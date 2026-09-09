@@ -1,36 +1,72 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# ── 依赖与包管理 ───────────────────────────────
+# 注意：不加前导 /，否则匹配不到 packages/*/node_modules
+node_modules/
+.pnpm-store/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
+# ── 构建产物 ──────────────────────────────────
+dist/
+build/
+out/
+*.tsbuildinfo
+.turbo/
+.vite/
 
-# testing
-/coverage
+# ── 测试与覆盖率 ───────────────────────────────
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
 
-# next.js
-/.next/
-/out/
+# ── 浏览器运行时产物 ────────────────────────────
+# Midscene 默认把报告与截图写在这里。架构文档铁律：
+# 证据一律进 S3，绝不落本地磁盘 —— 更不能进 git
+midscene_run/
+# 受管 Chrome profile 目录含 cookie 与登录态，等同凭据
+.browser-profiles/
+chrome-profiles/
+*.har
 
-# production
-/build
+# ── 内部文档，另行传递 ─────────────────────────
+docs/arch/
+docs/deploy/
 
-# misc
-.DS_Store
+# 指令草稿，可能含凭据
+.prompt
+*.prompt
+
+# ── 环境与密钥 ────────────────────────────────
+.env
+.env.*
+!.env.example
 *.pem
+*.key
+*.p12
+.keys/
 
-# debug
+# ── 本地服务数据卷（docker/podman compose）──────
+.data/
+pgdata/
+minio-data/
+
+# ── 日志与临时文件 ──────────────────────────────
+logs/
+*.log
 npm-debug.log*
+pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.artifacts/
+tmp/
 
-# local env files
-.env*.local
-.env
+# ── 编辑器与操作系统 ────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
 
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# ── Claude Code ──────────────────────────────
+# 开发工具与本机配置，不进产品仓库
+.claude/
