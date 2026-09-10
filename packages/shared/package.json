@@ -16,7 +16,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev": "tsc -w --preserveWatchOutput -p tsconfig.build.json"
   },
   "dependencies": {
     "zod": "^4.5.4"

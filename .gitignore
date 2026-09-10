@@ -51,6 +51,7 @@ pgdata/
 minio-data/
 
 # ── 日志与临时文件 ──────────────────────────────
+.run/
 logs/
 *.log
 npm-debug.log*

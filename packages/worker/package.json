@@ -6,7 +6,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev": "tsc -p tsconfig.build.json && concurrently -k -n tsc,node -c blue,green \"tsc -w --preserveWatchOutput -p tsconfig.build.json\" \"node --watch --watch-preserve-output dist/main.js\""
   },
   "dependencies": {
     "@cairn/db": "workspace:*",

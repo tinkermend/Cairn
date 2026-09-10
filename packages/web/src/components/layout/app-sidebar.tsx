@@ -7,6 +7,7 @@ import {
   SidebarRail,
 } from '@/components/ui/sidebar'
 // import { AppTitle } from './app-title'
+import { ApiStatus } from './api-status'
 import { sidebarData } from './data/sidebar-data'
 import { NavGroup } from './nav-group'
 import { NavUser } from './nav-user'
@@ -29,6 +30,7 @@ export function AppSidebar() {
         ))}
       </SidebarContent>
       <SidebarFooter>
+        <ApiStatus />
         <NavUser user={sidebarData.user} />
       </SidebarFooter>
       <SidebarRail />

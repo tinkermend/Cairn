@@ -17,7 +17,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "migrate": "node dist/bin/migrate-cli.js"
+    "migrate": "node dist/bin/migrate-cli.js",
+    "dev": "tsc -w --preserveWatchOutput -p tsconfig.build.json"
   },
   "dependencies": {
     "@cairn/shared": "workspace:*",

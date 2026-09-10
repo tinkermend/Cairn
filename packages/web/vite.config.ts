@@ -6,6 +6,8 @@ import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import { playwright } from '@vitest/browser-playwright'
 
+const API_ORIGIN = process.env.CAIRN_API_ORIGIN ?? 'http://127.0.0.1:3030'
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -19,6 +21,13 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
+    },
+  },
+  server: {
+    proxy: {
+      // 开发期把后端调用转发到本地 api，避免跨域并让前端代码里只写相对路径
+      '/api': { target: API_ORIGIN, changeOrigin: true },
+      '/health': { target: API_ORIGIN, changeOrigin: true },
     },
   },
   test: {

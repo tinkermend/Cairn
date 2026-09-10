@@ -14,9 +14,15 @@
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
     "check:migrations": "node tools/check-migrations.mjs",
-    "db:migrate": "pnpm --filter @cairn/db migrate"
+    "db:migrate": "pnpm --filter @cairn/db migrate",
+    "start": "./scripts/stack.sh start",
+    "stop": "./scripts/stack.sh stop",
+    "restart": "./scripts/stack.sh restart",
+    "status": "./scripts/stack.sh status",
+    "logs": "./scripts/stack.sh logs"
   },
   "devDependencies": {
+    "concurrently": "^10.0.5",
     "turbo": "^2.10.12"
   }
 }
