@@ -315,3 +315,20 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
    重点解决 Recorder 不等于脚本生成、Scenario IR、Excel/CSV 导入、自然语言、手工编排、术语、Business Action、参数化、断言生成、Scenario Analyzer 与 Trial/Fix Loop。
 5. [识途 MVP 范围与开发实施路线图 v1.0](docs/arch/05_识途MVP范围与开发实施路线图_v1.0.md)
    明确 In Scope / Out of Scope、9 个 PoC Gate、6 个 Vertical Slice、里程碑、验收指标和第一批 ADR，防止第一版越做越大。
+
+## 24. UI 的核心原则
+
+1. 蓝色表达操作和平台能力；
+2. 绿色表达成功和健康；
+3. 红色只表达失败、错误和危险；
+4. 橙色表达警告和待处理；
+5. 紫色只表达 AI 能力；
+6. 灰色表达辅助、禁用、等待和次要信息；
+7. 白色卡片承载主要业务内容；
+8. 页面背景使用极浅冷灰色；
+9. 一张页面最多只有一个最醒目的主操作；
+10. 用户首先看到业务状态，其次看到数据趋势，最后看到辅助信息；
+11. 测试步骤、断言、执行证据是平台的核心信息，不得为了简洁而隐藏；
+12. 所有复杂功能优先采用渐进式展示，而不是一次性全部展开；
+13. 表格用于批量管理，卡片用于概览和快捷操作；
+14. AI 是辅助能力，不取代用户对测试逻辑的控制。
