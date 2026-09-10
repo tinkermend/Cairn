@@ -25,6 +25,6 @@
     "@types/node": "^25.9.5",
     "typescript": "~6.0.3",
     "unplugin-swc": "^1.6.0",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.11"
   }
 }
