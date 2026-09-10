@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dbEnvSchema } from '../env.js'
+import { apiEnvSchema, dbEnvSchema, parseDurationSeconds } from '../env.js'
 
 const base = {
   CAIRN_DB_HOST: 'db.example',
@@ -21,5 +21,22 @@ describe('dbEnvSchema', () => {
 
   it('缺少必填项时抛错', () => {
     expect(() => dbEnvSchema.parse({ ...base, CAIRN_DB_PASSWORD: '' })).toThrow()
+  })
+})
+
+describe('apiEnvSchema', () => {
+  it('JWT 与 bootstrap 有本地默认值', () => {
+    const env = apiEnvSchema.parse({})
+    expect(env.CAIRN_BOOTSTRAP_ADMIN_EMAIL).toBe('admin@cairn.dev')
+    expect(env.CAIRN_BOOTSTRAP_ADMIN_PASSWORD).toBe('cairn-admin')
+    expect(env.CAIRN_JWT_SECRET.length).toBeGreaterThanOrEqual(16)
+  })
+})
+
+describe('parseDurationSeconds', () => {
+  it('解析 smhd', () => {
+    expect(parseDurationSeconds('30s')).toBe(30)
+    expect(parseDurationSeconds('12h')).toBe(12 * 3600)
+    expect(parseDurationSeconds('7d')).toBe(7 * 86400)
   })
 })

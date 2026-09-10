@@ -5,6 +5,9 @@
 --
 -- 全文幂等：重复执行不产生副作用。
 
+-- 主键一律 UUID（应用侧生成 UUIDv7，见 packages/db/src/id.ts），
+-- 外键列名 = 被引用表名的单数形 + "_id"，两条均见 CLAUDE.md「数据库约定」。
+
 CREATE SCHEMA IF NOT EXISTS "__SCHEMA__";
 
 -- ─────────────────────────────────────────────────────────────
@@ -14,7 +17,7 @@ CREATE SCHEMA IF NOT EXISTS "__SCHEMA__";
 -- 它刻意不含任何认证方式的信息，认证方式全部在 console_identities。
 -- ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS "__SCHEMA__".console_accounts (
-  id            TEXT        PRIMARY KEY,
+  id            UUID        PRIMARY KEY,
   display_name  TEXT        NOT NULL,
   email         TEXT,
   role          TEXT        NOT NULL DEFAULT 'operator',
@@ -57,22 +60,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS console_accounts_email_idx
 -- 与日后接入的 OIDC / LDAP 平级。
 --
 -- 拆开的理由：接客户 SSO 时是往这里新增一行，account 表与所有引用
--- account_id 的地方都不用动。反过来若把 provider 与密码塞进用户表，
+-- console_account_id 的地方都不用动。反过来若把 provider 与密码塞进用户表，
 -- 后补这一层要改遍每一处引用。
 --
 -- 同一 account 可持有多个 identity（本地密码 + 企业 SSO 并存）。
 -- ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS "__SCHEMA__".console_identities (
-  id            TEXT        PRIMARY KEY,
-  account_id    TEXT        NOT NULL
+  id                  UUID  PRIMARY KEY,
+  console_account_id  UUID  NOT NULL
                             REFERENCES "__SCHEMA__".console_accounts (id) ON DELETE CASCADE,
-  provider      TEXT        NOT NULL,
+  provider            TEXT  NOT NULL,
   -- 该 provider 下的唯一标识：local 为登录名，OIDC 为 sub，LDAP 为 DN
-  subject       TEXT        NOT NULL,
+  subject             TEXT  NOT NULL,
   -- 仅 local 使用，存密码哈希；外部 provider 恒为 NULL
-  secret        TEXT,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_used_at  TIMESTAMPTZ
+  secret              TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at        TIMESTAMPTZ
 );
 
 DO $$
@@ -97,4 +100,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS console_identities_provider_subject_idx
   ON "__SCHEMA__".console_identities (provider, subject);
 
 CREATE INDEX IF NOT EXISTS console_identities_account_idx
-  ON "__SCHEMA__".console_identities (account_id);
+  ON "__SCHEMA__".console_identities (console_account_id);

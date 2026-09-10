@@ -26,6 +26,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu'
+import { visibleByPermission } from '@/lib/rbac'
+import { useAuthStore } from '@/stores/auth-store'
 import {
   type NavCollapsible,
   type NavItem,
@@ -36,11 +38,23 @@ import {
 export function NavGroup({ title, items }: NavGroupProps) {
   const { state, isMobile } = useSidebar()
   const href = useLocation({ select: (location) => location.href })
+  const user = useAuthStore((s) => s.auth.user)
+  const visibleItems: NavItem[] = []
+  for (const item of items) {
+    if (item.permission && !visibleByPermission([item], user).length) continue
+    if (item.items) {
+      const children = visibleByPermission(item.items, user)
+      if (children.length > 0) visibleItems.push({ ...item, items: children })
+    } else if (visibleByPermission([item], user).length > 0) {
+      visibleItems.push(item)
+    }
+  }
+  if (visibleItems.length === 0) return null
   return (
     <SidebarGroup>
       <SidebarGroupLabel>{title}</SidebarGroupLabel>
       <SidebarMenu>
-        {items.map((item) => {
+        {visibleItems.map((item) => {
           const key = `${item.title}-${item.url}`
 
           if (!item.items)

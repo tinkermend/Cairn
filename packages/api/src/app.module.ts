@@ -6,10 +6,13 @@ import type { Request } from 'express'
 import { REQUEST_ID_HEADER } from '@cairn/shared'
 import { AllExceptionsFilter } from './common/all-exceptions.filter'
 import { AuthGuard } from './common/auth.guard'
-import { NotFoundController } from './common/not-found.controller'
+import { NotFoundModule } from './common/not-found.module'
 import { RequestIdMiddleware } from './common/request-id.middleware'
 import { DbModule } from './db/db.module'
+import { AuthModule } from './auth/auth.module'
 import { HealthModule } from './health/health.module'
+import { PermissionsGuard } from './rbac/permissions.guard'
+import { RbacModule } from './rbac/rbac.module'
 
 @Module({
   imports: [
@@ -30,12 +33,15 @@ import { HealthModule } from './health/health.module'
     }),
     DbModule,
     HealthModule,
+    AuthModule,
+    RbacModule,
+    // 必须放在最后：兜底路由要在所有业务路由之后注册
+    NotFoundModule,
   ],
-  // 必须放在最后：兜底路由要在所有业务路由之后注册
-  controllers: [NotFoundController],
   providers: [
     // 全局默认拒绝，白名单靠 @Public() 显式放行
     { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })

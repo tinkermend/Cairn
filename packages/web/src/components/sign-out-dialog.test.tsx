@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { SignOutDialog } from './sign-out-dialog'
+
+function renderWithQuery(ui: React.ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+}
 
 const navigate = vi.fn()
 const reset = vi.fn()
@@ -29,7 +35,7 @@ describe('SignOutDialog', () => {
   })
 
   it('calls auth.reset and navigates to sign-in with current location as redirect', async () => {
-    const { getByRole } = await render(
+    const { getByRole } = await renderWithQuery(
       <SignOutDialog open onOpenChange={vi.fn()} />
     )
 
@@ -44,7 +50,7 @@ describe('SignOutDialog', () => {
   })
 
   it('does not call reset or navigate when Cancel is clicked', async () => {
-    const { getByRole } = await render(
+    const { getByRole } = await renderWithQuery(
       <SignOutDialog open onOpenChange={vi.fn()} />
     )
 

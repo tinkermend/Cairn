@@ -1,9 +1,11 @@
 import { Controller, Get, INestApplication, NotFoundException } from '@nestjs/common'
 import { APP_FILTER, APP_GUARD, Reflector } from '@nestjs/core'
+import { JwtService } from '@nestjs/jwt'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { apiErrorSchema, REQUEST_ID_HEADER } from '@cairn/shared'
+import { AuthService } from '../auth/auth.service'
 import { AllExceptionsFilter } from './all-exceptions.filter'
 import { AuthGuard } from './auth.guard'
 import { Public } from './public.decorator'
@@ -43,6 +45,8 @@ describe('HTTP 契约（Guard / 异常过滤器 / requestId）', () => {
       controllers: [ProbeController],
       providers: [
         Reflector,
+        { provide: JwtService, useValue: { verifyAsync: async () => ({}) } },
+        { provide: AuthService, useValue: { resolveAccount: async () => null } },
         { provide: APP_GUARD, useClass: AuthGuard },
         { provide: APP_FILTER, useClass: AllExceptionsFilter },
       ],

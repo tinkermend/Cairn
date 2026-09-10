@@ -1,3 +1,5 @@
+export { newId } from './id.js'
 export { createDb, type Db, type DbHandle } from './client.js'
 export { migrate, loadMigrations, type Migration, type MigrateResult } from './migrate.js'
+export { and, desc, eq, inArray, sql } from 'drizzle-orm'
 export * from './schema/index.js'

@@ -3,6 +3,7 @@ packages:
 
 allowBuilds:
   '@swc/core': true
+  argon2: set this to true or false
   esbuild: true
 
 # pnpm 默认拦截依赖的 postinstall。以下依赖需要下载/编译原生二进制，

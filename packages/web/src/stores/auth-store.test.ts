@@ -7,10 +7,11 @@ async function importAuthStore() {
 }
 
 const sampleUser = {
-  accountNo: 'ACC-1',
+  id: 'acc-1',
+  displayName: '运维甲',
   email: 'user@example.com',
-  role: ['user'],
-  exp: 1_700_000_000,
+  roles: ['operator'],
+  permissions: ['workflow:read', 'run:read'],
 }
 
 describe('useAuthStore', () => {

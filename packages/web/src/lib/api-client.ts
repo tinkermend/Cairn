@@ -1,5 +1,6 @@
 import { apiErrorSchema, REQUEST_ID_HEADER, type ApiError } from '@cairn/shared'
 import type { ZodType } from 'zod'
+import { useAuthStore } from '@/stores/auth-store'
 
 /** 携带服务端 requestId 的错误，便于把前端报错与后端日志对上 */
 export class ApiRequestError extends Error {
@@ -28,14 +29,26 @@ export async function apiFetch<T>(
   schema: ZodType<T>,
   init?: RequestInit,
 ): Promise<T> {
+  const token = useAuthStore.getState().auth.accessToken
   const res = await fetch(path, {
     ...init,
-    headers: { Accept: 'application/json', ...init?.headers },
+    headers: {
+      Accept: 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
   })
+
+  if (res.status === 204) {
+    return undefined as T
+  }
 
   const body: unknown = await res.json().catch(() => null)
 
   if (!res.ok) {
+    if (res.status === 401 && path !== '/api/auth/login') {
+      useAuthStore.getState().auth.reset()
+    }
     const parsed = apiErrorSchema.safeParse(body)
     throw new ApiRequestError(
       res.status,

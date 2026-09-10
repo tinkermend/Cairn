@@ -1,12 +1,13 @@
-'use client'
-
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
-import { showSubmittedData } from '@/lib/show-submitted-data'
+import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { ApiRequestError } from '@/lib/api-client'
+import { deleteAccount } from '@/lib/rbac-api'
 import { type User } from '../data/schema'
 
 type UserDeleteDialogProps = {
@@ -21,27 +22,37 @@ export function UsersDeleteDialog({
   currentRow,
 }: UserDeleteDialogProps) {
   const [value, setValue] = useState('')
+  const [saving, setSaving] = useState(false)
+  const queryClient = useQueryClient()
 
-  const handleDelete = () => {
-    if (value.trim() !== currentRow.username) return
-
-    onOpenChange(false)
-    showSubmittedData(currentRow, 'The following user has been deleted:')
+  const handleDelete = async () => {
+    if (value.trim() !== currentRow.displayName) return
+    setSaving(true)
+    try {
+      await deleteAccount(currentRow.id)
+      await queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      await queryClient.invalidateQueries({ queryKey: ['roles'] })
+      await queryClient.invalidateQueries({ queryKey: ['audit'] })
+      toast.success('Account deleted')
+      onOpenChange(false)
+    } catch (error) {
+      toast.error(error instanceof ApiRequestError ? error.message : 'Delete failed')
+    } finally {
+      setSaving(false)
+    }
   }
+
+  const roleNames = currentRow.roles.map((r) => r.name).join(', ')
 
   return (
     <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
       form='users-delete-form'
-      disabled={value.trim() !== currentRow.username}
+      disabled={saving || value.trim() !== currentRow.displayName}
       title={
         <span className='text-destructive'>
-          <AlertTriangle
-            className='me-1 inline-block stroke-destructive'
-            size={18}
-          />{' '}
-          Delete User
+          <AlertTriangle className='me-1 inline-block stroke-destructive' size={18} /> Delete User
         </span>
       }
       desc={
@@ -49,36 +60,28 @@ export function UsersDeleteDialog({
           id='users-delete-form'
           onSubmit={(e) => {
             e.preventDefault()
-            handleDelete()
+            void handleDelete()
           }}
           className='space-y-4'
         >
           <p className='mb-2'>
-            Are you sure you want to delete{' '}
-            <span className='font-bold'>{currentRow.username}</span>?
+            Are you sure you want to delete <span className='font-bold'>{currentRow.displayName}</span>?
             <br />
-            This action will permanently remove the user with the role of{' '}
-            <span className='font-bold'>
-              {currentRow.role.toUpperCase()}
-            </span>{' '}
-            from the system. This cannot be undone.
+            This action will permanently remove the account with roles{' '}
+            <span className='font-bold'>{roleNames}</span> from the system. This cannot be undone.
           </p>
-
           <Label className='my-2'>
-            Username:
+            Display name:
             <Input
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder='Enter username to confirm deletion.'
+              placeholder='Enter display name to confirm deletion.'
               autoFocus
             />
           </Label>
-
           <Alert variant='destructive'>
             <AlertTitle>Warning!</AlertTitle>
-            <AlertDescription>
-              Please be careful, this operation can not be rolled back.
-            </AlertDescription>
+            <AlertDescription>Please be careful, this operation can not be rolled back.</AlertDescription>
           </Alert>
         </form>
       }

@@ -1,14 +1,15 @@
-'use client'
-
 import { useState } from 'react'
 import { type Table } from '@tanstack/react-table'
+import { useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
-import { sleep } from '@/lib/utils'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { ApiRequestError } from '@/lib/api-client'
+import { deleteAccount } from '@/lib/rbac-api'
+import { type User } from '../data/schema'
 
 type UserMultiDeleteDialogProps<TData> = {
   open: boolean
@@ -24,28 +25,34 @@ export function UsersMultiDeleteDialog<TData>({
   table,
 }: UserMultiDeleteDialogProps<TData>) {
   const [value, setValue] = useState('')
-
+  const [saving, setSaving] = useState(false)
+  const queryClient = useQueryClient()
   const selectedRows = table.getFilteredSelectedRowModel().rows
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (value.trim() !== CONFIRM_WORD) {
       toast.error(`Please type "${CONFIRM_WORD}" to confirm.`)
       return
     }
-
-    onOpenChange(false)
-
-    toast.promise(sleep(2000), {
-      loading: 'Deleting users...',
-      success: () => {
-        setValue('')
-        table.resetRowSelection()
-        return `Deleted ${selectedRows.length} ${
-          selectedRows.length > 1 ? 'users' : 'user'
-        }`
-      },
-      error: 'Error',
-    })
+    setSaving(true)
+    try {
+      await Promise.all(
+        selectedRows.map((row) => deleteAccount((row.original as User).id)),
+      )
+      await queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      await queryClient.invalidateQueries({ queryKey: ['roles'] })
+      await queryClient.invalidateQueries({ queryKey: ['audit'] })
+      setValue('')
+      table.resetRowSelection()
+      onOpenChange(false)
+      toast.success(
+        `Deleted ${selectedRows.length} ${selectedRows.length > 1 ? 'users' : 'user'}`,
+      )
+    } catch (error) {
+      toast.error(error instanceof ApiRequestError ? error.message : 'Delete failed')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -53,7 +60,7 @@ export function UsersMultiDeleteDialog<TData>({
       open={open}
       onOpenChange={onOpenChange}
       form='users-multi-delete-form'
-      disabled={value.trim() !== CONFIRM_WORD}
+      disabled={saving || value.trim() !== CONFIRM_WORD}
       title={
         <span className='text-destructive'>
           <AlertTriangle
@@ -69,7 +76,7 @@ export function UsersMultiDeleteDialog<TData>({
           id='users-multi-delete-form'
           onSubmit={(e) => {
             e.preventDefault()
-            handleDelete()
+            void handleDelete()
           }}
           className='space-y-4'
         >
@@ -79,7 +86,7 @@ export function UsersMultiDeleteDialog<TData>({
           </p>
 
           <Label className='my-4 flex flex-col items-start gap-1.5'>
-            <span className=''>Confirm by typing "{CONFIRM_WORD}":</span>
+            <span>Confirm by typing &quot;{CONFIRM_WORD}&quot;:</span>
             <Input
               value={value}
               onChange={(e) => setValue(e.target.value)}

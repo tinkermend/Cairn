@@ -1,35 +1,26 @@
-import { Shield, UserCheck, Users, CreditCard } from 'lucide-react'
-import { type UserStatus } from './schema'
+import { Eye, Shield, UserCheck } from 'lucide-react'
+import {
+  SYSTEM_ROLE_DEFINITIONS,
+  SYSTEM_ROLE_KEYS,
+  type AccountStatus,
+} from '@cairn/shared'
 
-export const callTypes = new Map<UserStatus, string>([
+export const callTypes = new Map<AccountStatus, string>([
   ['active', 'bg-teal-100/30 text-teal-900 dark:text-teal-200 border-teal-200'],
-  ['inactive', 'bg-neutral-300/40 border-neutral-300'],
-  ['invited', 'bg-sky-200/40 text-sky-900 dark:text-sky-100 border-sky-300'],
   [
-    'suspended',
+    'disabled',
     'bg-destructive/10 dark:bg-destructive/50 text-destructive dark:text-primary border-destructive/10',
   ],
 ])
 
-export const roles = [
-  {
-    label: 'Superadmin',
-    value: 'superadmin',
-    icon: Shield,
-  },
-  {
-    label: 'Admin',
-    value: 'admin',
-    icon: UserCheck,
-  },
-  {
-    label: 'Manager',
-    value: 'manager',
-    icon: Users,
-  },
-  {
-    label: 'Cashier',
-    value: 'cashier',
-    icon: CreditCard,
-  },
-] as const
+const ROLE_ICONS = {
+  admin: Shield,
+  operator: UserCheck,
+  viewer: Eye,
+} as const
+
+export const roles = SYSTEM_ROLE_KEYS.map((key) => ({
+  label: SYSTEM_ROLE_DEFINITIONS[key].name,
+  value: key,
+  icon: ROLE_ICONS[key],
+}))

@@ -50,6 +50,16 @@ describe('AppModule 完整装配', () => {
     expect(res.body.code).toBe('NOT_FOUND')
   })
 
+  it('未带 token 的 RBAC 路由默认 401；登录是公开的', async () => {
+    const res = await request(app.getHttpServer()).get('/api/rbac/roles').expect(401)
+    expect(res.body.code).toBe('UNAUTHENTICATED')
+    await request(app.getHttpServer()).get('/api/me').expect(401)
+    await request(app.getHttpServer()).get('/api/console/accounts').expect(401)
+    await request(app.getHttpServer()).get('/api/console/audit').expect(401)
+    const login = await request(app.getHttpServer()).post('/api/auth/login').send({}).expect(400)
+    expect(login.body.code).toBe('BAD_REQUEST')
+  })
+
   it('未知路径返回 404 而非 401——路径不存在不该伪装成认证失败', async () => {
     const res = await request(app.getHttpServer()).post('/api/whatever').expect(404)
     expect(res.body.code).toBe('NOT_FOUND')

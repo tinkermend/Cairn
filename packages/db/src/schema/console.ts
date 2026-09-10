@@ -1,5 +1,6 @@
 import { relations } from 'drizzle-orm'
-import { index, pgSchema, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import { index, pgSchema, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import { newId } from '../id.js'
 
 /**
  * DDL 的事实源是 migrations/*.sql，本文件是查询侧的 TypeScript 视图。
@@ -11,16 +12,13 @@ import { index, pgSchema, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-co
  */
 export const cairnSchema = pgSchema('cairn')
 
-/** 主体：角色、权限、审计归属。不含任何认证方式信息。 */
+/** 主体：审计归属。角色通过 console_account_roles 绑定。不含任何认证方式信息。 */
 export const consoleAccounts = cairnSchema.table(
   'console_accounts',
   {
-    id: text('id').primaryKey(),
+    id: uuid('id').primaryKey().$defaultFn(newId),
     displayName: text('display_name').notNull(),
     email: text('email'),
-    role: text('role', { enum: ['admin', 'operator', 'viewer'] })
-      .notNull()
-      .default('operator'),
     status: text('status', { enum: ['active', 'disabled'] })
       .notNull()
       .default('active'),
@@ -32,13 +30,13 @@ export const consoleAccounts = cairnSchema.table(
 
 /**
  * 身份来源：本地密码只是 provider='local' 的一种，与 OIDC / LDAP 平级。
- * 接客户 SSO 时是新增一行，account 表与所有引用 account_id 的地方不动。
+ * 接客户 SSO 时是新增一行，account 表与所有引用 console_account_id 的地方不动。
  */
 export const consoleIdentities = cairnSchema.table(
   'console_identities',
   {
-    id: text('id').primaryKey(),
-    accountId: text('account_id')
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    consoleAccountId: uuid('console_account_id')
       .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'cascade' }),
     /** 'local' | 'oidc' | 'ldap' | …，不设枚举以便新增 provider 无需迁移 */
@@ -52,7 +50,7 @@ export const consoleIdentities = cairnSchema.table(
   },
   (t) => [
     uniqueIndex('console_identities_provider_subject_idx').on(t.provider, t.subject),
-    index('console_identities_account_idx').on(t.accountId),
+    index('console_identities_account_idx').on(t.consoleAccountId),
   ],
 )
 
@@ -62,7 +60,7 @@ export const consoleAccountsRelations = relations(consoleAccounts, ({ many }) =>
 
 export const consoleIdentitiesRelations = relations(consoleIdentities, ({ one }) => ({
   account: one(consoleAccounts, {
-    fields: [consoleIdentities.accountId],
+    fields: [consoleIdentities.consoleAccountId],
     references: [consoleAccounts.id],
   }),
 }))

@@ -1,22 +1,32 @@
 import { useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTableMock } from '@/test-utils/tanstack-table'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { UsersMultiDeleteDialog } from './users-multi-delete-dialog'
 
-vi.mock('@/lib/utils', async (orig) => ({
-  ...(await orig()),
-  sleep: vi.fn(() => Promise.resolve()),
+const { deleteAccount } = vi.hoisted(() => ({
+  deleteAccount: vi.fn(),
 }))
 
+vi.mock('@/lib/rbac-api', () => ({ deleteAccount }))
+
+function renderDialog(ui: React.ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+}
+
 describe('UsersMultiDeleteDialog', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    deleteAccount.mockResolvedValue(undefined)
+  })
 
   it('renders the dialog with the correct title, description, input and buttons', async () => {
     const { table } = createTableMock()
 
-    const { getByRole, getByText } = await render(
+    const { getByRole, getByText } = await renderDialog(
       <UsersMultiDeleteDialog open onOpenChange={vi.fn()} table={table} />
     )
 
@@ -41,7 +51,7 @@ describe('UsersMultiDeleteDialog', () => {
 
   it('keeps the delete button disabled until the confirm delete input is filled correctly', async () => {
     const { table } = createTableMock()
-    const { getByRole } = await render(
+    const { getByRole } = await renderDialog(
       <UsersMultiDeleteDialog open onOpenChange={vi.fn()} table={table} />
     )
 
@@ -62,7 +72,7 @@ describe('UsersMultiDeleteDialog', () => {
   it('closes the dialog when the cancel button is clicked', async () => {
     const { table } = createTableMock()
     const onOpenChange = vi.fn()
-    const { getByRole } = await render(
+    const { getByRole } = await renderDialog(
       <UsersMultiDeleteDialog open onOpenChange={onOpenChange} table={table} />
     )
 
@@ -94,7 +104,7 @@ describe('UsersMultiDeleteDialog', () => {
       )
     }
 
-    const { getByRole } = await render(<Harness />)
+    const { getByRole } = await renderDialog(<Harness />)
 
     const confirmDeleteInput = getByRole('textbox', {
       name: /Confirm by typing "DELETE"/i,
@@ -110,10 +120,10 @@ describe('UsersMultiDeleteDialog', () => {
     await expect.element(confirmDeleteInput).toHaveValue('')
   })
 
-  it('shows the submitted data when deleted successfully', async () => {
+  it('deletes selected accounts and closes', async () => {
     const { table, resetRowSelection } = createTableMock()
     const onOpenChange = vi.fn()
-    const { getByRole } = await render(
+    const { getByRole } = await renderDialog(
       <UsersMultiDeleteDialog open onOpenChange={onOpenChange} table={table} />
     )
 
@@ -129,16 +139,15 @@ describe('UsersMultiDeleteDialog', () => {
 
     await userEvent.click(deleteButton)
 
-    expect(onOpenChange).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(deleteAccount).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
-
     await vi.waitFor(() => expect(resetRowSelection).toHaveBeenCalledOnce())
   })
 
   it('deletes successfully when press Enter key on the confirm delete input', async () => {
     const { table, resetRowSelection } = createTableMock()
     const onOpenChange = vi.fn()
-    const { getByRole } = await render(
+    const { getByRole } = await renderDialog(
       <UsersMultiDeleteDialog open onOpenChange={onOpenChange} table={table} />
     )
 
@@ -153,9 +162,8 @@ describe('UsersMultiDeleteDialog', () => {
     await expect.element(deleteButton).toBeEnabled()
 
     await userEvent.keyboard('{Enter}')
-    expect(onOpenChange).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(deleteAccount).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
-
     await vi.waitFor(() => expect(resetRowSelection).toHaveBeenCalledOnce())
   })
 })

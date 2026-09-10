@@ -22,18 +22,20 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { DataTablePagination, DataTableToolbar } from '@/components/data-table'
-import { roles } from '../data/data'
+import type { RoleDto } from '@cairn/shared'
+import { roles as systemRoleMeta } from '../data/data'
 import { type User } from '../data/schema'
 import { DataTableBulkActions } from './data-table-bulk-actions'
 import { usersColumns as columns } from './users-columns'
 
 type DataTableProps = {
   data: User[]
+  roles: RoleDto[]
   search: Record<string, unknown>
   navigate: NavigateFn
 }
 
-export function UsersTable({ data, search, navigate }: DataTableProps) {
+export function UsersTable({ data, roles, search, navigate }: DataTableProps) {
   // Local UI-only states
   const [rowSelection, setRowSelection] = useState({})
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
@@ -56,10 +58,9 @@ export function UsersTable({ data, search, navigate }: DataTableProps) {
     pagination: { defaultPage: 1, defaultPageSize: 10 },
     globalFilter: { enabled: false },
     columnFilters: [
-      // username per-column text filter
-      { columnId: 'username', searchKey: 'username', type: 'string' },
+      { columnId: 'displayName', searchKey: 'displayName', type: 'string' },
       { columnId: 'status', searchKey: 'status', type: 'array' },
-      { columnId: 'role', searchKey: 'role', type: 'array' },
+      { columnId: 'roles', searchKey: 'role', type: 'array' },
     ],
   })
 
@@ -102,22 +103,24 @@ export function UsersTable({ data, search, navigate }: DataTableProps) {
       <DataTableToolbar
         table={table}
         searchPlaceholder='Filter users...'
-        searchKey='username'
+        searchKey='displayName'
         filters={[
           {
             columnId: 'status',
             title: 'Status',
             options: [
               { label: 'Active', value: 'active' },
-              { label: 'Inactive', value: 'inactive' },
-              { label: 'Invited', value: 'invited' },
-              { label: 'Suspended', value: 'suspended' },
+              { label: 'Disabled', value: 'disabled' },
             ],
           },
           {
-            columnId: 'role',
+            columnId: 'roles',
             title: 'Role',
-            options: roles.map((role) => ({ ...role })),
+            options: (roles.length > 0 ? roles : systemRoleMeta).map((role) =>
+              'key' in role
+                ? { label: role.name, value: role.key }
+                : { label: role.label, value: role.value },
+            ),
           },
         ]}
       />

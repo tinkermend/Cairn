@@ -3,11 +3,13 @@ import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
 
 const ACCESS_TOKEN = 'thisisjustarandomstring'
 
-interface AuthUser {
-  accountNo: string
-  email: string
-  role: string[]
-  exp: number
+export interface AuthUser {
+  id: string
+  displayName: string
+  email: string | null
+  /** 角色 key，仅展示；鉴权看 permissions */
+  roles: string[]
+  permissions: string[]
 }
 
 interface AuthState {
@@ -32,7 +34,7 @@ export const useAuthStore = create<AuthState>()((set) => {
       accessToken: initToken,
       setAccessToken: (accessToken) =>
         set((state) => {
-          setCookie(ACCESS_TOKEN, JSON.stringify(accessToken))
+          setCookie(ACCESS_TOKEN, JSON.stringify(accessToken), 60 * 60 * 12)
           return { ...state, auth: { ...state.auth, accessToken } }
         }),
       resetAccessToken: () =>
