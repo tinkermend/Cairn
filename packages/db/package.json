@@ -10,11 +10,14 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "migrate": "node dist/bin/migrate-cli.js"
   },
   "dependencies": {
     "@cairn/shared": "workspace:*",
