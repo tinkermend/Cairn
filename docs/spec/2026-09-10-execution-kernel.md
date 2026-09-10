@@ -1,6 +1,6 @@
 # 执行内核：账本与无浏览器引擎
 
-日期：2026-09-10。状态：**待审查**。  
+日期：2026-09-10。状态：**待审查**（同日修订一版：参数化 `from` 三层校验、副作用未知一律 `NEEDS_REVIEW`、`runs` 列清单与摘要生产位置、外键列名、场景停用语义、证据索引）。  
 对应路线图 P1 剩余 + P2，以及 RF03 / RF04 / RF05 / RF09。两处对 P2 验收的主动下修（退避、Run 级总超时）已写进非目标。  
 前置：[最小执行契约](2026-09-10-runtime-contracts.md)（已落地）、[目标系统（接入目录）](2026-09-10-target-catalog.md)（已落地）。
 
@@ -319,6 +319,7 @@ runDetailSchema = runSummarySchema + {
   snapshot: RunSnapshot,                // 已落地契约
   context: record(string, jsonValue),
   stepRuns: [{
+    // name / type 从快照回填，不在 step_runs 冗余
     id, stepId, name, type, ordinal, status,
     startedAt, finishedAt,
     attempts: [{
@@ -332,7 +333,7 @@ runDetailSchema = runSummarySchema + {
 
 创建成功体是 `runDetailSchema`（此时 Attempt 为空、StepRun 全 `PENDING`、`context` 等于 `input`）。
 
-幂等：唯一键 `(created_by_console_account_id, idempotency_key)`（`idempotency_key` 为空则不参与）。同键则比较 `idempotency_digest`（`scenarioVersionId + input + targetAccountId + policy` 的同一套规范 JSON + SHA-256）。摘要相同 → 200 返回已有 Run（不是 201）。摘要不同 → `409` `RUN_IDEMPOTENCY_CONFLICT`。
+幂等：唯一键 `(created_by_console_account_id, idempotency_key)`（`idempotency_key` 为空则不参与）。同键则比较 `idempotency_digest`（`scenarioVersionId + input + targetAccountId + policy` 的同一套规范 JSON + SHA-256）。摘要相同 → 200 返回已有 Run（不是 201），返回的是该 Run **当前**的 `runDetail`，即使它已经 `SUCCEEDED` / `FAILED` / `CANCELLED`，也不重置为 `QUEUED`。摘要不同 → `409` `RUN_IDEMPOTENCY_CONFLICT`。
 
 可选 `targetAccountId` 必须属于该场景的 Target，且账号启用。有已保存凭据则 Snapshot 带 `secretRef`；没有则只有 `targetAccountId`。请求体禁止出现 `secretRef` / `password`。
 
@@ -452,7 +453,7 @@ CHECK：`(idempotency_key IS NULL) = (idempotency_digest IS NULL)`。部分唯�
 | GET | `/scenarios/:scenarioId` | `workflow:read` | 200 | 详情含最新 steps |
 | POST | `/scenarios/:scenarioId` | `workflow:write` | 200 | 改名/停用/新版本 |
 | POST | `/scenarios/:scenarioId/delete` | `workflow:delete` | 204 | 无 Run 才成功 |
-| GET | `/scenarios/:scenarioId/versions` | `workflow:read` | 200 | `{ items }` |
+| GET | `/scenarios/:scenarioId/versions` | `workflow:read` | 200 | `{ items }`，item 含 `definition` 全文与 `versionNo` |
 | POST | `/runs` | `run:execute` | 201 或 200 | 200 = 幂等命中 |
 | GET | `/runs` | `run:read` | 200 | 列表，不含 snapshot |
 | GET | `/runs/:runId` | `run:read` | 200 | 详情含 snapshot / context / attempts |
