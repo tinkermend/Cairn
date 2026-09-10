@@ -1,0 +1,4309 @@
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { stat } from 'node:fs/promises';
+import type { Server } from 'node:http';
+import { basename, dirname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type {
+  AgentDescribeElementAtPointResult,
+  DeviceAction,
+  ElementDescriberRuntime,
+  ExecutionDump,
+  ExecutionTask,
+  ExecutorContext,
+} from '@midscene/core';
+import {
+  type ReportActionDump,
+  describeElementAtPoint,
+  runConnectivityTest,
+} from '@midscene/core';
+import type { Agent as PageAgent } from '@midscene/core/agent';
+import { getModelRuntime } from '@midscene/core/ai-model';
+import {
+  imageMimeTypeForFileExtension,
+  parseBase64ImageDataUrl,
+} from '@midscene/core/dump';
+import { getTmpDir, sleep } from '@midscene/core/utils';
+import { getMidsceneRunSubDir } from '@midscene/shared/common';
+import { PLAYGROUND_SERVER_PORT } from '@midscene/shared/constants';
+import {
+  ModelConfigManager,
+  globalModelConfigManager,
+  overrideAIConfig,
+} from '@midscene/shared/env';
+import { annotateRects, imageInfoOfBase64 } from '@midscene/shared/img';
+import { getDebug } from '@midscene/shared/logger';
+import type {
+  MidsceneRecorderScreenshotAssetRef,
+  MidsceneRecorderSemantic,
+  MidsceneRecorderSemanticAction,
+} from '@midscene/shared/recorder';
+import {
+  buildMidsceneRecorderActionSummary,
+  buildMidsceneRecorderReplayInstruction,
+} from '@midscene/shared/recorder';
+import { antiEscapeScriptTag, uuid } from '@midscene/shared/utils';
+import express, { type Request, type Response } from 'express';
+import { executeAction, formatErrorMessage } from './common';
+import { MjpegStreamHandler } from './mjpeg-stream-handler';
+import type {
+  PlaygroundCreatedSession,
+  PlaygroundExecutionHooks,
+  PlaygroundPreviewDescriptor,
+  PlaygroundRecorderCapabilitiesResult,
+  PlaygroundRecorderDescribeTrace,
+  PlaygroundRecorderEvent,
+  PlaygroundSessionManager,
+  PlaygroundSessionNavigationEvent,
+  PlaygroundSessionNavigationSubscriber,
+  PlaygroundSessionSetup,
+  PlaygroundSessionState,
+  PlaygroundSessionTarget,
+  PlaygroundSidecar,
+  PreparedPlaygroundPlatform,
+} from './platform';
+import { PointerInputError, dispatchPointer } from './pointer-dispatch';
+import {
+  type PlaygroundRuntimeInfo,
+  buildRuntimeInfo,
+} from './runtime-metadata';
+import type { AgentFactory, PlaygroundReportRef } from './types';
+
+import 'dotenv/config';
+
+const defaultPort = PLAYGROUND_SERVER_PORT;
+const RECORDER_CAPTURE_AFTER_INTERACT_DELAY_MS = 250;
+const RECORDER_TYPE_ONLY_INPUT_SETTLE_DELAY_MS = 750;
+const RECORDER_AI_DESCRIBE_AFTER_INTERACT_TIMEOUT_MS = 30_000;
+const RECORDER_AI_DESCRIBE_VERIFY_PROMPT = false;
+const RECORDER_AI_DESCRIBE_SCREENSHOT_DUMP_DIR =
+  'recorder-ai-describe-screenshots';
+const RECORDER_SCREENSHOT_ASSET_DIR = 'recorder-screenshots';
+const RECORDER_SCREENSHOT_ASSET_MAX_SESSION_BYTES = 128 * 1024 * 1024;
+const RECORDER_SCREENSHOT_ASSET_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+const PLAYGROUND_REPORT_REF_TTL_MS = 60 * 60 * 1000;
+const REPORT_DUMP_OPEN_TAG = '<script type="midscene_web_dump"';
+const REPORT_IMAGE_CLOSE_TAG = '</script>';
+const recorderScreenshotAssetQuotaExceededSessions = new Set<string>();
+const recorderScreenshotAssetBytesBySession = new Map<string, number>();
+let recorderScreenshotAssetUsageInitialized = false;
+
+async function extractLastReportDump(reportPath: string): Promise<string> {
+  let pending = '';
+  let current = '';
+  let last = '';
+  let capturing = false;
+
+  for await (const rawChunk of createReadStream(reportPath, {
+    encoding: 'utf8',
+  })) {
+    let chunk = pending + rawChunk;
+    pending = '';
+
+    while (chunk) {
+      if (!capturing) {
+        const openIndex = chunk.indexOf(REPORT_DUMP_OPEN_TAG);
+        if (openIndex === -1) {
+          pending = chunk.slice(-(REPORT_DUMP_OPEN_TAG.length - 1));
+          break;
+        }
+        const tagEndIndex = chunk.indexOf('>', openIndex);
+        if (tagEndIndex === -1) {
+          pending = chunk.slice(openIndex);
+          break;
+        }
+        capturing = true;
+        current = '';
+        chunk = chunk.slice(tagEndIndex + 1);
+        continue;
+      }
+
+      const closeIndex = chunk.indexOf(REPORT_IMAGE_CLOSE_TAG);
+      if (closeIndex === -1) {
+        const retainedLength = REPORT_IMAGE_CLOSE_TAG.length - 1;
+        current += chunk.slice(0, -retainedLength);
+        pending = chunk.slice(-retainedLength);
+        break;
+      }
+      current += chunk.slice(0, closeIndex);
+      last = current.trim();
+      current = '';
+      capturing = false;
+      chunk = chunk.slice(closeIndex + REPORT_IMAGE_CLOSE_TAG.length);
+    }
+  }
+
+  if (!last) throw new Error('No replay dump found in report');
+  return antiEscapeScriptTag(last);
+}
+
+async function extractInlineReportImage(
+  reportPath: string,
+  imageId: string,
+): Promise<string | null> {
+  const openTag = `<script type="midscene-image" data-id="${imageId}">`;
+  let pending = '';
+  let content = '';
+  let capturing = false;
+
+  for await (const rawChunk of createReadStream(reportPath, {
+    encoding: 'utf8',
+  })) {
+    let chunk = pending + rawChunk;
+    pending = '';
+
+    if (!capturing) {
+      const openIndex = chunk.indexOf(openTag);
+      if (openIndex === -1) {
+        pending = chunk.slice(-(openTag.length - 1));
+        continue;
+      }
+      capturing = true;
+      chunk = chunk.slice(openIndex + openTag.length);
+    }
+
+    const closeIndex = chunk.indexOf(REPORT_IMAGE_CLOSE_TAG);
+    if (closeIndex !== -1) {
+      content += chunk.slice(0, closeIndex);
+      return antiEscapeScriptTag(content.trim());
+    }
+
+    const retainedLength = REPORT_IMAGE_CLOSE_TAG.length - 1;
+    content += chunk.slice(0, -retainedLength);
+    pending = chunk.slice(-retainedLength);
+  }
+
+  return null;
+}
+
+function shouldPersistStudioPreviewRecorderScreenshot(actionType: string) {
+  return [
+    'Tap',
+    'DoubleClick',
+    'LongPress',
+    'RightClick',
+    'DragAndDrop',
+    'Input',
+  ].includes(actionType);
+}
+
+function createElementDescriberRuntime(
+  agent: PageAgent,
+): ElementDescriberRuntime {
+  const modelConfigManager = agent.modelConfigManager;
+  const missingModelRuntime =
+    undefined as unknown as ElementDescriberRuntime['describeModelRuntime'];
+  return {
+    service: agent.service,
+    describeModelRuntime: modelConfigManager
+      ? getModelRuntime(modelConfigManager.getModelConfig('insight'))
+      : missingModelRuntime,
+    locateModelRuntime: modelConfigManager
+      ? getModelRuntime(modelConfigManager.getModelConfig('default'))
+      : missingModelRuntime,
+  };
+}
+
+function extractBase64Payload(value: string): {
+  base64: string;
+  mimeType?: string;
+} {
+  const dataUrlMatch = value.match(/^data:([^;,]+)?(?:;[^,]*)?,([\s\S]*)$/);
+  if (dataUrlMatch) {
+    return {
+      mimeType: dataUrlMatch[1],
+      base64: dataUrlMatch[2] || '',
+    };
+  }
+  return { base64: value };
+}
+
+function estimateBase64Bytes(value?: string): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const { base64 } = extractBase64Payload(value);
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+}
+
+function buildRecorderRawPayloadSummary(
+  rawPayload?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!rawPayload) {
+    return undefined;
+  }
+
+  const allowedKeys = [
+    'actionType',
+    'x',
+    'y',
+    'endX',
+    'endY',
+    'duration',
+    'direction',
+    'scrollType',
+    'distance',
+    'keyName',
+    'mode',
+  ];
+  const summary: Record<string, unknown> = {};
+  for (const key of allowedKeys) {
+    if (rawPayload[key] !== undefined) {
+      summary[key] = rawPayload[key];
+    }
+  }
+
+  const value = rawPayload.value;
+  if (typeof value === 'string') {
+    summary.valueLength = value.length;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function buildRecorderEventSummary(event: PlaygroundRecorderEvent) {
+  return {
+    hashId: event.hashId,
+    mergedHashIds: event.mergedHashIds,
+    type: event.type,
+    source: event.source,
+    actionType: event.actionType,
+    timestamp: event.timestamp,
+    url: event.url,
+    title: event.title,
+    valueLength:
+      typeof event.value === 'string' ? event.value.length : undefined,
+    rawPayloadSummary: buildRecorderRawPayloadSummary(event.rawPayload),
+    elementRect: event.elementRect,
+    pageInfo: event.pageInfo,
+  };
+}
+
+type RecorderAiDescribeScreenshotRef = NonNullable<
+  PlaygroundRecorderDescribeTrace['screenshotRef']
+>;
+type RecorderAiDescribeScreenshotAnnotation = NonNullable<
+  PlaygroundRecorderDescribeTrace['screenshotAnnotation']
+>;
+
+function sanitizeRecorderPathSegment(
+  value: unknown,
+  fallback: string,
+  maxLength = 64,
+) {
+  const normalized =
+    typeof value === 'string' && value.trim() ? value.trim() : fallback;
+  const sanitized = normalized
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return (sanitized || fallback).slice(0, maxLength);
+}
+
+function formatRecorderAiDescribeScreenshotPathParts() {
+  const date = new Date();
+  const localDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const pad = (value: number, length = 2) =>
+    String(value).padStart(length, '0');
+  const datePart = [
+    localDate.getFullYear(),
+    pad(localDate.getMonth() + 1),
+    pad(localDate.getDate()),
+  ].join('-');
+  const timePart = [
+    pad(localDate.getHours()),
+    pad(localDate.getMinutes()),
+    pad(localDate.getSeconds()),
+    pad(localDate.getMilliseconds(), 3),
+  ].join('-');
+  const hourPart = timePart.slice(0, 2) || 'unknown-hour';
+  return {
+    datePart,
+    hourPart,
+    filePrefix: `${timePart}_${randomUUID()}`,
+  };
+}
+
+function assertPathInsideDirectory(rootDir: string, targetPath: string) {
+  const resolvedRoot = resolve(rootDir);
+  const resolvedTarget = resolve(targetPath);
+  if (
+    resolvedTarget !== resolvedRoot &&
+    !resolvedTarget.startsWith(`${resolvedRoot}${sep}`)
+  ) {
+    throw new Error(`Refusing to write recorder dump outside ${resolvedRoot}`);
+  }
+  return resolvedTarget;
+}
+
+function writeRecorderAiDescribeScreenshot(
+  imageBase64: string,
+  suffix: string,
+): RecorderAiDescribeScreenshotRef {
+  const { base64, mimeType } = extractBase64Payload(imageBase64);
+  const bytes = Buffer.from(base64, 'base64');
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const extension = mimeType?.includes('jpeg') ? 'jpg' : 'png';
+  const pathParts = formatRecorderAiDescribeScreenshotPathParts();
+  const dumpRoot = resolve(
+    getMidsceneRunSubDir('dump'),
+    RECORDER_AI_DESCRIBE_SCREENSHOT_DUMP_DIR,
+  );
+  const dumpDir = assertPathInsideDirectory(
+    dumpRoot,
+    join(dumpRoot, pathParts.datePart, pathParts.hourPart),
+  );
+  mkdirSync(dumpDir, { recursive: true });
+  const safeSuffix = suffix === 'annotated' ? 'annotated' : 'raw';
+  const fileName = `${pathParts.filePrefix}_${safeSuffix}.${extension}`;
+  const filePath = assertPathInsideDirectory(dumpRoot, join(dumpDir, fileName));
+  if (!existsSync(filePath)) {
+    writeFileSync(filePath, bytes);
+  }
+
+  return {
+    path: filePath,
+    sha256,
+    bytes: bytes.byteLength,
+    mimeType,
+  };
+}
+
+function getRecorderScreenshotAssetRoot() {
+  const root = resolve(
+    getMidsceneRunSubDir('output'),
+    RECORDER_SCREENSHOT_ASSET_DIR,
+  );
+  mkdirSync(root, { recursive: true });
+  return root;
+}
+
+function assertRecorderScreenshotAssetId(assetId: string) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(assetId)) {
+    throw new Error('Invalid recorder screenshot asset id');
+  }
+  return assetId;
+}
+
+function recorderScreenshotAssetExtension(mimeType?: string) {
+  return mimeType?.includes('jpeg') ? 'jpg' : 'png';
+}
+
+function recorderScreenshotAssetPath(assetId: string, mimeType?: string) {
+  const root = getRecorderScreenshotAssetRoot();
+  const safeAssetId = assertRecorderScreenshotAssetId(assetId);
+  return assertPathInsideDirectory(
+    root,
+    join(root, `${safeAssetId}.${recorderScreenshotAssetExtension(mimeType)}`),
+  );
+}
+
+function getRecorderScreenshotAssetUsage(sessionId: string) {
+  initializeRecorderScreenshotAssetUsage();
+  const safeSessionId = sanitizeRecorderPathSegment(sessionId, 'session');
+  const sessionBytes =
+    recorderScreenshotAssetBytesBySession.get(safeSessionId) || 0;
+  const totalBytes = Array.from(
+    recorderScreenshotAssetBytesBySession.values(),
+  ).reduce((total, bytes) => total + bytes, 0);
+  return { totalBytes, sessionBytes };
+}
+
+function initializeRecorderScreenshotAssetUsage() {
+  if (recorderScreenshotAssetUsageInitialized) {
+    return;
+  }
+  recorderScreenshotAssetUsageInitialized = true;
+  const root = getRecorderScreenshotAssetRoot();
+  try {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      const match = entry.name.match(
+        /^(.*)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:png|jpg)$/i,
+      );
+      if (!match?.[1]) {
+        continue;
+      }
+      const sessionId = match[1];
+      const bytes = statSync(join(root, entry.name)).size;
+      recorderScreenshotAssetBytesBySession.set(
+        sessionId,
+        (recorderScreenshotAssetBytesBySession.get(sessionId) || 0) + bytes,
+      );
+    }
+  } catch (error) {
+    debugRecorderAssets(
+      'failed to initialize recorder screenshot asset usage:',
+      error,
+    );
+  }
+}
+
+function persistRecorderScreenshotAsset(
+  sessionId: string,
+  imageBase64?: string,
+): MidsceneRecorderScreenshotAssetRef | undefined {
+  if (!imageBase64?.startsWith('data:')) {
+    return undefined;
+  }
+  const { base64, mimeType } = extractBase64Payload(imageBase64);
+  const bytes = Buffer.from(base64, 'base64');
+  const safeSessionId = sanitizeRecorderPathSegment(sessionId, 'session');
+  const usage = getRecorderScreenshotAssetUsage(sessionId);
+  if (
+    usage.sessionBytes + bytes.byteLength >
+      RECORDER_SCREENSHOT_ASSET_MAX_SESSION_BYTES ||
+    usage.totalBytes + bytes.byteLength >
+      RECORDER_SCREENSHOT_ASSET_MAX_TOTAL_BYTES
+  ) {
+    if (!recorderScreenshotAssetQuotaExceededSessions.has(safeSessionId)) {
+      recorderScreenshotAssetQuotaExceededSessions.add(safeSessionId);
+      debugRecorderAssets('recorder screenshot asset quota reached %o', {
+        sessionId: safeSessionId,
+        sessionBytes: usage.sessionBytes,
+        totalBytes: usage.totalBytes,
+      });
+    }
+    return undefined;
+  }
+  const assetId = `${safeSessionId}-${randomUUID()}`;
+  const normalizedMimeType = mimeType || 'image/png';
+  const filePath = recorderScreenshotAssetPath(assetId, normalizedMimeType);
+  try {
+    writeFileSync(filePath, bytes);
+  } catch (error) {
+    debugRecorderAssets('failed to persist recorder screenshot asset:', error);
+    return undefined;
+  }
+  recorderScreenshotAssetBytesBySession.set(
+    safeSessionId,
+    usage.sessionBytes + bytes.byteLength,
+  );
+  return {
+    id: assetId,
+    mimeType: normalizedMimeType,
+    bytes: bytes.byteLength,
+  };
+}
+
+function readRecorderScreenshotAsset(
+  asset: MidsceneRecorderScreenshotAssetRef,
+): string | undefined {
+  const filePath = recorderScreenshotAssetPath(asset.id, asset.mimeType);
+  if (!existsSync(filePath)) {
+    return undefined;
+  }
+  return `data:${asset.mimeType};base64,${readFileSync(filePath).toString('base64')}`;
+}
+
+function findRecorderScreenshotAssetPath(assetId: string) {
+  const safeAssetId = assertRecorderScreenshotAssetId(assetId);
+  const root = getRecorderScreenshotAssetRoot();
+  for (const extension of ['png', 'jpg']) {
+    const filePath = assertPathInsideDirectory(
+      root,
+      join(root, `${safeAssetId}.${extension}`),
+    );
+    if (existsSync(filePath)) {
+      return filePath;
+    }
+  }
+  return undefined;
+}
+
+function removeRecorderScreenshotAssetsForSession(sessionId: string) {
+  const safeSessionId = sanitizeRecorderPathSegment(sessionId, 'session');
+  const prefix = `${safeSessionId}-`;
+  const root = getRecorderScreenshotAssetRoot();
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.startsWith(prefix)) {
+      rmSync(join(root, entry.name), { force: true });
+    }
+  }
+  recorderScreenshotAssetQuotaExceededSessions.delete(safeSessionId);
+  recorderScreenshotAssetBytesBySession.delete(safeSessionId);
+}
+
+function pruneRecorderScreenshotAssetsForSession(
+  sessionId: string,
+  retainedAssetIds: string[],
+) {
+  const safeSessionId = sanitizeRecorderPathSegment(sessionId, 'session');
+  const prefix = `${safeSessionId}-`;
+  const retained = new Set(
+    retainedAssetIds.map((assetId) => {
+      const safeAssetId = assertRecorderScreenshotAssetId(assetId);
+      if (!safeAssetId.startsWith(prefix)) {
+        throw new Error('Recorder screenshot asset does not belong to session');
+      }
+      return safeAssetId;
+    }),
+  );
+  const root = getRecorderScreenshotAssetRoot();
+  let sessionBytes = 0;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.startsWith(prefix)) {
+      continue;
+    }
+    const assetId = entry.name.replace(/\.(?:png|jpg)$/i, '');
+    const filePath = join(root, entry.name);
+    if (!retained.has(assetId)) {
+      rmSync(filePath, { force: true });
+      continue;
+    }
+    sessionBytes += statSync(filePath).size;
+  }
+  recorderScreenshotAssetBytesBySession.set(safeSessionId, sessionBytes);
+}
+
+function calculateRecorderScreenshotAnnotation(
+  event: PlaygroundRecorderEvent,
+  imageSize: { width: number; height: number },
+  verifyResult?: PlaygroundRecorderDescribeTrace['verifyResult'],
+): RecorderAiDescribeScreenshotAnnotation | undefined {
+  const pageWidth = event.pageInfo?.width;
+  const pageHeight = event.pageInfo?.height;
+  const scaleX = pageWidth ? imageSize.width / pageWidth : undefined;
+  const scaleY = pageHeight ? imageSize.height / pageHeight : undefined;
+  const mapX = (value: number) => (scaleX ? value * scaleX : value);
+  const mapY = (value: number) => (scaleY ? value * scaleY : value);
+  const logicalPoint =
+    typeof event.elementRect?.x === 'number' &&
+    typeof event.elementRect?.y === 'number'
+      ? ([event.elementRect.x, event.elementRect.y] as [number, number])
+      : undefined;
+  const locateRect = verifyResult?.rect;
+  const sourceTargetRect =
+    typeof event.elementRect?.left === 'number' &&
+    typeof event.elementRect?.top === 'number' &&
+    typeof event.elementRect?.width === 'number' &&
+    typeof event.elementRect?.height === 'number' &&
+    event.elementRect.width > 0 &&
+    event.elementRect.height > 0
+      ? {
+          left: mapX(event.elementRect.left),
+          top: mapY(event.elementRect.top),
+          width: mapX(event.elementRect.width),
+          height: mapY(event.elementRect.height),
+        }
+      : undefined;
+  if (!logicalPoint && !sourceTargetRect && !locateRect) {
+    return undefined;
+  }
+
+  const screenshotPoint =
+    logicalPoint && scaleX && scaleY
+      ? ([logicalPoint[0] * scaleX, logicalPoint[1] * scaleY] as [
+          number,
+          number,
+        ])
+      : undefined;
+  const pointTargetRect =
+    screenshotPoint && !sourceTargetRect
+      ? {
+          left: Math.max(0, screenshotPoint[0] - 6),
+          top: Math.max(0, screenshotPoint[1] - 6),
+          width: 12,
+          height: 12,
+        }
+      : undefined;
+  const center =
+    verifyResult?.center ||
+    (locateRect
+      ? ([
+          locateRect.left + locateRect.width / 2,
+          locateRect.top + locateRect.height / 2,
+        ] as [number, number])
+      : undefined);
+  const centerDelta =
+    screenshotPoint && center
+      ? {
+          x: center[0] - screenshotPoint[0],
+          y: center[1] - screenshotPoint[1],
+          distance: Math.hypot(
+            center[0] - screenshotPoint[0],
+            center[1] - screenshotPoint[1],
+          ),
+        }
+      : undefined;
+  const distanceOutsideRect =
+    screenshotPoint && locateRect
+      ? (() => {
+          const right = locateRect.left + locateRect.width;
+          const bottom = locateRect.top + locateRect.height;
+          const x =
+            screenshotPoint[0] < locateRect.left
+              ? locateRect.left - screenshotPoint[0]
+              : screenshotPoint[0] > right
+                ? screenshotPoint[0] - right
+                : 0;
+          const y =
+            screenshotPoint[1] < locateRect.top
+              ? locateRect.top - screenshotPoint[1]
+              : screenshotPoint[1] > bottom
+                ? screenshotPoint[1] - bottom
+                : 0;
+          return {
+            x,
+            y,
+            distance: Math.hypot(x, y),
+          };
+        })()
+      : undefined;
+
+  return {
+    inputPoint: screenshotPoint
+      ? { logical: logicalPoint!, screenshot: screenshotPoint }
+      : undefined,
+    sourceTargetRect: sourceTargetRect || pointTargetRect,
+    locateRect,
+    centerDelta,
+    distanceOutsideRect,
+  };
+}
+
+async function persistRecorderAiDescribeScreenshot(
+  event: PlaygroundRecorderEvent,
+  eventScreenshot?: string,
+  verifyResult?: PlaygroundRecorderDescribeTrace['verifyResult'],
+): Promise<
+  | {
+      screenshotRef?: RecorderAiDescribeScreenshotRef;
+      annotatedScreenshotRef?: RecorderAiDescribeScreenshotRef;
+      screenshotAnnotation?: RecorderAiDescribeScreenshotAnnotation;
+      annotatedScreenshotPersistError?: string;
+    }
+  | undefined
+> {
+  if (!eventScreenshot) {
+    return undefined;
+  }
+
+  const screenshotRef = writeRecorderAiDescribeScreenshot(
+    eventScreenshot,
+    'raw',
+  );
+  let annotatedScreenshotRef: RecorderAiDescribeScreenshotRef | undefined;
+  let screenshotAnnotation: RecorderAiDescribeScreenshotAnnotation | undefined;
+  let annotatedScreenshotPersistError: string | undefined;
+
+  try {
+    const imageSize = await imageInfoOfBase64(eventScreenshot);
+    screenshotAnnotation = calculateRecorderScreenshotAnnotation(
+      event,
+      imageSize,
+      verifyResult,
+    );
+
+    const annotatedRects = [
+      screenshotAnnotation?.sourceTargetRect,
+      screenshotAnnotation?.locateRect,
+    ].filter((rect): rect is NonNullable<typeof rect> => Boolean(rect));
+
+    if (annotatedRects.length > 0) {
+      const annotatedScreenshot = await annotateRects(
+        eventScreenshot,
+        annotatedRects,
+      );
+      annotatedScreenshotRef = writeRecorderAiDescribeScreenshot(
+        annotatedScreenshot,
+        'annotated',
+      );
+    }
+  } catch (error) {
+    annotatedScreenshotPersistError =
+      error instanceof Error ? error.message : String(error);
+  }
+
+  return {
+    screenshotRef,
+    annotatedScreenshotRef,
+    screenshotAnnotation,
+    annotatedScreenshotPersistError,
+  };
+}
+
+function createRecorderAiDescribeTraceBase(
+  event: PlaygroundRecorderEvent,
+  eventScreenshot?: string,
+): Omit<
+  PlaygroundRecorderDescribeTrace,
+  'status' | 'durationMs' | 'startedAt'
+> {
+  return {
+    traceId: `${event.hashId || 'recorder-event'}-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`,
+    eventHashId: event.hashId,
+    eventType: event.type,
+    actionType: event.actionType,
+    eventSummary: buildRecorderEventSummary(event),
+    point:
+      typeof event.elementRect?.x === 'number' &&
+      typeof event.elementRect?.y === 'number'
+        ? [event.elementRect.x, event.elementRect.y]
+        : undefined,
+    pageInfo: event.pageInfo,
+    screenshotBytes: estimateBase64Bytes(eventScreenshot),
+  };
+}
+
+/** Default `127.0.0.1`. Override via `MIDSCENE_PLAYGROUND_HOST` (e.g. `0.0.0.0`). */
+export function resolvePlaygroundListenHost(): string {
+  return process.env.MIDSCENE_PLAYGROUND_HOST?.trim() || '127.0.0.1';
+}
+
+export function resolvePlaygroundBrowserHost(): string {
+  const listenHost = resolvePlaygroundListenHost();
+  return listenHost === '0.0.0.0' || listenHost === '::'
+    ? '127.0.0.1'
+    : listenHost;
+}
+
+export function buildPlaygroundBrowserUrl(host: string, port: number): string {
+  const normalizedHost =
+    host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `http://${normalizedHost}:${port}`;
+}
+
+function serializeAiConfigSignature(aiConfig: Record<string, unknown>): string {
+  return JSON.stringify(
+    Object.entries(aiConfig).sort(([leftKey], [rightKey]) =>
+      leftKey.localeCompare(rightKey),
+    ),
+  );
+}
+
+/**
+ * Recursively serialize a Zod field into a plain object that preserves
+ * the `_def` metadata the client relies on (typeName, innerType, values,
+ * defaultValue, description, shape, etc.).
+ */
+export function serializeZodField(field: any): any {
+  if (!field || typeof field !== 'object') return field;
+
+  const def = field._def;
+  if (!def || typeof def !== 'object') return field;
+
+  const typeName: string | undefined = def.typeName;
+
+  const result: Record<string, any> = {
+    _def: {
+      typeName,
+    },
+  };
+
+  // Preserve description
+  if (def.description) {
+    result._def.description = def.description;
+  }
+
+  // Wrapper types (ZodOptional, ZodDefault, ZodNullable) – recurse into innerType
+  if (def.innerType) {
+    result._def.innerType = serializeZodField(def.innerType);
+  }
+
+  // ZodDefault – preserve defaultValue as a serializable plain value
+  if (typeName === 'ZodDefault' && typeof def.defaultValue === 'function') {
+    try {
+      result._def._serializedDefaultValue = def.defaultValue();
+    } catch {
+      // ignore
+    }
+  }
+
+  // ZodEnum – preserve values array
+  if (typeName === 'ZodEnum' && Array.isArray(def.values)) {
+    result._def.values = def.values;
+  }
+
+  // ZodObject – recurse into shape
+  if (typeName === 'ZodObject') {
+    const rawShape = typeof def.shape === 'function' ? def.shape() : def.shape;
+    if (rawShape && typeof rawShape === 'object') {
+      const serializedShape: Record<string, any> = {};
+      for (const [k, v] of Object.entries(rawShape)) {
+        serializedShape[k] = serializeZodField(v);
+      }
+      result._def.shape = serializedShape;
+      result.shape = serializedShape;
+    }
+  }
+
+  // Copy top-level description for compatibility
+  if (field.description) {
+    result.description = field.description;
+  }
+
+  return result;
+}
+
+// Static path for playground files
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const STATIC_PATH = join(__dirname, '..', '..', 'static');
+
+const debugScreenshot = getDebug('playground:screenshot', { console: true });
+const debugMjpeg = getDebug('playground:mjpeg', { console: true });
+const debugInteract = getDebug('playground:interact', { console: true });
+const debugCancel = getDebug('playground:cancel', { console: true });
+const debugReport = getDebug('playground:report', { console: true });
+const debugRecorderAssets = getDebug('playground:recorder-assets', {
+  console: true,
+});
+
+/**
+ * Thrown when a caller supplies an /interact body that fails validation
+ * (missing x/y, missing keyName for KeyboardPress, etc.). Distinct from a
+ * downstream device failure so the route handler can map this to HTTP 400.
+ */
+export class InteractParamsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InteractParamsValidationError';
+  }
+}
+
+function requireNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    throw new InteractParamsValidationError(
+      `${field} must be a number for this action`,
+    );
+  }
+  return value;
+}
+
+function locateFromPoint(
+  x: unknown,
+  y: unknown,
+  fieldX: string,
+  fieldY: string,
+  description: string,
+) {
+  return {
+    center: [
+      Math.round(requireNumber(x, fieldX)),
+      Math.round(requireNumber(y, fieldY)),
+    ] as [number, number],
+    description: description || '',
+  };
+}
+
+type InteractParamBuilder = (
+  body: Record<string, unknown>,
+  actionType: string,
+) => Record<string, unknown>;
+
+type BrowserChromeInteractAction = 'Stop';
+
+type BrowserChromeInterface = {
+  stopLoading?: () => Promise<void>;
+};
+
+const POINTER_INTERACT_ACTIONS = new Set([
+  'Tap',
+  'DoubleClick',
+  'LongPress',
+  'Swipe',
+  'DragAndDrop',
+  'Scroll',
+  'KeyboardPress',
+  'Input',
+  'Pinch',
+]);
+
+function isPointerInteractActionType(actionType: string): boolean {
+  return POINTER_INTERACT_ACTIONS.has(actionType);
+}
+
+function summarizeInteractPayload(
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    actionType: body.actionType,
+    x: body.x,
+    y: body.y,
+    endX: body.endX,
+    endY: body.endY,
+    duration: body.duration,
+    direction: body.direction,
+    scrollType: body.scrollType,
+    distance: body.distance,
+    keyName: body.keyName,
+    valueLength: typeof body.value === 'string' ? body.value.length : undefined,
+  };
+}
+
+const buildLocateActionParams: InteractParamBuilder = (body, actionType) => {
+  const params: Record<string, unknown> = {
+    locate: locateFromPoint(body.x, body.y, 'x', 'y', `manual ${actionType}`),
+  };
+  if (typeof body.duration === 'number') {
+    params.duration = body.duration;
+  }
+  return params;
+};
+
+const buildSwipeParams: InteractParamBuilder = (body) => {
+  const params: Record<string, unknown> = {
+    start: locateFromPoint(body.x, body.y, 'x', 'y', 'manual swipe start'),
+    end: locateFromPoint(
+      body.endX,
+      body.endY,
+      'endX',
+      'endY',
+      'manual swipe end',
+    ),
+  };
+  if (typeof body.duration === 'number') params.duration = body.duration;
+  if (typeof body.repeat === 'number') params.repeat = body.repeat;
+  return params;
+};
+
+const buildDragAndDropParams: InteractParamBuilder = (body) => ({
+  from: locateFromPoint(body.x, body.y, 'x', 'y', 'manual drag from'),
+  to: locateFromPoint(body.endX, body.endY, 'endX', 'endY', 'manual drag to'),
+});
+
+const buildScrollParams: InteractParamBuilder = (body) => {
+  const params: Record<string, unknown> = {
+    scrollType:
+      typeof body.scrollType === 'string' ? body.scrollType : 'singleAction',
+  };
+  if (typeof body.direction === 'string') {
+    params.direction = body.direction;
+  }
+  if (typeof body.distance === 'number') {
+    params.distance = body.distance;
+  }
+  if (typeof body.x === 'number' && typeof body.y === 'number') {
+    params.locate = locateFromPoint(body.x, body.y, 'x', 'y', 'manual scroll');
+  }
+  return params;
+};
+
+const buildKeyboardPressParams: InteractParamBuilder = (body) => {
+  if (typeof body.keyName !== 'string') {
+    throw new InteractParamsValidationError(
+      'keyName is required for KeyboardPress',
+    );
+  }
+  const params: Record<string, unknown> = { keyName: body.keyName };
+  if (typeof body.x === 'number' && typeof body.y === 'number') {
+    params.locate = locateFromPoint(
+      body.x,
+      body.y,
+      'x',
+      'y',
+      'manual keyboard press',
+    );
+  }
+  return params;
+};
+
+const buildInputParams: InteractParamBuilder = (body) => {
+  if (typeof body.value !== 'string') {
+    throw new InteractParamsValidationError('value is required for Input');
+  }
+  const params: Record<string, unknown> = { value: body.value };
+  if (typeof body.x === 'number' && typeof body.y === 'number') {
+    params.locate = locateFromPoint(body.x, body.y, 'x', 'y', 'manual input');
+  }
+  if (typeof body.mode === 'string') params.mode = body.mode;
+  if (typeof body.autoDismissKeyboard === 'boolean') {
+    params.autoDismissKeyboard = body.autoDismissKeyboard;
+  }
+  return params;
+};
+
+function getManualInteractParamBuilder(
+  actionType: string,
+): InteractParamBuilder | undefined {
+  switch (actionType) {
+    case 'Tap':
+    case 'DoubleClick':
+    case 'RightClick':
+    case 'Hover':
+    case 'LongPress':
+      return buildLocateActionParams;
+    case 'Swipe':
+      return buildSwipeParams;
+    case 'DragAndDrop':
+      return buildDragAndDropParams;
+    case 'Scroll':
+      return buildScrollParams;
+    case 'KeyboardPress':
+      return buildKeyboardPressParams;
+    case 'Input':
+      return buildInputParams;
+    default:
+      return undefined;
+  }
+}
+
+export function buildInteractParams(
+  actionType: string,
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  const builder = getManualInteractParamBuilder(actionType);
+  if (builder) {
+    return builder(body, actionType);
+  }
+  // Fallback: pass-through any caller-provided params for less common actions.
+  const { actionType: _omit, ...passthrough } = body as Record<string, unknown>;
+  return passthrough;
+}
+
+function getRecorderSemanticActionType(
+  actionType: string,
+): MidsceneRecorderSemanticAction['type'] {
+  switch (actionType) {
+    case 'Tap':
+    case 'DoubleClick':
+    case 'LongPress':
+    case 'RightClick':
+      return 'click';
+    case 'Swipe':
+    case 'DragAndDrop':
+      return 'drag';
+    case 'Input':
+      return 'input';
+    case 'KeyboardPress':
+      return 'keydown';
+    case 'Scroll':
+      return 'scroll';
+    case 'GoBack':
+    case 'GoForward':
+    case 'Reload':
+    case 'Stop':
+    case 'Navigate':
+    case 'InitialNavigation':
+    case 'NavigationChanged':
+      return 'navigation';
+    default:
+      return 'click';
+  }
+}
+
+function buildRecorderSemanticAction(
+  actionType: string,
+  payload: Record<string, unknown>,
+  url?: string,
+): MidsceneRecorderSemanticAction {
+  return {
+    type: getRecorderSemanticActionType(actionType),
+    actionType,
+    value:
+      typeof payload.value === 'string'
+        ? payload.value
+        : typeof payload.keyName === 'string'
+          ? payload.keyName
+          : undefined,
+    url,
+  };
+}
+
+function buildReadyRecorderSemantic(
+  source: MidsceneRecorderSemantic['source'],
+  event: MidsceneRecorderSemanticAction,
+  elementDescription: string,
+  confidence: MidsceneRecorderSemantic['confidence'],
+  extra?: Pick<MidsceneRecorderSemantic, 'aiDescribe' | 'error'>,
+): MidsceneRecorderSemantic {
+  return {
+    source,
+    status: 'ready',
+    elementDescription,
+    replayInstruction: buildMidsceneRecorderReplayInstruction(
+      event,
+      elementDescription,
+    ),
+    actionSummary: buildMidsceneRecorderActionSummary(
+      event,
+      elementDescription,
+    ),
+    confidence,
+    ...extra,
+  };
+}
+
+function buildFailedAiDescribeRecorderSemantic(
+  error: unknown,
+  extra?: Pick<MidsceneRecorderSemantic, 'aiDescribe'>,
+): MidsceneRecorderSemantic {
+  return {
+    source: 'aiDescribe',
+    status: 'failed',
+    error: error instanceof Error ? error.message : String(error),
+    ...extra,
+  };
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
+
+export function createManualExecutorContext(
+  actionType: string,
+  param: unknown,
+): ExecutorContext {
+  const task: ExecutionTask = {
+    type: 'Action Space',
+    subType: actionType,
+    param,
+    executor: async () => undefined,
+    taskId: `manual-${uuid()}`,
+    status: 'running',
+  };
+  return { task };
+}
+const errorHandler = (
+  err: unknown,
+  req: Request,
+  res: Response,
+  next: express.NextFunction,
+) => {
+  console.error(err);
+  const errorMessage =
+    err instanceof Error ? err.message : 'Internal server error';
+  res.status(500).json({
+    error: errorMessage,
+  });
+};
+
+interface PlaygroundRuntimeState {
+  platformId?: string;
+  title?: string;
+  description?: string;
+  preview?: PlaygroundPreviewDescriptor;
+  metadata?: Record<string, unknown>;
+}
+
+interface PlaygroundActiveConnection {
+  session: PlaygroundSessionState | null;
+  agent: PageAgent | null;
+  agentFactory?: AgentFactory | null;
+  runtime?: PlaygroundRuntimeState;
+  executionHooks?: PlaygroundExecutionHooks;
+  sidecars?: PlaygroundSidecar[];
+  subscribeNavigationEvents?: PlaygroundSessionNavigationSubscriber;
+  unsubscribeNavigationEvents?: () => void;
+}
+
+interface PlaygroundRecorderPageState {
+  pageInfo: {
+    width: number;
+    height: number;
+  };
+  url?: string;
+  title?: string;
+}
+
+interface PlaygroundRecorderSnapshot {
+  screenshot?: string;
+  pageState: PlaygroundRecorderPageState;
+}
+
+interface PlaygroundRecorderTargetPoint {
+  x: number;
+  y: number;
+}
+
+type PlaygroundDescribeElementVerifyResult = {
+  pass?: boolean;
+  rect?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+  center?: [number, number];
+  centerDistance?: number;
+  includedInRect?: boolean;
+};
+
+type PlaygroundDescribeElementProgress = {
+  prompt?: string;
+  deepLocate?: boolean;
+  verifyResult?: PlaygroundDescribeElementVerifyResult;
+};
+
+const RECOVERABLE_PAGE_SESSION_ERROR_PATTERN =
+  /Session closed|page has been closed|target closed|browser has been closed|Target page, context or browser has been closed/i;
+
+function isRecoverablePageSessionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return RECOVERABLE_PAGE_SESSION_ERROR_PATTERN.test(message);
+}
+
+class PlaygroundServer {
+  private _app: express.Application;
+  tmpDir: string;
+  server?: Server;
+  port?: number | null;
+  staticPath: string;
+  taskExecutionDumps: Record<string, ExecutionDump | null>; // Store execution dumps directly
+  id: string; // Unique identifier for this server instance
+  private readonly reportFiles = new Map<
+    string,
+    {
+      path: string;
+      expiresAt: number;
+      format: PlaygroundReportRef['format'];
+    }
+  >();
+
+  /**
+   * Port for scrcpy server (used by Android playground for screen mirroring)
+   * When set, this port is injected into the HTML page as window.SCRCPY_PORT
+   */
+  scrcpyPort?: number;
+
+  private _initialized = false;
+
+  private readonly _mjpegHandler = new MjpegStreamHandler({
+    getNativeUrl: () => this._activeConnection.agent?.interface?.mjpegStreamUrl,
+    getActiveInterface: () => this._activeConnection.agent?.interface ?? null,
+    takeScreenshot: () =>
+      this.getActiveAgentOrThrow().interface.screenshotBase64(),
+    canTakeScreenshot: () =>
+      typeof this._activeConnection.agent?.interface?.screenshotBase64 ===
+      'function',
+    isAgentReady: () => this._agentReady,
+    recoverFromPreviewError: async (error, reason) =>
+      (await this.recoverActiveAgentAfterPreviewError(error, reason))
+        ?.interface ?? null,
+  });
+
+  private sessionManager?: PlaygroundSessionManager;
+  private sessionSetupState: 'required' | 'ready' | 'blocked' = 'ready';
+  private sessionSetupBlockingReason?: string;
+
+  // Track current running task
+  private currentTaskId: string | null = null;
+  private taskAbortControllers: Record<string, AbortController> = {};
+
+  // Flag to pause MJPEG polling during agent recreation or task execution
+  private _agentReady = true;
+
+  // Flag to track if AI config has changed and agent needs recreation
+  private _configDirty = false;
+  private _lastAiConfigSignature: string | null = null;
+  private _baseRuntimeState?: PlaygroundRuntimeState;
+  private _basePreparedMetadata?: Record<string, unknown>;
+  private _baseExecutionHooks?: PlaygroundExecutionHooks;
+  private _baseSidecars?: PlaygroundSidecar[];
+  private _recorderSessionId: string | null = null;
+  private _recorderEvents: PlaygroundRecorderEvent[] = [];
+  private _recorderPendingTypeOnlyInput: PlaygroundRecorderEvent | null = null;
+  private _recorderPendingTypeOnlyInputFlushTimer:
+    | ReturnType<typeof setTimeout>
+    | undefined;
+  private _recorderEventQueue: Promise<void> = Promise.resolve();
+  private _recorderPendingCaptures = 0;
+  private _studioPreviewRecorderLastTargetPoint:
+    | PlaygroundRecorderTargetPoint
+    | undefined;
+  private _studioPreviewRecorderLastScreenshot: string | undefined;
+  private _studioPreviewRecorderLastPageState:
+    | PlaygroundRecorderPageState
+    | undefined;
+  private _activeConnection: PlaygroundActiveConnection = {
+    session: null,
+    agent: null,
+    agentFactory: null,
+    runtime: undefined,
+    executionHooks: undefined,
+    sidecars: undefined,
+  };
+
+  private setActiveAgent(
+    agent: PageAgent | null,
+    options: { preserveActiveStream?: boolean } = {},
+  ): void {
+    this._activeConnection.agent = agent;
+    // The MJPEG hub keys its producer by `activeInterface`. A bare
+    // recreateAgent swaps to a new agent instance — even when the
+    // underlying device/page is identical — so without a reset the next
+    // /mjpeg request finds a stale producer keyed to the previous
+    // interface object. `reset()` tears down the producer so the next
+    // request rebuilds one. The cancel path opts out: it preserves the
+    // browser page across recreates and we want the existing CDP
+    // screencast subscribers to keep receiving frames without a
+    // disconnect.
+    if (!options.preserveActiveStream) {
+      this._mjpegHandler.reset();
+    }
+  }
+
+  constructor(
+    agent?: PageAgent | (() => PageAgent) | (() => Promise<PageAgent>),
+    staticPath = STATIC_PATH,
+    id?: string, // Optional override ID
+  ) {
+    this._app = express();
+    this.tmpDir = getTmpDir()!;
+    this.staticPath = staticPath;
+    this.taskExecutionDumps = {}; // Initialize as empty object
+    // Use provided ID, or generate random UUID for each startup
+    this.id = id || uuid();
+
+    // Support both instance and factory function modes
+    if (typeof agent === 'function') {
+      this._activeConnection.agentFactory = agent;
+    } else {
+      this.setActiveAgent(agent || null);
+    }
+  }
+
+  get agent(): PageAgent | null {
+    return this._activeConnection.agent;
+  }
+
+  private assertNoActiveSessionForBaseStateUpdate(methodName: string): void {
+    if (this._activeConnection.session) {
+      throw new Error(
+        `${methodName} cannot update prepared state while a session is active`,
+      );
+    }
+  }
+
+  private buildBaseRuntimeState(): PlaygroundRuntimeState | undefined {
+    if (!this._baseRuntimeState) {
+      return undefined;
+    }
+
+    return {
+      ...this._baseRuntimeState,
+      metadata: this.buildSessionMetadata(),
+    };
+  }
+
+  private resetConnectionToBaseState(): void {
+    this._activeConnection = {
+      session: null,
+      agent: this._activeConnection.agent,
+      agentFactory: this._activeConnection.agentFactory,
+      runtime: this.buildBaseRuntimeState(),
+      executionHooks: this._baseExecutionHooks,
+      sidecars: this._baseSidecars,
+    };
+  }
+
+  private syncRuntimeState(): void {
+    this._baseRuntimeState = {
+      ...(this._baseRuntimeState || {}),
+      metadata: this.buildSessionMetadata(),
+    };
+
+    if (this._activeConnection.session) {
+      this._activeConnection = {
+        ...this._activeConnection,
+        runtime: this._activeConnection.runtime
+          ? {
+              ...this._activeConnection.runtime,
+              metadata: this.buildSessionMetadata(),
+            }
+          : this.buildBaseRuntimeState(),
+      };
+      return;
+    }
+
+    this.resetConnectionToBaseState();
+  }
+
+  private restoreBaseSessionState(): void {
+    this.clearActiveSessionNavigationEvents();
+    this.taskExecutionDumps = {};
+    this.currentTaskId = null;
+    this.sessionSetupState =
+      this.sessionSetupState === 'blocked' ? 'blocked' : 'required';
+    this._activeConnection = {
+      session: null,
+      agent: null,
+      agentFactory: null,
+      runtime: this.buildBaseRuntimeState(),
+      executionHooks: this._baseExecutionHooks,
+      sidecars: this._baseSidecars,
+    };
+    this._mjpegHandler.reset();
+    this.syncRuntimeState();
+  }
+
+  setPreparedPlatform(
+    prepared: Pick<
+      PreparedPlaygroundPlatform,
+      | 'platformId'
+      | 'title'
+      | 'description'
+      | 'preview'
+      | 'metadata'
+      | 'sessionManager'
+      | 'executionHooks'
+      | 'sidecars'
+    >,
+  ): void {
+    // Allow overriding the initial session created by agentFactory in launch()
+    if (this._activeConnection.session && this._activeConnection.agentFactory) {
+      this._activeConnection.session = null;
+    }
+    this.assertNoActiveSessionForBaseStateUpdate('setPreparedPlatform');
+    this.sessionManager = prepared.sessionManager;
+    this._basePreparedMetadata = prepared.metadata
+      ? { ...prepared.metadata }
+      : undefined;
+    this._baseRuntimeState = {
+      platformId: prepared.platformId,
+      title: prepared.title,
+      description: prepared.description,
+      preview: prepared.preview,
+      metadata: this.buildSessionMetadata(),
+    };
+    this._baseExecutionHooks = prepared.executionHooks;
+    this._baseSidecars = prepared.sidecars;
+    this.resetConnectionToBaseState();
+
+    if (
+      this.sessionManager &&
+      !this._activeConnection.agent &&
+      !this._activeConnection.session
+    ) {
+      this.sessionSetupState =
+        this._basePreparedMetadata?.setupState === 'blocked'
+          ? 'blocked'
+          : 'required';
+      this.sessionSetupBlockingReason =
+        typeof this._basePreparedMetadata?.setupBlockingReason === 'string'
+          ? this._basePreparedMetadata.setupBlockingReason
+          : undefined;
+    }
+  }
+
+  setPreviewDescriptor(preview?: PlaygroundPreviewDescriptor): void {
+    this.assertNoActiveSessionForBaseStateUpdate('setPreviewDescriptor');
+    this._baseRuntimeState = {
+      ...(this._baseRuntimeState || {}),
+      preview,
+    };
+    this.resetConnectionToBaseState();
+  }
+
+  setRuntimeMetadata(metadata?: Record<string, unknown>): void {
+    this.assertNoActiveSessionForBaseStateUpdate('setRuntimeMetadata');
+    this._basePreparedMetadata = metadata ? { ...metadata } : undefined;
+    this.syncRuntimeState();
+  }
+
+  getRuntimeInfo(): PlaygroundRuntimeInfo {
+    return buildRuntimeInfo({
+      platformId: this._activeConnection.runtime?.platformId,
+      title: this._activeConnection.runtime?.title,
+      platformDescription: this._activeConnection.runtime?.description,
+      interfaceType:
+        this._activeConnection.agent?.interface?.interfaceType || 'Unknown',
+      interfaceDescription:
+        this._activeConnection.agent?.interface?.describe?.() || undefined,
+      preview: this._activeConnection.runtime?.preview,
+      metadata: this.buildSessionMetadata(),
+      supportsScreenshot:
+        typeof this._activeConnection.agent?.interface?.screenshotBase64 ===
+        'function',
+      mjpegStreamUrl: this._activeConnection.agent?.interface?.mjpegStreamUrl,
+      scrcpyPort: this.scrcpyPort,
+    });
+  }
+
+  /**
+   * Treat a session as connected when either:
+   * - we have a live agent, OR
+   * - we are mid-recreate (`_agentReady === false`).
+   *
+   * `recreateAgent` (e.g. via /cancel) nulls `_activeConnection.agent`
+   * before the factory swaps in a fresh one. Without this guard the UI
+   * sees a brief `connected: false` window and flashes the
+   * SessionSetupPanel ("create agent" form) for ~1–2 seconds.
+   */
+  private isEffectivelyConnected(): boolean {
+    const rawConnected = this.sessionManager
+      ? Boolean(
+          this._activeConnection.session?.connected &&
+            this._activeConnection.agent,
+        )
+      : Boolean(this._activeConnection.agent);
+    return rawConnected || !this._agentReady;
+  }
+
+  getSessionInfo(): PlaygroundSessionState & {
+    setupState: 'required' | 'ready' | 'blocked';
+    setupBlockingReason?: string;
+  } {
+    return {
+      connected: this.isEffectivelyConnected(),
+      displayName: this._activeConnection.session?.displayName,
+      metadata: {
+        ...(this._activeConnection.session?.metadata || {}),
+      },
+      setupState: this.sessionSetupState,
+      setupBlockingReason: this.sessionSetupBlockingReason,
+    };
+  }
+
+  private buildSessionMetadata(): Record<string, unknown> {
+    return {
+      ...(this._basePreparedMetadata || {}),
+      ...(this._activeConnection.session?.metadata || {}),
+      sessionConnected: this.isEffectivelyConnected(),
+      sessionDisplayName: this._activeConnection.session?.displayName,
+      setupState: this.sessionSetupState,
+      ...(this.sessionSetupBlockingReason
+        ? { setupBlockingReason: this.sessionSetupBlockingReason }
+        : {}),
+    };
+  }
+
+  private async startSidecars(sidecars?: PlaygroundSidecar[]): Promise<void> {
+    for (const sidecar of sidecars || []) {
+      await sidecar.start();
+    }
+  }
+
+  private async stopSidecars(sidecars?: PlaygroundSidecar[]): Promise<void> {
+    for (const sidecar of sidecars || []) {
+      await sidecar.stop?.();
+    }
+  }
+
+  private getActiveAgentOrThrow(): PageAgent {
+    if (!this._activeConnection.agent) {
+      throw new Error('No active session');
+    }
+
+    return this._activeConnection.agent;
+  }
+
+  private async getRecorderCapabilities(): Promise<PlaygroundRecorderCapabilitiesResult> {
+    const agent = this._activeConnection.agent;
+    const platformId =
+      this._activeConnection.runtime?.platformId ||
+      agent?.interface?.interfaceType;
+
+    if (!agent) {
+      return {
+        supported: false,
+        source: 'unsupported',
+        platformId,
+        error: 'No active session.',
+      };
+    }
+
+    if (this.canRecordStudioPreviewInteractions()) {
+      return {
+        supported: true,
+        source: 'studio-preview',
+        platformId,
+      };
+    }
+
+    return {
+      supported: false,
+      source: 'unsupported',
+      platformId,
+      error: `Preview recording is unavailable for ${platformId || 'the current target'} because it does not expose manual interaction controls.`,
+    };
+  }
+
+  private resetRecorderState(): void {
+    this.clearPendingTypeOnlyRecorderInputFlushTimer();
+    this._recorderSessionId = null;
+    this._recorderEvents = [];
+    this._recorderPendingTypeOnlyInput = null;
+    this._recorderEventQueue = Promise.resolve();
+    this._studioPreviewRecorderLastTargetPoint = undefined;
+    this._studioPreviewRecorderLastScreenshot = undefined;
+    this._studioPreviewRecorderLastPageState = undefined;
+  }
+
+  async waitForRecorderIdle(): Promise<void> {
+    await this.waitForQueuedRecorderEvents();
+  }
+
+  private async waitForQueuedRecorderEvents(): Promise<void> {
+    await this._recorderEventQueue;
+  }
+
+  private canRecordStudioPreviewInteractions(): boolean {
+    const agent = this._activeConnection.agent;
+    if (!agent) return false;
+    if (agent.interface.inputPrimitives) return true;
+    try {
+      return (
+        typeof agent.interface.actionSpace === 'function' &&
+        agent.interface.actionSpace().length > 0
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private async takeRecorderScreenshot(): Promise<string | undefined> {
+    const agent = this._activeConnection.agent;
+    if (typeof agent?.interface?.screenshotBase64 !== 'function') {
+      return undefined;
+    }
+
+    try {
+      return await agent.interface.screenshotBase64();
+    } catch (error) {
+      debugScreenshot('recorder screenshot failed:', error);
+      return undefined;
+    }
+  }
+
+  private async getActivePageInfo(): Promise<{
+    width: number;
+    height: number;
+  }> {
+    const agent = this._activeConnection.agent;
+    if (typeof agent?.interface?.size !== 'function') {
+      return { width: 0, height: 0 };
+    }
+    try {
+      return await agent.interface.size();
+    } catch (error) {
+      debugScreenshot('recorder page size failed:', error);
+      return { width: 0, height: 0 };
+    }
+  }
+
+  private async getActivePageUrl(): Promise<string | undefined> {
+    const activeInterface = this._activeConnection.agent?.interface;
+    const getUrl = activeInterface?.url;
+    if (typeof getUrl !== 'function') {
+      return undefined;
+    }
+    try {
+      const url = await getUrl.call(activeInterface);
+      return typeof url === 'string' && url ? url : undefined;
+    } catch (error) {
+      debugScreenshot('recorder page url failed:', error);
+      return undefined;
+    }
+  }
+
+  private async getActivePageTitle(): Promise<string | undefined> {
+    const activeInterface = this._activeConnection.agent?.interface;
+    const evaluateJavaScript = activeInterface?.evaluateJavaScript;
+    if (typeof evaluateJavaScript !== 'function') {
+      return undefined;
+    }
+    try {
+      const title = await evaluateJavaScript.call(
+        activeInterface,
+        'document.title',
+      );
+      return typeof title === 'string' && title ? title : undefined;
+    } catch (error) {
+      debugScreenshot('recorder page title failed:', error);
+      return undefined;
+    }
+  }
+
+  private async getActiveRecorderPageState(): Promise<PlaygroundRecorderPageState> {
+    const [pageInfo, url, title] = await Promise.all([
+      this.getActivePageInfo(),
+      this.getActivePageUrl(),
+      this.getActivePageTitle(),
+    ]);
+    return {
+      pageInfo,
+      ...(url ? { url } : {}),
+      ...(title ? { title } : {}),
+    };
+  }
+
+  private async captureRecorderSnapshotBeforeInteract(): Promise<
+    PlaygroundRecorderSnapshot | undefined
+  > {
+    if (!this._recorderSessionId) {
+      return undefined;
+    }
+    return {
+      screenshot: this._studioPreviewRecorderLastScreenshot,
+      pageState:
+        this._studioPreviewRecorderLastPageState ||
+        (await this.getActiveRecorderPageState()),
+    };
+  }
+
+  private captureCachedRecorderSnapshotBeforeInteract():
+    | PlaygroundRecorderSnapshot
+    | undefined {
+    if (
+      !this._recorderSessionId ||
+      !this._studioPreviewRecorderLastPageState ||
+      this._recorderPendingCaptures > 0
+    ) {
+      return undefined;
+    }
+    return {
+      screenshot:
+        this._mjpegHandler.getLastFrameBase64() ||
+        this._studioPreviewRecorderLastScreenshot,
+      pageState: this._studioPreviewRecorderLastPageState,
+    };
+  }
+
+  private async startStudioPreviewRecorder(sessionId: string): Promise<void> {
+    this._recorderSessionId = sessionId;
+    this._studioPreviewRecorderLastScreenshot =
+      await this.takeRecorderScreenshot();
+    const initialPageState = await this.getActiveRecorderPageState();
+    this._studioPreviewRecorderLastPageState = initialPageState;
+    const initialNavigationEvent =
+      this.buildStudioPreviewInitialNavigationEvent(
+        initialPageState,
+        this._studioPreviewRecorderLastScreenshot,
+      );
+    if (initialNavigationEvent) {
+      this._recorderEvents.push(initialNavigationEvent);
+    }
+  }
+
+  private persistStudioPreviewRecorderScreenshot(
+    screenshot?: string,
+  ): MidsceneRecorderScreenshotAssetRef | undefined {
+    if (!this._recorderSessionId) {
+      return undefined;
+    }
+    return persistRecorderScreenshotAsset(this._recorderSessionId, screenshot);
+  }
+
+  private async storeStudioPreviewRecorderEvent(
+    payload: Record<string, unknown>,
+    snapshotBefore?: PlaygroundRecorderSnapshot,
+    agent?: PageAgent,
+  ): Promise<void> {
+    if (!this._recorderSessionId) {
+      return;
+    }
+    const before =
+      snapshotBefore || (await this.captureRecorderSnapshotBeforeInteract());
+    const screenshotBefore = before?.screenshot;
+    debugInteract('recorder capture scheduled after action %o', {
+      payload: summarizeInteractPayload(payload),
+      delayMs: RECORDER_CAPTURE_AFTER_INTERACT_DELAY_MS,
+      hasBeforeScreenshot: Boolean(screenshotBefore),
+      beforeUrl: before?.pageState.url,
+    });
+    await sleep(RECORDER_CAPTURE_AFTER_INTERACT_DELAY_MS);
+    if (!this._recorderSessionId) {
+      return;
+    }
+    const screenshotAfter = await this.takeRecorderScreenshot();
+    const pageStateAfter = await this.getActiveRecorderPageState();
+    debugInteract('recorder capture completed after action %o', {
+      payload: summarizeInteractPayload(payload),
+      hasAfterScreenshot: Boolean(screenshotAfter),
+      afterUrl: pageStateAfter.url,
+    });
+    const event = await this.buildStudioPreviewRecorderEvent(
+      payload,
+      before?.pageState || pageStateAfter,
+      screenshotBefore,
+      screenshotAfter,
+    );
+    if (!event) {
+      this._studioPreviewRecorderLastScreenshot = screenshotAfter;
+      this._studioPreviewRecorderLastPageState = pageStateAfter;
+      return;
+    }
+
+    const navigationEvent = this.buildStudioPreviewNavigationStateEvent(
+      payload,
+      this.getRecorderNavigationPageStateBefore(before?.pageState),
+      pageStateAfter,
+    );
+    this._studioPreviewRecorderLastScreenshot = screenshotAfter;
+    this._studioPreviewRecorderLastPageState = pageStateAfter;
+    this.queueStudioPreviewRecorderEventAppend(event, navigationEvent);
+  }
+
+  private async buildStudioPreviewRecorderEvent(
+    payload: Record<string, unknown>,
+    pageState: PlaygroundRecorderPageState,
+    screenshotBefore?: string,
+    screenshotAfter?: string,
+  ): Promise<PlaygroundRecorderEvent | null> {
+    const actionType =
+      typeof payload.actionType === 'string' ? payload.actionType : undefined;
+    if (!actionType) return null;
+
+    const { pageInfo, url, title } = pageState;
+    const timestamp = Date.now();
+    const payloadX = typeof payload.x === 'number' ? payload.x : undefined;
+    const payloadY = typeof payload.y === 'number' ? payload.y : undefined;
+    const canReuseLastTargetPoint =
+      actionType === 'Input' || actionType === 'KeyboardPress';
+    const inheritedTargetPoint =
+      canReuseLastTargetPoint &&
+      (payloadX === undefined || payloadY === undefined)
+        ? this._studioPreviewRecorderLastTargetPoint
+        : undefined;
+    const x = payloadX ?? inheritedTargetPoint?.x;
+    const y = payloadY ?? inheritedTargetPoint?.y;
+    if (payloadX !== undefined && payloadY !== undefined) {
+      this._studioPreviewRecorderLastTargetPoint = {
+        x: payloadX,
+        y: payloadY,
+      };
+    }
+    const endX = typeof payload.endX === 'number' ? payload.endX : undefined;
+    const endY = typeof payload.endY === 'number' ? payload.endY : undefined;
+    const dragDescription =
+      x !== undefined &&
+      y !== undefined &&
+      endX !== undefined &&
+      endY !== undefined
+        ? `${Math.round(x)},${Math.round(y)} -> ${Math.round(endX)},${Math.round(endY)}`
+        : undefined;
+    const shouldPersistScreenshot =
+      shouldPersistStudioPreviewRecorderScreenshot(actionType);
+    const retainedScreenshot = shouldPersistScreenshot
+      ? screenshotBefore || screenshotAfter
+      : undefined;
+    const deferScreenshotPersistence =
+      actionType === 'Input' && payload.mode === 'typeOnly';
+    const screenshotAsset = deferScreenshotPersistence
+      ? undefined
+      : this.persistStudioPreviewRecorderScreenshot(retainedScreenshot);
+    const shouldDiscardDataUrlScreenshot = Boolean(
+      retainedScreenshot?.startsWith('data:'),
+    );
+    const hasRetainedScreenshot = Boolean(
+      screenshotAsset ||
+        (deferScreenshotPersistence && retainedScreenshot) ||
+        (!shouldDiscardDataUrlScreenshot && retainedScreenshot),
+    );
+
+    const base = {
+      source: 'studio-preview' as const,
+      actionType,
+      rawPayload: payload,
+      pageInfo,
+      url,
+      title,
+      ...(screenshotAsset
+        ? { screenshotAsset }
+        : deferScreenshotPersistence
+          ? retainedScreenshot
+            ? { screenshotWithBox: retainedScreenshot }
+            : {}
+          : shouldDiscardDataUrlScreenshot
+            ? {}
+            : {
+                screenshotBefore,
+                screenshotAfter,
+              }),
+      semantic: hasRetainedScreenshot
+        ? {
+            source: 'aiDescribe' as const,
+            status: 'pending' as const,
+          }
+        : buildFailedAiDescribeRecorderSemantic(
+            'Recorder screenshot was not retained because asset storage is unavailable or its quota was reached.',
+          ),
+      timestamp,
+      hashId: `studio-preview-${actionType}-${timestamp}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
+    };
+
+    switch (actionType) {
+      case 'Tap':
+      case 'DoubleClick':
+      case 'LongPress':
+      case 'RightClick':
+        return {
+          ...base,
+          type: 'click',
+          elementRect:
+            x !== undefined && y !== undefined ? { x, y, left: x, top: y } : {},
+          value:
+            x !== undefined && y !== undefined
+              ? `${Math.round(x)},${Math.round(y)}`
+              : undefined,
+        };
+      case 'DragAndDrop':
+      case 'Swipe':
+        return {
+          ...base,
+          type: 'drag',
+          elementRect:
+            x !== undefined && y !== undefined
+              ? {
+                  x,
+                  y,
+                  left: x,
+                  top: y,
+                  width:
+                    endX !== undefined
+                      ? Math.abs(endX - x) || undefined
+                      : undefined,
+                  height:
+                    endY !== undefined
+                      ? Math.abs(endY - y) || undefined
+                      : undefined,
+                }
+              : {},
+          value: dragDescription,
+        };
+      case 'Input':
+        return {
+          ...base,
+          type: 'input',
+          value: typeof payload.value === 'string' ? payload.value : '',
+          elementRect:
+            x !== undefined && y !== undefined ? { x, y, left: x, top: y } : {},
+        };
+      case 'KeyboardPress':
+        return {
+          ...base,
+          type: 'keydown',
+          value: typeof payload.keyName === 'string' ? payload.keyName : '',
+          elementRect:
+            x !== undefined && y !== undefined ? { x, y, left: x, top: y } : {},
+        };
+      case 'Scroll':
+        return {
+          ...base,
+          type: 'scroll',
+          value: [
+            typeof payload.direction === 'string' ? payload.direction : 'down',
+            typeof payload.distance === 'number' ? payload.distance : undefined,
+          ]
+            .filter((part) => part !== undefined)
+            .join(' '),
+          elementRect:
+            x !== undefined && y !== undefined ? { x, y, left: x, top: y } : {},
+        };
+      case 'GoBack':
+      case 'GoForward':
+      case 'Reload':
+      case 'Stop': {
+        const elementDescription = url || actionType;
+        const semanticEvent = buildRecorderSemanticAction(
+          actionType,
+          { value: actionType },
+          url,
+        );
+        return {
+          ...base,
+          type: 'navigation',
+          value: actionType,
+          semantic: buildReadyRecorderSemantic(
+            'heuristic',
+            semanticEvent,
+            elementDescription,
+            url ? 'high' : 'medium',
+          ),
+        };
+      }
+      default:
+        return {
+          ...base,
+          type: 'click',
+          value:
+            x !== undefined && y !== undefined
+              ? `${Math.round(x)},${Math.round(y)}`
+              : actionType,
+        };
+    }
+  }
+
+  private async enrichStudioPreviewRecorderEventWithAiDescribe(
+    event: PlaygroundRecorderEvent,
+    agent?: PageAgent,
+  ): Promise<{
+    event: PlaygroundRecorderEvent;
+    trace: PlaygroundRecorderDescribeTrace;
+  }> {
+    const startedAt = new Date();
+    const startedAtMs = Date.now();
+    const eventScreenshot = await this.getRecorderAiDescribeScreenshot(event);
+    const traceBase = createRecorderAiDescribeTraceBase(event, eventScreenshot);
+    const finishTrace = async (
+      status: PlaygroundRecorderDescribeTrace['status'],
+      extra: Partial<PlaygroundRecorderDescribeTrace> = {},
+    ): Promise<PlaygroundRecorderDescribeTrace> => {
+      let screenshotRef:
+        | NonNullable<PlaygroundRecorderDescribeTrace['screenshotRef']>
+        | undefined;
+      let annotatedScreenshotRef:
+        | NonNullable<PlaygroundRecorderDescribeTrace['annotatedScreenshotRef']>
+        | undefined;
+      let screenshotAnnotation:
+        | NonNullable<PlaygroundRecorderDescribeTrace['screenshotAnnotation']>
+        | undefined;
+      let screenshotPersistError: string | undefined;
+      let annotatedScreenshotPersistError: string | undefined;
+
+      if (status === 'failed' || extra.verifyResult?.pass === false) {
+        try {
+          const screenshotDump = await persistRecorderAiDescribeScreenshot(
+            event,
+            eventScreenshot,
+            extra.verifyResult,
+          );
+          screenshotRef = screenshotDump?.screenshotRef;
+          annotatedScreenshotRef = screenshotDump?.annotatedScreenshotRef;
+          screenshotAnnotation = screenshotDump?.screenshotAnnotation;
+          annotatedScreenshotPersistError =
+            screenshotDump?.annotatedScreenshotPersistError;
+        } catch (error) {
+          screenshotPersistError =
+            error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      return {
+        ...traceBase,
+        ...extra,
+        screenshotRef,
+        annotatedScreenshotRef,
+        screenshotAnnotation,
+        screenshotPersistError,
+        annotatedScreenshotPersistError,
+        status,
+        startedAt: startedAt.toISOString(),
+        durationMs: Date.now() - startedAtMs,
+      };
+    };
+    if (event.type === 'navigation' || event.type === 'setViewport') {
+      const error =
+        'aiDescribe skipped because the event type does not target a UI element.';
+      const trace = await finishTrace('failed', { error });
+      debugInteract('recorder aiDescribe trace:', trace);
+      return {
+        event: {
+          ...event,
+          semantic: buildFailedAiDescribeRecorderSemantic(error),
+        },
+        trace,
+      };
+    }
+    if (!agent) {
+      const error = 'Active agent does not support describeElementAtPoint.';
+      const trace = await finishTrace('failed', { error });
+      debugInteract('recorder aiDescribe trace:', trace);
+      return {
+        event: {
+          ...event,
+          semantic: buildFailedAiDescribeRecorderSemantic(error),
+        },
+        trace,
+      };
+    }
+
+    const x = event.elementRect?.x;
+    const y = event.elementRect?.y;
+    let modelCallDurationMs: number | undefined;
+    let modelCallStartedAt: number | undefined;
+    let elementDescription: string | undefined;
+    let deepLocate: boolean | undefined;
+    let verifyResult:
+      | AgentDescribeElementAtPointResult['verifyResult']
+      | PlaygroundDescribeElementVerifyResult
+      | undefined;
+    const verifyPrompt = RECORDER_AI_DESCRIBE_VERIFY_PROMPT;
+    try {
+      if (typeof x !== 'number' || typeof y !== 'number') {
+        throw new Error(
+          'Skipped aiDescribe because the recorder event has no stable point target.',
+        );
+      }
+      if (!eventScreenshot) {
+        throw new Error(
+          'Skipped aiDescribe because the recorder event has no screenshot.',
+        );
+      }
+      if (!event.pageInfo?.width || !event.pageInfo?.height) {
+        throw new Error(
+          'Skipped aiDescribe because the recorder event has no pageInfo for coordinate mapping.',
+        );
+      }
+      modelCallStartedAt = Date.now();
+      const elementDescriber = createElementDescriberRuntime(agent);
+      /**
+       * Verification is disabled for recorder aiDescribe because it took too long and caused timeouts.
+       */
+      const describeResult = await withTimeout(
+        describeElementAtPoint(elementDescriber, [x, y], {
+          verifyPrompt,
+          screenshotBase64: eventScreenshot,
+          coordinateSpace: 'logical',
+          logicalSize: event.pageInfo,
+          onProgress: (progress) => {
+            elementDescription = progress.prompt?.trim() || elementDescription;
+            deepLocate = progress.deepLocate;
+            verifyResult = verifyPrompt ? progress.verifyResult : undefined;
+          },
+        }),
+        RECORDER_AI_DESCRIBE_AFTER_INTERACT_TIMEOUT_MS,
+        'Timed out while analyzing recorder event with aiDescribe.',
+      );
+      modelCallDurationMs = Date.now() - modelCallStartedAt;
+      elementDescription = describeResult.prompt?.trim();
+      deepLocate = describeResult.deepLocate;
+      verifyResult = verifyPrompt ? describeResult.verifyResult : undefined;
+      if (!elementDescription) {
+        throw new Error('aiDescribe returned an empty element description.');
+      }
+      const semanticAction = buildRecorderSemanticAction(
+        event.actionType || event.type,
+        event.rawPayload || {},
+        event.url,
+      );
+      if (describeResult.success === false && verifyResult?.pass === false) {
+        const trace = await finishTrace('ready', {
+          modelCallDurationMs,
+          elementDescription,
+          verifyPrompt,
+          verifyPassed: false,
+          centerDistance: verifyResult.centerDistance,
+          verifyResult,
+        });
+        debugInteract('recorder aiDescribe trace:', trace);
+        return {
+          event: {
+            ...event,
+            semantic: buildReadyRecorderSemantic(
+              'aiDescribe',
+              semanticAction,
+              elementDescription,
+              'low',
+              {
+                aiDescribe: {
+                  verifyPrompt,
+                  verifyPassed: false,
+                  deepLocate,
+                  centerDistance: verifyResult.centerDistance,
+                  expectedCenter: [x, y],
+                  actualCenter: verifyResult.center,
+                  annotatedScreenshotPath: trace.annotatedScreenshotRef?.path,
+                },
+              },
+            ),
+          },
+          trace,
+        };
+      }
+      if (describeResult.success === false) {
+        throw new Error(
+          describeResult.error ||
+            `aiDescribe ${describeResult.failureStage || 'unknown'} failed.`,
+        );
+      }
+      const trace = await finishTrace('ready', {
+        modelCallDurationMs,
+        elementDescription,
+        verifyPrompt,
+        verifyPassed: verifyResult?.pass,
+        centerDistance: verifyResult?.centerDistance,
+        verifyResult,
+      });
+      debugInteract('recorder aiDescribe trace:', trace);
+      return {
+        event: {
+          ...event,
+          semantic: buildReadyRecorderSemantic(
+            'aiDescribe',
+            semanticAction,
+            elementDescription,
+            verifyResult?.pass ? 'high' : 'medium',
+            {
+              aiDescribe: {
+                verifyPrompt,
+                verifyPassed: verifyResult?.pass,
+                deepLocate,
+                centerDistance: verifyResult?.centerDistance,
+                expectedCenter: [x, y],
+                actualCenter: verifyResult?.center,
+                annotatedScreenshotPath: trace.annotatedScreenshotRef?.path,
+              },
+            },
+          ),
+        },
+        trace,
+      };
+    } catch (error) {
+      const reportedError =
+        verifyResult?.pass === false
+          ? new Error('aiDescribe verification failed.')
+          : error;
+      if (modelCallDurationMs === undefined && modelCallStartedAt) {
+        modelCallDurationMs = Date.now() - modelCallStartedAt;
+      }
+      debugInteract('canonical recorder aiDescribe failed:', reportedError);
+      const trace = await finishTrace('failed', {
+        error:
+          reportedError instanceof Error
+            ? reportedError.message
+            : String(reportedError),
+        modelCallDurationMs,
+        elementDescription,
+        verifyPrompt,
+        verifyPassed: verifyResult?.pass,
+        centerDistance: verifyResult?.centerDistance,
+        verifyResult,
+      });
+      debugInteract('recorder aiDescribe trace:', trace);
+      const aiDescribeDetails =
+        verifyPrompt && (verifyResult || trace.annotatedScreenshotRef)
+          ? {
+              aiDescribe: {
+                verifyPrompt,
+                verifyPassed: verifyResult?.pass,
+                deepLocate,
+                centerDistance: verifyResult?.centerDistance,
+                expectedCenter:
+                  typeof x === 'number' && typeof y === 'number'
+                    ? ([x, y] as [number, number])
+                    : undefined,
+                actualCenter: verifyResult?.center,
+                annotatedScreenshotPath: trace.annotatedScreenshotRef?.path,
+              },
+            }
+          : undefined;
+      return {
+        event: {
+          ...event,
+          semantic: buildFailedAiDescribeRecorderSemantic(
+            reportedError,
+            aiDescribeDetails,
+          ),
+        },
+        trace,
+      };
+    }
+  }
+
+  private async getRecorderAiDescribeScreenshot(
+    event: PlaygroundRecorderEvent,
+  ): Promise<string | undefined> {
+    if (event.screenshotAsset) {
+      const screenshot = readRecorderScreenshotAsset(event.screenshotAsset);
+      if (screenshot) {
+        return screenshot;
+      }
+    }
+    if (
+      event.type === 'click' ||
+      event.type === 'input' ||
+      event.type === 'keydown' ||
+      event.type === 'drag'
+    ) {
+      return event.screenshotBefore || event.screenshotAfter;
+    }
+    return (
+      event.screenshotAfter || event.screenshotBefore || event.screenshotWithBox
+    );
+  }
+
+  private queueStudioPreviewRecorderEventAppend(
+    event: PlaygroundRecorderEvent,
+    navigationEvent: PlaygroundRecorderEvent | null,
+  ): void {
+    const sessionId = this._recorderSessionId;
+    if (!sessionId) {
+      return;
+    }
+
+    if (this.isDeferredTypeOnlyRecorderInput(event) && !navigationEvent) {
+      const pending = this._recorderPendingTypeOnlyInput;
+      if (
+        pending &&
+        this.canCoalesceDeferredTypeOnlyRecorderInput(pending, event)
+      ) {
+        this._recorderPendingTypeOnlyInput =
+          this.mergeDeferredTypeOnlyRecorderInput(pending, event);
+      } else {
+        this.flushPendingTypeOnlyRecorderInput();
+        this._recorderPendingTypeOnlyInput = event;
+      }
+      this.schedulePendingTypeOnlyRecorderInputFlush();
+      return;
+    }
+
+    this.flushPendingTypeOnlyRecorderInput();
+    this._recorderEvents.push(event);
+    if (navigationEvent) {
+      this._recorderEvents.push(navigationEvent);
+    }
+  }
+
+  private isDeferredTypeOnlyRecorderInput(event: PlaygroundRecorderEvent) {
+    return (
+      event.source === 'studio-preview' &&
+      event.type === 'input' &&
+      event.actionType === 'Input' &&
+      event.rawPayload?.mode === 'typeOnly'
+    );
+  }
+
+  private canCoalesceDeferredTypeOnlyRecorderInput(
+    current: PlaygroundRecorderEvent,
+    next: PlaygroundRecorderEvent,
+  ) {
+    return (
+      current.url === next.url &&
+      current.title === next.title &&
+      current.rawPayload?.x === next.rawPayload?.x &&
+      current.rawPayload?.y === next.rawPayload?.y
+    );
+  }
+
+  private mergeDeferredTypeOnlyRecorderInput(
+    current: PlaygroundRecorderEvent,
+    next: PlaygroundRecorderEvent,
+  ): PlaygroundRecorderEvent {
+    const value = `${current.value || ''}${next.value || ''}`;
+    return {
+      ...current,
+      value,
+      rawPayload: {
+        ...current.rawPayload,
+        ...next.rawPayload,
+        value,
+      },
+      pageInfo: next.pageInfo || current.pageInfo,
+      screenshotWithBox:
+        next.screenshotWithBox ||
+        next.screenshotAfter ||
+        next.screenshotBefore ||
+        current.screenshotWithBox,
+      timestamp: next.timestamp,
+      mergedHashIds: Array.from(
+        new Set([
+          current.hashId,
+          ...(current.mergedHashIds || []),
+          next.hashId,
+          ...(next.mergedHashIds || []),
+        ]),
+      ),
+    };
+  }
+
+  private flushPendingTypeOnlyRecorderInput(): void {
+    this.clearPendingTypeOnlyRecorderInputFlushTimer();
+    const pending = this._recorderPendingTypeOnlyInput;
+    if (!pending) {
+      return;
+    }
+    this._recorderPendingTypeOnlyInput = null;
+    const screenshot =
+      pending.screenshotWithBox ||
+      pending.screenshotAfter ||
+      pending.screenshotBefore;
+    const screenshotAsset =
+      this.persistStudioPreviewRecorderScreenshot(screenshot);
+    if (screenshotAsset) {
+      this._recorderEvents.push({
+        ...pending,
+        screenshotAsset,
+        screenshotBefore: undefined,
+        screenshotAfter: undefined,
+        screenshotWithBox: undefined,
+      });
+      return;
+    }
+
+    this._recorderEvents.push({
+      ...pending,
+      screenshotBefore: undefined,
+      screenshotAfter: undefined,
+      screenshotWithBox: undefined,
+      semantic: buildFailedAiDescribeRecorderSemantic(
+        'Recorder screenshot was not retained because asset storage is unavailable or its quota was reached.',
+      ),
+    });
+  }
+
+  private schedulePendingTypeOnlyRecorderInputFlush(): void {
+    this.clearPendingTypeOnlyRecorderInputFlushTimer();
+    this._recorderPendingTypeOnlyInputFlushTimer = setTimeout(() => {
+      this._recorderPendingTypeOnlyInputFlushTimer = undefined;
+      this.flushPendingTypeOnlyRecorderInput();
+    }, RECORDER_TYPE_ONLY_INPUT_SETTLE_DELAY_MS);
+  }
+
+  private clearPendingTypeOnlyRecorderInputFlushTimer(): void {
+    if (!this._recorderPendingTypeOnlyInputFlushTimer) {
+      return;
+    }
+    clearTimeout(this._recorderPendingTypeOnlyInputFlushTimer);
+    this._recorderPendingTypeOnlyInputFlushTimer = undefined;
+  }
+
+  private getRecorderNavigationPageStateBefore(
+    snapshotPageState: PlaygroundRecorderPageState | undefined,
+  ): PlaygroundRecorderPageState | undefined {
+    const lastPageState = this._studioPreviewRecorderLastPageState;
+    if (
+      !snapshotPageState?.url ||
+      !lastPageState?.url ||
+      snapshotPageState.url === lastPageState.url
+    ) {
+      return snapshotPageState;
+    }
+    return lastPageState;
+  }
+
+  private buildStudioPreviewNavigationStateEvent(
+    payload: Record<string, unknown>,
+    pageStateBefore: PlaygroundRecorderPageState | undefined,
+    pageStateAfter: PlaygroundRecorderPageState,
+  ): PlaygroundRecorderEvent | null {
+    const triggerActionType =
+      typeof payload.actionType === 'string' ? payload.actionType : undefined;
+    const beforeUrl = pageStateBefore?.url;
+    const afterUrl = pageStateAfter.url;
+    if (!triggerActionType || !afterUrl || beforeUrl === afterUrl) {
+      return null;
+    }
+
+    const timestamp = Date.now();
+    const semanticAction = buildRecorderSemanticAction(
+      'Navigate',
+      { value: afterUrl },
+      afterUrl,
+    );
+    return {
+      source: 'studio-preview',
+      type: 'navigation',
+      actionType: 'Navigate',
+      rawPayload: {
+        triggerActionType,
+        beforeUrl,
+        afterUrl,
+        implicitNavigationState: true,
+      },
+      pageInfo: pageStateAfter.pageInfo,
+      url: afterUrl,
+      title: pageStateAfter.title,
+      value: afterUrl,
+      semantic: buildReadyRecorderSemantic(
+        'heuristic',
+        semanticAction,
+        afterUrl,
+        'high',
+      ),
+      timestamp,
+      hashId: `studio-preview-navigation-${timestamp}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
+    };
+  }
+
+  private recordStudioPreviewNavigationState(
+    navigation: PlaygroundSessionNavigationEvent,
+  ): void {
+    const sessionId = this._recorderSessionId;
+    if (!sessionId || !navigation.url) {
+      return;
+    }
+
+    const task = this._recorderEventQueue
+      .catch(() => undefined)
+      .then(() => {
+        if (this._recorderSessionId !== sessionId) {
+          return;
+        }
+        const pageStateBefore = this._studioPreviewRecorderLastPageState;
+        if (pageStateBefore?.url === navigation.url) {
+          return;
+        }
+        const navigationEvent = this.buildStudioPreviewNavigationStateEvent(
+          { actionType: 'SessionNavigation' },
+          pageStateBefore,
+          {
+            pageInfo: pageStateBefore?.pageInfo || { width: 0, height: 0 },
+            url: navigation.url,
+          },
+        );
+        if (!navigationEvent) {
+          return;
+        }
+        navigationEvent.timestamp = navigation.timestamp || Date.now();
+        navigationEvent.rawPayload = {
+          ...navigationEvent.rawPayload,
+          navigationSource: 'session-event',
+        };
+
+        const lastActionIndex = this._recorderEvents.findLastIndex(
+          (event) =>
+            event.source === 'studio-preview' && event.type !== 'navigation',
+        );
+        const existingState =
+          lastActionIndex >= 0
+            ? this._recorderEvents[lastActionIndex + 1]
+            : undefined;
+        if (existingState?.rawPayload?.implicitNavigationState === true) {
+          this._recorderEvents.push({
+            ...navigationEvent,
+            // Keep the same Timeline item while incremental polling receives
+            // this newer URL for the same user action.
+            hashId: existingState.hashId,
+          });
+        } else if (lastActionIndex >= 0) {
+          this._recorderEvents.splice(lastActionIndex + 1, 0, navigationEvent);
+        } else {
+          this._recorderEvents.push(navigationEvent);
+        }
+        this._studioPreviewRecorderLastPageState = {
+          pageInfo: pageStateBefore?.pageInfo || { width: 0, height: 0 },
+          ...(pageStateBefore?.title ? { title: pageStateBefore.title } : {}),
+          url: navigation.url,
+        };
+      });
+
+    this._recorderEventQueue = task.catch((error) => {
+      debugInteract('session navigation recorder event failed:', error);
+    });
+  }
+
+  private queueStudioPreviewRecorderEvent(
+    payload: Record<string, unknown>,
+    snapshotBefore?: PlaygroundRecorderSnapshot,
+    agent?: PageAgent,
+  ): void {
+    const sessionId = this._recorderSessionId;
+    if (!sessionId) {
+      return;
+    }
+
+    this._recorderPendingCaptures++;
+    const queuedTask = this._recorderEventQueue
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          if (
+            !this._recorderSessionId ||
+            this._recorderSessionId !== sessionId
+          ) {
+            return;
+          }
+          await this.storeStudioPreviewRecorderEvent(
+            payload,
+            snapshotBefore,
+            agent,
+          );
+        } finally {
+          this._recorderPendingCaptures = Math.max(
+            0,
+            this._recorderPendingCaptures - 1,
+          );
+        }
+      });
+
+    this._recorderEventQueue = queuedTask.catch((error) => {
+      debugInteract('async recorder event capture failed:', error);
+    });
+  }
+
+  private buildStudioPreviewInitialNavigationEvent(
+    pageState: PlaygroundRecorderPageState,
+    screenshot?: string,
+  ): PlaygroundRecorderEvent | null {
+    if (!pageState.url) {
+      return null;
+    }
+
+    const timestamp = Date.now();
+    const semanticEvent = buildRecorderSemanticAction(
+      'InitialNavigation',
+      { value: pageState.url },
+      pageState.url,
+    );
+    return {
+      source: 'studio-preview',
+      type: 'navigation',
+      actionType: 'InitialNavigation',
+      rawPayload: {
+        url: pageState.url,
+        title: pageState.title,
+      },
+      pageInfo: pageState.pageInfo,
+      url: pageState.url,
+      title: pageState.title,
+      value: pageState.url,
+      semantic: buildReadyRecorderSemantic(
+        'heuristic',
+        semanticEvent,
+        pageState.url,
+        'high',
+      ),
+      timestamp,
+      hashId: `studio-preview-initial-navigation-${timestamp}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`,
+    };
+  }
+
+  private async destroyCurrentAgent({
+    preserveActiveStream = false,
+  }: { preserveActiveStream?: boolean } = {}): Promise<void> {
+    if (!this._activeConnection.agent) {
+      return;
+    }
+
+    try {
+      this.resetRecorderState();
+      if (typeof this._activeConnection.agent.destroy === 'function') {
+        await this._activeConnection.agent.destroy();
+      }
+    } catch (error) {
+      console.warn('Failed to destroy old agent:', error);
+    } finally {
+      // Forward `preserveActiveStream` so the cancel path doesn't blow
+      // away the MJPEG hub on the implicit `setActiveAgent(null)` that
+      // happens before `recreateAgent` plugs in the replacement agent.
+      this.setActiveAgent(null, { preserveActiveStream });
+      // Once the stale agent is gone there is nothing left to recreate.
+      this._configDirty = false;
+    }
+  }
+
+  private async destroyCurrentSession(): Promise<void> {
+    const previousSession = this._activeConnection.session;
+    const previousSidecars = this._activeConnection.sidecars;
+    this.clearActiveSessionNavigationEvents();
+    await this.destroyCurrentAgent();
+    await this.stopSidecars(previousSidecars);
+
+    if (this.sessionManager?.destroySession) {
+      await this.sessionManager.destroySession(previousSession || undefined);
+    }
+
+    this.restoreBaseSessionState();
+  }
+
+  private async applyCreatedSession(
+    session: PlaygroundCreatedSession,
+  ): Promise<void> {
+    if (!session.agent && !session.agentFactory) {
+      throw new Error(
+        'Session creation must provide either an agent or agentFactory',
+      );
+    }
+
+    const sessionSidecars = session.sidecars || this._baseSidecars;
+    await this.startSidecars(sessionSidecars);
+
+    try {
+      this._activeConnection = {
+        session: {
+          connected: true,
+          displayName: session.displayName,
+          metadata: session.metadata ? { ...session.metadata } : {},
+        },
+        agent: session.agent || null,
+        agentFactory: session.agentFactory || null,
+        runtime: {
+          platformId: session.platformId ?? this._baseRuntimeState?.platformId,
+          title: session.title ?? this._baseRuntimeState?.title,
+          description:
+            session.platformDescription ?? this._baseRuntimeState?.description,
+          preview: session.preview ?? this._baseRuntimeState?.preview,
+          metadata: session.metadata ? { ...session.metadata } : {},
+        },
+        executionHooks: session.executionHooks || this._baseExecutionHooks,
+        sidecars: sessionSidecars,
+        subscribeNavigationEvents: session.subscribeNavigationEvents,
+      };
+      this._mjpegHandler.reset();
+      this.sessionSetupState = 'ready';
+      this.sessionSetupBlockingReason = undefined;
+      this.syncRuntimeState();
+    } catch (error) {
+      await this.stopSidecars(sessionSidecars).catch(() => {});
+      this.restoreBaseSessionState();
+      throw error;
+    }
+  }
+
+  private bindActiveSessionNavigationEvents(): void {
+    this.clearActiveSessionNavigationEvents();
+    const subscribe = this._activeConnection.subscribeNavigationEvents;
+    if (!subscribe) {
+      return;
+    }
+    this._activeConnection.unsubscribeNavigationEvents = subscribe((event) => {
+      this.recordStudioPreviewNavigationState(event);
+    });
+  }
+
+  private clearActiveSessionNavigationEvents(): void {
+    const unsubscribe = this._activeConnection.unsubscribeNavigationEvents;
+    this._activeConnection.unsubscribeNavigationEvents = undefined;
+    if (!unsubscribe) {
+      return;
+    }
+    try {
+      unsubscribe();
+    } catch (error) {
+      debugInteract('failed to unsubscribe session navigation events:', error);
+    }
+  }
+
+  private async getSessionSetupSchema(
+    input?: Record<string, unknown>,
+  ): Promise<PlaygroundSessionSetup | null> {
+    if (!this.sessionManager) {
+      return null;
+    }
+
+    return this.sessionManager.getSetupSchema
+      ? this.sessionManager.getSetupSchema(input)
+      : null;
+  }
+
+  private async getSessionTargets(): Promise<PlaygroundSessionTarget[]> {
+    if (!this.sessionManager?.listTargets) {
+      return [];
+    }
+
+    return this.sessionManager.listTargets();
+  }
+
+  /**
+   * Get the Express app instance for custom configuration
+   *
+   * IMPORTANT: Add middleware (like CORS) BEFORE calling launch()
+   * The routes are initialized when launch() is called, so middleware
+   * added after launch() will not affect the API routes.
+   *
+   * @example
+   * ```typescript
+   * import cors from 'cors';
+   *
+   * const server = new PlaygroundServer(agent);
+   *
+   * // Add CORS middleware before launch
+   * server.app.use(cors({
+   *   origin: true,
+   *   credentials: true,
+   *   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+   * }));
+   *
+   * await server.launch();
+   * ```
+   */
+  get app(): express.Application {
+    return this._app;
+  }
+
+  /**
+   * Initialize Express app with all routes and middleware
+   * Called automatically by launch() if not already initialized
+   */
+  private initializeApp(): void {
+    if (this._initialized) return;
+
+    // Built-in middleware to parse JSON bodies
+    this._app.use(express.json({ limit: '50mb' }));
+
+    // Context update middleware (after JSON parsing)
+    this._app.use(
+      (req: Request, _res: Response, next: express.NextFunction) => {
+        const { context } = req.body || {};
+        if (
+          this._activeConnection.agent &&
+          context &&
+          'updateContext' in this._activeConnection.agent.interface &&
+          typeof this._activeConnection.agent.interface.updateContext ===
+            'function'
+        ) {
+          this._activeConnection.agent.interface.updateContext(context);
+          console.log('Context updated by PlaygroundServer middleware');
+        }
+        next();
+      },
+    );
+
+    // NOTE: CORS middleware should be added externally via server.app.use()
+    // before calling server.launch() if needed
+
+    // API routes
+    this.setupRoutes();
+
+    // Static file serving (if staticPath is provided)
+    this.setupStaticRoutes();
+
+    // Error handler middleware (must be last)
+    this._app.use(errorHandler);
+
+    this._initialized = true;
+  }
+
+  filePathForUuid(uuid: string) {
+    // Validate uuid to prevent path traversal attacks
+    // Only allow alphanumeric characters and hyphens
+    if (!/^[a-zA-Z0-9-]+$/.test(uuid)) {
+      throw new Error('Invalid uuid format');
+    }
+    const filePath = join(this.tmpDir, `${uuid}.json`);
+    // Double-check that resolved path is within tmpDir
+    const resolvedPath = resolve(filePath);
+    const resolvedTmpDir = resolve(this.tmpDir);
+    if (!resolvedPath.startsWith(resolvedTmpDir)) {
+      throw new Error('Invalid path');
+    }
+    return filePath;
+  }
+
+  saveContextFile(uuid: string, context: string) {
+    const tmpFile = this.filePathForUuid(uuid);
+    console.log(`save context file: ${tmpFile}`);
+    writeFileSync(tmpFile, context);
+    return tmpFile;
+  }
+
+  /**
+   * Recreate agent instance (for cancellation).
+   *
+   * `preserveActiveStream`: skip the MJPEG hub reset so the existing
+   * preview stream stays connected across the swap. Safe when the
+   * agent factory reuses the same underlying page/browser (Studio Web
+   * does this on cancel) — otherwise the producer would point at a
+   * dead source.
+   */
+  private async recreateAgent({
+    preserveActiveStream = false,
+  }: { preserveActiveStream?: boolean } = {}): Promise<void> {
+    this._agentReady = false;
+    console.log('Recreating agent to cancel current task...');
+
+    await this.destroyCurrentAgent({ preserveActiveStream });
+
+    // Create new agent instance if factory is available
+    if (this._activeConnection.agentFactory) {
+      try {
+        this.setActiveAgent(await this._activeConnection.agentFactory(), {
+          preserveActiveStream,
+        });
+        this._agentReady = true;
+        console.log('Agent recreated successfully');
+      } catch (error) {
+        this._agentReady = true;
+        console.error('Failed to recreate agent:', error);
+        throw error;
+      }
+    } else {
+      this._agentReady = true;
+      console.warn(
+        'Agent destroyed but cannot recreate: no factory function provided. Next /execute call will fail.',
+      );
+    }
+  }
+
+  private async recoverActiveAgentAfterPreviewError(
+    error: unknown,
+    reason: string,
+  ): Promise<PageAgent | null> {
+    if (
+      !this._activeConnection.agentFactory ||
+      !isRecoverablePageSessionError(error)
+    ) {
+      return null;
+    }
+
+    debugMjpeg(`Recovering active agent after ${reason}:`, error);
+    try {
+      this._mjpegHandler.reset();
+      await this.recreateAgent();
+      return this._activeConnection.agent;
+    } catch (recreateError) {
+      debugMjpeg(
+        `Failed to recover active agent after ${reason}:`,
+        recreateError,
+      );
+      return null;
+    }
+  }
+
+  private findInteractAction(
+    agent: PageAgent,
+    actionType: string,
+  ): DeviceAction<unknown> | undefined {
+    return (agent.interface.actionSpace() as DeviceAction<unknown>[]).find(
+      (entry) => entry.name === actionType,
+    );
+  }
+
+  private canRunBrowserChromeInteractAction(
+    agent: PageAgent,
+    actionType: string,
+  ): actionType is BrowserChromeInteractAction {
+    return (
+      actionType === 'Stop' &&
+      typeof (agent.interface as BrowserChromeInterface).stopLoading ===
+        'function'
+    );
+  }
+
+  private async runBrowserChromeInteractAction(
+    agent: PageAgent,
+    actionType: BrowserChromeInteractAction,
+  ): Promise<void> {
+    switch (actionType) {
+      case 'Stop':
+        await (agent.interface as BrowserChromeInterface).stopLoading?.();
+        return;
+    }
+  }
+
+  private async runInteractAction(
+    agent: PageAgent,
+    actionType: string,
+    params: Record<string, unknown>,
+  ): Promise<void> {
+    if (this.canRunBrowserChromeInteractAction(agent, actionType)) {
+      await this.runBrowserChromeInteractAction(agent, actionType);
+      return;
+    }
+
+    const action = this.findInteractAction(agent, actionType);
+    if (!action || typeof action.call !== 'function') {
+      throw new Error(
+        `Action "${actionType}" is not available on the current device`,
+      );
+    }
+
+    await action.call(params, createManualExecutorContext(actionType, params));
+  }
+
+  private async registerReportFile(
+    reportPath: string | null | undefined,
+  ): Promise<PlaygroundReportRef | null> {
+    if (!reportPath) return null;
+
+    const reportStat = await stat(reportPath);
+    if (!reportStat.isFile()) {
+      throw new Error(`Report path is not a file: ${reportPath}`);
+    }
+
+    const screenshotsPath = join(dirname(reportPath), 'screenshots');
+    const hasExternalScreenshots = await stat(screenshotsPath)
+      .then((entry) => entry.isDirectory())
+      .catch(() => false);
+    const format: PlaygroundReportRef['format'] =
+      basename(reportPath) === 'index.html' && hasExternalScreenshots
+        ? 'html-and-external-assets'
+        : 'single-html';
+
+    const now = Date.now();
+    for (const [id, report] of this.reportFiles) {
+      if (report.expiresAt <= now) this.reportFiles.delete(id);
+    }
+
+    const id = randomUUID();
+    this.reportFiles.set(id, {
+      path: reportPath,
+      expiresAt: now + PLAYGROUND_REPORT_REF_TTL_MS,
+      format,
+    });
+
+    return {
+      id,
+      url: `/reports/${id}/`,
+      replayUrl: `/reports/${id}/replay`,
+      bytes: reportStat.size,
+      format,
+    };
+  }
+
+  private getRegisteredReport(reportId: string) {
+    const report = this.reportFiles.get(reportId);
+    if (!report || report.expiresAt <= Date.now()) {
+      if (report) this.reportFiles.delete(reportId);
+      return null;
+    }
+    report.expiresAt = Date.now() + PLAYGROUND_REPORT_REF_TTL_MS;
+    return report;
+  }
+
+  /**
+   * Setup all API routes
+   */
+  private setupRoutes(): void {
+    this._app.get('/status', async (req: Request, res: Response) => {
+      res.send({
+        status: 'ok',
+        id: this.id,
+      });
+    });
+
+    this._app.get(
+      '/reports/:reportId/replay',
+      async (req: Request, res: Response) => {
+        const report = this.getRegisteredReport(req.params.reportId);
+        if (!report) {
+          return res.status(404).json({ error: 'Report not found or expired' });
+        }
+
+        try {
+          const serializedDump = await extractLastReportDump(report.path);
+          res.setHeader('Cache-Control', 'no-store');
+          return res.type('json').send(serializedDump);
+        } catch (error) {
+          debugReport('failed to stream report replay: %s', error);
+          return res
+            .status(500)
+            .json({ error: 'Failed to load report replay' });
+        }
+      },
+    );
+
+    this._app.get(
+      '/reports/:reportId/screenshots/:assetName',
+      async (req: Request, res: Response) => {
+        const report = this.getRegisteredReport(req.params.reportId);
+        if (!report) {
+          return res.status(404).json({ error: 'Report not found or expired' });
+        }
+
+        const match = /^([A-Za-z0-9_-]+)\.([A-Za-z0-9]+)$/.exec(
+          req.params.assetName,
+        );
+        const requestedMimeType = match
+          ? imageMimeTypeForFileExtension(match[2])
+          : null;
+        if (!match || !requestedMimeType) {
+          return res.status(400).json({ error: 'Invalid report image asset' });
+        }
+
+        const [, imageId] = match;
+        const externalAssetPath = join(
+          dirname(report.path),
+          'screenshots',
+          req.params.assetName,
+        );
+        const externalAssetExists = await stat(externalAssetPath)
+          .then((entry) => entry.isFile())
+          .catch(() => false);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+        if (externalAssetExists) {
+          res.type(requestedMimeType);
+          return res.sendFile(externalAssetPath);
+        }
+
+        try {
+          const dataUri = await extractInlineReportImage(report.path, imageId);
+          if (!dataUri) {
+            return res.status(404).json({ error: 'Report image not found' });
+          }
+          const parsedImage = parseBase64ImageDataUrl(dataUri);
+          if (parsedImage.mimeType !== requestedMimeType) {
+            throw new Error(
+              `Report image extension does not match its MIME type: ${req.params.assetName}`,
+            );
+          }
+          return res
+            .type(parsedImage.mimeType)
+            .send(Buffer.from(parsedImage.rawBase64, 'base64'));
+        } catch (error) {
+          debugReport('failed to stream report image: %s', error);
+          return res.status(500).json({ error: 'Failed to load report image' });
+        }
+      },
+    );
+
+    this._app.get('/reports/:reportId/', (req: Request, res: Response) => {
+      const report = this.getRegisteredReport(req.params.reportId);
+      if (!report) {
+        return res.status(404).json({ error: 'Report not found or expired' });
+      }
+
+      res.setHeader('Cache-Control', 'no-store');
+      res.type('html');
+      return res.sendFile(report.path);
+    });
+
+    this._app.get('/session', async (_req: Request, res: Response) => {
+      res.json(this.getSessionInfo());
+    });
+
+    this._app.get('/session/setup', async (req: Request, res: Response) => {
+      try {
+        const setup = await this.getSessionSetupSchema(
+          Object.fromEntries(
+            Object.entries(req.query).filter(
+              ([, value]) => typeof value === 'string',
+            ),
+          ),
+        );
+        if (!setup) {
+          return res.status(404).json({
+            error: 'Session setup is not available for this playground',
+          });
+        }
+
+        const targets = await this.getSessionTargets();
+        res.json({
+          ...setup,
+          targets: targets.length > 0 ? targets : setup.targets,
+        });
+      } catch (error) {
+        res.status(500).json({
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Failed to load session setup',
+        });
+      }
+    });
+
+    this._app.get('/session/targets', async (_req: Request, res: Response) => {
+      try {
+        res.json(await this.getSessionTargets());
+      } catch (error) {
+        res.status(500).json({
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Failed to load session targets',
+        });
+      }
+    });
+
+    this._app.post('/session', async (req: Request, res: Response) => {
+      if (!this.sessionManager) {
+        return res.status(404).json({
+          error: 'Session creation is not available for this playground',
+        });
+      }
+
+      if (this.currentTaskId) {
+        return res.status(409).json({
+          error: 'Cannot replace session while a task is running',
+        });
+      }
+
+      try {
+        await this.destroyCurrentSession();
+        const created = await this.sessionManager.createSession(req.body || {});
+        await this.applyCreatedSession(created);
+
+        if (
+          !this._activeConnection.agent &&
+          this._activeConnection.agentFactory
+        ) {
+          this.setActiveAgent(await this._activeConnection.agentFactory());
+        }
+        this.bindActiveSessionNavigationEvents();
+
+        if (this._configDirty && this._activeConnection.agentFactory) {
+          this._configDirty = false;
+          await this.recreateAgent();
+        }
+
+        res.json({
+          session: this.getSessionInfo(),
+          runtimeInfo: this.getRuntimeInfo(),
+        });
+      } catch (error) {
+        const failedSessionSidecars = this._activeConnection.session
+          ? this._activeConnection.sidecars
+          : undefined;
+        await this.destroyCurrentAgent();
+        await this.stopSidecars(failedSessionSidecars).catch(() => {});
+        this.restoreBaseSessionState();
+        res.status(400).json({
+          error:
+            error instanceof Error ? error.message : 'Failed to create session',
+        });
+      }
+    });
+
+    this._app.delete('/session', async (_req: Request, res: Response) => {
+      if (this.currentTaskId) {
+        return res.status(409).json({
+          error: 'Cannot destroy session while a task is running',
+        });
+      }
+
+      try {
+        await this.destroyCurrentSession();
+        res.json({
+          session: this.getSessionInfo(),
+          runtimeInfo: this.getRuntimeInfo(),
+        });
+      } catch (error) {
+        res.status(500).json({
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Failed to destroy session',
+        });
+      }
+    });
+
+    this._app.get('/context/:uuid', async (req: Request, res: Response) => {
+      const { uuid } = req.params;
+      let contextFile: string;
+      try {
+        contextFile = this.filePathForUuid(uuid);
+      } catch {
+        return res.status(400).json({
+          error: 'Invalid uuid format',
+        });
+      }
+
+      if (!existsSync(contextFile)) {
+        return res.status(404).json({
+          error: 'Context not found',
+        });
+      }
+
+      const context = readFileSync(contextFile, 'utf8');
+      res.json({
+        context,
+      });
+    });
+
+    this._app.get(
+      '/task-progress/:requestId',
+      async (req: Request, res: Response) => {
+        const { requestId } = req.params;
+        const executionDump = this.taskExecutionDumps[requestId] || null;
+
+        res.json({
+          executionDump,
+        });
+      },
+    );
+
+    this._app.post('/action-space', async (req: Request, res: Response) => {
+      try {
+        const agent = this.getActiveAgentOrThrow();
+        let actionSpace = [];
+
+        actionSpace = agent.interface.actionSpace();
+
+        // Process actionSpace to make paramSchema serializable with shape info
+        const processedActionSpace = actionSpace.map((action: unknown) => {
+          if (action && typeof action === 'object' && 'paramSchema' in action) {
+            const typedAction = action as {
+              paramSchema?: { shape?: object; [key: string]: unknown };
+              [key: string]: unknown;
+            };
+            if (
+              typedAction.paramSchema &&
+              typeof typedAction.paramSchema === 'object'
+            ) {
+              // Extract shape information from Zod schema
+              let processedSchema = null;
+
+              try {
+                // Extract shape from runtime Zod object
+                if (
+                  typedAction.paramSchema.shape &&
+                  typeof typedAction.paramSchema.shape === 'object'
+                ) {
+                  const rawShape = typedAction.paramSchema.shape as Record<
+                    string,
+                    any
+                  >;
+                  const serializedShape: Record<string, any> = {};
+                  for (const [key, field] of Object.entries(rawShape)) {
+                    serializedShape[key] = serializeZodField(field);
+                  }
+                  processedSchema = {
+                    type: 'ZodObject',
+                    shape: serializedShape,
+                  };
+                }
+              } catch (e) {
+                const actionName =
+                  'name' in typedAction && typeof typedAction.name === 'string'
+                    ? typedAction.name
+                    : 'unknown';
+                console.warn(
+                  'Failed to process paramSchema for action:',
+                  actionName,
+                  e,
+                );
+              }
+
+              return {
+                ...typedAction,
+                paramSchema: processedSchema,
+              };
+            }
+          }
+          return action;
+        });
+
+        res.json(processedActionSpace);
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        console.error('Failed to get action space:', error);
+        res.status(errorMessage === 'No active session' ? 409 : 500).json({
+          error: errorMessage,
+        });
+      }
+    });
+
+    // -------------------------
+    // actions from report file
+    this._app.post(
+      '/playground-with-context',
+      async (req: Request, res: Response) => {
+        const context = req.body.context;
+
+        if (!context) {
+          return res.status(400).json({
+            error: 'context is required',
+          });
+        }
+
+        const requestId = uuid();
+        this.saveContextFile(requestId, context);
+        return res.json({
+          location: `/playground/${requestId}`,
+          uuid: requestId,
+        });
+      },
+    );
+
+    this._app.post('/execute', async (req: Request, res: Response) => {
+      let agent: PageAgent;
+      try {
+        agent = this.getActiveAgentOrThrow();
+      } catch (error) {
+        return res.status(409).json({
+          error: error instanceof Error ? error.message : 'No active session',
+        });
+      }
+
+      const {
+        type,
+        prompt,
+        params,
+        requestId,
+        deepLocate,
+        deepThink,
+        screenshotIncluded,
+        domIncluded,
+        deviceOptions,
+        reportDisplay,
+      } = req.body;
+
+      if (!type) {
+        return res.status(400).json({
+          error: 'type is required',
+        });
+      }
+
+      // Recreate agent only when AI config has changed (via /config API)
+      if (this._activeConnection.agentFactory && this._configDirty) {
+        this._configDirty = false;
+        this._agentReady = false;
+        console.log('AI config changed, recreating agent...');
+        try {
+          await this.destroyCurrentAgent();
+          this.setActiveAgent(await this._activeConnection.agentFactory());
+          agent = this.getActiveAgentOrThrow();
+          this._agentReady = true;
+          console.log('Agent recreated with new config');
+        } catch (error) {
+          this._agentReady = true;
+          console.error('Failed to recreate agent:', error);
+          return res.status(500).json({
+            error: `Failed to create agent: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          });
+        }
+      }
+
+      // Update device options if provided
+      if (deviceOptions) {
+        const iface = agent.interface as unknown as {
+          options?: Record<string, unknown>;
+        };
+        iface.options = {
+          ...(iface.options || {}),
+          ...deviceOptions,
+        };
+      }
+
+      // Check if another task is running
+      if (this.currentTaskId) {
+        return res.status(409).json({
+          error: 'Another task is already running',
+          currentTaskId: this.currentTaskId,
+        });
+      }
+
+      // Lock this task
+      let abortController: AbortController | null = null;
+      if (requestId) {
+        this.currentTaskId = requestId;
+        this.taskExecutionDumps[requestId] = null;
+        abortController = new AbortController();
+        this.taskAbortControllers[requestId] = abortController;
+
+        // Use onDumpUpdate to receive and store executionDump directly
+        agent.onDumpUpdate = (_dump: string, executionDump?: ExecutionDump) => {
+          if (executionDump) {
+            // Store the execution dump directly without transformation
+            this.taskExecutionDumps[requestId] = executionDump;
+          }
+        };
+      }
+
+      const response: {
+        result: unknown;
+        dump: ExecutionDump | ReportActionDump | null;
+        error: string | null;
+        reportHTML: string | null;
+        report: PlaygroundReportRef | null;
+        requestId?: string;
+      } = {
+        result: null,
+        dump: null,
+        error: null,
+        reportHTML: null,
+        report: null,
+        requestId,
+      };
+
+      const startTime = Date.now();
+      try {
+        agent.resetDump?.();
+        await this._activeConnection.executionHooks?.beforeExecute?.();
+
+        // Get action space to check for dynamic actions
+        const actionSpace = agent.interface.actionSpace();
+
+        // Prepare value object for executeAction
+        const value = {
+          type,
+          prompt,
+          params,
+        };
+
+        response.result = await executeAction(agent, type, actionSpace, value, {
+          requestId,
+          deepLocate,
+          deepThink,
+          screenshotIncluded,
+          domIncluded,
+          abortSignal: abortController?.signal,
+          deviceOptions,
+          reportDisplay,
+        });
+      } catch (error: unknown) {
+        response.error = formatErrorMessage(error);
+      } finally {
+        try {
+          await this._activeConnection.executionHooks?.afterExecute?.();
+        } catch (hookError) {
+          console.error('Failed to run execution after hook:', hookError);
+        }
+      }
+
+      if (abortController?.signal.aborted) {
+        // Cancellation recreates (and therefore destroys) the agent. Do not
+        // synchronously inline every screenshot into both a dump and an HTML
+        // report while that teardown is in progress: on long mobile runs this
+        // blocks Electron's main event loop, including IPC and scrcpy. The
+        // cancel response reads the incrementally persisted report instead.
+        response.dump = null;
+      } else {
+        try {
+          // Snapshot updates await incremental report persistence before the
+          // action resolves. Register that existing artifact instead of
+          // synchronously inlining every screenshot into both a dump and an
+          // HTML report. Large Android runs otherwise starve Electron's main
+          // event loop long enough for the scrcpy Socket.IO heartbeat to fail.
+          const reportStartedAt = Date.now();
+          const reportFile = agent.reportFile;
+          response.report = await this.registerReportFile(reportFile);
+          response.dump = null;
+          agent.resetDump();
+
+          debugReport(
+            'registered persisted report: requestId=%s, duration=%dms, bytes=%d, file=%s',
+            requestId,
+            Date.now() - reportStartedAt,
+            response.report?.bytes || 0,
+            reportFile || 'none',
+          );
+        } catch (error: unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+          debugReport(
+            'register persisted report failed: requestId=%s, error=%s',
+            requestId,
+            errorMessage,
+          );
+        }
+      }
+
+      res.send(response);
+      const timeCost = Date.now() - startTime;
+
+      if (response.error) {
+        console.error(
+          `handle request failed after ${timeCost}ms: requestId: ${requestId}, ${response.error}`,
+        );
+      } else {
+        console.log(
+          `handle request done after ${timeCost}ms: requestId: ${requestId}`,
+        );
+      }
+
+      // Clean up task execution dumps and unlock after execution completes
+      if (requestId) {
+        delete this.taskExecutionDumps[requestId];
+        delete this.taskAbortControllers[requestId];
+        // Release the lock
+        if (this.currentTaskId === requestId) {
+          this.currentTaskId = null;
+        }
+      }
+    });
+
+    this._app.post(
+      '/cancel/:requestId',
+      async (req: Request, res: Response) => {
+        const { requestId } = req.params;
+
+        if (!requestId) {
+          return res.status(400).json({
+            error: 'requestId is required',
+          });
+        }
+
+        try {
+          const agent = this.getActiveAgentOrThrow();
+          // Check if this is the current running task
+          if (this.currentTaskId !== requestId) {
+            return res.json({
+              status: 'not_found',
+              message: 'Task not found or already completed',
+            });
+          }
+
+          console.log(`Cancelling task: ${requestId}`);
+
+          const abortController = this.taskAbortControllers[requestId];
+          // Abort before doing any teardown work. The cached progress dump is
+          // already persisted by the report generator, so cancellation does
+          // not need to synchronously serialize inline screenshots.
+          abortController?.abort(
+            new Error(`Task cancelled by user: ${requestId}`),
+          );
+
+          // A progress dump can reach the UI immediately before its queued
+          // report write starts. Persist that latest snapshot before destroy()
+          // flushes and finalizes the report, otherwise a stopped run can show
+          // a Timeline but have no report artifact to register.
+          const latestExecutionDump = this.taskExecutionDumps[requestId];
+          if (latestExecutionDump) {
+            agent.writeOutActionDumps?.(latestExecutionDump);
+          }
+
+          // Destroy and recreate agent to cancel the current task,
+          // while keeping the live preview stream alive so the user
+          // doesn't see a 3–5s blackout / page reload when they hit
+          // Stop. Platform factories that reuse the same device or
+          // page across recreates (e.g. Studio Web) honor this hint.
+          try {
+            await this.recreateAgent({ preserveActiveStream: true });
+          } catch (error) {
+            console.warn('Failed to recreate agent during cancel:', error);
+          }
+
+          let report: PlaygroundReportRef | null = null;
+          if (agent.reportFile) {
+            try {
+              // Agent.destroy() finalizes the incrementally persisted report
+              // before recreateAgent() resolves. Return an opaque streaming URL
+              // instead of putting the full artifact in cancellation JSON.
+              report = await this.registerReportFile(agent.reportFile);
+            } catch (error) {
+              debugCancel(
+                'Failed to register finalized report after cancel: %s',
+                error,
+              );
+            }
+          }
+
+          // Clean up
+          delete this.taskExecutionDumps[requestId];
+          delete this.taskAbortControllers[requestId];
+          this.currentTaskId = null;
+
+          res.json({
+            status: 'cancelled',
+            message: 'Task cancelled successfully',
+            dump: null,
+            reportHTML: null,
+            report,
+          });
+        } catch (error: unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+          console.error(`Failed to cancel: ${errorMessage}`);
+          res.status(errorMessage === 'No active session' ? 409 : 500).json({
+            error: `Failed to cancel: ${errorMessage}`,
+          });
+        }
+      },
+    );
+
+    this._app.post('/recorder/start', async (req: Request, res: Response) => {
+      const { sessionId } = req.body ?? {};
+      if (typeof sessionId !== 'string' || !sessionId.trim()) {
+        return res.status(400).json({
+          ok: false,
+          error: 'sessionId is required',
+        });
+      }
+
+      const capabilities = await this.getRecorderCapabilities();
+      if (!capabilities.supported) {
+        this.resetRecorderState();
+        return res.json({
+          ok: false,
+          supported: false,
+          source: capabilities.source,
+          platformId: capabilities.platformId,
+          error: capabilities.error,
+        });
+      }
+
+      try {
+        this.resetRecorderState();
+        await this.startStudioPreviewRecorder(sessionId);
+        res.json({
+          ok: true,
+          supported: true,
+          source: 'studio-preview',
+          platformId: capabilities.platformId,
+        });
+      } catch (error: unknown) {
+        this.resetRecorderState();
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        res.status(500).json({
+          ok: false,
+          supported: false,
+          error: errorMessage,
+        });
+      }
+    });
+
+    this._app.get(
+      '/recorder/capabilities',
+      async (_req: Request, res: Response) => {
+        res.json(await this.getRecorderCapabilities());
+      },
+    );
+
+    this._app.post('/recorder/stop', async (_req: Request, res: Response) => {
+      // URL changes caused by a click are not separate replay actions. Stop
+      // only waits for queued user-action capture, so a destroyed page context
+      // cannot delay finishing the recording.
+      await this.waitForQueuedRecorderEvents();
+      this.flushPendingTypeOnlyRecorderInput();
+      this._recorderSessionId = null;
+      this._studioPreviewRecorderLastScreenshot = undefined;
+      this._studioPreviewRecorderLastPageState = undefined;
+      res.json({ ok: true });
+    });
+
+    this._app.get('/recorder/events', async (req: Request, res: Response) => {
+      if (req.query.flushPending !== 'false') {
+        this.flushPendingTypeOnlyRecorderInput();
+      }
+      const since =
+        typeof req.query.since === 'string'
+          ? Number.parseInt(req.query.since, 10)
+          : 0;
+      const startIndex = Number.isFinite(since) && since > 0 ? since : 0;
+      res.json({
+        events: this._recorderEvents.slice(startIndex),
+        nextIndex: this._recorderEvents.length,
+      });
+    });
+
+    this._app.get(
+      '/recorder/assets/:assetId',
+      async (req: Request, res: Response) => {
+        try {
+          const assetId = String(req.params.assetId || '');
+          const filePath = findRecorderScreenshotAssetPath(assetId);
+          if (!filePath) {
+            return res
+              .status(404)
+              .json({ error: 'Recorder screenshot not found' });
+          }
+          res.type(filePath.endsWith('.jpg') ? 'image/jpeg' : 'image/png');
+          return res.send(readFileSync(filePath));
+        } catch (error) {
+          return res.status(400).json({
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Invalid recorder screenshot request',
+          });
+        }
+      },
+    );
+
+    this._app.delete(
+      '/recorder/assets/session/:sessionId',
+      async (req: Request, res: Response) => {
+        try {
+          removeRecorderScreenshotAssetsForSession(
+            String(req.params.sessionId || ''),
+          );
+          return res.json({ ok: true });
+        } catch (error) {
+          return res.status(400).json({
+            ok: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Invalid recorder session id',
+          });
+        }
+      },
+    );
+
+    this._app.post(
+      '/recorder/assets/session/:sessionId/prune',
+      async (req: Request, res: Response) => {
+        try {
+          const assetIds = Array.isArray(req.body?.assetIds)
+            ? req.body.assetIds.filter(
+                (assetId: unknown): assetId is string =>
+                  typeof assetId === 'string',
+              )
+            : [];
+          pruneRecorderScreenshotAssetsForSession(
+            String(req.params.sessionId || ''),
+            assetIds,
+          );
+          return res.json({ ok: true });
+        } catch (error) {
+          return res.status(400).json({
+            ok: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Invalid recorder screenshot cleanup request',
+          });
+        }
+      },
+    );
+
+    this._app.post(
+      '/recorder/describe-event',
+      async (req: Request, res: Response) => {
+        const event = req.body?.event as PlaygroundRecorderEvent | undefined;
+        if (!event || typeof event !== 'object') {
+          return res.status(400).json({
+            ok: false,
+            error: 'event is required',
+          });
+        }
+
+        try {
+          const agent = this.getActiveAgentOrThrow();
+          const { event: describedEvent, trace } =
+            await this.enrichStudioPreviewRecorderEventWithAiDescribe(
+              event,
+              agent,
+            );
+          res.json({ ok: true, event: describedEvent, trace });
+        } catch (error) {
+          const startedAt = new Date();
+          const traceBase = createRecorderAiDescribeTraceBase(event);
+          const trace: PlaygroundRecorderDescribeTrace = {
+            ...traceBase,
+            status: 'failed',
+            startedAt: startedAt.toISOString(),
+            durationMs: 0,
+            error: error instanceof Error ? error.message : String(error),
+          };
+          debugInteract('recorder aiDescribe trace:', trace);
+          res.status(500).json({
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            trace,
+          });
+        }
+      },
+    );
+
+    // Screenshot API for real-time screenshot polling
+    this._app.get('/screenshot', async (_req: Request, res: Response) => {
+      try {
+        let agent = this.getActiveAgentOrThrow();
+        // Check if page has screenshotBase64 method
+        if (typeof agent.interface.screenshotBase64 !== 'function') {
+          return res.status(500).json({
+            error: 'Screenshot method not available on current interface',
+          });
+        }
+
+        let screenshot: string;
+        try {
+          screenshot = await agent.interface.screenshotBase64();
+        } catch (error) {
+          const recoveredAgent = await this.recoverActiveAgentAfterPreviewError(
+            error,
+            'screenshot capture',
+          );
+          if (
+            !recoveredAgent ||
+            typeof recoveredAgent.interface.screenshotBase64 !== 'function'
+          ) {
+            throw error;
+          }
+          agent = recoveredAgent;
+          screenshot = await agent.interface.screenshotBase64();
+        }
+
+        res.json({
+          screenshot,
+          timestamp: Date.now(),
+        });
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        const statusCode = errorMessage === 'No active session' ? 409 : 500;
+        if (statusCode !== 409) {
+          console.error(`Failed to take screenshot: ${errorMessage}`);
+        }
+        res.status(statusCode).json({
+          error: `Failed to take screenshot: ${errorMessage}`,
+        });
+      }
+    });
+
+    // MJPEG streaming endpoint for real-time screen preview. The actual
+    // probe / proxy / in-process producer / polling logic lives in
+    // MjpegStreamHandler so this route is just HTTP plumbing.
+    this._app.get('/mjpeg', async (req: Request, res: Response) => {
+      const agent = this._activeConnection.agent;
+      if (!agent) {
+        return res.status(409).json({ error: 'No active session' });
+      }
+      await this._mjpegHandler.serve(req, res);
+    });
+
+    // Interface info API for getting interface type and description
+    this._app.get('/interface-info', async (_req: Request, res: Response) => {
+      try {
+        const runtimeInfo = this.getRuntimeInfo();
+        const agent = this._activeConnection.agent;
+        let size: { width: number; height: number } | undefined;
+        let navigationState: { isLoading: boolean } | undefined;
+        let actionTypes: string[] | undefined;
+        if (typeof agent?.interface?.size === 'function') {
+          try {
+            size = await agent.interface.size();
+          } catch (error) {
+            debugScreenshot('interface size() failed:', error);
+          }
+        }
+        if (typeof agent?.interface?.navigationState === 'function') {
+          try {
+            navigationState = await agent.interface.navigationState();
+          } catch (error) {
+            debugScreenshot('interface navigationState() failed:', error);
+          }
+        }
+        if (typeof agent?.interface?.actionSpace === 'function') {
+          try {
+            const actions = agent.interface.actionSpace();
+            actionTypes = Array.isArray(actions)
+              ? actions
+                  .map((action) => action?.name)
+                  .filter((name): name is string => typeof name === 'string')
+              : undefined;
+          } catch (error) {
+            debugScreenshot('interface actionSpace() failed:', error);
+          }
+        }
+
+        res.json({
+          type: runtimeInfo.interface.type,
+          description: runtimeInfo.interface.description,
+          ...(size ? { size } : {}),
+          ...(navigationState ? { navigationState } : {}),
+          ...(actionTypes ? { actionTypes } : {}),
+        });
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        console.error(`Failed to get interface info: ${errorMessage}`);
+        res.status(500).json({
+          error: `Failed to get interface info: ${errorMessage}`,
+        });
+      }
+    });
+
+    // Direct manipulation API – invokes a named action immediately, bypassing
+    // AI planning, the task lock, and dump bookkeeping. Primitive-capable
+    // device previews use the typed input surface; browser navigation falls
+    // back to explicit actionSpace/browser-chrome actions.
+    this._app.post('/interact', async (req: Request, res: Response) => {
+      let agent: PageAgent;
+      try {
+        agent = this.getActiveAgentOrThrow();
+      } catch (error) {
+        return res.status(409).json({
+          error: error instanceof Error ? error.message : 'No active session',
+        });
+      }
+
+      const { actionType } = req.body ?? {};
+      if (typeof actionType !== 'string' || !actionType) {
+        return res.status(400).json({
+          error: 'actionType is required',
+        });
+      }
+
+      try {
+        const interactStartedAt = Date.now();
+        debugInteract('received manual interact %o', {
+          payload: summarizeInteractPayload(req.body ?? {}),
+          interfaceType: agent.interface.interfaceType,
+          recorderActive: Boolean(this._recorderSessionId),
+          hasInputPrimitives: Boolean(agent.interface.inputPrimitives),
+        });
+        const recorderSnapshotBefore =
+          this.captureCachedRecorderSnapshotBeforeInteract();
+        const inputPrimitives = agent.interface.inputPrimitives;
+        if (inputPrimitives) {
+          await dispatchPointer(inputPrimitives, req.body ?? {}, () =>
+            agent.interface.size(),
+          );
+          debugInteract('primitive manual interact dispatched %o', {
+            payload: summarizeInteractPayload(req.body ?? {}),
+            elapsedMs: Date.now() - interactStartedAt,
+          });
+          res.json({});
+          this.queueStudioPreviewRecorderEvent(
+            req.body ?? {},
+            recorderSnapshotBefore,
+            agent,
+          );
+          debugInteract('manual interact completed %o', {
+            payload: summarizeInteractPayload(req.body ?? {}),
+            elapsedMs: Date.now() - interactStartedAt,
+          });
+          return;
+        }
+
+        if (
+          !this.findInteractAction(agent, actionType) &&
+          !this.canRunBrowserChromeInteractAction(agent, actionType)
+        ) {
+          return res.status(404).json({
+            error: isPointerInteractActionType(actionType)
+              ? 'Manual control is not supported on this device'
+              : `Action "${actionType}" is not available on the current device`,
+          });
+        }
+
+        const params = buildInteractParams(actionType, req.body ?? {});
+        await this.runInteractAction(agent, actionType, params);
+        debugInteract('actionSpace manual interact dispatched %o', {
+          payload: summarizeInteractPayload(req.body ?? {}),
+          elapsedMs: Date.now() - interactStartedAt,
+        });
+        res.json({});
+        this.queueStudioPreviewRecorderEvent(
+          req.body ?? {},
+          recorderSnapshotBefore,
+          agent,
+        );
+        debugInteract('manual interact completed %o', {
+          payload: summarizeInteractPayload(req.body ?? {}),
+          elapsedMs: Date.now() - interactStartedAt,
+        });
+      } catch (error: unknown) {
+        if (error instanceof PointerInputError) {
+          return res.status(error.statusCode).json({ error: error.message });
+        }
+        if (error instanceof InteractParamsValidationError) {
+          return res.status(400).json({ error: error.message });
+        }
+
+        const recoveredAgent = await this.recoverActiveAgentAfterPreviewError(
+          error,
+          `manual interact action "${actionType}"`,
+        );
+        if (recoveredAgent) {
+          return res.status(409).json({
+            error:
+              'The page session was closed and has been recreated. Please retry the action.',
+          });
+        }
+
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        console.error(
+          `Failed to run interact action "${actionType}": ${errorMessage}`,
+        );
+        res.status(500).json({ error: errorMessage });
+      }
+    });
+
+    this._app.get('/runtime-info', async (_req: Request, res: Response) => {
+      try {
+        res.json(this.getRuntimeInfo());
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        console.error(`Failed to get runtime info: ${errorMessage}`);
+        res.status(500).json({
+          error: `Failed to get runtime info: ${errorMessage}`,
+        });
+      }
+    });
+
+    this.app.post('/config', async (req: Request, res: Response) => {
+      const { aiConfig } = req.body;
+
+      if (!aiConfig || typeof aiConfig !== 'object') {
+        return res.status(400).json({
+          error: 'aiConfig is required and must be an object',
+        });
+      }
+
+      if (Object.keys(aiConfig).length === 0) {
+        return res.json({
+          status: 'ok',
+          message: 'AI config not changed due to empty object',
+        });
+      }
+
+      const nextConfigSignature = serializeAiConfigSignature(aiConfig);
+      const configChanged = nextConfigSignature !== this._lastAiConfigSignature;
+
+      try {
+        if (configChanged) {
+          overrideAIConfig(aiConfig);
+          this._lastAiConfigSignature = nextConfigSignature;
+          this._configDirty = Boolean(this._activeConnection.agent);
+        }
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        console.error(`Failed to update AI config: ${errorMessage}`);
+        return res.status(500).json({
+          error: `Failed to update AI config: ${errorMessage}`,
+        });
+      }
+
+      if (!configChanged) {
+        return res.json({
+          status: 'ok',
+          message: 'AI config not changed because it is identical to current',
+        });
+      }
+
+      // Validate the config immediately so the frontend gets early feedback
+      try {
+        globalModelConfigManager.getModelConfig('default');
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        console.error(`AI config validation failed: ${errorMessage}`);
+        return res.status(400).json({
+          error: errorMessage,
+        });
+      }
+
+      return res.json({
+        status: 'ok',
+        message: this._configDirty
+          ? 'AI config updated. Agent will be recreated on next execution.'
+          : 'AI config updated. New sessions will use it immediately.',
+      });
+    });
+
+    this.app.post('/connectivity-test', async (req: Request, res: Response) => {
+      try {
+        if (!req.body?.config) {
+          return res.status(400).json({
+            error: 'Model config is required for connectivity test.',
+          });
+        }
+        const modelConfigManager = new ModelConfigManager(req.body.config);
+        const result = await runConnectivityTest({
+          defaultModelConfig: modelConfigManager.getModelConfig('default'),
+          planningModelConfig: modelConfigManager.getModelConfig('planning'),
+          insightModelConfig: modelConfigManager.getModelConfig('insight'),
+        });
+        return res.json(result);
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error';
+        console.error(`Connectivity test failed: ${errorMessage}`);
+        return res.status(500).json({
+          error: errorMessage,
+        });
+      }
+    });
+  }
+
+  /**
+   * Setup static file serving routes
+   */
+  private setupStaticRoutes(): void {
+    // Handle index.html with port injection
+    this._app.get('/', (_req: Request, res: Response) => {
+      this.serveHtmlWithPorts(res);
+    });
+
+    this._app.get('/index.html', (_req: Request, res: Response) => {
+      this.serveHtmlWithPorts(res);
+    });
+
+    // Use express.static middleware for secure static file serving
+    this._app.use(express.static(this.staticPath));
+
+    // Fallback to index.html for SPA routing
+    this._app.get('*', (_req: Request, res: Response) => {
+      this.serveHtmlWithPorts(res);
+    });
+  }
+
+  /**
+   * Serve HTML with injected port configuration
+   */
+  private serveHtmlWithPorts(res: Response): void {
+    try {
+      const htmlPath = join(this.staticPath, 'index.html');
+      let html = readFileSync(htmlPath, 'utf8');
+
+      const scrcpyPort = this.scrcpyPort ?? this.port! + 1;
+
+      // Inject scrcpy port configuration script into HTML head
+      const configScript = `
+        <script>
+          window.SCRCPY_PORT = ${scrcpyPort};
+        </script>
+      `;
+
+      // Insert the script before closing </head> tag
+      html = html.replace('</head>', `${configScript}</head>`);
+
+      res.setHeader('Content-Type', 'text/html');
+      res.send(html);
+    } catch (error) {
+      console.error('Error serving HTML with ports:', error);
+      res.status(500).send('Internal Server Error');
+    }
+  }
+
+  /**
+   * Launch the server on specified port
+   */
+  async launch(port?: number): Promise<PlaygroundServer> {
+    // If using factory mode, initialize agent
+    if (this._activeConnection.agentFactory && !this.sessionManager) {
+      console.log('Initializing agent from factory function...');
+      this.setActiveAgent(await this._activeConnection.agentFactory());
+      this._activeConnection.session = {
+        connected: true,
+        metadata: {},
+      };
+      this.sessionSetupState = 'ready';
+      this.syncRuntimeState();
+      console.log('Agent initialized successfully');
+    }
+
+    // Initialize routes now, after any middleware has been added
+    this.initializeApp();
+
+    this.port = port || defaultPort;
+
+    return new Promise((resolve) => {
+      const serverPort = this.port ?? defaultPort;
+      const listenHost = resolvePlaygroundListenHost();
+      this.server = this._app.listen(serverPort, listenHost, () => {
+        resolve(this);
+      });
+    });
+  }
+
+  /**
+   * Close the server and clean up resources
+   */
+  async close(): Promise<void> {
+    await this.destroyCurrentSession().catch((error) => {
+      console.warn('Failed to destroy current session during shutdown:', error);
+    });
+    this._mjpegHandler.shutdown();
+    this.reportFiles.clear();
+
+    return new Promise((resolve, reject) => {
+      if (this.server) {
+        this.taskExecutionDumps = {};
+
+        // Close the server
+        this.server.close((error) => {
+          if (error) {
+            reject(error);
+          } else {
+            this.server = undefined;
+            resolve();
+          }
+        });
+      } else {
+        resolve();
+      }
+    });
+  }
+}
+
+export default PlaygroundServer;
+export { PlaygroundServer };

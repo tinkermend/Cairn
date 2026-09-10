@@ -1,0 +1,29 @@
+{
+  "extends": "../../packages/shared/tsconfig.app.base.json",
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "declarationDir": "dist/types"
+  },
+  "include": ["src", "tests", "scripts"],
+  "references": [
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/shared"
+    },
+    {
+      "path": "../../packages/visualizer"
+    },
+    {
+      "path": "../../packages/web-integration"
+    },
+    {
+      "path": "../../packages/playground"
+    }
+  ]
+}

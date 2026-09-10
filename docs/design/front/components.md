@@ -76,7 +76,7 @@ Loading 保留按钮宽度和主语，不显示模糊的“处理中”替代所
 
 ### 3.2 高聚焦表单与输入质感
 
-输入使用 `surface-control`（`#F7F9FC`）填充，与白色卡片区分开，再配 1px `border-control` 与 `control-shadow` 内阴影。填充负责让人一眼认出"这里可以输入"，边界负责满足 3:1 的识别对比度——两者分工，不再让边界单独扛全部识别责任。这样输入在观感上轻，但对比度不打折。
+输入使用与卡片相同的白底（`surface-card` / `surface-control`），再配 1px `border-control` 与 `control-shadow` 内阴影。输入靠边界识别，不另铺浅灰或冷白底；禁用态才使用 `surface-subtle`。边界负责满足 3:1 的识别对比度，不得为了“看起来轻”去削弱边界或重新加一层脏底。
 
 不使用 `inset 0 1px 0 #fff` 之类的外凸高光，那是拟物时代的做法；内凹用 `control-shadow`。Hover 加深为 `border-control-hover`；Focus 使用 1px 主蓝边界和紧贴的 2px `focus-halo`（`control-focus-shadow`），不用 `ring-offset` 外扩实线环；Error 使用红色边界与 `error-halo`。这些状态由共用 Input / Textarea / Select / PasswordInput 提供，页面只选择高度，不另写边框、光晕或阴影。
 

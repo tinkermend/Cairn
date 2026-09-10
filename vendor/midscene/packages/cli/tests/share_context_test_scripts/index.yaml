@@ -1,0 +1,10 @@
+# Run the setup before the main YAML file with a shared browser context
+concurrent: 1
+continueOnError: true
+shareBrowserContext: true
+
+setup: 01-login.yaml
+
+files:
+  - 02-check-login.yaml
+  - 03-check-session-continuity.yaml

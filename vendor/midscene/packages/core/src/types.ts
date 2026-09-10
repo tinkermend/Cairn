@@ -1,0 +1,1129 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import type { AgentAIContexts } from '@midscene/shared/agent-tools/agent-context';
+import type { SerializedError } from '@midscene/shared/agent-tools/error-formatter';
+import type { NodeType } from '@midscene/shared/constants';
+import type { CreateOpenAIClientFn, TModelConfig } from '@midscene/shared/env';
+import type {
+  BaseElement,
+  LocateResultElement,
+  Rect,
+  Size,
+} from '@midscene/shared/types';
+import type OpenAI from 'openai';
+import type { z } from 'zod';
+import type { TUserPrompt } from './common';
+import type { ScreenshotItem } from './screenshot-item';
+import type {
+  DetailedLocateParam,
+  MidsceneYamlFlowItem,
+  ServiceExtractOption,
+} from './yaml';
+
+export type {
+  ElementTreeNode,
+  BaseElement,
+  Rect,
+  Size,
+  Point,
+} from '@midscene/shared/types';
+export type { SerializedError } from '@midscene/shared/agent-tools/error-formatter';
+export type {
+  AgentAIContextKey,
+  AgentAIContexts,
+  AiApiName,
+} from '@midscene/shared/agent-tools/agent-context';
+export * from './yaml';
+
+export { ServiceError } from './errors';
+export {
+  ExecutionDump,
+  ReportActionDump,
+  GroupedActionDump,
+} from './dump/report-action-dump';
+
+export type AIUsageInfo = Record<string, any> & {
+  prompt_tokens: number | undefined;
+  completion_tokens: number | undefined;
+  total_tokens: number | undefined;
+  cached_input: number | undefined;
+  time_cost: number | undefined;
+  model_name: string | undefined;
+  model_description: string | undefined;
+  /**
+   * Raw top-level `.model` value returned by the model service response.
+   */
+  response_model_name: string | undefined;
+  /**
+   * Semantic intent of the model call, such as default, planning, or insight.
+   */
+  intent: string | undefined;
+  /**
+   * Config slot where the model config was resolved from. For example, a
+   * planning call may use the default slot when no planning model is configured.
+   */
+  slot: string | undefined;
+  request_id: string | undefined;
+};
+
+export type { LocateResultElement };
+
+export type AISingleElementResponseByPosition = {
+  position?: {
+    x: number;
+    y: number;
+  };
+  bbox?: [number, number, number, number];
+  reason: string;
+  text: string;
+};
+
+export type LocateResultPoint = [number, number];
+export type Bbox = [number, number, number, number];
+export type LocateResultBbox = Bbox;
+export type PixelBbox = Bbox;
+
+export interface AIElementLocateResponse {
+  bbox?: LocateResultBbox;
+  point?: LocateResultPoint;
+  error?: string;
+}
+
+export interface AIDataExtractionResponse<DataDemand> {
+  data: DataDemand;
+  errors?: string[];
+  thought?: string;
+}
+
+export interface AISectionLocatorResponse {
+  bbox?: LocateResultBbox;
+  point?: LocateResultPoint;
+  references_bbox?: LocateResultBbox[];
+  references_point?: LocateResultPoint[];
+  error?: string;
+}
+
+export interface AIAssertionResponse {
+  pass: boolean;
+  thought: string;
+}
+
+export interface AIDescribeElementResponse {
+  description: string;
+  error?: string;
+}
+
+export interface LocatorValidatorOption {
+  centerDistanceThreshold?: number;
+}
+
+export interface LocateValidatorResult {
+  pass: boolean;
+  rect?: Rect;
+  center: [number, number];
+  centerDistance?: number;
+  /** Whether the expected point is inside the located rect; absent for point-only results. */
+  includedInRect?: boolean;
+}
+
+export interface AgentDescribeElementAtPointResult {
+  prompt: string;
+  deepLocate: boolean;
+  deepDescribe: boolean;
+  verifyResult?: LocateValidatorResult;
+  success: boolean;
+  error?: string;
+  failureStage?: 'describe' | 'verify';
+}
+
+/**
+ * context
+ */
+
+export interface UiNode {
+  type: string;
+  attrs: Record<string, string | undefined>;
+  bounds: Rect;
+  children: UiNode[];
+}
+
+export interface UITreeSnapshot {
+  platform: 'android';
+  capturedAt: number;
+  root: UiNode;
+}
+
+export abstract class UIContext {
+  /**
+   * screenshot of the current UI state. which size is shotSize(be shrunk by screenshotShrinkFactor),
+   */
+  abstract screenshot: ScreenshotItem;
+
+  /**
+   * Optional sequence of screenshots captured over a short time window, in
+   * temporal order (earliest first, latest last). When present with more than
+   * one frame, extract/assert flows submit all frames to the model so it can
+   * observe transient UI (toasts, carousels, auto-hiding controls). The last
+   * frame is the same state as {@link screenshot}.
+   */
+  abstract screenshotSequence?: ScreenshotItem[];
+
+  /**
+   * screenshot size after shrinking
+   */
+  abstract shotSize: Size;
+
+  /**
+   * The ratio for converting shrunk screenshot coordinates to logical coordinates.
+   *
+   * Example:
+   * - Physical screen width: 3000px, dpr=6
+   * - Logical width: 500px
+   * - User-defined screenshotShrinkFactor: 2
+   * - Actual shrunk screenshot width: 3000 / 2 = 1500px
+   * - shrunkShotToLogicalRatio: dpr / screenshotShrinkFactor = 6 / 2 = 3
+   * - To map back to logical coordinates: 1500 / shrunkShotToLogicalRatio = 500px
+   */
+  abstract shrunkShotToLogicalRatio: number;
+
+  abstract _isFrozen?: boolean;
+
+  // @deprecated - backward compatibility for aiLocate
+  abstract deprecatedDpr?: number;
+}
+
+export type EnsureObject<T> = { [K in keyof T]: any };
+
+export type ServiceAction = 'locate' | 'extract' | 'assert' | 'describe';
+
+export type ServiceExtractParam = string | Record<string, string>;
+
+export type ElementCacheFeature = Record<string, unknown>;
+
+export interface LocateResult {
+  element: LocateResultElement | null;
+}
+
+export type ThinkingLevel = 'off' | 'medium' | 'high';
+
+export type AiActEffort = 'fast' | 'balance' | 'deepThink';
+
+export type DeepThinkOption = 'unset' | true | false;
+
+export interface ServiceTaskInfo {
+  durationMs: number;
+  formatResponse?: unknown;
+  /**
+   * Adapter-extracted content used by Midscene for parsing. This is not the
+   * full provider response or choices[0].message.
+   */
+  rawResponse?: unknown;
+  rawChoiceMessage?: unknown;
+  usage?: AIUsageInfo;
+  searchArea?: Rect;
+  /**
+   * Adapter-extracted content from the search-area model call. This is not the
+   * full provider response or choices[0].message.
+   */
+  searchAreaRawResponse?: string;
+  searchAreaRawChoiceMessage?: unknown;
+  searchAreaUsage?: AIUsageInfo;
+  reasoning_content?: string;
+}
+
+export interface DumpMeta {
+  logTime: number;
+}
+
+export type ReportAttributes = Record<
+  string,
+  string | number | boolean | null | undefined
+>;
+
+export interface ReportDumpWithAttributes {
+  dumpString: string;
+  attributes?: ReportAttributes;
+}
+
+export interface ServiceDump extends DumpMeta {
+  type: 'locate' | 'extract' | 'assert';
+  logId: string;
+  userQuery: {
+    element?: TUserPrompt;
+    dataDemand?: ServiceExtractParam;
+    assertion?: TUserPrompt;
+  };
+  matchedElement?: LocateResultElement[];
+  deepLocate?: boolean;
+  data: any;
+  assertionPass?: boolean;
+  assertionThought?: string;
+  taskInfo: ServiceTaskInfo;
+  error?: string;
+  output?: any;
+}
+
+export type PartialServiceDumpFromSDK = Omit<
+  ServiceDump,
+  'logTime' | 'logId' | 'model_name'
+>;
+
+export interface ServiceResultBase {
+  dump: ServiceDump;
+}
+
+export type LocateResultWithDump = LocateResult & ServiceResultBase;
+
+export interface ServiceExtractResult<T> extends ServiceResultBase {
+  data: T;
+  thought?: string;
+  usage?: AIUsageInfo;
+  reasoning_content?: string;
+}
+
+// intermediate variables to optimize the return value by AI
+export interface LiteUISection {
+  name: string;
+  description: string;
+  sectionCharacteristics: string;
+  textIds: string[];
+}
+
+export type ElementById = (id: string) => BaseElement | null;
+
+export type ServiceAssertionResponse = AIAssertionResponse & {
+  usage?: AIUsageInfo;
+};
+
+/**
+ * agent
+ */
+
+export type OnTaskStartTip = (tip: string) => Promise<void> | void;
+
+export interface AgentWaitForOpt extends ServiceExtractOption {
+  checkIntervalMs?: number;
+  timeoutMs?: number;
+}
+
+export interface AgentAssertOpt {
+  keepRawResponse?: boolean;
+  /**
+   * Additional facts, decision rules, constraints, or output requirements for
+   * this assertion. It overrides `aiContexts.aiAssert` and
+   * `aiContexts.default`;
+   * `''` disables inherited user context for this call.
+   */
+  context?: string;
+  abortSignal?: AbortSignal;
+}
+
+export interface AgentAssertResult {
+  pass: boolean;
+  thought?: string;
+  message?: string;
+}
+
+export type QueryOptions = ServiceExtractOption;
+export type AssertOptions = AgentAssertOpt & ServiceExtractOption;
+
+/** Options for fixed observations, which never read the live DOM. */
+export type ObservationQueryOptions = Omit<QueryOptions, 'domIncluded'> & {
+  domIncluded?: never;
+};
+
+/** Assertion options for fixed observations, which never read the live DOM. */
+export type ObservationAssertOptions = Omit<AssertOptions, 'domIncluded'> & {
+  domIncluded?: never;
+};
+
+/** Read-only AI operations supported by both live Agents and UI observations. */
+export interface InsightAPI<
+  QueryOpt extends QueryOptions = QueryOptions,
+  AssertOpt extends AssertOptions = AssertOptions,
+> {
+  aiQuery<ReturnType = any>(
+    demand: ServiceExtractParam,
+    options?: QueryOpt,
+  ): Promise<ReturnType>;
+  aiBoolean(prompt: TUserPrompt, options?: QueryOpt): Promise<boolean>;
+  aiNumber(prompt: TUserPrompt, options?: QueryOpt): Promise<number>;
+  aiString(prompt: TUserPrompt, options?: QueryOpt): Promise<string>;
+  aiAsk(prompt: TUserPrompt, options?: QueryOpt): Promise<string>;
+  aiAssert(
+    assertion: TUserPrompt,
+    message?: string,
+    options?: AssertOpt,
+  ): Promise<AgentAssertResult | undefined>;
+}
+
+/**
+ * planning
+ *
+ */
+
+type PlanningActionBase = {
+  thought?: string;
+  log?: string; // a brief preamble to the user explaining what you’re about to do
+  type: string;
+};
+
+export type PlanningAction<ParamType = undefined> = PlanningActionBase &
+  ([ParamType] extends [undefined] ? { param?: any } : { param: ParamType });
+
+export type SubGoalStatus = 'pending' | 'running' | 'finished';
+
+export interface SubGoal {
+  index: number;
+  status: SubGoalStatus;
+  description: string;
+  logs?: string[];
+}
+
+export interface RawResponsePlanningAIResponse {
+  action: PlanningAction | null;
+  thought?: string;
+  log: string;
+  memory?: string;
+  error?: string;
+  finalizeMessage?: string;
+  finalizeSuccess?: boolean;
+  updateSubGoals?: SubGoal[];
+  markFinishedIndexes?: number[];
+}
+
+export interface PlanningAIResponse
+  extends Omit<RawResponsePlanningAIResponse, 'action'> {
+  actions?: PlanningAction[];
+  usage?: AIUsageInfo;
+  /**
+   * Adapter-extracted content used by Midscene for parsing. This is not the
+   * full provider response or choices[0].message.
+   */
+  rawResponse?: string;
+  rawChoiceMessage?: unknown;
+  yamlFlow?: MidsceneYamlFlowItem[];
+  yamlString?: string;
+  error?: string;
+  reasoning_content?: string;
+  shouldContinuePlanning: boolean;
+  output?: string; // Output message from <complete> tag (same as finalizeMessage)
+}
+
+export interface PlanningActionParamSleep {
+  timeMs: number;
+}
+
+export interface PlanningActionParamError {
+  thought: string;
+}
+
+export type PlanningActionParamWaitFor = AgentWaitForOpt & {};
+
+export interface LongPressParam {
+  duration?: number;
+}
+
+export interface PullParam {
+  direction: 'up' | 'down';
+  distance?: number;
+  duration?: number;
+}
+/**
+ * misc
+ */
+
+export interface Color {
+  name: string;
+  hex: string;
+}
+
+export interface BaseAgentParserOpt {
+  selector?: string;
+}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface PuppeteerParserOpt extends BaseAgentParserOpt {}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface PlaywrightParserOpt extends BaseAgentParserOpt {}
+
+/*
+action
+*/
+export interface ExecutionTaskProgressOptions {
+  onTaskStart?: (task: ExecutionTask) => Promise<void> | void;
+}
+
+/**
+ * Generic agent progress bus.
+ *
+ * Progress notifications are a single, generic stream the agent broadcasts as
+ * it works. Each event is a thin envelope: a `scope` naming the producer, a
+ * `phase` within that producer's lifecycle, a monotonic `sequence`, and a
+ * structured, presentation-free `data` payload. The bus knows nothing about any
+ * particular producer's payload - consumers narrow by `scope`. `aiAct` is the
+ * first producer ("pilot") on this bus; others (queries, waits, ...) can be
+ * added without touching the bus, the listener API, or the renderer core.
+ */
+export interface AgentProgressEvent<
+  TScope extends string = string,
+  TData = unknown,
+  TPhase extends string = string,
+> {
+  scope: TScope;
+  phase: TPhase;
+  sequence: number;
+  data: TData;
+}
+
+export type AgentProgressListener<
+  TScope extends string = string,
+  TData = unknown,
+  TPhase extends string = string,
+> = (event: AgentProgressEvent<TScope, TData, TPhase>) => Promise<void> | void;
+
+// --- aiAct: the first producer on the generic progress bus ---
+
+export type AiActProgressPhase =
+  | 'start'
+  | 'plan_thinking'
+  | 'plan_planned'
+  | 'plan_action'
+  | 'plan_failed'
+  | 'action_running'
+  | 'action_done'
+  | 'action_failed'
+  | 'complete'
+  | 'failed';
+
+export interface AiActProgressAction {
+  name: string;
+  target?: string;
+  point?: [number, number];
+  bbox?: [number, number, number, number];
+  /**
+   * Structured, compacted summary of the action params for actions that are
+   * not described by a point/bbox (e.g. `Sleep` -> `{ timeMs }`). This is data,
+   * never a pre-formatted display string; consumers decide how to render it.
+   */
+  param?: unknown;
+}
+
+/**
+ * Structured payload carried by aiAct progress events. The producer only
+ * reports *what happened* as data: the action involved, the raw text the model
+ * produced, timings and errors. It never assembles human-readable log lines or
+ * truncates strings for display - that belongs to whichever layer consumes the
+ * stream (e.g. the CLI verbose renderer).
+ */
+export interface AiActProgressData {
+  /** Original user instruction, present on the `start` phase. */
+  prompt?: string;
+  planIndex?: number;
+  planLimit?: number;
+  /** Latest screenshot, present on `plan_thinking`. */
+  screenshot?: ScreenshotItem;
+  /** Structured action descriptor, present on the `*action*` phases. */
+  action?: AiActProgressAction;
+  /**
+   * Raw, untruncated semantic text produced by the model. Consumers choose
+   * which field to surface and how to format/truncate it.
+   */
+  thought?: string;
+  log?: string;
+  output?: string;
+  /** Wall-clock cost of an action, present on `action_done`/`action_failed`. */
+  durationMs?: number;
+  error?: string;
+}
+
+export const aiActProgressScope = 'aiAct';
+
+export interface ExecutionRecorderItem {
+  type: 'screenshot';
+  ts: number;
+  screenshot?: ScreenshotItem;
+  description?: string;
+  timing?: string;
+}
+
+export interface RecordToReportScreenshot {
+  /**
+   * PNG/JPEG data URI, or raw PNG base64 body.
+   */
+  base64: string;
+  description?: string;
+}
+
+export interface RecordToReportOptions {
+  content?: string;
+  /**
+   * @deprecated Use `screenshots: [{ base64 }]` instead.
+   */
+  screenshotBase64?: string;
+  /**
+   * Custom screenshots to display under a single report entry.
+   */
+  screenshots?: RecordToReportScreenshot[];
+}
+
+export type ExecutionTaskType = 'Planning' | 'Insight' | 'Action Space' | 'Log';
+
+export interface ExecutorContext {
+  task: ExecutionTask;
+  element?: LocateResultElement | null;
+  uiContext?: UIContext;
+}
+
+export interface ExecutionTaskApply<
+  Type extends ExecutionTaskType = any,
+  TaskParam = any,
+  TaskOutput = any,
+  TaskLog = any,
+> {
+  type: Type;
+  subType?: string;
+  param?: TaskParam;
+  thought?: string;
+  uiContext?: UIContext;
+  executor: (
+    context: ExecutorContext,
+  ) => // biome-ignore lint/suspicious/noConfusingVoidType: void is intentionally allowed as some executors may not return a value
+    | Promise<ExecutionTaskReturn<TaskOutput, TaskLog> | undefined | void>
+    | undefined
+    | void;
+}
+
+export interface ExecutionTaskHitBy {
+  from: string;
+  context: Record<string, any>;
+}
+
+export interface ExecutionTaskReturn<TaskOutput = unknown, TaskLog = unknown> {
+  output?: TaskOutput;
+  log?: TaskLog;
+  recorder?: ExecutionRecorderItem[];
+  hitBy?: ExecutionTaskHitBy;
+}
+
+export type ExecutionTask<
+  E extends ExecutionTaskApply<any, any, any> = ExecutionTaskApply<
+    any,
+    any,
+    any
+  >,
+> = E &
+  ExecutionTaskReturn<
+    E extends ExecutionTaskApply<any, any, infer TaskOutput, any>
+      ? TaskOutput
+      : unknown,
+    E extends ExecutionTaskApply<any, any, any, infer TaskLog>
+      ? TaskLog
+      : unknown
+  > & {
+    taskId: string;
+    status: 'pending' | 'running' | 'finished' | 'failed' | 'cancelled';
+    /**
+     * Optional feedback produced by a task for the next planning round.
+     * This is execution metadata, not part of the action return value.
+     */
+    planningFeedback?: string;
+    /**
+     * A bounded diagnostic DTO created when the task executor throws. Arbitrary
+     * upstream payloads are intentionally omitted; use this field for structured
+     * diagnostics or errorMessage/errorStack for the common display path.
+     */
+    error?: SerializedError;
+    errorMessage?: string;
+    errorStack?: string;
+    timing?: {
+      start: number;
+      getUiContextStart?: number;
+      getUiContextEnd?: number;
+      callAiStart?: number;
+      callAiEnd?: number;
+      beforeInvokeActionHookStart?: number;
+      beforeInvokeActionHookEnd?: number;
+      callActionStart?: number;
+      callActionEnd?: number;
+      afterInvokeActionHookStart?: number;
+      afterInvokeActionHookEnd?: number;
+      captureAfterCallingSnapshotStart?: number;
+      captureAfterCallingSnapshotEnd?: number;
+      end?: number;
+      cost?: number;
+    };
+    usage?: AIUsageInfo;
+    /**
+     * Pixel rect of the deepLocate first-stage search area in screenshot
+     * coordinates. Used by reports to explain the crop/zoom area that the
+     * final locate ran against.
+     */
+    searchArea?: Rect;
+    searchAreaUsage?: AIUsageInfo;
+    reasoning_content?: string;
+  };
+
+export interface IExecutionDump extends DumpMeta {
+  /** Stable unique identifier for this execution run */
+  id?: string;
+  name: string;
+  description?: string;
+  tasks: ExecutionTask[];
+  aiActContext?: string;
+}
+
+/*
+task - service-locate
+*/
+export interface ExecutionTaskInsightLocateOutput {
+  element: LocateResultElement | null;
+}
+
+export type ExecutionTaskInsightDump = ServiceDump;
+
+export type ExecutionTaskInsightLocateApply = ExecutionTaskApply<
+  'Insight',
+  DetailedLocateParam,
+  ExecutionTaskInsightLocateOutput,
+  ExecutionTaskInsightDump
+>;
+
+export type ExecutionTaskInsightLocate =
+  ExecutionTask<ExecutionTaskInsightLocateApply>;
+
+/*
+task - service-query
+*/
+export interface ExecutionTaskInsightQueryParam {
+  dataDemand: ServiceExtractParam;
+  domIncluded?: boolean | 'visible-only';
+  context?: string;
+}
+
+export interface ExecutionTaskInsightQueryOutput {
+  data: any;
+}
+
+export type ExecutionTaskInsightQueryApply = ExecutionTaskApply<
+  'Insight',
+  ExecutionTaskInsightQueryParam,
+  any,
+  ExecutionTaskInsightDump
+>;
+
+export type ExecutionTaskInsightQuery =
+  ExecutionTask<ExecutionTaskInsightQueryApply>;
+
+/*
+task - assertion
+*/
+export interface ExecutionTaskInsightAssertionParam {
+  assertion: string;
+}
+
+export type ExecutionTaskInsightAssertionApply = ExecutionTaskApply<
+  'Insight',
+  ExecutionTaskInsightAssertionParam,
+  ServiceAssertionResponse,
+  ExecutionTaskInsightDump
+>;
+
+export type ExecutionTaskInsightAssertion =
+  ExecutionTask<ExecutionTaskInsightAssertionApply>;
+
+/*
+task - action (i.e. interact) 
+*/
+export type ExecutionTaskActionApply<ActionParam = any> = ExecutionTaskApply<
+  'Action Space',
+  ActionParam,
+  void,
+  void
+>;
+
+export type ExecutionTaskAction = ExecutionTask<ExecutionTaskActionApply>;
+
+/*
+task - Log
+*/
+
+export type ExecutionTaskLogApply<
+  LogParam = {
+    content: string;
+  },
+> = ExecutionTaskApply<'Log', LogParam, void, void>;
+
+export type ExecutionTaskLog = ExecutionTask<ExecutionTaskLogApply>;
+
+/*
+task - planning
+*/
+
+export interface ExecutionTaskPlanningParam {
+  userInstruction: TUserPrompt;
+  userInstructionDisplay?: string;
+  replanningCycleLimit?: number;
+  aiActContext?: string;
+  imagesIncludeCount?: number;
+  effort?: AiActEffort;
+  subGoalStatus?: string;
+  memoriesStatus?: string;
+}
+
+export type ExecutionTaskPlanningApply = ExecutionTaskApply<
+  'Planning',
+  ExecutionTaskPlanningParam,
+  PlanningAIResponse
+>;
+
+export type ExecutionTaskPlanning = ExecutionTask<ExecutionTaskPlanningApply>;
+
+/*
+task - planning-locate
+*/
+export interface ExecutionTaskPlanningLocateOutput {
+  element: LocateResultElement | null;
+}
+
+export type ExecutionTaskPlanningDump = ServiceDump;
+
+export type ExecutionTaskPlanningLocateApply = ExecutionTaskApply<
+  'Planning',
+  DetailedLocateParam,
+  ExecutionTaskPlanningLocateOutput,
+  ExecutionTaskPlanningDump
+>;
+
+export type ExecutionTaskPlanningLocate =
+  ExecutionTask<ExecutionTaskPlanningLocateApply>;
+
+/*
+How a report file stores screenshots:
+- `inline`: base64 image script tags embedded in the single HTML file
+- `directory`: external PNG files under a sibling `screenshots/` dir
+*/
+export type ScreenshotMode = 'inline' | 'directory';
+
+/*
+Report metadata - extracted from ReportActionDump for per-execution writes
+*/
+export interface ReportMeta {
+  groupName: string;
+  groupDescription?: string;
+  sdkVersion: string;
+  modelBriefs: ModelBrief[];
+  deviceType?: string;
+}
+
+// Backward-compatible aliases for existing external consumers.
+export type GroupMeta = ReportMeta;
+
+/*
+Report dump
+*/
+export interface IReportActionDump {
+  sdkVersion: string;
+  groupName: string;
+  groupDescription?: string;
+  modelBriefs: ModelBrief[];
+  executions: IExecutionDump[];
+  deviceType?: string;
+}
+
+// Backward-compatible aliases for existing external consumers.
+export type IGroupedActionDump = IReportActionDump;
+
+export interface ModelBrief {
+  /**
+   * The intent/category of the model call, for example "planning" or "insight".
+   */
+  intent?: string;
+
+  /**
+   * The model name returned by usage metadata, for example "gpt-4o".
+   */
+  name?: string;
+
+  /**
+   * Optional human-readable model description, for example "qwen2.5-vl mode".
+   */
+  modelDescription?: string;
+}
+
+export type InterfaceType =
+  | 'puppeteer'
+  | 'playwright'
+  | 'static'
+  | 'chrome-extension-proxy'
+  | 'android'
+  | string;
+
+export interface StreamingCodeGenerationOptions {
+  /** Whether to enable streaming output */
+  stream?: boolean;
+  /** Callback function to handle streaming chunks */
+  onChunk?: StreamingCallback;
+  /** Callback function to handle streaming completion */
+  onComplete?: (finalCode: string) => void;
+  /** Callback function to handle streaming errors */
+  onError?: (error: Error) => void;
+}
+
+export type StreamingCallback = (chunk: CodeGenerationChunk) => void;
+
+export interface CodeGenerationChunk {
+  /** The incremental content chunk */
+  content: string;
+  /** The reasoning content */
+  reasoning_content: string;
+  /** The accumulated content so far */
+  accumulated: string;
+  /** Whether this is the final chunk */
+  isComplete: boolean;
+  /** Provider token usage, without guaranteed Midscene metadata. See the final response for AIUsageInfo. */
+  usage?: OpenAI.CompletionUsage;
+}
+
+export interface StreamingAIResponse {
+  /** The final accumulated content */
+  content: string;
+  /** Token usage information */
+  usage?: AIUsageInfo;
+  /** Whether the response was streamed */
+  isStreamed: boolean;
+}
+
+export interface DeviceAction<TParam = any, TReturn = any> {
+  name: string;
+  description?: string;
+  interfaceAlias?: string;
+  paramSchema?: z.ZodType<TParam>;
+  call: (
+    param: TParam,
+    context?: ExecutorContext,
+  ) => Promise<TReturn> | TReturn;
+  delayBeforeRunner?: number;
+  delayAfterRunner?: number;
+  /**
+   * An example param object for this action.
+   * Locate fields with { prompt } may be resolved to internal pixel bboxes when needed.
+   */
+  sample?: { [K in keyof TParam]?: any };
+}
+
+/**
+ * Type utilities for extracting types from DeviceAction definitions
+ */
+
+/**
+ * Extract parameter type from a DeviceAction
+ */
+export type ActionParam<Action extends DeviceAction<any, any>> =
+  Action extends DeviceAction<infer P, any> ? P : never;
+
+/**
+ * Extract return type from a DeviceAction
+ */
+export type ActionReturn<Action extends DeviceAction<any, any>> =
+  Action extends DeviceAction<any, infer R> ? R : never;
+
+/**
+ * Web-specific types
+ */
+export interface WebElementInfo extends BaseElement {
+  id: string;
+  attributes: {
+    nodeType: NodeType;
+    [key: string]: string;
+  };
+}
+
+/**
+ * Agent
+ */
+
+export type CacheConfig = {
+  strategy?: 'read-only' | 'read-write' | 'write-only';
+  id: string;
+  /**
+   * Optional cache directory path.
+   * When set, cache files are written to this directory instead of
+   * `<MIDSCENE_RUN_DIR>/cache`.
+   */
+  cacheDir?: string;
+};
+
+export type Cache =
+  | false // No read, no write
+  | true // Will throw error at runtime - deprecated
+  | CacheConfig; // Object configuration (requires explicit id)
+
+export interface AgentOpt {
+  // @deprecated Use `reportFileName` and `cache.id` instead.
+  testId?: string;
+  // @deprecated
+  cacheId?: string; // Keep backward compatibility, but marked as deprecated
+  groupName?: string;
+  groupDescription?: string;
+  /* if auto generate report, default true */
+  generateReport?: boolean;
+  /* if persist per-execution dump files next to the report, default false */
+  persistExecutionDump?: boolean;
+  /* if auto print report msg, default true */
+  autoPrintReportMsg?: boolean;
+
+  /**
+   * Use directory-based report format with separate image files.
+   *
+   * When enabled:
+   * - Screenshots are saved as PNG files in a `screenshots/` subdirectory
+   * - Report is generated as `index.html` with relative image paths
+   * - Reduces memory usage and report file size
+   *
+   * IMPORTANT: 'html-and-external-assets' reports must be served via HTTP server
+   * (e.g., `npx serve ./report-dir`). The file:// protocol will not
+   * work due to browser CORS restrictions.
+   *
+   * @default 'single-html'
+   */
+  outputFormat?: 'single-html' | 'html-and-external-assets';
+
+  onTaskStartTip?: OnTaskStartTip;
+  /**
+   * Agent-level AI guidance containing business facts, rules, constraints, or
+   * output requirements. `aiContexts.default` is a shared fallback used only
+   * when neither the call nor the matching API key provides a context.
+   *
+   * A per-call `options.context` overrides the matching API context, which
+   * overrides `aiContexts.default`. An empty string explicitly clears
+   * inherited user context for that scope. These layers are not automatically
+   * merged.
+   */
+  aiContexts?: AgentAIContexts;
+  /**
+   * Compatibility alias for `aiContexts.aiAct`. `aiContexts.aiAct` takes
+   * precedence when both are provided.
+   * @deprecated Use `aiContexts.aiAct` instead.
+   */
+  aiActContext?: string;
+  /**
+   * Older compatibility alias for `aiContexts.aiAct`.
+   * @deprecated Use `aiContexts.aiAct` instead.
+   */
+  aiActionContext?: string;
+  /* custom report file name */
+  reportFileName?: string;
+  reportAttributes?: ReportAttributes;
+  modelConfig?: TModelConfig;
+  cache?: Cache;
+  /**
+   * Maximum number of replanning cycles for aiAct.
+   * Defaults are resolved by the active model adapter: 20 for standard planning,
+   * 40 for UI-TARS, and 100 for Auto-GLM.
+   * If omitted, the agent will also read `MIDSCENE_REPLANNING_CYCLE_LIMIT` for backward compatibility.
+   */
+  replanningCycleLimit?: number;
+
+  /**
+   * Wait time in milliseconds after each action execution.
+   * This allows the UI to settle and stabilize before the next action.
+   * Defaults to 300ms when not provided.
+   */
+  waitAfterAction?: number;
+
+  /**
+   * When set to true, Midscene will use the target device's formatted local
+   * time instead of the runtime system time. The target interface must implement
+   * getDeviceLocalTimeString to provide device-local wall-clock time.
+   * Default: false
+   */
+  useDeviceTime?: boolean;
+
+  /**
+   * Custom screenshot shrink factor to reduce AI token usage.
+   * When set, the screenshot will be scaled down by this factor from the physical resolution.
+   *
+   * Example:
+   * - Physical screen width: 3000px, dpr=6
+   * - Logical width: 500px
+   * - screenshotShrinkFactor: 2
+   * - Actual shrunk screenshot width: 3000 / 2 = 1500px
+   * - AI analyzes the 1500px screenshot
+   * - Coordinates are transformed back to logical (500px) before actions execute
+   *
+   * Benefits:
+   * - Reduces token usage for high-resolution screenshots
+   * - Maintains accuracy by scaling coordinates appropriately
+   *
+   * Must be >= 1 (shrinking only, enlarging is not supported).
+   *
+   * @default 1 (no shrinking, uses original physical screenshot)
+   */
+  screenshotShrinkFactor?: number;
+
+  /**
+   * Custom OpenAI client factory function
+   *
+   * If provided, this function will be called to create OpenAI client instances
+   * for each AI call, allowing you to:
+   * - Wrap clients with observability tools (langsmith, langfuse)
+   * - Use custom OpenAI-compatible clients
+   * - Apply different configurations based on intent
+   *
+   * @param config - Resolved model configuration
+   * @returns OpenAI client instance (original or wrapped)
+   *
+   * @example
+   * ```typescript
+   * createOpenAIClient: async (openai, opts) => {
+   *   // Wrap with langsmith for planning tasks
+   *   if (opts.baseURL?.includes('planning')) {
+   *     return wrapOpenAI(openai, { metadata: { task: 'planning' } });
+   *   }
+   *
+   *   return openai;
+   * }
+   * ```
+   */
+  createOpenAIClient?: CreateOpenAIClientFn;
+
+  /**
+   * Called once per LLM call as soon as its usage is available, with the raw
+   * {@link AIUsageInfo} (token counts, model name, intent, request id, etc.).
+   *
+   * Use this for real-time, per-spec cost observability — e.g. push each call
+   * to Langfuse without waiting for the run to finish. For aggregated totals,
+   * read `agent.metrics` instead.
+   */
+  onLLMUsage?: (usage: AIUsageInfo) => void;
+}
+
+export type TestStatus =
+  | 'passed'
+  | 'failed'
+  | 'timedOut'
+  | 'skipped'
+  | 'interrupted';
+
+export interface ReportFileAttributes {
+  testDuration: number;
+  testStatus: TestStatus;
+  testTitle: string;
+  testId: string;
+  testDescription: string;
+}
+
+type SkippedReportFileAttributes = Omit<ReportFileAttributes, 'testStatus'> & {
+  testStatus: 'skipped';
+};
+
+export type ReportFileWithAttributes =
+  | {
+      reportFilePath: string;
+      reportAttributes: ReportFileAttributes;
+    }
+  | {
+      reportFilePath?: undefined;
+      reportAttributes: SkippedReportFileAttributes;
+    };

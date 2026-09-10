@@ -1,0 +1,25 @@
+{
+  "extends": "../shared/tsconfig.base.json",
+  "compilerOptions": {
+    "sourceMap": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "rootDir": ".",
+    "target": "ES2022",
+    "types": ["react", "node"],
+    "declarationDir": "dist/types"
+  },
+  "include": ["src", "tests"],
+  "references": [
+    {
+      "path": "../playground"
+    },
+    {
+      "path": "../visualizer"
+    },
+    {
+      "path": "../shared"
+    }
+  ]
+}

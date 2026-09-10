@@ -56,6 +56,11 @@ for (const [fg, bg] of pairs) {
 const edge = luminance(value("--border-control")),
   white = luminance(value("--surface-card"));
 assert.ok((white + 0.05) / (edge + 0.05) >= 3, "Input boundary must reach 3:1");
+assert.equal(
+  value("--surface-control"),
+  value("--surface-card"),
+  "Input fill must match card white; no gray or cold-white wash",
+);
 for (const file of [
   "README.md",
   "design-language.md",

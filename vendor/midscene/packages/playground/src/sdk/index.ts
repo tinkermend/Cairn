@@ -1,0 +1,433 @@
+import type { ConnectivityTestResult, DeviceAction } from '@midscene/core';
+import { PLAYGROUND_SERVER_PORT } from '@midscene/shared/constants';
+import type { TModelConfig } from '@midscene/shared/env';
+import type { BasePlaygroundAdapter } from '../adapters/base';
+import { LocalExecutionAdapter } from '../adapters/local-execution';
+import { RemoteExecutionAdapter } from '../adapters/remote-execution';
+import type {
+  PlaygroundRecorderCapabilitiesResult,
+  PlaygroundRecorderDescribeResult,
+  PlaygroundRecorderEvent,
+  PlaygroundRecorderEventsResult,
+  PlaygroundRecorderStartResult,
+  PlaygroundSessionSetup,
+  PlaygroundSessionState,
+  PlaygroundSessionTarget,
+} from '../platform';
+import type { PlaygroundRuntimeInfo } from '../runtime-metadata';
+import type {
+  AgentFactory,
+  BeforeActionHook,
+  ExecutionOptions,
+  FormValue,
+  PlaygroundAgent,
+  PlaygroundConfig,
+  PlaygroundReportRef,
+  ValidationResult,
+} from '../types';
+
+export type PlaygroundInteractPayload = {
+  actionType: string;
+} & Record<string, unknown>;
+
+export interface PlaygroundInteractResult {
+  ok: boolean;
+  error?: string;
+}
+
+export type PlaygroundPageRecordedEvent = PlaygroundRecorderEvent;
+export type {
+  PlaygroundRecorderCapabilitiesResult,
+  PlaygroundRecorderDescribeResult,
+  PlaygroundRecorderEventsResult,
+  PlaygroundRecorderStartResult,
+};
+
+export class PlaygroundSDK {
+  private adapter: BasePlaygroundAdapter;
+  private beforeActionHook?: BeforeActionHook;
+
+  constructor(config: PlaygroundConfig) {
+    this.adapter = this.createAdapter(
+      config.type,
+      config.serverUrl,
+      config.agent,
+      config.agentFactory,
+    );
+  }
+
+  private createAdapter(
+    type: string,
+    serverUrl?: string,
+    agent?: PlaygroundAgent,
+    agentFactory?: AgentFactory,
+  ): BasePlaygroundAdapter {
+    switch (type) {
+      case 'local-execution':
+        if (!agent && !agentFactory) {
+          throw new Error(
+            'Agent or agentFactory is required for local execution',
+          );
+        }
+        return new LocalExecutionAdapter(agent, agentFactory);
+      case 'remote-execution': {
+        // Use provided serverUrl first, then fallback to localhost if current page origin is file:// or default
+        const finalServerUrl =
+          serverUrl ||
+          (typeof window !== 'undefined' &&
+          window.location.protocol.includes('http')
+            ? window.location.origin
+            : `http://localhost:${PLAYGROUND_SERVER_PORT}`);
+
+        return new RemoteExecutionAdapter(finalServerUrl);
+      }
+      default:
+        throw new Error(`Unsupported execution type: ${type}`);
+    }
+  }
+
+  private runtimeMetadataAdapter():
+    | LocalExecutionAdapter
+    | RemoteExecutionAdapter
+    | null {
+    if (
+      this.adapter instanceof LocalExecutionAdapter ||
+      this.adapter instanceof RemoteExecutionAdapter
+    ) {
+      return this.adapter;
+    }
+
+    return null;
+  }
+
+  async executeAction(
+    actionType: string,
+    value: FormValue,
+    options: ExecutionOptions,
+  ): Promise<unknown> {
+    await this.beforeActionHook?.(actionType, value, options);
+    const result = await this.adapter.executeAction(actionType, value, options);
+    return result;
+  }
+
+  setBeforeActionHook(hook?: BeforeActionHook): void {
+    this.beforeActionHook = hook;
+  }
+
+  async getActionSpace(context?: unknown): Promise<DeviceAction<unknown>[]> {
+    // Both adapters now accept context parameter
+    // Local will prioritize internal agent, Remote will use server + fallback
+    return this.adapter.getActionSpace(context);
+  }
+
+  validateStructuredParams(
+    value: FormValue,
+    action: DeviceAction<unknown> | undefined,
+  ): ValidationResult {
+    return this.adapter.validateParams(value, action);
+  }
+
+  formatErrorMessage(error: any): string {
+    return this.adapter.formatErrorMessage(error);
+  }
+
+  createDisplayContent(
+    value: FormValue,
+    needsStructuredParams: boolean,
+    action: DeviceAction<unknown> | undefined,
+  ): string {
+    return this.adapter.createDisplayContent(
+      value,
+      needsStructuredParams,
+      action,
+    );
+  }
+
+  // Get adapter ID (works for both remote and local execution)
+  get id(): string | undefined {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.id;
+    }
+    if (this.adapter instanceof LocalExecutionAdapter) {
+      return this.adapter.id;
+    }
+    return undefined;
+  }
+
+  // Server communication methods (for remote execution)
+  async checkStatus(): Promise<boolean> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.checkStatus();
+    }
+    return true; // For local execution, always return true
+  }
+
+  async overrideConfig(aiConfig: any): Promise<void> {
+    return this.adapter.overrideConfig(aiConfig);
+  }
+
+  async runConnectivityTest(
+    aiConfig: TModelConfig,
+  ): Promise<ConnectivityTestResult> {
+    return this.adapter.runConnectivityTest(aiConfig);
+  }
+
+  // Get task progress (for remote execution)
+  async getTaskProgress(requestId: string): Promise<{ executionDump?: any }> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.getTaskProgress(requestId);
+    }
+    // For local execution, progress is handled via onDumpUpdate callback
+    return {};
+  }
+
+  // Cancel task (for remote execution)
+  async cancelTask(requestId: string): Promise<any> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.cancelTask(requestId);
+    }
+    return { error: 'Cancel task not supported in local execution mode' };
+  }
+
+  // Dump update callback management
+  onDumpUpdate(callback: (dump: string, executionDump?: any) => void): void {
+    if (this.adapter instanceof LocalExecutionAdapter) {
+      this.adapter.onDumpUpdate(callback);
+    } else if (this.adapter instanceof RemoteExecutionAdapter) {
+      this.adapter.onDumpUpdate(callback);
+    }
+  }
+
+  // Progress update callback management
+  onProgressUpdate(callback: (tip: string) => void): void {
+    if (this.adapter instanceof LocalExecutionAdapter) {
+      this.adapter.setProgressCallback(callback);
+    }
+    // RemoteExecutionAdapter uses polling mechanism via onDumpUpdate, no separate progress callback needed
+  }
+
+  // Cancel execution - supports both remote and local
+  async cancelExecution(requestId: string): Promise<{
+    dump: any | null;
+    reportHTML: string | null;
+    report: PlaygroundReportRef | null;
+  } | null> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      const result = await this.adapter.cancelTask(requestId);
+      // Return dump and reportHTML if available from cancellation
+      if (result.success) {
+        return {
+          dump: (result as any).dump || null,
+          reportHTML: (result as any).reportHTML || null,
+          report: (result as any).report || null,
+        };
+      }
+    } else if (this.adapter instanceof LocalExecutionAdapter) {
+      // Invoke adapter cancellation to destroy the agent and block further actions
+      const result = await this.adapter.cancelTask(requestId);
+      if (result.success) {
+        return {
+          dump: (result as any).dump || null,
+          reportHTML: (result as any).reportHTML || null,
+          report: null,
+        };
+      }
+    }
+    return null;
+  }
+
+  // Get current execution data (dump and report)
+  async getCurrentExecutionData(): Promise<{
+    dump: any | null;
+    reportHTML: string | null;
+    report?: PlaygroundReportRef | null;
+  }> {
+    if (
+      this.adapter instanceof LocalExecutionAdapter &&
+      this.adapter.getCurrentExecutionData
+    ) {
+      return await this.adapter.getCurrentExecutionData();
+    }
+    // For remote execution or if method not available, return empty data
+    return { dump: null, reportHTML: null };
+  }
+
+  // Screenshot method for remote execution
+  async getScreenshot(): Promise<{
+    screenshot: string;
+    timestamp: number;
+  } | null> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.getScreenshot();
+    }
+    return null; // For local execution, not supported yet
+  }
+
+  // Direct device manipulation – mouse/keyboard input from UI overlays.
+  async interact(
+    payload: PlaygroundInteractPayload,
+  ): Promise<PlaygroundInteractResult> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.interact(payload);
+    }
+    return { ok: false, error: 'Direct interaction requires remote execution' };
+  }
+
+  async startRecorderSession(
+    sessionId: string,
+  ): Promise<PlaygroundRecorderStartResult> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.startRecorderSession(sessionId);
+    }
+    return {
+      ok: false,
+      supported: false,
+      error: 'Recorder requires remote execution',
+    };
+  }
+
+  async getRecorderCapabilities(): Promise<PlaygroundRecorderCapabilitiesResult> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.getRecorderCapabilities();
+    }
+    return {
+      supported: false,
+      source: 'unsupported',
+      error: 'Recorder requires remote execution',
+    };
+  }
+
+  async stopRecorderSession(): Promise<PlaygroundInteractResult> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.stopRecorderSession();
+    }
+    return { ok: true };
+  }
+
+  async getRecorderEvents(since = 0): Promise<PlaygroundRecorderEventsResult> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.getRecorderEvents(since);
+    }
+    return { events: [], nextIndex: since };
+  }
+
+  async describeRecorderEventAtPoint(
+    event: PlaygroundRecorderEvent,
+  ): Promise<PlaygroundRecorderDescribeResult> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.describeRecorderEventAtPoint(event);
+    }
+    return {
+      ok: false,
+      error: 'Recorder aiDescribe requires remote execution',
+    };
+  }
+
+  async getRecorderScreenshotAsset(assetId: string): Promise<string | null> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.getRecorderScreenshotAsset(assetId);
+    }
+    return null;
+  }
+
+  getRecorderScreenshotAssetUrl(assetId: string): string | null {
+    return this.adapter.getRecorderScreenshotAssetUrl(assetId);
+  }
+
+  async clearRecorderScreenshotAssets(sessionId: string): Promise<void> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      await this.adapter.clearRecorderScreenshotAssets(sessionId);
+    }
+  }
+
+  async pruneRecorderScreenshotAssets(
+    sessionId: string,
+    assetIds: string[],
+  ): Promise<void> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      await this.adapter.pruneRecorderScreenshotAssets(sessionId, assetIds);
+    }
+  }
+
+  // Get interface information (type and description)
+  async getInterfaceInfo(): Promise<{
+    type: string;
+    description?: string;
+    size?: { width: number; height: number };
+    navigationState?: { isLoading: boolean };
+    /** Action names exposed by the connected device's actionSpace. */
+    actionTypes?: string[];
+  } | null> {
+    const adapter = this.runtimeMetadataAdapter();
+    if (!adapter) {
+      return null;
+    }
+
+    return adapter.getInterfaceInfo();
+  }
+
+  async getRuntimeInfo(): Promise<PlaygroundRuntimeInfo | null> {
+    const adapter = this.runtimeMetadataAdapter();
+    if (!adapter) {
+      return null;
+    }
+
+    return adapter.getRuntimeInfo();
+  }
+
+  async getSessionInfo(): Promise<PlaygroundSessionState | null> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.getSessionInfo();
+    }
+
+    return null;
+  }
+
+  async getSessionSetup(
+    input?: Record<string, unknown>,
+  ): Promise<PlaygroundSessionSetup | null> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.getSessionSetup(input);
+    }
+
+    return null;
+  }
+
+  async listSessionTargets(): Promise<PlaygroundSessionTarget[]> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.listSessionTargets();
+    }
+
+    return [];
+  }
+
+  async createSession(input?: Record<string, unknown>): Promise<{
+    session: PlaygroundSessionState;
+    runtimeInfo: PlaygroundRuntimeInfo;
+  }> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.createSession(input);
+    }
+
+    throw new Error('Session creation is only supported in server mode');
+  }
+
+  async destroySession(): Promise<{
+    session: PlaygroundSessionState;
+    runtimeInfo: PlaygroundRuntimeInfo;
+  }> {
+    if (this.adapter instanceof RemoteExecutionAdapter) {
+      return this.adapter.destroySession();
+    }
+
+    throw new Error('Session destruction is only supported in server mode');
+  }
+
+  // Get service mode based on adapter type
+  getServiceMode(): 'In-Browser-Extension' | 'Server' {
+    if (this.adapter instanceof LocalExecutionAdapter) {
+      return 'In-Browser-Extension';
+    }
+    return 'Server';
+  }
+}

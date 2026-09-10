@@ -1,0 +1,133 @@
+import path from 'node:path';
+import { defineConfig } from '@rsbuild/core';
+import { pluginLess } from '@rsbuild/plugin-less';
+import { pluginNodePolyfill } from '@rsbuild/plugin-node-polyfill';
+import { pluginReact } from '@rsbuild/plugin-react';
+import { pluginSvgr } from '@rsbuild/plugin-svgr';
+import { pluginWorkspaceDev } from 'rsbuild-plugin-workspace-dev';
+import { version } from '../../packages/visualizer/package.json';
+import {
+  commonIgnoreWarnings,
+  createTypeCheckPlugin,
+} from '../../scripts/rsbuild-utils.ts';
+
+export default defineConfig({
+  tools: {
+    rspack: {
+      watchOptions: {
+        ignored: [
+          '**/.git/**',
+          '**/web-ext-profile/**',
+          '**/extension_output/**',
+          'dist/**', // Only ignore THIS app's dist folder, not workspace packages
+          '**/node_modules/**',
+        ],
+        // Wait for workspace packages to finish building before recompiling
+        aggregateTimeout: 3000,
+      },
+      ignoreWarnings: commonIgnoreWarnings,
+    },
+  },
+  environments: {
+    web: {
+      source: {
+        entry: {
+          index: './src/index.tsx',
+          popup: './src/extension/popup/index.tsx',
+          confirm: './src/extension/confirm/index.tsx',
+        },
+      },
+      html: {
+        title: ({ entryName }) => {
+          if (entryName === 'confirm') {
+            return 'Midscene Bridge';
+          }
+          return 'Midscene';
+        },
+      },
+      output: {
+        target: 'web',
+        sourceMap: true,
+      },
+    },
+    iife: {
+      source: {
+        entry: {
+          worker: './src/scripts/worker.ts',
+          'stop-water-flow': './src/scripts/stop-water-flow.ts',
+          'water-flow': './src/scripts/water-flow.ts',
+          'event-recorder-bridge': './src/scripts/event-recorder-bridge.ts',
+        },
+      },
+      output: {
+        target: 'web-worker',
+        sourceMap: true,
+        filename: {
+          js: '../../scripts/[name].js',
+        },
+      },
+    },
+  },
+  dev: {
+    writeToDisk: true,
+    lazyCompilation: false, // Disable lazy compilation for Chrome extension compatibility
+  },
+  output: {
+    polyfill: 'entry',
+    injectStyles: true,
+    copy: [
+      { from: './static', to: './' },
+      {
+        from: path.resolve(__dirname, '../../packages/shared/dist-inspect'),
+        to: 'scripts',
+      },
+      {
+        from: path.resolve(
+          __dirname,
+          '../../packages/recorder/dist/recorder-iife.js',
+        ),
+        to: 'scripts',
+      },
+    ],
+    sourceMap: true,
+    externals: ['sharp'],
+  },
+  source: {
+    tsconfigPath: 'tsconfig.build.json',
+    define: {
+      __SDK_VERSION__: JSON.stringify(version),
+    },
+  },
+  resolve: {
+    alias: {
+      async_hooks: path.join(
+        __dirname,
+        '../../packages/shared/src/polyfills/async-hooks.ts',
+      ),
+      'node:async_hooks': path.join(
+        __dirname,
+        '../../packages/shared/src/polyfills/async-hooks.ts',
+      ),
+      react: path.resolve(__dirname, 'node_modules/react'),
+      'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
+      // Keep the browser-side Photon WASM path intact for the extension.
+      // Stub the node-only image dependency so rspack does not walk
+      // native/optional modules from shared image helpers.
+      sharp: false,
+    },
+  },
+  plugins: [
+    pluginReact(),
+    pluginNodePolyfill(),
+    pluginLess(),
+    pluginSvgr(),
+    createTypeCheckPlugin(),
+    pluginWorkspaceDev({
+      projects: {
+        '@midscene/report': {
+          skip: true,
+        },
+      },
+    }),
+  ],
+});

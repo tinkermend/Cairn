@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common'
 import { JwtModule, type JwtSignOptions } from '@nestjs/jwt'
-import { loadApiEnv } from '../config/env'
+import { config } from '../config/env'
 import { RbacModule } from '../rbac/rbac.module'
 import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
@@ -10,13 +10,10 @@ import { BootstrapService } from './bootstrap.service'
   imports: [
     RbacModule,
     JwtModule.registerAsync({
-      useFactory: () => {
-        const env = loadApiEnv()
-        return {
-          secret: env.CAIRN_JWT_SECRET,
-          signOptions: { expiresIn: env.CAIRN_JWT_EXPIRES_IN as JwtSignOptions['expiresIn'] },
-        }
-      },
+      useFactory: () => ({
+        secret: config.CAIRN_JWT_SECRET,
+        signOptions: { expiresIn: config.CAIRN_JWT_EXPIRES_IN as JwtSignOptions['expiresIn'] },
+      }),
     }),
   ],
   controllers: [AuthController],

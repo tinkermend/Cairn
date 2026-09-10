@@ -1,0 +1,141 @@
+import { describe, expect, it } from '@rstest/core';
+import { version } from '../../../package.json';
+import { DEFAULT_MODEL_CONFIG_KEYS } from '../../../src/env/constants';
+import {
+  getUITarsModelVersion,
+  legacyConfigToModelFamily,
+  parseOpenaiSdkConfig,
+  validateModelFamily,
+} from '../../../src/env/parse-model-config';
+import { UITarsModelVersion } from '../../../src/env/types';
+import {
+  MIDSCENE_USE_DOUBAO_VISION,
+  MIDSCENE_USE_GEMINI,
+  MIDSCENE_USE_QWEN3_VL,
+  MIDSCENE_USE_QWEN_VL,
+  MIDSCENE_USE_VLM_UI_TARS,
+  MODEL_FAMILY_VALUES,
+} from '../../../src/env/types';
+
+describe('getUITarsModelVersion', () => {
+  it('should return undefined when model family is missing', () => {
+    expect(getUITarsModelVersion()).toBeUndefined();
+  });
+
+  it('should map ui-tars variants to correct version', () => {
+    expect(getUITarsModelVersion('vlm-ui-tars')).toBe(UITarsModelVersion.V1_0);
+    expect(getUITarsModelVersion('vlm-ui-tars-doubao')).toBe(
+      UITarsModelVersion.DOUBAO_1_5_20B,
+    );
+    expect(getUITarsModelVersion('vlm-ui-tars-doubao-1.5')).toBe(
+      UITarsModelVersion.DOUBAO_1_5_20B,
+    );
+  });
+
+  it('should return undefined for non-UI-TARS models', () => {
+    expect(getUITarsModelVersion('qwen3-vl')).toBeUndefined();
+    expect(getUITarsModelVersion('doubao-vision')).toBeUndefined();
+    expect(getUITarsModelVersion('gemini')).toBeUndefined();
+    expect(getUITarsModelVersion('glm-v')).toBeUndefined();
+    expect(getUITarsModelVersion('gpt-5')).toBeUndefined();
+    expect(getUITarsModelVersion('kimi')).toBeUndefined();
+    expect(getUITarsModelVersion('xiaomi-mimo')).toBeUndefined();
+  });
+});
+
+describe('validateModelFamily', () => {
+  it('should not throw on valid model families', () => {
+    expect(() => validateModelFamily('qwen3-vl')).not.toThrow();
+    expect(() => validateModelFamily('qwen3')).not.toThrow();
+    expect(() => validateModelFamily('qwen3.6')).not.toThrow();
+    expect(() => validateModelFamily('doubao-vision')).not.toThrow();
+    expect(() => validateModelFamily('gemini')).not.toThrow();
+    expect(() => validateModelFamily('glm-v')).not.toThrow();
+    expect(() => validateModelFamily('gpt-5')).not.toThrow();
+    expect(() => validateModelFamily('gpt-6')).not.toThrow();
+    expect(() => validateModelFamily('kimi')).not.toThrow();
+    expect(() => validateModelFamily('xiaomi-mimo')).not.toThrow();
+    expect(() => validateModelFamily('vlm-ui-tars')).not.toThrow();
+    expect(() => validateModelFamily(undefined)).not.toThrow();
+  });
+
+  it('should throw on invalid value', () => {
+    expect(() => validateModelFamily('invalid' as any)).toThrow(
+      /Invalid MIDSCENE_MODEL_FAMILY value: invalid/,
+    );
+    expect(() => validateModelFamily('invalid' as any)).toThrow(
+      `Current version v${version}`,
+    );
+    expect(() => validateModelFamily('invalid' as any)).toThrow(
+      MODEL_FAMILY_VALUES.join(', '),
+    );
+    expect(() => validateModelFamily('invalid' as any)).toThrow(
+      'https://midscenejs.com/model-common-config.html',
+    );
+  });
+});
+
+describe('legacyConfigToModelFamily', () => {
+  it('should return undefined when no legacy vars set', () => {
+    expect(legacyConfigToModelFamily({})).toBeUndefined();
+  });
+
+  it('should map individual legacy flags to model family', () => {
+    expect(legacyConfigToModelFamily({ [MIDSCENE_USE_QWEN3_VL]: '1' })).toBe(
+      'qwen3-vl',
+    );
+    expect(legacyConfigToModelFamily({ [MIDSCENE_USE_QWEN_VL]: '1' })).toBe(
+      'qwen2.5-vl',
+    );
+    expect(
+      legacyConfigToModelFamily({ [MIDSCENE_USE_DOUBAO_VISION]: '1' }),
+    ).toBe('doubao-vision');
+    expect(legacyConfigToModelFamily({ [MIDSCENE_USE_GEMINI]: '1' })).toBe(
+      'gemini',
+    );
+  });
+
+  it('should handle UI-TARS legacy flags', () => {
+    expect(legacyConfigToModelFamily({ [MIDSCENE_USE_VLM_UI_TARS]: '1' })).toBe(
+      'vlm-ui-tars',
+    );
+    expect(
+      legacyConfigToModelFamily({ [MIDSCENE_USE_VLM_UI_TARS]: 'DOUBAO' }),
+    ).toBe('vlm-ui-tars-doubao-1.5');
+  });
+
+  it('should throw when multiple legacy flags enabled', () => {
+    expect(() =>
+      legacyConfigToModelFamily({
+        [MIDSCENE_USE_QWEN3_VL]: '1',
+        [MIDSCENE_USE_QWEN_VL]: '1',
+      }),
+    ).toThrow('Only one vision mode can be enabled at a time.');
+  });
+});
+
+describe('parseOpenaiSdkConfig', () => {
+  it('parses numeric temperature', () => {
+    const result = parseOpenaiSdkConfig({
+      keys: DEFAULT_MODEL_CONFIG_KEYS,
+      provider: {
+        MIDSCENE_MODEL_NAME: 'gpt-4o',
+        MIDSCENE_MODEL_TEMPERATURE: '0.7',
+      },
+    });
+
+    expect(result.temperature).toBe(0.7);
+  });
+
+  it('ignores non-numeric temperature values', () => {
+    const result = parseOpenaiSdkConfig({
+      keys: DEFAULT_MODEL_CONFIG_KEYS,
+      provider: {
+        MIDSCENE_MODEL_NAME: 'gpt-4o',
+        MIDSCENE_MODEL_TEMPERATURE: 'abc',
+      },
+    });
+
+    expect(result.temperature).toBeUndefined();
+  });
+});

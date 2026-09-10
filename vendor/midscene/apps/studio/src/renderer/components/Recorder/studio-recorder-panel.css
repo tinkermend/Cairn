@@ -1,0 +1,2717 @@
+.studio-recorder-panel {
+  --studio-recorder-motion: 200ms cubic-bezier(0.2, 0, 0, 1);
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--midscene-surface);
+  color: var(--midscene-text-primary);
+}
+
+.studio-recorder-panel button,
+.studio-recorder-panel select {
+  outline: none;
+}
+
+.studio-recorder-panel button:focus-visible,
+.studio-recorder-panel select:focus-visible {
+  box-shadow: 0 0 0 3px rgba(50, 136, 255, 0.18);
+}
+
+.studio-recorder-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 24px 22px 14px;
+}
+
+.studio-recorder-title {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 24px;
+}
+
+.studio-recorder-subtitle {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--midscene-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-recorder-icon-button,
+.studio-recorder-inline-icon-button {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--midscene-text-primary);
+  cursor: pointer;
+}
+
+.studio-recorder-icon-button:hover:not(:disabled),
+.studio-recorder-inline-icon-button:hover:not(:disabled) {
+  background: var(--midscene-surface-hover);
+}
+
+.studio-recorder-icon-button:disabled,
+.studio-recorder-inline-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.studio-recorder-icon-button svg,
+.studio-recorder-inline-icon-button svg,
+.studio-recorder-card-actions svg {
+  width: 17px;
+  height: 17px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.studio-recorder-notice {
+  margin: 0 22px 12px;
+  border-radius: 8px;
+  background: #fff2f0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #a8071a;
+}
+
+.studio-recorder-content {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 0 18px 104px;
+}
+
+.studio-recorder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.studio-recorder-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--midscene-border-subtle);
+  border-radius: 8px;
+  background: var(--midscene-surface);
+  cursor: pointer;
+}
+
+.studio-recorder-card:hover {
+  border-color: rgba(50, 136, 255, 0.24);
+}
+
+.studio-recorder-card-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+}
+
+.studio-recorder-card-title,
+.studio-recorder-session-title {
+  overflow: hidden;
+  color: var(--midscene-text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 21px;
+  text-overflow: ellipsis;
+}
+
+.studio-recorder-card-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.studio-recorder-card-summary,
+.studio-recorder-card-target,
+.studio-recorder-card-time,
+.studio-recorder-session-meta {
+  overflow: hidden;
+  color: var(--midscene-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+}
+
+.studio-recorder-card-target,
+.studio-recorder-card-time,
+.studio-recorder-session-meta {
+  white-space: nowrap;
+}
+
+.studio-recorder-card-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--midscene-border-subtle);
+  background: var(--midscene-surface-muted);
+}
+
+.studio-recorder-card-actions button {
+  display: inline-flex;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--midscene-text-secondary);
+  cursor: pointer;
+}
+
+.studio-recorder-card-action-tooltip {
+  display: block;
+  min-width: 0;
+  height: 40px;
+}
+
+.studio-recorder-card-action-tooltip button {
+  width: 100%;
+  height: 100%;
+}
+
+.studio-recorder-card-actions button:hover:not(:disabled) {
+  background: var(--midscene-surface-hover);
+  color: var(--midscene-text-primary);
+}
+
+.studio-recorder-card-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.studio-recorder-detail {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.studio-recorder-detail-nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.studio-recorder-session-heading {
+  min-width: 0;
+  flex: 1;
+}
+
+.studio-recorder-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: var(--midscene-surface-muted);
+  padding: 8px;
+}
+
+.studio-recorder-tab {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 6px;
+  color: var(--midscene-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.studio-recorder-tab:hover:not(:disabled) {
+  background: var(--midscene-surface-hover);
+}
+
+.studio-recorder-tab-active {
+  color: var(--midscene-text-primary);
+}
+
+.studio-recorder-tab svg,
+.studio-recorder-code-toolbar svg {
+  width: 16px;
+  height: 16px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.studio-recorder-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.studio-recorder-tab-arrow {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--midscene-text-secondary);
+}
+
+.studio-recorder-tab-arrow svg {
+  width: 14px;
+  height: 14px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.studio-recorder-timeline {
+  min-height: 0;
+}
+
+.studio-recorder-timeline .ant-card {
+  border-radius: 8px;
+}
+
+[data-theme="dark"] .studio-recorder-timeline .ant-card .ant-card-body {
+  border: 1px solid var(--midscene-border-subtle);
+  background: var(--midscene-surface-muted) !important;
+  color: var(--midscene-text-primary) !important;
+}
+
+[data-theme="dark"] .studio-recorder-timeline .ant-space,
+[data-theme="dark"] .studio-recorder-timeline .ant-typography {
+  color: var(--midscene-text-primary) !important;
+}
+
+.studio-recorder-empty {
+  display: flex;
+  min-height: 160px;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--midscene-border-subtle);
+  border-radius: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--midscene-text-secondary);
+  font-size: 13px;
+  line-height: 21px;
+}
+
+.studio-recorder-code-pane {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.studio-recorder-code-toolbar {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.studio-recorder-code-toolbar button {
+  display: inline-flex;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--midscene-border-subtle);
+  border-radius: 8px;
+  background: var(--midscene-surface);
+  padding: 0;
+  color: var(--midscene-text-primary);
+  cursor: pointer;
+}
+
+.studio-recorder-code-toolbar button:hover:not(:disabled) {
+  background: var(--midscene-surface-hover);
+}
+
+.studio-recorder-code-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.studio-recorder-select-shell {
+  display: inline-flex;
+  height: 32px;
+  min-width: 0;
+  max-width: 140px;
+  flex: 1 1 104px;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--midscene-border-subtle);
+  border-radius: 8px;
+  background: var(--midscene-surface);
+  padding: 0 6px;
+  color: var(--midscene-text-primary);
+}
+
+.studio-recorder-select-shell svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.studio-recorder-select-shell select {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+
+.studio-recorder-select-shell:has(select:disabled) {
+  opacity: 0.45;
+}
+
+.studio-recorder-language-select {
+  max-width: 92px;
+  flex: 0 1 82px;
+}
+
+.studio-recorder-code-spacer {
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.studio-recorder-generation {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.studio-recorder-generating-card {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--midscene-border-subtle);
+  border-radius: 8px;
+  background: var(--midscene-surface);
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.studio-recorder-generating-pill {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(50, 136, 255, 0.14);
+  padding: 4px 10px;
+  color: #3288ff;
+  font-weight: 700;
+}
+
+.studio-recorder-generation-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.studio-recorder-generation-step {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 10px;
+  border: 1px solid var(--midscene-border-subtle);
+  border-radius: 8px;
+  background: var(--midscene-surface);
+  padding: 12px;
+}
+
+.studio-recorder-generation-step-marker {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--midscene-surface-muted);
+  color: var(--midscene-text-secondary);
+}
+
+.studio-recorder-generation-step-marker svg {
+  width: 12px;
+  height: 12px;
+}
+
+.studio-recorder-generation-step-success
+  .studio-recorder-generation-step-marker {
+  background: rgba(52, 199, 89, 0.16);
+  color: #23ad44;
+}
+
+.studio-recorder-generation-step-running
+  .studio-recorder-generation-step-marker {
+  background: rgba(50, 136, 255, 0.16);
+}
+
+.studio-recorder-generation-step-running
+  .studio-recorder-generation-step-marker::after {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3288ff;
+  content: "";
+}
+
+.studio-recorder-generation-step-running
+  .studio-recorder-generation-step-title {
+  color: #3288ff;
+}
+
+.studio-recorder-generation-step-error .studio-recorder-generation-step-marker {
+  background: rgba(239, 68, 68, 0.16);
+}
+
+.studio-recorder-generation-step-error
+  .studio-recorder-generation-step-marker::after {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  content: "";
+}
+
+.studio-recorder-generation-step-title {
+  color: var(--midscene-text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.studio-recorder-generation-step-description {
+  margin-top: 2px;
+  color: var(--midscene-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.studio-recorder-generation-step-details {
+  margin-top: 4px;
+  color: var(--midscene-text-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.studio-recorder-code-block {
+  min-height: 280px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--midscene-border-subtle);
+  border-radius: 8px;
+  background: var(--midscene-surface);
+  padding: 16px;
+  color: var(--midscene-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre;
+}
+
+.studio-recorder-footer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  padding: 18px 20px 24px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0),
+    var(--midscene-surface) 34%
+  );
+}
+
+.studio-recorder-primary {
+  min-width: 188px;
+  height: 44px;
+  border: 1px solid transparent;
+  border-radius: 22px;
+  background: #3288ff;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(50, 136, 255, 0.22);
+}
+
+.studio-recorder-primary:focus-visible {
+  box-shadow: 0 8px 18px rgba(50, 136, 255, 0.22), 0 0 0 3px
+    rgba(50, 136, 255, 0.2);
+}
+
+.studio-recorder-primary:hover:not(:disabled) {
+  background: #1f78ee;
+}
+
+.studio-recorder-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.studio-recorder-stop {
+  background: #ef4444;
+  box-shadow: 0 8px 18px rgba(239, 68, 68, 0.18);
+}
+
+.studio-recorder-stop:focus-visible {
+  box-shadow: 0 8px 18px rgba(239, 68, 68, 0.18), 0 0 0 3px
+    rgba(239, 68, 68, 0.18);
+}
+
+.studio-recorder-stop:hover:not(:disabled) {
+  background: #dc2626;
+}
+
+.studio-mode-panel-stack {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.studio-mode-panel-pane {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.studio-mode-panel-pane-active {
+  z-index: 1;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* The active mode pane is absolutely positioned, so make it a flex parent.
+ * That gives Record's control card and Timeline a definite shared height. */
+.studio-mode-panel-pane-active.studio-recorder-column {
+  display: flex;
+  min-height: 0;
+}
+
+.studio-mode-panel-pane-active.studio-recorder-column > .studio-recorder-panel {
+  height: 100%;
+  flex: 1 1 auto;
+}
+
+/* Markdown makes the mode pane an overlay. Keep the Record column's height
+ * explicit in that mode so the Timeline retains its bounded scroll range. */
+.studio-mode-panel-overlay-floating .studio-recorder-panel {
+  height: 100%;
+}
+
+.studio-recorder-column {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0;
+}
+
+.studio-mode-panel-pane.studio-recorder-column,
+.studio-mode-panel-pane.studio-replay-column,
+.studio-mode-panel-pane.studio-playground-column {
+  position: absolute;
+}
+
+/* When a Markdown detail panel is open, Replay is an overlay. Before a replay
+ * starts it contains only the session picker, so collapse its otherwise
+ * full-height absolute wrapper instead of covering the preview below it. */
+.studio-mode-panel-overlay-floating:has(
+    .studio-mode-panel-pane-active.studio-replay-column
+      > .studio-replay-panel:only-child
+  ) {
+  bottom: auto;
+}
+
+.studio-mode-panel-overlay-floating:has(
+    .studio-mode-panel-pane-active.studio-replay-column
+      > .studio-replay-panel:only-child
+  )
+  .studio-mode-panel-stack {
+  height: auto;
+  overflow: visible;
+}
+
+.studio-mode-panel-overlay-floating:has(
+    .studio-mode-panel-pane-active.studio-replay-column
+      > .studio-replay-panel:only-child
+  )
+  .studio-mode-panel-pane-active {
+  position: relative;
+  inset: auto;
+  height: auto;
+  overflow: visible;
+}
+
+.studio-recorder-panel {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  overflow: hidden;
+  background: transparent;
+  box-sizing: border-box;
+  padding: 0;
+  pointer-events: auto;
+}
+
+.studio-recorder-control-card {
+  position: relative;
+  display: flex;
+  width: 100%;
+  max-height: 100%;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid #e5e5e5;
+  border-radius: 20px;
+  background: #fff;
+  pointer-events: auto;
+  transition: height var(--studio-recorder-motion), flex-basis
+    var(--studio-recorder-motion), max-height var(--studio-recorder-motion),
+    border-radius var(--studio-recorder-motion), border-color
+    var(--studio-recorder-motion);
+  will-change: height, max-height;
+}
+
+.studio-recorder-control-card {
+  height: 204.077px;
+  flex: 0 0 204.077px;
+  background: #f5f5f5;
+}
+
+.studio-recorder-control-card-collapsed {
+  height: 44px;
+  flex-basis: 44px;
+}
+
+.studio-recorder-task-card.studio-timeline-panel-empty
+  .studio-recorder-floating-main {
+  flex: 1 1 auto;
+  padding: 0 15px;
+}
+
+.studio-recorder-task-card.studio-timeline-panel-empty
+  .studio-recorder-floating-main-content {
+  flex: 1 1 auto;
+}
+
+.studio-recorder-floating-header {
+  display: flex;
+  width: 100%;
+  height: 44.077px;
+  flex: 0 0 44.077px;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  margin: 0;
+  border: 0;
+  border-radius: 20px 20px 0 0;
+  background: #f5f5f5;
+  padding: 8px 8px 8px 12px;
+  transition: border-radius var(--studio-recorder-motion), background
+    var(--studio-recorder-motion);
+}
+
+.studio-recorder-floating-header-collapsed {
+  border-radius: 20px;
+}
+
+.studio-recorder-floating-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  color: #0d0d0d;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22.106px;
+}
+
+.studio-recorder-floating-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-recorder-floating-title svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.studio-recorder-floating-status {
+  position: relative;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+}
+
+.studio-recorder-floating-status::before {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(26, 121, 255, 0.22);
+  border-top-color: #1a79ff;
+  border-radius: 50%;
+  content: "";
+}
+
+.studio-recorder-floating-status-running::before {
+  animation: studio-recorder-floating-status-spin 1s linear infinite;
+}
+
+@keyframes studio-recorder-floating-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.studio-recorder-floating-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.studio-recorder-floating-tool-button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0;
+  color: #6d6d6d;
+  cursor: pointer;
+  transition: background var(--studio-recorder-motion), color
+    var(--studio-recorder-motion), transform 150ms ease-out;
+}
+
+.studio-recorder-floating-tool-button:hover,
+.studio-recorder-floating-tool-button-active {
+  color: #1a1a1a;
+}
+
+.studio-recorder-floating-tool-button:active {
+  transform: scale(0.92);
+}
+
+.studio-recorder-floating-tool-button svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+}
+
+.studio-recorder-floating-fold-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  background: currentColor;
+  -webkit-mask: url("./assets/click-to-fold.svg") center / 16px 16px no-repeat;
+  mask: url("./assets/click-to-fold.svg") center / 16px 16px no-repeat;
+  transition: transform var(--studio-recorder-motion), opacity
+    var(--studio-recorder-motion);
+}
+
+.studio-recorder-floating-header-collapsed .studio-recorder-floating-fold-icon {
+  -webkit-mask-image: url("./assets/click-to-expand.svg");
+  mask-image: url("./assets/click-to-expand.svg");
+  transform: rotate(180deg);
+}
+
+.studio-recorder-floating-history-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  background: currentColor;
+  -webkit-mask: url("./assets/history.svg") center / 14px 14px no-repeat;
+  mask: url("./assets/history.svg") center / 14px 14px no-repeat;
+}
+
+.studio-recorder-floating-actions .history-selector-wrapper,
+.studio-recorder-floating-actions .selector-trigger {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.history-modal-overlay.studio-recorder-history-modal-overlay {
+  box-sizing: border-box;
+  width: 280px;
+  height: 305px;
+  border: 1px solid #ebebeb;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.08);
+  z-index: 20;
+}
+
+.history-modal-overlay.studio-recorder-history-modal-overlay.history-modal-overlay-in-container {
+  right: 8px;
+  bottom: 24px;
+  left: auto !important;
+  top: auto !important;
+}
+
+.studio-recorder-task-card.studio-timeline-panel-expanded
+  .history-modal-overlay.studio-recorder-history-modal-overlay.history-modal-overlay-in-container,
+.studio-recorder-control-card-collapsed
+  .history-modal-overlay.studio-recorder-history-modal-overlay.history-modal-overlay-in-container {
+  top: 52px !important;
+  bottom: auto;
+}
+
+.history-modal-overlay.studio-recorder-history-modal-overlay
+  .history-modal-container {
+  border-radius: 20px;
+}
+
+.history-modal-overlay.studio-recorder-history-modal-overlay .history-content {
+  padding: 0 20px 20px;
+}
+
+.history-modal-overlay.studio-recorder-history-modal-overlay .history-item {
+  border-radius: 8px;
+}
+
+.studio-recorder-history-name-input {
+  display: block;
+  width: calc(100% - 4px);
+  height: 28px;
+  box-sizing: border-box;
+  border: 1px solid #d6dae0;
+  border-radius: 6px;
+  appearance: none;
+  background: #fff;
+  color: #1f1f1f;
+  font-size: 13px;
+  line-height: 20px;
+  margin: 0 2px;
+  outline: none;
+  padding: 0 8px;
+}
+
+.studio-recorder-history-name-input:focus {
+  border-color: #4d8dff;
+  box-shadow: 0 0 0 2px rgba(77, 141, 255, 0.14);
+}
+
+.history-modal-overlay.studio-recorder-history-modal-overlay
+  .history-item:has(.studio-recorder-history-name-input),
+.history-modal-overlay.studio-recorder-history-modal-overlay
+  .history-item:has(.studio-recorder-history-name-input):hover {
+  background: transparent;
+  padding: 0;
+}
+
+.history-modal-overlay.studio-recorder-history-modal-overlay
+  .history-item:hover {
+  margin: 0;
+  background: #f3f3f4;
+  padding: 0 8px;
+}
+
+.studio-recorder-history-action-trigger {
+  display: inline-flex;
+  min-width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 4px;
+  color: #909090;
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.studio-recorder-history-action-trigger:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: #0d0d0d;
+}
+
+.studio-recorder-history-actions-popover .ant-popover-inner {
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.studio-recorder-history-actions-menu {
+  display: flex;
+  min-width: 108px;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.studio-recorder-history-actions-menu button {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 8px;
+  color: #5f5f5f;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.studio-recorder-history-actions-menu button:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.04);
+  color: #0d0d0d;
+}
+
+.studio-recorder-history-actions-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.studio-recorder-history-actions-menu svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
+.studio-recorder-floating-record-button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: #1a79ff;
+  padding: 0;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: none;
+  transition: background var(--studio-recorder-motion), opacity
+    var(--studio-recorder-motion), transform 150ms ease-out;
+}
+
+.studio-recorder-floating-record-button:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.studio-recorder-floating-record-button svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.studio-recorder-floating-record-button-icon {
+  width: 29px;
+  height: 29px;
+  flex: 0 0 29px;
+}
+
+.studio-recorder-floating-record-button-active {
+  background: transparent;
+}
+
+.studio-recorder-floating-record-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.studio-recorder-floating-primer {
+  display: flex;
+  width: 100%;
+  height: calc(100% - 44.077px);
+  max-height: none;
+  flex: 1 1 auto;
+  align-self: center;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  box-sizing: border-box;
+  margin: 0;
+  border: 0;
+  border-top: 1px solid #ebebeb;
+  border-radius: 16px;
+  background: #fff;
+  padding: 8px;
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition:
+    height var(--studio-recorder-motion),
+    max-height var(--studio-recorder-motion),
+    flex-basis var(--studio-recorder-motion),
+    margin var(--studio-recorder-motion),
+    padding var(--studio-recorder-motion),
+    opacity 140ms ease-out,
+    transform var(--studio-recorder-motion),
+    visibility 0s linear 0s;
+}
+
+.studio-recorder-control-card-recording .studio-recorder-floating-primer {
+  width: 100%;
+  align-self: stretch;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  background: #fff;
+}
+
+.studio-recorder-control-card-recording::after {
+  position: absolute;
+  top: 44.077px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  border-radius: 20px;
+  background: linear-gradient(
+    135deg,
+    #1a79ff 0%,
+    #7b61ff 48%,
+    #ff4f8b 74%,
+    #ff9f1a 100%
+  );
+  content: "";
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  pointer-events: none;
+}
+
+.studio-recorder-control-card-recording
+  .studio-recorder-floating-start-button-shell {
+  background: #fff;
+}
+
+.studio-recorder-floating-primer-hidden {
+  height: 0;
+  max-height: 0;
+  flex-basis: 0;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition:
+    height var(--studio-recorder-motion),
+    max-height var(--studio-recorder-motion),
+    flex-basis var(--studio-recorder-motion),
+    margin var(--studio-recorder-motion),
+    padding var(--studio-recorder-motion),
+    opacity 140ms ease-out,
+    transform var(--studio-recorder-motion),
+    visibility 0s linear 200ms;
+  visibility: hidden;
+}
+
+.studio-recorder-floating-primer-copy {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 0 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  font-family: var(--font-sans);
+  text-align: center;
+}
+
+.studio-recorder-floating-primer-status {
+  display: flex;
+  min-width: 0;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #404040;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.studio-recorder-floating-primer-status-copy {
+  min-width: 0;
+  white-space: normal;
+}
+
+.studio-recorder-floating-primer-description {
+  max-width: 264px;
+  color: #999;
+  font-family: "PingFang SC", var(--font-sans);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  text-align: center;
+}
+
+.studio-recorder-floating-ready-dot,
+.studio-recorder-floating-recording-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  overflow: visible;
+  border-radius: 50%;
+  background: #fe5f57;
+}
+
+.studio-recorder-floating-ready-dot {
+  background: #b6b6b6;
+}
+
+.studio-recorder-floating-ready-dot::before {
+  position: absolute;
+  inset: -2px;
+  border: 1px solid rgba(182, 182, 182, 0.25);
+  border-radius: 50%;
+  content: "";
+}
+
+.studio-recorder-floating-recording-dot::before {
+  position: absolute;
+  inset: -1.435px;
+  border: 1.435px solid rgba(254, 95, 87, 0.25);
+  border-radius: 50%;
+  content: "";
+}
+
+.studio-recorder-floating-start-button-shell {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  flex: 0 0 40px;
+  align-self: stretch;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 4px;
+  background: #fff;
+}
+
+.studio-recorder-floating-start-button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  flex: 1 0 0;
+  align-self: stretch;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 12px;
+  box-sizing: border-box;
+  background: #1a79ff;
+  padding: 0 6px;
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 12px;
+  cursor: pointer;
+  transition: background var(--studio-recorder-motion), opacity
+    var(--studio-recorder-motion), transform 150ms ease-out;
+}
+
+.studio-recorder-floating-start-button > span {
+  white-space: nowrap;
+}
+
+.studio-recorder-floating-start-button:hover:not(:disabled) {
+  background: #0f6ee8;
+}
+
+.studio-recorder-floating-start-button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.studio-recorder-floating-start-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.studio-recorder-floating-start-button svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.studio-recorder-floating-stop-button-icon {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 2px;
+  background: #151414;
+}
+
+.studio-recorder-floating-start-button-active {
+  border: 1px solid #ddd;
+  background: #fff;
+  color: #000;
+}
+
+.studio-recorder-floating-start-button-active:hover:not(:disabled) {
+  background: #fff;
+}
+
+.studio-recorder-floating-main {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 15px 16px;
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition:
+    height var(--studio-recorder-motion),
+    max-height var(--studio-recorder-motion),
+    flex-basis var(--studio-recorder-motion),
+    margin var(--studio-recorder-motion),
+    padding var(--studio-recorder-motion),
+    opacity 140ms ease-out,
+    transform var(--studio-recorder-motion),
+    visibility 0s linear 0s;
+  will-change: height, opacity, transform;
+}
+
+.studio-recorder-task-card.studio-timeline-panel-expanded
+  .studio-recorder-floating-main {
+  height: auto;
+  max-height: none;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.studio-recorder-task-card:not(.studio-timeline-panel-empty):not(
+    .studio-timeline-panel-collapsed
+  )
+  .studio-recorder-floating-main {
+  max-height: calc(100% - 44.077px);
+  flex: 0 1 auto;
+}
+
+/*
+ * The Timeline shares a column with the record controls. When a generated
+ * Markdown panel is open that column becomes a floating overlay, so content
+ * height is no longer a reliable scroll bound. Let the Timeline body occupy
+ * the remaining card height, then make its main area the dedicated scroller.
+ */
+.studio-recorder-task-card:not(.studio-timeline-panel-empty):not(
+    .studio-timeline-panel-collapsed
+  )
+  .studio-timeline-panel-scroll-body {
+  max-height: none;
+  flex: 1 1 auto;
+}
+
+.studio-recorder-panel
+  > .studio-recorder-task-card:not(.studio-timeline-panel-empty):not(
+    .studio-timeline-panel-collapsed
+  ) {
+  height: auto;
+  max-height: calc(100% - 212.077px);
+  flex: 0 1 auto;
+}
+
+.studio-recorder-task-card:not(.studio-timeline-panel-empty):not(
+    .studio-timeline-panel-collapsed
+  )
+  .studio-recorder-floating-main {
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
+  overscroll-behavior: contain;
+}
+
+.studio-mode-panel-overlay-floating .studio-recorder-floating-main {
+  pointer-events: auto;
+}
+
+.studio-recorder-floating-main-collapsed {
+  height: 0;
+  max-height: 0;
+  flex-basis: 0;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition:
+    height var(--studio-recorder-motion),
+    max-height var(--studio-recorder-motion),
+    flex-basis var(--studio-recorder-motion),
+    margin var(--studio-recorder-motion),
+    padding var(--studio-recorder-motion),
+    opacity 140ms ease-out,
+    transform var(--studio-recorder-motion),
+    visibility 0s linear 200ms;
+  visibility: hidden;
+}
+
+.studio-recorder-floating-main-content {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+}
+
+.studio-recorder-timeline-list {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-recorder-timeline-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 8px;
+  min-height: 38px;
+  margin: 0;
+  padding: 0;
+}
+
+.studio-recorder-timeline-rail {
+  display: flex;
+  width: 16px;
+  align-items: center;
+  flex-direction: column;
+}
+
+.studio-recorder-timeline-rail-line {
+  width: 1px;
+  flex: 1 1 auto;
+  min-height: 8px;
+  background: #e5e5e5;
+}
+
+.studio-recorder-timeline-rail-line-top {
+  flex: 0 0 8px;
+}
+
+.studio-recorder-timeline-item:last-child
+  .studio-recorder-timeline-rail-line-bottom {
+  display: none;
+}
+
+.studio-recorder-timeline-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 3px 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.studio-recorder-timeline-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.studio-recorder-timeline-icon-target {
+  color: #1a79ff;
+}
+
+.studio-recorder-timeline-icon-scroll {
+  color: #ffa53c;
+}
+
+.studio-recorder-timeline-copy {
+  display: block;
+  min-width: 0;
+  padding: 8px;
+  color: rgba(0, 0, 0, 0.9);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+
+.studio-recorder-timeline-copy-text {
+  display: -webkit-box;
+  max-height: 42px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  word-break: break-word;
+}
+
+.studio-recorder-timeline-action {
+  font-weight: 500;
+}
+
+.studio-recorder-timeline-analyzing {
+  background: linear-gradient(92.754deg, #0066ff 0%, #7b02c5 56.414%);
+  background-clip: text;
+  color: transparent;
+}
+
+.studio-recorder-floating-timeline .ant-timeline-item {
+  padding-bottom: 18px;
+}
+
+.studio-recorder-floating-timeline .ant-timeline-item-last {
+  padding-bottom: 0;
+}
+
+.studio-recorder-floating-timeline .ant-timeline-item-tail {
+  display: none;
+}
+
+.studio-recorder-floating-timeline .ant-timeline-item-head {
+  background: transparent;
+}
+
+.studio-recorder-floating-timeline .ant-timeline-item-head-custom {
+  inset-inline-start: 8px;
+  inset-block-start: 6px;
+}
+
+.studio-recorder-floating-timeline .ant-timeline-item-head-custom svg {
+  width: 16px;
+  height: 16px;
+}
+
+.studio-recorder-floating-timeline .ant-timeline-item-content {
+  min-height: 0;
+  margin-inline-start: 28px;
+  color: #0d0d0d;
+  font-size: 13px;
+  line-height: 16px;
+}
+
+.studio-recorder-floating-timeline .ant-card {
+  margin-bottom: 0 !important;
+  background: transparent;
+  box-shadow: none;
+}
+
+.studio-recorder-floating-timeline .ant-card-body {
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.studio-recorder-floating-timeline .ant-card-body > .ant-space {
+  display: flex !important;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start !important;
+  gap: 8px !important;
+  color: #0d0d0d !important;
+}
+
+.studio-recorder-floating-timeline .ant-card-body > .ant-space > .ant-space {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.studio-recorder-floating-timeline .ant-typography {
+  color: #0d0d0d;
+  font-size: 13px;
+  line-height: 16px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.studio-recorder-floating-timeline .step-title-shiny {
+  font-size: 13px;
+  line-height: 16px;
+}
+
+.studio-recorder-floating-timeline .ant-image {
+  width: 24px !important;
+  height: 24px !important;
+  flex: 0 0 24px;
+}
+
+.studio-recorder-floating-outputs {
+  position: relative;
+  box-sizing: border-box;
+  height: 68px;
+  max-height: 68px;
+  flex: 0 0 68px;
+  margin: 8px 20px 0;
+  border-top: 0;
+  padding: 20px 0 16px;
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition:
+    height var(--studio-recorder-motion),
+    max-height var(--studio-recorder-motion),
+    flex-basis var(--studio-recorder-motion),
+    margin var(--studio-recorder-motion),
+    padding var(--studio-recorder-motion),
+    opacity 140ms ease-out,
+    transform var(--studio-recorder-motion),
+    visibility 0s linear 0s;
+  will-change: height, opacity, transform;
+}
+
+.studio-recorder-floating-outputs-with-screenshot {
+  height: 108px;
+  max-height: 108px;
+  flex-basis: 108px;
+}
+
+.studio-recorder-floating-outputs-hidden {
+  height: 0;
+  max-height: 0;
+  flex-basis: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition:
+    height var(--studio-recorder-motion),
+    max-height var(--studio-recorder-motion),
+    flex-basis var(--studio-recorder-motion),
+    margin var(--studio-recorder-motion),
+    padding var(--studio-recorder-motion),
+    opacity 140ms ease-out,
+    transform var(--studio-recorder-motion),
+    visibility 0s linear 200ms;
+  visibility: hidden;
+}
+
+.studio-recorder-floating-outputs::before {
+  display: block;
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--midscene-border-subtle);
+  content: "";
+}
+
+.studio-recorder-floating-output-stack {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.studio-recorder-floating-output {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 0 12px;
+  color: #0d0d0d;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 21px;
+  text-align: left;
+}
+
+.studio-recorder-floating-output:hover,
+.studio-recorder-floating-output:focus-within {
+  background: #f3f3f4;
+}
+
+.studio-recorder-floating-output-generate {
+  width: 100%;
+  gap: 4px;
+  margin: 0;
+  border: 1px solid rgba(221, 221, 221, 0.01);
+  border-radius: 12px;
+  background: #eee;
+  cursor: pointer;
+}
+
+.studio-recorder-floating-output-generate:hover,
+.studio-recorder-floating-output-generate:focus-within {
+  background: #e8e8e8;
+}
+
+.studio-recorder-floating-output-generate svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: #333;
+}
+
+.studio-recorder-floating-output-info {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 8px;
+  color: #0d0d0d;
+}
+
+.studio-recorder-floating-output-info svg,
+.studio-recorder-floating-output-action svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.studio-recorder-floating-output-info svg {
+  color: #333;
+}
+
+.studio-recorder-floating-output-info span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-recorder-floating-output-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  transition: opacity var(--studio-recorder-motion);
+}
+
+.studio-recorder-floating-output-action {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #5f5f5f;
+  cursor: pointer;
+}
+
+.studio-recorder-floating-output:hover .studio-recorder-floating-output-actions,
+.studio-recorder-floating-output:focus-within
+  .studio-recorder-floating-output-actions {
+  opacity: 1;
+}
+
+.studio-recorder-floating-output-action:hover {
+  color: #0d0d0d;
+}
+
+.studio-recorder-output-tooltip .ant-tooltip-inner {
+  min-height: 0;
+  border-radius: 6px;
+  background: #000;
+  padding: 6px 12px;
+  color: #fff;
+  font-family: Inter, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.studio-recorder-output-tooltip .ant-tooltip-arrow-content {
+  background: #000;
+}
+
+.studio-recorder-floating-output-generating {
+  cursor: default;
+}
+
+.studio-recorder-floating-output-generating:hover {
+  background: #eee;
+}
+
+.studio-recorder-floating-output-generating svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: #0066ff;
+  animation: studio-recorder-generate-icon-sheen 1.8s ease-in-out infinite;
+}
+
+.studio-recorder-floating-output-generating svg path:first-child {
+  stroke: #0066ff;
+}
+
+.studio-recorder-floating-output-generating svg path:last-child {
+  fill: #7b02c5;
+}
+
+.studio-recorder-floating-output-generating span {
+  position: relative;
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  background-image: linear-gradient(92.8202deg, #0066ff 0%, #7b02c5 56.414%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: transparent;
+  font-weight: 500;
+}
+
+.studio-recorder-floating-output-generating span::after {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(
+    105deg,
+    transparent 42%,
+    rgba(255, 255, 255, 0.95) 50%,
+    transparent 58%
+  );
+  background-position: -200% 0;
+  background-repeat: no-repeat;
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  content: attr(data-text);
+  pointer-events: none;
+  -webkit-text-fill-color: transparent;
+  animation: studio-recorder-generate-metallic-sheen 1.8s ease-in-out infinite;
+}
+
+@keyframes studio-recorder-generate-metallic-sheen {
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes studio-recorder-generate-icon-sheen {
+  50% {
+    filter: brightness(1.6) saturate(1.35)
+      drop-shadow(0 0 3px rgba(186, 219, 255, 0.9));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-recorder-floating-output-generating svg,
+  .studio-recorder-floating-output-generating span::after,
+  .studio-right-panel-markdown-drawer,
+  .studio-right-panel-markdown-drawer .studio-right-panel {
+    animation: none;
+  }
+}
+
+.studio-right-panel-markdown-drawer {
+  will-change: opacity;
+}
+
+.studio-right-panel-markdown-drawer-enter {
+  animation: studio-right-panel-markdown-drawer-fade-enter 160ms ease-out both;
+}
+
+.studio-right-panel-markdown-drawer-exit {
+  animation: studio-right-panel-markdown-drawer-fade-exit 140ms ease-in both;
+}
+
+@keyframes studio-right-panel-markdown-drawer-fade-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes studio-right-panel-markdown-drawer-fade-exit {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+.studio-right-panel {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+}
+
+.studio-right-panel-close,
+.studio-right-panel-close * {
+  cursor: pointer !important;
+  -webkit-app-region: no-drag;
+}
+
+.studio-right-panel-close {
+  position: absolute;
+  top: 10px;
+  right: calc(10px + var(--studio-titlebar-right-inset, 0px));
+  z-index: 30;
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0;
+  color: #6d6d6d;
+  cursor: pointer !important;
+  touch-action: manipulation;
+  -webkit-app-region: no-drag;
+  transition: background var(--studio-recorder-motion), color
+    var(--studio-recorder-motion);
+}
+
+.studio-right-panel-close svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.studio-right-panel-close:hover,
+.studio-right-panel-close:focus-visible,
+.studio-right-panel-close:active {
+  background: #eaeaeb;
+  color: #0d0d0d;
+}
+
+.studio-recorder-screenshot-detail {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fff;
+}
+
+.studio-recorder-screenshot-detail-header {
+  display: flex;
+  height: 52px;
+  flex: 0 0 52px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #ebebeb;
+  padding: 0 48px 0 16px;
+}
+
+.studio-recorder-screenshot-detail-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: #0d0d0d;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+.studio-recorder-screenshot-detail-title svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: #333;
+}
+
+.studio-recorder-screenshot-detail-close {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0;
+  color: #666;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.studio-recorder-screenshot-detail-close:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.studio-recorder-screenshot-list {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+  padding: 16px;
+}
+
+.studio-recorder-screenshot-card {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #e6e6e6;
+  border-radius: 8px;
+  background: #f5f5f5;
+}
+
+.studio-recorder-screenshot-card-header {
+  display: flex;
+  height: 43px;
+  flex: 0 0 43px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  color: #0d0d0d;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.studio-recorder-screenshot-card-header span:first-child {
+  color: #8a8a8a;
+}
+
+.studio-recorder-screenshot-card-body {
+  display: flex;
+  height: 204px;
+  flex: 0 0 204px;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  padding: 0;
+}
+
+.studio-recorder-screenshot-image-button {
+  display: block;
+  width: 100%;
+  height: 204px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: zoom-in;
+}
+
+.studio-recorder-screenshot-image-button img {
+  display: block;
+  width: 100%;
+  height: 204px;
+  border: 0;
+  object-fit: contain;
+}
+
+.studio-recorder-screenshot-state {
+  display: flex;
+  width: 100%;
+  min-height: 204px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #6d6d6d;
+  font-size: 12px;
+}
+
+.studio-recorder-screenshot-state button {
+  cursor: pointer;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 4px 6px;
+  color: #1a79ff;
+}
+
+.studio-recorder-screenshot-state button:hover,
+.studio-recorder-screenshot-state button:focus-visible {
+  background: #eaf2ff;
+}
+
+.studio-right-panel-markdown {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fff;
+}
+
+.studio-right-panel-markdown-header {
+  display: flex;
+  height: 52px;
+  flex: 0 0 52px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #ebebeb;
+  padding: 0 calc(48px + var(--studio-titlebar-right-inset, 0px)) 0 16px;
+}
+
+.studio-right-panel-markdown-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #0d0d0d;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-right-panel-markdown-more {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0;
+  color: #6d6d6d;
+  cursor: pointer;
+  transition: background var(--studio-recorder-motion), color
+    var(--studio-recorder-motion);
+}
+
+.studio-right-panel-markdown-more:hover,
+.studio-right-panel-markdown-more:focus-visible,
+.studio-right-panel-markdown-more:active {
+  background: #eaeaeb;
+  color: #0d0d0d;
+}
+
+.studio-right-panel-markdown-more svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.studio-right-panel-markdown-menu {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.studio-right-panel-markdown-body {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 16px;
+}
+
+.studio-right-panel-markdown-body pre {
+  margin: 0;
+  color: #0d0d0d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.studio-replay-panel {
+  display: flex;
+  width: 100%;
+  height: 204.077px;
+  flex: 0 0 204.077px;
+  flex-direction: column;
+  align-items: stretch;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid #e5e5e5;
+  border-radius: 20px;
+  background: #f5f5f5;
+}
+
+.studio-replay-panel-header {
+  display: flex;
+  height: 44.077px;
+  flex: 0 0 44.077px;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  padding: 8.038px 8px 8.038px 12px;
+}
+
+.studio-replay-panel-title {
+  padding: 0 4px;
+  color: #0d0d0d;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22.106px;
+}
+
+.studio-replay-panel-body {
+  display: flex;
+  height: 160px;
+  min-height: 80px;
+  flex: 0 0 160px;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+  border-top: 1px solid #ebebeb;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.studio-replay-panel-list {
+  display: flex;
+  height: 159px;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  padding: 12px;
+}
+
+.studio-replay-panel-item {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0 8px;
+  color: #333;
+  cursor: pointer;
+}
+
+.studio-replay-panel-item:hover,
+.studio-replay-panel-item-active,
+.studio-replay-panel-item-selected {
+  background: #f3f3f3;
+}
+
+.studio-replay-panel-item svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.studio-replay-panel-item > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: #252525;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: normal;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-replay-panel-item > svg:last-child,
+.studio-replay-panel-play-button {
+  color: #6d6d6d;
+}
+
+.studio-replay-panel-actions {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.studio-replay-panel-more-button {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 2px;
+  color: #6d6d6d;
+  cursor: pointer;
+  opacity: 1;
+}
+
+.studio-replay-panel-more-button:hover,
+.studio-replay-panel-more-button:focus-visible,
+.studio-replay-panel-more-button[aria-expanded="true"] {
+  background: #e5e5e5;
+  color: #333;
+}
+
+.studio-replay-panel-more-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.studio-replay-panel-loading {
+  flex: 0 0 16px !important;
+  color: #1a79ff !important;
+  animation: studio-recorder-spin 1s linear infinite;
+}
+
+.studio-replay-panel-play-button {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 2px;
+  cursor: pointer;
+}
+
+.studio-replay-panel-play-button:hover,
+.studio-replay-panel-play-button:focus-visible {
+  background: #e0e0e0;
+  color: #151414;
+}
+
+.studio-replay-panel-play-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.studio-replay-panel-stop-button {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 2px;
+  color: #151414;
+  cursor: pointer;
+}
+
+.studio-replay-panel-stop-button:hover,
+.studio-replay-panel-stop-button:focus-visible {
+  background: #e0e0e0;
+}
+
+.studio-replay-panel-stop-icon {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+.studio-replay-panel-empty {
+  display: flex;
+  height: 159px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  padding: 36px 0;
+  text-align: center;
+}
+
+.studio-replay-panel-empty-title {
+  width: max-content;
+  max-width: none;
+  color: #2c2c2c;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  white-space: nowrap !important;
+}
+
+.studio-replay-panel-empty-description {
+  width: 187px;
+  color: #9e9e9e;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 21px;
+}
+
+@keyframes studio-recorder-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+[data-theme="dark"] .studio-recorder-control-card,
+[data-theme="dark"] .studio-replay-panel {
+  border-color: #323131;
+  background: #242424;
+}
+
+[data-theme="dark"] .studio-recorder-floating-header {
+  background: #242424;
+}
+
+[data-theme="dark"] .studio-recorder-floating-title,
+[data-theme="dark"] .studio-replay-panel-title {
+  color: #eee;
+}
+
+[data-theme="dark"] .studio-recorder-floating-tool-button {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="dark"] .studio-recorder-floating-tool-button:hover,
+[data-theme="dark"] .studio-recorder-floating-tool-button-active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+[data-theme="dark"]
+  .history-modal-overlay.studio-recorder-history-modal-overlay {
+  border-color: #323131;
+  background: #242424;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
+}
+
+[data-theme="dark"]
+  .history-modal-overlay.studio-recorder-history-modal-overlay
+  .history-modal-container {
+  background: #242424;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"]
+  .history-modal-overlay.studio-recorder-history-modal-overlay
+  .history-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .studio-recorder-history-name-input {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: #181818;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"] .studio-recorder-history-action-trigger {
+  color: rgba(255, 255, 255, 0.58);
+}
+
+[data-theme="dark"] .studio-recorder-history-action-trigger:hover,
+[data-theme="dark"]
+  .studio-recorder-history-actions-menu
+  button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+[data-theme="dark"]
+  .studio-recorder-history-actions-popover
+  .ant-popover-inner {
+  background: #242424;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
+}
+
+[data-theme="dark"] .studio-recorder-history-actions-menu button {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+[data-theme="dark"] .studio-recorder-floating-primer {
+  border: 0;
+  border-top: 1px solid #323131;
+  background: #181818;
+}
+
+[data-theme="dark"]
+  .studio-recorder-control-card-recording
+  .studio-recorder-floating-primer {
+  border: 1px solid transparent;
+  background: #181818;
+}
+
+[data-theme="dark"]
+  .studio-recorder-control-card-recording
+  .studio-recorder-floating-start-button-shell,
+[data-theme="dark"] .studio-recorder-floating-start-button-shell {
+  background: #181818;
+}
+
+[data-theme="dark"] .studio-recorder-floating-primer-copy,
+[data-theme="dark"] .studio-recorder-floating-primer-copy svg {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"] .studio-recorder-floating-primer-status,
+[data-theme="dark"] .studio-recorder-floating-primer-status-copy {
+  color: #fff;
+}
+
+[data-theme="dark"] .studio-recorder-floating-start-button-active {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: #242424;
+  color: #fff;
+}
+
+[data-theme="dark"]
+  .studio-recorder-floating-start-button-active:hover:not(:disabled) {
+  background: #242424;
+}
+
+[data-theme="dark"] .studio-recorder-floating-stop-button-icon {
+  background: #fff;
+}
+
+[data-theme="dark"] .studio-recorder-timeline-rail-line {
+  background: #333;
+}
+
+[data-theme="dark"] .studio-recorder-timeline-copy,
+[data-theme="dark"]
+  .studio-recorder-floating-timeline
+  .ant-timeline-item-content,
+[data-theme="dark"]
+  .studio-recorder-floating-timeline
+  .ant-card-body
+  > .ant-space,
+[data-theme="dark"] .studio-recorder-floating-timeline .ant-typography {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+[data-theme="dark"] .studio-recorder-floating-output {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"] .studio-recorder-floating-output:hover,
+[data-theme="dark"] .studio-recorder-floating-output:focus-within {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .studio-recorder-floating-output-generate {
+  border-color: rgba(221, 221, 221, 0.01);
+  background: #292929;
+}
+
+[data-theme="dark"]
+  .studio-recorder-floating-output-generate:not(
+    .studio-recorder-floating-output-generating
+  )
+  svg {
+  color: #fff;
+}
+
+[data-theme="dark"] .studio-recorder-floating-output-generate:hover,
+[data-theme="dark"] .studio-recorder-floating-output-generate:focus-within,
+[data-theme="dark"] .studio-recorder-floating-output-generating:hover {
+  background: #333;
+}
+
+[data-theme="dark"] .studio-recorder-floating-output-info,
+[data-theme="dark"] .studio-recorder-floating-output-info svg {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"] .studio-recorder-floating-output-action {
+  color: rgba(255, 255, 255, 0.58);
+}
+
+[data-theme="dark"] .studio-recorder-floating-output-action:hover {
+  color: #fff;
+}
+
+[data-theme="dark"] .studio-right-panel-close,
+[data-theme="dark"] .studio-right-panel-markdown-more,
+[data-theme="dark"] .studio-recorder-screenshot-detail-close {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="dark"] .studio-right-panel-close:hover,
+[data-theme="dark"] .studio-right-panel-close:focus-visible,
+[data-theme="dark"] .studio-right-panel-close:active,
+[data-theme="dark"] .studio-right-panel-markdown-more:hover,
+[data-theme="dark"] .studio-right-panel-markdown-more:focus-visible,
+[data-theme="dark"] .studio-right-panel-markdown-more:active,
+[data-theme="dark"] .studio-recorder-screenshot-detail-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+[data-theme="dark"] .studio-recorder-screenshot-detail,
+[data-theme="dark"] .studio-right-panel-markdown {
+  background: #181818;
+}
+
+[data-theme="dark"] .studio-recorder-screenshot-detail-header,
+[data-theme="dark"] .studio-right-panel-markdown-header {
+  border-bottom-color: #323131;
+}
+
+[data-theme="dark"] .studio-recorder-screenshot-detail-title,
+[data-theme="dark"] .studio-recorder-screenshot-detail-title svg,
+[data-theme="dark"] .studio-right-panel-markdown-title,
+[data-theme="dark"] .studio-right-panel-markdown-body pre {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"] .studio-recorder-screenshot-card {
+  border-color: #323131;
+  background: #242424;
+}
+
+[data-theme="dark"] .studio-recorder-screenshot-card-header {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"] .studio-recorder-screenshot-card-header span:first-child {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+[data-theme="dark"] .studio-recorder-screenshot-card-body {
+  background: #111;
+}
+
+[data-theme="dark"] .studio-replay-panel-body,
+[data-theme="dark"] .studio-replay-panel-list,
+[data-theme="dark"] .studio-replay-panel-empty {
+  border-top-color: #323131;
+  background: #181818;
+}
+
+[data-theme="dark"] .studio-replay-panel-item {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+[data-theme="dark"] .studio-replay-panel-item:hover,
+[data-theme="dark"] .studio-replay-panel-item-active,
+[data-theme="dark"] .studio-replay-panel-item-selected {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"] .studio-replay-panel-item > span {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"] .studio-replay-panel-item > svg:last-child,
+[data-theme="dark"] .studio-replay-panel-more-button,
+[data-theme="dark"] .studio-replay-panel-play-button {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="dark"] .studio-replay-panel-more-button:hover,
+[data-theme="dark"] .studio-replay-panel-more-button:focus-visible,
+[data-theme="dark"] .studio-replay-panel-more-button[aria-expanded="true"],
+[data-theme="dark"] .studio-replay-panel-play-button:hover,
+[data-theme="dark"] .studio-replay-panel-play-button:focus-visible,
+[data-theme="dark"] .studio-replay-panel-stop-button:hover,
+[data-theme="dark"] .studio-replay-panel-stop-button:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+[data-theme="dark"] .studio-replay-panel-stop-button {
+  color: #fff;
+}
+
+[data-theme="dark"] .studio-replay-panel-empty-title {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="dark"] .studio-replay-panel-empty-description {
+  color: rgba(255, 255, 255, 0.5);
+}

@@ -1,0 +1,38 @@
+// Rstest Snapshot v1
+
+exports[`runToolsCLI > --help output matches snapshot 1`] = `
+"test-cli v1.2.3
+
+
+Usage: test-cli <command> [options]
+
+Commands:
+  connect                        Connect to a device for automation
+  disconnect                     Disconnect from the current device
+  take_screenshot                Capture a screenshot of the current screen
+  tap                            Tap on a specific element or coordinate on the screen
+  version                        Show CLI version
+
+Global Options:
+  --verbose     Print progress while the command is running. act and record print readable progress by default. Use --verbose=jsonl for structured events.
+  --deep-locate Force deep locate for every locating operation (better precision for small/ambiguous targets, a bit slower).
+  --deep-think  Plan the act tool with deep thinking (richer context and sub-goal decomposition, a bit slower).
+
+Run "test-cli <command> --help" for more info."
+`;
+
+exports[`runToolsCLI > command --help output matches snapshot 1`] = `
+"
+Usage: test-cli connect [options]
+
+Connect to a device for automation
+
+Options:
+  --url                  The device URL to connect to
+  --timeout              Connection timeout in ms
+
+Global Options:
+  --verbose     Print progress while the command is running. act and record print readable progress by default. Use --verbose=jsonl for structured events.
+  --deep-locate Force deep locate for every locating operation (better precision for small/ambiguous targets, a bit slower).
+  --deep-think  Plan the act tool with deep thinking (richer context and sub-goal decomposition, a bit slower)."
+`;

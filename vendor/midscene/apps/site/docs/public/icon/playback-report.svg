@@ -1,0 +1,21 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="28" fill="#FA884B" opacity="0.08"/>
+
+  <!-- Dashboard frame -->
+  <rect x="10" y="12" width="44" height="34" rx="4" stroke="#FA884B" stroke-width="2.5" fill="none"/>
+
+  <!-- Top bar -->
+  <rect x="16" y="18" width="8" height="3" rx="1.5" fill="#FA884B" opacity="0.4"/>
+  <rect x="28" y="18" width="6" height="3" rx="1.5" fill="#FA884B" opacity="0.3"/>
+
+  <!-- Bar chart -->
+  <rect x="16" y="34" width="6" height="6" rx="1" fill="#FA884B" opacity="0.35"/>
+  <rect x="24" y="30" width="6" height="10" rx="1" fill="#FA884B" opacity="0.55"/>
+  <rect x="32" y="26" width="6" height="14" rx="1" fill="#FA884B"/>
+  <rect x="40" y="32" width="6" height="8" rx="1" fill="#FA884B" opacity="0.45"/>
+
+  <!-- Play button overlay -->
+  <circle cx="44" cy="46" r="8" fill="#FA884B"/>
+  <path d="M42 42.5L48 46L42 49.5V42.5Z" fill="white"/>
+</svg>

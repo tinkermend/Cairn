@@ -1,0 +1,17 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="28" fill="#0555FF" opacity="0.08"/>
+
+  <!-- Terminal window -->
+  <rect x="12" y="14" width="40" height="36" rx="4" stroke="#0555FF" stroke-width="2.5" fill="none"/>
+  <rect x="12" y="14" width="40" height="10" rx="4" fill="#0555FF" opacity="0.12"/>
+  <circle cx="20" cy="19" r="2" fill="#0555FF" opacity="0.35"/>
+  <circle cx="27" cy="19" r="2" fill="#0555FF" opacity="0.35"/>
+
+  <!-- Command lines -->
+  <path d="M19 30L24 34L19 38" stroke="#0555FF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="28" y="33" width="16" height="2.5" rx="1.25" fill="#0555FF" opacity="0.5"/>
+
+  <!-- AI sparkle -->
+  <path d="M44 16L45.2 19.8L49 21L45.2 22.2L44 26L42.8 22.2L39 21L42.8 19.8L44 16Z" fill="#0555FF"/>
+</svg>

@@ -1,0 +1,851 @@
+import assert from 'node:assert';
+import fs from 'node:fs';
+import {
+  type ActionScrollParam,
+  type DeviceAction,
+  type InterfaceType,
+  type LocateResultElement,
+  type Point,
+  type Size,
+  z,
+} from '@midscene/core';
+import {
+  type AbstractInterface,
+  type HarmonyDeviceInputOpt as CoreHarmonyDeviceInputOpt,
+  type HarmonyDeviceOpt as CoreHarmonyDeviceOpt,
+  type MobileInputPrimitives,
+  type PointerPoint,
+  createDefaultMobileActions,
+  defineAction,
+  resolveTextInputOptions,
+  sendTextSequentially,
+  shouldInputSequentially,
+} from '@midscene/core/device';
+import { getTmpFile, sleep } from '@midscene/core/utils';
+import type { ElementInfo } from '@midscene/shared/extractor';
+import { createImgBase64ByFormat } from '@midscene/shared/img';
+import { getDebug } from '@midscene/shared/logger';
+import {
+  mergeAndNormalizeAppNameMapping,
+  normalizeForComparison,
+  repeat,
+} from '@midscene/shared/utils';
+import { HdcClient } from './hdc';
+import { resolveHarmonyKeyCodes } from './keycode';
+
+type KeyboardDismissStrategy = 'esc-first' | 'back-first';
+
+export type HarmonyDeviceInputOpt = CoreHarmonyDeviceInputOpt & {
+  keyboardDismissStrategy?: KeyboardDismissStrategy;
+};
+
+export type HarmonyDeviceOpt = CoreHarmonyDeviceOpt & HarmonyDeviceInputOpt;
+
+const defaultScrollUntilTimes = 10;
+const defaultFastSwipeSpeed = 2000;
+const maxScrollDistance = 9999999;
+const scrollQuadrantDivisions = 4;
+// Minimum margin from screen edge for fling endpoints.
+// HarmonyOS uitest ignores fling gestures that end at exact screen boundaries.
+const screenEdgeMargin = 50;
+
+const debugDevice = getDebug('harmony:device');
+
+let screenshotResizeScaleWarned = false;
+
+export class HarmonyDevice implements AbstractInterface {
+  private deviceId: string;
+  private hdc: HdcClient | null = null;
+  private connecting: Promise<HdcClient> | null = null;
+  private destroyed = false;
+  private descriptionText: string | undefined;
+  private customActions?: DeviceAction<any>[];
+  private cachedScreenSize: { width: number; height: number } | null = null;
+  private appNameMapping: Record<string, string> = {};
+  private lastTapPosition: { x: number; y: number } | null = null;
+  interfaceType: InterfaceType = 'harmony';
+  uri: string | undefined;
+  options?: HarmonyDeviceOpt;
+
+  readonly inputPrimitives: MobileInputPrimitives = {
+    pointer: {
+      tap: (point) => this.tapPoint(point),
+      doubleClick: (point) => this.doubleTapPoint(point),
+      longPress: (point) => this.longPressPoint(point),
+      dragAndDrop: async (from, to) => {
+        const hdc = await this.getHdc();
+        await hdc.drag(from.x, from.y, to.x, to.y);
+      },
+    },
+    keyboard: {
+      keyboardPress: (keyName) => this.pressKey(keyName),
+      typeText: (value, opts) => {
+        const harmonyOpts = opts as
+          | (typeof opts & HarmonyDeviceInputOpt)
+          | undefined;
+        return harmonyOpts?.focusOnly
+          ? Promise.resolve()
+          : this.typeText(
+              value,
+              harmonyOpts?.target as LocateResultElement | undefined,
+              harmonyOpts?.replace ?? true,
+              {
+                autoDismissKeyboard: harmonyOpts?.autoDismissKeyboard,
+                keyboardDismissStrategy: harmonyOpts?.keyboardDismissStrategy,
+                keyboardTypeDelay: harmonyOpts?.keyboardTypeDelay,
+                inputStrategy: harmonyOpts?.inputStrategy,
+              },
+            );
+      },
+      clearInput: (target) =>
+        this.clearInput(target as ElementInfo | undefined),
+      cursorMove: async (direction, times = 1) => {
+        const arrowKey = direction === 'left' ? 'ArrowLeft' : 'ArrowRight';
+        for (let i = 0; i < times; i++) {
+          await this.pressKey(arrowKey);
+        }
+      },
+    },
+    touch: {
+      swipe: async (start, end, opts) => {
+        const duration = opts?.duration;
+        const repeatCount = opts?.repeat ?? 1;
+        const hdc = await this.getHdc();
+        for (let i = 0; i < repeatCount; i++) {
+          await hdc.swipe(
+            start.x,
+            start.y,
+            end.x,
+            end.y,
+            duration ? Math.round(duration) : undefined,
+          );
+        }
+      },
+    },
+    scroll: {
+      scroll: (param) => this.performActionScroll(param),
+    },
+  };
+
+  actionSpace(): DeviceAction<any>[] {
+    const mobileActionContext = {
+      input: this.inputPrimitives,
+      size: () => this.size(),
+      sleep: async (timeMs: number) => {
+        await sleep(timeMs);
+      },
+    };
+    const defaultActions = [...createDefaultMobileActions(mobileActionContext)];
+
+    const platformSpecificActions = Object.values(createPlatformActions(this));
+
+    const customActions = this.customActions ?? [];
+    return [...defaultActions, ...platformSpecificActions, ...customActions];
+  }
+
+  private async performActionScroll(param: ActionScrollParam): Promise<void> {
+    const element = param.locate;
+    const startingPoint = element
+      ? {
+          left: element.center[0],
+          top: element.center[1],
+        }
+      : undefined;
+    const scrollToEventName = param?.scrollType;
+    if (scrollToEventName === 'scrollToTop') {
+      await this.scrollUntilTop(startingPoint);
+    } else if (scrollToEventName === 'scrollToBottom') {
+      await this.scrollUntilBottom(startingPoint);
+    } else if (scrollToEventName === 'scrollToRight') {
+      await this.scrollUntilRight(startingPoint);
+    } else if (scrollToEventName === 'scrollToLeft') {
+      await this.scrollUntilLeft(startingPoint);
+    } else if (scrollToEventName === 'singleAction' || !scrollToEventName) {
+      if (param?.direction === 'down' || !param || !param.direction) {
+        await this.scrollDown(param?.distance ?? undefined, startingPoint);
+      } else if (param.direction === 'up') {
+        await this.scrollUp(param.distance ?? undefined, startingPoint);
+      } else if (param.direction === 'left') {
+        await this.scrollLeft(param.distance ?? undefined, startingPoint);
+      } else if (param.direction === 'right') {
+        await this.scrollRight(param.distance ?? undefined, startingPoint);
+      } else {
+        throw new Error(`Unknown scroll direction: ${param.direction}`);
+      }
+      await sleep(500);
+    } else {
+      throw new Error(
+        `Unknown scroll event type: ${scrollToEventName}, param: ${JSON.stringify(param)}`,
+      );
+    }
+  }
+
+  constructor(deviceId: string, options?: HarmonyDeviceOpt) {
+    assert(deviceId, 'deviceId is required for HarmonyDevice');
+
+    this.deviceId = deviceId;
+    this.options = options;
+    this.customActions = options?.customActions;
+
+    if (
+      options?.screenshotResizeScale !== undefined &&
+      !screenshotResizeScaleWarned
+    ) {
+      screenshotResizeScaleWarned = true;
+      console.warn(
+        '[midscene] screenshotResizeScale is deprecated. Use screenshotShrinkFactor in AgentOpt instead.',
+      );
+    }
+  }
+
+  describe(): string {
+    return this.descriptionText || `DeviceId: ${this.deviceId}`;
+  }
+
+  public async connect(): Promise<HdcClient> {
+    const hdc = await this.getHdc();
+    return hdc;
+  }
+
+  public async getHdc(): Promise<HdcClient> {
+    if (this.destroyed) {
+      throw new Error(
+        `HarmonyDevice ${this.deviceId} has been destroyed and cannot execute HDC commands`,
+      );
+    }
+
+    if (this.hdc) {
+      return this.hdc;
+    }
+
+    if (this.connecting) {
+      return this.connecting;
+    }
+
+    this.connecting = (async () => {
+      debugDevice(`Initializing HDC with device ID: ${this.deviceId}`);
+      try {
+        this.hdc = new HdcClient({
+          hdcPath: this.options?.hdcPath,
+          deviceId: this.deviceId,
+        });
+
+        const screenInfo = await this.hdc.getScreenInfo();
+        this.cachedScreenSize = screenInfo;
+
+        this.descriptionText = `DeviceId: ${this.deviceId}\nScreenSize: ${screenInfo.width}x${screenInfo.height}`;
+        debugDevice('HDC initialized successfully', this.descriptionText);
+        return this.hdc;
+      } catch (e) {
+        debugDevice(`Failed to initialize HDC: ${e}`);
+        throw new Error(`Unable to connect to device ${this.deviceId}: ${e}`);
+      } finally {
+        this.connecting = null;
+      }
+    })();
+
+    return this.connecting;
+  }
+
+  /**
+   * Set app-name aliases used by launch and terminate.
+   * Keys are normalized here so callers do not need to know the internal
+   * comparison format.
+   */
+  public setAppNameMapping(mapping: Record<string, string>): void {
+    this.appNameMapping = mergeAndNormalizeAppNameMapping({}, mapping);
+  }
+
+  private resolveMappedAppTarget(appName: string): string | undefined {
+    const normalizedAppName = normalizeForComparison(appName);
+    return this.appNameMapping[normalizedAppName];
+  }
+
+  private resolveBundleNameForTerminate(target: string): string {
+    const mappedTarget = this.resolveMappedAppTarget(target);
+    if (mappedTarget) return mappedTarget.split('/')[0];
+
+    const [bundleOrAppName] = target.split('/');
+    return (
+      this.resolveMappedAppTarget(bundleOrAppName) ?? bundleOrAppName
+    ).split('/')[0];
+  }
+
+  public async launch(uri: string): Promise<HarmonyDevice> {
+    const hdc = await this.getHdc();
+
+    this.uri = uri;
+
+    try {
+      debugDevice(`Launching app: ${uri}`);
+      // Preserve direct URI behavior while allowing mapped targets to use any
+      // launch shape supported by this method.
+      const target = uri.includes('://')
+        ? uri
+        : (this.resolveMappedAppTarget(uri) ?? uri);
+      if (target.includes('://')) {
+        // URI with scheme - use aa start -U
+        const sanitizedUri = target.replace(/[`$\\;"'|&<>(){}]/g, '');
+        await hdc.shell(`aa start -U ${sanitizedUri}`);
+      } else if (target.includes('/')) {
+        // Format: bundleName/abilityName
+        const [bundleName, abilityName] = target.split('/');
+        await hdc.startAbility(bundleName, abilityName);
+      } else {
+        // Bundle name or app name
+        await hdc.launchBundle(target);
+      }
+      debugDevice(`Successfully launched: ${uri}`);
+    } catch (error: any) {
+      debugDevice(`Error launching ${uri}: ${error}`);
+      throw new Error(`Failed to launch ${uri}: ${error.message}`, {
+        cause: error,
+      });
+    }
+
+    return this;
+  }
+
+  /**
+   * Terminate (force-stop) a HarmonyOS app by bundle name.
+   * Supports app name resolution via setAppNameMapping.
+   * If uri contains "/" (e.g. com.example.app/MainAbility), only the bundle part is used.
+   */
+  public async terminate(uri: string): Promise<void> {
+    const bundleName = this.resolveBundleNameForTerminate(uri);
+    const hdc = await this.getHdc();
+    try {
+      debugDevice(`Terminating app: ${bundleName}`);
+      await hdc.forceStop(bundleName);
+      debugDevice(`Successfully terminated: ${bundleName}`);
+    } catch (error: any) {
+      debugDevice(`Error terminating ${bundleName}: ${error}`);
+      throw new Error(`Failed to terminate ${bundleName}: ${error.message}`, {
+        cause: error,
+      });
+    }
+  }
+
+  async getScreenSize(): Promise<{ width: number; height: number }> {
+    if (this.cachedScreenSize) {
+      return this.cachedScreenSize;
+    }
+
+    const hdc = await this.getHdc();
+    const screenInfo = await hdc.getScreenInfo();
+    this.cachedScreenSize = screenInfo;
+    return screenInfo;
+  }
+
+  async size(): Promise<Size> {
+    const screenInfo = await this.getScreenSize();
+    return {
+      width: screenInfo.width,
+      height: screenInfo.height,
+    };
+  }
+
+  private remoteScreenshotPath = '/data/local/tmp/ms_screen.jpeg';
+  private localScreenshotPath: string | null = null;
+
+  async screenshotBase64(): Promise<string> {
+    debugDevice('screenshotBase64 begin');
+    const hdc = await this.getHdc();
+
+    if (!this.localScreenshotPath) {
+      this.localScreenshotPath = getTmpFile('jpeg')!;
+    }
+
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Take screenshot on device (reuse fixed path, no per-frame cleanup needed)
+      const snapshotOutput = await hdc.screenshot(this.remoteScreenshotPath);
+
+      // Update cached screen size from actual screenshot dimensions.
+      // Foldable screens may report different sizes in hidumper vs the actual
+      // active display, so snapshot_display output is the source of truth.
+      const dimMatch = snapshotOutput.match(/width\s+(\d+),\s*height\s+(\d+)/);
+      if (dimMatch) {
+        const w = Number.parseInt(dimMatch[1], 10);
+        const h = Number.parseInt(dimMatch[2], 10);
+        if (
+          this.cachedScreenSize &&
+          (this.cachedScreenSize.width !== w ||
+            this.cachedScreenSize.height !== h)
+        ) {
+          debugDevice(
+            `Screen size changed: ${this.cachedScreenSize.width}x${this.cachedScreenSize.height} -> ${w}x${h}`,
+          );
+          this.cachedScreenSize = { width: w, height: h };
+        }
+      }
+
+      // Pull to local (overwrites the same local file each time)
+      await hdc.fileRecv(this.remoteScreenshotPath, this.localScreenshotPath);
+
+      // Read file
+      const screenshotBuffer = await fs.promises.readFile(
+        this.localScreenshotPath,
+      );
+
+      if (screenshotBuffer && screenshotBuffer.length > 0) {
+        debugDevice(`Screenshot captured: ${screenshotBuffer.length} bytes`);
+        return createImgBase64ByFormat(
+          'jpeg',
+          screenshotBuffer.toString('base64'),
+        );
+      }
+
+      debugDevice(
+        `Screenshot buffer empty (attempt ${attempt}/${maxAttempts})`,
+      );
+      if (attempt < maxAttempts) {
+        await sleep(200);
+      }
+    }
+
+    throw new Error('Screenshot buffer is empty after retries');
+  }
+
+  private async tapPoint(point: PointerPoint): Promise<void> {
+    this.lastTapPosition = { x: point.x, y: point.y };
+    const hdc = await this.getHdc();
+    await hdc.click(point.x, point.y);
+  }
+
+  private async doubleTapPoint(point: PointerPoint): Promise<void> {
+    const hdc = await this.getHdc();
+    await hdc.doubleClick(point.x, point.y);
+  }
+
+  private async longPressPoint(point: PointerPoint): Promise<void> {
+    const hdc = await this.getHdc();
+    await hdc.longClick(point.x, point.y);
+  }
+
+  private async typeText(
+    text: string,
+    element?: LocateResultElement,
+    shouldReplace?: boolean,
+    options?: HarmonyDeviceInputOpt,
+  ): Promise<void> {
+    if (!text) return;
+
+    const resolvedInputOptions = resolveTextInputOptions(options, this.options);
+    const hdc = await this.getHdc();
+    const typeDelay = resolvedInputOptions.keyboardTypeDelay;
+    const inputSequentially = shouldInputSequentially(resolvedInputOptions);
+    let x: number;
+    let y: number;
+
+    if (element) {
+      [x, y] = element.center;
+    } else if (this.lastTapPosition) {
+      x = this.lastTapPosition.x;
+      y = this.lastTapPosition.y;
+    } else {
+      const { width, height } = await this.size();
+      x = Math.round(width / 2);
+      y = Math.round(height / 2);
+    }
+
+    if (shouldReplace) {
+      // Focus the field, select all text, then delete the selection.
+      await hdc.click(x, y);
+      await sleep(100);
+      await hdc.clearTextField();
+      await sleep(100);
+    }
+
+    if (inputSequentially) {
+      // Type one character at a time with a delay between keystrokes.
+      // `uitest uiInput inputText x y text` uses (x, y) to identify the target
+      // component, not to position the text cursor. Once the field is focused,
+      // repeated calls at the same coordinates append to the existing content
+      // rather than repositioning the cursor. Verified on real device:
+      // character order is preserved and no characters are lost.
+      await sendTextSequentially(
+        text,
+        {
+          sendCharacter: (character) => hdc.inputText(x, y, character),
+          wait: sleep,
+        },
+        {
+          delayMs: typeDelay,
+          delayAfterLast: resolvedInputOptions.inputStrategy === 'legacy',
+        },
+      );
+    } else {
+      await hdc.inputText(x, y, text);
+    }
+
+    const shouldAutoDismissKeyboard =
+      options?.autoDismissKeyboard ?? this.options?.autoDismissKeyboard ?? true;
+
+    if (shouldAutoDismissKeyboard) {
+      await this.hideKeyboard(options);
+    }
+  }
+
+  async clearInput(element?: ElementInfo): Promise<void> {
+    const hdc = await this.getHdc();
+
+    if (element) {
+      await hdc.click(element.center[0], element.center[1]);
+      await sleep(100);
+    }
+
+    await hdc.clearTextField();
+  }
+
+  private async pressKey(key: string): Promise<void> {
+    const keyCodes = resolveHarmonyKeyCodes(key);
+    const hdc = await this.getHdc();
+    await hdc.keyEvent(...keyCodes);
+  }
+
+  async scroll(deltaX: number, deltaY: number, speed?: number): Promise<void> {
+    if (deltaX === 0 && deltaY === 0) {
+      throw new Error('Scroll distance cannot be zero in both directions');
+    }
+
+    const { width, height } = await this.size();
+    const n = scrollQuadrantDivisions;
+
+    const startX = Math.round(deltaX < 0 ? (n - 1) * (width / n) : width / n);
+    const startY = Math.round(deltaY < 0 ? (n - 1) * (height / n) : height / n);
+
+    const maxPositiveDeltaX = startX;
+    const maxNegativeDeltaX = width - startX;
+    const maxPositiveDeltaY = startY;
+    const maxNegativeDeltaY = height - startY;
+
+    deltaX = Math.max(-maxNegativeDeltaX, Math.min(deltaX, maxPositiveDeltaX));
+    deltaY = Math.max(-maxNegativeDeltaY, Math.min(deltaY, maxPositiveDeltaY));
+
+    const endX = Math.round(
+      Math.max(
+        screenEdgeMargin,
+        Math.min(width - screenEdgeMargin, startX - deltaX),
+      ),
+    );
+    const endY = Math.round(
+      Math.max(
+        screenEdgeMargin,
+        Math.min(height - screenEdgeMargin, startY - deltaY),
+      ),
+    );
+
+    const hdc = await this.getHdc();
+    await hdc.fling(startX, startY, endX, endY, speed ?? defaultFastSwipeSpeed);
+  }
+
+  private async scrollInDirection(
+    direction: 'up' | 'down' | 'left' | 'right',
+    distance?: number,
+    startPoint?: Point,
+  ): Promise<void> {
+    const { width, height } = await this.size();
+    const isVertical = direction === 'up' || direction === 'down';
+    const scrollDistance = Math.round(
+      distance ?? (isVertical ? height : width),
+    );
+
+    if (startPoint) {
+      const hdc = await this.getHdc();
+      const sx = Math.round(startPoint.left);
+      const sy = Math.round(startPoint.top);
+
+      const endPoints = {
+        down: { x: sx, y: Math.max(screenEdgeMargin, sy - scrollDistance) },
+        up: {
+          x: sx,
+          y: Math.min(height - screenEdgeMargin, sy + scrollDistance),
+        },
+        left: {
+          x: Math.min(width - screenEdgeMargin, sx + scrollDistance),
+          y: sy,
+        },
+        right: { x: Math.max(screenEdgeMargin, sx - scrollDistance), y: sy },
+      } as const;
+
+      const end = endPoints[direction];
+      await hdc.fling(sx, sy, end.x, end.y, defaultFastSwipeSpeed);
+      return;
+    }
+
+    const deltas = {
+      down: [0, scrollDistance],
+      up: [0, -scrollDistance],
+      left: [-scrollDistance, 0],
+      right: [scrollDistance, 0],
+    } as const;
+
+    const [dx, dy] = deltas[direction];
+    await this.scroll(dx, dy);
+  }
+
+  async scrollDown(distance?: number, startPoint?: Point): Promise<void> {
+    await this.scrollInDirection('down', distance, startPoint);
+  }
+
+  async scrollUp(distance?: number, startPoint?: Point): Promise<void> {
+    await this.scrollInDirection('up', distance, startPoint);
+  }
+
+  async scrollLeft(distance?: number, startPoint?: Point): Promise<void> {
+    await this.scrollInDirection('left', distance, startPoint);
+  }
+
+  async scrollRight(distance?: number, startPoint?: Point): Promise<void> {
+    await this.scrollInDirection('right', distance, startPoint);
+  }
+
+  private async scrollUntilEdge(
+    direction: 'up' | 'down' | 'left' | 'right',
+    startPoint?: Point,
+  ): Promise<void> {
+    if (startPoint) {
+      const { width, height } = await this.size();
+      const hdc = await this.getHdc();
+      const sx = Math.round(startPoint.left);
+      const sy = Math.round(startPoint.top);
+
+      const flingTargets = {
+        up: { x: sx, y: Math.round(height) - screenEdgeMargin },
+        down: { x: sx, y: screenEdgeMargin },
+        left: { x: Math.round(width) - screenEdgeMargin, y: sy },
+        right: { x: screenEdgeMargin, y: sy },
+      } as const;
+
+      const target = flingTargets[direction];
+      await repeat(defaultScrollUntilTimes, () =>
+        hdc.fling(sx, sy, target.x, target.y, defaultFastSwipeSpeed),
+      );
+      await sleep(1000);
+      return;
+    }
+
+    const deltas = {
+      up: [0, -maxScrollDistance],
+      down: [0, maxScrollDistance],
+      left: [-maxScrollDistance, 0],
+      right: [maxScrollDistance, 0],
+    } as const;
+
+    const [dx, dy] = deltas[direction];
+    await repeat(defaultScrollUntilTimes, () =>
+      this.scroll(dx, dy, defaultFastSwipeSpeed),
+    );
+    await sleep(1000);
+  }
+
+  async scrollUntilTop(startPoint?: Point): Promise<void> {
+    await this.scrollUntilEdge('up', startPoint);
+  }
+
+  async scrollUntilBottom(startPoint?: Point): Promise<void> {
+    await this.scrollUntilEdge('down', startPoint);
+  }
+
+  async scrollUntilLeft(startPoint?: Point): Promise<void> {
+    await this.scrollUntilEdge('left', startPoint);
+  }
+
+  async scrollUntilRight(startPoint?: Point): Promise<void> {
+    await this.scrollUntilEdge('right', startPoint);
+  }
+
+  async back(): Promise<void> {
+    const hdc = await this.getHdc();
+    await hdc.keyEvent('Back');
+  }
+
+  async home(): Promise<void> {
+    const hdc = await this.getHdc();
+    await hdc.keyEvent('Home');
+  }
+
+  async recentApps(): Promise<void> {
+    const hdc = await this.getHdc();
+    // HarmonyOS NEXT devices use this system event for Recent Apps. The public
+    // KEYCODE_VIRTUAL_MULTITASK (2210) is accepted but does not open the app
+    // switcher on the Huawei devices covered by our physical-device tests.
+    await hdc.keyEvent('10011');
+  }
+
+  async hideKeyboard(options?: HarmonyDeviceInputOpt): Promise<void> {
+    const hdc = await this.getHdc();
+    const keyboardDismissStrategy =
+      options?.keyboardDismissStrategy ??
+      this.options?.keyboardDismissStrategy ??
+      'esc-first';
+    if (keyboardDismissStrategy === 'back-first') {
+      await hdc.keyEvent('Back');
+      return;
+    }
+    await hdc.keyEvent(...resolveHarmonyKeyCodes('Escape'));
+  }
+
+  /**
+   * Get the current device-local time as a formatted string.
+   * This avoids formatting a device timestamp in the host machine's timezone.
+   */
+  async getDeviceLocalTimeString(
+    format = 'YYYY-MM-DD HH:mm:ss',
+  ): Promise<string> {
+    const hdc = await this.getHdc();
+    try {
+      const stdout = await hdc.shell('date +%Y-%m-%dT%H:%M:%S');
+      const match = stdout
+        .trim()
+        .match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/);
+
+      if (!match) {
+        throw new Error(`Invalid device time format: ${stdout}`);
+      }
+
+      const [, year, month, day, hours, minutes, seconds] = match;
+      const timeString = format
+        .replace('YYYY', year)
+        .replace('MM', month)
+        .replace('DD', day)
+        .replace('HH', hours)
+        .replace('mm', minutes)
+        .replace('ss', seconds);
+
+      debugDevice(`Got device local time: ${timeString}`);
+      return `${timeString} (${format})`;
+    } catch (error) {
+      debugDevice(`Failed to get device local time: ${error}`);
+      throw new Error(`Failed to get device local time: ${error}`);
+    }
+  }
+
+  async destroy(): Promise<void> {
+    if (this.destroyed) {
+      return;
+    }
+
+    this.destroyed = true;
+    this.cachedScreenSize = null;
+    this.hdc = null;
+    this.connecting = null;
+  }
+}
+
+const runHdcShellParamSchema = z.object({
+  command: z.string().describe('HDC shell command to execute'),
+});
+
+const launchParamSchema = z.object({
+  uri: z
+    .string()
+    .describe(
+      'App name, bundle name, or URL to launch. Prioritize using the exact bundle name or URL the user has provided. If none provided, use the accurate app name.',
+    ),
+});
+
+const terminateParamSchema = z.object({
+  uri: z
+    .string()
+    .describe(
+      'Bundle name or app name to terminate. Prioritize using the exact bundle name the user provided. If the bundle is unknown, use the accurate app name shown on screen, such as Settings or Music.',
+    ),
+});
+
+type RunHdcShellParam = z.infer<typeof runHdcShellParamSchema>;
+type LaunchParam = z.infer<typeof launchParamSchema>;
+type TerminateParam = z.infer<typeof terminateParamSchema>;
+
+export type DeviceActionRunHdcShell = DeviceAction<RunHdcShellParam, string>;
+export type DeviceActionLaunch = DeviceAction<LaunchParam, void>;
+export type DeviceActionTerminate = DeviceAction<TerminateParam, void>;
+
+const createPlatformActions = (
+  device: HarmonyDevice,
+): {
+  RunHdcShell: DeviceActionRunHdcShell;
+  Launch: DeviceActionLaunch;
+  Terminate: DeviceActionTerminate;
+  HarmonyBackButton: DeviceActionHarmonyBackButton;
+  HarmonyHomeButton: DeviceActionHarmonyHomeButton;
+  HarmonyRecentAppsButton: DeviceActionHarmonyRecentAppsButton;
+} => {
+  return {
+    RunHdcShell: defineAction<
+      typeof runHdcShellParamSchema,
+      RunHdcShellParam,
+      string
+    >({
+      name: 'RunHdcShell',
+      description: 'Execute HDC shell command on HarmonyOS device',
+      interfaceAlias: 'runHdcShell',
+      paramSchema: runHdcShellParamSchema,
+      sample: {
+        command: 'hidumper -s WindowManagerService -a',
+      },
+      call: async (param) => {
+        if (!param.command || param.command.trim() === '') {
+          throw new Error('RunHdcShell requires a non-empty command parameter');
+        }
+        const hdc = await device.getHdc();
+        return await hdc.shell(param.command);
+      },
+    }),
+    Launch: defineAction<typeof launchParamSchema, LaunchParam, void>({
+      name: 'Launch',
+      description: 'Launch a HarmonyOS app or URL',
+      interfaceAlias: 'launch',
+      paramSchema: launchParamSchema,
+      sample: {
+        uri: 'com.example.app',
+      },
+      call: async (param) => {
+        if (!param.uri || param.uri.trim() === '') {
+          throw new Error('Launch requires a non-empty uri parameter');
+        }
+        await device.launch(param.uri);
+      },
+    }),
+    Terminate: defineAction<typeof terminateParamSchema, TerminateParam, void>({
+      name: 'Terminate',
+      description:
+        'Terminate (force-stop) a HarmonyOS app by bundle name or mapped app name',
+      interfaceAlias: 'terminate',
+      paramSchema: terminateParamSchema,
+      call: async (param) => {
+        if (!param.uri || param.uri.trim() === '') {
+          throw new Error('Terminate requires a non-empty uri parameter');
+        }
+        await device.terminate(param.uri);
+      },
+    }),
+    HarmonyBackButton: defineAction({
+      name: 'HarmonyBackButton',
+      description: 'Trigger the system "back" operation on HarmonyOS devices',
+      call: async () => {
+        await device.back();
+      },
+    }),
+    HarmonyHomeButton: defineAction({
+      name: 'HarmonyHomeButton',
+      description: 'Trigger the system "home" operation on HarmonyOS devices',
+      call: async () => {
+        await device.home();
+      },
+    }),
+    HarmonyRecentAppsButton: defineAction({
+      name: 'HarmonyRecentAppsButton',
+      description:
+        'Trigger the system "recent apps" operation on HarmonyOS devices',
+      call: async () => {
+        await device.recentApps();
+      },
+    }),
+  } as const;
+};
+
+export type DeviceActionHarmonyBackButton = DeviceAction<undefined, void>;
+export type DeviceActionHarmonyHomeButton = DeviceAction<undefined, void>;
+export type DeviceActionHarmonyRecentAppsButton = DeviceAction<undefined, void>;

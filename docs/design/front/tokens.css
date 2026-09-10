@@ -1,5 +1,5 @@
 /*
- * 识途 · 前端设计基线 v1.0
+ * 识途 · 前端设计基线 v1.2
  * 浅色主题。供规范、视觉样本与 packages/web 共用。
  * packages/web/styles/theme.css 直接导入本文件，不并行维护第二套主题。
  */
@@ -32,7 +32,8 @@
   --surface-page: #f1f4fa;
   --surface-card: #ffffff;
   --surface-header: #f8fafc;
-  --surface-control: #f7f9fc;
+  /* 输入与卡片同色纯白。靠边界识别，不另铺浅灰或冷白底。 */
+  --surface-control: var(--surface-card);
   --surface-subtle: #f1f5f9;
 
   /* 画布顶部光晕。只铺在内容区，不参与任何前景对比度计算。 */

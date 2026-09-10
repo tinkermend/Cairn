@@ -1,0 +1,234 @@
+import { readFileSync } from 'node:fs';
+import { basename, dirname, extname, resolve } from 'node:path';
+import { cwd } from 'node:process';
+import type {
+  MidsceneYamlConfig,
+  MidsceneYamlTargetConfig,
+} from '@midscene/core';
+import { interpolateEnvVars, resolveWebTarget } from '@midscene/core/yaml';
+import { load as yamlLoad } from 'js-yaml';
+import merge from 'lodash.merge';
+import type { BatchRunnerConfig } from './batch-runner';
+import { matchYamlFiles } from './cli-utils';
+import { defaultConfig, pickYamlTargetConfig } from './config-options';
+
+export { defaultConfig } from './config-options';
+
+export type ConfigFactoryOptions = MidsceneYamlTargetConfig & {
+  concurrent?: number;
+  continueOnError?: boolean;
+  retry?: number;
+  summary?: string;
+  shareBrowserContext?: boolean;
+  headed?: boolean;
+  keepWindow?: boolean;
+  dotenvOverride?: boolean;
+  dotenvDebug?: boolean;
+  files?: string[];
+  setup?: string;
+};
+
+export type ParsedConfig = MidsceneYamlTargetConfig & {
+  concurrent: number;
+  continueOnError: boolean;
+  retry: number;
+  summary: string;
+  shareBrowserContext: boolean;
+  files: string[];
+  setup?: string;
+  patterns: string[]; // Keep patterns for reference
+  headed: boolean;
+  keepWindow: boolean;
+  dotenvOverride: boolean;
+  dotenvDebug: boolean;
+};
+
+async function expandFilePatterns(
+  patterns: string[],
+  basePath: string,
+): Promise<string[]> {
+  const allFiles: string[] = [];
+
+  for (const pattern of patterns) {
+    try {
+      const yamlFiles = await matchYamlFiles(pattern, {
+        cwd: basePath,
+      });
+
+      // Add all matched files, including duplicates
+      // This allows users to execute the same file multiple times
+      for (const file of yamlFiles) {
+        allFiles.push(file);
+      }
+    } catch (error) {
+      console.warn(`Warning: Failed to expand pattern "${pattern}":`, error);
+    }
+  }
+
+  return allFiles;
+}
+
+/**
+ * Resolve the optional single setup file. It supports glob/relative paths like
+ * the main files, but must reference exactly one file.
+ */
+async function resolveSetupFile(
+  setup: string | undefined,
+  basePath: string,
+): Promise<string | undefined> {
+  if (!setup) {
+    return undefined;
+  }
+  const matched = await expandFilePatterns([setup], basePath);
+  if (matched.length === 0) {
+    throw new Error(`No YAML file found matching "setup": ${setup}`);
+  }
+  if (matched.length > 1) {
+    throw new Error(
+      `"setup" must reference a single YAML file, but "${setup}" matched ${matched.length} files`,
+    );
+  }
+  return matched[0];
+}
+
+export async function parseConfigYaml(
+  configYamlPath: string,
+): Promise<ParsedConfig> {
+  const basePath = dirname(resolve(configYamlPath));
+  const configContent = readFileSync(configYamlPath, 'utf8');
+  const interpolatedContent = interpolateEnvVars(configContent);
+  let configYaml: MidsceneYamlConfig;
+  try {
+    configYaml = yamlLoad(interpolatedContent) as MidsceneYamlConfig;
+  } catch (error) {
+    throw new Error(`Failed to parse config YAML: ${error}`);
+  }
+
+  if (!configYaml?.files || !Array.isArray(configYaml?.files)) {
+    throw new Error('Config YAML must contain a "files" array');
+  }
+
+  resolveWebTarget(configYaml);
+
+  // Expand file patterns using glob
+  const files = await expandFilePatterns(configYaml?.files, basePath);
+
+  // Validate that at least one file was found
+  if (files.length === 0) {
+    throw new Error('No YAML files found matching the patterns in "files"');
+  }
+
+  // Resolve the optional setup file (runs before the main files)
+  const setup = await resolveSetupFile(configYaml.setup, basePath);
+
+  // Generate default summary filename
+  const configFileName = basename(configYamlPath, extname(configYamlPath));
+  const timestamp = Date.now();
+  const defaultSummary = `${configFileName}-${timestamp}.json`;
+
+  // Build parsed configuration from file only
+  const config: ParsedConfig = {
+    ...pickYamlTargetConfig(configYaml),
+    concurrent: configYaml.concurrent ?? defaultConfig.concurrent,
+    continueOnError:
+      configYaml.continueOnError ?? defaultConfig.continueOnError,
+    retry: configYaml.retry ?? defaultConfig.retry,
+    summary: configYaml.summary ?? defaultSummary,
+    shareBrowserContext:
+      configYaml.shareBrowserContext ?? defaultConfig.shareBrowserContext,
+    patterns: configYaml.files,
+    files,
+    setup,
+    headed: configYaml.headed ?? defaultConfig.headed,
+    keepWindow: configYaml.keepWindow ?? defaultConfig.keepWindow,
+    dotenvOverride: configYaml.dotenvOverride ?? defaultConfig.dotenvOverride,
+    dotenvDebug: configYaml.dotenvDebug ?? defaultConfig.dotenvDebug,
+  };
+
+  return config;
+}
+
+export async function createConfig(
+  configYamlPath: string,
+  options?: ConfigFactoryOptions,
+): Promise<BatchRunnerConfig> {
+  const parsedConfig = await parseConfigYaml(configYamlPath);
+  const globalConfig = merge(
+    pickYamlTargetConfig(parsedConfig),
+    pickYamlTargetConfig(options ?? {}),
+  );
+
+  // Apply command line overrides with higher priority than file configuration
+  const keepWindow = options?.keepWindow ?? parsedConfig.keepWindow;
+  const headed = options?.headed ?? parsedConfig.headed;
+
+  // If keepWindow is true, automatically enable headed mode
+  const finalHeaded = keepWindow || headed;
+
+  // If files are provided via command line, expand them and use those instead of config files
+  let files = parsedConfig.files;
+  if (options?.files && options.files.length > 0) {
+    const basePath = dirname(resolve(configYamlPath));
+    files = await expandFilePatterns(options.files, basePath);
+  }
+
+  // Command-line setup, when provided, overrides the config file one.
+  let setup = parsedConfig.setup;
+  if (options?.setup) {
+    const basePath = dirname(resolve(configYamlPath));
+    setup = await resolveSetupFile(options.setup, basePath);
+  }
+
+  const shareBrowserContext =
+    options?.shareBrowserContext ?? parsedConfig.shareBrowserContext;
+
+  return {
+    files,
+    setup,
+    concurrent: options?.concurrent ?? parsedConfig.concurrent,
+    continueOnError: options?.continueOnError ?? parsedConfig.continueOnError,
+    retry: options?.retry ?? parsedConfig.retry,
+    summary: options?.summary ?? parsedConfig.summary,
+    shareBrowserContext,
+    headed: finalHeaded,
+    keepWindow: keepWindow,
+    dotenvOverride: options?.dotenvOverride ?? parsedConfig.dotenvOverride,
+    dotenvDebug: options?.dotenvDebug ?? parsedConfig.dotenvDebug,
+    globalConfig,
+  };
+}
+
+export async function createFilesConfig(
+  patterns: string[],
+  options: ConfigFactoryOptions = {},
+): Promise<BatchRunnerConfig> {
+  const files = await expandFilePatterns(patterns, cwd());
+  const setup = await resolveSetupFile(options.setup, cwd());
+  // Generate default summary filename if not provided
+  const timestamp = Date.now();
+  const defaultSummary = `summary-${timestamp}.json`;
+
+  const keepWindow = options.keepWindow ?? defaultConfig.keepWindow;
+  const headed = options.headed ?? defaultConfig.headed;
+
+  // If keepWindow is true, automatically enable headed mode
+  const finalHeaded = keepWindow || headed;
+
+  const shareBrowserContext =
+    options.shareBrowserContext ?? defaultConfig.shareBrowserContext;
+
+  return {
+    files,
+    setup,
+    concurrent: options.concurrent ?? defaultConfig.concurrent,
+    continueOnError: options.continueOnError ?? defaultConfig.continueOnError,
+    retry: options.retry ?? defaultConfig.retry,
+    summary: options.summary ?? defaultSummary,
+    shareBrowserContext,
+    headed: finalHeaded,
+    keepWindow: keepWindow,
+    dotenvOverride: options.dotenvOverride ?? defaultConfig.dotenvOverride,
+    dotenvDebug: options.dotenvDebug ?? defaultConfig.dotenvDebug,
+    globalConfig: pickYamlTargetConfig(options),
+  };
+}

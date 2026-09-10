@@ -1,6 +1,6 @@
 import { Global, Inject, Module, type OnApplicationShutdown } from '@nestjs/common'
 import { createDb, type DbHandle } from '@cairn/db'
-import { loadDbEnv } from '../config/env'
+import { resolveDbEnv } from '../config/env'
 
 export const DB_HANDLE = Symbol('DB_HANDLE')
 
@@ -17,7 +17,7 @@ export const DB_HANDLE = Symbol('DB_HANDLE')
  */
 @Global()
 @Module({
-  providers: [{ provide: DB_HANDLE, useFactory: (): DbHandle => createDb(loadDbEnv()) }],
+  providers: [{ provide: DB_HANDLE, useFactory: (): DbHandle => createDb(resolveDbEnv()) }],
   exports: [DB_HANDLE],
 })
 export class DbModule implements OnApplicationShutdown {

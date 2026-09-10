@@ -1,0 +1,856 @@
+import Icon, {
+  ClearOutlined,
+  LoadingOutlined,
+  ArrowDownOutlined,
+  UpOutlined,
+} from '@ant-design/icons';
+import { Alert, Button, Form, List, Tooltip } from 'antd';
+import type { ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePlaygroundExecution } from '../../hooks/usePlaygroundExecution';
+import { usePlaygroundState } from '../../hooks/usePlaygroundState';
+import { useTextTruncation } from '../../hooks/useTextTruncation';
+import { useEnvConfig } from '../../store/store';
+import type { FormValue, UniversalPlaygroundProps } from '../../types';
+import { notifyError } from '../../utils';
+import { ContextPreview } from '../context-preview';
+import { EnvConfigReminder } from '../env-config-reminder';
+import { PlaygroundResultView } from '../playground-result';
+import './index.less';
+import PlaygroundIcon from '../../icons/avatar.svg';
+import { defaultMainButtons } from '../../utils/constants';
+import { calculateEmptyStatePromptScrollTop } from '../../utils/empty-state-scroll';
+import {
+  defaultProgressErrorIcon,
+  resolveProgressActionIcon,
+} from '../../utils/progress-action-icon';
+import { shouldOffsetEmptyStateForPromptInput } from '../../utils/prompt-input-utils';
+import { PromptInput } from '../prompt-input';
+import ShinyText from '../shiny-text';
+import {
+  shouldRenderCustomEmptyState,
+  shouldShowTimelineActions,
+} from './empty-state';
+import {
+  preparePlaygroundExecution,
+  shouldExecuteExternalRunRequest,
+} from './external-run';
+import { getLastProgressItemIdsByGroup } from './progress-groups';
+import {
+  createStorageProvider,
+  detectBestStorageType,
+} from './providers/storage-provider';
+import { shouldShowOutputAlongsideReport } from './result-display';
+
+const handledExternalRunRequestIds = new Set<string>();
+const MAX_HANDLED_EXTERNAL_RUN_REQUEST_IDS = 100;
+
+// Function to get stable ID for SDK (adapter-driven)
+function getSDKId(sdk: any): string {
+  // Handle null/undefined SDK
+  if (!sdk) {
+    return 'playground-default';
+  }
+  // Primary: Use adapter ID if available (works for both remote and local)
+  if (sdk.id && typeof sdk.id === 'string') {
+    return `agent-${sdk.id}`;
+  }
+  // Fallback: Use default when ID is not available
+  return 'playground-default';
+}
+
+function ErrorMessage({ error }: { error: string }) {
+  if (!error) return null;
+  // Ensure only one "Error: " prefix and style it red
+  const cleanError = error.replace(/^(Error:\s*)+/, 'Error: ');
+  return (
+    <Alert
+      message={<span style={{ color: '#ff4d4f' }}>{cleanError}</span>}
+      type="error"
+      showIcon
+    />
+  );
+}
+
+function ProgressRowContent({
+  action,
+  content,
+  description,
+  error,
+  shouldShowLoading,
+}: {
+  action: string;
+  content: string;
+  description: string;
+  error?: string | null;
+  shouldShowLoading: boolean;
+}) {
+  const { ref, truncated } = useTextTruncation<HTMLDivElement>(
+    content,
+    'multi-line',
+  );
+
+  const copy = (
+    <div className="progress-row-content">
+      <div className="progress-row-copy" ref={ref}>
+        {action ? <span className="progress-action-item">{action}</span> : null}
+        {description ? (
+          <div className="progress-description-wrap">
+            {shouldShowLoading ? (
+              <ShinyText text={description} className="progress-description" />
+            ) : (
+              <span className="progress-description">{description}</span>
+            )}
+          </div>
+        ) : null}
+      </div>
+      {error && <ErrorMessage error={error} />}
+    </div>
+  );
+
+  return truncated ? <Tooltip title={content}>{copy}</Tooltip> : copy;
+}
+
+export function UniversalPlayground({
+  playgroundSDK,
+  storage,
+  contextProvider,
+  config: componentConfig = {},
+  envConfigReminderProps,
+  branding = {},
+  className = '',
+  dryMode = false,
+  showContextPreview = true,
+}: UniversalPlaygroundProps) {
+  const [form] = Form.useForm();
+  const { config } = useEnvConfig();
+  const [sdkReady, setSdkReady] = useState(false);
+  const lastExternalRunRequestIdRef = useRef<string | null>(null);
+
+  // Initialize SDK ID on mount for remote execution
+  useEffect(() => {
+    const initializeSDK = async () => {
+      if (playgroundSDK && typeof playgroundSDK.checkStatus === 'function') {
+        try {
+          await playgroundSDK.checkStatus();
+          setSdkReady(true);
+        } catch (error) {
+          console.warn(
+            'Failed to initialize SDK, using default namespace:',
+            error,
+          );
+          setSdkReady(true); // Still proceed with default
+        }
+      } else {
+        setSdkReady(true); // For local execution, no need to wait
+      }
+    };
+
+    initializeSDK();
+  }, [playgroundSDK]);
+
+  // Use custom hooks for state management
+  // Keep an explicitly configured namespace independent from the SDK. Hosts
+  // such as the browser extension can recreate an SDK when its target changes
+  // without replacing the storage provider (and resetting the conversation).
+  const configuredStorageNamespace = componentConfig.storageNamespace;
+  const sdkStorageNamespace = configuredStorageNamespace
+    ? undefined
+    : getSDKId(playgroundSDK);
+
+  // Determine the storage provider based on configuration
+  const effectiveStorage = useMemo(() => {
+    if (componentConfig.persistMessages === false) {
+      return null;
+    }
+
+    // If external storage is provided, use it
+    if (storage) {
+      return storage;
+    }
+
+    // Wait for SDK to be ready before creating storage
+    if (!sdkReady) {
+      return null;
+    }
+
+    // Otherwise, create the best available storage provider with unique namespace
+    // Priority: explicit storageNamespace > auto-generated SDK ID
+    const namespace = configuredStorageNamespace || sdkStorageNamespace;
+
+    // Detect and use the best available storage type
+    const bestStorageType = detectBestStorageType();
+    console.log(`Using ${bestStorageType} storage for namespace: ${namespace}`);
+
+    return createStorageProvider(bestStorageType, namespace);
+  }, [
+    storage,
+    sdkReady,
+    configuredStorageNamespace,
+    componentConfig.persistMessages,
+    sdkStorageNamespace,
+  ]);
+
+  const {
+    loading,
+    setLoading,
+    infoList,
+    setInfoList,
+    actionSpace,
+    actionSpaceLoading,
+    uiContextPreview,
+    setUiContextPreview,
+    showScrollToBottomButton,
+    verticalMode,
+    replayCounter,
+    setReplayCounter,
+    messagesInitialized,
+    infoListRef,
+    currentRunningIdRef,
+    interruptedFlagRef,
+    clearInfoList,
+    handleScrollToBottom,
+  } = usePlaygroundState(
+    playgroundSDK,
+    effectiveStorage,
+    contextProvider,
+    branding.targetName,
+    componentConfig.persistMessages !== false &&
+      !componentConfig.storageNamespace,
+  );
+
+  // Use execution hook
+  const {
+    handleRun: executeAction,
+    handleStop,
+    cancelCurrentExecution,
+    canStop,
+  } = usePlaygroundExecution({
+    playgroundSDK,
+    storage: effectiveStorage,
+    actionSpace,
+    loading,
+    setLoading,
+    setInfoList,
+    replayCounter,
+    setReplayCounter,
+    verticalMode,
+    currentRunningIdRef,
+    interruptedFlagRef,
+    deviceType: componentConfig.deviceType,
+  });
+  const cancelCurrentExecutionRef = useRef(cancelCurrentExecution);
+  const onExecutionStatusChangeRef = useRef(
+    componentConfig.onExecutionStatusChange,
+  );
+  const onBeforeExecutionStartRef = useRef(
+    componentConfig.onBeforeExecutionStart,
+  );
+  const executionScopeKey = componentConfig.executionScopeKey ?? null;
+  const previousExecutionScopeKeyRef = useRef(executionScopeKey);
+
+  useEffect(() => {
+    cancelCurrentExecutionRef.current = cancelCurrentExecution;
+  }, [cancelCurrentExecution]);
+
+  useEffect(() => {
+    onExecutionStatusChangeRef.current =
+      componentConfig.onExecutionStatusChange;
+  }, [componentConfig.onExecutionStatusChange]);
+
+  useEffect(() => {
+    onBeforeExecutionStartRef.current = componentConfig.onBeforeExecutionStart;
+  }, [componentConfig.onBeforeExecutionStart]);
+
+  const prepareExecution = useCallback(
+    () =>
+      preparePlaygroundExecution({
+        clearTimeline: clearInfoList,
+        clearTimelineBeforeRun: componentConfig.clearTimelineBeforeRun,
+        onBeforeExecutionStart: onBeforeExecutionStartRef.current,
+      }),
+    [clearInfoList, componentConfig.clearTimelineBeforeRun],
+  );
+
+  useEffect(() => {
+    componentConfig.onExecutionStatusChange?.({
+      running: loading,
+      stoppable: canStop,
+      stop: handleStop,
+    });
+  }, [canStop, componentConfig.onExecutionStatusChange, handleStop, loading]);
+
+  useEffect(() => {
+    return () => {
+      void cancelCurrentExecutionRef.current();
+      onExecutionStatusChangeRef.current?.({
+        running: false,
+        stoppable: false,
+        stop: () => undefined,
+      });
+    };
+  }, []);
+
+  useEffect(() => {
+    if (previousExecutionScopeKeyRef.current === executionScopeKey) {
+      return;
+    }
+    previousExecutionScopeKeyRef.current = executionScopeKey;
+    void cancelCurrentExecution();
+  }, [cancelCurrentExecution, executionScopeKey]);
+
+  // Override SDK config when environment config changes
+  useEffect(() => {
+    // Only pass global config, not execution options like deepLocate, screenshotIncluded, domIncluded
+    // These execution options will be passed through ExecutionOptions during execution
+    if (playgroundSDK?.overrideConfig && config) {
+      playgroundSDK.overrideConfig(config).catch((error) => {
+        console.error('Failed to override SDK config:', error);
+        if (!componentConfig.suppressConfigErrorToast) {
+          notifyError(error, { title: 'Failed to apply AI configuration' });
+        }
+      });
+    }
+  }, [playgroundSDK, config, componentConfig.suppressConfigErrorToast]);
+
+  // Handle form submission with error handling
+  const handleFormRun = useCallback(async () => {
+    try {
+      const value = form.getFieldsValue() as FormValue;
+      await prepareExecution();
+      await executeAction(value);
+    } catch (error) {
+      notifyError(error, { title: 'Execution failed' });
+    }
+  }, [form, executeAction, prepareExecution]);
+
+  useEffect(() => {
+    const request = componentConfig.externalRunRequest;
+    if (
+      !request ||
+      !shouldExecuteExternalRunRequest({
+        request,
+        handledRequestIds: handledExternalRunRequestIds,
+        lastRequestId: lastExternalRunRequestIdRef.current,
+        sdkReady,
+        messagesInitialized,
+      })
+    ) {
+      return;
+    }
+    lastExternalRunRequestIdRef.current = request.id;
+    handledExternalRunRequestIds.add(request.id);
+    if (
+      handledExternalRunRequestIds.size > MAX_HANDLED_EXTERNAL_RUN_REQUEST_IDS
+    ) {
+      const oldestRequestId = handledExternalRunRequestIds
+        .values()
+        .next().value;
+      if (oldestRequestId) {
+        handledExternalRunRequestIds.delete(oldestRequestId);
+      }
+    }
+    (async () => {
+      await prepareExecution();
+      await executeAction(request.value, {
+        displayContent: request.displayContent,
+        ...(request.reportDisplay
+          ? { reportDisplay: request.reportDisplay }
+          : {}),
+      });
+    })().catch((error) => {
+      notifyError(error, { title: 'Execution failed' });
+    });
+  }, [
+    componentConfig.externalRunRequest,
+    executeAction,
+    messagesInitialized,
+    prepareExecution,
+    sdkReady,
+  ]);
+
+  // Check if run button should be enabled
+  const configAlreadySet = Object.keys(config || {}).length >= 1;
+  const runButtonEnabled =
+    componentConfig.serverMode ||
+    (!dryMode && !actionSpaceLoading && configAlreadySet);
+
+  // Get the currently selected type.
+  // `Form.useWatch` returns `undefined` on the first render before the form
+  // initialises its values, so we fall back to `getFieldValue` to avoid a
+  // one-frame window where downstream consumers (e.g. PromptInput minimal
+  // chrome) observe an empty type and run type-sync effects unnecessarily.
+  const watchedType = Form.useWatch('type', form);
+  const selectedType = watchedType || defaultMainButtons[0];
+
+  // Determine service mode based on SDK adapter type
+  const serviceMode = useMemo(() => {
+    if (!playgroundSDK || typeof playgroundSDK.getServiceMode !== 'function') {
+      return 'Server'; // Default fallback
+    }
+    return playgroundSDK.getServiceMode();
+  }, [playgroundSDK]);
+
+  // Apply configuration
+  const finalShowContextPreview =
+    showContextPreview && componentConfig.showContextPreview !== false;
+  const layout = componentConfig.layout || 'vertical';
+  const showVersionInfo = componentConfig.showVersionInfo !== false;
+  const deviceType = componentConfig.deviceType;
+  const executionFlowConfig = componentConfig.executionFlow ?? {};
+  const collapsibleProgressGroup = executionFlowConfig.collapsible === true;
+  const progressGroupLabel = executionFlowConfig.label ?? 'Execution Flow';
+
+  // Collapse state for progress groups, keyed by the id of the first progress
+  // item of each run. A run is a maximal sequence of consecutive `progress`
+  // items without any non-progress item interrupting it.
+  const [collapsedProgressGroups, setCollapsedProgressGroups] = useState<
+    Set<string>
+  >(() => new Set());
+
+  const toggleProgressGroup = useCallback((groupId: string) => {
+    setCollapsedProgressGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
+
+  /*
+   * Walk `infoList` once and compute two things:
+   *   1. which item ids are the FIRST progress item of a run (they carry the
+   *      collapsible header);
+   *   2. the visible list after hiding items that belong to a collapsed run.
+   * Both are derived memos so the render loop below can stay declarative.
+   */
+  const { firstInProgressGroup, visibleInfoList } = useMemo(() => {
+    const firstIds = new Set<string>();
+    const visible: typeof infoList = [];
+    let currentGroupFirstId: string | null = null;
+    const hideWelcome = infoList.length > 1;
+    for (const item of infoList) {
+      if (hideWelcome && item.id === 'welcome') continue;
+      if (item.type === 'progress') {
+        if (currentGroupFirstId === null) {
+          currentGroupFirstId = item.id;
+          firstIds.add(item.id);
+          visible.push(item);
+          continue;
+        }
+        if (
+          !collapsibleProgressGroup ||
+          !collapsedProgressGroups.has(currentGroupFirstId)
+        ) {
+          visible.push(item);
+        }
+      } else {
+        currentGroupFirstId = null;
+        visible.push(item);
+      }
+    }
+    return { firstInProgressGroup: firstIds, visibleInfoList: visible };
+  }, [collapsedProgressGroups, collapsibleProgressGroup, infoList]);
+
+  // Precompute the id of the latest progress item once so each renderItem
+  // can do a single string compare instead of re-scanning `infoList` with
+  // `findIndex` + `slice` on every render. On long agent runs that scan was
+  // the dominant cost — O(n) per progress item × N items = O(n²) per state
+  // update, visibly stuttering the UI at 15+ steps.
+  const latestProgressId = useMemo(() => {
+    for (let i = infoList.length - 1; i >= 0; i--) {
+      if (infoList[i].type === 'progress') return infoList[i].id;
+    }
+    return null;
+  }, [infoList]);
+  const lastVisibleProgressIds = useMemo(
+    () => getLastProgressItemIdsByGroup(visibleInfoList),
+    [visibleInfoList],
+  );
+  const renderCustomEmptyState = shouldRenderCustomEmptyState(
+    visibleInfoList,
+    componentConfig.emptyState,
+  );
+  const shouldOffsetEmptyStateForPrompt = useMemo(
+    () =>
+      renderCustomEmptyState &&
+      shouldOffsetEmptyStateForPromptInput(actionSpace, selectedType),
+    [actionSpace, renderCustomEmptyState, selectedType],
+  );
+  const showTimelineActions = shouldShowTimelineActions(renderCustomEmptyState);
+
+  useEffect(() => {
+    if (!shouldOffsetEmptyStateForPrompt) {
+      return;
+    }
+
+    const adjustEmptyStateScroll = () => {
+      const container = infoListRef.current;
+      if (!container) {
+        return;
+      }
+
+      const wrapper = container.querySelector(
+        '.playground-empty-state-wrapper',
+      );
+      const contentStart = wrapper?.querySelector(
+        '[data-playground-empty-state-content-start]',
+      );
+      const contentEnd = wrapper?.querySelector(
+        '[data-playground-empty-state-content-end]',
+      );
+      if (
+        !(contentStart instanceof HTMLElement) ||
+        !(contentEnd instanceof HTMLElement)
+      ) {
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const startRect = contentStart.getBoundingClientRect();
+      const endRect = contentEnd.getBoundingClientRect();
+      const top = calculateEmptyStatePromptScrollTop({
+        currentScrollTop: container.scrollTop,
+        maxScrollTop: Math.max(
+          0,
+          container.scrollHeight - container.clientHeight,
+        ),
+        containerTop: containerRect.top,
+        containerBottom: containerRect.bottom,
+        contentStartTop: startRect.top,
+        contentEndBottom: endRect.bottom,
+      });
+      container.scrollTo({
+        top,
+        behavior: 'auto',
+      });
+    };
+
+    const animationFrameId = window.requestAnimationFrame(
+      adjustEmptyStateScroll,
+    );
+    const timeoutId = window.setTimeout(adjustEmptyStateScroll, 160);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [infoListRef, selectedType, shouldOffsetEmptyStateForPrompt]);
+  const emptyStateWrapperClassName = [
+    'playground-empty-state-wrapper',
+    shouldOffsetEmptyStateForPrompt
+      ? 'playground-empty-state-wrapper-offset-for-prompt'
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const showClearButton = componentConfig.showClearButton !== false;
+  const handleClearInfoList = useCallback(() => {
+    void cancelCurrentExecution().finally(() => {
+      void clearInfoList();
+    });
+  }, [cancelCurrentExecution, clearInfoList]);
+  const timelineHeaderAction =
+    showClearButton && showTimelineActions ? (
+      <div className="clear-button-container">
+        <Button
+          size="small"
+          icon={<ClearOutlined />}
+          onClick={handleClearInfoList}
+          type="text"
+          className="clear-button"
+        />
+      </div>
+    ) : null;
+  const wrapTimeline =
+    componentConfig.timelineWrapper ??
+    ((
+      content: ReactNode,
+      _state: { empty: boolean; headerAction?: ReactNode },
+    ) => content);
+  const promptInputSection = componentConfig.hidePromptInput ? null : (
+    <div className="bottom-input-section">
+      {componentConfig.showEnvConfigReminder ? (
+        <EnvConfigReminder
+          {...envConfigReminderProps}
+          playgroundSDK={playgroundSDK}
+        />
+      ) : null}
+      <PromptInput
+        runButtonEnabled={runButtonEnabled}
+        form={form}
+        serviceMode={serviceMode}
+        selectedType={selectedType}
+        dryMode={dryMode}
+        stoppable={canStop}
+        loading={loading}
+        onRun={handleFormRun}
+        onStop={handleStop}
+        actionSpace={actionSpace}
+        chrome={componentConfig.promptInputChrome}
+        deviceType={deviceType}
+      />
+    </div>
+  );
+  const renderPromptBeforeTimeline =
+    componentConfig.promptInputPlacement === 'before-timeline';
+
+  return (
+    <div className={`playground-container ${layout}-mode ${className}`.trim()}>
+      <Form
+        form={form}
+        onFinish={handleFormRun}
+        className="command-form"
+        initialValues={{ type: defaultMainButtons[0] }}
+      >
+        {/* Context Preview Section */}
+        {finalShowContextPreview && (
+          <div className="context-preview-section">
+            <ContextPreview
+              uiContextPreview={uiContextPreview}
+              setUiContextPreview={setUiContextPreview}
+              showContextPreview={finalShowContextPreview}
+            />
+          </div>
+        )}
+
+        {renderPromptBeforeTimeline ? promptInputSection : null}
+
+        {/* Timeline and prompt are siblings. Hosts choose their composition in
+         * config, so Timeline never reserves space for a separate panel. */}
+        <div className="playground-timeline-region">
+          {wrapTimeline(
+            <div
+              className={[
+                'middle-dialog-area',
+                renderCustomEmptyState ? 'middle-dialog-area-empty' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+            >
+              {componentConfig.timelineHeader}
+
+              {/* Info List */}
+              <div
+                ref={infoListRef}
+                className={[
+                  'info-list-container',
+                  renderCustomEmptyState ? 'info-list-container-empty' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                {renderCustomEmptyState ? (
+                  <div className={emptyStateWrapperClassName}>
+                    {componentConfig.emptyState}
+                  </div>
+                ) : (
+                  <List
+                    itemLayout="vertical"
+                    dataSource={visibleInfoList}
+                    renderItem={(item) => {
+                      const isFirstInProgressGroup =
+                        collapsibleProgressGroup &&
+                        firstInProgressGroup.has(item.id);
+                      const isCollapsedHeader =
+                        isFirstInProgressGroup &&
+                        collapsedProgressGroups.has(item.id);
+                      return (
+                        <List.Item key={item.id} className="list-item">
+                          {isFirstInProgressGroup ? (
+                            <button
+                              type="button"
+                              className={`progress-group-toggle ${
+                                collapsedProgressGroups.has(item.id)
+                                  ? 'is-collapsed'
+                                  : 'is-expanded'
+                              }`}
+                              aria-expanded={
+                                !collapsedProgressGroups.has(item.id)
+                              }
+                              onClick={() => toggleProgressGroup(item.id)}
+                            >
+                              <span className="progress-group-toggle-label">
+                                {progressGroupLabel}
+                              </span>
+                              <UpOutlined className="progress-group-toggle-chevron" />
+                            </button>
+                          ) : null}
+                          {isCollapsedHeader ? null : /* User Message */
+                          item.type === 'user' ? (
+                            <div className="user-message-container">
+                              <div className="user-message-bubble">
+                                {item.content}
+                              </div>
+                            </div>
+                          ) : item.type === 'progress' ? (
+                            /* Progress Message */
+                            <div>
+                              {(() => {
+                                const parts = item.content.split(' - ');
+                                const action = parts[0]?.trim();
+                                const description = parts
+                                  .slice(1)
+                                  .join(' - ')
+                                  .trim();
+
+                                const isLatestProgress =
+                                  item.id === latestProgressId;
+                                const isLastVisibleProgress =
+                                  lastVisibleProgressIds.has(item.id);
+                                const shouldShowLoading =
+                                  loading && isLatestProgress;
+
+                                const state: 'loading' | 'error' | 'completed' =
+                                  shouldShowLoading
+                                    ? 'loading'
+                                    : item.result?.error
+                                      ? 'error'
+                                      : 'completed';
+                                const domainIcon =
+                                  state === 'completed'
+                                    ? resolveProgressActionIcon(
+                                        item.actionKind,
+                                        executionFlowConfig.resolveActionIcon,
+                                      )
+                                    : null;
+                                return (
+                                  <div
+                                    className={`progress-row ${
+                                      isLastVisibleProgress
+                                        ? 'progress-row-last'
+                                        : ''
+                                    }`}
+                                  >
+                                    {action ? (
+                                      <span
+                                        className={`progress-status-icon ${state}`}
+                                      >
+                                        {state === 'loading' ? (
+                                          <LoadingOutlined spin />
+                                        ) : state === 'error' ? (
+                                          defaultProgressErrorIcon()
+                                        ) : domainIcon !== null ? (
+                                          domainIcon
+                                        ) : (
+                                          '✓'
+                                        )}
+                                      </span>
+                                    ) : null}
+                                    <ProgressRowContent
+                                      action={action}
+                                      content={item.content}
+                                      description={description}
+                                      error={item.result?.error}
+                                      shouldShowLoading={shouldShowLoading}
+                                    />
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          ) : (
+                            /* System Message */
+                            <div className="system-message-container">
+                              {componentConfig.showSystemMessageHeader !==
+                                false && (
+                                <div className="system-message-header">
+                                  <Icon
+                                    className="system-message-icon"
+                                    component={branding.icon || PlaygroundIcon}
+                                    style={{ fontSize: 20 }}
+                                  />
+                                  <span className="system-message-title">
+                                    {branding.title || 'Playground'}
+                                  </span>
+                                </div>
+                              )}
+                              {(item.content || item.result) && (
+                                <div className="system-message-content">
+                                  {item.type === 'result' ? (
+                                    <PlaygroundResultView
+                                      result={item.result || null}
+                                      loading={item.loading || false}
+                                      serverValid={true}
+                                      serviceMode={serviceMode}
+                                      replayScriptsInfo={
+                                        item.replayScriptsInfo || null
+                                      }
+                                      replayCounter={item.replayCounter || 0}
+                                      loadingProgressText={
+                                        item.loadingProgressText || ''
+                                      }
+                                      verticalMode={item.verticalMode || false}
+                                      fitMode="width"
+                                      showOutputAlongsideReport={shouldShowOutputAlongsideReport(
+                                        item.actionType,
+                                      )}
+                                      onDownloadReport={
+                                        componentConfig.onDownloadReport
+                                      }
+                                      playerPresentation="timeline"
+                                      hidePlayerFullscreenControl={
+                                        componentConfig.hidePlayerFullscreenControl
+                                      }
+                                    />
+                                  ) : (
+                                    <>
+                                      <div className="system-message-text">
+                                        {item.content}
+                                      </div>
+                                      {item.loading &&
+                                        item.loadingProgressText && (
+                                          <div className="loading-progress-text">
+                                            <span>
+                                              {item.loadingProgressText}
+                                            </span>
+                                          </div>
+                                        )}
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </List.Item>
+                      );
+                    }}
+                  />
+                )}
+              </div>
+
+              {/* Scroll to Bottom Button */}
+              {showTimelineActions &&
+                showScrollToBottomButton &&
+                componentConfig.enableScrollToBottom !== false && (
+                  <Button
+                    aria-label="Scroll to latest message"
+                    className="scroll-to-bottom-button"
+                    shape="circle"
+                    icon={<ArrowDownOutlined />}
+                    onClick={handleScrollToBottom}
+                  />
+                )}
+            </div>,
+            {
+              empty: renderCustomEmptyState,
+              headerAction: timelineHeaderAction,
+            },
+          )}
+        </div>
+
+        {renderPromptBeforeTimeline ? null : promptInputSection}
+
+        {/* Version Info Section */}
+        {showVersionInfo && branding.version && (
+          <div className="version-info-section">
+            <span className="version-text">
+              Midscene.js version: {branding.version}
+            </span>
+          </div>
+        )}
+      </Form>
+    </div>
+  );
+}
+
+export default UniversalPlayground;

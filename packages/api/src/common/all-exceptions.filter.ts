@@ -35,34 +35,39 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     let message = '服务器内部错误'
     let issues: ApiError['issues']
+    /** handler 显式给出的领域码；没有才回落状态码映射 */
+    let explicitCode: string | undefined
 
     if (exception instanceof HttpException) {
       const body = exception.getResponse()
       if (typeof body === 'string') {
         message = body
       } else if (body && typeof body === 'object') {
-        const b = body as { message?: unknown; issues?: ApiError['issues'] }
+        const b = body as { message?: unknown; issues?: ApiError['issues']; code?: unknown }
         message = Array.isArray(b.message)
           ? b.message.join('; ')
           : typeof b.message === 'string'
             ? b.message
             : exception.message
         issues = b.issues
+        if (typeof b.code === 'string' && b.code.length > 0) explicitCode = b.code
       }
     }
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
-      // 内部错误的真实原因只进日志，不出网
+      // 内部错误的真实原因只进日志，不出网。领域码在这里同样被强制覆盖——
+      // 否则它就成了绕过「5xx 不泄露细节」的新通道。
       this.logger.error(
         { requestId, path: req.originalUrl, err: exception },
         '未处理的异常',
       )
       message = '服务器内部错误'
       issues = undefined
+      explicitCode = undefined
     }
 
     const payload = apiErrorSchema.parse({
-      code: errorCodeForStatus(status),
+      code: explicitCode ?? errorCodeForStatus(status),
       message,
       requestId,
       ...(issues ? { issues } : {}),

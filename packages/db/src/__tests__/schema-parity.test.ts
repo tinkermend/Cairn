@@ -46,6 +46,9 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'console_identities',
       'console_role_permissions',
       'console_roles',
+      'secrets',
+      'target_accounts',
+      'targets',
     ])
   })
 
@@ -142,6 +145,61 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     ])
   })
 
+  it('targets 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'targets' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'auth_method', is_nullable: 'NO' },
+      { column_name: 'captcha_mode', is_nullable: 'NO' },
+      { column_name: 'code', is_nullable: 'NO' },
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'entry_url', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'login_fields', is_nullable: 'YES' },
+      { column_name: 'login_url', is_nullable: 'YES' },
+      { column_name: 'name', is_nullable: 'NO' },
+      { column_name: 'status', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ])
+  })
+
+  it('secrets 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'secrets' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'ciphertext', is_nullable: 'NO' },
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'provider', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ])
+  })
+
+  it('target_accounts 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'target_accounts' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'display_name', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'secret_id', is_nullable: 'YES' },
+      { column_name: 'secret_provider', is_nullable: 'YES' },
+      { column_name: 'status', is_nullable: 'NO' },
+      { column_name: 'target_id', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+      { column_name: 'username', is_nullable: 'NO' },
+    ])
+  })
+
   it('所有 id / *_id 列都是 uuid 类型', async () => {
     const { rows } = await pool.query<{ table_name: string; column_name: string; data_type: string }>(
       `SELECT table_name, column_name, data_type FROM information_schema.columns
@@ -175,6 +233,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
   it('重复执行迁移不产生副作用（幂等）', async () => {
     const second = await migrate(pool, TEST_SCHEMA)
     expect(second.applied).toEqual([])
-    expect(second.skipped).toEqual(['0001_initial.sql', '0002_rbac.sql', '0003_audit.sql'])
+    expect(second.skipped).toEqual([
+      '0001_initial.sql',
+      '0002_rbac.sql',
+      '0003_audit.sql',
+      '0004_targets.sql',
+      '0005_target_login_fields.sql',
+    ])
   })
 })

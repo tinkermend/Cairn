@@ -1,0 +1,278 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { IPC_CHANNELS } from '../src/shared/electron-contract';
+
+const mocks = vi.hoisted(() => ({
+  exposeInMainWorld: vi.fn(),
+  invoke: vi.fn(),
+  on: vi.fn(),
+  removeListener: vi.fn(),
+}));
+
+vi.mock('electron', () => ({
+  contextBridge: {
+    exposeInMainWorld: mocks.exposeInMainWorld,
+  },
+  ipcRenderer: {
+    invoke: mocks.invoke,
+    on: mocks.on,
+    removeListener: mocks.removeListener,
+  },
+}));
+
+async function loadModule() {
+  vi.resetModules();
+  await import('../src/preload/index');
+}
+
+describe('preload bridge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.invoke.mockResolvedValue(undefined);
+    vi.unstubAllEnvs();
+  });
+
+  it('exposes shell, studio runtime, and updater APIs that proxy over IPC', async () => {
+    await loadModule();
+
+    expect(mocks.exposeInMainWorld).toHaveBeenCalledTimes(3);
+
+    const shellApi = mocks.exposeInMainWorld.mock.calls.find(
+      ([name]) => name === 'electronShell',
+    )?.[1];
+    const studioRuntimeApi = mocks.exposeInMainWorld.mock.calls.find(
+      ([name]) => name === 'studioRuntime',
+    )?.[1];
+    const updaterApi = mocks.exposeInMainWorld.mock.calls.find(
+      ([name]) => name === 'studioUpdater',
+    )?.[1];
+
+    expect(shellApi).toBeDefined();
+    expect(studioRuntimeApi).toBeDefined();
+    expect(updaterApi).toBeDefined();
+
+    await shellApi.closeWindow();
+    await shellApi.minimizeWindow();
+    await shellApi.openExternalUrl('https://midscenejs.com');
+    await shellApi.openRunDirectory();
+    await shellApi.chooseReportSavePath('report.html');
+    await shellApi.chooseFileSavePath({
+      defaultFileName: 'recording.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    await shellApi.toggleMaximizeWindow();
+    await shellApi.writeReportFile({
+      path: '/tmp/report.html',
+      content: '<html />',
+    });
+    await shellApi.writeFile({
+      path: '/tmp/recording.json',
+      content: '{}',
+    });
+
+    await studioRuntimeApi.getPlaygroundBootstrap();
+    await studioRuntimeApi.restartPlayground();
+    await studioRuntimeApi.discoverDevices();
+    const stopListening = studioRuntimeApi.onDiscoveredDevicesChanged(
+      () => undefined,
+    );
+    await studioRuntimeApi.setDiscoveryPollingPaused(true);
+    await studioRuntimeApi.runConnectivityTest({
+      MIDSCENE_MODEL_API_KEY: 'sk-test',
+      MIDSCENE_MODEL_BASE_URL: 'https://api.example.com/v1',
+      MIDSCENE_MODEL_NAME: 'gpt-4o',
+    });
+    await studioRuntimeApi.updateAgentOptions({
+      replanningCycleLimit: 12,
+      waitAfterAction: 500,
+      screenshotShrinkFactor: 2,
+    });
+    await studioRuntimeApi.generateRecorderCode({
+      type: 'playwright',
+      input: {
+        target: {
+          platformId: 'web',
+          label: 'Web',
+          values: { url: 'https://example.com' },
+        },
+        events: [
+          {
+            type: 'navigation',
+            pageInfo: { width: 1280, height: 720 },
+            timestamp: 1,
+            hashId: 'event-1',
+            url: 'https://example.com',
+          },
+        ],
+        testName: 'recording',
+      },
+      modelConfig: {
+        modelName: 'gpt-4o',
+        modelDescription: '',
+        intent: 'default',
+        slot: 'default',
+      },
+    });
+    await studioRuntimeApi.generateRecorderMetadata({
+      input: {
+        target: {
+          platformId: 'web',
+          label: 'Web',
+          values: { url: 'https://example.com' },
+        },
+        events: [
+          {
+            type: 'navigation',
+            pageInfo: { width: 1280, height: 720 },
+            timestamp: 1,
+            hashId: 'event-1',
+            url: 'https://example.com',
+          },
+        ],
+        fallbackName: 'recording',
+      },
+      modelConfig: {
+        modelName: 'gpt-4o',
+        modelDescription: '',
+        intent: 'default',
+        slot: 'default',
+      },
+    });
+    stopListening();
+
+    await updaterApi.check();
+    await updaterApi.download();
+    await updaterApi.install();
+    await updaterApi.getVersion();
+    await updaterApi.getStatus();
+    const stopStatus = updaterApi.onStatus(() => undefined);
+    stopStatus();
+
+    expect(mocks.invoke.mock.calls).toEqual([
+      [IPC_CHANNELS.closeWindow],
+      [IPC_CHANNELS.minimizeWindow],
+      [IPC_CHANNELS.openExternalUrl, 'https://midscenejs.com'],
+      [IPC_CHANNELS.openRunDirectory],
+      [IPC_CHANNELS.chooseReportSavePath, 'report.html'],
+      [
+        IPC_CHANNELS.chooseFileSavePath,
+        {
+          defaultFileName: 'recording.json',
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        },
+      ],
+      [IPC_CHANNELS.toggleMaximizeWindow],
+      [
+        IPC_CHANNELS.writeReportFile,
+        {
+          path: '/tmp/report.html',
+          content: '<html />',
+        },
+      ],
+      [
+        IPC_CHANNELS.writeFile,
+        {
+          path: '/tmp/recording.json',
+          content: '{}',
+        },
+      ],
+      [IPC_CHANNELS.getPlaygroundBootstrap],
+      [IPC_CHANNELS.restartPlayground],
+      [IPC_CHANNELS.discoverDevices, undefined],
+      [IPC_CHANNELS.setDiscoveryPollingPaused, true],
+      [
+        IPC_CHANNELS.runConnectivityTest,
+        {
+          MIDSCENE_MODEL_API_KEY: 'sk-test',
+          MIDSCENE_MODEL_BASE_URL: 'https://api.example.com/v1',
+          MIDSCENE_MODEL_NAME: 'gpt-4o',
+        },
+      ],
+      [
+        IPC_CHANNELS.updateAgentOptions,
+        {
+          replanningCycleLimit: 12,
+          waitAfterAction: 500,
+          screenshotShrinkFactor: 2,
+        },
+      ],
+      [
+        IPC_CHANNELS.generateRecorderCode,
+        {
+          type: 'playwright',
+          input: {
+            target: {
+              platformId: 'web',
+              label: 'Web',
+              values: { url: 'https://example.com' },
+            },
+            events: [
+              {
+                type: 'navigation',
+                pageInfo: { width: 1280, height: 720 },
+                timestamp: 1,
+                hashId: 'event-1',
+                url: 'https://example.com',
+              },
+            ],
+            testName: 'recording',
+          },
+          modelConfig: {
+            modelName: 'gpt-4o',
+            modelDescription: '',
+            intent: 'default',
+            slot: 'default',
+          },
+        },
+      ],
+      [
+        IPC_CHANNELS.generateRecorderMetadata,
+        {
+          input: {
+            target: {
+              platformId: 'web',
+              label: 'Web',
+              values: { url: 'https://example.com' },
+            },
+            events: [
+              {
+                type: 'navigation',
+                pageInfo: { width: 1280, height: 720 },
+                timestamp: 1,
+                hashId: 'event-1',
+                url: 'https://example.com',
+              },
+            ],
+            fallbackName: 'recording',
+          },
+          modelConfig: {
+            modelName: 'gpt-4o',
+            modelDescription: '',
+            intent: 'default',
+            slot: 'default',
+          },
+        },
+      ],
+      [IPC_CHANNELS.updaterCheck],
+      [IPC_CHANNELS.updaterDownload],
+      [IPC_CHANNELS.updaterInstall],
+      [IPC_CHANNELS.updaterGetVersion],
+      [IPC_CHANNELS.updaterGetStatus],
+    ]);
+    expect(mocks.on).toHaveBeenCalledWith(
+      IPC_CHANNELS.discoveredDevicesUpdated,
+      expect.any(Function),
+    );
+    expect(mocks.on).toHaveBeenCalledWith(
+      IPC_CHANNELS.updaterStatus,
+      expect.any(Function),
+    );
+    expect(mocks.removeListener).toHaveBeenCalledWith(
+      IPC_CHANNELS.discoveredDevicesUpdated,
+      expect.any(Function),
+    );
+    expect(mocks.removeListener).toHaveBeenCalledWith(
+      IPC_CHANNELS.updaterStatus,
+      expect.any(Function),
+    );
+  });
+});

@@ -1,0 +1,12 @@
+{
+  "name": "target-login-hmi",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "识途目标系统联调夹具：带账密登录的示例 HMI，非正式 Runtime。",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "test": "node check.mjs"
+  }
+}

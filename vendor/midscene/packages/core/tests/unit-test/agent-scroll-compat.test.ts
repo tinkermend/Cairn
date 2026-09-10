@@ -1,0 +1,107 @@
+import { Agent } from '@/agent';
+import { describe, expect, it, rs } from '@rstest/core';
+
+const createAgentStub = () => {
+  const agent = Object.create(Agent.prototype) as Agent<any>;
+  (agent as any).opts = {};
+  (agent as any).callActionInActionSpace = rs.fn(async () => undefined);
+  return agent;
+};
+
+describe('Agent aiScroll legacy scrollType compatibility', () => {
+  it('normalizes legacy scrollType values in legacy signature', async () => {
+    const agent = createAgentStub();
+    const callActionSpy = (agent as any).callActionInActionSpace as ReturnType<
+      typeof rs.fn
+    >;
+
+    await agent.aiScroll({ direction: 'down', scrollType: 'once' } as any);
+
+    expect(callActionSpy).toHaveBeenCalledTimes(1);
+    expect(callActionSpy).toHaveBeenCalledWith(
+      'Scroll',
+      expect.objectContaining({
+        scrollType: 'singleAction',
+      }),
+    );
+  });
+
+  it('normalizes legacy scrollType values in new signature', async () => {
+    const agent = createAgentStub();
+    const callActionSpy = (agent as any).callActionInActionSpace as ReturnType<
+      typeof rs.fn
+    >;
+
+    await agent.aiScroll('product list', {
+      direction: 'up',
+      scrollType: 'untilBottom' as any,
+    } as any);
+
+    expect(callActionSpy).toHaveBeenCalledTimes(1);
+    expect(callActionSpy).toHaveBeenCalledWith(
+      'Scroll',
+      expect.objectContaining({
+        scrollType: 'scrollToBottom',
+      }),
+    );
+  });
+
+  it('uses new signature when scroll options is an empty object', async () => {
+    const agent = createAgentStub();
+    const callActionSpy = (agent as any).callActionInActionSpace as ReturnType<
+      typeof rs.fn
+    >;
+
+    await agent.aiScroll('计数器', {} as any);
+
+    expect(callActionSpy).toHaveBeenCalledTimes(1);
+    expect(callActionSpy).toHaveBeenCalledWith(
+      'Scroll',
+      expect.objectContaining({
+        locate: expect.objectContaining({
+          prompt: '计数器',
+        }),
+      }),
+    );
+  });
+
+  it('uses new signature when locatePrompt is an object with prompt', async () => {
+    const agent = createAgentStub();
+    const callActionSpy = (agent as any).callActionInActionSpace as ReturnType<
+      typeof rs.fn
+    >;
+
+    await agent.aiScroll({ prompt: '计数器' } as any, {} as any);
+
+    expect(callActionSpy).toHaveBeenCalledTimes(1);
+    expect(callActionSpy).toHaveBeenCalledWith(
+      'Scroll',
+      expect.objectContaining({
+        locate: expect.objectContaining({
+          prompt: '计数器',
+        }),
+      }),
+    );
+  });
+
+  it('treats null locatePrompt as a global scroll', async () => {
+    const agent = createAgentStub();
+    const callActionSpy = (agent as any).callActionInActionSpace as ReturnType<
+      typeof rs.fn
+    >;
+
+    await agent.aiScroll(
+      null as any,
+      {
+        scrollType: 'scrollToBottom',
+        deepThink: true,
+      } as any,
+    );
+
+    expect(callActionSpy).toHaveBeenCalledTimes(1);
+    expect(callActionSpy).toHaveBeenCalledWith('Scroll', {
+      locate: undefined,
+      scrollType: 'scrollToBottom',
+    });
+  });
+});

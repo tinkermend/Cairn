@@ -1,0 +1,461 @@
+import type { TMultimodalPrompt, TUserPrompt } from './common';
+import type {
+  AndroidDeviceOpt,
+  HarmonyDeviceOpt,
+  IOSDeviceOpt,
+} from './device';
+import type { AgentOpt, LocateResultElement, Rect } from './types';
+import type { UIContext } from './types';
+
+export interface LocateOption extends Partial<TMultimodalPrompt> {
+  prompt?: TUserPrompt;
+  /**
+   * Additional facts, rules, or constraints for this AI call. It overrides
+   * the matching API context and `aiContexts.default`; `''` disables inherited
+   * user context for this call.
+   */
+  context?: string;
+  deepLocate?: boolean; // only available in vl model
+  /** @deprecated Use `deepLocate` instead. Kept for backward compatibility. */
+  deepThink?: boolean; // alias for deepLocate
+  cacheable?: boolean; // user can set this param to false to disable the cache for a single agent api
+  xpath?: string; // only available in web
+  uiContext?: UIContext;
+  fileChooserAccept?: string | string[]; // file path(s) to upload when tapping triggers a file chooser
+}
+
+export interface ServiceExtractOption {
+  /**
+   * Additional facts, decision rules, constraints, or output requirements for
+   * this AI call. It overrides the matching API context and
+   * `aiContexts.default`; `''` disables inherited user context for this call.
+   */
+  context?: string;
+  domIncluded?: boolean | 'visible-only';
+  screenshotIncluded?: boolean;
+  [key: string]: unknown;
+}
+
+export interface DetailedLocateParam
+  extends Omit<
+    LocateOption,
+    'context' | 'deepThink' | keyof TMultimodalPrompt
+  > {
+  prompt: TUserPrompt;
+  /** Original prompt text used for user-facing reports. */
+  promptDisplay?: string;
+  /** Per-call AI guidance recorded in user-facing reports. */
+  context?: string;
+}
+
+export type ScrollType =
+  | 'singleAction'
+  | 'scrollToBottom'
+  | 'scrollToTop'
+  | 'scrollToRight'
+  | 'scrollToLeft'
+  // Legacy aliases kept for backward compatibility
+  | 'once'
+  | 'untilBottom'
+  | 'untilTop'
+  | 'untilRight'
+  | 'untilLeft';
+
+export type ActionScrollParam = {
+  direction?: 'down' | 'up' | 'right' | 'left';
+  scrollType?: ScrollType;
+  distance?: number | null;
+  locate?: LocateResultElement;
+};
+
+export type ScrollParam = Omit<ActionScrollParam, 'locate'>;
+
+export interface MidsceneYamlScript {
+  // @deprecated
+  target?: MidsceneYamlScriptWebEnv;
+
+  page?: MidsceneYamlScriptWebEnv;
+  browser?: MidsceneYamlScriptWebEnv;
+  web?: MidsceneYamlScriptWebEnv;
+  android?: MidsceneYamlScriptAndroidEnv;
+  ios?: MidsceneYamlScriptIOSEnv;
+  harmony?: MidsceneYamlScriptHarmonyEnv;
+  computer?: MidsceneYamlScriptComputerEnv;
+
+  interface?: MidsceneYamlScriptEnvGeneralInterface;
+  config?: MidsceneYamlScriptConfig;
+  agent?: MidsceneYamlScriptAgentOpt;
+
+  tasks: MidsceneYamlTask[];
+}
+
+export interface MidsceneYamlTask {
+  name: string;
+  flow: MidsceneYamlFlowItem[];
+  continueOnError?: boolean;
+}
+
+/**
+ * Agent configuration options that can be specified in YAML scripts.
+ *
+ * This type includes serializable fields from AgentOpt, excluding non-serializable
+ * fields like functions and complex objects. All fields are optional.
+ *
+ * @remarks
+ * - testId is deprecated; prefer reportFileName and cache.id
+ * - These settings apply to all platforms (Web, Android, iOS, Generic Interface)
+ * - modelConfig is configured through environment variables, not in YAML
+ *
+ * @example
+ * ```yaml
+ * agent:
+ *   reportFileName: "checkout-report"
+ *   groupName: "E2E Test Suite"
+ *   generateReport: true
+ *   replanningCycleLimit: 30
+ *   cache:
+ *     id: "checkout-cache"
+ *     strategy: "read-write"
+ * ```
+ */
+export type MidsceneYamlScriptAgentOpt = Pick<
+  AgentOpt,
+  | 'testId' // deprecated, kept for backward compatibility
+  | 'groupName'
+  | 'groupDescription'
+  | 'generateReport'
+  | 'persistExecutionDump'
+  | 'autoPrintReportMsg'
+  | 'reportFileName'
+  | 'replanningCycleLimit'
+  | 'aiContexts'
+  | 'aiActContext'
+  | 'aiActionContext'
+  | 'cache'
+  | 'screenshotShrinkFactor'
+>;
+
+export interface MidsceneYamlScriptConfig {
+  output?: string;
+  unstableLogContent?: boolean | string;
+}
+
+export interface MidsceneYamlScriptEnvGeneralInterface {
+  // this will work as `const {...} = import('...'); const interface = new ...(param)`
+  module: string;
+  export?: string;
+  param?: Record<string, any>;
+}
+
+export interface MidsceneYamlScriptWebEnv
+  extends MidsceneYamlScriptConfig,
+    MidsceneYamlScriptAgentOpt {
+  mode?: 'page' | 'browser';
+
+  // for web only
+  serve?: string;
+  url: string;
+
+  // puppeteer only
+  userAgent?: string;
+  acceptInsecureCerts?: boolean;
+  viewportWidth?: number;
+  viewportHeight?: number;
+  deviceScaleFactor?: number;
+  waitForNetworkIdle?: {
+    timeout?: number;
+    continueOnNetworkIdleError?: boolean; // should continue if failed to wait for network idle, true for default
+  };
+  cookie?: string;
+
+  /**
+   * Extra HTTP headers sent with every request (Puppeteer only, not supported
+   * in bridge mode). Useful when the server validates custom request headers.
+   *
+   * Header values must be strings. Quote values that YAML would otherwise parse
+   * as a boolean or number (e.g. `true`, `false`, `123`), such as `"true"`.
+   *
+   * @example
+   * ```yaml
+   * web:
+   *   url: https://example.com
+   *   extraHTTPHeaders:
+   *     X-Custom-Token: my-token
+   *     Accept-Language: en-US
+   * ```
+   */
+  extraHTTPHeaders?: Record<string, string>;
+
+  forceSameTabNavigation?: boolean; // if limit the new tab to the current page, true for default in yaml script
+  autoFollowNewPage?: boolean; // if use BrowserAgent to follow newly opened pages, false for default
+
+  /**
+   * Chrome download directory (Puppeteer only, not supported in bridge mode).
+   *
+   * Relative paths are resolved from the current working directory.
+   *
+   * @example
+   * ```yaml
+   * web:
+   *   url: https://example.com
+   *   downloadPath: ./downloads
+   * ```
+   */
+  downloadPath?: string;
+
+  /**
+   * Custom Chrome launch arguments (Puppeteer only, not supported in bridge mode).
+   *
+   * Allows passing custom command-line arguments to Chrome/Chromium when launching the browser.
+   * This is useful for testing scenarios that require specific browser configurations.
+   *
+   * ⚠️ Security Warning: Some arguments (e.g., --no-sandbox, --disable-web-security) may
+   * reduce browser security. Use only in controlled testing environments.
+   *
+   * @example
+   * ```yaml
+   * web:
+   *   url: https://example.com
+   *   chromeArgs:
+   *     - '--disable-features=ThirdPartyCookiePhaseout'
+   *     - '--disable-features=SameSiteByDefaultCookies'
+   *     - '--window-size=1920,1080'
+   * ```
+   */
+  chromeArgs?: string[];
+
+  // bridge mode config
+  bridgeMode?: false | 'newTabWithUrl' | 'currentTab';
+  closeNewTabsAfterDisconnect?: boolean;
+
+  /**
+   * CDP (Chrome DevTools Protocol) endpoint URL.
+   * When specified, connects to an existing Chrome browser via CDP instead of launching a new one.
+   *
+   * @example
+   * ```yaml
+   * web:
+   *   url: https://example.com
+   *   cdpEndpoint: ws://localhost:9222/devtools/browser/xxxx
+   * ```
+   */
+  cdpEndpoint?: string;
+}
+
+export interface MidsceneYamlScriptAndroidEnv
+  extends MidsceneYamlScriptConfig,
+    Omit<AndroidDeviceOpt, 'customActions'> {
+  // The Android device ID to connect to, optional, will use the first device if not specified
+  deviceId?: string;
+
+  // The URL or app package to launch, optional, will use the current screen if not specified
+  launch?: string;
+}
+
+export interface MidsceneYamlScriptIOSEnv
+  extends MidsceneYamlScriptConfig,
+    Omit<IOSDeviceOpt, 'customActions'> {
+  // The URL or app bundle ID to launch, optional, will use the current screen if not specified
+  launch?: string;
+}
+
+export interface MidsceneYamlScriptHarmonyEnv
+  extends MidsceneYamlScriptConfig,
+    Omit<HarmonyDeviceOpt, 'customActions'> {
+  // The HarmonyOS device ID to connect to, optional, will use the first device if not specified
+  deviceId?: string;
+
+  // The bundle name, bundle/Ability target, or mapped app name to launch, optional,
+  // will use the current screen if not specified
+  launch?: string;
+
+  // Custom mapping of app names to bundle names or explicit bundle/Ability targets;
+  // user-provided mappings take precedence over defaults
+  appNameMapping?: Record<string, string>;
+}
+
+export interface MidsceneYamlScriptComputerEnv
+  extends MidsceneYamlScriptConfig {
+  // The display ID to use, optional, will use the primary display if not specified
+  displayId?: string;
+}
+
+export type MidsceneYamlScriptEnv =
+  | MidsceneYamlScriptWebEnv
+  | MidsceneYamlScriptAndroidEnv
+  | MidsceneYamlScriptIOSEnv
+  | MidsceneYamlScriptHarmonyEnv
+  | MidsceneYamlScriptComputerEnv;
+
+/** Target sections that can be supplied as batch-wide YAML overrides. */
+export type MidsceneYamlTargetKey = Exclude<
+  keyof MidsceneYamlScript,
+  'config' | 'agent' | 'tasks'
+>;
+
+const midsceneYamlTargetKeyMap = {
+  target: true,
+  page: true,
+  browser: true,
+  web: true,
+  android: true,
+  ios: true,
+  harmony: true,
+  computer: true,
+  interface: true,
+} as const satisfies Record<MidsceneYamlTargetKey, true>;
+
+export const midsceneYamlTargetKeys = Object.keys(
+  midsceneYamlTargetKeyMap,
+) as MidsceneYamlTargetKey[];
+
+/**
+ * Partial target settings applied to every script in a YAML batch.
+ *
+ * Batch settings are deep-merged over each script's target section, so every
+ * nested target field is optional here even when a standalone script requires
+ * it.
+ */
+export type MidsceneYamlTargetConfig = {
+  [Target in MidsceneYamlTargetKey]?: Partial<
+    NonNullable<MidsceneYamlScript[Target]>
+  >;
+};
+
+export interface MidsceneYamlFlowItemAIAction {
+  // defined as aiAction for backward compatibility
+  aiAction?: TUserPrompt | null;
+  ai?: TUserPrompt | null; // this is the shortcut for aiAct
+  aiAct?: TUserPrompt | null;
+  instruction?: TUserPrompt;
+  aiActionProgressTips?: string[];
+  cacheable?: boolean;
+  [key: string]: unknown;
+}
+
+export interface MidsceneYamlFlowItemAIAssert extends ServiceExtractOption {
+  aiAssert: string;
+  errorMessage?: string;
+  name?: string;
+}
+
+export interface MidsceneYamlFlowItemAIWaitFor extends ServiceExtractOption {
+  aiWaitFor: string;
+  timeout?: number;
+}
+
+export interface MidsceneYamlFlowItemRunGherkinScenario {
+  runGherkinScenario: string;
+}
+
+export interface MidsceneYamlFlowItemEvaluateJavaScript {
+  javascript: string;
+  name?: string;
+}
+
+export interface MidsceneYamlFlowItemSleep {
+  sleep: number;
+}
+
+export interface MidsceneYamlFlowItemLogScreenshot {
+  logScreenshot?: string; // optional, the title of the screenshot
+  recordToReport?: string; // preferred key for record title
+  content?: string;
+}
+
+export type MidsceneYamlFlowItem =
+  | MidsceneYamlFlowItemAIAction
+  | MidsceneYamlFlowItemAIAssert
+  | MidsceneYamlFlowItemAIWaitFor
+  | MidsceneYamlFlowItemRunGherkinScenario
+  | MidsceneYamlFlowItemEvaluateJavaScript
+  | MidsceneYamlFlowItemSleep
+  | MidsceneYamlFlowItemLogScreenshot;
+
+export interface FreeFn {
+  name: string;
+  fn: () => void | Promise<void>;
+}
+
+export interface ScriptPlayerTaskStatus extends MidsceneYamlTask {
+  status: ScriptPlayerStatusValue;
+  currentStep?: number;
+  totalSteps: number;
+  error?: Error;
+}
+
+export type ScriptPlayerStatusValue = 'init' | 'running' | 'done' | 'error';
+
+// Index YAML file types for batch execution
+export interface MidsceneYamlConfig extends MidsceneYamlTargetConfig {
+  /** @deprecated Use `web`, `page`, or `browser` instead. */
+  target?: Partial<MidsceneYamlScriptWebEnv>;
+  concurrent?: number;
+  continueOnError?: boolean;
+  /**
+   * Number of times to retry a failed yaml file before marking it as failed.
+   * A value of 2 means each failing case is re-executed up to 2 extra times
+   * (3 attempts in total). Only the cases that failed in the previous attempt
+   * are retried. Defaults to 0 (no retry).
+   */
+  retry?: number;
+  summary?: string;
+  /**
+   * Share one BrowserContext and Page across Puppeteer Web yaml files. This is
+   * not supported by bridge mode or non-Web targets.
+   */
+  shareBrowserContext?: boolean;
+  /**
+   * A setup yaml file that runs before the main `files`. A setup failure aborts
+   * the whole batch and the main files are marked as not executed. Puppeteer
+   * Web setup requires `shareBrowserContext: true` to pass browser state to the
+   * main files. Other targets run setup without browser-context sharing.
+   */
+  setup?: string;
+  files: string[];
+  headed?: boolean;
+  keepWindow?: boolean;
+  dotenvOverride?: boolean;
+  dotenvDebug?: boolean;
+}
+
+export interface MidsceneYamlConfigOutput {
+  format?: 'json';
+  path?: string;
+}
+
+export type MidsceneYamlConfigResultType =
+  | 'success'
+  | 'failed'
+  | 'partialFailed'
+  | 'notExecuted';
+
+export interface MidsceneYamlConfigAttempt {
+  attempt: number;
+  success: boolean;
+  output?: string | null;
+  report?: string | null;
+  error?: string;
+  duration?: number;
+  resultType?: MidsceneYamlConfigResultType;
+}
+
+export interface MidsceneYamlConfigResult {
+  file: string;
+  success: boolean;
+  executed: boolean;
+  output?: string | null;
+  report?: string | null;
+  retryReport?: string | null;
+  attempts?: MidsceneYamlConfigAttempt[];
+  error?: string;
+  duration?: number;
+  /**
+   * Type of result:
+   * - 'success': All tasks completed successfully
+   * - 'failed': Execution failed (player error)
+   * - 'partialFailed': Some tasks failed but execution continued (continueOnError)
+   * - 'notExecuted': Not executed due to previous failures
+   */
+  resultType?: MidsceneYamlConfigResultType;
+}

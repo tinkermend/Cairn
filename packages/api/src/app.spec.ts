@@ -53,11 +53,17 @@ describe('AppModule 完整装配', () => {
   it('未带 token 的 RBAC 路由默认 401；登录是公开的', async () => {
     const res = await request(app.getHttpServer()).get('/api/rbac/roles').expect(401)
     expect(res.body.code).toBe('UNAUTHENTICATED')
+    // 未认证与未匹配路由、校验失败、未处理异常同属必须过契约的四类
+    expect(() => apiErrorSchema.parse(res.body)).not.toThrow()
     await request(app.getHttpServer()).get('/api/me').expect(401)
     await request(app.getHttpServer()).get('/api/console/accounts').expect(401)
     await request(app.getHttpServer()).get('/api/console/audit').expect(401)
+    await request(app.getHttpServer()).get('/api/targets').expect(401)
     const login = await request(app.getHttpServer()).post('/api/auth/login').send({}).expect(400)
     expect(login.body.code).toBe('BAD_REQUEST')
+    expect(() => apiErrorSchema.parse(login.body)).not.toThrow()
+    // 校验失败必须逐字段给出原因，否则调用方只能看到「参数不对」
+    expect(login.body.issues?.length).toBeGreaterThan(0)
   })
 
   it('未知路径返回 404 而非 401——路径不存在不该伪装成认证失败', async () => {
@@ -80,5 +86,28 @@ describe('AppModule 完整装配', () => {
       .expect(404)
     expect(res.headers[REQUEST_ID_HEADER]).toBe('run-e2e-9')
     expect(res.body.requestId).toBe('run-e2e-9')
+  })
+
+  it('对外头名就是 x-cairn-request-id', async () => {
+    const res = await request(app.getHttpServer()).get('/api/does-not-exist').expect(404)
+    expect(REQUEST_ID_HEADER).toBe('x-cairn-request-id')
+    expect(res.headers['x-cairn-request-id']).toBe(res.body.requestId)
+  })
+
+  it('旧头 x-cairn-run-id 不被采纳', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/does-not-exist')
+      .set('x-cairn-run-id', 'legacy-run-1')
+      .expect(404)
+    expect(res.body.requestId).not.toBe('legacy-run-1')
+  })
+
+  it('网关的 x-request-id 被采纳为 requestId', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/does-not-exist')
+      .set('x-request-id', 'gw-7')
+      .expect(404)
+    expect(res.body.requestId).toBe('gw-7')
+    expect(res.headers['x-cairn-request-id']).toBe('gw-7')
   })
 })

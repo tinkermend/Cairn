@@ -1,0 +1,243 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { getKeyCommands } from '@/web-page';
+import { ScreenshotItem } from '@midscene/core';
+import {
+  buildDetailedLocateParam,
+  buildDetailedLocateParamAndRestParams,
+} from '@midscene/core/yaml';
+import { describe, expect, it } from '@rstest/core';
+
+describe('getKeyCommands', () => {
+  it('should return a single key without command when no meta or control key is provided', () => {
+    const result = getKeyCommands('a');
+    expect(result).toEqual([{ key: 'A' }]);
+  });
+
+  it('should work with array input without meta key', () => {
+    const result = getKeyCommands(['b', 'd']);
+    expect(result).toEqual([{ key: 'B' }, { key: 'D' }]);
+  });
+
+  it('should attach "SelectAll" command when "Meta" is present with key "a"', () => {
+    const result = getKeyCommands(['Meta', 'a', 'b']);
+    expect(result).toEqual([
+      { key: 'Meta' },
+      { key: 'A', command: 'SelectAll' },
+      { key: 'B' },
+    ]);
+  });
+
+  it('should attach "Copy" command when "Control" is present with key "c"', () => {
+    const result = getKeyCommands(['Control', 'c', 'x']);
+    expect(result).toEqual([
+      { key: 'Control' },
+      { key: 'C', command: 'Copy' },
+      { key: 'X' },
+    ]);
+  });
+
+  it('should attach proper commands for uppercase letters when "Meta" is present', () => {
+    const result = getKeyCommands(['Meta', 'A', 'C', 'V']);
+    expect(result).toEqual([
+      { key: 'Meta' },
+      { key: 'A', command: 'SelectAll' },
+      { key: 'C', command: 'Copy' },
+      { key: 'V', command: 'Paste' },
+    ]);
+  });
+
+  it('should support ctrl+a combination string', () => {
+    const result = getKeyCommands('Ctrl+A');
+    if (process.platform === 'darwin') {
+      expect(result).toEqual([
+        { key: 'Meta' },
+        { key: 'A', command: 'SelectAll' },
+      ]);
+    } else {
+      expect(result).toEqual([
+        { key: 'Control' },
+        { key: 'A', command: 'SelectAll' },
+      ]);
+    }
+  });
+
+  it('should support ctrl + a combination with spaces', () => {
+    const result = getKeyCommands('Ctrl + A');
+    if (process.platform === 'darwin') {
+      expect(result).toEqual([
+        { key: 'Meta' },
+        { key: 'A', command: 'SelectAll' },
+      ]);
+    } else {
+      expect(result).toEqual([
+        { key: 'Control' },
+        { key: 'A', command: 'SelectAll' },
+      ]);
+    }
+  });
+});
+
+describe('buildDetailedLocateParam', () => {
+  it('should build basic detailed locate param from string prompt', () => {
+    const locatePrompt = 'Click on the login button';
+    const result = buildDetailedLocateParam(locatePrompt);
+
+    expect(result).toEqual({
+      prompt: 'Click on the login button',
+      deepLocate: false,
+      cacheable: true,
+      xpath: undefined,
+    });
+  });
+
+  it('should build detailed locate param with options', () => {
+    const locatePrompt = 'Find the submit button';
+    const options = {
+      deepLocate: true,
+      cacheable: false,
+      xpath: '//button[@type="submit"]',
+      // prompt: 'Override prompt',
+    };
+    const result = buildDetailedLocateParam(locatePrompt, options);
+
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "cacheable": false,
+        "deepLocate": true,
+        "prompt": "Find the submit button",
+        "xpath": "//button[@type=\"submit\"]",
+      }
+    `);
+  });
+
+  it('should handle partial options with defaults', () => {
+    const locatePrompt = 'Locate the search input';
+    const options = {
+      deepLocate: true,
+      // cacheable and xpath not provided - should use defaults
+    };
+    const result = buildDetailedLocateParam(locatePrompt, options);
+
+    expect(result).toEqual({
+      prompt: 'Locate the search input',
+      deepLocate: true,
+      cacheable: true, // default value
+      xpath: undefined, // default value
+    });
+  });
+
+  it('should unwrap prompt-only object prompts to avoid double nesting', () => {
+    const locatePrompt = {
+      prompt: 'Please determine whether there is a specific on the page.',
+    };
+
+    const result = buildDetailedLocateParam(locatePrompt);
+
+    expect(result).toEqual({
+      prompt: 'Please determine whether there is a specific on the page.',
+      deepLocate: false,
+      cacheable: true,
+      xpath: undefined,
+    });
+  });
+});
+
+describe('buildDetailedLocateParamAndRestParams', () => {
+  it('should build detailed locate param and empty rest params when no extra options', () => {
+    const locatePrompt = 'Click on the login button';
+    const result = buildDetailedLocateParamAndRestParams(
+      locatePrompt,
+      undefined,
+    );
+
+    expect(result.locateParam).toEqual({
+      prompt: 'Click on the login button',
+      deepLocate: false,
+      cacheable: true,
+      xpath: undefined,
+    });
+    expect(result.restParams).toEqual({});
+  });
+
+  it('should build detailed locate param and extract uiContext to restParams', () => {
+    const locatePrompt = 'Find the submit button';
+    const mockPageContext = {
+      tree: { node: null, children: [] },
+      shotSize: { width: 800, height: 600 },
+      shrunkShotToLogicalRatio: 1,
+      screenshot: ScreenshotItem.create('mock-base64-string', Date.now()),
+    };
+    const options = {
+      deepLocate: true,
+      cacheable: false,
+      xpath: '//button[@type="submit"]',
+      prompt: 'Override prompt',
+      uiContext: mockPageContext,
+    };
+    const result = buildDetailedLocateParamAndRestParams(locatePrompt, options);
+
+    expect(result.locateParam).toMatchInlineSnapshot(`
+      {
+        "cacheable": false,
+        "deepLocate": true,
+        "prompt": "Find the submit button",
+        "xpath": "//button[@type="submit"]",
+      }
+    `);
+    expect(result.restParams).toEqual({
+      uiContext: mockPageContext,
+    });
+  });
+
+  it('should handle multiple rest params', () => {
+    const locatePrompt = 'Locate the search input';
+    const options = {
+      deepLocate: true,
+      uiContext: {
+        tree: { node: null, children: [] },
+        shotSize: { width: 1024, height: 768 },
+        shrunkShotToLogicalRatio: 1,
+        screenshotBase64: 'mock-base64-string',
+      },
+      customParam1: 'value1',
+      customParam2: 42,
+      customParam3: true,
+    } as any; // Using 'as any' because these custom params aren't in LocateOption type
+    const result = buildDetailedLocateParamAndRestParams(locatePrompt, options);
+
+    expect(result.locateParam).toEqual({
+      prompt: 'Locate the search input',
+      deepLocate: true,
+      cacheable: true,
+      xpath: undefined,
+    });
+    expect(result.restParams).toEqual({
+      uiContext: {
+        tree: { node: null, children: [] },
+        shotSize: { width: 1024, height: 768 },
+        shrunkShotToLogicalRatio: 1,
+        screenshotBase64: 'mock-base64-string',
+      },
+      customParam1: 'value1',
+      customParam2: 42,
+      customParam3: true,
+    });
+  });
+
+  it('should handle null options', () => {
+    const locatePrompt = 'Test prompt';
+    const result = buildDetailedLocateParamAndRestParams(
+      locatePrompt,
+      null as any,
+    );
+
+    expect(result.locateParam).toEqual({
+      prompt: 'Test prompt',
+      deepLocate: false,
+      cacheable: true,
+      xpath: undefined,
+    });
+    expect(result.restParams).toEqual({});
+  });
+});

@@ -1,4 +1,11 @@
-import { Controller, Get, INestApplication, NotFoundException } from '@nestjs/common'
+import {
+  ConflictException,
+  Controller,
+  Get,
+  INestApplication,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common'
 import { APP_FILTER, APP_GUARD, Reflector } from '@nestjs/core'
 import { JwtService } from '@nestjs/jwt'
 import { Test } from '@nestjs/testing'
@@ -34,6 +41,30 @@ class ProbeController {
   @Get('boom')
   boom(): never {
     throw new Error('内部细节：connection string postgres://user:pass@host')
+  }
+
+  @Public()
+  @Get('domain-code')
+  domainCode(): never {
+    throw new ConflictException({
+      code: 'SCENARIO_NOT_BOUND',
+      message: '工作流未绑定 Target',
+    })
+  }
+
+  @Public()
+  @Get('boom-with-code')
+  boomWithCode(): never {
+    throw new InternalServerErrorException({
+      code: 'LEASE_CONFLICT',
+      message: '内部细节：lease table cairn.session_lease 冲突',
+    })
+  }
+
+  @Public()
+  @Get('empty-code')
+  emptyCode(): never {
+    throw new ConflictException({ code: '', message: '空 code 应回落状态码映射' })
   }
 }
 
@@ -76,6 +107,23 @@ describe('HTTP 契约（Guard / 异常过滤器 / requestId）', () => {
     expect(res.body).toMatchObject({ code: 'NOT_FOUND', message: '工作流不存在' })
   })
 
+  it('handler 给出的领域 code 被透传', async () => {
+    const res = await request(app.getHttpServer()).get('/probe/domain-code').expect(409)
+    expect(() => apiErrorSchema.parse(res.body)).not.toThrow()
+    expect(res.body).toMatchObject({ code: 'SCENARIO_NOT_BOUND', message: '工作流未绑定 Target' })
+  })
+
+  it('空 code 回落状态码映射，不产生非法错误体', async () => {
+    const res = await request(app.getHttpServer()).get('/probe/empty-code').expect(409)
+    expect(res.body.code).toBe('CONFLICT')
+  })
+
+  it('5xx 的领域 code 被强制覆盖为 INTERNAL_ERROR', async () => {
+    const res = await request(app.getHttpServer()).get('/probe/boom-with-code').expect(500)
+    expect(res.body.code).toBe('INTERNAL_ERROR')
+    expect(JSON.stringify(res.body)).not.toContain('session_lease')
+  })
+
   it('5xx 不泄露内部细节', async () => {
     const res = await request(app.getHttpServer()).get('/probe/boom').expect(500)
     expect(res.body.message).toBe('服务器内部错误')
@@ -89,6 +137,12 @@ describe('HTTP 契约（Guard / 异常过滤器 / requestId）', () => {
     expect(res.body.requestId).toBe(res.headers[REQUEST_ID_HEADER])
   })
 
+  it('响应头是平台私有头名本身，不是某个常量恰好拼出的字符串', async () => {
+    const res = await request(app.getHttpServer()).get('/probe/missing').expect(404)
+    expect(REQUEST_ID_HEADER).toBe('x-cairn-request-id')
+    expect(res.headers['x-cairn-request-id']).toBeTruthy()
+  })
+
   it('上游带了 requestId 则沿用，便于跨服务串联', async () => {
     const res = await request(app.getHttpServer())
       .get('/probe/missing')
@@ -96,5 +150,22 @@ describe('HTTP 契约（Guard / 异常过滤器 / requestId）', () => {
       .expect(404)
     expect(res.body.requestId).toBe('run-abc-123')
     expect(res.headers[REQUEST_ID_HEADER]).toBe('run-abc-123')
+  })
+
+  it('网关的 x-request-id 同样被沿用', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/probe/missing')
+      .set('x-request-id', 'gw-9')
+      .expect(404)
+    expect(res.body.requestId).toBe('gw-9')
+  })
+
+  it('旧头 x-cairn-run-id 不再被采纳，服务端另发新 ID', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/probe/missing')
+      .set('x-cairn-run-id', 'legacy-run-1')
+      .expect(404)
+    expect(res.body.requestId).not.toBe('legacy-run-1')
+    expect(res.body.requestId).toBe(res.headers[REQUEST_ID_HEADER])
   })
 })

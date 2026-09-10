@@ -1,0 +1,958 @@
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import * as fs from 'node:fs';
+import { locateParamStr } from '@/agent/ui-utils';
+import { dumpActionParam, findAllMidsceneLocatorField } from '@/common';
+import { getMidsceneLocationSchema } from '@/index';
+import { getMidsceneRunSubDir } from '@midscene/shared/common';
+import { uuid } from '@midscene/shared/utils';
+import { describe, expect, it, rs } from '@rstest/core';
+import { z } from 'zod';
+import {
+  ifLocateParamHasLocatedPixelResult,
+  transformLogicalElementToScreenshot,
+  transformLogicalRectToScreenshotRect,
+} from '../../src/agent/utils';
+import {
+  getReportTpl,
+  getTmpDir,
+  getTmpFile,
+  insertScriptBeforeClosingHtml,
+  overlapped,
+  reportHTMLContent,
+  writeDumpReport,
+} from '../../src/utils';
+import {
+  buildDetailedLocateParam,
+  buildDetailedLocateParamAndRestParams,
+} from '../../src/yaml/utils';
+import { getGroupedDumpScriptIds } from './test-helpers/report-html';
+
+import * as fsActual from 'node:fs' with { rstest: 'importActual' };
+
+const { readFileSyncMock } = rs.hoisted(() => ({
+  readFileSyncMock: rs.fn(),
+}));
+
+rs.mock('node:fs', () => {
+  readFileSyncMock.mockImplementation(fsActual.readFileSync);
+
+  return {
+    ...fsActual,
+    default: {
+      ...fsActual,
+      readFileSync: readFileSyncMock,
+    },
+    readFileSync: readFileSyncMock,
+  };
+});
+
+function createTempHtmlFile(content: string): string {
+  const filePath = getTmpFile('html');
+  if (!filePath) {
+    throw new Error('Failed to create temp html file');
+  }
+  fs.writeFileSync(filePath, content, 'utf8');
+  return filePath;
+}
+
+describe('utils', () => {
+  it('rejects an unresolved report template placeholder', () => {
+    readFileSyncMock.mockReturnValueOnce('REPLACE_ME_WITH_REPORT_HTML');
+
+    expect(() => getReportTpl()).toThrow('pnpm exec nx build @midscene/report');
+  });
+
+  it('tmpDir', () => {
+    const testDir = getTmpDir();
+    expect(typeof testDir).toBe('string');
+
+    const testFile = getTmpFile('txt');
+    expect(testFile!.endsWith('.txt')).toBe(true);
+  });
+
+  it('log dir', () => {
+    const dumpDir = getMidsceneRunSubDir('log');
+    expect(dumpDir).toBeTruthy();
+  });
+
+  it('write report file', () => {
+    const content = uuid();
+    const reportPath = writeDumpReport('test', `{"foo": "${content}"}`);
+    expect(reportPath).toBeTruthy();
+    const reportContent = readFileSync(reportPath!, 'utf-8');
+    expect(reportContent).contains(content);
+  });
+
+  it('write report file with empty dump', () => {
+    const reportPath = writeDumpReport('test', '{}');
+    expect(reportPath).toBeTruthy();
+    const reportContent = readFileSync(reportPath!, 'utf-8');
+    expect(reportContent).contains('type="midscene_web_dump"');
+  });
+
+  it('write report file with attributes', () => {
+    const content = uuid();
+    const reportPath = writeDumpReport('test', {
+      dumpString: content,
+      attributes: {
+        foo: 'bar',
+        hello: 'world',
+      },
+    });
+    expect(reportPath).toBeTruthy();
+    const reportContent = readFileSync(reportPath!, 'utf-8');
+    expect(reportContent).contains(content);
+    expect(reportContent).contains('foo="bar"');
+    expect(reportContent).contains('hello="world"');
+  });
+
+  it('overlapped', () => {
+    const container = { left: 100, top: 100, width: 100, height: 100 };
+    const target = { left: 150, top: 150, width: 100, height: 100 };
+    expect(overlapped(container, target)).toBeTruthy();
+
+    const target2 = { left: 200, top: 200, width: 100, height: 100 };
+    expect(overlapped(container, target2)).toBeFalsy();
+  });
+
+  it('reportHTMLContent', () => {
+    const reportA = reportHTMLContent('');
+    expect(reportA).toContain(
+      '<script type="midscene_web_dump" type="application/json" data-group-id="',
+    );
+
+    const content = uuid();
+    const reportB = reportHTMLContent(content);
+    expect(reportB).toContain(`type="application/json" data-group-id="`);
+    expect(reportB).toContain(`>\n${content}\n</script>`);
+  });
+
+  it('reportHTMLContent with reportPath', () => {
+    const tmpFile = createTempHtmlFile('');
+
+    // test empty array
+    const reportPathA = reportHTMLContent('', tmpFile);
+    expect(reportPathA).toBe(tmpFile);
+    const fileContentA = readFileSync(tmpFile, 'utf-8');
+    expect(fileContentA).toContain(
+      '<script type="midscene_web_dump" type="application/json" data-group-id="',
+    );
+
+    // test string content
+    const content = JSON.stringify({ test: uuid() });
+    const reportPathB = reportHTMLContent(content, tmpFile);
+    expect(reportPathB).toBe(tmpFile);
+    const fileContentB = readFileSync(tmpFile, 'utf-8');
+    expect(fileContentB).toContain(`type="application/json" data-group-id="`);
+    expect(fileContentB).toContain(`>\n${content}\n</script>`);
+
+    // test array with attributes
+    const uuid1 = uuid();
+    const dumpArray = {
+      dumpString: JSON.stringify({ id: uuid1 }),
+      attributes: {
+        test_attr: 'test_value',
+        another_attr: 'another_value',
+      },
+    };
+
+    const reportPathC = reportHTMLContent(dumpArray, tmpFile);
+    expect(reportPathC).toBe(tmpFile);
+    const fileContentC = readFileSync(tmpFile, 'utf-8');
+
+    // verify the file content contains attributes and data
+    expect(fileContentC).toContain('test_attr="test_value"');
+    expect(fileContentC).toContain('another_attr="another_value"');
+    expect(fileContentC).toContain(uuid1);
+  });
+
+  it('reportHTMLContent string append mode reuses the same auto group id', () => {
+    const tmpFile = createTempHtmlFile('');
+    const firstContent = JSON.stringify({ test: 'first' });
+    const secondContent = JSON.stringify({ test: 'second' });
+
+    reportHTMLContent(firstContent, tmpFile, true);
+    reportHTMLContent(secondContent, tmpFile, true);
+
+    const fileContent = readFileSync(tmpFile, 'utf-8');
+    const groupIds = getGroupedDumpScriptIds(fileContent);
+
+    expect(groupIds).toHaveLength(2);
+    expect(groupIds[0]).toBeTruthy();
+    expect(groupIds[0]).toBe(groupIds[1]);
+  });
+
+  it(
+    'should handle multiple large reports correctly',
+    { timeout: 30000 },
+    async () => {
+      const tmpFile = createTempHtmlFile('');
+
+      // Create a large string of approximately 100MB
+      const generateLargeString = (sizeInMB: number, identifier: string) => {
+        const approximateCharsPer1MB = 1024 * 1024; // 1MB in characters
+        const totalChars = approximateCharsPer1MB * sizeInMB;
+
+        // Create a basic JSON structure with a very large string
+        const baseObj = {
+          id: identifier,
+          timestamp: new Date().toISOString(),
+          data: 'X'.repeat(totalChars - 100), // subtract a small amount for the JSON structure
+        };
+
+        return JSON.stringify(baseObj);
+      };
+
+      // Monitor memory usage
+      const startMemory = process.memoryUsage();
+      const heapTotalBefore = startMemory.heapTotal / 1024 / 1024;
+      const heapUsedBefore = startMemory.heapUsed / 1024 / 1024;
+      console.log(
+        'Memory usage before test:',
+        `RSS: ${Math.round(startMemory.rss / 1024 / 1024)}MB, ` +
+          `Heap Total: ${heapTotalBefore}MB, ` +
+          `Heap Used: ${heapUsedBefore}MB`,
+      );
+
+      // Store start time
+      const startTime = Date.now();
+
+      // Generate 10 large reports (each ~100MB)
+      const numberOfReports = 10;
+      // Write the large reports
+      for (let i = 0; i < numberOfReports; i++) {
+        const reportPath = reportHTMLContent(
+          {
+            dumpString: generateLargeString(100, `large-report-${i + 1}`),
+            attributes: {
+              report_number: `${i + 1}`,
+              report_size: '100MB',
+            },
+          },
+          tmpFile,
+          true,
+        );
+        expect(reportPath).toBe(tmpFile);
+      }
+
+      // Calculate execution time
+      const executionTime = Date.now() - startTime;
+      console.log(`Execution time: ${executionTime}ms`);
+
+      // Check memory usage after test
+      const endMemory = process.memoryUsage();
+      const rssAfter = endMemory.rss / 1024 / 1024;
+      const heapTotalAfter = endMemory.heapTotal / 1024 / 1024;
+      const heapUsedAfter = endMemory.heapUsed / 1024 / 1024;
+      console.log(
+        'Memory usage after test:',
+        `RSS: ${Math.round(rssAfter)}MB, ` +
+          `Heap Total: ${heapTotalAfter}MB, ` +
+          `Heap Used: ${heapUsedAfter}MB`,
+      );
+
+      // Check if file exists
+      expect(existsSync(tmpFile)).toBe(true);
+
+      // Verify file size is approximately (100MB * 10) + template size
+      const stats = statSync(tmpFile);
+      const fileSizeInMB = stats.size / (1024 * 1024);
+      console.log(`File size: ${fileSizeInMB.toFixed(2)}MB`);
+
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      // We expect the file to be approximately 700MB plus template overhead
+      const expectedMinSize = 1000; // 10 reports × 100MB
+      expect(fileSizeInMB).toBeGreaterThan(expectedMinSize);
+    },
+  );
+
+  it('reportHTMLContent array with xss', () => {
+    const reportContent = reportHTMLContent({
+      dumpString: '<script>alert("xss")</script>',
+      attributes: {
+        'data-midscene-id': '123',
+      },
+    });
+    expect(reportContent).toBeTruthy();
+    expect(reportContent).toContain('data-midscene-id="123"');
+    expect(reportContent).toContain(
+      `__midscene_lt__script__midscene_gt__alert("xss")__midscene_lt__/script__midscene_gt__`,
+    );
+    expect(reportContent).not.toContain('<script>alert("xss")</script>');
+  });
+
+  it('reportHTMLContent string with xss', () => {
+    const reportContent = reportHTMLContent('<script>alert("xss")</script>');
+    expect(reportContent).toBeTruthy();
+    expect(reportContent).toContain(
+      `__midscene_lt__script__midscene_gt__alert("xss")__midscene_lt__/script__midscene_gt__`,
+    );
+    expect(reportContent).not.toContain('<script>alert("xss")</script>');
+  });
+});
+
+describe('buildDetailedLocateParam', () => {
+  it('adds per-call context to the locate prompt', () => {
+    const result = buildDetailedLocateParam('Click the checkout button', {
+      context: 'The current user is a wholesale customer.',
+    });
+
+    expect(result?.prompt).toBe(
+      '<CONTEXT>\nThe current user is a wholesale customer.\n</CONTEXT>\n\n<LOCATE_TARGET>\nClick the checkout button\n</LOCATE_TARGET>',
+    );
+    expect(result?.promptDisplay).toBe('Click the checkout button');
+    expect(result?.context).toBe('The current user is a wholesale customer.');
+    expect(locateParamStr(result)).toBe('Click the checkout button');
+  });
+
+  it('merges multimodal locate options into the prompt object', () => {
+    const result = buildDetailedLocateParam('Click the icon', {
+      images: [
+        {
+          name: 'target icon',
+          url: 'https://example.com/icon.png',
+        },
+      ],
+      convertHttpImage2Base64: true,
+      cacheable: false,
+    });
+
+    expect(result).toEqual({
+      prompt: {
+        prompt: 'Click the icon',
+        images: [
+          {
+            name: 'target icon',
+            url: 'https://example.com/icon.png',
+          },
+        ],
+        convertHttpImage2Base64: true,
+      },
+      deepLocate: false,
+      cacheable: false,
+      xpath: undefined,
+    });
+  });
+});
+
+describe('buildDetailedLocateParamAndRestParams', () => {
+  it('consumes context without leaking it into action params', () => {
+    const result = buildDetailedLocateParamAndRestParams(
+      'Click the checkout button',
+      {
+        context: 'The current user is a wholesale customer.',
+      },
+    );
+
+    expect(result.locateParam?.prompt).toContain(
+      'The current user is a wholesale customer.',
+    );
+    expect(result.restParams).not.toHaveProperty('context');
+  });
+
+  it('does not leak multimodal locate options into rest params', () => {
+    const uiContext = {
+      screenshot: {
+        base64: 'mock-base64',
+      },
+      shotSize: { width: 100, height: 100 },
+      deprecatedDpr: 1,
+      shrunkShotToLogicalRatio: 1,
+    } as any;
+
+    const result = buildDetailedLocateParamAndRestParams('Click the icon', {
+      images: [
+        {
+          name: 'target icon',
+          url: 'https://example.com/icon.png',
+        },
+      ],
+      convertHttpImage2Base64: true,
+      cacheable: false,
+      uiContext,
+    });
+
+    expect(result.locateParam).toEqual({
+      prompt: {
+        prompt: 'Click the icon',
+        images: [
+          {
+            name: 'target icon',
+            url: 'https://example.com/icon.png',
+          },
+        ],
+        convertHttpImage2Base64: true,
+      },
+      deepLocate: false,
+      cacheable: false,
+      xpath: undefined,
+    });
+    expect(result.restParams).toEqual({
+      uiContext,
+    });
+  });
+});
+
+describe('insertScriptBeforeClosingHtml', () => {
+  it('should insert script before </html> in a standard HTML file', () => {
+    const html = '<html>hello</html>';
+    const filePath = createTempHtmlFile(html);
+    insertScriptBeforeClosingHtml(filePath, '<script>test</script>');
+    const result = fs.readFileSync(filePath, 'utf8');
+    expect(result).toBe('<html>hello<script>test</script>\n</html>\n');
+    fs.unlinkSync(filePath);
+  });
+
+  it('should work with large HTML file and </html> at the end', () => {
+    const body = 'a'.repeat(5000);
+    const html = `<html>${body}</html>`;
+    const filePath = createTempHtmlFile(html);
+    insertScriptBeforeClosingHtml(filePath, '<script>large</script>');
+    const result = fs.readFileSync(filePath, 'utf8');
+    expect(result.endsWith('<script>large</script>\n</html>\n')).toBe(true);
+    fs.unlinkSync(filePath);
+  });
+
+  it('should throw if </html> is missing', () => {
+    const html = '<html>no end tag';
+    const filePath = createTempHtmlFile(html);
+    expect(() =>
+      insertScriptBeforeClosingHtml(filePath, '<script>fail</script>'),
+    ).toThrow('No </html> found');
+    fs.unlinkSync(filePath);
+  });
+
+  it('should support multi-line scriptContent', () => {
+    const html = '<html>abc</html>';
+    const script = '<script>\nconsole.log(1)\n</script>';
+    const filePath = createTempHtmlFile(html);
+    insertScriptBeforeClosingHtml(filePath, script);
+    const result = fs.readFileSync(filePath, 'utf8');
+    expect(result).toBe(
+      '<html>abc<script>\nconsole.log(1)\n</script>\n</html>\n',
+    );
+    fs.unlinkSync(filePath);
+  });
+
+  it('should not increase memory usage significantly for large files (memory check)', async () => {
+    const body = 'a'.repeat(50 * 1024 * 1024); // 50MB
+    const html = `<html>${body}</html>`;
+    const filePath = createTempHtmlFile(html);
+
+    // write large file first, wait for memory release
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const memBefore = process.memoryUsage().rss;
+
+    insertScriptBeforeClosingHtml(filePath, '<script>large</script>');
+
+    // wait for a while, ensure the insertion process ends
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const memAfter = process.memoryUsage().rss;
+
+    // allow at most 2MB growth
+    expect(memAfter - memBefore).toBeLessThan(2 * 1024 * 1024);
+
+    fs.unlinkSync(filePath);
+  });
+
+  it('calculate correct position for html contains chinese', () => {
+    const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <title>Bug Case</title>
+  </head>
+  <body>
+    <h1>Bug Case</h1>
+  </body>
+  <script>
+    { "hello": "你好", "world": "世界" }
+  </script>
+</html>`;
+    const filePath = createTempHtmlFile(html);
+    insertScriptBeforeClosingHtml(filePath, '<script>large</script>');
+    const result = fs.readFileSync(filePath, 'utf8');
+    const expected = html.replace(
+      '</html>',
+      '<script>large</script>\n</html>\n',
+    );
+
+    // bug case:
+    // - Expected
+    // + Received
+    //   <!DOCTYPE html>
+    //   <html>
+    //     <head>
+    //       <title>Bug Case</title>
+    //     </head>
+    //     <body>
+    //       <h1>Bug Case</h1>
+    //     </body>
+    //     <script>
+    //       { "hello": "你好", "world": "世界" }
+    // -   </script>
+    // - <script>large</script>
+    // +   </scri<script>large</script>
+    //   </html>
+
+    expect(result).toBe(expected);
+    fs.unlinkSync(filePath);
+  });
+
+  it('findAllMidsceneLocatorField', () => {
+    const result = findAllMidsceneLocatorField(
+      z.object({
+        a: getMidsceneLocationSchema(),
+        b: z.string(),
+        c: getMidsceneLocationSchema().optional().describe('ccccc'),
+      }),
+    );
+    expect(result).toEqual(['a', 'c']);
+  });
+
+  it('findAllMidsceneLocatorField - non match', () => {
+    const result = findAllMidsceneLocatorField(
+      z.object({
+        b: z.string(),
+      }),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('findAllMidsceneLocatorField - requiredOnly parameter', () => {
+    const schema = z.object({
+      a: getMidsceneLocationSchema(),
+      b: z.string(),
+      c: getMidsceneLocationSchema().optional().describe('optional locator'),
+      d: getMidsceneLocationSchema().describe('required locator'),
+    });
+
+    // Test default behavior (requiredOnly = false, should return all locator fields)
+    const allResult = findAllMidsceneLocatorField(schema);
+    expect(allResult).toEqual(['a', 'c', 'd']);
+
+    // Test requiredOnly = false explicitly
+    const allResultExplicit = findAllMidsceneLocatorField(schema, false);
+    expect(allResultExplicit).toEqual(['a', 'c', 'd']);
+
+    // Test requiredOnly = true (should only return required locator fields)
+    const requiredOnlyResult = findAllMidsceneLocatorField(schema, true);
+    expect(requiredOnlyResult).toEqual(['a', 'd']);
+  });
+});
+
+describe('dumpActionParam', () => {
+  it('should handle various locator field scenarios', () => {
+    const schema = z.object({
+      foo: z.string(),
+      locator1: getMidsceneLocationSchema(),
+      locator2: getMidsceneLocationSchema().optional(),
+      locator3: getMidsceneLocationSchema().optional(),
+      bar: z.number(),
+      baz: z.boolean().optional(),
+    });
+
+    // Test case 1: Valid locators with prompts
+    const input1 = {
+      foo: 'test',
+      locator1: {
+        prompt: 'first locator',
+        center: [100, 200],
+        rect: { left: 50, top: 100, width: 100, height: 50 },
+      },
+      locator2: {
+        prompt: 'second locator',
+        center: [200, 300],
+        rect: { left: 150, top: 200, width: 100, height: 50 },
+      },
+      bar: 42,
+      baz: true,
+    };
+
+    const result1 = dumpActionParam(input1, schema);
+    expect(result1).toMatchInlineSnapshot(`
+      {
+        "bar": 42,
+        "baz": true,
+        "foo": "test",
+        "locator1": "first locator",
+        "locator2": "second locator",
+      }
+    `);
+
+    // Test case 2: Missing optional locator
+    const input2 = {
+      foo: 'test2',
+      locator1: {
+        prompt: 'only locator',
+        center: [50, 100],
+        rect: { left: 25, top: 50, width: 50, height: 25 },
+      },
+      bar: 24,
+    };
+
+    const result2 = dumpActionParam(input2, schema);
+    expect(result2).toMatchInlineSnapshot(`
+      {
+        "bar": 24,
+        "foo": "test2",
+        "locator1": "only locator",
+      }
+    `);
+  });
+
+  it('should format locator fields that have image arrays', () => {
+    const schema = z.object({
+      locator: getMidsceneLocationSchema(),
+    });
+
+    const inputWithImages = {
+      locator: {
+        prompt: {
+          prompt: 'find the button',
+          images: [
+            { name: 'button1.png', url: 'data:image/png;base64,xyz' },
+            { name: 'button2.png', url: 'https://example.com/img.png' },
+          ],
+        },
+        center: [100, 200],
+        rect: { left: 50, top: 100, width: 100, height: 50 },
+      },
+    };
+
+    const resultWithImages = dumpActionParam(inputWithImages, schema);
+    expect(resultWithImages).toMatchInlineSnapshot(`
+      {
+        "locator": "find the button (with 2 images)",
+      }
+    `);
+
+    const inputWithOneImage = {
+      locator: {
+        prompt: {
+          prompt: 'find the text',
+          images: [{ name: 'text.png', url: 'data:image/png;base64,abc' }],
+        },
+        center: [100, 200],
+        rect: { left: 50, top: 100, width: 100, height: 50 },
+      },
+    };
+
+    const resultWithOneImage = dumpActionParam(inputWithOneImage, schema);
+    expect(resultWithOneImage).toMatchInlineSnapshot(`
+      {
+        "locator": "find the text (with 1 image)",
+      }
+    `);
+
+    const inputWithEmptyImages = {
+      locator: {
+        prompt: {
+          prompt: 'find the link',
+          images: [],
+        },
+        center: [100, 200],
+        rect: { left: 50, top: 100, width: 100, height: 50 },
+      },
+    };
+
+    const resultWithEmptyImages = dumpActionParam(inputWithEmptyImages, schema);
+    expect(resultWithEmptyImages).toMatchInlineSnapshot(`
+      {
+        "locator": "find the link",
+      }
+    `);
+  });
+
+  it('should handle edge cases and invalid inputs', () => {
+    const schema = z.object({
+      foo: z.string(),
+      locator1: getMidsceneLocationSchema(),
+      locator2: getMidsceneLocationSchema().optional(),
+      bar: z.number().optional(),
+    });
+
+    // Test case 1: Invalid locator value (string instead of object)
+    const input1 = {
+      foo: 'test',
+      locator1: 'invalid_locator_value',
+      bar: 123,
+    };
+
+    const result1 = dumpActionParam(input1, schema);
+    expect(result1).toMatchInlineSnapshot(`
+      {
+        "bar": 123,
+        "foo": "test",
+        "locator1": "invalid_locator_value",
+      }
+    `);
+
+    // Test case 2: Locator without prompt
+    const input2 = {
+      foo: 'test2',
+      locator1: {
+        // missing prompt
+        center: [100, 200],
+        rect: { left: 50, top: 100, width: 100, height: 50 },
+      },
+      locator2: {
+        prompt: 'valid locator',
+        center: [200, 300],
+        rect: { left: 150, top: 200, width: 100, height: 50 },
+      },
+    };
+
+    const result2 = dumpActionParam(input2, schema);
+    expect(result2).toMatchInlineSnapshot(`
+      {
+        "foo": "test2",
+        "locator1": {
+          "center": [
+            100,
+            200,
+          ],
+          "rect": {
+            "height": 50,
+            "left": 50,
+            "top": 100,
+            "width": 100,
+          },
+        },
+        "locator2": "valid locator",
+      }
+    `);
+
+    // Test case 3: Empty object
+    const emptySchema = z.object({
+      foo: z.string().optional(),
+      locator: getMidsceneLocationSchema().optional(),
+    });
+    const emptyInput = {};
+
+    const result3 = dumpActionParam(emptyInput, emptySchema);
+    expect(result3).toMatchInlineSnapshot('{}');
+  });
+
+  it('should handle non-locator fields unchanged', () => {
+    const schema = z.object({
+      stringField: z.string(),
+      numberField: z.number(),
+      booleanField: z.boolean(),
+      optionalString: z.string().optional(),
+      arrayField: z.array(z.string()),
+      objectField: z.object({
+        nested: z.string(),
+      }),
+    });
+
+    const input = {
+      stringField: 'test string',
+      numberField: 42,
+      booleanField: true,
+      optionalString: 'optional value',
+      arrayField: ['item1', 'item2'],
+      objectField: {
+        nested: 'nested value',
+      },
+    };
+
+    const result = dumpActionParam(input, schema);
+    expect(result).toMatchInlineSnapshot(`
+      {
+        "arrayField": [
+          "item1",
+          "item2",
+        ],
+        "booleanField": true,
+        "numberField": 42,
+        "objectField": {
+          "nested": "nested value",
+        },
+        "optionalString": "optional value",
+        "stringField": "test string",
+      }
+    `);
+  });
+
+  it('should return empty object when input is not a plain object', () => {
+    const schema = z.object({
+      name: z.string(),
+    });
+
+    // String input was causing the bug: "com.example.app" spread into {0: 'c', 1: 'o', ...}
+    expect(dumpActionParam('com.example.app' as any, schema)).toEqual({});
+    expect(dumpActionParam(['a', 'b', 'c'] as any, schema)).toEqual({});
+    expect(dumpActionParam(null as any, schema)).toEqual({});
+    expect(dumpActionParam(12345 as any, schema)).toEqual({});
+  });
+});
+
+describe('ifLocateParamHasLocatedPixelResult', () => {
+  it.each([
+    null,
+    1,
+    'invalid',
+    {},
+    { rect: { left: 0, top: 0, width: 1, height: 1 } },
+  ])('rejects a pixel result without a center: %j', (locatedPixelResult) => {
+    expect(
+      ifLocateParamHasLocatedPixelResult({
+        prompt: 'target',
+        locatedPixelResult,
+      }),
+    ).toBe(false);
+  });
+  it('should return true when locatedPixelResult.center is valid array with 2 elements', () => {
+    const param = {
+      prompt: 'test element',
+      locatedPixelResult: { center: [200, 300] as [number, number] },
+    };
+    expect(ifLocateParamHasLocatedPixelResult(param)).toBe(true);
+  });
+
+  it('should return false when locatedPixelResult is undefined', () => {
+    const param = {
+      prompt: 'test element',
+    };
+    expect(ifLocateParamHasLocatedPixelResult(param)).toBe(false);
+  });
+
+  it('should return false when locatedPixelResult.center is not an array', () => {
+    const param = {
+      prompt: 'test element',
+      locatedPixelResult: { center: 'not an array' as any },
+    };
+    expect(ifLocateParamHasLocatedPixelResult(param)).toBe(false);
+  });
+
+  it('should return false when locatedPixelResult.center array length is not 2', () => {
+    const param1 = {
+      prompt: 'test element',
+      locatedPixelResult: { center: [100] as any },
+    };
+    expect(ifLocateParamHasLocatedPixelResult(param1)).toBe(false);
+
+    const param2 = {
+      prompt: 'test element',
+      locatedPixelResult: { center: [100, 200, 300] as any },
+    };
+    expect(ifLocateParamHasLocatedPixelResult(param2)).toBe(false);
+
+    const param3 = {
+      prompt: 'test element',
+      locatedPixelResult: { center: [100, 200, 300, 400, 500] as any },
+    };
+    expect(ifLocateParamHasLocatedPixelResult(param3)).toBe(false);
+  });
+
+  it('should return false when locatedPixelResult.center is null', () => {
+    const param = {
+      prompt: 'test element',
+      locatedPixelResult: { center: null as any },
+    };
+    expect(ifLocateParamHasLocatedPixelResult(param)).toBe(false);
+  });
+
+  it('should return false when locatedPixelResult.center contains non-finite or non-number values', () => {
+    expect(
+      ifLocateParamHasLocatedPixelResult({
+        prompt: 'test element',
+        locatedPixelResult: { center: [100, Number.NaN, 300, 400] as any },
+      }),
+    ).toBe(false);
+    expect(
+      ifLocateParamHasLocatedPixelResult({
+        prompt: 'test element',
+        locatedPixelResult: { center: [100, '200', 300, 400] as any },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('shrunkShotToLogicalRatio', () => {
+  it('scales an existing center independently from the retained rect', () => {
+    expect(
+      transformLogicalElementToScreenshot(
+        {
+          description: 'test element',
+          center: [150.125, 250.125],
+          rect: { left: 100.2, top: 200.2, width: 80.2, height: 40.2 },
+        },
+        2,
+      ),
+    ).toStrictEqual({
+      description: 'test element',
+      center: [300.25, 500.25],
+      rect: { left: 200, top: 400, width: 160, height: 80 },
+    });
+  });
+
+  it('transformLogicalElementToScreenshot with shrunkShotToLogicalRatio=1', () => {
+    expect(
+      transformLogicalElementToScreenshot(
+        {
+          description: 'test element',
+          center: [150, 250],
+        },
+        1,
+      ),
+    ).toStrictEqual({
+      description: 'test element',
+      center: [150, 250],
+    });
+  });
+
+  it('transformLogicalElementToScreenshot with shrunkShotToLogicalRatio=2', () => {
+    expect(
+      transformLogicalElementToScreenshot(
+        {
+          description: 'test element',
+          center: [150, 250],
+        },
+        2,
+      ),
+    ).toStrictEqual({
+      description: 'test element',
+      center: [300, 500],
+    });
+  });
+
+  it('transformLogicalRectToScreenshotRect with shrunkShotToLogicalRatio=1', () => {
+    expect(
+      transformLogicalRectToScreenshotRect(
+        {
+          left: 100,
+          top: 200,
+          width: 300,
+          height: 400,
+        },
+        1,
+      ),
+    ).toStrictEqual({
+      left: 100,
+      top: 200,
+      width: 300,
+      height: 400,
+    });
+  });
+
+  it('transformLogicalRectToScreenshotRect with shrunkShotToLogicalRatio=2', () => {
+    expect(
+      transformLogicalRectToScreenshotRect(
+        {
+          left: 100,
+          top: 200,
+          width: 300,
+          height: 400,
+        },
+        2,
+      ),
+    ).toStrictEqual({
+      left: 200,
+      top: 400,
+      width: 600,
+      height: 800,
+    });
+  });
+});

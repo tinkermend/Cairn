@@ -1,0 +1,53 @@
+import { describe, expect, it, rs } from '@rstest/core';
+import { HdcClient } from '../../src/hdc';
+import { getConnectedDevices } from '../../src/utils';
+
+rs.mock('../../src/hdc', () => {
+  const mockListTargets = rs.fn();
+  return {
+    HdcClient: rs.fn(() => ({
+      listTargets: mockListTargets,
+    })),
+    __mockListTargets: mockListTargets,
+  };
+});
+
+describe('Harmony Utils', () => {
+  describe('getConnectedDevices', () => {
+    it('should return a list of connected devices', async () => {
+      const mockTargets = ['device-1', 'device-2'];
+      const { __mockListTargets } = (await import('../../src/hdc')) as any;
+      __mockListTargets.mockResolvedValue(mockTargets);
+
+      const devices = await getConnectedDevices();
+
+      expect(HdcClient).toHaveBeenCalled();
+      expect(devices).toEqual([
+        { deviceId: 'device-1' },
+        { deviceId: 'device-2' },
+      ]);
+    });
+
+    it('should pass discovery options to HdcClient', async () => {
+      const { __mockListTargets } = (await import('../../src/hdc')) as any;
+      __mockListTargets.mockResolvedValue([]);
+
+      await getConnectedDevices('/custom/hdc', { timeout: 5000 });
+
+      expect(HdcClient).toHaveBeenCalledWith({
+        hdcPath: '/custom/hdc',
+        timeout: 5000,
+      });
+    });
+
+    it('should throw a formatted error if getting devices fails', async () => {
+      const error = new Error('Failed to connect to HDC');
+      const { __mockListTargets } = (await import('../../src/hdc')) as any;
+      __mockListTargets.mockRejectedValue(error);
+
+      await expect(getConnectedDevices()).rejects.toThrow(
+        'Unable to get connected HarmonyOS device list',
+      );
+    });
+  });
+});

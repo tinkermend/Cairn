@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 · 青石场站监控</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-mark" src="/mark.svg" alt="" />
+        青石场站监控
+      </div>
+      <span>HMI 联调夹具</span>
+    </header>
+    <main class="login-shell">
+      <section class="panel">
+        <h1>操作员登录</h1>
+        <p class="lede">请使用场站账号进入监控画面。此页是识途目标系统联调夹具，不是识途控制台。</p>
+        <p id="login-error" class="banner" hidden>用户名或密码不正确。</p>
+        <form id="login-form" method="post" action="/login">
+          <label for="username">用户名</label>
+          <input
+            id="username"
+            name="username"
+            type="text"
+            autocomplete="username"
+            required
+          />
+          <label for="password">密码</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+          <button id="login-submit" name="login" type="submit">登录</button>
+        </form>
+        <p class="hint">
+          演示账号 <code>demo</code> / <code>demo123</code>，备用
+          <code>alice</code> / <code>alice123</code>。
+        </p>
+      </section>
+    </main>
+    <script>
+      const params = new URLSearchParams(location.search)
+      if (params.get('error') === '1') {
+        document.getElementById('login-error').hidden = false
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,804 @@
+import { Agent } from '@/agent';
+import type { CreateOpenAIClientFn } from '@midscene/shared/env';
+import {
+  MIDSCENE_INSIGHT_MODEL_API_KEY,
+  MIDSCENE_INSIGHT_MODEL_BASE_URL,
+  MIDSCENE_INSIGHT_MODEL_NAME,
+  MIDSCENE_MODEL_API_KEY,
+  MIDSCENE_MODEL_BASE_URL,
+  MIDSCENE_MODEL_FAMILY,
+  MIDSCENE_MODEL_NAME,
+  MIDSCENE_PLANNING_MODEL_API_KEY,
+  MIDSCENE_PLANNING_MODEL_BASE_URL,
+  MIDSCENE_PLANNING_MODEL_NAME,
+  globalModelConfigManager,
+} from '@midscene/shared/env';
+import { afterEach, beforeEach, describe, expect, it, rs } from '@rstest/core';
+
+const defaultModelConfig = {
+  [MIDSCENE_MODEL_NAME]: 'qwen2.5-vl-max',
+  [MIDSCENE_MODEL_API_KEY]: 'test-key',
+  [MIDSCENE_MODEL_BASE_URL]: 'https://api.sample.com/v1',
+  [MIDSCENE_MODEL_FAMILY]: 'qwen2.5-vl' as const,
+};
+
+const complexModelConfig = {
+  ...defaultModelConfig,
+  [MIDSCENE_PLANNING_MODEL_NAME]: 'gpt-5.1',
+  [MIDSCENE_PLANNING_MODEL_API_KEY]: 'test-planning-key',
+  [MIDSCENE_PLANNING_MODEL_BASE_URL]: 'https://api.smaple-planning.com/v1',
+  [MIDSCENE_INSIGHT_MODEL_NAME]: 'model-for-insight',
+  [MIDSCENE_INSIGHT_MODEL_API_KEY]: 'test-insight-key',
+  [MIDSCENE_INSIGHT_MODEL_BASE_URL]: 'https://api.sample-insight.com/v1',
+};
+
+const createMockInterface = () =>
+  ({
+    interfaceType: 'puppeteer',
+    actionSpace: () => [],
+  }) as any;
+
+const stubModelEnv = (config: Record<string, string>) => {
+  for (const [key, value] of Object.entries(config)) {
+    rs.stubEnv(key, value);
+  }
+  globalModelConfigManager.clearModelConfigMap();
+};
+
+describe('Agent with custom OpenAI client', () => {
+  beforeEach(() => {
+    rs.mock('openai');
+    stubModelEnv(defaultModelConfig);
+  });
+
+  afterEach(() => {
+    rs.unstubAllEnvs();
+    globalModelConfigManager.clearModelConfigMap();
+    rs.clearAllMocks();
+  });
+
+  describe('default modelConfig without createOpenAIClient', () => {
+    it('should work without createOpenAIClient', () => {
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+      });
+
+      expect(agent).toBeInstanceOf(Agent);
+
+      const defaultConfig = (agent as any).modelConfigManager.getModelConfig(
+        'default',
+      );
+      expect(defaultConfig).toMatchInlineSnapshot(`
+        {
+          "createOpenAIClient": undefined,
+          "extraBody": undefined,
+          "httpProxy": undefined,
+          "intent": "default",
+          "modelDescription": "qwen2.5-vl mode",
+          "modelFamily": "qwen2.5-vl",
+          "modelName": "qwen2.5-vl-max",
+          "openaiApiKey": "test-key",
+          "openaiBaseURL": "https://api.sample.com/v1",
+          "openaiExtraConfig": undefined,
+          "reasoningBudget": undefined,
+          "reasoningEffort": undefined,
+          "reasoningEnabled": undefined,
+          "responseFormat": "auto",
+          "retryCount": 1,
+          "retryInterval": 2000,
+          "slot": "default",
+          "socksProxy": undefined,
+          "temperature": undefined,
+          "timeout": undefined,
+          "uiTarsModelVersion": undefined,
+        }
+      `);
+
+      const planningConfig = (agent as any).modelConfigManager.getModelConfig(
+        'planning',
+      );
+      expect(planningConfig).toMatchInlineSnapshot(`
+        {
+          "createOpenAIClient": undefined,
+          "extraBody": undefined,
+          "httpProxy": undefined,
+          "intent": "planning",
+          "modelDescription": "qwen2.5-vl mode",
+          "modelFamily": "qwen2.5-vl",
+          "modelName": "qwen2.5-vl-max",
+          "openaiApiKey": "test-key",
+          "openaiBaseURL": "https://api.sample.com/v1",
+          "openaiExtraConfig": undefined,
+          "reasoningBudget": undefined,
+          "reasoningEffort": undefined,
+          "reasoningEnabled": undefined,
+          "responseFormat": "auto",
+          "retryCount": 1,
+          "retryInterval": 2000,
+          "slot": "default",
+          "socksProxy": undefined,
+          "temperature": undefined,
+          "timeout": undefined,
+          "uiTarsModelVersion": undefined,
+        }
+      `);
+
+      const insightConfig = (agent as any).modelConfigManager.getModelConfig(
+        'insight',
+      );
+      expect(insightConfig).toMatchInlineSnapshot(`
+        {
+          "createOpenAIClient": undefined,
+          "extraBody": undefined,
+          "httpProxy": undefined,
+          "intent": "insight",
+          "modelDescription": "qwen2.5-vl mode",
+          "modelFamily": "qwen2.5-vl",
+          "modelName": "qwen2.5-vl-max",
+          "openaiApiKey": "test-key",
+          "openaiBaseURL": "https://api.sample.com/v1",
+          "openaiExtraConfig": undefined,
+          "reasoningBudget": undefined,
+          "reasoningEffort": undefined,
+          "reasoningEnabled": undefined,
+          "responseFormat": "auto",
+          "retryCount": 1,
+          "retryInterval": 2000,
+          "slot": "default",
+          "socksProxy": undefined,
+          "temperature": undefined,
+          "timeout": undefined,
+          "uiTarsModelVersion": undefined,
+        }
+      `);
+    });
+  });
+
+  describe('complex modelConfig without createOpenAIClient', () => {
+    it('should work without createOpenAIClient', () => {
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: complexModelConfig,
+      });
+
+      expect(agent).toBeInstanceOf(Agent);
+
+      const defaultConfig = (agent as any).modelConfigManager.getModelConfig(
+        'default',
+      );
+      expect(defaultConfig).toMatchInlineSnapshot(`
+        {
+          "createOpenAIClient": undefined,
+          "extraBody": undefined,
+          "httpProxy": undefined,
+          "intent": "default",
+          "modelDescription": "qwen2.5-vl mode",
+          "modelFamily": "qwen2.5-vl",
+          "modelName": "qwen2.5-vl-max",
+          "openaiApiKey": "test-key",
+          "openaiBaseURL": "https://api.sample.com/v1",
+          "openaiExtraConfig": undefined,
+          "reasoningBudget": undefined,
+          "reasoningEffort": undefined,
+          "reasoningEnabled": undefined,
+          "responseFormat": "auto",
+          "retryCount": 1,
+          "retryInterval": 2000,
+          "slot": "default",
+          "socksProxy": undefined,
+          "temperature": undefined,
+          "timeout": undefined,
+          "uiTarsModelVersion": undefined,
+        }
+      `);
+
+      const planningConfig = (agent as any).modelConfigManager.getModelConfig(
+        'planning',
+      );
+      expect(planningConfig).toMatchInlineSnapshot(`
+        {
+          "createOpenAIClient": undefined,
+          "extraBody": undefined,
+          "httpProxy": undefined,
+          "intent": "planning",
+          "modelDescription": "",
+          "modelFamily": undefined,
+          "modelName": "gpt-5.1",
+          "openaiApiKey": "test-planning-key",
+          "openaiBaseURL": "https://api.smaple-planning.com/v1",
+          "openaiExtraConfig": undefined,
+          "reasoningBudget": undefined,
+          "reasoningEffort": undefined,
+          "reasoningEnabled": undefined,
+          "responseFormat": "auto",
+          "retryCount": 1,
+          "retryInterval": 2000,
+          "slot": "planning",
+          "socksProxy": undefined,
+          "temperature": undefined,
+          "timeout": undefined,
+          "uiTarsModelVersion": undefined,
+        }
+      `);
+
+      const insightConfig = (agent as any).modelConfigManager.getModelConfig(
+        'insight',
+      );
+      expect(insightConfig).toMatchInlineSnapshot(`
+        {
+          "createOpenAIClient": undefined,
+          "extraBody": undefined,
+          "httpProxy": undefined,
+          "intent": "insight",
+          "modelDescription": "",
+          "modelFamily": undefined,
+          "modelName": "model-for-insight",
+          "openaiApiKey": "test-insight-key",
+          "openaiBaseURL": "https://api.sample-insight.com/v1",
+          "openaiExtraConfig": undefined,
+          "reasoningBudget": undefined,
+          "reasoningEffort": undefined,
+          "reasoningEnabled": undefined,
+          "responseFormat": "auto",
+          "retryCount": 1,
+          "retryInterval": 2000,
+          "slot": "insight",
+          "socksProxy": undefined,
+          "temperature": undefined,
+          "timeout": undefined,
+          "uiTarsModelVersion": undefined,
+        }
+      `);
+    });
+  });
+
+  describe('constructor with createOpenAIClient', () => {
+    it('should expose createOpenAIClient on public modelConfigManager for factory-only agents', () => {
+      const mockCreateClient: CreateOpenAIClientFn = rs.fn(async () => ({
+        chat: { completions: { create: rs.fn() } },
+      }));
+      const agent = new Agent(createMockInterface(), {
+        createOpenAIClient: mockCreateClient,
+      });
+
+      const defaultConfig = agent.modelConfigManager.getModelConfig('default');
+      const insightConfig = agent.modelConfigManager.getModelConfig('insight');
+
+      expect(defaultConfig.modelName).toBe(
+        defaultModelConfig[MIDSCENE_MODEL_NAME],
+      );
+      expect(defaultConfig.createOpenAIClient).toBe(mockCreateClient);
+      expect(insightConfig.modelName).toBe(
+        defaultModelConfig[MIDSCENE_MODEL_NAME],
+      );
+      expect(insightConfig.createOpenAIClient).toBe(mockCreateClient);
+    });
+
+    it('should combine global model config with an agent-scoped createOpenAIClient', () => {
+      const mockCreateClient: CreateOpenAIClientFn = rs.fn(async () => ({
+        chat: { completions: { create: rs.fn() } },
+      }));
+      const agent = new Agent(createMockInterface(), {
+        createOpenAIClient: mockCreateClient,
+      });
+
+      const runtime = (agent as any).resolveModelRuntime('default');
+
+      expect(runtime.config.modelName).toBe(
+        defaultModelConfig[MIDSCENE_MODEL_NAME],
+      );
+      expect(runtime.config.openaiApiKey).toBe(
+        defaultModelConfig[MIDSCENE_MODEL_API_KEY],
+      );
+      expect(runtime.config.openaiBaseURL).toBe(
+        defaultModelConfig[MIDSCENE_MODEL_BASE_URL],
+      );
+      expect(runtime.config.createOpenAIClient).toBe(mockCreateClient);
+      expect(mockCreateClient).not.toHaveBeenCalled();
+    });
+
+    it('should isolate createOpenAIClient between agents sharing global config', () => {
+      const firstCreateClient: CreateOpenAIClientFn = rs.fn(async () => ({
+        chat: { completions: { create: rs.fn() } },
+      }));
+      const secondCreateClient: CreateOpenAIClientFn = rs.fn(async () => ({
+        chat: { completions: { create: rs.fn() } },
+      }));
+      const firstAgent = new Agent(createMockInterface(), {
+        createOpenAIClient: firstCreateClient,
+      });
+      const secondAgent = new Agent(createMockInterface(), {
+        createOpenAIClient: secondCreateClient,
+      });
+
+      const firstRuntime = (firstAgent as any).resolveModelRuntime('default');
+      const secondRuntime = (secondAgent as any).resolveModelRuntime('default');
+      const firstRuntimeAgain = (firstAgent as any).resolveModelRuntime(
+        'default',
+      );
+
+      expect(firstRuntime.config.modelName).toBe(
+        defaultModelConfig[MIDSCENE_MODEL_NAME],
+      );
+      expect(secondRuntime.config.modelName).toBe(
+        defaultModelConfig[MIDSCENE_MODEL_NAME],
+      );
+      expect(firstRuntime.config).not.toBe(secondRuntime.config);
+      expect(firstRuntime.config.createOpenAIClient).toBe(firstCreateClient);
+      expect(secondRuntime.config.createOpenAIClient).toBe(secondCreateClient);
+      expect(firstRuntimeAgain.config.createOpenAIClient).toBe(
+        firstCreateClient,
+      );
+    });
+
+    it('should accept createOpenAIClient in AgentOpt with modelConfig', () => {
+      const mockCreateClient = rs.fn(async () => ({
+        chat: { completions: { create: rs.fn() } },
+      }));
+
+      // Create a mock interface instance
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+        createOpenAIClient: mockCreateClient,
+      });
+
+      expect(agent).toBeInstanceOf(Agent);
+      expect(mockCreateClient).not.toHaveBeenCalled(); // Not called in constructor
+    });
+
+    it('should pass createOpenAIClient to ModelConfigManager when modelConfig is provided', () => {
+      const mockCreateClient = rs.fn(async () => ({
+        chat: { completions: { create: rs.fn() } },
+      }));
+
+      // Create a mock interface instance
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+        createOpenAIClient: mockCreateClient,
+      });
+
+      // Access the private modelConfigManager through type assertion
+      const modelConfig = (agent as any).modelConfigManager.getModelConfig(
+        'default',
+      );
+      expect(modelConfig.createOpenAIClient).toBe(mockCreateClient);
+    });
+
+    it('should work without createOpenAIClient (backward compatibility)', () => {
+      // Create a mock interface instance
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+      });
+
+      expect(agent).toBeInstanceOf(Agent);
+
+      const modelConfig = (agent as any).modelConfigManager.getModelConfig(
+        'default',
+      );
+      expect(modelConfig.createOpenAIClient).toBeUndefined();
+    });
+  });
+
+  describe('intent-specific custom clients', () => {
+    it('should support different clients for different intents', () => {
+      const mockCreateClient: CreateOpenAIClientFn = rs.fn(
+        async (_client, opts) => {
+          const { apiKey } = opts as { apiKey?: string };
+          // Return different mock clients based on provided options
+          return {
+            chat: { completions: { create: rs.fn() } },
+            _apiKey: apiKey, // For testing purposes
+          };
+        },
+      );
+
+      // Create a mock interface instance
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: complexModelConfig,
+        createOpenAIClient: mockCreateClient,
+      });
+
+      const planningConfig = (agent as any).modelConfigManager.getModelConfig(
+        'planning',
+      );
+      expect(planningConfig.createOpenAIClient).toBe(mockCreateClient);
+      expect(planningConfig.intent).toBe('planning');
+      expect(planningConfig.slot).toBe('planning');
+
+      const defaultConfig = (agent as any).modelConfigManager.getModelConfig(
+        'default',
+      );
+      expect(defaultConfig.createOpenAIClient).toBe(mockCreateClient);
+      expect(defaultConfig.intent).toBe('default');
+      expect(defaultConfig.slot).toBe('default');
+    });
+  });
+
+  describe('observability wrapper integration', () => {
+    it('should support wrapping clients with langsmith-style wrappers', async () => {
+      const mockWrapOpenAI = rs.fn((client, options) => ({
+        ...client,
+        _wrapped: true,
+        _options: options,
+      }));
+
+      const mockCreateClient: CreateOpenAIClientFn = rs.fn(
+        async (client, opts) => {
+          const options = opts as { apiKey?: string };
+
+          // Wrap planning clients with observability
+          if (options.apiKey === 'planning-key') {
+            return mockWrapOpenAI(client, {
+              projectName: 'midscene-planning',
+              metadata: { apiKey: options.apiKey },
+            }) as any;
+          }
+
+          return client as any;
+        },
+      );
+
+      // Create a mock interface instance
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: {
+          [MIDSCENE_MODEL_NAME]: 'gpt-4o',
+          [MIDSCENE_MODEL_API_KEY]: 'default-key',
+          [MIDSCENE_MODEL_BASE_URL]: 'https://api.openai.com/v1',
+          [MIDSCENE_PLANNING_MODEL_NAME]: 'qwen-vl-plus',
+          [MIDSCENE_PLANNING_MODEL_API_KEY]: 'planning-key',
+          [MIDSCENE_PLANNING_MODEL_BASE_URL]: 'https://api.openai.com/v1',
+          [MIDSCENE_MODEL_FAMILY]: 'qwen2.5-vl' as const,
+        },
+        createOpenAIClient: mockCreateClient,
+      });
+
+      expect(agent).toBeInstanceOf(Agent);
+
+      // Planning config should have wrapped client creator
+      const planningConfig = (agent as any).modelConfigManager.getModelConfig(
+        'planning',
+      );
+      expect(planningConfig.createOpenAIClient).toBeDefined();
+
+      // Simulate calling the client creator
+      const baseClient = { chat: { completions: { create: rs.fn() } } };
+      const clientOptions = {
+        baseURL: planningConfig.openaiBaseURL,
+        apiKey: planningConfig.openaiApiKey,
+        dangerouslyAllowBrowser: true,
+      };
+
+      const planningClient = await planningConfig.createOpenAIClient!(
+        baseClient,
+        clientOptions,
+      );
+
+      expect(mockWrapOpenAI).toHaveBeenCalledWith(baseClient, {
+        projectName: 'midscene-planning',
+        metadata: { apiKey: 'planning-key' },
+      });
+
+      expect(planningClient).toMatchObject({
+        _wrapped: true,
+        _options: {
+          projectName: 'midscene-planning',
+          metadata: { apiKey: 'planning-key' },
+        },
+      });
+    });
+
+    it('should provide all config parameters to createOpenAIClient', async () => {
+      const mockCreateClient: CreateOpenAIClientFn = rs.fn(async () => ({
+        chat: { completions: { create: rs.fn() } },
+      }));
+
+      // Create a mock interface instance
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: {
+          [MIDSCENE_MODEL_NAME]: 'gpt-4o',
+          [MIDSCENE_MODEL_API_KEY]: 'test-api-key',
+          [MIDSCENE_MODEL_BASE_URL]: 'https://custom.openai.com/v1',
+        },
+        createOpenAIClient: mockCreateClient,
+      });
+
+      const config = (agent as any).modelConfigManager.getModelConfig(
+        'default',
+      );
+
+      // Simulate what createChatClient does
+      const baseClient = { chat: { completions: { create: rs.fn() } } };
+      const options = {
+        baseURL: config.openaiBaseURL,
+        apiKey: config.openaiApiKey,
+        dangerouslyAllowBrowser: true,
+      };
+
+      await config.createOpenAIClient!(baseClient, options);
+
+      expect(mockCreateClient).toHaveBeenCalledWith(baseClient, options);
+    });
+  });
+
+  describe('performance characteristics', () => {
+    it('should inject createOpenAIClient during config initialization, not on getModelConfig', () => {
+      const mockCreateClient = rs.fn(async () => ({
+        chat: { completions: { create: rs.fn() } },
+      }));
+
+      // Create a mock interface instance
+      const mockInterface = createMockInterface();
+
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+        createOpenAIClient: mockCreateClient,
+      });
+
+      const modelConfigManager = (agent as any).modelConfigManager;
+
+      // Get config multiple times
+      const config1 = modelConfigManager.getModelConfig('default');
+      const config2 = modelConfigManager.getModelConfig('default');
+      const config3 = modelConfigManager.getModelConfig('default');
+
+      // All should return the same object reference
+      expect(config1).toBe(config2);
+      expect(config2).toBe(config3);
+
+      // createOpenAIClient should be the same reference
+      expect(config1.createOpenAIClient).toBe(mockCreateClient);
+      expect(config2.createOpenAIClient).toBe(mockCreateClient);
+      expect(config3.createOpenAIClient).toBe(mockCreateClient);
+    });
+  });
+
+  describe('planning locate strategy', () => {
+    it('should pass balance effort when planning config is explicitly resolved', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: {
+          ...defaultModelConfig,
+          [MIDSCENE_PLANNING_MODEL_NAME]:
+            defaultModelConfig[MIDSCENE_MODEL_NAME],
+          [MIDSCENE_PLANNING_MODEL_API_KEY]:
+            defaultModelConfig[MIDSCENE_MODEL_API_KEY],
+          [MIDSCENE_PLANNING_MODEL_BASE_URL]:
+            defaultModelConfig[MIDSCENE_MODEL_BASE_URL],
+        },
+      });
+      const actionSpy = rs
+        .spyOn((agent as any).taskExecutor, 'action')
+        .mockResolvedValue({
+          output: {
+            yamlFlow: [],
+          },
+        });
+
+      await agent.aiAct('click the submit button');
+
+      expect(actionSpy).toHaveBeenCalled();
+      expect(actionSpy.mock.calls[0][6]).toBe('balance');
+      expect(
+        (agent as any).modelConfigManager.getModelConfig('planning').slot,
+      ).toBe('planning');
+    });
+
+    it('should pass balance effort when planning config falls back to default', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+      });
+      const actionSpy = rs
+        .spyOn((agent as any).taskExecutor, 'action')
+        .mockResolvedValue({
+          output: {
+            yamlFlow: [],
+          },
+        });
+
+      await agent.aiAct('click the submit button');
+
+      expect(actionSpy).toHaveBeenCalled();
+      expect(actionSpy.mock.calls[0][6]).toBe('balance');
+      expect(
+        (agent as any).modelConfigManager.getModelConfig('planning').slot,
+      ).toBe('default');
+    });
+
+    it('should prefer effort over deepThink and warn that effort is experimental', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+      });
+      const actionSpy = rs
+        .spyOn((agent as any).taskExecutor, 'action')
+        .mockResolvedValue({
+          output: {
+            yamlFlow: [],
+          },
+        });
+      const warnSpy = rs
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+
+      await agent.aiAct('click the submit button', {
+        deepThink: false,
+        effort: 'deepThink',
+      });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[Midscene]',
+        'The "effort" option is experimental and not yet open for public use. Do not use it. When both "effort" and "deepThink" are provided, "effort" takes precedence.',
+      );
+      expect(actionSpy.mock.calls[0][6]).toBe('deepThink');
+    });
+
+    it('should prefer balance effort over deepThink and use the experimental warning', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+      });
+      const actionSpy = rs
+        .spyOn((agent as any).taskExecutor, 'action')
+        .mockResolvedValue({
+          output: {
+            yamlFlow: [],
+          },
+        });
+      const warnSpy = rs
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+
+      await agent.aiAct('click the submit button', {
+        deepThink: true,
+        effort: 'balance',
+      });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[Midscene]',
+        'The "effort" option is experimental and not yet open for public use. Do not use it. When both "effort" and "deepThink" are provided, "effort" takes precedence.',
+      );
+      expect(actionSpy.mock.calls[0][6]).toBe('balance');
+    });
+
+    it('should keep supporting deepThink without an experimental warning', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+      });
+      const actionSpy = rs
+        .spyOn((agent as any).taskExecutor, 'action')
+        .mockResolvedValue({
+          output: {
+            yamlFlow: [],
+          },
+        });
+      const warnSpy = rs
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+
+      await agent.aiAct('click the submit button', { deepThink: true });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(actionSpy.mock.calls[0][6]).toBe('deepThink');
+    });
+
+    it('should use the unified experimental warning for fast effort', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: defaultModelConfig,
+      });
+      const actionSpy = rs
+        .spyOn((agent as any).taskExecutor, 'action')
+        .mockResolvedValue({
+          output: {
+            yamlFlow: [],
+          },
+        });
+      const warnSpy = rs
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+
+      await agent.aiAct('click the submit button', { effort: 'fast' });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[Midscene]',
+        'The "effort" option is experimental and not yet open for public use. Do not use it. When both "effort" and "deepThink" are provided, "effort" takes precedence.',
+      );
+      expect(actionSpy.mock.calls[0][6]).toBe('fast');
+    });
+
+    it('should reject fast effort before running custom planning', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: {
+          ...defaultModelConfig,
+          [MIDSCENE_MODEL_FAMILY]: 'auto-glm',
+        },
+      });
+      const actionSpy = rs.spyOn((agent as any).taskExecutor, 'action');
+      rs.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await expect(
+        agent.aiAct('click the submit button', { effort: 'fast' }),
+      ).rejects.toThrow(
+        'The "fast" aiAct effort is not supported with custom planning adapters (modelFamily: auto-glm).',
+      );
+
+      expect(actionSpy).not.toHaveBeenCalled();
+    });
+
+    it('should support deepThink and normalize unsupported custom planning', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: {
+          ...defaultModelConfig,
+          [MIDSCENE_MODEL_FAMILY]: 'auto-glm',
+        },
+      });
+      const actionSpy = rs
+        .spyOn((agent as any).taskExecutor, 'action')
+        .mockResolvedValue({
+          output: {
+            yamlFlow: [],
+          },
+        });
+      const warnSpy = rs
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+
+      await agent.aiAct('click the submit button', { deepThink: true });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[Midscene]',
+        'The "deepThink" aiAct effort is not supported with custom planning adapters (modelFamily: auto-glm). It will be ignored.',
+      );
+      expect(actionSpy).toHaveBeenCalled();
+      expect(actionSpy.mock.calls[0][6]).toBe('balance');
+    });
+
+    it('should disable deepLocate before running custom planning', async () => {
+      const mockInterface = createMockInterface();
+      const agent = new Agent(mockInterface, {
+        modelConfig: {
+          ...defaultModelConfig,
+          [MIDSCENE_MODEL_FAMILY]: 'auto-glm',
+        },
+      });
+      const actionSpy = rs
+        .spyOn((agent as any).taskExecutor, 'action')
+        .mockResolvedValue({
+          output: {
+            yamlFlow: [],
+          },
+        });
+      const warnSpy = rs
+        .spyOn(console, 'warn')
+        .mockImplementation(() => undefined);
+
+      await agent.aiAct('click the submit button', { deepLocate: true });
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[Midscene]',
+        'The "deepLocate" option is not supported for aiAct with the current planning adapter (modelFamily: auto-glm). It will be ignored.',
+      );
+      expect(actionSpy).toHaveBeenCalled();
+      expect(actionSpy.mock.calls[0][8]).toBe(false);
+    });
+  });
+});

@@ -1,0 +1,23 @@
+// Rstest Snapshot v1
+
+exports[`yaml > basic load 1`] = `
+{
+  "target": {
+    "url": "https://www.baidu.com",
+    "waitForNetworkIdle": {
+      "continueOnNetworkIdleError": true,
+      "timeout": 1000,
+    },
+  },
+  "tasks": [
+    {
+      "flow": [
+        {
+          "action": "type 'hello' in search box, hit enter",
+        },
+      ],
+      "name": "search",
+    },
+  ],
+}
+`;

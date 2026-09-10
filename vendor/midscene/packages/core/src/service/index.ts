@@ -1,0 +1,614 @@
+import type { ModelRuntime } from '@/ai-model/models';
+import { elementDescriberInstruction } from '@/ai-model/prompt/describe';
+import {
+  AIResponseParseError,
+  callAIWithObjectResponse,
+} from '@/ai-model/service-caller';
+import type { AIArgs } from '@/ai-model/service-caller/types';
+import { defaultModelFamilyRequiredForLocateMessage } from '@/ai-model/shared/model-locate-result/errors';
+import {
+  AiLocateElement,
+  AiLocateSection,
+  buildSearchAreaConfig,
+} from '@/ai-model/workflows/grounding';
+import { mergeSearchAreaResults } from '@/ai-model/workflows/grounding/search-area';
+import type { SearchAreaConfig } from '@/ai-model/workflows/grounding/types';
+import { AiExtractElementInfo } from '@/ai-model/workflows/insight';
+import type {
+  AIDescribeElementResponse,
+  AIUsageInfo,
+  DetailedLocateParam,
+  LocateResultElement,
+  LocateResultWithDump,
+  PartialServiceDumpFromSDK,
+  Rect,
+  ServiceExtractOption,
+  ServiceExtractParam,
+  ServiceExtractResult,
+  ServiceTaskInfo,
+  UIContext,
+} from '@/types';
+import { ServiceError } from '@/types';
+import {
+  compositeElementInfoImg,
+  compositePointMarkerImg,
+  cropByRect,
+  resizeBase64ImageToJpeg,
+} from '@midscene/shared/img';
+import { getDebug } from '@midscene/shared/logger';
+import { assert } from '@midscene/shared/utils';
+import type { ChatCompletionContentPart } from 'openai/resources/index';
+import type { TMultimodalPrompt, TUserPrompt } from '../common';
+import {
+  createServiceDump,
+  getDescribeDeepContextAreas,
+  getDescribeDeepLocateResizeSize,
+  getDescribeMarkerBorderThickness,
+  getDescribeMarkerRect,
+  getRectInCrop,
+  recoverDescribeResponseFromParseError,
+} from './utils';
+
+export interface LocateOpts {
+  context?: UIContext;
+  planLocatedElement?: LocateResultElement;
+}
+
+export type AnyValue<T> = {
+  [K in keyof T]: unknown extends T[K] ? any : T[K];
+};
+
+interface ServiceOptions {
+  taskInfo?: Omit<ServiceTaskInfo, 'durationMs'>;
+}
+
+interface LocateSearchAreaResult {
+  config?: SearchAreaConfig;
+  error?: string;
+  trace: {
+    sourceRect?: Rect;
+    rawResponse?: string;
+    rawChoiceMessage?: unknown;
+    usage?: AIUsageInfo;
+  };
+}
+
+const debug = getDebug('ai:service');
+
+export default class Service {
+  contextRetrieverFn: () => Promise<UIContext> | UIContext;
+
+  taskInfo?: Omit<ServiceTaskInfo, 'durationMs'>;
+
+  constructor(
+    context: UIContext | (() => Promise<UIContext> | UIContext),
+    opt?: ServiceOptions,
+  ) {
+    assert(context, 'context is required for Service');
+    if (typeof context === 'function') {
+      this.contextRetrieverFn = context;
+    } else {
+      this.contextRetrieverFn = () => Promise.resolve(context);
+    }
+
+    if (typeof opt?.taskInfo !== 'undefined') {
+      this.taskInfo = opt.taskInfo;
+    }
+  }
+
+  async locate(
+    query: DetailedLocateParam,
+    opt: LocateOpts,
+    modelRuntime: ModelRuntime,
+    abortSignal?: AbortSignal,
+  ): Promise<LocateResultWithDump> {
+    const { config: modelConfig } = modelRuntime;
+    const queryPrompt = query.prompt;
+    assert(queryPrompt, 'query is required for locate');
+
+    if (!modelConfig.modelFamily) {
+      throw new Error(defaultModelFamilyRequiredForLocateMessage);
+    }
+
+    const context = opt?.context || (await this.contextRetrieverFn());
+
+    const searchAreaStartTime = Date.now();
+    const searchArea = await this.resolveLocateSearchArea({
+      query,
+      queryPrompt,
+      opt,
+      context,
+      modelRuntime,
+      abortSignal,
+    });
+
+    if (!searchArea.config && searchArea.error) {
+      const errorMessage = `cannot find search area for "${queryPrompt}": ${searchArea.error}`;
+      const taskInfo: ServiceTaskInfo = {
+        ...(this.taskInfo ? this.taskInfo : {}),
+        durationMs: Date.now() - searchAreaStartTime,
+        searchAreaRawResponse: searchArea.trace.rawResponse,
+        searchAreaRawChoiceMessage: searchArea.trace.rawChoiceMessage,
+        searchAreaUsage: searchArea.trace.usage,
+      };
+      const dump = createServiceDump({
+        type: 'locate',
+        userQuery: { element: queryPrompt },
+        matchedElement: [],
+        data: null,
+        taskInfo,
+        deepLocate: true,
+        error: errorMessage,
+      });
+      throw new ServiceError(errorMessage, dump);
+    }
+
+    const startTime = Date.now();
+    const {
+      parseResult,
+      rawResponse,
+      rawChoiceMessage,
+      usage,
+      reasoning_content,
+    } = await AiLocateElement({
+      context,
+      targetElementDescription: queryPrompt,
+      searchConfig: searchArea.config,
+      modelRuntime,
+      abortSignal,
+    });
+
+    const timeCost = Date.now() - startTime;
+    const taskInfo: ServiceTaskInfo = {
+      ...(this.taskInfo ? this.taskInfo : {}),
+      durationMs: timeCost,
+      rawResponse,
+      rawChoiceMessage,
+      formatResponse: parseResult,
+      usage,
+      searchArea: searchArea.trace.sourceRect,
+      searchAreaRawResponse: searchArea.trace.rawResponse,
+      searchAreaRawChoiceMessage: searchArea.trace.rawChoiceMessage,
+      searchAreaUsage: searchArea.trace.usage,
+      reasoning_content,
+    };
+
+    let errorLog: string | undefined;
+    if (parseResult.errors?.length) {
+      errorLog = `failed to locate element: \n${parseResult.errors.join('\n')}`;
+    }
+
+    const dumpData: PartialServiceDumpFromSDK = {
+      type: 'locate',
+      userQuery: {
+        element: queryPrompt,
+      },
+      data: null,
+      taskInfo,
+      deepLocate: !!searchArea.trace.sourceRect,
+      error: errorLog,
+    };
+
+    const element = parseResult.element;
+
+    const dump = createServiceDump({
+      ...dumpData,
+      matchedElement: element ? [element] : [],
+    });
+
+    if (errorLog) {
+      throw new ServiceError(errorLog, dump);
+    }
+
+    if (element) {
+      return {
+        element: {
+          center: element.center,
+          description: element.description,
+          ...(element.rect ? { rect: element.rect } : {}),
+        },
+        dump,
+      };
+    }
+
+    return {
+      element: null,
+      dump,
+    };
+  }
+
+  private async resolveLocateSearchArea(options: {
+    query: DetailedLocateParam;
+    queryPrompt: TUserPrompt;
+    opt: LocateOpts;
+    context: UIContext;
+    modelRuntime: ModelRuntime;
+    abortSignal?: AbortSignal;
+  }): Promise<LocateSearchAreaResult> {
+    const { query, queryPrompt, opt, context, modelRuntime, abortSignal } =
+      options;
+    const { adapter } = modelRuntime;
+    const hasPlanLocatedElement = !!opt?.planLocatedElement?.center;
+
+    if (!query.deepLocate) {
+      return { trace: {} };
+    }
+
+    // TODO: Make the plan, section-locate, and element-locate fallback paths
+    // resolve only the source rect, then build the search-area config once in
+    // this orchestration layer instead of building it inside AiLocateSection.
+    if (hasPlanLocatedElement) {
+      const config = await buildSearchAreaConfig({
+        context,
+        baseRect: mergeSearchAreaResults(opt.planLocatedElement!),
+      });
+
+      return {
+        config,
+        trace: {
+          sourceRect: config.sourceRect,
+          rawResponse: JSON.stringify({
+            source: 'plan-located-element',
+            center: opt.planLocatedElement!.center,
+            rect: opt.planLocatedElement!.rect,
+          }),
+        },
+      };
+    }
+
+    if (adapter.locate.kind === 'standard' && adapter.locate.searchArea) {
+      const searchAreaResponse = await AiLocateSection({
+        context,
+        sectionDescription: queryPrompt,
+        modelRuntime,
+        abortSignal,
+      });
+      const { searchAreaConfig } = searchAreaResponse;
+      if (!searchAreaConfig) {
+        return {
+          error: searchAreaResponse.error || 'unknown search area error',
+          trace: {
+            rawResponse: searchAreaResponse.rawResponse,
+            rawChoiceMessage: searchAreaResponse.rawChoiceMessage,
+            usage: searchAreaResponse.usage,
+          },
+        };
+      }
+
+      return {
+        config: searchAreaConfig,
+        trace: {
+          sourceRect: searchAreaConfig.sourceRect,
+          rawResponse: searchAreaResponse.rawResponse,
+          rawChoiceMessage: searchAreaResponse.rawChoiceMessage,
+          usage: searchAreaResponse.usage,
+        },
+      };
+    }
+
+    const firstPassLocateResult = await AiLocateElement({
+      context,
+      targetElementDescription: queryPrompt,
+      modelRuntime,
+      abortSignal,
+    });
+    assert(
+      firstPassLocateResult.parseResult.element?.center,
+      `cannot find search area for "${queryPrompt}"${
+        firstPassLocateResult.parseResult.errors?.length
+          ? `: ${firstPassLocateResult.parseResult.errors.join('\n')}`
+          : ''
+      }`,
+    );
+
+    const config = await buildSearchAreaConfig({
+      context,
+      baseRect: mergeSearchAreaResults(
+        firstPassLocateResult.parseResult.element!,
+      ),
+    });
+
+    return {
+      config,
+      trace: {
+        sourceRect: config.sourceRect,
+        rawResponse: JSON.stringify({
+          source: 'deep-locate-first-pass',
+          center: firstPassLocateResult.parseResult.element?.center,
+          rect: firstPassLocateResult.parseResult.element?.rect,
+          rawResponse: firstPassLocateResult.rawResponse,
+        }),
+        rawChoiceMessage: firstPassLocateResult.rawChoiceMessage,
+        usage: firstPassLocateResult.usage,
+      },
+    };
+  }
+
+  async extract<T>(
+    dataDemand: ServiceExtractParam,
+    modelRuntime: ModelRuntime,
+    opt?: ServiceExtractOption,
+    pageDescription?: string,
+    multimodalPrompt?: TMultimodalPrompt,
+    context?: UIContext,
+    executionOptions?: {
+      abortSignal?: AbortSignal;
+    },
+  ): Promise<ServiceExtractResult<T>> {
+    assert(context, 'context is required for extract');
+    assert(
+      typeof dataDemand === 'object' || typeof dataDemand === 'string',
+      `dataDemand should be object or string, but get ${typeof dataDemand}`,
+    );
+
+    const startTime = Date.now();
+
+    let parseResult: Awaited<
+      ReturnType<typeof AiExtractElementInfo<T>>
+    >['parseResult'];
+    let rawResponse: string;
+    let rawChoiceMessage: unknown;
+    let usage: Awaited<ReturnType<typeof AiExtractElementInfo<T>>>['usage'];
+    let reasoning_content: string | undefined;
+
+    try {
+      const result = await AiExtractElementInfo<T>({
+        context,
+        dataQuery: dataDemand,
+        multimodalPrompt,
+        extractOption: opt,
+        modelRuntime,
+        pageDescription,
+        abortSignal: executionOptions?.abortSignal,
+      });
+      parseResult = result.parseResult;
+      rawResponse = result.rawResponse;
+      rawChoiceMessage = result.rawChoiceMessage;
+      usage = result.usage;
+      reasoning_content = result.reasoning_content;
+    } catch (error) {
+      if (error instanceof AIResponseParseError) {
+        // Create dump with usage and rawResponse from the error
+        const timeCost = Date.now() - startTime;
+        const taskInfo: ServiceTaskInfo = {
+          ...(this.taskInfo ? this.taskInfo : {}),
+          durationMs: timeCost,
+          rawResponse: error.rawResponse,
+          rawChoiceMessage: error.rawChoiceMessage,
+          usage: error.usage,
+        };
+        const dump = createServiceDump({
+          type: 'extract',
+          userQuery: { dataDemand },
+          data: null,
+          taskInfo,
+          error: error.message,
+        });
+        throw new ServiceError(error.message, dump);
+      }
+      throw error;
+    }
+
+    const timeCost = Date.now() - startTime;
+    const taskInfo: ServiceTaskInfo = {
+      ...(this.taskInfo ? this.taskInfo : {}),
+      durationMs: timeCost,
+      rawResponse,
+      rawChoiceMessage,
+      formatResponse: parseResult,
+      usage,
+      reasoning_content,
+    };
+
+    let errorLog: string | undefined;
+    if (parseResult.errors?.length) {
+      errorLog = `AI response error: \n${parseResult.errors.join('\n')}`;
+    }
+
+    const dumpData: PartialServiceDumpFromSDK = {
+      type: 'extract',
+      userQuery: {
+        dataDemand,
+      },
+      data: null,
+      taskInfo,
+      error: errorLog,
+    };
+
+    const { data, thought } = parseResult || {};
+
+    const dump = createServiceDump({
+      ...dumpData,
+      data,
+    });
+
+    if (errorLog && !data) {
+      throw new ServiceError(errorLog, dump);
+    }
+
+    return {
+      data,
+      thought,
+      usage,
+      reasoning_content,
+      dump,
+    };
+  }
+
+  async describe(
+    target: Rect | [number, number],
+    modelRuntime: ModelRuntime,
+    opt?: {
+      deepDescribe?: boolean;
+      context?: UIContext;
+    },
+  ): Promise<Pick<AIDescribeElementResponse, 'description'>> {
+    assert(target, 'target is required for service.describe');
+    const context = opt?.context || (await this.contextRetrieverFn());
+    const { shotSize } = context;
+    const screenshotBase64 = context.screenshot.base64;
+    assert(screenshotBase64, 'screenshot is required for service.describe');
+    const systemPrompt = elementDescriberInstruction();
+
+    // Convert [x,y] center point to Rect if needed
+    const defaultRectSize = 30;
+    const targetFromPoint = Array.isArray(target);
+    const targetRect: Rect = targetFromPoint
+      ? {
+          left: Math.floor(target[0] - defaultRectSize / 2),
+          top: Math.floor(target[1] - defaultRectSize / 2),
+          width: defaultRectSize,
+          height: defaultRectSize,
+        }
+      : target;
+    const targetPoint = targetFromPoint
+      ? {
+          x: target[0],
+          y: target[1],
+        }
+      : undefined;
+
+    const usePointMarker = targetFromPoint;
+    const imagePayload = usePointMarker
+      ? await compositePointMarkerImg({
+          inputImgBase64: screenshotBase64,
+          size: shotSize,
+          point: targetPoint!,
+        })
+      : await compositeElementInfoImg({
+          inputImgBase64: screenshotBase64,
+          size: shotSize,
+          elementsPositionInfo: [
+            {
+              rect: getDescribeMarkerRect(targetRect),
+            },
+          ],
+          borderThickness: getDescribeMarkerBorderThickness(targetRect),
+          centerPoint: true,
+        });
+
+    const shouldDeepDescribe = opt?.deepDescribe;
+    let imageContent: ChatCompletionContentPart[];
+    if (shouldDeepDescribe) {
+      const contextAreas = getDescribeDeepContextAreas(targetRect, shotSize);
+      const contextImages = await Promise.all(
+        contextAreas.map(async (area) => {
+          debug('describe: cropping deep context area', area);
+          const croppedResult = await cropByRect(screenshotBase64, area.rect);
+          const cropSize = {
+            width: croppedResult.width,
+            height: croppedResult.height,
+          };
+          const targetInCrop = getRectInCrop(targetRect, area.rect, cropSize);
+          const markedCropPayload = targetFromPoint
+            ? await compositePointMarkerImg({
+                inputImgBase64: croppedResult.imageBase64,
+                size: cropSize,
+                point: {
+                  x: targetPoint!.x - area.rect.left,
+                  y: targetPoint!.y - area.rect.top,
+                },
+              })
+            : await compositeElementInfoImg({
+                inputImgBase64: croppedResult.imageBase64,
+                size: cropSize,
+                elementsPositionInfo: [
+                  {
+                    rect: getDescribeMarkerRect(targetInCrop),
+                  },
+                ],
+                borderThickness: getDescribeMarkerBorderThickness(targetInCrop),
+                centerPoint: true,
+              });
+          const resizeSize = getDescribeDeepLocateResizeSize(croppedResult);
+          return {
+            kind: area.kind,
+            imageBase64: resizeSize
+              ? await resizeBase64ImageToJpeg(markedCropPayload, {
+                  sourceSize: cropSize,
+                  targetSize: resizeSize,
+                })
+              : markedCropPayload,
+          };
+        }),
+      );
+      const contextImageContent =
+        contextImages.flatMap<ChatCompletionContentPart>((item, index) => [
+          {
+            type: 'text',
+            text: `Image ${index + 2}: focused detail crop around the target, for reading text, icon shape, and exact local boundaries.`,
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: item.imageBase64,
+              detail: 'high',
+            },
+          },
+        ]);
+
+      imageContent = [
+        {
+          type: 'text' as const,
+          text: 'Use these images together to describe the real UI target marked by the temporary callout. Do not describe the marker itself.',
+        },
+        {
+          type: 'text' as const,
+          text: 'Image 1: full screenshot overview with the target marker, for page position and ownership context.',
+        },
+        {
+          type: 'image_url' as const,
+          image_url: {
+            url: imagePayload,
+            detail: 'high',
+          },
+        },
+        ...contextImageContent,
+      ];
+    } else {
+      imageContent = [
+        {
+          type: 'text' as const,
+          text: 'Full screenshot with a temporary callout marking the target:',
+        },
+        {
+          type: 'image_url' as const,
+          image_url: {
+            url: imagePayload,
+            detail: 'high',
+          },
+        },
+      ];
+    }
+
+    const msgs: AIArgs = [
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: imageContent,
+      },
+    ];
+
+    let res: Awaited<
+      ReturnType<typeof callAIWithObjectResponse<AIDescribeElementResponse>>
+    >;
+    try {
+      res = await callAIWithObjectResponse<AIDescribeElementResponse>(
+        msgs,
+        modelRuntime,
+      );
+    } catch (error) {
+      const recoveredResponse = recoverDescribeResponseFromParseError(error);
+      if (!recoveredResponse) {
+        throw error;
+      }
+      debug('describe: recovered malformed description JSON response');
+      return recoveredResponse;
+    }
+
+    const { content } = res;
+    assert(!content.error, `describe failed: ${content.error}`);
+    assert(content.description, 'failed to describe the element');
+    return content;
+  }
+}

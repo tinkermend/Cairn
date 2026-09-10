@@ -1,0 +1,326 @@
+import type {
+  AndroidDeviceInputOpt,
+  AndroidDeviceOpt,
+  HarmonyDeviceInputOpt,
+  HarmonyDeviceOpt,
+  IOSDeviceInputOpt,
+  IOSDeviceOpt,
+} from '@/device';
+import type {
+  MidsceneYamlScriptAndroidEnv,
+  MidsceneYamlScriptIOSEnv,
+} from '@/yaml';
+import { describe, expect, test } from '@rstest/core';
+
+describe('Device Options Type Definitions', () => {
+  describe('AndroidDeviceOpt', () => {
+    test('should include all required Android device options', () => {
+      const options: AndroidDeviceOpt = {
+        androidAdbPath: '/custom/path/to/adb',
+        remoteAdbHost: '192.168.1.100',
+        remoteAdbPort: 5037,
+        imeStrategy: 'yadb-for-non-ascii',
+        screenshotStrategy: 'auto',
+        displayId: 1,
+        usePhysicalDisplayIdForScreenshot: true,
+        usePhysicalDisplayIdForDisplayLookup: true,
+        exposeRunAdbShellAction: false,
+        screenshotResizeScale: 0.5,
+        minScreenshotBufferSize: 4096,
+        alwaysRefreshScreenInfo: true,
+        autoDismissKeyboard: true,
+        keyboardDismissStrategy: 'esc-first',
+      };
+
+      // Type check - this will fail at compile time if types are incorrect
+      expect(options).toBeDefined();
+    });
+
+    test('should work with partial options', () => {
+      const options: Partial<AndroidDeviceOpt> = {
+        androidAdbPath: '/custom/path/to/adb',
+      };
+
+      expect(options).toBeDefined();
+    });
+
+    test('AndroidDeviceInputOpt should include keyboard options', () => {
+      const inputOptions: AndroidDeviceInputOpt = {
+        autoDismissKeyboard: true,
+        keyboardDismissStrategy: 'back-first',
+        keyboardTypeDelay: 20,
+        inputStrategy: 'sequential',
+      };
+
+      expect(inputOptions).toBeDefined();
+    });
+  });
+
+  describe('IOSDeviceOpt', () => {
+    test('should include all required iOS device options', () => {
+      const options: IOSDeviceOpt = {
+        iOSDeviceClassOverride: '@private-package/ios',
+        wdaPort: 8100,
+        wdaHost: 'localhost',
+        sessionId: 'external-session-id',
+        autoDismissKeyboard: true,
+      };
+
+      // Type check - this will fail at compile time if types are incorrect
+      expect(options).toBeDefined();
+    });
+
+    test('should reject unsupported device selectors', () => {
+      const deviceIdOptions: IOSDeviceOpt = {
+        // @ts-expect-error - select the target through the WDA endpoint
+        deviceId: '00008110-000123456789ABCD',
+      };
+      const useWDAOptions: IOSDeviceOpt = {
+        // @ts-expect-error - IOSDevice is always backed by WebDriverAgent
+        useWDA: true,
+      };
+
+      expect(deviceIdOptions).toBeDefined();
+      expect(useWDAOptions).toBeDefined();
+    });
+
+    test('should work with partial options', () => {
+      const options: Partial<IOSDeviceOpt> = {
+        wdaPort: 8100,
+      };
+
+      expect(options).toBeDefined();
+    });
+
+    test('should allow documented iOS device override option name', () => {
+      const options: IOSDeviceOpt = {
+        iOSDeviceClassOverride: '@private-package/ios',
+      };
+
+      expect(options).toBeDefined();
+    });
+
+    test('IOSDeviceInputOpt should include keyboard options', () => {
+      const inputOptions: IOSDeviceInputOpt = {
+        autoDismissKeyboard: true,
+        keyboardTypeDelay: 20,
+        inputStrategy: 'bulk',
+      };
+
+      expect(inputOptions).toBeDefined();
+    });
+  });
+
+  describe('HarmonyDeviceOpt', () => {
+    test('should include all required HarmonyOS device options', () => {
+      const options: HarmonyDeviceOpt = {
+        hdcPath: '/custom/path/to/hdc',
+        autoDismissKeyboard: true,
+        keyboardDismissStrategy: 'esc-first',
+        screenshotResizeScale: 0.5,
+      };
+
+      expect(options).toBeDefined();
+    });
+
+    test('HarmonyDeviceInputOpt should include keyboard options', () => {
+      const inputOptions: HarmonyDeviceInputOpt = {
+        autoDismissKeyboard: true,
+        keyboardDismissStrategy: 'back-first',
+        keyboardTypeDelay: 20,
+        inputStrategy: 'legacy',
+      };
+
+      expect(inputOptions).toBeDefined();
+    });
+  });
+
+  describe('YAML Environment Types', () => {
+    test('MidsceneYamlScriptAndroidEnv should include all AndroidDeviceOpt except customActions', () => {
+      const yamlConfig: MidsceneYamlScriptAndroidEnv = {
+        // From AndroidDeviceOpt
+        deviceId: 'emulator-5554',
+        androidAdbPath: '/custom/path/to/adb',
+        remoteAdbHost: '192.168.1.100',
+        remoteAdbPort: 5037,
+        imeStrategy: 'yadb-for-non-ascii',
+        screenshotStrategy: 'always-yadb',
+        displayId: 1,
+        usePhysicalDisplayIdForScreenshot: true,
+        usePhysicalDisplayIdForDisplayLookup: true,
+        exposeRunAdbShellAction: false,
+        screenshotResizeScale: 0.5,
+        minScreenshotBufferSize: 4096,
+        alwaysRefreshScreenInfo: true,
+        autoDismissKeyboard: true,
+        keyboardDismissStrategy: 'esc-first',
+
+        // YAML-specific
+        launch: 'com.example.app',
+
+        // From MidsceneYamlScriptConfig
+        output: './output',
+        unstableLogContent: true,
+      };
+
+      const invalidConfig: MidsceneYamlScriptAndroidEnv = {
+        // @ts-expect-error - customActions should not be allowed in YAML config
+        customActions: [],
+      };
+
+      expect(yamlConfig).toBeDefined();
+      expect(invalidConfig).toBeDefined(); // Runtime check, TS will error
+    });
+
+    test('MidsceneYamlScriptIOSEnv should include all IOSDeviceOpt except customActions', () => {
+      const yamlConfig: MidsceneYamlScriptIOSEnv = {
+        // From IOSDeviceOpt
+        iOSDeviceClassOverride: '@private-package/ios',
+        wdaPort: 8100,
+        wdaHost: 'localhost',
+        sessionId: 'external-session-id',
+        autoDismissKeyboard: true,
+
+        // YAML-specific
+        launch: 'com.example.app',
+
+        // From MidsceneYamlScriptConfig
+        output: './output',
+        unstableLogContent: true,
+      };
+
+      const invalidConfig: MidsceneYamlScriptIOSEnv = {
+        // @ts-expect-error - customActions should not be allowed in YAML config
+        customActions: [],
+      };
+
+      expect(yamlConfig).toBeDefined();
+      expect(invalidConfig).toBeDefined(); // Runtime check, TS will error
+    });
+
+    test('should work with minimal YAML config', () => {
+      const androidMinimal: MidsceneYamlScriptAndroidEnv = {
+        deviceId: 'test-device',
+      };
+
+      const iosMinimal: MidsceneYamlScriptIOSEnv = {
+        wdaPort: 8100,
+      };
+
+      expect(androidMinimal).toBeDefined();
+      expect(iosMinimal).toBeDefined();
+    });
+  });
+
+  describe('Type Compatibility', () => {
+    test('AndroidDeviceOpt should be assignable to agent function parameter', () => {
+      const options: AndroidDeviceOpt = {
+        androidAdbPath: '/path/to/adb',
+        displayId: 1,
+      };
+
+      // This simulates what happens in agentFromAdbDevice
+      const processOptions = (opts?: AndroidDeviceOpt) => {
+        expect(opts).toBeDefined();
+      };
+
+      processOptions(options);
+    });
+
+    test('IOSDeviceOpt should be assignable to agent function parameter', () => {
+      const options: IOSDeviceOpt = {
+        wdaPort: 8100,
+        wdaHost: 'localhost',
+      };
+
+      // This simulates what happens in agentFromWebDriverAgent
+      const processOptions = (opts?: IOSDeviceOpt) => {
+        expect(opts).toBeDefined();
+      };
+
+      processOptions(options);
+    });
+
+    test('YAML config should be compatible with device options', () => {
+      const yamlAndroidConfig: MidsceneYamlScriptAndroidEnv = {
+        androidAdbPath: '/path/to/adb',
+        displayId: 1,
+        launch: 'com.example.app',
+      };
+
+      // Simulate spread operator usage in create-yaml-player
+      const deviceOptions: Partial<AndroidDeviceOpt> = {
+        ...yamlAndroidConfig,
+      };
+
+      expect(deviceOptions.androidAdbPath).toBe('/path/to/adb');
+      expect(deviceOptions.displayId).toBe(1);
+    });
+  });
+
+  describe('IME Strategy Types', () => {
+    test('should only accept valid imeStrategy values', () => {
+      const validStrategies: Array<AndroidDeviceOpt['imeStrategy']> = [
+        'always-yadb',
+        'yadb-for-non-ascii',
+        undefined,
+      ];
+
+      validStrategies.forEach((strategy) => {
+        const options: AndroidDeviceOpt = {
+          imeStrategy: strategy,
+        };
+        expect(options).toBeDefined();
+      });
+    });
+
+    test('should only accept valid keyboardDismissStrategy values', () => {
+      const validStrategies: Array<
+        AndroidDeviceOpt['keyboardDismissStrategy']
+      > = ['esc-first', 'back-first', undefined];
+
+      validStrategies.forEach((strategy) => {
+        const options: AndroidDeviceOpt = {
+          keyboardDismissStrategy: strategy,
+        };
+        expect(options).toBeDefined();
+      });
+
+      validStrategies.forEach((strategy) => {
+        const options: HarmonyDeviceOpt = {
+          keyboardDismissStrategy: strategy,
+        };
+        expect(options).toBeDefined();
+      });
+    });
+  });
+
+  describe('Screenshot Strategy Types', () => {
+    test('should only accept valid screenshotStrategy values', () => {
+      const validStrategies: Array<AndroidDeviceOpt['screenshotStrategy']> = [
+        'auto',
+        'always-yadb',
+        undefined,
+      ];
+
+      validStrategies.forEach((strategy) => {
+        const options: AndroidDeviceOpt = {
+          screenshotStrategy: strategy,
+        };
+        expect(options).toBeDefined();
+      });
+    });
+
+    test('should reject invalid screenshotStrategy values', () => {
+      const invalidStrategies = ['invalid', '', 123] as const;
+
+      invalidStrategies.forEach((strategy) => {
+        const options: AndroidDeviceOpt = {
+          // @ts-expect-error - invalid values should cause a type error
+          screenshotStrategy: strategy,
+        };
+        expect(options).toBeDefined();
+      });
+    });
+  });
+});

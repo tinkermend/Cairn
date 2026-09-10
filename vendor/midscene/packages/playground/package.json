@@ -1,0 +1,61 @@
+{
+  "name": "@midscene/playground",
+  "version": "1.12.6",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/web-infra-dev/midscene.git",
+    "directory": "packages/playground"
+  },
+  "description": "Midscene playground utilities for web integration",
+  "author": "midscene team",
+  "license": "MIT",
+  "main": "./dist/lib/index.js",
+  "types": "./dist/types/index.d.ts",
+  "module": "./dist/es/index.mjs",
+  "browser": "./dist/es/index.browser.mjs",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "browser": "./dist/es/index.browser.mjs",
+      "require": "./dist/lib/index.js",
+      "import": "./dist/es/index.mjs",
+      "default": "./dist/es/index.mjs"
+    },
+    "./recorder-ui-describer": {
+      "types": "./dist/types/recorder-ui-describer.d.ts",
+      "require": "./dist/lib/recorder-ui-describer.js",
+      "import": "./dist/es/recorder-ui-describer.mjs",
+      "default": "./dist/es/recorder-ui-describer.mjs"
+    }
+  },
+  "files": ["dist", "static"],
+  "scripts": {
+    "build": "rslib build",
+    "build:watch": "rslib build --watch --no-clean",
+    "dev": "npm run build:watch",
+    "test": "rstest",
+    "test:watch": "rstest --watch",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@midscene/core": "workspace:*",
+    "@midscene/shared": "workspace:*",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "open": "10.1.0",
+    "uuid": "11.1.0"
+  },
+  "devDependencies": {
+    "@rslib/core": "^0.18.3",
+    "@rstest/core": "0.11.5",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^18.0.0",
+    "@types/uuid": "10.0.0",
+    "typescript": "^5.8.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "extends": "../../packages/shared/tsconfig.app.base.json",
+  "compilerOptions": {
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "allowImportingTsExtensions": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*", "demo/**/*"],
+  "references": [
+    {
+      "path": "../../packages/playground"
+    },
+    {
+      "path": "../../packages/playground-app"
+    },
+    {
+      "path": "../../packages/web-integration"
+    }
+  ]
+}

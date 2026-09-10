@@ -1,0 +1,135 @@
+import type { ConnectivityTestResult, DeviceAction } from '@midscene/core';
+import type { Agent } from '@midscene/core/agent';
+import type { TModelConfig } from '@midscene/shared/env';
+
+export interface PlaygroundAgent extends Agent {
+  [key: string]: any; // Allow dynamic method access for backward compatibility
+}
+
+export interface FormValue {
+  type: string;
+  prompt?: string;
+  params?: Record<string, unknown>;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  errorMessage?: string;
+}
+
+export interface ServerResponse {
+  result?: unknown;
+  dump?: any;
+  reportHTML?: string | null;
+  report?: PlaygroundReportRef | null;
+  error?: string;
+}
+
+export interface PlaygroundReportRef {
+  id: string;
+  url: string;
+  replayUrl?: string;
+  bytes: number;
+  format?: 'single-html' | 'html-and-external-assets';
+}
+
+export interface DeviceOptions {
+  imeStrategy?: 'always-yadb' | 'yadb-for-non-ascii';
+  screenshotStrategy?: 'auto' | 'always-yadb';
+  autoDismissKeyboard?: boolean;
+  keyboardDismissStrategy?: 'esc-first' | 'back-first';
+  alwaysRefreshScreenInfo?: boolean;
+}
+
+export interface ExecutionReportDisplay {
+  type?: string;
+  prompt?: string;
+}
+
+export interface ExecutionOptions {
+  deepLocate?: boolean;
+  deepThink?: boolean;
+  screenshotIncluded?: boolean;
+  domIncluded?: boolean | 'visible-only';
+  planningStrategy?: 'fast' | 'standard';
+  context?: any;
+  requestId?: string;
+  abortSignal?: AbortSignal;
+  deviceOptions?: DeviceOptions;
+  reportDisplay?: ExecutionReportDisplay;
+}
+
+export type BeforeActionHook = (
+  actionType: string,
+  value: FormValue,
+  options: ExecutionOptions,
+) => void | Promise<void>;
+
+// SDK types - execution model based
+export type ExecutionType = 'local-execution' | 'remote-execution';
+
+// Factory function type for creating agents
+export type AgentFactory =
+  | (() => PlaygroundAgent)
+  | (() => Promise<PlaygroundAgent>);
+
+export interface PlaygroundConfig {
+  type: ExecutionType;
+  serverUrl?: string; // For remote-execution
+  agent?: PlaygroundAgent; // For local-execution: initial agent (optional if agentFactory provided)
+  agentFactory?: AgentFactory; // For local-execution: factory for creating/recreating agent
+  // Note: For local-execution, at least one of agent or agentFactory must be provided.
+  // If only agentFactory is provided, the agent will be created lazily on first use.
+}
+
+/**
+ * Progress message for UI display
+ * Generated from ExecutionTask to provide user-friendly progress updates
+ */
+export interface ProgressMessage {
+  /** Unique identifier for this progress message */
+  id: string;
+  /** Corresponding task ID from ExecutionTask */
+  taskId: string;
+  /** Task type display name (e.g., "Plan", "Action", "Query") */
+  action: string;
+  /** Human-readable description of what the task does */
+  description: string;
+  /** Task execution status */
+  status: 'pending' | 'running' | 'finished' | 'failed';
+  /** Unix timestamp when this message was generated */
+  timestamp: number;
+}
+
+export interface PlaygroundAdapter {
+  parseStructuredParams(
+    action: DeviceAction<unknown>,
+    params: Record<string, unknown>,
+    options: ExecutionOptions,
+  ): Promise<unknown[]>;
+
+  formatErrorMessage(error: any): string;
+
+  validateParams(
+    value: FormValue,
+    action: DeviceAction<unknown> | undefined,
+  ): ValidationResult;
+
+  createDisplayContent(
+    value: FormValue,
+    needsStructuredParams: boolean,
+    action: DeviceAction<unknown> | undefined,
+  ): string;
+
+  // New server communication methods
+  executeAction(
+    activeAgent: PlaygroundAgent,
+    actionType: string,
+    actionSpace: DeviceAction<unknown>[],
+    value: FormValue,
+    options: ExecutionOptions,
+  ): Promise<unknown>;
+
+  getActionSpace?(context: any): Promise<DeviceAction<unknown>[]>;
+  runConnectivityTest?(config: TModelConfig): Promise<ConnectivityTestResult>;
+}

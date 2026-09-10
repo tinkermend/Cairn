@@ -1,0 +1,1300 @@
+import assert from 'node:assert';
+import {
+  type ActionScrollParam,
+  type DeviceAction,
+  type ExecutorContext,
+  type InterfaceType,
+  type Point,
+  type Size,
+  z,
+} from '@midscene/core';
+import {
+  type AbstractInterface,
+  type DeviceFrameSource,
+  type IOSDeviceInputOpt,
+  type IOSDeviceOpt,
+  type MobileInputPrimitives,
+  type PointerPoint,
+  type ResolvedTextInputOptions,
+  createDefaultMobileActions,
+  defineAction,
+  resolveTextInputOptions,
+  sendTextSequentially,
+  shouldInputSequentially,
+} from '@midscene/core/device';
+import { sleep } from '@midscene/core/utils';
+import { DEFAULT_WDA_PORT } from '@midscene/shared/constants';
+import type { ElementInfo } from '@midscene/shared/extractor';
+import { createImgBase64ByFormat } from '@midscene/shared/img';
+import { getDebug } from '@midscene/shared/logger';
+import { normalizeForComparison } from '@midscene/shared/utils';
+import { WDAManager } from '@midscene/webdriver';
+import { IOSWebDriverClient as WebDriverAgentBackend } from './ios-webdriver-client';
+import { MjpegFrameSource } from './mjpeg-frame-source';
+
+// Re-export IOSDeviceOpt and IOSDeviceInputOpt for backward compatibility
+export type { IOSDeviceOpt, IOSDeviceInputOpt } from '@midscene/core/device';
+
+const debugDevice = getDebug('ios:device');
+const debugDeviceWarning = getDebug('ios:device', { console: true });
+
+/**
+ * HTTP methods supported by WebDriverAgent API
+ */
+export const WDA_HTTP_METHODS = ['GET', 'POST', 'DELETE', 'PUT'] as const;
+export type WDAHttpMethod = (typeof WDA_HTTP_METHODS)[number];
+
+const DEFAULT_WDA_MJPEG_PORT = 9100;
+const keyboardFollowUpMaxAgeMs = 30_000;
+const keyboardFollowUpKeys: ReadonlySet<string> = new Set([
+  'enter',
+  'return',
+  'tab',
+]);
+
+type PendingKeyboardFollowUp = {
+  target: PointerPoint;
+  createdAt: number;
+};
+
+export class IOSDevice implements AbstractInterface {
+  private deviceId: string;
+  private devicePixelRatio = 1;
+  private devicePixelRatioInitialized = false;
+  private destroyed = false;
+  private description: string | undefined;
+  private customActions?: DeviceAction<any>[];
+  private wdaBackend: WebDriverAgentBackend;
+  private wdaManager: WDAManager;
+  /** URL of WDA's native MJPEG server for real-time streaming */
+  mjpegStreamUrl: string;
+  /** Lazily-started consumer of the WDA MJPEG stream, used by UI observation. */
+  private mjpegFrameSource: MjpegFrameSource | null = null;
+  /**
+   * Continuous frame-source capability for UI observation. Only wired up when
+   * the MJPEG frame source is opt-in enabled; otherwise left undefined so
+   * observers fall back to sequential screenshots.
+   */
+  openFrameSource?: AbstractInterface['openFrameSource'];
+  private appNameMapping: Record<string, string> = {};
+  /** Auto-dismissed input eligible for one immediate submit/navigation key. */
+  private pendingKeyboardFollowUp: PendingKeyboardFollowUp | undefined;
+  interfaceType: InterfaceType = 'ios';
+  uri: string | undefined;
+  options?: IOSDeviceOpt;
+
+  readonly inputPrimitives: MobileInputPrimitives = {
+    pointer: {
+      tap: (point) => this.tapPoint(point),
+      doubleClick: (point) => this.doubleTapPoint(point),
+      longPress: (point, opts) => this.longPressPoint(point, opts?.duration),
+      dragAndDrop: (from, to) => this.swipePoint(from, to, 1000),
+    },
+    keyboard: {
+      keyboardPress: (keyName, opts) =>
+        this.pressKey(keyName, opts?.target as ElementInfo | undefined),
+      typeText: async (value, opts) => {
+        const resolvedInputOptions = resolveTextInputOptions(
+          opts,
+          this.options,
+        );
+        const target = opts?.target as ElementInfo | undefined;
+        const focusRestorePoint = target
+          ? { x: target.center[0], y: target.center[1] }
+          : undefined;
+        if (target && opts?.replace !== false) {
+          await this.clearInput(target);
+        } else if (target) {
+          await this.tapPoint({ x: target.center[0], y: target.center[1] });
+        }
+
+        if (opts?.focusOnly) {
+          return;
+        }
+
+        await this.typeText(
+          value,
+          opts,
+          focusRestorePoint,
+          resolvedInputOptions,
+        );
+      },
+      clearInput: (target) =>
+        this.clearInput(target as ElementInfo | undefined),
+      cursorMove: async (direction, times = 1) => {
+        const arrowKey = direction === 'left' ? 'ArrowLeft' : 'ArrowRight';
+        for (let i = 0; i < times; i++) {
+          await this.pressKey(arrowKey);
+        }
+      },
+    },
+    touch: {
+      swipe: async (start, end, opts) => {
+        const duration = opts?.duration ?? 300;
+        const repeat = opts?.repeat ?? 1;
+        for (let i = 0; i < repeat; i++) {
+          await this.swipePoint(start, end, duration);
+        }
+      },
+      pinch: async (center, opts) => {
+        this.invalidatePendingKeyboardFollowUp('pinch');
+        await this.wdaBackend.pinch(
+          Math.round(center.x),
+          Math.round(center.y),
+          opts.startDistance,
+          opts.endDistance,
+          opts.duration,
+        );
+      },
+    },
+    scroll: {
+      scroll: (param) => this.performActionScroll(param),
+    },
+  };
+
+  private invalidatePendingKeyboardFollowUp(reason: string): void {
+    if (!this.pendingKeyboardFollowUp) {
+      return;
+    }
+    debugDevice(`Discarding pending keyboard follow-up: ${reason}`);
+    this.pendingKeyboardFollowUp = undefined;
+  }
+
+  private registerPendingKeyboardFollowUp(target?: PointerPoint): void {
+    if (!target) {
+      return;
+    }
+    this.pendingKeyboardFollowUp = {
+      target,
+      createdAt: Date.now(),
+    };
+    debugDevice(
+      `Registered one keyboard follow-up for (${target.x}, ${target.y})`,
+    );
+  }
+
+  private consumePendingKeyboardFollowUp(
+    key: string,
+  ): PointerPoint | undefined {
+    const pendingFollowUp = this.pendingKeyboardFollowUp;
+    this.pendingKeyboardFollowUp = undefined;
+    if (!pendingFollowUp) {
+      return undefined;
+    }
+
+    const normalizedKey = key.trim().toLowerCase();
+    if (!keyboardFollowUpKeys.has(normalizedKey)) {
+      debugDevice(
+        `Discarding pending keyboard follow-up: ${JSON.stringify(key)} is not a submit/navigation key`,
+      );
+      return undefined;
+    }
+
+    const ageMs = Date.now() - pendingFollowUp.createdAt;
+    if (ageMs > keyboardFollowUpMaxAgeMs) {
+      debugDevice(
+        `Discarding pending keyboard follow-up: expired after ${ageMs}ms`,
+      );
+      return undefined;
+    }
+
+    return pendingFollowUp.target;
+  }
+
+  private async tryAutoDismissKeyboard(): Promise<boolean> {
+    let dismissed: boolean;
+    try {
+      dismissed = await this.hideKeyboard();
+    } catch (error) {
+      debugDeviceWarning(
+        'Text input request completed, but auto-dismissing the iOS keyboard failed',
+        error,
+      );
+      return false;
+    }
+    if (!dismissed) {
+      debugDeviceWarning(
+        'Text input request completed, but the iOS keyboard could not be auto-dismissed because no supported dismissal control was found or the keyboard remained visible',
+      );
+    }
+    return dismissed;
+  }
+
+  private async tapPoint(point: PointerPoint): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('tap');
+    debugDevice(`tap at coordinates (${point.x}, ${point.y})`);
+    await this.wdaBackend.tap(Math.round(point.x), Math.round(point.y));
+  }
+
+  private async doubleTapPoint(point: PointerPoint): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('double tap');
+    await this.wdaBackend.doubleTap(Math.round(point.x), Math.round(point.y));
+  }
+
+  private async longPressPoint(
+    point: PointerPoint,
+    duration = 1000,
+  ): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('long press');
+    await this.wdaBackend.longPress(
+      Math.round(point.x),
+      Math.round(point.y),
+      duration,
+    );
+  }
+
+  private async swipePoint(
+    start: PointerPoint,
+    end: PointerPoint,
+    duration = 500,
+  ): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('swipe');
+    await this.wdaBackend.swipe(
+      Math.round(start.x),
+      Math.round(start.y),
+      Math.round(end.x),
+      Math.round(end.y),
+      duration,
+    );
+  }
+
+  private async clearInputAt(point?: PointerPoint): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('clear input');
+    if (point) {
+      await this.tapPoint(point);
+      await sleep(100);
+    }
+
+    debugDevice('Attempting to clear input with WebDriver Clear API');
+    const cleared = await this.wdaBackend.clearActiveElement();
+    if (cleared) {
+      debugDevice('Successfully cleared input with WebDriver Clear API');
+    } else {
+      debugDevice(
+        'WebDriver Clear API returned false (no active element or clear failed)',
+      );
+    }
+  }
+
+  actionSpace(): DeviceAction<any>[] {
+    const mobileActionContext = {
+      input: this.inputPrimitives,
+      size: () => this.size(),
+      sleep: async (timeMs: number) => {
+        this.invalidatePendingKeyboardFollowUp('sleep action');
+        await sleep(timeMs);
+      },
+      getDefaultAutoDismissKeyboard: () => this.options?.autoDismissKeyboard,
+    };
+    const defaultActions = [...createDefaultMobileActions(mobileActionContext)];
+
+    const platformSpecificActions = Object.values(createPlatformActions(this));
+
+    const customActions = (this.customActions || []).map((action) => ({
+      ...action,
+      call: async (param: any, context?: ExecutorContext) => {
+        this.invalidatePendingKeyboardFollowUp(`custom action ${action.name}`);
+        return await action.call(param, context);
+      },
+    }));
+    return [...defaultActions, ...platformSpecificActions, ...customActions];
+  }
+
+  private async performActionScroll(param: ActionScrollParam): Promise<void> {
+    const element = param.locate;
+    const startingPoint = element
+      ? {
+          left: element.center[0],
+          top: element.center[1],
+        }
+      : undefined;
+    const scrollToEventName = param?.scrollType;
+    if (scrollToEventName === 'scrollToTop') {
+      await this.scrollUntilTop(startingPoint);
+    } else if (scrollToEventName === 'scrollToBottom') {
+      await this.scrollUntilBottom(startingPoint);
+    } else if (scrollToEventName === 'scrollToRight') {
+      await this.scrollUntilRight(startingPoint);
+    } else if (scrollToEventName === 'scrollToLeft') {
+      await this.scrollUntilLeft(startingPoint);
+    } else if (scrollToEventName === 'singleAction' || !scrollToEventName) {
+      if (param?.direction === 'down' || !param || !param.direction) {
+        await this.scrollDown(param?.distance || undefined, startingPoint);
+      } else if (param.direction === 'up') {
+        await this.scrollUp(param.distance || undefined, startingPoint);
+      } else if (param.direction === 'left') {
+        await this.scrollLeft(param.distance || undefined, startingPoint);
+      } else if (param.direction === 'right') {
+        await this.scrollRight(param.distance || undefined, startingPoint);
+      } else {
+        throw new Error(`Unknown scroll direction: ${param.direction}`);
+      }
+      await sleep(500);
+    } else {
+      throw new Error(
+        `Unknown scroll event type: ${scrollToEventName}, param: ${JSON.stringify(
+          param,
+        )}`,
+      );
+    }
+  }
+
+  constructor(options?: IOSDeviceOpt) {
+    // deviceId will be auto-detected from WebDriverAgent connection
+    this.deviceId = 'pending-connection';
+    this.options = options;
+    this.customActions = options?.customActions;
+
+    const wdaPort = options?.wdaPort || DEFAULT_WDA_PORT;
+    const wdaHost = options?.wdaHost || 'localhost';
+    const mjpegPort = options?.wdaMjpegPort ?? DEFAULT_WDA_MJPEG_PORT;
+    this.wdaBackend = new WebDriverAgentBackend({
+      port: wdaPort,
+      host: wdaHost,
+      ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
+    });
+    this.wdaManager = WDAManager.getInstance(wdaPort, wdaHost);
+    this.mjpegStreamUrl = `http://${wdaHost}:${mjpegPort}`;
+
+    // Opt-in (default off), mirroring Android scrcpy: only expose the MJPEG
+    // frame-source capability when explicitly enabled. When off, UI observers
+    // fall back to sequential screenshotBase64() capture.
+    if (options?.wdaMjpegFrameSource?.enabled) {
+      this.openFrameSource = () => this.openMjpegFrameSource();
+    }
+  }
+
+  describe(): string {
+    return this.description || `Device ID: ${this.deviceId}`;
+  }
+
+  async getConnectedDeviceInfo(): Promise<{
+    udid: string;
+    name: string;
+    model: string;
+  } | null> {
+    return await this.wdaBackend.getDeviceInfo();
+  }
+
+  public async connect(): Promise<void> {
+    assert(
+      !this.destroyed,
+      `IOSDevice ${this.deviceId} has been destroyed and cannot execute commands`,
+    );
+
+    this.invalidatePendingKeyboardFollowUp('connect');
+    debugDevice(`Connecting to iOS device: ${this.deviceId}`);
+
+    try {
+      // Start WebDriverAgent
+      await this.wdaManager.start();
+
+      if (this.options?.sessionId) {
+        debugDevice(`Using existing WDA session: ${this.options.sessionId}`);
+        await this.wdaBackend.setupExistingSession();
+      } else {
+        // Create WDA session
+        await this.wdaBackend.createSession();
+      }
+
+      // Try to get real device info from WebDriverAgent
+      const deviceInfo = await this.wdaBackend.getDeviceInfo();
+      if (deviceInfo?.udid) {
+        // Update deviceId with real UDID from WebDriverAgent
+        this.deviceId = deviceInfo.udid;
+        debugDevice(`Updated device ID to real UDID: ${this.deviceId}`);
+      }
+
+      // Get device screen size for description
+      const size = await this.getScreenSize();
+      this.description = `
+UDID: ${this.deviceId}${
+        deviceInfo
+          ? `
+Name: ${deviceInfo.name}
+Model: ${deviceInfo.model}`
+          : ''
+      }
+Type: WebDriverAgent
+ScreenSize: ${size.width}x${size.height} (DPR: ${size.scale})
+`;
+      debugDevice('iOS device connected successfully', this.description);
+    } catch (e) {
+      debugDevice(`Failed to connect to iOS device: ${e}`);
+      throw new Error(`Unable to connect to iOS device ${this.deviceId}: ${e}`);
+    }
+  }
+
+  /**
+   * Set the app name to bundle ID mapping
+   */
+  public setAppNameMapping(mapping: Record<string, string>): void {
+    this.appNameMapping = mapping;
+  }
+
+  /**
+   * Resolve app name to bundle ID using the mapping.
+   * Comparison is case-insensitive and ignores spaces, dashes, and underscores.
+   * Keys in appNameMapping are pre-normalized, so we only need to normalize the input.
+   *
+   * @param appName The app name to resolve.
+   */
+  private resolveBundleId(appName: string): string | undefined {
+    const normalizedAppName = normalizeForComparison(appName);
+    return this.appNameMapping[normalizedAppName];
+  }
+
+  public async launch(uri: string): Promise<IOSDevice> {
+    this.invalidatePendingKeyboardFollowUp('launch');
+    this.uri = uri;
+
+    try {
+      debugDevice(`Launching app: ${uri}`);
+      if (
+        uri.startsWith('http://') ||
+        uri.startsWith('https://') ||
+        uri.includes('://')
+      ) {
+        // Try to open URL using WebDriverAgent
+        await this.openUrl(uri);
+      } else {
+        // Launch app using bundle ID or app name
+        // Auto-resolve friendly app name to bundle ID if mapping exists
+        const resolvedUri = this.resolveBundleId(uri) ?? uri;
+        await this.wdaBackend.launchApp(resolvedUri);
+      }
+      debugDevice(`Successfully launched: ${uri}`);
+    } catch (error: any) {
+      debugDevice(`Error launching ${uri}: ${error}`);
+      throw new Error(`Failed to launch ${uri}: ${error.message}`);
+    }
+
+    return this;
+  }
+
+  /**
+   * Terminate (close) an iOS app by bundle ID.
+   * Supports app name resolution via setAppNameMapping when provided.
+   */
+  public async terminate(bundleId: string): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('terminate');
+    const resolved = this.resolveBundleId(bundleId) ?? bundleId;
+    try {
+      debugDevice(`Terminating app: ${resolved}`);
+      await this.wdaBackend.terminateApp(resolved);
+      debugDevice(`Successfully terminated: ${resolved}`);
+    } catch (error: any) {
+      debugDevice(`Error terminating ${resolved}: ${error}`);
+      throw new Error(`Failed to terminate ${resolved}: ${error.message}`);
+    }
+  }
+
+  async getElementsInfo(): Promise<ElementInfo[]> {
+    return [];
+  }
+
+  async getElementsNodeTree(): Promise<any> {
+    // Simplified implementation, returns an empty node tree
+    return {
+      node: null,
+      children: [],
+    };
+  }
+
+  private async initializeDevicePixelRatio(): Promise<void> {
+    if (this.devicePixelRatioInitialized) {
+      return;
+    }
+
+    // Get real device pixel ratio from WebDriverAgent /wda/screen endpoint
+    const apiScale = await this.wdaBackend.getScreenScale();
+
+    assert(
+      apiScale && apiScale > 0,
+      'Failed to get device pixel ratio from WebDriverAgent API',
+    );
+
+    debugDevice(`Got screen scale from WebDriverAgent API: ${apiScale}`);
+    this.devicePixelRatio = apiScale;
+    this.devicePixelRatioInitialized = true;
+  }
+
+  async getScreenSize(): Promise<{
+    width: number;
+    height: number;
+    scale: number;
+  }> {
+    // Ensure device pixel ratio is initialized
+    await this.initializeDevicePixelRatio();
+
+    const windowSize = await this.wdaBackend.getWindowSize();
+
+    return {
+      width: windowSize.width,
+      height: windowSize.height,
+      scale: this.devicePixelRatio,
+    };
+  }
+
+  async size(): Promise<Size> {
+    const screenSize = await this.getScreenSize();
+
+    return {
+      width: screenSize.width,
+      height: screenSize.height,
+    };
+  }
+
+  async screenshotBase64(): Promise<string> {
+    debugDevice('Taking screenshot via WDA');
+    try {
+      const base64Data = await this.wdaBackend.takeScreenshot();
+      const result = createImgBase64ByFormat('png', base64Data);
+      debugDevice('Screenshot taken successfully');
+      return result;
+    } catch (error) {
+      debugDevice(`Screenshot failed: ${error}`);
+      throw new Error(`Failed to take screenshot: ${error}`);
+    }
+  }
+
+  /**
+   * Continuous frame source backed by WDA's MJPEG server. WDA's
+   * `takeScreenshot` is too slow (~250ms) to sample the screen densely, so
+   * observers pull the most recent frame from the continuously-running MJPEG
+   * stream instead — near-instant per grab. Frames are already JPEG data
+   * URLs, so `decode()` is a pass-through.
+   *
+   * Opt-in: only wired up as the `openFrameSource` capability (in the
+   * constructor) when `wdaMjpegFrameSource.enabled` is set, mirroring scrcpy.
+   * `stop()` tears the stream down so device-side encoding only runs while an
+   * observation window is open.
+   */
+  private async openMjpegFrameSource(): Promise<DeviceFrameSource> {
+    const source = await this.ensureMjpegFrameSource();
+    return {
+      latest: () => {
+        const frame = source.getLatest();
+        return frame
+          ? { ref: frame.base64, capturedAt: frame.capturedAt }
+          : null;
+      },
+      // MJPEG frames are already data URLs — no deferred decode cost on iOS.
+      decode: async (refs) => refs.map((frameRef) => frameRef.ref as string),
+      stop: () => {
+        source.stop();
+        if (this.mjpegFrameSource === source) {
+          this.mjpegFrameSource = null;
+        }
+      },
+    };
+  }
+
+  private async ensureMjpegFrameSource(): Promise<MjpegFrameSource> {
+    assert(
+      !this.destroyed,
+      `IOSDevice ${this.deviceId} has been destroyed and cannot stream frames`,
+    );
+    if (!this.mjpegFrameSource) {
+      this.mjpegFrameSource = new MjpegFrameSource(this.mjpegStreamUrl);
+    }
+    try {
+      await this.mjpegFrameSource.ensureStarted();
+    } catch (error) {
+      // Drop the failed source so a later call can retry from a clean state.
+      this.mjpegFrameSource.stop();
+      this.mjpegFrameSource = null;
+      throw error;
+    }
+    return this.mjpegFrameSource;
+  }
+
+  async clearInput(element?: ElementInfo): Promise<void> {
+    await this.clearInputAt(
+      element ? { x: element.center[0], y: element.center[1] } : undefined,
+    );
+  }
+
+  async url(): Promise<string> {
+    return '';
+  }
+
+  async tap(x: number, y: number): Promise<void> {
+    await this.tapPoint({ x, y });
+  }
+
+  async swipe(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    duration = 500,
+  ): Promise<void> {
+    await this.swipeCoordinates(fromX, fromY, toX, toY, duration);
+  }
+
+  private async swipeCoordinates(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    duration = 500,
+  ): Promise<void> {
+    await this.swipePoint({ x: fromX, y: fromY }, { x: toX, y: toY }, duration);
+  }
+
+  private async typeText(
+    text: string,
+    options?: IOSDeviceInputOpt,
+    focusRestorePoint?: PointerPoint,
+    resolvedInputOptions: ResolvedTextInputOptions = resolveTextInputOptions(
+      options,
+      this.options,
+    ),
+  ): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('new text input');
+    if (!text) return;
+
+    const shouldAutoDismissKeyboard =
+      options?.autoDismissKeyboard ?? this.options?.autoDismissKeyboard ?? true;
+    const typeDelay = resolvedInputOptions.keyboardTypeDelay;
+    const inputSequentially = shouldInputSequentially(resolvedInputOptions);
+
+    debugDevice(`Typing text: "${text}"`);
+
+    try {
+      // Wait a bit to ensure keyboard is ready
+      await sleep(200);
+
+      if (inputSequentially) {
+        // Type one character at a time with a delay between keystrokes.
+        // Use typeRawKeys instead of typeText — the latter trims whitespace,
+        // which would silently drop spaces and newlines when sent one at a time.
+        await sendTextSequentially(
+          text,
+          {
+            sendCharacter: (character) =>
+              this.wdaBackend.typeRawKeys([character]),
+            wait: sleep,
+          },
+          {
+            delayMs: typeDelay,
+            delayAfterLast: resolvedInputOptions.inputStrategy === 'legacy',
+          },
+        );
+      } else {
+        await this.wdaBackend.typeText(text);
+      }
+
+      await sleep(300); // Give more time for text to appear
+    } catch (error) {
+      debugDevice(`Failed to type text with WDA: ${error}`);
+      throw error;
+    }
+
+    if (shouldAutoDismissKeyboard) {
+      const dismissed = await this.tryAutoDismissKeyboard();
+      if (dismissed) {
+        this.registerPendingKeyboardFollowUp(focusRestorePoint);
+      }
+    }
+  }
+
+  private async pressKey(key: string, target?: ElementInfo): Promise<void> {
+    const explicitTargetPoint = target
+      ? { x: target.center[0], y: target.center[1] }
+      : undefined;
+    let focusRestorePoint: PointerPoint | undefined;
+    if (explicitTargetPoint) {
+      this.invalidatePendingKeyboardFollowUp(
+        'keyboard press has an explicit target',
+      );
+      focusRestorePoint = explicitTargetPoint;
+    } else {
+      focusRestorePoint = this.consumePendingKeyboardFollowUp(key);
+    }
+
+    if (focusRestorePoint) {
+      debugDevice(
+        `Restoring text input focus at (${focusRestorePoint.x}, ${focusRestorePoint.y}) before pressing ${key}`,
+      );
+      await this.tapPoint(focusRestorePoint);
+    }
+    await this.wdaBackend.pressKey(key);
+  }
+
+  // Scroll methods
+  async scrollUp(distance?: number, startPoint?: Point): Promise<void> {
+    const { width, height } = await this.size();
+    const start = startPoint
+      ? { x: Math.round(startPoint.left), y: Math.round(startPoint.top) }
+      : { x: Math.round(width / 2), y: Math.round(height / 2) };
+    const scrollDistance = Math.round(distance || height / 3);
+
+    await this.swipeCoordinates(
+      start.x,
+      start.y,
+      start.x,
+      start.y + scrollDistance,
+    );
+  }
+
+  async scrollDown(distance?: number, startPoint?: Point): Promise<void> {
+    const { width, height } = await this.size();
+    const start = startPoint
+      ? { x: Math.round(startPoint.left), y: Math.round(startPoint.top) }
+      : { x: Math.round(width / 2), y: Math.round(height / 2) };
+    const scrollDistance = Math.round(distance || height / 3);
+
+    await this.swipeCoordinates(
+      start.x,
+      start.y,
+      start.x,
+      start.y - scrollDistance,
+    );
+  }
+
+  async scrollLeft(distance?: number, startPoint?: Point): Promise<void> {
+    const { width, height } = await this.size();
+    // scrollLeft: bring left content into view (swipe finger right)
+    const start = startPoint
+      ? { x: Math.round(startPoint.left), y: Math.round(startPoint.top) }
+      : { x: Math.round(width / 2), y: Math.round(height / 2) };
+    const scrollDistance = Math.round(distance || width * 0.7); // Use 70% of width for sufficient scroll
+
+    await this.swipeCoordinates(
+      start.x,
+      start.y,
+      start.x + scrollDistance,
+      start.y,
+    );
+  }
+
+  async scrollRight(distance?: number, startPoint?: Point): Promise<void> {
+    const { width, height } = await this.size();
+    // scrollRight: bring right content into view (swipe finger left)
+    const start = startPoint
+      ? { x: Math.round(startPoint.left), y: Math.round(startPoint.top) }
+      : { x: Math.round(width / 2), y: Math.round(height / 2) };
+    const scrollDistance = Math.round(distance || width * 0.7); // Use 70% of width for sufficient scroll
+
+    await this.swipeCoordinates(
+      start.x,
+      start.y,
+      start.x - scrollDistance,
+      start.y,
+    );
+  }
+
+  async scrollUntilTop(startPoint?: Point): Promise<void> {
+    debugDevice(
+      'Using screenshot-based scroll detection for better reliability',
+    );
+    await this.scrollUntilBoundary('up', startPoint, 1);
+  }
+
+  async scrollUntilBottom(startPoint?: Point): Promise<void> {
+    debugDevice(
+      'Using screenshot-based scroll detection for better reliability',
+    );
+    await this.scrollUntilBoundary('down', startPoint, 1);
+  }
+
+  // Smart screenshot comparison method that tolerates minor dynamic changes
+  private compareScreenshots(
+    screenshot1: string,
+    screenshot2: string,
+    tolerancePercent = 2, // Allow 2% difference
+  ): boolean {
+    // Identical screenshots are the ideal case
+    if (screenshot1 === screenshot2) {
+      debugDevice('Screenshots are identical');
+      return true;
+    }
+
+    const len1 = screenshot1.length;
+    const len2 = screenshot2.length;
+    debugDevice(`Screenshots differ: length1=${len1}, length2=${len2}`);
+
+    // If length difference is too large, content is genuinely different
+    if (Math.abs(len1 - len2) > Math.min(len1, len2) * 0.1) {
+      debugDevice('Screenshots have significant length difference');
+      return false;
+    }
+
+    // For screenshots with similar length, calculate character difference percentage
+    if (len1 > 0 && len2 > 0) {
+      const minLength = Math.min(len1, len2);
+      const sampleSize = Math.min(2000, minLength); // Check first 2000 characters
+      let diffCount = 0;
+
+      for (let i = 0; i < sampleSize; i++) {
+        if (screenshot1[i] !== screenshot2[i]) {
+          diffCount++;
+        }
+      }
+
+      const diffPercent = (diffCount / sampleSize) * 100;
+      debugDevice(
+        `Character differences: ${diffCount}/${sampleSize} (${diffPercent.toFixed(2)}%)`,
+      );
+
+      // If difference is within tolerance, consider screenshots similar (no substantial content change)
+      const isSimilar = diffPercent <= tolerancePercent;
+      if (isSimilar) {
+        debugDevice(
+          `Screenshots are similar enough (${diffPercent.toFixed(2)}% <= ${tolerancePercent}%)`,
+        );
+      }
+      return isSimilar;
+    }
+
+    return false;
+  }
+
+  // Generic scroll-to-boundary detection method
+  private async scrollUntilBoundary(
+    direction: 'up' | 'down' | 'left' | 'right',
+    startPoint?: Point,
+    maxUnchangedCount = 1,
+  ): Promise<void> {
+    const maxAttempts = 20;
+    const { width, height } = await this.size();
+
+    // Determine starting position based on scroll direction
+    let start: { x: number; y: number };
+    if (startPoint) {
+      start = {
+        x: Math.round(startPoint.left),
+        y: Math.round(startPoint.top),
+      };
+    } else {
+      switch (direction) {
+        case 'up':
+          start = { x: Math.round(width / 2), y: Math.round(height * 0.2) };
+          break;
+        case 'down':
+          start = { x: Math.round(width / 2), y: Math.round(height * 0.8) };
+          break;
+        case 'left':
+          start = { x: Math.round(width * 0.8), y: Math.round(height / 2) };
+          break;
+        case 'right':
+          start = { x: Math.round(width * 0.2), y: Math.round(height / 2) };
+          break;
+      }
+    }
+
+    let lastScreenshot: string | null = null;
+    let unchangedCount = 0;
+
+    debugDevice(`Starting scroll to ${direction} with content detection`);
+
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        debugDevice(`Scroll attempt ${i + 1}/${maxAttempts}`);
+
+        // Wait for any previous scroll to stabilize
+        await sleep(500);
+
+        // Take a single stable screenshot
+        const currentScreenshot = await this.screenshotBase64();
+
+        if (
+          lastScreenshot &&
+          this.compareScreenshots(lastScreenshot, currentScreenshot, 10) // Tolerate 10% difference for dynamic content
+        ) {
+          unchangedCount++;
+          debugDevice(
+            `Screen content unchanged (${unchangedCount}/${maxUnchangedCount})`,
+          );
+
+          if (unchangedCount >= maxUnchangedCount) {
+            debugDevice(
+              `Reached ${direction}: screen content no longer changes`,
+            );
+            break;
+          }
+        } else {
+          // Content changed, reset counter
+          if (lastScreenshot) {
+            debugDevice(
+              `Content changed, resetting counter (was ${unchangedCount})`,
+            );
+          }
+          unchangedCount = 0;
+        }
+
+        // Safety measure to prevent infinite scrolling: if consecutive attempts have large differences, may be too much dynamic content
+        if (i >= 15 && unchangedCount === 0) {
+          debugDevice(
+            `Too many attempts with dynamic content, stopping scroll to ${direction}`,
+          );
+          break;
+        }
+
+        lastScreenshot = currentScreenshot;
+
+        // Execute scroll action
+        const scrollDistance = Math.round(
+          direction === 'left' || direction === 'right'
+            ? width * 0.6
+            : height * 0.6,
+        );
+
+        debugDevice(
+          `Performing scroll: ${direction}, distance: ${scrollDistance}`,
+        );
+
+        switch (direction) {
+          case 'up':
+            await this.swipeCoordinates(
+              start.x,
+              start.y,
+              start.x,
+              start.y + scrollDistance,
+              300,
+            );
+            break;
+          case 'down':
+            await this.swipeCoordinates(
+              start.x,
+              start.y,
+              start.x,
+              start.y - scrollDistance,
+              300,
+            );
+            break;
+          case 'left':
+            await this.swipeCoordinates(
+              start.x,
+              start.y,
+              start.x + scrollDistance,
+              start.y,
+              300,
+            );
+            break;
+          case 'right':
+            await this.swipeCoordinates(
+              start.x,
+              start.y,
+              start.x - scrollDistance,
+              start.y,
+              300,
+            );
+            break;
+        }
+
+        // Critical: wait for scroll action completion + inertia scrolling to stop
+        debugDevice('Waiting for scroll and inertia to complete...');
+        await sleep(2000); // 300ms scroll + inertia time + page stabilization time
+      } catch (error) {
+        debugDevice(`Error during scroll attempt ${i + 1}: ${error}`);
+        await sleep(300);
+      }
+    }
+
+    debugDevice(
+      `Scroll to ${direction} completed after ${maxAttempts} attempts`,
+    );
+  }
+
+  async scrollUntilLeft(startPoint?: Point): Promise<void> {
+    await this.scrollUntilBoundary('left', startPoint, 1); // 1 detection is enough for horizontal scrolling
+  }
+
+  async scrollUntilRight(startPoint?: Point): Promise<void> {
+    await this.scrollUntilBoundary('right', startPoint, 3);
+  }
+
+  // iOS specific methods
+  async home(): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('home');
+    await this.wdaBackend.pressHomeButton();
+  }
+
+  async appSwitcher(): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('app switcher');
+    await this.wdaBackend.appSwitcher();
+  }
+
+  /**
+   * Hides the iOS software keyboard using a structurally located accessory
+   * control, or configured key names when provided.
+   *
+   * @returns `true` when the keyboard is hidden, or `false` when the current
+   * application exposes no supported dismissal control.
+   * @throws When communication with WebDriverAgent fails.
+   */
+  async hideKeyboard(keyNames?: string[]): Promise<boolean> {
+    this.invalidatePendingKeyboardFollowUp('hide keyboard');
+    try {
+      debugDevice(
+        keyNames && keyNames.length > 0
+          ? `Attempting to dismiss keyboard using configured buttons: ${keyNames.join(', ')}`
+          : 'Attempting to dismiss keyboard using its accessory toolbar',
+      );
+      const dismissed = await this.wdaBackend.dismissKeyboard(keyNames);
+      debugDevice(
+        dismissed
+          ? 'Successfully dismissed keyboard'
+          : 'No supported keyboard dismiss control was found',
+      );
+      return dismissed;
+    } catch (error) {
+      debugDevice(`Failed to hide keyboard: ${error}`);
+      throw new Error(`Failed to hide the iOS keyboard through WDA: ${error}`, {
+        cause: error,
+      });
+    }
+  }
+
+  /**
+   * Open a URL using WebDriverAgent
+   * @param url The URL to open (supports http://, https://, and custom schemes)
+   * @param options Configuration options for URL opening
+   */
+  async openUrl(
+    url: string,
+    options?: {
+      useSafariAsBackup?: boolean;
+      waitTime?: number;
+    },
+  ): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('open URL');
+    const opts = {
+      useSafariAsBackup: true,
+      waitTime: 2000,
+      ...options,
+    };
+
+    try {
+      debugDevice(`Opening URL: ${url}`);
+
+      // Try direct URL opening first
+      await this.wdaBackend.openUrl(url);
+      await sleep(opts.waitTime);
+
+      debugDevice(`Successfully opened URL: ${url}`);
+    } catch (error) {
+      debugDevice(`Direct URL opening failed: ${error}`);
+
+      if (opts.useSafariAsBackup) {
+        debugDevice(`Attempting to open URL via Safari: ${url}`);
+        await this.openUrlViaSafari(url);
+      } else {
+        throw new Error(`Failed to open URL: ${error}`);
+      }
+    }
+  }
+
+  /**
+   * Open a URL via Safari (backup method for real devices)
+   * @param url The URL to open
+   */
+  async openUrlViaSafari(url: string): Promise<void> {
+    this.invalidatePendingKeyboardFollowUp('open URL via Safari');
+    try {
+      debugDevice(`Opening URL via Safari: ${url}`);
+
+      // Launch Safari
+      await this.wdaBackend.terminateApp('com.apple.mobilesafari');
+      await this.wdaBackend.launchApp('com.apple.mobilesafari');
+      await sleep(2000); // Wait for Safari to launch
+
+      // Find and tap the address bar
+      // Note: This is a simplified implementation. In practice, you might need
+      // to handle different Safari UI states (new tab, existing tab, etc.)
+
+      // Type the URL in the address bar
+      await this.typeText(url, { autoDismissKeyboard: false });
+      await sleep(500);
+
+      // Press Return to navigate
+      await this.pressKey('Return');
+      await sleep(1000);
+
+      // Handle potential app confirmation dialog
+      // iOS shows a dialog asking if you want to open the app
+      try {
+        // Look for "Open" button and tap it if present
+        // This is a best-effort approach as the dialog appearance may vary
+        await sleep(2000); // Wait for potential dialog
+        debugDevice(`URL opened via Safari: ${url}`);
+      } catch (dialogError) {
+        debugDevice(
+          `No confirmation dialog or dialog handling failed: ${dialogError}`,
+        );
+      }
+    } catch (error) {
+      debugDevice(`Failed to open URL via Safari: ${error}`);
+      throw new Error(`Failed to open URL via Safari: ${error}`);
+    }
+  }
+
+  /**
+   * Execute a WebDriverAgent API request directly
+   * This is the iOS equivalent of Android's runAdbShell
+   * @param method HTTP method (GET, POST, DELETE, PUT)
+   * @param endpoint WebDriver API endpoint
+   * @param data Optional request body data
+   * @returns Response from the WebDriver API
+   */
+  async runWdaRequest<TResult = any>(
+    method: WDAHttpMethod,
+    endpoint: string,
+    data?: any,
+  ): Promise<TResult> {
+    this.invalidatePendingKeyboardFollowUp('raw WDA request');
+    return await this.wdaBackend.executeRequest<TResult>(
+      method,
+      endpoint,
+      data,
+    );
+  }
+
+  async destroy(): Promise<void> {
+    if (this.destroyed) {
+      return;
+    }
+
+    this.invalidatePendingKeyboardFollowUp('destroy');
+    try {
+      // Stop the MJPEG frame source if it was started.
+      this.mjpegFrameSource?.stop();
+      this.mjpegFrameSource = null;
+
+      // Delete WDA session
+      await this.wdaBackend.deleteSession();
+
+      // Stop WDA manager
+      await this.wdaManager.stop();
+    } catch (error) {
+      debugDevice(`Error during cleanup: ${error}`);
+    }
+
+    this.destroyed = true;
+    debugDevice(`iOS device ${this.deviceId} destroyed`);
+  }
+}
+
+const runWdaRequestParamSchema = z.object({
+  method: z
+    .enum(WDA_HTTP_METHODS)
+    .describe('HTTP method (GET, POST, DELETE, PUT)'),
+  endpoint: z.string().describe('WebDriver API endpoint'),
+  data: z
+    .object({})
+    .passthrough()
+    .optional()
+    .describe('Optional request body data as JSON object'),
+});
+
+type RunWdaRequestParam = z.infer<typeof runWdaRequestParamSchema>;
+type RunWdaRequestReturn = Awaited<ReturnType<IOSDevice['runWdaRequest']>>;
+
+const launchParamSchema = z.object({
+  uri: z
+    .string()
+    .describe(
+      'App name, bundle ID, or URL to launch. Prioritize using the exact bundle ID or URL the user has provided. If none provided, use the accurate app name.',
+    ),
+});
+
+type LaunchParam = z.infer<typeof launchParamSchema>;
+
+export type DeviceActionRunWdaRequest = DeviceAction<
+  RunWdaRequestParam,
+  RunWdaRequestReturn
+>;
+export type DeviceActionLaunch = DeviceAction<LaunchParam, void>;
+
+const terminateParamSchema = z.object({
+  uri: z
+    .string()
+    .describe(
+      'Bundle ID of the app to terminate (close). Use the exact bundle ID, e.g. com.apple.Preferences.',
+    ),
+});
+
+type TerminateParam = z.infer<typeof terminateParamSchema>;
+
+export type DeviceActionTerminate = DeviceAction<TerminateParam, void>;
+
+/**
+ * Platform-specific action definitions for iOS
+ * Single source of truth for both runtime behavior and type definitions
+ */
+const createPlatformActions = (device: IOSDevice) => {
+  return {
+    RunWdaRequest: defineAction<
+      typeof runWdaRequestParamSchema,
+      RunWdaRequestParam,
+      RunWdaRequestReturn
+    >({
+      name: 'RunWdaRequest',
+      description: 'Execute WebDriverAgent API request directly on iOS device',
+      interfaceAlias: 'runWdaRequest',
+      paramSchema: runWdaRequestParamSchema,
+      sample: {
+        method: 'GET',
+        endpoint: '/status',
+      },
+      call: async (param) => {
+        return await device.runWdaRequest(
+          param.method,
+          param.endpoint,
+          param.data,
+        );
+      },
+    }),
+    Launch: defineAction<typeof launchParamSchema, LaunchParam, void>({
+      name: 'Launch',
+      description: 'Launch an iOS app or URL',
+      interfaceAlias: 'launch',
+      paramSchema: launchParamSchema,
+      sample: {
+        uri: 'com.apple.Preferences',
+      },
+      call: async (param) => {
+        if (!param.uri || param.uri.trim() === '') {
+          throw new Error('Launch requires a non-empty uri parameter');
+        }
+        await device.launch(param.uri);
+      },
+    }),
+    Terminate: defineAction<typeof terminateParamSchema, TerminateParam, void>({
+      name: 'Terminate',
+      description: 'Terminate (close) an iOS app by its bundle ID',
+      interfaceAlias: 'terminate',
+      paramSchema: terminateParamSchema,
+      sample: {
+        uri: 'com.apple.Preferences',
+      },
+      call: async (param) => {
+        if (!param.uri || param.uri.trim() === '') {
+          throw new Error('Terminate requires a non-empty uri parameter');
+        }
+        await device.terminate(param.uri);
+      },
+    }),
+    IOSHomeButton: defineAction({
+      name: 'IOSHomeButton',
+      description: 'Trigger the system "home" operation on iOS devices',
+      call: async () => {
+        await device.home();
+      },
+    }),
+    IOSAppSwitcher: defineAction({
+      name: 'IOSAppSwitcher',
+      description: 'Trigger the system "app switcher" operation on iOS devices',
+      call: async () => {
+        await device.appSwitcher();
+      },
+    }),
+  } as const;
+};
+
+export type DeviceActionIOSHomeButton = DeviceAction<undefined, void>;
+
+export type DeviceActionIOSAppSwitcher = DeviceAction<undefined, void>;

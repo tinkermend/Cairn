@@ -1,0 +1,30 @@
+import type { DeviceType } from '../types';
+
+export interface DeviceCapabilities {
+  supportsImeStrategy: boolean;
+  supportsScreenshotStrategy: boolean;
+  supportsKeyboardDismissStrategy: boolean;
+  supportsAutoDismissKeyboard: boolean;
+  supportsAlwaysRefreshScreenInfo: boolean;
+}
+
+export function getDeviceCapabilities(
+  deviceType?: DeviceType,
+): DeviceCapabilities {
+  return {
+    supportsImeStrategy: deviceType === 'android',
+    supportsScreenshotStrategy: deviceType === 'android',
+    supportsKeyboardDismissStrategy:
+      deviceType === 'android' || deviceType === 'harmony',
+    supportsAutoDismissKeyboard:
+      deviceType === 'android' ||
+      deviceType === 'ios' ||
+      deviceType === 'harmony',
+    supportsAlwaysRefreshScreenInfo: deviceType === 'android',
+  };
+}
+
+export function hasDeviceSpecificConfig(deviceType?: DeviceType): boolean {
+  const capabilities = getDeviceCapabilities(deviceType);
+  return Object.values(capabilities).some(Boolean);
+}

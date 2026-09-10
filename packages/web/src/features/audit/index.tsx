@@ -25,7 +25,7 @@ export function AuditPage() {
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title='审计'
-          description='身份与权限变更记录。持久化状态以 API 返回为准。'
+          description='控制台身份、权限与目标系统的变更记录。持久化状态以 API 返回为准。'
         />
         {audit.isPending ? (
           <PageSkeleton />
@@ -39,7 +39,7 @@ export function AuditPage() {
         ) : items.length === 0 ? (
           <EmptyState
             title='还没有审计事件'
-            description='身份和权限变更会显示在这里。'
+            description='身份、权限和目标系统变更会显示在这里。'
           />
         ) : (
           <div className='min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>

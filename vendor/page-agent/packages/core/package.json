@@ -1,0 +1,67 @@
+{
+    "name": "@page-agent/core",
+    "private": false,
+    "version": "1.12.4",
+    "type": "module",
+    "main": "./src/PageAgentCore.ts",
+    "types": "./src/PageAgentCore.ts",
+    "exports": {
+        ".": {
+            "types": "./src/PageAgentCore.ts",
+            "default": "./src/PageAgentCore.ts"
+        }
+    },
+    "publishConfig": {
+        "main": "./dist/esm/page-agent-core.js",
+        "module": "./dist/esm/page-agent-core.js",
+        "types": "./dist/esm/PageAgentCore.d.ts",
+        "exports": {
+            ".": {
+                "types": "./dist/esm/PageAgentCore.d.ts",
+                "import": "./dist/esm/page-agent-core.js",
+                "default": "./dist/esm/page-agent-core.js"
+            }
+        }
+    },
+    "files": [
+        "dist/"
+    ],
+    "description": "GUI agent for web applications - add intelligent automation to any webpage with a single script",
+    "keywords": [
+        "ai",
+        "automation",
+        "ui-agent",
+        "GUI-agent",
+        "browser-automation",
+        "web-agent",
+        "llm",
+        "dom-interaction",
+        "web-automation",
+        "GUI-simulation"
+    ],
+    "author": "Simon<gaomeng1900>",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/alibaba/page-agent.git"
+    },
+    "homepage": "https://alibaba.github.io/page-agent/",
+    "scripts": {
+        "build": "vite build",
+        "test": "vitest run",
+        "dev:iife": "concurrently \"vite build --config vite.iife.config.js --watch\" \"npx serve dist/iife -p 5174\"",
+        "prepublishOnly": "node ../../scripts/pre-publish.js",
+        "postpublish": "node ../../scripts/post-publish.js"
+    },
+    "dependencies": {
+        "chalk": "^6.0.0",
+        "@page-agent/llms": "1.12.4",
+        "@page-agent/page-controller": "1.12.4"
+    },
+    "peerDependencies": {
+        "zod": "^3.25.0 || ^4.0.0"
+    },
+    "devDependencies": {
+        "zod": "^4.5.1"
+    }
+}

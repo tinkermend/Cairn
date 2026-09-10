@@ -1,5 +1,6 @@
 import {
   Home,
+  Monitor,
   Palette,
   ScrollText,
   Settings,
@@ -24,6 +25,12 @@ export const sidebarData: SidebarData = {
           title: '首页',
           url: '/',
           icon: Home,
+        },
+        {
+          title: '目标系统',
+          url: '/targets',
+          icon: Monitor,
+          permission: 'target:read',
         },
         {
           title: '用户',

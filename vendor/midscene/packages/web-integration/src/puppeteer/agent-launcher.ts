@@ -1,0 +1,573 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { getDebug } from '@midscene/shared/logger';
+import { assert } from '@midscene/shared/utils';
+
+import { resolveBrowserAgentRuntimeOptions } from '@/common/browser-agent';
+import {
+  defaultViewportHeight,
+  defaultViewportWidth,
+  resolveWebViewportSize,
+} from '@/common/viewport';
+import { PuppeteerAgent, PuppeteerBrowserAgent } from '@/puppeteer/index';
+import { PuppeteerPageOwnership } from '@/puppeteer/page-ownership';
+import { createScopedPuppeteerBrowserAgent } from '@/puppeteer/scoped-browser-agent';
+import type { AgentOpt, Cache, MidsceneYamlScriptWebEnv } from '@midscene/core';
+import { DEFAULT_WAIT_FOR_NETWORK_IDLE_TIMEOUT } from '@midscene/shared/constants';
+import puppeteer, {
+  type Browser,
+  type BrowserContext,
+  type DownloadBehavior,
+  type Page,
+} from 'puppeteer';
+
+export { defaultViewportWidth, defaultViewportHeight } from '@/common/viewport';
+
+export const defaultUA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
+// Setting deviceScaleFactor value to `0` means reset this value to the system default in Puppeteer.
+export const defaultViewportScale = 0;
+export const defaultWaitForNetworkIdleTimeout =
+  DEFAULT_WAIT_FOR_NETWORK_IDLE_TIMEOUT;
+
+export function resolveAiActionContext(
+  target: MidsceneYamlScriptWebEnv,
+  preference?: Partial<Pick<AgentOpt, 'aiActionContext' | 'aiActContext'>>,
+): AgentOpt['aiActionContext'] | undefined {
+  // Prefer agent-level preference if provided; otherwise fall back to target-level context.
+  // Priority: preference.aiActContext > preference.aiActionContext (deprecated) > target.aiActionContext
+  const data =
+    preference?.aiActContext ??
+    preference?.aiActionContext ??
+    target.aiActionContext;
+  return data;
+}
+
+/**
+ * Chrome arguments that may reduce browser security.
+ * These should only be used in controlled testing environments.
+ *
+ * Security implications:
+ * - `--no-sandbox`: Disables Chrome's sandbox security model
+ * - `--disable-setuid-sandbox`: Disables setuid sandbox on Linux
+ * - `--disable-web-security`: Allows cross-origin requests without CORS
+ * - `--ignore-certificate-errors`: Ignores SSL/TLS certificate errors
+ * - `--disable-features=IsolateOrigins`: Disables origin isolation
+ * - `--disable-site-isolation-trials`: Disables site isolation
+ * - `--allow-running-insecure-content`: Allows mixed HTTP/HTTPS content
+ */
+const DANGEROUS_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-web-security',
+  '--ignore-certificate-errors',
+  '--disable-features=IsolateOrigins',
+  '--disable-site-isolation-trials',
+  '--allow-running-insecure-content',
+] as const;
+
+/**
+ * Validates Chrome launch arguments for security concerns.
+ * Emits a warning if dangerous arguments are detected.
+ *
+ * This function filters out arguments that are already present in baseArgs
+ * to avoid warning about platform-specific defaults (e.g., --no-sandbox on non-Windows).
+ *
+ * @param args - Chrome launch arguments to validate
+ * @param baseArgs - Base Chrome arguments already configured
+ *
+ * @example
+ * ```typescript
+ * // Will show warning for --disable-web-security
+ * validateChromeArgs(['--disable-web-security', '--headless'], ['--no-sandbox']);
+ *
+ * // Will NOT show warning for --no-sandbox (already in baseArgs)
+ * validateChromeArgs(['--no-sandbox'], ['--no-sandbox', '--headless']);
+ * ```
+ */
+function validateChromeArgs(args: string[], baseArgs: string[]): void {
+  // Filter out arguments that are already in baseArgs
+  const newArgs = args.filter(
+    (arg) =>
+      !baseArgs.some((baseArg) => {
+        // Check if arg starts with the same flag as baseArg (before '=' if present)
+        const argFlag = arg.split('=')[0];
+        const baseFlag = baseArg.split('=')[0];
+        return argFlag === baseFlag;
+      }),
+  );
+
+  const dangerousArgs = newArgs.filter((arg) =>
+    DANGEROUS_ARGS.some((dangerous) => arg.startsWith(dangerous)),
+  );
+
+  if (dangerousArgs.length > 0) {
+    console.warn(
+      `Warning: Dangerous Chrome arguments detected: ${dangerousArgs.join(', ')}.\nThese arguments may reduce browser security. Use only in controlled testing environments.`,
+    );
+  }
+}
+
+interface FreeFn {
+  name: string;
+  fn: () => void | Promise<void>;
+}
+
+const launcherDebug = getDebug('puppeteer:launcher');
+const launcherWarning = getDebug('puppeteer:launcher', { console: true });
+
+async function cleanupFailedLaunch(freeFn: FreeFn[]): Promise<void> {
+  for (const cleanup of [...freeFn].reverse()) {
+    try {
+      await cleanup.fn();
+    } catch (error) {
+      launcherWarning(
+        `failed to run ${cleanup.name} after Puppeteer page initialization failed`,
+        error,
+      );
+    }
+  }
+}
+
+export function buildDownloadBehavior(
+  downloadPath: string | undefined,
+): DownloadBehavior | undefined {
+  if (!downloadPath) {
+    return undefined;
+  }
+
+  return {
+    policy: 'allow',
+    downloadPath: path.resolve(downloadPath),
+  };
+}
+
+export interface BuildChromeArgsOptions {
+  userAgent?: string;
+  windowSize?: { width: number; height: number };
+  chromeArgs?: string[];
+}
+
+/**
+ * Builds Chrome launch arguments with sensible defaults.
+ *
+ * Platform-specific behavior:
+ * - On non-Windows systems, automatically adds --no-sandbox and --disable-setuid-sandbox
+ *   for compatibility with containerized/CI environments
+ *
+ * @param options - Configuration options for Chrome arguments
+ * @returns Array of Chrome launch arguments
+ *
+ * @example
+ * ```typescript
+ * // Basic usage
+ * const args = buildChromeArgs();
+ *
+ * // With custom arguments
+ * const args = buildChromeArgs({
+ *   chromeArgs: ['--disable-gpu', '--disable-dev-shm-usage'],
+ *   userAgent: 'CustomUA/1.0',
+ *   windowSize: { width: 1920, height: 1080 },
+ * });
+ * ```
+ */
+export function buildChromeArgs(options?: BuildChromeArgsOptions): string[] {
+  const isWindows = process.platform === 'win32';
+
+  const sandboxArgs = isWindows
+    ? []
+    : ['--no-sandbox', '--disable-setuid-sandbox'];
+  const featureArgs = [
+    '--disable-features=HttpsFirstBalancedModeAutoEnable',
+    '--disable-features=PasswordLeakDetection',
+    '--disable-save-password-bubble',
+  ];
+  const userAgentArg = options?.userAgent
+    ? [`--user-agent="${options.userAgent}"`]
+    : [];
+  const windowSizeArg = options?.windowSize
+    ? [`--window-size=${options.windowSize.width},${options.windowSize.height}`]
+    : [];
+
+  const baseArgs = [
+    ...sandboxArgs,
+    ...featureArgs,
+    ...userAgentArg,
+    ...windowSizeArg,
+  ];
+
+  if (options?.chromeArgs?.length) {
+    validateChromeArgs(options.chromeArgs, baseArgs);
+    return [...baseArgs, ...options.chromeArgs];
+  }
+
+  return baseArgs;
+}
+
+async function preparePuppeteerPage(
+  target: MidsceneYamlScriptWebEnv,
+  preference?: {
+    headed?: boolean;
+    keepWindow?: boolean;
+    ignoreDefaultArgs?: boolean | string[];
+  },
+  browser?: Browser,
+  existingPage?: Page,
+  browserContext?: BrowserContext,
+) {
+  assert(target.url, 'url is required');
+  const freeFn: FreeFn[] = [];
+
+  // prepare the environment
+  const ua = target.userAgent || defaultUA;
+  const { width, height } = resolveWebViewportSize(target);
+  let dpr = defaultViewportScale;
+  if (
+    target.deviceScaleFactor !== undefined &&
+    target.deviceScaleFactor !== null
+  ) {
+    assert(
+      typeof target.deviceScaleFactor === 'number',
+      'deviceScaleFactor must be a number',
+    );
+    dpr = target.deviceScaleFactor;
+    assert(dpr > 0, `deviceScaleFactor must be > 0, but got ${dpr}`);
+  }
+  const viewportConfig = {
+    width,
+    height,
+    deviceScaleFactor: dpr,
+  };
+
+  const headed = preference?.headed || preference?.keepWindow;
+  const defaultViewportConfig = headed ? null : viewportConfig;
+
+  // launch the browser
+  if (headed && process.env.CI === '1') {
+    console.warn(
+      'you are probably running headed mode in CI, this will usually fail.',
+    );
+  }
+
+  // Build Chrome arguments using the shared helper
+  // Only pass windowSize in headed mode; in headless mode, defaultViewport takes precedence
+  // Add 100px to height to account for browser UI (address bar, tabs, etc.)
+  const browserUIHeight = 100;
+  const args = buildChromeArgs({
+    userAgent: ua,
+    windowSize: headed
+      ? { width, height: height + browserUIHeight }
+      : undefined,
+    chromeArgs: target.chromeArgs,
+  });
+  const downloadBehavior = buildDownloadBehavior(target.downloadPath);
+
+  launcherDebug(
+    'launching browser with viewport, headed',
+    headed,
+    'viewport',
+    viewportConfig,
+    'args',
+    args,
+    'preference',
+    preference,
+  );
+  // Callers may provide a page when they need to own its lifecycle. Otherwise
+  // create a new page in the supplied browser (or a newly launched browser).
+  let page: Page;
+  let browserInstance = browser;
+  let ownsBrowser = false;
+
+  try {
+    if (existingPage) {
+      page = existingPage;
+      launcherDebug('using caller-provided page');
+
+      // Get the browser instance from the existing page
+      if (!browserInstance) {
+        browserInstance = page.browser();
+      }
+    } else {
+      // Create a new browser and page
+      if (!browserInstance) {
+        browserInstance = await puppeteer.launch({
+          headless: !preference?.headed,
+          defaultViewport: defaultViewportConfig,
+          downloadBehavior,
+          args,
+          acceptInsecureCerts: target.acceptInsecureCerts,
+          ignoreDefaultArgs: preference?.ignoreDefaultArgs,
+        });
+        ownsBrowser = true;
+        freeFn.push({
+          name: 'puppeteer_browser',
+          fn: async () => {
+            if (preference?.keepWindow) {
+              return;
+            }
+            if (process.platform === 'win32') {
+              await new Promise((resolve) => setTimeout(resolve, 800));
+            }
+            await browserInstance?.close();
+          },
+        });
+      }
+      page = browserContext
+        ? await browserContext.newPage()
+        : await browserInstance.newPage();
+      if (!ownsBrowser) {
+        const createdPage = page;
+        freeFn.push({
+          name: 'puppeteer_page',
+          fn: async () => {
+            if (!preference?.keepWindow && !createdPage.isClosed()) {
+              try {
+                await createdPage.close();
+              } catch (error) {
+                throw new Error('Failed to close a YAML execution page', {
+                  cause: error,
+                });
+              }
+            }
+          },
+        });
+      }
+    }
+
+    if (target.cookie) {
+      const cookieFileContent = readFileSync(target.cookie, 'utf-8');
+      await page.browserContext().setCookie(...JSON.parse(cookieFileContent));
+    }
+
+    if (ua) {
+      await page.setUserAgent(ua);
+    }
+
+    if (target.extraHTTPHeaders) {
+      // YAML may parse unquoted values into booleans/numbers (e.g. `yes` -> true),
+      // but Puppeteer requires string header values, so normalize them here.
+      const normalizedHeaders = Object.fromEntries(
+        Object.entries(target.extraHTTPHeaders).map(([key, value]) => [
+          key,
+          String(value),
+        ]),
+      );
+      await page.setExtraHTTPHeaders(normalizedHeaders);
+    }
+
+    if (viewportConfig) {
+      await page.setViewport(viewportConfig);
+    }
+
+    return { page, freeFn };
+  } catch (error) {
+    await cleanupFailedLaunch(freeFn);
+    throw error;
+  }
+}
+
+async function navigatePuppeteerPage(
+  page: Page,
+  target: MidsceneYamlScriptWebEnv,
+): Promise<void> {
+  const waitForNetworkIdleTimeout =
+    typeof target.waitForNetworkIdle?.timeout === 'number'
+      ? target.waitForNetworkIdle.timeout
+      : defaultWaitForNetworkIdleTimeout;
+
+  launcherDebug('goto', target.url);
+  await page.goto(target.url);
+
+  if (waitForNetworkIdleTimeout <= 0) {
+    return;
+  }
+
+  launcherDebug('waitForNetworkIdle', waitForNetworkIdleTimeout);
+  try {
+    await page.waitForNetworkIdle({
+      timeout: waitForNetworkIdleTimeout,
+    });
+  } catch (error) {
+    if (target.waitForNetworkIdle?.continueOnNetworkIdleError === false) {
+      throw new Error(`failed to wait for network idle: ${error}`, {
+        cause: error,
+      });
+    }
+    launcherWarning(
+      `failed to wait for network idle after ${waitForNetworkIdleTimeout}ms, but the script will continue.`,
+      error,
+    );
+  }
+}
+
+export async function launchPuppeteerPage(
+  target: MidsceneYamlScriptWebEnv,
+  preference?: {
+    headed?: boolean;
+    keepWindow?: boolean;
+    ignoreDefaultArgs?: boolean | string[];
+  },
+  browser?: Browser,
+  existingPage?: Page,
+  browserContext?: BrowserContext,
+) {
+  const preparedPage = await preparePuppeteerPage(
+    target,
+    preference,
+    browser,
+    existingPage,
+    browserContext,
+  );
+  try {
+    await navigatePuppeteerPage(preparedPage.page, target);
+    return preparedPage;
+  } catch (error) {
+    await cleanupFailedLaunch(preparedPage.freeFn);
+    throw error;
+  }
+}
+
+export async function puppeteerAgentForTarget(
+  target: MidsceneYamlScriptWebEnv,
+  preference?: {
+    headed?: boolean;
+    keepWindow?: boolean;
+  } & Partial<
+    Pick<
+      AgentOpt,
+      | 'groupName'
+      | 'groupDescription'
+      | 'generateReport'
+      | 'persistExecutionDump'
+      | 'autoPrintReportMsg'
+      | 'reportFileName'
+      | 'replanningCycleLimit'
+      | 'cache'
+      | 'aiActionContext'
+    >
+  >,
+  browser?: Browser,
+  existingPage?: Page,
+  browserContext?: BrowserContext,
+) {
+  const mode = target.mode ?? 'page';
+
+  if (mode !== 'page' && mode !== 'browser') {
+    throw new Error(
+      `[midscene] web target mode must be either "page" or "browser", but got "${mode}".`,
+    );
+  }
+
+  const runtimeOptions = resolveBrowserAgentRuntimeOptions({
+    agentName: 'YAML web target',
+    pageScope: mode,
+    forceSameTabNavigation: target.forceSameTabNavigation,
+    autoFollowNewPage: target.autoFollowNewPage,
+  });
+
+  const { page, freeFn } = await preparePuppeteerPage(
+    target,
+    preference,
+    browser,
+    existingPage,
+    browserContext,
+  );
+  const aiActContext = resolveAiActionContext(target, preference);
+
+  const { aiActionContext, ...preferenceToUse } = preference ?? {};
+
+  const commonAgentOpts = {
+    ...preferenceToUse,
+    aiActContext,
+    waitForNetworkIdleTimeout:
+      typeof target.waitForNetworkIdle?.timeout === 'number'
+        ? target.waitForNetworkIdle.timeout
+        : undefined,
+  };
+
+  // Install page ownership and BrowserAgent listeners before the first
+  // navigation. Initial document loading may synchronously open a popup; if
+  // listeners are installed after goto(), that page escapes the YAML scope.
+  let agent: PuppeteerAgent | PuppeteerBrowserAgent | undefined;
+  let pageOwnership: PuppeteerPageOwnership | undefined;
+  try {
+    if (mode === 'browser' && browser && !existingPage) {
+      pageOwnership = new PuppeteerPageOwnership(page);
+    }
+
+    if (mode === 'browser') {
+      const browserAgentOptions = {
+        ...commonAgentOpts,
+        autoFollowNewPage: runtimeOptions.autoFollowNewPage,
+      };
+      agent = pageOwnership
+        ? createScopedPuppeteerBrowserAgent(
+            page.browser(),
+            page,
+            browserAgentOptions,
+            pageOwnership,
+          )
+        : await PuppeteerBrowserAgent.create(page.browser(), {
+            ...browserAgentOptions,
+            initialPage: page,
+          });
+    } else {
+      agent = new PuppeteerAgent(page, {
+        ...commonAgentOpts,
+        forceSameTabNavigation: runtimeOptions.forceSameTabNavigation,
+      });
+    }
+
+    await navigatePuppeteerPage(page, target);
+  } catch (error) {
+    const failedLaunchCleanup = pageOwnership
+      ? [
+          ...freeFn.filter((cleanup) => cleanup.name !== 'puppeteer_page'),
+          {
+            name: 'puppeteer_page_scope',
+            fn: () =>
+              preference?.keepWindow
+                ? pageOwnership?.release()
+                : pageOwnership?.close(),
+          },
+        ]
+      : [...freeFn];
+    if (agent) {
+      failedLaunchCleanup.push({
+        name: 'midscene_puppeteer_agent',
+        fn: () => agent?.destroy(),
+      });
+    }
+    await cleanupFailedLaunch(failedLaunchCleanup);
+    throw error;
+  }
+
+  assert(agent, 'failed to initialize the Puppeteer agent');
+  const launchedAgent = agent;
+
+  const agentCleanup: FreeFn = {
+    name: 'midscene_puppeteer_agent',
+    fn: () => launchedAgent.destroy(),
+  };
+  const pageOwnershipCleanup: FreeFn | undefined = pageOwnership
+    ? {
+        name: 'puppeteer_page_scope',
+        fn: () =>
+          preference?.keepWindow
+            ? pageOwnership.release()
+            : pageOwnership.close(),
+      }
+    : undefined;
+  const launcherCleanup = pageOwnership
+    ? freeFn.filter((cleanup) => cleanup.name !== 'puppeteer_page')
+    : freeFn;
+
+  return {
+    agent: launchedAgent,
+    freeFn: [
+      agentCleanup,
+      ...(pageOwnershipCleanup ? [pageOwnershipCleanup] : []),
+      ...launcherCleanup,
+    ],
+  };
+}

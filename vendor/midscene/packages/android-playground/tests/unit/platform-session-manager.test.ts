@@ -1,0 +1,160 @@
+import { beforeEach, describe, expect, rs, test } from '@rstest/core';
+
+const connectMock = rs.fn();
+const currentDevice = { connect: connectMock };
+const getConnectedDevicesWithDetailsMock = rs.fn();
+const findAvailablePortMock = rs.fn(async (port: number) => port);
+const androidAgentMock = rs.fn().mockImplementation((device) => ({
+  interface: {
+    interfaceType: 'android',
+    describe: () => 'Mock Android device',
+    actionSpace: () => [],
+  },
+  destroy: rs.fn(),
+  device,
+}));
+
+rs.mock('@midscene/android', () => ({
+  AndroidAgent: androidAgentMock,
+  AndroidDevice: rs.fn().mockImplementation(() => currentDevice),
+  getConnectedDevicesWithDetails: getConnectedDevicesWithDetailsMock,
+}));
+
+rs.mock('@midscene/shared/node', () => ({
+  findAvailablePort: findAvailablePortMock,
+}));
+
+rs.mock('@midscene/playground', () => ({
+  definePlaygroundPlatform: (descriptor: unknown) => descriptor,
+  createScrcpyPreviewDescriptor: (
+    custom: Record<string, unknown>,
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    kind: 'scrcpy',
+    custom,
+    capabilities: [],
+    ...overrides,
+  }),
+}));
+
+describe('androidPlaygroundPlatform session manager', () => {
+  beforeEach(() => {
+    rs.clearAllMocks();
+    getConnectedDevicesWithDetailsMock.mockResolvedValue([
+      {
+        udid: 'SERIAL123',
+        state: 'device',
+        model: 'Pixel 8',
+        resolution: '1080x2400',
+        density: 420,
+      },
+    ]);
+    connectMock.mockResolvedValue(undefined);
+  });
+
+  test('returns device setup fields and creates a connected session', async () => {
+    const { androidPlaygroundPlatform } = await import('../../src/platform');
+    const prepared = await androidPlaygroundPlatform.prepare({});
+    const setup = await prepared.sessionManager!.getSetupSchema!();
+
+    expect(setup?.fields[0]).toMatchObject({
+      key: 'deviceId',
+      type: 'select',
+      defaultValue: 'SERIAL123',
+    });
+    expect(setup?.autoSubmitWhenReady).toBe(true);
+    expect(setup?.fields[0]?.options?.[0]?.description).toBe(
+      'Pixel 8 · 1080x2400',
+    );
+
+    const created = await prepared.sessionManager?.createSession({
+      deviceId: 'SERIAL123',
+    });
+    expect(created?.displayName).toBe('SERIAL123');
+    expect(created?.metadata).toMatchObject({
+      deviceId: 'SERIAL123',
+    });
+    expect(connectMock).toHaveBeenCalled();
+  });
+
+  test.each(['127.0.0.1', '192.168.1.100', '0.0.0.0', '::1'])(
+    'includes the Scrcpy bind host %s before and after device connection',
+    async (host) => {
+      const { androidPlaygroundPlatform } = await import('../../src/platform');
+      const scrcpyServer = {
+        host,
+        currentDeviceId: null,
+        launch: rs.fn(async () => {}),
+        close: rs.fn(),
+      };
+      const prepared = await androidPlaygroundPlatform.prepare({
+        scrcpyServer,
+      });
+      expect(prepared.preview?.custom).toMatchObject({ scrcpyHost: host });
+      const session = await prepared.sessionManager!.createSession({
+        deviceId: 'SERIAL123',
+      });
+      expect(session.preview?.custom).toMatchObject({ scrcpyHost: host });
+    },
+  );
+
+  test('keeps the setup schema usable when adb discovery fails', async () => {
+    getConnectedDevicesWithDetailsMock
+      .mockRejectedValueOnce(new Error('adb executable not found'))
+      .mockRejectedValueOnce(new Error('adb executable not found'));
+
+    const { androidPlaygroundPlatform } = await import('../../src/platform');
+    const prepared = await androidPlaygroundPlatform.prepare({});
+
+    const setup = await prepared.sessionManager!.getSetupSchema!();
+    expect(setup?.targets).toEqual([]);
+    expect(setup?.autoSubmitWhenReady).toBe(false);
+    expect(setup?.notice).toMatchObject({
+      type: 'warning',
+      description: expect.stringContaining('adb executable not found'),
+    });
+
+    await expect(prepared.sessionManager?.listTargets?.()).resolves.toEqual([]);
+  });
+
+  test('passes host Agent options to each new Android Agent', async () => {
+    const agentOptions = {
+      replanningCycleLimit: 12,
+      waitAfterAction: 500,
+      screenshotShrinkFactor: 2,
+    };
+    const { androidPlaygroundPlatform } = await import('../../src/platform');
+    const prepared = await androidPlaygroundPlatform.prepare({
+      getAgentOptions: () => agentOptions,
+    });
+
+    const created = await prepared.sessionManager?.createSession({
+      deviceId: 'SERIAL123',
+    });
+    await created?.agentFactory?.();
+
+    expect(androidAgentMock).toHaveBeenNthCalledWith(
+      1,
+      currentDevice,
+      agentOptions,
+    );
+    expect(androidAgentMock).toHaveBeenNthCalledWith(
+      2,
+      currentDevice,
+      agentOptions,
+    );
+  });
+
+  test('bubbles adb discovery failures out of createSession so the user sees the root cause', async () => {
+    getConnectedDevicesWithDetailsMock.mockRejectedValueOnce(
+      new Error('adb executable not found'),
+    );
+
+    const { androidPlaygroundPlatform } = await import('../../src/platform');
+    const prepared = await androidPlaygroundPlatform.prepare({});
+
+    await expect(prepared.sessionManager?.createSession({})).rejects.toThrow(
+      'adb executable not found',
+    );
+  });
+});

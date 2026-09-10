@@ -1,0 +1,715 @@
+import { resolveBrowserAgentRuntimeOptions } from '@/common/browser-agent';
+import type { WebPageAgentOpt } from '@/web-element';
+import type { Cache } from '@midscene/core';
+import type { Agent as PageAgent } from '@midscene/core/agent';
+import { processCacheConfig } from '@midscene/core/utils';
+import {
+  DEFAULT_WAIT_FOR_NAVIGATION_TIMEOUT,
+  DEFAULT_WAIT_FOR_NETWORK_IDLE_TIMEOUT,
+} from '@midscene/shared/constants';
+import { getDebug } from '@midscene/shared/logger';
+import { replaceIllegalPathCharsAndSpace, uuid } from '@midscene/shared/utils';
+import { type TestInfo, type TestType, test } from '@playwright/test';
+import type { Page as OriginPlaywrightPage } from 'playwright';
+import {
+  PlaywrightAgent,
+  PlaywrightBrowserAgent,
+  type PlaywrightWebPage,
+} from './agent';
+import { buildPlaywrightReportTag } from './report-filename';
+export type APITestType = Pick<TestType<any, any>, 'step'>;
+
+const debugPage = getDebug('web:playwright:ai-fixture');
+
+const groupAndCaseForTest = (testInfo: TestInfo) => {
+  let taskFile: string;
+  let taskTitle: string;
+  const titlePath = [...testInfo.titlePath];
+
+  if (titlePath.length > 1) {
+    taskFile = titlePath.shift() || 'unnamed';
+    taskTitle = titlePath.join('__');
+  } else if (titlePath.length === 1) {
+    taskTitle = titlePath[0];
+    taskFile = `${taskTitle}`;
+  } else {
+    taskTitle = 'unnamed';
+    taskFile = 'unnamed';
+  }
+
+  const taskTitleWithRetry = `${taskTitle}${testInfo.retry ? `(retry #${testInfo.retry})` : ''}`;
+
+  return {
+    file: taskFile,
+    id: replaceIllegalPathCharsAndSpace(`${taskFile}(${taskTitle})`),
+    title: replaceIllegalPathCharsAndSpace(taskTitleWithRetry),
+  };
+};
+
+const midsceneAgentKeyId = '_midsceneAgentId';
+export const midsceneDumpAnnotationId = 'MIDSCENE_DUMP_ANNOTATION';
+
+type AgentRecord = {
+  agent: PageAgent<PlaywrightWebPage>;
+  finalizePromise?: Promise<string | undefined>;
+  finalReportPath?: string;
+};
+
+type PlaywrightCacheConfig = {
+  strategy?: 'read-only' | 'read-write' | 'write-only';
+  id?: string;
+};
+type PlaywrightCache = false | true | PlaywrightCacheConfig;
+
+export type PlaywrightAiFixtureOptions = Omit<
+  WebPageAgentOpt,
+  | 'testId'
+  | 'cacheId'
+  | 'groupName'
+  | 'groupDescription'
+  | 'reportFileName'
+  | 'cache'
+> & {
+  autoFollowNewPage?: boolean;
+  cache?: PlaywrightCache;
+};
+
+export const PlaywrightAiFixture = (options?: PlaywrightAiFixtureOptions) => {
+  const {
+    forceSameTabNavigation = true,
+    autoFollowNewPage = false,
+    waitForNetworkIdleTimeout = DEFAULT_WAIT_FOR_NETWORK_IDLE_TIMEOUT,
+    waitForNavigationTimeout = DEFAULT_WAIT_FOR_NAVIGATION_TIMEOUT,
+    cache,
+    ...sharedAgentOptions
+  } = options ?? {};
+
+  // Helper function to process cache configuration and auto-generate ID from test info
+  const processTestCacheConfig = (testInfo: TestInfo): Cache | undefined => {
+    // Generate ID from test info
+    const { id } = groupAndCaseForTest(testInfo);
+
+    // Use shared processCacheConfig with generated ID as fallback
+    return processCacheConfig(cache as Cache, id);
+  };
+
+  const pageAgentMap: Record<string, PageAgent<PlaywrightWebPage>> = {};
+  const testAgentRecords = new Map<string, Map<string, AgentRecord>>();
+
+  const getAgentRecordsForTest = (testInfo: TestInfo) => {
+    let records = testAgentRecords.get(testInfo.testId);
+    if (!records) {
+      records = new Map<string, AgentRecord>();
+      testAgentRecords.set(testInfo.testId, records);
+    }
+    return records;
+  };
+
+  const setReportAnnotation = (testInfo: TestInfo, reportPaths: string[]) => {
+    testInfo.annotations = testInfo.annotations.filter((item) => {
+      return item.type !== midsceneDumpAnnotationId;
+    });
+
+    for (const reportPath of reportPaths) {
+      testInfo.annotations.push({
+        type: midsceneDumpAnnotationId,
+        description: reportPath,
+      });
+    }
+  };
+
+  const finalizeAgentRecord = async (
+    record: AgentRecord,
+  ): Promise<string | undefined> => {
+    if (!record.finalizePromise) {
+      record.finalizePromise = (async () => {
+        await record.agent.destroy();
+        const reportPath = record.agent.reportFile || undefined;
+        record.finalReportPath = reportPath;
+        return reportPath;
+      })();
+    }
+
+    return await record.finalizePromise;
+  };
+
+  const createOrReuseAgentForPage = (
+    page: OriginPlaywrightPage,
+    testInfo: TestInfo, // { testId: string; taskFile: string; taskTitle: string },
+    opts?: WebPageAgentOpt,
+  ) => {
+    let idForPage = (page as any)[midsceneAgentKeyId];
+    if (!idForPage) {
+      idForPage = uuid();
+      (page as any)[midsceneAgentKeyId] = idForPage;
+      const { file, title } = groupAndCaseForTest(testInfo);
+      const cacheConfig = processTestCacheConfig(testInfo);
+      // `replaceIllegalPathCharsAndSpace` intentionally preserves `/` and `\`
+      // so groupName/groupDescription can still carry hierarchy. But
+      // ReportGenerator rejects path separators in the file name, so the
+      // report tag builder strips them without changing the group metadata.
+      const reportTag = buildPlaywrightReportTag(title, idForPage);
+
+      if (autoFollowNewPage && forceSameTabNavigation === true) {
+        throw new Error(
+          '[midscene] autoFollowNewPage cannot be used with forceSameTabNavigation: true.',
+        );
+      }
+
+      const runtimeOptions = resolveBrowserAgentRuntimeOptions({
+        agentName: 'PlaywrightAiFixture',
+        pageScope: autoFollowNewPage ? 'browser' : 'page',
+        forceSameTabNavigation: autoFollowNewPage
+          ? undefined
+          : forceSameTabNavigation,
+        autoFollowNewPage,
+      });
+
+      const commonAgentOpts = {
+        testId: reportTag,
+        reportFileName: reportTag,
+        cache: cacheConfig,
+        groupName: title,
+        groupDescription: file,
+        generateReport: true,
+        ...sharedAgentOptions,
+        ...opts,
+      };
+
+      const agent = autoFollowNewPage
+        ? new PlaywrightBrowserAgent(page.context(), page, {
+            ...commonAgentOpts,
+            autoFollowNewPage: runtimeOptions.autoFollowNewPage,
+          })
+        : new PlaywrightAgent(page, {
+            ...commonAgentOpts,
+            forceSameTabNavigation: runtimeOptions.forceSameTabNavigation,
+          });
+      pageAgentMap[idForPage] = agent;
+      const records = getAgentRecordsForTest(testInfo);
+      const record: AgentRecord = { agent };
+      records.set(idForPage, record);
+
+      page.on('close', async () => {
+        debugPage('page closed');
+        try {
+          await finalizeAgentRecord(record);
+        } finally {
+          delete pageAgentMap[idForPage];
+        }
+      });
+    }
+
+    return pageAgentMap[idForPage];
+  };
+
+  async function generateAiFunction(options: {
+    page: OriginPlaywrightPage;
+    testInfo: TestInfo;
+    use: any;
+    aiActionType:
+      | 'ai'
+      | 'aiAct'
+      | 'aiAction'
+      | 'aiHover'
+      | 'aiInput'
+      | 'aiKeyboardPress'
+      | 'aiScroll'
+      | 'aiTap'
+      | 'aiRightClick'
+      | 'aiDoubleClick'
+      | 'aiQuery'
+      | 'aiAssert'
+      | 'aiWaitFor'
+      | 'aiLocate'
+      | 'aiNumber'
+      | 'aiString'
+      | 'aiBoolean'
+      | 'aiAsk'
+      | 'runYaml'
+      | 'setAIActionContext'
+      | 'evaluateJavaScript'
+      | 'recordToReport'
+      | 'logScreenshot'
+      | 'freezePageContext'
+      | 'unfreezePageContext';
+  }) {
+    const { page, testInfo, use, aiActionType } = options;
+    const agent = createOrReuseAgentForPage(page, testInfo, {
+      waitForNavigationTimeout,
+      waitForNetworkIdleTimeout,
+    }) as PlaywrightAgent;
+
+    await use(async (taskPrompt: unknown, ...args: any[]) => {
+      return new Promise((resolve, reject) => {
+        test.step(`ai-${aiActionType} - ${JSON.stringify(taskPrompt)}`, async () => {
+          try {
+            type AgentMethod = (...methodArgs: any[]) => Promise<any>;
+            const result = await (agent[aiActionType] as AgentMethod).bind(
+              agent,
+            )(taskPrompt, ...args);
+            resolve(result);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+    });
+  }
+
+  return {
+    _midsceneFinalizeReports: [
+      // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture callbacks must use object destructuring for the first parameter even when no fixtures are consumed.
+      async ({}: Record<string, unknown>, use: any, testInfo: TestInfo) => {
+        await use();
+
+        const records = testAgentRecords.get(testInfo.testId);
+        if (!records || records.size === 0) {
+          return;
+        }
+
+        const reportPaths = (
+          await Promise.all(
+            Array.from(records.values()).map((record) =>
+              finalizeAgentRecord(record),
+            ),
+          )
+        ).filter((reportPath): reportPath is string => Boolean(reportPath));
+
+        if (reportPaths.length > 0) {
+          setReportAnnotation(testInfo, reportPaths);
+        }
+
+        testAgentRecords.delete(testInfo.testId);
+      },
+      { auto: true },
+    ],
+    agentForPage: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await use(
+        async (
+          propsPage?: OriginPlaywrightPage | undefined,
+          opts?: WebPageAgentOpt,
+        ) => {
+          const cacheConfig = processTestCacheConfig(testInfo);
+
+          // Handle cache configuration priority:
+          // 1. If user provides cache in opts, use it (but auto-generate ID if missing)
+          // 2. Otherwise use fixture's cache config
+          let finalCacheConfig = cacheConfig;
+          if (opts?.cache !== undefined) {
+            const userCache = opts.cache;
+            if (userCache === false) {
+              finalCacheConfig = false;
+            } else if (userCache === true) {
+              // Auto-generate ID for user's cache: true
+              const { id } = groupAndCaseForTest(testInfo);
+              finalCacheConfig = { id };
+            } else if (typeof userCache === 'object') {
+              if (!userCache.id) {
+                // Auto-generate ID for user's cache object without ID
+                const { id } = groupAndCaseForTest(testInfo);
+                finalCacheConfig = { ...userCache, id };
+              } else {
+                finalCacheConfig = userCache;
+              }
+            }
+          }
+
+          const agent = createOrReuseAgentForPage(propsPage || page, testInfo, {
+            waitForNavigationTimeout,
+            waitForNetworkIdleTimeout,
+            cache: finalCacheConfig,
+            ...opts,
+          });
+          return agent;
+        },
+      );
+    },
+    ai: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'ai',
+      });
+    },
+    aiAct: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiAct',
+      });
+    },
+    /**
+     * @deprecated Use {@link PlaywrightAiFixture.aiAct} instead.
+     */
+    aiAction: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiAction',
+      });
+    },
+    aiTap: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiTap',
+      });
+    },
+    aiRightClick: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiRightClick',
+      });
+    },
+    aiDoubleClick: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiDoubleClick',
+      });
+    },
+    aiHover: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiHover',
+      });
+    },
+    aiInput: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiInput',
+      });
+    },
+    aiKeyboardPress: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiKeyboardPress',
+      });
+    },
+    aiScroll: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiScroll',
+      });
+    },
+    aiQuery: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiQuery',
+      });
+    },
+    aiAssert: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiAssert',
+      });
+    },
+    aiWaitFor: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiWaitFor',
+      });
+    },
+    aiLocate: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiLocate',
+      });
+    },
+    aiNumber: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiNumber',
+      });
+    },
+    aiString: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiString',
+      });
+    },
+    aiBoolean: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiBoolean',
+      });
+    },
+    aiAsk: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'aiAsk',
+      });
+    },
+    runYaml: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'runYaml',
+      });
+    },
+    setAIActionContext: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'setAIActionContext',
+      });
+    },
+    evaluateJavaScript: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'evaluateJavaScript',
+      });
+    },
+    recordToReport: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'recordToReport',
+      });
+    },
+    logScreenshot: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'logScreenshot',
+      });
+    },
+    freezePageContext: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'freezePageContext',
+      });
+    },
+    unfreezePageContext: async (
+      { page }: { page: OriginPlaywrightPage },
+      use: any,
+      testInfo: TestInfo,
+    ) => {
+      await generateAiFunction({
+        page,
+        testInfo,
+        use,
+        aiActionType: 'unfreezePageContext',
+      });
+    },
+  };
+};
+
+export type PlayWrightAiFixtureType = {
+  agentForPage: (
+    page?: OriginPlaywrightPage,
+    opts?: WebPageAgentOpt,
+  ) => Promise<PageAgent<PlaywrightWebPage>>;
+  ai: <T = any>(...args: Parameters<PageAgent['ai']>) => Promise<T>;
+  aiAct: (
+    ...args: Parameters<PageAgent['aiAct']>
+  ) => ReturnType<PageAgent['aiAct']>;
+  /**
+   * @deprecated Use {@link PlayWrightAiFixtureType.aiAct} instead.
+   */
+  aiAction: (
+    ...args: Parameters<PageAgent['aiAction']>
+  ) => ReturnType<PageAgent['aiAction']>;
+  aiTap: (
+    ...args: Parameters<PageAgent['aiTap']>
+  ) => ReturnType<PageAgent['aiTap']>;
+  aiRightClick: (
+    ...args: Parameters<PageAgent['aiRightClick']>
+  ) => ReturnType<PageAgent['aiRightClick']>;
+  aiDoubleClick: (
+    ...args: Parameters<PageAgent['aiDoubleClick']>
+  ) => ReturnType<PageAgent['aiDoubleClick']>;
+  aiHover: (
+    ...args: Parameters<PageAgent['aiHover']>
+  ) => ReturnType<PageAgent['aiHover']>;
+  aiInput: (
+    ...args: Parameters<PageAgent['aiInput']>
+  ) => ReturnType<PageAgent['aiInput']>;
+  aiKeyboardPress: (
+    ...args: Parameters<PageAgent['aiKeyboardPress']>
+  ) => ReturnType<PageAgent['aiKeyboardPress']>;
+  aiScroll: (
+    ...args: Parameters<PageAgent['aiScroll']>
+  ) => ReturnType<PageAgent['aiScroll']>;
+  aiQuery: <T = any>(...args: Parameters<PageAgent['aiQuery']>) => Promise<T>;
+  aiAssert: (
+    ...args: Parameters<PageAgent['aiAssert']>
+  ) => ReturnType<PageAgent['aiAssert']>;
+  aiWaitFor: (...args: Parameters<PageAgent['aiWaitFor']>) => Promise<void>;
+  aiLocate: (
+    ...args: Parameters<PageAgent['aiLocate']>
+  ) => ReturnType<PageAgent['aiLocate']>;
+  aiNumber: (
+    ...args: Parameters<PageAgent['aiNumber']>
+  ) => ReturnType<PageAgent['aiNumber']>;
+  aiString: (
+    ...args: Parameters<PageAgent['aiString']>
+  ) => ReturnType<PageAgent['aiString']>;
+  aiBoolean: (
+    ...args: Parameters<PageAgent['aiBoolean']>
+  ) => ReturnType<PageAgent['aiBoolean']>;
+  aiAsk: (
+    ...args: Parameters<PageAgent['aiAsk']>
+  ) => ReturnType<PageAgent['aiAsk']>;
+  runYaml: (
+    ...args: Parameters<PageAgent['runYaml']>
+  ) => ReturnType<PageAgent['runYaml']>;
+  setAIActionContext: (
+    ...args: Parameters<PageAgent['setAIActionContext']>
+  ) => ReturnType<PageAgent['setAIActionContext']>;
+  evaluateJavaScript: (
+    ...args: Parameters<PageAgent['evaluateJavaScript']>
+  ) => ReturnType<PageAgent['evaluateJavaScript']>;
+  recordToReport: (
+    ...args: Parameters<PageAgent['recordToReport']>
+  ) => ReturnType<PageAgent['recordToReport']>;
+  logScreenshot: (
+    ...args: Parameters<PageAgent['logScreenshot']>
+  ) => ReturnType<PageAgent['logScreenshot']>;
+  freezePageContext: (
+    ...args: Parameters<PageAgent['freezePageContext']>
+  ) => ReturnType<PageAgent['freezePageContext']>;
+  unfreezePageContext: (
+    ...args: Parameters<PageAgent['unfreezePageContext']>
+  ) => ReturnType<PageAgent['unfreezePageContext']>;
+};

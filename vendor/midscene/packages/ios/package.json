@@ -1,0 +1,71 @@
+{
+  "name": "@midscene/ios",
+  "version": "1.12.6",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/web-infra-dev/midscene.git",
+    "directory": "packages/ios"
+  },
+  "description": "iOS automation library for Midscene",
+  "keywords": [
+    "iOS UI automation",
+    "iOS AI testing",
+    "iOS automation library",
+    "iOS automation tool",
+    "iOS testing",
+    "simulator automation"
+  ],
+  "main": "./dist/lib/index.js",
+  "module": "./dist/es/index.mjs",
+  "types": "./dist/types/index.d.ts",
+  "files": ["dist", "static", "bin", "README.md"],
+  "bin": {
+    "midscene-ios": "./bin/midscene-ios"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/es/index.mjs",
+      "require": "./dist/lib/index.js"
+    },
+    "./test": {
+      "types": "./dist/types/test-runner.d.ts",
+      "import": "./dist/es/test-runner.mjs",
+      "require": "./dist/lib/test-runner.js"
+    },
+    "./src/bin": {
+      "types": "./dist/types/bin.d.ts",
+      "import": "./dist/es/bin.mjs",
+      "require": "./dist/lib/bin.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "dev": "npm run build:watch",
+    "build": "rslib build",
+    "build:watch": "rslib build --watch --no-clean",
+    "playground": "DEBUG=midscene:* tsx demo/playground.ts",
+    "test": "rstest",
+    "test:u": "rstest -u",
+    "test:ai": "AI_TEST_TYPE=iOS rstest",
+    "test:ai:cache": "MIDSCENE_CACHE=true AI_TEST_TYPE=iOS rstest"
+  },
+  "dependencies": {
+    "@midscene/core": "workspace:*",
+    "@midscene/shared": "workspace:*",
+    "@midscene/webdriver": "workspace:*",
+    "@inquirer/prompts": "^7.8.6",
+    "@midscene/playground": "workspace:*",
+    "open": "10.1.0",
+    "zod": "^3.25.1"
+  },
+  "devDependencies": {
+    "@rslib/core": "^0.18.3",
+    "@rstest/core": "0.11.5",
+    "@types/node": "^18.0.0",
+    "dotenv": "^16.4.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,36 @@
+// Rstest Snapshot v1
+
+exports[`yaml utils > basic build && load 1`] = `
+"page:
+  url: https://bing.com
+  waitForNetworkIdle:
+    timeout: 1000
+    continueOnNetworkIdleError: true
+tasks:
+  - name: search
+    flow:
+      - aiAction: type "hello" in search box, hit enter
+"
+`;
+
+exports[`yaml utils > basic build && load 2`] = `
+{
+  "page": {
+    "url": "https://bing.com",
+    "waitForNetworkIdle": {
+      "continueOnNetworkIdleError": true,
+      "timeout": 1000,
+    },
+  },
+  "tasks": [
+    {
+      "flow": [
+        {
+          "aiAction": "type "hello" in search box, hit enter",
+        },
+      ],
+      "name": "search",
+    },
+  ],
+}
+`;

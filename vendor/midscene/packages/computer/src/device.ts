@@ -1,0 +1,1859 @@
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { chmodSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type {
+  DeviceAction,
+  InterfaceType,
+  LocateResultElement,
+  Size,
+} from '@midscene/core';
+import {
+  type AbstractInterface,
+  type ComputerInputPrimitives,
+  type InputStrategy,
+  type ResolvedTextInputOptions,
+  defineAction,
+  defineActionsFromInputPrimitives,
+  resolveTextInputOptions,
+  sendTextSequentially,
+  shouldInputSequentially,
+} from '@midscene/core/device';
+import { sleep } from '@midscene/core/utils';
+import { createImgBase64ByFormat } from '@midscene/shared/img';
+import { getDebug } from '@midscene/shared/logger';
+import screenshot from 'screenshot-desktop';
+import {
+  ComputerInputDriver,
+  type LibNut,
+  type ScrollDirection,
+} from './input-driver';
+import { runWindowsPhysicalPixelPowershell } from './windows-dpi';
+import {
+  WindowsPointerDriver,
+  windowsPointerDrift,
+  windowsPointerIsWithinTolerance,
+} from './windows-pointer';
+import type { XvfbInstance } from './xvfb';
+import {
+  checkXvfbInstalled,
+  createXvfbSignalCleanup,
+  needsXvfb,
+  scheduleXvfbStopAfterProcessExit,
+  startXvfb,
+} from './xvfb';
+
+declare const __VERSION__: string;
+
+interface ScreenshotOptions {
+  format: 'png' | 'jpg';
+  screen?: string | number;
+}
+
+async function captureScreenshot(options: ScreenshotOptions): Promise<Buffer> {
+  if (process.platform !== 'linux') {
+    return screenshot(options);
+  }
+
+  // screenshot-desktop derives its Linux stdout maxBuffer from the screen's
+  // pixel count. PNGs can exceed that value on a 1920×1080 Chrome window,
+  // causing a screenshot failure before the image reaches the agent. Capture
+  // to a temporary file instead, which bypasses the stdout buffer entirely.
+  const filename = join(tmpdir(), `midscene-screenshot-${randomUUID()}.png`);
+  try {
+    await screenshot({ ...options, filename });
+    return readFileSync(filename);
+  } finally {
+    rmSync(filename, { force: true });
+  }
+}
+
+interface ScreenshotDisplay {
+  id: string | number;
+  name?: string;
+  primary?: boolean;
+}
+
+interface NativeDisplayInfoResponse {
+  displays?: DarwinDisplayGeometry[];
+}
+
+interface DarwinFrontmostApplication {
+  pid: number;
+  name: string;
+}
+
+export interface DisplayBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DisplayGeometry {
+  primary: boolean;
+  bounds: DisplayBounds;
+}
+
+export interface DarwinDisplayGeometry extends DisplayGeometry {
+  screenIndex: number;
+  cgDisplayId: number;
+}
+
+export interface WindowsDisplayGeometry extends DisplayGeometry {
+  id: string;
+  name: string;
+}
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+// Constants
+const SMOOTH_MOVE_STEPS_TAP = 8;
+const SMOOTH_MOVE_STEPS_MOUSE_MOVE = 10;
+const SMOOTH_MOVE_STEPS_DRAG = 20;
+const SMOOTH_MOVE_DELAY_TAP = 8;
+const SMOOTH_MOVE_DELAY_MOUSE_MOVE = 10;
+const SMOOTH_MOVE_DELAY_DRAG = 10;
+const MOUSE_MOVE_EFFECT_WAIT = 300;
+const CLICK_SETTLE_DELAY = 50;
+const CLICK_HOLD_DURATION = 100;
+const CLICK_FOCUS_SETTLE_DELAY = 120;
+const INPUT_FOCUS_DELAY = 300;
+const INPUT_CLEAR_DELAY = 150;
+const SCROLL_REPEAT_COUNT = 10;
+const SCROLL_STEP_DELAY = 100;
+const SCROLL_COMPLETE_DELAY = 500;
+// Edge scrolls (scrollToTop / scrollToBottom / ...) use a large total
+// distance so ordinary pages clamp at the boundary. The step count controls
+// smoothness; 400 steps at ~16ms each is ~6.4s in the worst case but WebKit
+// short-circuits the remaining events once the boundary is reached.
+const EDGE_SCROLL_TOTAL_PX = 50_000;
+const EDGE_SCROLL_STEPS = 400;
+// singleAction vertical/horizontal scroll: target ~30px per step and a
+// minimum of 10 steps so small distances still feel momentum-like.
+const PHASED_PIXELS_PER_STEP = 30;
+const PHASED_MIN_STEPS = 10;
+// libnut fallback (Windows / Linux, and macOS when phased-scroll is
+// unavailable). libnut.scrollMouse(x, y) is *not* a portable pixel API:
+//   - macOS:   y is a CG pixel scroll delta
+//   - Linux:   y is the number of XButton4/5 press-release pairs (1 = one
+//              wheel notch)
+//   - Windows: y is forwarded directly to MOUSEEVENTF_WHEEL's `mouseData`,
+//              where the unit is WHEEL_DELTA (= 120) per detent
+// Calling scrollMouse(0, 6) on Windows therefore sends `mouseData = 6` —
+// far below one detent — which gets silently accumulated and is frequently
+// discarded by Chromium's WheelEventQueue (Electron apps like Lark/Feishu
+// see this as "scroll did nothing"). Always emit one detent per call, and
+// pace the calls so blink doesn't coalesce them into a single tick.
+const LIBNUT_FALLBACK_PIXELS_PER_DETENT = 100;
+const LIBNUT_FALLBACK_TICK_DELAY_MS = 30;
+const LIBNUT_FALLBACK_MAX_DETENTS = 200;
+const LIBNUT_FALLBACK_DETENT_AMOUNT = process.platform === 'win32' ? 120 : 1;
+// Work around libnut's Linux shifted-punctuation behavior for en-US layouts.
+// This is intentionally not a universal keyboard-layout map: non-US layouts
+// can place these characters on different keys or modifier levels (for example,
+// AltGr). Layout-independent support should resolve characters against the
+// active layout in the input backend instead of extending this table.
+const LINUX_SHIFTED_CHARACTER_KEYS = new Map<string, string>([
+  ['~', '`'],
+  ['!', '1'],
+  ['@', '2'],
+  ['#', '3'],
+  ['$', '4'],
+  ['%', '5'],
+  ['^', '6'],
+  ['&', '7'],
+  ['*', '8'],
+  ['(', '9'],
+  [')', '0'],
+  ['_', '-'],
+  ['+', '='],
+  ['{', '['],
+  ['}', ']'],
+  ['|', '\\'],
+  [':', ';'],
+  ['"', "'"],
+  ['<', ','],
+  ['>', '.'],
+  ['?', '/'],
+]);
+// Edge scrolls (scrollToTop / scrollToBottom / ...) must drive all the way to
+// the boundary on every backend. The phased path requests EDGE_SCROLL_TOTAL_PX
+// (50_000 px); the libnut fallback aims for the same distance, capped at
+// LIBNUT_FALLBACK_MAX_DETENTS so a misconfigured screen size can't wedge the
+// process. Chromium clamps wheel events at the boundary, so overshooting is
+// free. Exported for regression coverage.
+export const LIBNUT_FALLBACK_EDGE_DETENTS = Math.min(
+  LIBNUT_FALLBACK_MAX_DETENTS,
+  Math.max(
+    1,
+    Math.ceil(EDGE_SCROLL_TOTAL_PX / LIBNUT_FALLBACK_PIXELS_PER_DETENT),
+  ),
+);
+// Default scroll distance is 70% of the screen size on the relevant axis,
+// matching the web puppeteer/chrome-extension behavior so a model that simply
+// says "scroll down" without a distance gets a roughly one-screen scroll on
+// every platform.
+const DEFAULT_SCROLL_VIEWPORT_RATIO = 0.7;
+
+type EdgeScrollType =
+  | 'scrollToTop'
+  | 'scrollToBottom'
+  | 'scrollToLeft'
+  | 'scrollToRight';
+
+interface EdgeScrollStrategy {
+  direction: ScrollDirection;
+  key: 'home' | 'end';
+  // Unit vector for libnut.scrollMouse direction. Magnitude is applied
+  // separately by emitDetents() so each call is one full detent on every
+  // platform (see LIBNUT_FALLBACK_DETENT_AMOUNT).
+  libnut: readonly [number, number];
+}
+
+// Single source of truth for edge scroll dispatch. Adding a new scrollType
+// only requires one entry here; the three backends (phased binary /
+// AppleScript / libnut) all read from the same spec.
+const EDGE_SCROLL_SPEC: Record<EdgeScrollType, EdgeScrollStrategy> = {
+  scrollToTop: { direction: 'up', key: 'home', libnut: [0, 1] },
+  scrollToBottom: { direction: 'down', key: 'end', libnut: [0, -1] },
+  scrollToLeft: { direction: 'left', key: 'home', libnut: [-1, 0] },
+  scrollToRight: { direction: 'right', key: 'end', libnut: [1, 0] },
+};
+
+// macOS AppleScript key code mapping
+// Reference: https://eastmanreference.com/complete-list-of-applescript-key-codes
+const APPLESCRIPT_KEY_CODE_MAP: Record<string, number> = {
+  // Special keys
+  return: 36,
+  enter: 36,
+  tab: 48,
+  space: 49,
+  backspace: 51,
+  delete: 51,
+  escape: 53,
+  forwarddelete: 117,
+
+  // Arrow keys
+  left: 123,
+  right: 124,
+  down: 125,
+  up: 126,
+
+  // Navigation keys
+  home: 115,
+  end: 119,
+  pageup: 116,
+  pagedown: 121,
+
+  // Function keys
+  f1: 122,
+  f2: 120,
+  f3: 99,
+  f4: 118,
+  f5: 96,
+  f6: 97,
+  f7: 98,
+  f8: 100,
+  f9: 101,
+  f10: 109,
+  f11: 103,
+  f12: 111,
+};
+
+// Modifier key mapping for AppleScript
+const APPLESCRIPT_MODIFIER_MAP: Record<string, string> = {
+  command: 'command down',
+  cmd: 'command down',
+  control: 'control down',
+  ctrl: 'control down',
+  shift: 'shift down',
+  alt: 'option down',
+  option: 'option down',
+  meta: 'command down',
+};
+
+/**
+ * Send a key press using AppleScript (macOS only)
+ * More reliable than libnut for TUI applications like Bubble Tea
+ */
+function sendKeyViaAppleScript(key: string, modifiers: string[] = []): void {
+  const lowerKey = key.toLowerCase();
+  const keyCode = APPLESCRIPT_KEY_CODE_MAP[lowerKey];
+
+  // Build modifier string
+  const modifierParts = modifiers
+    .map((m) => APPLESCRIPT_MODIFIER_MAP[m.toLowerCase()])
+    .filter(Boolean);
+  const modifierStr =
+    modifierParts.length > 0 ? ` using {${modifierParts.join(', ')}}` : '';
+
+  let script: string;
+
+  if (keyCode !== undefined) {
+    // Use key code for special keys
+    script = `tell application "System Events" to key code ${keyCode}${modifierStr}`;
+  } else {
+    const escapedKey = key.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    script = `tell application "System Events" to keystroke "${escapedKey}"${modifierStr}`;
+  }
+
+  debugDevice('sendKeyViaAppleScript', { key, modifiers, script });
+  execFileSync('osascript', ['-e', script]);
+}
+
+function escapePowershellSingleQuoted(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+/** Enumerate Windows monitors and their physical-pixel bounds via PowerShell
+ * (screenshot-desktop's .bat-based listDisplays is broken under Claude Code —
+ * see #2150). */
+export function readWindowsDisplayGeometries(): WindowsDisplayGeometry[] {
+  const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$s = [System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
+  $b = $_.Bounds
+  [PSCustomObject]@{
+    id = $_.DeviceName
+    name = $_.DeviceName
+    primary = $_.Primary
+    bounds = [PSCustomObject]@{ x = $b.X; y = $b.Y; width = $b.Width; height = $b.Height }
+  }
+}
+ConvertTo-Json @($s) -Compress
+`.trim();
+  const output = runWindowsPhysicalPixelPowershell(script).trim();
+  if (!output) {
+    throw new Error('Windows display enumeration returned no data');
+  }
+  const parsed: unknown = JSON.parse(output);
+  if (!Array.isArray(parsed)) {
+    throw new Error('Windows display enumeration returned invalid data');
+  }
+  const displays = parsed.filter(isWindowsDisplayGeometry);
+  if (displays.length !== parsed.length || displays.length === 0) {
+    throw new Error('Windows display enumeration returned invalid geometry');
+  }
+  return displays;
+}
+
+function listWindowsDisplays(
+  geometries = readWindowsDisplayGeometries(),
+): DisplayInfo[] {
+  return geometries.map((display) => ({
+    id: display.id,
+    name: display.name,
+    primary: display.primary,
+  }));
+}
+
+let libnut: LibNut | null = null;
+let libnutLoadError: Error | null = null;
+
+async function getLibnut(): Promise<LibNut> {
+  if (libnut) return libnut;
+  if (libnutLoadError) throw libnutLoadError;
+
+  try {
+    const require = createRequire(import.meta.url);
+    const libnutModule = require('@computer-use/libnut/dist/import_libnut');
+    libnut = libnutModule.libnut as LibNut;
+    if (!libnut) {
+      throw new Error('libnut module loaded but libnut object is undefined');
+    }
+    return libnut;
+  } catch (error) {
+    libnutLoadError = error as Error;
+    throw new Error(
+      `Failed to load @computer-use/libnut. Make sure it is properly installed and compiled for your platform. Error: ${error}`,
+    );
+  }
+}
+
+const debugDevice = getDebug('computer:device');
+const warnDevice = getDebug('computer:device', { console: true });
+const debugComputerInput = getDebug('computer:input', { console: true });
+const WINDOWS_UIPI_DOC_URL =
+  'https://midscenejs.com/computer-getting-started#windows-clicks-have-no-effect-on-some-apps';
+
+function resolvePackageRoot(helperName: string): string | null {
+  const require = createRequire(import.meta.url);
+  let pkgRoot: string | null = null;
+  try {
+    pkgRoot = dirname(require.resolve('@midscene/computer/package.json'));
+  } catch {
+    // Fallback for the dev/test path where the package is not resolvable by
+    // its public name (e.g. tests import from src directly).
+    const hereDir = dirname(fileURLToPath(import.meta.url));
+    for (const candidate of [
+      resolve(hereDir, '..'), // src/device.ts -> package root
+      resolve(hereDir, '../..'), // dist/{lib,es}/*.js -> package root
+    ]) {
+      if (existsSync(resolve(candidate, 'package.json'))) {
+        pkgRoot = candidate;
+        break;
+      }
+    }
+  }
+  if (!pkgRoot) {
+    debugDevice(`${helperName}: cannot locate @midscene/computer package root`);
+    return null;
+  }
+  return pkgRoot;
+}
+
+/**
+ * Resolve the phased-scroll helper binary bundled with the package.
+ *
+ * The binary is a tiny CoreGraphics helper that posts trackpad-like scroll
+ * events with proper gesture phase markers, which WebKit and modern AppKit
+ * scroll views accept without needing keyboard focus — unlike libnut's
+ * phase-less CGScrollEvent path.
+ *
+ * Returns null on non-darwin or when the binary is missing (expected if a
+ * consumer stripped the optional `bin/darwin/` directory from their install).
+ */
+let phasedScrollBinaryPath: string | null | undefined;
+/** @internal exported for unit tests — do not consume from outside this package */
+export function getPhasedScrollBinary(): string | null {
+  if (phasedScrollBinaryPath !== undefined) return phasedScrollBinaryPath;
+  if (process.platform !== 'darwin') {
+    phasedScrollBinaryPath = null;
+    return null;
+  }
+
+  const pkgRoot = resolvePackageRoot('phased-scroll');
+  if (!pkgRoot) {
+    phasedScrollBinaryPath = null;
+    return null;
+  }
+
+  const binPath = resolve(pkgRoot, 'bin/darwin/phased-scroll');
+  if (!existsSync(binPath)) {
+    debugDevice('phased-scroll binary not found at', binPath);
+    phasedScrollBinaryPath = null;
+    return null;
+  }
+  // npm tarball extraction drops the executable bit on packed files (mode
+  // becomes 0644). Self-heal once at resolution time so spawnSync doesn't
+  // come back with status:null/EACCES on every scroll.
+  try {
+    const st = statSync(binPath);
+    if ((st.mode & 0o111) === 0) {
+      chmodSync(binPath, 0o755);
+      debugDevice('phased-scroll: restored executable bit on', binPath);
+    }
+  } catch (err) {
+    debugDevice('phased-scroll: chmod self-heal failed', err);
+  }
+  phasedScrollBinaryPath = binPath;
+  return binPath;
+}
+
+let displayInfoBinaryPath: string | null | undefined;
+/** @internal exported for unit tests — do not consume from outside this package */
+export function getDisplayInfoBinary(): string | null {
+  if (displayInfoBinaryPath !== undefined) return displayInfoBinaryPath;
+  if (process.platform !== 'darwin') {
+    displayInfoBinaryPath = null;
+    return null;
+  }
+
+  const pkgRoot = resolvePackageRoot('display-info');
+  if (!pkgRoot) {
+    displayInfoBinaryPath = null;
+    return null;
+  }
+
+  const binPath = resolve(pkgRoot, 'bin/darwin/display-info');
+  if (!existsSync(binPath)) {
+    debugDevice('display-info binary not found at', binPath);
+    displayInfoBinaryPath = null;
+    return null;
+  }
+  displayInfoBinaryPath = binPath;
+  return binPath;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isDisplayBounds(value: unknown): value is DisplayBounds {
+  if (!value || typeof value !== 'object') return false;
+  const bounds = value as DisplayBounds;
+  return (
+    isFiniteNumber(bounds.x) &&
+    isFiniteNumber(bounds.y) &&
+    isFiniteNumber(bounds.width) &&
+    isFiniteNumber(bounds.height) &&
+    bounds.width > 0 &&
+    bounds.height > 0
+  );
+}
+
+function isWindowsDisplayGeometry(
+  value: unknown,
+): value is WindowsDisplayGeometry {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as WindowsDisplayGeometry;
+  return (
+    typeof candidate.id === 'string' &&
+    candidate.id.length > 0 &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.primary === 'boolean' &&
+    isDisplayBounds(candidate.bounds)
+  );
+}
+
+function isDarwinDisplayGeometry(
+  value: unknown,
+): value is DarwinDisplayGeometry {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as DarwinDisplayGeometry;
+  return (
+    Number.isInteger(candidate.screenIndex) &&
+    Number.isInteger(candidate.cgDisplayId) &&
+    typeof candidate.primary === 'boolean' &&
+    !!candidate.bounds &&
+    isFiniteNumber(candidate.bounds.x) &&
+    isFiniteNumber(candidate.bounds.y) &&
+    isFiniteNumber(candidate.bounds.width) &&
+    isFiniteNumber(candidate.bounds.height)
+  );
+}
+
+/** @internal exported for unit tests — do not consume from outside this package */
+export function readDarwinDisplayGeometries(): DarwinDisplayGeometry[] {
+  const bin = getDisplayInfoBinary();
+  if (!bin) return [];
+
+  try {
+    const output = execFileSync(bin, [], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const parsed = JSON.parse(output) as NativeDisplayInfoResponse;
+    return Array.isArray(parsed.displays)
+      ? parsed.displays.filter(isDarwinDisplayGeometry)
+      : [];
+  } catch (error) {
+    debugDevice('display-info helper failed:', error);
+    return [];
+  }
+}
+
+function readDarwinFrontmostApplication():
+  | DarwinFrontmostApplication
+  | undefined {
+  try {
+    const output = execFileSync('osascript', [
+      '-e',
+      [
+        'tell application "System Events"',
+        'set frontApp to first application process whose frontmost is true',
+        'return (unix id of frontApp as string) & "\t" & (name of frontApp as string)',
+        'end tell',
+      ].join('\n'),
+    ])
+      .toString()
+      .trim();
+    const [pidText, ...nameParts] = output.split('\t');
+    const pid = Number(pidText);
+    if (!Number.isInteger(pid) || pid <= 0) return undefined;
+    return { pid, name: nameParts.join('\t') };
+  } catch (error) {
+    debugDevice('Failed to read macOS frontmost application:', error);
+    return undefined;
+  }
+}
+
+async function pressMouseAtGlobalPoint(
+  inputDriver: ComputerInputDriver,
+  targetX: number,
+  targetY: number,
+  current: Point,
+  holdDuration: number,
+  reason: 'primary' | 'focus-follow-up',
+): Promise<void> {
+  const drift = { x: current.x - targetX, y: current.y - targetY };
+  debugComputerInput('tap mouse moved %o', {
+    reason,
+    target: { x: targetX, y: targetY },
+    current,
+    drift,
+  });
+  await inputDriver.withMouseButton('left', async () => {
+    debugComputerInput('tap mouse down %o', { reason });
+    await inputDriver.delay(holdDuration);
+  });
+  debugComputerInput('tap mouse up %o', { reason });
+}
+
+/** @internal exported for unit tests — do not consume from outside this package */
+export function resolveDarwinDisplayGeometryFromList(
+  displayId: string | undefined,
+  displays: DarwinDisplayGeometry[],
+): DarwinDisplayGeometry | undefined {
+  if (!displays.length) return undefined;
+  const screenIndex =
+    displayId === undefined || displayId === '' ? 0 : Number(displayId);
+  if (!Number.isInteger(screenIndex) || screenIndex < 0) {
+    debugDevice('Invalid macOS display id for display geometry:', displayId);
+    return undefined;
+  }
+  if (displayId === undefined || displayId === '') {
+    return (
+      displays.find((display) => display.primary) ||
+      displays.find((display) => display.screenIndex === 0) ||
+      displays[0]
+    );
+  }
+  return (
+    displays.find((display) => display.screenIndex === screenIndex) ||
+    displays.find((display) => display.cgDisplayId === screenIndex)
+  );
+}
+
+/** @internal exported for unit tests — do not consume from outside this package */
+export function resolveWindowsDisplayGeometryFromList(
+  displayId: string | undefined,
+  displays: WindowsDisplayGeometry[],
+): WindowsDisplayGeometry | undefined {
+  if (!displays.length) return undefined;
+  if (displayId === undefined || displayId === '') {
+    return displays.find((display) => display.primary) || displays[0];
+  }
+  return displays.find((display) => display.id === displayId);
+}
+
+function resolveDisplayGeometry(
+  displayId: string | undefined,
+  windowsDisplays?: WindowsDisplayGeometry[],
+): DisplayGeometry | undefined {
+  if (process.platform === 'darwin') {
+    return resolveDarwinDisplayGeometryFromList(
+      displayId,
+      readDarwinDisplayGeometries(),
+    );
+  }
+  if (process.platform === 'win32') {
+    const geometry = resolveWindowsDisplayGeometryFromList(
+      displayId,
+      windowsDisplays ?? readWindowsDisplayGeometries(),
+    );
+    if (!geometry) {
+      throw new Error(
+        displayId
+          ? `Requested Windows display not found: ${displayId}`
+          : 'No Windows displays were detected',
+      );
+    }
+    return geometry;
+  }
+  return undefined;
+}
+
+/** @internal exported for unit tests — do not consume from outside this package */
+export function mapDisplayLocalPointToGlobal(
+  point: Point,
+  geometry?: DisplayGeometry,
+): Point {
+  if (!geometry) return point;
+  return {
+    x: point.x + geometry.bounds.x,
+    y: point.y + geometry.bounds.y,
+  };
+}
+
+let phasedScrollExecWarned = false;
+/** @internal exported for unit tests — do not consume from outside this package */
+export function runPhasedScroll(
+  direction: ScrollDirection,
+  pixels: number,
+  steps: number,
+): boolean {
+  const bin = getPhasedScrollBinary();
+  if (!bin) return false;
+  // phased-scroll posts events at the current cursor location — callers that
+  // care about routing should move the mouse before invoking.
+  try {
+    const res = spawnSync(
+      bin,
+      [direction, String(Math.max(1, Math.round(pixels))), String(steps)],
+      { stdio: 'ignore' },
+    );
+    if (res.status === 0) return true;
+    if (!phasedScrollExecWarned) {
+      phasedScrollExecWarned = true;
+      // status === null means the child was killed by a signal before it
+      // could exit normally — usually EACCES (binary not executable) or a
+      // codesign/quarantine rejection. status !== 0 means the helper exited
+      // on its own; on macOS that's almost always Accessibility denial.
+      const hint =
+        res.status === null
+          ? `signal ${res.signal ?? 'unknown'}; the binary may not be executable (npm tarball extraction can drop the +x bit) or may be blocked by quarantine. Try: chmod +x "${bin}"`
+          : 'this usually means Accessibility permission has not been granted to the host process (System Settings → Privacy & Security → Accessibility)';
+      console.warn(
+        `[@midscene/computer] phased-scroll helper failed (exit=${res.status}, signal=${res.signal ?? 'none'}); falling back to keyboard/libnut. ${hint}`,
+      );
+    }
+    debugDevice(
+      'phased-scroll exited non-zero',
+      res.status,
+      res.signal,
+      res.error,
+    );
+    return false;
+  } catch (err) {
+    if (!phasedScrollExecWarned) {
+      phasedScrollExecWarned = true;
+      console.warn(
+        `[@midscene/computer] phased-scroll helper failed to spawn (${(err as Error)?.message}); falling back to keyboard/libnut.`,
+      );
+    }
+    debugDevice('phased-scroll spawn failed', err);
+    return false;
+  }
+}
+
+// Key name mapping for cross-platform compatibility
+// Note: Modifier keys have different names when used as primary key vs modifier
+const KEY_NAME_MAP: Record<string, string> = {
+  // Modifier keys (for use in modifiers array)
+  windows: 'win',
+  win: 'win',
+  ctrl: 'control',
+  esc: 'escape',
+  del: 'delete',
+  ins: 'insert',
+  // Navigation keys
+  pgup: 'pageup',
+  pgdn: 'pagedown',
+  arrowup: 'up',
+  arrowdown: 'down',
+  arrowleft: 'left',
+  arrowright: 'right',
+  // Media keys
+  volumedown: 'audio_vol_down',
+  volumeup: 'audio_vol_up',
+  mediavolumedown: 'audio_vol_down',
+  mediavolumeup: 'audio_vol_up',
+  mute: 'audio_mute',
+  mediamute: 'audio_mute',
+  mediaplay: 'audio_play',
+  mediapause: 'audio_pause',
+  mediaplaypause: 'audio_play',
+  mediastop: 'audio_stop',
+  medianexttrack: 'audio_next',
+  mediaprevioustrack: 'audio_prev',
+  medianext: 'audio_next',
+  mediaprev: 'audio_prev',
+};
+
+// When pressing modifier keys alone (as primary key), use these names
+// This is needed because libnut requires different key names for modifiers
+// when they are the main key vs when they are in the modifiers array
+const PRIMARY_KEY_MAP: Record<string, string> = {
+  command: 'cmd',
+  cmd: 'cmd',
+  meta: 'meta',
+  control: 'control',
+  ctrl: 'control',
+  shift: 'shift',
+  alt: 'alt',
+  option: 'alt',
+};
+
+function normalizeKeyName(key: string): string {
+  const lowerKey = key.toLowerCase();
+  return KEY_NAME_MAP[lowerKey] || lowerKey;
+}
+
+function normalizePrimaryKey(key: string): string {
+  const lowerKey = key.toLowerCase();
+  // First check PRIMARY_KEY_MAP for modifier keys pressed alone
+  if (PRIMARY_KEY_MAP[lowerKey]) {
+    return PRIMARY_KEY_MAP[lowerKey];
+  }
+  // Then use regular KEY_NAME_MAP
+  return KEY_NAME_MAP[lowerKey] || lowerKey;
+}
+
+export interface DisplayInfo {
+  id: string;
+  name: string;
+  primary?: boolean;
+}
+
+export interface ComputerDeviceInputOpt {
+  /**
+   * Delay in milliseconds between keystrokes when typing text.
+   *
+   * Must be a finite non-negative number. In `legacy` mode, positive values
+   * switch input from clipboard paste to real key events. This helps
+   * applications that require physical-looking keystrokes or drop characters
+   * when an entire value arrives at once. When omitted or set to zero,
+   * `legacy` mode keeps using clipboard paste to avoid IME interference.
+   */
+  keyboardTypeDelay?: number;
+  /**
+   * How Midscene sends text to the desktop input backend. `bulk` uses one
+   * clipboard paste; `sequential` emits one Unicode code point at a time.
+   * `bulk` requires `keyboardTypeDelay` to be omitted or set to zero.
+   * @default 'legacy'
+   */
+  inputStrategy?: InputStrategy;
+}
+
+export interface ComputerDeviceOpt extends ComputerDeviceInputOpt {
+  displayId?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  customActions?: DeviceAction<any>[];
+  /**
+   * Keyboard driver for sending key events (macOS only)
+   * - 'applescript': Use AppleScript via osascript (default on macOS, more reliable)
+   * - 'libnut': Use libnut's keyTap (faster but may not work with some TUI apps)
+   */
+  keyboardDriver?: 'applescript' | 'libnut';
+  /**
+   * Headless mode via Xvfb (Linux only).
+   * - true: start Xvfb virtual display
+   * - false/undefined: do not start Xvfb
+   * Can also be set via MIDSCENE_COMPUTER_HEADLESS_LINUX=true environment variable.
+   */
+  headless?: boolean;
+  /**
+   * Resolution for Xvfb virtual display (default '1920x1080x24')
+   */
+  xvfbResolution?: string;
+  /**
+   * Keep a managed Xvfb server alive until process exit.
+   *
+   * @internal The foreground CLI uses this because libnut keeps a process-wide
+   * X11 connection open. Stopping Xvfb during normal CLI teardown would make
+   * Xlib terminate an otherwise successful command with exit code 1.
+   */
+  keepXvfbAliveUntilProcessExit?: boolean;
+}
+
+export class ComputerDevice implements AbstractInterface {
+  interfaceType: InterfaceType = 'computer';
+  private options?: ComputerDeviceOpt;
+  private displayId?: string;
+  private displayGeometry?: DisplayGeometry;
+  private description?: string;
+  private destroyed = false;
+  private xvfbInstance?: XvfbInstance;
+  private xvfbCleanup?: () => void;
+  private xvfbSignalCleanup?: () => void;
+  private readonly inputDriver = new ComputerInputDriver({
+    getLibnut: () => libnut,
+    useAppleScript: () => this.useAppleScript,
+    sendKeyViaAppleScript,
+    runPhasedScroll,
+    debug: (message) => debugDevice(message),
+  });
+  private readonly windowsPointerDriver = new WindowsPointerDriver({
+    runPhysicalPixelPowershell: runWindowsPhysicalPixelPowershell,
+  });
+  /**
+   * On macOS, use AppleScript for keyboard operations by default
+   * to avoid focus issues with system overlays (e.g. Spotlight).
+   */
+  private useAppleScript: boolean;
+  /** Cached result of the elevation check; see isRunningAsAdmin(). */
+  private adminCheckCache?: boolean;
+  uri?: string;
+
+  readonly inputPrimitives: ComputerInputPrimitives = {
+    pointer: {
+      tap: async ({ x, y }, opts) => {
+        const target = this.toGlobalPoint({ x, y });
+        const targetX = Math.round(target.x);
+        const targetY = Math.round(target.y);
+        const holdDuration = Math.max(
+          0,
+          Math.round(opts?.duration ?? CLICK_HOLD_DURATION),
+        );
+        debugComputerInput('tap start %o', {
+          local: { x, y },
+          global: { x: targetX, y: targetY },
+          holdDuration,
+          displayId: this.displayId,
+          displayGeometry: this.displayGeometry,
+        });
+
+        const frontmostBefore =
+          process.platform === 'darwin'
+            ? readDarwinFrontmostApplication()
+            : undefined;
+        const current = await this.moveGlobalPointer(
+          { x: targetX, y: targetY },
+          'Mouse did not reach the tap target',
+          {
+            smoothSteps: SMOOTH_MOVE_STEPS_TAP,
+            smoothDelay: SMOOTH_MOVE_DELAY_TAP,
+          },
+        );
+        await pressMouseAtGlobalPoint(
+          this.inputDriver,
+          targetX,
+          targetY,
+          current,
+          holdDuration,
+          'primary',
+        );
+
+        if (frontmostBefore && process.platform === 'darwin') {
+          await sleep(CLICK_FOCUS_SETTLE_DELAY);
+          const frontmostAfter = readDarwinFrontmostApplication();
+          const focusChanged =
+            !!frontmostAfter && frontmostAfter.pid !== frontmostBefore.pid;
+          debugComputerInput('tap focus check %o', {
+            before: frontmostBefore,
+            after: frontmostAfter,
+            focusChanged,
+          });
+          if (focusChanged) {
+            const followUpCurrent = await this.moveGlobalPointer(
+              { x: targetX, y: targetY },
+              'Mouse did not reach the focus follow-up target',
+            );
+            await pressMouseAtGlobalPoint(
+              this.inputDriver,
+              targetX,
+              targetY,
+              followUpCurrent,
+              holdDuration,
+              'focus-follow-up',
+            );
+          }
+        }
+      },
+      doubleClick: async ({ x, y }) => {
+        await this.moveDisplayPointer(
+          { x, y },
+          'Mouse did not reach the double-click target',
+        );
+        this.inputDriver.mouseClick('left', true);
+      },
+      rightClick: async ({ x, y }) => {
+        await this.moveDisplayPointer(
+          { x, y },
+          'Mouse did not reach the right-click target',
+        );
+        this.inputDriver.mouseClick('right');
+      },
+      hover: async ({ x, y }) => {
+        await this.moveDisplayPointer(
+          { x, y },
+          'Mouse did not reach the hover target',
+          {
+            smoothSteps: SMOOTH_MOVE_STEPS_MOUSE_MOVE,
+            smoothDelay: SMOOTH_MOVE_DELAY_MOUSE_MOVE,
+          },
+        );
+        await this.inputDriver.delay(MOUSE_MOVE_EFFECT_WAIT);
+      },
+      dragAndDrop: async (from, to) => {
+        await this.moveDisplayPointer(
+          from,
+          'Mouse did not reach the drag start target',
+        );
+        await this.inputDriver.withMouseButton('left', async () => {
+          await this.inputDriver.delay(100);
+          await this.moveDisplayPointer(
+            to,
+            'Mouse did not reach the drag end target',
+            {
+              // Native desktop toolkits commonly use the first motion beyond
+              // their threshold to enter drag mode. Keep emitting held-button
+              // motions so the drop target can observe the active drag before
+              // the button is released.
+              smoothSteps: SMOOTH_MOVE_STEPS_DRAG,
+              smoothDelay: SMOOTH_MOVE_DELAY_DRAG,
+            },
+          );
+          await this.inputDriver.delay(100);
+        });
+      },
+    },
+    keyboard: {
+      typeText: async (value, opts) => {
+        const resolvedInputOptions = resolveTextInputOptions(
+          opts,
+          this.options,
+        );
+        const element = opts?.target as LocateResultElement | undefined;
+
+        if (element) {
+          await this.focusKeyboardTarget(element, INPUT_FOCUS_DELAY);
+
+          if (opts?.replace !== false) {
+            await this.selectAllAndDelete();
+            await this.inputDriver.delay(INPUT_CLEAR_DELAY);
+          }
+        }
+
+        await this.smartTypeString(value, resolvedInputOptions);
+      },
+      keyboardPress: async (keyName, opts) => {
+        const target = opts?.target as LocateResultElement | undefined;
+        if (target) {
+          await this.focusKeyboardTarget(target, 50);
+        }
+
+        await this.pressKeyboardShortcut(keyName);
+      },
+      clearInput: async (target) => {
+        if (target) {
+          await this.focusKeyboardTarget(target as LocateResultElement, 100);
+        }
+
+        await this.selectAllAndDelete();
+        await this.inputDriver.delay(50);
+      },
+    },
+    scroll: {
+      scroll: async (param) => {
+        await this.performScroll(param);
+      },
+    },
+  };
+
+  constructor(options?: ComputerDeviceOpt) {
+    this.options = options;
+    this.displayId = options?.displayId;
+    this.useAppleScript =
+      process.platform === 'darwin' && options?.keyboardDriver !== 'libnut';
+  }
+
+  private async moveGlobalPointer(
+    point: Point,
+    context: string,
+    smooth?: { smoothSteps: number; smoothDelay: number },
+  ): Promise<Point> {
+    if (this.destroyed) {
+      throw new Error('ComputerDevice has been destroyed');
+    }
+    const target = {
+      x: Math.round(point.x),
+      y: Math.round(point.y),
+    };
+    if (process.platform === 'win32') {
+      const actual = this.windowsPointerDriver.moveTo(target, {
+        smoothSteps: smooth?.smoothSteps,
+        smoothDelayMs: smooth?.smoothDelay,
+      });
+      const drift = windowsPointerDrift(target, actual);
+      if (!windowsPointerIsWithinTolerance(drift)) {
+        throw new Error(
+          `${context}: expected (${target.x}, ${target.y}), got (${actual.x}, ${actual.y}), drift=(${drift.x}, ${drift.y})`,
+        );
+      }
+      await this.inputDriver.delay(CLICK_SETTLE_DELAY);
+      return actual;
+    }
+    if (smooth) {
+      await this.inputDriver.smoothMoveMouse(
+        target.x,
+        target.y,
+        smooth.smoothSteps,
+        smooth.smoothDelay,
+      );
+    } else {
+      this.inputDriver.moveMouse(target.x, target.y);
+    }
+    await this.inputDriver.delay(CLICK_SETTLE_DELAY);
+    return this.inputDriver.getMousePos();
+  }
+
+  private moveDisplayPointer(
+    point: Point,
+    context: string,
+    smooth?: { smoothSteps: number; smoothDelay: number },
+  ): Promise<Point> {
+    return this.moveGlobalPointer(this.toGlobalPoint(point), context, smooth);
+  }
+
+  private async focusKeyboardTarget(
+    element: LocateResultElement,
+    delayMs: number,
+  ): Promise<void> {
+    const [x, y] = element.center;
+    if (process.platform === 'darwin') {
+      // Reuse the macOS tap path, which holds mouse-down long enough for
+      // AppKit and follows up when the click changes the foreground process.
+      // A bare libnut mouseClick can be consumed solely as an activation click
+      // on hosted desktops, leaving subsequent AppleScript typing unfocused.
+      await this.inputPrimitives.pointer.tap({ x, y });
+    } else {
+      await this.moveDisplayPointer(
+        { x, y },
+        'Mouse did not reach the keyboard focus target',
+      );
+      this.inputDriver.mouseClick('left');
+    }
+    await this.inputDriver.delay(delayMs);
+  }
+
+  describe(): string {
+    return this.description || 'Computer Device';
+  }
+
+  /**
+   * Get all available displays
+   */
+  static async listDisplays(): Promise<DisplayInfo[]> {
+    try {
+      // screenshot-desktop's Windows listDisplays uses the same broken polyglot
+      // .bat as its capture path (#2150); enumerate via PowerShell instead.
+      if (process.platform === 'win32') {
+        return listWindowsDisplays();
+      }
+      const displays: ScreenshotDisplay[] = await screenshot.listDisplays();
+      return displays.map((d) => ({
+        id: String(d.id),
+        name: d.name || `Display ${d.id}`,
+        primary: d.primary || false,
+      }));
+    } catch (error) {
+      debugDevice(`Failed to list displays: ${error}`);
+      throw new Error(`Failed to list displays: ${error}`);
+    }
+  }
+
+  async connect(): Promise<void> {
+    debugDevice('Connecting to computer device');
+
+    try {
+      // Start Xvfb if explicitly requested (option or env var)
+      const headless =
+        this.options?.headless ??
+        process.env.MIDSCENE_COMPUTER_HEADLESS_LINUX === 'true';
+      if (needsXvfb(headless)) {
+        if (!checkXvfbInstalled()) {
+          throw new Error(
+            'Xvfb is required for headless mode but not installed. Install: sudo apt-get install xvfb',
+          );
+        }
+        this.xvfbInstance = await startXvfb({
+          resolution: this.options?.xvfbResolution,
+        });
+        if (this.options?.keepXvfbAliveUntilProcessExit) {
+          scheduleXvfbStopAfterProcessExit(this.xvfbInstance);
+        }
+        process.env.DISPLAY = this.xvfbInstance.display;
+        debugDevice(`Xvfb started on display ${this.xvfbInstance.display}`);
+
+        if (!this.options?.keepXvfbAliveUntilProcessExit) {
+          // Clean up SDK-owned Xvfb during device teardown or process exit.
+          this.xvfbCleanup = () => {
+            if (this.xvfbInstance) {
+              this.xvfbInstance.stop();
+              this.xvfbInstance = undefined;
+            }
+          };
+          this.xvfbSignalCleanup = createXvfbSignalCleanup(() =>
+            this.xvfbCleanup?.(),
+          );
+          process.on('exit', this.xvfbCleanup);
+          process.on('SIGINT', this.xvfbSignalCleanup);
+          process.on('SIGTERM', this.xvfbSignalCleanup);
+        }
+      }
+
+      // Load libnut on first connect
+      libnut = await getLibnut();
+      const windowsDisplayGeometries =
+        process.platform === 'win32'
+          ? readWindowsDisplayGeometries()
+          : undefined;
+      this.displayGeometry = resolveDisplayGeometry(
+        this.displayId,
+        windowsDisplayGeometries,
+      );
+
+      const size = await this.size();
+      const displays = windowsDisplayGeometries
+        ? listWindowsDisplays(windowsDisplayGeometries)
+        : await ComputerDevice.listDisplays();
+
+      const headlessInfo = this.xvfbInstance
+        ? `\nHeadless: true (Xvfb on ${this.xvfbInstance.display})`
+        : '';
+
+      this.description = `
+Type: Computer
+Platform: ${process.platform}
+Display: ${this.displayId || 'Primary'}
+Screen Size: ${size.width}x${size.height}
+Available Displays: ${displays.length > 0 ? displays.map((d) => d.name).join(', ') : 'Unknown'}${headlessInfo}
+`;
+      debugDevice('Computer device connected', this.description);
+      // Health check: verify screenshot and mouse control are working
+      await this.healthCheck(displays);
+    } catch (error) {
+      // Clean up Xvfb on connection failure
+      if (this.xvfbInstance) {
+        if (!this.options?.keepXvfbAliveUntilProcessExit) {
+          this.xvfbInstance.stop();
+        }
+        this.xvfbInstance = undefined;
+      }
+      if (this.xvfbCleanup) {
+        process.removeListener('exit', this.xvfbCleanup);
+        this.xvfbCleanup = undefined;
+      }
+      if (this.xvfbSignalCleanup) {
+        process.removeListener('SIGINT', this.xvfbSignalCleanup);
+        process.removeListener('SIGTERM', this.xvfbSignalCleanup);
+        this.xvfbSignalCleanup = undefined;
+      }
+      debugDevice(`Failed to connect: ${error}`);
+      throw new Error(`Unable to connect to computer device: ${error}`);
+    }
+  }
+
+  private async healthCheck(displays: DisplayInfo[]): Promise<void> {
+    console.log('[HealthCheck] Starting health check...');
+    console.log(`[HealthCheck] @midscene/computer v${__VERSION__}`);
+
+    // Step 1: Take a screenshot (with timeout to handle screenshot-desktop
+    // hanging when xrandr is missing on Linux — its promise never settles)
+    console.log('[HealthCheck] Taking screenshot...');
+    const screenshotTimeout = 15_000;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error('Screenshot timed out')),
+        screenshotTimeout,
+      );
+    });
+    const base64 = await Promise.race([
+      this.screenshotBase64().finally(() => clearTimeout(timeoutId)),
+      timeoutPromise,
+    ]);
+    console.log(`[HealthCheck] Screenshot succeeded (length=${base64.length})`);
+
+    // Step 2: Verify pointer control. Windows capture, display enumeration,
+    // movement, and observation all use physical pixels.
+    console.log('[HealthCheck] Verifying mouse control...');
+    const startPos =
+      process.platform === 'win32'
+        ? this.windowsPointerDriver.getPosition()
+        : this.inputDriver.getMousePos();
+    console.log(
+      `[HealthCheck] Current mouse position: (${startPos.x}, ${startPos.y})`,
+    );
+
+    if (process.platform === 'win32') {
+      if (!this.displayGeometry) {
+        throw new Error('Windows display geometry is unavailable');
+      }
+      const bounds = this.displayGeometry.bounds;
+      const target = {
+        x: Math.round(bounds.x + bounds.width / 2),
+        y: Math.round(bounds.y + bounds.height / 2),
+      };
+      try {
+        const actual = this.windowsPointerDriver.moveTo(target);
+        const drift = windowsPointerDrift(target, actual);
+        if (!windowsPointerIsWithinTolerance(drift)) {
+          throw new Error(
+            `Windows screenshot-space pointer verification: expected (${target.x}, ${target.y}), got (${actual.x}, ${actual.y}), drift=(${drift.x}, ${drift.y})`,
+          );
+        }
+      } finally {
+        this.windowsPointerDriver.moveTo(startPos);
+      }
+      console.log(
+        `[HealthCheck] Mouse verified in screenshot-space display bounds (${bounds.x}, ${bounds.y}, ${bounds.width}, ${bounds.height})`,
+      );
+    } else {
+      const offsetX = Math.floor(Math.random() * 40) + 10;
+      const offsetY = Math.floor(Math.random() * 40) + 10;
+      const targetX = startPos.x + offsetX;
+      const targetY = startPos.y + offsetY;
+      console.log(`[HealthCheck] Moving mouse to (${targetX}, ${targetY})...`);
+      try {
+        this.inputDriver.moveMouse(targetX, targetY);
+        await sleep(CLICK_SETTLE_DELAY);
+        this.inputDriver.assertMousePosition(
+          targetX,
+          targetY,
+          'Mouse health check failed',
+        );
+      } finally {
+        this.inputDriver.moveMouse(startPos.x, startPos.y);
+        console.log(
+          `[HealthCheck] Mouse restored to (${startPos.x}, ${startPos.y})`,
+        );
+      }
+    }
+
+    // Windows UIPI advisory. This must NOT be gated on the moveMouse delta
+    // check above: UIPI does not block cursor movement, it only silently
+    // drops button/key input injected into an elevated (admin) window. So a
+    // non-admin process can pass the move test yet have every click land on
+    // nothing — clicks "do nothing" while the cursor visibly moves to the
+    // right spot. We cannot tell from here whether the target app is actually
+    // elevated, so phrase this as a conditional heads-up (keyed off the
+    // observable symptom) rather than asserting something is wrong — most
+    // non-admin sessions target non-admin apps and work fine.
+    if (process.platform === 'win32' && !this.isRunningAsAdmin()) {
+      const hint = [
+        'Heads-up: Midscene is not running as Administrator.',
+        'If clicks or key presses have no effect while the cursor still moves to the right position,',
+        `see the Windows permission troubleshooting guide: ${WINDOWS_UIPI_DOC_URL}`,
+      ].join(' ');
+      warnDevice(`[HealthCheck] ${hint}`);
+    }
+
+    // Step 3: List available monitors
+    console.log('[HealthCheck] Listing monitors...');
+    if (displays.length > 0) {
+      console.log(`[HealthCheck] Found ${displays.length} monitor(s):`);
+      for (const display of displays) {
+        const primaryTag = display.primary ? ' (primary)' : '';
+        console.log(
+          `[HealthCheck]   - id=${display.id}, name=${display.name}${primaryTag}`,
+        );
+      }
+    } else {
+      console.log('[HealthCheck] No monitors detected');
+    }
+
+    console.log('[HealthCheck] Health check passed');
+  }
+
+  /**
+   * Check if the current process is running with Administrator privileges.
+   * Uses "net session" which succeeds only when elevated.
+   *
+   * The result is cached because elevation cannot change during the process
+   * lifetime, and the underlying `execSync('net session')` is a blocking
+   * subprocess spawn that should not run on every connect / health check.
+   */
+  private isRunningAsAdmin(): boolean {
+    if (process.platform !== 'win32') return false;
+    if (this.adminCheckCache !== undefined) return this.adminCheckCache;
+    try {
+      execSync('net session', { stdio: 'pipe' });
+      this.adminCheckCache = true;
+    } catch {
+      this.adminCheckCache = false;
+    }
+    return this.adminCheckCache;
+  }
+
+  async screenshotBase64(): Promise<string> {
+    if (this.destroyed) {
+      throw new Error('ComputerDevice has been destroyed');
+    }
+    debugDevice('Taking screenshot', { displayId: this.displayId });
+
+    // Windows: screenshot-desktop captures through a polyglot .bat that
+    // self-compiles via csc.exe and then re-launches the compiled exe. That
+    // chain breaks under the POSIX-flavored environment Claude Code / Git Bash
+    // inject (PATH/SystemRoot/COMSPEC), so the capture fails even though the
+    // host can screenshot fine from a plain terminal (issue #2150). Capture
+    // through PowerShell instead — System.Drawing.CopyFromScreen works in
+    // virtual-desktop coordinates, so it captures any monitor (including
+    // secondary displays at negative offsets) without csc/.bat/.NET source.
+    if (process.platform === 'win32') {
+      return this.screenshotViaPowershell();
+    }
+
+    const options: ScreenshotOptions = { format: 'png' };
+    if (this.displayId !== undefined) {
+      // On macOS: displayId is screenshot-desktop's screen index.
+      // On Windows: displayId is string like "\\.\DISPLAY1"
+      // On Linux: displayId is string like ":0.0"
+      if (process.platform === 'darwin') {
+        const screenIndex = Number(this.displayId);
+        if (!Number.isNaN(screenIndex)) {
+          options.screen = screenIndex;
+        }
+      } else {
+        // Windows and Linux use string IDs directly
+        options.screen = this.displayId;
+      }
+    }
+    debugDevice('Screenshot options', options);
+
+    // macOS `screencapture` returns "could not create image from display"
+    // both for missing TCC Screen Recording permission AND for transient
+    // CGDisplay states (display sleep/wake, Space switch, fullscreen
+    // transition, secure input briefly held by System Settings, etc.).
+    // Real permission failures stay broken across retries, so a short
+    // retry burst recovers from the transient case without papering over
+    // genuine misconfiguration.
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 300;
+    let lastRawMessage = '';
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const buffer = await captureScreenshot(options);
+        if (attempt > 1) {
+          debugDevice(`Screenshot succeeded on attempt ${attempt}`);
+        }
+        return createImgBase64ByFormat('png', buffer.toString('base64'));
+      } catch (error) {
+        lastRawMessage = error instanceof Error ? error.message : String(error);
+        const isMacTransient =
+          process.platform === 'darwin' &&
+          /could not create image from display/i.test(lastRawMessage);
+        const willRetry = isMacTransient && attempt < MAX_ATTEMPTS;
+        debugDevice(
+          `Screenshot attempt ${attempt} failed: ${lastRawMessage}${willRetry ? ' — retrying' : ''}`,
+        );
+        if (!willRetry) {
+          break;
+        }
+        await sleep(RETRY_DELAY_MS);
+      }
+    }
+
+    if (
+      process.platform === 'darwin' &&
+      /could not create image from display/i.test(lastRawMessage)
+    ) {
+      throw new Error(
+        `Failed to take screenshot on macOS: the host process is missing Screen Recording permission, or the target display is locked/sleeping.
+
+Please follow these steps:
+1. Open System Settings > Privacy & Security > Screen Recording
+2. Enable the application running this script (e.g., Terminal, iTerm2, VS Code, WebStorm, or Midscene Studio)
+3. Fully quit and relaunch that application after granting permission — macOS only re-reads this permission on process launch.
+
+Original error: ${lastRawMessage}`,
+      );
+    }
+    throw new Error(`Failed to take screenshot: ${lastRawMessage}`);
+  }
+
+  /**
+   * Windows screenshot path that bypasses screenshot-desktop's polyglot .bat
+   * (see screenshotBase64 for the rationale). Captures via PowerShell +
+   * System.Drawing, which honors `displayId` by matching the monitor's
+   * DeviceName and captures in virtual-desktop coordinates, so secondary
+   * displays — including those at negative offsets — are supported.
+   *
+   * The PowerShell thread is switched to Per-Monitor V2 before WinForms is
+   * loaded. Screen.Bounds, CopyFromScreen, and pointer movement therefore use
+   * physical pixels even when Windows display scaling is enabled. The native
+   * declaration is emitted in memory, so this does not require csc.exe.
+   */
+  private screenshotViaPowershell(): string {
+    const deviceName = this.displayId ? String(this.displayId) : '';
+    // A requested displayId that cannot be matched (stale saved id, unplugged
+    // monitor) must fail fast rather than silently capturing the primary
+    // display — otherwise downstream coordinates/actions land on the wrong
+    // monitor. Only fall back to primary when no displayId was supplied.
+    const selectScreen = deviceName
+      ? `$dn = '${escapePowershellSingleQuoted(deviceName)}'
+$screen = [System.Windows.Forms.Screen]::AllScreens | Where-Object { $_.DeviceName -eq $dn } | Select-Object -First 1
+if (-not $screen) { throw "Requested display not found: $dn" }`
+      : '$screen = [System.Windows.Forms.Screen]::PrimaryScreen';
+    const script = `
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+${selectScreen}
+$b = $screen.Bounds
+$bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size)
+$ms = New-Object System.IO.MemoryStream
+$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray()))
+$g.Dispose(); $bmp.Dispose(); $ms.Dispose()
+`.trim();
+
+    let stdout: string;
+    try {
+      stdout = runWindowsPhysicalPixelPowershell(script);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to take screenshot on Windows: ${message}`);
+    }
+
+    const body = stdout.trim();
+    if (!body) {
+      throw new Error(
+        'Failed to take screenshot on Windows: PowerShell returned no image data',
+      );
+    }
+    return createImgBase64ByFormat('png', body);
+  }
+
+  async size(): Promise<Size> {
+    if (this.displayGeometry) {
+      return {
+        width: Math.round(this.displayGeometry.bounds.width),
+        height: Math.round(this.displayGeometry.bounds.height),
+      };
+    }
+
+    try {
+      const screenSize = this.inputDriver.getScreenSize();
+      return {
+        width: screenSize.width,
+        height: screenSize.height,
+      };
+    } catch (error) {
+      debugDevice(`Failed to get screen size: ${error}`);
+      throw new Error(`Failed to get screen size: ${error}`);
+    }
+  }
+
+  private toGlobalPoint(point: Point): Point {
+    return mapDisplayLocalPointToGlobal(point, this.displayGeometry);
+  }
+
+  /**
+   * Type text via clipboard (paste)
+   * This method:
+   * 1. Saves the old clipboard content
+   * 2. Writes new content to clipboard
+   * 3. Simulates paste shortcut (Ctrl+V / Cmd+V)
+   * 4. Restores old clipboard content
+   */
+  private async typeViaClipboard(text: string): Promise<void> {
+    debugDevice('Using clipboard to input text', {
+      textLength: text.length,
+      preview: text.substring(0, 20),
+    });
+
+    const clipboardy = await import('clipboardy');
+    // 1. Save old clipboard content
+    const oldClipboard = await clipboardy.default.read().catch(() => '');
+
+    try {
+      // 2. Write new content to clipboard
+      await clipboardy.default.write(text);
+      await this.inputDriver.delay(50);
+
+      // 3. Simulate paste shortcut
+      if (this.useAppleScript) {
+        this.inputDriver.sendKeyViaAppleScript('v', ['command']);
+      } else {
+        const modifier = process.platform === 'darwin' ? 'command' : 'control';
+        this.inputDriver.keyTap('v', [modifier]);
+      }
+      await this.inputDriver.delay(100);
+    } finally {
+      // 4. Restore old clipboard content
+      if (oldClipboard) {
+        await clipboardy.default.write(oldClipboard).catch(() => {
+          // Silent fail - don't affect main flow
+          debugDevice('Failed to restore clipboard content');
+        });
+      }
+    }
+  }
+
+  /**
+   * Keep clipboard paste as the default to avoid IME interference. A positive
+   * delay explicitly opts into real key events, which can be required by apps
+   * that reject paste or need key-by-key input.
+   */
+  private async smartTypeString(
+    text: string,
+    inputOptions: ResolvedTextInputOptions,
+  ): Promise<void> {
+    if (shouldInputSequentially(inputOptions)) {
+      await this.typeStringWithDelay(text, inputOptions.keyboardTypeDelay ?? 0);
+      return;
+    }
+
+    await this.typeViaClipboard(text);
+  }
+
+  private async typeStringWithDelay(
+    text: string,
+    keyboardTypeDelay: number,
+  ): Promise<void> {
+    await sendTextSequentially(
+      text.replace(/\r\n?/g, '\n'),
+      {
+        sendCharacter: (character) => {
+          const linuxShiftedKey =
+            process.platform === 'linux'
+              ? LINUX_SHIFTED_CHARACTER_KEYS.get(character)
+              : undefined;
+          if (character === '\n') {
+            this.inputDriver.sendKey('return');
+          } else if (character === '\t') {
+            this.inputDriver.sendKey('tab');
+          } else if (character === ' ') {
+            this.inputDriver.sendKey('space');
+          } else if (this.useAppleScript) {
+            this.inputDriver.sendKeyViaAppleScript(character);
+          } else if (linuxShiftedKey !== undefined) {
+            this.inputDriver.keyTap(linuxShiftedKey, ['shift']);
+          } else {
+            this.inputDriver.typeString(character);
+          }
+        },
+        wait: (delayMs) => this.inputDriver.delay(delayMs),
+      },
+      { delayMs: keyboardTypeDelay },
+    );
+  }
+
+  private async selectAllAndDelete(): Promise<void> {
+    if (this.useAppleScript) {
+      this.inputDriver.sendKeyViaAppleScript('a', ['command']);
+      await this.inputDriver.delay(50);
+      this.inputDriver.sendKeyViaAppleScript('backspace', []);
+      return;
+    }
+
+    const modifier = process.platform === 'darwin' ? 'command' : 'control';
+    this.inputDriver.keyTap('a', [modifier]);
+    await this.inputDriver.delay(50);
+    this.inputDriver.keyTap('backspace');
+  }
+
+  private async pressKeyboardShortcut(keyName: string): Promise<void> {
+    const keys = keyName.split('+');
+    const modifiers = keys.slice(0, -1).map(normalizeKeyName);
+    const key = normalizePrimaryKey(keys[keys.length - 1]);
+
+    debugDevice('KeyboardPress', {
+      original: keyName,
+      key,
+      modifiers,
+      driver: this.useAppleScript ? 'applescript' : 'libnut',
+    });
+
+    this.inputDriver.sendKey(key, modifiers);
+  }
+
+  private resolveUntargetedScrollPoint(screenSize: Size): Point {
+    if (process.platform === 'win32') {
+      const activeWindowRect = this.windowsPointerDriver.getActiveWindowRect();
+      if (activeWindowRect) {
+        const activeWindowCenter = {
+          x: activeWindowRect.x + activeWindowRect.width / 2,
+          y: activeWindowRect.y + activeWindowRect.height / 2,
+        };
+        const bounds = this.displayGeometry?.bounds;
+        if (
+          !bounds ||
+          (activeWindowCenter.x >= bounds.x &&
+            activeWindowCenter.x < bounds.x + bounds.width &&
+            activeWindowCenter.y >= bounds.y &&
+            activeWindowCenter.y < bounds.y + bounds.height)
+        ) {
+          return activeWindowCenter;
+        }
+      }
+    }
+
+    return this.toGlobalPoint({
+      x: screenSize.width / 2,
+      y: screenSize.height / 2,
+    });
+  }
+
+  private async moveMouseToScrollTarget(param: any): Promise<Size | undefined> {
+    if (param.locate) {
+      const element = param.locate as LocateResultElement;
+      const [x, y] = element.center;
+      await this.moveDisplayPointer(
+        { x, y },
+        'Mouse did not reach the scroll target',
+      );
+      return undefined;
+    }
+
+    // Wheel events are delivered to the window under the cursor. For an
+    // untargeted "scroll down", anchor the cursor in the active viewport
+    // instead of relying on wherever the previous action left it.
+    const screenSize = await this.size();
+    if (process.platform === 'win32' && this.inputDriver.focusActiveWindow()) {
+      await this.inputDriver.delay(CLICK_FOCUS_SETTLE_DELAY);
+    }
+    const point = this.resolveUntargetedScrollPoint(screenSize);
+    await this.moveGlobalPointer(
+      point,
+      'Mouse did not reach the scroll viewport',
+    );
+    await this.inputDriver.delay(MOUSE_MOVE_EFFECT_WAIT);
+    return screenSize;
+  }
+
+  private async performScroll(param: any): Promise<void> {
+    let screenSize = await this.moveMouseToScrollTarget(param);
+
+    const scrollType = param?.scrollType;
+
+    const edgeSpec =
+      scrollType && scrollType in EDGE_SCROLL_SPEC
+        ? EDGE_SCROLL_SPEC[scrollType as EdgeScrollType]
+        : null;
+    if (edgeSpec) {
+      if (
+        this.inputDriver.runPhasedScroll(
+          edgeSpec.direction,
+          EDGE_SCROLL_TOTAL_PX,
+          EDGE_SCROLL_STEPS,
+        )
+      ) {
+        await this.inputDriver.delay(SCROLL_COMPLETE_DELAY);
+        return;
+      }
+
+      if (this.useAppleScript) {
+        this.inputDriver.sendKeyViaAppleScript(edgeSpec.key);
+        await this.inputDriver.delay(SCROLL_COMPLETE_DELAY);
+        return;
+      }
+
+      const [ux, uy] = edgeSpec.libnut;
+      await this.inputDriver.emitScrollDetents(
+        ux * LIBNUT_FALLBACK_DETENT_AMOUNT,
+        uy * LIBNUT_FALLBACK_DETENT_AMOUNT,
+        LIBNUT_FALLBACK_EDGE_DETENTS,
+        LIBNUT_FALLBACK_TICK_DELAY_MS,
+      );
+      return;
+    }
+
+    if (scrollType === 'singleAction' || !scrollType) {
+      const direction = (param?.direction || 'down') as ScrollDirection;
+      const isKnownDirection =
+        direction === 'up' ||
+        direction === 'down' ||
+        direction === 'left' ||
+        direction === 'right';
+      const isHorizontal = direction === 'left' || direction === 'right';
+
+      let distance: number | undefined = param?.distance ?? undefined;
+      if (!distance) {
+        screenSize ??= await this.size();
+        const base = isHorizontal ? screenSize.width : screenSize.height;
+        distance = Math.max(
+          1,
+          Math.round(base * DEFAULT_SCROLL_VIEWPORT_RATIO),
+        );
+      }
+
+      if (isKnownDirection) {
+        const steps = Math.max(
+          PHASED_MIN_STEPS,
+          Math.round(distance / PHASED_PIXELS_PER_STEP),
+        );
+        if (this.inputDriver.runPhasedScroll(direction, distance, steps)) {
+          await this.inputDriver.delay(SCROLL_COMPLETE_DELAY);
+          return;
+        }
+      }
+
+      if (this.useAppleScript && (direction === 'up' || direction === 'down')) {
+        if (!screenSize) screenSize = await this.size();
+        const pages = Math.max(1, Math.round(distance / screenSize.height));
+        const key = direction === 'up' ? 'pageup' : 'pagedown';
+        for (let i = 0; i < pages; i++) {
+          this.inputDriver.sendKeyViaAppleScript(key);
+          await this.inputDriver.delay(SCROLL_STEP_DELAY);
+        }
+        await this.inputDriver.delay(SCROLL_COMPLETE_DELAY);
+        return;
+      }
+
+      const detents = Math.min(
+        LIBNUT_FALLBACK_MAX_DETENTS,
+        Math.max(1, Math.ceil(distance / LIBNUT_FALLBACK_PIXELS_PER_DETENT)),
+      );
+      const directionUnit: Record<string, [number, number]> = {
+        up: [0, 1],
+        down: [0, -1],
+        left: [-1, 0],
+        right: [1, 0],
+      };
+      const [ux, uy] = directionUnit[direction] || [0, -1];
+      await this.inputDriver.emitScrollDetents(
+        ux * LIBNUT_FALLBACK_DETENT_AMOUNT,
+        uy * LIBNUT_FALLBACK_DETENT_AMOUNT,
+        detents,
+        LIBNUT_FALLBACK_TICK_DELAY_MS,
+      );
+      await this.inputDriver.delay(SCROLL_COMPLETE_DELAY);
+      return;
+    }
+
+    throw new Error(
+      `Unknown scroll type: ${scrollType}, param: ${JSON.stringify(param)}`,
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  actionSpace(): DeviceAction<any>[] {
+    const defaultActions: DeviceAction<any>[] = [
+      ...defineActionsFromInputPrimitives(this.inputPrimitives),
+    ];
+
+    const platformActions = Object.values(createPlatformActions());
+    const customActions = this.options?.customActions || [];
+
+    return [...defaultActions, ...platformActions, ...customActions];
+  }
+
+  async destroy(): Promise<void> {
+    if (this.destroyed) {
+      return;
+    }
+
+    this.destroyed = true;
+    this.inputDriver.destroy();
+
+    const keepXvfbAliveUntilProcessExit =
+      this.options?.keepXvfbAliveUntilProcessExit === true;
+    if (this.xvfbInstance) {
+      if (!keepXvfbAliveUntilProcessExit) {
+        this.xvfbInstance.stop();
+      }
+      this.xvfbInstance = undefined;
+    }
+    if (this.xvfbCleanup && !keepXvfbAliveUntilProcessExit) {
+      process.removeListener('exit', this.xvfbCleanup);
+      this.xvfbCleanup = undefined;
+    }
+    if (this.xvfbSignalCleanup) {
+      process.removeListener('SIGINT', this.xvfbSignalCleanup);
+      process.removeListener('SIGTERM', this.xvfbSignalCleanup);
+      this.xvfbSignalCleanup = undefined;
+    }
+
+    debugDevice('Computer device destroyed');
+  }
+
+  async url(): Promise<string> {
+    return '';
+  }
+}
+
+/**
+ * Platform-specific actions
+ */
+function createPlatformActions() {
+  return {
+    ListDisplays: defineAction({
+      name: 'ListDisplays',
+      description: 'List all available displays/monitors',
+      call: async () => {
+        return await ComputerDevice.listDisplays();
+      },
+    }),
+  } as const;
+}

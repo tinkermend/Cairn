@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt'
 import { and, consoleIdentities, eq, sql, type DbHandle } from '@cairn/db'
 import { parseDurationSeconds, type AccountDto, type LoginResponse } from '@cairn/shared'
 import { DB_HANDLE } from '../db/db.module'
-import { loadApiEnv } from '../config/env'
+import { config } from '../config/env'
 import { RbacService } from '../rbac/rbac.service'
 import { hashSecret, verifySecret } from './password'
 import type { RequestAccount } from '../common/request-account'
@@ -21,7 +21,7 @@ export function toRequestAccount(account: AccountDto): RequestAccount {
 
 @Injectable()
 export class AuthService {
-  private readonly expiresIn = loadApiEnv().CAIRN_JWT_EXPIRES_IN
+  private readonly expiresIn = config.CAIRN_JWT_EXPIRES_IN
 
   constructor(
     @Inject(DB_HANDLE) private readonly dbHandle: DbHandle,
@@ -37,7 +37,7 @@ export class AuthService {
     const identity = await this.findLocalIdentity(email)
     const ok = identity?.secret ? await verifySecret(password, identity.secret) : await this.dummyVerify(password)
     if (!identity || !ok) {
-      throw new UnauthorizedException('邮箱或密码不正确')
+      throw new UnauthorizedException('账号或密码不正确')
     }
 
     const account = await this.rbac.getAccount(identity.consoleAccountId)

@@ -1,13 +1,21 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { Pool } from 'pg'
-import { dbEnvSchema } from '@cairn/shared'
+import { dbEnvSchema, formatEnvIssues } from '@cairn/shared'
 import { migrate } from '../migrate.js'
 
 const envFile = resolve(import.meta.dirname, '../../../../.env')
 if (existsSync(envFile)) process.loadEnvFile(envFile)
 
-const env = dbEnvSchema.parse(process.env)
+// 配置错误以逐行「变量名: 原因」结束，不把 zod 的 issue 结构甩给执行迁移的人
+const parsed = dbEnvSchema.safeParse(process.env)
+if (!parsed.success) {
+  console.error('cairn-db-migrate 配置校验失败，进程拒绝启动：')
+  for (const line of formatEnvIssues(parsed.error)) console.error(`  ✗ ${line}`)
+  process.exit(1)
+}
+const env = parsed.data
+
 const pool = new Pool({
   host: env.CAIRN_DB_HOST,
   port: env.CAIRN_DB_PORT,

@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import type { PermissionCode } from '@cairn/shared'
-import { ScrollText, Settings, Shield, Users } from 'lucide-react'
+import { Monitor, ScrollText, Settings, Shield, Users } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { can } from '@/lib/rbac'
 import { AppHeader } from '@/components/layout/app-header'
@@ -10,10 +10,17 @@ import { PageHeader } from '@/components/layout/page-header'
 const modules: {
   title: string
   description: string
-  to: '/users' | '/roles' | '/audit' | '/settings'
+  to: '/targets' | '/users' | '/roles' | '/audit' | '/settings'
   icon: React.ElementType
   permission?: PermissionCode
 }[] = [
+  {
+    title: '目标系统',
+    description: '登记要仿真的外部业务系统，并维护目标账号。',
+    to: '/targets',
+    icon: Monitor,
+    permission: 'target:read',
+  },
   {
     title: '用户',
     description: '管理控制台账号，并分配角色。',
@@ -30,7 +37,7 @@ const modules: {
   },
   {
     title: '审计',
-    description: '查看身份与权限变更记录。',
+    description: '查看身份、权限与目标系统的变更记录。',
     to: '/audit',
     icon: ScrollText,
     permission: 'audit:read',
@@ -57,7 +64,7 @@ export function HomePage() {
       <Main className='flex flex-1 flex-col gap-6'>
         <PageHeader
           title={greeting}
-          description='识途是面向真实 Web 系统的智能仿真平台。当前可管理控制台账号、角色与审计；Scenario 与 Run 将按功能方案逐步接入。'
+          description='识途是面向真实 Web 系统的智能仿真平台。当前可管理目标系统、控制台账号、角色与审计；Scenario 与 Run 将按功能方案逐步接入。'
         />
         <section className='grid gap-4 sm:grid-cols-2 md:gap-5 xl:grid-cols-3'>
           {visible.map((item) => {

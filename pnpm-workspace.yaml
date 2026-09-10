@@ -1,5 +1,7 @@
 packages:
   - 'packages/*'
+  # 浏览器扩展命名空间：每个上游插件一个子包，见 packages/extension/README.md
+  - 'packages/extension/*'
 
 allowBuilds:
   '@swc/core': true

@@ -1,0 +1,139 @@
+import type {
+  ExternalRunRequest,
+  PlaygroundExecutionStatus,
+} from '@midscene/visualizer';
+import type { ReactNode } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useStudioPlayground } from '../../playground/useStudioPlayground';
+import { createStudioRecorderTargetSignature } from '../../recorder/selectors';
+import { StudioModeTab } from '../../recorder/types';
+import { useStudioRecorder } from '../../recorder/useStudioRecorder';
+import { PlaygroundShell } from '../PlaygroundShell';
+import { StudioTimelineEmptyState } from '../StudioTimelinePanel';
+import {
+  StudioTimelineExecution,
+  createStudioTimelineConfig,
+  createStudioTimelineStorageNamespace,
+} from './StudioTimelineExecution';
+import './studio-playground-panel.css';
+
+export {
+  createStudioTimelineConfig,
+  createStudioTimelineStorageNamespace,
+} from './StudioTimelineExecution';
+
+interface PlaygroundProps {
+  externalRunRequest?: ExternalRunRequest | null;
+  inputActions?: ReactNode;
+  onHeaderChange?: (header: {
+    title: ReactNode;
+    actions?: ReactNode;
+  }) => void;
+  onBeforeExecutionStart?: () => Promise<void> | void;
+  onExecutionStatusChange?: (status: PlaygroundExecutionStatus) => void;
+  playground?: ReturnType<typeof useStudioPlayground>;
+}
+
+export default function Playground({
+  externalRunRequest,
+  inputActions,
+  onBeforeExecutionStart,
+  onExecutionStatusChange,
+  onHeaderChange,
+  playground,
+}: PlaygroundProps) {
+  const hookPlayground = useStudioPlayground();
+  const studioPlayground = playground ?? hookPlayground;
+  const recorder = useStudioRecorder();
+  const [timelineCollapsed, setTimelineCollapsed] = useState(false);
+  const currentTargetSignature = useMemo(
+    () => createStudioRecorderTargetSignature(recorder.currentTarget),
+    [recorder.currentTarget],
+  );
+  const storageNamespace = useMemo(
+    () => createStudioTimelineStorageNamespace(currentTargetSignature),
+    [currentTargetSignature],
+  );
+  const playgroundConfig = useMemo(
+    () =>
+      createStudioTimelineConfig({
+        emptyState: (
+          <StudioTimelineEmptyState
+            description="The mission progress will be displayed here."
+            title="No execution yet"
+            variant={StudioModeTab.Playground}
+          />
+        ),
+        executionScopeKey: currentTargetSignature,
+        externalRunRequest,
+        inputActions,
+        onBeforeExecutionStart,
+        onExecutionStatusChange,
+        showClearButton: true,
+        storageNamespace,
+        timeline: {
+          collapsed: timelineCollapsed,
+          onToggleCollapsed: () => {
+            setTimelineCollapsed((collapsed) => !collapsed);
+          },
+          variant: StudioModeTab.Playground,
+        },
+      }),
+    [
+      currentTargetSignature,
+      externalRunRequest,
+      inputActions,
+      onBeforeExecutionStart,
+      onExecutionStatusChange,
+      storageNamespace,
+      timelineCollapsed,
+    ],
+  );
+  const renderOwnHeader = !onHeaderChange;
+
+  useEffect(() => {
+    onHeaderChange?.({ title: 'API Playground' });
+  }, [onHeaderChange]);
+
+  return (
+    <PlaygroundShell showHeader={renderOwnHeader} title="API Playground">
+      <div className="min-h-0 h-full flex-1 overflow-hidden">
+        {studioPlayground.phase === 'booting' ? (
+          <div className="flex h-full items-center justify-center px-6 text-center text-[14px] leading-[22px] text-text-tertiary">
+            Playground starting...
+          </div>
+        ) : studioPlayground.phase === 'error' ? (
+          <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
+            <div className="text-[14px] leading-[22px] text-text-secondary">
+              {studioPlayground.error}
+            </div>
+            <button
+              className="rounded-lg border border-border-subtle px-4 py-2 text-[13px] font-medium text-text-primary"
+              onClick={() => {
+                void studioPlayground.restartPlayground();
+              }}
+              type="button"
+            >
+              Retry runtime
+            </button>
+          </div>
+        ) : (
+          <StudioTimelineExecution
+            className="h-full"
+            controller={studioPlayground.controller}
+            playgroundClassName={[
+              'studio-playground-execution',
+              'studio-playground-input-first',
+              'studio-playground-timeline-wrapped',
+              timelineCollapsed ? 'studio-playground-timeline-collapsed' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            playgroundConfig={playgroundConfig}
+            title="Playground"
+          />
+        )}
+      </div>
+    </PlaygroundShell>
+  );
+}

@@ -1,0 +1,40 @@
+{
+  "name": "@midscene/webdriver",
+  "version": "1.12.6",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/web-infra-dev/midscene.git",
+    "directory": "packages/webdriver"
+  },
+  "description": "WebDriver protocol implementation for Midscene automation",
+  "main": "dist/lib/index.js",
+  "module": "dist/es/index.mjs",
+  "types": "dist/types/index.d.ts",
+  "scripts": {
+    "dev": "npm run build:watch",
+    "build": "rslib build",
+    "build:watch": "rslib build --watch --no-clean",
+    "test": "rstest",
+    "lint": "biome check .",
+    "lint:fix": "biome check . --write"
+  },
+  "dependencies": {
+    "@midscene/shared": "workspace:*",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@rslib/core": "^0.18.3",
+    "@rstest/core": "0.11.5",
+    "@types/node": "^18.0.0",
+    "typescript": "^5.8.3"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/es/index.mjs",
+      "require": "./dist/lib/index.js"
+    }
+  },
+  "files": ["dist"],
+  "keywords": ["webdriver", "automation", "ios", "mobile"]
+}

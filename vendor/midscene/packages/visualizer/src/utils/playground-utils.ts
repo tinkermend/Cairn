@@ -1,0 +1,80 @@
+import type { DeviceAction, UIContext } from '@midscene/core';
+import { StaticPage, StaticPageAgent } from '@midscene/web/static';
+import type { ZodObjectSchema } from '../types';
+import { isZodObjectSchema, unwrapZodType } from '../types';
+
+/**
+ * @deprecated Import `actionNameForType` from `./action-label` directly.
+ * This re-export exists only to keep older import paths working and may be
+ * removed once all call sites are migrated.
+ */
+export { actionNameForType } from './action-label';
+export { getPlaceholderForType } from './prompt-placeholder';
+
+// Create static agent from context
+export const staticAgentFromContext = (context: UIContext) => {
+  const page = new StaticPage(context);
+  return new StaticPageAgent(page);
+};
+
+export const isRunButtonEnabled = (
+  runButtonEnabled: boolean,
+  needsStructuredParams: boolean,
+  params: any,
+  action: DeviceAction<any> | undefined,
+  promptValue: string,
+) => {
+  if (!runButtonEnabled) {
+    return false;
+  }
+
+  // Check if this method needs any input
+  const needsAnyInput = (() => {
+    if (action) {
+      if (!action.paramSchema) return false;
+
+      // Check if paramSchema actually has fields
+      if (
+        typeof action.paramSchema === 'object' &&
+        'shape' in action.paramSchema
+      ) {
+        const shape =
+          (action.paramSchema as { shape: Record<string, unknown> }).shape ||
+          {};
+        const shapeKeys = Object.keys(shape);
+        return shapeKeys.length > 0; // Only need input if there are actual fields
+      }
+
+      // If paramSchema exists but not in expected format, assume it needs input
+      return true;
+    }
+
+    // If the action is unavailable, assume most methods need some input.
+    return true;
+  })();
+
+  // If method doesn't need any input, button is always enabled (when runButtonEnabled is true)
+  if (!needsAnyInput) {
+    return true;
+  }
+
+  if (needsStructuredParams) {
+    const currentParams = params || {};
+    if (action?.paramSchema && isZodObjectSchema(action.paramSchema)) {
+      // Check if all required fields are filled
+      const schema = action.paramSchema as unknown as ZodObjectSchema;
+      const shape = schema.shape || {};
+      return Object.keys(shape).every((key) => {
+        const field = shape[key];
+        const { isOptional } = unwrapZodType(field);
+        const value = currentParams[key];
+        // A field is valid if it's optional or has a non-empty value
+        return (
+          isOptional || (value !== undefined && value !== '' && value !== null)
+        );
+      });
+    }
+    return true; // Fallback for safety
+  }
+  return promptValue.trim().length > 0;
+};

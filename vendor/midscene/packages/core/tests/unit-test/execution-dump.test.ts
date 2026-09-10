@@ -1,0 +1,592 @@
+import { TaskRunner } from '@/task-runner';
+import { describe, expect, it } from '@rstest/core';
+import { ScreenshotItem } from '../../src/screenshot-item';
+import {
+  ExecutionDump,
+  type IExecutionDump,
+  type IReportActionDump,
+  ReportActionDump,
+} from '../../src/types';
+
+describe('ExecutionDump', () => {
+  const createMockExecutionDumpData = (): IExecutionDump => ({
+    logTime: 1234567890,
+    name: 'Test Execution',
+    description: 'A test execution dump',
+    tasks: [
+      {
+        type: 'Insight',
+        subType: 'Locate',
+        status: 'finished',
+        param: { prompt: 'Find button' },
+        timing: { start: 1000, end: 2000, cost: 1000 },
+        executor: async () => {},
+      } as any,
+    ],
+    aiActContext: 'Test context',
+  });
+
+  describe('constructor', () => {
+    it('should create an ExecutionDump instance from IExecutionDump data', () => {
+      const data = createMockExecutionDumpData();
+      const dump = new ExecutionDump(data);
+
+      expect(dump.logTime).toBe(data.logTime);
+      expect(dump.name).toBe(data.name);
+      expect(dump.description).toBe(data.description);
+      expect(dump.tasks).toEqual(data.tasks);
+      expect(dump.aiActContext).toBe(data.aiActContext);
+    });
+
+    it('should handle optional fields', () => {
+      const data: IExecutionDump = {
+        logTime: 1234567890,
+        name: 'Minimal Execution',
+        tasks: [],
+      };
+      const dump = new ExecutionDump(data);
+
+      expect(dump.logTime).toBe(1234567890);
+      expect(dump.name).toBe('Minimal Execution');
+      expect(dump.description).toBeUndefined();
+      expect(dump.tasks).toEqual([]);
+      expect(dump.aiActContext).toBeUndefined();
+    });
+  });
+
+  describe('serialize', () => {
+    it('should serialize to JSON string', () => {
+      const data = createMockExecutionDumpData();
+      const dump = new ExecutionDump(data);
+      const serialized = dump.serialize();
+
+      expect(typeof serialized).toBe('string');
+      const parsed = JSON.parse(serialized);
+      expect(parsed.logTime).toBe(data.logTime);
+      expect(parsed.name).toBe(data.name);
+      expect(parsed.description).toBe(data.description);
+    });
+
+    it('should serialize with indentation when specified', () => {
+      const data = createMockExecutionDumpData();
+      const dump = new ExecutionDump(data);
+      const serialized = dump.serialize(2);
+
+      expect(serialized).toContain('\n');
+      expect(serialized).toContain('  ');
+    });
+
+    it('should handle Page and Browser objects in serialization', () => {
+      const data = createMockExecutionDumpData();
+      // Simulate a task with Page object
+      data.tasks = [
+        {
+          type: 'Action',
+          status: 'finished',
+          param: {
+            page: { constructor: { name: 'Page' } },
+            browser: { constructor: { name: 'Browser' } },
+          },
+          executor: async () => {},
+        } as any,
+      ];
+
+      const dump = new ExecutionDump(data);
+      const serialized = dump.serialize();
+
+      expect(serialized).toContain('[Page object]');
+      expect(serialized).toContain('[Browser object]');
+    });
+
+    it('should serialize the bounded task error created by TaskRunner', async () => {
+      const originalError = {
+        code: 'E_LARGE_PAYLOAD',
+        payload: 'x'.repeat(10_000_000),
+      };
+      const runner = new TaskRunner(
+        'Bounded Error Test',
+        async () => undefined as any,
+      );
+      await runner.append({
+        type: 'Action Space',
+        subType: 'Tap',
+        executor: async () => {
+          throw originalError;
+        },
+      });
+      await expect(runner.flush()).rejects.toThrow('Error without a message');
+
+      const dump = runner.dump();
+      const json = dump.toJSON();
+      const serialized = dump.serialize();
+      const parsed = JSON.parse(serialized);
+
+      expect(dump.tasks[0].error).not.toBe(originalError);
+      expect(dump.tasks[0].error).toEqual({
+        name: 'Error',
+        message: 'Error without a message',
+        code: 'E_LARGE_PAYLOAD',
+      });
+      expect(json.tasks[0].error).toEqual({
+        name: 'Error',
+        message: 'Error without a message',
+        code: 'E_LARGE_PAYLOAD',
+      });
+      expect(parsed.tasks[0].error).toEqual(json.tasks[0].error);
+      expect(serialized.length).toBeLessThan(10_000);
+      expect(serialized).not.toContain('payload');
+    });
+  });
+
+  describe('reference image registration', () => {
+    it('uses explicit sidecar metadata without inspecting task parameters', () => {
+      const referenceImage = {
+        name: 'reference',
+        url: 'data:image/webp;base64,dGVzdA==',
+      };
+      const unregisteredImage = {
+        name: 'unregistered',
+        url: 'data:image/png;base64,dW5yZWdpc3RlcmVk',
+      };
+      const page = { constructor: { name: 'Page' } } as Record<string, unknown>;
+      Object.defineProperty(page, 'internalState', {
+        enumerable: true,
+        get: () => {
+          throw new Error('Page internals must remain opaque');
+        },
+      });
+
+      const dump = new ExecutionDump(
+        {
+          logTime: 1234567890,
+          name: 'Opaque runtime object',
+          tasks: [
+            {
+              type: 'Action',
+              status: 'finished',
+              param: {
+                images: [referenceImage],
+                nested: { images: [unregisteredImage] },
+                page,
+              },
+              executor: async () => {},
+            } as any,
+          ],
+        },
+        {
+          referenceImageUrls: [
+            referenceImage.url,
+            referenceImage.url,
+            'https://example.com/reference.webp',
+          ],
+        },
+      );
+
+      expect(dump.getReferenceImageUrls()).toEqual([referenceImage.url]);
+      expect(dump.getReferenceImageUrls()).not.toContain(unregisteredImage.url);
+      const serialized = dump.serialize();
+      expect(serialized).not.toContain('referenceImageUrls');
+      expect(() => JSON.parse(serialized)).not.toThrow();
+    });
+  });
+
+  describe('toJSON', () => {
+    it('should return a plain object with recorder fields normalized', () => {
+      const data = createMockExecutionDumpData();
+      const dump = new ExecutionDump(data);
+      const json = dump.toJSON();
+
+      expect(json).toEqual({
+        logTime: data.logTime,
+        name: data.name,
+        description: data.description,
+        tasks: data.tasks.map((task) => ({
+          ...task,
+          recorder: task.recorder || [],
+        })),
+        aiActContext: data.aiActContext,
+      });
+    });
+  });
+
+  describe('fromSerializedString', () => {
+    it('should create an ExecutionDump from serialized string', () => {
+      const data = createMockExecutionDumpData();
+      const serialized = JSON.stringify(data);
+      const dump = ExecutionDump.fromSerializedString(serialized);
+
+      expect(dump).toBeInstanceOf(ExecutionDump);
+      expect(dump.logTime).toBe(data.logTime);
+      expect(dump.name).toBe(data.name);
+      expect(dump.description).toBe(data.description);
+    });
+
+    it('should throw on invalid JSON', () => {
+      expect(() =>
+        ExecutionDump.fromSerializedString('invalid json'),
+      ).toThrow();
+    });
+  });
+
+  describe('fromJSON', () => {
+    it('should create an ExecutionDump from plain object', () => {
+      const data = createMockExecutionDumpData();
+      const dump = ExecutionDump.fromJSON(data);
+
+      expect(dump).toBeInstanceOf(ExecutionDump);
+      expect(dump.logTime).toBe(data.logTime);
+      expect(dump.name).toBe(data.name);
+    });
+  });
+
+  describe('round-trip serialization', () => {
+    it('should preserve data through serialize/fromSerializedString cycle', () => {
+      const originalData = createMockExecutionDumpData();
+      const dump1 = new ExecutionDump(originalData);
+      const serialized = dump1.serialize();
+      const dump2 = ExecutionDump.fromSerializedString(serialized);
+
+      expect(dump2.logTime).toBe(dump1.logTime);
+      expect(dump2.name).toBe(dump1.name);
+      expect(dump2.description).toBe(dump1.description);
+      expect(dump2.aiActContext).toBe(dump1.aiActContext);
+    });
+  });
+});
+
+describe('ReportActionDump', () => {
+  const createMockReportActionDumpData = (): IReportActionDump => ({
+    sdkVersion: '1.0.0',
+    groupName: 'Test Group',
+    groupDescription: 'A test group description',
+    modelBriefs: [{ name: 'model1' }, { name: 'model2' }],
+    executions: [
+      {
+        logTime: 1234567890,
+        name: 'Execution 1',
+        description: 'First execution',
+        tasks: [],
+      },
+      {
+        logTime: 1234567891,
+        name: 'Execution 2',
+        tasks: [],
+      },
+    ],
+  });
+
+  describe('constructor', () => {
+    it('should create a ReportActionDump instance from IReportActionDump data', () => {
+      const data = createMockReportActionDumpData();
+      const dump = new ReportActionDump(data);
+
+      expect(dump.sdkVersion).toBe(data.sdkVersion);
+      expect(dump.groupName).toBe(data.groupName);
+      expect(dump.groupDescription).toBe(data.groupDescription);
+      expect(dump.modelBriefs).toEqual(data.modelBriefs);
+      expect(dump.executions).toHaveLength(2);
+    });
+
+    it('should convert IExecutionDump to ExecutionDump instances', () => {
+      const data = createMockReportActionDumpData();
+      const dump = new ReportActionDump(data);
+
+      dump.executions.forEach((execution) => {
+        expect(execution).toBeInstanceOf(ExecutionDump);
+      });
+    });
+
+    it('should preserve existing ExecutionDump instances', () => {
+      const executionDump = new ExecutionDump({
+        logTime: 1234567890,
+        name: 'Existing Execution',
+        tasks: [],
+      });
+
+      const data: IReportActionDump = {
+        sdkVersion: '1.0.0',
+        groupName: 'Test',
+        modelBriefs: [],
+        executions: [executionDump],
+      };
+
+      const dump = new ReportActionDump(data);
+      expect(dump.executions[0]).toBe(executionDump);
+    });
+
+    it('should handle optional fields', () => {
+      const data: IReportActionDump = {
+        sdkVersion: '1.0.0',
+        groupName: 'Minimal Group',
+        modelBriefs: [],
+        executions: [],
+      };
+      const dump = new ReportActionDump(data);
+
+      expect(dump.sdkVersion).toBe('1.0.0');
+      expect(dump.groupName).toBe('Minimal Group');
+      expect(dump.groupDescription).toBeUndefined();
+      expect(dump.modelBriefs).toEqual([]);
+      expect(dump.executions).toEqual([]);
+    });
+  });
+
+  describe('serialize', () => {
+    it('should serialize to JSON string', () => {
+      const data = createMockReportActionDumpData();
+      const dump = new ReportActionDump(data);
+      const serialized = dump.serialize();
+
+      expect(typeof serialized).toBe('string');
+      const parsed = JSON.parse(serialized);
+      expect(parsed.sdkVersion).toBe(data.sdkVersion);
+      expect(parsed.groupName).toBe(data.groupName);
+      expect(parsed.executions).toHaveLength(2);
+    });
+
+    it('should serialize with indentation when specified', () => {
+      const data = createMockReportActionDumpData();
+      const dump = new ReportActionDump(data);
+      const serialized = dump.serialize(2);
+
+      expect(serialized).toContain('\n');
+      expect(serialized).toContain('  ');
+    });
+
+    it('should serialize nested ExecutionDump instances correctly', () => {
+      const data = createMockReportActionDumpData();
+      const dump = new ReportActionDump(data);
+      const serialized = dump.serialize();
+      const parsed = JSON.parse(serialized);
+
+      expect(parsed.executions[0].logTime).toBe(1234567890);
+      expect(parsed.executions[0].name).toBe('Execution 1');
+      expect(parsed.executions[1].name).toBe('Execution 2');
+    });
+
+    it('should preserve capturedAt in inline screenshot serialization', () => {
+      const capturedAt = 1700000000123;
+      const screenshot = ScreenshotItem.create(
+        'data:image/png;base64,test-inline-screenshot',
+        capturedAt,
+      );
+
+      const dump = new ReportActionDump({
+        sdkVersion: '1.0.0',
+        groupName: 'Inline Screenshot Test',
+        modelBriefs: [],
+        executions: [
+          {
+            logTime: 123,
+            name: 'Execution',
+            tasks: [
+              {
+                taskId: 'task-1',
+                type: 'Insight',
+                status: 'finished',
+                uiContext: {
+                  screenshot,
+                  shotSize: { width: 100, height: 100 },
+                  shrunkShotToLogicalRatio: 1,
+                },
+                executor: async () => {},
+              } as any,
+            ],
+          },
+        ],
+      });
+
+      const serialized = dump.serializeWithInlineScreenshots();
+      const parsed = JSON.parse(serialized);
+      const screenshotData = parsed.executions[0].tasks[0].uiContext.screenshot;
+
+      expect(screenshotData.base64).toBe(
+        'data:image/png;base64,test-inline-screenshot',
+      );
+      expect(screenshotData.capturedAt).toBe(capturedAt);
+    });
+
+    it('should keep task errors bounded in inline screenshot serialization', async () => {
+      const runner = new TaskRunner(
+        'Bounded Error Test',
+        async () => undefined as any,
+      );
+      await runner.append({
+        type: 'Action Space',
+        subType: 'Tap',
+        executor: async () => {
+          throw { payload: 'x'.repeat(10_000_000) };
+        },
+      });
+      await expect(runner.flush()).rejects.toThrow('Error without a message');
+
+      const dump = new ReportActionDump({
+        sdkVersion: '1.0.0',
+        groupName: 'Bounded Error Test',
+        modelBriefs: [],
+        executions: [runner.dump()],
+      });
+
+      const serialized = dump.serializeWithInlineScreenshots();
+      const error = JSON.parse(serialized).executions[0].tasks[0].error;
+
+      expect(error).toEqual({
+        name: 'Error',
+        message: 'Error without a message',
+      });
+      expect(serialized.length).toBeLessThan(10_000);
+      expect(serialized).not.toContain('payload');
+    });
+  });
+
+  describe('toJSON', () => {
+    it('should return a plain object with nested toJSON calls', () => {
+      const data = createMockReportActionDumpData();
+      const dump = new ReportActionDump(data);
+      const json = dump.toJSON();
+
+      expect(json.sdkVersion).toBe(data.sdkVersion);
+      expect(json.groupName).toBe(data.groupName);
+      expect(json.executions).toHaveLength(2);
+      // Verify nested objects are plain objects, not class instances
+      expect(json.executions[0]).not.toBeInstanceOf(ExecutionDump);
+    });
+  });
+
+  describe('fromSerializedString', () => {
+    it('should create a ReportActionDump from serialized string', () => {
+      const data = createMockReportActionDumpData();
+      const serialized = JSON.stringify(data);
+      const dump = ReportActionDump.fromSerializedString(serialized);
+
+      expect(dump).toBeInstanceOf(ReportActionDump);
+      expect(dump.sdkVersion).toBe(data.sdkVersion);
+      expect(dump.groupName).toBe(data.groupName);
+      expect(dump.executions).toHaveLength(2);
+    });
+
+    it('should convert nested executions to ExecutionDump instances', () => {
+      const data = createMockReportActionDumpData();
+      const serialized = JSON.stringify(data);
+      const dump = ReportActionDump.fromSerializedString(serialized);
+
+      dump.executions.forEach((execution) => {
+        expect(execution).toBeInstanceOf(ExecutionDump);
+      });
+    });
+
+    it('should throw on invalid JSON', () => {
+      expect(() =>
+        ReportActionDump.fromSerializedString('invalid json'),
+      ).toThrow();
+    });
+  });
+
+  describe('fromJSON', () => {
+    it('should create a ReportActionDump from plain object', () => {
+      const data = createMockReportActionDumpData();
+      const dump = ReportActionDump.fromJSON(data);
+
+      expect(dump).toBeInstanceOf(ReportActionDump);
+      expect(dump.sdkVersion).toBe(data.sdkVersion);
+      expect(dump.groupName).toBe(data.groupName);
+    });
+  });
+
+  describe('round-trip serialization', () => {
+    it('should preserve data through serialize/fromSerializedString cycle', () => {
+      const originalData = createMockReportActionDumpData();
+      const dump1 = new ReportActionDump(originalData);
+      const serialized = dump1.serialize();
+      const dump2 = ReportActionDump.fromSerializedString(serialized);
+
+      expect(dump2.sdkVersion).toBe(dump1.sdkVersion);
+      expect(dump2.groupName).toBe(dump1.groupName);
+      expect(dump2.groupDescription).toBe(dump1.groupDescription);
+      expect(dump2.modelBriefs).toEqual(dump1.modelBriefs);
+      expect(dump2.executions.length).toBe(dump1.executions.length);
+
+      for (let i = 0; i < dump2.executions.length; i++) {
+        expect(dump2.executions[i].name).toBe(dump1.executions[i].name);
+        expect(dump2.executions[i].logTime).toBe(dump1.executions[i].logTime);
+      }
+    });
+
+    it('should handle complex nested structures', () => {
+      const complexData: IReportActionDump = {
+        sdkVersion: '2.0.0',
+        groupName: 'Complex Group',
+        groupDescription: 'A complex test',
+        modelBriefs: [{ name: 'openai/gpt-4' }, { name: 'anthropic/claude' }],
+        executions: [
+          {
+            logTime: Date.now(),
+            name: 'Complex Execution',
+            description: 'With many tasks',
+            tasks: [
+              {
+                type: 'Insight',
+                subType: 'Locate',
+                status: 'finished',
+                param: { prompt: 'Find element' },
+                output: { element: { center: [100, 200] } },
+                timing: { start: 0, end: 100, cost: 100 },
+                executor: async () => {},
+              } as any,
+              {
+                type: 'Action',
+                subType: 'Click',
+                status: 'finished',
+                timing: { start: 100, end: 200, cost: 100 },
+                executor: async () => {},
+              } as any,
+            ],
+            aiActContext: 'Test AI context',
+          },
+        ],
+      };
+
+      const dump1 = new ReportActionDump(complexData);
+      const serialized = dump1.serialize();
+      const dump2 = ReportActionDump.fromSerializedString(serialized);
+
+      expect(dump2.executions[0].tasks).toHaveLength(2);
+      expect(dump2.executions[0].aiActContext).toBe('Test AI context');
+    });
+  });
+});
+
+describe('ExecutionDump and ReportActionDump integration', () => {
+  it('should work together in a typical workflow', () => {
+    // Create ExecutionDump instances
+    const execution1 = new ExecutionDump({
+      logTime: Date.now(),
+      name: 'First Action',
+      tasks: [],
+    });
+
+    const execution2 = new ExecutionDump({
+      logTime: Date.now() + 1000,
+      name: 'Second Action',
+      tasks: [],
+    });
+
+    // Create ReportActionDump with ExecutionDump instances
+    const groupedDump = new ReportActionDump({
+      sdkVersion: '1.0.0',
+      groupName: 'Integration Test',
+      modelBriefs: [],
+      executions: [execution1, execution2],
+    });
+
+    // Serialize the entire structure
+    const serialized = groupedDump.serialize();
+
+    // Deserialize and verify
+    const restored = ReportActionDump.fromSerializedString(serialized);
+
+    expect(restored.executions).toHaveLength(2);
+    expect(restored.executions[0].name).toBe('First Action');
+    expect(restored.executions[1].name).toBe('Second Action');
+  });
+});

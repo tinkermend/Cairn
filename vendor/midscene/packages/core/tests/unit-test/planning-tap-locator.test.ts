@@ -1,0 +1,191 @@
+import type { ResolvedCustomPlanningDefinition } from '@/ai-model/model-adapter/custom-planning-types';
+import { AIResponseParseError } from '@/ai-model/service-caller';
+import type { PixelLocateResult } from '@/ai-model/shared/model-locate-result';
+import { resolvePlanningTapLocator } from '@/ai-model/workflows/grounding/planning-action-locate';
+import { runCustomPlanning } from '@/ai-model/workflows/planning/custom-planning';
+import { ScreenshotItem } from '@/screenshot-item';
+import { beforeEach, describe, expect, it, rs } from '@rstest/core';
+
+rs.mock('@/ai-model/workflows/planning/custom-planning', () => ({
+  runCustomPlanning: rs.fn(),
+}));
+
+function createPlanner(): ResolvedCustomPlanningDefinition<null> {
+  return {
+    messages: {
+      systemPromptPlacement: 'system-message',
+      buildSystemPrompt: () => 'planning system prompt',
+    },
+    coordinateSystem: {
+      shape: 'point',
+      order: 'xy',
+      normalizedBy: 1000,
+      rounding: 'round',
+    },
+    coordinateNormalizer: {} as any,
+    parseResponse: () => null,
+    transformActions: () => [],
+    shouldContinuePlanning: () => false,
+    buildResponseLog: () => '',
+  };
+}
+
+function createLocateRequest() {
+  const options = {
+    context: {
+      screenshot: ScreenshotItem.create(
+        'data:image/png;base64,SCREENSHOT==',
+        123,
+      ),
+      shotSize: {
+        width: 1000,
+        height: 800,
+      },
+      shrunkShotToLogicalRatio: 1,
+    },
+    actionSpace: [],
+    conversationHistory: {} as any,
+    includeLocateInPlanning: false,
+    modelRuntime: {
+      adapter: {
+        imagePreprocess: {},
+      },
+      config: {
+        modelName: 'test-model',
+        modelDescription: 'test-model',
+        slot: 'default',
+      },
+    },
+  } as any;
+
+  return {
+    targetElementDescription: 'submit button',
+    locateImage: {
+      imageBase64: 'data:image/png;base64,CROP==',
+      width: 320,
+      height: 240,
+    },
+    options,
+  } as any;
+}
+
+describe('resolvePlanningTapLocator', () => {
+  beforeEach(() => {
+    rs.mocked(runCustomPlanning).mockReset();
+  });
+
+  it('runs the resolved planner once with tap locate options and returns the complete configured pixel result', async () => {
+    const actions = [{ type: 'Tap', param: {} }];
+    rs.mocked(runCustomPlanning).mockResolvedValueOnce({
+      actions,
+      shouldContinuePlanning: false,
+      rawResponse: 'raw planning response',
+      rawChoiceMessage: { role: 'assistant' },
+      usage: { total_tokens: 3 } as any,
+      log: 'planner reasoning',
+    });
+
+    const locatedPixelResult: PixelLocateResult = {
+      center: [2, 3],
+      rect: { left: 1, top: 2, width: 3, height: 3 },
+    };
+    const getLocatedPixelResult = rs.fn(() => locatedPixelResult);
+    const locate = resolvePlanningTapLocator(
+      {
+        buildSystemPrompt: () => 'locate system prompt',
+        getLocatedPixelResult,
+      },
+      createPlanner(),
+    );
+
+    const result = await locate(createLocateRequest());
+
+    const [, planOptions, locatorPlanner] =
+      rs.mocked(runCustomPlanning).mock.calls[0];
+    expect(planOptions.context.screenshot.base64).toBe(
+      'data:image/png;base64,CROP==',
+    );
+    expect(planOptions.context.screenshot.capturedAt).toBe(123);
+    expect(planOptions.context.shotSize).toEqual({ width: 320, height: 240 });
+    expect(planOptions.includeLocateInPlanning).toBe(true);
+    expect(planOptions.actionSpace.map((action: any) => action.name)).toEqual([
+      'Tap',
+    ]);
+    expect(rs.mocked(runCustomPlanning).mock.calls[0][0]).toEqual({
+      text: 'submit button',
+      referenceImages: [],
+    });
+    expect(locatorPlanner.messages.buildSystemPrompt()).toBe(
+      'locate system prompt',
+    );
+    expect(
+      locatorPlanner.messages.buildUserInstruction?.('submit button'),
+    ).toBe('Tap: submit button');
+    expect(getLocatedPixelResult).toHaveBeenCalledWith(actions);
+    expect(result).toEqual({
+      locatedPixelResult,
+      rawResponse: 'raw planning response',
+      rawChoiceMessage: { role: 'assistant' },
+      usage: { total_tokens: 3 },
+      reasoningContent: 'planner reasoning',
+    });
+  });
+
+  it('returns an error when the planner actions do not contain a tap point', async () => {
+    rs.mocked(runCustomPlanning).mockResolvedValueOnce({
+      actions: [{ type: 'Scroll', param: {} }],
+      shouldContinuePlanning: false,
+      rawResponse: 'raw planning response',
+      log: 'planner reasoning',
+    });
+
+    const locate = resolvePlanningTapLocator(
+      {
+        buildSystemPrompt: () => 'locate system prompt',
+        getLocatedPixelResult: () => undefined,
+      },
+      createPlanner(),
+    );
+
+    const result = await locate(createLocateRequest());
+
+    expect(result).toEqual({
+      rawResponse: 'raw planning response',
+      rawChoiceMessage: undefined,
+      usage: undefined,
+      reasoningContent: 'planner reasoning',
+      errors: ['No locatedPixelResult found in planner response'],
+    });
+  });
+
+  it('preserves raw response metadata from planner parse errors', async () => {
+    const rawChoiceMessage = { role: 'assistant', content: 'bad response' };
+    const usage = { total_tokens: 5 } as any;
+    rs.mocked(runCustomPlanning).mockRejectedValueOnce(
+      new AIResponseParseError(
+        'Parse error: malformed response',
+        'raw malformed response',
+        usage,
+        rawChoiceMessage,
+      ),
+    );
+
+    const locate = resolvePlanningTapLocator(
+      {
+        buildSystemPrompt: () => 'locate system prompt',
+        getLocatedPixelResult: () => undefined,
+      },
+      createPlanner(),
+    );
+
+    const result = await locate(createLocateRequest());
+
+    expect(result).toEqual({
+      rawResponse: 'raw malformed response',
+      rawChoiceMessage,
+      usage,
+      reasoningContent: '',
+      errors: ['Parse error: malformed response'],
+    });
+  });
+});

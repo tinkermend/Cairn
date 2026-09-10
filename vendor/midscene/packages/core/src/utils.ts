@@ -1,0 +1,498 @@
+import { execFile } from 'node:child_process';
+import * as fs from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import { promisify } from 'node:util';
+import {
+  defaultRunDirName,
+  getMidsceneRunSubDir,
+} from '@midscene/shared/common';
+import {
+  MIDSCENE_CACHE,
+  MIDSCENE_DEBUG_MODE,
+  globalConfigManager,
+} from '@midscene/shared/env';
+import { getRunningPkgInfo } from '@midscene/shared/node';
+import { assert, logMsg } from '@midscene/shared/utils';
+import {
+  escapeScriptTag,
+  ifInBrowser,
+  ifInWorker,
+  uuid,
+} from '@midscene/shared/utils';
+import { IS_REPORT_BUILD } from './constants';
+import { REPORT_HTML_TEMPLATE } from './report-html-template';
+import type { Cache, Rect, ReportDumpWithAttributes } from './types';
+
+let logEnvReady = false;
+
+export { appendFileSync } from 'node:fs';
+
+export const groupedActionDumpFileExt = 'web-dump.json';
+
+function htmlScriptCloseTag(): string {
+  // biome-ignore lint/style/useTemplate: keep this token runtime-built for inline report bundles
+  return String.fromCharCode(60) + '/script>';
+}
+
+/**
+ * Process cache configuration with environment variable support and backward compatibility.
+ *
+ * @param cache - The original cache configuration
+ * @param cacheId - The cache ID to use as:
+ *   1. Fallback ID when cache is true or cache object has no ID
+ *   2. Legacy cacheId when cache is undefined (requires MIDSCENE_CACHE env var)
+ * @returns Processed cache configuration
+ */
+export function processCacheConfig(
+  cache: Cache | undefined,
+  cacheId: string,
+): Cache | undefined {
+  // 1. New cache object configuration (highest priority)
+  if (cache !== undefined) {
+    if (cache === false) {
+      return false; // Keep explicit disablement distinguishable from missing config.
+    }
+
+    if (cache === true) {
+      // Auto-generate ID using cacheId for CLI/YAML scenarios
+      // Agent will validate and reject this later if needed
+      return { id: cacheId };
+    }
+
+    // cache is object configuration
+    if (typeof cache === 'object' && cache !== null) {
+      // Auto-generate ID using cacheId when missing (for CLI/YAML scenarios)
+      if (!cache.id) {
+        return { ...cache, id: cacheId };
+      }
+      return cache;
+    }
+  }
+
+  // 2. Backward compatibility: support old cacheId (requires environment variable)
+  // When cache is undefined, check if legacy cacheId mode is enabled via env var
+  const envEnabled = globalConfigManager.getEnvConfigInBoolean(MIDSCENE_CACHE);
+
+  if (envEnabled && cacheId) {
+    return { id: cacheId };
+  }
+
+  // 3. No cache configuration
+  return undefined;
+}
+
+const reportInitializedMap = new Map<string, boolean>();
+const reportGroupIdMap = new Map<string, string>();
+
+declare const __DEV_REPORT_PATH__: string;
+
+export function getReportTpl() {
+  // Report builds replace IS_REPORT_BUILD with true. Keep this early return
+  // statically analyzable so the bundler removes the unreachable template
+  // branch, including its placeholder literal, before validating the HTML.
+  if (IS_REPORT_BUILD) {
+    return '';
+  }
+
+  const reportTpl =
+    typeof __DEV_REPORT_PATH__ === 'string' && __DEV_REPORT_PATH__
+      ? fs.readFileSync(__DEV_REPORT_PATH__, 'utf-8')
+      : REPORT_HTML_TEMPLATE;
+
+  // reportTpl is expected to be replaced with the real Report HTML during the
+  // Report build. If it still contains the placeholder, synchronization did
+  // not complete. This can happen when the Report build fails, or when a cached
+  // Core build skips its synchronization hook while the placeholder is already
+  // present. This should normally occur only during development; the release
+  // pipeline validates that Core's reportTpl has been fully replaced. Throw
+  // explicitly and tell the user to rebuild instead of producing an invalid
+  // report.
+  // Keep this literal in sync with the placeholder in report-html-template.ts
+  // and reportTemplateMagicString in scripts/report-template-utils.mjs.
+  if (reportTpl.includes('REPLACE_ME_WITH_REPORT_HTML')) {
+    throw new Error(
+      'Report template contains an unresolved placeholder. Build Report with "pnpm exec nx build @midscene/report", or run "pnpm --filter @midscene/core sync-report-template" if apps/report/dist/index.html already exists.',
+    );
+  }
+
+  return reportTpl;
+}
+
+/**
+ * Insert content before </html> in an HTML string.
+ * Falls back to simple concatenation if </html> is not found.
+ */
+export function insertContentBeforeClosingHtml(
+  html: string,
+  content: string,
+): string {
+  const htmlEndIdx = html.lastIndexOf('</html>');
+  if (htmlEndIdx === -1) {
+    return html + content;
+  }
+  return `${html.slice(0, htmlEndIdx)}${content}\n${html.slice(htmlEndIdx)}`;
+}
+
+/**
+ * high performance, insert script before </html> in HTML file
+ * only truncate and append, no temporary file
+ */
+export function insertScriptBeforeClosingHtml(
+  filePath: string,
+  scriptContent: string,
+): void {
+  const htmlEndTag = '</html>';
+  const stat = fs.statSync(filePath);
+
+  const readSize = Math.min(stat.size, 4096);
+  const start = Math.max(0, stat.size - readSize);
+  const buffer = Buffer.alloc(stat.size - start);
+  const fd = fs.openSync(filePath, 'r');
+  fs.readSync(fd, buffer, 0, buffer.length, start);
+  fs.closeSync(fd);
+
+  const tailStr = buffer.toString('utf8');
+  const htmlEndIdx = tailStr.lastIndexOf(htmlEndTag);
+  if (htmlEndIdx === -1) {
+    throw new Error(`No </html> found in file：${filePath}`);
+  }
+
+  // calculate the correct byte position: char position to byte position
+  const beforeHtmlInTail = tailStr.slice(0, htmlEndIdx);
+  const htmlEndPos = start + Buffer.byteLength(beforeHtmlInTail, 'utf8');
+
+  // truncate to </html> before
+  fs.truncateSync(filePath, htmlEndPos);
+  // append script and </html>
+  fs.appendFileSync(filePath, `${scriptContent}\n${htmlEndTag}\n`);
+}
+
+export function reportHTMLContent(
+  dumpData: string | ReportDumpWithAttributes,
+  reportPath?: string,
+  appendReport?: boolean,
+  withTpl = true, // whether return with report template, default = true
+): string {
+  // Short-circuit reportHTMLContent in Report builds so its generated
+  // <script type="midscene_web_dump" ... data-group-id="..."> literal is not
+  // bundled into the Report output. Report merging scans for this opening tag
+  // to locate dump JSON, so a copy inside bundled JS may be mistaken for a real
+  // dump tag. The embedded Playground does not support generating reports
+  // while replaying actions.
+  if (IS_REPORT_BUILD) {
+    return '';
+  }
+
+  let tpl = '';
+  if (withTpl) {
+    tpl = getReportTpl();
+
+    if (!tpl) {
+      console.warn('reportTpl is not set, will not write report');
+      return '';
+    }
+  }
+  // if reportPath is set, it means we are in write to file mode
+  const writeToFile = reportPath && !ifInBrowser;
+  let dumpContent = '';
+  const closeTag = htmlScriptCloseTag();
+
+  const resolveAutoGroupId = (): string => {
+    if (!reportPath || !appendReport) {
+      return uuid();
+    }
+
+    const existingGroupId = reportGroupIdMap.get(reportPath);
+    if (existingGroupId) {
+      return existingGroupId;
+    }
+
+    const newGroupId = uuid();
+    reportGroupIdMap.set(reportPath, newGroupId);
+    return newGroupId;
+  };
+
+  if (typeof dumpData === 'string') {
+    const groupId = resolveAutoGroupId();
+    // do not use template string here, will cause bundle error
+    dumpContent =
+      // biome-ignore lint/style/useTemplate: <explanation>
+      '<script type="midscene_web_dump" type="application/json" data-group-id="' +
+      encodeURIComponent(groupId) +
+      '">\n' +
+      escapeScriptTag(dumpData) +
+      '\n' +
+      closeTag;
+  } else {
+    const { dumpString, attributes } = dumpData;
+    const attributesArr = Object.entries(attributes || {})
+      .filter((entry): entry is [string, string | number | boolean] => {
+        return entry[1] !== undefined && entry[1] !== null;
+      })
+      .map(([key, value]) => {
+        return `${key}="${encodeURIComponent(value)}"`;
+      });
+
+    dumpContent =
+      // do not use template string here, will cause bundle error
+      // biome-ignore lint/style/useTemplate: <explanation>
+      '<script type="midscene_web_dump" type="application/json" ' +
+      attributesArr.join(' ') +
+      '>\n' +
+      escapeScriptTag(dumpString) +
+      '\n' +
+      closeTag;
+  }
+
+  if (writeToFile) {
+    if (!appendReport) {
+      writeFileSync(
+        reportPath!,
+        insertContentBeforeClosingHtml(tpl, dumpContent),
+        { flag: 'w' },
+      );
+      return reportPath!;
+    }
+
+    if (!reportInitializedMap.get(reportPath!)) {
+      writeFileSync(reportPath!, tpl, { flag: 'w' });
+      reportInitializedMap.set(reportPath!, true);
+    }
+
+    insertScriptBeforeClosingHtml(reportPath!, dumpContent);
+    return reportPath!;
+  }
+
+  return insertContentBeforeClosingHtml(tpl, dumpContent);
+}
+
+export function writeDumpReport(
+  fileName: string,
+  dumpData: string | ReportDumpWithAttributes,
+  appendReport?: boolean,
+): string | null {
+  if (ifInBrowser || ifInWorker) {
+    console.log('will not write report in browser');
+    return null;
+  }
+
+  const reportPath = path.join(
+    getMidsceneRunSubDir('report'),
+    `${fileName}.html`,
+  );
+
+  reportHTMLContent(dumpData, reportPath, appendReport);
+
+  if (process.env.MIDSCENE_DEBUG_LOG_JSON) {
+    const jsonPath = `${reportPath}.json`;
+    let data;
+
+    if (typeof dumpData === 'string') {
+      data = JSON.parse(dumpData) as ReportDumpWithAttributes;
+    } else {
+      data = dumpData;
+    }
+
+    writeFileSync(jsonPath, JSON.stringify(data, null, 2), {
+      flag: appendReport ? 'a' : 'w',
+    });
+
+    logMsg(`Midscene - dump file written: ${jsonPath}`);
+  }
+
+  return reportPath;
+}
+
+export function writeLogFile(opts: {
+  fileName: string;
+  fileExt: string;
+  fileContent: string | ReportDumpWithAttributes;
+  type: 'dump' | 'cache' | 'report' | 'tmp';
+  generateReport?: boolean;
+  appendReport?: boolean;
+}) {
+  if (ifInBrowser || ifInWorker) {
+    return '/mock/report.html';
+  }
+  const { fileName, fileExt, fileContent, type = 'dump' } = opts;
+  const targetDir = getMidsceneRunSubDir(type);
+  // Ensure directory exists
+  if (!logEnvReady) {
+    assert(targetDir, 'logDir should be set before writing dump file');
+
+    // gitIgnore in the parent directory
+    const gitIgnorePath = path.join(targetDir, '../../.gitignore');
+    const gitPath = path.join(targetDir, '../../.git');
+    let gitIgnoreContent = '';
+
+    if (existsSync(gitPath)) {
+      // if the git path exists, we need to add the log folder to the git ignore file
+      if (existsSync(gitIgnorePath)) {
+        gitIgnoreContent = readFileSync(gitIgnorePath, 'utf-8');
+      }
+
+      // ignore the log folder
+      if (!gitIgnoreContent.includes(`${defaultRunDirName}/`)) {
+        writeFileSync(
+          gitIgnorePath,
+          `${gitIgnoreContent}\n# Midscene.js dump files\n${defaultRunDirName}/dump\n${defaultRunDirName}/report\n${defaultRunDirName}/tmp\n${defaultRunDirName}/log\n`,
+          'utf-8',
+        );
+      }
+    }
+
+    logEnvReady = true;
+  }
+
+  const filePath = path.join(targetDir, `${fileName}.${fileExt}`);
+
+  if (type !== 'dump') {
+    // do not write dump file any more
+    writeFileSync(filePath, JSON.stringify(fileContent));
+  }
+
+  if (opts?.generateReport) {
+    return writeDumpReport(fileName, fileContent, opts.appendReport);
+  }
+
+  return filePath;
+}
+
+export function getTmpDir(): string | null {
+  try {
+    const runningPkgInfo = getRunningPkgInfo();
+    if (!runningPkgInfo) {
+      return null;
+    }
+    const { name } = runningPkgInfo;
+    const tmpPath = path.join(tmpdir(), name);
+    mkdirSync(tmpPath, { recursive: true });
+    return tmpPath;
+  } catch (e) {
+    return null;
+  }
+}
+
+export function getTmpFile(fileExtWithoutDot: string): string | null {
+  if (ifInBrowser || ifInWorker) {
+    return null;
+  }
+  const tmpDir = getTmpDir();
+  const filename = `${uuid()}.${fileExtWithoutDot}`;
+  return path.join(tmpDir!, filename);
+}
+
+export function overlapped(container: Rect, target: Rect) {
+  // container and the target have some part overlapped
+  return (
+    container.left < target.left + target.width &&
+    container.left + container.width > target.left &&
+    container.top < target.top + target.height &&
+    container.top + container.height > target.top
+  );
+}
+
+export async function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function replacerForPageObject(_key: string, value: any) {
+  if (value && value.constructor?.name === 'Page') {
+    return '[Page object]';
+  }
+  if (value && value.constructor?.name === 'Browser') {
+    return '[Browser object]';
+  }
+  // Handle ScreenshotItem serialization
+  if (value && typeof value.toSerializable === 'function') {
+    return value.toSerializable();
+  }
+  return value;
+}
+
+export function stringifyDumpData(data: any, indents?: number) {
+  return JSON.stringify(data, replacerForPageObject, indents);
+}
+
+declare const __VERSION__: string;
+
+export function getVersion() {
+  return __VERSION__;
+}
+
+function debugLog(...message: any[]) {
+  // always read from process.env, and cannot be override by modelConfig, overrideAIConfig, etc.
+  // also avoid circular dependency
+  const debugMode = process.env[MIDSCENE_DEBUG_MODE];
+  if (debugMode) {
+    console.log('[Midscene]', ...message);
+  }
+}
+
+let gitInfoPromise: Promise<{ repoUrl: string; userEmail: string }> | null =
+  null;
+
+function getGitInfoAsync(): Promise<{ repoUrl: string; userEmail: string }> {
+  if (gitInfoPromise) return gitInfoPromise;
+
+  const execFileAsync = promisify(execFile);
+
+  gitInfoPromise = Promise.all([
+    execFileAsync('git', ['config', '--get', 'remote.origin.url']).then(
+      ({ stdout }) => stdout.trim(),
+      () => '',
+    ),
+    execFileAsync('git', ['config', '--get', 'user.email']).then(
+      ({ stdout }) => stdout.trim(),
+      () => '',
+    ),
+  ]).then(([repoUrl, userEmail]) => ({ repoUrl, userEmail }));
+
+  return gitInfoPromise;
+}
+
+let lastReportedRepoUrl = '';
+export async function uploadTestInfoToServer({
+  testUrl,
+  serverUrl,
+}: { testUrl: string; serverUrl?: string }) {
+  if (!serverUrl) return;
+
+  const { repoUrl, userEmail } = await getGitInfoAsync();
+
+  // Only upload test info if:
+  // 1. Server URL is configured AND
+  // 2. Either:
+  //    - We have a repo URL that's different from last reported one (to avoid duplicate reports)
+  //    - OR we don't have a repo URL but have a test URL (for non-git environments)
+  if (repoUrl ? repoUrl !== lastReportedRepoUrl : !!testUrl) {
+    debugLog('Uploading test info to server', {
+      serverUrl,
+      repoUrl,
+      testUrl,
+      userEmail,
+    });
+
+    fetch(serverUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        repo_url: repoUrl,
+        test_url: testUrl,
+        user_email: userEmail,
+      }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        debugLog('Successfully uploaded test info to server:', data);
+      })
+      .catch((error) =>
+        debugLog('Failed to upload test info to server:', error),
+      );
+    lastReportedRepoUrl = repoUrl;
+  }
+}

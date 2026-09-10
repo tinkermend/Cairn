@@ -1,0 +1,1238 @@
+import path, { join, resolve } from 'node:path';
+
+import { existsSync, readFileSync } from 'node:fs';
+import type { PageAgent } from '@/index';
+import { Agent } from '@midscene/core';
+import type {
+  DeviceAction,
+  MidsceneYamlScriptWebEnv,
+  ReportActionDump,
+} from '@midscene/core';
+import { actionTapParamSchema } from '@midscene/core/device';
+import { ScriptPlayer, buildYaml, parseYamlScript } from '@midscene/core/yaml';
+import { getMidsceneRunSubDir } from '@midscene/shared/common';
+import { type Mock, describe, expect, rs, test } from '@rstest/core';
+
+const serverRoot = join(__dirname, 'server_root');
+
+// Mock agent that tracks method calls
+const getMockAgent = async () => {
+  const methodCalls: Array<{ method: string; args: any[] }> = [];
+  const dumpPath = path.join(__dirname, '../fixtures', 'dump.json');
+  const dump = JSON.parse(
+    readFileSync(dumpPath, 'utf-8'),
+  ) as unknown as ReportActionDump;
+
+  const actionSpace: DeviceAction[] = [
+    {
+      name: 'Tap',
+      interfaceAlias: 'aiTap',
+      call: rs.fn(),
+    },
+    {
+      name: 'RightClick',
+      interfaceAlias: 'aiRightClick',
+      call: rs.fn(),
+    },
+    {
+      name: 'Hover',
+      interfaceAlias: 'aiHover',
+      call: rs.fn(),
+    },
+    {
+      name: 'Input',
+      interfaceAlias: 'aiInput',
+      call: rs.fn(),
+    },
+  ];
+
+  return {
+    agent: {
+      aiTap: rs.fn(async (...args) => {
+        methodCalls.push({ method: 'aiTap', args });
+        return {};
+      }),
+      aiRightClick: rs.fn(async (...args) => {
+        methodCalls.push({ method: 'aiRightClick', args });
+        return {};
+      }),
+      aiAction: rs.fn(async (...args) => {
+        methodCalls.push({ method: 'aiAction', args });
+        return {};
+      }),
+      aiInput: rs.fn(),
+      aiScroll: rs.fn(),
+      aiKeyboardPress: rs.fn(),
+      reportFile: null,
+      onTaskStartTip: undefined,
+      _unstableLogContent: rs.fn(async () => dump),
+      dump,
+      callActionInActionSpace: rs.fn(),
+      getActionSpace: async () => actionSpace,
+    } as unknown as PageAgent,
+    freeFn: [],
+    methodCalls,
+    actionSpace,
+  };
+};
+
+describe('yaml utils', () => {
+  test('basic build && load', () => {
+    const script = buildYaml(
+      {
+        url: 'https://bing.com',
+        waitForNetworkIdle: {
+          timeout: 1000,
+          continueOnNetworkIdleError: true,
+        },
+      },
+      [
+        {
+          name: 'search',
+          flow: [
+            {
+              aiAction: 'type "hello" in search box, hit enter',
+            },
+          ],
+        },
+      ],
+    );
+    expect(script).toMatchSnapshot();
+
+    const loadedScript = parseYamlScript(script);
+    expect(loadedScript).toMatchSnapshot();
+  });
+
+  test('load error with filePath', () => {
+    expect(() => {
+      parseYamlScript(
+        `
+      target:
+        a: 1
+      `,
+        'some_error_path',
+      );
+    }).toThrow(/some_error_path/);
+  });
+
+  test('player - bad params', async () => {
+    await expect(
+      Agent.prototype.runYaml.call(
+        {} as Agent,
+        `
+          target:
+            serve: ${serverRoot}
+        `,
+      ),
+    ).rejects.toThrow(
+      /property "tasks" is required in yaml script\s*, failed to load yaml/,
+    );
+
+    await expect(
+      Agent.prototype.runYaml.call(
+        {} as Agent,
+        `
+          target:
+            serve: ${serverRoot}
+            viewportWidth: 0
+        `,
+      ),
+    ).rejects.toThrow(
+      /property "tasks" is required in yaml script\s*, failed to load yaml/,
+    );
+  });
+});
+
+describe('YAML Player - aiRightClick Integration', () => {
+  test('should parse and execute aiRightClick from YAML', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_right_click
+    flow:
+      - aiRightClick: "context menu trigger element"
+`;
+
+    const script = parseYamlScript(yamlString);
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      getMockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player completed successfully
+    expect(player.errorInSetup).toBeUndefined();
+    expect(player.taskStatusList[0].error).toBeUndefined();
+    expect(player.status).toBe('done');
+    expect(player.taskStatusList[0].status).toBe('done');
+  });
+
+  test('should execute aiRightClick with options', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_right_click_with_options
+    flow:
+      - aiRightClick: "element to right click"
+        deepLocate: true
+        cacheable: false
+        moreParam: 
+        foo: 123 
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player completed successfully
+    expect(player.status).toBe('done');
+    expect(player.errorInSetup).toBeUndefined();
+
+    // Verify aiRightClick was called with correct parameters
+    expect(mockAgent.agent.aiRightClick).toBeCalledTimes(0);
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "RightClick",
+          {
+            "foo": 123,
+            "locate": {
+              "cacheable": false,
+              "deepLocate": true,
+              "prompt": "element to right click",
+              "xpath": undefined,
+            },
+            "moreParam": null,
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('action from action space', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_right_click_with_options
+    flow:
+      - RightClick: "element to right click"
+        deepLocate: true
+        cacheable: false
+        moreParam: 456
+      - Input: "input field 1"
+        value: "i am value 1"
+      - aiRightClick: "item in menu"
+
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player completed successfully
+    expect(player.errorInSetup).toBeUndefined();
+    console.log(player.taskStatusList);
+    expect(player.status).toBe('done');
+
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "RightClick",
+          {
+            "locate": {
+              "cacheable": false,
+              "deepLocate": true,
+              "prompt": "element to right click",
+              "xpath": undefined,
+            },
+            "moreParam": 456,
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "input field 1",
+              "xpath": undefined,
+            },
+            "value": "i am value 1",
+          },
+        ],
+        [
+          "RightClick",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "item in menu",
+              "xpath": undefined,
+            },
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('locate parameter with different style', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_aiTap_with_different_style
+    flow:
+      - aiTap: 'search input box'
+      - aiTap: 'search input box'
+        deepLocate: true
+        cacheable: false
+      - aiTap:
+        prompt: 'search input box'
+      - aiTap:
+        prompt: 'search input box'
+        deepLocate: true
+        cacheable: false
+      - aiKeyboardPress:
+        keyName: 'Enter'
+      - aiInput: ''
+        locate: 第一个搜索结果的天气信息卡片
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player completed successfully
+    expect(player.errorInSetup).toBeUndefined();
+    // console.log(player);
+    expect(player.status).toBe('done');
+
+    // Verify aiTap was called with correct parameters
+    expect(
+      (mockAgent.agent.aiTap as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "search input box",
+          {},
+        ],
+        [
+          "search input box",
+          {
+            "cacheable": false,
+            "deepLocate": true,
+          },
+        ],
+        [
+          "search input box",
+          {},
+        ],
+        [
+          "search input box",
+          {
+            "cacheable": false,
+            "deepLocate": true,
+          },
+        ],
+      ]
+    `);
+
+    // Verify remaining actions still go through callActionInActionSpace
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "KeyboardPress",
+          {
+            "keyName": "Enter",
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "第一个搜索结果的天气信息卡片",
+              "xpath": undefined,
+            },
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('aiTap with locate containing image prompts (sibling and nested formats)', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_aiTap_image_prompt
+    flow:
+      - aiTap:
+        locate:
+          prompt: the area contains the image.
+          images:
+            - name: target image
+              url: https://example.com/image.png
+          convertHttpImage2Base64: true
+      - aiTap:
+          locate:
+            prompt: the area contains the image.
+            images:
+              - name: target image
+                url: https://example.com/image.png
+            convertHttpImage2Base64: true
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    expect(player.errorInSetup).toBeUndefined();
+    expect(player.taskStatusList[0].error).toBeUndefined();
+    expect(player.status).toBe('done');
+
+    // Both formats should produce the same aiTap calls
+    const aiTapCalls = (mockAgent.agent.aiTap as Mock<any>).mock.calls;
+    expect(aiTapCalls).toHaveLength(2);
+    // Both calls should have the same arguments regardless of YAML nesting style
+    expect(aiTapCalls[0]).toEqual(aiTapCalls[1]);
+    expect(aiTapCalls).toMatchInlineSnapshot(`
+      [
+        [
+          "the area contains the image.",
+          {
+            "convertHttpImage2Base64": true,
+            "images": [
+              {
+                "name": "target image",
+                "url": "https://example.com/image.png",
+              },
+            ],
+          },
+        ],
+        [
+          "the area contains the image.",
+          {
+            "convertHttpImage2Base64": true,
+            "images": [
+              {
+                "name": "target image",
+                "url": "https://example.com/image.png",
+              },
+            ],
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('aiInput, aiScroll, aiKeyboardPress , different style', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_right_click_with_options
+    flow:
+      - aiInput: 'i am value 1'
+        locate: 'input field 1'
+      - aiInput: 'input field 2'
+        value: 'i am value 2'
+      - aiInput:
+        locate: 'input field 3'
+        value: 'i am value 3'
+      - aiScroll: 'scrollable area A'
+        direction: 'down'
+        scrollType: 'once'
+        distance: 100
+      - aiScroll: 
+        locate: 'scrollable area B'
+        direction: 'up'
+        scrollType: 'once'
+        distance: 100
+      - aiKeyboardPress: 'input field 3'
+        keyName: 'Enter'
+      - aiKeyboardPress: 'Control'
+        locate: 'input field 4'
+      - aiKeyboardPress:
+        locate: 'input field 5'
+        keyName: 'Escape'
+      - aiInput:
+        locate:
+          prompt: Please determine whether there is a specific on the page.
+      - aiInput:
+        locate:
+          prompt: Please determine whether there is a specific on the page.
+          images:
+            - name: The specific logo
+              url: https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png
+            - name: The specific logo
+              url: https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png
+      - aiInput:
+        locate:
+          prompt: Please determine whether there is a specific on the page.
+          images:
+            - name: The specific logo
+              url: https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png
+          convertHttpImage2Base64: true
+      - aiHover:
+        locate: move the area contains the logo
+      - aiHover:
+        locate:
+          prompt: move the area contains the image.
+          images:
+            - name: target image
+              url: https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png
+          convertHttpImage2Base64: true
+        `;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player completed successfully
+    expect(player.errorInSetup).toBeUndefined();
+    // console.log(player.taskStatusList);
+    expect(player.status).toBe('done');
+
+    // Verify aiRightClick was called with correct parameters
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "input field 1",
+              "xpath": undefined,
+            },
+            "value": "i am value 1",
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "input field 2",
+              "xpath": undefined,
+            },
+            "value": "i am value 2",
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "input field 3",
+              "xpath": undefined,
+            },
+            "value": "i am value 3",
+          },
+        ],
+        [
+          "KeyboardPress",
+          {
+            "keyName": "Enter",
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "input field 3",
+              "xpath": undefined,
+            },
+          },
+        ],
+        [
+          "KeyboardPress",
+          {
+            "keyName": "Control",
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "input field 4",
+              "xpath": undefined,
+            },
+          },
+        ],
+        [
+          "KeyboardPress",
+          {
+            "keyName": "Escape",
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "input field 5",
+              "xpath": undefined,
+            },
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "Please determine whether there is a specific on the page.",
+              "xpath": undefined,
+            },
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": {
+                "images": [
+                  {
+                    "name": "The specific logo",
+                    "url": "https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png",
+                  },
+                  {
+                    "name": "The specific logo",
+                    "url": "https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png",
+                  },
+                ],
+                "prompt": "Please determine whether there is a specific on the page.",
+              },
+              "xpath": undefined,
+            },
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": {
+                "convertHttpImage2Base64": true,
+                "images": [
+                  {
+                    "name": "The specific logo",
+                    "url": "https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png",
+                  },
+                ],
+                "prompt": "Please determine whether there is a specific on the page.",
+              },
+              "xpath": undefined,
+            },
+          },
+        ],
+        [
+          "Hover",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "move the area contains the logo",
+              "xpath": undefined,
+            },
+          },
+        ],
+        [
+          "Hover",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": {
+                "convertHttpImage2Base64": true,
+                "images": [
+                  {
+                    "name": "target image",
+                    "url": "https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png",
+                  },
+                ],
+                "prompt": "move the area contains the image.",
+              },
+              "xpath": undefined,
+            },
+          },
+        ],
+      ]
+    `);
+    expect((mockAgent.agent.aiInput as Mock<any>).mock.calls).toHaveLength(0);
+
+    expect((mockAgent.agent.aiScroll as Mock<any>).mock.calls).toHaveLength(2);
+
+    expect(
+      (mockAgent.agent.aiKeyboardPress as Mock<any>).mock.calls,
+    ).toHaveLength(0);
+  });
+
+  test('aiScroll without locate keeps global scroll semantics', async () => {
+    const yamlString = `
+android:
+
+tasks:
+  - name: scroll to bottom
+    flow:
+      - aiScroll:
+        scrollType: scrollToBottom
+        deepThink: true
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<any>(script, async () => mockAgent);
+
+    await player.run();
+
+    expect(player.errorInSetup).toBeUndefined();
+    expect(player.status).toBe('done');
+    expect((mockAgent.agent.aiScroll as Mock<any>).mock.calls).toEqual([
+      [
+        undefined,
+        {
+          scrollType: 'scrollToBottom',
+          deepThink: true,
+        },
+      ],
+    ]);
+  });
+
+  test('should handle errors in action space', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_right_click_error
+    flow:
+      - no_such_action: "non-existent element"
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player handled error correctly
+    expect(player.status).toBe('error');
+    expect(player.taskStatusList[0].status).toBe('error');
+    expect(player.taskStatusList[0].error).toBeDefined();
+  });
+
+  test('should continue on error when continueOnError is true', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"  
+tasks:
+  - name: test_continue_on_error
+    continueOnError: true
+    flow:
+      - non_existent_action: "non-existent element"
+  - name: test_second_task
+    flow:
+      - aiTap: "some button"
+`;
+
+    const script = parseYamlScript(yamlString);
+
+    // Create mock where first call throws error, second succeeds
+    const errorMockSetup = {
+      agent: {
+        aiRightClick: rs.fn(async () => {
+          throw new Error('Element not found for right click');
+        }),
+        aiTap: rs.fn(),
+        reportFile: null,
+        onTaskStartTip: undefined,
+        getActionSpace: async () => [
+          {
+            name: 'aiTap',
+            interfaceAlias: 'aiTap',
+            paramSchema: actionTapParamSchema,
+            call: rs.fn(),
+          },
+        ],
+        callActionInActionSpace: rs.fn(),
+      },
+      freeFn: [],
+    };
+
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => errorMockSetup as any,
+    );
+
+    await player.run();
+
+    // Verify the player completed despite first task error
+    expect(player.errorInSetup).toBeUndefined();
+    console.log(player.taskStatusList);
+    expect(player.taskStatusList[0].error).toBeDefined();
+    expect(player.taskStatusList[0].status).toBe('error');
+    expect(player.taskStatusList[1].status).toBe('done');
+    expect(player.status).toBe('done');
+
+    // Verify aiTap was called via agent.aiTap
+    expect(
+      (errorMockSetup.agent.aiTap as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "some button",
+          {},
+        ],
+      ]
+    `);
+  });
+});
+
+describe('YAML Player - unstableLogContent', () => {
+  test('should write unstableLogContent to file when unstableLogContent is true', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+  unstableLogContent: true
+tasks:
+  - name: test_right_click
+    flow:
+      - aiRightClick: "context menu trigger element"
+`;
+
+    const script = parseYamlScript(yamlString);
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      getMockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player completed successfully
+    expect(player.status).toBe('done');
+
+    // Verify the unstableLogContent file was created
+    const filePath = resolve(
+      getMidsceneRunSubDir('output'),
+      'unstableLogContent.json',
+    );
+    expect(existsSync(filePath)).toBe(true);
+  });
+
+  test('should write unstableLogContent to file when unstableLogContent is path', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+  unstableLogContent: ./midscene_run/output/unstableLogContent-custom.json
+tasks:
+  - name: test_right_click
+    flow:
+      - aiRightClick: "context menu trigger element"
+`;
+
+    const script = parseYamlScript(yamlString);
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      getMockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player completed successfully
+    expect(player.status).toBe('done');
+
+    // Verify the unstableLogContent file was created
+    const filePath = resolve(
+      getMidsceneRunSubDir('output'),
+      'unstableLogContent-custom.json',
+    );
+    expect(existsSync(filePath)).toBe(true);
+  });
+});
+
+describe('YAML Player - aiInput with number values', () => {
+  test('should accept integer value', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_input_integer
+    flow:
+      - aiInput: 'input field'
+        value: 123456
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    // Verify the player completed successfully
+    expect(player.status).toBe('done');
+    expect(player.errorInSetup).toBeUndefined();
+    expect(player.taskStatusList[0].error).toBeUndefined();
+
+    // Verify Input was called with number value
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "input field",
+              "xpath": undefined,
+            },
+            "value": "123456",
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('should accept decimal value', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_input_decimal
+    flow:
+      - aiInput: 'price input'
+        value: 3.14
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    expect(player.status).toBe('done');
+    expect(player.errorInSetup).toBeUndefined();
+
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "price input",
+              "xpath": undefined,
+            },
+            "value": "3.14",
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('should accept zero value', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_input_zero
+    flow:
+      - aiInput: 'quantity input'
+        value: 0
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    expect(player.status).toBe('done');
+    expect(player.errorInSetup).toBeUndefined();
+
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "quantity input",
+              "xpath": undefined,
+            },
+            "value": "0",
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('should accept negative value', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_input_negative
+    flow:
+      - aiInput: 'temperature input'
+        value: -999
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    expect(player.status).toBe('done');
+    expect(player.errorInSetup).toBeUndefined();
+
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "temperature input",
+              "xpath": undefined,
+            },
+            "value": "-999",
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('should handle mixed string and number values', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_mixed_values
+    flow:
+      - aiInput: 'name field'
+        value: 'John Doe'
+      - aiInput: 'age field'
+        value: 25
+      - aiInput: 'salary field'
+        value: 50000.50
+      - aiInput: 'email field'
+        value: 'test@example.com'
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    expect(player.status).toBe('done');
+    expect(player.errorInSetup).toBeUndefined();
+
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "name field",
+              "xpath": undefined,
+            },
+            "value": "John Doe",
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "age field",
+              "xpath": undefined,
+            },
+            "value": "25",
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "salary field",
+              "xpath": undefined,
+            },
+            "value": "50000.5",
+          },
+        ],
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "email field",
+              "xpath": undefined,
+            },
+            "value": "test@example.com",
+          },
+        ],
+      ]
+    `);
+  });
+
+  test('should accept number value with old aiInput format (locate field)', async () => {
+    const yamlString = `
+target:
+  url: "https://example.com"
+tasks:
+  - name: test_old_format_number
+    flow:
+      - aiInput: 42
+        locate: 'answer field'
+`;
+
+    const script = parseYamlScript(yamlString);
+    const mockAgent = await getMockAgent();
+    const player = new ScriptPlayer<MidsceneYamlScriptWebEnv>(
+      script,
+      async () => mockAgent,
+    );
+
+    await player.run();
+
+    expect(player.status).toBe('done');
+    expect(player.errorInSetup).toBeUndefined();
+
+    expect(
+      (mockAgent.agent.callActionInActionSpace as Mock<any>).mock.calls,
+    ).toMatchInlineSnapshot(`
+      [
+        [
+          "Input",
+          {
+            "locate": {
+              "cacheable": true,
+              "deepLocate": false,
+              "prompt": "answer field",
+              "xpath": undefined,
+            },
+            "value": "42",
+          },
+        ],
+      ]
+    `);
+  });
+});
+
+describe('YAML Player - chromeArgs', () => {
+  test('should accept custom Chrome arguments', () => {
+    const yamlString = `
+web:
+  url: https://example.com
+  chromeArgs:
+    - '--disable-features=ThirdPartyCookiePhaseout'
+    - '--disable-features=SameSiteByDefaultCookies'
+tasks: []
+`;
+    const parsed = parseYamlScript(yamlString);
+    expect(parsed.web?.chromeArgs).toEqual([
+      '--disable-features=ThirdPartyCookiePhaseout',
+      '--disable-features=SameSiteByDefaultCookies',
+    ]);
+  });
+
+  test('should parse chromeArgs with various Chrome cookie-related flags', () => {
+    const yamlString = `
+web:
+  url: https://example.com
+  chromeArgs:
+    - '--disable-features=CookiesWithoutSameSiteMustBeSecure'
+    - '--disable-features=TrackingProtection3pcd'
+tasks: []
+`;
+    const parsed = parseYamlScript(yamlString);
+    expect(parsed.web?.chromeArgs).toEqual([
+      '--disable-features=CookiesWithoutSameSiteMustBeSecure',
+      '--disable-features=TrackingProtection3pcd',
+    ]);
+  });
+
+  test('should work without chromeArgs (backward compatibility)', () => {
+    const yamlString = `
+web:
+  url: https://example.com
+tasks: []
+`;
+    const parsed = parseYamlScript(yamlString);
+    expect(parsed.web?.chromeArgs).toBeUndefined();
+  });
+});

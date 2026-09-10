@@ -1,0 +1,93 @@
+#!/usr/bin/env node
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { getDownloadMaxRetries, retryDownload } from './download-retry.mjs';
+import { downloadGitHubReleaseAssetWithApiFallback } from './github-release-asset.mjs';
+import { createLoggedProxyDispatcher } from './proxy-dispatcher.mjs';
+
+const scriptPath = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(scriptPath);
+export const YADB_VERSION = 'v1.1.1';
+
+export function getYadbDownloadUrl(version = YADB_VERSION) {
+  return `https://github.com/ysbing/YADB/releases/download/${version}/yadb`;
+}
+
+export async function downloadYadbReleaseAsset({
+  destinationPath,
+  fetchImpl = fetch,
+  fsApi = fs,
+  version = YADB_VERSION,
+  dispatcher,
+}) {
+  await downloadGitHubReleaseAssetWithApiFallback({
+    assetName: 'yadb',
+    destinationPath,
+    directUrl: getYadbDownloadUrl(version),
+    dispatcher,
+    fetchImpl,
+    fsApi,
+    owner: 'ysbing',
+    repo: 'YADB',
+    version,
+  });
+}
+
+export async function main() {
+  const binDir = path.resolve(__dirname, '../bin');
+  const yadbPath = path.resolve(binDir, 'yadb');
+  const versionFile = path.resolve(binDir, '.yadb-version');
+
+  // Skip download if binary already exists with the correct version
+  try {
+    await fs.access(yadbPath);
+    const currentVersion = await fs
+      .readFile(versionFile, 'utf-8')
+      .catch(() => '');
+    if (currentVersion.trim() === YADB_VERSION) {
+      console.log(
+        '[yadb] Binary already exists with correct version, skipping download',
+      );
+      return;
+    }
+    console.log(
+      `[yadb] Version mismatch (current: ${currentVersion.trim() || 'unknown'}, expected: ${YADB_VERSION}), re-downloading...`,
+    );
+  } catch {
+    // file does not exist, continue downloading
+  }
+
+  console.log(`[yadb] Downloading yadb ${YADB_VERSION} from GitHub...`);
+
+  await fs.mkdir(binDir, { recursive: true });
+
+  const maxRetries = getDownloadMaxRetries();
+  const dispatcher = createLoggedProxyDispatcher({
+    logPrefix: 'yadb',
+  });
+
+  await retryDownload({
+    label: 'yadb',
+    maxRetries,
+    download: async () => {
+      await downloadYadbReleaseAsset({
+        destinationPath: yadbPath,
+        dispatcher,
+        version: YADB_VERSION,
+      });
+    },
+  });
+
+  // Write version marker for future upgrade detection
+  await fs.writeFile(versionFile, YADB_VERSION);
+
+  console.log('[yadb] Downloaded successfully');
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+  main().catch((error) => {
+    console.error('[yadb] Failed to download:', error.message);
+    process.exit(1);
+  });
+}

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>工作台 · 青石场站监控</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-mark" src="/mark.svg" alt="" />
+        青石场站监控
+      </div>
+      <form method="post" action="/logout">
+        <button class="ghost" type="submit">退出</button>
+      </form>
+    </header>
+    <main class="shell">
+      <section class="panel">
+        <h1>1 号场站总览</h1>
+        <p class="lede">登录成功后的入口页。可把本地址登记为识途目标系统的入口 URL。</p>
+        <div class="grid">
+          <article class="tile">
+            <strong>通信</strong>
+            <span class="status-ok">在线</span>
+          </article>
+          <article class="tile">
+            <strong>主变负荷</strong>
+            <span>62%</span>
+          </article>
+          <article class="tile">
+            <strong>告警</strong>
+            <span>0</span>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

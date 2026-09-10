@@ -1,0 +1,125 @@
+import type {
+  AgentOpt,
+  DeviceAction,
+  Rect,
+  WebElementInfo,
+} from '@midscene/core';
+import type { InputStrategy } from '@midscene/core/device';
+import { _keyDefinitions } from '@midscene/shared/us-keyboard-layout';
+
+import type { NodeType } from '@midscene/shared/constants';
+export type { WebElementInfo };
+
+export type WebPageAgentOpt = AgentOpt & WebPageOpt;
+export type WebPageOpt = {
+  waitForNavigationTimeout?: number;
+  waitForNetworkIdleTimeout?: number;
+  forceSameTabNavigation?: boolean /* if limit the new tab to the current page, default true */;
+  enableTouchEventsInActionSpace?: boolean;
+  /**
+   * Finite non-negative per-character delay (ms) used when typing text via the
+   * underlying Puppeteer/Playwright `keyboard.type` API. Default undefined
+   * leaves the option unset and uses the underlying driver's own default.
+   */
+  keyboardTypeDelay?: number;
+  /**
+   * How Midscene sends text to the browser. `bulk` uses one `insertText`
+   * operation; `sequential` sends one Unicode code point at a time. `bulk`
+   * requires `keyboardTypeDelay` to be omitted or set to zero.
+   * @default 'legacy'
+   */
+  inputStrategy?: InputStrategy;
+  /**
+   * Force Chrome to render select elements using base-select appearance instead of OS-native rendering.
+   * This makes select elements visible in screenshots captured by Playwright/Puppeteer.
+   *
+   * Reference: https://developer.chrome.com/blog/a-customizable-select
+   *
+   * When enabled, adds a style tag with `select { appearance: base-select !important; }` to the page.
+   *
+   * Defaults to `true`. Set to `false` to opt out (e.g. on older Chrome/driver
+   * versions that do not support `appearance: base-select`).
+   */
+  forceChromeSelectRendering?: boolean;
+  beforeInvokeAction?: () => Promise<void>;
+  afterInvokeAction?: () => Promise<void>;
+  customActions?: DeviceAction<any>[];
+};
+
+export class WebElementInfoImpl implements WebElementInfo {
+  content: string;
+
+  rect: Rect;
+
+  center: [number, number];
+
+  id: string;
+
+  indexId: number;
+
+  attributes: {
+    nodeType: NodeType;
+    [key: string]: string;
+  };
+
+  xpaths?: string[];
+
+  isVisible: boolean;
+
+  constructor({
+    content,
+    rect,
+    id,
+    attributes,
+    indexId,
+    xpaths,
+    isVisible,
+  }: {
+    content: string;
+    rect: Rect;
+    id: string;
+    attributes: {
+      nodeType: NodeType;
+      [key: string]: string;
+    };
+    indexId: number;
+    xpaths?: string[];
+    isVisible: boolean;
+  }) {
+    this.content = content;
+    this.rect = rect;
+    this.center = [
+      Math.floor(rect.left + rect.width / 2),
+      Math.floor(rect.top + rect.height / 2),
+    ];
+    this.id = id;
+    this.attributes = attributes;
+    this.indexId = indexId;
+    this.xpaths = xpaths;
+    this.isVisible = isVisible;
+  }
+}
+
+export const limitOpenNewTabScript = `
+if (!window.__MIDSCENE_NEW_TAB_INTERCEPTOR_INITIALIZED__) {
+  window.__MIDSCENE_NEW_TAB_INTERCEPTOR_INITIALIZED__ = true;
+
+  // Intercept the window.open method (only once)
+  window.open = function(url) {
+    console.log('Blocked window.open:', url);
+    window.location.href = url;
+    return null;
+  };
+
+  // Block all a tag clicks with target="_blank" (only once)
+  document.addEventListener('click', function(e) {
+    const target = e.target.closest('a');
+    if (target && target.target === '_blank') {
+      e.preventDefault();
+      console.log('Blocked new tab:', target.href);
+      window.location.href = target.href;
+      target.removeAttribute('target');
+    }
+  }, true);
+}
+`;

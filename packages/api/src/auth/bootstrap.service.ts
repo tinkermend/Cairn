@@ -1,6 +1,6 @@
 import { Injectable, Logger, type OnModuleInit } from '@nestjs/common'
 import { ADMIN_ROLE_KEY } from '@cairn/shared'
-import { loadApiEnv } from '../config/env'
+import { config } from '../config/env'
 import { RbacService } from '../rbac/rbac.service'
 
 /**
@@ -26,7 +26,6 @@ export class BootstrapService implements OnModuleInit {
     const hasAdmin = accounts.items.some((account) => account.roles.some((role) => role.key === ADMIN_ROLE_KEY))
     if (hasAdmin) return
 
-    const env = loadApiEnv()
     const roles = await this.rbac.listRoles()
     const adminRole = roles.items.find((role) => role.key === ADMIN_ROLE_KEY)
     if (!adminRole) {
@@ -35,15 +34,15 @@ export class BootstrapService implements OnModuleInit {
 
     await this.rbac.createAccount(
       {
-        displayName: env.CAIRN_BOOTSTRAP_ADMIN_NAME,
-        email: env.CAIRN_BOOTSTRAP_ADMIN_EMAIL,
-        password: env.CAIRN_BOOTSTRAP_ADMIN_PASSWORD,
+        displayName: config.CAIRN_BOOTSTRAP_ADMIN_NAME,
+        email: config.CAIRN_BOOTSTRAP_ADMIN_EMAIL,
+        password: config.CAIRN_BOOTSTRAP_ADMIN_PASSWORD,
         roleIds: [adminRole.id],
       },
       null,
     )
     this.logger.warn(
-      { email: env.CAIRN_BOOTSTRAP_ADMIN_EMAIL },
+      { email: config.CAIRN_BOOTSTRAP_ADMIN_EMAIL },
       '已创建首位管理员。生产环境请立刻改密，并覆盖 CAIRN_JWT_SECRET / CAIRN_BOOTSTRAP_ADMIN_PASSWORD',
     )
   }

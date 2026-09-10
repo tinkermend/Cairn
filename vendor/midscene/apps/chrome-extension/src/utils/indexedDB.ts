@@ -1,0 +1,755 @@
+import type { RecordingSession } from '../store';
+
+const DB_NAME = 'midscene-recorder';
+const SESSIONS_STORE = 'recording-sessions';
+const CONFIG_STORE = 'config';
+const SESSION_METADATA_KEY = 'recording-session-metadata';
+const LEGACY_SESSION_METADATA_STORE = 'recording-session-metadata';
+
+// Session limit configuration
+const MAX_SESSIONS = 5;
+
+interface DBConfig {
+  currentSessionId: string | null;
+  isRecording: boolean;
+  // Navigation recovery fields
+  wasRecordingBeforeNavigation?: boolean;
+  lastRecordingTabId?: number;
+  lastRecordingUrl?: string;
+  lastRecordingSessionId?: string;
+  lastNavigationTime?: number;
+}
+
+type RecordingSessionMetadata = Omit<
+  RecordingSession,
+  'events' | 'eventCount'
+> & {
+  eventCount: number;
+};
+
+export const toRecordingSessionMetadata = (
+  session: RecordingSession,
+): RecordingSessionMetadata => {
+  const { events, eventCount, ...metadata } = session;
+  return {
+    ...metadata,
+    eventCount: eventCount ?? events.length,
+  };
+};
+
+class IndexedDBManager {
+  private db: IDBDatabase | null = null;
+  private initPromise: Promise<void> | null = null;
+  private isInitialized = false;
+  private isHealthy = true;
+
+  async init(): Promise<void> {
+    // Prevent duplicate initialization
+    if (this.isInitialized && this.isHealthy) {
+      return;
+    }
+
+    // If already initializing, return existing Promise
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+
+    this.initPromise = this._doInit();
+    try {
+      await this.initPromise;
+      this.isInitialized = true;
+      this.isHealthy = true;
+    } catch (error) {
+      // Reset Promise on failure for retry
+      this.initPromise = null;
+      this.isHealthy = false;
+      throw error;
+    }
+  }
+
+  // Health check method
+  private async healthCheck(): Promise<boolean> {
+    if (!this.db || !this.isInitialized) {
+      return false;
+    }
+
+    try {
+      // Simple read test
+      await this.getConfig();
+      this.isHealthy = true;
+      return true;
+    } catch (error) {
+      console.warn('IndexedDB health check failed:', error);
+      this.isHealthy = false;
+      return false;
+    }
+  }
+
+  private async _doInit(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Open the existing database at its current version. This keeps the
+      // corrected build compatible with both v2 databases and any local v3
+      // database opened by the short-lived metadata-store implementation.
+      const request = indexedDB.open(DB_NAME);
+
+      request.onerror = () => {
+        console.error('IndexedDB open error:', request.error);
+        reject(request.error);
+      };
+
+      request.onsuccess = () => {
+        this.db = request.result;
+
+        // Add database error handling
+        this.db.onerror = (event) => {
+          console.error('IndexedDB error:', event);
+        };
+        this.db.onversionchange = () => {
+          this.db?.close();
+          this.db = null;
+          this.isInitialized = false;
+        };
+
+        resolve();
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+
+        // Create sessions store
+        if (!db.objectStoreNames.contains(SESSIONS_STORE)) {
+          const sessionsStore = db.createObjectStore(SESSIONS_STORE, {
+            keyPath: 'id',
+          });
+          sessionsStore.createIndex('createdAt', 'createdAt', {
+            unique: false,
+          });
+          sessionsStore.createIndex('updatedAt', 'updatedAt', {
+            unique: false,
+          });
+        }
+
+        // Create config store
+        if (!db.objectStoreNames.contains(CONFIG_STORE)) {
+          db.createObjectStore(CONFIG_STORE, { keyPath: 'key' });
+        }
+      };
+    });
+  }
+
+  private async ensureDB(): Promise<IDBDatabase> {
+    await this.init();
+    if (!this.db || !this.isInitialized || !this.isHealthy) {
+      throw new Error(
+        'Database not initialized or unhealthy. Call init() first.',
+      );
+    }
+    return this.db;
+  }
+
+  // Safe database operation wrapper
+  private async safeDBOperation<T>(
+    operation: () => Promise<T>,
+    fallback: T,
+  ): Promise<T> {
+    try {
+      // Health check
+      if (!this.isHealthy) {
+        const isHealthy = await this.healthCheck();
+        if (!isHealthy) {
+          throw new Error('Database is unhealthy');
+        }
+      }
+
+      return await operation();
+    } catch (error) {
+      console.error('Database operation failed:', error);
+      this.isHealthy = false;
+      return fallback;
+    }
+  }
+
+  // Create Promise wrapper with timeout
+  private createTimeoutPromise<T>(
+    promiseExecutor: (
+      resolve: (value: T) => void,
+      reject: (reason?: any) => void,
+    ) => void,
+    timeoutMs = 10000,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      // Set timeout
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`IndexedDB operation timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      // Wrap original resolve and reject
+      const wrappedResolve = (value: T) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      };
+
+      const wrappedReject = (reason?: any) => {
+        clearTimeout(timeoutId);
+        reject(reason);
+      };
+
+      try {
+        promiseExecutor(wrappedResolve, wrappedReject);
+      } catch (error) {
+        clearTimeout(timeoutId);
+        reject(error);
+      }
+    });
+  }
+
+  // Session management
+  async getSessionSummaries(): Promise<RecordingSession[]> {
+    return this.safeDBOperation(async () => {
+      const db = await this.ensureDB();
+      const [cachedMetadata, legacyMetadata, sessionKeys] = await Promise.all([
+        this.getCachedSessionMetadata(db),
+        this.getLegacySessionMetadata(db),
+        this.getSessionKeys(db),
+      ]);
+
+      let metadata = cachedMetadata || legacyMetadata;
+      const cacheMatchesSessions =
+        metadata?.length === sessionKeys.length &&
+        metadata.every(
+          (session, index) =>
+            session.id === sessionKeys[index]?.id &&
+            session.updatedAt === sessionKeys[index]?.updatedAt,
+        );
+
+      if (!cacheMatchesSessions) {
+        if (sessionKeys.length === 0) {
+          metadata = [];
+        } else {
+          const sessions = await this.getAllSessions();
+          metadata = sessions
+            .slice(0, MAX_SESSIONS)
+            .map(toRecordingSessionMetadata);
+        }
+      }
+
+      if (metadata !== cachedMetadata) {
+        await this.setCachedSessionMetadata(db, metadata || []);
+      }
+
+      return (metadata || []).map((session) => ({
+        ...session,
+        events: [],
+      }));
+    }, []);
+  }
+
+  private async getCachedSessionMetadata(
+    db: IDBDatabase,
+  ): Promise<RecordingSessionMetadata[] | null> {
+    return this.createTimeoutPromise((resolve, reject) => {
+      const transaction = db.transaction([CONFIG_STORE], 'readonly');
+      const request = transaction
+        .objectStore(CONFIG_STORE)
+        .get(SESSION_METADATA_KEY);
+      request.onsuccess = () => resolve(request.result?.value || null);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  private async getLegacySessionMetadata(
+    db: IDBDatabase,
+  ): Promise<RecordingSessionMetadata[] | null> {
+    if (!db.objectStoreNames.contains(LEGACY_SESSION_METADATA_STORE)) {
+      return null;
+    }
+
+    return this.createTimeoutPromise((resolve, reject) => {
+      const transaction = db.transaction(
+        [LEGACY_SESSION_METADATA_STORE],
+        'readonly',
+      );
+      const request = transaction
+        .objectStore(LEGACY_SESSION_METADATA_STORE)
+        .index('updatedAt')
+        .openCursor(null, 'prev');
+      const metadata: RecordingSessionMetadata[] = [];
+
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor || metadata.length >= MAX_SESSIONS) {
+          resolve(metadata);
+          return;
+        }
+        metadata.push(cursor.value);
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  private async setCachedSessionMetadata(
+    db: IDBDatabase,
+    metadata: RecordingSessionMetadata[],
+  ): Promise<void> {
+    return this.createTimeoutPromise((resolve, reject) => {
+      const transaction = db.transaction([CONFIG_STORE], 'readwrite');
+      const request = transaction.objectStore(CONFIG_STORE).put({
+        key: SESSION_METADATA_KEY,
+        value: metadata,
+      });
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  private async getSessionKeys(
+    db: IDBDatabase,
+  ): Promise<Array<{ id: IDBValidKey; updatedAt: IDBValidKey }>> {
+    return this.createTimeoutPromise((resolve, reject) => {
+      const transaction = db.transaction([SESSIONS_STORE], 'readonly');
+      const request = transaction
+        .objectStore(SESSIONS_STORE)
+        .index('updatedAt')
+        .openKeyCursor(null, 'prev');
+      const keys: Array<{ id: IDBValidKey; updatedAt: IDBValidKey }> = [];
+
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor || keys.length >= MAX_SESSIONS) {
+          resolve(keys);
+          return;
+        }
+        keys.push({ id: cursor.primaryKey, updatedAt: cursor.key });
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async getAllSessions(): Promise<RecordingSession[]> {
+    return this.safeDBOperation(async () => {
+      const db = await this.ensureDB();
+
+      return this.createTimeoutPromise<RecordingSession[]>(
+        (resolve, reject) => {
+          const transaction = db.transaction([SESSIONS_STORE], 'readonly');
+
+          // Add transaction error handling
+          transaction.onerror = () => {
+            console.error(
+              'Transaction error in getAllSessions:',
+              transaction.error,
+            );
+            reject(transaction.error);
+          };
+
+          transaction.onabort = () => {
+            console.error('Transaction aborted in getAllSessions');
+            reject(new Error('Transaction aborted'));
+          };
+
+          const store = transaction.objectStore(SESSIONS_STORE);
+          const index = store.index('updatedAt');
+          const request = index.getAll();
+
+          request.onsuccess = () => {
+            try {
+              // Sort by updatedAt descending (newest first)
+              const sessions = request.result.sort(
+                (a, b) => b.updatedAt - a.updatedAt,
+              );
+              resolve(sessions);
+            } catch (error) {
+              reject(error);
+            }
+          };
+
+          request.onerror = () => {
+            console.error('Request error in getAllSessions:', request.error);
+            reject(request.error);
+          };
+        },
+      );
+    }, []);
+  }
+
+  async getSession(id: string): Promise<RecordingSession | null> {
+    return this.safeDBOperation(async () => {
+      const db = await this.ensureDB();
+
+      return this.createTimeoutPromise<RecordingSession | null>(
+        (resolve, reject) => {
+          const transaction = db.transaction([SESSIONS_STORE], 'readonly');
+
+          transaction.onerror = () => {
+            console.error(
+              'Transaction error in getSession:',
+              transaction.error,
+            );
+            reject(transaction.error);
+          };
+
+          transaction.onabort = () => {
+            console.error('Transaction aborted in getSession');
+            reject(new Error('Transaction aborted'));
+          };
+
+          const store = transaction.objectStore(SESSIONS_STORE);
+          const request = store.get(id);
+
+          request.onsuccess = () => resolve(request.result || null);
+          request.onerror = () => {
+            console.error('Request error in getSession:', request.error);
+            reject(request.error);
+          };
+        },
+      );
+    }, null);
+  }
+
+  async addSession(session: RecordingSession): Promise<void> {
+    const db = await this.ensureDB();
+    const summaries = await this.getSessionSummaries();
+    const metadata = [
+      toRecordingSessionMetadata(session),
+      ...summaries
+        .filter(({ id }) => id !== session.id)
+        .map(toRecordingSessionMetadata),
+    ]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_SESSIONS);
+    const retainedSessionIds = new Set(metadata.map(({ id }) => id));
+
+    return this.createTimeoutPromise<void>((resolve, reject) => {
+      const transaction = db.transaction(
+        [SESSIONS_STORE, CONFIG_STORE],
+        'readwrite',
+      );
+      const sessionsStore = transaction.objectStore(SESSIONS_STORE);
+      sessionsStore.add(session);
+      transaction.objectStore(CONFIG_STORE).put({
+        key: SESSION_METADATA_KEY,
+        value: metadata,
+      });
+      for (const existingSession of summaries) {
+        if (!retainedSessionIds.has(existingSession.id)) {
+          sessionsStore.delete(existingSession.id);
+        }
+      }
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }
+
+  async updateSession(
+    sessionId: string,
+    updates: Partial<RecordingSession>,
+  ): Promise<void> {
+    const db = await this.ensureDB();
+    let existingSession = await this.getSession(sessionId);
+
+    // If session doesn't exist, create a basic session structure
+    if (!existingSession) {
+      console.warn(
+        `Session ${sessionId} not found, creating new session with updates`,
+      );
+      existingSession = {
+        id: sessionId,
+        name: `Session ${new Date().toLocaleString()}`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        events: [],
+        status: 'idle' as const,
+        ...updates, // Apply the updates to the new session
+      };
+    } else {
+      // Merge updates with existing session
+      existingSession = {
+        ...existingSession,
+        ...updates,
+        updatedAt: Date.now(),
+      };
+    }
+    const summaries = await this.getSessionSummaries();
+    const metadata = [
+      toRecordingSessionMetadata(existingSession),
+      ...summaries
+        .filter(({ id }) => id !== sessionId)
+        .map(toRecordingSessionMetadata),
+    ]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_SESSIONS);
+
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(
+        [SESSIONS_STORE, CONFIG_STORE],
+        'readwrite',
+      );
+      const store = transaction.objectStore(SESSIONS_STORE);
+      store.put(existingSession);
+      transaction.objectStore(CONFIG_STORE).put({
+        key: SESSION_METADATA_KEY,
+        value: metadata,
+      });
+
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    const db = await this.ensureDB();
+    const metadata = (await this.getSessionSummaries())
+      .filter(({ id }) => id !== sessionId)
+      .map(toRecordingSessionMetadata);
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(
+        [SESSIONS_STORE, CONFIG_STORE],
+        'readwrite',
+      );
+      transaction.objectStore(SESSIONS_STORE).delete(sessionId);
+      transaction.objectStore(CONFIG_STORE).put({
+        key: SESSION_METADATA_KEY,
+        value: metadata,
+      });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  }
+
+  // Config management
+  async getConfig(): Promise<DBConfig> {
+    try {
+      const db = await this.ensureDB();
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction([CONFIG_STORE], 'readonly');
+        const store = transaction.objectStore(CONFIG_STORE);
+        const request = store.get('config');
+
+        request.onsuccess = () => {
+          const result = request.result;
+          resolve(
+            result?.value || {
+              currentSessionId: null,
+              isRecording: false,
+              wasRecordingBeforeNavigation: false,
+              lastRecordingTabId: undefined,
+              lastRecordingUrl: undefined,
+              lastRecordingSessionId: undefined,
+              lastNavigationTime: undefined,
+            },
+          );
+        };
+        request.onerror = () => reject(request.error);
+      });
+    } catch (error) {
+      console.error('Failed to get config:', error);
+      return {
+        currentSessionId: null,
+        isRecording: false,
+        wasRecordingBeforeNavigation: false,
+        lastRecordingTabId: undefined,
+        lastRecordingUrl: undefined,
+        lastRecordingSessionId: undefined,
+        lastNavigationTime: undefined,
+      };
+    }
+  }
+
+  async setConfig(config: Partial<DBConfig>): Promise<void> {
+    try {
+      const db = await this.ensureDB();
+      const currentConfig = await this.getConfig();
+      const newConfig = { ...currentConfig, ...config };
+
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction([CONFIG_STORE], 'readwrite');
+        const store = transaction.objectStore(CONFIG_STORE);
+        const request = store.put({ key: 'config', value: newConfig });
+
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    } catch (error) {
+      console.error('Failed to set config:', error);
+    }
+  }
+
+  async getCurrentSessionId(): Promise<string | null> {
+    const config = await this.getConfig();
+    return config.currentSessionId;
+  }
+
+  async setCurrentSessionId(sessionId: string | null): Promise<void> {
+    await this.setConfig({ currentSessionId: sessionId });
+  }
+
+  async getRecordingState(): Promise<boolean> {
+    const config = await this.getConfig();
+    return config.isRecording;
+  }
+
+  async setRecordingState(isRecording: boolean): Promise<void> {
+    await this.setConfig({ isRecording });
+  }
+
+  // Clear navigation recovery state
+  async clearNavigationRecoveryState(): Promise<void> {
+    await this.setConfig({
+      wasRecordingBeforeNavigation: false,
+      lastRecordingTabId: undefined,
+      lastRecordingUrl: undefined,
+      lastRecordingSessionId: undefined,
+      lastNavigationTime: undefined,
+    });
+  }
+
+  // Recording events management (temporary storage during recording)
+  async getRecordingEvents(): Promise<any[]> {
+    return this.safeDBOperation(async () => {
+      const db = await this.ensureDB();
+
+      return this.createTimeoutPromise<any[]>((resolve, reject) => {
+        const transaction = db.transaction([CONFIG_STORE], 'readonly');
+
+        transaction.onerror = () => {
+          console.error(
+            'Transaction error in getRecordingEvents:',
+            transaction.error,
+          );
+          reject(transaction.error);
+        };
+
+        const store = transaction.objectStore(CONFIG_STORE);
+        const request = store.get('recording-events');
+
+        request.onsuccess = () => {
+          const result = request.result;
+          resolve(result?.value || []);
+        };
+        request.onerror = () => {
+          console.error('Request error in getRecordingEvents:', request.error);
+          reject(request.error);
+        };
+      });
+    }, []);
+  }
+
+  async setRecordingEvents(events: any[]): Promise<void> {
+    try {
+      const db = await this.ensureDB();
+
+      return this.createTimeoutPromise<void>((resolve, reject) => {
+        const transaction = db.transaction([CONFIG_STORE], 'readwrite');
+
+        // Add transaction error handling
+        transaction.onerror = () => {
+          console.error(
+            'Transaction error in setRecordingEvents:',
+            transaction.error,
+          );
+          reject(transaction.error);
+        };
+
+        transaction.onabort = () => {
+          console.error('Transaction aborted in setRecordingEvents');
+          reject(new Error('Transaction aborted'));
+        };
+
+        const store = transaction.objectStore(CONFIG_STORE);
+        const request = store.put({ key: 'recording-events', value: events });
+
+        request.onsuccess = () => resolve();
+        request.onerror = () => {
+          console.error('Request error in setRecordingEvents:', request.error);
+          reject(request.error);
+        };
+      }, 5000); // Shorter timeout for events during navigation
+    } catch (error) {
+      console.error('Failed to set recording events:', error);
+      // Don't throw error during navigation to prevent hanging
+    }
+  }
+
+  // Emergency method for saving events during navigation with minimal timeout
+  async emergencySetRecordingEvents(events: any[]): Promise<void> {
+    try {
+      const db = await this.ensureDB();
+
+      return this.createTimeoutPromise<void>((resolve, reject) => {
+        const transaction = db.transaction([CONFIG_STORE], 'readwrite');
+
+        // Immediate resolution on transaction complete for faster response
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(new Error('Transaction aborted'));
+
+        const store = transaction.objectStore(CONFIG_STORE);
+        const request = store.put({ key: 'recording-events', value: events });
+
+        request.onerror = () => reject(request.error);
+      }, 2000); // Very short timeout for emergency saves
+    } catch (error) {
+      console.error('Failed to emergency save recording events:', error);
+      // Fail silently during navigation
+    }
+  }
+
+  async clearRecordingEvents(): Promise<void> {
+    try {
+      const db = await this.ensureDB();
+
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction([CONFIG_STORE], 'readwrite');
+        const store = transaction.objectStore(CONFIG_STORE);
+        const request = store.delete('recording-events');
+
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      });
+    } catch (error) {
+      console.error('Failed to clear recording events:', error);
+    }
+  }
+}
+
+// Singleton instance
+export const dbManager = new IndexedDBManager();
+
+// Global initialization state tracking
+let isGloballyInitialized = false;
+let globalInitPromise: Promise<void> | null = null;
+
+// Initialize the database
+export const initializeDB = async (): Promise<void> => {
+  // Prevent duplicate initialization
+  if (isGloballyInitialized) {
+    return;
+  }
+
+  // If already initializing, return existing Promise
+  if (globalInitPromise) {
+    return globalInitPromise;
+  }
+
+  globalInitPromise = (async () => {
+    try {
+      await dbManager.init();
+      // Only execute migration on first initialization
+      if (!isGloballyInitialized) {
+        isGloballyInitialized = true;
+      }
+    } catch (error) {
+      // Reset state on initialization failure for retry
+      globalInitPromise = null;
+      console.error('Failed to initialize IndexedDB:', error);
+      throw error;
+    }
+  })();
+
+  return globalInitPromise;
+};

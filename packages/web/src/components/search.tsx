@@ -14,7 +14,7 @@ export function Search({
       {...props}
       variant='outline'
       className={cn(
-        'group relative h-8 w-full flex-1 justify-start rounded-md bg-muted/25 text-sm font-normal text-muted-foreground shadow-none hover:bg-accent sm:w-40 sm:pe-12 md:flex-none lg:w-52 xl:w-64',
+        'group relative h-8 w-full flex-1 justify-start rounded-md bg-surface-control text-sm font-normal text-muted-foreground shadow-none hover:bg-accent sm:w-40 sm:pe-12 md:flex-none lg:w-52 xl:w-64',
         className
       )}
       aria-keyshortcuts='Meta+K Control+K'

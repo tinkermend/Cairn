@@ -1,0 +1,18 @@
+# MCP 集成已下线
+
+Midscene 不再发布 MCP server。请改用 [Skills](./skills)，让 AI 编程 Agent 通过各平台 CLI 驱动 Midscene。
+
+如果仍然需要 MCP server 包，请将 Midscene 固定在 `1.9.8`。这是最后一个包含 MCP 支持的版本。
+
+请从 Agent 配置中移除以下已退役的 MCP 包：
+
+- `@midscene/web-bridge-mcp`
+- `@midscene/android-mcp`
+- `@midscene/ios-mcp`
+- `@midscene/harmony-mcp`
+- `@midscene/computer-mcp`
+- `@midscene/mcp`
+
+如果之前的 MCP 配置中设置了 `MIDSCENE_MCP_CHROME_PATH`，请迁移为 Skills 和 CLI 使用的 `MIDSCENE_CHROME_PATH`。旧变量会暂时作为迁移别名继续生效。
+
+如果需要代码级自动化，请使用 JavaScript SDK、YAML runner，或 [Skills](./skills) 中列出的各平台 CLI。

@@ -1,0 +1,18 @@
+# MCP integration has been retired
+
+Midscene no longer ships MCP servers. Use [Skills](./skills) to let AI coding agents drive Midscene through the platform CLIs.
+
+If you still need the MCP server packages, pin Midscene to `1.9.8`. This is the final version that includes MCP support.
+
+Remove any agent configuration that references the retired MCP packages:
+
+- `@midscene/web-bridge-mcp`
+- `@midscene/android-mcp`
+- `@midscene/ios-mcp`
+- `@midscene/harmony-mcp`
+- `@midscene/computer-mcp`
+- `@midscene/mcp`
+
+If your previous MCP configuration set `MIDSCENE_MCP_CHROME_PATH`, move that value to `MIDSCENE_CHROME_PATH` for Skills and CLI usage. The old variable is still accepted as a temporary migration alias.
+
+For code-level automation, use the JavaScript SDK, YAML runner, or the platform CLIs listed in [Skills](./skills).

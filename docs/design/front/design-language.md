@@ -74,7 +74,7 @@
 | `surface-page` | `#F1F4FA` | 内容画布 |
 | `surface-card` | `#FFFFFF` | 卡片、弹层 |
 | `surface-header` | `#F8FAFC` | 表头、分区标题底 |
-| `surface-control` | `#F7F9FC` | 输入填充；与卡片白底区分，不与卡片同色 |
+| `surface-control` | `#FFFFFF` | 输入填充，与卡片同色；靠边界识别，不另铺浅灰或冷白底 |
 | `surface-subtle` | `#F1F5F9` | 中性标签、次级分区、Skeleton |
 | `border-default` | `#E4E9F1` | 结构边界、分区 |
 | `border-card` | `#EEF1F6` | 卡片与数据容器；与双层阴影配合，不单独承担边界 |
@@ -93,7 +93,8 @@
 
 结构边框可以轻，输入框的必要识别边界不能同样弱。`border-control` 对白底不低于 3:1（WCAG 2.2 SC 1.4.11），
 这条由 `check.mjs` 断言卡住：**不得为了观感把输入边界调浅到 3:1 以下**。要让输入看起来更轻，
-应该走填充（`surface-control`）与内阴影，而不是削弱边界对比度。
+用白底加内阴影，而不是削弱边界，也不得再铺一层浅灰或冷白填充——那层底叠在白卡片上只会发脏，像禁用态。
+`surface-control` 必须与 `surface-card` 同色，由 `check.mjs` 卡住。
 
 ### 3.3 语义状态
 

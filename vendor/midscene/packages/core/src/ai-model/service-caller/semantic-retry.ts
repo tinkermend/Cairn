@@ -1,0 +1,97 @@
+import type { ChatCompletionMessageParam } from 'openai/resources/index';
+
+export function withSemanticRetryFeedback(
+  messages: ChatCompletionMessageParam[],
+  previousParseError?: unknown,
+): ChatCompletionMessageParam[] {
+  if (!previousParseError) return messages;
+
+  const errorMessage =
+    previousParseError instanceof Error
+      ? previousParseError.message
+      : String(previousParseError);
+
+  return [
+    ...messages,
+    {
+      role: 'user',
+      content: `The previous response was invalid:\n${errorMessage}\n\nPlease avoid the validation error above in this response.`,
+    },
+  ];
+}
+
+export type CallAiAndParseWithRetryOptions<Response, Parsed> = {
+  /** Sends a single model request. Request errors are always propagated as-is. */
+  /**
+   * `retryAttempt` is local to this retry loop: 0 for the initial request,
+   * then incremented after each parsing failure.
+   */
+  callAi: (
+    retryAttempt: number,
+    previousParseError?: unknown,
+  ) => Promise<Response>;
+  /** Parses a successful model response. Only failures from this callback retry. */
+  parseResponse: (response: Response) => Parsed | Promise<Parsed>;
+  /** Converts the final parsing failure into the caller's domain error. */
+  toParseError: (error: unknown, response: Response) => Error;
+  /** Number of additional model requests after a parsing failure. Defaults to 0. */
+  parseRetryTimes?: number;
+  /** Delay in milliseconds before retrying a parsing failure. Defaults to 0. */
+  parseRetryInterval?: number;
+  abortSignal?: AbortSignal;
+  /** Runs immediately before a parsing failure triggers another model request. */
+  onParseRetry?: (error: unknown, response: Response) => void;
+};
+
+/**
+ * Calls AI and parses its response, retrying only when the response cannot be
+ * structurally parsed.
+ *
+ * Errors thrown by callAi() intentionally bypass this retry mechanism and are
+ * propagated as-is. Only a successful callAi() response that fails the
+ * parseResponse() callback triggers another model request.
+ */
+export async function callAiAndParseWithRetry<Response, Parsed>({
+  callAi,
+  parseResponse,
+  toParseError,
+  parseRetryTimes = 0,
+  parseRetryInterval = 0,
+  abortSignal,
+  onParseRetry,
+}: CallAiAndParseWithRetryOptions<Response, Parsed>): Promise<Parsed> {
+  const normalizedRetryTimes = Number.isFinite(parseRetryTimes)
+    ? Math.max(0, Math.floor(parseRetryTimes))
+    : 0;
+  const normalizedRetryInterval = Number.isFinite(parseRetryInterval)
+    ? Math.max(0, parseRetryInterval)
+    : 0;
+
+  const callAndParseOnce = async (
+    remainingRetries: number,
+    retryAttempt: number,
+    previousParseError?: unknown,
+  ): Promise<Parsed> => {
+    const response = await callAi(retryAttempt, previousParseError);
+
+    try {
+      return await parseResponse(response);
+    } catch (error) {
+      if (remainingRetries > 0 && !abortSignal?.aborted) {
+        onParseRetry?.(error, response);
+        if (normalizedRetryInterval > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, normalizedRetryInterval),
+          );
+        }
+        if (abortSignal?.aborted) {
+          throw toParseError(error, response);
+        }
+        return callAndParseOnce(remainingRetries - 1, retryAttempt + 1, error);
+      }
+      throw toParseError(error, response);
+    }
+  };
+
+  return callAndParseOnce(normalizedRetryTimes, 0);
+}

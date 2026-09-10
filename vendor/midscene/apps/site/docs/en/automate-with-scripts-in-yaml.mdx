@@ -1,0 +1,808 @@
+import SetupEnv from './common/setup-env.mdx';
+
+# Automate with scripts in YAML
+
+:::info Legacy YAML automation
+This page describes the legacy YAML automation solution. For new test projects, see [Midscene Test overview](./midscene-test/overview). Midscene Test is currently in Beta.
+:::
+
+In most cases, developers write automation scripts just to perform some smoke tests, like checking for the appearance of certain content or verifying that a key user path is accessible. In such situations, maintaining a large test project is unnecessary.
+
+Midscene offers a way to perform automation using `.yaml` files, which helps you focus on the script itself rather than the testing framework. This allows any team member to write automation scripts without needing to learn any API.
+
+Here is an example. By reading its content, you should be able to understand how it works.
+
+```yaml
+page:
+  url: https://www.bing.com
+
+tasks:
+  - name: Search for weather
+    flow:
+      - ai: Search for "today's weather"
+      - sleep: 3000
+
+  - name: Check results
+    flow:
+      - aiAssert: The results show weather information
+```
+
+:::info Sample Project
+
+You can find a sample project that uses YAML scripts for automation here:
+
+- [Web](https://github.com/web-infra-dev/midscene-example/tree/main/yaml-scripts-demo)
+- [Android](https://github.com/web-infra-dev/midscene-example/tree/main/android/yaml-scripts-demo)
+- [Computer (Mac/Windows/Linux)](https://github.com/web-infra-dev/midscene-example/tree/main/computer/yaml-scripts-demo)
+
+:::
+
+## Set up API keys for model
+
+<SetupEnv />
+
+To execute YAML workflows from the command line, install the Midscene CLI. See [YAML script runner](./yaml-script-runner) for installation guidance, `.env` usage, and details on the `midscene` runner.
+
+## Script file structure
+
+Script files use YAML format to describe automation tasks. It defines the target to be manipulated (like a webpage or an Android app) and the series of steps to perform.
+
+A standard `.yaml` script file includes a `page`, `browser`, `web`, `android`, `ios`, `harmony`, or `computer` section to configure the environment, an optional `agent` section to configure AI agent behavior, and a `tasks` section to define the automation tasks.
+
+```yaml
+page:
+  url: https://www.bing.com
+
+# The tasks section defines the series of steps to be executed
+tasks:
+  - name: Search for weather
+    flow:
+      - ai: Search for "today's weather"
+      - sleep: 3000
+      - aiAssert: The results show weather information
+```
+
+Use `page:` for a page-level Agent. Use `browser:` when one Agent should manage a browser and its active page. `web:` remains supported as a compatibility entry; `web.mode: browser` maps to BrowserAgent and plain `web:` maps to PageAgent. Do not combine `page`, `browser`, `web`, or the deprecated `target` in the same script.
+
+### The `agent` part
+
+The `agent` section configures AI agent behavior and test report options. All fields are optional.
+
+```yaml
+# AI agent configuration
+agent:
+  # Test identifier, used for reporting and cache identification, optional
+  testId: <string>
+
+  # Report group name, optional
+  groupName: <string>
+
+  # Report group description, optional
+  groupDescription: <string>
+
+  # Whether to generate test reports, optional, defaults to true
+  generateReport: <boolean>
+
+  # Whether to automatically print report messages, optional, defaults to true
+  autoPrintReportMsg: <boolean>
+
+  # Custom report file name, optional
+  reportFileName: <string>
+
+  # Maximum AI replanning cycle limit, optional, defaults to 20 (40 for UI-TARS model)
+  replanningCycleLimit: <number>
+
+  # Additional AI guidance, optional. default is the shared fallback.
+  aiContexts:
+    default: <string>
+    aiAct: <string>
+    aiQuery: <string>
+
+  # Deprecated compatibility alias for aiContexts.aiAct, optional
+  aiActContext: <string>
+  # The older deprecated alias aiActionContext also remains available for compatibility
+
+  # Cache configuration, optional
+  cache:
+    # Cache strategy, optional, values: 'read-only' | 'read-write' | 'write-only'
+    strategy: <string>
+    # Cache ID, required
+    id: <string>
+```
+
+:::info Agent Configuration Notes
+
+- **Applicable environments**: Web, iOS, and Android environments all support `agent` configuration
+- **testId priority**: CLI parameter > YAML agent.testId > filename
+- **aiContexts**: Provides additional AI guidance such as business facts, rules, constraints, or output requirements. If `default` is configured, it is used only when neither the current call nor the matching API has its own context. A per-call `context` overrides the API value, which overrides `default`; these values are not automatically merged. Empty strings explicitly clear inherited user context.
+- **aiActContext**: Deprecated compatibility field for `aiContexts.aiAct`. `aiContexts.aiAct` wins when both are present. The older `aiActionContext` alias is also deprecated and remains available only for compatibility.
+- **Cache configuration**: For detailed usage, refer to the [Caching documentation](./caching.mdx)
+
+:::
+
+#### Usage example
+
+```yaml
+# agent configuration, applies to all environments
+agent:
+  testId: "checkout-test"
+  groupName: "E2E Test Suite"
+  groupDescription: "Complete checkout flow testing"
+  generateReport: true
+  autoPrintReportMsg: false
+  reportFileName: "checkout-report"
+  replanningCycleLimit: 30
+  aiContexts:
+    default: "Prices are displayed in USD."
+    aiAct: "If any popup appears, click agree. If login page appears, skip it."
+  cache:
+    id: "checkout-cache"
+    strategy: "read-write"
+
+# iOS environment configuration
+ios:
+  launch: https://www.bing.com
+  wdaPort: 8100
+
+# Or Android environment configuration
+android:
+  deviceId: s4ey59
+  launch: https://www.bing.com
+
+tasks:
+  - name: Search for weather
+    flow:
+      - ai: Search for "today's weather"
+      - aiAssert: The results show weather information
+```
+
+
+### The web target part
+
+Recommended page-level target:
+
+```yaml
+page:
+  url: https://example.com
+```
+
+Recommended browser-level target:
+
+```yaml
+browser:
+  url: https://example.com
+  autoFollowNewPage: true
+```
+
+Compatibility form:
+
+```yaml
+web:
+  mode: browser
+  url: https://example.com
+  autoFollowNewPage: true
+```
+
+Shared options:
+
+```yaml
+page:
+  # The URL to visit, required. If `serve` is provided, provide the relative path.
+  url: <url>
+
+  # Serve a local path as a static server, optional.
+  serve: <root-directory>
+
+  # The browser user agent, optional.
+  userAgent: <ua>
+
+  # The browser viewport width, optional, defaults to 1440.
+  viewportWidth: <width>
+
+  # The browser viewport height, optional, defaults to 800.
+  viewportHeight: <height>
+
+  # The browser's device pixel ratio, optional, defaults to the system's value.
+  deviceScaleFactor: <scale>
+
+  # Path to a JSON format browser cookie file, optional.
+  cookie: <path-to-cookie-file>
+
+  # Chrome download directory (Puppeteer only), optional.
+  # Relative paths are resolved from the current working directory.
+  # Not supported in bridge mode.
+  downloadPath: <path-to-download-directory>
+
+  # Extra HTTP headers sent with every request (Puppeteer only), optional.
+  # Useful when the server validates custom request headers.
+  # Values must be strings; quote values YAML would treat as a boolean or number, e.g. "true".
+  extraHTTPHeaders:
+    X-Custom-Token: my-token
+    Accept-Language: en-US
+
+  # The strategy for waiting for network idle in Puppeteer mode, optional.
+  # `timeout` applies to the initial opening of `web.url` defined in YAML and to later actions such as `aiTap` and `aiInput`.
+  # `continueOnNetworkIdleError` only applies to the initial opening of `web.url` defined in YAML.
+  waitForNetworkIdle:
+    # The timeout in milliseconds for each network idle wait, optional, defaults to 2000ms.
+    timeout: <ms>
+    # Whether to continue if the initial opening of `web.url` defined in YAML times out while waiting for network idle, optional, defaults to true.
+    # Later action-time waits always continue even if they time out.
+    continueOnNetworkIdleError: <boolean>
+
+  # The path to the JSON file for outputting aiQuery/aiAssert results, optional.
+  output: <path-to-output-file>
+
+  # Whether to save log content to a JSON file, optional, defaults to `false`. If true, saves to `unstableLogContent.json`. If a string, saves to the specified path. The log content structure may change in the future.
+  unstableLogContent: <boolean | path-to-unstable-log-file>
+
+  # Whether to restrict page navigation to the current tab, optional, defaults to true.
+  # Page mode only. Do not use it with `browser:` or `web.mode: browser`.
+  forceSameTabNavigation: <boolean>
+
+  # Whether BrowserAgent should automatically continue in newly opened pages, optional, defaults to false.
+  # Browser mode only. Use `browser:` or `web.mode: browser`.
+  autoFollowNewPage: <boolean>
+
+  # CDP endpoint, optional. Connects to an existing browser instance via CDP instead of launching a new one.
+  # Mutually exclusive with bridgeMode.
+  cdpEndpoint: ws://localhost:9222/devtools/browser
+
+  # The bridge mode, optional, defaults to false. Can be 'newTabWithUrl' or 'currentTab'. See below for more details.
+  bridgeMode: false | 'newTabWithUrl' | 'currentTab'
+
+  # Whether to close newly created tabs when the bridge disconnects, optional, defaults to false.
+  closeNewTabsAfterDisconnect: <boolean>
+
+  # Whether to ignore HTTPS certificate errors, optional, defaults to false.
+  acceptInsecureCerts: <boolean>
+
+  # Custom Chrome launch arguments (Puppeteer only, not supported in bridge mode), optional.
+  # Use this to customize Chrome browser behavior, such as disabling third-party cookie blocking.
+  # ⚠️ Security Warning: Some arguments (e.g., --no-sandbox, --disable-web-security) may reduce browser security.
+  # Use only in controlled testing environments.
+  chromeArgs:
+    - '--disable-features=ThirdPartyCookiePhaseout'
+    - '--disable-features=SameSiteByDefaultCookies'
+    - '--window-size=1920,1080'
+```
+
+### The `android` part
+
+```yaml
+android:
+  # The device ID, optional, defaults to the first connected device.
+  deviceId: <device-id>
+
+  # The launch URL, optional, defaults to the device's current page.
+  launch: <url>
+
+  # The path to the JSON file for outputting aiQuery/aiAssert results, optional.
+  output: <path-to-output-file>
+
+  # All other options supported by the AndroidDevice constructor
+  # For example: androidAdbPath, remoteAdbHost, remoteAdbPort,
+  # imeStrategy, displayId, autoDismissKeyboard, keyboardDismissStrategy,
+  # keyboardTypeDelay, minScreenshotBufferSize, alwaysRefreshScreenInfo, etc.
+  # See the AndroidDevice constructor documentation for the complete list
+```
+
+:::info View Complete Android Configuration Options
+
+YAML scripts now support all configuration options from the `AndroidDevice` constructor. For the complete list of options, see [`AndroidDevice`](./reference/#androiddevice) in the Android API reference.
+
+:::
+
+#### Android Platform-Specific Actions
+
+**`runAdbShell` - Execute ADB Shell Commands**
+
+Execute ADB shell commands on Android devices. Pass only the shell command itself, without the `adb shell` prefix. To set a command timeout, keep `timeout` as a shallow sibling of `runAdbShell`.
+
+```yaml
+android:
+  deviceId: 'test-device'
+
+tasks:
+  - name: Clear app data
+    flow:
+      - runAdbShell: 'pm clear com.example.app'
+
+  - name: Get battery info
+    flow:
+      - runAdbShell: 'dumpsys battery'
+
+  - name: Tap screen coordinates
+    flow:
+      - runAdbShell: 'input tap 100 200'
+
+  - name: Run command with timeout
+    flow:
+      - runAdbShell: 'dumpsys activity services'
+        timeout: 60000
+```
+
+**Common ADB Shell Commands:**
+- `pm clear <package>` - Clear app data
+- `dumpsys battery` - Get battery information
+- `dumpsys window` - Get window information
+- `settings get secure android_id` - Get device ID
+- `input tap <x> <y>` - Tap screen coordinates
+- `input keyevent <keycode>` - Send key events
+
+**`launch` - Launch App or URL**
+
+Launch Android apps or open URLs.
+
+```yaml
+android:
+  deviceId: 'test-device'
+
+tasks:
+  - name: Launch Settings app
+    flow:
+      - launch: com.android.settings
+
+  - name: Open webpage
+    flow:
+      - launch: https://www.example.com
+```
+
+**`terminate` - Terminate App**
+
+Terminate (force-stop) a running Android app by package name.
+
+```yaml
+android:
+  deviceId: 'test-device'
+
+tasks:
+  - name: Terminate Settings app
+    flow:
+      - terminate: com.android.settings
+```
+
+### The `ios` part
+
+```yaml
+ios:
+  # WebDriverAgent port, optional, defaults to 8100.
+  wdaPort: <port>
+
+  # WebDriverAgent host address, optional, defaults to localhost.
+  wdaHost: <host>
+
+  # Whether to auto dismiss keyboard, optional, defaults to false.
+  autoDismissKeyboard: <boolean>
+
+  # Launch URL or app bundle ID, optional, defaults to the device's current page.
+  launch: <url-or-bundle-id>
+
+  # The path to the JSON file for outputting aiQuery/aiAssert results, optional.
+  output: <path-to-output-file>
+
+  # Whether to save log content to a JSON file, optional, defaults to `false`. If true, saves to `unstableLogContent.json`. If a string, saves to the specified path. The log content structure may change in the future.
+  unstableLogContent: <boolean | path-to-unstable-log-file>
+
+  # All other options supported by the IOSDevice constructor
+  # See the IOSDevice constructor documentation for the complete list
+```
+
+:::info View Complete iOS Configuration Options
+
+YAML scripts now support all configuration options from the `IOSDevice` constructor. For the complete list of options, see [`IOSDevice`](./reference/#iosdevice) in the iOS API reference.
+
+:::
+
+#### iOS Platform-Specific Actions
+
+**`runWdaRequest` - Execute WebDriverAgent API Requests**
+
+Execute WebDriverAgent API requests directly on iOS devices.
+
+```yaml
+ios:
+  launch: 'com.apple.mobilesafari'
+
+tasks:
+  - name: Press home button via WDA
+    flow:
+      - runWdaRequest:
+          method: POST
+          endpoint: /session/test/wda/pressButton
+          data:
+            name: home
+
+  - name: Get device information
+    flow:
+      - runWdaRequest:
+          method: GET
+          endpoint: /wda/device/info
+```
+
+**Parameters:**
+- `method` (string, required): HTTP method (GET, POST, DELETE, etc.)
+- `endpoint` (string, required): WebDriverAgent API endpoint
+- `data` (any, optional): Request body data
+
+**Common WebDriverAgent Endpoints:**
+- `/wda/screen` - Get screen information
+- `/wda/device/info` - Get device information
+- `/session/{sessionId}/wda/pressButton` - Press hardware buttons
+- `/session/{sessionId}/wda/apps/launch` - Launch apps
+- `/session/{sessionId}/wda/apps/terminate` - Terminate apps
+- `/session/{sessionId}/wda/apps/activate` - Activate apps
+
+**`launch` - Launch App or URL**
+
+Launch iOS apps or open URLs.
+
+```yaml
+ios:
+  wdaPort: 8100
+
+tasks:
+  - name: Launch Settings app
+    flow:
+      - launch: com.apple.Preferences
+
+  - name: Open webpage
+    flow:
+      - launch: https://www.example.com
+```
+
+**`terminate` - Terminate App**
+
+Terminate (close) a running iOS app by its bundle ID.
+
+```yaml
+ios:
+  wdaPort: 8100
+
+tasks:
+  - name: Terminate Settings app
+    flow:
+      - terminate: com.apple.Preferences
+```
+
+### The `harmony` part
+
+The `harmony` section is used for HarmonyOS device automation via HDC. The device is connected with `hdc`, so make sure `hdc list targets` reports your device before running.
+
+```yaml
+harmony:
+  # The HarmonyOS device ID to connect to, optional, defaults to the first connected device.
+  deviceId: <device-id>
+
+  # The app to launch, optional, defaults to the device's current screen.
+  launch: <bundle-name>
+
+  # The path to the HDC executable, optional.
+  hdcPath: <path-to-hdc>
+
+  # Whether to auto dismiss keyboard after input, optional, defaults to true.
+  autoDismissKeyboard: <boolean>
+
+  # Custom mapping of app names to bundle names or explicit bundle/ability targets, optional.
+  # User-provided mappings take precedence over defaults.
+  appNameMapping:
+    <app-name>: <bundle-name-or-bundle/ability>
+
+  # The path to the JSON file for outputting aiQuery/aiAssert results, optional.
+  output: <path-to-output-file>
+
+  # All other options supported by the HarmonyDevice constructor
+```
+
+#### HarmonyOS Platform-Specific Actions
+
+**`launch` - Launch App**
+
+Launch a HarmonyOS app by its bundle name or an explicit `bundle/Ability` target.
+
+```yaml
+harmony:
+  deviceId: 'test-device'
+  appNameMapping:
+    Video: com.example.video/PhoneAbility
+
+tasks:
+  - name: Launch app
+    flow:
+      - launch: Video
+```
+
+**`terminate` - Terminate App**
+
+Terminate (force-stop) a running HarmonyOS app by bundle name or mapped app name.
+
+```yaml
+harmony:
+  deviceId: 'test-device'
+
+tasks:
+  - name: Terminate app
+    flow:
+      - terminate: com.example.app
+```
+
+**`runHdcShell` - Execute HDC Shell Command**
+
+Execute an HDC shell command on the HarmonyOS device.
+
+```yaml
+harmony:
+  deviceId: 'test-device'
+
+tasks:
+  - name: Dump window info
+    flow:
+      - runHdcShell:
+          command: 'hidumper -s WindowManagerService -a'
+```
+
+### The `computer` part
+
+The `computer` section is used for PC desktop automation. It allows you to control the desktop environment, including mouse movements, keyboard inputs, and screen queries.
+
+```yaml
+computer:
+  # The display ID to use, optional, defaults to the primary display.
+  displayId: <display-id>
+
+  # The path to the JSON file for outputting aiQuery/aiAssert results, optional.
+  output: <path-to-output-file>
+```
+
+#### Usage example
+
+```yaml
+computer: {}
+
+tasks:
+  - name: Open browser and search
+    flow:
+      - aiAct: press Cmd+Space
+      - sleep: 500
+      - aiAct: type "Safari" and press Enter
+      - sleep: 2000
+      - aiAct: press Cmd+L to focus address bar
+      - aiAct: type "https://www.bing.com"
+      - aiAct: press Enter
+      - sleep: 3000
+      - aiAct: type "weather today" in the search box and press Enter
+      - aiAssert: The results show weather information
+```
+
+:::info Platform Notes
+
+The demo scripts above use macOS commands. For Windows, modify the scripts to use:
+- `press Windows key` instead of `press Cmd+Space`
+- `type "Chrome"` instead of `type "Safari"`
+- `press Ctrl+L` instead of `press Cmd+L`
+
+:::
+
+### The `tasks` part
+
+The `tasks` part is an array that defines the steps of the script. Remember to add a `-` before each step to indicate it's an array item.
+
+The interfaces in the `flow` section are almost identical to the [API](./reference/#common), with some differences in parameter nesting levels.
+
+```yaml
+tasks:
+  - name: <name>
+    continueOnError: <boolean> # Optional, whether to continue to the next task on error, defaults to false.
+    flow:
+      # Auto Planning (.ai)
+      # ----------------
+
+      # Perform an interaction. `ai` is a shorthand for `aiAct`.
+      - ai: <prompt>
+        cacheable: <boolean> # Optional, whether to cache the result of this API call when the [caching feature](./caching.mdx) is enabled. Defaults to True.
+        deepThink: <boolean> # Optional, guide aiAct to focus on task decomposition and separate planning from UI element locating. Defaults to false.
+        deepLocate: <boolean> # Optional, enable Deep Locate for UI element locating during aiAct execution. Defaults to false.
+
+      # This usage is the same as `ai`.
+      # Note: In earlier versions, this was also written as `aiAction`. The current version supports both names.
+      - aiAct: <prompt>
+        cacheable: <boolean> # Optional, whether to cache the result of this API call when the [caching feature](./caching.mdx) is enabled. Defaults to True.
+        deepThink: <boolean> # Optional, guide aiAct to focus on task decomposition and separate planning from UI element locating. Defaults to false.
+        deepLocate: <boolean> # Optional, enable Deep Locate for UI element locating during aiAct execution. Defaults to false.
+
+      # Instant Action (.aiTap, .aiHover, .aiInput, .aiKeyboardPress, .aiScroll)
+      # ----------------
+
+      # Tap an element described by a prompt.
+      - aiTap: <prompt>
+        deepLocate: <boolean> # Optional, whether to enable Deep Locate for this element. Defaults to False.
+        xpath: <xpath> # Optional, the xpath of the target element for the operation. If provided, Midscene will prioritize this xpath to find the element before using the cache and the AI model. Defaults to empty.
+        cacheable: <boolean> # Optional, whether to cache the result of this API call when the [caching feature](./caching.mdx) is enabled. Defaults to True.
+        fileChooserAccept: <path> | [<path1>, <path2>] # Optional, file path(s) to upload when the tap triggers a file chooser; only available on web
+
+      # Hover over an element described by a prompt.
+      - aiHover: <prompt>
+        deepLocate: <boolean> # Optional, whether to enable Deep Locate for this element. Defaults to False.
+        xpath: <xpath> # Optional, the xpath of the target element for the operation. If provided, Midscene will prioritize this xpath to find the element before using the cache and the AI model. Defaults to empty.
+        cacheable: <boolean> # Optional, whether to cache the result of this API call when the [caching feature](./caching.mdx) is enabled. Defaults to True.
+
+      # Input text into an element described by a prompt.
+      - aiInput: <prompt> # The element to input text into.
+        value: <final text content of the input>
+        deepLocate: <boolean> # Optional, whether to enable Deep Locate for this element. Defaults to False.
+        xpath: <xpath> # Optional, the xpath of the target element for the operation. If provided, Midscene will prioritize this xpath to find the element before using the cache and the AI model. Defaults to empty.
+        cacheable: <boolean> # Optional, whether to cache the result of this API call when the [caching feature](./caching.mdx) is enabled. Defaults to True.
+
+      # Press a key (e.g., Enter, Tab, Escape) on an element described by a prompt.
+      - aiKeyboardPress: <prompt> # The element to press the key on.
+        keyName: <key>
+        deepLocate: <boolean> # Optional, whether to enable Deep Locate for this element. Defaults to False.
+        xpath: <xpath> # Optional, the xpath of the target element for the operation. If provided, Midscene will prioritize this xpath to find the element before using the cache and the AI model. Defaults to empty.
+        cacheable: <boolean> # Optional, whether to cache the result of this API call when the [caching feature](./caching.mdx) is enabled. Defaults to True.
+
+      # Scroll globally or on an element described by a prompt.
+      - aiScroll: <prompt> # Optional, the element to scroll on.
+        scrollType: 'singleAction' # or 'scrollToBottom' | 'scrollToTop' | 'scrollToRight' | 'scrollToLeft'. Defaults to 'singleAction'.
+        direction: 'down' # or 'up' | 'left' | 'right'. Defaults to 'down'. Only effective when scrollType is singleAction.
+        distance: <number> # Optional, the scroll distance in pixels. Use null to let Midscene decide automatically.
+        deepLocate: <boolean> # Optional, whether to enable Deep Locate for this element. Defaults to False.
+        xpath: <xpath> # Optional, the xpath of the target element for the operation. If provided, Midscene will prioritize this xpath to find the element before using the cache and the AI model. Defaults to empty.
+        cacheable: <boolean> # Optional, whether to cache the result of this API call when the [caching feature](./caching.mdx) is enabled. Defaults to True.
+
+      # Log the current screenshot with a description in the report file.
+      - recordToReport: <title> # Optional, the title of the screenshot. If not provided, the title will be 'untitled'.
+        content: <content> # Optional, the description of the screenshot.
+
+      # Data Extraction
+      # ----------------
+
+      # Perform a query that returns a JSON object.
+      - aiQuery: <prompt> # Remember to describe the format of the result in the prompt.
+        name: <name> # The key for the query result in the JSON output.
+
+      # More APIs
+      # ----------------
+
+      # Wait for a condition to be met, with a timeout (in ms, optional, defaults to 30000).
+      - aiWaitFor: <prompt>
+        timeout: <ms>
+
+      # Perform an assertion.
+      - aiAssert: <prompt>
+        errorMessage: <error-message> # Optional, the error message to print if the assertion fails.
+        name: <name> # Optional, give the assertion a name, which will be used as a key in the JSON output.
+
+      - aiBoolean: <prompt>
+        name: <name> # Optional, give the boolean result a name for JSON output.
+
+      # Run one Gherkin Scenario. This is a Beta feature available starting in Midscene 1.10.
+      - runGherkinScenario: |
+          Scenario: Add a todo item
+            Given the todo page is open
+            When I add a todo item named "Buy milk"
+            Then the todo list should contain "Buy milk"
+
+      # Wait for a specified amount of time.
+      - sleep: <ms>
+
+      # Execute a piece of JavaScript code in the web page context.
+      - javascript: <javascript>
+        name: <name> # Optional, assign a name to the return value, which will be used as a key in the JSON output.
+
+  - name: <name>
+    flow:
+      # ...
+```
+
+`runGherkinScenario` is a Beta feature available starting in Midscene 1.10. For supported rules and limitations, see [BDD-style scripts with Gherkin](./advanced/bdd-style-scripts-with-gherkin).
+
+#### Step Result Names
+
+Steps that write a result with `name` save that value into the YAML run result and the JSON output. Use `name` to label values that should appear in the run output.
+
+```yaml
+tasks:
+  - name: Save extracted data
+    flow:
+      - aiString: Get the product id shown on the page
+        name: product_id
+
+      - aiQuery: Get the search result after submitting the product id
+        name: search_result
+```
+
+#### Upload Files With `aiTap`
+
+When clicking a button opens a file chooser, you can set `fileChooserAccept` directly on the `aiTap` step. It accepts either a single path or an array of paths.
+
+```yaml
+tasks:
+  - name: upload single file
+    flow:
+      - aiTap: Choose file button
+        fileChooserAccept: ./fixtures/document.pdf
+
+  - name: upload multiple files
+    flow:
+      - aiTap: Upload images button
+        fileChooserAccept:
+          - ./fixtures/image1.jpg
+          - ./fixtures/image2.png
+```
+
+If you are already using a `locate` object for `prompt`, `images`, or other locate options, keep `fileChooserAccept` at the same level as `locate`. Do not nest it inside `locate` or inside the `aiTap` object:
+
+```yaml
+tasks:
+  - name: upload file with locate
+    flow:
+      - aiTap:
+        locate:
+          prompt: Click the upload button
+        fileChooserAccept: ./fixtures/document.pdf
+```
+
+Notes:
+
+- `fileChooserAccept` is only available for web pages (Playwright, Puppeteer, or Chrome extension Bridge mode).
+- Relative paths are resolved from the current command working directory, not from the YAML file directory.
+- If a file does not exist, the script throws before the tap is executed.
+- In Chrome extension Bridge mode, local file uploads require the Midscene extension's "Allow access to file URLs" permission. Enable it in `chrome://extensions` > Midscene > "Details", then reconnect Bridge mode from the target `http(s)://` page.
+- Chrome extension Bridge mode does not support directory upload inputs (`webkitdirectory` / `directory`). Use Playwright for directory uploads.
+
+#### Prompting with images
+
+For steps whose prompt accepts images, you can attach images to the prompt by setting the `images` field to an array of objects, each containing a `name` and a `url`. (see the [API reference](./reference/#prompting-with-images)), replace the string value with an object that contains:
+
+- `prompt`: The text prompt.
+- `images`: (Optional) The reference images used in the prompt. Each image needs a `name` and a `url`.
+- `convertHttpImage2Base64`: (Optional) Converts HTTP image links to Base64 before sending them to the model, which is useful when the link is not publicly accessible.
+
+Image URLs can be local paths, Base64 strings, or remote links. When using image links that cannot be accessed for the model, set `convertHttpImage2Base64: true` so Midscene will download the image and send the base64 string to the model.
+
+For interactions like `aiTap`, `aiHover`, `aiDoubleClick`, `aiRightClick`, put the text and images in the `locate` field as a sibling of the action key.
+
+```yaml
+tasks:
+  - name: Verify branding
+    flow:
+      - aiHover:
+        locate:
+          prompt: Move the cursor to the region containing the GitHub logo.
+          images:
+            - name: GitHub logo
+              url: https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png
+          convertHttpImage2Base64: true
+
+      - aiTap:
+        locate:
+          prompt: Tap the region containing the GitHub logo.
+          images:
+            - name: GitHub logo
+              url: https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png
+          convertHttpImage2Base64: true
+```
+
+> The legacy nested format (where `locate` is indented under the action key, e.g. `aiTap: \n    locate: ...`) is still supported but not recommended.
+
+For `aiAct` (and its `ai` shorthand), and for insight steps like `aiAsk`, `aiQuery`, `aiBoolean`, `aiNumber`, `aiString`, and `aiAssert`, you can set the `prompt` and `images` fields directly under the action key.
+
+```yaml
+tasks:
+  - name: Verify branding
+    flow:
+      - aiAssert:
+          prompt: Check whether the image appears on the page.
+          images:
+            - name: target logo
+              url: https://github.githubassets.com/assets/GitHub-Mark-ea2971cee799.png
+          convertHttpImage2Base64: true
+```
+
+## Notes
+
+### `agent.runYaml` only parses the `tasks` field
+
+When using the `agent.runYaml()` API, only the `tasks` field in the YAML file is parsed and executed.
+
+At that point the agent has already been initialized in the JS script, so it cannot be reinitialized based on the `agent` configuration in the YAML file.

@@ -164,6 +164,10 @@ Worker 必须持续持久化关键状态。WebSocket、SSE、PG NOTIFY、API 内
 
 **API** 是无状态控制面：负责鉴权授权、Target/Account/Scenario 管理、Run 创建、调度、查询、Evidence 索引访问和 Web 实时出口。API 不持有正式 Browser Session，不执行 Scenario。
 
+平台 API 对外只允许 **GET** 与 **POST**。GET 用于查询与其他无副作用读取；POST 用于创建、更新、删除及一切有副作用的操作。PUT、PATCH、DELETE 及其他方法不得作为正式业务接口。CORS 预检等基础设施方法不属于业务接口。
+
+平台 API 对外只允许 **GET** 与 **POST**。GET 用于查询与其他无副作用读取；POST 用于创建、更新、删除及一切有副作用的操作。PUT、PATCH、DELETE 及其他方法不得作为正式业务接口。CORS 预检等基础设施方法不属于业务接口。
+
 **Worker** 是执行面：负责领取 Run、Execution Engine、Executor、Browser Runtime、Session/Lease、Evidence 生产和状态持久化。Worker 不通过调用 API 写回执行事实。
 
 Worker 与 API 通过持久化数据和通知机制协作，不通过双向业务回调耦合。
@@ -232,6 +236,7 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 16. AI Executor 与具体 AI 框架、模型供应商解耦。
 17. 关键跨边界契约必须可运行时验证。
 18. 必须遵守的约束最终都应由代码、Schema、数据库约束、状态机或自动化检查卡住，而不是依赖自觉。
+19. 平台 API 对外只使用 GET 与 POST。
 
 ## 19. 硬禁区
 
@@ -250,6 +255,7 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 - 不得让具体 AI 框架或模型供应商定义识途核心领域模型。
 - 不得默认永久保存所有成功 Run 的重型 Trace。
 - 不得把控制台账号与目标系统账号建成同一种账号。
+- 不得以 PUT、PATCH、DELETE 或其他非 GET/POST 方法对外提供正式业务接口。
 
 ## 20. 当前技术基线
 
@@ -300,6 +306,7 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 ## 22. 文档编写
 
 - 在进行大的功能模块开发之前先写方案文档放在 docs/spec 目录下, 用户审查通过后再进行开发, 方案文档可以作为 PR 的基础, 也可以作为后续开发的参考,同时在 docs/spec README.md 中记录方案文档的目录和链接, 方便用户查阅。
+- 每次按方案开发完成 写关键信息到 CHANGELOG 日志中格式为: 日期--一句话总结说明
 
 ## 23. 架构文档
 
@@ -332,3 +339,14 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 12. 所有复杂功能优先采用渐进式展示，而不是一次性全部展开；
 13. 表格用于批量管理，卡片用于概览和快捷操作；
 14. AI 是辅助能力，不取代用户对测试逻辑的控制。
+
+### 前端设计规范索引
+
+前端 UI 设计语言与组件规范统一维护在 [`docs/design/front/`](docs/design/front/README.md)。开发或调整界面时先查阅对应规范，复用统一的 Design Token 和组件状态约定。
+
+- [UI 设计语言](docs/design/front/design-language.md)：色彩、字体、间距、布局、圆角、图标、图表与无障碍基线。
+- [组件设计规范](docs/design/front/components.md)：基础组件清单、尺寸、状态、交互、反馈与组合规则。
+- [前端落地约定](docs/design/front/implementation.md)：现有脚手架的复用方式、Token 映射、验收与维护方式。
+- [Design Token](docs/design/front/tokens.css) 与 [组件视觉样本](docs/design/front/preview.html)：可复用的变量定义与直观参考。
+
+这些文档是当前前端设计基线，不扩充业务范围。具体颜色、尺寸和组件实现可在规范中演进，不作为宪法不变量；具体功能模块仍按第 22 节另行编写开发方案。

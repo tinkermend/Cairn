@@ -1,0 +1,141 @@
+import path from 'node:path';
+import { describe, expect, it, rs } from '@rstest/core';
+import {
+  playgroundForAgent,
+  playgroundForAgentFactory,
+} from '../../src/launcher';
+import { launchPreparedPlaygroundPlatform } from '../../src/platform-launcher';
+import {
+  buildPlaygroundBrowserUrl,
+  resolvePlaygroundListenHost,
+} from '../../src/server';
+
+function createMockAgent() {
+  return {
+    interface: {},
+    destroy: rs.fn(async () => {}),
+  } as any;
+}
+
+const staticPath = path.resolve(process.cwd(), 'static');
+
+describe('playground launcher', () => {
+  it('should build browser URLs for IPv4, hostnames, and IPv6 literals', () => {
+    expect(buildPlaygroundBrowserUrl('127.0.0.1', 5921)).toBe(
+      'http://127.0.0.1:5921',
+    );
+    expect(buildPlaygroundBrowserUrl('localhost', 5921)).toBe(
+      'http://localhost:5921',
+    );
+    expect(buildPlaygroundBrowserUrl('::1', 5921)).toBe('http://[::1]:5921');
+  });
+
+  it('should default the listen host to 127.0.0.1', () => {
+    const originalHost = process.env.MIDSCENE_PLAYGROUND_HOST;
+    Reflect.deleteProperty(process.env, 'MIDSCENE_PLAYGROUND_HOST');
+
+    try {
+      expect(resolvePlaygroundListenHost()).toBe('127.0.0.1');
+    } finally {
+      if (originalHost === undefined) {
+        Reflect.deleteProperty(process.env, 'MIDSCENE_PLAYGROUND_HOST');
+      } else {
+        process.env.MIDSCENE_PLAYGROUND_HOST = originalHost;
+      }
+    }
+  });
+
+  it('should launch with a custom static path and fixed id', async () => {
+    const agent = createMockAgent();
+
+    const result = await playgroundForAgent(agent).launch({
+      port: 5921,
+      openBrowser: false,
+      verbose: false,
+      staticPath,
+      id: 'launcher-instance-id',
+    });
+
+    expect(result.port).toBe(5921);
+    expect(result.host).toBe('127.0.0.1');
+    expect(result.server.id).toBe('launcher-instance-id');
+    expect(result.server.staticPath).toBe(staticPath);
+
+    await result.close();
+    expect(agent.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('should return MIDSCENE_PLAYGROUND_HOST when configured', async () => {
+    const originalHost = process.env.MIDSCENE_PLAYGROUND_HOST;
+    process.env.MIDSCENE_PLAYGROUND_HOST = 'localhost';
+
+    try {
+      const result = await playgroundForAgent(createMockAgent()).launch({
+        port: 5924,
+        openBrowser: false,
+        verbose: false,
+        staticPath,
+      });
+
+      expect(result.host).toBe('localhost');
+      await result.close();
+    } finally {
+      if (originalHost === undefined) {
+        Reflect.deleteProperty(process.env, 'MIDSCENE_PLAYGROUND_HOST');
+      } else {
+        process.env.MIDSCENE_PLAYGROUND_HOST = originalHost;
+      }
+    }
+  });
+
+  it('should launch from agent factory and allow server configuration', async () => {
+    const agentFactory = rs.fn(async () => createMockAgent());
+    let configuredServer: any;
+    const configureServer = rs.fn((server: any) => {
+      configuredServer = server;
+    });
+
+    const result = await playgroundForAgentFactory(agentFactory).launch({
+      port: 5922,
+      openBrowser: false,
+      verbose: false,
+      staticPath,
+      configureServer,
+    });
+
+    expect(agentFactory).toHaveBeenCalledTimes(1);
+    expect(configureServer).toHaveBeenCalledTimes(1);
+    expect(configureServer).toHaveBeenCalledWith(result.server);
+    expect(result.server.staticPath).toBe(staticPath);
+    expect(configuredServer).toBe(result.server);
+
+    await result.close();
+  });
+
+  it('should manage prepared platform sidecars for direct agent platforms', async () => {
+    const sidecar = {
+      id: 'mock-sidecar',
+      start: rs.fn(async () => {}),
+      stop: rs.fn(async () => {}),
+    };
+
+    const result = await launchPreparedPlaygroundPlatform(
+      {
+        platformId: 'mock',
+        title: 'Mock',
+        agent: createMockAgent(),
+        sidecars: [sidecar],
+      },
+      {
+        port: 5923,
+        openBrowser: false,
+        verbose: false,
+        staticPath,
+      },
+    );
+
+    expect(sidecar.start).toHaveBeenCalledTimes(1);
+    await result.close();
+    expect(sidecar.stop).toHaveBeenCalledTimes(1);
+  });
+});

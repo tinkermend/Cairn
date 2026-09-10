@@ -23,7 +23,9 @@ import { Route as AuthenticatedRolesIndexRouteImport } from './routes/_authentic
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
+import { Route as AuthenticatedTargetsIndexRouteImport } from './routes/_authenticated/targets/index'
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
+import { Route as AuthenticatedTargetsTargetIdIndexRouteImport } from './routes/_authenticated/targets/$targetId/index'
 
 const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
   id: '/_authenticated',
@@ -98,11 +100,23 @@ const AuthenticatedSettingsAppearanceRoute =
     path: '/appearance',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
+const AuthenticatedTargetsIndexRoute =
+  AuthenticatedTargetsIndexRouteImport.update({
+    id: '/targets/',
+    path: '/targets/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedUsersIndexRoute = AuthenticatedUsersIndexRouteImport.update({
   id: '/users/',
   path: '/users/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedTargetsTargetIdIndexRoute =
+  AuthenticatedTargetsTargetIdIndexRouteImport.update({
+    id: '/targets/$targetId/',
+    path: '/targets/$targetId/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
@@ -118,7 +132,9 @@ export interface FileRoutesByFullPath {
   '/audit/': typeof AuthenticatedAuditIndexRoute
   '/roles/': typeof AuthenticatedRolesIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
+  '/targets/': typeof AuthenticatedTargetsIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
+  '/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof authSignInRoute
@@ -133,7 +149,9 @@ export interface FileRoutesByTo {
   '/audit': typeof AuthenticatedAuditIndexRoute
   '/roles': typeof AuthenticatedRolesIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
+  '/targets': typeof AuthenticatedTargetsIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
+  '/targets/$targetId': typeof AuthenticatedTargetsTargetIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -151,7 +169,9 @@ export interface FileRoutesById {
   '/_authenticated/audit/': typeof AuthenticatedAuditIndexRoute
   '/_authenticated/roles/': typeof AuthenticatedRolesIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
+  '/_authenticated/targets/': typeof AuthenticatedTargetsIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
+  '/_authenticated/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -169,7 +189,9 @@ export interface FileRouteTypes {
     | '/audit/'
     | '/roles/'
     | '/settings/'
+    | '/targets/'
     | '/users/'
+    | '/targets/$targetId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/sign-in'
@@ -184,7 +206,9 @@ export interface FileRouteTypes {
     | '/audit'
     | '/roles'
     | '/settings'
+    | '/targets'
     | '/users'
+    | '/targets/$targetId'
   id:
     | '__root__'
     | '/_authenticated'
@@ -201,7 +225,9 @@ export interface FileRouteTypes {
     | '/_authenticated/audit/'
     | '/_authenticated/roles/'
     | '/_authenticated/settings/'
+    | '/_authenticated/targets/'
     | '/_authenticated/users/'
+    | '/_authenticated/targets/$targetId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -314,11 +340,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsAppearanceRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
+    '/_authenticated/targets/': {
+      id: '/_authenticated/targets/'
+      path: '/targets'
+      fullPath: '/targets/'
+      preLoaderRoute: typeof AuthenticatedTargetsIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/users/': {
       id: '/_authenticated/users/'
       path: '/users'
       fullPath: '/users/'
       preLoaderRoute: typeof AuthenticatedUsersIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/targets/$targetId/': {
+      id: '/_authenticated/targets/$targetId/'
+      path: '/targets/$targetId'
+      fullPath: '/targets/$targetId/'
+      preLoaderRoute: typeof AuthenticatedTargetsTargetIdIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
   }
@@ -347,7 +387,9 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedAuditIndexRoute: typeof AuthenticatedAuditIndexRoute
   AuthenticatedRolesIndexRoute: typeof AuthenticatedRolesIndexRoute
+  AuthenticatedTargetsIndexRoute: typeof AuthenticatedTargetsIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
+  AuthenticatedTargetsTargetIdIndexRoute: typeof AuthenticatedTargetsTargetIdIndexRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -355,7 +397,10 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
   AuthenticatedAuditIndexRoute: AuthenticatedAuditIndexRoute,
   AuthenticatedRolesIndexRoute: AuthenticatedRolesIndexRoute,
+  AuthenticatedTargetsIndexRoute: AuthenticatedTargetsIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,
+  AuthenticatedTargetsTargetIdIndexRoute:
+    AuthenticatedTargetsTargetIdIndexRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =

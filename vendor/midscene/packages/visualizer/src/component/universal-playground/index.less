@@ -1,0 +1,711 @@
+// Universal Playground Styles
+// Based on Chrome Extension playground styles with improvements
+
+.playground-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100%;
+  background: var(--midscene-surface, #fff);
+  color: var(--midscene-text-primary, inherit);
+  position: relative;
+
+  .command-form {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    width: 100%;
+  }
+
+  // Hosts compose this region with their own prompt/history panels. It owns
+  // the available execution space; the timeline itself remains content-sized.
+  .playground-timeline-region {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+
+  // Context Preview Section
+  .context-preview-section {
+    flex-shrink: 0;
+    padding: 16px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+
+  // Main Dialog Area
+  .middle-dialog-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+
+    .clear-button-container {
+      position: absolute;
+      top: 16px;
+      right: 0;
+      z-index: 10;
+
+      .clear-button {
+        opacity: 0.7;
+        transition: opacity 0.2s;
+
+        &:hover {
+          opacity: 1;
+        }
+      }
+    }
+
+    .info-list-container {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-top: 16px;
+      padding-bottom: 16px;
+
+      .ant-list {
+        .ant-list-item {
+          border-bottom: none;
+          padding: 0;
+
+          .ant-card {
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            border: 1px solid #f0f0f0;
+
+            &:hover {
+              box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+            }
+
+            .ant-card-body {
+              padding: 12px;
+            }
+          }
+        }
+
+        .ant-list-empty-text {
+          color: #999;
+          font-style: italic;
+        }
+      }
+
+      &::-webkit-scrollbar {
+        display: none;
+      }
+
+      scrollbar-width: none;
+
+      .list-item {
+        padding: 0 0;
+        border: none;
+        background: none;
+      }
+
+      .playground-empty-state-wrapper {
+        min-height: 100%;
+      }
+
+      .playground-empty-state-wrapper-offset-for-prompt {
+        padding-bottom: 128px;
+      }
+    }
+
+    .scroll-to-bottom-button {
+      position: absolute;
+      bottom: 10px;
+      right: 0;
+      z-index: 10;
+      background: var(--midscene-surface-elevated, #fff);
+      border: 1px solid var(--midscene-border-strong, rgba(0, 0, 0, 0.08));
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+      color: var(--midscene-accent, #2b83ff);
+
+      &:not(:disabled):hover {
+        background: var(--midscene-accent, #2b83ff);
+        border-color: var(--midscene-accent, #2b83ff);
+        color: #fff;
+      }
+
+      .anticon {
+        font-size: 16px;
+        color: inherit;
+      }
+    }
+  }
+
+  // User Message Styles
+  .user-message-container {
+    display: flex;
+    justify-content: flex-end;
+    width: 100%;
+    margin: 20px 0 30px;
+
+    .user-message-bubble {
+      background: var(--midscene-surface-muted, rgba(242, 244, 247, 1));
+      border-radius: 12px;
+      padding: 12px 16px;
+      color: var(--midscene-text-primary, rgba(0, 0, 0, 0.85));
+      display: inline-block;
+      max-width: 80%;
+      text-align: left;
+      font-size: 14px;
+      font-weight: 400;
+    }
+  }
+
+  // Progress Message Styles
+  .progress-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 4px 0;
+  }
+
+  .progress-row-content {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .progress-status-icon {
+    flex: 0 0 auto;
+
+    &.loading {
+      color: #1890ff;
+    }
+
+    &.completed {
+      color: #52c41a;
+    }
+
+    &.error {
+      color: #ff4d4f;
+      font-weight: bold;
+    }
+  }
+
+  .progress-action-item {
+    background: var(--midscene-surface-muted, #f2f4f7);
+    color: var(--midscene-text-primary, #000);
+    font-size: 14px;
+    height: 36px;
+    line-height: 36px;
+    border-radius: 8px;
+    padding: 0 12px;
+    display: flex;
+    justify-content: space-between;
+    margin: 0;
+  }
+
+  .progress-description {
+    font-size: 14px;
+    line-height: 22px;
+    padding: 8px 0;
+    display: inline-block;
+  }
+
+  // System Message Styles
+  .system-message-container {
+    display: flex;
+    flex-direction: column;
+
+    .system-message-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0;
+
+      .system-message-title {
+        font-weight: 400;
+        font-size: 12px;
+        line-height: 100%;
+      }
+    }
+
+    .system-message-content {
+      color: var(--midscene-text-primary, rgba(0, 0, 0, 0.85));
+      font-size: 14px;
+
+      .system-message-text {
+        font-size: 14px;
+        line-height: 25px;
+        color: var(--midscene-text-primary, rgba(0, 0, 0, 0.85));
+      }
+
+      .error-message {
+        color: #e51723;
+        word-break: break-word;
+        background-color: #fff;
+        border: none;
+        border-radius: 0;
+        padding: 0;
+        font-size: 14px;
+        margin-bottom: 16px;
+        display: flex;
+        align-items: flex-start;
+
+        .divider {
+          width: 1px;
+          background-color: #e6e8eb;
+          margin: 0 8px 0 0;
+          flex-shrink: 0;
+          align-self: stretch;
+          min-height: 20px;
+        }
+      }
+
+      .loading-progress-text {
+        margin-top: 8px;
+        padding: 8px 12px;
+        background: #f6f8fa;
+        border-left: 3px solid #1890ff;
+        border-radius: 4px;
+        font-size: 13px;
+        color: #666;
+      }
+    }
+  }
+
+  // Collapsible progress group header (only shown when
+  // `UniversalPlaygroundConfig.collapsibleProgressGroup` is enabled).
+  .progress-group-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    border: 0;
+    background: transparent;
+    color: var(--midscene-text-tertiary, rgba(0, 0, 0, 0.5));
+    padding: 0 4px;
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 15px;
+    user-select: none;
+
+    &:hover {
+      color: var(--midscene-text-secondary, rgba(0, 0, 0, 0.7));
+    }
+
+    .progress-group-toggle-chevron {
+      font-size: 10px;
+      transition: transform 0.15s ease-out;
+    }
+
+    &.is-collapsed .progress-group-toggle-chevron {
+      transform: rotate(180deg);
+    }
+  }
+
+  // Bottom Input Section
+  .bottom-input-section {
+    flex-shrink: 0;
+    background-color: var(--midscene-surface, #fff);
+    padding: 16px 0 0 0;
+  }
+
+  // Version Info Section
+  .version-info-section {
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .version-text {
+    font-size: 12px;
+    color: #999;
+    text-align: center;
+  }
+
+  // Hidden result ref
+  .hidden-result-ref {
+    display: none;
+  }
+
+  // Additional compatibility styles from original playground
+  .playground-description {
+    margin-bottom: 32px;
+
+    .description-zh {
+      font-size: 16px;
+      color: #333333;
+      margin: 0 0 8px 0;
+      line-height: 1.5;
+    }
+
+    .description-en {
+      font-size: 14px;
+      color: #666666;
+      margin: 0;
+      line-height: 1.5;
+    }
+  }
+
+  .config-section {
+    margin-bottom: 24px;
+
+    .config-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #333333;
+      margin: 0 0 16px 0;
+    }
+
+    .config-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+
+      .config-check {
+        color: #52c41a;
+        font-size: 16px;
+      }
+
+      .config-label {
+        font-size: 14px;
+        color: #333333;
+      }
+    }
+
+    .config-link {
+      color: #1890ff;
+      text-decoration: none;
+      font-size: 14px;
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+  }
+}
+
+/*
+ * --- Conversation skin ---
+ *
+ * Shared skin used by `PlaygroundConversationPanel` across Studio and the
+ * standalone playground apps. Renders the Execution Flow as compact rows:
+ * 16x16 status icon on the left and the action + description text flowing
+ * inline on the right. Tightens message spacing and adopts the compact
+ * bubble/input treatment previously unique to the Studio shell.
+ *
+ * Layout reference (matches the imported design):
+ *   group header and status icon start at the 20px container inset
+ *   step text starts 36px after the status icon column
+ */
+.playground-container.playground-conversation-skin {
+  .middle-dialog-area .info-list-container {
+    padding: 20px 16px 32px 20px;
+  }
+
+  .middle-dialog-area .info-list-container .ant-list-items {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .middle-dialog-area .info-list-container .list-item {
+    padding: 0;
+  }
+
+  .user-message-container {
+    margin: 0;
+  }
+
+  .user-message-container .user-message-bubble {
+    max-width: min(80%, 280px);
+    border-radius: 12px;
+    padding: 8px 16px;
+    font-size: 13px;
+    line-height: 22px;
+  }
+
+  .bottom-input-section {
+    flex-shrink: 0;
+    background: var(--midscene-surface);
+    padding: 12px;
+  }
+
+  // === Execution Flow step rows ===
+  // Each progress list-item is its own row. The header stays at the
+  // container's 20px inset, while only the progress content reserves the
+  // left indicator column.
+  // Selectors are scoped under `.middle-dialog-area .info-list-container`
+  // to outweigh the base (5-class) `.ant-list-item { padding: 0 }` rule.
+  .middle-dialog-area .info-list-container {
+    .list-item:has(.progress-row) {
+      position: relative;
+      min-height: 24px;
+    }
+
+    // The unclassed wrapper div around each progress row owns the
+    // two-column layout: 16px icon, 20px gap, then text.
+    .list-item > div:has(> .progress-row) {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      column-gap: 20px;
+      align-items: start;
+      min-height: 24px;
+      padding: 4px 0;
+    }
+
+    .progress-row {
+      display: contents;
+      margin: 0;
+    }
+
+    .progress-row-content {
+      min-width: 0;
+      line-height: 24px;
+    }
+
+    // Keep long progress entries consistent with the recorder timeline: clamp
+    // them to two lines so the truncation hook can reveal the full text.
+    .progress-row-copy {
+      display: -webkit-box;
+      max-height: 48px;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      word-break: break-word;
+    }
+
+    .progress-row-content .ant-alert-message {
+      font-size: 13px;
+    }
+
+    // Drop the pill chrome — render the action label as plain inline text.
+    .progress-action-item {
+      display: inline;
+      padding: 0;
+      margin: 0;
+      height: auto;
+      line-height: 24px;
+      border-radius: 0;
+      background: transparent;
+      color: var(--midscene-text-primary, rgba(0, 0, 0, 0.85));
+      font-family: Inter, system-ui, sans-serif;
+      // Keep the event name visually distinct from its description, matching
+      // the recorder timeline.
+      font-weight: 500;
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+
+    .progress-status-icon {
+      width: 16px;
+      height: 16px;
+      margin: 3px 0 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+
+      &.loading {
+        font-size: 14px;
+      }
+    }
+
+    .progress-status-icon svg {
+      display: block;
+      width: 16px;
+      height: 16px;
+      flex: 0 0 16px;
+    }
+
+    // Join every non-final progress icon to the next row. The connector lives
+    // on the list item so its height follows multi-line descriptions instead
+    // of collapsing to the 16px icon box.
+    .list-item:has(.progress-row:not(.progress-row-last))::after {
+      position: absolute;
+      z-index: 0;
+      top: 23px;
+      bottom: -15px;
+      left: 7px;
+      width: 2px;
+      border-radius: 1px;
+      background: var(--midscene-timeline-connector, rgba(31, 35, 41, 0.2));
+      content: '';
+      pointer-events: none;
+    }
+
+    .progress-status-icon {
+      position: relative;
+      z-index: 1;
+    }
+
+    // Description wrapper: the visualiser renders descriptions inside an
+    // unclassed `<div>` right after the action span. Switch it to inline
+    // so the description text joins the action text on the same line and
+    // wraps naturally; insert a " - " separator to match the design copy.
+    .progress-action-item + .progress-description-wrap {
+      display: inline;
+      margin: 0;
+      padding: 0;
+    }
+
+    .progress-action-item + .progress-description-wrap::before {
+      content: ' - ';
+    }
+
+    .progress-action-item + .progress-description-wrap .shiny-text {
+      display: inline;
+      padding: 0;
+      margin: 0;
+    }
+
+    .progress-description {
+      display: inline;
+      padding: 0;
+      margin: 0;
+      font-family: Inter, system-ui, sans-serif;
+      font-size: 13px;
+      font-weight: 400;
+      line-height: 24px;
+      color: var(--midscene-text-primary, rgba(0, 0, 0, 0.85));
+    }
+
+    // Ant-list's 16px row gap would visibly outpace the 8px intra-step
+    // gap; pull each subsequent progress item up by 8px to equalise.
+    .list-item:has(.progress-row) + .list-item:has(.progress-row) {
+      margin-top: -8px;
+    }
+
+    // Toggle header sits above the steps. It starts at the container's
+    // 20px left inset, matching the design.
+    .progress-group-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 15px;
+      margin: 0 0 8px;
+      padding: 0 4px 0 0;
+      font-family: Inter, system-ui, sans-serif;
+      font-weight: 500;
+      font-size: 13px;
+      line-height: 14.5px;
+      color: var(--midscene-text-tertiary, rgba(0, 0, 0, 0.5));
+    }
+  }
+
+  .system-message-header .system-message-title,
+  .system-message-content,
+  .system-message-content .system-message-text,
+  .system-message-content .error-message,
+  .system-message-content .loading-progress-text {
+    font-size: 13px;
+  }
+
+  .system-message-content,
+  .system-message-content .system-message-text {
+    line-height: 22px;
+    color: rgba(0, 0, 0, 0.85);
+  }
+}
+
+// Dark mode palette for the conversation skin.
+[data-theme='dark'] .playground-container.playground-conversation-skin {
+  .middle-dialog-area .info-list-container {
+    .progress-action-item {
+      color: var(--midscene-text-primary);
+    }
+
+    .progress-description {
+      color: var(--midscene-text-primary);
+    }
+
+    .list-item:has(.progress-row:not(.progress-row-last))::after {
+      background: var(--midscene-timeline-connector, rgba(255, 255, 255, 0.64));
+    }
+  }
+
+  .system-message-content,
+  .system-message-content .system-message-text {
+    color: var(--midscene-text-primary);
+  }
+}
+
+// Dark mode styles
+[data-theme='dark'] {
+  .universal-playground {
+    .error-hint {
+      color: rgba(255, 255, 255, 0.45);
+    }
+
+    .status-indicator {
+      color: #f8fafd;
+
+      &.error {
+        color: #ff4d4f;
+      }
+
+      &.success {
+        color: #52c41a;
+      }
+    }
+
+    .operation-label {
+      color: #f8fafd;
+    }
+
+    .alert-message {
+      color: #f8fafd;
+      background-color: rgba(82, 38, 7, 0.3);
+    }
+
+    .operation-item {
+      .operation-icon-wrapper {
+        background-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .operation-content {
+        background-color: transparent;
+
+        .operation-title {
+          color: rgba(255, 255, 255, 0.45);
+        }
+      }
+    }
+
+    .playground-footer {
+      background-color: rgba(255, 255, 255, 0.04);
+
+      .status-text {
+        color: #f8fafd;
+      }
+    }
+
+    .results-info {
+      color: rgba(255, 255, 255, 0.45);
+    }
+
+    .result-section {
+      .result-title {
+        color: #f8fafd;
+      }
+
+      .result-details {
+        color: #f8fafd;
+      }
+
+      .result-value {
+        color: #f8fafd;
+
+        &.success {
+          color: #52c41a;
+        }
+
+        &.error {
+          color: #ff4d4f;
+        }
+      }
+    }
+  }
+}

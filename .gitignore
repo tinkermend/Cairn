@@ -71,3 +71,19 @@ Thumbs.db
 # ── Claude Code ──────────────────────────────
 # 开发工具与本机配置，不进产品仓库
 .claude/
+# 本机临时试验不入库；已入库的 HMI 夹具单独放行
+tests/*
+!tests/target-login-hmi/
+!tests/target-login-hmi/**
+
+# ── 整仓二开快照 ────────────────────────────────
+# 上面的 tests/*、.vscode/* 会误伤 vendor 里的上游源码。
+# 先放行快照，再压住安装与构建产物（不要并进根 workspace）。
+!vendor/**/tests/
+!vendor/**/tests/**
+!vendor/**/.vscode/
+!vendor/**/.vscode/**
+!vendor/**/build/
+!vendor/**/build/**
+vendor/**/node_modules/
+vendor/**/.pnpm-store/

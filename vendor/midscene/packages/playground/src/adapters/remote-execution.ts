@@ -1,0 +1,952 @@
+import type {
+  ConnectivityTestResult,
+  DeviceAction,
+  ExecutionDump,
+} from '@midscene/core';
+import type { TModelConfig } from '@midscene/shared/env';
+import { parseStructuredParams } from '../common';
+import type {
+  PlaygroundRecorderCapabilitiesResult,
+  PlaygroundRecorderDescribeResult,
+  PlaygroundRecorderEvent,
+  PlaygroundRecorderEventsResult,
+  PlaygroundRecorderSourceKind,
+  PlaygroundRecorderStartResult,
+  PlaygroundSessionSetup,
+  PlaygroundSessionState,
+  PlaygroundSessionTarget,
+} from '../platform';
+import type { PlaygroundRuntimeInfo } from '../runtime-metadata';
+import type {
+  ExecutionOptions,
+  FormValue,
+  PlaygroundReportRef,
+  ValidationResult,
+} from '../types';
+import { BasePlaygroundAdapter } from './base';
+
+export class RemoteExecutionAdapter extends BasePlaygroundAdapter {
+  private serverUrl?: string;
+  private _id?: string;
+  private dumpUpdateCallback?: (
+    dump: string,
+    executionDump?: ExecutionDump,
+  ) => void;
+  private pollingIntervalId?: ReturnType<typeof setInterval>;
+
+  private resolveReportUrl(report: PlaygroundReportRef | null | undefined) {
+    if (!report || !this.serverUrl) return report;
+    const resolved = {
+      ...report,
+      url: new URL(report.url, this.serverUrl).toString(),
+    };
+    if (report.replayUrl) {
+      resolved.replayUrl = new URL(report.replayUrl, this.serverUrl).toString();
+    }
+    return resolved;
+  }
+
+  constructor(serverUrl: string) {
+    super();
+    this.serverUrl = serverUrl;
+  }
+
+  // Set dump update callback
+  onDumpUpdate(
+    callback: (dump: string, executionDump?: ExecutionDump) => void,
+  ): void {
+    this.dumpUpdateCallback = undefined;
+    this.dumpUpdateCallback = callback;
+  }
+
+  // Get adapter ID (cached after first status check for remote)
+  get id(): string | undefined {
+    return this._id;
+  }
+
+  // Override validateParams for remote execution
+  // Since schemas from server are JSON-serialized and lack .parse() method
+  validateParams(
+    value: FormValue,
+    action: DeviceAction<unknown> | undefined,
+  ): ValidationResult {
+    if (!action?.paramSchema) {
+      return { valid: true };
+    }
+
+    const needsStructuredParams = this.actionNeedsStructuredParams(action);
+
+    if (!needsStructuredParams) {
+      return { valid: true };
+    }
+
+    if (!value.params) {
+      return { valid: false, errorMessage: 'Parameters are required' };
+    }
+
+    // For remote execution, perform basic validation without .parse()
+    // Check if required fields are present
+    if (action.paramSchema && typeof action.paramSchema === 'object') {
+      const schema = action.paramSchema as any;
+      if (schema.shape || schema.type === 'ZodObject') {
+        const shape = schema.shape || {};
+        const missingFields = Object.keys(shape).filter((key) => {
+          const fieldDef = shape[key];
+          // Check if field is required (not optional)
+          const isOptional =
+            fieldDef?.isOptional ||
+            fieldDef?._def?.innerType || // ZodOptional
+            fieldDef?._def?.typeName === 'ZodOptional';
+          return (
+            !isOptional &&
+            (value.params![key] === undefined || value.params![key] === '')
+          );
+        });
+
+        if (missingFields.length > 0) {
+          return {
+            valid: false,
+            errorMessage: `Missing required parameters: ${missingFields.join(', ')}`,
+          };
+        }
+      }
+    }
+
+    return { valid: true };
+  }
+
+  async parseStructuredParams(
+    action: DeviceAction<unknown>,
+    params: Record<string, unknown>,
+    options: ExecutionOptions,
+  ): Promise<unknown[]> {
+    // Use shared implementation from common.ts
+    return await parseStructuredParams(action, params, options);
+  }
+
+  formatErrorMessage(error: any): string {
+    const message = error?.message || '';
+
+    // Handle Android-specific errors
+    const androidErrors = [
+      {
+        keyword: 'adb',
+        message:
+          'ADB connection error. Please ensure device is connected and USB debugging is enabled.',
+      },
+      {
+        keyword: 'UIAutomator',
+        message:
+          'UIAutomator error. Please ensure the UIAutomator server is running on the device.',
+      },
+    ];
+
+    const androidError = androidErrors.find(({ keyword }) =>
+      message.includes(keyword),
+    );
+    if (androidError) {
+      return androidError.message;
+    }
+
+    return this.formatBasicErrorMessage(error);
+  }
+
+  // Remote execution adapter - simplified interface
+  async executeAction(
+    actionType: string,
+    value: FormValue,
+    options: ExecutionOptions,
+  ): Promise<unknown> {
+    // If serverUrl is provided, use server-side execution
+    if (this.serverUrl && typeof window !== 'undefined') {
+      return this.executeViaServer(actionType, value, options);
+    }
+
+    throw new Error(
+      'Remote execution adapter requires server URL for execution',
+    );
+  }
+
+  // Remote execution via server - uses same endpoint as requestPlaygroundServer
+  private async executeViaServer(
+    actionType: string,
+    value: FormValue,
+    options: ExecutionOptions,
+  ): Promise<unknown> {
+    const payload: Record<string, unknown> = {
+      type: actionType,
+      prompt: value.prompt,
+      ...this.buildOptionalPayloadParams(options, value),
+    };
+
+    // Add context only if it exists (server can handle single agent case without context)
+    if (options.context) {
+      payload.context = options.context;
+    }
+
+    // Start polling if requestId is provided and dumpUpdateCallback is set
+    if (options.requestId && this.dumpUpdateCallback) {
+      this.startProgressPolling(options.requestId);
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/execute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(
+          `Server request failed (${response.status}): ${errorText}`,
+        );
+      }
+
+      const result = await response.json();
+      if (result?.report) {
+        result.report = this.resolveReportUrl(result.report);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Execute via server failed:', error);
+      throw error;
+    } finally {
+      // Stop polling when execution completes (success or error)
+      this.stopProgressPolling();
+    }
+  }
+
+  // Helper method to build optional payload parameters
+  private buildOptionalPayloadParams(
+    options: ExecutionOptions,
+    value: FormValue,
+  ): Record<string, unknown> {
+    const optionalParams: Record<string, unknown> = {};
+
+    // Add optional parameters only if they have meaningful values
+    const optionalFields = [
+      { key: 'requestId', value: options.requestId },
+      { key: 'deepLocate', value: options.deepLocate },
+      { key: 'deepThink', value: options.deepThink },
+      { key: 'screenshotIncluded', value: options.screenshotIncluded },
+      { key: 'domIncluded', value: options.domIncluded },
+      { key: 'deviceOptions', value: options.deviceOptions },
+      { key: 'reportDisplay', value: options.reportDisplay },
+      { key: 'params', value: value.params },
+    ] as const;
+
+    optionalFields.forEach(({ key, value }) => {
+      if (value !== undefined && value !== null && value !== '') {
+        optionalParams[key] = value;
+      }
+    });
+
+    return optionalParams;
+  }
+
+  // Get action space from server with fallback
+  async getActionSpace(context?: unknown): Promise<DeviceAction<unknown>[]> {
+    // Try server first if available
+    if (this.serverUrl && typeof window !== 'undefined') {
+      try {
+        const response = await fetch(`${this.serverUrl}/action-space`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ context }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Failed to get action space: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        return Array.isArray(result) ? result : [];
+      } catch (error) {
+        console.error('Failed to get action space from server:', error);
+        // Fall through to context fallback
+      }
+    }
+
+    // Fallback: try context.actionSpace if available
+    if (context && typeof context === 'object' && 'actionSpace' in context) {
+      try {
+        const actionSpaceMethod = (
+          context as {
+            actionSpace: () =>
+              | DeviceAction<unknown>[]
+              | Promise<DeviceAction<unknown>[]>;
+          }
+        ).actionSpace;
+        const result = await actionSpaceMethod();
+        return Array.isArray(result) ? result : [];
+      } catch (error) {
+        console.error('Failed to get action space from context:', error);
+      }
+    }
+
+    return [];
+  }
+
+  // Uses base implementation for validateParams and createDisplayContent
+
+  // Server communication methods
+  async checkStatus(): Promise<boolean> {
+    if (!this.serverUrl) {
+      return false;
+    }
+
+    try {
+      const res = await fetch(`${this.serverUrl}/status`);
+      if (res.status === 200) {
+        // Try to extract id from response
+        try {
+          const data = await res.json();
+          if (data.id && typeof data.id === 'string') {
+            this._id = data.id;
+          }
+        } catch (jsonError) {
+          // If JSON parsing fails, id remains undefined but status is still OK
+          console.debug('Failed to parse status response:', jsonError);
+        }
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.warn('Server status check failed:', error);
+      return false;
+    }
+  }
+
+  async overrideConfig(aiConfig: Record<string, unknown>): Promise<void> {
+    if (!this.serverUrl) {
+      throw new Error('Server URL not configured');
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/config`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ aiConfig }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const detail = body?.error || response.statusText;
+        throw new Error(detail);
+      }
+    } catch (error) {
+      console.error('Failed to override server config:', error);
+      throw error;
+    }
+  }
+
+  async runConnectivityTest(
+    aiConfig: TModelConfig,
+  ): Promise<ConnectivityTestResult> {
+    if (!this.serverUrl) {
+      throw new Error('Server URL not configured');
+    }
+
+    const response = await fetch(`${this.serverUrl}/connectivity-test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: aiConfig }),
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const detail = body?.error || response.statusText;
+      throw new Error(detail);
+    }
+
+    return response.json();
+  }
+
+  async getTaskProgress(requestId: string): Promise<{
+    executionDump?: ExecutionDump;
+  }> {
+    if (!this.serverUrl) {
+      return {};
+    }
+
+    if (!requestId?.trim()) {
+      console.warn('Invalid requestId provided for task progress');
+      return {};
+    }
+
+    try {
+      const response = await fetch(
+        `${this.serverUrl}/task-progress/${encodeURIComponent(requestId)}`,
+      );
+
+      if (!response.ok) {
+        console.warn(`Task progress request failed: ${response.statusText}`);
+        return {};
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to poll task progress:', error);
+      return {};
+    }
+  }
+
+  /**
+   * Start polling for task progress and invoke dump update callback
+   */
+  private startProgressPolling(requestId: string): void {
+    // Clear any existing polling
+    this.stopProgressPolling();
+
+    // Poll every 500ms for progress updates
+    this.pollingIntervalId = setInterval(async () => {
+      try {
+        const progressData = await this.getTaskProgress(requestId);
+
+        if (progressData.executionDump) {
+          // Invoke dump update callback if set
+          if (this.dumpUpdateCallback) {
+            this.dumpUpdateCallback('', progressData.executionDump);
+          }
+        }
+      } catch (error) {
+        console.error('Error polling task progress:', error);
+      }
+    }, 500); // Poll every 500ms
+  }
+
+  /**
+   * Stop polling for task progress
+   */
+  private stopProgressPolling(): void {
+    if (this.pollingIntervalId) {
+      clearInterval(this.pollingIntervalId);
+      this.pollingIntervalId = undefined;
+    }
+  }
+
+  // Cancel task
+  async cancelTask(
+    requestId: string,
+  ): Promise<{ error?: string; success?: boolean }> {
+    if (!this.serverUrl) {
+      return { error: 'No server URL configured' };
+    }
+
+    if (!requestId?.trim()) {
+      return { error: 'Invalid request ID' };
+    }
+
+    try {
+      const res = await fetch(
+        `${this.serverUrl}/cancel/${encodeURIComponent(requestId)}`,
+        {
+          method: 'POST',
+        },
+      );
+
+      if (!res.ok) {
+        return { error: `Cancel request failed: ${res.statusText}` };
+      }
+
+      const result = await res.json();
+      if (result?.report) {
+        result.report = this.resolveReportUrl(result.report);
+      }
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('Failed to cancel task:', error);
+      return { error: 'Failed to cancel task' };
+    }
+  }
+
+  // Get screenshot from server
+  async getScreenshot(): Promise<{
+    screenshot: string;
+    timestamp: number;
+  } | null> {
+    if (!this.serverUrl) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/screenshot`);
+
+      if (!response.ok) {
+        if (response.status !== 409) {
+          console.warn(`Screenshot request failed: ${response.statusText}`);
+        }
+        return null;
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get screenshot:', error);
+      return null;
+    }
+  }
+
+  // Direct device manipulation – invokes a named action on the connected
+  // device without going through AI planning.
+  async interact(
+    payload: { actionType: string } & Record<string, unknown>,
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!this.serverUrl) {
+      return { ok: false, error: 'No server URL configured' };
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/interact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: data?.error || `Interact request failed (${response.status})`,
+        };
+      }
+
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  async startRecorderSession(
+    sessionId: string,
+  ): Promise<PlaygroundRecorderStartResult> {
+    if (!this.serverUrl) {
+      return { ok: false, supported: false, error: 'No server URL configured' };
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/recorder/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+        }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        supported?: boolean;
+        source?: PlaygroundRecorderSourceKind;
+        platformId?: string;
+        error?: string;
+      } | null;
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          supported: data?.supported ?? false,
+          source: data?.source,
+          platformId: data?.platformId,
+          error:
+            data?.error || `Recorder start request failed (${response.status})`,
+        };
+      }
+
+      return {
+        ok: data?.ok ?? true,
+        supported: data?.supported ?? true,
+        source: data?.source,
+        platformId: data?.platformId,
+        error: data?.error,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        supported: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  async getRecorderCapabilities(): Promise<PlaygroundRecorderCapabilitiesResult> {
+    if (!this.serverUrl) {
+      return {
+        supported: false,
+        source: 'unsupported',
+        error: 'No server URL configured',
+      };
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/recorder/capabilities`);
+      const data = (await response.json().catch(() => null)) as {
+        supported?: boolean;
+        source?: PlaygroundRecorderSourceKind;
+        platformId?: string;
+        error?: string;
+      } | null;
+      if (!response.ok) {
+        return {
+          supported: false,
+          source: 'unsupported',
+          error:
+            data?.error ||
+            `Recorder capabilities request failed (${response.status})`,
+        };
+      }
+      return {
+        supported: data?.supported === true,
+        source: data?.source || 'unsupported',
+        platformId: data?.platformId,
+        error: data?.error,
+      };
+    } catch (error) {
+      return {
+        supported: false,
+        source: 'unsupported',
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  async stopRecorderSession(): Promise<{ ok: boolean; error?: string }> {
+    if (!this.serverUrl) {
+      return { ok: false, error: 'No server URL configured' };
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/recorder/stop`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: `Recorder stop request failed (${response.status})`,
+        };
+      }
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  async getRecorderEvents(since = 0): Promise<PlaygroundRecorderEventsResult> {
+    if (!this.serverUrl) {
+      return { events: [], nextIndex: since };
+    }
+
+    try {
+      const response = await fetch(
+        `${this.serverUrl}/recorder/events?since=${encodeURIComponent(String(since))}&flushPending=false`,
+      );
+      if (!response.ok) {
+        return { events: [], nextIndex: since };
+      }
+      const data = (await response.json().catch(() => null)) as {
+        events?: unknown;
+        nextIndex?: unknown;
+      } | null;
+      return {
+        events: Array.isArray(data?.events) ? data.events : [],
+        nextIndex:
+          typeof data?.nextIndex === 'number' && Number.isFinite(data.nextIndex)
+            ? data.nextIndex
+            : since,
+      };
+    } catch (error) {
+      console.error('Failed to poll recorder events:', error);
+      return { events: [], nextIndex: since };
+    }
+  }
+
+  async describeRecorderEventAtPoint(
+    event: PlaygroundRecorderEvent,
+  ): Promise<PlaygroundRecorderDescribeResult> {
+    if (!this.serverUrl) {
+      return { ok: false, error: 'No server URL configured' };
+    }
+
+    try {
+      const response = await fetch(
+        `${this.serverUrl}/recorder/describe-event`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event }),
+        },
+      );
+      const data = (await response
+        .json()
+        .catch(() => null)) as PlaygroundRecorderDescribeResult | null;
+      if (!response.ok) {
+        return {
+          ok: false,
+          error:
+            data?.error ||
+            `Recorder describe request failed (${response.status})`,
+        };
+      }
+      return data || { ok: false, error: 'Empty recorder describe response' };
+    } catch (error) {
+      return {
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Failed to describe recorder event',
+      };
+    }
+  }
+
+  async getRecorderScreenshotAsset(assetId: string): Promise<string | null> {
+    if (!this.serverUrl || !assetId) {
+      return null;
+    }
+    try {
+      const response = await fetch(
+        `${this.serverUrl}/recorder/assets/${encodeURIComponent(assetId)}`,
+      );
+      if (!response.ok) {
+        return null;
+      }
+      const blob = await response.blob();
+      return await new Promise<string | null>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () =>
+          resolve(typeof reader.result === 'string' ? reader.result : null);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      console.error('Failed to fetch recorder screenshot asset:', error);
+      return null;
+    }
+  }
+
+  getRecorderScreenshotAssetUrl(assetId: string): string | null {
+    if (!this.serverUrl || !/^[a-zA-Z0-9_-]+$/.test(assetId)) {
+      return null;
+    }
+    return `${this.serverUrl}/recorder/assets/${encodeURIComponent(assetId)}`;
+  }
+
+  async clearRecorderScreenshotAssets(sessionId: string): Promise<void> {
+    if (!this.serverUrl || !sessionId) {
+      return;
+    }
+    const response = await fetch(
+      `${this.serverUrl}/recorder/assets/session/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Recorder screenshot cleanup request failed (${response.status})`,
+      );
+    }
+  }
+
+  async pruneRecorderScreenshotAssets(
+    sessionId: string,
+    assetIds: string[],
+  ): Promise<void> {
+    if (!this.serverUrl || !sessionId) {
+      return;
+    }
+    const response = await fetch(
+      `${this.serverUrl}/recorder/assets/session/${encodeURIComponent(sessionId)}/prune`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetIds }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Recorder screenshot prune request failed (${response.status})`,
+      );
+    }
+  }
+
+  // Get interface information from server
+  async getInterfaceInfo(): Promise<{
+    type: string;
+    description?: string;
+    size?: { width: number; height: number };
+    navigationState?: { isLoading: boolean };
+    actionTypes?: string[];
+  } | null> {
+    if (!this.serverUrl) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/interface-info`);
+
+      if (!response.ok) {
+        console.warn(`Interface info request failed: ${response.statusText}`);
+        return null;
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get interface info:', error);
+      return null;
+    }
+  }
+
+  async getRuntimeInfo(): Promise<PlaygroundRuntimeInfo | null> {
+    if (!this.serverUrl) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/runtime-info`);
+
+      if (!response.ok) {
+        console.warn(`Runtime info request failed: ${response.statusText}`);
+        return null;
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get runtime info:', error);
+      return null;
+    }
+  }
+
+  async getSessionInfo(): Promise<PlaygroundSessionState | null> {
+    if (!this.serverUrl) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/session`);
+      if (!response.ok) {
+        console.warn(`Session info request failed: ${response.statusText}`);
+        return null;
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get session info:', error);
+      return null;
+    }
+  }
+
+  async getSessionSetup(
+    input?: Record<string, unknown>,
+  ): Promise<PlaygroundSessionSetup | null> {
+    if (!this.serverUrl) {
+      return null;
+    }
+
+    try {
+      const searchParams = new URLSearchParams();
+      Object.entries(input || {}).forEach(([key, value]) => {
+        if (
+          typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean'
+        ) {
+          searchParams.set(key, String(value));
+        }
+      });
+      const suffix = searchParams.size > 0 ? `?${searchParams.toString()}` : '';
+      const response = await fetch(`${this.serverUrl}/session/setup${suffix}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(
+          body?.error || response.statusText || 'Failed to load session setup',
+        );
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to get session setup:', error);
+      throw error;
+    }
+  }
+
+  async listSessionTargets(): Promise<PlaygroundSessionTarget[]> {
+    if (!this.serverUrl) {
+      return [];
+    }
+
+    try {
+      const response = await fetch(`${this.serverUrl}/session/targets`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(
+          body?.error ||
+            response.statusText ||
+            'Failed to load session targets',
+        );
+      }
+
+      const result = await response.json();
+      return Array.isArray(result) ? result : [];
+    } catch (error) {
+      console.error('Failed to get session targets:', error);
+      throw error;
+    }
+  }
+
+  async createSession(input?: Record<string, unknown>): Promise<{
+    session: PlaygroundSessionState;
+    runtimeInfo: PlaygroundRuntimeInfo;
+  }> {
+    if (!this.serverUrl) {
+      throw new Error('Server URL not configured');
+    }
+
+    const response = await fetch(`${this.serverUrl}/session`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(input || {}),
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.error || response.statusText);
+    }
+
+    return await response.json();
+  }
+
+  async destroySession(): Promise<{
+    session: PlaygroundSessionState;
+    runtimeInfo: PlaygroundRuntimeInfo;
+  }> {
+    if (!this.serverUrl) {
+      throw new Error('Server URL not configured');
+    }
+
+    const response = await fetch(`${this.serverUrl}/session`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.error || response.statusText);
+    }
+
+    return await response.json();
+  }
+}

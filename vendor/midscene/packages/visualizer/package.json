@@ -1,0 +1,74 @@
+{
+  "name": "@midscene/visualizer",
+  "private": true,
+  "version": "1.12.6",
+  "repository": "https://github.com/web-infra-dev/midscene",
+  "homepage": "https://midscenejs.com/",
+  "types": "./dist/types/index.d.ts",
+  "main": "./dist/lib/index.js",
+  "module": "./dist/es/index.mjs",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/es/index.mjs",
+      "require": "./dist/lib/index.js"
+    },
+    "./history-selector": {
+      "types": "./dist/types/component/history-selector/index.d.ts",
+      "import": "./dist/es/component/history-selector/index.mjs",
+      "require": "./dist/lib/component/history-selector/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      ".": ["./dist/types/index.d.ts"],
+      "history-selector": ["./dist/types/component/history-selector/index.d.ts"]
+    }
+  },
+  "files": ["dist", "html", "README.md"],
+  "scripts": {
+    "dev": "npm run build:watch",
+    "build": "rslib build",
+    "build:watch": "rslib build --watch --no-clean",
+    "test": "rstest",
+    "serve": "http-server ./dist/ -p 3000"
+  },
+  "peerDependencies": {
+    "react": "18.3.1",
+    "react-dom": ">=19.1.0"
+  },
+  "devDependencies": {
+    "@rsbuild/plugin-less": "^1.5.0",
+    "@rsbuild/plugin-node-polyfill": "1.4.2",
+    "@rsbuild/plugin-react": "^1.4.1",
+    "@rsbuild/plugin-svgr": "^1.2.2",
+    "@rslib/core": "^0.18.3",
+    "@rstest/core": "0.11.5",
+    "@types/chrome": "0.0.279",
+    "@types/node": "^18.0.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "execa": "9.3.0",
+    "http-server": "14.1.1",
+    "query-string": "9.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-resizable-panels": "2.0.22",
+    "rimraf": "~5.0.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3",
+    "zustand": "4.5.2"
+  },
+  "sideEffects": ["**/*.css", "**/*.less", "**/*.sass", "**/*.scss"],
+  "dependencies": {
+    "@ant-design/icons": "^5.3.1",
+    "@midscene/core": "workspace:*",
+    "@midscene/playground": "workspace:*",
+    "@midscene/shared": "workspace:*",
+    "@midscene/web": "workspace:*",
+    "antd": "^5.21.6",
+    "buffer": "6.0.3",
+    "dayjs": "^1.11.11"
+  },
+  "license": "MIT"
+}

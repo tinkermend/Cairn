@@ -1,40 +1,32 @@
-import { randomUUID } from 'node:crypto'
 import { MiddlewareConsumer, Module, type NestModule } from '@nestjs/common'
 import { APP_FILTER, APP_GUARD } from '@nestjs/core'
 import { LoggerModule } from 'nestjs-pino'
-import type { Request } from 'express'
-import { REQUEST_ID_HEADER } from '@cairn/shared'
 import { AllExceptionsFilter } from './common/all-exceptions.filter'
 import { AuthGuard } from './common/auth.guard'
+import { buildApiLoggerOptions } from './common/logger-options'
 import { NotFoundModule } from './common/not-found.module'
 import { RequestIdMiddleware } from './common/request-id.middleware'
+import { config } from './config/env'
 import { DbModule } from './db/db.module'
 import { AuthModule } from './auth/auth.module'
 import { HealthModule } from './health/health.module'
 import { PermissionsGuard } from './rbac/permissions.guard'
 import { RbacModule } from './rbac/rbac.module'
+import { TargetsModule } from './targets/targets.module'
 
 @Module({
   imports: [
     LoggerModule.forRoot({
-      pinoHttp: {
-        base: { service: 'cairn-api' },
-        // pino-http 在 Nest 中间件之前执行，所以 requestId 在这里确定，
-        // 之后由 RequestIdMiddleware 镜像到响应头。三者共用同一个值。
-        genReqId: (req) => {
-          const incoming = req.headers[REQUEST_ID_HEADER]
-          const id = (Array.isArray(incoming) ? incoming[0] : incoming) || randomUUID()
-          ;(req as Request).requestId = id
-          return id
-        },
-        customProps: (req) => ({ runId: (req as Request).requestId }),
-        autoLogging: { ignore: (req) => req.url === '/health' },
-      },
+      pinoHttp: buildApiLoggerOptions({
+        service: 'cairn-api',
+        level: config.CAIRN_LOG_LEVEL,
+      }),
     }),
     DbModule,
     HealthModule,
     AuthModule,
     RbacModule,
+    TargetsModule,
     // 必须放在最后：兜底路由要在所有业务路由之后注册
     NotFoundModule,
   ],

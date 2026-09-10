@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    # 集成测试真连 PostgreSQL：库不可用时整个包失败，不静默跳过。
+    # 这一条与本地跑的 `requireReachableDb()`（vitest globalSetup）是同一个判据。
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cairn
+          POSTGRES_PASSWORD: cairn
+          POSTGRES_DB: cairn
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cairn"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      CAIRN_DB_HOST: 127.0.0.1
+      CAIRN_DB_PORT: 5432
+      CAIRN_DB_NAME: cairn
+      CAIRN_DB_USER: cairn
+      CAIRN_DB_PASSWORD: cairn
+      CAIRN_DB_SCHEMA: cairn
+      # CI 不是 staging / production，用开发默认密钥即可；
+      # 设成非 development 会要求真实密钥，那是部署环境的事。
+      CAIRN_ENV: development
+      CAIRN_API_PORT: 3030
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: pnpm check
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+      - run: pnpm db:migrate
+
+      # 集成测试需要一个可作 actor 的账号（targets.integration 取 console_accounts 的第一行）。
+      # bootstrap 目前只在 api 启动时执行，所以这里起一次 api 让它种下首位管理员。
+      # 退出条件：seed 变成独立的 CLI（或集成测试自建夹具）后，删掉这一步。
+      - name: Seed bootstrap admin
+        run: |
+          node packages/api/dist/main.js &
+          api_pid=$!
+          for _ in $(seq 1 30); do
+            curl -fsS "http://127.0.0.1:${CAIRN_API_PORT}/health" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          kill "$api_pid" 2>/dev/null || true
+          wait "$api_pid" 2>/dev/null || true
+
+      # web 的组件测试跑在真实 Chromium 上（vitest browser mode）
+      - run: pnpm --filter @cairn/web exec playwright install --with-deps chromium
+
+      - run: pnpm test

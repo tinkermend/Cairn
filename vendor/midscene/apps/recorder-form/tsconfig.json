@@ -1,0 +1,13 @@
+{
+  "extends": "../../packages/shared/tsconfig.app.base.json",
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["src", "../../packages/record/src/RecordTimeline.tsx"],
+  "references": [
+    {
+      "path": "../../packages/recorder"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "extends": "../shared/tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "sourceMap": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "rootDir": ".",
+    "target": "es2018",
+    "declarationDir": "dist/types",
+    "types": ["node"]
+  },
+  "include": ["src", "tests"],
+  "references": [
+    {
+      "path": "../shared"
+    }
+  ]
+}

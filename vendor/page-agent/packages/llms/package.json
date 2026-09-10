@@ -1,0 +1,60 @@
+{
+    "name": "@page-agent/llms",
+    "version": "1.12.4",
+    "type": "module",
+    "main": "./src/index.ts",
+    "types": "./src/index.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.ts",
+            "default": "./src/index.ts"
+        }
+    },
+    "publishConfig": {
+        "main": "./dist/lib/page-agent-llms.js",
+        "module": "./dist/lib/page-agent-llms.js",
+        "types": "./dist/lib/index.d.ts",
+        "exports": {
+            ".": {
+                "types": "./dist/lib/index.d.ts",
+                "import": "./dist/lib/page-agent-llms.js",
+                "default": "./dist/lib/page-agent-llms.js"
+            }
+        }
+    },
+    "files": [
+        "dist/"
+    ],
+    "description": "LLM client with reflection-before-action mental model for page-agent",
+    "keywords": [
+        "page-agent",
+        "llm",
+        "openai",
+        "tool-calling",
+        "agent"
+    ],
+    "author": "Simon<gaomeng1900>",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/alibaba/page-agent.git",
+        "directory": "packages/llms"
+    },
+    "homepage": "https://alibaba.github.io/page-agent/",
+    "scripts": {
+        "build": "vite build",
+        "test": "vitest run --project llms",
+        "test:live": "vitest run --project llms:live",
+        "prepublishOnly": "node ../../scripts/pre-publish.js",
+        "postpublish": "node ../../scripts/post-publish.js"
+    },
+    "dependencies": {
+        "chalk": "^6.0.0"
+    },
+    "peerDependencies": {
+        "zod": "^3.25.0 || ^4.0.0"
+    },
+    "devDependencies": {
+        "zod": "^4.5.1"
+    }
+}

@@ -1,0 +1,370 @@
+import { TaskBuilder, locatePlanForLocate } from '@/agent/task-builder';
+import { getMidsceneLocationSchema } from '@/ai-model';
+import { getModelRuntime } from '@/ai-model/models';
+import { AbstractInterface, defineActionSleep } from '@/device';
+import type Service from '@/service';
+import type { DeviceAction, PlanningAction } from '@/types';
+import { afterEach, describe, expect, it, rs } from '@rstest/core';
+import { z } from 'zod';
+
+class MockInterface extends AbstractInterface {
+  interfaceType = 'mock';
+  override cacheFeatureForPoint: AbstractInterface['cacheFeatureForPoint'] =
+    undefined;
+  override rectMatchesCacheFeature: AbstractInterface['rectMatchesCacheFeature'] =
+    undefined;
+  override destroy: AbstractInterface['destroy'] = undefined;
+  override describe: AbstractInterface['describe'] = undefined;
+  override beforeInvokeAction: AbstractInterface['beforeInvokeAction'] =
+    undefined;
+  override afterInvokeAction: AbstractInterface['afterInvokeAction'] =
+    undefined;
+  override getUITree: AbstractInterface['getUITree'] = undefined;
+  override getElementsNodeTree: AbstractInterface['getElementsNodeTree'] =
+    undefined;
+  override url: AbstractInterface['url'] = undefined;
+  override evaluateJavaScript: AbstractInterface['evaluateJavaScript'] =
+    undefined;
+
+  constructor(private readonly actions: DeviceAction[]) {
+    super();
+  }
+
+  async screenshotBase64(): Promise<string> {
+    return 'mock';
+  }
+
+  async size(): Promise<{ width: number; height: number }> {
+    return { width: 0, height: 0 };
+  }
+
+  actionSpace(): DeviceAction[] {
+    return this.actions;
+  }
+}
+
+describe('TaskBuilder', () => {
+  const mockModelRuntime = getModelRuntime({
+    modelName: 'mock-model',
+    modelDescription: 'mock-model-description',
+    intent: 'default',
+    slot: 'default',
+  });
+
+  afterEach(() => {
+    rs.useRealTimers();
+  });
+
+  it('normalizes the deprecated locate deepThink alias before task reporting', () => {
+    const plan = locatePlanForLocate({
+      prompt: 'cart icon',
+      deepThink: true,
+    } as any);
+
+    expect(plan.param).toEqual({
+      prompt: 'cart icon',
+      deepLocate: true,
+    });
+    expect(plan.param).not.toHaveProperty('deepThink');
+  });
+
+  it('dispatches plans using handler registry', async () => {
+    const actionSchema = z.object({
+      locate: getMidsceneLocationSchema().describe('element to locate'),
+    });
+
+    const mockAction: DeviceAction = {
+      name: 'Tap',
+      description: 'mock tap action',
+      paramSchema: actionSchema,
+      call: rs.fn(),
+    };
+
+    const mockInterface = new MockInterface([mockAction, defineActionSleep()]);
+
+    const insightService = {
+      contextRetrieverFn: rs.fn(),
+      locate: rs.fn(),
+    } as unknown as Service;
+
+    const taskBuilder = new TaskBuilder({
+      interfaceInstance: mockInterface,
+      service: insightService,
+      actionSpace: mockInterface.actionSpace(),
+    });
+
+    const plans: PlanningAction[] = [
+      {
+        type: 'Locate',
+        thought: 'find element',
+        param: { prompt: 'first' },
+      },
+      {
+        type: 'Finished',
+        thought: 'all done',
+        param: null,
+      },
+      {
+        type: 'Sleep',
+        thought: 'take a break',
+        param: { timeMs: 100 },
+      },
+      {
+        type: 'Tap',
+        thought: 'tap element',
+        param: { locate: { prompt: 'button' } },
+      },
+    ];
+
+    const { tasks } = await taskBuilder.build(
+      plans,
+      mockModelRuntime,
+      mockModelRuntime,
+    );
+
+    expect(tasks.map((task) => [task.type, task.subType])).toEqual([
+      ['Planning', 'Locate'],
+      ['Action Space', 'Finished'],
+      ['Action Space', 'Sleep'],
+      ['Planning', 'Locate'],
+      ['Action Space', 'Tap'],
+    ]);
+  });
+
+  it('uses promptDisplay for the located element passed to an action', async () => {
+    const actionSchema = z.object({
+      locate: getMidsceneLocationSchema().describe('element to locate'),
+    });
+    const mockAction: DeviceAction = {
+      name: 'Tap',
+      description: 'mock tap action',
+      paramSchema: actionSchema,
+      call: rs.fn(),
+    };
+    const mockInterface = new MockInterface([mockAction]);
+    const locateDump = {
+      taskInfo: { durationMs: 1 },
+      matchedElement: [
+        {
+          center: [50, 50],
+          rect: { left: 40, top: 40, width: 20, height: 20 },
+          description:
+            '<CONTEXT>favorite fruit rule</CONTEXT><LOCATE_TARGET>orange</LOCATE_TARGET>',
+        },
+      ],
+    };
+    const insightService = {
+      contextRetrieverFn: rs.fn(),
+      locate: rs.fn(async () => ({
+        element: {
+          center: [50, 50],
+          rect: { left: 40, top: 40, width: 20, height: 20 },
+          description:
+            '<CONTEXT>favorite fruit rule</CONTEXT><LOCATE_TARGET>orange</LOCATE_TARGET>',
+        },
+        dump: locateDump,
+      })),
+    } as unknown as Service;
+    const taskBuilder = new TaskBuilder({
+      interfaceInstance: mockInterface,
+      service: insightService,
+      actionSpace: mockInterface.actionSpace(),
+    });
+    const plans: PlanningAction[] = [
+      {
+        type: 'Tap',
+        param: {
+          locate: {
+            prompt:
+              '<CONTEXT>favorite fruit rule</CONTEXT><LOCATE_TARGET>orange</LOCATE_TARGET>',
+            promptDisplay: 'orange',
+            context: 'favorite fruit rule',
+          },
+        },
+      },
+    ];
+
+    const { tasks } = await taskBuilder.build(
+      plans,
+      mockModelRuntime,
+      mockModelRuntime,
+    );
+    const locateTask = tasks[0];
+    await locateTask.executor({
+      task: { timing: {} },
+      uiContext: {
+        shrunkShotToLogicalRatio: 1,
+        deprecatedDpr: 1,
+      },
+    } as any);
+
+    expect((plans[0].param as any).locate.description).toBe('orange');
+    expect(locateDump.matchedElement[0].description).toBe('orange');
+  });
+
+  it('throws when building an executable task for an action outside actionSpace', async () => {
+    const mockInterface = new MockInterface([defineActionSleep()]);
+    const insightService = {
+      contextRetrieverFn: rs.fn(),
+      locate: rs.fn(),
+    } as unknown as Service;
+    const taskBuilder = new TaskBuilder({
+      interfaceInstance: mockInterface,
+      service: insightService,
+      actionSpace: mockInterface.actionSpace(),
+    });
+
+    await expect(
+      taskBuilder.build(
+        [{ type: 'Tap', thought: 'tap missing action', param: {} }],
+        mockModelRuntime,
+        mockModelRuntime,
+      ),
+    ).rejects.toThrow(
+      /Action type 'Tap' is not in the current action space. Available actions: Sleep/,
+    );
+  });
+
+  it('supports fast-path action delays for system actions', async () => {
+    rs.useFakeTimers();
+
+    const defaultBeforeHook = rs.fn(async () => undefined);
+    const defaultAfterHook = rs.fn(async () => undefined);
+    const defaultActionCall = rs.fn(async () => undefined);
+    const defaultAction: DeviceAction = {
+      name: 'DefaultExit',
+      description: 'default exit action',
+      call: defaultActionCall,
+    };
+
+    const defaultInterface = new MockInterface([defaultAction]);
+    defaultInterface.beforeInvokeAction = defaultBeforeHook;
+    defaultInterface.afterInvokeAction = defaultAfterHook;
+
+    const fastBeforeHook = rs.fn(async () => undefined);
+    const fastAfterHook = rs.fn(async () => undefined);
+    const fastActionCall = rs.fn(async () => undefined);
+    const fastAction: DeviceAction = {
+      name: 'FastExit',
+      description: 'fast exit action',
+      delayBeforeRunner: 0,
+      delayAfterRunner: 0,
+      call: fastActionCall,
+    };
+
+    const fastInterface = new MockInterface([fastAction]);
+    fastInterface.beforeInvokeAction = fastBeforeHook;
+    fastInterface.afterInvokeAction = fastAfterHook;
+
+    const insightService = {
+      contextRetrieverFn: rs.fn(),
+      locate: rs.fn(),
+    } as unknown as Service;
+
+    const defaultTaskBuilder = new TaskBuilder({
+      interfaceInstance: defaultInterface,
+      service: insightService,
+      actionSpace: defaultInterface.actionSpace(),
+    });
+
+    const fastTaskBuilder = new TaskBuilder({
+      interfaceInstance: fastInterface,
+      service: insightService,
+      actionSpace: fastInterface.actionSpace(),
+    });
+
+    const { tasks: defaultTasks } = await defaultTaskBuilder.build(
+      [{ type: 'DefaultExit', thought: '', param: {} }],
+      mockModelRuntime,
+      mockModelRuntime,
+    );
+    const { tasks: fastTasks } = await fastTaskBuilder.build(
+      [{ type: 'FastExit', thought: '', param: {} }],
+      mockModelRuntime,
+      mockModelRuntime,
+    );
+
+    const defaultTask = defaultTasks[0];
+    const fastTask = fastTasks[0];
+    const taskContext = {
+      task: { timing: {} },
+      uiContext: { shrunkShotToLogicalRatio: 1 },
+    } as any;
+
+    const defaultPromise = defaultTask.executor(taskContext);
+
+    await rs.advanceTimersByTimeAsync(199);
+    expect(defaultBeforeHook).toHaveBeenCalledTimes(1);
+    expect(defaultActionCall).not.toHaveBeenCalled();
+    expect(defaultAfterHook).not.toHaveBeenCalled();
+
+    await rs.advanceTimersByTimeAsync(1);
+    expect(defaultActionCall).toHaveBeenCalledTimes(1);
+    expect(defaultAfterHook).not.toHaveBeenCalled();
+
+    await rs.advanceTimersByTimeAsync(299);
+    expect(defaultAfterHook).not.toHaveBeenCalled();
+
+    await rs.advanceTimersByTimeAsync(1);
+    await expect(defaultPromise).resolves.toEqual({ output: undefined });
+    expect(defaultAfterHook).toHaveBeenCalledTimes(1);
+
+    const fastPromise = fastTask.executor(taskContext);
+    await expect(fastPromise).resolves.toEqual({ output: undefined });
+    expect(fastBeforeHook).toHaveBeenCalledTimes(1);
+    expect(fastActionCall).toHaveBeenCalledTimes(1);
+    expect(fastAfterHook).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows actions to attach planning feedback to the running task', async () => {
+    const actionCall = rs.fn(async () => '0\n');
+    const readStateAction: DeviceAction<{ key: string }, string> = {
+      name: 'ReadState',
+      description: 'read state',
+      delayBeforeRunner: 0,
+      delayAfterRunner: 0,
+      call: async (param, context) => {
+        const output = await actionCall();
+        if (!context?.task) {
+          throw new Error('executor context task is required');
+        }
+        context.task.planningFeedback = `ReadState returned ${param.key}: ${output}`;
+        return output;
+      },
+    };
+    const mockInterface = new MockInterface([readStateAction]);
+    const insightService = {
+      contextRetrieverFn: rs.fn(),
+      locate: rs.fn(),
+    } as unknown as Service;
+    const taskBuilder = new TaskBuilder({
+      interfaceInstance: mockInterface,
+      service: insightService,
+      actionSpace: mockInterface.actionSpace(),
+    });
+
+    const { tasks } = await taskBuilder.build(
+      [
+        {
+          type: 'ReadState',
+          thought: 'read brightness state',
+          param: { key: 'brightness' },
+        },
+      ],
+      mockModelRuntime,
+      mockModelRuntime,
+    );
+    const taskContext = {
+      task: { timing: {} },
+      uiContext: { shrunkShotToLogicalRatio: 1 },
+    } as any;
+    const result = await tasks[0].executor(taskContext);
+
+    expect(result).toEqual({
+      output: '0\n',
+    });
+    expect(taskContext.task.planningFeedback).toBe(
+      'ReadState returned brightness: 0\n',
+    );
+  });
+});

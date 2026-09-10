@@ -1,0 +1,157 @@
+.shiny-text {
+  position: relative;
+  display: inline-block;
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  animation: textGradient 8s ease infinite;
+  background-image: linear-gradient(45deg, #2b83ff, #1d9bf0, #2575fc, #4481eb);
+
+  // Color themes
+  &.theme-blue {
+    background-image: linear-gradient(
+      45deg,
+      #2b83ff,
+      #1d9bf0,
+      #2575fc,
+      #4481eb
+    );
+  }
+
+  &.theme-purple {
+    background-image: linear-gradient(
+      45deg,
+      #667eea,
+      #764ba2,
+      #b06ab3,
+      #9d50bb
+    );
+  }
+
+  &.theme-green {
+    background-image: linear-gradient(
+      45deg,
+      #11998e,
+      #38ef7d,
+      #2dd4bf,
+      #10b981
+    );
+  }
+
+  &.theme-rainbow {
+    background-image: linear-gradient(
+      45deg,
+      #ff0080,
+      #ff8c00,
+      #40e0d0,
+      #9d50bb,
+      #ff0080
+    );
+    background-size: 400% auto;
+  }
+
+  // Light-mode shine: an absolutely-positioned bright stripe slides across
+  // the bounding box. It looks good on a light app surface because the
+  // white-ish gradient blends into the white-ish background everywhere
+  // *except* over the colored text glyphs underneath. In dark mode the
+  // same overlay reads as a bright rectangle sweeping the empty container
+  // area — so the dark-mode block below opts out of this layer.
+  &::after {
+    content: '';
+    position: absolute;
+    top: -10%;
+    left: -150%;
+    width: 120%;
+    height: 120%;
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.1) 10%,
+      rgba(255, 255, 255, 0.6) 50%,
+      rgba(255, 255, 255, 0.1) 90%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    transform: skewX(-20deg) translateY(0);
+    animation: shine var(--animation-duration, 5s)
+      cubic-bezier(0.25, 0.1, 0.25, 1) infinite;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  &.disabled {
+    animation: none;
+    color: #000;
+    background: none;
+    font-weight: normal;
+
+    &::after {
+      animation: none;
+      display: none;
+    }
+  }
+}
+
+[data-theme='dark'] .shiny-text {
+  background-image: linear-gradient(45deg, #7dd3fc, #60a5fa, #38bdf8, #60a5fa);
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: none;
+  animation: textGradient 8s ease infinite;
+
+  // The light-mode shine layer flashes the entire text container against
+  // the dark app surface, so we suppress it here and let the base
+  // gradient (which is text-clipped) do all the shimmering on its own.
+  &::after {
+    display: none;
+  }
+}
+
+[data-theme='dark'] .shiny-text.disabled {
+  animation: none;
+  background: none;
+  color: var(--midscene-text-primary, rgba(255, 255, 255, 0.88));
+  -webkit-text-fill-color: currentColor;
+  font-weight: normal;
+}
+
+@keyframes shine {
+  0% {
+    left: -150%;
+    opacity: 0.7;
+  }
+
+  20% {
+    opacity: 1;
+  }
+
+  80% {
+    opacity: 1;
+  }
+
+  100% {
+    left: 250%;
+    opacity: 0.7;
+  }
+}
+
+@keyframes textGradient {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
+}

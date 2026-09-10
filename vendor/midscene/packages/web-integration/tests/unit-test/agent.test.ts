@@ -1,0 +1,731 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import type { AbstractWebPage } from '@/web-page';
+import * as coreActual from '@midscene/core' with { rstest: 'importActual' };
+import type { ReportActionDump } from '@midscene/core';
+import { Agent as PageAgent } from '@midscene/core/agent';
+import {
+  getVersion,
+  reportHTMLContent,
+  sleep,
+  stringifyDumpData,
+  writeLogFile,
+} from '@midscene/core/utils';
+import { getMidsceneRunSubDir } from '@midscene/shared/common';
+import { globalConfigManager } from '@midscene/shared/env';
+import { beforeEach, describe, expect, it, rs } from '@rstest/core';
+
+declare const __VERSION__: string;
+// Mock only the necessary parts to avoid side effects
+rs.mock('@midscene/core/utils', { spy: true });
+
+rs.mocked(writeLogFile).mockReturnValue('');
+rs.mocked(reportHTMLContent).mockReturnValue('');
+rs.mocked(stringifyDumpData).mockReturnValue('{}');
+rs.mocked(getVersion).mockReturnValue(__VERSION__);
+rs.mocked(sleep).mockResolvedValue(undefined);
+
+rs.mock('@midscene/shared/logger', () => ({
+  getDebug: rs.fn(() => rs.fn()),
+  logMsg: rs.fn(),
+}));
+
+rs.mock('@midscene/core', () => ({
+  ...coreActual,
+  Insight: rs.fn().mockImplementation(() => ({})),
+}));
+
+// Mock page implementation
+const mockPage = {
+  interfaceType: 'puppeteer',
+  mouse: {
+    click: rs.fn(),
+  },
+  actionSpace: rs.fn(() => []),
+  screenshotBase64: rs.fn().mockResolvedValue('mock-screenshot'),
+  evaluateJavaScript: rs.fn(),
+  size: rs.fn().mockResolvedValue({}),
+  destroy: rs.fn(),
+} as unknown as AbstractWebPage;
+
+const mockedModelConfig = {
+  MIDSCENE_MODEL_NAME: 'mock-model',
+  MIDSCENE_MODEL_API_KEY: 'mock-api-key',
+  MIDSCENE_MODEL_BASE_URL: 'mock-base-url',
+  MIDSCENE_MODEL_FAMILY: 'qwen3-vl',
+};
+
+// Mock task executor
+const mockTaskExecutor = {
+  runPlans: rs.fn(),
+} as any;
+
+describe('PageAgent RightClick', () => {
+  let agent: PageAgent;
+
+  beforeEach(() => {
+    rs.clearAllMocks();
+
+    // Create agent instance
+    agent = new PageAgent(mockPage, {
+      generateReport: false,
+      autoPrintReportMsg: false,
+      modelConfig: mockedModelConfig,
+    });
+
+    // Replace the taskExecutor with our mock
+    agent.taskExecutor = mockTaskExecutor;
+  });
+
+  it('should handle aiRightClick with locate options', async () => {
+    const mockExecutorResult = {
+      runner: {
+        dump: () => ({ name: 'test', tasks: [] }),
+        isInErrorState: () => false,
+      },
+      output: {},
+    };
+
+    mockTaskExecutor.runPlans.mockResolvedValue(mockExecutorResult);
+
+    // Call aiRightClick with options
+    await agent.aiRightClick('right click target', {
+      deepLocate: true,
+      cacheable: false,
+    });
+  });
+
+  it('should be supported in ai method with rightClick type', async () => {
+    // ai method is an alias for aiAct, use aiRightClick directly for right click
+    const mockExecutorResult = {
+      runner: {
+        dump: () => ({ name: 'test', tasks: [] }),
+        isInErrorState: () => false,
+      },
+      output: {},
+    };
+
+    mockTaskExecutor.runPlans.mockResolvedValue(mockExecutorResult);
+    await agent.aiRightClick('button to right click');
+  });
+});
+
+describe('PageAgent logContent', () => {
+  let agent: PageAgent;
+
+  beforeEach(() => {
+    agent = new PageAgent(mockPage, {
+      modelConfig: mockedModelConfig,
+    });
+    const dumpPath = path.join(__dirname, 'fixtures', 'dump.json');
+    agent.dump = JSON.parse(
+      fs.readFileSync(dumpPath, 'utf-8'),
+    ) as unknown as ReportActionDump;
+  });
+
+  it('should return correct content', async () => {
+    expect(agent.dump.executions[0].tasks[0].uiContext).toBeDefined();
+    expect(agent.dump.executions[0].tasks[0].log).toBeDefined();
+    const content = agent._unstableLogContent() as ReportActionDump;
+    expect(content).matchSnapshot();
+    // _unstableLogContent() now returns all fields including uiContext and log
+    // These are no longer stripped out as the method behavior has changed
+    expect(content.executions[0].tasks[0].uiContext).toBeDefined();
+    expect(content.executions[0].tasks[0].log).toBeDefined();
+    expect(agent.dump.executions[0].tasks[0].uiContext).toBeDefined();
+    expect(agent.dump.executions[0].tasks[0].log).toBeDefined();
+  });
+});
+
+describe('PageAgent reportFileName', () => {
+  beforeEach(() => {
+    rs.clearAllMocks();
+  });
+
+  it('should use external reportFileName when provided', () => {
+    const customReportName = 'my-custom-report-name';
+    const agent = new PageAgent(mockPage, {
+      reportFileName: customReportName,
+      modelConfig: mockedModelConfig,
+    });
+
+    expect(agent.reportFileName).toBe(customReportName);
+  });
+
+  it('should reject empty reportFileName when provided', () => {
+    expect(
+      () =>
+        new PageAgent(mockPage, {
+          reportFileName: '',
+          modelConfig: mockedModelConfig,
+        }),
+    ).toThrow('reportFileName must be a non-empty string');
+  });
+
+  it('should generate reportFileName when not provided', () => {
+    const agent = new PageAgent(mockPage, {
+      modelConfig: mockedModelConfig,
+    });
+
+    // The generated name should contain puppeteer and follow the pattern
+    // Note: uuid() generates base-36 strings (0-9, a-z)
+    expect(agent.reportFileName).toMatch(
+      /puppeteer-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-[a-z0-9]{8}/,
+    );
+  });
+
+  it('should use testId for generated reportFileName when provided', () => {
+    const agent = new PageAgent(mockPage, {
+      testId: 'test-123',
+      modelConfig: mockedModelConfig,
+    });
+
+    // The generated name should contain test-123 and follow the pattern
+    // Note: uuid() generates base-36 strings (0-9, a-z)
+    expect(agent.reportFileName).toMatch(
+      /test-123-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-[a-z0-9]{8}/,
+    );
+  });
+
+  it('should prioritize external reportFileName over testId', () => {
+    const customReportName = 'my-custom-report';
+    const agent = new PageAgent(mockPage, {
+      reportFileName: customReportName,
+      testId: 'test-456',
+      modelConfig: mockedModelConfig,
+    });
+
+    expect(agent.reportFileName).toBe(customReportName);
+  });
+
+  it('should fallback to "web" when interfaceType is not available', () => {
+    const mockPageWithoutType = {
+      ...mockPage,
+      interfaceType: undefined,
+    } as unknown as AbstractWebPage;
+
+    const agent = new PageAgent(mockPageWithoutType, {
+      modelConfig: mockedModelConfig,
+    });
+
+    // The generated name should contain web and follow the pattern
+    // Note: uuid() generates base-36 strings (0-9, a-z)
+    expect(agent.reportFileName).toMatch(
+      /web-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-[a-z0-9]{8}/,
+    );
+  });
+
+  it('should pass persistExecutionDump option to the report generator', () => {
+    const agent = new PageAgent(mockPage, {
+      persistExecutionDump: false,
+      modelConfig: mockedModelConfig,
+    });
+
+    expect((agent as any).opts.persistExecutionDump).toBe(false);
+  });
+});
+
+describe('PageAgent aiWaitFor', () => {
+  let agent: PageAgent;
+  let mockTaskExecutor: any;
+
+  beforeEach(() => {
+    rs.clearAllMocks();
+
+    // Create agent instance
+    agent = new PageAgent(mockPage, {
+      generateReport: false,
+      autoPrintReportMsg: false,
+      modelConfig: mockedModelConfig,
+    });
+
+    // Mock the task executor with waitFor method
+    mockTaskExecutor = {
+      waitFor: rs.fn(),
+    };
+
+    // Replace the taskExecutor with our mock
+    agent.taskExecutor = mockTaskExecutor;
+  });
+
+  it('should call waitFor with provided timeout options', async () => {
+    // Mock the waitFor method to return a successful runner
+    const mockExecutorResult = {
+      runner: {
+        dump: () => ({ name: 'waitFor test', tasks: [] }),
+        isInErrorState: () => false,
+        latestErrorTask: () => null,
+      },
+    };
+
+    mockTaskExecutor.waitFor.mockResolvedValue(mockExecutorResult);
+
+    // Call aiWaitFor
+    await agent.aiWaitFor('test assertion', {
+      timeoutMs: 5000,
+      checkIntervalMs: 1000,
+    });
+
+    // Verify that waitFor was called with the correct parameters
+    expect(mockTaskExecutor.waitFor).toHaveBeenCalledWith(
+      'test assertion',
+      {
+        timeoutMs: 5000,
+        checkIntervalMs: 1000,
+      },
+      expect.objectContaining({
+        config: expect.objectContaining({
+          modelName: 'mock-model',
+          modelFamily: 'qwen3-vl',
+          intent: 'insight',
+          slot: 'default',
+        }),
+      }),
+    );
+  });
+
+  it('should surface executor errors', async () => {
+    mockTaskExecutor.waitFor.mockRejectedValue(
+      new Error('Test executor failure'),
+    );
+
+    await expect(agent.aiWaitFor('test assertion')).rejects.toThrow(
+      'Test executor failure',
+    );
+
+    // Verify that waitFor was called
+    expect(mockTaskExecutor.waitFor).toHaveBeenCalled();
+  });
+
+  it('should use default timeout and checkInterval values', async () => {
+    const mockExecutorResult = {
+      runner: {
+        dump: () => ({ name: 'waitFor test', tasks: [] }),
+        isInErrorState: () => false,
+        latestErrorTask: () => null,
+      },
+    };
+
+    mockTaskExecutor.waitFor.mockResolvedValue(mockExecutorResult);
+
+    // Call aiWaitFor without options
+    await agent.aiWaitFor('test assertion');
+
+    // Verify that waitFor was called with default values
+    expect(mockTaskExecutor.waitFor).toHaveBeenCalledWith(
+      'test assertion',
+      {
+        timeoutMs: 15000, // 15 * 1000
+        checkIntervalMs: 3000, // 3 * 1000
+      },
+      expect.objectContaining({
+        config: expect.objectContaining({
+          modelName: 'mock-model',
+          modelFamily: 'qwen3-vl',
+          intent: 'insight',
+          slot: 'default',
+        }),
+      }),
+    );
+  });
+
+  it('should pass through custom timeout and checkInterval values', async () => {
+    const mockExecutorResult = {
+      runner: {
+        dump: () => ({ name: 'waitFor test', tasks: [] }),
+        isInErrorState: () => false,
+        latestErrorTask: () => null,
+      },
+    };
+
+    mockTaskExecutor.waitFor.mockResolvedValue(mockExecutorResult);
+
+    const customOptions = {
+      timeoutMs: 30000,
+      checkIntervalMs: 5000,
+    };
+
+    // Call aiWaitFor with custom options
+    await agent.aiWaitFor('test assertion', customOptions);
+
+    // Verify that waitFor was called with custom values
+    expect(mockTaskExecutor.waitFor).toHaveBeenCalledWith(
+      'test assertion',
+      {
+        timeoutMs: 30000,
+        checkIntervalMs: 5000,
+      },
+      expect.objectContaining({
+        config: expect.objectContaining({
+          modelName: 'mock-model',
+          modelFamily: 'qwen3-vl',
+          intent: 'insight',
+          slot: 'default',
+        }),
+      }),
+    );
+  });
+});
+
+describe('PageAgent cache configuration', () => {
+  beforeEach(() => {
+    rs.clearAllMocks();
+  });
+
+  describe('new cache object API', () => {
+    it('should throw error for cache: true (no longer supported)', () => {
+      expect(() => {
+        new PageAgent(mockPage, {
+          cache: true,
+          modelConfig: mockedModelConfig,
+        });
+      }).toThrow('cache: true requires an explicit cache ID');
+    });
+
+    it('should handle cache: false (disabled)', () => {
+      const agent = new PageAgent(mockPage, {
+        cache: false,
+        modelConfig: mockedModelConfig,
+      });
+
+      expect(agent.taskCache).toBeUndefined();
+    });
+
+    it('should throw error for cache: { strategy: "read-only" } without id', () => {
+      expect(() => {
+        new PageAgent(mockPage, {
+          cache: { strategy: 'read-only', id: undefined as unknown as string },
+          modelConfig: mockedModelConfig,
+        });
+      }).toThrow('cache configuration requires an explicit id');
+    });
+
+    it('should handle cache: { id: "custom-id" } with default read-write strategy', () => {
+      const agent = new PageAgent(mockPage, {
+        cache: { id: 'custom-cache-id' },
+        modelConfig: mockedModelConfig,
+      });
+
+      expect(agent.taskCache).toBeDefined();
+      expect(agent.taskCache?.isCacheResultUsed).toBe(true);
+      expect(agent.taskCache?.readOnlyMode).toBe(false);
+      expect(agent.taskCache?.cacheId).toBe('custom-cache-id');
+    });
+
+    it('should throw error for cache: { strategy: "invalid" }', () => {
+      expect(() => {
+        new PageAgent(mockPage, {
+          cache: {
+            // @ts-expect-error invalid strategy provided intentionally for runtime validation
+            strategy: 'invalid',
+            id: 'invalid-strategy-cache',
+          },
+          modelConfig: mockedModelConfig,
+        });
+      }).toThrow(
+        'cache.strategy must be one of "read-only", "read-write", "write-only"',
+      );
+    });
+
+    it('should handle cache: { strategy: "read-write", id: "custom-id" }', () => {
+      const agent = new PageAgent(mockPage, {
+        cache: {
+          strategy: 'read-write',
+          id: 'custom-readwrite-cache',
+        },
+        modelConfig: mockedModelConfig,
+      });
+
+      expect(agent.taskCache).toBeDefined();
+      expect(agent.taskCache?.isCacheResultUsed).toBe(true);
+      expect(agent.taskCache?.readOnlyMode).toBe(false);
+      expect(agent.taskCache?.cacheId).toBe('custom-readwrite-cache');
+    });
+
+    it('should handle cache: { strategy: "read-only", id: "custom-id" }', () => {
+      const agent = new PageAgent(mockPage, {
+        cache: {
+          strategy: 'read-only',
+          id: 'custom-readonly-cache',
+        },
+        modelConfig: mockedModelConfig,
+      });
+
+      expect(agent.taskCache).toBeDefined();
+      expect(agent.taskCache?.isCacheResultUsed).toBe(true);
+      expect(agent.taskCache?.readOnlyMode).toBe(true);
+      expect(agent.taskCache?.cacheId).toBe('custom-readonly-cache');
+    });
+
+    it('should handle cache: { strategy: "write-only", id: "custom-id" }', () => {
+      const agent = new PageAgent(mockPage, {
+        cache: {
+          strategy: 'write-only',
+          id: 'custom-writeonly-cache',
+        },
+        modelConfig: mockedModelConfig,
+      });
+
+      expect(agent.taskCache).toBeDefined();
+      expect(agent.taskCache?.isCacheResultUsed).toBe(false);
+      expect(agent.taskCache?.readOnlyMode).toBe(false);
+      expect(agent.taskCache?.writeOnlyMode).toBe(true);
+      expect(agent.taskCache?.cacheId).toBe('custom-writeonly-cache');
+    });
+
+    it('should place cache file under provided dir without changing log/report dirs', async () => {
+      const cacheDir = path.join(
+        process.cwd(),
+        'tmp-custom-cache-dir',
+        `${Date.now()}`,
+      );
+      const logDir = getMidsceneRunSubDir('log');
+      const reportDir = getMidsceneRunSubDir('report');
+      try {
+        const agent = new PageAgent(mockPage, {
+          cache: {
+            id: 'custom-cache-dir-id',
+            cacheDir: ` ${cacheDir} `,
+          },
+          modelConfig: mockedModelConfig,
+        });
+
+        expect(agent.taskCache).toBeDefined();
+        const cacheFilePath = agent.taskCache?.cacheFilePath;
+        expect(cacheFilePath).toBe(
+          path.join(cacheDir, 'custom-cache-dir-id.cache.yaml'),
+        );
+        expect(getMidsceneRunSubDir('log')).toBe(logDir);
+        expect(getMidsceneRunSubDir('report')).toBe(reportDir);
+        expect(path.relative(cacheDir, logDir)).toMatch(/^\.\./);
+        expect(path.relative(cacheDir, reportDir)).toMatch(/^\.\./);
+
+        await agent.flushCache({ cleanUnused: false });
+        expect(fs.existsSync(cacheFilePath!)).toBe(true);
+      } finally {
+        if (fs.existsSync(cacheDir)) {
+          fs.rmSync(cacheDir, { recursive: true, force: true });
+        }
+      }
+    });
+
+    it('should throw error for empty cache dir', () => {
+      expect(() => {
+        new PageAgent(mockPage, {
+          cache: {
+            id: 'custom-cache-id',
+            cacheDir: '  ',
+          },
+          modelConfig: mockedModelConfig,
+        });
+      }).toThrow('cache.cacheDir must be a non-empty string when provided');
+    });
+
+    it('should throw error for non-string cache dir', () => {
+      expect(() => {
+        new PageAgent(mockPage, {
+          cache: {
+            id: 'custom-cache-id',
+            cacheDir: 123 as any,
+          },
+          modelConfig: mockedModelConfig,
+        });
+      }).toThrow('cache.cacheDir must be a non-empty string when provided');
+    });
+
+    it('should throw error for cache: true even with testId', () => {
+      expect(() => {
+        new PageAgent(mockPage, {
+          testId: 'my-test-case',
+          cache: true,
+          modelConfig: mockedModelConfig,
+        });
+      }).toThrow('cache: true requires an explicit cache ID');
+    });
+  });
+
+  describe('backward compatibility with cacheId', () => {
+    it('should work with cacheId when MIDSCENE_CACHE=true', () => {
+      const globalConfigSpy = rs
+        .spyOn(globalConfigManager, 'getEnvConfigInBoolean')
+        .mockReturnValue(true);
+
+      const agent = new PageAgent(mockPage, {
+        cacheId: 'legacy-cache-id',
+        modelConfig: mockedModelConfig,
+      });
+
+      expect(agent.taskCache).toBeDefined();
+      expect(agent.taskCache?.isCacheResultUsed).toBe(true);
+      expect(agent.taskCache?.readOnlyMode).toBe(false);
+      expect(agent.taskCache?.cacheId).toBe('legacy-cache-id');
+
+      globalConfigSpy.mockRestore();
+    });
+
+    it('should not create cache with cacheId when MIDSCENE_CACHE=false', () => {
+      const globalConfigSpy = rs
+        .spyOn(globalConfigManager, 'getEnvConfigInBoolean')
+        .mockReturnValue(false);
+
+      const agent = new PageAgent(mockPage, {
+        cacheId: 'legacy-cache-id',
+        modelConfig: mockedModelConfig,
+      });
+
+      expect(agent.taskCache).toBeUndefined();
+
+      globalConfigSpy.mockRestore();
+    });
+
+    it('should prefer new cache config over cacheId', () => {
+      const globalConfigSpy = rs
+        .spyOn(globalConfigManager, 'getEnvConfigInBoolean')
+        .mockReturnValue(true);
+
+      const agent = new PageAgent(mockPage, {
+        cacheId: 'legacy-cache-id', // Should be ignored
+        cache: { id: 'new-cache-id' },
+        modelConfig: mockedModelConfig,
+      });
+
+      expect(agent.taskCache).toBeDefined();
+      expect(agent.taskCache?.cacheId).toBe('new-cache-id');
+
+      globalConfigSpy.mockRestore();
+    });
+  });
+
+  describe('flushCache method', () => {
+    it('should throw error when cache is not configured', async () => {
+      const agent = new PageAgent(mockPage, {
+        cache: false,
+        modelConfig: mockedModelConfig,
+      });
+
+      await expect(agent.flushCache({ cleanUnused: false })).rejects.toThrow(
+        'Cache is not configured',
+      );
+    });
+
+    it('should work with cleanUnused parameter', async () => {
+      const agent = new PageAgent(mockPage, {
+        cache: { strategy: 'read-only', id: 'flush-test' },
+        modelConfig: mockedModelConfig,
+      });
+
+      // Mock the flushCacheToFile method
+      const flushSpy = rs.spyOn(agent.taskCache!, 'flushCacheToFile');
+
+      await agent.flushCache({ cleanUnused: true });
+
+      expect(flushSpy).toHaveBeenCalledWith({ cleanUnused: true });
+    });
+
+    it('should work in read-only mode', async () => {
+      const agent = new PageAgent(mockPage, {
+        cache: { strategy: 'read-only', id: 'flush-test' },
+        modelConfig: mockedModelConfig,
+      });
+
+      // Mock the flushCacheToFile method
+      const flushSpy = rs.spyOn(agent.taskCache!, 'flushCacheToFile');
+
+      await agent.flushCache({ cleanUnused: false });
+
+      expect(flushSpy).toHaveBeenCalledWith({ cleanUnused: false });
+    });
+
+    it('should throw error for cache: true without explicit ID', () => {
+      expect(() => {
+        new PageAgent(mockPage, {
+          cache: true, // Not supported anymore
+          modelConfig: mockedModelConfig,
+        });
+      }).toThrow('cache: true requires an explicit cache ID');
+    });
+  });
+});
+
+describe('PageAgent aiAct abortSignal', () => {
+  let agent: PageAgent;
+  let mockTaskExecutor: any;
+
+  beforeEach(() => {
+    rs.clearAllMocks();
+
+    agent = new PageAgent(mockPage, {
+      generateReport: false,
+      autoPrintReportMsg: false,
+      modelConfig: mockedModelConfig,
+    });
+
+    mockTaskExecutor = {
+      action: rs.fn(),
+      loadYamlFlowAsPlanning: rs.fn(),
+    };
+
+    agent.taskExecutor = mockTaskExecutor;
+  });
+
+  it('should throw immediately if abortSignal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort('cancelled by user');
+
+    await expect(
+      agent.aiAct('click the button', {
+        abortSignal: controller.signal,
+      }),
+    ).rejects.toThrow('aiAct aborted');
+    expect(mockTaskExecutor.action).not.toHaveBeenCalled();
+  });
+
+  it('should pass abortSignal to taskExecutor.action', async () => {
+    const controller = new AbortController();
+    const mockExecutorResult = {
+      output: { output: 'done', yamlFlow: [] },
+      runner: {
+        dump: () => ({ name: 'test', tasks: [] }),
+        isInErrorState: () => false,
+      },
+    };
+    mockTaskExecutor.action.mockResolvedValue(mockExecutorResult);
+
+    await agent.aiAct('click the button', {
+      abortSignal: controller.signal,
+    });
+
+    // Verify the abortSignal argument is passed before report options.
+    const callArgs = mockTaskExecutor.action.mock.calls[0];
+    expect(callArgs[callArgs.length - 2]).toBe(controller.signal);
+  });
+
+  it('should work normally without abortSignal', async () => {
+    const mockExecutorResult = {
+      output: { output: 'done', yamlFlow: [] },
+      runner: {
+        dump: () => ({ name: 'test', tasks: [] }),
+        isInErrorState: () => false,
+      },
+    };
+    mockTaskExecutor.action.mockResolvedValue(mockExecutorResult);
+
+    await agent.aiAct('click the button');
+
+    // AbortSignal argument should be undefined when no signal is provided.
+    const callArgs = mockTaskExecutor.action.mock.calls[0];
+    expect(callArgs[callArgs.length - 2]).toBeUndefined();
+  });
+
+  it('should throw with default reason when aborted without reason', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      agent.aiAct('click the button', {
+        abortSignal: controller.signal,
+      }),
+    ).rejects.toThrow('aiAct aborted');
+    expect(mockTaskExecutor.action).not.toHaveBeenCalled();
+  });
+});

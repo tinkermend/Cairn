@@ -1,0 +1,121 @@
+import {
+  type IModelConfig,
+  MIDSCENE_MODEL_API_KEY,
+  MIDSCENE_MODEL_BASE_URL,
+  MIDSCENE_MODEL_NAME,
+  ModelConfigManager,
+  OPENAI_API_KEY,
+  OPENAI_BASE_URL,
+  type TModelConfig,
+} from '@midscene/shared/env';
+
+const LEGACY_MODEL_NAME_KEYS = ['MIDSCENE_MODEL', 'OPENAI_MODEL'] as const;
+
+export interface ModelConnectionParams {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}
+
+export interface ResolvedModelConnection extends ModelConnectionParams {
+  modelConfig: IModelConfig;
+}
+
+export type ModelConnectionErrorKind =
+  | 'missing-required-keys'
+  | 'invalid-config';
+
+export interface ModelConnectionError {
+  kind: ModelConnectionErrorKind;
+  error: string;
+}
+
+export function resolveModelConnection(
+  provider: Record<string, string | number | undefined>,
+): ModelConnectionParams | ModelConnectionError {
+  const resolved = resolveModelConnectionWithConfig(provider);
+  if ('error' in resolved) {
+    return resolved;
+  }
+
+  return {
+    apiKey: resolved.apiKey,
+    baseUrl: resolved.baseUrl,
+    model: resolved.model,
+  };
+}
+
+export function resolveModelConnectionWithConfig(
+  provider: Record<string, string | number | undefined>,
+): ResolvedModelConnection | ModelConnectionError {
+  const normalizedProvider = normalizeStudioModelProvider(provider);
+  const apiKey = normalizedProvider[MIDSCENE_MODEL_API_KEY]?.trim() || '';
+  const baseUrl = normalizedProvider[MIDSCENE_MODEL_BASE_URL]?.trim() || '';
+  const model = normalizedProvider[MIDSCENE_MODEL_NAME]?.trim() || '';
+
+  const missing: string[] = [];
+  if (!apiKey) missing.push(OPENAI_API_KEY);
+  if (!baseUrl) missing.push(OPENAI_BASE_URL);
+  if (!model) missing.push(MIDSCENE_MODEL_NAME);
+
+  if (missing.length > 0) {
+    return {
+      kind: 'missing-required-keys',
+      error: `Missing required keys: ${missing.join(', ')}`,
+    };
+  }
+
+  let modelConfig: IModelConfig;
+  try {
+    const modelConfigManager = new ModelConfigManager(
+      normalizedProvider as TModelConfig,
+    );
+    modelConfig = modelConfigManager.getModelConfig('default');
+  } catch (error) {
+    return {
+      kind: 'invalid-config',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  return {
+    apiKey,
+    baseUrl,
+    model,
+    modelConfig,
+  };
+}
+
+export function normalizeStudioModelProvider(
+  provider: Record<string, string | number | undefined>,
+): Record<string, string | undefined> {
+  const normalizedProvider = {
+    ...Object.fromEntries(
+      Object.entries(provider).map(([key, value]) => [
+        key,
+        value === undefined ? undefined : String(value),
+      ]),
+    ),
+  };
+
+  normalizedProvider[MIDSCENE_MODEL_API_KEY] = stringifyProviderValue(
+    provider[MIDSCENE_MODEL_API_KEY] || provider[OPENAI_API_KEY],
+  );
+  normalizedProvider[MIDSCENE_MODEL_BASE_URL] = stringifyProviderValue(
+    provider[MIDSCENE_MODEL_BASE_URL] || provider[OPENAI_BASE_URL],
+  );
+
+  const legacyModelName = LEGACY_MODEL_NAME_KEYS.map((key) =>
+    stringifyProviderValue(provider[key]),
+  ).find((value) => value && value.trim().length > 0);
+  normalizedProvider[MIDSCENE_MODEL_NAME] =
+    stringifyProviderValue(provider[MIDSCENE_MODEL_NAME]) || legacyModelName;
+
+  return normalizedProvider;
+}
+
+function stringifyProviderValue(
+  value: string | number | undefined,
+): string | undefined {
+  return value === undefined ? undefined : String(value);
+}

@@ -1,0 +1,945 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version(major,minor,patch,preminor,prepatch)'
+        required: true
+        default: 'prepatch'
+      branch:
+        description: 'Release Branch(confirm release branch)'
+        required: true
+        default: 'main'
+      notify_stable_release:
+        description: 'Send IM notifications for a stable release'
+        required: true
+        type: boolean
+        default: true
+
+# Add permissions for creating releases.
+# `id-token: write` is required for npm Trusted Publishers (OIDC) and for
+# Sigstore provenance signing on `npm publish --provenance`.
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  release:
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      is_prerelease: ${{ steps.get_version.outputs.is_prerelease }}
+    # npm Trusted Publishing requires a GitHub-hosted runner, and the native
+    # Linux package build requires freerdp3-dev from Ubuntu 24.04.
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        node-version: [24.13.0]
+    # Force rspack/miette onto the narratable diagnostic path. The graphical
+    # handler in miette 7.6.0 panics on `terminal_size()` edge cases inside
+    # GitHub Actions (no tty + stream multiplexing), which surfaces as a
+    # "Formatting argument out of range" abort at
+    # miette-7.6.0/src/handlers/graphical.rs:1159. Same commit can flake
+    # pass/fail across reruns — setting these env vars makes the build
+    # deterministic until rspack rolls a newer miette.
+    env:
+      COLUMNS: '120'
+      TERM: dumb
+      FORCE_COLOR: '0'
+      NO_COLOR: '1'
+    steps:
+    - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
+      with:
+        ref: ${{ github.event.inputs.branch }}
+    - name: Pushing to the protected branch 'protected'
+      uses: zhoushaw/push-protected@f36ef70ae5f2e6bbd4f7b04da4f1fa3c11bc5a01 # v2
+      with:
+        token: ${{ secrets.PUSH_TO_PROTECTED_BRANCH }}
+        branch: ${{ github.event.inputs.branch }}
+    - name: Setup pnpm
+      uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2.4.1
+      with:
+        # pnpm forwards publish auth to the bundled npm CLI so Trusted
+        # Publisher OIDC exchange (npm 11.x) works without an NPM_TOKEN.
+        # npm now generates provenance automatically for trusted publishing,
+        # so the release script should not pass an explicit --provenance flag.
+        version: 9.15.9
+
+    - name: Setup Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: '24.13.0'
+        registry-url: 'https://registry.npmjs.org'
+
+    - name: Cache pnpm store
+      id: pnpm-cache
+      uses: ./.github/actions/pnpm-cache/restore
+
+    - name: Cache Puppeteer
+      id: cache-puppeteer
+      uses: ./.github/actions/cache/restore
+      with:
+        path: ~/.cache/puppeteer
+        key: ${{ runner.os }}-puppeteer-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-puppeteer-
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile --ignore-scripts
+
+    - name: Save pnpm store
+      if: steps.pnpm-cache.outputs.cache-hit != 'true'
+      uses: ./.github/actions/pnpm-cache/save
+
+    - name: Install Puppeteer browser
+      run: cd packages/web-integration && npx puppeteer browsers install chrome
+
+    - name: Save Puppeteer cache
+      if: steps.cache-puppeteer.outputs.cache-hit != 'true'
+      uses: ./.github/actions/cache/save
+      with:
+        path: ~/.cache/puppeteer
+        key: ${{ runner.os }}-puppeteer-${{ hashFiles('**/package-lock.json') }}
+
+    - name: Install @midscene/computer native build deps (linux/x64)
+      # The prepublishOnly hook of @midscene/computer compiles
+      # bin/linux/rdp-helper on the publishing runner so the linux helper
+      # ships in the published tarball. The build needs cmake, pkg-config
+      # and the FreeRDP 3 development headers. On Ubuntu 24.04 the dev
+      # metapackage is `freerdp3-dev` (universe) — note this is the
+      # FreeRDP source-package name, not `libfreerdp3-dev` (which does
+      # not exist on noble).
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake pkg-config freerdp3-dev
+
+    - name: release
+      # Auth to npm uses npm Trusted Publishers via the OIDC token from
+      # `id-token: write`. No NPM_TOKEN is needed; the npm CLI bundled with
+      # Node 24.x exchanges the GitHub OIDC token for a short-lived publish
+      # token at request time. Pre-release workflow dispatches disable
+      # automatic provenance because npm's transparency-log write can reject
+      # otherwise valid publishes with duplicate-entry 409s, which blocks the
+      # Studio artifact packaging jobs.
+      env:
+        RELEASE_VERSION_INPUT: ${{ github.event.inputs.version }}
+      run: |
+        if [[ "$RELEASE_VERSION_INPUT" == pre* ]]; then
+          export NPM_CONFIG_PROVENANCE=false
+          echo "Disabled npm provenance for prerelease workflow dispatch."
+        fi
+        node ./scripts/release.js --version="$RELEASE_VERSION_INPUT"
+
+    - name: Get version from core package
+      id: get_version
+      run: |
+        VERSION=$(cat packages/core/package.json | jq -r '.version')
+        IS_PRERELEASE=false
+        if [[ "$VERSION" == *beta* || "$VERSION" == *alpha* || "$VERSION" == *rc* ]]; then
+          IS_PRERELEASE=true
+        fi
+        echo "version=v${VERSION}" >> $GITHUB_OUTPUT
+        echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+        echo "Core package version: v${VERSION}"
+        echo "## 🚀 Released v${VERSION}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Version**: \`v${VERSION}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Type**: \`${{ github.event.inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: \`${{ github.event.inputs.branch }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **NPM**: [\`@midscene/core@${VERSION}\`](https://www.npmjs.com/package/@midscene/core/v/${VERSION})" >> $GITHUB_STEP_SUMMARY
+        if [[ "$IS_PRERELEASE" == "true" ]]; then
+          echo "- **GitHub Release**: skipped for prerelease builds" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifacts**: download them from this workflow run" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **GitHub Release**: https://github.com/${{ github.repository }}/releases/tag/v${VERSION}" >> $GITHUB_STEP_SUMMARY
+        fi
+      
+    - name: Upload output
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        if-no-files-found: error
+        name: chrome_extension
+        path: ${{ github.workspace }}/apps/chrome-extension/extension_output
+
+    - name: Generate ordered Release notes
+      if: ${{ steps.get_version.outputs.is_prerelease != 'true' }}
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_TARGET: ${{ github.event.inputs.branch }}
+        RELEASE_VERSION: ${{ steps.get_version.outputs.version }}
+      run: |
+        REQUEST_BODY="$(
+          jq -cn \
+            --arg tag_name "$RELEASE_VERSION" \
+            --arg target_commitish "$RELEASE_TARGET" \
+            '{tag_name: $tag_name, target_commitish: $target_commitish}'
+        )"
+        curl \
+          --fail-with-body \
+          --silent \
+          --show-error \
+          --request POST \
+          --header 'Accept: application/vnd.github+json' \
+          --header "Authorization: Bearer ${GH_TOKEN}" \
+          --header 'Content-Type: application/json' \
+          --header 'X-GitHub-Api-Version: 2022-11-28' \
+          --data "$REQUEST_BODY" \
+          "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+          | jq -er '.body | strings | select(test("\\S"))' \
+          > "$RUNNER_TEMP/generated-release-notes.md"
+        node ./scripts/format-release-notes.mjs \
+          < "$RUNNER_TEMP/generated-release-notes.md" \
+          > "$RUNNER_TEMP/release-notes.md"
+        node ./scripts/format-release-notes.mjs --notification-json \
+          < "$RUNNER_TEMP/generated-release-notes.md" \
+          > "$RUNNER_TEMP/release-notification.json"
+        test -s "$RUNNER_TEMP/release-notes.md"
+        jq -e '
+          .schemaVersion == 1
+          and (.changeCount | type == "number" and . >= 0)
+          and (.categoryCount | type == "number" and . >= 0)
+          and (.markdown | type == "string")
+          and (.groups | type == "array")
+        ' "$RUNNER_TEMP/release-notification.json" >/dev/null
+        
+    - name: Upload Release Assets
+      if: ${{ steps.get_version.outputs.is_prerelease != 'true' }}
+      uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+      with:
+        tag_name: ${{ steps.get_version.outputs.version }}
+        target_commitish: ${{ github.event.inputs.branch }}
+        prerelease: ${{ contains(steps.get_version.outputs.version, 'beta') || contains(steps.get_version.outputs.version, 'alpha') || contains(steps.get_version.outputs.version, 'rc') }}
+        body_path: ${{ runner.temp }}/release-notes.md
+        files: |
+          ${{ github.workspace }}/apps/chrome-extension/extension_output/**/*.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Release notes metadata
+      if: ${{ steps.get_version.outputs.is_prerelease != 'true' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        if-no-files-found: error
+        name: release_notes
+        path: |
+          ${{ runner.temp }}/release-notes.md
+          ${{ runner.temp }}/release-notification.json
+
+  publish_chrome_web_store:
+    needs: release
+    if: ${{ needs.release.result == 'success' && !contains(needs.release.outputs.version, 'beta') && !contains(needs.release.outputs.version, 'alpha') && !contains(needs.release.outputs.version, 'rc') }}
+    runs-on: ${{ fromJSON(vars.CI_LINUX_MINI_RUNNER || '"ubuntu-latest"') }}
+    steps:
+    - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
+      with:
+        ref: ${{ github.event.inputs.branch }}
+    - name: Download packaged Chrome extension artifact
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: chrome_extension
+        path: ${{ github.workspace }}/apps/chrome-extension/extension_output
+    - name: Publish Chrome extension to Chrome Web Store
+      id: publish_extension
+      continue-on-error: true
+      run: |
+        bash ./scripts/publish-chrome-extension.sh \
+          --zip-path "${{ github.workspace }}/apps/chrome-extension/extension_output/midscene-extension-${{ needs.release.outputs.version }}.zip"
+      env:
+        CHROME_WEB_STORE_PUBLISHER_ID: ${{ secrets.CHROME_WEB_STORE_PUBLISHER_ID }}
+        CHROME_WEB_STORE_CLIENT_ID: ${{ secrets.CHROME_WEB_STORE_CLIENT_ID }}
+        CHROME_WEB_STORE_CLIENT_SECRET: ${{ secrets.CHROME_WEB_STORE_CLIENT_SECRET }}
+        CHROME_WEB_STORE_REFRESH_TOKEN: ${{ secrets.CHROME_WEB_STORE_REFRESH_TOKEN }}
+    - name: Summarize manual fallback when Chrome Web Store publish fails
+      if: ${{ steps.publish_extension.outcome == 'failure' }}
+      run: |
+        echo "## Chrome Web Store publish fallback" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Chrome Web Store publishing failed, but the GitHub Release and packaged extension artifact were created successfully." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Download the packaged extension zip from the GitHub Release page and upload it manually:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "https://github.com/${{ github.repository }}/releases/tag/${{ needs.release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+
+  package_studio:
+    needs: release
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ${{ vars.LINUX_SELF_HOSTED_RUNNER_LABELS || '"ubuntu-22.04"' }}
+          platform: linux
+          arch: x64
+        - runner: ${{ vars.WINDOWS_SELF_HOSTED_RUNNER_LABELS || '"windows-latest"' }}
+          platform: win32
+          arch: x64
+        - runner: '"macos-15"'
+          platform: darwin
+          arch: arm64
+        - runner: '"macos-15-intel"'
+          os: macos-15-intel
+          platform: darwin
+          arch: x64
+    # Same miette-graphical workaround as the `release` job above.
+    env:
+      COLUMNS: '120'
+      TERM: dumb
+      FORCE_COLOR: '0'
+      MIDSCENE_REQUIRE_MAC_CODESIGN: ${{ needs.release.outputs.is_prerelease != 'true' }}
+      MIDSCENE_REQUIRE_MAC_NOTARIZATION: ${{ needs.release.outputs.is_prerelease != 'true' }}
+      NPM_CONFIG_VIRTUAL_STORE_DIR_MAX_LENGTH: ${{ matrix.platform == 'win32' && '40' || '120' }}
+      NO_COLOR: '1'
+    steps:
+    - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
+      if: ${{ needs.release.outputs.is_prerelease != 'true' }}
+      with:
+        ref: refs/tags/${{ needs.release.outputs.version }}
+    - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
+      if: ${{ needs.release.outputs.is_prerelease == 'true' }}
+      with:
+        ref: ${{ github.event.inputs.branch }}
+    - name: Setup pnpm
+      uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2.4.1
+      with:
+        version: 9.3.0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: '24.13.0'
+
+    - name: Cache pnpm store
+      id: pnpm-cache
+      uses: ./.github/actions/pnpm-cache/restore
+
+    - name: Prepare macOS codesigning keychain
+      if: ${{ matrix.platform == 'darwin' }}
+      env:
+        APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+        APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      run: |
+        : "${APPLE_CERT_P12_BASE64:?APPLE_CERT_P12_BASE64 is required for macOS release packaging}"
+        : "${APPLE_CERT_PASSWORD:?APPLE_CERT_PASSWORD is required for macOS release packaging}"
+        : "${APPLE_CODESIGN_IDENTITY:?APPLE_CODESIGN_IDENTITY is required for macOS release packaging}"
+
+        CERT_PATH="$RUNNER_TEMP/midscene-codesign.p12"
+        KEYCHAIN_PATH="$RUNNER_TEMP/midscene-signing.keychain-db"
+        KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+
+        printf '%s' "$APPLE_CERT_P12_BASE64" | base64 -D > "$CERT_PATH"
+
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+        security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+        CURRENT_KEYCHAINS=$(security list-keychains -d user | tr -d '"')
+        security list-keychains -d user -s "$KEYCHAIN_PATH" $CURRENT_KEYCHAINS
+
+        echo "APPLE_CODESIGN_IDENTITY=$APPLE_CODESIGN_IDENTITY" >> "$GITHUB_ENV"
+        echo "APPLE_CODESIGN_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+        if [ -n "${APPLE_TEAM_ID:-}" ]; then
+          echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+        fi
+
+    - name: Prepare macOS notarization credentials
+      if: ${{ matrix.platform == 'darwin' }}
+      env:
+        APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+      run: |
+        : "${APPLE_API_KEY_P8_BASE64:?APPLE_API_KEY_P8_BASE64 is required for macOS release packaging}"
+        : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID is required for macOS release packaging}"
+
+        API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+        printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 -D > "$API_KEY_PATH"
+
+        echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
+        echo "APPLE_API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
+        if [ -n "${APPLE_API_ISSUER_ID:-}" ]; then
+          echo "APPLE_API_ISSUER_ID=$APPLE_API_ISSUER_ID" >> "$GITHUB_ENV"
+        fi
+
+    - name: Install dependencies
+      id: install-dependencies
+      continue-on-error: ${{ matrix.platform == 'win32' }}
+      run: pnpm install --frozen-lockfile --ignore-scripts
+
+    - name: Retry dependency installation on Windows
+      if: ${{ matrix.platform == 'win32' && steps.install-dependencies.outcome == 'failure' }}
+      run: |
+        Start-Sleep -Seconds 5
+        git clean -ffdx
+        pnpm install --frozen-lockfile --ignore-scripts
+
+    - name: Save pnpm store
+      if: ${{ matrix.platform != 'win32' && steps.pnpm-cache.outputs.cache-hit != 'true' }}
+      uses: ./.github/actions/pnpm-cache/save
+
+    - name: Install @midscene/computer native build deps (macOS)
+      if: ${{ matrix.platform == 'darwin' }}
+      run: brew install cmake pkg-config freerdp
+
+    - name: Build @midscene/computer native helpers
+      if: ${{ matrix.platform == 'darwin' }}
+      run: pnpm --filter @midscene/computer run build:native
+
+    - name: Build appdmg native bindings
+      if: ${{ matrix.platform == 'darwin' }}
+      # appdmg pulls in darwin-only native deps (`macos-alias`,
+      # `fs-xattr`) whose `node-gyp rebuild` install scripts were
+      # skipped by the workspace install (`--ignore-scripts`). Ensure
+      # each helper exists in the consumer's resolver path, then rebuild
+      # directly from the package directory.
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+
+        ensure_native_pkg() {
+          local pkg="$1"
+          local version="$2"
+          local consumer="$3"
+          PKG_DIRS=(
+            node_modules/.pnpm/${pkg}@*/node_modules/${pkg}
+            node_modules/.pnpm/${consumer}@*/node_modules/${pkg}
+          )
+          if [ "${#PKG_DIRS[@]}" -eq 0 ]; then
+            CONSUMER_STORE_ROOTS=(node_modules/.pnpm/${consumer}@*)
+            if [ "${#CONSUMER_STORE_ROOTS[@]}" -eq 0 ]; then
+              echo "${consumer} store directory not found under node_modules/.pnpm" >&2
+              exit 1
+            fi
+            CONSUMER_STORE_ROOT="${CONSUMER_STORE_ROOTS[0]}"
+            echo "Installing ${pkg}@${version} under ${CONSUMER_STORE_ROOT}"
+            npm install --prefix "${CONSUMER_STORE_ROOT}" --no-save --no-package-lock --ignore-scripts "${pkg}@${version}"
+            PKG_DIRS=(
+              node_modules/.pnpm/${pkg}@*/node_modules/${pkg}
+              node_modules/.pnpm/${consumer}@*/node_modules/${pkg}
+            )
+            if [ "${#PKG_DIRS[@]}" -eq 0 ]; then
+              echo "${pkg} package directory not found under node_modules/.pnpm" >&2
+              exit 1
+            fi
+          fi
+          echo "Rebuilding ${pkg} in ${PKG_DIRS[0]}"
+          (cd "${PKG_DIRS[0]}" && npm rebuild)
+        }
+
+        ensure_native_pkg macos-alias 0.2.12 ds-store
+        ensure_native_pkg fs-xattr 0.3.1 appdmg
+
+    - name: Build Studio and Nx dependencies
+      run: npx nx build studio
+
+    - name: Package Midscene Studio Beta
+      run: pnpm --dir apps/studio run package:release -- --platform=${{ matrix.platform }} --arch=${{ matrix.arch }} --version=${{ needs.release.outputs.version }}
+
+    - name: Upload packaged Studio artifact
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        if-no-files-found: error
+        name: studio_${{ matrix.platform }}_${{ matrix.arch }}
+        # Include the electron-updater channel manifests so reviewers can
+        # download the same set the GitHub Release will publish.
+        path: |
+          ${{ github.workspace }}/.release/studio/artifacts/*.zip
+          ${{ github.workspace }}/.release/studio/artifacts/*.dmg
+          ${{ github.workspace }}/.release/studio/artifacts/*.exe
+          ${{ github.workspace }}/.release/studio/artifacts/*.blockmap
+          ${{ github.workspace }}/.release/studio/artifacts/*.yml
+
+    - name: Upload Studio asset to GitHub Release
+      if: ${{ needs.release.outputs.is_prerelease != 'true' }}
+      uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+      with:
+        tag_name: ${{ needs.release.outputs.version }}
+        target_commitish: ${{ github.event.inputs.branch }}
+        prerelease: ${{ contains(needs.release.outputs.version, 'beta') || contains(needs.release.outputs.version, 'alpha') || contains(needs.release.outputs.version, 'rc') }}
+        # The zip is the manual download artifact; latest-*.yml (and
+        # beta-*.yml on prereleases) is what electron-updater fetches to
+        # learn the version + sha512 of the matching updater artifact. On
+        # Windows that updater artifact is the NSIS setup.exe; the blockmap
+        # supports NSIS differential downloads. The dmg ships the same .app
+        # behind a drag-to-Applications installer for macOS users who want a
+        # regular GUI install.
+        files: |
+          ${{ github.workspace }}/.release/studio/artifacts/*.zip
+          ${{ github.workspace }}/.release/studio/artifacts/*.dmg
+          ${{ github.workspace }}/.release/studio/artifacts/*.exe
+          ${{ github.workspace }}/.release/studio/artifacts/*.blockmap
+          ${{ github.workspace }}/.release/studio/artifacts/*.yml
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify_discord:
+    needs:
+    - release
+    - package_studio
+    if: ${{ inputs.notify_stable_release && needs.release.result == 'success' && needs.package_studio.result == 'success' && needs.release.outputs.is_prerelease != 'true' }}
+    runs-on: ${{ fromJSON(vars.CI_LINUX_MINI_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+    - name: Download Release notes metadata
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: release_notes
+        path: ${{ runner.temp }}/release-notes
+    - name: Publish release notification to Discord
+      id: notify
+      continue-on-error: true
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_NOTES_METADATA_PATH: ${{ runner.temp }}/release-notes/release-notification.json
+        RELEASE_VERSION: ${{ needs.release.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$DISCORD_WEBHOOK_URL" ]]; then
+          echo "::warning::DISCORD_WEBHOOK_URL is not configured; skipping the Discord release notification."
+          echo "## Discord notification" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Skipped because the repository secret \`DISCORD_WEBHOOK_URL\` is not configured." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        jq -e '
+          . as $metadata
+          | .schemaVersion == 1
+          and (.changeCount | type == "number" and . >= 0)
+          and (.categoryCount | type == "number" and . >= 0)
+          and (.markdown | type == "string")
+          and (.groups | type == "array")
+          and .categoryCount == (.groups | length)
+          and .changeCount == ([.groups[].items[]] | length)
+          and all(.groups[];
+            (.key | type == "string" and length > 0)
+            and (.label | type == "string" and length > 0)
+            and (.items | type == "array")
+            and all(.items[];
+              (.pr | type == "string" and length > 0)
+              and (.title | type == "string" and length > 0)
+              and (.url | type == "string" and length > 0)
+            )
+          )
+          and (if .changeCount > 0 then (.markdown | test("\\S")) else .markdown == "" end)
+        ' "$RELEASE_NOTES_METADATA_PATH" >/dev/null
+        NOTIFICATION_MARKDOWN="$(jq -r '.markdown' "$RELEASE_NOTES_METADATA_PATH")"
+        CHANGE_COUNT="$(jq -r '.changeCount' "$RELEASE_NOTES_METADATA_PATH")"
+        CATEGORY_COUNT="$(jq -r '.categoryCount' "$RELEASE_NOTES_METADATA_PATH")"
+
+        ENCODED_RELEASE_VERSION="$(jq -rn --arg value "$RELEASE_VERSION" '$value | @uri')"
+        RELEASE_JSON="$(
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${ENCODED_RELEASE_VERSION}"
+        )"
+        jq -e \
+          --arg version "$RELEASE_VERSION" \
+          '
+            .tag_name == $version
+            and .draft == false
+            and (.html_url | type == "string" and length > 0)
+            and (.published_at | type == "string" and length > 0)
+          ' >/dev/null <<< "$RELEASE_JSON"
+        RELEASE_NAME="$(jq -r '.name // empty' <<< "$RELEASE_JSON")"
+        RELEASE_URL="$(jq -r '.html_url' <<< "$RELEASE_JSON")"
+        RELEASE_PUBLISHED_AT="$(jq -r '.published_at' <<< "$RELEASE_JSON")"
+        PACKAGE_VERSION="${RELEASE_VERSION#v}"
+
+        PAYLOAD="$(
+          jq -cn \
+            --arg notes "$NOTIFICATION_MARKDOWN" \
+            --arg package_version "$PACKAGE_VERSION" \
+            --arg published_at "$RELEASE_PUBLISHED_AT" \
+            --arg release_name "$RELEASE_NAME" \
+            --arg release_url "$RELEASE_URL" \
+            --arg version "$RELEASE_VERSION" \
+            --argjson category_count "$CATEGORY_COUNT" \
+            --argjson change_count "$CHANGE_COUNT" \
+            '
+              def release_title:
+                ($release_name | gsub("^\\s+|\\s+$"; "")) as $name
+                | if $name == "" or $name == $version or $name == ($version | ltrimstr("v")) then
+                    "Midscene.js \($version)"
+                  else
+                    $name
+                  end;
+              (if $change_count > 0 then $notes else "Midscene.js \($version) is now available." end) as $description_notes
+              | (if $change_count > 0 then
+                    "\($change_count) \(if $change_count == 1 then "change" else "changes" end)"
+                    + " · \($category_count) \(if $category_count == 1 then "category" else "categories" end)"
+                  else
+                    "Latest stable release"
+                  end
+                ) as $summary
+              | ("Latest stable release\n\n"
+                  + (if $change_count > 0 then "**\($summary)**\n\n" else "" end)
+                  + $description_notes
+                  | if length > 3500 then .[0:3500] + "\n\n…" else . end
+                ) as $description
+              | (release_title | .[0:256]) as $title
+              | {
+                  username: "Midscene Release",
+                  avatar_url: "https://midscenejs.com/midscene-icon.png",
+                  allowed_mentions: {
+                    parse: []
+                  },
+                  embeds: [{
+                    title: $title,
+                    url: $release_url,
+                    description: $description,
+                    color: 43248,
+                    fields: [
+                      {
+                        name: "GitHub Release",
+                        value: "[View release](\($release_url))",
+                        inline: true
+                      },
+                      {
+                        name: "npm",
+                        value: "[@midscene/core](https://www.npmjs.com/package/@midscene/core/v/\($package_version))",
+                        inline: true
+                      }
+                    ],
+                    footer: {
+                      text: $summary
+                    },
+                    timestamp: $published_at
+                  }]
+                }
+            '
+        )"
+
+        WEBHOOK_METADATA="$(
+          printf 'url = "%s"\n' "$DISCORD_WEBHOOK_URL" \
+            | curl \
+                --config - \
+                --fail-with-body \
+                --silent \
+                --show-error
+        )"
+        GUILD_ID="$(jq -er '.guild_id' <<< "$WEBHOOK_METADATA")"
+
+        DISCORD_RESPONSE="$(
+          printf 'url = "%s?wait=true"\n' "$DISCORD_WEBHOOK_URL" \
+            | curl \
+                --config - \
+                --fail-with-body \
+                --silent \
+                --show-error \
+                --request POST \
+                --header 'Content-Type: application/json' \
+                --data "$PAYLOAD"
+        )"
+
+        MESSAGE_ID="$(jq -er '.id' <<< "$DISCORD_RESPONSE")"
+        CHANNEL_ID="$(jq -er '.channel_id' <<< "$DISCORD_RESPONSE")"
+        MESSAGE_URL="https://discord.com/channels/${GUILD_ID}/${CHANNEL_ID}/${MESSAGE_ID}"
+
+        echo "## Discord notification" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "Published [the ${RELEASE_VERSION} notification](${MESSAGE_URL})." >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Summarize Discord notification failure
+      if: ${{ steps.notify.outcome == 'failure' }}
+      run: |
+        echo "::warning::The GitHub Release succeeded, but its Discord notification failed."
+        echo "## Discord notification fallback" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "The GitHub Release succeeded, but its Discord notification failed. Review the previous step and resend the announcement manually." >> "$GITHUB_STEP_SUMMARY"
+
+  notify_feishu:
+    needs:
+    - release
+    - package_studio
+    if: ${{ inputs.notify_stable_release && needs.release.result == 'success' && needs.package_studio.result == 'success' && needs.release.outputs.is_prerelease != 'true' }}
+    runs-on: ${{ fromJSON(vars.CI_LINUX_MINI_RUNNER || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+    steps:
+    - name: Download Release notes metadata
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: release_notes
+        path: ${{ runner.temp }}/release-notes
+    - name: Publish release notification to Feishu
+      id: notify
+      continue-on-error: true
+      env:
+        # All internal and external groups are configured as a JSON array of
+        # {"url":"...","secret":"..."} webhook targets.
+        FEISHU_WEBHOOK_TARGETS_JSON: ${{ secrets.FEISHU_WEBHOOK_TARGETS_JSON }}
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_NOTES_METADATA_PATH: ${{ runner.temp }}/release-notes/release-notification.json
+        RELEASE_VERSION: ${{ needs.release.outputs.version }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "$FEISHU_WEBHOOK_TARGETS_JSON" ]]; then
+          echo "::warning::No Feishu webhook targets are configured; skipping the Feishu release notification."
+          echo "## Feishu notification" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Skipped because the repository secret \`FEISHU_WEBHOOK_TARGETS_JSON\` is not configured." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        if ! jq -e '
+          type == "array"
+          and all(.[];
+            type == "object"
+            and (.url | type) == "string"
+            and (.url | length) > 0
+            and (.secret | type) == "string"
+            and (.secret | length) > 0
+          )
+        ' >/dev/null <<< "$FEISHU_WEBHOOK_TARGETS_JSON"; then
+          echo "::warning::FEISHU_WEBHOOK_TARGETS_JSON must be a JSON array of non-empty url and secret strings."
+          exit 1
+        fi
+
+        JSON_TARGET_COUNT="$(jq 'length' <<< "$FEISHU_WEBHOOK_TARGETS_JSON")"
+        if [[ "$JSON_TARGET_COUNT" -eq 0 ]]; then
+          echo "::warning::FEISHU_WEBHOOK_TARGETS_JSON contains no webhook targets; skipping the Feishu release notification."
+          echo "## Feishu notification" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Skipped because \`FEISHU_WEBHOOK_TARGETS_JSON\` contains no webhook targets." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        WEBHOOK_URLS=()
+        WEBHOOK_SECRETS=()
+        for ((JSON_TARGET_INDEX = 0; JSON_TARGET_INDEX < JSON_TARGET_COUNT; JSON_TARGET_INDEX += 1)); do
+          WEBHOOK_URLS+=("$(
+            jq -r --argjson index "$JSON_TARGET_INDEX" '.[$index].url' <<< "$FEISHU_WEBHOOK_TARGETS_JSON"
+          )")
+          WEBHOOK_SECRETS+=("$(
+            jq -r --argjson index "$JSON_TARGET_INDEX" '.[$index].secret' <<< "$FEISHU_WEBHOOK_TARGETS_JSON"
+          )")
+        done
+
+        jq -e '
+          . as $metadata
+          | .schemaVersion == 1
+          and (.changeCount | type == "number" and . >= 0)
+          and (.categoryCount | type == "number" and . >= 0)
+          and (.markdown | type == "string")
+          and (.groups | type == "array")
+          and .categoryCount == (.groups | length)
+          and .changeCount == ([.groups[].items[]] | length)
+          and all(.groups[];
+            (.key | type == "string" and length > 0)
+            and (.label | type == "string" and length > 0)
+            and (.items | type == "array")
+            and all(.items[];
+              (.pr | type == "string" and length > 0)
+              and (.title | type == "string" and length > 0)
+              and (.url | type == "string" and length > 0)
+            )
+          )
+          and (if .changeCount > 0 then (.markdown | test("\\S")) else .markdown == "" end)
+        ' "$RELEASE_NOTES_METADATA_PATH" >/dev/null
+        NOTIFICATION_MARKDOWN="$(jq -r '.markdown' "$RELEASE_NOTES_METADATA_PATH")"
+        CHANGE_COUNT="$(jq -r '.changeCount' "$RELEASE_NOTES_METADATA_PATH")"
+        CATEGORY_COUNT="$(jq -r '.categoryCount' "$RELEASE_NOTES_METADATA_PATH")"
+
+        ENCODED_RELEASE_VERSION="$(jq -rn --arg value "$RELEASE_VERSION" '$value | @uri')"
+        RELEASE_JSON="$(
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${ENCODED_RELEASE_VERSION}"
+        )"
+        jq -e \
+          --arg version "$RELEASE_VERSION" \
+          '
+            .tag_name == $version
+            and .draft == false
+            and (.html_url | type == "string" and length > 0)
+            and (.published_at | type == "string" and length > 0)
+          ' >/dev/null <<< "$RELEASE_JSON"
+        RELEASE_NAME="$(jq -r '.name // empty' <<< "$RELEASE_JSON")"
+        RELEASE_URL="$(jq -r '.html_url' <<< "$RELEASE_JSON")"
+        PACKAGE_VERSION="${RELEASE_VERSION#v}"
+        NPM_URL="https://www.npmjs.com/package/@midscene/core/v/${PACKAGE_VERSION}"
+
+        CARD_CONTENT="$(
+          jq -cn \
+            --arg notes "$NOTIFICATION_MARKDOWN" \
+            --arg release_name "$RELEASE_NAME" \
+            --arg release_url "$RELEASE_URL" \
+            --arg npm_url "$NPM_URL" \
+            --arg version "$RELEASE_VERSION" \
+            --argjson category_count "$CATEGORY_COUNT" \
+            --argjson change_count "$CHANGE_COUNT" \
+            '
+              def release_title:
+                ($release_name | gsub("^\\s+|\\s+$"; "")) as $name
+                | if $name == "" or $name == $version or $name == ($version | ltrimstr("v")) then
+                    "Midscene.js \($version)"
+                  else
+                    $name
+                  end;
+              (if $change_count > 0 then $notes else "Midscene.js \($version) is now available." end)
+              | (.
+                  | if length > 7500 then
+                      .[0:7400] + "\n\n… [View the full release notes](\($release_url))"
+                    else
+                      .
+                    end
+                ) as $description
+              | (if $change_count > 0 then
+                    "\($change_count) \(if $change_count == 1 then "change" else "changes" end)"
+                    + " · \($category_count) \(if $category_count == 1 then "category" else "categories" end)"
+                  else
+                    "Latest stable release"
+                  end
+                ) as $summary
+              | (release_title | .[0:100]) as $title
+              | {
+                  schema: "2.0",
+                  config: {
+                    update_multi: true,
+                    width_mode: "default",
+                    summary: {
+                      content: "\($title) · \($summary)"
+                    }
+                  },
+                  header: {
+                    title: {tag: "plain_text", content: $title},
+                    subtitle: {tag: "plain_text", content: $summary},
+                    template: "blue",
+                    icon: {tag: "standard_icon", token: "bell_outlined"},
+                    text_tag_list: [{
+                      tag: "text_tag",
+                      text: {tag: "plain_text", content: "Release"},
+                      color: "blue"
+                    }]
+                  },
+                  body: {
+                    direction: "vertical",
+                    padding: "12px 12px 20px 12px",
+                    vertical_spacing: "12px",
+                    elements: [
+                      {
+                        tag: "markdown",
+                        content: $description
+                      },
+                      {
+                        tag: "column_set",
+                        flex_mode: "bisect",
+                        horizontal_spacing: "8px",
+                        columns: [
+                          {
+                            tag: "column",
+                            width: "weighted",
+                            weight: 1,
+                            elements: [{
+                              tag: "button",
+                              text: {tag: "plain_text", content: "GitHub Release"},
+                              type: "primary_filled",
+                              width: "fill",
+                              behaviors: [{type: "open_url", default_url: $release_url}]
+                            }]
+                          },
+                          {
+                            tag: "column",
+                            width: "weighted",
+                            weight: 1,
+                            elements: [{
+                              tag: "button",
+                              text: {tag: "plain_text", content: "@midscene/core on npm"},
+                              type: "default",
+                              width: "fill",
+                              behaviors: [{type: "open_url", default_url: $npm_url}]
+                            }]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+            '
+        )"
+        echo "## Feishu notification" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        DELIVERY_FAILURES=0
+        DELIVERED_TARGETS=0
+        for TARGET_INDEX in "${!WEBHOOK_URLS[@]}"; do
+          WEBHOOK_URL="${WEBHOOK_URLS[$TARGET_INDEX]}"
+          WEBHOOK_SECRET="${WEBHOOK_SECRETS[$TARGET_INDEX]}"
+          if [[ -z "$WEBHOOK_URL" && -z "$WEBHOOK_SECRET" ]]; then
+            continue
+          fi
+
+          TIMESTAMP="$(date +%s)"
+          SIGNING_KEY="$(printf '%s\n%s' "$TIMESTAMP" "$WEBHOOK_SECRET")"
+          SIGNATURE="$(
+            printf '' \
+              | openssl dgst -sha256 -hmac "$SIGNING_KEY" -binary \
+              | openssl base64 -A
+          )"
+          unset SIGNING_KEY
+
+          PAYLOAD="$(
+            jq -cn \
+              --argjson card "$CARD_CONTENT" \
+              --arg sign "$SIGNATURE" \
+              --arg timestamp "$TIMESTAMP" \
+              '{timestamp: $timestamp, sign: $sign, msg_type: "interactive", card: $card}'
+          )"
+
+          if ! FEISHU_RESPONSE="$(
+            printf 'url = "%s"\n' "$WEBHOOK_URL" \
+              | curl \
+                  --config - \
+                  --fail-with-body \
+                  --silent \
+                  --show-error \
+                  --request POST \
+                  --header 'Content-Type: application/json; charset=utf-8' \
+                  --data "$PAYLOAD"
+          )"; then
+            echo "Feishu webhook target $((TARGET_INDEX + 1)) request failed." >&2
+            ((DELIVERY_FAILURES += 1))
+            continue
+          fi
+
+          if [[ "$(jq -r '.code // .StatusCode // -1' <<< "$FEISHU_RESPONSE")" != "0" ]]; then
+            echo "Feishu webhook target $((TARGET_INDEX + 1)) rejected the request: $(
+              jq -c '{code: (.code // .StatusCode), msg: (.msg // .StatusMessage)}' <<< "$FEISHU_RESPONSE"
+            )" >&2
+            ((DELIVERY_FAILURES += 1))
+            continue
+          fi
+
+          ((DELIVERED_TARGETS += 1))
+        done
+
+        echo "Published the ${RELEASE_VERSION} notification to ${DELIVERED_TARGETS} Feishu group(s) through signed webhooks." >> "$GITHUB_STEP_SUMMARY"
+        if [[ "$DELIVERY_FAILURES" -ne 0 ]]; then
+          exit 1
+        fi
+
+    - name: Summarize Feishu notification failure
+      if: ${{ steps.notify.outcome == 'failure' }}
+      run: |
+        echo "::warning::The GitHub Release succeeded, but its Feishu notification failed."
+        echo "## Feishu notification fallback" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "The GitHub Release succeeded, but its Feishu notification failed. Review the previous step and resend the announcement manually." >> "$GITHUB_STEP_SUMMARY"

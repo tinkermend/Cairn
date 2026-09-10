@@ -1,0 +1,274 @@
+import { LoadingOutlined } from '@ant-design/icons';
+import { Spin } from 'antd';
+import type React from 'react';
+import type {
+  PlaygroundResult as PlaygroundResultType,
+  ReportDownloadHandler,
+  ServiceModeType,
+} from '../../types';
+import type { ReplayScriptsInfo } from '../../utils/replay-scripts';
+import { emptyResultTip, serverLaunchTip } from '../misc';
+import { Player, type PlayerPresentation } from '../player';
+import ShinyText from '../shiny-text';
+import './index.less';
+
+interface PlaygroundResultProps {
+  result: PlaygroundResultType | null;
+  loading: boolean;
+  serverValid?: boolean;
+  serviceMode: ServiceModeType;
+  replayScriptsInfo: ReplayScriptsInfo | null;
+  replayCounter: number;
+  loadingProgressText: string;
+  verticalMode?: boolean;
+  notReadyMessage?: React.ReactNode | string;
+  fitMode?: 'width' | 'height';
+  autoZoom?: boolean;
+  // When a report is available, also show the return value above it.
+  showOutputAlongsideReport?: boolean;
+  canDownloadReport?: boolean;
+  onDownloadReport?: ReportDownloadHandler;
+  playerPresentation?: PlayerPresentation;
+  hidePlayerFullscreenControl?: boolean;
+}
+
+export const PlaygroundResultView: React.FC<PlaygroundResultProps> = ({
+  result,
+  loading,
+  serverValid,
+  serviceMode,
+  replayScriptsInfo,
+  replayCounter,
+  loadingProgressText,
+  verticalMode = false,
+  notReadyMessage,
+  fitMode,
+  autoZoom,
+  showOutputAlongsideReport = false,
+  canDownloadReport,
+  onDownloadReport,
+  playerPresentation,
+  hidePlayerFullscreenControl,
+}) => {
+  let resultWrapperClassName = 'result-wrapper';
+  if (verticalMode) {
+    resultWrapperClassName += ' vertical-mode-result';
+  }
+  if (replayScriptsInfo && verticalMode) {
+    resultWrapperClassName += ' result-wrapper-compact';
+  }
+
+  let resultDataToShow: React.ReactNode = emptyResultTip;
+
+  if (!serverValid && serviceMode === 'Server') {
+    resultDataToShow = serverLaunchTip(notReadyMessage);
+  } else if (loading) {
+    resultDataToShow = (
+      <div className="loading-container">
+        <Spin spinning={loading} indicator={<LoadingOutlined spin />} />
+        <div className="loading-progress-text loading-progress-text-progress">
+          <ShinyText text={loadingProgressText} speed={3} />
+        </div>
+      </div>
+    );
+  } else if (result?.error) {
+    // Show errors first
+    const errorNode = (
+      <pre style={{ color: '#ff4d4f', whiteSpace: 'pre-wrap' }}>
+        {result?.error}
+      </pre>
+    );
+
+    if (result.reportHTML || result.report || replayScriptsInfo) {
+      resultDataToShow = (
+        <div className="combined-result-layout">
+          <div style={{ flex: '0 0 auto', maxHeight: '40%', overflow: 'auto' }}>
+            <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>
+              Error:
+            </div>
+            {errorNode}
+          </div>
+          <div className="combined-result-section">
+            <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>
+              Report:
+            </div>
+            <div className="combined-result-player">
+              <Player
+                key={replayCounter}
+                replayScripts={replayScriptsInfo?.scripts}
+                imageWidth={replayScriptsInfo?.width}
+                imageHeight={replayScriptsInfo?.height}
+                reportFileContent={result.reportHTML || null}
+                reportUrl={result.report?.url}
+                reportFormat={result.report?.format}
+                fitMode={fitMode}
+                autoZoom={autoZoom}
+                canDownloadReport={
+                  canDownloadReport ?? serviceMode !== 'In-Browser'
+                }
+                onDownloadReport={onDownloadReport}
+                presentation={playerPresentation}
+                hideFullscreenControl={hidePlayerFullscreenControl}
+              />
+            </div>
+          </div>
+        </div>
+      );
+    } else {
+      resultDataToShow = errorNode;
+    }
+  } else if (
+    showOutputAlongsideReport &&
+    result?.result !== undefined &&
+    replayScriptsInfo
+  ) {
+    // Show both the API return value and the replay/report.
+    const resultOutput =
+      typeof result?.result === 'string' ? (
+        <pre>{result?.result}</pre>
+      ) : (
+        <pre>{JSON.stringify(result?.result, null, 2)}</pre>
+      );
+
+    const reportContent = result?.reportHTML || null;
+
+    resultDataToShow = (
+      <div className="combined-result-layout">
+        <div style={{ flex: '0 0 auto' }}>
+          <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Output:</div>
+          {resultOutput}
+        </div>
+        <div className="combined-result-section">
+          <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Report:</div>
+          <div className="combined-result-player">
+            <Player
+              key={replayCounter}
+              replayScripts={replayScriptsInfo.scripts}
+              imageWidth={replayScriptsInfo.width}
+              imageHeight={replayScriptsInfo.height}
+              reportFileContent={reportContent}
+              reportUrl={result.report?.url}
+              reportFormat={result.report?.format}
+              fitMode={fitMode}
+              autoZoom={autoZoom}
+              canDownloadReport={
+                canDownloadReport ?? serviceMode !== 'In-Browser'
+              }
+              onDownloadReport={onDownloadReport}
+              presentation={playerPresentation}
+              hideFullscreenControl={hidePlayerFullscreenControl}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  } else if (replayScriptsInfo) {
+    // Has replay scripts (non-noReplayAPI) - show Player with replay and report
+    const reportContent = result?.reportHTML || null;
+
+    resultDataToShow = (
+      <Player
+        key={replayCounter}
+        replayScripts={replayScriptsInfo.scripts}
+        imageWidth={replayScriptsInfo.width}
+        imageHeight={replayScriptsInfo.height}
+        reportFileContent={reportContent}
+        reportUrl={result?.report?.url}
+        reportFormat={result?.report?.format}
+        fitMode={fitMode}
+        autoZoom={autoZoom}
+        canDownloadReport={canDownloadReport ?? serviceMode !== 'In-Browser'}
+        onDownloadReport={onDownloadReport}
+        presentation={playerPresentation}
+        hideFullscreenControl={hidePlayerFullscreenControl}
+      />
+    );
+  } else if (
+    showOutputAlongsideReport &&
+    result?.result !== undefined &&
+    (result?.reportHTML || result?.report)
+  ) {
+    // Show both the API return value and the report.
+    const resultOutput =
+      typeof result?.result === 'string' ? (
+        <pre>{result?.result}</pre>
+      ) : (
+        <pre>{JSON.stringify(result?.result, null, 2)}</pre>
+      );
+
+    resultDataToShow = (
+      <div className="combined-result-layout">
+        <div style={{ flex: '0 0 auto' }}>
+          <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Output:</div>
+          {resultOutput}
+        </div>
+        <div className="combined-result-section">
+          <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>Report:</div>
+          <div className="combined-result-player">
+            <Player
+              key={replayCounter}
+              reportFileContent={result.reportHTML || null}
+              reportUrl={result.report?.url}
+              reportFormat={result.report?.format}
+              fitMode={fitMode}
+              autoZoom={autoZoom}
+              canDownloadReport={
+                canDownloadReport ?? serviceMode !== 'In-Browser'
+              }
+              onDownloadReport={onDownloadReport}
+              presentation={playerPresentation}
+              hideFullscreenControl={hidePlayerFullscreenControl}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  } else if (showOutputAlongsideReport && result?.result !== undefined) {
+    // Without a report, show the API return value on its own.
+    resultDataToShow =
+      typeof result?.result === 'string' ? (
+        <pre>{result?.result}</pre>
+      ) : (
+        <pre>{JSON.stringify(result?.result, null, 2)}</pre>
+      );
+  } else if (result?.reportHTML || result?.report) {
+    // No replay scripts but has report - show Player with report only
+    resultDataToShow = (
+      <Player
+        key={replayCounter}
+        reportFileContent={result.reportHTML || null}
+        reportUrl={result.report?.url}
+        reportFormat={result.report?.format}
+        fitMode={fitMode}
+        autoZoom={autoZoom}
+        canDownloadReport={canDownloadReport ?? serviceMode !== 'In-Browser'}
+        onDownloadReport={onDownloadReport}
+        presentation={playerPresentation}
+        hideFullscreenControl={hidePlayerFullscreenControl}
+      />
+    );
+  } else if (result?.result !== undefined) {
+    // Fallback: show result output
+    resultDataToShow =
+      typeof result?.result === 'string' ? (
+        <pre>{result?.result}</pre>
+      ) : (
+        <pre>{JSON.stringify(result?.result, null, 2)}</pre>
+      );
+  }
+
+  return (
+    <div
+      className={resultWrapperClassName}
+      style={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        flex: '1 1 auto',
+        justifyContent: 'center',
+      }}
+    >
+      {resultDataToShow}
+    </div>
+  );
+};

@@ -1,0 +1,709 @@
+import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, rs } from '@rstest/core';
+import sharp from 'sharp';
+import {
+  type JpegBase64DataUrl,
+  compositePointMarkerImg,
+  constrainBase64ImageToMaxSize,
+  httpImg2Base64,
+  imageInfoOfBase64,
+  isValidJPEGImageBuffer,
+  isValidPNGImageBuffer,
+  localImg2Base64,
+  resizeAndConvertImgBuffer,
+  resizeBase64ImageToJpeg,
+  resizeImgBase64,
+  validateScreenshotBuffer,
+} from '../../../src/img';
+import {
+  createImgBase64ByFormat,
+  cropByRect,
+  paddingToMatchBlockByBase64,
+  parseBase64,
+  saveBase64Image,
+} from '../../../src/img/transform';
+import { getFixture } from '../../utils';
+
+describe('imageInfoOfBase64', () => {
+  it('returns correct dimensions for PNG image', async () => {
+    const image = getFixture('icon.png');
+    const base64 = localImg2Base64(image);
+    const info = await imageInfoOfBase64(base64);
+
+    expect(info.width).toBe(68);
+    expect(info.height).toBe(56);
+  });
+
+  it('returns correct dimensions for JPEG image', async () => {
+    const image = getFixture('heytea.jpeg');
+    const base64 = localImg2Base64(image);
+    const info = await imageInfoOfBase64(base64);
+
+    expect(info.width).toBe(400);
+    expect(info.height).toBe(905);
+  });
+
+  it('works with base64 string without data URI header', async () => {
+    const image = getFixture('icon.png');
+    const base64WithHeader = localImg2Base64(image);
+    const base64Body = base64WithHeader.split(',')[1];
+
+    const info = await imageInfoOfBase64(base64Body);
+
+    expect(info.width).toBe(68);
+    expect(info.height).toBe(56);
+  });
+
+  it('throws error for invalid base64 data', async () => {
+    const invalidBase64 = 'data:image/png;base64,notvalidbase64data';
+
+    await expect(imageInfoOfBase64(invalidBase64)).rejects.toThrow(
+      'Invalid image',
+    );
+  });
+
+  it('throws clear error for valid base64 that is not an image', async () => {
+    const nonImageBase64 = 'data:image/png;base64,Zm9v';
+
+    await expect(imageInfoOfBase64(nonImageBase64)).rejects.toThrow(
+      'Invalid image: unsupported format',
+    );
+  });
+
+  it('throws error for empty string', async () => {
+    await expect(imageInfoOfBase64('')).rejects.toThrow(
+      'Invalid image: empty base64 data',
+    );
+  });
+});
+
+describe('image utils', () => {
+  const image = getFixture('icon.png');
+
+  it('localImg2Base64', () => {
+    const base64 = localImg2Base64(image);
+    expect(base64).toMatchSnapshot();
+
+    const headlessBase64 = localImg2Base64(image, true);
+    expect(headlessBase64).toMatchSnapshot();
+  });
+
+  it('localImg2Base64 + imageInfo', async () => {
+    const image = getFixture('icon.png');
+    const base64 = localImg2Base64(image);
+    const info = await imageInfoOfBase64(base64);
+    expect(info.width).toMatchSnapshot();
+    expect(info.height).toMatchSnapshot();
+  });
+
+  it('jpeg + base64 + imageInfo', async () => {
+    const image = getFixture('heytea.jpeg');
+    const base64 = localImg2Base64(image);
+    const info = await imageInfoOfBase64(base64);
+    expect(info.width).toMatchSnapshot();
+    expect(info.height).toMatchSnapshot();
+  });
+
+  it('resizeBase64ImageToJpeg always returns a typed JPEG data URL', async () => {
+    const image = getFixture('heytea.jpeg');
+
+    const base64 = localImg2Base64(image);
+    const resizedBase64: JpegBase64DataUrl = await resizeBase64ImageToJpeg(
+      base64,
+      {
+        sourceSize: { width: 400, height: 905 },
+        targetSize: { width: 100, height: 100 },
+      },
+    );
+    expect(resizedBase64).toMatch(/^data:image\/jpeg;base64,/);
+  });
+
+  it('resizeBase64ImageToJpeg converts PNG when dimensions are unchanged', async () => {
+    const base64 = localImg2Base64(getFixture('icon.png'));
+    const resizedBase64 = await resizeBase64ImageToJpeg(base64, {
+      sourceSize: { width: 68, height: 56 },
+      targetSize: { width: 68, height: 56 },
+    });
+
+    expect(resizedBase64).toMatch(/^data:image\/jpeg;base64,/);
+    const { body } = parseBase64(resizedBase64);
+    expect(isValidJPEGImageBuffer(Buffer.from(body, 'base64'))).toBe(true);
+    await expect(imageInfoOfBase64(resizedBase64)).resolves.toEqual({
+      width: 68,
+      height: 56,
+    });
+  });
+
+  it('resizeBase64ImageToJpeg resizes PNG and encodes the result as JPEG', async () => {
+    const base64 = localImg2Base64(getFixture('icon.png'));
+    const resizedBase64 = await resizeBase64ImageToJpeg(base64, {
+      sourceSize: { width: 68, height: 56 },
+      targetSize: { width: 34, height: 28 },
+    });
+
+    expect(resizedBase64).toMatch(/^data:image\/jpeg;base64,/);
+    await expect(imageInfoOfBase64(resizedBase64)).resolves.toEqual({
+      width: 34,
+      height: 28,
+    });
+  });
+
+  it('constrainBase64ImageToMaxSize bounds the longest edge with real image bytes', async () => {
+    const base64 = localImg2Base64(getFixture('icon.png'));
+    const constrainedBase64 = await constrainBase64ImageToMaxSize(base64, {
+      maxSize: 34,
+    });
+
+    expect(constrainedBase64).toMatch(/^data:image\/jpeg;base64,/);
+    await expect(imageInfoOfBase64(constrainedBase64)).resolves.toEqual({
+      width: 34,
+      height: 28,
+    });
+  });
+
+  it('constrainBase64ImageToMaxSize preserves an image already within the bound', async () => {
+    const base64 = localImg2Base64(getFixture('icon.png'));
+
+    await expect(
+      constrainBase64ImageToMaxSize(base64, { maxSize: 68 }),
+    ).resolves.toBe(base64);
+  });
+
+  it('uses image bytes instead of a misleading MIME header', async () => {
+    const pngBase64 = localImg2Base64(getFixture('icon.png'));
+    const mislabeledBase64 = pngBase64.replace('image/png', 'image/jpeg');
+    const result = await resizeBase64ImageToJpeg(mislabeledBase64, {
+      sourceSize: { width: 68, height: 56 },
+      targetSize: { width: 68, height: 56 },
+    });
+
+    const { body } = parseBase64(result);
+    expect(isValidJPEGImageBuffer(Buffer.from(body, 'base64'))).toBe(true);
+  });
+
+  it('resizeBase64ImageToJpeg reuses an unchanged JPEG without generation loss', async () => {
+    const base64 = localImg2Base64(getFixture('heytea.jpeg'));
+    const resizedBase64 = await resizeBase64ImageToJpeg(base64, {
+      sourceSize: { width: 400, height: 905 },
+      targetSize: { width: 400, height: 905 },
+    });
+
+    expect(resizedBase64).toBe(base64);
+  });
+
+  it('resizeBase64ImageToJpeg rejects source dimensions that do not match the encoded image', async () => {
+    const base64 = localImg2Base64(getFixture('heytea.jpeg'));
+
+    await expect(
+      resizeBase64ImageToJpeg(base64, {
+        sourceSize: { width: 1, height: 1 },
+        targetSize: { width: 1, height: 1 },
+      }),
+    ).rejects.toThrow(
+      'sourceSize 1x1 does not match encoded image dimensions 400x905',
+    );
+  });
+
+  it.each([0, 101, 10.5, Number.NaN])(
+    'resizeBase64ImageToJpeg rejects invalid JPEG quality %s',
+    async (jpegQuality) => {
+      const base64 = localImg2Base64(getFixture('icon.png'));
+
+      await expect(
+        resizeBase64ImageToJpeg(base64, {
+          sourceSize: { width: 68, height: 56 },
+          targetSize: { width: 68, height: 56 },
+          jpegQuality,
+        }),
+      ).rejects.toThrow(/jpegQuality/);
+    },
+  );
+
+  it.each([
+    { width: 10.5, height: 10 },
+    { width: 10, height: Number.NaN },
+    { width: Number.POSITIVE_INFINITY, height: 10 },
+    { width: 0, height: 10 },
+  ])(
+    'resizeBase64ImageToJpeg rejects invalid target size $width x $height',
+    async (targetSize) => {
+      const base64 = localImg2Base64(getFixture('icon.png'));
+
+      await expect(
+        resizeBase64ImageToJpeg(base64, {
+          sourceSize: { width: 68, height: 56 },
+          targetSize,
+        }),
+      ).rejects.toThrow(/targetSize.*positive integers/);
+    },
+  );
+
+  it.each([
+    { width: 10.5, height: 10 },
+    { width: 10, height: Number.NaN },
+    { width: Number.POSITIVE_INFINITY, height: 10 },
+    { width: 0, height: 10 },
+  ])(
+    'resizeBase64ImageToJpeg rejects invalid known source size $width x $height',
+    async (sourceSize) => {
+      const base64 = localImg2Base64(getFixture('icon.png'));
+
+      await expect(
+        resizeBase64ImageToJpeg(base64, {
+          sourceSize,
+          targetSize: { width: 68, height: 56 },
+        }),
+      ).rejects.toThrow(/sourceSize.*positive integers/);
+    },
+  );
+
+  it('resizeBase64ImageToJpeg applies the requested JPEG quality', async () => {
+    const base64 = localImg2Base64(getFixture('heytea.jpeg'));
+    const lowQuality = await resizeBase64ImageToJpeg(base64, {
+      sourceSize: { width: 400, height: 905 },
+      targetSize: { width: 100, height: 100 },
+      jpegQuality: 10,
+    });
+    const highQuality = await resizeBase64ImageToJpeg(base64, {
+      sourceSize: { width: 400, height: 905 },
+      targetSize: { width: 100, height: 100 },
+      jpegQuality: 90,
+    });
+
+    expect(lowQuality).toMatch(/^data:image\/jpeg;base64,/);
+    expect(highQuality).toMatch(/^data:image\/jpeg;base64,/);
+    expect(lowQuality).not.toBe(highQuality);
+  });
+
+  it('keeps resizeImgBase64 backward compatible for unchanged PNG input', async () => {
+    const base64 = localImg2Base64(getFixture('icon.png'));
+    const resizedBase64 = await resizeImgBase64(base64, {
+      width: 68,
+      height: 56,
+    });
+
+    expect(resizedBase64).toBe(base64);
+    expect(resizedBase64).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('keeps resizeImgBase64 backward compatible for unchanged JPEG input', async () => {
+    const base64 = localImg2Base64(getFixture('heytea.jpeg'));
+    const resizedBase64 = await resizeImgBase64(base64, {
+      width: 400,
+      height: 905,
+    });
+
+    expect(resizedBase64).toBe(base64);
+    expect(resizedBase64).toMatch(/^data:image\/jpeg;base64,/);
+  });
+
+  it('keeps resizeImgBase64 JPEG output behavior when dimensions change', async () => {
+    const base64 = localImg2Base64(getFixture('icon.png'));
+    const resizedBase64 = await resizeImgBase64(base64, {
+      width: 34,
+      height: 28,
+    });
+
+    expect(resizedBase64).toMatch(/^data:image\/jpeg;base64,/);
+    await expect(imageInfoOfBase64(resizedBase64)).resolves.toEqual({
+      width: 34,
+      height: 28,
+    });
+  });
+
+  it('compositePointMarkerImg keeps image dimensions and marks a point', async () => {
+    const image = getFixture('icon.png');
+    const base64 = localImg2Base64(image);
+
+    const markedBase64 = await compositePointMarkerImg({
+      inputImgBase64: base64,
+      point: { x: 20, y: 20 },
+    });
+
+    expect(markedBase64).toContain(';base64,');
+    expect(markedBase64).not.toBe(base64);
+
+    const originalInfo = await imageInfoOfBase64(base64);
+    const markedInfo = await imageInfoOfBase64(markedBase64);
+    expect(markedInfo).toEqual(originalInfo);
+  });
+
+  it('compositePointMarkerImg uses red target and blue locator callout markers without covering the target point', async () => {
+    const inputBuffer = await sharp({
+      create: {
+        width: 120,
+        height: 120,
+        channels: 4,
+        background: { r: 255, g: 255, b: 255, alpha: 1 },
+      },
+    })
+      .png()
+      .toBuffer();
+    const base64 = createImgBase64ByFormat(
+      'png',
+      inputBuffer.toString('base64'),
+    );
+
+    const markedBase64 = await compositePointMarkerImg({
+      inputImgBase64: base64,
+      point: { x: 60, y: 60 },
+    });
+    const locatorMarkedBase64 = await compositePointMarkerImg({
+      inputImgBase64: base64,
+      point: { x: 60, y: 60 },
+      indexId: 2,
+    });
+    const { body } = parseBase64(markedBase64);
+    const { data, info } = await sharp(Buffer.from(body, 'base64'))
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const locatorBody = parseBase64(locatorMarkedBase64).body;
+    const { data: locatorData, info: locatorInfo } = await sharp(
+      Buffer.from(locatorBody, 'base64'),
+    )
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    let redDominantPixels = 0;
+    let blueCalloutPixels = 0;
+    const isRedMarkerPixel = (r: number, g: number, b: number) =>
+      r > 160 && g < 140 && b < 140;
+    for (let offset = 0; offset < data.length; offset += info.channels) {
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      if (isRedMarkerPixel(r, g, b)) {
+        redDominantPixels += 1;
+      }
+      if (b > 180 && r < 100 && g > 80) {
+        blueCalloutPixels += 1;
+      }
+    }
+    let locatorBlueCalloutPixels = 0;
+    for (
+      let offset = 0;
+      offset < locatorData.length;
+      offset += locatorInfo.channels
+    ) {
+      const r = locatorData[offset];
+      const g = locatorData[offset + 1];
+      const b = locatorData[offset + 2];
+      if (b > 180 && r < 100 && g < 100) {
+        locatorBlueCalloutPixels += 1;
+      }
+    }
+
+    const targetPointOffset = (60 * info.width + 60) * info.channels;
+    const [targetR, targetG, targetB] = data.slice(
+      targetPointOffset,
+      targetPointOffset + 3,
+    );
+    const rightEdgeOffset = (60 * info.width + 90) * info.channels;
+    const lowerEdgeOffset = (75 * info.width + 60) * info.channels;
+    const circleBottomOffset = (90 * info.width + 60) * info.channels;
+    const [rightR, rightG, rightB] = data.slice(
+      rightEdgeOffset,
+      rightEdgeOffset + 3,
+    );
+    const [lowerR, lowerG, lowerB] = data.slice(
+      lowerEdgeOffset,
+      lowerEdgeOffset + 3,
+    );
+    const [circleBottomR, circleBottomG, circleBottomB] = data.slice(
+      circleBottomOffset,
+      circleBottomOffset + 3,
+    );
+    expect(targetR).toBeGreaterThan(245);
+    expect(targetG).toBeGreaterThan(245);
+    expect(targetB).toBeGreaterThan(245);
+    expect(isRedMarkerPixel(rightR, rightG, rightB)).toBe(true);
+    expect(isRedMarkerPixel(lowerR, lowerG, lowerB)).toBe(true);
+    expect(isRedMarkerPixel(circleBottomR, circleBottomG, circleBottomB)).toBe(
+      false,
+    );
+    expect(redDominantPixels).toBeGreaterThan(20);
+    expect(blueCalloutPixels).toBe(0);
+    expect(locatorBlueCalloutPixels).toBeGreaterThan(20);
+  });
+
+  it('paddingToMatchBlockByBase64', async () => {
+    const image = getFixture('heytea.jpeg');
+    const base64 = localImg2Base64(image);
+    const result = await paddingToMatchBlockByBase64(base64);
+
+    expect(result.width).toMatchSnapshot();
+    expect(result.height).toMatchSnapshot();
+
+    const tmpFile = join(tmpdir(), 'heytea-padded.jpeg');
+    await saveBase64Image({
+      base64Data: result.imageBase64,
+      outputPath: tmpFile,
+    });
+    // console.log('tmpFile', tmpFile);
+  });
+
+  it('cropByRect', async () => {
+    const image = getFixture('heytea.jpeg');
+    const base64 = localImg2Base64(image);
+    const croppedBase64 = await cropByRect(base64, {
+      left: 200,
+      top: 80,
+      width: 100,
+      height: 400,
+    });
+
+    expect(croppedBase64).toBeTruthy();
+
+    const info = await imageInfoOfBase64(croppedBase64.imageBase64);
+    // biome-ignore lint/style/noUnusedTemplateLiteral: by intention
+    expect(info.width).toMatchInlineSnapshot(`100`);
+    // biome-ignore lint/style/noUnusedTemplateLiteral: by intention
+    expect(info.height).toMatchInlineSnapshot(`400`);
+
+    const tmpFile = join(tmpdir(), 'heytea-cropped-2.jpeg');
+    await saveBase64Image({
+      base64Data: croppedBase64.imageBase64,
+      outputPath: tmpFile,
+    });
+    console.log('cropped image saved to', tmpFile);
+  });
+
+  it('cropByRect normalizes fractional browser coordinates for Sharp', async () => {
+    const image = getFixture('heytea.jpeg');
+    const result = await cropByRect(localImg2Base64(image), {
+      left: 200.4,
+      top: 80.8,
+      width: 100.7,
+      height: 40.6,
+    });
+
+    expect(result.width).toBe(101);
+    expect(result.height).toBe(41);
+    await expect(imageInfoOfBase64(result.imageBase64)).resolves.toEqual({
+      width: 101,
+      height: 41,
+    });
+  });
+
+  it('isValidPNGImageBuffer', () => {
+    const buffer = readFileSync(getFixture('icon.png'));
+    const isValid = isValidPNGImageBuffer(buffer);
+    expect(isValid).toBe(true);
+  });
+
+  it('isValidPNGImageBuffer, invalid', () => {
+    const buffer = readFileSync(getFixture('heytea.jpeg'));
+    const isValid = isValidPNGImageBuffer(buffer);
+    expect(isValid).toBe(false);
+  });
+
+  it('isValidPNGImageBuffer, invalid buffer', () => {
+    const isValid = isValidPNGImageBuffer(
+      Buffer.from(
+        '<Buffer 49 6e 76 61 6c 69 64 20 64 69 73 70 6c 61 79 20 49 44 3a 20 4f 75 74 20 6f 66 20 72 61 6e 67 65 20 5b 30 2c 20 32 5e 36 34 29 2e 0a>',
+      ),
+    );
+    expect(isValid).toBe(false);
+  });
+
+  it('rejects a truncated PNG that has a valid signature but no IEND chunk', () => {
+    const validPng = readFileSync(getFixture('icon.png'));
+    const truncatedPng = validPng.subarray(0, validPng.length - 12);
+
+    expect(isValidPNGImageBuffer(truncatedPng)).toBe(false);
+    expect(() =>
+      validateScreenshotBuffer(truncatedPng, {
+        label: 'Screenshot',
+      }),
+    ).toThrow('Screenshot buffer has invalid image format');
+  });
+
+  it('validateScreenshotBuffer accepts valid screenshots above the minimum size', () => {
+    const buffer = readFileSync(getFixture('icon.png'));
+
+    expect(() =>
+      validateScreenshotBuffer(buffer, {
+        label: 'Screenshot',
+        minBufferSize: 8,
+      }),
+    ).not.toThrow();
+  });
+
+  it('validateScreenshotBuffer rejects empty screenshots', () => {
+    expect(() =>
+      validateScreenshotBuffer(Buffer.alloc(0), {
+        label: 'Screenshot',
+        minBufferSize: 0,
+      }),
+    ).toThrow('Screenshot validation failed: buffer size 0 bytes');
+  });
+
+  it('validateScreenshotBuffer rejects invalid image buffers', () => {
+    expect(() =>
+      validateScreenshotBuffer(Buffer.from('not-an-image'), {
+        label: 'Screenshot',
+        minBufferSize: 0,
+      }),
+    ).toThrow('Screenshot buffer has invalid image format');
+  });
+
+  it('validateScreenshotBuffer rejects screenshots below the configured size threshold', () => {
+    const buffer = readFileSync(getFixture('icon.png'));
+
+    expect(() =>
+      validateScreenshotBuffer(buffer, {
+        label: 'Screenshot',
+        minBufferSize: buffer.length + 1,
+      }),
+    ).toThrow(
+      `Screenshot validation failed: buffer size ${buffer.length} bytes (minimum: ${
+        buffer.length + 1
+      })`,
+    );
+  });
+
+  it('httpImg2Base64', async () => {
+    const mockResponse = Buffer.from('image-data');
+    const fetchSpy = rs.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(mockResponse, {
+        status: 200,
+        headers: { 'content-type': 'image/svg+xml' },
+      }),
+    );
+
+    const result = await httpImg2Base64('https://example.com/image.svg');
+
+    expect(result).toBe(
+      `data:image/svg+xml;base64,${mockResponse.toString('base64')}`,
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it('parseBase64', () => {
+    const base64 =
+      'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+    const { mimeType, body } = parseBase64(base64);
+    expect(mimeType).toBe('image/gif');
+    expect(body).toBe(
+      'R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
+    );
+  });
+
+  it('parseBase64 normalizes wrapped base64 bodies', () => {
+    const base64 =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA\r\nAu4AAAU2CAYAAADK1zMG';
+    const { mimeType, body } = parseBase64(base64);
+    expect(mimeType).toBe('image/png');
+    expect(body).toBe('iVBORw0KGgoAAAANSUhEUgAAAu4AAAU2CAYAAADK1zMG');
+  });
+
+  it('parseBase64 accepts raw jpeg base64 bodies', () => {
+    const base64 = '/9j/4AAQSkZJRgABAQAAAQABAAD/2w==';
+    const { mimeType, body } = parseBase64(base64);
+    expect(mimeType).toBe('image/jpeg');
+    expect(body).toBe(base64);
+  });
+
+  it('parseBase64 accepts raw png base64 bodies with wrapping', () => {
+    const base64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB\r\nCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+    const { mimeType, body } = parseBase64(base64);
+    expect(mimeType).toBe('image/png');
+    expect(body).toBe(base64.replace(/\s/g, ''));
+  });
+
+  it('parseBase64, invalid', () => {
+    const base64 = 'IamNotBase64';
+    expect(() => parseBase64(base64)).toThrowError(
+      'parseBase64 fail because intput is not a valid base64 string: IamNotBase64',
+    );
+  });
+
+  it('createImgBase64ByFormat', () => {
+    const base64 = createImgBase64ByFormat('png', 'foo');
+    expect(base64).toBe('data:image/png;base64,foo');
+  });
+
+  it('createImgBase64ByFormat strips WDA-style line wrapping', () => {
+    const base64 = createImgBase64ByFormat('png', 'abc\r\ndef ghi');
+    expect(base64).toBe('data:image/png;base64,abcdefghi');
+  });
+
+  // it(
+  //   'profile',
+  //   async () => {
+  //     let count = 100;
+  //     console.time('alignCoordByTrim');
+  //     while (count--) {
+  //       const file = getFixture('long-text.png');
+  //       await alignCoordByTrim(file, {
+  //         left: 440,
+  //         top: 50,
+  //         width: 200,
+  //         height: 150,
+  //       });
+  //     }
+  //     console.timeEnd('alignCoordByTrim');
+  //   },
+  //   10 * 1000,
+  // );
+});
+
+describe('resizeAndConvertImgBuffer', () => {
+  const imageBuffer = readFileSync(getFixture('2x2.png'));
+
+  describe('try sharp', () => {
+    it('Sharp no-resize will get original format', async () => {
+      const { format, buffer } = await resizeAndConvertImgBuffer(
+        'png',
+        imageBuffer,
+        {
+          width: 2,
+          height: 2,
+        },
+      );
+      expect(format).toBe('png');
+    });
+    it('Sharp resize will get jpeg format', async () => {
+      const { format, buffer } = await resizeAndConvertImgBuffer(
+        'png',
+        imageBuffer,
+        {
+          width: 1,
+          height: 1,
+        },
+      );
+      expect(format).toBe('jpeg');
+    });
+  });
+
+  describe('sharp failure', () => {
+    const metadataFn = rs.fn(() => {
+      throw new Error('sharp is not available');
+    });
+
+    beforeAll(() => {
+      rs.doMock('sharp', () => ({
+        default: () => ({
+          metadata: metadataFn,
+        }),
+      }));
+    });
+
+    afterAll(() => {
+      rs.resetAllMocks();
+    });
+
+    it('throws instead of loading the browser image backend', async () => {
+      await expect(
+        resizeAndConvertImgBuffer('png', imageBuffer, {
+          width: 2,
+          height: 2,
+        }),
+      ).rejects.toThrow('sharp is not available');
+      expect(metadataFn).toHaveBeenCalledTimes(1);
+    });
+  });
+});

@@ -1,0 +1,68 @@
+/*
+ * Scoped layout for the Studio Playground panel.
+ *
+ * The chat window visual treatment now lives in the shared playground
+ * packages so Studio and the standalone playground apps render the same
+ * conversation UI. This file only owns the outer shell chrome.
+ */
+
+.playground-shell {
+  position: relative;
+  display: flex;
+  height: 100%;
+  width: 100%;
+  flex-shrink: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-top-right-radius: 12px;
+  border-bottom-right-radius: 12px;
+  background: transparent;
+}
+
+[data-theme="dark"] .playground-shell > .app-drag {
+  border-color: #323131;
+  background: #181818;
+}
+
+.playground-shell .playground-conversation-panel,
+.playground-shell .playground-conversation-body,
+.playground-shell .playground-container,
+.playground-shell .command-form,
+.playground-shell .middle-dialog-area {
+  min-height: 0;
+  height: 100%;
+}
+
+.playground-shell .playground-container {
+  background: transparent;
+}
+
+.playground-shell-mode-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.playground-shell-mode-icon {
+  display: inline-flex;
+  height: 16px;
+  width: 16px;
+  align-items: center;
+  justify-content: center;
+  color: var(--midscene-text-secondary);
+}
+
+.playground-shell-mode-button-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.playground-shell-mode-button-icon img,
+.playground-shell-mode-button-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+}

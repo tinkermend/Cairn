@@ -189,6 +189,14 @@ export function uniquePermissions(codes: readonly string[]): string[] {
   return [...new Set(codes)].sort()
 }
 
+/**
+ * 集合信封的游标。
+ *
+ * 有值即表示服务端还有下一页；服务端截断必须由它表达，静默截断是缺陷。
+ * 内容由服务端生成、客户端只负责回传，不解释其含义。
+ */
+export const nextCursorSchema = z.string().min(1).optional()
+
 export const roleKeySchema = z
   .string()
   .regex(/^[a-z][a-z0-9_]{1,62}$/, '角色 key 须为小写字母开头的 slug（最多 63 字符）')
@@ -244,11 +252,13 @@ export type PermissionCatalogResponse = z.infer<typeof permissionCatalogResponse
 
 export const roleListResponseSchema = z.object({
   items: z.array(roleSchema),
+  nextCursor: nextCursorSchema,
 })
 export type RoleListResponse = z.infer<typeof roleListResponseSchema>
 
 export const accountListResponseSchema = z.object({
   items: z.array(accountSchema),
+  nextCursor: nextCursorSchema,
 })
 export type AccountListResponse = z.infer<typeof accountListResponseSchema>
 
@@ -334,6 +344,13 @@ export const AUDIT_ACTIONS = [
   'role.create',
   'role.update',
   'role.delete',
+  'target.create',
+  'target.update',
+  'target.delete',
+  'target_account.create',
+  'target_account.update',
+  'target_account.delete',
+  'target_account.password',
 ] as const
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 
@@ -356,6 +373,7 @@ export type AuditEventDto = z.infer<typeof auditEventSchema>
 
 export const auditListResponseSchema = z.object({
   items: z.array(auditEventSchema),
+  nextCursor: nextCursorSchema,
 })
 export type AuditListResponse = z.infer<typeof auditListResponseSchema>
 

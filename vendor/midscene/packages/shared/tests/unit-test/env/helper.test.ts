@@ -1,0 +1,32 @@
+import { describe, expect, it } from '@rstest/core';
+import { maskConfig } from '../../../src/env/helper';
+import type { IModelConfig } from '../../../src/env/types';
+
+describe('maskConfig', () => {
+  it('key will be masked', () => {
+    const config = {
+      modelName: 'test-model',
+      openaiApiKey: 'sk-thisisafakekeythatislongenough',
+      socksProxy: 'socks://proxy.example.com:1080',
+      httpProxy: 'http://proxy.example.com:8080',
+      openaiBaseURL: 'https://api.openai.com/v1',
+      openaiExtraConfig: { top_p: 0.9 },
+      modelFamily: 'doubao-vision',
+      modelDescription: '',
+      intent: 'default',
+      slot: 'default',
+    } satisfies IModelConfig;
+    expect(maskConfig(config)).toEqual({
+      httpProxy: 'http://proxy.example.com:8080',
+      intent: 'default',
+      slot: 'default',
+      modelDescription: '',
+      modelName: 'test-model',
+      openaiApiKey: 'sk-***************************ugh',
+      openaiBaseURL: 'https://api.openai.com/v1',
+      openaiExtraConfig: { top_p: 0.9 },
+      socksProxy: 'socks://proxy.example.com:1080',
+      modelFamily: 'doubao-vision',
+    });
+  });
+});

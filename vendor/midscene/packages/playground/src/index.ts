@@ -1,0 +1,90 @@
+export {
+  dataExtractionAPIs,
+  noReplayAPIs,
+  validationAPIs,
+  formatErrorMessage,
+  validateStructuredParams,
+  executeAction,
+} from './common';
+export { buildPlaygroundBrowserUrl, PlaygroundServer } from './server';
+export {
+  describeRecorderUIEvent,
+  describeRecorderUIEvents,
+  getRecorderUIEventTargetRect,
+  type DescribeRecorderUIEventInput,
+  type DescribeRecorderUIEventOptions,
+  type DescribeRecorderUIEventResult,
+} from './recorder-ui-describer';
+export { playgroundForAgent } from './launcher';
+export { playgroundForAgentFactory } from './launcher';
+export { playgroundForSessionManager } from './launcher';
+export {
+  createMjpegPreviewDescriptor,
+  createScreenshotPreviewDescriptor,
+  createScrcpyPreviewDescriptor,
+  definePlaygroundPlatform,
+  resolvePreparedLaunchOptions,
+} from './platform';
+export { launchPreparedPlaygroundPlatform } from './platform-launcher';
+export {
+  playgroundForPlatforms,
+  prepareMultiPlatformPlayground,
+} from './multi-platform';
+
+// SDK exports
+export { PlaygroundSDK } from './sdk/index';
+export { BasePlaygroundAdapter } from './adapters/base';
+export { LocalExecutionAdapter } from './adapters/local-execution';
+export { RemoteExecutionAdapter } from './adapters/remote-execution';
+
+export type {
+  PlaygroundInteractPayload,
+  PlaygroundInteractResult,
+  PlaygroundPageRecordedEvent,
+} from './sdk/index';
+export type {
+  BeforeActionHook,
+  ExecutionOptions,
+  FormValue,
+  PlaygroundAgent,
+  ValidationResult,
+  PlaygroundConfig,
+  ExecutionType,
+  PlaygroundAdapter,
+  PlaygroundReportRef,
+  ServerResponse,
+  AgentFactory,
+} from './types';
+export type {
+  LaunchPlaygroundOptions,
+  LaunchPlaygroundResult,
+} from './launcher';
+export type {
+  PlaygroundCreatedSession,
+  PlaygroundExecutionHooks,
+  PlaygroundPlatformRegistration,
+  PlaygroundPlatformDescriptor,
+  PlaygroundPlatformSelectorConfig,
+  PlaygroundPreviewCapability,
+  PlaygroundPreviewDescriptor,
+  PlaygroundPreviewKind,
+  PlaygroundRecorderCapabilitiesResult,
+  PlaygroundRecorderDescribeResult,
+  PlaygroundRecorderEvent,
+  PlaygroundRecorderEventsResult,
+  PlaygroundRecorderSourceKind,
+  PlaygroundRecorderStartResult,
+  PlaygroundSidecar,
+  PreparedPlaygroundPlatform,
+  PlaygroundSessionField,
+  PlaygroundSessionFieldOption,
+  PlaygroundSessionManager,
+  PlaygroundSessionSetup,
+  PlaygroundSessionState,
+  PlaygroundSessionTarget,
+} from './platform';
+export type { PlaygroundRuntimeInfo } from './runtime-metadata';
+export type {
+  PrepareMultiPlatformPlaygroundOptions,
+  RegisteredPlaygroundPlatform,
+} from './multi-platform';

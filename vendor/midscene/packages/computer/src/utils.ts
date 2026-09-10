@@ -1,0 +1,208 @@
+import { createRequire } from 'node:module';
+declare const __VERSION__: string;
+import { ComputerDevice, type DisplayInfo } from './device';
+
+export function version(): string {
+  const currentVersion = __VERSION__;
+  console.log(`@midscene/computer v${currentVersion}`);
+  return currentVersion;
+}
+export interface EnvironmentCheck {
+  available: boolean;
+  error?: string;
+  platform: string;
+  displays: number;
+}
+
+export interface AccessibilityCheckResult {
+  hasPermission: boolean;
+  platform: string;
+  error?: string;
+}
+
+interface MacPermissions {
+  getAuthStatus: (type: string) => string;
+  askForAccessibilityAccess: () => void;
+  askForScreenCaptureAccess: (openPreferences?: boolean) => void;
+}
+
+interface MacPermissionsLoadResult {
+  permissions: MacPermissions | null;
+  loadError?: string;
+}
+
+function loadMacPermissions(): MacPermissionsLoadResult {
+  if (process.platform !== 'darwin') {
+    return { permissions: null };
+  }
+  try {
+    const dynamicRequire = createRequire(import.meta.url);
+    return {
+      permissions: dynamicRequire('node-mac-permissions') as MacPermissions,
+    };
+  } catch (error) {
+    return {
+      permissions: null,
+      loadError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Check if macOS accessibility permission is granted
+ * On other platforms, always returns true
+ *
+ * @param promptIfNeeded - If true, will trigger system prompt and open settings when permission is not granted (macOS only)
+ */
+export function checkAccessibilityPermission(
+  promptIfNeeded = false,
+): AccessibilityCheckResult {
+  if (process.platform !== 'darwin') {
+    return {
+      hasPermission: true,
+      platform: process.platform,
+    };
+  }
+
+  try {
+    const { permissions, loadError } = loadMacPermissions();
+    if (!permissions) {
+      // node-mac-permissions failed to load on macOS — typically caused by
+      // the native module being built for the wrong ABI (e.g., not rebuilt
+      // for the current Electron version). Fail closed so users actually
+      // see the problem instead of silently bypassing TCC checks.
+      return {
+        hasPermission: false,
+        platform: process.platform,
+        error: `Cannot verify macOS Accessibility permission: node-mac-permissions is unavailable${
+          loadError ? ` (${loadError})` : ''
+        }. The native module may need to be rebuilt for the current Node/Electron ABI.`,
+      };
+    }
+
+    const status = permissions.getAuthStatus('accessibility');
+
+    if (status === 'authorized') {
+      return {
+        hasPermission: true,
+        platform: process.platform,
+      };
+    }
+
+    // Trigger system prompt and open settings if requested
+    if (promptIfNeeded) {
+      permissions.askForAccessibilityAccess();
+    }
+
+    return {
+      hasPermission: false,
+      platform: process.platform,
+      error: `macOS Accessibility permission is required (current status: ${status}).\n\nPlease follow these steps:\n1. Open System Settings > Privacy & Security > Accessibility\n2. Enable the application running this script (e.g., Terminal, iTerm2, VS Code, WebStorm)\n3. Restart your terminal or IDE after granting permission\n\nFor more details, see: https://github.com/nut-tree/nut.js#macos`,
+    };
+  } catch (error) {
+    return {
+      hasPermission: false,
+      platform: process.platform,
+      error: `Failed to check accessibility permission: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
+ * Check if macOS Screen Recording permission is granted (required for screencapture).
+ * Accessibility and Screen Recording are independent TCC permissions — granting
+ * one does not grant the other. On non-macOS platforms, always returns true.
+ *
+ * @param promptIfNeeded - If true, will trigger system prompt and open settings when permission is not granted (macOS only)
+ */
+export function checkScreenRecordingPermission(
+  promptIfNeeded = false,
+): AccessibilityCheckResult {
+  if (process.platform !== 'darwin') {
+    return {
+      hasPermission: true,
+      platform: process.platform,
+    };
+  }
+
+  try {
+    const { permissions, loadError } = loadMacPermissions();
+    if (!permissions) {
+      return {
+        hasPermission: false,
+        platform: process.platform,
+        error: `Cannot verify macOS Screen Recording permission: node-mac-permissions is unavailable${
+          loadError ? ` (${loadError})` : ''
+        }. The native module may need to be rebuilt for the current Node/Electron ABI.`,
+      };
+    }
+
+    const status = permissions.getAuthStatus('screen');
+
+    if (status === 'authorized') {
+      return {
+        hasPermission: true,
+        platform: process.platform,
+      };
+    }
+
+    if (promptIfNeeded) {
+      permissions.askForScreenCaptureAccess(true);
+    }
+
+    return {
+      hasPermission: false,
+      platform: process.platform,
+      error: `macOS Screen Recording permission is required (current status: ${status}).\n\nPlease follow these steps:\n1. Open System Settings > Privacy & Security > Screen Recording\n2. Enable the application running this script (e.g., Terminal, iTerm2, VS Code, WebStorm, or Midscene Studio)\n3. Fully quit and relaunch that application after granting permission — macOS only re-reads this permission on process launch.`,
+    };
+  } catch (error) {
+    return {
+      hasPermission: false,
+      platform: process.platform,
+      error: `Failed to check screen recording permission: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
+ * Check if the computer environment is available
+ */
+export async function checkComputerEnvironment(): Promise<EnvironmentCheck> {
+  try {
+    const libnutModule = await import(
+      '@computer-use/libnut/dist/import_libnut.js'
+    );
+    const libnut = libnutModule.libnut;
+    const screenSize = libnut.getScreenSize();
+    if (!screenSize || screenSize.width <= 0) {
+      return {
+        available: false,
+        error: 'libnut cannot get screen size',
+        platform: process.platform,
+        displays: 0,
+      };
+    }
+
+    const displays = await ComputerDevice.listDisplays();
+    return {
+      available: true,
+      platform: process.platform,
+      displays: displays.length,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return {
+      available: false,
+      error: errorMessage,
+      platform: process.platform,
+      displays: 0,
+    };
+  }
+}
+
+/**
+ * Get all connected displays
+ */
+export async function getConnectedDisplays(): Promise<DisplayInfo[]> {
+  return ComputerDevice.listDisplays();
+}

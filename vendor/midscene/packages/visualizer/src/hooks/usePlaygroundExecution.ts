@@ -1,0 +1,650 @@
+import type {
+  DeviceAction,
+  ExecutionDump,
+  IExecutionDump,
+  IReportActionDump,
+} from '@midscene/core';
+import { paramStr, typeStr } from '@midscene/core/agent';
+import {
+  createInlineImageResolver,
+  parseDumpScript,
+  parseImageScripts,
+  restoreImageReferences,
+  restoreReportImageReferences,
+} from '@midscene/core/dump';
+import { useCallback } from 'react';
+import { useEnvConfig } from '../store/store';
+import type {
+  ExecutionReportDisplay,
+  FormValue,
+  InfoListItem,
+  PlaygroundResult,
+  PlaygroundSDKLike,
+  StorageProvider,
+} from '../types';
+
+import { BLANK_RESULT } from '../utils/constants';
+import { allScriptsFromDump } from '../utils/replay-scripts';
+
+/**
+ * Format error object to string
+ */
+export function formatPlaygroundError(error: unknown): string {
+  if (!error) return 'Unknown error';
+  if (typeof error === 'string') return error;
+  if (typeof error === 'object') {
+    const errorWithDetails = error as {
+      cause?: { message?: unknown };
+      dump?: { error?: unknown };
+      message?: unknown;
+    };
+    if (errorWithDetails.dump?.error) {
+      return formatPlaygroundError(errorWithDetails.dump.error);
+    }
+    if (errorWithDetails.message) return String(errorWithDetails.message);
+    if (errorWithDetails.cause?.message) {
+      return String(errorWithDetails.cause.message);
+    }
+  }
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== '{}') return serialized;
+  } catch {
+    // Fall through to the string representation below.
+  }
+
+  const stringified = String(error);
+  return stringified === '[object Object]'
+    ? 'Unknown error (an empty error object was received)'
+    : stringified;
+}
+
+/**
+ * Build progress content string from task information
+ * @param task - The execution task to build content from
+ * @returns Formatted content string with action and optional description
+ */
+function buildProgressContent(task: any): string {
+  const action = typeStr(task);
+  const description = paramStr(task);
+  return description ? `${action} - ${description}` : action;
+}
+
+/**
+ * Convert ExecutionDump to ReportActionDump for replay scripts
+ * @param dump - The execution dump containing tasks and their usage information
+ * @returns A grouped action dump with model briefs and executions array
+ */
+function wrapExecutionDumpForReplay(
+  dump: ExecutionDump | IExecutionDump,
+  deviceType?: string,
+): IReportActionDump {
+  return {
+    sdkVersion: '',
+    groupName: 'Playground Execution',
+    // modelBriefs is intentionally left empty in playground flow.
+    // Downstream metadata extraction derives model info from task.usage.
+    modelBriefs: [],
+    executions: [dump],
+    deviceType,
+  };
+}
+
+function isReportActionDump(
+  dump: ExecutionDump | IExecutionDump | IReportActionDump | null | undefined,
+): dump is IReportActionDump {
+  return Array.isArray((dump as IReportActionDump | undefined)?.executions);
+}
+
+function replayInfoFromDump(
+  dump: ExecutionDump | IExecutionDump | IReportActionDump | null | undefined,
+  deviceType?: string,
+) {
+  if (!dump) return null;
+
+  if (isReportActionDump(dump)) {
+    return allScriptsFromDump(dump);
+  }
+
+  if (dump.tasks && Array.isArray(dump.tasks)) {
+    return allScriptsFromDump(wrapExecutionDumpForReplay(dump, deviceType));
+  }
+
+  return null;
+}
+
+function replayInfoFromReportHTML(reportHTML: string, deviceType?: string) {
+  try {
+    const imageMap = parseImageScripts(reportHTML);
+    const resolveInlineImage = createInlineImageResolver(imageMap);
+    const dump = restoreImageReferences(
+      JSON.parse(parseDumpScript(reportHTML)) as IReportActionDump,
+      resolveInlineImage,
+    ) as IReportActionDump;
+    return replayInfoFromDump(dump, deviceType);
+  } catch (error) {
+    console.error('Failed to restore replay from playground report:', error);
+    return null;
+  }
+}
+
+function replayInfoFromExecutionResult(
+  result:
+    | {
+        dump?: ExecutionDump | IExecutionDump | IReportActionDump | null;
+        reportHTML?: string | null;
+      }
+    | null
+    | undefined,
+  deviceType?: string,
+) {
+  return result?.dump
+    ? replayInfoFromDump(result.dump, deviceType)
+    : result?.reportHTML
+      ? replayInfoFromReportHTML(result.reportHTML, deviceType)
+      : null;
+}
+
+async function loadReportReplay(
+  result: Pick<PlaygroundResult, 'dump' | 'report'>,
+): Promise<void> {
+  if (result.dump || !result.report?.replayUrl) return;
+
+  try {
+    const response = await fetch(result.report.replayUrl);
+    if (!response.ok) {
+      throw new Error(`Report replay request failed (${response.status})`);
+    }
+    const dump = (await response.json()) as IReportActionDump;
+    result.dump = restoreReportImageReferences(
+      dump,
+      result.report.url,
+    ) as IReportActionDump;
+  } catch (error) {
+    console.error('Failed to load playground report replay:', error);
+  }
+}
+
+export interface UsePlaygroundExecutionOptions {
+  playgroundSDK: PlaygroundSDKLike | null;
+  storage: StorageProvider | undefined | null;
+  actionSpace: DeviceAction<unknown>[];
+  loading: boolean;
+  setLoading: (loading: boolean) => void;
+  setInfoList: React.Dispatch<React.SetStateAction<InfoListItem[]>>;
+  replayCounter: number;
+  setReplayCounter: React.Dispatch<React.SetStateAction<number>>;
+  verticalMode: boolean;
+  currentRunningIdRef: React.MutableRefObject<number | null>;
+  interruptedFlagRef: React.MutableRefObject<Record<number, boolean>>;
+  deviceType?: string;
+}
+
+export interface RunActionOptions {
+  displayContent?: string;
+  reportDisplay?: ExecutionReportDisplay;
+}
+
+interface CancelExecutionOptions {
+  appendStopMessage?: boolean;
+}
+
+function shouldForwardDeepThink(actionType: string) {
+  return actionType === 'aiAct' || actionType === 'runMarkdown';
+}
+
+/**
+ * Hook for handling playground execution logic
+ */
+export function usePlaygroundExecution(options: UsePlaygroundExecutionOptions) {
+  const {
+    playgroundSDK,
+    storage,
+    actionSpace,
+    loading,
+    setLoading,
+    setInfoList,
+    replayCounter,
+    setReplayCounter,
+    verticalMode,
+    currentRunningIdRef,
+    interruptedFlagRef,
+    deviceType,
+  } = options;
+  // Get execution options from environment config
+  const {
+    deepLocate,
+    deepThink,
+    screenshotIncluded,
+    domIncluded,
+    imeStrategy,
+    screenshotStrategy,
+    autoDismissKeyboard,
+    keyboardDismissStrategy,
+    alwaysRefreshScreenInfo,
+  } = useEnvConfig();
+
+  // Handle form submission and execution
+  const handleRun = useCallback(
+    async (value: FormValue, runOptions: RunActionOptions = {}) => {
+      // Check if SDK is available
+      if (!playgroundSDK) {
+        console.warn('PlaygroundSDK is not available');
+        return;
+      }
+
+      // Basic validation - specific validation logic would need to be moved to the SDK or passed as a separate function
+      const thisRunningId = Date.now();
+      const actionType = value.type;
+
+      // Create display content for user input
+      const displayContent =
+        runOptions.displayContent ||
+        `${value.type}: ${value.prompt || JSON.stringify(value.params)}`;
+
+      // Add user input to info list
+      const userItem: InfoListItem = {
+        id: `user-${Date.now()}`,
+        type: 'user',
+        content: displayContent,
+        timestamp: new Date(),
+      };
+      setInfoList((prev) => [...prev, userItem]);
+      setLoading(true);
+
+      const result = { ...BLANK_RESULT };
+
+      // Add system processing info to list
+      const systemItem: InfoListItem = {
+        id: `system-${thisRunningId}`,
+        type: 'system',
+        content: '',
+        timestamp: new Date(),
+        loading: true,
+        loadingProgressText: '',
+      };
+      setInfoList((prev) => [...prev, systemItem]);
+
+      try {
+        currentRunningIdRef.current = thisRunningId;
+        interruptedFlagRef.current[thisRunningId] = false;
+
+        // Set up dump update tracking to transform tasks to progress items
+        if (playgroundSDK.onDumpUpdate) {
+          playgroundSDK.onDumpUpdate(
+            (_: string, executionDump?: ExecutionDump) => {
+              if (
+                interruptedFlagRef.current[thisRunningId] ||
+                !executionDump?.tasks?.length
+              ) {
+                return;
+              }
+
+              const progressItems: InfoListItem[] = executionDump.tasks.map(
+                (task, index) => ({
+                  id: `progress-${thisRunningId}-task-${index}`,
+                  type: 'progress' as const,
+                  content: buildProgressContent(task),
+                  actionKind: typeStr(task),
+                  timestamp: new Date(task.timing?.start || Date.now()),
+                  result: task.error
+                    ? {
+                        error: formatPlaygroundError(task.error),
+                        result: null,
+                      }
+                    : undefined,
+                }),
+              );
+
+              // Replace this session's progress items with new ones
+              setInfoList((prev) => {
+                const systemItemIndex = prev.findIndex(
+                  (item) => item.id === `system-${thisRunningId}`,
+                );
+
+                if (systemItemIndex === -1) {
+                  return prev;
+                }
+
+                // Remove old progress items for this session
+                const listWithoutCurrentProgress = prev.filter(
+                  (item) =>
+                    !(
+                      item.type === 'progress' &&
+                      item.id.startsWith(`progress-${thisRunningId}-`)
+                    ),
+                );
+
+                // Insert new progress items after system item
+                return [
+                  ...listWithoutCurrentProgress.slice(0, systemItemIndex + 1),
+                  ...progressItems,
+                  ...listWithoutCurrentProgress.slice(systemItemIndex + 1),
+                ];
+              });
+            },
+          );
+        }
+
+        // During deepThink -> deepLocate migration:
+        // keep deepThink only for aiAct-like planning APIs, and avoid passing it
+        // to script runners such as runYaml.
+        if (!shouldForwardDeepThink(actionType) && deepThink === true) {
+          console.warn(
+            '[Playground] Non-aiAct action will be executed without deepThink. deepThink is only forwarded for aiAct and runMarkdown.',
+            {
+              actionType,
+              requestId: thisRunningId.toString(),
+            },
+          );
+        }
+        // Only pass deepThink when it's explicitly set (true/false), not when 'unset'
+        // so that model-level reasoningEnabled from env config is respected
+        const resolvedDeepThink = deepThink === 'unset' ? undefined : deepThink;
+        const executionOptions = {
+          requestId: thisRunningId.toString(),
+          deepLocate,
+          ...(shouldForwardDeepThink(actionType) &&
+          resolvedDeepThink !== undefined
+            ? { deepThink: resolvedDeepThink }
+            : {}),
+          screenshotIncluded,
+          domIncluded,
+          deviceOptions: {
+            imeStrategy,
+            screenshotStrategy,
+            autoDismissKeyboard,
+            keyboardDismissStrategy,
+            alwaysRefreshScreenInfo,
+          },
+          ...(runOptions.reportDisplay
+            ? { reportDisplay: runOptions.reportDisplay }
+            : {}),
+        };
+        result.result = await playgroundSDK.executeAction(
+          actionType,
+          value,
+          executionOptions,
+        );
+
+        // For some adapters, result might already include dump and reportHTML
+        if (typeof result.result === 'object' && result.result !== null) {
+          const resultObj = result.result;
+          if (resultObj.dump) {
+            result.dump = resultObj.dump;
+          }
+          if (resultObj.reportHTML) result.reportHTML = resultObj.reportHTML;
+          if (resultObj.report) result.report = resultObj.report;
+          if (resultObj.error) {
+            result.error = formatPlaygroundError(resultObj.error);
+          }
+
+          // If result was wrapped, extract the actual result
+          // Handle both defined values and undefined (e.g., from aiWaitFor)
+          if ('result' in resultObj) {
+            result.result = resultObj.result;
+          }
+        }
+      } catch (e: any) {
+        if (interruptedFlagRef.current[thisRunningId]) {
+          return;
+        }
+        result.error = formatPlaygroundError(e);
+        console.error('Playground execution error:', e);
+
+        // Try to extract dump and reportHTML from error object
+        // The adapter may attach these even on error
+        if (typeof e === 'object' && e !== null) {
+          if (e.dump) result.dump = e.dump;
+          if (e.reportHTML) result.reportHTML = e.reportHTML;
+          if (e.report) result.report = e.report;
+        }
+      }
+
+      await loadReportReplay(result);
+
+      if (interruptedFlagRef.current[thisRunningId]) {
+        return;
+      }
+
+      setLoading(false);
+      currentRunningIdRef.current = null;
+
+      let replayInfo = null;
+      let counter = replayCounter;
+
+      // Generate replay info for all APIs so eligible APIs can display their
+      // return value alongside the report.
+      const info = replayInfoFromExecutionResult(result, deviceType);
+      if (info) {
+        setReplayCounter((c) => c + 1);
+        replayInfo = info;
+        counter = replayCounter + 1;
+      }
+
+      // Update system message to completed
+      setInfoList((prev) =>
+        prev.map((item) =>
+          item.id === `system-${thisRunningId}`
+            ? {
+                ...item,
+                content: '',
+                loading: false,
+                loadingProgressText: '',
+              }
+            : item,
+        ),
+      );
+
+      // Add result to list
+      const resultItem: InfoListItem = {
+        id: `result-${thisRunningId}`,
+        type: 'result',
+        content: 'Execution result',
+        timestamp: new Date(),
+        result: result,
+        loading: false,
+        replayScriptsInfo: replayInfo,
+        replayCounter: counter,
+        loadingProgressText: '',
+        verticalMode: verticalMode,
+        actionType: actionType, // Save actionType for display logic
+      };
+
+      setInfoList((prev) => [...prev, resultItem]);
+
+      // Store result if storage is available
+      if (storage?.saveResult) {
+        try {
+          await storage.saveResult(resultItem.id, resultItem);
+        } catch (error) {
+          console.error('Failed to save result:', error);
+        }
+      }
+    },
+    [
+      playgroundSDK,
+      storage,
+      actionSpace,
+      setLoading,
+      setInfoList,
+      replayCounter,
+      setReplayCounter,
+      verticalMode,
+      currentRunningIdRef,
+      interruptedFlagRef,
+      deepLocate,
+      deepThink,
+      screenshotIncluded,
+      domIncluded,
+      deviceType,
+      imeStrategy,
+      screenshotStrategy,
+      autoDismissKeyboard,
+      keyboardDismissStrategy,
+      alwaysRefreshScreenInfo,
+    ],
+  );
+
+  const cancelCurrentExecution = useCallback(
+    async ({ appendStopMessage = false }: CancelExecutionOptions = {}) => {
+      const thisRunningId = currentRunningIdRef.current;
+      if (!(thisRunningId && playgroundSDK && playgroundSDK.cancelExecution)) {
+        return;
+      }
+
+      interruptedFlagRef.current[thisRunningId] = true;
+      currentRunningIdRef.current = null;
+      setLoading(false);
+
+      const markStopped = (
+        executionData?: {
+          dump: ExecutionDump | IExecutionDump | IReportActionDump | null;
+          reportHTML: string | null;
+          report?: PlaygroundResult['report'];
+        } | null,
+      ) => {
+        setInfoList((prev) => {
+          const next = prev.map((item) =>
+            item.id === `system-${thisRunningId}`
+              ? {
+                  ...item,
+                  content: '',
+                  loading: false,
+                  loadingProgressText: '',
+                }
+              : item,
+          );
+
+          if (!appendStopMessage) {
+            return next;
+          }
+
+          const hasStopItem = next.some(
+            (item) =>
+              item.id === `stop-${thisRunningId}` ||
+              item.id === `stop-result-${thisRunningId}`,
+          );
+          if (hasStopItem) {
+            return next;
+          }
+
+          if (
+            executionData &&
+            (executionData.dump ||
+              executionData.reportHTML ||
+              executionData.report)
+          ) {
+            let replayInfo = null;
+            let counter = replayCounter;
+
+            replayInfo = replayInfoFromExecutionResult(
+              executionData,
+              deviceType,
+            );
+            if (replayInfo) {
+              setReplayCounter((c) => c + 1);
+              counter = replayCounter + 1;
+            }
+
+            return [
+              ...next,
+              {
+                id: `stop-result-${thisRunningId}`,
+                type: 'result',
+                content: 'Execution stopped by user',
+                timestamp: new Date(),
+                result: {
+                  result: null,
+                  dump: executionData.dump,
+                  reportHTML: executionData.reportHTML,
+                  report: executionData.report || null,
+                  error: null,
+                },
+                loading: false,
+                verticalMode,
+                replayScriptsInfo: replayInfo,
+                replayCounter: counter,
+              },
+            ];
+          }
+
+          return [
+            ...next,
+            {
+              id: `stop-${thisRunningId}`,
+              type: 'system',
+              content: 'Operation stopped',
+              timestamp: new Date(),
+              loading: false,
+            },
+          ];
+        });
+      };
+
+      try {
+        const cancelResult = await playgroundSDK.cancelExecution(
+          thisRunningId.toString(),
+        );
+
+        let executionData: {
+          dump: ExecutionDump | IExecutionDump | IReportActionDump | null;
+          reportHTML: string | null;
+          report?: PlaygroundResult['report'];
+        } | null = null;
+
+        if (cancelResult) {
+          executionData = cancelResult;
+        } else if (playgroundSDK.getCurrentExecutionData) {
+          try {
+            executionData = await playgroundSDK.getCurrentExecutionData();
+          } catch (error) {
+            console.error('Failed to get execution data before stop:', error);
+          }
+        }
+
+        if (executionData) {
+          await loadReportReplay(executionData);
+        }
+
+        markStopped(executionData);
+      } catch (error) {
+        console.error('Failed to stop execution:', error);
+        markStopped();
+      }
+    },
+    [
+      playgroundSDK,
+      currentRunningIdRef,
+      interruptedFlagRef,
+      setLoading,
+      setInfoList,
+      verticalMode,
+      replayCounter,
+      setReplayCounter,
+      deviceType,
+    ],
+  );
+
+  // Handle stop execution
+  const handleStop = useCallback(async () => {
+    const thisRunningId = currentRunningIdRef.current;
+    if (thisRunningId) {
+      await cancelCurrentExecution({ appendStopMessage: true });
+    }
+  }, [cancelCurrentExecution, currentRunningIdRef]);
+
+  // Check if execution can be stopped
+  const canStop =
+    loading &&
+    !!currentRunningIdRef.current &&
+    !!playgroundSDK &&
+    !!playgroundSDK.cancelExecution;
+
+  return {
+    cancelCurrentExecution,
+    handleRun,
+    handleStop,
+    canStop,
+  };
+}

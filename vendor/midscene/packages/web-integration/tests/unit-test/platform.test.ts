@@ -1,0 +1,36 @@
+import { describe, expect, test } from '@rstest/core';
+import { webPlaygroundPlatform } from '../../src/platform';
+import { StaticPageAgent } from '../../src/static';
+
+describe('webPlaygroundPlatform', () => {
+  test('creates a default static web playground agent factory when none is provided', async () => {
+    const prepared = await webPlaygroundPlatform.prepare(undefined);
+    const createdAgent = await prepared.agentFactory?.();
+
+    expect(prepared.platformId).toBe('web');
+    expect(prepared.agent).toBeUndefined();
+    expect(prepared.agentFactory).toBeTypeOf('function');
+    expect(createdAgent).toBeInstanceOf(StaticPageAgent);
+    expect(prepared.preview).toMatchObject({
+      kind: 'mjpeg',
+      screenshotPath: '/screenshot',
+      mjpegPath: '/mjpeg',
+    });
+  });
+
+  test('preserves custom launch options and title overrides', async () => {
+    const prepared = await webPlaygroundPlatform.prepare({
+      title: 'Custom Web Playground',
+      launchOptions: {
+        port: 5807,
+        openBrowser: true,
+      },
+    });
+
+    expect(prepared.title).toBe('Custom Web Playground');
+    expect(prepared.launchOptions).toMatchObject({
+      port: 5807,
+      openBrowser: true,
+    });
+  });
+});

@@ -1,0 +1,37 @@
+# search headphone on ebay, extract the items info into a json file, and assert the shopping cart icon
+
+ios:
+  launch: https://www.ebay.com
+
+tasks:
+  - name: check device info with WDA
+    flow:
+      - runWdaRequest:
+          method: GET
+          endpoint: /wda/screen
+        name: screenInfo
+      - runWdaRequest:
+          method: GET
+          endpoint: /wda/device/info
+        name: deviceInfo
+
+  - name: search headphones
+    flow:
+      - aiAction: open browser and navigate to ebay.com
+      - aiAction: type 'Headphones' in ebay search box, click the search button
+      - sleep: 5000
+      - aiAction: scroll down the page for 800px
+
+  - name: extract headphones info
+    flow:
+      - aiQuery: >
+          {name: string, price: number, subTitle: string}[], return item name, price and the subTitle on the lower right corner of each item
+        name: headphones
+      - aiNumber: "What is the price of the first headphone?"
+      - aiBoolean: "Is the price of the headphones more than 1000?"
+      - aiString: "What is the name of the first headphone?"
+      - aiLocate: "What is the location of the first headphone?"
+
+  - name: assert Filter button
+    flow:
+      - aiAssert: There is a Filter button on the page

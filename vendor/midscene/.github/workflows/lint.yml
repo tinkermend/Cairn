@@ -1,0 +1,42 @@
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+      
+permissions:
+  contents: read
+
+jobs:
+  main:
+    runs-on: ${{ fromJSON(vars.CI_LINUX_MINI_RUNNER || '"ubuntu-latest"') }}
+    strategy:
+      matrix:
+        node-version: [24.13.0]
+
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+    - name: Setup Node.js and pnpm
+      uses: ./.github/actions/setup-node-pnpm
+
+    - name: Cache pnpm store
+      id: pnpm-cache
+      uses: ./.github/actions/pnpm-cache/restore
+
+    - name: Install Dependencies
+      run: pnpm install --frozen-lockfile --ignore-scripts
+
+    - name: Save pnpm store
+      if: steps.pnpm-cache.outputs.cache-hit != 'true'
+      uses: ./.github/actions/pnpm-cache/save
+
+    - name: Check Dependency Version
+      run: pnpm run check-dependency-version
+
+    - name: Biome lint
+      run: npx biome check . --diagnostic-level=warn --no-errors-on-unmatched

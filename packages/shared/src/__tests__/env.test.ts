@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { apiEnvSchema, dbEnvSchema, parseDurationSeconds } from '../env.js'
+import {
+  DEV_CREDENTIAL_KEY,
+  DEV_JWT_SECRET,
+  apiEnvSchema,
+  dbEnvSchema,
+  decodeCredentialKey,
+  formatEnvIssues,
+  parseDurationSeconds,
+  workerEnvSchema,
+} from '../env.js'
 
 const base = {
   CAIRN_DB_HOST: 'db.example',
@@ -30,6 +39,162 @@ describe('apiEnvSchema', () => {
     expect(env.CAIRN_BOOTSTRAP_ADMIN_EMAIL).toBe('admin@cairn.dev')
     expect(env.CAIRN_BOOTSTRAP_ADMIN_PASSWORD).toBe('cairn-admin')
     expect(env.CAIRN_JWT_SECRET.length).toBeGreaterThanOrEqual(16)
+  })
+
+  it('端口、CORS、环境与日志级别有默认值', () => {
+    const env = apiEnvSchema.parse({})
+    expect(env.CAIRN_API_PORT).toBe(3030)
+    expect(env.CAIRN_CORS_ORIGINS).toEqual(['http://localhost:5173'])
+    expect(env.CAIRN_ENV).toBe('development')
+    expect(env.CAIRN_LOG_LEVEL).toBe('info')
+  })
+
+  it('字符串端口被强制为数字', () => {
+    expect(apiEnvSchema.parse({ CAIRN_API_PORT: '8080' }).CAIRN_API_PORT).toBe(8080)
+  })
+
+  it('非法端口被拒绝', () => {
+    expect(() => apiEnvSchema.parse({ CAIRN_API_PORT: 'not-a-port' })).toThrow()
+    expect(() => apiEnvSchema.parse({ CAIRN_API_PORT: '0' })).toThrow()
+    expect(() => apiEnvSchema.parse({ CAIRN_API_PORT: '70000' })).toThrow()
+  })
+
+  it('空串按未设置处理，回落默认值', () => {
+    // dotenv 无法表达「未设置」，占位写法就是 KEY=
+    const env = apiEnvSchema.parse({ CAIRN_API_PORT: '', CAIRN_LOG_LEVEL: '', CAIRN_CORS_ORIGINS: '' })
+    expect(env.CAIRN_API_PORT).toBe(3030)
+    expect(env.CAIRN_LOG_LEVEL).toBe('info')
+    expect(env.CAIRN_CORS_ORIGINS).toEqual(['http://localhost:5173'])
+  })
+
+  it('CORS 白名单在 schema 里就拆成数组，两端空白被吃掉', () => {
+    const env = apiEnvSchema.parse({
+      CAIRN_CORS_ORIGINS: 'http://localhost:5173, https://cairn.example.com:8443 ',
+    })
+    expect(env.CAIRN_CORS_ORIGINS).toEqual([
+      'http://localhost:5173',
+      'https://cairn.example.com:8443',
+    ])
+  })
+
+  it('拆不出任何 origin 的取值被拒绝——启动成功却全站被拒是最难查的形态', () => {
+    // 「非空字符串」能放过它，但拆出来是空白名单
+    expect(() => apiEnvSchema.parse({ CAIRN_CORS_ORIGINS: ',' })).toThrow()
+    expect(() => apiEnvSchema.parse({ CAIRN_CORS_ORIGINS: ' , , ' })).toThrow()
+  })
+
+  it('漏写 scheme 的 origin 被拒绝——浏览器发出的 Origin 永远带 scheme', () => {
+    expect(() => apiEnvSchema.parse({ CAIRN_CORS_ORIGINS: 'localhost:5173' })).toThrow()
+    expect(() =>
+      apiEnvSchema.parse({ CAIRN_CORS_ORIGINS: 'http://localhost:5173,example.com' }),
+    ).toThrow()
+  })
+
+  it('通配符仍可显式配置', () => {
+    expect(apiEnvSchema.parse({ CAIRN_CORS_ORIGINS: '*' }).CAIRN_CORS_ORIGINS).toEqual(['*'])
+  })
+
+  it('非法日志级别与非法环境被拒绝', () => {
+    expect(() => apiEnvSchema.parse({ CAIRN_LOG_LEVEL: 'verbose' })).toThrow()
+    expect(() => apiEnvSchema.parse({ CAIRN_ENV: 'prod' })).toThrow()
+  })
+
+  it('development 允许沿用开发默认密钥', () => {
+    expect(apiEnvSchema.parse({ CAIRN_ENV: 'development' }).CAIRN_JWT_SECRET).toBe(DEV_JWT_SECRET)
+  })
+
+  it('非 development 沿用默认 JWT 密钥时拒绝启动', () => {
+    const result = apiEnvSchema.safeParse({
+      CAIRN_ENV: 'production',
+      CAIRN_BOOTSTRAP_ADMIN_PASSWORD: 'a-real-password',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain('CAIRN_JWT_SECRET')
+  })
+
+  it('非 development 沿用默认管理员口令时拒绝启动', () => {
+    const result = apiEnvSchema.safeParse({
+      CAIRN_ENV: 'staging',
+      CAIRN_JWT_SECRET: 'a-real-secret-value-over-16',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain(
+      'CAIRN_BOOTSTRAP_ADMIN_PASSWORD',
+    )
+  })
+
+  it('凭据主密钥默认值解码为 32 字节', () => {
+    const bytes = decodeCredentialKey(DEV_CREDENTIAL_KEY)
+    expect(bytes?.byteLength).toBe(32)
+    expect(apiEnvSchema.parse({}).CAIRN_CREDENTIAL_KEY).toBe(DEV_CREDENTIAL_KEY)
+  })
+
+  it('非法 base64 或非 32 字节的凭据主密钥被拒绝', () => {
+    expect(() => apiEnvSchema.parse({ CAIRN_CREDENTIAL_KEY: 'not-base64!!!' })).toThrow()
+    expect(() => apiEnvSchema.parse({ CAIRN_CREDENTIAL_KEY: 'dG9vLXNob3J0' })).toThrow()
+  })
+
+  it('非 development 覆盖三项后放行', () => {
+    const env = apiEnvSchema.parse({
+      CAIRN_ENV: 'production',
+      CAIRN_JWT_SECRET: 'a-real-secret-value-over-16',
+      CAIRN_BOOTSTRAP_ADMIN_PASSWORD: 'a-real-password',
+      CAIRN_CREDENTIAL_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    })
+    expect(env.CAIRN_ENV).toBe('production')
+  })
+
+  it('非 development 沿用默认凭据主密钥时拒绝启动', () => {
+    const result = apiEnvSchema.safeParse({
+      CAIRN_ENV: 'production',
+      CAIRN_JWT_SECRET: 'a-real-secret-value-over-16',
+      CAIRN_BOOTSTRAP_ADMIN_PASSWORD: 'a-real-password',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain('CAIRN_CREDENTIAL_KEY')
+  })
+
+  it('空着的 JWT 密钥在非 development 下同样被拒绝', () => {
+    expect(() => apiEnvSchema.parse({ CAIRN_ENV: 'production', CAIRN_JWT_SECRET: '' })).toThrow()
+  })
+})
+
+describe('workerEnvSchema', () => {
+  it('workerId、环境与日志级别有默认值', () => {
+    const env = workerEnvSchema.parse({})
+    expect(env.CAIRN_WORKER_ID).toBe('local-worker')
+    expect(env.CAIRN_ENV).toBe('development')
+    expect(env.CAIRN_LOG_LEVEL).toBe('info')
+  })
+
+  it('空 workerId 回落默认值而非启动失败', () => {
+    expect(workerEnvSchema.parse({ CAIRN_WORKER_ID: '' }).CAIRN_WORKER_ID).toBe('local-worker')
+  })
+
+  it('显式 workerId 被采纳', () => {
+    expect(workerEnvSchema.parse({ CAIRN_WORKER_ID: 'worker-3' }).CAIRN_WORKER_ID).toBe('worker-3')
+  })
+
+  it('非法日志级别被拒绝', () => {
+    expect(() => workerEnvSchema.parse({ CAIRN_LOG_LEVEL: 'loud' })).toThrow()
+  })
+})
+
+describe('formatEnvIssues', () => {
+  it('逐行给出变量名与规则，不回显变量值', () => {
+    const secret = 'super-secret-value-should-not-appear'
+    const result = apiEnvSchema.safeParse({
+      CAIRN_ENV: 'production',
+      CAIRN_JWT_SECRET: DEV_JWT_SECRET,
+      CAIRN_BOOTSTRAP_ADMIN_PASSWORD: secret,
+    })
+    expect(result.success).toBe(false)
+    const lines = formatEnvIssues(result.error!)
+    expect(lines.length).toBeGreaterThan(0)
+    for (const line of lines) {
+      expect(line).toContain('CAIRN_')
+      expect(line).not.toContain(secret)
+    }
   })
 })
 

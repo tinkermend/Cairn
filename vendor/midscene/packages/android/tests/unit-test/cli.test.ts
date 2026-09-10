@@ -1,0 +1,297 @@
+/**
+ * Integration test for the Android tool CLI path.
+ *
+ * Exercises the full `runToolsCLI(argv) → parseCliArgs → handler dispatch →
+ * ensureAgent → agentFromAdbDevice` chain with a real AndroidMidsceneTools
+ * instance (only the adb agent factory is mocked). This complements the
+ * handler-level unit tests by locking down the CLI argument plumbing.
+ */
+import { runToolsCLI } from '@midscene/shared/cli';
+import { afterEach, beforeEach, describe, expect, it, rs } from '@rstest/core';
+import { agentFromAdbDevice } from '../../src/agent';
+import { AndroidMidsceneTools } from '../../src/agent-tools';
+
+rs.mock('../../src/agent', () => ({
+  agentFromAdbDevice: rs.fn(),
+}));
+
+rs.mock('../../src/device', () => ({
+  AndroidDevice: rs.fn().mockImplementation(() => ({
+    actionSpace: rs.fn().mockReturnValue([]),
+    destroy: rs.fn(),
+  })),
+}));
+
+const validPngBase64 =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+function createMockAgent() {
+  return {
+    page: {
+      screenshotBase64: rs.fn().mockResolvedValue(validPngBase64),
+    },
+    aiAction: rs.fn().mockResolvedValue('done'),
+    destroy: rs.fn(),
+  };
+}
+
+describe('Android CLI integration', () => {
+  let consoleLogSpy: ReturnType<typeof rs.spyOn>;
+  let consoleErrorSpy: ReturnType<typeof rs.spyOn>;
+
+  beforeEach(() => {
+    rs.mocked(agentFromAdbDevice).mockResolvedValue(createMockAgent() as any);
+    // Silence expected CLI log output without touching the module-level mocks
+    // set up via `rs.mock` — `restoreAllMocks` would reset those too.
+    consoleLogSpy = rs.spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = rs.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    rs.mocked(agentFromAdbDevice).mockReset();
+  });
+
+  it('routes --device-id (preferred bare form) through the same pipeline', async () => {
+    const tools = new AndroidMidsceneTools();
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: ['take_screenshot', '--device-id', 'bare-kebab-device'],
+    });
+
+    expect(agentFromAdbDevice).toHaveBeenCalledWith('bare-kebab-device', {
+      autoDismissKeyboard: false,
+    });
+  });
+
+  it('routes --deviceId (preferred bare camel form) through the same pipeline', async () => {
+    const tools = new AndroidMidsceneTools();
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: ['take_screenshot', '--deviceId', 'bare-camel-device'],
+    });
+
+    expect(agentFromAdbDevice).toHaveBeenCalledWith('bare-camel-device', {
+      autoDismissKeyboard: false,
+    });
+  });
+
+  it('rejects --android.device-id in the single-platform CLI', async () => {
+    const tools = new AndroidMidsceneTools();
+
+    await expect(
+      runToolsCLI(tools, 'midscene-android', {
+        stripPrefix: 'android_',
+        argv: ['take_screenshot', '--android.device-id', 'kebab-device'],
+      }),
+    ).rejects.toThrow(
+      'Unsupported option "--android.device-id" for midscene-android take_screenshot.',
+    );
+
+    expect(agentFromAdbDevice).not.toHaveBeenCalled();
+  });
+
+  it('rejects --android.deviceId in the single-platform CLI', async () => {
+    const tools = new AndroidMidsceneTools();
+
+    await expect(
+      runToolsCLI(tools, 'midscene-android', {
+        stripPrefix: 'android_',
+        argv: ['take_screenshot', '--android.deviceId', 'camel-device'],
+      }),
+    ).rejects.toThrow(
+      'Unsupported option "--android.deviceId" for midscene-android take_screenshot.',
+    );
+
+    expect(agentFromAdbDevice).not.toHaveBeenCalled();
+  });
+
+  it('threads init args through the act command alongside --prompt', async () => {
+    const mockAgent = createMockAgent();
+    rs.mocked(agentFromAdbDevice).mockResolvedValue(mockAgent as any);
+
+    const tools = new AndroidMidsceneTools();
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: ['act', '--prompt', 'open settings', '--device-id', 'act-device'],
+    });
+
+    expect(agentFromAdbDevice).toHaveBeenCalledWith('act-device', {
+      autoDismissKeyboard: false,
+    });
+    expect(mockAgent.aiAction).toHaveBeenCalledWith('open settings', {
+      deepThink: false,
+    });
+  });
+
+  it('threads common agent behavior args through the generated CLI', async () => {
+    const mockAgent = createMockAgent();
+    rs.mocked(agentFromAdbDevice).mockResolvedValue(mockAgent as any);
+
+    const tools = new AndroidMidsceneTools();
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: [
+        'act',
+        '--prompt',
+        'open settings',
+        '--device-id',
+        'behavior-device',
+        '--wait-after-action',
+        '650',
+        '--replanning-cycle-limit',
+        '12',
+        '--ai-contexts',
+        '{"default":"prices are displayed in USD","aiQuery":"return numbers only"}',
+        '--ai-act-context',
+        'accept permission dialogs',
+        '--screenshot-shrink-factor',
+        '2',
+      ],
+    });
+
+    expect(agentFromAdbDevice).toHaveBeenCalledWith('behavior-device', {
+      autoDismissKeyboard: false,
+      waitAfterAction: 650,
+      replanningCycleLimit: 12,
+      aiContexts: {
+        default: 'prices are displayed in USD',
+        aiQuery: 'return numbers only',
+      },
+      aiActContext: 'accept permission dialogs',
+      screenshotShrinkFactor: 2,
+    });
+    expect(mockAgent.aiAction).toHaveBeenCalledWith('open settings', {
+      deepThink: false,
+    });
+  });
+
+  it('enables scrcpy when --use-scrcpy is provided', async () => {
+    const tools = new AndroidMidsceneTools();
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: ['take_screenshot', '--device-id', 'scrcpy-device', '--use-scrcpy'],
+    });
+
+    expect(agentFromAdbDevice).toHaveBeenCalledWith('scrcpy-device', {
+      autoDismissKeyboard: false,
+      scrcpyConfig: { enabled: true },
+    });
+  });
+
+  it('sets the scrcpy video bitrate from the CLI', async () => {
+    const tools = new AndroidMidsceneTools();
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: [
+        'take_screenshot',
+        '--device-id',
+        'remote-scrcpy-device',
+        '--use-scrcpy',
+        '--scrcpy-video-bit-rate',
+        '4000000',
+      ],
+    });
+
+    expect(agentFromAdbDevice).toHaveBeenCalledWith('remote-scrcpy-device', {
+      autoDismissKeyboard: false,
+      scrcpyConfig: { enabled: true, videoBitRate: 4_000_000 },
+    });
+  });
+
+  it('rejects a non-positive scrcpy video bitrate', async () => {
+    const tools = new AndroidMidsceneTools();
+
+    await expect(
+      runToolsCLI(tools, 'midscene-android', {
+        stripPrefix: 'android_',
+        argv: [
+          'take_screenshot',
+          '--use-scrcpy',
+          '--scrcpy-video-bit-rate',
+          '0',
+        ],
+      }),
+    ).rejects.toThrow(
+      'Invalid value for "--scrcpy-video-bit-rate" in midscene-android take_screenshot',
+    );
+
+    expect(agentFromAdbDevice).not.toHaveBeenCalled();
+  });
+
+  it('enables scrcpy when a video bitrate is provided by itself', async () => {
+    const tools = new AndroidMidsceneTools();
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: ['take_screenshot', '--scrcpy-video-bit-rate', '4000000'],
+    });
+
+    expect(agentFromAdbDevice).toHaveBeenCalledWith(undefined, {
+      autoDismissKeyboard: false,
+      scrcpyConfig: { enabled: true, videoBitRate: 4_000_000 },
+    });
+  });
+
+  it('strips init args from the payload passed to the action', async () => {
+    const mockAgent = createMockAgent();
+    rs.mocked(agentFromAdbDevice).mockResolvedValue(mockAgent as any);
+
+    const tools = new AndroidMidsceneTools();
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: ['act', '--prompt', 'do X', '--device-id', 'sanitize-target'],
+    });
+
+    // The aiAction call must not carry the init args — they are agent-level,
+    // not action-level. `sanitizeToolArgs` is what strips them.
+    const [, actionOpts] = mockAgent.aiAction.mock.calls[0];
+    expect(actionOpts).toEqual({ deepThink: false });
+  });
+
+  it('renders bare flags first in single-platform command help', async () => {
+    const tools = new AndroidMidsceneTools();
+    const output: string[] = [];
+    const logSpy = rs.spyOn(console, 'log').mockImplementation((...args) => {
+      output.push(args.map(String).join(' '));
+    });
+
+    await runToolsCLI(tools, 'midscene-android', {
+      stripPrefix: 'android_',
+      argv: ['connect', '--help'],
+    });
+
+    expect(output.join('\n')).toContain('--device-id');
+    expect(output.join('\n')).toContain('--deviceId');
+    expect(output.join('\n')).toContain('--wait-after-action');
+    expect(output.join('\n')).toContain('--waitAfterAction');
+    expect(output.join('\n')).toContain('Default: 300ms');
+    expect(output.join('\n')).toContain('--replanning-cycle-limit');
+    expect(output.join('\n')).toContain('--ai-contexts');
+    expect(output.join('\n')).toContain('--ai-act-context');
+    expect(output.join('\n')).not.toContain('--ai-action-context');
+    expect(output.join('\n')).not.toContain('--aiActionContext');
+    expect(output.join('\n')).toContain('--screenshot-shrink-factor');
+    expect(output.join('\n')).toContain('--scrcpy-video-bit-rate');
+    expect(output.join('\n')).toContain('--scrcpyVideoBitRate');
+    expect(output.join('\n')).toContain(
+      'tune it only from independent transport measurements',
+    );
+    expect(output.join('\n')).not.toContain('start with 4000000 (4 Mbps)');
+    expect(output.join('\n')).toContain(
+      'high values may reduce recognition quality, especially on mobile',
+    );
+    expect(output.join('\n')).not.toContain('--android.device-id');
+    expect(output.join('\n')).not.toContain('--android.deviceId');
+
+    logSpy.mockRestore();
+  });
+});

@@ -8,6 +8,7 @@ import {
   SYSTEM_ROLE_KEYS,
   WILDCARD_PERMISSION,
   accountSchema,
+  accountListResponseSchema,
   createAccountBodySchema,
   createRoleBodySchema,
   hasAllPermissions,
@@ -16,6 +17,7 @@ import {
   isSystemRoleKey,
   meResponseSchema,
   permissionCatalogResponseSchema,
+  roleListResponseSchema,
   uniquePermissions,
   updateAccountBodySchema,
   updateRoleBodySchema,
@@ -206,5 +208,15 @@ describe('response schemas', () => {
   it('role 必须带 accountCount', () => {
     const { accountCount: _drop, ...without } = role
     expect(() => accountSchema.parse({ ...account, roles: [without] })).not.toThrow()
+  })
+
+  it('集合信封接受省略的 nextCursor，也接受服务端给出的游标', () => {
+    expect(roleListResponseSchema.parse({ items: [role] }).nextCursor).toBeUndefined()
+    expect(accountListResponseSchema.parse({ items: [account] }).nextCursor).toBeUndefined()
+    expect(roleListResponseSchema.parse({ items: [role], nextCursor: 'c-2' }).nextCursor).toBe('c-2')
+  })
+
+  it('nextCursor 为空串视为非法——空游标无法与「没有下一页」区分', () => {
+    expect(() => roleListResponseSchema.parse({ items: [role], nextCursor: '' })).toThrow()
   })
 })
