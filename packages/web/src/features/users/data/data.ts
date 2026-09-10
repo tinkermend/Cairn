@@ -4,13 +4,11 @@ import {
   SYSTEM_ROLE_KEYS,
   type AccountStatus,
 } from '@cairn/shared'
+import type { StatusTone } from '@/components/status-badge'
 
-export const callTypes = new Map<AccountStatus, string>([
-  ['active', 'bg-teal-100/30 text-teal-900 dark:text-teal-200 border-teal-200'],
-  [
-    'disabled',
-    'bg-destructive/10 dark:bg-destructive/50 text-destructive dark:text-primary border-destructive/10',
-  ],
+export const callTypes = new Map<AccountStatus, StatusTone>([
+  ['active', 'success'],
+  ['disabled', 'neutral'],
 ])
 
 const ROLE_ICONS = {

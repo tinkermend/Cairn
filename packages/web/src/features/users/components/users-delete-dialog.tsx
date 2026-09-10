@@ -33,10 +33,10 @@ export function UsersDeleteDialog({
       await queryClient.invalidateQueries({ queryKey: ['accounts'] })
       await queryClient.invalidateQueries({ queryKey: ['roles'] })
       await queryClient.invalidateQueries({ queryKey: ['audit'] })
-      toast.success('Account deleted')
+      toast.success('账号已删除')
       onOpenChange(false)
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : 'Delete failed')
+      toast.error(error instanceof ApiRequestError ? error.message : '删除失败')
     } finally {
       setSaving(false)
     }
@@ -52,7 +52,7 @@ export function UsersDeleteDialog({
       disabled={saving || value.trim() !== currentRow.displayName}
       title={
         <span className='text-destructive'>
-          <AlertTriangle className='me-1 inline-block stroke-destructive' size={18} /> Delete User
+          <AlertTriangle className='me-1 inline-block stroke-destructive' size={18} /> 删除用户
         </span>
       }
       desc={
@@ -65,27 +65,27 @@ export function UsersDeleteDialog({
           className='space-y-4'
         >
           <p className='mb-2'>
-            Are you sure you want to delete <span className='font-bold'>{currentRow.displayName}</span>?
+            确定删除 <span className='font-bold'>{currentRow.displayName}</span> 吗？
             <br />
-            This action will permanently remove the account with roles{' '}
-            <span className='font-bold'>{roleNames}</span> from the system. This cannot be undone.
+            该账号及其角色{' '}
+            <span className='font-bold'>{roleNames}</span> 将被永久移除，且无法恢复。
           </p>
           <Label className='my-2'>
-            Display name:
+            显示名称：
             <Input
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder='Enter display name to confirm deletion.'
+              placeholder='输入显示名称以确认删除'
               autoFocus
             />
           </Label>
           <Alert variant='destructive'>
-            <AlertTitle>Warning!</AlertTitle>
-            <AlertDescription>Please be careful, this operation can not be rolled back.</AlertDescription>
+            <AlertTitle>注意</AlertTitle>
+            <AlertDescription>此操作不可撤销，请确认后再继续。</AlertDescription>
           </Alert>
         </form>
       }
-      confirmText='Delete'
+      confirmText='删除'
       destructive
     />
   )

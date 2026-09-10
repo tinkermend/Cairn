@@ -43,11 +43,11 @@ import {
 import { type User } from '../data/schema'
 
 const formSchema = z.object({
-  displayName: z.string().min(1, 'Display name is required.'),
-  email: z.email('Invalid email.'),
+  displayName: z.string().min(1, '请填写显示名称。'),
+  email: z.email('邮箱格式不正确。'),
   password: z.string().optional(),
   status: z.enum(ACCOUNT_STATUS),
-  roleIds: z.array(z.string()).min(1, 'Select at least one role.'),
+  roleIds: z.array(z.string()).min(1, '请至少选择一个角色。'),
 })
 type UserForm = z.infer<typeof formSchema>
 
@@ -103,10 +103,10 @@ export function UsersActionDialog({
         if (values.password) {
           await setAccountPassword(currentRow.id, { password: values.password })
         }
-        toast.success('Account updated')
+        toast.success('账号已更新')
       } else {
         if (!values.password || values.password.length < 8) {
-          form.setError('password', { message: 'Password must be at least 8 characters.' })
+          form.setError('password', { message: '密码至少 8 位。' })
           return
         }
         await createAccount({
@@ -116,7 +116,7 @@ export function UsersActionDialog({
           status: values.status,
           roleIds: values.roleIds,
         })
-        toast.success('Account created')
+        toast.success('账号已创建')
       }
       await queryClient.invalidateQueries({ queryKey: ['accounts'] })
       await queryClient.invalidateQueries({ queryKey: ['roles'] })
@@ -124,7 +124,7 @@ export function UsersActionDialog({
       form.reset()
       onOpenChange(false)
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : 'Request failed')
+      toast.error(error instanceof ApiRequestError ? error.message : '请求失败')
     } finally {
       setSaving(false)
     }
@@ -140,10 +140,9 @@ export function UsersActionDialog({
     >
       <DialogContent className='sm:max-w-lg'>
         <DialogHeader className='text-start'>
-          <DialogTitle>{isEdit ? 'Edit User' : 'Add New User'}</DialogTitle>
+          <DialogTitle>{isEdit ? '编辑用户' : '新增用户'}</DialogTitle>
           <DialogDescription>
-            {isEdit ? 'Update the account and roles. ' : 'Create a console account with a local password. '}
-            Click save when you&apos;re done.
+            {isEdit ? '更新账号信息与角色分配。' : '创建使用本地密码的控制台账号。'}
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -157,7 +156,7 @@ export function UsersActionDialog({
               name='displayName'
               render={({ field }) => (
                 <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>Display name</FormLabel>
+                  <FormLabel className='col-span-2 text-end'>显示名称</FormLabel>
                   <FormControl>
                     <Input placeholder='Ada Admin' className='col-span-4' autoComplete='off' {...field} />
                   </FormControl>
@@ -170,7 +169,7 @@ export function UsersActionDialog({
               name='email'
               render={({ field }) => (
                 <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>Email</FormLabel>
+                  <FormLabel className='col-span-2 text-end'>邮箱</FormLabel>
                   <FormControl>
                     <Input placeholder='ada@cairn.dev' className='col-span-4' {...field} />
                   </FormControl>
@@ -184,12 +183,12 @@ export function UsersActionDialog({
               render={({ field }) => (
                 <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
                   <FormLabel className='col-span-2 text-end'>
-                    {isEdit ? 'New password' : 'Password'}
+                    {isEdit ? '新密码' : '密码'}
                   </FormLabel>
                   <FormControl>
                     <PasswordInput
                       className='col-span-4'
-                      placeholder={isEdit ? 'Leave blank to keep' : 'At least 8 characters'}
+                      placeholder={isEdit ? '留空则不修改' : '至少 8 位'}
                       {...field}
                     />
                   </FormControl>
@@ -202,7 +201,7 @@ export function UsersActionDialog({
               name='status'
               render={({ field }) => (
                 <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>Status</FormLabel>
+                  <FormLabel className='col-span-2 text-end'>状态</FormLabel>
                   <Select value={field.value} onValueChange={field.onChange}>
                     <FormControl>
                       <SelectTrigger className='col-span-4'>
@@ -210,8 +209,8 @@ export function UsersActionDialog({
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value='active'>Active</SelectItem>
-                      <SelectItem value='disabled'>Disabled</SelectItem>
+                      <SelectItem value='active'>启用</SelectItem>
+                      <SelectItem value='disabled'>停用</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage className='col-span-4 col-start-3' />
@@ -223,7 +222,7 @@ export function UsersActionDialog({
               name='roleIds'
               render={() => (
                 <FormItem className='grid grid-cols-6 items-start space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 pt-1 text-end'>Roles</FormLabel>
+                  <FormLabel className='col-span-2 pt-1 text-end'>角色</FormLabel>
                   <div className='col-span-4 space-y-2'>
                     {roles.map((role) => (
                       <FormField
@@ -233,7 +232,7 @@ export function UsersActionDialog({
                         render={({ field }) => {
                           const checked = field.value.includes(role.id)
                           return (
-                            <label className='flex items-center gap-2 text-sm'>
+                            <label className='flex items-center gap-2 text-body'>
                               <Checkbox
                                 checked={checked}
                                 disabled={!canAssign(role)}
@@ -261,7 +260,7 @@ export function UsersActionDialog({
         </Form>
         <DialogFooter>
           <Button type='submit' form='user-form' disabled={saving}>
-            Save changes
+            保存
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -35,18 +35,18 @@ describe('UsersDeleteDialog', () => {
     )
 
     await expect
-      .element(getByRole('heading', { level: 2, name: /Delete User/i }))
+      .element(getByRole('heading', { level: 2, name: /删除用户/ }))
       .toBeInTheDocument()
     await expect
       .element(
         getByText(
-          new RegExp(`Are you sure you want to delete ${MOCK_USER.displayName}?`, 'i')
+          new RegExp(`确定删除 ${MOCK_USER.displayName}`)
         )
       )
       .toBeInTheDocument()
-    await expect.element(getByRole('textbox', { name: /Display name/i })).toBeInTheDocument()
-    await expect.element(getByRole('button', { name: /Cancel/i })).toBeInTheDocument()
-    await expect.element(getByRole('button', { name: /Delete/i })).toBeDisabled()
+    await expect.element(getByRole('textbox', { name: /显示名称/ })).toBeInTheDocument()
+    await expect.element(getByRole('button', { name: /取消/ })).toBeInTheDocument()
+    await expect.element(getByRole('button', { name: /^删除$/ })).toBeDisabled()
   })
 
   it('keeps the delete button disabled until the display name is filled correctly', async () => {
@@ -54,8 +54,8 @@ describe('UsersDeleteDialog', () => {
       <UsersDeleteDialog open onOpenChange={vi.fn()} currentRow={MOCK_USER} />
     )
 
-    const nameInput = getByRole('textbox', { name: /Display name/i })
-    const deleteButton = getByRole('button', { name: /Delete/i })
+    const nameInput = getByRole('textbox', { name: /显示名称/ })
+    const deleteButton = getByRole('button', { name: /^删除$/ })
 
     await expect.element(deleteButton).toBeDisabled()
     await userEvent.fill(nameInput, 'wrong-name')
@@ -74,7 +74,7 @@ describe('UsersDeleteDialog', () => {
       />
     )
 
-    await userEvent.click(getByRole('button', { name: /Cancel/i }))
+    await userEvent.click(getByRole('button', { name: /取消/ }))
     expect(onOpenChange).toHaveBeenCalled()
   })
 })

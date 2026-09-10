@@ -35,16 +35,16 @@ export function DataTableBulkActions<TData>({
       await queryClient.invalidateQueries({ queryKey: ['audit'] })
       table.resetRowSelection()
       toast.success(
-        `${status === 'active' ? 'Activated' : 'Disabled'} ${selectedUsers.length} user${selectedUsers.length > 1 ? 's' : ''}`,
+        `已${status === 'active' ? '启用' : '停用'} ${selectedUsers.length} 个用户`,
       )
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : 'Update failed')
+      toast.error(error instanceof ApiRequestError ? error.message : '更新失败')
     }
   }
 
   return (
     <>
-      <BulkActionsToolbar table={table} entityName='user'>
+      <BulkActionsToolbar table={table} entityName='用户'>
         <Can permission='account:write'>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -53,15 +53,15 @@ export function DataTableBulkActions<TData>({
                 size='icon'
                 onClick={() => void handleBulkStatusChange('active')}
                 className='size-8'
-                aria-label='Activate selected users'
-                title='Activate selected users'
+                aria-label='启用所选用户'
+                title='启用所选用户'
               >
                 <UserCheck />
-                <span className='sr-only'>Activate selected users</span>
+                <span className='sr-only'>启用所选用户</span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              <p>Activate selected users</p>
+              <p>启用所选用户</p>
             </TooltipContent>
           </Tooltip>
 
@@ -72,15 +72,15 @@ export function DataTableBulkActions<TData>({
                 size='icon'
                 onClick={() => void handleBulkStatusChange('disabled')}
                 className='size-8'
-                aria-label='Disable selected users'
-                title='Disable selected users'
+                aria-label='停用所选用户'
+                title='停用所选用户'
               >
                 <UserX />
-                <span className='sr-only'>Disable selected users</span>
+                <span className='sr-only'>停用所选用户</span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              <p>Disable selected users</p>
+              <p>停用所选用户</p>
             </TooltipContent>
           </Tooltip>
         </Can>
@@ -93,15 +93,15 @@ export function DataTableBulkActions<TData>({
                 size='icon'
                 onClick={() => setShowDeleteConfirm(true)}
                 className='size-8'
-                aria-label='Delete selected users'
-                title='Delete selected users'
+                aria-label='删除所选用户'
+                title='删除所选用户'
               >
                 <Trash2 />
-                <span className='sr-only'>Delete selected users</span>
+                <span className='sr-only'>删除所选用户</span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              <p>Delete selected users</p>
+              <p>删除所选用户</p>
             </TooltipContent>
           </Tooltip>
         </Can>

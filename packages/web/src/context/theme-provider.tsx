@@ -1,10 +1,10 @@
-import { createContext, useContext, useEffect, useState, useMemo } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import { getCookie, setCookie, removeCookie } from '@/lib/cookies'
 
 type Theme = 'dark' | 'light' | 'system'
-type ResolvedTheme = Exclude<Theme, 'system'>
+type ResolvedTheme = 'light'
 
-const DEFAULT_THEME = 'system'
+const DEFAULT_THEME: Theme = 'light'
 const THEME_COOKIE_NAME = 'vite-ui-theme'
 const THEME_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
 
@@ -32,62 +32,43 @@ const initialState: ThemeProviderState = {
 
 const ThemeContext = createContext<ThemeProviderState>(initialState)
 
+function applyLightTheme() {
+  const root = window.document.documentElement
+  root.classList.remove('dark')
+  root.classList.add('light')
+}
+
 export function ThemeProvider({
   children,
   defaultTheme = DEFAULT_THEME,
   storageKey = THEME_COOKIE_NAME,
   ...props
 }: ThemeProviderProps) {
-  const [theme, _setTheme] = useState<Theme>(
-    () => (getCookie(storageKey) as Theme) || defaultTheme
-  )
-
-  // Optimized: Memoize the resolved theme calculation to prevent unnecessary re-computations
-  const resolvedTheme = useMemo((): ResolvedTheme => {
-    if (theme === 'system') {
-      return window.matchMedia('(prefers-color-scheme: dark)').matches
-        ? 'dark'
-        : 'light'
-    }
-    return theme as ResolvedTheme
-  }, [theme])
+  const [theme, _setTheme] = useState<Theme>(DEFAULT_THEME)
 
   useEffect(() => {
-    const root = window.document.documentElement
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-
-    const applyTheme = (currentResolvedTheme: ResolvedTheme) => {
-      root.classList.remove('light', 'dark') // Remove existing theme classes
-      root.classList.add(currentResolvedTheme) // Add the new theme class
+    const stored = getCookie(storageKey) as Theme | undefined
+    if (stored && stored !== 'light') {
+      removeCookie(storageKey)
     }
+    applyLightTheme()
+  }, [storageKey])
 
-    const handleChange = () => {
-      if (theme === 'system') {
-        const systemTheme = mediaQuery.matches ? 'dark' : 'light'
-        applyTheme(systemTheme)
-      }
-    }
-
-    applyTheme(resolvedTheme)
-
-    mediaQuery.addEventListener('change', handleChange)
-
-    return () => mediaQuery.removeEventListener('change', handleChange)
-  }, [theme, resolvedTheme])
-
-  const setTheme = (theme: Theme) => {
-    setCookie(storageKey, theme, THEME_COOKIE_MAX_AGE)
-    _setTheme(theme)
+  const setTheme = (_next: Theme) => {
+    setCookie(storageKey, 'light', THEME_COOKIE_MAX_AGE)
+    _setTheme('light')
+    applyLightTheme()
   }
 
   const resetTheme = () => {
     removeCookie(storageKey)
     _setTheme(DEFAULT_THEME)
+    applyLightTheme()
   }
 
   const contextValue = {
     defaultTheme,
-    resolvedTheme,
+    resolvedTheme: 'light' as const,
     resetTheme,
     theme,
     setTheme,

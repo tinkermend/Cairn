@@ -32,15 +32,15 @@ describe('UsersMultiDeleteDialog', () => {
 
     const title = getByRole('heading', {
       level: 2,
-      name: /Delete 2 users/i,
+      name: /删除 2 个用户/,
     })
     const desc = getByText(
-      new RegExp(`Are you sure you want to delete the selected users?`, 'i')
+      /确定删除所选用户吗/
     )
     const confirmDeleteInput = getByRole('textbox', {
-      name: /Confirm by typing "DELETE"/i,
+      name: /请输入「DELETE」确认/,
     })
-    const deleteButton = getByRole('button', { name: /Delete/i })
+    const deleteButton = getByRole('button', { name: /^删除$/ })
 
     await expect.element(title).toBeInTheDocument()
     await expect.element(desc).toBeInTheDocument()
@@ -56,9 +56,9 @@ describe('UsersMultiDeleteDialog', () => {
     )
 
     const confirmDeleteInput = getByRole('textbox', {
-      name: /Confirm by typing "DELETE"/i,
+      name: /请输入「DELETE」确认/,
     })
-    const deleteButton = getByRole('button', { name: /Delete/i })
+    const deleteButton = getByRole('button', { name: /^删除$/ })
 
     await expect.element(deleteButton).toBeDisabled()
 
@@ -76,7 +76,7 @@ describe('UsersMultiDeleteDialog', () => {
       <UsersMultiDeleteDialog open onOpenChange={onOpenChange} table={table} />
     )
 
-    const cancelButton = getByRole('button', { name: /Cancel/i })
+    const cancelButton = getByRole('button', { name: /取消/ })
     await userEvent.click(cancelButton)
 
     expect(onOpenChange).toHaveBeenCalledOnce()
@@ -107,12 +107,12 @@ describe('UsersMultiDeleteDialog', () => {
     const { getByRole } = await renderDialog(<Harness />)
 
     const confirmDeleteInput = getByRole('textbox', {
-      name: /Confirm by typing "DELETE"/i,
+      name: /请输入「DELETE」确认/,
     })
     await userEvent.fill(confirmDeleteInput, 'DELETE')
     await expect.element(confirmDeleteInput).toHaveValue('DELETE')
 
-    const cancelButton = getByRole('button', { name: /Cancel/i })
+    const cancelButton = getByRole('button', { name: /取消/ })
     await userEvent.click(cancelButton)
 
     const reopenButton = getByRole('button', { name: /Reopen/i })
@@ -128,9 +128,9 @@ describe('UsersMultiDeleteDialog', () => {
     )
 
     const confirmDeleteInput = getByRole('textbox', {
-      name: /Confirm by typing "DELETE"/i,
+      name: /请输入「DELETE」确认/,
     })
-    const deleteButton = getByRole('button', { name: /Delete/i })
+    const deleteButton = getByRole('button', { name: /^删除$/ })
 
     await expect.element(deleteButton).toBeDisabled()
 
@@ -152,9 +152,9 @@ describe('UsersMultiDeleteDialog', () => {
     )
 
     const confirmDeleteInput = getByRole('textbox', {
-      name: /Confirm by typing "DELETE"/i,
+      name: /请输入「DELETE」确认/,
     })
-    const deleteButton = getByRole('button', { name: /Delete/i })
+    const deleteButton = getByRole('button', { name: /^删除$/ })
 
     await expect.element(deleteButton).toBeDisabled()
 

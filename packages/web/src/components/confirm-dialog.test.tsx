@@ -23,10 +23,10 @@ describe('ConfirmDialog', () => {
       .element(getByText('This action cannot be undone.'))
       .toBeInTheDocument()
     await expect
-      .element(getByRole('button', { name: 'Cancel' }))
+      .element(getByRole('button', { name: '取消' }))
       .toBeInTheDocument()
     await expect
-      .element(getByRole('button', { name: 'Continue' }))
+      .element(getByRole('button', { name: '继续' }))
       .toBeInTheDocument()
   })
 
@@ -60,7 +60,7 @@ describe('ConfirmDialog', () => {
       />
     )
 
-    const confirm = getByRole('button', { name: 'Continue' })
+    const confirm = getByRole('button', { name: '继续' })
     await expect.element(confirm).toBeDisabled()
     expect(handleConfirm).not.toHaveBeenCalled()
   })
@@ -78,10 +78,8 @@ describe('ConfirmDialog', () => {
       />
     )
 
-    await expect.element(getByRole('button', { name: 'Cancel' })).toBeDisabled()
-    await expect
-      .element(getByRole('button', { name: 'Continue' }))
-      .toBeDisabled()
+    await expect.element(getByRole('button', { name: '取消' })).toBeDisabled()
+    await expect.element(getByRole('button', { name: '继续' })).toBeDisabled()
   })
 
   it('supports custom button texts', async () => {
@@ -110,10 +108,10 @@ describe('ConfirmDialog', () => {
       <ConfirmDialog
         open
         onOpenChange={vi.fn()}
-        title='Delete tasks'
-        form='tasks-multi-delete-form'
+        title='Delete items'
+        form='example-delete-form'
         desc={
-          <form id='tasks-multi-delete-form' className='space-y-4'>
+          <form id='example-delete-form' className='space-y-4'>
             <p>Type DELETE to confirm.</p>
           </form>
         }
@@ -126,7 +124,7 @@ describe('ConfirmDialog', () => {
     await expect.element(deleteBtn).toHaveAttribute('type', 'submit')
     await expect
       .element(deleteBtn)
-      .toHaveAttribute('form', 'tasks-multi-delete-form')
+      .toHaveAttribute('form', 'example-delete-form')
   })
 
   it('submits the desc form when confirm is clicked (form prop, no handleConfirm)', async () => {

@@ -17,12 +17,12 @@ export function ApiStatus() {
   const { data, isPending, isError } = useHealth()
 
   const tone = isPending
-    ? { dot: 'bg-muted-foreground/50', label: '连接中…' }
-    : isError
-      ? { dot: 'bg-destructive', label: '后端不可达' }
-      : data?.status === 'ok'
-        ? { dot: 'bg-emerald-500', label: '后端正常' }
-        : { dot: 'bg-amber-500', label: '后端降级' }
+        ? { dot: 'bg-status-waiting-foreground', label: '连接中…' }
+      : isError
+        ? { dot: 'bg-status-error-accent', label: '后端不可达' }
+        : data?.status === 'ok'
+          ? { dot: 'bg-status-success-accent', label: '后端正常' }
+          : { dot: 'bg-status-warning-accent', label: '后端降级' }
 
   const detail = data ? `数据库 ${data.checks.database === 'up' ? '正常' : '不可用'}` : undefined
 
@@ -31,7 +31,7 @@ export function ApiStatus() {
       <SidebarMenuItem>
         <SidebarMenuButton size='sm' className='cursor-default' tooltip={tone.label}>
           <span className={cn('size-2 shrink-0 rounded-full', tone.dot)} aria-hidden />
-          <span className='truncate text-xs'>
+          <span className='truncate text-label'>
             {tone.label}
             {detail ? <span className='text-muted-foreground'> · {detail}</span> : null}
           </span>

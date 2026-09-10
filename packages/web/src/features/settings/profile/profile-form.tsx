@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { z } from 'zod'
+import { type z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
@@ -41,9 +41,9 @@ export function ProfileForm() {
       const me = await updateMe(data)
       setUser(toAuthUser(me.account))
       queryClient.setQueryData(['me'], me)
-      toast.success('Profile updated')
+      toast.success('个人资料已更新')
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : 'Update failed')
+      toast.error(error instanceof ApiRequestError ? error.message : '更新失败')
     }
   }
 
@@ -55,26 +55,25 @@ export function ProfileForm() {
           name='displayName'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Display name</FormLabel>
+              <FormLabel>显示名称</FormLabel>
               <FormControl>
                 <Input autoComplete='name' {...field} />
               </FormControl>
               <FormDescription>
-                Shown on the audit log and to other console users.
+                会显示在审计记录和其他控制台用户面前。
               </FormDescription>
               <FormMessage />
             </FormItem>
           )}
         />
         <div>
-          <h3 className='text-sm font-medium'>Email</h3>
-          <p className='text-muted-foreground mt-1 text-sm'>{user?.email ?? '—'}</p>
-          <p className='text-muted-foreground mt-1 text-xs'>
-            Email is the local identity subject. An administrator can change it
-            from Users.
+          <h3 className='text-body font-medium'>邮箱</h3>
+          <p className='text-muted-foreground mt-1 text-body'>{user?.email ?? '—'}</p>
+          <p className='text-muted-foreground mt-1 text-label'>
+            邮箱是本地身份主体。管理员可在用户页修改。
           </p>
         </div>
-        <Button type='submit'>Update profile</Button>
+        <Button type='submit'>保存个人资料</Button>
       </form>
     </Form>
   )

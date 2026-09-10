@@ -2,6 +2,32 @@
 @import 'tw-animate-css';
 @import './theme.css';
 
+/*
+ * Inter 自托管（拉丁子集，可变字重 400–700，SIL OFL 1.1）。
+ * 规范按 Inter 的字面设计；不自托管就会静默回落到系统字体，
+ * 于是「按 Inter 设计、按 SF 渲染」。CJK 不由 Inter 承担。
+ */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/inter-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/inter-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+    U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @layer base {
@@ -11,10 +37,13 @@
     scrollbar-color: var(--border) transparent;
   }
   html {
-    @apply overflow-x-hidden;
+    @apply overflow-x-hidden font-sans;
+    font-feature-settings: 'kern' 1;
+    background-color: var(--surface-page, #edf0f7);
   }
   body {
-    @apply min-h-svh w-full bg-background text-foreground has-[div[data-variant='inset']]:bg-sidebar;
+    @apply min-h-svh w-full text-foreground;
+    background-color: var(--surface-page, #edf0f7);
   }
 
   /* Override Radix scroll locking for sticky headers */
@@ -38,9 +67,45 @@
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .CollapsibleContent[data-state='open'],
+  .CollapsibleContent[data-state='closed'] {
+    animation: none;
+  }
+}
+
 @utility container {
   margin-inline: auto;
   padding-inline: 2rem;
+}
+
+@utility control-focus {
+  &:hover:not(:disabled):not(:focus):not([aria-invalid='true']) {
+    border-color: var(--border-control-hover);
+  }
+
+  &:focus,
+  &:focus-visible {
+    border-color: var(--action-primary);
+    box-shadow: var(--control-focus-shadow);
+    outline: none;
+  }
+
+  &[aria-invalid='true'] {
+    border-color: var(--status-error-accent);
+    box-shadow: var(--control-error-shadow);
+  }
+}
+
+/* 画布顶部光晕。只是背景层，不承担任何信息，也不参与对比度计算。 */
+@utility canvas-bloom {
+  background-image: var(--canvas-bloom);
+  background-repeat: no-repeat;
+  background-position: top center;
 }
 
 @utility no-scrollbar {
@@ -62,10 +127,10 @@
   overflow: hidden;
 }
 .CollapsibleContent[data-state='open'] {
-  animation: slideDown 300ms ease-out;
+  animation: slideDown var(--motion-panel) var(--ease-standard);
 }
 .CollapsibleContent[data-state='closed'] {
-  animation: slideUp 300ms ease-out;
+  animation: slideUp var(--motion-panel) var(--ease-standard);
 }
 
 @keyframes slideDown {

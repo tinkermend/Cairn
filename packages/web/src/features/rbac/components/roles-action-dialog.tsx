@@ -30,10 +30,10 @@ import { Textarea } from '@/components/ui/textarea'
 import { PermissionMatrix } from './permission-matrix'
 
 const formSchema = z.object({
-  key: z.string().regex(/^[a-z][a-z0-9_]{1,62}$/, 'Use a lowercase slug, e.g. qa_lead.'),
-  name: z.string().min(1, 'Name is required.'),
+  key: z.string().regex(/^[a-z][a-z0-9_]{1,62}$/, '请使用小写标识，例如 qa_lead。'),
+  name: z.string().min(1, '请填写名称。'),
   description: z.string().optional(),
-  permissions: z.array(z.string()).min(1, 'Select at least one permission.'),
+  permissions: z.array(z.string()).min(1, '请至少选择一项权限。'),
 })
 type RoleForm = z.infer<typeof formSchema>
 
@@ -82,17 +82,17 @@ export function RolesActionDialog({ currentRow, open, onOpenChange }: RolesActio
           description: parsed.description ?? null,
           permissions: parsed.permissions,
         })
-        toast.success('Role updated')
+        toast.success('角色已更新')
       } else {
         await createRole(parsed)
-        toast.success('Role created')
+        toast.success('角色已创建')
       }
       await queryClient.invalidateQueries({ queryKey: ['roles'] })
       await queryClient.invalidateQueries({ queryKey: ['audit'] })
       form.reset()
       onOpenChange(false)
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : 'Request failed')
+      toast.error(error instanceof ApiRequestError ? error.message : '请求失败')
     } finally {
       setSaving(false)
     }
@@ -108,11 +108,11 @@ export function RolesActionDialog({ currentRow, open, onOpenChange }: RolesActio
     >
       <DialogContent className='flex max-h-[90vh] flex-col sm:max-w-2xl'>
         <DialogHeader className='text-start'>
-          <DialogTitle>{locked ? 'View Role' : isEdit ? 'Edit Role' : 'Create Role'}</DialogTitle>
+          <DialogTitle>{locked ? '查看角色' : isEdit ? '编辑角色' : '创建角色'}</DialogTitle>
           <DialogDescription>
             {locked
-              ? 'System roles are defined in code and cannot be changed here.'
-              : 'A role is a named set of permissions. Custom roles can only use catalog permissions.'}
+              ? '系统角色由代码定义，不能在此修改。'
+              : '角色是一组命名权限。自定义角色只能使用权限目录中的项。'}
           </DialogDescription>
         </DialogHeader>
         <div className='min-h-0 flex-1 overflow-y-auto pe-2'>
@@ -123,7 +123,7 @@ export function RolesActionDialog({ currentRow, open, onOpenChange }: RolesActio
                 name='key'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Key</FormLabel>
+                    <FormLabel>标识</FormLabel>
                     <FormControl>
                       <Input placeholder='qa_lead' disabled={isEdit || locked} autoComplete='off' {...field} />
                     </FormControl>
@@ -136,7 +136,7 @@ export function RolesActionDialog({ currentRow, open, onOpenChange }: RolesActio
                 name='name'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Name</FormLabel>
+                    <FormLabel>名称</FormLabel>
                     <FormControl>
                       <Input placeholder='QA Lead' disabled={locked} {...field} />
                     </FormControl>
@@ -149,7 +149,7 @@ export function RolesActionDialog({ currentRow, open, onOpenChange }: RolesActio
                 name='description'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Description</FormLabel>
+                    <FormLabel>说明</FormLabel>
                     <FormControl>
                       <Textarea disabled={locked} rows={2} {...field} />
                     </FormControl>
@@ -162,7 +162,7 @@ export function RolesActionDialog({ currentRow, open, onOpenChange }: RolesActio
                 name='permissions'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Permissions</FormLabel>
+                    <FormLabel>权限</FormLabel>
                     <PermissionMatrix
                       value={field.value as PermissionCode[]}
                       onChange={field.onChange}
@@ -179,7 +179,7 @@ export function RolesActionDialog({ currentRow, open, onOpenChange }: RolesActio
         <DialogFooter>
           {!locked && (
             <Button type='submit' form='role-form' disabled={saving}>
-              Save changes
+              保存
             </Button>
           )}
         </DialogFooter>

@@ -1,0 +1,192 @@
+/*
+ * 识途 · 前端设计基线 v1.0
+ * 浅色主题。供规范、视觉样本与 packages/web 共用。
+ * packages/web/styles/theme.css 直接导入本文件，不并行维护第二套主题。
+ */
+:root {
+  color-scheme: light;
+
+  /* 基础色板：页面组件消费下方语义 Token，不直接挑选色号。 */
+  --primary-700: #274bc1;
+  --primary-600: #3563e9;
+  --primary-500: #4f7cff;
+  --primary-400: #6f91ff;
+  --primary-100: #eaf1ff;
+  --primary-50: #f5f8ff;
+  --ai-purple: #7c5cfc;
+  --ai-light: #f2eeff;
+  --success-base: #17b890;
+  --warning-base: #f59e0b;
+  --error-base: #f04452;
+  --info-base: #3b82f6;
+
+  /* 文字与表面。muted 在 shadcn 中是表面色，不是文字色。 */
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #5c6b80;
+  --text-disabled: #94a3b8;
+
+  /* 三层平面：导航白 / 画布冷灰蓝 / 卡片白。
+     画布与卡片的明度比必须够把白卡片托出来——1.05:1 等于没有分层，当前 1.14:1。 */
+  --surface-nav: #ffffff;
+  --surface-page: #f1f4fa;
+  --surface-card: #ffffff;
+  --surface-header: #f8fafc;
+  --surface-control: #f7f9fc;
+  --surface-subtle: #f1f5f9;
+
+  /* 画布顶部光晕。只铺在内容区，不参与任何前景对比度计算。 */
+  --canvas-bloom:
+    radial-gradient(900px 420px at 78% -10%, #ffffffe6, #ffffff00 60%),
+    radial-gradient(560px 300px at 4% -4%, #819eff1f, #ffffff00 70%);
+
+  --border-default: #e4e9f1;
+  --border-divider: #edf1f6;
+  --border-card: #eef1f6;
+  --border-control: #8693a9;
+  --border-control-hover: #5b6b84;
+  /* 输入外光用更亮的 500，避免和主蓝边界叠成第二道实线。 */
+  --focus-halo: #4f7cff2e;
+  --error-halo: #f0445229;
+  --technical-grid: #3563e90a;
+  --technical-line: #3563e91f;
+  --technical-glow: #4f7cff1a;
+  --scrim: #0f172a52;
+  --shadow-tint: #2342780a;
+  --shadow-ambient-tint: #2342780f;
+  --shadow-overlay-tint: #23427824;
+  --action-shadow-tint: #3563e93d;
+
+  /* 交互语义：按钮小字使用 600/700 配白色，不能用 400/500 配白字。 */
+  --action-primary: var(--primary-600);
+  --action-primary-hover: var(--primary-700);
+  --action-primary-active: var(--primary-700);
+  --action-primary-foreground: var(--surface-card);
+  --action-secondary: var(--primary-100);
+  --action-secondary-foreground: var(--primary-700);
+  --action-secondary-hover: var(--primary-100);
+  --action-hover: var(--primary-50);
+  --selection-background: var(--primary-100);
+  --selection-foreground: var(--primary-700);
+  --selection-border: var(--primary-600);
+  --focus-ring: var(--primary-600);
+  --link: var(--primary-700);
+  --ai-accent: var(--ai-purple);
+  --ai-background: var(--ai-light);
+  --ai-foreground: #6444d4;
+
+  /* 状态底色、强调色、小字颜色分开，不能用 base 色作为浅底小字。 */
+  --status-success-accent: var(--success-base);
+  --status-success-background: #eaf9f4;
+  --status-success-foreground: #08795f;
+  --status-warning-accent: var(--warning-base);
+  --status-warning-background: #fff7e8;
+  --status-warning-foreground: #925900;
+  --status-error-accent: var(--error-base);
+  --status-error-background: #fff0f1;
+  --status-error-foreground: #bd293b;
+  --status-info-accent: var(--info-base);
+  --status-info-background: #eff6ff;
+  --status-info-foreground: #285bc1;
+  --status-waiting-background: #edf2f8;
+  --status-waiting-foreground: #526681;
+  --status-blocked-background: #fff1e8;
+  --status-blocked-foreground: #ba4918;
+  --status-neutral-background: var(--surface-subtle);
+  --status-neutral-foreground: #526174;
+
+  /* 普通数据系列：语义状态图必须改用对应 status Token。 */
+  --chart-1: var(--primary-600);
+  --chart-2: #168779;
+  --chart-3: #576d92;
+  --chart-4: #8a6c22;
+  --chart-5: #4d7890;
+  --chart-grid: var(--border-divider);
+  --chart-axis: var(--text-muted);
+  --chart-area: var(--primary-50);
+
+  /* 字体：系统字体优先；已自托管 Inter 时自动使用。 */
+  --font-sans:
+    Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
+    "Source Han Sans SC", system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-size-page: 24px;
+  --line-height-page: 32px;
+  --font-size-section: 16px;
+  --line-height-section: 24px;
+  --font-size-stat: 28px;
+  --line-height-stat: 36px;
+  --font-size-body: 14px;
+  --line-height-body: 22px;
+  --font-size-small: 13px;
+  --line-height-small: 20px;
+  --font-size-label: 12px;
+  --line-height-label: 18px;
+  --radius-tag: 6px;
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-dialog: 16px;
+  /* 尺寸不再重复声明：4/8/12… 间距、32/36/40 控件高度、40/48/56 行高
+     与 Tailwind 默认刻度完全重合，一律直接用 Tailwind 工具类。 */
+  --border-width: 1px;
+  --focus-width: 2px;
+  --focus-offset: 3px;
+  /* 卡片走「双层阴影 + 极浅边框」，不再用「弱边框 + 弱阴影」各出一半力。 */
+  --card-shadow:
+    0 1px 2px var(--shadow-tint), 0 8px 24px var(--shadow-ambient-tint);
+  --popover-shadow: 0 8px 28px var(--shadow-overlay-tint);
+  --control-shadow: inset 0 1px 2px var(--shadow-tint);
+  --control-focus-shadow:
+    inset 0 1px 2px var(--shadow-tint), 0 0 0 2px var(--focus-halo);
+  --control-error-shadow:
+    inset 0 1px 2px var(--shadow-tint), 0 0 0 2px var(--error-halo);
+  --tech-panel-shadow: 0 24px 64px var(--shadow-overlay-tint);
+  --action-shadow: 0 6px 16px var(--action-shadow-tint);
+  --sidebar-width: 224px;
+  --sidebar-collapsed: 72px;
+  --motion-fast: 140ms;
+  --motion-panel: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
+  --z-sticky: 20;
+  --z-dropdown: 40;
+  --z-overlay: 50;
+  --z-toast: 60;
+
+  /* shadcn 兼容层。保留现有组件 API，通过变量统一外观。 */
+  --radius: var(--radius-card);
+  --background: var(--surface-page);
+  --foreground: var(--text-primary);
+  --card: var(--surface-card);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-card);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--action-primary);
+  --primary-foreground: var(--action-primary-foreground);
+  --secondary: var(--action-secondary);
+  --secondary-foreground: var(--action-secondary-foreground);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--selection-background);
+  --accent-foreground: var(--selection-foreground);
+  --destructive: var(--status-error-foreground);
+  --border: var(--border-default);
+  --input: var(--border-control);
+  --ring: var(--focus-ring);
+  --sidebar: var(--surface-nav);
+  --sidebar-foreground: var(--text-secondary);
+  --sidebar-primary: var(--action-primary);
+  --sidebar-primary-foreground: var(--surface-card);
+  --sidebar-accent: var(--selection-background);
+  --sidebar-accent-foreground: var(--selection-foreground);
+  --sidebar-border: var(--border-default);
+  --sidebar-ring: var(--focus-ring);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-panel: 0ms;
+  }
+}

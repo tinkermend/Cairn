@@ -73,7 +73,7 @@ export function NavGroup({ title, items }: NavGroupProps) {
 }
 
 function NavBadge({ children }: { children: ReactNode }) {
-  return <Badge className='rounded-full px-1 py-0 text-xs'>{children}</Badge>
+  return <Badge className='rounded-full px-1 py-0 text-label'>{children}</Badge>
 }
 
 function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
@@ -176,7 +176,7 @@ function SidebarMenuCollapsedDropdown({
                 {sub.icon && <sub.icon />}
                 <span className='max-w-52 text-wrap'>{sub.title}</span>
                 {sub.badge && (
-                  <span className='ms-auto text-xs'>{sub.badge}</span>
+                  <span className='ms-auto text-label'>{sub.badge}</span>
                 )}
               </Link>
             </DropdownMenuItem>

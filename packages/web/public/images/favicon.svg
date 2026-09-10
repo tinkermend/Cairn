@@ -1,4 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svgjs="http://svgjs.com/svgjs" width="24" height="24"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokewidth="2" strokelinecap="round" strokelinejoin="round">
-  <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"></path>
-</svg><style>@media (prefers-color-scheme: light) { :root { filter: contrast(1) brightness(0.8); } }
-</style></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="#3563E9"/>
+  <circle cx="32" cy="32" r="20" fill="#fff"/>
+  <circle cx="32" cy="32" r="16.5" fill="#EAF1FF"/>
+  <path d="M19 35l8 5 8-6 10-7" fill="none" stroke="#3563E9" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#fff" stroke="#3563E9" stroke-width="3">
+    <circle cx="19" cy="35" r="3.25"/>
+    <circle cx="27" cy="40" r="3.25"/>
+    <circle cx="35" cy="34" r="3.25"/>
+    <circle cx="45" cy="27" r="3.25"/>
+  </g>
+</svg>

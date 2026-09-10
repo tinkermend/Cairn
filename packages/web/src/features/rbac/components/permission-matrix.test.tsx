@@ -8,8 +8,8 @@ describe('PermissionMatrix', () => {
     const { getByText, getByLabelText } = await render(
       <PermissionMatrix value={['workflow:read']} onChange={vi.fn()} />
     )
-    await expect.element(getByText('Workflows', { exact: true })).toBeInTheDocument()
-    await expect.element(getByText('Accounts', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText('工作流', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText('账号', { exact: true })).toBeInTheDocument()
     await expect.element(getByLabelText('workflow:read')).toBeChecked()
     await expect.element(getByLabelText('workflow:write')).not.toBeChecked()
   })

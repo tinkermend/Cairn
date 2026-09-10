@@ -4,8 +4,8 @@ import { ProfileForm } from './profile-form'
 export function SettingsProfile() {
   return (
     <ContentSection
-      title='Profile'
-      desc='Your display name as shown to other console users.'
+      title='个人资料'
+      desc='其他控制台用户看到的显示名称。'
     >
       <ProfileForm />
     </ContentSection>

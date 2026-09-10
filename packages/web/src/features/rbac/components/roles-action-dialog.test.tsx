@@ -40,13 +40,13 @@ describe('RolesActionDialog', () => {
     )
 
     await expect
-      .element(getByRole('heading', { level: 2, name: /Create Role/i }))
+      .element(getByRole('heading', { level: 2, name: /创建角色/ }))
       .toBeInTheDocument()
 
-    await userEvent.fill(getByLabelText(/^Key$/i), 'qa_lead')
-    await userEvent.fill(getByLabelText(/^Name$/i), 'QA Lead')
+    await userEvent.fill(getByLabelText(/^标识$/), 'qa_lead')
+    await userEvent.fill(getByLabelText(/^名称$/), 'QA Lead')
     await userEvent.click(getByLabelText('workflow:read'))
-    await userEvent.click(getByRole('button', { name: /Save Changes/i }))
+    await userEvent.click(getByRole('button', { name: /保存/ }))
 
     await vi.waitFor(() => expect(createRole).toHaveBeenCalledOnce())
     expect(createRole).toHaveBeenCalledWith(
@@ -63,8 +63,8 @@ describe('RolesActionDialog', () => {
     const { getByRole, getByText } = await renderDialog(
       <RolesActionDialog open onOpenChange={vi.fn()} />
     )
-    await userEvent.click(getByRole('button', { name: /Save Changes/i }))
-    await expect.element(getByText('Name is required.')).toBeInTheDocument()
+    await userEvent.click(getByRole('button', { name: /保存/ }))
+    await expect.element(getByText('请填写名称。')).toBeInTheDocument()
   })
 
   it('locks system roles: no save, permissions disabled', async () => {
@@ -73,11 +73,11 @@ describe('RolesActionDialog', () => {
       <RolesActionDialog open onOpenChange={vi.fn()} currentRow={admin} />
     )
     await expect
-      .element(getByRole('heading', { level: 2, name: /View Role/i }))
+      .element(getByRole('heading', { level: 2, name: /查看角色/ }))
       .toBeInTheDocument()
     await expect.element(getByLabelText('account:write')).toBeDisabled()
     await expect
-      .element(getByRole('button', { name: /Save Changes/i }))
+      .element(getByRole('button', { name: /保存/ }))
       .not.toBeInTheDocument()
   })
 
@@ -90,8 +90,8 @@ describe('RolesActionDialog', () => {
         currentRow={sampleCustomRole}
       />
     )
-    await userEvent.fill(getByLabelText(/^Name$/i), 'QA')
-    await userEvent.click(getByRole('button', { name: /Save Changes/i }))
+    await userEvent.fill(getByLabelText(/^名称$/), 'QA')
+    await userEvent.click(getByRole('button', { name: /保存/ }))
     await vi.waitFor(() => expect(updateRole).toHaveBeenCalledOnce())
     expect(updateRole).toHaveBeenCalledWith(
       sampleCustomRole.id,

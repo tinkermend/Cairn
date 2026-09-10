@@ -1,12 +1,43 @@
 import {
   PERMISSION_CATALOG,
   PERMISSION_RESOURCES,
-  RESOURCE_LABELS,
   hasPermission,
   type PermissionCode,
+  type PermissionResource,
 } from '@cairn/shared'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
+
+const RESOURCE_LABELS_ZH: Record<PermissionResource, string> = {
+  account: '账号',
+  role: '角色',
+  workflow: '工作流',
+  run: 'Run',
+  target: 'Target',
+  settings: '设置',
+  audit: '审计',
+}
+
+const PERMISSION_LABELS_ZH: Record<PermissionCode, string> = {
+  'account:read': '查看账号',
+  'account:write': '创建和更新账号',
+  'account:delete': '删除账号',
+  'role:read': '查看角色',
+  'role:write': '创建和更新角色',
+  'role:delete': '删除自定义角色',
+  'workflow:read': '查看工作流',
+  'workflow:write': '创建和更新工作流',
+  'workflow:delete': '删除工作流',
+  'run:read': '查看 Run',
+  'run:execute': '启动 Run',
+  'run:cancel': '取消 Run',
+  'target:read': '查看 Target',
+  'target:write': '创建和更新 Target',
+  'target:delete': '删除 Target',
+  'settings:read': '查看设置',
+  'settings:write': '更新设置',
+  'audit:read': '查看审计',
+}
 
 type PermissionMatrixProps = {
   value: PermissionCode[]
@@ -38,7 +69,9 @@ export function PermissionMatrix({
         if (items.length === 0) return null
         return (
           <fieldset key={resource} className='space-y-2'>
-            <legend className='text-sm font-medium'>{RESOURCE_LABELS[resource]}</legend>
+            <legend className='text-body font-medium'>
+              {RESOURCE_LABELS_ZH[resource]}
+            </legend>
             <div className='grid gap-2 sm:grid-cols-2'>
               {items.map((item) => (
                 <Label
@@ -52,8 +85,10 @@ export function PermissionMatrix({
                     aria-label={item.code}
                   />
                   <span>
-                    <span className='block'>{item.label}</span>
-                    <span className='text-muted-foreground font-mono text-xs'>
+                    <span className='block'>
+                      {PERMISSION_LABELS_ZH[item.code] ?? item.label}
+                    </span>
+                    <span className='text-muted-foreground font-mono text-label'>
                       {item.code}
                     </span>
                   </span>

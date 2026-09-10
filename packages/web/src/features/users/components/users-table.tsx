@@ -12,6 +12,7 @@ import {
   useReactTable,
 } from '@tanstack/react-table'
 import { cn } from '@/lib/utils'
+import { EmptyState } from '@/components/empty-state'
 import { type NavigateFn, useTableUrlState } from '@/hooks/use-table-url-state'
 import {
   Table,
@@ -102,20 +103,20 @@ export function UsersTable({ data, roles, search, navigate }: DataTableProps) {
     >
       <DataTableToolbar
         table={table}
-        searchPlaceholder='Filter users...'
+        searchPlaceholder='按姓名筛选…'
         searchKey='displayName'
         filters={[
           {
             columnId: 'status',
-            title: 'Status',
+            title: '状态',
             options: [
-              { label: 'Active', value: 'active' },
-              { label: 'Disabled', value: 'disabled' },
+              { label: '启用', value: 'active' },
+              { label: '停用', value: 'disabled' },
             ],
           },
           {
             columnId: 'roles',
-            title: 'Role',
+            title: '角色',
             options: (roles.length > 0 ? roles : systemRoleMeta).map((role) =>
               'key' in role
                 ? { label: role.name, value: role.key }
@@ -124,7 +125,7 @@ export function UsersTable({ data, roles, search, navigate }: DataTableProps) {
           },
         ]}
       />
-      <div className='overflow-hidden rounded-md border'>
+      <div className='overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -135,7 +136,9 @@ export function UsersTable({ data, roles, search, navigate }: DataTableProps) {
                       key={header.id}
                       colSpan={header.colSpan}
                       className={cn(
-                        'bg-background group-hover/row:bg-muted group-data-[state=selected]/row:bg-muted',
+                        // 表头单元格需要不透明底供粘性列使用；用表头平面而不是卡片白，
+                        // 否则会盖掉 TableHeader 的淡底、表头又变得没有"头"。
+                        'bg-surface-header',
                         header.column.columnDef.meta?.className,
                         header.column.columnDef.meta?.thClassName
                       )}
@@ -164,7 +167,7 @@ export function UsersTable({ data, roles, search, navigate }: DataTableProps) {
                     <TableCell
                       key={cell.id}
                       className={cn(
-                        'bg-background group-hover/row:bg-muted group-data-[state=selected]/row:bg-muted',
+                        'bg-card group-hover/row:bg-muted group-data-[state=selected]/row:bg-muted',
                         cell.column.columnDef.meta?.className,
                         cell.column.columnDef.meta?.tdClassName
                       )}
@@ -179,11 +182,11 @@ export function UsersTable({ data, roles, search, navigate }: DataTableProps) {
               ))
             ) : (
               <TableRow>
-                <TableCell
-                  colSpan={columns.length}
-                  className='h-24 text-center'
-                >
-                  No results.
+                <TableCell colSpan={columns.length} className='p-0'>
+                  <EmptyState
+                    title='无搜索结果'
+                    description='保留当前筛选条件，或清空筛选后重试。'
+                  />
                 </TableCell>
               </TableRow>
             )}

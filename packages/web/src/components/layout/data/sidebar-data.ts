@@ -1,60 +1,44 @@
 import {
-  LayoutDashboard,
-  HelpCircle,
-  Bell,
+  Home,
   Palette,
+  ScrollText,
   Settings,
-  Wrench,
+  Shield,
   UserCog,
   Users,
-  Shield,
-  ScrollText,
-  Monitor,
-  ListTodo,
+  Wrench,
 } from 'lucide-react'
 import { type SidebarData } from '../types'
 
 export const sidebarData: SidebarData = {
   user: {
-    name: 'Console',
+    name: '控制台',
     email: '',
     avatar: '',
   },
-  teams: [
-    {
-      name: 'Cairn',
-      logo: Shield,
-      plan: 'Console',
-    },
-  ],
   navGroups: [
     {
-      title: 'General',
+      title: '工作台',
       items: [
         {
-          title: 'Dashboard',
+          title: '首页',
           url: '/',
-          icon: LayoutDashboard,
+          icon: Home,
         },
         {
-          title: 'Tasks',
-          url: '/tasks',
-          icon: ListTodo,
-        },
-        {
-          title: 'Users',
+          title: '用户',
           url: '/users',
           icon: Users,
           permission: 'account:read',
         },
         {
-          title: 'Roles',
+          title: '角色',
           url: '/roles',
           icon: Shield,
           permission: 'role:read',
         },
         {
-          title: 'Audit',
+          title: '审计',
           url: '/audit',
           icon: ScrollText,
           permission: 'audit:read',
@@ -62,44 +46,29 @@ export const sidebarData: SidebarData = {
       ],
     },
     {
-      title: 'Other',
+      title: '其他',
       items: [
         {
-          title: 'Settings',
+          title: '设置',
           icon: Settings,
           permission: 'settings:read',
           items: [
             {
-              title: 'Profile',
+              title: '个人资料',
               url: '/settings',
               icon: UserCog,
             },
             {
-              title: 'Account',
+              title: '账号',
               url: '/settings/account',
               icon: Wrench,
             },
             {
-              title: 'Appearance',
+              title: '外观',
               url: '/settings/appearance',
               icon: Palette,
             },
-            {
-              title: 'Notifications',
-              url: '/settings/notifications',
-              icon: Bell,
-            },
-            {
-              title: 'Display',
-              url: '/settings/display',
-              icon: Monitor,
-            },
           ],
-        },
-        {
-          title: 'Help Center',
-          url: '/help-center',
-          icon: HelpCircle,
         },
       ],
     },

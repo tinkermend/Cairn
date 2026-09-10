@@ -54,7 +54,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         {children}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isLoading}>
-            {cancelBtnText ?? 'Cancel'}
+            {cancelBtnText ?? '取消'}
           </AlertDialogCancel>
           <Button
             type={form ? 'submit' : 'button'}
@@ -62,8 +62,9 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             onClick={handleConfirm}
             variant={destructive ? 'destructive' : 'default'}
             disabled={disabled || isLoading}
+            loading={isLoading}
           >
-            {confirmText ?? 'Continue'}
+            {confirmText ?? '继续'}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

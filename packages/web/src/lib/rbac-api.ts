@@ -7,7 +7,6 @@ import {
   createRoleBodySchema,
   meResponseSchema,
   permissionCatalogResponseSchema,
-  replaceRolePermissionsBodySchema,
   roleListResponseSchema,
   roleSchema,
   setPasswordBodySchema,
@@ -20,7 +19,6 @@ import {
   type CreateRoleBody,
   type MeResponse,
   type PermissionCatalogResponse,
-  type ReplaceRolePermissionsBody,
   type RoleDto,
   type RoleListResponse,
   type AccountListResponse,
@@ -38,10 +36,6 @@ export function fetchRoles(): Promise<RoleListResponse> {
   return apiFetch('/api/rbac/roles', roleListResponseSchema)
 }
 
-export function fetchRole(id: string): Promise<RoleDto> {
-  return apiFetch(`/api/rbac/roles/${id}`, roleSchema)
-}
-
 export function createRole(body: CreateRoleBody): Promise<RoleDto> {
   return apiFetch('/api/rbac/roles', roleSchema, {
     method: 'POST',
@@ -55,17 +49,6 @@ export function updateRole(id: string, body: UpdateRoleBody): Promise<RoleDto> {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updateRoleBodySchema.parse(body)),
-  })
-}
-
-export function replaceRolePermissions(
-  id: string,
-  body: ReplaceRolePermissionsBody,
-): Promise<RoleDto> {
-  return apiFetch(`/api/rbac/roles/${id}/permissions`, roleSchema, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(replaceRolePermissionsBodySchema.parse(body)),
   })
 }
 

@@ -1,6 +1,5 @@
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
-import { AxiosError } from 'axios'
 import {
   QueryCache,
   QueryClient,
@@ -9,9 +8,8 @@ import {
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
+import { ApiRequestError } from '@/lib/api-client'
 import { handleServerError } from '@/lib/handle-server-error'
-import { DirectionProvider } from './context/direction-provider'
-import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
 // Generated Routes
 import { routeTree } from './routeTree.gen'
@@ -29,8 +27,7 @@ const queryClient = new QueryClient({
         if (failureCount > 3 && import.meta.env.PROD) return false
 
         return !(
-          error instanceof AxiosError &&
-          [401, 403].includes(error.response?.status ?? 0)
+          error instanceof ApiRequestError && [401, 403].includes(error.status)
         )
       },
       refetchOnWindowFocus: import.meta.env.PROD,
@@ -40,32 +37,30 @@ const queryClient = new QueryClient({
       onError: (error) => {
         handleServerError(error)
 
-        if (error instanceof AxiosError) {
-          if (error.response?.status === 304) {
-            toast.error('Content not modified!')
-          }
+        if (error instanceof ApiRequestError && error.status === 304) {
+          toast.error('Content not modified!')
         }
       },
     },
   },
   queryCache: new QueryCache({
     onError: (error) => {
-      if (error instanceof AxiosError) {
-        if (error.response?.status === 401) {
-          toast.error('Session expired!')
-          useAuthStore.getState().auth.reset()
-          const redirect = `${router.history.location.href}`
-          router.navigate({ to: '/sign-in', search: { redirect } })
-        }
-        if (error.response?.status === 500) {
-          toast.error('Internal Server Error!')
-          // Only navigate to error page in production to avoid disrupting HMR in development
-          if (import.meta.env.PROD) {
-            router.navigate({ to: '/500' })
-          }
-        }
-        if (error.response?.status === 403) {
-          // router.navigate("/forbidden", { replace: true });
+      // 只认 apiFetch 的错误类型：会话失效由它统一处理，
+      // 不再兼容模板残留的 Axios 分支——残留调用方已全部迁移。
+      if (!(error instanceof ApiRequestError)) return
+
+      if (error.status === 401) {
+        toast.error('Session expired!')
+        useAuthStore.getState().auth.reset()
+        const redirect = `${router.history.location.href}`
+        router.navigate({ to: '/sign-in', search: { redirect } })
+      }
+      if (error.status === 500) {
+        // 展示服务端给的说明，而不是写死的英文串
+        toast.error(error.message)
+        // Only navigate to error page in production to avoid disrupting HMR in development
+        if (import.meta.env.PROD) {
+          router.navigate({ to: '/500' })
         }
       }
     },
@@ -95,11 +90,7 @@ if (!rootElement.innerHTML) {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
-          <FontProvider>
-            <DirectionProvider>
-              <RouterProvider router={router} />
-            </DirectionProvider>
-          </FontProvider>
+          <RouterProvider router={router} />
         </ThemeProvider>
       </QueryClientProvider>
     </StrictMode>

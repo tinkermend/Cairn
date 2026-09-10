@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { type z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
@@ -31,17 +31,17 @@ export function AccountForm() {
     try {
       await changePassword(data)
       form.reset()
-      toast.success('Password updated')
+      toast.success('密码已更新')
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : 'Update failed')
+      toast.error(error instanceof ApiRequestError ? error.message : '更新失败')
     }
   }
 
   return (
     <div className='space-y-8'>
       <div>
-        <h3 className='text-sm font-medium'>Signed in as</h3>
-        <p className='text-muted-foreground mt-1 text-sm'>
+        <h3 className='text-body font-medium'>当前登录</h3>
+        <p className='text-muted-foreground mt-1 text-body'>
           {user?.displayName}
           {user?.email ? ` · ${user.email}` : ''}
         </p>
@@ -53,7 +53,7 @@ export function AccountForm() {
             name='currentPassword'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Current password</FormLabel>
+                <FormLabel>当前密码</FormLabel>
                 <FormControl>
                   <PasswordInput autoComplete='current-password' {...field} />
                 </FormControl>
@@ -66,16 +66,16 @@ export function AccountForm() {
             name='newPassword'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>New password</FormLabel>
+                <FormLabel>新密码</FormLabel>
                 <FormControl>
                   <PasswordInput autoComplete='new-password' {...field} />
                 </FormControl>
-                <FormDescription>At least 8 characters.</FormDescription>
+                <FormDescription>至少 8 位。</FormDescription>
                 <FormMessage />
               </FormItem>
             )}
           />
-          <Button type='submit'>Change password</Button>
+          <Button type='submit'>修改密码</Button>
         </form>
       </Form>
     </div>

@@ -1,39 +1,13 @@
-:root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.129 0.042 264.695);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.129 0.042 264.695);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.129 0.042 264.695);
-  --primary: oklch(0.208 0.042 265.755);
-  --primary-foreground: oklch(0.984 0.003 247.858);
-  --secondary: oklch(0.968 0.007 247.896);
-  --secondary-foreground: oklch(0.208 0.042 265.755);
-  --muted: oklch(0.968 0.007 247.896);
-  --muted-foreground: oklch(0.554 0.046 257.417);
-  --accent: oklch(0.968 0.007 247.896);
-  --accent-foreground: oklch(0.208 0.042 265.755);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.929 0.013 255.508);
-  --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.704 0.04 256.788);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
+/*
+ * Runtime theme. Semantic values come from the design-token fact source.
+ * Do not declare a second :root palette here.
+ */
+@import '../../../../docs/design/front/tokens.css';
 
-  --sidebar: var(--background);
-  --sidebar-foreground: var(--foreground);
-  --sidebar-primary: var(--primary);
-  --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: var(--accent);
-  --sidebar-accent-foreground: var(--accent-foreground);
-  --sidebar-border: var(--border);
-  --sidebar-ring: var(--ring);
-}
-
+/*
+ * Scaffold dark variables are retained but unused.
+ * This round locks the console to light; .dark is never applied.
+ */
 .dark {
   --background: oklch(0.129 0.042 264.695);
   --foreground: oklch(0.984 0.003 247.858);
@@ -53,21 +27,43 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.551 0.027 264.364);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
 }
 
 @theme inline {
-  --font-inter: 'Inter', 'sans-serif';
-  --font-manrope: 'Manrope', 'sans-serif';
+  --font-sans:
+    Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+    'Source Han Sans SC', system-ui, sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
 
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-sm: var(--radius-tag);
+  --radius-md: var(--radius-control);
+  --radius-lg: var(--radius-card);
+  --radius-xl: var(--radius-dialog);
+
+  /* 阴影一律指向 tokens.css，不在这里并行维护第二份数值。 */
+  --shadow-card: var(--card-shadow);
+  --shadow-popover: var(--popover-shadow);
+  --shadow-control: var(--control-shadow);
+  --shadow-control-focus: var(--control-focus-shadow);
+  --shadow-control-error: var(--control-error-shadow);
+  --shadow-tech-panel: var(--tech-panel-shadow);
+  --shadow-action: var(--action-shadow);
+
+  /* 字号刻度接进 Tailwind 的 --text-* 命名空间。
+     不映射就等于没有：text-body / text-small / text-label 才是可被页面消费的形态。 */
+  --text-page: var(--font-size-page);
+  --text-page--line-height: var(--line-height-page);
+  --text-stat: var(--font-size-stat);
+  --text-stat--line-height: var(--line-height-stat);
+  --text-section: var(--font-size-section);
+  --text-section--line-height: var(--line-height-section);
+  --text-body: var(--font-size-body);
+  --text-body--line-height: var(--line-height-body);
+  --text-small: var(--font-size-small);
+  --text-small--line-height: var(--line-height-small);
+  --text-label: var(--font-size-label);
+  --text-label--line-height: var(--line-height-label);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -91,6 +87,9 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-axis: var(--chart-axis);
+  --color-chart-area: var(--chart-area);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -99,4 +98,56 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-text-disabled: var(--text-disabled);
+  --color-surface-page: var(--surface-page);
+  --color-surface-nav: var(--surface-nav);
+  --color-surface-card: var(--surface-card);
+  --color-surface-header: var(--surface-header);
+  --color-surface-control: var(--surface-control);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-border-default: var(--border-default);
+  --color-border-card: var(--border-card);
+  --color-border-divider: var(--border-divider);
+  --color-border-control: var(--border-control);
+  --color-border-control-hover: var(--border-control-hover);
+  --color-focus-halo: var(--focus-halo);
+  --color-error-halo: var(--error-halo);
+  --color-technical-grid: var(--technical-grid);
+  --color-technical-line: var(--technical-line);
+  --color-technical-glow: var(--technical-glow);
+  --color-action-hover: var(--action-hover);
+  --color-action-primary-hover: var(--action-primary-hover);
+  --color-action-primary-active: var(--action-primary-active);
+  --color-selection-background: var(--selection-background);
+  --color-selection-foreground: var(--selection-foreground);
+  --color-selection-border: var(--selection-border);
+  --color-link: var(--link);
+  --color-scrim: var(--scrim);
+
+  --color-status-success-accent: var(--status-success-accent);
+  --color-status-success-background: var(--status-success-background);
+  --color-status-success-foreground: var(--status-success-foreground);
+  --color-status-warning-accent: var(--status-warning-accent);
+  --color-status-warning-background: var(--status-warning-background);
+  --color-status-warning-foreground: var(--status-warning-foreground);
+  --color-status-error-accent: var(--status-error-accent);
+  --color-status-error-background: var(--status-error-background);
+  --color-status-error-foreground: var(--status-error-foreground);
+  --color-status-info-accent: var(--status-info-accent);
+  --color-status-info-background: var(--status-info-background);
+  --color-status-info-foreground: var(--status-info-foreground);
+  --color-status-waiting-background: var(--status-waiting-background);
+  --color-status-waiting-foreground: var(--status-waiting-foreground);
+  --color-status-blocked-background: var(--status-blocked-background);
+  --color-status-blocked-foreground: var(--status-blocked-foreground);
+  --color-status-neutral-background: var(--status-neutral-background);
+  --color-status-neutral-foreground: var(--status-neutral-foreground);
+
+  --color-ai-accent: var(--ai-accent);
+  --color-ai-background: var(--ai-background);
+  --color-ai-foreground: var(--ai-foreground);
 }

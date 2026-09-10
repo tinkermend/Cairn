@@ -25,17 +25,17 @@ export function RolesDeleteDialog({ open, onOpenChange, currentRow }: RolesDelet
       disabled={locked || saving}
       title={
         <span className='text-destructive'>
-          <AlertTriangle className='me-1 inline-block stroke-destructive' size={18} /> Delete Role
+          <AlertTriangle className='me-1 inline-block stroke-destructive' size={18} /> 删除角色
         </span>
       }
       desc={
         locked
           ? currentRow.kind === 'system'
-            ? 'System roles cannot be deleted.'
-            : `This role is still assigned to ${currentRow.accountCount} account(s).`
-          : `Delete custom role "${currentRow.name}" (${currentRow.key})? This cannot be undone.`
+            ? '系统角色不能删除。'
+            : `该角色仍分配给 ${currentRow.accountCount} 个账号。`
+          : `确定删除自定义角色「${currentRow.name}」（${currentRow.key}）吗？此操作不可撤销。`
       }
-      confirmText='Delete'
+      confirmText='删除'
       destructive
       handleConfirm={() => {
         if (locked) return
@@ -44,11 +44,11 @@ export function RolesDeleteDialog({ open, onOpenChange, currentRow }: RolesDelet
           .then(async () => {
             await queryClient.invalidateQueries({ queryKey: ['roles'] })
             await queryClient.invalidateQueries({ queryKey: ['audit'] })
-            toast.success('Role deleted')
+            toast.success('角色已删除')
             onOpenChange(false)
           })
           .catch((error) => {
-            toast.error(error instanceof ApiRequestError ? error.message : 'Delete failed')
+            toast.error(error instanceof ApiRequestError ? error.message : '删除失败')
           })
           .finally(() => setSaving(false))
       }}

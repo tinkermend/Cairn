@@ -66,10 +66,10 @@ describe('UsersActionDialog', () => {
       )
 
       await expect
-        .element(getByRole('heading', { level: 2, name: /Add New User/i }))
+        .element(getByRole('heading', { level: 2, name: /新增用户/ }))
         .toBeInTheDocument()
       await expect
-        .element(getByText(/Create a console account with a local password/i))
+        .element(getByText(/创建使用本地密码的控制台账号/))
         .toBeInTheDocument()
     })
 
@@ -77,8 +77,8 @@ describe('UsersActionDialog', () => {
       const { getByRole, getByText } = await renderDialog(
         <UsersActionDialog open onOpenChange={vi.fn()} roles={MOCK_ROLES} />
       )
-      await userEvent.click(getByRole('button', { name: /Save Changes/i }))
-      await expect.element(getByText('Display name is required.')).toBeInTheDocument()
+      await userEvent.click(getByRole('button', { name: /保存/ }))
+      await expect.element(getByText('请填写显示名称。')).toBeInTheDocument()
     })
 
     it('submits display name, email, password and default operator role', async () => {
@@ -87,10 +87,10 @@ describe('UsersActionDialog', () => {
         <UsersActionDialog open onOpenChange={onOpenChange} roles={MOCK_ROLES} />
       )
 
-      await userEvent.fill(getByLabelText(/Display name/i), 'New Operator')
-      await userEvent.fill(getByLabelText(/^Email$/i), 'ops@cairn.dev')
-      await userEvent.fill(getByLabelText(/^Password$/i), 'password1')
-      await userEvent.click(getByRole('button', { name: /Save Changes/i }))
+      await userEvent.fill(getByLabelText(/显示名称/), 'New Operator')
+      await userEvent.fill(getByLabelText(/^邮箱$/), 'ops@cairn.dev')
+      await userEvent.fill(getByLabelText(/^密码$/), 'password1')
+      await userEvent.click(getByRole('button', { name: /保存/ }))
 
       await vi.waitFor(() => expect(createAccount).toHaveBeenCalledOnce())
       expect(createAccount).toHaveBeenCalledWith({
@@ -115,10 +115,10 @@ describe('UsersActionDialog', () => {
         />
       )
       await expect
-        .element(getByRole('heading', { level: 2, name: /Edit User/i }))
+        .element(getByRole('heading', { level: 2, name: /编辑用户/ }))
         .toBeInTheDocument()
       await expect
-        .element(getByText(/Update the account and roles/i))
+        .element(getByText(/更新账号信息与角色分配/))
         .toBeInTheDocument()
     })
 
@@ -133,8 +133,8 @@ describe('UsersActionDialog', () => {
         />
       )
 
-      await userEvent.fill(screen.getByLabelText(/Display name/i), 'Alex Updated')
-      await userEvent.click(screen.getByRole('button', { name: /Save Changes/i }))
+      await userEvent.fill(screen.getByLabelText(/显示名称/), 'Alex Updated')
+      await userEvent.click(screen.getByRole('button', { name: /保存/ }))
 
       await vi.waitFor(() => expect(updateAccount).toHaveBeenCalledOnce())
       expect(updateAccount).toHaveBeenCalledWith(

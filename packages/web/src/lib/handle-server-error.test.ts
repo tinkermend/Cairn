@@ -1,5 +1,5 @@
-import { AxiosError } from 'axios'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiRequestError } from './api-client'
 import { handleServerError } from './handle-server-error'
 
 const toastError = vi.hoisted(() => vi.fn())
@@ -9,6 +9,10 @@ vi.mock('sonner', () => ({
     error: toastError,
   },
 }))
+
+function apiError(status: number, message: string, code = 'REQUEST_FAILED') {
+  return new ApiRequestError(status, { code, message, requestId: 'req-1' })
+}
 
 beforeEach(() => {
   vi.mocked(toastError).mockClear()
@@ -27,40 +31,24 @@ describe('handleServerError', () => {
     expect(toastError).toHaveBeenCalledWith('No content.')
   })
 
-  it('prefers the API title when the error is an Axios error with response data', () => {
-    const error = new AxiosError('Bad request')
-    error.response = {
-      status: 422,
-      data: { title: 'Validation failed' },
-    } as AxiosError['response']
+  it('shows the server message carried by ApiRequestError', () => {
+    handleServerError(apiError(422, '工作流未绑定 Target', 'SCENARIO_NOT_BOUND'))
 
-    handleServerError(error)
-
-    expect(toastError).toHaveBeenCalledWith('Validation failed')
+    expect(toastError).toHaveBeenCalledWith(expect.stringContaining('工作流未绑定 Target'))
   })
 
-  it('falls back to the generic message when Axios response has no data.title', () => {
-    const error = new AxiosError('Request failed')
-    error.response = {
-      status: 500,
-      data: {},
-    } as AxiosError['response']
+  it('appends the requestId in development so the toast can be traced to server logs', () => {
+    handleServerError(apiError(500, '服务器内部错误', 'INTERNAL_ERROR'))
 
-    handleServerError(error)
-
-    expect(toastError).toHaveBeenCalledWith('Something went wrong!')
+    expect(toastError).toHaveBeenCalledWith('服务器内部错误（req-1）')
   })
 
-  it('falls back to the generic message when Axios data.title is an empty string', () => {
-    const error = new AxiosError('Bad request')
-    error.response = {
-      status: 400,
-      data: { title: '' },
-    } as AxiosError['response']
+  it('hides the requestId in production', () => {
+    vi.stubEnv('DEV', false)
 
-    handleServerError(error)
+    handleServerError(apiError(500, '服务器内部错误', 'INTERNAL_ERROR'))
 
-    expect(toastError).toHaveBeenCalledWith('Something went wrong!')
+    expect(toastError).toHaveBeenCalledWith('服务器内部错误')
   })
 
   it('logs the error to the console in development', () => {

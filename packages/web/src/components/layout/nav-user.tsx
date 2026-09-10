@@ -1,17 +1,9 @@
-import { Link } from '@tanstack/react-router'
-import {
-  BadgeCheck,
-  ChevronsUpDown,
-  LogOut,
-  UserCog,
-} from 'lucide-react'
+import { ChevronsUpDown } from 'lucide-react'
 import useDialogState from '@/hooks/use-dialog-state'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -22,6 +14,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar'
+import { AccountMenuItems } from '@/components/account-menu-items'
 import { SignOutDialog } from '@/components/sign-out-dialog'
 import { initials } from '@/lib/auth'
 
@@ -49,11 +42,13 @@ export function NavUser({ user }: NavUserProps) {
               >
                 <Avatar className='h-8 w-8 rounded-lg'>
                   <AvatarImage src={user.avatar} alt={user.name} />
-                    <AvatarFallback className='rounded-lg'>{initials(user.name)}</AvatarFallback>
+                  <AvatarFallback className='rounded-lg'>
+                    {initials(user.name)}
+                  </AvatarFallback>
                 </Avatar>
-                <div className='grid flex-1 text-start text-sm leading-tight'>
+                <div className='grid flex-1 text-start text-body leading-tight'>
                   <span className='truncate font-semibold'>{user.name}</span>
-                  <span className='truncate text-xs'>{user.email}</span>
+                  <span className='truncate text-label'>{user.email}</span>
                 </div>
                 <ChevronsUpDown className='ms-auto size-4' />
               </SidebarMenuButton>
@@ -65,40 +60,21 @@ export function NavUser({ user }: NavUserProps) {
               sideOffset={4}
             >
               <DropdownMenuLabel className='p-0 font-normal'>
-                <div className='flex items-center gap-2 px-1 py-1.5 text-start text-sm'>
+                <div className='flex items-center gap-2 px-1 py-1.5 text-start text-body'>
                   <Avatar className='h-8 w-8 rounded-lg'>
                     <AvatarImage src={user.avatar} alt={user.name} />
-                    <AvatarFallback className='rounded-lg'>{initials(user.name)}</AvatarFallback>
+                    <AvatarFallback className='rounded-lg'>
+                      {initials(user.name)}
+                    </AvatarFallback>
                   </Avatar>
-                  <div className='grid flex-1 text-start text-sm leading-tight'>
+                  <div className='grid flex-1 text-start text-body leading-tight'>
                     <span className='truncate font-semibold'>{user.name}</span>
-                    <span className='truncate text-xs'>{user.email}</span>
+                    <span className='truncate text-label'>{user.email}</span>
                   </div>
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuItem asChild>
-                  <Link to='/settings'>
-                    <UserCog />
-                    Profile
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link to='/settings/account'>
-                    <BadgeCheck />
-                    Account
-                  </Link>
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant='destructive'
-                onClick={() => setOpen(true)}
-              >
-                <LogOut />
-                Sign out
-              </DropdownMenuItem>
+              <AccountMenuItems onSignOut={() => setOpen(true)} />
             </DropdownMenuContent>
           </DropdownMenu>
         </SidebarMenuItem>

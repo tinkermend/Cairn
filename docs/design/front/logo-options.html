@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>识途 Logo 方案记录</title>
+    <link rel="stylesheet" href="./tokens.css" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(
+            circle at 50% 30%,
+            var(--primary-100),
+            transparent 46%
+          ),
+          var(--surface-page);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+      }
+      main {
+        width: min(1120px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 72px 0;
+      }
+      header {
+        max-width: 680px;
+        margin-bottom: 32px;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: var(--font-size-page);
+        line-height: var(--line-height-page);
+      }
+      header p {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: var(--font-size-body);
+        line-height: var(--line-height-body);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+      }
+      article {
+        min-width: 0;
+        padding: 28px;
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-card);
+        background: var(--surface-card);
+        box-shadow: var(--shadow-card);
+      }
+      article.recommended {
+        border-color: var(--selection-border);
+        box-shadow: var(--shadow-popover);
+      }
+      .tag {
+        display: inline-flex;
+        margin-bottom: 24px;
+        padding: 3px 8px;
+        border-radius: var(--radius-tag);
+        background: var(--selection-background);
+        color: var(--selection-foreground);
+        font-size: var(--font-size-label);
+        font-weight: var(--font-weight-semibold);
+      }
+      .wordmark {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-height: 72px;
+      }
+      .wordmark img {
+        width: 64px;
+        height: 64px;
+      }
+      .brand-name {
+        font-size: 22px;
+        font-weight: var(--font-weight-semibold);
+        letter-spacing: -0.02em;
+      }
+      .brand-subtitle {
+        margin-top: 3px;
+        color: var(--text-muted);
+        font-size: var(--font-size-small);
+      }
+      h2 {
+        margin: 24px 0 8px;
+        font-size: var(--font-size-section);
+        line-height: var(--line-height-section);
+      }
+      article p {
+        min-height: 66px;
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: var(--font-size-body);
+        line-height: var(--line-height-body);
+      }
+      .sizes {
+        display: flex;
+        align-items: end;
+        gap: 16px;
+        margin-top: 24px;
+        padding-top: 20px;
+        border-top: 1px solid var(--border-divider);
+      }
+      .sizes img:nth-child(1) {
+        width: 40px;
+        height: 40px;
+      }
+      .sizes img:nth-child(2) {
+        width: 24px;
+        height: 24px;
+      }
+      .sizes img:nth-child(3) {
+        width: 16px;
+        height: 16px;
+      }
+      @media (max-width: 860px) {
+        main {
+          padding: 40px 0;
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        article p {
+          min-height: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>识途 Logo 方案记录</h1>
+        <p>B「观测证据」已选定为正式方向；本页保留三个方案的并排记录。</p>
+      </header>
+      <section class="grid" aria-label="Logo 候选方案">
+        <article>
+          <span class="tag">A</span>
+          <div class="wordmark">
+            <img
+              src="../../../packages/web/src/assets/brand/logo-path.svg"
+              alt="路径标"
+            />
+            <div>
+              <div class="brand-name">识途</div>
+              <div class="brand-subtitle">可观测场景执行平台</div>
+            </div>
+          </div>
+          <h2>路径标</h2>
+          <p>起点、连续路径与终点共同表达顺序执行，并形成隐约的 S。</p>
+          <div class="sizes" aria-label="路径标小尺寸预览">
+            <img
+              src="../../../packages/web/src/assets/brand/logo-path.svg"
+              alt=""
+            />
+            <img
+              src="../../../packages/web/src/assets/brand/logo-path.svg"
+              alt=""
+            />
+            <img
+              src="../../../packages/web/src/assets/brand/logo-path.svg"
+              alt=""
+            />
+          </div>
+        </article>
+        <article class="recommended">
+          <span class="tag">B · 已选</span>
+          <div class="wordmark">
+            <img
+              src="../../../packages/web/src/assets/brand/logo-observe.svg"
+              alt="观测证据"
+            />
+            <div>
+              <div class="brand-name">识途</div>
+              <div class="brand-subtitle">可观测场景执行平台</div>
+            </div>
+          </div>
+          <h2>观测证据</h2>
+          <p>圆形观测窗口与连续节点表达运行过程、Evidence 和可复盘性。</p>
+          <div class="sizes" aria-label="观测证据小尺寸预览">
+            <img
+              src="../../../packages/web/src/assets/brand/logo-observe.svg"
+              alt=""
+            />
+            <img
+              src="../../../packages/web/src/assets/brand/logo-observe.svg"
+              alt=""
+            />
+            <img
+              src="../../../packages/web/src/assets/brand/logo-observe.svg"
+              alt=""
+            />
+          </div>
+        </article>
+        <article>
+          <span class="tag">C</span>
+          <div class="wordmark">
+            <img
+              src="../../../packages/web/src/assets/brand/logo-cairn.svg"
+              alt="叠石路标"
+            />
+            <div>
+              <div class="brand-name">识途</div>
+              <div class="brand-subtitle">可观测场景执行平台</div>
+            </div>
+          </div>
+          <h2>叠石路标</h2>
+          <p>叠石对应 Cairn 的名称来源，表达路标、方向与可靠引导。</p>
+          <div class="sizes" aria-label="叠石路标小尺寸预览">
+            <img
+              src="../../../packages/web/src/assets/brand/logo-cairn.svg"
+              alt=""
+            />
+            <img
+              src="../../../packages/web/src/assets/brand/logo-cairn.svg"
+              alt=""
+            />
+            <img
+              src="../../../packages/web/src/assets/brand/logo-cairn.svg"
+              alt=""
+            />
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

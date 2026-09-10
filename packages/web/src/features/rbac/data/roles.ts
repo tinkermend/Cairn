@@ -29,5 +29,3 @@ export const sampleCustomRole: RoleDto = {
   createdAt: now,
   updatedAt: now,
 }
-
-export const sampleRoles: RoleDto[] = [...systemRoles, sampleCustomRole]

@@ -32,19 +32,19 @@ describe('can', () => {
 
 describe('visibleByPermission', () => {
   const items = [
-    { title: 'Dashboard' },
-    { title: 'Users', permission: 'account:read' as const },
-    { title: 'Roles', permission: 'role:write' as const },
+    { title: '首页' },
+    { title: '用户', permission: 'account:read' as const },
+    { title: '角色', permission: 'role:write' as const },
   ]
 
   it('无主体时只保留不要求权限的项', () => {
-    expect(visibleByPermission(items, null).map((i) => i.title)).toEqual(['Dashboard'])
+    expect(visibleByPermission(items, null).map((i) => i.title)).toEqual(['首页'])
   })
 
   it('viewer 看不到需要 write 的项', () => {
     expect(visibleByPermission(items, viewer).map((i) => i.title)).toEqual([
-      'Dashboard',
-      'Users',
+      '首页',
+      '用户',
     ])
   })
 })

@@ -8,7 +8,7 @@ export function RolesPrimaryButtons() {
   return (
     <Can permission='role:write'>
       <Button className='space-x-1' onClick={() => setOpen('add')}>
-        <span>Create Role</span> <ShieldPlus size={18} />
+        <span>创建角色</span> <ShieldPlus size={18} />
       </Button>
     </Can>
   )

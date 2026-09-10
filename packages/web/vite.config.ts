@@ -24,6 +24,9 @@ export default defineConfig({
     },
   },
   server: {
+    fs: {
+      allow: [path.resolve(import.meta.dirname, '../..')],
+    },
     proxy: {
       // 开发期把后端调用转发到本地 api，避免跨域并让前端代码里只写相对路径
       '/api': { target: API_ORIGIN, changeOrigin: true },

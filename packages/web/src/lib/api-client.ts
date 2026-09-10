@@ -18,6 +18,21 @@ export class ApiRequestError extends Error {
 }
 
 /**
+ * 前端侧生成关联 ID。
+ *
+ * 不能直接用 `crypto.randomUUID`：它只在安全上下文可用，而识途控制台在私有化
+ * 交付里恰恰常跑在 LAN 的明文 HTTP 上（开发期走 localhost / Vite 代理，
+ * 属于安全上下文，测不出这个洞）。那里 `randomUUID` 是 undefined，
+ * 直接调用会让每个请求在发出前就抛错——比拿不到关联 ID 严重得多。
+ * `getRandomValues` 不受该限制。
+ */
+function newRequestId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
  * 所有后端调用的唯一入口。
  *
  * 响应用 @cairn/shared 的 schema 解析——与 api 序列化时用的是同一批
@@ -34,6 +49,9 @@ export async function apiFetch<T>(
     ...init,
     headers: {
       Accept: 'application/json',
+      // 前端主动生成并送出自有请求 ID，浏览器与服务端日志因此能对上。
+      // 失败时仍以错误体里的 requestId 为准——服务端可能另有上游来源。
+      [REQUEST_ID_HEADER]: newRequestId(),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },

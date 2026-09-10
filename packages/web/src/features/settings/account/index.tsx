@@ -4,8 +4,8 @@ import { AccountForm } from './account-form'
 export function SettingsAccount() {
   return (
     <ContentSection
-      title='Account'
-      desc='Change the password for your local console identity.'
+      title='账号'
+      desc='修改本地控制台身份的密码。'
     >
       <AccountForm />
     </ContentSection>

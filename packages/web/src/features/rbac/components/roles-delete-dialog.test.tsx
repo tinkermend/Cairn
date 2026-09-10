@@ -19,8 +19,8 @@ describe('RolesDeleteDialog', () => {
     const { getByText, getByRole } = await renderDialog(
       <RolesDeleteDialog open onOpenChange={vi.fn()} currentRow={admin} />
     )
-    await expect.element(getByText(/System roles cannot be deleted/i)).toBeInTheDocument()
-    await expect.element(getByRole('button', { name: /Delete/i })).toBeDisabled()
+    await expect.element(getByText(/系统角色不能删除/)).toBeInTheDocument()
+    await expect.element(getByRole('button', { name: /^删除$/ })).toBeDisabled()
   })
 
   it('allows deleting an unused custom role', async () => {
@@ -32,8 +32,8 @@ describe('RolesDeleteDialog', () => {
       />
     )
     await expect
-      .element(getByText(/Delete custom role "QA Lead"/i))
+      .element(getByText(/确定删除自定义角色「QA Lead」/))
       .toBeInTheDocument()
-    await expect.element(getByRole('button', { name: /Delete/i })).toBeEnabled()
+    await expect.element(getByRole('button', { name: /^删除$/ })).toBeEnabled()
   })
 })

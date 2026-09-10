@@ -23,7 +23,6 @@
     "^react/(.*)$",
     "^globals$",
     "^zod$",
-    "^axios$",
     "^date-fns$",
     "^react-hook-form$",
     "^use-intl$",
