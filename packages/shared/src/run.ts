@@ -1,12 +1,13 @@
 import { z } from 'zod'
 import { secretRefSchema } from './secret-ref.js'
-import { executionPolicySchema, stepSchema } from './step.js'
+import { contextKeySchema, executionPolicySchema, stepSchema } from './step.js'
 import {
   entityIdSchema,
   jsonValueSchema,
   RUNTIME_SCHEMA_VERSION,
   runtimeSchemaVersionSchema,
   utcInstantSchema,
+  type JsonValue,
 } from './wire.js'
 
 /**
@@ -45,6 +46,64 @@ export const ATTEMPT_STATUSES = ['RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED'] 
 export type AttemptStatus = (typeof ATTEMPT_STATUSES)[number]
 export const attemptStatusSchema = z.enum(ATTEMPT_STATUSES)
 
+/** input / context 键不得踩到原型链上的保留名。`contextKeySchema` 挡不住 `constructor`。 */
+export const FORBIDDEN_CONTEXT_KEYS = [
+  '__proto__',
+  'constructor',
+  'prototype',
+  'toString',
+  'valueOf',
+  'hasOwnProperty',
+] as const
+
+export const MAX_RUN_INPUT_KEYS = 64
+
+export const runInputKeySchema = contextKeySchema.refine(
+  (key) => !(FORBIDDEN_CONTEXT_KEYS as readonly string[]).includes(key),
+  'input 键不得使用对象保留名',
+)
+
+/**
+ * 不用 `z.record`：Zod 读键时会丢掉 JSON 的 `__proto__` 自有属性，验收要求必须拒掉。
+ * 用 `getOwnPropertyNames` 才能看到这个键。
+ */
+export const runInputSchema = z.unknown().transform((raw, ctx) => {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    ctx.addIssue({ code: 'custom', message: 'input 必须是对象' })
+    return z.NEVER
+  }
+  const keys = Object.getOwnPropertyNames(raw)
+  if (keys.length > MAX_RUN_INPUT_KEYS) {
+    ctx.addIssue({ code: 'custom', message: `input 最多 ${MAX_RUN_INPUT_KEYS} 个键` })
+    return z.NEVER
+  }
+  const out: Record<string, JsonValue> = {}
+  for (const key of keys) {
+    const keyOk = runInputKeySchema.safeParse(key)
+    if (!keyOk.success) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: keyOk.error.issues[0]?.message ?? '非法 input 键',
+      })
+      continue
+    }
+    const value = Object.getOwnPropertyDescriptor(raw, key)?.value
+    const valOk = jsonValueSchema.safeParse(value)
+    if (!valOk.success) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: valOk.error.issues[0]?.message ?? '非法 input 值',
+      })
+      continue
+    }
+    out[key] = valOk.data
+  }
+  return out
+})
+export type RunInput = z.infer<typeof runInputSchema>
+
 export const runSnapshotSchema = z
   .strictObject({
     schemaVersion: runtimeSchemaVersionSchema,
@@ -56,7 +115,7 @@ export const runSnapshotSchema = z
     scenarioId: entityIdSchema,
     scenarioVersionId: entityIdSchema,
     steps: z.array(stepSchema),
-    input: z.record(z.string(), jsonValueSchema),
+    input: runInputSchema,
     createdAt: utcInstantSchema,
     policy: executionPolicySchema.optional(),
     executorVersions: z.record(z.string().min(1), z.string().min(1).max(64)).optional(),

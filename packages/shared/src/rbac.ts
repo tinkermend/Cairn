@@ -351,6 +351,11 @@ export const AUDIT_ACTIONS = [
   'target_account.update',
   'target_account.delete',
   'target_account.password',
+  'scenario.create',
+  'scenario.update',
+  'scenario.delete',
+  'run.create',
+  'run.cancel',
 ] as const
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 

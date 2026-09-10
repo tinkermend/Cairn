@@ -254,6 +254,24 @@ describe('Targets HTTP', () => {
     expect(res.body.code).toBe('TARGET_HAS_ACCOUNTS')
   })
 
+  it('领域码 TARGET_HAS_SCENARIOS / TARGET_ACCOUNT_HAS_RUNS 原样透传', async () => {
+    service.deleteTarget.mockRejectedValueOnce(
+      new ConflictException({ code: 'TARGET_HAS_SCENARIOS', message: '请先删除该目标系统下的场景' }),
+    )
+    const hasScenarios = await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/delete`)
+      .expect(409)
+    expect(hasScenarios.body.code).toBe('TARGET_HAS_SCENARIOS')
+
+    service.deleteAccount.mockRejectedValueOnce(
+      new ConflictException({ code: 'TARGET_ACCOUNT_HAS_RUNS', message: '请先处理引用该目标账号的运行' }),
+    )
+    const hasRuns = await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/accounts/${account.id}/delete`)
+      .expect(409)
+    expect(hasRuns.body.code).toBe('TARGET_ACCOUNT_HAS_RUNS')
+  })
+
   it('目标不存在 404 TARGET_NOT_FOUND', async () => {
     service.getTarget.mockRejectedValueOnce(
       new NotFoundException({ code: 'TARGET_NOT_FOUND', message: '目标系统不存在' }),

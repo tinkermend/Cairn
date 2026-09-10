@@ -157,7 +157,6 @@ HTTP `error.ts` 不改形状；只补 `requestIdValueSchema`，给事件字段�
 
 ## 7. 刻意留给后续
 
-- P1：表、digest 计算、引用存在性。
-- P2：Engine 解释 `from` / `outputKey`，执行策略读取 `retryable`。
+- P1 / P2 的表、digest、引用存在性，以及 Engine 解释 `from` / `outputKey`、执行策略读取 `retryable`，已在 [执行内核](2026-09-10-execution-kernel.md) 落地。
 - P3：Lease 写入与库钟比较。
 - 业务 Step Type、SSE 补读、领域错误码词表。

@@ -28,18 +28,13 @@
 
   /* 三层平面：导航白 / 画布冷灰蓝 / 卡片白。
      画布与卡片的明度比必须够把白卡片托出来——1.05:1 等于没有分层，当前 1.14:1。 */
-  --surface-nav: #ffffff;
+  --surface-nav: #f8f9fb;
   --surface-page: #f1f4fa;
   --surface-card: #ffffff;
   --surface-header: #f8fafc;
   /* 输入与卡片同色纯白。靠边界识别，不另铺浅灰或冷白底。 */
   --surface-control: var(--surface-card);
   --surface-subtle: #f1f5f9;
-
-  /* 画布顶部光晕。只铺在内容区，不参与任何前景对比度计算。 */
-  --canvas-bloom:
-    radial-gradient(900px 420px at 78% -10%, #ffffffe6, #ffffff00 60%),
-    radial-gradient(560px 300px at 4% -4%, #819eff1f, #ffffff00 70%);
 
   --border-default: #e4e9f1;
   --border-divider: #edf1f6;

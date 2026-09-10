@@ -12,6 +12,8 @@ import { AuthModule } from './auth/auth.module'
 import { HealthModule } from './health/health.module'
 import { PermissionsGuard } from './rbac/permissions.guard'
 import { RbacModule } from './rbac/rbac.module'
+import { RunsModule } from './runs/runs.module'
+import { ScenariosModule } from './scenarios/scenarios.module'
 import { TargetsModule } from './targets/targets.module'
 
 @Module({
@@ -27,6 +29,8 @@ import { TargetsModule } from './targets/targets.module'
     AuthModule,
     RbacModule,
     TargetsModule,
+    ScenariosModule,
+    RunsModule,
     // 必须放在最后：兜底路由要在所有业务路由之后注册
     NotFoundModule,
   ],

@@ -1,6 +1,6 @@
 # 执行内核：账本与无浏览器引擎
 
-日期：2026-09-10。状态：**待审查**（同日修订一版：参数化 `from` 三层校验、副作用未知一律 `NEEDS_REVIEW`、`runs` 列清单与摘要生产位置、外键列名、场景停用语义、证据索引）。  
+日期：2026-09-10。状态：**已落地**（同日修订一版后实现：参数化 `from` 三层校验、副作用未知一律 `NEEDS_REVIEW`、`runs` 列清单与摘要生产位置、外键列名、场景停用语义、证据索引）。**同日复查后又修**：取消请求的收口点、停机与领取的竞态、执行器异常分类、步骤跑完但 Run 未收尾。  
 对应路线图 P1 剩余 + P2，以及 RF03 / RF04 / RF05 / RF09。两处对 P2 验收的主动下修（退避、Run 级总超时）已写进非目标。  
 前置：[最小执行契约](2026-09-10-runtime-contracts.md)（已落地）、[目标系统（接入目录）](2026-09-10-target-catalog.md)（已落地）。
 
@@ -433,12 +433,13 @@ CHECK：`(idempotency_key IS NULL) = (idempotency_digest IS NULL)`。部分唯�
 | `requestRunCancel` | 设 `cancel_requested_at`；若仍 `QUEUED` 则终态 `CANCELLED` 且 PENDING → `CANCELLED` |
 | `claimQueuedRun` | D4 的单行领取 |
 | `startAttempt` | StepRun→`RUNNING`（若还是 PENDING）、插 Attempt、插 input Evidence |
-| `finishAttempt` | 关 Attempt + Evidence + context + StepRun/Run 状态。条件：Attempt 仍是 `RUNNING` |
+| `finishAttempt` | 关 Attempt + Evidence + context + StepRun/Run 状态。条件：Attempt 仍是 `RUNNING`；若 Run 有取消请求则改写成取消（`NEEDS_REVIEW` 除外） |
+| `finishRunIfDrained` | 步骤全部 `SUCCEEDED` 且无取消请求时补写 Run `SUCCEEDED`（§7 第 4 步的兜底） |
 | `skipRemainingStepRuns` / `cancelPendingStepRuns` | 失败即停与取消 |
 
 `finishAttempt` 必须在同一事务里读当前 Run 行并确认仍是 `RUNNING`（或按取消请求改写）。本期没有 fencing token；P3 会把这段改成验租约。函数签名现在就留下明确的「状态写入入口」，避免以后只修一处、漏掉另一处。
 
-**状态写入入口的完整清单**（P3 加 token 校验时一个都不能漏）：`createRunWithSnapshot`、`requestRunCancel`、`claimQueuedRun`、`startAttempt`、`finishAttempt`、`skipRemainingStepRuns`、`cancelPendingStepRuns`。
+**状态写入入口的完整清单**（P3 加 token 校验时一个都不能漏）：`createRunWithSnapshot`、`requestRunCancel`、`claimQueuedRun`、`startAttempt`、`finishAttempt`、`finishRunIfDrained`、`skipRemainingStepRuns`、`cancelPendingStepRuns`。
 
 **摘要与校验的落点**：`snapshotDigestPayload` / `idempotencyDigestPayload` / `resolveStepPolicy` / `validateScenarioDefinition` 进 `@cairn/shared`（纯函数，零 Node 内置依赖；已核实 shared 现阶段只依赖 zod）。`createHash` 只在 `packages/db/src/runs/digest.ts`，由 `createRunWithSnapshot` 调用——不是「只在测试里用」。
 
@@ -473,7 +474,8 @@ CHECK：`(idempotency_key IS NULL) = (idempotency_digest IS NULL)`。部分唯�
 1. `runSnapshotSchema.parse`；失败 → Run `FAILED`（`VALIDATION`），剩余 StepRun `SKIPPED`，直接结束。
 2. 读 Snapshot 与 `context`（应已等于 input）；断言 `executorVersions` 是本期那三个键且值匹配。
 3. 若已有 `cancel_requested_at` 或 `signal` abort：按 D4 的 `effectType` 分流收尾。
-4. 按 `ordinal` 取下一个 `PENDING` StepRun。没有则 Run `SUCCEEDED`。
+   取消没有通知机制可依赖（NOTIFY 属 P7），因此 Engine 在整条 Run 的生命周期里轮询 `cancel_requested_at`（默认 250 ms，`cancelPollMs` 可覆盖），命中即 abort 在途步骤，跨步骤与跨重试都有效。写入侧的最终收口在 `finishAttempt`：取消请求到达后到达的成功一律改写成取消。
+4. 按 `ordinal` 取下一个 `PENDING` StepRun。没有则 Run `SUCCEEDED`（最后一步成功时已在同一事务里写终态；循环结束时由 `finishRunIfDrained` 兜底）。
 5. 解析输入：`from` 用 `Object.hasOwn(context, key)` 取值并过 `jsonValueSchema.parse`；`startAttempt`；0 行则按 D5 收尾。
 6. Registry 取 Executor，`AbortSignal.any(signal, resolveStepPolicy(快照, 步骤).timeoutMs)`。
 7. 成功 → `finishAttempt(SUCCEEDED)`，写 context，回 4。
@@ -553,7 +555,8 @@ CHECK：`(idempotency_key IS NULL) = (idempotency_digest IS NULL)`。部分唯�
 |---|---|
 | P3 | RunLease、fencing、心跳、崩溃恢复、`NEEDS_REVIEW` 的处置与恢复入口、3 Worker × 100 Run |
 | P4 | 浏览器、Session、登录态、读密文、`WAITING_FOR_AUTH` |
-| P6 | 截图、对象存储、Trace |
+| P6 存储内核 | [对象存储内核](2026-09-10-object-store.md)：put / get / delete、本地与 S3、保留清理 |
+| P6 其余 | 截图、Trace、授权下载、`evidenceStatus` |
 | P7 | `run_events`、NOTIFY、SSE、Run Observer 页 |
 | P10–P11 | Draft/Publish、Compiler、Sequence Editor |
 | P12+ | 录制进 IR、断言搭建、AI Step |
@@ -569,3 +572,4 @@ P3 替换领取函数时，所有权检查要覆盖 §5 列出的全部状态写
 5. 退避与 Run 级总超时未做（路线图 P2 已列）。快照 `policy.timeoutMs` 只是步骤级默认超时，跨步骤的总预算在 P3 补。
 6. `NEEDS_REVIEW` 没有 API 出口，本期只能人工 SQL 收敛。
 7. 场景定义不声明输入清单，保存期的 `from` 只校验顺序，参数化引用要到创建 Run 才被判死。P10 加 `definition.inputs` 后收紧。
+8. 取消靠轮询 `cancel_requested_at` 发现（默认 250 ms），期间每个 Run 会持续读一行 `runs`。P7 接 NOTIFY 后应改为事件驱动，轮询只作兜底。

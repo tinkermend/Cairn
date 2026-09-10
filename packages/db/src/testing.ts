@@ -1,7 +1,10 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { drizzle } from 'drizzle-orm/node-postgres'
 import { Pool } from 'pg'
 import { dbEnvSchema, formatEnvIssues, type DbEnv } from '@cairn/shared'
+import type { DbHandle } from './client.js'
+import { migrate } from './migrate.js'
 
 /** 仓库根 `.env`。与 api / worker 的读取路径同源：本地读它，CI 由环境变量提供。 */
 const ENV_FILE = resolve(import.meta.dirname, '../../../.env')
@@ -59,4 +62,75 @@ export async function requireReachableDb(): Promise<DbEnv> {
   }
 
   return env
+}
+
+/**
+ * 集成测试用的独立数据库。
+ *
+ * Drizzle 表名编译期写死为 `cairn.*`，只建独立 schema 拦不住限定名。
+ * 另开数据库再在其中 migrate `cairn`，查询与领取都不会碰到开发库或其它测试。
+ * `close()` 会 `DROP DATABASE`。
+ */
+export async function openIsolatedDb(name: string): Promise<DbHandle> {
+  const env = await requireReachableDb()
+  if (!/^[a-z_][a-z0-9_]*$/.test(name) || name.length > 63) {
+    throw new Error(`隔离库名不合法：${name}`)
+  }
+
+  const admin = new Pool({
+    host: env.CAIRN_DB_HOST,
+    port: env.CAIRN_DB_PORT,
+    database: env.CAIRN_DB_NAME,
+    user: env.CAIRN_DB_USER,
+    password: env.CAIRN_DB_PASSWORD,
+    connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+  })
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`)
+  } finally {
+    await admin.end()
+  }
+
+  const pool = new Pool({
+    host: env.CAIRN_DB_HOST,
+    port: env.CAIRN_DB_PORT,
+    database: name,
+    user: env.CAIRN_DB_USER,
+    password: env.CAIRN_DB_PASSWORD,
+    options: `-c search_path=cairn,public`,
+  })
+  try {
+    await migrate(pool, 'cairn')
+  } catch (error) {
+    await pool.end()
+    await dropIsolatedDatabase(env, name)
+    throw error
+  }
+
+  const db = drizzle(pool)
+  return {
+    db,
+    pool,
+    ping: async () => true,
+    close: async () => {
+      await pool.end()
+      await dropIsolatedDatabase(env, name)
+    },
+  }
+}
+
+async function dropIsolatedDatabase(env: DbEnv, name: string): Promise<void> {
+  const admin = new Pool({
+    host: env.CAIRN_DB_HOST,
+    port: env.CAIRN_DB_PORT,
+    database: env.CAIRN_DB_NAME,
+    user: env.CAIRN_DB_USER,
+    password: env.CAIRN_DB_PASSWORD,
+    connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+  })
+  try {
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`)
+  } finally {
+    await admin.end()
+  }
 }

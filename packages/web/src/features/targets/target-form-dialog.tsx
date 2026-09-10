@@ -403,7 +403,7 @@ function TargetFormFields({
                 {accountOpen ? (
                   <div className='space-y-4'>
                     {authMethod === 'manual' ? (
-                      <p className='text-sm text-muted-foreground'>
+                      <p className='text-body text-muted-foreground'>
                         仅手工登录时仍可登记备用号，不会自动使用。
                       </p>
                     ) : null}
@@ -467,9 +467,9 @@ function TargetFormFields({
                     </Alert>
                   ) : null}
                   {authMethod === 'manual' ? (
-                    <p className='text-sm text-muted-foreground'>仅手工登录时定位仅作备用。</p>
+                    <p className='text-body text-muted-foreground'>仅手工登录时定位仅作备用。</p>
                   ) : null}
-                  <p className='text-sm text-muted-foreground'>
+                  <p className='text-body text-muted-foreground'>
                     知道输入框的 id 或 name 就填；留空则以后试填时按常见字段猜测。保存不会打开目标页面。
                   </p>
                   <LocatorRow form={form} role='username' placeholder='username' />
@@ -505,7 +505,7 @@ function SectionToggle({
   return (
     <button
       type='button'
-      className='flex w-full items-center justify-between text-left text-sm font-medium'
+      className='flex w-full items-center justify-between text-left text-body font-medium'
       onClick={() => onOpenChange(!open)}
       aria-expanded={open}
     >

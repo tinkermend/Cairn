@@ -2,6 +2,8 @@ import { Test } from '@nestjs/testing'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DbHandle } from '@cairn/db'
 import { DB_HANDLE, DbModule } from '../db/db.module'
+import { ExecutionEngine } from '../engine/engine'
+import { ObjectService } from '../objects/object.service'
 import { LifecycleService } from './lifecycle.service'
 
 function stubDb(close = vi.fn(async () => {})): DbHandle {
@@ -13,7 +15,12 @@ describe('LifecycleService', () => {
 
   async function buildApp(handle: DbHandle) {
     const moduleRef = await Test.createTestingModule({
-      providers: [LifecycleService, { provide: DB_HANDLE, useValue: handle }],
+      providers: [
+        LifecycleService,
+        { provide: DB_HANDLE, useValue: handle },
+        { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
+        { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+      ],
     }).compile()
     const application = moduleRef.createNestApplication()
     await application.init()
@@ -46,6 +53,36 @@ describe('LifecycleService', () => {
     const svc = app.get(LifecycleService)
     svc.onApplicationShutdown('SIGTERM')
     expect(svc.shutdownSignal).toBe('SIGTERM')
+  })
+
+  it('停机等待在途对象清理结束', async () => {
+    let release!: () => void
+    const purgeHold = new Promise<{ purged: number }>((resolve) => {
+      release = () => resolve({ purged: 1 })
+    })
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        LifecycleService,
+        { provide: DB_HANDLE, useValue: stubDb() },
+        { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
+        { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(() => purgeHold) } },
+      ],
+    }).compile()
+    app = moduleRef.createNestApplication()
+    await app.init()
+    const svc = app.get(LifecycleService)
+    const running = svc.runCleanup()
+    const closing = svc.onApplicationShutdown('SIGTERM')
+    let closed = false
+    void closing.then(() => {
+      closed = true
+    })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(closed).toBe(false)
+    release()
+    await running
+    await closing
+    expect(svc.shutdownCalled).toBe(true)
   })
 
   it('uptime 非负且随时间增长', async () => {

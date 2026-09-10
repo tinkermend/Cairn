@@ -121,4 +121,8 @@ describe('runSnapshotSchema', () => {
   it('createdAt 必须是 UTC', () => {
     expect(() => runSnapshotSchema.parse(snapshot({ createdAt: '2026-09-10T16:00:00+08:00' }))).toThrow()
   })
+
+  it('input 键拒绝 constructor', () => {
+    expect(() => runSnapshotSchema.parse(snapshot({ input: { constructor: 1 } }))).toThrow()
+  })
 })

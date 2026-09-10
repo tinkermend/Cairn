@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { entityIdSchema, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
+import { objectContentTypeSchema, objectKeySchema } from './object-store.js'
+import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
 
 /**
  * Evidence 元数据。结构化索引走这条契约；截图 / Trace 只留对象指针。
@@ -20,10 +21,12 @@ export const evidenceMetadataSchema = z.strictObject({
   attemptId: entityIdSchema.optional(),
   type: evidenceTypeSchema,
   createdAt: utcInstantSchema,
-  objectKey: z.string().min(1).max(512).optional(),
-  contentType: z.string().min(1).max(128).optional(),
+  objectKey: objectKeySchema.optional(),
+  contentType: objectContentTypeSchema.optional(),
   byteSize: z.number().int().nonnegative().optional(),
   digest: z.string().min(1).max(128).optional(),
   missingReason: z.string().min(1).max(512).optional(),
+  /** 结构化小证据。截图 / Trace 用 objectKey，本期不写这两类行。 */
+  payload: jsonValueSchema.optional(),
 })
 export type EvidenceMetadata = z.infer<typeof evidenceMetadataSchema>

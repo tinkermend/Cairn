@@ -59,6 +59,8 @@ describe('AppModule 完整装配', () => {
     await request(app.getHttpServer()).get('/api/console/accounts').expect(401)
     await request(app.getHttpServer()).get('/api/console/audit').expect(401)
     await request(app.getHttpServer()).get('/api/targets').expect(401)
+    await request(app.getHttpServer()).get('/api/scenarios').expect(401)
+    await request(app.getHttpServer()).get('/api/runs').expect(401)
     const login = await request(app.getHttpServer()).post('/api/auth/login').send({}).expect(400)
     expect(login.body.code).toBe('BAD_REQUEST')
     expect(() => apiErrorSchema.parse(login.body)).not.toThrow()

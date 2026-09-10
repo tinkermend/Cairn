@@ -31,12 +31,22 @@ export const TARGET_ERROR_CODES = [
   'TARGET_CODE_CONFLICT',
   'TARGET_ACCOUNT_CONFLICT',
   'TARGET_HAS_ACCOUNTS',
+  'TARGET_HAS_SCENARIOS',
+  'TARGET_DISABLED',
+  'TARGET_ACCOUNT_HAS_RUNS',
 ] as const
 export type TargetErrorCode = (typeof TARGET_ERROR_CODES)[number]
 
 export const targetCodeSchema = z
   .string()
   .regex(/^[a-z][a-z0-9-]{1,62}$/, '编码须为小写字母开头的 slug（2–63 字符）')
+
+/**
+ * `URL` 是浏览器与 Node 共有的 Web 标准全局，契约包不带 DOM lib，
+ * 因此显式声明形状。取不到时下面的 refine 会抛错并判为非法——失败方向是拒绝，不是放行。
+ */
+const UrlCtor = (globalThis as unknown as { URL: new (input: string) => { username: string; password: string } })
+  .URL
 
 const httpUrlSchema = z
   .string()
@@ -49,7 +59,7 @@ const httpUrlSchema = z
   })
   .refine((value) => {
     try {
-      const parsed = new URL(value)
+      const parsed = new UrlCtor(value)
       return parsed.username === '' && parsed.password === ''
     } catch {
       return false

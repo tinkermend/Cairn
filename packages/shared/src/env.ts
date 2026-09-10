@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { logLevelSchema } from './logging.js'
+import { isAbsoluteFsPath, objectStoreDriverSchema } from './object-store.js'
 
 /**
  * `.env` 里留空的项与未设置等价。
@@ -57,12 +58,17 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+=*$/
 export function decodeCredentialKey(raw: string): Uint8Array | undefined {
   if (!BASE64_PATTERN.test(raw)) return undefined
   try {
+    // 契约包同时跑在浏览器与 Node，且不带 DOM lib：用到的全局都显式声明形状，
+    // 不为了让 tsc 认识 `atob` 而把整个 DOM lib 拉进来。
     const BufferCtor = (globalThis as { Buffer?: { from(value: string, enc: string): Uint8Array } })
       .Buffer
+    const atobFn = (globalThis as { atob?: (data: string) => string }).atob
     const bytes = BufferCtor
       ? Uint8Array.from(BufferCtor.from(raw, 'base64'))
-      : Uint8Array.from(atob(raw), (c) => c.charCodeAt(0))
-    if (bytes.byteLength !== 32) return undefined
+      : atobFn
+        ? Uint8Array.from(atobFn(raw), (c: string) => c.charCodeAt(0))
+        : undefined
+    if (!bytes || bytes.byteLength !== 32) return undefined
     return bytes
   } catch {
     return undefined
@@ -83,6 +89,44 @@ const ORIGIN_PATTERN = /^(?:\*|[a-z][a-z0-9+.-]*:\/\/[^\s/]+)$/i
 const runtimeEnvShape = {
   CAIRN_ENV: z.enum(CAIRN_ENVS).default('development'),
   CAIRN_LOG_LEVEL: logLevelSchema.default('info'),
+}
+
+export const DEFAULT_OBJECT_STORE_DIR = '.data/object-store'
+export const DEFAULT_OBJECT_MAX_BYTES = 33_554_432
+export const DEFAULT_OBJECT_RETAIN_DAYS = 30
+export const DEFAULT_OBJECT_PENDING_TTL_SECONDS = 3600
+export const DEFAULT_OBJECT_CLEANUP_INTERVAL_MS = 60_000
+
+const optionalBoolFromEnv = z
+  .enum(['true', 'false'])
+  .optional()
+  .transform((value) => (value === undefined ? undefined : value === 'true'))
+
+/**
+ * 对象存储。只进 workerEnvSchema——控制面本期没有下载出口。
+ * `CAIRN_S3_FORCE_PATH_STYLE` 未写时：有 endpoint 则 true，否则 false。
+ */
+const objectStoreEnvShape = {
+  CAIRN_OBJECT_STORE: objectStoreDriverSchema.default('local'),
+  CAIRN_OBJECT_STORE_DIR: z.string().min(1).default(DEFAULT_OBJECT_STORE_DIR),
+  CAIRN_OBJECT_MAX_BYTES: z.coerce.number().int().positive().default(DEFAULT_OBJECT_MAX_BYTES),
+  CAIRN_OBJECT_RETAIN_DAYS: z.coerce.number().int().positive().default(DEFAULT_OBJECT_RETAIN_DAYS),
+  CAIRN_OBJECT_PENDING_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_OBJECT_PENDING_TTL_SECONDS),
+  CAIRN_OBJECT_CLEANUP_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_OBJECT_CLEANUP_INTERVAL_MS),
+  CAIRN_S3_ENDPOINT: z.string().min(1).optional(),
+  CAIRN_S3_REGION: z.string().min(1).default('us-east-1'),
+  CAIRN_S3_BUCKET: z.string().min(1).optional(),
+  CAIRN_S3_ACCESS_KEY: z.string().min(1).optional(),
+  CAIRN_S3_SECRET_KEY: z.string().min(1).optional(),
+  CAIRN_S3_FORCE_PATH_STYLE: optionalBoolFromEnv,
 }
 
 /**
@@ -178,10 +222,52 @@ export type ApiEnv = z.infer<typeof apiEnvSchema>
  */
 export const workerEnvSchema = z.preprocess(
   blankAsUnset,
-  z.object({
-    CAIRN_WORKER_ID: z.string().min(1).default('local-worker'),
-    ...runtimeEnvShape,
-  }),
+  z
+    .object({
+      CAIRN_WORKER_ID: z.string().min(1).default('local-worker'),
+      ...runtimeEnvShape,
+      ...objectStoreEnvShape,
+    })
+    .superRefine((env, ctx) => {
+      if (env.CAIRN_OBJECT_STORE === 's3') {
+        if (!env.CAIRN_S3_BUCKET) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['CAIRN_S3_BUCKET'],
+            message: 's3 驱动必须配置桶名',
+          })
+        }
+        if (!env.CAIRN_S3_ACCESS_KEY) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['CAIRN_S3_ACCESS_KEY'],
+            message: 's3 驱动必须配置访问密钥',
+          })
+        }
+        if (!env.CAIRN_S3_SECRET_KEY) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['CAIRN_S3_SECRET_KEY'],
+            message: 's3 驱动必须配置秘密密钥',
+          })
+        }
+      }
+      if (
+        env.CAIRN_OBJECT_STORE === 'local' &&
+        env.CAIRN_ENV !== 'development' &&
+        !isAbsoluteFsPath(env.CAIRN_OBJECT_STORE_DIR)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_OBJECT_STORE_DIR'],
+          message: '非 development 环境的本地目录必须是绝对路径',
+        })
+      }
+    })
+    .transform((env) => ({
+      ...env,
+      CAIRN_S3_FORCE_PATH_STYLE: env.CAIRN_S3_FORCE_PATH_STYLE ?? Boolean(env.CAIRN_S3_ENDPOINT),
+    })),
 )
 
 export type WorkerEnv = z.infer<typeof workerEnvSchema>

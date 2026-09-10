@@ -53,6 +53,27 @@ for (const [fg, bg] of pairs) {
   const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
   assert.ok(ratio >= 4.5, `${fg}/${bg}: ${ratio.toFixed(2)}:1 < 4.5`);
 }
+// 三层平面必须构成一道明度阶梯：画布 < 壳 < 卡片，且任意两层不得同值。
+// 壳一旦也用纯白，卡片就没有更亮的空间，画布到两者的距离又相等 —— 画布会被读成孤立的色块。
+{
+  const canvas = luminance(value("--surface-page"));
+  const nav = luminance(value("--surface-nav"));
+  const card = luminance(value("--surface-card"));
+  assert.ok(canvas < nav, `画布必须暗于壳：${canvas.toFixed(4)} vs ${nav.toFixed(4)}`);
+  assert.ok(nav < card, `壳必须暗于卡片，纯白只留给卡片：${nav.toFixed(4)} vs ${card.toFixed(4)}`);
+  const step = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  assert.ok(
+    step(canvas, card) >= 1.08,
+    `卡片与画布明度比 ${step(canvas, card).toFixed(3)}:1 低于 1.08 下限，白卡片会糊在画布上`,
+  );
+  for (const [n, a, b] of [
+    ["壳/画布", nav, canvas],
+    ["卡片/壳", card, nav],
+  ]) {
+    assert.ok(step(a, b) > 1.01, `${n} 明度撞车（${step(a, b).toFixed(3)}:1），三层必须三个值`);
+  }
+}
+
 const edge = luminance(value("--border-control")),
   white = luminance(value("--surface-card"));
 assert.ok((white + 0.05) / (edge + 0.05) >= 3, "Input boundary must reach 3:1");
@@ -236,7 +257,7 @@ try {
     });
   }
   console.log(
-    `PASS: ${pairs.length} text contrast pairs, control border, token references, document links; ${allTsx.length} tsx 无硬编码色 / 无 transition-all，${contentTsx.length} 个页面文件字号在刻度上; 5 widths; form, tabs, toggle, dialog, 5 empty states, reduced motion.`,
+    `PASS: ${pairs.length} text contrast pairs, control border, 明度阶梯, token references, document links; ${allTsx.length} tsx 无硬编码色 / 无 transition-all，${contentTsx.length} 个页面文件字号在刻度上; 5 widths; form, tabs, toggle, dialog, 5 empty states, reduced motion.`,
   );
 } finally {
   await browser.close();

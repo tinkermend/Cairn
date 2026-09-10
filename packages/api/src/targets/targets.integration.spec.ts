@@ -8,7 +8,8 @@ import type { RequestAccount } from '../common/request-account'
 import { credentialKeyFromEnv, LocalSecretProvider } from '../secrets/local-secret-provider'
 import { TargetsService } from './targets.service'
 
-const envFile = resolve(import.meta.dirname, '../../../../.env')
+// api 的 tsconfig 带 types:["node"]，CJS 程序不允许 import.meta；vitest 运行时提供 __dirname
+const envFile = resolve(__dirname, '../../../../.env')
 if (existsSync(envFile)) process.loadEnvFile(envFile)
 const parsed = dbEnvSchema.safeParse(process.env)
 
@@ -161,23 +162,23 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
       { password: 'second-secret' },
       actor,
     )
-    const [{ n: afterRotate }] = await handle.db
+    const rotated = await handle.db
       .select({ n: sql<number>`count(*)::int` })
       .from(secrets)
       .innerJoin(targetAccounts, eq(targetAccounts.secretId, secrets.id))
       .where(eq(targetAccounts.id, created.id))
-    expect(Number(afterRotate)).toBe(1)
+    expect(Number(rotated[0]?.n ?? 0)).toBe(1)
     const leftover = await handle.db.select().from(secrets).where(eq(secrets.id, firstSecretId!))
     expect(leftover).toHaveLength(0)
 
     const cleared = await service.updateAccount(target.id, created.id, { clearPassword: true }, actor)
     expect(cleared.hasPassword).toBe(false)
-    const [{ n: afterClear }] = await handle.db
+    const cleared_ = await handle.db
       .select({ n: sql<number>`count(*)::int` })
       .from(secrets)
       .innerJoin(targetAccounts, eq(targetAccounts.secretId, secrets.id))
       .where(eq(targetAccounts.id, created.id))
-    expect(Number(afterClear)).toBe(0)
+    expect(Number(cleared_[0]?.n ?? 0)).toBe(0)
   })
 
   it('删光账号后再删系统，对应 secret 不残留', async () => {

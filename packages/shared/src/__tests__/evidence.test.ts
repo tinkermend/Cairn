@@ -25,9 +25,9 @@ describe('evidenceMetadataSchema', () => {
       runId: valid.runId,
       type: 'trace',
       createdAt: valid.createdAt,
-      missingReason: 'object store unavailable',
+      missingReason: 'object_store_unavailable',
     }
-    expect(evidenceMetadataSchema.parse(missing).missingReason).toBe('object store unavailable')
+    expect(evidenceMetadataSchema.parse(missing).missingReason).toBe('object_store_unavailable')
   })
 
   it('拒绝未知证据类型', () => {
@@ -36,5 +36,17 @@ describe('evidenceMetadataSchema', () => {
 
   it('拒绝把二进制当字段塞进来', () => {
     expect(() => evidenceMetadataSchema.parse({ ...valid, bytes: 'iVBORw0KGgo=' })).toThrow()
+  })
+
+  it('接受结构化 payload', () => {
+    const parsed = evidenceMetadataSchema.parse({
+      schemaVersion: 1,
+      id: valid.id,
+      runId: valid.runId,
+      type: 'output',
+      createdAt: valid.createdAt,
+      payload: { waitedMs: 50 },
+    })
+    expect(parsed.payload).toEqual({ waitedMs: 50 })
   })
 })

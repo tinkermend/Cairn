@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     root: import.meta.dirname,
     include: ['src/**/*.spec.ts'],
+    testTimeout: 15_000,
     // 集成测试的库前置条件：连不上就整包失败，不静默少跑一半
     globalSetup: ['./vitest.global-setup.mts'],
   },

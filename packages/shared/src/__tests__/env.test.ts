@@ -178,6 +178,71 @@ describe('workerEnvSchema', () => {
   it('非法日志级别被拒绝', () => {
     expect(() => workerEnvSchema.parse({ CAIRN_LOG_LEVEL: 'loud' })).toThrow()
   })
+
+  it('对象存储默认走本地，并忽略未配的 S3 变量', () => {
+    const env = workerEnvSchema.parse({
+      CAIRN_S3_BUCKET: '',
+      CAIRN_S3_ACCESS_KEY: '',
+      CAIRN_S3_SECRET_KEY: '',
+    })
+    expect(env.CAIRN_OBJECT_STORE).toBe('local')
+    expect(env.CAIRN_OBJECT_STORE_DIR).toBe('.data/object-store')
+    expect(env.CAIRN_OBJECT_MAX_BYTES).toBe(33_554_432)
+    expect(env.CAIRN_OBJECT_RETAIN_DAYS).toBe(30)
+    expect(env.CAIRN_S3_FORCE_PATH_STYLE).toBe(false)
+    expect(env.CAIRN_S3_BUCKET).toBeUndefined()
+  })
+
+  it('有 S3 endpoint 时默认走 path-style', () => {
+    const env = workerEnvSchema.parse({ CAIRN_S3_ENDPOINT: 'http://127.0.0.1:9000' })
+    expect(env.CAIRN_S3_FORCE_PATH_STYLE).toBe(true)
+  })
+
+  it('s3 驱动缺桶或密钥时拒绝启动', () => {
+    const missingBucket = workerEnvSchema.safeParse({ CAIRN_OBJECT_STORE: 's3' })
+    expect(missingBucket.success).toBe(false)
+    expect(missingBucket.error?.issues.map((i) => i.path.join('.'))).toEqual(
+      expect.arrayContaining(['CAIRN_S3_BUCKET', 'CAIRN_S3_ACCESS_KEY', 'CAIRN_S3_SECRET_KEY']),
+    )
+
+    const ok = workerEnvSchema.parse({
+      CAIRN_OBJECT_STORE: 's3',
+      CAIRN_S3_BUCKET: 'cairn-evidence',
+      CAIRN_S3_ACCESS_KEY: 'key',
+      CAIRN_S3_SECRET_KEY: 'secret',
+    })
+    expect(ok.CAIRN_S3_BUCKET).toBe('cairn-evidence')
+  })
+
+  it('非 development 的本地目录必须是绝对路径', () => {
+    const relative = workerEnvSchema.safeParse({
+      CAIRN_ENV: 'production',
+      CAIRN_OBJECT_STORE: 'local',
+      CAIRN_OBJECT_STORE_DIR: '.data/object-store',
+    })
+    expect(relative.success).toBe(false)
+    expect(relative.error?.issues.map((i) => i.path.join('.'))).toContain('CAIRN_OBJECT_STORE_DIR')
+
+    const absolute = workerEnvSchema.parse({
+      CAIRN_ENV: 'production',
+      CAIRN_OBJECT_STORE: 'local',
+      CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
+    })
+    expect(absolute.CAIRN_OBJECT_STORE_DIR).toBe('/var/cairn/objects')
+  })
+
+  it('s3 缺密钥时 formatEnvIssues 只含变量名', () => {
+    const secret = 'should-not-appear-in-issues'
+    const result = workerEnvSchema.safeParse({
+      CAIRN_OBJECT_STORE: 's3',
+      CAIRN_S3_ACCESS_KEY: secret,
+    })
+    expect(result.success).toBe(false)
+    const lines = formatEnvIssues(result.error!)
+    expect(lines.some((line) => line.includes('CAIRN_S3_BUCKET'))).toBe(true)
+    expect(lines.some((line) => line.includes('CAIRN_S3_SECRET_KEY'))).toBe(true)
+    for (const line of lines) expect(line).not.toContain(secret)
+  })
 })
 
 describe('formatEnvIssues', () => {

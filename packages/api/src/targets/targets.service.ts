@@ -8,7 +8,10 @@ import {
 import {
   asc,
   consoleAuditEvents,
+  countRunsForAccount,
+  countScenariosForTarget,
   eq,
+  mapPgRestriction,
   newId,
   secrets,
   sql,
@@ -181,10 +184,25 @@ export class TargetsService {
         message: '请先删除该目标系统下的目标账号',
       })
     }
-    await this.db.transaction(async (tx) => {
-      await tx.delete(targets).where(eq(targets.id, id))
-      await this.writeAudit(tx, actor, 'target.delete', 'target', id, `${current.name}（${current.code}）`)
-    })
+    const scenarioCount = await countScenariosForTarget(this.db, id)
+    if (scenarioCount > 0) {
+      throw new ConflictException({
+        code: 'TARGET_HAS_SCENARIOS',
+        message: '请先删除该目标系统下的场景',
+      })
+    }
+    try {
+      await this.db.transaction(async (tx) => {
+        await tx.delete(targets).where(eq(targets.id, id))
+        await this.writeAudit(tx, actor, 'target.delete', 'target', id, `${current.name}（${current.code}）`)
+      })
+    } catch (error) {
+      const mapped = mapPgRestriction(error)
+      if (mapped) {
+        throw new ConflictException({ code: mapped.code, message: mapped.message })
+      }
+      throw error
+    }
   }
 
   async listAccounts(targetId: string): Promise<TargetAccountListResponse> {
@@ -288,20 +306,35 @@ export class TargetsService {
 
   async deleteAccount(targetId: string, accountId: string, actor: RequestAccount): Promise<void> {
     const current = await this.loadAccount(targetId, accountId)
-    await this.db.transaction(async (tx) => {
-      await tx.delete(targetAccounts).where(eq(targetAccounts.id, accountId))
-      if (current.secretId) {
-        await tx.delete(secrets).where(eq(secrets.id, current.secretId))
+    const runCount = await countRunsForAccount(this.db, accountId)
+    if (runCount > 0) {
+      throw new ConflictException({
+        code: 'TARGET_ACCOUNT_HAS_RUNS',
+        message: '请先处理引用该目标账号的运行',
+      })
+    }
+    try {
+      await this.db.transaction(async (tx) => {
+        await tx.delete(targetAccounts).where(eq(targetAccounts.id, accountId))
+        if (current.secretId) {
+          await tx.delete(secrets).where(eq(secrets.id, current.secretId))
+        }
+        await this.writeAudit(
+          tx,
+          actor,
+          'target_account.delete',
+          'target_account',
+          accountId,
+          `${current.displayName}（${current.username}）`,
+        )
+      })
+    } catch (error) {
+      const mapped = mapPgRestriction(error)
+      if (mapped) {
+        throw new ConflictException({ code: mapped.code, message: mapped.message })
       }
-      await this.writeAudit(
-        tx,
-        actor,
-        'target_account.delete',
-        'target_account',
-        accountId,
-        `${current.displayName}（${current.username}）`,
-      )
-    })
+      throw error
+    }
   }
 
   private async getAccount(targetId: string, accountId: string): Promise<TargetAccountDto> {

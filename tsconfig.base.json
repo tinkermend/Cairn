@@ -1,7 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023"],
+    // 运行时不变量是 Node 24 LTS，它已实现 ES2024（含 Promise.withResolvers）。
+    // lib 只提供类型，不会改变 emit；缺了它就只能写「new Promise(resolve => …)」这类旧式延迟。
+    "lib": ["ES2024"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
