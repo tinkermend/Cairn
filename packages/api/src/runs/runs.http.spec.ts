@@ -15,6 +15,7 @@ import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
 import { RunsController } from './runs.controller'
 import { RunsService } from './runs.service'
+import { listenForSupertest } from '../__tests__/http-app'
 
 const admin: RequestAccount = {
   id: 'acc-admin',
@@ -59,7 +60,7 @@ function mockService() {
     get: vi.fn(async () => detail),
     create: vi.fn(async () => ({ detail, created: true })),
     cancel: vi.fn(async () => ({ ...detail, status: 'CANCELLED' })),
-    evidence: vi.fn(async () => ({ items: [] })),
+    evidence: vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] })),
   }
 }
 
@@ -75,7 +76,7 @@ async function buildApp(account: RequestAccount | null, service: ReturnType<type
     ],
   }).compile()
   const app = moduleRef.createNestApplication({ logger: false })
-  await app.init()
+  await listenForSupertest(app)
   return app
 }
 

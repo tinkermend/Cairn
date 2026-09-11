@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { executionErrorSchema } from './runtime-error.js'
 import { runInputSchema, runSnapshotSchema, runStatusSchema, stepRunStatusSchema, attemptStatusSchema } from './run.js'
+import { sessionPolicyOverrideSchema } from './session.js'
 import { executionPolicySchema } from './step.js'
 import { evidenceMetadataSchema } from './evidence.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
@@ -24,6 +25,8 @@ export const createRunBodySchema = z.strictObject({
   targetAccountId: entityIdSchema.optional(),
   input: runInputSchema.optional(),
   policy: executionPolicySchema.optional(),
+  /** 会话策略覆盖；与 policy 并列，不进 Step 级 executionPolicy。 */
+  sessionPolicy: sessionPolicyOverrideSchema.optional(),
   idempotencyKey: idempotencyKeySchema.optional(),
 })
 export type CreateRunBody = z.infer<typeof createRunBodySchema>

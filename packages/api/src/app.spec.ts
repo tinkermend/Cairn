@@ -6,6 +6,7 @@ import { apiErrorSchema, REQUEST_ID_HEADER } from '@cairn/shared'
 import type { DbHandle } from '@cairn/db'
 import { AppModule } from './app.module'
 import { DB_HANDLE } from './db/db.module'
+import { listenForSupertest } from './__tests__/http-app'
 
 /**
  * 整应用装配测试。
@@ -31,7 +32,7 @@ describe('AppModule 完整装配', () => {
 
     app = moduleRef.createNestApplication({ logger: false })
     app.setGlobalPrefix('api', { exclude: ['health'] })
-    await app.init()
+    await listenForSupertest(app)
   })
 
   afterAll(async () => {

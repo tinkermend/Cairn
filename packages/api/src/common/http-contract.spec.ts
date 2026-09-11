@@ -17,6 +17,7 @@ import { AllExceptionsFilter } from './all-exceptions.filter'
 import { AuthGuard } from './auth.guard'
 import { Public } from './public.decorator'
 import { RequestIdMiddleware } from './request-id.middleware'
+import { listenForSupertest } from '../__tests__/http-app'
 
 @Controller('probe')
 class ProbeController {
@@ -85,7 +86,7 @@ describe('HTTP 契约（Guard / 异常过滤器 / requestId）', () => {
 
     app = moduleRef.createNestApplication({ logger: false })
     app.use(new RequestIdMiddleware().use.bind(new RequestIdMiddleware()))
-    await app.init()
+    await listenForSupertest(app)
   })
 
   afterAll(async () => {

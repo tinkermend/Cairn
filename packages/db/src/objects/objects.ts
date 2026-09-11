@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, lt, or } from 'drizzle-orm'
+import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm'
 import {
   OBJECT_MISSING_REASONS,
   ObjectStoreError,
@@ -187,14 +187,14 @@ export async function markStoredObjectPurgeFailed(
   input: { id: string; now?: Date },
 ): Promise<number> {
   const now = input.now ?? new Date()
-  const [row] = await db.select().from(storedObjects).where(eq(storedObjects.id, input.id)).limit(1)
-  if (!row) return 0
-  const attempts = row.purgeAttempts + 1
-  await db
+  // 单语句自增：两个 Worker 同时清同一行时，读改写会把其中一次失败吞掉，
+  // 计数偏小就等于退避失效。
+  const [row] = await db
     .update(storedObjects)
-    .set({ purgeAttempts: attempts, lastPurgeErrorAt: now })
+    .set({ purgeAttempts: sql`${storedObjects.purgeAttempts} + 1`, lastPurgeErrorAt: now })
     .where(eq(storedObjects.id, input.id))
-  return attempts
+    .returning({ purgeAttempts: storedObjects.purgeAttempts })
+  return row?.purgeAttempts ?? 0
 }
 
 export async function recordObjectEvidence(

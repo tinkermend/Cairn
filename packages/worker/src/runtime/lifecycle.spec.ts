@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DbHandle } from '@cairn/db'
+import { BrowserSessionManager } from '../browser/session-manager'
 import { DB_HANDLE, DbModule } from '../db/db.module'
 import { ExecutionEngine } from '../engine/engine'
 import { ObjectService } from '../objects/object.service'
@@ -8,6 +9,16 @@ import { LifecycleService } from './lifecycle.service'
 
 function stubDb(close = vi.fn(async () => {})): DbHandle {
   return { ping: async () => true, close, db: {} as never, pool: {} as never }
+}
+
+function stubSessions() {
+  return {
+    reconcileOwn: vi.fn(async () => ({ leasesRevoked: 0, sessionsClosed: 0 })),
+    startHeartbeat: vi.fn(),
+    stopHeartbeat: vi.fn(),
+    shutdown: vi.fn(async () => {}),
+    reap: vi.fn(async () => ({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 })),
+  }
 }
 
 describe('LifecycleService', () => {
@@ -20,6 +31,7 @@ describe('LifecycleService', () => {
         { provide: DB_HANDLE, useValue: handle },
         { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
         { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: BrowserSessionManager, useValue: stubSessions() },
       ],
     }).compile()
     const application = moduleRef.createNestApplication()
@@ -60,12 +72,14 @@ describe('LifecycleService', () => {
     const purgeHold = new Promise<{ purged: number }>((resolve) => {
       release = () => resolve({ purged: 1 })
     })
+    const sessions = stubSessions()
     const moduleRef = await Test.createTestingModule({
       providers: [
         LifecycleService,
         { provide: DB_HANDLE, useValue: stubDb() },
         { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
         { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(() => purgeHold) } },
+        { provide: BrowserSessionManager, useValue: sessions },
       ],
     }).compile()
     app = moduleRef.createNestApplication()
@@ -83,6 +97,24 @@ describe('LifecycleService', () => {
     await running
     await closing
     expect(svc.shutdownCalled).toBe(true)
+    expect(sessions.shutdown).toHaveBeenCalledOnce()
+  })
+
+  it('启动时 reconcileOwn 并启动心跳', async () => {
+    const sessions = stubSessions()
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        LifecycleService,
+        { provide: DB_HANDLE, useValue: stubDb() },
+        { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
+        { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: BrowserSessionManager, useValue: sessions },
+      ],
+    }).compile()
+    app = moduleRef.createNestApplication()
+    await app.init()
+    expect(sessions.reconcileOwn).toHaveBeenCalledOnce()
+    expect(sessions.startHeartbeat).toHaveBeenCalledOnce()
   })
 
   it('uptime 非负且随时间增长', async () => {

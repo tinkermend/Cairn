@@ -108,6 +108,7 @@ describe('digest payloads', () => {
       input: { orderId: 'A-1' },
       targetAccountId: null,
       policy: undefined,
+      sessionPolicy: null,
     })
   })
 })

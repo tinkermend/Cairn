@@ -9,6 +9,7 @@ import { IS_PUBLIC, Public } from '../common/public.decorator'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from './permissions.guard'
 import { RequirePermissions } from './require-permission.decorator'
+import { listenForSupertest } from '../__tests__/http-app'
 
 class StaticAuthGuard implements CanActivate {
   constructor(
@@ -90,7 +91,7 @@ async function buildApp(account: RequestAccount | null): Promise<INestApplicatio
     ],
   }).compile()
   const app = moduleRef.createNestApplication({ logger: false })
-  await app.init()
+  await listenForSupertest(app)
   return app
 }
 

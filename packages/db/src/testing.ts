@@ -99,9 +99,31 @@ export async function openIsolatedDb(name: string): Promise<DbHandle> {
     password: env.CAIRN_DB_PASSWORD,
     options: `-c search_path=cairn,public`,
   })
+
+  /**
+   * 收尾竞态：`DROP DATABASE ... WITH (FORCE)` 会 `pg_terminate_backend` 掉所有
+   * 还连在这个库上的会话。`await pool.end()` 在本地判定连接已结束时就返回，但
+   * 套接字可能还没真正关完、服务端 backend 也还在——FORCE 的终止信号正好落进
+   * 这个窗口，客户端就读到一条 FATAL 57P01。
+   *
+   * `Pool` 没有 'error' 监听者时，这条错误是 EventEmitter 的未处理 'error'，
+   * vitest 记成 unhandled error 并把整份用例文件判红——哪怕文件里每条断言都过了
+   * （实测：`objects-repository.test.ts` 91 passed / 0 failed，文件仍是红的）。
+   * 机器越忙窗口越宽，所以它表现为「并行跑才偶发」。
+   *
+   * 关闭期的连接错误是我们自己造成的、也是预期的，不该改变测试结论；
+   * 非关闭期的仍要看得见，否则会盖住真问题。
+   */
+  let closing = false
+  pool.on('error', (error) => {
+    if (closing) return
+    console.error(`[openIsolatedDb:${name}] 空闲连接错误：${error.message}`)
+  })
+
   try {
     await migrate(pool, 'cairn')
   } catch (error) {
+    closing = true
     await pool.end()
     await dropIsolatedDatabase(env, name)
     throw error
@@ -113,6 +135,7 @@ export async function openIsolatedDb(name: string): Promise<DbHandle> {
     pool,
     ping: async () => true,
     close: async () => {
+      closing = true
       await pool.end()
       await dropIsolatedDatabase(env, name)
     },

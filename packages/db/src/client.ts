@@ -28,6 +28,18 @@ export function createDb(env: DbEnv): DbHandle {
     options: `-c search_path=${env.CAIRN_DB_SCHEMA},public`,
   })
 
+  /**
+   * 空闲连接出错（网络抖动、PG 重启、被 DBA 断开）时，pg 把错误抛在 Pool 上。
+   * 没有监听者，它就是 EventEmitter 的未处理 'error'——整个 api / worker 进程被掀掉。
+   *
+   * 池子自己会摘掉坏连接并继续服务，所以这里只记录不重抛。真正的失败仍会在
+   * 具体查询上抛出来，由调用方处理；执行事实的真相在库里（宪法 §11），
+   * 进程崩不掉比崩掉更容易恢复。
+   */
+  pool.on('error', (error) => {
+    console.error(`[db] 空闲连接错误：${error instanceof Error ? error.message : error}`)
+  })
+
   const db = drizzle(pool)
 
   return {

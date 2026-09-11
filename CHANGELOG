@@ -1,3 +1,8 @@
+2026-09-11--BrowserSession P1 收口：平台默认与 env 对齐、RF04 零 session 行、D8 复用单测、RF17 50 页、.env.example 去重
+2026-09-11--BrowserSession 认证闭环补齐：WAITING_FOR_AUTH、认证超时、@cairn/secret 自动登录、LEASE_UNKNOWN、换代续租测、chromium 可选 runtime 测
+2026-09-11--集成测试三处偶发收口：DROP DATABASE FORCE 的收尾 57P01 不再变成 unhandled error、db/api 补齐 hookTimeout（建库跑迁移实测 7s，默认 10s 越线）、supertest 先 listen 固定端口（每请求换临时端口会被别的进程复用，表现为本该存在的路由 404）；生产连接池同补 error 监听，空闲连接出错不再掀进程
+2026-09-11--对象存储复查修订：仓根改惰性求值（容器与 s3 驱动不再被 pnpm-workspace.yaml 挡住启动）、purge 失败计数改单语句、缺失原因按错误码分流；SecretProvider 抽出 @cairn/secret，shared 回到无 node 依赖；web 的 React 类型钉死在自身 19.x，不再漏到扩展占住的 pnpm 提升槽
+2026-09-11--BrowserSession / SessionLease 落地：会话纳管、三列状态、租约四操作、丢租即停、回收与重启自愈；Playwright 仅 worker
 2026-09-10--对象存储内核落地：put/get/delete、本地与 S3 适配、保留清理；证据索引只挂对象指针
 2026-09-10--执行内核复查修订：取消请求收口在 finishAttempt、停机与领取竞态、执行器异常分类、drain 终态兜底；shared 构建断点与四处 typecheck 转绿
 2026-09-10--执行内核落地：场景版本与 Run 账本、Echo/Delay/Fail 引擎，无浏览器即可跑完并复盘

@@ -66,13 +66,20 @@ describe('LifecycleService（集成）', { timeout: 30_000 }, () => {
     // 闸门卡住 claim：停机信号正好落在「已领取、还没开始执行」之间。
     const claimEntered = Promise.withResolvers<void>()
     const gate = Promise.withResolvers<void>()
-    // 第三个构造参数是对象存储清理用的 ObjectService，与本用例无关：给个同形的占位即可，
-    // 免得停机竞态的测试被另一个模块的依赖链拖住。
+    // 第三/四个构造参数是 ObjectService / BrowserSessionManager，与本用例无关：给同形占位。
     const noObjects = { purgeExpiredObjects: async () => ({ purged: 0 }) }
+    const noSessions = {
+      reconcileOwn: async () => ({ leasesRevoked: 0, sessionsClosed: 0 }),
+      startHeartbeat: () => {},
+      stopHeartbeat: () => {},
+      shutdown: async () => {},
+      reap: async () => ({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }),
+    }
     const lifecycle = new LifecycleService(
       gatedPoolHandle(handle, gate.promise, () => claimEntered.resolve()),
       new ExecutionEngine(handle),
       noObjects as never,
+      noSessions as never,
     )
 
     await lifecycle.onApplicationBootstrap()

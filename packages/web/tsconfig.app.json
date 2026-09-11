@@ -17,7 +17,24 @@
 
     /* Alias */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+
+      /*
+       * React 类型钉死在 web 自己那份（19.x）。
+       *
+       * 不钉的话，@tanstack/*、cmdk、lucide-react 等九个包的 .d.ts 里那句
+       * `import ... from 'react'` 会在自己的隔离目录里找不到 @types/react，
+       * 一路向上落到 pnpm 虚拟仓的提升槽 node_modules/.pnpm/node_modules/@types/react，
+       * 而那个槽被扩展（React 18）占着——于是同一个程序里出现两份 ReactNode，
+       * React 19 的 bigint 分支对不上 18 的定义，整个 tsc -b 红掉。
+       *
+       * 提升槽给谁是安装顺序的副产物，不是可依赖的行为；web 是 React 19、
+       * 扩展是 React 18，两边都成立，所以这里声明的是事实而不是补丁。
+       */
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"],
+      "react-dom": ["./node_modules/@types/react-dom"],
+      "react-dom/*": ["./node_modules/@types/react-dom/*"]
     },
 
     /* Linting */

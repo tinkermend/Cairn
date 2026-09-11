@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common'
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common'
 import {
   failRunValidation,
   finishAttempt,
@@ -24,6 +24,7 @@ import {
 import { DB_HANDLE } from '../db/db.module'
 import { isAbortError, systemClock, type EngineClock } from './clock.js'
 import { executeDelay, executeEcho, executeFail } from './executors.js'
+import { BROWSER_PORT, type BrowserPort } from './ports.js'
 
 export type ExecuteOptions = {
   signal?: AbortSignal
@@ -43,7 +44,11 @@ type ExecutorOutcome =
 export class ExecutionEngine {
   private readonly logger = new Logger(ExecutionEngine.name)
 
-  constructor(@Inject(DB_HANDLE) private readonly handle: DbHandle) {}
+  constructor(
+    @Inject(DB_HANDLE) private readonly handle: DbHandle,
+    /** 本期 Echo/Delay/Fail 不消费；P5 浏览器步骤经此端口拿 SessionGrant。 */
+    @Optional() @Inject(BROWSER_PORT) private readonly browser?: BrowserPort,
+  ) {}
 
   async execute(runId: string, options: ExecuteOptions = {}): Promise<void> {
     const clock = options.clock ?? systemClock

@@ -41,6 +41,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     expect(rows.map((r) => r.table_name)).toEqual([
       '_migrations',
       'attempts',
+      'browser_sessions',
       'console_account_roles',
       'console_accounts',
       'console_audit_events',
@@ -52,6 +53,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'scenario_versions',
       'scenarios',
       'secrets',
+      'session_leases',
       'step_runs',
       'stored_objects',
       'target_accounts',
@@ -349,6 +351,85 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     ])
   })
 
+  it('browser_sessions 的列与约束一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'browser_sessions' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'auth_hold_expires_at', is_nullable: 'YES' },
+      { column_name: 'auth_hold_worker_id', is_nullable: 'YES' },
+      { column_name: 'auth_state', is_nullable: 'NO' },
+      { column_name: 'close_reason', is_nullable: 'YES' },
+      { column_name: 'closed_at', is_nullable: 'YES' },
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'expires_at', is_nullable: 'NO' },
+      { column_name: 'fencing_token', is_nullable: 'NO' },
+      { column_name: 'generation', is_nullable: 'NO' },
+      { column_name: 'health', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'idle_ttl_seconds', is_nullable: 'NO' },
+      { column_name: 'last_used_at', is_nullable: 'NO' },
+      { column_name: 'max_lifetime_seconds', is_nullable: 'NO' },
+      { column_name: 'owner_worker_id', is_nullable: 'NO' },
+      { column_name: 'profile_key', is_nullable: 'NO' },
+      { column_name: 'reuse_policy', is_nullable: 'NO' },
+      { column_name: 'status', is_nullable: 'NO' },
+      { column_name: 'target_account_id', is_nullable: 'NO' },
+      { column_name: 'target_id', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+      { column_name: 'version', is_nullable: 'NO' },
+    ])
+
+    const { rows: indexes } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+       WHERE schemaname = $1 AND tablename = 'browser_sessions'
+       ORDER BY indexname`,
+      [TEST_SCHEMA],
+    )
+    expect(indexes.map((r) => r.indexname)).toEqual(
+      expect.arrayContaining([
+        'browser_sessions_key_live_idx',
+        'browser_sessions_owner_idx',
+        'browser_sessions_reap_idx',
+      ]),
+    )
+  })
+
+  it('session_leases 的列与 ACTIVE 唯一索引一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'session_leases' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'acquired_at', is_nullable: 'NO' },
+      { column_name: 'expires_at', is_nullable: 'NO' },
+      { column_name: 'heartbeat_at', is_nullable: 'NO' },
+      { column_name: 'holder_worker_id', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'release_reason', is_nullable: 'YES' },
+      { column_name: 'released_at', is_nullable: 'YES' },
+      { column_name: 'run_fencing_token', is_nullable: 'YES' },
+      { column_name: 'run_id', is_nullable: 'NO' },
+      { column_name: 'session_fencing_token', is_nullable: 'NO' },
+      { column_name: 'session_generation', is_nullable: 'NO' },
+      { column_name: 'session_id', is_nullable: 'NO' },
+      { column_name: 'status', is_nullable: 'NO' },
+    ])
+
+    const { rows: indexes } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+       WHERE schemaname = $1 AND tablename = 'session_leases'
+       ORDER BY indexname`,
+      [TEST_SCHEMA],
+    )
+    expect(indexes.map((r) => r.indexname)).toEqual(
+      expect.arrayContaining(['session_leases_active_idx', 'session_leases_reap_idx']),
+    )
+  })
+
   it('evidences.object_key 外键指向 stored_objects', async () => {
     const { rows } = await pool.query<{ referenced: string }>(
       `SELECT ccu.table_name AS referenced
@@ -364,7 +445,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     expect(rows.map((r) => r.referenced)).toEqual(['stored_objects'])
   })
 
-  it('所有 id / *_id 列都是 uuid 类型', async () => {
+  it('所有 id / *_id 列都是 uuid 类型（Worker 身份列除外）', async () => {
+    const workerIdColumns = new Set([
+      'owner_worker_id',
+      'auth_hold_worker_id',
+      'holder_worker_id',
+    ])
     const { rows } = await pool.query<{ table_name: string; column_name: string; data_type: string }>(
       `SELECT table_name, column_name, data_type FROM information_schema.columns
        WHERE table_schema = $1 AND table_name <> '_migrations'
@@ -373,7 +459,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       [TEST_SCHEMA],
     )
     expect(rows.length).toBeGreaterThan(0)
-    expect(rows.filter((r) => r.data_type !== 'uuid')).toEqual([])
+    expect(
+      rows.filter((r) => !workerIdColumns.has(r.column_name) && r.data_type !== 'uuid'),
+    ).toEqual([])
+    expect(rows.filter((r) => workerIdColumns.has(r.column_name)).every((r) => r.data_type === 'text')).toBe(
+      true,
+    )
   })
 
   it('外键列名以「被引用表名单数形 + _id」结尾', async () => {
@@ -388,8 +479,15 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       [TEST_SCHEMA],
     )
     expect(rows.length).toBeGreaterThan(0)
+    // session_id → browser_sessions：领域名用 session 而非 browser_session
+    // target_id → target_accounts：复合外键 (target_account_id, target_id) 的第二列
+    const allowed = new Set([
+      'session_id→browser_sessions',
+      'target_id→target_accounts',
+    ])
     const violations = rows.filter((r) => {
       if (!r.column_name.endsWith('_id')) return false
+      if (allowed.has(`${r.column_name}→${r.referenced}`)) return false
       return !r.column_name.endsWith(`${r.referenced.replace(/s$/, '')}_id`)
     })
     expect(violations).toEqual([])
@@ -406,6 +504,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       '0005_target_login_fields.sql',
       '0006_execution.sql',
       '0007_object_store.sql',
+      '0008_browser_session.sql',
     ])
   })
 })

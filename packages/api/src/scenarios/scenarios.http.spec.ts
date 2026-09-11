@@ -17,6 +17,7 @@ import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
 import { ScenariosController } from './scenarios.controller'
 import { ScenariosService } from './scenarios.service'
+import { listenForSupertest } from '../__tests__/http-app'
 
 const now = '2026-09-10T00:00:00.000Z'
 const scenario = {
@@ -87,7 +88,7 @@ async function buildApp(account: RequestAccount | null, service: ReturnType<type
     ],
   }).compile()
   const app = moduleRef.createNestApplication({ logger: false })
-  await app.init()
+  await listenForSupertest(app)
   return app
 }
 

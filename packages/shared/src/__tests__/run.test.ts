@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { runSnapshotSchema, runStatusSchema } from '../run.js'
+import { DEFAULT_SESSION_POLICY } from '../session.js'
 
 const ids = {
   run: '00000000-0000-4000-8000-000000000021',
@@ -124,5 +125,15 @@ describe('runSnapshotSchema', () => {
 
   it('input 键拒绝 constructor', () => {
     expect(() => runSnapshotSchema.parse(snapshot({ input: { constructor: 1 } }))).toThrow()
+  })
+
+  it('缺 sessionPolicy 的既有快照仍可解析', () => {
+    const parsed = runSnapshotSchema.parse(snapshot())
+    expect(parsed.sessionPolicy).toBeUndefined()
+  })
+
+  it('接受完整 sessionPolicy', () => {
+    const parsed = runSnapshotSchema.parse(snapshot({ sessionPolicy: DEFAULT_SESSION_POLICY }))
+    expect(parsed.sessionPolicy).toEqual(DEFAULT_SESSION_POLICY)
   })
 })

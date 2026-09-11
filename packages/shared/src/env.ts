@@ -97,10 +97,22 @@ export const DEFAULT_OBJECT_RETAIN_DAYS = 30
 export const DEFAULT_OBJECT_PENDING_TTL_SECONDS = 3600
 export const DEFAULT_OBJECT_CLEANUP_INTERVAL_MS = 60_000
 
+export const DEFAULT_BROWSER_PROFILE_DIR = '.data/browser-profiles'
+export const DEFAULT_BROWSER_MAX_SESSIONS = 2
+export const DEFAULT_BROWSER_HEADLESS = true
+export const DEFAULT_SESSION_HEARTBEAT_MS = 5_000
+export const DEFAULT_SESSION_REAPER_INTERVAL_MS = 15_000
+
 const optionalBoolFromEnv = z
   .enum(['true', 'false'])
   .optional()
   .transform((value) => (value === undefined ? undefined : value === 'true'))
+
+const boolFromEnv = (fallback: boolean) =>
+  z
+    .enum(['true', 'false'])
+    .default(fallback ? 'true' : 'false')
+    .transform((value) => value === 'true')
 
 /**
  * 对象存储。只进 workerEnvSchema——控制面本期没有下载出口。
@@ -127,6 +139,44 @@ const objectStoreEnvShape = {
   CAIRN_S3_ACCESS_KEY: z.string().min(1).optional(),
   CAIRN_S3_SECRET_KEY: z.string().min(1).optional(),
   CAIRN_S3_FORCE_PATH_STYLE: optionalBoolFromEnv,
+}
+
+/**
+ * 浏览器会话与租约。只进 workerEnvSchema。
+ * 到期判定一律用库钟；LEASE_TTL ≥ 3 × HEARTBEAT，连续两次丢心跳才判丢租。
+ */
+const browserSessionEnvShape = {
+  CAIRN_BROWSER_HEADLESS: boolFromEnv(DEFAULT_BROWSER_HEADLESS),
+  CAIRN_BROWSER_PROFILE_DIR: z.string().min(1).default(DEFAULT_BROWSER_PROFILE_DIR),
+  CAIRN_BROWSER_MAX_SESSIONS: z.coerce.number().int().positive().default(DEFAULT_BROWSER_MAX_SESSIONS),
+  CAIRN_BROWSER_EXECUTABLE_PATH: z.string().min(1).optional(),
+  // 下列默认必须与 session.ts 的 DEFAULT_SESSION_* 一致（快照平台默认同源）
+  CAIRN_SESSION_IDLE_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(600),
+  CAIRN_SESSION_MAX_LIFETIME_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(14_400),
+  CAIRN_SESSION_LEASE_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30),
+  CAIRN_SESSION_HEARTBEAT_MS: z.coerce.number().int().positive().default(DEFAULT_SESSION_HEARTBEAT_MS),
+  CAIRN_SESSION_REAPER_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_SESSION_REAPER_INTERVAL_MS),
+  CAIRN_SESSION_AUTH_WAIT_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(300),
 }
 
 /**
@@ -225,10 +275,33 @@ export const workerEnvSchema = z.preprocess(
   z
     .object({
       CAIRN_WORKER_ID: z.string().min(1).default('local-worker'),
+      /**
+       * 自动登录解密 TargetAccount 凭据。与 api 同源约定；
+       * 非 development 不得沿用开发默认密钥。
+       */
+      CAIRN_CREDENTIAL_KEY: z
+        .string()
+        .default(DEV_CREDENTIAL_KEY)
+        .superRefine((value, ctx) => {
+          if (!decodeCredentialKey(value)) {
+            ctx.addIssue({
+              code: 'custom',
+              message: '须为 base64 编码的 32 字节密钥',
+            })
+          }
+        }),
       ...runtimeEnvShape,
       ...objectStoreEnvShape,
+      ...browserSessionEnvShape,
     })
     .superRefine((env, ctx) => {
+      if (env.CAIRN_ENV !== 'development' && env.CAIRN_CREDENTIAL_KEY === DEV_CREDENTIAL_KEY) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_CREDENTIAL_KEY'],
+          message: '非 development 环境不得沿用开发默认凭据主密钥，必须在环境中覆盖',
+        })
+      }
       if (env.CAIRN_OBJECT_STORE === 's3') {
         if (!env.CAIRN_S3_BUCKET) {
           ctx.addIssue({
@@ -261,6 +334,38 @@ export const workerEnvSchema = z.preprocess(
           code: 'custom',
           path: ['CAIRN_OBJECT_STORE_DIR'],
           message: '非 development 环境的本地目录必须是绝对路径',
+        })
+      }
+      if (
+        env.CAIRN_ENV !== 'development' &&
+        !isAbsoluteFsPath(env.CAIRN_BROWSER_PROFILE_DIR)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_BROWSER_PROFILE_DIR'],
+          message: '非 development 环境的浏览器 profile 目录必须是绝对路径',
+        })
+      }
+      if (env.CAIRN_BROWSER_MAX_SESSIONS < 1) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_BROWSER_MAX_SESSIONS'],
+          message: 'CAIRN_BROWSER_MAX_SESSIONS 至少为 1',
+        })
+      }
+      if (env.CAIRN_SESSION_MAX_LIFETIME_SECONDS <= env.CAIRN_SESSION_IDLE_TTL_SECONDS) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_SESSION_MAX_LIFETIME_SECONDS'],
+          message: 'CAIRN_SESSION_MAX_LIFETIME_SECONDS 必须大于 CAIRN_SESSION_IDLE_TTL_SECONDS',
+        })
+      }
+      const heartbeatSeconds = env.CAIRN_SESSION_HEARTBEAT_MS / 1000
+      if (env.CAIRN_SESSION_LEASE_TTL_SECONDS < 3 * heartbeatSeconds) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_SESSION_LEASE_TTL_SECONDS'],
+          message: 'CAIRN_SESSION_LEASE_TTL_SECONDS 须 ≥ 3 × CAIRN_SESSION_HEARTBEAT_MS/1000',
         })
       }
     })

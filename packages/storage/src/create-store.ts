@@ -18,7 +18,10 @@ export type ObjectStoreConfig = Pick<
   | 'CAIRN_S3_FORCE_PATH_STYLE'
 >
 
-export function createObjectStore(env: ObjectStoreConfig, options: { repoRoot: string }): ObjectStore {
+export function createObjectStore(
+  env: ObjectStoreConfig,
+  options: { repoRoot: () => string },
+): ObjectStore {
   if (env.CAIRN_OBJECT_STORE === 'local') {
     const root = resolveLocalObjectStoreDir(env.CAIRN_OBJECT_STORE_DIR, options.repoRoot)
     return new LocalObjectStore(root, env.CAIRN_OBJECT_MAX_BYTES)

@@ -24,9 +24,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ALLOWED_EDGES = {
   '@cairn/shared': [],
   '@cairn/storage': ['@cairn/shared'],
+  '@cairn/secret': ['@cairn/shared'],
   '@cairn/db': ['@cairn/shared'],
-  '@cairn/api': ['@cairn/db', '@cairn/shared'],
-  '@cairn/worker': ['@cairn/db', '@cairn/shared', '@cairn/storage'],
+  '@cairn/api': ['@cairn/db', '@cairn/secret', '@cairn/shared'],
+  '@cairn/worker': ['@cairn/db', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
   '@cairn/web': ['@cairn/shared'],
   '@cairn/extension-playwright-crx': ['@cairn/shared'],
 }

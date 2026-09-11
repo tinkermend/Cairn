@@ -227,6 +227,8 @@ describe('workerEnvSchema', () => {
       CAIRN_ENV: 'production',
       CAIRN_OBJECT_STORE: 'local',
       CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
+      CAIRN_BROWSER_PROFILE_DIR: '/var/cairn/profiles',
+      CAIRN_CREDENTIAL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
     })
     expect(absolute.CAIRN_OBJECT_STORE_DIR).toBe('/var/cairn/objects')
   })
@@ -242,6 +244,76 @@ describe('workerEnvSchema', () => {
     expect(lines.some((line) => line.includes('CAIRN_S3_BUCKET'))).toBe(true)
     expect(lines.some((line) => line.includes('CAIRN_S3_SECRET_KEY'))).toBe(true)
     for (const line of lines) expect(line).not.toContain(secret)
+  })
+
+  it('浏览器会话有默认值', () => {
+    const env = workerEnvSchema.parse({})
+    expect(env.CAIRN_BROWSER_HEADLESS).toBe(true)
+    expect(env.CAIRN_BROWSER_PROFILE_DIR).toBe('.data/browser-profiles')
+    expect(env.CAIRN_BROWSER_MAX_SESSIONS).toBe(2)
+    expect(env.CAIRN_SESSION_IDLE_TTL_SECONDS).toBe(600)
+    expect(env.CAIRN_SESSION_MAX_LIFETIME_SECONDS).toBe(14_400)
+    expect(env.CAIRN_SESSION_LEASE_TTL_SECONDS).toBe(30)
+    expect(env.CAIRN_SESSION_HEARTBEAT_MS).toBe(5_000)
+    expect(env.CAIRN_SESSION_REAPER_INTERVAL_MS).toBe(15_000)
+    expect(env.CAIRN_SESSION_AUTH_WAIT_SECONDS).toBe(300)
+    expect(env.CAIRN_CREDENTIAL_KEY).toBe(DEV_CREDENTIAL_KEY)
+  })
+
+  it('非 development 不得沿用开发凭据密钥', () => {
+    const result = workerEnvSchema.safeParse({
+      CAIRN_ENV: 'production',
+      CAIRN_OBJECT_STORE: 'local',
+      CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
+      CAIRN_BROWSER_PROFILE_DIR: '/var/cairn/profiles',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain('CAIRN_CREDENTIAL_KEY')
+  })
+
+  it('LEASE_TTL < 3×HEARTBEAT 时拒绝启动', () => {
+    const result = workerEnvSchema.safeParse({
+      CAIRN_SESSION_LEASE_TTL_SECONDS: '10',
+      CAIRN_SESSION_HEARTBEAT_MS: '5000',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain(
+      'CAIRN_SESSION_LEASE_TTL_SECONDS',
+    )
+  })
+
+  it('MAX_LIFETIME ≤ IDLE_TTL 时拒绝启动', () => {
+    const result = workerEnvSchema.safeParse({
+      CAIRN_SESSION_IDLE_TTL_SECONDS: '600',
+      CAIRN_SESSION_MAX_LIFETIME_SECONDS: '600',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain(
+      'CAIRN_SESSION_MAX_LIFETIME_SECONDS',
+    )
+  })
+
+  it('非 development 的 profile 目录必须是绝对路径', () => {
+    const relative = workerEnvSchema.safeParse({
+      CAIRN_ENV: 'production',
+      CAIRN_OBJECT_STORE: 'local',
+      CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
+      CAIRN_BROWSER_PROFILE_DIR: '.data/browser-profiles',
+      CAIRN_CREDENTIAL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+    })
+    expect(relative.success).toBe(false)
+    expect(relative.error?.issues.map((i) => i.path.join('.'))).toContain(
+      'CAIRN_BROWSER_PROFILE_DIR',
+    )
+
+    const absolute = workerEnvSchema.parse({
+      CAIRN_ENV: 'production',
+      CAIRN_OBJECT_STORE: 'local',
+      CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
+      CAIRN_BROWSER_PROFILE_DIR: '/var/cairn/profiles',
+      CAIRN_CREDENTIAL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+    })
+    expect(absolute.CAIRN_BROWSER_PROFILE_DIR).toBe('/var/cairn/profiles')
   })
 })
 

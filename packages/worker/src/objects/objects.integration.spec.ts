@@ -319,9 +319,15 @@ describe('对象存储托管协议（集成）', { timeout: 30_000 }, () => {
       (item) => item.objectKey === put.objectKey && !item.missingReason,
     )
     const row = await getStoredObjectById(handle.db, put.objectId)
-    if (row?.status === 'purged') {
-      expect(dangling).toEqual([])
+    expect(row?.status).toBe('purged')
+    expect(dangling).toEqual([])
+    // 两种合法结局：挂上了指针并被补上 object_purged，或 attach 撞见已清理直接失败。
+    const attach = outcomes[0]
+    if (attach?.status === 'rejected') {
+      expect(attach.reason).toMatchObject({ code: 'OBJECT_NOT_AVAILABLE' })
+    } else {
+      const attached = listed.items.find((item) => item.objectKey === put.objectKey)
+      expect(attached?.missingReason).toBe(OBJECT_MISSING_REASONS.purged)
     }
-    expect(outcomes.length).toBe(2)
   })
 })

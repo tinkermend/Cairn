@@ -110,12 +110,22 @@ describe('仓根解析', () => {
     const repo = findRepoRoot(import.meta.dirname)
     const fromWorker = findRepoRoot(join(repo, 'packages/worker'))
     expect(fromWorker).toBe(repo)
-    expect(resolveLocalObjectStoreDir('.data/object-store', repo)).toBe(
-      resolveLocalObjectStoreDir('.data/object-store', fromWorker),
+    expect(resolveLocalObjectStoreDir('.data/object-store', () => repo)).toBe(
+      resolveLocalObjectStoreDir('.data/object-store', () => fromWorker),
     )
-    expect(resolveLocalObjectStoreDir('.data/object-store', repo)).toBe(
+    expect(resolveLocalObjectStoreDir('.data/object-store', () => repo)).toBe(
       join(repo, '.data/object-store'),
     )
+
+    // 绝对路径不碰仓根：thunk 一次都不该被调用。
+    let calls = 0
+    expect(
+      resolveLocalObjectStoreDir('/var/cairn/objects', () => {
+        calls += 1
+        return repo
+      }),
+    ).toBe('/var/cairn/objects')
+    expect(calls).toBe(0)
   })
 })
 
@@ -127,9 +137,37 @@ describe('createObjectStore', () => {
       CAIRN_S3_ACCESS_KEY: 'ignored',
       CAIRN_S3_SECRET_KEY: 'ignored',
     })
-    const store = createObjectStore(env, { repoRoot: findRepoRoot(import.meta.dirname) })
+    const store = createObjectStore(env, { repoRoot: () => findRepoRoot(import.meta.dirname) })
     expect(store).toBeInstanceOf(LocalObjectStore)
     expect(env.CAIRN_OBJECT_MAX_BYTES).toBe(DEFAULT_OBJECT_MAX_BYTES)
+  })
+
+  it('s3 驱动不求值仓根：容器里跑 dist 也能起来', () => {
+    const env = workerEnvSchema.parse({
+      CAIRN_OBJECT_STORE: 's3',
+      CAIRN_S3_BUCKET: 'cairn-evidence',
+      CAIRN_S3_ACCESS_KEY: 'key',
+      CAIRN_S3_SECRET_KEY: 'secret',
+    })
+    const store = createObjectStore(env, {
+      repoRoot: () => {
+        throw new Error('未找到仓根（缺少 pnpm-workspace.yaml）')
+      },
+    })
+    expect(store).toBeInstanceOf(S3ObjectStore)
+  })
+
+  it('local + 绝对路径同样不求值仓根', () => {
+    const env = workerEnvSchema.parse({
+      CAIRN_OBJECT_STORE: 'local',
+      CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
+    })
+    const store = createObjectStore(env, {
+      repoRoot: () => {
+        throw new Error('未找到仓根（缺少 pnpm-workspace.yaml）')
+      },
+    })
+    expect(store).toBeInstanceOf(LocalObjectStore)
   })
 })
 
@@ -159,7 +197,7 @@ describe.skipIf(!loadConfiguredS3Env())('S3ObjectStore 真端点', { timeout: 30
   it('put / get / 同正文幂等 / 冲突 / delete，并清掉测试键', async () => {
     const env = loadConfiguredS3Env()
     if (!env) throw new Error('S3 变量在用例开始后消失')
-    const store = createObjectStore(env, { repoRoot: findRepoRoot(import.meta.dirname) })
+    const store = createObjectStore(env, { repoRoot: () => findRepoRoot(import.meta.dirname) })
     expect(store).toBeInstanceOf(S3ObjectStore)
 
     const key = objectKeyFor(testEntityId(), testEntityId())

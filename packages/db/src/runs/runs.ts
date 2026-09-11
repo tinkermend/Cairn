@@ -6,6 +6,7 @@ import {
   ScenarioValidationError,
   assertRunFromResolved,
   evidenceMetadataSchema,
+  resolveSessionPolicy,
   runDetailSchema,
   runEvidenceListResponseSchema,
   runListResponseSchema,
@@ -20,8 +21,10 @@ import {
   type RunListResponse,
   type RunSnapshot,
   type RunStatus,
+  type SessionGrant,
   type StepRunStatus,
 } from '@cairn/shared'
+import { verifySessionLeaseForCommit } from '../sessions/sessions.js'
 import type { Db, DbHandle } from '../client.js'
 import { newId } from '../id.js'
 import { consoleAuditEvents } from '../schema/audit.js'
@@ -207,12 +210,15 @@ export async function createRunWithSnapshot(
     }
   }
 
+  const sessionPolicy = resolveSessionPolicy(input.sessionPolicy)
+
   const idempotencyDigest = input.idempotencyKey
     ? computeIdempotencyDigest({
         scenarioVersionId: version.id,
         input: runInput,
         targetAccountId: input.targetAccountId,
         policy: input.policy,
+        sessionPolicy,
       })
     : null
 
@@ -241,6 +247,7 @@ export async function createRunWithSnapshot(
     input: runInput,
     createdAt: now.toISOString(),
     policy: input.policy,
+    sessionPolicy,
     executorVersions: { ...DEFAULT_EXECUTOR_VERSIONS },
   }
   const parsed = runSnapshotSchema.parse(snapshotBase)
@@ -408,6 +415,11 @@ export type FinishAttemptInput = {
   runStatus?: RunStatus
   skipRemaining?: boolean
   cancelPending?: boolean
+  /**
+   * 浏览器步骤提交边界：若提供，写 SUCCEEDED 前在事务内校验租约仍有效。
+   * 丢租时 SIDE_EFFECT → NEEDS_REVIEW，其余 → FAILED，不写成功结果。
+   */
+  sessionLease?: SessionGrant & { holderWorkerId: string; effectType?: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT' }
   /** 仅测试：Evidence 写完后抛错，验证整单回滚 */
   injectFailure?: Error
 }
@@ -437,14 +449,45 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
    * 这是「Running 中取消不出现迟到 SUCCEEDED」的唯一收口点，放在事务里与状态同生共死。
    * 例外是 NEEDS_REVIEW：副作用结果未知优先于取消，不能被取消洗成干净终态。
    */
-  const cancelled = run.cancelRequestedAt !== null && input.runStatus !== 'NEEDS_REVIEW'
+  let cancelled = run.cancelRequestedAt !== null && input.runStatus !== 'NEEDS_REVIEW'
+
+  let attemptStatus = input.attemptStatus
+  let output = input.output
+  let error = input.error
+  let stepRunStatus = input.stepRunStatus
+  let runStatus = input.runStatus
+  let skipRemaining = input.skipRemaining
+  let context = input.context
+
+  /**
+   * 浏览器步骤提交边界：丢租后的结果不可信。
+   * SIDE_EFFECT → NEEDS_REVIEW；其余 → FAILED。不得写成 SUCCEEDED。
+   */
+  if (!cancelled && attemptStatus === 'SUCCEEDED' && input.sessionLease) {
+    const held = await verifySessionLeaseForCommit(tx, input.sessionLease)
+    if (!held) {
+      const sideEffect = input.sessionLease.effectType === 'SIDE_EFFECT'
+      attemptStatus = 'FAILED'
+      output = null
+      error = {
+        code: 'SESSION_LEASE_LOST',
+        category: sideEffect ? 'UNKNOWN' : 'INFRASTRUCTURE',
+        retryable: false,
+        safeMessage: '提交结果前会话租约已失效',
+      }
+      stepRunStatus = 'FAILED'
+      runStatus = sideEffect ? 'NEEDS_REVIEW' : 'FAILED'
+      skipRemaining = true
+      context = undefined
+    }
+  }
 
   const closed = await tx
     .update(attempts)
     .set({
-      status: cancelled ? 'CANCELLED' : input.attemptStatus,
-      output: cancelled ? null : (input.output ?? null),
-      error: cancelled ? CANCELLED_ATTEMPT_ERROR : (input.error ?? null),
+      status: cancelled ? 'CANCELLED' : attemptStatus,
+      output: cancelled ? null : (output ?? null),
+      error: cancelled ? CANCELLED_ATTEMPT_ERROR : (error ?? null),
       finishedAt: now,
     })
     .where(and(eq(attempts.id, input.attemptId), eq(attempts.status, 'RUNNING')))
@@ -453,9 +496,9 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
 
   const evidenceType: EvidenceType | undefined = cancelled
     ? 'error'
-    : input.attemptStatus === 'SUCCEEDED'
+    : attemptStatus === 'SUCCEEDED'
       ? 'output'
-      : input.error
+      : error
         ? 'error'
         : undefined
   if (evidenceType) {
@@ -469,38 +512,38 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
       payload: cancelled
         ? CANCELLED_ATTEMPT_ERROR
         : evidenceType === 'output'
-          ? (input.output ?? null)
-          : (input.error ?? null),
+          ? (output ?? null)
+          : (error ?? null),
       createdAt: now,
     })
   }
 
   // 取消时不采纳输出：context 保持取消前已提交的值。
-  if (input.context && !cancelled) {
-    await tx.update(runs).set({ context: input.context, updatedAt: now }).where(eq(runs.id, input.runId))
+  if (context && !cancelled) {
+    await tx.update(runs).set({ context, updatedAt: now }).where(eq(runs.id, input.runId))
   }
 
-  const stepRunStatus = cancelled ? 'CANCELLED' : input.stepRunStatus
-  const stepTerminal = stepRunStatus !== 'RUNNING' && stepRunStatus !== 'PENDING'
+  const finalStepStatus = cancelled ? 'CANCELLED' : stepRunStatus
+  const stepTerminal = finalStepStatus !== 'RUNNING' && finalStepStatus !== 'PENDING'
   await tx
     .update(stepRuns)
     .set({
-      status: stepRunStatus,
+      status: finalStepStatus,
       ...(stepTerminal ? { finishedAt: now } : {}),
     })
     .where(eq(stepRuns.id, attempt.stepRunId))
 
   if (cancelled || input.cancelPending) await cancelPendingStepRunsTx(tx, input.runId, now)
-  else if (input.skipRemaining) await skipRemainingStepRunsTx(tx, input.runId, now)
+  else if (skipRemaining) await skipRemainingStepRunsTx(tx, input.runId, now)
 
-  const runStatus = cancelled ? 'CANCELLED' : input.runStatus
-  if (runStatus) {
+  const finalRunStatus = cancelled ? 'CANCELLED' : runStatus
+  if (finalRunStatus) {
     await tx
       .update(runs)
       .set({
-        status: runStatus,
+        status: finalRunStatus,
         updatedAt: now,
-        ...(TERMINAL_RUN.has(runStatus) ? { finishedAt: now } : {}),
+        ...(TERMINAL_RUN.has(finalRunStatus) ? { finishedAt: now } : {}),
       })
       .where(eq(runs.id, input.runId))
   }
@@ -581,6 +624,63 @@ export async function failRunValidation(db: Db, runId: string): Promise<void> {
       .where(eq(runs.id, runId))
     await skipRemainingStepRunsTx(tx as unknown as Db, runId, now)
   })
+}
+
+/**
+ * 需要人工认证：Run → WAITING_FOR_AUTH（非终态，P3 恢复扫描后再领取）。
+ * 仅从 RUNNING 迁入。
+ */
+export async function markRunWaitingForAuth(db: Db, runId: string): Promise<boolean> {
+  const now = new Date()
+  const [row] = await db
+    .update(runs)
+    .set({ status: 'WAITING_FOR_AUTH', updatedAt: now })
+    .where(and(eq(runs.id, runId), eq(runs.status, 'RUNNING')))
+    .returning({ id: runs.id })
+  return row !== undefined
+}
+
+/**
+ * 认证等待超时：Run → FAILED，挂 SESSION_AUTH_TIMEOUT 错误证据，跳过剩余步骤。
+ * 仅从 WAITING_FOR_AUTH 迁入。
+ */
+export async function failRunAuthTimeout(db: Db, runId: string): Promise<boolean> {
+  const now = new Date()
+  return db.transaction(async (tx) => {
+    const [run] = await tx
+      .update(runs)
+      .set({ status: 'FAILED', finishedAt: now, updatedAt: now })
+      .where(and(eq(runs.id, runId), eq(runs.status, 'WAITING_FOR_AUTH')))
+      .returning({ id: runs.id })
+    if (!run) return false
+    await tx.insert(evidences).values({
+      id: newId(),
+      runId,
+      type: 'error',
+      schemaVersion: 1,
+      payload: {
+        code: 'SESSION_AUTH_TIMEOUT',
+        category: 'INFRASTRUCTURE',
+        retryable: false,
+        safeMessage: '等待人工认证超时',
+      },
+      createdAt: now,
+    })
+    await skipRemainingStepRunsTx(tx as unknown as Db, runId, now)
+    return true
+  })
+}
+
+/** 找出仍在 WAITING_FOR_AUTH 且绑定该 TargetAccount 的 Run。 */
+export async function listRunsWaitingForAuthByAccount(
+  db: Db,
+  targetAccountId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.status, 'WAITING_FOR_AUTH'), eq(runs.targetAccountId, targetAccountId)))
+  return rows.map((r) => r.id)
 }
 
 export async function loadRunRow(db: Db, runId: string) {

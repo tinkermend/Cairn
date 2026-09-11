@@ -7,6 +7,7 @@ import type { DbHandle } from '@cairn/db'
 import { DB_HANDLE } from '../db/db.module'
 import { HealthController } from './health.controller'
 import { HealthService } from './health.service'
+import { listenForSupertest } from '../__tests__/http-app'
 
 function stubDb(ping: () => Promise<boolean>): DbHandle {
   return { ping, close: async () => {}, db: {} as never, pool: {} as never }
@@ -18,7 +19,7 @@ async function buildApp(handle: DbHandle): Promise<INestApplication> {
     providers: [HealthService, { provide: DB_HANDLE, useValue: handle }],
   }).compile()
   const app = moduleRef.createNestApplication()
-  await app.init()
+  await listenForSupertest(app)
   return app
 }
 

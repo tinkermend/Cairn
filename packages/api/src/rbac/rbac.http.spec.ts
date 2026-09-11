@@ -25,6 +25,7 @@ import { MeController } from './me.controller'
 import { PermissionsGuard } from './permissions.guard'
 import { RbacController } from './rbac.controller'
 import { RbacService } from './rbac.service'
+import { listenForSupertest } from '../__tests__/http-app'
 
 const now = '2026-01-01T00:00:00.000Z'
 
@@ -127,7 +128,7 @@ async function buildApp(account: RequestAccount | null, service: ReturnType<type
     ],
   }).compile()
   const app = moduleRef.createNestApplication({ logger: false })
-  await app.init()
+  await listenForSupertest(app)
   return app
 }
 

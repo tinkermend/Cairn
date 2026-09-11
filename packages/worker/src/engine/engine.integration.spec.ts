@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  browserSessions,
   claimQueuedRun,
   computeSnapshotDigest,
   consoleAccounts,
@@ -15,7 +16,7 @@ import {
   targets,
   type DbHandle,
 } from '@cairn/db'
-import { DEFAULT_EXECUTOR_VERSIONS, runSnapshotSchema, type Step } from '@cairn/shared'
+import { DEFAULT_EXECUTOR_VERSIONS, DEFAULT_SESSION_POLICY, runSnapshotSchema, type Step } from '@cairn/shared'
 import { ExecutionEngine } from './engine.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_eng`
@@ -127,6 +128,23 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
         .filter((item) => item.type === 'output')
         .every((item) => item.payload !== undefined && !item.objectKey),
     ).toBe(true)
+  })
+
+  it('RF04 惰性启动：Echo 链路不产生 browser_sessions，快照带平台默认 sessionPolicy', async () => {
+    const detail = await createAndRun('惰性', [
+      {
+        id: newId(),
+        name: 'echo',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        input: { value: 1 },
+      },
+    ])
+    expect(detail.status).toBe('SUCCEEDED')
+    expect(detail.snapshot.sessionPolicy).toEqual(DEFAULT_SESSION_POLICY)
+    const sessions = await handle.db.select({ id: browserSessions.id }).from(browserSessions)
+    expect(sessions).toEqual([])
+    // Engine 本期不调用 BrowserPort；无 playwright import 由 boundary 卡住
   })
 
   it('参数化 from 用 input 执行', async () => {

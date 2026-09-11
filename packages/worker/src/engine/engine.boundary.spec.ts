@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest'
 const ENGINE_DIR = __dirname
 const FORBIDDEN_IMPORT =
   /(?:from|import|require)\s*\(?\s*['"][^'"]*(?:playwright|midscene|page-agent|@cairn\/storage)/i
+/** Engine 只能通过注入的 BrowserPort 使用会话，不得直接引用 ../browser。 */
+const FORBIDDEN_BROWSER_DIR = /(?:from|import|require)\s*\(?\s*['"][^'"]*\.\.\/browser/
 
 describe('Engine 依赖边界', () => {
   it('源码与测试不引用浏览器或 AI SDK', () => {
@@ -13,7 +15,7 @@ describe('Engine 依赖边界', () => {
     const hits: string[] = []
     for (const file of files) {
       const text = readFileSync(join(ENGINE_DIR, file), 'utf8')
-      if (FORBIDDEN_IMPORT.test(text)) hits.push(file)
+      if (FORBIDDEN_IMPORT.test(text) || FORBIDDEN_BROWSER_DIR.test(text)) hits.push(file)
     }
     expect(hits).toEqual([])
   })

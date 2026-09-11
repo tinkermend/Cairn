@@ -20,7 +20,6 @@ import {
   type EvidenceType,
 } from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
-import { sha256Digest } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
 
 export const OBJECT_STORE = Symbol('OBJECT_STORE')
@@ -110,8 +109,8 @@ export class ObjectService {
     }
     try {
       const got = await this.store.get(objectKey)
-      const digest = sha256Digest(got.body)
-      if (digest !== row.digest) {
+      // 适配器读出时已复算过一次，直接用它的结果，别对 32 MiB 再哈希一遍。
+      if (got.head.digest !== row.digest) {
         throw new ObjectStoreError('OBJECT_DIGEST_MISMATCH', '对象正文与账本摘要不一致')
       }
       return { head: got.head, contentType: row.contentType, body: got.body }
@@ -161,13 +160,16 @@ export class ObjectService {
         objectKey: put.objectKey,
       })
     } catch (error) {
-      if (!isObjectStoreError(error) || error.code !== 'OBJECT_NOT_AVAILABLE') {
+      // 只有「字节没能落进存储」才算 store unavailable。挂指针阶段的失败
+      // （对象已被清、跨 Run）不是存储故障，贴上这个原因等于给证据行写假死因。
+      const reason = missingReasonFor(error)
+      if (reason) {
         await this.recordMissingObjectEvidence({
           runId: input.runId,
           stepRunId: input.stepRunId,
           attemptId: input.attemptId,
           type: input.type,
-          missingReason: OBJECT_MISSING_REASONS.storeUnavailable,
+          missingReason: reason,
         })
       }
       throw error
@@ -216,5 +218,20 @@ export class ObjectService {
       throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '只能重试未提交的对象')
     }
     return { id: row.id, objectKey: row.objectKey }
+  }
+}
+
+/**
+ * 写失败证据时该记什么原因。
+ * 挂指针阶段的失败不产生缺失证据——对象可能好好地在那儿，只是这条证据没挂上。
+ */
+function missingReasonFor(error: unknown): string | undefined {
+  if (!isObjectStoreError(error)) return OBJECT_MISSING_REASONS.storeUnavailable
+  switch (error.code) {
+    case 'OBJECT_NOT_AVAILABLE':
+    case 'OBJECT_KEY_INVALID':
+      return undefined
+    default:
+      return OBJECT_MISSING_REASONS.storeUnavailable
   }
 }

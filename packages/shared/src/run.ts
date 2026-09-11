@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { secretRefSchema } from './secret-ref.js'
+import { sessionPolicySchema } from './session.js'
 import { contextKeySchema, executionPolicySchema, stepSchema } from './step.js'
 import {
   entityIdSchema,
@@ -118,6 +119,11 @@ export const runSnapshotSchema = z
     input: runInputSchema,
     createdAt: utcInstantSchema,
     policy: executionPolicySchema.optional(),
+    /**
+     * 解析后的会话策略。可选：既有快照无此字段仍可解析；
+     * 新 Run 创建时必须写入完整值（历史 Run 可解释当时怎么执行）。
+     */
+    sessionPolicy: sessionPolicySchema.optional(),
     executorVersions: z.record(z.string().min(1), z.string().min(1).max(64)).optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),

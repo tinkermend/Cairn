@@ -2,8 +2,9 @@ import { Module } from '@nestjs/common'
 import { LoggerModule } from 'nestjs-pino'
 import { LOGGING_CENSOR, LOGGING_REDACT_PATHS } from '@cairn/shared'
 import { createObjectStore, findRepoRoot } from '@cairn/storage'
+import { BrowserModule } from './browser/browser.module'
 import { config, resolveWorkerEnv } from './config/env'
-import { DB_HANDLE, DbModule } from './db/db.module'
+import { DbModule } from './db/db.module'
 import { ExecutionEngine } from './engine/engine'
 import {
   OBJECT_SERVICE_OPTIONS,
@@ -24,6 +25,7 @@ import { LifecycleService } from './runtime/lifecycle.service'
       },
     }),
     DbModule,
+    BrowserModule,
   ],
   providers: [
     {
@@ -32,7 +34,8 @@ import { LifecycleService } from './runtime/lifecycle.service'
         // worker 编译为 CJS（package.json 无 "type": "module"），import.meta 在这里是语法错误；
         // 与 config/env.ts 一样用 __dirname。
         createObjectStore(resolveWorkerEnv(), {
-          repoRoot: findRepoRoot(__dirname),
+          // 惰性：s3 驱动与绝对路径配置用不到仓根，容器里也找不到 pnpm-workspace.yaml。
+          repoRoot: () => findRepoRoot(__dirname),
         }),
     },
     {

@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common'
 import { claimQueuedRun, type DbHandle } from '@cairn/db'
+import { BrowserSessionManager } from '../browser/session-manager'
 import { config } from '../config/env'
 import { DB_HANDLE } from '../db/db.module'
 import { ExecutionEngine } from '../engine/engine'
@@ -23,10 +24,14 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   private readonly startedAt = Date.now()
   private tick: NodeJS.Timeout | undefined
   private cleanupTick: NodeJS.Timeout | undefined
+  private reaperTick: NodeJS.Timeout | undefined
   private stopped = false
   private busy = false
   private inFlight: Promise<void> | undefined
   private cleanupInFlight: Promise<{ purged: number }> | undefined
+  private reaperInFlight:
+    | Promise<{ leasesExpired: number; sessionsClosed: number; authTimeouts: number }>
+    | undefined
   private controller: AbortController | undefined
 
   shutdownSignal: string | undefined
@@ -36,16 +41,22 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
     private readonly engine: ExecutionEngine,
     private readonly objects: ObjectService,
+    private readonly sessions: BrowserSessionManager,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     await this.handle.ping()
+    await this.sessions.reconcileOwn()
+    this.sessions.startHeartbeat()
     this.tick = setInterval(() => {
       this.inFlight = this.pump()
     }, TICK_INTERVAL_MS)
     this.cleanupTick = setInterval(() => {
       void this.runCleanup()
     }, config.CAIRN_OBJECT_CLEANUP_INTERVAL_MS)
+    this.reaperTick = setInterval(() => {
+      void this.runReaper()
+    }, config.CAIRN_SESSION_REAPER_INTERVAL_MS)
     this.logger.log('执行面已就绪，等待任务')
   }
 
@@ -69,12 +80,19 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       clearInterval(this.cleanupTick)
       this.cleanupTick = undefined
     }
+    if (this.reaperTick) {
+      clearInterval(this.reaperTick)
+      this.reaperTick = undefined
+    }
     this.controller?.abort()
     // 等 pump 自己退出：此刻它可能正卡在 claim 上，abort 只能打断它之后才创建的 signal。
     const inFlight = this.inFlight
     const cleanup = this.cleanupInFlight
+    const reaper = this.reaperInFlight
     if (inFlight) await inFlight
     if (cleanup) await cleanup
+    if (reaper) await reaper
+    await this.sessions.shutdown()
     this.logger.log(`收到 ${signal ?? '停机'} 信号，已停止领取任务`)
   }
 
@@ -91,6 +109,25 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
         this.cleanupInFlight = undefined
       })
     return this.cleanupInFlight
+  }
+
+  async runReaper(): Promise<{
+    leasesExpired: number
+    sessionsClosed: number
+    authTimeouts: number
+  }> {
+    if (this.stopped) return { leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }
+    if (this.reaperInFlight) return this.reaperInFlight
+    this.reaperInFlight = this.sessions
+      .reap()
+      .catch((error) => {
+        this.logger.error(error instanceof Error ? error.message : error, '会话回收失败')
+        return { leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }
+      })
+      .finally(() => {
+        this.reaperInFlight = undefined
+      })
+    return this.reaperInFlight
   }
 
   private async pump(): Promise<void> {

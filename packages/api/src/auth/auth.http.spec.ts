@@ -9,6 +9,7 @@ import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import { AuthGuard } from '../common/auth.guard'
 import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
+import { listenForSupertest } from '../__tests__/http-app'
 
 const now = '2026-01-01T00:00:00.000Z'
 const account = {
@@ -41,7 +42,7 @@ describe('POST /auth/login', () => {
       ],
     }).compile()
     app = moduleRef.createNestApplication({ logger: false })
-    await app.init()
+    await listenForSupertest(app)
   })
 
   afterAll(async () => {
