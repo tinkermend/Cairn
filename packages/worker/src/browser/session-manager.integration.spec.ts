@@ -1,4 +1,5 @@
 import { mkdtempSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -44,10 +45,10 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   let actorId: string
   let targetId: string
   let accountId: string
-  let accountId2: string
   let manualTargetId: string
-  let manualAccountId: string
   let profileRoot: string
+  let baseUrl = ''
+  let server: ReturnType<typeof createServer> | undefined
   const secretProvider = new LocalSecretProvider(credentialKeyFromEnv(DEV_CREDENTIAL_KEY))
 
   beforeAll(async () => {
@@ -56,9 +57,49 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     actorId = newId()
     targetId = newId()
     accountId = newId()
-    accountId2 = newId()
     manualTargetId = newId()
-    manualAccountId = newId()
+
+    /*
+     * 内嵌登录夹具，不指向公网。
+     *
+     * 原来这里写 `https://example.com/`，没有 chromium 时整条认证路径根本跑不到，
+     * 测试靠「launch 失败 → 容忍 BROWSER_UNAVAILABLE」通过。一旦机器上有浏览器，
+     * example.com 上找不到 `[name=username]`，fill 会挂 30 秒然后抛出来——测试红了，
+     * 但真正暴露的是两件事：夹具假定了不存在的页面，且登录失败会以异常逃逸。
+     * 指向本地夹具后，认证路径在有无网络时都真的被执行。
+     */
+    server = createServer((req, res) => {
+      const url = req.url ?? '/'
+      if (url.startsWith('/login') && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end(`<!doctype html><html><body><form method="POST" action="/login">
+          <input name="username" id="user" /><input name="password" id="pass" type="password" />
+          <button type="submit" id="go">登录</button></form></body></html>`)
+        return
+      }
+      if (url.startsWith('/login') && req.method === 'POST') {
+        res.writeHead(302, { Location: '/', 'Set-Cookie': 'bsm=ok; Path=/' })
+        res.end()
+        return
+      }
+      if (url === '/' || url.startsWith('/?')) {
+        if (!(req.headers.cookie ?? '').includes('bsm=ok')) {
+          res.writeHead(302, { Location: '/login' })
+          res.end()
+          return
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end('<html><body><h1>home</h1></body></html>')
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    await new Promise<void>((resolveListen) => server!.listen(0, '127.0.0.1', resolveListen))
+    const addr = server.address()
+    if (!addr || typeof addr === 'string') throw new Error('no port')
+    baseUrl = `http://127.0.0.1:${addr.port}`
+
     await handle.db.insert(consoleAccounts).values({
       id: actorId,
       displayName: 'bsm',
@@ -70,8 +111,8 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
         id: targetId,
         code: `bsm-${SCHEMA.slice(-6)}`,
         name: 'BSM',
-        entryUrl: 'https://example.com/',
-        loginUrl: 'https://example.com/login',
+        entryUrl: `${baseUrl}/`,
+        loginUrl: `${baseUrl}/login`,
         authMethod: 'password',
         captchaMode: 'none',
         loginFields: {
@@ -84,22 +125,20 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
         id: manualTargetId,
         code: `bsm-m-${SCHEMA.slice(-5)}`,
         name: 'BSM-manual',
-        entryUrl: 'https://example.com/',
+        entryUrl: `${baseUrl}/`,
         authMethod: 'manual',
         captchaMode: 'none',
       },
     ])
-    await handle.db.insert(targetAccounts).values([
-      { id: accountId, targetId, displayName: 'a', username: 'alice', status: 'active' },
-      { id: accountId2, targetId, displayName: 'b', username: 'bob', status: 'active' },
-      {
-        id: manualAccountId,
-        targetId: manualTargetId,
-        displayName: 'm',
-        username: 'manual',
-        status: 'active',
-      },
-    ])
+    // 只有 SESSION_ACCOUNT_REQUIRED 用这个账号（它必须存在，但键不会被碰）；
+    // 其余用例各自 makeAccount，互不共享 Target + TargetAccount 键。
+    await handle.db.insert(targetAccounts).values({
+      id: accountId,
+      targetId,
+      displayName: 'a',
+      username: 'alice',
+      status: 'active',
+    })
 
     manager = new BrowserSessionManager(
       handle,
@@ -120,7 +159,27 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   afterAll(async () => {
     await manager?.shutdown()
     await handle?.close()
+    if (server) await new Promise<void>((r) => server!.close(() => r()))
   })
+
+  /**
+   * 每个用例自己领账号，避免共用同一个 Target + TargetAccount 键。
+   *
+   * 会话按设计不随 Run 结束关闭，所以共用键的用例会互相看到对方留下的活会话：
+   * 容量用例会把别人的会话算进上限，重启自愈用例会撞 browser_sessions_key_live_idx。
+   * 原来没暴露是因为有浏览器的机器上整条路径跑不到；现在真的跑了，必须让用例互不依赖。
+   */
+  async function makeAccount(target: 'password' | 'manual', label: string): Promise<string> {
+    const id = newId()
+    await handle.db.insert(targetAccounts).values({
+      id,
+      targetId: target === 'password' ? targetId : manualTargetId,
+      displayName: label,
+      username: `${label}-${newId().slice(0, 8)}`,
+      status: 'active',
+    })
+    return id
+  }
 
   async function makeRunningSnapshot(input: {
     targetId: string
@@ -155,10 +214,8 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   })
 
   it('manual 认证：有浏览器时 WAITING_FOR_AUTH + 认证占用', async () => {
-    const run = await makeRunningSnapshot({
-      targetId: manualTargetId,
-      accountId: manualAccountId,
-    })
+    const account = await makeAccount('manual', 'manual-auth')
+    const run = await makeRunningSnapshot({ targetId: manualTargetId, accountId: account })
     const result = await manager.acquire(run)
     if (!result.ok && result.waitingForAuth) {
       expect((await getRun(handle.db, run.runId)).status).toBe('WAITING_FOR_AUTH')
@@ -173,7 +230,8 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   })
 
   it('acquire → renew → release；丢租 guard；LEASE_UNKNOWN', async () => {
-    const run = await makeRunningSnapshot({ targetId, accountId })
+    const account = await makeAccount('password', 'lease')
+    const run = await makeRunningSnapshot({ targetId, accountId: account })
     manager.resolveCredential = async () => ({ username: 'alice', password: 'x' })
     const result = await manager.acquire(run)
     if (!result.ok) {
@@ -216,13 +274,13 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     await limited.reconcileOwn()
     limited.resolveCredential = async () => ({ username: 'u', password: 'p' })
 
-    const run1 = await makeRunningSnapshot({ targetId, accountId })
-    const run2 = await makeRunningSnapshot({ targetId, accountId: accountId2 })
+    const capA = await makeAccount('password', 'cap-a')
+    const capB = await makeAccount('password', 'cap-b')
+    const run1 = await makeRunningSnapshot({ targetId, accountId: capA })
+    const run2 = await makeRunningSnapshot({ targetId, accountId: capB })
     const a = await limited.acquire(run1)
     if (!a.ok) {
-      expect(['BROWSER_UNAVAILABLE', 'BROWSER_LAUNCH_FAILED', 'SESSION_AUTH_UNSUPPORTED']).toContain(
-        a.code,
-      )
+      expect(['BROWSER_UNAVAILABLE', 'BROWSER_LAUNCH_FAILED', 'PROFILE_LOCKED']).toContain(a.code)
       await limited.shutdown()
       return
     }
@@ -234,8 +292,9 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   })
 
   it('重启自愈清掉名下 OPEN 会话', async () => {
+    const account = await makeAccount('password', 'restart')
     const session = await createSession(handle.db, {
-      key: { targetId, targetAccountId: accountId },
+      key: { targetId, targetAccountId: account },
       ownerWorkerId: WORKER,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
@@ -246,7 +305,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       expectedVersion: session.version,
       status: 'OPEN',
     })
-    const run = await makeRunningSnapshot({ targetId, accountId })
+    const run = await makeRunningSnapshot({ targetId, accountId: account })
     await acquireSessionLease(handle.db, {
       sessionId: session.id,
       runId: run.runId,
@@ -274,8 +333,9 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   })
 
   it('认证超时 reap：WAITING_FOR_AUTH → FAILED，会话仍 OPEN', async () => {
+    const account = await makeAccount('manual', 'auth-timeout')
     const session = await createSession(handle.db, {
-      key: { targetId: manualTargetId, targetAccountId: manualAccountId },
+      key: { targetId: manualTargetId, targetAccountId: account },
       ownerWorkerId: WORKER,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
@@ -298,7 +358,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
 
     const run = await makeRunningSnapshot({
       targetId: manualTargetId,
-      accountId: manualAccountId,
+      accountId: account,
     })
     await markRunWaitingForAuth(handle.db, run.runId)
 

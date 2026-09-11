@@ -64,6 +64,8 @@ RunLease 与 Fencing（P3）**尚未落地**。本方案与它的绑定按「可
 
 `playwright` 只加进 `packages/worker/package.json`。浏览器二进制不进 CI 默认安装路径——见 D11 惰性启动。
 
+**版本必须与 `packages/web` 一致**：playwright 每个版本钉死自己的 chromium revision（1.55 → 1187、1.63 → 1243），两个包各写一个版本就是各下一份浏览器，且 worker 的浏览器测试在没装对应 revision 的机器上静默 skip（CI 只装 web 那份，于是它从来没在 CI 上跑过）。约束由 `tools/check-deps.mjs` 卡住（`SHARED_VERSION_DEPS`），版本分叉直接让 `pnpm check` 失败。
+
 ### D2. 三件事分开存：生命周期 / 健康 / 认证
 
 `READY` 与 `AUTH_REQUIRED` 是两种观测的合取，不是第三种观测。把「进程在不在」「健康不健康」「登录态还有效吗」压成一个 status 列，等于每次认证过期都要靠人记得同步改 status，而崩溃或探针失败又必须回写——双事实源，且崩在中间态就永久撒谎。
@@ -540,4 +542,5 @@ DISPOSABLE_SESSION_STATUSES                                    // CREATING / CLO
 - 2026-09-11：补齐认证闭环——`WAITING_FOR_AUTH` 写库、认证占用超时 → `SESSION_AUTH_TIMEOUT`、worker 侧 LocalSecretProvider 自动登录、`SESSION_LEASE_UNKNOWN`、换代续租测试、可选 chromium runtime 测、`browser:install` 脚本。
 - 2026-09-11：P1 收口——快照平台默认与 env 默认对齐测试、RF04 零 session 行断言、D8 复用档位单测、RF17 50 页、认证文案与 `.env.example` 去重。说明：ExecutionEngine 本期只注入 BrowserPort、不调用（无浏览器 Step）；P5 前正式 Run 不走 acquire。
 - 2026-09-11：复查补口——`LOST` 原本是只写状态（占键且无出口，同 Target+TargetAccount 会被永久锁死）。按 D13 补最小人工处置入口：`GET /browser-sessions` + `POST /browser-sessions/:id/dispose`（`session:read` / `session:dispose`，`0009` 补种系统角色）、`disposeStuckSession` 同事务撤租约与写审计、worker `reap` 对账丢弃已处置句柄。同时把 `recordAudit` 从 runs / scenarios 的各一份收敛成 `packages/db/src/audit/record.ts`。
+- 2026-09-11：修订——worker 的 playwright 与 web 对齐到 1.63.0（同一 chromium revision 1243，装一次两处共用），分叉由 `tools/check-deps.mjs` 的 `SHARED_VERSION_DEPS` 卡住。对齐后 worker 的浏览器测试首次真正运行，暴露出两处此前被「无 chromium 就 skip」掩盖的问题：`loginWithCredentials` 在登录失败时抛异常而不是返回 false（违反其 `Promise<boolean>` 契约，把可解释的认证失败变成调用方未捕获异常），以及集成用例共用 Target+TargetAccount 键、指向公网 `example.com`。前者改为内部收敛为 false，后者改用内嵌登录夹具并让每个用例各领账号。worker 测试 48 通过 0 跳过（原 47 通过 1 跳过）。
 - 待后续：路线图 P4 中 Affinity 与失联处置；P5 页面能力（Engine 消费 BrowserPort）；人工认证可达通道；处置面 Web 界面。

@@ -72,6 +72,23 @@ function checkRelativeEscapes(packageDir, self, report) {
   }
 }
 
+/*
+ * 必须全仓同版本的依赖。
+ *
+ * playwright 的每个版本钉死自己的 chromium revision（1.55 → 1187、1.63 → 1243），
+ * 两个包各写一个版本就是两台机器上各下一份浏览器：谁跑一次 browser:install 就多拉
+ * 一份，且 worker 的浏览器测试在没装对应 revision 的机器上静默 skip（CI 只装了 web
+ * 那一份，于是这条测试从来没在 CI 上跑过）。同版本是「装一次、跑两处」的前提。
+ *
+ * 不用 pnpm catalog 是因为 knip 的 findFile 只看 cwd，而 knip 按包运行、cwd 在
+ * packages/web —— 它读不到仓根的 pnpm-workspace.yaml，会把 catalog: 报成
+ * unresolved。约束落在这里：脚本已经在 CI（pnpm check）里卡着。
+ */
+const SHARED_VERSION_DEPS = ['playwright']
+
+/** dep → (声明版本 → 声明它的包)。循环里收集，循环后判定。 */
+const versionsByDep = new Map()
+
 const PACKAGE_ROOTS = [resolve(root, 'packages'), resolve(root, 'packages/extension')]
 const errors = []
 let checked = 0
@@ -117,6 +134,25 @@ for (const packagesDir of PACKAGE_ROOTS) {
     }
 
     checkRelativeEscapes(packageDir, self, (message) => errors.push(message))
+
+    for (const dep of SHARED_VERSION_DEPS) {
+      const spec = declared[dep]
+      if (!spec) continue
+      const seen = versionsByDep.get(dep) ?? new Map()
+      if (!seen.has(spec)) seen.set(spec, [])
+      seen.get(spec).push(self)
+      versionsByDep.set(dep, seen)
+    }
+  }
+}
+
+for (const dep of SHARED_VERSION_DEPS) {
+  const seen = versionsByDep.get(dep)
+  if (seen && seen.size > 1) {
+    const detail = [...seen]
+      .map(([spec, pkgs]) => `${spec}（${[...new Set(pkgs)].join('、')}）`)
+      .join(' vs ')
+    errors.push(`${dep} 全仓必须同版本，当前分叉：${detail}——每个版本会各拉一份浏览器`)
   }
 }
 

@@ -1,3 +1,4 @@
+2026-09-11--playwright 版本对齐：worker 与 web 统一到 1.63.0（同一 chromium 1243，装一次共用），分叉由 tools/check-deps.mjs 卡住；对齐后 worker 浏览器测试首次真正运行，修掉 loginWithCredentials 抛异常逃逸与用例共用会话键
 2026-09-11--BrowserSession 处置出口：GET /browser-sessions 与 POST :id/dispose（session:read / session:dispose、0009 补种系统角色）、LOST 不再永久占键、worker reap 对账收掉已处置句柄、recordAudit 收敛为单份
 2026-09-11--BrowserSession P1 收口：平台默认与 env 对齐、RF04 零 session 行、D8 复用单测、RF17 50 页、.env.example 去重
 2026-09-11--BrowserSession 认证闭环补齐：WAITING_FOR_AUTH、认证超时、@cairn/secret 自动登录、LEASE_UNKNOWN、换代续租测、chromium 可选 runtime 测

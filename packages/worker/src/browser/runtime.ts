@@ -119,6 +119,14 @@ export async function probeAuth(
   }
 }
 
+/**
+ * 自动登录。返回 false 表示「这次登录没成功」，**不抛异常**。
+ *
+ * 调用方按 D7 处理失败（置认证占用、Run → WAITING_FOR_AUTH）。所以页面结构不符、
+ * 元素超时、导航失败都必须在函数内收敛成 false：让 Playwright 的错误逃出
+ * `acquire` 会把一个可解释的认证失败变成调用方的未捕获异常，Run 也就得不到
+ * WAITING_FOR_AUTH 这条正确的处置路径。
+ */
 export async function loginWithCredentials(
   handle: BrowserHandle,
   target: TargetAuthInfo,
@@ -126,14 +134,18 @@ export async function loginWithCredentials(
 ): Promise<boolean> {
   const fields = target.loginFields
   if (!fields?.username || !fields.password || !fields.submit) return false
-  const loginUrl = target.loginUrl ?? target.entryUrl
-  await handle.basePage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  await locatorFor(handle.basePage, fields.username).fill(credential.username)
-  await locatorFor(handle.basePage, fields.password).fill(credential.password)
-  await locatorFor(handle.basePage, fields.submit).click()
-  await handle.basePage.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => {})
-  const auth = await probeAuth(handle, target)
-  return auth === 'AUTHENTICATED'
+  try {
+    const loginUrl = target.loginUrl ?? target.entryUrl
+    await handle.basePage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    await locatorFor(handle.basePage, fields.username).fill(credential.username)
+    await locatorFor(handle.basePage, fields.password).fill(credential.password)
+    await locatorFor(handle.basePage, fields.submit).click()
+    await handle.basePage.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => {})
+    const auth = await probeAuth(handle, target)
+    return auth === 'AUTHENTICATED'
+  } catch {
+    return false
+  }
 }
 
 export async function stopSession(

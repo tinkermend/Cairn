@@ -76,7 +76,10 @@ jobs:
           kill "$api_pid" 2>/dev/null || true
           wait "$api_pid" 2>/dev/null || true
 
-      # web 的组件测试跑在真实 Chromium 上（vitest browser mode）
+      # web 的组件测试（vitest browser mode）与 worker 的浏览器运行时测试共用同一份
+      # Chromium：两个包的 playwright 版本由 tools/check-deps.mjs 卡成同一个，各自
+      # 需要的 chromium revision 因此一致，这里装一次即可。装漏的后果是 worker 的
+      # runtime.hmi.spec.ts 静默 skip。
       - run: pnpm --filter @cairn/web exec playwright install --with-deps chromium
 
       - run: pnpm test
