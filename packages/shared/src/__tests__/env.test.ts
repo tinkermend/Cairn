@@ -36,7 +36,7 @@ describe('dbEnvSchema', () => {
 describe('apiEnvSchema', () => {
   it('JWT 与 bootstrap 有本地默认值', () => {
     const env = apiEnvSchema.parse({})
-    expect(env.CAIRN_BOOTSTRAP_ADMIN_EMAIL).toBe('admin@cairn.dev')
+    expect(env.CAIRN_BOOTSTRAP_ADMIN_EMAIL).toBe('admin')
     expect(env.CAIRN_BOOTSTRAP_ADMIN_PASSWORD).toBe('cairn-admin')
     expect(env.CAIRN_JWT_SECRET.length).toBeGreaterThanOrEqual(16)
   })
@@ -280,6 +280,35 @@ describe('workerEnvSchema', () => {
     expect(result.error?.issues.map((i) => i.path.join('.'))).toContain(
       'CAIRN_SESSION_LEASE_TTL_SECONDS',
     )
+  })
+
+  it('RunLease TTL < 3×Worker 心跳时拒绝启动', () => {
+    const result = workerEnvSchema.safeParse({
+      CAIRN_RUN_LEASE_TTL_SECONDS: '10',
+      CAIRN_WORKER_HEARTBEAT_MS: '5000',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain('CAIRN_RUN_LEASE_TTL_SECONDS')
+  })
+
+  it('WORKER_LOST_AFTER ≤ RunLease TTL 时拒绝启动', () => {
+    const result = workerEnvSchema.safeParse({
+      CAIRN_RUN_LEASE_TTL_SECONDS: '30',
+      CAIRN_WORKER_LOST_AFTER_SECONDS: '30',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain(
+      'CAIRN_WORKER_LOST_AFTER_SECONDS',
+    )
+  })
+
+  it('RunLease 相关默认值', () => {
+    const env = workerEnvSchema.parse({})
+    expect(env.CAIRN_WORKER_CAPACITY).toBe(1)
+    expect(env.CAIRN_WORKER_HEARTBEAT_MS).toBe(5_000)
+    expect(env.CAIRN_RUN_LEASE_TTL_SECONDS).toBe(30)
+    expect(env.CAIRN_WORKER_LOST_AFTER_SECONDS).toBe(45)
+    expect(env.CAIRN_RUN_MAX_RECOVERIES).toBe(3)
   })
 
   it('MAX_LIFETIME ≤ IDLE_TTL 时拒绝启动', () => {

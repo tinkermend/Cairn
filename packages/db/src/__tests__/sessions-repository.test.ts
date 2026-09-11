@@ -26,6 +26,7 @@ import {
   listRunsWaitingForAuthByAccount,
   markRunWaitingForAuth,
   markSessionsClosing,
+  registerWorker,
   openIsolatedDb,
   releaseAuthHold,
   releaseSessionLease,
@@ -39,6 +40,7 @@ import {
   type DbHandle,
 } from '../index.js'
 import { newId } from '../id.js'
+import { forceGrantForRun } from './lease-harness.js'
 import { consoleAccounts } from '../schema/console.js'
 import { runs } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
@@ -116,6 +118,12 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       actor: { id: actorId },
     })
     runId2 = run2.detail.id
+    await registerWorker(handle.db, {
+      workerId: workerA,
+      instanceId: newId(),
+      capacity: 8,
+      lostAfterSeconds: 60,
+    })
   })
 
   afterAll(async () => {
@@ -219,12 +227,14 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
         runId,
         holderWorkerId: workerA,
         leaseTtlSeconds: 30,
+        runFencingToken: 1,
       }),
       acquireSessionLease(handle.db, {
         sessionId: session.id,
         runId: runId2,
         holderWorkerId: workerB,
         leaseTtlSeconds: 30,
+        runFencingToken: 1,
       }),
     ])
     const wins = [a, b].filter((x) => x.ok)
@@ -248,6 +258,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId: winner.lease.runId,
       holderWorkerId: winner.lease.holderWorkerId,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     expect(again.ok).toBe(true)
     if (again.ok) {
@@ -277,6 +288,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId,
       holderWorkerId: workerA,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     expect(got.ok).toBe(true)
     if (!got.ok) throw new Error('lease')
@@ -361,12 +373,8 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       targetAccountId: accountId,
       actor: { id: actorId },
     })
-    await handle.db
-      .update(runs)
-      .set({ status: 'RUNNING', startedAt: new Date(), updatedAt: new Date() })
-      .where(eq(runs.id, created.detail.id))
-
-    expect(await markRunWaitingForAuth(handle.db, created.detail.id)).toBe(true)
+    const grant = await forceGrantForRun(handle, created.detail.id, workerA)
+    expect(await markRunWaitingForAuth(handle.db, grant)).toBe(true)
     expect((await getRun(handle.db, created.detail.id)).status).toBe('WAITING_FOR_AUTH')
 
     const session = await openSession()
@@ -412,6 +420,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId,
       holderWorkerId: workerA,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     if (!got.ok) throw new Error('lease')
     await forceLeaseExpiresAt(handle.db, got.lease.id, new Date(Date.now() - 5000))
@@ -427,6 +436,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId: runId2,
       holderWorkerId: workerA,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     if (!got2.ok) throw new Error('lease2')
     await releaseSessionLease(handle.db, {
@@ -455,6 +465,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId,
       holderWorkerId: workerA,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     if (!got.ok) throw new Error('lease')
     const grant = {
@@ -496,6 +507,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId,
       holderWorkerId: workerA,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     if (!got.ok) throw new Error('lease')
     // 获取会 touch last_used；拨回过去后有租约仍不可收
@@ -540,6 +552,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId,
       holderWorkerId: workerA,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     if (!got.ok) throw new Error('lease')
     const revoked = await revokeWorkerLeases(handle.db, workerA)
@@ -618,11 +631,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
         targetAccountId: accountId,
         actor: { id: actorId },
       })
-      // 不走 claim 队列：同库可能还有其它测试留下的 QUEUED
-      await handle.db
-        .update(runs)
-        .set({ status: 'RUNNING', startedAt: new Date(), updatedAt: new Date() })
-        .where(eq(runs.id, created.detail.id))
+      const grant = await forceGrantForRun(handle, created.detail.id, workerA)
       const detail = await getRun(handle.db, created.detail.id)
       expect(detail.status).toBe('RUNNING')
       const stepRunId = detail.stepRuns[0]!.id
@@ -630,6 +639,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
         runId: created.detail.id,
         stepRunId,
         inputPayload: 'x',
+        grant: grant!,
       })
       expect(started).not.toBeNull()
 
@@ -639,6 +649,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
         runId: created.detail.id,
         holderWorkerId: workerA,
         leaseTtlSeconds: 30,
+        runFencingToken: grant!.fencingToken,
       })
       expect(lease.ok).toBe(true)
       if (!lease.ok) throw new Error('lease')
@@ -651,6 +662,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
         output: { ok: true },
         stepRunStatus: 'SUCCEEDED',
         runStatus: 'SUCCEEDED',
+        grant: grant!,
         sessionLease: {
           sessionId: session.id,
           leaseId: lease.lease.id,
@@ -707,6 +719,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId,
       holderWorkerId: workerA,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     expect(lease.ok).toBe(true)
     await setSessionStatus(handle.db, {
@@ -796,6 +809,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       runId,
       holderWorkerId: workerA,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
     expect(lease.ok).toBe(true)
 

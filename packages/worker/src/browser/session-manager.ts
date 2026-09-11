@@ -33,6 +33,7 @@ import {
   DEFAULT_SESSION_POLICY,
   LOCAL_SECRET_PROVIDER,
   resolveSessionPolicy,
+  type RunGrant,
   type RunSnapshot,
   type SessionErrorCode,
   type SessionGrant,
@@ -142,7 +143,7 @@ export class BrowserSessionManager {
     return { leasesRevoked, sessionsClosed }
   }
 
-  async acquire(run: RunSnapshot, _signal?: AbortSignal): Promise<SessionAcquireResult> {
+  async acquire(run: RunSnapshot, runGrant: RunGrant, _signal?: AbortSignal): Promise<SessionAcquireResult> {
     if (!run.targetAccountId) {
       return {
         ok: false,
@@ -251,7 +252,7 @@ export class BrowserSessionManager {
       )
     }
 
-    const auth = await this.ensureAuth(live, run, policy)
+    const auth = await this.ensureAuth(live, run, runGrant, policy)
     if (!auth.ok) return auth
     live = auth.session
 
@@ -260,6 +261,7 @@ export class BrowserSessionManager {
       runId: run.runId,
       holderWorkerId: this.options.workerId,
       leaseTtlSeconds: policy.leaseTtlSeconds,
+      runFencingToken: runGrant.fencingToken,
     })
     if (!leaseOutcome.ok) {
       return {
@@ -275,27 +277,27 @@ export class BrowserSessionManager {
     const lease = leaseOutcome.lease
     await this.applyReuse(live, policy, lease.id)
 
-    const grant: SessionGrant = {
+    const sessionGrant: SessionGrant = {
       sessionId: live.id,
       leaseId: lease.id,
       generation: lease.sessionGeneration,
       sessionFencingToken: lease.sessionFencingToken,
       expiresAt: lease.expiresAt.toISOString(),
     }
-    this.guard.install(grant)
+    this.guard.install(sessionGrant)
     this.leaseToSession.set(lease.id, live.id)
     this.logger.log(
       {
-        sessionId: grant.sessionId,
-        leaseId: grant.leaseId,
-        sessionGeneration: grant.generation,
-        fencingToken: grant.sessionFencingToken,
+        sessionId: sessionGrant.sessionId,
+        leaseId: sessionGrant.leaseId,
+        sessionGeneration: sessionGrant.generation,
+        fencingToken: sessionGrant.sessionFencingToken,
         workerId: this.options.workerId,
         runId: run.runId,
       },
       'lease.acquired',
     )
-    return { ok: true, grant }
+    return { ok: true, grant: sessionGrant }
   }
 
   async renew(leaseId: string, leaseTtlSeconds?: number): Promise<'ok' | 'lost'> {
@@ -619,6 +621,7 @@ export class BrowserSessionManager {
   private async ensureAuth(
     session: SessionRecord,
     run: RunSnapshot,
+    runGrant: RunGrant,
     policy: SessionPolicy,
   ): Promise<
     | { ok: true; session: SessionRecord }
@@ -666,7 +669,7 @@ export class BrowserSessionManager {
             : targetInfo.captchaMode !== 'none'
               ? '目标系统启用验证码，自动登录降级'
               : '需要人工认证'
-      return this.enterWaitingForAuth(session, run, policy, 'SESSION_AUTH_UNSUPPORTED', message)
+      return this.enterWaitingForAuth(session, runGrant, policy, 'SESSION_AUTH_UNSUPPORTED', message)
     }
 
     // password + none + 字段齐全 → 自动登录
@@ -674,7 +677,7 @@ export class BrowserSessionManager {
     if (!credential) {
       return this.enterWaitingForAuth(
         session,
-        run,
+        runGrant,
         policy,
         'SESSION_AUTH_UNSUPPORTED',
         '无法解析登录凭据',
@@ -705,7 +708,7 @@ export class BrowserSessionManager {
     if (!ok) {
       return this.enterWaitingForAuth(
         session,
-        run,
+        runGrant,
         policy,
         'SESSION_AUTH_UNSUPPORTED',
         '自动登录失败',
@@ -718,11 +721,12 @@ export class BrowserSessionManager {
   }
 
   /**
-   * 认证占用 + Run → WAITING_FOR_AUTH。不持有执行租约。
+   * 认证占用 + Run → WAITING_FOR_AUTH，同一事务释放执行租约。
+   * 这里等的是目标系统登录，不是控制台账号。
    */
   private async enterWaitingForAuth(
     session: SessionRecord,
-    run: RunSnapshot,
+    runGrant: RunGrant,
     policy: SessionPolicy,
     code: SessionErrorCode,
     message: string,
@@ -738,9 +742,9 @@ export class BrowserSessionManager {
       ownerWorkerId: this.options.workerId,
       authState: 'EXPIRED',
     })
-    await markRunWaitingForAuth(db, run.runId)
+    await markRunWaitingForAuth(db, runGrant)
     this.logger.log(
-      { sessionId: session.id, runId: run.runId, workerId: this.options.workerId, code },
+      { sessionId: session.id, runId: runGrant.runId, workerId: this.options.workerId, code },
       'session.auth_changed',
     )
     return { ok: false, code, message, waitingForAuth: true }

@@ -9,7 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 
 const RESOURCE_LABELS_ZH: Record<PermissionResource, string> = {
-  account: '账号',
+  account: '控制台账号',
   role: '角色',
   workflow: '工作流',
   run: 'Run',
@@ -20,9 +20,9 @@ const RESOURCE_LABELS_ZH: Record<PermissionResource, string> = {
 }
 
 const PERMISSION_LABELS_ZH: Record<PermissionCode, string> = {
-  'account:read': '查看账号',
-  'account:write': '创建和更新账号',
-  'account:delete': '删除账号',
+  'account:read': '查看控制台账号',
+  'account:write': '创建和更新控制台账号',
+  'account:delete': '删除控制台账号',
   'role:read': '查看角色',
   'role:write': '创建和更新角色',
   'role:delete': '删除自定义角色',
@@ -32,6 +32,7 @@ const PERMISSION_LABELS_ZH: Record<PermissionCode, string> = {
   'run:read': '查看 Run',
   'run:execute': '启动 Run',
   'run:cancel': '取消 Run',
+  'run:review': '核查运行',
   'session:read': '查看浏览器会话',
   'session:dispose': '处置卡死的浏览器会话',
   'target:read': '查看目标系统',

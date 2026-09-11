@@ -56,7 +56,7 @@ export const usersColumns: ColumnDef<User>[] = [
   {
     accessorKey: 'email',
     header: ({ column }) => (
-      <DataTableColumnHeader column={column} title='邮箱' />
+      <DataTableColumnHeader column={column} title='账号' />
     ),
     cell: ({ row }) => (
       <div className='w-fit ps-2 text-nowrap'>{row.getValue('email') ?? '—'}</div>

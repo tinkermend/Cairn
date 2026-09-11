@@ -1,5 +1,25 @@
+import { randomUUID } from 'node:crypto'
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common'
-import { claimQueuedRun, type DbHandle } from '@cairn/db'
+import {
+  claimRun,
+  expireStaleRunLeases,
+  heartbeatWorker,
+  listActiveLeasesForWorker,
+  markLostWorkers,
+  markSessionsLostForWorkers,
+  markWorkerDraining,
+  markWorkerStopped,
+  registerWorker,
+  renewRunLease,
+  settleRevokedRuns,
+  sweepDriftedRuns,
+  yieldUnfinishedRun,
+  DomainError,
+  WORKER_ID_CONFLICT,
+  type DbHandle,
+  type WorkerHeartbeatOutcome,
+} from '@cairn/db'
+import type { RunGrant } from '@cairn/shared'
 import { BrowserSessionManager } from '../browser/session-manager'
 import { config } from '../config/env'
 import { DB_HANDLE } from '../db/db.module'
@@ -8,34 +28,50 @@ import { ObjectService } from '../objects/object.service'
 
 const TICK_INTERVAL_MS = 1_000
 
+type InFlight = {
+  grant: RunGrant
+  controller: AbortController
+  done: Promise<void>
+}
+
 /**
  * 执行面的进程生命周期。
  *
- * tick 领取一条 QUEUED Run 并交给 Engine。同时只跑一个 Run。
- * 停机：停止领取 → abort 在途 → 等收尾。副作用未确认的 Attempt 由 Engine 标 NEEDS_REVIEW。
- *
- * 领取是异步的，停机信号可能正好落在 claim 与 execute 之间：那时 controller 已存在、
- * pumpTask 也已登记，所以 shutdown 能 abort 到它并等到收尾——否则会留下一条
- * 被领取但没人执行的 RUNNING。
+ * tick：容量未满则 claimRun，以 leaseId 去重后交给 Engine。
+ * 心跳与 RunLease 续租共用 CAIRN_WORKER_HEARTBEAT_MS。
+ * 恢复扫描挂在既有 session reaper tick 上。
  */
 @Injectable()
 export class LifecycleService implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly logger = new Logger(LifecycleService.name)
   private readonly startedAt = Date.now()
+  /** 每次（重新）注册换一份：旧代的 grant 与心跳都必须随之作废。 */
+  private instanceId = randomUUID()
+  private readonly inFlight = new Map<string, InFlight>()
   private tick: NodeJS.Timeout | undefined
+  private heartbeatTick: NodeJS.Timeout | undefined
   private cleanupTick: NodeJS.Timeout | undefined
   private reaperTick: NodeJS.Timeout | undefined
   private stopped = false
-  private busy = false
-  private inFlight: Promise<void> | undefined
+  private claiming = false
+  private claimTask: Promise<void> | undefined
+  private pendingClaim: AbortController | undefined
   private cleanupInFlight: Promise<{ purged: number }> | undefined
   private reaperInFlight:
     | Promise<{ leasesExpired: number; sessionsClosed: number; authTimeouts: number }>
     | undefined
-  private controller: AbortController | undefined
+  private healing: Promise<void> | undefined
 
   shutdownSignal: string | undefined
   shutdownCalled = false
+
+  /**
+   * 身份已被别的实例接管时如何结束进程。
+   *
+   * 这一步不能只是「不再领取」：那样进程活着却永远不干活，外部也看不出来。
+   * 默认交给编排重启，测试里覆写成记录调用。
+   */
+  exitProcess: (code: number) => void = (code) => process.exit(code)
 
   constructor(
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
@@ -46,22 +82,67 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
 
   async onApplicationBootstrap(): Promise<void> {
     await this.handle.ping()
+    try {
+      await this.register()
+    } catch (error) {
+      // 本地最先踩到的错误路径：默认 ID 只够单进程，开第二个就撞。
+      // 冒泡让 Nest 启动失败是对的，但得先说清楚是什么、怎么办；只带 ID 与秒数，不带凭证。
+      if (error instanceof DomainError && error.code === WORKER_ID_CONFLICT) {
+        this.logger.error(
+          `CAIRN_WORKER_ID=${config.CAIRN_WORKER_ID} 已被另一个仍在心跳的实例占用，本进程不启动。` +
+            `多实例部署必须每实例一个 ID；若上一个实例已经死了，等 ${config.CAIRN_WORKER_LOST_AFTER_SECONDS} 秒判失联后可重启。`,
+        )
+      }
+      throw error
+    }
     await this.sessions.reconcileOwn()
     this.sessions.startHeartbeat()
-    this.tick = setInterval(() => {
-      this.inFlight = this.pump()
-    }, TICK_INTERVAL_MS)
+    this.startClaiming()
+    this.claimTask = this.pump()
+    this.heartbeatTick = setInterval(() => {
+      void this.beat()
+    }, config.CAIRN_WORKER_HEARTBEAT_MS)
     this.cleanupTick = setInterval(() => {
       void this.runCleanup()
     }, config.CAIRN_OBJECT_CLEANUP_INTERVAL_MS)
     this.reaperTick = setInterval(() => {
       void this.runReaper()
     }, config.CAIRN_SESSION_REAPER_INTERVAL_MS)
-    this.logger.log('执行面已就绪，等待任务')
+    this.logger.log(
+      { workerId: config.CAIRN_WORKER_ID, instanceId: this.instanceId },
+      '执行面已就绪，等待任务',
+    )
   }
 
   isRunning(): boolean {
     return this.tick !== undefined
+  }
+
+  /**
+   * 注册（或以新代重新注册）本实例：撤销自己名下残留的 ACTIVE 租约，
+   * 对应 Run 交回恢复扫描。启动与失联自愈走同一条路径。
+   */
+  private async register(): Promise<void> {
+    this.instanceId = randomUUID()
+    const registered = await registerWorker(this.handle.db, {
+      workerId: config.CAIRN_WORKER_ID,
+      instanceId: this.instanceId,
+      capacity: config.CAIRN_WORKER_CAPACITY,
+      lostAfterSeconds: config.CAIRN_WORKER_LOST_AFTER_SECONDS,
+    })
+    await settleRevokedRuns(
+      this.handle.db,
+      registered.revokedRunIds,
+      config.CAIRN_RUN_MAX_RECOVERIES,
+    )
+  }
+
+  private startClaiming(): void {
+    if (this.tick || this.shutdownCalled) return
+    this.stopped = false
+    this.tick = setInterval(() => {
+      this.claimTask = this.pump()
+    }, TICK_INTERVAL_MS)
   }
 
   uptimeSeconds(): number {
@@ -72,9 +153,14 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     this.shutdownSignal = signal
     this.shutdownCalled = true
     this.stopped = true
+    await markWorkerDraining(this.handle.db, config.CAIRN_WORKER_ID).catch(() => undefined)
     if (this.tick) {
       clearInterval(this.tick)
       this.tick = undefined
+    }
+    if (this.heartbeatTick) {
+      clearInterval(this.heartbeatTick)
+      this.heartbeatTick = undefined
     }
     if (this.cleanupTick) {
       clearInterval(this.cleanupTick)
@@ -84,14 +170,22 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       clearInterval(this.reaperTick)
       this.reaperTick = undefined
     }
-    this.controller?.abort()
-    // 等 pump 自己退出：此刻它可能正卡在 claim 上，abort 只能打断它之后才创建的 signal。
-    const inFlight = this.inFlight
+    this.pendingClaim?.abort()
+    for (const item of this.inFlight.values()) item.controller.abort()
+    // 自愈可能正在重新注册：等它结束，别让停机与注册交错。
+    await this.healing?.catch(() => undefined)
+    const claiming = this.claimTask
     const cleanup = this.cleanupInFlight
     const reaper = this.reaperInFlight
-    if (inFlight) await inFlight
+    if (claiming) await claiming
+    await Promise.all([...this.inFlight.values()].map((item) => item.done))
     if (cleanup) await cleanup
     if (reaper) await reaper
+    const leftover = await listActiveLeasesForWorker(this.handle.db, config.CAIRN_WORKER_ID)
+    for (const grant of leftover) {
+      await yieldUnfinishedRun(this.handle.db, grant)
+    }
+    await markWorkerStopped(this.handle.db, config.CAIRN_WORKER_ID).catch(() => undefined)
     await this.sessions.shutdown()
     this.logger.log(`收到 ${signal ?? '停机'} 信号，已停止领取任务`)
   }
@@ -118,10 +212,9 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   }> {
     if (this.stopped) return { leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }
     if (this.reaperInFlight) return this.reaperInFlight
-    this.reaperInFlight = this.sessions
-      .reap()
+    this.reaperInFlight = this.reapAll()
       .catch((error) => {
-        this.logger.error(error instanceof Error ? error.message : error, '会话回收失败')
+        this.logger.error(error instanceof Error ? error.message : error, '回收失败')
         return { leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }
       })
       .finally(() => {
@@ -130,22 +223,140 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     return this.reaperInFlight
   }
 
-  private async pump(): Promise<void> {
-    if (this.stopped || this.busy) return
-    this.busy = true
-    // controller 必须在 claim 之前就位：停机若落在 claim 期间，abort 才不会打空。
-    const controller = new AbortController()
-    this.controller = controller
+  private async reapAll(): Promise<{
+    leasesExpired: number
+    sessionsClosed: number
+    authTimeouts: number
+  }> {
+    const session = await this.sessions.reap()
+    await expireStaleRunLeases(this.handle.db, {
+      limit: 50,
+      maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
+    })
+    await sweepDriftedRuns(this.handle.db, {
+      limit: 50,
+      leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
+      maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
+    })
+    const lostWorkerIds = await markLostWorkers(this.handle.db, config.CAIRN_WORKER_LOST_AFTER_SECONDS)
+    if (lostWorkerIds.length > 0) {
+      await markSessionsLostForWorkers(this.handle.db, lostWorkerIds)
+    }
+    return session
+  }
+
+  private async beat(): Promise<void> {
+    if (this.stopped || this.healing) return
     try {
-      const claimed = await claimQueuedRun(this.handle)
-      if (!claimed) return
-      this.logger.log({ runId: claimed.id }, '领取到运行')
-      await this.engine.execute(claimed.id, { signal: controller.signal })
+      const outcome = await heartbeatWorker(this.handle.db, config.CAIRN_WORKER_ID, this.instanceId)
+      if (outcome !== 'ok') {
+        this.healing = this.healIdentity(outcome).finally(() => {
+          this.healing = undefined
+        })
+        await this.healing
+        return
+      }
+      for (const item of this.inFlight.values()) {
+        const expiresAt = await renewRunLease(
+          this.handle.db,
+          item.grant,
+          config.CAIRN_RUN_LEASE_TTL_SECONDS,
+        )
+        if (!expiresAt) {
+          this.logger.warn({ runId: item.grant.runId, leaseId: item.grant.leaseId }, 'RunLease 续租失败，停手')
+          item.controller.abort()
+        }
+      }
     } catch (error) {
-      this.logger.error(error instanceof Error ? error.message : error, '领取或执行失败')
+      this.logger.error(error instanceof Error ? error.message : error, '心跳或续租失败')
+    }
+  }
+
+  /** 本实例不再领取；已在途的 Run 中止，等租约过期后由同伴接管。 */
+  private fenceSelf(): void {
+    this.stopped = true
+    this.pendingClaim?.abort()
+    for (const item of this.inFlight.values()) item.controller.abort()
+    if (this.tick) {
+      clearInterval(this.tick)
+      this.tick = undefined
+    }
+  }
+
+  /**
+   * 心跳写不进去之后的处置。
+   *
+   * 先无条件停手——本实例手上的每个 grant 都已不可信，续租必然 0 行。
+   * 之后按原因分流，两条路都不允许留下「进程活着但永远不干活」的僵尸：
+   *
+   * - 被同伴判失联（抖动、长 GC、主机挂起超过 LOST_AFTER）：用新代重新注册，恢复领取。
+   *   这条必须自愈，否则一次网络抖动就永久少掉一份集群容量。
+   * - 身份被另一个活实例接管：按 D4 不得抢回，退出进程交给编排。
+   */
+  private async healIdentity(outcome: WorkerHeartbeatOutcome): Promise<void> {
+    this.fenceSelf()
+    if (this.shutdownCalled) return
+
+    if (outcome === 'instance_taken') {
+      this.logger.error(
+        { workerId: config.CAIRN_WORKER_ID, instanceId: this.instanceId },
+        'Worker 身份已被另一个实例接管，本进程退出；多实例部署必须每实例一个 CAIRN_WORKER_ID',
+      )
+      this.exitProcess(1)
+      return
+    }
+
+    this.logger.warn(
+      { workerId: config.CAIRN_WORKER_ID, instanceId: this.instanceId },
+      'Worker 心跳未写入（已被判失联），停手并以新代重新注册',
+    )
+    try {
+      await this.register()
+    } catch (error) {
+      // 重新注册被 WORKER_ID_CONFLICT 挡住 = 自愈期间别人拿走了这个 ID，等同身份被接管。
+      this.logger.error(
+        { workerId: config.CAIRN_WORKER_ID, err: error instanceof Error ? error.message : error },
+        '重新注册失败，本进程退出',
+      )
+      this.exitProcess(1)
+      return
+    }
+    this.startClaiming()
+    this.logger.log(
+      { workerId: config.CAIRN_WORKER_ID, instanceId: this.instanceId },
+      'Worker 已以新代重新注册，恢复领取',
+    )
+  }
+
+  private async pump(): Promise<void> {
+    if (this.stopped || this.claiming) return
+    if (this.inFlight.size >= config.CAIRN_WORKER_CAPACITY) return
+    this.claiming = true
+    const controller = new AbortController()
+    this.pendingClaim = controller
+    try {
+      const grant = await claimRun(this.handle, {
+        workerId: config.CAIRN_WORKER_ID,
+        instanceId: this.instanceId,
+        leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
+      })
+      if (!grant) return
+      if (this.inFlight.has(grant.leaseId)) return
+      this.logger.log({ runId: grant.runId, leaseId: grant.leaseId }, '领取到运行')
+      const done = this.engine
+        .execute(grant.runId, { grant, signal: controller.signal })
+        .catch((error) => {
+          this.logger.error(error instanceof Error ? error.message : error, '执行失败')
+        })
+        .finally(() => {
+          this.inFlight.delete(grant.leaseId)
+        })
+      this.inFlight.set(grant.leaseId, { grant, controller, done })
+    } catch (error) {
+      this.logger.error(error instanceof Error ? error.message : error, '领取失败')
     } finally {
-      if (this.controller === controller) this.controller = undefined
-      this.busy = false
+      if (this.pendingClaim === controller) this.pendingClaim = undefined
+      this.claiming = false
     }
   }
 }

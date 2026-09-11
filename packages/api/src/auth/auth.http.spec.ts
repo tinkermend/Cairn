@@ -15,7 +15,7 @@ const now = '2026-01-01T00:00:00.000Z'
 const account = {
   id: 'acc-admin',
   displayName: 'Admin',
-  email: 'admin@cairn.dev',
+  email: 'admin',
   status: 'active' as const,
   roles: [{ id: 'admin', key: 'admin', name: 'Administrator', kind: 'system' as const }],
   permissions: [...PERMISSIONS],
@@ -58,10 +58,10 @@ describe('POST /auth/login', () => {
     })
     const res = await request(app.getHttpServer())
       .post('/auth/login')
-      .send({ email: 'admin@cairn.dev', password: 'cairn-admin' })
+      .send({ email: 'admin', password: 'cairn-admin' })
       .expect(200)
     expect(() => loginResponseSchema.parse(res.body)).not.toThrow()
-    expect(auth.login).toHaveBeenCalledWith('admin@cairn.dev', 'cairn-admin')
+    expect(auth.login).toHaveBeenCalledWith('admin', 'cairn-admin')
   })
 
   it('缺字段 400', async () => {

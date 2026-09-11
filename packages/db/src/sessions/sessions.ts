@@ -405,10 +405,13 @@ export async function acquireSessionLease(
     runId: string
     holderWorkerId: string
     leaseTtlSeconds: number
-    runFencingToken?: number | null
+    runFencingToken: number
     leaseId?: string
   },
 ): Promise<LeaseOutcome> {
+  if (!Number.isInteger(input.runFencingToken) || input.runFencingToken < 1) {
+    return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
+  }
   return db.transaction(async (tx) => {
     const [existing] = await tx
       .select()
@@ -497,7 +500,7 @@ export async function acquireSessionLease(
           sessionGeneration: bumped.generation,
           sessionFencingToken: bumped.fencingToken,
           runId: input.runId,
-          runFencingToken: input.runFencingToken ?? null,
+          runFencingToken: input.runFencingToken,
           holderWorkerId: input.holderWorkerId,
           status: 'ACTIVE',
           expiresAt: sql`now() + make_interval(secs => ${input.leaseTtlSeconds})`,
@@ -695,6 +698,30 @@ export async function revokeWorkerLeases(db: Db, workerId: string): Promise<numb
   return rows.length
 }
 
+/**
+ * 失联 Worker 名下未关闭的浏览器会话标 LOST。
+ * 只动 browser_sessions，不碰控制台账号，也不碰目标账号。
+ */
+export async function markSessionsLostForWorkers(db: Db, workerIds: string[]): Promise<number> {
+  if (workerIds.length === 0) return 0
+  const now = new Date()
+  const rows = await db
+    .update(browserSessions)
+    .set({
+      status: 'LOST',
+      updatedAt: now,
+      version: sql`${browserSessions.version} + 1`,
+    })
+    .where(
+      and(
+        inArray(browserSessions.ownerWorkerId, workerIds),
+        inArray(browserSessions.status, ['CREATING', 'OPEN', 'CLOSING']),
+      ),
+    )
+    .returning({ id: browserSessions.id })
+  return rows.length
+}
+
 export async function closeWorkerSessions(db: Db, workerId: string): Promise<number> {
   const rows = await db
     .update(browserSessions)
@@ -752,7 +779,7 @@ export async function findActiveLeaseForSession(
   return row ? toLease(row) : null
 }
 
-export async function listActiveLeasesForWorker(db: Db, workerId: string): Promise<LeaseRecord[]> {
+export async function listActiveSessionLeasesForWorker(db: Db, workerId: string): Promise<LeaseRecord[]> {
   const rows = await db
     .select()
     .from(sessionLeases)

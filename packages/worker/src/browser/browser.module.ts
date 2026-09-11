@@ -43,8 +43,12 @@ import {
     {
       provide: BROWSER_PORT,
       useFactory: (manager: BrowserSessionManager) => ({
-        async acquire(run: Parameters<BrowserSessionManager['acquire']>[0], signal?: AbortSignal) {
-          const result = await manager.acquire(run, signal)
+        async acquire(
+          run: Parameters<BrowserSessionManager['acquire']>[0],
+          grant: Parameters<BrowserSessionManager['acquire']>[1],
+          signal?: AbortSignal,
+        ) {
+          const result = await manager.acquire(run, grant, signal)
           if (!result.ok) {
             const error = new Error(result.message) as Error & {
               code: string

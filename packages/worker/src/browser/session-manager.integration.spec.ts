@@ -7,6 +7,7 @@ import type { Step } from '@cairn/shared'
 import {
   acquireSessionLease,
   claimAuthHold,
+  claimRun,
   createRunWithSnapshot,
   createScenarioWithVersion,
   createSession,
@@ -16,6 +17,7 @@ import {
   getSessionById,
   markRunWaitingForAuth,
   newId,
+  registerWorker,
   openIsolatedDb,
   setSessionStatus,
   sql,
@@ -24,12 +26,13 @@ import {
   targets,
   type DbHandle,
 } from '@cairn/db'
-import { DEFAULT_SESSION_POLICY, DEV_CREDENTIAL_KEY } from '@cairn/shared'
+import { DEFAULT_SESSION_POLICY, DEV_CREDENTIAL_KEY, type RunGrant, type RunSnapshot } from '@cairn/shared'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { BrowserSessionManager, SessionLeaseError } from './session-manager'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_bsm`
 const WORKER = `bsm-worker-${Date.now().toString(36)}`
+const WORKER_INSTANCE = newId()
 
 const echoStep: Step = {
   id: '00000000-0000-4000-8000-0000000000a1',
@@ -153,6 +156,12 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       },
       secretProvider,
     )
+    await registerWorker(handle.db, {
+      workerId: WORKER,
+      instanceId: WORKER_INSTANCE,
+      capacity: 8,
+      lostAfterSeconds: 60,
+    })
     await manager.reconcileOwn()
   })
 
@@ -184,7 +193,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   async function makeRunningSnapshot(input: {
     targetId: string
     accountId: string
-  }) {
+  }): Promise<{ snapshot: RunSnapshot; grant: RunGrant }> {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId: input.targetId,
       // 不能截 newId()：v7 前 48 位是毫秒时间戳，前 8 个 hex 只到时间戳高 32 位，
@@ -199,24 +208,36 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       actor: { id: actorId },
       sessionPolicy: { ...DEFAULT_SESSION_POLICY, reuse: 'NEW_PAGE' },
     })
-    await handle.db.execute(
-      sql`UPDATE runs SET status = 'RUNNING', started_at = now() WHERE id = ${created.detail.id}`,
+    await handle.pool.query(
+      `UPDATE runs
+          SET status = 'CANCELLED',
+              finished_at = COALESCE(finished_at, now()),
+              updated_at = now()
+        WHERE status IN ('QUEUED', 'RECOVERING')
+          AND id <> $1`,
+      [created.detail.id],
     )
-    return (await getRun(handle.db, created.detail.id)).snapshot
+    const grant = await claimRun(handle, {
+      workerId: WORKER,
+      instanceId: WORKER_INSTANCE,
+      leaseTtlSeconds: 30,
+    })
+    if (!grant || grant.runId !== created.detail.id) throw new Error('claimRun 未领到本 Run')
+    return { snapshot: (await getRun(handle.db, created.detail.id)).snapshot, grant }
   }
 
   it('无 targetAccountId → SESSION_ACCOUNT_REQUIRED', async () => {
-    const run = await makeRunningSnapshot({ targetId, accountId })
+    const { snapshot: run, grant } = await makeRunningSnapshot({ targetId, accountId })
     const { targetAccountId: _, ...noAccount } = run
-    const result = await manager.acquire(noAccount as typeof run)
+    const result = await manager.acquire(noAccount as typeof run, grant)
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.code).toBe('SESSION_ACCOUNT_REQUIRED')
   })
 
   it('manual 认证：有浏览器时 WAITING_FOR_AUTH + 认证占用', async () => {
     const account = await makeAccount('manual', 'manual-auth')
-    const run = await makeRunningSnapshot({ targetId: manualTargetId, accountId: account })
-    const result = await manager.acquire(run)
+    const { snapshot: run, grant } = await makeRunningSnapshot({ targetId: manualTargetId, accountId: account })
+    const result = await manager.acquire(run, grant)
     if (!result.ok && result.waitingForAuth) {
       expect((await getRun(handle.db, run.runId)).status).toBe('WAITING_FOR_AUTH')
       return
@@ -231,9 +252,9 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
 
   it('acquire → renew → release；丢租 guard；LEASE_UNKNOWN', async () => {
     const account = await makeAccount('password', 'lease')
-    const run = await makeRunningSnapshot({ targetId, accountId: account })
+    const { snapshot: run, grant } = await makeRunningSnapshot({ targetId, accountId: account })
     manager.resolveCredential = async () => ({ username: 'alice', password: 'x' })
-    const result = await manager.acquire(run)
+    const result = await manager.acquire(run, grant)
     if (!result.ok) {
       expect(['BROWSER_UNAVAILABLE', 'BROWSER_LAUNCH_FAILED', 'SESSION_AUTH_UNSUPPORTED']).toContain(
         result.code,
@@ -276,15 +297,15 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
 
     const capA = await makeAccount('password', 'cap-a')
     const capB = await makeAccount('password', 'cap-b')
-    const run1 = await makeRunningSnapshot({ targetId, accountId: capA })
-    const run2 = await makeRunningSnapshot({ targetId, accountId: capB })
-    const a = await limited.acquire(run1)
+    const { snapshot: run1, grant: grant1 } = await makeRunningSnapshot({ targetId, accountId: capA })
+    const { snapshot: run2, grant: grant2 } = await makeRunningSnapshot({ targetId, accountId: capB })
+    const a = await limited.acquire(run1, grant1)
     if (!a.ok) {
       expect(['BROWSER_UNAVAILABLE', 'BROWSER_LAUNCH_FAILED', 'PROFILE_LOCKED']).toContain(a.code)
       await limited.shutdown()
       return
     }
-    const b = await limited.acquire(run2)
+    const b = await limited.acquire(run2, grant2)
     expect(b.ok).toBe(false)
     if (!b.ok) expect(b.code).toBe('SESSION_CAPACITY_EXCEEDED')
     await limited.release(a.grant.leaseId, 'done')
@@ -305,12 +326,13 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       expectedVersion: session.version,
       status: 'OPEN',
     })
-    const run = await makeRunningSnapshot({ targetId, accountId: account })
+    const { snapshot: run } = await makeRunningSnapshot({ targetId, accountId: account })
     await acquireSessionLease(handle.db, {
       sessionId: session.id,
       runId: run.runId,
       holderWorkerId: WORKER,
       leaseTtlSeconds: 30,
+      runFencingToken: 1,
     })
 
     const fresh = new BrowserSessionManager(
@@ -356,11 +378,11 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
        WHERE id = ${session.id}
     `)
 
-    const run = await makeRunningSnapshot({
+    const { snapshot: run, grant } = await makeRunningSnapshot({
       targetId: manualTargetId,
       accountId: account,
     })
-    await markRunWaitingForAuth(handle.db, run.runId)
+    await markRunWaitingForAuth(handle.db, grant)
 
     const n = await manager.reapAuthTimeouts()
     expect(n).toBeGreaterThanOrEqual(1)

@@ -1,22 +1,33 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   browserSessions,
-  claimQueuedRun,
+  claimRun,
   computeSnapshotDigest,
+  registerWorker,
   consoleAccounts,
   createRunWithSnapshot,
   createScenarioWithVersion,
+  expireStaleRunLeases,
+  finishAttempt,
   getRun,
   listRunEvidence,
   newId,
   openIsolatedDb,
   requestRunCancel,
   runs,
+  startAttempt,
   stepRuns,
   targets,
+  yieldUnfinishedRun,
   type DbHandle,
 } from '@cairn/db'
-import { DEFAULT_EXECUTOR_VERSIONS, DEFAULT_SESSION_POLICY, runSnapshotSchema, type Step } from '@cairn/shared'
+import {
+  DEFAULT_EXECUTOR_VERSIONS,
+  DEFAULT_SESSION_POLICY,
+  runGrantSchema,
+  runSnapshotSchema,
+  type Step,
+} from '@cairn/shared'
 import { ExecutionEngine } from './engine.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_eng`
@@ -34,6 +45,8 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
   let engine: ExecutionEngine
   let actorId: string
   let targetId: string
+  let workerId: string
+  let workerInstanceId: string
 
   beforeAll(async () => {
     handle = await openIsolatedDb(SCHEMA)
@@ -51,6 +64,14 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       code: `eng-${SCHEMA.slice(-8)}`,
       name: '引擎夹具',
       entryUrl: 'https://example.com',
+    })
+    workerId = `eng-${SCHEMA.slice(-8)}`
+    workerInstanceId = newId()
+    await registerWorker(handle.db, {
+      workerId,
+      instanceId: workerInstanceId,
+      capacity: 8,
+      lostAfterSeconds: 60,
     })
   })
 
@@ -70,6 +91,29 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     throw new Error('Attempt 未在预期时间内开始')
   }
 
+  async function cancelOtherClaimable(keepRunId?: string) {
+    await handle.pool.query(
+      `UPDATE runs
+          SET status = 'CANCELLED',
+              finished_at = COALESCE(finished_at, now()),
+              updated_at = now()
+        WHERE status IN ('QUEUED', 'RECOVERING')
+          AND ($1::uuid IS NULL OR id <> $1)`,
+      [keepRunId ?? null],
+    )
+  }
+
+  async function claimThis(runId: string) {
+    await cancelOtherClaimable(runId)
+    const grant = await claimRun(handle, {
+      workerId,
+      instanceId: workerInstanceId,
+      leaseTtlSeconds: 30,
+    })
+    expect(grant?.runId).toBe(runId)
+    return grant!
+  }
+
   async function createAndRun(name: string, steps: Step[], input?: Record<string, string>) {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
@@ -82,9 +126,8 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       input,
       actor: { id: actorId },
     })
-    const claimed = await claimQueuedRun(handle)
-    expect(claimed?.id).toBe(created.detail.id)
-    await engine.execute(created.detail.id)
+    const grant = await claimThis(created.detail.id)
+    await engine.execute(created.detail.id, { grant })
     return getRun(handle.db, created.detail.id)
   }
 
@@ -250,7 +293,10 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     })
     const cancelled = await requestRunCancel(handle.db, created.detail.id, { id: actorId })
     expect(cancelled.status).toBe('CANCELLED')
-    expect(await claimQueuedRun(handle)).toBeNull()
+    await cancelOtherClaimable()
+    expect(
+      await claimRun(handle, { workerId, instanceId: workerInstanceId, leaseTtlSeconds: 30 }),
+    ).toBeNull()
   })
 
   it('SIDE_EFFECT Delay 被 abort → NEEDS_REVIEW', async () => {
@@ -272,9 +318,9 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await claimQueuedRun(handle)
+    const grant = await claimThis(created.detail.id)
     const controller = new AbortController()
-    const running = engine.execute(created.detail.id, { signal: controller.signal })
+    const running = engine.execute(created.detail.id, { grant, signal: controller.signal })
     await waitForFirstAttempt(created.detail.id)
     controller.abort()
     await running
@@ -355,8 +401,8 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       ordinal: 0,
       status: 'PENDING',
     })
-    await claimQueuedRun(handle)
-    await engine.execute(runId)
+    const grant = await claimThis(runId)
+    await engine.execute(runId, { grant })
     const detail = await getRun(handle.db, runId)
     expect(detail.status).toBe('FAILED')
     expect(detail.stepRuns[0]?.attempts[0]?.error?.category).toBe('VALIDATION')
@@ -382,9 +428,9 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await claimQueuedRun(handle)
+    const grant = await claimThis(created.detail.id)
 
-    const running = engine.execute(created.detail.id, { cancelPollMs: 20 })
+    const running = engine.execute(created.detail.id, { grant, cancelPollMs: 20 })
     await waitForFirstAttempt(created.detail.id)
     await requestRunCancel(handle.db, created.detail.id, { id: actorId })
     await running
@@ -417,9 +463,10 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await claimQueuedRun(handle)
+    const grant = await claimThis(created.detail.id)
 
     await engine.execute(created.detail.id, {
+      grant,
       clock: {
         now: () => Date.now(),
         sleep: async () => {
@@ -454,13 +501,13 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await claimQueuedRun(handle)
+    const grant = await claimThis(created.detail.id)
     await handle.pool.query(
       `UPDATE step_runs SET status = 'SUCCEEDED', finished_at = now() WHERE run_id = $1`,
       [created.detail.id],
     )
 
-    await engine.execute(created.detail.id)
+    await engine.execute(created.detail.id, { grant })
 
     expect((await getRun(handle.db, created.detail.id)).status).toBe('SUCCEEDED')
   })
@@ -499,8 +546,8 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       ordinal: 0,
       status: 'PENDING',
     })
-    await claimQueuedRun(handle)
-    await engine.execute(runId)
+    const grant = await claimThis(runId)
+    await engine.execute(runId, { grant })
     const { rows: runRows } = await handle.pool.query<{ status: string }>(
       `SELECT status FROM runs WHERE id = $1`,
       [runId],
@@ -512,4 +559,279 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     expect(runRows[0]?.status).toBe('FAILED')
     expect(stepRows.map((row) => row.status)).toEqual(['SKIPPED'])
   })
+
+  it('接管后续跑：孤儿 READ_ONLY Attempt 取消后重开 Attempt，不假成功', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '接管续跑',
+      steps: [
+        {
+          id: ids.echo1,
+          name: '写',
+          type: 'echo',
+          effectType: 'READ_ONLY',
+          outputKey: 'greeting',
+          input: { value: 'hello' },
+        },
+        {
+          id: ids.delay,
+          name: '等',
+          type: 'delay',
+          effectType: 'READ_ONLY',
+          input: { durationMs: 10 },
+        },
+        {
+          id: ids.echo2,
+          name: '读',
+          type: 'echo',
+          effectType: 'READ_ONLY',
+          outputKey: 'again',
+          input: { from: 'greeting' },
+        },
+      ],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const runId = created.detail.id
+
+    await cancelOtherClaimable(runId)
+    await handle.pool.query(
+      `UPDATE runs SET status = 'RUNNING', started_at = COALESCE(started_at, now()), updated_at = now() WHERE id = $1`,
+      [runId],
+    )
+    const oldLeaseId = newId()
+    await handle.pool.query(
+      `INSERT INTO run_leases (id, run_id, fencing_token, holder_worker_id, status, expires_at)
+       VALUES ($1, $2, 1, $3, 'ACTIVE', now() + interval '30 seconds')`,
+      [oldLeaseId, runId, workerId],
+    )
+    const oldGrant = runGrantSchema.parse({
+      runId,
+      leaseId: oldLeaseId,
+      fencingToken: 1,
+      holderWorkerId: workerId,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    })
+
+    const s1 = await startAttempt(handle.db, {
+      runId,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      inputPayload: 'hello',
+      grant: oldGrant,
+    })
+    await finishAttempt(handle.db, {
+      runId,
+      attemptId: s1!.attemptId,
+      attemptStatus: 'SUCCEEDED',
+      output: 'hello',
+      context: { greeting: 'hello' },
+      stepRunStatus: 'SUCCEEDED',
+      grant: oldGrant,
+    })
+    const s2 = await startAttempt(handle.db, {
+      runId,
+      stepRunId: created.detail.stepRuns[1]!.id,
+      inputPayload: { durationMs: 10 },
+      grant: oldGrant,
+    })
+    expect(s2).not.toBeNull()
+
+    await handle.pool.query(`UPDATE run_leases SET expires_at = now() - interval '2 seconds' WHERE id = $1`, [
+      oldLeaseId,
+    ])
+    await expireStaleRunLeases(handle.db, { limit: 10, maxRecoveries: 3 })
+    expect((await getRun(handle.db, runId)).status).toBe('RECOVERING')
+
+    const newGrant = await claimThis(runId)
+    expect(newGrant.fencingToken).toBeGreaterThan(1)
+    await engine.execute(runId, { grant: newGrant })
+
+    const after = await getRun(handle.db, runId)
+    expect(after.status).toBe('SUCCEEDED')
+    expect(after.stepRuns.every((step) => step.status === 'SUCCEEDED')).toBe(true)
+    expect(after.stepRuns[1]!.attempts.some((a) => a.status === 'CANCELLED')).toBe(true)
+    expect(after.stepRuns[1]!.attempts.some((a) => a.status === 'SUCCEEDED')).toBe(true)
+    expect(after.context.again).toBe('hello')
+  })
+
+  /**
+   * 接管时副作用步骤的结果无法确认（验收 13）。
+   *
+   * 这是整套恢复里最危险的分支：Worker 被 kill 在副作用步骤中途，平台不知道那次操作
+   * 到底有没有生效。此时只能停下来交给人，绝不允许当成"重试一次就好"。
+   */
+  it('接管时副作用孤儿 Attempt：Run 进 NEEDS_REVIEW，后续步骤不续跑', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '接管副作用',
+      steps: [
+        {
+          id: ids.echo1,
+          name: '写',
+          type: 'echo',
+          effectType: 'READ_ONLY',
+          outputKey: 'greeting',
+          input: { value: 'hello' },
+        },
+        {
+          id: ids.delay,
+          name: '提交订单',
+          type: 'delay',
+          effectType: 'SIDE_EFFECT',
+          input: { durationMs: 10 },
+        },
+        {
+          id: ids.echo2,
+          name: '读',
+          type: 'echo',
+          effectType: 'READ_ONLY',
+          outputKey: 'again',
+          input: { from: 'greeting' },
+        },
+      ],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const runId = created.detail.id
+    const oldGrant = await forceRunningGrant(runId)
+
+    const s1 = await startAttempt(handle.db, {
+      runId,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      inputPayload: 'hello',
+      grant: oldGrant,
+    })
+    await finishAttempt(handle.db, {
+      runId,
+      attemptId: s1!.attemptId,
+      attemptStatus: 'SUCCEEDED',
+      output: 'hello',
+      context: { greeting: 'hello' },
+      stepRunStatus: 'SUCCEEDED',
+      grant: oldGrant,
+    })
+    // 副作用步骤的 Attempt 开着不收尾：等同持有者被 kill 在这一步中间。
+    const s2 = await startAttempt(handle.db, {
+      runId,
+      stepRunId: created.detail.stepRuns[1]!.id,
+      inputPayload: { durationMs: 10 },
+      grant: oldGrant,
+    })
+    expect(s2).not.toBeNull()
+
+    await handle.pool.query(`UPDATE run_leases SET expires_at = now() - interval '2 seconds' WHERE id = $1`, [
+      oldGrant.leaseId,
+    ])
+    await expireStaleRunLeases(handle.db, { limit: 10, maxRecoveries: 3 })
+    expect((await getRun(handle.db, runId)).status).toBe('RECOVERING')
+
+    const newGrant = await claimThis(runId)
+    await engine.execute(runId, { grant: newGrant })
+
+    const after = await getRun(handle.db, runId)
+    expect(after.status).toBe('NEEDS_REVIEW')
+    // 副作用那一步判失败且写明原因，后面的步骤一步都不许跑
+    expect(after.stepRuns.map((step) => step.status)).toEqual(['SUCCEEDED', 'FAILED', 'PENDING'])
+    const orphan = after.stepRuns[1]!.attempts.find((attempt) => attempt.id === s2!.attemptId)
+    expect(orphan?.status).toBe('FAILED')
+    expect(orphan?.error?.safeMessage).toBe('接管时副作用步骤结果未确认')
+    expect(after.stepRuns[1]!.attempts.some((attempt) => attempt.status === 'SUCCEEDED')).toBe(false)
+    expect(after.context.again).toBeUndefined()
+
+    // 进核查即交还租约：不许把 Run 攥在一个不会再推进它的持有者手里
+    const { rows } = await handle.pool.query<{ status: string; release_reason: string }>(
+      `SELECT status, release_reason FROM run_leases WHERE id = $1`,
+      [newGrant.leaseId],
+    )
+    expect(rows[0]?.status).toBe('RELEASED')
+    expect(rows[0]?.release_reason).toBe('run_halted')
+  })
+
+  /**
+   * 停机中止不是取消（S4）。
+   *
+   * 外部信号只说明本实例要走，Run 的事实没有结论。Engine 不得写终态，
+   * 之后 `yieldUnfinishedRun` 把 Run 交回 RECOVERING，同伴接管续跑。
+   */
+  it('停机中止：不写终态，交回后接管续跑到成功', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '停机交回',
+      steps: [
+        {
+          id: ids.delay,
+          name: '慢步骤',
+          type: 'delay',
+          effectType: 'READ_ONLY',
+          input: { durationMs: 5_000 },
+        },
+      ],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const runId = created.detail.id
+    const grant = await claimThis(runId)
+
+    const controller = new AbortController()
+    const running = engine.execute(runId, { grant, signal: controller.signal, cancelPollMs: 20 })
+    await waitForFirstAttempt(runId)
+    controller.abort()
+    await running
+
+    // 中止之后：Run 仍是 RUNNING，Attempt 仍开着，租约也还在——一个事实都没被改写
+    const stopped = await getRun(handle.db, runId)
+    expect(stopped.status).toBe('RUNNING')
+    expect(stopped.cancelRequested).toBe(false)
+    expect(stopped.stepRuns[0]?.attempts.map((attempt) => attempt.status)).toEqual(['RUNNING'])
+
+    // 停机路径把它交回
+    await yieldUnfinishedRun(handle.db, grant)
+    const yielded = await getRun(handle.db, runId)
+    expect(yielded.status).toBe('RECOVERING')
+
+    // 同伴接管：READ_ONLY 孤儿取消后重开，最终成功。滚动发布不该让用户的 Run 死掉。
+    const takeover = await claimThis(runId)
+    expect(takeover.fencingToken).toBeGreaterThan(grant.fencingToken)
+    await engine.execute(runId, { grant: takeover })
+
+    const after = await getRun(handle.db, runId)
+    expect(after.status).toBe('SUCCEEDED')
+    expect(after.stepRuns[0]?.attempts.map((attempt) => attempt.status)).toEqual(['CANCELLED', 'SUCCEEDED'])
+  })
+
+  /** 把 Run 推到 RUNNING 并伪造一份有效 grant：模拟"持有者已经跑了一半"。 */
+  async function forceRunningGrant(runId: string) {
+    await cancelOtherClaimable(runId)
+    await handle.pool.query(
+      `UPDATE runs SET status = 'RUNNING', started_at = COALESCE(started_at, now()), updated_at = now() WHERE id = $1`,
+      [runId],
+    )
+    const leaseId = newId()
+    const { rows } = await handle.pool.query<{ token: number }>(
+      `SELECT COALESCE(MAX(fencing_token), 0) + 1 AS token FROM run_leases WHERE run_id = $1`,
+      [runId],
+    )
+    const token = Number(rows[0]!.token)
+    await handle.pool.query(
+      `INSERT INTO run_leases (id, run_id, fencing_token, holder_worker_id, status, expires_at)
+       VALUES ($1, $2, $3, $4, 'ACTIVE', now() + interval '30 seconds')`,
+      [leaseId, runId, token, workerId],
+    )
+    return runGrantSchema.parse({
+      runId,
+      leaseId,
+      fencingToken: token,
+      holderWorkerId: workerId,
+      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+    })
+  }
 })

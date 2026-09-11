@@ -111,14 +111,14 @@ describe('UserAuthForm', () => {
     })
 
     it('authenticates and navigates to default route on success', async () => {
-      await userEvent.fill(emailInput, 'a@b.com')
+      await userEvent.fill(emailInput, 'admin')
       await userEvent.fill(passwordInput, 'cairn-admin')
 
       await userEvent.click(signInButton)
 
       await vi.waitFor(() => expect(login).toHaveBeenCalledOnce())
       expect(login).toHaveBeenCalledWith({
-        email: 'a@b.com',
+        email: 'admin',
         password: 'cairn-admin',
       })
       await vi.waitFor(() => expect(setUserMock).toHaveBeenCalledOnce())
@@ -159,7 +159,7 @@ describe('UserAuthForm', () => {
       <UserAuthForm redirectTo='/settings' />
     )
 
-    await userEvent.fill(getByRole('textbox', { name: /账号/ }), 'a@b.com')
+    await userEvent.fill(getByRole('textbox', { name: /账号/ }), 'admin')
     await userEvent.fill(getByLabelText('密码'), 'cairn-admin')
 
     await userEvent.click(getByRole('button', { name: /登录/ }))

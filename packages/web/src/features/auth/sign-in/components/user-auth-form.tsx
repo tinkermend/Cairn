@@ -25,7 +25,7 @@ import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/password-input'
 
 const formSchema = z.object({
-  email: z.email('请输入账号。'),
+  email: z.string().trim().min(1, '请输入账号。'),
   password: z.string().min(1, '请输入密码。'),
 })
 
@@ -89,8 +89,7 @@ export function UserAuthForm({
               <FormLabel>账号</FormLabel>
               <FormControl>
                 <Input
-                  type='email'
-                  inputMode='email'
+                  type='text'
                   placeholder='请输入账号'
                   autoComplete='username'
                   className='h-12 rounded-lg px-4 text-section md:text-body'

@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  claimRun,
   consoleAccounts,
   createRunWithSnapshot,
   createScenarioWithVersion,
   getRun,
   newId,
   openIsolatedDb,
+  registerWorker,
   targets,
   type DbHandle,
 } from '@cairn/db'
@@ -15,7 +17,7 @@ import { LifecycleService } from './lifecycle.service'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_lc`
 
-describe('LifecycleService（集成）', { timeout: 30_000 }, () => {
+describe('LifecycleService（集成）', { timeout: 60_000 }, () => {
   let handle: DbHandle
   let actorId: string
   let targetId: string
@@ -75,52 +77,95 @@ describe('LifecycleService（集成）', { timeout: 30_000 }, () => {
       shutdown: async () => {},
       reap: async () => ({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }),
     }
+    const restoreConnect = gatePoolConnect(handle, gate.promise, () => claimEntered.resolve())
     const lifecycle = new LifecycleService(
-      gatedPoolHandle(handle, gate.promise, () => claimEntered.resolve()),
+      handle,
       new ExecutionEngine(handle),
       noObjects as never,
       noSessions as never,
     )
 
-    await lifecycle.onApplicationBootstrap()
-    await claimEntered.promise
+    try {
+      await lifecycle.onApplicationBootstrap()
+      await claimEntered.promise
 
-    let shutdownSettled = false
-    const shutdown = lifecycle.onApplicationShutdown('SIGTERM').then(() => {
-      shutdownSettled = true
-    })
-    const { promise: ticked, resolve: tick } = Promise.withResolvers<void>()
-    setTimeout(tick, 50)
-    await tick
+      let shutdownSettled = false
+      const shutdown = lifecycle.onApplicationShutdown('SIGTERM').then(() => {
+        shutdownSettled = true
+      })
+      const { promise: ticked, resolve: tick } = Promise.withResolvers<void>()
+      setTimeout(tick, 50)
+      await tick
 
-    // 在途 pump 还没结束，停机就必须还没返回——否则这条 Run 会被留在 RUNNING。
-    expect(shutdownSettled).toBe(false)
+      // 在途 pump 还没结束，停机就必须还没返回——否则这条 Run 会被留在 RUNNING。
+      expect(shutdownSettled).toBe(false)
 
-    gate.resolve()
-    await shutdown
+      gate.resolve()
+      await shutdown
 
-    const detail = await getRun(handle.db, created.detail.id)
-    expect(detail.status).toBe('CANCELLED')
-    expect(detail.stepRuns.map((step) => step.status)).toEqual(['CANCELLED'])
-    expect(detail.stepRuns[0]?.attempts).toEqual([])
+      // 停机不是取消（S4）：Run 原样交回 RECOVERING，用户没取消的 Run 不得因为一次
+      // 滚动发布变成 CANCELLED。租约按 worker_shutdown 正常释放，不算一次恢复失败。
+      const detail = await getRun(handle.db, created.detail.id)
+      expect(detail.status).toBe('RECOVERING')
+      expect(detail.stepRuns.map((step) => step.status)).toEqual(['PENDING'])
+      expect(detail.stepRuns[0]?.attempts).toEqual([])
+
+      const { rows } = await handle.pool.query<{ status: string; release_reason: string }>(
+        `SELECT status, release_reason FROM run_leases WHERE run_id = $1`,
+        [created.detail.id],
+      )
+      expect(rows.map((row) => row.status)).toEqual(['RELEASED'])
+      expect(rows[0]?.release_reason).toBe('worker_shutdown')
+
+      // 交回之后必须真的能被别人领走，否则"不写终态"只是把 Run 悬在半空
+      const peerId = `${SCHEMA.slice(-8)}-peer`
+      const peerInstance = newId()
+      await registerWorker(handle.db, {
+        workerId: peerId,
+        instanceId: peerInstance,
+        capacity: 1,
+        lostAfterSeconds: 60,
+      })
+      const taken = await claimRun(handle, {
+        workerId: peerId,
+        instanceId: peerInstance,
+        leaseTtlSeconds: 30,
+      })
+      expect(taken?.runId).toBe(created.detail.id)
+      expect(taken?.fencingToken).toBe(2)
+    } finally {
+      restoreConnect()
+      await lifecycle.onApplicationShutdown('SIGTERM').catch(() => undefined)
+    }
   })
 })
 
-/** 只把 `pool.query` 挡在闸门后：`claimQueuedRun` 走它，其余仓储调用走 `handle.db`。 */
-function gatedPoolHandle(handle: DbHandle, gate: Promise<void>, onClaim: () => void): DbHandle {
-  return {
-    ...handle,
-    pool: new Proxy(handle.pool, {
-      get(target, prop, receiver) {
-        if (prop === 'query') {
-          return async (...args: unknown[]) => {
-            onClaim()
-            await gate
-            return (target.query as (...rest: unknown[]) => unknown)(...args)
-          }
+function sqlText(text: unknown): string {
+  if (typeof text === 'string') return text
+  if (text && typeof text === 'object' && 'text' in text) return String((text as { text: unknown }).text)
+  return String(text)
+}
+
+/** 改写真实连接池的 connect：只把 SKIP LOCKED 领取查询挡在闸门后。 */
+function gatePoolConnect(handle: DbHandle, gate: Promise<void>, onClaim: () => void): () => void {
+  const origConnect = handle.pool.connect.bind(handle.pool)
+  handle.pool.connect = ((...args: unknown[]) => {
+    if (typeof args[0] === 'function') {
+      return origConnect(...(args as []))
+    }
+    return origConnect().then((client) => {
+      const query = client.query.bind(client)
+      ;(client as { query: typeof query }).query = ((text: unknown, values?: unknown, cb?: unknown) => {
+        if (sqlText(text).includes('SKIP LOCKED')) {
+          onClaim()
+          return gate.then(() => query(text as never, values as never, cb as never))
         }
-        return Reflect.get(target, prop, receiver)
-      },
-    }),
-  } as DbHandle
+        return query(text as never, values as never, cb as never)
+      }) as typeof query
+      return client
+    })
+  }) as typeof handle.pool.connect
+  return () => {
+    handle.pool.connect = origConnect
+  }
 }

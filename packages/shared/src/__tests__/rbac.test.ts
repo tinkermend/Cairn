@@ -11,6 +11,7 @@ import {
   accountListResponseSchema,
   createAccountBodySchema,
   createRoleBodySchema,
+  loginBodySchema,
   hasAllPermissions,
   hasPermission,
   isPermissionCode,
@@ -134,7 +135,15 @@ describe('body schemas', () => {
     expect(() => updateRoleBodySchema.parse({ name: 'Ops' })).not.toThrow()
   })
 
-  it('创建账号必须带邮箱和密码，角色可省略（服务端补默认 operator）', () => {
+  it('登录名不是邮箱：admin 合法，空串非法', () => {
+    expect(loginBodySchema.parse({ email: 'admin', password: 'cairn-admin' })).toEqual({
+      email: 'admin',
+      password: 'cairn-admin',
+    })
+    expect(() => loginBodySchema.parse({ email: '', password: 'cairn-admin' })).toThrow()
+  })
+
+  it('创建账号必须带账号和密码，角色可省略（服务端补默认 operator）', () => {
     expect(
       createAccountBodySchema.parse({
         displayName: '运维甲',

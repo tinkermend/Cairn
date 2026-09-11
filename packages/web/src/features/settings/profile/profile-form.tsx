@@ -67,10 +67,10 @@ export function ProfileForm() {
           )}
         />
         <div>
-          <h3 className='text-body font-medium'>邮箱</h3>
+          <h3 className='text-body font-medium'>账号</h3>
           <p className='text-muted-foreground mt-1 text-body'>{user?.email ?? '—'}</p>
           <p className='text-muted-foreground mt-1 text-label'>
-            邮箱是本地身份主体。管理员可在用户页修改。
+            账号是本地登录名。管理员可在用户页修改。
           </p>
         </div>
         <Button type='submit'>保存个人资料</Button>

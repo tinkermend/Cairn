@@ -1,6 +1,13 @@
 import { z } from 'zod'
 import { logLevelSchema } from './logging.js'
 import { isAbsoluteFsPath, objectStoreDriverSchema } from './object-store.js'
+import {
+  DEFAULT_RUN_LEASE_TTL_SECONDS,
+  DEFAULT_RUN_MAX_RECOVERIES,
+  DEFAULT_WORKER_CAPACITY,
+  DEFAULT_WORKER_HEARTBEAT_MS,
+  DEFAULT_WORKER_LOST_AFTER_SECONDS,
+} from './run-lease.js'
 
 /**
  * `.env` 里留空的项与未设置等价。
@@ -44,6 +51,7 @@ export type DbEnv = z.infer<typeof dbEnvSchema>
  * 共用同一个常量——改默认值的人必然看到检查。
  */
 export const DEV_JWT_SECRET = 'dev-only-change-me-jwt-secret'
+export const DEV_ADMIN_ACCOUNT = 'admin'
 export const DEV_ADMIN_PASSWORD = 'cairn-admin'
 
 /**
@@ -102,6 +110,13 @@ export const DEFAULT_BROWSER_MAX_SESSIONS = 2
 export const DEFAULT_BROWSER_HEADLESS = true
 export const DEFAULT_SESSION_HEARTBEAT_MS = 5_000
 export const DEFAULT_SESSION_REAPER_INTERVAL_MS = 15_000
+export {
+  DEFAULT_WORKER_CAPACITY,
+  DEFAULT_WORKER_HEARTBEAT_MS,
+  DEFAULT_RUN_LEASE_TTL_SECONDS,
+  DEFAULT_WORKER_LOST_AFTER_SECONDS,
+  DEFAULT_RUN_MAX_RECOVERIES,
+} from './run-lease.js'
 
 const optionalBoolFromEnv = z
   .enum(['true', 'false'])
@@ -214,7 +229,7 @@ export const apiEnvSchema = z.preprocess(
         ),
       CAIRN_JWT_SECRET: z.string().min(16).default(DEV_JWT_SECRET),
       CAIRN_JWT_EXPIRES_IN: z.string().min(1).default('12h'),
-      CAIRN_BOOTSTRAP_ADMIN_EMAIL: z.email().default('admin@cairn.dev'),
+      CAIRN_BOOTSTRAP_ADMIN_EMAIL: z.string().trim().min(1).max(64).default(DEV_ADMIN_ACCOUNT),
       CAIRN_BOOTSTRAP_ADMIN_PASSWORD: z.string().min(8).default(DEV_ADMIN_PASSWORD),
       CAIRN_BOOTSTRAP_ADMIN_NAME: z.string().min(1).default('Administrator'),
       /**
@@ -267,14 +282,32 @@ export type ApiEnv = z.infer<typeof apiEnvSchema>
 /**
  * 执行面进程配置。
  *
- * `CAIRN_WORKER_ID` 在 Lease / 多 Worker 落地前允许本地默认；正式部署必须
- * 每实例唯一，唯一性由部署或后续的注册检查保证，不在这里做。
+ * `CAIRN_WORKER_ID` 必须每实例唯一：默认值 `local-worker` 只够单进程，同 ID
+ * 第二个实例会在注册时被新鲜心跳挡住、启动失败。唯一性由注册检查卡住，不在这里做——
+ * schema 看不见别的进程。
  */
 export const workerEnvSchema = z.preprocess(
   blankAsUnset,
   z
     .object({
       CAIRN_WORKER_ID: z.string().min(1).default('local-worker'),
+      CAIRN_WORKER_CAPACITY: z.coerce.number().int().positive().default(DEFAULT_WORKER_CAPACITY),
+      CAIRN_WORKER_HEARTBEAT_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_WORKER_HEARTBEAT_MS),
+      CAIRN_RUN_LEASE_TTL_SECONDS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_RUN_LEASE_TTL_SECONDS),
+      CAIRN_WORKER_LOST_AFTER_SECONDS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_WORKER_LOST_AFTER_SECONDS),
+      CAIRN_RUN_MAX_RECOVERIES: z.coerce.number().int().positive().default(DEFAULT_RUN_MAX_RECOVERIES),
       /**
        * 自动登录解密 TargetAccount 凭据。与 api 同源约定；
        * 非 development 不得沿用开发默认密钥。
@@ -366,6 +399,21 @@ export const workerEnvSchema = z.preprocess(
           code: 'custom',
           path: ['CAIRN_SESSION_LEASE_TTL_SECONDS'],
           message: 'CAIRN_SESSION_LEASE_TTL_SECONDS 须 ≥ 3 × CAIRN_SESSION_HEARTBEAT_MS/1000',
+        })
+      }
+      const workerHeartbeatSeconds = env.CAIRN_WORKER_HEARTBEAT_MS / 1000
+      if (env.CAIRN_RUN_LEASE_TTL_SECONDS < 3 * workerHeartbeatSeconds) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_RUN_LEASE_TTL_SECONDS'],
+          message: 'CAIRN_RUN_LEASE_TTL_SECONDS 须 ≥ 3 × CAIRN_WORKER_HEARTBEAT_MS/1000',
+        })
+      }
+      if (env.CAIRN_WORKER_LOST_AFTER_SECONDS <= env.CAIRN_RUN_LEASE_TTL_SECONDS) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_WORKER_LOST_AFTER_SECONDS'],
+          message: 'CAIRN_WORKER_LOST_AFTER_SECONDS 必须大于 CAIRN_RUN_LEASE_TTL_SECONDS',
         })
       }
     })

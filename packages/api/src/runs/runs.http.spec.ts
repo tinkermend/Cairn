@@ -52,6 +52,7 @@ const detail = {
   createdAt: '2026-09-10T00:00:00.000Z',
   startedAt: null,
   finishedAt: null,
+  lease: null,
 }
 
 function mockService() {
@@ -60,6 +61,8 @@ function mockService() {
     get: vi.fn(async () => detail),
     create: vi.fn(async () => ({ detail, created: true })),
     cancel: vi.fn(async () => ({ ...detail, status: 'CANCELLED' })),
+    review: vi.fn(async () => ({ ...detail, status: 'FAILED' })),
+    resumeAuth: vi.fn(async () => ({ ...detail, status: 'RECOVERING' })),
     evidence: vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] })),
   }
 }
@@ -188,5 +191,35 @@ describe('Runs HTTP', () => {
     })
     expect(res.body.items[0].payload).toBeUndefined()
     expect(JSON.stringify(res.body)).not.toContain('hello-object')
+  })
+
+  it('无 run:review 不能核查', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/runs/${detail.id}/review`)
+      .send({ conclusion: 'fail' })
+      .expect(403)
+    expect(service.review).not.toHaveBeenCalled()
+  })
+
+  it('无 run:execute 不能确认目标系统登录', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/runs/${detail.id}/resume-auth`)
+      .send({})
+      .expect(403)
+    expect(service.resumeAuth).not.toHaveBeenCalled()
+  })
+
+  it('核查与确认目标系统登录走控制面 POST', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/runs/${detail.id}/review`)
+      .send({ conclusion: 'fail', note: '副作用未确认' })
+      .expect(200)
+    expect(service.review).toHaveBeenCalledWith(
+      detail.id,
+      { conclusion: 'fail', note: '副作用未确认' },
+      admin,
+    )
+    await request(adminApp.getHttpServer()).post(`/runs/${detail.id}/resume-auth`).send({}).expect(200)
+    expect(service.resumeAuth).toHaveBeenCalled()
   })
 })

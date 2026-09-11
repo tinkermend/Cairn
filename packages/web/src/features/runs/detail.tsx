@@ -1,0 +1,250 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Link, useParams } from '@tanstack/react-router'
+import { isFinishedRunStatus } from '@cairn/shared'
+import { toast } from 'sonner'
+import { ApiRequestError } from '@/lib/api-client'
+import { cancelRun, fetchRun, fetchRunEvidence, resumeRunAuth, reviewRun } from '@/lib/runs-api'
+import { AppHeader } from '@/components/layout/app-header'
+import { Main } from '@/components/layout/main'
+import { PageHeader } from '@/components/layout/page-header'
+import { PageSkeleton } from '@/components/page-skeleton'
+import { QueryErrorState } from '@/components/query-error-state'
+import { StatusBadge } from '@/components/status-badge'
+import { Can } from '@/components/rbac/can'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { RUN_STATUS_LABELS, STEP_RUN_STATUS_LABELS, runStatusTone, stepRunStatusTone } from './labels'
+
+export function RunDetailPage() {
+  const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
+  const runQuery = useQuery({ queryKey: ['runs', runId], queryFn: () => fetchRun(runId) })
+  const evidenceQuery = useQuery({
+    queryKey: ['runs', runId, 'evidence'],
+    queryFn: () => fetchRunEvidence(runId),
+  })
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const run = runQuery.data
+
+  function refresh() {
+    void runQuery.refetch()
+    void evidenceQuery.refetch()
+  }
+
+  return (
+    <>
+      <AppHeader fixed />
+      <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
+        <PageHeader
+          title='运行详情'
+          description='业务状态、步骤时间线与结构化证据。刷新只走 GET，页面没有自动轮询。'
+          actions={
+            <div className='flex items-center gap-2'>
+              <Button variant='outline' onClick={refresh}>
+                刷新
+              </Button>
+              {run && !isFinishedRunStatus(run.status) && run.status !== 'NEEDS_REVIEW' ? (
+                <Can permission='run:cancel'>
+                  <Button
+                    variant='destructive'
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true)
+                      void cancelRun(runId)
+                        .then(() => {
+                          toast.success('已取消')
+                          refresh()
+                        })
+                        .catch((error) => {
+                          toast.error(error instanceof ApiRequestError ? error.message : '取消失败')
+                        })
+                        .finally(() => setBusy(false))
+                    }}
+                  >
+                    取消
+                  </Button>
+                </Can>
+              ) : null}
+            </div>
+          }
+        />
+        {runQuery.isPending ? (
+          <PageSkeleton />
+        ) : runQuery.isError || !run ? (
+          <QueryErrorState title='无法加载运行' onRetry={refresh} />
+        ) : (
+          <div className='space-y-5'>
+            <section className='rounded-lg border border-border-card bg-card p-5 shadow-card'>
+              <StatusBadge tone={runStatusTone(run.status)}>{RUN_STATUS_LABELS[run.status]}</StatusBadge>
+              <p className='mt-3 text-body text-muted-foreground'>
+                场景{' '}
+                <Link
+                  to='/scenarios/$scenarioId'
+                  params={{ scenarioId: run.scenarioId }}
+                  className='text-primary hover:underline'
+                >
+                  {run.scenarioName}
+                </Link>
+                {' · '}
+                目标系统{' '}
+                <Link
+                  to='/targets/$targetId'
+                  params={{ targetId: run.targetId }}
+                  className='text-primary hover:underline'
+                >
+                  {run.targetName}
+                </Link>
+                {run.targetAccountName ? ` · 目标账号 ${run.targetAccountName}` : ''}
+              </p>
+              {run.lease ? (
+                <p className='mt-2 text-label text-muted-foreground'>
+                  执行租约 Worker {run.lease.holderWorkerId} · fencing {run.lease.fencingToken}
+                </p>
+              ) : (
+                <p className='mt-2 text-label text-muted-foreground'>当前没有执行租约</p>
+              )}
+              {run.status === 'NEEDS_REVIEW' ? (
+                <Can permission='run:review'>
+                  <div className='mt-4 space-y-3'>
+                    <Label htmlFor='review-note'>核查说明</Label>
+                    <Input
+                      id='review-note'
+                      value={note}
+                      onChange={(event) => setNote(event.target.value)}
+                      placeholder='可选说明，写入控制台审计'
+                    />
+                    <div className='flex gap-2'>
+                      <Button
+                        disabled={busy}
+                        onClick={() => {
+                          setBusy(true)
+                          void reviewRun(runId, { conclusion: 'fail', note: note || undefined })
+                            .then(() => {
+                              toast.success('已判定失败')
+                              refresh()
+                            })
+                            .catch((error) => {
+                              toast.error(error instanceof ApiRequestError ? error.message : '核查失败')
+                            })
+                            .finally(() => setBusy(false))
+                        }}
+                      >
+                        判定失败
+                      </Button>
+                      <Button
+                        variant='outline'
+                        disabled={busy}
+                        onClick={() => {
+                          setBusy(true)
+                          void reviewRun(runId, { conclusion: 'cancel', note: note || undefined })
+                            .then(() => {
+                              toast.success('已判定取消')
+                              refresh()
+                            })
+                            .catch((error) => {
+                              toast.error(error instanceof ApiRequestError ? error.message : '核查失败')
+                            })
+                            .finally(() => setBusy(false))
+                        }}
+                      >
+                        判定取消
+                      </Button>
+                    </div>
+                  </div>
+                </Can>
+              ) : null}
+              {run.status === 'WAITING_FOR_AUTH' ? (
+                <Can permission='run:execute'>
+                  <div className='mt-4 space-y-3'>
+                    <p className='text-body'>
+                      等待的是目标系统登录，不是控制台账号。确认外部系统已登录后再放回领取。
+                    </p>
+                    <Button
+                      disabled={busy}
+                      onClick={() => {
+                        setBusy(true)
+                        void resumeRunAuth(runId, { note: note || undefined })
+                          .then(() => {
+                            toast.success('已确认目标系统登录，等待再次领取')
+                            refresh()
+                          })
+                          .catch((error) => {
+                            toast.error(error instanceof ApiRequestError ? error.message : '恢复失败')
+                          })
+                          .finally(() => setBusy(false))
+                      }}
+                    >
+                      确认目标系统已登录
+                    </Button>
+                  </div>
+                </Can>
+              ) : null}
+            </section>
+
+            <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
+              <h2 className='text-section font-semibold'>步骤时间线</h2>
+              <ol className='space-y-3'>
+                {run.stepRuns.map((step) => (
+                  <li key={step.id} className='rounded-md border border-border-card p-3'>
+                    <div className='flex flex-wrap items-center gap-2'>
+                      <span className='font-medium'>
+                        {step.ordinal + 1}. {step.name}
+                      </span>
+                      <StatusBadge tone={stepRunStatusTone(step.status)}>
+                        {STEP_RUN_STATUS_LABELS[step.status]}
+                      </StatusBadge>
+                    </div>
+                    <p className='mt-1 text-label text-muted-foreground'>{step.type}</p>
+                    {step.attempts.map((attempt) => (
+                      <div key={attempt.id} className='mt-2 rounded-sm bg-muted/40 p-2 text-label'>
+                        <p>
+                          Attempt #{attempt.attemptNo} · {attempt.status}
+                        </p>
+                        {attempt.output !== null ? (
+                          <pre className='mt-1 overflow-x-auto'>{JSON.stringify(attempt.output)}</pre>
+                        ) : null}
+                        {attempt.error ? (
+                          <p className='mt-1 text-destructive'>
+                            {attempt.error.code}: {attempt.error.safeMessage}
+                          </p>
+                        ) : null}
+                      </div>
+                    ))}
+                  </li>
+                ))}
+              </ol>
+            </section>
+
+            <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
+              <h2 className='text-section font-semibold'>Context</h2>
+              <pre className='overflow-x-auto text-label'>{JSON.stringify(run.context, null, 2)}</pre>
+            </section>
+
+            <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
+              <h2 className='text-section font-semibold'>结构化证据</h2>
+              {evidenceQuery.data?.items.length ? (
+                <ul className='space-y-2'>
+                  {evidenceQuery.data.items.map((item) => (
+                    <li key={item.id} className='rounded-md border border-border-card p-3 text-label'>
+                      <p>
+                        {item.type}
+                        {item.objectKey ? ` · 对象 ${item.objectKey}` : ''}
+                      </p>
+                      {'payload' in item && item.payload !== undefined ? (
+                        <pre className='mt-1 overflow-x-auto'>{JSON.stringify(item.payload)}</pre>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className='text-muted-foreground'>还没有结构化证据。</p>
+              )}
+            </section>
+          </div>
+        )}
+      </Main>
+    </>
+  )
+}

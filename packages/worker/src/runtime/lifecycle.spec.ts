@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DbHandle } from '@cairn/db'
@@ -6,6 +7,26 @@ import { DB_HANDLE, DbModule } from '../db/db.module'
 import { ExecutionEngine } from '../engine/engine'
 import { ObjectService } from '../objects/object.service'
 import { LifecycleService } from './lifecycle.service'
+
+vi.mock('@cairn/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cairn/db')>()
+  return {
+    ...actual,
+    registerWorker: vi.fn(async () => ({ worker: { id: 'stub' }, revokedRunIds: [] })),
+    settleRevokedRuns: vi.fn(async () => undefined),
+    markWorkerDraining: vi.fn(async () => undefined),
+    markWorkerStopped: vi.fn(async () => undefined),
+    listActiveLeasesForWorker: vi.fn(async () => []),
+    claimRun: vi.fn(async () => null),
+    heartbeatWorker: vi.fn(async () => 'ok' as const),
+    renewRunLease: vi.fn(async () => new Date()),
+    expireStaleRunLeases: vi.fn(async () => ({ expired: 0, outcomes: [] })),
+    sweepDriftedRuns: vi.fn(async () => 0),
+    markLostWorkers: vi.fn(async () => []),
+    markSessionsLostForWorkers: vi.fn(async () => 0),
+    yieldUnfinishedRun: vi.fn(async () => undefined),
+  }
+})
 
 function stubDb(close = vi.fn(async () => {})): DbHandle {
   return { ping: async () => true, close, db: {} as never, pool: {} as never }
@@ -125,6 +146,158 @@ describe('LifecycleService', () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(svc.uptimeSeconds()).toBeGreaterThan(first)
   })
+
+  it('被判失联：停手、以新代重新注册、恢复领取，不留僵尸进程', async () => {
+    const { heartbeatWorker, registerWorker } = await import('@cairn/db')
+    const svc = await buildLifecycle()
+    // 启动注册已经发生过一次，计数从这里重新起算
+    vi.mocked(registerWorker).mockClear()
+    vi.mocked(heartbeatWorker).mockResolvedValueOnce('lost')
+    const exit = vi.fn()
+    svc.exitProcess = exit
+    const abort = injectInFlight(svc)
+    const instanceBefore = instanceIdOf(svc)
+
+    await beat(svc)
+
+    // 在途 grant 已随失联作废，必须中止；但领取能力要回来。
+    expect(abort).toHaveBeenCalledOnce()
+    expect(registerWorker).toHaveBeenCalledOnce()
+    expect(instanceIdOf(svc)).not.toBe(instanceBefore)
+    expect(svc.isRunning()).toBe(true)
+    expect(exit).not.toHaveBeenCalled()
+  })
+
+  it('身份被另一实例接管：不抢回，退出进程', async () => {
+    const { heartbeatWorker, registerWorker } = await import('@cairn/db')
+    const svc = await buildLifecycle()
+    vi.mocked(registerWorker).mockClear()
+    vi.mocked(heartbeatWorker).mockResolvedValueOnce('instance_taken')
+    const exit = vi.fn()
+    svc.exitProcess = exit
+    const abort = injectInFlight(svc)
+
+    await beat(svc)
+
+    expect(abort).toHaveBeenCalledOnce()
+    expect(svc.isRunning()).toBe(false)
+    expect(registerWorker).not.toHaveBeenCalled()
+    expect(exit).toHaveBeenCalledWith(1)
+  })
+
+  it('自愈期间 ID 被别人拿走：重新注册失败也要退出，不静默停工', async () => {
+    const { heartbeatWorker, registerWorker } = await import('@cairn/db')
+    const svc = await buildLifecycle()
+    // 只对自愈那次注册注入冲突：启动注册必须先正常走完
+    vi.mocked(registerWorker).mockRejectedValueOnce(new Error('WORKER_ID_CONFLICT'))
+    vi.mocked(heartbeatWorker).mockResolvedValueOnce('lost')
+    const exit = vi.fn()
+    svc.exitProcess = exit
+
+    await beat(svc)
+
+    expect(svc.isRunning()).toBe(false)
+    expect(exit).toHaveBeenCalledWith(1)
+  })
+
+  /** 验收 21：容量满就不再领取，否则一个实例会把自己撑爆、租约全部续不上。 */
+  it('容量已满时不再领取', async () => {
+    const { claimRun } = await import('@cairn/db')
+    const svc = await buildLifecycle()
+    // 等启动那次领取跑完，否则 pump 会被 claiming 挡住，用例就测不到容量这一层
+    await (svc as unknown as { claimTask?: Promise<void> }).claimTask
+    vi.mocked(claimRun).mockClear()
+    injectInFlight(svc)
+
+    await (svc as unknown as { pump: () => Promise<void> }).pump()
+
+    // 默认容量 1，已有一条在途
+    expect(claimRun).not.toHaveBeenCalled()
+  })
+
+  /** S6：同 ID 双开是本地最先踩到的错误路径，必须给出可读原因且不带凭证。 */
+  it('启动撞同 ID 冲突：给出可读原因后仍让启动失败', async () => {
+    const { registerWorker, DomainError } = await import('@cairn/db')
+    vi.mocked(registerWorker).mockRejectedValueOnce(
+      new DomainError('conflict', 'WORKER_ID_CONFLICT', 'Worker local-worker 仍有新鲜心跳'),
+    )
+    const errors: string[] = []
+    const spy = vi.spyOn(Logger.prototype, 'error').mockImplementation((message: unknown) => {
+      errors.push(String(message))
+    })
+
+    try {
+      await expect(
+        Test.createTestingModule({
+          providers: [
+            LifecycleService,
+            { provide: DB_HANDLE, useValue: stubDb() },
+            { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
+            {
+              provide: ObjectService,
+              useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) },
+            },
+            { provide: BrowserSessionManager, useValue: stubSessions() },
+          ],
+        })
+          .compile()
+          .then((moduleRef) => moduleRef.createNestApplication().init()),
+      ).rejects.toThrow(/WORKER_ID_CONFLICT|仍有新鲜心跳/)
+    } finally {
+      spy.mockRestore()
+    }
+
+    const explained = errors.join('\n')
+    expect(explained).toContain('CAIRN_WORKER_ID=local-worker')
+    expect(explained).toContain('每实例一个 ID')
+    expect(explained).not.toMatch(/password|CairnDB/i)
+  })
+
+  async function buildLifecycle(): Promise<LifecycleService> {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        LifecycleService,
+        { provide: DB_HANDLE, useValue: stubDb() },
+        { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
+        { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: BrowserSessionManager, useValue: stubSessions() },
+      ],
+    }).compile()
+    app = moduleRef.createNestApplication()
+    await app.init()
+    const svc = app.get(LifecycleService)
+    expect(svc.isRunning()).toBe(true)
+    return svc
+  }
+
+  /** 注入一条在途运行，返回它的 abort 探针。 */
+  function injectInFlight(svc: LifecycleService): ReturnType<typeof vi.fn> {
+    const abort = vi.fn()
+    ;(
+      svc as unknown as {
+        inFlight: Map<string, { controller: { abort: () => void }; grant: unknown; done: Promise<void> }>
+      }
+    ).inFlight.set('lease-1', {
+      grant: {
+        runId: 'r1',
+        leaseId: 'lease-1',
+        fencingToken: 1,
+        holderWorkerId: 'w',
+        expiresAt: new Date().toISOString(),
+      },
+      controller: { abort },
+      done: Promise.resolve(),
+    })
+    return abort
+  }
+
+  function beat(svc: LifecycleService): Promise<void> {
+    return (svc as unknown as { beat: () => Promise<void> }).beat()
+  }
+
+  function instanceIdOf(svc: LifecycleService): string {
+    return (svc as unknown as { instanceId: string }).instanceId
+  }
 })
 
 describe('DbModule', () => {

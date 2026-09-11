@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import type { Step } from '@cairn/shared'
 import {
   appendScenarioVersion,
-  claimQueuedRun,
+  claimRun,
   computeSnapshotDigest,
   createRunWithSnapshot,
   createScenarioWithVersion,
@@ -24,6 +24,7 @@ import { newId } from '../id.js'
 import { consoleAccounts } from '../schema/console.js'
 import { runs, stepRuns } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
+import { forceGrantForRun, seedWorker } from './lease-harness.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_exec`
 
@@ -226,9 +227,10 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await handle.db.update(runs).set({ status: 'RUNNING' }).where(eq(runs.id, created.detail.id))
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
     const stepRunId = created.detail.stepRuns[0]!.id
-    const first = await startAttempt(handle.db, { runId: created.detail.id, stepRunId, inputPayload: 'hello' })
+    const first = await startAttempt(handle.db, { runId: created.detail.id, stepRunId, inputPayload: 'hello', grant })
     expect(first).not.toBeNull()
     await finishAttempt(handle.db, {
       runId: created.detail.id,
@@ -236,8 +238,9 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       attemptStatus: 'FAILED',
       error: { code: 'FAIL', category: 'EXECUTOR', retryable: true, safeMessage: '先失败' },
       stepRunStatus: 'RUNNING',
+      grant,
     })
-    const second = await startAttempt(handle.db, { runId: created.detail.id, stepRunId, inputPayload: 'hello' })
+    const second = await startAttempt(handle.db, { runId: created.detail.id, stepRunId, inputPayload: 'hello', grant })
     expect(second).not.toBeNull()
     await finishAttempt(handle.db, {
       runId: created.detail.id,
@@ -247,6 +250,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       context: { greeting: 'hello' },
       stepRunStatus: 'SUCCEEDED',
       runStatus: 'SUCCEEDED',
+      grant,
     })
     const detail = await getRun(handle.db, created.detail.id)
     expect(detail.status).toBe('SUCCEEDED')
@@ -266,11 +270,13 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await handle.db.update(runs).set({ status: 'RUNNING' }).where(eq(runs.id, created.detail.id))
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
     const started = await startAttempt(handle.db, {
       runId: created.detail.id,
       stepRunId: created.detail.stepRuns[0]!.id,
       inputPayload: 'hello',
+      grant,
     })
     await expect(
       finishAttempt(handle.db, {
@@ -281,6 +287,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
         context: { greeting: 'hello' },
         stepRunStatus: 'SUCCEEDED',
         runStatus: 'SUCCEEDED',
+        grant,
         injectFailure: new Error('injected'),
       }),
     ).rejects.toThrow('injected')
@@ -304,11 +311,13 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await handle.db.update(runs).set({ status: 'RUNNING' }).where(eq(runs.id, created.detail.id))
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
     const started = await startAttempt(handle.db, {
       runId: created.detail.id,
       stepRunId: created.detail.stepRuns[0]!.id,
       inputPayload: 'hello',
+      grant,
     })
     const first = await finishAttempt(handle.db, {
       runId: created.detail.id,
@@ -318,6 +327,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       stepRunStatus: 'CANCELLED',
       runStatus: 'CANCELLED',
       cancelPending: true,
+      grant,
     })
     expect(first.updated).toBe(true)
     const late = await finishAttempt(handle.db, {
@@ -327,6 +337,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       output: 'hello',
       stepRunStatus: 'SUCCEEDED',
       runStatus: 'SUCCEEDED',
+      grant,
     })
     expect(late.updated).toBe(false)
     const detail = await getRun(handle.db, created.detail.id)
@@ -345,11 +356,13 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await handle.db.update(runs).set({ status: 'RUNNING' }).where(eq(runs.id, created.detail.id))
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
     const started = await startAttempt(handle.db, {
       runId: created.detail.id,
       stepRunId: created.detail.stepRuns[0]!.id,
       inputPayload: 'hello',
+      grant,
     })
     await requestRunCancel(handle.db, created.detail.id, { id: actorId })
 
@@ -361,6 +374,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       context: { greeting: 'hello' },
       stepRunStatus: 'SUCCEEDED',
       runStatus: 'SUCCEEDED',
+      grant,
     })
 
     expect(result).toEqual({ updated: true, cancelled: true })
@@ -387,11 +401,13 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await handle.db.update(runs).set({ status: 'RUNNING' }).where(eq(runs.id, created.detail.id))
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
     const started = await startAttempt(handle.db, {
       runId: created.detail.id,
       stepRunId: created.detail.stepRuns[0]!.id,
       inputPayload: 'hello',
+      grant,
     })
     await requestRunCancel(handle.db, created.detail.id, { id: actorId })
 
@@ -402,6 +418,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       error: { code: 'UNKNOWN', category: 'UNKNOWN', retryable: false, safeMessage: '结果未确认' },
       stepRunStatus: 'FAILED',
       runStatus: 'NEEDS_REVIEW',
+      grant,
     })
 
     expect(result).toEqual({ updated: true, cancelled: false })
@@ -421,26 +438,27 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await handle.db.update(runs).set({ status: 'RUNNING' }).where(eq(runs.id, created.detail.id))
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
 
     // 还有 PENDING 步骤：不得判成功
-    expect((await finishRunIfDrained(handle.db, created.detail.id)).finished).toBe(false)
+    expect((await finishRunIfDrained(handle.db, grant)).finished).toBe(false)
 
     await handle.db.update(stepRuns).set({ status: 'SUCCEEDED' }).where(eq(stepRuns.runId, created.detail.id))
-    expect((await finishRunIfDrained(handle.db, created.detail.id)).finished).toBe(true)
+    expect((await finishRunIfDrained(handle.db, grant)).finished).toBe(true)
     expect((await getRun(handle.db, created.detail.id)).status).toBe('SUCCEEDED')
     // 已是终态：不再重复写
-    expect((await finishRunIfDrained(handle.db, created.detail.id)).finished).toBe(false)
+    expect((await finishRunIfDrained(handle.db, grant)).finished).toBe(false)
 
     // 有取消请求时不判成功
     const cancelledRun = await createRunWithSnapshot(handle.db, {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await handle.db.update(runs).set({ status: 'RUNNING' }).where(eq(runs.id, cancelledRun.detail.id))
+    const cancelGrant = await forceGrantForRun(handle, cancelledRun.detail.id, worker.workerId)
     await handle.db.update(stepRuns).set({ status: 'SUCCEEDED' }).where(eq(stepRuns.runId, cancelledRun.detail.id))
     await requestRunCancel(handle.db, cancelledRun.detail.id, { id: actorId })
-    expect((await finishRunIfDrained(handle.db, cancelledRun.detail.id)).finished).toBe(false)
+    expect((await finishRunIfDrained(handle.db, cancelGrant)).finished).toBe(false)
     expect((await getRun(handle.db, cancelledRun.detail.id)).status).toBe('RUNNING')
   })
 
@@ -494,6 +512,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       actor: { id: actorId },
     })
     await handle.pool.query(`UPDATE runs SET cancel_requested_at = now() WHERE status = 'QUEUED'`)
-    expect(await claimQueuedRun(handle)).toBeNull()
+    const worker = await seedWorker(handle)
+    expect(await claimRun(handle, { workerId: worker.workerId, instanceId: worker.instanceId, leaseTtlSeconds: 30 })).toBeNull()
   })
 })

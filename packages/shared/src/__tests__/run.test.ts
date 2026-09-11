@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runSnapshotSchema, runStatusSchema } from '../run.js'
+import { isFinishedRunStatus, isHaltedRunStatus, runSnapshotSchema, runStatusSchema } from '../run.js'
 import { DEFAULT_SESSION_POLICY } from '../session.js'
 
 const ids = {
@@ -44,6 +44,11 @@ describe('runStatusSchema', () => {
   it('拒绝未入词表的状态', () => {
     expect(() => runStatusSchema.parse('CLAIMED')).toThrow()
     expect(() => runStatusSchema.parse('CANCELLING')).toThrow()
+  })
+
+  it('NEEDS_REVIEW 属于 HALTED 不属于 FINISHED', () => {
+    expect(isHaltedRunStatus('NEEDS_REVIEW')).toBe(true)
+    expect(isFinishedRunStatus('NEEDS_REVIEW')).toBe(false)
   })
 })
 

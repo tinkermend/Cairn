@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import type { PermissionCode } from '@cairn/shared'
-import { Monitor, ScrollText, Settings, Shield, Users } from 'lucide-react'
+import { ListChecks, Monitor, Play, ScrollText, Settings, Shield, Users } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { can } from '@/lib/rbac'
 import { AppHeader } from '@/components/layout/app-header'
@@ -10,7 +10,7 @@ import { PageHeader } from '@/components/layout/page-header'
 const modules: {
   title: string
   description: string
-  to: '/targets' | '/users' | '/roles' | '/audit' | '/settings'
+  to: '/targets' | '/scenarios' | '/runs' | '/users' | '/roles' | '/audit' | '/settings'
   icon: React.ElementType
   permission?: PermissionCode
 }[] = [
@@ -20,6 +20,20 @@ const modules: {
     to: '/targets',
     icon: Monitor,
     permission: 'target:read',
+  },
+  {
+    title: '场景',
+    description: '绑定目标系统的最小可运行定义，不是编排画布。',
+    to: '/scenarios',
+    icon: ListChecks,
+    permission: 'workflow:read',
+  },
+  {
+    title: '运行',
+    description: '对目标系统执行场景，查看步骤、证据与结论。',
+    to: '/runs',
+    icon: Play,
+    permission: 'run:read',
   },
   {
     title: '用户',
@@ -64,7 +78,7 @@ export function HomePage() {
       <Main className='flex flex-1 flex-col gap-6'>
         <PageHeader
           title={greeting}
-          description='识途是面向真实 Web 系统的智能仿真平台。当前可管理目标系统、控制台账号、角色与审计；Scenario 与 Run 将按功能方案逐步接入。'
+          description='识途是面向真实 Web 系统的智能仿真平台。控制台账号管平台权限；目标系统与目标账号是被仿真对象；浏览器会话由执行面纳管，不在这张工作台菜单里。'
         />
         <section className='grid gap-4 sm:grid-cols-2 md:gap-5 xl:grid-cols-3'>
           {visible.map((item) => {

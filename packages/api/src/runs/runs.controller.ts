@@ -1,6 +1,13 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res } from '@nestjs/common'
 import type { Response } from 'express'
-import { createRunBodySchema, type CreateRunBody } from '@cairn/shared'
+import {
+  createRunBodySchema,
+  resumeAuthBodySchema,
+  reviewRunBodySchema,
+  type CreateRunBody,
+  type ResumeAuthBody,
+  type ReviewRunBody,
+} from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
 import { CurrentAccount } from '../rbac/current-account.decorator'
@@ -46,5 +53,27 @@ export class RunsController {
   @RequirePermissions('run:cancel')
   cancel(@Param('runId') runId: string, @CurrentAccount() actor: RequestAccount) {
     return this.runs.cancel(runId, actor)
+  }
+
+  @Post(':runId/review')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('run:review')
+  review(
+    @Param('runId') runId: string,
+    @Body(new ZodValidationPipe(reviewRunBodySchema)) body: ReviewRunBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.runs.review(runId, body, actor)
+  }
+
+  @Post(':runId/resume-auth')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('run:execute')
+  resumeAuth(
+    @Param('runId') runId: string,
+    @Body(new ZodValidationPipe(resumeAuthBodySchema)) body: ResumeAuthBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.runs.resumeAuth(runId, body, actor)
   }
 }

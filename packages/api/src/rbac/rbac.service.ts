@@ -368,7 +368,7 @@ export class RbacService {
     const account = await this.getAccount(accountId)
     const identity = await this.findLocalIdentityByAccount(accountId)
     if (!identity) {
-      if (!account.email) throw new BadRequestException('该账号没有邮箱，无法设置本地密码')
+      if (!account.email) throw new BadRequestException('该账号没有登录名，无法设置本地密码')
       await this.createLocalIdentity(accountId, account.email, body.password)
     } else {
       await this.db

@@ -73,7 +73,7 @@ export class AuthService {
     return row ?? null
   }
 
-  /** 即使用户不存在也走一遍哈希，避免按耗时枚举邮箱。 */
+  /** 即使用户不存在也走一遍哈希，避免按耗时枚举账号。 */
   private async dummyVerify(password: string): Promise<boolean> {
     await hashSecret(password)
     return false

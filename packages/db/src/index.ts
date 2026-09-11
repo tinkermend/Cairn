@@ -6,5 +6,6 @@ export { migrate, loadMigrations, type Migration, type MigrateResult } from './m
 export { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 export * from './schema/index.js'
 export * from './runs/index.js'
+export * from './leases/index.js'
 export * from './objects/index.js'
 export * from './sessions/index.js'

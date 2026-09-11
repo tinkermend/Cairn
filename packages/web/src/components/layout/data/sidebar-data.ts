@@ -1,7 +1,9 @@
 import {
   Home,
+  ListChecks,
   Monitor,
   Palette,
+  Play,
   ScrollText,
   Settings,
   Shield,
@@ -31,6 +33,18 @@ export const sidebarData: SidebarData = {
           url: '/targets',
           icon: Monitor,
           permission: 'target:read',
+        },
+        {
+          title: '场景',
+          url: '/scenarios',
+          icon: ListChecks,
+          permission: 'workflow:read',
+        },
+        {
+          title: '运行',
+          url: '/runs',
+          icon: Play,
+          permission: 'run:read',
         },
         {
           title: '用户',

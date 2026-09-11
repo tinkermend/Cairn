@@ -1,3 +1,9 @@
+2026-09-11--RunLease 复查第二轮：优雅停机不再把在途 Run 洗成 CANCELLED（Engine 区分外部信号与库里说停，交回 RECOVERING 且断言必须真能被接管），恢复次数只数失败交接（优雅停机不计，否则滚动发布三次就把好 Run 推进待核查），NEEDS_REVIEW 不再写 finished_at，删掉无产生者的两个租约错误码，WORKER_ID_CONFLICT 启动前给可读原因；补 RF08 副作用孤儿/同事务回滚注入点/幂等/自愈/双开/容量与 L3 组件用例，运行页显示名称而非裸 UUID；进程维度的 kill/暂停/DB 断连与多进程 RF06 明确留成债务
+2026-09-11--RunLease 三处致命修补：0011 收紧会话租约前先撤销存量 ACTIVE+NULL fencing（否则 23514 整份回滚、有会话的库永久升不上来）、心跳失败按 lost/instance_taken 分流（失联重新注册自愈，身份被接管退出进程，不再留不可观测的僵尸）、finishAttempt 加 barrierAfterVerify 让 D5 的提交边界真被测试卡住；三处均带负向验证
+2026-09-11--复查修补 RunLease：Engine 接管后续跑 RUNNING 步骤、claimRun 要求 READY+instance、心跳失败自停；补接管/屏障/LOST/env 反例用例
+2026-09-11--RunLease / Fencing / 恢复落地：Worker 领取带 fencing、过期与漂移同事务恢复、核查与确认目标系统登录；控制台只加场景/运行观察面，不把控制台账号、目标系统、浏览器会话混成一套
+2026-09-11--控制台登录改为账号而非邮箱：默认管理员 admin / cairn-admin；已有库把 admin@cairn.dev 迁成 admin
+2026-09-11--目标系统列表不再因历史编码含下划线而 500：出站 DTO 与创建 slug 规则拆开
 2026-09-11--playwright 版本对齐：worker 与 web 统一到 1.63.0（同一 chromium 1243，装一次共用），分叉由 tools/check-deps.mjs 卡住；对齐后 worker 浏览器测试首次真正运行，修掉 loginWithCredentials 抛异常逃逸与用例共用会话键
 2026-09-11--BrowserSession 处置出口：GET /browser-sessions 与 POST :id/dispose（session:read / session:dispose、0009 补种系统角色）、LOST 不再永久占键、worker reap 对账收掉已处置句柄、recordAudit 收敛为单份
 2026-09-11--BrowserSession P1 收口：平台默认与 env 对齐、RF04 零 session 行、D8 复用单测、RF17 50 页、.env.example 去重

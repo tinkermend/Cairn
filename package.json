@@ -12,6 +12,7 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "pnpm check && turbo run test",
+    "test:rf06": "pnpm --filter @cairn/db test:rf06",
     "typecheck": "turbo run typecheck",
     "check": "node tools/check-deps.mjs && node tools/check-migrations.mjs",
     "check:migrations": "node tools/check-migrations.mjs",

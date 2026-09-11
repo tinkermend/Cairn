@@ -249,4 +249,19 @@ describe('targetSchema / list', () => {
       targetListResponseSchema.parse({ items: [target], nextCursor: 'abc' }).nextCursor,
     ).toBe('abc')
   })
+
+  it('出站接受已落库的非 slug 编码；创建仍拒绝', () => {
+    expect(() => targetSchema.parse({ ...target, code: 'exec-y_exec' })).not.toThrow()
+    expect(
+      targetListResponseSchema.parse({ items: [{ ...target, code: 'exec-y_exec' }] }).items[0]
+        ?.code,
+    ).toBe('exec-y_exec')
+    expect(() =>
+      createTargetBodySchema.parse({
+        code: 'exec-y_exec',
+        name: 'x',
+        entryUrl: 'https://example.com',
+      }),
+    ).toThrow()
+  })
 })

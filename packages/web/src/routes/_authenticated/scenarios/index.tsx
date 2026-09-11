@@ -1,0 +1,14 @@
+import { createFileRoute, redirect } from '@tanstack/react-router'
+import { hasPermission } from '@cairn/shared'
+import { ScenariosPage } from '@/features/scenarios'
+import { useAuthStore } from '@/stores/auth-store'
+
+export const Route = createFileRoute('/_authenticated/scenarios/')({
+  beforeLoad: () => {
+    const user = useAuthStore.getState().auth.user
+    if (!user || !hasPermission(user.permissions, 'workflow:read')) {
+      throw redirect({ to: '/403' })
+    }
+  },
+  component: ScenariosPage,
+})

@@ -14,7 +14,6 @@ export {
 } from './scenarios.js'
 export {
   cancelPendingStepRuns,
-  claimQueuedRun,
   countRunsForAccount,
   createRunWithSnapshot,
   failRunAuthTimeout,
@@ -35,4 +34,16 @@ export {
   startAttempt,
   type FinishAttemptInput,
   type FinishAttemptResult,
+  type RunWriteAuthority,
 } from './runs.js'
+export {
+  expireStaleRunLeases,
+  reconcileOrphanAttempts,
+  resumeRunAfterAuth,
+  reviewRun,
+  settleLeaselessRun,
+  settleRevokedRuns,
+  sweepDriftedRuns,
+  yieldUnfinishedRun,
+  type SettleOutcome,
+} from './recover.js'

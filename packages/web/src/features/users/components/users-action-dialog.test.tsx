@@ -88,7 +88,7 @@ describe('UsersActionDialog', () => {
       )
 
       await userEvent.fill(getByLabelText(/显示名称/), 'New Operator')
-      await userEvent.fill(getByLabelText(/^邮箱$/), 'ops@cairn.dev')
+      await userEvent.fill(getByLabelText(/^账号$/), 'ops@cairn.dev')
       await userEvent.fill(getByLabelText(/^密码$/), 'password1')
       await userEvent.click(getByRole('button', { name: /保存/ }))
 

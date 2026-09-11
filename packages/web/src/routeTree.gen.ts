@@ -20,11 +20,15 @@ import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/
 import { Route as AuthenticatedSettingsRouteRouteImport } from './routes/_authenticated/settings/route'
 import { Route as AuthenticatedAuditIndexRouteImport } from './routes/_authenticated/audit/index'
 import { Route as AuthenticatedRolesIndexRouteImport } from './routes/_authenticated/roles/index'
+import { Route as AuthenticatedRunsIndexRouteImport } from './routes/_authenticated/runs/index'
+import { Route as AuthenticatedScenariosIndexRouteImport } from './routes/_authenticated/scenarios/index'
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
 import { Route as AuthenticatedTargetsIndexRouteImport } from './routes/_authenticated/targets/index'
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
+import { Route as AuthenticatedRunsRunIdIndexRouteImport } from './routes/_authenticated/runs/$runId/index'
+import { Route as AuthenticatedScenariosScenarioIdIndexRouteImport } from './routes/_authenticated/scenarios/$scenarioId/index'
 import { Route as AuthenticatedTargetsTargetIdIndexRouteImport } from './routes/_authenticated/targets/$targetId/index'
 
 const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
@@ -82,6 +86,17 @@ const AuthenticatedRolesIndexRoute = AuthenticatedRolesIndexRouteImport.update({
   path: '/roles/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedRunsIndexRoute = AuthenticatedRunsIndexRouteImport.update({
+  id: '/runs/',
+  path: '/runs/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedScenariosIndexRoute =
+  AuthenticatedScenariosIndexRouteImport.update({
+    id: '/scenarios/',
+    path: '/scenarios/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedSettingsIndexRoute =
   AuthenticatedSettingsIndexRouteImport.update({
     id: '/',
@@ -111,6 +126,18 @@ const AuthenticatedUsersIndexRoute = AuthenticatedUsersIndexRouteImport.update({
   path: '/users/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedRunsRunIdIndexRoute =
+  AuthenticatedRunsRunIdIndexRouteImport.update({
+    id: '/runs/$runId/',
+    path: '/runs/$runId/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedScenariosScenarioIdIndexRoute =
+  AuthenticatedScenariosScenarioIdIndexRouteImport.update({
+    id: '/scenarios/$scenarioId/',
+    path: '/scenarios/$scenarioId/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedTargetsTargetIdIndexRoute =
   AuthenticatedTargetsTargetIdIndexRouteImport.update({
     id: '/targets/$targetId/',
@@ -131,9 +158,13 @@ export interface FileRoutesByFullPath {
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/audit/': typeof AuthenticatedAuditIndexRoute
   '/roles/': typeof AuthenticatedRolesIndexRoute
+  '/runs/': typeof AuthenticatedRunsIndexRoute
+  '/scenarios/': typeof AuthenticatedScenariosIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
   '/targets/': typeof AuthenticatedTargetsIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
+  '/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
+  '/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
 }
 export interface FileRoutesByTo {
@@ -148,9 +179,13 @@ export interface FileRoutesByTo {
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/audit': typeof AuthenticatedAuditIndexRoute
   '/roles': typeof AuthenticatedRolesIndexRoute
+  '/runs': typeof AuthenticatedRunsIndexRoute
+  '/scenarios': typeof AuthenticatedScenariosIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
   '/targets': typeof AuthenticatedTargetsIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
+  '/runs/$runId': typeof AuthenticatedRunsRunIdIndexRoute
+  '/scenarios/$scenarioId': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/targets/$targetId': typeof AuthenticatedTargetsTargetIdIndexRoute
 }
 export interface FileRoutesById {
@@ -168,9 +203,13 @@ export interface FileRoutesById {
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/audit/': typeof AuthenticatedAuditIndexRoute
   '/_authenticated/roles/': typeof AuthenticatedRolesIndexRoute
+  '/_authenticated/runs/': typeof AuthenticatedRunsIndexRoute
+  '/_authenticated/scenarios/': typeof AuthenticatedScenariosIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
   '/_authenticated/targets/': typeof AuthenticatedTargetsIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
+  '/_authenticated/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
+  '/_authenticated/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/_authenticated/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
 }
 export interface FileRouteTypes {
@@ -188,9 +227,13 @@ export interface FileRouteTypes {
     | '/settings/appearance'
     | '/audit/'
     | '/roles/'
+    | '/runs/'
+    | '/scenarios/'
     | '/settings/'
     | '/targets/'
     | '/users/'
+    | '/runs/$runId/'
+    | '/scenarios/$scenarioId/'
     | '/targets/$targetId/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -205,9 +248,13 @@ export interface FileRouteTypes {
     | '/settings/appearance'
     | '/audit'
     | '/roles'
+    | '/runs'
+    | '/scenarios'
     | '/settings'
     | '/targets'
     | '/users'
+    | '/runs/$runId'
+    | '/scenarios/$scenarioId'
     | '/targets/$targetId'
   id:
     | '__root__'
@@ -224,9 +271,13 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/appearance'
     | '/_authenticated/audit/'
     | '/_authenticated/roles/'
+    | '/_authenticated/runs/'
+    | '/_authenticated/scenarios/'
     | '/_authenticated/settings/'
     | '/_authenticated/targets/'
     | '/_authenticated/users/'
+    | '/_authenticated/runs/$runId/'
+    | '/_authenticated/scenarios/$scenarioId/'
     | '/_authenticated/targets/$targetId/'
   fileRoutesById: FileRoutesById
 }
@@ -319,6 +370,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedRolesIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/runs/': {
+      id: '/_authenticated/runs/'
+      path: '/runs'
+      fullPath: '/runs/'
+      preLoaderRoute: typeof AuthenticatedRunsIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/scenarios/': {
+      id: '/_authenticated/scenarios/'
+      path: '/scenarios'
+      fullPath: '/scenarios/'
+      preLoaderRoute: typeof AuthenticatedScenariosIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/settings/': {
       id: '/_authenticated/settings/'
       path: '/'
@@ -354,6 +419,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedUsersIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/runs/$runId/': {
+      id: '/_authenticated/runs/$runId/'
+      path: '/runs/$runId'
+      fullPath: '/runs/$runId/'
+      preLoaderRoute: typeof AuthenticatedRunsRunIdIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/scenarios/$scenarioId/': {
+      id: '/_authenticated/scenarios/$scenarioId/'
+      path: '/scenarios/$scenarioId'
+      fullPath: '/scenarios/$scenarioId/'
+      preLoaderRoute: typeof AuthenticatedScenariosScenarioIdIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/targets/$targetId/': {
       id: '/_authenticated/targets/$targetId/'
       path: '/targets/$targetId'
@@ -387,8 +466,12 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedAuditIndexRoute: typeof AuthenticatedAuditIndexRoute
   AuthenticatedRolesIndexRoute: typeof AuthenticatedRolesIndexRoute
+  AuthenticatedRunsIndexRoute: typeof AuthenticatedRunsIndexRoute
+  AuthenticatedScenariosIndexRoute: typeof AuthenticatedScenariosIndexRoute
   AuthenticatedTargetsIndexRoute: typeof AuthenticatedTargetsIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
+  AuthenticatedRunsRunIdIndexRoute: typeof AuthenticatedRunsRunIdIndexRoute
+  AuthenticatedScenariosScenarioIdIndexRoute: typeof AuthenticatedScenariosScenarioIdIndexRoute
   AuthenticatedTargetsTargetIdIndexRoute: typeof AuthenticatedTargetsTargetIdIndexRoute
 }
 
@@ -397,8 +480,13 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
   AuthenticatedAuditIndexRoute: AuthenticatedAuditIndexRoute,
   AuthenticatedRolesIndexRoute: AuthenticatedRolesIndexRoute,
+  AuthenticatedRunsIndexRoute: AuthenticatedRunsIndexRoute,
+  AuthenticatedScenariosIndexRoute: AuthenticatedScenariosIndexRoute,
   AuthenticatedTargetsIndexRoute: AuthenticatedTargetsIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,
+  AuthenticatedRunsRunIdIndexRoute: AuthenticatedRunsRunIdIndexRoute,
+  AuthenticatedScenariosScenarioIdIndexRoute:
+    AuthenticatedScenariosScenarioIdIndexRoute,
   AuthenticatedTargetsTargetIdIndexRoute:
     AuthenticatedTargetsTargetIdIndexRoute,
 }

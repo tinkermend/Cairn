@@ -27,7 +27,7 @@ describe('RolesActionDialog', () => {
     useAuthStore.getState().auth.setUser({
       id: 'admin',
       displayName: 'Admin',
-      email: 'admin@cairn.dev',
+      email: 'admin',
       roles: ['admin'],
       permissions: [...PERMISSIONS],
     })

@@ -6,6 +6,7 @@ import {
   loadRunDetail,
   loadRunRow,
   markRunCancelled,
+  reconcileOrphanAttempts,
   startAttempt,
   type DbHandle,
   type FinishAttemptInput,
@@ -19,6 +20,7 @@ import {
   type ExecutionError,
   type JsonValue,
   type RunDetailDto,
+  type RunGrant,
   type Step,
 } from '@cairn/shared'
 import { DB_HANDLE } from '../db/db.module'
@@ -27,6 +29,7 @@ import { executeDelay, executeEcho, executeFail } from './executors.js'
 import { BROWSER_PORT, type BrowserPort } from './ports.js'
 
 export type ExecuteOptions = {
+  grant: RunGrant
   signal?: AbortSignal
   clock?: EngineClock
   /** 轮询取消请求的间隔。取消只能查库发现（NOTIFY 属 P7），测试用它把窗口压小。 */
@@ -50,10 +53,14 @@ export class ExecutionEngine {
     @Optional() @Inject(BROWSER_PORT) private readonly browser?: BrowserPort,
   ) {}
 
-  async execute(runId: string, options: ExecuteOptions = {}): Promise<void> {
+  async execute(runId: string, options: ExecuteOptions): Promise<void> {
+    const grant = options.grant
     const clock = options.clock ?? systemClock
     const external = options.signal ?? new AbortController().signal
     const db = this.handle.db
+
+    const orphan = await reconcileOrphanAttempts(db, { grant })
+    if (orphan !== 'continue') return
 
     const row = await loadRunRow(db, runId)
     if (!row || row.status !== 'RUNNING') return
@@ -61,41 +68,61 @@ export class ExecutionEngine {
     const parsed = runSnapshotSchema.safeParse(row.snapshot)
     if (!parsed.success || !executorVersionsMatch(parsed.data.executorVersions)) {
       this.logger.warn({ runId }, '快照或 executorVersions 非法，Run 标为 FAILED')
-      await failRunValidation(db, runId)
+      await failRunValidation(db, runId, { grant })
       return
     }
     const snapshot = parsed.data
 
     // 取消没有通知机制可依赖（NOTIFY 属 P7），在途取消只能轮询 cancel_requested_at。
     const stop = this.watchCancellation(runId, external, clock, options.cancelPollMs ?? DEFAULT_CANCEL_POLL_MS)
+    /**
+     * 停机／失联中止不是取消。
+     *
+     * 外部信号只说明「本实例要走了」，Run 的事实并没有结论：此时不写终态，直接返回，
+     * 由停机路径把 Run 交回 `RECOVERING` 并释放租约，未关闭的 Attempt 留给接管方按
+     * effectType 收敛（READ_ONLY / IDEMPOTENT 续跑，SIDE_EFFECT 进核查）。把它写成
+     * CANCELLED 等于一次滚动发布就替用户取消了没取消的 Run，也让整套恢复能力在最常见的
+     * 重启场景上永远用不到。库里说停（取消请求、Run 已离开 RUNNING）走另一条路。
+     */
+    const yielding = (): boolean => external.aborted && !stop.fromDb.aborted
 
     try {
-      if (row.cancelRequestedAt || stop.signal.aborted) {
-        await markRunCancelled(db, runId)
+      if (row.cancelRequestedAt) {
+        await markRunCancelled(db, runId, { grant })
+        return
+      }
+      if (stop.signal.aborted) {
+        if (!yielding()) await markRunCancelled(db, runId, { grant })
         return
       }
 
       for (const step of snapshot.steps) {
         const current = await loadRunRow(db, runId)
         if (!current || current.status !== 'RUNNING') return
-        if (current.cancelRequestedAt || stop.signal.aborted) {
-          await markRunCancelled(db, runId)
+        if (current.cancelRequestedAt) {
+          await markRunCancelled(db, runId, { grant })
+          return
+        }
+        if (stop.signal.aborted) {
+          if (!yielding()) await markRunCancelled(db, runId, { grant })
           return
         }
 
         const detail = await loadRunDetail(db, runId)
         if (!detail) return
         const stepRun = detail.stepRuns.find((item) => item.stepId === step.id)
-        if (!stepRun || stepRun.status !== 'PENDING') continue
+        // PENDING：尚未执行。RUNNING 且无在途 Attempt：接管后孤儿已收，或失败重试间隙——必须续跑，不得跳过。
+        if (!stepRun || !isRunnableStepRun(stepRun)) continue
 
         const resolved = resolveStepInput(step, detail.context)
         const started = await startAttempt(db, {
           runId,
           stepRunId: stepRun.id,
           inputPayload: resolved.input,
+          grant,
         })
         if (!started) {
-          await this.finishAfterZeroRow(runId, stop.signal)
+          await this.finishAfterZeroRow(runId, grant, stop.signal, yielding)
           return
         }
 
@@ -108,14 +135,16 @@ export class ExecutionEngine {
             stepRunStatus: 'FAILED',
             runStatus: 'FAILED',
             skipRemaining: true,
+            grant,
           })
           return
         }
 
         const policy = resolveStepPolicy(snapshot.policy, step.policy)
-        const last = isLastPending(detail, step.id)
+        const last = isLastOpenStep(detail, step.id)
         const finished = await this.completeAttempt({
           runId,
+          grant,
           step,
           stepRunId: stepRun.id,
           attemptId: started.attemptId,
@@ -125,6 +154,7 @@ export class ExecutionEngine {
           last,
           context: { ...detail.context },
           stop: stop.signal,
+          yielding,
           clock,
         })
         if (!finished) return
@@ -132,7 +162,7 @@ export class ExecutionEngine {
 
       // 步骤都终结但 Run 还停在 RUNNING（续跑、恢复）：补一次成功终态。
       // 正常的最后一步已在同一事务里写过 SUCCEEDED，这里只是兜底。
-      await finishRunIfDrained(db, runId)
+      await finishRunIfDrained(db, grant)
     } finally {
       stop.stop()
     }
@@ -140,6 +170,7 @@ export class ExecutionEngine {
 
   private async completeAttempt(input: {
     runId: string
+    grant: RunGrant
     step: Step
     stepRunId: string
     attemptId: string
@@ -149,6 +180,8 @@ export class ExecutionEngine {
     last: boolean
     context: Record<string, JsonValue>
     stop: AbortSignal
+    /** 见 execute 里的同名闭包：停机中止不写终态 */
+    yielding: () => boolean
     clock: EngineClock
   }): Promise<boolean> {
     const db = this.handle.db
@@ -159,6 +192,8 @@ export class ExecutionEngine {
     while (true) {
       // 重试之间也要看取消（D6 的「步骤间隙」），否则取消之后还会再开一次 Attempt。
       if (input.stop.aborted) {
+        // 停机：这一轮的 Attempt 还没跑，原样留给接管方收孤儿，不替用户写取消。
+        if (input.yielding()) return false
         await this.close({
           runId: input.runId,
           attemptId,
@@ -167,6 +202,7 @@ export class ExecutionEngine {
           stepRunStatus: 'CANCELLED',
           runStatus: 'CANCELLED',
           cancelPending: true,
+          grant: input.grant,
         })
         return false
       }
@@ -186,6 +222,7 @@ export class ExecutionEngine {
           context,
           stepRunStatus: 'SUCCEEDED',
           runStatus: input.last ? 'SUCCEEDED' : undefined,
+          grant: input.grant,
         })
       }
 
@@ -198,9 +235,13 @@ export class ExecutionEngine {
           error,
           stepRunStatus: 'FAILED',
           runStatus: 'NEEDS_REVIEW',
+          grant: input.grant,
         })
         return false
       }
+
+      // 停机中止。SIDE_EFFECT 已在上面的 needs_review 分支拿到结论，能走到这里的都可安全重跑。
+      if (outcome.aborted && !outcome.timedOut && input.yielding()) return false
 
       if (outcome.kind === 'cancelled' || (outcome.aborted && !outcome.timedOut)) {
         await this.close({
@@ -211,6 +252,7 @@ export class ExecutionEngine {
           stepRunStatus: 'CANCELLED',
           runStatus: 'CANCELLED',
           cancelPending: true,
+          grant: input.grant,
         })
         return false
       }
@@ -224,6 +266,7 @@ export class ExecutionEngine {
         stepRunStatus: retry ? 'RUNNING' : 'FAILED',
         runStatus: retry ? undefined : 'FAILED',
         skipRemaining: !retry,
+        grant: input.grant,
       })
       if (!closed || !retry) return false
 
@@ -231,9 +274,10 @@ export class ExecutionEngine {
         runId: input.runId,
         stepRunId: input.stepRunId,
         inputPayload: input.input,
+        grant: input.grant,
       })
       if (!next) {
-        await this.finishAfterZeroRow(input.runId, input.stop)
+        await this.finishAfterZeroRow(input.runId, input.grant, input.stop, input.yielding)
         return false
       }
       attemptId = next.attemptId
@@ -307,11 +351,20 @@ export class ExecutionEngine {
     }
   }
 
-  private async finishAfterZeroRow(runId: string, stop: AbortSignal): Promise<void> {
+  private async finishAfterZeroRow(
+    runId: string,
+    grant: RunGrant,
+    stop: AbortSignal,
+    yielding: () => boolean,
+  ): Promise<void> {
     const row = await loadRunRow(this.handle.db, runId)
     if (!row || row.status !== 'RUNNING') return
-    if (row.cancelRequestedAt || stop.aborted) {
-      await markRunCancelled(this.handle.db, runId)
+    if (row.cancelRequestedAt) {
+      await markRunCancelled(this.handle.db, runId, { grant })
+      return
+    }
+    if (stop.aborted && !yielding()) {
+      await markRunCancelled(this.handle.db, runId, { grant })
     }
   }
 
@@ -327,7 +380,7 @@ export class ExecutionEngine {
     external: AbortSignal,
     clock: EngineClock,
     pollMs: number,
-  ): { signal: AbortSignal; stop: () => void } {
+  ): { signal: AbortSignal; fromDb: AbortSignal; stop: () => void } {
     const controller = new AbortController()
     const signal = AbortSignal.any([external, controller.signal])
 
@@ -350,7 +403,8 @@ export class ExecutionEngine {
       this.logger.warn({ runId, error }, '取消轮询中断')
     })
 
-    return { signal, stop: () => controller.abort() }
+    // fromDb 只在「库里说停」时 abort：调用方靠它把停机中止与取消分开。
+    return { signal, fromDb: controller.signal, stop: () => controller.abort() }
   }
 
   /**
@@ -394,10 +448,24 @@ function resolveStepInput(
   return { ok: true, input: step.input }
 }
 
-function isLastPending(detail: RunDetailDto, stepId: string): boolean {
+/** 可被 Engine 推进：未开始，或已在跑但没有未关闭的 Attempt（接管收孤儿后）。 */
+function isRunnableStepRun(stepRun: RunDetailDto['stepRuns'][number]): boolean {
+  if (stepRun.status === 'PENDING') return true
+  if (stepRun.status !== 'RUNNING') return false
+  return !stepRun.attempts.some((attempt) => attempt.status === 'RUNNING')
+}
+
+/**
+ * 当前步骤是否为「最后一个未完成步骤」。
+ * RUNNING 与 PENDING 都算未完成——接管后不得把后面的步骤当成最后一步写 SUCCEEDED。
+ */
+function isLastOpenStep(detail: RunDetailDto, stepId: string): boolean {
   const current = detail.stepRuns.find((item) => item.stepId === stepId)
   if (!current) return false
-  return detail.stepRuns.every((item) => item.ordinal <= current.ordinal || item.status !== 'PENDING')
+  return detail.stepRuns.every(
+    (item) =>
+      item.ordinal <= current.ordinal || (item.status !== 'PENDING' && item.status !== 'RUNNING'),
+  )
 }
 
 function shouldNeedsReview(step: Step, error: ExecutionError, timedOut: boolean, aborted: boolean): boolean {

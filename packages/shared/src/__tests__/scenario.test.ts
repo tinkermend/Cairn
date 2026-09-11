@@ -116,6 +116,8 @@ describe('领域码常量', () => {
       'RUN_IDEMPOTENCY_CONFLICT',
       'RUN_ACCOUNT_MISMATCH',
       'RUN_ACCOUNT_DISABLED',
+      'RUN_NOT_REVIEWABLE',
+      'RUN_NOT_WAITING_FOR_AUTH',
     ])
     expect(TARGET_ERROR_CODES).toEqual(
       expect.arrayContaining(['TARGET_HAS_SCENARIOS', 'TARGET_DISABLED', 'TARGET_ACCOUNT_HAS_RUNS']),

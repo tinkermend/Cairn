@@ -44,7 +44,7 @@ import { type User } from '../data/schema'
 
 const formSchema = z.object({
   displayName: z.string().min(1, '请填写显示名称。'),
-  email: z.email('邮箱格式不正确。'),
+  email: z.string().trim().min(1, '请输入账号。').max(64),
   password: z.string().optional(),
   status: z.enum(ACCOUNT_STATUS),
   roleIds: z.array(z.string()).min(1, '请至少选择一个角色。'),
@@ -169,9 +169,9 @@ export function UsersActionDialog({
               name='email'
               render={({ field }) => (
                 <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>邮箱</FormLabel>
+                  <FormLabel className='col-span-2 text-end'>账号</FormLabel>
                   <FormControl>
-                    <Input placeholder='ada@cairn.dev' className='col-span-4' {...field} />
+                    <Input placeholder='admin' className='col-span-4' autoComplete='off' {...field} />
                   </FormControl>
                   <FormMessage className='col-span-4 col-start-3' />
                 </FormItem>

@@ -12,6 +12,8 @@ export const RUN_ERROR_CODES = [
   'RUN_IDEMPOTENCY_CONFLICT',
   'RUN_ACCOUNT_MISMATCH',
   'RUN_ACCOUNT_DISABLED',
+  'RUN_NOT_REVIEWABLE',
+  'RUN_NOT_WAITING_FOR_AUTH',
 ] as const
 export type RunErrorCode = (typeof RUN_ERROR_CODES)[number]
 
@@ -33,17 +35,39 @@ export type CreateRunBody = z.infer<typeof createRunBodySchema>
 
 const instantOrNull = utcInstantSchema.nullable()
 
+export const runListLeaseSchema = z
+  .object({
+    holderWorkerId: z.string().min(1).max(128),
+  })
+  .nullable()
+
+export const runDetailLeaseSchema = z
+  .object({
+    holderWorkerId: z.string().min(1).max(128),
+    fencingToken: z.number().int().min(1),
+    expiresAt: utcInstantSchema,
+  })
+  .nullable()
+
 export const runSummarySchema = z.object({
   id: entityIdSchema,
   status: runStatusSchema,
   cancelRequested: z.boolean(),
   targetId: entityIdSchema,
+  /**
+   * 场景名与目标系统名取当前值，只用于人认得出这是哪一条，不参与执行解释——
+   * 步骤定义一律来自 Run 自己的 Snapshot。控制台上列一串 UUID 等于没有信息。
+   */
+  targetName: z.string().min(1).max(128),
   targetAccountId: entityIdSchema.nullable(),
+  targetAccountName: z.string().min(1).max(128).nullable(),
   scenarioId: entityIdSchema,
+  scenarioName: z.string().min(1).max(128),
   scenarioVersionId: entityIdSchema,
   createdAt: utcInstantSchema,
   startedAt: instantOrNull,
   finishedAt: instantOrNull,
+  lease: runListLeaseSchema,
 })
 export type RunSummaryDto = z.infer<typeof runSummarySchema>
 
@@ -71,11 +95,14 @@ export const stepRunDtoSchema = z.object({
 })
 export type StepRunDto = z.infer<typeof stepRunDtoSchema>
 
-export const runDetailSchema = runSummarySchema.extend({
-  snapshot: runSnapshotSchema,
-  context: z.record(z.string(), jsonValueSchema),
-  stepRuns: z.array(stepRunDtoSchema),
-})
+export const runDetailSchema = runSummarySchema
+  .omit({ lease: true })
+  .extend({
+    snapshot: runSnapshotSchema,
+    context: z.record(z.string(), jsonValueSchema),
+    stepRuns: z.array(stepRunDtoSchema),
+    lease: runDetailLeaseSchema,
+  })
 export type RunDetailDto = z.infer<typeof runDetailSchema>
 
 export const runListResponseSchema = z.object({

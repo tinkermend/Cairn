@@ -47,6 +47,28 @@ export const ATTEMPT_STATUSES = ['RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED'] 
 export type AttemptStatus = (typeof ATTEMPT_STATUSES)[number]
 export const attemptStatusSchema = z.enum(ATTEMPT_STATUSES)
 
+/**
+ * 领取 / Engine / 迟到 finishAttempt：不得再自动推进。
+ * NEEDS_REVIEW 在此集合内，但还不是最终结论。
+ */
+export const HALTED_RUN_STATUSES = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'NEEDS_REVIEW'] as const
+export type HaltedRunStatus = (typeof HALTED_RUN_STATUSES)[number]
+
+/** review / 取消幂等 / 控制台「还能不能操作」：已经有最终结论。 */
+export const FINISHED_RUN_STATUSES = ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const
+export type FinishedRunStatus = (typeof FINISHED_RUN_STATUSES)[number]
+
+const HALTED_RUN = new Set<string>(HALTED_RUN_STATUSES)
+const FINISHED_RUN = new Set<string>(FINISHED_RUN_STATUSES)
+
+export function isHaltedRunStatus(status: RunStatus): boolean {
+  return HALTED_RUN.has(status)
+}
+
+export function isFinishedRunStatus(status: RunStatus): boolean {
+  return FINISHED_RUN.has(status)
+}
+
 /** input / context 键不得踩到原型链上的保留名。`contextKeySchema` 挡不住 `constructor`。 */
 export const FORBIDDEN_CONTEXT_KEYS = [
   '__proto__',

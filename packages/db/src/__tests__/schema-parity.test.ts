@@ -1,5 +1,7 @@
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { dbEnvSchema } from '@cairn/shared'
@@ -49,6 +51,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'console_role_permissions',
       'console_roles',
       'evidences',
+      'run_leases',
       'runs',
       'scenario_versions',
       'scenarios',
@@ -58,6 +61,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'stored_objects',
       'target_accounts',
       'targets',
+      'workers',
     ])
   })
 
@@ -430,6 +434,52 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     )
   })
 
+  it('workers / run_leases 的列与部分唯一索引一致', async () => {
+    const { rows: workerCols } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'workers' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(workerCols).toEqual([
+      { column_name: 'capacity', is_nullable: 'NO' },
+      { column_name: 'heartbeat_at', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'instance_id', is_nullable: 'NO' },
+      { column_name: 'started_at', is_nullable: 'NO' },
+      { column_name: 'status', is_nullable: 'NO' },
+      { column_name: 'stopped_at', is_nullable: 'YES' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ])
+
+    const { rows: leaseCols } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'run_leases' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(leaseCols).toEqual([
+      { column_name: 'acquired_at', is_nullable: 'NO' },
+      { column_name: 'expires_at', is_nullable: 'NO' },
+      { column_name: 'fencing_token', is_nullable: 'NO' },
+      { column_name: 'heartbeat_at', is_nullable: 'NO' },
+      { column_name: 'holder_worker_id', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'release_reason', is_nullable: 'YES' },
+      { column_name: 'released_at', is_nullable: 'YES' },
+      { column_name: 'run_id', is_nullable: 'NO' },
+      { column_name: 'status', is_nullable: 'NO' },
+    ])
+
+    const { rows: indexes } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+       WHERE schemaname = $1 AND tablename IN ('run_leases', 'workers')
+       ORDER BY indexname`,
+      [TEST_SCHEMA],
+    )
+    expect(indexes.map((r) => r.indexname)).toEqual(
+      expect.arrayContaining(['run_leases_active_idx', 'run_leases_token_idx', 'run_leases_holder_idx', 'run_leases_reap_idx']),
+    )
+  })
+
   it('evidences.object_key 外键指向 stored_objects', async () => {
     const { rows } = await pool.query<{ referenced: string }>(
       `SELECT ccu.table_name AS referenced
@@ -451,6 +501,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'auth_hold_worker_id',
       'holder_worker_id',
     ])
+    const textIdExceptions = new Set(['workers.id'])
     const { rows } = await pool.query<{ table_name: string; column_name: string; data_type: string }>(
       `SELECT table_name, column_name, data_type FROM information_schema.columns
        WHERE table_schema = $1 AND table_name <> '_migrations'
@@ -460,11 +511,21 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     )
     expect(rows.length).toBeGreaterThan(0)
     expect(
-      rows.filter((r) => !workerIdColumns.has(r.column_name) && r.data_type !== 'uuid'),
+      rows.filter(
+        (r) =>
+          !workerIdColumns.has(r.column_name) &&
+          !textIdExceptions.has(`${r.table_name}.${r.column_name}`) &&
+          r.data_type !== 'uuid',
+      ),
     ).toEqual([])
-    expect(rows.filter((r) => workerIdColumns.has(r.column_name)).every((r) => r.data_type === 'text')).toBe(
-      true,
-    )
+    expect(
+      rows
+        .filter(
+          (r) =>
+            workerIdColumns.has(r.column_name) || textIdExceptions.has(`${r.table_name}.${r.column_name}`),
+        )
+        .every((r) => r.data_type === 'text'),
+    ).toBe(true)
   })
 
   it('外键列名以「被引用表名单数形 + _id」结尾', async () => {
@@ -506,6 +567,136 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       '0007_object_store.sql',
       '0008_browser_session.sql',
       '0009_session_dispose.sql',
+      '0010_admin_login_account.sql',
+      '0011_run_lease.sql',
     ])
+  })
+})
+
+/**
+ * 带存量数据的升级路径。
+ *
+ * 空库全量迁移证明不了升级成立：0011 给 session_leases 加的是校验型 CHECK，
+ * PostgreSQL 会扫全表，而 0008 时代写下的 ACTIVE 租约 run_fencing_token 一律是 NULL。
+ * 少了迁移里那条补数据语句，这一步就会报 23514 并回滚整份 0011，
+ * 任何跑过浏览器会话的库都再也升不上来。
+ */
+describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集成）', () => {
+  const SCHEMA = `${TEST_SCHEMA}_upgrade`
+  const MIGRATIONS_DIR = resolve(import.meta.dirname, '../../migrations')
+  let pool: Pool
+  let throughDir: string
+  let staleLeaseId: string
+  let runId: string
+  let sessionId: string
+
+  beforeAll(async () => {
+    const env = parsed.data!
+    pool = new Pool({
+      host: env.CAIRN_DB_HOST,
+      port: env.CAIRN_DB_PORT,
+      database: env.CAIRN_DB_NAME,
+      user: env.CAIRN_DB_USER,
+      password: env.CAIRN_DB_PASSWORD,
+    })
+
+    // 只装到 0010：migrate 要求序号连续，所以把前十份复制进临时目录
+    throughDir = mkdtempSync(join(tmpdir(), 'cairn-mig-0010-'))
+    for (const filename of readdirSync(MIGRATIONS_DIR).sort().slice(0, 10)) {
+      copyFileSync(resolve(MIGRATIONS_DIR, filename), resolve(throughDir, filename))
+    }
+    const through = await migrate(pool, SCHEMA, throughDir)
+    expect(through.applied).toHaveLength(10)
+    expect(through.applied.at(-1)).toBe('0010_admin_login_account.sql')
+
+    // 0008 形状的存量现场：Worker 被 kill 后没人回收的 ACTIVE 租约，run_fencing_token 为 NULL
+    const actorId = randomUUID()
+    const targetId = randomUUID()
+    const accountId = randomUUID()
+    const scenarioId = randomUUID()
+    const versionId = randomUUID()
+    runId = randomUUID()
+    sessionId = randomUUID()
+    staleLeaseId = randomUUID()
+
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".console_accounts (id, display_name, email, status)
+       VALUES ($1, '升级夹具', $2, 'active')`,
+      [actorId, `upgrade-${actorId}@example.com`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".targets (id, code, name, entry_url)
+       VALUES ($1, $2, '升级夹具', 'https://example.com')`,
+      [targetId, `upgrade-${targetId.slice(0, 8)}`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".target_accounts (id, target_id, display_name, username)
+       VALUES ($1, $2, '升级账号', $3)`,
+      [accountId, targetId, `u-${accountId.slice(0, 8)}`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".scenarios (id, target_id, name, created_by_console_account_id)
+       VALUES ($1, $2, '升级场景', $3)`,
+      [scenarioId, targetId, actorId],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".scenario_versions
+         (id, scenario_id, version_no, definition, created_by_console_account_id)
+       VALUES ($1, $2, 1, '{"steps":[]}'::jsonb, $3)`,
+      [versionId, scenarioId, actorId],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".runs
+         (id, target_id, scenario_id, scenario_version_id, created_by_console_account_id,
+          status, snapshot, snapshot_digest, context)
+       VALUES ($1, $2, $3, $4, $5, 'RUNNING', '{}'::jsonb, 'digest', '{}'::jsonb)`,
+      [runId, targetId, scenarioId, versionId, actorId],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".browser_sessions
+         (id, target_id, target_account_id, status, health, owner_worker_id, generation,
+          fencing_token, profile_key, reuse_policy, idle_ttl_seconds, max_lifetime_seconds, expires_at)
+       VALUES ($1, $2, $3, 'OPEN', 'HEALTHY', 'killed-worker', 1, 1, $4,
+               'REUSE_PAGE', 600, 3600, now() + interval '1 hour')`,
+      [sessionId, targetId, accountId, `p/${sessionId.slice(0, 8)}`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".session_leases
+         (id, session_id, session_generation, session_fencing_token, run_id, run_fencing_token,
+          holder_worker_id, status, expires_at)
+       VALUES ($1, $2, 1, 1, $3, NULL, 'killed-worker', 'ACTIVE', now() + interval '30 seconds')`,
+      [staleLeaseId, sessionId, runId],
+    )
+  })
+
+  afterAll(async () => {
+    await pool?.query(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`)
+    await pool?.end()
+    if (throughDir) rmSync(throughDir, { recursive: true, force: true })
+  })
+
+  it('0011 装得上，并把缺 run_fencing 的存量 ACTIVE 租约撤销', async () => {
+    const up = await migrate(pool, SCHEMA)
+    expect(up.applied).toEqual(['0011_run_lease.sql'])
+
+    const { rows } = await pool.query<{ status: string; release_reason: string; released_at: Date }>(
+      `SELECT status, release_reason, released_at FROM "${SCHEMA}".session_leases WHERE id = $1`,
+      [staleLeaseId],
+    )
+    expect(rows[0]?.status).toBe('REVOKED')
+    expect(rows[0]?.release_reason).toBe('pre_0011_missing_run_fencing')
+    expect(rows[0]?.released_at).not.toBeNull()
+  })
+
+  it('装完之后新的 ACTIVE 租约仍必须带 run_fencing', async () => {
+    await expect(
+      pool.query(
+        `INSERT INTO "${SCHEMA}".session_leases
+           (id, session_id, session_generation, session_fencing_token, run_id, run_fencing_token,
+            holder_worker_id, status, expires_at)
+         VALUES ($1, $2, 1, 2, $3, NULL, 'w', 'ACTIVE', now() + interval '30 seconds')`,
+        [randomUUID(), sessionId, runId],
+      ),
+    ).rejects.toThrow(/session_leases_run_fencing_active_check/)
   })
 })

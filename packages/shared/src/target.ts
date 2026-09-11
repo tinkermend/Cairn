@@ -42,6 +42,12 @@ export const targetCodeSchema = z
   .regex(/^[a-z][a-z0-9-]{1,62}$/, '编码须为小写字母开头的 slug（2–63 字符）')
 
 /**
+ * 已落库的编码。创建仍走 targetCodeSchema；出站不能再用同一条正则打回，
+ * 否则库里一条历史/夹具脏数据会让整个 GET /targets 变成 500。
+ */
+export const persistedTargetCodeSchema = z.string().min(1).max(256)
+
+/**
  * `URL` 是浏览器与 Node 共有的 Web 标准全局，契约包不带 DOM lib，
  * 因此显式声明形状。取不到时下面的 refine 会抛错并判为非法——失败方向是拒绝，不是放行。
  */
@@ -79,7 +85,7 @@ export const captchaModeSchema = z.enum(CAPTCHA_MODES)
 
 export const targetSchema = z.object({
   id: z.string().min(1),
-  code: targetCodeSchema,
+  code: persistedTargetCodeSchema,
   name: z.string().min(1),
   entryUrl: httpUrlSchema,
   loginUrl: z.string().nullable(),

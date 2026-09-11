@@ -25,7 +25,7 @@ export const PERMISSION_RESOURCES = [
 ] as const
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number]
 
-export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel'] as const
+export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review'] as const
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number]
 
 export const PERMISSIONS = [
@@ -41,6 +41,7 @@ export const PERMISSIONS = [
   'run:read',
   'run:execute',
   'run:cancel',
+  'run:review',
   'session:read',
   'session:dispose',
   'target:read',
@@ -85,6 +86,7 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'run:read': 'View runs',
   'run:execute': 'Start runs',
   'run:cancel': 'Cancel runs',
+  'run:review': 'Review halted runs',
   'session:read': 'View browser sessions',
   'session:dispose': 'Dispose stuck browser sessions',
   'target:read': 'View targets',
@@ -128,6 +130,7 @@ const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
   'run:read',
   'run:execute',
   'run:cancel',
+  'run:review',
   'session:read',
   'session:dispose',
   'target:read',
@@ -305,9 +308,12 @@ export const passwordSchema = z
   .min(8, '密码至少 8 个字符')
   .max(128, '密码最多 128 个字符')
 
+/** 控制台登录名。不是邮箱，不要求 `@`。 */
+export const accountLoginSchema = z.string().trim().min(1, '请输入账号').max(64)
+
 export const createAccountBodySchema = z.object({
   displayName: z.string().trim().min(1).max(64),
-  email: z.email(),
+  email: accountLoginSchema,
   password: passwordSchema,
   status: accountStatusSchema.optional(),
   roleIds: z.array(z.string().min(1)).optional(),
@@ -315,7 +321,7 @@ export const createAccountBodySchema = z.object({
 export type CreateAccountBody = z.infer<typeof createAccountBodySchema>
 
 export const loginBodySchema = z.object({
-  email: z.email(),
+  email: accountLoginSchema,
   password: z.string().min(1, '请输入密码'),
 })
 export type LoginBody = z.infer<typeof loginBodySchema>
@@ -365,6 +371,8 @@ export const AUDIT_ACTIONS = [
   'scenario.delete',
   'run.create',
   'run.cancel',
+  'run.review',
+  'run.resume_auth',
   'session.dispose',
 ] as const
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
@@ -395,7 +403,7 @@ export type AuditListResponse = z.infer<typeof auditListResponseSchema>
 export const updateAccountBodySchema = z
   .object({
     displayName: z.string().trim().min(1).max(64).optional(),
-    email: z.union([z.email(), z.null()]).optional(),
+    email: z.union([accountLoginSchema, z.null()]).optional(),
     status: accountStatusSchema.optional(),
   })
   .refine((body) => body.displayName !== undefined || body.email !== undefined || body.status !== undefined, {

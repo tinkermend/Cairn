@@ -6,6 +6,8 @@ import {
   ScenarioValidationError,
   assertRunFromResolved,
   evidenceMetadataSchema,
+  isFinishedRunStatus,
+  isHaltedRunStatus,
   resolveSessionPolicy,
   runDetailSchema,
   runEvidenceListResponseSchema,
@@ -17,6 +19,7 @@ import {
   type ExecutionPolicy,
   type JsonValue,
   type RunDetailDto,
+  type RunGrant,
   type RunListResponse,
   type RunSnapshot,
   type RunStatus,
@@ -24,16 +27,16 @@ import {
   type StepRunStatus,
 } from '@cairn/shared'
 import { recordAudit, type AuditActor } from '../audit/record.js'
+import { findActiveLeaseForRun, listActiveLeasesByRunIds, lockRunRow, releaseRunLeaseTx, verifyRunLeaseForWrite } from '../leases/leases.js'
 import { verifySessionLeaseForCommit } from '../sessions/sessions.js'
-import type { Db, DbHandle } from '../client.js'
+import type { Db } from '../client.js'
+import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.js'
 import { newId } from '../id.js'
-import { attempts, evidences, runs, stepRuns } from '../schema/execution.js'
+import { attempts, evidences, runs, scenarios, stepRuns } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
 import { computeIdempotencyDigest, computeSnapshotDigest } from './digest.js'
 import { badRequest, conflict, mapPgRestriction, notFound } from './errors.js'
 import { loadScenarioVersion } from './scenarios.js'
-
-const TERMINAL_RUN = new Set<RunStatus>(['SUCCEEDED', 'FAILED', 'CANCELLED', 'NEEDS_REVIEW'])
 
 function iso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null
@@ -57,19 +60,39 @@ export async function getRun(db: Db, runId: string): Promise<RunDetailDto> {
 }
 
 export async function listRuns(db: Db): Promise<RunListResponse> {
-  const rows = await db.select().from(runs).orderBy(desc(runs.createdAt), desc(runs.id))
+  // 带上场景名与目标系统名：两者都是 NOT NULL 外键，innerJoin 不会漏行。
+  const rows = await db
+    .select({
+      run: runs,
+      scenarioName: scenarios.name,
+      targetName: targets.name,
+      targetAccountName: targetAccounts.displayName,
+    })
+    .from(runs)
+    .innerJoin(scenarios, eq(scenarios.id, runs.scenarioId))
+    .innerJoin(targets, eq(targets.id, runs.targetId))
+    .leftJoin(targetAccounts, eq(targetAccounts.id, runs.targetAccountId))
+    .orderBy(desc(runs.createdAt), desc(runs.id))
+  const leases = await listActiveLeasesByRunIds(
+    db,
+    rows.map((row) => row.run.id),
+  )
   return runListResponseSchema.parse({
-    items: rows.map((row) => ({
+    items: rows.map(({ run: row, scenarioName, targetName, targetAccountName }) => ({
       id: row.id,
       status: row.status,
       cancelRequested: row.cancelRequestedAt !== null,
       targetId: row.targetId,
+      targetName,
       targetAccountId: row.targetAccountId,
+      targetAccountName,
       scenarioId: row.scenarioId,
+      scenarioName,
       scenarioVersionId: row.scenarioVersionId,
       createdAt: row.createdAt.toISOString(),
       startedAt: iso(row.startedAt),
       finishedAt: iso(row.finishedAt),
+      lease: leases.get(row.id) ? { holderWorkerId: leases.get(row.id)!.holderWorkerId } : null,
     })),
   })
 }
@@ -103,8 +126,21 @@ export async function listRunEvidence(db: Db, runId: string) {
 }
 
 export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto | null> {
-  const [row] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1)
-  if (!row) return null
+  const [joined] = await db
+    .select({
+      run: runs,
+      scenarioName: scenarios.name,
+      targetName: targets.name,
+      targetAccountName: targetAccounts.displayName,
+    })
+    .from(runs)
+    .innerJoin(scenarios, eq(scenarios.id, runs.scenarioId))
+    .innerJoin(targets, eq(targets.id, runs.targetId))
+    .leftJoin(targetAccounts, eq(targetAccounts.id, runs.targetAccountId))
+    .where(eq(runs.id, runId))
+    .limit(1)
+  if (!joined) return null
+  const row = joined.run
   const stepRows = await db.select().from(stepRuns).where(eq(stepRuns.runId, runId)).orderBy(asc(stepRuns.ordinal))
   const attemptRows =
     stepRows.length === 0
@@ -112,17 +148,28 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
       : await db.select().from(attempts).where(inArray(attempts.stepRunId, stepRows.map((step) => step.id)))
   const snapshot = row.snapshot
   const stepsById = new Map(snapshot.steps.map((step) => [step.id, step]))
+  const lease = await findActiveLeaseForRun(db, runId)
   return runDetailSchema.parse({
     id: row.id,
     status: row.status,
     cancelRequested: row.cancelRequestedAt !== null,
     targetId: row.targetId,
+    targetName: joined.targetName,
     targetAccountId: row.targetAccountId,
+    targetAccountName: joined.targetAccountName,
     scenarioId: row.scenarioId,
+    scenarioName: joined.scenarioName,
     scenarioVersionId: row.scenarioVersionId,
     createdAt: row.createdAt.toISOString(),
     startedAt: iso(row.startedAt),
     finishedAt: iso(row.finishedAt),
+    lease: lease
+      ? {
+          holderWorkerId: lease.holderWorkerId,
+          fencingToken: lease.fencingToken,
+          expiresAt: lease.expiresAt,
+        }
+      : null,
     snapshot,
     context: row.context,
     stepRuns: stepRows.map((step) => {
@@ -295,55 +342,42 @@ async function findIdempotent(db: Db, actorId: string, key: string) {
 }
 
 export async function requestRunCancel(db: Db, runId: string, actor: AuditActor): Promise<RunDetailDto> {
-  const [current] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1)
-  if (!current) throw notFound('RUN_NOT_FOUND', '运行不存在')
-  if (TERMINAL_RUN.has(current.status)) return getRun(db, runId)
-
   const now = new Date()
   await db.transaction(async (tx) => {
+    const current = await lockRunRow(tx as unknown as Db, runId)
+    if (!current) throw notFound('RUN_NOT_FOUND', '运行不存在')
+    if (isFinishedRunStatus(current.status) || current.status === 'NEEDS_REVIEW') return
+
+    const leaseless =
+      current.status === 'QUEUED' ||
+      current.status === 'RECOVERING' ||
+      current.status === 'WAITING_FOR_AUTH'
     await tx
       .update(runs)
       .set({
         cancelRequestedAt: current.cancelRequestedAt ?? now,
         updatedAt: now,
-        ...(current.status === 'QUEUED' ? { status: 'CANCELLED' as const, finishedAt: now } : {}),
+        ...(leaseless ? { status: 'CANCELLED' as const, finishedAt: now } : {}),
       })
       .where(eq(runs.id, runId))
-    if (current.status === 'QUEUED') {
-      await tx
-        .update(stepRuns)
-        .set({ status: 'CANCELLED', finishedAt: now })
-        .where(and(eq(stepRuns.runId, runId), eq(stepRuns.status, 'PENDING')))
+    if (leaseless) {
+      await cancelPendingStepRunsTx(tx as unknown as Db, runId, now)
     }
     await recordAudit(tx as unknown as Db, actor, 'run.cancel', 'run', runId, '取消运行')
   })
   return getRun(db, runId)
 }
 
-export async function claimQueuedRun(handle: DbHandle): Promise<{ id: string } | null> {
-  const result = await handle.pool.query<{ id: string }>(
-    `UPDATE runs
-     SET status = 'RUNNING', started_at = now(), updated_at = now()
-     WHERE id = (
-       SELECT id FROM runs
-       WHERE status = 'QUEUED' AND cancel_requested_at IS NULL
-       ORDER BY created_at, id
-       LIMIT 1
-       FOR UPDATE SKIP LOCKED
-     )
-     RETURNING id`,
-  )
-  const id = result.rows[0]?.id
-  return id ? { id } : null
-}
-
 export async function startAttempt(
   db: Db,
-  input: { runId: string; stepRunId: string; inputPayload: JsonValue },
+  input: { runId: string; stepRunId: string; inputPayload: JsonValue; grant: RunGrant },
 ): Promise<{ attemptId: string; attemptNo: number } | null> {
   return db.transaction(async (tx) => {
-    const [run] = await tx.select().from(runs).where(eq(runs.id, input.runId)).limit(1)
+    const run = await lockRunRow(tx as unknown as Db, input.runId)
     if (!run || run.status !== 'RUNNING') return null
+    if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return null
+    const [full] = await tx.select().from(runs).where(eq(runs.id, input.runId)).limit(1)
+    if (!full) return null
     const [step] = await tx.select().from(stepRuns).where(eq(stepRuns.id, input.stepRunId)).limit(1)
     if (!step || (step.status !== 'PENDING' && step.status !== 'RUNNING')) return null
 
@@ -400,8 +434,17 @@ export type FinishAttemptInput = {
    * 丢租时 SIDE_EFFECT → NEEDS_REVIEW，其余 → FAILED，不写成功结果。
    */
   sessionLease?: SessionGrant & { holderWorkerId: string; effectType?: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT' }
+  grant: RunGrant
   /** 仅测试：Evidence 写完后抛错，验证整单回滚 */
   injectFailure?: Error
+  /**
+   * 仅测试：Run 行已锁、租约已验、尚未写入任何事实时暂停。
+   *
+   * 这是 D5 的 TOCTOU 窗口。没有 `lockRunRow` 的话，回收与接管会正好挤进这里：
+   * 谓词读到的「租约仍有效」在 COMMIT 前就已经过时，旧 owner 照样提交 SUCCEEDED。
+   * 屏障必须留在生产代码里，否则这条不变量只能靠人看，没有任何检查卡得住。
+   */
+  barrierAfterVerify?: () => Promise<void>
 }
 
 /**
@@ -416,8 +459,12 @@ export async function finishAttempt(db: Db, input: FinishAttemptInput): Promise<
 
 export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promise<FinishAttemptResult> {
   const now = new Date()
+  const locked = await lockRunRow(tx, input.runId)
+  if (!locked || isHaltedRunStatus(locked.status)) return { updated: false, cancelled: false }
+  if (!(await verifyRunLeaseForWrite(tx, input.grant))) return { updated: false, cancelled: false }
+  if (input.barrierAfterVerify) await input.barrierAfterVerify()
   const [run] = await tx.select().from(runs).where(eq(runs.id, input.runId)).limit(1)
-  if (!run || TERMINAL_RUN.has(run.status)) return { updated: false, cancelled: false }
+  if (!run) return { updated: false, cancelled: false }
 
   const [attempt] = await tx.select().from(attempts).where(eq(attempts.id, input.attemptId)).limit(1)
   if (!attempt || attempt.status !== 'RUNNING') return { updated: false, cancelled: false }
@@ -523,9 +570,19 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
       .set({
         status: finalRunStatus,
         updatedAt: now,
-        ...(TERMINAL_RUN.has(finalRunStatus) ? { finishedAt: now } : {}),
+        // finished_at 表示「已有最终结论」，按 FINISHED 而不是 HALTED 判定：
+        // NEEDS_REVIEW 只是停下来等人，结论要等 reviewRun 才写，否则耗时统计会把待核查
+        // 算成已完成，同一条 Run 还会先后写两个不同的完成时间。
+        ...(isFinishedRunStatus(finalRunStatus) ? { finishedAt: now } : {}),
       })
       .where(eq(runs.id, input.runId))
+    if (isHaltedRunStatus(finalRunStatus) || finalRunStatus === 'WAITING_FOR_AUTH') {
+      await releaseRunLeaseTx(
+        tx,
+        input.grant,
+        finalRunStatus === 'WAITING_FOR_AUTH' ? 'waiting_for_auth' : 'run_halted',
+      )
+    }
   }
 
   if (input.injectFailure) throw input.injectFailure
@@ -540,22 +597,29 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
  * 只要还有非 SUCCEEDED 的 step_run（含 PENDING / RUNNING / FAILED / SKIPPED / CANCELLED）
  * 或有取消请求就 0 行，不会把没跑完的 Run 判成成功。
  */
-export async function finishRunIfDrained(db: Db, runId: string): Promise<{ finished: boolean }> {
+export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ finished: boolean }> {
   const now = new Date()
-  const drained = await db
-    .update(runs)
-    .set({ status: 'SUCCEEDED', finishedAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(runs.id, runId),
-        eq(runs.status, 'RUNNING'),
-        isNull(runs.cancelRequestedAt),
-        sql`EXISTS (SELECT 1 FROM ${stepRuns} WHERE run_id = ${runId} AND status = 'SUCCEEDED')`,
-        sql`NOT EXISTS (SELECT 1 FROM ${stepRuns} WHERE run_id = ${runId} AND status <> 'SUCCEEDED')`,
-      ),
-    )
-    .returning({ id: runs.id })
-  return { finished: drained.length > 0 }
+  return db.transaction(async (tx) => {
+    const locked = await lockRunRow(tx as unknown as Db, grant.runId)
+    if (!locked || locked.status !== 'RUNNING') return { finished: false }
+    if (!(await verifyRunLeaseForWrite(tx as unknown as Db, grant))) return { finished: false }
+    const drained = await tx
+      .update(runs)
+      .set({ status: 'SUCCEEDED', finishedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(runs.id, grant.runId),
+          eq(runs.status, 'RUNNING'),
+          isNull(runs.cancelRequestedAt),
+          sql`EXISTS (SELECT 1 FROM ${stepRuns} WHERE run_id = ${grant.runId} AND status = 'SUCCEEDED')`,
+          sql`NOT EXISTS (SELECT 1 FROM ${stepRuns} WHERE run_id = ${grant.runId} AND status <> 'SUCCEEDED')`,
+        ),
+      )
+      .returning({ id: runs.id })
+    if (drained.length === 0) return { finished: false }
+    await releaseRunLeaseTx(tx as unknown as Db, grant, 'run_halted')
+    return { finished: true }
+  })
 }
 
 export async function skipRemainingStepRuns(db: Db, runId: string): Promise<void> {
@@ -566,67 +630,82 @@ export async function cancelPendingStepRuns(db: Db, runId: string): Promise<void
   await cancelPendingStepRunsTx(db, runId, new Date())
 }
 
-async function skipRemainingStepRunsTx(tx: Db, runId: string, now: Date): Promise<void> {
-  await tx
-    .update(stepRuns)
-    .set({ status: 'SKIPPED', finishedAt: now })
-    .where(and(eq(stepRuns.runId, runId), eq(stepRuns.status, 'PENDING')))
+export type RunWriteAuthority = { grant: RunGrant } | { recover: true }
+
+async function assertWriteAuthority(tx: Db, runId: string, authority: RunWriteAuthority): Promise<boolean> {
+  const locked = await lockRunRow(tx, runId)
+  if (!locked) return false
+  if ('grant' in authority) return verifyRunLeaseForWrite(tx, authority.grant)
+  const active = await findActiveLeaseForRun(tx, runId)
+  return active === null
 }
 
-async function cancelPendingStepRunsTx(tx: Db, runId: string, now: Date): Promise<void> {
-  await tx
-    .update(stepRuns)
-    .set({ status: 'CANCELLED', finishedAt: now })
-    .where(and(eq(stepRuns.runId, runId), eq(stepRuns.status, 'PENDING')))
-}
-
-export async function markRunCancelled(db: Db, runId: string): Promise<void> {
+export async function markRunCancelled(db: Db, runId: string, authority: RunWriteAuthority): Promise<void> {
   const now = new Date()
   await db.transaction(async (tx) => {
+    if (!(await assertWriteAuthority(tx as unknown as Db, runId, authority))) return
     const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1)
-    if (!run || TERMINAL_RUN.has(run.status)) return
+    if (!run || isHaltedRunStatus(run.status)) return
     await tx
       .update(runs)
       .set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
       .where(eq(runs.id, runId))
     await cancelPendingStepRunsTx(tx as unknown as Db, runId, now)
+    if ('grant' in authority) {
+      await releaseRunLeaseTx(tx as unknown as Db, authority.grant, 'run_halted')
+    }
   })
 }
 
-export async function failRunValidation(db: Db, runId: string): Promise<void> {
+export async function failRunValidation(db: Db, runId: string, authority: RunWriteAuthority): Promise<void> {
   const now = new Date()
   await db.transaction(async (tx) => {
+    if (!(await assertWriteAuthority(tx as unknown as Db, runId, authority))) return
     const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1)
-    if (!run || TERMINAL_RUN.has(run.status)) return
+    if (!run || isHaltedRunStatus(run.status)) return
     await tx
       .update(runs)
       .set({ status: 'FAILED', finishedAt: now, updatedAt: now })
       .where(eq(runs.id, runId))
     await skipRemainingStepRunsTx(tx as unknown as Db, runId, now)
+    if ('grant' in authority) {
+      await releaseRunLeaseTx(tx as unknown as Db, authority.grant, 'run_halted')
+    }
   })
 }
 
 /**
- * 需要人工认证：Run → WAITING_FOR_AUTH（非终态，P3 恢复扫描后再领取）。
+ * 需要人工认证：Run → WAITING_FOR_AUTH，同一事务释放 RunLease。
  * 仅从 RUNNING 迁入。
  */
-export async function markRunWaitingForAuth(db: Db, runId: string): Promise<boolean> {
+export async function markRunWaitingForAuth(db: Db, grant: RunGrant): Promise<boolean> {
   const now = new Date()
-  const [row] = await db
-    .update(runs)
-    .set({ status: 'WAITING_FOR_AUTH', updatedAt: now })
-    .where(and(eq(runs.id, runId), eq(runs.status, 'RUNNING')))
-    .returning({ id: runs.id })
-  return row !== undefined
+  return db.transaction(async (tx) => {
+    const locked = await lockRunRow(tx as unknown as Db, grant.runId)
+    if (!locked || locked.status !== 'RUNNING') return false
+    if (!(await verifyRunLeaseForWrite(tx as unknown as Db, grant))) return false
+    const [row] = await tx
+      .update(runs)
+      .set({ status: 'WAITING_FOR_AUTH', updatedAt: now })
+      .where(and(eq(runs.id, grant.runId), eq(runs.status, 'RUNNING')))
+      .returning({ id: runs.id })
+    if (!row) return false
+    await releaseRunLeaseTx(tx as unknown as Db, grant, 'waiting_for_auth')
+    return true
+  })
 }
 
 /**
  * 认证等待超时：Run → FAILED，挂 SESSION_AUTH_TIMEOUT 错误证据，跳过剩余步骤。
- * 仅从 WAITING_FOR_AUTH 迁入。
+ * recover 权威：行锁后确认无 ACTIVE 租约。
  */
 export async function failRunAuthTimeout(db: Db, runId: string): Promise<boolean> {
   const now = new Date()
   return db.transaction(async (tx) => {
+    const locked = await lockRunRow(tx as unknown as Db, runId)
+    if (!locked || locked.status !== 'WAITING_FOR_AUTH') return false
+    const active = await findActiveLeaseForRun(tx as unknown as Db, runId)
+    if (active) return false
     const [run] = await tx
       .update(runs)
       .set({ status: 'FAILED', finishedAt: now, updatedAt: now })
