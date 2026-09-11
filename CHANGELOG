@@ -1,3 +1,4 @@
+2026-09-12--写下 P6 其余部分的方案（Evidence / Trace / 授权下载）：evidenceStatus 与执行结论分两根轴、证据债务先登记后上传接上零调用方的重投入口、崩溃只补账不重新截图、API 第一次依赖对象存储需显式改依赖边表、Trace 按 Attempt 分 chunk 失败保留、脱敏靠 Step 声明与 Secret 值级替换而不猜字段名；D7 记下一处对路线图的收窄（截图默认仍是失败一张）
 2026-09-12--收口两处红：FramePath 解析补上与候选定位同一套等待窗口（整条路径共用一个截止时间；iframe 已 attach 但 url 还是空串时不再判 SURFACE_LOST，L2 嵌套 iframe 40 次连跑不再偶发），容量腾位用例的假句柄补齐 waitFor / waitForFunction（漏方法不是类型错误，会被登录路径 catch 成 SESSION_AUTH_UNSUPPORTED）
 2026-09-12--Browser Surface 复查修补：联调夹具入库、定位诊断与失败截图缺失原因写入证据、FrameStep.selector 真正匹配 iframe
 2026-09-12--接入 SNC DPM 为 L3 只读目标系统（docs/targets，宪法只建索引），控制台编码 snc-dpm；Engine×真浏览器垂直切片进 CI 硬门槛；点击可开 popup 但后续步骤仍留原页；L3 已跑通自动登录+提取「数据库」与 WAITING_FOR_AUTH
