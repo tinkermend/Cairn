@@ -1,0 +1,8 @@
+body { font-family: sans-serif; margin: 24px; background: #f5f7fa; color: #1a2332; }
+main { background: #fff; padding: 20px; border-radius: 8px; max-width: 720px; }
+button, input { font: inherit; }
+iframe { border: 1px solid #d5dbe3; background: #fff; }
+table { border-collapse: collapse; width: 100%; }
+td, th { border: 1px solid #d5dbe3; padding: 8px; }
+.icon { width: 16px; height: 16px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.ok { color: #0f7b3a; }

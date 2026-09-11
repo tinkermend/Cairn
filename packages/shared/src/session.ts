@@ -32,6 +32,8 @@ export const sessionReusePolicySchema = z.enum(SESSION_REUSE_POLICIES)
 export const SESSION_ERROR_CODES = [
   'SESSION_ACCOUNT_REQUIRED',
   'SESSION_NOT_CLAIMABLE',
+  'SESSION_TARGET_MISSING',
+  'SESSION_POLICY_INVALID',
   'SESSION_BUSY',
   'SESSION_CAPACITY_EXCEEDED',
   'SESSION_LEASE_LOST',
@@ -44,6 +46,33 @@ export const SESSION_ERROR_CODES = [
 ] as const
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number]
 export const sessionErrorCodeSchema = z.enum(SESSION_ERROR_CODES)
+
+/** 占不到会话：回交，不把 Run 标失败。 */
+export const PLACEMENT_YIELD_CODES = [
+  'SESSION_BUSY',
+  'SESSION_CAPACITY_EXCEEDED',
+  'SESSION_NOT_CLAIMABLE',
+  'PROFILE_LOCKED',
+  'BROWSER_UNAVAILABLE',
+  'BROWSER_LAUNCH_FAILED',
+] as const
+export type PlacementYieldCode = (typeof PLACEMENT_YIELD_CODES)[number]
+
+/** 永久性配置错误：真正失败，不回交。 */
+export const SESSION_CONFIG_ERROR_CODES = [
+  'SESSION_ACCOUNT_REQUIRED',
+  'SESSION_TARGET_MISSING',
+  'SESSION_POLICY_INVALID',
+] as const
+export type SessionConfigErrorCode = (typeof SESSION_CONFIG_ERROR_CODES)[number]
+
+export function isPlacementYieldCode(code: string): code is PlacementYieldCode {
+  return (PLACEMENT_YIELD_CODES as readonly string[]).includes(code)
+}
+
+export function isSessionConfigErrorCode(code: string): code is SessionConfigErrorCode {
+  return (SESSION_CONFIG_ERROR_CODES as readonly string[]).includes(code)
+}
 
 /**
  * 平台默认会话策略数值。

@@ -15,7 +15,13 @@ import { Can } from '@/components/rbac/can'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { RUN_STATUS_LABELS, STEP_RUN_STATUS_LABELS, runStatusTone, stepRunStatusTone } from './labels'
+import {
+  PLACEMENT_COPY,
+  RUN_STATUS_LABELS,
+  STEP_RUN_STATUS_LABELS,
+  runStatusTone,
+  stepRunStatusTone,
+} from './labels'
 
 export function RunDetailPage() {
   const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
@@ -105,6 +111,22 @@ export function RunDetailPage() {
               ) : (
                 <p className='mt-2 text-label text-muted-foreground'>当前没有执行租约</p>
               )}
+              {run.placement.state === 'session_lost' ||
+              run.placement.state === 'owner_required' ||
+              run.placement.state === 'owner_at_capacity' ||
+              run.placement.state === 'session_not_ready' ? (
+                <p
+                  className={
+                    run.placement.state === 'session_lost'
+                      ? 'mt-2 text-body text-status-warning-foreground'
+                      : 'mt-2 text-body text-muted-foreground'
+                  }
+                >
+                  {PLACEMENT_COPY[run.placement.state]}
+                  {run.placement.sessionId ? ` 会话 ${run.placement.sessionId}` : ''}
+                  {run.placement.ownerWorkerId ? ` · Worker ${run.placement.ownerWorkerId}` : ''}
+                </p>
+              ) : null}
               {run.status === 'NEEDS_REVIEW' ? (
                 <Can permission='run:review'>
                   <div className='mt-4 space-y-3'>

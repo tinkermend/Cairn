@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isExecutableStepType, stepSchema } from '../step.js'
+import { isBrowserStepType, isExecutableStepType, stepSchema } from '../step.js'
 
 const echoId = '00000000-0000-4000-8000-000000000011'
 const delayId = '00000000-0000-4000-8000-000000000012'
@@ -73,8 +73,8 @@ describe('stepSchema', () => {
     ).toThrow()
   })
 
-  it('拒绝未注册的 Step Type', () => {
-    expect(() =>
+  it('接受 navigate / click，拒绝未注册类型', () => {
+    expect(
       stepSchema.parse({
         id: echoId,
         name: '打开首页',
@@ -82,9 +82,63 @@ describe('stepSchema', () => {
         effectType: 'IDEMPOTENT',
         input: { url: 'https://example.com' },
       }),
+    ).toMatchObject({ type: 'navigate' })
+    expect(isExecutableStepType('navigate')).toBe(true)
+    expect(isBrowserStepType('click')).toBe(true)
+    expect(isBrowserStepType('echo')).toBe(false)
+    expect(() =>
+      stepSchema.parse({
+        id: echoId,
+        name: 'AI 操作',
+        type: 'ai_action',
+        effectType: 'SIDE_EFFECT',
+        input: {},
+      }),
     ).toThrow()
-    expect(isExecutableStepType('navigate')).toBe(false)
-    expect(isExecutableStepType('fail')).toBe(true)
+  })
+
+  it('css 候选只能放在最后；FrameStep 不许只有下标字段', () => {
+    expect(() =>
+      stepSchema.parse({
+        id: echoId,
+        name: '点',
+        type: 'click',
+        effectType: 'SIDE_EFFECT',
+        input: {
+          target: {
+            candidates: [
+              { by: 'css', value: '#a' },
+              { by: 'text', value: '确定' },
+            ],
+          },
+        },
+      }),
+    ).toThrow()
+    expect(() =>
+      stepSchema.parse({
+        id: echoId,
+        name: '点',
+        type: 'click',
+        effectType: 'SIDE_EFFECT',
+        input: {
+          target: {
+            framePath: [{ index: 0 }],
+            candidates: [{ by: 'text', value: '确定' }],
+          },
+        },
+      }),
+    ).toThrow()
+  })
+
+  it('不给浏览器步骤默认 effectType', () => {
+    expect(() =>
+      stepSchema.parse({
+        id: echoId,
+        name: '打开',
+        type: 'navigate',
+        input: { url: '/' },
+      }),
+    ).toThrow()
   })
 
   it('effectType 必填，不从 type 名推断', () => {

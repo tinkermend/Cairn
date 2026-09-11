@@ -1,0 +1,11 @@
+{
+  "name": "target-surface-lab",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "识途 Browser Surface 受控站点：iframe / popup / 小图标 / Shadow / Canvas，非正式 Runtime。",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  }
+}

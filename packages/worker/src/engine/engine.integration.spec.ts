@@ -187,7 +187,7 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     expect(detail.snapshot.sessionPolicy).toEqual(DEFAULT_SESSION_POLICY)
     const sessions = await handle.db.select({ id: browserSessions.id }).from(browserSessions)
     expect(sessions).toEqual([])
-    // Engine 本期不调用 BrowserPort；无 playwright import 由 boundary 卡住
+    // 按需开会话：纯 Echo 不 acquire。无 playwright import 由 boundary 卡住
   })
 
   it('参数化 from 用 input 执行', async () => {

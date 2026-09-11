@@ -1,0 +1,19 @@
+{
+  "code": "snc-dpm",
+  "name": "智慧运维管理平台",
+  "entryUrl": "",
+  "loginUrl": "",
+  "authMethod": "password",
+  "captchaMode": "none",
+  "status": "active",
+  "loginFields": {
+    "username": { "by": "css", "value": "input.input-account[type=text]" },
+    "password": { "by": "css", "value": "input.input-account[type=password]" },
+    "submit": { "by": "css", "value": "button.el-button--primary[type=submit]" }
+  },
+  "account": {
+    "displayName": "DPM 演示账号",
+    "username": "",
+    "status": "active"
+  }
+}

@@ -50,6 +50,12 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     startedAt: '2026-09-11T02:00:01.000Z',
     finishedAt: null,
     lease: null,
+    placement: {
+      state: 'not_applicable',
+      sessionId: null,
+      ownerWorkerId: null,
+      sessionStatus: null,
+    },
     snapshot: {
       schemaVersion: 1,
       runId: RUN_ID,
@@ -203,6 +209,41 @@ describe('RunDetailPage', () => {
     expect(screen.getByRole('button', { name: '确认目标系统已登录' }).elements()).toHaveLength(0)
     // 刷新是只读操作，任何人都能点
     await expect.element(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
+  })
+
+  it('失联会话：橙色说明须处置；等待 owner：灰色说明', async () => {
+    mocks.fetchRun.mockResolvedValue(
+      runDetail({
+        status: 'QUEUED',
+        stepRuns: [],
+        placement: {
+          state: 'session_lost',
+          sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          ownerWorkerId: 'worker-a',
+          sessionStatus: 'LOST',
+        },
+      }),
+    )
+    signIn(['run:read'])
+    const lost = await renderPage()
+    await expect.element(lost.getByText(/会话失联，处置并确认旧浏览器停止后才会继续/)).toBeInTheDocument()
+    expect(lost.getByText(/会话失联/).element().className).toContain('text-status-warning-foreground')
+
+    mocks.fetchRun.mockResolvedValue(
+      runDetail({
+        status: 'QUEUED',
+        stepRuns: [],
+        placement: {
+          state: 'owner_required',
+          sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          ownerWorkerId: 'worker-a',
+          sessionStatus: 'OPEN',
+        },
+      }),
+    )
+    const waiting = await renderPage()
+    await expect.element(waiting.getByText(/等待持有该账号会话的 Worker 领取/)).toBeInTheDocument()
+    expect(waiting.getByText(/等待持有该账号会话/).element().className).toContain('text-muted-foreground')
   })
 
   it('点刷新重新拉取运行与证据', async () => {

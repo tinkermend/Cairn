@@ -166,8 +166,6 @@ Worker 必须持续持久化关键状态。WebSocket、SSE、PG NOTIFY、API 内
 
 平台 API 对外只允许 **GET** 与 **POST**。GET 用于查询与其他无副作用读取；POST 用于创建、更新、删除及一切有副作用的操作。PUT、PATCH、DELETE 及其他方法不得作为正式业务接口。CORS 预检等基础设施方法不属于业务接口。
 
-平台 API 对外只允许 **GET** 与 **POST**。GET 用于查询与其他无副作用读取；POST 用于创建、更新、删除及一切有副作用的操作。PUT、PATCH、DELETE 及其他方法不得作为正式业务接口。CORS 预检等基础设施方法不属于业务接口。
-
 **Worker** 是执行面：负责领取 Run、Execution Engine、Executor、Browser Runtime、Session/Lease、Evidence 生产和状态持久化。Worker 不通过调用 API 写回执行事实。
 
 Worker 与 API 通过持久化数据和通知机制协作，不通过双向业务回调耦合。
@@ -307,6 +305,7 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 
 - 在进行大的功能模块开发之前先写方案文档放在 docs/spec 目录下, 用户审查通过后再进行开发, 方案文档可以作为 PR 的基础, 也可以作为后续开发的参考,同时在 docs/spec README.md 中记录方案文档的目录和链接, 方便用户查阅。
 - 每次按方案开发完成 写关键信息到 CHANGELOG 日志中格式为: 日期--一句话总结说明
+- 联调 / L3 用的外部目标系统清单见 [`docs/targets/`](docs/targets/README.md)。具体 URL、账号、口令不是宪法不变量，只写在那份清单里，并在控制台登记为 Target / TargetAccount。
 
 ## 23. 架构文档
 

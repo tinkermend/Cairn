@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   commitStoredObject,
   consoleAccounts,
-  createSession,
+  requireCreatedSession,
   getSessionById,
   newId,
   openIsolatedDb,
@@ -216,6 +216,38 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
     }
   })
 
+  it('GET run detail.placement 与活会话派生一致', async () => {
+    const target = await createTarget(slug('place'))
+    const account = await targets.createAccount(
+      target.id,
+      { displayName: '放置账号', username: `place-${newId().slice(0, 8)}`, status: 'active' },
+      actor,
+    )
+    const scenario = await scenarios.create({ targetId: target.id, name: '放置', steps: [echoStep] }, actor)
+    const created = await runs.create({ scenarioId: scenario.id, targetAccountId: account.id }, actor)
+    expect(created.detail.placement.state).toBe('claimable')
+
+    const session = await requireCreatedSession(handle.db, {
+      key: { targetId: target.id, targetAccountId: account.id },
+      ownerWorkerId: 'api-worker',
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+    })
+    const detail = await runs.get(created.detail.id)
+    expect(detail.placement).toMatchObject({
+      state: 'owner_required',
+      sessionId: session.id,
+      ownerWorkerId: 'api-worker',
+      sessionStatus: 'OPEN',
+    })
+  })
+
   it('处置卡死会话：LOST 放行、活会话被拒、键可再用', async () => {
     const target = await createTarget(slug('sess'))
     const account = await targets.createAccount(
@@ -225,7 +257,7 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
     )
     const sessions = new BrowserSessionsService(handle)
 
-    const created = await createSession(handle.db, {
+    const created = await requireCreatedSession(handle.db, {
       key: { targetId: target.id, targetAccountId: account.id },
       ownerWorkerId: 'api-worker',
       reusePolicy: 'NEW_PAGE',
@@ -256,7 +288,7 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
     expect((await sessions.list()).items.some((s) => s.id === opened.id)).toBe(false)
 
     // 键已释放：同键可再建
-    const rebuilt = await createSession(handle.db, {
+    const rebuilt = await requireCreatedSession(handle.db, {
       key: { targetId: target.id, targetAccountId: account.id },
       ownerWorkerId: 'api-worker',
       reusePolicy: 'NEW_PAGE',

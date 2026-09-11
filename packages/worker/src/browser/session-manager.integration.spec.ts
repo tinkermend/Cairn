@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { Step } from '@cairn/shared'
 import {
   acquireSessionLease,
@@ -10,7 +10,9 @@ import {
   claimRun,
   createRunWithSnapshot,
   createScenarioWithVersion,
-  createSession,
+  requireCreatedSession,
+  failRunValidation,
+  findLiveSession,
   forceLeaseExpiresAt,
   getLeaseById,
   getRun,
@@ -28,6 +30,8 @@ import {
 } from '@cairn/db'
 import { DEFAULT_SESSION_POLICY, DEV_CREDENTIAL_KEY, type RunGrant, type RunSnapshot } from '@cairn/shared'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
+import { BrowserRuntimeError, type BrowserHandle } from './runtime'
+import { clearPlacementYields, placementYieldExcludes, yieldPlacement } from '../runtime/placement-backoff'
 import { BrowserSessionManager, SessionLeaseError } from './session-manager'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_bsm`
@@ -40,6 +44,38 @@ const echoStep: Step = {
   type: 'echo',
   effectType: 'READ_ONLY',
   input: { value: 'x' },
+}
+
+/*
+ * 假句柄要覆盖 `loginWithCredentials` 与 `probeAuth` 真正调到的每个方法。
+ * 漏一个不会是类型错误（这里整体 as unknown 转型），而是运行期 TypeError 被登录路径
+ * catch 成 false，最后表现为一个与容量腾位毫无关系的 SESSION_AUTH_UNSUPPORTED。
+ */
+function stubBrowserHandle(profileDir: string): BrowserHandle {
+  const locator = () => ({
+    fill: async () => undefined,
+    click: async () => undefined,
+    count: async () => 0,
+    first: () => ({ isVisible: async () => false }),
+    waitFor: async () => undefined,
+  })
+  return {
+    profileDir,
+    context: {
+      close: async () => undefined,
+      browser: () => null,
+      pages: () => [],
+      newPage: async () => ({ close: async () => undefined }),
+    },
+    basePage: {
+      evaluate: async () => true,
+      goto: async () => undefined,
+      url: () => 'http://127.0.0.1/',
+      waitForLoadState: async () => undefined,
+      waitForFunction: async () => undefined,
+      locator,
+    },
+  } as unknown as BrowserHandle
 }
 
 describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
@@ -159,10 +195,14 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     await registerWorker(handle.db, {
       workerId: WORKER,
       instanceId: WORKER_INSTANCE,
-      capacity: 8,
+      capacity: 32,
       lostAfterSeconds: 60,
     })
     await manager.reconcileOwn()
+  })
+
+  afterEach(() => {
+    clearPlacementYields()
   })
 
   afterAll(async () => {
@@ -314,7 +354,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
 
   it('重启自愈清掉名下 OPEN 会话', async () => {
     const account = await makeAccount('password', 'restart')
-    const session = await createSession(handle.db, {
+    const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: account },
       ownerWorkerId: WORKER,
       reusePolicy: 'NEW_PAGE',
@@ -356,7 +396,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
 
   it('认证超时 reap：WAITING_FOR_AUTH → FAILED，会话仍 OPEN', async () => {
     const account = await makeAccount('manual', 'auth-timeout')
-    const session = await createSession(handle.db, {
+    const session = await requireCreatedSession(handle.db, {
       key: { targetId: manualTargetId, targetAccountId: account },
       ownerWorkerId: WORKER,
       reusePolicy: 'NEW_PAGE',
@@ -399,5 +439,337 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       closeReason: 'cleanup',
       ownerWorkerId: WORKER,
     })
+  })
+
+  it('目标缺失 → SESSION_TARGET_MISSING，不建会话', async () => {
+    const account = await makeAccount('password', 'missing-target')
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: account })
+    const result = await manager.acquire({ ...snapshot, targetId: newId() }, grant)
+    expect(result).toMatchObject({ ok: false, code: 'SESSION_TARGET_MISSING' })
+    const { rows } = await handle.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM browser_sessions WHERE target_account_id = $1`,
+      [account],
+    )
+    expect(rows[0]?.n).toBe('0')
+    await failRunValidation(handle.db, snapshot.runId, { grant })
+    expect((await getRun(handle.db, snapshot.runId)).status).toBe('FAILED')
+  })
+
+  it('策略非法 → SESSION_POLICY_INVALID，不抛、不回交', async () => {
+    const account = await makeAccount('password', 'bad-policy')
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: account })
+    const result = await manager.acquire(
+      {
+        ...snapshot,
+        sessionPolicy: { ...DEFAULT_SESSION_POLICY, idleTtlSeconds: 600, maxLifetimeSeconds: 600 },
+      },
+      grant,
+    )
+    expect(result).toMatchObject({ ok: false, code: 'SESSION_POLICY_INVALID' })
+    const { rows } = await handle.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM browser_sessions WHERE target_account_id = $1`,
+      [account],
+    )
+    expect(rows[0]?.n).toBe('0')
+    await failRunValidation(handle.db, snapshot.runId, { grant })
+    expect((await getRun(handle.db, snapshot.runId)).status).toBe('FAILED')
+  })
+
+  it('PROFILE_LOCKED 把刚插入的行标 LOST，不放键', async () => {
+    const account = await makeAccount('password', 'locked')
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: account })
+    manager.launchOverride = async () => {
+      throw new BrowserRuntimeError('PROFILE_LOCKED', 'SingletonLock')
+    }
+    const result = await manager.acquire(snapshot, grant)
+    manager.launchOverride = undefined
+    expect(result).toMatchObject({ ok: false, code: 'PROFILE_LOCKED' })
+    const { rows } = await handle.pool.query<{ status: string; close_reason: string | null }>(
+      `SELECT status, close_reason FROM browser_sessions WHERE target_account_id = $1`,
+      [account],
+    )
+    expect(rows).toEqual([{ status: 'LOST', close_reason: 'profile_locked' }])
+    await expect(
+      requireCreatedSession(handle.db, {
+        key: { targetId, targetAccountId: account },
+        ownerWorkerId: WORKER,
+        reusePolicy: 'NEW_PAGE',
+        idleTtlSeconds: 600,
+        maxLifetimeSeconds: 3600,
+      }),
+    ).rejects.toMatchObject({ code: 'SESSION_BUSY' })
+
+    expect(await yieldPlacement(handle.db, grant)).toBe('yielded')
+    expect((await getRun(handle.db, snapshot.runId)).status).toBe('RECOVERING')
+  })
+
+  it('会话位满先腾空闲无租约的会话；带租约的不腾', async () => {
+    const evictor = new BrowserSessionManager(
+      handle,
+      {
+        workerId: `${WORKER}-evict`,
+        profileRoot,
+        headless: true,
+        maxSessions: 2,
+        defaultLeaseTtlSeconds: 30,
+        defaultAuthWaitSeconds: 60,
+        heartbeatMs: 60_000,
+      },
+      secretProvider,
+    )
+    await evictor.reconcileOwn()
+    const idle = await makeAccount('password', 'evict-idle')
+    const busy = await makeAccount('password', 'evict-busy')
+    const next = await makeAccount('password', 'evict-next')
+    const idleSession = await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: idle },
+      ownerWorkerId: `${WORKER}-evict`,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: idleSession.id,
+      expectedVersion: idleSession.version,
+      status: 'OPEN',
+    })
+    const busySession = await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: busy },
+      ownerWorkerId: `${WORKER}-evict`,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: busySession.id,
+      expectedVersion: busySession.version,
+      status: 'OPEN',
+    })
+    const busyScenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `busy-${newId()}`,
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const busyRun = await createRunWithSnapshot(handle.db, {
+      scenarioId: busyScenario.id,
+      targetAccountId: busy,
+      actor: { id: actorId },
+    })
+    await acquireSessionLease(handle.db, {
+      sessionId: busySession.id,
+      runId: busyRun.detail.id,
+      holderWorkerId: `${WORKER}-evict`,
+      leaseTtlSeconds: 30,
+      runFencingToken: 1,
+    })
+
+    evictor.installLiveHandleForTest(idleSession.id, stubBrowserHandle(join(profileRoot, 'idle')))
+    evictor.resolveCredential = async () => ({ username: 'u', password: 'p' })
+    evictor.launchOverride = async (dir) => stubBrowserHandle(dir)
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: next })
+    const result = await evictor.acquire(snapshot, grant)
+    evictor.launchOverride = undefined
+    expect(result.ok).toBe(true)
+    expect((await getSessionById(handle.db, idleSession.id))?.status).toBe('CLOSED')
+    expect((await getSessionById(handle.db, idleSession.id))?.closeReason).toBe('capacity_evict')
+    expect((await getSessionById(handle.db, busySession.id))?.status).toBe('OPEN')
+    const created = await findLiveSession(handle.db, { targetId, targetAccountId: next })
+    expect(created?.status).toBe('OPEN')
+    expect(created?.ownerWorkerId).toBe(`${WORKER}-evict`)
+    await evictor.shutdown()
+  })
+
+  it('会话位全被租约占住则回交，不腾带租约的会话', async () => {
+    const full = new BrowserSessionManager(
+      handle,
+      {
+        workerId: `${WORKER}-full`,
+        profileRoot,
+        headless: true,
+        maxSessions: 2,
+        defaultLeaseTtlSeconds: 30,
+        defaultAuthWaitSeconds: 60,
+        heartbeatMs: 60_000,
+      },
+      secretProvider,
+    )
+    await full.reconcileOwn()
+    const heldA = await makeAccount('password', 'full-a')
+    const heldB = await makeAccount('password', 'full-b')
+    const next = await makeAccount('password', 'full-next')
+    for (const account of [heldA, heldB]) {
+      const session = await requireCreatedSession(handle.db, {
+        key: { targetId, targetAccountId: account },
+        ownerWorkerId: `${WORKER}-full`,
+        reusePolicy: 'NEW_PAGE',
+        idleTtlSeconds: 600,
+        maxLifetimeSeconds: 3600,
+      })
+      await setSessionStatus(handle.db, {
+        sessionId: session.id,
+        expectedVersion: session.version,
+        status: 'OPEN',
+      })
+      const scenario = await createScenarioWithVersion(handle.db, {
+        targetId,
+        name: `full-${newId()}`,
+        steps: [echoStep],
+        actor: { id: actorId },
+      })
+      const run = await createRunWithSnapshot(handle.db, {
+        scenarioId: scenario.id,
+        targetAccountId: account,
+        actor: { id: actorId },
+      })
+      await acquireSessionLease(handle.db, {
+        sessionId: session.id,
+        runId: run.detail.id,
+        holderWorkerId: `${WORKER}-full`,
+        leaseTtlSeconds: 30,
+        runFencingToken: 1,
+      })
+    }
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: next })
+    const result = await full.acquire(snapshot, grant)
+    expect(result).toMatchObject({ ok: false, code: 'SESSION_CAPACITY_EXCEEDED' })
+    expect(await yieldPlacement(handle.db, grant)).toBe('yielded')
+    expect((await getRun(handle.db, snapshot.runId)).status).toBe('RECOVERING')
+    expect(await findLiveSession(handle.db, { targetId, targetAccountId: next })).toBeNull()
+
+    const cooling = placementYieldExcludes()
+    expect(cooling).toContain(snapshot.runId)
+    const before = await handle.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM run_leases WHERE run_id = $1`,
+      [snapshot.runId],
+    )
+    expect(
+      await claimRun(handle, {
+        workerId: WORKER,
+        instanceId: WORKER_INSTANCE,
+        leaseTtlSeconds: 30,
+        excludeRunIds: cooling,
+      }),
+    ).toBeNull()
+    const after = await handle.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM run_leases WHERE run_id = $1`,
+      [snapshot.runId],
+    )
+    expect(after.rows[0]?.n).toBe(before.rows[0]?.n)
+    expect(
+      (
+        await claimRun(handle, {
+          workerId: WORKER,
+          instanceId: WORKER_INSTANCE,
+          leaseTtlSeconds: 30,
+        })
+      )?.runId,
+    ).toBe(snapshot.runId)
+    await full.shutdown()
+  })
+
+  it('同账号连续两次 acquire 只解析一次凭据；另一账号独立会话', async () => {
+    let credCalls = 0
+    manager.resolveCredential = async () => {
+      credCalls += 1
+      return { username: 'alice', password: 'x' }
+    }
+    const account = await makeAccount('password', 'reuse-once')
+    const first = await makeRunningSnapshot({ targetId, accountId: account })
+    const a = await manager.acquire(first.snapshot, first.grant)
+    if (!a.ok) {
+      expect(['BROWSER_UNAVAILABLE', 'BROWSER_LAUNCH_FAILED', 'PROFILE_LOCKED', 'SESSION_AUTH_UNSUPPORTED']).toContain(
+        a.code,
+      )
+      manager.resolveCredential = undefined
+      return
+    }
+    await manager.release(a.grant.leaseId, 'done')
+    const second = await makeRunningSnapshot({ targetId, accountId: account })
+    const b = await manager.acquire(second.snapshot, second.grant)
+    expect(b.ok).toBe(true)
+    expect(credCalls).toBe(1)
+    if (b.ok) await manager.release(b.grant.leaseId, 'done')
+
+    const other = await makeAccount('password', 'reuse-other')
+    const third = await makeRunningSnapshot({ targetId, accountId: other })
+    const c = await manager.acquire(third.snapshot, third.grant)
+    expect(c.ok).toBe(true)
+    expect(credCalls).toBe(2)
+    const left = await findLiveSession(handle.db, { targetId, targetAccountId: account })
+    const right = await findLiveSession(handle.db, { targetId, targetAccountId: other })
+    expect(left?.profileKey).not.toBe(right?.profileKey)
+    expect(left?.ownerWorkerId).toBe(WORKER)
+    expect(right?.ownerWorkerId).toBe(WORKER)
+    if (c.ok) await manager.release(c.grant.leaseId, 'done')
+    manager.resolveCredential = undefined
+  })
+
+  it('stopAllLocal 无句柄则 LOST，同键不能再建', async () => {
+    const isolator = new BrowserSessionManager(
+      handle,
+      {
+        workerId: `${WORKER}-heal`,
+        profileRoot,
+        headless: true,
+        maxSessions: 2,
+        defaultLeaseTtlSeconds: 30,
+        defaultAuthWaitSeconds: 60,
+        heartbeatMs: 60_000,
+      },
+      secretProvider,
+    )
+    await isolator.reconcileOwn()
+    const account = await makeAccount('password', 'heal-lost')
+    const session = await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: account },
+      ownerWorkerId: `${WORKER}-heal`,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+    })
+    const results = await isolator.stopAllLocal()
+    expect(results).toEqual(expect.arrayContaining([{ sessionId: session.id, result: 'unconfirmed' }]))
+    expect((await getSessionById(handle.db, session.id))?.status).toBe('LOST')
+    await expect(
+      requireCreatedSession(handle.db, {
+        key: { targetId, targetAccountId: account },
+        ownerWorkerId: `${WORKER}-heal`,
+        reusePolicy: 'NEW_PAGE',
+        idleTtlSeconds: 600,
+        maxLifetimeSeconds: 3600,
+      }),
+    ).rejects.toMatchObject({ code: 'SESSION_BUSY' })
+    await isolator.shutdown()
+  })
+
+  it('BROWSER_UNAVAILABLE 回交且自禁到下一轮 reap', async () => {
+    let launches = 0
+    manager.launchOverride = async () => {
+      launches += 1
+      throw new BrowserRuntimeError('BROWSER_UNAVAILABLE', 'missing executable')
+    }
+    const account = await makeAccount('password', 'nobrowser')
+    const first = await makeRunningSnapshot({ targetId, accountId: account })
+    const a = await manager.acquire(first.snapshot, first.grant)
+    expect(a).toMatchObject({ ok: false, code: 'BROWSER_UNAVAILABLE' })
+    expect(await yieldPlacement(handle.db, first.grant)).toBe('yielded')
+    expect((await getRun(handle.db, first.snapshot.runId)).status).toBe('RECOVERING')
+
+    const second = await makeRunningSnapshot({ targetId, accountId: await makeAccount('password', 'nobrowser-2') })
+    const b = await manager.acquire(second.snapshot, second.grant)
+    expect(b).toMatchObject({ ok: false, code: 'BROWSER_UNAVAILABLE' })
+    expect(launches).toBe(1)
+
+    await manager.reap()
+    const third = await makeRunningSnapshot({ targetId, accountId: await makeAccount('password', 'nobrowser-3') })
+    await manager.acquire(third.snapshot, third.grant)
+    expect(launches).toBe(2)
+    manager.launchOverride = undefined
   })
 })

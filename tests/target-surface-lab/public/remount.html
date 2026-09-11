@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>重挂载 iframe</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>会重挂载</h1>
+      <div id="slot"></div>
+    </main>
+    <script>
+      const slot = document.getElementById('slot')
+      let n = 0
+      function mount() {
+        slot.innerHTML = ''
+        const frame = document.createElement('iframe')
+        frame.name = 'live'
+        frame.title = 'live'
+        frame.width = 480
+        frame.height = 160
+        frame.src = '/remount-frame.html?n=' + ++n
+        slot.appendChild(frame)
+      }
+      mount()
+      setInterval(mount, 400)
+    </script>
+  </body>
+</html>

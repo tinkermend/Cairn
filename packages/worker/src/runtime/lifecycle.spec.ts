@@ -4,8 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DbHandle } from '@cairn/db'
 import { BrowserSessionManager } from '../browser/session-manager'
 import { DB_HANDLE, DbModule } from '../db/db.module'
+import { clearPlacementYields, yieldPlacement } from './placement-backoff'
 import { ExecutionEngine } from '../engine/engine'
 import { ObjectService } from '../objects/object.service'
+import { config } from '../config/env'
 import { LifecycleService } from './lifecycle.service'
 
 vi.mock('@cairn/db', async (importOriginal) => {
@@ -25,6 +27,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
     markLostWorkers: vi.fn(async () => []),
     markSessionsLostForWorkers: vi.fn(async () => 0),
     yieldUnfinishedRun: vi.fn(async () => undefined),
+    yieldClaimedRun: vi.fn(async () => 'yielded' as const),
   }
 })
 
@@ -39,6 +42,7 @@ function stubSessions() {
     stopHeartbeat: vi.fn(),
     shutdown: vi.fn(async () => {}),
     reap: vi.fn(async () => ({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 })),
+    stopAllLocal: vi.fn(async () => []),
   }
 }
 
@@ -61,6 +65,7 @@ describe('LifecycleService', () => {
   }
 
   afterEach(async () => {
+    clearPlacementYields()
     await app?.close().catch(() => {})
     app = undefined
   })
@@ -166,6 +171,36 @@ describe('LifecycleService', () => {
     expect(instanceIdOf(svc)).not.toBe(instanceBefore)
     expect(svc.isRunning()).toBe(true)
     expect(exit).not.toHaveBeenCalled()
+    const sessions = app!.get(BrowserSessionManager)
+    expect(sessions.stopAllLocal).toHaveBeenCalled()
+    expect(vi.mocked(registerWorker).mock.invocationCallOrder[0]!).toBeGreaterThan(
+      vi.mocked(sessions.stopAllLocal).mock.invocationCallOrder[0]!,
+    )
+  })
+
+  it('登记时写入 maxSessions；pump 把冷却中的 runId 传给 claimRun', async () => {
+    const { claimRun, registerWorker } = await import('@cairn/db')
+    const svc = await buildLifecycle()
+    expect(registerWorker).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ maxSessions: config.CAIRN_BROWSER_MAX_SESSIONS }),
+    )
+    await (svc as unknown as { claimTask?: Promise<void> }).claimTask
+    vi.mocked(claimRun).mockClear()
+    const { yieldClaimedRun } = await import('@cairn/db')
+    vi.mocked(yieldClaimedRun).mockResolvedValueOnce('yielded')
+    await yieldPlacement({} as never, {
+      runId: 'run-yielded',
+      leaseId: 'lease-yielded',
+      fencingToken: 1,
+      holderWorkerId: 'w',
+      expiresAt: new Date().toISOString(),
+    })
+    await (svc as unknown as { pump: () => Promise<void> }).pump()
+    expect(claimRun).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ excludeRunIds: expect.arrayContaining(['run-yielded']) }),
+    )
   })
 
   it('身份被另一实例接管：不抢回，退出进程', async () => {

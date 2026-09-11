@@ -9,7 +9,7 @@ import { APP_FILTER, APP_GUARD, Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PERMISSIONS, RUN_ERROR_CODES } from '@cairn/shared'
+import { PERMISSIONS, RUN_ERROR_CODES, type RunPlacement } from '@cairn/shared'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
@@ -53,6 +53,12 @@ const detail = {
   startedAt: null,
   finishedAt: null,
   lease: null,
+  placement: {
+    state: 'not_applicable',
+    sessionId: null,
+    ownerWorkerId: null,
+    sessionStatus: null,
+  } as RunPlacement,
 }
 
 function mockService() {
@@ -191,6 +197,24 @@ describe('Runs HTTP', () => {
     })
     expect(res.body.items[0].payload).toBeUndefined()
     expect(JSON.stringify(res.body)).not.toContain('hello-object')
+  })
+
+  it('viewer 能看 placement，信封不出现容量失败码', async () => {
+    service.get.mockResolvedValueOnce({
+      ...detail,
+      placement: {
+        state: 'session_lost',
+        sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        ownerWorkerId: 'worker-a',
+        sessionStatus: 'LOST',
+      },
+    })
+    const res = await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}`).expect(200)
+    expect(res.body.placement).toMatchObject({
+      state: 'session_lost',
+      ownerWorkerId: 'worker-a',
+    })
+    expect(JSON.stringify(res.body)).not.toMatch(/WORKER_CAPACITY_EXCEEDED|SESSION_CAPACITY_EXCEEDED/)
   })
 
   it('无 run:review 不能核查', async () => {

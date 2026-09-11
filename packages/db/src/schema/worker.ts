@@ -13,6 +13,7 @@ export const workers = cairnSchema.table('workers', {
   instanceId: uuid('instance_id').notNull(),
   status: text('status').notNull().$type<WorkerStatus>(),
   capacity: integer('capacity').notNull(),
+  maxSessions: integer('max_sessions').notNull().default(2),
   heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }).notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

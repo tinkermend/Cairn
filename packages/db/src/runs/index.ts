@@ -26,6 +26,7 @@ export {
   listRuns,
   listRunsWaitingForAuthByAccount,
   loadRunDetail,
+  computeRunPlacement,
   loadRunRow,
   markRunCancelled,
   markRunWaitingForAuth,
@@ -44,6 +45,9 @@ export {
   settleLeaselessRun,
   settleRevokedRuns,
   sweepDriftedRuns,
+  yieldClaimedRun,
   yieldUnfinishedRun,
   type SettleOutcome,
+  type YieldClaimReason,
+  type YieldClaimResult,
 } from './recover.js'

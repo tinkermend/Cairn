@@ -90,7 +90,7 @@ describe('runSnapshotSchema', () => {
             {
               id: ids.delay,
               name: '打开页',
-              type: 'navigate',
+              type: 'ai_action',
               effectType: 'IDEMPOTENT',
               input: { url: '/' },
             },

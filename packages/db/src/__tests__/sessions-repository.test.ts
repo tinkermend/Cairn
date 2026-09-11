@@ -6,7 +6,7 @@ import {
   closeWorkerSessions,
   createRunWithSnapshot,
   createScenarioWithVersion,
-  createSession,
+  requireCreatedSession,
   disposeStuckSession,
   eq,
   expireStaleLeases,
@@ -137,7 +137,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     maxLife?: number
   }) {
     const key = { targetId, targetAccountId: opts?.account ?? accountId }
-    const session = await createSession(handle.db, {
+    const session = await requireCreatedSession(handle.db, {
       key,
       ownerWorkerId: opts?.worker ?? workerA,
       reusePolicy: 'NEW_PAGE',
@@ -160,7 +160,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
 
   it('同键并发创建只有一个成功；CLOSED 后可再建；LOST 阻塞新建', async () => {
     const key = { targetId, targetAccountId: accountId }
-    const first = await createSession(handle.db, {
+    const first = await requireCreatedSession(handle.db, {
       key,
       ownerWorkerId: workerA,
       reusePolicy: 'NEW_PAGE',
@@ -168,7 +168,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       maxLifetimeSeconds: 3600,
     })
     await expect(
-      createSession(handle.db, {
+      requireCreatedSession(handle.db, {
         key,
         ownerWorkerId: workerB,
         reusePolicy: 'NEW_PAGE',
@@ -184,7 +184,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       closeReason: 'owner_lost',
     })
     await expect(
-      createSession(handle.db, {
+      requireCreatedSession(handle.db, {
         key,
         ownerWorkerId: workerA,
         reusePolicy: 'NEW_PAGE',
@@ -203,7 +203,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     const live = await findLiveSession(handle.db, key)
     expect(live).toBeNull()
 
-    const second = await createSession(handle.db, {
+    const second = await requireCreatedSession(handle.db, {
       key,
       ownerWorkerId: workerA,
       reusePolicy: 'NEW_PAGE',
@@ -272,6 +272,54 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       holderWorkerId: winner.lease.holderWorkerId,
       reason: 'test',
     })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: (await getSessionById(handle.db, session.id))!.version,
+      status: 'CLOSED',
+      closeReason: 'cleanup',
+      ownerWorkerId: workerA,
+    })
+  })
+
+  it('双锁顺序：并发 acquire 在超时内结束，失败者没有残留 ACTIVE 租约', async () => {
+    const session = await openSession()
+    const started = Date.now()
+    const [a, b] = await Promise.all([
+      acquireSessionLease(handle.db, {
+        sessionId: session.id,
+        runId,
+        holderWorkerId: workerA,
+        leaseTtlSeconds: 30,
+        runFencingToken: 1,
+      }),
+      acquireSessionLease(handle.db, {
+        sessionId: session.id,
+        runId: runId2,
+        holderWorkerId: workerB,
+        leaseTtlSeconds: 30,
+        runFencingToken: 1,
+      }),
+    ])
+    expect(Date.now() - started).toBeLessThan(8_000)
+    const wins = [a, b].filter((item) => item.ok)
+    const loses = [a, b].filter((item) => !item.ok)
+    expect(wins).toHaveLength(1)
+    expect(loses).toHaveLength(1)
+    if (loses[0] && !loses[0].ok) expect(loses[0].code).toBe('SESSION_BUSY')
+    const loserRunId = a.ok ? runId2 : runId
+    const leftover = await handle.db.execute(sql`
+      SELECT count(*)::int AS n
+        FROM session_leases
+       WHERE run_id = ${loserRunId} AND status = 'ACTIVE'
+    `)
+    expect(Number((leftover.rows[0] as { n: number }).n)).toBe(0)
+    if (wins[0]?.ok) {
+      await releaseSessionLease(handle.db, {
+        leaseId: wins[0].lease.id,
+        holderWorkerId: wins[0].lease.holderWorkerId,
+        reason: 'test',
+      })
+    }
     await setSessionStatus(handle.db, {
       sessionId: session.id,
       expectedVersion: (await getSessionById(handle.db, session.id))!.version,
@@ -562,7 +610,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     expect((await getLeaseById(handle.db, got.lease.id))?.status).toBe('REVOKED')
     expect((await getSessionById(handle.db, session.id))?.status).toBe('CLOSED')
 
-    const again = await createSession(handle.db, {
+    const again = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: accountId },
       ownerWorkerId: workerA,
       reusePolicy: 'NEW_PAGE',
@@ -693,7 +741,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
 
   it('处置：LOST 释放键、撤租约、写审计；OPEN 被拒；重复处置幂等', async () => {
     const key = { targetId, targetAccountId: accountId }
-    const session = await createSession(handle.db, {
+    const session = await requireCreatedSession(handle.db, {
       key,
       ownerWorkerId: workerA,
       reusePolicy: 'NEW_PAGE',
@@ -731,7 +779,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     const lost = (await getSessionById(handle.db, opened.id))!
     expect(lost.status).toBe('LOST')
     await expect(
-      createSession(handle.db, {
+      requireCreatedSession(handle.db, {
         key,
         ownerWorkerId: workerA,
         reusePolicy: 'NEW_PAGE',
@@ -756,7 +804,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     expect(await findLiveSession(handle.db, key)).toBeNull()
 
     // 键已释放：同键可再建，且世代前进
-    const rebuilt = await createSession(handle.db, {
+    const rebuilt = await requireCreatedSession(handle.db, {
       key,
       ownerWorkerId: workerA,
       reusePolicy: 'NEW_PAGE',
@@ -791,7 +839,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
 
   it('会话列表只给活会话，并带当前 ACTIVE 租约与可处置标记', async () => {
     const key = { targetId, targetAccountId: accountId2 }
-    const session = await createSession(handle.db, {
+    const session = await requireCreatedSession(handle.db, {
       key,
       ownerWorkerId: workerA,
       reusePolicy: 'NEW_PAGE',

@@ -5,12 +5,14 @@ import {
   closeWorkerSessions,
   countOpenSessionsForWorker,
   createSession,
+  findEvictableSession,
   eq,
   expireAuthHold,
   expireStaleLeases,
   failRunAuthTimeout,
   findLiveSession,
   getSessionById,
+  listOwnedLiveSessions,
   listExpiredAuthHolds,
   listReapableSessions,
   listRunsWaitingForAuthByAccount,
@@ -33,6 +35,8 @@ import {
   DEFAULT_SESSION_POLICY,
   LOCAL_SECRET_PROVIDER,
   resolveSessionPolicy,
+  type BrowserCommand,
+  type BrowserCommandResult,
   type RunGrant,
   type RunSnapshot,
   type SessionErrorCode,
@@ -57,6 +61,7 @@ import {
   type BrowserHandle,
   type TargetAuthInfo,
 } from './runtime'
+import { captureFailureScreenshot, executeOnPage } from './surface'
 
 export type BrowserSessionManagerOptions = {
   workerId: string
@@ -101,6 +106,10 @@ export class BrowserSessionManager {
   private readonly leaseToSession = new Map<string, string>()
   private heartbeat: NodeJS.Timeout | undefined
   private reconciled = false
+  private browserUnavailable = false
+  private browserUnavailableCode: 'BROWSER_UNAVAILABLE' | 'BROWSER_LAUNCH_FAILED' = 'BROWSER_UNAVAILABLE'
+  /** 测试钩子：覆盖默认 launch。 */
+  launchOverride?: typeof launchSession
 
   constructor(
     @Inject(DB_HANDLE) private readonly dbHandle: DbHandle,
@@ -152,7 +161,17 @@ export class BrowserSessionManager {
       }
     }
 
-    const policy = resolveSessionPolicy(run.sessionPolicy, this.platformDefaultPolicy())
+    const targetInfo = await this.loadTargetAuth(run.targetId)
+    if (!targetInfo) {
+      return { ok: false, code: 'SESSION_TARGET_MISSING', message: '目标系统不存在' }
+    }
+
+    let policy: SessionPolicy
+    try {
+      policy = resolveSessionPolicy(run.sessionPolicy, this.platformDefaultPolicy())
+    } catch {
+      return { ok: false, code: 'SESSION_POLICY_INVALID', message: '会话策略非法' }
+    }
     const key = { targetId: run.targetId, targetAccountId: run.targetAccountId }
     const db = this.dbHandle.db
 
@@ -172,12 +191,27 @@ export class BrowserSessionManager {
     }
 
     if (!live) {
-      const openCount = await countOpenSessionsForWorker(db, this.options.workerId)
+      let openCount = await countOpenSessionsForWorker(db, this.options.workerId)
       if (openCount >= this.options.maxSessions) {
+        const evictable = await findEvictableSession(db, this.options.workerId)
+        if (evictable) {
+          await this.close(evictable.id, 'capacity_evict')
+          openCount = await countOpenSessionsForWorker(db, this.options.workerId)
+        }
+        if (openCount >= this.options.maxSessions) {
+          return {
+            ok: false,
+            code: 'SESSION_CAPACITY_EXCEEDED',
+            message: `本 Worker 会话数已达上限 ${this.options.maxSessions}`,
+          }
+        }
+      }
+
+      if (this.browserUnavailable) {
         return {
           ok: false,
-          code: 'SESSION_CAPACITY_EXCEEDED',
-          message: `本 Worker 会话数已达上限 ${this.options.maxSessions}`,
+          code: this.browserUnavailableCode,
+          message: '本机浏览器不可用，已暂停新建会话',
         }
       }
 
@@ -189,7 +223,10 @@ export class BrowserSessionManager {
           idleTtlSeconds: policy.idleTtlSeconds,
           maxLifetimeSeconds: policy.maxLifetimeSeconds,
         })
-        const launched = await this.launchAndOpen(created, key)
+        if (!created.ok) {
+          return { ok: false, code: created.code, message: created.message }
+        }
+        const launched = await this.launchAndOpen(created.session, key)
         if (!launched.ok) return launched
         live = launched.session
         this.logger.log(
@@ -203,6 +240,7 @@ export class BrowserSessionManager {
         )
       } catch (error) {
         if (error instanceof BrowserRuntimeError) {
+          this.markBrowserUnavailable(error.code)
           return { ok: false, code: error.code, message: error.message }
         }
         if (error && typeof error === 'object' && 'code' in error) {
@@ -403,6 +441,7 @@ export class BrowserSessionManager {
     sessionsClosed: number
     authTimeouts: number
   }> {
+    this.browserUnavailable = false
     const db = this.dbHandle.db
     const leasesExpired = await expireStaleLeases(db)
     if (leasesExpired > 0) {
@@ -538,6 +577,55 @@ export class BrowserSessionManager {
     return this.guard.assertHeld(leaseId)
   }
 
+  /**
+   * 浏览器命令唯一入口：先过 guard，再走 Surface。Playwright 不离开 runtime.ts。
+   */
+  async execute(
+    grant: SessionGrant,
+    command: BrowserCommand,
+    signal?: AbortSignal,
+  ): Promise<BrowserCommandResult & { screenshotBytes?: Buffer }> {
+    try {
+      this.guard.assertHeld(grant.leaseId, grant)
+    } catch (error) {
+      if (error instanceof GuardError) {
+        return {
+          ok: false,
+          error: {
+            code: 'SESSION_LEASE_LOST',
+            category: 'INFRASTRUCTURE',
+            retryable: false,
+            safeMessage: error.message,
+          },
+        }
+      }
+      throw error
+    }
+    const page = this.pageForGrant(grant)
+    if (!page) {
+      return {
+        ok: false,
+        error: {
+          code: 'SESSION_NOT_CLAIMABLE',
+          category: 'INFRASTRUCTURE',
+          retryable: true,
+          safeMessage: '本进程没有该租约对应的页面',
+        },
+      }
+    }
+    const result = await executeOnPage(page, command, signal)
+    if (result.ok) return result
+    const screenshotBytes = await captureFailureScreenshot(page)
+    return screenshotBytes ? { ...result, screenshotBytes } : result
+  }
+
+  pageForGrant(grant: SessionGrant) {
+    const sessionId = this.leaseToSession.get(grant.leaseId) ?? grant.sessionId
+    const live = this.lives.get(sessionId)
+    if (!live) return undefined
+    return live.runPages.get(grant.leaseId) ?? live.handle.basePage
+  }
+
   pageCount(sessionId: string): number {
     const live = this.lives.get(sessionId)
     return live ? countPages(live.handle) : 0
@@ -573,8 +661,9 @@ export class BrowserSessionManager {
   > {
     const db = this.dbHandle.db
     const { profileDir } = ensureProfileDir(this.options.profileRoot, key)
+    const launch = this.launchOverride ?? launchSession
     try {
-      const handle = await launchSession(profileDir, {
+      const handle = await launch(profileDir, {
         headless: this.options.headless,
         executablePath: this.options.executablePath,
       })
@@ -604,6 +693,16 @@ export class BrowserSessionManager {
       const session = (await getSessionById(db, created.id))!
       return { ok: true, session }
     } catch (error) {
+      if (error instanceof BrowserRuntimeError && error.code === 'PROFILE_LOCKED') {
+        await setSessionStatus(db, {
+          sessionId: created.id,
+          expectedVersion: created.version,
+          status: 'LOST',
+          closeReason: 'profile_locked',
+          ownerWorkerId: this.options.workerId,
+        }).catch(() => {})
+        return { ok: false, code: error.code, message: error.message }
+      }
       await setSessionStatus(db, {
         sessionId: created.id,
         expectedVersion: created.version,
@@ -612,6 +711,7 @@ export class BrowserSessionManager {
         ownerWorkerId: this.options.workerId,
       }).catch(() => {})
       if (error instanceof BrowserRuntimeError) {
+        this.markBrowserUnavailable(error.code)
         return { ok: false, code: error.code, message: error.message }
       }
       throw error
@@ -635,7 +735,7 @@ export class BrowserSessionManager {
 
     const targetInfo = await this.loadTargetAuth(run.targetId)
     if (!targetInfo) {
-      return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: '目标系统不存在' }
+      return { ok: false, code: 'SESSION_TARGET_MISSING', message: '目标系统不存在' }
     }
 
     // 已认证则探针确认（不刷新 last_used_at）
@@ -806,6 +906,41 @@ export class BrowserSessionManager {
     const page = await openRunPage(live.handle)
     live.runPages.set(leaseId, page)
     live.runPageIds.add(leaseId)
+  }
+
+  /** 测试钩子：给已有会话行挂上可确认退出的句柄，让 close() 走 D6 确认路径。 */
+  installLiveHandleForTest(sessionId: string, handle: BrowserHandle): void {
+    this.lives.set(sessionId, {
+      handle,
+      sessionId,
+      runPageIds: new Set(),
+      runPages: new Map(),
+    })
+  }
+
+  markBrowserUnavailable(code: 'BROWSER_UNAVAILABLE' | 'BROWSER_LAUNCH_FAILED' | 'PROFILE_LOCKED'): void {
+    if (code === 'PROFILE_LOCKED') return
+    this.browserUnavailable = true
+    this.browserUnavailableCode = code
+    this.logger.error({ code, workerId: this.options.workerId }, 'browser.unavailable')
+  }
+
+  /**
+   * 失联自愈：先停本进程全部句柄。确认退出才关会话；确认不了则留 LOST。
+   */
+  async stopAllLocal(): Promise<Array<{ sessionId: string; result: 'stopped' | 'unconfirmed' }>> {
+    const owned = await listOwnedLiveSessions(this.dbHandle.db, this.options.workerId)
+    const ids = new Set<string>([...this.lives.keys(), ...owned.map((session) => session.id)])
+    const results: Array<{ sessionId: string; result: 'stopped' | 'unconfirmed' }> = []
+    for (const sessionId of ids) {
+      await this.close(sessionId, 'owner_confirmed_stopped')
+      const latest = await getSessionById(this.dbHandle.db, sessionId)
+      results.push({
+        sessionId,
+        result: latest?.status === 'CLOSED' ? 'stopped' : 'unconfirmed',
+      })
+    }
+    return results
   }
 
   private async closeRunPage(leaseId: string): Promise<void> {

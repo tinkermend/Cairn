@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+  <body>
+    <button type="button" id="tick">心跳</button>
+    <p id="n"></p>
+    <script>
+      document.getElementById('n').textContent = new URLSearchParams(location.search).get('n') ?? '0'
+      document.getElementById('tick').addEventListener('click', () => {
+        document.getElementById('n').dataset.clicked = '1'
+      })
+    </script>
+  </body>
+</html>

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import {
   CANCELLED_ATTEMPT_ERROR,
   isFinishedRunStatus,
@@ -150,15 +150,35 @@ export async function settleRevokedRuns(
   }
 }
 
-/** 停机时释放仍 ACTIVE 的租约；未终态的 Run 回到 RECOVERING，供其他 Worker 领取。 */
-export async function yieldUnfinishedRun(db: Db, grant: RunGrant): Promise<void> {
+export type YieldClaimReason = 'worker_shutdown' | 'placement_yield'
+export type YieldClaimResult = 'yielded' | 'has_attempts' | 'unknown'
+
+/**
+ * 交回已领取但尚未执行的 Run。
+ * `placement_yield` 只允许在没有在途 Attempt 时；有 `RUNNING` Attempt 返回 `has_attempts`，不改现场。
+ * 终态 Attempt 不挡回交——恢复重领的 Run 身上会有上一轮记录。
+ * Worker 占不到会话时必须走 `yieldPlacement`（回交 + 进程内冷却），不要只调本函数。
+ */
+export async function yieldClaimedRun(
+  db: Db,
+  grant: RunGrant,
+  reason: YieldClaimReason,
+): Promise<YieldClaimResult> {
   const now = new Date()
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     const run = await lockRunRow(tx as unknown as Db, grant.runId)
-    if (!run) return
+    if (!run) return 'unknown'
     if (!(await verifyRunLeaseForWrite(tx as unknown as Db, grant))) {
-      await releaseRunLeaseTx(tx as unknown as Db, grant, 'worker_shutdown')
-      return
+      await releaseRunLeaseTx(tx as unknown as Db, grant, reason)
+      return 'unknown'
+    }
+    if (reason === 'placement_yield') {
+      const [row] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(attempts)
+        .innerJoin(stepRuns, eq(attempts.stepRunId, stepRuns.id))
+        .where(and(eq(stepRuns.runId, grant.runId), eq(attempts.status, 'RUNNING')))
+      if (Number(row?.n ?? 0) > 0) return 'has_attempts'
     }
     if (!isHaltedRunStatus(run.status) && run.status !== 'WAITING_FOR_AUTH') {
       await tx
@@ -166,8 +186,14 @@ export async function yieldUnfinishedRun(db: Db, grant: RunGrant): Promise<void>
         .set({ status: 'RECOVERING', updatedAt: now })
         .where(eq(runs.id, grant.runId))
     }
-    await releaseRunLeaseTx(tx as unknown as Db, grant, 'worker_shutdown')
+    await releaseRunLeaseTx(tx as unknown as Db, grant, reason)
+    return 'yielded'
   })
+}
+
+/** 停机时释放仍 ACTIVE 的租约；未终态的 Run 回到 RECOVERING，供其他 Worker 领取。 */
+export async function yieldUnfinishedRun(db: Db, grant: RunGrant): Promise<void> {
+  await yieldClaimedRun(db, grant, 'worker_shutdown')
 }
 
 export async function reconcileOrphanAttempts(

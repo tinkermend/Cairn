@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+  <body>
+    <h1>子窗</h1>
+    <button type="button" id="child-ok">子窗确认</button>
+    <p id="child-status">未确认</p>
+    <script>
+      document.getElementById('child-ok').addEventListener('click', () => {
+        document.getElementById('child-status').textContent = '子窗已确认'
+      })
+    </script>
+  </body>
+</html>

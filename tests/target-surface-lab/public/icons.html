@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>小图标</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>重复图标</h1>
+      <table>
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>甲订单</td>
+            <td>
+              <button type="button" class="icon" aria-label="删除" title="删除" data-row="甲订单">🗑</button>
+            </td>
+          </tr>
+          <tr>
+            <td>乙订单</td>
+            <td>
+              <button type="button" class="icon" aria-label="删除" title="删除" data-row="乙订单">🗑</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p id="deleted">无</p>
+    </main>
+    <script>
+      for (const button of document.querySelectorAll('[aria-label="删除"]')) {
+        button.addEventListener('click', () => {
+          document.getElementById('deleted').textContent = button.dataset.row
+        })
+      }
+    </script>
+  </body>
+</html>

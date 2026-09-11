@@ -78,8 +78,8 @@ jobs:
 
       # web 的组件测试（vitest browser mode）与 worker 的浏览器运行时测试共用同一份
       # Chromium：两个包的 playwright 版本由 tools/check-deps.mjs 卡成同一个，各自
-      # 需要的 chromium revision 因此一致，这里装一次即可。装漏的后果是 worker 的
-      # runtime.hmi.spec.ts 静默 skip。
+      # 需要的 chromium revision 因此一致，这里装一次即可。装漏时 engine.lab.spec.ts
+      #（Engine × 真浏览器垂直切片）会失败，不准 skip。
       - run: pnpm --filter @cairn/web exec playwright install --with-deps chromium
 
       - run: pnpm test

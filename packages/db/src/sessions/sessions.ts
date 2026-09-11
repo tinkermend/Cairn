@@ -20,6 +20,7 @@ import {
   type SessionLeaseRow,
 } from '../schema/session.js'
 import { secrets } from '../schema/targets.js'
+import { lockRunRow } from '../leases/leases.js'
 
 export type SessionKey = { targetId: string; targetAccountId: string }
 
@@ -219,9 +220,17 @@ export type CreateSessionInput = {
   id?: string
 }
 
-export async function createSession(db: Db, input: CreateSessionInput): Promise<SessionRecord> {
+export type CreateSessionResult =
+  | { ok: true; session: SessionRecord }
+  | { ok: false; code: 'SESSION_POLICY_INVALID'; message: string }
+
+export async function createSession(db: Db, input: CreateSessionInput): Promise<CreateSessionResult> {
   if (input.maxLifetimeSeconds <= input.idleTtlSeconds) {
-    throw new SessionDomainError('SESSION_NOT_CLAIMABLE', 'maxLifetimeSeconds 必须大于 idleTtlSeconds')
+    return {
+      ok: false,
+      code: 'SESSION_POLICY_INVALID',
+      message: 'maxLifetimeSeconds 必须大于 idleTtlSeconds',
+    }
   }
   const generation = await nextGenerationForKey(db, input.key)
   const id = input.id ?? newId()
@@ -251,7 +260,7 @@ export async function createSession(db: Db, input: CreateSessionInput): Promise<
         updatedAt: now,
       })
       .returning()
-    return toSession(row!)
+    return { ok: true, session: toSession(row!) }
   } catch (error) {
     if (pgCode(error) === '23505') {
       const name = constraintName(error) ?? ''
@@ -261,6 +270,34 @@ export async function createSession(db: Db, input: CreateSessionInput): Promise<
     }
     throw error
   }
+}
+
+export async function requireCreatedSession(db: Db, input: CreateSessionInput): Promise<SessionRecord> {
+  const created = await createSession(db, input)
+  if (!created.ok) throw new SessionDomainError(created.code, created.message)
+  return created.session
+}
+
+/** D3b：本进程可提前回收的空闲会话。带租约或认证占用的不能腾。 */
+export async function findEvictableSession(db: Db, workerId: string): Promise<SessionRecord | null> {
+  const [row] = await db
+    .select()
+    .from(browserSessions)
+    .where(
+      and(
+        eq(browserSessions.ownerWorkerId, workerId),
+        eq(browserSessions.status, 'OPEN'),
+        isNull(browserSessions.authHoldWorkerId),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${sessionLeases} l
+           WHERE l.session_id = ${browserSessions.id}
+             AND l.status = 'ACTIVE'
+        )`,
+      ),
+    )
+    .orderBy(asc(browserSessions.lastUsedAt), asc(browserSessions.id))
+    .limit(1)
+  return row ? toSession(row) : null
 }
 
 export async function setSessionStatus(
@@ -413,6 +450,10 @@ export async function acquireSessionLease(
     return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
   }
   return db.transaction(async (tx) => {
+    // 双锁顺序：先 Run 后 Session。反过来会与 finishAttempt 交叉死锁。
+    const run = await lockRunRow(tx as unknown as Db, input.runId)
+    if (!run) return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
+
     const [existing] = await tx
       .select()
       .from(sessionLeases)
@@ -786,6 +827,20 @@ export async function listActiveSessionLeasesForWorker(db: Db, workerId: string)
     .where(and(eq(sessionLeases.holderWorkerId, workerId), eq(sessionLeases.status, 'ACTIVE')))
     .orderBy(asc(sessionLeases.acquiredAt))
   return rows.map(toLease)
+}
+
+/** owner 名下仍占键的会话，含 LOST。自愈停浏览器时用。 */
+export async function listOwnedLiveSessions(db: Db, workerId: string): Promise<SessionRecord[]> {
+  const rows = await db
+    .select()
+    .from(browserSessions)
+    .where(
+      and(
+        eq(browserSessions.ownerWorkerId, workerId),
+        inArray(browserSessions.status, LIVE_STATUSES),
+      ),
+    )
+  return rows.map(toSession)
 }
 
 export async function listOwnedOpenSessions(db: Db, workerId: string): Promise<SessionRecord[]> {

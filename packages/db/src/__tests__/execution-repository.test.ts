@@ -500,6 +500,57 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
     }
   })
 
+  it('finishAttempt 失败时把定位诊断和截图缺失原因写成独立证据', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '定位失败证据',
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    const started = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      inputPayload: 'hello',
+      grant,
+    })
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: started!.attemptId,
+      attemptStatus: 'FAILED',
+      error: {
+        code: 'TARGET_NOT_FOUND',
+        category: 'EXECUTOR',
+        retryable: false,
+        safeMessage: '未找到',
+      },
+      diagnostics: {
+        outcome: 'NOT_FOUND',
+        candidatesTried: [{ index: 0, by: 'css', value: '#gone', matches: 0 }],
+      },
+      screenshot: { missingReason: 'capture_failed' },
+      stepRunStatus: 'FAILED',
+      runStatus: 'FAILED',
+      skipRemaining: true,
+      grant,
+    })
+    const evidence = await listRunEvidence(handle.db, created.detail.id)
+    expect(evidence.items.some((item) => item.type === 'error')).toBe(true)
+    expect(evidence.items.find((item) => item.type === 'log')?.payload).toEqual({
+      outcome: 'NOT_FOUND',
+      candidatesTried: [{ index: 0, by: 'css', value: '#gone', matches: 0 }],
+    })
+    const shot = evidence.items.find((item) => item.type === 'screenshot')
+    expect(shot?.missingReason).toBe('capture_failed')
+    expect(shot?.objectKey).toBeUndefined()
+    expect(shot?.payload).toBeUndefined()
+  })
+
   it('领取跳过已请求取消的 QUEUED Run', async () => {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,

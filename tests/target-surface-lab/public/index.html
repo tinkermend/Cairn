@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Surface Lab</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1 data-testid="page-title">普通 DOM</h1>
+      <p id="status">待操作</p>
+      <label>单号 <input id="order" aria-label="单号" /></label>
+      <button type="button" id="query">查询</button>
+      <p id="result" hidden>查到 42 条</p>
+      <nav>
+        <a href="/nested">嵌套 iframe</a>
+        <a href="/remount">重挂载</a>
+        <a href="/popup">弹窗</a>
+        <a href="/icons">小图标</a>
+        <a href="/shadow">Shadow</a>
+        <a href="/canvas">Canvas</a>
+        <a href="/missing">缺失目标</a>
+      </nav>
+    </main>
+    <script>
+      document.getElementById('query').addEventListener('click', () => {
+        document.getElementById('status').textContent = '已查询'
+        document.getElementById('result').hidden = false
+      })
+    </script>
+  </body>
+</html>

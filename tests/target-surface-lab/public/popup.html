@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>弹窗</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>主页</h1>
+      <button type="button" id="open-child">打开子窗</button>
+    </main>
+    <script>
+      document.getElementById('open-child').addEventListener('click', () => {
+        window.open('/popup-child.html', 'lab-child', 'width=360,height=240')
+      })
+    </script>
+  </body>
+</html>

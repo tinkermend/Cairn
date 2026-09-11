@@ -62,14 +62,15 @@ export class ScenarioValidationError extends Error {
   }
 }
 
-function echoFrom(step: Step): string | undefined {
-  return step.type === 'echo' ? step.input.from : undefined
+function contextFrom(step: Step): string | undefined {
+  if (step.type === 'echo' || step.type === 'fill') return step.input.from
+  return undefined
 }
 
 /** 保存期：`from` 不得指向本步或更晚步骤的 outputKey。指向未声明的 key 是参数化，放过。 */
 export function assertNoForwardFrom(steps: readonly Step[]): void {
   for (const [index, step] of steps.entries()) {
-    const from = echoFrom(step)
+    const from = contextFrom(step)
     if (!from) continue
     const laterOrSelf = new Set(
       steps.slice(index).flatMap((item) => (item.outputKey ? [item.outputKey] : [])),
@@ -90,7 +91,7 @@ export function assertRunFromResolved(
 ): void {
   const available = new Set(Object.keys(input))
   for (const step of steps) {
-    const from = echoFrom(step)
+    const from = contextFrom(step)
     if (from && !available.has(from)) {
       throw new ScenarioValidationError(
         'SCENARIO_UNRESOLVED_REF',

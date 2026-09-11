@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Shadow</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Shadow DOM</h1>
+      <div id="open-host"></div>
+      <div id="closed-host" data-cairn-closed-shadow data-cairn-inner="暗处按钮"></div>
+    </main>
+    <script>
+      const open = document.getElementById('open-host').attachShadow({ mode: 'open' })
+      open.innerHTML = '<button type="button" id="open-btn">亮处按钮</button>'
+      const closed = document.getElementById('closed-host').attachShadow({ mode: 'closed' })
+      closed.innerHTML = '<button type="button">暗处按钮</button>'
+    </script>
+  </body>
+</html>

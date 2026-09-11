@@ -4,6 +4,11 @@ export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
   echo: '回显',
   delay: '等待',
   fail: '失败',
+  navigate: '导航',
+  click: '点击',
+  fill: '填写',
+  extract: '提取',
+  assert: '断言',
 }
 
 export const EFFECT_TYPE_LABELS: Record<EffectType, string> = {

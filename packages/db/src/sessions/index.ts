@@ -9,6 +9,8 @@ export {
   countOpenSessionsForWorker,
   nextGenerationForKey,
   createSession,
+  requireCreatedSession,
+  findEvictableSession,
   setSessionStatus,
   setSessionProbe,
   touchSessionUsed,
@@ -26,6 +28,7 @@ export {
   verifySessionLeaseForCommit,
   findActiveLeaseForSession,
   listActiveSessionLeasesForWorker,
+  listOwnedLiveSessions,
   listOwnedOpenSessions,
   forceLastUsedAt,
   forceLeaseExpiresAt,
@@ -43,4 +46,5 @@ export {
   type LeaseBusyInfo,
   type LeaseOutcome,
   type CreateSessionInput,
+  type CreateSessionResult,
 } from './sessions.js'

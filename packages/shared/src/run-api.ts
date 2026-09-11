@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { executionErrorSchema } from './runtime-error.js'
 import { runInputSchema, runSnapshotSchema, runStatusSchema, stepRunStatusSchema, attemptStatusSchema } from './run.js'
-import { sessionPolicyOverrideSchema } from './session.js'
+import { sessionPolicyOverrideSchema, sessionStatusSchema } from './session.js'
 import { executionPolicySchema } from './step.js'
 import { evidenceMetadataSchema } from './evidence.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
@@ -48,6 +48,27 @@ export const runDetailLeaseSchema = z
     expiresAt: utcInstantSchema,
   })
   .nullable()
+
+export const RUN_PLACEMENT_STATES = [
+  'not_applicable',
+  'claimed',
+  'claimable',
+  'owner_required',
+  'owner_at_capacity',
+  'session_not_ready',
+  'session_lost',
+] as const
+export type RunPlacementState = (typeof RUN_PLACEMENT_STATES)[number]
+export const runPlacementStateSchema = z.enum(RUN_PLACEMENT_STATES)
+
+/** GET 派生，不落库。列表不带，详情必带。 */
+export const runPlacementSchema = z.strictObject({
+  state: runPlacementStateSchema,
+  sessionId: entityIdSchema.nullable(),
+  ownerWorkerId: z.string().min(1).max(128).nullable(),
+  sessionStatus: sessionStatusSchema.nullable(),
+})
+export type RunPlacement = z.infer<typeof runPlacementSchema>
 
 export const runSummarySchema = z.object({
   id: entityIdSchema,
@@ -102,6 +123,7 @@ export const runDetailSchema = runSummarySchema
     context: z.record(z.string(), jsonValueSchema),
     stepRuns: z.array(stepRunDtoSchema),
     lease: runDetailLeaseSchema,
+    placement: runPlacementSchema,
   })
 export type RunDetailDto = z.infer<typeof runDetailSchema>
 

@@ -4,6 +4,7 @@ import {
   DEFAULT_STEP_TIMEOUT_MS,
   canonicalJson,
   createRunBodySchema,
+  runPlacementSchema,
   idempotencyDigestPayload,
   resolveStepPolicy,
   runInputSchema,
@@ -36,6 +37,25 @@ describe('runInputSchema', () => {
 
   it('接受合法键', () => {
     expect(runInputSchema.parse({ orderId: 'A-1' })).toEqual({ orderId: 'A-1' })
+  })
+})
+
+describe('runPlacementSchema', () => {
+  it('详情必须带 placement，列表状态闭枚举', () => {
+    expect(runPlacementSchema.parse({
+      state: 'owner_required',
+      sessionId: ids.run,
+      ownerWorkerId: 'worker-1',
+      sessionStatus: 'OPEN',
+    }).state).toBe('owner_required')
+    expect(() =>
+      runPlacementSchema.parse({
+        state: 'waiting_for_capacity',
+        sessionId: null,
+        ownerWorkerId: null,
+        sessionStatus: null,
+      }),
+    ).toThrow()
   })
 })
 

@@ -7,7 +7,7 @@ import {
   countFailedRecoveries,
   createRunWithSnapshot,
   createScenarioWithVersion,
-  createSession,
+  requireCreatedSession,
   expireStaleRunLeases,
   findActiveLeaseForRun,
   finishAttempt,
@@ -336,7 +336,7 @@ describe('RunLease / fencing（集成）', { timeout: RF06_FULL ? 180_000 : 120_
       username: `u-${accountId.slice(0, 8)}`,
     })
     const created = await queueEcho(`会话fencing-${newId().slice(0, 8)}`)
-    const session = await createSession(handle.db, {
+    const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: accountId },
       ownerWorkerId: 'sess-worker',
       reusePolicy: 'REUSE_PAGE',
@@ -372,7 +372,7 @@ describe('RunLease / fencing（集成）', { timeout: RF06_FULL ? 180_000 : 120_
       capacity: 1,
       lostAfterSeconds: 1,
     })
-    const session = await createSession(handle.db, {
+    const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: accountId },
       ownerWorkerId: 'lost-worker',
       reusePolicy: 'REUSE_PAGE',

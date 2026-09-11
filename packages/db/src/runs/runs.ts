@@ -1,12 +1,13 @@
 import { and, asc, count, desc, eq, inArray, isNull, max, sql } from 'drizzle-orm'
 import {
   CANCELLED_ATTEMPT_ERROR,
-  DEFAULT_EXECUTOR_VERSIONS,
+  freezeExecutorVersions,
   RUNTIME_SCHEMA_VERSION,
   ScenarioValidationError,
   assertRunFromResolved,
   evidenceMetadataSchema,
   isFinishedRunStatus,
+  resolverDiagnosticsSchema,
   isHaltedRunStatus,
   resolveSessionPolicy,
   runDetailSchema,
@@ -21,14 +22,18 @@ import {
   type RunDetailDto,
   type RunGrant,
   type RunListResponse,
+  type RunPlacement,
   type RunSnapshot,
+  type ResolverDiagnostics,
   type RunStatus,
+  type ScreenshotPointer,
   type SessionGrant,
   type StepRunStatus,
 } from '@cairn/shared'
 import { recordAudit, type AuditActor } from '../audit/record.js'
 import { findActiveLeaseForRun, listActiveLeasesByRunIds, lockRunRow, releaseRunLeaseTx, verifyRunLeaseForWrite } from '../leases/leases.js'
-import { verifySessionLeaseForCommit } from '../sessions/sessions.js'
+import { findLiveSession, verifySessionLeaseForCommit } from '../sessions/sessions.js'
+import { runLeases, workers } from '../schema/worker.js'
 import type { Db } from '../client.js'
 import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.js'
 import { newId } from '../id.js'
@@ -125,6 +130,72 @@ export async function listRunEvidence(db: Db, runId: string) {
   })
 }
 
+const emptyPlacement = (
+  state: RunPlacement['state'] = 'not_applicable',
+): RunPlacement => ({
+  state,
+  sessionId: null,
+  ownerWorkerId: null,
+  sessionStatus: null,
+})
+
+export async function computeRunPlacement(
+  db: Db,
+  run: {
+    status: RunStatus
+    targetId: string
+    targetAccountId: string | null
+    hasActiveLease: boolean
+  },
+): Promise<RunPlacement> {
+  if (
+    isFinishedRunStatus(run.status) ||
+    run.status === 'NEEDS_REVIEW' ||
+    run.status === 'WAITING_FOR_AUTH' ||
+    !run.targetAccountId
+  ) {
+    return emptyPlacement()
+  }
+  if (run.hasActiveLease) {
+    return emptyPlacement('claimed')
+  }
+  const live = await findLiveSession(db, {
+    targetId: run.targetId,
+    targetAccountId: run.targetAccountId,
+  })
+  if (!live) return emptyPlacement('claimable')
+  const withSession = {
+    sessionId: live.id,
+    ownerWorkerId: live.ownerWorkerId,
+    sessionStatus: live.status,
+  }
+  if (live.status === 'LOST') return { state: 'session_lost', ...withSession }
+  if (live.status === 'CREATING' || live.status === 'CLOSING') {
+    return { state: 'session_not_ready', ...withSession }
+  }
+  const [owner] = await db
+    .select({ capacity: workers.capacity })
+    .from(workers)
+    .where(eq(workers.id, live.ownerWorkerId))
+    .limit(1)
+  if (owner) {
+    const [held] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(runLeases)
+      .where(
+        and(
+          eq(runLeases.holderWorkerId, live.ownerWorkerId),
+          eq(runLeases.status, 'ACTIVE'),
+          sql`${runLeases.expiresAt} > now()`,
+        ),
+      )
+    if (Number(held?.n ?? 0) >= owner.capacity) {
+      return { state: 'owner_at_capacity', ...withSession }
+    }
+  }
+  return { state: 'owner_required', ...withSession }
+}
+
 export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto | null> {
   const [joined] = await db
     .select({
@@ -149,6 +220,12 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
   const snapshot = row.snapshot
   const stepsById = new Map(snapshot.steps.map((step) => [step.id, step]))
   const lease = await findActiveLeaseForRun(db, runId)
+  const placement = await computeRunPlacement(db, {
+    status: row.status,
+    targetId: row.targetId,
+    targetAccountId: row.targetAccountId,
+    hasActiveLease: lease !== null,
+  })
   return runDetailSchema.parse({
     id: row.id,
     status: row.status,
@@ -170,6 +247,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
           expiresAt: lease.expiresAt,
         }
       : null,
+    placement,
     snapshot,
     context: row.context,
     stepRuns: stepRows.map((step) => {
@@ -275,7 +353,7 @@ export async function createRunWithSnapshot(
     createdAt: now.toISOString(),
     policy: input.policy,
     sessionPolicy,
-    executorVersions: { ...DEFAULT_EXECUTOR_VERSIONS },
+    executorVersions: freezeExecutorVersions(version.definition.steps.map((step) => step.type)),
   }
   const parsed = runSnapshotSchema.parse(snapshotBase)
   const digest = computeSnapshotDigest(parsed)
@@ -434,6 +512,10 @@ export type FinishAttemptInput = {
    * 丢租时 SIDE_EFFECT → NEEDS_REVIEW，其余 → FAILED，不写成功结果。
    */
   sessionLease?: SessionGrant & { holderWorkerId: string; effectType?: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT' }
+  /** 浏览器定位诊断。失败时另写一条 log 证据，不塞进 error 契约。 */
+  diagnostics?: ResolverDiagnostics
+  /** 失败截图指针。已落对象的行由 ObjectService 写；这里只补 missingReason。 */
+  screenshot?: ScreenshotPointer
   grant: RunGrant
   /** 仅测试：Evidence 写完后抛错，验证整单回滚 */
   injectFailure?: Error
@@ -541,6 +623,31 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
         : evidenceType === 'output'
           ? (output ?? null)
           : (error ?? null),
+      createdAt: now,
+    })
+  }
+
+  if (!cancelled && attemptStatus !== 'SUCCEEDED' && input.diagnostics) {
+    await tx.insert(evidences).values({
+      id: newId(),
+      runId: input.runId,
+      stepRunId: attempt.stepRunId,
+      attemptId: input.attemptId,
+      type: 'log',
+      schemaVersion: 1,
+      payload: resolverDiagnosticsSchema.parse(input.diagnostics),
+      createdAt: now,
+    })
+  }
+  if (!cancelled && input.screenshot?.missingReason && !input.screenshot.objectKey) {
+    await tx.insert(evidences).values({
+      id: newId(),
+      runId: input.runId,
+      stepRunId: attempt.stepRunId,
+      attemptId: input.attemptId,
+      type: 'screenshot',
+      schemaVersion: 1,
+      missingReason: input.screenshot.missingReason,
       createdAt: now,
     })
   }

@@ -1,5 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import {
+  DEFAULT_BROWSER_MAX_SESSIONS,
   isFinishedRunStatus,
   runGrantSchema,
   type RunGrant,
@@ -21,6 +22,7 @@ export type WorkerRecord = {
   instanceId: string
   status: WorkerStatus
   capacity: number
+  maxSessions: number
   heartbeatAt: Date
 }
 
@@ -35,6 +37,7 @@ function toWorker(row: WorkerRow): WorkerRecord {
     instanceId: row.instanceId,
     status: row.status,
     capacity: row.capacity,
+    maxSessions: row.maxSessions,
     heartbeatAt: row.heartbeatAt,
   }
 }
@@ -51,12 +54,18 @@ function toGrant(row: Pick<RunLeaseRow, 'id' | 'runId' | 'fencingToken' | 'holde
 
 export async function registerWorker(
   db: Db,
-  input: { workerId: string; instanceId: string; capacity: number; lostAfterSeconds: number },
+  input: {
+    workerId: string
+    instanceId: string
+    capacity: number
+    maxSessions?: number
+    lostAfterSeconds: number
+  },
 ): Promise<RegisterWorkerResult> {
   const now = new Date()
   return db.transaction(async (tx) => {
     const locked = await tx.execute(sql`
-      SELECT id, instance_id, status, capacity, heartbeat_at
+      SELECT id, instance_id, status, capacity, max_sessions, heartbeat_at
         FROM ${workers}
        WHERE id = ${input.workerId}
        FOR UPDATE
@@ -67,6 +76,7 @@ export async function registerWorker(
           instance_id: string
           status: string
           capacity: number
+          max_sessions: number
           heartbeat_at: Date
         }
       | undefined
@@ -84,6 +94,7 @@ export async function registerWorker(
         instanceId: input.instanceId,
         status: 'READY',
         capacity: input.capacity,
+        maxSessions: input.maxSessions ?? DEFAULT_BROWSER_MAX_SESSIONS,
         heartbeatAt: now,
         startedAt: now,
         updatedAt: now,
@@ -95,6 +106,7 @@ export async function registerWorker(
           instanceId: input.instanceId,
           status: 'READY',
           capacity: input.capacity,
+          maxSessions: input.maxSessions ?? DEFAULT_BROWSER_MAX_SESSIONS,
           heartbeatAt: now,
           startedAt: now,
           updatedAt: now,
@@ -217,6 +229,8 @@ export async function verifyRunLeaseForWrite(tx: Db, grant: RunGrant): Promise<b
 async function claimOneStatus(
   client: { query: (sql: string, values?: unknown[]) => Promise<{ rows: { id: string }[] }> },
   status: 'RECOVERING' | 'QUEUED',
+  workerId: string,
+  excludeRunIds: string[],
 ): Promise<string | null> {
   const recoveringFilter =
     status === 'RECOVERING'
@@ -225,36 +239,55 @@ async function claimOneStatus(
             WHERE l.run_id = r.id AND l.status = 'ACTIVE'
          )`
       : ''
+  const excludeFilter = excludeRunIds.length > 0 ? `AND r.id <> ALL($3::uuid[])` : ''
+  const values: unknown[] = excludeRunIds.length > 0 ? [status, workerId, excludeRunIds] : [status, workerId]
   const result = await client.query(
     `UPDATE runs
         SET status = 'RUNNING',
             started_at = COALESCE(started_at, now()),
             updated_at = now()
       WHERE id = (
-        SELECT r.id FROM runs r
+        SELECT r.id
+          FROM runs r
+          LEFT JOIN browser_sessions s
+            ON s.target_id = r.target_id
+           AND s.target_account_id = r.target_account_id
+           AND s.status IN ('CREATING', 'OPEN', 'CLOSING', 'LOST')
          WHERE r.status = $1
            AND r.cancel_requested_at IS NULL
            ${recoveringFilter}
+           ${excludeFilter}
+           AND (
+             r.target_account_id IS NULL
+             OR s.id IS NULL
+             OR (s.status = 'OPEN' AND s.owner_worker_id = $2)
+           )
          ORDER BY r.created_at, r.id
          LIMIT 1
-         FOR UPDATE SKIP LOCKED
+         FOR UPDATE OF r SKIP LOCKED
       )
       RETURNING id`,
-    [status],
+    values,
   )
   return result.rows[0]?.id ?? null
 }
 
 export async function claimRun(
   handle: DbHandle,
-  input: { workerId: string; instanceId: string; leaseTtlSeconds: number },
+  input: {
+    workerId: string
+    instanceId: string
+    leaseTtlSeconds: number
+    excludeRunIds?: string[]
+  },
 ): Promise<RunGrant | null> {
+  const excludeRunIds = input.excludeRunIds ?? []
   const client = await handle.pool.connect()
   try {
     await client.query('BEGIN')
     // 失联 / 停机 / 错位实例不得再领：心跳失败后仍存活的进程会卡在这里，避免僵尸抢单烧恢复次数。
-    const worker = await client.query<{ id: string }>(
-      `SELECT id FROM workers
+    const worker = await client.query<{ id: string; capacity: number }>(
+      `SELECT id, capacity FROM workers
         WHERE id = $1 AND instance_id = $2 AND status = 'READY'
         FOR UPDATE`,
       [input.workerId, input.instanceId],
@@ -263,8 +296,20 @@ export async function claimRun(
       await client.query('ROLLBACK')
       return null
     }
+    const held = await client.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM run_leases
+        WHERE holder_worker_id = $1
+          AND status = 'ACTIVE'
+          AND expires_at > now()`,
+      [input.workerId],
+    )
+    if (Number(held.rows[0]?.n ?? 0) >= worker.rows[0]!.capacity) {
+      await client.query('ROLLBACK')
+      return null
+    }
     const runId =
-      (await claimOneStatus(client, 'RECOVERING')) ?? (await claimOneStatus(client, 'QUEUED'))
+      (await claimOneStatus(client, 'RECOVERING', input.workerId, excludeRunIds)) ??
+      (await claimOneStatus(client, 'QUEUED', input.workerId, excludeRunIds))
     if (!runId) {
       await client.query('ROLLBACK')
       return null

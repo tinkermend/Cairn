@@ -7,6 +7,8 @@ import {
   DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
   DEFAULT_SESSION_POLICY,
   DEFAULT_SESSION_REUSE_POLICY,
+  isPlacementYieldCode,
+  isSessionConfigErrorCode,
   resolveSessionPolicy,
   sessionErrorCodeSchema,
   sessionGrantSchema,
@@ -35,8 +37,17 @@ describe('session 词表', () => {
   it('错误码闭枚举', () => {
     expect(SESSION_ERROR_CODES).toContain('SESSION_LEASE_LOST')
     expect(SESSION_ERROR_CODES).toContain('BROWSER_UNAVAILABLE')
+    expect(SESSION_ERROR_CODES).toContain('SESSION_TARGET_MISSING')
+    expect(SESSION_ERROR_CODES).toContain('SESSION_POLICY_INVALID')
     expect(sessionErrorCodeSchema.parse('SESSION_BUSY')).toBe('SESSION_BUSY')
     expect(() => sessionErrorCodeSchema.parse('UNKNOWN')).toThrow()
+  })
+
+  it('回交码与配置错误码互斥', () => {
+    expect(isPlacementYieldCode('BROWSER_UNAVAILABLE')).toBe(true)
+    expect(isPlacementYieldCode('SESSION_TARGET_MISSING')).toBe(false)
+    expect(isSessionConfigErrorCode('SESSION_POLICY_INVALID')).toBe(true)
+    expect(isSessionConfigErrorCode('SESSION_BUSY')).toBe(false)
   })
 })
 

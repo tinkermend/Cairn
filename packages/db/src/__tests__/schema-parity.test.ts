@@ -445,11 +445,24 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'heartbeat_at', is_nullable: 'NO' },
       { column_name: 'id', is_nullable: 'NO' },
       { column_name: 'instance_id', is_nullable: 'NO' },
+      { column_name: 'max_sessions', is_nullable: 'NO' },
       { column_name: 'started_at', is_nullable: 'NO' },
       { column_name: 'status', is_nullable: 'NO' },
       { column_name: 'stopped_at', is_nullable: 'YES' },
       { column_name: 'updated_at', is_nullable: 'NO' },
     ])
+
+    const { rows: workerChecks } = await pool.query<{ conname: string }>(
+      `SELECT c.conname
+         FROM pg_constraint c
+         JOIN pg_class t ON t.oid = c.conrelid
+         JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = $1 AND t.relname = 'workers' AND c.contype = 'c'`,
+      [TEST_SCHEMA],
+    )
+    expect(workerChecks.map((row) => row.conname)).toEqual(
+      expect.arrayContaining(['workers_capacity_check', 'workers_max_sessions_check']),
+    )
 
     const { rows: leaseCols } = await pool.query<{ column_name: string; is_nullable: string }>(
       `SELECT column_name, is_nullable FROM information_schema.columns
@@ -569,6 +582,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       '0009_session_dispose.sql',
       '0010_admin_login_account.sql',
       '0011_run_lease.sql',
+      '0012_session_affinity.sql',
     ])
   })
 })
@@ -677,7 +691,7 @@ describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集�
 
   it('0011 装得上，并把缺 run_fencing 的存量 ACTIVE 租约撤销', async () => {
     const up = await migrate(pool, SCHEMA)
-    expect(up.applied).toEqual(['0011_run_lease.sql'])
+    expect(up.applied).toEqual(['0011_run_lease.sql', '0012_session_affinity.sql'])
 
     const { rows } = await pool.query<{ status: string; release_reason: string; released_at: Date }>(
       `SELECT status, release_reason, released_at FROM "${SCHEMA}".session_leases WHERE id = $1`,

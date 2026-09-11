@@ -1,3 +1,9 @@
+2026-09-12--收口两处红：FramePath 解析补上与候选定位同一套等待窗口（整条路径共用一个截止时间；iframe 已 attach 但 url 还是空串时不再判 SURFACE_LOST，L2 嵌套 iframe 40 次连跑不再偶发），容量腾位用例的假句柄补齐 waitFor / waitForFunction（漏方法不是类型错误，会被登录路径 catch 成 SESSION_AUTH_UNSUPPORTED）
+2026-09-12--Browser Surface 复查修补：联调夹具入库、定位诊断与失败截图缺失原因写入证据、FrameStep.selector 真正匹配 iframe
+2026-09-12--接入 SNC DPM 为 L3 只读目标系统（docs/targets，宪法只建索引），控制台编码 snc-dpm；Engine×真浏览器垂直切片进 CI 硬门槛；点击可开 popup 但后续步骤仍留原页；L3 已跑通自动登录+提取「数据库」与 WAITING_FOR_AUTH
+2026-09-12--Browser Surface 落地：含浏览器步骤的 Run 在第一个 Attempt 之前经 BrowserPort acquire，占不到会话走 yieldPlacement；注册 navigate / click / fill / extract / assert，定位失败可判定，提交带 sessionLease，失败截一张；受控站点 tests/target-surface-lab 做 L2
+2026-09-12--P4 后半回交接上进程内冷却：占不到会话走 yieldPlacement（库回交成功才记冷却），验收 10.2 不再手工传 excludeRunIds
+2026-09-11--P4 后半落地：claimRun 按账号活会话做 Affinity、容量只数未过期租约；占不到会话先腾空闲位再回交并退避，配置错误拆 SESSION_TARGET_MISSING / SESSION_POLICY_INVALID，PROFILE_LOCKED 与失联不放键；运行详情派生 placement，S02 只对受控夹具限制采用
 2026-09-11--控制台 RBAC 的 8 个 PATCH/PUT/DELETE 端点收成 POST（对齐 targets 的 `:id` 与 `:id/delete` 约定），补上宪法不变量 19 唯一的破口；检查读 Express 装配后的真实路由表而不是扫源码文本，@All 挂到具体业务路径同样会红，并已用重新塞回一个 @Patch 验证它确实变红
 2026-09-11--RunLease 复查第二轮：优雅停机不再把在途 Run 洗成 CANCELLED（Engine 区分外部信号与库里说停，交回 RECOVERING 且断言必须真能被接管），恢复次数只数失败交接（优雅停机不计，否则滚动发布三次就把好 Run 推进待核查），NEEDS_REVIEW 不再写 finished_at，删掉无产生者的两个租约错误码，WORKER_ID_CONFLICT 启动前给可读原因；补 RF08 副作用孤儿/同事务回滚注入点/幂等/自愈/双开/容量与 L3 组件用例，运行页显示名称而非裸 UUID；进程维度的 kill/暂停/DB 断连与多进程 RF06 明确留成债务
 2026-09-11--RunLease 三处致命修补：0011 收紧会话租约前先撤销存量 ACTIVE+NULL fencing（否则 23514 整份回滚、有会话的库永久升不上来）、心跳失败按 lost/instance_taken 分流（失联重新注册自愈，身份被接管退出进程，不再留不可观测的僵尸）、finishAttempt 加 barrierAfterVerify 让 D5 的提交边界真被测试卡住；三处均带负向验证

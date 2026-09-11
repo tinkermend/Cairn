@@ -513,8 +513,8 @@ DISPOSABLE_SESSION_STATUSES                                    // CREATING / CLO
 
 | 阶段 | 本方案结束后仍缺的 |
 | --- | --- |
-| Affinity / 容量排队 | P3 心跳与 Worker 注册到位后，把 Run 路由到健康 owner；容量不足改为等待而不是失败 |
-| 跨 Worker 失联 | owner 失联判定 → `LOST`（本期只到 SQL 形状与人工处置出口）；确认旧进程停止后的自动隔离与重建流程 |
+| Affinity / 容量排队 | 见 [P4 后半](2026-09-11-session-affinity.md)（已落地） |
+| 跨 Worker 失联 | owner 失联判定 → `LOST` 已由 P3 回填；确认旧进程停止后的隔离与重建见 [P4 后半](2026-09-11-session-affinity.md)（已落地） |
 | 处置面 | Web 界面（P7 的会话只读页里加处置按钮）、批量处置、按 Target 的会话视图；本期只有 API |
 | 认证通道 | 人工登录的可达界面（headful 本机 / 远程可视化 / 扩展桥）；`WAITING_FOR_AUTH` 期间释放 RunLease 并由恢复扫描重新领取、增代 |
 | 复用档位 | `NEW_CONTEXT`（需要改成 browser + storageState 播种），以及每个 Target 的策略列与 UI |
@@ -543,4 +543,4 @@ DISPOSABLE_SESSION_STATUSES                                    // CREATING / CLO
 - 2026-09-11：P1 收口——快照平台默认与 env 默认对齐测试、RF04 零 session 行断言、D8 复用档位单测、RF17 50 页、认证文案与 `.env.example` 去重。说明：ExecutionEngine 本期只注入 BrowserPort、不调用（无浏览器 Step）；P5 前正式 Run 不走 acquire。
 - 2026-09-11：复查补口——`LOST` 原本是只写状态（占键且无出口，同 Target+TargetAccount 会被永久锁死）。按 D13 补最小人工处置入口：`GET /browser-sessions` + `POST /browser-sessions/:id/dispose`（`session:read` / `session:dispose`，`0009` 补种系统角色）、`disposeStuckSession` 同事务撤租约与写审计、worker `reap` 对账丢弃已处置句柄。同时把 `recordAudit` 从 runs / scenarios 的各一份收敛成 `packages/db/src/audit/record.ts`。
 - 2026-09-11：修订——worker 的 playwright 与 web 对齐到 1.63.0（同一 chromium revision 1243，装一次两处共用），分叉由 `tools/check-deps.mjs` 的 `SHARED_VERSION_DEPS` 卡住。对齐后 worker 的浏览器测试首次真正运行，暴露出两处此前被「无 chromium 就 skip」掩盖的问题：`loginWithCredentials` 在登录失败时抛异常而不是返回 false（违反其 `Promise<boolean>` 契约，把可解释的认证失败变成调用方未捕获异常），以及集成用例共用 Target+TargetAccount 键、指向公网 `example.com`。前者改为内部收敛为 false，后者改用内嵌登录夹具并让每个用例各领账号。worker 测试 48 通过 0 跳过（原 47 通过 1 跳过）。
-- 待后续：路线图 P4 中 Affinity 与失联处置；P5 页面能力（Engine 消费 BrowserPort）；人工认证可达通道；处置面 Web 界面。
+- 待后续：路线图 P4 中 Affinity 与失联处置见 [P4 后半](2026-09-11-session-affinity.md)（已落地）；P5 页面能力（Engine 消费 BrowserPort）；人工认证可达通道；处置面 Web 界面。

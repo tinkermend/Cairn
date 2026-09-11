@@ -1,13 +1,34 @@
-import type { RunGrant, RunSnapshot, SessionGrant } from '@cairn/shared'
+import type {
+  BrowserCommand,
+  BrowserCommandEvidence,
+  BrowserCommandResult,
+  RunGrant,
+  RunSnapshot,
+  SessionErrorCode,
+  SessionGrant,
+} from '@cairn/shared'
+
+/**
+ * acquire 失败走返回值里的码，不抛成无 Schema 的 Error。
+ * 真正的进程 / DB 故障仍然抛。
+ */
+export type SessionAcquireOutcome =
+  | { ok: true; grant: SessionGrant }
+  | { ok: false; code: SessionErrorCode; message: string; waitingForAuth?: boolean }
 
 /**
  * Engine 只认这个端口，不认识 playwright / BrowserSessionManager。
- * 页面能力在 P5 扩展；本期只到 acquire / release。
- * acquire 必须带 RunGrant：会话租约的 run_fencing_token 只从执行租约取，不从控制台身份拼。
+ * acquire 必须带 RunGrant：会话租约的 run_fencing_token 只从执行租约取。
  */
 export type BrowserPort = {
-  acquire(run: RunSnapshot, grant: RunGrant, signal?: AbortSignal): Promise<SessionGrant>
+  acquire(run: RunSnapshot, grant: RunGrant, signal?: AbortSignal): Promise<SessionAcquireOutcome>
   release(grant: SessionGrant, reason: string): Promise<void>
+  execute(
+    grant: SessionGrant,
+    command: BrowserCommand,
+    signal?: AbortSignal,
+    evidence?: BrowserCommandEvidence,
+  ): Promise<BrowserCommandResult>
 }
 
 export const BROWSER_PORT = Symbol('BROWSER_PORT')

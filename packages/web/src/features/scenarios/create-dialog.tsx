@@ -3,10 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   EFFECT_TYPES,
-  EXECUTABLE_STEP_TYPES,
+  FIXTURE_STEP_TYPES,
   type CreateScenarioBody,
   type EffectType,
-  type ExecutableStepType,
+  type FixtureStepType,
   type Step,
 } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
@@ -35,7 +35,7 @@ import { EFFECT_TYPE_LABELS, STEP_TYPE_LABELS } from './labels'
 type DraftStep = {
   key: string
   name: string
-  type: ExecutableStepType
+  type: FixtureStepType
   effectType: EffectType
   value: string
   from: string
@@ -199,7 +199,7 @@ export function ScenarioCreateDialog({ open, onOpenChange, onCreated }: Scenario
                     onValueChange={(value) =>
                       setSteps((prev) =>
                         prev.map((item) =>
-                          item.key === step.key ? { ...item, type: value as ExecutableStepType } : item,
+                          item.key === step.key ? { ...item, type: value as FixtureStepType } : item,
                         ),
                       )
                     }
@@ -208,7 +208,7 @@ export function ScenarioCreateDialog({ open, onOpenChange, onCreated }: Scenario
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {EXECUTABLE_STEP_TYPES.map((type) => (
+                      {FIXTURE_STEP_TYPES.map((type) => (
                         <SelectItem key={type} value={type}>
                           {STEP_TYPE_LABELS[type]}
                         </SelectItem>

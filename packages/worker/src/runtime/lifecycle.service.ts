@@ -22,6 +22,7 @@ import {
 import type { RunGrant } from '@cairn/shared'
 import { BrowserSessionManager } from '../browser/session-manager'
 import { config } from '../config/env'
+import { placementYieldExcludes } from './placement-backoff'
 import { DB_HANDLE } from '../db/db.module'
 import { ExecutionEngine } from '../engine/engine'
 import { ObjectService } from '../objects/object.service'
@@ -128,6 +129,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       workerId: config.CAIRN_WORKER_ID,
       instanceId: this.instanceId,
       capacity: config.CAIRN_WORKER_CAPACITY,
+      maxSessions: config.CAIRN_BROWSER_MAX_SESSIONS,
       lostAfterSeconds: config.CAIRN_WORKER_LOST_AFTER_SECONDS,
     })
     await settleRevokedRuns(
@@ -310,6 +312,12 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       { workerId: config.CAIRN_WORKER_ID, instanceId: this.instanceId },
       'Worker 心跳未写入（已被判失联），停手并以新代重新注册',
     )
+    await this.sessions.stopAllLocal().catch((error) => {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : error },
+        '自愈停浏览器失败，继续重新注册',
+      )
+    })
     try {
       await this.register()
     } catch (error) {
@@ -339,6 +347,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
         workerId: config.CAIRN_WORKER_ID,
         instanceId: this.instanceId,
         leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
+        excludeRunIds: placementYieldExcludes(),
       })
       if (!grant) return
       if (this.inFlight.has(grant.leaseId)) return
