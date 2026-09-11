@@ -47,6 +47,9 @@ export {
   sessionPolicyOverrideSchema,
   resolveSessionPolicy,
   sessionGrantSchema,
+  sessionDtoSchema,
+  sessionListResponseSchema,
+  disposeSessionBodySchema,
   type SessionStatus,
   type SessionHealth,
   type SessionAuthState,
@@ -56,6 +59,9 @@ export {
   type SessionPolicy,
   type SessionPolicyOverride,
   type SessionGrant,
+  type SessionDto,
+  type SessionListResponse,
+  type DisposeSessionBody,
 } from './session.js'
 export {
   apiErrorSchema,

@@ -8,7 +8,6 @@ import {
   scenarioVersionListResponseSchema,
   scenarioVersionSchema,
   validateScenarioDefinition,
-  type AuditAction,
   type ScenarioDefinition,
   type ScenarioDetailDto,
   type ScenarioDto,
@@ -18,36 +17,15 @@ import {
   type ScenarioVersionListResponse,
   type Step,
 } from '@cairn/shared'
+import { recordAudit, type AuditActor } from '../audit/record.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
-import { consoleAuditEvents } from '../schema/audit.js'
 import { runs, scenarioVersions, scenarios } from '../schema/execution.js'
 import { targets } from '../schema/targets.js'
 import { badRequest, conflict, mapPgRestriction, notFound } from './errors.js'
 
-export type AuditActor = { id: string }
-
 function iso(value: Date): string {
   return value.toISOString()
-}
-
-async function writeAudit(
-  tx: Db,
-  actor: AuditActor,
-  action: AuditAction,
-  resource: string,
-  resourceId: string,
-  summary: string,
-): Promise<void> {
-  await tx.insert(consoleAuditEvents).values({
-    id: newId(),
-    actorConsoleAccountId: actor.id,
-    action,
-    resource,
-    resourceId,
-    summary,
-    createdAt: new Date(),
-  })
 }
 
 function rethrow(error: unknown): never {
@@ -165,7 +143,7 @@ export async function createScenarioWithVersion(
         createdByConsoleAccountId: input.actor.id,
         createdAt: now,
       })
-      await writeAudit(
+      await recordAudit(
         tx as unknown as Db,
         input.actor,
         'scenario.create',
@@ -199,10 +177,10 @@ export async function updateScenarioMeta(
         })
         .where(eq(scenarios.id, scenarioId))
       if (input.name !== undefined && input.name !== current.name) {
-        await writeAudit(tx as unknown as Db, input.actor, 'scenario.update', 'scenario', scenarioId, `改名为 ${input.name}`)
+        await recordAudit(tx as unknown as Db, input.actor, 'scenario.update', 'scenario', scenarioId, `改名为 ${input.name}`)
       }
       if (input.status !== undefined && input.status !== current.status) {
-        await writeAudit(
+        await recordAudit(
           tx as unknown as Db,
           input.actor,
           'scenario.update',
@@ -247,7 +225,7 @@ export async function appendScenarioVersion(
         createdAt: now,
       })
       await tx.update(scenarios).set({ updatedAt: now }).where(eq(scenarios.id, scenarioId))
-      await writeAudit(
+      await recordAudit(
         tx as unknown as Db,
         input.actor,
         'scenario.update',
@@ -271,7 +249,7 @@ export async function deleteScenario(db: Db, scenarioId: string, actor: AuditAct
     await db.transaction(async (tx) => {
       await tx.delete(scenarioVersions).where(eq(scenarioVersions.scenarioId, scenarioId))
       await tx.delete(scenarios).where(eq(scenarios.id, scenarioId))
-      await writeAudit(tx as unknown as Db, actor, 'scenario.delete', 'scenario', scenarioId, current.name)
+      await recordAudit(tx as unknown as Db, actor, 'scenario.delete', 'scenario', scenarioId, current.name)
     })
   } catch (error) {
     rethrow(error)

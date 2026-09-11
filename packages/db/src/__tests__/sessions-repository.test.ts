@@ -7,6 +7,7 @@ import {
   createRunWithSnapshot,
   createScenarioWithVersion,
   createSession,
+  disposeStuckSession,
   eq,
   expireStaleLeases,
   findLiveSession,
@@ -21,6 +22,7 @@ import {
   getSessionById,
   listExpiredAuthHolds,
   listReapableSessions,
+  listSessions,
   listRunsWaitingForAuthByAccount,
   markRunWaitingForAuth,
   markSessionsClosing,
@@ -675,5 +677,155 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
 
     expect(await runWithEffect('SIDE_EFFECT')).toBe('NEEDS_REVIEW')
     expect(await runWithEffect('READ_ONLY')).toBe('FAILED')
+  })
+
+  it('处置：LOST 释放键、撤租约、写审计；OPEN 被拒；重复处置幂等', async () => {
+    const key = { targetId, targetAccountId: accountId }
+    const session = await createSession(handle.db, {
+      key,
+      ownerWorkerId: workerA,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+    })
+    const opened = (await getSessionById(handle.db, session.id))!
+
+    // 活会话：处置必须被拒，否则等于放行同账号双开
+    await expect(
+      disposeStuckSession(handle.db, { sessionId: opened.id, actor: { id: actorId } }),
+    ).rejects.toMatchObject({ code: 'SESSION_NOT_DISPOSABLE' })
+    expect((await getSessionById(handle.db, opened.id))?.status).toBe('OPEN')
+
+    // 真实卡死形态：租约已领取，owner 随后失联 → LOST 且租约仍 ACTIVE
+    const lease = await acquireSessionLease(handle.db, {
+      sessionId: opened.id,
+      runId,
+      holderWorkerId: workerA,
+      leaseTtlSeconds: 30,
+    })
+    expect(lease.ok).toBe(true)
+    await setSessionStatus(handle.db, {
+      sessionId: opened.id,
+      expectedVersion: opened.version,
+      status: 'LOST',
+      closeReason: 'owner_lost',
+    })
+    const lost = (await getSessionById(handle.db, opened.id))!
+    expect(lost.status).toBe('LOST')
+    await expect(
+      createSession(handle.db, {
+        key,
+        ownerWorkerId: workerA,
+        reusePolicy: 'NEW_PAGE',
+        idleTtlSeconds: 600,
+        maxLifetimeSeconds: 3600,
+      }),
+    ).rejects.toMatchObject({ code: 'SESSION_BUSY' })
+
+    // 人工确认旧浏览器已停 → 处置放行
+    const dto = await disposeStuckSession(handle.db, {
+      sessionId: lost.id,
+      actor: { id: actorId },
+      note: '已确认旧进程退出',
+    })
+    expect(dto.status).toBe('CLOSED')
+    expect(dto.closeReason).toBe('operator_disposed')
+    expect(dto.disposable).toBe(false)
+    expect(dto.authHold).toBeNull()
+    if (lease.ok) {
+      expect((await getLeaseById(handle.db, lease.lease.id))?.status).toBe('REVOKED')
+    }
+    expect(await findLiveSession(handle.db, key)).toBeNull()
+
+    // 键已释放：同键可再建，且世代前进
+    const rebuilt = await createSession(handle.db, {
+      key,
+      ownerWorkerId: workerA,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(rebuilt.generation).toBe(session.generation + 1)
+    await setSessionStatus(handle.db, {
+      sessionId: rebuilt.id,
+      expectedVersion: rebuilt.version,
+      status: 'CLOSED',
+      closeReason: 'cleanup',
+    })
+
+    // 幂等：重复处置不报错，也不改写关闭原因
+    const again = await disposeStuckSession(handle.db, { sessionId: lost.id, actor: { id: actorId } })
+    expect(again.status).toBe('CLOSED')
+    expect(again.closeReason).toBe('operator_disposed')
+
+    // 审计与事实同事务落地
+    const { rows } = await handle.db.execute(sql`
+      SELECT action, summary FROM console_audit_events
+       WHERE action = 'session.dispose' AND resource_id = ${lost.id}
+    `)
+    expect(rows).toHaveLength(1)
+    expect(String((rows[0] as { summary: string }).summary)).toContain('已确认旧进程退出')
+
+    await expect(
+      disposeStuckSession(handle.db, { sessionId: newId(), actor: { id: actorId } }),
+    ).rejects.toMatchObject({ code: 'SESSION_NOT_FOUND' })
+  })
+
+  it('会话列表只给活会话，并带当前 ACTIVE 租约与可处置标记', async () => {
+    const key = { targetId, targetAccountId: accountId2 }
+    const session = await createSession(handle.db, {
+      key,
+      ownerWorkerId: workerA,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+    })
+    const opened = (await getSessionById(handle.db, session.id))!
+    const lease = await acquireSessionLease(handle.db, {
+      sessionId: opened.id,
+      runId,
+      holderWorkerId: workerA,
+      leaseTtlSeconds: 30,
+    })
+    expect(lease.ok).toBe(true)
+
+    const listed = await listSessions(handle.db)
+    const row = listed.find((item) => item.id === opened.id)!
+    expect(row.status).toBe('OPEN')
+    expect(row.disposable).toBe(false)
+    expect(row.ownerWorkerId).toBe(workerA)
+    // 只给元数据：不带 profile 绝对路径之外的任何句柄信息
+    expect(row.profileKey).toBe(`${targetId}/${accountId2}`)
+    if (lease.ok) {
+      expect(row.activeLease?.id).toBe(lease.lease.id)
+      expect(row.activeLease?.runId).toBe(runId)
+    }
+
+    await disposeStuckSession(handle.db, { sessionId: opened.id, actor: { id: actorId } }).catch(
+      () => undefined,
+    )
+    // OPEN 不允许直接处置，所以行仍在列表里
+    expect((await listSessions(handle.db)).some((item) => item.id === opened.id)).toBe(true)
+
+    // 落到 LOST 后即可处置，处置后从列表消失（CLOSED 不占键）
+    await setSessionStatus(handle.db, {
+      sessionId: opened.id,
+      expectedVersion: (await getSessionById(handle.db, opened.id))!.version,
+      status: 'LOST',
+      closeReason: 'owner_lost',
+    })
+    expect((await listSessions(handle.db)).find((i) => i.id === opened.id)?.disposable).toBe(true)
+    await disposeStuckSession(handle.db, { sessionId: opened.id, actor: { id: actorId } })
+    expect((await listSessions(handle.db)).some((item) => item.id === opened.id)).toBe(false)
   })
 })

@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { nextCursorSchema } from './rbac.js'
+import { utcInstantSchema } from './wire.js'
 
 /**
  * Browser Session / SessionLease 词表与策略。
@@ -130,3 +132,60 @@ export const sessionGrantSchema = z.strictObject({
   expiresAt: z.iso.datetime(),
 })
 export type SessionGrant = z.infer<typeof sessionGrantSchema>
+
+/**
+ * 控制面会话视图。只给元数据：没有 Cookie、没有 profile 绝对路径，
+ * 也没有任何可用于驱动浏览器的句柄（宪法 §12：API 不持有正式 Browser Session）。
+ */
+export const sessionDtoSchema = z.object({
+  id: z.uuid(),
+  targetId: z.uuid(),
+  targetAccountId: z.uuid(),
+  status: sessionStatusSchema,
+  health: sessionHealthSchema,
+  authState: sessionAuthStateSchema,
+  ownerWorkerId: z.string().min(1),
+  generation: z.number().int().positive(),
+  reusePolicy: sessionReusePolicySchema,
+  profileKey: z.string().min(1),
+  idleTtlSeconds: z.number().int().positive(),
+  /** 空闲回收的判定基准。 */
+  lastUsedAt: utcInstantSchema,
+  /** 最大生命周期的到期时刻（快照策略的值）。 */
+  expiresAt: utcInstantSchema,
+  authHold: z
+    .object({
+      workerId: z.string().min(1),
+      expiresAt: utcInstantSchema,
+    })
+    .nullable(),
+  closeReason: z.string().min(1).nullable(),
+  createdAt: utcInstantSchema,
+  updatedAt: utcInstantSchema,
+  /** 当前 `ACTIVE` 租约；没有则为 null。 */
+  activeLease: z
+    .object({
+      id: z.uuid(),
+      runId: z.uuid(),
+      holderWorkerId: z.string().min(1),
+      acquiredAt: utcInstantSchema,
+      expiresAt: utcInstantSchema,
+    })
+    .nullable(),
+  /** 是否能被人工处置：`OPEN` 是活会话，必须由 owner 自己回收。 */
+  disposable: z.boolean(),
+})
+export type SessionDto = z.infer<typeof sessionDtoSchema>
+
+export const sessionListResponseSchema = z.object({
+  items: z.array(sessionDtoSchema),
+  nextCursor: nextCursorSchema,
+})
+export type SessionListResponse = z.infer<typeof sessionListResponseSchema>
+
+export const disposeSessionBodySchema = z.strictObject({
+  /** 操作者确认「旧浏览器已停止或已隔离」的说明，进审计。 */
+  note: z.string().trim().min(1).max(512).optional(),
+})
+export type DisposeSessionBody = z.infer<typeof disposeSessionBodySchema>
+

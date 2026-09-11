@@ -505,6 +505,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       '0006_execution.sql',
       '0007_object_store.sql',
       '0008_browser_session.sql',
+      '0009_session_dispose.sql',
     ])
   })
 })

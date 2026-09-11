@@ -11,7 +11,6 @@ export {
   listScenarios,
   loadScenarioVersion,
   updateScenarioMeta,
-  type AuditActor,
 } from './scenarios.js'
 export {
   cancelPendingStepRuns,

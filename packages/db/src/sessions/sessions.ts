@@ -1,15 +1,18 @@
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
-import type {
-  SessionAuthState,
-  SessionErrorCode,
-  SessionGrant,
-  SessionHealth,
-  SessionReusePolicy,
-  SessionStatus,
+import {
+  sessionDtoSchema,
+  type SessionAuthState,
+  type SessionDto,
+  type SessionErrorCode,
+  type SessionGrant,
+  type SessionHealth,
+  type SessionReusePolicy,
+  type SessionStatus,
 } from '@cairn/shared'
+import { recordAudit, type AuditActor } from '../audit/record.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
-import { constraintName, pgCode } from '../runs/errors.js'
+import { constraintName, pgCode, conflict, notFound } from '../runs/errors.js'
 import {
   browserSessions,
   sessionLeases,
@@ -856,3 +859,157 @@ export async function loadSecretCiphertext(
   if (!row) return null
   return { id: row.id, provider: row.provider, ciphertext: row.ciphertext }
 }
+
+/** 占着键的会话：CLOSED 之外的全部状态。控制面列表只给这一批。 */
+export async function listSessions(db: Db): Promise<SessionDto[]> {
+  const rows = await db
+    .select()
+    .from(browserSessions)
+    .where(inArray(browserSessions.status, LIVE_STATUSES))
+    .orderBy(desc(browserSessions.createdAt), desc(browserSessions.id))
+  if (rows.length === 0) return []
+
+  const leases = await db
+    .select()
+    .from(sessionLeases)
+    .where(
+      and(
+        inArray(
+          sessionLeases.sessionId,
+          rows.map((row) => row.id),
+        ),
+        eq(sessionLeases.status, 'ACTIVE'),
+      ),
+    )
+  const leaseBySession = new Map(leases.map((lease) => [lease.sessionId, lease]))
+  return rows.map((row) => toSessionDto(row, leaseBySession.get(row.id) ?? null))
+}
+
+/** 行 → 控制面 DTO。只暴露元数据（§12：API 不持有会话）。 */
+export function toSessionDto(row: BrowserSessionRow, lease: SessionLeaseRow | null): SessionDto {
+  return sessionDtoSchema.parse({
+    id: row.id,
+    targetId: row.targetId,
+    targetAccountId: row.targetAccountId,
+    status: row.status,
+    health: row.health,
+    authState: row.authState,
+    ownerWorkerId: row.ownerWorkerId,
+    generation: row.generation,
+    reusePolicy: row.reusePolicy,
+    profileKey: row.profileKey,
+    idleTtlSeconds: row.idleTtlSeconds,
+    lastUsedAt: row.lastUsedAt.toISOString(),
+    expiresAt: row.expiresAt.toISOString(),
+    authHold:
+      row.authHoldWorkerId && row.authHoldExpiresAt
+        ? { workerId: row.authHoldWorkerId, expiresAt: row.authHoldExpiresAt.toISOString() }
+        : null,
+    closeReason: row.closeReason,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    activeLease: lease
+      ? {
+          id: lease.id,
+          runId: lease.runId,
+          holderWorkerId: lease.holderWorkerId,
+          acquiredAt: lease.acquiredAt.toISOString(),
+          expiresAt: lease.expiresAt.toISOString(),
+        }
+      : null,
+    disposable: DISPOSABLE_SESSION_STATUSES.includes(row.status),
+  })
+}
+
+/** 人工可处置的状态：owner 已不在或已无法推进的那些。`OPEN` 必须走 owner 自己的回收。 */
+export const DISPOSABLE_SESSION_STATUSES: readonly SessionStatus[] = [
+  'CREATING',
+  'CLOSING',
+  'LOST',
+]
+
+/**
+ * 人工处置卡死会话：确认旧浏览器已停或已隔离后，释放 Target + TargetAccount 的键。
+ *
+ * 控制面只改状态，不碰浏览器——它没有句柄，也无法验证进程是否真的退出，所以
+ * 「已停止」由调用方声明并进审计。`OPEN` 一律拒绝：那是活会话，放行等于同账号双开。
+ *
+ * 撤租约、关会话、写审计在同一事务；对已 CLOSED 幂等返回。
+ */
+export async function disposeStuckSession(
+  db: Db,
+  input: { sessionId: string; actor: AuditActor; note?: string },
+): Promise<SessionDto> {
+  return db.transaction(async (tx) => {
+    // 行锁：与同一会话的 acquire / owner 回收串行，避免处置与领取交错。
+    const locked = await tx.execute(sql`
+      SELECT id FROM ${browserSessions} WHERE id = ${input.sessionId} FOR UPDATE
+    `)
+    if (locked.rows.length === 0) {
+      throw notFound('SESSION_NOT_FOUND', '会话不存在')
+    }
+
+    const session = (await getSessionById(tx as unknown as Db, input.sessionId))!
+    if (session.status === 'CLOSED') {
+      return toSessionDto(
+        await loadSessionRow(tx as unknown as Db, input.sessionId),
+        null,
+      )
+    }
+    if (!DISPOSABLE_SESSION_STATUSES.includes(session.status)) {
+      throw conflict(
+        'SESSION_NOT_DISPOSABLE',
+        `会话处于 ${session.status}，必须由持有它的 Worker 回收`,
+      )
+    }
+
+    const revoked = await tx
+      .update(sessionLeases)
+      .set({ status: 'REVOKED', releasedAt: new Date(), releaseReason: 'operator_disposed' })
+      .where(and(eq(sessionLeases.sessionId, input.sessionId), eq(sessionLeases.status, 'ACTIVE')))
+      .returning({ id: sessionLeases.id })
+
+    const now = new Date()
+    const [closed] = await tx
+      .update(browserSessions)
+      .set({
+        status: 'CLOSED',
+        closedAt: now,
+        closeReason: 'operator_disposed',
+        // 处置就是收回一切占用：认证占用不能留在一个已关闭的会话上。
+        authHoldWorkerId: null,
+        authHoldExpiresAt: null,
+        version: sql`${browserSessions.version} + 1`,
+        updatedAt: now,
+      })
+      .where(eq(browserSessions.id, input.sessionId))
+      .returning()
+
+    await recordAudit(
+      tx as unknown as Db,
+      input.actor,
+      'session.dispose',
+      'session',
+      input.sessionId,
+      [
+        `处置会话 ${session.status}（${session.profileKey}，owner ${session.ownerWorkerId}）`,
+        `撤销租约 ${revoked.length} 条`,
+        input.note ? `说明：${input.note}` : null,
+      ]
+        .filter(Boolean)
+        .join('；'),
+    )
+
+    return toSessionDto(closed!, null)
+  })
+}
+
+async function loadSessionRow(db: Db, sessionId: string): Promise<BrowserSessionRow> {
+  const [row] = await db
+    .select()
+    .from(browserSessions)
+    .where(eq(browserSessions.id, sessionId))
+    .limit(1)
+  return row!
+}
+

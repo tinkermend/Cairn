@@ -1,17 +1,21 @@
-import { BadRequestException, ConflictException } from '@nestjs/common'
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   commitStoredObject,
   consoleAccounts,
+  createSession,
+  getSessionById,
   newId,
   openIsolatedDb,
   recordObjectEvidence,
   reserveStoredObject,
+  setSessionStatus,
   type DbHandle,
 } from '@cairn/db'
 import { DEV_CREDENTIAL_KEY, type Step } from '@cairn/shared'
 import type { RequestAccount } from './common/request-account'
 import { credentialKeyFromEnv, LocalSecretProvider } from './secrets/local-secret-provider'
+import { BrowserSessionsService } from './browser-sessions/browser-sessions.service'
 import { RunsService } from './runs/runs.service'
 import { ScenariosService } from './scenarios/scenarios.service'
 import { TargetsService } from './targets/targets.service'
@@ -210,5 +214,63 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
     } catch (error) {
       expect((error as ConflictException).getResponse()).toMatchObject({ code: 'TARGET_ACCOUNT_HAS_RUNS' })
     }
+  })
+
+  it('处置卡死会话：LOST 放行、活会话被拒、键可再用', async () => {
+    const target = await createTarget(slug('sess'))
+    const account = await targets.createAccount(
+      target.id,
+      { displayName: '会话账号', username: `sess-${newId().slice(0, 8)}`, status: 'active' },
+      actor,
+    )
+    const sessions = new BrowserSessionsService(handle)
+
+    const created = await createSession(handle.db, {
+      key: { targetId: target.id, targetAccountId: account.id },
+      ownerWorkerId: 'api-worker',
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: created.id,
+      expectedVersion: created.version,
+      status: 'OPEN',
+    })
+    const opened = (await getSessionById(handle.db, created.id))!
+
+    // 活会话：控制面不得处置
+    await expect(sessions.dispose(opened.id, {}, actor)).rejects.toBeInstanceOf(ConflictException)
+
+    // owner 失联 → LOST，键仍被占
+    await setSessionStatus(handle.db, {
+      sessionId: opened.id,
+      expectedVersion: opened.version,
+      status: 'LOST',
+      closeReason: 'owner_lost',
+    })
+    expect((await sessions.list()).items.find((s) => s.id === opened.id)?.disposable).toBe(true)
+
+    const dto = await sessions.dispose(opened.id, { note: '已确认旧进程退出' }, actor)
+    expect(dto).toMatchObject({ status: 'CLOSED', closeReason: 'operator_disposed', disposable: false })
+    expect((await sessions.list()).items.some((s) => s.id === opened.id)).toBe(false)
+
+    // 键已释放：同键可再建
+    const rebuilt = await createSession(handle.db, {
+      key: { targetId: target.id, targetAccountId: account.id },
+      ownerWorkerId: 'api-worker',
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(rebuilt.generation).toBeGreaterThan(created.generation)
+    await setSessionStatus(handle.db, {
+      sessionId: rebuilt.id,
+      expectedVersion: rebuilt.version,
+      status: 'CLOSED',
+      closeReason: 'cleanup',
+    })
+
+    await expect(sessions.dispose(newId(), {}, actor)).rejects.toBeInstanceOf(NotFoundException)
   })
 })

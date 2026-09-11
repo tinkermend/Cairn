@@ -286,9 +286,26 @@ UPDATE browser_sessions SET status = 'CLOSED', closed_at = now(),
 
 ### D12. 可观测：结构化日志，不扩事件枚举
 
-`pino` 行带 `sessionId` / `leaseId` / `sessionGeneration` / `fencingToken` / `workerId` / `runId`，事件覆盖：`session.created`、`session.reused`、`session.auth_changed`、`session.closing`、`session.closed`、`session.lost`、`lease.acquired`、`lease.renew_failed`、`lease.released`、`lease.expired`、`reap.cycle`。
+`pino` 行带 `sessionId` / `leaseId` / `sessionGeneration` / `fencingToken` / `workerId` / `runId`，事件覆盖：`session.created`、`session.reused`、`session.auth_changed`、`session.closing`、`session.closed`、`session.lost`、`session.disposed_externally`、`lease.acquired`、`lease.renew_failed`、`lease.released`、`lease.expired`、`reap.cycle`。
 
 不扩 `RUN_EVENT_TYPES`：事件信封是 Run 作用域的，会话生命周期不是 Run 的子事件；SSE 与观察面是 P7 的事，那时再决定会话事件的形状。指标（活跃会话数、租约等待时长、重建认证次数）留给 P7 的 OTel 接入。
+
+### D13. 卡死会话的人工处置出口：控制面只改状态，不碰浏览器
+
+`LOST` 占键是对的（D3），但它必须有出口——否则一个 owner 失联的会话会把该 Target + TargetAccount **永久**锁死，只能手写 SQL 救。本期补最小出口：
+
+```text
+GET  /browser-sessions                  session:read      列出占键的会话（元数据 + 当前 ACTIVE 租约 + disposable）
+POST /browser-sessions/:id/dispose      session:dispose   确认旧浏览器已停/已隔离后释放键
+```
+
+- **只允许 `CREATING` / `CLOSING` / `LOST`**。`OPEN` 一律拒绝（`SESSION_NOT_DISPOSABLE`）：那是活会话，控制面放行等于同账号双开，必须由持有它的 Worker 按 D10 自己回收。
+- **API 不持有、不关闭浏览器**（宪法 §12）。控制面没有句柄，也无从验证旧进程是否真的退出——「已停或已隔离」由操作者声明，写进审计摘要，可追溯到人和时间。
+- 处置事务内：撤该会话的 `ACTIVE` 租约（`REVOKED` / `operator_disposed`）、置 `CLOSED` / `operator_disposed`、清认证占用、写 `session.dispose` 审计。对已 `CLOSED` 幂等返回，不覆盖既有 `close_reason`。
+- **worker 侧必须收尾**：处置改不了另一个进程里的浏览器。`reap()` 先做一次对账，凡是「行已 `CLOSED` / 行已消失 / owner 换了人」的本地句柄，停掉浏览器、丢句柄、清 guard 与租约映射，记 `session.disposed_externally`。没有这一步，处置只是在库里放行，盘上仍留着一个带同一 profile 的旧进程——正是 D3 要防的双开。
+- 权限码 `session:read` / `session:dispose` 进 `PERMISSIONS` 目录：admin 全部、operator 两项、viewer 只读。系统角色的权限集由 `0009_session_dispose.sql` 补种——目录是代码拥有的，库里只存绑定，新增码不补种就是「shared 的单测说 admin 全覆盖、实际库 403」。
+
+Web 界面不在本期（非目标：P7 前不展示会话）；出口先给运维与脚本。
 
 ## 4. 形状
 
@@ -408,14 +425,40 @@ export type BrowserPort = {
 
 `SessionGrant` 是 Engine 与 Executor 能看到的全部：没有 Context、Page、Cookie，也没有路径。页面能力在 P5 通过 `BrowserPort` 扩展，本方案不开这个口子。
 
+### 处置接口（`@cairn/api`，D13）
+
+```ts
+// src/browser-sessions/browser-sessions.controller.ts
+GET  /browser-sessions                 @RequirePermissions('session:read')
+POST /browser-sessions/:id/dispose     @RequirePermissions('session:dispose')
+
+// 请求体（disposeSessionBodySchema，strictObject）
+{ note?: string }   // 512 字内，操作者确认「旧浏览器已停或已隔离」的说明，进审计
+```
+
+`sessionDtoSchema` 只给元数据：状态三列、`ownerWorkerId`、`generation`、`profileKey`（键而非绝对路径）、TTL 与时间戳、当前 `ACTIVE` 租约、`disposable`。没有 Cookie、没有页面句柄，也没有可用于驱动浏览器的东西。
+
+### `@cairn/db` 处置与列表
+
+```ts
+listSessions(db): Promise<SessionDto[]>                       // 只列占键的会话
+toSessionDto(row, lease): SessionDto
+disposeStuckSession(db, { sessionId, actor, note? }): Promise<SessionDto>
+DISPOSABLE_SESSION_STATUSES                                    // CREATING / CLOSING / LOST
+```
+
+`disposeStuckSession` 行锁 → 校验可处置 → 撤租约 → 关会话 → 写审计，同一事务；对已 `CLOSED` 幂等。`OPEN` 抛 `SESSION_NOT_DISPOSABLE`，不存在抛 `SESSION_NOT_FOUND`，两者都经 `mapPgRestriction` / `DomainError` 走既有 HTTP 映射。
+
 ## 5. 文件
 
 | 区域 | 动作 |
 | --- | --- |
 | `packages/shared/src/session.ts`、`run.ts`、`run-api.ts`、`env.ts`、`index.ts` | 状态词表、错误码、`sessionPolicySchema`、快照与创建入参的可选字段、`browserEnvShape` 并入 `workerEnvSchema`（含 `superRefine`） |
 | `packages/db/migrations/0008_browser_session.sql` | 两张表、约束、索引、`target_accounts (id, target_id)` 唯一索引 |
-| `packages/db/src/schema/session.ts`、`src/sessions/`、`index.ts` | Drizzle 表与 Repository |
-| `packages/db/src/__tests__/schema-parity.test.ts` | 表清单、列与约束断言、`0008` 的 `skipped` |
+| `packages/db/src/schema/session.ts`、`src/sessions/`、`src/audit/record.ts`、`index.ts` | Drizzle 表、Repository、`recordAudit` 公共写入（原来在 runs / scenarios 各一份） |
+| `packages/db/migrations/0009_session_dispose.sql` | 系统角色补种 `session:read` / `session:dispose` |
+| `packages/api/src/browser-sessions/` | 控制面：列表与处置（controller / service / module / http spec） |
+| `packages/db/src/__tests__/schema-parity.test.ts` | 表清单、列与约束断言、`0008` / `0009` 的 `skipped` |
 | `packages/secret/` | 新库包 `@cairn/secret`：`LocalSecretProvider` 从 api 抽出。worker 也要解密，但它不能进 `shared`——web 依赖 shared，`node:crypto` 不该出现在浏览器构建路径上 |
 | `packages/worker/package.json` | 加 `playwright` 与 `@cairn/secret` 依赖、二进制安装脚本 |
 | `packages/worker/src/browser/` | `runtime.ts`（唯一 playwright 边界）、`session-manager.ts`、`profiles.ts`（目录规则与 0700）、`guard.ts`（命令面校验）、`browser.module.ts` |
@@ -459,13 +502,18 @@ export type BrowserPort = {
 21. 页面不累积（RF17）：同一会话连跑 50 次 `acquire → release`，页面数不超过 1，无遗留业务页。
 22. 配置：`LEASE_TTL < 3×HEARTBEAT`、`MAX_LIFETIME <= IDLE_TTL`、非 development 配相对 `PROFILE_DIR` 时启动失败，输出只有变量名与规则；`.env.example` 与 schema 键名逐一对应。
 23. `pnpm test`、`pnpm lint`、`pnpm typecheck` 通过。
+24. 处置出口（D13）：`LOST` 会话经 `POST /browser-sessions/:id/dispose` 转 `CLOSED`（`close_reason = operator_disposed`），其 `ACTIVE` 租约转 `REVOKED`，同键可立即再建且 `generation` 前进；`OPEN` 会话处置返回 409 `SESSION_NOT_DISPOSABLE`，状态不变；重复处置幂等且不改写 `close_reason`；不存在返回 404 `SESSION_NOT_FOUND`；审计含操作者、目标会话与 `note`。
+25. 处置的权限与授权：`GET /browser-sessions` 需 `session:read`，处置需 `session:dispose`；只有 `session:read` 的账号处置得 403；未认证得 401；`0009` 迁移后 admin 的权限集仍与 `PERMISSIONS` 逐项相等（否则按钮可见但接口 403）。
+26. 处置后 worker 收尾（D13）：本进程仍持有句柄的已处置会话，下一次 `reap()` 停掉浏览器、丢弃句柄、清 guard 与租约映射（`session.disposed_externally`），浏览器进程数归零；页数归零。
+27. 列表只给元数据：`GET /browser-sessions` 的项不含 Cookie / storageState / profile 绝对路径；只列占键的会话（`CLOSED` 不出现）；`disposable` 仅在 `CREATING` / `CLOSING` / `LOST` 为真。
 
 ## 8. 刻意留给后续
 
 | 阶段 | 本方案结束后仍缺的 |
 | --- | --- |
 | Affinity / 容量排队 | P3 心跳与 Worker 注册到位后，把 Run 路由到健康 owner；容量不足改为等待而不是失败 |
-| 跨 Worker 失联 | owner 失联判定 → `LOST`；确认旧进程停止后的隔离与重建流程；人工处置入口 |
+| 跨 Worker 失联 | owner 失联判定 → `LOST`（本期只到 SQL 形状与人工处置出口）；确认旧进程停止后的自动隔离与重建流程 |
+| 处置面 | Web 界面（P7 的会话只读页里加处置按钮）、批量处置、按 Target 的会话视图；本期只有 API |
 | 认证通道 | 人工登录的可达界面（headful 本机 / 远程可视化 / 扩展桥）；`WAITING_FOR_AUTH` 期间释放 RunLease 并由恢复扫描重新领取、增代 |
 | 复用档位 | `NEW_CONTEXT`（需要改成 browser + storageState 播种），以及每个 Target 的策略列与 UI |
 | 页面能力 | P5 的 `BrowserPort` 扩展、Surface 与 TargetResolver |
@@ -480,9 +528,10 @@ export type BrowserPort = {
 3. `run_fencing_token` 在 P3 未落地前为 `NULL`，此时只能证明「我是会话的持有者」，不能证明「我仍是这个 Run 的合法执行者」。单 Worker 阶段可接受；P3 落地必须回填并收紧为 `NOT NULL`。
 4. 认证等待期间 Run 仍占住该 Worker 的执行槽（`WAITING_FOR_AUTH` 已经写库，但释放与重新领取要 P3 的恢复扫描）。单 Worker 下表现为「等人登录时不能跑别的 Run」。
 5. 非 owner 不碰别人浏览器的规则靠 `owner_worker_id` 过滤，DB 层没有强制「只有 owner 能写 health / auth_state」。多 Worker 落地时应加显式校验或按 owner 分离的写权限。
-6. 浏览器崩溃后 profile 目录里可能留下带锁的残留（`SingletonLock`）；`PROFILE_LOCKED` 时本期靠人工清理，没有自动恢复。
-7. 相对 `CAIRN_BROWSER_PROFILE_DIR` 在非 development 下启动失败与对象存储同规则，但两者的根目录约定各自维护，没有共用解析函数。
-8. profile 目录含登录态，权限靠 0700 与「不上传」两条约定，没有加密；Worker 磁盘被读取即等于账号被接管。合规要求提高时需评估磁盘加密或专门的凭证存储。
+6. 处置是**声明式**的：操作者说旧浏览器已停，平台无法验证。若实际操作者判断错误，处置会释放键并允许同键重建，而旧进程可能仍在跑同一 profile——此时靠 Chromium 的 `userDataDir` 单实例锁兜底（表现为新会话 `PROFILE_LOCKED`），不是靠平台。要真正消除这一档风险，需要跨 Worker 的进程可见性（P3 心跳 + 隔离流程）。
+7. 浏览器崩溃后 profile 目录里可能留下带锁的残留（`SingletonLock`）；`PROFILE_LOCKED` 时本期靠人工清理，没有自动恢复。
+8. 相对 `CAIRN_BROWSER_PROFILE_DIR` 在非 development 下启动失败与对象存储同规则，但两者的根目录约定各自维护，没有共用解析函数。
+9. profile 目录含登录态，权限靠 0700 与「不上传」两条约定，没有加密；Worker 磁盘被读取即等于账号被接管。合规要求提高时需评估磁盘加密或专门的凭证存储。
 
 ## 10. 更新历史
 
@@ -490,4 +539,5 @@ export type BrowserPort = {
 - 2026-09-11：落地。shared 词表与 env、`0008` 迁移与 Repository、worker `src/browser/`、Lifecycle 回收与自愈、`finishAttempt` 提交边界；`docs/arch/03` §6 词表已按 D2 修订。
 - 2026-09-11：补齐认证闭环——`WAITING_FOR_AUTH` 写库、认证占用超时 → `SESSION_AUTH_TIMEOUT`、worker 侧 LocalSecretProvider 自动登录、`SESSION_LEASE_UNKNOWN`、换代续租测试、可选 chromium runtime 测、`browser:install` 脚本。
 - 2026-09-11：P1 收口——快照平台默认与 env 默认对齐测试、RF04 零 session 行断言、D8 复用档位单测、RF17 50 页、认证文案与 `.env.example` 去重。说明：ExecutionEngine 本期只注入 BrowserPort、不调用（无浏览器 Step）；P5 前正式 Run 不走 acquire。
-- 待后续：路线图 P4 中 Affinity 与失联处置；P5 页面能力（Engine 消费 BrowserPort）；人工认证可达通道。
+- 2026-09-11：复查补口——`LOST` 原本是只写状态（占键且无出口，同 Target+TargetAccount 会被永久锁死）。按 D13 补最小人工处置入口：`GET /browser-sessions` + `POST /browser-sessions/:id/dispose`（`session:read` / `session:dispose`，`0009` 补种系统角色）、`disposeStuckSession` 同事务撤租约与写审计、worker `reap` 对账丢弃已处置句柄。同时把 `recordAudit` 从 runs / scenarios 的各一份收敛成 `packages/db/src/audit/record.ts`。
+- 待后续：路线图 P4 中 Affinity 与失联处置；P5 页面能力（Engine 消费 BrowserPort）；人工认证可达通道；处置面 Web 界面。

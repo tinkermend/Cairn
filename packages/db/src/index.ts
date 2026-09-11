@@ -1,4 +1,5 @@
 export { newId } from './id.js'
+export { recordAudit, type AuditActor } from './audit/record.js'
 export { createDb, type Db, type DbHandle } from './client.js'
 export { requireReachableDb, openIsolatedDb } from './testing.js'
 export { migrate, loadMigrations, type Migration, type MigrateResult } from './migrate.js'

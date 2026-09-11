@@ -409,6 +409,10 @@ export class BrowserSessionManager {
 
     const authTimeouts = await this.reapAuthTimeouts()
 
+    // 控制面可能已处置掉本进程的卡死会话（例如 LOST 后人工放行）。句柄若还在，
+    // 必须停掉浏览器——否则旧进程带着同一 profile 活着，正是处置要消除的双开风险。
+    const disposedDropped = await this.dropDisposedHandles()
+
     const reapable = await listReapableSessions(db, this.options.workerId)
     if (reapable.length > 0) {
       await markSessionsClosing(db, {
@@ -439,10 +443,42 @@ export class BrowserSessionManager {
     }
 
     this.logger.log(
-      { leasesExpired, sessionsClosed, authTimeouts, workerId: this.options.workerId },
+      { leasesExpired, sessionsClosed, authTimeouts, disposedDropped, workerId: this.options.workerId },
       'reap.cycle',
     )
     return { leasesExpired, sessionsClosed, authTimeouts }
+  }
+
+  /**
+   * 丢弃已不由本进程拥有的会话句柄：行已 CLOSED、已消失，或 owner 换了人。
+   *
+   * 处置只改库，停不了浏览器；句柄在本进程时由这里收尾。租约映射一并清掉——
+   * 处置已经把它们 REVOKED，留着只会让心跳反复判定丢租。
+   */
+  private async dropDisposedHandles(): Promise<number> {
+    const db = this.dbHandle.db
+    let dropped = 0
+    for (const [sessionId, live] of [...this.lives]) {
+      const row = await getSessionById(db, sessionId)
+      const stillOurs =
+        row !== null && row.status !== 'CLOSED' && row.ownerWorkerId === this.options.workerId
+      if (stillOurs) continue
+
+      for (const page of live.runPages.values()) await closePage(page)
+      await stopSession(live.handle)
+      this.lives.delete(sessionId)
+      for (const [leaseId, mapped] of [...this.leaseToSession]) {
+        if (mapped !== sessionId) continue
+        this.guard.revoke(leaseId)
+        this.leaseToSession.delete(leaseId)
+      }
+      dropped += 1
+      this.logger.warn(
+        { sessionId, status: row?.status ?? 'missing', workerId: this.options.workerId },
+        'session.disposed_externally',
+      )
+    }
+    return dropped
   }
 
   /**

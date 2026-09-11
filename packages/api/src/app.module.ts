@@ -9,6 +9,7 @@ import { RequestIdMiddleware } from './common/request-id.middleware'
 import { config } from './config/env'
 import { DbModule } from './db/db.module'
 import { AuthModule } from './auth/auth.module'
+import { BrowserSessionsModule } from './browser-sessions/browser-sessions.module'
 import { HealthModule } from './health/health.module'
 import { PermissionsGuard } from './rbac/permissions.guard'
 import { RbacModule } from './rbac/rbac.module'
@@ -31,6 +32,7 @@ import { TargetsModule } from './targets/targets.module'
     TargetsModule,
     ScenariosModule,
     RunsModule,
+    BrowserSessionsModule,
     // 必须放在最后：兜底路由要在所有业务路由之后注册
     NotFoundModule,
   ],

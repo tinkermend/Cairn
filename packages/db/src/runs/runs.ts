@@ -11,7 +11,6 @@ import {
   runEvidenceListResponseSchema,
   runListResponseSchema,
   runSnapshotSchema,
-  type AuditAction,
   type CreateRunBody,
   type EvidenceType,
   type ExecutionError,
@@ -24,39 +23,20 @@ import {
   type SessionGrant,
   type StepRunStatus,
 } from '@cairn/shared'
+import { recordAudit, type AuditActor } from '../audit/record.js'
 import { verifySessionLeaseForCommit } from '../sessions/sessions.js'
 import type { Db, DbHandle } from '../client.js'
 import { newId } from '../id.js'
-import { consoleAuditEvents } from '../schema/audit.js'
 import { attempts, evidences, runs, stepRuns } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
 import { computeIdempotencyDigest, computeSnapshotDigest } from './digest.js'
 import { badRequest, conflict, mapPgRestriction, notFound } from './errors.js'
-import { loadScenarioVersion, type AuditActor } from './scenarios.js'
+import { loadScenarioVersion } from './scenarios.js'
 
 const TERMINAL_RUN = new Set<RunStatus>(['SUCCEEDED', 'FAILED', 'CANCELLED', 'NEEDS_REVIEW'])
 
 function iso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null
-}
-
-async function writeAudit(
-  tx: Db,
-  actor: AuditActor,
-  action: AuditAction,
-  resource: string,
-  resourceId: string,
-  summary: string,
-): Promise<void> {
-  await tx.insert(consoleAuditEvents).values({
-    id: newId(),
-    actorConsoleAccountId: actor.id,
-    action,
-    resource,
-    resourceId,
-    summary,
-    createdAt: new Date(),
-  })
 }
 
 function rethrow(error: unknown): never {
@@ -283,7 +263,7 @@ export async function createRunWithSnapshot(
           })),
         )
       }
-      await writeAudit(
+      await recordAudit(
         tx as unknown as Db,
         input.actor,
         'run.create',
@@ -335,7 +315,7 @@ export async function requestRunCancel(db: Db, runId: string, actor: AuditActor)
         .set({ status: 'CANCELLED', finishedAt: now })
         .where(and(eq(stepRuns.runId, runId), eq(stepRuns.status, 'PENDING')))
     }
-    await writeAudit(tx as unknown as Db, actor, 'run.cancel', 'run', runId, '取消运行')
+    await recordAudit(tx as unknown as Db, actor, 'run.cancel', 'run', runId, '取消运行')
   })
   return getRun(db, runId)
 }
