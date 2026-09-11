@@ -179,7 +179,7 @@ describe('RBAC HTTP', () => {
       .send({ key: 'qa_lead', name: 'QA', permissions: ['workflow:read'] })
       .expect(403)
     expect(denied.body.code).toBe('FORBIDDEN')
-    await request(viewerApp.getHttpServer()).delete('/rbac/roles/role-qa').expect(403)
+    await request(viewerApp.getHttpServer()).post('/rbac/roles/role-qa/delete').expect(403)
     expect(service.createRole).not.toHaveBeenCalled()
     expect(service.deleteRole).not.toHaveBeenCalled()
   })
@@ -203,7 +203,7 @@ describe('RBAC HTTP', () => {
   })
 
   it('删除角色返回 204', async () => {
-    await request(adminApp.getHttpServer()).delete('/rbac/roles/role-qa').expect(204)
+    await request(adminApp.getHttpServer()).post('/rbac/roles/role-qa/delete').expect(204)
     expect(service.deleteRole).toHaveBeenCalledWith('role-qa', adminPrincipal)
   })
 
@@ -234,7 +234,7 @@ describe('RBAC HTTP', () => {
 
   it('分配角色校验至少保留一个', async () => {
     const res = await request(adminApp.getHttpServer())
-      .put('/console/accounts/acc-1/roles')
+      .post('/console/accounts/acc-1/roles')
       .send({ roleIds: [] })
       .expect(400)
     expect(res.body.code).toBe('BAD_REQUEST')
@@ -246,8 +246,8 @@ describe('RBAC HTTP', () => {
     expect(service.getMe).toHaveBeenCalledWith(viewerPrincipal.id)
   })
 
-  it('PATCH /me 更新显示名', async () => {
-    await request(viewerApp.getHttpServer()).patch('/me').send({ displayName: 'V2' }).expect(200)
+  it('POST /me 更新显示名', async () => {
+    await request(viewerApp.getHttpServer()).post('/me').send({ displayName: 'V2' }).expect(200)
     expect(service.updateMe).toHaveBeenCalledWith(viewerPrincipal.id, { displayName: 'V2' })
   })
 

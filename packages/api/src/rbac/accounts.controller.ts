@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common'
 import {
   assignAccountRolesBodySchema,
   createAccountBodySchema,
@@ -40,7 +40,8 @@ export class AccountsController {
     return this.rbac.getAccount(id)
   }
 
-  @Patch(':id')
+  @Post(':id')
+  @HttpCode(HttpStatus.OK)
   @RequirePermissions('account:write')
   updateAccount(
     @Param('id') id: string,
@@ -50,14 +51,15 @@ export class AccountsController {
     return this.rbac.updateAccount(id, body, actor)
   }
 
-  @Delete(':id')
-  @HttpCode(204)
+  @Post(':id/delete')
+  @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions('account:delete')
   deleteAccount(@Param('id') id: string, @CurrentAccount() actor: RequestAccount) {
     return this.rbac.deleteAccount(id, actor)
   }
 
-  @Put(':id/roles')
+  @Post(':id/roles')
+  @HttpCode(HttpStatus.OK)
   @RequirePermissions('account:write')
   assignRoles(
     @Param('id') id: string,
@@ -67,8 +69,8 @@ export class AccountsController {
     return this.rbac.assignAccountRoles(id, body, actor)
   }
 
-  @Put(':id/password')
-  @HttpCode(204)
+  @Post(':id/password')
+  @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions('account:write')
   setPassword(
     @Param('id') id: string,

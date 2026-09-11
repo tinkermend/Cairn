@@ -23,7 +23,7 @@ export function login(body: LoginBody): Promise<LoginResponse> {
 
 export function updateMe(body: UpdateMeBody): Promise<MeResponse> {
   return apiFetch('/api/me', meResponseSchema, {
-    method: 'PATCH',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updateMeBodySchema.parse(body)),
   })

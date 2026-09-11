@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Patch, Post } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Post } from '@nestjs/common'
 import {
   changePasswordBodySchema,
   updateMeBodySchema,
@@ -20,7 +20,8 @@ export class MeController {
     return this.rbac.getMe(account.id)
   }
 
-  @Patch()
+  @Post()
+  @HttpCode(HttpStatus.OK)
   updateMe(
     @CurrentAccount() account: RequestAccount,
     @Body(new ZodValidationPipe(updateMeBodySchema)) body: UpdateMeBody,
@@ -29,7 +30,7 @@ export class MeController {
   }
 
   @Post('password')
-  @HttpCode(204)
+  @HttpCode(HttpStatus.NO_CONTENT)
   changePassword(
     @CurrentAccount() account: RequestAccount,
     @Body(new ZodValidationPipe(changePasswordBodySchema)) body: ChangePasswordBody,

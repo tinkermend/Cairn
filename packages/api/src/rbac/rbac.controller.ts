@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common'
 import {
   createRoleBodySchema,
   replaceRolePermissionsBodySchema,
@@ -44,7 +44,8 @@ export class RbacController {
     return this.rbac.getRole(id)
   }
 
-  @Patch('roles/:id')
+  @Post('roles/:id')
+  @HttpCode(HttpStatus.OK)
   @RequirePermissions('role:write')
   updateRole(
     @Param('id') id: string,
@@ -54,7 +55,8 @@ export class RbacController {
     return this.rbac.updateRole(id, body, actor)
   }
 
-  @Put('roles/:id/permissions')
+  @Post('roles/:id/permissions')
+  @HttpCode(HttpStatus.OK)
   @RequirePermissions('role:write')
   replacePermissions(
     @Param('id') id: string,
@@ -64,8 +66,8 @@ export class RbacController {
     return this.rbac.replaceRolePermissions(id, body, actor)
   }
 
-  @Delete('roles/:id')
-  @HttpCode(204)
+  @Post('roles/:id/delete')
+  @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermissions('role:delete')
   deleteRole(@Param('id') id: string, @CurrentAccount() actor: RequestAccount) {
     return this.rbac.deleteRole(id, actor)

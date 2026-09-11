@@ -1,3 +1,4 @@
+2026-09-11--控制台 RBAC 的 8 个 PATCH/PUT/DELETE 端点收成 POST（对齐 targets 的 `:id` 与 `:id/delete` 约定），补上宪法不变量 19 唯一的破口；检查读 Express 装配后的真实路由表而不是扫源码文本，@All 挂到具体业务路径同样会红，并已用重新塞回一个 @Patch 验证它确实变红
 2026-09-11--RunLease 复查第二轮：优雅停机不再把在途 Run 洗成 CANCELLED（Engine 区分外部信号与库里说停，交回 RECOVERING 且断言必须真能被接管），恢复次数只数失败交接（优雅停机不计，否则滚动发布三次就把好 Run 推进待核查），NEEDS_REVIEW 不再写 finished_at，删掉无产生者的两个租约错误码，WORKER_ID_CONFLICT 启动前给可读原因；补 RF08 副作用孤儿/同事务回滚注入点/幂等/自愈/双开/容量与 L3 组件用例，运行页显示名称而非裸 UUID；进程维度的 kill/暂停/DB 断连与多进程 RF06 明确留成债务
 2026-09-11--RunLease 三处致命修补：0011 收紧会话租约前先撤销存量 ACTIVE+NULL fencing（否则 23514 整份回滚、有会话的库永久升不上来）、心跳失败按 lost/instance_taken 分流（失联重新注册自愈，身份被接管退出进程，不再留不可观测的僵尸）、finishAttempt 加 barrierAfterVerify 让 D5 的提交边界真被测试卡住；三处均带负向验证
 2026-09-11--复查修补 RunLease：Engine 接管后续跑 RUNNING 步骤、claimRun 要求 READY+instance、心跳失败自停；补接管/屏障/LOST/env 反例用例

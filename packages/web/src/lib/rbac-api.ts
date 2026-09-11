@@ -46,15 +46,15 @@ export function createRole(body: CreateRoleBody): Promise<RoleDto> {
 
 export function updateRole(id: string, body: UpdateRoleBody): Promise<RoleDto> {
   return apiFetch(`/api/rbac/roles/${id}`, roleSchema, {
-    method: 'PATCH',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updateRoleBodySchema.parse(body)),
   })
 }
 
 export function deleteRole(id: string): Promise<void> {
-  return apiFetch(`/api/rbac/roles/${id}`, roleSchema, {
-    method: 'DELETE',
+  return apiFetch(`/api/rbac/roles/${id}/delete`, roleSchema, {
+    method: 'POST',
   }).then(() => undefined)
 }
 
@@ -72,15 +72,15 @@ export function createAccount(body: CreateAccountBody): Promise<AccountDto> {
 
 export function updateAccount(id: string, body: UpdateAccountBody): Promise<AccountDto> {
   return apiFetch(`/api/console/accounts/${id}`, accountSchema, {
-    method: 'PATCH',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updateAccountBodySchema.parse(body)),
   })
 }
 
 export function deleteAccount(id: string): Promise<void> {
-  return apiFetch(`/api/console/accounts/${id}`, accountSchema, {
-    method: 'DELETE',
+  return apiFetch(`/api/console/accounts/${id}/delete`, accountSchema, {
+    method: 'POST',
   }).then(() => undefined)
 }
 
@@ -89,7 +89,7 @@ export function assignAccountRoles(
   body: AssignAccountRolesBody,
 ): Promise<AccountDto> {
   return apiFetch(`/api/console/accounts/${id}/roles`, accountSchema, {
-    method: 'PUT',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(assignAccountRolesBodySchema.parse(body)),
   })
@@ -101,7 +101,7 @@ export function fetchMe(): Promise<MeResponse> {
 
 export function setAccountPassword(id: string, body: SetPasswordBody): Promise<void> {
   return apiFetch(`/api/console/accounts/${id}/password`, accountSchema, {
-    method: 'PUT',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(setPasswordBodySchema.parse(body)),
   }).then(() => undefined)
