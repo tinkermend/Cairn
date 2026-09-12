@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { evidencePolicySchema } from './evidence-policy.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
 import { contextKeySchema, executionPolicySchema, stepSchema } from './step.js'
@@ -146,6 +147,11 @@ export const runSnapshotSchema = z
      * 新 Run 创建时必须写入完整值（历史 Run 可解释当时怎么执行）。
      */
     sessionPolicy: sessionPolicySchema.optional(),
+    /**
+     * 冻结的证据策略。可选：存量快照没有它仍可解析，缺省走平台默认。
+     * 新 Run 创建时写入解析后的完整值。
+     */
+    evidencePolicy: evidencePolicySchema.optional(),
     executorVersions: z.record(z.string().min(1), z.string().min(1).max(64)).optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),

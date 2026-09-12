@@ -140,8 +140,23 @@ describe('apiEnvSchema', () => {
       CAIRN_JWT_SECRET: 'a-real-secret-value-over-16',
       CAIRN_BOOTSTRAP_ADMIN_PASSWORD: 'a-real-password',
       CAIRN_CREDENTIAL_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
     })
     expect(env.CAIRN_ENV).toBe('production')
+    expect(env.CAIRN_OBJECT_STORE).toBe('local')
+  })
+
+  it('非 development 的本地对象目录必须是绝对路径', () => {
+    const result = apiEnvSchema.safeParse({
+      CAIRN_ENV: 'production',
+      CAIRN_JWT_SECRET: 'a-real-secret-value-over-16',
+      CAIRN_BOOTSTRAP_ADMIN_PASSWORD: 'a-real-password',
+      CAIRN_CREDENTIAL_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      CAIRN_OBJECT_STORE: 'local',
+      CAIRN_OBJECT_STORE_DIR: '.data/object-store',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((i) => i.path.join('.'))).toContain('CAIRN_OBJECT_STORE_DIR')
   })
 
   it('非 development 沿用默认凭据主密钥时拒绝启动', () => {
@@ -188,6 +203,8 @@ describe('workerEnvSchema', () => {
     expect(env.CAIRN_OBJECT_STORE).toBe('local')
     expect(env.CAIRN_OBJECT_STORE_DIR).toBe('.data/object-store')
     expect(env.CAIRN_OBJECT_MAX_BYTES).toBe(33_554_432)
+    expect(env.CAIRN_TRACE_MAX_BYTES).toBe(134_217_728)
+    expect(env.CAIRN_EVIDENCE_UPLOAD_MAX_ATTEMPTS).toBe(3)
     expect(env.CAIRN_OBJECT_RETAIN_DAYS).toBe(30)
     expect(env.CAIRN_S3_FORCE_PATH_STYLE).toBe(false)
     expect(env.CAIRN_S3_BUCKET).toBeUndefined()

@@ -11,6 +11,7 @@ const RUN_ID = '44444444-4444-4444-8444-444444444444'
 const mocks = vi.hoisted(() => ({
   fetchRun: vi.fn(),
   fetchRunEvidence: vi.fn(),
+  fetchEvidenceContent: vi.fn(),
   cancelRun: vi.fn(),
   reviewRun: vi.fn(),
   resumeRunAuth: vi.fn(),
@@ -49,6 +50,7 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     createdAt: '2026-09-11T02:00:00.000Z',
     startedAt: '2026-09-11T02:00:01.000Z',
     finishedAt: null,
+    evidenceStatus: 'PENDING',
     lease: null,
     placement: {
       state: 'not_applicable',
@@ -105,7 +107,10 @@ const evidence: RunEvidenceListResponse = {
       schemaVersion: 1,
       id: '99999999-9999-4999-8999-999999999999',
       runId: RUN_ID,
+      stepRunId: '66666666-6666-4666-8666-666666666666',
+      attemptId: '88888888-8888-4888-8888-888888888888',
       type: 'error',
+      status: 'available',
       createdAt: '2026-09-11T02:00:09.000Z',
       payload: { code: 'UNKNOWN', safeMessage: '接管时副作用步骤结果未确认' },
     },
@@ -244,6 +249,59 @@ describe('RunDetailPage', () => {
     const waiting = await renderPage()
     await expect.element(waiting.getByText(/等待持有该账号会话的 Worker 领取/)).toBeInTheDocument()
     expect(waiting.getByText(/等待持有该账号会话/).element().className).toContain('text-muted-foreground')
+  })
+
+  it('两根轴并列：成功且证据不完整是橙色；终态收集中是灰色', async () => {
+    mocks.fetchRun.mockResolvedValue(
+      runDetail({ status: 'SUCCEEDED', evidenceStatus: 'INCOMPLETE', stepRuns: [] }),
+    )
+    signIn(['run:read'])
+    const incomplete = await renderPage()
+    await expect.element(incomplete.getByText('成功')).toBeInTheDocument()
+    const incompleteBadge = incomplete.getByText('证据不完整')
+    await expect.element(incompleteBadge).toBeInTheDocument()
+    expect(incompleteBadge.element().closest('[data-slot="status-badge"]')?.className).toContain(
+      'bg-status-warning-background',
+    )
+
+    mocks.fetchRun.mockResolvedValue(
+      runDetail({ status: 'SUCCEEDED', evidenceStatus: 'PENDING', stepRuns: [] }),
+    )
+    const pending = await renderPage()
+    const collecting = pending.getByText('证据收集中')
+    await expect.element(collecting).toBeInTheDocument()
+    expect(collecting.element().closest('[data-slot="status-badge"]')?.className).toContain(
+      'bg-status-neutral-background',
+    )
+    expect(collecting.element().closest('[data-slot="status-badge"]')?.className).not.toContain(
+      'bg-status-warning-background',
+    )
+  })
+
+  it('缺失原因用橙色而不是红色；证据挂在对应 Attempt 下', async () => {
+    mocks.fetchRunEvidence.mockResolvedValue({
+      items: [
+        {
+          schemaVersion: 1,
+          id: '99999999-9999-4999-8999-999999999991',
+          runId: RUN_ID,
+          stepRunId: '66666666-6666-4666-8666-666666666666',
+          attemptId: '88888888-8888-4888-8888-888888888888',
+          type: 'screenshot',
+          status: 'missing',
+          createdAt: '2026-09-11T02:00:09.000Z',
+          missingReason: 'worker_lost',
+        },
+      ],
+    })
+    signIn(['run:read', 'run:review'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText(/Attempt #1/)).toBeInTheDocument()
+    await screen.getByText('截图').click()
+    const reason = screen.getByText(/缺失原因：worker_lost/)
+    await expect.element(reason).toBeInTheDocument()
+    expect(reason.element().className).toContain('text-status-warning-foreground')
+    expect(reason.element().className).not.toContain('text-destructive')
   })
 
   it('点刷新重新拉取运行与证据', async () => {

@@ -1,22 +1,20 @@
 import { S3Client } from '@aws-sdk/client-s3'
-import type { WorkerEnv } from '@cairn/shared'
 import { LocalObjectStore } from './local-store.js'
 import { resolveLocalObjectStoreDir } from './repo-root.js'
 import { S3ObjectStore } from './s3-store.js'
 import type { ObjectStore } from './types.js'
 
-export type ObjectStoreConfig = Pick<
-  WorkerEnv,
-  | 'CAIRN_OBJECT_STORE'
-  | 'CAIRN_OBJECT_STORE_DIR'
-  | 'CAIRN_OBJECT_MAX_BYTES'
-  | 'CAIRN_S3_ENDPOINT'
-  | 'CAIRN_S3_REGION'
-  | 'CAIRN_S3_BUCKET'
-  | 'CAIRN_S3_ACCESS_KEY'
-  | 'CAIRN_S3_SECRET_KEY'
-  | 'CAIRN_S3_FORCE_PATH_STYLE'
->
+export type ObjectStoreConfig = {
+  CAIRN_OBJECT_STORE: 'local' | 's3'
+  CAIRN_OBJECT_STORE_DIR: string
+  CAIRN_OBJECT_MAX_BYTES: number
+  CAIRN_S3_ENDPOINT?: string
+  CAIRN_S3_REGION: string
+  CAIRN_S3_BUCKET?: string
+  CAIRN_S3_ACCESS_KEY?: string
+  CAIRN_S3_SECRET_KEY?: string
+  CAIRN_S3_FORCE_PATH_STYLE: boolean
+}
 
 export function createObjectStore(
   env: ObjectStoreConfig,

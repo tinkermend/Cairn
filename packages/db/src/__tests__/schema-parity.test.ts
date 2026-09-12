@@ -257,6 +257,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'context', is_nullable: 'NO' },
       { column_name: 'created_at', is_nullable: 'NO' },
       { column_name: 'created_by_console_account_id', is_nullable: 'NO' },
+      { column_name: 'evidence_status', is_nullable: 'NO' },
       { column_name: 'finished_at', is_nullable: 'YES' },
       { column_name: 'id', is_nullable: 'NO' },
       { column_name: 'idempotency_digest', is_nullable: 'YES' },
@@ -322,12 +323,15 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'digest', is_nullable: 'YES' },
       { column_name: 'id', is_nullable: 'NO' },
       { column_name: 'missing_reason', is_nullable: 'YES' },
+      { column_name: 'object_id', is_nullable: 'YES' },
       { column_name: 'object_key', is_nullable: 'YES' },
       { column_name: 'payload', is_nullable: 'YES' },
       { column_name: 'run_id', is_nullable: 'NO' },
       { column_name: 'schema_version', is_nullable: 'NO' },
+      { column_name: 'status', is_nullable: 'NO' },
       { column_name: 'step_run_id', is_nullable: 'YES' },
       { column_name: 'type', is_nullable: 'NO' },
+      { column_name: 'upload_attempts', is_nullable: 'NO' },
     ])
   })
 
@@ -558,6 +562,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     const allowed = new Set([
       'session_id→browser_sessions',
       'target_id→target_accounts',
+      'object_id→stored_objects',
     ])
     const violations = rows.filter((r) => {
       if (!r.column_name.endsWith('_id')) return false
@@ -583,6 +588,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       '0010_admin_login_account.sql',
       '0011_run_lease.sql',
       '0012_session_affinity.sql',
+      '0013_evidence_status.sql',
     ])
   })
 })
@@ -691,7 +697,11 @@ describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集�
 
   it('0011 装得上，并把缺 run_fencing 的存量 ACTIVE 租约撤销', async () => {
     const up = await migrate(pool, SCHEMA)
-    expect(up.applied).toEqual(['0011_run_lease.sql', '0012_session_affinity.sql'])
+    expect(up.applied).toEqual([
+      '0011_run_lease.sql',
+      '0012_session_affinity.sql',
+      '0013_evidence_status.sql',
+    ])
 
     const { rows } = await pool.query<{ status: string; release_reason: string; released_at: Date }>(
       `SELECT status, release_reason, released_at FROM "${SCHEMA}".session_leases WHERE id = $1`,
@@ -712,5 +722,137 @@ describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集�
         [randomUUID(), sessionId, runId],
       ),
     ).rejects.toThrow(/session_leases_run_fencing_active_check/)
+  })
+})
+
+describe.skipIf(!parsed.success)('带存量数据的 0012 → 0013 升级（集成）', () => {
+  const SCHEMA = `${TEST_SCHEMA}_ev13`
+  const MIGRATIONS_DIR = resolve(import.meta.dirname, '../../migrations')
+  let pool: Pool
+  let throughDir: string
+  let succeededRunId: string
+  let runningRunId: string
+  let reviewRunId: string
+  let availableEvidenceId: string
+  let missingEvidenceId: string
+
+  beforeAll(async () => {
+    const env = parsed.data!
+    pool = new Pool({
+      host: env.CAIRN_DB_HOST,
+      port: env.CAIRN_DB_PORT,
+      database: env.CAIRN_DB_NAME,
+      user: env.CAIRN_DB_USER,
+      password: env.CAIRN_DB_PASSWORD,
+    })
+    throughDir = mkdtempSync(join(tmpdir(), 'cairn-mig-0012-'))
+    for (const filename of readdirSync(MIGRATIONS_DIR).sort().slice(0, 12)) {
+      copyFileSync(resolve(MIGRATIONS_DIR, filename), resolve(throughDir, filename))
+    }
+    const through = await migrate(pool, SCHEMA, throughDir)
+    expect(through.applied).toHaveLength(12)
+    expect(through.applied.at(-1)).toBe('0012_session_affinity.sql')
+
+    const actorId = randomUUID()
+    const targetId = randomUUID()
+    const scenarioId = randomUUID()
+    const versionId = randomUUID()
+    succeededRunId = randomUUID()
+    runningRunId = randomUUID()
+    reviewRunId = randomUUID()
+    availableEvidenceId = randomUUID()
+    missingEvidenceId = randomUUID()
+
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".console_accounts (id, display_name, email, status)
+       VALUES ($1, '升级夹具', $2, 'active')`,
+      [actorId, `ev13-${actorId}@example.com`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".targets (id, code, name, entry_url)
+       VALUES ($1, $2, '升级夹具', 'https://example.com')`,
+      [targetId, `ev13-${targetId.slice(0, 8)}`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".scenarios (id, target_id, name, created_by_console_account_id)
+       VALUES ($1, $2, '升级场景', $3)`,
+      [scenarioId, targetId, actorId],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".scenario_versions
+         (id, scenario_id, version_no, definition, created_by_console_account_id)
+       VALUES ($1, $2, 1, '{"steps":[]}'::jsonb, $3)`,
+      [versionId, scenarioId, actorId],
+    )
+    for (const [id, status] of [
+      [succeededRunId, 'SUCCEEDED'],
+      [runningRunId, 'RUNNING'],
+      [reviewRunId, 'NEEDS_REVIEW'],
+    ] as const) {
+      await pool.query(
+        `INSERT INTO "${SCHEMA}".runs
+           (id, target_id, scenario_id, scenario_version_id, created_by_console_account_id,
+            status, snapshot, snapshot_digest, context)
+         VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb, 'digest', '{}'::jsonb)`,
+        [id, targetId, scenarioId, versionId, actorId, status],
+      )
+    }
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".evidences (id, run_id, type, payload)
+       VALUES ($1, $2, 'output', '{"ok":true}'::jsonb)`,
+      [availableEvidenceId, succeededRunId],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".evidences (id, run_id, type, missing_reason)
+       VALUES ($1, $2, 'screenshot', 'object_store_unavailable')`,
+      [missingEvidenceId, succeededRunId],
+    )
+  })
+
+  afterAll(async () => {
+    await pool?.query(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`)
+    await pool?.end()
+    if (throughDir) rmSync(throughDir, { recursive: true, force: true })
+  })
+
+  it('0013 装得上，回填不产生 status 与 missing_reason 矛盾行', async () => {
+    const up = await migrate(pool, SCHEMA)
+    expect(up.applied).toEqual(['0013_evidence_status.sql'])
+
+    const { rows: runRows } = await pool.query<{ id: string; evidence_status: string }>(
+      `SELECT id, evidence_status FROM "${SCHEMA}".runs WHERE id = ANY($1::uuid[])`,
+      [[succeededRunId, runningRunId, reviewRunId]],
+    )
+    const byId = Object.fromEntries(runRows.map((row) => [row.id, row.evidence_status]))
+    expect(byId[succeededRunId]).toBe('COMPLETE')
+    expect(byId[runningRunId]).toBe('PENDING')
+    expect(byId[reviewRunId]).toBe('PENDING')
+
+    const { rows: evidenceRows } = await pool.query<{ id: string; status: string; missing_reason: string | null }>(
+      `SELECT id, status, missing_reason FROM "${SCHEMA}".evidences WHERE id = ANY($1::uuid[])`,
+      [[availableEvidenceId, missingEvidenceId]],
+    )
+    const evidenceById = Object.fromEntries(evidenceRows.map((row) => [row.id, row]))
+    expect(evidenceById[availableEvidenceId]).toMatchObject({ status: 'available', missing_reason: null })
+    expect(evidenceById[missingEvidenceId]).toMatchObject({
+      status: 'missing',
+      missing_reason: 'object_store_unavailable',
+    })
+
+    const { rows: contradictions } = await pool.query(
+      `SELECT id FROM "${SCHEMA}".evidences
+       WHERE (status = 'missing') <> (missing_reason IS NOT NULL)`,
+    )
+    expect(contradictions).toEqual([])
+  })
+
+  it('CHECK 拒绝 available + missing_reason', async () => {
+    await expect(
+      pool.query(
+        `INSERT INTO "${SCHEMA}".evidences (id, run_id, type, status, missing_reason)
+         VALUES ($1, $2, 'log', 'available', 'object_purged')`,
+        [randomUUID(), succeededRunId],
+      ),
+    ).rejects.toThrow(/evidences_status_missing_reason_check/)
   })
 })

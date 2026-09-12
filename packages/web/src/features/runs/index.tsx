@@ -24,7 +24,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { RunCreateDialog } from './create-dialog'
-import { RUN_STATUS_LABELS, runStatusTone } from './labels'
+import { RUN_EVIDENCE_STATUS_LABELS, RUN_STATUS_LABELS, runEvidenceStatusTone, runStatusTone } from './labels'
 
 export function RunsPage() {
   const query = useQuery({ queryKey: ['runs'], queryFn: fetchRuns })
@@ -69,6 +69,7 @@ export function RunsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>状态</TableHead>
+                  <TableHead>证据</TableHead>
                   <TableHead>场景</TableHead>
                   <TableHead>目标系统</TableHead>
                   <TableHead>创建时间</TableHead>
@@ -82,6 +83,14 @@ export function RunsPage() {
                       <StatusBadge tone={runStatusTone(item.status)}>
                         {RUN_STATUS_LABELS[item.status]}
                       </StatusBadge>
+                    </TableCell>
+                    <TableCell>
+                      {item.evidenceStatus === 'INCOMPLETE' ||
+                      (item.evidenceStatus === 'PENDING' && isFinishedRunStatus(item.status)) ? (
+                        <StatusBadge tone={runEvidenceStatusTone(item.evidenceStatus, item.status)}>
+                          {RUN_EVIDENCE_STATUS_LABELS[item.evidenceStatus]}
+                        </StatusBadge>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <Link

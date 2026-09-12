@@ -12,7 +12,7 @@ import {
   type RunEvidenceListResponse,
   type RunListResponse,
 } from '@cairn/shared'
-import { apiFetch } from '@/lib/api-client'
+import { apiFetch, apiFetchBlob } from '@/lib/api-client'
 
 export function fetchRuns(): Promise<RunListResponse> {
   return apiFetch('/api/runs', runListResponseSchema)
@@ -24,6 +24,14 @@ export function fetchRun(id: string): Promise<RunDetailDto> {
 
 export function fetchRunEvidence(id: string): Promise<RunEvidenceListResponse> {
   return apiFetch(`/api/runs/${id}/evidence`, runEvidenceListResponseSchema)
+}
+
+export function runEvidenceContentPath(runId: string, evidenceId: string): string {
+  return `/api/runs/${runId}/evidence/${evidenceId}/content`
+}
+
+export function fetchEvidenceContent(runId: string, evidenceId: string) {
+  return apiFetchBlob(runEvidenceContentPath(runId, evidenceId))
 }
 
 export function createRun(body: CreateRunBody): Promise<RunDetailDto> {

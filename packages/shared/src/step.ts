@@ -105,6 +105,8 @@ export const fillInputSchema = z
     target: targetDescriptorSchema,
     value: z.string().max(16_384).optional(),
     from: contextKeySchema.optional(),
+    /** 作者声明敏感。只打码该步 input 证据，不并进后续步骤的替换集。 */
+    sensitive: z.boolean().optional(),
   })
   .refine((input) => (input.value !== undefined) !== (input.from !== undefined), {
     message: 'fill 必须恰好提供 value 或 from 其中一个',

@@ -15,6 +15,8 @@ export {
   DEFAULT_OBJECT_RETAIN_DAYS,
   DEFAULT_OBJECT_PENDING_TTL_SECONDS,
   DEFAULT_OBJECT_CLEANUP_INTERVAL_MS,
+  DEFAULT_TRACE_MAX_BYTES,
+  DEFAULT_EVIDENCE_UPLOAD_MAX_ATTEMPTS,
   DEFAULT_BROWSER_PROFILE_DIR,
   DEFAULT_BROWSER_MAX_SESSIONS,
   DEFAULT_BROWSER_HEADLESS,
@@ -276,6 +278,7 @@ export {
   browserCommandSchema,
   browserCommandResultSchema,
   screenshotPointerSchema,
+  evidenceObjectPointerSchema,
   BROWSER_COMMAND_EVIDENCE,
   type ResolverOutcome,
   type BrowserStepErrorCode,
@@ -288,6 +291,7 @@ export {
   type BrowserCommand,
   type BrowserCommandResult,
   type ScreenshotPointer,
+  type EvidenceObjectPointer,
   type BrowserCommandEvidence,
 } from './browser-command.js'
 export {
@@ -405,11 +409,34 @@ export {
 } from './run-api.js'
 export {
   EVIDENCE_TYPES,
+  EVIDENCE_STATUSES,
+  RUN_EVIDENCE_STATUSES,
+  EVIDENCE_INCOMPLETE_CODE,
   evidenceTypeSchema,
+  evidenceStatusSchema,
+  runEvidenceStatusSchema,
   evidenceMetadataSchema,
   type EvidenceType,
+  type EvidenceStatus,
+  type RunEvidenceStatus,
   type EvidenceMetadata,
 } from './evidence.js'
+export {
+  EVIDENCE_CAPTURE_MODES,
+  evidenceCaptureModeSchema,
+  evidencePolicySchema,
+  DEFAULT_EVIDENCE_POLICY,
+  DEFAULT_SCREENSHOT_RETAIN_DAYS,
+  DEFAULT_TRACE_RETAIN_DAYS,
+  DEFAULT_DEBUG_TRACE_RETAIN_DAYS,
+  resolveEvidencePolicy,
+  shouldCaptureEvidence,
+  retainUntilFor,
+  type EvidenceCaptureMode,
+  type EvidencePolicy,
+  type ResolvedEvidencePolicy,
+} from './evidence-policy.js'
+export { REDACTED, redactJson } from './redact.js'
 export {
   OBJECT_STORE_DRIVERS,
   objectStoreDriverSchema,

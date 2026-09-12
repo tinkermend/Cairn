@@ -25,6 +25,7 @@ import { config } from '../config/env'
 import { placementYieldExcludes } from './placement-backoff'
 import { DB_HANDLE } from '../db/db.module'
 import { ExecutionEngine } from '../engine/engine'
+import { EvidenceSettleService } from '../evidence/settle.service'
 import { ObjectService } from '../objects/object.service'
 
 const TICK_INTERVAL_MS = 1_000
@@ -78,6 +79,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
     private readonly engine: ExecutionEngine,
     private readonly objects: ObjectService,
+    private readonly evidence: EvidenceSettleService,
     private readonly sessions: BrowserSessionManager,
   ) {}
 
@@ -195,8 +197,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   async runCleanup(): Promise<{ purged: number }> {
     if (this.stopped) return { purged: 0 }
     if (this.cleanupInFlight) return this.cleanupInFlight
-    this.cleanupInFlight = this.objects
-      .purgeExpiredObjects({ limit: 100 })
+    this.cleanupInFlight = this.runCleanupTick()
       .catch((error) => {
         this.logger.error(error instanceof Error ? error.message : error, '对象清理失败')
         return { purged: 0 }
@@ -205,6 +206,11 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
         this.cleanupInFlight = undefined
       })
     return this.cleanupInFlight
+  }
+
+  private async runCleanupTick(): Promise<{ purged: number }> {
+    await this.evidence.settleExpired()
+    return this.objects.purgeExpiredObjects({ limit: 100 })
   }
 
   async runReaper(): Promise<{

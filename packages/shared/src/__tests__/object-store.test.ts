@@ -65,6 +65,9 @@ describe('OBJECT_STORE_ERROR_CODES / missing reasons', () => {
       storeUnavailable: 'object_store_unavailable',
       purged: 'object_purged',
       uploadIncomplete: 'upload_incomplete',
+      workerLost: 'worker_lost',
+      traceTooLarge: 'trace_too_large',
+      captureFailed: 'capture_failed',
     })
   })
 

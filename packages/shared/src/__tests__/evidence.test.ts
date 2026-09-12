@@ -7,6 +7,7 @@ const valid = {
   runId: '00000000-0000-4000-8000-000000000032',
   attemptId: '00000000-0000-4000-8000-000000000033',
   type: 'screenshot',
+  status: 'available',
   createdAt: '2026-09-10T08:00:01.000Z',
   objectKey: 'cairn-evidence/run/attempt/shot.png',
   contentType: 'image/png',
@@ -24,6 +25,7 @@ describe('evidenceMetadataSchema', () => {
       id: valid.id,
       runId: valid.runId,
       type: 'trace',
+      status: 'missing',
       createdAt: valid.createdAt,
       missingReason: 'object_store_unavailable',
     }
@@ -44,9 +46,18 @@ describe('evidenceMetadataSchema', () => {
       id: valid.id,
       runId: valid.runId,
       type: 'output',
+      status: 'available',
       createdAt: valid.createdAt,
       payload: { waitedMs: 50 },
     })
     expect(parsed.payload).toEqual({ waitedMs: 50 })
+  })
+
+  it('status 必填', () => {
+    const { status: _status, ...rest } = valid
+    expect(() => evidenceMetadataSchema.parse(rest)).toThrow()
+    expect(
+      evidenceMetadataSchema.parse({ ...valid, status: 'pending', uploadAttempts: 1 }).uploadAttempts,
+    ).toBe(1)
   })
 })

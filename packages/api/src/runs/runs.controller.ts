@@ -48,6 +48,21 @@ export class RunsController {
     return this.runs.evidence(runId)
   }
 
+  @Get(':runId/evidence/:evidenceId/content')
+  @RequirePermissions('run:read')
+  async evidenceContent(
+    @Param('runId') runId: string,
+    @Param('evidenceId') evidenceId: string,
+    @Res() res: Response,
+  ) {
+    const file = await this.runs.evidenceContent(runId, evidenceId)
+    res.setHeader('Content-Type', file.contentType)
+    res.setHeader('Content-Length', String(file.byteSize))
+    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`)
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.status(HttpStatus.OK).send(Buffer.from(file.body))
+  }
+
   @Post(':runId/cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('run:cancel')

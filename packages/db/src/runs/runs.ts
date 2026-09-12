@@ -5,10 +5,11 @@ import {
   RUNTIME_SCHEMA_VERSION,
   ScenarioValidationError,
   assertRunFromResolved,
-  evidenceMetadataSchema,
   isFinishedRunStatus,
+  redactJson,
   resolverDiagnosticsSchema,
   isHaltedRunStatus,
+  resolveEvidencePolicy,
   resolveSessionPolicy,
   runDetailSchema,
   runEvidenceListResponseSchema,
@@ -41,6 +42,7 @@ import { attempts, evidences, runs, scenarios, stepRuns } from '../schema/execut
 import { targetAccounts, targets } from '../schema/targets.js'
 import { computeIdempotencyDigest, computeSnapshotDigest } from './digest.js'
 import { badRequest, conflict, mapPgRestriction, notFound } from './errors.js'
+import { toEvidenceMetadata } from '../objects/evidence-map.js'
 import { loadScenarioVersion } from './scenarios.js'
 
 function iso(value: Date | null | undefined): string | null {
@@ -97,6 +99,7 @@ export async function listRuns(db: Db): Promise<RunListResponse> {
       createdAt: row.createdAt.toISOString(),
       startedAt: iso(row.startedAt),
       finishedAt: iso(row.finishedAt),
+      evidenceStatus: row.evidenceStatus,
       lease: leases.get(row.id) ? { holderWorkerId: leases.get(row.id)!.holderWorkerId } : null,
     })),
   })
@@ -110,23 +113,7 @@ export async function listRunEvidence(db: Db, runId: string) {
     .where(eq(evidences.runId, runId))
     .orderBy(asc(evidences.createdAt), asc(evidences.id))
   return runEvidenceListResponseSchema.parse({
-    items: rows.map((row) =>
-      evidenceMetadataSchema.parse({
-        schemaVersion: row.schemaVersion,
-        id: row.id,
-        runId: row.runId,
-        stepRunId: row.stepRunId ?? undefined,
-        attemptId: row.attemptId ?? undefined,
-        type: row.type,
-        createdAt: row.createdAt.toISOString(),
-        objectKey: row.objectKey ?? undefined,
-        contentType: row.contentType ?? undefined,
-        byteSize: row.byteSize ?? undefined,
-        digest: row.digest ?? undefined,
-        missingReason: row.missingReason ?? undefined,
-        payload: row.payload ?? undefined,
-      }),
-    ),
+    items: rows.map((row) => toEvidenceMetadata(row)),
   })
 }
 
@@ -240,6 +227,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     createdAt: row.createdAt.toISOString(),
     startedAt: iso(row.startedAt),
     finishedAt: iso(row.finishedAt),
+    evidenceStatus: row.evidenceStatus,
     lease: lease
       ? {
           holderWorkerId: lease.holderWorkerId,
@@ -316,6 +304,7 @@ export async function createRunWithSnapshot(
   }
 
   const sessionPolicy = resolveSessionPolicy(input.sessionPolicy)
+  const evidencePolicy = resolveEvidencePolicy(input.evidencePolicy)
 
   const idempotencyDigest = input.idempotencyKey
     ? computeIdempotencyDigest({
@@ -324,6 +313,7 @@ export async function createRunWithSnapshot(
         targetAccountId: input.targetAccountId,
         policy: input.policy,
         sessionPolicy,
+        evidencePolicy,
       })
     : null
 
@@ -353,6 +343,7 @@ export async function createRunWithSnapshot(
     createdAt: now.toISOString(),
     policy: input.policy,
     sessionPolicy,
+    evidencePolicy,
     executorVersions: freezeExecutorVersions(version.definition.steps.map((step) => step.type)),
   }
   const parsed = runSnapshotSchema.parse(snapshotBase)
@@ -369,6 +360,7 @@ export async function createRunWithSnapshot(
         targetAccountId: input.targetAccountId,
         createdByConsoleAccountId: input.actor.id,
         status: 'QUEUED',
+        evidenceStatus: 'PENDING',
         snapshot,
         snapshotDigest: digest,
         context: runInput,
@@ -448,7 +440,13 @@ export async function requestRunCancel(db: Db, runId: string, actor: AuditActor)
 
 export async function startAttempt(
   db: Db,
-  input: { runId: string; stepRunId: string; inputPayload: JsonValue; grant: RunGrant },
+  input: {
+    runId: string
+    stepRunId: string
+    inputPayload: JsonValue
+    grant: RunGrant
+    secrets?: readonly string[]
+  },
 ): Promise<{ attemptId: string; attemptNo: number } | null> {
   return db.transaction(async (tx) => {
     const run = await lockRunRow(tx as unknown as Db, input.runId)
@@ -488,8 +486,9 @@ export async function startAttempt(
       stepRunId: input.stepRunId,
       attemptId,
       type: 'input',
+      status: 'available',
       schemaVersion: 1,
-      payload: input.inputPayload,
+      payload: redactJson(input.inputPayload, input.secrets ?? []),
       createdAt: now,
     })
     return { attemptId, attemptNo }
@@ -516,6 +515,9 @@ export type FinishAttemptInput = {
   diagnostics?: ResolverDiagnostics
   /** 失败截图指针。已落对象的行由 ObjectService 写；这里只补 missingReason。 */
   screenshot?: ScreenshotPointer
+  /** 失败 Trace 指针。与 screenshot 同一套：有行不插，无行且 missingReason 则补 missing。 */
+  trace?: ScreenshotPointer
+  secrets?: readonly string[]
   grant: RunGrant
   /** 仅测试：Evidence 写完后抛错，验证整单回滚 */
   injectFailure?: Error
@@ -610,19 +612,22 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
       : error
         ? 'error'
         : undefined
+  const secrets = input.secrets ?? []
   if (evidenceType) {
+    const rawPayload = cancelled
+      ? CANCELLED_ATTEMPT_ERROR
+      : evidenceType === 'output'
+        ? (output ?? null)
+        : (error ?? null)
     await tx.insert(evidences).values({
       id: newId(),
       runId: input.runId,
       stepRunId: attempt.stepRunId,
       attemptId: input.attemptId,
       type: evidenceType,
+      status: 'available',
       schemaVersion: 1,
-      payload: cancelled
-        ? CANCELLED_ATTEMPT_ERROR
-        : evidenceType === 'output'
-          ? (output ?? null)
-          : (error ?? null),
+      payload: redactJson(rawPayload, secrets),
       createdAt: now,
     })
   }
@@ -634,21 +639,28 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
       stepRunId: attempt.stepRunId,
       attemptId: input.attemptId,
       type: 'log',
+      status: 'available',
       schemaVersion: 1,
-      payload: resolverDiagnosticsSchema.parse(input.diagnostics),
+      payload: redactJson(resolverDiagnosticsSchema.parse(input.diagnostics), secrets),
       createdAt: now,
     })
   }
-  if (!cancelled && input.screenshot?.missingReason && !input.screenshot.objectKey) {
-    await tx.insert(evidences).values({
-      id: newId(),
+  if (!cancelled) {
+    await insertMissingObjectEvidence(tx, {
       runId: input.runId,
       stepRunId: attempt.stepRunId,
       attemptId: input.attemptId,
       type: 'screenshot',
-      schemaVersion: 1,
-      missingReason: input.screenshot.missingReason,
-      createdAt: now,
+      pointer: input.screenshot,
+      now,
+    })
+    await insertMissingObjectEvidence(tx, {
+      runId: input.runId,
+      stepRunId: attempt.stepRunId,
+      attemptId: input.attemptId,
+      type: 'trace',
+      pointer: input.trace,
+      now,
     })
   }
 
@@ -695,6 +707,37 @@ export async function finishAttemptTx(tx: Db, input: FinishAttemptInput): Promis
   if (input.injectFailure) throw input.injectFailure
 
   return { updated: true, cancelled }
+}
+
+async function insertMissingObjectEvidence(
+  tx: Db,
+  input: {
+    runId: string
+    stepRunId: string
+    attemptId: string
+    type: 'screenshot' | 'trace'
+    pointer?: ScreenshotPointer
+    now: Date
+  },
+): Promise<void> {
+  if (!input.pointer?.missingReason || input.pointer.objectKey) return
+  const existing = await tx
+    .select({ id: evidences.id })
+    .from(evidences)
+    .where(and(eq(evidences.attemptId, input.attemptId), eq(evidences.type, input.type)))
+    .limit(1)
+  if (existing.length > 0) return
+  await tx.insert(evidences).values({
+    id: newId(),
+    runId: input.runId,
+    stepRunId: input.stepRunId,
+    attemptId: input.attemptId,
+    type: input.type,
+    status: 'missing',
+    schemaVersion: 1,
+    missingReason: input.pointer.missingReason,
+    createdAt: input.now,
+  })
 }
 
 /**

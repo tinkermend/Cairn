@@ -6,6 +6,7 @@ import { BrowserSessionManager } from '../browser/session-manager'
 import { DB_HANDLE, DbModule } from '../db/db.module'
 import { clearPlacementYields, yieldPlacement } from './placement-backoff'
 import { ExecutionEngine } from '../engine/engine'
+import { EvidenceSettleService } from '../evidence/settle.service'
 import { ObjectService } from '../objects/object.service'
 import { config } from '../config/env'
 import { LifecycleService } from './lifecycle.service'
@@ -56,6 +57,7 @@ describe('LifecycleService', () => {
         { provide: DB_HANDLE, useValue: handle },
         { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
         { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
         { provide: BrowserSessionManager, useValue: stubSessions() },
       ],
     }).compile()
@@ -105,6 +107,7 @@ describe('LifecycleService', () => {
         { provide: DB_HANDLE, useValue: stubDb() },
         { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
         { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(() => purgeHold) } },
+        { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
         { provide: BrowserSessionManager, useValue: sessions },
       ],
     }).compile()
@@ -134,6 +137,7 @@ describe('LifecycleService', () => {
         { provide: DB_HANDLE, useValue: stubDb() },
         { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
         { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
         { provide: BrowserSessionManager, useValue: sessions },
       ],
     }).compile()
@@ -272,6 +276,7 @@ describe('LifecycleService', () => {
               provide: ObjectService,
               useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) },
             },
+            { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
             { provide: BrowserSessionManager, useValue: stubSessions() },
           ],
         })
@@ -295,6 +300,7 @@ describe('LifecycleService', () => {
         { provide: DB_HANDLE, useValue: stubDb() },
         { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
         { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
         { provide: BrowserSessionManager, useValue: stubSessions() },
       ],
     }).compile()

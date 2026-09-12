@@ -6,6 +6,7 @@ import {
   type ExecutionPolicy,
   type JsonValue,
   type RunSnapshot,
+  type EvidencePolicy,
   type SessionPolicy,
   type SessionPolicyOverride,
 } from '@cairn/shared'
@@ -24,6 +25,7 @@ export function computeIdempotencyDigest(input: {
   targetAccountId?: string | null
   policy?: ExecutionPolicy
   sessionPolicy?: SessionPolicy | SessionPolicyOverride | null
+  evidencePolicy?: EvidencePolicy | null
 }): string {
   return sha256Hex(idempotencyDigestPayload(input))
 }

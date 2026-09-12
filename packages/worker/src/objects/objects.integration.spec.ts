@@ -10,11 +10,13 @@ import {
   eq,
   getRun,
   getStoredObjectById,
+  attempts,
   listRunEvidence,
   newId,
   openIsolatedDb,
   reserveStoredObject,
   sql,
+  stepRuns,
   storedObjects,
   targets,
   type DbHandle,
@@ -234,6 +236,7 @@ describe('对象存储托管协议（集成）', { timeout: 30_000 }, () => {
     const found = listed.items.find((item) => item.id === evidence.id)
     expect(found?.objectKey).toBe(evidence.objectKey)
     expect(found?.missingReason).toBe(OBJECT_MISSING_REASONS.purged)
+    expect(found?.status).toBe('missing')
     expect((await getRun(handle.db, runId)).status).toBe(runStatus)
   })
 
@@ -292,7 +295,7 @@ describe('对象存储托管协议（集成）', { timeout: 30_000 }, () => {
     const listed = await listRunEvidence(handle.db, runId)
     const added = listed.items.slice(before)
     expect(added.some((item) => item.objectKey && item.missingReason == null)).toBe(false)
-    expect(added.some((item) => !item.objectKey && item.missingReason === OBJECT_MISSING_REASONS.storeUnavailable)).toBe(
+    expect(added.some((item) => item.status === 'missing' && item.missingReason === OBJECT_MISSING_REASONS.storeUnavailable)).toBe(
       true,
     )
     const pendingPointers = added.filter((item) => item.objectKey)
@@ -329,5 +332,146 @@ describe('对象存储托管协议（集成）', { timeout: 30_000 }, () => {
       const attached = listed.items.find((item) => item.objectKey === put.objectKey)
       expect(attached?.missingReason).toBe(OBJECT_MISSING_REASONS.purged)
     }
+  })
+
+  let attemptSeq = 1
+  async function newAttempt(targetRunId: string) {
+    const [step] = await handle.db.select().from(stepRuns).where(eq(stepRuns.runId, targetRunId))
+    const attemptId = newId()
+    await handle.db.insert(attempts).values({
+      id: attemptId,
+      stepRunId: step!.id,
+      attemptNo: attemptSeq++,
+      status: 'RUNNING',
+      startedAt: new Date(),
+    })
+    return attemptId
+  }
+
+  it('同一调用内第一次 put 失败、退避后第二次成功，对象只有一份', async () => {
+    const attemptId = await newAttempt(runId)
+    let puts = 0
+    const flaky = {
+      put: async (input: { key: string; body: Uint8Array; contentType: string }) => {
+        puts += 1
+        if (puts === 1) throw new Error('s3 5xx')
+        return store.put(input)
+      },
+      get: store.get.bind(store),
+      delete: store.delete.bind(store),
+    }
+    const svc = new ObjectService(handle, flaky, {
+      retainDays: 30,
+      pendingTtlSeconds: 3600,
+      maxBytes: 1024,
+      uploadMaxAttempts: 3,
+      uploadBackoffMs: 0,
+    })
+    const body = new TextEncoder().encode('retry-shot')
+    const saved = await svc.putObjectEvidence({
+      runId,
+      attemptId,
+      type: 'screenshot',
+      body,
+      contentType: 'image/png',
+    })
+    expect(saved.status).toBe('available')
+    expect(puts).toBe(2)
+    const objects = await handle.db.select().from(storedObjects).where(eq(storedObjects.runId, runId))
+    expect(objects.filter((row) => row.objectKey === saved.objectKey)).toHaveLength(1)
+  })
+
+  it('同一调用内连续失败直到上限后判 missing', async () => {
+    const attemptId = await newAttempt(runId)
+    const failing = {
+      put: async () => {
+        throw new Error('still down')
+      },
+      get: store.get.bind(store),
+      delete: store.delete.bind(store),
+    }
+    const svc = new ObjectService(handle, failing, {
+      retainDays: 30,
+      pendingTtlSeconds: 3600,
+      maxBytes: 1024,
+      uploadMaxAttempts: 2,
+      uploadBackoffMs: 0,
+    })
+    await expect(
+      svc.putObjectEvidence({
+        runId,
+        attemptId,
+        type: 'screenshot',
+        body: new TextEncoder().encode('bounded'),
+        contentType: 'image/png',
+      }),
+    ).rejects.toThrow(/still down/)
+    const row = (await listRunEvidence(handle.db, runId)).items.find((item) => item.attemptId === attemptId)
+    expect(row?.status).toBe('missing')
+    expect(row?.missingReason).toBe(OBJECT_MISSING_REASONS.storeUnavailable)
+  })
+
+  it('put 已成功、证据 commit 失败时重试只补证据，不再 put', async () => {
+    const attemptId = await newAttempt(runId)
+    let puts = 0
+    const counting = {
+      put: async (input: { key: string; body: Uint8Array; contentType: string }) => {
+        puts += 1
+        return store.put(input)
+      },
+      get: store.get.bind(store),
+      delete: store.delete.bind(store),
+    }
+    let interrupted = false
+    const svc = new ObjectService(handle, counting, {
+      retainDays: 30,
+      pendingTtlSeconds: 3600,
+      maxBytes: 1024,
+      uploadMaxAttempts: 3,
+      uploadBackoffMs: 0,
+      afterObjectPut: async () => {
+        if (!interrupted) {
+          interrupted = true
+          throw new Error('commit evidence interrupted')
+        }
+      },
+    })
+    const saved = await svc.putObjectEvidence({
+      runId,
+      attemptId,
+      type: 'screenshot',
+      body: new TextEncoder().encode('after-put'),
+      contentType: 'image/png',
+    })
+    expect(saved.status).toBe('available')
+    expect(puts).toBe(1)
+    const objects = await handle.db.select().from(storedObjects).where(eq(storedObjects.runId, runId))
+    expect(objects.filter((row) => row.objectKey === saved.objectKey)).toHaveLength(1)
+  })
+
+  it('Trace 超限不上传，记 trace_too_large', async () => {
+    const attemptId = await newAttempt(runId)
+    const svc = new ObjectService(handle, store, {
+      retainDays: 30,
+      pendingTtlSeconds: 3600,
+      maxBytes: 1024,
+      traceMaxBytes: 16,
+      uploadMaxAttempts: 3,
+    })
+    await expect(
+      svc.putObjectEvidence({
+        runId,
+        attemptId,
+        type: 'trace',
+        body: new Uint8Array(64),
+        contentType: 'application/zip',
+      }),
+    ).rejects.toMatchObject({ code: 'OBJECT_TOO_LARGE' })
+    const row = (await listRunEvidence(handle.db, runId)).items.find(
+      (item) => item.attemptId === attemptId && item.type === 'trace',
+    )
+    expect(row?.status).toBe('missing')
+    expect(row?.missingReason).toBe(OBJECT_MISSING_REASONS.traceTooLarge)
+    expect(row?.objectKey).toBeUndefined()
   })
 })

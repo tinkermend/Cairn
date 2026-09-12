@@ -104,6 +104,8 @@ export const DEFAULT_OBJECT_MAX_BYTES = 33_554_432
 export const DEFAULT_OBJECT_RETAIN_DAYS = 30
 export const DEFAULT_OBJECT_PENDING_TTL_SECONDS = 3600
 export const DEFAULT_OBJECT_CLEANUP_INTERVAL_MS = 60_000
+export const DEFAULT_TRACE_MAX_BYTES = 134_217_728
+export const DEFAULT_EVIDENCE_UPLOAD_MAX_ATTEMPTS = 3
 
 export const DEFAULT_BROWSER_PROFILE_DIR = '.data/browser-profiles'
 export const DEFAULT_BROWSER_MAX_SESSIONS = 2
@@ -130,7 +132,7 @@ const boolFromEnv = (fallback: boolean) =>
     .transform((value) => value === 'true')
 
 /**
- * 对象存储。只进 workerEnvSchema——控制面本期没有下载出口。
+ * 对象存储。api 与 worker 共用同一份片段。
  * `CAIRN_S3_FORCE_PATH_STYLE` 未写时：有 endpoint 则 true，否则 false。
  */
 const objectStoreEnvShape = {
@@ -154,6 +156,53 @@ const objectStoreEnvShape = {
   CAIRN_S3_ACCESS_KEY: z.string().min(1).optional(),
   CAIRN_S3_SECRET_KEY: z.string().min(1).optional(),
   CAIRN_S3_FORCE_PATH_STYLE: optionalBoolFromEnv,
+}
+
+function refineObjectStoreEnv(
+  env: {
+    CAIRN_ENV: (typeof CAIRN_ENVS)[number]
+    CAIRN_OBJECT_STORE: 'local' | 's3'
+    CAIRN_OBJECT_STORE_DIR: string
+    CAIRN_S3_BUCKET?: string
+    CAIRN_S3_ACCESS_KEY?: string
+    CAIRN_S3_SECRET_KEY?: string
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (env.CAIRN_OBJECT_STORE === 's3') {
+    if (!env.CAIRN_S3_BUCKET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CAIRN_S3_BUCKET'],
+        message: 's3 驱动必须配置桶名',
+      })
+    }
+    if (!env.CAIRN_S3_ACCESS_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CAIRN_S3_ACCESS_KEY'],
+        message: 's3 驱动必须配置访问密钥',
+      })
+    }
+    if (!env.CAIRN_S3_SECRET_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CAIRN_S3_SECRET_KEY'],
+        message: 's3 驱动必须配置秘密密钥',
+      })
+    }
+  }
+  if (
+    env.CAIRN_OBJECT_STORE === 'local' &&
+    env.CAIRN_ENV !== 'development' &&
+    !isAbsoluteFsPath(env.CAIRN_OBJECT_STORE_DIR)
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_OBJECT_STORE_DIR'],
+      message: '非 development 环境的本地目录必须是绝对路径',
+    })
+  }
 }
 
 /**
@@ -248,33 +297,40 @@ export const apiEnvSchema = z.preprocess(
           }
         }),
       ...runtimeEnvShape,
+      ...objectStoreEnvShape,
     })
     .superRefine((env, ctx) => {
       // 「默认值方便本地」与「生产不得裸奔」由同一个 schema 同时成立，
       // 不依赖部署清单上的一行提醒。
-      if (env.CAIRN_ENV === 'development') return
-      if (env.CAIRN_JWT_SECRET === DEV_JWT_SECRET) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['CAIRN_JWT_SECRET'],
-          message: '非 development 环境不得沿用开发默认密钥，必须在环境中覆盖',
-        })
+      if (env.CAIRN_ENV !== 'development') {
+        if (env.CAIRN_JWT_SECRET === DEV_JWT_SECRET) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['CAIRN_JWT_SECRET'],
+            message: '非 development 环境不得沿用开发默认密钥，必须在环境中覆盖',
+          })
+        }
+        if (env.CAIRN_BOOTSTRAP_ADMIN_PASSWORD === DEV_ADMIN_PASSWORD) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['CAIRN_BOOTSTRAP_ADMIN_PASSWORD'],
+            message: '非 development 环境不得沿用默认管理员口令，必须在环境中覆盖',
+          })
+        }
+        if (env.CAIRN_CREDENTIAL_KEY === DEV_CREDENTIAL_KEY) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['CAIRN_CREDENTIAL_KEY'],
+            message: '非 development 环境不得沿用开发默认凭据主密钥，必须在环境中覆盖',
+          })
+        }
       }
-      if (env.CAIRN_BOOTSTRAP_ADMIN_PASSWORD === DEV_ADMIN_PASSWORD) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['CAIRN_BOOTSTRAP_ADMIN_PASSWORD'],
-          message: '非 development 环境不得沿用默认管理员口令，必须在环境中覆盖',
-        })
-      }
-      if (env.CAIRN_CREDENTIAL_KEY === DEV_CREDENTIAL_KEY) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['CAIRN_CREDENTIAL_KEY'],
-          message: '非 development 环境不得沿用开发默认凭据主密钥，必须在环境中覆盖',
-        })
-      }
-    }),
+      refineObjectStoreEnv(env, ctx)
+    })
+    .transform((env) => ({
+      ...env,
+      CAIRN_S3_FORCE_PATH_STYLE: env.CAIRN_S3_FORCE_PATH_STYLE ?? Boolean(env.CAIRN_S3_ENDPOINT),
+    })),
 )
 
 export type ApiEnv = z.infer<typeof apiEnvSchema>
@@ -308,6 +364,12 @@ export const workerEnvSchema = z.preprocess(
         .positive()
         .default(DEFAULT_WORKER_LOST_AFTER_SECONDS),
       CAIRN_RUN_MAX_RECOVERIES: z.coerce.number().int().positive().default(DEFAULT_RUN_MAX_RECOVERIES),
+      CAIRN_TRACE_MAX_BYTES: z.coerce.number().int().positive().default(DEFAULT_TRACE_MAX_BYTES),
+      CAIRN_EVIDENCE_UPLOAD_MAX_ATTEMPTS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_EVIDENCE_UPLOAD_MAX_ATTEMPTS),
       /**
        * 自动登录解密 TargetAccount 凭据。与 api 同源约定；
        * 非 development 不得沿用开发默认密钥。
@@ -335,40 +397,7 @@ export const workerEnvSchema = z.preprocess(
           message: '非 development 环境不得沿用开发默认凭据主密钥，必须在环境中覆盖',
         })
       }
-      if (env.CAIRN_OBJECT_STORE === 's3') {
-        if (!env.CAIRN_S3_BUCKET) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['CAIRN_S3_BUCKET'],
-            message: 's3 驱动必须配置桶名',
-          })
-        }
-        if (!env.CAIRN_S3_ACCESS_KEY) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['CAIRN_S3_ACCESS_KEY'],
-            message: 's3 驱动必须配置访问密钥',
-          })
-        }
-        if (!env.CAIRN_S3_SECRET_KEY) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['CAIRN_S3_SECRET_KEY'],
-            message: 's3 驱动必须配置秘密密钥',
-          })
-        }
-      }
-      if (
-        env.CAIRN_OBJECT_STORE === 'local' &&
-        env.CAIRN_ENV !== 'development' &&
-        !isAbsoluteFsPath(env.CAIRN_OBJECT_STORE_DIR)
-      ) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['CAIRN_OBJECT_STORE_DIR'],
-          message: '非 development 环境的本地目录必须是绝对路径',
-        })
-      }
+      refineObjectStoreEnv(env, ctx)
       if (
         env.CAIRN_ENV !== 'development' &&
         !isAbsoluteFsPath(env.CAIRN_BROWSER_PROFILE_DIR)

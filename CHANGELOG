@@ -1,3 +1,6 @@
+2026-09-12--收尾补洞：对象已 available、证据仍 pending 时 cleanup 只 commit 指针，不标 worker_lost；方案 D3 / §10 与实现对齐
+2026-09-12--复查整改 P6 证据补传与收尾：putObjectEvidence 在字节仍在调用栈时重试、对象已 available 只 commit 证据、reviewRun 与 cleanup 扫描闭环迁出证据轴；空 Trace 落 capture_failed 行，运行列表状态与证据分列
+2026-09-12--落地 P6 Evidence / Trace / 授权下载：证据轴与执行结论分开、债务先登记后上传、授权下载与 Viewer、Trace 按 Attempt 分 chunk、写入前脱敏；S04 在受控站点测得 Trace always 约 +0.3s / 12KiB，默认仍 off
 2026-09-12--写下 P6 其余部分的方案（Evidence / Trace / 授权下载）：evidenceStatus 与执行结论分两根轴、证据债务先登记后上传接上零调用方的重投入口、崩溃只补账不重新截图、API 第一次依赖对象存储需显式改依赖边表、Trace 按 Attempt 分 chunk 失败保留、脱敏靠 Step 声明与 Secret 值级替换而不猜字段名；D7 记下一处对路线图的收窄（截图默认仍是失败一张）
 2026-09-12--收口两处红：FramePath 解析补上与候选定位同一套等待窗口（整条路径共用一个截止时间；iframe 已 attach 但 url 还是空串时不再判 SURFACE_LOST，L2 嵌套 iframe 40 次连跑不再偶发），容量腾位用例的假句柄补齐 waitFor / waitForFunction（漏方法不是类型错误，会被登录路径 catch 成 SESSION_AUTH_UNSUPPORTED）
 2026-09-12--Browser Surface 复查修补：联调夹具入库、定位诊断与失败截图缺失原因写入证据、FrameStep.selector 真正匹配 iframe

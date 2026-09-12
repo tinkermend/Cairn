@@ -4,6 +4,7 @@ import { Logger } from 'nestjs-pino'
 import { REQUEST_ID_HEADER } from '@cairn/shared'
 import { AppModule } from './app.module'
 import { resolveApiEnv } from './config/env'
+import { warnLocalObjectStoreTopology } from './config/object-store-warning'
 
 /** 停机收敛的上限。超时强制退出，避免容器等到 kill -9。 */
 const SHUTDOWN_TIMEOUT_MS = 10_000
@@ -12,6 +13,9 @@ async function bootstrap(): Promise<void> {
   // 配置在模块加载时就已校验；这里取已解析结果，不再直接读 process.env，
   // 免得「schema 里校验过的」和「实际用的」是两份值。
   const env = resolveApiEnv()
+  warnLocalObjectStoreTopology(env, (message) => {
+    console.warn(message)
+  })
 
   const app = await NestFactory.create(AppModule, { bufferLogs: true })
   app.useLogger(app.get(Logger))

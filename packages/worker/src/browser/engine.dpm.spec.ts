@@ -1,7 +1,7 @@
 /**
  * L3：真实 SNC DPM 只读路径。默认 skip；CAIRN_L3_DPM=1 时必须跑通，失败不准 skip。
  */
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -11,6 +11,7 @@ import {
   createRunWithSnapshot,
   createScenarioWithVersion,
   getRun,
+  listRunEvidence,
   newId,
   openIsolatedDb,
   registerWorker,
@@ -23,6 +24,8 @@ import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, type Step } from '@cairn/sha
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { createBrowserPort } from './port.js'
 import { BrowserSessionManager } from './session-manager.js'
+import { LocalObjectStore } from '@cairn/storage'
+import { ObjectService } from '../objects/object.service.js'
 import { ExecutionEngine } from '../engine/engine.js'
 
 const ENABLED = process.env.CAIRN_L3_DPM === '1'
@@ -71,6 +74,8 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
   let accountId: string
   let workerId: string
   let workerInstanceId: string
+  let objects: ObjectService
+  let objectDir = ''
 
   beforeAll(async () => {
     await requireChromium()
@@ -111,6 +116,17 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
       secretId,
       status: 'active',
     })
+    objectDir = mkdtempSync(join(tmpdir(), 'cairn-dpm-obj-'))
+    objects = new ObjectService(
+      handle,
+      new LocalObjectStore(objectDir, 32 * 1024 * 1024),
+      {
+        retainDays: 30,
+        pendingTtlSeconds: 3600,
+        maxBytes: 32 * 1024 * 1024,
+        uploadMaxAttempts: 3,
+      },
+    )
     workerId = `dpm-${SCHEMA.slice(-8)}`
     workerInstanceId = newId()
     await registerWorker(handle.db, {
@@ -138,6 +154,7 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
   afterAll(async () => {
     await manager?.shutdown()
     await handle?.close()
+    if (objectDir) rmSync(objectDir, { recursive: true, force: true })
   }, 30_000)
 
   it('自动登录后只读提取「数据库」菜单', async () => {
@@ -226,5 +243,59 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
     const engine = new ExecutionEngine(handle, createBrowserPort(manager))
     await engine.execute(created.detail.id, { grant: grant! })
     expect((await getRun(handle.db, created.detail.id)).status).toBe('WAITING_FOR_AUTH')
+  })
+
+  it('失败截图可取回字节，业务结论仍是 FAILED', async () => {
+    const steps: Step[] = [
+      {
+        id: newId(),
+        name: '打开总览',
+        type: 'navigate',
+        effectType: 'IDEMPOTENT',
+        input: { url: ENTRY_URL },
+      },
+      {
+        id: newId(),
+        name: '点不存在',
+        type: 'click',
+        effectType: 'READ_ONLY',
+        input: {
+          target: {
+            framePath: [],
+            candidates: [{ by: 'text', value: '绝不存在的菜单项-cairn-s04' }],
+          },
+        },
+      },
+    ]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `dpm-shot-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      targetAccountId: accountId,
+      evidencePolicy: { screenshot: 'on_failure' },
+      actor: { id: actorId },
+    })
+    const grant = await claimRun(handle, {
+      workerId,
+      instanceId: workerInstanceId,
+      leaseTtlSeconds: 90,
+    })
+    expect(grant?.runId).toBe(created.detail.id)
+    const engine = new ExecutionEngine(handle, createBrowserPort(manager, objects))
+    await engine.execute(created.detail.id, { grant: grant! })
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(detail.status).toBe('FAILED')
+    const shot = (await listRunEvidence(handle.db, created.detail.id)).items.find(
+      (item) => item.type === 'screenshot',
+    )
+    expect(shot?.status).toBe('available')
+    expect(shot?.objectKey).toBeTruthy()
+    const got = await objects.getObject(shot!.objectKey!)
+    expect(got.contentType).toBe('image/png')
+    expect(got.body.byteLength).toBeGreaterThan(100)
   })
 })

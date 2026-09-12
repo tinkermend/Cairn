@@ -6,8 +6,10 @@ import {
   finishRunIfDrained,
   loadRunDetail,
   loadRunRow,
+  loadSecretCiphertext,
   markRunCancelled,
   reconcileOrphanAttempts,
+  settleRunEvidence,
   startAttempt,
   targets,
   type DbHandle,
@@ -15,12 +17,16 @@ import {
 } from '@cairn/db'
 import {
   CANCELLED_ATTEMPT_ERROR,
+  LOCAL_SECRET_PROVIDER,
+  REDACTED,
   executorVersionsMatch,
   isBrowserStepType,
   isPlacementYieldCode,
   isSessionConfigErrorCode,
   jsonValueSchema,
+  resolveEvidencePolicy,
   resolveStepPolicy,
+  retainUntilFor,
   runSnapshotSchema,
   type BrowserCommand,
   type ExecutionError,
@@ -34,7 +40,10 @@ import {
   type Step,
   type TargetDescriptor,
 } from '@cairn/shared'
+import type { LocalSecretProvider } from '@cairn/secret'
+import { config } from '../config/env.js'
 import { DB_HANDLE } from '../db/db.module'
+import { SECRET_PROVIDER } from '../tokens.js'
 import { yieldPlacement } from '../runtime/placement-backoff.js'
 import { isAbortError, systemClock, type EngineClock } from './clock.js'
 import { executeDelay, executeEcho, executeFail } from './executors.js'
@@ -52,13 +61,19 @@ export type ExecuteOptions = {
 const DEFAULT_CANCEL_POLL_MS = 250
 
 type ExecutorOutcome =
-  | { kind: 'success'; output: JsonValue }
+  | {
+      kind: 'success'
+      output: JsonValue
+      screenshot?: ScreenshotPointer
+      trace?: ScreenshotPointer
+    }
   | {
       kind: 'failed' | 'cancelled' | 'needs_review'
       error: ExecutionError
       output?: JsonValue
       diagnostics?: ResolverDiagnostics
       screenshot?: ScreenshotPointer
+      trace?: ScreenshotPointer
       timedOut: boolean
       aborted: boolean
     }
@@ -71,6 +86,7 @@ export class ExecutionEngine {
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
     /** 含浏览器步骤的 Run 经此端口 acquire / execute / release。 */
     @Optional() @Inject(BROWSER_PORT) private readonly browser?: BrowserPort,
+    @Optional() @Inject(SECRET_PROVIDER) private readonly secrets?: LocalSecretProvider,
   ) {}
 
   async execute(runId: string, options: ExecuteOptions): Promise<void> {
@@ -98,6 +114,8 @@ export class ExecutionEngine {
       return
     }
     const snapshot = parsed.data
+    const secrets = await this.resolveRedactionSecrets(snapshot)
+    const evidencePolicy = resolveEvidencePolicy(snapshot.evidencePolicy)
     const needsBrowser = snapshot.steps.some((step) => isBrowserStepType(step.type))
 
     // 取消没有通知机制可依赖（NOTIFY 属 P7），在途取消只能轮询 cancel_requested_at。
@@ -152,8 +170,9 @@ export class ExecutionEngine {
         const started = await startAttempt(db, {
           runId,
           stepRunId: stepRun.id,
-          inputPayload: resolved.input,
+          inputPayload: evidencePayloadForStep(step, resolved.input),
           grant,
+          secrets,
         })
         if (!started) {
           await this.finishAfterZeroRow(runId, grant, stop.signal, yielding)
@@ -171,6 +190,7 @@ export class ExecutionEngine {
             skipRemaining: true,
             grant,
             sessionLease: sessionLeaseFor({ step, sessionGrant, grant }),
+            secrets,
           })
           return
         }
@@ -193,6 +213,8 @@ export class ExecutionEngine {
           stop: stop.signal,
           yielding,
           clock,
+          secrets,
+          evidencePolicy,
         })
         if (!finished) return
       }
@@ -209,6 +231,15 @@ export class ExecutionEngine {
           )
         })
       }
+      await settleRunEvidence(db, runId, {
+        pendingTtlSeconds: config.CAIRN_OBJECT_PENDING_TTL_SECONDS,
+        maxUploadAttempts: config.CAIRN_EVIDENCE_UPLOAD_MAX_ATTEMPTS,
+      }).catch((error: unknown) => {
+        this.logger.warn(
+          { runId, message: error instanceof Error ? error.message : String(error) },
+          '证据收尾失败',
+        )
+      })
       stop.stop()
     }
   }
@@ -264,6 +295,8 @@ export class ExecutionEngine {
     /** 见 execute 里的同名闭包：停机中止不写终态 */
     yielding: () => boolean
     clock: EngineClock
+    secrets: readonly string[]
+    evidencePolicy: ReturnType<typeof resolveEvidencePolicy>
   }): Promise<boolean> {
     const db = this.handle.db
     let attemptId = input.attemptId
@@ -285,6 +318,7 @@ export class ExecutionEngine {
           cancelPending: true,
           grant: input.grant,
           sessionLease: sessionLeaseFor(input),
+          secrets: input.secrets,
         })
         return false
       }
@@ -300,6 +334,7 @@ export class ExecutionEngine {
         stepRunId: input.stepRunId,
         attemptId,
         targetId: input.targetId,
+        evidencePolicy: input.evidencePolicy,
       })
 
       // 成功也要看写入结果：取消请求抢先到达时 finishAttempt 会把它改写成取消，此时必须停手。
@@ -316,10 +351,13 @@ export class ExecutionEngine {
           attemptStatus: 'SUCCEEDED',
           output: outcome.output,
           context,
+          screenshot: outcome.screenshot,
+          trace: outcome.trace,
           stepRunStatus: 'SUCCEEDED',
           runStatus: input.last ? 'SUCCEEDED' : undefined,
           grant: input.grant,
           sessionLease: sessionLeaseFor(input),
+          secrets: input.secrets,
         })
       }
 
@@ -332,10 +370,12 @@ export class ExecutionEngine {
           error,
           diagnostics: outcome.diagnostics,
           screenshot: outcome.screenshot,
+          trace: outcome.trace,
           stepRunStatus: 'FAILED',
           runStatus: 'NEEDS_REVIEW',
           grant: input.grant,
           sessionLease: sessionLeaseFor(input),
+          secrets: input.secrets,
         })
         return false
       }
@@ -351,11 +391,13 @@ export class ExecutionEngine {
           error,
           diagnostics: outcome.diagnostics,
           screenshot: outcome.screenshot,
+          trace: outcome.trace,
           stepRunStatus: 'CANCELLED',
           runStatus: 'CANCELLED',
           cancelPending: true,
           grant: input.grant,
           sessionLease: sessionLeaseFor(input),
+          secrets: input.secrets,
         })
         return false
       }
@@ -369,19 +411,22 @@ export class ExecutionEngine {
         output: outcome.output,
         diagnostics: outcome.diagnostics,
         screenshot: outcome.screenshot,
+        trace: outcome.trace,
         stepRunStatus: retry ? 'RUNNING' : 'FAILED',
         runStatus: retry ? undefined : 'FAILED',
         skipRemaining: !retry,
         grant: input.grant,
         sessionLease: sessionLeaseFor(input),
+        secrets: input.secrets,
       })
       if (!closed || !retry) return false
 
       const next = await startAttempt(db, {
         runId: input.runId,
         stepRunId: input.stepRunId,
-        inputPayload: input.input,
+        inputPayload: evidencePayloadForStep(input.step, input.input),
         grant: input.grant,
+        secrets: input.secrets,
       })
       if (!next) {
         await this.finishAfterZeroRow(input.runId, input.grant, input.stop, input.yielding)
@@ -403,6 +448,7 @@ export class ExecutionEngine {
     stepRunId: string
     attemptId: string
     targetId: string
+    evidencePolicy: ReturnType<typeof resolveEvidencePolicy>
   }): Promise<ExecutorOutcome> {
     const { step, timeoutMs, stop, clock } = input
     const timeout = new AbortController()
@@ -437,14 +483,26 @@ export class ExecutionEngine {
         runId: input.runId,
         stepRunId: input.stepRunId,
         attemptId: input.attemptId,
+        screenshot: input.evidencePolicy.screenshot,
+        trace: input.evidencePolicy.trace,
+        screenshotRetainUntil: retainUntilFor('screenshot', input.evidencePolicy).toISOString(),
+        traceRetainUntil: retainUntilFor('trace', input.evidencePolicy).toISOString(),
       })
-      if (result.ok) return { kind: 'success', output: result.output }
+      if (result.ok) {
+        return {
+          kind: 'success',
+          output: result.output,
+          screenshot: result.screenshot,
+          trace: result.trace,
+        }
+      }
       return {
         kind: 'failed',
         error: result.error,
         output: result.output,
         diagnostics: result.diagnostics,
         screenshot: result.screenshot,
+        trace: result.trace,
         timedOut: false,
         aborted: false,
       }
@@ -633,6 +691,19 @@ export class ExecutionEngine {
     }
   }
 
+  private async resolveRedactionSecrets(snapshot: RunSnapshot): Promise<string[]> {
+    if (!snapshot.secretRef || !snapshot.targetAccountId) return []
+    if (snapshot.secretRef.provider !== LOCAL_SECRET_PROVIDER || !this.secrets) return []
+    const row = await loadSecretCiphertext(this.handle.db, snapshot.secretRef.secretId)
+    if (!row) return []
+    try {
+      const password = this.secrets.decrypt(row.id, row.ciphertext)
+      return password ? [password] : []
+    } catch {
+      return []
+    }
+  }
+
   private async loadAllowedOrigins(targetId: string): Promise<string[]> {
     const [row] = await this.handle.db
       .select({ entryUrl: targets.entryUrl, loginUrl: targets.loginUrl })
@@ -764,6 +835,19 @@ function originsFromUrls(entryUrl: string, loginUrl?: string | null): string[] {
     }
   }
   return [...origins]
+}
+
+function evidencePayloadForStep(step: Step, input: JsonValue): JsonValue {
+  if (
+    step.type === 'fill' &&
+    step.input.sensitive &&
+    input &&
+    typeof input === 'object' &&
+    !Array.isArray(input)
+  ) {
+    return { ...input, value: REDACTED }
+  }
+  return input
 }
 
 function shouldRetry(step: Step, error: ExecutionError, attemptNo: number, retryLimit: number): boolean {

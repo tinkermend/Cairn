@@ -118,6 +118,8 @@ describe('领域码常量', () => {
       'RUN_ACCOUNT_DISABLED',
       'RUN_NOT_REVIEWABLE',
       'RUN_NOT_WAITING_FOR_AUTH',
+      'EVIDENCE_NOT_FOUND',
+      'EVIDENCE_NOT_AVAILABLE',
     ])
     expect(TARGET_ERROR_CODES).toEqual(
       expect.arrayContaining(['TARGET_HAS_SCENARIOS', 'TARGET_DISABLED', 'TARGET_ACCOUNT_HAS_RUNS']),

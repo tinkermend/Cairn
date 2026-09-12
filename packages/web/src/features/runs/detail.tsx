@@ -17,11 +17,14 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   PLACEMENT_COPY,
+  RUN_EVIDENCE_STATUS_LABELS,
   RUN_STATUS_LABELS,
   STEP_RUN_STATUS_LABELS,
+  runEvidenceStatusTone,
   runStatusTone,
   stepRunStatusTone,
 } from './labels'
+import { AttemptEvidenceList } from './evidence-viewer'
 
 export function RunDetailPage() {
   const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
@@ -83,7 +86,12 @@ export function RunDetailPage() {
         ) : (
           <div className='space-y-5'>
             <section className='rounded-lg border border-border-card bg-card p-5 shadow-card'>
-              <StatusBadge tone={runStatusTone(run.status)}>{RUN_STATUS_LABELS[run.status]}</StatusBadge>
+              <div className='flex flex-wrap items-center gap-2'>
+                <StatusBadge tone={runStatusTone(run.status)}>{RUN_STATUS_LABELS[run.status]}</StatusBadge>
+                <StatusBadge tone={runEvidenceStatusTone(run.evidenceStatus, run.status)}>
+                  {RUN_EVIDENCE_STATUS_LABELS[run.evidenceStatus]}
+                </StatusBadge>
+              </div>
               <p className='mt-3 text-body text-muted-foreground'>
                 场景{' '}
                 <Link
@@ -232,6 +240,10 @@ export function RunDetailPage() {
                             {attempt.error.code}: {attempt.error.safeMessage}
                           </p>
                         ) : null}
+                        <AttemptEvidenceList
+                          runId={run.id}
+                          items={(evidenceQuery.data?.items ?? []).filter((item) => item.attemptId === attempt.id)}
+                        />
                       </div>
                     ))}
                   </li>
@@ -244,26 +256,15 @@ export function RunDetailPage() {
               <pre className='overflow-x-auto text-label'>{JSON.stringify(run.context, null, 2)}</pre>
             </section>
 
-            <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
-              <h2 className='text-section font-semibold'>结构化证据</h2>
-              {evidenceQuery.data?.items.length ? (
-                <ul className='space-y-2'>
-                  {evidenceQuery.data.items.map((item) => (
-                    <li key={item.id} className='rounded-md border border-border-card p-3 text-label'>
-                      <p>
-                        {item.type}
-                        {item.objectKey ? ` · 对象 ${item.objectKey}` : ''}
-                      </p>
-                      {'payload' in item && item.payload !== undefined ? (
-                        <pre className='mt-1 overflow-x-auto'>{JSON.stringify(item.payload)}</pre>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className='text-muted-foreground'>还没有结构化证据。</p>
-              )}
-            </section>
+            {(evidenceQuery.data?.items ?? []).some((item) => !item.attemptId) ? (
+              <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
+                <h2 className='text-section font-semibold'>运行级证据</h2>
+                <AttemptEvidenceList
+                  runId={run.id}
+                  items={(evidenceQuery.data?.items ?? []).filter((item) => !item.attemptId)}
+                />
+              </section>
+            ) : null}
           </div>
         )}
       </Main>

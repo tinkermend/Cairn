@@ -129,6 +129,7 @@ describe('digest payloads', () => {
       targetAccountId: null,
       policy: undefined,
       sessionPolicy: null,
+      evidencePolicy: null,
     })
   })
 })

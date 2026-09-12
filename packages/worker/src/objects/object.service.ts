@@ -1,14 +1,20 @@
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import {
+  bumpEvidenceUploadAttempts,
+  commitObjectEvidence,
   commitStoredObject,
+  findObjectEvidenceByAttemptType,
   getStoredObjectById,
   getStoredObjectByKey,
   listPurgeCandidates,
+  markEvidenceMissing,
   markStoredObjectPurgeFailed,
   markStoredObjectPurged,
   recordMissingObjectEvidence,
   recordObjectEvidence as recordObjectEvidenceRow,
+  reserveObjectEvidence,
   reserveStoredObject,
+  settleExpiredPendingEvidence,
   type DbHandle,
 } from '@cairn/db'
 import {
@@ -31,6 +37,12 @@ export type ObjectServiceOptions = {
   retainDays: number
   pendingTtlSeconds: number
   maxBytes: number
+  traceMaxBytes?: number
+  uploadMaxAttempts?: number
+  /** 进程内补传退避。生产默认 200ms；测试置 0。 */
+  uploadBackoffMs?: number
+  /** 仅测试：`putObject` 已成功、尚未 `commitObjectEvidence` 时插入。 */
+  afterObjectPut?: () => Promise<void>
   now?: () => Date
 }
 
@@ -150,30 +162,113 @@ export class ObjectService {
     stepRunId?: string
     attemptId?: string
   }): Promise<EvidenceMetadata> {
-    try {
-      const put = await this.putObject(input)
-      return await this.recordObjectEvidence({
-        runId: input.runId,
-        stepRunId: input.stepRunId,
-        attemptId: input.attemptId,
-        type: input.type,
-        objectKey: put.objectKey,
-      })
-    } catch (error) {
-      // 只有「字节没能落进存储」才算 store unavailable。挂指针阶段的失败
-      // （对象已被清、跨 Run）不是存储故障，贴上这个原因等于给证据行写假死因。
-      const reason = missingReasonFor(error)
-      if (reason) {
+    const contentType = objectContentTypeSchema.parse(input.contentType)
+    const limit = input.type === 'trace' ? (this.options.traceMaxBytes ?? this.options.maxBytes) : this.options.maxBytes
+    const maxAttempts = this.options.uploadMaxAttempts ?? 3
+
+    let existing = input.attemptId
+      ? await findObjectEvidenceByAttemptType(this.handle.db, {
+          attemptId: input.attemptId,
+          type: input.type,
+        })
+      : null
+    if (existing?.status === 'available' || existing?.status === 'missing') return existing
+
+    const tooLargeReason =
+      input.type === 'trace' ? OBJECT_MISSING_REASONS.traceTooLarge : OBJECT_MISSING_REASONS.storeUnavailable
+    if (input.body.byteLength > limit) {
+      if (existing?.status === 'pending') {
+        await markEvidenceMissing(this.handle.db, { id: existing.id, reason: tooLargeReason })
+      } else {
         await this.recordMissingObjectEvidence({
           runId: input.runId,
           stepRunId: input.stepRunId,
           attemptId: input.attemptId,
           type: input.type,
-          missingReason: reason,
+          missingReason: tooLargeReason,
         })
       }
-      throw error
+      throw new ObjectStoreError('OBJECT_TOO_LARGE', `对象超过 ${limit} 字节上限`)
     }
+
+    if (!existing || existing.status !== 'pending') {
+      const retainUntil =
+        input.retainUntil ??
+        new Date(
+          this.now().getTime() +
+            (input.type === 'trace' ? 14 : this.options.retainDays) * 86_400_000,
+        )
+      existing = await reserveObjectEvidence(this.handle.db, {
+        runId: input.runId,
+        stepRunId: input.stepRunId,
+        attemptId: input.attemptId,
+        type: input.type,
+        retainUntil,
+      })
+    }
+
+    const backoffMs = this.options.uploadBackoffMs ?? 200
+    for (;;) {
+      const object = existing.objectKey
+        ? await getStoredObjectByKey(this.handle.db, existing.objectKey)
+        : null
+      if (!object) {
+        throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '待上传对象不存在')
+      }
+
+      try {
+        if (object.status === 'available') {
+          if (object.contentType == null || object.byteSize == null || object.digest == null) {
+            throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '对象账本不完整，无法挂证据')
+          }
+          const committed = await commitObjectEvidence(this.handle.db, {
+            id: existing.id,
+            contentType: object.contentType,
+            byteSize: object.byteSize,
+            digest: object.digest,
+          })
+          return committed ?? existing
+        }
+        if (object.status !== 'pending') {
+          throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '待上传对象不可用')
+        }
+
+        const put = await this.putObject({
+          runId: input.runId,
+          body: input.body,
+          contentType,
+          objectId: object.id,
+          retainUntil: input.retainUntil,
+        })
+        if (this.options.afterObjectPut) await this.options.afterObjectPut()
+        const committed = await commitObjectEvidence(this.handle.db, {
+          id: existing.id,
+          contentType: put.contentType,
+          byteSize: put.byteSize,
+          digest: put.digest,
+        })
+        return committed ?? existing
+      } catch (error) {
+        const attempts = await bumpEvidenceUploadAttempts(this.handle.db, existing.id)
+        if (attempts >= maxAttempts) {
+          const reason = missingReasonFor(error) ?? OBJECT_MISSING_REASONS.storeUnavailable
+          await markEvidenceMissing(this.handle.db, { id: existing.id, reason })
+          throw error
+        }
+        if (backoffMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, backoffMs))
+        }
+      }
+    }
+  }
+
+  async settleExpiredEvidence(): Promise<{ marked: number }> {
+    const result = await settleExpiredPendingEvidence(this.handle.db, {
+      now: this.now(),
+      pendingTtlSeconds: this.options.pendingTtlSeconds,
+      maxUploadAttempts: this.options.uploadMaxAttempts ?? 3,
+    })
+    return { marked: result.marked + result.committed }
   }
 
   async purgeExpiredObjects(input: { limit?: number } = {}): Promise<{ purged: number }> {

@@ -2,8 +2,10 @@ import { relations } from 'drizzle-orm'
 import { index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import type {
   AttemptStatus,
+  EvidenceStatus,
   EvidenceType,
   JsonValue,
+  RunEvidenceStatus,
   RunSnapshot,
   RunStatus,
   ScenarioDefinition,
@@ -73,6 +75,7 @@ export const runs = cairnSchema.table(
       .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
     status: text('status').notNull().$type<RunStatus>(),
+    evidenceStatus: text('evidence_status').notNull().default('PENDING').$type<RunEvidenceStatus>(),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
@@ -136,16 +139,23 @@ export const evidences = cairnSchema.table(
     stepRunId: uuid('step_run_id').references(() => stepRuns.id, { onDelete: 'restrict' }),
     attemptId: uuid('attempt_id').references(() => attempts.id, { onDelete: 'restrict' }),
     type: text('type').notNull().$type<EvidenceType>(),
+    status: text('status').notNull().default('available').$type<EvidenceStatus>(),
     schemaVersion: integer('schema_version').notNull().default(1),
     payload: jsonb('payload').$type<JsonValue>(),
+    objectId: uuid('object_id'),
     objectKey: text('object_key'),
     contentType: text('content_type'),
     byteSize: integer('byte_size'),
     digest: text('digest'),
     missingReason: text('missing_reason'),
+    uploadAttempts: integer('upload_attempts').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('evidences_run_created_idx').on(t.runId, t.createdAt), index('evidences_attempt_id_idx').on(t.attemptId)],
+  (t) => [
+    index('evidences_run_created_idx').on(t.runId, t.createdAt),
+    index('evidences_attempt_id_idx').on(t.attemptId),
+    index('evidences_status_idx').on(t.status, t.createdAt),
+  ],
 )
 
 export const scenariosRelations = relations(scenarios, ({ one, many }) => ({

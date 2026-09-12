@@ -33,6 +33,9 @@ export const OBJECT_MISSING_REASONS = {
   storeUnavailable: 'object_store_unavailable',
   purged: 'object_purged',
   uploadIncomplete: 'upload_incomplete',
+  workerLost: 'worker_lost',
+  traceTooLarge: 'trace_too_large',
+  captureFailed: 'capture_failed',
 } as const
 export type ObjectMissingReason = (typeof OBJECT_MISSING_REASONS)[keyof typeof OBJECT_MISSING_REASONS]
 

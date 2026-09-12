@@ -82,3 +82,38 @@ export async function apiFetch<T>(
 
   return schema.parse(body)
 }
+
+/** 授权下载对象正文。Bearer 不会跟 `<img src>`，必须先拿 blob 再建 Object URL。 */
+export async function apiFetchBlob(path: string): Promise<{ blob: Blob; contentType: string }> {
+  const token = useAuthStore.getState().auth.accessToken
+  const res = await fetch(path, {
+    headers: {
+      Accept: '*/*',
+      [REQUEST_ID_HEADER]: newRequestId(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  })
+
+  if (!res.ok) {
+    if (res.status === 401 && path !== '/api/auth/login') {
+      useAuthStore.getState().auth.reset()
+    }
+    const body: unknown = await res.json().catch(() => null)
+    const parsed = apiErrorSchema.safeParse(body)
+    throw new ApiRequestError(
+      res.status,
+      parsed.success
+        ? parsed.data
+        : {
+            code: 'REQUEST_FAILED',
+            message: `请求失败（HTTP ${res.status}）`,
+            requestId: res.headers.get(REQUEST_ID_HEADER) ?? 'unknown',
+          },
+    )
+  }
+
+  return {
+    blob: await res.blob(),
+    contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+  }
+}

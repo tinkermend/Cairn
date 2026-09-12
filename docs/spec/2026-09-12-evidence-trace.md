@@ -1,6 +1,6 @@
 # 识途 Evidence / Trace / 授权下载：让证据可读、可判定完整性
 
-日期：2026-09-12。状态：**草案**。
+日期：2026-09-12。状态：**已落地**。
 对应路线图 P6（Evidence ObjectStore Trace）的其余部分，以及 RF14 / RF15 / RF18 的证据部分、S04、A06、VS2。
 前置：[对象存储内核](2026-09-10-object-store.md)（已落地）、[执行内核](2026-09-10-execution-kernel.md)（已落地）、[RunLease / Fencing / 恢复](2026-09-11-run-lease.md)（已落地）、[BrowserSession / SessionLease](2026-09-10-browser-session-manager.md)（已落地）、[Browser Surface 与浏览器步骤](2026-09-11-browser-surface.md)（已落地）。
 
@@ -116,6 +116,14 @@ runs.evidence_status 证据结论：PENDING / COMPLETE / INCOMPLETE（新增）
 
 API 的 Run 详情同时返回两根轴；控制台把「成功」与「证据不完整」并列显示，不合成一个词（D9）。
 
+终态 Run 的证据轴允许停留 `PENDING` 最长 `pending_ttl`（默认 3600 s）：Worker 失联时补传窗口没关，要等收尾扫描判死。收集窗口对执行结论在终态关闭，对证据轴开到 `pending_ttl` 为止。D9 必须给「执行已终态、证据仍 `PENDING`」这个组合独立文案，不得把它渲染成执行进行时。
+
+证据轴迁出 `PENDING` 的入口必须闭环，否则会出现「必要证据都齐了、轴却永远停在收集中」：
+
+- Engine `execute` 的 `finally` 调 `settleRunEvidence`（已有）。
+- **`reviewRun` 在执行结论落入 `FINISHED` 之后、同一请求内再调一次 `settleRunEvidence`。** 核查结论已提交就不得因收尾失败回滚——执行轴已落；收尾失败留给下一轮扫描。
+- **cleanup tick：先 commit「对象已 `available`」的 pending 证据，再把过期 pending 判 `worker_lost`，再扫已终态且 `evidence_status = PENDING` 的 Run，最后 `purgeExpiredObjects`。** 后一道扫描覆盖：`finally` 收尾失败、`NEEDS_REVIEW` 当时未终态、以及没有任何 `pending` 证据行可被 TTL 谓词扫到的成功 Run。只扫执行已终态的行，不扫 `RUNNING` / `NEEDS_REVIEW`。
+
 **Attempt 一级不加列。** 单个 Attempt 的证据齐不齐可以从它名下的证据行直接数出来，多存一份就是多一个会漂移的事实源。Run 一级要存，是因为策略在 Run 终态时冻结，收集窗口已经关闭，事后重算会被后来的清理（`markStoredObjectPurged` 会把过期对象的证据行改成 `object_purged`）污染成假的 `INCOMPLETE`。
 
 ### D2. 债务先登记再上传：`evidences.status`
@@ -142,6 +150,8 @@ API 的 Run 详情同时返回两根轴；控制台把「成功」与「证据�
 
 存量数据在 `0013` 里回填：`missing_reason` 非空的行 → `missing`，其余 → `available`。
 
+`status` 与 `missing_reason` 之间是一条不变量：**对象类证据行 `status = 'missing'` 当且仅当 `missing_reason` 非空**，0013 的 CHECK 直接把它写进 Schema（宪法 §18 不变量 18：约束由数据库约束卡住，不靠自觉），不是只靠回填检查兜底。现有的 `markStoredObjectPurged` 只写 `missing_reason` 不写 `status`（`objects.ts` 176–181）——不改它，清理路径会持续制造 `available + missing_reason` 的矛盾行；而 CHECK 先上线、它后改，清理事务会开始失败，对象永远清不掉。它的证据行更新必须同步置 `status = 'missing'`（D8 有对应修订）。
+
 ### D3. 崩溃之后能补的是账，不是字节
 
 补传要诚实：**截图和 Trace 的字节在崩溃的那个 Worker 的内存/临时目录里，进程没了就没了。**
@@ -155,9 +165,26 @@ API 的 Run 详情同时返回两根轴；控制台把「成功」与「证据�
 
 第二种是本决策的重点：不要写一个「恢复时重新截图」的分支。那时页面早就不是失败现场了，补出来的 PNG 比没有更有害——它看起来像证据，实际上是另一个时刻的东西。宪法 §10 说 Evidence 记录「实际上发生了什么」。
 
-收尾扫描挂在 Worker 已有的 reap tick 上（`packages/worker/src/runtime/lifecycle.service.ts` 已有 60 s 的 `purgeExpiredObjects`，同一处加一个 `settleEvidence`）。它**只写证据行与 `runs.evidence_status`，不写 Run / StepRun / Attempt 的执行状态**，因此不需要 RunLease——与对象存储方案 §8 对清理的判断同一条理由。这一点要有测试卡住：收尾路径不得调用任何带 `grant` 的写入。
+第一种必须发生在**字节还在本次调用栈**的时候：`putObjectEvidence` 在同一调用内按 `CAIRN_EVIDENCE_UPLOAD_MAX_ATTEMPTS` 循环重试，退避默认 200 ms（测试置 0）。`attachObjectEvidence` 只调一次，等这次调用自己重试完。**禁止把「再调一次 `putObjectEvidence` 并重新传入 body」当成生产补传路径**——那条路生产走不到，字节已经丢了。预算耗尽才把行判 `MISSING`。
 
-判 `MISSING` 的触发条件：对应 `stored_objects` 行已被 `listPurgeCandidates` 按 `pending_ttl` 判为未完成上传（默认 3600 s），或 `upload_attempts` 超过上限。两个条件复用现有配置，不新造 TTL。
+还有第三种现场，和崩溃不同、和「字节还在手上」也不同：
+
+| 现场 | 能做什么 |
+| --- | --- |
+| `store.put` 已成功、`stored_objects` 已 `available`，但 `commitObjectEvidence` 未落 | 字节在桶里。**进程内与进程死后同一条路**：只 commit 证据行，用账本上的 `contentType` / `byteSize` / `digest`。禁止再走 `requirePending` / 再 `put`，也禁止收尾把它写成 `worker_lost` |
+
+`putObjectEvidence` 每次重试前重读对象行：`available` → 只 commit 证据；`pending` → `putObject({ objectId })`；其它状态 → 按预算判缺失。
+
+进程若在 `put` 成功、`commitObjectEvidence` 之前死去：字节已不在调用栈，但仍在桶里。cleanup 扫 `pending` 证据时**先**处理「对象已 `available`」——`commitObjectEvidence`，再谈 TTL / `worker_lost`。只补账，不重放、不重新截图。
+
+收尾扫描挂在 Worker 已有的 cleanup tick 上（先 commit「对象已在」的 pending 证据，再把过期 / 超限的 pending 判 `worker_lost`，再扫已终态且轴仍 `PENDING` 的 Run，最后 `purgeExpiredObjects`）。它**只写证据行与 `runs.evidence_status`，不写 Run / StepRun / Attempt 的执行状态**，因此不需要 RunLease——与对象存储方案 §8 对清理的判断同一条理由。这一点要有测试卡住：收尾路径不得调用任何带 `grant` 的写入。
+
+判 `MISSING` 的触发条件：对象仍是 `pending` 且已被 `listPurgeCandidates` 按 `pending_ttl` 判为未完成上传（默认 3600 s），或 `upload_attempts` 超上限。对象已经 `available` 的 pending 证据不走这条，走上面的只 commit。两个 TTL 条件复用现有配置，不新造。
+
+定序与并发要钉死，否则 `worker_lost` 这个死因看运气：
+
+- **同一 cleanup tick 内：先 commit 已在对象，再 `worker_lost`，再扫终态轴，最后 `purgeExpiredObjects`。** 过期 pending 与 purge 共用 `pending_ttl` 谓词，purge 先到会把同一条证据行写成 `object_purged` 而不是 `worker_lost`。跨 Worker 并发时 purge 仍可能先到——死因字符串不同、结局相同（行 `MISSING`、Run 证据轴 `INCOMPLETE`），settle 对已非 `pending` 的行不再改写，两种死因都算数；L1 第 5 条的 `worker_lost` 在单进程受控时序下断言。对象已 `available` 的行不得被写成 `worker_lost`——`commitObjectEvidence` 与 `markEvidenceMissing` 都是 `WHERE status = 'pending'`，commit 先到则输家不落笔。
+- **settle 的写入全部走条件更新。** 每个 Worker 的 cleanup tick 都扫全局 `listPendingEvidence`，两个 Worker 同时收尾同一批行时输家一笔不落：证据行 `UPDATE … WHERE status = 'pending'`（沿用 `markStoredObjectPurged` 的 `expectedStatus` 惯用法），`runs.evidence_status` 只从 `pending` 迁出，`EVIDENCE_INCOMPLETE` 错误证据行不存在才插。
 
 ### D4. 授权下载：API 第一次依赖对象存储
 
@@ -187,20 +214,21 @@ Playwright 的能力刚好对上要求：`context.tracing.start()` 在 Context �
 时序：
 
 ```text
-acquire 会话 → tracing.start({ screenshots, snapshots })      每个 Context 一次
+acquire 会话 → tracing.start({ screenshots, snapshots })      仅当策略非 `off`；随 lease 开停
   每个浏览器 Attempt：
     startChunk(title = attemptId)     ← 动作之前。事后开录留不下失败之前的过程
     …执行命令…
     stopChunk({ path: 临时文件 })
     按策略：失败 → 上传成 type='trace' 证据；成功 → 删临时文件
-release 会话 → tracing.stop()
+release 会话（归还 lease）→ tracing.stop()
 ```
 
-三条约束：
+四条约束：
 
 - **必须在动作之前开录。** 「需要失败保留时提前录制」是 RF15 的原话，也是 Trace 唯一有价值的用法。
 - **Trace 不取代平台断言。** `context.tracing` 记不下识途自己的 `assert` 结论（路线图 S6 已点明）。断言结果继续由 `finishAttempt` 写进平台证据，Trace 只是补充调试材料。宪法 §10。
-- **不默认全开。** 宪法 §19「不得默认永久保存所有成功 Run 的重型 Trace」。默认策略是 `on_failure`。
+- **不默认全开。** 宪法 §19「不得默认永久保存所有成功 Run 的重型 Trace」。平台默认是 `off`（D10）；要留的时候用 `on_failure`，不要 `always`。Debug Run 显式传 `always`。
+- **`off` 就是不开录。** `tracing.start` 只在该 Run 冻结策略非 `off` 时调用——「开了但不保存」会让每个 Context 白付 snapshot/screenshot 开销，L3 第 25 条的「开启前后」也没有诚实基线。start / stop 跟随本次 Run 的 lease：Session 跨 Run 复用时，上一个 Run release 即 `stop`，本次 acquire 按自己的冻结策略决定是否 `start`，两次 Run 不共用一次开录。
 
 体积：Trace zip 可能超过现有 32 MiB 默认上限（`CAIRN_OBJECT_MAX_BYTES`）。给 Trace 单独一档上限 `CAIRN_TRACE_MAX_BYTES`（默认 128 MiB），超限不上传、记 `missing_reason = 'trace_too_large'`，不静默截断。对象存储方案债务 5 说「采集方案里再调，不要在本核里预抬」——这里就是那个位置。
 
@@ -217,7 +245,11 @@ release 会话 → tracing.stop()
 
 统一实现成 `@cairn/shared` 的一个纯函数 `redactJson(payload, secrets)`，Engine 与 `finishAttempt` 之间只有一个调用点——散在各处的 redact 迟早漏一处。
 
-截图侧：`screenshotPage` 已有的密码框遮罩保留，另加 Target 上可声明的遮罩选择器清单；`evidencePolicy.screenshot = 'off'` 可整体关掉截图采集，对应路线图「未知敏感区域的采集策略必须可关闭」。
+`secrets` 从哪来要说死，不能搭登录路径的便车：Engine 在 Run 启动、Snapshot 带 `secretRef` 时经 SecretProvider **自行解析一次**，明文只存在于 Worker 进程内存，供本次 Run 的脱敏与（需要时的）登录共用，Run 结束即弃。复用已认证会话的 Run 根本不登录——值级替换的匹配集不能因此为空。解密是只读幂等操作，Engine 与 session-manager 各解析一次不产生两份事实。
+
+值级替换集只含 SecretProvider 解出的凭证明文（口令）。**不含** `targetAccounts.username`：短用户名会误伤 extract 结果。作者忘了标 `sensitive`、但值来自凭据的情况，仍靠口令值级替换覆盖。
+
+截图侧：`screenshotPage` 已有的密码框遮罩保留；`evidencePolicy.screenshot = 'off'` 可整体关掉截图采集，对应路线图「未知敏感区域的采集策略必须可关闭」。Target 上可声明的遮罩选择器清单要动 Target 契约与迁移，本轮不做，见债务 9。
 
 ### D7. 截图默认仍是失败一张——对路线图的一处收窄
 
@@ -233,13 +265,14 @@ release 会话 → tracing.stop()
 
 | 证据 | 默认保留 |
 | --- | --- |
-| 结构化 `input` / `output` / `error`（进 PG，不进对象存储） | 随 Run 行 |
+| 结构化 `input` / `output` / `error` / `log`（PG payload 行，不进对象存储） | 随 Run 行 |
 | `screenshot` | 30 天 |
 | `trace`（失败保留） | 14 天 |
 | `trace`（Debug Run 显式保留） | 7 天 |
-| `log` | 30 天 |
 
-清理链路完全不动：`listPurgeCandidates` 已经只看 `retain_until`，`markStoredObjectPurged` 已经会把对应证据行的 `missing_reason` 改成 `object_purged`（`objects.ts` 176–181）。本期只改「`retain_until` 怎么算出来」。
+`retainDays` 实际只有 `screenshot` / `trace` 两类消费——其余类型的证据是 PG payload 行，没有 `reserve()`，配了天数也没有读者，键控里留着它们只是噪音。Debug Run 的 Trace 反而比失败 Trace 短，是有意的：Debug 是当场打开当场看的材料，消费窗口以分钟计；失败 Trace 服务于事后复盘，窗口给长。要留得更久，先下载。
+
+清理链路几乎不动：`listPurgeCandidates` 已经只看 `retain_until`，本期只改「`retain_until` 怎么算出来」。`markStoredObjectPurged` 有一处必须动：证据行更新补写 `status = 'missing'`（D2 的不变量）——它今天只写 `missing_reason` 的写法（`objects.ts` 176–181）会撞上 0013 的 CHECK，撞上就是清理事务失败、对象清不掉。
 
 被清理**不等于**证据不完整：`markStoredObjectPurged` 改的是 `missing_reason`，`evidence_status` 已经在 Run 终态时定死（D1），不因过期清理翻转。这条要有用例卡住，否则所有历史 Run 会在 30 天后集体变成 `INCOMPLETE`。
 
@@ -252,7 +285,8 @@ release 会话 → tracing.stop()
 - `screenshot` 直接出图（走 D4 的下载路由），点开看大图；
 - `trace` 给下载按钮，旁注「用 Playwright Trace Viewer 打开」；
 - `missing_reason` 用橙色警告色而不是红色——证据缺失是待处理，不是执行失败（UI 原则 3 / 4）；
-- Run 头部并列显示两根轴：执行结论用状态色，证据轴不完整时挂一枚橙色标记。
+- Run 头部并列显示两根轴：执行结论用状态色，证据轴不完整时挂一枚橙色标记；
+- 「执行已终态、证据仍 `PENDING`」（Worker 失联后补传窗口未关，最长 `pending_ttl`）用灰色给独立文案「证据收集中」——它还没被判缺失，不上橙色（D1）。列表同样：**「状态」与「证据」分两列**，不得把两枚徽章塞进同一格导致后面的场景 / 目标系统列错位。列表证据列只在 `INCOMPLETE`、或已终态仍 `PENDING` 时出徽章；`QUEUED` / `RUNNING` 的 `PENDING` 不出，避免把执行进行时渲染成「证据收集中」。
 
 继续不加自动刷新：`detail.test.tsx` 已有的「无 `refetchInterval` / `setInterval` / `EventSource`」源码断言保持（那是 P7 的事）。
 
@@ -264,7 +298,7 @@ release 会话 → tracing.stop()
 evidencePolicy: {
   screenshot: 'off' | 'on_failure' | 'always'   // 默认 on_failure
   trace:      'off' | 'on_failure' | 'always'   // 默认 off；Debug Run 为 always
-  required:   EvidenceType[]                     // 默认 ['input', 'output' | 'error']
+  required:   EvidenceType[]                     // 默认 ['input']；另有隐含 outcome 槽（output | error 有一即可）
   retainDays: Partial<Record<EvidenceType, number>>
 }
 ```
@@ -287,10 +321,11 @@ evidencePolicy: {
 
 `@cairn/db`：
 
-- 迁移 `0013_evidence_status.sql`：`evidences` 加 `status` / `object_id` / `upload_attempts` 三列与 CHECK；`runs` 加 `evidence_status` 与 CHECK；回填存量行（`missing_reason` 非空 → `missing`，其余 → `available`；`runs.evidence_status` 终态 Run 一律 `complete`，未终态 `pending`）。
-- `objects.ts`：新增 `reserveObjectEvidence`（PENDING 分支）、`commitObjectEvidence`、`markEvidenceMissing`、`bumpEvidenceUploadAttempts`（单语句自增）；`recordObjectEvidence` 的 `available` 断言保持不变。
-- 新增 `evidence.ts`：`settleRunEvidence`（按冻结策略算证据轴并写 `runs.evidence_status`）、`listPendingEvidence`、`getEvidenceForRun`（下载路由用，校验归属）。
-- `runs.ts`：`startAttempt` / `finishAttempt` 写 payload 前经 `redactJson`。
+- 迁移 `0013_evidence_status.sql`：`evidences` 加 `status` / `object_id` / `upload_attempts` 三列与 CHECK（含 `status = 'missing'` 当且仅当 `missing_reason` 非空，D2 的不变量进 Schema）；`runs` 加 `evidence_status` 与 CHECK；回填存量行（`missing_reason` 非空 → `missing`，其余 → `available`；`runs.evidence_status` 终态 Run 一律 `complete`、未终态 `pending`——终态不按行回算：历史 Run 执行时证据轴与冻结策略都不存在，按行回溯等于用今天的契约追判当时的 Run）。
+- `objects.ts`：新增 `reserveObjectEvidence`（PENDING 分支）、`commitObjectEvidence`、`markEvidenceMissing`、`bumpEvidenceUploadAttempts`（单语句自增）；`recordObjectEvidence` 的 `available` 断言保持不变；`markStoredObjectPurged` 的证据行更新补写 `status = 'missing'`，其余行为不动（D2 / D8）。
+- 新增 `evidence.ts`：`settleRunEvidence`（按冻结策略算证据轴并写 `runs.evidence_status`）、`listPendingEvidence`、`settleFinishedPendingRuns`（已终态且轴仍 `PENDING`）、`getEvidenceForRun`（下载路由用，校验归属）；`settleExpiredPendingEvidence` 先 commit「对象已 `available`」的 pending 证据，再把过期 / 超限行判 `worker_lost`；`settleRunEvidence` 的写入全部走条件更新——证据行 `WHERE status = 'pending'`、`runs.evidence_status` 只从 `pending` 迁出、`EVIDENCE_INCOMPLETE` 行不存在才插（D3）。
+- `runs.ts`：`startAttempt` / `finishAttempt` 写 payload 前经 `redactJson`。`finishAttempt` 对 `screenshot` 与 `trace` 同样处理：调用方带来的 `missingReason` 且尚无该类型行时补 `missing` 行；已有 `pending` / `available` 行不插。
+- `recover.ts`：`reviewRun` 在执行结论提交后调 `settleRunEvidence`，失败不回滚核查。
 
 `@cairn/api`：
 
@@ -301,10 +336,11 @@ evidencePolicy: {
 
 `@cairn/worker`：
 
-- `object.service.ts`：`putObjectEvidence` 改成「先登记后上传」，接上有界重试。
-- 新增 `evidence/settle.service.ts`：挂在已有 reap tick 上的证据收尾，只写证据不写执行状态。
+- `object.service.ts`：`putObjectEvidence` 先登记后上传；**同一调用内**有界重试 + 退避；对象已 `available` 时只 commit 证据行。
+- 新增 `evidence/settle.service.ts`：挂在已有 cleanup tick 上的证据收尾，只写证据不写执行状态；同一 tick 内先过期 pending、再扫已终态轴 `PENDING`、最后 `purgeExpiredObjects`（D3）。
 - `runtime.ts` / `session-manager.ts`：Trace 的 `start` / `startChunk` / `stopChunk` / `stop`。
-- `port.ts`：Trace 指针经 `BrowserCommandResult` 回传，与截图同一条路。
+- `port.ts`：Trace 指针经 `BrowserCommandResult` 回传，与截图同一条路。空字节回 `capture_failed`，由 `finishAttempt` 落行。
+- `engine.ts`：Run 启动、Snapshot 带 `secretRef` 时经 SecretProvider 解析一次**口令**，明文只在内存，传入 `startAttempt` / `finishAttempt` 的脱敏调用点（D6）。失败路径把 `screenshot` 与 `trace` 指针交给 `finishAttempt`。
 
 `@cairn/web`：`detail.tsx` 的 Evidence Viewer 与两根轴展示；`runs-api.ts` 加下载地址构造。
 
@@ -314,18 +350,18 @@ evidencePolicy: {
 
 1. 两根轴分开：截图上传失败的浏览器 Run，`runs.status = 'SUCCEEDED'` 且 `runs.evidence_status = 'INCOMPLETE'`，并挂一条 `EVIDENCE_INCOMPLETE` 的错误证据。把 D1 的判定撤掉，本条必须失败。
 2. 证据缺失**不**改写业务结论：同一条 Run 的 Attempt 仍是 `SUCCEEDED`，`SIDE_EFFECT` 步骤不进 `NEEDS_REVIEW`、不产生第二次执行。
-3. 债务可重试：注入一次 `store.put` 失败，`evidences` 留下 `status = 'pending'` 的行与 PENDING 对象；下一轮补传成功后同一行变 `available`，`stored_objects` 只有一份对象（幂等键，不产生第二份）。
-4. 有界：连续注入失败直到 `upload_attempts` 超上限 → 行判 `missing`，Run 证据轴 `INCOMPLETE`。
+3. 债务可重试：同一 `putObjectEvidence` 调用内注入一次 `store.put` 失败，退避后第二次成功；行变 `available`，`stored_objects` 只有一份对象。把重试做成第二次函数调用并重新传入 `body`，本条必须失败——那不是生产路径。
+4. 有界：同一调用内连续注入失败直到 `upload_attempts` 超上限 → 行判 `missing`，Run 证据轴 `INCOMPLETE`。
 5. 崩溃只补账：PENDING 对象超 `pending_ttl` 后收尾把证据行判 `missing`、`missing_reason = 'worker_lost'`，且**不重新截图**、不重放业务动作。
-6. 收尾不碰执行状态：证据收尾路径不调用任何带 `grant` 的写入；Run / StepRun / Attempt 的状态与 `updated_at` 在收尾前后不变。
-7. 过期清理不翻转证据轴：把一条 `COMPLETE` Run 的对象 `retain_until` 改到过去、跑一轮清理，证据行 `missing_reason` 变 `object_purged`，但 `runs.evidence_status` 仍是 `COMPLETE`。
+6. 收尾不碰执行状态：证据收尾路径不调用任何带 `grant` 的写入；Run / StepRun / Attempt 的状态与 `updated_at` 在收尾前后不变。并发两轮收尾同一 Run，`EVIDENCE_INCOMPLETE` 错误证据行只有一条（条件更新，输家不落笔）。已终态、轴仍 `PENDING`、没有任何 `pending` 证据行的 Run，cleanup 扫描后轴迁出 `PENDING`。`reviewRun` 给出结论后同一请求内轴迁出 `PENDING`。
+7. 过期清理不翻转证据轴：把一条 `COMPLETE` Run 的对象 `retain_until` 改到过去、跑一轮清理，证据行 `missing_reason` 变 `object_purged`、`status = 'missing'`，但 `runs.evidence_status` 仍是 `COMPLETE`。清理路径不得制造 `available + missing_reason` 矛盾行——漏写 `status` 会被 CHECK 拦成清理失败，本条跟着红。
 8. Trace 分 chunk 不串 Run：同一 Session 连续跑两个 Run，各自失败一次，产出两个 Trace 对象，各自只含本 Run 的 Attempt。
 9. Trace 成功丢弃：`on_failure` 策略下成功 Attempt 不产生 `type = 'trace'` 证据，临时文件已删。
 10. Trace 在动作之前开录：把 `startChunk` 挪到动作之后，本条必须失败（Trace 里读不到失败之前的导航）。
-11. Trace 超限：构造超过 `CAIRN_TRACE_MAX_BYTES` 的 chunk → 不上传、记 `trace_too_large`，Attempt 结论不变。
+11. Trace 超限：构造超过 `CAIRN_TRACE_MAX_BYTES` 的 chunk → 不上传、记 `trace_too_large`，Attempt 结论不变。空字节留下 `type = 'trace'`、`status = 'missing'`、`missing_reason = 'capture_failed'` 的行，不把 Attempt 改写成成功。
 12. 脱敏：`sensitive: true` 的 `fill` 值不出现在 `evidences.payload`；本次 Run 解析过的凭据值不出现在任何证据与日志里（全表扫一遍 payload 断言）。把 `redactJson` 撤掉，本条必须失败。
 13. 脱敏不误伤：一个叫 `tokenCount` 的 `extract` 输出原样保留——本期不做按字段名猜。
-14. 存量 Snapshot（无 `evidencePolicy`）继续可执行，走平台默认策略；显式声明 `screenshot: 'off'` 的 Snapshot 不产生截图证据。
+14. 存量 Snapshot（无 `evidencePolicy`）继续可执行，走平台默认策略；显式声明 `screenshot: 'off'` 的 Snapshot 不产生截图证据。默认 `trace: 'off'` 时 `tracing.start` 零调用——`off` 是不开录，不是开了不保存（D5）。
 15. Echo / Delay / Fail 的 Mock Run 仍有完整结构化证据、零 `screenshot`、零 `trace` 行（RF04 的既有断言保持）。
 16. `0013` 在空库与存量库上都能升；回填后不存在 `status` 为空或与 `missing_reason` 矛盾的行。
 
@@ -334,7 +370,7 @@ evidencePolicy: {
 17. 授权下载：带 `run:read` 能取回截图正文，`Content-Type` 为 `image/png`，`X-Content-Type-Options: nosniff`。
 18. 无 `run:read` → 403；`:evidenceId` 属于另一个 Run → 404，不吐字节。
 19. `status != 'available'` 的证据 → 404 带缺失原因，不 500。
-20. Run 详情返回两根轴；`INCOMPLETE` 的 Run 在列表与详情上都能看出来。
+20. Run 详情返回两根轴；`INCOMPLETE` 的 Run 在列表与详情上都能看出来。列表「状态」与「证据」分两列，场景名出现在「场景」列下，不得错到「证据」列。
 21. Evidence Viewer：证据挂在对应 Attempt 下，截图能出图，Trace 能下载，`missing_reason` 用橙色而非红色。
 22. 页面仍无 `refetchInterval` / `setInterval` / `EventSource`（沿用 P3 / P4 的源码断言）。
 23. `local` 驱动 + 非 development 启动时给出多机拓扑告警，且不硬失败。
@@ -343,7 +379,7 @@ evidencePolicy: {
 ### L3 受控站点与真实系统（S04）
 
 25. 在 `tests/target-surface-lab` 上测 Trace 开启前后的单 Attempt 延迟与产物体积，出数值，不出结论式描述。
-26. 上传中断：在 `store.put` 与 `commit` 之间注入中断，验证不产生错误关联、重试只补证据。
+26. 上传中断：在 `putObject`（对象已 `available`）与 `commitObjectEvidence` 之间注入中断，验证重试只 commit 证据行、`requirePending` 零调用、`stored_objects` 仍一份。进程在 commit 前死去：cleanup 同样只 commit，不标 `worker_lost`。把中断做成「再调一次并重传 body」，本条必须失败。
 27. 浏览器 Crash：kill chromium 进程，验证截不到图时记 `capture_failed`，业务结论不被改写成成功。
 28. 逐 Run Trace 不串联：复用同一 Session 的两个 Run 各自的 Trace 互不包含对方的 Attempt。
 29. L3 打 [SNC DPM](../targets/snc-dpm.md)（`CAIRN_L3_DPM=1`，只读），跑通「失败截图 → 授权下载 → 页面看图」一条链路。
@@ -354,12 +390,20 @@ evidencePolicy: {
 31. `pnpm check`、`pnpm lint`、`pnpm typecheck`、`pnpm test` 通过。
 32. 不得宣称 RF14 / RF15 在真进程 kill / 断网上通过——那是 P3 债务 4，本方案只证明本进程与库层（见债务 1）。
 
+### 复查补条（2026-09-12 整改）
+
+33. 同一 `putObjectEvidence` 调用内：第一次 `store.put` 失败、退避后第二次成功 → `available`，对象一份。
+34. `stored_objects` 已 `available`、证据仍 `pending`：重试只 `commitObjectEvidence`，不 `requirePending`、不再 `put`。
+35. `reviewRun` 之后，以及 cleanup 扫描「已终态 + 轴 `PENDING` + 无 pending 行」，证据轴迁出 `PENDING`。
+36. 空 Trace 落 `capture_failed` 行；运行列表状态列与证据列分开。
+37. 对象已 `available`、证据仍 `pending`：cleanup 只 commit 证据，行变 `available`，轴迁出 `PENDING`，`missing_reason` 不是 `worker_lost`。把这条收成 `worker_lost`，本条必须失败。
+
 ## 6. 拆分与顺序
 
 建议四个 PR：
 
-1. **两根轴 + 债务登记**：`0013` 迁移、`evidences.status`、`reserveObjectEvidence` / `commitObjectEvidence`、`putObjectEvidence` 改先登记后上传、有界重试、`settleRunEvidence`、证据收尾挂上 reap tick。交付 L1 的 1–7、16。
-2. **脱敏 + Evidence Policy**：`redactJson`、`fill.sensitive`、Secret 值级替换、`evidencePolicy` 进 Snapshot 与存量缺省、按类型保留。交付 L1 的 12–15，以及 D8 的清理不翻转（第 7 条与 PR 1 共同覆盖）。
+1. **两根轴 + 债务登记**：`0013` 迁移、`evidences.status`、`reserveObjectEvidence` / `commitObjectEvidence`、`putObjectEvidence` 改先登记后上传、有界重试、`settleRunEvidence`、证据收尾挂上 reap tick（先收尾后清理）、`markStoredObjectPurged` 补写 `status`。交付 L1 的 1–7、16。
+2. **脱敏 + Evidence Policy**：`redactJson`、`fill.sensitive`、Secret 值级替换（Engine 启动时自行解析一次，D6）、`evidencePolicy` 进 Snapshot 与存量缺省、按类型保留。交付 L1 的 12–15，以及 D8 的清理不翻转（第 7 条与 PR 1 共同覆盖）。
 3. **授权下载 + Viewer**：依赖边表、API env、下载路由、Web Evidence Viewer 与两根轴展示。交付 L2 全部。
 4. **Trace**：`start` / `startChunk` / `stopChunk`、失败保留成功丢弃、体积上限、S04。交付 L1 的 8–11、L3 全部。
 
@@ -383,7 +427,32 @@ PR 1 是硬前置：没有 `evidences.status`，后面三个都没有可挂的�
 5. 值级 Secret 替换对「凭据被目标系统变形后回显」无效（例如只回显后四位、或做了 URL 编码）。这是脱敏的固有上限，不假装覆盖。
 6. Trace 的敏感内容没有遮罩。Trace 里含完整 DOM 快照与网络记录，截图那层的密码框遮罩管不到它。本期只靠「默认 `off`、失败才留、保留期短」控制暴露面；真要遮罩得先有 Playwright 侧的可行手段，不凭想象写。
 7. `evidencePolicy` 目前只能按平台默认与 Run 创建参数决定，没有 Target 级默认。等 P10 的 Compiler 把策略合并做出来再接。
+8. 作者标 `sensitive: true` 的值只在该步 `input` 行整体打码；它经 Execution Context 流进后续步骤的 input / output（例如 extract 回显）时仍可见——值级替换只认本次 Run 解析过的凭据，不认作者标记。要覆盖得把 sensitive 解析值也并进替换集，本期不做。
+9. Target 级截图遮罩选择器清单。D6 原文要「另加 Target 上可声明的遮罩选择器」，要动 Target 契约、迁移与控制台表单。本轮只保留 `input[type=password]` 遮罩和 `screenshot: 'off'`；选择器清单单独做，不塞进这次补传 / 收尾修补。
 
 ## 9. 更新历史
 
 - 2026-09-12：初稿。以对象存储方案 §8「刻意留给后续」、P5 方案 §7 的 P6 条目、路线图 P6 / RF14 / RF15 / S04，以及仓内现状为事实源：`port.ts` 的 `attachScreenshot` 吞异常、`putObject({ objectId })` 重投入口零调用方、`ALLOWED_EDGES` 不许 API 依赖 storage、`context.tracing` 全仓零调用、`insert(evidences)` 前无 redact。D7 明确记下一处对路线图原文的收窄（截图默认 `on_failure` 而非全采），供评审推翻。
+- 2026-09-12：评审修订。补三处设计缺口：`markStoredObjectPurged` 须同步写 `status`、status↔missing_reason 一致性进 CHECK（D2 / D8）；收尾与清理在同一 tick 的定序、跨 Worker 竞争的死因口径、settle 全条件更新（D3）；Secret 值到达脱敏点的管道——Engine 启动时自行解析一次，不搭登录便车（D6）。另：`off` 不开录写成硬约束（D5）、终态 + 证据 `PENDING` 的展示口径（D1 / D9）、`0013` 终态回填的 rationale、D8 表删掉 `log` 死配置行并给 Debug 保留期一句理由、验收 6 / 7 / 14 加对应断言、新增债务 8。
+- 2026-09-12：按评审修订落地。`0013`、两根轴、债务先登记后上传、授权下载、Evidence Viewer、Trace 分 chunk、写入前脱敏。S04 数值见 §10。不宣称 RF14 / RF15 在真进程 kill / 断网上通过。
+- 2026-09-12：对照落地复查后整改。钉死三处生产路径：`putObjectEvidence` 在字节仍在调用栈时重试（禁止二次调用冒充补传）；对象已 `available` 时只 commit 证据；`reviewRun` 与 cleanup 扫描闭环迁出证据轴。顺带：空 Trace 落 `capture_failed` 行、列表状态 / 证据分列、值级替换不含 username。Target 遮罩选择器降为债务 9。
+- 2026-09-12：复查补洞。`store.put` 已成功、进程在 commit 证据前死去：cleanup 只 commit 已在对象，不标 `worker_lost`。D5 默认口径与 D10 对齐为 Trace `off`；§10 上传中断改成与 D3 同一条路。
+
+## 10. S04 报告
+
+受控站点：`tests/target-surface-lab`。先暖机一次登录/会话，再对单 Attempt `navigate` 测 `trace: off` 与 `trace: always`。
+
+| 项 | 数值 |
+| --- | --- |
+| Trace off 墙钟 | 1518 ms |
+| Trace always 墙钟 | 1793 ms |
+| 增量 | +275 ms |
+| off 产物体积 | 0 |
+| always Trace zip | 12 575 B |
+| 失败分类 | 定位失败 → 业务 `FAILED`，截图/Trace 按 `on_failure` 保留；空字节记 `capture_failed`，不改写成成功 |
+| 上传中断 | 同一调用内 `put` 失败则退避再 `put`；`put` 已成功、证据未 commit 则只 commit。进程在 commit 前死去，cleanup 同样只 commit，不标 `worker_lost` |
+| 逐 Run 不串联 | 同一 Session 连续两个失败 Run，各有一条 Trace，`objectKey` / `runId` 不同 |
+
+默认策略不收窄：`screenshot: on_failure`、`trace: off`。单页 Trace 约 12 KiB、墙钟多约 0.3 s，未到需要改默认的量级。
+
+chromium 进程 kill 未在真进程编排里做（债务 1）；本方案用「截不到图 → `capture_failed`、结论仍是失败」覆盖采集失败路径。SNC DPM 只读失败截图链路在 `CAIRN_L3_DPM=1` 时跑 `engine.dpm.spec.ts`，未宣称任意企业系统已兼容。

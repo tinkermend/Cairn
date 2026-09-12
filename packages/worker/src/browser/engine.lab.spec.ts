@@ -2,7 +2,7 @@
  * Engine × 真浏览器垂直切片。CI 必须跑；没有 Chromium 直接失败，不准 skip。
  */
 import { createServer } from 'node:http'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, join, resolve } from 'node:path'
@@ -14,6 +14,7 @@ import {
   createScenarioWithVersion,
   eq,
   getRun,
+  listRunEvidence,
   newId,
   openIsolatedDb,
   registerWorker,
@@ -27,6 +28,8 @@ import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, type Step } from '@cairn/sha
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { createBrowserPort } from './port.js'
 import { BrowserSessionManager } from './session-manager.js'
+import { LocalObjectStore } from '@cairn/storage'
+import { ObjectService } from '../objects/object.service.js'
 import { ExecutionEngine } from '../engine/engine.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_elab`
@@ -71,6 +74,8 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
   let accountId: string
   let workerId: string
   let workerInstanceId: string
+  let objects: ObjectService
+  let objectDir = ''
 
   beforeAll(async () => {
     await requireChromium()
@@ -155,6 +160,18 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       status: 'active',
     })
 
+    objectDir = mkdtempSync(join(tmpdir(), 'cairn-elab-obj-'))
+    objects = new ObjectService(
+      handle,
+      new LocalObjectStore(objectDir, 32 * 1024 * 1024),
+      {
+        retainDays: 30,
+        pendingTtlSeconds: 3600,
+        maxBytes: 32 * 1024 * 1024,
+        traceMaxBytes: 128 * 1024 * 1024,
+        uploadMaxAttempts: 3,
+      },
+    )
     workerId = `elab-${SCHEMA.slice(-8)}`
     workerInstanceId = newId()
     await registerWorker(handle.db, {
@@ -182,6 +199,7 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
   afterAll(async () => {
     await manager?.shutdown()
     await handle?.close()
+    if (objectDir) rmSync(objectDir, { recursive: true, force: true })
     if (server) {
       await new Promise<void>((done) => server!.close(() => done()))
     }
@@ -252,5 +270,143 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       .from(sessionLeases)
       .where(eq(sessionLeases.runId, created.detail.id))
     expect(leftover.filter((row) => row.status === 'ACTIVE')).toEqual([])
+    const evidence = await listRunEvidence(handle.db, created.detail.id)
+    expect(evidence.items.some((item) => item.type === 'screenshot' || item.type === 'trace')).toBe(false)
+    expect(created.detail.evidenceStatus).toBe('PENDING')
+    expect(detail.evidenceStatus === 'COMPLETE' || detail.evidenceStatus === 'PENDING').toBe(true)
+  })
+
+  async function runWithPolicy(
+    steps: Step[],
+    evidencePolicy: { screenshot?: 'off' | 'on_failure' | 'always'; trace?: 'off' | 'on_failure' | 'always' },
+  ) {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `lab-ev-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      targetAccountId: accountId,
+      evidencePolicy,
+      actor: { id: actorId },
+    })
+    const grant = await claimRun(handle, {
+      workerId,
+      instanceId: workerInstanceId,
+      leaseTtlSeconds: 60,
+    })
+    expect(grant?.runId).toBe(created.detail.id)
+    const engine = new ExecutionEngine(handle, createBrowserPort(manager, objects))
+    const started = Date.now()
+    await engine.execute(created.detail.id, { grant: grant! })
+    const ms = Date.now() - started
+    const detail = await getRun(handle.db, created.detail.id)
+    const evidence = await listRunEvidence(handle.db, created.detail.id)
+    return { detail, evidence, ms }
+  }
+
+  it('失败保留 Trace / 截图；成功 on_failure 丢弃 Trace', async () => {
+    const failClick: Step = {
+      id: newId(),
+      name: '点不存在',
+      type: 'click',
+      effectType: 'READ_ONLY',
+      input: {
+        target: {
+          framePath: [],
+          candidates: [{ by: 'text', value: '不存在的按钮' }],
+        },
+      },
+    }
+    const failed = await runWithPolicy(
+      [
+        {
+          id: newId(),
+          name: '打开',
+          type: 'navigate',
+          effectType: 'IDEMPOTENT',
+          input: { url: `${baseUrl}/` },
+        },
+        failClick,
+      ],
+      { screenshot: 'on_failure', trace: 'on_failure' },
+    )
+    expect(failed.detail.status).toBe('FAILED')
+    expect(failed.evidence.items.some((item) => item.type === 'screenshot' && item.status === 'available')).toBe(true)
+    expect(failed.evidence.items.some((item) => item.type === 'trace' && item.status === 'available')).toBe(true)
+    expect(failed.detail.stepRuns.every((step) => step.attempts.length === 1)).toBe(true)
+
+    const ok = await runWithPolicy(
+      [
+        {
+          id: newId(),
+          name: '打开',
+          type: 'navigate',
+          effectType: 'IDEMPOTENT',
+          input: { url: `${baseUrl}/` },
+        },
+      ],
+      { screenshot: 'on_failure', trace: 'on_failure' },
+    )
+    expect(ok.detail.status).toBe('SUCCEEDED')
+    expect(ok.evidence.items.some((item) => item.type === 'trace')).toBe(false)
+  })
+
+  it('同一 Session 连续两个失败 Run 的 Trace 互不串联', async () => {
+    const failStep = (): Step => ({
+      id: newId(),
+      name: '点不存在',
+      type: 'click',
+      effectType: 'READ_ONLY',
+      input: {
+        target: {
+          framePath: [],
+          candidates: [{ by: 'text', value: `missing-${newId()}` }],
+        },
+      },
+    })
+    const first = await runWithPolicy(
+      [
+        { id: newId(), name: '打开', type: 'navigate', effectType: 'IDEMPOTENT', input: { url: `${baseUrl}/` } },
+        failStep(),
+      ],
+      { trace: 'on_failure', screenshot: 'off' },
+    )
+    const second = await runWithPolicy(
+      [
+        { id: newId(), name: '打开', type: 'navigate', effectType: 'IDEMPOTENT', input: { url: `${baseUrl}/` } },
+        failStep(),
+      ],
+      { trace: 'on_failure', screenshot: 'off' },
+    )
+    const traces = [...first.evidence.items, ...second.evidence.items].filter((item) => item.type === 'trace')
+    expect(traces).toHaveLength(2)
+    expect(traces[0]?.objectKey).not.toBe(traces[1]?.objectKey)
+    expect(traces[0]?.runId).not.toBe(traces[1]?.runId)
+  })
+
+  it('S04：Trace off / always 的单 Attempt 延迟与体积', async () => {
+    const nav = (): Step[] => [
+      { id: newId(), name: '打开', type: 'navigate', effectType: 'IDEMPOTENT', input: { url: `${baseUrl}/` } },
+    ]
+    await runWithPolicy(nav(), { screenshot: 'off', trace: 'off' })
+    const off = await runWithPolicy(nav(), { screenshot: 'off', trace: 'off' })
+    const on = await runWithPolicy(nav(), { screenshot: 'off', trace: 'always' })
+    const onTrace = on.evidence.items.find((item) => item.type === 'trace')
+    const report = {
+      offMs: off.ms,
+      onMs: on.ms,
+      offTraceBytes: 0,
+      onTraceBytes: onTrace?.byteSize ?? 0,
+      onTraceStatus: onTrace?.status ?? 'missing',
+    }
+    process.stdout.write(`S04_TRACE_COST ${JSON.stringify(report)}\n`)
+    expect(off.detail.status).toBe('SUCCEEDED')
+    expect(on.detail.status).toBe('SUCCEEDED')
+    expect(off.evidence.items.some((item) => item.type === 'trace')).toBe(false)
+    expect(onTrace?.status).toBe('available')
+    expect(report.onTraceBytes).toBeGreaterThan(0)
   })
 })

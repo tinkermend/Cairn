@@ -24,6 +24,7 @@ import {
   verifyRunLeaseForWrite,
 } from '../leases/leases.js'
 import { attempts, evidences, runs, stepRuns } from '../schema/execution.js'
+import { settleRunEvidence } from '../objects/evidence.js'
 import { conflict, notFound } from './errors.js'
 import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.js'
 
@@ -290,7 +291,7 @@ export async function reviewRun(
   input: { runId: string; actor: AuditActor; conclusion: 'fail' | 'cancel'; note?: string },
 ) {
   const now = new Date()
-  return db.transaction(async (tx) => {
+  await db.transaction(async (tx) => {
     const run = await lockRunRow(tx as unknown as Db, input.runId)
     if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
     if (run.status !== 'NEEDS_REVIEW') {
@@ -315,6 +316,10 @@ export async function reviewRun(
       `核查结论 ${input.conclusion}${input.note ? `：${input.note}` : ''}`,
     )
   })
+  // 执行轴已落。收尾失败不回滚核查，留给 cleanup 扫描已终态 + 轴 PENDING。
+  await settleRunEvidence(db, input.runId, { pendingTtlSeconds: 3600, maxUploadAttempts: 3 }).catch(
+    () => undefined,
+  )
 }
 
 export async function resumeRunAfterAuth(

@@ -1,4 +1,4 @@
-import type { RunPlacementState, RunStatus, StepRunStatus } from '@cairn/shared'
+import { isFinishedRunStatus, type RunEvidenceStatus, type RunPlacementState, type RunStatus, type StepRunStatus } from '@cairn/shared'
 import type { StatusTone } from '@/components/status-badge'
 import { RUN_STATUS_LABELS, STEP_RUN_STATUS_LABELS } from '@/features/scenarios/labels'
 
@@ -19,6 +19,22 @@ export function runStatusTone(status: RunStatus): StatusTone {
   if (status === 'FAILED') return 'error'
   if (status === 'NEEDS_REVIEW' || status === 'WAITING_FOR_AUTH') return 'warning'
   if (status === 'RUNNING' || status === 'RECOVERING') return 'info'
+  return 'neutral'
+}
+
+export const RUN_EVIDENCE_STATUS_LABELS: Record<RunEvidenceStatus, string> = {
+  PENDING: '证据收集中',
+  COMPLETE: '证据完整',
+  INCOMPLETE: '证据不完整',
+}
+
+export function runEvidenceStatusTone(
+  evidenceStatus: RunEvidenceStatus,
+  runStatus: RunStatus,
+): StatusTone {
+  if (evidenceStatus === 'INCOMPLETE') return 'warning'
+  if (evidenceStatus === 'COMPLETE') return 'success'
+  if (isFinishedRunStatus(runStatus) && evidenceStatus === 'PENDING') return 'neutral'
   return 'neutral'
 }
 

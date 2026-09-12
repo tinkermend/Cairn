@@ -4,7 +4,8 @@ import { executionErrorSchema } from './runtime-error.js'
 import { runInputSchema, runSnapshotSchema, runStatusSchema, stepRunStatusSchema, attemptStatusSchema } from './run.js'
 import { sessionPolicyOverrideSchema, sessionStatusSchema } from './session.js'
 import { executionPolicySchema } from './step.js'
-import { evidenceMetadataSchema } from './evidence.js'
+import { evidenceMetadataSchema, runEvidenceStatusSchema } from './evidence.js'
+import { evidencePolicySchema } from './evidence-policy.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
 export const RUN_ERROR_CODES = [
@@ -14,6 +15,8 @@ export const RUN_ERROR_CODES = [
   'RUN_ACCOUNT_DISABLED',
   'RUN_NOT_REVIEWABLE',
   'RUN_NOT_WAITING_FOR_AUTH',
+  'EVIDENCE_NOT_FOUND',
+  'EVIDENCE_NOT_AVAILABLE',
 ] as const
 export type RunErrorCode = (typeof RUN_ERROR_CODES)[number]
 
@@ -29,6 +32,7 @@ export const createRunBodySchema = z.strictObject({
   policy: executionPolicySchema.optional(),
   /** 会话策略覆盖；与 policy 并列，不进 Step 级 executionPolicy。 */
   sessionPolicy: sessionPolicyOverrideSchema.optional(),
+  evidencePolicy: evidencePolicySchema.optional(),
   idempotencyKey: idempotencyKeySchema.optional(),
 })
 export type CreateRunBody = z.infer<typeof createRunBodySchema>
@@ -88,6 +92,7 @@ export const runSummarySchema = z.object({
   createdAt: utcInstantSchema,
   startedAt: instantOrNull,
   finishedAt: instantOrNull,
+  evidenceStatus: runEvidenceStatusSchema,
   lease: runListLeaseSchema,
 })
 export type RunSummaryDto = z.infer<typeof runSummarySchema>

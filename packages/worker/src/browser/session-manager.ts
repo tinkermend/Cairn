@@ -31,11 +31,16 @@ import {
   type LeaseRecord,
   type SessionRecord,
 } from '@cairn/db'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import {
   DEFAULT_SESSION_POLICY,
   LOCAL_SECRET_PROVIDER,
+  resolveEvidencePolicy,
   resolveSessionPolicy,
+  shouldCaptureEvidence,
   type BrowserCommand,
+  type BrowserCommandEvidence,
   type BrowserCommandResult,
   type RunGrant,
   type RunSnapshot,
@@ -57,11 +62,12 @@ import {
   openRunPage,
   probeAuth,
   probeHealth,
+  screenshotPage,
   stopSession,
   type BrowserHandle,
   type TargetAuthInfo,
 } from './runtime'
-import { captureFailureScreenshot, executeOnPage } from './surface'
+import { executeOnPage } from './surface'
 
 export type BrowserSessionManagerOptions = {
   workerId: string
@@ -75,7 +81,8 @@ export type BrowserSessionManagerOptions = {
 }
 
 export const BROWSER_SESSION_OPTIONS = Symbol('BROWSER_SESSION_OPTIONS')
-export const SECRET_PROVIDER = Symbol('SECRET_PROVIDER')
+import { SECRET_PROVIDER } from '../tokens.js'
+export { SECRET_PROVIDER }
 
 export type SessionAcquireResult =
   | { ok: true; grant: SessionGrant }
@@ -104,6 +111,7 @@ export class BrowserSessionManager {
   readonly guard = new SessionGuard()
   private readonly lives = new Map<string, LiveHandle>()
   private readonly leaseToSession = new Map<string, string>()
+  private readonly tracingByLease = new Map<string, boolean>()
   private heartbeat: NodeJS.Timeout | undefined
   private reconciled = false
   private browserUnavailable = false
@@ -324,6 +332,7 @@ export class BrowserSessionManager {
     }
     this.guard.install(sessionGrant)
     this.leaseToSession.set(lease.id, live.id)
+    await this.startTracingForLease(lease.id, live.id, run)
     this.logger.log(
       {
         sessionId: sessionGrant.sessionId,
@@ -366,6 +375,7 @@ export class BrowserSessionManager {
    */
   async release(leaseId: string, reason: string): Promise<void> {
     const sessionId = this.leaseToSession.get(leaseId)
+    await this.stopTracingForLease(leaseId, sessionId)
     await this.closeRunPage(leaseId)
     const result = await releaseSessionLease(this.dbHandle.db, {
       leaseId,
@@ -584,7 +594,8 @@ export class BrowserSessionManager {
     grant: SessionGrant,
     command: BrowserCommand,
     signal?: AbortSignal,
-  ): Promise<BrowserCommandResult & { screenshotBytes?: Buffer }> {
+    evidence?: BrowserCommandEvidence,
+  ): Promise<BrowserCommandResult & { screenshotBytes?: Buffer; tracePath?: string }> {
     try {
       this.guard.assertHeld(grant.leaseId, grant)
     } catch (error) {
@@ -613,10 +624,55 @@ export class BrowserSessionManager {
         },
       }
     }
-    const result = await executeOnPage(page, command, signal)
-    if (result.ok) return result
-    const screenshotBytes = await captureFailureScreenshot(page)
-    return screenshotBytes ? { ...result, screenshotBytes } : result
+    const tracing = this.tracingByLease.get(grant.leaseId) === true
+    const contextTracing = page.context().tracing
+    const tracePath =
+      tracing && evidence ? join(tmpdir(), `cairn-trace-${evidence.attemptId}.zip`) : undefined
+    if (tracePath && evidence) {
+      await contextTracing.startChunk({ title: evidence.attemptId })
+    }
+    try {
+      const result = await executeOnPage(page, command, signal)
+      const failed = !result.ok
+      const wantShot = evidence
+        ? shouldCaptureEvidence(evidence.screenshot ?? 'on_failure', failed)
+        : failed
+      const screenshotBytes = wantShot ? await screenshotPage(page).catch(() => undefined) : undefined
+      return screenshotBytes || tracePath ? { ...result, screenshotBytes, tracePath } : result
+    } finally {
+      if (tracePath) {
+        await contextTracing.stopChunk({ path: tracePath }).catch(() => undefined)
+      }
+    }
+  }
+
+  private async startTracingForLease(leaseId: string, sessionId: string, run: RunSnapshot): Promise<void> {
+    const policy = resolveEvidencePolicy(run.evidencePolicy)
+    if (policy.trace === 'off') {
+      this.tracingByLease.set(leaseId, false)
+      return
+    }
+    const live = this.lives.get(sessionId)
+    if (!live) {
+      this.tracingByLease.set(leaseId, false)
+      return
+    }
+    const tracing = live.handle.context.tracing
+    if (!tracing?.start) {
+      this.tracingByLease.set(leaseId, false)
+      return
+    }
+    await tracing.start({ screenshots: true, snapshots: true })
+    this.tracingByLease.set(leaseId, true)
+  }
+
+  private async stopTracingForLease(leaseId: string, sessionId: string | undefined): Promise<void> {
+    const enabled = this.tracingByLease.get(leaseId)
+    this.tracingByLease.delete(leaseId)
+    if (!enabled || !sessionId) return
+    const live = this.lives.get(sessionId)
+    if (!live) return
+    await live.handle.context.tracing.stop().catch(() => undefined)
   }
 
   pageForGrant(grant: SessionGrant) {

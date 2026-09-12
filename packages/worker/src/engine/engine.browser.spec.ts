@@ -634,4 +634,74 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
       .where(eq(sessionLeases.runId, created.detail.id))
     expect(leftover).toEqual([])
   })
+
+  it('fill.sensitive 的明文不进证据；tokenCount 不被误伤', async () => {
+    const fill: Step = {
+      id: newId(),
+      name: '填写',
+      type: 'fill',
+      effectType: 'IDEMPOTENT',
+      input: {
+        target: clickTarget,
+        value: 'hunter2-plain',
+        sensitive: true,
+      },
+    }
+    const extract: Step = {
+      id: newId(),
+      name: '提取',
+      type: 'extract',
+      effectType: 'READ_ONLY',
+      outputKey: 'tokenCount',
+      input: {
+        target: clickTarget,
+        as: 'text',
+      },
+    }
+    const created = await queue([fill, extract])
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async (_grant, command): Promise<BrowserCommandResult> => {
+        if (command.type === 'extract') return { ok: true, output: { value: 3, tokenCount: 3 } }
+        return { ok: true, output: {} }
+      },
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+    const dumped = JSON.stringify(await listRunEvidence(handle.db, created.detail.id))
+    expect(dumped).not.toContain('hunter2-plain')
+    expect(dumped).toContain('[redacted]')
+    expect(dumped).toContain('tokenCount')
+  })
+
+  it('显式 screenshot:off 不产生截图证据', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `off-${newId()}`,
+      steps: [clickStep(newId())],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      targetAccountId: accountId,
+      evidencePolicy: { screenshot: 'off' },
+      actor: { id: actorId },
+    })
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => ({
+        ok: false,
+        error: {
+          code: 'TARGET_NOT_FOUND',
+          category: 'EXECUTOR',
+          retryable: false,
+          safeMessage: '未找到',
+        },
+      }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+    const evidence = await listRunEvidence(handle.db, created.detail.id)
+    expect(evidence.items.some((item) => item.type === 'screenshot')).toBe(false)
+  })
 })

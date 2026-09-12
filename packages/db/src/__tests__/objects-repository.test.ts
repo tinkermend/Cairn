@@ -171,6 +171,7 @@ describe('对象账本 Repository（集成）', { timeout: 30_000 }, () => {
     const found = listed.items.find((item) => item.id === evidence.id)
     expect(found?.objectKey).toBe(reserved.objectKey)
     expect(found?.missingReason).toBe(OBJECT_MISSING_REASONS.purged)
+    expect(found?.status).toBe('missing')
 
     const attempts = await markStoredObjectPurgeFailed(handle.db, { id: reserved.id })
     expect(attempts).toBe(1)
@@ -184,6 +185,7 @@ describe('对象账本 Repository（集成）', { timeout: 30_000 }, () => {
     })
     expect(missing.objectKey).toBeUndefined()
     expect(missing.missingReason).toBe(OBJECT_MISSING_REASONS.storeUnavailable)
+    expect(missing.status).toBe('missing')
   })
 
   it('禁止把 Run A 的对象挂到 Run B', async () => {

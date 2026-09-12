@@ -1,6 +1,7 @@
 import {
   ConflictException,
   INestApplication,
+  NotFoundException,
   UnauthorizedException,
   type CanActivate,
   type ExecutionContext,
@@ -52,6 +53,7 @@ const detail = {
   createdAt: '2026-09-10T00:00:00.000Z',
   startedAt: null,
   finishedAt: null,
+  evidenceStatus: 'PENDING',
   lease: null,
   placement: {
     state: 'not_applicable',
@@ -70,6 +72,7 @@ function mockService() {
     review: vi.fn(async () => ({ ...detail, status: 'FAILED' })),
     resumeAuth: vi.fn(async () => ({ ...detail, status: 'RECOVERING' })),
     evidence: vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] })),
+    evidenceContent: vi.fn(),
   }
 }
 
@@ -181,6 +184,7 @@ describe('Runs HTTP', () => {
       id: '77777777-7777-4777-8777-777777777777',
       runId: detail.id,
       type: 'log',
+      status: 'available',
       createdAt: '2026-09-10T00:00:00.000Z',
       objectKey: `v1/runs/${detail.id}/77777777-7777-4777-8777-777777777778`,
       contentType: 'text/plain',
@@ -215,6 +219,54 @@ describe('Runs HTTP', () => {
       ownerWorkerId: 'worker-a',
     })
     expect(JSON.stringify(res.body)).not.toMatch(/WORKER_CAPACITY_EXCEEDED|SESSION_CAPACITY_EXCEEDED/)
+  })
+
+  it('带 run:read 能取回截图正文，且带 nosniff', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+    service.evidenceContent.mockResolvedValueOnce({
+      body: png,
+      contentType: 'image/png',
+      byteSize: png.byteLength,
+      filename: 'screenshot.png',
+    })
+    const res = await request(viewerApp.getHttpServer())
+      .get(`/runs/${detail.id}/evidence/77777777-7777-4777-8777-777777777777/content`)
+      .expect(200)
+    expect(res.headers['content-type']).toMatch(/image\/png/)
+    expect(res.headers['x-content-type-options']).toBe('nosniff')
+    expect(res.headers['content-disposition']).toContain('screenshot.png')
+    expect(res.body).toEqual(png)
+  })
+
+  it('无 run:read 不能下载证据正文', async () => {
+    const noRead: RequestAccount = { ...viewer, permissions: ['workflow:read'] }
+    const app = await buildApp(noRead, service)
+    await request(app.getHttpServer())
+      .get(`/runs/${detail.id}/evidence/77777777-7777-4777-8777-777777777777/content`)
+      .expect(403)
+    expect(service.evidenceContent).not.toHaveBeenCalled()
+    await app.close()
+  })
+
+  it('跨 Run 的 evidenceId 与不可用证据都是 404，不吐字节', async () => {
+    service.evidenceContent.mockRejectedValueOnce(
+      new NotFoundException({ code: 'EVIDENCE_NOT_FOUND', message: '证据不存在' }),
+    )
+    const missing = await request(adminApp.getHttpServer())
+      .get(`/runs/${detail.id}/evidence/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/content`)
+      .expect(404)
+    expect(missing.body.code).toBe('EVIDENCE_NOT_FOUND')
+    expect(missing.body).not.toHaveProperty('body')
+
+    service.evidenceContent.mockRejectedValueOnce(
+      new NotFoundException({ code: 'EVIDENCE_NOT_AVAILABLE', message: '证据不可用：worker_lost' }),
+    )
+    const unavailable = await request(adminApp.getHttpServer())
+      .get(`/runs/${detail.id}/evidence/77777777-7777-4777-8777-777777777777/content`)
+      .expect(404)
+    expect(unavailable.body.code).toBe('EVIDENCE_NOT_AVAILABLE')
+    expect(unavailable.body.message).toContain('worker_lost')
+    expect(unavailable.status).not.toBe(500)
   })
 
   it('无 run:review 不能核查', async () => {

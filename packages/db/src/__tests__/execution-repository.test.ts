@@ -551,6 +551,48 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
     expect(shot?.payload).toBeUndefined()
   })
 
+  it('finishAttempt 把空 Trace 的 capture_failed 落成 missing 行', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '空 Trace',
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    const started = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      inputPayload: 'hello',
+      grant,
+    })
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: started!.attemptId,
+      attemptStatus: 'FAILED',
+      error: {
+        code: 'TARGET_NOT_FOUND',
+        category: 'EXECUTOR',
+        retryable: false,
+        safeMessage: '未找到',
+      },
+      trace: { missingReason: 'capture_failed' },
+      stepRunStatus: 'FAILED',
+      runStatus: 'FAILED',
+      skipRemaining: true,
+      grant,
+    })
+    const evidence = await listRunEvidence(handle.db, created.detail.id)
+    const trace = evidence.items.find((item) => item.type === 'trace')
+    expect(trace?.status).toBe('missing')
+    expect(trace?.missingReason).toBe('capture_failed')
+    expect(trace?.objectKey).toBeUndefined()
+  })
+
   it('领取跳过已请求取消的 QUEUED Run', async () => {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,

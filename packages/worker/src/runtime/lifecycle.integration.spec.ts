@@ -70,6 +70,7 @@ describe('LifecycleService（集成）', { timeout: 60_000 }, () => {
     const gate = Promise.withResolvers<void>()
     // 第三/四个构造参数是 ObjectService / BrowserSessionManager，与本用例无关：给同形占位。
     const noObjects = { purgeExpiredObjects: async () => ({ purged: 0 }) }
+    const noEvidence = { settleExpired: async () => ({ marked: 0 }), settleRun: async () => {} }
     const noSessions = {
       reconcileOwn: async () => ({ leasesRevoked: 0, sessionsClosed: 0 }),
       startHeartbeat: () => {},
@@ -82,6 +83,7 @@ describe('LifecycleService（集成）', { timeout: 60_000 }, () => {
       handle,
       new ExecutionEngine(handle),
       noObjects as never,
+      noEvidence as never,
       noSessions as never,
     )
 

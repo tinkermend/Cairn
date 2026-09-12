@@ -1,12 +1,14 @@
+import { unlink } from 'node:fs/promises'
 import type {
   BrowserCommand,
   BrowserCommandEvidence,
   BrowserCommandResult,
+  EvidenceObjectPointer,
   RunGrant,
   RunSnapshot,
   SessionGrant,
 } from '@cairn/shared'
-import { OBJECT_MISSING_REASONS } from '@cairn/shared'
+import { OBJECT_MISSING_REASONS, shouldCaptureEvidence } from '@cairn/shared'
 import type { ObjectService } from '../objects/object.service'
 import type { BrowserPort } from '../engine/ports'
 import { BrowserSessionManager, SessionLeaseError } from './session-manager'
@@ -30,45 +32,89 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
       signal?: AbortSignal,
       evidence?: BrowserCommandEvidence,
     ) {
-      const raw = await manager.execute(grant, command, signal)
-      const { screenshotBytes, ...result } = raw
-      if (result.ok) return result
-      return attachScreenshot(result, screenshotBytes, objects, evidence)
+      const raw = await manager.execute(grant, command, signal, evidence)
+      const { screenshotBytes, tracePath, ...result } = raw
+      const failed = !result.ok
+      const shotMode = evidence?.screenshot ?? 'on_failure'
+      const traceMode = evidence?.trace ?? 'off'
+
+      let screenshot = result.screenshot
+      if (shouldCaptureEvidence(shotMode, failed)) {
+        screenshot = await attachObjectEvidence({
+          type: 'screenshot',
+          bytes: screenshotBytes,
+          contentType: 'image/png',
+          objects,
+          evidence,
+          retainUntil: evidence?.screenshotRetainUntil,
+          emptyReason: OBJECT_MISSING_REASONS.captureFailed,
+        })
+      }
+
+      let trace = result.trace
+      if (tracePath) {
+        if (shouldCaptureEvidence(traceMode, failed)) {
+          const { readFile } = await import('node:fs/promises')
+          const bytes = await readFile(tracePath).catch(() => undefined)
+          trace = await attachObjectEvidence({
+            type: 'trace',
+            bytes,
+            contentType: 'application/zip',
+            objects,
+            evidence,
+            retainUntil: evidence?.traceRetainUntil,
+            emptyReason: OBJECT_MISSING_REASONS.captureFailed,
+          })
+        }
+        await unlink(tracePath).catch(() => undefined)
+      }
+
+      return { ...result, screenshot, trace }
     },
   }
 }
 
-async function attachScreenshot(
-  result: Extract<BrowserCommandResult, { ok: false }>,
-  screenshotBytes: Buffer | undefined,
-  objects: ObjectService | undefined,
-  evidence: BrowserCommandEvidence | undefined,
-): Promise<BrowserCommandResult> {
-  if (!screenshotBytes) {
-    return { ...result, screenshot: { missingReason: 'capture_failed' } }
+async function attachObjectEvidence(input: {
+  type: 'screenshot' | 'trace'
+  bytes: Buffer | Uint8Array | undefined
+  contentType: string
+  objects: ObjectService | undefined
+  evidence: BrowserCommandEvidence | undefined
+  retainUntil?: string
+  emptyReason: string
+}): Promise<EvidenceObjectPointer> {
+  if (!input.bytes || input.bytes.byteLength === 0) {
+    return { missingReason: input.emptyReason }
   }
-  if (!objects || !evidence) {
-    return { ...result, screenshot: { missingReason: OBJECT_MISSING_REASONS.storeUnavailable } }
+  if (!input.objects || !input.evidence) {
+    return { missingReason: OBJECT_MISSING_REASONS.storeUnavailable }
   }
   try {
-    const saved = await objects.putObjectEvidence({
-      runId: evidence.runId,
-      stepRunId: evidence.stepRunId,
-      attemptId: evidence.attemptId,
-      type: 'screenshot',
-      body: screenshotBytes,
-      contentType: 'image/png',
+    const saved = await input.objects.putObjectEvidence({
+      runId: input.evidence.runId,
+      stepRunId: input.evidence.stepRunId,
+      attemptId: input.evidence.attemptId,
+      type: input.type,
+      body: input.bytes instanceof Uint8Array ? input.bytes : new Uint8Array(input.bytes),
+      contentType: input.contentType,
+      retainUntil: input.retainUntil ? new Date(input.retainUntil) : undefined,
     })
-    return {
-      ...result,
-      screenshot: {
-        objectKey: saved.objectKey,
-        contentType: saved.contentType,
-        byteSize: saved.byteSize,
-        digest: saved.digest,
-      },
+    if (saved.status === 'missing') {
+      return { missingReason: saved.missingReason ?? OBJECT_MISSING_REASONS.storeUnavailable }
     }
-  } catch {
-    return { ...result, screenshot: { missingReason: OBJECT_MISSING_REASONS.storeUnavailable } }
+    return {
+      objectKey: saved.objectKey,
+      contentType: saved.contentType,
+      byteSize: saved.byteSize,
+      digest: saved.digest,
+    }
+  } catch (error) {
+    const tooLarge =
+      error && typeof error === 'object' && 'code' in error && error.code === 'OBJECT_TOO_LARGE'
+    return {
+      missingReason: tooLarge && input.type === 'trace'
+        ? OBJECT_MISSING_REASONS.traceTooLarge
+        : OBJECT_MISSING_REASONS.storeUnavailable,
+    }
   }
 }

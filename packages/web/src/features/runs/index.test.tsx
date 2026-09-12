@@ -39,6 +39,7 @@ function summary(overrides: Partial<RunSummaryDto>): RunSummaryDto {
     createdAt: '2026-09-11T02:00:00.000Z',
     startedAt: null,
     finishedAt: null,
+    evidenceStatus: 'PENDING',
     lease: null,
     ...overrides,
   }
@@ -53,6 +54,7 @@ const list: RunListResponse = {
       scenarioName: '登录巡检',
       startedAt: '2026-09-11T01:00:00.000Z',
       finishedAt: '2026-09-11T01:00:20.000Z',
+      evidenceStatus: 'INCOMPLETE',
     }),
   ],
 }
@@ -97,6 +99,17 @@ describe('RunsPage', () => {
     expect(screen.getByText('演示商城').elements()).toHaveLength(2)
     expect(document.body.textContent).not.toContain('33333333-3333-4333-8333-333333333333')
     expect(document.body.textContent).not.toContain('11111111-1111-4111-8111-111111111111')
+    await expect.element(screen.getByText('证据不完整')).toBeInTheDocument()
+    const headers = [...document.querySelectorAll('thead th')].map((node) => node.textContent?.trim())
+    expect(headers.slice(0, 5)).toEqual(['状态', '证据', '场景', '目标系统', '创建时间'])
+    const incompleteRow = [...document.querySelectorAll('tbody tr')].find((row) =>
+      row.textContent?.includes('登录巡检'),
+    )
+    const cells = [...(incompleteRow?.querySelectorAll('td') ?? [])].map((node) => node.textContent ?? '')
+    expect(cells[0]).toContain('成功')
+    expect(cells[1]).toContain('证据不完整')
+    expect(cells[2]).toContain('登录巡检')
+    expect(cells[1]).not.toContain('登录巡检')
   })
 
   /** 验收 35：排队中可取消；已成功的不给取消入口。 */

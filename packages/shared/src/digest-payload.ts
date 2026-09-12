@@ -1,3 +1,4 @@
+import type { EvidencePolicy } from './evidence-policy.js'
 import type { ExecutionPolicy } from './step.js'
 import type { RunSnapshot } from './run.js'
 import type { SessionPolicy, SessionPolicyOverride } from './session.js'
@@ -16,6 +17,7 @@ export function snapshotDigestPayload(snapshot: RunSnapshot): Record<string, unk
     input: snapshot.input,
     policy: snapshot.policy,
     sessionPolicy: snapshot.sessionPolicy,
+    evidencePolicy: snapshot.evidencePolicy,
     executorVersions: snapshot.executorVersions,
   }
 }
@@ -26,6 +28,7 @@ export function idempotencyDigestPayload(input: {
   targetAccountId?: string | null
   policy?: ExecutionPolicy
   sessionPolicy?: SessionPolicy | SessionPolicyOverride | null
+  evidencePolicy?: EvidencePolicy | null
 }): Record<string, unknown> {
   return {
     scenarioVersionId: input.scenarioVersionId,
@@ -33,5 +36,6 @@ export function idempotencyDigestPayload(input: {
     targetAccountId: input.targetAccountId ?? null,
     policy: input.policy,
     sessionPolicy: input.sessionPolicy ?? null,
+    evidencePolicy: input.evidencePolicy ?? null,
   }
 }
