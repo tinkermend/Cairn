@@ -91,6 +91,11 @@ export function parseAiOutput(
     if (!parsed.ok) {
       return { ok: false, code: 'AI_OUTPUT_INVALID', message: `字段 ${field.name} ${parsed.message}` }
     }
+    // 页面还在加载时模型倾向于回空串而不是报错。必填字段放行空值会把这个错误
+    // 顺着 context 传给后续步骤，失败点离原因很远，也拿不到本步的重试机会。
+    if (required && typeof parsed.value === 'string' && parsed.value.trim() === '') {
+      return { ok: false, code: 'AI_OUTPUT_INVALID', message: `必填字段 ${field.name} 取到空值` }
+    }
     out[field.name] = parsed.value
   }
   return { ok: true, value: jsonValueSchema.parse(out) }

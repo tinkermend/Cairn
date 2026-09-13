@@ -96,15 +96,20 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
     return { target, created }
   }
 
-  it('能力查询与部署闸门一致，不含未开放的 AI 类型', () => {
+  // 这里跑的是真实进程配置，AI 开关由部署环境决定，所以断言两张清单的划分关系，
+  // 而不是断言某个环境下的开关值：三类 AI 步骤同进同出，且可执行与不可用互斥、合起来盖满。
+  it('能力查询与部署闸门一致：AI 类型要么整组可执行，要么整组给出关闭原因', () => {
     const capabilities = scenarios.capabilities()
     expect(capabilities.executableStepTypes).toEqual(
       expect.arrayContaining(['navigate', 'click', 'fill', 'extract', 'assert', 'echo', 'delay', 'fail']),
     )
-    expect(capabilities.executableStepTypes).not.toContain('ai_action')
-    expect(capabilities.unavailableReasons.some((item) => item.type === 'ai_action' && item.code === 'AI_DISABLED')).toBe(
-      true,
+    const aiTypes = ['ai_action', 'ai_extract', 'ai_assert']
+    const executable = aiTypes.filter((type) => capabilities.executableStepTypes.includes(type))
+    const blocked = aiTypes.filter((type) =>
+      capabilities.unavailableReasons.some((item) => item.type === type && item.code === 'AI_DISABLED'),
     )
+    expect(executable.length === 0 ? blocked : executable).toEqual(aiTypes)
+    expect(executable.filter((type) => blocked.includes(type))).toEqual([])
   })
 
   it('保存草稿升 revision；过期 revision 的保存 / 发布 / 试跑都是同一套冲突', async () => {

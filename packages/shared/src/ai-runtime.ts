@@ -1,6 +1,15 @@
 import { z } from 'zod'
+import { aiOutputSchemaSchema } from './output-schema.js'
+import {
+  FACTORY_PLATFORM_CONFIG,
+  assertAiRequestTimeoutFitsSteps,
+  platformRuntimeDefaultsFrom,
+  platformRuntimeDefaultsSchema,
+  resolvePlatformExecutionPolicy,
+  type PlatformConfigDocument,
+} from './platform-config.js'
 import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
-import { AI_STEP_TYPES, EXECUTABLE_STEP_TYPES, isAiStepType } from './step.js'
+import { AI_STEP_TYPES, EXECUTABLE_STEP_TYPES, hasAiSteps, isAiStepType } from './step.js'
 import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
 
 export const BROWSER_AI_ADAPTER = 'midscene' as const
@@ -23,6 +32,7 @@ export const scenarioCapabilitiesSchema = z.strictObject({
       message: z.string().min(1).max(512),
     }),
   ),
+  defaults: platformRuntimeDefaultsSchema,
 })
 export type ScenarioCapabilities = z.infer<typeof scenarioCapabilitiesSchema>
 
@@ -51,7 +61,7 @@ export type AiCommandType = (typeof AI_COMMAND_TYPES)[number]
 export const aiCommandSchema = z.strictObject({
   type: z.enum(AI_COMMAND_TYPES),
   instruction: z.string().trim().min(1).max(4096),
-  outputSchema: jsonValueSchema.optional(),
+  outputSchema: aiOutputSchemaSchema.optional(),
   maxCalls: z.number().int().positive(),
   maxOutputTokens: z.number().int().positive(),
   requestTimeoutMs: z.number().int().positive(),
@@ -110,6 +120,7 @@ export function executableStepTypesFor(browserAiEnabled: boolean): string[] {
 export function scenarioCapabilitiesFor(input: {
   browserAiEnabled: boolean
   unavailableMessage?: string
+  defaults?: ScenarioCapabilities['defaults']
 }): ScenarioCapabilities {
   return {
     executableStepTypes: executableStepTypesFor(input.browserAiEnabled),
@@ -120,7 +131,42 @@ export function scenarioCapabilitiesFor(input: {
           code: 'AI_DISABLED',
           message: input.unavailableMessage ?? '浏览器仿真 AI 未启用',
         })),
+    defaults: input.defaults ?? platformRuntimeDefaultsFrom(FACTORY_PLATFORM_CONFIG, 1),
   }
+}
+
+export function resolveAiExecutionFromPlatform(
+  steps: readonly { type: string; policy?: { timeoutMs?: number; retryLimit?: number } }[],
+  document: PlatformConfigDocument,
+  extras: { revision: number; hangWaitMs: number },
+) {
+  if (!hasAiSteps(steps)) return undefined
+  if (!document.browserAi.enabled) {
+    throw Object.assign(new Error('浏览器仿真 AI 未启用'), { code: 'AI_DISABLED' })
+  }
+  const ai = document.browserAi
+  if (!ai.baseUrl || !ai.model || !ai.modelFamily || !ai.secretRef) {
+    throw Object.assign(new Error('浏览器仿真 AI 配置不完整'), { code: 'AI_CONFIG_INVALID' })
+  }
+  const snapshotPolicy = resolvePlatformExecutionPolicy(undefined, document.execution)
+  assertAiRequestTimeoutFitsSteps(steps, snapshotPolicy, ai.requestTimeoutMs)
+  return aiExecutionConfigSchema.parse({
+    adapter: BROWSER_AI_ADAPTER,
+    adapterVersion: BROWSER_AI_ADAPTER_VERSION,
+    sdkVersion: BROWSER_AI_SDK_VERSION,
+    routeId: BROWSER_AI_ROUTE_ID,
+    configVersion: String(extras.revision),
+    modelBaseUrl: ai.baseUrl,
+    modelName: ai.model,
+    modelFamily: ai.modelFamily,
+    secretRef: ai.secretRef,
+    promptVersion: BROWSER_AI_PROMPT_VERSION,
+    policyVersion: BROWSER_AI_POLICY_VERSION,
+    maxCalls: ai.stepMaxCalls,
+    maxOutputTokens: ai.maxOutputTokens,
+    requestTimeoutMs: ai.requestTimeoutMs,
+    hangWaitMs: extras.hangWaitMs,
+  })
 }
 
 export const ASSERT_FAILED_CODE = 'ASSERT_FAILED' as const

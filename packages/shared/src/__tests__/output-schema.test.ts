@@ -30,6 +30,23 @@ describe('parseAiOutput', () => {
     expect(parseAiOutput({ orderNo: 'A-1', extra: 1 }, schema).ok).toBe(false)
     expect(parseAiOutput({ paid: true }, schema).ok).toBe(false)
   })
+
+  // 页面还没渲染完时模型会回空串。必填放行空值等于把错误传给后续步骤。
+  it('必填字符串不接受空值，可选字段仍允许空串', () => {
+    const schema = {
+      kind: 'object' as const,
+      fields: [
+        { name: 'orderNo', type: 'string' as const },
+        { name: 'note', type: 'string' as const, required: false },
+      ],
+    }
+    expect(parseAiOutput({ orderNo: '' }, schema).ok).toBe(false)
+    expect(parseAiOutput({ orderNo: '   ' }, schema).ok).toBe(false)
+    expect(parseAiOutput({ orderNo: 'A-1', note: '' }, schema)).toEqual({
+      ok: true,
+      value: { orderNo: 'A-1', note: '' },
+    })
+  })
 })
 
 describe('fillTextFromContext', () => {

@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common'
 import {
-  eq,
+  expireRunDeadlines,
   failRunValidation,
   finishAttempt,
   finishRunIfDrained,
@@ -11,7 +11,6 @@ import {
   reconcileOrphanAttempts,
   settleRunEvidence,
   startAttempt,
-  targets,
   type DbHandle,
   type FinishAttemptInput,
 } from '@cairn/db'
@@ -20,7 +19,11 @@ import {
   LOCAL_SECRET_PROVIDER,
   REDACTED,
   executorVersionsMatch,
-  isBrowserStepType,
+  ASSERT_FAILED_CODE,
+  fillTextFromContext,
+  isAiStepType,
+  readContextValue,
+  stepUsesBrowser,
   isPlacementYieldCode,
   isSessionConfigErrorCode,
   jsonValueSchema,
@@ -46,8 +49,14 @@ import { DB_HANDLE } from '../db/db.module'
 import { SECRET_PROVIDER } from '../tokens.js'
 import { yieldPlacement } from '../runtime/placement-backoff.js'
 import { isAbortError, systemClock, type EngineClock } from './clock.js'
-import { executeDelay, executeEcho, executeFail } from './executors.js'
 import { BROWSER_PORT, type BrowserPort } from './ports.js'
+import { BrowserStepExecutor } from './browser-executor.js'
+import { FixtureStepExecutor } from './fixture-executor.js'
+import {
+  STEP_EXECUTOR_REGISTRY,
+  StepExecutorRegistry,
+  type StepExecutionOutcome,
+} from './step-executor.js'
 
 export type ExecuteOptions = {
   grant: RunGrant
@@ -60,41 +69,38 @@ export type ExecuteOptions = {
 /** 取消请求的轮询间隔：更密只增加查询，不会更早发现取消。 */
 const DEFAULT_CANCEL_POLL_MS = 250
 
-type ExecutorOutcome =
-  | {
-      kind: 'success'
-      output: JsonValue
-      screenshot?: ScreenshotPointer
-      trace?: ScreenshotPointer
-    }
-  | {
-      kind: 'failed' | 'cancelled' | 'needs_review'
-      error: ExecutionError
-      output?: JsonValue
-      diagnostics?: ResolverDiagnostics
-      screenshot?: ScreenshotPointer
-      trace?: ScreenshotPointer
-      timedOut: boolean
-      aborted: boolean
-    }
+type ExecutorOutcome = StepExecutionOutcome & {
+  timedOut: boolean
+  aborted: boolean
+}
 
 @Injectable()
 export class ExecutionEngine {
   private readonly logger = new Logger(ExecutionEngine.name)
+  private readonly registry: StepExecutorRegistry
 
   constructor(
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
     /** 含浏览器步骤的 Run 经此端口 acquire / execute / release。 */
     @Optional() @Inject(BROWSER_PORT) private readonly browser?: BrowserPort,
     @Optional() @Inject(SECRET_PROVIDER) private readonly secrets?: LocalSecretProvider,
-  ) {}
+    @Optional() @Inject(STEP_EXECUTOR_REGISTRY) registry?: StepExecutorRegistry,
+  ) {
+    this.registry =
+      registry ??
+      new StepExecutorRegistry([
+        new FixtureStepExecutor(),
+        new BrowserStepExecutor(this.handle, this.browser),
+      ])
+  }
 
   async execute(runId: string, options: ExecuteOptions): Promise<void> {
     const grant = options.grant
     const clock = options.clock ?? systemClock
     const external = options.signal ?? new AbortController().signal
-    const db = this.handle.db
+    const db = this.handle
 
+    await expireRunDeadlines(db, runId)
     const orphan = await reconcileOrphanAttempts(db, { grant })
     if (orphan !== 'continue') return
 
@@ -110,13 +116,19 @@ export class ExecutionEngine {
       )
     ) {
       this.logger.warn({ runId }, '快照或 executorVersions 非法，Run 标为 FAILED')
-      await failRunValidation(db, runId, { grant })
+      await failRunValidation(db, runId, { grant }, {
+        code: 'RUN_SNAPSHOT_INVALID',
+        category: 'VALIDATION',
+        retryable: false,
+        safeMessage: '运行快照或执行器版本非法，无法开始步骤',
+      })
       return
     }
     const snapshot = parsed.data
     const secrets = await this.resolveRedactionSecrets(snapshot)
     const evidencePolicy = resolveEvidencePolicy(snapshot.evidencePolicy)
-    const needsBrowser = snapshot.steps.some((step) => isBrowserStepType(step.type))
+    const needsBrowser = snapshot.steps.some((step) => stepUsesBrowser(step.type))
+    let sessionMustClose = false
 
     // 取消没有通知机制可依赖（NOTIFY 属 P7），在途取消只能轮询 cancel_requested_at。
     const stop = this.watchCancellation(runId, external, clock, options.cancelPollMs ?? DEFAULT_CANCEL_POLL_MS)
@@ -135,7 +147,10 @@ export class ExecutionEngine {
     try {
       if (needsBrowser) {
         const acquired = await this.acquireSession(snapshot, grant, stop.signal)
-        if (acquired.kind !== 'held') return
+        if (acquired.kind !== 'held') {
+          if (stop.fromDb.aborted) await markRunCancelled(db, runId, { grant })
+          return
+        }
         sessionGrant = acquired.grant
       }
 
@@ -195,8 +210,9 @@ export class ExecutionEngine {
           return
         }
 
-        const policy = resolveStepPolicy(snapshot.policy, step.policy)
+        const policy = resolveStepPolicy(snapshot.policy, step.policy, step.type)
         const last = isLastOpenStep(detail, step.id)
+        const taint = { hung: false }
         const finished = await this.completeAttempt({
           runId,
           grant,
@@ -210,12 +226,15 @@ export class ExecutionEngine {
           context: { ...detail.context },
           sessionGrant,
           targetId: snapshot.targetId,
+          snapshot,
           stop: stop.signal,
           yielding,
           clock,
           secrets,
           evidencePolicy,
+          taint,
         })
+        sessionMustClose = sessionMustClose || taint.hung
         if (!finished) return
       }
 
@@ -224,6 +243,14 @@ export class ExecutionEngine {
       await finishRunIfDrained(db, grant)
     } finally {
       if (sessionGrant && this.browser) {
+        if (sessionMustClose && this.browser.invalidate) {
+          await this.browser.invalidate(sessionGrant, 'ai_hung').catch((error: unknown) => {
+            this.logger.warn(
+              { runId, message: error instanceof Error ? error.message : String(error) },
+              '关闭未落定的 AI 会话失败',
+            )
+          })
+        }
         await this.browser.release(sessionGrant, 'run_finished').catch((error: unknown) => {
           this.logger.warn(
             { runId, message: error instanceof Error ? error.message : String(error) },
@@ -250,30 +277,37 @@ export class ExecutionEngine {
     signal: AbortSignal,
   ): Promise<{ kind: 'held'; grant: SessionGrant } | { kind: 'stop' }> {
     if (!this.browser) {
-      await yieldPlacement(this.handle.db, grant)
+      await yieldPlacement(this.handle, grant)
       return { kind: 'stop' }
     }
     try {
       const outcome = await this.browser.acquire(snapshot, grant, signal)
       if (outcome.ok) return { kind: 'held', grant: outcome.grant }
+      if (signal.aborted) return { kind: 'stop' }
       if (outcome.waitingForAuth) return { kind: 'stop' }
       if (isPlacementYieldCode(outcome.code)) {
-        await yieldPlacement(this.handle.db, grant)
+        await yieldPlacement(this.handle, grant)
         return { kind: 'stop' }
       }
       if (isSessionConfigErrorCode(outcome.code)) {
-        await failRunValidation(this.handle.db, grant.runId, { grant })
+        await failRunValidation(this.handle, grant.runId, { grant }, acquireValidationError(outcome))
         return { kind: 'stop' }
       }
       this.logger.warn({ runId: grant.runId, code: outcome.code }, 'acquire 未识别的失败，按配置错误收场')
-      await failRunValidation(this.handle.db, grant.runId, { grant })
+      await failRunValidation(this.handle, grant.runId, { grant }, acquireValidationError(outcome))
       return { kind: 'stop' }
     } catch (error) {
+      if (signal.aborted) return { kind: 'stop' }
       this.logger.warn(
         { runId: grant.runId, message: error instanceof Error ? error.message : String(error) },
         'acquire 抛出异常，按配置错误收场',
       )
-      await failRunValidation(this.handle.db, grant.runId, { grant })
+      await failRunValidation(this.handle, grant.runId, { grant }, {
+        code: 'SESSION_ACQUIRE_FAILED',
+        category: 'INFRASTRUCTURE',
+        retryable: false,
+        safeMessage: '会话获取过程异常，运行在步骤开始前失败',
+      })
       return { kind: 'stop' }
     }
   }
@@ -297,8 +331,10 @@ export class ExecutionEngine {
     clock: EngineClock
     secrets: readonly string[]
     evidencePolicy: ReturnType<typeof resolveEvidencePolicy>
+    snapshot: RunSnapshot
+    taint: { hung: boolean }
   }): Promise<boolean> {
-    const db = this.handle.db
+    const db = this.handle
     let attemptId = input.attemptId
     let attemptNo = input.attemptNo
     let context = input.context
@@ -326,6 +362,7 @@ export class ExecutionEngine {
       const outcome = await this.runExecutor({
         step: input.step,
         input: input.input,
+        context,
         timeoutMs: input.policy.timeoutMs,
         stop: input.stop,
         clock: input.clock,
@@ -335,7 +372,10 @@ export class ExecutionEngine {
         attemptId,
         targetId: input.targetId,
         evidencePolicy: input.evidencePolicy,
+        grant: input.grant,
+        snapshot: input.snapshot,
       })
+      if (outcome.hung) input.taint.hung = true
 
       // 成功也要看写入结果：取消请求抢先到达时 finishAttempt 会把它改写成取消，此时必须停手。
       if (outcome.kind === 'success') {
@@ -362,7 +402,10 @@ export class ExecutionEngine {
       }
 
       const error = outcome.error
-      if (shouldNeedsReview(input.step, error, outcome.timedOut, outcome.aborted)) {
+      if (
+        outcome.kind === 'needs_review' ||
+        shouldNeedsReview(input.step, error, outcome.timedOut, outcome.aborted)
+      ) {
         await this.close({
           runId: input.runId,
           attemptId,
@@ -440,6 +483,7 @@ export class ExecutionEngine {
   private async runExecutor(input: {
     step: Step
     input: JsonValue
+    context: Record<string, JsonValue>
     timeoutMs: number
     stop: AbortSignal
     clock: EngineClock
@@ -449,62 +493,52 @@ export class ExecutionEngine {
     attemptId: string
     targetId: string
     evidencePolicy: ReturnType<typeof resolveEvidencePolicy>
+    grant: RunGrant
+    snapshot: RunSnapshot
   }): Promise<ExecutorOutcome> {
     const { step, timeoutMs, stop, clock } = input
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(), timeoutMs)
     const combined = AbortSignal.any([stop, timeout.signal])
     try {
-      if (step.type === 'echo') return { kind: 'success', output: executeEcho(input.input) }
-      if (step.type === 'delay') {
-        return { kind: 'success', output: await executeDelay(step.input.durationMs, combined, clock) }
-      }
-      if (step.type === 'fail') {
-        return { kind: 'failed', error: executeFail(step.input), timedOut: false, aborted: false }
-      }
-      if (!this.browser || !input.sessionGrant) {
+      const executor = this.registry.get(step.type)
+      if (!executor) {
         return {
           kind: 'failed',
           error: {
-            code: 'BROWSER_UNAVAILABLE',
-            category: 'INFRASTRUCTURE',
-            retryable: true,
-            safeMessage: '浏览器步骤没有可用会话',
+            code: 'EXECUTOR_NOT_FOUND',
+            category: 'VALIDATION',
+            retryable: false,
+            safeMessage: `未找到步骤类型 [${step.type}] 的执行器`,
           },
           timedOut: false,
           aborted: false,
         }
       }
-      const command = await this.toBrowserCommand(step, input.input, input.targetId)
-      if (!command.ok) {
-        return { kind: 'failed', error: command.error, timedOut: false, aborted: false }
-      }
-      const result = await this.browser.execute(input.sessionGrant, command.command, combined, {
+
+      const outcome = await executor.execute({
         runId: input.runId,
         stepRunId: input.stepRunId,
         attemptId: input.attemptId,
-        screenshot: input.evidencePolicy.screenshot,
-        trace: input.evidencePolicy.trace,
-        screenshotRetainUntil: retainUntilFor('screenshot', input.evidencePolicy).toISOString(),
-        traceRetainUntil: retainUntilFor('trace', input.evidencePolicy).toISOString(),
+        targetId: input.targetId,
+        step,
+        input: input.input,
+        context: input.context,
+        signal: combined,
+        clock,
+        sessionGrant: input.sessionGrant,
+        evidencePolicy: input.evidencePolicy,
+        grant: input.grant,
+        snapshot: input.snapshot,
       })
-      if (result.ok) {
-        return {
-          kind: 'success',
-          output: result.output,
-          screenshot: result.screenshot,
-          trace: result.trace,
-        }
-      }
+
+      // 执行器可能把中止收成一个普通失败结果返回（AI SDK 会把 abort 包成自己的错误）。
+      // 中止判定以引擎自己的信号为准，否则副作用步骤会丢掉 NEEDS_REVIEW 这条处置路径。
+      if (outcome.kind === 'success') return { ...outcome, timedOut: false, aborted: false }
       return {
-        kind: 'failed',
-        error: result.error,
-        output: result.output,
-        diagnostics: result.diagnostics,
-        screenshot: result.screenshot,
-        trace: result.trace,
-        timedOut: false,
-        aborted: false,
+        ...outcome,
+        timedOut: (outcome.timedOut ?? false) || (timeout.signal.aborted && !stop.aborted),
+        aborted: (outcome.aborted ?? false) || timeout.signal.aborted || stop.aborted,
       }
     } catch (error) {
       const timedOut = timeout.signal.aborted && !stop.aborted
@@ -562,14 +596,14 @@ export class ExecutionEngine {
     stop: AbortSignal,
     yielding: () => boolean,
   ): Promise<void> {
-    const row = await loadRunRow(this.handle.db, runId)
+    const row = await loadRunRow(this.handle, runId)
     if (!row || row.status !== 'RUNNING') return
     if (row.cancelRequestedAt) {
-      await markRunCancelled(this.handle.db, runId, { grant })
+      await markRunCancelled(this.handle, runId, { grant })
       return
     }
     if (stop.aborted && !yielding()) {
-      await markRunCancelled(this.handle.db, runId, { grant })
+      await markRunCancelled(this.handle, runId, { grant })
     }
   }
 
@@ -597,7 +631,8 @@ export class ExecutionEngine {
           return
         }
         if (signal.aborted) return
-        const row = await loadRunRow(this.handle.db, runId)
+        await expireRunDeadlines(this.handle, runId)
+        const row = await loadRunRow(this.handle, runId)
         if (!row || row.status !== 'RUNNING' || row.cancelRequestedAt) {
           controller.abort()
           return
@@ -619,99 +654,37 @@ export class ExecutionEngine {
    * `updated: false`（Attempt 已被关闭，迟到回调）与 `cancelled: true` 都必须立刻停手。
    */
   private async close(input: FinishAttemptInput): Promise<boolean> {
-    const result = await finishAttempt(this.handle.db, input)
+    const result = await finishAttempt(this.handle, input)
     return result.updated && !result.cancelled
   }
 
-  private async toBrowserCommand(
-    step: Step,
-    input: JsonValue,
-    targetId: string,
-  ): Promise<{ ok: true; command: BrowserCommand } | { ok: false; error: ExecutionError }> {
-    if (step.type === 'navigate') {
-      const url =
-        input && typeof input === 'object' && !Array.isArray(input) && typeof input.url === 'string'
-          ? input.url
-          : step.input.url
-      const allowedOrigins = await this.loadAllowedOrigins(targetId)
-      if (allowedOrigins.length === 0) {
-        return {
-          ok: false,
-          error: {
-            code: 'SESSION_TARGET_MISSING',
-            category: 'VALIDATION',
-            retryable: false,
-            safeMessage: 'Target 没有可用入口，无法校验导航范围',
-          },
+  private async resolveRedactionSecrets(snapshot: RunSnapshot): Promise<string[]> {
+    const secrets: string[] = []
+    if (snapshot.secretRef?.provider === LOCAL_SECRET_PROVIDER && this.secrets) {
+      const row = await loadSecretCiphertext(this.handle, snapshot.secretRef.secretId)
+      if (row) {
+        try {
+          const password = this.secrets.decrypt(row.id, row.ciphertext)
+          if (password) secrets.push(password)
+        } catch {
+          // 解密失败不阻断执行，只是这一份口令进不了脱敏集
         }
       }
-      return { ok: true, command: { type: 'navigate', url, allowedOrigins } }
     }
-    if (step.type === 'click') {
-      const target = descriptorFrom(input) ?? step.input.target
-      return { ok: true, command: { type: 'click', target } }
-    }
-    if (step.type === 'fill') {
-      const target = descriptorFrom(input) ?? step.input.target
-      const value =
-        input && typeof input === 'object' && !Array.isArray(input) && typeof input.value === 'string'
-          ? input.value
-          : ''
-      return { ok: true, command: { type: 'fill', target, value } }
-    }
-    if (step.type === 'extract') {
-      return {
-        ok: true,
-        command: {
-          type: 'extract',
-          target: descriptorFrom(input) ?? step.input.target,
-          as: step.input.as,
-          attribute: step.input.attribute,
-        },
+    const modelRef = snapshot.aiExecution?.secretRef
+    if (modelRef?.provider === LOCAL_SECRET_PROVIDER && this.secrets) {
+      const row = await loadSecretCiphertext(this.handle, modelRef.secretId)
+      if (row) {
+        try {
+          const key = this.secrets.decrypt(row.id, row.ciphertext)
+          if (key) secrets.push(key)
+        } catch {
+          // 同上
+        }
       }
     }
-    if (step.type === 'assert') {
-      return {
-        ok: true,
-        command: {
-          type: 'assert',
-          target: descriptorFrom(input) ?? step.input.target,
-          expect: step.input.expect,
-        },
-      }
-    }
-    return {
-      ok: false,
-      error: {
-        code: 'BROWSER_CAPABILITY_MISSING',
-        category: 'EXECUTOR',
-        retryable: false,
-        safeMessage: `不支持的浏览器步骤：${step.type}`,
-      },
-    }
-  }
-
-  private async resolveRedactionSecrets(snapshot: RunSnapshot): Promise<string[]> {
-    if (!snapshot.secretRef || !snapshot.targetAccountId) return []
-    if (snapshot.secretRef.provider !== LOCAL_SECRET_PROVIDER || !this.secrets) return []
-    const row = await loadSecretCiphertext(this.handle.db, snapshot.secretRef.secretId)
-    if (!row) return []
-    try {
-      const password = this.secrets.decrypt(row.id, row.ciphertext)
-      return password ? [password] : []
-    } catch {
-      return []
-    }
-  }
-
-  private async loadAllowedOrigins(targetId: string): Promise<string[]> {
-    const [row] = await this.handle.db
-      .select({ entryUrl: targets.entryUrl, loginUrl: targets.loginUrl })
-      .from(targets)
-      .where(eq(targets.id, targetId))
-      .limit(1)
-    if (!row) return []
-    return originsFromUrls(row.entryUrl, row.loginUrl)
+    if (config.CAIRN_BROWSER_AI_API_KEY) secrets.push(config.CAIRN_BROWSER_AI_API_KEY)
+    return secrets
   }
 }
 
@@ -722,42 +695,47 @@ function resolveStepInput(
   if (step.type === 'echo') {
     if (step.input.value !== undefined) return { ok: true, input: step.input.value }
     const from = step.input.from!
-    if (!Object.hasOwn(context, from)) {
+    const resolved = readContextValue(context, from, step.input.fromField)
+    if (!resolved.ok) {
       return {
         ok: false,
-        input: { from },
+        input: {
+          from,
+          ...(step.input.fromField ? { fromField: step.input.fromField } : {}),
+        },
         error: {
-          code: 'UNRESOLVED_REF',
+          code: resolved.code,
           category: 'VALIDATION',
           retryable: false,
-          safeMessage: `context 中不存在 ${from}`,
+          safeMessage: resolved.message,
         },
       }
     }
-    return { ok: true, input: jsonValueSchema.parse(context[from]) }
+    return { ok: true, input: resolved.value }
   }
   if (step.type === 'fill') {
     if (step.input.value !== undefined) {
       return { ok: true, input: { target: step.input.target, value: step.input.value } }
     }
     const from = step.input.from!
-    if (!Object.hasOwn(context, from)) {
+    const resolved = fillTextFromContext(context, from, step.input.fromField)
+    if (!resolved.ok) {
       return {
         ok: false,
-        input: { target: step.input.target, from },
+        input: {
+          target: step.input.target,
+          from,
+          ...(step.input.fromField ? { fromField: step.input.fromField } : {}),
+        },
         error: {
-          code: 'UNRESOLVED_REF',
+          code: resolved.code,
           category: 'VALIDATION',
           retryable: false,
-          safeMessage: `context 中不存在 ${from}`,
+          safeMessage: resolved.message,
         },
       }
     }
-    const value = context[from]
-    return {
-      ok: true,
-      input: { target: step.input.target, value: typeof value === 'string' ? value : JSON.stringify(value) },
-    }
+    return { ok: true, input: { target: step.input.target, value: resolved.text } }
   }
   return { ok: true, input: step.input }
 }
@@ -794,7 +772,7 @@ function sessionLeaseFor(input: {
   sessionGrant?: SessionGrant
   grant: RunGrant
 }): FinishAttemptInput['sessionLease'] {
-  if (!input.sessionGrant || !isBrowserStepType(input.step.type)) return undefined
+  if (!input.sessionGrant || !stepUsesBrowser(input.step.type)) return undefined
   return {
     ...input.sessionGrant,
     holderWorkerId: input.grant.holderWorkerId,
@@ -815,26 +793,19 @@ function contextValue(step: Step, output: JsonValue): JsonValue {
   return output
 }
 
-function descriptorFrom(input: JsonValue): TargetDescriptor | undefined {
-  if (!input || typeof input !== 'object' || Array.isArray(input) || !('target' in input)) return undefined
-  return input.target as TargetDescriptor
+const ACQUIRE_FAIL_MESSAGES: Record<string, string> = {
+  SESSION_ACCOUNT_REQUIRED: '浏览器步骤未指定目标账号，无法建立会话',
+  SESSION_TARGET_MISSING: '目标系统不存在或已被删除',
+  SESSION_POLICY_INVALID: '会话策略不合法',
 }
 
-function originsFromUrls(entryUrl: string, loginUrl?: string | null): string[] {
-  const origins = new Set<string>()
-  try {
-    origins.add(new URL(entryUrl).origin)
-  } catch {
-    return []
+function acquireValidationError(outcome: { code: string; message: string }): ExecutionError {
+  return {
+    code: outcome.code,
+    category: isSessionConfigErrorCode(outcome.code) ? 'VALIDATION' : 'INFRASTRUCTURE',
+    retryable: false,
+    safeMessage: ACQUIRE_FAIL_MESSAGES[outcome.code] ?? outcome.message,
   }
-  if (loginUrl) {
-    try {
-      origins.add(new URL(loginUrl, entryUrl).origin)
-    } catch {
-      // 忽略非法 loginUrl，仍用入口源
-    }
-  }
-  return [...origins]
 }
 
 function evidencePayloadForStep(step: Step, input: JsonValue): JsonValue {
@@ -852,6 +823,8 @@ function evidencePayloadForStep(step: Step, input: JsonValue): JsonValue {
 
 function shouldRetry(step: Step, error: ExecutionError, attemptNo: number, retryLimit: number): boolean {
   if (attemptNo >= retryLimit + 1) return false
+  if (error.code === ASSERT_FAILED_CODE) return false
+  if (isAiStepType(step.type) && step.type === 'ai_action') return false
   if (step.effectType === 'SIDE_EFFECT' && (error.category === 'UNKNOWN' || error.category === 'TIMEOUT')) {
     return false
   }
