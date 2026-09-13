@@ -198,7 +198,7 @@ describe('Scenarios HTTP', () => {
     expect(service.saveDraft).not.toHaveBeenCalled()
   })
 
-  it('试跑需要 workflow:write 且 run:execute', async () => {
+  it('试跑需要 workflow:write、run:execute 且 target:read', async () => {
     await request(viewerApp.getHttpServer())
       .post(`/scenarios/${scenario.id}/trial`)
       .send({ revision: 1 })

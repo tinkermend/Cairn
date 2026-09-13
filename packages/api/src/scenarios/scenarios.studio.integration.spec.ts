@@ -62,7 +62,7 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
       email: `studio-${actorId}@example.com`,
       status: 'active',
       roles: [],
-      permissions: ['target:write', 'workflow:write', 'run:execute'],
+      permissions: ['target:read', 'target:write', 'workflow:write', 'run:execute'],
     }
     targets = new TargetsService(handle, new LocalSecretProvider(credentialKeyFromEnv(DEV_CREDENTIAL_KEY)))
     scenarios = new ScenariosService(handle)

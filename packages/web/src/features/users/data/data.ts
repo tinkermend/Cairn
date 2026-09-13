@@ -1,4 +1,4 @@
-import { Eye, Shield, UserCheck } from 'lucide-react'
+import { Eye, PenLine, Shield, UserCheck } from 'lucide-react'
 import {
   SYSTEM_ROLE_DEFINITIONS,
   SYSTEM_ROLE_KEYS,
@@ -13,6 +13,7 @@ export const callTypes = new Map<AccountStatus, StatusTone>([
 
 const ROLE_ICONS = {
   admin: Shield,
+  author: PenLine,
   operator: UserCheck,
   viewer: Eye,
 } as const

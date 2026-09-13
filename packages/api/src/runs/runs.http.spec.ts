@@ -120,6 +120,26 @@ describe('Runs HTTP', () => {
     expect(service.create).not.toHaveBeenCalled()
   })
 
+  it('仅有 run:execute、没有 target:read 不能创建', async () => {
+    const executeOnly: RequestAccount = { ...admin, id: 'acc-exec', permissions: ['run:execute'] }
+    const app = await buildApp(executeOnly, service)
+    await request(app.getHttpServer()).post('/runs').send({ scenarioId: detail.scenarioId }).expect(403)
+    expect(service.create).not.toHaveBeenCalled()
+    await app.close()
+  })
+
+  it('执行者具备开跑组合权限可以创建', async () => {
+    const operator: RequestAccount = {
+      ...admin,
+      id: 'acc-operator',
+      permissions: ['run:execute', 'target:read', 'workflow:read'],
+    }
+    const app = await buildApp(operator, service)
+    await request(app.getHttpServer()).post('/runs').send({ scenarioId: detail.scenarioId }).expect(201)
+    expect(service.create).toHaveBeenCalledOnce()
+    await app.close()
+  })
+
   it('无 run:read 不能看详情', async () => {
     const noRead: RequestAccount = { ...viewer, permissions: ['workflow:read'] }
     const app = await buildApp(noRead, service)

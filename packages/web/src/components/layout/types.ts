@@ -12,6 +12,8 @@ type BaseNavItem = {
   badge?: string
   icon?: React.ElementType
   permission?: PermissionCode
+  /** 有其中任一权限即显示；与 permission 同时存在时以 anyOf 为准。 */
+  anyOf?: readonly PermissionCode[]
 }
 
 type NavLink = BaseNavItem & {

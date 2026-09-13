@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { isFinishedRunStatus } from '@cairn/shared'
+import { RUN_EXECUTE_ALL_OF, isFinishedRunStatus } from '@cairn/shared'
 import { Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
@@ -40,7 +40,7 @@ export function RunsPage() {
           title='运行'
           description='对目标系统执行场景的一次记录。进度以手动刷新的 GET 为准。'
           actions={
-            <Can permission='run:execute'>
+            <Can allOf={RUN_EXECUTE_ALL_OF}>
               <Button onClick={() => setCreateOpen(true)}>
                 创建运行 <Plus size={18} />
               </Button>
@@ -56,7 +56,7 @@ export function RunsPage() {
             title='还没有运行'
             description='从已绑定目标系统的场景发起一次执行。'
             action={
-              <Can permission='run:execute'>
+              <Can allOf={RUN_EXECUTE_ALL_OF}>
                 <Button onClick={() => setCreateOpen(true)}>
                   创建运行 <Plus size={18} />
                 </Button>

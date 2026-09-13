@@ -4,6 +4,8 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
   entityIdSchema,
   hasAiSteps,
+  canExecuteRun,
+  canTrialRun,
   hasPermission,
   isAiStepType,
   MAX_SCENARIO_STEPS,
@@ -101,7 +103,8 @@ export function ScenarioDetailPage() {
   })
   const canReadTarget = useCan('target:read')
   const canWrite = useCan('workflow:write')
-  const canRun = useCan('run:execute')
+  const canStartFormalRun = Boolean(user && canExecuteRun(user.permissions))
+  const canStartTrial = Boolean(user && canTrialRun(user.permissions))
   const canAi = Boolean(user && hasPermission(user.permissions, 'ai:execute'))
   const scenario = query.data
   const targetQuery = useQuery({
@@ -138,8 +141,7 @@ export function ScenarioDetailPage() {
   const editableTypes = selectableStudioTypes(capabilitiesQuery.data)
   const draftHasAi = Boolean(document && hasAiSteps(document.steps))
   const canTrial = Boolean(
-    canWrite &&
-      canRun &&
+    canStartTrial &&
       (!draftHasAi || canAi) &&
       !draft.dirty &&
       compile?.ok &&
@@ -338,7 +340,7 @@ export function ScenarioDetailPage() {
                     <Play />
                     试跑
                   </Button>
-                ) : canRun ? (
+                ) : canStartFormalRun ? (
                   <Button variant='outline' disabled title={trialDisabledReason}>
                     <Play />
                     试跑
@@ -354,7 +356,7 @@ export function ScenarioDetailPage() {
                     发布
                   </Button>
                 ) : null}
-                {canRun && !draft.dirty && compile?.ok && !unpublishedDraft ? (
+                {canStartFormalRun && !draft.dirty && compile?.ok && !unpublishedDraft ? (
                   <Button variant='outline' onClick={() => setRunOpen(true)}>
                     运行已发布版本
                   </Button>
@@ -372,7 +374,7 @@ export function ScenarioDetailPage() {
                         发布
                       </DropdownMenuItem>
                     ) : null}
-                    <DropdownMenuItem disabled={!canRun} onClick={() => setRunOpen(true)}>
+                    <DropdownMenuItem disabled={!canStartFormalRun} onClick={() => setRunOpen(true)}>
                       运行已发布版本
                     </DropdownMenuItem>
                   </DropdownMenuContent>
@@ -399,7 +401,7 @@ export function ScenarioDetailPage() {
                 </AlertDescription>
               </Alert>
             ) : null}
-            {canRun && !canTrial && draftHasAi && !canAi && !draft.dirty && compile?.ok ? (
+            {canStartFormalRun && !canTrial && draftHasAi && !canAi && !draft.dirty && compile?.ok ? (
               <Alert>
                 <AlertDescription>缺少 AI 执行权限。仍可保存和发布，但不能试跑或创建含 AI 步骤的正式 Run。</AlertDescription>
               </Alert>

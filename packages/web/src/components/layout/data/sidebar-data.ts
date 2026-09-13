@@ -1,5 +1,7 @@
 import {
   Home,
+  KeyRound,
+  CircleDot,
   ListChecks,
   Monitor,
   Palette,
@@ -41,11 +43,22 @@ export const sidebarData: SidebarData = {
           permission: 'workflow:read',
         },
         {
+          title: '录制草稿',
+          url: '/recordings',
+          icon: CircleDot,
+          permission: 'workflow:write',
+        },
+        {
           title: '运行',
           url: '/runs',
           icon: Play,
           permission: 'run:read',
         },
+      ],
+    },
+    {
+      title: '治理',
+      items: [
         {
           title: '用户',
           url: '/users',
@@ -59,10 +72,16 @@ export const sidebarData: SidebarData = {
           permission: 'role:read',
         },
         {
+          title: '开放服务',
+          url: '/services',
+          icon: KeyRound,
+          permission: 'service:read',
+        },
+        {
           title: '审计',
           url: '/audit',
           icon: ScrollText,
-          permission: 'audit:read',
+          anyOf: ['audit:read', 'audit:login'],
         },
       ],
     },

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { dbEnvSchema, PERMISSIONS, SYSTEM_ROLE_DEFINITIONS, SYSTEM_ROLE_KEYS } from '@cairn/shared'
 import { newId } from '../id.js'
-import { migrate } from '../migrate.js'
+import { loadMigrations, migrate } from '../migrate.js'
 
 const envFile = resolve(import.meta.dirname, '../../../../.env')
 if (existsSync(envFile)) process.loadEnvFile(envFile)
@@ -39,16 +39,34 @@ describe.skipIf(!parsed.success)('RBAC 模型约束（集成）', () => {
     await pool?.end()
   })
 
-  it('三个系统角色已种子化，id 是 UUID 而非可读值', async () => {
-    const { rows } = await q(`SELECT id, key, kind FROM "${S}".console_roles ORDER BY key`)
-    expect(rows.map((r: { key: string; kind: string }) => [r.key, r.kind])).toEqual([
-      ['admin', 'system'],
-      ['operator', 'system'],
-      ['viewer', 'system'],
+  it('四个系统角色已种子化，id 是 UUID 而非可读值', async () => {
+    const { rows } = await q(`SELECT id, key, kind, name FROM "${S}".console_roles ORDER BY key`)
+    expect(rows.map((r: { key: string; kind: string; name: string }) => [r.key, r.kind, r.name])).toEqual([
+      ['admin', 'system', '管理员'],
+      ['author', 'system', '编写者'],
+      ['operator', 'system', '执行者'],
+      ['viewer', 'system', '只读'],
     ])
     for (const row of rows as { id: string }[]) {
       expect(row.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
     }
+  })
+
+  it('存量只绑 operator 的账号不会自动获得 author', async () => {
+    const acc = newId()
+    const operatorId = await roleIdOf('operator')
+    await q(`INSERT INTO "${S}".console_accounts (id, display_name) VALUES ('${acc}','旧运维')`)
+    await q(
+      `INSERT INTO "${S}".console_account_roles (console_account_id, console_role_id) VALUES ('${acc}',$1)`,
+      [operatorId],
+    )
+    const { rows } = await q(
+      `SELECT r.key FROM "${S}".console_account_roles b
+       JOIN "${S}".console_roles r ON r.id = b.console_role_id
+       WHERE b.console_account_id='${acc}'
+       ORDER BY r.key`,
+    )
+    expect(rows.map((r: { key: string }) => r.key)).toEqual(['operator'])
   })
 
   it('系统角色的权限集与 @cairn/shared 一致', async () => {
@@ -88,7 +106,7 @@ describe.skipIf(!parsed.success)('RBAC 模型约束（集成）', () => {
   it('同一角色不能重复授予同一权限', async () => {
     await expect(
       q(
-        `INSERT INTO "${S}".console_role_permissions (console_role_id, permission) VALUES ($1,'audit:read')`,
+        `INSERT INTO "${S}".console_role_permissions (console_role_id, permission) VALUES ($1,'target:read')`,
         [await roleIdOf('viewer')],
       ),
     ).rejects.toThrow()
@@ -156,5 +174,46 @@ describe.skipIf(!parsed.success)('RBAC 模型约束（集成）', () => {
       `SELECT count(*)::int AS n FROM "${S}".console_role_permissions WHERE console_role_id='${role}'`,
     )
     expect(rows[0]).toEqual({ n: 0 })
+  })
+
+  it('自定义 author 角色会使 0018 失败，且不把它提升为系统角色', async () => {
+    const schema = `cairn_test_${Date.now().toString(36)}_authc`
+    const client = await pool.connect()
+    try {
+      const migrations = loadMigrations()
+      await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`)
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS "${schema}"._migrations (
+          prefix TEXT PRIMARY KEY,
+          filename TEXT NOT NULL,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `)
+      for (const migration of migrations) {
+        if (migration.prefix === '0018') break
+        await client.query('BEGIN')
+        await client.query(migration.sql.replaceAll('__SCHEMA__', schema))
+        await client.query(`INSERT INTO "${schema}"._migrations (prefix, filename) VALUES ($1, $2)`, [
+          migration.prefix,
+          migration.filename,
+        ])
+        await client.query('COMMIT')
+      }
+      const customId = newId()
+      await client.query(
+        `INSERT INTO "${schema}".console_roles (id, key, name, kind) VALUES ($1,'author','自定义作者','custom')`,
+        [customId],
+      )
+      const product = migrations.find((item) => item.prefix === '0018')
+      if (!product) throw new Error('缺少 0018_product_roles.sql')
+      await expect(client.query(product.sql.replaceAll('__SCHEMA__', schema))).rejects.toThrow(/author/)
+      const { rows } = await client.query<{ kind: string }>(
+        `SELECT kind FROM "${schema}".console_roles WHERE key='author'`,
+      )
+      expect(rows).toEqual([{ kind: 'custom' }])
+    } finally {
+      await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`)
+      client.release()
+    }
   })
 })

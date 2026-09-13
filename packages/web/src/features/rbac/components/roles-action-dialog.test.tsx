@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
-import { PERMISSIONS } from '@cairn/shared'
+import { PERMISSIONS, SYSTEM_ROLE_DEFINITIONS } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { sampleCustomRole, systemRoles } from '../data/roles'
 import { RolesActionDialog } from './roles-action-dialog'
@@ -79,6 +79,31 @@ describe('RolesActionDialog', () => {
     await expect
       .element(getByRole('button', { name: /保存/ }))
       .not.toBeInTheDocument()
+  })
+
+  it('系统角色查看态展示能力预览', async () => {
+    const operator = systemRoles.find((r) => r.key === 'operator')!
+    const { getByText, getByTestId } = await renderDialog(
+      <RolesActionDialog open onOpenChange={vi.fn()} currentRow={operator} />,
+    )
+    await expect.element(getByText('能力预览')).toBeInTheDocument()
+    await expect.element(getByTestId('capability-preview')).toBeInTheDocument()
+    await expect.element(getByText(/工作台：首页、目标系统、场景、运行/)).toBeInTheDocument()
+    await expect.element(getByText(/治理：无/)).toBeInTheDocument()
+    await expect.element(getByText('对目标系统发起运行')).toBeInTheDocument()
+    expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('account:read')
+    await expect.element(getByText('用户', { exact: true })).not.toBeInTheDocument()
+  })
+
+  it('勾选权限后预览即时更新', async () => {
+    const { getByLabelText, getByText } = await renderDialog(
+      <RolesActionDialog open onOpenChange={vi.fn()} />,
+    )
+    await expect.element(getByText('工作台：首页')).toBeInTheDocument()
+    await expect.element(getByText('工作台：首页、录制草稿')).not.toBeInTheDocument()
+    await userEvent.click(getByLabelText('workflow:write'))
+    await expect.element(getByText('工作台：首页、录制草稿')).toBeInTheDocument()
+    await expect.element(getByText('上传录制草稿')).toBeInTheDocument()
   })
 
   it('allows editing a custom role name', async () => {

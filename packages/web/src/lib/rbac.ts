@@ -12,9 +12,40 @@ export function can(user: AuthUser | null, permission: PermissionCode): boolean 
   return hasPermission(user.permissions, permission)
 }
 
-export function visibleByPermission<T extends { permission?: PermissionCode }>(
-  items: T[],
+export function canAny(user: AuthUser | null, permissions: readonly PermissionCode[]): boolean {
+  return permissions.some((permission) => can(user, permission))
+}
+
+export function visibleByPermission<
+  T extends { permission?: PermissionCode; anyOf?: readonly PermissionCode[] },
+>(items: T[], user: AuthUser | null): T[] {
+  return items.filter((item) => {
+    if (item.anyOf?.length) return canAny(user, item.anyOf)
+    return !item.permission || can(user, item.permission)
+  })
+}
+
+type NavGate = {
+  permission?: PermissionCode
+  anyOf?: readonly PermissionCode[]
+}
+
+/** 侧栏与命令面板共用：父级无可见子项则整项去掉。 */
+export function filterNavItems<T extends NavGate & { items?: readonly NavGate[] }>(
+  items: readonly T[],
   user: AuthUser | null,
 ): T[] {
-  return items.filter((item) => !item.permission || can(user, item.permission))
+  const visible: T[] = []
+  for (const item of items) {
+    if ((item.permission || item.anyOf?.length) && !visibleByPermission([item], user).length) {
+      continue
+    }
+    if (item.items) {
+      const children = visibleByPermission([...item.items], user)
+      if (children.length > 0) visible.push({ ...item, items: children as T['items'] })
+    } else if (visibleByPermission([item], user).length > 0) {
+      visible.push(item)
+    }
+  }
+  return visible
 }

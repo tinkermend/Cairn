@@ -107,6 +107,7 @@ function mockService() {
     deleteAccount: vi.fn(async () => undefined),
     assignAccountRoles: vi.fn(async () => adminAccount),
     listAuditEvents: vi.fn(async () => ({ items: [] })),
+    listLoginAuditEvents: vi.fn(async () => ({ items: [] })),
     changePassword: vi.fn(async () => undefined),
     setPassword: vi.fn(async () => undefined),
     updateMe: vi.fn(async () => ({ account: adminAccount })),
@@ -160,10 +161,16 @@ describe('RBAC HTTP', () => {
     expect(service.listRoles).not.toHaveBeenCalled()
   })
 
-  it('GET /rbac/permissions 返回与 shared 同一份目录', async () => {
+  it('GET /rbac/permissions 返回与 shared 同一份目录，标签为中文', async () => {
     const res = await request(adminApp.getHttpServer()).get('/rbac/permissions').expect(200)
     expect(() => permissionCatalogResponseSchema.parse(res.body)).not.toThrow()
     expect(res.body.items).toHaveLength(PERMISSIONS.length)
+    expect(res.body.items.find((item: { code: string }) => item.code === 'workflow:read')?.label).toBe(
+      '查看场景',
+    )
+    expect(res.body.items.find((item: { code: string }) => item.code === 'ai:execute')?.label).toBe(
+      '执行含 AI 步骤的运行',
+    )
   })
 
   it('GET /rbac/roles 符合契约', async () => {
@@ -265,5 +272,14 @@ describe('RBAC HTTP', () => {
   it('GET /console/audit 需要 audit:read', async () => {
     await request(adminApp.getHttpServer()).get('/console/audit').expect(200)
     expect(service.listAuditEvents).toHaveBeenCalledOnce()
+  })
+
+  it('GET /console/audit/operations 需要 audit:read，logins 需要 audit:login', async () => {
+    await request(adminApp.getHttpServer()).get('/console/audit/operations').expect(200)
+    await request(adminApp.getHttpServer()).get('/console/audit/logins').expect(200)
+    expect(service.listAuditEvents).toHaveBeenCalled()
+    expect(service.listLoginAuditEvents).toHaveBeenCalledOnce()
+    await request(viewerApp.getHttpServer()).get('/console/audit/logins').expect(403)
+    await request(viewerApp.getHttpServer()).get('/console/audit/operations').expect(200)
   })
 })

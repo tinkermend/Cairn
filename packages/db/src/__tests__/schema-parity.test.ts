@@ -646,6 +646,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       '0015_scenario_drafts.sql',
       '0016_audit_login.sql',
       '0017_ai_execute.sql',
+      '0018_product_roles.sql',
     ])
   })
 })
@@ -762,6 +763,7 @@ describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集�
       '0015_scenario_drafts.sql',
       '0016_audit_login.sql',
       '0017_ai_execute.sql',
+      '0018_product_roles.sql',
     ])
 
     const { rows } = await pool.query<{ status: string; release_reason: string; released_at: Date }>(
@@ -884,6 +886,7 @@ describe.skipIf(!parsed.success)('带存量数据的 0012 → 0013 升级（集�
       '0015_scenario_drafts.sql',
       '0016_audit_login.sql',
       '0017_ai_execute.sql',
+      '0018_product_roles.sql',
     ])
 
     const { rows: runRows } = await pool.query<{ id: string; evidence_status: string }>(

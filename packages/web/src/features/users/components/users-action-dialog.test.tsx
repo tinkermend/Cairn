@@ -8,9 +8,20 @@ import { UsersActionDialog } from './users-action-dialog'
 
 const MOCK_ROLES: RoleDto[] = [
   {
+    id: 'author',
+    key: 'author',
+    name: '编写者',
+    kind: 'system',
+    description: null,
+    permissions: ['workflow:write'],
+    accountCount: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
     id: 'operator',
     key: 'operator',
-    name: 'Operator',
+    name: '执行者',
     kind: 'system',
     description: null,
     permissions: ['workflow:read'],
@@ -81,7 +92,7 @@ describe('UsersActionDialog', () => {
       await expect.element(getByText('请填写显示名称。')).toBeInTheDocument()
     })
 
-    it('submits display name, email, password and default operator role', async () => {
+    it('submits display name, email, password and default author role', async () => {
       const onOpenChange = vi.fn()
       const { getByRole, getByLabelText } = await renderDialog(
         <UsersActionDialog open onOpenChange={onOpenChange} roles={MOCK_ROLES} />
@@ -98,7 +109,7 @@ describe('UsersActionDialog', () => {
         email: 'ops@cairn.dev',
         password: 'password1',
         status: 'active',
-        roleIds: ['operator'],
+        roleIds: ['author'],
       })
       expect(onOpenChange).toHaveBeenCalledWith(false)
     })

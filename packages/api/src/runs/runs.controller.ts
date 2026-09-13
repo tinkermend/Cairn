@@ -25,7 +25,7 @@ export class RunsController {
   }
 
   @Post()
-  @RequirePermissions('run:execute')
+  @RequirePermissions('run:execute', 'target:read', 'workflow:read')
   async create(
     @Body(new ZodValidationPipe(createRunBodySchema)) body: CreateRunBody,
     @CurrentAccount() actor: RequestAccount,

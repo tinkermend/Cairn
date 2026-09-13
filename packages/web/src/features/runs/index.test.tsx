@@ -134,4 +134,19 @@ describe('RunsPage', () => {
     expect(screen.getByRole('button', { name: /创建运行/ }).elements()).toHaveLength(0)
     expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
   })
+
+  it('仅有 run:execute 时不显示创建运行', async () => {
+    signIn(['run:read', 'run:execute'])
+    const screen = await renderPage()
+
+    await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /创建运行/ }).elements()).toHaveLength(0)
+  })
+
+  it('具备开跑组合权限时显示创建运行', async () => {
+    signIn(['run:read', 'run:execute', 'target:read', 'workflow:read'])
+    const screen = await renderPage()
+
+    await expect.element(screen.getByRole('button', { name: /创建运行/ }).first()).toBeInTheDocument()
+  })
 })

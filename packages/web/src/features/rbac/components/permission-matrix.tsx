@@ -1,50 +1,13 @@
 import {
   PERMISSION_CATALOG,
+  PERMISSION_LABELS,
   PERMISSION_RESOURCES,
+  RESOURCE_LABELS,
   hasPermission,
   type PermissionCode,
-  type PermissionResource,
 } from '@cairn/shared'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
-
-const RESOURCE_LABELS_ZH: Record<PermissionResource, string> = {
-  account: '控制台账号',
-  role: '角色',
-  workflow: '工作流',
-  run: 'Run',
-  session: '浏览器会话',
-  target: '目标系统',
-  settings: '设置',
-  audit: '审计',
-  ai: '浏览器仿真 AI',
-}
-
-const PERMISSION_LABELS_ZH: Record<PermissionCode, string> = {
-  'account:read': '查看控制台账号',
-  'account:write': '创建和更新控制台账号',
-  'account:delete': '删除控制台账号',
-  'role:read': '查看角色',
-  'role:write': '创建和更新角色',
-  'role:delete': '删除自定义角色',
-  'workflow:read': '查看工作流',
-  'workflow:write': '创建和更新工作流',
-  'workflow:delete': '删除工作流',
-  'run:read': '查看 Run',
-  'run:execute': '启动 Run',
-  'run:cancel': '取消 Run',
-  'run:review': '核查运行',
-  'session:read': '查看浏览器会话',
-  'session:dispose': '处置卡死的浏览器会话',
-  'target:read': '查看目标系统',
-  'target:write': '创建和更新目标系统',
-  'target:delete': '删除目标系统',
-  'settings:read': '查看设置',
-  'settings:write': '更新设置',
-  'audit:read': '查看操作记录',
-  'audit:login': '查看登录记录',
-  'ai:execute': '执行浏览器仿真 AI 步骤',
-}
 
 type PermissionMatrixProps = {
   value: PermissionCode[]
@@ -77,7 +40,7 @@ export function PermissionMatrix({
         return (
           <fieldset key={resource} className='space-y-2'>
             <legend className='text-body font-medium'>
-              {RESOURCE_LABELS_ZH[resource]}
+              {RESOURCE_LABELS[resource]}
             </legend>
             <div className='grid gap-2 sm:grid-cols-2'>
               {items.map((item) => (
@@ -93,7 +56,7 @@ export function PermissionMatrix({
                   />
                   <span>
                     <span className='block'>
-                      {PERMISSION_LABELS_ZH[item.code] ?? item.label}
+                      {PERMISSION_LABELS[item.code] ?? item.label}
                     </span>
                     <span className='text-muted-foreground font-mono text-label'>
                       {item.code}

@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import type { PermissionCode } from '@cairn/shared'
 import { ListChecks, Monitor, Play, ScrollText, Settings, Shield, Users } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
-import { can } from '@/lib/rbac'
+import { can, canAny } from '@/lib/rbac'
 import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
@@ -13,6 +13,7 @@ const modules: {
   to: '/targets' | '/scenarios' | '/runs' | '/users' | '/roles' | '/audit' | '/settings'
   icon: React.ElementType
   permission?: PermissionCode
+  anyOf?: PermissionCode[]
 }[] = [
   {
     title: '目标系统',
@@ -51,10 +52,10 @@ const modules: {
   },
   {
     title: '审计',
-    description: '查看身份、权限与目标系统的变更记录。',
+    description: '查看控制台操作记录与登录记录。',
     to: '/audit',
     icon: ScrollText,
-    permission: 'audit:read',
+    anyOf: ['audit:read', 'audit:login'],
   },
   {
     title: '设置',
@@ -68,8 +69,8 @@ const modules: {
 export function HomePage() {
   const user = useAuthStore((s) => s.auth.user)
   const greeting = user?.displayName ? `你好，${user.displayName}` : '你好'
-  const visible = modules.filter(
-    (item) => !item.permission || can(user, item.permission)
+  const visible = modules.filter((item) =>
+    item.anyOf ? canAny(user, item.anyOf) : !item.permission || can(user, item.permission)
   )
 
   return (

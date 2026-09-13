@@ -2,6 +2,7 @@
 
 | 方案 | 状态 | 原型 |
 | --- | --- | --- |
+| [控制台产品角色与能力地图](2026-09-13-console-product-roles-and-capability-map.md) | 已落地（2026-09-13）：四产品角色、业务/治理侧栏、能力预览、开跑组合闸门、录制收进编写面；存量 operator 静默降权，需管理员补挂编写者。不做 Workspace 与菜单表，不进 D0–D4 | — |
 | [D1：顺序编排与 AI 步骤编辑增强](2026-09-13-sequence-studio-foundation.md) | 本线已落地（2026-09-13）：ST02 / ST03 根键与 fromField / ST05；消费已有 shared 契约，未另造生产 DTO。ST04 已挂载现有 AI 表单与证据组件，步骤库仍受能力闸门约束。本机库已对齐到 0017，真实 API 验过保存 / OCC / 试跑。ST06 / 真模型 / SSE / Live View 未宣称通过 | 沿用 [Studio 视觉参考](../front_design/2026-09-13-foundation-lab/index.html#studio) |
 | [D0 混编关键未知：受管 Page 适配层探针](2026-09-13-d0-hybrid-probes.md) | 离线 Gate 已记录（2026-09-13）：S06 限制采用（控制面）；S07-lite 已出 SPI；在线 VL 未跑 | [`packages/worker/src/ai/`](../../packages/worker/src/ai/README.md) |
 | [S06 受管 Page 适配层实验记录](2026-09-13-s06-managed-page.md) | 已记录（2026-09-13）：离线限制采用；完整 aiAct 回放 / 在线 VL / 对象 fill.from 关闭 | — |

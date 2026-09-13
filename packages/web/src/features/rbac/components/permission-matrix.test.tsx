@@ -8,12 +8,13 @@ describe('PermissionMatrix', () => {
     const { getByText, getByLabelText } = await render(
       <PermissionMatrix value={['workflow:read']} onChange={vi.fn()} />
     )
-    await expect.element(getByText('工作流', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText('场景', { exact: true })).toBeInTheDocument()
     await expect.element(getByText('控制台账号', { exact: true })).toBeInTheDocument()
     await expect.element(getByText('目标系统', { exact: true })).toBeInTheDocument()
     await expect.element(getByText('浏览器会话', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText('浏览器 AI', { exact: true })).toBeInTheDocument()
     await expect.element(getByText('查看目标系统')).toBeInTheDocument()
-    await expect.element(getByText('核查运行')).toBeInTheDocument()
+    await expect.element(getByText('核查暂停的运行')).toBeInTheDocument()
     await expect.element(getByText('Target', { exact: true })).not.toBeInTheDocument()
     await expect.element(getByLabelText('workflow:read')).toBeChecked()
     await expect.element(getByLabelText('workflow:write')).not.toBeChecked()

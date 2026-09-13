@@ -237,8 +237,10 @@ export type ConsoleCapability = {
   label: string
   /** 菜单所属分组；动作为空。 */
   group?: CapabilityGroup
-  /** 空数组表示登录即可（仅首页）。 */
+  /** 空数组表示登录即可（仅首页）。与 anyOf 同时存在时以 anyOf 为准。 */
   allOf: readonly PermissionCode[]
+  /** 有其中任一权限即授予；用于侧栏单入口对应多权限的菜单。 */
+  anyOf?: readonly PermissionCode[]
 }
 
 export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
@@ -249,8 +251,14 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'menu.runs', kind: 'menu', group: 'workbench', label: '运行', allOf: ['run:read'] },
   { id: 'menu.users', kind: 'menu', group: 'governance', label: '用户', allOf: ['account:read'] },
   { id: 'menu.roles', kind: 'menu', group: 'governance', label: '角色', allOf: ['role:read'] },
-  { id: 'menu.audit.operations', kind: 'menu', group: 'governance', label: '操作记录', allOf: ['audit:read'] },
-  { id: 'menu.audit.logins', kind: 'menu', group: 'governance', label: '登录记录', allOf: ['audit:login'] },
+  {
+    id: 'menu.audit',
+    kind: 'menu',
+    group: 'governance',
+    label: '审计',
+    allOf: [],
+    anyOf: ['audit:read', 'audit:login'],
+  },
   { id: 'menu.settings', kind: 'menu', group: 'other', label: '设置', allOf: ['settings:read'] },
   { id: 'action.target.write', kind: 'action', label: '登记和维护目标系统', allOf: ['target:write'] },
   { id: 'action.target.delete', kind: 'action', label: '删除目标系统', allOf: ['target:delete'] },
@@ -283,6 +291,7 @@ export type CapabilityPreview = {
 }
 
 function capabilityGranted(granted: readonly string[], capability: ConsoleCapability): boolean {
+  if (capability.anyOf?.length) return capability.anyOf.some((code) => hasPermission(granted, code))
   if (capability.allOf.length === 0) return true
   return hasAllPermissions(granted, capability.allOf)
 }
@@ -472,6 +481,12 @@ export const updateMeBodySchema = z.object({
 export type UpdateMeBody = z.infer<typeof updateMeBodySchema>
 
 export const OPERATION_AUDIT_ACTIONS = [
+  'service.create',
+  'service.update',
+  'credential.issue',
+  'credential.update',
+  'credential.revoke',
+  'evidence.release',
   'account.create',
   'account.update',
   'account.delete',
@@ -523,6 +538,12 @@ export type AuditClient = {
 }
 
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
+  'service.create': '创建服务调用方',
+  'service.update': '更新服务调用方',
+  'credential.issue': '签发服务凭据',
+  'credential.update': '更新服务凭据范围',
+  'credential.revoke': '吊销服务凭据',
+  'evidence.release': '调整证据对外可见性',
   'account.create': '创建账号',
   'account.update': '更新账号',
   'account.delete': '删除账号',
@@ -609,6 +630,8 @@ export type LoginAuditQuery = z.infer<typeof loginAuditQuerySchema>
 
 const auditActorSchema = z
   .object({
+    kind: z.enum(['console', 'service']).optional(),
+    credentialId: z.string().optional().nullable(),
     id: z.string().min(1),
     displayName: z.string().min(1),
     email: z.string().nullable(),

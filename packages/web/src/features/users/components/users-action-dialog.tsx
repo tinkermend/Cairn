@@ -68,7 +68,7 @@ export function UsersActionDialog({
   const queryClient = useQueryClient()
   const actorPermissions = useAuthStore((s) => s.auth.user?.permissions)
   const [saving, setSaving] = useState(false)
-  const defaultOperator = roles.find((role) => role.key === 'operator')?.id ?? roles[0]?.id ?? ''
+  const defaultAuthor = roles.find((role) => role.key === 'author')?.id ?? roles[0]?.id ?? ''
   const canAssign = (role: RoleDto) =>
     actorPermissions == null || hasAllPermissions(actorPermissions, role.permissions)
   const form = useForm<UserForm>({
@@ -86,7 +86,7 @@ export function UsersActionDialog({
           email: '',
           password: '',
           status: 'active',
-          roleIds: defaultOperator ? [defaultOperator] : [],
+          roleIds: defaultAuthor ? [defaultAuthor] : [],
         },
   })
 

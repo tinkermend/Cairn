@@ -11,7 +11,7 @@ import {
   reserveStoredObject,
   setSessionStatus,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY, type Step } from '@cairn/shared'
 import type { RequestAccount } from './common/request-account'
 import { credentialKeyFromEnv, LocalSecretProvider } from './secrets/local-secret-provider'
@@ -52,7 +52,15 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
       email: `api-${actorId}@example.com`,
       status: 'active',
       roles: [],
-      permissions: ['target:write', 'target:delete', 'workflow:write', 'workflow:delete', 'run:execute'],
+      permissions: [
+        'target:read',
+        'target:write',
+        'target:delete',
+        'workflow:read',
+        'workflow:write',
+        'workflow:delete',
+        'run:execute',
+      ],
     }
     targets = new TargetsService(handle, new LocalSecretProvider(credentialKeyFromEnv(DEV_CREDENTIAL_KEY)))
     scenarios = new ScenariosService(handle)
@@ -106,6 +114,7 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
       {
         targetId: target.id,
         name: '参数化',
+        inputs: [{ key: 'orderId', label: '单号' }],
         steps: [
           {
             id: '00000000-0000-4000-8000-000000000082',

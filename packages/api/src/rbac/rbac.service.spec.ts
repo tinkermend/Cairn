@@ -4,7 +4,8 @@ import { RbacService } from './rbac.service'
 
 describe('RbacService', () => {
   it('权限目录来自 @cairn/shared，不查库', () => {
-    const service = new RbacService({} as never)
+    const dummy = { driver: 'postgres' as const, ping: async () => true, close: async () => {} }
+    const service = new RbacService(dummy)
     const catalog = service.listPermissions()
     expect(catalog.items.map((i) => i.code)).toEqual([...PERMISSIONS])
   })

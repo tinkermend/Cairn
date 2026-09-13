@@ -176,6 +176,7 @@ describe('能力地图', () => {
     expect(canExecuteRun(['run:execute', 'target:read', 'workflow:read'])).toBe(true)
     expect(canTrialRun(['workflow:write', 'run:execute'])).toBe(false)
     expect(canTrialRun(['workflow:write', 'run:execute', 'target:read'])).toBe(true)
+    expect(previewCapabilities(['run:execute']).actions).not.toContain('对目标系统发起运行')
   })
 
   it('执行者预览只有业务菜单，没有治理；编写者能看见录制', () => {
@@ -199,15 +200,21 @@ describe('能力地图', () => {
     expect(viewer.actions).toEqual([])
 
     const admin = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.admin.permissions)
-    expect(admin.menus.governance).toEqual(['用户', '角色', '操作记录', '登录记录'])
+    expect(admin.menus.governance).toEqual(['用户', '角色', '审计'])
   })
 
   it('能力 id 不重复，菜单 besides 首页都有 allOf', () => {
     const ids = CONSOLE_CAPABILITIES.map((item) => item.id)
     expect(new Set(ids).size).toBe(ids.length)
     for (const item of CONSOLE_CAPABILITIES) {
-      if (item.id === 'menu.home') expect(item.allOf).toEqual([])
-      else expect(item.allOf.length).toBeGreaterThan(0)
+      if (item.id === 'menu.home') {
+        expect(item.allOf).toEqual([])
+        expect(item.anyOf).toBeUndefined()
+      } else if (item.anyOf?.length) {
+        expect(item.anyOf.length).toBeGreaterThan(0)
+      } else {
+        expect(item.allOf.length).toBeGreaterThan(0)
+      }
     }
   })
 })

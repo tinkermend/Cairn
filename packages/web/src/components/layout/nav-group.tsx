@@ -1,6 +1,8 @@
 import { type ReactNode } from 'react'
 import { Link, useLocation } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
+import { useAuthStore } from '@/stores/auth-store'
+import { filterNavItems } from '@/lib/rbac'
 import {
   Collapsible,
   CollapsibleContent,
@@ -26,8 +28,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu'
-import { visibleByPermission } from '@/lib/rbac'
-import { useAuthStore } from '@/stores/auth-store'
 import {
   type NavCollapsible,
   type NavItem,
@@ -39,16 +39,7 @@ export function NavGroup({ title, items }: NavGroupProps) {
   const { state, isMobile } = useSidebar()
   const href = useLocation({ select: (location) => location.href })
   const user = useAuthStore((s) => s.auth.user)
-  const visibleItems: NavItem[] = []
-  for (const item of items) {
-    if (item.permission && !visibleByPermission([item], user).length) continue
-    if (item.items) {
-      const children = visibleByPermission(item.items, user)
-      if (children.length > 0) visibleItems.push({ ...item, items: children })
-    } else if (visibleByPermission([item], user).length > 0) {
-      visibleItems.push(item)
-    }
-  }
+  const visibleItems = filterNavItems(items, user)
   if (visibleItems.length === 0) return null
   return (
     <SidebarGroup>
@@ -106,7 +97,7 @@ function SidebarMenuCollapsible({
   return (
     <Collapsible
       asChild
-      defaultOpen={checkIsActive(href, item, true)}
+      defaultOpen={checkIsActive(href, item)}
       className='group/collapsible'
     >
       <SidebarMenuItem>
@@ -187,13 +178,12 @@ function SidebarMenuCollapsedDropdown({
   )
 }
 
-function checkIsActive(href: string, item: NavItem, mainNav = false) {
+function checkIsActive(href: string, item: NavItem): boolean {
+  const pathname = href.split(/[?#]/)[0]
+  const url = item.url?.replace(/\/$/, '')
   return (
-    href === item.url || // /endpint?search=param
-    href.split('?')[0] === item.url || // endpoint
-    !!item?.items?.filter((i) => i.url === href).length || // if child nav is active
-    (mainNav &&
-      href.split('/')[1] !== '' &&
-      href.split('/')[1] === item?.url?.split('/')[1])
+    pathname === item.url ||
+    Boolean(url && pathname.startsWith(`${url}/`)) ||
+    Boolean(item.items?.some((child) => checkIsActive(href, child)))
   )
 }

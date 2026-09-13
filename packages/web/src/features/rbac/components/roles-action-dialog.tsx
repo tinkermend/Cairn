@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { CapabilityPreview } from './capability-preview'
 import { PermissionMatrix } from './permission-matrix'
 
 const formSchema = z.object({
@@ -173,6 +174,7 @@ export function RolesActionDialog({ currentRow, open, onOpenChange }: RolesActio
                   </FormItem>
                 )}
               />
+              <CapabilityPreview permissions={form.watch('permissions')} />
             </form>
           </Form>
         </div>
