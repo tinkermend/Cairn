@@ -317,59 +317,11 @@ function refineBrowserAiEnv(
   },
   ctx: z.RefinementCtx,
 ): void {
-  if (!env.CAIRN_BROWSER_AI_ENABLED) return
-  if (!env.CAIRN_BROWSER_AI_BASE_URL) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['CAIRN_BROWSER_AI_BASE_URL'],
-      message: '启用浏览器仿真 AI 时必须配置服务地址',
-    })
-  }
-  if (!env.CAIRN_BROWSER_AI_MODEL) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['CAIRN_BROWSER_AI_MODEL'],
-      message: '启用浏览器仿真 AI 时必须配置模型名',
-    })
-  }
-  if (!env.CAIRN_BROWSER_AI_MODEL_FAMILY) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['CAIRN_BROWSER_AI_MODEL_FAMILY'],
-      message: '启用浏览器仿真 AI 时必须配置模型族',
-    })
-  }
-  if (env.CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS >= DEFAULT_STEP_TIMEOUT_MS) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS'],
-      message: `须小于默认步骤超时 ${DEFAULT_STEP_TIMEOUT_MS}ms`,
-    })
-  }
-  const hasSecret = Boolean(env.CAIRN_BROWSER_AI_API_KEY_SECRET_ID)
-  const hasKey = Boolean(env.CAIRN_BROWSER_AI_API_KEY)
-  if (env.CAIRN_ENV !== 'development') {
-    if (hasKey) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['CAIRN_BROWSER_AI_API_KEY'],
-        message: '非 development 环境不得直填模型密钥，必须使用 Secret 引用',
-      })
-    }
-    if (!hasSecret) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['CAIRN_BROWSER_AI_API_KEY_SECRET_ID'],
-        message: '启用浏览器仿真 AI 时必须配置 Secret 引用',
-      })
-    }
-    return
-  }
-  if (!hasSecret && !hasKey) {
+  if (env.CAIRN_ENV !== 'development' && env.CAIRN_BROWSER_AI_API_KEY) {
     ctx.addIssue({
       code: 'custom',
       path: ['CAIRN_BROWSER_AI_API_KEY'],
-      message: '启用浏览器仿真 AI 时须提供开发密钥或 Secret 引用',
+      message: '非 development 环境不得直填模型密钥，必须使用 Secret 引用',
     })
   }
 }

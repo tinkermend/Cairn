@@ -333,17 +333,10 @@ describe('workerEnvSchema', () => {
     expect(env.CAIRN_BROWSER_AI_HANG_WAIT_MS).toBe(5_000)
   })
 
-  it('启用浏览器 AI 但缺模型配置时拒绝启动', () => {
+  it('启用浏览器 AI 但缺模型配置时仍可启动', () => {
     const result = workerEnvSchema.safeParse({ CAIRN_BROWSER_AI_ENABLED: 'true' })
-    expect(result.success).toBe(false)
-    expect(result.error?.issues.map((issue) => issue.path.join('.'))).toEqual(
-      expect.arrayContaining([
-        'CAIRN_BROWSER_AI_BASE_URL',
-        'CAIRN_BROWSER_AI_MODEL',
-        'CAIRN_BROWSER_AI_MODEL_FAMILY',
-        'CAIRN_BROWSER_AI_API_KEY',
-      ]),
-    )
+    expect(result.success).toBe(true)
+    expect(result.data?.CAIRN_BROWSER_AI_ENABLED).toBe(true)
   })
 
   it('development 启用时可直填密钥', () => {

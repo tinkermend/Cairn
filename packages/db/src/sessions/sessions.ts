@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
 import {
+  LOCAL_SECRET_PROVIDER,
   sessionDtoSchema,
   type SessionAuthState,
   type SessionDto,
@@ -930,6 +931,22 @@ export async function expireAuthHold(
     )
     .returning({ id: browserSessions.id })
   return row !== undefined
+}
+
+/** 登记一条不绑定 TargetAccount 的独立 Secret，供模型密钥等使用。 */
+export async function registerStandaloneSecret(
+  db: Db,
+  input: { id: string; ciphertext: Buffer },
+): Promise<{ id: string }> {
+  const now = new Date()
+  await db.insert(secrets).values({
+    id: input.id,
+    provider: LOCAL_SECRET_PROVIDER,
+    ciphertext: input.ciphertext,
+    createdAt: now,
+    updatedAt: now,
+  })
+  return { id: input.id }
 }
 
 /** 读取 secrets 密文（不解密）。 */

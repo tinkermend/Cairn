@@ -14,6 +14,7 @@ import { HealthModule } from './health/health.module'
 import { PermissionsGuard } from './rbac/permissions.guard'
 import { RbacModule } from './rbac/rbac.module'
 import { RecordingsModule } from './recordings/recordings.module'
+import { PlatformConfigModule } from './platform-config/platform-config.module'
 import { RunsModule } from './runs/runs.module'
 import { ScenariosModule } from './scenarios/scenarios.module'
 import { TargetsModule } from './targets/targets.module'
@@ -34,6 +35,7 @@ import { TargetsModule } from './targets/targets.module'
     ScenariosModule,
     RecordingsModule,
     RunsModule,
+    PlatformConfigModule,
     BrowserSessionsModule,
     // 必须放在最后：兜底路由要在所有业务路由之后注册
     NotFoundModule,

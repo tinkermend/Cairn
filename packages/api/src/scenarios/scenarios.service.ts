@@ -1,8 +1,9 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import {
   createScenarioWithVersion,
   createTrialRunFromDraft,
   deleteScenario,
+  getPlatformConfig,
   getScenario,
   listScenarioVersions,
   listScenarios,
@@ -11,37 +12,63 @@ import {
   updateScenarioMeta,
   type DbHandle,
 } from '@cairn/db'
-import type {
-  CreateScenarioBody,
-  PublishScenarioBody,
-  SaveScenarioDraftBody,
-  TrialRunBody,
-  UpdateScenarioBody,
+import {
+  FACTORY_PLATFORM_CONFIG,
+  type CreateScenarioBody,
+  type PlatformConfigCurrent,
+  type PublishScenarioBody,
+  type SaveScenarioDraftBody,
+  type TrialRunBody,
+  type UpdateScenarioBody,
 } from '@cairn/shared'
 import {
   assertAiExecutePermission,
-  browserAiCapabilities,
-  executableTypes,
-  resolveAiExecution,
+  browserAiCapabilitiesFrom,
+  executableTypesFrom,
 } from '../config/browser-ai'
+import { config } from '../config/env'
 import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
 import { rethrowDomain } from '../common/domain-error'
+import { PlatformConfigService } from '../platform-config/platform-config.service'
 
 @Injectable()
 export class ScenariosService {
-  constructor(@Inject(DB_HANDLE) private readonly dbHandle: DbHandle) {}
+  constructor(
+    @Inject(DB_HANDLE) private readonly dbHandle: DbHandle,
+    @Optional() private readonly platformConfig?: PlatformConfigService,
+  ) {}
 
   private get db() {
     return this.dbHandle
+  }
+
+  private async currentConfig(): Promise<PlatformConfigCurrent> {
+    if (this.platformConfig) return this.platformConfig.ensure()
+    return (
+      (await getPlatformConfig(this.db)) ?? {
+        revision: 1,
+        document: FACTORY_PLATFORM_CONFIG,
+        updatedAt: new Date(0).toISOString(),
+        updatedByAccountId: null,
+        reason: '出厂默认',
+        source: 'bootstrap',
+      }
+    )
   }
 
   list() {
     return listScenarios(this.db)
   }
 
-  capabilities() {
-    return browserAiCapabilities()
+  async capabilities() {
+    const current = await this.currentConfig()
+    return browserAiCapabilitiesFrom(current.document, current.revision)
+  }
+
+  private async runtimeTypes() {
+    const current = await this.currentConfig()
+    return executableTypesFrom(current.document)
   }
 
   get(id: string) {
@@ -61,7 +88,7 @@ export class ScenariosService {
         inputs: body.inputs,
         status: body.status,
         actor: { id: actor.id },
-        executableTypes: executableTypes(),
+        executableTypes: await this.runtimeTypes(),
       })
     } catch (error) {
       rethrowDomain(error)
@@ -97,7 +124,7 @@ export class ScenariosService {
       return await publishScenarioDraft(this.db, id, {
         revision: body.revision,
         actor: { id: actor.id },
-        executableTypes: executableTypes(),
+        executableTypes: await this.runtimeTypes(),
       })
     } catch (error) {
       rethrowDomain(error)
@@ -106,7 +133,9 @@ export class ScenariosService {
 
   async trial(id: string, body: TrialRunBody, actor: RequestAccount) {
     try {
-      const detail = await getScenario(this.db, id, { executableTypes: executableTypes() })
+      const current = await this.currentConfig()
+      const types = executableTypesFrom(current.document)
+      const detail = await getScenario(this.db, id, { executableTypes: types })
       const steps = detail.draft?.document.steps ?? detail.published?.definition.steps ?? []
       assertAiExecutePermission(actor, steps)
       return await createTrialRunFromDraft(this.db, id, {
@@ -118,8 +147,8 @@ export class ScenariosService {
         evidencePolicy: body.evidencePolicy,
         idempotencyKey: body.idempotencyKey,
         actor: { id: actor.id },
-        executableTypes: executableTypes(),
-        aiExecution: resolveAiExecution(steps),
+        executableTypes: types,
+        hangWaitMs: config.CAIRN_BROWSER_AI_HANG_WAIT_MS,
       })
     } catch (error) {
       rethrowDomain(error)

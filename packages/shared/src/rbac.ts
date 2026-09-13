@@ -23,6 +23,7 @@ export const PERMISSION_RESOURCES = [
   'settings',
   'audit',
   'ai',
+  'platform-config',
 ] as const
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number]
 
@@ -53,6 +54,8 @@ export const PERMISSIONS = [
   'audit:read',
   'audit:login',
   'ai:execute',
+  'platform-config:read',
+  'platform-config:write',
 ] as const
 export type PermissionCode = (typeof PERMISSIONS)[number]
 
@@ -75,6 +78,7 @@ export const RESOURCE_LABELS: Record<PermissionResource, string> = {
   settings: '设置',
   audit: '审计',
   ai: '浏览器 AI',
+  'platform-config': '平台配置',
 }
 
 export const PERMISSION_LABELS: Record<PermissionCode, string> = {
@@ -101,6 +105,8 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'audit:read': '查看操作记录',
   'audit:login': '查看登录记录',
   'ai:execute': '执行含 AI 步骤的运行',
+  'platform-config:read': '查看平台配置',
+  'platform-config:write': '修改平台配置',
 }
 
 export interface PermissionDef {
@@ -251,6 +257,8 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'menu.runs', kind: 'menu', group: 'workbench', label: '运行', allOf: ['run:read'] },
   { id: 'menu.users', kind: 'menu', group: 'governance', label: '用户', allOf: ['account:read'] },
   { id: 'menu.roles', kind: 'menu', group: 'governance', label: '角色', allOf: ['role:read'] },
+  { id: 'menu.platform-config', kind: 'menu', group: 'governance', label: '平台配置', allOf: ['platform-config:read'] },
+  { id: 'action.platform-config.write', kind: 'action', label: '修改平台配置', allOf: ['platform-config:write'] },
   {
     id: 'menu.audit',
     kind: 'menu',
@@ -511,6 +519,9 @@ export const OPERATION_AUDIT_ACTIONS = [
   'run.review',
   'run.resume_auth',
   'session.dispose',
+  'platform_config.update',
+  'platform_config.restore',
+  'platform_config.secret',
 ] as const
 export type OperationAuditAction = (typeof OPERATION_AUDIT_ACTIONS)[number]
 
@@ -568,6 +579,9 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   'run.review': '核查运行',
   'run.resume_auth': '确认目标系统登录',
   'session.dispose': '处置浏览器会话',
+  'platform_config.update': '更新平台配置',
+  'platform_config.restore': '恢复平台配置',
+  'platform_config.secret': '登记平台模型密钥',
   'auth.login': '登录',
 }
 

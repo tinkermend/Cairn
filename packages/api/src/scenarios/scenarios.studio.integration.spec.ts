@@ -1,5 +1,6 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { getPlatformConfig } from '@cairn/db'
 import { consoleAccounts, newId, openIsolatedDb, type DbHandle } from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY, type Step } from '@cairn/shared'
 import type { RequestAccount } from '../common/request-account'
@@ -98,8 +99,10 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
 
   // 这里跑的是真实进程配置，AI 开关由部署环境决定，所以断言两张清单的划分关系，
   // 而不是断言某个环境下的开关值：三类 AI 步骤同进同出，且可执行与不可用互斥、合起来盖满。
-  it('能力查询与部署闸门一致：AI 类型要么整组可执行，要么整组给出关闭原因', () => {
-    const capabilities = scenarios.capabilities()
+  it('能力查询与部署闸门一致：AI 类型要么整组可执行，要么整组给出关闭原因', async () => {
+    expect(await getPlatformConfig(handle)).toBeNull()
+    const capabilities = await scenarios.capabilities()
+    expect(await getPlatformConfig(handle)).toBeNull()
     expect(capabilities.executableStepTypes).toEqual(
       expect.arrayContaining(['navigate', 'click', 'fill', 'extract', 'assert', 'echo', 'delay', 'fail']),
     )

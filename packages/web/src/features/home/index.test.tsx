@@ -36,6 +36,7 @@ describe('HomePage', () => {
     expect(screen.getByRole('heading', { name: '用户' }).elements()).toHaveLength(0)
     expect(screen.getByRole('heading', { name: '角色' }).elements()).toHaveLength(0)
     expect(screen.getByRole('heading', { name: '审计' }).elements()).toHaveLength(0)
+    expect(screen.getByRole('heading', { name: '平台配置' }).elements()).toHaveLength(0)
   })
 
   it('管理员能看见治理卡片', async () => {
@@ -43,5 +44,6 @@ describe('HomePage', () => {
     const screen = await render(<HomePage />)
     await expect.element(screen.getByRole('heading', { name: '用户' })).toBeInTheDocument()
     await expect.element(screen.getByRole('heading', { name: '审计' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('heading', { name: '平台配置' })).toBeInTheDocument()
   })
 })

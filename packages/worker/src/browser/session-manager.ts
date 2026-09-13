@@ -111,6 +111,7 @@ export class BrowserSessionManager {
   readonly guard = new SessionGuard()
   private readonly lives = new Map<string, LiveHandle>()
   private readonly leaseToSession = new Map<string, string>()
+  private readonly leaseTtls = new Map<string, number>()
   private readonly tracingByLease = new Map<string, boolean>()
   private heartbeat: NodeJS.Timeout | undefined
   private reconciled = false
@@ -169,7 +170,7 @@ export class BrowserSessionManager {
       }
     }
 
-    const targetInfo = await this.loadTargetAuth(run.targetId)
+    const targetInfo = await this.loadTargetAuth(run)
     if (!targetInfo) {
       return { ok: false, code: 'SESSION_TARGET_MISSING', message: '目标系统不存在' }
     }
@@ -332,6 +333,7 @@ export class BrowserSessionManager {
     }
     this.guard.install(sessionGrant)
     this.leaseToSession.set(lease.id, live.id)
+    this.leaseTtls.set(lease.id, policy.leaseTtlSeconds)
     await this.startTracingForLease(lease.id, live.id, run)
     this.logger.log(
       {
@@ -348,7 +350,8 @@ export class BrowserSessionManager {
   }
 
   async renew(leaseId: string, leaseTtlSeconds?: number): Promise<'ok' | 'lost'> {
-    const ttl = leaseTtlSeconds ?? this.options.defaultLeaseTtlSeconds
+    const ttl =
+      leaseTtlSeconds ?? this.leaseTtls.get(leaseId) ?? this.options.defaultLeaseTtlSeconds
     const row = await renewSessionLease(this.dbHandle.db, {
       leaseId,
       holderWorkerId: this.options.workerId,
@@ -356,6 +359,7 @@ export class BrowserSessionManager {
     })
     if (!row) {
       this.guard.revoke(leaseId)
+      this.leaseTtls.delete(leaseId)
       this.logger.warn({ leaseId, workerId: this.options.workerId }, 'lease.renew_failed')
       return 'lost'
     }
@@ -384,6 +388,7 @@ export class BrowserSessionManager {
     })
     this.guard.revoke(leaseId)
     this.leaseToSession.delete(leaseId)
+    this.leaseTtls.delete(leaseId)
     if (result === 'unknown') {
       throw new SessionLeaseError('SESSION_LEASE_UNKNOWN', `租约不存在: ${leaseId}`)
     }
@@ -522,6 +527,7 @@ export class BrowserSessionManager {
         if (mapped !== sessionId) continue
         this.guard.revoke(leaseId)
         this.leaseToSession.delete(leaseId)
+        this.leaseTtls.delete(leaseId)
       }
       dropped += 1
       this.logger.warn(
@@ -575,6 +581,7 @@ export class BrowserSessionManager {
         // 停机路径：未知租约也清本地
         this.guard.revoke(leaseId)
         this.leaseToSession.delete(leaseId)
+        this.leaseTtls.delete(leaseId)
       }
     }
     for (const sessionId of [...this.lives.keys()]) {
@@ -694,7 +701,6 @@ export class BrowserSessionManager {
     return {
       ...DEFAULT_SESSION_POLICY,
       leaseTtlSeconds: this.options.defaultLeaseTtlSeconds,
-      authWaitSeconds: this.options.defaultAuthWaitSeconds,
     }
   }
 
@@ -704,6 +710,7 @@ export class BrowserSessionManager {
       if (result === 'lost') {
         await this.closeRunPage(leaseId)
         this.leaseToSession.delete(leaseId)
+        this.leaseTtls.delete(leaseId)
       }
     }
   }
@@ -789,7 +796,7 @@ export class BrowserSessionManager {
       return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: '无浏览器句柄' }
     }
 
-    const targetInfo = await this.loadTargetAuth(run.targetId)
+    const targetInfo = await this.loadTargetAuth(run)
     if (!targetInfo) {
       return { ok: false, code: 'SESSION_TARGET_MISSING', message: '目标系统不存在' }
     }
@@ -929,7 +936,7 @@ export class BrowserSessionManager {
     }
   }
 
-  private async loadTargetAuth(targetId: string): Promise<
+  private async loadTargetAuth(run: RunSnapshot): Promise<
     | (TargetAuthInfo & {
         authMethod: string
         captchaMode: string
@@ -939,9 +946,18 @@ export class BrowserSessionManager {
     const [row] = await this.dbHandle.db
       .select()
       .from(targets)
-      .where(eq(targets.id, targetId))
+      .where(eq(targets.id, run.targetId))
       .limit(1)
     if (!row) return null
+    if (run.targetAuth) {
+      return {
+        entryUrl: run.targetAuth.entryUrl,
+        loginUrl: run.targetAuth.loginUrl,
+        loginFields: run.targetAuth.loginFields,
+        authMethod: run.targetAuth.authMethod,
+        captchaMode: run.targetAuth.captchaMode,
+      }
+    }
     return {
       entryUrl: row.entryUrl,
       loginUrl: row.loginUrl,

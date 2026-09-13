@@ -5,11 +5,15 @@ import {
   getRun,
   listRunEvidence,
   listRuns,
+  loadScenarioVersion,
   requestRunCancel,
   resumeRunAfterAuth,
   reviewRun,
   type DbHandle,
 } from '@cairn/db'
+import { assertAiExecutePermission } from '../config/browser-ai'
+import { config } from '../config/env'
+import { PlatformConfigService } from '../platform-config/platform-config.service'
 import type { CreateRunBody, ResumeAuthBody, ReviewRunBody } from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
@@ -29,6 +33,7 @@ export class RunsService {
   constructor(
     @Inject(DB_HANDLE) private readonly dbHandle: DbHandle,
     @Optional() @Inject(OBJECT_STORE) private readonly store?: ObjectStore,
+    @Optional() private readonly platformConfig?: PlatformConfigService,
   ) {}
 
   private get db() {
@@ -82,7 +87,14 @@ export class RunsService {
 
   async create(body: CreateRunBody, actor: RequestAccount) {
     try {
-      return await createRunWithSnapshot(this.db, { ...body, actor: { id: actor.id } })
+      await this.platformConfig?.ensure()
+      const { version } = await loadScenarioVersion(this.db, body.scenarioId, body.scenarioVersionId)
+      assertAiExecutePermission(actor, version.definition.steps)
+      return await createRunWithSnapshot(this.db, {
+        ...body,
+        actor: { id: actor.id },
+        hangWaitMs: config.CAIRN_BROWSER_AI_HANG_WAIT_MS,
+      })
     } catch (error) {
       rethrowDomain(error)
     }

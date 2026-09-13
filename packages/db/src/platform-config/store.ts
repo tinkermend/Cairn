@@ -1,0 +1,296 @@
+import { and, desc, eq, inArray, lt, or } from 'drizzle-orm'
+import {
+  FACTORY_PLATFORM_CONFIG,
+  PLATFORM_CONFIG_SINGLETON_ID,
+  platformConfigCurrentSchema,
+  platformConfigDocumentSchema,
+  platformConfigDiff,
+  platformConfigRevisionListSchema,
+  type PlatformConfigCurrent,
+  type PlatformConfigDocument,
+  type PlatformConfigRevisionList,
+  type PlatformConfigSource,
+} from '@cairn/shared'
+import { decodeAuditCursor, encodeAuditCursor } from '../audit/cursor.js'
+import { recordAudit, type AuditActor } from '../audit/record.js'
+import type { Db } from '../client.js'
+import { newId } from '../id.js'
+import { atomic, schemaFor, updateRows } from '../native.js'
+import { conflict, notFound, pgCode } from '../runs/errors.js'
+
+function isUniqueViolation(error: unknown): boolean {
+  const code = pgCode(error)
+  return (
+    code === '23505' ||
+    code === 'ER_DUP_ENTRY' ||
+    code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    code === '2067'
+  )
+}
+import { registerStandaloneSecret } from '../sessions/sessions.js'
+
+export type PlatformBootstrap = {
+  document: PlatformConfigDocument
+  reason: string
+}
+
+function toCurrent(row: {
+  revision: number
+  document: PlatformConfigDocument
+  updatedAt: Date
+  updatedByConsoleAccountId: string | null
+  reason: string
+  source: PlatformConfigSource
+}): PlatformConfigCurrent {
+  return platformConfigCurrentSchema.parse({
+    revision: row.revision,
+    document: platformConfigDocumentSchema.parse(row.document),
+    updatedAt: row.updatedAt.toISOString(),
+    updatedByAccountId: row.updatedByConsoleAccountId,
+    reason: row.reason,
+    source: row.source,
+  })
+}
+
+export async function getPlatformConfig(db: Db): Promise<PlatformConfigCurrent | null> {
+  const { platformConfig } = schemaFor(db)
+  const [row] = await db
+    .select()
+    .from(platformConfig)
+    .where(eq(platformConfig.id, PLATFORM_CONFIG_SINGLETON_ID))
+    .limit(1)
+  return row ? toCurrent(row) : null
+}
+
+export async function getOrCreatePlatformConfig(
+  db: Db,
+  bootstrap: PlatformBootstrap = {
+    document: FACTORY_PLATFORM_CONFIG,
+    reason: '初始化：出厂默认',
+  },
+): Promise<PlatformConfigCurrent> {
+  const existing = await getPlatformConfig(db)
+  if (existing) return existing
+  const document = platformConfigDocumentSchema.parse(bootstrap.document)
+  try {
+    await atomic(db, async (tx) => {
+      const { platformConfig, platformConfigRevisions } = schemaFor(tx)
+      const now = new Date()
+      await tx.insert(platformConfig).values({
+        id: PLATFORM_CONFIG_SINGLETON_ID,
+        revision: 1,
+        document,
+        updatedByConsoleAccountId: null,
+        reason: bootstrap.reason,
+        source: 'bootstrap',
+        updatedAt: now,
+      })
+      await tx.insert(platformConfigRevisions).values({
+        id: newId(),
+        revision: 1,
+        document,
+        actorConsoleAccountId: null,
+        reason: bootstrap.reason,
+        source: 'bootstrap',
+        createdAt: now,
+      })
+    })
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error
+  }
+  const created = await getPlatformConfig(db)
+  if (!created) throw new Error('平台配置初始化失败')
+  return created
+}
+
+async function writeRevision(
+  db: Db,
+  input: {
+    expectedRevision: number
+    document: PlatformConfigDocument
+    reason: string
+    source: Exclude<PlatformConfigSource, 'bootstrap'>
+    actor: AuditActor
+    auditAction: 'platform_config.update' | 'platform_config.restore'
+    summary: string
+  },
+): Promise<PlatformConfigCurrent> {
+  const document = platformConfigDocumentSchema.parse(input.document)
+  return atomic(db, async (tx) => {
+    const { platformConfig, platformConfigRevisions } = schemaFor(tx)
+    const now = new Date()
+    const nextRevision = input.expectedRevision + 1
+    const updated = await updateRows(
+      tx,
+      platformConfig,
+      {
+        revision: nextRevision,
+        document,
+        updatedByConsoleAccountId: input.actor.id,
+        reason: input.reason,
+        source: input.source,
+        updatedAt: now,
+      },
+      and(
+        eq(platformConfig.id, PLATFORM_CONFIG_SINGLETON_ID),
+        eq(platformConfig.revision, input.expectedRevision),
+      ),
+    )
+    if (updated.length === 0) {
+      const current = await getPlatformConfig(tx)
+      throw conflict('PLATFORM_CONFIG_CONFLICT', '平台配置已被他人更新')
+    }
+    await tx.insert(platformConfigRevisions).values({
+      id: newId(),
+      revision: nextRevision,
+      document,
+      actorConsoleAccountId: input.actor.id,
+      reason: input.reason,
+      source: input.source,
+      createdAt: now,
+    })
+    await recordAudit(
+      tx,
+      { id: input.actor.id },
+      input.auditAction,
+      'platform_config',
+      PLATFORM_CONFIG_SINGLETON_ID,
+      input.summary,
+    )
+    const current = await getPlatformConfig(tx)
+    if (!current) throw new Error('平台配置写入后丢失')
+    return current
+  })
+}
+
+export async function updatePlatformConfig(
+  db: Db,
+  input: {
+    expectedRevision: number
+    document: PlatformConfigDocument
+    reason: string
+    actor: AuditActor
+  },
+): Promise<PlatformConfigCurrent> {
+  return writeRevision(db, {
+    ...input,
+    source: 'update',
+    auditAction: 'platform_config.update',
+    summary: `更新平台配置到修订 ${input.expectedRevision + 1}`,
+  })
+}
+
+export async function getPlatformConfigRevision(
+  db: Db,
+  revision: number,
+): Promise<PlatformConfigDocument> {
+  const { platformConfigRevisions } = schemaFor(db)
+  const [row] = await db
+    .select()
+    .from(platformConfigRevisions)
+    .where(eq(platformConfigRevisions.revision, revision))
+    .limit(1)
+  if (!row) throw notFound('PLATFORM_CONFIG_REVISION_NOT_FOUND', '要恢复的配置修订不存在')
+  return platformConfigDocumentSchema.parse(row.document)
+}
+
+export async function restorePlatformConfig(
+  db: Db,
+  input: {
+    revision: number
+    expectedRevision: number
+    reason: string
+    actor: AuditActor
+  },
+): Promise<PlatformConfigCurrent> {
+  const { platformConfigRevisions } = schemaFor(db)
+  const [row] = await db
+    .select()
+    .from(platformConfigRevisions)
+    .where(eq(platformConfigRevisions.revision, input.revision))
+    .limit(1)
+  if (!row) throw notFound('PLATFORM_CONFIG_REVISION_NOT_FOUND', '要恢复的配置修订不存在')
+  return writeRevision(db, {
+    expectedRevision: input.expectedRevision,
+    document: platformConfigDocumentSchema.parse(row.document),
+    reason: input.reason,
+    source: 'restore',
+    actor: input.actor,
+    auditAction: 'platform_config.restore',
+    summary: `从修订 ${input.revision} 恢复平台配置`,
+  })
+}
+
+export async function registerPlatformAiSecret(
+  db: Db,
+  input: { id: string; ciphertext: Buffer; actor: AuditActor },
+): Promise<{ id: string }> {
+  return atomic(db, async (tx) => {
+    const registered = await registerStandaloneSecret(tx, { id: input.id, ciphertext: input.ciphertext })
+    await recordAudit(
+      tx,
+      { id: input.actor.id },
+      'platform_config.secret',
+      'platform_config',
+      registered.id,
+      '登记浏览器 AI 模型密钥',
+    )
+    return registered
+  })
+}
+
+export async function listPlatformConfigRevisions(
+  db: Db,
+  query: { cursor?: string; limit?: number } = {},
+): Promise<PlatformConfigRevisionList> {
+  const limit = query.limit ?? 50
+  const { platformConfigRevisions } = schemaFor(db)
+  const cursor = query.cursor ? decodeAuditCursor(query.cursor) : undefined
+  const rows = await db
+    .select()
+    .from(platformConfigRevisions)
+    .where(
+      cursor
+        ? or(
+            lt(platformConfigRevisions.createdAt, cursor.createdAt),
+            and(
+              eq(platformConfigRevisions.createdAt, cursor.createdAt),
+              lt(platformConfigRevisions.id, cursor.id),
+            ),
+          )
+        : undefined,
+    )
+    .orderBy(desc(platformConfigRevisions.createdAt), desc(platformConfigRevisions.id))
+    .limit(limit + 1)
+
+  const slice = rows.slice(0, limit)
+  const wanted = new Set(slice.flatMap((row) => [row.revision, row.revision - 1]))
+  const history =
+    wanted.size === 0
+      ? []
+      : await db
+          .select()
+          .from(platformConfigRevisions)
+          .where(inArray(platformConfigRevisions.revision, [...wanted]))
+  const byRevision = new Map(
+    history.map((row) => [row.revision, platformConfigDocumentSchema.parse(row.document)] as const),
+  )
+
+  const last = slice.at(-1)
+  return platformConfigRevisionListSchema.parse({
+    items: slice.map((row) => {
+      const document = platformConfigDocumentSchema.parse(row.document)
+      return {
+        id: row.id,
+        revision: row.revision,
+        document,
+        actorAccountId: row.actorConsoleAccountId,
+        reason: row.reason,
+        source: row.source,
+        createdAt: row.createdAt.toISOString(),
+        diff: platformConfigDiff(byRevision.get(row.revision - 1), document),
+      }
+    }),
+    nextCursor: rows.length > limit && last ? encodeAuditCursor(last.createdAt, last.id) : undefined,
+  })
+}

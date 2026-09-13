@@ -200,7 +200,7 @@ describe('能力地图', () => {
     expect(viewer.actions).toEqual([])
 
     const admin = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.admin.permissions)
-    expect(admin.menus.governance).toEqual(['用户', '角色', '审计'])
+    expect(admin.menus.governance).toEqual(['用户', '角色', '平台配置', '审计'])
   })
 
   it('能力 id 不重复，菜单 besides 首页都有 allOf', () => {

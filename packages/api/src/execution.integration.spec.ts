@@ -150,7 +150,8 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
     const created = await runs.create({ scenarioId: scenario.id, targetAccountId: account.id }, actor)
     const json = JSON.stringify(created.detail)
     expect(json).not.toContain('hunter2-secret')
-    expect(json).not.toContain('password')
+    expect(json).not.toMatch(/"password"\s*:/)
+    expect(created.detail.snapshot.targetAuth?.authMethod).toBe('password')
     expect(created.detail.snapshot.secretRef).toEqual({
       provider: 'local',
       secretId: expect.any(String),

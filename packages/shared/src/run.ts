@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { aiExecutionConfigSchema } from './ai-runtime.js'
 import { evidencePolicySchema } from './evidence-policy.js'
+import { frozenTargetAuthSchema } from './platform-config.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
 import { contextKeySchema, executionPolicySchema, hasAiSteps, stepSchema } from './step.js'
@@ -142,6 +143,7 @@ export const runSnapshotSchema = z
     steps: z.array(stepSchema),
     input: runInputSchema,
     createdAt: utcInstantSchema,
+    deadlineAt: utcInstantSchema.optional(),
     policy: executionPolicySchema.optional(),
     /**
      * 解析后的会话策略。可选：既有快照无此字段仍可解析；
@@ -164,6 +166,12 @@ export const runSnapshotSchema = z
      * 冻结的浏览器 AI 执行配置。含 AI Step 时必须存在；确定性历史快照可缺省。
      */
     aiExecution: aiExecutionConfigSchema.optional(),
+    /** 创建时读取的平台配置修订。旧快照可缺省。 */
+    platformConfigRevision: z.number().int().positive().optional(),
+    /**
+     * 冻结的 Target 认证解释。新 Run 必写；旧快照缺字段时 Worker 仍读当前行。
+     */
+    targetAuth: frozenTargetAuthSchema.optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),
   })

@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { ApiRequestError } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth-store'
-import { DETERMINISTIC_STUDIO_TYPES } from './step-registry'
 import { ScenarioDetailPage } from './detail'
 
 const SCENARIO_ID = '33333333-3333-4333-8333-333333333333'
@@ -127,10 +126,7 @@ const target: TargetDto = {
 
 const defaultCapabilities: ScenarioCapabilities = scenarioCapabilitiesFor({ browserAiEnabled: false })
 
-const openAiCapabilities: ScenarioCapabilities = {
-  executableStepTypes: [...DETERMINISTIC_STUDIO_TYPES, 'ai_action', 'ai_extract', 'ai_assert'],
-  unavailableReasons: [],
-}
+const openAiCapabilities: ScenarioCapabilities = scenarioCapabilitiesFor({ browserAiEnabled: true })
 
 function trialRun(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
   return {

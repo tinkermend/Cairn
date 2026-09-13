@@ -36,6 +36,7 @@ export {
   listExpiredAuthHolds,
   expireAuthHold,
   loadSecretCiphertext,
+  registerStandaloneSecret,
   listSessions,
   toSessionDto,
   disposeStuckSession,

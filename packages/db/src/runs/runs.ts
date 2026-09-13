@@ -10,12 +10,22 @@ import {
   redactJson,
   resolverDiagnosticsSchema,
   isHaltedRunStatus,
-  resolveEvidencePolicy,
-  resolveSessionPolicy,
+  hasAiSteps,
+  loginScopeFromTargetUrl,
+  originsFromTargetUrls,
+  DEFAULT_BROWSER_AI_HANG_WAIT_MS,
+  FACTORY_PLATFORM_CONFIG,
+  frozenTargetAuthSchema,
+  idempotentRequestMatches,
+  resolveAiExecutionFromPlatform,
+  resolvePlatformEvidencePolicy,
+  resolvePlatformExecutionPolicy,
+  resolvePlatformSessionPolicy,
   runDetailSchema,
   runEvidenceListResponseSchema,
   runListResponseSchema,
   runSnapshotSchema,
+  type AiExecutionConfig,
   type CreateRunBody,
   type EvidenceType,
   type ExecutionError,
@@ -47,6 +57,7 @@ import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.
 import { newId } from '../id.js'
 import { attempts, evidences, runs, scenarios, stepRuns } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
+import { getPlatformConfig } from '../platform-config/store.js'
 import { computeIdempotencyDigest, computeSnapshotDigest } from './digest.js'
 import { badRequest, conflict, mapRestriction, notFound } from './errors.js'
 import { toEvidenceMetadata } from '../objects/evidence-map.js'
@@ -302,7 +313,12 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
 
 export async function createRunWithSnapshot(
   db: Db,
-  input: CreateRunBody & { actor: AuditActor; allowTrialVersion?: boolean },
+  input: CreateRunBody & {
+    actor: AuditActor
+    allowTrialVersion?: boolean
+    aiExecution?: AiExecutionConfig
+    hangWaitMs?: number
+  },
 ): Promise<{ detail: RunDetailDto; created: boolean }> {
   const { runs, stepRuns, targetAccounts, targets } = schemaFor(db)
   const { scenario, version } = await loadScenarioVersion(
@@ -347,8 +363,11 @@ export async function createRunWithSnapshot(
     }
   }
 
-  const sessionPolicy = resolveSessionPolicy(input.sessionPolicy)
-  const evidencePolicy = resolveEvidencePolicy(input.evidencePolicy)
+  const platform = await getPlatformConfig(db)
+  const document = platform?.document ?? FACTORY_PLATFORM_CONFIG
+  const sessionPolicy = resolvePlatformSessionPolicy(input.sessionPolicy, document.session)
+  const evidencePolicy = resolvePlatformEvidencePolicy(input.evidencePolicy, document.evidence)
+  const policy = resolvePlatformExecutionPolicy(input.policy, document.execution)
 
   const idempotencyDigest = input.idempotencyKey
     ? computeIdempotencyDigest({
@@ -356,15 +375,33 @@ export async function createRunWithSnapshot(
         input: runInput,
         targetAccountId: input.targetAccountId,
         policy: input.policy,
-        sessionPolicy,
-        evidencePolicy,
+        sessionPolicy: input.sessionPolicy ?? null,
+        evidencePolicy: input.evidencePolicy ?? null,
       })
     : null
 
   if (input.idempotencyKey) {
     const existing = await findIdempotent(db, input.actor.id, input.idempotencyKey)
     if (existing) {
-      if (existing.idempotencyDigest !== idempotencyDigest) {
+      const same = idempotentRequestMatches({
+        existingDigest: existing.idempotencyDigest ?? '',
+        rawDigest: idempotencyDigest ?? '',
+        legacyDigest: computeIdempotencyDigest({
+          scenarioVersionId: version.id,
+          input: runInput,
+          targetAccountId: input.targetAccountId,
+          policy: input.policy,
+          sessionPolicy: existing.snapshot.sessionPolicy ?? null,
+          evidencePolicy: existing.snapshot.evidencePolicy ?? null,
+        }),
+        sessionOverride: input.sessionPolicy,
+        evidenceOverride: input.evidencePolicy,
+        policyOverride: input.policy,
+        snapshotSession: existing.snapshot.sessionPolicy,
+        snapshotEvidence: existing.snapshot.evidencePolicy,
+        snapshotPolicy: existing.snapshot.policy,
+      })
+      if (!same) {
         throw conflict('RUN_IDEMPOTENCY_CONFLICT', '相同幂等键对应不同的运行输入')
       }
       const detail = await getRun(db, existing.id)
@@ -385,10 +422,38 @@ export async function createRunWithSnapshot(
     steps: version.definition.steps,
     input: runInput,
     createdAt: now.toISOString(),
-    policy: input.policy,
+    policy,
     sessionPolicy,
     evidencePolicy,
     executorVersions: freezeExecutorVersions(version.definition.steps.map((step) => step.type)),
+    allowedOrigins: originsFromTargetUrls(target.entryUrl, target.loginUrl),
+    ...loginScopeFromTargetUrl(target.entryUrl, target.loginUrl),
+    targetAuth: frozenTargetAuthSchema.parse({
+      entryUrl: target.entryUrl,
+      loginUrl: target.loginUrl,
+      authMethod: target.authMethod,
+      captchaMode: target.captchaMode,
+      loginFields: target.loginFields ?? null,
+    }),
+    ...(platform ? { platformConfigRevision: platform.revision } : {}),
+    aiExecution: input.aiExecution,
+  }
+  if (hasAiSteps(snapshotBase.steps) && !snapshotBase.aiExecution) {
+    try {
+      snapshotBase.aiExecution = resolveAiExecutionFromPlatform(snapshotBase.steps, document, {
+        revision: platform?.revision ?? 1,
+        hangWaitMs: input.hangWaitMs ?? DEFAULT_BROWSER_AI_HANG_WAIT_MS,
+      })
+    } catch (error) {
+      const code =
+        error && typeof error === 'object' && 'code' in error
+          ? String(error.code)
+          : 'AI_CONFIG_INVALID'
+      throw badRequest(code, error instanceof Error ? error.message : '浏览器仿真 AI 配置无效')
+    }
+  }
+  if (hasAiSteps(snapshotBase.steps) && !snapshotBase.aiExecution) {
+    throw badRequest('AI_CONFIG_INVALID', '含 AI 步骤的运行必须冻结 AI 执行配置')
   }
   const parsed = runSnapshotSchema.parse(snapshotBase)
   const digest = computeSnapshotDigest(parsed)
@@ -458,6 +523,8 @@ export async function createTrialRunFromDraft(
     evidencePolicy?: CreateRunBody['evidencePolicy']
     idempotencyKey?: string
     actor: AuditActor
+    executableTypes?: readonly string[]
+    hangWaitMs?: number
   },
 ): Promise<{ detail: RunDetailDto; created: boolean }> {
   try {
@@ -477,6 +544,7 @@ export async function createTrialRunFromDraft(
         evidencePolicy: input.evidencePolicy,
         idempotencyKey: input.idempotencyKey,
         actor: input.actor,
+        hangWaitMs: input.hangWaitMs,
         allowTrialVersion: true,
       })
     })

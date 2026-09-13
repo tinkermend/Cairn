@@ -43,19 +43,22 @@ export const DEFAULT_EVIDENCE_POLICY: ResolvedEvidencePolicy = {
   },
 }
 
-export function resolveEvidencePolicy(policy?: EvidencePolicy | null): ResolvedEvidencePolicy {
-  const screenshot = policy?.screenshot ?? DEFAULT_EVIDENCE_POLICY.screenshot
-  const trace = policy?.trace ?? DEFAULT_EVIDENCE_POLICY.trace
-  const required = policy?.required ?? DEFAULT_EVIDENCE_POLICY.required
-  const traceRetain =
-    policy?.retainDays?.trace ??
-    (trace === 'always' ? DEFAULT_DEBUG_TRACE_RETAIN_DAYS : DEFAULT_TRACE_RETAIN_DAYS)
+export function resolveEvidencePolicy(
+  policy?: EvidencePolicy | null,
+  platformDefault: ResolvedEvidencePolicy = DEFAULT_EVIDENCE_POLICY,
+): ResolvedEvidencePolicy {
+  const screenshot = policy?.screenshot ?? platformDefault.screenshot
+  const trace = policy?.trace ?? platformDefault.trace
+  const required = policy?.required ?? platformDefault.required
+  const defaultTraceRetain =
+    trace === 'always' ? DEFAULT_DEBUG_TRACE_RETAIN_DAYS : platformDefault.retainDays.trace
+  const traceRetain = policy?.retainDays?.trace ?? defaultTraceRetain
   return {
     screenshot,
     trace,
     required: [...required],
     retainDays: {
-      screenshot: policy?.retainDays?.screenshot ?? DEFAULT_SCREENSHOT_RETAIN_DAYS,
+      screenshot: policy?.retainDays?.screenshot ?? platformDefault.retainDays.screenshot,
       trace: traceRetain,
     },
   }

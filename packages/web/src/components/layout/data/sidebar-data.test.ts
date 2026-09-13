@@ -37,7 +37,7 @@ describe('侧栏导航', () => {
   })
 
   it('治理组按权限显隐，无治理权限时整组为空', () => {
-    expect(governance.items.map((item) => item.title)).toEqual(['用户', '角色', '审计'])
+    expect(governance.items.map((item) => item.title)).toEqual(['用户', '角色', '平台配置', '审计'])
     const audit = governance.items.find((item) => item.title === '审计')
     expect(audit && 'url' in audit ? audit.url : undefined).toBe('/audit')
     expect(audit && 'items' in audit ? audit.items : undefined).toBeUndefined()

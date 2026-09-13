@@ -48,9 +48,13 @@ export function executorVersionsMatch(
 export function resolveStepPolicy(
   snapshotPolicy?: ExecutionPolicy,
   stepPolicy?: ExecutionPolicy,
+  stepType?: string,
 ): { timeoutMs: number; retryLimit: number } {
   return {
     timeoutMs: stepPolicy?.timeoutMs ?? snapshotPolicy?.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS,
-    retryLimit: stepPolicy?.retryLimit ?? snapshotPolicy?.retryLimit ?? DEFAULT_RETRY_LIMIT,
+    retryLimit:
+      stepType === 'ai_action'
+        ? 0
+        : (stepPolicy?.retryLimit ?? snapshotPolicy?.retryLimit ?? DEFAULT_RETRY_LIMIT),
   }
 }

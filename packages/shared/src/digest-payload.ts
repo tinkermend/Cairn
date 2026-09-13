@@ -7,6 +7,7 @@ import type { JsonValue } from './wire.js'
 /** 参与 snapshot.digest 的字段。不含 runId / createdAt / digest。 */
 export function snapshotDigestPayload(snapshot: RunSnapshot): Record<string, unknown> {
   return {
+    ...(snapshot.deadlineAt ? { deadlineAt: snapshot.deadlineAt } : {}),
     schemaVersion: snapshot.schemaVersion,
     targetId: snapshot.targetId,
     targetAccountId: snapshot.targetAccountId,
@@ -19,6 +20,14 @@ export function snapshotDigestPayload(snapshot: RunSnapshot): Record<string, unk
     sessionPolicy: snapshot.sessionPolicy,
     evidencePolicy: snapshot.evidencePolicy,
     executorVersions: snapshot.executorVersions,
+    allowedOrigins: snapshot.allowedOrigins,
+    loginOrigin: snapshot.loginOrigin,
+    loginPath: snapshot.loginPath,
+    aiExecution: snapshot.aiExecution,
+    ...(snapshot.platformConfigRevision != null
+      ? { platformConfigRevision: snapshot.platformConfigRevision }
+      : {}),
+    ...(snapshot.targetAuth ? { targetAuth: snapshot.targetAuth } : {}),
   }
 }
 

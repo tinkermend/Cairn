@@ -125,6 +125,7 @@ export const listOwnedOpenSessions = operation(impl2.listOwnedOpenSessions)
 export const listExpiredAuthHolds = operation(impl2.listExpiredAuthHolds)
 export const expireAuthHold = operation(impl2.expireAuthHold)
 export const loadSecretCiphertext = operation(impl2.loadSecretCiphertext)
+export const registerStandaloneSecret = operation(impl2.registerStandaloneSecret)
 export const listSessions = operation(impl2.listSessions)
 export { toSessionDto } from './sessions/index.js'
 export const disposeStuckSession = operation(impl2.disposeStuckSession)
@@ -174,3 +175,13 @@ export const findLocalIdentity = operation(impl5.findLocalIdentity)
 export const touchLocalIdentity = operation(impl5.touchLocalIdentity)
 export const loadTargetForExecution = operation(impl5.loadTargetForExecution)
 export const loadAccountForExecution = operation(impl5.loadAccountForExecution)
+
+import * as platformConfig from './platform-config/index.js'
+export const getPlatformConfig = operation(platformConfig.getPlatformConfig)
+export const getOrCreatePlatformConfig = operation(platformConfig.getOrCreatePlatformConfig)
+export const getPlatformConfigRevision = operation(platformConfig.getPlatformConfigRevision)
+export const updatePlatformConfig = operation(platformConfig.updatePlatformConfig)
+export const restorePlatformConfig = operation(platformConfig.restorePlatformConfig)
+export const listPlatformConfigRevisions = operation(platformConfig.listPlatformConfigRevisions)
+export const registerPlatformAiSecret = operation(platformConfig.registerPlatformAiSecret)
+export type { PlatformBootstrap } from './platform-config/index.js'

@@ -1,53 +1,62 @@
 import {
   DomainError,
   forbidden,
+  getPlatformConfig,
   loadScenarioVersion,
   type DbHandle,
 } from '@cairn/db'
 import {
-  aiExecutionFromEnv,
+  FACTORY_PLATFORM_CONFIG,
   executableStepTypesFor,
   hasAiSteps,
   hasPermission,
+  platformRuntimeDefaultsFrom,
+  resolveAiExecutionFromPlatform,
   scenarioCapabilitiesFor,
   type AiExecutionConfig,
+  type PlatformConfigDocument,
   type ScenarioCapabilities,
 } from '@cairn/shared'
 import { config } from './env'
 import type { RequestAccount } from '../common/request-account'
 
-export function browserAiCapabilities(): ScenarioCapabilities {
+export function platformDocumentOrFactory(document?: PlatformConfigDocument | null) {
+  return document ?? FACTORY_PLATFORM_CONFIG
+}
+
+export function browserAiCapabilitiesFrom(
+  document: PlatformConfigDocument,
+  revision: number,
+): ScenarioCapabilities {
   return scenarioCapabilitiesFor({
-    browserAiEnabled: config.CAIRN_BROWSER_AI_ENABLED,
+    browserAiEnabled: document.browserAi.enabled,
+    defaults: platformRuntimeDefaultsFrom(document, revision),
   })
 }
 
-export function executableTypes(): string[] {
-  return executableStepTypesFor(config.CAIRN_BROWSER_AI_ENABLED)
+export function executableTypesFrom(document: PlatformConfigDocument = FACTORY_PLATFORM_CONFIG) {
+  return executableStepTypesFor(document.browserAi.enabled)
 }
 
-export function resolveAiExecution(steps: readonly { type: string }[]): AiExecutionConfig | undefined {
-  if (!hasAiSteps(steps)) return undefined
-  if (!config.CAIRN_BROWSER_AI_ENABLED) {
-    throw new DomainError('bad_request', 'AI_DISABLED', '浏览器仿真 AI 未启用')
+export function resolveAiExecution(
+  steps: readonly { type: string; policy?: { timeoutMs?: number; retryLimit?: number } }[],
+  document: PlatformConfigDocument,
+  extras: { revision: number; hangWaitMs?: number },
+): AiExecutionConfig | undefined {
+  try {
+    return resolveAiExecutionFromPlatform(steps, document, {
+      revision: extras.revision,
+      hangWaitMs: extras.hangWaitMs ?? config.CAIRN_BROWSER_AI_HANG_WAIT_MS,
+    })
+  } catch (error) {
+    const code =
+      error && typeof error === 'object' && 'code' in error ? String(error.code) : 'AI_CONFIG_INVALID'
+    throw new DomainError(
+      'bad_request',
+      code,
+      error instanceof Error ? error.message : '浏览器仿真 AI 配置无效',
+    )
   }
-  if (
-    !config.CAIRN_BROWSER_AI_BASE_URL ||
-    !config.CAIRN_BROWSER_AI_MODEL ||
-    !config.CAIRN_BROWSER_AI_MODEL_FAMILY
-  ) {
-    throw new DomainError('bad_request', 'AI_CONFIG_INVALID', '浏览器仿真 AI 配置不完整')
-  }
-  return aiExecutionFromEnv({
-    CAIRN_BROWSER_AI_BASE_URL: config.CAIRN_BROWSER_AI_BASE_URL,
-    CAIRN_BROWSER_AI_MODEL: config.CAIRN_BROWSER_AI_MODEL,
-    CAIRN_BROWSER_AI_MODEL_FAMILY: config.CAIRN_BROWSER_AI_MODEL_FAMILY,
-    CAIRN_BROWSER_AI_API_KEY_SECRET_ID: config.CAIRN_BROWSER_AI_API_KEY_SECRET_ID,
-    CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS: config.CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS,
-    CAIRN_BROWSER_AI_HANG_WAIT_MS: config.CAIRN_BROWSER_AI_HANG_WAIT_MS,
-    CAIRN_BROWSER_AI_STEP_MAX_CALLS: config.CAIRN_BROWSER_AI_STEP_MAX_CALLS,
-    CAIRN_BROWSER_AI_MAX_OUTPUT_TOKENS: config.CAIRN_BROWSER_AI_MAX_OUTPUT_TOKENS,
-  })
 }
 
 export function assertAiExecutePermission(
@@ -60,11 +69,25 @@ export function assertAiExecutePermission(
   }
 }
 
+export async function loadPlatformForRuntime(db: DbHandle): Promise<{
+  document: PlatformConfigDocument
+  revision: number
+}> {
+  const current = await getPlatformConfig(db)
+  return {
+    document: platformDocumentOrFactory(current?.document),
+    revision: current?.revision ?? 1,
+  }
+}
+
 export async function resolveRunAiExecution(
   db: DbHandle,
   input: { scenarioId: string; scenarioVersionId?: string; actor: RequestAccount },
 ): Promise<AiExecutionConfig | undefined> {
   const { version } = await loadScenarioVersion(db, input.scenarioId, input.scenarioVersionId)
   assertAiExecutePermission(input.actor, version.definition.steps)
-  return resolveAiExecution(version.definition.steps)
+  const platform = await loadPlatformForRuntime(db)
+  return resolveAiExecution(version.definition.steps, platform.document, {
+    revision: platform.revision,
+  })
 }

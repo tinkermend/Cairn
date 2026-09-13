@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { runInputSchema, type RunDetailDto, type ScenarioInputDecl } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { trialScenario } from '@/lib/scenarios-api'
+import { fetchScenarioCapabilities, trialScenario } from '@/lib/scenarios-api'
+import { inheritCaptureLabel } from '@/features/platform-config/labels'
 import { fetchTargetAccounts } from '@/lib/targets-api'
 import { Button } from '@/components/ui/button'
 import {
@@ -55,6 +56,13 @@ export function TrialDialog({
     queryFn: () => fetchTargetAccounts(targetId),
     enabled: open,
   })
+  const capabilities = useQuery({
+    queryKey: ['scenarios', 'capabilities'],
+    queryFn: fetchScenarioCapabilities,
+    enabled: open,
+  })
+    const inheritScreenshot = capabilities.data?.defaults?.evidence.screenshot
+    const inheritTrace = capabilities.data?.defaults?.evidence.trace
   const [targetAccountId, setTargetAccountId] = useState('')
   const [values, setValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
@@ -94,6 +102,13 @@ export function TrialDialog({
               </SelectContent>
             </Select>
           </div>
+          <p className='text-label text-muted-foreground'>
+            试跑继承平台默认证据策略
+            {inheritScreenshot || inheritTrace
+              ? `：截图 ${inheritCaptureLabel(inheritScreenshot, '平台默认')}，Trace ${inheritCaptureLabel(inheritTrace, '平台默认')}`
+              : '。'}
+            本次不单独覆盖。
+          </p>
           {inputs.map((input) => (
             <div key={input.key} className='space-y-2'>
               <Label htmlFor={`trial-${input.key}`}>{input.label}</Label>

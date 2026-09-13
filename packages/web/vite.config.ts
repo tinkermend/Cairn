@@ -1,10 +1,14 @@
 /// <reference types="vitest/config" />
+import { existsSync } from 'node:fs'
 import path from 'path'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import { playwright } from '@vitest/browser-playwright'
+
+const repoEnv = path.resolve(import.meta.dirname, '../../.env')
+if (existsSync(repoEnv)) process.loadEnvFile(repoEnv)
 
 const API_ORIGIN = process.env.CAIRN_API_ORIGIN ?? 'http://127.0.0.1:3030'
 
@@ -22,6 +26,15 @@ export default defineConfig({
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
     },
+  },
+  optimizeDeps: {
+    include: [
+      '@radix-ui/react-tabs',
+      '@radix-ui/react-switch',
+      'react-day-picker',
+      'react-day-picker/locale',
+      'date-fns',
+    ],
   },
   server: {
     fs: {

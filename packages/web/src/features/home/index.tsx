@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import type { PermissionCode } from '@cairn/shared'
-import { ListChecks, Monitor, Play, ScrollText, Settings, Shield, Users } from 'lucide-react'
+import { ListChecks, Monitor, Play, ScrollText, Settings, Shield, SlidersHorizontal, Users } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { can, canAny } from '@/lib/rbac'
 import { AppHeader } from '@/components/layout/app-header'
@@ -10,7 +10,7 @@ import { PageHeader } from '@/components/layout/page-header'
 const modules: {
   title: string
   description: string
-  to: '/targets' | '/scenarios' | '/runs' | '/users' | '/roles' | '/audit' | '/settings'
+  to: '/targets' | '/scenarios' | '/runs' | '/users' | '/roles' | '/audit' | '/settings' | '/platform-config'
   icon: React.ElementType
   permission?: PermissionCode
   anyOf?: PermissionCode[]
@@ -56,6 +56,13 @@ const modules: {
     to: '/audit',
     icon: ScrollText,
     anyOf: ['audit:read', 'audit:login'],
+  },
+  {
+    title: '平台配置',
+    description: '调整浏览器 AI、执行、会话与证据的平台默认策略。',
+    to: '/platform-config',
+    icon: SlidersHorizontal,
+    permission: 'platform-config:read',
   },
   {
     title: '设置',
