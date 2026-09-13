@@ -18,6 +18,12 @@ import type {
   TrialRunBody,
   UpdateScenarioBody,
 } from '@cairn/shared'
+import {
+  assertAiExecutePermission,
+  browserAiCapabilities,
+  executableTypes,
+  resolveAiExecution,
+} from '../config/browser-ai'
 import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
 import { rethrowDomain } from '../common/domain-error'
@@ -32,6 +38,10 @@ export class ScenariosService {
 
   list() {
     return listScenarios(this.db)
+  }
+
+  capabilities() {
+    return browserAiCapabilities()
   }
 
   get(id: string) {
@@ -51,6 +61,7 @@ export class ScenariosService {
         inputs: body.inputs,
         status: body.status,
         actor: { id: actor.id },
+        executableTypes: executableTypes(),
       })
     } catch (error) {
       rethrowDomain(error)
@@ -86,6 +97,7 @@ export class ScenariosService {
       return await publishScenarioDraft(this.db, id, {
         revision: body.revision,
         actor: { id: actor.id },
+        executableTypes: executableTypes(),
       })
     } catch (error) {
       rethrowDomain(error)
@@ -94,6 +106,9 @@ export class ScenariosService {
 
   async trial(id: string, body: TrialRunBody, actor: RequestAccount) {
     try {
+      const detail = await getScenario(this.db, id, { executableTypes: executableTypes() })
+      const steps = detail.draft?.document.steps ?? detail.published?.definition.steps ?? []
+      assertAiExecutePermission(actor, steps)
       return await createTrialRunFromDraft(this.db, id, {
         revision: body.revision,
         targetAccountId: body.targetAccountId,
@@ -103,6 +118,8 @@ export class ScenariosService {
         evidencePolicy: body.evidencePolicy,
         idempotencyKey: body.idempotencyKey,
         actor: { id: actor.id },
+        executableTypes: executableTypes(),
+        aiExecution: resolveAiExecution(steps),
       })
     } catch (error) {
       rethrowDomain(error)

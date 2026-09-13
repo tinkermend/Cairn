@@ -28,6 +28,12 @@ export class ScenariosController {
     return this.scenarios.list()
   }
 
+  @Get('capabilities')
+  @RequirePermissions('workflow:read')
+  capabilities() {
+    return this.scenarios.capabilities()
+  }
+
   @Post()
   @RequirePermissions('workflow:write')
   create(
@@ -77,7 +83,7 @@ export class ScenariosController {
   }
 
   @Post(':scenarioId/trial')
-  @RequirePermissions('workflow:write', 'run:execute')
+  @RequirePermissions('workflow:write', 'run:execute', 'target:read')
   async trial(
     @Param('scenarioId') scenarioId: string,
     @Body(new ZodValidationPipe(trialRunBodySchema)) body: TrialRunBody,

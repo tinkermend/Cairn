@@ -159,12 +159,13 @@ export const compileDiagnosticSchema = z.object({
   message: z.string().min(1).max(512),
   stepId: entityIdSchema.optional(),
   inputKey: contextKeySchema.optional(),
+  fieldPath: z.array(z.string().min(1).max(64)).max(8).optional(),
 })
 export type CompileDiagnostic = z.infer<typeof compileDiagnosticSchema>
 
 export const compileResultSchema = z.object({
   ok: z.boolean(),
-  compilerVersion: z.literal(1),
+  compilerVersion: z.number().int().min(1),
   diagnostics: z.array(compileDiagnosticSchema),
 })
 export type CompileResultDto = z.infer<typeof compileResultSchema>

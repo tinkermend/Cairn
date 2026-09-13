@@ -7,23 +7,30 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const dir = resolve(dirname(fileURLToPath(import.meta.url)), '../packages/db/migrations')
-const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
 const errors = []
-const seen = new Map()
+let total = 0
+for (const backend of ['.', 'mysql', 'sqlite']) {
+  const files = readdirSync(resolve(dir, backend))
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+  const seen = new Map()
+  total += files.length
+  if (!files.length) errors.push(`迁移目录为空：${backend}`)
 
-files.forEach((f, i) => {
-  const m = /^(\d{4})_[a-z0-9_]+\.sql$/.exec(f)
-  if (!m) return errors.push(`文件名不合规范（应为 NNNN_name.sql）：${f}`)
-  const prefix = m[1]
-  if (seen.has(prefix)) errors.push(`前缀重复：${prefix} → ${seen.get(prefix)} 与 ${f}`)
-  seen.set(prefix, f)
-  const expected = String(i + 1).padStart(4, '0')
-  if (prefix !== expected) errors.push(`序号不连续：期望 ${expected}，实际 ${prefix}（${f}）`)
-})
+  files.forEach((f, i) => {
+    const m = /^(\d{4})_[a-z0-9_]+\.sql$/.exec(f)
+    if (!m) return errors.push(`文件名不合规范（应为 NNNN_name.sql）：${f}`)
+    const prefix = m[1]
+    if (seen.has(prefix)) errors.push(`前缀重复：${prefix} → ${seen.get(prefix)} 与 ${f}`)
+    seen.set(prefix, f)
+    const expected = String(i + 1).padStart(4, '0')
+    if (prefix !== expected) errors.push(`序号不连续：期望 ${expected}，实际 ${prefix}（${f}）`)
+  })
+}
 
 if (errors.length) {
   console.error('迁移文件检查未通过：')
   for (const e of errors) console.error(`  ✗ ${e}`)
   process.exit(1)
 }
-console.log(`✅ 迁移文件检查通过（${files.length} 个）`)
+console.log(`✅ 迁移文件检查通过（三库共 ${total} 个）`)

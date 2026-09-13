@@ -3,6 +3,7 @@ import {
   publishScenarioBodySchema,
   runDetailSchema,
   saveScenarioDraftBodySchema,
+  scenarioCapabilitiesSchema,
   scenarioDetailSchema,
   scenarioListResponseSchema,
   trialRunBodySchema,
@@ -11,6 +12,7 @@ import {
   type PublishScenarioBody,
   type RunDetailDto,
   type SaveScenarioDraftBody,
+  type ScenarioCapabilities,
   type ScenarioDetailDto,
   type ScenarioListResponse,
   type TrialRunBody,
@@ -24,6 +26,10 @@ export function fetchScenarios(): Promise<ScenarioListResponse> {
 
 export function fetchScenario(id: string): Promise<ScenarioDetailDto> {
   return apiFetch(`/api/scenarios/${id}`, scenarioDetailSchema)
+}
+
+export function fetchScenarioCapabilities(): Promise<ScenarioCapabilities> {
+  return apiFetch('/api/scenarios/capabilities', scenarioCapabilitiesSchema)
 }
 
 export function createScenario(body: CreateScenarioBody): Promise<ScenarioDetailDto> {

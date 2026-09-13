@@ -90,9 +90,28 @@ describe('runSnapshotSchema', () => {
             {
               id: ids.delay,
               name: '打开页',
-              type: 'ai_action',
+              type: 'unknown_step',
               effectType: 'IDEMPOTENT',
               input: { url: '/' },
+            },
+          ],
+        }),
+      ),
+    ).toThrow()
+  })
+
+  it('含 AI 步骤的快照必须冻结 AI 配置；缺省确定性快照仍可解析', () => {
+    expect(runSnapshotSchema.parse(snapshot()).aiExecution).toBeUndefined()
+    expect(() =>
+      runSnapshotSchema.parse(
+        snapshot({
+          steps: [
+            {
+              id: ids.delay,
+              name: 'AI 操作',
+              type: 'ai_action',
+              effectType: 'SIDE_EFFECT',
+              input: { instruction: '查询订单' },
             },
           ],
         }),

@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useParams } from '@tanstack/react-router'
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
-  compileScenarioDocument,
-  EXECUTABLE_STEP_TYPES,
+  entityIdSchema,
+  hasAiSteps,
+  hasPermission,
+  isAiStepType,
   MAX_SCENARIO_STEPS,
   type CompileDiagnostic,
   type ExecutableStepType,
-  type ScenarioDocument,
+  type RunDetailDto,
 } from '@cairn/shared'
 import {
   ArrowLeft,
@@ -18,12 +20,14 @@ import {
   Plus,
   Save,
   TriangleAlert,
+  Undo2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { fetchScenario, publishScenario, saveScenarioDraft } from '@/lib/scenarios-api'
+import { fetchScenario, fetchScenarioCapabilities, publishScenario, saveScenarioDraft } from '@/lib/scenarios-api'
 import { fetchTarget } from '@/lib/targets-api'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -41,6 +45,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { AppHeader } from '@/components/layout/app-header'
@@ -50,27 +59,50 @@ import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
 import { StatusBadge } from '@/components/status-badge'
 import { RunCreateDialog } from '@/features/runs/create-dialog'
-import { createBlankStep } from './blank-step'
+import {
+  createBlankStep,
+  DETERMINISTIC_STUDIO_TYPES,
+  selectableStudioTypes,
+  STEP_TYPE_HINTS,
+  unavailableStudioTypes,
+} from './step-registry'
 import { InputsEditor, StepEditor } from './step-editor'
 import { TrialDialog } from './trial-dialog'
-import { SCENARIO_STATUS_LABELS, STEP_TYPE_LABELS } from './labels'
-
-function sameDocument(left: ScenarioDocument, right: ScenarioDocument): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
-}
+import { TrialPanel } from './trial-panel'
+import { SCENARIO_STATUS_LABELS, stepTypeLabel } from './labels'
+import { useStudioDraft } from './use-studio-draft'
+import {
+  documentContextKeys,
+  focusStudioField,
+  insertStep,
+  isTypingTarget,
+  moveStep,
+  outputConsumers,
+  priorBindings,
+  priorOutputShapes,
+} from './studio-document'
 
 export function ScenarioDetailPage() {
   const { scenarioId } = useParams({
     from: '/_authenticated/scenarios/$scenarioId/',
   })
+  const search = useSearch({ strict: false })
+  const runId = entityIdSchema.optional().safeParse((search as { runId?: unknown }).runId).data
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const user = useAuthStore((state) => state.auth.user)
   const query = useQuery({
     queryKey: ['scenarios', scenarioId],
     queryFn: () => fetchScenario(scenarioId),
   })
+  const capabilitiesQuery = useQuery({
+    queryKey: ['scenarios', 'capabilities'],
+    queryFn: fetchScenarioCapabilities,
+  })
   const canReadTarget = useCan('target:read')
   const canWrite = useCan('workflow:write')
   const canRun = useCan('run:execute')
+  const canAi = Boolean(user && hasPermission(user.permissions, 'ai:execute'))
   const scenario = query.data
   const targetQuery = useQuery({
     queryKey: ['target', scenario?.targetId],
@@ -78,101 +110,120 @@ export function ScenarioDetailPage() {
     enabled: !!scenario && canReadTarget,
   })
   const target = canReadTarget ? targetQuery.data : undefined
-  const [document, setDocument] = useState<ScenarioDocument | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const draft = useStudioDraft(
+    scenarioId,
+    scenario?.draft
+      ? { revision: scenario.draft.revision, document: scenario.draft.document }
+      : undefined,
+    target
+      ? { exists: true, status: target.status }
+      : scenario
+        ? { exists: true, status: 'active' }
+        : undefined,
+    capabilitiesQuery.data?.executableStepTypes ?? DETERMINISTIC_STUDIO_TYPES,
+  )
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
-  const [conflict, setConflict] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [typeChange, setTypeChange] = useState<ExecutableStepType | null>(null)
+  const [reloadOpen, setReloadOpen] = useState(false)
+  const [leaveOpen, setLeaveOpen] = useState(false)
   const [trialOpen, setTrialOpen] = useState(false)
   const [runOpen, setRunOpen] = useState(false)
+  const [mobilePane, setMobilePane] = useState<'steps' | 'properties'>('steps')
 
-  useEffect(() => {
-    if (!scenario?.draft) return
-    setDocument(scenario.draft.document)
-    setSelectedId((current) => current ?? scenario.draft!.document.steps[0]?.id ?? null)
-    setConflict(false)
-  }, [scenario?.id, scenario?.draft?.revision])
-
-  const savedDocument = scenario?.draft?.document
-  const dirty = Boolean(document && savedDocument && !sameDocument(document, savedDocument))
-  const compile = useMemo(() => {
-    if (!document) return scenario?.compile
-    return compileScenarioDocument(document, {
-      mode: 'release',
-      target: target
-        ? { exists: true, status: target.status }
-        : scenario
-          ? { exists: true, status: 'active' }
-          : undefined,
-    })
-  }, [document, scenario, target])
-
-  const selected = selectedId
-    ? (document?.steps.find((step) => step.id === selectedId) ?? document?.steps[0] ?? null)
-    : null
-  const selectedIndex = selected
-    ? (document?.steps.findIndex((step) => step.id === selected.id) ?? 0)
-    : -1
-  const bindings = [
-    ...(document?.inputs ?? []).map((input) => ({
-      key: input.key,
-      label: `输入 · ${input.label}`,
-    })),
-    ...(document?.steps ?? [])
-      .filter((step) => step.outputKey)
-      .map((step) => ({ key: step.outputKey!, label: `步骤 · ${step.name}` })),
-  ]
+  const document = draft.candidate
   const disabled = !canWrite || saving || publishing
-  const canTrial = canWrite && canRun && !dirty && Boolean(compile?.ok) && scenario?.status === 'active' && target?.status !== 'disabled'
+  const compile = draft.compile ?? (draft.hasFieldDrafts ? null : scenario?.compile)
+  const editableTypes = selectableStudioTypes(capabilitiesQuery.data)
+  const draftHasAi = Boolean(document && hasAiSteps(document.steps))
+  const canTrial = Boolean(
+    canWrite &&
+      canRun &&
+      (!draftHasAi || canAi) &&
+      !draft.dirty &&
+      compile?.ok &&
+      scenario?.status === 'active' &&
+      target?.status !== 'disabled',
+  )
   const canPublish = Boolean(
-    canWrite && !dirty && compile?.ok && scenario && scenario.status === 'active' && target?.status !== 'disabled',
+    canWrite &&
+      !draft.dirty &&
+      compile?.ok &&
+      scenario &&
+      scenario.status === 'active' &&
+      target?.status !== 'disabled',
   )
   const unpublishedDraft = Boolean(scenario?.draftDirty)
+  const consumers = document ? outputConsumers(document, document.steps.find((step) => step.id === deleteId)?.outputKey) : []
+  const bindings = document && draft.selectedIndex >= 0 ? priorBindings(document, draft.selectedIndex) : []
+  const shapes = document && draft.selectedIndex >= 0 ? priorOutputShapes(document, draft.selectedIndex) : new Map()
+  const trialDisabledReason = useMemo(() => {
+    if (compile?.ok === false) return '先修复编译错误'
+    if (draft.hasFieldDrafts) return '先修正尚未合法的字段'
+    if (draft.dirty) return '先保存草稿'
+    if (draftHasAi && !canAi) return '缺少 ai:execute，不能试跑含 AI 步骤的场景'
+    return '当前不能试跑'
+  }, [canAi, compile?.ok, draft.dirty, draft.hasFieldDrafts, draftHasAi])
 
-  function move(index: number, delta: number) {
-    if (!document) return
-    const nextIndex = index + delta
-    if (nextIndex < 0 || nextIndex >= document.steps.length) return
-    const steps = [...document.steps]
-    const [item] = steps.splice(index, 1)
-    steps.splice(nextIndex, 0, item!)
-    setDocument({ ...document, steps })
-  }
+  const applyStructure = draft.applyStructure
+  const selectedIndex = draft.selectedIndex
+  const selectedStepId = draft.selected?.id ?? null
 
   useEffect(() => {
-    if (!canWrite || !document || selectedIndex < 0) return
+    if (!canWrite || disabled || !document || selectedIndex < 0) return
+    const current = document
     function onKeyDown(event: KeyboardEvent) {
-      if (!event.altKey) return
+      if (!event.altKey || isTypingTarget(event.target)) return
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        move(selectedIndex, -1)
+        const next = moveStep(current, selectedIndex, -1)
+        if (next) applyStructure(next, selectedStepId)
       }
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        move(selectedIndex, 1)
+        const next = moveStep(current, selectedIndex, 1)
+        if (next) applyStructure(next, selectedStepId)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [canWrite, document, selectedIndex])
+  }, [applyStructure, canWrite, disabled, document, selectedIndex, selectedStepId])
+
+  useEffect(() => {
+    function onBeforeUnload(event: BeforeUnloadEvent) {
+      if (!draft.dirty) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [draft.dirty])
+
+  function markConflict() {
+    draft.setConflict(true)
+    toast.error('他人已更新这份草稿，请重新加载')
+  }
 
   async function save() {
-    if (!document || !scenario?.draft || saving) return
+    if (!document || !draft.baseline || saving) return
+    if (draft.hasFieldDrafts) {
+      toast.error('先修正尚未合法的字段')
+      draft.focusFirstDraft()
+      return
+    }
     setSaving(true)
     try {
-      const next = await saveScenarioDraft(scenario.id, {
-        revision: scenario.draft.revision,
+      const next = await saveScenarioDraft(scenarioId, {
+        revision: draft.baseline.revision,
         document,
       })
+      if (next.draft) draft.acceptServer({ revision: next.draft.revision, document: next.draft.document })
       queryClient.setQueryData(['scenarios', scenarioId], next)
-      setDocument(next.draft!.document)
-      setConflict(false)
       toast.success('草稿已保存')
     } catch (error) {
       if (error instanceof ApiRequestError && error.payload.code === 'SCENARIO_DRAFT_CONFLICT') {
-        setConflict(true)
-        toast.error('他人已更新这份草稿，请重新加载')
+        markConflict()
       } else {
         toast.error(error instanceof ApiRequestError ? error.message : '保存失败')
       }
@@ -182,17 +233,67 @@ export function ScenarioDetailPage() {
   }
 
   async function publish() {
-    if (!scenario?.draft || dirty || publishing) return
+    if (!draft.baseline || draft.dirty || publishing) return
     setPublishing(true)
     try {
-      const next = await publishScenario(scenario.id, { revision: scenario.draft.revision })
+      const next = await publishScenario(scenarioId, { revision: draft.baseline.revision })
+      if (next.draft) draft.acceptServer({ revision: next.draft.revision, document: next.draft.document })
       queryClient.setQueryData(['scenarios', scenarioId], next)
       toast.success('已发布新版本')
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : '发布失败')
+      if (error instanceof ApiRequestError && error.payload.code === 'SCENARIO_DRAFT_CONFLICT') {
+        markConflict()
+      } else {
+        toast.error(error instanceof ApiRequestError ? error.message : '发布失败')
+      }
     } finally {
       setPublishing(false)
     }
+  }
+
+  function addStep(type: ExecutableStepType) {
+    if (!document) return
+    const nextStep = createBlankStep(type, documentContextKeys(document))
+    const after = draft.selectedIndex
+    draft.applyStructure(insertStep(document, nextStep, after), nextStep.id)
+    setMobilePane('properties')
+  }
+
+  function changeType(type: ExecutableStepType) {
+    if (!document || !draft.selected) return
+    const next = createBlankStep(type, documentContextKeys({
+      ...document,
+      steps: document.steps.filter((step) => step.id !== draft.selected!.id),
+    }))
+    draft.applyStructure(
+      {
+        ...document,
+        steps: document.steps.map((step) =>
+          step.id === draft.selected!.id ? { ...next, id: step.id, name: step.name || next.name } : step,
+        ),
+      },
+      draft.selected.id,
+    )
+    setTypeChange(null)
+  }
+
+  function confirmReload() {
+    void query.refetch().then((result) => {
+      if (result.data?.draft) {
+        draft.acceptServer({ revision: result.data.draft.revision, document: result.data.draft.document })
+      }
+      setReloadOpen(false)
+    })
+  }
+
+  function attachRun(run: RunDetailDto) {
+    queryClient.setQueryData(['runs', run.id], run)
+    void navigate({
+      to: '/scenarios/$scenarioId',
+      params: { scenarioId },
+      search: { runId: run.id },
+      replace: true,
+    })
   }
 
   return (
@@ -203,23 +304,28 @@ export function ScenarioDetailPage() {
           <Link
             to='/scenarios'
             className='me-auto flex items-center gap-2 text-small text-muted-foreground hover:text-link'
+            onClick={(event) => {
+              if (!draft.dirty) return
+              event.preventDefault()
+              setLeaveOpen(true)
+            }}
           >
             <ArrowLeft className='size-4' />
             返回场景
           </Link>
         }
       />
-      <Main className='flex min-w-0 flex-1 flex-col gap-5'>
+      <Main className='flex min-w-0 flex-1 flex-col gap-5 overflow-x-clip'>
         <PageHeader
           title={scenario?.name ?? '场景'}
-          description='编辑有序步骤、查看编译诊断，保存草稿后再试跑或发布。试跑进度需在运行详情中刷新。'
+          description='编辑有序步骤、查看编译诊断。保存后再试跑；试跑结果留在本页，完整复盘另开。'
           actions={
             scenario && !query.isError ? (
               <div className='flex flex-wrap items-center gap-2'>
                 {canWrite ? (
                   <Button
-                    variant={dirty ? 'default' : 'outline'}
-                    disabled={!dirty || saving}
+                    variant={draft.dirty ? 'default' : 'outline'}
+                    disabled={!draft.dirty || saving}
                     loading={saving}
                     onClick={() => void save()}
                   >
@@ -233,22 +339,12 @@ export function ScenarioDetailPage() {
                     试跑
                   </Button>
                 ) : canRun ? (
-                  <Button
-                    variant='outline'
-                    disabled
-                    title={
-                      compile?.ok === false
-                        ? '先修复编译错误'
-                        : dirty
-                          ? '先保存草稿'
-                          : '当前不能试跑'
-                    }
-                  >
+                  <Button variant='outline' disabled title={trialDisabledReason}>
                     <Play />
                     试跑
                   </Button>
                 ) : null}
-                {canWrite && (dirty || unpublishedDraft) ? (
+                {canWrite && (draft.dirty || unpublishedDraft) ? (
                   <Button
                     variant='outline'
                     disabled={!canPublish || publishing}
@@ -258,7 +354,7 @@ export function ScenarioDetailPage() {
                     发布
                   </Button>
                 ) : null}
-                {canRun && !dirty && compile?.ok && !unpublishedDraft ? (
+                {canRun && !draft.dirty && compile?.ok && !unpublishedDraft ? (
                   <Button variant='outline' onClick={() => setRunOpen(true)}>
                     运行已发布版本
                   </Button>
@@ -271,7 +367,7 @@ export function ScenarioDetailPage() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align='end'>
-                    {canWrite && !dirty && !unpublishedDraft ? (
+                    {canWrite && !draft.dirty && !unpublishedDraft ? (
                       <DropdownMenuItem disabled={!canPublish || publishing} onClick={() => void publish()}>
                         发布
                       </DropdownMenuItem>
@@ -285,7 +381,7 @@ export function ScenarioDetailPage() {
             ) : null
           }
         />
-        {query.isPending || !document ? (
+        {query.isPending || !document || !scenario ? (
           query.isError ? (
             <QueryErrorState title='无法加载场景' onRetry={() => void query.refetch()} />
           ) : (
@@ -293,24 +389,23 @@ export function ScenarioDetailPage() {
           )
         ) : (
           <>
-            {conflict ? (
+            {draft.conflict || draft.remoteStale ? (
               <Alert variant='warning'>
                 <AlertDescription className='flex flex-wrap items-center justify-between gap-3'>
-                  他人已更新这份草稿。重新加载会丢掉未保存的本地修改。
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    onClick={() => {
-                      void query.refetch().then((result) => {
-                        if (result.data?.draft) setDocument(result.data.draft.document)
-                        setConflict(false)
-                      })
-                    }}
-                  >
+                  {draft.conflict ? '他人已更新这份草稿。重新加载会丢掉未保存的本地修改。' : '服务端草稿已更新。本地修改仍保留，确认后才重载。'}
+                  <Button size='sm' variant='outline' onClick={() => setReloadOpen(true)}>
                     重新加载
                   </Button>
                 </AlertDescription>
               </Alert>
+            ) : null}
+            {canRun && !canTrial && draftHasAi && !canAi && !draft.dirty && compile?.ok ? (
+              <Alert>
+                <AlertDescription>缺少 AI 执行权限。仍可保存和发布，但不能试跑或创建含 AI 步骤的正式 Run。</AlertDescription>
+              </Alert>
+            ) : null}
+            {!canTrial && !draft.dirty && compile && !compile.ok ? (
+              <p className='text-label text-status-warning-foreground'>试跑不可用：{trialDisabledReason}。</p>
             ) : null}
             {scenario.status === 'disabled' || target?.status === 'disabled' ? (
               <Alert variant='warning'>
@@ -342,10 +437,10 @@ export function ScenarioDetailPage() {
               </div>
               <div>
                 <p className='text-label text-muted-foreground'>草稿</p>
-                <p className='text-body font-medium'>r{scenario.draft?.revision ?? 1}</p>
+                <p className='text-body font-medium'>r{draft.baseline?.revision ?? scenario.draft?.revision ?? 1}</p>
               </div>
-              <StatusBadge tone={dirty || scenario.draftDirty ? 'warning' : 'success'}>
-                {dirty ? '未保存' : scenario.draftDirty ? '有未发布草稿' : '与已发布一致'}
+              <StatusBadge tone={draft.dirty || scenario.draftDirty ? 'warning' : 'success'}>
+                {draft.dirty ? '未保存' : scenario.draftDirty ? '有未发布草稿' : '与已发布一致'}
               </StatusBadge>
               {compile?.ok === false ? (
                 <StatusBadge tone='error'>编译未通过</StatusBadge>
@@ -354,10 +449,31 @@ export function ScenarioDetailPage() {
                 {SCENARIO_STATUS_LABELS[scenario.status]}
               </StatusBadge>
             </div>
+            <div className='flex gap-2 lg:hidden'>
+              <Button
+                size='sm'
+                variant={mobilePane === 'steps' ? 'default' : 'outline'}
+                aria-pressed={mobilePane === 'steps'}
+                onClick={() => setMobilePane('steps')}
+              >
+                步骤
+              </Button>
+              <Button
+                size='sm'
+                variant={mobilePane === 'properties' ? 'default' : 'outline'}
+                aria-pressed={mobilePane === 'properties'}
+                onClick={() => setMobilePane('properties')}
+              >
+                属性
+              </Button>
+            </div>
             <div className='grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]'>
               <section
                 aria-label='执行步骤'
-                className='min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card'
+                className={cn(
+                  'min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card',
+                  mobilePane !== 'steps' && 'max-lg:hidden',
+                )}
               >
                 <div className='flex items-center justify-between gap-3 border-b border-border-divider px-5 py-4'>
                   <h2 className='flex items-center gap-2 text-section font-semibold'>
@@ -377,18 +493,46 @@ export function ScenarioDetailPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align='end'>
-                        {EXECUTABLE_STEP_TYPES.map((type) => (
-                          <DropdownMenuItem
-                            key={type}
-                            onClick={() => {
-                              const next = createBlankStep(type)
-                              setDocument({ ...document, steps: [...document.steps, next] })
-                              setSelectedId(next.id)
-                            }}
-                          >
-                            {STEP_TYPE_LABELS[type]}
+                        <DropdownMenuLabel>确定性</DropdownMenuLabel>
+                        {editableTypes
+                          .filter((type) => ['navigate', 'click', 'fill', 'extract', 'assert'].includes(type))
+                          .map((type) => (
+                            <DropdownMenuItem key={type} onClick={() => addStep(type)}>
+                              {stepTypeLabel(type)}
+                            </DropdownMenuItem>
+                          ))}
+                        {editableTypes.some((type) => type.startsWith('ai_')) ? (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className='text-ai-foreground'>AI</DropdownMenuLabel>
+                            {editableTypes
+                              .filter((type) => type.startsWith('ai_'))
+                              .map((type) => (
+                                <DropdownMenuItem key={type} className='text-ai-foreground' onClick={() => addStep(type)}>
+                                  {stepTypeLabel(type)}
+                                </DropdownMenuItem>
+                              ))}
+                          </>
+                        ) : null}
+                        {unavailableStudioTypes(capabilitiesQuery.data).map((item) => (
+                          <DropdownMenuItem key={item.type} disabled>
+                            {stepTypeLabel(item.type)}（{item.message}）
                           </DropdownMenuItem>
                         ))}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>调试夹具</DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            {editableTypes
+                              .filter((type) => ['echo', 'delay', 'fail'].includes(type))
+                              .map((type) => (
+                                <DropdownMenuItem key={type} onClick={() => addStep(type)}>
+                                  {stepTypeLabel(type)}
+                                  <span className='text-label text-muted-foreground'> · {STEP_TYPE_HINTS[type]}</span>
+                                </DropdownMenuItem>
+                              ))}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   ) : null}
@@ -405,11 +549,14 @@ export function ScenarioDetailPage() {
                         </span>
                         <button
                           type='button'
-                          aria-pressed={selected?.id === step.id}
-                          onClick={() => setSelectedId(step.id)}
+                          aria-pressed={draft.selected?.id === step.id}
+                          onClick={() => {
+                            draft.setSelectedId(step.id)
+                            setMobilePane('properties')
+                          }}
                           className={cn(
                             'flex min-w-0 flex-1 items-center gap-3 rounded-md border p-4 text-left',
-                            selected?.id === step.id
+                            draft.selected?.id === step.id
                               ? 'border-selection-border bg-selection-background shadow-control-focus'
                               : 'border-border-default bg-card hover:bg-action-hover',
                             hasError && 'border-status-error-foreground',
@@ -418,9 +565,14 @@ export function ScenarioDetailPage() {
                         >
                           <span className='min-w-0 flex-1'>
                             <span className='block text-body font-medium break-words'>{step.name}</span>
-                            <span className='mt-1 text-label text-muted-foreground'>
-                              {STEP_TYPE_LABELS[step.type as ExecutableStepType] ?? step.type}
-                              {step.outputKey ? ` · 输出 ${step.outputKey}` : ''}
+                            <span className='mt-1 flex flex-wrap items-center gap-2 text-label text-muted-foreground'>
+                              {isAiStepType(step.type) ? (
+                                <StatusBadge tone='ai'>{stepTypeLabel(step.type)}</StatusBadge>
+                              ) : (
+                                stepTypeLabel(step.type)
+                              )}
+                              {step.outputKey ? <span>输出 {step.outputKey}</span> : null}
+                              {stepDiagnostics.length > 0 ? <span>{stepDiagnostics.length} 条诊断</span> : null}
                             </span>
                           </span>
                           {hasError ? <TriangleAlert className='size-4 text-status-error-foreground' /> : null}
@@ -431,51 +583,68 @@ export function ScenarioDetailPage() {
                   })}
                 </ol>
                 <p className='border-t border-border-divider bg-surface-header px-5 py-3 text-label text-muted-foreground'>
-                  使用 Alt + ↑ / Alt + ↓ 重排当前步骤。删除需要确认。
+                  {draft.selected
+                    ? '新步骤插入到当前步骤之后。使用 Alt + ↑ / Alt + ↓ 重排；输入框内不拦截。'
+                    : '未选中步骤时，新步骤追加到末尾。删除需要确认。'}
                 </p>
               </section>
               <section
-                aria-label={selected ? '步骤属性' : '场景输入'}
-                className='min-w-0 rounded-lg border border-border-card bg-card shadow-card'
+                aria-label={draft.selected ? '步骤属性' : '场景输入'}
+                className={cn(
+                  'min-w-0 rounded-lg border border-border-card bg-card shadow-card',
+                  mobilePane !== 'properties' && 'max-lg:hidden',
+                )}
               >
                 <div className='border-b border-border-divider p-5'>
                   <p className='text-label text-muted-foreground'>
-                    {selected ? `步骤 ${selectedIndex + 1} / ${document.steps.length}` : '场景级'}
+                    {draft.selected ? `步骤 ${draft.selectedIndex + 1} / ${document.steps.length}` : '场景级'}
                   </p>
                   <h2 className='mt-1 text-section font-semibold break-words'>
-                    {selected ? selected.name : '输入与诊断'}
+                    {draft.selected ? draft.selected.name : '输入与诊断'}
                   </h2>
+                  <Button
+                    size='sm'
+                    variant='ghost'
+                    className='mt-2 lg:hidden'
+                    onClick={() => setMobilePane('steps')}
+                  >
+                    返回步骤列表
+                  </Button>
                 </div>
                 <div className='space-y-6 p-5'>
-                  {selected ? (
+                  {draft.selected ? (
                     <>
                       <StepEditor
-                        step={selected}
-                        index={selectedIndex}
+                        step={draft.selected}
+                        index={draft.selectedIndex}
                         bindings={bindings}
+                        shapes={shapes}
+                        editableTypes={editableTypes}
                         diagnostics={(compile?.diagnostics ?? []) as CompileDiagnostic[]}
                         disabled={disabled}
-                        onChange={(next) =>
-                          setDocument({
-                            ...document,
-                            steps: document.steps.map((step) => (step.id === next.id ? next : step)),
-                          })
-                        }
+                        onChange={draft.updateStep}
+                        onRequestTypeChange={setTypeChange}
                       />
                       <div className='flex flex-wrap gap-2'>
                         <Button
                           size='sm'
                           variant='outline'
-                          disabled={disabled || selectedIndex === 0}
-                          onClick={() => move(selectedIndex, -1)}
+                          disabled={disabled || draft.selectedIndex === 0}
+                          onClick={() => {
+                            const next = moveStep(document, draft.selectedIndex, -1)
+                            if (next) draft.applyStructure(next, draft.selected?.id ?? null)
+                          }}
                         >
                           上移
                         </Button>
                         <Button
                           size='sm'
                           variant='outline'
-                          disabled={disabled || selectedIndex === document.steps.length - 1}
-                          onClick={() => move(selectedIndex, 1)}
+                          disabled={disabled || draft.selectedIndex === document.steps.length - 1}
+                          onClick={() => {
+                            const next = moveStep(document, draft.selectedIndex, 1)
+                            if (next) draft.applyStructure(next, draft.selected?.id ?? null)
+                          }}
                         >
                           下移
                         </Button>
@@ -483,26 +652,36 @@ export function ScenarioDetailPage() {
                           size='sm'
                           variant='outline'
                           disabled={disabled || document.steps.length <= 1}
-                          onClick={() => setDeleteId(selected.id)}
+                          onClick={() => setDeleteId(draft.selected!.id)}
                         >
                           删除
+                        </Button>
+                        <Button size='sm' variant='outline' disabled={!draft.undo} onClick={draft.undoStructure}>
+                          <Undo2 />
+                          撤销结构操作
                         </Button>
                       </div>
                     </>
                   ) : (
                     <InputsEditor
-                      inputs={document.inputs}
+                      inputs={draft.displayInputs}
                       disabled={disabled}
-                      onChange={(inputs) => setDocument({ ...document, inputs })}
+                      onChange={draft.updateInputs}
                     />
                   )}
-                  {!selected ? (
-                    <DiagnosticList diagnostics={compile?.diagnostics ?? []} />
+                  {!draft.selected ? (
+                    <DiagnosticList
+                      diagnostics={compile?.diagnostics ?? []}
+                      onSelect={(item) => {
+                        if (item.stepId) draft.setSelectedId(item.stepId)
+                        queueMicrotask(() => focusStudioField(item))
+                      }}
+                    />
                   ) : (
                     <button
                       type='button'
                       className='text-small text-link hover:underline'
-                      onClick={() => setSelectedId(null)}
+                      onClick={() => draft.setSelectedId(null)}
                     >
                       查看场景输入与全局诊断
                     </button>
@@ -510,6 +689,14 @@ export function ScenarioDetailPage() {
                 </div>
               </section>
             </div>
+            {runId ? (
+              <TrialPanel
+                runId={runId}
+                scenarioId={scenarioId}
+                selectedDraftStepId={draft.selected?.id ?? null}
+                onSelectDraftStep={draft.setSelectedId}
+              />
+            ) : null}
           </>
         )}
       </Main>
@@ -517,7 +704,11 @@ export function ScenarioDetailPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除这一步？</AlertDialogTitle>
-            <AlertDialogDescription>删除后需要保存才会写入草稿。引用它的后续步骤可能会变成前向引用。</AlertDialogDescription>
+            <AlertDialogDescription>
+              {consumers.length > 0
+                ? `后续 ${consumers.map((item) => item.name).join('、')} 引用了它的输出。删除后保留这些失效引用，不会改成字面量。`
+                : '删除后需要保存才会写入草稿。没有后续步骤引用这个输出。'}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
@@ -525,13 +716,51 @@ export function ScenarioDetailPage() {
               onClick={() => {
                 if (!document || !deleteId) return
                 const steps = document.steps.filter((step) => step.id !== deleteId)
-                setDocument({ ...document, steps })
-                setSelectedId(steps[Math.max(0, selectedIndex - 1)]?.id ?? null)
+                const nextSelected = steps[Math.max(0, draft.selectedIndex - 1)]?.id ?? null
+                draft.applyStructure({ ...document, steps }, nextSelected)
                 setDeleteId(null)
               }}
             >
               删除
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={Boolean(typeChange)} onOpenChange={(open) => !open && setTypeChange(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>更换步骤类型？</AlertDialogTitle>
+            <AlertDialogDescription>
+              会重置专有输入和输出，但保留步骤 ID 和名称。不会把 AI 意图转成确定性动作。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => typeChange && changeType(typeChange)}>更换类型</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={reloadOpen} onOpenChange={setReloadOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>放弃本地修改并重载？</AlertDialogTitle>
+            <AlertDialogDescription>确认后才会用服务端草稿覆盖当前编辑，没有强制覆盖入口。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>继续编辑</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmReload}>确认重载</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={leaveOpen} onOpenChange={setLeaveOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>离开当前场景？</AlertDialogTitle>
+            <AlertDialogDescription>未保存的修改或尚未合法的字段会丢失。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>留在本页</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void navigate({ to: '/scenarios' })}>离开</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -541,8 +770,10 @@ export function ScenarioDetailPage() {
           onOpenChange={setTrialOpen}
           scenarioId={scenario.id}
           targetId={scenario.targetId}
-          revision={scenario.draft?.revision ?? 1}
+          revision={draft.baseline?.revision ?? 1}
           inputs={document?.inputs ?? []}
+          onCreated={attachRun}
+          onConflict={markConflict}
         />
       ) : null}
       {scenario && runOpen ? (
@@ -558,22 +789,31 @@ export function ScenarioDetailPage() {
   )
 }
 
-function DiagnosticList({ diagnostics }: { diagnostics: CompileDiagnostic[] }) {
+function DiagnosticList({
+  diagnostics,
+  onSelect,
+}: {
+  diagnostics: CompileDiagnostic[]
+  onSelect: (item: CompileDiagnostic) => void
+}) {
   if (diagnostics.length === 0) {
     return <p className='text-small text-muted-foreground'>当前没有编译诊断。</p>
   }
   return (
     <ul className='space-y-2' aria-label='编译诊断'>
       {diagnostics.map((item) => (
-        <li
-          key={`${item.code}-${item.stepId ?? item.inputKey ?? 'global'}-${item.message}`}
-          className={
-            item.severity === 'error'
-              ? 'rounded-md bg-status-error-background p-3 text-small text-status-error-foreground'
-              : 'rounded-md bg-status-warning-background p-3 text-small text-status-warning-foreground'
-          }
-        >
-          {item.message}
+        <li key={`${item.code}-${item.stepId ?? item.inputKey ?? 'global'}-${item.message}`}>
+          <button
+            type='button'
+            className={
+              item.severity === 'error'
+                ? 'w-full rounded-md bg-status-error-background p-3 text-left text-small text-status-error-foreground'
+                : 'w-full rounded-md bg-status-warning-background p-3 text-left text-small text-status-warning-foreground'
+            }
+            onClick={() => onSelect(item)}
+          >
+            {item.message}
+          </button>
         </li>
       ))}
     </ul>

@@ -1,8 +1,9 @@
 import { z } from 'zod'
+import { aiExecutionConfigSchema } from './ai-runtime.js'
 import { evidencePolicySchema } from './evidence-policy.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
-import { contextKeySchema, executionPolicySchema, stepSchema } from './step.js'
+import { contextKeySchema, executionPolicySchema, hasAiSteps, stepSchema } from './step.js'
 import {
   entityIdSchema,
   jsonValueSchema,
@@ -153,6 +154,16 @@ export const runSnapshotSchema = z
      */
     evidencePolicy: evidencePolicySchema.optional(),
     executorVersions: z.record(z.string().min(1), z.string().min(1).max(64)).optional(),
+    /**
+     * 冻结的 Target 页面源。新 Run 必写；存量快照缺字段时回落实时查询。
+     */
+    allowedOrigins: z.array(z.string().min(1).max(256)).max(16).optional(),
+    loginOrigin: z.string().min(1).max(256).optional(),
+    loginPath: z.string().max(2048).optional(),
+    /**
+     * 冻结的浏览器 AI 执行配置。含 AI Step 时必须存在；确定性历史快照可缺省。
+     */
+    aiExecution: aiExecutionConfigSchema.optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),
   })
@@ -162,6 +173,13 @@ export const runSnapshotSchema = z
         code: 'custom',
         path: ['targetAccountId'],
         message: '有 secretRef 时必须同时给出 targetAccountId',
+      })
+    }
+    if (hasAiSteps(snapshot.steps) && !snapshot.aiExecution) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['aiExecution'],
+        message: '含 AI 步骤的运行必须冻结 AI 执行配置',
       })
     }
 

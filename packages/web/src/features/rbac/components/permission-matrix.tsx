@@ -17,6 +17,7 @@ const RESOURCE_LABELS_ZH: Record<PermissionResource, string> = {
   target: '目标系统',
   settings: '设置',
   audit: '审计',
+  ai: '浏览器仿真 AI',
 }
 
 const PERMISSION_LABELS_ZH: Record<PermissionCode, string> = {
@@ -40,7 +41,9 @@ const PERMISSION_LABELS_ZH: Record<PermissionCode, string> = {
   'target:delete': '删除目标系统',
   'settings:read': '查看设置',
   'settings:write': '更新设置',
-  'audit:read': '查看审计',
+  'audit:read': '查看操作记录',
+  'audit:login': '查看登录记录',
+  'ai:execute': '执行浏览器仿真 AI 步骤',
 }
 
 type PermissionMatrixProps = {

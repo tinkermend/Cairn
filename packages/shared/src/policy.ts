@@ -12,6 +12,9 @@ export const DEFAULT_EXECUTOR_VERSIONS = {
   fill: '1',
   extract: '1',
   assert: '1',
+  ai_action: '1',
+  ai_extract: '1',
+  ai_assert: '1',
 } as const
 export type DefaultExecutorVersions = typeof DEFAULT_EXECUTOR_VERSIONS
 

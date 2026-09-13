@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { logLevelSchema } from './logging.js'
 import { isAbsoluteFsPath, objectStoreDriverSchema } from './object-store.js'
+import { DEFAULT_STEP_TIMEOUT_MS } from './policy.js'
 import {
   DEFAULT_RUN_LEASE_TTL_SECONDS,
   DEFAULT_RUN_MAX_RECOVERIES,
@@ -31,19 +32,40 @@ function blankAsUnset(source: unknown): unknown {
  * Midscene 不得回落进程 MIDSCENE_*；在线探针用 CAIRN_S06_*，由适配层读入后
  * 经 modelConfig 显式传入，本期不进 schema。
  */
+const serverDbShape = {
+  CAIRN_DB_HOST: z.string().min(1),
+  CAIRN_DB_NAME: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/),
+  CAIRN_DB_USER: z.string().min(1),
+  CAIRN_DB_PASSWORD: z.string().min(1),
+}
 export const dbEnvSchema = z.preprocess(
-  blankAsUnset,
-  z.object({
-    CAIRN_DB_HOST: z.string().min(1),
-    CAIRN_DB_PORT: z.coerce.number().int().positive().default(5432),
-    CAIRN_DB_NAME: z.string().min(1),
-    CAIRN_DB_USER: z.string().min(1),
-    CAIRN_DB_PASSWORD: z.string().min(1),
-    CAIRN_DB_SCHEMA: z.string().min(1).default('cairn'),
-  }),
+  (raw) => {
+    const source = blankAsUnset(raw)
+    return source && typeof source === 'object'
+      ? { CAIRN_DB_DRIVER: 'postgres', ...source }
+      : source
+  },
+  z.discriminatedUnion('CAIRN_DB_DRIVER', [
+    z.object({
+      ...serverDbShape,
+      CAIRN_DB_DRIVER: z.literal('postgres').default('postgres'),
+      CAIRN_DB_PORT: z.coerce.number().int().min(1).max(65535).default(5432),
+      CAIRN_DB_SCHEMA: z.string().regex(/^[a-z_][a-z0-9_]*$/).default('cairn'),
+    }),
+    z.object({
+      ...serverDbShape,
+      CAIRN_DB_DRIVER: z.literal('mysql'),
+      CAIRN_DB_PORT: z.coerce.number().int().min(1).max(65535).default(3306),
+    }),
+    z.object({
+      CAIRN_DB_DRIVER: z.literal('sqlite'),
+      CAIRN_DB_FILE: z.string().min(1).refine((v) => v !== ':memory:', '须使用本机数据库文件'),
+    }),
+  ]),
 )
 
 export type DbEnv = z.infer<typeof dbEnvSchema>
+export type PostgresDbEnv = Extract<DbEnv, { CAIRN_DB_DRIVER: 'postgres' }>
 
 /**
  * 开发默认值。它们让本地与测试不必先配一屏环境变量，代价是
@@ -244,6 +266,114 @@ const browserSessionEnvShape = {
     .default(300),
 }
 
+export const DEFAULT_BROWSER_AI_REQUEST_TIMEOUT_MS = 15_000
+export const DEFAULT_BROWSER_AI_HANG_WAIT_MS = 5_000
+export const DEFAULT_BROWSER_AI_STEP_MAX_CALLS = 20
+export const DEFAULT_BROWSER_AI_MAX_OUTPUT_TOKENS = 2048
+
+const browserAiEnvShape = {
+  CAIRN_BROWSER_AI_ENABLED: boolFromEnv(false),
+  CAIRN_BROWSER_AI_BASE_URL: z.string().url().max(2048).optional(),
+  CAIRN_BROWSER_AI_MODEL: z.string().min(1).max(256).optional(),
+  CAIRN_BROWSER_AI_MODEL_FAMILY: z.string().min(1).max(64).optional(),
+  CAIRN_BROWSER_AI_API_KEY: z.string().min(1).optional(),
+  CAIRN_BROWSER_AI_API_KEY_SECRET_ID: z.string().min(1).max(128).optional(),
+  CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(300_000)
+    .default(DEFAULT_BROWSER_AI_REQUEST_TIMEOUT_MS),
+  CAIRN_BROWSER_AI_HANG_WAIT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(60_000)
+    .default(DEFAULT_BROWSER_AI_HANG_WAIT_MS),
+  CAIRN_BROWSER_AI_STEP_MAX_CALLS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(200)
+    .default(DEFAULT_BROWSER_AI_STEP_MAX_CALLS),
+  CAIRN_BROWSER_AI_MAX_OUTPUT_TOKENS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(32_768)
+    .default(DEFAULT_BROWSER_AI_MAX_OUTPUT_TOKENS),
+}
+
+function refineBrowserAiEnv(
+  env: {
+    CAIRN_ENV: (typeof CAIRN_ENVS)[number]
+    CAIRN_BROWSER_AI_ENABLED: boolean
+    CAIRN_BROWSER_AI_BASE_URL?: string
+    CAIRN_BROWSER_AI_MODEL?: string
+    CAIRN_BROWSER_AI_MODEL_FAMILY?: string
+    CAIRN_BROWSER_AI_API_KEY?: string
+    CAIRN_BROWSER_AI_API_KEY_SECRET_ID?: string
+    CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS: number
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (!env.CAIRN_BROWSER_AI_ENABLED) return
+  if (!env.CAIRN_BROWSER_AI_BASE_URL) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_BROWSER_AI_BASE_URL'],
+      message: '启用浏览器仿真 AI 时必须配置服务地址',
+    })
+  }
+  if (!env.CAIRN_BROWSER_AI_MODEL) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_BROWSER_AI_MODEL'],
+      message: '启用浏览器仿真 AI 时必须配置模型名',
+    })
+  }
+  if (!env.CAIRN_BROWSER_AI_MODEL_FAMILY) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_BROWSER_AI_MODEL_FAMILY'],
+      message: '启用浏览器仿真 AI 时必须配置模型族',
+    })
+  }
+  if (env.CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS >= DEFAULT_STEP_TIMEOUT_MS) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS'],
+      message: `须小于默认步骤超时 ${DEFAULT_STEP_TIMEOUT_MS}ms`,
+    })
+  }
+  const hasSecret = Boolean(env.CAIRN_BROWSER_AI_API_KEY_SECRET_ID)
+  const hasKey = Boolean(env.CAIRN_BROWSER_AI_API_KEY)
+  if (env.CAIRN_ENV !== 'development') {
+    if (hasKey) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CAIRN_BROWSER_AI_API_KEY'],
+        message: '非 development 环境不得直填模型密钥，必须使用 Secret 引用',
+      })
+    }
+    if (!hasSecret) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CAIRN_BROWSER_AI_API_KEY_SECRET_ID'],
+        message: '启用浏览器仿真 AI 时必须配置 Secret 引用',
+      })
+    }
+    return
+  }
+  if (!hasSecret && !hasKey) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_BROWSER_AI_API_KEY'],
+      message: '启用浏览器仿真 AI 时须提供开发密钥或 Secret 引用',
+    })
+  }
+}
+
 /**
  * 控制面进程配置。
  *
@@ -279,6 +409,11 @@ export const apiEnvSchema = z.preprocess(
         ),
       CAIRN_JWT_SECRET: z.string().min(16).default(DEV_JWT_SECRET),
       CAIRN_JWT_EXPIRES_IN: z.string().min(1).default('12h'),
+      /**
+       * 信任的反向代理跳数。0（默认）只用套接字对端地址，忽略
+       * X-Forwarded-For。反代后的部署按可信跳数填写。
+       */
+      CAIRN_TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(9).default(0),
       CAIRN_BOOTSTRAP_ADMIN_EMAIL: z.string().trim().min(1).max(64).default(DEV_ADMIN_ACCOUNT),
       CAIRN_BOOTSTRAP_ADMIN_PASSWORD: z.string().min(8).default(DEV_ADMIN_PASSWORD),
       CAIRN_BOOTSTRAP_ADMIN_NAME: z.string().min(1).default('Administrator'),
@@ -299,6 +434,7 @@ export const apiEnvSchema = z.preprocess(
         }),
       ...runtimeEnvShape,
       ...objectStoreEnvShape,
+      ...browserAiEnvShape,
     })
     .superRefine((env, ctx) => {
       // 「默认值方便本地」与「生产不得裸奔」由同一个 schema 同时成立，
@@ -327,6 +463,7 @@ export const apiEnvSchema = z.preprocess(
         }
       }
       refineObjectStoreEnv(env, ctx)
+      refineBrowserAiEnv(env, ctx)
     })
     .transform((env) => ({
       ...env,
@@ -389,6 +526,7 @@ export const workerEnvSchema = z.preprocess(
       ...runtimeEnvShape,
       ...objectStoreEnvShape,
       ...browserSessionEnvShape,
+      ...browserAiEnvShape,
     })
     .superRefine((env, ctx) => {
       if (env.CAIRN_ENV !== 'development' && env.CAIRN_CREDENTIAL_KEY === DEV_CREDENTIAL_KEY) {
@@ -446,6 +584,7 @@ export const workerEnvSchema = z.preprocess(
           message: 'CAIRN_WORKER_LOST_AFTER_SECONDS 必须大于 CAIRN_RUN_LEASE_TTL_SECONDS',
         })
       }
+      refineBrowserAiEnv(env, ctx)
     })
     .transform((env) => ({
       ...env,

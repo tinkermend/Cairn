@@ -1,7 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
-import { runInputSchema, type ScenarioInputDecl } from '@cairn/shared'
+import { runInputSchema, type RunDetailDto, type ScenarioInputDecl } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { trialScenario } from '@/lib/scenarios-api'
@@ -32,6 +31,13 @@ type TrialDialogProps = {
   targetId: string
   revision: number
   inputs: ScenarioInputDecl[]
+  onCreated: (run: RunDetailDto) => void
+  onConflict: () => void
+}
+
+function newIdempotencyKey(): string {
+  const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}`
+  return `trial-${id}`
 }
 
 export function TrialDialog({
@@ -41,8 +47,9 @@ export function TrialDialog({
   targetId,
   revision,
   inputs,
+  onCreated,
+  onConflict,
 }: TrialDialogProps) {
-  const navigate = useNavigate()
   const accounts = useQuery({
     queryKey: ['target-accounts', targetId],
     queryFn: () => fetchTargetAccounts(targetId),
@@ -51,6 +58,12 @@ export function TrialDialog({
   const [targetAccountId, setTargetAccountId] = useState('')
   const [values, setValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
+  const fingerprint = JSON.stringify({ revision, targetAccountId, values })
+  const keyRef = useRef<string | undefined>(undefined)
+
+  useEffect(() => {
+    keyRef.current = undefined
+  }, [fingerprint])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -58,7 +71,7 @@ export function TrialDialog({
         <DialogHeader>
           <DialogTitle>试跑当前草稿</DialogTitle>
           <DialogDescription>
-            从第一步开始执行已保存的草稿。进度在运行详情中查看，需要手动刷新。本次试跑不会改草稿。
+            从第一步执行已保存的草稿。结果留在本页，进度需手动刷新。本次试跑不会改草稿。
           </DialogDescription>
         </DialogHeader>
         <div className='space-y-4'>
@@ -103,18 +116,24 @@ export function TrialDialog({
                 toast.error(parsed.error.issues[0]?.message ?? '试跑输入不合法')
                 return
               }
+              keyRef.current ??= newIdempotencyKey()
               setSaving(true)
               void trialScenario(scenarioId, {
                 revision,
                 targetAccountId: targetAccountId || undefined,
                 input: parsed.data,
+                idempotencyKey: keyRef.current,
               })
                 .then((detail) => {
                   toast.success('试跑已创建')
                   onOpenChange(false)
-                  void navigate({ to: '/runs/$runId', params: { runId: detail.id } })
+                  onCreated(detail)
                 })
                 .catch((error) => {
+                  if (error instanceof ApiRequestError && error.payload.code === 'SCENARIO_DRAFT_CONFLICT') {
+                    onConflict()
+                    return
+                  }
                   toast.error(error instanceof ApiRequestError ? error.message : '试跑失败')
                 })
                 .finally(() => setSaving(false))

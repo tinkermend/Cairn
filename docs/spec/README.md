@@ -2,6 +2,7 @@
 
 | 方案 | 状态 | 原型 |
 | --- | --- | --- |
+| [D1：顺序编排与 AI 步骤编辑增强](2026-09-13-sequence-studio-foundation.md) | 本线已落地（2026-09-13）：ST02 / ST03 根键与 fromField / ST05；消费已有 shared 契约，未另造生产 DTO。ST04 已挂载现有 AI 表单与证据组件，步骤库仍受能力闸门约束。本机库已对齐到 0017，真实 API 验过保存 / OCC / 试跑。ST06 / 真模型 / SSE / Live View 未宣称通过 | 沿用 [Studio 视觉参考](../front_design/2026-09-13-foundation-lab/index.html#studio) |
 | [D0 混编关键未知：受管 Page 适配层探针](2026-09-13-d0-hybrid-probes.md) | 离线 Gate 已记录（2026-09-13）：S06 限制采用（控制面）；S07-lite 已出 SPI；在线 VL 未跑 | [`packages/worker/src/ai/`](../../packages/worker/src/ai/README.md) |
 | [S06 受管 Page 适配层实验记录](2026-09-13-s06-managed-page.md) | 已记录（2026-09-13）：离线限制采用；完整 aiAct 回放 / 在线 VL / 对象 fill.from 关闭 | — |
 | [混合自动化与录制编排：方向复核与浏览器交互边界](2026-09-13-hybrid-authoring-direction-review.md) | 已完成分析（2026-09-13）：商业产品对照、源码复用取舍、Cairn / PulseAI 现状、本地录制与 Live View／受控认证边界；交付调整已合并到唯一工程计划，新增模块待详细方案评审 | — |

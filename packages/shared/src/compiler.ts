@@ -1,5 +1,6 @@
+import { type OutputShape } from './output-schema.js'
 import { FORBIDDEN_CONTEXT_KEYS } from './run.js'
-import { EXECUTABLE_STEP_TYPES, isBrowserStepType, type Step } from './step.js'
+import { EXECUTABLE_STEP_TYPES, stepUsesBrowser, type Step } from './step.js'
 import {
   assertNoForwardFrom,
   ScenarioValidationError,
@@ -9,7 +10,7 @@ import {
   type ScenarioStatus,
 } from './scenario.js'
 
-export const COMPILER_VERSION = 1 as const
+export const COMPILER_VERSION = 2 as const
 
 export const COMPILE_DIAGNOSTIC_CODES = [
   'SCENARIO_EMPTY',
@@ -26,6 +27,9 @@ export const COMPILE_DIAGNOSTIC_CODES = [
   'SCENARIO_EXTRACT_NO_OUTPUT_KEY',
   'SCENARIO_INPUT_UNUSED',
   'SCENARIO_NO_ASSERT',
+  'SCENARIO_FROM_FIELD_MISSING',
+  'SCENARIO_FROM_FIELD_UNKNOWN',
+  'SCENARIO_AI_RETRY_FORBIDDEN',
 ] as const
 export type CompileDiagnosticCode = (typeof COMPILE_DIAGNOSTIC_CODES)[number]
 
@@ -49,9 +53,11 @@ export type CompileResult = {
   diagnostics: CompileDiagnostic[]
 }
 
-function stepFrom(step: Step): string | undefined {
-  if (step.type === 'echo' || step.type === 'fill') return step.input.from
-  return undefined
+function stepFrom(step: Step): { from?: string; fromField?: string } {
+  if (step.type === 'echo' || step.type === 'fill') {
+    return { from: step.input.from, fromField: step.input.fromField }
+  }
+  return {}
 }
 
 function add(
@@ -59,9 +65,35 @@ function add(
   code: CompileDiagnosticCode,
   severity: CompileDiagnostic['severity'],
   message: string,
-  extra?: Pick<CompileDiagnostic, 'stepId' | 'inputKey'>,
+  extra?: Pick<CompileDiagnostic, 'stepId' | 'inputKey' | 'fieldPath'>,
 ): void {
   diagnostics.push({ code, severity, message, ...extra })
+}
+
+export function outputShapeForStep(step: Step): OutputShape {
+  if (step.type === 'ai_extract') {
+    const schema = step.input.outputSchema
+    if (schema.kind === 'scalar') return { kind: 'scalar', type: schema.type }
+    return {
+      kind: 'object',
+      fields: schema.fields.map((field) => ({
+        name: field.name,
+        type: field.type,
+        required: field.required !== false,
+      })),
+    }
+  }
+  if (step.type === 'ai_assert') {
+    return {
+      kind: 'object',
+      fields: [
+        { name: 'passed', type: 'boolean', required: true },
+        { name: 'reason', type: 'string', required: true },
+      ],
+    }
+  }
+  if (step.type === 'extract' || step.type === 'echo') return { kind: 'scalar', type: 'json' }
+  return { kind: 'unknown' }
 }
 
 function locatorSteps(step: Step): Extract<Step, { input: { target?: unknown } }>[] {
@@ -87,6 +119,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
   const declared = new Set(document.inputs.map((input) => input.key))
   const usedInputs = new Set<string>()
   const available = new Set(declared)
+  const outputShapes = new Map<string, OutputShape>()
   const seenInputKeys = new Set<string>()
   const seenStepIds = new Set<string>()
   const seenOutputKeys = new Set<string>()
@@ -126,7 +159,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
       })
     }
 
-    const from = stepFrom(step)
+    const { from, fromField } = stepFrom(step)
     if (from) {
       if (declared.has(from)) usedInputs.add(from)
       if (!available.has(from)) {
@@ -135,15 +168,56 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
           'SCENARIO_UNRESOLVED_REF',
           release ? 'error' : 'warning',
           `步骤「${step.name}」的 from=${from} 不是已声明输入或更早步骤的 outputKey`,
-          { stepId: step.id, inputKey: from },
+          { stepId: step.id, inputKey: from, fieldPath: ['input', 'from'] },
         )
+      } else {
+        const shape = outputShapes.get(from)
+        if (shape?.kind === 'object' && !fromField) {
+          add(
+            diagnostics,
+            'SCENARIO_FROM_FIELD_MISSING',
+            'error',
+            `步骤「${step.name}」的 from=${from} 是对象输出，必须指定 fromField`,
+            { stepId: step.id, inputKey: from, fieldPath: ['input', 'fromField'] },
+          )
+        }
+        if (fromField) {
+          if (shape?.kind === 'object') {
+            if (!shape.fields.some((field) => field.name === fromField)) {
+              add(
+                diagnostics,
+                'SCENARIO_FROM_FIELD_UNKNOWN',
+                'error',
+                `步骤「${step.name}」的 fromField=${fromField} 不在 ${from} 的输出字段中`,
+                { stepId: step.id, inputKey: from, fieldPath: ['input', 'fromField'] },
+              )
+            }
+          } else if (shape && shape.kind !== 'unknown') {
+            add(
+              diagnostics,
+              'SCENARIO_FROM_FIELD_UNKNOWN',
+              'error',
+              `步骤「${step.name}」的 from=${from} 不是对象，不能使用 fromField`,
+              { stepId: step.id, inputKey: from, fieldPath: ['input', 'fromField'] },
+            )
+          }
+        }
       }
     }
-    if (step.outputKey) available.add(step.outputKey)
+    if (step.outputKey) {
+      available.add(step.outputKey)
+      outputShapes.set(step.outputKey, outputShapeForStep(step))
+    }
 
-    if (step.type === 'extract' && !step.outputKey) {
+    if ((step.type === 'extract' || step.type === 'ai_extract') && !step.outputKey) {
       add(diagnostics, 'SCENARIO_EXTRACT_NO_OUTPUT_KEY', 'warning', `提取步骤「${step.name}」没有 outputKey，后续步骤无法引用`, {
         stepId: step.id,
+      })
+    }
+    if (step.type === 'ai_action' && (step.policy?.retryLimit ?? 0) > 0) {
+      add(diagnostics, 'SCENARIO_AI_RETRY_FORBIDDEN', 'error', `步骤「${step.name}」是 AI Action，不允许自动重试`, {
+        stepId: step.id,
+        fieldPath: ['policy', 'retryLimit'],
       })
     }
 
@@ -184,7 +258,10 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
     }
   }
 
-  if (document.steps.some((step) => isBrowserStepType(step.type)) && !document.steps.some((step) => step.type === 'assert')) {
+  if (
+    document.steps.some((step) => stepUsesBrowser(step.type)) &&
+    !document.steps.some((step) => step.type === 'assert' || step.type === 'ai_assert')
+  ) {
     add(diagnostics, 'SCENARIO_NO_ASSERT', 'warning', '含浏览器步骤的场景没有断言')
   }
 

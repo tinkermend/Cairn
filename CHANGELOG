@@ -1,3 +1,5 @@
+2026-09-13--对齐本机 PostgreSQL 至 0017 并修正 MySQL 登录审计 CHECK 与外键冲突，Studio 用真实 API 验完保存、OCC 与试跑
+2026-09-13--落地 D1 顺序编排增强：三层草稿、前序绑定与 fromField、试跑留在 Studio；ST06 / 真模型 / SSE 不在本线验收
 2026-09-13--D0 探针改问适配层：离线验取消/残留/受管 Page，S07 收成 lite SPI；补夹具事件日志、实验记录与平台模型键
 2026-09-12--收尾补洞：对象已 available、证据仍 pending 时 cleanup 只 commit 指针，不标 worker_lost；方案 D3 / §10 与实现对齐
 2026-09-12--复查整改 P6 证据补传与收尾：putObjectEvidence 在字节仍在调用栈时重试、对象已 available 只 commit 证据、reviewRun 与 cleanup 扫描闭环迁出证据轴；空 Trace 落 capture_failed 行，运行列表状态与证据分列

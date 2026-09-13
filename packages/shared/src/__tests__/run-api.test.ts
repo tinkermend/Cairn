@@ -114,6 +114,9 @@ describe('digest payloads', () => {
     expect(payload).not.toHaveProperty('digest')
     expect(payload.targetId).toBe(ids.target)
     expect(canonicalJson(payload)).toContain('"orderId":"SO-1"')
+    expect(canonicalJson(payload)).toBe(
+      '{"executorVersions":{"delay":"1","echo":"1","fail":"1"},"input":{"orderId":"SO-1"},"scenarioId":"00000000-0000-4000-8000-000000000024","scenarioVersionId":"00000000-0000-4000-8000-000000000025","schemaVersion":1,"steps":[{"effectType":"READ_ONLY","id":"00000000-0000-4000-8000-000000000026","input":{"value":{"ok":true}},"name":"回显","outputKey":"echo_1","type":"echo"}],"targetId":"00000000-0000-4000-8000-000000000022"}',
+    )
   })
 
   it('idempotencyDigestPayload 固定字段集合', () => {

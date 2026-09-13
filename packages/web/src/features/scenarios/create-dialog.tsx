@@ -68,7 +68,11 @@ export function ScenarioCreateDialog({
     const body: CreateScenarioBody = {
       targetId,
       name: name.trim(),
-      steps: [{ ...first, name: '打开页面', input: { url: url.trim() } }],
+      steps: [
+        first.type === 'navigate'
+          ? { ...first, name: '打开页面', input: { url: url.trim() } }
+          : first,
+      ],
     }
     setSaving(true)
     setError('')

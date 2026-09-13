@@ -82,6 +82,10 @@ function mockService() {
     trial: vi.fn(async () => ({ detail: { id: 'run-1' }, created: true })),
     remove: vi.fn(async () => undefined),
     versions: vi.fn(async () => ({ items: [] })),
+    capabilities: vi.fn(async () => ({
+      executableStepTypes: ['echo', 'navigate'],
+      unavailableReasons: [{ type: 'ai_action', code: 'AI_DISABLED', message: 'off' }],
+    })),
   }
 }
 
@@ -119,6 +123,12 @@ describe('Scenarios HTTP', () => {
     await adminApp.close()
     await viewerApp.close()
     await writerApp.close()
+  })
+
+  it('能力查询只需 workflow:read，且不把 capabilities 当成场景 id', async () => {
+    await request(viewerApp.getHttpServer()).get('/scenarios/capabilities').expect(200)
+    expect(service.capabilities).toHaveBeenCalled()
+    expect(service.get).not.toHaveBeenCalled()
   })
 
   it('无 workflow:write 不能新建', async () => {

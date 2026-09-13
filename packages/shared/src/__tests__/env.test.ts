@@ -19,11 +19,12 @@ const base = {
 
 describe('dbEnvSchema', () => {
   it('把字符串端口强制为数字', () => {
-    expect(dbEnvSchema.parse({ ...base, CAIRN_DB_PORT: '5432' }).CAIRN_DB_PORT).toBe(5432)
+    expect(dbEnvSchema.parse({ ...base, CAIRN_DB_PORT: '5432' })).toMatchObject({ CAIRN_DB_PORT: 5432 })
   })
 
   it('端口与 schema 有默认值', () => {
     const env = dbEnvSchema.parse(base)
+    if (env.CAIRN_DB_DRIVER !== 'postgres') throw new Error('Default driver must be postgres')
     expect(env.CAIRN_DB_PORT).toBe(5432)
     expect(env.CAIRN_DB_SCHEMA).toBe('cairn')
   })
@@ -45,8 +46,14 @@ describe('apiEnvSchema', () => {
     const env = apiEnvSchema.parse({})
     expect(env.CAIRN_API_PORT).toBe(3030)
     expect(env.CAIRN_CORS_ORIGINS).toEqual(['http://localhost:5173'])
+    expect(env.CAIRN_TRUST_PROXY_HOPS).toBe(0)
     expect(env.CAIRN_ENV).toBe('development')
     expect(env.CAIRN_LOG_LEVEL).toBe('info')
+  })
+
+  it('反代跳数为非负整数，非法值拒绝', () => {
+    expect(apiEnvSchema.parse({ CAIRN_TRUST_PROXY_HOPS: '2' }).CAIRN_TRUST_PROXY_HOPS).toBe(2)
+    expect(() => apiEnvSchema.parse({ CAIRN_TRUST_PROXY_HOPS: '-1' })).toThrow()
   })
 
   it('字符串端口被强制为数字', () => {
@@ -316,6 +323,56 @@ describe('workerEnvSchema', () => {
     expect(result.success).toBe(false)
     expect(result.error?.issues.map((i) => i.path.join('.'))).toContain(
       'CAIRN_WORKER_LOST_AFTER_SECONDS',
+    )
+  })
+
+  it('浏览器 AI 默认关闭，其余项不必填', () => {
+    const env = workerEnvSchema.parse({})
+    expect(env.CAIRN_BROWSER_AI_ENABLED).toBe(false)
+    expect(env.CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS).toBe(15_000)
+    expect(env.CAIRN_BROWSER_AI_HANG_WAIT_MS).toBe(5_000)
+  })
+
+  it('启用浏览器 AI 但缺模型配置时拒绝启动', () => {
+    const result = workerEnvSchema.safeParse({ CAIRN_BROWSER_AI_ENABLED: 'true' })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((issue) => issue.path.join('.'))).toEqual(
+      expect.arrayContaining([
+        'CAIRN_BROWSER_AI_BASE_URL',
+        'CAIRN_BROWSER_AI_MODEL',
+        'CAIRN_BROWSER_AI_MODEL_FAMILY',
+        'CAIRN_BROWSER_AI_API_KEY',
+      ]),
+    )
+  })
+
+  it('development 启用时可直填密钥', () => {
+    const env = workerEnvSchema.parse({
+      CAIRN_BROWSER_AI_ENABLED: 'true',
+      CAIRN_BROWSER_AI_BASE_URL: 'https://ark.example/api/v3',
+      CAIRN_BROWSER_AI_MODEL: 'demo-model',
+      CAIRN_BROWSER_AI_MODEL_FAMILY: 'doubao-seed',
+      CAIRN_BROWSER_AI_API_KEY: 'sk-dev',
+    })
+    expect(env.CAIRN_BROWSER_AI_ENABLED).toBe(true)
+    expect(env.CAIRN_BROWSER_AI_MODEL).toBe('demo-model')
+  })
+
+  it('非 development 不得直填模型密钥', () => {
+    const result = workerEnvSchema.safeParse({
+      CAIRN_ENV: 'production',
+      CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
+      CAIRN_BROWSER_PROFILE_DIR: '/var/cairn/profiles',
+      CAIRN_CREDENTIAL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+      CAIRN_BROWSER_AI_ENABLED: 'true',
+      CAIRN_BROWSER_AI_BASE_URL: 'https://ark.example/api/v3',
+      CAIRN_BROWSER_AI_MODEL: 'demo-model',
+      CAIRN_BROWSER_AI_MODEL_FAMILY: 'doubao-seed',
+      CAIRN_BROWSER_AI_API_KEY: 'sk-prod',
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues.map((issue) => issue.path.join('.'))).toContain(
+      'CAIRN_BROWSER_AI_API_KEY',
     )
   })
 

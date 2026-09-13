@@ -6,6 +6,7 @@ import type {
   ExecutionErrorCategory,
   LocatorBy,
   NumberCompareOp,
+  OutputShape,
   RelativeAnchorScope,
   ScenarioInputDecl,
   Step,
@@ -14,8 +15,8 @@ import type {
 import {
   ASSERT_KINDS,
   EFFECT_TYPES,
-  EXECUTABLE_STEP_TYPES,
   EXECUTION_ERROR_CATEGORIES,
+  isAiStepType,
   LOCATOR_BY,
   MAX_FRAME_DEPTH,
   NUMBER_COMPARE_OPS,
@@ -32,7 +33,9 @@ import {
 } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { EFFECT_TYPE_LABELS, STEP_TYPE_LABELS } from './labels'
-import { createBlankStep, defaultTarget } from './blank-step'
+import { defaultTarget } from './blank-step'
+import { AiStepFields } from './ai-step-fields'
+import { fieldElementId, type BindingOption } from './studio-document'
 
 const BY_LABELS: Record<LocatorBy, string> = {
   role: '角色',
@@ -73,19 +76,32 @@ const ANCHOR_LABELS: Record<RelativeAnchorScope, string> = {
   nearest: '最近',
 }
 
-type BindingOption = { key: string; label: string }
-
 type StepEditorProps = {
   step: Step
   index: number
   bindings: BindingOption[]
+  shapes: Map<string, OutputShape>
+  editableTypes: readonly ExecutableStepType[]
   diagnostics: CompileDiagnostic[]
   disabled?: boolean
   onChange: (step: Step) => void
+  onRequestTypeChange: (type: ExecutableStepType) => void
 }
 
-export function StepEditor({ step, index, bindings, diagnostics, disabled, onChange }: StepEditorProps) {
+export function StepEditor({
+  step,
+  index,
+  bindings,
+  shapes,
+  editableTypes,
+  diagnostics,
+  disabled,
+  onChange,
+  onRequestTypeChange,
+}: StepEditorProps) {
   const own = diagnostics.filter((item) => item.stepId === step.id)
+  const aiLocked = isAiStepType(step.type)
+  const typeOptions = editableTypes.includes(step.type) ? editableTypes : [step.type, ...editableTypes]
 
   function replace(next: Step) {
     onChange(next)
@@ -94,11 +110,12 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
   return (
     <div className='space-y-5'>
       <div className='space-y-2'>
-        <Label htmlFor={`step-name-${step.id}`}>步骤名称</Label>
+        <Label htmlFor={fieldElementId(step.id, ['name'])}>步骤名称</Label>
         <Input
-          id={`step-name-${step.id}`}
+          id={fieldElementId(step.id, ['name'])}
           value={step.name}
           disabled={disabled}
+          aria-invalid={step.name.trim().length === 0}
           onChange={(event) => replace({ ...step, name: event.target.value })}
         />
       </div>
@@ -108,18 +125,15 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
           <Select
             value={step.type}
             disabled={disabled}
-            onValueChange={(value) => {
-              const next = createBlankStep(value as ExecutableStepType)
-              replace({ ...next, id: step.id, name: step.name || next.name })
-            }}
+            onValueChange={(value) => onRequestTypeChange(value as ExecutableStepType)}
           >
             <SelectTrigger className='w-full' aria-label={`步骤 ${index + 1} 类型`}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {EXECUTABLE_STEP_TYPES.map((type) => (
+              {typeOptions.map((type) => (
                 <SelectItem key={type} value={type}>
-                  {STEP_TYPE_LABELS[type]}
+                  {STEP_TYPE_LABELS[type] ?? type}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -129,8 +143,11 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
           <Label>副作用</Label>
           <Select
             value={step.effectType}
-            disabled={disabled}
-            onValueChange={(value) => replace({ ...step, effectType: value as EffectType })}
+            disabled={disabled || aiLocked}
+            onValueChange={(value) => {
+              if (step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert') return
+              replace({ ...step, effectType: value as EffectType })
+            }}
           >
             <SelectTrigger className='w-full' aria-label={`步骤 ${index + 1} 副作用`}>
               <SelectValue />
@@ -143,16 +160,17 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
               ))}
             </SelectContent>
           </Select>
+          {aiLocked ? <p className='text-label text-muted-foreground'>AI 步骤的副作用由类型锁定，不能改成只读来获得重试。</p> : null}
         </div>
       </div>
-      <StepFields step={step} bindings={bindings} disabled={disabled} onChange={replace} />
-      {step.type === 'extract' || step.type === 'echo' ? (
+      <StepFields step={step} bindings={bindings} shapes={shapes} disabled={disabled} onChange={replace} />
+      {step.type === 'extract' || step.type === 'echo' || step.type === 'ai_extract' || step.type === 'ai_assert' ? (
         <div className='space-y-2'>
-          <Label htmlFor={`step-output-${step.id}`}>
-            {step.type === 'extract' ? '输出名称（建议填写）' : '输出名称（可选）'}
+          <Label htmlFor={fieldElementId(step.id, ['outputKey'])}>
+            {step.type === 'extract' || step.type === 'ai_extract' ? '输出名称（建议填写）' : '输出名称（可选）'}
           </Label>
           <Input
-            id={`step-output-${step.id}`}
+            id={fieldElementId(step.id, ['outputKey'])}
             value={step.outputKey ?? ''}
             disabled={disabled}
             onChange={(event) =>
@@ -163,9 +181,9 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
       ) : null}
       <div className='grid gap-3 sm:grid-cols-2'>
         <div className='space-y-2'>
-          <Label htmlFor={`step-timeout-${step.id}`}>超时（毫秒，可选）</Label>
+          <Label htmlFor={fieldElementId(step.id, ['policy', 'timeoutMs'])}>超时（毫秒，可选）</Label>
           <Input
-            id={`step-timeout-${step.id}`}
+            id={fieldElementId(step.id, ['policy', 'timeoutMs'])}
             type='number'
             min={1}
             disabled={disabled}
@@ -183,14 +201,14 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
           />
         </div>
         <div className='space-y-2'>
-          <Label htmlFor={`step-retry-${step.id}`}>重试上限（可选）</Label>
+          <Label htmlFor={fieldElementId(step.id, ['policy', 'retryLimit'])}>重试上限（可选）</Label>
           <Input
-            id={`step-retry-${step.id}`}
+            id={fieldElementId(step.id, ['policy', 'retryLimit'])}
             type='number'
             min={0}
             max={10}
-            disabled={disabled}
-            value={step.policy?.retryLimit ?? ''}
+            disabled={disabled || step.type === 'ai_action'}
+            value={step.type === 'ai_action' ? 0 : (step.policy?.retryLimit ?? '')}
             onChange={(event) => {
               const retryLimit = event.target.value === '' ? undefined : Number(event.target.value)
               replace({
@@ -205,7 +223,12 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
         </div>
       </div>
       {own.length > 0 ? (
-        <ul className='space-y-2' aria-label='该步骤的编译诊断'>
+        <ul
+          id={`studio-step-diagnostics-${step.id}`}
+          tabIndex={-1}
+          className='space-y-2'
+          aria-label='该步骤的编译诊断'
+        >
           {own.map((item) => (
             <li
               key={`${item.code}-${item.message}`}
@@ -219,7 +242,11 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
             </li>
           ))}
         </ul>
-      ) : null}
+      ) : (
+        <div id={`studio-step-diagnostics-${step.id}`} tabIndex={-1} className='sr-only'>
+          该步骤没有编译诊断
+        </div>
+      )}
     </div>
   )
 }
@@ -227,22 +254,28 @@ export function StepEditor({ step, index, bindings, diagnostics, disabled, onCha
 function StepFields({
   step,
   bindings,
+  shapes,
   disabled,
   onChange,
 }: {
   step: Step
   bindings: BindingOption[]
+  shapes: Map<string, OutputShape>
   disabled?: boolean
   onChange: (step: Step) => void
 }) {
+  if (step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert') {
+    return <AiStepFields step={step} disabled={disabled} onChange={onChange} />
+  }
   if (step.type === 'navigate') {
     return (
       <div className='space-y-2'>
-        <Label htmlFor={`step-url-${step.id}`}>页面地址</Label>
+        <Label htmlFor={fieldElementId(step.id, ['input', 'url'])}>页面地址</Label>
         <Input
-          id={`step-url-${step.id}`}
+          id={fieldElementId(step.id, ['input', 'url'])}
           value={step.input.url}
           disabled={disabled}
+          aria-invalid={step.input.url.trim().length === 0}
           onChange={(event) => onChange({ ...step, input: { url: event.target.value } })}
         />
       </div>
@@ -353,21 +386,30 @@ function StepFields({
         <BindingFields
           id={step.id}
           from={from}
+          fromField={step.input.fromField}
           value={typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value)}
           bindings={bindings}
+          shape={from ? shapes.get(from) : undefined}
           disabled={disabled}
-          onBinding={(nextFrom, nextValue) => {
+          onBinding={(nextFrom, nextValue, nextField) => {
             if (step.type === 'echo') {
               onChange({
                 ...step,
-                input: nextFrom ? { from: nextFrom } : { value: nextValue },
+                input: nextFrom
+                  ? { from: nextFrom, fromField: nextField }
+                  : { value: nextValue },
               })
               return
             }
             onChange({
               ...step,
               input: nextFrom
-                ? { target: step.input.target, from: nextFrom, sensitive: step.input.sensitive }
+                ? {
+                    target: step.input.target,
+                    from: nextFrom,
+                    fromField: nextField,
+                    sensitive: step.input.sensitive,
+                  }
                 : { target: step.input.target, value: nextValue, sensitive: step.input.sensitive },
             })
           }}
@@ -468,20 +510,26 @@ function StepFields({
 function BindingFields({
   id,
   from,
+  fromField,
   value,
   bindings,
+  shape,
   disabled,
   onBinding,
 }: {
   id: string
   from: string
+  fromField?: string
   value: string
   bindings: BindingOption[]
+  shape?: OutputShape
   disabled?: boolean
-  onBinding: (from: string, value: string) => void
+  onBinding: (from: string, value: string, fromField?: string) => void
 }) {
   const known = bindings.some((item) => item.key === from)
   const custom = Boolean(from) && !known
+  const objectFields = shape?.kind === 'object' ? shape.fields : []
+  const showFields = Boolean(from) && shape?.kind === 'object'
   return (
     <div className='space-y-3'>
       <div className='grid gap-3 sm:grid-cols-2'>
@@ -496,7 +544,7 @@ function BindingFields({
               else onBinding(next, value)
             }}
           >
-            <SelectTrigger className='w-full' aria-label='引用上下文'>
+            <SelectTrigger id={fieldElementId(id, ['input', 'from'])} className='w-full' aria-label='引用上下文'>
               <SelectValue placeholder='使用字面量' />
             </SelectTrigger>
             <SelectContent>
@@ -509,6 +557,9 @@ function BindingFields({
               <SelectItem value='__custom__'>尚未声明的键</SelectItem>
             </SelectContent>
           </Select>
+          {from && shape?.kind === 'unknown' ? (
+            <p className='text-label text-muted-foreground'>来源没有静态类型，运行时再检查。不提供字段点选。</p>
+          ) : null}
         </div>
         <div className='space-y-2'>
           <Label htmlFor={`step-value-${id}`}>内容</Label>
@@ -520,6 +571,35 @@ function BindingFields({
           />
         </div>
       </div>
+      {showFields ? (
+        <div className='space-y-2'>
+          <Label>输出字段</Label>
+          <Select
+            value={fromField && objectFields.some((field) => field.name === fromField) ? fromField : fromField ? '__stale__' : '__none__'}
+            disabled={disabled}
+            onValueChange={(next) => {
+              if (next === '__none__') onBinding(from, value)
+              else if (next !== '__stale__') onBinding(from, value, next)
+            }}
+          >
+            <SelectTrigger id={fieldElementId(id, ['input', 'fromField'])} className='w-full' aria-label='输出字段'>
+              <SelectValue placeholder='选择字段' />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='__none__'>选择字段</SelectItem>
+              {objectFields.map((field) => (
+                <SelectItem key={field.name} value={field.name}>
+                  {field.name} · {field.type}
+                  {field.required ? ' · 必填' : ''}
+                </SelectItem>
+              ))}
+              {fromField && !objectFields.some((field) => field.name === fromField) ? (
+                <SelectItem value='__stale__'>{fromField}（失效）</SelectItem>
+              ) : null}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
       {custom ? (
         <div className='space-y-2'>
           <Label htmlFor={`step-from-${id}`}>未声明的输入键</Label>
@@ -858,6 +938,7 @@ export function InputsEditor({
         inputs.map((input, index) => (
           <div key={`${input.key}-${index}`} className='grid gap-2 sm:grid-cols-2'>
             <Input
+              id={`studio-input-${input.key}`}
               aria-label={`输入键 ${index + 1}`}
               value={input.key}
               disabled={disabled}

@@ -24,6 +24,8 @@ export const apiErrorSchema = z.object({
       }),
     )
     .optional(),
+  /** 领域错误附加体，例如编译诊断或冲突草稿 */
+  details: z.unknown().optional(),
 })
 
 export type ApiError = z.infer<typeof apiErrorSchema>

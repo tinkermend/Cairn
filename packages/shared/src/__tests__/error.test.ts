@@ -16,6 +16,12 @@ describe('apiErrorSchema', () => {
     expect(apiErrorSchema.parse(base)).toEqual(base)
   })
 
+  it('接受带 details 的领域错误', () => {
+    expect(apiErrorSchema.parse({ ...base, details: { revision: 2 } }).details).toEqual({
+      revision: 2,
+    })
+  })
+
   it('接受带 issues 的校验错误', () => {
     const withIssues = {
       ...base,

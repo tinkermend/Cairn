@@ -1,25 +1,10 @@
-import type {
-  EffectType,
-  ExecutableStepType,
-  RunStatus,
-  ScenarioStatus,
-  StepRunStatus,
-} from '@cairn/shared'
+import type { EffectType, RunStatus, ScenarioStatus, StepRunStatus } from '@cairn/shared'
+
+export { STEP_TYPE_LABELS, stepTypeLabel } from './step-registry'
 
 export const SCENARIO_STATUS_LABELS: Record<ScenarioStatus, string> = {
   active: '已启用',
   disabled: '已停用',
-}
-
-export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
-  echo: '回显',
-  delay: '等待',
-  fail: '失败',
-  navigate: '导航',
-  click: '点击',
-  fill: '填写',
-  extract: '提取',
-  assert: '断言',
 }
 
 export const EFFECT_TYPE_LABELS: Record<EffectType, string> = {

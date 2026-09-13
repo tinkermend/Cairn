@@ -17,6 +17,10 @@ export const RUN_ERROR_CODES = [
   'RUN_NOT_WAITING_FOR_AUTH',
   'EVIDENCE_NOT_FOUND',
   'EVIDENCE_NOT_AVAILABLE',
+  'AI_DISABLED',
+  'AI_CONFIG_INVALID',
+  'AI_EXECUTE_FORBIDDEN',
+  'AI_BUDGET_EXCEEDED',
 ] as const
 export type RunErrorCode = (typeof RUN_ERROR_CODES)[number]
 

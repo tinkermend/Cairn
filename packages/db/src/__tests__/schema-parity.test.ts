@@ -178,11 +178,18 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     expect(rows).toEqual([
       { column_name: 'action', is_nullable: 'NO' },
       { column_name: 'actor_console_account_id', is_nullable: 'YES' },
+      { column_name: 'category', is_nullable: 'NO' },
+      { column_name: 'client_ip', is_nullable: 'YES' },
+      { column_name: 'client_kind', is_nullable: 'YES' },
       { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'failure_reason', is_nullable: 'YES' },
       { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'login_identifier', is_nullable: 'YES' },
+      { column_name: 'outcome', is_nullable: 'YES' },
       { column_name: 'resource', is_nullable: 'NO' },
       { column_name: 'resource_id', is_nullable: 'YES' },
       { column_name: 'summary', is_nullable: 'NO' },
+      { column_name: 'user_agent', is_nullable: 'YES' },
     ])
   })
 
@@ -637,6 +644,8 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       '0013_evidence_status.sql',
       '0014_recording_drafts.sql',
       '0015_scenario_drafts.sql',
+      '0016_audit_login.sql',
+      '0017_ai_execute.sql',
     ])
   })
 })
@@ -751,6 +760,8 @@ describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集�
       '0013_evidence_status.sql',
       '0014_recording_drafts.sql',
       '0015_scenario_drafts.sql',
+      '0016_audit_login.sql',
+      '0017_ai_execute.sql',
     ])
 
     const { rows } = await pool.query<{ status: string; release_reason: string; released_at: Date }>(
@@ -867,7 +878,13 @@ describe.skipIf(!parsed.success)('带存量数据的 0012 → 0013 升级（集�
 
   it('0013 装得上，回填不产生 status 与 missing_reason 矛盾行', async () => {
     const up = await migrate(pool, SCHEMA)
-    expect(up.applied).toEqual(['0013_evidence_status.sql', '0014_recording_drafts.sql', '0015_scenario_drafts.sql'])
+    expect(up.applied).toEqual([
+      '0013_evidence_status.sql',
+      '0014_recording_drafts.sql',
+      '0015_scenario_drafts.sql',
+      '0016_audit_login.sql',
+      '0017_ai_execute.sql',
+    ])
 
     const { rows: runRows } = await pool.query<{ id: string; evidence_status: string }>(
       `SELECT id, evidence_status FROM "${SCHEMA}".runs WHERE id = ANY($1::uuid[])`,

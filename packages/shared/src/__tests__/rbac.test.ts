@@ -1,12 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import {
   ADMIN_ROLE_KEY,
+  AUTHOR_ROLE_KEY,
+  CONSOLE_CAPABILITIES,
   DEFAULT_ACCOUNT_ROLE_KEY,
   PERMISSIONS,
   PERMISSION_CATALOG,
+  PERMISSION_LABELS,
+  RESOURCE_LABELS,
   SYSTEM_ROLE_DEFINITIONS,
   SYSTEM_ROLE_KEYS,
+  canExecuteRun,
+  canTrialRun,
+  previewCapabilities,
   WILDCARD_PERMISSION,
+  AUDIT_ACTION_LABELS,
+  AUDIT_ACTIONS,
+  LOGIN_FAILURE_REASON_LABELS,
+  normalizeLoginIdentifier,
+  operationAuditQuerySchema,
+  loginAuditQuerySchema,
+  loginAuditListResponseSchema,
   accountSchema,
   accountListResponseSchema,
   createAccountBodySchema,
@@ -75,17 +89,126 @@ describe('catalog', () => {
     }
   })
 
-  it('operator 不能管理身份与权限，viewer 只有 read', () => {
+  it('产品角色：执行者能跑含 AI 的正式运行，不能写场景或管身份；只读全是 read', () => {
     expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('account:write')
     expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('role:write')
+    expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('audit:login')
+    expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).toContain('ai:execute')
+    expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('workflow:write')
+    expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('target:write')
+    expect(SYSTEM_ROLE_DEFINITIONS.author.permissions).toContain('workflow:write')
+    expect(SYSTEM_ROLE_DEFINITIONS.author.permissions).toContain('run:execute')
+    expect(SYSTEM_ROLE_DEFINITIONS.author.permissions).not.toContain('session:dispose')
+    expect(SYSTEM_ROLE_DEFINITIONS.author.permissions).not.toContain('account:read')
+    expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions).not.toContain('audit:login')
+    expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions).not.toContain('ai:execute')
     expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions.every((c) => c.endsWith(':read'))).toBe(true)
   })
 
-  it('默认新账号角色是 operator，管理员 key 稳定', () => {
-    expect(DEFAULT_ACCOUNT_ROLE_KEY).toBe('operator')
+  it('admin 有登录记录权限，动作标签覆盖全部审计动作', () => {
+    expect(SYSTEM_ROLE_DEFINITIONS.admin.permissions).toContain('audit:login')
+    expect(SYSTEM_ROLE_DEFINITIONS.admin.permissions).toContain('ai:execute')
+    expect(Object.keys(AUDIT_ACTION_LABELS).sort()).toEqual([...AUDIT_ACTIONS].sort())
+    expect(LOGIN_FAILURE_REASON_LABELS.unknown_account).toBe('账号不存在')
+  })
+
+  it('登录名规范化：去空白并小写', () => {
+    expect(normalizeLoginIdentifier('  Admin ')).toBe('admin')
+  })
+
+  it('审计列表查询拒绝 from ≥ to，空串当作未设', () => {
+    expect(operationAuditQuerySchema.parse({}).limit).toBe(50)
+    expect(operationAuditQuerySchema.parse({ action: '', cursor: '' }).action).toBeUndefined()
+    expect(() =>
+      operationAuditQuerySchema.parse({
+        from: '2026-09-13T00:00:00.000Z',
+        to: '2026-09-13T00:00:00.000Z',
+      }),
+    ).toThrow()
+    expect(loginAuditQuerySchema.parse({ outcome: 'failure', identifier: 'Admin' }).identifier).toBe(
+      'Admin',
+    )
+  })
+
+  it('登录列表面包络可解析', () => {
+    expect(
+      loginAuditListResponseSchema.parse({
+        items: [
+          {
+            id: 'evt-1',
+            loginIdentifier: 'admin',
+            outcome: 'success',
+            failureReason: null,
+            actor: { id: 'acc-1', displayName: '管理员', email: 'admin' },
+            clientIp: '127.0.0.1',
+            userAgent: 'test',
+            clientKind: 'web',
+            createdAt: '2026-09-13T00:00:00.000Z',
+          },
+        ],
+      }).items,
+    ).toHaveLength(1)
+  })
+
+  it('默认新账号角色是 author，四个系统角色 key 稳定', () => {
+    expect(DEFAULT_ACCOUNT_ROLE_KEY).toBe('author')
     expect(ADMIN_ROLE_KEY).toBe('admin')
+    expect(AUTHOR_ROLE_KEY).toBe('author')
+    expect(SYSTEM_ROLE_KEYS).toEqual(['admin', 'author', 'operator', 'viewer'])
     expect(isSystemRoleKey('admin')).toBe(true)
+    expect(isSystemRoleKey('author')).toBe(true)
     expect(isSystemRoleKey('cashier')).toBe(false)
+  })
+
+  it('目录标签是中文产品用语，码仍是 workflow / run', () => {
+    expect(RESOURCE_LABELS.workflow).toBe('场景')
+    expect(RESOURCE_LABELS.ai).toBe('浏览器 AI')
+    expect(PERMISSION_LABELS['workflow:read']).toBe('查看场景')
+    expect(PERMISSION_LABELS['run:execute']).toBe('发起运行')
+    expect(PERMISSION_LABELS['ai:execute']).toBe('执行含 AI 步骤的运行')
+  })
+})
+
+describe('能力地图', () => {
+  it('开跑必须同时具备 execute、读目标和读场景', () => {
+    expect(canExecuteRun(['run:execute'])).toBe(false)
+    expect(canExecuteRun(['run:execute', 'target:read'])).toBe(false)
+    expect(canExecuteRun(['run:execute', 'target:read', 'workflow:read'])).toBe(true)
+    expect(canTrialRun(['workflow:write', 'run:execute'])).toBe(false)
+    expect(canTrialRun(['workflow:write', 'run:execute', 'target:read'])).toBe(true)
+  })
+
+  it('执行者预览只有业务菜单，没有治理；编写者能看见录制', () => {
+    const operator = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.operator.permissions)
+    expect(operator.menus.workbench).toEqual(['首页', '目标系统', '场景', '运行'])
+    expect(operator.menus.governance).toEqual([])
+    expect(operator.menus.other).toEqual(['设置'])
+    expect(operator.actions).toContain('对目标系统发起运行')
+    expect(operator.actions).not.toContain('创建和编辑场景')
+    expect(operator.actions).toContain('执行含 AI 步骤的运行')
+
+    const author = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.author.permissions)
+    expect(author.menus.workbench).toEqual(['首页', '目标系统', '场景', '录制草稿', '运行'])
+    expect(author.menus.governance).toEqual([])
+    expect(author.actions).toContain('在工作区试跑')
+    expect(author.actions).toContain('对目标系统发起运行')
+    expect(author.actions).not.toContain('处置卡死的浏览器会话')
+
+    const viewer = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.viewer.permissions)
+    expect(viewer.menus.workbench).toEqual(['首页', '目标系统', '场景', '运行'])
+    expect(viewer.actions).toEqual([])
+
+    const admin = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.admin.permissions)
+    expect(admin.menus.governance).toEqual(['用户', '角色', '操作记录', '登录记录'])
+  })
+
+  it('能力 id 不重复，菜单 besides 首页都有 allOf', () => {
+    const ids = CONSOLE_CAPABILITIES.map((item) => item.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    for (const item of CONSOLE_CAPABILITIES) {
+      if (item.id === 'menu.home') expect(item.allOf).toEqual([])
+      else expect(item.allOf.length).toBeGreaterThan(0)
+    }
   })
 })
 
@@ -143,7 +266,7 @@ describe('body schemas', () => {
     expect(() => loginBodySchema.parse({ email: '', password: 'cairn-admin' })).toThrow()
   })
 
-  it('创建账号必须带账号和密码，角色可省略（服务端补默认 operator）', () => {
+  it('创建账号必须带账号和密码，角色可省略（服务端补默认 author）', () => {
     expect(
       createAccountBodySchema.parse({
         displayName: '运维甲',

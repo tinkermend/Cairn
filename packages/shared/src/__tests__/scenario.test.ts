@@ -123,6 +123,10 @@ describe('领域码常量', () => {
       'RUN_NOT_WAITING_FOR_AUTH',
       'EVIDENCE_NOT_FOUND',
       'EVIDENCE_NOT_AVAILABLE',
+      'AI_DISABLED',
+      'AI_CONFIG_INVALID',
+      'AI_EXECUTE_FORBIDDEN',
+      'AI_BUDGET_EXCEEDED',
     ])
     expect(TARGET_ERROR_CODES).toEqual(
       expect.arrayContaining([

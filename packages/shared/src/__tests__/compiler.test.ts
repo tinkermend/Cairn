@@ -114,6 +114,80 @@ describe('compileScenarioDocument', () => {
     ])
   })
 
+  it('对象输出未给 fromField 时阻断，字段名必须存在', () => {
+    const extract: Step = {
+      id: ids.a,
+      name: '提取',
+      type: 'ai_extract',
+      effectType: 'READ_ONLY',
+      outputKey: 'order',
+      input: {
+        instruction: '读取订单',
+        outputSchema: { kind: 'object', fields: [{ name: 'orderNo', type: 'string' }] },
+      },
+    }
+    const missing = compileScenarioDocument(
+      document([extract, echo(ids.b, '回填', { from: 'order' })]),
+      { mode: 'release' },
+    )
+    expect(missing.ok).toBe(false)
+    expect(missing.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_FROM_FIELD_MISSING' })]),
+    )
+    const unknown = compileScenarioDocument(
+      document([
+        extract,
+        {
+          id: ids.b,
+          name: '回填',
+          type: 'echo',
+          effectType: 'READ_ONLY',
+          input: { from: 'order', fromField: 'missing' },
+        },
+      ]),
+      { mode: 'release' },
+    )
+    expect(unknown.ok).toBe(false)
+    expect(unknown.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_FROM_FIELD_UNKNOWN' })]),
+    )
+  })
+
+  it('AI Action 禁止自动重试，AI Assert 可充当断言', () => {
+    const retried = compileScenarioDocument(
+      document([
+        {
+          id: ids.a,
+          name: '动作',
+          type: 'ai_action',
+          effectType: 'SIDE_EFFECT',
+          policy: { retryLimit: 1 },
+          input: { instruction: '查询' },
+        },
+      ]),
+      { mode: 'release' },
+    )
+    expect(retried.ok).toBe(false)
+    expect(retried.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_AI_RETRY_FORBIDDEN' })]),
+    )
+    const asserted = compileScenarioDocument(
+      document([
+        navigate(ids.a),
+        {
+          id: ids.b,
+          name: '判断',
+          type: 'ai_assert',
+          effectType: 'READ_ONLY',
+          input: { instruction: '已成功' },
+        },
+      ]),
+      { mode: 'release', target: { exists: true, status: 'active' } },
+    )
+    expect(asserted.ok).toBe(true)
+    expect(asserted.diagnostics.some((item) => item.code === 'SCENARIO_NO_ASSERT')).toBe(false)
+  })
+
   it('仅 CSS 定位、无断言、未使用输入给出 warning', () => {
     const source = document(
       [
@@ -123,14 +197,14 @@ describe('compileScenarioDocument', () => {
           name: '点',
           type: 'click',
           effectType: 'SIDE_EFFECT',
-          input: { target: { candidates: [{ by: 'css', value: '#ok' }] } },
+          input: { target: { framePath: [], candidates: [{ by: 'css', value: '#ok' }] } },
         },
         {
           id: ids.c,
           name: '抽',
           type: 'extract',
           effectType: 'READ_ONLY',
-          input: { target: { candidates: [{ by: 'label', value: '名称' }] }, as: 'text' },
+          input: { target: { framePath: [], candidates: [{ by: 'label', value: '名称' }] }, as: 'text' },
         },
       ],
       [{ key: 'unused', label: '未用' }],

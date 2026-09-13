@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isBrowserStepType, isExecutableStepType, stepSchema } from '../step.js'
+import { isAiStepType, isBrowserStepType, isExecutableStepType, stepSchema, stepUsesBrowser } from '../step.js'
 
 const echoId = '00000000-0000-4000-8000-000000000011'
 const delayId = '00000000-0000-4000-8000-000000000012'
@@ -86,13 +86,93 @@ describe('stepSchema', () => {
     expect(isExecutableStepType('navigate')).toBe(true)
     expect(isBrowserStepType('click')).toBe(true)
     expect(isBrowserStepType('echo')).toBe(false)
+    expect(isAiStepType('ai_action')).toBe(true)
+    expect(stepUsesBrowser('ai_extract')).toBe(true)
+    expect(isExecutableStepType('ai_assert')).toBe(true)
+    expect(
+      stepSchema.parse({
+        id: echoId,
+        name: 'AI 操作',
+        type: 'ai_action',
+        effectType: 'SIDE_EFFECT',
+        input: { instruction: '查询订单' },
+      }),
+    ).toMatchObject({ type: 'ai_action' })
+    expect(() =>
+      stepSchema.parse({
+        id: echoId,
+        name: 'AI 操作',
+        type: 'ai_action',
+        effectType: 'READ_ONLY',
+        input: { instruction: '查询订单' },
+      }),
+    ).toThrow()
     expect(() =>
       stepSchema.parse({
         id: echoId,
         name: 'AI 操作',
         type: 'ai_action',
         effectType: 'SIDE_EFFECT',
-        input: {},
+        policy: { retryLimit: 1 },
+        input: { instruction: '查询订单' },
+      }),
+    ).toThrow()
+  })
+
+  it('接受 AI Extract / Assert，并锁定 effectType', () => {
+    expect(
+      stepSchema.parse({
+        id: echoId,
+        name: '提取',
+        type: 'ai_extract',
+        effectType: 'READ_ONLY',
+        outputKey: 'order',
+        input: {
+          instruction: '读取订单号',
+          outputSchema: { kind: 'object', fields: [{ name: 'orderNo', type: 'string' }] },
+        },
+      }),
+    ).toMatchObject({ type: 'ai_extract' })
+    expect(
+      stepSchema.parse({
+        id: echoId,
+        name: '断言',
+        type: 'ai_assert',
+        effectType: 'READ_ONLY',
+        input: { instruction: '结果页已出现成功提示' },
+      }),
+    ).toMatchObject({ type: 'ai_assert' })
+    expect(() =>
+      stepSchema.parse({
+        id: echoId,
+        name: '提取',
+        type: 'ai_extract',
+        effectType: 'SIDE_EFFECT',
+        input: {
+          instruction: '读取订单号',
+          outputSchema: { kind: 'scalar', type: 'string' },
+        },
+      }),
+    ).toThrow()
+  })
+
+  it('fromField 只能配合 from 使用', () => {
+    expect(
+      stepSchema.parse({
+        id: echoId,
+        name: '再回显',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        input: { from: 'order', fromField: 'orderNo' },
+      }).input,
+    ).toEqual({ from: 'order', fromField: 'orderNo' })
+    expect(() =>
+      stepSchema.parse({
+        id: echoId,
+        name: '非法字段',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        input: { value: 'x', fromField: 'orderNo' },
       }),
     ).toThrow()
   })
