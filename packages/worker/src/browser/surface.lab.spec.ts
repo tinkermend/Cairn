@@ -17,6 +17,7 @@ const LAB_PUBLIC = resolve(__dirname, '../../../../tests/target-surface-lab/publ
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
 }
 
 async function chromiumAvailable(): Promise<boolean> {

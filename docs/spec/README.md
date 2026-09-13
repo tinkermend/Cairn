@@ -2,6 +2,9 @@
 
 | 方案 | 状态 | 原型 |
 | --- | --- | --- |
+| [D0 混编关键未知：受管 Page 适配层探针](2026-09-13-d0-hybrid-probes.md) | 离线 Gate 已记录（2026-09-13）：S06 限制采用（控制面）；S07-lite 已出 SPI；在线 VL 未跑 | [`packages/worker/src/ai/`](../../packages/worker/src/ai/README.md) |
+| [S06 受管 Page 适配层实验记录](2026-09-13-s06-managed-page.md) | 已记录（2026-09-13）：离线限制采用；完整 aiAct 回放 / 在线 VL / 对象 fill.from 关闭 | — |
+| [混合自动化与录制编排：方向复核与浏览器交互边界](2026-09-13-hybrid-authoring-direction-review.md) | 已完成分析（2026-09-13）：商业产品对照、源码复用取舍、Cairn / PulseAI 现状、本地录制与 Live View／受控认证边界；交付调整已合并到唯一工程计划，新增模块待详细方案评审 | — |
 | [平台工程地基收口](2026-09-10-platform-foundation.md) | 已落地（2026-09-10）：HTTP 信封与关联 ID 冻结、凭证脱敏、配置生产硬失败、依赖方向检查 | — |
 | [最小执行契约](2026-09-10-runtime-contracts.md) | 已落地（2026-09-10）：Step / Echo·Delay·Fail / RunSnapshot / 执行错误 / Evidence 元数据 / 事件信封 | — |
 | [目标系统（接入目录）](2026-09-10-target-catalog.md) | 已落地（2026-09-10）：Target / TargetAccount 目录、本地凭据引用；不含会话与登录绑定。联调夹具见 [`tests/target-login-hmi/`](../tests/target-login-hmi/README.md)；外部 L3 清单见 [`docs/targets/`](../targets/README.md) | — |

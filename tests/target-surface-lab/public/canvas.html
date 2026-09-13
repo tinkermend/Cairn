@@ -4,16 +4,24 @@
     <meta charset="utf-8" />
     <title>Canvas</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/lab-events.js"></script>
   </head>
   <body>
     <main>
       <h1>画布</h1>
+      <p>色块没有稳定 role / test-id，规则 Locator 点不中画布内容。</p>
       <canvas id="board" width="200" height="80"></canvas>
+      <p id="result" hidden>单号 <span id="order-no">SO-1001</span></p>
+      <label>回填 <input id="echo" aria-label="回填单号" /></label>
     </main>
     <script>
-      const ctx = document.getElementById('board').getContext('2d')
+      const canvas = document.getElementById('board')
+      const ctx = canvas.getContext('2d')
       ctx.fillStyle = '#2563eb'
       ctx.fillRect(10, 10, 80, 40)
+      canvas.addEventListener('click', () => {
+        document.getElementById('result').hidden = false
+      })
     </script>
   </body>
 </html>

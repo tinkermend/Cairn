@@ -17,7 +17,11 @@ node server.mjs
 | `/popup` | `window.open` |
 | `/icons` | 多行重复 `aria-label`，用行内锚点消歧 |
 | `/shadow` | open / closed Shadow DOM |
-| `/canvas` | Canvas 目标（能力缺口） |
+| `/canvas` | Canvas 目标；点击色块后出现单号（D0 视觉样本） |
+| `/hybrid-missing` | 检索成功但 DOM 无单号（编造检测） |
+| `/csp` | 限制 `script-src` 与 `connect-src`，供 S07-lite |
 | `/missing` | 故意没有目标 |
+
+相关页引入 `/lab-events.js`，事件记在 `window.__labEvents`。
 
 这不是真实企业系统。L2 通过不得写成「已兼容某某业务系统」。

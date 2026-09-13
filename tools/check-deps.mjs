@@ -42,6 +42,10 @@ const ALLOWED_EDGES = {
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'])
 const IGNORED_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.turbo', '.vite'])
 const SPECIFIER_PATTERN = /\b(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g
+const AI_SDK_PATTERN = /(?:midscene|page-agent|@midscene\/|@page-agent\/)/i
+const WORKER_SRC = resolve(root, 'packages/worker/src')
+const ENGINE_SRC = resolve(WORKER_SRC, 'engine')
+const AI_SRC = resolve(WORKER_SRC, 'ai')
 
 function* sourceFiles(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -54,6 +58,56 @@ function* sourceFiles(dir) {
     }
     const dot = entry.name.lastIndexOf('.')
     if (dot > 0 && SOURCE_EXTENSIONS.has(entry.name.slice(dot))) yield full
+  }
+}
+
+function checkWorkerAiIsolation(report) {
+  if (!existsSync(WORKER_SRC)) return
+  for (const file of sourceFiles(WORKER_SRC)) {
+    if (file.startsWith(AI_SRC + sep)) continue
+    const source = readFileSync(file, 'utf8')
+    for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+      if (!AI_SDK_PATTERN.test(specifier)) continue
+      const rel = relative(root, file)
+      if (file.startsWith(ENGINE_SRC + sep)) {
+        report(`Engine 不得引用 Midscene / page-agent：${rel} → ${specifier}`)
+      } else {
+        report(`Worker 生产路径不得引用 Midscene / page-agent（只允许 src/ai/）：${rel} → ${specifier}`)
+      }
+    }
+  }
+}
+
+const FORBIDDEN_AI_DEPS = /^(?:@midscene\/|@page-agent\/|page-agent)/
+
+function checkManifestAiDeps(self, declared, report) {
+  if (self === '@cairn/worker') return
+  for (const dep of Object.keys(declared)) {
+    if (!FORBIDDEN_AI_DEPS.test(dep)) continue
+    report(`${self} 不得声明 ${dep}（仅 @cairn/worker 可依赖 Midscene / page-agent）`)
+  }
+}
+
+const NON_WORKER_SRC_ROOTS = [
+  resolve(root, 'packages/shared/src'),
+  resolve(root, 'packages/api/src'),
+  resolve(root, 'packages/web/src'),
+  resolve(root, 'packages/db/src'),
+  resolve(root, 'packages/secret/src'),
+  resolve(root, 'packages/storage/src'),
+  resolve(root, 'packages/extension'),
+]
+
+function checkOtherPackagesAiIsolation(report) {
+  for (const dir of NON_WORKER_SRC_ROOTS) {
+    if (!existsSync(dir)) continue
+    for (const file of sourceFiles(dir)) {
+      const source = readFileSync(file, 'utf8')
+      for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+        if (!AI_SDK_PATTERN.test(specifier)) continue
+        report(`非 Worker 包不得引用 Midscene / page-agent：${relative(root, file)} → ${specifier}`)
+      }
+    }
   }
 }
 
@@ -134,6 +188,8 @@ for (const packagesDir of PACKAGE_ROOTS) {
     }
 
     checkRelativeEscapes(packageDir, self, (message) => errors.push(message))
+    checkManifestAiDeps(self, declared, (message) => errors.push(message))
+    if (self === '@cairn/worker') checkWorkerAiIsolation((message) => errors.push(message))
 
     for (const dep of SHARED_VERSION_DEPS) {
       const spec = declared[dep]
@@ -145,6 +201,8 @@ for (const packagesDir of PACKAGE_ROOTS) {
     }
   }
 }
+
+checkOtherPackagesAiIsolation((message) => errors.push(message))
 
 for (const dep of SHARED_VERSION_DEPS) {
   const seen = versionsByDep.get(dep)

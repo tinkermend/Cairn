@@ -27,8 +27,9 @@ function blankAsUnset(source: unknown): unknown {
 }
 
 /**
- * 平台自有配置。第三方依赖自带的变量（MIDSCENE_*、DATABASE_URL）
- * 不在此校验——它们由外部库直接读取。
+ * 平台自有配置。第三方依赖自带的变量（DATABASE_URL）不在此校验。
+ * Midscene 不得回落进程 MIDSCENE_*；在线探针用 CAIRN_S06_*，由适配层读入后
+ * 经 modelConfig 显式传入，本期不进 schema。
  */
 export const dbEnvSchema = z.preprocess(
   blankAsUnset,

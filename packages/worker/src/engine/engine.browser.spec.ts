@@ -466,6 +466,37 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     expect(after.status).toBe('FAILED')
   })
 
+  it('fill.from 遇到对象会 JSON.stringify（P9 已知缺口，D0 不修）', async () => {
+    const created = await queue([
+      {
+        id: newId(),
+        name: '对象输出',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        outputKey: 'extracted',
+        input: { value: { orderNo: 'SO-1' } },
+      },
+      {
+        id: newId(),
+        name: '回填',
+        type: 'fill',
+        effectType: 'IDEMPOTENT',
+        input: { target: clickTarget, from: 'extracted' },
+      },
+    ])
+    let fillValue: unknown
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async (_grant, command): Promise<BrowserCommandResult> => {
+        if (command.type === 'fill') fillValue = command.value
+        return { ok: true, output: {} }
+      },
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+    expect(fillValue).toBe(JSON.stringify({ orderNo: 'SO-1' }))
+  })
+
   it('navigate 越出 Target 源时命令带 allowedOrigins，失败不改写成成功', async () => {
     const created = await queue([
       {

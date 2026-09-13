@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'" />
+    <title>CSP</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/lab-events.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>CSP 页</h1>
+      <p id="status">本页拒绝外网脚本。</p>
+      <script src="https://cdn.invalid/page-agent.demo.js"></script>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>缺字段</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/lab-events.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>检索无单号</h1>
+      <button type="button" id="query">查询</button>
+      <p id="result" hidden>查到 0 条，页面没有单号。</p>
+      <label>回填 <input id="echo" aria-label="回填单号" /></label>
+    </main>
+    <script>
+      document.getElementById('query').addEventListener('click', () => {
+        document.getElementById('result').hidden = false
+      })
+    </script>
+  </body>
+</html>
