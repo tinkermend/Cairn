@@ -56,6 +56,12 @@ const viewer: RequestAccount = {
   permissions: ['workflow:read', 'run:read'],
 }
 
+const writer: RequestAccount = {
+  ...admin,
+  id: 'acc-writer',
+  permissions: ['workflow:read', 'workflow:write'],
+}
+
 class StaticAuthGuard implements CanActivate {
   constructor(private readonly account: RequestAccount | null) {}
   canActivate(context: ExecutionContext): boolean {
@@ -71,6 +77,9 @@ function mockService() {
     get: vi.fn(async () => scenario),
     create: vi.fn(async () => scenario),
     update: vi.fn(async () => scenario),
+    saveDraft: vi.fn(async () => scenario),
+    publish: vi.fn(async () => scenario),
+    trial: vi.fn(async () => ({ detail: { id: 'run-1' }, created: true })),
     remove: vi.fn(async () => undefined),
     versions: vi.fn(async () => ({ items: [] })),
   }
@@ -96,10 +105,12 @@ describe('Scenarios HTTP', () => {
   const service = mockService()
   let adminApp: INestApplication
   let viewerApp: INestApplication
+  let writerApp: INestApplication
 
   beforeAll(async () => {
     adminApp = await buildApp(admin, service)
     viewerApp = await buildApp(viewer, service)
+    writerApp = await buildApp(writer, service)
   })
 
   beforeEach(() => vi.clearAllMocks())
@@ -107,6 +118,7 @@ describe('Scenarios HTTP', () => {
   afterAll(async () => {
     await adminApp.close()
     await viewerApp.close()
+    await writerApp.close()
   })
 
   it('无 workflow:write 不能新建', async () => {
@@ -155,5 +167,54 @@ describe('Scenarios HTTP', () => {
     )
     const missing = await request(adminApp.getHttpServer()).get(`/scenarios/${scenario.id}`)
     expect(missing.body.code).toBe('SCENARIO_NOT_FOUND')
+  })
+
+  it('改步骤不再走更新接口', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}`)
+      .send({ steps: scenario.steps })
+      .expect(400)
+    expect(service.update).not.toHaveBeenCalled()
+  })
+
+  it('保存草稿需要 workflow:write', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/draft`)
+      .send({
+        revision: 1,
+        document: { schemaVersion: 1, inputs: [], steps: scenario.steps },
+      })
+      .expect(403)
+    expect(service.saveDraft).not.toHaveBeenCalled()
+  })
+
+  it('试跑需要 workflow:write 且 run:execute', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/trial`)
+      .send({ revision: 1 })
+      .expect(403)
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/trial`)
+      .send({ revision: 1 })
+      .expect(403)
+    expect(service.trial).not.toHaveBeenCalled()
+  })
+
+  it('保存草稿与发布走新入口', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/draft`)
+      .send({
+        revision: 1,
+        document: { schemaVersion: 1, inputs: [], steps: scenario.steps },
+      })
+      .expect(200)
+    await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/publish`)
+      .send({ revision: 1 })
+      .expect(200)
+    await request(adminApp.getHttpServer()).post(`/scenarios/${scenario.id}/trial`).send({ revision: 1 }).expect(201)
+    expect(service.saveDraft).toHaveBeenCalled()
+    expect(service.publish).toHaveBeenCalled()
+    expect(service.trial).toHaveBeenCalled()
   })
 })

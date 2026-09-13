@@ -1,4 +1,4 @@
-export { DomainError, badRequest, conflict, mapPgRestriction, notFound, pgCode, constraintName } from './errors.js'
+export { DomainError, badRequest, conflict, mapRestriction, notFound, pgCode, constraintName } from './errors.js'
 export { computeIdempotencyDigest, computeSnapshotDigest, sha256Hex } from './digest.js'
 export {
   appendScenarioVersion,
@@ -10,12 +10,16 @@ export {
   listScenarioVersions,
   listScenarios,
   loadScenarioVersion,
+  prepareTrialVersion,
+  publishScenarioDraft,
+  saveScenarioDraft,
   updateScenarioMeta,
 } from './scenarios.js'
 export {
   cancelPendingStepRuns,
   countRunsForAccount,
   createRunWithSnapshot,
+  createTrialRunFromDraft,
   failRunAuthTimeout,
   failRunValidation,
   finishAttempt,

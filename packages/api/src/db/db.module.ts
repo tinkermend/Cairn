@@ -1,5 +1,6 @@
-import { Global, Module, type OnApplicationShutdown } from '@nestjs/common'
+import { Global, Inject, Module, type OnApplicationShutdown } from '@nestjs/common'
 import { createDb, type DbHandle } from '@cairn/db'
+import { assertReady } from '@cairn/db/admin'
 import { resolveDbEnv } from '../config/env'
 
 export const DB_HANDLE = Symbol('DB_HANDLE')
@@ -9,15 +10,19 @@ export const DB_HANDLE = Symbol('DB_HANDLE')
   providers: [
     {
       provide: DB_HANDLE,
-      useFactory: (): DbHandle => createDb(resolveDbEnv()),
+      useFactory: async (): Promise<DbHandle> => {
+        const env = resolveDbEnv()
+        const database = createDb(env)
+        try { await assertReady(database, env); return database } catch (error) { await database.close(); throw error }
+      },
     },
   ],
   exports: [DB_HANDLE],
 })
 export class DbModule implements OnApplicationShutdown {
-  constructor() {}
+  constructor(@Inject(DB_HANDLE) private readonly handle: DbHandle) {}
 
   async onApplicationShutdown(): Promise<void> {
-    // 连接池由 DbHandle 自己持有；进程退出时交给 Nest 生命周期收敛
+    await this.handle.close()
   }
 }

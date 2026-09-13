@@ -278,6 +278,52 @@ describe('RunDetailPage', () => {
     )
   })
 
+  it('步骤开始前失败：运行级错误证据在时间线上方', async () => {
+    mocks.fetchRun.mockResolvedValue(
+      runDetail({
+        status: 'FAILED',
+        targetAccountId: null,
+        targetAccountName: null,
+        stepRuns: [
+          {
+            id: '66666666-6666-4666-8666-666666666666',
+            stepId: '77777777-7777-4777-8777-777777777777',
+            name: '打开总览',
+            type: 'navigate',
+            ordinal: 0,
+            status: 'SKIPPED',
+            startedAt: null,
+            finishedAt: '2026-09-11T02:00:02.000Z',
+            attempts: [],
+          },
+        ],
+      }),
+    )
+    mocks.fetchRunEvidence.mockResolvedValue({
+      items: [
+        {
+          schemaVersion: 1,
+          id: '99999999-9999-4999-8999-999999999992',
+          runId: RUN_ID,
+          type: 'error',
+          status: 'available',
+          createdAt: '2026-09-11T02:00:02.000Z',
+          payload: {
+            code: 'SESSION_ACCOUNT_REQUIRED',
+            category: 'VALIDATION',
+            retryable: false,
+            safeMessage: '浏览器步骤未指定目标账号，无法建立会话',
+          },
+        },
+      ],
+    })
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByRole('heading', { name: '运行级证据' })).toBeInTheDocument()
+    await expect.element(screen.getByText('浏览器步骤未指定目标账号，无法建立会话')).toBeInTheDocument()
+    await expect.element(screen.getByText('运行在步骤开始前失败。原因见运行级证据。')).toBeInTheDocument()
+  })
+
   it('缺失原因用橙色而不是红色；证据挂在对应 Attempt 下', async () => {
     mocks.fetchRunEvidence.mockResolvedValue({
       items: [
@@ -297,11 +343,11 @@ describe('RunDetailPage', () => {
     signIn(['run:read', 'run:review'])
     const screen = await renderPage()
     await expect.element(screen.getByText(/Attempt #1/)).toBeInTheDocument()
-    await screen.getByText('截图').click()
-    const reason = screen.getByText(/缺失原因：worker_lost/)
+    const reason = screen.getByText(/缺失原因：执行进程失联，现场字节已不可得/)
     await expect.element(reason).toBeInTheDocument()
     expect(reason.element().className).toContain('text-status-warning-foreground')
     expect(reason.element().className).not.toContain('text-destructive')
+    await expect.element(screen.getByText(/本次采集：截图 失败时/)).toBeInTheDocument()
   })
 
   it('点刷新重新拉取运行与证据', async () => {

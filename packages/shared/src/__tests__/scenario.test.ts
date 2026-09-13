@@ -110,6 +110,9 @@ describe('领域码常量', () => {
       'SCENARIO_HAS_RUNS',
       'SCENARIO_UNRESOLVED_REF',
       'SCENARIO_DISABLED',
+      'SCENARIO_DRAFT_CONFLICT',
+      'SCENARIO_COMPILE_BLOCKED',
+      'SCENARIO_VERSION_NOT_PUBLISHED',
     ])
     expect(RUN_ERROR_CODES).toEqual([
       'RUN_NOT_FOUND',
@@ -122,7 +125,12 @@ describe('领域码常量', () => {
       'EVIDENCE_NOT_AVAILABLE',
     ])
     expect(TARGET_ERROR_CODES).toEqual(
-      expect.arrayContaining(['TARGET_HAS_SCENARIOS', 'TARGET_DISABLED', 'TARGET_ACCOUNT_HAS_RUNS']),
+      expect.arrayContaining([
+        'TARGET_HAS_SCENARIOS',
+        'TARGET_HAS_RECORDINGS',
+        'TARGET_DISABLED',
+        'TARGET_ACCOUNT_HAS_RUNS',
+      ]),
     )
   })
 })
@@ -138,10 +146,15 @@ describe('createScenarioBodySchema / updateScenarioBodySchema', () => {
     expect(parsed.status).toBeUndefined()
   })
 
-  it('更新体必须至少一项，且禁止 targetId', () => {
+  it('更新体必须至少一项，且禁止 targetId 与 steps', () => {
     expect(() => updateScenarioBodySchema.parse({})).toThrow()
     expect(() =>
       updateScenarioBodySchema.parse({ targetId: ids.target, name: 'x' }),
+    ).toThrow()
+    expect(() =>
+      updateScenarioBodySchema.parse({
+        steps: [echo(ids.a, '回显', { input: { value: 1 } })],
+      }),
     ).toThrow()
   })
 })

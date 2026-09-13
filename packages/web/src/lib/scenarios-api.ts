@@ -1,10 +1,20 @@
 import {
   createScenarioBodySchema,
+  publishScenarioBodySchema,
+  runDetailSchema,
+  saveScenarioDraftBodySchema,
   scenarioDetailSchema,
   scenarioListResponseSchema,
+  trialRunBodySchema,
+  updateScenarioBodySchema,
   type CreateScenarioBody,
+  type PublishScenarioBody,
+  type RunDetailDto,
+  type SaveScenarioDraftBody,
   type ScenarioDetailDto,
   type ScenarioListResponse,
+  type TrialRunBody,
+  type UpdateScenarioBody,
 } from '@cairn/shared'
 import { apiFetch } from '@/lib/api-client'
 
@@ -21,5 +31,37 @@ export function createScenario(body: CreateScenarioBody): Promise<ScenarioDetail
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(createScenarioBodySchema.parse(body)),
+  })
+}
+
+export function updateScenario(id: string, body: UpdateScenarioBody): Promise<ScenarioDetailDto> {
+  return apiFetch(`/api/scenarios/${id}`, scenarioDetailSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updateScenarioBodySchema.parse(body)),
+  })
+}
+
+export function saveScenarioDraft(id: string, body: SaveScenarioDraftBody): Promise<ScenarioDetailDto> {
+  return apiFetch(`/api/scenarios/${id}/draft`, scenarioDetailSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(saveScenarioDraftBodySchema.parse(body)),
+  })
+}
+
+export function publishScenario(id: string, body: PublishScenarioBody): Promise<ScenarioDetailDto> {
+  return apiFetch(`/api/scenarios/${id}/publish`, scenarioDetailSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(publishScenarioBodySchema.parse(body)),
+  })
+}
+
+export function trialScenario(id: string, body: TrialRunBody): Promise<RunDetailDto> {
+  return apiFetch(`/api/scenarios/${id}/trial`, runDetailSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(trialRunBodySchema.parse(body)),
   })
 }

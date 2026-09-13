@@ -1,4 +1,4 @@
-import { relations } from 'drizzle-orm'
+import { relations, sql } from 'drizzle-orm'
 import { index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import type {
   AttemptStatus,
@@ -9,7 +9,9 @@ import type {
   RunSnapshot,
   RunStatus,
   ScenarioDefinition,
+  ScenarioDocument,
   ScenarioStatus,
+  ScenarioVersionKind,
   StepRunStatus,
 } from '@cairn/shared'
 import { newId } from '../id.js'
@@ -47,14 +49,41 @@ export const scenarioVersions = cairnSchema.table(
     scenarioId: uuid('scenario_id')
       .notNull()
       .references(() => scenarios.id, { onDelete: 'restrict' }),
-    versionNo: integer('version_no').notNull(),
+    versionNo: integer('version_no'),
+    kind: text('kind', { enum: ['published', 'trial'] })
+      .notNull()
+      .default('published')
+      .$type<ScenarioVersionKind>(),
     definition: jsonb('definition').$type<ScenarioDefinition>().notNull(),
+    compilerVersion: integer('compiler_version').notNull().default(1),
+    sourceDigest: text('source_digest').notNull().default(''),
     createdByConsoleAccountId: uuid('created_by_console_account_id')
       .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('scenario_versions_scenario_no_idx').on(t.scenarioId, t.versionNo)],
+  (t) => [
+    uniqueIndex('scenario_versions_scenario_no_idx').on(t.scenarioId, t.versionNo),
+    uniqueIndex('scenario_versions_trial_digest_idx')
+      .on(t.scenarioId, t.sourceDigest)
+      .where(sql`${t.kind} = 'trial'`),
+  ],
+)
+
+export const scenarioDrafts = cairnSchema.table(
+  'scenario_drafts',
+  {
+    scenarioId: uuid('scenario_id')
+      .primaryKey()
+      .references(() => scenarios.id, { onDelete: 'restrict' }),
+    revision: integer('revision').notNull(),
+    document: jsonb('document').$type<ScenarioDocument>().notNull(),
+    updatedByConsoleAccountId: uuid('updated_by_console_account_id')
+      .notNull()
+      .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('scenario_drafts_updated_at_idx').on(t.updatedAt)],
 )
 
 export const runs = cairnSchema.table(
@@ -161,6 +190,11 @@ export const evidences = cairnSchema.table(
 export const scenariosRelations = relations(scenarios, ({ one, many }) => ({
   target: one(targets, { fields: [scenarios.targetId], references: [targets.id] }),
   versions: many(scenarioVersions),
+  draft: one(scenarioDrafts),
+}))
+
+export const scenarioDraftsRelations = relations(scenarioDrafts, ({ one }) => ({
+  scenario: one(scenarios, { fields: [scenarioDrafts.scenarioId], references: [scenarios.id] }),
 }))
 
 export const scenarioVersionsRelations = relations(scenarioVersions, ({ one }) => ({
@@ -179,6 +213,7 @@ export const stepRunsRelations = relations(stepRuns, ({ one, many }) => ({
 
 export type ScenarioRow = typeof scenarios.$inferSelect
 export type ScenarioVersionRow = typeof scenarioVersions.$inferSelect
+export type ScenarioDraftRow = typeof scenarioDrafts.$inferSelect
 export type RunRow = typeof runs.$inferSelect
 export type StepRunRow = typeof stepRuns.$inferSelect
 export type AttemptRow = typeof attempts.$inferSelect

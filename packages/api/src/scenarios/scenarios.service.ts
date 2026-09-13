@@ -1,15 +1,23 @@
 import { Inject, Injectable } from '@nestjs/common'
 import {
-  appendScenarioVersion,
   createScenarioWithVersion,
+  createTrialRunFromDraft,
   deleteScenario,
   getScenario,
   listScenarioVersions,
   listScenarios,
+  publishScenarioDraft,
+  saveScenarioDraft,
   updateScenarioMeta,
   type DbHandle,
 } from '@cairn/db'
-import type { CreateScenarioBody, UpdateScenarioBody } from '@cairn/shared'
+import type {
+  CreateScenarioBody,
+  PublishScenarioBody,
+  SaveScenarioDraftBody,
+  TrialRunBody,
+  UpdateScenarioBody,
+} from '@cairn/shared'
 import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
 import { rethrowDomain } from '../common/domain-error'
@@ -19,7 +27,7 @@ export class ScenariosService {
   constructor(@Inject(DB_HANDLE) private readonly dbHandle: DbHandle) {}
 
   private get db() {
-    return this.dbHandle.db
+    return this.dbHandle
   }
 
   list() {
@@ -40,6 +48,7 @@ export class ScenariosService {
         targetId: body.targetId,
         name: body.name,
         steps: body.steps,
+        inputs: body.inputs,
         status: body.status,
         actor: { id: actor.id },
       })
@@ -50,17 +59,51 @@ export class ScenariosService {
 
   async update(id: string, body: UpdateScenarioBody, actor: RequestAccount) {
     try {
-      if (body.name !== undefined || body.status !== undefined) {
-        await updateScenarioMeta(this.db, id, {
-          name: body.name,
-          status: body.status,
-          actor: { id: actor.id },
-        })
-      }
-      if (body.steps) {
-        return await appendScenarioVersion(this.db, id, { steps: body.steps, actor: { id: actor.id } })
-      }
-      return await getScenario(this.db, id)
+      return await updateScenarioMeta(this.db, id, {
+        name: body.name,
+        status: body.status,
+        actor: { id: actor.id },
+      })
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async saveDraft(id: string, body: SaveScenarioDraftBody, actor: RequestAccount) {
+    try {
+      return await saveScenarioDraft(this.db, id, {
+        revision: body.revision,
+        document: body.document,
+        actor: { id: actor.id },
+      })
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async publish(id: string, body: PublishScenarioBody, actor: RequestAccount) {
+    try {
+      return await publishScenarioDraft(this.db, id, {
+        revision: body.revision,
+        actor: { id: actor.id },
+      })
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async trial(id: string, body: TrialRunBody, actor: RequestAccount) {
+    try {
+      return await createTrialRunFromDraft(this.db, id, {
+        revision: body.revision,
+        targetAccountId: body.targetAccountId,
+        input: body.input,
+        policy: body.policy,
+        sessionPolicy: body.sessionPolicy,
+        evidencePolicy: body.evidencePolicy,
+        idempotencyKey: body.idempotencyKey,
+        actor: { id: actor.id },
+      })
     } catch (error) {
       rethrowDomain(error)
     }

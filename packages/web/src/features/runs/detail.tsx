@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
-import { isFinishedRunStatus } from '@cairn/shared'
+import { isFinishedRunStatus, resolveEvidencePolicy, type ExecutableStepType } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { cancelRun, fetchRun, fetchRunEvidence, resumeRunAuth, reviewRun } from '@/lib/runs-api'
@@ -16,10 +16,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
+  ATTEMPT_STATUS_LABELS,
+  CAPTURE_MODE_LABELS,
   PLACEMENT_COPY,
   RUN_EVIDENCE_STATUS_LABELS,
   RUN_STATUS_LABELS,
   STEP_RUN_STATUS_LABELS,
+  STEP_TYPE_LABELS,
+  formatDuration,
   runEvidenceStatusTone,
   runStatusTone,
   stepRunStatusTone,
@@ -91,6 +95,11 @@ export function RunDetailPage() {
                 <StatusBadge tone={runEvidenceStatusTone(run.evidenceStatus, run.status)}>
                   {RUN_EVIDENCE_STATUS_LABELS[run.evidenceStatus]}
                 </StatusBadge>
+                {run.scenarioVersionKind === 'trial' ? (
+                  <StatusBadge tone='warning'>试跑</StatusBadge>
+                ) : (
+                  <StatusBadge tone='neutral'>正式</StatusBadge>
+                )}
               </div>
               <p className='mt-3 text-body text-muted-foreground'>
                 场景{' '}
@@ -112,6 +121,15 @@ export function RunDetailPage() {
                 </Link>
                 {run.targetAccountName ? ` · 目标账号 ${run.targetAccountName}` : ''}
               </p>
+              {(() => {
+                const policy = resolveEvidencePolicy(run.snapshot.evidencePolicy)
+                return (
+                  <p className='mt-2 text-label text-muted-foreground'>
+                    本次采集：截图 {CAPTURE_MODE_LABELS[policy.screenshot]} · Trace{' '}
+                    {CAPTURE_MODE_LABELS[policy.trace]}
+                  </p>
+                )
+              })()}
               {run.lease ? (
                 <p className='mt-2 text-label text-muted-foreground'>
                   执行租约 Worker {run.lease.holderWorkerId} · fencing {run.lease.fencingToken}
@@ -213,8 +231,30 @@ export function RunDetailPage() {
               ) : null}
             </section>
 
+            {(() => {
+              const runLevel = (evidenceQuery.data?.items ?? []).filter((item) => !item.attemptId)
+              return runLevel.length > 0 ? (
+                <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
+                  <h2 className='text-section font-semibold'>运行级证据</h2>
+                  <AttemptEvidenceList runId={run.id} items={runLevel} />
+                </section>
+              ) : null
+            })()}
+
             <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
               <h2 className='text-section font-semibold'>步骤时间线</h2>
+              {evidenceQuery.isPending ? (
+                <p className='text-label text-muted-foreground'>证据加载中…</p>
+              ) : evidenceQuery.isError ? (
+                <QueryErrorState title='无法加载证据' onRetry={() => void evidenceQuery.refetch()} />
+              ) : null}
+              {run.status === 'FAILED' && run.stepRuns.every((step) => step.attempts.length === 0) ? (
+                <p className='text-body text-status-warning-foreground'>
+                  {(evidenceQuery.data?.items ?? []).some((item) => !item.attemptId)
+                    ? '运行在步骤开始前失败。原因见运行级证据。'
+                    : '运行在步骤开始前失败，没有留下 Attempt 证据。常见原因是浏览器步骤未指定目标账号，或会话配置不被支持。'}
+                </p>
+              ) : null}
               <ol className='space-y-3'>
                 {run.stepRuns.map((step) => (
                   <li key={step.id} className='rounded-md border border-border-card p-3'>
@@ -226,15 +266,22 @@ export function RunDetailPage() {
                         {STEP_RUN_STATUS_LABELS[step.status]}
                       </StatusBadge>
                     </div>
-                    <p className='mt-1 text-label text-muted-foreground'>{step.type}</p>
+                    <p className='mt-1 text-label text-muted-foreground'>
+                      {step.type in STEP_TYPE_LABELS
+                        ? STEP_TYPE_LABELS[step.type as ExecutableStepType]
+                        : step.type}
+                    </p>
+                    {step.attempts.length === 0 ? (
+                      <p className='mt-2 text-label text-muted-foreground'>尚未开始尝试。</p>
+                    ) : null}
                     {step.attempts.map((attempt) => (
                       <div key={attempt.id} className='mt-2 rounded-sm bg-muted/40 p-2 text-label'>
                         <p>
-                          Attempt #{attempt.attemptNo} · {attempt.status}
+                          Attempt #{attempt.attemptNo} · {ATTEMPT_STATUS_LABELS[attempt.status]}
+                          {formatDuration(attempt.startedAt, attempt.finishedAt)
+                            ? ` · ${formatDuration(attempt.startedAt, attempt.finishedAt)}`
+                            : ''}
                         </p>
-                        {attempt.output !== null ? (
-                          <pre className='mt-1 overflow-x-auto'>{JSON.stringify(attempt.output)}</pre>
-                        ) : null}
                         {attempt.error ? (
                           <p className='mt-1 text-destructive'>
                             {attempt.error.code}: {attempt.error.safeMessage}
@@ -256,15 +303,6 @@ export function RunDetailPage() {
               <pre className='overflow-x-auto text-label'>{JSON.stringify(run.context, null, 2)}</pre>
             </section>
 
-            {(evidenceQuery.data?.items ?? []).some((item) => !item.attemptId) ? (
-              <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
-                <h2 className='text-section font-semibold'>运行级证据</h2>
-                <AttemptEvidenceList
-                  runId={run.id}
-                  items={(evidenceQuery.data?.items ?? []).filter((item) => !item.attemptId)}
-                />
-              </section>
-            ) : null}
           </div>
         )}
       </Main>

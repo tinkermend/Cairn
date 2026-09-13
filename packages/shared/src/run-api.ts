@@ -37,6 +37,17 @@ export const createRunBodySchema = z.strictObject({
 })
 export type CreateRunBody = z.infer<typeof createRunBodySchema>
 
+export const trialRunBodySchema = z.strictObject({
+  revision: z.number().int().min(1),
+  targetAccountId: entityIdSchema.optional(),
+  input: runInputSchema.optional(),
+  policy: executionPolicySchema.optional(),
+  sessionPolicy: sessionPolicyOverrideSchema.optional(),
+  evidencePolicy: evidencePolicySchema.optional(),
+  idempotencyKey: idempotencyKeySchema.optional(),
+})
+export type TrialRunBody = z.infer<typeof trialRunBodySchema>
+
 const instantOrNull = utcInstantSchema.nullable()
 
 export const runListLeaseSchema = z
@@ -89,6 +100,7 @@ export const runSummarySchema = z.object({
   scenarioId: entityIdSchema,
   scenarioName: z.string().min(1).max(128),
   scenarioVersionId: entityIdSchema,
+  scenarioVersionKind: z.enum(['published', 'trial']).optional(),
   createdAt: utcInstantSchema,
   startedAt: instantOrNull,
   finishedAt: instantOrNull,

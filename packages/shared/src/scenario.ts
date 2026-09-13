@@ -1,11 +1,16 @@
 import { z } from 'zod'
+import { FORBIDDEN_CONTEXT_KEYS } from './run.js'
 import { nextCursorSchema } from './rbac.js'
-import { stepSchema, type Step } from './step.js'
+import { contextKeySchema, stepSchema, type Step } from './step.js'
 import { entityIdSchema, RUNTIME_SCHEMA_VERSION, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
 
 export const SCENARIO_STATUSES = ['active', 'disabled'] as const
 export type ScenarioStatus = (typeof SCENARIO_STATUSES)[number]
 export const scenarioStatusSchema = z.enum(SCENARIO_STATUSES)
+
+export const SCENARIO_VERSION_KINDS = ['published', 'trial'] as const
+export type ScenarioVersionKind = (typeof SCENARIO_VERSION_KINDS)[number]
+export const scenarioVersionKindSchema = z.enum(SCENARIO_VERSION_KINDS)
 
 export const SCENARIO_ERROR_CODES = [
   'SCENARIO_NOT_FOUND',
@@ -14,6 +19,9 @@ export const SCENARIO_ERROR_CODES = [
   'SCENARIO_HAS_RUNS',
   'SCENARIO_UNRESOLVED_REF',
   'SCENARIO_DISABLED',
+  'SCENARIO_DRAFT_CONFLICT',
+  'SCENARIO_COMPILE_BLOCKED',
+  'SCENARIO_VERSION_NOT_PUBLISHED',
 ] as const
 export type ScenarioErrorCode = (typeof SCENARIO_ERROR_CODES)[number]
 
@@ -21,15 +29,36 @@ export const MAX_SCENARIO_STEPS = 32
 
 export const scenarioNameSchema = z.string().trim().min(1).max(128)
 
-export const scenarioDefinitionSchema = z
+export const scenarioInputDeclSchema = z.strictObject({
+  key: contextKeySchema.refine(
+    (key) => !(FORBIDDEN_CONTEXT_KEYS as readonly string[]).includes(key),
+    'input 键不得使用对象保留名',
+  ),
+  label: z.string().trim().min(1).max(128),
+})
+export type ScenarioInputDecl = z.infer<typeof scenarioInputDeclSchema>
+
+export const scenarioDocumentSchema = z
   .strictObject({
     schemaVersion: runtimeSchemaVersionSchema,
+    inputs: z.array(scenarioInputDeclSchema).max(64).default([]),
     steps: z.array(stepSchema).min(1).max(MAX_SCENARIO_STEPS),
   })
-  .superRefine((definition, ctx) => {
+  .superRefine((document, ctx) => {
+    const inputKeys = new Set<string>()
+    for (const [index, input] of document.inputs.entries()) {
+      if (inputKeys.has(input.key)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['inputs', index, 'key'],
+          message: '同一场景内 inputs.key 不能重复',
+        })
+      }
+      inputKeys.add(input.key)
+    }
     const stepIds = new Set<string>()
     const outputKeys = new Set<string>()
-    for (const [index, step] of definition.steps.entries()) {
+    for (const [index, step] of document.steps.entries()) {
       if (stepIds.has(step.id)) {
         ctx.addIssue({
           code: 'custom',
@@ -50,7 +79,9 @@ export const scenarioDefinitionSchema = z
       }
     }
   })
-export type ScenarioDefinition = z.infer<typeof scenarioDefinitionSchema>
+export type ScenarioDocument = z.infer<typeof scenarioDocumentSchema>
+export const scenarioDefinitionSchema = scenarioDocumentSchema
+export type ScenarioDefinition = ScenarioDocument
 
 export class ScenarioValidationError extends Error {
   readonly code: ScenarioErrorCode
@@ -116,13 +147,53 @@ export const scenarioSchema = z.object({
   latestVersionId: entityIdSchema,
   latestVersionNo: z.number().int().min(1),
   stepCount: z.number().int().min(1).max(MAX_SCENARIO_STEPS),
+  draftDirty: z.boolean().default(false),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
 })
 export type ScenarioDto = z.infer<typeof scenarioSchema>
 
+export const compileDiagnosticSchema = z.object({
+  code: z.string().min(1).max(64),
+  severity: z.enum(['error', 'warning']),
+  message: z.string().min(1).max(512),
+  stepId: entityIdSchema.optional(),
+  inputKey: contextKeySchema.optional(),
+})
+export type CompileDiagnostic = z.infer<typeof compileDiagnosticSchema>
+
+export const compileResultSchema = z.object({
+  ok: z.boolean(),
+  compilerVersion: z.literal(1),
+  diagnostics: z.array(compileDiagnosticSchema),
+})
+export type CompileResultDto = z.infer<typeof compileResultSchema>
+
+export const scenarioDraftDtoSchema = z.object({
+  revision: z.number().int().min(1),
+  document: scenarioDocumentSchema,
+  updatedAt: utcInstantSchema,
+  updatedBy: z.object({
+    id: entityIdSchema,
+    displayName: z.string().min(1),
+  }),
+})
+export type ScenarioDraftDto = z.infer<typeof scenarioDraftDtoSchema>
+
+export const scenarioPublishedDtoSchema = z.object({
+  versionId: entityIdSchema,
+  versionNo: z.number().int().min(1),
+  definition: scenarioDefinitionSchema,
+  compilerVersion: z.number().int().min(1),
+  createdAt: utcInstantSchema,
+})
+export type ScenarioPublishedDto = z.infer<typeof scenarioPublishedDtoSchema>
+
 export const scenarioDetailSchema = scenarioSchema.extend({
   steps: z.array(stepSchema),
+  published: scenarioPublishedDtoSchema.optional(),
+  draft: scenarioDraftDtoSchema.optional(),
+  compile: compileResultSchema.optional(),
 })
 export type ScenarioDetailDto = z.infer<typeof scenarioDetailSchema>
 
@@ -135,8 +206,10 @@ export type ScenarioListResponse = z.infer<typeof scenarioListResponseSchema>
 export const scenarioVersionSchema = z.object({
   id: entityIdSchema,
   scenarioId: entityIdSchema,
-  versionNo: z.number().int().min(1),
+  versionNo: z.number().int().min(1).nullable(),
+  kind: scenarioVersionKindSchema,
   definition: scenarioDefinitionSchema,
+  compilerVersion: z.number().int().min(1),
   createdAt: utcInstantSchema,
 })
 export type ScenarioVersionDto = z.infer<typeof scenarioVersionSchema>
@@ -151,6 +224,7 @@ export const createScenarioBodySchema = z.strictObject({
   targetId: entityIdSchema,
   name: scenarioNameSchema,
   steps: z.array(stepSchema).min(1).max(MAX_SCENARIO_STEPS),
+  inputs: z.array(scenarioInputDeclSchema).max(64).optional(),
   status: scenarioStatusSchema.optional(),
 })
 export type CreateScenarioBody = z.infer<typeof createScenarioBodySchema>
@@ -158,14 +232,27 @@ export type CreateScenarioBody = z.infer<typeof createScenarioBodySchema>
 export const updateScenarioBodySchema = z
   .strictObject({
     name: scenarioNameSchema.optional(),
-    steps: z.array(stepSchema).min(1).max(MAX_SCENARIO_STEPS).optional(),
     status: scenarioStatusSchema.optional(),
   })
-  .refine((body) => body.name !== undefined || body.steps !== undefined || body.status !== undefined, {
+  .refine((body) => body.name !== undefined || body.status !== undefined, {
     message: '至少提供一个要修改的字段',
   })
 export type UpdateScenarioBody = z.infer<typeof updateScenarioBodySchema>
 
-export function scenarioDefinitionFromSteps(steps: ScenarioDefinition['steps']): ScenarioDefinition {
-  return { schemaVersion: RUNTIME_SCHEMA_VERSION, steps }
+export const saveScenarioDraftBodySchema = z.strictObject({
+  revision: z.number().int().min(1),
+  document: scenarioDocumentSchema,
+})
+export type SaveScenarioDraftBody = z.infer<typeof saveScenarioDraftBodySchema>
+
+export const publishScenarioBodySchema = z.strictObject({
+  revision: z.number().int().min(1),
+})
+export type PublishScenarioBody = z.infer<typeof publishScenarioBodySchema>
+
+export function scenarioDefinitionFromSteps(
+  steps: ScenarioDefinition['steps'],
+  inputs: ScenarioDefinition['inputs'] = [],
+): ScenarioDefinition {
+  return { schemaVersion: RUNTIME_SCHEMA_VERSION, inputs, steps }
 }

@@ -1,8 +1,15 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res } from '@nestjs/common'
+import type { Response } from 'express'
 import {
   createScenarioBodySchema,
+  publishScenarioBodySchema,
+  saveScenarioDraftBodySchema,
+  trialRunBodySchema,
   updateScenarioBodySchema,
   type CreateScenarioBody,
+  type PublishScenarioBody,
+  type SaveScenarioDraftBody,
+  type TrialRunBody,
   type UpdateScenarioBody,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
@@ -45,6 +52,41 @@ export class ScenariosController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.scenarios.update(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/draft')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write')
+  saveDraft(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(saveScenarioDraftBodySchema)) body: SaveScenarioDraftBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.saveDraft(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/publish')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write')
+  publish(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(publishScenarioBodySchema)) body: PublishScenarioBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.publish(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/trial')
+  @RequirePermissions('workflow:write', 'run:execute')
+  async trial(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(trialRunBodySchema)) body: TrialRunBody,
+    @CurrentAccount() actor: RequestAccount,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { detail, created } = await this.scenarios.trial(scenarioId, body, actor)
+    res.status(created ? HttpStatus.CREATED : HttpStatus.OK)
+    return detail
   }
 
   @Post(':scenarioId/delete')

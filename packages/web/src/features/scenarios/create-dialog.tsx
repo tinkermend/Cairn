@@ -1,14 +1,7 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { CreateScenarioBody } from '@cairn/shared'
 import { toast } from 'sonner'
-import {
-  EFFECT_TYPES,
-  FIXTURE_STEP_TYPES,
-  type CreateScenarioBody,
-  type EffectType,
-  type FixtureStepType,
-  type Step,
-} from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import { createScenario } from '@/lib/scenarios-api'
 import { fetchTargets } from '@/lib/targets-api'
@@ -30,72 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { EFFECT_TYPE_LABELS, STEP_TYPE_LABELS } from './labels'
-
-type DraftStep = {
-  key: string
-  name: string
-  type: FixtureStepType
-  effectType: EffectType
-  value: string
-  from: string
-  durationMs: string
-  failMessage: string
-  outputKey: string
-}
-
-function emptyStep(): DraftStep {
-  return {
-    key: crypto.randomUUID(),
-    name: '',
-    type: 'echo',
-    effectType: 'READ_ONLY',
-    value: '',
-    from: '',
-    durationMs: '100',
-    failMessage: '主动失败',
-    outputKey: '',
-  }
-}
-
-function newStepId(): string {
-  return crypto.randomUUID()
-}
-
-function toStep(draft: DraftStep): Step {
-  const id = newStepId()
-  const name = draft.name.trim() || STEP_TYPE_LABELS[draft.type]
-  const outputKey = draft.outputKey.trim() || undefined
-  if (draft.type === 'echo') {
-    const from = draft.from.trim()
-    return {
-      id,
-      name,
-      type: 'echo',
-      effectType: draft.effectType,
-      outputKey,
-      input: from ? { from } : { value: draft.value },
-    }
-  }
-  if (draft.type === 'delay') {
-    return {
-      id,
-      name,
-      type: 'delay',
-      effectType: draft.effectType,
-      outputKey,
-      input: { durationMs: Number(draft.durationMs) || 100 },
-    }
-  }
-  return {
-    id,
-    name,
-    type: 'fail',
-    effectType: draft.effectType,
-    outputKey,
-    input: { message: draft.failMessage.trim() || '主动失败' },
-  }
-}
+import { createBlankStep } from './blank-step'
 
 type ScenarioCreateDialogProps = {
   open: boolean
@@ -103,42 +31,82 @@ type ScenarioCreateDialogProps = {
   onCreated: (id: string) => void
 }
 
-export function ScenarioCreateDialog({ open, onOpenChange, onCreated }: ScenarioCreateDialogProps) {
-  const targets = useQuery({ queryKey: ['targets'], queryFn: fetchTargets, enabled: open })
+export function ScenarioCreateDialog({
+  open,
+  onOpenChange,
+  onCreated,
+}: ScenarioCreateDialogProps) {
+  const queryClient = useQueryClient()
+  const targets = useQuery({
+    queryKey: ['targets'],
+    queryFn: fetchTargets,
+    enabled: open,
+  })
   const [name, setName] = useState('')
   const [targetId, setTargetId] = useState('')
-  const [steps, setSteps] = useState<DraftStep[]>([emptyStep()])
+  const [url, setUrl] = useState('')
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
   const items = targets.data?.items ?? []
 
-  const canSubmit = useMemo(
-    () => name.trim().length > 0 && targetId.length > 0 && steps.length > 0,
-    [name, targetId, steps.length],
-  )
+  const canSubmit =
+    name.trim().length > 0 &&
+    url.trim().length > 0 &&
+    targets.isSuccess &&
+    items.some((item) => item.id === targetId && item.status === 'active')
 
   function reset() {
     setName('')
     setTargetId('')
-    setSteps([emptyStep()])
+    setUrl('')
+    setError('')
+  }
+
+  async function submit() {
+    if (!canSubmit || saving) return
+    const first = createBlankStep('navigate')
+    const body: CreateScenarioBody = {
+      targetId,
+      name: name.trim(),
+      steps: [{ ...first, name: '打开页面', input: { url: url.trim() } }],
+    }
+    setSaving(true)
+    setError('')
+    try {
+      const created = await createScenario(body)
+      await queryClient.invalidateQueries({ queryKey: ['scenarios'] })
+      toast.success('场景已创建')
+      reset()
+      onOpenChange(false)
+      onCreated(created.id)
+    } catch (error) {
+      setError(
+        error instanceof ApiRequestError
+          ? error.message
+          : '创建失败，请检查名称、目标系统和页面地址后重试。'
+      )
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        if (saving) return
         if (!next) reset()
         onOpenChange(next)
       }}
     >
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent className='sm:max-w-lg'>
         <DialogHeader>
           <DialogTitle>新建场景</DialogTitle>
           <DialogDescription>
-            最小可运行定义：绑定一个目标系统，再写下有序的 echo / delay / fail
-            步骤。这不是编排画布。
+            选择目标系统并填写首步要打开的地址。创建后进入顺序编辑，再补充填写、点击、提取和断言。
           </DialogDescription>
         </DialogHeader>
-        <div className='space-y-4'>
+        <fieldset disabled={saving} className='min-w-0 space-y-5'>
           <div className='space-y-2'>
             <Label htmlFor='scenario-name'>名称</Label>
             <Input
@@ -148,175 +116,81 @@ export function ScenarioCreateDialog({ open, onOpenChange, onCreated }: Scenario
             />
           </div>
           <div className='space-y-2'>
-            <Label>目标系统</Label>
-            <Select value={targetId || undefined} onValueChange={setTargetId}>
-              <SelectTrigger className='w-full'>
+            <Label htmlFor='scenario-target'>目标系统</Label>
+            <Select value={targetId} onValueChange={setTargetId}>
+              <SelectTrigger
+                id='scenario-target'
+                className='w-full'
+                disabled={saving || !targets.isSuccess}
+              >
                 <SelectValue placeholder='选择要仿真的目标系统' />
               </SelectTrigger>
               <SelectContent>
                 {items.map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
+                  <SelectItem
+                    key={item.id}
+                    value={item.id}
+                    disabled={item.status === 'disabled'}
+                  >
                     {item.name}
+                    {item.status === 'disabled' ? '（已停用）' : ''}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {targets.isPending ? (
+              <p role='status' className='text-small text-muted-foreground'>
+                正在加载目标系统…
+              </p>
+            ) : targets.isError ? (
+              <p role='alert' className='text-small text-destructive'>
+                无法加载目标系统。
+                <Button
+                  type='button'
+                  variant='link'
+                  size='sm'
+                  onClick={() => void targets.refetch()}
+                >
+                  重试
+                </Button>
+              </p>
+            ) : !items.some((item) => item.status === 'active') ? (
+              <p className='text-small text-muted-foreground'>
+                没有已启用的目标系统，请先登记或启用一个系统。
+              </p>
+            ) : null}
           </div>
-          <div className='space-y-3'>
-            <div className='flex items-center justify-between'>
-              <Label>步骤</Label>
-              <Button type='button' variant='outline' size='sm' onClick={() => setSteps((prev) => [...prev, emptyStep()])}>
-                添加步骤
-              </Button>
-            </div>
-            {steps.map((step, index) => (
-              <div key={step.key} className='space-y-2 rounded-md border border-border-card p-3'>
-                <div className='flex items-center justify-between'>
-                  <p className='text-label text-muted-foreground'>步骤 {index + 1}</p>
-                  {steps.length > 1 ? (
-                    <Button
-                      type='button'
-                      variant='ghost'
-                      size='sm'
-                      onClick={() => setSteps((prev) => prev.filter((item) => item.key !== step.key))}
-                    >
-                      移除
-                    </Button>
-                  ) : null}
-                </div>
-                <Input
-                  placeholder='步骤名称'
-                  value={step.name}
-                  onChange={(event) =>
-                    setSteps((prev) =>
-                      prev.map((item) => (item.key === step.key ? { ...item, name: event.target.value } : item)),
-                    )
-                  }
-                />
-                <div className='grid gap-2 sm:grid-cols-2'>
-                  <Select
-                    value={step.type}
-                    onValueChange={(value) =>
-                      setSteps((prev) =>
-                        prev.map((item) =>
-                          item.key === step.key ? { ...item, type: value as FixtureStepType } : item,
-                        ),
-                      )
-                    }
-                  >
-                    <SelectTrigger className='w-full'>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {FIXTURE_STEP_TYPES.map((type) => (
-                        <SelectItem key={type} value={type}>
-                          {STEP_TYPE_LABELS[type]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={step.effectType}
-                    onValueChange={(value) =>
-                      setSteps((prev) =>
-                        prev.map((item) =>
-                          item.key === step.key ? { ...item, effectType: value as EffectType } : item,
-                        ),
-                      )
-                    }
-                  >
-                    <SelectTrigger className='w-full'>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {EFFECT_TYPES.map((type) => (
-                        <SelectItem key={type} value={type}>
-                          {EFFECT_TYPE_LABELS[type]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {step.type === 'echo' ? (
-                  <div className='grid gap-2 sm:grid-cols-2'>
-                    <Input
-                      placeholder='value'
-                      value={step.value}
-                      onChange={(event) =>
-                        setSteps((prev) =>
-                          prev.map((item) => (item.key === step.key ? { ...item, value: event.target.value, from: '' } : item)),
-                        )
-                      }
-                    />
-                    <Input
-                      placeholder='或 from（context 键）'
-                      value={step.from}
-                      onChange={(event) =>
-                        setSteps((prev) =>
-                          prev.map((item) => (item.key === step.key ? { ...item, from: event.target.value, value: '' } : item)),
-                        )
-                      }
-                    />
-                  </div>
-                ) : null}
-                {step.type === 'delay' ? (
-                  <Input
-                    placeholder='等待毫秒'
-                    value={step.durationMs}
-                    onChange={(event) =>
-                      setSteps((prev) =>
-                        prev.map((item) => (item.key === step.key ? { ...item, durationMs: event.target.value } : item)),
-                      )
-                    }
-                  />
-                ) : null}
-                {step.type === 'fail' ? (
-                  <Input
-                    placeholder='失败说明'
-                    value={step.failMessage}
-                    onChange={(event) =>
-                      setSteps((prev) =>
-                        prev.map((item) => (item.key === step.key ? { ...item, failMessage: event.target.value } : item)),
-                      )
-                    }
-                  />
-                ) : null}
-                <Input
-                  placeholder='可选 outputKey'
-                  value={step.outputKey}
-                  onChange={(event) =>
-                    setSteps((prev) =>
-                      prev.map((item) => (item.key === step.key ? { ...item, outputKey: event.target.value } : item)),
-                    )
-                  }
-                />
-              </div>
-            ))}
+          <div className='space-y-2'>
+            <Label htmlFor='scenario-url'>首步页面地址</Label>
+            <Input
+              id='scenario-url'
+              value={url}
+              placeholder='https://'
+              onChange={(event) => setUrl(event.target.value)}
+            />
           </div>
-        </div>
+        </fieldset>
+        {error ? (
+          <p
+            role='alert'
+            className='rounded-md bg-status-error-background p-3 text-small text-status-error-foreground'
+          >
+            {error}
+          </p>
+        ) : null}
         <DialogFooter>
           <Button
-            disabled={!canSubmit || saving}
+            type='button'
+            variant='outline'
+            disabled={saving}
             onClick={() => {
-              const body: CreateScenarioBody = {
-                targetId,
-                name: name.trim(),
-                steps: steps.map(toStep),
-              }
-              setSaving(true)
-              void createScenario(body)
-                .then((created) => {
-                  toast.success('场景已创建')
-                  reset()
-                  onOpenChange(false)
-                  onCreated(created.id)
-                })
-                .catch((error) => {
-                  toast.error(error instanceof ApiRequestError ? error.message : '创建失败')
-                })
-                .finally(() => setSaving(false))
+              reset()
+              onOpenChange(false)
             }}
           >
+            取消
+          </Button>
+          <Button disabled={!canSubmit} loading={saving} onClick={() => void submit()}>
             创建
           </Button>
         </DialogFooter>

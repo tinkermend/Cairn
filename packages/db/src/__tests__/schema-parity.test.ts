@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
-import { dbEnvSchema } from '@cairn/shared'
+import { postgresEnvSchema as dbEnvSchema } from '../test-entry.js'
 import { migrate } from '../migrate.js'
 
 const envFile = resolve(import.meta.dirname, '../../../../.env')
@@ -51,8 +51,10 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'console_role_permissions',
       'console_roles',
       'evidences',
+      'recording_drafts',
       'run_leases',
       'runs',
+      'scenario_drafts',
       'scenario_versions',
       'scenarios',
       'secrets',
@@ -62,6 +64,32 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'target_accounts',
       'targets',
       'workers',
+    ])
+  })
+
+  it('recording_drafts 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'recording_drafts' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'created_by_console_account_id', is_nullable: 'NO' },
+      { column_name: 'diagnostics', is_nullable: 'NO' },
+      { column_name: 'event_count', is_nullable: 'NO' },
+      { column_name: 'events', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'idempotency_key', is_nullable: 'NO' },
+      { column_name: 'item_count', is_nullable: 'NO' },
+      { column_name: 'items', is_nullable: 'NO' },
+      { column_name: 'name', is_nullable: 'NO' },
+      { column_name: 'payload_digest', is_nullable: 'NO' },
+      { column_name: 'recording_id', is_nullable: 'NO' },
+      { column_name: 'source_version', is_nullable: 'NO' },
+      { column_name: 'target_id', is_nullable: 'NO' },
+      { column_name: 'unresolved_count', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
     ])
   })
 
@@ -237,12 +265,30 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       [TEST_SCHEMA],
     )
     expect(rows).toEqual([
+      { column_name: 'compiler_version', is_nullable: 'NO' },
       { column_name: 'created_at', is_nullable: 'NO' },
       { column_name: 'created_by_console_account_id', is_nullable: 'NO' },
       { column_name: 'definition', is_nullable: 'NO' },
       { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'kind', is_nullable: 'NO' },
       { column_name: 'scenario_id', is_nullable: 'NO' },
-      { column_name: 'version_no', is_nullable: 'NO' },
+      { column_name: 'source_digest', is_nullable: 'NO' },
+      { column_name: 'version_no', is_nullable: 'YES' },
+    ])
+  })
+
+  it('scenario_drafts 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'scenario_drafts' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'document', is_nullable: 'NO' },
+      { column_name: 'revision', is_nullable: 'NO' },
+      { column_name: 'scenario_id', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+      { column_name: 'updated_by_console_account_id', is_nullable: 'NO' },
     ])
   })
 
@@ -589,6 +635,8 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       '0011_run_lease.sql',
       '0012_session_affinity.sql',
       '0013_evidence_status.sql',
+      '0014_recording_drafts.sql',
+      '0015_scenario_drafts.sql',
     ])
   })
 })
@@ -701,6 +749,8 @@ describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集�
       '0011_run_lease.sql',
       '0012_session_affinity.sql',
       '0013_evidence_status.sql',
+      '0014_recording_drafts.sql',
+      '0015_scenario_drafts.sql',
     ])
 
     const { rows } = await pool.query<{ status: string; release_reason: string; released_at: Date }>(
@@ -817,7 +867,7 @@ describe.skipIf(!parsed.success)('带存量数据的 0012 → 0013 升级（集�
 
   it('0013 装得上，回填不产生 status 与 missing_reason 矛盾行', async () => {
     const up = await migrate(pool, SCHEMA)
-    expect(up.applied).toEqual(['0013_evidence_status.sql'])
+    expect(up.applied).toEqual(['0013_evidence_status.sql', '0014_recording_drafts.sql', '0015_scenario_drafts.sql'])
 
     const { rows: runRows } = await pool.query<{ id: string; evidence_status: string }>(
       `SELECT id, evidence_status FROM "${SCHEMA}".runs WHERE id = ANY($1::uuid[])`,
