@@ -19,20 +19,15 @@ import { Route as errors503RouteImport } from './routes/(errors)/503'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
 import { Route as AuthenticatedSettingsRouteRouteImport } from './routes/_authenticated/settings/route'
 import { Route as AuthenticatedAuditIndexRouteImport } from './routes/_authenticated/audit/index'
-import { Route as AuthenticatedAuditLoginsRouteImport } from './routes/_authenticated/audit/logins'
-import { Route as AuthenticatedAuditOperationsRouteImport } from './routes/_authenticated/audit/operations'
 import { Route as AuthenticatedPlatformConfigIndexRouteImport } from './routes/_authenticated/platform-config/index'
-import { Route as AuthenticatedRecordingsIndexRouteImport } from './routes/_authenticated/recordings/index'
 import { Route as AuthenticatedRolesIndexRouteImport } from './routes/_authenticated/roles/index'
 import { Route as AuthenticatedRunsIndexRouteImport } from './routes/_authenticated/runs/index'
 import { Route as AuthenticatedScenariosIndexRouteImport } from './routes/_authenticated/scenarios/index'
-import { Route as AuthenticatedServicesIndexRouteImport } from './routes/_authenticated/services/index'
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
 import { Route as AuthenticatedTargetsIndexRouteImport } from './routes/_authenticated/targets/index'
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
-import { Route as AuthenticatedRecordingsRecordingIdIndexRouteImport } from './routes/_authenticated/recordings/$recordingId/index'
 import { Route as AuthenticatedRunsRunIdIndexRouteImport } from './routes/_authenticated/runs/$runId/index'
 import { Route as AuthenticatedScenariosScenarioIdIndexRouteImport } from './routes/_authenticated/scenarios/$scenarioId/index'
 import { Route as AuthenticatedTargetsTargetIdIndexRouteImport } from './routes/_authenticated/targets/$targetId/index'
@@ -87,28 +82,10 @@ const AuthenticatedAuditIndexRoute = AuthenticatedAuditIndexRouteImport.update({
   path: '/audit/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
-const AuthenticatedAuditLoginsRoute =
-  AuthenticatedAuditLoginsRouteImport.update({
-    id: '/audit/logins',
-    path: '/audit/logins',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
-const AuthenticatedAuditOperationsRoute =
-  AuthenticatedAuditOperationsRouteImport.update({
-    id: '/audit/operations',
-    path: '/audit/operations',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
 const AuthenticatedPlatformConfigIndexRoute =
   AuthenticatedPlatformConfigIndexRouteImport.update({
     id: '/platform-config/',
     path: '/platform-config/',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
-const AuthenticatedRecordingsIndexRoute =
-  AuthenticatedRecordingsIndexRouteImport.update({
-    id: '/recordings/',
-    path: '/recordings/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedRolesIndexRoute = AuthenticatedRolesIndexRouteImport.update({
@@ -125,12 +102,6 @@ const AuthenticatedScenariosIndexRoute =
   AuthenticatedScenariosIndexRouteImport.update({
     id: '/scenarios/',
     path: '/scenarios/',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
-const AuthenticatedServicesIndexRoute =
-  AuthenticatedServicesIndexRouteImport.update({
-    id: '/services/',
-    path: '/services/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedSettingsIndexRoute =
@@ -162,12 +133,6 @@ const AuthenticatedUsersIndexRoute = AuthenticatedUsersIndexRouteImport.update({
   path: '/users/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
-const AuthenticatedRecordingsRecordingIdIndexRoute =
-  AuthenticatedRecordingsRecordingIdIndexRouteImport.update({
-    id: '/recordings/$recordingId/',
-    path: '/recordings/$recordingId/',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
 const AuthenticatedRunsRunIdIndexRoute =
   AuthenticatedRunsRunIdIndexRouteImport.update({
     id: '/runs/$runId/',
@@ -196,21 +161,16 @@ export interface FileRoutesByFullPath {
   '/404': typeof errors404Route
   '/500': typeof errors500Route
   '/503': typeof errors503Route
-  '/audit/logins': typeof AuthenticatedAuditLoginsRoute
-  '/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/audit/': typeof AuthenticatedAuditIndexRoute
   '/platform-config/': typeof AuthenticatedPlatformConfigIndexRoute
-  '/recordings/': typeof AuthenticatedRecordingsIndexRoute
   '/roles/': typeof AuthenticatedRolesIndexRoute
   '/runs/': typeof AuthenticatedRunsIndexRoute
   '/scenarios/': typeof AuthenticatedScenariosIndexRoute
-  '/services/': typeof AuthenticatedServicesIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
   '/targets/': typeof AuthenticatedTargetsIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
-  '/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
   '/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
@@ -223,21 +183,16 @@ export interface FileRoutesByTo {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/': typeof AuthenticatedIndexRoute
-  '/audit/logins': typeof AuthenticatedAuditLoginsRoute
-  '/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/audit': typeof AuthenticatedAuditIndexRoute
   '/platform-config': typeof AuthenticatedPlatformConfigIndexRoute
-  '/recordings': typeof AuthenticatedRecordingsIndexRoute
   '/roles': typeof AuthenticatedRolesIndexRoute
   '/runs': typeof AuthenticatedRunsIndexRoute
   '/scenarios': typeof AuthenticatedScenariosIndexRoute
-  '/services': typeof AuthenticatedServicesIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
   '/targets': typeof AuthenticatedTargetsIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
-  '/recordings/$recordingId': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/runs/$runId': typeof AuthenticatedRunsRunIdIndexRoute
   '/scenarios/$scenarioId': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/targets/$targetId': typeof AuthenticatedTargetsTargetIdIndexRoute
@@ -253,21 +208,16 @@ export interface FileRoutesById {
   '/(errors)/500': typeof errors500Route
   '/(errors)/503': typeof errors503Route
   '/_authenticated/': typeof AuthenticatedIndexRoute
-  '/_authenticated/audit/logins': typeof AuthenticatedAuditLoginsRoute
-  '/_authenticated/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/audit/': typeof AuthenticatedAuditIndexRoute
   '/_authenticated/platform-config/': typeof AuthenticatedPlatformConfigIndexRoute
-  '/_authenticated/recordings/': typeof AuthenticatedRecordingsIndexRoute
   '/_authenticated/roles/': typeof AuthenticatedRolesIndexRoute
   '/_authenticated/runs/': typeof AuthenticatedRunsIndexRoute
   '/_authenticated/scenarios/': typeof AuthenticatedScenariosIndexRoute
-  '/_authenticated/services/': typeof AuthenticatedServicesIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
   '/_authenticated/targets/': typeof AuthenticatedTargetsIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
-  '/_authenticated/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/_authenticated/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
   '/_authenticated/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/_authenticated/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
@@ -283,21 +233,16 @@ export interface FileRouteTypes {
     | '/404'
     | '/500'
     | '/503'
-    | '/audit/logins'
-    | '/audit/operations'
     | '/settings/account'
     | '/settings/appearance'
     | '/audit/'
     | '/platform-config/'
-    | '/recordings/'
     | '/roles/'
     | '/runs/'
     | '/scenarios/'
-    | '/services/'
     | '/settings/'
     | '/targets/'
     | '/users/'
-    | '/recordings/$recordingId/'
     | '/runs/$runId/'
     | '/scenarios/$scenarioId/'
     | '/targets/$targetId/'
@@ -310,21 +255,16 @@ export interface FileRouteTypes {
     | '/500'
     | '/503'
     | '/'
-    | '/audit/logins'
-    | '/audit/operations'
     | '/settings/account'
     | '/settings/appearance'
     | '/audit'
     | '/platform-config'
-    | '/recordings'
     | '/roles'
     | '/runs'
     | '/scenarios'
-    | '/services'
     | '/settings'
     | '/targets'
     | '/users'
-    | '/recordings/$recordingId'
     | '/runs/$runId'
     | '/scenarios/$scenarioId'
     | '/targets/$targetId'
@@ -339,21 +279,16 @@ export interface FileRouteTypes {
     | '/(errors)/500'
     | '/(errors)/503'
     | '/_authenticated/'
-    | '/_authenticated/audit/logins'
-    | '/_authenticated/audit/operations'
     | '/_authenticated/settings/account'
     | '/_authenticated/settings/appearance'
     | '/_authenticated/audit/'
     | '/_authenticated/platform-config/'
-    | '/_authenticated/recordings/'
     | '/_authenticated/roles/'
     | '/_authenticated/runs/'
     | '/_authenticated/scenarios/'
-    | '/_authenticated/services/'
     | '/_authenticated/settings/'
     | '/_authenticated/targets/'
     | '/_authenticated/users/'
-    | '/_authenticated/recordings/$recordingId/'
     | '/_authenticated/runs/$runId/'
     | '/_authenticated/scenarios/$scenarioId/'
     | '/_authenticated/targets/$targetId/'
@@ -441,32 +376,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAuditIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
-    '/_authenticated/audit/logins': {
-      id: '/_authenticated/audit/logins'
-      path: '/audit/logins'
-      fullPath: '/audit/logins'
-      preLoaderRoute: typeof AuthenticatedAuditLoginsRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
-    '/_authenticated/audit/operations': {
-      id: '/_authenticated/audit/operations'
-      path: '/audit/operations'
-      fullPath: '/audit/operations'
-      preLoaderRoute: typeof AuthenticatedAuditOperationsRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
     '/_authenticated/platform-config/': {
       id: '/_authenticated/platform-config/'
       path: '/platform-config'
       fullPath: '/platform-config/'
       preLoaderRoute: typeof AuthenticatedPlatformConfigIndexRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
-    '/_authenticated/recordings/': {
-      id: '/_authenticated/recordings/'
-      path: '/recordings'
-      fullPath: '/recordings/'
-      preLoaderRoute: typeof AuthenticatedRecordingsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/roles/': {
@@ -488,13 +402,6 @@ declare module '@tanstack/react-router' {
       path: '/scenarios'
       fullPath: '/scenarios/'
       preLoaderRoute: typeof AuthenticatedScenariosIndexRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
-    '/_authenticated/services/': {
-      id: '/_authenticated/services/'
-      path: '/services'
-      fullPath: '/services/'
-      preLoaderRoute: typeof AuthenticatedServicesIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/settings/': {
@@ -530,13 +437,6 @@ declare module '@tanstack/react-router' {
       path: '/users'
       fullPath: '/users/'
       preLoaderRoute: typeof AuthenticatedUsersIndexRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
-    '/_authenticated/recordings/$recordingId/': {
-      id: '/_authenticated/recordings/$recordingId/'
-      path: '/recordings/$recordingId'
-      fullPath: '/recordings/$recordingId/'
-      preLoaderRoute: typeof AuthenticatedRecordingsRecordingIdIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/runs/$runId/': {
@@ -584,18 +484,13 @@ const AuthenticatedSettingsRouteRouteWithChildren =
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRouteRoute: typeof AuthenticatedSettingsRouteRouteWithChildren
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
-  AuthenticatedAuditLoginsRoute: typeof AuthenticatedAuditLoginsRoute
-  AuthenticatedAuditOperationsRoute: typeof AuthenticatedAuditOperationsRoute
   AuthenticatedAuditIndexRoute: typeof AuthenticatedAuditIndexRoute
   AuthenticatedPlatformConfigIndexRoute: typeof AuthenticatedPlatformConfigIndexRoute
-  AuthenticatedRecordingsIndexRoute: typeof AuthenticatedRecordingsIndexRoute
   AuthenticatedRolesIndexRoute: typeof AuthenticatedRolesIndexRoute
   AuthenticatedRunsIndexRoute: typeof AuthenticatedRunsIndexRoute
   AuthenticatedScenariosIndexRoute: typeof AuthenticatedScenariosIndexRoute
-  AuthenticatedServicesIndexRoute: typeof AuthenticatedServicesIndexRoute
   AuthenticatedTargetsIndexRoute: typeof AuthenticatedTargetsIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
-  AuthenticatedRecordingsRecordingIdIndexRoute: typeof AuthenticatedRecordingsRecordingIdIndexRoute
   AuthenticatedRunsRunIdIndexRoute: typeof AuthenticatedRunsRunIdIndexRoute
   AuthenticatedScenariosScenarioIdIndexRoute: typeof AuthenticatedScenariosScenarioIdIndexRoute
   AuthenticatedTargetsTargetIdIndexRoute: typeof AuthenticatedTargetsTargetIdIndexRoute
@@ -604,19 +499,13 @@ interface AuthenticatedRouteRouteChildren {
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRouteRoute: AuthenticatedSettingsRouteRouteWithChildren,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
-  AuthenticatedAuditLoginsRoute: AuthenticatedAuditLoginsRoute,
-  AuthenticatedAuditOperationsRoute: AuthenticatedAuditOperationsRoute,
   AuthenticatedAuditIndexRoute: AuthenticatedAuditIndexRoute,
   AuthenticatedPlatformConfigIndexRoute: AuthenticatedPlatformConfigIndexRoute,
-  AuthenticatedRecordingsIndexRoute: AuthenticatedRecordingsIndexRoute,
   AuthenticatedRolesIndexRoute: AuthenticatedRolesIndexRoute,
   AuthenticatedRunsIndexRoute: AuthenticatedRunsIndexRoute,
   AuthenticatedScenariosIndexRoute: AuthenticatedScenariosIndexRoute,
-  AuthenticatedServicesIndexRoute: AuthenticatedServicesIndexRoute,
   AuthenticatedTargetsIndexRoute: AuthenticatedTargetsIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,
-  AuthenticatedRecordingsRecordingIdIndexRoute:
-    AuthenticatedRecordingsRecordingIdIndexRoute,
   AuthenticatedRunsRunIdIndexRoute: AuthenticatedRunsRunIdIndexRoute,
   AuthenticatedScenariosScenarioIdIndexRoute:
     AuthenticatedScenariosScenarioIdIndexRoute,
