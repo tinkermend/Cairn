@@ -1,0 +1,129 @@
+{
+  "created": "2026-09-13",
+  "mode": "built-in image_gen",
+  "requestedModel": "gpt-image-2.5",
+  "actualModel": "Tool does not expose model selection or verification.",
+  "commonPrompt": "Use case: ui-mockup.\nCreate ONE high-fidelity future product UI screen for the Chinese enterprise web simulation and testing platform \"识途\". This is an actual desktop software interface mockup, crisp flat front-on screenshot filling the entire image. Target canvas 2560 x 1600, 16:10 landscape. No device, no browser outer chrome, no perspective, no collage, no explanatory poster. Every visible word should be clear, correctly written Simplified Chinese, except intentional IDs and technical type labels. Render at a readable professional desktop UI scale, not microscopic text. A single coherent shadcn/ui + Radix style.\nShared visual system MUST be consistent in all screens: a continuous L-shaped navigation shell #F8F9FB, with a left 224px-equivalent sidebar and 64px-equivalent topbar, no divider separating those two shell regions. The main inset canvas #F1F4FA has a 16px upper-left rounded corner, subtle border at its top and left. White #FFFFFF business content cards with 12px corners and soft contact shadows. Inputs white with visible cool-gray border; buttons 8px corners. Main text #0F172A, secondary #334155, muted #5C6B80. Blue #3563E9 for actions and selected navigation, pale #EAF1FF selection. Green with a check icon and word for success/healthy. Red exclusively for failure/error/danger. Orange exclusively for warning/pending human action. Purple #7C5CFC with pale #F2EEFF ONLY for AI capability, AI suggestions or AI nodes. No decorative chart purple. Only ONE dominant solid-blue primary action per screen; secondary buttons outlined or quiet. No dark mode, gradients, glass, decorative illustrations, emoji, rainbow cards or abstract blobs.\nTypography like Inter + PingFang SC, desktop title 24px, section heading 16px, body 14px, tabular numerals, carefully aligned columns, 24px content padding, balanced whitespace with professionally useful information density. Use thin Lucide-style line icons with text. Status always icon plus readable word, not color alone.\nShared shell: top-left compact existing brand icon: blue rounded square containing a white circular observation window, pale-blue interior and a rising blue 4-node connected path; next to it \"识途\", small subtitle \"智能仿真平台\". Do not invent a new brand. Left sidebar grouped under \"工作空间\": \"工作台\", \"目标系统\", \"场景\", \"运行\", \"浏览器会话\", \"调度计划\"; then \"管理\": \"业务资产\", \"平台设置\". Bottom shows compact workspace \"质量保障\" and user \"林舟\". Topbar has breadcrumb at left, compact search \"搜索场景、运行…\", environment chip \"测试环境\", bell and help icons on right. Inside page title area show a very subtle neutral chip \"设计原型\". Small bottom text \"示例数据 · 2026-09-13\".\nDomain rules: Target and its target-login accounts are distinct from platform members. Deterministic steps and three AI types (AI Action, AI Extract, AI Assert) coexist in ONE linear ordered Scenario. No free graph, branches, loops or parallel workflow. AI output is an editable draft requiring explicit acceptance; never silently rewrite published scenarios. Every run binds a target and a frozen scenario version. StepRun and Attempt are distinct. Execution status and evidence completeness are distinct. A retry failure does not mean the step failed if a later attempt succeeds. Sessions may be reused across runs; a temporary exclusive lease is separate. Never display real secrets, use masks or secret references. Invented example business data only.\n",
+  "pages": [
+    {
+      "id": "01",
+      "slug": "workbench",
+      "title": "工作台",
+      "priority": "核心闭环",
+      "idea": "先呈现待处理运行、认证问题与证据缺口，再看趋势；从异常直接进入对应 Run 或 Session。",
+      "prompt": "SCREEN: 工作台. Sidebar select 工作台. Title \"工作台\", subtitle \"掌握业务运行状态，及时处理异常\"; one primary \"新建场景\". Content at top: a prominent but restrained white \"需要关注\" horizontal card with three actionable issue rows: \"2 个运行待核查\" orange, \"1 个账号待认证\" orange, \"1 次运行证据不完整\" orange; each has clear \"查看\" quiet link. Then four compact equal summary cells \"今日运行 128\", \"成功率 96.1%\" with small \"123 / 128 已结束运行\", \"运行中 4\", \"会话复用率 87%\". Main lower region: a wide \"最近运行\" table with columns 场景 / 目标系统 / 执行状态 / 证据 / 耗时. Example rows: 订单查询与金额核验, 采购管理系统, 成功 green, 完整 green, 42s; 库存低位巡检, 仓储系统, 运行中 blue, 收集中 gray, 18s; 采购单提交验证, 采购管理系统, 待核查 orange, 完整 green, —; 客户资料查询, 客户服务系统, 成功 green, 不完整 orange, 31s. Right side narrower card \"运行成功率 · 近 7 天\" simple blue line chart with visibly labeled 0%, 50%, 100% axis and dates 09/07–09/13, caption \"仅统计成功与失败的已结束运行\". Under chart compact \"目标系统健康\" list of 3 systems with healthy and needs-auth text. Business status first, trends second. No giant greeting or decorative hero."
+    },
+    {
+      "id": "02",
+      "slug": "targets",
+      "title": "目标系统与账号",
+      "priority": "核心闭环",
+      "idea": "用目标系统组织场景、目标账号和会话策略；详情侧栏分别呈现连接、认证与运行可用性。",
+      "prompt": "SCREEN: 目标系统. Sidebar select 目标系统. Title \"目标系统\", subtitle \"管理系统入口、目标账号与会话策略\". One primary top-right \"接入目标系统\". A filter row search \"搜索目标系统\", selects 环境 / 状态. Wide left area, about 64%: clean table with columns 系统名称 / 环境 / 目标账号 / 状态 / 最近运行. Four rows: 采购管理系统, 测试, 3 个账号, 健康, 2 分钟前; 仓储管理系统, 测试, 2 个账号, 健康, 8 分钟前; 客户服务系统, 预发布, 1 个账号, 待认证 orange, 21 分钟前; 费用报销系统, 测试, 2 个账号, 未验证 gray, —. First row selected pale blue. Right 36% persistent white detail panel title \"采购管理系统\", small status 健康, three tabs \"概览 / 目标账号 / 会话策略\", 目标账号 selected. Show \"目标系统登录账号\" heading, small quiet \"添加账号\". Account rows \"采购只读账号\" username \"qa_reader\" masked credential \"••••••••\" with green 已认证 and 可复用; \"采购提交账号\" username \"qa_submit\" green 已认证 with \"使用中 · RUN-0913-024\"; \"审批验证账号\" username \"qa_approver\" orange 待认证, quiet \"处理认证\". A small info line explains \"目标账号用于登录采购管理系统\". Bottom of panel compact policy summary \"单账号独占会话\" 开启, \"空闲保留\" 30 分钟, link 查看关联场景. Do not conflate account authentication with system reachability. No plaintext password or actual URLs."
+    },
+    {
+      "id": "03",
+      "slug": "scenario-library",
+      "title": "场景库",
+      "priority": "核心闭环",
+      "idea": "场景列表同时暴露绑定目标、已发布版本和草稿；录制、手工、AI、导入作为同一场景的创建入口。",
+      "prompt": "SCREEN: 场景库. Sidebar select 场景. Title \"场景\", subtitle \"将业务流程沉淀为可编辑、可版本化的执行场景\". One primary \"新建场景\" at top right; immediately beneath show its open elegant anchored dropdown with four compact options \"手工编排\", \"录制操作\", \"AI 辅助创建\" with tiny purple sparkle, \"导入 Excel / CSV\". Only this menu is open, it must not obscure critical table text. Main card tabs \"全部 24 / 已发布 18 / 草稿 6\"; filters 搜索场景, 目标系统, 标签. Table columns \"场景名称\", \"目标系统\", \"步骤\", \"版本\", \"最近运行\", \"更新\". Rows: 订单查询与金额核验 / 采购管理系统 / 8 步 · 2 AI / v3 · 有草稿 / 成功 / 10 分钟前; 库存低位巡检 / 仓储管理系统 / 6 步 · 1 AI / v2 / 成功 / 1 小时前; 采购单提交验证 / 采购管理系统 / 9 步 / v4 / 待核查 orange / 2 小时前; 客户资料查询 / 客户服务系统 / 5 步 / v1 / 成功 / 昨天; 新建报销单 / 费用报销系统 / 7 步 · 1 AI / 草稿 / 未试跑 gray / 昨天. Add row subtitle tags \"回归测试\", \"只读巡检\", subtle small purple AI badge only next to AI counts. Selected first row a bottom contextual strip \"已发布 v3 · 当前草稿有 2 处修改\" with quiet links \"继续编辑\", \"查看版本\", \"运行已发布版本\". Include right margin or lower compact \"草稿检查\" info with 绑定目标、步骤契约、断言覆盖 three check lines, emphasizing publish readiness without black-box automation."
+    },
+    {
+      "id": "04",
+      "slug": "scenario-studio",
+      "title": "Scenario Studio 顺序编排",
+      "priority": "核心闭环",
+      "idea": "左侧步骤库、中间有序步骤、右侧属性、底部试跑证据；确定性与 AI 步骤使用同一套编辑结构。",
+      "prompt": "SCREEN: Scenario Studio main Sequence Editor. Sidebar select 场景. Breadcrumb \"场景 / 订单查询与金额核验\". Top heading \"订单查询与金额核验\", chips \"草稿\" and \"基于 v3\"; context text \"目标：采购管理系统 · 账号：采购只读账号\". One primary blue \"试跑\"; quiet secondary \"保存草稿\", \"发布\". This is a focused professional editing workspace, not a dashboard. Three columns inside one broad white editor panel: narrow left \"步骤库\" searchable, categories \"浏览器操作\" with 导航、点击、填写、选择、等待、提取; \"断言\" with 文本断言、数值断言; \"AI 能力\" with AI Action、AI Extract、AI Assert each purple tiny icon. Center largest \"执行顺序\" with thin vertical connected line and eight numbered rectangular rows: 01 打开订单列表 [Navigate], 02 输入订单号 [Fill], 03 点击查询 [Click], 04 等待查询结果 [Wait], 05 读取订单金额 [AI Extract] purple accent, 06 核验金额大于零 [Assert] selected pale blue, 07 语义核验订单状态 [AI Assert] purple accent, 08 保存结果截图 [Screenshot]. Every row has drag handle and ellipsis with up/down semantics; no branching edges. Bottom insert '+ 添加步骤'. Right \"步骤属性\" for 06 with clear labels \"步骤名称\", \"断言类型 数值比较\", \"实际值 {{steps.order.total}}\", \"条件 大于\", \"期望值 0\", \"失败说明 订单金额必须大于零\"; collapsed advanced sections 超时与重试, 证据策略. Bottom horizontal trial console about 18% of screen with tabs \"试跑 / 输入输出 / 证据\", visible previous \"RUN-0913-024 · v3 快照 · 成功 · 证据完整\" and 3 screenshot thumbnails plus selected output total 1280.00. Keep key steps and assertion details readable. No full code editor, no freestyle flowchart."
+    },
+    {
+      "id": "05",
+      "slug": "step-editor",
+      "title": "步骤编辑与页面定位",
+      "priority": "核心闭环",
+      "idea": "从页面目标、输入契约与执行策略配置步骤；复杂 iframe 路径可见，参数引用无需靠脚本猜测。",
+      "prompt": "SCREEN: Focused Step Editor and browser target selection. Sidebar select 场景. Breadcrumb \"场景 / 订单查询与金额核验 / 步骤 02\". Title \"填写订单号\", type chip \"Fill · 确定性步骤\". One primary \"保存步骤\", quiet \"取消\". Main workspace 58% left and 42% right. Left white \"页面预览\" panel toolbar \"采购管理系统 / 订单查询\" and small tag \"定位预览\". Show credible embedded web business page with order-search form fields 订单号, 供应商, 状态 and button 查询; the 订单号 input is selected with crisp blue outline, small anchored label \"订单号 · textbox\", no actual cursor necessary. Beneath embedded preview a readable horizontal frame breadcrumb \"主页面 › 业务工作区 iframe › 订单列表 iframe\"; matching footer \"匹配 1 个元素\" green. Right form tabs \"配置 / 输入输出 / 执行策略\", 配置 selected. Labeled fields: 步骤名称 填写订单号; 定位方式 角色与名称; 元素角色 textbox; 可访问名称 订单号; a collapsible \"更多定位信息\" row; 输入值 parameter chip \"{{inputs.orderNo}}\". A small open variable picker beneath lists \"场景输入 / orderNo · string\" and \"前序步骤输出\". Section \"输入契约\" with parameter \"orderNo\", type 文本, required 必填. Bottom compact \"执行策略\" read-only summary \"超时 10 秒 · 最多尝试 2 次\" and muted \"仅按重试策略处理安全的页面输入\". Include visible small orange inline message in an auxiliary hint area \"发布前需验证目标元素\". Show technical location only where it helps the editor, not raw internal IDs everywhere. No secret content."
+    },
+    {
+      "id": "06",
+      "slug": "ai-authoring",
+      "title": "AI 辅助创建与审阅",
+      "priority": "核心闭环",
+      "idea": "自然语言生成可检查的步骤候选；逐项接受、编辑或拒绝，明确区分 AI Action、Extract、Assert。",
+      "prompt": "SCREEN: AI-assisted scenario authoring review. Sidebar select 场景. Breadcrumb \"场景 / AI 辅助创建\". Title \"AI 辅助创建\", small purple capability icon, subtitle \"将业务意图转为可检查的场景草稿\". One main BLUE button \"接受并创建草稿\"; quiet secondary \"重新生成\". Context selector \"目标系统 采购管理系统\", account 采购只读账号. Split workspace left 38%, right 62%. Left white card title \"描述业务目标\", a composed prompt block with exact text \"查询指定订单，读取订单金额，确认金额大于零，并检查订单状态是否符合预期。\". Below labeled parameter \"订单号 → orderNo\", expected status \"已审批\". Small pale-purple \"需要你确认\" block: \"订单状态需要语义判断，建议使用 AI Assert\" and explicit radio choice \"采用建议 / 改为文本断言\". Lower text \"AI 只生成草稿，发布前仍需检查与试跑\". Right large white card header \"生成的步骤 · 6 步\", compact validation status \"目标已绑定 · 契约通过 · 1 项待确认\". Six ordered candidate step cards with visible Accept checkbox and quiet 编辑 / 移除: 1 导航到订单列表 [Navigate], 2 输入订单号 [Fill] variable chip, 3 查询订单 [Click], 4 读取金额 [AI Extract] purple, output schema compact rows total: number and currency: string; 5 核验金额 > 0 [Assert] deterministic blue/gray; 6 核验订单状态 [AI Assert] pale-purple expanded showing expected result \"passed: boolean · explanation: string\". At very bottom a small legend \"AI Action 操作页面 / AI Extract 读取数据 / AI Assert 判断条件\". Make AI suggestions subordinate to user review, no magic autonomous publish or hidden selector replacement. Purple limited to AI cards, primary submit remains blue."
+    },
+    {
+      "id": "07",
+      "slug": "recorder",
+      "title": "录制工作台",
+      "priority": "核心闭环",
+      "idea": "把原始操作归并为业务步骤后交给用户审阅；录制结果回到 Studio，可继续编辑与试跑。",
+      "prompt": "SCREEN: Recorder authoring workspace. Sidebar select 场景. Breadcrumb \"场景 / 录制操作\". Title \"录制工作台\"; one primary blue \"结束并审阅\", secondary outlined \"暂停录制\". Header context \"采购管理系统 · 采购只读账号\", small blue recording indicator with text \"录制中 · 02:14\", neutral tag \"本地浏览器已连接\". Do NOT use red for harmless recording state. Main left 67% a large clean preview of a procurement web target with top tabs 采购订单 / 供应商 / 统计, search field containing sample \"PO-2026-0913\", visible query-result table with three orders. Small unobtrusive extension toolbar within preview upper-right shows blue observation logo, \"识途录制\", \"暂停\", \"忽略此区域\". Current query button highlighted blue. Right 33% white event review side panel headed \"已捕获的业务步骤 · 5\" with ordered numbered cards: 打开订单列表 [Navigate], 输入订单号 [Fill], 点击查询 [Click], 打开订单详情 [Click], 读取订单金额 [Extract]. Under second card visible small neutral line \"6 个输入事件已合并\"; each has small timestamp 00:18, 00:32 etc. One soft orange suggestion row \"建议将固定订单号转为参数\" with quiet \"采用\". Bottom white strip spans workspace: \"原始操作 18 → 规范化步骤 5\", link \"查看捕获记录\", text \"结束后进入草稿审阅，再编辑与试跑\". Include no script-code fact source, no direct production scheduler dependent on extension. Layout must read as web-console local recording collaboration, not a second standalone runtime."
+    },
+    {
+      "id": "08",
+      "slug": "import-review",
+      "title": "Excel／CSV 导入审阅",
+      "priority": "核心闭环",
+      "idea": "保留原始行到步骤的对应关系；列映射、参数和断言候选可核对，有歧义时先处理再生成草稿。",
+      "prompt": "SCREEN: Excel/CSV import mapping and review. Sidebar select 场景. Breadcrumb \"场景 / 导入测试步骤\". Title \"导入测试步骤\"; one primary blue \"创建草稿\"; quiet \"返回上传\". A horizontal simple stepper \"1 上传文件 ✓  →  2 映射与审阅  →  3 创建草稿\" with current step 2 blue. Context \"采购回归用例.xlsx · 工作表：订单查询 · 8 行\" and target dropdown \"采购管理系统\". Top compact mapping strip with five labeled dropdowns: 序号→A 列, 操作步骤→B 列, 测试数据→C 列, 预期结果→D 列, 前置条件→E 列. Main split into matching-height panels: left \"原始表格\" about 52%, screenshot-like actual structured spreadsheet table with row numbers, headers and legible example entries 打开订单列表 / 输入订单号 / 点击查询 / 检查金额 / 检查状态, example PO-2026-0913, expected 金额大于零 and 已审批. Selected rows 4 and 5 pale blue. Right \"步骤预览\" about 48%, ordered cards including Fill variable {{inputs.orderNo}}, Click 查询, Assert 金额 > 0 with small source tag \"来源：第 4 行\", Assert 状态 = 已审批 source 第5行. Below small pale-purple suggestion \"已识别 1 个参数、2 条断言\" with explicit toggles/checkboxes \"订单号设为场景输入\" and \"预期结果生成断言\". Orange bottom inline review item \"第 7 行：‘检查正常’缺少明确条件\" with field \"预期条件\" filled \"订单状态为已审批\" and small green 已解决. Footer \"8 行已解析 · 0 个阻断项 · 创建后进入 Studio\". No direct publish from imported spreadsheet, no complete dataset management platform."
+    },
+    {
+      "id": "09",
+      "slug": "run-center",
+      "title": "运行中心",
+      "priority": "核心闭环",
+      "idea": "手工、试跑、调度共用运行列表；执行结果与证据完整性分列，认证等待和人工核查都有明确入口。",
+      "prompt": "SCREEN: unified Run center. Sidebar select 运行. Title \"运行\", subtitle \"手工运行、试跑与调度执行使用同一运行记录\"; one primary blue \"发起运行\". Top horizontal status tabs \"全部 168 / 运行中 4 / 排队 3 / 待处理 3 / 已结束 158\". Filters search \"场景名称或运行编号\", 目标系统, 触发方式, 时间 今天. Small top-right live connection text with blue dot \"实时连接正常\" not polling controls. Main wide table columns 运行 / 场景与目标 / 触发方式 / 执行状态 / 证据状态 / 耗时 / 开始时间. Seven rows:\nRUN-0913-028, 库存低位巡检 · 仓储管理系统, 调度, 运行中 blue, 收集中 gray, 18s, 14:32:10;\nRUN-0913-027, 订单查询与金额核验 · 采购管理系统, 手工, 成功 green, 完整 green, 42s, 14:30:12;\nRUN-0913-026, 客户资料查询 · 客户服务系统, 试跑, 成功 green, 不完整 orange, 31s, 14:28:04;\nRUN-0913-025, 采购单提交验证 · 采购管理系统, 手工, 待核查 orange, 完整 green, —, 14:25:39;\nRUN-0913-024, 订单查询与金额核验 · 采购管理系统, 试跑, 成功 green, 完整 green, 44s, 14:23:18;\nRUN-0913-023, 客户检索 · 客户服务系统, 调度, 等待认证 orange, 收集中 gray, —, 14:20:10;\nRUN-0913-022, 库存低位巡检 · 仓储管理系统, 调度, 排队 gray, 待采集 gray, —, 14:18:56.\nAt bottom a compact selected RUN-0913-025 detail strip \"提交结果未知，需人工核查\" with quiet link \"查看证据与核查\". Do not display blind Retry as primary for unknown side effects. Table footer count and pagination. Keep evidence incomplete distinct from execution failed."
+    },
+    {
+      "id": "10",
+      "slug": "run-detail",
+      "title": "运行详情与调试",
+      "priority": "核心闭环",
+      "idea": "按 Run → StepRun → Attempt 逐层定位问题；展示冻结版本、实际输出和每次尝试，避免把重试失败误判为步骤失败。",
+      "prompt": "SCREEN: successful run detail and debugger. Sidebar select 运行. Breadcrumb \"运行 / RUN-0913-024\". Title \"订单查询与金额核验\"; run ID under title, separate chips \"执行成功\" green and \"证据完整\" green, small trigger \"试跑\". One primary blue \"查看完整证据\"; quiet \"用此版本新建运行\". Metadata bar \"冻结版本 v3 · 采购管理系统 · 采购只读账号 · 会话 SES-018（复用）· 总耗时 44s\". Tabs \"步骤与结果\" selected / \"运行快照\" / \"事件\" / \"资源与用量\". Main left about 34% ordered timeline of eight steps all green successful, step 05 读取订单金额 [AI Extract] shows \"成功 · 2 次尝试\" and selected blue outline, step 07 AI Assert tiny purple badge. Right detail panel 66% heading \"步骤 05 · 读取订单金额\"; persistent status \"StepRun 成功\". Two attempt tabs \"Attempt 1 · 失败\" red small indicator and \"Attempt 2 · 成功\" green selected. Below a concise event strip \"14:23:35 开始 → 14:23:41 完成 · 6.2s\". Split selected attempt detail: left embedded small screenshot of an order detail page with total 1,280.00 and blue detected field highlight; right structured readable input/output key value table \"目标 读取订单金额\", \"total 1280.00\", \"currency CNY\", \"输出引用 steps.order.total\". Lower pale-purple audit section \"AI 执行摘要\": model route vision-default, 实际模型 vision-a, 策略版本 p4, token 1,240, \"判断说明：在订单摘要区域读取含税总金额\"; no hidden chain-of-thought. Bottom inspector tabs 输入 / 输出 / 截图 / 错误 and compact success message \"断言 total > 0 通过\". Show that first attempt failed while overall step and run succeeded. Historical run uses frozen v3, no edit published in place."
+    },
+    {
+      "id": "11",
+      "slug": "evidence-viewer",
+      "title": "证据查看与回放",
+      "priority": "核心闭环",
+      "idea": "证据绑定到步骤和尝试；截图、输入输出、错误和 AI 摘要并列可查，Trace 作为补充且保留期限可见。",
+      "prompt": "SCREEN: Evidence Viewer, professional inspection layout. Sidebar select 运行. Breadcrumb \"运行 / RUN-0913-024 / 证据\". Title \"执行证据\", subtitle \"订单查询与金额核验 · 冻结版本 v3\". One primary blue \"下载证据包\", secondary \"打开 Trace\". Summary chips \"执行成功\" and \"必要证据完整\" both green. Main viewer three columns: left narrow 21% tree card titled \"步骤与尝试\", ordered 01 打开订单列表, 02 输入订单号, 03 点击查询, 04 等待查询结果, expanded 05 读取订单金额 with nested \"Attempt 1 · 失败\" and selected \"Attempt 2 · 成功\", 06 核验金额, 07 核验状态, 08 保存截图. Center 53% white large image viewer \"截图 · 14:23:39.842\", toolbar minus, \"100%\", plus, fit, previous/next. Image is credible target-system order detail page with clear total \"¥1,280.00\"; customer identifying field obscured with a solid neutral masking rectangle labeled \"已脱敏\". Small blue outline on total field, no red success highlight. Under center image a horizontal filmstrip of four distinct screenshot thumbnails with timestamps, one selected blue, then readable event time rail. Right 26% inspector with tabs \"详情 / 输入输出 / AI 摘要\", 详情 selected. Key/value rows \"运行 RUN-0913-024\", \"步骤 05 · 读取订单金额\", \"尝试 Attempt 2\", \"类型 页面截图\", \"状态 可用\", \"保留至 2026-09-27\". Below a structured output compact block total 1280.00 / currency CNY. Trace section \"Debug 策略 · 已保留\" and quiet explanatory \"Trace 辅助浏览器调试，步骤证据独立保留\". Include action log as short auditable decisions, not model chain of thought. Show native evidence navigation, not a video player masquerading as recorded video."
+    },
+    {
+      "id": "12",
+      "slug": "browser-sessions",
+      "title": "浏览器会话中心",
+      "priority": "核心闭环",
+      "idea": "分别展示会话生命周期、健康状态、认证状态与当前独占使用；用户能看清复用关系和等待原因。",
+      "prompt": "SCREEN: Browser Session operations. Sidebar select 浏览器会话. Title \"浏览器会话\"; subtitle \"复用健康认证状态，按运行临时独占使用\". One primary blue \"查看待处理会话\". Top four small metrics \"会话总数 12\", \"可复用 7\", \"使用中 4\", \"待认证 1\". Main left 65% table with filters 目标系统 / 认证状态 / 使用状态, columns 会话 / 目标与账号 / 健康 / 认证 / 当前使用. Rows SES-018, 采购管理系统 · 采购只读账号, 健康 green, 已认证 green, 空闲 gray; SES-019, 采购管理系统 · 采购提交账号, 健康 green, 已认证 green, RUN-0913-025 blue; SES-020, 仓储管理系统 · 库存巡检账号, 健康, 已认证, RUN-0913-028; SES-021, 客户服务系统 · 客户只读账号, 健康 green, 待认证 orange, 等待处理 orange. First row selected. Right 35% \"SES-018\" detail white panel with independent status labels 生命周期 可用, 浏览器健康 健康, 认证状态 已认证. Section \"当前独占使用\" explicitly \"无有效租约 · 可分配给下一次运行\" gray. Section \"最近复用\" tiny vertical history: RUN-0913-024 试跑 14:23 已释放; RUN-0913-027 手工 14:30 已释放. Section \"会话策略\" idle TTL \"30 分钟\", 最大生命周期 \"8 小时\", \"同账号单会话\" enabled. Technical worker detail in collapsed \"运行资源\" expander. Footer row quiet secondary \"检查健康\", outlined \"重新认证\", destructive \"销毁会话\" in low-emphasis red text only. Do not auto-destroy on every run finish; no two concurrent valid leases for same selected account. Maintain semantic color distinctions."
+    },
+    {
+      "id": "13",
+      "slug": "schedules",
+      "title": "调度与巡检计划",
+      "priority": "规划能力",
+      "idea": "把频率、时区、发布版本、目标账号及冲突处理放在同一计划中；触发后进入统一 Run。",
+      "prompt": "SCREEN: scheduling and inspection plans. Sidebar select 调度计划. Title \"调度计划\"; subtitle \"按计划运行已发布场景，结果进入统一运行中心\". One primary blue \"新建计划\". Main left 62% table tabs \"全部 / 启用中 / 已暂停\", columns 计划名称 / 场景版本 / 频率 / 下次运行 / 状态. Four rows: 订单每日回归 / 订单查询与金额核验 v3 / 每天 09:00 / 明天 09:00 / 启用 green; 库存每小时巡检 / 库存低位巡检 v2 / 每小时 / 今天 15:00 / 启用; 客户服务可用性 / 客户资料查询 v1 / 每 30 分钟 / 今天 15:00 / 账号待认证 orange; 采购提交夜间验证 / 采购单提交验证 v4 / 每天 23:00 / — / 已暂停 gray. First row selected pale blue. Below table a restrained small \"未来 24 小时\" horizontal timeline with labeled 15:00, 18:00, 21:00, 00:00, 03:00, 06:00, 09:00 and scheduled small blue markers, no complicated full calendar. Right 38% white \"订单每日回归\" configuration/details panel. Fields \"绑定场景 订单查询与金额核验\", \"发布版本 v3（固定）\", \"目标系统 采购管理系统\", \"目标账号 采购只读账号\". A plain schedule builder \"每天\" selector plus native-looking time \"09:00\". Time zone \"Asia/Taipei · UTC+08:00\". \"会话忙碌时 排队等待\" and \"错过执行时 跳过本次\" as explicit policy choices. Recent record box \"上次运行 成功 · 证据完整\", link RUN-0913-012. Secondary link 编辑计划. Small warning \"更新场景后需确认计划使用的版本\". No raw cron syntax as the main user flow, no separate scheduler execution model."
+    },
+    {
+      "id": "14",
+      "slug": "business-assets",
+      "title": "业务动作与术语库",
+      "priority": "后续增强",
+      "idea": "将高频业务操作沉淀为有版本、有契约的动作；术语匹配给出候选，由用户确认引用固定版本。",
+      "prompt": "SCREEN: business asset library, a planned future enhancement shown as useful modest domain knowledge reuse, NOT a marketplace. Sidebar select 业务资产. Title \"业务资产\", subtle chip \"后续增强\", subtitle \"复用经过验证的业务动作与目标系统术语\". One primary blue \"新建业务动作\". Tabs \"业务动作 / 术语\" with 业务动作 selected. Target scope selector \"采购管理系统\", search \"搜索动作或术语\". Main area left 59% a clean table columns 动作名称 / 版本 / 输入 / 输出 / 使用场景. Rows 查询采购订单 / v2 / orderNo / order / 6; 打开订单详情 / v1 / orderId / detail / 4; 核验订单金额 / v3 / total, minimum / passed / 5; 查询供应商 / v1 / supplierName / suppliers / 2. First row selected. Right 41% detailed white card \"查询采购订单\" with badge v2 已发布. Small subtitle target scope 采购管理系统. Sections \"输入契约\" row orderNo string 必填; \"输出契约\" order object, total number, status string. A compact sequence preview \"打开订单列表 → 填写订单号 → 点击查询 → 提取结果\" as four vertically ordered mini rows, NOT a general flowchart. \"已验证\" line \"最近 20 次运行 · 19 次成功 · 1 次失败\" factual sample. Secondary action \"查看使用场景\"; note \"场景引用固定动作版本 v2\". Bottom pale-purple optional suggestion box \"相关术语候选：采购单、PO、采购订单\" with separate quiet \"接受关联\" / \"忽略\", clearly user reviewed; AI cannot silently swap published action. Do not add commerce, plugins, cross-system universal RPA or huge full dataset platform."
+    },
+    {
+      "id": "15",
+      "slug": "platform-settings",
+      "title": "平台设置：模型路由与用量",
+      "priority": "平台治理",
+      "idea": "把模型路由、只读语义、成本和策略版本放在同一治理视图；成员、权限、审计和执行资源作为同级设置入口。",
+      "prompt": "SCREEN: platform settings focused on model routing and AI usage. Sidebar select 平台设置. Title \"平台设置\"; subtitle \"管理团队权限、执行资源与 AI 能力\". One primary blue \"保存配置\". Horizontal top tabs \"成员与角色 / 模型路由 / 执行资源 / 证据策略 / 审计日志\", 模型路由 selected with thin blue underline. Top compact summary bar \"本月 AI 调用 8,420\", \"Token 126.4 万\", \"可计量费用 ¥186.40\", muted \"仅汇总已返回用量的调用\". Main left 61% white routing card title \"模型路由\" tiny purple AI icon. Table headings 路由名称 / 能力 / 默认模型 / 策略版本 / 状态. Rows vision-default / 页面视觉操作 / vision-a / p4 / 已启用 green; extract-readonly / 结构化提取 / extract-b / p2 / 已启用; assert-semantic / 语义断言 / reasoner-c / p3 / 已启用. Selected extract-readonly row, model names intentionally illustrative aliases not marketed brand claims. Under table \"调用趋势 · 近 7 天\" small blue bar chart of daily counts with dates and clear zero baseline. Right 39% white settings card \"extract-readonly\" with labels \"适用步骤 AI Extract\" purple chip, \"执行边界 只读\", \"输出格式 结构化 Schema\", \"模型连接 企业模型网关\", \"凭据引用 secret://model-gateway/read-only\" (reference only, never literal API key), \"单次超时 30 秒\", \"最大输出 4,096 tokens\". Small neutral explanation \"运行时记录实际模型、路由与策略版本\". Bottom audit snippet \"最近变更 · 林舟 · 2026-09-13 13:20\", \"策略 p2 已发布\". Secondary link 查看调用明细. Keep settings navigable with platform members distinct from target login accounts, avoid provider-specific steps or decorative purple page backgrounds."
+    }
+  ]
+}

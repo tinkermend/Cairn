@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "browser:install": "playwright install chromium",
-    "dev": "tsc -p tsconfig.build.json && concurrently -k -n tsc,node -c blue,green \"tsc -w --preserveWatchOutput -p tsconfig.build.json\" \"node --watch --watch-preserve-output dist/main.js\""
+    "dev": "tsc -p tsconfig.build.json && concurrently -k -n tsc,node -c blue,green \"tsc -w --preserveWatchOutput -p tsconfig.build.json\" \"node --watch --watch-preserve-output dist/main.js\"",
+    "register-ai-secret": "node dist/bin/register-browser-ai-secret.js"
   },
   "dependencies": {
     "@cairn/db": "workspace:*",

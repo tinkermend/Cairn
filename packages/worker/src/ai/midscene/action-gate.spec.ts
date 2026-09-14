@@ -17,10 +17,10 @@ describe('ActionGate', () => {
       ],
       gate,
     )
-    await click.call({})
+    await click!.call()
     expect(called).toBe(1)
     controller.abort()
-    await expect(click.call({})).rejects.toThrow('CAIRN_ABORTED:action')
+    await expect(click!.call()).rejects.toThrow('CAIRN_ABORTED:action')
     expect(called).toBe(1)
   })
 
@@ -28,7 +28,7 @@ describe('ActionGate', () => {
     const gate = new ActionGate()
     const [click] = gateActions([{ name: 'Click', call: async () => 'ok' }], gate)
     gate.markLeaseLost()
-    await expect(click.call({})).rejects.toThrow('CAIRN_LEASE_LOST:action')
+    await expect(click!.call()).rejects.toThrow('CAIRN_LEASE_LOST:action')
   })
 
   it('屏障扣住第 N 次再放行', async () => {

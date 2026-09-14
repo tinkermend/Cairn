@@ -12,6 +12,7 @@ import {
   type PlatformConfigDocument,
   type PlatformConfigRestoreBody,
   type PlatformConfigRevisionList,
+  type PlatformConfigSecretBody,
   type PlatformConfigSecretResponse,
   type PlatformConfigTestConnectionBody,
   type PlatformConfigTestConnectionResponse,
@@ -31,7 +32,7 @@ export function fetchPlatformConfig(): Promise<PlatformConfigCurrent> {
 
 export function fetchPlatformConfigRevisions(
   cursor?: string,
-  limit?: number,
+  limit?: number
 ): Promise<PlatformConfigRevisionList> {
   const params = new URLSearchParams()
   if (cursor) params.set('cursor', cursor)
@@ -39,7 +40,7 @@ export function fetchPlatformConfigRevisions(
   const query = params.toString()
   return apiFetch(
     `/api/platform-config/revisions${query ? `?${query}` : ''}`,
-    platformConfigRevisionListSchema,
+    platformConfigRevisionListSchema
   )
 }
 
@@ -47,40 +48,46 @@ export function validatePlatformConfig(document: PlatformConfigDocument) {
   return apiFetch(
     '/api/platform-config/validate',
     platformConfigValidateBodySchema,
-    post(platformConfigValidateBodySchema.parse({ document })),
+    post(platformConfigValidateBodySchema.parse({ document }))
   )
 }
 
-export function updatePlatformConfig(body: PlatformConfigUpdateBody): Promise<PlatformConfigCurrent> {
+export function updatePlatformConfig(
+  body: PlatformConfigUpdateBody
+): Promise<PlatformConfigCurrent> {
   return apiFetch(
     '/api/platform-config/update',
     platformConfigCurrentSchema,
-    post(platformConfigUpdateBodySchema.parse(body)),
+    post(platformConfigUpdateBodySchema.parse(body))
   )
 }
 
-export function restorePlatformConfig(body: PlatformConfigRestoreBody): Promise<PlatformConfigCurrent> {
+export function restorePlatformConfig(
+  body: PlatformConfigRestoreBody
+): Promise<PlatformConfigCurrent> {
   return apiFetch(
     '/api/platform-config/restore',
     platformConfigCurrentSchema,
-    post(platformConfigRestoreBodySchema.parse(body)),
+    post(platformConfigRestoreBodySchema.parse(body))
   )
 }
 
-export function registerPlatformConfigSecret(apiKey: string): Promise<PlatformConfigSecretResponse> {
+export function registerPlatformConfigSecret(
+  body: PlatformConfigSecretBody
+): Promise<PlatformConfigSecretResponse> {
   return apiFetch(
     '/api/platform-config/secrets',
     platformConfigSecretResponseSchema,
-    post(platformConfigSecretBodySchema.parse({ apiKey })),
+    post(platformConfigSecretBodySchema.parse(body))
   )
 }
 
 export function testPlatformConfigConnection(
-  body: PlatformConfigTestConnectionBody,
+  body: PlatformConfigTestConnectionBody
 ): Promise<PlatformConfigTestConnectionResponse> {
   return apiFetch(
     '/api/platform-config/test-connection',
     platformConfigTestConnectionResponseSchema,
-    post(platformConfigTestConnectionBodySchema.parse(body)),
+    post(platformConfigTestConnectionBodySchema.parse(body))
   )
 }

@@ -21,7 +21,7 @@ import {
   targetAccounts,
   targets,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY, type SessionPolicyOverride, type Step } from '@cairn/shared'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { BrowserSessionManager } from '../../browser/session-manager.js'
@@ -42,7 +42,7 @@ function countProfileProcesses(profileRoot: string): number {
 }
 
 function cssTarget(value: string) {
-  return { framePath: [] as string[], candidates: [{ by: 'css' as const, value }] }
+  return { framePath: [], candidates: [{ by: 'css' as const, value }] }
 }
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_s06`
@@ -269,7 +269,7 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
         gate,
       )
       const before = await readLabEvents(page)
-      await click.call({})
+      await click!.call()
       const afterClick = await readLabEvents(page)
       expect(afterClick.filter((e) => e.type === 'click').length).toBeGreaterThan(
         before.filter((e) => e.type === 'click').length,
@@ -281,7 +281,7 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
       controller.abort()
       barrier.release()
       await expect(pending).rejects.toThrow('CAIRN_ABORTED:model')
-      await expect(click.call({})).rejects.toThrow('CAIRN_ABORTED:action')
+      await expect(click!.call()).rejects.toThrow('CAIRN_ABORTED:action')
       expect((await readLabEvents(page)).filter((e) => e.type === 'click').length).toBe(clicksBeforeAbort)
       expect(records).toHaveLength(1)
 
@@ -291,7 +291,7 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
         [{ name: 'Click', call: async () => page.click('#board') }],
         lost,
       )
-      await expect(lostClick.call({})).rejects.toThrow('CAIRN_LEASE_LOST:action')
+      await expect(lostClick!.call()).rejects.toThrow('CAIRN_LEASE_LOST:action')
       expect((await readLabEvents(page)).filter((e) => e.type === 'click').length).toBe(clicksBeforeAbort)
       expect(processModelEnvKeys()).toEqual([])
     })

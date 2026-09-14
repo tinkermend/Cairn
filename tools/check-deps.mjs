@@ -17,7 +17,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  * 包名前缀 → 允许依赖的仓内包前缀。
  *
  * - 库只能向下依赖库；进程包之间不得互为库依赖。
- * - 进程包通过 PostgreSQL 与通知机制协作，不通过 import。
+ * - 进程包通过持久化数据与通知机制协作，不通过 import。
  * - 浏览器扩展在 packages/extension/<plugin>/，彼此不得互为依赖；
  *   正式执行仍在 worker，扩展只依赖 shared 契约。
  */
@@ -75,6 +75,26 @@ function checkWorkerAiIsolation(report) {
         report(`Worker 生产路径不得引用 Midscene / page-agent（只允许 src/ai/）：${rel} → ${specifier}`)
       }
     }
+  }
+}
+
+function checkDatabaseBoundary(report) {
+  const forbidden = /^(?:pg|mysql2|drizzle-orm)(?:\/|$)|^node:sqlite$/
+  for (const area of ['api', 'worker']) {
+    for (const file of sourceFiles(resolve(root, `packages/${area}/src`))) {
+      if (/\.(?:spec|test)\.[cm]?[jt]sx?$/.test(file) || file.includes(`${sep}__tests__${sep}`) || file.includes(`${sep}testing${sep}`)) continue
+      const source = readFileSync(file, 'utf8')
+      for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+        if (forbidden.test(specifier) || specifier === '@cairn/db/testing' || specifier.includes('/testing/') ||
+          (specifier.startsWith('@cairn/db/') && !(specifier === '@cairn/db/admin' && file.endsWith(`${sep}db${sep}db.module.ts`)))) {
+          report(`业务代码只能使用数据库业务入口：${relative(root, file)} → ${specifier}`)
+        }
+      }
+    }
+  }
+  const declaration = resolve(root, 'packages/db/dist/index.d.ts')
+  if (existsSync(declaration) && /NodePgDatabase|\bPool\b|drizzle-orm|\$inferSelect|\/schema\//.test(readFileSync(declaration, 'utf8'))) {
+    report('@cairn/db 公共声明泄漏了数据库实现类型')
   }
 }
 
@@ -203,6 +223,7 @@ for (const packagesDir of PACKAGE_ROOTS) {
 }
 
 checkOtherPackagesAiIsolation((message) => errors.push(message))
+checkDatabaseBoundary((message) => errors.push(message))
 
 for (const dep of SHARED_VERSION_DEPS) {
   const seen = versionsByDep.get(dep)

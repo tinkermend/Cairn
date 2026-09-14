@@ -8,6 +8,7 @@ import type {
   RunSnapshot,
   RunStatus,
   ScenarioDefinition,
+  ScenarioDocument,
   ScenarioStatus,
   StepRunStatus,
   PurgeReason,
@@ -198,165 +199,7 @@ export type ScenarioVersionRow = {
   createdByConsoleAccountId: string
   scenarioId: string
   versionNo: number | null
-  definition: {
-    schemaVersion: 1
-    inputs: { key: string; label: string }[]
-    steps: (
-      | {
-          type: 'echo'
-          input: { value?: JsonValue | undefined; from?: string | undefined }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'delay'
-          input: { durationMs: number }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'fail'
-          input: {
-            message: string
-            code?: string | undefined
-            category?:
-              | 'VALIDATION'
-              | 'TIMEOUT'
-              | 'CANCELLED'
-              | 'EXECUTOR'
-              | 'INFRASTRUCTURE'
-              | 'UNKNOWN'
-              | undefined
-            retryable?: boolean | undefined
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'navigate'
-          input: { url: string }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'click'
-          input: {
-            target: {
-              framePath: {
-                urlPattern?: string | undefined
-                name?: string | undefined
-                selector?: string | undefined
-              }[]
-              candidates: {
-                by: 'css' | 'label' | 'title' | 'role' | 'text' | 'testId'
-                value: string
-                name?: string | undefined
-              }[]
-              anchor?: { withinText: string; scope: 'row' | 'nearest' } | undefined
-            }
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'fill'
-          input: {
-            target: {
-              framePath: {
-                urlPattern?: string | undefined
-                name?: string | undefined
-                selector?: string | undefined
-              }[]
-              candidates: {
-                by: 'css' | 'label' | 'title' | 'role' | 'text' | 'testId'
-                value: string
-                name?: string | undefined
-              }[]
-              anchor?: { withinText: string; scope: 'row' | 'nearest' } | undefined
-            }
-            value?: string | undefined
-            from?: string | undefined
-            sensitive?: boolean | undefined
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'extract'
-          input: {
-            target: {
-              framePath: {
-                urlPattern?: string | undefined
-                name?: string | undefined
-                selector?: string | undefined
-              }[]
-              candidates: {
-                by: 'css' | 'label' | 'title' | 'role' | 'text' | 'testId'
-                value: string
-                name?: string | undefined
-              }[]
-              anchor?: { withinText: string; scope: 'row' | 'nearest' } | undefined
-            }
-            as: 'value' | 'text' | 'attribute'
-            attribute?: string | undefined
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'assert'
-          input: {
-            expect:
-              | { kind: 'exists' }
-              | { kind: 'visible' }
-              | { kind: 'text_equals'; value: string }
-              | { kind: 'text_contains'; value: string }
-              | { kind: 'number_compare'; op: 'eq' | 'gt' | 'gte' | 'lt' | 'lte'; value: number }
-            target?:
-              | {
-                  framePath: {
-                    urlPattern?: string | undefined
-                    name?: string | undefined
-                    selector?: string | undefined
-                  }[]
-                  candidates: {
-                    by: 'css' | 'label' | 'title' | 'role' | 'text' | 'testId'
-                    value: string
-                    name?: string | undefined
-                  }[]
-                  anchor?: { withinText: string; scope: 'row' | 'nearest' } | undefined
-                }
-              | undefined
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-    )[]
-  }
+  definition: ScenarioDefinition
   compilerVersion: number
   sourceDigest: string
 }
@@ -365,165 +208,7 @@ export type ScenarioDraftRow = {
   updatedAt: Date
   scenarioId: string
   revision: number
-  document: {
-    schemaVersion: 1
-    inputs: { key: string; label: string }[]
-    steps: (
-      | {
-          type: 'echo'
-          input: { value?: JsonValue | undefined; from?: string | undefined }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'delay'
-          input: { durationMs: number }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'fail'
-          input: {
-            message: string
-            code?: string | undefined
-            category?:
-              | 'VALIDATION'
-              | 'TIMEOUT'
-              | 'CANCELLED'
-              | 'EXECUTOR'
-              | 'INFRASTRUCTURE'
-              | 'UNKNOWN'
-              | undefined
-            retryable?: boolean | undefined
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'navigate'
-          input: { url: string }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'click'
-          input: {
-            target: {
-              framePath: {
-                urlPattern?: string | undefined
-                name?: string | undefined
-                selector?: string | undefined
-              }[]
-              candidates: {
-                by: 'css' | 'label' | 'title' | 'role' | 'text' | 'testId'
-                value: string
-                name?: string | undefined
-              }[]
-              anchor?: { withinText: string; scope: 'row' | 'nearest' } | undefined
-            }
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'fill'
-          input: {
-            target: {
-              framePath: {
-                urlPattern?: string | undefined
-                name?: string | undefined
-                selector?: string | undefined
-              }[]
-              candidates: {
-                by: 'css' | 'label' | 'title' | 'role' | 'text' | 'testId'
-                value: string
-                name?: string | undefined
-              }[]
-              anchor?: { withinText: string; scope: 'row' | 'nearest' } | undefined
-            }
-            value?: string | undefined
-            from?: string | undefined
-            sensitive?: boolean | undefined
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'extract'
-          input: {
-            target: {
-              framePath: {
-                urlPattern?: string | undefined
-                name?: string | undefined
-                selector?: string | undefined
-              }[]
-              candidates: {
-                by: 'css' | 'label' | 'title' | 'role' | 'text' | 'testId'
-                value: string
-                name?: string | undefined
-              }[]
-              anchor?: { withinText: string; scope: 'row' | 'nearest' } | undefined
-            }
-            as: 'value' | 'text' | 'attribute'
-            attribute?: string | undefined
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-      | {
-          type: 'assert'
-          input: {
-            expect:
-              | { kind: 'exists' }
-              | { kind: 'visible' }
-              | { kind: 'text_equals'; value: string }
-              | { kind: 'text_contains'; value: string }
-              | { kind: 'number_compare'; op: 'eq' | 'gt' | 'gte' | 'lt' | 'lte'; value: number }
-            target?:
-              | {
-                  framePath: {
-                    urlPattern?: string | undefined
-                    name?: string | undefined
-                    selector?: string | undefined
-                  }[]
-                  candidates: {
-                    by: 'css' | 'label' | 'title' | 'role' | 'text' | 'testId'
-                    value: string
-                    name?: string | undefined
-                  }[]
-                  anchor?: { withinText: string; scope: 'row' | 'nearest' } | undefined
-                }
-              | undefined
-          }
-          id: string
-          name: string
-          effectType: 'READ_ONLY' | 'IDEMPOTENT' | 'SIDE_EFFECT'
-          outputKey?: string | undefined
-          policy?: { timeoutMs?: number | undefined; retryLimit?: number | undefined } | undefined
-        }
-    )[]
-  }
+  document: ScenarioDocument
   updatedByConsoleAccountId: string
 }
 
@@ -541,7 +226,7 @@ export type RunRow = {
   createdAt: Date
   updatedAt: Date
   targetId: string
-  createdByConsoleAccountId: string
+  createdByConsoleAccountId: string | null
   scenarioId: string
   scenarioVersionId: string
   targetAccountId: string | null
@@ -763,6 +448,7 @@ export type AttemptRow = {
 }
 
 export type EvidenceRow = {
+  externalAccess?: number
   id: string
   status: 'available' | 'pending' | 'missing'
   createdAt: Date
@@ -819,6 +505,14 @@ export type BrowserSessionRow = {
   expiresAt: Date
   authHoldWorkerId: string | null
   authHoldExpiresAt: Date | null
+  authHoldRunId: string | null
+  authHoldSessionGeneration: number | null
+  authHoldWorkerInstanceId: string | null
+  authControlEpoch: number
+  authControlActorId: string | null
+  authControlTokenHash: string | null
+  authControlExpiresAt: Date | null
+  authControlPageId: string | null
   closeReason: string | null
   closedAt: Date | null
 }
@@ -844,6 +538,14 @@ export type NewBrowserSession = {
   version?: number | undefined
   authHoldWorkerId?: string | null | undefined
   authHoldExpiresAt?: Date | null | undefined
+  authHoldRunId?: string | null | undefined
+  authHoldSessionGeneration?: number | null | undefined
+  authHoldWorkerInstanceId?: string | null | undefined
+  authControlEpoch?: number | undefined
+  authControlActorId?: string | null | undefined
+  authControlTokenHash?: string | null | undefined
+  authControlExpiresAt?: Date | null | undefined
+  authControlPageId?: string | null | undefined
   closeReason?: string | null | undefined
   closedAt?: Date | null | undefined
 }

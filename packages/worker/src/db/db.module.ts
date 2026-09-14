@@ -1,11 +1,12 @@
 import { Global, Inject, Module, type OnApplicationShutdown } from '@nestjs/common'
 import { createDb, type DbHandle } from '@cairn/db'
+import { assertReady } from '@cairn/db/admin'
 import { resolveDbEnv } from '../config/env'
 
 export const DB_HANDLE = Symbol('DB_HANDLE')
 
 /**
- * 与 api 的 DbModule 形状相同但各自持有——两个进程只通过 PostgreSQL
+ * 与 api 的 DbModule 形状相同但各自持有——两个进程只通过持久化数据库
  * 通信，不共享内存状态。待出现第二个共用模块时再抽 @cairn/nest-common，
  * 现在抽属于过早。
  *
@@ -17,7 +18,11 @@ export const DB_HANDLE = Symbol('DB_HANDLE')
  */
 @Global()
 @Module({
-  providers: [{ provide: DB_HANDLE, useFactory: (): DbHandle => createDb(resolveDbEnv()) }],
+  providers: [{ provide: DB_HANDLE, useFactory: async (): Promise<DbHandle> => {
+        const env = resolveDbEnv()
+        const database = createDb(env)
+        try { await assertReady(database, env); return database } catch (error) { await database.close(); throw error }
+      } }],
   exports: [DB_HANDLE],
 })
 export class DbModule implements OnApplicationShutdown {

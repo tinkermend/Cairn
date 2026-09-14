@@ -6,6 +6,7 @@ import { ApiRequestError } from '@/lib/api-client'
 import { fetchScenarioCapabilities, trialScenario } from '@/lib/scenarios-api'
 import { inheritCaptureLabel } from '@/features/platform-config/labels'
 import { fetchTargetAccounts } from '@/lib/targets-api'
+import { passwordAccounts, preferredPasswordAccountId } from '@/features/runs/target-account'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -64,6 +65,7 @@ export function TrialDialog({
     const inheritScreenshot = capabilities.data?.defaults?.evidence.screenshot
     const inheritTrace = capabilities.data?.defaults?.evidence.trace
   const [targetAccountId, setTargetAccountId] = useState('')
+  const usableAccounts = passwordAccounts(accounts.data?.items ?? [])
   const [values, setValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const fingerprint = JSON.stringify({ revision, targetAccountId, values })
@@ -73,32 +75,39 @@ export function TrialDialog({
     keyRef.current = undefined
   }, [fingerprint])
 
+  useEffect(() => {
+    setTargetAccountId(preferredPasswordAccountId(accounts.data?.items ?? []))
+  }, [accounts.data, targetId])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className='sm:max-w-lg'>
         <DialogHeader>
           <DialogTitle>试跑当前草稿</DialogTitle>
           <DialogDescription>
-            从第一步执行已保存的草稿。结果留在本页，进度需手动刷新。本次试跑不会改草稿。
+            从第一步执行已保存的草稿。结果留在本页并自动跟随进度。本次试跑不会改草稿。
           </DialogDescription>
         </DialogHeader>
         <div className='space-y-4'>
           <div className='space-y-2'>
-            <Label>目标账号（可选）</Label>
+            <Label>目标账号{usableAccounts.length > 0 ? '' : '（可选）'}</Label>
             <Select
-              value={targetAccountId || '__none__'}
+              value={targetAccountId || (usableAccounts.length > 0 ? undefined : '__none__')}
               onValueChange={(value) => setTargetAccountId(value === '__none__' ? '' : value)}
             >
               <SelectTrigger className='w-full'>
-                <SelectValue placeholder='不指定目标账号' />
+                <SelectValue placeholder={usableAccounts.length > 0 ? '选择已保存口令的账号' : '不指定目标账号'} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value='__none__'>不指定</SelectItem>
-                {(accounts.data?.items ?? []).map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
-                    {item.displayName}（{item.username}）
-                  </SelectItem>
-                ))}
+                {usableAccounts.length === 0 ? <SelectItem value='__none__'>不指定</SelectItem> : null}
+                {(accounts.data?.items ?? [])
+                  .filter((item) => item.status === 'active')
+                  .map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.displayName}（{item.username}
+                      {item.hasPassword ? '' : ' · 未保存口令'}）
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </div>
@@ -125,6 +134,7 @@ export function TrialDialog({
         <DialogFooter>
           <Button
             loading={saving}
+            disabled={usableAccounts.length > 0 && !targetAccountId}
             onClick={() => {
               const parsed = runInputSchema.safeParse(values)
               if (!parsed.success) {

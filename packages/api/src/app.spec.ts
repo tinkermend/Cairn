@@ -6,7 +6,8 @@ import { apiErrorSchema, REQUEST_ID_HEADER } from '@cairn/shared'
 import type { DbHandle } from '@cairn/db'
 import { AppModule } from './app.module'
 import { DB_HANDLE } from './db/db.module'
-import { listenForSupertest } from './__tests__/http-app'
+import { CHANGE_HINT } from './observe/change-hint.module'
+import { listenForSupertest, unusedChangeHint } from './__tests__/http-app'
 
 /**
  * 整应用装配测试。
@@ -25,9 +26,10 @@ describe('AppModule 完整装配', () => {
       .useValue({
         ping: vi.fn(async () => true),
         close: vi.fn(async () => {}),
-        db: {} as never,
-        pool: {} as never,
+        driver: 'postgres',
       } satisfies DbHandle)
+      .overrideProvider(CHANGE_HINT)
+      .useValue(unusedChangeHint)
       .compile()
 
     app = moduleRef.createNestApplication({ logger: false })
@@ -59,6 +61,8 @@ describe('AppModule 完整装配', () => {
     await request(app.getHttpServer()).get('/api/me').expect(401)
     await request(app.getHttpServer()).get('/api/console/accounts').expect(401)
     await request(app.getHttpServer()).get('/api/console/audit').expect(401)
+    await request(app.getHttpServer()).get('/api/console/audit/operations').expect(401)
+    await request(app.getHttpServer()).get('/api/console/audit/logins').expect(401)
     await request(app.getHttpServer()).get('/api/targets').expect(401)
     await request(app.getHttpServer()).get('/api/scenarios').expect(401)
     await request(app.getHttpServer()).get('/api/runs').expect(401)

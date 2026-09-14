@@ -10,7 +10,7 @@ import {
   registerWorker,
   targets,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import type { Step } from '@cairn/shared'
 import { ExecutionEngine } from '../engine/engine.js'
 import { LifecycleService } from './lifecycle.service'
@@ -158,7 +158,7 @@ function gatePoolConnect(handle: DbHandle, gate: Promise<void>, onClaim: () => v
     return origConnect().then((client) => {
       const query = client.query.bind(client)
       ;(client as { query: typeof query }).query = ((text: unknown, values?: unknown, cb?: unknown) => {
-        if (sqlText(text).includes('SKIP LOCKED')) {
+        if (/skip locked/i.test(sqlText(text))) {
           onClaim()
           return gate.then(() => query(text as never, values as never, cb as never))
         }

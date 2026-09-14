@@ -8,7 +8,7 @@ import { CircleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
 import { ApiRequestError } from '@/lib/api-client'
-import { toAuthUser } from '@/lib/auth'
+import { getLoginRedirect, toAuthUser } from '@/lib/auth'
 import { login } from '@/lib/auth-api'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -57,11 +57,13 @@ export function UserAuthForm({
     setIsLoading(true)
     try {
       const session = await login(data)
+      // 新会话不继承旧账号的缓存与未完成查询。
+      queryClient.clear()
       auth.setUser(toAuthUser(session.account))
       auth.setAccessToken(session.accessToken)
       queryClient.setQueryData(['me'], { account: session.account })
       toast.success(`欢迎回来，${session.account.displayName}`)
-      navigate({ to: redirectTo || '/', replace: true })
+      await navigate({ to: getLoginRedirect(redirectTo), replace: true })
     } catch (error) {
       setSubmitError(
         error instanceof ApiRequestError
@@ -77,7 +79,7 @@ export function UserAuthForm({
     <Form {...form}>
       <form
         onSubmit={form.handleSubmit(onSubmit)}
-        className={cn('grid gap-5', className)}
+        className={cn('grid gap-6', className)}
         noValidate
         {...props}
       >
@@ -92,7 +94,7 @@ export function UserAuthForm({
                   type='text'
                   placeholder='请输入账号'
                   autoComplete='username'
-                  className='h-12 rounded-lg px-4 text-section md:text-body'
+                  className='h-12 px-4 text-section md:text-section'
                   {...field}
                 />
               </FormControl>
@@ -110,7 +112,8 @@ export function UserAuthForm({
                 <PasswordInput
                   placeholder='请输入密码'
                   autoComplete='current-password'
-                  inputClassName='h-12 rounded-lg px-4 pe-12 text-section md:text-body'
+                  className='[&_button]:w-12'
+                  inputClassName='h-12 px-4 pe-12 text-section md:text-section'
                   {...field}
                 />
               </FormControl>
@@ -126,7 +129,7 @@ export function UserAuthForm({
         ) : null}
         <Button
           type='submit'
-          className='mt-1 h-12 w-full rounded-lg text-[15px] shadow-action'
+          className='mt-2 h-12 w-full text-section'
           loading={isLoading}
         >
           {isLoading ? '正在登录…' : '登录'}

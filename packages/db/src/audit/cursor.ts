@@ -1,4 +1,4 @@
-import { badRequest } from '../runs/errors.js'
+import { failure } from '../runs/errors.js'
 
 export function encodeAuditCursor(createdAt: Date, id: string): string {
   return Buffer.from(`${createdAt.toISOString()}|${id}`, 'utf8').toString('base64url')
@@ -14,6 +14,6 @@ export function decodeAuditCursor(cursor: string): { createdAt: Date; id: string
     if (Number.isNaN(createdAt.getTime()) || !id) throw new Error('bad cursor')
     return { createdAt, id }
   } catch {
-    throw badRequest('INVALID_CURSOR', '游标无效')
+    throw failure('bad_request', '游标无效')
   }
 }

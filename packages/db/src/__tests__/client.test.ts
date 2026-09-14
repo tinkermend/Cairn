@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { dbEnvSchema } from '@cairn/shared'
-import { createDb, type DbHandle } from '../client.js'
+import { postgresEnvSchema as dbEnvSchema } from '../test-entry.js'
+import { createDb, type DbHandle } from '../test-entry.js'
 
 // 从仓库根的 .env 读取真实连接信息。.env 不入库，
 // CI 上没有它时整组集成测试跳过而非失败。

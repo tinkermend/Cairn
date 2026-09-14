@@ -82,7 +82,7 @@ AI 产品层至少区分：
 
 ## 6. Execution Engine
 
-Execution Engine 是识途核心自研运行时，负责：
+Execution Engine 是识途负责领域语义与可靠运行的核心运行时，允许复用成熟实现；平台必须掌握以下职责与契约：
 
 - 加载 Run Snapshot；
 - 顺序调度 Step；
@@ -110,7 +110,7 @@ Executor Executor Executor
 
 ## 7. Browser Runtime
 
-Browser Runtime 是识途核心自研基础设施。
+Browser Runtime 是识途统一纳管的核心基础设施，优先复用成熟浏览器能力，并由平台维护会话、所有权与可靠运行边界。
 
 Playwright 是浏览器自动化核心能力；CDP 等连接方式只是 Browser Runtime 的实现策略，不属于产品不变量。
 
@@ -140,7 +140,7 @@ Run 必须冻结足以解释当时 AI 行为的配置，包括 instruction、Ste
 
 > Scenario 保存“要做什么”；Run Snapshot 保存“当时以什么配置执行”；Evidence 保存“实际上发生了什么”。
 
-Midscene 可以作为第一阶段默认 AI Executor 实现，但识途核心模型不得依赖 Midscene 专有语义。模型访问经过 Model Router，不允许业务 Step 与具体模型供应商形成不可替换的直接绑定。
+Midscene 可以作为第一阶段默认 AI Executor 实现，但识途核心模型不得依赖 Midscene 专有语义，也不要求同时接入多个 AI 框架。模型访问经过可替换的受控适配，首期只需满足配置冻结、权限、预算与可观测要求，不要求先建设通用 Model Router；业务 Step 不得与具体模型供应商形成不可替换的直接绑定。
 
 ## 10. Evidence 与可复盘性
 
@@ -150,11 +150,11 @@ Evidence 是产品能力，不是附属日志。
 
 Playwright Trace 用于浏览器级调试，但不得取代平台自己的 Step Evidence。完整 Trace 按 Evidence Policy 保留，例如 Debug Run、Failure、Retry/异常 Attempt 或显式要求时保留，而不是所有成功 Run 永久保存。
 
-结构化状态、索引和对象指针存 PostgreSQL；截图、Trace、报告等大对象存 S3 兼容对象存储。对象存储不得作为队列、锁服务或事务事实源。
+结构化状态、索引和对象指针存具有事务与完整性约束的持久化数据库；截图、Trace、报告等大对象通过 ObjectStore 存储（本地目录或 S3 兼容存储）。对象存储不得作为队列、锁服务或事务事实源。
 
 ## 11. Run 状态是真相
 
-Run、StepRun、Attempt 的持久化状态以 PostgreSQL 为事实源。
+Run、StepRun、Attempt 的持久化状态以数据库为事实源。数据库实现可以替换，但必须通过相同的原子提交、完整性约束、所有权隔离与故障恢复验收。
 
 Worker 必须持续持久化关键状态。WebSocket、SSE、PG NOTIFY、API 内存和 Worker 内存都不是运行状态事实源。
 
@@ -170,17 +170,17 @@ Worker 必须持续持久化关键状态。WebSocket、SSE、PG NOTIFY、API 内
 
 Worker 与 API 通过持久化数据和通知机制协作，不通过双向业务回调耦合。
 
-MVP 使用 PostgreSQL 持久化 Run 队列并通过原子领取机制支持多 Worker。具体队列实现是阶段性技术选择；长期不变量是：**调度必须持久化、可恢复、支持原子领取，并避免同一任务被多个 Worker 同时成功持有。**
+Run 队列持久化在数据库中，通过原子领取机制协调 Worker。数据库锁、条件更新及约束的具体实现由持久化适配层负责。各数据库的部署与并发支持范围必须明确；长期不变量是：**调度必须持久化、可恢复、支持原子领取，并避免同一任务被多个 Worker 同时成功持有。**
 
 ## 13. 实时通信
 
-Web 获取 Run 实时进度采用 SSE。PostgreSQL 状态表是事实源，PG NOTIFY 只作为变化提示：
+Web 获取 Run 实时进度采用 SSE。数据库状态表是事实源，通知通道（例如 PG NOTIFY）只作为变化提示：
 
 ```text
-Worker → Persist State → NOTIFY → API → SSE → Web
+Worker → Persist State → Change Hint → API → SSE → Web
 ```
 
-丢失 NOTIFY 或 SSE 不得造成状态丢失。客户端重新连接后必须能通过 API 恢复完整状态。
+丢失变化提示或 SSE 不得造成状态丢失。客户端重新连接后必须能通过 API 恢复完整状态。
 
 禁止用高频轮询作为正常 Run 实时进度机制；断线恢复查询不属于轮询。
 
@@ -233,7 +233,7 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 15. Secret Backend 可替换。
 16. AI Executor 与具体 AI 框架、模型供应商解耦。
 17. 关键跨边界契约必须可运行时验证。
-18. 必须遵守的约束最终都应由代码、Schema、数据库约束、状态机或自动化检查卡住，而不是依赖自觉。
+18. 必须遵守的约束最终都应由代码、Schema、数据库约束、状态机或自动化检查卡住，而不是依赖自觉。数据库替换不得削弱这些保障；业务层不得依赖具体数据库驱动、SQL 方言或物理表定义。
 19. 平台 API 对外只使用 GET 与 POST。
 
 ## 19. 硬禁区
@@ -266,14 +266,14 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 | API | NestJS |
 | ORM | Drizzle |
 | Runtime Schema | Zod |
-| Database | PostgreSQL 16+ |
-| MVP Queue | PostgreSQL + `FOR UPDATE SKIP LOCKED` |
+| Database | PostgreSQL 16+（现有）；MySQL / SQLite 按适配实现与兼容验收开放 |
+| MVP Queue | 数据库持久化队列 + 原子领取（PG 当前采用 `FOR UPDATE SKIP LOCKED`） |
 | Object Storage | S3 Compatible（MinIO / OSS 等） |
 | Browser Automation | Playwright |
-| Browser Runtime | 自研 Session / Lease Manager |
-| Execution Runtime | 自研 Execution Engine + Executor Registry |
+| Browser Runtime | 平台纳管 Session / Lease Manager，复用成熟浏览器能力 |
+| Execution Runtime | 平台维护 Execution Engine + Executor Registry，成熟实现可复用 |
 | AI Executor | Midscene（第一阶段默认实现） |
-| Model Routing | 自研 Model Router |
+| Model Routing | 最小受控模型访问适配，按需扩展 Router |
 | Secret | SecretProvider abstraction |
 | Frontend | React 19 + Vite |
 | Server State | TanStack Query |
@@ -285,7 +285,7 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 | Scenario UI | Sequence Editor（MVP） |
 | Advanced Flow | `@xyflow/react`（预留） |
 | Realtime | SSE |
-| Change Hint | PostgreSQL NOTIFY |
+| Change Hint | 可替换的提交后变化提示；PostgreSQL NOTIFY 为 PG 实现选项 |
 | Logging | pino |
 | Telemetry | OpenTelemetry |
 | Browser Evidence | Playwright Trace（策略化保留） |
@@ -303,7 +303,9 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 
 ## 22. 文档编写
 
-- 在进行大的功能模块开发之前先写方案文档放在 docs/spec 目录下, 用户审查通过后再进行开发, 方案文档可以作为 PR 的基础, 也可以作为后续开发的参考,同时在 docs/spec README.md 中记录方案文档的目录和链接, 方便用户查阅。
+- [`docs/spec/`](docs/spec/README.md) 专门存放技术方案，包括设计、范围、接口契约、实施约定和验收标准。大的功能模块开发前先写方案，经用户审查通过后再开发，并在该目录的 README 中登记链接。
+- 代码 Review、实施复查、测试验证与验收结果等报告统一放在 [`docs/reviews/`](docs/reviews/README.md)，并在该目录的 README 中登记；报告引用对应技术方案，不放入 `docs/spec/`。
+- 技术方案可保留简短的实施状态及报告链接；详细问题清单、复现过程、测试结果与整改记录放在报告中。验收标准属于方案，验收执行结果属于报告。
 - 每次按方案开发完成 写关键信息到 CHANGELOG 日志中格式为: 日期--一句话总结说明
 - 联调 / L3 用的外部目标系统清单见 [`docs/targets/`](docs/targets/README.md)。具体 URL、账号、口令不是宪法不变量，只写在那份清单里，并在控制台登记为 Target / TargetAccount。
 
@@ -311,16 +313,18 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 
 `docs/arch/` 展开宪法中的领域与运行时边界，本身不是宪法不变量。当前五份设计如下：
 
-1. [识途智能仿真平台总体架构设计方案 v1.0](docs/arch/识途智能仿真平台总体架构设计方案_v1.0.md)
+1. [识途智能仿真平台总体架构设计方案 v1.1](docs/arch/识途智能仿真平台总体架构设计方案_v1.0.md)
    给出平台总体逻辑架构与七个一级架构域，并锁定 Authoring、Execution、Intelligence、Perception、Browser Runtime、Knowledge 与 Platform 之间的跨模块原则。
 2. [识途核心领域模型与数据架构设计 v1.0](docs/arch/02_识途核心领域模型与数据架构设计_v1.0.md)
    冻结 Target / TargetAccount / ScenarioVersion / Step / Run / StepRun / Attempt / Evidence / BrowserSession / 双 Lease / BusinessAction，以及 Version、Snapshot、Fencing 与一致性原则。
 3. [识途 Execution 与 Browser Runtime 详细设计 v1.0](docs/arch/03_识途Execution与Browser_Runtime详细设计_v1.0.md)
    重点解决 Execution Engine、Executor、Session 复用、Worker Affinity、RunLease、SessionLease、Fencing、故障恢复、副作用步骤、Capacity/Placement；复杂 iframe 已纳入 Browser Surface，Playwright FrameLocator 作为这一层的底层能力。
-4. [识途 Scenario Authoring 与 IR 详细设计 v1.0](docs/arch/04_识途Scenario_Authoring与IR详细设计_v1.0.md)
+4. [识途 Scenario Authoring 与 IR 详细设计 v1.1](docs/arch/04_识途Scenario_Authoring与IR详细设计_v1.0.md)
    重点解决 Recorder 不等于脚本生成、Scenario IR、Excel/CSV 导入、自然语言、手工编排、术语、Business Action、参数化、断言生成、Scenario Analyzer 与 Trial/Fix Loop。
-5. [识途 MVP 范围与开发实施路线图 v1.0](docs/arch/05_识途MVP范围与开发实施路线图_v1.0.md)
-   明确 In Scope / Out of Scope、9 个 PoC Gate、6 个 Vertical Slice、里程碑、验收指标和第一批 ADR，防止第一版越做越大。
+5. [识途 MVP 范围与验收基线 v1.2](docs/arch/05_识途MVP范围与开发实施路线图_v1.0.md)
+   明确 In Scope / Out of Scope、风险验证主题、验收范围、指标和第一批 ADR；保留原文件路径，不再维护开发排序。
+
+开发顺序、里程碑与交付 Gate 只维护在[识途开发路线与工程实施计划](docs/plan/识途开发路线与工程实施计划.md#5-当前交付顺序与验收样例)，其他分析和原型文档引用该计划，不另列有效排期。
 
 ## 24. UI 的核心原则
 
@@ -346,6 +350,8 @@ Scenario Studio、Step Editor、Run Detail/Debugger、Evidence Viewer、Browser 
 - [UI 设计语言](docs/design/front/design-language.md)：色彩、字体、间距、布局、圆角、图标、图表与无障碍基线。
 - [组件设计规范](docs/design/front/components.md)：基础组件清单、尺寸、状态、交互、反馈与组合规则。
 - [前端落地约定](docs/design/front/implementation.md)：现有脚手架的复用方式、Token 映射、验收与维护方式。
+- [AI 前端开发工作流](docs/design/front/ai-workflow.md)：前端任务先读；确定布局与复用组件，执行自动检查、浏览器评审和局部纠偏。
+- [前端验收 skill](.agents/skills/shitu-frontend-acceptance/SKILL.md)：新页面、交互、布局与公共 UI 改造按影响面验收；纯文案、无语义变化的格式或孤立装饰小改不自动触发。
 - [Design Token](docs/design/front/tokens.css) 与 [组件视觉样本](docs/design/front/preview.html)：可复用的变量定义与直观参考。
 
 这些文档是当前前端设计基线，不扩充业务范围。具体颜色、尺寸和组件实现可在规范中演进，不作为宪法不变量；具体功能模块仍按第 22 节另行编写开发方案。

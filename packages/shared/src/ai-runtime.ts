@@ -9,7 +9,7 @@ import {
   type PlatformConfigDocument,
 } from './platform-config.js'
 import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
-import { AI_STEP_TYPES, EXECUTABLE_STEP_TYPES, hasAiSteps, isAiStepType } from './step.js'
+import { AI_STEP_TYPES, EXECUTABLE_STEP_TYPES, hasAiSteps, isAiStepType, type ExecutionPolicy } from './step.js'
 import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
 
 export const BROWSER_AI_ADAPTER = 'midscene' as const
@@ -138,7 +138,7 @@ export function scenarioCapabilitiesFor(input: {
 export function resolveAiExecutionFromPlatform(
   steps: readonly { type: string; policy?: { timeoutMs?: number; retryLimit?: number } }[],
   document: PlatformConfigDocument,
-  extras: { revision: number; hangWaitMs: number },
+  extras: { revision: number; hangWaitMs: number; policy?: ExecutionPolicy },
 ) {
   if (!hasAiSteps(steps)) return undefined
   if (!document.browserAi.enabled) {
@@ -148,7 +148,7 @@ export function resolveAiExecutionFromPlatform(
   if (!ai.baseUrl || !ai.model || !ai.modelFamily || !ai.secretRef) {
     throw Object.assign(new Error('浏览器仿真 AI 配置不完整'), { code: 'AI_CONFIG_INVALID' })
   }
-  const snapshotPolicy = resolvePlatformExecutionPolicy(undefined, document.execution)
+  const snapshotPolicy = resolvePlatformExecutionPolicy(extras.policy, document.execution)
   assertAiRequestTimeoutFitsSteps(steps, snapshotPolicy, ai.requestTimeoutMs)
   return aiExecutionConfigSchema.parse({
     adapter: BROWSER_AI_ADAPTER,

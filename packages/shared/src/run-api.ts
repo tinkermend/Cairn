@@ -1,10 +1,18 @@
 import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { executionErrorSchema } from './runtime-error.js'
-import { runInputSchema, runSnapshotSchema, runStatusSchema, stepRunStatusSchema, attemptStatusSchema } from './run.js'
+import {
+  isFinishedRunStatus,
+  runInputSchema,
+  runSnapshotSchema,
+  runStatusSchema,
+  stepRunStatusSchema,
+  attemptStatusSchema,
+  type RunStatus,
+} from './run.js'
 import { sessionPolicyOverrideSchema, sessionStatusSchema } from './session.js'
 import { executionPolicySchema } from './step.js'
-import { evidenceMetadataSchema, runEvidenceStatusSchema } from './evidence.js'
+import { evidenceMetadataSchema, runEvidenceStatusSchema, type RunEvidenceStatus } from './evidence.js'
 import { evidencePolicySchema } from './evidence-policy.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
@@ -13,8 +21,17 @@ export const RUN_ERROR_CODES = [
   'RUN_IDEMPOTENCY_CONFLICT',
   'RUN_ACCOUNT_MISMATCH',
   'RUN_ACCOUNT_DISABLED',
+  'RUN_ACCOUNT_REQUIRED',
   'RUN_NOT_REVIEWABLE',
   'RUN_NOT_WAITING_FOR_AUTH',
+  'WORKER_UNREACHABLE',
+  'WORKER_GENERATION_MISMATCH',
+  'AUTH_HOLD_UNBOUND',
+  'AUTH_CONTROL_HELD',
+  'AUTH_CONTROL_INVALID',
+  'AUTH_NOT_VERIFIED',
+  'AUTH_INPUT_REJECTED',
+  'PAGE_STALE',
   'EVIDENCE_NOT_FOUND',
   'EVIDENCE_NOT_AVAILABLE',
   'AI_DISABLED',
@@ -90,6 +107,7 @@ export const runPlacementSchema = z.strictObject({
 export type RunPlacement = z.infer<typeof runPlacementSchema>
 
 export const runSummarySchema = z.object({
+  source: z.object({ kind: z.enum(['console', 'service']), callerId: entityIdSchema.optional(), credentialId: entityIdSchema.optional() }).optional(),
   id: entityIdSchema,
   status: runStatusSchema,
   cancelRequested: z.boolean(),
@@ -159,3 +177,19 @@ export const runEvidenceListResponseSchema = z.object({
   nextCursor: nextCursorSchema,
 })
 export type RunEvidenceListResponse = z.infer<typeof runEvidenceListResponseSchema>
+
+export const runObservationSchema = z.strictObject({
+  run: runDetailSchema,
+  evidence: runEvidenceListResponseSchema,
+  eventSeq: z.number().int().nonnegative(),
+  earliestEventSeq: z.number().int().nonnegative(),
+})
+export type RunObservation = z.infer<typeof runObservationSchema>
+
+/** SSE 可以 complete 并停止自动重连。 */
+export function isRunObservationComplete(input: {
+  status: RunStatus
+  evidenceStatus: RunEvidenceStatus
+}): boolean {
+  return isFinishedRunStatus(input.status) && input.evidenceStatus !== 'PENDING'
+}

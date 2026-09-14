@@ -1,0 +1,122 @@
+import { describe, expect, it, vi } from 'vitest'
+import { BrowserSessionManager } from './session-manager'
+import { startManagedBrowserHttp } from '../internal/http-server'
+import { DEV_INTERNAL_AUTH_SECRET, requireInternalSecret, signInternalHeaders, workerInternalPath } from '@cairn/shared'
+
+const state = vi.hoisted(() => ({ latest: {} as Record<string, unknown> }))
+vi.mock('@cairn/db', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  heartbeatAuthControl: async () => ({ epoch: 1, expiresAt: new Date(Date.now() + 30_000) }),
+  getSessionById: async () => state.latest,
+}))
+
+function rig() {
+  let release!: () => void
+  const sessionId = '00000000-0000-4000-8000-000000000001'
+  const runId = '00000000-0000-4000-8000-000000000002'
+  const actorId = '00000000-0000-4000-8000-000000000003'
+  const pageId = '00000000-0000-4000-8000-000000000004'
+  const insertText = vi.fn(async () => undefined)
+  const page = {
+    isClosed: () => false,
+    viewportSize: () => ({ width: 1280, height: 720 }),
+    url: () => 'https://shop.example.com/login',
+    locator: () => ({ count: async () => 0 }),
+    keyboard: { insertText },
+  }
+  const session = { id: sessionId, generation: 1, authControlEpoch: 1 }
+  state.latest = {
+    ...session,
+    authControlActorId: actorId,
+    authControlTokenHash: 'new-token-hash',
+    authControlExpiresAt: new Date(Date.now() + 30_000),
+  }
+  const live = {
+    sessionId, autoInputClosed: true,
+    serial: new Promise<void>((resolve) => { release = resolve }),
+    receipts: new Map(), lastSeq: 0, controlEpoch: 1,
+    pages: new Map([[pageId, { pageId, runId, documentEpoch: 1, page }]]),
+    screencasts: new Map(), allowedOrigins: ['https://shop.example.com'],
+  }
+  const manager = Object.create(BrowserSessionManager.prototype)
+  Object.assign(manager, {
+    dbHandle: {}, workerInstanceId: 'test-worker',
+    requireLiveAuthSession: async () => ({ session, live, run: { status: 'WAITING_FOR_AUTH' } }),
+  })
+  const command = {
+    type: 'insert_text' as const, text: 'REVIEW_TEST_ONLY',
+    commandId: '00000000-0000-4000-8000-000000000005', seq: 1,
+    pageRef: { sessionId, sessionGeneration: 1, pageId, documentEpoch: 1 },
+    frameId: 'test-frame', viewport: { width: 1280, height: 720 },
+  }
+  return { manager, runId, actorId, command, release, insertText }
+}
+
+describe('ABC independent review reproductions', () => {
+  it('disconnecting the viewer must abort the Worker frame subscription', async () => {
+    let frameSignal: AbortSignal | undefined
+    let finishFeed: (() => void) | undefined
+    const instanceId = '00000000-0000-4000-8000-000000000033'
+    const http = await startManagedBrowserHttp({
+      host: '127.0.0.1', port: 0, secret: DEV_INTERNAL_AUTH_SECRET,
+      workerInstanceId: instanceId,
+      sessions: {
+        subscribeRunFrames: async ({ signal, onFrame }: { signal: AbortSignal; onFrame: (x: unknown) => void }) => {
+          frameSignal = signal
+          await new Promise<void>((resolve) => {
+            finishFeed = resolve
+            signal.addEventListener('abort', resolve as never, { once: true })
+            onFrame({ testFrame: true })
+          })
+        },
+      } as never,
+    })
+    const addr = http.server.address()
+    if (!addr || typeof addr === 'string') throw new Error('no port')
+    const path = workerInternalPath('/frames')
+    const headers = await signInternalHeaders(requireInternalSecret(DEV_INTERNAL_AUTH_SECRET), {
+      method: 'GET', path, body: '', expiresUnix: Math.floor(Date.now() / 1000) + 10,
+      actorId: '00000000-0000-4000-8000-000000000031',
+      runId: '00000000-0000-4000-8000-000000000032',
+      sessionGeneration: 1, workerInstanceId: instanceId,
+    })
+    const controller = new AbortController()
+    try {
+      const response = await fetch(`http://127.0.0.1:${addr.port}${path}`, { headers, signal: controller.signal })
+      await response.body!.getReader().read()
+      controller.abort()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(frameSignal?.aborted).toBe(true)
+    } finally {
+      controller.abort()
+      finishFeed?.()
+      http.server.closeAllConnections()
+      await http.close()
+    }
+  })
+
+  it('concurrent duplicate input must execute only once', async () => {
+    const r = rig()
+    const input = { runId: r.runId, actorId: r.actorId, token: 'old-token', command: r.command }
+    const first = r.manager.inputRunAuthControl(input)
+    const second = r.manager.inputRunAuthControl(input)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    r.release()
+    await Promise.all([first, second])
+    expect(r.insertText).toHaveBeenCalledTimes(1)
+  })
+
+  it('queued input from the old epoch must be rejected after same actor reacquires', async () => {
+    const r = rig()
+    const pending = r.manager.inputRunAuthControl({
+      runId: r.runId, actorId: r.actorId, token: 'old-token', command: r.command,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    state.latest.authControlEpoch = 2
+    r.release()
+    const outcome = await Promise.allSettled([pending])
+    expect(outcome[0].status).toBe('rejected')
+    if (outcome[0].status === 'rejected') expect(outcome[0].reason.code).toBe('AUTH_CONTROL_INVALID')
+    expect(r.insertText).not.toHaveBeenCalled()
+  })
+})

@@ -47,7 +47,7 @@ flowchart LR
 3. **离线（D0 Gate）**：假模型 + 屏障，确定性验证取消、残留、受管 Page、模型调用计数、编造检测。不依赖真实 VL、不因模型采购卡住 D0。
 4. **在线（非 Gate）**：有 `CAIRN_S06_ONLINE=1` 且显式 `modelConfig` 时加跑能力样本；失败记限制。L3 / DPM 默认不跑 AI（真实页面截图会外发）。
 5. S07-lite（≤1 日）：自建无头注入，假 LLM，`customFetch` / `exposeBinding` 经 Worker；输出 SPI 约束清单。不做采用结论。
-6. 每条离线结论可重跑。实验记录含 HEAD、依赖版本、命令和失败分类。工作区未提交时写 `HEAD` + dirty，并保存 `git diff HEAD` 补丁，不假装有发布提交号。
+6. 每条离线结论可重跑。采用 / 限制 / 拒绝、命令和失败分类写回本文，不另开与方案平级的实验记录。工作区未提交时写 `HEAD` dirty，不假装有发布提交号。
 
 ### 非目标
 
@@ -122,7 +122,7 @@ SDK 取 npm `@midscene/web@1.12.6`（与 vendor 快照同版本）。不把 vend
 
 ### D6. popup 只记录，不进 S06 Gate
 
-对照默认开 / 关 `forceSameTabNavigation` 的残留与跳转，写入实验记录。产品适配层固定关闭强制同 Tab。页面交接产品化归后续 P5 方案，不在 D0 假装已修。
+对照默认开 / 关 `forceSameTabNavigation` 的残留与跳转，写入本文落地结论。产品适配层固定关闭强制同 Tab。页面交接产品化归后续 P5 方案，不在 D0 假装已修。
 
 ### D7. 平台在动作边保证「abort 后零新动作」
 
@@ -207,9 +207,9 @@ lite 要求：
 1. 在 `/popup` 上用规则 `click` 打开子窗，行为与未创建 Agent 时一致（子窗在、当前页不 `goto` 子窗 URL）。
 2. `REUSE_PAGE` 的下一 Run 没有 popup 监听和 select 样式残留。
 
-### D16. 实验记录
+### D16. 结论写回本文，不另开文档
 
-问题和假设；HEAD（允许 dirty，但须保存 `git diff HEAD` 补丁并记摘要，保证可复现）；npm / vendor 版本；环境；页面；步骤；判据；原始结果；失败分类；限制；决策；关联阶段。缺项不得把 S06 标完成。
+Spike 的采用 / 限制 / 拒绝、可重跑命令和失败分类写进本文 §9 与落地结论。可重跑证据在测试里。不在 `docs/spec/` 再开一份同级「实验记录」。普通功能方案落地后只改状态与 CHANGELOG，不套用本条。
 
 ## 5. 夹具与样本
 
@@ -280,7 +280,7 @@ lite 要求：
 
 | 编号 | 问题 | 决策 | 开放 | 关闭 | 证据 |
 | --- | --- | --- | --- | --- | --- |
-| S06 离线 | 适配层能否让 Midscene 服从受管 Page | 限制采用 | 动作边 abort/丢租、显式 modelConfig、安全标志构造、编造检测、REUSE_PAGE 无残留 | 完整 aiAct 假响应回放、在线 VL、对象 context 直接 fill.from | [实验记录](2026-09-13-s06-managed-page.md)；`packages/worker/src/ai/midscene/*.spec.ts` |
+| S06 离线 | 适配层能否让 Midscene 服从受管 Page | 限制采用 | 动作边 abort/丢租、显式 modelConfig、安全标志构造、编造检测、REUSE_PAGE 无残留 | 完整 aiAct 假响应回放、在线 VL、对象 context 直接 fill.from | §11；`packages/worker/src/ai/midscene/*.spec.ts` |
 | S06 在线 | 真 VL 在夹具上的能力 | 未跑 | | 全部在线类别 | 需 `CAIRN_S06_ONLINE=1` |
 | S07-lite | 页内 Agent 的 SPI 约束 | 已记录，无采用结论 | 无 | 真模型 / 凭据代理 / 分类评估 | `packages/worker/src/ai/page-agent/` |
 
@@ -290,4 +290,18 @@ lite 要求：
 - 2026-09-13：复用优先，S07 / Stagehand 改为条件触发。
 - 2026-09-13：吸收评审。问法改为适配层；D7 改动作边 + 屏障；残留与 REUSE_PAGE；D8 编造与 Engine 缺口；D9 显式 modelConfig；D4 三项检查与真实 PG；S07-lite；D0 归属表与时限；popup 退出 Gate；离线先于在线。
 - 2026-09-13：落地离线 Gate 与 S07-lite。Worker `src/ai/` 骨架、`@midscene/web@1.12.6`（从 `playwright/agent` 入口，避开 `@playwright/test`）、夹具事件日志。S06 记限制采用。
-- 2026-09-13：复查补齐 D16 实验记录、`.env.example` 改为 `CAIRN_S06_*`、`setMidsceneRunDir`、D13 跨包检查、离线样本 3–4/6/8–9 与 CSP binding。
+- 2026-09-13：复查补齐 `.env.example` 改为 `CAIRN_S06_*`、`setMidsceneRunDir`、D13 跨包检查、离线样本 3–4/6/8–9 与 CSP binding。
+- 2026-09-13：落地结论并回本文，删除与方案平级的实验记录。
+
+## 11. 落地结论
+
+提交 `d111800`。适配层依赖 Midscene npm `1.12.6`（`@midscene/web` / `core` / `shared`）。
+
+可复跑（在 `packages/worker`，避免仓根 `pnpm --filter` 触发 ignored `sharp` 构建）：
+
+```text
+npx vitest run src/ai/page-agent/inpage-binding.spec.ts src/ai/midscene src/engine/engine.boundary.spec.ts src/engine/engine.browser.spec.ts
+node ../../tools/check-deps.mjs
+```
+
+2026-09-13 本机：7 个文件、44 条通过；`check-deps` 通过。未跑 `CAIRN_S06_ONLINE=1`。未做完整 `aiAct` 假响应回放——§9 只能写「动作边检查成立」，不能写「aiAct 在 abort 后零新动作」。

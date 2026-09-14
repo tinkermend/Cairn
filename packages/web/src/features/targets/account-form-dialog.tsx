@@ -1,13 +1,12 @@
 import { useState } from 'react'
+import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
-import { z } from 'zod'
 import { TARGET_STATUSES, type TargetAccountDto } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { createTargetAccount, updateTargetAccount } from '@/lib/targets-api'
-import { PasswordInput } from '@/components/password-input'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -33,6 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { PasswordInput } from '@/components/password-input'
 import { TARGET_STATUS_LABELS } from './labels'
 
 const formSchema = z.object({
@@ -73,7 +73,9 @@ export function AccountFormDialog({
 
   const invalidate = async () => {
     await queryClient.invalidateQueries({ queryKey: ['target', targetId] })
-    await queryClient.invalidateQueries({ queryKey: ['target', targetId, 'accounts'] })
+    await queryClient.invalidateQueries({
+      queryKey: ['target', targetId, 'accounts'],
+    })
     await queryClient.invalidateQueries({ queryKey: ['targets'] })
   }
 
@@ -85,7 +87,9 @@ export function AccountFormDialog({
           displayName: values.displayName,
           username: values.username,
           status: values.status,
-          ...(values.password.trim() === '' ? {} : { password: values.password }),
+          ...(values.password.trim() === ''
+            ? {}
+            : { password: values.password }),
         })
         toast.success('目标账号已更新')
       } else {
@@ -93,7 +97,9 @@ export function AccountFormDialog({
           displayName: values.displayName,
           username: values.username,
           status: values.status,
-          ...(values.password.trim() === '' ? {} : { password: values.password }),
+          ...(values.password.trim() === ''
+            ? {}
+            : { password: values.password }),
         })
         toast.success('目标账号已添加')
       }
@@ -122,8 +128,13 @@ export function AccountFormDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className='max-w-lg'>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!saving) onOpenChange(next)
+      }}
+    >
+      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-lg'>
         <DialogHeader>
           <DialogTitle>{isEdit ? '编辑目标账号' : '添加目标账号'}</DialogTitle>
           <DialogDescription>
@@ -212,11 +223,16 @@ export function AccountFormDialog({
                 <span />
               )}
               <div className='flex gap-2'>
-                <Button type='button' variant='outline' onClick={() => onOpenChange(false)}>
+                <Button
+                  type='button'
+                  variant='outline'
+                  disabled={saving}
+                  onClick={() => onOpenChange(false)}
+                >
                   取消
                 </Button>
-                <Button type='submit' disabled={saving}>
-                  {saving ? '保存中…' : '保存'}
+                <Button type='submit' loading={saving}>
+                  保存
                 </Button>
               </div>
             </DialogFooter>

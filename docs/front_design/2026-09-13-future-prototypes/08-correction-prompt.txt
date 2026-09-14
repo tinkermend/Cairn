@@ -1,0 +1,16 @@
+Use case: precise-object-edit. Input image is the EDIT TARGET, a Chinese 识途 import page. Keep the complete layout, typography, palette, shell and controls. Correct its inconsistent data. All changes below are required:
+File summary must say "5 行", not 8.
+Left spreadsheet has EXACTLY FIVE rows, with columns 行号 / 序号 / 操作步骤 / 测试数据 / 预期结果 / 前置条件:
+1 | 1 | 打开订单列表 | — | 显示订单列表 | 已登录
+2 | 2 | 输入订单号 | PO-2026-0913 | 显示输入值 | 在订单列表
+3 | 3 | 点击查询 | — | 显示查询结果 | 已输入订单号
+4 | 4 | 检查金额 | — | 金额大于零 | 已查询到订单
+5 | 5 | 检查状态 | — | 检查正常 | 已查询到订单
+Remove login/logout and all extra original rows, including credential rows. Highlight rows 4 and 5 pale blue.
+Right heading exactly "步骤预览（共 5 步）". Five numbered candidates: 1 打开订单列表; 2 填写订单号 (retaining {{inputs.orderNo}}); 3 点击查询; 4 断言 金额 > 0; 5 断言 状态 = 已审批. Their respective source tags MUST be 来源：第 1 行 / 来源：第 2 行 / 来源：第 3 行 / 来源：第 4 行 / 来源：第 5 行.
+The orange resolved diagnostic must say "第 5 行：‘检查正常’缺少明确条件", with "已解决" and filled expected-condition field "订单状态为已审批".
+Bottom caption exactly "5 行已解析 · 0 个阻断项 · 创建后进入 Studio".
+Retain "已识别 1 个参数、2 条断言", column mappings, target binding, review stepper, sole solid blue 创建草稿 button.
+Ordinary deterministic step icons are blue; purple only in the AI suggestion block.
+Top-left brand symbol should be a blue rounded square containing a white observation circle, pale-blue inner circle, four blue outlined nodes connected by a rising path, not a bar chart.
+Return ONE corrected full UI image, crisp Simplified Chinese. Keep all other content unchanged.

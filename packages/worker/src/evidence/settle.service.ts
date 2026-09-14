@@ -19,13 +19,13 @@ export class EvidenceSettleService {
   ) {}
 
   async settleExpired(): Promise<{ marked: number }> {
-    const expired = await settleExpiredPendingEvidence(this.handle.db, this.opts())
-    const finished = await settleFinishedPendingRuns(this.handle.db, this.opts())
+    const expired = await settleExpiredPendingEvidence(this.handle, this.opts())
+    const finished = await settleFinishedPendingRuns(this.handle, this.opts())
     return { marked: expired.marked + expired.committed + finished.settled }
   }
 
   async settleRun(runId: string): Promise<void> {
-    await settleRunEvidence(this.handle.db, runId, this.opts())
+    await settleRunEvidence(this.handle, runId, this.opts())
   }
 
   private opts() {

@@ -20,6 +20,7 @@ import { ActionGate } from './midscene/action-gate.js'
 import {
   createFormalMidsceneAgent,
   midsceneModelConfig,
+  validateBrowserAiModelFamily,
   type FormalAgentHandle,
 } from './midscene/formal-agent.js'
 import type { OpenAiLike } from './midscene/model-client.js'
@@ -43,6 +44,7 @@ export function createAiPort(input: {
           assertPageScope(page.url(), command)
           const pagesBefore = page.context().pages().length
           const apiKey = await input.resolveApiKey(evidence.config)
+          await validateBrowserAiModelFamily(evidence.config.modelFamily)
           const agent = await createFormalMidsceneAgent({
             page,
             gate,

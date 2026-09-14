@@ -1,23 +1,29 @@
+import type { EvidenceRow } from '../records.js'
+import { atomic, schemaFor } from '../native.js'
+import { updateRows } from '../native.js'
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import {
   EVIDENCE_INCOMPLETE_CODE,
   FINISHED_RUN_STATUSES,
   RUNTIME_SCHEMA_VERSION,
-  isBrowserStepType,
+  stepUsesBrowser,
   isFinishedRunStatus,
   resolveEvidencePolicy,
   shouldCaptureEvidence,
   type EvidenceMetadata,
   type EvidenceType,
+  type JsonValue,
   type RunEvidenceStatus,
   type RunSnapshot,
   type Step,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
-import { attempts, evidences, runs, stepRuns, type EvidenceRow } from '../schema/execution.js'
+import { attempts, evidences, runs, stepRuns } from '../schema/execution.js'
 import { storedObjects } from '../schema/objects.js'
 import { toEvidenceMetadata } from './evidence-map.js'
+import { lockRunRow } from '../leases/leases.js'
+import { appendRunEvents } from '../observe/events.js'
 import { commitObjectEvidence, markEvidenceMissing } from './objects.js'
 
 export type PendingEvidenceRow = EvidenceMetadata & {
@@ -33,6 +39,7 @@ export async function getEvidenceForRun(
   db: Db,
   input: { runId: string; evidenceId: string },
 ): Promise<EvidenceRow | null> {
+  const { evidences } = schemaFor(db)
   const [row] = await db
     .select()
     .from(evidences)
@@ -45,6 +52,7 @@ export async function listPendingEvidence(
   db: Db,
   input: { limit?: number } = {},
 ): Promise<PendingEvidenceRow[]> {
+  const { evidences, storedObjects } = schemaFor(db)
   const rows = await db
     .select({
       evidence: evidences,
@@ -80,6 +88,7 @@ export async function settleExpiredPendingEvidence(
   db: Db,
   options: SettleEvidenceOptions,
 ): Promise<{ marked: number; committed: number; runs: string[] }> {
+  const { runs } = schemaFor(db)
   const now = options.now ?? new Date()
   const pendingBefore = new Date(now.getTime() - options.pendingTtlSeconds * 1000)
   const pending = await listPendingEvidence(db, { limit: 500 })
@@ -111,7 +120,11 @@ export async function settleExpiredPendingEvidence(
 
   const expired = leftover.filter((row) => {
     if ((row.uploadAttempts ?? 0) >= options.maxUploadAttempts) return true
-    if (row.objectStatus === 'pending' && row.objectCreatedAt && row.objectCreatedAt < pendingBefore) {
+    if (
+      row.objectStatus === 'pending' &&
+      row.objectCreatedAt &&
+      row.objectCreatedAt < pendingBefore
+    ) {
       return true
     }
     if (!row.objectId && new Date(row.createdAt) < pendingBefore) return true
@@ -138,10 +151,13 @@ export async function settleFinishedPendingRuns(
   db: Db,
   options: SettleEvidenceOptions,
 ): Promise<{ settled: number }> {
+  const { runs } = schemaFor(db)
   const rows = await db
     .select({ id: runs.id })
     .from(runs)
-    .where(and(inArray(runs.status, [...FINISHED_RUN_STATUSES]), eq(runs.evidenceStatus, 'PENDING')))
+    .where(
+      and(inArray(runs.status, [...FINISHED_RUN_STATUSES]), eq(runs.evidenceStatus, 'PENDING')),
+    )
     .orderBy(asc(runs.createdAt), asc(runs.id))
     .limit(200)
   let settled = 0
@@ -157,45 +173,65 @@ export async function settleRunEvidence(
   runId: string,
   options: SettleEvidenceOptions,
 ): Promise<{ evidenceStatus: RunEvidenceStatus; updated: boolean }> {
+  const { attempts, evidences, runs, stepRuns } = schemaFor(db)
   const now = options.now ?? new Date()
-  const [run] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1)
-  if (!run) return { evidenceStatus: 'PENDING', updated: false }
+  return atomic(db, async (tx) => {
+    await lockRunRow(tx, runId)
+    const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1)
+    if (!run) return { evidenceStatus: 'PENDING' as const, updated: false }
 
-  const snapshot = run.snapshot as RunSnapshot
-  const policy = resolveEvidencePolicy(snapshot.evidencePolicy)
-  const stepRows = await db.select().from(stepRuns).where(eq(stepRuns.runId, runId))
-  const attemptRows =
-    stepRows.length === 0
-      ? []
-      : await db.select().from(attempts).where(inArray(attempts.stepRunId, stepRows.map((s) => s.id)))
-  const evidenceRows = await db.select().from(evidences).where(eq(evidences.runId, runId))
-  const stepsById = new Map((snapshot.steps ?? []).map((step) => [step.id, step]))
+    const snapshot = run.snapshot as RunSnapshot
+    const policy = resolveEvidencePolicy(snapshot.evidencePolicy)
+    const stepRows = await tx.select().from(stepRuns).where(eq(stepRuns.runId, runId))
+    const attemptRows =
+      stepRows.length === 0
+        ? []
+        : await tx
+            .select()
+            .from(attempts)
+            .where(
+              inArray(
+                attempts.stepRunId,
+                stepRows.map((s) => s.id),
+              ),
+            )
+    const evidenceRows = await tx.select().from(evidences).where(eq(evidences.runId, runId))
+    const stepsById = new Map((snapshot.steps ?? []).map((step) => [step.id, step]))
 
-  const required = collectRequiredEvidence(stepRows, attemptRows, evidenceRows, stepsById, policy)
-  const next = decideEvidenceStatus({
-    runStatus: run.status,
-    required,
-    evidenceRows,
+    const required = collectRequiredEvidence(stepRows, attemptRows, evidenceRows, stepsById, policy)
+    const next = decideEvidenceStatus({
+      runStatus: run.status,
+      required,
+      evidenceRows,
+    })
+
+    if (!isFinishedRunStatus(run.status) || next === 'PENDING') {
+      return { evidenceStatus: run.evidenceStatus, updated: false }
+    }
+
+    const [updated] = await updateRows(
+      tx,
+      runs,
+      { evidenceStatus: next },
+      and(eq(runs.id, runId), eq(runs.evidenceStatus, 'PENDING')),
+      { evidenceStatus: runs.evidenceStatus },
+    )
+
+    if (next === 'INCOMPLETE') {
+      await insertIncompleteEvidence(tx, runId, required, evidenceRows, now)
+    }
+
+    if (updated) {
+      await appendRunEvents(tx, runId, [
+        { type: 'run.status_changed', payload: { evidenceStatus: next } },
+      ])
+    }
+
+    return {
+      evidenceStatus: updated?.evidenceStatus ?? run.evidenceStatus,
+      updated: Boolean(updated),
+    }
   })
-
-  if (!isFinishedRunStatus(run.status) || next === 'PENDING') {
-    return { evidenceStatus: run.evidenceStatus, updated: false }
-  }
-
-  const [updated] = await db
-    .update(runs)
-    .set({ evidenceStatus: next })
-    .where(and(eq(runs.id, runId), eq(runs.evidenceStatus, 'PENDING')))
-    .returning({ evidenceStatus: runs.evidenceStatus })
-
-  if (next === 'INCOMPLETE') {
-    await insertIncompleteEvidence(db, runId, required, evidenceRows, now)
-  }
-
-  return {
-    evidenceStatus: updated?.evidenceStatus ?? run.evidenceStatus,
-    updated: Boolean(updated),
-  }
 }
 
 type RequiredSlot = {
@@ -242,7 +278,7 @@ function collectRequiredEvidence(
       })
     }
 
-    if (step && isBrowserStepType(step.type)) {
+    if (step && stepUsesBrowser(step.type)) {
       if (shouldCaptureEvidence(policy.screenshot, failed)) {
         required.push({
           attemptId: attempt.id,
@@ -311,6 +347,7 @@ async function insertIncompleteEvidence(
   evidenceRows: EvidenceRow[],
   now: Date,
 ): Promise<void> {
+  const { evidences } = schemaFor(db)
   const exists = evidenceRows.some(
     (row) =>
       row.type === 'error' &&
@@ -349,4 +386,27 @@ async function insertIncompleteEvidence(
     const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : ''
     if (code !== '23505') throw error
   }
+}
+
+export async function recordInlineLogEvidence(
+  db: Db,
+  input: {
+    runId: string
+    stepRunId?: string
+    attemptId?: string
+    payload: JsonValue
+  },
+): Promise<void> {
+  const { evidences } = schemaFor(db)
+  await db.insert(evidences).values({
+    id: newId(),
+    runId: input.runId,
+    stepRunId: input.stepRunId,
+    attemptId: input.attemptId,
+    type: 'log',
+    status: 'available',
+    schemaVersion: RUNTIME_SCHEMA_VERSION,
+    payload: input.payload,
+    createdAt: new Date(),
+  })
 }

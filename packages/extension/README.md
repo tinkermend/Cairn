@@ -14,7 +14,7 @@ Midscene、page-agent 是整仓二开，源码在 [`vendor/`](../../vendor/READM
 
 | 子目录 | 上游 | 识途用途 |
 | --- | --- | --- |
-| `playwright-crx` | [ruifigueira/playwright-crx](https://github.com/ruifigueira/playwright-crx) 的 `examples/recorder-crx` | 挂用户 Chrome，录结构化操作，上传进 Scenario IR |
+| `playwright-crx` | [ruifigueira/playwright-crx](https://github.com/ruifigueira/playwright-crx) 的 `examples/recorder-crx` | 挂用户 Chrome，录结构化操作，用控制台账号上传进录制草稿 / IR |
 
 约定：
 

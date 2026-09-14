@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, type RenderResult } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { PERMISSIONS, SYSTEM_ROLE_DEFINITIONS } from '@cairn/shared'
 import { SearchProvider } from '@/context/search-provider'
+import { useAuthStore } from '@/stores/auth-store'
 
 const COMMAND_MENU_PLACEHOLDER = '搜索菜单或页面…'
 
@@ -50,9 +52,20 @@ async function openCommandPalette(
   )
 }
 
+function signIn(permissions: readonly string[]) {
+  useAuthStore.getState().auth.setUser({
+    id: 'u1',
+    displayName: '测试',
+    email: null,
+    roles: [],
+    permissions: [...permissions],
+  })
+}
+
 describe('SearchProvider and CommandMenu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useAuthStore.getState().auth.reset()
   })
 
   it('renders the command palette when the palette is open', async () => {
@@ -96,6 +109,7 @@ describe('SearchProvider and CommandMenu', () => {
   )
 
   it('navigates to a top-level route and closes the palette when a nav item is selected', async () => {
+    signIn([...PERMISSIONS])
     const screen = await renderWithSearchProvider()
 
     await openCommandPalette(screen)
@@ -109,6 +123,7 @@ describe('SearchProvider and CommandMenu', () => {
   })
 
   it('navigates for nested sidebar items (group with sub-items)', async () => {
+    signIn(['settings:read'])
     const screen = await renderWithSearchProvider()
     const { getByPlaceholder, getByRole } = screen
 
@@ -120,6 +135,17 @@ describe('SearchProvider and CommandMenu', () => {
     await expect
       .element(getByPlaceholder(COMMAND_MENU_PLACEHOLDER))
       .not.toBeInTheDocument()
+  })
+
+  it('执行者看不到治理入口', async () => {
+    signIn(SYSTEM_ROLE_DEFINITIONS.operator.permissions)
+    const screen = await renderWithSearchProvider()
+
+    await openCommandPalette(screen)
+
+    await expect.element(screen.getByRole('option', { name: '运行' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '用户' }).elements()).toHaveLength(0)
+    expect(screen.getByRole('option', { name: '录制草稿' }).elements()).toHaveLength(0)
   })
 
   it('shows empty state when the filter matches nothing', async () => {

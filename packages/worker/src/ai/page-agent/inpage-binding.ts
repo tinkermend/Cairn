@@ -52,13 +52,14 @@ export async function installInpageBinding(
 
 export async function bootstrapInpageAgent(page: Page): Promise<void> {
   await page.evaluate(() => {
-    ;(window as { __cairnPageAgent?: unknown }).__cairnPageAgent = {
+    const g = globalThis as typeof globalThis & {
+      __cairnPageAgent?: unknown
+      cairnLlmInvoke?: (payload: { nonce: string; intent: string }) => Promise<unknown>
+    }
+    g.__cairnPageAgent = {
       async run(nonce: string, intent: string) {
-        return (
-          window as unknown as {
-            cairnLlmInvoke: (payload: { nonce: string; intent: string }) => Promise<unknown>
-          }
-        ).cairnLlmInvoke({ nonce, intent })
+        if (!g.cairnLlmInvoke) throw new Error('CAIRN_BINDING_MISSING')
+        return g.cairnLlmInvoke({ nonce, intent })
       },
     }
   })
@@ -67,8 +68,9 @@ export async function bootstrapInpageAgent(page: Page): Promise<void> {
 export async function invokeInpageAgent(page: Page, nonce: string, intent: string): Promise<unknown> {
   return page.evaluate(
     async ([n, i]) => {
-      const agent = (window as { __cairnPageAgent?: { run: (nonce: string, intent: string) => Promise<unknown> } })
-        .__cairnPageAgent
+      const agent = (globalThis as {
+        __cairnPageAgent?: { run: (nonce: string, intent: string) => Promise<unknown> }
+      }).__cairnPageAgent
       if (!agent) throw new Error('CAIRN_AGENT_MISSING')
       return agent.run(n, i)
     },

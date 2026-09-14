@@ -159,6 +159,44 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
     expect(created.detail.snapshot).not.toHaveProperty('password')
   })
 
+  it('未指定账号时自动绑定唯一已保存口令的目标账号', async () => {
+    const target = await createTarget(slug('auto-acct'))
+    const account = await targets.createAccount(
+      target.id,
+      { displayName: '运维', username: 'ops', password: 'hunter2-secret', status: 'active' },
+      actor,
+    )
+    const scenario = await scenarios.create({ targetId: target.id, name: '自动绑', steps: [echoStep] }, actor)
+    const created = await runs.create({ scenarioId: scenario.id }, actor)
+    expect(created.detail.snapshot.targetAccountId).toBe(account.id)
+    expect(created.detail.snapshot.secretRef).toEqual({
+      provider: 'local',
+      secretId: expect.any(String),
+    })
+  })
+
+  it('多个已保存口令账号时必须显式指定', async () => {
+    const target = await createTarget(slug('multi-acct'))
+    await targets.createAccount(
+      target.id,
+      { displayName: '一号', username: 'one', password: 'hunter2-one', status: 'active' },
+      actor,
+    )
+    await targets.createAccount(
+      target.id,
+      { displayName: '二号', username: 'two', password: 'hunter2-two', status: 'active' },
+      actor,
+    )
+    const scenario = await scenarios.create({ targetId: target.id, name: '多账号', steps: [echoStep] }, actor)
+    try {
+      await runs.create({ scenarioId: scenario.id }, actor)
+      expect.unreachable()
+    } catch (error) {
+      expect(error).toBeInstanceOf(BadRequestException)
+      expect((error as BadRequestException).getResponse()).toMatchObject({ code: 'RUN_ACCOUNT_REQUIRED' })
+    }
+  })
+
   it('GET evidence 返回对象指针、无正文', async () => {
     const target = await createTarget(slug('evd'))
     const scenario = await scenarios.create({ targetId: target.id, name: '指针', steps: [echoStep] }, actor)

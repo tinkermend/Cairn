@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,15 +15,15 @@
  */
 export type CrxSettings = {
   testIdAttributeName: string;
-  targetLanguage: string;
-  sidepanel?: boolean;
-  experimental?: boolean;
+  targetLanguage: 'javascript';
+  sidepanel: boolean;
+  experimental: boolean;
   playInIncognito: boolean;
 };
 
-export const defaultSettings = {
+export const defaultSettings: CrxSettings = {
   testIdAttributeName: 'data-testid',
-  targetLanguage: 'playwright-test',
+  targetLanguage: 'javascript',
   sidepanel: true,
   experimental: false,
   playInIncognito: false,
@@ -32,22 +32,29 @@ export const defaultSettings = {
 export async function loadSettings(): Promise<CrxSettings> {
   const [isAllowedIncognitoAccess, loadedPreferences] = await Promise.all([
     chrome.extension.isAllowedIncognitoAccess(),
-    chrome.storage.sync.get(['testIdAttributeName', 'targetLanguage', 'sidepanel', 'playInIncognito', 'experimental']) as Partial<CrxSettings>,
+    chrome.storage.sync.get(['testIdAttributeName', 'sidepanel', 'playInIncognito']) as Partial<CrxSettings>,
   ]);
-  return { ...defaultSettings, ...loadedPreferences, playInIncognito: !!loadedPreferences.playInIncognito && isAllowedIncognitoAccess };
+  return {
+    ...defaultSettings,
+    ...loadedPreferences,
+    targetLanguage: 'javascript',
+    experimental: false,
+    playInIncognito: !!loadedPreferences.playInIncognito && isAllowedIncognitoAccess,
+  };
 }
 
 export async function storeSettings(settings: CrxSettings) {
-  await chrome.storage.sync.set(settings);
+  await chrome.storage.sync.set({
+    testIdAttributeName: settings.testIdAttributeName,
+    sidepanel: settings.sidepanel,
+    playInIncognito: settings.playInIncognito,
+  });
 }
 
 const listeners = new Map<(settings: CrxSettings) => void, any>();
 
 export function addSettingsChangedListener(listener: (settings: CrxSettings) => void) {
-  const wrappedListener = ({ testIdAttributeName, targetLanguage, sidepanel, playInIncognito, experimental }: Record<string, chrome.storage.StorageChange>) => {
-    if (!testIdAttributeName && !targetLanguage && sidepanel && playInIncognito && experimental)
-      return;
-
+  const wrappedListener = () => {
     loadSettings().then(listener).catch(() => {});
   };
   listeners.set(listener, wrappedListener);

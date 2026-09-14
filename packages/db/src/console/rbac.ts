@@ -1,11 +1,10 @@
 import type { ConsoleRole, ConsoleAccount } from '../records.js'
 import { schemaFor } from '../native.js'
 import { updateRows, deleteRows } from '../native.js'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import {
   consoleAccountRoles,
   consoleAccounts,
-  consoleAuditEvents,
   consoleIdentities,
   consoleRolePermissions,
   consoleRoles,
@@ -27,7 +26,12 @@ import {
   PERMISSION_CATALOG,
   accountListResponseSchema,
   accountSchema,
-  auditListResponseSchema,
+  operationAuditQuerySchema,
+  type AuditClient,
+  type LoginAuditListResponse,
+  type LoginAuditQuery,
+  type LoginFailureReason,
+  type OperationAuditQuery,
   hasAllPermissions,
   isSystemRoleKey,
   type ChangePasswordBody,
@@ -54,6 +58,8 @@ import {
   type UpdateRoleBody,
 } from '@cairn/shared'
 import type { PersistenceActor as RequestAccount } from './actor.js'
+import { recordLoginAudit } from '../audit/record.js'
+import { listLoginAuditEvents, listOperationAuditEvents } from '../audit/list.js'
 
 function iso(value: Date): string {
   return value.toISOString()
@@ -511,37 +517,49 @@ export class RbacStore {
     await this.insertAudit(this.db, actorId, action, resource, resourceId, summary)
   }
 
-  async listAuditEvents(): Promise<AuditListResponse> {
-    const { consoleAccounts, consoleAuditEvents } = schemaFor(this.db)
-    const rows = await this.db
-      .select({
-        id: consoleAuditEvents.id,
-        action: consoleAuditEvents.action,
-        resource: consoleAuditEvents.resource,
-        resourceId: consoleAuditEvents.resourceId,
-        summary: consoleAuditEvents.summary,
-        createdAt: consoleAuditEvents.createdAt,
-        actorId: consoleAccounts.id,
-        actorName: consoleAccounts.displayName,
-        actorEmail: consoleAccounts.email,
-      })
-      .from(consoleAuditEvents)
-      .leftJoin(consoleAccounts, eq(consoleAccounts.id, consoleAuditEvents.actorConsoleAccountId))
-      .orderBy(desc(consoleAuditEvents.createdAt))
-      .limit(200)
+  async listAuditEvents(
+    query: OperationAuditQuery = operationAuditQuerySchema.parse({}),
+  ): Promise<AuditListResponse> {
+    return listOperationAuditEvents(this.db, query)
+  }
 
-    return auditListResponseSchema.parse({
-      items: rows.map((row) => ({
-        id: row.id,
-        action: row.action,
-        resource: row.resource,
-        resourceId: row.resourceId,
-        summary: row.summary,
-        createdAt: iso(row.createdAt),
-        actor: row.actorId
-          ? { id: row.actorId, displayName: row.actorName ?? '已删除账号', email: row.actorEmail }
-          : null,
-      })),
+  async listLoginAuditEvents(query: LoginAuditQuery): Promise<LoginAuditListResponse> {
+    return listLoginAuditEvents(this.db, query)
+  }
+
+  async completeSuccessfulLogin(input: {
+    identityId: string
+    accountId: string
+    identifier: string
+    client?: AuditClient
+  }): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const { consoleIdentities } = schemaFor(tx)
+      await tx
+        .update(consoleIdentities)
+        .set({ lastUsedAt: new Date() })
+        .where(eq(consoleIdentities.id, input.identityId))
+      await recordLoginAudit(tx as unknown as Db, {
+        identifier: input.identifier,
+        outcome: 'success',
+        accountId: input.accountId,
+        client: input.client,
+      })
+    })
+  }
+
+  async recordLoginFailure(input: {
+    identifier: string
+    reason: LoginFailureReason
+    accountId?: string | null
+    client?: AuditClient
+  }): Promise<void> {
+    await recordLoginAudit(this.db, {
+      identifier: input.identifier,
+      outcome: 'failure',
+      failureReason: input.reason,
+      accountId: input.accountId ?? null,
+      client: input.client,
     })
   }
 
@@ -758,6 +776,10 @@ export class RbacStore {
       resource,
       resourceId,
       summary,
+      category: 'operation',
+      loginIdentifier: null,
+      outcome: null,
+      failureReason: null,
       createdAt: new Date(),
     })
   }

@@ -1,630 +1,105 @@
-import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-  Inject,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common'
-import {
-  and,
-  consoleAccountRoles,
-  consoleAccounts,
-  consoleAuditEvents,
-  consoleIdentities,
-  consoleRolePermissions,
-  consoleRoles,
-  desc,
-  eq,
-  inArray,
-  newId,
-  sql,
-  type DbHandle,
-} from '@cairn/db'
-import {
-  ADMIN_ROLE_KEY,
-  DEFAULT_ACCOUNT_ROLE_KEY,
-  PERMISSION_CATALOG,
-  accountListResponseSchema,
-  accountSchema,
-  auditListResponseSchema,
-  hasAllPermissions,
-  isSystemRoleKey,
-  type ChangePasswordBody,
-  type SetPasswordBody,
-  type UpdateMeBody,
-  meResponseSchema,
-  permissionCatalogResponseSchema,
-  roleListResponseSchema,
-  roleSchema,
-  uniquePermissions,
-  type AccountDto,
-  type AccountListResponse,
-  type AssignAccountRolesBody,
-  type AuditAction,
-  type AuditListResponse,
-  type CreateAccountBody,
-  type CreateRoleBody,
-  type MeResponse,
-  type PermissionCatalogResponse,
-  type ReplaceRolePermissionsBody,
-  type RoleDto,
-  type RoleListResponse,
-  type UpdateAccountBody,
-  type UpdateRoleBody,
-} from '@cairn/shared'
+import { Inject, Injectable } from '@nestjs/common'
+import { RbacStore, type DbHandle } from '@cairn/db'
 import { DB_HANDLE } from '../db/db.module'
-import type { RequestAccount } from '../common/request-account'
+import { rethrowDomain } from '../common/domain-error'
 import { hashSecret, verifySecret } from '../auth/password'
-
-function iso(value: Date): string {
-  return value.toISOString()
-}
-
-function pgCode(error: unknown): string | undefined {
-  if (typeof error === 'object' && error !== null && 'code' in error) {
-    return String((error as { code: unknown }).code)
-  }
-  if (error instanceof Error && error.cause) return pgCode(error.cause)
-  return undefined
-}
 
 @Injectable()
 export class RbacService {
-  constructor(@Inject(DB_HANDLE) private readonly dbHandle: DbHandle) {}
-
-  private get db() {
-    return this.dbHandle.db
+  private readonly store: RbacStore
+  constructor(@Inject(DB_HANDLE) database: DbHandle) {
+    this.store = new RbacStore(database, { hash: hashSecret, verify: verifySecret })
   }
 
-  listPermissions(): PermissionCatalogResponse {
-    return permissionCatalogResponseSchema.parse({ items: [...PERMISSION_CATALOG] })
+  listPermissions(...args: Parameters<RbacStore['listPermissions']>) {
+    return this.store.listPermissions(...args)
   }
 
-  async listRoles(): Promise<RoleListResponse> {
-    const roles = await this.db.select().from(consoleRoles).orderBy(consoleRoles.key)
-    const permRows = await this.db.select().from(consoleRolePermissions)
-    const countRows = await this.db
-      .select({
-        roleId: consoleAccountRoles.consoleRoleId,
-        n: sql<number>`count(*)::int`.as('n'),
-      })
-      .from(consoleAccountRoles)
-      .groupBy(consoleAccountRoles.consoleRoleId)
-
-    const permsByRole = new Map<string, string[]>()
-    for (const row of permRows) {
-      const list = permsByRole.get(row.consoleRoleId) ?? []
-      list.push(row.permission)
-      permsByRole.set(row.consoleRoleId, list)
-    }
-    const countByRole = new Map(countRows.map((r) => [r.roleId, Number(r.n)]))
-
-    return roleListResponseSchema.parse({
-      items: roles.map((role) =>
-        this.toRoleDto(role, uniquePermissions(permsByRole.get(role.id) ?? []), countByRole.get(role.id) ?? 0),
-      ),
-    })
+  listRoles(...args: Parameters<RbacStore['listRoles']>) {
+    return this.store.listRoles(...args).catch(rethrowDomain)
   }
 
-  async getRole(id: string): Promise<RoleDto> {
-    const role = await this.requireRole(id)
-    const [permissions, accountCount] = await Promise.all([
-      this.permissionsOf(id),
-      this.accountCountOf(id),
-    ])
-    return this.toRoleDto(role, permissions, accountCount)
+  getRole(...args: Parameters<RbacStore['getRole']>) {
+    return this.store.getRole(...args).catch(rethrowDomain)
   }
 
-  async createRole(body: CreateRoleBody, actor: RequestAccount | null): Promise<RoleDto> {
-    this.assertCanGrant(actor, body.permissions)
-    if (isSystemRoleKey(body.key)) {
-      throw new ConflictException('不能占用系统角色的 key')
-    }
-    const id = newId()
-    const now = new Date()
-    try {
-      await this.db.transaction(async (tx) => {
-        await tx.insert(consoleRoles).values({
-          id,
-          key: body.key,
-          name: body.name,
-          description: body.description ?? null,
-          kind: 'custom',
-          createdAt: now,
-          updatedAt: now,
-        })
-        await tx.insert(consoleRolePermissions).values(
-          body.permissions.map((permission) => ({ consoleRoleId: id, permission })),
-        )
-        await this.insertAudit(tx, actor?.id ?? null, 'role.create', 'role', id, `创建角色 ${body.key}`)
-      })
-    } catch (error) {
-      if (pgCode(error) === '23505') {
-        throw new ConflictException('角色 key 已存在')
-      }
-      throw error
-    }
-    return this.getRole(id)
+  createRole(...args: Parameters<RbacStore['createRole']>) {
+    return this.store.createRole(...args).catch(rethrowDomain)
   }
 
-  async updateRole(id: string, body: UpdateRoleBody, actor: RequestAccount | null): Promise<RoleDto> {
-    const role = await this.requireRole(id)
-    if (role.kind === 'system') {
-      throw new BadRequestException('系统角色不可修改')
-    }
-    if (body.permissions) this.assertCanGrant(actor, body.permissions)
-    try {
-      await this.db.transaction(async (tx) => {
-        await tx
-          .update(consoleRoles)
-          .set({
-            ...(body.name !== undefined ? { name: body.name } : {}),
-            ...(body.description !== undefined ? { description: body.description } : {}),
-            updatedAt: new Date(),
-          })
-          .where(eq(consoleRoles.id, id))
-        if (body.permissions) {
-          await tx.delete(consoleRolePermissions).where(eq(consoleRolePermissions.consoleRoleId, id))
-          await tx.insert(consoleRolePermissions).values(
-            body.permissions.map((permission) => ({ consoleRoleId: id, permission })),
-          )
-        }
-        await this.insertAudit(tx, actor?.id ?? null, 'role.update', 'role', id, `更新角色 ${role.key}`)
-      })
-    } catch (error) {
-      if (pgCode(error) === '23505') {
-        throw new ConflictException('角色 key 已存在')
-      }
-      throw error
-    }
-    return this.getRole(id)
+  updateRole(...args: Parameters<RbacStore['updateRole']>) {
+    return this.store.updateRole(...args).catch(rethrowDomain)
   }
 
-  async replaceRolePermissions(
-    id: string,
-    body: ReplaceRolePermissionsBody,
-    actor: RequestAccount | null,
-  ): Promise<RoleDto> {
-    return this.updateRole(id, { permissions: body.permissions }, actor)
+  replaceRolePermissions(...args: Parameters<RbacStore['replaceRolePermissions']>) {
+    return this.store.replaceRolePermissions(...args).catch(rethrowDomain)
   }
 
-  async deleteRole(id: string, actor: RequestAccount | null): Promise<void> {
-    const role = await this.requireRole(id)
-    if (role.kind === 'system') {
-      throw new BadRequestException('系统角色不可删除')
-    }
-    const accountCount = await this.accountCountOf(id)
-    if (accountCount > 0) {
-      throw new ConflictException('仍有账号使用该角色')
-    }
-    await this.db.transaction(async (tx) => {
-      await this.insertAudit(tx, actor?.id ?? null, 'role.delete', 'role', id, `删除角色 ${role.key}`)
-      await tx.delete(consoleRoles).where(eq(consoleRoles.id, id))
-    })
+  deleteRole(...args: Parameters<RbacStore['deleteRole']>) {
+    return this.store.deleteRole(...args).catch(rethrowDomain)
   }
 
-  async listAccounts(): Promise<AccountListResponse> {
-    const rows = await this.db.select().from(consoleAccounts).orderBy(consoleAccounts.createdAt)
-    const items = await this.assembleAccounts(rows)
-    return accountListResponseSchema.parse({ items })
+  listAccounts(...args: Parameters<RbacStore['listAccounts']>) {
+    return this.store.listAccounts(...args).catch(rethrowDomain)
   }
 
-  async getAccount(id: string): Promise<AccountDto> {
-    const [row] = await this.db.select().from(consoleAccounts).where(eq(consoleAccounts.id, id)).limit(1)
-    if (!row) throw new NotFoundException('账号不存在')
-    const [account] = await this.assembleAccounts([row])
-    return accountSchema.parse(account)
+  getAccount(...args: Parameters<RbacStore['getAccount']>) {
+    return this.store.getAccount(...args).catch(rethrowDomain)
   }
 
-  async getMe(accountId: string): Promise<MeResponse> {
-    return meResponseSchema.parse({ account: await this.getAccount(accountId) })
+  getMe(...args: Parameters<RbacStore['getMe']>) {
+    return this.store.getMe(...args).catch(rethrowDomain)
   }
 
-  async updateMe(accountId: string, body: UpdateMeBody): Promise<MeResponse> {
-    const current = await this.getAccount(accountId)
-    await this.db
-      .update(consoleAccounts)
-      .set({ displayName: body.displayName, updatedAt: new Date() })
-      .where(eq(consoleAccounts.id, accountId))
-    await this.recordAudit(accountId, 'account.update', 'account', accountId, `修改了自己的显示名（${current.displayName} → ${body.displayName}）`)
-    return this.getMe(accountId)
+  updateMe(...args: Parameters<RbacStore['updateMe']>) {
+    return this.store.updateMe(...args).catch(rethrowDomain)
   }
 
-  async createAccount(body: CreateAccountBody, actor: RequestAccount | null): Promise<AccountDto> {
-    const id = newId()
-    const now = new Date()
-    const email = body.email.trim().toLowerCase()
-    const roleIds = body.roleIds?.length
-      ? body.roleIds
-      : [await this.roleIdByKey(DEFAULT_ACCOUNT_ROLE_KEY)]
-    await this.requireRolesExist(roleIds)
-    await this.assertCanGrantRoles(actor, roleIds)
-    const secret = await hashSecret(body.password)
-    try {
-      await this.db.transaction(async (tx) => {
-        await tx.insert(consoleAccounts).values({
-          id,
-          displayName: body.displayName,
-          email,
-          status: body.status ?? 'active',
-          createdAt: now,
-          updatedAt: now,
-        })
-        await tx.insert(consoleIdentities).values({
-          id: newId(),
-          consoleAccountId: id,
-          provider: 'local',
-          subject: email,
-          secret,
-          createdAt: now,
-        })
-        await tx.insert(consoleAccountRoles).values(
-          roleIds.map((consoleRoleId) => ({
-            consoleAccountId: id,
-            consoleRoleId,
-            assignedAt: now,
-            assignedByConsoleAccountId: actor?.id ?? null,
-          })),
-        )
-        await this.insertAudit(tx, actor?.id ?? null, 'account.create', 'account', id, `创建账号 ${email}`)
-      })
-    } catch (error) {
-      this.rethrowAccountWriteError(error)
-    }
-    return this.getAccount(id)
+  createAccount(...args: Parameters<RbacStore['createAccount']>) {
+    return this.store.createAccount(...args).catch(rethrowDomain)
   }
 
-  async updateAccount(id: string, body: UpdateAccountBody, actor: RequestAccount | null): Promise<AccountDto> {
-    const current = await this.getAccount(id)
-    if (actor && id === actor.id && body.status === 'disabled') {
-      throw new ForbiddenException('不能停用自己的账号')
-    }
-    const nextStatus = body.status ?? current.status
-    if (nextStatus === 'disabled' || (body.status === 'disabled' && current.status === 'active')) {
-      await this.assertNotLastActiveAdmin(id, nextStatus, current.roles.map((r) => r.id))
-    }
-    const nextEmail = body.email === undefined ? undefined : body.email === null ? null : body.email.trim().toLowerCase()
-    try {
-      await this.db.transaction(async (tx) => {
-        const [updated] = await tx
-          .update(consoleAccounts)
-          .set({
-            ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
-            ...(nextEmail !== undefined ? { email: nextEmail } : {}),
-            ...(body.status !== undefined ? { status: body.status } : {}),
-            updatedAt: new Date(),
-          })
-          .where(eq(consoleAccounts.id, id))
-          .returning()
-        if (!updated) throw new NotFoundException('账号不存在')
-        if (nextEmail) {
-          await tx
-            .update(consoleIdentities)
-            .set({ subject: nextEmail })
-            .where(and(eq(consoleIdentities.consoleAccountId, id), eq(consoleIdentities.provider, 'local')))
-        }
-        await this.insertAudit(tx, actor?.id ?? null, 'account.update', 'account', id, `更新账号 ${current.displayName}`)
-      })
-    } catch (error) {
-      this.rethrowAccountWriteError(error)
-    }
-    return this.getAccount(id)
+  updateAccount(...args: Parameters<RbacStore['updateAccount']>) {
+    return this.store.updateAccount(...args).catch(rethrowDomain)
   }
 
-  async deleteAccount(id: string, actor: RequestAccount | null): Promise<void> {
-    const current = await this.getAccount(id)
-    if (actor && id === actor.id) {
-      throw new ForbiddenException('不能删除自己的账号')
-    }
-    await this.assertNotLastActiveAdmin(id, 'disabled', current.roles.map((r) => r.id))
-    await this.db.transaction(async (tx) => {
-      await this.insertAudit(tx, actor?.id ?? null, 'account.delete', 'account', id, `删除账号 ${current.displayName}`)
-      const deleted = await tx.delete(consoleAccounts).where(eq(consoleAccounts.id, id)).returning({
-        id: consoleAccounts.id,
-      })
-      if (deleted.length === 0) throw new NotFoundException('账号不存在')
-    })
+  deleteAccount(...args: Parameters<RbacStore['deleteAccount']>) {
+    return this.store.deleteAccount(...args).catch(rethrowDomain)
   }
 
-  async assignAccountRoles(
-    id: string,
-    body: AssignAccountRolesBody,
-    actor: RequestAccount | null,
-  ): Promise<AccountDto> {
-    const current = await this.getAccount(id)
-    await this.requireRolesExist(body.roleIds)
-    await this.assertCanGrantRoles(actor, body.roleIds)
-    await this.assertNotLastActiveAdmin(id, current.status, body.roleIds)
-    const now = new Date()
-    await this.db.transaction(async (tx) => {
-      await tx.delete(consoleAccountRoles).where(eq(consoleAccountRoles.consoleAccountId, id))
-      await tx.insert(consoleAccountRoles).values(
-        body.roleIds.map((consoleRoleId) => ({
-          consoleAccountId: id,
-          consoleRoleId,
-          assignedAt: now,
-          assignedByConsoleAccountId: actor?.id ?? null,
-        })),
-      )
-      await tx.update(consoleAccounts).set({ updatedAt: now }).where(eq(consoleAccounts.id, id))
-      await this.insertAudit(tx, actor?.id ?? null, 'account.roles', 'account', id, `调整账号 ${current.displayName} 的角色`)
-    })
-    return this.getAccount(id)
+  assignAccountRoles(...args: Parameters<RbacStore['assignAccountRoles']>) {
+    return this.store.assignAccountRoles(...args).catch(rethrowDomain)
   }
 
-  async changePassword(accountId: string, body: ChangePasswordBody): Promise<void> {
-    const identity = await this.requireLocalIdentity(accountId)
-    const ok = await verifySecret(body.currentPassword, identity.secret!)
-    if (!ok) throw new ForbiddenException('当前密码不正确')
-    await this.db
-      .update(consoleIdentities)
-      .set({ secret: await hashSecret(body.newPassword) })
-      .where(eq(consoleIdentities.id, identity.id))
-    await this.recordAudit(accountId, 'account.password', 'account', accountId, '修改了自己的密码')
+  changePassword(...args: Parameters<RbacStore['changePassword']>) {
+    return this.store.changePassword(...args).catch(rethrowDomain)
   }
 
-  async setPassword(accountId: string, body: SetPasswordBody, actor: RequestAccount): Promise<void> {
-    const account = await this.getAccount(accountId)
-    const identity = await this.findLocalIdentityByAccount(accountId)
-    if (!identity) {
-      if (!account.email) throw new BadRequestException('该账号没有登录名，无法设置本地密码')
-      await this.createLocalIdentity(accountId, account.email, body.password)
-    } else {
-      await this.db
-        .update(consoleIdentities)
-        .set({ secret: await hashSecret(body.password) })
-        .where(eq(consoleIdentities.id, identity.id))
-    }
-    await this.recordAudit(actor.id, 'account.password', 'account', accountId, `重置了 ${account.displayName} 的密码`)
+  setPassword(...args: Parameters<RbacStore['setPassword']>) {
+    return this.store.setPassword(...args).catch(rethrowDomain)
   }
 
-  async createLocalIdentity(accountId: string, email: string, password: string): Promise<void> {
-    await this.db.insert(consoleIdentities).values({
-      id: newId(),
-      consoleAccountId: accountId,
-      provider: 'local',
-      subject: email.trim().toLowerCase(),
-      secret: await hashSecret(password),
-      createdAt: new Date(),
-    })
+  createLocalIdentity(...args: Parameters<RbacStore['createLocalIdentity']>) {
+    return this.store.createLocalIdentity(...args).catch(rethrowDomain)
   }
 
-  async recordAudit(
-    actorId: string | null,
-    action: AuditAction,
-    resource: string,
-    resourceId: string | null,
-    summary: string,
-  ): Promise<void> {
-    await this.insertAudit(this.db, actorId, action, resource, resourceId, summary)
+  recordAudit(...args: Parameters<RbacStore['recordAudit']>) {
+    return this.store.recordAudit(...args).catch(rethrowDomain)
   }
 
-  async listAuditEvents(): Promise<AuditListResponse> {
-    const rows = await this.db
-      .select({
-        id: consoleAuditEvents.id,
-        action: consoleAuditEvents.action,
-        resource: consoleAuditEvents.resource,
-        resourceId: consoleAuditEvents.resourceId,
-        summary: consoleAuditEvents.summary,
-        createdAt: consoleAuditEvents.createdAt,
-        actorId: consoleAccounts.id,
-        actorName: consoleAccounts.displayName,
-        actorEmail: consoleAccounts.email,
-      })
-      .from(consoleAuditEvents)
-      .leftJoin(consoleAccounts, eq(consoleAccounts.id, consoleAuditEvents.actorConsoleAccountId))
-      .orderBy(desc(consoleAuditEvents.createdAt))
-      .limit(200)
-
-    return auditListResponseSchema.parse({
-      items: rows.map((row) => ({
-        id: row.id,
-        action: row.action,
-        resource: row.resource,
-        resourceId: row.resourceId,
-        summary: row.summary,
-        createdAt: iso(row.createdAt),
-        actor: row.actorId
-          ? { id: row.actorId, displayName: row.actorName ?? '已删除账号', email: row.actorEmail }
-          : null,
-      })),
-    })
+  listAuditEvents(...args: Parameters<RbacStore['listAuditEvents']>) {
+    return this.store.listAuditEvents(...args).catch(rethrowDomain)
   }
 
-  private async requireRole(id: string) {
-    const [role] = await this.db.select().from(consoleRoles).where(eq(consoleRoles.id, id)).limit(1)
-    if (!role) throw new NotFoundException('角色不存在')
-    return role
+  listLoginAuditEvents(...args: Parameters<RbacStore['listLoginAuditEvents']>) {
+    return this.store.listLoginAuditEvents(...args).catch(rethrowDomain)
   }
 
-  /**
-   * 系统角色的稳定标识是 key，不是 id——id 是 seed 时生成的 UUID。
-   * 拿 `ADMIN_ROLE_KEY` 当 id 用会静默查不到行，让「最后一个管理员」
-   * 这类守卫失效，所以一律先解析。
-   */
-  private async roleIdByKey(key: string): Promise<string> {
-    const [role] = await this.db
-      .select({ id: consoleRoles.id })
-      .from(consoleRoles)
-      .where(eq(consoleRoles.key, key))
-      .limit(1)
-    if (!role) throw new Error(`系统角色缺失：${key}（0002_rbac 未执行？）`)
-    return role.id
+  completeSuccessfulLogin(...args: Parameters<RbacStore['completeSuccessfulLogin']>) {
+    return this.store.completeSuccessfulLogin(...args).catch(rethrowDomain)
   }
 
-  private async requireRolesExist(ids: string[]): Promise<void> {
-    const unique = [...new Set(ids)]
-    const rows = await this.db.select({ id: consoleRoles.id }).from(consoleRoles).where(inArray(consoleRoles.id, unique))
-    if (rows.length !== unique.length) {
-      throw new BadRequestException('包含不存在的角色')
-    }
-  }
-
-  private async permissionsOf(roleId: string): Promise<string[]> {
-    const rows = await this.db
-      .select({ permission: consoleRolePermissions.permission })
-      .from(consoleRolePermissions)
-      .where(eq(consoleRolePermissions.consoleRoleId, roleId))
-    return uniquePermissions(rows.map((r) => r.permission))
-  }
-
-  private async accountCountOf(roleId: string): Promise<number> {
-    const [row] = await this.db
-      .select({ n: sql<number>`count(*)::int`.as('n') })
-      .from(consoleAccountRoles)
-      .where(eq(consoleAccountRoles.consoleRoleId, roleId))
-    return Number(row?.n ?? 0)
-  }
-
-  private toRoleDto(
-    role: typeof consoleRoles.$inferSelect,
-    permissions: string[],
-    accountCount: number,
-  ): RoleDto {
-    return roleSchema.parse({
-      id: role.id,
-      key: role.key,
-      name: role.name,
-      kind: role.kind,
-      description: role.description,
-      permissions,
-      accountCount,
-      createdAt: iso(role.createdAt),
-      updatedAt: iso(role.updatedAt),
-    })
-  }
-
-  private async assembleAccounts(rows: (typeof consoleAccounts.$inferSelect)[]): Promise<AccountDto[]> {
-    if (rows.length === 0) return []
-    const ids = rows.map((r) => r.id)
-    const bindRows = await this.db
-      .select({
-        accountId: consoleAccountRoles.consoleAccountId,
-        roleId: consoleRoles.id,
-        key: consoleRoles.key,
-        name: consoleRoles.name,
-        kind: consoleRoles.kind,
-        permission: consoleRolePermissions.permission,
-      })
-      .from(consoleAccountRoles)
-      .innerJoin(consoleRoles, eq(consoleRoles.id, consoleAccountRoles.consoleRoleId))
-      .leftJoin(consoleRolePermissions, eq(consoleRolePermissions.consoleRoleId, consoleRoles.id))
-      .where(inArray(consoleAccountRoles.consoleAccountId, ids))
-
-    const rolesByAccount = new Map<string, Map<string, AccountDto['roles'][number]>>()
-    const permsByAccount = new Map<string, string[]>()
-    for (const row of bindRows) {
-      const roleMap = rolesByAccount.get(row.accountId) ?? new Map()
-      roleMap.set(row.roleId, { id: row.roleId, key: row.key, name: row.name, kind: row.kind })
-      rolesByAccount.set(row.accountId, roleMap)
-      if (row.permission) {
-        const perms = permsByAccount.get(row.accountId) ?? []
-        perms.push(row.permission)
-        permsByAccount.set(row.accountId, perms)
-      }
-    }
-
-    return rows.map((row) =>
-      accountSchema.parse({
-        id: row.id,
-        displayName: row.displayName,
-        email: row.email,
-        status: row.status,
-        roles: [...(rolesByAccount.get(row.id)?.values() ?? [])],
-        permissions: uniquePermissions(permsByAccount.get(row.id) ?? []),
-        createdAt: iso(row.createdAt),
-        updatedAt: iso(row.updatedAt),
-      }),
-    )
-  }
-
-  /**
-   * 最后一个处于 active 且持有 admin 角色的账号，不能被停用、删除或撤掉 admin。
-   */
-  private async assertNotLastActiveAdmin(
-    accountId: string,
-    nextStatus: AccountDto['status'],
-    nextRoleIds: string[],
-  ): Promise<void> {
-    const adminRoleId = await this.roleIdByKey(ADMIN_ROLE_KEY)
-    const adminRows = await this.db
-      .select({ accountId: consoleAccountRoles.consoleAccountId })
-      .from(consoleAccountRoles)
-      .innerJoin(consoleAccounts, eq(consoleAccounts.id, consoleAccountRoles.consoleAccountId))
-      .where(and(eq(consoleAccountRoles.consoleRoleId, adminRoleId), eq(consoleAccounts.status, 'active')))
-
-    const activeAdmins = new Set(adminRows.map((r) => r.accountId))
-    const currentlyAdmin = activeAdmins.has(accountId)
-    const willBeAdmin = nextStatus === 'active' && nextRoleIds.includes(adminRoleId)
-    if (willBeAdmin || !currentlyAdmin) return
-    if (activeAdmins.size <= 1) {
-      throw new ConflictException('不能移除最后一个管理员')
-    }
-  }
-
-  private rethrowAccountWriteError(error: unknown): never {
-    if (pgCode(error) === '23505') {
-      throw new ConflictException('邮箱已被使用')
-    }
-    if (pgCode(error) === '23503') {
-      throw new BadRequestException('包含不存在的角色')
-    }
-    throw error
-  }
-
-  /**
-   * 不能授予自己没有的权限。bootstrap（actor 为空）跳过——它只在空库种首位 admin。
-   */
-  private assertCanGrant(actor: RequestAccount | null, permissions: readonly string[]): void {
-    if (!actor) return
-    if (!hasAllPermissions(actor.permissions, permissions)) {
-      throw new ForbiddenException('不能授予超出自身权限的角色或权限')
-    }
-  }
-
-  private async assertCanGrantRoles(actor: RequestAccount | null, roleIds: string[]): Promise<void> {
-    if (!actor) return
-    const unique = [...new Set(roleIds)]
-    const rows = await this.db
-      .select({ permission: consoleRolePermissions.permission })
-      .from(consoleRolePermissions)
-      .where(inArray(consoleRolePermissions.consoleRoleId, unique))
-    this.assertCanGrant(actor, uniquePermissions(rows.map((r) => r.permission)))
-  }
-
-  private async findLocalIdentityByAccount(accountId: string) {
-    const [row] = await this.db
-      .select()
-      .from(consoleIdentities)
-      .where(and(eq(consoleIdentities.consoleAccountId, accountId), eq(consoleIdentities.provider, 'local')))
-      .limit(1)
-    return row ?? null
-  }
-
-  private async requireLocalIdentity(accountId: string) {
-    const identity = await this.findLocalIdentityByAccount(accountId)
-    if (!identity?.secret) throw new BadRequestException('该账号没有本地密码')
-    return identity
-  }
-
-  private async insertAudit(
-    db: Pick<DbHandle['db'], 'insert'>,
-    actorId: string | null,
-    action: AuditAction,
-    resource: string,
-    resourceId: string | null,
-    summary: string,
-  ): Promise<void> {
-    await db.insert(consoleAuditEvents).values({
-      id: newId(),
-      actorConsoleAccountId: actorId,
-      action,
-      resource,
-      resourceId,
-      summary,
-      createdAt: new Date(),
-    })
+  recordLoginFailure(...args: Parameters<RbacStore['recordLoginFailure']>) {
+    return this.store.recordLoginFailure(...args).catch(rethrowDomain)
   }
 }

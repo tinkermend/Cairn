@@ -84,9 +84,12 @@ describe('录制草稿 Repository（集成）', { timeout: 30_000 }, () => {
       ),
     ).rejects.toMatchObject({ code: 'RECORDING_IDEMPOTENCY_CONFLICT' })
 
-    const listed = await listRecordingDrafts(handle.db)
+    const listed = await listRecordingDrafts(handle.db, actorId)
     expect(listed.items).toHaveLength(1)
-    expect(await getRecordingDraft(handle.db, first.detail.id)).toMatchObject({ id: first.detail.id })
+    expect(await getRecordingDraft(handle.db, first.detail.id, actorId)).toMatchObject({ id: first.detail.id })
+    await expect(getRecordingDraft(handle.db, first.detail.id, newId())).rejects.toMatchObject({
+      code: 'RECORDING_NOT_FOUND',
+    })
   })
 
   it('停用目标不能上传', async () => {

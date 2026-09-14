@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { runInputSchema, type EvidenceCaptureMode } from '@cairn/shared'
@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { CAPTURE_MODE_LABELS } from './labels'
+import { passwordAccounts, preferredPasswordAccountId } from './target-account'
 
 type RunCreateDialogProps = {
   open: boolean
@@ -59,6 +60,7 @@ export function RunCreateDialog({
     enabled: open && !!targetId,
   })
   const [targetAccountId, setTargetAccountId] = useState('')
+  const usableAccounts = passwordAccounts(accounts.data?.items ?? [])
   const [inputJson, setInputJson] = useState('{}')
   const [screenshotOverride, setScreenshotOverride] = useState<EvidenceCaptureMode | null>(null)
   const [traceOverride, setTraceOverride] = useState<EvidenceCaptureMode | null>(null)
@@ -66,13 +68,17 @@ export function RunCreateDialog({
     const inheritScreenshot = capabilities.data?.defaults?.evidence.screenshot ?? 'on_failure'
   const inheritTrace = capabilities.data?.defaults?.evidence.trace ?? 'off'
 
+  useEffect(() => {
+    setTargetAccountId(preferredPasswordAccountId(accounts.data?.items ?? []))
+  }, [accounts.data, scenarioId])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className='sm:max-w-lg'>
         <DialogHeader>
           <DialogTitle>创建运行</DialogTitle>
           <DialogDescription>
-            对已绑定目标系统的场景发起一次执行。可选的目标账号是该外部系统的登录身份，不是控制台用户。
+            对已绑定目标系统的场景发起一次执行。已保存口令的目标账号会作为登录凭据；不要和控制台用户混淆。
           </DialogDescription>
         </DialogHeader>
         <div className='space-y-4'>
@@ -83,7 +89,9 @@ export function RunCreateDialog({
                 <SelectValue placeholder='选择场景' />
               </SelectTrigger>
               <SelectContent>
-                {(scenarios.data?.items ?? []).map((item) => (
+                {(scenarios.data?.items ?? [])
+                  .filter((item) => item.status === 'active')
+                  .map((item) => (
                   <SelectItem key={item.id} value={item.id}>
                     {item.name}
                   </SelectItem>
@@ -92,25 +100,30 @@ export function RunCreateDialog({
             </Select>
           </div>
           <div className='space-y-2'>
-            <Label>目标账号（可选）</Label>
+            <Label>目标账号{usableAccounts.length > 0 ? '' : '（可选）'}</Label>
             <Select
-              value={targetAccountId || '__none__'}
+              value={targetAccountId || (usableAccounts.length > 0 ? undefined : '__none__')}
               onValueChange={(value) => setTargetAccountId(value === '__none__' ? '' : value)}
             >
               <SelectTrigger className='w-full'>
-                <SelectValue placeholder='不指定目标账号' />
+                <SelectValue placeholder={usableAccounts.length > 0 ? '选择已保存口令的账号' : '不指定目标账号'} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value='__none__'>不指定</SelectItem>
-                {(accounts.data?.items ?? []).map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
-                    {item.displayName}（{item.username}）
-                  </SelectItem>
-                ))}
+                {usableAccounts.length === 0 ? <SelectItem value='__none__'>不指定</SelectItem> : null}
+                {(accounts.data?.items ?? [])
+                  .filter((item) => item.status === 'active')
+                  .map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.displayName}（{item.username}
+                      {item.hasPassword ? '' : ' · 未保存口令'}）
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
             <p className='text-label text-muted-foreground'>
-              这里选的是目标系统账号。浏览器会话由执行面按目标系统 + 目标账号纳管，本期不提供会话菜单。
+              {usableAccounts.length > 0
+                ? '将使用该账号已保存的口令自动登录目标系统。'
+                : '这里选的是目标系统账号。未保存口令时运行会等待人工登录。'}
             </p>
           </div>
           <div className='space-y-2'>
@@ -170,7 +183,7 @@ export function RunCreateDialog({
         </div>
         <DialogFooter>
           <Button
-            disabled={!scenarioId || saving}
+            disabled={!scenarioId || saving || (usableAccounts.length > 0 && !targetAccountId)}
             onClick={() => {
               let parsedJson: unknown
               try {

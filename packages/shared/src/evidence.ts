@@ -40,6 +40,7 @@ export const evidenceMetadataSchema = z.strictObject({
   byteSize: z.number().int().nonnegative().optional(),
   digest: z.string().min(1).max(128).optional(),
   missingReason: z.string().min(1).max(512).optional(),
+  externalAccess: z.boolean().optional(),
   uploadAttempts: z.number().int().nonnegative().optional(),
   /** 结构化小证据。截图 / Trace 用 objectKey。 */
   payload: jsonValueSchema.optional(),

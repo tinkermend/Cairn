@@ -17,7 +17,7 @@ export const RUN_STATUS_LABELS: Record<RunStatus, string> = {
   QUEUED: '排队',
   RUNNING: '运行中',
   RECOVERING: '恢复中',
-  WAITING_FOR_AUTH: '等待目标系统登录',
+  WAITING_FOR_AUTH: '需要登录',
   SUCCEEDED: '成功',
   FAILED: '失败',
   CANCELLED: '已取消',

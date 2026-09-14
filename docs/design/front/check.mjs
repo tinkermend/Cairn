@@ -6,6 +6,7 @@ const require = createRequire(
   new URL("../../../packages/web/package.json", import.meta.url),
 );
 const { chromium } = require("playwright");
+const ts = require("typescript");
 const root = new URL("./", import.meta.url);
 const css = readFileSync(new URL("tokens.css", root), "utf8");
 const tokens = Object.fromEntries(
@@ -87,6 +88,7 @@ for (const file of [
   "design-language.md",
   "components.md",
   "implementation.md",
+  "ai-workflow.md",
 ]) {
   for (const match of readFileSync(new URL(file, root), "utf8").matchAll(
     /\]\(([^)]+)\)/g,
@@ -118,35 +120,67 @@ function tsxFiles(dir) {
 const rel = (f) => f.slice(webSrc.length);
 const allTsx = tsxFiles(webSrc);
 
-// 1. 页面不得自选色板。颜色一律走语义 Token，否则 tokens.css 改了也带不动页面。
-for (const file of allTsx) {
-  const hex = readFileSync(file, "utf8").match(/#[0-9a-fA-F]{3,8}\b/g);
-  assert.ok(!hex, `${rel(file)}: 硬编码颜色 ${hex?.[0]} —— 改用语义 Token`);
+// 检查字符串与样式属性，跳过注释、JSX 正文、锚点和 selector。
+// 这是静态语法护栏；动态拼接、外部 CSS 和布局效果仍需浏览器验收。
+function sourceStyleIssues(source, page = true, allowedFontClasses = []) {
+  const ast = ts.createSourceFile("sample.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const issues = [];
+  const literalColor = /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|oklch|oklab|lab|lch|color)\(/i;
+  const paletteClass = /(?<![\w-])(?:bg|text|border(?:-[xysetblr])?|divide|outline|ring(?:-offset)?|shadow|accent|caret|fill|stroke|from|via|to|decoration)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|[1-9]00|950)(?![\w-])/;
+  const fontClass = /(?<![\w-])text-(?:xs|sm|base|lg|xl|[0-9]xl)(?![\w-])|(?<![\w-])text-\[(?:length:|font-size:)?[\d.]+(?:px|r?em|pt|vw|vh|%)\]/;
+  const add = (kind, value) => issues.push({ kind, value });
+  function visit(node) {
+    if (ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
+      const text = node.text;
+      const parent = ts.isJsxExpression(node.parent) ? node.parent.parent : node.parent;
+      const name = (ts.isPropertyAssignment(parent) || ts.isJsxAttribute(parent)) ? parent.name.getText(ast).replace(/['"]/g, "") : "";
+      const colorProperty = /^(?:--|background|border|outline|(?:box|text)Shadow|fill$|stroke$)|color$/i.test(name);
+      const arbitraryColor = [...text.matchAll(/\[[^\]]+\]/g)].some(([part]) => literalColor.test(part));
+      if (paletteClass.test(text) || arbitraryColor || (colorProperty && literalColor.test(text))) add("color", text);
+      if (/\btransition-all\b/.test(text)) add("motion", text);
+      const fontText = text.split(/\s+/).filter(token => !allowedFontClasses.includes(token)).join(" ");
+      if (page && (fontClass.test(fontText) || (name === "fontSize" && /^[\d.]+(?:px|r?em|pt|vw|vh|%)?$/.test(text)))) add("font", text);
+    }
+    if (page && ts.isPropertyAssignment(node) && node.name.getText(ast) === "fontSize" && ts.isNumericLiteral(node.initializer)) add("font", node.initializer.text);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  return issues;
 }
 
-// 2. transition-all 会把没打算动的属性一起动画掉，等于动效不解释任何东西。
-//    设计语言 §10：动效只用于说明状态变化。
-for (const file of allTsx) {
-  assert.ok(
-    !/\btransition-all\b/.test(readFileSync(file, "utf8")),
-    `${rel(file)}: transition-all —— 改成明确的属性表，如 transition-[background-color,box-shadow]`,
-  );
+// 真实误报/漏报的回归样本。验证违规会失败，合法内容不会因类似色号被拦住。
+const sourceCases = [
+  ['<div className="text-body bg-card" />', [], true],
+  ['<div className="bg-[#ff0000]" />', ["color"], true],
+  ['<div className="hover:bg-red-500/50" />', ["color"], true],
+  ['<div style={{color: "rgb(255 0 0)"}} />', ["color"], true],
+  ['<svg><path fill="#fff" /></svg>', ["color"], true],
+  ['<div className="text-[11px]" />', ["font"], true],
+  ['<div style={{fontSize: 11}} />', ["font"], true],
+  ['<div className="text-sm" />', ["font"], true],
+  ['<div className="text-sm" />', [], false],
+  ['<div className="transition-all" />', ["motion"], true],
+  ['// 说明 #abc / transition-all\nconst s = "#abc"; const x = <a href="#abc">色号 #abc</a>;', [], true],
+  ['<div style={{color:"var(--text-primary)",fontSize:"var(--font-size-body)"}} />', [], true],
+  ['<div className="text-[28px] sm:text-[34px]" />', [], true, ["text-[28px]", "sm:text-[34px]"]],
+  ['<div className="text-[28px] text-[11px]" />', ["font"], true, ["text-[28px]"]],
+];
+for (const [source, expected, page, allowed] of sourceCases) {
+  assert.deepEqual(sourceStyleIssues(source, page, allowed).map(issue => issue.kind), expected, `样式检查回归：${source}`);
 }
 
-// 3. 页面层文字必须走 §4 的字号职务刻度（text-page / text-section / text-body /
-//    text-small / text-label）。components/ui 是 shadcn 组件底座的控件字号，不在此列——
-//    把下拉菜单项也换成 text-body 等于给它赋予"正文"语义，那是另一种错。
+// 页面字号使用职务刻度；components/ui 保留控件自己的尺寸 API。
 const contentTsx = allTsx.filter(
   (f) => rel(f).startsWith("features/") || rel(f).startsWith("components/layout/"),
 );
-for (const file of contentTsx) {
-  const bad = readFileSync(file, "utf8").match(
-    /(?<![\w-])text-(xs|sm|base|lg|xl|[0-9]xl)(?![\w-])/g,
-  );
-  assert.ok(
-    !bad,
-    `${rel(file)}: 用了 Tailwind 默认字号 ${bad?.[0]} —— 页面层改用 text-page / text-section / text-body / text-small / text-label`,
-  );
+// ponytail: 仅保留认证页现存的独立字号（设计语言 §6.1），不豁免整个文件；
+// 正式迁移时把品牌及认证控件字号纳入 Token 后删除这些精确例外。
+const existingAuthFonts = {
+  "features/auth/auth-layout.tsx": ["text-[28px]", "sm:text-[34px]"],
+};
+for (const file of allTsx) {
+  const issues = sourceStyleIssues(readFileSync(file, "utf8"), contentTsx.includes(file), existingAuthFonts[rel(file)]);
+  assert.deepEqual(issues, [], `${rel(file)}: 样式绕过统一规则（color 用语义 Token，font 用页面刻度，motion 用明确属性）：${JSON.stringify(issues)}`);
 }
 
 const constitution = readFileSync(new URL("../../../CLAUDE.md", root), "utf8");
@@ -257,7 +291,7 @@ try {
     });
   }
   console.log(
-    `PASS: ${pairs.length} text contrast pairs, control border, 明度阶梯, token references, document links; ${allTsx.length} tsx 无硬编码色 / 无 transition-all，${contentTsx.length} 个页面文件字号在刻度上; 5 widths; form, tabs, toggle, dialog, 5 empty states, reduced motion.`,
+    `PASS: ${pairs.length} text contrast pairs, control border, 明度阶梯, token references, document links; ${sourceCases.length} 个样式误报/漏报回归样本，${allTsx.length} tsx 静态样式检查，${contentTsx.length} 个页面文件字号检查; 5 widths; form, tabs, toggle, dialog, 5 empty states, reduced motion.`,
   );
 } finally {
   await browser.close();

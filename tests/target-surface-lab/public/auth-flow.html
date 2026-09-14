@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>识途靶场 - 多步骤认证流 (Auth Flow)</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .auth-box { max-width: 440px; margin: 40px auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; color: #334155; }
+    .form-group input { width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+    .btn { display: inline-block; width: 100%; padding: 10px; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    .btn:hover { background: #1d4ed8; }
+    .error-msg { color: #dc2626; font-size: 13px; margin-top: 4px; display: none; }
+    .hint { font-size: 12px; color: #64748b; margin-top: 4px; }
+    .step-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; background: #e0e7ff; color: #3730a3; margin-bottom: 12px; }
+    .success-badge { background: #dcfce7; color: #166534; padding: 4px 12px; border-radius: 16px; font-weight: 600; display: inline-block; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div class="auth-box">
+    <h2 id="auth-title">目标系统安全登录</h2>
+
+    <!-- Step 1: 密码登录 -->
+    <div id="step-password">
+      <span class="step-badge" id="step-indicator">步骤 1/2: 账号密码验证</span>
+      <div class="form-group">
+        <label for="username">账号 / 用户名</label>
+        <input type="text" id="username" name="username" placeholder="请输入用户名 (测试: lab-admin)" />
+        <div class="error-msg" id="err-username">用户名不能为空</div>
+      </div>
+      <div class="form-group">
+        <label for="password">登录密码</label>
+        <input type="password" id="password" name="password" placeholder="请输入密码 (测试: password123)" />
+        <div class="error-msg" id="err-password">密码不能为空</div>
+      </div>
+      <button class="btn" id="btn-login-step1" type="button">下一步验证</button>
+      <div class="hint">默认测试凭据：lab-admin / password123</div>
+    </div>
+
+    <!-- Step 2: 短信 / OTP 动态验证码 -->
+    <div id="step-otp" style="display: none;">
+      <span class="step-badge" id="step-otp-indicator">步骤 2/2: 短信安全验证码</span>
+      <p style="font-size: 13px; color: #475569;">已向绑定手机号 <b id="phone-display">138****0000</b> 发送 6 位安全动态码。</p>
+      <div class="form-group">
+        <label for="otp-code">动态验证码</label>
+        <input type="text" id="otp-code" name="otpCode" maxlength="6" placeholder="6 位验证码 (测试: 888888)" />
+        <div class="error-msg" id="err-otp">验证码错误，请输入 888888</div>
+      </div>
+      <button class="btn" id="btn-verify-otp" type="button">确认登录</button>
+    </div>
+
+    <!-- Step 3: 已认证成功看板 -->
+    <div id="auth-success" style="display: none;">
+      <div class="success-badge" id="auth-status">AUTHENTICATED</div>
+      <h3 id="welcome-msg">欢迎回来，lab-admin！</h3>
+      <p style="font-size: 14px; color: #475569;">当前会话令牌: <code id="token-display"></code></p>
+      <button class="btn" id="logout-btn" type="button" style="background: #ef4444; margin-top: 16px;">退出当前登录</button>
+    </div>
+  </div>
+
+  <script>
+    const stepPassword = document.getElementById('step-password');
+    const stepOtp = document.getElementById('step-otp');
+    const authSuccess = document.getElementById('auth-success');
+
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
+    const otpInput = document.getElementById('otp-code');
+
+    const errUsername = document.getElementById('err-username');
+    const errPassword = document.getElementById('err-password');
+    const errOtp = document.getElementById('err-otp');
+
+    const btnStep1 = document.getElementById('btn-login-step1');
+    const btnVerifyOtp = document.getElementById('btn-verify-otp');
+    const logoutBtn = document.getElementById('logout-btn');
+    const tokenDisplay = document.getElementById('token-display');
+
+    // 检查初始 Cookie
+    if (document.cookie.includes('cairn_session_token=')) {
+      showAuthenticated('cairn_session_token_restored');
+    }
+
+    btnStep1.addEventListener('click', () => {
+      errUsername.style.display = 'none';
+      errPassword.style.display = 'none';
+      const u = usernameInput.value.trim();
+      const p = passwordInput.value;
+      if (!u) {
+        errUsername.style.display = 'block';
+        return;
+      }
+      if (!p) {
+        errPassword.style.display = 'block';
+        return;
+      }
+      if (u === 'lab-admin' && p === 'password123') {
+        stepPassword.style.display = 'none';
+        stepOtp.style.display = 'block';
+        otpInput.focus();
+      } else {
+        errPassword.innerText = '用户名或密码不正确';
+        errPassword.style.display = 'block';
+      }
+    });
+
+    btnVerifyOtp.addEventListener('click', () => {
+      errOtp.style.display = 'none';
+      const otp = otpInput.value.trim();
+      if (otp === '888888') {
+        const token = 'tok_' + Math.random().toString(36).slice(2, 10);
+        document.cookie = `cairn_session_token=${token}; path=/; max-age=3600`;
+        showAuthenticated(token);
+      } else {
+        errOtp.style.display = 'block';
+      }
+    });
+
+    logoutBtn.addEventListener('click', () => {
+      document.cookie = 'cairn_session_token=; path=/; max-age=0';
+      authSuccess.style.display = 'none';
+      stepOtp.style.display = 'none';
+      stepPassword.style.display = 'block';
+      usernameInput.value = '';
+      passwordInput.value = '';
+      otpInput.value = '';
+    });
+
+    function showAuthenticated(token) {
+      stepPassword.style.display = 'none';
+      stepOtp.style.display = 'none';
+      authSuccess.style.display = 'block';
+      tokenDisplay.innerText = token;
+    }
+  </script>
+</body>
+</html>

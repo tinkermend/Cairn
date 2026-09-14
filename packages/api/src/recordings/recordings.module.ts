@@ -1,9 +1,10 @@
 import { Module } from '@nestjs/common'
-import { RecordingsController } from './recordings.controller'
+import { RecordingBindingsController, RecordingsController } from './recordings.controller'
 import { RecordingsService } from './recordings.service'
 
 @Module({
-  controllers: [RecordingsController],
+  controllers: [RecordingsController, RecordingBindingsController],
   providers: [RecordingsService],
+  exports: [RecordingsService],
 })
 export class RecordingsModule {}

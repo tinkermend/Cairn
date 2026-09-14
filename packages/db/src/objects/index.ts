@@ -23,6 +23,7 @@ export {
   settleExpiredPendingEvidence,
   settleFinishedPendingRuns,
   settleRunEvidence,
+  recordInlineLogEvidence,
   type PendingEvidenceRow,
   type SettleEvidenceOptions,
 } from './evidence.js'

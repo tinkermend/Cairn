@@ -1,0 +1,395 @@
+@import '@cairn/design-tokens';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  min-width: 0;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color-scheme: light;
+}
+
+body.dark-mode {
+  background: var(--surface-page);
+  color: var(--text-primary);
+}
+
+.cairn-app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-page);
+}
+
+.cairn-login {
+  width: 100%;
+  min-width: 0;
+  min-height: 100vh;
+  padding: 40px 24px 32px;
+  display: flex;
+  flex-direction: column;
+}
+
+.cairn-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 28px;
+  text-align: center;
+}
+
+.cairn-brand img {
+  width: 40px;
+  height: 40px;
+}
+
+.cairn-brand small {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--font-size-label);
+}
+
+.cairn-card {
+  width: 100%;
+  min-width: 0;
+  background: var(--surface-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--card-shadow);
+  padding: 24px 20px 20px;
+}
+
+.cairn-card h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.cairn-lead {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+  font-size: var(--font-size-small);
+  text-align: center;
+}
+
+.cairn-field {
+  margin-bottom: 16px;
+  min-width: 0;
+}
+
+.cairn-field label,
+.cairn-label {
+  display: block;
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-small);
+  font-weight: 500;
+}
+
+.cairn-field input,
+.cairn-field select {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--surface-control);
+  box-shadow: var(--control-shadow);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.cairn-field input:focus,
+.cairn-field select:focus,
+.cairn-btn:focus-visible {
+  outline: none;
+  border-color: var(--focus-ring);
+  box-shadow: var(--control-focus-shadow);
+}
+
+.cairn-error {
+  margin: 0 0 12px;
+  color: var(--status-error-foreground);
+  font-size: var(--font-size-small);
+}
+
+.cairn-btn {
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-control);
+  font: 500 14px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.cairn-btn-block {
+  width: 100%;
+}
+
+.cairn-btn-primary {
+  background: var(--action-primary);
+  color: var(--action-primary-foreground);
+  box-shadow: var(--action-shadow);
+}
+
+.cairn-btn-primary:hover:not(:disabled) {
+  background: var(--action-primary-hover);
+}
+
+.cairn-btn-secondary {
+  background: var(--action-secondary);
+  color: var(--action-secondary-foreground);
+}
+
+.cairn-btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.cairn-btn[aria-pressed='true'] {
+  background: var(--selection-background);
+  color: var(--selection-foreground);
+}
+
+.cairn-btn:disabled {
+  background: var(--surface-subtle);
+  color: var(--text-disabled);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.cairn-top {
+  padding: 12px;
+  background: var(--surface-nav);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.cairn-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.cairn-top-row strong {
+  font-size: var(--font-size-small);
+}
+
+.cairn-who {
+  color: var(--text-muted);
+  font-size: var(--font-size-label);
+}
+
+.cairn-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--surface-card);
+  border-bottom: 1px solid var(--border-divider);
+}
+
+.cairn-toolbar .cairn-btn-ghost:last-child {
+  margin-left: auto;
+}
+
+.cairn-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--status-info-background);
+  color: var(--status-info-foreground);
+  font-size: var(--font-size-label);
+}
+
+.cairn-status-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.cairn-status-detail {
+  color: var(--text-muted);
+}
+
+.cairn-status-warning {
+  background: var(--status-warning-background);
+  color: var(--status-warning-foreground);
+}
+
+.cairn-status-error {
+  background: var(--status-error-background);
+  color: var(--status-error-foreground);
+}
+
+.cairn-status-ok {
+  background: var(--status-success-background);
+  color: var(--status-success-foreground);
+}
+
+/* 录制中要一眼看出来：蓝色表达平台正在工作，红色只留给失败。 */
+.cairn-status-live {
+  color: var(--action-primary);
+  font-weight: 500;
+}
+
+.cairn-status-live .cairn-status-detail {
+  font-weight: 400;
+}
+
+.cairn-live-dot {
+  flex: none;
+  margin-top: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--action-primary);
+  animation: cairn-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes cairn-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cairn-live-dot {
+    animation: none;
+  }
+}
+
+.cairn-steps {
+  margin: 0;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  list-style: none;
+}
+
+.cairn-step {
+  background: var(--surface-card);
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+  padding: 10px 12px;
+}
+
+.cairn-step-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.cairn-step-name {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 连续多条同名操作要能靠这行分辨录到了哪个元素。 */
+.cairn-step-target {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-label);
+  overflow-wrap: anywhere;
+}
+
+.cairn-step-toggle {
+  flex: none;
+  align-self: center;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--action-primary);
+  font: inherit;
+  font-size: var(--font-size-label);
+  cursor: pointer;
+}
+
+.cairn-step-toggle:hover {
+  background: var(--surface-subtle);
+}
+
+/* 删除是减法但可撤销：不用危险红，避免和执行失败抢语义。 */
+.cairn-step-remove {
+  color: var(--text-secondary);
+}
+
+.cairn-step-raw {
+  margin: 8px 0 0 28px;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cairn-idx {
+  flex: none;
+  width: 20px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cairn-meta {
+  margin: 4px 0 0 28px;
+  color: var(--text-muted);
+  font-size: var(--font-size-label);
+}
+
+.cairn-meta-warning {
+  color: var(--status-warning-foreground);
+}
+
+.cairn-empty,
+.cairn-hint {
+  padding: 8px 12px 16px;
+  color: var(--text-muted);
+  font-size: var(--font-size-label);
+}
+
+.cairn-confirm {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--status-warning-background);
+  color: var(--status-warning-foreground);
+  font-size: var(--font-size-small);
+}

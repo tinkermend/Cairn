@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>识途靶场 - 动态异步表格 (Dynamic Table)</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .table-container { max-width: 900px; margin: 30px auto; padding: 24px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
+    .toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+    .filters { display: flex; gap: 10px; }
+    input[type="text"], select { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+    th { background: #f8fafc; font-weight: 600; color: #475569; }
+    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+    .status-pending { background: #fef3c7; color: #92400e; }
+    .status-approved { background: #dcfce7; color: #166534; }
+    .status-rejected { background: #fee2e2; color: #991b1b; }
+    .btn-action { padding: 4px 8px; font-size: 12px; border-radius: 4px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; margin-right: 4px; }
+    .btn-action:hover { background: #e2e8f0; }
+    .btn-delete { color: #dc2626; border-color: #fca5a5; }
+    .btn-delete:hover { background: #fee2e2; }
+    .pagination { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; font-size: 14px; }
+    .page-btn { padding: 6px 12px; border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; cursor: pointer; }
+    .page-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .loading-spin { text-align: center; padding: 30px; color: #64748b; font-size: 14px; }
+    .toast { position: fixed; top: 20px; right: 20px; background: #0f172a; color: #fff; padding: 10px 16px; border-radius: 6px; font-size: 14px; display: none; z-index: 100; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 50; }
+    .modal-content { background: white; width: 360px; padding: 20px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.2); }
+  </style>
+</head>
+<body>
+  <div class="table-container">
+    <h2 id="table-title">企业采购订单列表</h2>
+    <div class="toolbar">
+      <div class="filters">
+        <input type="text" id="search-input" placeholder="搜索订单号或客户名称" />
+        <select id="status-filter">
+          <option value="ALL">全部状态</option>
+          <option value="PENDING">待审批</option>
+          <option value="APPROVED">已通过</option>
+          <option value="REJECTED">已拒绝</option>
+        </select>
+        <button type="button" class="page-btn" id="btn-search">查询</button>
+      </div>
+      <div>
+        <span>总计记录: <b id="total-count">0</b> 条</span>
+      </div>
+    </div>
+
+    <div id="table-loading" class="loading-spin" style="display: none;">正在加载数据...</div>
+
+    <table id="order-table">
+      <thead>
+        <tr>
+          <th>订单号</th>
+          <th>采购客户</th>
+          <th>类目</th>
+          <th>金额</th>
+          <th>状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="table-body">
+      </tbody>
+    </table>
+
+    <div class="pagination">
+      <button type="button" class="page-btn" id="prev-page" disabled>上一页</button>
+      <span id="page-info">第 1 / 1 页</span>
+      <button type="button" class="page-btn" id="next-page" disabled>下一页</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast-msg"></div>
+
+  <!-- 删除确认弹窗 -->
+  <div class="modal-overlay" id="delete-modal">
+    <div class="modal-content">
+      <h3 style="margin-top: 0;">确认删除订单？</h3>
+      <p id="delete-modal-msg" style="font-size: 14px; color: #475569;">确定要删除该采购订单记录吗？此操作无法撤销。</p>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button type="button" class="page-btn" id="btn-cancel-delete">取消</button>
+        <button type="button" class="page-btn" id="btn-confirm-delete" style="background: #dc2626; color: white; border: none;">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const mockData = [
+      { id: 'ORD-101', customer: '未来科技有限责任公司', category: '硬件设备', amount: 18800.00, status: 'PENDING' },
+      { id: 'ORD-102', customer: '蓝天智能云科技有限公司', category: '云服务资源', amount: 4500.00, status: 'APPROVED' },
+      { id: 'ORD-103', customer: '创新工场孵化中心', category: '办公耗材', amount: 1200.00, status: 'REJECTED' },
+      { id: 'ORD-104', customer: '智图数字媒体工作室', category: '硬件设备', amount: 9200.00, status: 'APPROVED' },
+      { id: 'ORD-105', customer: '先锋前沿实验室', category: '云服务资源', amount: 6800.00, status: 'PENDING' },
+    ];
+
+    let dataset = [...mockData];
+    let filtered = [...mockData];
+    let currentPage = 1;
+    const pageSize = 3;
+    let pendingDeleteId = null;
+
+    const tableBody = document.getElementById('table-body');
+    const tableLoading = document.getElementById('table-loading');
+    const totalCountEl = document.getElementById('total-count');
+    const pageInfoEl = document.getElementById('page-info');
+    const prevBtn = document.getElementById('prev-page');
+    const nextBtn = document.getElementById('next-page');
+    const searchInput = document.getElementById('search-input');
+    const statusFilter = document.getElementById('status-filter');
+    const btnSearch = document.getElementById('btn-search');
+    const toastMsg = document.getElementById('toast-msg');
+    const deleteModal = document.getElementById('delete-modal');
+    const deleteModalMsg = document.getElementById('delete-modal-msg');
+    const btnCancelDelete = document.getElementById('btn-cancel-delete');
+    const btnConfirmDelete = document.getElementById('btn-confirm-delete');
+
+    function showToast(text) {
+      toastMsg.innerText = text;
+      toastMsg.style.display = 'block';
+      setTimeout(() => { toastMsg.style.display = 'none'; }, 2000);
+    }
+
+    function renderTable() {
+      tableLoading.style.display = 'block';
+      tableBody.innerHTML = '';
+
+      setTimeout(() => {
+        tableLoading.style.display = 'none';
+        const start = (currentPage - 1) * pageSize;
+        const pageItems = filtered.slice(start, start + pageSize);
+        const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+
+        totalCountEl.innerText = filtered.length;
+        pageInfoEl.innerText = `第 ${currentPage} / ${totalPages} 页`;
+        prevBtn.disabled = currentPage <= 1;
+        nextBtn.disabled = currentPage >= totalPages;
+
+        pageItems.forEach(item => {
+          const tr = document.createElement('tr');
+          tr.dataset.id = item.id;
+          const statusClass = item.status === 'APPROVED' ? 'status-approved' : item.status === 'REJECTED' ? 'status-rejected' : 'status-pending';
+          const statusLabel = item.status === 'APPROVED' ? '已通过' : item.status === 'REJECTED' ? '已拒绝' : '待审批';
+
+          tr.innerHTML = `
+            <td><code class="order-id">${item.id}</code></td>
+            <td class="customer-name">${item.customer}</td>
+            <td>${item.category}</td>
+            <td>¥ ${item.amount.toFixed(2)}</td>
+            <td><span class="status-badge ${statusClass}">${statusLabel}</span></td>
+            <td>
+              <button type="button" class="btn-action btn-edit" data-id="${item.id}">查看</button>
+              <button type="button" class="btn-action btn-delete" data-id="${item.id}">删除</button>
+            </td>
+          `;
+          tableBody.appendChild(tr);
+        });
+
+        // 绑定删除事件
+        document.querySelectorAll('.btn-delete').forEach(btn => {
+          btn.addEventListener('click', () => {
+            pendingDeleteId = btn.dataset.id;
+            deleteModalMsg.innerText = `确定要删除采购订单 ${pendingDeleteId} 吗？此操作无法撤销。`;
+            deleteModal.style.display = 'flex';
+          });
+        });
+      }, 50);
+    }
+
+    btnConfirmDelete.addEventListener('click', () => {
+      if (pendingDeleteId) {
+        dataset = dataset.filter(x => x.id !== pendingDeleteId);
+        filtered = filtered.filter(x => x.id !== pendingDeleteId);
+        showToast(`已成功删除订单 ${pendingDeleteId}`);
+        deleteModal.style.display = 'none';
+        pendingDeleteId = null;
+        if ((currentPage - 1) * pageSize >= filtered.length && currentPage > 1) {
+          currentPage--;
+        }
+        renderTable();
+      }
+    });
+
+    btnCancelDelete.addEventListener('click', () => {
+      deleteModal.style.display = 'none';
+      pendingDeleteId = null;
+    });
+
+    btnSearch.addEventListener('click', applyFilters);
+    searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyFilters(); });
+    statusFilter.addEventListener('change', applyFilters);
+
+    function applyFilters() {
+      const q = searchInput.value.trim().toLowerCase();
+      const status = statusFilter.value;
+      filtered = dataset.filter(item => {
+        const matchesQuery = !q || item.id.toLowerCase().includes(q) || item.customer.toLowerCase().includes(q);
+        const matchesStatus = status === 'ALL' || item.status === status;
+        return matchesQuery && matchesStatus;
+      });
+      currentPage = 1;
+      renderTable();
+    }
+
+    prevBtn.addEventListener('click', () => { if (currentPage > 1) { currentPage--; renderTable(); } });
+    nextBtn.addEventListener('click', () => {
+      const totalPages = Math.ceil(filtered.length / pageSize);
+      if (currentPage < totalPages) { currentPage++; renderTable(); }
+    });
+
+    renderTable();
+  </script>
+</body>
+</html>

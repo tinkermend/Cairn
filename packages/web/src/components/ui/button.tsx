@@ -16,14 +16,15 @@ const buttonVariants = cva(
         outline:
           'border border-border bg-card shadow-xs hover:bg-action-hover hover:text-accent-foreground',
         secondary:
-          'bg-secondary text-secondary-foreground shadow-xs hover:border hover:border-selection-border',
+          'border border-transparent bg-secondary text-secondary-foreground shadow-xs hover:border-selection-border',
         ghost: 'hover:bg-action-hover hover:text-accent-foreground',
         link: 'text-link underline-offset-4 hover:underline',
       },
       size: {
-        default: 'h-9 px-4 py-2 has-[>svg]:px-3',
-        sm: 'h-8 rounded-md gap-1.5 px-3 text-[13px] has-[>svg]:px-2.5',
-        lg: 'h-10 rounded-md px-6 has-[>svg]:px-4',
+        default:
+          'h-9 px-4 py-2 has-[>svg]:px-3 has-[[data-slot=button-label]>svg]:px-3',
+        sm: 'h-8 rounded-md gap-1.5 px-3 text-[13px] has-[>svg]:px-2.5 has-[[data-slot=button-label]>svg]:px-2.5',
+        lg: 'h-10 rounded-md px-6 has-[>svg]:px-4 has-[[data-slot=button-label]>svg]:px-4',
         icon: 'size-9',
       },
     },
@@ -39,7 +40,7 @@ function Button({
   variant,
   size,
   asChild = false,
-  loading = false,
+  loading,
   children,
   disabled,
   ...props
@@ -53,17 +54,36 @@ function Button({
   return (
     <Comp
       data-slot='button'
-      className={cn(buttonVariants({ variant, size, className }))}
+      className={cn(
+        buttonVariants({ variant, size }),
+        'relative motion-reduce:transition-none',
+        className
+      )}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       {...props}
     >
-      {asChild ? (
+      {asChild || loading === undefined ? (
         children
       ) : (
         <>
-          {loading ? <Loader2 className='size-4 animate-spin' /> : null}
-          {children}
+          <span
+            data-slot='button-label'
+            className={cn(
+              'inline-flex items-center justify-center gap-2',
+              loading && 'opacity-0'
+            )}
+          >
+            {children}
+          </span>
+          {loading ? (
+            <span
+              aria-hidden='true'
+              className='pointer-events-none absolute inset-0 flex items-center justify-center'
+            >
+              <Loader2 className='size-4 animate-spin motion-reduce:animate-none' />
+            </span>
+          ) : null}
         </>
       )}
     </Comp>

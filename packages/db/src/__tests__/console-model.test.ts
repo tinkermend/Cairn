@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
-import { dbEnvSchema } from '@cairn/shared'
+import { postgresEnvSchema as dbEnvSchema } from '../test-entry.js'
 import { newId } from '../id.js'
 import { migrate } from '../migrate.js'
 

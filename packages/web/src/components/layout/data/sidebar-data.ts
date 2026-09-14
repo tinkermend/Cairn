@@ -73,6 +73,12 @@ export const sidebarData: SidebarData = {
           permission: 'role:read',
         },
         {
+          title: '开放服务',
+          url: '/services',
+          icon: KeyRound,
+          permission: 'service:read',
+        },
+        {
           title: '平台配置',
           url: '/platform-config',
           icon: SlidersHorizontal,

@@ -61,7 +61,11 @@ describe('POST /auth/login', () => {
       .send({ email: 'admin', password: 'cairn-admin' })
       .expect(200)
     expect(() => loginResponseSchema.parse(res.body)).not.toThrow()
-    expect(auth.login).toHaveBeenCalledWith('admin', 'cairn-admin')
+    expect(auth.login).toHaveBeenCalledWith(
+      'admin',
+      'cairn-admin',
+      expect.objectContaining({ kind: 'web' }),
+    )
   })
 
   it('缺字段 400', async () => {

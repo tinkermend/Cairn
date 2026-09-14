@@ -32,6 +32,7 @@ export default defineConfig({
       '@protocol': path.resolve(root, 'vendor/playwright-protocol'),
       '@web': path.resolve(root, 'vendor/playwright-web'),
       '@recorder': path.resolve(root, 'vendor/playwright-recorder'),
+      '@cairn/design-tokens': path.resolve(root, '../../../docs/design/front/tokens.css'),
     },
   },
   build: {
@@ -41,7 +42,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: path.resolve(root, 'index.html'),
-        preferences: path.resolve(root, 'preferences.html'),
         background: path.resolve(root, 'src/background.ts'),
       },
       output: {

@@ -37,7 +37,13 @@ describe('侧栏导航', () => {
   })
 
   it('治理组按权限显隐，无治理权限时整组为空', () => {
-    expect(governance.items.map((item) => item.title)).toEqual(['用户', '角色', '平台配置', '审计'])
+    expect(governance.items.map((item) => item.title)).toEqual([
+      '用户',
+      '角色',
+      '开放服务',
+      '平台配置',
+      '审计',
+    ])
     const audit = governance.items.find((item) => item.title === '审计')
     expect(audit && 'url' in audit ? audit.url : undefined).toBe('/audit')
     expect(audit && 'items' in audit ? audit.items : undefined).toBeUndefined()
@@ -65,11 +71,12 @@ describe('侧栏导航', () => {
     for (const group of sidebarData.navGroups) {
       for (const item of group.items) {
         if (item.anyOf?.length) {
+          const required = item.anyOf
           const match = menus.find(
             (menu) =>
               menu.label === item.title &&
               menu.anyOf &&
-              [...menu.anyOf].sort().join() === [...item.anyOf].sort().join(),
+              [...menu.anyOf].sort().join() === [...required].sort().join(),
           )
           expect(match, `${item.title} 缺少 anyOf 能力地图`).toBeTruthy()
         } else if (item.permission) {

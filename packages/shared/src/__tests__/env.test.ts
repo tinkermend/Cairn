@@ -35,6 +35,16 @@ describe('dbEnvSchema', () => {
 })
 
 describe('apiEnvSchema', () => {
+  it('变化提示默认 auto，显式 redis 必须有 URL', () => {
+    const env = apiEnvSchema.parse({})
+    expect(env.CAIRN_CHANGE_HINT).toBe('auto')
+    expect(env.CAIRN_RUN_EVENT_RETAIN_DAYS).toBe(7)
+    expect(() => apiEnvSchema.parse({ CAIRN_CHANGE_HINT: 'redis' })).toThrow()
+    expect(apiEnvSchema.parse({ CAIRN_CHANGE_HINT: 'redis', CAIRN_REDIS_URL: 'redis://127.0.0.1:6379' }).CAIRN_REDIS_URL).toBe(
+      'redis://127.0.0.1:6379',
+    )
+  })
+
   it('JWT 与 bootstrap 有本地默认值', () => {
     const env = apiEnvSchema.parse({})
     expect(env.CAIRN_BOOTSTRAP_ADMIN_EMAIL).toBe('admin')
@@ -147,6 +157,7 @@ describe('apiEnvSchema', () => {
       CAIRN_JWT_SECRET: 'a-real-secret-value-over-16',
       CAIRN_BOOTSTRAP_ADMIN_PASSWORD: 'a-real-password',
       CAIRN_CREDENTIAL_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      CAIRN_INTERNAL_AUTH_SECRET: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
       CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
     })
     expect(env.CAIRN_ENV).toBe('production')
@@ -253,6 +264,7 @@ describe('workerEnvSchema', () => {
       CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
       CAIRN_BROWSER_PROFILE_DIR: '/var/cairn/profiles',
       CAIRN_CREDENTIAL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+      CAIRN_INTERNAL_AUTH_SECRET: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
     })
     expect(absolute.CAIRN_OBJECT_STORE_DIR).toBe('/var/cairn/objects')
   })
@@ -408,6 +420,7 @@ describe('workerEnvSchema', () => {
       CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
       CAIRN_BROWSER_PROFILE_DIR: '/var/cairn/profiles',
       CAIRN_CREDENTIAL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+      CAIRN_INTERNAL_AUTH_SECRET: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
     })
     expect(absolute.CAIRN_BROWSER_PROFILE_DIR).toBe('/var/cairn/profiles')
   })

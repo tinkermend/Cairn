@@ -1,10 +1,12 @@
 import { relations, sql } from 'drizzle-orm'
 import { index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import type {
+  ServiceAdmission,
   AttemptStatus,
   EvidenceStatus,
   EvidenceType,
   JsonValue,
+  RunEventType,
   RunEvidenceStatus,
   RunSnapshot,
   RunStatus,
@@ -16,6 +18,7 @@ import type {
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
+import { serviceCallers, serviceCredentials } from './service-access.js'
 import { targetAccounts, targets } from './targets.js'
 
 export const scenarios = cairnSchema.table(
@@ -101,8 +104,12 @@ export const runs = cairnSchema.table(
       .references(() => scenarioVersions.id, { onDelete: 'restrict' }),
     targetAccountId: uuid('target_account_id').references(() => targetAccounts.id, { onDelete: 'restrict' }),
     createdByConsoleAccountId: uuid('created_by_console_account_id')
-      .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
+    serviceCallerId: uuid('service_caller_id').references(() => serviceCallers.id, { onDelete: 'restrict' }),
+    serviceCredentialId: uuid('service_credential_id').references(() => serviceCredentials.id, { onDelete: 'restrict' }),
+    serviceAdmission: jsonb('service_admission').$type<ServiceAdmission>(),
+    deadlineAt: timestamp('deadline_at', { withTimezone: true }),
+    cancelReason: text('cancel_reason'),
     status: text('status').notNull().$type<RunStatus>(),
     evidenceStatus: text('evidence_status').notNull().default('PENDING').$type<RunEvidenceStatus>(),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
@@ -115,9 +122,13 @@ export const runs = cairnSchema.table(
     idempotencyDigest: text('idempotency_digest'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    eventSeq: integer('event_seq').notNull().default(0),
   },
   (t) => [
     uniqueIndex('runs_idempotency_idx').on(t.createdByConsoleAccountId, t.idempotencyKey),
+    uniqueIndex('runs_idempotency_service_idx').on(t.serviceCallerId, t.idempotencyKey),
+    index('runs_service_status_idx').on(t.serviceCallerId, t.status),
+    index('runs_deadline_idx').on(t.deadlineAt, t.status),
     index('runs_claim_idx').on(t.status, t.createdAt, t.id),
   ],
 )
@@ -177,6 +188,7 @@ export const evidences = cairnSchema.table(
     byteSize: integer('byte_size'),
     digest: text('digest'),
     missingReason: text('missing_reason'),
+    externalAccess: integer('external_access').notNull().default(0),
     uploadAttempts: integer('upload_attempts').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -184,6 +196,29 @@ export const evidences = cairnSchema.table(
     index('evidences_run_created_idx').on(t.runId, t.createdAt),
     index('evidences_attempt_id_idx').on(t.attemptId),
     index('evidences_status_idx').on(t.status, t.createdAt),
+  ],
+)
+
+export const runEvents = cairnSchema.table(
+  'run_events',
+  {
+    eventId: uuid('event_id').primaryKey().$defaultFn(newId),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'restrict' }),
+    sequence: integer('sequence').notNull(),
+    schemaVersion: integer('schema_version').notNull().default(1),
+    type: text('type').notNull().$type<RunEventType>(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    stepRunId: uuid('step_run_id'),
+    attemptId: uuid('attempt_id'),
+    workerId: text('worker_id'),
+    requestId: text('request_id'),
+    payload: jsonb('payload').$type<JsonValue>().notNull(),
+  },
+  (t) => [
+    uniqueIndex('run_events_run_seq_idx').on(t.runId, t.sequence),
+    index('run_events_run_occurred_idx').on(t.runId, t.occurredAt),
   ],
 )
 

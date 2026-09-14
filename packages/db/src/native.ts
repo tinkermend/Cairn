@@ -30,19 +30,55 @@ export type Driver = 'postgres' | 'mysql' | 'sqlite'
 type Tables = {
   [K in keyof typeof schema as (typeof schema)[K] extends Table ? K : never]: (typeof schema)[K]
 }
-const contexts = new WeakMap<object, { driver: Driver; tables: Tables; inTransaction: boolean }>()
+type NativeContext = {
+  driver: Driver
+  tables: Tables
+  inTransaction: boolean
+  hooks: Array<() => void | Promise<void>>
+}
+const contexts = new WeakMap<object, NativeContext>()
 export function driverOf(db: object): Driver {
   return contexts.get(db)?.driver ?? 'postgres'
 }
 export function schemaFor(db: object): Tables {
   return contexts.get(db)?.tables ?? schema
 }
-export function bindNative(db: Db, driver: Driver, tables: Tables, inTransaction = false): Db {
-  contexts.set(db, { driver, tables, inTransaction })
+export function bindNative(
+  db: Db,
+  driver: Driver,
+  tables: Tables,
+  inTransaction = false,
+  hooks: Array<() => void | Promise<void>> = [],
+): Db {
+  contexts.set(db, { driver, tables, inTransaction, hooks })
   return db
 }
 export function inTransaction(db: object): boolean {
   return contexts.get(db)?.inTransaction ?? false
+}
+
+export function onCommit(db: object, fn: () => void | Promise<void>): void {
+  const ctx = contexts.get(db)
+  if (!ctx?.inTransaction) {
+    queueMicrotask(() => {
+      void Promise.resolve(fn()).catch((error) => {
+        console.error('[db] onCommit hook failed outside transaction', error)
+      })
+    })
+    return
+  }
+  ctx.hooks.push(fn)
+}
+
+export async function flushCommitHooks(hooks: Array<() => void | Promise<void>>): Promise<void> {
+  const pending = hooks.splice(0)
+  for (const hook of pending) {
+    try {
+      await hook()
+    } catch (error) {
+      console.error('[db] after-commit hook failed', error)
+    }
+  }
 }
 
 const sqliteDate = sqlite.customType<{ data: Date; driverData: string }>({
@@ -68,11 +104,22 @@ export const indexedTextLimits: Record<string, number> = {
   'console_roles.key': 64,
   'scenario_versions.source_digest': 64,
   'console_role_permissions.permission': 128,
+  'console_audit_events.login_identifier': 64,
   'targets.code': 256,
   'target_accounts.username': 256,
   'scenarios.name': 128,
   'runs.idempotency_key': 256,
+  'run_events.type': 64,
+  'run_events.worker_id': 128,
+  'run_events.request_id': 128,
   'recording_drafts.idempotency_key': 256,
+  'recording_bindings.ticket_hash': 64,
+  'recording_bindings.status': 16,
+  'recording_bindings.api_origin': 256,
+  'recording_import_receipts.idempotency_key': 256,
+  'recording_import_receipts.request_digest': 64,
+  'recording_import_receipts.source_digest': 64,
+  'recording_import_receipts.normalizer_version': 64,
   'stored_objects.object_key': 512,
   'workers.id': 256,
 }

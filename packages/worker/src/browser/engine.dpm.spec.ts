@@ -19,7 +19,7 @@ import {
   targetAccounts,
   targets,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, type Step } from '@cairn/shared'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { createBrowserPort } from './port.js'
@@ -33,19 +33,54 @@ const CATALOG = JSON.parse(
   readFileSync(resolve(__dirname, '../../../../tests/target-snc-dpm/catalog.json'), 'utf8'),
 ) as {
   name: string
-  entryUrl: string
-  loginUrl: string
   loginFields: {
     username: { by: 'css'; value: string }
     password: { by: 'css'; value: string }
     submit: { by: 'css'; value: string }
   }
-  account: { displayName: string; username: string }
+  account: { displayName: string }
 }
 
-const ENTRY_URL = process.env.CAIRN_L3_DPM_URL ?? CATALOG.entryUrl
-const USERNAME = process.env.CAIRN_L3_DPM_USERNAME ?? CATALOG.account.username
-const PASSWORD = process.env.CAIRN_L3_DPM_PASSWORD ?? ''
+function loadLocalOverlay(): {
+  entryUrl?: string
+  loginUrl?: string
+  username?: string
+  password?: string
+} {
+  try {
+    const raw = JSON.parse(
+      readFileSync(resolve(__dirname, '../../../../tests/target-snc-dpm/catalog.local.json'), 'utf8'),
+    ) as {
+      entryUrl?: string
+      loginUrl?: string
+      account?: { username?: string; password?: string }
+    }
+    return {
+      entryUrl: raw.entryUrl,
+      loginUrl: raw.loginUrl,
+      username: raw.account?.username,
+      password: raw.account?.password,
+    }
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return {}
+    }
+    throw error
+  }
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string {
+  for (const value of values) {
+    if (value?.trim()) return value.trim()
+  }
+  return ''
+}
+
+const LOCAL = loadLocalOverlay()
+const ENTRY_URL = firstNonEmpty(process.env.CAIRN_L3_DPM_URL, LOCAL.entryUrl)
+const LOGIN_URL = firstNonEmpty(process.env.CAIRN_L3_DPM_LOGIN_URL, LOCAL.loginUrl)
+const USERNAME = firstNonEmpty(process.env.CAIRN_L3_DPM_USERNAME, LOCAL.username)
+const PASSWORD = firstNonEmpty(process.env.CAIRN_L3_DPM_PASSWORD, LOCAL.password)
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_dpm`
 
 async function requireChromium(): Promise<void> {
@@ -57,10 +92,24 @@ async function requireChromium(): Promise<void> {
   await browser.close()
 }
 
+function requireOverlay(): void {
+  const missing = [
+    ['CAIRN_L3_DPM_URL', ENTRY_URL],
+    ['CAIRN_L3_DPM_LOGIN_URL', LOGIN_URL],
+    ['CAIRN_L3_DPM_USERNAME', USERNAME],
+    ['CAIRN_L3_DPM_PASSWORD', PASSWORD],
+  ]
+    .filter(([, value]) => !value)
+    .map(([name]) => name)
+  if (missing.length === 0) return
+  throw new Error(
+    `CAIRN_L3_DPM=1 时必须提供 ${missing.join('、')}（环境变量或 tests/target-snc-dpm/catalog.local.json）`,
+  )
+}
+
 async function requireReachable(): Promise<void> {
-  const loginUrl = CATALOG.loginUrl
   const res = await Promise.race([
-    fetch(loginUrl, { redirect: 'follow' }),
+    fetch(LOGIN_URL, { redirect: 'follow' }),
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error('unreachable')), 8_000)),
   ])
   if (!res.ok && res.status >= 500) throw new Error(`DPM 登录页 ${res.status}`)
@@ -78,6 +127,7 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
   let objectDir = ''
 
   beforeAll(async () => {
+    requireOverlay()
     await requireChromium()
     await requireReachable()
     handle = await openIsolatedDb(SCHEMA)
@@ -97,7 +147,7 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
       code: `dpm-${SCHEMA.slice(-8)}`,
       name: CATALOG.name,
       entryUrl: ENTRY_URL,
-      loginUrl: CATALOG.loginUrl,
+      loginUrl: LOGIN_URL,
       authMethod: 'password',
       captchaMode: 'none',
       loginFields: CATALOG.loginFields,

@@ -182,10 +182,19 @@ export const sessionDtoSchema = z.object({
   lastUsedAt: utcInstantSchema,
   /** 最大生命周期的到期时刻（快照策略的值）。 */
   expiresAt: utcInstantSchema,
-  authHold: z
+    authHold: z
     .object({
       workerId: z.string().min(1),
       expiresAt: utcInstantSchema,
+      runId: z.uuid().nullable(),
+      bound: z.boolean(),
+    })
+    .nullable(),
+  authControl: z
+    .object({
+      epoch: z.number().int().nonnegative(),
+      actorId: z.uuid().nullable(),
+      expiresAt: utcInstantSchema.nullable(),
     })
     .nullable(),
   closeReason: z.string().min(1).nullable(),

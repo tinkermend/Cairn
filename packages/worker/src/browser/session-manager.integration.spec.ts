@@ -6,8 +6,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { Step } from '@cairn/shared'
 import {
   acquireSessionLease,
-  claimAuthHold,
   claimRun,
+  enterRunWaitingForAuth,
   createRunWithSnapshot,
   createScenarioWithVersion,
   requireCreatedSession,
@@ -17,7 +17,6 @@ import {
   getLeaseById,
   getRun,
   getSessionById,
-  markRunWaitingForAuth,
   newId,
   registerWorker,
   openIsolatedDb,
@@ -27,7 +26,7 @@ import {
   targetAccounts,
   targets,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import { DEFAULT_SESSION_POLICY, DEV_CREDENTIAL_KEY, type RunGrant, type RunSnapshot } from '@cairn/shared'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { BrowserRuntimeError, type BrowserHandle } from './runtime'
@@ -59,22 +58,29 @@ function stubBrowserHandle(profileDir: string): BrowserHandle {
     first: () => ({ isVisible: async () => false }),
     waitFor: async () => undefined,
   })
+  const stubPage = () => ({
+    evaluate: async () => true,
+    goto: async () => undefined,
+    url: () => 'http://127.0.0.1/',
+    waitForLoadState: async () => undefined,
+    waitForFunction: async () => undefined,
+    locator,
+    isClosed: () => false,
+    on: () => undefined,
+    off: () => undefined,
+    mainFrame: () => ({}),
+    close: async () => undefined,
+    context: () => ({}),
+  })
   return {
     profileDir,
     context: {
       close: async () => undefined,
       browser: () => null,
       pages: () => [],
-      newPage: async () => ({ close: async () => undefined }),
+      newPage: async () => stubPage(),
     },
-    basePage: {
-      evaluate: async () => true,
-      goto: async () => undefined,
-      url: () => 'http://127.0.0.1/',
-      waitForLoadState: async () => undefined,
-      waitForFunction: async () => undefined,
-      locator,
-    },
+    basePage: stubPage(),
   } as unknown as BrowserHandle
 }
 
@@ -408,21 +414,22 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       expectedVersion: session.version,
       status: 'OPEN',
     })
-    await claimAuthHold(handle.db, {
+    const { snapshot: run, grant } = await makeRunningSnapshot({
+      targetId: manualTargetId,
+      accountId: account,
+    })
+    manager.setWorkerInstance(WORKER_INSTANCE)
+    await enterRunWaitingForAuth(handle.db, {
+      grant,
       sessionId: session.id,
       workerId: WORKER,
+      workerInstanceId: WORKER_INSTANCE,
       holdSeconds: 1,
     })
     await handle.db.execute(sql`
       UPDATE browser_sessions SET auth_hold_expires_at = now() - interval '5 seconds'
        WHERE id = ${session.id}
     `)
-
-    const { snapshot: run, grant } = await makeRunningSnapshot({
-      targetId: manualTargetId,
-      accountId: account,
-    })
-    await markRunWaitingForAuth(handle.db, grant)
 
     const n = await manager.reapAuthTimeouts()
     expect(n).toBeGreaterThanOrEqual(1)
@@ -499,7 +506,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       }),
     ).rejects.toMatchObject({ code: 'SESSION_BUSY' })
 
-    expect(await yieldPlacement(handle.db, grant)).toBe('yielded')
+    expect(await yieldPlacement(handle, grant)).toBe('yielded')
     expect((await getRun(handle.db, snapshot.runId)).status).toBe('RECOVERING')
   })
 
@@ -633,7 +640,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: next })
     const result = await full.acquire(snapshot, grant)
     expect(result).toMatchObject({ ok: false, code: 'SESSION_CAPACITY_EXCEEDED' })
-    expect(await yieldPlacement(handle.db, grant)).toBe('yielded')
+    expect(await yieldPlacement(handle, grant)).toBe('yielded')
     expect((await getRun(handle.db, snapshot.runId)).status).toBe('RECOVERING')
     expect(await findLiveSession(handle.db, { targetId, targetAccountId: next })).toBeNull()
 
@@ -758,7 +765,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     const first = await makeRunningSnapshot({ targetId, accountId: account })
     const a = await manager.acquire(first.snapshot, first.grant)
     expect(a).toMatchObject({ ok: false, code: 'BROWSER_UNAVAILABLE' })
-    expect(await yieldPlacement(handle.db, first.grant)).toBe('yielded')
+    expect(await yieldPlacement(handle, first.grant)).toBe('yielded')
     expect((await getRun(handle.db, first.snapshot.runId)).status).toBe('RECOVERING')
 
     const second = await makeRunningSnapshot({ targetId, accountId: await makeAccount('password', 'nobrowser-2') })

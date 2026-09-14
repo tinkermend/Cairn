@@ -13,6 +13,7 @@ export const healthResponseSchema = z.object({
   uptimeSeconds: z.number().nonnegative(),
   checks: z.object({
     database: z.enum(['up', 'down']),
+    changeHint: z.enum(['up', 'down', 'unused']).default('unused'),
   }),
 })
 

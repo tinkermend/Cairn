@@ -1,4 +1,6 @@
-import { registerWorker, claimRun, type DbHandle } from '../index.js'
+import { eq, sql } from 'drizzle-orm'
+import { schemaFor, afterSeconds, databaseNow, insertRows } from '../native.js'
+import { registerWorker, claimRun, type NativeHandle as DbHandle } from '../test-entry.js'
 import { newId } from '../id.js'
 import { runGrantSchema, type RunGrant } from '@cairn/shared'
 
@@ -39,27 +41,18 @@ export async function forceGrantForRun(
   workerId: string,
   leaseTtlSeconds = 30,
 ): Promise<RunGrant> {
-  await handle.pool.query(
-    `UPDATE runs SET status = 'RUNNING', started_at = COALESCE(started_at, now()), updated_at = now() WHERE id = $1`,
-    [runId],
-  )
-  const token = await handle.pool.query<{ t: string }>(
-    `SELECT COALESCE(MAX(fencing_token), 0) + 1 AS t FROM run_leases WHERE run_id = $1`,
-    [runId],
-  )
-  const fencingToken = Number(token.rows[0]?.t ?? 1)
+  const { runs, runLeases } = schemaFor(handle.db)
+  await handle.db.update(runs).set({ status: 'RUNNING', startedAt: databaseNow(handle.db), updatedAt: databaseNow(handle.db) }).where(eq(runs.id, runId))
+  const [token] = await handle.db.select({ t: sql<number>`COALESCE(MAX(${runLeases.fencingToken}), 0) + 1` }).from(runLeases).where(eq(runLeases.runId, runId))
+  const fencingToken = Number(token!.t)
   const leaseId = newId()
-  const inserted = await handle.pool.query<{ expires_at: Date }>(
-    `INSERT INTO run_leases (id, run_id, fencing_token, holder_worker_id, status, expires_at)
-     VALUES ($1, $2, $3, $4, 'ACTIVE', now() + make_interval(secs => $5))
-     RETURNING expires_at`,
-    [leaseId, runId, fencingToken, workerId, leaseTtlSeconds],
-  )
+  const [inserted] = await insertRows(handle.db, runLeases, { id: leaseId, runId, fencingToken, holderWorkerId: workerId,
+    status: 'ACTIVE', expiresAt: afterSeconds(handle.db, leaseTtlSeconds) })
   return runGrantSchema.parse({
     runId,
     leaseId,
     fencingToken,
     holderWorkerId: workerId,
-    expiresAt: new Date(inserted.rows[0]!.expires_at).toISOString(),
+    expiresAt: inserted!.expiresAt.toISOString(),
   })
 }

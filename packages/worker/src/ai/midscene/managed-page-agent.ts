@@ -31,8 +31,8 @@ export async function createManagedMidsceneAgent(input: {
 
   try {
     const web = await import('@midscene/web/playwright/agent')
-    const core = await import('@midscene/core')
-    const PlaywrightWebPage = web.PlaywrightWebPage ?? web.WebPage
+    const core = (await import('@midscene/core')) as unknown as { Agent?: unknown; default?: unknown }
+    const PlaywrightWebPage = web.PlaywrightWebPage
     if (!PlaywrightWebPage) {
       throw new Error('CAIRN_MIDSCENE_EXPORT: 找不到 PlaywrightWebPage')
     }
@@ -40,6 +40,14 @@ export async function createManagedMidsceneAgent(input: {
     if (typeof Agent !== 'function') {
       throw new Error('CAIRN_MIDSCENE_EXPORT: 找不到 Agent')
     }
+    const AgentCtor = Agent as new (
+      page: unknown,
+      options: {
+        generateReport: boolean
+        modelConfig: Record<string, string>
+        createOpenAIClient: (client: OpenAiLike) => Promise<OpenAiLike>
+      },
+    ) => { destroy?: () => Promise<void> }
 
     const webPage = new PlaywrightWebPage(input.page, {
       forceSameTabNavigation: false,
@@ -48,7 +56,7 @@ export async function createManagedMidsceneAgent(input: {
     const originalSpace = webPage.actionSpace.bind(webPage)
     webPage.actionSpace = () => gateActions(originalSpace(), input.gate)
 
-    const agent = new Agent(webPage, {
+    const agent = new AgentCtor(webPage, {
       generateReport: false,
       modelConfig: { ...(readPlatformModelConfig() ?? PROBE_MODEL_CONFIG) },
       createOpenAIClient: async (client: OpenAiLike) => wrapModelClient({
@@ -61,7 +69,7 @@ export async function createManagedMidsceneAgent(input: {
     return {
       gate: input.gate,
       page: input.page,
-      interface: webPage,
+      interface: webPage as ManagedAgentHandle['interface'],
       async destroy() {
         try {
           if (typeof agent.destroy === 'function') await agent.destroy()

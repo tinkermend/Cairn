@@ -5,18 +5,26 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { healthResponseSchema } from '@cairn/shared'
 import type { DbHandle } from '@cairn/db'
 import { DB_HANDLE } from '../db/db.module'
+import { CHANGE_HINT } from '../observe/change-hint.module'
 import { HealthController } from './health.controller'
 import { HealthService } from './health.service'
-import { listenForSupertest } from '../__tests__/http-app'
+import { listenForSupertest, unusedChangeHint } from '../__tests__/http-app'
 
 function stubDb(ping: () => Promise<boolean>): DbHandle {
-  return { ping, close: async () => {}, db: {} as never, pool: {} as never }
+  return { ping, close: async () => {}, driver: 'postgres' }
 }
 
-async function buildApp(handle: DbHandle): Promise<INestApplication> {
+async function buildApp(
+  handle: DbHandle,
+  hint = unusedChangeHint,
+): Promise<INestApplication> {
   const moduleRef = await Test.createTestingModule({
     controllers: [HealthController],
-    providers: [HealthService, { provide: DB_HANDLE, useValue: handle }],
+    providers: [
+      HealthService,
+      { provide: DB_HANDLE, useValue: handle },
+      { provide: CHANGE_HINT, useValue: hint },
+    ],
   }).compile()
   const app = moduleRef.createNestApplication()
   await listenForSupertest(app)
@@ -55,6 +63,19 @@ describe('GET /health', () => {
     expect(res.body.status).toBe('degraded')
     expect(res.body.checks.database).toBe('down')
     expect(() => healthResponseSchema.parse(res.body)).not.toThrow()
+  })
+
+  it('提示通道不可用时整体 degraded，运行事实仍以数据库为准', async () => {
+    const app = await buildApp(stubDb(async () => true), {
+      ...unusedChangeHint,
+      realtime: true,
+      ping: async () => false,
+    })
+    const res = await request(app.getHttpServer()).get('/health').expect(200)
+    expect(res.body.status).toBe('degraded')
+    expect(res.body.checks.database).toBe('up')
+    expect(res.body.checks.changeHint).toBe('down')
+    await app.close()
   })
 
   it('uptime 随时间单调不减', async () => {

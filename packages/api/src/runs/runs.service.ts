@@ -7,14 +7,13 @@ import {
   listRuns,
   loadScenarioVersion,
   requestRunCancel,
-  resumeRunAfterAuth,
   reviewRun,
   type DbHandle,
 } from '@cairn/db'
 import { assertAiExecutePermission } from '../config/browser-ai'
 import { config } from '../config/env'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
-import type { CreateRunBody, ResumeAuthBody, ReviewRunBody } from '@cairn/shared'
+import type { CreateRunBody, ReviewRunBody } from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
@@ -37,7 +36,7 @@ export class RunsService {
   ) {}
 
   private get db() {
-    return this.dbHandle.db
+    return this.dbHandle
   }
 
   list() {
@@ -122,18 +121,6 @@ export class RunsService {
     }
   }
 
-  async resumeAuth(id: string, body: ResumeAuthBody, actor: RequestAccount) {
-    try {
-      await resumeRunAfterAuth(this.db, {
-        runId: id,
-        actor: { id: actor.id },
-        note: body.note,
-      })
-      return await getRun(this.db, id)
-    } catch (error) {
-      rethrowDomain(error)
-    }
-  }
 }
 
 function filenameFor(type: string): string {

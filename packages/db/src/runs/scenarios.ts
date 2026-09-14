@@ -84,12 +84,21 @@ async function loadTargetContext(db: Db, targetId: string) {
   return { exists: true as const, status: target.status, row: target }
 }
 
+export type ScenarioCompileOptions = {
+  executableTypes?: readonly string[]
+}
+
 function compileDocument(
   document: ScenarioDocument,
   target: { exists: boolean; status: 'active' | 'disabled' },
   mode: 'save' | 'release',
+  options?: ScenarioCompileOptions,
 ): CompileResult {
-  return compileScenarioDocument(document, { mode, target })
+  return compileScenarioDocument(document, {
+    mode,
+    target,
+    executableTypes: mode === 'save' ? undefined : options?.executableTypes,
+  })
 }
 
 function throwIfBlocked(result: CompileResult): CompileResult {
@@ -167,13 +176,14 @@ async function toDetailDto(
   db: Db,
   row: ScenarioRow,
   latest: ScenarioVersionRow,
+  options?: ScenarioCompileOptions,
 ): Promise<ScenarioDetailDto> {
   const draft = await loadDraft(db, row.id)
   const target = await loadTargetContext(db, row.targetId)
   const document = draft
     ? parseDocument(draft.document)
     : scenarioDocumentSchema.parse(latest.definition)
-  const compiled = compileDocument(document, target, 'release')
+  const compiled = compileDocument(document, target, 'release', options)
   const dirty = draft ? isDraftDirty(draft.document, latest.definition) : false
   return scenarioDetailSchema.parse({
     ...toScenarioDto(row, latest, dirty),
@@ -201,12 +211,16 @@ async function toDetailDto(
   })
 }
 
-export async function getScenario(db: Db, scenarioId: string): Promise<ScenarioDetailDto> {
+export async function getScenario(
+  db: Db,
+  scenarioId: string,
+  options?: ScenarioCompileOptions,
+): Promise<ScenarioDetailDto> {
   const { scenarios } = schemaFor(db)
   const [row] = await db.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1)
   if (!row) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   const latest = await latestPublishedVersion(db, scenarioId)
-  return toDetailDto(db, row, latest)
+  return toDetailDto(db, row, latest, options)
 }
 
 export async function listScenarios(db: Db): Promise<ScenarioListResponse> {
@@ -255,6 +269,7 @@ export async function createScenarioWithVersion(
     status?: ScenarioStatus
     actor: AuditActor
     compileMode?: 'save' | 'release'
+    executableTypes?: readonly string[]
   },
 ): Promise<ScenarioDetailDto> {
   const { scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
@@ -263,7 +278,7 @@ export async function createScenarioWithVersion(
   if (!target.exists) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
   if (target.status === 'disabled')
     throw conflict('TARGET_DISABLED', '目标系统已停用，不能新建场景')
-  const compiled = compileDocument(document, target, input.compileMode ?? 'release')
+  const compiled = compileDocument(document, target, input.compileMode ?? 'release', input)
   if ((input.compileMode ?? 'release') === 'release') throwIfBlocked(compiled)
 
   const id = newId()
@@ -311,7 +326,7 @@ export async function createScenarioWithVersion(
   } catch (error) {
     rethrow(error)
   }
-  return getScenario(db, id)
+  return getScenario(db, id, input)
 }
 
 export async function updateScenarioMeta(
@@ -363,7 +378,7 @@ export async function updateScenarioMeta(
 export async function appendScenarioVersion(
   db: Db,
   scenarioId: string,
-  input: { steps: Step[]; inputs?: ScenarioInputDecl[]; actor: AuditActor },
+  input: { steps: Step[]; inputs?: ScenarioInputDecl[]; actor: AuditActor; executableTypes?: readonly string[] },
 ): Promise<ScenarioDetailDto> {
   const { scenarioVersions, scenarios } = schemaFor(db)
   const document = parseDocument(scenarioDefinitionFromSteps(input.steps, input.inputs ?? []))
@@ -376,7 +391,7 @@ export async function appendScenarioVersion(
       )
       if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
       const target = await loadTargetContext(tx as unknown as Db, current.targetId)
-      throwIfBlocked(compileDocument(document, target, 'release'))
+      throwIfBlocked(compileDocument(document, target, 'release', input))
       const latest = await latestPublishedVersion(tx as unknown as Db, scenarioId)
       const versionNo = publishedVersionNo(latest) + 1
       await tx.insert(scenarioVersions).values({
@@ -403,7 +418,7 @@ export async function appendScenarioVersion(
   } catch (error) {
     rethrow(error)
   }
-  return getScenario(db, scenarioId)
+  return getScenario(db, scenarioId, input)
 }
 
 export async function saveScenarioDraft(
@@ -462,7 +477,7 @@ export async function saveScenarioDraft(
 export async function publishScenarioDraft(
   db: Db,
   scenarioId: string,
-  input: { revision: number; actor: AuditActor },
+  input: { revision: number; actor: AuditActor; executableTypes?: readonly string[] },
 ): Promise<ScenarioDetailDto> {
   const { scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
   const now = new Date()
@@ -489,7 +504,7 @@ export async function publishScenarioDraft(
       if (target.status === 'disabled')
         throw conflict('TARGET_DISABLED', '目标系统已停用，不能发布')
       const document = parseDocument(draft.document)
-      const compiled = throwIfBlocked(compileDocument(document, target, 'release'))
+      const compiled = throwIfBlocked(compileDocument(document, target, 'release', input))
       const latest = await latestPublishedVersion(tx as unknown as Db, scenarioId)
       if (sourceDocumentDigest(compiled.definition) === sourceDocumentDigest(latest.definition)) {
         return
@@ -519,13 +534,18 @@ export async function publishScenarioDraft(
   } catch (error) {
     rethrow(error)
   }
-  return getScenario(db, scenarioId)
+  return getScenario(db, scenarioId, input)
 }
 
 export async function prepareTrialVersion(
   db: Db,
   scenarioId: string,
-  input: { revision: number; runInput: Readonly<Record<string, unknown>>; actor: AuditActor },
+  input: {
+    revision: number
+    runInput: Readonly<Record<string, unknown>>
+    actor: AuditActor
+    executableTypes?: readonly string[]
+  },
 ): Promise<{ versionId: string }> {
   const { scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
   const now = new Date()
@@ -554,7 +574,7 @@ export async function prepareTrialVersion(
       if (target.status === 'disabled')
         throw conflict('TARGET_DISABLED', '目标系统已停用，不能试跑')
       const document = parseDocument(draft.document)
-      const compiled = throwIfBlocked(compileDocument(document, target, 'release'))
+      const compiled = throwIfBlocked(compileDocument(document, target, 'release', input))
       try {
         assertRunFromResolved(compiled.definition.steps, input.runInput)
       } catch (error) {

@@ -1,5 +1,7 @@
+import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { schemaFor, databaseNow, afterSeconds } from '../native.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { Step } from '@cairn/shared'
 import { OBJECT_MISSING_REASONS, objectKeyFor } from '@cairn/shared'
 import {
@@ -15,11 +17,13 @@ import {
   recordMissingObjectEvidence,
   recordObjectEvidence,
   reserveStoredObject,
-  type DbHandle,
-} from '../index.js'
+  type NativeHandle as DbHandle,
+} from '../test-entry.js'
 import { newId } from '../id.js'
-import { consoleAccounts } from '../schema/console.js'
-import { targets } from '../schema/targets.js'
+import { consoleAccounts as pg_consoleAccounts } from '../schema/console.js'
+let consoleAccounts = pg_consoleAccounts
+import { targets as pg_targets } from '../schema/targets.js'
+let targets = pg_targets
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_obj`
 
@@ -31,7 +35,7 @@ const echoStep: Step = {
   input: { value: 'hello' },
 }
 
-describe('对象账本 Repository（集成）', { timeout: 30_000 }, () => {
+describe.each(DRIVERS)('%s 对象账本 Repository（集成）', { timeout: 30_000 }, (driver) => {
   let handle: DbHandle
   let actorId: string
   let targetId: string
@@ -39,7 +43,8 @@ describe('对象账本 Repository（集成）', { timeout: 30_000 }, () => {
   let runId: string
 
   beforeAll(async () => {
-    handle = await openIsolatedDb(SCHEMA)
+    handle = await openContractDb(driver, SCHEMA)
+    ;({ consoleAccounts, targets } = schemaFor(handle.db))
     actorId = newId()
     targetId = newId()
     await handle.db.insert(consoleAccounts).values({
@@ -124,9 +129,7 @@ describe('对象账本 Repository（集成）', { timeout: 30_000 }, () => {
     ).rejects.toMatchObject({ code: 'OBJECT_NOT_AVAILABLE' })
 
     const past = new Date(Date.now() - 60_000)
-    await handle.db.execute(
-      sql`update cairn.stored_objects set created_at = ${past} where id = ${reserved.id}`,
-    )
+    await handle.db.update(schemaFor(handle.db).storedObjects).set({ createdAt: past }).where(eq(schemaFor(handle.db).storedObjects.id, reserved.id))
     const candidates = await listPurgeCandidates(handle.db, {
       now: new Date(),
       pendingTtlSeconds: 1,

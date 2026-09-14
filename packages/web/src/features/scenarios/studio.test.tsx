@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { RunDetailDto, ScenarioCapabilities, ScenarioDetailDto, TargetDto } from '@cairn/shared'
+import type { RunDetailDto, RunObservation, ScenarioCapabilities, ScenarioDetailDto, TargetDto } from '@cairn/shared'
 import { scenarioCapabilitiesFor } from '@cairn/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -16,6 +16,8 @@ const EXTRACT_ID = '66666666-6666-4666-8666-666666666666'
 const ECHO_ID = '88888888-8888-4888-8888-888888888888'
 const LATER_ID = '99999999-9999-4999-8999-999999999999'
 const AI_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const RECORDING_DRAFT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const IMPORTED_STEP_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 
 const mocks = vi.hoisted(() => ({
   fetchScenarios: vi.fn(),
@@ -24,22 +26,33 @@ const mocks = vi.hoisted(() => ({
   saveScenarioDraft: vi.fn(),
   publishScenario: vi.fn(),
   trialScenario: vi.fn(),
+  createRecordingBinding: vi.fn(),
+  fetchRecordingImports: vi.fn(),
+  previewRecordingImport: vi.fn(),
+  applyRecordingImport: vi.fn(),
   fetchTarget: vi.fn(),
   fetchTargets: vi.fn(),
   fetchTargetAccounts: vi.fn(),
 }))
 
 const runMocks = vi.hoisted(() => ({
-  fetchRun: vi.fn(),
-  fetchRunEvidence: vi.fn(),
+  fetchRunObservation: vi.fn(),
+  subscribeRunEvents: vi.fn(),
 }))
 
 const router = vi.hoisted(() => ({
-  search: { runId: undefined as string | undefined },
+  search: { runId: undefined as string | undefined, import: undefined as string | undefined },
   navigate: vi.fn(),
 }))
 
 vi.mock('@/lib/scenarios-api', () => mocks)
+vi.mock('@/lib/extension-bridge', () => ({
+  notifyExtensionStart: vi.fn(async () => null),
+  configuredExtensionId: () => '',
+}))
+vi.mock('@/lib/recordings-api', () => ({
+  closeRecordingBinding: vi.fn(async () => ({ id: 'bind-1' })),
+}))
 vi.mock('@/lib/targets-api', () => ({
   fetchTarget: mocks.fetchTarget,
   fetchTargets: mocks.fetchTargets,
@@ -47,8 +60,8 @@ vi.mock('@/lib/targets-api', () => ({
 }))
 vi.mock('@/lib/runs-api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/runs-api')>()),
-  fetchRun: runMocks.fetchRun,
-  fetchRunEvidence: runMocks.fetchRunEvidence,
+  fetchRunObservation: runMocks.fetchRunObservation,
+  subscribeRunEvents: runMocks.subscribeRunEvents,
 }))
 vi.mock('@/components/layout/app-header', () => ({
   AppHeader: () => null,
@@ -168,6 +181,36 @@ function trialRun(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
   }
 }
 
+function trialObservation(run: RunDetailDto = trialRun()): RunObservation {
+  return {
+    run,
+    evidence: { items: [] },
+    eventSeq: 1,
+    earliestEventSeq: 1,
+  }
+}
+
+function hangSubscribe() {
+  runMocks.subscribeRunEvents.mockImplementation(
+    async (id: string, input: { signal: AbortSignal; handlers: { onControl?: (control: { kind: string }) => void } }) => {
+      input.handlers.onControl?.({
+        kind: 'ready',
+        runId: id,
+        eventSeq: 1,
+        earliestEventSeq: 1,
+        realtime: true,
+      } as never)
+      await new Promise<void>((resolve) => {
+        if (input.signal.aborted) {
+          resolve()
+          return
+        }
+        input.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+    },
+  )
+}
+
 function signIn(permissions = ['workflow:read', 'workflow:write', 'run:execute', 'target:read']) {
   useAuthStore.getState().auth.setUser({
     id: 'u1',
@@ -191,16 +234,17 @@ async function renderPage() {
 describe('Scenario Studio', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    router.search = { runId: undefined }
+    router.search = { runId: undefined, import: undefined }
     signIn()
     mocks.fetchScenario.mockResolvedValue(detail())
     mocks.fetchScenarioCapabilities.mockResolvedValue(defaultCapabilities)
+    mocks.fetchRecordingImports.mockResolvedValue({ bindings: [], drafts: [], receipts: [] })
     mocks.fetchTarget.mockResolvedValue(target)
     mocks.fetchTargets.mockResolvedValue({ items: [target] })
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
     mocks.fetchScenarios.mockResolvedValue({ items: [detail()] })
-    runMocks.fetchRun.mockResolvedValue(trialRun())
-    runMocks.fetchRunEvidence.mockResolvedValue({ items: [] })
+    runMocks.fetchRunObservation.mockResolvedValue(trialObservation())
+    hangSubscribe()
     mocks.saveScenarioDraft.mockImplementation(async (_id: string, body: { revision: number; document: typeof document }) =>
       detail({
         draft: {
@@ -689,7 +733,7 @@ describe('Scenario Studio', () => {
 
   it('带 runId 时展示可折叠试跑摘要和最近获取时间', async () => {
     signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read'])
-    router.search = { runId: RUN_ID }
+    router.search = { runId: RUN_ID, import: undefined }
     const { screen } = await renderPage()
     await expect.element(screen.getByRole('heading', { name: '试跑结果' })).toBeInTheDocument()
     await expect.element(screen.getByText(/最近获取/)).toBeInTheDocument()
@@ -698,7 +742,8 @@ describe('Scenario Studio', () => {
     await expect.element(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
     await expect.element(screen.getByText('打开完整运行详情')).toBeInTheDocument()
     await screen.getByRole('button', { name: '刷新' }).click()
-    await vi.waitFor(() => expect(runMocks.fetchRun).toHaveBeenCalled())
+    await vi.waitFor(() => expect(runMocks.fetchRunObservation).toHaveBeenCalled())
+    await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
   })
 
   it('工作区主列不会横向撑破容器', async () => {
@@ -710,9 +755,94 @@ describe('Scenario Studio', () => {
   })
 
   it('无 run:read 或不匹配的 Run 不影响草稿', async () => {
-    router.search = { runId: RUN_ID }
+    router.search = { runId: RUN_ID, import: undefined }
     const { screen } = await renderPage()
     await expect.element(screen.getByText('没有运行读取权限，不能展示试跑结果。草稿不受影响。')).toBeInTheDocument()
     await expect.element(screen.getByLabelText('页面地址')).toHaveValue('https://shop.example.com')
+  })
+
+  it('未保存时不能开始录制', async () => {
+    const { screen } = await renderPage()
+    await screen.getByLabelText('页面地址').fill('https://shop.example.com/search')
+    await screen.getByRole('button', { name: '录制步骤' }).click()
+    expect(mocks.createRecordingBinding).not.toHaveBeenCalled()
+  })
+
+  it('import 参数打开预览并回填到当前草稿', async () => {
+    router.search = { runId: undefined, import: RECORDING_DRAFT_ID }
+    mocks.previewRecordingImport.mockResolvedValue({
+      recordingDraftId: RECORDING_DRAFT_ID,
+      recordingName: '录制 shop.example.com',
+      normalizerVersion: 'recording-normalizer@2',
+      sourceVersion: 'playwright-crx@0.15.0',
+      sourceDigest: 'a'.repeat(64),
+      eventCount: 1,
+      remainingStepCapacity: 31,
+      currentRevision: 1,
+      insertAnchor: { kind: 'start' },
+      items: [
+        {
+          index: 0,
+          sourceIndexes: [0],
+          status: 'mapped',
+          sourceAction: 'navigate',
+          name: '打开 shop.example.com/orders',
+          candidateStepType: 'navigate',
+          input: { url: 'https://shop.example.com/orders' },
+          diagnostics: [],
+          ready: true,
+          candidateStep: {
+            id: '00000000-0000-4000-8000-000000000000',
+            name: '打开 shop.example.com/orders',
+            type: 'navigate',
+            effectType: 'SIDE_EFFECT',
+            input: { url: 'https://shop.example.com/orders' },
+          },
+        },
+      ],
+      diagnostics: [],
+    })
+    const imported = {
+      id: IMPORTED_STEP_ID,
+      name: '打开 shop.example.com/orders',
+      type: 'navigate' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      input: { url: 'https://shop.example.com/orders' },
+    }
+    mocks.applyRecordingImport.mockResolvedValue({
+      receipt: {
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        scenarioId: SCENARIO_ID,
+        recordingDraftId: RECORDING_DRAFT_ID,
+        sourceDigest: 'a'.repeat(64),
+        normalizerVersion: 'recording-normalizer@2',
+        baseRevision: 1,
+        newRevision: 2,
+        insertedStepIds: [IMPORTED_STEP_ID],
+        sourceMap: [{ sourceIndexes: [0], stepId: IMPORTED_STEP_ID, disposition: 'accept' }],
+        createdAt: '2026-09-14T00:00:00.000Z',
+      },
+      scenario: detail({
+        draftDirty: true,
+        draft: {
+          revision: 2,
+          document: { schemaVersion: 1, inputs: [], steps: [document.steps[0]!, imported] },
+          updatedAt: '2026-09-14T00:00:00.000Z',
+          updatedBy: { id: 'acc-1', displayName: '测试' },
+        },
+        steps: [document.steps[0]!, imported],
+      }),
+    })
+    const { screen } = await renderPage()
+    await expect.element(screen.getByRole('heading', { name: '录制回填预览' })).toBeInTheDocument()
+    await expect.element(screen.getByText('打开 shop.example.com/orders')).toBeInTheDocument()
+    await screen.getByRole('button', { name: '回填 1 步' }).click()
+    await vi.waitFor(() => expect(mocks.applyRecordingImport).toHaveBeenCalledTimes(1))
+    expect(mocks.applyRecordingImport.mock.calls[0]![1]).toMatchObject({
+      recordingDraftId: RECORDING_DRAFT_ID,
+      baseRevision: 1,
+      dispositions: [{ sourceIndexes: [0], disposition: 'accept' }],
+    })
+    await expect.element(screen.getByText('刚导入')).toBeInTheDocument()
   })
 })

@@ -2,19 +2,25 @@ import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RunDetailDto, RunEvidenceListResponse } from '@cairn/shared'
+import type { RunDetailDto, RunEvidenceListResponse, RunObservation } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { RunDetailPage } from './detail'
 
 const RUN_ID = '44444444-4444-4444-8444-444444444444'
 
 const mocks = vi.hoisted(() => ({
-  fetchRun: vi.fn(),
-  fetchRunEvidence: vi.fn(),
+  fetchRunObservation: vi.fn(),
+  subscribeRunEvents: vi.fn(),
   fetchEvidenceContent: vi.fn(),
   cancelRun: vi.fn(),
   reviewRun: vi.fn(),
   resumeRunAuth: vi.fn(),
+  fetchManagedBrowser: vi.fn(),
+  subscribeBrowserFrames: vi.fn(),
+  acquireAuthControl: vi.fn(),
+  heartbeatAuthControl: vi.fn(),
+  inputAuthControl: vi.fn(),
+  releaseAuthControl: vi.fn(),
 }))
 
 vi.mock('@/lib/runs-api', () => mocks)
@@ -101,6 +107,39 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
   }
 }
 
+function observationOf(
+  run: RunDetailDto,
+  items: RunEvidenceListResponse['items'] = evidence.items,
+): RunObservation {
+  return {
+    run,
+    evidence: { items },
+    eventSeq: 1,
+    earliestEventSeq: 1,
+  }
+}
+
+function hangSubscribe() {
+  mocks.subscribeRunEvents.mockImplementation(
+    async (id: string, input: { signal: AbortSignal; handlers: { onControl?: (control: { kind: string }) => void } }) => {
+      input.handlers.onControl?.({
+        kind: 'ready',
+        runId: id,
+        eventSeq: 1,
+        earliestEventSeq: 1,
+        realtime: true,
+      } as never)
+      await new Promise<void>((resolve) => {
+        if (input.signal.aborted) {
+          resolve()
+          return
+        }
+        input.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+    },
+  )
+}
+
 const evidence: RunEvidenceListResponse = {
   items: [
     {
@@ -139,10 +178,31 @@ async function renderPage() {
 describe('RunDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.fetchRun.mockResolvedValue(runDetail())
-    mocks.fetchRunEvidence.mockResolvedValue(evidence)
+    mocks.fetchRunObservation.mockResolvedValue(observationOf(runDetail()))
+    hangSubscribe()
     mocks.cancelRun.mockResolvedValue({ status: 'CANCELLED' })
     mocks.reviewRun.mockResolvedValue(undefined)
+    mocks.fetchManagedBrowser.mockResolvedValue({
+      runId: RUN_ID,
+      runStatus: 'NEEDS_REVIEW',
+      sessionId: null,
+      sessionGeneration: 0,
+      ownerWorkerId: null,
+      framesAvailable: false,
+      viewingOtherPage: false,
+      currentPage: null,
+      pages: [],
+      authHold: null,
+      authControl: null,
+      capabilities: {
+        screencast: 'closed',
+        authInput: 'closed',
+        popupHandoff: 'closed',
+        chineseInsertText: 'closed',
+      },
+      degradedReason: null,
+    })
+    mocks.subscribeBrowserFrames.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -194,7 +254,7 @@ describe('RunDetailPage', () => {
 
   /** 验收 35：排队中的 Run 可以取消。 */
   it('排队中：取消按钮调用取消接口', async () => {
-    mocks.fetchRun.mockResolvedValue(runDetail({ status: 'QUEUED', stepRuns: [] }))
+    mocks.fetchRunObservation.mockResolvedValue(observationOf(runDetail({ status: 'QUEUED', stepRuns: [] })))
     signIn(['run:read', 'run:cancel'])
     const screen = await renderPage()
 
@@ -212,39 +272,57 @@ describe('RunDetailPage', () => {
     expect(screen.getByRole('button', { name: '判定取消' }).elements()).toHaveLength(0)
     expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
     expect(screen.getByRole('button', { name: '确认目标系统已登录' }).elements()).toHaveLength(0)
+    expect(screen.getByRole('button', { name: '处理登录' }).elements()).toHaveLength(0)
+    expect(screen.getByRole('region', { name: '受管浏览器' }).elements()).toHaveLength(0)
     // 刷新是只读操作，任何人都能点
     await expect.element(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
   })
 
+  it('等待认证：有控制权的用户在详情页直接看到处理登录', async () => {
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(runDetail({ status: 'WAITING_FOR_AUTH', stepRuns: [] })),
+    )
+    signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('需要登录')).toBeInTheDocument()
+    await expect.element(screen.getByRole('region', { name: '受管浏览器' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '处理登录' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认目标系统已登录' }).elements()).toHaveLength(0)
+  })
+
   it('失联会话：橙色说明须处置；等待 owner：灰色说明', async () => {
-    mocks.fetchRun.mockResolvedValue(
-      runDetail({
-        status: 'QUEUED',
-        stepRuns: [],
-        placement: {
-          state: 'session_lost',
-          sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-          ownerWorkerId: 'worker-a',
-          sessionStatus: 'LOST',
-        },
-      }),
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'QUEUED',
+          stepRuns: [],
+          placement: {
+            state: 'session_lost',
+            sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            ownerWorkerId: 'worker-a',
+            sessionStatus: 'LOST',
+          },
+        }),
+      ),
     )
     signIn(['run:read'])
     const lost = await renderPage()
     await expect.element(lost.getByText(/会话失联，处置并确认旧浏览器停止后才会继续/)).toBeInTheDocument()
     expect(lost.getByText(/会话失联/).element().className).toContain('text-status-warning-foreground')
 
-    mocks.fetchRun.mockResolvedValue(
-      runDetail({
-        status: 'QUEUED',
-        stepRuns: [],
-        placement: {
-          state: 'owner_required',
-          sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-          ownerWorkerId: 'worker-a',
-          sessionStatus: 'OPEN',
-        },
-      }),
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'QUEUED',
+          stepRuns: [],
+          placement: {
+            state: 'owner_required',
+            sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            ownerWorkerId: 'worker-a',
+            sessionStatus: 'OPEN',
+          },
+        }),
+      ),
     )
     const waiting = await renderPage()
     await expect.element(waiting.getByText(/等待持有该账号会话的 Worker 领取/)).toBeInTheDocument()
@@ -252,8 +330,8 @@ describe('RunDetailPage', () => {
   })
 
   it('两根轴并列：成功且证据不完整是橙色；终态收集中是灰色', async () => {
-    mocks.fetchRun.mockResolvedValue(
-      runDetail({ status: 'SUCCEEDED', evidenceStatus: 'INCOMPLETE', stepRuns: [] }),
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(runDetail({ status: 'SUCCEEDED', evidenceStatus: 'INCOMPLETE', stepRuns: [] })),
     )
     signIn(['run:read'])
     const incomplete = await renderPage()
@@ -264,8 +342,8 @@ describe('RunDetailPage', () => {
       'bg-status-warning-background',
     )
 
-    mocks.fetchRun.mockResolvedValue(
-      runDetail({ status: 'SUCCEEDED', evidenceStatus: 'PENDING', stepRuns: [] }),
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(runDetail({ status: 'SUCCEEDED', evidenceStatus: 'PENDING', stepRuns: [] })),
     )
     const pending = await renderPage()
     const collecting = pending.getByText('证据收集中')
@@ -279,44 +357,44 @@ describe('RunDetailPage', () => {
   })
 
   it('步骤开始前失败：运行级错误证据在时间线上方', async () => {
-    mocks.fetchRun.mockResolvedValue(
-      runDetail({
-        status: 'FAILED',
-        targetAccountId: null,
-        targetAccountName: null,
-        stepRuns: [
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'FAILED',
+          targetAccountId: null,
+          targetAccountName: null,
+          stepRuns: [
+            {
+              id: '66666666-6666-4666-8666-666666666666',
+              stepId: '77777777-7777-4777-8777-777777777777',
+              name: '打开总览',
+              type: 'navigate',
+              ordinal: 0,
+              status: 'SKIPPED',
+              startedAt: null,
+              finishedAt: '2026-09-11T02:00:02.000Z',
+              attempts: [],
+            },
+          ],
+        }),
+        [
           {
-            id: '66666666-6666-4666-8666-666666666666',
-            stepId: '77777777-7777-4777-8777-777777777777',
-            name: '打开总览',
-            type: 'navigate',
-            ordinal: 0,
-            status: 'SKIPPED',
-            startedAt: null,
-            finishedAt: '2026-09-11T02:00:02.000Z',
-            attempts: [],
+            schemaVersion: 1,
+            id: '99999999-9999-4999-8999-999999999992',
+            runId: RUN_ID,
+            type: 'error',
+            status: 'available',
+            createdAt: '2026-09-11T02:00:02.000Z',
+            payload: {
+              code: 'SESSION_ACCOUNT_REQUIRED',
+              category: 'VALIDATION',
+              retryable: false,
+              safeMessage: '浏览器步骤未指定目标账号，无法建立会话',
+            },
           },
         ],
-      }),
+      ),
     )
-    mocks.fetchRunEvidence.mockResolvedValue({
-      items: [
-        {
-          schemaVersion: 1,
-          id: '99999999-9999-4999-8999-999999999992',
-          runId: RUN_ID,
-          type: 'error',
-          status: 'available',
-          createdAt: '2026-09-11T02:00:02.000Z',
-          payload: {
-            code: 'SESSION_ACCOUNT_REQUIRED',
-            category: 'VALIDATION',
-            retryable: false,
-            safeMessage: '浏览器步骤未指定目标账号，无法建立会话',
-          },
-        },
-      ],
-    })
     signIn(['run:read'])
     const screen = await renderPage()
     await expect.element(screen.getByRole('heading', { name: '运行级证据' })).toBeInTheDocument()
@@ -325,8 +403,8 @@ describe('RunDetailPage', () => {
   })
 
   it('缺失原因用橙色而不是红色；证据挂在对应 Attempt 下', async () => {
-    mocks.fetchRunEvidence.mockResolvedValue({
-      items: [
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(runDetail(), [
         {
           schemaVersion: 1,
           id: '99999999-9999-4999-8999-999999999991',
@@ -338,8 +416,8 @@ describe('RunDetailPage', () => {
           createdAt: '2026-09-11T02:00:09.000Z',
           missingReason: 'worker_lost',
         },
-      ],
-    })
+      ]),
+    )
     signIn(['run:read', 'run:review'])
     const screen = await renderPage()
     await expect.element(screen.getByText(/Attempt #1/)).toBeInTheDocument()
@@ -354,29 +432,29 @@ describe('RunDetailPage', () => {
     signIn(['run:read'])
     const screen = await renderPage()
     await expect.element(screen.getByText('待核查')).toBeInTheDocument()
-    expect(mocks.fetchRun).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchRunObservation).toHaveBeenCalledTimes(1)
+    await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
 
     await screen.getByRole('button', { name: '刷新' }).click()
-    await vi.waitFor(() => expect(mocks.fetchRun).toHaveBeenCalledTimes(2))
-    expect(mocks.fetchRunEvidence).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(mocks.fetchRunObservation).toHaveBeenCalledTimes(2))
+    expect(mocks.subscribeRunEvents).toHaveBeenCalled()
   })
 })
 
 /**
- * 验收 36 的一半：页面不得存在任何定时刷新。
- *
- * 宪法 §13 禁止把轮询当正常进度机制，P7 才上 SSE。这条只能在源码层面卡住——
- * 行为测试等不出"没有定时器"，而一个 refetchInterval 混进来之后就再没人会发现。
+ * 页面不得把 TanStack Query 定时轮询当进度机制。P7 的 SSE 重连只允许出现在
+ * 观察 hook 里，不能用 refetchInterval / EventSource / 页面级 setInterval。
  */
 describe('运行与场景页不得有定时刷新', () => {
   const sources = {
+    ...import.meta.glob('../runs/*.ts', { query: '?raw', import: 'default', eager: true }),
     ...import.meta.glob('../runs/*.tsx', { query: '?raw', import: 'default', eager: true }),
     ...import.meta.glob('../scenarios/*.tsx', { query: '?raw', import: 'default', eager: true }),
   } as Record<string, string>
 
-  it('源码里没有 refetchInterval / setInterval / 自动重连', () => {
+  it('源码里没有 refetchInterval / EventSource / 页面级 setInterval', () => {
     const offenders = Object.entries(sources)
-      .filter(([file]) => !file.endsWith('.test.tsx'))
+      .filter(([file]) => !file.endsWith('.test.tsx') && !file.endsWith('.test.ts'))
       .filter(([, code]) => /refetchInterval|refetchIntervalInBackground|setInterval|EventSource/.test(code))
       .map(([file]) => file)
     expect(offenders).toEqual([])

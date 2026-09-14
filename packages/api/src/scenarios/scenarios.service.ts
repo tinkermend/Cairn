@@ -1,12 +1,16 @@
 import { Inject, Injectable, Optional } from '@nestjs/common'
 import {
+  applyRecordingImport,
+  createRecordingBinding,
   createScenarioWithVersion,
   createTrialRunFromDraft,
   deleteScenario,
   getPlatformConfig,
   getScenario,
+  listScenarioRecordingImports,
   listScenarioVersions,
   listScenarios,
+  previewRecordingImport,
   publishScenarioDraft,
   saveScenarioDraft,
   updateScenarioMeta,
@@ -14,13 +18,17 @@ import {
 } from '@cairn/db'
 import {
   FACTORY_PLATFORM_CONFIG,
+  type ApplyRecordingImportBody,
+  type CreateRecordingBindingBody,
   type CreateScenarioBody,
   type PlatformConfigCurrent,
+  type PreviewRecordingImportBody,
   type PublishScenarioBody,
   type SaveScenarioDraftBody,
   type TrialRunBody,
   type UpdateScenarioBody,
 } from '@cairn/shared'
+import { publicApiOrigin } from '../recordings/recordings.service'
 import {
   assertAiExecutePermission,
   browserAiCapabilitiesFrom,
@@ -158,6 +166,41 @@ export class ScenariosService {
   async remove(id: string, actor: RequestAccount) {
     try {
       await deleteScenario(this.db, id, { id: actor.id })
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async createRecordingBinding(id: string, body: CreateRecordingBindingBody, actor: RequestAccount) {
+    try {
+      return await createRecordingBinding(
+        this.db,
+        id,
+        { ...body, apiOrigin: publicApiOrigin() },
+        { id: actor.id },
+      )
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  listRecordingImports(id: string, actor: RequestAccount) {
+    return listScenarioRecordingImports(this.db, id, actor.id).catch(rethrowDomain)
+  }
+
+  async previewRecordingImport(id: string, body: PreviewRecordingImportBody, actor: RequestAccount) {
+    try {
+      return await previewRecordingImport(this.db, id, body, actor.id)
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async applyRecordingImport(id: string, body: ApplyRecordingImportBody, actor: RequestAccount) {
+    try {
+      return await applyRecordingImport(this.db, id, body, { id: actor.id }, {
+        executableTypes: await this.runtimeTypes(),
+      })
     } catch (error) {
       rethrowDomain(error)
     }

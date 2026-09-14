@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common'
 import {
   claimRun,
+  expireRunDeadlines,
   expireStaleRunLeases,
   heartbeatWorker,
   listActiveLeasesForWorker,
@@ -21,6 +22,7 @@ import {
 } from '@cairn/db'
 import type { RunGrant } from '@cairn/shared'
 import { BrowserSessionManager } from '../browser/session-manager'
+import { startManagedBrowserHttp, type ManagedBrowserHttp } from '../internal/http-server'
 import { config } from '../config/env'
 import { placementYieldExcludes } from './placement-backoff'
 import { DB_HANDLE } from '../db/db.module'
@@ -63,6 +65,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     | Promise<{ leasesExpired: number; sessionsClosed: number; authTimeouts: number }>
     | undefined
   private healing: Promise<void> | undefined
+  private internalHttp: ManagedBrowserHttp | undefined
 
   shutdownSignal: string | undefined
   shutdownCalled = false
@@ -99,6 +102,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       throw error
     }
     await this.sessions.reconcileOwn()
+    await this.bindInternalHttp()
     this.sessions.startHeartbeat()
     this.startClaiming()
     this.claimTask = this.pump()
@@ -127,7 +131,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
    */
   private async register(): Promise<void> {
     this.instanceId = randomUUID()
-    const registered = await registerWorker(this.handle.db, {
+    const registered = await registerWorker(this.handle, {
       workerId: config.CAIRN_WORKER_ID,
       instanceId: this.instanceId,
       capacity: config.CAIRN_WORKER_CAPACITY,
@@ -135,7 +139,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       lostAfterSeconds: config.CAIRN_WORKER_LOST_AFTER_SECONDS,
     })
     await settleRevokedRuns(
-      this.handle.db,
+      this.handle,
       registered.revokedRunIds,
       config.CAIRN_RUN_MAX_RECOVERIES,
     )
@@ -157,7 +161,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     this.shutdownSignal = signal
     this.shutdownCalled = true
     this.stopped = true
-    await markWorkerDraining(this.handle.db, config.CAIRN_WORKER_ID).catch(() => undefined)
+    await markWorkerDraining(this.handle, config.CAIRN_WORKER_ID).catch(() => undefined)
     if (this.tick) {
       clearInterval(this.tick)
       this.tick = undefined
@@ -185,11 +189,13 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     await Promise.all([...this.inFlight.values()].map((item) => item.done))
     if (cleanup) await cleanup
     if (reaper) await reaper
-    const leftover = await listActiveLeasesForWorker(this.handle.db, config.CAIRN_WORKER_ID)
+    const leftover = await listActiveLeasesForWorker(this.handle, config.CAIRN_WORKER_ID)
     for (const grant of leftover) {
-      await yieldUnfinishedRun(this.handle.db, grant)
+      await yieldUnfinishedRun(this.handle, grant)
     }
-    await markWorkerStopped(this.handle.db, config.CAIRN_WORKER_ID).catch(() => undefined)
+    await markWorkerStopped(this.handle, config.CAIRN_WORKER_ID).catch(() => undefined)
+    await this.internalHttp?.close().catch(() => undefined)
+    this.internalHttp = undefined
     await this.sessions.shutdown()
     this.logger.log(`收到 ${signal ?? '停机'} 信号，已停止领取任务`)
   }
@@ -236,19 +242,20 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     sessionsClosed: number
     authTimeouts: number
   }> {
+    await expireRunDeadlines(this.handle)
     const session = await this.sessions.reap()
-    await expireStaleRunLeases(this.handle.db, {
+    await expireStaleRunLeases(this.handle, {
       limit: 50,
       maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
     })
-    await sweepDriftedRuns(this.handle.db, {
+    await sweepDriftedRuns(this.handle, {
       limit: 50,
       leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
       maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
     })
-    const lostWorkerIds = await markLostWorkers(this.handle.db, config.CAIRN_WORKER_LOST_AFTER_SECONDS)
+    const lostWorkerIds = await markLostWorkers(this.handle, config.CAIRN_WORKER_LOST_AFTER_SECONDS)
     if (lostWorkerIds.length > 0) {
-      await markSessionsLostForWorkers(this.handle.db, lostWorkerIds)
+      await markSessionsLostForWorkers(this.handle, lostWorkerIds)
     }
     return session
   }
@@ -256,7 +263,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   private async beat(): Promise<void> {
     if (this.stopped || this.healing) return
     try {
-      const outcome = await heartbeatWorker(this.handle.db, config.CAIRN_WORKER_ID, this.instanceId)
+      const outcome = await heartbeatWorker(this.handle, config.CAIRN_WORKER_ID, this.instanceId)
       if (outcome !== 'ok') {
         this.healing = this.healIdentity(outcome).finally(() => {
           this.healing = undefined
@@ -266,7 +273,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       }
       for (const item of this.inFlight.values()) {
         const expiresAt = await renewRunLease(
-          this.handle.db,
+          this.handle,
           item.grant,
           config.CAIRN_RUN_LEASE_TTL_SECONDS,
         )
@@ -335,11 +342,25 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       this.exitProcess(1)
       return
     }
+    await this.bindInternalHttp()
     this.startClaiming()
     this.logger.log(
       { workerId: config.CAIRN_WORKER_ID, instanceId: this.instanceId },
       'Worker 已以新代重新注册，恢复领取',
     )
+  }
+
+  private async bindInternalHttp(): Promise<void> {
+    this.sessions.setWorkerInstance(this.instanceId)
+    if (config.CAIRN_WORKER_INTERNAL_PORT <= 0) return
+    await this.internalHttp?.close().catch(() => undefined)
+    this.internalHttp = await startManagedBrowserHttp({
+      host: config.CAIRN_WORKER_INTERNAL_HOST,
+      port: config.CAIRN_WORKER_INTERNAL_PORT,
+      secret: config.CAIRN_INTERNAL_AUTH_SECRET,
+      workerInstanceId: this.instanceId,
+      sessions: this.sessions,
+    })
   }
 
   private async pump(): Promise<void> {

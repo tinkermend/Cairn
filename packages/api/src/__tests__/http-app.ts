@@ -1,4 +1,16 @@
 import type { INestApplication } from '@nestjs/common'
+import type { ChangeHintBus } from '@cairn/db'
+
+/** 装配测试用的空提示通道，避免 LISTEN 真实数据库。 */
+export const unusedChangeHint: ChangeHintBus = {
+  driver: 'none',
+  realtime: false,
+  namespace: 'test',
+  publish: async () => undefined,
+  subscribe: async () => undefined,
+  ping: async () => true,
+  close: async () => undefined,
+}
 
 /**
  * 让应用在整份用例文件期间持有一个固定端口，供 supertest 复用。

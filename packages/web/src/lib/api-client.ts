@@ -1,12 +1,12 @@
-import { apiErrorSchema, REQUEST_ID_HEADER, type ApiError } from '@cairn/shared'
 import type { ZodType } from 'zod'
+import { apiErrorSchema, REQUEST_ID_HEADER, type ApiError } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 
 /** 携带服务端 requestId 的错误，便于把前端报错与后端日志对上 */
 export class ApiRequestError extends Error {
   constructor(
     readonly status: number,
-    readonly payload: ApiError,
+    readonly payload: ApiError
   ) {
     super(payload.message)
     this.name = 'ApiRequestError'
@@ -42,7 +42,7 @@ function newRequestId(): string {
 export async function apiFetch<T>(
   path: string,
   schema: ZodType<T>,
-  init?: RequestInit,
+  init?: RequestInit
 ): Promise<T> {
   const token = useAuthStore.getState().auth.accessToken
   const res = await fetch(path, {
@@ -64,7 +64,12 @@ export async function apiFetch<T>(
   const body: unknown = await res.json().catch(() => null)
 
   if (!res.ok) {
-    if (res.status === 401 && path !== '/api/auth/login') {
+    // 旧请求晚到的 401 不能使刚建立的新会话失效。
+    if (
+      res.status === 401 &&
+      path !== '/api/auth/login' &&
+      token === useAuthStore.getState().auth.accessToken
+    ) {
       useAuthStore.getState().auth.reset()
     }
     const parsed = apiErrorSchema.safeParse(body)
@@ -76,7 +81,7 @@ export async function apiFetch<T>(
             code: 'REQUEST_FAILED',
             message: `请求失败（HTTP ${res.status}）`,
             requestId: res.headers.get(REQUEST_ID_HEADER) ?? 'unknown',
-          },
+          }
     )
   }
 
@@ -84,7 +89,9 @@ export async function apiFetch<T>(
 }
 
 /** 授权下载对象正文。Bearer 不会跟 `<img src>`，必须先拿 blob 再建 Object URL。 */
-export async function apiFetchBlob(path: string): Promise<{ blob: Blob; contentType: string }> {
+export async function apiFetchBlob(
+  path: string
+): Promise<{ blob: Blob; contentType: string }> {
   const token = useAuthStore.getState().auth.accessToken
   const res = await fetch(path, {
     headers: {
@@ -95,7 +102,11 @@ export async function apiFetchBlob(path: string): Promise<{ blob: Blob; contentT
   })
 
   if (!res.ok) {
-    if (res.status === 401 && path !== '/api/auth/login') {
+    if (
+      res.status === 401 &&
+      path !== '/api/auth/login' &&
+      token === useAuthStore.getState().auth.accessToken
+    ) {
       useAuthStore.getState().auth.reset()
     }
     const body: unknown = await res.json().catch(() => null)
@@ -108,7 +119,7 @@ export async function apiFetchBlob(path: string): Promise<{ blob: Blob; contentT
             code: 'REQUEST_FAILED',
             message: `请求失败（HTTP ${res.status}）`,
             requestId: res.headers.get(REQUEST_ID_HEADER) ?? 'unknown',
-          },
+          }
     )
   }
 

@@ -62,6 +62,7 @@ export async function migrateDatabase(handle: DbHandle, env: DbEnv): Promise<Mig
       .filter(Boolean)
     try {
       for (const statement of statements) await handle.raw(statement)
+      if (handle.driver === 'sqlite' && (await handle.raw('PRAGMA foreign_key_check')).length) throw new Error('Migration produced foreign key violations')
       await handle.raw("UPDATE _migrations SET state = 'complete' WHERE prefix = ?", [m.prefix])
       applied.push(m.filename)
     } catch (cause) {

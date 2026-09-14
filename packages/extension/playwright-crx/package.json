@@ -6,9 +6,13 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "probe:panel": "node probe/panel-flow.mjs",
+    "probe:import": "node probe/studio-import.mjs",
     "dev": "vite build --watch"
   },
   "dependencies": {
+    "@cairn/shared": "workspace:*",
     "codemirror": "5.65.18",
     "idb-keyval": "^6.2.1",
     "playwright-crx": "0.15.0",
@@ -27,6 +31,7 @@
     "@types/react-dom": "^18.3.1",
     "@types/wicg-file-system-access": "^2023.10.5",
     "typescript": "~6.0.3",
-    "vite": "^6.3.4"
+    "vite": "^6.3.4",
+    "vitest": "^4.1.11"
   }
 }

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { assertExpectSchema } from './browser-command.js'
+import { pageAfterSchema } from './managed-browser.js'
 import { aiOutputSchemaSchema, outputFieldNameSchema } from './output-schema.js'
 import { executionErrorCategorySchema } from './runtime-error.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
@@ -115,8 +116,12 @@ export const navigateInputSchema = z.strictObject({
 })
 export type NavigateInput = z.infer<typeof navigateInputSchema>
 
+export { pageAfterSchema, type PageAfter } from './managed-browser.js'
+
 export const clickInputSchema = z.strictObject({
   target: targetDescriptorSchema,
+  /** 缺省保持旧行为：可等待 popup 但不收养为当前页。 */
+  pageAfter: pageAfterSchema.optional(),
 })
 export type ClickInput = z.infer<typeof clickInputSchema>
 

@@ -2,6 +2,7 @@
  * 唯一碰 playwright 的模块。Engine 不得 import 本文件。
  */
 
+import { targetScopeReady } from './target-scope'
 import type { BrowserContext, Frame, Locator, Page } from 'playwright'
 import type {
   LocatorCandidate,
@@ -67,6 +68,7 @@ export async function launchSession(
       headless: opts.headless,
       executablePath: opts.executablePath,
       args: ['--disable-dev-shm-usage'],
+      serviceWorkers: 'block',
     })
     const basePage = context.pages()[0] ?? (await context.newPage())
     return { context, basePage, profileDir }
@@ -181,7 +183,9 @@ export async function stopSession(
 }
 
 export async function openRunPage(handle: BrowserHandle): Promise<Page> {
-  return handle.context.newPage()
+  const page = await handle.context.newPage()
+  await targetScopeReady(page)
+  return page
 }
 
 export async function closePage(page: Page): Promise<void> {
@@ -414,6 +418,62 @@ export async function waitForPopup(page: Page, action: () => Promise<void>, time
   const pending = page.context().waitForEvent('page', { timeout: timeoutMs }).catch(() => null)
   await action()
   return pending
+}
+
+/** 只收集 opener 为当前页的新窗口；默认 click 仍走 waitForPopup。 */
+export async function waitForPopupsFrom(
+  page: Page,
+  action: () => Promise<void>,
+  timeoutMs = 1_500,
+): Promise<Page[]> {
+  const found: Page[] = []
+  const pending: Promise<void>[] = []
+  const onPage = (opened: Page) => {
+    pending.push(
+      opened.opener().then((parent) => {
+        if (parent === page) found.push(opened)
+      }),
+    )
+  }
+  page.context().on('page', onPage)
+  try {
+    await action()
+    await new Promise((resolve) => setTimeout(resolve, timeoutMs))
+    await Promise.all(pending)
+    return found.filter((item) => !item.isClosed())
+  } finally {
+    page.context().off('page', onPage)
+  }
+}
+
+export async function probeAuthOnPage(
+  page: Page,
+  target: TargetAuthInfo,
+): Promise<'AUTHENTICATED' | 'EXPIRED'> {
+  try {
+    const url = page.url()
+    if (target.loginUrl) {
+      const login = new URL(target.loginUrl, target.entryUrl)
+      const current = new URL(url)
+      if (
+        current.pathname === login.pathname ||
+        current.href.startsWith(login.href) ||
+        current.pathname.includes('/login')
+      ) {
+        return 'EXPIRED'
+      }
+    }
+    if (target.loginFields?.password) {
+      const pwd = locatorFor(page, target.loginFields.password)
+      if (await pwd.count().then((n) => n > 0).catch(() => false)) {
+        const visible = await pwd.first().isVisible().catch(() => false)
+        if (visible) return 'EXPIRED'
+      }
+    }
+    return 'AUTHENTICATED'
+  } catch {
+    return 'EXPIRED'
+  }
 }
 
 export async function screenshotPage(page: Page): Promise<Buffer> {

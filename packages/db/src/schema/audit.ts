@@ -1,4 +1,5 @@
 import { index, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { serviceCallers, serviceCredentials } from './service-access.js'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
 
@@ -9,6 +10,9 @@ export const consoleAuditEvents = cairnSchema.table(
     actorConsoleAccountId: uuid('actor_console_account_id').references(() => consoleAccounts.id, {
       onDelete: 'set null',
     }),
+    actorServiceCallerId: uuid('actor_service_caller_id').references(() => serviceCallers.id, { onDelete: 'restrict' }),
+    actorServiceCredentialId: uuid('actor_service_credential_id').references(() => serviceCredentials.id, { onDelete: 'restrict' }),
+    requestId: text('request_id'),
     action: text('action').notNull(),
     resource: text('resource').notNull(),
     resourceId: uuid('resource_id'),

@@ -49,3 +49,14 @@ export {
   type CreateSessionInput,
   type CreateSessionResult,
 } from './sessions.js'
+export {
+  hashAuthControlToken,
+  newAuthControlToken,
+  isBoundAuthHold,
+  enterRunWaitingForAuth,
+  acquireAuthControl,
+  heartbeatAuthControl,
+  releaseAuthControl,
+  expireStaleAuthControl,
+  findSessionByAuthHoldRun,
+} from './auth-control.js'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { EXECUTABLE_STEP_TYPES } from '@cairn/shared'
+import { EXECUTABLE_STEP_TYPES, FACTORY_PLATFORM_CONFIG, platformRuntimeDefaultsFrom } from '@cairn/shared'
 import { createBlankStep, DETERMINISTIC_STUDIO_TYPES, selectableStudioTypes } from './step-registry'
 
 describe('step-registry', () => {
@@ -10,6 +10,7 @@ describe('step-registry', () => {
       selectableStudioTypes({
         executableStepTypes: ['navigate', 'http', 'ai_action'],
         unavailableReasons: [],
+        defaults: platformRuntimeDefaultsFrom(FACTORY_PLATFORM_CONFIG, 1),
       }),
     ).toEqual(['navigate', 'ai_action'])
   })

@@ -1,12 +1,18 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res } from '@nestjs/common'
 import type { Response } from 'express'
 import {
+  applyRecordingImportBodySchema,
+  createRecordingBindingBodySchema,
   createScenarioBodySchema,
+  previewRecordingImportBodySchema,
   publishScenarioBodySchema,
   saveScenarioDraftBodySchema,
   trialRunBodySchema,
   updateScenarioBodySchema,
+  type ApplyRecordingImportBody,
+  type CreateRecordingBindingBody,
   type CreateScenarioBody,
+  type PreviewRecordingImportBody,
   type PublishScenarioBody,
   type SaveScenarioDraftBody,
   type TrialRunBody,
@@ -106,5 +112,46 @@ export class ScenariosController {
   @RequirePermissions('workflow:read')
   versions(@Param('scenarioId') scenarioId: string) {
     return this.scenarios.versions(scenarioId)
+  }
+
+  @Post(':scenarioId/recording-bindings')
+  @RequirePermissions('workflow:write', 'target:read')
+  createRecordingBinding(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(createRecordingBindingBodySchema)) body: CreateRecordingBindingBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.createRecordingBinding(scenarioId, body, actor)
+  }
+
+  @Get(':scenarioId/recording-imports')
+  @RequirePermissions('workflow:read', 'target:read')
+  listRecordingImports(
+    @Param('scenarioId') scenarioId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.listRecordingImports(scenarioId, actor)
+  }
+
+  @Post(':scenarioId/recording-imports/preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:read', 'target:read')
+  previewRecordingImport(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(previewRecordingImportBodySchema)) body: PreviewRecordingImportBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.previewRecordingImport(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/recording-imports/apply')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write', 'target:read')
+  applyRecordingImport(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(applyRecordingImportBodySchema)) body: ApplyRecordingImportBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.applyRecordingImport(scenarioId, body, actor)
   }
 }

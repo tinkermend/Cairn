@@ -30,7 +30,10 @@ chrome-profiles/
 
 # ── 内部文档，另行传递 ─────────────────────────
 docs/arch/
+# 含明文凭据的部署记录（远端 shsnc-ah3、本机 Podman 等），不入库
 docs/deploy/
+# 联调 / L3 外部目标系统清单：URL、账号、口令，不入库
+docs/targets/
 
 # 指令草稿，可能含凭据
 .prompt
@@ -39,7 +42,10 @@ docs/deploy/
 # ── 环境与密钥 ────────────────────────────────
 .env
 .env.*
-!.env.example
+# 只放行模板。填好的 deploy/.env、仓库根 .env / .env.local / .env.remote 都不入库。
+!/.env.example
+!/deploy/.env.example
+deploy/.env
 *.pem
 *.key
 *.p12
@@ -79,6 +85,9 @@ tests/*
 !tests/target-surface-lab/**
 !tests/target-snc-dpm/
 !tests/target-snc-dpm/**
+!tests/harness/
+!tests/harness/**
+tests/target-snc-dpm/catalog.local.json
 
 # ── 整仓二开快照 ────────────────────────────────
 # 上面的 tests/*、.vscode/* 会误伤 vendor 里的上游源码。
@@ -91,3 +100,6 @@ tests/*
 !vendor/**/build/**
 vendor/**/node_modules/
 vendor/**/.pnpm-store/
+
+# 仅供阅读的上游源码参考（覆盖前面的 vendor 放行规则）
+/vendor/ref/

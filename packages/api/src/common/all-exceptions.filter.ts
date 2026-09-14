@@ -37,13 +37,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let issues: ApiError['issues']
     /** handler 显式给出的领域码；没有才回落状态码映射 */
     let explicitCode: string | undefined
+    let details: unknown | undefined
 
     if (exception instanceof HttpException) {
       const body = exception.getResponse()
       if (typeof body === 'string') {
         message = body
       } else if (body && typeof body === 'object') {
-        const b = body as { message?: unknown; issues?: ApiError['issues']; code?: unknown }
+        const b = body as {
+          message?: unknown
+          issues?: ApiError['issues']
+          code?: unknown
+          details?: unknown
+        }
         message = Array.isArray(b.message)
           ? b.message.join('; ')
           : typeof b.message === 'string'
@@ -51,6 +57,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
             : exception.message
         issues = b.issues
         if (typeof b.code === 'string' && b.code.length > 0) explicitCode = b.code
+        if (b.details !== undefined) details = b.details
       }
     }
 
@@ -64,6 +71,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       message = '服务器内部错误'
       issues = undefined
       explicitCode = undefined
+      details = undefined
     }
 
     const payload = apiErrorSchema.parse({
@@ -71,8 +79,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       message,
       requestId,
       ...(issues ? { issues } : {}),
+      ...(details !== undefined ? { details } : {}),
     })
 
+    if (status === 429 && details && typeof details === 'object' && 'retryAfter' in details) {
+      const retry = Number(details.retryAfter)
+      if (Number.isFinite(retry) && retry > 0) res.setHeader('Retry-After', String(Math.ceil(retry)))
+    }
     res.status(status).json(payload)
   }
 }

@@ -1,5 +1,6 @@
+import type { EvidenceRow } from '../records.js'
 import { RUNTIME_SCHEMA_VERSION, evidenceMetadataSchema, type EvidenceMetadata } from '@cairn/shared'
-import type { EvidenceRow } from '../schema/execution.js'
+
 
 export function toEvidenceMetadata(row: EvidenceRow): EvidenceMetadata {
   return evidenceMetadataSchema.parse({
@@ -17,6 +18,7 @@ export function toEvidenceMetadata(row: EvidenceRow): EvidenceMetadata {
     digest: row.digest ?? undefined,
     missingReason: row.missingReason ?? undefined,
     uploadAttempts: row.uploadAttempts,
+    externalAccess: row.externalAccess === 1,
     payload: row.payload ?? undefined,
   })
 }

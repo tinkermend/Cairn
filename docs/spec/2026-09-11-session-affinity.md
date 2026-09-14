@@ -272,7 +272,7 @@ Engine 正式路径不 `acquire`，RF04 继续：无浏览器步骤的 Run 零 `
 本期最低交付：
 
 1. 受控夹具（`tests/target-login-hmi` 或与之同级的会话夹具）可复跑：连续两次 `acquire` 自动登录一次；另一账号 Cookie 不串；`NEW_PAGE` 关 Run 页、`REUSE_PAGE` 沿用基准页；杀掉浏览器后按 D6 隔离。
-2. 实验记录写到 [`docs/spec/2026-09-11-s02-session-reuse.md`](2026-09-11-s02-session-reuse.md)（落地时建，按路线图 §4「每份实验记录必须包含」的字段填）。结论只能是采用 / 限制采用 / 拒绝某档复用。
+2. 采用 / 限制采用 / 拒绝写回本文落地结论，不另开与方案平级的实验记录。可重跑证据在测试里。
 3. 真实企业系统：有就记一页限制；没有则内部 Foundation 可过，**不得**在文档或 UI 写该系统已兼容。
 
 storageState 仍然不等于活会话备份。S02 若观察到 sessionStorage / SPA 内存导致 `NEW_PAGE` 不等价于原页，记进限制，不改 D8 三档枚举。
@@ -373,7 +373,7 @@ Engine、`BrowserPort` 形状、Step 枚举不动。
 | `packages/worker/src/browser/session-manager.ts`、`runtime/lifecycle.service.ts`、`runtime/placement-backoff.ts` | `PROFILE_LOCKED`、腾位、失败码分流、浏览器不可用自禁、自愈先停浏览器、`yieldPlacement` 回交并记冷却 |
 | `packages/worker/src/browser/session-manager.integration.spec.ts` | RF10 夹具在 Affinity 下仍成立；`PROFILE_LOCKED` 不放键 |
 | `packages/api/src/runs/`、`packages/web/src/features/runs/` | 详情 placement；文案；无定时器 |
-| `docs/spec/2026-09-11-s02-session-reuse.md` | 落地时写 S02 记录 |
+| 本文落地结论 | S02 限制采用；无真实企业系统承诺 |
 | `docs/arch/03` §8 / §13 | 落地后改成「MVP = Affinity 优先 + 容量阈值 + DB Claim」，与本方案对齐 |
 | `docs/spec/README.md`、两份前序方案的「留给后续」 | 指向本稿；`CHANGELOG` 落地时再写 |
 
@@ -386,7 +386,7 @@ Engine、`BrowserPort` 形状、Step 枚举不动。
 4b. **不空转**：会话位满先腾位；腾不出回交带退避；浏览器不可用自禁到下一轮 reaper。这一步的用例必须先红（去掉任一道闸即失败）。
 5. **自愈**：`healIdentity` 停浏览器；新进程 `reconcileOwn` 不关 `LOST`。
 6. **GET + 页面**：`placement`；失联橙色、等待灰色；无定时器、无会话菜单。
-7. **S02 记录**：受控夹具结论；真实系统有则附录。
+7. **S02 结论**：受控夹具写回本文；真实系统有则附录，不另开文档。
 8. 回写本稿状态、README、CHANGELOG、`docs/arch/03` §8 / §13。
 
 ## 7. 验收
@@ -431,7 +431,7 @@ Engine、`BrowserPort` 形状、Step 枚举不动。
 ### 统一
 
 24. `pnpm test`、`pnpm lint`、`pnpm typecheck`、`pnpm check:deps` 通过。
-25. S02 记录存在且有结论。无真实系统不得写「已兼容」。
+25. S02 有采用 / 限制 / 拒绝结论（见落地结论）。无真实系统不得写「已兼容」。
 26. 不得宣称 RF11 / RF12 在真进程 kill / 暂停 / 断网上通过——那是 P3 债务，本方案只证明库谓词与本进程句柄。
 
 ## 8. 刻意留给后续
@@ -466,7 +466,18 @@ Engine、`BrowserPort` 形状、Step 枚举不动。
   - **D5 拆码**：`SESSION_NOT_CLAIMABLE` 现网一码多义（暂态 + 永久配置错误，后者甚至是抛异常穿透 `acquire`），按码分流会把配置错误判成永久排队。拆出 `SESSION_TARGET_MISSING` / `SESSION_POLICY_INVALID`。
   - **D2 容量口径**：只数未过期的 `ACTIVE` 租约，避免一条死票长期吃掉 owner 的执行槽、再被 Affinity 锁死成无人可领。
   - **新增 D3b**：默认 `capacity = 1` / `maxSessions = 2` / idle TTL 600 s 下，回交会变成 1 s 一轮的空转。改为会话位满先腾位，腾不出才回交且带进程内退避。
-- 2026-09-11：落地。`0012` 登记 `max_sessions`；`claimRun` 按活会话 Affinity 且容量只数未过期租约；`yieldClaimedRun(..., 'placement_yield')` 不计恢复；`acquire` 拆配置错误码、腾位、浏览器不可用自禁、`PROFILE_LOCKED`→`LOST`；自愈先 `stopAllLocal`；详情 GET `placement`。S02 见 [2026-09-11-s02-session-reuse.md](2026-09-11-s02-session-reuse.md)（受控夹具限制采用，无真实企业系统承诺）。
+- 2026-09-11：落地。`0012` 登记 `max_sessions`；`claimRun` 按活会话 Affinity 且容量只数未过期租约；`yieldClaimedRun(..., 'placement_yield')` 不计恢复；`acquire` 拆配置错误码、腾位、浏览器不可用自禁、`PROFILE_LOCKED`→`LOST`；自愈先 `stopAllLocal`；详情 GET `placement`。S02 受控夹具限制采用，无真实企业系统承诺（见落地结论）。
+- 2026-09-13：S02 结论并回本文，删除与方案平级的实验记录。
 - 2026-09-12：回交与进程内冷却收成 `yieldPlacement`。夹具与验收 10.2 走这条入口；只调库回交不再算接上退避。
 
 - 2026-09-12：跟随 [Browser Surface 方案](2026-09-11-browser-surface.md)的评审修订一处。**D4 判据**从「该 Run 名下没有任何 Attempt」改为「不存在 `RUNNING` Attempt」：初稿口径只覆盖首次领取，恢复重领的 Run 因为身上有终态 Attempt，D5 的回交会被 `yieldClaimedRun` 整条挡掉，Run 卡在 `RUNNING` 直到租约 `EXPIRED` 并计进 `countFailedRecoveries`，三轮后 `NEEDS_REVIEW`——与本方案「占不到会话不计恢复、不标失败」的承诺正好相反。修订后的谓词与 §7 L1 第 9 条本来的措辞一致，落地测试（`startAttempt` 造的是 `RUNNING` Attempt）不受影响；代码改动随 P5 PR 1 一起落地。
+
+## 11. S02 落地结论
+
+**限制采用。** 受控账密 Cookie 夹具，不是对某家企业系统的兼容承诺。
+
+- 采用：`NEW_PAGE`（默认）、`REUSE_PAGE`；同账号活会话复用；账号键隔离 profile。
+- 限制：只证明受控夹具。未测真实 MFA / 过期会话 / 真进程 kill。腾位会关掉一份已登录空闲会话（债务 5.1）。
+- 拒绝：不把 `storageState` 当活会话备份；不做 `NEW_CONTEXT`；不把一次成功轨迹写成平台通用复用承诺。sessionStorage / SPA 内存若使 `NEW_PAGE` 不等价于原页，记 Target 限制，不改三档枚举。
+
+基线约 `7c54f3b` 之后的 P4 后半工作树。可复跑：`pnpm --filter @cairn/worker exec vitest run src/browser/session-manager.integration.spec.ts src/browser/runtime.hmi.spec.ts src/browser/reuse.spec.ts`。2026-09-11 本机：有 Chromium 时同账号二次 acquire 走 `session.reused`、凭据解析一次；`PROFILE_LOCKED` / 无句柄 `stopAllLocal` → `LOST`。无浏览器归 `BROWSER_UNAVAILABLE` 回交，不记复用失败。

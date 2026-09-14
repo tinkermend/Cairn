@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
+import { stepSchema, type Step } from './step.js'
 import {
   MAX_FRAME_DEPTH,
   MAX_LOCATOR_CANDIDATES,
@@ -11,8 +12,10 @@ import { entityIdSchema, jsonValueSchema, utcInstantSchema, type JsonValue } fro
 import { idempotencyKeySchema } from './run-api.js'
 import { scenarioNameSchema } from './scenario.js'
 
-/** 当前识途录制器壳对应的来源版本。服务端接受其它版本，但会记诊断。 */
+/** 当前识途录制器壳对应的来源版本。导入路径只接受这一版。 */
 export const RECORDER_SOURCE_VERSION = 'playwright-crx@0.15.0'
+/** 可执行转换规则版本。预览/回填必须带上并重跑。 */
+export const RECORDING_NORMALIZER_VERSION = 'recording-normalizer@2'
 
 export const MAX_RECORDING_EVENTS = 200
 export const MAX_RECORDING_JSON_BYTES = 256_000
@@ -22,7 +25,19 @@ export const RECORDING_ERROR_CODES = [
   'RECORDING_IDEMPOTENCY_CONFLICT',
   'RECORDING_EMPTY',
   'RECORDING_TOO_LARGE',
+  'RECORDING_TOO_MANY_EVENTS',
   'RECORDING_FORBIDDEN_PAYLOAD',
+  'RECORDING_BINDING_NOT_FOUND',
+  'RECORDING_BINDING_EXPIRED',
+  'RECORDING_BINDING_CLOSED',
+  'RECORDING_BINDING_CLAIMED',
+  'RECORDING_BINDING_ORIGIN_MISMATCH',
+  'RECORDING_BINDING_FORBIDDEN',
+  'RECORDING_IMPORT_INCOMPLETE',
+  'RECORDING_IMPORT_CAPACITY',
+  'RECORDING_IMPORT_STALE',
+  'RECORDING_IMPORT_CONFLICT',
+  'RECORDING_SOURCE_UNSUPPORTED',
 ] as const
 export type RecordingErrorCode = (typeof RECORDING_ERROR_CODES)[number]
 
@@ -88,6 +103,9 @@ export const recordingEventSchema = z
     pageAlias: z.string().max(64).optional(),
     framePath: z.array(z.string().max(512)).max(8).optional(),
     locator: recordingLocatorSchema.optional(),
+    inputType: z.string().max(64).optional(),
+    autocomplete: z.string().max(128).optional(),
+    markedSensitive: z.boolean().optional(),
   })
   .passthrough()
 export type RecordingEvent = z.infer<typeof recordingEventSchema>
@@ -113,6 +131,7 @@ export const createRecordingBodySchema = z.strictObject({
   sourceVersion: z.string().trim().min(1).max(64),
   idempotencyKey: idempotencyKeySchema,
   name: scenarioNameSchema.optional(),
+  bindingId: entityIdSchema.optional(),
   events: z.array(recordingEventSchema).min(1).max(MAX_RECORDING_EVENTS),
 })
 export type CreateRecordingBody = z.infer<typeof createRecordingBodySchema>
@@ -157,10 +176,29 @@ export type NormalizeRecordingResult = {
   diagnostics: string[]
   eventCount: number
   unresolvedCount: number
+  sourceDigestEvents: RecordingEvent[]
 }
 
 const SENSITIVE_LOCATOR = /password|passwd|secret|token|otp|\bpin\b|密码|口令|验证码/i
+const SENSITIVE_AUTOCOMPLETE = new Set([
+  'current-password',
+  'new-password',
+  'one-time-code',
+  'cc-number',
+  'cc-csc',
+])
+const SECRET_QUERY_KEYS = new Set([
+  'password',
+  'passwd',
+  'secret',
+  'token',
+  'access_token',
+  'refresh_token',
+  'otp',
+  'pin',
+])
 const FORBIDDEN_EVENT_KEYS = ['storageState', 'cookies', 'localStorage', 'sessionStorage']
+const KNOWN_SIGNAL_NAMES = new Set(['popup', 'download', 'dialog', 'navigation'])
 
 export class RecordingNormalizationError extends Error {
   readonly code: RecordingErrorCode
@@ -205,8 +243,12 @@ function asJson(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue
 }
 
+export function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length
+}
+
 export function assertRecordingPayloadSize(body: unknown): void {
-  const bytes = JSON.stringify(body).length
+  const bytes = utf8ByteLength(JSON.stringify(body))
   if (bytes > MAX_RECORDING_JSON_BYTES) {
     throw new RecordingNormalizationError(
       'RECORDING_TOO_LARGE',
@@ -217,14 +259,14 @@ export function assertRecordingPayloadSize(body: unknown): void {
 
 export function normalizeRecording(
   rawEvents: readonly unknown[],
-  options: { sourceVersion?: string } = {},
+  options: { sourceVersion?: string; forImport?: boolean } = {},
 ): NormalizeRecordingResult {
   if (rawEvents.length === 0) {
     throw new RecordingNormalizationError('RECORDING_EMPTY', '没有可保存的录制操作')
   }
   if (rawEvents.length > MAX_RECORDING_EVENTS) {
     throw new RecordingNormalizationError(
-      'RECORDING_EMPTY',
+      'RECORDING_TOO_MANY_EVENTS',
       `一次最多上传 ${MAX_RECORDING_EVENTS} 条操作`,
     )
   }
@@ -243,8 +285,11 @@ export function normalizeRecording(
 
   const merged = mergeConsecutiveFills(parsed)
   const diagnostics: string[] = []
+  const sourceUnsupported = Boolean(
+    options.forImport && options.sourceVersion && options.sourceVersion !== RECORDER_SOURCE_VERSION,
+  )
   if (options.sourceVersion && options.sourceVersion !== RECORDER_SOURCE_VERSION) {
-    diagnostics.push(`来源版本是 ${options.sourceVersion}，映射按 ${RECORDER_SOURCE_VERSION} 解释`)
+    diagnostics.push(`来源版本是 ${options.sourceVersion}，不能按 ${RECORDER_SOURCE_VERSION} 做可执行转换`)
   }
 
   const items: RecordingItem[] = []
@@ -254,7 +299,7 @@ export function normalizeRecording(
     const sanitized = sanitizeEvent(entry.event)
     events.push(sanitized)
     const item = mapEvent(sanitized, entry.sourceIndexes, items.length)
-    if (item) items.push(item)
+    if (item) items.push(sourceUnsupported ? forceUnresolved(item, '来源版本不受支持，不能自动转换') : item)
   }
 
   if (items.length === 0) {
@@ -268,17 +313,46 @@ export function normalizeRecording(
     diagnostics,
     eventCount: events.length,
     unresolvedCount,
+    sourceDigestEvents: events,
   }
 }
 
-function assertNoForbiddenKeys(event: unknown, index: number): void {
+export function candidateStepFromItem(item: RecordingItem, id: string): Step | undefined {
+  if (item.status !== 'mapped' || !item.candidateStepType || item.input === undefined) return undefined
+  const effectType = item.candidateStepType === 'assert' ? 'READ_ONLY' : 'SIDE_EFFECT'
+  const parsed = stepSchema.safeParse({
+    id,
+    name: item.name,
+    type: item.candidateStepType,
+    effectType,
+    input: item.input,
+  })
+  return parsed.success ? parsed.data : undefined
+}
+
+export function recordingItemReady(item: RecordingItem): boolean {
+  return Boolean(candidateStepFromItem(item, '00000000-0000-4000-8000-000000000000'))
+}
+
+function assertNoForbiddenKeys(event: unknown, index: number, path = `第 ${index + 1} 条操作`): void {
   if (!event || typeof event !== 'object' || Array.isArray(event)) {
-    throw new RecordingNormalizationError('RECORDING_FORBIDDEN_PAYLOAD', `第 ${index + 1} 条操作不是对象`)
+    throw new RecordingNormalizationError('RECORDING_FORBIDDEN_PAYLOAD', `${path}不是对象`)
   }
-  const keys = Object.keys(event)
-  const hit = keys.find((key) => FORBIDDEN_EVENT_KEYS.includes(key))
-  if (hit) {
-    throw new RecordingNormalizationError('RECORDING_FORBIDDEN_PAYLOAD', '不能上传 storage state、Cookie 或本地存储')
+  const record = event as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (FORBIDDEN_EVENT_KEYS.includes(key)) {
+      throw new RecordingNormalizationError('RECORDING_FORBIDDEN_PAYLOAD', '不能上传 storage state、Cookie 或本地存储')
+    }
+    const value = record[key]
+    if (value && typeof value === 'object') {
+      if (Array.isArray(value)) {
+        value.forEach((item, itemIndex) => {
+          if (item && typeof item === 'object') assertNoForbiddenKeys(item, index, `${path}.${key}[${itemIndex}]`)
+        })
+      } else {
+        assertNoForbiddenKeys(value, index, `${path}.${key}`)
+      }
+    }
   }
 }
 
@@ -286,11 +360,7 @@ function mergeConsecutiveFills(events: RecordingEvent[]): { event: RecordingEven
   const result: { event: RecordingEvent; sourceIndexes: number[] }[] = []
   for (const [index, event] of events.entries()) {
     const previous = result.at(-1)
-    if (
-      event.name === 'fill' &&
-      previous?.event.name === 'fill' &&
-      sameTarget(previous.event, event)
-    ) {
+    if (event.name === 'fill' && previous?.event.name === 'fill' && sameTarget(previous.event, event)) {
       previous.event = { ...event, text: event.text }
       previous.sourceIndexes.push(index)
       continue
@@ -304,16 +374,24 @@ function sameTarget(left: RecordingEvent, right: RecordingEvent): boolean {
   return (
     (left.selector ?? '') === (right.selector ?? '') &&
     (left.pageAlias ?? '') === (right.pageAlias ?? '') &&
-    JSON.stringify(left.framePath ?? []) === JSON.stringify(right.framePath ?? [])
+    JSON.stringify(left.framePath ?? []) === JSON.stringify(right.framePath ?? []) &&
+    locatorIdentity(left.locator) === locatorIdentity(right.locator)
   )
+}
+
+function locatorIdentity(locator: RecordingEvent['locator']): string {
+  if (!locator) return ''
+  const body = typeof locator.body === 'string' ? locator.body : ''
+  const name = typeof locator.options?.name === 'string' ? locator.options.name : ''
+  return `${locator.kind}:${body}:${name}`
 }
 
 function sanitizeEvent(event: RecordingEvent): RecordingEvent {
   const picked: RecordingEvent = {
     name: event.name,
-    signals: event.signals,
+    signals: sanitizeSignals(event.signals),
     selector: event.selector,
-    url: event.url,
+    url: stripSecretQuery(event.url),
     text: event.text,
     button: event.button,
     clickCount: event.clickCount,
@@ -326,25 +404,78 @@ function sanitizeEvent(event: RecordingEvent): RecordingEvent {
     checked: event.checked,
     pageAlias: event.pageAlias,
     framePath: event.framePath,
-    locator: event.locator,
+    locator: sanitizeLocator(event.locator),
+    inputType: event.inputType,
+    autocomplete: event.autocomplete,
+    markedSensitive: event.markedSensitive,
   }
-  if (isSensitiveFill(picked)) {
+  if (isSensitiveFill(picked) || isSensitiveAssert(picked)) {
     return { ...picked, text: undefined, value: undefined }
   }
   return picked
 }
 
+function sanitizeSignals(signals: RecordingEvent['signals']): RecordingEvent['signals'] {
+  if (!Array.isArray(signals)) return undefined
+  return signals.flatMap((signal) => {
+    if (!signal || typeof signal !== 'object' || !('name' in signal)) return []
+    const name = String((signal as { name: unknown }).name)
+    if (!KNOWN_SIGNAL_NAMES.has(name)) return []
+    return [{ name }]
+  })
+}
+
+function sanitizeLocator(locator: RecordingEvent['locator']): RecordingEvent['locator'] {
+  if (!locator) return undefined
+  const name = typeof locator.options?.name === 'string' ? locator.options.name : undefined
+  const next = isLocatorNode(locator.next) ? sanitizeLocator(locator.next) : undefined
+  return {
+    kind: locator.kind,
+    body: typeof locator.body === 'string' ? locator.body : undefined,
+    options: name ? { name } : undefined,
+    next,
+  }
+}
+
+function stripSecretQuery(url: string | undefined): string | undefined {
+  if (!url) return url
+  try {
+    const parsed = new URL(url)
+    let changed = false
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (SECRET_QUERY_KEYS.has(key.toLowerCase())) {
+        parsed.searchParams.delete(key)
+        changed = true
+      }
+    }
+    return changed ? parsed.toString() : url
+  } catch {
+    return url
+  }
+}
+
 function isSensitiveFill(event: RecordingEvent): boolean {
   if (event.name !== 'fill') return false
+  if (event.markedSensitive) return true
+  if ((event.inputType ?? '').toLowerCase() === 'password') return true
+  if (SENSITIVE_AUTOCOMPLETE.has((event.autocomplete ?? '').toLowerCase())) return true
   const hay = [event.selector ?? '', locatorHaystack(event.locator)].join(' ')
   return SENSITIVE_LOCATOR.test(hay)
+}
+
+function isSensitiveAssert(event: RecordingEvent): boolean {
+  if (event.name !== 'assertText' && event.name !== 'assertValue') return false
+  return SENSITIVE_LOCATOR.test(`${event.text ?? ''} ${event.value ?? ''}`)
 }
 
 function locatorHaystack(locator: RecordingEvent['locator']): string {
   if (!locator) return ''
   const body = typeof locator.body === 'string' ? locator.body : ''
   const name = typeof locator.options?.name === 'string' ? locator.options.name : ''
-  const next = locator.next && typeof locator.next === 'object' ? locatorHaystack(locator.next as RecordingEvent['locator']) : ''
+  const next =
+    locator.next && typeof locator.next === 'object'
+      ? locatorHaystack(locator.next as RecordingEvent['locator'])
+      : ''
   return `${locator.kind} ${body} ${name} ${next}`
 }
 
@@ -361,8 +492,13 @@ function mapEvent(event: RecordingEvent, sourceIndexes: number[], index: number)
     }
     return navigateItem(event, sourceIndexes, index, url)
   }
-  if (event.name === 'click' || event.name === 'check' || event.name === 'uncheck') {
-    return actionWithTarget(event, sourceIndexes, index, 'click', clickName(event), event.name === 'click' ? [] : ['勾选按点击处理，发布前请确认'])
+  if (event.name === 'check' || event.name === 'uncheck') {
+    return unresolved(event, sourceIndexes, index, clickName(event), [
+      '勾选/取消勾选不能降为点击，当前 Step Type 无法精确表达',
+    ])
+  }
+  if (event.name === 'click') {
+    return clickItem(event, sourceIndexes, index)
   }
   if (event.name === 'fill') {
     return fillItem(event, sourceIndexes, index)
@@ -370,9 +506,7 @@ function mapEvent(event: RecordingEvent, sourceIndexes: number[], index: number)
   if (event.name === 'assertVisible' || event.name === 'assertText') {
     return assertItem(event, sourceIndexes, index)
   }
-  return unresolved(event, sourceIndexes, index, unresolvedName(event.name), [
-    capabilityMessage(event.name),
-  ])
+  return unresolved(event, sourceIndexes, index, unresolvedName(event.name), [capabilityMessage(event.name)])
 }
 
 function navigateItem(
@@ -395,12 +529,38 @@ function navigateItem(
   }
 }
 
+function clickItem(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem {
+  const popups = popupSignals(event)
+  if (popups > 1) {
+    return unresolved(event, sourceIndexes, index, '点击', ['多个弹出窗口，无法确定页面交接'])
+  }
+  const target = targetFromEvent(event)
+  if (!target) {
+    return unresolved(event, sourceIndexes, index, '点击', targetDiagnostics(event))
+  }
+  const input = popups === 1 ? { target, pageAfter: 'popup' as const } : { target }
+  const diagnostics = signalDiagnostics(event)
+  if (popups === 1) diagnostics.push('将交接至弹出页')
+  return {
+    index,
+    sourceIndexes,
+    status: 'mapped',
+    sourceAction: 'click',
+    name: '点击',
+    candidateStepType: 'click',
+    input: asJson(input),
+    pageAlias: event.pageAlias,
+    framePath: event.framePath,
+    diagnostics,
+  }
+}
+
 function fillItem(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem {
   const sensitive = isSensitiveFill(event)
   const target = targetFromEvent(event)
   const diagnostics = [...signalDiagnostics(event)]
   if (!target) {
-    return unresolved(event, sourceIndexes, index, '填写', ['填写目标无法映射为平台定位'])
+    return unresolved(event, sourceIndexes, index, '填写', targetDiagnostics(event))
   }
   if (sensitive) {
     diagnostics.push('敏感输入已排除，需在编辑器补参数')
@@ -435,7 +595,10 @@ function fillItem(event: RecordingEvent, sourceIndexes: number[], index: number)
 function assertItem(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem {
   const target = targetFromEvent(event)
   const diagnostics = [...signalDiagnostics(event)]
-  if (!target) diagnostics.push('断言目标需在编辑器确认')
+  if (isSensitiveAssert(event)) {
+    return unresolved(event, sourceIndexes, index, '断言文本', ['断言文本含敏感值，已排除，需人工重建'])
+  }
+  if (!target) diagnostics.push(...targetDiagnostics(event))
   if (event.name === 'assertVisible') {
     return {
       index,
@@ -471,33 +634,6 @@ function assertItem(event: RecordingEvent, sourceIndexes: number[], index: numbe
   }
 }
 
-function actionWithTarget(
-  event: RecordingEvent,
-  sourceIndexes: number[],
-  index: number,
-  stepType: RecordingCandidateStepType,
-  name: string,
-  extraDiagnostics: string[],
-): RecordingItem {
-  const target = targetFromEvent(event)
-  const diagnostics = [...signalDiagnostics(event), ...extraDiagnostics]
-  if (!target) {
-    return unresolved(event, sourceIndexes, index, name, ['定位无法映射为平台 TargetDescriptor'])
-  }
-  return {
-    index,
-    sourceIndexes,
-    status: 'mapped',
-    sourceAction: event.name,
-    name,
-    candidateStepType: stepType,
-    input: asJson({ target }),
-    pageAlias: event.pageAlias,
-    framePath: event.framePath,
-    diagnostics,
-  }
-}
-
 function unresolved(
   event: RecordingEvent,
   sourceIndexes: number[],
@@ -517,41 +653,51 @@ function unresolved(
   }
 }
 
+function forceUnresolved(item: RecordingItem, reason: string): RecordingItem {
+  return {
+    ...item,
+    status: 'unresolved',
+    candidateStepType: undefined,
+    input: undefined,
+    diagnostics: [...item.diagnostics, reason].slice(0, 16),
+  }
+}
+
 function targetFromEvent(event: RecordingEvent): TargetDescriptor | undefined {
+  const frames = (event.framePath ?? []).map((selector) => selector.trim()).filter(Boolean)
+  if (frames.length > MAX_FRAME_DEPTH) return undefined
   const candidates = locatorToCandidates(event.locator, event.selector)
   if (!candidates) return undefined
-  const framePath = (event.framePath ?? [])
-    .slice(0, MAX_FRAME_DEPTH)
-    .map((selector) => selector.trim())
-    .filter(Boolean)
-    .map((selector) => ({ selector }))
   const parsed = z
     .object({
       framePath: z.array(z.object({ selector: z.string().min(1).max(512) })).max(MAX_FRAME_DEPTH),
       candidates: z.array(locatorCandidateSchema).min(1).max(MAX_LOCATOR_CANDIDATES),
     })
-    .safeParse({ framePath, candidates })
+    .safeParse({
+      framePath: frames.map((selector) => ({ selector })),
+      candidates,
+    })
   return parsed.success ? parsed.data : undefined
+}
+
+function targetDiagnostics(event: RecordingEvent): string[] {
+  const frames = (event.framePath ?? []).map((selector) => selector.trim()).filter(Boolean)
+  if (frames.length > MAX_FRAME_DEPTH) return [`iframe 深度 ${frames.length} 超过 ${MAX_FRAME_DEPTH}，不能截断后执行`]
+  if (event.locator && isLocatorNode(event.locator.next)) return ['链式定位不能摊平为候选列表']
+  const kind = event.locator?.kind
+  if (kind === 'placeholder' || kind === 'alt') return [`${kind} 不能改写成平台 locator`]
+  return ['定位无法映射为平台 TargetDescriptor']
 }
 
 function locatorToCandidates(
   locator: RecordingEvent['locator'],
   selector: string | undefined,
 ): LocatorCandidate[] | undefined {
-  const found: LocatorCandidate[] = []
-  let node: RecordingEvent['locator'] | undefined = locator
-  while (node && found.length < MAX_LOCATOR_CANDIDATES) {
-    const mapped = mapLocatorNode(node)
-    if (mapped) found.push(mapped)
-    node = isLocatorNode(node.next) ? node.next : undefined
-  }
-  if (found.length === 0 && selector && isCssLike(selector)) {
-    found.push({ by: 'css', value: selector.slice(0, 512) })
-  }
-  const rest = found.filter((item) => item.by !== 'css')
-  const css = found.filter((item) => item.by === 'css').at(-1)
-  const ordered = css ? [...rest, css] : rest
-  return ordered.length > 0 ? ordered.slice(0, MAX_LOCATOR_CANDIDATES) : undefined
+  if (locator && isLocatorNode(locator.next)) return undefined
+  const mapped = locator ? mapLocatorNode(locator) : undefined
+  if (mapped) return [mapped]
+  if (selector && isCssLike(selector)) return [{ by: 'css', value: selector.slice(0, 512) }]
+  return undefined
 }
 
 function isLocatorNode(value: unknown): value is NonNullable<RecordingEvent['locator']> {
@@ -566,10 +712,8 @@ function mapLocatorNode(node: NonNullable<RecordingEvent['locator']>): LocatorCa
     case 'role':
       return name ? { by: 'role', value: body, name } : { by: 'role', value: body }
     case 'label':
-    case 'placeholder':
       return { by: 'label', value: body }
     case 'text':
-    case 'alt':
       return { by: 'text', value: body }
     case 'title':
       return { by: 'title', value: body }
@@ -577,6 +721,9 @@ function mapLocatorNode(node: NonNullable<RecordingEvent['locator']>): LocatorCa
       return { by: 'testId', value: body }
     case 'default':
       return { by: 'css', value: body }
+    case 'placeholder':
+    case 'alt':
+      return undefined
     default:
       return undefined
   }
@@ -586,11 +733,16 @@ function isCssLike(selector: string): boolean {
   return !selector.startsWith('internal:') && /^[a-zA-Z.#\[*]/.test(selector)
 }
 
+function popupSignals(event: RecordingEvent): number {
+  const signals = Array.isArray(event.signals) ? event.signals : []
+  return signals.filter((signal) => signal && typeof signal === 'object' && 'name' in signal && signal.name === 'popup')
+    .length
+}
+
 function signalDiagnostics(event: RecordingEvent): string[] {
   const signals = Array.isArray(event.signals) ? event.signals : []
   return signals.flatMap((signal) => {
     if (!signal || typeof signal !== 'object' || !('name' in signal)) return []
-    if (signal.name === 'popup') return ['打开了新窗口，后续步骤的页面交接需在编辑器确认']
     if (signal.name === 'download') return ['触发了下载，平台步骤暂不覆盖']
     if (signal.name === 'dialog') return ['弹出了对话框，平台步骤暂不覆盖']
     return []

@@ -11,6 +11,7 @@ import {
   MAX_SCENARIO_STEPS,
   type CompileDiagnostic,
   type ExecutableStepType,
+  type RecordingInsertAnchor,
   type RunDetailDto,
 } from '@cairn/shared'
 import {
@@ -23,10 +24,20 @@ import {
   Save,
   TriangleAlert,
   Undo2,
+  Video,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { fetchScenario, fetchScenarioCapabilities, publishScenario, saveScenarioDraft } from '@/lib/scenarios-api'
+import { notifyExtensionStart } from '@/lib/extension-bridge'
+import { closeRecordingBinding } from '@/lib/recordings-api'
+import {
+  createRecordingBinding,
+  fetchRecordingImports,
+  fetchScenario,
+  fetchScenarioCapabilities,
+  publishScenario,
+  saveScenarioDraft,
+} from '@/lib/scenarios-api'
 import { fetchTarget } from '@/lib/targets-api'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
@@ -72,6 +83,7 @@ import { InputsEditor, StepEditor } from './step-editor'
 import { TrialDialog } from './trial-dialog'
 import { TrialPanel } from './trial-panel'
 import { SCENARIO_STATUS_LABELS, stepTypeLabel } from './labels'
+import { RecordingImportPanel } from './recording-import-panel'
 import { useStudioDraft } from './use-studio-draft'
 import {
   documentContextKeys,
@@ -90,6 +102,7 @@ export function ScenarioDetailPage() {
   })
   const search = useSearch({ strict: false })
   const runId = entityIdSchema.optional().safeParse((search as { runId?: unknown }).runId).data
+  const importDraftId = entityIdSchema.optional().safeParse((search as { import?: unknown }).import).data
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const user = useAuthStore((state) => state.auth.user)
@@ -133,7 +146,24 @@ export function ScenarioDetailPage() {
   const [leaveOpen, setLeaveOpen] = useState(false)
   const [trialOpen, setTrialOpen] = useState(false)
   const [runOpen, setRunOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [startingRecord, setStartingRecord] = useState(false)
+  const importedQueryKey = ['scenarios', scenarioId, 'imported-step-ids'] as const
+  const importedStepsQuery = useQuery({
+    queryKey: importedQueryKey,
+    queryFn: async () => queryClient.getQueryData<string[]>(importedQueryKey) ?? [],
+    staleTime: Infinity,
+    gcTime: 30 * 60 * 1000,
+  })
+  const importedStepIds = importedStepsQuery.data ?? []
   const [mobilePane, setMobilePane] = useState<'steps' | 'properties'>('steps')
+  const canRecord = canWrite && canReadTarget
+  const recordingQuery = useQuery({
+    queryKey: ['scenarios', scenarioId, 'recording-imports'],
+    queryFn: () => fetchRecordingImports(scenarioId),
+    enabled: Boolean(scenario && canReadTarget),
+  })
+  const openBinding = recordingQuery.data?.bindings.find((item) => item.status !== 'closed')
 
   const document = draft.candidate
   const disabled = !canWrite || saving || publishing
@@ -205,6 +235,67 @@ export function ScenarioDetailPage() {
   function markConflict() {
     draft.setConflict(true)
     toast.error('他人已更新这份草稿，请重新加载')
+  }
+
+  const currentInsertAnchor: RecordingInsertAnchor = draft.selected?.id
+    ? { kind: 'after', stepId: draft.selected.id }
+    : { kind: 'start' }
+
+  function setImportSearch(next: string | undefined) {
+    void navigate({
+      to: '/scenarios/$scenarioId',
+      params: { scenarioId },
+      search: { runId, import: next },
+      replace: true,
+    })
+  }
+
+  useEffect(() => {
+    if (!importDraftId) {
+      setImportOpen(false)
+      return
+    }
+    if (draft.dirty || draft.hasFieldDrafts) {
+      toast.error('先保存草稿再打开录制回填')
+      return
+    }
+    setImportOpen(true)
+  }, [draft.dirty, draft.hasFieldDrafts, importDraftId])
+
+  async function startRecording() {
+    if (!document || !draft.baseline || startingRecord) return
+    if (draft.dirty || draft.hasFieldDrafts) {
+      toast.error('先保存草稿')
+      return
+    }
+    setStartingRecord(true)
+    try {
+      const created = await createRecordingBinding(scenarioId, {
+        revision: draft.baseline.revision,
+        insertAnchor: currentInsertAnchor,
+      })
+      await notifyExtensionStart(created)
+      await queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId, 'recording-imports'] })
+      toast.message('点击浏览器工具栏中的识途录制器图标，继续同一绑定')
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.payload.code === 'SCENARIO_DRAFT_CONFLICT') {
+        markConflict()
+      } else {
+        toast.error(error instanceof ApiRequestError ? error.message : '无法开始录制')
+      }
+    } finally {
+      setStartingRecord(false)
+    }
+  }
+
+  async function cancelRecording() {
+    if (!openBinding) return
+    try {
+      await closeRecordingBinding(openBinding.id)
+      await queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId, 'recording-imports'] })
+    } catch (error) {
+      toast.error(error instanceof ApiRequestError ? error.message : '无法关闭录制绑定')
+    }
   }
 
   async function save() {
@@ -377,6 +468,20 @@ export function ScenarioDetailPage() {
                     <DropdownMenuItem disabled={!canStartFormalRun} onClick={() => setRunOpen(true)}>
                       运行已发布版本
                     </DropdownMenuItem>
+                    {canRecord ? (
+                      <DropdownMenuItem
+                        disabled={disabled}
+                        onClick={() => {
+                          if (draft.dirty || draft.hasFieldDrafts) {
+                            toast.error('先保存草稿')
+                            return
+                          }
+                          setImportOpen(true)
+                        }}
+                      >
+                        导入已有录制
+                      </DropdownMenuItem>
+                    ) : null}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -408,6 +513,46 @@ export function ScenarioDetailPage() {
             ) : null}
             {!canTrial && !draft.dirty && compile && !compile.ok ? (
               <p className='text-label text-status-warning-foreground'>试跑不可用：{trialDisabledReason}。</p>
+            ) : null}
+            {openBinding ? (
+              <Alert>
+                <AlertDescription className='flex flex-wrap items-center justify-between gap-3'>
+                  <span>
+                    {openBinding.status === 'issued'
+                      ? `已发起录制「${openBinding.targetName}」。点击浏览器工具栏中的识途录制器图标继续，未挂上页面之前不算录制中。`
+                      : openBinding.recordingDraftId
+                        ? `场景「${openBinding.scenarioName}」的录制已上传，待预览回填。`
+                        : `插件已领取「${openBinding.targetName}」。完成操作后上传，再回 Studio 预览。`}
+                  </span>
+                  <span className='flex flex-wrap gap-2'>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      onClick={() => void recordingQuery.refetch()}
+                    >
+                      刷新批次
+                    </Button>
+                    {openBinding.recordingDraftId || (recordingQuery.data?.drafts[0] && canRecord) ? (
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        onClick={() =>
+                          setImportSearch(
+                            openBinding.recordingDraftId ?? recordingQuery.data?.drafts[0]?.id,
+                          )
+                        }
+                      >
+                        预览回填
+                      </Button>
+                    ) : null}
+                    {canWrite ? (
+                      <Button size='sm' variant='ghost' onClick={() => void cancelRecording()}>
+                        关闭绑定
+                      </Button>
+                    ) : null}
+                  </span>
+                </AlertDescription>
+              </Alert>
             ) : null}
             {scenario.status === 'disabled' || target?.status === 'disabled' ? (
               <Alert variant='warning'>
@@ -483,6 +628,19 @@ export function ScenarioDetailPage() {
                     执行步骤
                   </h2>
                   {canWrite ? (
+                    <div className='flex flex-wrap items-center gap-2'>
+                    {canRecord ? (
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={disabled || startingRecord}
+                        loading={startingRecord}
+                        onClick={() => void startRecording()}
+                      >
+                        <Video />
+                        录制步骤
+                      </Button>
+                    ) : null}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
@@ -537,6 +695,7 @@ export function ScenarioDetailPage() {
                         </DropdownMenuSub>
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    </div>
                   ) : null}
                 </div>
                 <ol className='max-h-[65vh] space-y-2 overflow-y-auto p-4'>
@@ -544,6 +703,7 @@ export function ScenarioDetailPage() {
                     const stepDiagnostics = (compile?.diagnostics ?? []).filter((item) => item.stepId === step.id)
                     const hasError = stepDiagnostics.some((item) => item.severity === 'error')
                     const hasWarning = stepDiagnostics.some((item) => item.severity === 'warning')
+                    const imported = importedStepIds.includes(step.id)
                     return (
                       <li key={step.id} className='flex min-w-0 items-center gap-2'>
                         <span className='w-5 shrink-0 text-center font-mono text-label text-muted-foreground'>
@@ -552,6 +712,7 @@ export function ScenarioDetailPage() {
                         <button
                           type='button'
                           aria-pressed={draft.selected?.id === step.id}
+                          data-imported={imported || undefined}
                           onClick={() => {
                             draft.setSelectedId(step.id)
                             setMobilePane('properties')
@@ -563,11 +724,13 @@ export function ScenarioDetailPage() {
                               : 'border-border-default bg-card hover:bg-action-hover',
                             hasError && 'border-status-error-foreground',
                             !hasError && hasWarning && 'border-status-warning-foreground',
+                            imported && !hasError && 'border-primary',
                           )}
                         >
                           <span className='min-w-0 flex-1'>
                             <span className='block text-body font-medium break-words'>{step.name}</span>
                             <span className='mt-1 flex flex-wrap items-center gap-2 text-label text-muted-foreground'>
+                              {imported ? <StatusBadge tone='info'>刚导入</StatusBadge> : null}
                               {isAiStepType(step.type) ? (
                                 <StatusBadge tone='ai'>{stepTypeLabel(step.type)}</StatusBadge>
                               ) : (
@@ -766,6 +929,33 @@ export function ScenarioDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {scenario ? (
+        <RecordingImportPanel
+          open={importOpen}
+          scenarioId={scenarioId}
+          recordingDraftId={importDraftId ?? null}
+          revision={draft.baseline?.revision ?? scenario.draft?.revision ?? 1}
+          insertAnchor={currentInsertAnchor}
+          stepCount={document?.steps.length ?? 0}
+          inputs={document?.inputs ?? []}
+          canApply={canWrite}
+          onOpenChange={(open) => {
+            setImportOpen(open)
+            if (!open) setImportSearch(undefined)
+          }}
+          onSelectDraft={setImportSearch}
+          onConflict={markConflict}
+          onApplied={(next, insertedIds) => {
+            queryClient.setQueryData(['scenarios', scenarioId], next)
+            if (next.draft) {
+              draft.acceptServer({ revision: next.draft.revision, document: next.draft.document })
+            }
+            if (insertedIds[0]) draft.setSelectedId(insertedIds[0])
+            queryClient.setQueryData(importedQueryKey, insertedIds)
+            void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId, 'recording-imports'] })
+          }}
+        />
+      ) : null}
       {scenario && trialOpen ? (
         <TrialDialog
           open

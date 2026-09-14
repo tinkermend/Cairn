@@ -4,7 +4,7 @@
 
 ## 1. 本轮交付边界
 
-当前按脚手架阶段制定共用设计规范，不开发具体业务模块，也不改变业务流程。Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用 Input / PasswordInput 是首个正式接入样本；其余组件按实际开发逐步改造。
+Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用 Input / PasswordInput 是首批正式接入样本，Target / Scenario / Run 已有业务实现。2026-09-13 的[交互原型](../../front_design/2026-09-13-foundation-lab/index.html)已获用户认可，Target / Scenario 列表与详情已完成首批 React 迁移，验收记录见[迁移样板](../../front_design/2026-09-13-react-migration/README.md)，范围见[正式接入方案](../../spec/2026-09-13-ui-foundation-review.md#正式接入方案)。本文记录工程接入约定，日常开发与纠偏执行 [AI 前端开发工作流](ai-workflow.md)。
 
 视觉样本是评审材料，不是另一套要维护的生产组件库。正式界面继续使用现有 React 19、Vite、Tailwind、shadcn/ui、Radix，并从共用 Token 与基础组件继承视觉状态。
 
@@ -18,11 +18,15 @@
 | `packages/web/src/styles/index.css` | 基础样式、字体、全局行为 | 统一字体与文字颜色，补 reduced-motion 与焦点基线 |
 | `packages/web/src/components/ui/` | 基础控件与 Radix 组合 | 优先改变量和 variant，保留公开 API |
 | `packages/web/src/components/layout/` | Header、Sidebar、导航组 | 应用尺寸、选中、收起与中文排版规范 |
-| `packages/web/src/components/data-table/` | 工具栏、分页、选择与列设置 | 保留 TanStack Table 状态与查询约定，统一外观 |
+| `packages/web/src/components/data-table/` | 工具栏、页码分页、游标分页、选择与列设置 | 保留 TanStack Table 状态与查询约定。判定表格会持续增长时必须服务端分页：有总数用 `DataTablePagination`，只有游标用 `CursorPagination`；不要先拉全量再前端切页，也不要把「加载更多」当默认 |
 | `packages/web/src/components/confirm-dialog.tsx` | 已有确认入口 | 统一标题、后果、焦点和按钮优先级 |
 | `packages/web/src/components/password-input.tsx` | 密码显隐 | 复用可访问名称与原有行为 |
 | `packages/web/src/features/auth/` | 认证布局与登录表单 | 作为品牌区、低密度背景和 48px 高聚焦表单的接入参考 |
-| `packages/web/src/components/date-picker.tsx` | 日期选择 | 按当前 Date Picker 组合调整样式和中文展示 |
+| `packages/web/src/components/collection-summary.tsx` | 两类管理页共用的集合摘要 | 只统计已加载的集合；不伪造健康、趋势或运行成功率 |
+| `packages/web/src/features/targets/` | 管理页真实样板 | 表格、筛选、对象概览、详情与账号管理 |
+| `packages/web/src/features/scenarios/` | 顺序工作区真实样板 | 场景列表、目标绑定、步骤属性与原有运行入口；不代表完整编辑器 |
+| `packages/web/src/components/date-picker.tsx` | 单日选择 | 仅用于只要一天的表单字段 |
+| `packages/web/src/components/date-range-picker.tsx` | 日期范围（Range Picker） | 筛选栏的起止日期一律用这个；中文、`YYYY-MM-DD`、双月历 |
 | `packages/web/src/components/command-menu.tsx` | 全局搜索 / 命令入口 | 复用命令菜单，不另造搜索弹窗框架 |
 
 ### 组件实现覆盖
@@ -83,7 +87,7 @@
 阴影数值只在 tokens.css 声明一次（`--card-shadow`、`--control-shadow`、`--action-shadow` …），
 `@theme` 里的 `--shadow-*` 一律 `var()` 指过去，不在两个文件里各写一份数值。
 
-现有 `--radius-sm/md/lg/xl` 与每种控件的实际类名一起检查。按钮与输入统一显式映射到 8px，不能只改变 `--radius` 后让按钮变成 10px。统计卡使用专属 14px Token。
+现有 `--radius-sm/md/lg/xl` 与每种控件的实际类名一起检查。按钮与输入的 `rounded-md` 映射到 9px，Card 的 `rounded-lg` 映射到 14px，Dialog 的 `rounded-xl` 映射到 18px。统计卡沿用 Card 圆角。
 
 现有主按钮已有 32/36/40px 高度，优先保留。新增 Loading 时在相同位置替换图标与文案，不改变尺寸。不应因设计更新重做 Button、Dialog、Tabs 的行为层。
 
@@ -135,12 +139,16 @@
 
 | 断言 | 范围 | 为什么 |
 | --- | --- | --- |
-| 不得出现硬编码颜色 | 全部 `.tsx` | 页面自选色板后，改 tokens.css 带不动页面 |
+| 颜色使用语义 Token | 全部 `.tsx` 的可识别样式字符串与属性 | 检查 Tailwind 常用色板、任意色值和内联颜色函数，跳过注释与锚点等非样式内容 |
 | 不得出现 `transition-all` | 全部 `.tsx` | 什么都动等于不解释任何东西，见[设计语言 §10](design-language.md#10-动效与无障碍) |
-| 字号必须在职务刻度上 | `features/` + `components/layout/` | 页面文字必须有职务；`components/ui/` 是控件字号，不在此列 |
+| 字号必须在职务刻度上 | `features/` + `components/layout/` | 检查默认字号类、任意数值字号与直接数值 fontSize；`components/ui/` 是控件字号，不在此列 |
 | `surface-control` 必须与 `surface-card` 同色 | `tokens.css` | 输入不得再铺浅灰或冷白底；叠在白卡片上会发脏 |
 
 视觉样本的 `check.mjs` 还验证内部文档链接、核心色对、1366/1440/1920px 布局、原生表单校验、确认取消与焦点返回。它是可运行的样本检查，不是正式应用的无障碍认证，也不替代应用现有测试。
+
+2026-09-13 定向复查后，源码检查使用项目已有 TypeScript 解析器，并加入 14 个合法 / 违规回归样本，验证漏报与误报。认证配图标题的 28 / 34px 字号以精确文件、精确类名保留例外；表单和按钮使用语义字号，不豁免整个认证模块。共用 `cn` 将六档语义字号注册到 tailwind-merge 的 font-size 组，避免字号被当成文字颜色、意外移除按钮前景色；`utils.test.ts` 验证颜色保留和响应式字号覆盖。
+
+检查不做完整数据流推断，也不穷举动态拼接、外部 CSS 或所有可写的颜色形式。通过这些检查只能说明已覆盖的规则满足，实际布局和真实组件状态仍需按验收 skill 检查。
 
 正式样式接入时运行相关组件已有测试与 typecheck/build。仅当新增行为、修复失败或存在新的风险时增加测试；不为纯色值或静态文档逐项建测试套件。
 

@@ -1,0 +1,72 @@
+# 本机 PostgreSQL + MinIO。凭据与远端 shsnc-ah3 对齐，只改监听地址。
+# 用法：在仓库根执行  pnpm infra:up
+name: cairn
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: cairn-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CAIRN_DB_USER}
+      POSTGRES_PASSWORD: ${CAIRN_DB_PASSWORD}
+      POSTGRES_DB: ${CAIRN_DB_NAME}
+    ports:
+      - "127.0.0.1:${CAIRN_DB_PORT}:5432"
+    volumes:
+      - ../.data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CAIRN_DB_USER} -d ${CAIRN_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: cairn-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${CAIRN_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${CAIRN_S3_SECRET_KEY}
+      MINIO_REGION_NAME: ${CAIRN_S3_REGION}
+    ports:
+      - "127.0.0.1:${CAIRN_S3_API_PORT}:9000"
+      - "127.0.0.1:${CAIRN_S3_CONSOLE_PORT}:9001"
+    volumes:
+      - ../.data/minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: cairn-minio-init
+    depends_on:
+      - minio
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${CAIRN_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${CAIRN_S3_SECRET_KEY}
+      CAIRN_S3_BUCKET: ${CAIRN_S3_BUCKET}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        i=0
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          i=$$((i + 1))
+          if [ "$$i" -gt 30 ]; then
+            echo "MinIO 在 60s 内没有就绪" >&2
+            exit 1
+          fi
+          sleep 2
+        done
+        mc mb --ignore-existing "local/$$CAIRN_S3_BUCKET"
+        mc anonymous set none "local/$$CAIRN_S3_BUCKET"
+        echo "bucket ready: $$CAIRN_S3_BUCKET"

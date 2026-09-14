@@ -1,3 +1,5 @@
+import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { schemaFor, databaseNow, afterSeconds } from '../native.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
 import type { Step } from '@cairn/shared'
@@ -18,12 +20,18 @@ import {
   requestRunCancel,
   startAttempt,
   updateScenarioMeta,
-  type DbHandle,
-} from '../index.js'
+  type NativeHandle as DbHandle,
+} from '../test-entry.js'
 import { newId } from '../id.js'
-import { consoleAccounts } from '../schema/console.js'
-import { runs, stepRuns } from '../schema/execution.js'
-import { targetAccounts, targets } from '../schema/targets.js'
+import { consoleAccounts as pg_consoleAccounts } from '../schema/console.js'
+let consoleAccounts = pg_consoleAccounts
+import { runs as pg_runs, stepRuns as pg_stepRuns } from '../schema/execution.js'
+let runs = pg_runs
+let stepRuns = pg_stepRuns
+let attempts = schemaFor({}).attempts
+import { targetAccounts as pg_targetAccounts, targets as pg_targets } from '../schema/targets.js'
+let targetAccounts = pg_targetAccounts
+let targets = pg_targets
 import { forceGrantForRun, seedWorker } from './lease-harness.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_exec`
@@ -38,13 +46,14 @@ const echoStep: Step = {
   input: { value: 'hello' },
 }
 
-describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
+describe.each(DRIVERS)('%s 执行账本 Repository（集成）', { timeout: 30_000 }, (driver) => {
   let handle: DbHandle
   let actorId: string
   let targetId: string
 
   beforeAll(async () => {
-    handle = await openIsolatedDb(SCHEMA)
+    handle = await openContractDb(driver, SCHEMA)
+    ;({ consoleAccounts, runs, stepRuns, attempts, targetAccounts, targets } = schemaFor(handle.db))
     actorId = newId()
     targetId = newId()
     await handle.db.insert(consoleAccounts).values({
@@ -79,6 +88,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
     })
     expect(first.created).toBe(true)
     expect(first.detail.status).toBe('QUEUED')
+    expect(first.detail.snapshot.allowedOrigins).toEqual(['https://example.com'])
     expect(computeSnapshotDigest(first.detail.snapshot)).toBe(first.detail.snapshot.digest)
     const [digestRow] = await handle.db
       .select({ snapshotDigest: runs.snapshotDigest })
@@ -109,6 +119,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
       name: '参数化',
+      inputs: [{ key: 'orderId', label: '单号' }],
       steps: [
         {
           id: '00000000-0000-4000-8000-000000000062',
@@ -199,21 +210,15 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       actor: { id: actorId },
     })
     await expect(
-      handle.pool.query(`UPDATE runs SET snapshot = snapshot || '{"x":1}'::jsonb WHERE id = $1`, [
-        created.detail.id,
-      ]),
-    ).rejects.toThrow(/immutable/)
+      handle.db.update(runs).set({ snapshot: { ...created.detail.snapshot, x: 1 } as never }).where(eq(runs.id, created.detail.id)),
+    ).rejects.toSatisfy((error: Error) => String(error.cause ?? error).includes('immutable'))
 
     const stepId = created.detail.stepRuns[0]!.id
     const attemptId = newId()
-    await handle.pool.query(
-      `INSERT INTO attempts (id, step_run_id, attempt_no, status, started_at, finished_at)
-       VALUES ($1, $2, 1, 'SUCCEEDED', now(), now())`,
-      [attemptId, stepId],
-    )
+    await handle.db.insert(attempts).values({ id: attemptId, stepRunId: stepId, attemptNo: 1, status: 'SUCCEEDED', startedAt: new Date(), finishedAt: new Date() })
     await expect(
-      handle.pool.query(`UPDATE attempts SET status = 'FAILED' WHERE id = $1`, [attemptId]),
-    ).rejects.toThrow(/immutable/)
+      handle.db.update(attempts).set({ status: 'FAILED' }).where(eq(attempts.id, attemptId)),
+    ).rejects.toSatisfy((error: Error) => String(error.cause ?? error).includes('immutable'))
   })
 
   it('先失败后成功保留两次 Attempt，StepRun 为 SUCCEEDED', async () => {
@@ -496,7 +501,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       await handle.db.delete(targetAccounts).where(eq(targetAccounts.id, accountId))
       expect.unreachable()
     } catch (error) {
-      expect(mapPgRestriction(error)).toMatchObject({ code: 'TARGET_ACCOUNT_HAS_RUNS' })
+      expect(mapPgRestriction(error, 'target_account')).toMatchObject({ code: 'TARGET_ACCOUNT_HAS_RUNS' })
     }
   })
 
@@ -604,7 +609,7 @@ describe('执行账本 Repository（集成）', { timeout: 30_000 }, () => {
       scenarioId: scenario.id,
       actor: { id: actorId },
     })
-    await handle.pool.query(`UPDATE runs SET cancel_requested_at = now() WHERE status = 'QUEUED'`)
+    await handle.db.update(runs).set({ cancelRequestedAt: databaseNow(handle.db) }).where(eq(runs.status, 'QUEUED'))
     const worker = await seedWorker(handle)
     expect(await claimRun(handle, { workerId: worker.workerId, instanceId: worker.instanceId, leaseTtlSeconds: 30 })).toBeNull()
   })

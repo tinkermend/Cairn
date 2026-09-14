@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { DbHandle } from '@cairn/db'
+import type { DbHandle } from '@cairn/db/testing'
 import { BrowserSessionManager } from './session-manager'
 
 describe('浏览器命令入口 × SessionGuard', () => {

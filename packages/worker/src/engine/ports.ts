@@ -1,9 +1,13 @@
 import type {
+  AiCommand,
+  AiExecutionConfig,
+  AiResult,
   BrowserCommand,
   BrowserCommandEvidence,
   BrowserCommandResult,
   RunGrant,
   RunSnapshot,
+  ScreenshotPointer,
   SessionErrorCode,
   SessionGrant,
 } from '@cairn/shared'
@@ -23,6 +27,7 @@ export type SessionAcquireOutcome =
 export type BrowserPort = {
   acquire(run: RunSnapshot, grant: RunGrant, signal?: AbortSignal): Promise<SessionAcquireOutcome>
   release(grant: SessionGrant, reason: string): Promise<void>
+  invalidate?(grant: SessionGrant, reason: string): Promise<void>
   execute(
     grant: SessionGrant,
     command: BrowserCommand,
@@ -30,5 +35,21 @@ export type BrowserPort = {
     evidence?: BrowserCommandEvidence,
   ): Promise<BrowserCommandResult>
 }
+
+export type AiPort = {
+  execute(
+    grant: SessionGrant,
+    command: AiCommand,
+    signal: AbortSignal,
+    evidence: BrowserCommandEvidence & {
+      grant: RunGrant
+      maxCalls: number
+      model?: string
+      config: AiExecutionConfig
+    },
+  ): Promise<AiResult & { screenshot?: ScreenshotPointer; trace?: ScreenshotPointer }>
+}
+
+export const AI_PORT = Symbol('AI_PORT')
 
 export const BROWSER_PORT = Symbol('BROWSER_PORT')

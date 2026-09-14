@@ -26,7 +26,7 @@ import {
   targetAccounts,
   targets,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import {
   DEFAULT_EXECUTOR_VERSIONS,
   PLACEMENT_YIELD_CODES,
@@ -403,6 +403,37 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     const after = await getRun(handle.db, created.detail.id)
     expect(after.status).toBe('NEEDS_REVIEW')
     expect(after.stepRuns[0]?.attempts[0]?.status).toBe('FAILED')
+  })
+
+  it('popup 交接失败：点击已发出，SIDE_EFFECT 进 NEEDS_REVIEW 且不重试', async () => {
+    const created = await queue([
+      {
+        ...clickStep(newId(), 'SIDE_EFFECT'),
+        input: { target: clickTarget, pageAfter: 'popup' },
+      },
+    ])
+    let executes = 0
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => {
+        executes += 1
+        return {
+          ok: false,
+          error: {
+            code: 'PAGE_HANDOFF_NO_POPUP',
+            category: 'UNKNOWN',
+            retryable: false,
+            safeMessage: '点击后没有出现可交接的弹出窗口',
+          },
+        }
+      },
+    })
+    const engine = new ExecutionEngine(handle, port)
+    const grant = await claimThis(created.detail.id)
+    await engine.execute(created.detail.id, { grant })
+    const after = await getRun(handle.db, created.detail.id)
+    expect(after.status).toBe('NEEDS_REVIEW')
+    expect(executes).toBe(1)
   })
 
   it('extract 写入 context 供后续 from 使用；assert 失败带 expected/actual', async () => {

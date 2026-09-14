@@ -1,9 +1,15 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res } from '@nestjs/common'
-import type { Response } from 'express'
+import { Body, Controller, Get, HttpCode, HttpStatus, NotFoundException, Param, Post, Req, Res } from '@nestjs/common'
+import type { Request, Response } from 'express'
 import {
+  acquireAuthControlBodySchema,
+  authControlInputBodySchema,
+  authControlTokenBodySchema,
   createRunBodySchema,
   resumeAuthBodySchema,
   reviewRunBodySchema,
+  type AcquireAuthControlBody,
+  type AuthControlInputBody,
+  type AuthControlTokenBody,
   type CreateRunBody,
   type ResumeAuthBody,
   type ReviewRunBody,
@@ -12,11 +18,17 @@ import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
 import { CurrentAccount } from '../rbac/current-account.decorator'
 import { RequirePermissions } from '../rbac/require-permission.decorator'
+import { BrowserService } from './browser.service'
+import { ObserveService } from './observe.service'
 import { RunsService } from './runs.service'
 
 @Controller('runs')
 export class RunsController {
-  constructor(private readonly runs: RunsService) {}
+  constructor(
+    private readonly runs: RunsService,
+    private readonly observe: ObserveService,
+    private readonly browser: BrowserService,
+  ) {}
 
   @Get()
   @RequirePermissions('run:read')
@@ -34,6 +46,35 @@ export class RunsController {
     const { detail, created } = await this.runs.create(body, actor)
     res.status(created ? HttpStatus.CREATED : HttpStatus.OK)
     return detail
+  }
+
+  @Get(':runId/observation')
+  @RequirePermissions('run:read')
+  async observation(@Param('runId') runId: string) {
+    const result = await this.observe.observation(runId)
+    if (!result) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
+    return result
+  }
+
+  @Get(':runId/events')
+  @RequirePermissions('run:read')
+  async events(
+    @Param('runId') runId: string,
+    @CurrentAccount() actor: RequestAccount,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const result = await this.observe.observation(runId)
+    if (!result) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
+    const lastEventId = headerValue(req.headers['last-event-id'])
+    await this.observe.stream({
+      runId,
+      lastEventId,
+      authorization: headerValue(req.headers.authorization),
+      account: actor,
+      response: res,
+      signal: abortFrom(req),
+    })
   }
 
   @Get(':runId')
@@ -81,14 +122,99 @@ export class RunsController {
     return this.runs.review(runId, body, actor)
   }
 
+  @Get(':runId/browser')
+  @RequirePermissions('run:read', 'session:view')
+  browserMeta(@Param('runId') runId: string, @CurrentAccount() actor: RequestAccount, @Req() req: Request) {
+    return this.browser.meta(runId, actor, queryValue(req.query.pageId))
+  }
+
+  @Get(':runId/browser/frames')
+  @RequirePermissions('run:read', 'session:view')
+  async browserFrames(
+    @Param('runId') runId: string,
+    @CurrentAccount() actor: RequestAccount,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    await this.browser.streamFrames({
+      runId,
+      pageId: queryValue(req.query.pageId),
+      actor,
+      authorization: headerValue(req.headers.authorization),
+      response: res,
+      signal: abortFrom(req),
+    })
+  }
+
+  @Post(':runId/browser/auth-control/acquire')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control', 'run:execute')
+  acquireAuthControl(
+    @Param('runId') runId: string,
+    @Body(new ZodValidationPipe(acquireAuthControlBodySchema)) body: AcquireAuthControlBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.browser.acquire(runId, body, actor)
+  }
+
+  @Post(':runId/browser/auth-control/heartbeat')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control', 'run:execute')
+  heartbeatAuthControl(
+    @Param('runId') runId: string,
+    @Body(new ZodValidationPipe(authControlTokenBodySchema)) body: AuthControlTokenBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.browser.heartbeat(runId, body, actor)
+  }
+
+  @Post(':runId/browser/auth-control/input')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control', 'run:execute')
+  inputAuthControl(
+    @Param('runId') runId: string,
+    @Body(new ZodValidationPipe(authControlInputBodySchema)) body: AuthControlInputBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.browser.input(runId, body, actor)
+  }
+
+  @Post(':runId/browser/auth-control/release')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control', 'run:execute')
+  releaseAuthControl(
+    @Param('runId') runId: string,
+    @Body(new ZodValidationPipe(authControlTokenBodySchema)) body: AuthControlTokenBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.browser.release(runId, body, actor)
+  }
+
   @Post(':runId/resume-auth')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('run:execute')
+  @RequirePermissions('session:control', 'run:execute')
   resumeAuth(
     @Param('runId') runId: string,
     @Body(new ZodValidationPipe(resumeAuthBodySchema)) body: ResumeAuthBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.runs.resumeAuth(runId, body, actor)
+    return this.browser.resumeAuth(runId, body, actor)
   }
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0]
+  return value
+}
+
+function queryValue(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value
+  if (Array.isArray(value) && typeof value[0] === 'string') return value[0]
+  return undefined
+}
+
+function abortFrom(req: Request): AbortSignal {
+  const controller = new AbortController()
+  req.on('close', () => controller.abort())
+  return controller.signal
 }

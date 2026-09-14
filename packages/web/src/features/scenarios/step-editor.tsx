@@ -432,11 +432,35 @@ function StepFields({
   }
   if (step.type === 'click') {
     return (
-      <TargetFields
-        target={step.input.target}
-        disabled={disabled}
-        onChange={(target) => onChange({ ...step, input: { target } })}
-      />
+      <div className='space-y-3'>
+        <TargetFields
+          target={step.input.target}
+          disabled={disabled}
+          onChange={(target) => onChange({ ...step, input: { ...step.input, target } })}
+        />
+        <div className='space-y-2'>
+          <Label>点击后页面</Label>
+          <Select
+            value={step.input.pageAfter ?? 'unset'}
+            disabled={disabled}
+            onValueChange={(value) => {
+              const pageAfter = value === 'same' || value === 'popup' ? value : undefined
+              const next = { ...step.input, pageAfter }
+              if (!pageAfter) delete next.pageAfter
+              onChange({ ...step, input: next })
+            }}
+          >
+            <SelectTrigger className='w-full' aria-label='点击后页面'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='unset'>未指定（保持当前页）</SelectItem>
+              <SelectItem value='same'>保持当前页</SelectItem>
+              <SelectItem value='popup'>切换到弹出窗口</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
     )
   }
   if (step.type === 'extract') {

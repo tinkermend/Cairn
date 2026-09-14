@@ -20,7 +20,7 @@ import {
   storedObjects,
   targets,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import { OBJECT_MISSING_REASONS, type Step } from '@cairn/shared'
 import { LocalObjectStore } from '@cairn/storage'
 import { ObjectService } from './object.service.js'

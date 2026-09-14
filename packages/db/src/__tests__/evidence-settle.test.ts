@@ -1,3 +1,5 @@
+import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { schemaFor, databaseNow, afterSeconds } from '../native.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
 import {
@@ -22,13 +24,18 @@ import {
   settleFinishedPendingRuns,
   startAttempt,
   reviewRun,
-  type DbHandle,
-} from '../index.js'
+  type NativeHandle as DbHandle,
+} from '../test-entry.js'
 import { newId } from '../id.js'
-import { consoleAccounts } from '../schema/console.js'
-import { runs, stepRuns } from '../schema/execution.js'
-import { storedObjects } from '../schema/objects.js'
-import { targets } from '../schema/targets.js'
+import { consoleAccounts as pg_consoleAccounts } from '../schema/console.js'
+let consoleAccounts = pg_consoleAccounts
+import { runs as pg_runs, stepRuns as pg_stepRuns } from '../schema/execution.js'
+let runs = pg_runs
+let stepRuns = pg_stepRuns
+import { storedObjects as pg_storedObjects } from '../schema/objects.js'
+let storedObjects = pg_storedObjects
+import { targets as pg_targets } from '../schema/targets.js'
+let targets = pg_targets
 import { forceGrantForRun, seedWorker } from './lease-harness.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_evs`
@@ -42,14 +49,15 @@ const echoStep: Step = {
   input: { value: 'hello-secret' },
 }
 
-describe('证据轴与收尾（集成）', { timeout: 30_000 }, () => {
+describe.each(DRIVERS)('%s 证据轴与收尾（集成）', { timeout: 30_000 }, (driver) => {
   let handle: DbHandle
   let actorId: string
   let targetId: string
   let scenarioId: string
 
   beforeAll(async () => {
-    handle = await openIsolatedDb(SCHEMA)
+    handle = await openContractDb(driver, SCHEMA)
+    ;({ consoleAccounts, runs, stepRuns, storedObjects, targets } = schemaFor(handle.db))
     actorId = newId()
     targetId = newId()
     await handle.db.insert(consoleAccounts).values({

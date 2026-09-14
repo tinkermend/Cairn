@@ -2,6 +2,7 @@ export {
   WORKER_ID_CONFLICT,
   registerWorker,
   heartbeatWorker,
+  getWorkerById,
   markWorkerDraining,
   markWorkerStopped,
   markLostWorkers,

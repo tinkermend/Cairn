@@ -1,9 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, RefreshCw } from 'lucide-react'
 import { hasPermission } from '@cairn/shared'
-import { fetchRun, fetchRunEvidence } from '@/lib/runs-api'
 import { useAuthStore } from '@/stores/auth-store'
+import { connectionLabel, connectionTone, useRunObservation } from '@/features/runs/use-run-observation'
 import { AttemptEvidenceList } from '@/features/runs/evidence-viewer'
 import { AiAttemptSummary } from '@/features/runs/ai-evidence'
 import {
@@ -19,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { StatusBadge } from '@/components/status-badge'
 import { stepTypeLabel } from './labels'
+import { BrowserView } from '@/features/runs/browser-view'
 
 export function TrialPanel({
   runId,
@@ -33,16 +33,7 @@ export function TrialPanel({
 }) {
   const user = useAuthStore((state) => state.auth.user)
   const canRead = Boolean(user && hasPermission(user.permissions, 'run:read'))
-  const runQuery = useQuery({
-    queryKey: ['runs', runId],
-    queryFn: () => fetchRun(runId),
-    enabled: canRead,
-  })
-  const evidenceQuery = useQuery({
-    queryKey: ['runs', runId, 'evidence'],
-    queryFn: () => fetchRunEvidence(runId),
-    enabled: canRead && runQuery.isSuccess,
-  })
+  const { run, evidence, connection, query: runQuery, refresh, eventSeq } = useRunObservation(runId, canRead)
 
   if (!canRead) {
     return (
@@ -52,14 +43,13 @@ export function TrialPanel({
     )
   }
 
-  const run = runQuery.data
   const mismatch = run && run.scenarioId !== scenarioId
   const historic = run?.snapshot.steps.find((step) => step.id === selectedDraftStepId) ?? run?.snapshot.steps[0]
   const stepRun = historic ? run?.stepRuns.find((item) => item.stepId === historic.id) : undefined
   const latestAttempt = stepRun?.attempts[stepRun.attempts.length - 1]
-  const attemptEvidence = (evidenceQuery.data?.items ?? []).filter((item) => item.attemptId === latestAttempt?.id)
+  const attemptEvidence = (evidence?.items ?? []).filter((item) => item.attemptId === latestAttempt?.id)
   const screenshot = attemptEvidence.find((item) => item.type === 'screenshot')
-  const runLevel = (evidenceQuery.data?.items ?? []).filter((item) => !item.attemptId)
+  const runLevel = (evidence?.items ?? []).filter((item) => !item.attemptId)
   const draftMissing = Boolean(selectedDraftStepId && run && !run.snapshot.steps.some((step) => step.id === selectedDraftStepId))
   const fetchedAt = runQuery.dataUpdatedAt ? new Date(runQuery.dataUpdatedAt).toLocaleTimeString() : null
 
@@ -72,12 +62,14 @@ export function TrialPanel({
         </CollapsibleTrigger>
         <div className='flex flex-wrap items-center gap-2'>
           {fetchedAt ? <p className='text-label text-muted-foreground'>最近获取 {fetchedAt}</p> : null}
+          {canRead ? (
+            <StatusBadge tone={connectionTone(connection)}>{connectionLabel(connection)}</StatusBadge>
+          ) : null}
           <Button
             size='sm'
             variant='outline'
             onClick={() => {
-              void runQuery.refetch()
-              void evidenceQuery.refetch()
+              void refresh()
             }}
           >
             <RefreshCw />
@@ -108,6 +100,12 @@ export function TrialPanel({
                 {run.scenarioVersionKind === 'trial' ? '试跑版本' : '正式版本'}
               </StatusBadge>
             </div>
+            <BrowserView
+              runId={run.id}
+              runStatus={run.status}
+              eventSeq={eventSeq}
+              onRunChanged={refresh}
+            />
             <p className='text-small text-muted-foreground'>
               冻结版本 {run.scenarioVersionId}
               {run.startedAt ? ` · 开始 ${new Date(run.startedAt).toLocaleString()}` : ''}

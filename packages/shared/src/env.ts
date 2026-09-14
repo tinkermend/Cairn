@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import { logLevelSchema } from './logging.js'
 import { isAbsoluteFsPath, objectStoreDriverSchema } from './object-store.js'
-import { DEFAULT_STEP_TIMEOUT_MS } from './policy.js'
 import {
   DEFAULT_RUN_LEASE_TTL_SECONDS,
   DEFAULT_RUN_MAX_RECOVERIES,
@@ -82,6 +81,11 @@ export const DEV_ADMIN_PASSWORD = 'cairn-admin'
  * 字面量只存在这里，schema 默认值与非 development 拒绝共用。
  */
 export const DEV_CREDENTIAL_KEY = 'Y2Fpcm4tZGV2LW9ubHktY3JlZGVudGlhbC1rZXktMDE='
+/** 开发默认内部 HMAC：ASCII `cairn-dev-only-internal-auth-k01` 的 32 字节再 base64。 */
+export const DEV_INTERNAL_AUTH_SECRET = 'Y2Fpcm4tZGV2LW9ubHktaW50ZXJuYWwtYXV0aC1rMDE='
+export const DEFAULT_WORKER_INTERNAL_HOST = '127.0.0.1'
+export const DEFAULT_WORKER_INTERNAL_PORT = 8091
+export const DEFAULT_WORKER_ENDPOINTS = 'local-worker=http://127.0.0.1:8091'
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+=*$/
 
@@ -142,6 +146,72 @@ export {
   DEFAULT_WORKER_LOST_AFTER_SECONDS,
   DEFAULT_RUN_MAX_RECOVERIES,
 } from './run-lease.js'
+
+const internalAuthSecretSchema = z
+  .string()
+  .default(DEV_INTERNAL_AUTH_SECRET)
+  .superRefine((value, ctx) => {
+    if (!decodeCredentialKey(value)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: '须为 base64 编码的 32 字节密钥',
+      })
+    }
+  })
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+
+function refineInternalAuthSecret(
+  env: { CAIRN_ENV: (typeof CAIRN_ENVS)[number]; CAIRN_INTERNAL_AUTH_SECRET: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (env.CAIRN_ENV !== 'development' && env.CAIRN_INTERNAL_AUTH_SECRET === DEV_INTERNAL_AUTH_SECRET) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_INTERNAL_AUTH_SECRET'],
+      message: '非 development 环境不得沿用开发默认内部密钥，必须在环境中覆盖',
+    })
+  }
+}
+
+function refineWorkerEndpoints(raw: string, ctx: z.RefinementCtx): void {
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    const eq = trimmed.indexOf('=')
+    if (eq <= 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CAIRN_WORKER_ENDPOINTS'],
+        message: '须为 workerId=baseUrl 的逗号分隔列表',
+      })
+      return
+    }
+    try {
+      const parsed = new URL(trimmed.slice(eq + 1).trim())
+      const loopback = LOOPBACK_HOSTS.has(parsed.hostname)
+      if (parsed.protocol === 'http:' && !loopback) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_WORKER_ENDPOINTS'],
+          message: '非 loopback 的 Worker 内部地址必须使用 https',
+        })
+      } else if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_WORKER_ENDPOINTS'],
+          message: 'Worker 内部地址只允许 http(loopback) 或 https',
+        })
+      }
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['CAIRN_WORKER_ENDPOINTS'],
+        message: 'Worker 内部地址不是合法 URL',
+      })
+    }
+  }
+}
 
 const optionalBoolFromEnv = z
   .enum(['true', 'false'])
@@ -271,6 +341,66 @@ export const DEFAULT_BROWSER_AI_HANG_WAIT_MS = 5_000
 export const DEFAULT_BROWSER_AI_STEP_MAX_CALLS = 20
 export const DEFAULT_BROWSER_AI_MAX_OUTPUT_TOKENS = 2048
 
+export const CHANGE_HINT_DRIVERS = ['auto', 'postgres', 'redis', 'none'] as const
+export type ChangeHintDriver = (typeof CHANGE_HINT_DRIVERS)[number]
+export type ResolvedChangeHintDriver = 'postgres' | 'redis' | 'none'
+
+export const DEFAULT_RUN_EVENT_RETAIN_DAYS = 7
+export const DEFAULT_RUN_EVENT_PAGE_SIZE = 200
+export const DEFAULT_SSE_BACKLOG = 256
+export const DEFAULT_SSE_HEARTBEAT_MS = 15_000
+export const DEFAULT_OBSERVE_RECONCILE_MS = 15_000
+export const DEFAULT_SSE_AUTH_REFRESH_MS = 15_000
+
+export function resolveChangeHintDriver(
+  hint: ChangeHintDriver,
+  dbDriver: 'postgres' | 'mysql' | 'sqlite',
+  hasRedisUrl: boolean,
+): ResolvedChangeHintDriver {
+  if (hint !== 'auto') return hint
+  if (dbDriver === 'postgres') return 'postgres'
+  return hasRedisUrl ? 'redis' : 'none'
+}
+
+const changeHintEnvShape = {
+  CAIRN_CHANGE_HINT: z.enum(CHANGE_HINT_DRIVERS).default('auto'),
+  CAIRN_REDIS_URL: z.string().min(1).optional(),
+  CAIRN_CHANGE_HINT_NAMESPACE: z.string().min(1).max(64).optional(),
+  CAIRN_RUN_EVENT_RETAIN_DAYS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(365)
+    .default(DEFAULT_RUN_EVENT_RETAIN_DAYS),
+  CAIRN_RUN_EVENT_PAGE_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(1000)
+    .default(DEFAULT_RUN_EVENT_PAGE_SIZE),
+  CAIRN_SSE_BACKLOG: z.coerce.number().int().positive().max(4096).default(DEFAULT_SSE_BACKLOG),
+  CAIRN_SSE_HEARTBEAT_MS: z.coerce.number().int().positive().default(DEFAULT_SSE_HEARTBEAT_MS),
+  CAIRN_OBSERVE_RECONCILE_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_OBSERVE_RECONCILE_MS),
+  CAIRN_SSE_AUTH_REFRESH_MS: z.coerce.number().int().positive().default(DEFAULT_SSE_AUTH_REFRESH_MS),
+}
+
+function refineChangeHintEnv(
+  env: { CAIRN_CHANGE_HINT: ChangeHintDriver; CAIRN_REDIS_URL?: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (env.CAIRN_CHANGE_HINT === 'redis' && !env.CAIRN_REDIS_URL) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_REDIS_URL'],
+      message: 'CAIRN_CHANGE_HINT=redis 必须配置 CAIRN_REDIS_URL',
+    })
+  }
+}
+
 const browserAiEnvShape = {
   CAIRN_BROWSER_AI_ENABLED: boolFromEnv(false),
   CAIRN_BROWSER_AI_BASE_URL: z.string().url().max(2048).optional(),
@@ -307,13 +437,7 @@ const browserAiEnvShape = {
 function refineBrowserAiEnv(
   env: {
     CAIRN_ENV: (typeof CAIRN_ENVS)[number]
-    CAIRN_BROWSER_AI_ENABLED: boolean
-    CAIRN_BROWSER_AI_BASE_URL?: string
-    CAIRN_BROWSER_AI_MODEL?: string
-    CAIRN_BROWSER_AI_MODEL_FAMILY?: string
     CAIRN_BROWSER_AI_API_KEY?: string
-    CAIRN_BROWSER_AI_API_KEY_SECRET_ID?: string
-    CAIRN_BROWSER_AI_REQUEST_TIMEOUT_MS: number
   },
   ctx: z.RefinementCtx,
 ): void {
@@ -384,13 +508,18 @@ export const apiEnvSchema = z.preprocess(
             })
           }
         }),
+      CAIRN_INTERNAL_AUTH_SECRET: internalAuthSecretSchema,
+      CAIRN_WORKER_ENDPOINTS: z.string().min(1).default(DEFAULT_WORKER_ENDPOINTS),
       ...runtimeEnvShape,
       ...objectStoreEnvShape,
       ...browserAiEnvShape,
+      ...changeHintEnvShape,
     })
     .superRefine((env, ctx) => {
       // 「默认值方便本地」与「生产不得裸奔」由同一个 schema 同时成立，
       // 不依赖部署清单上的一行提醒。
+      refineInternalAuthSecret(env, ctx)
+      refineWorkerEndpoints(env.CAIRN_WORKER_ENDPOINTS, ctx)
       if (env.CAIRN_ENV !== 'development') {
         if (env.CAIRN_JWT_SECRET === DEV_JWT_SECRET) {
           ctx.addIssue({
@@ -416,6 +545,7 @@ export const apiEnvSchema = z.preprocess(
       }
       refineObjectStoreEnv(env, ctx)
       refineBrowserAiEnv(env, ctx)
+      refineChangeHintEnv(env, ctx)
     })
     .transform((env) => ({
       ...env,
@@ -475,12 +605,22 @@ export const workerEnvSchema = z.preprocess(
             })
           }
         }),
+      CAIRN_INTERNAL_AUTH_SECRET: internalAuthSecretSchema,
+      CAIRN_WORKER_INTERNAL_HOST: z.string().min(1).default(DEFAULT_WORKER_INTERNAL_HOST),
+      CAIRN_WORKER_INTERNAL_PORT: z.coerce
+        .number()
+        .int()
+        .min(0)
+        .max(65535)
+        .default(DEFAULT_WORKER_INTERNAL_PORT),
       ...runtimeEnvShape,
       ...objectStoreEnvShape,
       ...browserSessionEnvShape,
       ...browserAiEnvShape,
+      ...changeHintEnvShape,
     })
     .superRefine((env, ctx) => {
+      refineInternalAuthSecret(env, ctx)
       if (env.CAIRN_ENV !== 'development' && env.CAIRN_CREDENTIAL_KEY === DEV_CREDENTIAL_KEY) {
         ctx.addIssue({
           code: 'custom',
@@ -537,6 +677,7 @@ export const workerEnvSchema = z.preprocess(
         })
       }
       refineBrowserAiEnv(env, ctx)
+      refineChangeHintEnv(env, ctx)
     })
     .transform((env) => ({
       ...env,

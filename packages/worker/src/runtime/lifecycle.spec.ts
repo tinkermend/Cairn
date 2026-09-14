@@ -33,12 +33,13 @@ vi.mock('@cairn/db', async (importOriginal) => {
 })
 
 function stubDb(close = vi.fn(async () => {})): DbHandle {
-  return { ping: async () => true, close, db: {} as never, pool: {} as never }
+  return { driver: 'postgres', ping: async () => true, close }
 }
 
 function stubSessions() {
   return {
     reconcileOwn: vi.fn(async () => ({ leasesRevoked: 0, sessionsClosed: 0 })),
+    setWorkerInstance: vi.fn(),
     startHeartbeat: vi.fn(),
     stopHeartbeat: vi.fn(),
     shutdown: vi.fn(async () => {}),

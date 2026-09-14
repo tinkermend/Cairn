@@ -13,7 +13,7 @@ import { PERMISSIONS, RECORDER_SOURCE_VERSION } from '@cairn/shared'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
-import { RecordingsController } from './recordings.controller'
+import { RecordingBindingsController, RecordingsController } from './recordings.controller'
 import { RecordingsService } from './recordings.service'
 import { listenForSupertest } from '../__tests__/http-app'
 
@@ -78,6 +78,9 @@ class StaticAuthGuard implements CanActivate {
 
 function mockService() {
   return {
+    open: vi.fn(async () => ({ binding: null })),
+    claim: vi.fn(async () => draft),
+    close: vi.fn(async () => draft),
     list: vi.fn(async () => ({ items: [draft] })),
     get: vi.fn(async () => draft),
     create: vi.fn(async () => draft),
@@ -86,7 +89,7 @@ function mockService() {
 
 async function buildApp(account: RequestAccount | null, service: ReturnType<typeof mockService>) {
   const moduleRef = await Test.createTestingModule({
-    controllers: [RecordingsController],
+    controllers: [RecordingsController, RecordingBindingsController],
     providers: [
       Reflector,
       { provide: RecordingsService, useValue: service },
@@ -136,6 +139,27 @@ describe('Recordings HTTP', () => {
     )
     const conflicted = await request(adminApp.getHttpServer()).post('/recordings').send(body)
     expect(conflicted.body.code).toBe('RECORDING_IDEMPOTENCY_CONFLICT')
+  })
+
+  it('无 target:read 不能领取绑定', async () => {
+    const writer = { ...admin, permissions: ['workflow:write'] }
+    const app = await buildApp(writer, service)
+    await request(app.getHttpServer())
+      .post('/recording-bindings/claim')
+      .send({
+        ticket: 'a'.repeat(64),
+        apiOrigin: 'http://localhost:3030',
+      })
+      .expect(403)
+    expect(service.claim).not.toHaveBeenCalled()
+    await request(app.getHttpServer()).get('/recording-bindings/open').expect(403)
+    expect(service.open).not.toHaveBeenCalled()
+    await app.close()
+  })
+
+  it('打开中的绑定返回 { binding }', async () => {
+    await request(adminApp.getHttpServer()).get('/recording-bindings/open').expect(200, { binding: null })
+    expect(service.open).toHaveBeenCalled()
   })
 
   it('不能把 steps 当录制体', async () => {

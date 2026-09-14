@@ -1,0 +1,101 @@
+.login-illustration {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+}
+
+/* Match the poster's object-cover / center 40% at every panel aspect ratio. */
+.login-illustration__stage {
+  position: absolute;
+  width: max(100cqw, calc(100cqh * 2 / 3));
+  aspect-ratio: 2 / 3;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -40%);
+  pointer-events: none;
+}
+
+.login-illustration[data-paused='true'] {
+  --illustration-play-state: paused;
+}
+
+.login-illustration__node {
+  animation: login-node-lift 1.2s var(--ease-standard) both;
+}
+
+.login-illustration__ring {
+  animation: login-node-light 1.2s ease-in-out both;
+  animation-delay: inherit;
+}
+
+.login-illustration__card {
+  animation: login-card-arrive 0.7s var(--ease-standard) both;
+}
+
+.login-illustration__signal {
+  offset-path: path(
+    'M138 802C213 854 286 876 366 860C504 842 617 805 731 761C813 729 879 706 900 663C909 644 908 627 907 618'
+  );
+  offset-rotate: 0deg;
+  animation: login-track-flow 4.9s 0.3s linear both;
+}
+
+.login-illustration__node,
+.login-illustration__ring,
+.login-illustration__card,
+.login-illustration__signal {
+  animation-play-state: var(--illustration-play-state, running);
+}
+
+@keyframes login-node-lift {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes login-node-light {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  30%,
+  60% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes login-card-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes login-track-flow {
+  0% {
+    offset-distance: 0%;
+    opacity: 0;
+  }
+  5%,
+  95% {
+    opacity: 1;
+  }
+  100% {
+    offset-distance: 100%;
+    opacity: 0;
+  }
+}
+
+@media (max-width: 1023px), (prefers-reduced-motion: reduce) {
+  .login-illustration__stage {
+    display: none;
+  }
+}

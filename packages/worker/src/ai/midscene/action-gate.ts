@@ -26,13 +26,16 @@ export type GatedAction<T = unknown> = {
   call: (param: T, context?: unknown) => Promise<unknown> | unknown
 }
 
-export function gateActions<A extends GatedAction>(actions: A[], gate: ActionGate): A[] {
+export function gateActions<A extends { name: string; call: (...args: never[]) => unknown }>(
+  actions: readonly A[],
+  gate: ActionGate,
+): A[] {
   return actions.map((action) => ({
     ...action,
-    call: async (param: unknown, context?: unknown) => {
+    call: (async (...args: never[]) => {
       gate.assertAllowed('action')
-      return action.call(param as never, context)
-    },
+      return action.call(...args)
+    }) as A['call'],
   }))
 }
 

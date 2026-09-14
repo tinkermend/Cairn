@@ -1,5 +1,5 @@
 /*
- * 识途 · 前端设计基线 v1.2
+ * 识途 · 前端设计基线 v1.3 · Foundation
  * 浅色主题。供规范、视觉样本与 packages/web 共用。
  * packages/web/styles/theme.css 直接导入本文件，不并行维护第二套主题。
  */
@@ -7,12 +7,12 @@
   color-scheme: light;
 
   /* 基础色板：页面组件消费下方语义 Token，不直接挑选色号。 */
-  --primary-700: #274bc1;
-  --primary-600: #3563e9;
+  --primary-700: #1b48be;
+  --primary-600: #245ce5;
   --primary-500: #4f7cff;
   --primary-400: #6f91ff;
-  --primary-100: #eaf1ff;
-  --primary-50: #f5f8ff;
+  --primary-100: #eaf0ff;
+  --primary-50: #f3f6ff;
   --ai-purple: #7c5cfc;
   --ai-light: #f2eeff;
   --success-base: #17b890;
@@ -21,37 +21,36 @@
   --info-base: #3b82f6;
 
   /* 文字与表面。muted 在 shadcn 中是表面色，不是文字色。 */
-  --text-primary: #0f172a;
-  --text-secondary: #334155;
-  --text-muted: #5c6b80;
+  --text-primary: #18253d;
+  --text-secondary: #40516d;
+  --text-muted: #607087;
   --text-disabled: #94a3b8;
 
-  /* 三层平面：导航白 / 画布冷灰蓝 / 卡片白。
-     画布与卡片的明度比必须够把白卡片托出来——1.05:1 等于没有分层，当前 1.14:1。 */
-  --surface-nav: #f8f9fb;
-  --surface-page: #f1f4fa;
+  /* 三层平面：浅色导航 / 冷灰画布 / 白色业务卡片。 */
+  --surface-nav: #fafbfd;
+  --surface-page: #f2f5f9;
   --surface-card: #ffffff;
-  --surface-header: #f8fafc;
+  --surface-header: #fbfcfe;
   /* 输入与卡片同色纯白。靠边界识别，不另铺浅灰或冷白底。 */
   --surface-control: var(--surface-card);
-  --surface-subtle: #f1f5f9;
+  --surface-subtle: #f4f6fa;
 
-  --border-default: #e4e9f1;
-  --border-divider: #edf1f6;
-  --border-card: #eef1f6;
+  --border-default: #dfe6f0;
+  --border-divider: #eaf0f6;
+  --border-card: #e3e9f2;
   --border-control: #8693a9;
   --border-control-hover: #5b6b84;
-  /* 输入外光用更亮的 500，避免和主蓝边界叠成第二道实线。 */
-  --focus-halo: #4f7cff2e;
+  /* 聚焦光晕保持低透明度，不叠成第二道实线。 */
+  --focus-halo: #245ce526;
   --error-halo: #f0445229;
   --technical-grid: #3563e90a;
   --technical-line: #3563e91f;
   --technical-glow: #4f7cff1a;
   --scrim: #0f172a52;
-  --shadow-tint: #2342780a;
-  --shadow-ambient-tint: #2342780f;
+  --shadow-tint: #263a6003;
+  --shadow-ambient-tint: #263a6005;
   --shadow-overlay-tint: #23427824;
-  --action-shadow-tint: #3563e93d;
+  --action-shadow-tint: #245ce52b;
 
   /* 交互语义：按钮小字使用 600/700 配白色，不能用 400/500 配白字。 */
   --action-primary: var(--primary-600);
@@ -122,17 +121,17 @@
   --font-size-label: 12px;
   --line-height-label: 18px;
   --radius-tag: 6px;
-  --radius-control: 8px;
-  --radius-card: 12px;
-  --radius-dialog: 16px;
+  --radius-control: 9px;
+  --radius-card: 14px;
+  --radius-dialog: 18px;
   /* 尺寸不再重复声明：4/8/12… 间距、32/36/40 控件高度、40/48/56 行高
      与 Tailwind 默认刻度完全重合，一律直接用 Tailwind 工具类。 */
   --border-width: 1px;
   --focus-width: 2px;
   --focus-offset: 3px;
-  /* 卡片走「双层阴影 + 极浅边框」，不再用「弱边框 + 弱阴影」各出一半力。 */
+  /* 白卡片由浅边框与克制的双层阴影承载，静态内容不浮动。 */
   --card-shadow:
-    0 1px 2px var(--shadow-tint), 0 8px 24px var(--shadow-ambient-tint);
+    0 2px 4px var(--shadow-tint), 0 10px 28px var(--shadow-ambient-tint);
   --popover-shadow: 0 8px 28px var(--shadow-overlay-tint);
   --control-shadow: inset 0 1px 2px var(--shadow-tint);
   --control-focus-shadow:
@@ -140,11 +139,11 @@
   --control-error-shadow:
     inset 0 1px 2px var(--shadow-tint), 0 0 0 2px var(--error-halo);
   --tech-panel-shadow: 0 24px 64px var(--shadow-overlay-tint);
-  --action-shadow: 0 6px 16px var(--action-shadow-tint);
+  --action-shadow: 0 3px 8px var(--action-shadow-tint);
   --sidebar-width: 224px;
   --sidebar-collapsed: 72px;
-  --motion-fast: 140ms;
-  --motion-panel: 200ms;
+  --motion-fast: 150ms;
+  --motion-panel: 220ms;
   --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
   --z-sticky: 20;
   --z-dropdown: 40;

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { evidenceCaptureModeSchema } from './evidence-policy.js'
 import { executionErrorSchema } from './runtime-error.js'
 import { objectContentTypeSchema, objectKeySchema } from './object-store.js'
+import { pageAfterSchema } from './managed-browser.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
 import { jsonValueSchema, utcInstantSchema } from './wire.js'
 
@@ -23,6 +24,10 @@ export const BROWSER_STEP_ERROR_CODES = [
   'BROWSER_CAPABILITY_MISSING',
   'NAVIGATE_OUT_OF_SCOPE',
   'SESSION_LEASE_LOST',
+  'PAGE_HANDOFF_NO_POPUP',
+  'PAGE_HANDOFF_AMBIGUOUS',
+  'PAGE_HANDOFF_OUT_OF_SCOPE',
+  'PAGE_HANDOFF_CLOSED',
 ] as const
 export type BrowserStepErrorCode = (typeof BROWSER_STEP_ERROR_CODES)[number]
 
@@ -74,6 +79,7 @@ export const browserCommandSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('click'),
     target: targetDescriptorSchema,
+    pageAfter: pageAfterSchema.optional(),
   }),
   z.strictObject({
     type: z.literal('fill'),

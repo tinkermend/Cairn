@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>识途靶场 - 业务工单创建流 (Order Flow)</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .order-card { max-width: 600px; margin: 30px auto; padding: 24px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; }
+    .row { display: flex; gap: 16px; margin-bottom: 16px; }
+    .col { flex: 1; }
+    label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; color: #334155; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+    .total-bar { background: #f8fafc; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #e2e8f0; }
+    .total-bar .amount { font-size: 20px; font-weight: bold; color: #0284c7; }
+    .btn-submit { width: 100%; padding: 12px; background: #0284c7; color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: 600; cursor: pointer; }
+    .btn-submit:hover { background: #0369a1; }
+    .error-hint { color: #e11d48; font-size: 12px; margin-top: 4px; display: none; }
+
+    /* Modal Overlay */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 50; }
+    .modal-content { background: white; width: 400px; padding: 24px; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.2); }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px; }
+    .btn-cancel { padding: 8px 16px; border: 1px solid #cbd5e1; background: #f1f5f9; border-radius: 6px; cursor: pointer; }
+    .btn-confirm { padding: 8px 16px; border: none; background: #0284c7; color: white; border-radius: 6px; cursor: pointer; }
+
+    /* Result */
+    .order-success { display: none; background: #ecfdf5; border: 1px solid #6ee7b7; padding: 16px; border-radius: 6px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="order-card">
+    <h2 id="order-title">新建业务采购工单</h2>
+    <form id="order-form" onsubmit="return false;">
+      <div class="row">
+        <div class="col">
+          <label for="category-select">商品类目</label>
+          <select id="category-select" name="category">
+            <option value="">-- 请选择类目 --</option>
+            <option value="hardware">硬件设备</option>
+            <option value="cloud">云服务资源</option>
+            <option value="office">办公耗材</option>
+          </select>
+          <div class="error-hint" id="err-category">请选择类目</div>
+        </div>
+        <div class="col">
+          <label for="product-select">采购商品</label>
+          <select id="product-select" name="product" disabled>
+            <option value="">-- 请先选择类目 --</option>
+          </select>
+          <div class="error-hint" id="err-product">请选择商品</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col">
+          <label for="quantity-input">采购数量</label>
+          <input type="number" id="quantity-input" name="quantity" min="1" max="999" value="1" />
+          <div class="error-hint" id="err-quantity">数量必须大于等于 1</div>
+        </div>
+        <div class="col">
+          <label for="unit-price">单价 (元)</label>
+          <input type="text" id="unit-price" readonly value="0.00" style="background: #f1f5f9;" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col">
+          <label for="remarks-input">申请理由 / 备注</label>
+          <textarea id="remarks-input" name="remarks" rows="3" placeholder="请填写采购用途及审批说明"></textarea>
+          <div class="error-hint" id="err-remarks">备注不能为空</div>
+        </div>
+      </div>
+
+      <div class="total-bar">
+        <span>结算总金额</span>
+        <span class="amount" id="total-amount">¥ 0.00</span>
+      </div>
+
+      <button type="button" class="btn-submit" id="btn-submit-order">提交工单</button>
+    </form>
+
+    <div class="order-success" id="order-result">
+      <h3 style="color: #065f46; margin-top: 0;">工单提交成功！</h3>
+      <p>工单流水号: <b id="order-no-display"></b></p>
+      <p>状态: <span style="background: #a7f3d0; padding: 2px 8px; border-radius: 4px; font-size: 13px;" id="order-status-badge">PENDING_APPROVAL</span></p>
+    </div>
+  </div>
+
+  <!-- 确认弹窗 -->
+  <div class="modal-overlay" id="confirm-modal">
+    <div class="modal-content">
+      <h3 id="modal-title" style="margin-top: 0;">确认提交采购单？</h3>
+      <p id="modal-desc" style="font-size: 14px; color: #475569;">提交后将自动进入财务及运维审批流。</p>
+      <div class="modal-actions">
+        <button type="button" class="btn-cancel" id="btn-modal-cancel">返回修改</button>
+        <button type="button" class="btn-confirm" id="btn-modal-confirm">确认提交</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const productsByCategory = {
+      hardware: [
+        { id: 'hw-srv', name: '机架式高性能服务器', price: 18800.00 },
+        { id: 'hw-sw', name: '万兆核心交换机', price: 6500.00 },
+      ],
+      cloud: [
+        { id: 'cld-vm', name: '按量付费云主机 (16C32G)', price: 450.00 },
+        { id: 'cld-oss', name: '对象存储包 (10TB/月)', price: 800.00 },
+      ],
+      office: [
+        { id: 'off-pc', name: '开发者工作站笔记本', price: 9200.00 },
+        { id: 'off-mon', name: '4K 专业显示器', price: 2100.00 },
+      ],
+    };
+
+    const categorySelect = document.getElementById('category-select');
+    const productSelect = document.getElementById('product-select');
+    const quantityInput = document.getElementById('quantity-input');
+    const unitPriceInput = document.getElementById('unit-price');
+    const remarksInput = document.getElementById('remarks-input');
+    const totalAmountSpan = document.getElementById('total-amount');
+
+    const errCategory = document.getElementById('err-category');
+    const errProduct = document.getElementById('err-product');
+    const errQuantity = document.getElementById('err-quantity');
+    const errRemarks = document.getElementById('err-remarks');
+
+    const btnSubmit = document.getElementById('btn-submit-order');
+    const confirmModal = document.getElementById('confirm-modal');
+    const btnModalCancel = document.getElementById('btn-modal-cancel');
+    const btnModalConfirm = document.getElementById('btn-modal-confirm');
+    const orderResult = document.getElementById('order-result');
+    const orderNoDisplay = document.getElementById('order-no-display');
+
+    let currentPrice = 0;
+
+    categorySelect.addEventListener('change', () => {
+      const cat = categorySelect.value;
+      productSelect.innerHTML = '<option value="">-- 请选择商品 --</option>';
+      if (cat && productsByCategory[cat]) {
+        productSelect.disabled = false;
+        productsByCategory[cat].forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.text = `${p.name} (¥${p.price.toFixed(2)})`;
+          opt.dataset.price = p.price;
+          productSelect.appendChild(opt);
+        });
+      } else {
+        productSelect.disabled = true;
+      }
+      recalc();
+    });
+
+    productSelect.addEventListener('change', () => {
+      const selected = productSelect.options[productSelect.selectedIndex];
+      currentPrice = selected && selected.dataset.price ? parseFloat(selected.dataset.price) : 0;
+      unitPriceInput.value = currentPrice.toFixed(2);
+      recalc();
+    });
+
+    quantityInput.addEventListener('input', recalc);
+
+    function recalc() {
+      const qty = parseInt(quantityInput.value, 10) || 0;
+      const total = qty * currentPrice;
+      totalAmountSpan.innerText = `¥ ${total.toFixed(2)}`;
+    }
+
+    btnSubmit.addEventListener('click', () => {
+      errCategory.style.display = 'none';
+      errProduct.style.display = 'none';
+      errQuantity.style.display = 'none';
+      errRemarks.style.display = 'none';
+
+      let valid = true;
+      if (!categorySelect.value) { errCategory.style.display = 'block'; valid = false; }
+      if (!productSelect.value) { errProduct.style.display = 'block'; valid = false; }
+      const qty = parseInt(quantityInput.value, 10);
+      if (isNaN(qty) || qty < 1) { errQuantity.style.display = 'block'; valid = false; }
+      if (!remarksInput.value.trim()) { errRemarks.style.display = 'block'; valid = false; }
+
+      if (valid) {
+        confirmModal.style.display = 'flex';
+      }
+    });
+
+    btnModalCancel.addEventListener('click', () => {
+      confirmModal.style.display = 'none';
+    });
+
+    btnModalConfirm.addEventListener('click', () => {
+      confirmModal.style.display = 'none';
+      const orderNo = 'ORD-' + Date.now().toString(36).toUpperCase();
+      orderNoDisplay.innerText = orderNo;
+      orderResult.style.display = 'block';
+      document.getElementById('order-form').style.display = 'none';
+    });
+  </script>
+</body>
+</html>

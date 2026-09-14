@@ -5,8 +5,9 @@ packages:
 
 allowBuilds:
   '@swc/core': true
-  argon2: set this to true or false
+  argon2: false
   esbuild: true
+  sharp: true
 
 # pnpm 默认拦截依赖的 postinstall。以下依赖需要下载/编译原生二进制，
 # 均属构建与测试工具链，显式放行。
@@ -14,3 +15,4 @@ onlyBuiltDependencies:
   - esbuild
   - '@swc/core'
   - playwright
+  - sharp

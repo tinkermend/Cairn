@@ -7,11 +7,13 @@ export type PageResidue = {
 }
 
 export async function snapshotResidue(page: Page): Promise<PageResidue> {
+  const emitter = page as Page & { listenerCount?: (event: string) => number }
   return {
-    popupListeners: page.listenerCount('popup'),
-    loadListeners: page.listenerCount('load'),
+    popupListeners: emitter.listenerCount?.('popup') ?? 0,
+    loadListeners: emitter.listenerCount?.('load') ?? 0,
     midsceneInterceptor: await page
-      .evaluate(() => Boolean((window as { __MIDSCENE_NEW_TAB_INTERCEPTOR_INITIALIZED__?: boolean }).__MIDSCENE_NEW_TAB_INTERCEPTOR_INITIALIZED__))
+      .evaluate('Boolean(globalThis.__MIDSCENE_NEW_TAB_INTERCEPTOR_INITIALIZED__)')
+      .then((value) => value === true)
       .catch(() => false),
   }
 }
@@ -26,7 +28,7 @@ export function unregisteredResidue(before: PageResidue, after: PageResidue): st
 
 export async function readLabEvents(page: Page): Promise<Array<{ type: string; id?: string }>> {
   return page.evaluate(() => {
-    const events = (window as { __labEvents?: Array<{ type: string; id?: string }> }).__labEvents
+    const events = (globalThis as { __labEvents?: Array<{ type: string; id?: string }> }).__labEvents
     return Array.isArray(events) ? events : []
   })
 }

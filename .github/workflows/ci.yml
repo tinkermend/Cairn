@@ -13,7 +13,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
 
-    # 集成测试真连 PostgreSQL：库不可用时整个包失败，不静默跳过。
+    # 集成测试真连 PostgreSQL / MySQL，SQLite 使用本机文件：库不可用时失败，不静默跳过。
     # 这一条与本地跑的 `requireReachableDb()`（vitest globalSetup）是同一个判据。
     services:
       postgres:
@@ -30,7 +30,23 @@ jobs:
           --health-timeout 5s
           --health-retries 20
 
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: cairn-contract
+          MYSQL_ROOT_HOST: '%'
+          MYSQL_DATABASE: cairn_portability
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pcairn-contract"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
     env:
+      CAIRN_TEST_MYSQL_PASSWORD: cairn-contract
+      CAIRN_TEST_MYSQL_PORT: 3307
       CAIRN_DB_HOST: 127.0.0.1
       CAIRN_DB_PORT: 5432
       CAIRN_DB_NAME: cairn
@@ -81,5 +97,8 @@ jobs:
       # 需要的 chromium revision 因此一致，这里装一次即可。装漏时 engine.lab.spec.ts
       #（Engine × 真浏览器垂直切片）会失败，不准 skip。
       - run: pnpm --filter @cairn/web exec playwright install --with-deps chromium
+
+      - name: Check frontend design rules
+        run: pnpm check:design
 
       - run: pnpm test

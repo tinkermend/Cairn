@@ -73,7 +73,7 @@ describe('S07-lite 页内 binding', { timeout: 60_000 }, () => {
     await expect(
       page.evaluate(() =>
         (
-          window as unknown as {
+          globalThis as unknown as {
             cairnLlmInvoke: (payload: { intent: string }) => Promise<unknown>
           }
         ).cairnLlmInvoke({ intent: 'steal' }),
@@ -92,7 +92,9 @@ describe('S07-lite 页内 binding', { timeout: 60_000 }, () => {
     binding.stop()
     await expect(invokeInpageAgent(page, nonce, 'click')).rejects.toThrow(/CAIRN_STOPPED/)
     await page.goto(`${baseUrl}/canvas`, { waitUntil: 'domcontentloaded' })
-    const alive = await page.evaluate(() => Boolean((window as { __cairnPageAgent?: unknown }).__cairnPageAgent))
+    const alive = await page.evaluate(() =>
+      Boolean((globalThis as { __cairnPageAgent?: unknown }).__cairnPageAgent),
+    )
     expect(alive).toBe(false)
     await context.close()
   })

@@ -15,6 +15,7 @@ import * as impl0 from './runs/index.js'
 export { DomainError } from './runs/index.js'
 export { badRequest } from './runs/index.js'
 export { conflict } from './runs/index.js'
+export { forbidden } from './runs/index.js'
 export { notFound } from './runs/index.js'
 export { computeIdempotencyDigest } from './runs/index.js'
 export { computeSnapshotDigest } from './runs/index.js'
@@ -36,6 +37,10 @@ export const cancelPendingStepRuns = operation(impl0.cancelPendingStepRuns)
 export const countRunsForAccount = operation(impl0.countRunsForAccount)
 export const createRunWithSnapshot = operation(impl0.createRunWithSnapshot)
 export const createTrialRunFromDraft = operation(impl0.createTrialRunFromDraft)
+export const reserveAiModelCall = operation(impl0.reserveAiModelCall)
+export const completeAiModelCall = operation(impl0.completeAiModelCall)
+export type { ReserveAiModelCallInput } from './runs/index.js'
+export type { ReserveAiModelCallResult } from './runs/index.js'
 export const failRunAuthTimeout = operation(impl0.failRunAuthTimeout)
 export const failRunValidation = operation(impl0.failRunValidation)
 export const finishAttempt = operation(impl0.finishAttempt)
@@ -72,6 +77,7 @@ import * as impl1 from './leases/index.js'
 export { WORKER_ID_CONFLICT } from './leases/index.js'
 export const registerWorker = operation(impl1.registerWorker)
 export const heartbeatWorker = operation(impl1.heartbeatWorker)
+export const getWorkerById = operation(impl1.getWorkerById)
 export const markWorkerDraining = operation(impl1.markWorkerDraining)
 export const markWorkerStopped = operation(impl1.markWorkerStopped)
 export const markLostWorkers = operation(impl1.markLostWorkers)
@@ -108,6 +114,13 @@ export const setSessionProbe = operation(impl2.setSessionProbe)
 export const touchSessionUsed = operation(impl2.touchSessionUsed)
 export const claimAuthHold = operation(impl2.claimAuthHold)
 export const releaseAuthHold = operation(impl2.releaseAuthHold)
+export const enterRunWaitingForAuth = operation(impl2.enterRunWaitingForAuth)
+export const acquireAuthControl = operation(impl2.acquireAuthControl)
+export const heartbeatAuthControl = operation(impl2.heartbeatAuthControl)
+export const releaseAuthControl = operation(impl2.releaseAuthControl)
+export const expireStaleAuthControl = operation(impl2.expireStaleAuthControl)
+export const findSessionByAuthHoldRun = operation(impl2.findSessionByAuthHoldRun)
+export { hashAuthControlToken, newAuthControlToken, isBoundAuthHold } from './sessions/index.js'
 export const acquireSessionLease = operation(impl2.acquireSessionLease)
 export const renewSessionLease = operation(impl2.renewSessionLease)
 export const releaseSessionLease = operation(impl2.releaseSessionLease)
@@ -161,6 +174,7 @@ export const listPendingEvidence = operation(impl3.listPendingEvidence)
 export const settleExpiredPendingEvidence = operation(impl3.settleExpiredPendingEvidence)
 export const settleFinishedPendingRuns = operation(impl3.settleFinishedPendingRuns)
 export const settleRunEvidence = operation(impl3.settleRunEvidence)
+export const recordInlineLogEvidence = operation(impl3.recordInlineLogEvidence)
 export type { PendingEvidenceRow } from './objects/index.js'
 export type { SettleEvidenceOptions } from './objects/index.js'
 export { toEvidenceMetadata } from './objects/index.js'
@@ -169,12 +183,50 @@ import * as impl4 from './recordings/index.js'
 export const createRecordingDraft = operation(impl4.createRecordingDraft)
 export const getRecordingDraft = operation(impl4.getRecordingDraft)
 export const listRecordingDrafts = operation(impl4.listRecordingDrafts)
+export const createRecordingBinding = operation(impl4.createRecordingBinding)
+export const claimRecordingBinding = operation(impl4.claimRecordingBinding)
+export const closeRecordingBinding = operation(impl4.closeRecordingBinding)
+export const getOpenRecordingBinding = operation(impl4.getOpenRecordingBinding)
+export const listScenarioRecordingImports = operation(impl4.listScenarioRecordingImports)
+export const previewRecordingImport = operation(impl4.previewRecordingImport)
+export const applyRecordingImport = operation(impl4.applyRecordingImport)
 
 import * as impl5 from './console/lookups.js'
 export const findLocalIdentity = operation(impl5.findLocalIdentity)
 export const touchLocalIdentity = operation(impl5.touchLocalIdentity)
 export const loadTargetForExecution = operation(impl5.loadTargetForExecution)
 export const loadAccountForExecution = operation(impl5.loadAccountForExecution)
+
+import * as services from './services/access.js'
+export const listServiceCallers = operation(services.listServiceCallers)
+export const getServiceCaller = operation(services.getServiceCaller)
+export const saveServiceCaller = operation(services.saveServiceCaller)
+export const issueServiceCredential = operation(services.issueServiceCredential)
+export const updateServiceCredential = operation(services.updateServiceCredential)
+export const authenticateService = operation(services.authenticateService)
+export const createServiceRun = operation(services.createServiceRun)
+export const getServiceRun = operation(services.getServiceRun)
+export const listServiceRuns = operation(services.listServiceRuns)
+export const serviceCatalog = operation(services.serviceCatalog)
+export const releaseServiceEvidence = operation(services.releaseServiceEvidence)
+export const serviceEvidence = operation(services.serviceEvidence)
+
+import { expireRunDeadlines as expireDeadlines } from './runs/deadline.js'
+export const expireRunDeadlines = operation(expireDeadlines)
+
+import * as observe from './observe/index.js'
+export const appendRunEvents = operation(observe.appendRunEvents)
+export const loadRunObservation = operation(observe.loadRunObservation)
+export const listRunEventsAfter = operation(observe.listRunEventsAfter)
+export const loadRunEventWatermark = operation(observe.loadRunEventWatermark)
+export const listRunEventWatermarks = operation(observe.listRunEventWatermarks)
+export const purgeExpiredRunEvents = operation(observe.purgeExpiredRunEvents)
+export const diagnoseRunEventCursor = observe.diagnoseRunEventCursor
+export const createChangeHint = observe.createChangeHint
+export const setChangeHintPublisher = observe.setChangeHintPublisher
+export const resetChangeHintPublisher = observe.resetChangeHintPublisher
+export type { ChangeHintBus } from './observe/index.js'
+export type { RunEventDraft } from './observe/index.js'
 
 import * as platformConfig from './platform-config/index.js'
 export const getPlatformConfig = operation(platformConfig.getPlatformConfig)
@@ -184,4 +236,5 @@ export const updatePlatformConfig = operation(platformConfig.updatePlatformConfi
 export const restorePlatformConfig = operation(platformConfig.restorePlatformConfig)
 export const listPlatformConfigRevisions = operation(platformConfig.listPlatformConfigRevisions)
 export const registerPlatformAiSecret = operation(platformConfig.registerPlatformAiSecret)
+export const loadPlatformAiSecret = operation(platformConfig.loadPlatformAiSecret)
 export type { PlatformBootstrap } from './platform-config/index.js'

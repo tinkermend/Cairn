@@ -11,6 +11,24 @@ export function toAuthUser(account: AccountDto): AuthUser {
   }
 }
 
+/** 展开旧的嵌套登录地址，只返回本站业务页。 */
+export function getLoginRedirect(redirectTo?: string): string {
+  let destination = redirectTo
+  while (destination) {
+    try {
+      const url = new URL(destination, window.location.origin)
+      if (url.origin !== window.location.origin) return '/'
+      if (url.pathname.replace(/\/+$/, '') !== '/sign-in') {
+        return `${url.pathname}${url.search}${url.hash}`
+      }
+      destination = url.searchParams.get('redirect') ?? undefined
+    } catch {
+      return '/'
+    }
+  }
+  return '/'
+}
+
 export function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return '?'

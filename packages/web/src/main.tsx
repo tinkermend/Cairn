@@ -49,11 +49,15 @@ const queryClient = new QueryClient({
       // 不再兼容模板残留的 Axios 分支——残留调用方已全部迁移。
       if (!(error instanceof ApiRequestError)) return
 
-      if (error.status === 401) {
-        toast.error('Session expired!')
-        useAuthStore.getState().auth.reset()
+      if (
+        error.status === 401 &&
+        !useAuthStore.getState().auth.accessToken &&
+        router.history.location.pathname !== '/sign-in'
+      ) {
+        // apiFetch 已按请求所属会话清除凭证；并发 401 不重复嵌套登录地址。
+        toast.error('登录已过期，请重新登录。')
         const redirect = `${router.history.location.href}`
-        router.navigate({ to: '/sign-in', search: { redirect } })
+        router.navigate({ to: '/sign-in', search: { redirect }, replace: true })
       }
       if (error.status === 500) {
         // 展示服务端给的说明，而不是写死的英文串

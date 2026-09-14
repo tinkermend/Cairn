@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { DbHandle } from '@cairn/db'
 import { AppModule } from '../app.module'
 import { DB_HANDLE } from '../db/db.module'
+import { CHANGE_HINT } from '../observe/change-hint.module'
+import { unusedChangeHint } from '../__tests__/http-app'
 
 /**
  * 宪法不变量 19：平台 API 对外只使用 GET 与 POST。
@@ -38,9 +40,10 @@ describe('对外 HTTP 方法', () => {
       .useValue({
         ping: vi.fn(async () => true),
         close: vi.fn(async () => {}),
-        db: {} as never,
-        pool: {} as never,
+        driver: 'postgres',
       } satisfies DbHandle)
+      .overrideProvider(CHANGE_HINT)
+      .useValue(unusedChangeHint)
       .compile()
 
     app = moduleRef.createNestApplication({ logger: false })

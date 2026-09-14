@@ -1,3 +1,5 @@
+import { schemaFor } from '../native.js'
+import { updateRows } from '../native.js'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import {
   CANCELLED_ATTEMPT_ERROR,
@@ -25,6 +27,7 @@ import {
 } from '../leases/leases.js'
 import { attempts, evidences, runs, stepRuns } from '../schema/execution.js'
 import { settleRunEvidence } from '../objects/evidence.js'
+import { appendRunEvents } from '../observe/events.js'
 import { conflict, notFound } from './errors.js'
 import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.js'
 
@@ -54,6 +57,7 @@ export async function settleLeaselessRun(
     injectFailure?: Error
   },
 ): Promise<SettleOutcome> {
+  const { evidences, runs } = schemaFor(db)
   return db.transaction(async (tx) => {
     const run = await lockRunRow(tx as unknown as Db, input.runId)
     if (!run) return 'skipped'
@@ -69,18 +73,13 @@ export async function settleLeaselessRun(
 
     const now = new Date()
     if (run.cancelRequestedAt) {
-      await closeRunningAttemptsTx(tx as unknown as Db, input.runId, now, 'cancel')
-      await tx
-        .update(runs)
-        .set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
-        .where(eq(runs.id, input.runId))
-      await cancelPendingStepRunsTx(tx as unknown as Db, input.runId, now)
-      return 'cancelled'
+      const outcome = await settleRunCancellationTx(tx as unknown as Db, input.runId, now)
+      return outcome === 'pending' ? 'skipped' : outcome
     }
 
     const failed = await countFailedRecoveries(tx as unknown as Db, input.runId)
     if (failed >= input.maxRecoveries) {
-      await closeRunningAttemptsTx(tx as unknown as Db, input.runId, now, 'exhausted')
+      await closeRunningAttemptsTx(tx as unknown as Db, input.runId, now)
       // 不写 finished_at：NEEDS_REVIEW 只是停下来等人，结论由 reviewRun 给出（D11）。
       await tx
         .update(runs)
@@ -94,6 +93,10 @@ export async function settleLeaselessRun(
         payload: RECOVERY_EXHAUSTED_ERROR,
         createdAt: now,
       })
+      await appendRunEvents(tx as unknown as Db, input.runId, [
+        { type: 'run.status_changed', payload: { status: 'NEEDS_REVIEW' } },
+        { type: 'evidence.recorded', payload: { type: 'error', status: 'available' } },
+      ])
       return 'needs_review'
     }
 
@@ -103,6 +106,9 @@ export async function settleLeaselessRun(
         .set({ status: 'RECOVERING', updatedAt: now })
         .where(eq(runs.id, input.runId))
       if (input.injectFailure) throw input.injectFailure
+      await appendRunEvents(tx as unknown as Db, input.runId, [
+        { type: 'run.status_changed', payload: { status: 'RECOVERING' } },
+      ])
       return 'recovering'
     }
 
@@ -165,6 +171,7 @@ export async function yieldClaimedRun(
   grant: RunGrant,
   reason: YieldClaimReason,
 ): Promise<YieldClaimResult> {
+  const { attempts, runs, stepRuns } = schemaFor(db)
   const now = new Date()
   return db.transaction(async (tx) => {
     const run = await lockRunRow(tx as unknown as Db, grant.runId)
@@ -175,19 +182,28 @@ export async function yieldClaimedRun(
     }
     if (reason === 'placement_yield') {
       const [row] = await tx
-        .select({ n: sql<number>`count(*)::int` })
+        .select({ n: sql<number>`count(*)` })
         .from(attempts)
         .innerJoin(stepRuns, eq(attempts.stepRunId, stepRuns.id))
         .where(and(eq(stepRuns.runId, grant.runId), eq(attempts.status, 'RUNNING')))
       if (Number(row?.n ?? 0) > 0) return 'has_attempts'
     }
-    if (!isHaltedRunStatus(run.status) && run.status !== 'WAITING_FOR_AUTH') {
+    const yielded =
+      !isHaltedRunStatus(run.status) && run.status !== 'WAITING_FOR_AUTH'
+    if (yielded) {
       await tx
         .update(runs)
         .set({ status: 'RECOVERING', updatedAt: now })
         .where(eq(runs.id, grant.runId))
     }
     await releaseRunLeaseTx(tx as unknown as Db, grant, reason)
+    if (run.cancelRequestedAt && !isHaltedRunStatus(run.status))
+      await settleRunCancellationTx(tx as unknown as Db, grant.runId, now)
+    else if (yielded) {
+      await appendRunEvents(tx as unknown as Db, grant.runId, [
+        { type: 'run.status_changed', payload: { status: 'RECOVERING', reason } },
+      ])
+    }
     return 'yielded'
   })
 }
@@ -201,11 +217,13 @@ export async function reconcileOrphanAttempts(
   db: Db,
   input: { grant: RunGrant } | { recoverRunId: string },
 ): Promise<'continue' | 'needs_review' | 'cancelled'> {
+  const { attempts, runs, stepRuns } = schemaFor(db)
   return db.transaction(async (tx) => {
     const runId = 'grant' in input ? input.grant.runId : input.recoverRunId
     const run = await lockRunRow(tx as unknown as Db, runId)
     if (!run) return 'cancelled'
-    if (isHaltedRunStatus(run.status)) return run.status === 'NEEDS_REVIEW' ? 'needs_review' : 'cancelled'
+    if (isHaltedRunStatus(run.status))
+      return run.status === 'NEEDS_REVIEW' ? 'needs_review' : 'cancelled'
 
     if ('grant' in input) {
       const held = await verifyRunLeaseForWrite(tx as unknown as Db, input.grant)
@@ -269,6 +287,9 @@ export async function reconcileOrphanAttempts(
         if ('grant' in input) {
           await releaseRunLeaseTx(tx as unknown as Db, input.grant, 'run_halted')
         }
+        await appendRunEvents(tx, runId, [
+          { type: 'run.status_changed', payload: { status: 'NEEDS_REVIEW' } },
+        ])
         return 'needs_review'
       }
       for (const attempt of open) {
@@ -286,10 +307,32 @@ export async function reconcileOrphanAttempts(
   })
 }
 
+/** Caller holds the Run row lock and requests cancellation. Never conclude a live owner's work. */
+export async function settleRunCancellationTx(
+  tx: Db,
+  runId: string,
+  now: Date,
+): Promise<'pending' | 'cancelled' | 'needs_review'> {
+  if (await findActiveLeaseForRun(tx, runId)) return 'pending'
+  const outcome = await reconcileOrphanAttempts(tx, { recoverRunId: runId })
+  if (outcome !== 'continue') return outcome
+  const { runs, stepRuns } = schemaFor(tx)
+  await tx.update(runs).set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
+    .where(eq(runs.id, runId))
+  // Orphan attempts are now closed. A read-only orphan can still have a RUNNING StepRun.
+  await tx.update(stepRuns).set({ status: 'CANCELLED', finishedAt: now })
+    .where(and(eq(stepRuns.runId, runId), inArray(stepRuns.status, ['PENDING', 'RUNNING'])))
+  await appendRunEvents(tx, runId, [
+    { type: 'run.status_changed', payload: { status: 'CANCELLED' } },
+  ])
+  return 'cancelled'
+}
+
 export async function reviewRun(
   db: Db,
   input: { runId: string; actor: AuditActor; conclusion: 'fail' | 'cancel'; note?: string },
 ) {
+  const { runs } = schemaFor(db)
   const now = new Date()
   await db.transaction(async (tx) => {
     const run = await lockRunRow(tx as unknown as Db, input.runId)
@@ -315,6 +358,9 @@ export async function reviewRun(
       input.runId,
       `核查结论 ${input.conclusion}${input.note ? `：${input.note}` : ''}`,
     )
+    await appendRunEvents(tx as unknown as Db, input.runId, [
+      { type: 'run.status_changed', payload: { status } },
+    ])
   })
   // 执行轴已落。收尾失败不回滚核查，留给 cleanup 扫描已终态 + 轴 PENDING。
   await settleRunEvidence(db, input.runId, { pendingTtlSeconds: 3600, maxUploadAttempts: 3 }).catch(
@@ -322,40 +368,14 @@ export async function reviewRun(
   )
 }
 
-export async function resumeRunAfterAuth(
-  db: Db,
-  input: { runId: string; actor: AuditActor; note?: string },
-): Promise<void> {
-  const now = new Date()
-  await db.transaction(async (tx) => {
-    const run = await lockRunRow(tx as unknown as Db, input.runId)
-    if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
-    if (run.status !== 'WAITING_FOR_AUTH') {
-      throw conflict('RUN_NOT_WAITING_FOR_AUTH', '只有等待认证的运行可以恢复领取')
-    }
-    const moved = await tx
-      .update(runs)
-      .set({ status: 'RECOVERING', updatedAt: now })
-      .where(and(eq(runs.id, input.runId), eq(runs.status, 'WAITING_FOR_AUTH')))
-      .returning({ id: runs.id })
-    if (moved.length === 0) throw conflict('RUN_NOT_WAITING_FOR_AUTH', '只有等待认证的运行可以恢复领取')
-    await recordAudit(
-      tx as unknown as Db,
-      input.actor,
-      'run.resume_auth',
-      'run',
-      input.runId,
-      `确认目标系统已登录${input.note ? `：${input.note}` : ''}`,
-    )
-  })
-}
+export { resumeRunAfterAuth } from '../sessions/auth-control.js'
 
 async function closeRunningAttemptsTx(
   tx: Db,
   runId: string,
   now: Date,
-  mode: 'cancel' | 'exhausted',
 ): Promise<void> {
+  const { attempts, stepRuns } = schemaFor(tx)
   const stepRows = await tx.select().from(stepRuns).where(eq(stepRuns.runId, runId))
   for (const step of stepRows) {
     const open = await tx
@@ -368,15 +388,15 @@ async function closeRunningAttemptsTx(
         attemptId: attempt.id,
         stepRunId: step.id,
         now,
-        status: mode === 'cancel' ? 'CANCELLED' : 'FAILED',
-        error: mode === 'cancel' ? CANCELLED_ATTEMPT_ERROR : RECOVERY_EXHAUSTED_ERROR,
+        status: 'FAILED',
+        error: RECOVERY_EXHAUSTED_ERROR,
       })
     }
-    if (open.length > 0 && mode === 'exhausted') {
-      await tx.update(stepRuns).set({ status: 'FAILED', finishedAt: now }).where(eq(stepRuns.id, step.id))
-    }
-    if (open.length > 0 && mode === 'cancel') {
-      await tx.update(stepRuns).set({ status: 'CANCELLED', finishedAt: now }).where(eq(stepRuns.id, step.id))
+    if (open.length > 0) {
+      await tx
+        .update(stepRuns)
+        .set({ status: 'FAILED', finishedAt: now })
+        .where(eq(stepRuns.id, step.id))
     }
   }
 }
@@ -392,19 +412,23 @@ async function closeAttemptTx(
     error: ExecutionError
   },
 ): Promise<void> {
-  const closed = await tx
-    .update(attempts)
-    .set({
+  const { attempts, evidences } = schemaFor(tx)
+  const closed = await updateRows(
+    tx,
+    attempts,
+    {
       status: input.status,
       error: input.error,
       output: null,
       finishedAt: input.now,
-    })
-    .where(and(eq(attempts.id, input.attemptId), eq(attempts.status, 'RUNNING')))
-    .returning({ id: attempts.id })
+    },
+    and(eq(attempts.id, input.attemptId), eq(attempts.status, 'RUNNING')),
+    { id: attempts.id },
+  )
   if (closed.length === 0) return
+  const evidenceId = newId()
   await tx.insert(evidences).values({
-    id: newId(),
+    id: evidenceId,
     runId: input.runId,
     stepRunId: input.stepRunId,
     attemptId: input.attemptId,
@@ -413,5 +437,18 @@ async function closeAttemptTx(
     payload: input.error,
     createdAt: input.now,
   })
+  await appendRunEvents(tx, input.runId, [
+    {
+      type: 'attempt.finished',
+      stepRunId: input.stepRunId,
+      attemptId: input.attemptId,
+      payload: { status: input.status },
+    },
+    {
+      type: 'evidence.recorded',
+      stepRunId: input.stepRunId,
+      attemptId: input.attemptId,
+      payload: { evidenceId, type: 'error', status: 'available' },
+    },
+  ])
 }
-

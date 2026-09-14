@@ -22,9 +22,7 @@ export function PageHeader({
       )}
     >
       <div className='min-w-0 space-y-1'>
-        <h1 className='text-page font-semibold'>
-          {title}
-        </h1>
+        <h1 className='text-page font-semibold break-words'>{title}</h1>
         {description ? (
           <p className='max-w-[72ch] text-body text-muted-foreground'>
             {description}
@@ -32,7 +30,7 @@ export function PageHeader({
         ) : null}
       </div>
       {actions ? (
-        <div className='flex items-center gap-2'>{actions}</div>
+        <div className='flex flex-wrap items-center gap-2'>{actions}</div>
       ) : null}
     </div>
   )

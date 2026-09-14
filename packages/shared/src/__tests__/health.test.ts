@@ -10,7 +10,10 @@ describe('healthResponseSchema', () => {
   }
 
   it('接受合法响应', () => {
-    expect(healthResponseSchema.parse(valid)).toEqual(valid)
+    expect(healthResponseSchema.parse(valid)).toEqual({
+      ...valid,
+      checks: { database: 'up', changeHint: 'unused' },
+    })
   })
 
   it('拒绝未知的 status', () => {

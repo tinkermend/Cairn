@@ -1,4 +1,4 @@
-export { DomainError, badRequest, conflict, mapRestriction, notFound, pgCode, constraintName } from './errors.js'
+export { DomainError, badRequest, conflict, forbidden, mapRestriction, notFound, pgCode, constraintName } from './errors.js'
 export { computeIdempotencyDigest, computeSnapshotDigest, sha256Hex } from './digest.js'
 export {
   appendScenarioVersion,
@@ -15,6 +15,8 @@ export {
   saveScenarioDraft,
   updateScenarioMeta,
 } from './scenarios.js'
+export { reserveAiModelCall, completeAiModelCall } from './ai-budget.js'
+export type { ReserveAiModelCallInput, ReserveAiModelCallResult } from './ai-budget.js'
 export {
   cancelPendingStepRuns,
   countRunsForAccount,

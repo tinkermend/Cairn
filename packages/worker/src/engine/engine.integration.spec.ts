@@ -20,7 +20,7 @@ import {
   targets,
   yieldUnfinishedRun,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import {
   DEFAULT_EXECUTOR_VERSIONS,
   DEFAULT_SESSION_POLICY,
@@ -114,11 +114,17 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     return grant!
   }
 
-  async function createAndRun(name: string, steps: Step[], input?: Record<string, string>) {
+  async function createAndRun(
+    name: string,
+    steps: Step[],
+    input?: Record<string, string>,
+    extras?: { inputs?: { key: string; label: string }[] },
+  ) {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
       name,
       steps,
+      inputs: extras?.inputs,
       actor: { id: actorId },
     })
     const created = await createRunWithSnapshot(handle.db, {
@@ -204,6 +210,7 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
         },
       ],
       { orderId: 'A-1' },
+      { inputs: [{ key: 'orderId', label: '单号' }] },
     )
     expect(detail.status).toBe('SUCCEEDED')
     expect(detail.stepRuns[0]?.attempts[0]?.output).toBe('A-1')
@@ -349,6 +356,7 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
       name: '构造函数陷阱',
+      compileMode: 'save',
       steps: [
         {
           id: ids.echoP,

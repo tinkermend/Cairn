@@ -72,3 +72,5 @@ export function resolveDbEnv(): DbEnv {
 export const config: ApiEnv = new Proxy({} as ApiEnv, {
   get: (_target, key: string) => resolveApiEnv()[key as keyof ApiEnv],
 })
+
+export type { ApiEnv, DbEnv }

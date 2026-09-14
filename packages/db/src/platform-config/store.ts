@@ -1,10 +1,13 @@
-import { and, desc, eq, inArray, lt, or } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, lt, or } from 'drizzle-orm'
 import {
   FACTORY_PLATFORM_CONFIG,
+  LOCAL_SECRET_PROVIDER,
+  modelServiceOrigin,
   PLATFORM_CONFIG_SINGLETON_ID,
   platformConfigCurrentSchema,
   platformConfigDocumentSchema,
   platformConfigDiff,
+  platformModelUrlSchema,
   platformConfigRevisionListSchema,
   type PlatformConfigCurrent,
   type PlatformConfigDocument,
@@ -16,18 +19,8 @@ import { recordAudit, type AuditActor } from '../audit/record.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { atomic, schemaFor, updateRows } from '../native.js'
-import { conflict, notFound, pgCode } from '../runs/errors.js'
-
-function isUniqueViolation(error: unknown): boolean {
-  const code = pgCode(error)
-  return (
-    code === '23505' ||
-    code === 'ER_DUP_ENTRY' ||
-    code === 'SQLITE_CONSTRAINT_UNIQUE' ||
-    code === '2067'
-  )
-}
-import { registerStandaloneSecret } from '../sessions/sessions.js'
+import { conflict, isUniqueViolation, notFound } from '../runs/errors.js'
+import { loadSecretCiphertext, registerStandaloneSecret } from '../sessions/sessions.js'
 
 export type PlatformBootstrap = {
   document: PlatformConfigDocument
@@ -138,7 +131,7 @@ async function writeRevision(
     )
     if (updated.length === 0) {
       const current = await getPlatformConfig(tx)
-      throw conflict('PLATFORM_CONFIG_CONFLICT', '平台配置已被他人更新')
+      throw conflict('PLATFORM_CONFIG_CONFLICT', '平台配置已被他人更新', current)
     }
     await tx.insert(platformConfigRevisions).values({
       id: newId(),
@@ -223,10 +216,16 @@ export async function restorePlatformConfig(
 
 export async function registerPlatformAiSecret(
   db: Db,
-  input: { id: string; ciphertext: Buffer; actor: AuditActor },
+  input: { id: string; ciphertext: Buffer; baseUrl: string; actor: AuditActor },
 ): Promise<{ id: string }> {
+  const modelOrigin = modelServiceOrigin(platformModelUrlSchema.parse(input.baseUrl))
   return atomic(db, async (tx) => {
-    const registered = await registerStandaloneSecret(tx, { id: input.id, ciphertext: input.ciphertext })
+    const { platformAiSecretBindings } = schemaFor(tx)
+    const registered = await registerStandaloneSecret(tx, {
+      id: input.id,
+      ciphertext: input.ciphertext,
+    })
+    await tx.insert(platformAiSecretBindings).values({ secretId: input.id, modelOrigin })
     await recordAudit(
       tx,
       { id: input.actor.id },
@@ -237,6 +236,39 @@ export async function registerPlatformAiSecret(
     )
     return registered
   })
+}
+
+/** 绑定来自登记事实；存量引用使用首次出现的不可变修订，绝不按当前表单重绑。 */
+export async function loadPlatformAiSecret(db: Db, secretId: string) {
+  const secret = await loadSecretCiphertext(db, secretId)
+  if (!secret || secret.provider !== LOCAL_SECRET_PROVIDER) return null
+  const { platformAiSecretBindings, platformConfigRevisions } = schemaFor(db)
+  const [binding] = await db
+    .select()
+    .from(platformAiSecretBindings)
+    .where(eq(platformAiSecretBindings.secretId, secretId))
+    .limit(1)
+  if (binding) return { ...secret, modelOrigin: binding.modelOrigin }
+
+  // ponytail: 只有存量未登记绑定的引用扫描历史；大量存量读取时将首次绑定回填到专表。
+  const history = await db
+    .select({ document: platformConfigRevisions.document })
+    .from(platformConfigRevisions)
+    .orderBy(asc(platformConfigRevisions.revision))
+  for (const row of history) {
+    const ai = row.document.browserAi
+    if (
+      ai.secretRef?.provider === LOCAL_SECRET_PROVIDER &&
+      ai.secretRef.secretId === secretId &&
+      ai.baseUrl
+    ) {
+      return {
+        ...secret,
+        modelOrigin: modelServiceOrigin(platformModelUrlSchema.parse(ai.baseUrl)),
+      }
+    }
+  }
+  return { ...secret, modelOrigin: null }
 }
 
 export async function listPlatformConfigRevisions(
@@ -291,6 +323,7 @@ export async function listPlatformConfigRevisions(
         diff: platformConfigDiff(byRevision.get(row.revision - 1), document),
       }
     }),
-    nextCursor: rows.length > limit && last ? encodeAuditCursor(last.createdAt, last.id) : undefined,
+    nextCursor:
+      rows.length > limit && last ? encodeAuditCursor(last.createdAt, last.id) : undefined,
   })
 }

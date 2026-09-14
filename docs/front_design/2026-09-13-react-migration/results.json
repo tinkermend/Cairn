@@ -1,0 +1,25 @@
+{
+  "scope": "实际 React、路由、API Schema；请求由 Playwright fixture 隔离。未执行真实后端写入或目标系统自动化。",
+  "checks": [
+    "目标搜索、状态筛选、空结果与概览保持同一对象",
+    "删除取消不发出写请求",
+    "账号绑定、保存失败保留输入、Loading 不跳宽且减少动效生效",
+    "场景按目标系统名称搜索，状态与最新版本对应实际 DTO",
+    "步骤顺序、选择、断言条件、副作用提示与场景运行入口",
+    "敏感 Fill 输入在属性与结构化定义中均遮蔽",
+    "四个真实路由 × 五档宽度，长名称 / URL / 32 步骤无整体横向溢出",
+    "只读用户无写入口；无目标读取权限时不额外请求目标资料",
+    "列表空态、接口错误与原位重试恢复"
+  ],
+  "screenshots": [
+    "screenshots/targets.png",
+    "screenshots/target-detail.png",
+    "screenshots/account-error.png",
+    "screenshots/scenarios.png",
+    "screenshots/scenario-detail.png",
+    "screenshots/targets-narrow.png",
+    "screenshots/target-detail-narrow.png",
+    "screenshots/scenarios-narrow.png",
+    "screenshots/scenario-detail-narrow.png"
+  ]
+}

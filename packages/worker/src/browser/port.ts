@@ -26,6 +26,9 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
         throw error
       }
     },
+    async invalidate(grant: SessionGrant, reason: string) {
+      await manager.invalidate(grant, reason)
+    },
     async execute(
       grant: SessionGrant,
       command: BrowserCommand,
@@ -74,7 +77,7 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
   }
 }
 
-async function attachObjectEvidence(input: {
+export async function attachObjectEvidence(input: {
   type: 'screenshot' | 'trace'
   bytes: Buffer | Uint8Array | undefined
   contentType: string

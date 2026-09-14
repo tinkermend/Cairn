@@ -14,16 +14,16 @@ import {
   failRunValidation,
   findEvictableSession,
   getRun,
+  listRunEvidence,
   getSessionById,
   newId,
   openIsolatedDb,
   requireCreatedSession,
-  resumeRunAfterAuth,
   setSessionStatus,
   startAttempt,
   yieldClaimedRun,
   type DbHandle,
-} from '../index.js'
+} from '../test-entry.js'
 import { consoleAccounts } from '../schema/console.js'
 import { targetAccounts, targets } from '../schema/targets.js'
 import { forceGrantForRun, seedWorker, type SeededWorker } from './lease-harness.js'
@@ -227,7 +227,9 @@ describe('P4 后半 Affinity / 容量 / 失联隔离（集成）', { timeout: 12
     await handle.pool.query(`UPDATE runs SET status = 'WAITING_FOR_AUTH', updated_at = now() WHERE id = $1`, [
       created.detail.id,
     ])
-    await resumeRunAfterAuth(handle.db, { runId: created.detail.id, actor: { id: actorId } })
+    await handle.pool.query(`UPDATE runs SET status = 'RECOVERING', updated_at = now() WHERE id = $1`, [
+      created.detail.id,
+    ])
     await cancelOtherClaimable(created.detail.id)
     const other = await seedWorker(handle, 'aff-resume-other')
     expect(await claimAs(other)).toBeNull()
@@ -239,7 +241,9 @@ describe('P4 后半 Affinity / 容量 / 失联隔离（集成）', { timeout: 12
     await handle.pool.query(`UPDATE runs SET status = 'WAITING_FOR_AUTH', updated_at = now() WHERE id = $1`, [
       lostRun.detail.id,
     ])
-    await resumeRunAfterAuth(handle.db, { runId: lostRun.detail.id, actor: { id: actorId } })
+    await handle.pool.query(`UPDATE runs SET status = 'RECOVERING', updated_at = now() WHERE id = $1`, [
+      lostRun.detail.id,
+    ])
     await cancelOtherClaimable(lostRun.detail.id)
     expect(await claimAs(owner)).toBeNull()
     expect(await claimAs(other)).toBeNull()
@@ -357,10 +361,15 @@ describe('P4 后半 Affinity / 容量 / 失联隔离（集成）', { timeout: 12
       leaseTtlSeconds: 30,
       runFencingToken: grant.fencingToken,
     })
+    const authRun = await queueBound(held)
+    await forceGrantForRun(handle, authRun.detail.id, worker.workerId)
     await claimAuthHold(handle.db, {
       sessionId: authSession.id,
       workerId: worker.workerId,
       holdSeconds: 120,
+      runId: authRun.detail.id,
+      sessionGeneration: authSession.generation,
+      workerInstanceId: worker.instanceId,
     })
 
     const evictable = await findEvictableSession(handle.db, worker.workerId)
@@ -418,8 +427,19 @@ describe('P4 后半 Affinity / 容量 / 失联隔离（集成）', { timeout: 12
     const worker = await seedWorker(handle, 'aff-fail-config')
     const run = await queueBound()
     const grant = await forceGrantForRun(handle, run.detail.id, worker.workerId)
-    await failRunValidation(handle.db, run.detail.id, { grant })
+    await failRunValidation(handle.db, run.detail.id, { grant }, {
+      code: 'SESSION_ACCOUNT_REQUIRED',
+      category: 'VALIDATION',
+      retryable: false,
+      safeMessage: '浏览器步骤未指定目标账号，无法建立会话',
+    })
     expect((await getRun(handle.db, run.detail.id)).status).toBe('FAILED')
     expect(await countFailedRecoveries(handle.db, run.detail.id)).toBe(0)
+    const evidence = (await listRunEvidence(handle.db, run.detail.id)).items.find((item) => item.type === 'error')
+    expect(evidence?.attemptId).toBeUndefined()
+    expect(evidence?.payload).toMatchObject({
+      code: 'SESSION_ACCOUNT_REQUIRED',
+      safeMessage: '浏览器步骤未指定目标账号，无法建立会话',
+    })
   })
 })

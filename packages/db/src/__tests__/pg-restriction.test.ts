@@ -13,6 +13,9 @@ describe('mapPgRestriction', () => {
     expect(mapPgRestriction(pgError('23505', 'runs_idempotency_idx'))).toMatchObject({
       code: 'RUN_IDEMPOTENCY_CONFLICT',
     })
+    expect(mapPgRestriction(pgError('23505', 'recording_drafts_actor_idempotency_idx'))).toMatchObject({
+      code: 'RECORDING_IDEMPOTENCY_CONFLICT',
+    })
   })
 
   it('23503 按约束名区分三条删除冲突，不互相误报', () => {
@@ -24,6 +27,9 @@ describe('mapPgRestriction', () => {
     })
     expect(mapPgRestriction(pgError('23503', 'runs_scenario_id_fkey'))).toMatchObject({
       code: 'SCENARIO_HAS_RUNS',
+    })
+    expect(mapPgRestriction(pgError('23503', 'recording_drafts_target_id_fkey'))).toMatchObject({
+      code: 'TARGET_HAS_RECORDINGS',
     })
   })
 

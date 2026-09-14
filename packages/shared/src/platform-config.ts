@@ -38,7 +38,12 @@ export type PlatformSessionReusePolicy = (typeof PLATFORM_SESSION_REUSE_POLICIES
 
 const UrlCtor = (
   globalThis as unknown as {
-    URL: new (input: string) => { username: string; password: string; protocol: string; host: string }
+    URL: new (input: string) => {
+      username: string
+      password: string
+      protocol: string
+      host: string
+    }
   }
 ).URL
 
@@ -128,10 +133,18 @@ export const platformConfigDocumentSchema = z
     }
     if (!ai.enabled) return
     if (!ai.baseUrl) {
-      ctx.addIssue({ code: 'custom', path: ['browserAi', 'baseUrl'], message: '启用浏览器仿真 AI 时必须配置服务地址' })
+      ctx.addIssue({
+        code: 'custom',
+        path: ['browserAi', 'baseUrl'],
+        message: '启用浏览器仿真 AI 时必须配置服务地址',
+      })
     }
     if (!ai.model) {
-      ctx.addIssue({ code: 'custom', path: ['browserAi', 'model'], message: '启用浏览器仿真 AI 时必须配置模型名' })
+      ctx.addIssue({
+        code: 'custom',
+        path: ['browserAi', 'model'],
+        message: '启用浏览器仿真 AI 时必须配置模型名',
+      })
     }
     if (!ai.modelFamily) {
       ctx.addIssue({
@@ -157,7 +170,10 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     defaultRetryLimit: DEFAULT_RETRY_LIMIT,
   },
   session: {
-    reuse: DEFAULT_SESSION_REUSE_POLICY === 'RECREATE_SESSION' ? 'NEW_PAGE' : DEFAULT_SESSION_REUSE_POLICY,
+    reuse:
+      DEFAULT_SESSION_REUSE_POLICY === 'RECREATE_SESSION'
+        ? 'NEW_PAGE'
+        : DEFAULT_SESSION_REUSE_POLICY,
     idleTtlSeconds: DEFAULT_SESSION_IDLE_TTL_SECONDS,
     maxLifetimeSeconds: DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
     authWaitSeconds: DEFAULT_SESSION_AUTH_WAIT_SECONDS,
@@ -220,6 +236,7 @@ export const platformConfigRestoreBodySchema = z.strictObject({
 export type PlatformConfigRestoreBody = z.infer<typeof platformConfigRestoreBodySchema>
 
 export const platformConfigSecretBodySchema = z.strictObject({
+  baseUrl: platformModelUrlSchema,
   apiKey: z.string().min(1).max(4096),
 })
 export type PlatformConfigSecretBody = z.infer<typeof platformConfigSecretBodySchema>
@@ -235,13 +252,17 @@ export const platformConfigTestConnectionBodySchema = z.strictObject({
   modelFamily: z.string().trim().min(1).max(64),
   secretRef: secretRefSchema.optional(),
 })
-export type PlatformConfigTestConnectionBody = z.infer<typeof platformConfigTestConnectionBodySchema>
+export type PlatformConfigTestConnectionBody = z.infer<
+  typeof platformConfigTestConnectionBodySchema
+>
 
 export const platformConfigTestConnectionResponseSchema = z.strictObject({
   ok: z.boolean(),
   message: z.string().min(1).max(512),
 })
-export type PlatformConfigTestConnectionResponse = z.infer<typeof platformConfigTestConnectionResponseSchema>
+export type PlatformConfigTestConnectionResponse = z.infer<
+  typeof platformConfigTestConnectionResponseSchema
+>
 
 export const platformConfigRevisionSchema = z.strictObject({
   id: entityIdSchema,
@@ -310,22 +331,23 @@ export function resolvePlatformEvidencePolicy(
   override: EvidencePolicy | null | undefined,
   platform: PlatformEvidenceDefaults,
 ): ResolvedEvidencePolicy {
+  const trace = override?.trace ?? platform.trace
   const base: ResolvedEvidencePolicy = {
     screenshot: platform.screenshot,
     trace: platform.trace,
     required: [...DEFAULT_EVIDENCE_POLICY.required],
     retainDays: {
       screenshot: platform.retainDays.screenshot,
-      trace: platform.trace === 'always' ? platform.retainDays.debugTrace : platform.retainDays.trace,
+      trace: trace === 'always' ? platform.retainDays.debugTrace : platform.retainDays.trace,
     },
   }
   const resolved = resolveEvidencePolicy(override, base)
-  if (!override?.retainDays?.trace && (override?.trace ?? platform.trace) === 'always') {
+  if (override?.retainDays?.trace === undefined) {
     return {
       ...resolved,
       retainDays: {
         ...resolved.retainDays,
-        trace: platform.retainDays.debugTrace,
+        trace: base.retainDays.trace,
       },
     }
   }
@@ -373,7 +395,9 @@ export function overridesCompatible(
   if (!resolved) return false
   for (const [key, value] of Object.entries(override)) {
     if (value === undefined) continue
-    if (JSON.stringify(value) !== JSON.stringify(resolved[key])) return false
+    if (isPlainObject(value)) {
+      if (!isPlainObject(resolved[key]) || !overridesCompatible(value, resolved[key])) return false
+    } else if (JSON.stringify(value) !== JSON.stringify(resolved[key])) return false
   }
   return true
 }
@@ -447,14 +471,4 @@ export function localSecretRef(secretId: string) {
 export function modelServiceOrigin(url: string): string {
   const parsed = new UrlCtor(url)
   return `${parsed.protocol}//${parsed.host}`
-}
-
-/** 换了模型服务 origin 却沿用旧 Secret 时，必须重新登记，避免把原凭据发到新地址。 */
-export function requiresAiSecretRebind(
-  previous: PlatformBrowserAiConfig | undefined,
-  next: PlatformBrowserAiConfig,
-): boolean {
-  if (!next.enabled || !next.baseUrl || !previous?.enabled || !previous.baseUrl) return false
-  if (modelServiceOrigin(previous.baseUrl) === modelServiceOrigin(next.baseUrl)) return false
-  return previous.secretRef?.secretId === next.secretRef?.secretId
 }

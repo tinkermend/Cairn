@@ -1,4 +1,5 @@
 import { Logo } from '@/assets/logo'
+import { LoginIllustration } from './login-illustration'
 
 type AuthLayoutProps = {
   children: React.ReactNode
@@ -6,47 +7,36 @@ type AuthLayoutProps = {
 
 export function AuthLayout({ children }: AuthLayoutProps) {
   return (
-    <main className='relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-background px-4 py-10 sm:px-6'>
-      <div
-        aria-hidden='true'
-        className='pointer-events-none absolute inset-0'
-        style={{
-          background:
-            'radial-gradient(circle at 50% 42%, var(--technical-glow) 0%, transparent 54%)',
-        }}
-      />
-      <div
-        aria-hidden='true'
-        className='pointer-events-none absolute inset-0'
-        style={{
-          backgroundImage:
-            'linear-gradient(var(--technical-grid) 1px, transparent 1px), linear-gradient(90deg, var(--technical-grid) 1px, transparent 1px)',
-          backgroundSize: '32px 32px',
-          maskImage:
-            'radial-gradient(ellipse 54% 62% at 50% 44%, black, transparent)',
-        }}
-      />
-      <div
-        aria-hidden='true'
-        className='pointer-events-none absolute top-[42%] left-1/2 size-[min(78vw,760px)] -translate-x-1/2 -translate-y-1/2 rounded-full border border-technical-line'
-      />
-      <div className='relative z-10 mx-auto flex w-full max-w-[480px] flex-col'>
-        <header className='mb-8 flex items-center justify-center gap-5'>
-          <Logo className='size-14 shrink-0 sm:size-[72px]' alt='' />
-          <div>
-            <div className='text-[28px] leading-9 font-semibold text-foreground sm:text-[34px] sm:leading-[42px]'>
-              识途
-            </div>
-            <p className='text-[15px] leading-6 font-medium text-text-secondary sm:text-section sm:leading-7'>
+    <main className='grid min-h-[100dvh] bg-card bg-[radial-gradient(ellipse_at_50%_0%,var(--technical-glow),transparent_65%),linear-gradient(110deg,var(--surface-card)_5%,var(--action-secondary)_100%)] p-6 lg:grid-cols-2 lg:gap-6'>
+      <section className='flex min-w-0 flex-col sm:px-6 sm:py-4 xl:px-10'>
+        <header className='flex items-center gap-4'>
+          <Logo className='size-16 shrink-0' alt='' />
+          <div className='space-y-1'>
+            <div className='text-stat font-semibold text-foreground'>识途</div>
+            <p className='text-body leading-6 text-text-secondary'>
               可观测场景执行平台
             </p>
           </div>
         </header>
-        {children}
-        <footer className='mt-6 text-center text-label text-muted-foreground'>
+        <div className='flex flex-1 items-center justify-center py-12 sm:py-16'>
+          <div className='w-full max-w-[400px]'>{children}</div>
+        </div>
+        <footer className='text-center text-label text-muted-foreground'>
           © 2026 新炬网络
         </footer>
-      </div>
+      </section>
+      <aside
+        aria-labelledby='login-story-title'
+        className='relative hidden min-h-[640px] min-w-0 flex-col overflow-hidden rounded-xl border border-technical-line bg-secondary shadow-card lg:flex'
+      >
+        <LoginIllustration />
+        <h2
+          id='login-story-title'
+          className='relative px-8 pt-10 text-center text-[28px] leading-snug font-semibold text-foreground sm:text-[34px] xl:pt-12'
+        >
+          化繁为简，<span className='text-primary'>识途即行</span>
+        </h2>
+      </aside>
     </main>
   )
 }

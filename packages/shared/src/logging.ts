@@ -30,5 +30,11 @@ export const LOGGING_REDACT_PATHS: readonly string[] = [
   // 目标账号设密走请求体。默认序列化器不写 body，但一旦有人打开 body
   // 日志或把 req 整份倒进 customProps，这条路径必须已经在清单里。
   'req.body.password',
+  'res.body.token',
+  'res.body.secretDigest',
+  'token',
+  'secretDigest',
   'req.body.account.password',
+  'CAIRN_BROWSER_AI_API_KEY',
+  'env.CAIRN_BROWSER_AI_API_KEY',
 ]

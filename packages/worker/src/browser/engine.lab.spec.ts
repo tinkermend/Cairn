@@ -23,9 +23,11 @@ import {
   targetAccounts,
   targets,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, type Step } from '@cairn/shared'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
+import { saveServiceCaller, issueServiceCredential, authenticateService, createServiceRun, getServiceRun, listScenarioVersions, releaseServiceEvidence } from '@cairn/db'
+import { serviceCallerBodySchema } from '@cairn/shared'
 import { createBrowserPort } from './port.js'
 import { BrowserSessionManager } from './session-manager.js'
 import { LocalObjectStore } from '@cairn/storage'
@@ -275,6 +277,53 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
     expect(evidence.items.some((item) => item.type === 'screenshot' || item.type === 'trace')).toBe(false)
     expect(created.detail.evidenceStatus).toBe('PENDING')
     expect(detail.evidenceStatus === 'COMPLETE' || detail.evidenceStatus === 'PENDING').toBe(true)
+  })
+
+  it('服务任务复用真实 Engine：成功/失败/取消与发布输出；登录中总时限关闭浏览器', async () => {
+    const actor = { id: actorId }
+    const caller = (await saveServiceCaller(handle, null, serviceCallerBodySchema.parse({ name: '浏览器服务验收', owner: '平台', runTimeoutSeconds: 60 }), actor)).caller
+    const issued = await issueServiceCredential(handle, caller.id, { name: '测试 Key', scopes: ['run:execute', 'run:read', 'run:cancel', 'evidence:read'], grants: [{ targetId, accountIds: [accountId], allowAnonymous: false }], expiresInDays: 1 }, actor)
+    const principal = await authenticateService(handle, `Bearer ${issued.token}`)
+    async function serviceRun(steps: Step[]) {
+      const scenario = await createScenarioWithVersion(handle.db, { targetId, name: `service-${newId()}`, steps, actor })
+      const version = (await listScenarioVersions(handle, scenario.id)).items[0]!
+      return createServiceRun(handle, principal, { scenarioId: scenario.id, scenarioVersionId: version.id, targetAccountId: accountId, input: {}, idempotencyKey: newId() }, newId())
+    }
+    const navigate = (): Step => ({ id: newId(), name: '打开', type: 'navigate', effectType: 'IDEMPOTENT', input: { url: baseUrl } })
+    const engine = new ExecutionEngine(handle, createBrowserPort(manager, objects))
+    for (const mode of ['success', 'failure', 'cancel'] as const) {
+      const steps: Step[] = [navigate(), mode === 'success'
+        ? { id: newId(), name: '业务结果', type: 'echo', effectType: 'READ_ONLY', input: { value: 'approved-result' } }
+        : { id: newId(), name: '等待不存在元素', type: 'click', effectType: 'READ_ONLY', policy: { timeoutMs: mode === 'cancel' ? 10000 : 200, retryLimit: 0 }, input: { target: { framePath: [], candidates: [{ by: 'css', value: '#service-missing' }] } } }]
+      const created = await serviceRun(steps)
+      const grant = (await claimRun(handle, { workerId, instanceId: workerInstanceId, leaseTtlSeconds: 60 }))!
+      expect(grant.runId).toBe(created.detail.id)
+      const execution = engine.execute(grant.runId, { grant, cancelPollMs: 20 })
+      if (mode === 'cancel') {
+        await expect.poll(async () => (await getServiceRun(handle, principal, grant.runId)).stepRuns[1]?.attempts.length, { timeout: 10000 }).toBe(1)
+        await getServiceRun(handle, principal, grant.runId, true)
+      }
+      await execution
+      const result = await getServiceRun(handle, principal, grant.runId)
+      expect(result.status).toBe(mode === 'success' ? 'SUCCEEDED' : mode === 'failure' ? 'FAILED' : 'CANCELLED')
+      if (mode === 'success') {
+        expect(result.stepRuns[1]!.attempts[0]!.output).toBeNull()
+        const output = (await listRunEvidence(handle.db, grant.runId)).items.find(e => e.type === 'output' && e.attemptId === result.stepRuns[1]!.attempts[0]!.id)!
+        await releaseServiceEvidence(handle, grant.runId, output.id, true, actor)
+        expect((await getServiceRun(handle, principal, grant.runId)).stepRuns[1]!.attempts[0]!.output).toBe('approved-result')
+      }
+    }
+    // A login selector that never appears keeps authentication in flight until the service deadline.
+    for (const live of await handle.db.select().from((await import('@cairn/db/testing')).browserSessions)) await manager.close(live.id, 'deadline_fixture')
+    await handle.db.update(targets).set({ loginFields: { username: { by: 'css', value: '#never-login' }, password: { by: 'css', value: '#pass' }, submit: { by: 'css', value: '#go' } } }).where(eq(targets.id, targetId))
+    await saveServiceCaller(handle, caller.id, serviceCallerBodySchema.parse({ name: caller.name, owner: caller.owner, runTimeoutSeconds: 1 }), actor)
+    const timed = await serviceRun([navigate()])
+    const grant = (await claimRun(handle, { workerId, instanceId: workerInstanceId, leaseTtlSeconds: 60 }))!
+    const start = Date.now()
+    await engine.execute(grant.runId, { grant, cancelPollMs: 20 })
+    expect(Date.now() - start).toBeLessThan(6000)
+    expect(await getServiceRun(handle, principal, timed.detail.id)).toMatchObject({ status: 'CANCELLED', cancelReason: 'RUN_DEADLINE_EXCEEDED' })
+    await handle.db.update(targets).set({ loginFields: { username: { by: 'name', value: 'username' }, password: { by: 'name', value: 'password' }, submit: { by: 'css', value: 'button[type=submit]' } } }).where(eq(targets.id, targetId))
   })
 
   async function runWithPolicy(

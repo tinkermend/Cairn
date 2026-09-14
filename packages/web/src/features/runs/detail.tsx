@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
-import { isFinishedRunStatus, resolveEvidencePolicy, type ExecutableStepType } from '@cairn/shared'
+import { isAiStepType, isFinishedRunStatus, resolveEvidencePolicy, type ExecutableStepType } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { cancelRun, fetchRun, fetchRunEvidence, resumeRunAuth, reviewRun } from '@/lib/runs-api'
+import { cancelRun, reviewRun } from '@/lib/runs-api'
+import { connectionLabel, connectionTone, useRunObservation } from './use-run-observation'
 import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
@@ -29,22 +29,15 @@ import {
   stepRunStatusTone,
 } from './labels'
 import { AttemptEvidenceList } from './evidence-viewer'
+import { AiAttemptSummary } from './ai-evidence'
+import { BrowserView } from './browser-view'
 
 export function RunDetailPage() {
   const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
-  const runQuery = useQuery({ queryKey: ['runs', runId], queryFn: () => fetchRun(runId) })
-  const evidenceQuery = useQuery({
-    queryKey: ['runs', runId, 'evidence'],
-    queryFn: () => fetchRunEvidence(runId),
-  })
+  const { run, evidence, connection, query: runQuery, refresh, eventSeq } = useRunObservation(runId)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
-  const run = runQuery.data
-
-  function refresh() {
-    void runQuery.refetch()
-    void evidenceQuery.refetch()
-  }
+  const evidenceItems = evidence?.items ?? []
 
   return (
     <>
@@ -52,16 +45,17 @@ export function RunDetailPage() {
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title='运行详情'
-          description='业务状态、步骤时间线与结构化证据。刷新只走 GET，页面没有自动轮询。'
+          description='业务状态、步骤时间线与结构化证据。实时通道只提示变化，刷新仍从数据库恢复。'
           actions={
             <div className='flex items-center gap-2'>
-              <Button variant='outline' onClick={refresh}>
+              <StatusBadge tone={connectionTone(connection)}>{connectionLabel(connection)}</StatusBadge>
+              <Button variant='outline' onClick={() => void refresh()}>
                 刷新
               </Button>
               {run && !isFinishedRunStatus(run.status) && run.status !== 'NEEDS_REVIEW' ? (
                 <Can permission='run:cancel'>
                   <Button
-                    variant='destructive'
+                    variant={run.status === 'WAITING_FOR_AUTH' ? 'outline' : 'destructive'}
                     disabled={busy}
                     onClick={() => {
                       setBusy(true)
@@ -102,7 +96,7 @@ export function RunDetailPage() {
                 )}
               </div>
               <p className='mt-3 text-body text-muted-foreground'>
-                场景{' '}
+                {run.source?.kind === 'service' ? '服务 API 调用 · ' : ''}场景{' '}
                 <Link
                   to='/scenarios/$scenarioId'
                   params={{ scenarioId: run.scenarioId }}
@@ -203,36 +197,16 @@ export function RunDetailPage() {
                   </div>
                 </Can>
               ) : null}
-              {run.status === 'WAITING_FOR_AUTH' ? (
-                <Can permission='run:execute'>
-                  <div className='mt-4 space-y-3'>
-                    <p className='text-body'>
-                      等待的是目标系统登录，不是控制台账号。确认外部系统已登录后再放回领取。
-                    </p>
-                    <Button
-                      disabled={busy}
-                      onClick={() => {
-                        setBusy(true)
-                        void resumeRunAuth(runId, { note: note || undefined })
-                          .then(() => {
-                            toast.success('已确认目标系统登录，等待再次领取')
-                            refresh()
-                          })
-                          .catch((error) => {
-                            toast.error(error instanceof ApiRequestError ? error.message : '恢复失败')
-                          })
-                          .finally(() => setBusy(false))
-                      }}
-                    >
-                      确认目标系统已登录
-                    </Button>
-                  </div>
-                </Can>
-              ) : null}
             </section>
+            <BrowserView
+              runId={runId}
+              runStatus={run.status}
+              eventSeq={eventSeq}
+              onRunChanged={refresh}
+            />
 
             {(() => {
-              const runLevel = (evidenceQuery.data?.items ?? []).filter((item) => !item.attemptId)
+              const runLevel = evidenceItems.filter((item) => !item.attemptId)
               return runLevel.length > 0 ? (
                 <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
                   <h2 className='text-section font-semibold'>运行级证据</h2>
@@ -243,14 +217,14 @@ export function RunDetailPage() {
 
             <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
               <h2 className='text-section font-semibold'>步骤时间线</h2>
-              {evidenceQuery.isPending ? (
+              {runQuery.isPending ? (
                 <p className='text-label text-muted-foreground'>证据加载中…</p>
-              ) : evidenceQuery.isError ? (
-                <QueryErrorState title='无法加载证据' onRetry={() => void evidenceQuery.refetch()} />
+              ) : runQuery.isError ? (
+                <QueryErrorState title='无法加载证据' onRetry={() => void refresh()} />
               ) : null}
               {run.status === 'FAILED' && run.stepRuns.every((step) => step.attempts.length === 0) ? (
                 <p className='text-body text-status-warning-foreground'>
-                  {(evidenceQuery.data?.items ?? []).some((item) => !item.attemptId)
+                  {evidenceItems.some((item) => !item.attemptId)
                     ? '运行在步骤开始前失败。原因见运行级证据。'
                     : '运行在步骤开始前失败，没有留下 Attempt 证据。常见原因是浏览器步骤未指定目标账号，或会话配置不被支持。'}
                 </p>
@@ -267,9 +241,17 @@ export function RunDetailPage() {
                       </StatusBadge>
                     </div>
                     <p className='mt-1 text-label text-muted-foreground'>
-                      {step.type in STEP_TYPE_LABELS
-                        ? STEP_TYPE_LABELS[step.type as ExecutableStepType]
-                        : step.type}
+                      {isAiStepType(step.type) ? (
+                        <StatusBadge tone='ai'>
+                          {step.type in STEP_TYPE_LABELS
+                            ? STEP_TYPE_LABELS[step.type as ExecutableStepType]
+                            : step.type}
+                        </StatusBadge>
+                      ) : step.type in STEP_TYPE_LABELS ? (
+                        STEP_TYPE_LABELS[step.type as ExecutableStepType]
+                      ) : (
+                        step.type
+                      )}
                     </p>
                     {step.attempts.length === 0 ? (
                       <p className='mt-2 text-label text-muted-foreground'>尚未开始尝试。</p>
@@ -287,9 +269,15 @@ export function RunDetailPage() {
                             {attempt.error.code}: {attempt.error.safeMessage}
                           </p>
                         ) : null}
+                        {isAiStepType(step.type) ? (
+                          <AiAttemptSummary
+                            output={attempt.output}
+                            evidence={evidenceItems.filter((item) => item.attemptId === attempt.id)}
+                          />
+                        ) : null}
                         <AttemptEvidenceList
                           runId={run.id}
-                          items={(evidenceQuery.data?.items ?? []).filter((item) => item.attemptId === attempt.id)}
+                          items={evidenceItems.filter((item) => item.attemptId === attempt.id)}
                         />
                       </div>
                     ))}

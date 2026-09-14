@@ -44,5 +44,6 @@ export type ReviewRunBody = z.infer<typeof reviewRunBodySchema>
 
 export const resumeAuthBodySchema = z.strictObject({
   note: z.string().trim().max(512).optional(),
+  token: z.string().min(16).max(128).optional(),
 })
 export type ResumeAuthBody = z.infer<typeof resumeAuthBodySchema>

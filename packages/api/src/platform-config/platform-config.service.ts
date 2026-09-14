@@ -5,7 +5,7 @@ import {
   getPlatformConfig,
   getPlatformConfigRevision,
   listPlatformConfigRevisions,
-  loadSecretCiphertext,
+  loadPlatformAiSecret,
   newId,
   registerPlatformAiSecret,
   registerStandaloneSecret,
@@ -16,8 +16,11 @@ import {
 } from '@cairn/db'
 import {
   localSecretRef,
+  LOCAL_SECRET_PROVIDER,
+  entityIdSchema,
+  modelServiceOrigin,
   platformConfigDocumentSchema,
-  requiresAiSecretRebind,
+  type SecretRef,
   type PlatformConfigDocument,
   type PlatformConfigRestoreBody,
   type PlatformConfigSecretBody,
@@ -49,7 +52,10 @@ export class PlatformConfigService {
           ciphertext: this.secrets.encrypt(secretId, config.CAIRN_BROWSER_AI_API_KEY),
         })
       }
-      return await getOrCreatePlatformConfig(this.db, buildPlatformBootstrapDocument(config, secretId))
+      return await getOrCreatePlatformConfig(
+        this.db,
+        buildPlatformBootstrapDocument(config, secretId),
+      )
     } catch (error) {
       rethrowDomain(error)
     }
@@ -64,9 +70,9 @@ export class PlatformConfigService {
   }
 
   async update(body: PlatformConfigUpdateBody, actor: AuditActor) {
-    const current = await this.ensure()
+    await this.ensure()
     try {
-      await this.assertSecretBinding(body.document, current.document)
+      await this.assertSecretBinding(body.document)
       return await updatePlatformConfig(this.db, {
         expectedRevision: body.expectedRevision,
         document: body.document,
@@ -79,10 +85,10 @@ export class PlatformConfigService {
   }
 
   async restore(body: PlatformConfigRestoreBody, actor: AuditActor) {
-    const current = await this.ensure()
+    await this.ensure()
     try {
       const document = await getPlatformConfigRevision(this.db, body.revision)
-      await this.assertSecretBinding(document, current.document)
+      await this.assertSecretBinding(document)
       return await restorePlatformConfig(this.db, {
         revision: body.revision,
         expectedRevision: body.expectedRevision,
@@ -106,6 +112,7 @@ export class PlatformConfigService {
       await registerPlatformAiSecret(this.db, {
         id,
         ciphertext: this.secrets.encrypt(id, body.apiKey),
+        baseUrl: body.baseUrl,
         actor,
       })
       return { secretRef: localSecretRef(id) }
@@ -117,14 +124,11 @@ export class PlatformConfigService {
   async testConnection(body: PlatformConfigTestConnectionBody) {
     let apiKey: string | undefined
     if (body.secretRef) {
-      const row = await loadSecretCiphertext(this.db, body.secretRef.secretId)
-      if (!row) {
-        throw new DomainError('bad_request', 'AI_CONFIG_INVALID', '凭据引用不可用')
-      }
+      const row = await this.loadBoundSecret(body.secretRef, body.baseUrl).catch(rethrowDomain)
       try {
         apiKey = this.secrets.decrypt(row.id, row.ciphertext)
       } catch {
-        throw new DomainError('bad_request', 'AI_CONFIG_INVALID', '凭据引用不可用')
+        rethrowDomain(new DomainError('bad_request', 'AI_CONFIG_INVALID', '凭据引用不可用'))
       }
     }
     const base = body.baseUrl.endsWith('/') ? body.baseUrl : `${body.baseUrl}/`
@@ -150,23 +154,34 @@ export class PlatformConfigService {
     }
   }
 
-  private async assertSecretBinding(document: PlatformConfigDocument, previous?: PlatformConfigDocument) {
-    if (!document.browserAi.enabled) return
-    const secretId = document.browserAi.secretRef?.secretId
-    if (!secretId) {
-      throw new DomainError('bad_request', 'AI_CONFIG_INVALID', '启用浏览器仿真 AI 时必须配置 Secret 引用')
+  private async assertSecretBinding(document: PlatformConfigDocument) {
+    const { secretRef, baseUrl } = document.browserAi
+    if (!document.browserAi.enabled && !secretRef) return
+    if (!secretRef || !baseUrl) {
+      throw new DomainError(
+        'bad_request',
+        'AI_CONFIG_INVALID',
+        '模型凭据必须同时配置服务地址及有效 Secret 引用',
+      )
     }
-    const row = await loadSecretCiphertext(this.db, secretId)
+    await this.loadBoundSecret(secretRef, baseUrl)
+  }
+
+  private async loadBoundSecret(ref: SecretRef, baseUrl: string) {
+    if (ref.provider !== LOCAL_SECRET_PROVIDER || !entityIdSchema.safeParse(ref.secretId).success) {
+      throw new DomainError('bad_request', 'AI_CONFIG_INVALID', '凭据引用不可用')
+    }
+    const row = await loadPlatformAiSecret(this.db, ref.secretId)
     if (!row) {
       throw new DomainError('bad_request', 'AI_CONFIG_INVALID', '凭据引用不可用')
     }
-    if (requiresAiSecretRebind(previous?.browserAi, document.browserAi)) {
+    if (!row.modelOrigin || row.modelOrigin !== modelServiceOrigin(baseUrl)) {
       throw new DomainError(
         'bad_request',
         'AI_CONFIG_INVALID',
         '变更模型服务地址后必须重新登记密钥，避免把原凭据发到新地址',
       )
     }
+    return row
   }
 }
-

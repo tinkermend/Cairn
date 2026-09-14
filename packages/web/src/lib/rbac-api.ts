@@ -3,6 +3,7 @@ import {
   accountSchema,
   assignAccountRolesBodySchema,
   auditListResponseSchema,
+  loginAuditListResponseSchema,
   createAccountBodySchema,
   createRoleBodySchema,
   meResponseSchema,
@@ -15,6 +16,9 @@ import {
   type AccountDto,
   type AssignAccountRolesBody,
   type AuditListResponse,
+  type LoginAuditListResponse,
+  type LoginAuditQuery,
+  type OperationAuditQuery,
   type CreateAccountBody,
   type CreateRoleBody,
   type MeResponse,
@@ -107,6 +111,45 @@ export function setAccountPassword(id: string, body: SetPasswordBody): Promise<v
   }).then(() => undefined)
 }
 
-export function fetchAuditLog(): Promise<AuditListResponse> {
-  return apiFetch('/api/console/audit', auditListResponseSchema)
+function auditSearch(params: Record<string, string | undefined>): string {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value) query.set(key, value)
+  }
+  const text = query.toString()
+  return text ? `?${text}` : ''
+}
+
+function dateParam(value?: Date): string | undefined {
+  return value ? value.toISOString() : undefined
+}
+
+export function fetchOperationAudit(query: OperationAuditQuery): Promise<AuditListResponse> {
+  return apiFetch(
+    `/api/console/audit/operations${auditSearch({
+      cursor: query.cursor,
+      limit: String(query.limit),
+      action: query.action,
+      actorId: query.actorId,
+      from: dateParam(query.from),
+      to: dateParam(query.to),
+    })}`,
+    auditListResponseSchema,
+  )
+}
+
+export function fetchLoginAudit(query: LoginAuditQuery): Promise<LoginAuditListResponse> {
+  return apiFetch(
+    `/api/console/audit/logins${auditSearch({
+      cursor: query.cursor,
+      limit: String(query.limit),
+      outcome: query.outcome,
+      actorId: query.actorId,
+      identifier: query.identifier,
+      clientKind: query.clientKind,
+      from: dateParam(query.from),
+      to: dateParam(query.to),
+    })}`,
+    loginAuditListResponseSchema,
+  )
 }

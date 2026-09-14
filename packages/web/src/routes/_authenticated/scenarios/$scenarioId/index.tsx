@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 const searchSchema = z.object({
   runId: entityIdSchema.optional().catch(undefined),
+  import: entityIdSchema.optional().catch(undefined),
 })
 
 export const Route = createFileRoute('/_authenticated/scenarios/$scenarioId/')({

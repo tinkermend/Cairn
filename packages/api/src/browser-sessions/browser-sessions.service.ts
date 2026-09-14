@@ -10,7 +10,7 @@ export class BrowserSessionsService {
   constructor(@Inject(DB_HANDLE) private readonly handle: DbHandle) {}
 
   async list(): Promise<SessionListResponse> {
-    return { items: await listSessions(this.handle.db) }
+    return { items: await listSessions(this.handle) }
   }
 
   /**
@@ -26,7 +26,7 @@ export class BrowserSessionsService {
     actor: RequestAccount,
   ): Promise<SessionDto> {
     try {
-      return await disposeStuckSession(this.handle.db, {
+      return await disposeStuckSession(this.handle, {
         sessionId,
         actor: { id: actor.id },
         note: body.note,

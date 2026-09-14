@@ -4,7 +4,8 @@ import { resolve } from 'node:path'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { Pool } from 'pg'
 import { dbEnvSchema, formatEnvIssues, type PostgresDbEnv } from '@cairn/shared'
-import type { DbHandle } from './client.js'
+import { bindTransactions, type DbHandle } from './client.js'
+import { nativeTables } from './native.js'
 import { registerFixture } from './database.js'
 export type PgTestHandle = DbHandle & { pool: Pool }
 import { migrate } from './migrate.js'
@@ -202,7 +203,7 @@ export async function openIsolatedDb(name: string): Promise<PgTestHandle> {
     }
   }
 
-  const db = drizzle(pool)
+  const db = bindTransactions(drizzle(pool), 'postgres', nativeTables('postgres', 'cairn'))
   return registerFixture({
     db,
     pool,

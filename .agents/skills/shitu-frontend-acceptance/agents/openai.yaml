@@ -1,0 +1,4 @@
+interface:
+  display_name: "识途前端验收"
+  short_description: "按改动影响验收识途界面与业务能力，小改动轻量检查，复杂交互定向验证。"
+  default_prompt: "使用 $shitu-frontend-acceptance 验收本次识途前端改动，先判断影响范围，再执行最低充分的检查并报告偏差。"

@@ -19,7 +19,6 @@ import {
   registerWorker,
   renewRunLease,
   requestRunCancel,
-  resumeRunAfterAuth,
   reviewRun,
   setSessionStatus,
   settleLeaselessRun,
@@ -28,7 +27,7 @@ import {
   sweepDriftedRuns,
   yieldUnfinishedRun,
   type DbHandle,
-} from '../index.js'
+} from '../test-entry.js'
 import { newId } from '../id.js'
 import { consoleAccounts } from '../schema/console.js'
 import { targetAccounts, targets } from '../schema/targets.js'
@@ -306,7 +305,10 @@ describe('RunLease / fencing（集成）', { timeout: RF06_FULL ? 180_000 : 120_
       `UPDATE run_leases SET status = 'RELEASED', released_at = now(), release_reason = 'waiting_for_auth' WHERE id = $1`,
       [first.leaseId],
     )
-    await resumeRunAfterAuth(handle.db, { runId: created.detail.id, actor: { id: actorId } })
+    await handle.pool.query(
+      `UPDATE runs SET status = 'RECOVERING', updated_at = now() WHERE id = $1`,
+      [created.detail.id],
+    )
     const next = await claimThisRun(worker, created.detail.id)
     expect(next.fencingToken).toBeGreaterThan(first.fencingToken)
   })

@@ -1,6 +1,13 @@
 import {
+  applyRecordingImportBodySchema,
+  createRecordingBindingBodySchema,
   createScenarioBodySchema,
+  previewRecordingImportBodySchema,
   publishScenarioBodySchema,
+  recordingBindingCreatedSchema,
+  recordingImportListResponseSchema,
+  recordingImportPreviewSchema,
+  recordingImportReceiptSchema,
   runDetailSchema,
   saveScenarioDraftBodySchema,
   scenarioCapabilitiesSchema,
@@ -8,8 +15,15 @@ import {
   scenarioListResponseSchema,
   trialRunBodySchema,
   updateScenarioBodySchema,
+  type ApplyRecordingImportBody,
+  type CreateRecordingBindingBody,
   type CreateScenarioBody,
+  type PreviewRecordingImportBody,
   type PublishScenarioBody,
+  type RecordingBindingCreated,
+  type RecordingImportListResponse,
+  type RecordingImportPreview,
+  type RecordingImportReceipt,
   type RunDetailDto,
   type SaveScenarioDraftBody,
   type ScenarioCapabilities,
@@ -18,7 +32,13 @@ import {
   type TrialRunBody,
   type UpdateScenarioBody,
 } from '@cairn/shared'
+import { z } from 'zod'
 import { apiFetch } from '@/lib/api-client'
+
+const applyRecordingImportResponseSchema = z.object({
+  receipt: recordingImportReceiptSchema,
+  scenario: scenarioDetailSchema,
+})
 
 export function fetchScenarios(): Promise<ScenarioListResponse> {
   return apiFetch('/api/scenarios', scenarioListResponseSchema)
@@ -69,5 +89,42 @@ export function trialScenario(id: string, body: TrialRunBody): Promise<RunDetail
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(trialRunBodySchema.parse(body)),
+  })
+}
+
+export function createRecordingBinding(
+  id: string,
+  body: CreateRecordingBindingBody,
+): Promise<RecordingBindingCreated> {
+  return apiFetch(`/api/scenarios/${id}/recording-bindings`, recordingBindingCreatedSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(createRecordingBindingBodySchema.parse(body)),
+  })
+}
+
+export function fetchRecordingImports(id: string): Promise<RecordingImportListResponse> {
+  return apiFetch(`/api/scenarios/${id}/recording-imports`, recordingImportListResponseSchema)
+}
+
+export function previewRecordingImport(
+  id: string,
+  body: PreviewRecordingImportBody,
+): Promise<RecordingImportPreview> {
+  return apiFetch(`/api/scenarios/${id}/recording-imports/preview`, recordingImportPreviewSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(previewRecordingImportBodySchema.parse(body)),
+  })
+}
+
+export function applyRecordingImport(
+  id: string,
+  body: ApplyRecordingImportBody,
+): Promise<{ receipt: RecordingImportReceipt; scenario: ScenarioDetailDto }> {
+  return apiFetch(`/api/scenarios/${id}/recording-imports/apply`, applyRecordingImportResponseSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(applyRecordingImportBodySchema.parse(body)),
   })
 }

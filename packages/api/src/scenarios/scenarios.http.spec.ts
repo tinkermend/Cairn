@@ -86,6 +86,10 @@ function mockService() {
       executableStepTypes: ['echo', 'navigate'],
       unavailableReasons: [{ type: 'ai_action', code: 'AI_DISABLED', message: 'off' }],
     })),
+    createRecordingBinding: vi.fn(async () => ({ binding: { id: 'bind-1' }, ticket: 't'.repeat(64) })),
+    listRecordingImports: vi.fn(async () => ({ bindings: [], drafts: [], receipts: [] })),
+    previewRecordingImport: vi.fn(async () => ({ items: [] })),
+    applyRecordingImport: vi.fn(async () => ({ receipt: { id: 'r1' }, scenario })),
   }
 }
 
@@ -226,5 +230,33 @@ describe('Scenarios HTTP', () => {
     expect(service.saveDraft).toHaveBeenCalled()
     expect(service.publish).toHaveBeenCalled()
     expect(service.trial).toHaveBeenCalled()
+  })
+
+  it('录制绑定与回填需要 target:read，预览只需读权限', async () => {
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/recording-bindings`)
+      .send({ revision: 1, insertAnchor: { kind: 'start' } })
+      .expect(403)
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/recording-imports/apply`)
+      .send({
+        idempotencyKey: 'import-0001',
+        baseRevision: 1,
+        recordingDraftId: '66666666-6666-4666-8666-666666666666',
+        normalizerVersion: 'recording-normalizer@2',
+        sourceDigest: 'a'.repeat(64),
+        insertAnchor: { kind: 'start' },
+        dispositions: [{ sourceIndexes: [0], disposition: 'discard', reason: '不需要' }],
+      })
+      .expect(403)
+    await request(viewerApp.getHttpServer()).get(`/scenarios/${scenario.id}/recording-imports`).expect(403)
+    expect(service.createRecordingBinding).not.toHaveBeenCalled()
+    expect(service.applyRecordingImport).not.toHaveBeenCalled()
+
+    await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/recording-bindings`)
+      .send({ revision: 1, insertAnchor: { kind: 'start' } })
+      .expect(201)
+    expect(service.createRecordingBinding).toHaveBeenCalled()
   })
 })

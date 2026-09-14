@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -8,10 +8,13 @@ import {
   hasPermission,
   platformConfigCurrentSchema,
   platformConfigDocumentSchema,
+  platformModelUrlSchema,
+  type PlatformConfigCurrent,
   type PlatformConfigDocument,
   type PlatformConfigRevision,
 } from '@cairn/shared'
 import { toast } from 'sonner'
+import { useAuthStore } from '@/stores/auth-store'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   fetchPlatformConfig,
@@ -22,7 +25,8 @@ import {
   updatePlatformConfig,
   validatePlatformConfig,
 } from '@/lib/platform-config-api'
-import { useAuthStore } from '@/stores/auth-store'
+import { useCursorPage } from '@/hooks/use-cursor-page'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -53,16 +57,19 @@ import {
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import { CursorPagination } from '@/components/data-table'
 import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
 import { Can } from '@/components/rbac/can'
-import { CursorPagination } from '@/components/data-table'
 import { TruncatedText } from '@/components/truncated-text'
-import { useCursorPage } from '@/hooks/use-cursor-page'
-import { CAPTURE_MODE_LABELS, SESSION_REUSE_LABELS, SOURCE_LABELS } from './labels'
+import {
+  CAPTURE_MODE_LABELS,
+  SESSION_REUSE_LABELS,
+  SOURCE_LABELS,
+} from './labels'
 
 const TABS = [
   { id: 'ai', title: '浏览器 AI' },
@@ -74,7 +81,9 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]['id']
 
-function cloneDocument(document: PlatformConfigDocument): PlatformConfigDocument {
+function cloneDocument(
+  document: PlatformConfigDocument
+): PlatformConfigDocument {
   return structuredClone(document)
 }
 
@@ -84,34 +93,58 @@ function formatTime(value: string) {
 
 export function PlatformConfigPage() {
   const user = useAuthStore((state) => state.auth.user)
-  const canWrite = Boolean(user && hasPermission(user.permissions, 'platform-config:write'))
+  const canWrite = Boolean(
+    user && hasPermission(user.permissions, 'platform-config:write')
+  )
   const client = useQueryClient()
-  const current = useQuery({ queryKey: ['platform-config'], queryFn: fetchPlatformConfig })
+  const current = useQuery({
+    queryKey: ['platform-config'],
+    queryFn: fetchPlatformConfig,
+  })
   const [tab, setTab] = useState<TabId>('ai')
   const [reason, setReason] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
-  const hydrated = useRef(false)
+  const [editingRevision, setEditingRevision] = useState<number>()
   const form = useForm<PlatformConfigDocument>({
     resolver: zodResolver(platformConfigDocumentSchema),
     defaultValues: FACTORY_PLATFORM_CONFIG,
   })
+  const isDirty = form.formState.isDirty
 
   useEffect(() => {
-    if (!current.data || hydrated.current) return
+    if (
+      !current.data ||
+      isDirty ||
+      busy ||
+      editingRevision === current.data.revision
+    )
+      return
     form.reset(cloneDocument(current.data.document))
-    hydrated.current = true
-  }, [current.data, form])
+    setEditingRevision(current.data.revision)
+  }, [current.data, form, isDirty, busy, editingRevision])
 
   const document = form.watch()
   const revision = current.data?.revision
   const updatedAt = current.data?.updatedAt
   const source = current.data?.source
+  const stale =
+    editingRevision !== undefined &&
+    revision !== undefined &&
+    editingRevision !== revision
+
+  async function resetEditor(saved: PlatformConfigCurrent) {
+    await client.cancelQueries({ queryKey: ['platform-config'], exact: true })
+    client.setQueryData(['platform-config'], saved)
+    form.reset(cloneDocument(saved.document))
+    setEditingRevision(saved.revision)
+    setReason('')
+    setApiKey('')
+  }
 
   async function persist(next: PlatformConfigDocument, persistReason: string) {
-    const expectedRevision =
-      client.getQueryData<typeof current.data>(['platform-config'])?.revision ?? revision
-    if (!expectedRevision) return
+    const expectedRevision = editingRevision
+    if (!expectedRevision || stale || busy) return
     setBusy(true)
     try {
       const saved = await updatePlatformConfig({
@@ -119,28 +152,20 @@ export function PlatformConfigPage() {
         reason: persistReason,
         document: next,
       })
-      client.setQueryData(['platform-config'], saved)
-      form.reset(cloneDocument(saved.document))
-      setReason('')
+      await resetEditor(saved)
       toast.success(`已保存并生效，修订 ${saved.revision}`)
     } catch (error) {
       if (error instanceof ApiRequestError && error.status === 409) {
-        const latest = platformConfigCurrentSchema.safeParse(error.payload.details)
-        const fallbackRevision =
-          error.payload.details &&
-          typeof error.payload.details === 'object' &&
-          'revision' in error.payload.details &&
-          typeof error.payload.details.revision === 'number'
-            ? error.payload.details.revision
-            : undefined
-        if (latest.success) client.setQueryData(['platform-config'], latest.data)
-        else if (fallbackRevision && current.data) {
-          client.setQueryData(['platform-config'], { ...current.data, revision: fallbackRevision })
-        } else {
+        const latest = platformConfigCurrentSchema.safeParse(
+          error.payload.details
+        )
+        if (latest.success)
+          client.setQueryData(['platform-config'], latest.data)
+        else {
           await current.refetch()
         }
         toast.error(
-          `配置已被他人更新到修订 ${latest.success ? latest.data.revision : fallbackRevision ?? current.data?.revision ?? '未知'}，已保留你的输入，请核对后再次保存`,
+          '配置已被他人更新，已保留你的输入。请载入最新配置后重新编辑。'
         )
         return
       }
@@ -183,10 +208,22 @@ export function PlatformConfigPage() {
       toast.error('请输入模型密钥')
       return
     }
+    const address = platformModelUrlSchema.safeParse(
+      form.getValues('browserAi.baseUrl')
+    )
+    if (!address.success) {
+      toast.error('请先填写有效的模型服务地址，密钥将绑定此服务')
+      return
+    }
     setBusy(true)
     try {
-      const registered = await registerPlatformConfigSecret(apiKey)
-      form.setValue('browserAi.secretRef', registered.secretRef, { shouldDirty: true })
+      const registered = await registerPlatformConfigSecret({
+        apiKey,
+        baseUrl: address.data,
+      })
+      form.setValue('browserAi.secretRef', registered.secretRef, {
+        shouldDirty: true,
+      })
       setApiKey('')
       toast.success('密钥已登记，尚未保存到当前配置')
     } catch (error) {
@@ -198,7 +235,11 @@ export function PlatformConfigPage() {
 
   async function onTestConnection() {
     const values = form.getValues()
-    if (!values.browserAi.baseUrl || !values.browserAi.model || !values.browserAi.modelFamily) {
+    if (
+      !values.browserAi.baseUrl ||
+      !values.browserAi.model ||
+      !values.browserAi.modelFamily
+    ) {
       toast.error('请先填写模型地址、模型名和模型族')
       return
     }
@@ -213,7 +254,9 @@ export function PlatformConfigPage() {
       if (result.ok) toast.success(result.message)
       else toast.error(result.message)
     } catch (error) {
-      toast.error(error instanceof ApiRequestError ? error.message : '连接测试失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '连接测试失败'
+      )
     } finally {
       setBusy(false)
     }
@@ -230,7 +273,10 @@ export function PlatformConfigPage() {
         {current.isPending ? (
           <PageSkeleton />
         ) : current.isError ? (
-          <QueryErrorState title='无法加载平台配置' onRetry={() => void current.refetch()} />
+          <QueryErrorState
+            title='无法加载平台配置'
+            onRetry={() => void current.refetch()}
+          />
         ) : (
           <section className='min-w-0 rounded-lg border border-border-card bg-card p-5 shadow-card'>
             <p className='text-label text-muted-foreground'>
@@ -238,10 +284,40 @@ export function PlatformConfigPage() {
               {updatedAt ? formatTime(updatedAt) : '—'}
               {current.data?.reason ? ` · ${current.data.reason}` : ''}
             </p>
-            <Tabs value={tab} onValueChange={(value) => setTab(value as TabId)} className='mt-4 gap-4'>
+            {stale ? (
+              <Alert variant='warning' className='mt-4'>
+                <AlertTitle>配置已有更新，暂不能保存</AlertTitle>
+                <AlertDescription>
+                  <p>
+                    你正在编辑修订 {editingRevision}，当前为修订 {revision}
+                    。输入仍已保留；重新加载将放弃本次未保存修改。
+                  </p>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    disabled={busy}
+                    onClick={() =>
+                      current.data && void resetEditor(current.data)
+                    }
+                  >
+                    放弃本次修改并载入最新配置
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            <Tabs
+              value={tab}
+              onValueChange={(value) => setTab(value as TabId)}
+              className='mt-4 gap-4'
+            >
               <TabsList className='flex h-auto w-full flex-wrap'>
                 {TABS.map((item) => (
-                  <TabsTrigger key={item.id} value={item.id} className='flex-none'>
+                  <TabsTrigger
+                    key={item.id}
+                    value={item.id}
+                    disabled={busy}
+                    className='flex-none'
+                  >
                     {item.title}
                   </TabsTrigger>
                 ))}
@@ -256,7 +332,7 @@ export function PlatformConfigPage() {
                 >
                   <TabsContent value='ai'>
                     <AiFields
-                      canWrite={canWrite}
+                      canWrite={canWrite && !busy}
                       apiKey={apiKey}
                       secretRef={document.browserAi.secretRef}
                       onApiKeyChange={setApiKey}
@@ -266,13 +342,13 @@ export function PlatformConfigPage() {
                     />
                   </TabsContent>
                   <TabsContent value='execution'>
-                    <ExecutionFields canWrite={canWrite} />
+                    <ExecutionFields canWrite={canWrite && !busy} />
                   </TabsContent>
                   <TabsContent value='session'>
-                    <SessionFields canWrite={canWrite} />
+                    <SessionFields canWrite={canWrite && !busy} />
                   </TabsContent>
                   <TabsContent value='evidence'>
-                    <EvidenceFields canWrite={canWrite} />
+                    <EvidenceFields canWrite={canWrite && !busy} />
                   </TabsContent>
                   {tab !== 'revisions' ? (
                     <div className='space-y-3 border-t border-border pt-4'>
@@ -281,23 +357,31 @@ export function PlatformConfigPage() {
                         <Textarea
                           id='platform-config-reason'
                           value={reason}
-                          disabled={!canWrite}
+                          disabled={!canWrite || busy}
                           onChange={(event) => setReason(event.target.value)}
                           placeholder='说明这次修改的原因，会写入变更记录。'
                         />
                       </div>
                       <p className='text-label text-muted-foreground'>
-                        当前默认超时 {document.execution.defaultTimeoutMs} ms。AI 请求超时必须小于每个
-                        AI 步骤解析后的超时。
+                        当前默认超时 {document.execution.defaultTimeoutMs}{' '}
+                        ms。AI 请求超时必须小于每个 AI 步骤解析后的超时。
                       </p>
                       <div className='flex flex-wrap gap-2'>
                         <Can permission='platform-config:write'>
-                          <Button type='submit' loading={busy}>
+                          <Button
+                            type='submit'
+                            loading={busy}
+                            disabled={stale || !editingRevision}
+                          >
                             保存并生效
                           </Button>
                         </Can>
                         <Can permission='platform-config:write'>
-                          <Button type='button' variant='outline' onClick={() => void onValidate()}>
+                          <Button
+                            type='button'
+                            variant='outline'
+                            onClick={() => void onValidate()}
+                          >
                             校验
                           </Button>
                         </Can>
@@ -310,7 +394,8 @@ export function PlatformConfigPage() {
                 <RevisionPanel
                   canWrite={canWrite}
                   expectedRevision={revision ?? 1}
-                  onRestored={() => void client.invalidateQueries({ queryKey: ['platform-config'] })}
+                  onRestored={resetEditor}
+                  onBusyChange={setBusy}
                 />
               </TabsContent>
             </Tabs>
@@ -346,10 +431,16 @@ function AiFields({
           <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2'>
             <div>
               <FormLabel>启用浏览器仿真 AI</FormLabel>
-              <FormDescription>关闭后不能新发布或创建含 AI 步骤的运行；已有运行继续按快照执行。</FormDescription>
+              <FormDescription>
+                关闭后不能新发布或创建含 AI 步骤的运行；已有运行继续按快照执行。
+              </FormDescription>
             </div>
             <FormControl>
-              <Switch checked={field.value} disabled={!canWrite} onCheckedChange={field.onChange} />
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
             </FormControl>
           </FormItem>
         )}
@@ -365,11 +456,13 @@ function AiFields({
                   disabled={!canWrite}
                   placeholder='https://api.example.com/v1'
                   value={field.value ?? ''}
-                  onChange={(event) => field.onChange(event.target.value || undefined)}
+                  onChange={(event) =>
+                    field.onChange(event.target.value || undefined)
+                  }
                 />
               </FormControl>
               <FormDescription>
-                不得在 URL 内嵌凭据。更换服务主机后必须重新登记密钥。普通用户看不到这个地址。
+                不得在 URL 内嵌凭据。更换服务主机或端口后必须重新登记密钥。
               </FormDescription>
               <FormMessage />
             </FormItem>
@@ -384,7 +477,9 @@ function AiFields({
                 <Input
                   disabled={!canWrite}
                   value={field.value ?? ''}
-                  onChange={(event) => field.onChange(event.target.value || undefined)}
+                  onChange={(event) =>
+                    field.onChange(event.target.value || undefined)
+                  }
                 />
               </FormControl>
               <FormMessage />
@@ -401,10 +496,14 @@ function AiFields({
                   disabled={!canWrite}
                   placeholder='doubao-seed'
                   value={field.value ?? ''}
-                  onChange={(event) => field.onChange(event.target.value || undefined)}
+                  onChange={(event) =>
+                    field.onChange(event.target.value || undefined)
+                  }
                 />
               </FormControl>
-              <FormDescription>须是 Worker 适配层支持的视觉模型族。</FormDescription>
+              <FormDescription>
+                须是 Worker 适配层支持的视觉模型族。
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}
@@ -419,7 +518,9 @@ function AiFields({
                   type='number'
                   disabled={!canWrite}
                   value={field.value}
-                  onChange={(event) => field.onChange(Number(event.target.value))}
+                  onChange={(event) =>
+                    field.onChange(Number(event.target.value))
+                  }
                 />
               </FormControl>
               <FormMessage />
@@ -436,7 +537,9 @@ function AiFields({
                   type='number'
                   disabled={!canWrite}
                   value={field.value}
-                  onChange={(event) => field.onChange(Number(event.target.value))}
+                  onChange={(event) =>
+                    field.onChange(Number(event.target.value))
+                  }
                 />
               </FormControl>
               <FormMessage />
@@ -453,7 +556,9 @@ function AiFields({
                   type='number'
                   disabled={!canWrite}
                   value={field.value}
-                  onChange={(event) => field.onChange(Number(event.target.value))}
+                  onChange={(event) =>
+                    field.onChange(Number(event.target.value))
+                  }
                 />
               </FormControl>
               <FormMessage />
@@ -462,7 +567,7 @@ function AiFields({
         />
       </div>
       <div className='space-y-2 rounded-md border border-border px-3 py-3'>
-        <Label>模型密钥</Label>
+        <Label htmlFor='platform-model-key'>模型密钥</Label>
         <p className='text-label text-muted-foreground'>
           密钥只写不回显。
           {secretRef
@@ -471,6 +576,7 @@ function AiFields({
         </p>
         <div className='flex flex-col gap-2 sm:flex-row'>
           <Input
+            id='platform-model-key'
             type='password'
             autoComplete='new-password'
             disabled={!canWrite}
@@ -479,12 +585,22 @@ function AiFields({
             onChange={(event) => onApiKeyChange(event.target.value)}
           />
           <Can permission='platform-config:write'>
-            <Button type='button' variant='outline' loading={busy} onClick={onRegisterSecret}>
+            <Button
+              type='button'
+              variant='outline'
+              loading={busy}
+              onClick={onRegisterSecret}
+            >
               登记密钥
             </Button>
           </Can>
           <Can permission='platform-config:write'>
-            <Button type='button' variant='outline' loading={busy} onClick={onTestConnection}>
+            <Button
+              type='button'
+              variant='outline'
+              loading={busy}
+              onClick={onTestConnection}
+            >
               测试连接
             </Button>
           </Can>
@@ -510,7 +626,9 @@ function ExecutionFields({ canWrite }: { canWrite: boolean }) {
                 onChange={(event) => field.onChange(Number(event.target.value))}
               />
             </FormControl>
-            <FormDescription>未写超时的步骤继承此值。单次运行或步骤仍可覆盖。</FormDescription>
+            <FormDescription>
+              未写超时的步骤继承此值。单次运行或步骤仍可覆盖。
+            </FormDescription>
             <FormMessage />
           </FormItem>
         )}
@@ -518,7 +636,9 @@ function ExecutionFields({ canWrite }: { canWrite: boolean }) {
       <FormItem>
         <FormLabel>默认自动重试</FormLabel>
         <p className='text-body'>0，不可改</p>
-        <FormDescription>平台默认重试保持关闭。AI Action 即使步骤未写重试也不会自动重试。</FormDescription>
+        <FormDescription>
+          平台默认重试保持关闭。AI Action 即使步骤未写重试也不会自动重试。
+        </FormDescription>
       </FormItem>
     </div>
   )
@@ -532,7 +652,11 @@ function SessionFields({ canWrite }: { canWrite: boolean }) {
         render={({ field }) => (
           <FormItem>
             <FormLabel>默认页面复用</FormLabel>
-            <Select disabled={!canWrite} value={field.value ?? ''} onValueChange={field.onChange}>
+            <Select
+              disabled={!canWrite}
+              value={field.value ?? ''}
+              onValueChange={field.onChange}
+            >
               <FormControl>
                 <SelectTrigger className='w-full'>
                   <SelectValue />
@@ -546,7 +670,9 @@ function SessionFields({ canWrite }: { canWrite: boolean }) {
                 ))}
               </SelectContent>
             </Select>
-            <FormDescription>重建会话仍是单次运行操作，不作为平台默认。</FormDescription>
+            <FormDescription>
+              重建会话仍是单次运行操作，不作为平台默认。
+            </FormDescription>
             <FormMessage />
           </FormItem>
         )}
@@ -610,8 +736,16 @@ function SessionFields({ canWrite }: { canWrite: boolean }) {
 function EvidenceFields({ canWrite }: { canWrite: boolean }) {
   return (
     <div className='grid gap-4 md:grid-cols-2'>
-      <CaptureField name='evidence.screenshot' label='截图采集' canWrite={canWrite} />
-      <CaptureField name='evidence.trace' label='Trace 采集' canWrite={canWrite} />
+      <CaptureField
+        name='evidence.screenshot'
+        label='截图采集'
+        canWrite={canWrite}
+      />
+      <CaptureField
+        name='evidence.trace'
+        label='Trace 采集'
+        canWrite={canWrite}
+      />
       <FormField
         name='evidence.retainDays.screenshot'
         render={({ field }) => (
@@ -659,7 +793,9 @@ function EvidenceFields({ canWrite }: { canWrite: boolean }) {
                 onChange={(event) => field.onChange(Number(event.target.value))}
               />
             </FormControl>
-            <FormDescription>Trace 选「始终」时使用。始终不等于永久保存。</FormDescription>
+            <FormDescription>
+              Trace 选「始终」时使用。始终不等于永久保存。
+            </FormDescription>
             <FormMessage />
           </FormItem>
         )}
@@ -686,7 +822,11 @@ function CaptureField({
       render={({ field }) => (
         <FormItem>
           <FormLabel>{label}</FormLabel>
-          <Select disabled={!canWrite} value={field.value ?? ''} onValueChange={field.onChange}>
+          <Select
+            disabled={!canWrite}
+            value={field.value ?? ''}
+            onValueChange={field.onChange}
+          >
             <FormControl>
               <SelectTrigger className='w-full'>
                 <SelectValue />
@@ -711,10 +851,12 @@ function RevisionPanel({
   canWrite,
   expectedRevision,
   onRestored,
+  onBusyChange,
 }: {
   canWrite: boolean
   expectedRevision: number
-  onRestored: () => void
+  onRestored: (saved: PlatformConfigCurrent) => Promise<void>
+  onBusyChange: (busy: boolean) => void
 }) {
   const page = useCursorPage()
   const revisions = useQuery({
@@ -731,26 +873,33 @@ function RevisionPanel({
       return
     }
     setBusyId(item.id)
+    onBusyChange(true)
     try {
-      await restorePlatformConfig({
+      const saved = await restorePlatformConfig({
         revision: item.revision,
         expectedRevision,
         reason,
       })
       setRestoreReason('')
       toast.success(`已从修订 ${item.revision} 恢复为新修订`)
-      onRestored()
+      await onRestored(saved)
       void revisions.refetch()
     } catch (error) {
       toast.error(error instanceof ApiRequestError ? error.message : '恢复失败')
     } finally {
       setBusyId(undefined)
+      onBusyChange(false)
     }
   }
 
   if (revisions.isPending) return <PageSkeleton />
   if (revisions.isError) {
-    return <QueryErrorState title='无法加载变更记录' onRetry={() => void revisions.refetch()} />
+    return (
+      <QueryErrorState
+        title='无法加载变更记录'
+        onRetry={() => void revisions.refetch()}
+      />
+    )
   }
 
   return (
@@ -764,6 +913,7 @@ function RevisionPanel({
           <Textarea
             id='restore-reason'
             value={restoreReason}
+            disabled={busyId !== undefined}
             onChange={(event) => setRestoreReason(event.target.value)}
             placeholder='说明为什么恢复这一版。'
           />
@@ -808,6 +958,7 @@ function RevisionPanel({
                       variant='outline'
                       size='sm'
                       loading={busyId === item.id}
+                      disabled={busyId !== undefined}
                       onClick={() => void restore(item)}
                     >
                       恢复这一版

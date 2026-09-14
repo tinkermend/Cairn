@@ -1,8 +1,15 @@
+import { expireRunDeadlines } from './deadline.js'
+import { settleRunCancellationTx } from './recover.js'
 import { atomic, databaseNow, schemaFor, updateRows } from '../native.js'
 import { and, asc, count, desc, eq, inArray, isNull, max, sql } from 'drizzle-orm'
 import {
   CANCELLED_ATTEMPT_ERROR,
+  executionActorSchema,
+  serviceAdmissionSchema,
   freezeExecutorVersions,
+  hasAiSteps,
+  loginScopeFromTargetUrl,
+  originsFromTargetUrls,
   RUNTIME_SCHEMA_VERSION,
   ScenarioValidationError,
   assertRunFromResolved,
@@ -10,10 +17,8 @@ import {
   redactJson,
   resolverDiagnosticsSchema,
   isHaltedRunStatus,
-  hasAiSteps,
-  loginScopeFromTargetUrl,
-  originsFromTargetUrls,
   DEFAULT_BROWSER_AI_HANG_WAIT_MS,
+  assertAiRequestTimeoutFitsSteps,
   FACTORY_PLATFORM_CONFIG,
   frozenTargetAuthSchema,
   idempotentRequestMatches,
@@ -27,6 +32,8 @@ import {
   runSnapshotSchema,
   type AiExecutionConfig,
   type CreateRunBody,
+  type ExecutionActor,
+  type ServiceAdmission,
   type EvidenceType,
   type ExecutionError,
   type ExecutionPolicy,
@@ -61,6 +68,7 @@ import { getPlatformConfig } from '../platform-config/store.js'
 import { computeIdempotencyDigest, computeSnapshotDigest } from './digest.js'
 import { badRequest, conflict, mapRestriction, notFound } from './errors.js'
 import { toEvidenceMetadata } from '../objects/evidence-map.js'
+import { appendRunEvents } from '../observe/events.js'
 import { loadScenarioVersion, prepareTrialVersion } from './scenarios.js'
 
 function iso(value: Date | null | undefined): string | null {
@@ -112,6 +120,7 @@ export async function listRuns(db: Db): Promise<RunListResponse> {
   return runListResponseSchema.parse({
     items: rows.map(
       ({ run: row, scenarioName, targetName, targetAccountName, scenarioVersionKind }) => ({
+        source: row.serviceCallerId ? { kind: 'service', callerId: row.serviceCallerId, credentialId: row.serviceCredentialId } : { kind: 'console' },
         id: row.id,
         status: row.status,
         cancelRequested: row.cancelRequestedAt !== null,
@@ -258,6 +267,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     hasActiveLease: lease !== null,
   })
   return runDetailSchema.parse({
+    source: row.serviceCallerId ? { kind: 'service', callerId: row.serviceCallerId, credentialId: row.serviceCredentialId } : { kind: 'console' },
     id: row.id,
     status: row.status,
     cancelRequested: row.cancelRequestedAt !== null,
@@ -311,15 +321,37 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
   })
 }
 
+async function resolveRunTargetAccountId(
+  db: Db,
+  input: { targetId: string; requestedAccountId?: string },
+): Promise<string | undefined> {
+  if (input.requestedAccountId) return input.requestedAccountId
+  const { targetAccounts } = schemaFor(db)
+  const rows = await db
+    .select()
+    .from(targetAccounts)
+    .where(and(eq(targetAccounts.targetId, input.targetId), eq(targetAccounts.status, 'active')))
+  const withSecret = rows.filter((row) => row.secretId && row.secretProvider)
+  if (withSecret.length === 1) return withSecret[0]!.id
+  if (withSecret.length > 1) {
+    throw badRequest('RUN_ACCOUNT_REQUIRED', '目标系统有多个已保存口令的账号，请指定本次使用的目标账号')
+  }
+  return undefined
+}
+
 export async function createRunWithSnapshot(
   db: Db,
   input: CreateRunBody & {
-    actor: AuditActor
+    actor: ExecutionActor
+    serviceAdmission?: ServiceAdmission
+    externalIdempotencyDigest?: string
+    deadlineAt?: Date
     allowTrialVersion?: boolean
     aiExecution?: AiExecutionConfig
     hangWaitMs?: number
   },
 ): Promise<{ detail: RunDetailDto; created: boolean }> {
+  input = { ...input, actor: executionActorSchema.parse(input.actor), ...(input.serviceAdmission ? { serviceAdmission: serviceAdmissionSchema.parse(input.serviceAdmission) } : {}) }
   const { runs, stepRuns, targetAccounts, targets } = schemaFor(db)
   const { scenario, version } = await loadScenarioVersion(
     db,
@@ -347,12 +379,17 @@ export async function createRunWithSnapshot(
     throw error
   }
 
+  const targetAccountId = await resolveRunTargetAccountId(db, {
+    targetId: scenario.targetId,
+    requestedAccountId: input.targetAccountId,
+  })
+
   let secretRef: RunSnapshot['secretRef']
-  if (input.targetAccountId) {
+  if (targetAccountId) {
     const [account] = await db
       .select()
       .from(targetAccounts)
-      .where(eq(targetAccounts.id, input.targetAccountId))
+      .where(eq(targetAccounts.id, targetAccountId))
       .limit(1)
     if (!account || account.targetId !== scenario.targetId) {
       throw badRequest('RUN_ACCOUNT_MISMATCH', '目标账号不属于该场景绑定的目标系统')
@@ -369,38 +406,40 @@ export async function createRunWithSnapshot(
   const evidencePolicy = resolvePlatformEvidencePolicy(input.evidencePolicy, document.evidence)
   const policy = resolvePlatformExecutionPolicy(input.policy, document.execution)
 
-  const idempotencyDigest = input.idempotencyKey
+  const idempotencyDigest = input.externalIdempotencyDigest ?? (input.idempotencyKey
     ? computeIdempotencyDigest({
         scenarioVersionId: version.id,
         input: runInput,
-        targetAccountId: input.targetAccountId,
+        targetAccountId,
         policy: input.policy,
         sessionPolicy: input.sessionPolicy ?? null,
         evidencePolicy: input.evidencePolicy ?? null,
       })
-    : null
+    : null)
 
   if (input.idempotencyKey) {
-    const existing = await findIdempotent(db, input.actor.id, input.idempotencyKey)
+    const existing = await findIdempotent(db, input.actor, input.idempotencyKey)
     if (existing) {
-      const same = idempotentRequestMatches({
-        existingDigest: existing.idempotencyDigest ?? '',
-        rawDigest: idempotencyDigest ?? '',
-        legacyDigest: computeIdempotencyDigest({
-          scenarioVersionId: version.id,
-          input: runInput,
-          targetAccountId: input.targetAccountId,
-          policy: input.policy,
-          sessionPolicy: existing.snapshot.sessionPolicy ?? null,
-          evidencePolicy: existing.snapshot.evidencePolicy ?? null,
-        }),
-        sessionOverride: input.sessionPolicy,
-        evidenceOverride: input.evidencePolicy,
-        policyOverride: input.policy,
-        snapshotSession: existing.snapshot.sessionPolicy,
-        snapshotEvidence: existing.snapshot.evidencePolicy,
-        snapshotPolicy: existing.snapshot.policy,
-      })
+      const same = input.externalIdempotencyDigest
+        ? existing.idempotencyDigest === idempotencyDigest
+        : idempotentRequestMatches({
+            existingDigest: existing.idempotencyDigest ?? '',
+            rawDigest: idempotencyDigest ?? '',
+            legacyDigest: computeIdempotencyDigest({
+              scenarioVersionId: version.id,
+              input: runInput,
+              targetAccountId,
+              policy: input.policy,
+              sessionPolicy: existing.snapshot.sessionPolicy ?? null,
+              evidencePolicy: existing.snapshot.evidencePolicy ?? null,
+            }),
+            sessionOverride: input.sessionPolicy,
+            evidenceOverride: input.evidencePolicy,
+            policyOverride: input.policy,
+            snapshotSession: existing.snapshot.sessionPolicy,
+            snapshotEvidence: existing.snapshot.evidencePolicy,
+            snapshotPolicy: existing.snapshot.policy,
+          })
       if (!same) {
         throw conflict('RUN_IDEMPOTENCY_CONFLICT', '相同幂等键对应不同的运行输入')
       }
@@ -415,13 +454,14 @@ export async function createRunWithSnapshot(
     schemaVersion: RUNTIME_SCHEMA_VERSION,
     runId,
     targetId: scenario.targetId,
-    targetAccountId: input.targetAccountId,
+    targetAccountId,
     secretRef,
     scenarioId: scenario.id,
     scenarioVersionId: version.id,
     steps: version.definition.steps,
     input: runInput,
     createdAt: now.toISOString(),
+    ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),
     policy,
     sessionPolicy,
     evidencePolicy,
@@ -443,17 +483,23 @@ export async function createRunWithSnapshot(
       snapshotBase.aiExecution = resolveAiExecutionFromPlatform(snapshotBase.steps, document, {
         revision: platform?.revision ?? 1,
         hangWaitMs: input.hangWaitMs ?? DEFAULT_BROWSER_AI_HANG_WAIT_MS,
+        policy,
       })
     } catch (error) {
       const code =
-        error && typeof error === 'object' && 'code' in error
-          ? String(error.code)
-          : 'AI_CONFIG_INVALID'
+        error && typeof error === 'object' && 'code' in error ? String(error.code) : 'AI_CONFIG_INVALID'
       throw badRequest(code, error instanceof Error ? error.message : '浏览器仿真 AI 配置无效')
     }
   }
   if (hasAiSteps(snapshotBase.steps) && !snapshotBase.aiExecution) {
     throw badRequest('AI_CONFIG_INVALID', '含 AI 步骤的运行必须冻结 AI 执行配置')
+  }
+  if (snapshotBase.aiExecution) {
+    try {
+      assertAiRequestTimeoutFitsSteps(snapshotBase.steps, policy, snapshotBase.aiExecution.requestTimeoutMs)
+    } catch (error) {
+      throw badRequest('AI_CONFIG_INVALID', error instanceof Error ? error.message : 'AI 请求超时配置无效')
+    }
   }
   const parsed = runSnapshotSchema.parse(snapshotBase)
   const digest = computeSnapshotDigest(parsed)
@@ -466,8 +512,12 @@ export async function createRunWithSnapshot(
         targetId: scenario.targetId,
         scenarioId: scenario.id,
         scenarioVersionId: version.id,
-        targetAccountId: input.targetAccountId,
-        createdByConsoleAccountId: input.actor.id,
+        targetAccountId,
+        createdByConsoleAccountId: input.actor.kind === 'service' ? null : input.actor.id,
+        serviceCallerId: input.actor.kind === 'service' ? input.actor.id : null,
+        serviceCredentialId: input.actor.kind === 'service' ? input.actor.credentialId : null,
+        serviceAdmission: input.serviceAdmission,
+        deadlineAt: input.deadlineAt,
         status: 'QUEUED',
         evidenceStatus: 'PENDING',
         snapshot,
@@ -497,10 +547,13 @@ export async function createRunWithSnapshot(
         runId,
         `创建运行（场景 ${scenario.name}）`,
       )
+      await appendRunEvents(tx as unknown as Db, runId, [
+        { type: 'run.created', payload: { status: 'QUEUED' } },
+      ])
     })
   } catch (error) {
     if (input.idempotencyKey && mapRestriction(error)?.code === 'RUN_IDEMPOTENCY_CONFLICT') {
-      const raced = await findIdempotent(db, input.actor.id, input.idempotencyKey)
+      const raced = await findIdempotent(db, input.actor, input.idempotencyKey)
       if (raced && raced.idempotencyDigest === idempotencyDigest) {
         return { detail: await getRun(db, raced.id), created: false }
       }
@@ -524,6 +577,7 @@ export async function createTrialRunFromDraft(
     idempotencyKey?: string
     actor: AuditActor
     executableTypes?: readonly string[]
+    aiExecution?: AiExecutionConfig
     hangWaitMs?: number
   },
 ): Promise<{ detail: RunDetailDto; created: boolean }> {
@@ -533,6 +587,7 @@ export async function createTrialRunFromDraft(
         revision: input.revision,
         runInput: input.input ?? {},
         actor: input.actor,
+        executableTypes: input.executableTypes,
       })
       return createRunWithSnapshot(tx, {
         scenarioId,
@@ -544,6 +599,7 @@ export async function createTrialRunFromDraft(
         evidencePolicy: input.evidencePolicy,
         idempotencyKey: input.idempotencyKey,
         actor: input.actor,
+        aiExecution: input.aiExecution,
         hangWaitMs: input.hangWaitMs,
         allowTrialVersion: true,
       })
@@ -553,12 +609,12 @@ export async function createTrialRunFromDraft(
   }
 }
 
-async function findIdempotent(db: Db, actorId: string, key: string) {
+async function findIdempotent(db: Db, actor: ExecutionActor, key: string) {
   const { runs } = schemaFor(db)
   const [row] = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.createdByConsoleAccountId, actorId), eq(runs.idempotencyKey, key)))
+    .where(and(eq(actor.kind === 'service' ? runs.serviceCallerId : runs.createdByConsoleAccountId, actor.id), eq(runs.idempotencyKey, key)))
     .limit(1)
   return row
 }
@@ -566,30 +622,29 @@ async function findIdempotent(db: Db, actorId: string, key: string) {
 export async function requestRunCancel(
   db: Db,
   runId: string,
-  actor: AuditActor,
+  actor: ExecutionActor,
 ): Promise<RunDetailDto> {
   const { runs } = schemaFor(db)
   const now = new Date()
-  await db.transaction(async (tx) => {
+  await atomic(db, async (tx) => {
     const current = await lockRunRow(tx as unknown as Db, runId)
     if (!current) throw notFound('RUN_NOT_FOUND', '运行不存在')
     if (isFinishedRunStatus(current.status) || current.status === 'NEEDS_REVIEW') return
 
-    const leaseless =
-      current.status === 'QUEUED' ||
-      current.status === 'RECOVERING' ||
-      current.status === 'WAITING_FOR_AUTH'
+    const firstCancel = current.cancelRequestedAt == null
     await tx
       .update(runs)
       .set({
         cancelRequestedAt: current.cancelRequestedAt ?? now,
         updatedAt: now,
-        ...(leaseless ? { status: 'CANCELLED' as const, finishedAt: now } : {}),
       })
       .where(eq(runs.id, runId))
-    if (leaseless) {
-      await cancelPendingStepRunsTx(tx as unknown as Db, runId, now)
+    if (firstCancel) {
+      await appendRunEvents(tx as unknown as Db, runId, [
+        { type: 'run.cancel_requested', payload: { cancelRequested: true } },
+      ])
     }
+    await settleRunCancellationTx(tx as unknown as Db, runId, now)
     await recordAudit(tx as unknown as Db, actor, 'run.cancel', 'run', runId, '取消运行')
   })
   return getRun(db, runId)
@@ -607,8 +662,9 @@ export async function startAttempt(
 ): Promise<{ attemptId: string; attemptNo: number } | null> {
   const { attempts, evidences, runs, stepRuns } = schemaFor(db)
   return db.transaction(async (tx) => {
+    await expireRunDeadlines(tx as unknown as Db, input.runId)
     const run = await lockRunRow(tx as unknown as Db, input.runId)
-    if (!run || run.status !== 'RUNNING') return null
+    if (!run || run.status !== 'RUNNING' || run.cancelRequestedAt) return null
     if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return null
     const [full] = await tx.select().from(runs).where(eq(runs.id, input.runId)).limit(1)
     if (!full) return null
@@ -640,8 +696,9 @@ export async function startAttempt(
       status: 'RUNNING',
       startedAt: now,
     })
+    const inputEvidenceId = newId()
     await tx.insert(evidences).values({
-      id: newId(),
+      id: inputEvidenceId,
       runId: input.runId,
       stepRunId: input.stepRunId,
       attemptId,
@@ -651,6 +708,23 @@ export async function startAttempt(
       payload: redactJson(input.inputPayload, input.secrets ?? []),
       createdAt: now,
     })
+    await appendRunEvents(tx as unknown as Db, input.runId, [
+      ...(step.status === 'PENDING'
+        ? [{ type: 'step_run.started' as const, stepRunId: input.stepRunId, payload: { status: 'RUNNING' } }]
+        : []),
+      {
+        type: 'attempt.started',
+        stepRunId: input.stepRunId,
+        attemptId,
+        payload: { attemptNo },
+      },
+      {
+        type: 'evidence.recorded',
+        stepRunId: input.stepRunId,
+        attemptId,
+        payload: { evidenceId: inputEvidenceId, type: 'input', status: 'available' },
+      },
+    ])
     return { attemptId, attemptNo }
   })
 }
@@ -713,6 +787,7 @@ export async function finishAttemptTx(
 ): Promise<FinishAttemptResult> {
   const { attempts, evidences, runs, stepRuns } = schemaFor(tx)
   const now = new Date()
+  await expireRunDeadlines(tx, input.runId)
   const locked = await lockRunRow(tx, input.runId)
   if (!locked || isHaltedRunStatus(locked.status)) return { updated: false, cancelled: false }
   if (!(await verifyRunLeaseForWrite(tx, input.grant))) return { updated: false, cancelled: false }
@@ -748,7 +823,7 @@ export async function finishAttemptTx(
    * 浏览器步骤提交边界：丢租后的结果不可信。
    * SIDE_EFFECT → NEEDS_REVIEW；其余 → FAILED。不得写成 SUCCEEDED。
    */
-  if (!cancelled && attemptStatus === 'SUCCEEDED' && input.sessionLease) {
+  if (attemptStatus === 'SUCCEEDED' && input.sessionLease) {
     const held = await verifySessionLeaseForCommit(tx, input.sessionLease)
     if (!held) {
       const sideEffect = input.sessionLease.effectType === 'SIDE_EFFECT'
@@ -762,6 +837,8 @@ export async function finishAttemptTx(
       }
       stepRunStatus = 'FAILED'
       runStatus = sideEffect ? 'NEEDS_REVIEW' : 'FAILED'
+      // Cancellation cannot turn an untrusted side-effect result into a clean terminal state.
+      if (sideEffect) cancelled = false
       skipRemaining = true
       context = undefined
     }
@@ -789,14 +866,16 @@ export async function finishAttemptTx(
         ? 'error'
         : undefined
   const secrets = input.secrets ?? []
+  const recorded: { evidenceId: string; type: EvidenceType; status: 'available' | 'missing' }[] = []
   if (evidenceType) {
     const rawPayload = cancelled
       ? CANCELLED_ATTEMPT_ERROR
       : evidenceType === 'output'
         ? (output ?? null)
         : (error ?? null)
+    const evidenceId = newId()
     await tx.insert(evidences).values({
-      id: newId(),
+      id: evidenceId,
       runId: input.runId,
       stepRunId: attempt.stepRunId,
       attemptId: input.attemptId,
@@ -806,11 +885,13 @@ export async function finishAttemptTx(
       payload: redactJson(rawPayload, secrets),
       createdAt: now,
     })
+    recorded.push({ evidenceId, type: evidenceType, status: 'available' })
   }
 
   if (!cancelled && attemptStatus !== 'SUCCEEDED' && input.diagnostics) {
+    const evidenceId = newId()
     await tx.insert(evidences).values({
-      id: newId(),
+      id: evidenceId,
       runId: input.runId,
       stepRunId: attempt.stepRunId,
       attemptId: input.attemptId,
@@ -820,9 +901,10 @@ export async function finishAttemptTx(
       payload: redactJson(resolverDiagnosticsSchema.parse(input.diagnostics), secrets),
       createdAt: now,
     })
+    recorded.push({ evidenceId, type: 'log', status: 'available' })
   }
   if (!cancelled) {
-    await insertMissingObjectEvidence(tx, {
+    const screenshotId = await insertMissingObjectEvidence(tx, {
       runId: input.runId,
       stepRunId: attempt.stepRunId,
       attemptId: input.attemptId,
@@ -830,7 +912,8 @@ export async function finishAttemptTx(
       pointer: input.screenshot,
       now,
     })
-    await insertMissingObjectEvidence(tx, {
+    if (screenshotId) recorded.push({ evidenceId: screenshotId, type: 'screenshot', status: 'missing' })
+    const traceId = await insertMissingObjectEvidence(tx, {
       runId: input.runId,
       stepRunId: attempt.stepRunId,
       attemptId: input.attemptId,
@@ -838,6 +921,7 @@ export async function finishAttemptTx(
       pointer: input.trace,
       now,
     })
+    if (traceId) recorded.push({ evidenceId: traceId, type: 'trace', status: 'missing' })
   }
 
   // 取消时不采纳输出：context 保持取消前已提交的值。
@@ -882,6 +966,34 @@ export async function finishAttemptTx(
 
   if (input.injectFailure) throw input.injectFailure
 
+  await appendRunEvents(tx, input.runId, [
+    {
+      type: 'attempt.finished',
+      stepRunId: attempt.stepRunId,
+      attemptId: input.attemptId,
+      workerId: input.grant.holderWorkerId,
+      payload: { status: cancelled ? 'CANCELLED' : attemptStatus },
+    },
+    ...recorded.map((item) => ({
+      type: item.status === 'missing' ? ('evidence.missing' as const) : ('evidence.recorded' as const),
+      stepRunId: attempt.stepRunId,
+      attemptId: input.attemptId,
+      payload: item,
+    })),
+    ...(stepTerminal
+      ? [
+          {
+            type: 'step_run.finished' as const,
+            stepRunId: attempt.stepRunId,
+            payload: { status: finalStepStatus },
+          },
+        ]
+      : []),
+    ...(finalRunStatus
+      ? [{ type: 'run.status_changed' as const, payload: { status: finalRunStatus } }]
+      : []),
+  ])
+
   return { updated: true, cancelled }
 }
 
@@ -895,17 +1007,18 @@ async function insertMissingObjectEvidence(
     pointer?: ScreenshotPointer
     now: Date
   },
-): Promise<void> {
+): Promise<string | null> {
   const { evidences } = schemaFor(tx)
-  if (!input.pointer?.missingReason || input.pointer.objectKey) return
+  if (!input.pointer?.missingReason || input.pointer.objectKey) return null
   const existing = await tx
     .select({ id: evidences.id })
     .from(evidences)
     .where(and(eq(evidences.attemptId, input.attemptId), eq(evidences.type, input.type)))
     .limit(1)
-  if (existing.length > 0) return
+  if (existing.length > 0) return null
+  const id = newId()
   await tx.insert(evidences).values({
-    id: newId(),
+    id,
     runId: input.runId,
     stepRunId: input.stepRunId,
     attemptId: input.attemptId,
@@ -915,6 +1028,7 @@ async function insertMissingObjectEvidence(
     missingReason: input.pointer.missingReason,
     createdAt: input.now,
   })
+  return id
 }
 
 /**
@@ -928,6 +1042,7 @@ export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ fin
   const { runs, stepRuns } = schemaFor(db)
   const now = new Date()
   return db.transaction(async (tx) => {
+    await expireRunDeadlines(tx as unknown as Db, grant.runId)
     const locked = await lockRunRow(tx as unknown as Db, grant.runId)
     if (!locked || locked.status !== 'RUNNING') return { finished: false }
     if (!(await verifyRunLeaseForWrite(tx as unknown as Db, grant))) return { finished: false }
@@ -946,6 +1061,9 @@ export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ fin
     )
     if (drained.length === 0) return { finished: false }
     await releaseRunLeaseTx(tx as unknown as Db, grant, 'run_halted')
+    await appendRunEvents(tx as unknown as Db, grant.runId, [
+      { type: 'run.status_changed', payload: { status: 'SUCCEEDED' } },
+    ])
     return { finished: true }
   })
 }
@@ -983,14 +1101,10 @@ export async function markRunCancelled(
     if (!(await assertWriteAuthority(tx as unknown as Db, runId, authority))) return
     const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1)
     if (!run || isHaltedRunStatus(run.status)) return
-    await tx
-      .update(runs)
-      .set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
-      .where(eq(runs.id, runId))
-    await cancelPendingStepRunsTx(tx as unknown as Db, runId, now)
     if ('grant' in authority) {
       await releaseRunLeaseTx(tx as unknown as Db, authority.grant, 'run_halted')
     }
+    await settleRunCancellationTx(tx as unknown as Db, runId, now)
   })
 }
 
@@ -1035,12 +1149,16 @@ export async function failRunValidation(
     if ('grant' in authority) {
       await releaseRunLeaseTx(tx as unknown as Db, authority.grant, 'run_halted')
     }
+    await appendRunEvents(tx as unknown as Db, runId, [
+      { type: 'run.status_changed', payload: { status: 'FAILED' } },
+      { type: 'evidence.recorded', payload: { type: 'error', status: 'available' } },
+    ])
   })
 }
 
 /**
- * 需要人工认证：Run → WAITING_FOR_AUTH，同一事务释放 RunLease。
- * 仅从 RUNNING 迁入。
+ * 只改 Run 状态并释放执行租约，不写 Session authHold。
+ * 生产进入等待必须走 `enterRunWaitingForAuth`；本函数留给引擎/夹具模拟“已经在等登录”。
  */
 export async function markRunWaitingForAuth(db: Db, grant: RunGrant): Promise<boolean> {
   const { runs } = schemaFor(db)
@@ -1058,6 +1176,9 @@ export async function markRunWaitingForAuth(db: Db, grant: RunGrant): Promise<bo
     )
     if (!row) return false
     await releaseRunLeaseTx(tx as unknown as Db, grant, 'waiting_for_auth')
+    await appendRunEvents(tx as unknown as Db, grant.runId, [
+      { type: 'run.auth_wait', payload: { status: 'WAITING_FOR_AUTH' } },
+    ])
     return true
   })
 }
@@ -1096,6 +1217,10 @@ export async function failRunAuthTimeout(db: Db, runId: string): Promise<boolean
       createdAt: now,
     })
     await skipRemainingStepRunsTx(tx as unknown as Db, runId, now)
+    await appendRunEvents(tx as unknown as Db, runId, [
+      { type: 'run.status_changed', payload: { status: 'FAILED' } },
+      { type: 'evidence.recorded', payload: { type: 'error', status: 'available' } },
+    ])
     return true
   })
 }

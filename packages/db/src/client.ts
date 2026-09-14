@@ -8,7 +8,7 @@ import { setTimeout } from 'node:timers/promises'
 import { Pool } from 'pg'
 import { createPool } from 'mysql2/promise'
 import type { DbEnv } from '@cairn/shared'
-import { bindNative, nativeTables, schemaFor, type Driver } from './native.js'
+import { bindNative, flushCommitHooks, nativeTables, schemaFor, type Driver } from './native.js'
 
 /** Private common Drizzle query projection; never part of the business API. */
 export type Db = NodePgDatabase<Record<string, never>>
@@ -22,20 +22,32 @@ export interface DbHandle {
   raw(statement: string, values?: unknown[]): Promise<Record<string, unknown>[]>
 }
 
-function bindTransactions(
+export function bindTransactions(
   db: Db,
   driver: Driver,
   tables: ReturnType<typeof schemaFor>,
   inTx = false,
+  hooks: Array<() => void | Promise<void>> = [],
 ): Db {
-  bindNative(db, driver, tables, inTx)
+  bindNative(db, driver, tables, inTx, hooks)
   const transaction = db.transaction.bind(db)
-  db.transaction = ((fn: (tx: Db) => Promise<unknown>, config?: unknown) =>
-    transaction(
-      (tx) => fn(bindTransactions(tx as unknown as Db, driver, tables, true)),
-      (config ??
-        (driver === 'mysql' && !inTx ? { isolationLevel: 'read committed' } : undefined)) as never,
-    )) as Db['transaction']
+  db.transaction = ((fn: (tx: Db) => Promise<unknown>, config?: unknown) => {
+    const childHooks: Array<() => void | Promise<void>> = []
+    return Promise.resolve(
+      transaction(
+        (tx) => fn(bindTransactions(tx as unknown as Db, driver, tables, true, childHooks)),
+        (config ??
+          (driver === 'mysql' && !inTx ? { isolationLevel: 'read committed' } : undefined)) as never,
+      ),
+    ).then(async (result) => {
+      if (inTx) {
+        hooks.push(...childHooks)
+        return result
+      }
+      await flushCommitHooks(childHooks)
+      return result
+    })
+  }) as Db['transaction']
   return db
 }
 
@@ -140,7 +152,11 @@ function createSqlite(file: string): DbHandle {
   }
   const root = connect()
   root.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
-  function orm(connection: DatabaseSync, inTx = false): Db {
+  function orm(
+    connection: DatabaseSync,
+    inTx = false,
+    hooks: Array<() => void | Promise<void>> = [],
+  ): Db {
     const db = sqliteDrizzle(async (statement, values, method) =>
       busyRetry(() => {
         const prepared = connection.prepare(statement)
@@ -154,17 +170,19 @@ function createSqlite(file: string): DbHandle {
         return { rows: prepared.all(...params) as unknown as unknown[][] }
       }),
     ) as unknown as Db
-    bindNative(db, 'sqlite', tables, inTx)
+    bindNative(db, 'sqlite', tables, inTx, hooks)
     // Dedicated transaction connection prevents an awaited callback from leaking
     // writes into another request. BEGIN IMMEDIATE serializes local writers.
     db.transaction = (async (fn: (tx: Db) => Promise<unknown>) => {
       if (inTx) {
         // Match native PG/MySQL nested transactions without opening another writer.
         const name = `cairn_sp_${++savepointSequence}`
+        const nestedHooks: Array<() => void | Promise<void>> = []
         connection.exec(`SAVEPOINT ${name}`)
         try {
-          const value = await fn(db)
+          const value = await fn(orm(connection, true, nestedHooks))
           connection.exec(`RELEASE SAVEPOINT ${name}`)
+          hooks.push(...nestedHooks)
           return value
         } catch (error) {
           connection.exec(`ROLLBACK TO SAVEPOINT ${name}`)
@@ -172,12 +190,14 @@ function createSqlite(file: string): DbHandle {
           throw error
         }
       }
+      const childHooks: Array<() => void | Promise<void>> = []
       const txConnection = connect()
       try {
         await busyRetry(() => txConnection.exec('BEGIN IMMEDIATE'))
         try {
-          const value = await fn(orm(txConnection, true))
+          const value = await fn(orm(txConnection, true, childHooks))
           await busyRetry(() => txConnection.exec('COMMIT'))
+          await flushCommitHooks(childHooks)
           return value
         } catch (error) {
           txConnection.exec('ROLLBACK')

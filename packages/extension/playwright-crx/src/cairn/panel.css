@@ -1,0 +1,67 @@
+.cairn-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  background: #f4f7fb;
+  border-bottom: 1px solid #d7dee8;
+  color: #1a2332;
+  font-size: 12px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.cairn-bar__brand {
+  font-weight: 600;
+  color: #1d4ed8;
+  margin-right: 4px;
+}
+
+.cairn-bar input,
+.cairn-bar select {
+  min-width: 120px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid #c5d0de;
+  border-radius: 4px;
+  background: #fff;
+  color: #1a2332;
+}
+
+.cairn-bar input[type='password'] {
+  min-width: 100px;
+}
+
+.cairn-bar button {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+}
+
+.cairn-bar button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.cairn-bar button.secondary {
+  background: transparent;
+  color: #2563eb;
+  border: 1px solid #2563eb;
+}
+
+.cairn-bar__status {
+  flex: 1 1 100%;
+  color: #475569;
+}
+
+.cairn-bar__status.error {
+  color: #b91c1c;
+}
+
+.cairn-bar__status.ok {
+  color: #15803d;
+}

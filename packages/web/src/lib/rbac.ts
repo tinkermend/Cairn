@@ -26,6 +26,7 @@ export function visibleByPermission<
 }
 
 type NavGate = {
+  title: string
   permission?: PermissionCode
   anyOf?: readonly PermissionCode[]
 }

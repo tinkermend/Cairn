@@ -36,7 +36,9 @@ export function buildApiLoggerOptions({ service, level }: LoggerOptionsInput): O
       return id
     },
     // 字段名与 apiErrorSchema.requestId、响应头 x-cairn-request-id 三者同义
-    customProps: (req) => ({ requestId: (req as RequestWithId).requestId }),
+    customProps: (req) => ({ requestId: (req as RequestWithId).requestId,
+      ...(req.servicePrincipal ? { serviceCallerId: req.servicePrincipal.id, serviceCredentialId: req.servicePrincipal.credentialId } : {}),
+    }),
     // 默认序列化器不可信：pino-http 的 req 序列化器会把整份 headers 写出，
     // 已认证请求因此把可重放的 Bearer 令牌与 Cookie 明文落盘。
     redact: { paths: [...LOGGING_REDACT_PATHS], censor: LOGGING_CENSOR },

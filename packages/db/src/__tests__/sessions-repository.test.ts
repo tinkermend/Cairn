@@ -1,3 +1,5 @@
+import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { schemaFor, databaseNow, afterSeconds } from '../native.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Step } from '@cairn/shared'
 import {
@@ -24,9 +26,10 @@ import {
   listReapableSessions,
   listSessions,
   listRunsWaitingForAuthByAccount,
-  markRunWaitingForAuth,
+  enterRunWaitingForAuth,
   markSessionsClosing,
   registerWorker,
+  requestRunCancel,
   openIsolatedDb,
   releaseAuthHold,
   releaseSessionLease,
@@ -37,13 +40,17 @@ import {
   sql,
   startAttempt,
   verifySessionLeaseForCommit,
-  type DbHandle,
-} from '../index.js'
+  type NativeHandle as DbHandle,
+} from '../test-entry.js'
 import { newId } from '../id.js'
 import { forceGrantForRun } from './lease-harness.js'
-import { consoleAccounts } from '../schema/console.js'
-import { runs } from '../schema/execution.js'
-import { targetAccounts, targets } from '../schema/targets.js'
+import { consoleAccounts as pg_consoleAccounts } from '../schema/console.js'
+let consoleAccounts = pg_consoleAccounts
+import { runs as pg_runs } from '../schema/execution.js'
+let runs = pg_runs
+import { targetAccounts as pg_targetAccounts, targets as pg_targets } from '../schema/targets.js'
+let targetAccounts = pg_targetAccounts
+let targets = pg_targets
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_sess`
 
@@ -55,7 +62,7 @@ const echoStep: Step = {
   input: { value: 'hello' },
 }
 
-describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_000 }, () => {
+describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）', { timeout: 60_000 }, (driver) => {
   let handle: DbHandle
   let actorId: string
   let targetId: string
@@ -65,9 +72,11 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
   let runId2: string
   const workerA = 'worker-a'
   const workerB = 'worker-b'
+  const workerAInstance = newId()
 
   beforeAll(async () => {
-    handle = await openIsolatedDb(SCHEMA)
+    handle = await openContractDb(driver, SCHEMA)
+    ;({ consoleAccounts, runs, targetAccounts, targets } = schemaFor(handle.db))
     actorId = newId()
     targetId = newId()
     accountId = newId()
@@ -120,7 +129,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     runId2 = run2.detail.id
     await registerWorker(handle.db, {
       workerId: workerA,
-      instanceId: newId(),
+      instanceId: workerAInstance,
       capacity: 8,
       lostAfterSeconds: 60,
     })
@@ -307,12 +316,8 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     expect(loses).toHaveLength(1)
     if (loses[0] && !loses[0].ok) expect(loses[0].code).toBe('SESSION_BUSY')
     const loserRunId = a.ok ? runId2 : runId
-    const leftover = await handle.db.execute(sql`
-      SELECT count(*)::int AS n
-        FROM session_leases
-       WHERE run_id = ${loserRunId} AND status = 'ACTIVE'
-    `)
-    expect(Number((leftover.rows[0] as { n: number }).n)).toBe(0)
+    const leftover = await handle.db.select().from(schemaFor(handle.db).sessionLeases).where(eq(schemaFor(handle.db).sessionLeases.runId, loserRunId))
+    expect(leftover.filter(row => row.status === 'ACTIVE')).toHaveLength(0)
     if (wins[0]?.ok) {
       await releaseSessionLease(handle.db, {
         leaseId: wins[0].lease.id,
@@ -422,21 +427,20 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       actor: { id: actorId },
     })
     const grant = await forceGrantForRun(handle, created.detail.id, workerA)
-    expect(await markRunWaitingForAuth(handle.db, grant)).toBe(true)
-    expect((await getRun(handle.db, created.detail.id)).status).toBe('WAITING_FOR_AUTH')
-
     const session = await openSession()
-    await claimAuthHold(handle.db, {
-      sessionId: session.id,
-      workerId: workerA,
-      holdSeconds: 1,
-    })
+    expect(
+      await enterRunWaitingForAuth(handle.db, {
+        grant,
+        sessionId: session.id,
+        workerId: workerA,
+        workerInstanceId: workerAInstance,
+        holdSeconds: 1,
+      }),
+    ).toBe(true)
+    expect((await getRun(handle.db, created.detail.id)).status).toBe('WAITING_FOR_AUTH')
+    expect((await getSessionById(handle.db, session.id))?.authHoldRunId).toBe(created.detail.id)
     // 拨占用到期
-    await handle.db.execute(sql`
-      UPDATE browser_sessions
-         SET auth_hold_expires_at = now() - interval '1 second'
-       WHERE id = ${session.id}
-    `)
+    await handle.db.update(schemaFor(handle.db).browserSessions).set({ authHoldExpiresAt: afterSeconds(handle.db, -1) }).where(eq(schemaFor(handle.db).browserSessions.id, session.id))
     const expired = await listExpiredAuthHolds(handle.db, workerA)
     expect(expired.map((s) => s.id)).toContain(session.id)
 
@@ -538,6 +542,28 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     })
   })
 
+  it('claimAuthHold 拒绝未绑定 Run / 代次 / 进程的占用', async () => {
+    const session = await openSession()
+    await expect(
+      claimAuthHold(handle.db, {
+        sessionId: session.id,
+        workerId: workerA,
+        holdSeconds: 30,
+        runId: '',
+        sessionGeneration: session.generation,
+        workerInstanceId: workerAInstance,
+      }),
+    ).rejects.toMatchObject({ code: 'AUTH_HOLD_UNBOUND' })
+    expect((await getSessionById(handle.db, session.id))?.authHoldWorkerId).toBeNull()
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'CLOSED',
+      closeReason: 'cleanup',
+      ownerWorkerId: workerA,
+    })
+  })
+
   it('探针不延寿；有租约或认证占用时不回收；空闲 TTL 可回收', async () => {
     const session = await openSession({ idle: 60 })
     const before = session.lastUsedAt
@@ -568,7 +594,14 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       reason: 'done',
     })
     await forceLastUsedAt(handle.db, session.id, new Date(Date.now() - 120_000))
-    await claimAuthHold(handle.db, { sessionId: session.id, workerId: workerA, holdSeconds: 300 })
+    await claimAuthHold(handle.db, {
+      sessionId: session.id,
+      workerId: workerA,
+      holdSeconds: 300,
+      runId,
+      sessionGeneration: session.generation,
+      workerInstanceId: workerAInstance,
+    })
     expect(await listReapableSessions(handle.db, workerA)).toHaveLength(0)
 
     await releaseAuthHold(handle.db, { sessionId: session.id, workerId: workerA })
@@ -660,7 +693,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
   })
 
   it('提交边界：丢租后 SIDE_EFFECT→NEEDS_REVIEW，READ_ONLY→FAILED，无 SUCCEEDED', async () => {
-    async function runWithEffect(effectType: 'READ_ONLY' | 'SIDE_EFFECT') {
+    async function runWithEffect(effectType: 'READ_ONLY' | 'SIDE_EFFECT', cancel = false) {
       const step: Step = {
         id: newId(),
         name: `效-${effectType}`,
@@ -702,6 +735,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       expect(lease.ok).toBe(true)
       if (!lease.ok) throw new Error('lease')
       await forceLeaseExpiresAt(handle.db, lease.lease.id, new Date(Date.now() - 1000))
+      if (cancel) await requestRunCancel(handle.db, created.detail.id, { id: actorId })
 
       await finishAttempt(handle.db, {
         runId: created.detail.id,
@@ -723,7 +757,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
       })
 
       const after = await getRun(handle.db, created.detail.id)
-      expect(after.stepRuns[0]?.attempts[0]?.status).toBe('FAILED')
+      expect(after.stepRuns[0]?.attempts[0]?.status).toBe(cancel && effectType === 'READ_ONLY' ? 'CANCELLED' : 'FAILED')
       expect(after.stepRuns[0]?.attempts[0]?.status).not.toBe('SUCCEEDED')
       await setSessionStatus(handle.db, {
         sessionId: session.id,
@@ -737,6 +771,8 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
 
     expect(await runWithEffect('SIDE_EFFECT')).toBe('NEEDS_REVIEW')
     expect(await runWithEffect('READ_ONLY')).toBe('FAILED')
+    expect(await runWithEffect('SIDE_EFFECT', true)).toBe('NEEDS_REVIEW')
+    expect(await runWithEffect('READ_ONLY', true)).toBe('CANCELLED')
   })
 
   it('处置：LOST 释放键、撤租约、写审计；OPEN 被拒；重复处置幂等', async () => {
@@ -825,10 +861,7 @@ describe('BrowserSession / SessionLease Repository（集成）', { timeout: 60_0
     expect(again.closeReason).toBe('operator_disposed')
 
     // 审计与事实同事务落地
-    const { rows } = await handle.db.execute(sql`
-      SELECT action, summary FROM console_audit_events
-       WHERE action = 'session.dispose' AND resource_id = ${lost.id}
-    `)
+    const rows = await handle.db.select().from(schemaFor(handle.db).consoleAuditEvents).where(eq(schemaFor(handle.db).consoleAuditEvents.resourceId, lost.id))
     expect(rows).toHaveLength(1)
     expect(String((rows[0] as { summary: string }).summary)).toContain('已确认旧进程退出')
 

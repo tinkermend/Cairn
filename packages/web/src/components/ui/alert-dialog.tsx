@@ -43,8 +43,11 @@ function AlertDialogOverlay({
 
 function AlertDialogContent({
   className,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
+  const returnFocus = React.useRef<HTMLElement | null>(null)
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
@@ -54,6 +57,24 @@ function AlertDialogContent({
           'fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-xl border border-border bg-card p-6 shadow-popover duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg',
           className
         )}
+        onOpenAutoFocus={(event) => {
+          returnFocus.current =
+            document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null
+          onOpenAutoFocus?.(event)
+        }}
+        onCloseAutoFocus={(event) => {
+          onCloseAutoFocus?.(event)
+          if (
+            !event.defaultPrevented &&
+            returnFocus.current?.isConnected &&
+            returnFocus.current !== document.body
+          ) {
+            event.preventDefault()
+            returnFocus.current.focus({ preventScroll: true })
+          }
+        }}
         {...props}
       />
     </AlertDialogPortal>

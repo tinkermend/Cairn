@@ -86,14 +86,14 @@ export class ObjectService {
 
     const reserved = input.objectId
       ? await this.requirePending(input.objectId, input.runId)
-      : await reserveStoredObject(this.handle.db, { runId: input.runId, retainUntil })
+      : await reserveStoredObject(this.handle, { runId: input.runId, retainUntil })
 
     const head = await this.store.put({
       key: reserved.objectKey,
       body: input.body,
       contentType,
     })
-    const committed = await commitStoredObject(this.handle.db, {
+    const committed = await commitStoredObject(this.handle, {
       id: reserved.id,
       contentType,
       byteSize: head.byteSize,
@@ -115,7 +115,7 @@ export class ObjectService {
     contentType: string
     body: Uint8Array
   }> {
-    const row = await getStoredObjectByKey(this.handle.db, objectKey)
+    const row = await getStoredObjectByKey(this.handle, objectKey)
     if (!row || row.status !== 'available' || !row.contentType || row.digest == null || row.byteSize == null) {
       throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '对象不可用')
     }
@@ -141,7 +141,7 @@ export class ObjectService {
     type: EvidenceType
     objectKey: string
   }): Promise<EvidenceMetadata> {
-    return recordObjectEvidenceRow(this.handle.db, input)
+    return recordObjectEvidenceRow(this.handle, input)
   }
 
   async recordMissingObjectEvidence(input: {
@@ -151,7 +151,7 @@ export class ObjectService {
     type: EvidenceType
     missingReason?: string
   }): Promise<EvidenceMetadata> {
-    return recordMissingObjectEvidence(this.handle.db, {
+    return recordMissingObjectEvidence(this.handle, {
       ...input,
       missingReason: input.missingReason ?? OBJECT_MISSING_REASONS.storeUnavailable,
     })
@@ -167,7 +167,7 @@ export class ObjectService {
     const maxAttempts = this.options.uploadMaxAttempts ?? 3
 
     let existing = input.attemptId
-      ? await findObjectEvidenceByAttemptType(this.handle.db, {
+      ? await findObjectEvidenceByAttemptType(this.handle, {
           attemptId: input.attemptId,
           type: input.type,
         })
@@ -178,7 +178,7 @@ export class ObjectService {
       input.type === 'trace' ? OBJECT_MISSING_REASONS.traceTooLarge : OBJECT_MISSING_REASONS.storeUnavailable
     if (input.body.byteLength > limit) {
       if (existing?.status === 'pending') {
-        await markEvidenceMissing(this.handle.db, { id: existing.id, reason: tooLargeReason })
+        await markEvidenceMissing(this.handle, { id: existing.id, reason: tooLargeReason })
       } else {
         await this.recordMissingObjectEvidence({
           runId: input.runId,
@@ -198,7 +198,7 @@ export class ObjectService {
           this.now().getTime() +
             (input.type === 'trace' ? 14 : this.options.retainDays) * 86_400_000,
         )
-      existing = await reserveObjectEvidence(this.handle.db, {
+      existing = await reserveObjectEvidence(this.handle, {
         runId: input.runId,
         stepRunId: input.stepRunId,
         attemptId: input.attemptId,
@@ -210,7 +210,7 @@ export class ObjectService {
     const backoffMs = this.options.uploadBackoffMs ?? 200
     for (;;) {
       const object = existing.objectKey
-        ? await getStoredObjectByKey(this.handle.db, existing.objectKey)
+        ? await getStoredObjectByKey(this.handle, existing.objectKey)
         : null
       if (!object) {
         throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '待上传对象不存在')
@@ -221,7 +221,7 @@ export class ObjectService {
           if (object.contentType == null || object.byteSize == null || object.digest == null) {
             throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '对象账本不完整，无法挂证据')
           }
-          const committed = await commitObjectEvidence(this.handle.db, {
+          const committed = await commitObjectEvidence(this.handle, {
             id: existing.id,
             contentType: object.contentType,
             byteSize: object.byteSize,
@@ -241,7 +241,7 @@ export class ObjectService {
           retainUntil: input.retainUntil,
         })
         if (this.options.afterObjectPut) await this.options.afterObjectPut()
-        const committed = await commitObjectEvidence(this.handle.db, {
+        const committed = await commitObjectEvidence(this.handle, {
           id: existing.id,
           contentType: put.contentType,
           byteSize: put.byteSize,
@@ -249,10 +249,10 @@ export class ObjectService {
         })
         return committed ?? existing
       } catch (error) {
-        const attempts = await bumpEvidenceUploadAttempts(this.handle.db, existing.id)
+        const attempts = await bumpEvidenceUploadAttempts(this.handle, existing.id)
         if (attempts >= maxAttempts) {
           const reason = missingReasonFor(error) ?? OBJECT_MISSING_REASONS.storeUnavailable
-          await markEvidenceMissing(this.handle.db, { id: existing.id, reason })
+          await markEvidenceMissing(this.handle, { id: existing.id, reason })
           throw error
         }
         if (backoffMs > 0) {
@@ -263,7 +263,7 @@ export class ObjectService {
   }
 
   async settleExpiredEvidence(): Promise<{ marked: number }> {
-    const result = await settleExpiredPendingEvidence(this.handle.db, {
+    const result = await settleExpiredPendingEvidence(this.handle, {
       now: this.now(),
       pendingTtlSeconds: this.options.pendingTtlSeconds,
       maxUploadAttempts: this.options.uploadMaxAttempts ?? 3,
@@ -274,7 +274,7 @@ export class ObjectService {
   async purgeExpiredObjects(input: { limit?: number } = {}): Promise<{ purged: number }> {
     const limit = input.limit ?? 100
     const now = this.now()
-    const candidates = await listPurgeCandidates(this.handle.db, {
+    const candidates = await listPurgeCandidates(this.handle, {
       now,
       pendingTtlSeconds: this.options.pendingTtlSeconds,
       limit,
@@ -283,7 +283,7 @@ export class ObjectService {
     for (const candidate of candidates) {
       try {
         await this.store.delete(candidate.objectKey)
-        const marked = await markStoredObjectPurged(this.handle.db, {
+        const marked = await markStoredObjectPurged(this.handle, {
           id: candidate.id,
           expectedStatus: candidate.status,
           reason: candidate.status === 'pending' ? 'upload_incomplete' : 'expired',
@@ -291,7 +291,7 @@ export class ObjectService {
         })
         if (marked.updated) purged += 1
       } catch (error) {
-        const attempts = await markStoredObjectPurgeFailed(this.handle.db, { id: candidate.id, now })
+        const attempts = await markStoredObjectPurgeFailed(this.handle, { id: candidate.id, now })
         const message = error instanceof Error ? error.message : String(error)
         if (attempts >= PURGE_ATTEMPT_WARN_AT) {
           this.logger.warn(
@@ -308,7 +308,7 @@ export class ObjectService {
     objectId: string,
     runId: string,
   ): Promise<{ id: string; objectKey: string }> {
-    const row = await getStoredObjectById(this.handle.db, objectId)
+    const row = await getStoredObjectById(this.handle, objectId)
     if (!row || row.runId !== runId || row.status !== 'pending') {
       throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '只能重试未提交的对象')
     }

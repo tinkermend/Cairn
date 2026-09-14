@@ -13,7 +13,7 @@ import {
   recordObjectEvidence,
   reserveStoredObject,
   type DbHandle,
-} from '@cairn/db'
+} from '@cairn/db/testing'
 import { OBJECT_MISSING_REASONS, type Step } from '@cairn/shared'
 import { LocalObjectStore } from '@cairn/storage'
 import type { RequestAccount } from '../common/request-account'
@@ -59,7 +59,7 @@ describe('证据正文下载（集成）', { timeout: 30_000 }, () => {
       email: `evc-${actorId}@example.com`,
       status: 'active',
       roles: [],
-      permissions: ['target:write', 'workflow:write', 'run:execute', 'run:read'],
+      permissions: ['target:read', 'target:write', 'workflow:read', 'workflow:write', 'run:execute', 'run:read'],
     }
     const targets = new TargetsService(handle, new LocalSecretProvider(credentialKeyFromEnv(DEV_CREDENTIAL_KEY)))
     const scenarios = new ScenariosService(handle)

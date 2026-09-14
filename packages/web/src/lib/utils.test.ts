@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { getPageNumbers } from './utils'
+import { cn, getPageNumbers } from './utils'
+
+it('合并语义字号时保留文字颜色，并正确覆盖默认及响应式字号', () => {
+  for (const size of ['page', 'section', 'stat', 'body', 'small', 'label']) {
+    expect(cn('text-sm text-primary-foreground', `text-${size}`)).toBe(
+      `text-primary-foreground text-${size}`
+    )
+    expect(cn(`text-${size}`, 'text-destructive')).toBe(
+      `text-${size} text-destructive`
+    )
+  }
+  expect(
+    cn(
+      'text-sm text-primary-foreground md:text-sm',
+      'text-body md:text-section'
+    )
+  ).toBe('text-primary-foreground text-body md:text-section')
+})
 
 describe('getPageNumbers', () => {
   it('returns all pages when total is at most 5', () => {

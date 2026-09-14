@@ -1,8 +1,9 @@
+import { postgresEnvSchema as dbEnvSchema } from '@cairn/db/testing'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
-import { dbEnvSchema, PERMISSIONS, SYSTEM_ROLE_DEFINITIONS, SYSTEM_ROLE_KEYS } from '@cairn/shared'
+import { PERMISSIONS, SYSTEM_ROLE_DEFINITIONS, SYSTEM_ROLE_KEYS } from '@cairn/shared'
 import { newId } from '../id.js'
 import { loadMigrations, migrate } from '../migrate.js'
 

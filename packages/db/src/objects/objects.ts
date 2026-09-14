@@ -1,3 +1,6 @@
+import type { StoredObjectRow } from '../records.js'
+import { atomic, schemaFor } from '../native.js'
+import { updateRows, locked } from '../native.js'
 import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm'
 import {
   OBJECT_MISSING_REASONS,
@@ -13,11 +16,13 @@ import {
   type StoredObjectStatus,
 } from '@cairn/shared'
 import { toEvidenceMetadata } from './evidence-map.js'
+import { lockRunRow } from '../leases/leases.js'
+import { appendRunEvents } from '../observe/events.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { evidences } from '../schema/execution.js'
 import { storedObjects } from '../schema/objects.js'
-import { mapPgRestriction } from '../runs/errors.js'
+import { mapRestriction } from '../runs/errors.js'
 
 export type StoredObjectRecord = {
   id: string
@@ -41,7 +46,7 @@ export type PurgeCandidate = {
 }
 
 function rethrow(error: unknown): never {
-  const mapped = mapPgRestriction(error)
+  const mapped = mapRestriction(error)
   if (mapped) throw mapped
   throw error
 }
@@ -50,6 +55,7 @@ export async function reserveStoredObject(
   db: Db,
   input: { runId: string; retainUntil: Date; id?: string },
 ): Promise<{ id: string; objectKey: string }> {
+  const { storedObjects } = schemaFor(db)
   const id = input.id ?? newId()
   const objectKey = objectKeyFor(input.runId, id)
   try {
@@ -67,6 +73,7 @@ export async function reserveStoredObject(
 }
 
 export async function getStoredObjectById(db: Db, id: string): Promise<StoredObjectRecord | null> {
+  const { storedObjects } = schemaFor(db)
   const [row] = await db.select().from(storedObjects).where(eq(storedObjects.id, id)).limit(1)
   return row ? toRecord(row) : null
 }
@@ -75,8 +82,13 @@ export async function getStoredObjectByKey(
   db: Db,
   objectKey: string,
 ): Promise<StoredObjectRecord | null> {
+  const { storedObjects } = schemaFor(db)
   const key = objectKeySchema.parse(objectKey)
-  const [row] = await db.select().from(storedObjects).where(eq(storedObjects.objectKey, key)).limit(1)
+  const [row] = await db
+    .select()
+    .from(storedObjects)
+    .where(eq(storedObjects.objectKey, key))
+    .limit(1)
   return row ? toRecord(row) : null
 }
 
@@ -91,6 +103,7 @@ export async function commitStoredObject(
     pendingTtlSeconds?: number
   },
 ): Promise<StoredObjectRecord> {
+  const { storedObjects } = schemaFor(db)
   const now = input.now ?? new Date()
   const contentType = objectContentTypeSchema.parse(input.contentType)
   const digest = objectDigestSchema.parse(input.digest)
@@ -105,17 +118,18 @@ export async function commitStoredObject(
     throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '未完成上传已过期，不能再提交')
   }
 
-  const [updated] = await db
-    .update(storedObjects)
-    .set({
+  const [updated] = await updateRows(
+    db,
+    storedObjects,
+    {
       status: 'available',
       contentType,
       byteSize: input.byteSize,
       digest,
       availableAt: now,
-    })
-    .where(and(eq(storedObjects.id, input.id), eq(storedObjects.status, 'pending')))
-    .returning()
+    },
+    and(eq(storedObjects.id, input.id), eq(storedObjects.status, 'pending')),
+  )
   if (!updated) {
     throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '对象不是待提交状态，无法提交')
   }
@@ -126,6 +140,7 @@ export async function listPurgeCandidates(
   db: Db,
   input: { now: Date; pendingTtlSeconds: number; limit: number },
 ): Promise<PurgeCandidate[]> {
+  const { storedObjects } = schemaFor(db)
   const pendingBefore = new Date(input.now.getTime() - input.pendingTtlSeconds * 1000)
   const rows = await db
     .select()
@@ -161,17 +176,20 @@ export async function markStoredObjectPurged(
     now?: Date
   },
 ): Promise<{ updated: boolean }> {
+  const { evidences, storedObjects } = schemaFor(db)
   const now = input.now ?? new Date()
   return db.transaction(async (tx) => {
-    const [updated] = await tx
-      .update(storedObjects)
-      .set({
+    const [updated] = await updateRows(
+      tx,
+      storedObjects,
+      {
         status: 'purged',
         purgedAt: now,
         purgeReason: input.reason,
-      })
-      .where(and(eq(storedObjects.id, input.id), eq(storedObjects.status, input.expectedStatus)))
-      .returning({ objectKey: storedObjects.objectKey })
+      },
+      and(eq(storedObjects.id, input.id), eq(storedObjects.status, input.expectedStatus)),
+      { objectKey: storedObjects.objectKey },
+    )
     if (!updated) return { updated: false }
 
     await tx
@@ -189,14 +207,17 @@ export async function markStoredObjectPurgeFailed(
   db: Db,
   input: { id: string; now?: Date },
 ): Promise<number> {
+  const { storedObjects } = schemaFor(db)
   const now = input.now ?? new Date()
   // 单语句自增：两个 Worker 同时清同一行时，读改写会把其中一次失败吞掉，
   // 计数偏小就等于退避失效。
-  const [row] = await db
-    .update(storedObjects)
-    .set({ purgeAttempts: sql`${storedObjects.purgeAttempts} + 1`, lastPurgeErrorAt: now })
-    .where(eq(storedObjects.id, input.id))
-    .returning({ purgeAttempts: storedObjects.purgeAttempts })
+  const [row] = await updateRows(
+    db,
+    storedObjects,
+    { purgeAttempts: sql`${storedObjects.purgeAttempts} + 1`, lastPurgeErrorAt: now },
+    eq(storedObjects.id, input.id),
+    { purgeAttempts: storedObjects.purgeAttempts },
+  )
   return row?.purgeAttempts ?? 0
 }
 
@@ -210,14 +231,23 @@ export async function recordObjectEvidence(
     objectKey: string
   },
 ): Promise<EvidenceMetadata> {
+  const { evidences, storedObjects } = schemaFor(db)
   const objectKey = objectKeySchema.parse(input.objectKey)
   return db.transaction(async (tx) => {
-    const [obj] = await tx
-      .select()
-      .from(storedObjects)
-      .where(eq(storedObjects.objectKey, objectKey))
-      .for('update')
-    if (!obj || obj.status !== 'available' || !obj.contentType || obj.byteSize == null || !obj.digest) {
+    if (!(await lockRunRow(tx as unknown as Db, input.runId))) {
+      throw new ObjectStoreError('OBJECT_KEY_INVALID', '运行不存在')
+    }
+    const [obj] = await locked(
+      tx,
+      tx.select().from(storedObjects).where(eq(storedObjects.objectKey, objectKey)),
+    )
+    if (
+      !obj ||
+      obj.status !== 'available' ||
+      !obj.contentType ||
+      obj.byteSize == null ||
+      !obj.digest
+    ) {
       throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '只能把 AVAILABLE 对象挂到证据上')
     }
     if (obj.runId !== input.runId) {
@@ -242,6 +272,14 @@ export async function recordObjectEvidence(
       createdAt,
     })
     const [row] = await tx.select().from(evidences).where(eq(evidences.id, id)).limit(1)
+    await appendRunEvents(tx as unknown as Db, input.runId, [
+      {
+        type: 'evidence.recorded',
+        stepRunId: input.stepRunId,
+        attemptId: input.attemptId,
+        payload: { evidenceId: id, type: input.type, status: 'available' },
+      },
+    ])
     return toEvidenceMetadata(row!)
   })
 }
@@ -256,21 +294,33 @@ export async function recordMissingObjectEvidence(
     missingReason: string
   },
 ): Promise<EvidenceMetadata> {
+  const { evidences } = schemaFor(db)
   const id = newId()
   const createdAt = new Date()
-  await db.insert(evidences).values({
-    id,
-    runId: input.runId,
-    stepRunId: input.stepRunId,
-    attemptId: input.attemptId,
-    type: input.type,
-    status: 'missing',
-    schemaVersion: RUNTIME_SCHEMA_VERSION,
-    missingReason: input.missingReason,
-    createdAt,
+  return atomic(db, async (tx) => {
+    await lockRunRow(tx, input.runId)
+    await tx.insert(evidences).values({
+      id,
+      runId: input.runId,
+      stepRunId: input.stepRunId,
+      attemptId: input.attemptId,
+      type: input.type,
+      status: 'missing',
+      schemaVersion: RUNTIME_SCHEMA_VERSION,
+      missingReason: input.missingReason,
+      createdAt,
+    })
+    const [row] = await tx.select().from(evidences).where(eq(evidences.id, id)).limit(1)
+    await appendRunEvents(tx, input.runId, [
+      {
+        type: 'evidence.missing',
+        stepRunId: input.stepRunId,
+        attemptId: input.attemptId,
+        payload: { evidenceId: id, type: input.type, status: 'missing', missingReason: input.missingReason },
+      },
+    ])
+    return toEvidenceMetadata(row!)
   })
-  const [row] = await db.select().from(evidences).where(eq(evidences.id, id)).limit(1)
-  return toEvidenceMetadata(row!)
 }
 
 export async function reserveObjectEvidence(
@@ -284,7 +334,9 @@ export async function reserveObjectEvidence(
     objectId?: string
   },
 ): Promise<EvidenceMetadata> {
+  const { evidences } = schemaFor(db)
   return db.transaction(async (tx) => {
+    await lockRunRow(tx as unknown as Db, input.runId)
     const reserved = await reserveStoredObject(tx as unknown as Db, {
       runId: input.runId,
       retainUntil: input.retainUntil,
@@ -306,6 +358,14 @@ export async function reserveObjectEvidence(
       createdAt,
     })
     const [row] = await tx.select().from(evidences).where(eq(evidences.id, id)).limit(1)
+    await appendRunEvents(tx as unknown as Db, input.runId, [
+      {
+        type: 'evidence.recorded',
+        stepRunId: input.stepRunId,
+        attemptId: input.attemptId,
+        payload: { evidenceId: id, type: input.type, status: 'pending' },
+      },
+    ])
     return toEvidenceMetadata(row!)
   })
 }
@@ -314,6 +374,7 @@ export async function findPendingObjectEvidence(
   db: Db,
   input: { attemptId: string; type: EvidenceType },
 ): Promise<EvidenceMetadata | null> {
+  const { evidences } = schemaFor(db)
   const [row] = await db
     .select()
     .from(evidences)
@@ -332,6 +393,7 @@ export async function findObjectEvidenceByAttemptType(
   db: Db,
   input: { attemptId: string; type: EvidenceType },
 ): Promise<EvidenceMetadata | null> {
+  const { evidences } = schemaFor(db)
   const [row] = await db
     .select()
     .from(evidences)
@@ -350,47 +412,82 @@ export async function commitObjectEvidence(
     digest: string
   },
 ): Promise<EvidenceMetadata | null> {
+  const { evidences } = schemaFor(db)
   const contentType = objectContentTypeSchema.parse(input.contentType)
   const digest = objectDigestSchema.parse(input.digest)
-  const [updated] = await db
-    .update(evidences)
-    .set({
-      status: 'available',
-      contentType,
-      byteSize: input.byteSize,
-      digest,
-      missingReason: null,
-    })
-    .where(and(eq(evidences.id, input.id), eq(evidences.status, 'pending')))
-    .returning()
-  return updated ? toEvidenceMetadata(updated) : null
+  return atomic(db, async (tx) => {
+    const [current] = await tx.select().from(evidences).where(eq(evidences.id, input.id)).limit(1)
+    if (!current) return null
+    await lockRunRow(tx, current.runId)
+    const [updated] = await updateRows(
+      tx,
+      evidences,
+      {
+        status: 'available',
+        contentType,
+        byteSize: input.byteSize,
+        digest,
+        missingReason: null,
+      },
+      and(eq(evidences.id, input.id), eq(evidences.status, 'pending')),
+    )
+    if (!updated) return null
+    await appendRunEvents(tx, current.runId, [
+      {
+        type: 'evidence.recorded',
+        stepRunId: current.stepRunId ?? undefined,
+        attemptId: current.attemptId ?? undefined,
+        payload: { evidenceId: current.id, type: current.type, status: 'available' },
+      },
+    ])
+    return toEvidenceMetadata(updated)
+  })
 }
 
 export async function markEvidenceMissing(
   db: Db,
   input: { id: string; reason: string },
 ): Promise<EvidenceMetadata | null> {
-  const [updated] = await db
-    .update(evidences)
-    .set({
-      status: 'missing',
-      missingReason: input.reason,
-    })
-    .where(and(eq(evidences.id, input.id), eq(evidences.status, 'pending')))
-    .returning()
-  return updated ? toEvidenceMetadata(updated) : null
+  const { evidences } = schemaFor(db)
+  return atomic(db, async (tx) => {
+    const [current] = await tx.select().from(evidences).where(eq(evidences.id, input.id)).limit(1)
+    if (!current) return null
+    await lockRunRow(tx, current.runId)
+    const [updated] = await updateRows(
+      tx,
+      evidences,
+      {
+        status: 'missing',
+        missingReason: input.reason,
+      },
+      and(eq(evidences.id, input.id), eq(evidences.status, 'pending')),
+    )
+    if (!updated) return null
+    await appendRunEvents(tx, current.runId, [
+      {
+        type: 'evidence.missing',
+        stepRunId: current.stepRunId ?? undefined,
+        attemptId: current.attemptId ?? undefined,
+        payload: { evidenceId: current.id, type: current.type, status: 'missing', missingReason: input.reason },
+      },
+    ])
+    return toEvidenceMetadata(updated)
+  })
 }
 
 export async function bumpEvidenceUploadAttempts(db: Db, id: string): Promise<number> {
-  const [row] = await db
-    .update(evidences)
-    .set({ uploadAttempts: sql`${evidences.uploadAttempts} + 1` })
-    .where(eq(evidences.id, id))
-    .returning({ uploadAttempts: evidences.uploadAttempts })
+  const { evidences } = schemaFor(db)
+  const [row] = await updateRows(
+    db,
+    evidences,
+    { uploadAttempts: sql`${evidences.uploadAttempts} + 1` },
+    eq(evidences.id, id),
+    { uploadAttempts: evidences.uploadAttempts },
+  )
   return row?.uploadAttempts ?? 0
 }
 
-function toRecord(row: typeof storedObjects.$inferSelect): StoredObjectRecord {
+function toRecord(row: StoredObjectRow): StoredObjectRecord {
   return {
     id: row.id,
     objectKey: row.objectKey,

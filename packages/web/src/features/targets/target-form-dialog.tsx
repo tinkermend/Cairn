@@ -1,9 +1,8 @@
 import { useState } from 'react'
+import { z } from 'zod'
 import { useForm, useWatch, type UseFormReturn } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronDown } from 'lucide-react'
-import { z } from 'zod'
 import {
   AUTH_METHODS,
   CAPTCHA_MODES,
@@ -16,10 +15,10 @@ import {
   type TargetDto,
   type TargetLoginFields,
 } from '@cairn/shared'
+import { ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { createTarget, updateTarget } from '@/lib/targets-api'
-import { PasswordInput } from '@/components/password-input'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -47,6 +46,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { PasswordInput } from '@/components/password-input'
 import {
   AUTH_METHOD_LABELS,
   CAPTCHA_MODE_LABELS,
@@ -81,10 +81,18 @@ const formSchema = z
       values.accountPassword.trim() !== ''
     if (!hasAny) return
     if (values.accountDisplayName.trim() === '') {
-      ctx.addIssue({ code: 'custom', path: ['accountDisplayName'], message: '填写首个账号时请给出显示名。' })
+      ctx.addIssue({
+        code: 'custom',
+        path: ['accountDisplayName'],
+        message: '填写首个账号时请给出显示名。',
+      })
     }
     if (values.accountUsername.trim() === '') {
-      ctx.addIssue({ code: 'custom', path: ['accountUsername'], message: '填写首个账号时请给出登录名。' })
+      ctx.addIssue({
+        code: 'custom',
+        path: ['accountUsername'],
+        message: '填写首个账号时请给出登录名。',
+      })
     }
   })
 type FormValues = z.infer<typeof formSchema>
@@ -121,7 +129,9 @@ function loginFieldsFromForm(values: FormValues): TargetLoginFields | null {
   })
 }
 
-function accountFromForm(values: FormValues): CreateTargetAccountBody | undefined {
+function accountFromForm(
+  values: FormValues
+): CreateTargetAccountBody | undefined {
   const displayName = values.accountDisplayName.trim()
   const username = values.accountUsername.trim()
   const password = values.accountPassword
@@ -153,7 +163,9 @@ function valuesFromTarget(current: TargetDto): FormValues {
   }
 }
 
-function hasAnyLoginField(fields: TargetLoginFields | null | undefined): boolean {
+function hasAnyLoginField(
+  fields: TargetLoginFields | null | undefined
+): boolean {
   return Boolean(fields?.username || fields?.password || fields?.submit)
 }
 
@@ -193,7 +205,9 @@ function TargetFormFields({
   const queryClient = useQueryClient()
   const [saving, setSaving] = useState(false)
   const [accountOpen, setAccountOpen] = useState(!current)
-  const [locatorOpen, setLocatorOpen] = useState(hasAnyLoginField(current?.loginFields))
+  const [locatorOpen, setLocatorOpen] = useState(
+    hasAnyLoginField(current?.loginFields)
+  )
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: current ? valuesFromTarget(current) : EMPTY_VALUES,
@@ -218,7 +232,9 @@ function TargetFormFields({
         })
         toast.success('目标系统已更新')
         await queryClient.invalidateQueries({ queryKey: ['targets'] })
-        await queryClient.invalidateQueries({ queryKey: ['target', current.id] })
+        await queryClient.invalidateQueries({
+          queryKey: ['target', current.id],
+        })
         onOpenChange(false)
       } else {
         const parsed = createTargetBodySchema.parse({
@@ -247,143 +263,98 @@ function TargetFormFields({
 
   return (
     <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-xl'>
-        <DialogHeader>
-          <DialogTitle>{isEdit ? '编辑目标系统' : '新建目标系统'}</DialogTitle>
-          <DialogDescription>
-            登记要仿真的外部业务系统。URL 只是入口，不是系统身份。
-          </DialogDescription>
-        </DialogHeader>
-        <Form {...form}>
-          <form className='space-y-4' onSubmit={form.handleSubmit(onSubmit)}>
+      <DialogHeader>
+        <DialogTitle>{isEdit ? '编辑目标系统' : '新建目标系统'}</DialogTitle>
+        <DialogDescription>
+          登记要仿真的外部业务系统。URL 只是入口，不是系统身份。
+        </DialogDescription>
+      </DialogHeader>
+      <Form {...form}>
+        <form className='space-y-4' onSubmit={form.handleSubmit(onSubmit)}>
+          <FormField
+            control={form.control}
+            name='code'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>编码</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    disabled={isEdit}
+                    placeholder='tower-preprod'
+                  />
+                </FormControl>
+                <FormDescription>
+                  {isEdit
+                    ? '创建后不可改。'
+                    : '小写字母开头的 slug，2–63 字符，创建后不可改。'}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='name'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>名称</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder='铁塔视联' />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='entryUrl'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>入口 URL</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder='https://example.com/#/home' />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='loginUrl'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>登录 URL（可选）</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder='留空则与入口相同' />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <div className='grid gap-4 sm:grid-cols-2'>
             <FormField
               control={form.control}
-              name='code'
+              name='authMethod'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>编码</FormLabel>
-                  <FormControl>
-                    <Input {...field} disabled={isEdit} placeholder='tower-preprod' />
-                  </FormControl>
-                  <FormDescription>
-                    {isEdit
-                      ? '创建后不可改。'
-                      : '小写字母开头的 slug，2–63 字符，创建后不可改。'}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='name'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>名称</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder='铁塔视联' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='entryUrl'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>入口 URL</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder='https://example.com/#/home' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='loginUrl'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>登录 URL（可选）</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder='留空则与入口相同' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <div className='grid gap-4 sm:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='authMethod'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>认证方式</FormLabel>
-                    <Select
-                      value={field.value}
-                      onValueChange={(value) => {
-                        field.onChange(value)
-                        if (!isEdit) setAccountOpen(value === 'password')
-                      }}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {AUTH_METHODS.map((value) => (
-                          <SelectItem key={value} value={value}>
-                            {AUTH_METHOD_LABELS[value]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='captchaMode'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>验证码</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {CAPTCHA_MODES.map((value) => (
-                          <SelectItem key={value} value={value}>
-                            {CAPTCHA_MODE_LABELS[value]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-            <FormField
-              control={form.control}
-              name='status'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>状态</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
+                  <FormLabel>认证方式</FormLabel>
+                  <Select
+                    value={field.value}
+                    onValueChange={(value) => {
+                      field.onChange(value)
+                      if (!isEdit) setAccountOpen(value === 'password')
+                    }}
+                  >
                     <FormControl>
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {TARGET_STATUSES.map((value) => (
+                      {AUTH_METHODS.map((value) => (
                         <SelectItem key={value} value={value}>
-                          {TARGET_STATUS_LABELS[value]}
+                          {AUTH_METHOD_LABELS[value]}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -392,104 +363,172 @@ function TargetFormFields({
                 </FormItem>
               )}
             />
+            <FormField
+              control={form.control}
+              name='captchaMode'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>验证码</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {CAPTCHA_MODES.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {CAPTCHA_MODE_LABELS[value]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+          <FormField
+            control={form.control}
+            name='status'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>状态</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {TARGET_STATUSES.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {TARGET_STATUS_LABELS[value]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-            {!isEdit ? (
-              <section className='space-y-3 border-t border-border pt-4'>
-                <SectionToggle
-                  open={accountOpen}
-                  onOpenChange={setAccountOpen}
-                  title='第一个目标账号'
-                />
-                {accountOpen ? (
-                  <div className='space-y-4'>
-                    {authMethod === 'manual' ? (
-                      <p className='text-body text-muted-foreground'>
-                        仅手工登录时仍可登记备用号，不会自动使用。
-                      </p>
-                    ) : null}
-                    <FormField
-                      control={form.control}
-                      name='accountDisplayName'
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>显示名</FormLabel>
-                          <FormControl>
-                            <Input {...field} placeholder='演示账号' />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name='accountUsername'
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>登录名</FormLabel>
-                          <FormControl>
-                            <Input {...field} placeholder='demo' />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name='accountPassword'
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>密码</FormLabel>
-                          <FormControl>
-                            <PasswordInput {...field} placeholder='建议填写，也可稍后补齐' />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
-
+          {!isEdit ? (
             <section className='space-y-3 border-t border-border pt-4'>
               <SectionToggle
-                open={locatorOpen}
-                onOpenChange={setLocatorOpen}
-                title='登录框定位（可选）'
+                open={accountOpen}
+                onOpenChange={setAccountOpen}
+                title='第一个目标账号'
               />
-              {locatorOpen ? (
+              {accountOpen ? (
                 <div className='space-y-4'>
-                  {captchaMode !== 'none' ? (
-                    <Alert variant='warning'>
-                      <AlertDescription>
-                        已声明{CAPTCHA_MODE_LABELS[captchaMode]}，自动续登不能作为默认承诺。
-                      </AlertDescription>
-                    </Alert>
-                  ) : null}
                   {authMethod === 'manual' ? (
-                    <p className='text-body text-muted-foreground'>仅手工登录时定位仅作备用。</p>
+                    <p className='text-body text-muted-foreground'>
+                      仅手工登录时仍可登记备用号，不会自动使用。
+                    </p>
                   ) : null}
-                  <p className='text-body text-muted-foreground'>
-                    知道输入框的 id 或 name 就填；留空则以后试填时按常见字段猜测。保存不会打开目标页面。
-                  </p>
-                  <LocatorRow form={form} role='username' placeholder='username' />
-                  <LocatorRow form={form} role='password' placeholder='password' />
-                  <LocatorRow form={form} role='submit' placeholder='login' />
+                  <FormField
+                    control={form.control}
+                    name='accountDisplayName'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>显示名</FormLabel>
+                        <FormControl>
+                          <Input {...field} placeholder='演示账号' />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='accountUsername'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>登录名</FormLabel>
+                        <FormControl>
+                          <Input {...field} placeholder='demo' />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='accountPassword'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>密码</FormLabel>
+                        <FormControl>
+                          <PasswordInput
+                            {...field}
+                            placeholder='建议填写，也可稍后补齐'
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                 </div>
               ) : null}
             </section>
+          ) : null}
 
-            <DialogFooter>
-              <Button type='button' variant='outline' onClick={() => onOpenChange(false)}>
-                取消
-              </Button>
-              <Button type='submit' disabled={saving}>
-                {saving ? '保存中…' : '保存'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
+          <section className='space-y-3 border-t border-border pt-4'>
+            <SectionToggle
+              open={locatorOpen}
+              onOpenChange={setLocatorOpen}
+              title='登录框定位（可选）'
+            />
+            {locatorOpen ? (
+              <div className='space-y-4'>
+                {captchaMode !== 'none' ? (
+                  <Alert variant='warning'>
+                    <AlertDescription>
+                      已声明{CAPTCHA_MODE_LABELS[captchaMode]}
+                      ，自动续登不能作为默认承诺。
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+                {authMethod === 'manual' ? (
+                  <p className='text-body text-muted-foreground'>
+                    仅手工登录时定位仅作备用。
+                  </p>
+                ) : null}
+                <p className='text-body text-muted-foreground'>
+                  知道输入框的 id 或 name
+                  就填；留空则以后试填时按常见字段猜测。保存不会打开目标页面。
+                </p>
+                <LocatorRow
+                  form={form}
+                  role='username'
+                  placeholder='username'
+                />
+                <LocatorRow
+                  form={form}
+                  role='password'
+                  placeholder='password'
+                />
+                <LocatorRow form={form} role='submit' placeholder='login' />
+              </div>
+            ) : null}
+          </section>
+
+          <DialogFooter>
+            <Button
+              type='button'
+              variant='outline'
+              onClick={() => onOpenChange(false)}
+            >
+              取消
+            </Button>
+            <Button type='submit' loading={saving}>
+              保存
+            </Button>
+          </DialogFooter>
+        </form>
+      </Form>
+    </DialogContent>
   )
 }
 
@@ -538,7 +577,9 @@ function LocatorRow({
           name={byName}
           render={({ field }) => (
             <FormItem>
-              <FormLabel className='sr-only'>{LOGIN_FIELD_ROLE_LABELS[role]}定位方式</FormLabel>
+              <FormLabel className='sr-only'>
+                {LOGIN_FIELD_ROLE_LABELS[role]}定位方式
+              </FormLabel>
               <Select value={field.value} onValueChange={field.onChange}>
                 <FormControl>
                   <SelectTrigger>
@@ -562,7 +603,9 @@ function LocatorRow({
           name={valueName}
           render={({ field }) => (
             <FormItem>
-              <FormLabel className='sr-only'>{LOGIN_FIELD_ROLE_LABELS[role]}定位值</FormLabel>
+              <FormLabel className='sr-only'>
+                {LOGIN_FIELD_ROLE_LABELS[role]}定位值
+              </FormLabel>
               <FormControl>
                 <Input {...field} placeholder={placeholder} />
               </FormControl>

@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>识途录制器 · 侧栏样本</title>
+  <link rel="stylesheet" href="../../design/front/tokens.css">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: var(--surface-page);
+      color: var(--text-primary);
+      font: 14px/22px var(--font-sans);
+    }
+    .review {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .review button {
+      height: 32px;
+      padding: 0 12px;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-control);
+      background: var(--surface-card);
+      color: var(--text-secondary);
+    }
+    .review button[aria-pressed="true"] {
+      background: var(--selection-background);
+      color: var(--selection-foreground);
+      border-color: var(--selection-border);
+    }
+    .chrome {
+      width: 380px;
+      height: 720px;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface-page);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      box-shadow: var(--card-shadow);
+      overflow: hidden;
+    }
+    .chrome-title {
+      flex: none;
+      height: 36px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      background: var(--surface-nav);
+      border-bottom: 1px solid var(--border-default);
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+    .screen { flex: 1; min-height: 0; overflow: auto; }
+    .login {
+      min-height: 100%;
+      padding: 40px 24px 32px;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 28px;
+      text-align: center;
+    }
+    .mark {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      background: var(--action-primary);
+      color: var(--action-primary-foreground);
+      display: grid;
+      place-items: center;
+      font-weight: 600;
+    }
+    .brand small { color: var(--text-muted); font-size: 12px; }
+    .card {
+      width: 100%;
+      min-width: 0;
+      background: var(--surface-card);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-card);
+      box-shadow: var(--card-shadow);
+      padding: 24px 20px 20px;
+    }
+    .card h1 {
+      margin: 0 0 6px;
+      font-size: 20px;
+      line-height: 28px;
+      font-weight: 600;
+      text-align: center;
+    }
+    .lead {
+      margin: 0 0 20px;
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+    }
+    label {
+      display: block;
+      margin: 0 0 8px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .field { margin-bottom: 16px; min-width: 0; }
+    input, select {
+      display: block;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      height: 36px;
+      padding: 0 12px;
+      border: 1px solid var(--border-control);
+      border-radius: var(--radius-control);
+      background: var(--surface-control);
+      box-shadow: var(--control-shadow);
+      color: var(--text-primary);
+      font: inherit;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--focus-ring);
+      box-shadow: var(--control-focus-shadow);
+    }
+    .btn {
+      height: 36px;
+      padding: 0 16px;
+      border: 0;
+      border-radius: var(--radius-control);
+      font: 500 14px/1 var(--font-sans);
+      cursor: pointer;
+    }
+    .btn-block { width: 100%; }
+    .btn-primary {
+      background: var(--action-primary);
+      color: var(--action-primary-foreground);
+      box-shadow: var(--action-shadow);
+    }
+    .btn-secondary {
+      background: var(--action-secondary);
+      color: var(--action-secondary-foreground);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+    }
+    .btn[aria-pressed="true"] {
+      background: var(--selection-background);
+      color: var(--selection-foreground);
+    }
+    .btn:disabled {
+      background: var(--surface-subtle);
+      color: var(--text-disabled);
+      box-shadow: none;
+      cursor: not-allowed;
+    }
+    .workbench { display: flex; flex-direction: column; min-height: 100%; }
+    .top {
+      padding: 12px 12px 10px;
+      background: var(--surface-nav);
+      border-bottom: 1px solid var(--border-default);
+    }
+    .top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .top-row strong { font-size: 13px; }
+    .who { color: var(--text-muted); font-size: 12px; }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 12px;
+      background: var(--surface-card);
+      border-bottom: 1px solid var(--border-divider);
+    }
+    .toolbar .btn-ghost { margin-left: auto; }
+    .steps { margin: 0; padding: 12px; display: grid; gap: 8px; list-style: none; }
+    .step {
+      background: var(--surface-card);
+      border: 1px solid var(--border-card);
+      border-radius: 10px;
+      box-shadow: var(--card-shadow);
+      padding: 10px 12px;
+    }
+    .step-head {
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+    }
+    .step-name { flex: 1; min-width: 0; }
+    .step-target {
+      display: block;
+      margin-top: 2px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .step-toggle {
+      flex: none;
+      align-self: center;
+      padding: 2px 6px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--action-primary);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .step-raw {
+      margin: 8px 0 0 28px;
+      padding: 8px 10px;
+      max-height: 220px;
+      overflow: auto;
+      border-radius: 8px;
+      background: var(--surface-subtle);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 18px;
+      white-space: pre-wrap;
+    }
+    .idx {
+      flex: none;
+      width: 20px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .meta { margin: 4px 0 0 28px; color: var(--text-muted); font-size: 12px; }
+    .warn { color: var(--status-warning-foreground); }
+    .ok { color: var(--status-success-foreground); }
+    .hint { padding: 8px 12px 16px; color: var(--text-muted); font-size: 12px; }
+    .pick {
+      margin: 8px 12px 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--status-info-background);
+      color: var(--status-info-foreground);
+      font-size: 12px;
+    }
+    .live {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--status-info-background);
+      color: var(--action-primary);
+      font-weight: 500;
+    }
+    .live-dot {
+      flex: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--action-primary);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.25; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .live-dot { animation: none; }
+    }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="review">
+    侧栏样本 · 模拟数据
+    <button type="button" id="show-login" aria-pressed="true">登录</button>
+    <button type="button" id="show-work" aria-pressed="false">工作台</button>
+  </div>
+
+  <section class="chrome" aria-label="识途录制器侧栏">
+    <div class="chrome-title">识途录制器</div>
+
+    <div id="login" class="screen login">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">识</div>
+        <div>识途<small>可观测场景执行平台</small></div>
+      </div>
+      <div class="card">
+        <h1>登录识途</h1>
+        <p class="lead">用控制台账号进入。没有登录不能录制。</p>
+        <div class="field">
+          <select id="env" aria-label="环境">
+            <option>本地开发环境</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="email">账号</label>
+          <input id="email" value="admin" autocomplete="username">
+        </div>
+        <div class="field">
+          <label for="password">密码</label>
+          <input id="password" type="password" value="password" autocomplete="current-password">
+        </div>
+        <button class="btn btn-primary" type="button" id="do-login">登录</button>
+      </div>
+    </div>
+
+    <div id="work" class="screen workbench hidden">
+      <div class="top">
+        <div class="top-row">
+          <strong>识途录制器</strong>
+          <span class="who">Administrator <button class="btn btn-ghost" type="button" id="do-out">退出</button></span>
+        </div>
+        <div class="field">
+          <label for="target">目标系统</label>
+          <select id="target">
+            <option>Browser Surface 受控站点</option>
+          </select>
+        </div>
+        <button class="btn btn-primary btn-block" type="button">上传到平台</button>
+      </div>
+      <div class="toolbar">
+        <button class="btn btn-secondary" type="button" aria-pressed="true">停止录制</button>
+        <button class="btn btn-ghost" type="button">选取</button>
+        <button class="btn btn-ghost" type="button">清空</button>
+      </div>
+      <p class="pick live"><span class="live-dot" aria-hidden="true"></span>正在录制当前标签页，已记录 4 步</p>
+      <ol class="steps">
+        <li class="step">
+          <div class="step-head">
+            <span class="idx">1</span>
+            <span class="step-name">打开 lab.example/orders</span>
+            <button class="step-toggle" type="button" aria-expanded="false">展开</button>
+          </div>
+          <p class="meta ok">已映射 · navigate</p>
+        </li>
+        <li class="step">
+          <div class="step-head">
+            <span class="idx">2</span>
+            <span class="step-name">填写<span class="step-target">#orderNo</span></span>
+            <button class="step-toggle" type="button" aria-expanded="false">展开</button>
+          </div>
+          <p class="meta ok">已映射 · fill</p>
+        </li>
+        <li class="step">
+          <div class="step-head">
+            <span class="idx">3</span>
+            <span class="step-name">点击<span class="step-target">button「查询」</span></span>
+            <button class="step-toggle" type="button" aria-expanded="true">收起</button>
+          </div>
+          <p class="meta ok">已映射 · click</p>
+          <pre class="step-raw">{
+  "sourceAction": "click",
+  "status": "mapped",
+  "candidateStepType": "click",
+  "pageAlias": "page",
+  "framePath": [],
+  "input": {
+    "target": {
+      "framePath": [],
+      "candidates": [
+        { "by": "role", "value": "button", "name": "查询" }
+      ]
+    }
+  }
+}</pre>
+        </li>
+        <li class="step">
+          <div class="step-head">
+            <span class="idx">4</span>
+            <span class="step-name">选择<span class="step-target">#status</span></span>
+            <button class="step-toggle" type="button" aria-expanded="false">展开</button>
+          </div>
+          <p class="meta warn">待处理 · 下拉选择尚无对应 Step Type</p>
+        </li>
+      </ol>
+      <p class="hint">步骤文案与控制台「录制草稿」同一套 IR，展开是同一套字段。AI 说明以后再加，不用紫色。</p>
+    </div>
+  </section>
+
+  <script>
+    const login = document.getElementById('login')
+    const work = document.getElementById('work')
+    const showLogin = document.getElementById('show-login')
+    const showWork = document.getElementById('show-work')
+    function setScreen(name) {
+      const isLogin = name === 'login'
+      login.classList.toggle('hidden', !isLogin)
+      work.classList.toggle('hidden', isLogin)
+      showLogin.setAttribute('aria-pressed', String(isLogin))
+      showWork.setAttribute('aria-pressed', String(!isLogin))
+    }
+    showLogin.onclick = () => setScreen('login')
+    showWork.onclick = () => setScreen('work')
+    document.getElementById('do-login').onclick = () => setScreen('work')
+    document.getElementById('do-out').onclick = () => setScreen('login')
+  </script>
+</body>
+</html>

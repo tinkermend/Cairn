@@ -6,6 +6,7 @@ import type { BrowserSessionManager } from '../browser/session-manager.js'
 import type { ObjectService } from '../objects/object.service.js'
 
 vi.mock('./midscene/formal-agent.js', () => ({
+  validateBrowserAiModelFamily: async () => undefined,
   midsceneModelConfig: () => ({}),
   createFormalMidsceneAgent: async () => ({
     gate: { markLeaseLost: () => undefined },

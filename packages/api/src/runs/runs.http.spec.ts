@@ -14,8 +14,10 @@ import { PERMISSIONS, RUN_ERROR_CODES, type RunPlacement } from '@cairn/shared'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
+import { BrowserService } from './browser.service'
 import { RunsController } from './runs.controller'
 import { RunsService } from './runs.service'
+import { ObserveService } from './observe.service'
 import { listenForSupertest } from '../__tests__/http-app'
 
 const admin: RequestAccount = {
@@ -63,6 +65,13 @@ const detail = {
   } as RunPlacement,
 }
 
+const observation = {
+  run: detail,
+  evidence: { items: [] },
+  eventSeq: 1,
+  earliestEventSeq: 1,
+}
+
 function mockService() {
   return {
     list: vi.fn(async () => ({ items: [detail] })),
@@ -76,12 +85,45 @@ function mockService() {
   }
 }
 
-async function buildApp(account: RequestAccount | null, service: ReturnType<typeof mockService>) {
+function mockBrowser() {
+  return {
+    meta: vi.fn(async () => ({ runId: detail.id, framesAvailable: false })),
+    streamFrames: vi.fn(async () => undefined),
+    acquire: vi.fn(async () => ({ token: 't'.repeat(32) })),
+    heartbeat: vi.fn(async () => ({ epoch: 1 })),
+    input: vi.fn(async () => ({ status: 'accepted' })),
+    release: vi.fn(async () => ({ released: true })),
+    resumeAuth: vi.fn(async () => ({ ...detail, status: 'RECOVERING' })),
+  }
+}
+
+function mockObserve() {
+  return {
+    observation: vi.fn(async (): Promise<typeof observation | null> => observation),
+    stream: vi.fn(async ({ response }: { response: { status: (code: number) => void; setHeader: (k: string, v: string) => void; write: (chunk: string) => void; end: () => void } }) => {
+      response.status(200)
+      response.setHeader('Content-Type', 'text/event-stream')
+      response.write(
+        'event: ready\ndata: {"kind":"ready","runId":"66666666-6666-4666-8666-666666666666","eventSeq":1,"earliestEventSeq":1,"realtime":false}\n\n',
+      )
+      response.end()
+    }),
+  }
+}
+
+async function buildApp(
+  account: RequestAccount | null,
+  service: ReturnType<typeof mockService>,
+  observe: ReturnType<typeof mockObserve> = mockObserve(),
+  browser: ReturnType<typeof mockBrowser> = mockBrowser(),
+) {
   const moduleRef = await Test.createTestingModule({
     controllers: [RunsController],
     providers: [
       Reflector,
       { provide: RunsService, useValue: service },
+      { provide: ObserveService, useValue: observe },
+      { provide: BrowserService, useValue: browser },
       { provide: APP_GUARD, useValue: new StaticAuthGuard(account) },
       { provide: APP_GUARD, useClass: PermissionsGuard },
       { provide: APP_FILTER, useClass: AllExceptionsFilter },
@@ -94,12 +136,13 @@ async function buildApp(account: RequestAccount | null, service: ReturnType<type
 
 describe('Runs HTTP', () => {
   const service = mockService()
+  const browser = mockBrowser()
   let adminApp: INestApplication
   let viewerApp: INestApplication
 
   beforeAll(async () => {
-    adminApp = await buildApp(admin, service)
-    viewerApp = await buildApp(viewer, service)
+    adminApp = await buildApp(admin, service, mockObserve(), browser)
+    viewerApp = await buildApp(viewer, service, mockObserve(), browser)
   })
 
   beforeEach(() => {
@@ -302,7 +345,7 @@ describe('Runs HTTP', () => {
       .post(`/runs/${detail.id}/resume-auth`)
       .send({})
       .expect(403)
-    expect(service.resumeAuth).not.toHaveBeenCalled()
+    expect(browser.resumeAuth).not.toHaveBeenCalled()
   })
 
   it('核查与确认目标系统登录走控制面 POST', async () => {
@@ -316,6 +359,55 @@ describe('Runs HTTP', () => {
       admin,
     )
     await request(adminApp.getHttpServer()).post(`/runs/${detail.id}/resume-auth`).send({}).expect(200)
-    expect(service.resumeAuth).toHaveBeenCalled()
+    expect(browser.resumeAuth).toHaveBeenCalled()
+  })
+
+  it('GET observation 与详情同权，返回一致版本', async () => {
+    const res = await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/observation`).expect(200)
+    expect(res.body).toMatchObject({
+      run: { id: detail.id, status: 'QUEUED' },
+      eventSeq: 1,
+      earliestEventSeq: 1,
+    })
+    await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/observation`).expect(200)
+  })
+
+  it('无 run:read 不能观察或订阅 SSE', async () => {
+    const noRead: RequestAccount = { ...viewer, permissions: ['workflow:read'] }
+    const app = await buildApp(noRead, service)
+    await request(app.getHttpServer()).get(`/runs/${detail.id}/observation`).expect(403)
+    await request(app.getHttpServer()).get(`/runs/${detail.id}/events`).expect(403)
+    await app.close()
+  })
+
+  it('不存在的 Run 观察与 SSE 都是 404', async () => {
+    const observe = mockObserve()
+    observe.observation.mockResolvedValueOnce(null)
+    const app = await buildApp(admin, service, observe)
+    const missing = await request(app.getHttpServer()).get(`/runs/${detail.id}/observation`).expect(404)
+    expect(missing.body.code).toBe('RUN_NOT_FOUND')
+    observe.observation.mockResolvedValueOnce(null)
+    await request(app.getHttpServer()).get(`/runs/${detail.id}/events`).expect(404)
+    expect(observe.stream).not.toHaveBeenCalled()
+    await app.close()
+  })
+
+  it('SSE 使用 Last-Event-ID，不把凭证放进 URL', async () => {
+    const observe = mockObserve()
+    const app = await buildApp(admin, service, observe)
+    const cursor = `${detail.id}:1`
+    const res = await request(app.getHttpServer())
+      .get(`/runs/${detail.id}/events`)
+      .set('Last-Event-ID', cursor)
+      .expect(200)
+    expect(res.headers['content-type']).toMatch(/text\/event-stream/)
+    expect(observe.stream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: detail.id,
+        lastEventId: cursor,
+      }),
+    )
+    expect(res.request.url).not.toMatch(/token=|access_token=/)
+    await app.close()
   })
 })

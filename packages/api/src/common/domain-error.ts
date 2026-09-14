@@ -1,4 +1,4 @@
-import { ForbiddenException, ServiceUnavailableException, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common'
+import { HttpException, UnauthorizedException, ForbiddenException, ServiceUnavailableException, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common'
 import { DomainError } from '@cairn/db'
 
 function domainBody(domain: DomainError) {
@@ -12,6 +12,8 @@ function domainBody(domain: DomainError) {
 export function rethrowDomain(error: unknown): never {
   const domain = error instanceof DomainError ? error : undefined
   if (domain) {
+    if (domain.kind === 'unauthorized') throw new UnauthorizedException(domainBody(domain))
+    if (domain.kind === 'rate_limited') throw new HttpException(domainBody(domain), 429)
     if (domain.kind === 'forbidden') throw new ForbiddenException(domainBody(domain))
     if (domain.kind === 'unavailable') throw new ServiceUnavailableException()
     if (domain.kind === 'not_found') {

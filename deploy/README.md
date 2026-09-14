@@ -1,10 +1,48 @@
 # deploy
 
-私有化部署产物：compose 编排 + PostgreSQL / MinIO 初始化。
+本机用 Podman 起 PostgreSQL 16 与 MinIO，给 `pnpm env:use local` 用。远端 shsnc-ah3 仍是 Docker + RustFS，见 `docs/deploy/2026-09-10-shsnc-ah3-infra.md`（未入库）。
 
-> 本机容器运行时是 podman 5.8.2，没有 docker；本地验证走 `podman compose`。
+凭据与远端一致，只有地址不同：库和 S3 都听 `127.0.0.1`，端口仍是 `5432` / `9021` / `9022`。
+
+> 本机容器运行时是 podman 5.8.2，没有 docker。编排走 `podman compose`（底层是 Docker Compose 5）。
+
+## 一次启动
+
+```bash
+# 若还没有 deploy/.env：从 example 复制，并填上与远端相同的库口令 / S3 密钥
+cp deploy/.env.example deploy/.env
+
+pnpm infra:up        # 等价于 podman compose -f deploy/compose.yml up -d
+pnpm infra:status
+pnpm env:use local   # 让仓库根 .env 指向本机画像
+pnpm db:migrate      # schema cairn 仍由迁移创建，不在 compose 里预建
+```
+
+数据目录在仓库根 `.data/postgres` 与 `.data/minio`（已 gitignore）。`down` 默认保留数据。
+
+## 端口与账号
+
+| 服务 | 容器 | 本机地址 | 账号 |
+| --- | --- | --- | --- |
+| PostgreSQL | `cairn-postgres` | `127.0.0.1:5432` | 与远端相同的 `cairn` / 库名 `cairn` |
+| MinIO S3 | `cairn-minio` | `http://127.0.0.1:9021` | 与远端相同的 Access Key / Secret Key |
+| MinIO 控制台 | `cairn-minio` | `http://127.0.0.1:9022` | 同上（root 即管理员） |
+
+桶 `cairn-evidence` 由 `cairn-minio-init` 在 MinIO healthy 后创建。S3 客户端必须 `forcePathStyle: true`。
+
+## 常用命令
+
+```bash
+pnpm infra:up
+pnpm infra:status
+pnpm infra:logs
+pnpm infra:down          # 停容器，保留 .data
+```
+
+需要清盘时再 `podman compose -f deploy/compose.yml down -v`，并手动删 `.data/postgres`、`.data/minio`。
+
+数据库后端配置、SQLite 部署限制、跨库受控迁移和运行观察提示通道见[数据库配置与受控迁移](database-backends.md)。PostgreSQL 默认用 LISTEN/NOTIFY；若部署 MySQL / SQLite 并要实时推送，需另配 `CAIRN_REDIS_URL`，不要把 Redis 当成队列或锁。
 
 ## 升级注意：产品角色
 
 含 `0018_product_roles`（MySQL / SQLite 为 `0004_product_roles`）的版本会把系统角色收成「管理员 / 编写者 / 执行者 / 只读」。已有 `operator` 账号**不会**自动补挂编写者，升级后只能跑、不能改目标或场景，也看不见用户 / 角色 / 审计。这是预期降权，不是故障。若该用户仍要编写，由管理员在用户页补挂「编写者」。新建控制台账号默认是编写者。
-
