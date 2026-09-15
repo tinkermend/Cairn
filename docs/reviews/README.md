@@ -4,6 +4,8 @@
 
 | 日期 | 报告 | 对应方案 | 状态 |
 | --- | --- | --- | --- |
+| 2026-09-15 | [FlowGram 蛇形排布与工作区留白修正](2026-09-15-flowgram-snake-layout.md) | [接入方案](../spec/2026-09-14-flowgram-sequence-editor.md) | 同字号下可见节点由 4 到 8；空列修正，14 组浏览器交互及 43 项定向测试通过；用户授权验收后合入 |
+| 2026-09-15 | [FlowGram 编辑便捷性修正](2026-09-15-flowgram-editor-ux.md) | [正式接入草案](../spec/2026-09-14-flowgram-sequence-editor.md) | 恢复并排常驻属性、中性步骤边框，补直接定位；7 组交互检查及 36 项定向测试通过，完整工程门禁限制见报告 |
 | 2026-09-15 | [受管浏览器 Studio 控制台用户路径](2026-09-15-managed-browser-studio-console.md) | [受管浏览器查看与认证](../spec/2026-09-13-managed-browser-view-and-auth.md) | 控制台走完等待认证、输入、续跑与证据；同日补续跑后只读画面与 dispose hold 绑定。BV08 p95、断线条款控制台重测、D1 与系统弹窗未宣称 |
 | 2026-09-15 | [变化提示与 SSE 鉴权故障隔离](2026-09-15-change-hint-and-sse-auth.md) | [Run 实时观察](../spec/2026-09-13-run-realtime-observation.md) | ABC 复查 A 线第 1、8 项已修；提示失败不拖垮进程，库故障不清登录；PG LISTEN 可多次重连。MySQL/SQLite 实时仍按方案依赖 Redis |
 | 2026-09-14 | [FlowGram 10 步混编接入验证](2026-09-14-flowgram-sequence-spike.md) | [正式接入草案](../spec/2026-09-14-flowgram-sequence-editor.md) | 独立 PoC：10/10 真实试跑成功、27 条证据；编辑与冲突验证通过，StrictMode 桥接和完整工程门禁限制见报告 |

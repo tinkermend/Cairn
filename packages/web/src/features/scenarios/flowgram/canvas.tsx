@@ -12,6 +12,7 @@ import {
 import { createRoot, type Root } from 'react-dom/client'
 import {
   isAiStepType,
+  MAX_SCENARIO_STEPS,
   type CompileDiagnostic,
   type RunDetailDto,
   type ScenarioDocument,
@@ -20,6 +21,7 @@ import {
   EditorRenderer,
   FlowLayoutDefault,
   FlowRendererKey,
+  FlowTransitionLineEnum,
   type FlowNodeEntity,
   FixedLayoutEditorProvider,
   useNodeRender,
@@ -39,10 +41,20 @@ import {
 import { STEP_TYPE_HINTS, stepTypeLabel } from '../step-registry'
 import { applyFlowgramOrder, toFlowgram } from './adapter'
 import './canvas.css'
+import {
+  snakeColumns,
+  snakePort,
+  snakePosition,
+  SNAKE_NODE_HEIGHT,
+  SNAKE_NODE_WIDTH,
+} from './snake-layout'
 
 type CanvasProps = {
   document: ScenarioDocument
+  layout: 'vertical' | 'snake'
+  onLayoutChange: (layout: 'vertical' | 'snake') => void
   selectedId: string | null
+  navigation?: { id: string; sequence: number } | null
   disabled: boolean
   trialRun?: RunDetailDto
   diagnostics: readonly CompileDiagnostic[]
@@ -50,12 +62,20 @@ type CanvasProps = {
   onInsertAfter: (id: string) => void
   onReorder: (document: ScenarioDocument, selectedId: string | null) => void
 }
-const CanvasContext = createContext<CanvasProps | null>(null)
+const CanvasContext = createContext<
+  (CanvasProps & { compact: boolean }) | null
+>(null)
 
 function StepNode() {
   const model = useContext(CanvasContext)!
-  const { id, startDrag, onMouseEnter, onMouseLeave, dragging } =
+  const { id, node, startDrag, onMouseEnter, onMouseLeave, dragging } =
     useNodeRender()
+  useLayoutEffect(() => {
+    const renderData = node.renderData
+    // FlowGram 1.0.15 leaves this delayed hover update alive after disposal.
+    // Switching views while hovering a node must not touch its removed parent.
+    return () => clearTimeout(renderData.mouseLeaveTimeout)
+  }, [node])
   const step = model.document.steps.find((item) => item.id === id)
   if (!step) return null
   const index = model.document.steps.indexOf(step)
@@ -80,7 +100,6 @@ function StepNode() {
       className={cn(
         'flowgram-step',
         model.selectedId === id && 'is-selected',
-        errors.length > 0 && 'has-error',
         dragging && 'is-dragging'
       )}
     >
@@ -110,23 +129,45 @@ function StepNode() {
           <span className='font-mono'>
             {String(index + 1).padStart(2, '0')}
           </span>
-          <StatusBadge tone={isAiStepType(step.type) ? 'ai' : 'neutral'}>
+          <StatusBadge
+            tone={isAiStepType(step.type) ? 'ai' : 'neutral'}
+            hideIcon={model.compact}
+          >
             {stepTypeLabel(step.type)}
           </StatusBadge>
-          {result && matchesSnapshot ? (
-            <StatusBadge tone={stepRunStatusTone(result.status)}>
+          {errors.length > 0 ? (
+            <span title='引用 / 字段异常'>
+              <StatusBadge tone='error' hideIcon={model.compact}>
+                {model.compact ? '字段异常' : '引用 / 字段异常'}
+              </StatusBadge>
+            </span>
+          ) : result && matchesSnapshot ? (
+            <StatusBadge
+              tone={stepRunStatusTone(result.status)}
+              hideIcon={model.compact}
+            >
               试跑 {STEP_RUN_STATUS_LABELS[result.status]}
             </StatusBadge>
-          ) : null}
-          {result && !matchesSnapshot ? <span>草稿已修改</span> : null}
-          {errors.length > 0 ? (
-            <StatusBadge tone='error'>引用 / 字段异常</StatusBadge>
+          ) : result ? (
+            <span>草稿已修改</span>
           ) : null}
         </span>
-        <span className='mt-2 block text-body font-semibold break-words'>
+        <span
+          className='flowgram-step-name mt-2 block text-body font-semibold break-words'
+          title={step.name}
+        >
           {step.name}
         </span>
-        <span className='mt-1 block text-label break-words text-muted-foreground'>
+        <span
+          className='flowgram-step-hint mt-1 block text-label break-words text-muted-foreground'
+          title={
+            source
+              ? `读取 ${source}${field}`
+              : step.outputKey
+                ? `输出 ${step.outputKey}`
+                : STEP_TYPE_HINTS[step.type]
+          }
+        >
           {source
             ? `读取 ${source}${field}`
             : step.outputKey
@@ -144,7 +185,9 @@ function InsertPoint({ from }: { from: FlowNodeEntity }) {
     <button
       type='button'
       className='flowgram-insert'
-      disabled={model.disabled}
+      disabled={
+        model.disabled || model.document.steps.length >= MAX_SCENARIO_STEPS
+      }
       aria-label={`在${model.document.steps.find((step) => step.id === from.id)?.name ?? '此处'}后插入步骤`}
       onMouseDown={(event) => event.stopPropagation()}
       onClick={() => model.onInsertAfter(from.id)}
@@ -156,7 +199,7 @@ function InsertPoint({ from }: { from: FlowNodeEntity }) {
 function DragPreview({ dragStart }: { dragStart?: FlowNodeEntity }) {
   const model = useContext(CanvasContext)!
   return (
-    <div className='flowgram-drag-preview'>
+    <div className={cn('flowgram-drag-preview', model.compact && 'is-compact')}>
       {model.document.steps.find((step) => step.id === dragStart?.id)?.name ??
         '移动步骤'}
     </div>
@@ -167,6 +210,32 @@ function DropTarget() {
 }
 function DropHighlight() {
   return <div className='flowgram-drop-highlight' />
+}
+
+function SequenceArrow({ id }: { id: string }) {
+  return (
+    <defs>
+      <marker
+        id={id}
+        data-sequence-arrow
+        markerWidth='7'
+        markerHeight='8'
+        refX='6'
+        refY='4'
+        orient='auto'
+        markerUnits='userSpaceOnUse'
+      >
+        <path
+          d='M1 1 L6 4 L1 7'
+          fill='none'
+          stroke='var(--text-muted)'
+          strokeWidth='1.5'
+          strokeLinecap='round'
+          strokeLinejoin='round'
+        />
+      </marker>
+    </defs>
+  )
 }
 
 class CanvasErrorBoundary extends Component<
@@ -198,6 +267,31 @@ function FlowgramCanvas(props: CanvasProps) {
   const syncing = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
+  const { layout, onLayoutChange } = props
+  const [columns, setColumns] = useState(1)
+  const surface = useRef<HTMLDivElement>(null)
+  const folded = layout === 'snake' && columns > 1
+  const arrangement = useRef({ folded, columns })
+  useLayoutEffect(() => {
+    arrangement.current = { folded, columns }
+  }, [folded, columns])
+  useLayoutEffect(() => {
+    const element = surface.current
+    if (!element) return
+    const update = () => {
+      if (element.clientWidth > 0)
+        setColumns(
+          snakeColumns(
+            element.clientWidth,
+            latest.current.document.steps.length
+          )
+        )
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [props.document.steps.length])
   const [initial] = useState(() => toFlowgram(props.document))
   const options = useMemo<FixedLayoutProps>(
     () => ({
@@ -214,8 +308,43 @@ function FlowgramCanvas(props: CanvasProps) {
           type: 'cairn-step',
           extend: 'default',
           meta: { deleteDisable: true, copyDisable: true },
+          onAfterUpdateLocalTransform(transform) {
+            const current = arrangement.current
+            if (current.folded)
+              transform.position = snakePosition(
+                transform.entity.index,
+                current.columns
+              )
+          },
+          getInputPoint(transform) {
+            const current = arrangement.current
+            return current.folded
+              ? transform.bounds[
+                  snakePort(transform.entity.index, current.columns, 'input')
+                ]
+              : transform.defaultInputPoint
+          },
+          getOutputPoint(transform) {
+            const current = arrangement.current
+            return current.folded
+              ? transform.bounds[
+                  snakePort(transform.entity.index, current.columns, 'output')
+                ]
+              : transform.defaultOutputPoint
+          },
         },
       ],
+      formatNodeLines(_node, lines) {
+        return arrangement.current.folded
+          ? lines.map((line) => ({
+              ...line,
+              type: FlowTransitionLineEnum.ROUNDED_LINE,
+              vertices: [],
+              arrow: true,
+              style: { ...line.style, stroke: 'var(--text-muted)' },
+            }))
+          : lines
+      },
       materials: {
         renderDefaultNode: StepNode,
         components: {
@@ -223,6 +352,8 @@ function FlowgramCanvas(props: CanvasProps) {
           [FlowRendererKey.DRAG_NODE]: DragPreview,
           [FlowRendererKey.DRAGGABLE_ADDER]: DropTarget,
           [FlowRendererKey.DRAG_HIGHLIGHT_ADDER]: DropHighlight,
+          [FlowRendererKey.MARKER_ARROW]: SequenceArrow,
+          [FlowRendererKey.MARKER_ACTIVATE_ARROW]: SequenceArrow,
         },
       },
       dragdrop: {
@@ -261,8 +392,8 @@ function FlowgramCanvas(props: CanvasProps) {
         editor.current = ctx
         setReady(true)
         const selected =
-          latest.current.selectedId ?? latest.current.document.steps[0]!.id
-        const first = ctx.document.getNode(selected)
+          latest.current.selectedId ?? latest.current.document.steps[0]?.id
+        const first = selected ? ctx.document.getNode(selected) : undefined
         const atStart = selected === latest.current.document.steps[0]?.id
         if (first) {
           const config = ctx.playground.config
@@ -271,7 +402,9 @@ function FlowgramCanvas(props: CanvasProps) {
             zoom: config.zoom,
             scrollToCenter: true,
             scrollDelta: {
-              x: 0,
+              x: arrangement.current.folded
+                ? ctx.document.root.bounds.center.x - first.bounds.center.x
+                : 0,
               y: atStart
                 ? (config.getClientBounds().height / 2 -
                     first.bounds.height / 2 -
@@ -313,17 +446,117 @@ function FlowgramCanvas(props: CanvasProps) {
       void ctx.playground.config.scrollToView({
         bounds: node.bounds,
         zoom: ctx.playground.config.zoom,
+        scrollDelta: arrangement.current.folded
+          ? {
+              x: ctx.document.root.bounds.center.x - node.bounds.center.x,
+              y: 0,
+            }
+          : undefined,
       })
   }, [props.selectedId, ready])
 
+  useEffect(() => {
+    const ctx = editor.current
+    const request = props.navigation
+    if (!ctx || !ready || !request || request.id !== latest.current.selectedId)
+      return
+    const node = ctx.document.getNode(request.id)
+    if (node) {
+      // FlowGram's scroll limits read the current zoom, so update it before
+      // calculating the destination when leaving the full-flow overview.
+      const config = ctx.playground.config
+      config.updateZoom(1, false)
+      void config.scrollToView({
+        bounds: node.bounds,
+        zoom: 1,
+        scrollToCenter: true,
+        scrollDelta: arrangement.current.folded
+          ? {
+              x: ctx.document.root.bounds.center.x - node.bounds.center.x,
+              y: 0,
+            }
+          : undefined,
+        easing: false,
+      })
+    }
+  }, [props.navigation, ready])
+
+  useEffect(() => {
+    const ctx = editor.current
+    if (!ctx || !ready) return
+    ctx.document.traverse((node) => {
+      node.transform.localDirty = true
+    })
+    ctx.document.transformer.clear()
+    ctx.document.fireRender()
+    const frame = requestAnimationFrame(() => {
+      ctx.document.transformer.refresh()
+      const selected =
+        latest.current.selectedId ?? latest.current.document.steps[0]?.id
+      const node = selected ? ctx.document.getNode(selected) : undefined
+      if (!node) return
+      const config = ctx.playground.config
+      config.updateZoom(1, false)
+      void config.scrollToView({
+        bounds: node.bounds,
+        zoom: 1,
+        scrollToCenter: true,
+        easing: false,
+        scrollDelta: {
+          x: folded
+            ? ctx.document.root.bounds.center.x - node.bounds.center.x
+            : 0,
+          y:
+            selected === latest.current.document.steps[0]?.id
+              ? config.getClientBounds().height / 2 -
+                node.bounds.height / 2 -
+                24
+              : 0,
+        },
+      })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [folded, columns, ready])
+
   return (
-    <CanvasContext.Provider value={props}>
-      <div className='flowgram-sequence' aria-label='FlowGram 顺序画布'>
-        <div className='flex items-center justify-between gap-2 border-b border-border-divider bg-surface-header px-4 py-2'>
-          <span className='flex items-center gap-2 text-label text-muted-foreground'>
-            <Workflow className='size-4' />
-            顺序编排 · {props.document.steps.length} 步
-          </span>
+    <CanvasContext.Provider value={{ ...props, compact: folded }}>
+      <div
+        className={cn('flowgram-sequence', folded && 'is-folded')}
+        aria-label='FlowGram 顺序画布'
+        data-arrangement={folded ? 'snake' : 'vertical'}
+        style={
+          {
+            '--snake-node-width': `${SNAKE_NODE_WIDTH}px`,
+            '--snake-node-height': `${SNAKE_NODE_HEIGHT}px`,
+          } as React.CSSProperties
+        }
+      >
+        <div className='flex flex-wrap items-center justify-between gap-2 border-b border-border-divider bg-surface-header px-4 py-2'>
+          <div className='flex flex-wrap items-center gap-2'>
+            <span className='flex items-center gap-2 text-label text-muted-foreground'>
+              <Workflow className='size-4' />
+              {props.document.steps.length} 步
+              {folded ? ` · 每行 ${columns} 步` : ''}
+            </span>
+            <div role='group' aria-label='画布排布' className='flex gap-1'>
+              <Button
+                size='sm'
+                variant={layout === 'vertical' ? 'secondary' : 'ghost'}
+                aria-pressed={layout === 'vertical'}
+                onClick={() => onLayoutChange('vertical')}
+              >
+                纵向
+              </Button>
+              <Button
+                size='sm'
+                variant={layout === 'snake' ? 'secondary' : 'ghost'}
+                aria-pressed={layout === 'snake'}
+                onClick={() => onLayoutChange('snake')}
+              >
+                折行
+              </Button>
+            </div>
+          </div>
           <div className='flex gap-1'>
             <Button
               size='icon'
@@ -365,7 +598,7 @@ function FlowgramCanvas(props: CanvasProps) {
             {error}
           </p>
         ) : null}
-        <div className='flowgram-surface'>
+        <div ref={surface} className='flowgram-surface'>
           <FixedLayoutEditorProvider {...options} readonly={props.disabled}>
             <EditorRenderer className='flowgram-renderer' />
           </FixedLayoutEditorProvider>

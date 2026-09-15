@@ -43,6 +43,13 @@ seed 支持 `CAIRN_API_ORIGIN`、`FLOWGRAM_LAB_ORIGIN`、`FLOWGRAM_WEB_ORIGIN`�
 
 ## 检查与记录
 
+9/15 按用户反馈恢复并排编辑并修正诊断表达，见[交互修正报告](../../docs/reviews/2026-09-15-flowgram-editor-ux.md)。本机恢复服务使用 `../Cairn/.env.local` 的本地数据库；新的只读联调脚本不保存草稿、不发起试跑：
+
+```sh
+node --env-file=../Cairn/.env.local tools/flowgram-spike/verify-navigation.mjs
+node --env-file=../Cairn/.env.local tools/flowgram-spike/verify-snake.mjs
+```
+
 ```sh
 pnpm --filter @cairn/web test src/features/scenarios/flowgram/adapter.test.ts src/features/scenarios/studio.test.tsx src/features/scenarios/studio-document.test.ts src/features/scenarios/trial-dialog.test.tsx
 pnpm --filter @cairn/web exec eslint src/features/scenarios/flowgram
@@ -50,5 +57,7 @@ pnpm check:design
 pnpm --filter @cairn/web exec vite build
 pnpm --filter @cairn/web typecheck
 ```
+
+蛇形排布、列表空列修正及实际截图见[9/15 排布验收](../../docs/reviews/2026-09-15-flowgram-snake-layout.md)。`verify-navigation` 显式选择纵向以复测原交互，`verify-snake` 覆盖折行方向、拖动、插入、视图切换与响应式；两者仅编辑浏览器内草稿。
 
 运行截图和原始读取结果留在被忽略的 `.artifacts/`；审查用的脱敏摘要和最终截图在 [验证报告](../../docs/reviews/2026-09-14-flowgram-sequence-spike.md) 中登记。完整 typecheck 的已有阻断也在报告中列出。

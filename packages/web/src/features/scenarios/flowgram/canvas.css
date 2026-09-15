@@ -27,11 +27,36 @@
   box-shadow: var(--shadow-control-focus);
   background: var(--selection-background);
 }
-.flowgram-step.has-error {
-  border-color: var(--status-error-foreground);
-}
 .flowgram-step.is-dragging {
   opacity: 0.7;
+}
+.flowgram-sequence.is-folded .flowgram-step {
+  width: var(--snake-node-width);
+  height: var(--snake-node-height);
+  min-height: 0;
+}
+.flowgram-sequence.is-folded .flowgram-step-body {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.flowgram-sequence.is-folded .flowgram-step-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.flowgram-sequence.is-folded .flowgram-step-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flowgram-sequence.is-folded .flowgram-drop-highlight {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--selection-border);
+  border-radius: 50%;
+  background: var(--selection-background);
 }
 .flowgram-step-body {
   min-width: 0;
@@ -94,6 +119,14 @@
   background: var(--surface-card);
   color: var(--text-primary);
   box-shadow: var(--shadow-card);
+}
+/* FlowGram hits labels using the preview rectangle. Keep it smaller than the
+   distance to the previous label so a neighboring drop zone cannot win. */
+.flowgram-drag-preview.is-compact {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .flowgram-drop-target {
   width: 20px;

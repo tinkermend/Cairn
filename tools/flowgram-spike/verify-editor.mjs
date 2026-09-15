@@ -3,9 +3,9 @@ import { session, sample, artifact, save } from './browser.mjs'
 const s = await session()
 const checks = []
 const check = (name) => { checks.push(name); console.log('PASS', name) }
-const order = () => s.page.locator('[data-flow-step]').evaluateAll((elements) => elements.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map((element) => element.getAttribute('data-flow-step')))
+const order = () => s.page.locator('[data-flow-step]').evaluateAll((elements) => elements.sort((a, b) => Number(a.querySelector('.flowgram-step-body').getAttribute('aria-label').match(/^步骤 (\d+) /)[1]) - Number(b.querySelector('.flowgram-step-body').getAttribute('aria-label').match(/^步骤 (\d+) /)[1])).map((element) => element.getAttribute('data-flow-step')))
 const waitOrder = async (expected) => {
-  await s.page.waitForFunction((expected) => JSON.stringify([...document.querySelectorAll('[data-flow-step]')].sort((a,b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map((e) => e.getAttribute('data-flow-step'))) === JSON.stringify(expected), expected, { timeout: 5000 })
+  await s.page.waitForFunction((expected) => JSON.stringify([...document.querySelectorAll('[data-flow-step]')].sort((a,b) => Number(a.querySelector('.flowgram-step-body').getAttribute('aria-label').match(/^步骤 (\d+) /)[1]) - Number(b.querySelector('.flowgram-step-body').getAttribute('aria-label').match(/^步骤 (\d+) /)[1])).map((e) => e.getAttribute('data-flow-step'))) === JSON.stringify(expected), expected, { timeout: 5000 })
 }
 try {
   const original = await s.request(`/scenarios/${sample.scenarioId}`)
@@ -48,7 +48,7 @@ try {
   await s.page.getByRole('button', { name: '下移', exact: true }).click()
   await s.page.waitForTimeout(300)
   assert.equal(await s.page.getByRole('button', { name: '试跑', exact: true }).isDisabled(), true)
-  assert.ok((await s.page.locator('body').innerText()).includes('引用 / 字段异常'))
+  assert.ok(await s.page.locator('[data-flow-step] [title="引用 / 字段异常"]').count() > 0)
   check('重排导致前向引用时，画布显示诊断并阻止试跑')
   await s.page.getByRole('button', { name: '撤销结构操作', exact: true }).click()
   await s.page.getByLabel('步骤名称', { exact: true }).fill(sample.steps[4].name + ' · 保存验证')
