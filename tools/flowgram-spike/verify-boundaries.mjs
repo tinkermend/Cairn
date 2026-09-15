@@ -1,0 +1,73 @@
+import assert from 'node:assert/strict'
+import { session, sample, artifact, save } from './browser.mjs'
+const s = await session()
+const checks = []
+const check = (name) => { checks.push(name); console.log('PASS', name) }
+const runId = sample.successfulRunId
+if (!runId) throw new Error('先完成 trial.mjs 的成功试跑')
+let releaseSave = () => {}
+try {
+  const before = await s.request(`/scenarios/${sample.scenarioId}`)
+  await s.page.goto(sample.url)
+  await s.page.locator('[data-flow-step]').first().waitFor()
+  await s.page.getByLabel('步骤名称', { exact: true }).fill(before.draft.document.steps[0].name + ' · 并发验证')
+  const gate = new Promise((resolve) => { releaseSave = resolve })
+  await s.page.route(`**/api/scenarios/${sample.scenarioId}/draft`, async (route) => { await gate; await route.continue() })
+  const saved = s.page.waitForResponse((r) => r.url().endsWith(`/scenarios/${sample.scenarioId}/draft`) && r.request().method() === 'POST')
+  await s.page.getByRole('button', { name: '保存草稿', exact: true }).click()
+  await s.page.waitForFunction(() => [...document.querySelectorAll('.flowgram-drag,.flowgram-insert')].every((button) => button.disabled))
+  check('真实保存请求在途时，拖动与插入入口禁用')
+  releaseSave()
+  assert.equal((await saved).status(), 200)
+  await s.page.unroute(`**/api/scenarios/${sample.scenarioId}/draft`)
+  const changed = await s.request(`/scenarios/${sample.scenarioId}`)
+  const history = await s.request(`/runs/${runId}`)
+  assert.equal(history.status, 'SUCCEEDED')
+  assert.equal(history.snapshot.steps[0].name, before.draft.document.steps[0].name)
+  check('改草稿后，已完成运行的冻结快照保持不变')
+  await s.request(`/scenarios/${sample.scenarioId}/draft`, { revision: changed.draft.revision, document: before.draft.document })
+  await s.page.reload()
+  await s.page.locator('[data-flow-step]').first().waitFor()
+  const base = await s.request(`/scenarios/${sample.scenarioId}`)
+  await s.page.getByLabel('步骤名称', { exact: true }).fill('本地未保存的名称')
+  const remote = structuredClone(base.draft.document)
+  remote.steps[0].name = '另一编辑者保存的名称'
+  const newer = await s.request(`/scenarios/${sample.scenarioId}/draft`, { revision: base.draft.revision, document: remote })
+  const conflicting = s.page.waitForResponse((r) => r.url().endsWith(`/scenarios/${sample.scenarioId}/draft`) && r.request().method() === 'POST')
+  await s.page.getByRole('button', { name: '保存草稿', exact: true }).click()
+  assert.equal((await conflicting).status(), 409)
+  assert.equal(await s.page.getByLabel('步骤名称', { exact: true }).inputValue(), '本地未保存的名称')
+  assert.equal((await s.request(`/scenarios/${sample.scenarioId}`)).draft.document.steps[0].name, '另一编辑者保存的名称')
+  check('真实 revision 冲突返回 409，保留本地输入且不覆盖远端')
+  await s.request(`/scenarios/${sample.scenarioId}/draft`, { revision: newer.draft.revision, document: before.draft.document })
+  await s.page.goto(`${sample.url}&runId=${runId}`)
+  await s.page.locator('[data-flow-step]').first().waitFor()
+  await s.page.waitForFunction(() => [...document.querySelectorAll('[data-flow-step]')].filter((e) => e.innerText.includes('试跑 成功')).length === 10)
+  check('刷新后从持久化运行读取 10 个节点成功状态')
+  await s.page.getByRole('button', { name: '步骤列表', exact: true }).click()
+  await s.page.getByRole('button', { name: /AI 提取订单号与应付金额/ }).first().click()
+  await s.page.getByRole('button', { name: '流程画布', exact: true }).click()
+  await s.page.locator('[data-flow-step]').first().waitFor()
+  await s.page.waitForTimeout(500)
+  await s.page.screenshot({ path: artifact('editor-with-evidence.png'), fullPage: true })
+  for (const width of [1024, 390]) {
+    await s.page.setViewportSize({ width, height: 1000 })
+    await s.page.goto(`${sample.url}&runId=${runId}`)
+    await s.page.locator('[data-flow-step]').first().waitFor()
+    await s.page.waitForTimeout(350)
+    assert.ok(await s.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${width}px overflow`)
+    await s.page.screenshot({ path: artifact(`editor-${width}.png`), fullPage: true })
+    check(`${width}px 页面无横向溢出`)
+  }
+  await s.page.locator('.flowgram-step-body').first().click()
+  await s.page.getByLabel('步骤名称', { exact: true }).waitFor({ state: 'visible' })
+  check('窄屏可由步骤切换到属性编辑')
+  assert.deepEqual(s.errors, [])
+  await save('boundary-checks.json', { checks, errors: s.errors })
+} catch (error) {
+  releaseSave()
+  await s.page.screenshot({ path: artifact('boundary-failure.png'), fullPage: true })
+  console.log((await s.page.locator('body').innerText()).slice(-4500))
+  await save('boundary-checks.json', { checks, errors: s.errors, failure: error.message })
+  throw error
+} finally { await s.browser.close() }

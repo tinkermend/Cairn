@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
@@ -17,8 +17,10 @@ import {
 } from '@cairn/shared'
 import {
   ArrowLeft,
+  ArrowRight,
   ChevronDown,
   ChevronRight,
+  Info,
   ListOrdered,
   Play,
   Plus,
@@ -60,6 +62,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -107,11 +110,14 @@ import {
   priorOutputShapes,
 } from './studio-document'
 
+const FlowgramCanvas = lazy(() => import('./flowgram/canvas'))
+
 export function ScenarioDetailPage() {
   const { scenarioId } = useParams({
     from: '/_authenticated/scenarios/$scenarioId/',
   })
   const search = useSearch({ strict: false })
+  const flowgram = (search as { editor?: string }).editor === 'flowgram'
   const runId = entityIdSchema.optional().safeParse((search as { runId?: unknown }).runId).data
   const importDraftId = entityIdSchema.optional().safeParse((search as { import?: unknown }).import).data
   const navigate = useNavigate()
@@ -176,6 +182,20 @@ export function ScenarioDetailPage() {
   })
   const importedStepIds = importedStepsQuery.data ?? []
   const [mobilePane, setMobilePane] = useState<'steps' | 'properties' | 'page'>('steps')
+  const [stepNavigation, setStepNavigation] = useState<{ id: string; sequence: number } | null>(null)
+  const [canvasLayout, setCanvasLayout] = useState<'vertical' | 'snake'>('snake')
+  function locateStep(id: string) {
+    draft.setSelectedId(id)
+    setStepNavigation((current) => ({ id, sequence: (current?.sequence ?? 0) + 1 }))
+  }
+  const stepList = useRef<HTMLOListElement>(null)
+  const selectedListId = draft.selected?.id
+  useEffect(() => {
+    if (!flowgram && selectedListId) {
+      const selected = stepList.current?.querySelector('[aria-pressed="true"]')
+      if (selected?.getClientRects().length) selected.scrollIntoView({ block: 'nearest' })
+    }
+  }, [flowgram, mobilePane, selectedListId])
   const { run: trialRun } = useRunObservation(runId ?? '', Boolean(runId))
   const openedPageForRun = useRef<string | null>(null)
   useEffect(() => {
@@ -200,6 +220,7 @@ export function ScenarioDetailPage() {
   const openBinding = recordingQuery.data?.bindings.find((item) => item.status !== 'closed')
 
   const document = draft.candidate
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
   const disabled = !canWrite || saving || publishing
   const compile = draft.compile ?? (draft.hasFieldDrafts ? null : scenario?.compile)
   const editableTypes = selectableStudioTypes(capabilitiesQuery.data)
@@ -318,7 +339,7 @@ export function ScenarioDetailPage() {
     void navigate({
       to: '/scenarios/$scenarioId',
       params: { scenarioId },
-      search: { runId, import: next },
+      search: { runId, import: next, editor: flowgram ? 'flowgram' : undefined },
       replace: true,
     })
   }
@@ -466,7 +487,7 @@ export function ScenarioDetailPage() {
     void navigate({
       to: '/scenarios/$scenarioId',
       params: { scenarioId },
-      search: { runId: run.id },
+      search: { runId: run.id, editor: flowgram ? 'flowgram' : undefined },
       replace: true,
     })
   }
@@ -803,7 +824,7 @@ export function ScenarioDetailPage() {
               }}
             >
             {runId ? <StudioHoldBar runId={runId} /> : null}
-            <div className='grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)] xl:grid-cols-[minmax(16rem,0.9fr)_minmax(18rem,0.85fr)_minmax(22rem,1.15fr)]'>
+            <div className='grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]'>
               <section
                 aria-label='执行步骤'
                 className={cn(
@@ -811,8 +832,8 @@ export function ScenarioDetailPage() {
                   mobilePane !== 'steps' && 'max-lg:hidden',
                 )}
               >
-                <div className='flex items-center justify-between gap-3 border-b border-border-divider px-5 py-4'>
-                  <h2 className='flex items-center gap-2 text-section font-semibold'>
+                <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-divider px-5 py-4'>
+                  <h2 className='flex shrink-0 items-center gap-2 text-section font-semibold'>
                     <ListOrdered className='size-4 text-primary' />
                     执行步骤
                   </h2>
@@ -830,7 +851,7 @@ export function ScenarioDetailPage() {
                         录制步骤
                       </Button>
                     ) : null}
-                    <DropdownMenu>
+                    <DropdownMenu open={addMenuOpen} onOpenChange={setAddMenuOpen}>
                       <DropdownMenuTrigger asChild>
                         <Button
                           size='sm'
@@ -891,14 +912,57 @@ export function ScenarioDetailPage() {
                     </div>
                   ) : null}
                 </div>
-                <ol className='max-h-[65vh] space-y-2 overflow-y-auto p-4'>
+                <div className='flex flex-wrap items-center gap-2 border-b border-border-divider px-4 py-2'>
+                  <div role='group' aria-label='步骤视图' className='flex gap-1'>
+                    <Button size='sm' variant={!flowgram ? 'secondary' : 'ghost'} aria-pressed={!flowgram} onClick={() => void navigate({ to: '/scenarios/$scenarioId', params: { scenarioId }, search: (prev) => ({ ...prev, editor: undefined }), replace: true })}>步骤列表</Button>
+                    <Button size='sm' variant={flowgram ? 'secondary' : 'ghost'} aria-pressed={flowgram} onClick={() => void navigate({ to: '/scenarios/$scenarioId', params: { scenarioId }, search: (prev) => ({ ...prev, editor: 'flowgram' }), replace: true })}>流程画布</Button>
+                  </div>
+                  <div className='flex min-w-0 flex-1 basis-48 items-center gap-1'>
+                    <Button size='icon' variant='ghost' aria-label='定位上一步' title='定位上一步' disabled={draft.selectedIndex <= 0}
+                      onClick={() => locateStep(document.steps[draft.selectedIndex - 1]!.id)}><ArrowLeft /></Button>
+                    <Select value={draft.selected?.id ?? ''} onValueChange={locateStep}>
+                      <SelectTrigger aria-label='定位步骤' className='min-w-0 flex-1'><SelectValue placeholder='定位步骤' /></SelectTrigger>
+                      <SelectContent>
+                        {document.steps.map((step, index) => <SelectItem key={step.id} value={step.id}>{String(index + 1).padStart(2, '0')} · {step.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <Button size='icon' variant='ghost' aria-label='定位下一步' title='定位下一步' disabled={draft.selectedIndex >= document.steps.length - 1}
+                      onClick={() => locateStep(document.steps[draft.selectedIndex + 1]!.id)}><ArrowRight /></Button>
+                  </div>
+                </div>
+                {flowgram ? (
+                  <Suspense fallback={<p className='p-6 text-small text-muted-foreground'>正在加载画布…</p>}>
+                    <FlowgramCanvas
+                      key={scenarioId}
+                      trialRun={trialRun?.scenarioId === scenarioId ? trialRun : undefined}
+                      document={document}
+                      selectedId={draft.selected?.id ?? null}
+                      navigation={stepNavigation}
+                      layout={canvasLayout}
+                      onLayoutChange={setCanvasLayout}
+                      disabled={disabled}
+                      diagnostics={compile?.diagnostics ?? []}
+                      onSelect={(id) => {
+                        draft.setSelectedId(id)
+                        setMobilePane('properties')
+                      }}
+                      onInsertAfter={(id) => {
+                        if (disabled || document.steps.length >= MAX_SCENARIO_STEPS) return
+                        draft.setSelectedId(id)
+                        setAddMenuOpen(true)
+                      }}
+                      onReorder={draft.applyStructure}
+                    />
+                  </Suspense>
+                ) : (
+                <ol ref={stepList} aria-label='有序步骤列表' className='max-h-[65vh] space-y-2 overflow-y-auto p-4'>
                   {document.steps.map((step, index) => {
                     const stepDiagnostics = (compile?.diagnostics ?? []).filter((item) => item.stepId === step.id)
-                    const hasError = stepDiagnostics.some((item) => item.severity === 'error')
-                    const hasWarning = stepDiagnostics.some((item) => item.severity === 'warning')
+                    const errorCount = stepDiagnostics.filter((item) => item.severity === 'error').length
+                    const warningCount = stepDiagnostics.filter((item) => item.severity === 'warning').length
                     const imported = importedStepIds.includes(step.id)
                     return (
-                      <li key={step.id} className='flex min-w-0 items-center gap-2'>
+                      <li key={step.id} data-list-step={step.id} className='flex min-w-0 items-center gap-2'>
                         <span className='w-5 shrink-0 text-center font-mono text-label text-muted-foreground'>
                           {String(index + 1).padStart(2, '0')}
                         </span>
@@ -915,9 +979,6 @@ export function ScenarioDetailPage() {
                             draft.selected?.id === step.id
                               ? 'border-selection-border bg-selection-background shadow-control-focus'
                               : 'border-border-default bg-card hover:bg-action-hover',
-                            hasError && 'border-status-error-foreground',
-                            !hasError && hasWarning && 'border-status-warning-foreground',
-                            imported && !hasError && 'border-primary',
                           )}
                         >
                           <span className='min-w-0 flex-1'>
@@ -931,16 +992,17 @@ export function ScenarioDetailPage() {
                                 stepTypeLabel(step.type)
                               )}
                               {step.outputKey ? <span>输出 {step.outputKey}</span> : null}
-                              {stepDiagnostics.length > 0 ? <span>{stepDiagnostics.length} 条诊断</span> : null}
+                              {errorCount > 0 ? <span className='inline-flex items-center gap-1 text-status-error-foreground'><TriangleAlert className='size-3' />{errorCount} 项错误</span> : null}
+                              {warningCount > 0 ? <span className='inline-flex items-center gap-1'><Info className='size-3' />{warningCount} 项提醒</span> : null}
                             </span>
                           </span>
-                          {hasError ? <TriangleAlert className='size-4 text-status-error-foreground' /> : null}
                           <ChevronRight className='size-4 shrink-0 text-muted-foreground' />
                         </button>
                       </li>
                     )
                   })}
                 </ol>
+                )}
                 <p className='border-t border-border-divider bg-surface-header px-5 py-3 text-label text-muted-foreground'>
                   {draft.selected
                     ? '新步骤插入到当前步骤之后。使用 Alt + ↑ / Alt + ↓ 重排；输入框内不拦截。'
@@ -1048,7 +1110,7 @@ export function ScenarioDetailPage() {
                 </div>
               </section>
             {runId ? (
-              <div className={cn(mobilePane !== 'page' && 'max-lg:hidden', 'min-w-0 lg:col-span-2 xl:col-span-1')}>
+              <div className={cn(mobilePane !== 'page' && 'max-lg:hidden', 'min-w-0 lg:col-span-2')}>
                 <TrialPanel
                   runId={runId}
                   scenarioId={scenarioId}

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>采购核对靶场 · 登录</title>
+<link rel="stylesheet" href="/styles.css" />
+<body>
+<main><h1>采购核对靶场登录</h1><p>仅供本地会话生命周期验证，接受非空测试账号与口令。</p>
+<form id="login-form"><label for="username">测试账号</label><input id="username" autocomplete="username" required />
+<label for="password">测试口令</label><input id="password" type="password" autocomplete="current-password" required />
+<button id="login-submit" type="submit">登录采购核对工作台</button></form></main>
+<script>document.getElementById('login-form').onsubmit = (event) => { event.preventDefault(); localStorage.setItem('flowgram-lab-session', 'active'); location.href = '/flowgram-orders.html'; };</script>
+</body></html>

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>采购订单核对 · 识途验证靶场</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    body { background: #f1f4fa; color: #18253d; font: 16px/1.6 system-ui,sans-serif; }
+    main { max-width: 1000px; margin: 32px auto; }
+    section { background: white; border: 1px solid #dfe6f0; border-radius: 12px; padding: 24px; margin-top: 24px; }
+    h1 { font-size: 26px; } h2 { font-size: 20px; margin-top: 0; }
+    label { display: block; margin-bottom: 8px; } input { padding: 10px; border: 1px solid #8693a9; border-radius: 6px; width: 300px; font: inherit; }
+    button { padding: 10px 20px; border: 0; border-radius: 6px; color: white; background: #245ce5; font: inherit; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; } th,td { text-align: left; padding: 14px 10px; border-bottom: 1px solid #dfe6f0; }
+    .muted { color: #607087; } .fields { display: flex; gap: 24px; margin-bottom: 20px; } #reconcile-result { font-weight: 600; color: #08795f; }
+  </style>
+</head>
+<body>
+<main>
+  <p class="muted">识途 · 独立业务靶场 / 无外部业务写入</p>
+  <h1>采购订单核对</h1>
+  <p>先查询客户订单，再将订单号和应付金额填入核对表。登记结果可从靶场服务独立核验。</p>
+  <section>
+    <h2>1. 查询采购订单</h2>
+    <label for="customer">客户名称</label>
+    <input id="customer" autocomplete="off" placeholder="输入客户名称" />
+    <button id="search" type="button">查询订单</button>
+    <p id="query-status" role="status">请输入客户名称后查询。</p>
+    <table id="orders" hidden>
+      <thead><tr><th>订单号</th><th>采购客户</th><th>应付金额（元）</th><th>订单状态</th></tr></thead>
+      <tbody><tr><td id="order-number">FG-2026-0108</td><td>华东设备有限公司</td><td id="order-amount">1280.00</td><td>待核对</td></tr></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>2. 核对并登记</h2>
+    <div class="fields">
+      <div><label for="reconcile-order">核对订单号</label><input id="reconcile-order" autocomplete="off" /></div>
+      <div><label for="reconcile-amount">核对应付金额</label><input id="reconcile-amount" autocomplete="off" /></div>
+    </div>
+    <button id="register" type="button">核对并登记</button>
+    <p id="reconcile-result" role="status">尚未登记</p>
+    <p id="registration-count">本页成功登记次数：0</p>
+  </section>
+</main>
+<script>
+  if (localStorage.getItem('flowgram-lab-session') !== 'active') location.replace('/flowgram-login.html');
+  let queried = false;
+  let submitting = false;
+  let count = 0;
+  document.getElementById('search').onclick = () => {
+    queried = document.getElementById('customer').value.trim() === '华东设备有限公司';
+    document.getElementById('orders').hidden = !queried;
+    document.getElementById('query-status').textContent = queried ? '查询完成，找到 1 笔待核对订单。' : '没有找到该客户的订单。';
+  };
+  document.getElementById('register').onclick = async () => {
+    if(submitting) return;
+    const orderNo = document.getElementById('reconcile-order').value.trim();
+    const amount = document.getElementById('reconcile-amount').value.trim();
+    const result = document.getElementById('reconcile-result');
+    if(!queried || orderNo !== 'FG-2026-0108' || amount !== '1280.00') {
+      result.textContent = '核对失败：请确认已查询的订单号和金额。'; return;
+    }
+    submitting = true;
+    const button = document.getElementById('register');
+    button.disabled = true;
+    try {
+      const response = await fetch('/lab/api/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sample: 'flowgram-sequence-spike', orderNo, amount, customer: '华东设备有限公司' }) });
+      if(!response.ok) throw new Error('登记请求失败');
+      const receipt = await response.json();
+      count++;
+      result.textContent = `已核对 · ${orderNo} · ${amount}`;
+      result.dataset.receipt = receipt.submissionId;
+      document.getElementById('registration-count').textContent = `本页成功登记次数：${count}`;
+    } catch(error) { result.textContent = error.message; button.disabled = false; submitting = false; }
+  };
+</script>
+</body>
+</html>

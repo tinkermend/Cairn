@@ -5,6 +5,7 @@ import { ScenarioDetailPage } from '@/features/scenarios/detail'
 import { useAuthStore } from '@/stores/auth-store'
 
 const searchSchema = z.object({
+  editor: z.enum(['flowgram']).optional().catch(undefined),
   runId: entityIdSchema.optional().catch(undefined),
   import: entityIdSchema.optional().catch(undefined),
 })
