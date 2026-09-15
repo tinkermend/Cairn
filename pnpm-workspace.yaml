@@ -9,6 +9,15 @@ allowBuilds:
   esbuild: true
   sharp: true
 
+minimumReleaseAgeExclude:
+  - '@turbo/darwin-64@2.10.13'
+  - '@turbo/darwin-arm64@2.10.13'
+  - '@turbo/linux-64@2.10.13'
+  - '@turbo/linux-arm64@2.10.13'
+  - '@turbo/windows-64@2.10.13'
+  - '@turbo/windows-arm64@2.10.13'
+  - turbo@2.10.13
+
 # pnpm 默认拦截依赖的 postinstall。以下依赖需要下载/编译原生二进制，
 # 均属构建与测试工具链，显式放行。
 onlyBuiltDependencies:

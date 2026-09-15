@@ -39,6 +39,6 @@
   },
   "devDependencies": {
     "concurrently": "^10.0.5",
-    "turbo": "^2.10.12"
+    "turbo": "^2.10.13"
   }
 }
