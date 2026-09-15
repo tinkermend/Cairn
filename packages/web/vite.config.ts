@@ -41,8 +41,9 @@ export default defineConfig({
       allow: [path.resolve(import.meta.dirname, '../..')],
     },
     proxy: {
-      // 开发期把后端调用转发到本地 api，避免跨域并让前端代码里只写相对路径
-      '/api': { target: API_ORIGIN, changeOrigin: true },
+      // 开发期把后端调用转发到本地 api，避免跨域并让前端代码里只写相对路径。
+      // 画面 SSE 必须禁用代理超时，否则首帧会被缓冲到连接结束，试跑页一直空白。
+      '/api': { target: API_ORIGIN, changeOrigin: true, timeout: 0, proxyTimeout: 0 },
       '/health': { target: API_ORIGIN, changeOrigin: true },
     },
   },

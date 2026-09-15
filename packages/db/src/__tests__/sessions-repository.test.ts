@@ -923,4 +923,61 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     await disposeStuckSession(handle.db, { sessionId: opened.id, actor: { id: actorId } })
     expect((await listSessions(handle.db)).some((item) => item.id === opened.id)).toBe(false)
   })
+
+  it('处置带完整认证占用绑定的 LOST 会话，不留下半截 hold', async () => {
+    const account = newId()
+    await handle.db.insert(targetAccounts).values({
+      id: account,
+      targetId,
+      displayName: '占用处置',
+      username: `hold-dispose-${account.slice(0, 8)}`,
+      status: 'active',
+    })
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `hold-dispose-${newId()}`,
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      targetAccountId: account,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, created.detail.id, workerA)
+    const session = await openSession({ account })
+    expect(
+      await enterRunWaitingForAuth(handle.db, {
+        grant,
+        sessionId: session.id,
+        workerId: workerA,
+        workerInstanceId: workerAInstance,
+        holdSeconds: 60,
+      }),
+    ).toBe(true)
+    const held = (await getSessionById(handle.db, session.id))!
+    expect(held.authHoldRunId).toBe(created.detail.id)
+    expect(held.authHoldSessionGeneration).not.toBeNull()
+    expect(held.authHoldWorkerInstanceId).toBe(workerAInstance)
+
+    await setSessionStatus(handle.db, {
+      sessionId: held.id,
+      expectedVersion: held.version,
+      status: 'LOST',
+      closeReason: 'owner_lost',
+    })
+    const dto = await disposeStuckSession(handle.db, {
+      sessionId: held.id,
+      actor: { id: actorId },
+      note: '失联后处置等待认证会话',
+    })
+    expect(dto.status).toBe('CLOSED')
+    expect(dto.authHold).toBeNull()
+    const closed = (await getSessionById(handle.db, held.id))!
+    expect(closed.authHoldRunId).toBeNull()
+    expect(closed.authHoldSessionGeneration).toBeNull()
+    expect(closed.authHoldWorkerInstanceId).toBeNull()
+    expect(closed.authHoldWorkerId).toBeNull()
+    expect(await findLiveSession(handle.db, { targetId, targetAccountId: account })).toBeNull()
+  })
 })

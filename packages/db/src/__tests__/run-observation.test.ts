@@ -337,12 +337,19 @@ describe.each(DRIVERS)('%s 运行观察账本', { timeout: 30_000 }, (driver) =>
     await bus.subscribe((hint) => {
       if (hint.runId === '66666666-6666-4666-8666-666666666666') received.push(hint.eventSeq)
     })
-    await bus.publish({
-      namespace,
-      runId: '66666666-6666-4666-8666-666666666666',
-      eventSeq: 7,
-    })
-    await expect.poll(() => received, { timeout: 3_000 }).toEqual([7])
+    await Promise.all([
+      bus.publish({
+        namespace,
+        runId: '66666666-6666-4666-8666-666666666666',
+        eventSeq: 7,
+      }),
+      bus.publish({
+        namespace,
+        runId: '66666666-6666-4666-8666-666666666666',
+        eventSeq: 8,
+      }),
+    ])
+    await expect.poll(() => received, { timeout: 3_000 }).toEqual(expect.arrayContaining([7, 8]))
     await bus.close()
   })
 })

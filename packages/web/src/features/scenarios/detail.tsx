@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
@@ -177,6 +177,16 @@ export function ScenarioDetailPage() {
   const importedStepIds = importedStepsQuery.data ?? []
   const [mobilePane, setMobilePane] = useState<'steps' | 'properties' | 'page'>('steps')
   const { run: trialRun } = useRunObservation(runId ?? '', Boolean(runId))
+  const openedPageForRun = useRef<string | null>(null)
+  useEffect(() => {
+    if (!runId || !trialRun) return
+    if (!['QUEUED', 'RUNNING', 'RECOVERING', 'WAITING_FOR_AUTH', 'HOLDING'].includes(trialRun.status)) {
+      return
+    }
+    if (openedPageForRun.current === runId) return
+    openedPageForRun.current = runId
+    setMobilePane('page')
+  }, [runId, trialRun])
   const holdingStepId =
     trialRun?.status === 'HOLDING' && trialRun.debugMode !== 'runThrough'
       ? trialRun.checkpoint?.stepId

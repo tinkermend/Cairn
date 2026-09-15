@@ -6,6 +6,9 @@ import { useAuthStore } from '@/stores/auth-store'
 import { BrowserView } from './browser-view'
 
 const mocks = vi.hoisted(() => ({
+  fetchRunObservation: vi.fn(),
+  subscribeRunEvents: vi.fn(),
+  observeRun: vi.fn(),
   fetchManagedBrowser: vi.fn(),
   subscribeBrowserFrames: vi.fn(),
   acquireAuthControl: vi.fn(),
@@ -111,5 +114,73 @@ describe('BrowserView', () => {
     const screen = await renderView()
     await expect.element(screen.getByText('由其他用户处理登录')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '处理登录' }).element()).toBeDisabled()
+    await expect.element(screen.getByText('取得登录权后才会显示认证画面，避免把验证码广播给其他观察者。')).toBeInTheDocument()
+  })
+
+  it('试跑运行中自动展开并订阅画面', async () => {
+    const pageId = '66666666-6666-4666-8666-666666666666'
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId,
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [
+        {
+          pageRef: {
+            sessionId: meta.sessionId!,
+            sessionGeneration: 1,
+            pageId,
+            documentEpoch: 0,
+          },
+          kind: 'run',
+          viewing: true,
+          currentExecution: true,
+        },
+      ],
+      authHold: null,
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue(live)
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-1',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-15T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+    })
+    signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
+    const screen = await renderView('RUNNING')
+    await expect.element(screen.getByRole('button', { name: '收起画面' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('img', { name: '受管浏览器当前画面' })).toBeInTheDocument()
+    await expect.element(screen.getByText('画面已连接')).toBeInTheDocument()
+    expect(mocks.subscribeBrowserFrames).toHaveBeenCalled()
+  })
+
+  it('已结束的运行不假装还在线', async () => {
+    mocks.fetchManagedBrowser.mockResolvedValue({
+      ...meta,
+      runStatus: 'SUCCEEDED',
+      framesAvailable: false,
+      authHold: null,
+      degradedReason: 'worker_unreachable',
+    })
+    signIn(['run:read', 'session:view'])
+    const screen = await renderView('SUCCEEDED')
+    await expect.element(screen.getByRole('button', { name: '展开画面' })).toBeInTheDocument()
+    expect(mocks.subscribeBrowserFrames).not.toHaveBeenCalled()
+    await screen.getByRole('button', { name: '展开画面' }).click()
+    await expect.element(screen.getByText('运行已结束，实时画面已关闭。步骤截图仍在证据里。')).toBeInTheDocument()
   })
 })

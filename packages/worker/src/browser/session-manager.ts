@@ -1353,11 +1353,7 @@ export class BrowserSessionManager {
     onFrame: (frame: ManagedBrowserFrame) => void
     signal: AbortSignal
   }): Promise<void> {
-    const { session, live, run } = await this.requireLiveAuthSession(input.runId).catch(async () => {
-      const meta = await this.buildMeta(input.runId, input.actorId, input.pageId)
-      if (!meta.framesAvailable) throw conflict('WORKER_UNREACHABLE', '当前没有可观察的受管页面')
-      throw conflict('WORKER_UNREACHABLE', '当前没有可观察的受管页面')
-    })
+    const { session, live, run } = await this.requireLiveAuthSession(input.runId)
     if (
       !canObserveManagedFrames({
         runStatus: run.status,
@@ -1490,13 +1486,9 @@ export class BrowserSessionManager {
     live: LiveHandle
     run: Awaited<ReturnType<typeof getRun>>
   }> {
-    const run = await getRun(this.dbHandle, runId)
-    const held = this.liveAuthHold(await findSessionByAuthHoldRun(this.dbHandle, runId))
-    const sessionId = held?.id ?? run.placement.sessionId ?? this.liveSessionIdForRun(runId)
-    const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
+    const { run, session, live } = await this.lookupRunSession(runId)
     if (!session) throw conflict('WORKER_UNREACHABLE', '运行没有可观察的受管会话')
     this.assertSessionOwnedHere(session)
-    const live = this.lives.get(session.id)
     if (!live) throw conflict('WORKER_UNREACHABLE', '本进程没有会话句柄')
     await expireStaleAuthControl(this.dbHandle, session.id, runId).catch(() => undefined)
     await this.assertOwnLiveRegistration()
@@ -1554,15 +1546,30 @@ export class BrowserSessionManager {
       const sessionId = this.leaseToSession.get(leaseId)
       if (sessionId && this.lives.has(sessionId)) return sessionId
     }
+    for (const [sessionId, live] of this.lives) {
+      if (live.currentPageIdByRun.has(runId)) return sessionId
+      for (const entry of live.pages.values()) {
+        if (entry.runId === runId && !entry.page.isClosed()) return sessionId
+      }
+    }
     return undefined
   }
 
-  private async buildMeta(runId: string, actorId: string, viewPageId?: string): Promise<ManagedBrowserMeta> {
+  private async lookupRunSession(runId: string): Promise<{
+    run: Awaited<ReturnType<typeof getRun>>
+    session: SessionRecord | null
+    live: LiveHandle | undefined
+  }> {
     const run = await getRun(this.dbHandle, runId)
     const held = this.liveAuthHold(await findSessionByAuthHoldRun(this.dbHandle, runId))
-    const session =
-      held ?? (run.placement.sessionId ? await getSessionById(this.dbHandle, run.placement.sessionId) : null)
+    const sessionId = held?.id ?? run.placement.sessionId ?? this.liveSessionIdForRun(runId)
+    const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
     const live = session ? this.lives.get(session.id) : undefined
+    return { run, session, live }
+  }
+
+  private async buildMeta(runId: string, actorId: string, viewPageId?: string): Promise<ManagedBrowserMeta> {
+    const { run, session, live } = await this.lookupRunSession(runId)
     const liveOk = Boolean(live && session && this.sessionOwnedHere(session))
     const waiting = run.status === 'WAITING_FOR_AUTH'
     const controlLive =

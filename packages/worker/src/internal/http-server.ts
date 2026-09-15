@@ -227,11 +227,13 @@ function bindSseAbort(req: IncomingMessage, res: ServerResponse, controller: Abo
   const abort = () => {
     if (!controller.signal.aborted) controller.abort()
   }
-  res.once('close', abort)
+  // Node 24 在 GET 读完空 body 后 req.destroyed=true 并 emit('close')，不是客户端断开。
+  res.once('close', () => {
+    if (!res.writableEnded) abort()
+  })
   res.once('error', abort)
   req.socket?.once('close', abort)
   req.socket?.once('error', abort)
-  if (req.destroyed || res.writableEnded || req.socket?.destroyed) abort()
 }
 
 function header(req: IncomingMessage, name: string): string {

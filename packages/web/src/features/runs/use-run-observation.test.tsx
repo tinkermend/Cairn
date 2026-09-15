@@ -203,6 +203,36 @@ describe('useRunObservation', () => {
     expect(useAuthStore.getState().auth.user?.id).toBe('u1')
   })
 
+  it('UNAUTHORIZED 控制消息清空当前登录', async () => {
+    const stream = captureSubscribe()
+    const { screen } = await renderHook()
+    await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
+    stream.emitControl({ kind: 'error', code: 'UNAUTHORIZED' })
+    await vi.waitFor(() => expect(useAuthStore.getState().auth.accessToken).toBe(''))
+    expect(useAuthStore.getState().auth.user).toBeNull()
+  })
+
+  it('INTERNAL 控制消息保留登录并重连', async () => {
+    let calls = 0
+    mocks.subscribeRunEvents.mockImplementation(async (_id: string, input: StreamInput) => {
+      calls += 1
+      if (calls === 1) {
+        input.handlers.onControl?.({ kind: 'error', code: 'INTERNAL' })
+        return
+      }
+      input.handlers.onControl?.({ kind: 'ready', realtime: true })
+      await new Promise<void>((resolve) => {
+        input.signal.addEventListener('abort', () => resolve(), { once: true })
+      })
+    })
+    const { screen } = await renderHook()
+    await expect.element(screen.getByText('RUNNING')).toBeInTheDocument()
+    await vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(2))
+    expect(useAuthStore.getState().auth.accessToken).toBe('token-a')
+    expect(useAuthStore.getState().auth.user?.id).toBe('u1')
+    await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
+  })
+
   it('实时未配置显示辅助灰标，不是 Run 失败', async () => {
     mocks.subscribeRunEvents.mockImplementation(async (_id: string, input: StreamInput) => {
       input.handlers.onControl?.({ kind: 'ready', realtime: false })

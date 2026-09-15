@@ -1217,9 +1217,16 @@ export async function disposeStuckSession(
         status: 'CLOSED',
         closedAt: now,
         closeReason: 'operator_disposed',
-        // 处置就是收回一切占用：认证占用不能留在一个已关闭的会话上。
+        // 处置就是收回一切占用。只清 worker/到期、留下 runId 会违反 hold 绑定约束。
         authHoldWorkerId: null,
         authHoldExpiresAt: null,
+        authHoldRunId: null,
+        authHoldSessionGeneration: null,
+        authHoldWorkerInstanceId: null,
+        authControlActorId: null,
+        authControlTokenHash: null,
+        authControlExpiresAt: null,
+        authControlPageId: null,
         version: sql`${browserSessions.version} + 1`,
         updatedAt: now,
       },

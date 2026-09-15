@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common'
 import { Test } from '@nestjs/testing'
 import { JwtService } from '@nestjs/jwt'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -179,6 +180,94 @@ describe('ObserveService.stream', () => {
       expect(res.chunks.join('')).toContain('"kind":"ready"')
       await vi.advanceTimersByTimeAsync(15_000)
       expect(res.chunks.join('')).toContain('"code":"FORBIDDEN"')
+      expect(res.end).toHaveBeenCalled()
+      controller.abort()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('存活期间库故障发 INTERNAL，不把登录判失效', async () => {
+    vi.useFakeTimers()
+    try {
+      service.onModuleDestroy()
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          ObserveService,
+          { provide: DB_HANDLE, useValue: { ping: async () => true, close: async () => undefined, driver: 'postgres' } },
+          { provide: CHANGE_HINT, useValue: unusedChangeHint },
+          { provide: JwtService, useValue: { decode: () => ({ exp: Math.floor(Date.now() / 1000) + 3600 }) } },
+          {
+            provide: AuthService,
+            useValue: {
+              resolveAccount: vi.fn(async () => {
+                throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+              }),
+            },
+          },
+        ],
+      }).compile()
+      service = moduleRef.get(ObserveService)
+      await moduleRef.init()
+      mocks.loadRunObservation.mockResolvedValue(observation())
+      mocks.listRunEventsAfter.mockResolvedValue([])
+      const res = mockResponse()
+      const controller = new AbortController()
+      await service.stream({
+        runId,
+        authorization: 'Bearer live',
+        account: { id: 'acc', displayName: 't', email: null, status: 'active', roles: [], permissions: ['run:read'] },
+        response: res as never,
+        signal: controller.signal,
+      })
+      expect(res.chunks.join('')).toContain('"kind":"ready"')
+      await vi.advanceTimersByTimeAsync(15_000)
+      const text = res.chunks.join('')
+      expect(text).toContain('"code":"INTERNAL"')
+      expect(text).toContain('服务暂时不可用')
+      expect(text).not.toContain('"code":"UNAUTHORIZED"')
+      expect(res.end).toHaveBeenCalled()
+      controller.abort()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('存活期间账号不存在才发 UNAUTHORIZED', async () => {
+    vi.useFakeTimers()
+    try {
+      service.onModuleDestroy()
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          ObserveService,
+          { provide: DB_HANDLE, useValue: { ping: async () => true, close: async () => undefined, driver: 'postgres' } },
+          { provide: CHANGE_HINT, useValue: unusedChangeHint },
+          { provide: JwtService, useValue: { decode: () => ({ exp: Math.floor(Date.now() / 1000) + 3600 }) } },
+          {
+            provide: AuthService,
+            useValue: {
+              resolveAccount: vi.fn(async () => {
+                throw new NotFoundException('账号不存在')
+              }),
+            },
+          },
+        ],
+      }).compile()
+      service = moduleRef.get(ObserveService)
+      await moduleRef.init()
+      mocks.loadRunObservation.mockResolvedValue(observation())
+      mocks.listRunEventsAfter.mockResolvedValue([])
+      const res = mockResponse()
+      const controller = new AbortController()
+      await service.stream({
+        runId,
+        authorization: 'Bearer live',
+        account: { id: 'acc', displayName: 't', email: null, status: 'active', roles: [], permissions: ['run:read'] },
+        response: res as never,
+        signal: controller.signal,
+      })
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(res.chunks.join('')).toContain('"code":"UNAUTHORIZED"')
       expect(res.end).toHaveBeenCalled()
       controller.abort()
     } finally {

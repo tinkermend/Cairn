@@ -109,7 +109,9 @@ export function useRunObservation(runId: string, enabled = true) {
                     if (tokenAtStart === useAuthStore.getState().auth.accessToken) {
                       useAuthStore.getState().auth.reset()
                     }
+                    return
                   }
+                  setConnection('recovering')
                 }
               },
             },

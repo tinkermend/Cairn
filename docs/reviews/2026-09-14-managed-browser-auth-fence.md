@@ -20,9 +20,10 @@ B 线主体原先已经接通。本轮只补方案承诺过、复查复现失败
 | API browser HTTP | 22 项通过 |
 | `CAIRN_S_LIVE=1`（Playwright 1.63 / headless Chromium / darwin） | 3 项通过：原探针、20 次订阅/关闭无残留且首帧回调 p95 ≤ 3s、等待认证后独占输入并续跑到 `RECOVERING` |
 
-未在本轮控制台实测，因此不宣称：
+2026-09-15 控制台用户路径及续跑后只读画面见 [Studio 控制台报告](2026-09-15-managed-browser-studio-console.md)。本报告仍不宣称：
 
-- BV08 的 Web 展示路径时延
-- BV09「用户从 Studio 发现等待认证」的控制台入口
+- BV08 的 Web 展示路径 p95 与 20 次循环
+- 操作系统弹窗、证书选择、复杂 SSO
+- D1 联合验收
 
 D1 联合验收（SSE + 画面 + 已有 AI/Studio 的 10 步样例）仍按工程计划另做。

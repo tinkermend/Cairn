@@ -130,6 +130,58 @@ describe('内部 HTTP', () => {
     await vi.waitFor(() => expect(frameSignal?.aborted).toBe(true), { timeout: 1000 })
   })
 
+  it('GET 读完请求体后画面订阅仍保持，直到客户端断开', { timeout: 8_000 }, async () => {
+    const sessions = stubSessions()
+    let frameSignal: AbortSignal | undefined
+    let finishFeed: (() => void) | undefined
+    sessions.subscribeRunFrames.mockImplementation(
+      async ({ signal, onFrame }: { signal: AbortSignal; onFrame: (x: unknown) => void }) => {
+        frameSignal = signal
+        if (signal.aborted) return
+        onFrame({ testFrame: true })
+        await new Promise<void>((resolve) => {
+          finishFeed = resolve
+          signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+      },
+    )
+    const http = await startManagedBrowserHttp({
+      host: '127.0.0.1',
+      port: 0,
+      secret: DEV_INTERNAL_AUTH_SECRET,
+      workerInstanceId,
+      sessions: sessions as never,
+    })
+    closers.push(async () => {
+      finishFeed?.()
+      http.server.closeAllConnections()
+      await http.close()
+    })
+    const addr = http.server.address()
+    if (!addr || typeof addr === 'string') throw new Error('no port')
+    const path = workerInternalPath('/frames')
+    const headers = await signInternalHeaders(requireInternalSecret(DEV_INTERNAL_AUTH_SECRET), {
+      method: 'GET',
+      path,
+      body: '',
+      expiresUnix: Math.floor(Date.now() / 1000) + 10,
+      actorId,
+      runId,
+      sessionGeneration: 1,
+      workerInstanceId,
+    })
+    const controller = new AbortController()
+    const response = await fetch(`http://127.0.0.1:${addr.port}${path}`, { headers, signal: controller.signal })
+    expect(response.status).toBe(200)
+    await vi.waitFor(() => expect(sessions.subscribeRunFrames).toHaveBeenCalled())
+    expect(frameSignal?.aborted).toBe(false)
+    const first = await response.body!.getReader().read()
+    expect(first.done).toBe(false)
+    expect(frameSignal?.aborted).toBe(false)
+    controller.abort()
+    await vi.waitFor(() => expect(frameSignal?.aborted).toBe(true), { timeout: 1000 })
+  })
+
   it('observe 与 debug-resume 走内部路径，不出现控制面 /api/runs', async () => {
     const sessions = stubSessions()
     sessions.observeRun.mockResolvedValue({

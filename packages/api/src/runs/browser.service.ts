@@ -42,7 +42,7 @@ import {
 import { config } from '../config/env'
 import { AuthService } from '../auth/auth.service'
 import type { RequestAccount } from '../common/request-account'
-import { rethrowDomain } from '../common/domain-error'
+import { classifyAccountRecheck, rethrowDomain } from '../common/domain-error'
 import { DB_HANDLE } from '../db/db.module'
 import { WorkerForwardError, WorkerInternalClient } from './worker-internal.client'
 
@@ -314,7 +314,7 @@ export class BrowserService {
     accountId: string,
     expiresAt: number,
     runId: string,
-  ): Promise<'UNAUTHORIZED' | 'FORBIDDEN' | null> {
+  ): Promise<'UNAUTHORIZED' | 'FORBIDDEN' | 'INTERNAL' | null> {
     if (Date.now() >= expiresAt) return 'UNAUTHORIZED'
     try {
       const account = await this.auth.resolveAccount(accountId)
@@ -333,8 +333,8 @@ export class BrowserService {
         return 'FORBIDDEN'
       }
       return null
-    } catch {
-      return 'UNAUTHORIZED'
+    } catch (error) {
+      return classifyAccountRecheck(error)
     }
   }
 }

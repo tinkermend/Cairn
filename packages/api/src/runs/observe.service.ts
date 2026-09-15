@@ -20,6 +20,7 @@ import {
 } from '@cairn/shared'
 import type { RequestAccount } from '../common/request-account'
 import { AuthService } from '../auth/auth.service'
+import { classifyAccountRecheck } from '../common/domain-error'
 import { config } from '../config/env'
 import { DB_HANDLE } from '../db/db.module'
 import { CHANGE_HINT } from '../observe/change-hint.module'
@@ -248,7 +249,12 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
             kind: 'error',
             runId: input.runId,
             code,
-            message: code === 'UNAUTHORIZED' ? '登录已过期或无效' : '没有运行读取权限',
+            message:
+              code === 'UNAUTHORIZED'
+                ? '登录已过期或无效'
+                : code === 'FORBIDDEN'
+                  ? '没有运行读取权限'
+                  : '服务暂时不可用',
           })
           close()
         })
@@ -296,15 +302,15 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
   private async recheck(
     accountId: string,
     expiresAt: number,
-  ): Promise<'UNAUTHORIZED' | 'FORBIDDEN' | null> {
+  ): Promise<'UNAUTHORIZED' | 'FORBIDDEN' | 'INTERNAL' | null> {
     if (Date.now() >= expiresAt) return 'UNAUTHORIZED'
     try {
       const account = await this.auth.resolveAccount(accountId)
       if (account.status === 'disabled') return 'FORBIDDEN'
       if (!hasPermission(account.permissions, 'run:read')) return 'FORBIDDEN'
       return null
-    } catch {
-      return 'UNAUTHORIZED'
+    } catch (error) {
+      return classifyAccountRecheck(error)
     }
   }
 }

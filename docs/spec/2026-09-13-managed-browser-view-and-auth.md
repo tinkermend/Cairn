@@ -1,6 +1,6 @@
 # P7 / P5：受管浏览器查看、认证续跑与页面交接
 
-> 编号：B。日期：2026-09-13。状态：**审查后修订并实施**；2026-09-14 补齐认证输入 fencing 与画面订阅回收。
+> 编号：B。日期：2026-09-13。状态：**审查后修订并实施**；2026-09-14 补齐认证输入 fencing 与画面订阅回收；2026-09-15 控制台走完 Studio 用户路径并补续跑后只读画面，BV08 p95 仍未关。
 > 对应 P7 Live View / 受控认证、P5 页面交接、D1；S-LIVE 是本线实现选择的先行探针。
 > 关联：[A 运行实时状态](2026-09-13-run-realtime-observation.md)、[C 录制回填 Studio](2026-09-13-recording-studio-integration.md)；唯一交付顺序见[工程计划第 5 节](../plan/识途开发路线与工程实施计划.md#5-当前交付顺序与验收样例)。
 
@@ -64,7 +64,7 @@ Screencast 由 Chromium DevTools 协议提供，属于实验性能力，本线�
 
 探针实现为 Worker lab spec：`CAIRN_S_LIVE=1` 且能启动 Chromium 时，用同一个 `BrowserSessionManager` 测 CDP 首帧、中文 `insert_text`、`pageAfter=popup` 后 `pageForGrant` 与 Midscene 适配层是否同一页。无该环境变量时跳过，**跳过不等于通过，也不得把默认 `open` 写成 BV08**。能力字段先反映“实现已接通”；lab 通过只证明受控靶场接通，不自动改写 BV08 的展示路径 p95 与 20 次循环。前端仅对 `closed` 隐藏入口。
 
-2026-09-14 本机 `CAIRN_S_LIVE=1`（Playwright 1.63 / headless Chromium / darwin）探针通过：首帧 ≤ 3s、中文 `insert_text`、popup 后 `pageForGrant` 与假模型 Midscene 适配层同一页。同日补测 Worker 订阅 20 次连接/关闭无残留、首帧回调 p95 ≤ 3s，以及等待认证后独占输入、登录并续跑到 `RECOVERING`。这仍不是 BV08 的 Web 展示路径 p95，也不是 BV09 的 Studio 控制台发现入口。
+2026-09-14 本机 `CAIRN_S_LIVE=1`（Playwright 1.63 / headless Chromium / darwin）探针通过：首帧 ≤ 3s、中文 `insert_text`、popup 后 `pageForGrant` 与假模型 Midscene 适配层同一页。同日补测 Worker 订阅 20 次连接/关闭无残留、首帧回调 p95 ≤ 3s，以及等待认证后独占输入、登录并续跑到 `RECOVERING`。这仍不是 BV08 的 Web 展示路径 p95。2026-09-15 Studio 控制台用户路径见[控制台报告](../reviews/2026-09-15-managed-browser-studio-console.md)。
 
 能力响应字段：
 
@@ -281,7 +281,7 @@ Step Editor 为 click 增加“点击后页面”：未指定 / 保持当前页 
 
 BV01–BV09 对应工程计划 LV01–LV06 的展开，不能降低 RF 的所有权与未知副作用要求。PG/MySQL/SQLite 的控制原子性分别验收；浏览器/网络支持按探针实际通过范围公开。操作系统弹窗、证书选择、复杂 SSO 和新 AI 页面类别未经专项验证不宣称支持。
 
-无 Chromium 的 CI 跑契约、三库原子性、签名/权限/转发与 UI 状态测试；S-LIVE / popup lab / 性能数字在有浏览器的环境记录，不能把跳过写成通过。Worker 侧 20 次循环与等待认证续跑已由 S-LIVE 记录；BV08 的 Web 展示路径 p95、BV09 的 Studio 发现入口仍要在控制台对受控目标实测，lab 通过不能替代。
+无 Chromium 的 CI 跑契约、三库原子性、签名/权限/转发与 UI 状态测试；S-LIVE / popup lab / 性能数字在有浏览器的环境记录，不能把跳过写成通过。Worker 侧 20 次循环与等待认证续跑已由 S-LIVE 记录。2026-09-15 控制台已走完 BV09 的发现 / 独占输入 / 登录 / 续跑 / 证据，见[控制台报告](../reviews/2026-09-15-managed-browser-studio-console.md)；BV08 的 Web 展示路径 p95 与 20 次循环仍未关，lab 通过不能替代。
 
 ## 11. 与另外两线的依赖
 

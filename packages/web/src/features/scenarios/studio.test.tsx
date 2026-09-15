@@ -43,6 +43,8 @@ const runMocks = vi.hoisted(() => ({
   subscribeRunEvents: vi.fn(),
   debugRun: vi.fn(),
   observeRun: vi.fn(),
+  fetchManagedBrowser: vi.fn(),
+  subscribeBrowserFrames: vi.fn(),
 }))
 
 const router = vi.hoisted(() => ({
@@ -69,6 +71,8 @@ vi.mock('@/lib/runs-api', async (importOriginal) => ({
   subscribeRunEvents: runMocks.subscribeRunEvents,
   debugRun: runMocks.debugRun,
   observeRun: runMocks.observeRun,
+  fetchManagedBrowser: runMocks.fetchManagedBrowser,
+  subscribeBrowserFrames: runMocks.subscribeBrowserFrames,
 }))
 vi.mock('@/components/layout/app-header', () => ({
   AppHeader: () => null,
@@ -252,6 +256,27 @@ describe('Scenario Studio', () => {
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
     mocks.fetchScenarios.mockResolvedValue({ items: [detail()] })
     runMocks.fetchRunObservation.mockResolvedValue(trialObservation())
+    runMocks.fetchManagedBrowser.mockResolvedValue({
+      runId: RUN_ID,
+      runStatus: 'QUEUED',
+      sessionId: null,
+      sessionGeneration: null,
+      ownerWorkerId: null,
+      framesAvailable: false,
+      viewingOtherPage: false,
+      currentPage: null,
+      pages: [],
+      authHold: null,
+      authControl: null,
+      capabilities: {
+        screencast: 'open',
+        authInput: 'open',
+        popupHandoff: 'open',
+        chineseInsertText: 'open',
+      },
+      degradedReason: null,
+    })
+    runMocks.subscribeBrowserFrames.mockResolvedValue(undefined)
     runMocks.observeRun.mockResolvedValue({
       outcome: 'FOUND',
       page: { url: 'https://shop.example.com' },

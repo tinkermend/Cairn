@@ -9,6 +9,13 @@ function domainBody(domain: DomainError) {
   }
 }
 
+/** SSE 存活复核：只有明确的身份/权限失败才能清登录，库故障走 INTERNAL。 */
+export function classifyAccountRecheck(error: unknown): 'UNAUTHORIZED' | 'FORBIDDEN' | 'INTERNAL' {
+  if (error instanceof NotFoundException || error instanceof UnauthorizedException) return 'UNAUTHORIZED'
+  if (error instanceof ForbiddenException) return 'FORBIDDEN'
+  return 'INTERNAL'
+}
+
 export function rethrowDomain(error: unknown): never {
   const domain = error instanceof DomainError ? error : undefined
   if (domain) {

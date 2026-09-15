@@ -508,4 +508,49 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     expect(staleHold.associationLive).toBe(false)
     expect(staleHold.session?.id).toBe(heldSession.id)
   })
+
+  it('续跑后占用已清、租约未领时仍能转发到该账号活会话', async () => {
+    const workerId = `resume-route-${newId().slice(0, 8)}`
+    const instanceId = newId()
+    await registerWorker(handle.db, {
+      workerId,
+      instanceId,
+      capacity: 1,
+      lostAfterSeconds: 60,
+    })
+    const account = await makeAccount(`resume-route-${newId().slice(0, 6)}`)
+    const session = await openOwnedSession({ workerId, account, instanceId })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId,
+      targetAccountId: account,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, created.detail.id, workerId)
+    expect(
+      await enterRunWaitingForAuth(handle.db, {
+        grant,
+        sessionId: session.id,
+        workerId,
+        workerInstanceId: instanceId,
+        holdSeconds: 30,
+      }),
+    ).toBe(true)
+    const { browserSessions, runs } = schemaFor(handle.db)
+    await handle.db
+      .update(browserSessions)
+      .set({
+        authHoldWorkerId: null,
+        authHoldExpiresAt: null,
+        authHoldRunId: null,
+        authHoldSessionGeneration: null,
+        authHoldWorkerInstanceId: null,
+      })
+      .where(eq(browserSessions.id, session.id))
+    await handle.db.update(runs).set({ status: 'RECOVERING' }).where(eq(runs.id, created.detail.id))
+
+    const route = await resolveWorkerRoute(handle.db, created.detail.id)
+    expect(route.session?.id).toBe(session.id)
+    expect(route.associationLive).toBe(true)
+    expect(route.runStatus).toBe('RECOVERING')
+  })
 })

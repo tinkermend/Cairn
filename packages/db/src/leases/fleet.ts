@@ -19,7 +19,7 @@ import type { Db } from '../client.js'
 import { clockNow, schemaFor } from '../native.js'
 import { failure } from '../runs/errors.js'
 import { findSessionByAuthHoldRun } from '../sessions/auth-control.js'
-import { getSessionById, toSessionDto, type SessionRecord } from '../sessions/sessions.js'
+import { findLiveSession, getSessionById, toSessionDto, type SessionRecord } from '../sessions/sessions.js'
 import { notFound } from '../runs/errors.js'
 import { getWorkerById, type WorkerRecord } from './leases.js'
 
@@ -66,7 +66,15 @@ export async function resolveWorkerRoute(db: Db, runId: string): Promise<WorkerR
     const holdLive = Boolean(held && authHoldLive(held, asOf))
     const leaseLive = Boolean(lease && lease.expiresAt.getTime() > asOf.getTime())
     const leased = lease ? await getSessionById(tx as unknown as Db, lease.sessionId) : null
-    const session = (holdLive ? held : null) ?? leased ?? held
+    let session = (holdLive ? held : null) ?? leased ?? held
+    // 续跑后占用已清、新租约尚未领取：仍要把画面转到这个账号上的活会话。
+    if (!session && run.status === 'RECOVERING' && run.targetAccountId) {
+      const recovering = await findLiveSession(tx as unknown as Db, {
+        targetId: run.targetId,
+        targetAccountId: run.targetAccountId,
+      })
+      if (recovering?.status === 'OPEN') session = recovering
+    }
     const worker = session ? await getWorkerById(tx as unknown as Db, session.ownerWorkerId) : null
     return {
       asOf,
@@ -74,7 +82,7 @@ export async function resolveWorkerRoute(db: Db, runId: string): Promise<WorkerR
       runStatus: run.status,
       session,
       worker,
-      associationLive: holdLive || leaseLive,
+      associationLive: holdLive || leaseLive || (run.status === 'RECOVERING' && session?.status === 'OPEN'),
     }
   })
 }

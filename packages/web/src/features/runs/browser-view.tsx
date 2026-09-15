@@ -23,6 +23,31 @@ import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
 import { useAuthoringObserve } from '@/features/scenarios/authoring-observe'
 
+const LIVE_VIEW_STATUSES = new Set(['QUEUED', 'RUNNING', 'RECOVERING', 'WAITING_FOR_AUTH', 'HOLDING'])
+
+function isLiveViewRun(status: string) {
+  return LIVE_VIEW_STATUSES.has(status)
+}
+
+function viewPlaceholder(input: {
+  runStatus: string
+  waiting: boolean
+  controlling: boolean
+  framesAvailable: boolean
+  degradedReason: ManagedBrowserMeta['degradedReason']
+  streamError: string | null
+  connecting: boolean
+}) {
+  if (input.streamError) return input.streamError
+  if (!isLiveViewRun(input.runStatus)) return '运行已结束，实时画面已关闭。步骤截图仍在证据里。'
+  if (input.waiting && !input.controlling) return '取得登录权后才会显示认证画面，避免把验证码广播给其他观察者。'
+  if (input.degradedReason === 'worker_generation_mismatch') return '执行面已更换，不能继续看这一轮画面。'
+  if (input.degradedReason === 'worker_unreachable') return '执行面暂时不可达，仍显示会话所有权。'
+  if (input.connecting) return '正在连接受管浏览器画面…'
+  if (!input.framesAvailable) return '等待执行面就绪。会话建立后会自动开始抓取画面。'
+  return '运行已结束，实时画面已关闭。步骤截图仍在证据里。'
+}
+
 /** 画面是 object-contain，按整块按钮比例换算会点到留白而不是登录框。 */
 function framePointFromClick(
   event: { currentTarget: HTMLElement; clientX: number; clientY: number },
@@ -55,6 +80,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
   const [pageRef, setPageRef] = useState<PageRef | null>(null)
   const [expiresAt, setExpiresAt] = useState<string | null>(null)
   const [viewPageId, setViewPageId] = useState<string | undefined>()
+  const [streamError, setStreamError] = useState<string | null>(null)
   const seq = useRef(0)
   const composing = useRef(false)
   const tokenRef = useRef<string | null>(null)
@@ -62,24 +88,40 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
   tokenRef.current = token
 
   useEffect(() => {
-    if (runStatus === 'HOLDING' || runStatus === 'WAITING_FOR_AUTH') setOpen(true)
-  }, [runStatus])
+    if (isLiveViewRun(runStatus)) setOpen(true)
+  }, [runId, runStatus])
 
   useEffect(() => {
     if (!canView) return
-    if (!open && runStatus !== 'WAITING_FOR_AUTH' && runStatus !== 'HOLDING') return
+    if (!open && !isLiveViewRun(runStatus)) return
     let cancelled = false
-    void fetchManagedBrowser(runId, viewPageId)
-      .then((next) => {
-        if (!cancelled) setMeta(next)
-      })
-      .catch((error) => {
-        if (!cancelled) toast.error(error instanceof ApiRequestError ? error.message : '无法读取浏览器状态')
-      })
+    let timer = 0
+    const load = () => {
+      void fetchManagedBrowser(runId, viewPageId)
+        .then((next) => {
+          if (cancelled) return
+          setMeta(next)
+          const waitingAuthGate = next.runStatus === 'WAITING_FOR_AUTH' && !tokenRef.current
+          const needRetry =
+            open &&
+            isLiveViewRun(runStatus) &&
+            !next.framesAvailable &&
+            next.degradedReason !== 'worker_generation_mismatch' &&
+            !waitingAuthGate
+          if (needRetry) timer = window.setTimeout(load, 800)
+        })
+        .catch((error) => {
+          if (cancelled) return
+          toast.error(error instanceof ApiRequestError ? error.message : '无法读取浏览器状态')
+          if (open && isLiveViewRun(runStatus)) timer = window.setTimeout(load, 1600)
+        })
+    }
+    load()
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
-  }, [open, canView, runId, runStatus, eventSeq, viewPageId])
+  }, [open, canView, runId, runStatus, eventSeq, viewPageId, token])
 
   useEffect(() => {
     return () => {
@@ -91,16 +133,45 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
   useEffect(() => {
     if (!open || !canView || !meta?.framesAvailable) {
       setFrame(null)
+      setStreamError(null)
       return
     }
-    const controller = new AbortController()
-    void subscribeBrowserFrames(runId, {
-      signal: controller.signal,
-      pageId: viewPageId,
-      onFrame: (next) => setFrame(next),
-    }).catch(() => undefined)
-    return () => controller.abort()
-  }, [open, canView, runId, viewPageId, meta?.framesAvailable, meta?.authControl?.epoch])
+    let cancelled = false
+    let retryTimer = 0
+    let controller: AbortController | null = null
+    const connect = () => {
+      if (cancelled) return
+      controller = new AbortController()
+      setStreamError(null)
+      void subscribeBrowserFrames(runId, {
+        signal: controller.signal,
+        pageId: viewPageId,
+        onFrame: (next) => {
+          setStreamError(null)
+          setFrame(next)
+        },
+      })
+        .then(() => {
+          if (cancelled || controller?.signal.aborted) return
+          if (!isLiveViewRun(runStatus)) return
+          setStreamError('画面流已中断，正在重连…')
+          retryTimer = window.setTimeout(connect, 800)
+        })
+        .catch((error) => {
+          if (cancelled || controller?.signal.aborted) return
+          const message = error instanceof ApiRequestError ? error.message : '无法订阅受管浏览器画面'
+          setStreamError(message)
+          toast.error(message)
+          if (isLiveViewRun(runStatus)) retryTimer = window.setTimeout(connect, 1600)
+        })
+    }
+    connect()
+    return () => {
+      cancelled = true
+      controller?.abort()
+      window.clearTimeout(retryTimer)
+    }
+  }, [open, canView, runId, runStatus, viewPageId, meta?.framesAvailable, meta?.authControl?.epoch])
 
   useEffect(() => {
     if (!token || !canControl) return
@@ -173,14 +244,17 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
               ? '需要目标系统登录。画面只发给当前控制者。'
               : holding
                 ? '调试挂起中。指认在画面上点选，校验框画在叠加层，不会改目标页。'
-                : '只读跟随当前执行页。展开后才抓取画面。'}
+                : isLiveViewRun(runStatus)
+                  ? '只读跟随当前执行页。在途运行会自动展开画面。'
+                  : '只读跟随当前执行页。运行结束后不再抓取实时画面。'}
           </p>
         </div>
         <div className='flex items-center gap-2'>
           {meta?.degradedReason ? <StatusBadge tone='warning'>画面不可用</StatusBadge> : null}
+          {frame ? <StatusBadge tone='success'>画面已连接</StatusBadge> : null}
           {controlling ? <StatusBadge tone='warning'>正在输入</StatusBadge> : null}
           <Button variant='outline' onClick={() => setOpen((value) => !value)}>
-            {open || waiting || holding ? (open ? '收起画面' : '展开画面') : '展开画面'}
+            {open ? '收起画面' : '展开画面'}
           </Button>
         </div>
       </div>
@@ -338,7 +412,22 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
                 </svg>
               ) : null}
             </button>
-          ) : null}
+          ) : (
+            <div
+              role='status'
+              className='flex min-h-56 items-center justify-center rounded-md border border-dashed border-border-default bg-muted px-4 py-8 text-center text-small text-muted-foreground'
+            >
+              {viewPlaceholder({
+                runStatus,
+                waiting,
+                controlling,
+                framesAvailable: Boolean(meta?.framesAvailable),
+                degradedReason: meta?.degradedReason ?? null,
+                streamError,
+                connecting: Boolean(open && meta?.framesAvailable && !frame),
+              })}
+            </div>
+          )}
           {controlling && meta?.capabilities.authInput !== 'closed' ? (
             <div className='space-y-2'>
               <label className='text-label text-muted-foreground' htmlFor={inputId}>

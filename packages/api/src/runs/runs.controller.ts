@@ -30,6 +30,7 @@ import { BrowserService } from './browser.service'
 import { ObserveService } from './observe.service'
 import { RunsService } from './runs.service'
 import { cleanupAcceptedStatus } from '../common/cleanup-status'
+import { abortWhenSseClientDrops } from '../common/sse-abort'
 
 @Controller('runs')
 export class RunsController {
@@ -82,7 +83,7 @@ export class RunsController {
       authorization: headerValue(req.headers.authorization),
       account: actor,
       response: res,
-      signal: abortFrom(req, res),
+      signal: abortWhenSseClientDrops(req, res),
     })
   }
 
@@ -183,7 +184,7 @@ export class RunsController {
       actor,
       authorization: headerValue(req.headers.authorization),
       response: res,
-      signal: abortFrom(req, res),
+      signal: abortWhenSseClientDrops(req, res),
     })
   }
 
@@ -276,13 +277,3 @@ function queryValue(value: unknown): string | undefined {
   return undefined
 }
 
-function abortFrom(req: Request, res?: Response): AbortSignal {
-  const controller = new AbortController()
-  const abort = () => {
-    if (!controller.signal.aborted) controller.abort()
-  }
-  req.on('close', abort)
-  req.socket?.on('close', abort)
-  res?.on('close', abort)
-  return controller.signal
-}
