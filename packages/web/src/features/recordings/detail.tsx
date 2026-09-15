@@ -1,12 +1,18 @@
-import { useQuery } from '@tanstack/react-query'
-import { Link, useParams } from '@tanstack/react-router'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import type { RecordingItem } from '@cairn/shared'
-import { fetchRecording } from '@/lib/recordings-api'
+import { hasPermission } from '@cairn/shared'
+import { deleteRecording, fetchRecording } from '@/lib/recordings-api'
+import { useAuthStore } from '@/stores/auth-store'
 import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
+import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
+import { Button } from '@/components/ui/button'
+import { RecordingRenameDialog } from './rename-dialog'
 
 const STATUS_LABEL: Record<RecordingItem['status'], string> = {
   mapped: '已映射',
@@ -16,11 +22,25 @@ const STATUS_LABEL: Record<RecordingItem['status'], string> = {
 
 export function RecordingDetailPage() {
   const { recordingId } = useParams({ from: '/_authenticated/recordings/$recordingId/' })
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const user = useAuthStore((s) => s.auth.user)
+  const isAdmin = Boolean(user?.roles.includes('admin'))
   const query = useQuery({
     queryKey: ['recordings', recordingId],
     queryFn: () => fetchRecording(recordingId),
   })
   const draft = query.data
+  const [renaming, setRenaming] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const canWrite =
+    Boolean(draft) &&
+    hasPermission(user?.permissions ?? [], 'workflow:write') &&
+    (isAdmin || draft?.createdBy.id === user?.id)
+  const canDelete =
+    Boolean(draft) &&
+    hasPermission(user?.permissions ?? [], 'workflow:delete') &&
+    (isAdmin || draft?.createdBy.id === user?.id)
 
   return (
     <>
@@ -28,7 +48,23 @@ export function RecordingDetailPage() {
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title={draft?.name ?? '录制草稿'}
-          description='来自识途录制器的 IR。未解决项会阻止以后发布，本期只展示。'
+          description='来自识途录制器的操作序列。可重命名、删除，或前往已回填的场景继续编辑。'
+          actions={
+            draft ? (
+              <div className='flex flex-wrap gap-2'>
+                {canWrite ? (
+                  <Button variant='outline' onClick={() => setRenaming(true)}>
+                    重命名
+                  </Button>
+                ) : null}
+                {canDelete ? (
+                  <Button variant='ghost' className='text-destructive' onClick={() => setRemoving(true)}>
+                    删除
+                  </Button>
+                ) : null}
+              </div>
+            ) : null
+          }
         />
         {query.isPending ? (
           <PageSkeleton />
@@ -48,6 +84,21 @@ export function RecordingDetailPage() {
               {' · '}
               {draft.itemCount} 步 · {draft.unresolvedCount} 项待处理 · {draft.sourceVersion}
             </p>
+            {draft.imported && draft.importedScenarioId ? (
+              <p className='text-body'>
+                已回填到场景，原始录制删除不会改写已导入步骤。
+                <Link
+                  to='/scenarios/$scenarioId'
+                  params={{ scenarioId: draft.importedScenarioId }}
+                  search={{ import: draft.id }}
+                  className='ms-2 text-primary hover:underline'
+                >
+                  前往对应 Studio
+                </Link>
+              </p>
+            ) : (
+              <p className='text-body text-muted-foreground'>尚未回填到场景。</p>
+            )}
             {draft.diagnostics.length > 0 ? (
               <ul className='list-disc space-y-1 pl-5 text-body text-status-warning-foreground'>
                 {draft.diagnostics.map((line) => (
@@ -83,6 +134,28 @@ export function RecordingDetailPage() {
           </div>
         )}
       </Main>
+      <RecordingRenameDialog
+        open={renaming}
+        onOpenChange={setRenaming}
+        recording={draft ?? null}
+        onRenamed={() => {
+          setRenaming(false)
+          void queryClient.invalidateQueries({ queryKey: ['recordings', recordingId] })
+        }}
+      />
+      <ResourceDeleteDialog
+        open={removing}
+        onOpenChange={setRemoving}
+        resourceId={recordingId}
+        resourceName={draft?.name ?? ''}
+        resourceType='recording'
+        deleteFn={() => deleteRecording(recordingId)}
+        onSuccess={() => {
+          setRemoving(false)
+          void queryClient.invalidateQueries({ queryKey: ['recordings'] })
+          void navigate({ to: '/recordings' })
+        }}
+      />
     </>
   )
 }

@@ -29,6 +29,9 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
     async invalidate(grant: SessionGrant, reason: string) {
       await manager.invalidate(grant, reason)
     },
+    async describeHold(runId: string) {
+      return manager.describeHoldPage(runId)
+    },
     async execute(
       grant: SessionGrant,
       command: BrowserCommand,

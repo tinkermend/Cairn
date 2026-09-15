@@ -73,6 +73,7 @@ describe('LifecycleService（集成）', { timeout: 60_000 }, () => {
     const noEvidence = { settleExpired: async () => ({ marked: 0 }), settleRun: async () => {} }
     const noSessions = {
       reconcileOwn: async () => ({ leasesRevoked: 0, sessionsClosed: 0 }),
+      setWorkerInstance: () => {},
       startHeartbeat: () => {},
       stopHeartbeat: () => {},
       shutdown: async () => {},

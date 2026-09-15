@@ -73,6 +73,8 @@ export class AiStepExecutor implements StepExecutor {
       }
     }
     if (!result.ok) {
+      // 端口给了结构化错误就原样使用：丢租且已放行过动作记 UNKNOWN，副作用步骤由引擎转人工核查。
+      if (result.error) return fail(result.error, undefined, result.screenshot, result.trace)
       const budget = result.summary?.includes('预算')
       return fail(
         {

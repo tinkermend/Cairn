@@ -10,6 +10,7 @@ const TARGET_ID = '11111111-1111-4111-8111-111111111111'
 const mocks = vi.hoisted(() => ({
   createRun: vi.fn(),
   fetchScenarios: vi.fn(),
+  fetchScenario: vi.fn(),
   fetchScenarioCapabilities: vi.fn(),
   fetchTargetAccounts: vi.fn(),
   navigate: vi.fn(),
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/runs-api', () => ({ createRun: mocks.createRun }))
 vi.mock('@/lib/scenarios-api', () => ({
   fetchScenarios: mocks.fetchScenarios,
+  fetchScenario: mocks.fetchScenario,
   fetchScenarioCapabilities: mocks.fetchScenarioCapabilities,
 }))
 vi.mock('@/lib/targets-api', () => ({ fetchTargetAccounts: mocks.fetchTargetAccounts }))
@@ -55,5 +57,31 @@ describe('RunCreateDialog', () => {
     await screen.getByRole('button', { name: '创建运行' }).click()
     await vi.waitFor(() => expect(mocks.createRun).toHaveBeenCalledTimes(1))
     expect(mocks.createRun.mock.calls[0]![0]).not.toHaveProperty('evidencePolicy')
+  })
+
+  it('目标账号选择支持远程搜索', async () => {
+    mocks.fetchTargetAccounts.mockResolvedValue({
+      items: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          displayName: '值班账号',
+          username: 'ops',
+          status: 'active',
+          hasPassword: true,
+        },
+      ],
+    })
+    const screen = await renderDialog()
+    await screen.getByRole('combobox', { name: '场景' }).click()
+    await screen.getByRole('option', { name: '回显' }).click()
+    const search = screen.getByRole('textbox', { name: '搜索目标账号' })
+    await expect.element(search).toBeInTheDocument()
+    await search.fill('ops')
+    await vi.waitFor(() =>
+      expect(mocks.fetchTargetAccounts).toHaveBeenCalledWith(
+        TARGET_ID,
+        expect.objectContaining({ search: 'ops', limit: 100 }),
+      ),
+    )
   })
 })

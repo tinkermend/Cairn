@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { CreateScenarioBody } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { createScenario } from '@/lib/scenarios-api'
-import { fetchTargets } from '@/lib/targets-api'
+import { fetchTarget, fetchTargets } from '@/lib/targets-api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -29,25 +29,40 @@ type ScenarioCreateDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: (id: string) => void
+  defaultTargetId?: string
 }
 
 export function ScenarioCreateDialog({
   open,
   onOpenChange,
   onCreated,
+  defaultTargetId,
 }: ScenarioCreateDialogProps) {
   const queryClient = useQueryClient()
+  const [targetSearch, setTargetSearch] = useState('')
   const targets = useQuery({
-    queryKey: ['targets'],
-    queryFn: fetchTargets,
+    queryKey: ['targets', { limit: 100, search: targetSearch.trim() || undefined }],
+    queryFn: () => fetchTargets({ limit: 100, search: targetSearch.trim() || undefined }),
     enabled: open,
   })
+  const fallbackTarget = useQuery({
+    queryKey: ['target', defaultTargetId],
+    queryFn: () => fetchTarget(defaultTargetId!),
+    enabled: open && Boolean(defaultTargetId) && !targets.data?.items.some((t) => t.id === defaultTargetId),
+  })
+  const items = useMemo(() => {
+    const list = [...(targets.data?.items ?? [])]
+    if (fallbackTarget.data && !list.some((t) => t.id === fallbackTarget.data?.id)) {
+      list.unshift(fallbackTarget.data)
+    }
+    return list
+  }, [targets.data?.items, fallbackTarget.data])
+
   const [name, setName] = useState('')
-  const [targetId, setTargetId] = useState('')
+  const [targetId, setTargetId] = useState(defaultTargetId ?? '')
   const [url, setUrl] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const items = targets.data?.items ?? []
 
   const canSubmit =
     name.trim().length > 0 &&
@@ -121,6 +136,12 @@ export function ScenarioCreateDialog({
           </div>
           <div className='space-y-2'>
             <Label htmlFor='scenario-target'>目标系统</Label>
+            <Input
+              aria-label='搜索目标系统'
+              placeholder='搜索名称或编码'
+              value={targetSearch}
+              onChange={(event) => setTargetSearch(event.target.value)}
+            />
             <Select value={targetId} onValueChange={setTargetId}>
               <SelectTrigger
                 id='scenario-target'

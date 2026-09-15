@@ -18,6 +18,12 @@ export const workers = cairnSchema.table('workers', {
   startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   stoppedAt: timestamp('stopped_at', { withTimezone: true }),
+  internalBaseUrl: text('internal_base_url'),
+  lostAfterSeconds: integer('lost_after_seconds'),
+  heartbeatExpiresAt: timestamp('heartbeat_expires_at', { withTimezone: true }),
+  liveHandleCount: integer('live_handle_count'),
+  sampledSlotCount: integer('sampled_slot_count'),
+  handleMismatchStreak: integer('handle_mismatch_streak').notNull().default(0),
 })
 
 export const runLeases = cairnSchema.table(

@@ -392,8 +392,117 @@ export async function navigateInScope(
   return { href: page.url() }
 }
 
-export async function clickLocator(locator: Locator): Promise<void> {
+export async function clickLocator(
+  locator: Locator,
+  options?: {
+    button?: 'left' | 'right' | 'middle'
+    clickCount?: 1 | 2
+    modifiers?: Array<'Alt' | 'Control' | 'Meta' | 'Shift'>
+  },
+): Promise<void> {
+  await locator.click({
+    timeout: 5_000,
+    button: options?.button ?? 'left',
+    clickCount: options?.clickCount ?? 1,
+    modifiers: options?.modifiers,
+  })
+}
+
+export async function selectLocator(
+  locator: Locator,
+  input: { by: 'label' | 'value' | 'index'; value?: string; index?: number },
+): Promise<void> {
+  const tag = await locator.evaluate((el) => el.tagName.toLowerCase()).catch(() => '')
+  const role = await locator.getAttribute('role').catch(() => null)
+  const native = tag === 'select'
+  const accessible = role === 'listbox' || role === 'combobox'
+  if (!native && !accessible) {
+    throw new BrowserCapabilityMissingError('自定义下拉缺少 listbox/combobox 角色，不能猜测坐标')
+  }
+  if (native) {
+    if (input.by === 'index') {
+      await locator.selectOption({ index: input.index ?? 0 }, { timeout: 5_000 })
+      return
+    }
+    if (input.by === 'label') {
+      await locator.selectOption({ label: input.value ?? '' }, { timeout: 5_000 })
+      return
+    }
+    await locator.selectOption({ value: input.value ?? '' }, { timeout: 5_000 })
+    return
+  }
   await locator.click({ timeout: 5_000 })
+  const page = locator.page()
+  if (input.by === 'index') {
+    await page.getByRole('option').nth(input.index ?? 0).click({ timeout: 5_000 })
+    return
+  }
+  await page.getByRole('option', { name: input.value ?? '', exact: true }).click({ timeout: 5_000 })
+}
+
+export async function pressKeys(
+  page: Page,
+  keys: string[],
+  target?: Locator,
+): Promise<void> {
+  if (target) await target.focus({ timeout: 5_000 })
+  for (const key of keys) {
+    await page.keyboard.press(key, { delay: 10 })
+  }
+}
+
+export async function waitOnPage(
+  page: Page,
+  input: {
+    kind: 'time' | 'visible' | 'hidden' | 'url' | 'text'
+    locator?: Locator
+    urlPattern?: string
+    text?: string
+    durationMs?: number
+    timeoutMs?: number
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw new Error('步骤已取消')
+  const timeout = input.timeoutMs ?? 8_000
+  if (input.kind === 'time') {
+    const ms = input.durationMs ?? 0
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, ms)
+      const onAbort = () => {
+        clearTimeout(timer)
+        reject(new Error('步骤已取消'))
+      }
+      if (signal?.aborted) {
+        onAbort()
+        return
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
+    return
+  }
+  if (input.kind === 'url') {
+    await page.waitForURL((url) => url.href.includes(input.urlPattern ?? ''), { timeout })
+    return
+  }
+  if (!input.locator) throw new Error('等待条件缺少目标')
+  if (input.kind === 'visible') {
+    await input.locator.waitFor({ state: 'visible', timeout })
+    return
+  }
+  if (input.kind === 'hidden') {
+    await input.locator.waitFor({ state: 'hidden', timeout })
+    return
+  }
+  await input.locator.filter({ hasText: input.text ?? '' }).first().waitFor({ state: 'visible', timeout })
+}
+
+export class BrowserCapabilityMissingError extends Error {
+  readonly code = 'BROWSER_CAPABILITY_MISSING' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'BrowserCapabilityMissingError'
+  }
 }
 
 export async function fillLocator(locator: Locator, value: string): Promise<void> {

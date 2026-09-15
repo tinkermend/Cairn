@@ -9,6 +9,7 @@ import {
   type PlatformConfigDocument,
 } from './platform-config.js'
 import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
+import { authoringCapabilitiesSchema, type AuthoringCapabilities } from './authoring-observation.js'
 import { AI_STEP_TYPES, EXECUTABLE_STEP_TYPES, hasAiSteps, isAiStepType, type ExecutionPolicy } from './step.js'
 import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
 
@@ -33,6 +34,7 @@ export const scenarioCapabilitiesSchema = z.strictObject({
     }),
   ),
   defaults: platformRuntimeDefaultsSchema,
+  authoring: authoringCapabilitiesSchema.optional(),
 })
 export type ScenarioCapabilities = z.infer<typeof scenarioCapabilitiesSchema>
 
@@ -117,10 +119,21 @@ export function executableStepTypesFor(browserAiEnabled: boolean): string[] {
   return EXECUTABLE_STEP_TYPES.filter((type) => !isAiStepType(type))
 }
 
+export function defaultAuthoringCapabilities(): AuthoringCapabilities {
+  return {
+    indicate: 'open',
+    highlight: 'open',
+    debugHold: 'open',
+    assist: 'closed',
+    stepTypesExtra: ['select', 'keyboard', 'wait'],
+  }
+}
+
 export function scenarioCapabilitiesFor(input: {
   browserAiEnabled: boolean
   unavailableMessage?: string
   defaults?: ScenarioCapabilities['defaults']
+  authoring?: AuthoringCapabilities
 }): ScenarioCapabilities {
   return {
     executableStepTypes: executableStepTypesFor(input.browserAiEnabled),
@@ -132,6 +145,7 @@ export function scenarioCapabilitiesFor(input: {
           message: input.unavailableMessage ?? '浏览器仿真 AI 未启用',
         })),
     defaults: input.defaults ?? platformRuntimeDefaultsFrom(FACTORY_PLATFORM_CONFIG, 1),
+    authoring: input.authoring ?? defaultAuthoringCapabilities(),
   }
 }
 

@@ -21,7 +21,6 @@ React 19 + Vite 控制台。SPA。
 - **移除上游项目自身文件**：`.github/`、`netlify.toml`、`cz.yaml`、`CHANGELOG.md`。
 - **移除 `pnpm-lock.yaml`**：pnpm workspace 的 lockfile 只应存在于仓库根。
 
-## 待办
+## 功能范围与设计
 
-- 接入 `@xyflow/react`（编排画布）
-- 接入 i18n
+开发前先读[前端工作流](../../docs/design/front/ai-workflow.md)和[设计规范](../../docs/design/front/README.md)。当前范围与交付顺序以[主计划](../../docs/plan/识途开发路线与工程实施计划.md)及对应方案为准；脚手架候选能力不作为独立待办清单。

@@ -10,7 +10,7 @@ import { RECORDING_STATUS_LABEL, recordingItemMeta } from '../labels'
 import { WORKBENCH_PATH, nextRecorderPanelPath, resetRecorderPanelPath, withDeadline } from '../panel-window'
 import { previewRecording } from '../preview'
 import { describeStepTarget, stepDetail } from '../step-detail'
-import { recordingAllowedOrigins, recordingBridgeStartSchema, recordingStudioPath } from '@cairn/shared'
+import { recordingAllowedOrigins, recordingBridgeStartSchema, recordingStudioPath, targetDescriptorFromInspectSelector } from '@cairn/shared'
 import { canRecordTab, chooseRecordingTab } from '../tab-choice'
 import { studioReturnUrl } from '../api'
 
@@ -123,6 +123,9 @@ describe('步骤预览', () => {
           JSON.stringify({
             name: 'click',
             selector: 'internal:role=button[name="查询"i]',
+            button: 'left',
+            modifiers: 0,
+            clickCount: 1,
             signals: [],
             pageAlias: 'page',
             framePath: [],
@@ -145,16 +148,16 @@ describe('步骤预览', () => {
       '打开 lab.example/orders',
       '填写',
       '点击',
-      '选择',
+      '选择 open',
     ])
     expect(preview.items.map((item) => item.status)).toEqual([
       'mapped',
       'mapped',
       'mapped',
-      'unresolved',
+      'mapped',
     ])
     expect(recordingItemMeta(preview.items[0]!)).toBe('已映射 · navigate')
-    expect(recordingItemMeta(preview.items[3]!)).toContain('待处理')
+    expect(recordingItemMeta(preview.items[3]!)).toContain('已映射 · select')
     expect(RECORDING_STATUS_LABEL.parameterized).toBe('待补参数')
   })
 
@@ -176,6 +179,9 @@ describe('步骤明细', () => {
         JSON.stringify({
           name: 'click',
           selector: 'internal:role=button[name="查询"i]',
+          button: 'left',
+          modifiers: 0,
+          clickCount: 1,
           signals: [],
           pageAlias: 'page',
           framePath: [],
@@ -205,7 +211,7 @@ describe('步骤明细', () => {
   it('同名操作靠定位摘要区分，不是一串一样的「点击」', () => {
     expect(describeStepTarget(preview.items[0]!)).toBe('button「查询」')
     expect(describeStepTarget(preview.items[1]!)).toBe('#orderNo')
-    expect(describeStepTarget(preview.items[2]!)).toBeNull()
+    expect(describeStepTarget(preview.items[2]!)).toBe('#status')
   })
 
   it('展开给出与控制台草稿同一套字段，含平台定位', () => {
@@ -233,6 +239,9 @@ describe('删除误录步', () => {
         JSON.stringify({
           name: 'click',
           selector: 'internal:role=button[name="展开"i]',
+          button: 'left',
+          modifiers: 0,
+          clickCount: 1,
           signals: [],
           pageAlias: 'page',
           locator: { kind: 'role', body: 'button', options: { name: '展开' } },
@@ -421,5 +430,9 @@ describe('元素读数', () => {
       'button · 查询',
     )
     expect(formatPickedElement({ selector: '' })).toBe('未识别到元素')
+    expect(targetDescriptorFromInspectSelector('internal:role=button[name="查询"i]')).toEqual({
+      framePath: [],
+      candidates: [{ by: 'role', value: 'button', name: '查询' }],
+    })
   })
 })

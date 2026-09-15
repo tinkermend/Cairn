@@ -33,6 +33,14 @@ describe('平台配置契约', () => {
     )
   })
 
+  it('旧修订没有 platformAi 时按关闭补齐，不改写调用方对象', () => {
+    const { platformAi: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.platformAi.enabled).toBe(false)
+    expect(parsed.platformAi.routeId).toBe('platform-default')
+    expect('platformAi' in legacy).toBe(false)
+  })
+
   it('启用 AI 时拒绝 URL 内嵌凭据', () => {
     expect(() =>
       platformConfigDocumentSchema.parse({

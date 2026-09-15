@@ -1,19 +1,23 @@
 import { Inject, Injectable, NotFoundException, Optional } from '@nestjs/common'
 import {
   createRunWithSnapshot,
+  deleteRun,
   getEvidenceForRun,
   getRun,
+  getRunCleanupStatus,
   listRunEvidence,
   listRuns,
   loadScenarioVersion,
+  previewDeleteRun,
   requestRunCancel,
+  retryRunCleanup,
   reviewRun,
   type DbHandle,
 } from '@cairn/db'
 import { assertAiExecutePermission } from '../config/browser-ai'
 import { config } from '../config/env'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
-import type { CreateRunBody, ReviewRunBody } from '@cairn/shared'
+import type { CreateRunBody, DeleteResourceBody, ReviewRunBody, RunListQuery } from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
@@ -39,12 +43,28 @@ export class RunsService {
     return this.dbHandle
   }
 
-  list() {
-    return listRuns(this.db)
+  list(query?: RunListQuery) {
+    return listRuns(this.db, query).catch(rethrowDomain)
   }
 
   get(id: string) {
     return getRun(this.db, id).catch(rethrowDomain)
+  }
+
+  previewDelete(id: string) {
+    return previewDeleteRun(this.db, id).catch(rethrowDomain)
+  }
+
+  delete(id: string, actor: RequestAccount, body?: DeleteResourceBody) {
+    return deleteRun(this.db, id, actor, body).catch(rethrowDomain)
+  }
+
+  cleanupStatus(id: string) {
+    return getRunCleanupStatus(this.db, id).catch(rethrowDomain)
+  }
+
+  retryCleanup(id: string, actor: RequestAccount) {
+    return retryRunCleanup(this.db, id, actor).catch(rethrowDomain)
   }
 
   evidence(id: string) {

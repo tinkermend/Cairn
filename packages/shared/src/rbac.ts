@@ -28,7 +28,7 @@ export const PERMISSION_RESOURCES = [
 ] as const
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number]
 
-export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review'] as const
+export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review', 'assist'] as const
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number]
 
 export const PERMISSIONS = [
@@ -45,6 +45,7 @@ export const PERMISSIONS = [
   'run:execute',
   'run:cancel',
   'run:review',
+  'run:delete',
   'session:read',
   'session:view',
   'session:control',
@@ -59,6 +60,7 @@ export const PERMISSIONS = [
   'audit:read',
   'audit:login',
   'ai:execute',
+  'ai:assist',
   'platform-config:read',
   'platform-config:write',
 ] as const
@@ -83,7 +85,7 @@ export const RESOURCE_LABELS: Record<PermissionResource, string> = {
   service: '开放服务',
   settings: '设置',
   audit: '审计',
-  ai: '浏览器 AI',
+  ai: 'AI',
   'platform-config': '平台配置',
 }
 
@@ -101,6 +103,7 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'run:execute': '发起运行',
   'run:cancel': '取消运行',
   'run:review': '核查暂停的运行',
+  'run:delete': '删除终态运行与清理附件',
   'session:read': '查看浏览器会话',
   'session:view': '查看受管浏览器画面',
   'session:control': '处理目标系统登录',
@@ -115,6 +118,7 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'audit:read': '查看操作记录',
   'audit:login': '查看登录记录',
   'ai:execute': '执行含 AI 步骤的运行',
+  'ai:assist': '使用平台助手',
   'platform-config:read': '查看平台配置',
   'platform-config:write': '修改平台配置',
 }
@@ -156,6 +160,7 @@ const AUTHOR_PERMISSIONS: readonly PermissionCode[] = [
   'run:cancel',
   'run:review',
   'ai:execute',
+  'ai:assist',
   'session:read',
   'session:view',
   'session:control',
@@ -170,6 +175,7 @@ const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
   'run:cancel',
   'run:review',
   'ai:execute',
+  'ai:assist',
   'session:read',
   'session:view',
   'session:control',
@@ -182,6 +188,7 @@ const VIEWER_PERMISSIONS: readonly PermissionCode[] = [
   'workflow:read',
   'run:read',
   'settings:read',
+  'ai:assist',
 ]
 
 export const SYSTEM_ROLE_DEFINITIONS: Readonly<
@@ -274,6 +281,7 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'menu.services', kind: 'menu', group: 'governance', label: '开放服务', allOf: ['service:read'] },
   { id: 'action.service.write', kind: 'action', label: '管理开放服务', allOf: ['service:write'] },
   { id: 'menu.platform-config', kind: 'menu', group: 'governance', label: '平台配置', allOf: ['platform-config:read'] },
+  { id: 'menu.workers', kind: 'menu', group: 'governance', label: '执行节点', allOf: ['session:read'] },
   { id: 'action.platform-config.write', kind: 'action', label: '修改平台配置', allOf: ['platform-config:write'] },
   {
     id: 'menu.audit',
@@ -289,6 +297,9 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'action.scenario.write', kind: 'action', label: '创建和编辑场景', allOf: ['workflow:write'] },
   { id: 'action.scenario.delete', kind: 'action', label: '删除场景', allOf: ['workflow:delete'] },
   { id: 'action.recording.upload', kind: 'action', label: '上传录制草稿', allOf: ['workflow:write'] },
+  { id: 'action.recording.update', kind: 'action', label: '重命名录制草稿', allOf: ['workflow:write'] },
+  { id: 'action.recording.delete', kind: 'action', label: '删除录制草稿', allOf: ['workflow:delete'] },
+  { id: 'action.run.delete', kind: 'action', label: '删除运行与清理附件', allOf: ['run:delete'] },
   {
     id: 'action.run.execute',
     kind: 'action',
@@ -304,6 +315,7 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'action.run.cancel', kind: 'action', label: '取消运行', allOf: ['run:cancel'] },
   { id: 'action.run.review', kind: 'action', label: '核查暂停的运行', allOf: ['run:review'] },
   { id: 'action.ai.execute', kind: 'action', label: '执行含 AI 步骤的运行', allOf: ['ai:execute'] },
+  { id: 'action.assistant.use', kind: 'action', label: '使用平台助手', allOf: ['ai:assist'] },
   { id: 'action.session.view', kind: 'action', label: '查看受管浏览器画面', allOf: ['session:view'] },
   {
     id: 'action.session.control',
@@ -537,10 +549,16 @@ export const OPERATION_AUDIT_ACTIONS = [
   'scenario.update',
   'scenario.delete',
   'recording.create',
+  'recording.update',
+  'recording.delete',
   'run.create',
   'run.cancel',
   'run.review',
   'run.resume_auth',
+  'run.debug',
+  'run.delete',
+  'target.cleanup_retry',
+  'run.cleanup_retry',
   'session.auth_control_acquire',
   'session.auth_control_release',
   'session.dispose',
@@ -599,10 +617,16 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   'scenario.update': '更新场景',
   'scenario.delete': '删除场景',
   'recording.create': '上传录制草稿',
+  'recording.update': '重命名录制草稿',
+  'recording.delete': '删除录制草稿',
   'run.create': '创建运行',
   'run.cancel': '取消运行',
   'run.review': '核查运行',
   'run.resume_auth': '确认目标系统登录',
+  'run.debug': '调试会话动作',
+  'run.delete': '删除运行与清理附件',
+  'target.cleanup_retry': '重试目标系统附件清理',
+  'run.cleanup_retry': '重试运行附件清理',
   'session.auth_control_acquire': '取得认证输入权',
   'session.auth_control_release': '释放认证输入权',
   'session.dispose': '处置浏览器会话',

@@ -8,7 +8,7 @@ import { CHANGE_HINT } from '../observe/change-hint.module'
 import { unusedChangeHint } from '../__tests__/http-app'
 
 /**
- * 宪法不变量 19：平台 API 对外只使用 GET 与 POST。
+ * 宪法「业务接口」：平台 API 对外只使用 GET 与 POST。
  *
  * 这条检查读的是 Express 装配完成后的真实路由表，不是源码里的装饰器
  * 文本——无论 @Patch、@Put、@Delete 还是 @All 挂到具体路径，只要最终

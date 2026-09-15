@@ -4,15 +4,18 @@ import {
   closeRecordingBinding,
   createRecordingBinding,
   createRecordingDraft,
+  deleteRecordingDraft,
   getOpenRecordingBinding,
   getRecordingDraft,
   listRecordingDrafts,
+  renameRecordingDraft,
   type DbHandle,
 } from '@cairn/db'
 import type {
   ClaimRecordingBindingBody,
   CreateRecordingBindingBody,
   CreateRecordingBody,
+  RecordingDraftListQuery,
 } from '@cairn/shared'
 import { hasPermission } from '@cairn/shared'
 import { forbidden } from '@cairn/db'
@@ -29,12 +32,20 @@ export class RecordingsService {
     return this.dbHandle
   }
 
-  list(actor: RequestAccount) {
-    return listRecordingDrafts(this.db, actor.id)
+  list(actor: RequestAccount, query?: RecordingDraftListQuery) {
+    return listRecordingDrafts(this.db, actor.id, query).catch(rethrowDomain)
   }
 
   get(id: string, actor: RequestAccount) {
     return getRecordingDraft(this.db, id, actor.id).catch(rethrowDomain)
+  }
+
+  rename(id: string, name: string, actor: RequestAccount) {
+    return renameRecordingDraft(this.db, id, name, actor).catch(rethrowDomain)
+  }
+
+  remove(id: string, actor: RequestAccount) {
+    return deleteRecordingDraft(this.db, id, actor).catch(rethrowDomain)
   }
 
   async create(body: CreateRecordingBody, actor: RequestAccount) {

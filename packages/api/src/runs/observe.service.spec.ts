@@ -220,6 +220,24 @@ describe('ObserveService.stream', () => {
     controller.abort()
   })
 
+  it('运行已删除或不存在时结束流并说明运行不存在', async () => {
+    mocks.loadRunObservation.mockResolvedValue(null)
+    const res = mockResponse()
+    const controller = new AbortController()
+    await service.stream({
+      runId,
+      lastEventId: `${runId}:0`,
+      account: { id: 'acc', displayName: 't', email: null, status: 'active', roles: [], permissions: ['run:read'] },
+      response: res as never,
+      signal: controller.signal,
+    })
+    const text = res.chunks.join('')
+    expect(text).toContain('"kind":"error"')
+    expect(text).toContain('"message":"运行不存在"')
+    expect(res.end).toHaveBeenCalled()
+    controller.abort()
+  })
+
   it('积压过大时 skip 到高水位并 reset', async () => {
     mocks.loadRunObservation.mockResolvedValue(observation({ eventSeq: 400 }))
     mocks.listRunEventsAfter.mockResolvedValue([])

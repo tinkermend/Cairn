@@ -12,7 +12,16 @@ import { durationMsSchema, entityIdSchema, jsonValueSchema, timeoutMsSchema } fr
  * 能力闸门另走 Compiler 的 executableTypes / GET capabilities，不靠从枚举里拿掉类型。
  */
 export const FIXTURE_STEP_TYPES = ['echo', 'delay', 'fail'] as const
-export const BROWSER_STEP_TYPES = ['navigate', 'click', 'fill', 'extract', 'assert'] as const
+export const BROWSER_STEP_TYPES = [
+  'navigate',
+  'click',
+  'fill',
+  'extract',
+  'assert',
+  'select',
+  'keyboard',
+  'wait',
+] as const
 export const AI_STEP_TYPES = ['ai_action', 'ai_extract', 'ai_assert'] as const
 export const EXECUTABLE_STEP_TYPES = [...FIXTURE_STEP_TYPES, ...BROWSER_STEP_TYPES, ...AI_STEP_TYPES] as const
 export type FixtureStepType = (typeof FIXTURE_STEP_TYPES)[number]
@@ -122,6 +131,9 @@ export const clickInputSchema = z.strictObject({
   target: targetDescriptorSchema,
   /** 缺省保持旧行为：可等待 popup 但不收养为当前页。 */
   pageAfter: pageAfterSchema.optional(),
+  button: z.enum(['left', 'right', 'middle']).optional(),
+  clickCount: z.union([z.literal(1), z.literal(2)]).optional(),
+  modifiers: z.array(z.enum(['Alt', 'Control', 'Meta', 'Shift'])).optional(),
 })
 export type ClickInput = z.infer<typeof clickInputSchema>
 
@@ -185,6 +197,103 @@ export const assertStepSchema = z.strictObject({
   input: assertInputSchema,
 })
 
+export const selectStepInputSchema = z
+  .strictObject({
+    target: targetDescriptorSchema,
+    by: z.enum(['label', 'value', 'index']),
+    value: z.string().optional(),
+    from: contextKeySchema.optional(),
+    fromField: outputFieldNameSchema.optional(),
+    index: z.number().int().min(0).optional(),
+  })
+  .refine(
+    (input) => {
+      if (input.by === 'index') {
+        return input.index !== undefined && input.value === undefined && input.from === undefined
+      }
+      return (input.value !== undefined) !== (input.from !== undefined)
+    },
+    { message: 'select by=index 时须提供 index；by=label/value 时须提供 value 或 from 之一' },
+  )
+  .refine((input) => input.fromField === undefined || input.from !== undefined, {
+    message: 'fromField 仅在提供 from 时合法',
+  })
+export type SelectInput = z.infer<typeof selectStepInputSchema>
+
+export const KEY_BASE_ENUM = [
+  'Enter',
+  'Tab',
+  'Escape',
+  'Backspace',
+  'Space',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+] as const
+
+export const KEY_MODIFIER_ENUM = ['Control', 'Meta', 'Alt', 'Shift'] as const
+
+export const keyComboSchema = z.string().regex(
+  /^(Control|Meta|Alt|Shift)\+([A-Za-z0-9]|Enter|Tab|Escape|Backspace|Space|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown)$|^(Enter|Tab|Escape|Backspace|Space|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown)$/,
+  '按键必须属于封闭枚举（如 Enter, Tab, ArrowDown，或带单修饰键 Control+s, Shift+Tab 等）',
+)
+export type KeyCombo = z.infer<typeof keyComboSchema>
+
+export const keyboardInputSchema = z.strictObject({
+  target: targetDescriptorSchema.optional(),
+  keys: z.array(keyComboSchema).min(1).max(4),
+})
+export type KeyboardInput = z.infer<typeof keyboardInputSchema>
+
+export const waitKindSchema = z.enum(['time', 'visible', 'hidden', 'url', 'text'])
+export type WaitKind = z.infer<typeof waitKindSchema>
+
+export const waitInputSchema = z
+  .strictObject({
+    kind: waitKindSchema,
+    target: targetDescriptorSchema.optional(),
+    urlPattern: z.string().trim().min(1).max(2048).optional(),
+    text: z.string().min(1).max(1024).optional(),
+    durationMs: durationMsSchema.max(60_000).optional(),
+    timeoutMs: timeoutMsSchema.optional(),
+  })
+  .refine(
+    (input) => {
+      if (input.kind === 'time') return input.durationMs !== undefined && input.durationMs > 0
+      if (input.kind === 'url') return Boolean(input.urlPattern)
+      if (input.kind === 'text') return Boolean(input.target && input.text)
+      if (input.kind === 'visible' || input.kind === 'hidden') return Boolean(input.target)
+      return true
+    },
+    {
+      message:
+        'wait 步骤必须根据 kind 提供对应条件（time 提供 durationMs ≤ 60s；visible/hidden 提供 target；url 提供 urlPattern；text 提供 target 和 text）',
+    },
+  )
+export type WaitInput = z.infer<typeof waitInputSchema>
+
+export const selectStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('select'),
+  input: selectStepInputSchema,
+})
+export const keyboardStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('keyboard'),
+  input: keyboardInputSchema,
+})
+export const waitStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('wait'),
+  effectType: z.literal('READ_ONLY'),
+  input: waitInputSchema,
+})
+
 export const aiInstructionSchema = z.string().trim().min(1).max(4096)
 
 export const aiActionInputSchema = z.strictObject({
@@ -243,6 +352,9 @@ export const stepSchema = z
     fillStepSchema,
     extractStepSchema,
     assertStepSchema,
+    selectStepSchema,
+    keyboardStepSchema,
+    waitStepSchema,
     aiActionStepBase,
     aiExtractStepSchema,
     aiAssertStepSchema,
@@ -264,6 +376,9 @@ export type ClickStep = z.infer<typeof clickStepSchema>
 export type FillStep = z.infer<typeof fillStepSchema>
 export type ExtractStep = z.infer<typeof extractStepSchema>
 export type AssertStep = z.infer<typeof assertStepSchema>
+export type SelectStep = z.infer<typeof selectStepSchema>
+export type KeyboardStep = z.infer<typeof keyboardStepSchema>
+export type WaitStep = z.infer<typeof waitStepSchema>
 export type AiActionStep = z.infer<typeof aiActionStepSchema>
 export type AiExtractStep = z.infer<typeof aiExtractStepSchema>
 export type AiAssertStep = z.infer<typeof aiAssertStepSchema>

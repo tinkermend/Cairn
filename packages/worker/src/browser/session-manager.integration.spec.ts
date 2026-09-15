@@ -19,6 +19,7 @@ import {
   getSessionById,
   newId,
   registerWorker,
+  markWorkerStopped,
   openIsolatedDb,
   setSessionStatus,
   sql,
@@ -189,6 +190,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       handle,
       {
         workerId: WORKER,
+        workerInstanceId: WORKER_INSTANCE,
         profileRoot,
         headless: true,
         maxSessions: 2,
@@ -325,10 +327,18 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   })
 
   it('容量上限：maxSessions=1 时第二键失败', async () => {
+    const capInstance = newId()
+    await registerWorker(handle.db, {
+      workerId: `${WORKER}-cap`,
+      instanceId: capInstance,
+      capacity: 8,
+      lostAfterSeconds: 60,
+    })
     const limited = new BrowserSessionManager(
       handle,
       {
         workerId: `${WORKER}-cap`,
+        workerInstanceId: capInstance,
         profileRoot,
         headless: true,
         maxSessions: 1,
@@ -363,6 +373,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: account },
       ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,
@@ -381,10 +392,21 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       runFencingToken: 1,
     })
 
+    await handle.pool.query(`UPDATE workers SET heartbeat_expires_at = now() - interval '1 second' WHERE id = $1`, [
+      WORKER,
+    ])
+    const freshInstance = newId()
+    await registerWorker(handle.db, {
+      workerId: WORKER,
+      instanceId: freshInstance,
+      capacity: 32,
+      lostAfterSeconds: 60,
+    })
     const fresh = new BrowserSessionManager(
       handle,
       {
         workerId: WORKER,
+        workerInstanceId: freshInstance,
         profileRoot,
         headless: true,
         maxSessions: 2,
@@ -394,10 +416,16 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       },
       secretProvider,
     )
-    const result = await fresh.reconcileOwn()
-    expect(result.sessionsClosed).toBeGreaterThanOrEqual(1)
-    expect((await getSessionById(handle.db, session.id))?.status).toBe('CLOSED')
+    await fresh.reconcileOwn()
+    expect((await getSessionById(handle.db, session.id))?.status).toBe('LOST')
     await fresh.shutdown()
+    await markWorkerStopped(handle.db, WORKER, freshInstance)
+    await registerWorker(handle.db, {
+      workerId: WORKER,
+      instanceId: WORKER_INSTANCE,
+      capacity: 32,
+      lostAfterSeconds: 60,
+    })
   })
 
   it('认证超时 reap：WAITING_FOR_AUTH → FAILED，会话仍 OPEN', async () => {
@@ -511,10 +539,18 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   })
 
   it('会话位满先腾空闲无租约的会话；带租约的不腾', async () => {
+    const evictInstance = newId()
+    await registerWorker(handle.db, {
+      workerId: `${WORKER}-evict`,
+      instanceId: evictInstance,
+      capacity: 8,
+      lostAfterSeconds: 60,
+    })
     const evictor = new BrowserSessionManager(
       handle,
       {
         workerId: `${WORKER}-evict`,
+        workerInstanceId: evictInstance,
         profileRoot,
         headless: true,
         maxSessions: 2,
@@ -531,6 +567,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     const idleSession = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: idle },
       ownerWorkerId: `${WORKER}-evict`,
+      ownerWorkerInstanceId: evictInstance,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,
@@ -543,6 +580,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     const busySession = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: busy },
       ownerWorkerId: `${WORKER}-evict`,
+      ownerWorkerInstanceId: evictInstance,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,
@@ -588,10 +626,18 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   })
 
   it('会话位全被租约占住则回交，不腾带租约的会话', async () => {
+    const fullInstance = newId()
+    await registerWorker(handle.db, {
+      workerId: `${WORKER}-full`,
+      instanceId: fullInstance,
+      capacity: 8,
+      lostAfterSeconds: 60,
+    })
     const full = new BrowserSessionManager(
       handle,
       {
         workerId: `${WORKER}-full`,
+        workerInstanceId: fullInstance,
         profileRoot,
         headless: true,
         maxSessions: 2,
@@ -609,6 +655,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       const session = await requireCreatedSession(handle.db, {
         key: { targetId, targetAccountId: account },
         ownerWorkerId: `${WORKER}-full`,
+        ownerWorkerInstanceId: fullInstance,
         reusePolicy: 'NEW_PAGE',
         idleTtlSeconds: 600,
         maxLifetimeSeconds: 3600,
@@ -713,10 +760,18 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   })
 
   it('stopAllLocal 无句柄则 LOST，同键不能再建', async () => {
+    const healInstance = newId()
+    await registerWorker(handle.db, {
+      workerId: `${WORKER}-heal`,
+      instanceId: healInstance,
+      capacity: 8,
+      lostAfterSeconds: 60,
+    })
     const isolator = new BrowserSessionManager(
       handle,
       {
         workerId: `${WORKER}-heal`,
+        workerInstanceId: healInstance,
         profileRoot,
         headless: true,
         maxSessions: 2,
@@ -731,6 +786,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: account },
       ownerWorkerId: `${WORKER}-heal`,
+      ownerWorkerInstanceId: healInstance,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,

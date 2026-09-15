@@ -7,6 +7,7 @@ import {
   createRecordingBodySchema,
   normalizeRecording,
   parseJsonlSource,
+  isSensitiveFill,
   recordingItemReady,
   RecordingNormalizationError,
   utf8ByteLength,
@@ -205,6 +206,33 @@ describe('parseJsonlSource', () => {
   it('actions 缺省且 text 为空时得到空列', () => {
     expect(parseJsonlSource({})).toEqual([])
   })
+
+  it('采集补全：密码定位写出 inputType，不把缺字段 click 猜成左键', () => {
+    const [filled] = parseJsonlSource({
+      actions: [
+        JSON.stringify({
+          name: 'fill',
+          selector: 'internal:role=textbox[name="密码"i]',
+          text: 'secret',
+          locator: { kind: 'role', body: 'textbox', options: { name: '密码' } },
+        }),
+      ],
+    })
+    expect(filled).toMatchObject({ inputType: 'password' })
+    expect(isSensitiveFill(filled as { name: 'fill'; inputType: string; locator: { kind: string; body: string; options: { name: string } } })).toBe(true)
+    const result = normalizeRecording(
+      [
+        jsonlActions.navigateLogin,
+        {
+          name: 'click',
+          selector: 'internal:role=button[name="查询"i]',
+          locator: { kind: 'role', body: 'button', options: { name: '查询' } },
+        },
+      ],
+      { sourceVersion: RECORDER_SOURCE_VERSION },
+    )
+    expect(result.items.some((item) => item.sourceAction === 'click' && item.status === 'unresolved')).toBe(true)
+  })
 })
 
 describe('normalizeRecording JSONL 探针', () => {
@@ -222,8 +250,8 @@ describe('normalizeRecording JSONL 探针', () => {
       ['click', 'mapped', 'click'],
       ['assertVisible', 'mapped', 'assert'],
       ['assertText', 'mapped', 'assert'],
-      ['select', 'unresolved', undefined],
-      ['press', 'unresolved', undefined],
+      ['select', 'mapped', 'select'],
+      ['press', 'mapped', 'keyboard'],
       ['setInputFiles', 'unresolved', undefined],
       ['closePage', 'unresolved', undefined],
       ['click', 'mapped', 'click'],
@@ -258,7 +286,7 @@ describe('normalizeRecording JSONL 探针', () => {
     expect(popup?.input).toMatchObject({ pageAfter: 'popup' })
     expect(recordingItemReady(popup!)).toBe(true)
 
-    expect(result.unresolvedCount).toBe(5)
+    expect(result.unresolvedCount).toBe(3)
   })
 
   it('连续普通填写合并为最后一次值', () => {
@@ -331,7 +359,11 @@ describe('normalizeRecording JSONL 探针', () => {
       ],
       { sourceVersion: RECORDER_SOURCE_VERSION },
     )
-    expect(result.items.every((item) => item.status === 'unresolved')).toBe(true)
+    expect(result.items[0]?.name).toBe('勾选')
+    expect(result.items[0]?.status).toBe('mapped')
+    expect(result.items[1]?.name).toBe('取消勾选')
+    expect(result.items[1]?.status).toBe('mapped')
+    expect(result.items.slice(2).every((item) => item.status === 'unresolved')).toBe(true)
     expect(result.items.map((item) => item.sourceAction)).toEqual([
       'check',
       'uncheck',
@@ -340,6 +372,65 @@ describe('normalizeRecording JSONL 探针', () => {
       'click',
       'click',
     ])
+  })
+
+  it('右键 / 双击 / 修饰键分别 mapped，缺字段不猜左键', () => {
+    const result = normalizeRecording(
+      [
+        {
+          name: 'click',
+          button: 'right',
+          clickCount: 1,
+          modifiers: 0,
+          locator: { kind: 'text', body: '项目行', options: {} },
+          pageAlias: 'page',
+          framePath: [],
+        },
+        {
+          name: 'click',
+          button: 'left',
+          clickCount: 2,
+          modifiers: 0,
+          locator: { kind: 'text', body: '标题', options: {} },
+          pageAlias: 'page',
+          framePath: [],
+        },
+        {
+          name: 'click',
+          button: 'left',
+          clickCount: 1,
+          modifiers: ['Control'],
+          locator: { kind: 'role', body: 'button', options: { name: '查询' } },
+          pageAlias: 'page',
+          framePath: [],
+        },
+        {
+          name: 'click',
+          locator: { kind: 'text', body: '旧事件', options: {} },
+          pageAlias: 'page',
+          framePath: [],
+        },
+        {
+          name: 'press',
+          key: 'F12',
+          locator: { kind: 'default', body: 'body', options: {} },
+          pageAlias: 'page',
+          framePath: [],
+        },
+      ],
+      { sourceVersion: RECORDER_SOURCE_VERSION },
+    )
+    expect(result.items.map((item) => [item.name, item.status, item.candidateStepType])).toEqual([
+      ['右键点击', 'mapped', 'click'],
+      ['双击', 'mapped', 'click'],
+      ['Control+点击', 'mapped', 'click'],
+      ['点击', 'unresolved', undefined],
+      ['按键 F12', 'unresolved', undefined],
+    ])
+    expect(result.items[0]?.input).toMatchObject({ button: 'right' })
+    expect(result.items[1]?.input).toMatchObject({ clickCount: 2 })
+    expect(result.items[2]?.input).toMatchObject({ modifiers: ['Control'] })
+    expect(result.items[3]?.diagnostics.some((line) => line.includes('不能猜测'))).toBe(true)
   })
 
   it('导入路径遇到未知来源版本不进入可执行转换', () => {

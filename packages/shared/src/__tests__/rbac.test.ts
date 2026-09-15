@@ -102,7 +102,10 @@ describe('catalog', () => {
     expect(SYSTEM_ROLE_DEFINITIONS.author.permissions).not.toContain('account:read')
     expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions).not.toContain('audit:login')
     expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions).not.toContain('ai:execute')
-    expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions.every((c) => c.endsWith(':read'))).toBe(true)
+    expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions).toContain('ai:assist')
+    expect(
+      SYSTEM_ROLE_DEFINITIONS.viewer.permissions.every((c) => c.endsWith(':read') || c === 'ai:assist'),
+    ).toBe(true)
   })
 
   it('admin 有登录记录权限，动作标签覆盖全部审计动作', () => {
@@ -162,7 +165,7 @@ describe('catalog', () => {
 
   it('目录标签是中文产品用语，码仍是 workflow / run', () => {
     expect(RESOURCE_LABELS.workflow).toBe('场景')
-    expect(RESOURCE_LABELS.ai).toBe('浏览器 AI')
+    expect(RESOURCE_LABELS.ai).toBe('AI')
     expect(PERMISSION_LABELS['workflow:read']).toBe('查看场景')
     expect(PERMISSION_LABELS['run:execute']).toBe('发起运行')
     expect(PERMISSION_LABELS['ai:execute']).toBe('执行含 AI 步骤的运行')
@@ -182,7 +185,7 @@ describe('能力地图', () => {
   it('执行者预览只有业务菜单，没有治理；编写者能看见录制', () => {
     const operator = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.operator.permissions)
     expect(operator.menus.workbench).toEqual(['首页', '目标系统', '场景', '运行'])
-    expect(operator.menus.governance).toEqual([])
+    expect(operator.menus.governance).toEqual(['执行节点'])
     expect(operator.menus.other).toEqual(['设置'])
     expect(operator.actions).toContain('对目标系统发起运行')
     expect(operator.actions).not.toContain('创建和编辑场景')
@@ -190,17 +193,17 @@ describe('能力地图', () => {
 
     const author = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.author.permissions)
     expect(author.menus.workbench).toEqual(['首页', '目标系统', '场景', '录制草稿', '运行'])
-    expect(author.menus.governance).toEqual([])
+    expect(author.menus.governance).toEqual(['执行节点'])
     expect(author.actions).toContain('在工作区试跑')
     expect(author.actions).toContain('对目标系统发起运行')
     expect(author.actions).not.toContain('处置卡死的浏览器会话')
 
     const viewer = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.viewer.permissions)
     expect(viewer.menus.workbench).toEqual(['首页', '目标系统', '场景', '运行'])
-    expect(viewer.actions).toEqual([])
+    expect(viewer.actions).toEqual(['使用平台助手'])
 
     const admin = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.admin.permissions)
-    expect(admin.menus.governance).toEqual(['用户', '角色', '开放服务', '平台配置', '审计'])
+    expect(admin.menus.governance).toEqual(['用户', '角色', '开放服务', '平台配置', '执行节点', '审计'])
   })
 
   it('能力 id 不重复，菜单 besides 首页都有 allOf', () => {

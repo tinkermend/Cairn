@@ -317,6 +317,12 @@ describe.each(DRIVERS)('%s controlled service execution', (driver) => {
     await expect(
       api.serviceEvidence(f.db, f.principal, run.detail.id, { limit: 20 }, evidenceId),
     ).rejects.toMatchObject({ code: 'EVIDENCE_NOT_FOUND' })
+    await api.releaseServiceEvidence(f.db, run.detail.id, evidenceId, true, f.actor)
+    await f.h.db.update(s.runs).set({ status: 'SUCCEEDED' }).where(eq(s.runs.id, run.detail.id))
+    await api.deleteRun(f.db, run.detail.id, f.actor)
+    await expect(api.serviceEvidence(f.db, f.principal, run.detail.id, { limit: 20 })).rejects.toMatchObject({
+      code: 'RUN_NOT_FOUND',
+    })
     // Strict governance bodies do not accept response-only fields.
     await api.saveServiceCaller(
       f.db,

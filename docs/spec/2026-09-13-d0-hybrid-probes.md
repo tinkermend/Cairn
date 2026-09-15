@@ -169,7 +169,7 @@ AbortSignal 或 SessionLease 失效
 
 lite 要求：
 
-- 自建脚本：无面板、无遮罩、不自动 init。
+- 自建脚本：无面板、无遮罩、不自动 init。落地用的是只转调 binding 的替身，不是 `PageAgentCore` 本体：本探针只验证 binding 机制（nonce、stop、CSP 下可用、导航后失效），Page Agent 本体的注入、`stop()` 与导航重建随完整 S07。
 - 模型请求经 `exposeBinding` 交给 Worker；Worker 用假 LLM。
 - `context.route` 拦截非 Lab origin，外网请求失败。
 - 按 Attempt 发 nonce，校验请求形状。页面任意脚本裸调 binding 必须被拒（反向滥用：目标站可花平台额度）。
@@ -231,7 +231,7 @@ Spike 的采用 / 限制 / 拒绝、可重跑命令和失败分类写进本文 �
 2. 包装动作边执行一次「点击画布」（模拟已规划动作）
 3. 假模型返回 `{ orderNo }`；独立 DOM 断言页面含该号后，写入**字符串** context
 4. 规则 `fill` / `assert` 只引用该字符串
-5. `/hybrid-missing` + 假模型编造 → `fabricated`，不得 fill
+5. `/hybrid-missing` + 假模型编造 → 样本 helper 识别为 `fabricated`（正式路径不做编造拦截，由场景里的确定性断言核对）
 6. 屏障扣住第 N 次模型调用 → abort / leaseLost → 放行 → 动作边零新 click（读 `__labEvents`）
 7. destroy 后 `/popup` 规则 click；`REUSE_PAGE` 下一 Run 无残留
 8. `MIDSCENE_*` 为空；包装 client 无回落；launch 打桩未被调用
@@ -241,7 +241,7 @@ Spike 的采用 / 限制 / 拒绝、可重跑命令和失败分类写进本文 �
 
 ### 5.3 S07-lite 样本
 
-注入无头脚本 → 一次假 LLM binding → 导航后须重建或显式失效 → CSP 页上注入是否生效、页内 fetch 被 `connect-src` 拦下而 binding 仍可用 → stop 后 binding 拒绝 → 无 nonce 调用失败。
+注入替身脚本（只转调 binding）→ 一次假 LLM binding → 导航后须重建或显式失效 → CSP 页上注入是否生效、页内 fetch 被 `connect-src` 拦下而 binding 仍可用 → stop 后 binding 拒绝 → 无 nonce 调用失败。
 
 ## 6. 验收
 
@@ -262,7 +262,7 @@ Spike 的采用 / 限制 / 拒绝、可重跑命令和失败分类写进本文 �
 
 1. popup → `pageRef`：P5 后续方案。
 2. `fill.from` 对象 stringify：P9 / Compiler。本期用测试钉住现状。
-3. 完整 `aiAct` 假响应回放：超时则限制，不挡离线 Gate；未完成前 AI Action 类别不开放（见 D14）。
+3. 完整 `aiAct` 假响应回放：2026-09-14 已补（见 §11），不再挡 AI Action。
 4. 平台 AI 证据、预算、Token：P8。
 5. S07 完整版、S-LIVE、S08 网络 / 登录条件、旧 JS。
 6. ADR A08 accepted：S06 离线通过后起草。
@@ -280,9 +280,9 @@ Spike 的采用 / 限制 / 拒绝、可重跑命令和失败分类写进本文 �
 
 | 编号 | 问题 | 决策 | 开放 | 关闭 | 证据 |
 | --- | --- | --- | --- | --- | --- |
-| S06 离线 | 适配层能否让 Midscene 服从受管 Page | 限制采用 | 动作边 abort/丢租、显式 modelConfig、安全标志构造、编造检测、REUSE_PAGE 无残留 | 完整 aiAct 假响应回放、在线 VL、对象 context 直接 fill.from | §11；`packages/worker/src/ai/midscene/*.spec.ts` |
+| S06 离线 | 适配层能否让 Midscene 服从受管 Page | 限制采用 | 动作边 abort/丢租（含完整 aiAct 回放下取消、超时、真实丢租零新动作）、只读拒绝整条动作通道、显式 modelConfig、安全标志构造、AI 执行过动作后 destroy 与 REUSE_PAGE 无未登记残留、迟到调用经会话作废不串 Run、AI 新开窗口收尾关闭 | 在线 VL、对象 context 直接 fill.from、编造拦截（平台不做；离线只验证样本比对 helper，正式路径由确定性断言核对） | §11；`packages/worker/src/ai/midscene/*.spec.ts` |
 | S06 在线 | 真 VL 在夹具上的能力 | 未跑 | | 全部在线类别 | 需 `CAIRN_S06_ONLINE=1` |
-| S07-lite | 页内 Agent 的 SPI 约束 | 已记录，无采用结论 | 无 | 真模型 / 凭据代理 / 分类评估 | `packages/worker/src/ai/page-agent/` |
+| S07-lite | 页内 Agent 的 SPI 约束（替身脚本验证 binding 机制） | 已记录，无采用结论 | 无 | Page Agent 本体注入 / `stop()` / 导航重建、真模型 / 凭据代理 / 分类评估 | `packages/worker/src/ai/page-agent/` |
 
 ## 10. 修订
 
@@ -292,6 +292,8 @@ Spike 的采用 / 限制 / 拒绝、可重跑命令和失败分类写进本文 �
 - 2026-09-13：落地离线 Gate 与 S07-lite。Worker `src/ai/` 骨架、`@midscene/web@1.12.6`（从 `playwright/agent` 入口，避开 `@playwright/test`）、夹具事件日志。S06 记限制采用。
 - 2026-09-13：复查补齐 `.env.example` 改为 `CAIRN_S06_*`、`setMidsceneRunDir`、D13 跨包检查、离线样本 3–4/6/8–9 与 CSP binding。
 - 2026-09-13：落地结论并回本文，删除与方案平级的实验记录。
+- 2026-09-14：复查补完整 `aiAct` 回放下的停止用例；gate 接入 SessionGuard，修复真实丢租后仍可动作。
+- 2026-09-14：复查第 3–7 项：矩阵收窄编造与残留表述并补 AI 执行后残留用例；S07-lite 注明替身；AI 新开窗口收尾关闭、hung 不被页面检查盖掉；迟到调用跨 Run 隔离用例；SDK 调试日志按 Agent 存活期轮换。
 
 ## 11. 落地结论
 
@@ -304,4 +306,30 @@ npx vitest run src/ai/page-agent/inpage-binding.spec.ts src/ai/midscene src/engi
 node ../../tools/check-deps.mjs
 ```
 
-2026-09-13 本机：7 个文件、44 条通过；`check-deps` 通过。未跑 `CAIRN_S06_ONLINE=1`。未做完整 `aiAct` 假响应回放——§9 只能写「动作边检查成立」，不能写「aiAct 在 abort 后零新动作」。
+2026-09-13 本机：7 个文件、44 条通过；`check-deps` 通过。未跑 `CAIRN_S06_ONLINE=1`。未做完整 `aiAct` 假响应回放——§9 只能写「动作边检查成立」，不能写「aiAct 在 abort 后零新动作」。（2026-09-14 已补，见下。）
+
+2026-09-14 复查补齐完整循环：
+
+- 修复：续租失败只 revoke 进程内 SessionGuard、不 abort 步骤信号，原 gate 只看信号，真实丢租后 Agent 仍能点击。`port.ts` 改由 `createStepGate` 构造 gate，动作边与模型边同时校验 `SessionGuard.assertHeld`。
+- 新增 `managed-page.lab.spec.ts`「正式适配层：完整 aiAct 循环里的停止」：真 Midscene 规划循环，模型响应按序号回放 qwen3-vl 格式，在第 1 次规划已返回、动作尚未开始时注入。对照组真实点中画布；取消、超时、真实丢租三种注入均零新动作、出站模型调用保持 1 次；只读 Agent 在同一循环里零动作。`formal-agent.spec.ts` 补只读拒绝未知动作名。
+- 反向验证：临时去掉 guard 校验，「真实丢租」用例点击 1 次而失败；恢复后通过。
+- 本机：action-gate / formal-agent / port 单测 3 个文件 12 条通过，`managed-page.lab.spec.ts` 10 条通过，`check-deps` 与 Worker `tsc --noEmit` 通过。
+- 已知现象：gate 拦下模型请求后 Midscene 自带一次约 2s 的重试，同样被拦、不出站。
+
+2026-09-14 复查第 3–7 项：
+
+- 残留：新增用例在 AI 真正执行过动作之后再查残留（Node 侧 popup / load 监听、页内新标签拦截器、元素检查器全局、select 样式），并验证规则 popup 不被劫持、REUSE_PAGE 下一 Run 无残留。对照：SDK 默认参数构造的 `PlaywrightAgent` 会被检出 popup、load 监听与 select 样式，说明检查看得见。
+- 编造：原「不得交给 fill」用例没有调用 fill，断言形同虚设；改为只验证样本比对 helper，§9 把编造拦截列入关闭——正式路径不做，由场景里的确定性断言核对。
+- S07-lite：注明注入的是只转调 binding 的替身，结论只对 binding 机制成立；Page Agent 本体归完整 S07。
+- 新窗口：`settleAiCommand` 在步骤收尾先关闭 AI 新开的页，再报 `AI_POPUP_UNSUPPORTED`；未落定结果原样返回，页面检查不再盖掉 hung（`withManagedPage` 范围检查失败的分支同样保留）。
+- 迟到调用：扣住规划响应模拟卡在底层调用里的 SDK，gate 故意不接信号。先 invalidate 再 release 时，下一 Run 换了新页、旧页已关、零迟到点击；对照组不作废会话时，迟到点击落到下一 Run 复用的页面。
+- 日志：`run-dir.ts` 以 Agent 存活期计数，全部销毁后轮换到新一代目录并删除旧代；仍有 Agent 在途但单代超过 64 MiB 也轮换。
+- 本机：`src/ai` 下 10 个测试文件全部通过，`check-deps` 通过。
+
+2026-09-14 丢租分类：
+
+- 问题：gate 拦下动作后 SDK 抛出被它包过一层的报错，`AiResult` 没有错误码字段，执行器一律记 `AI_EXECUTION_FAILED / EXECUTOR`。Engine 判中止只看取消与超时信号，丢租不触发，于是副作用 AI 步骤被记成普通失败，绕过了 `finishAttempt` 对「成功但会话租约已失效」的处置（`runs.ts`：SIDE_EFFECT 进 NEEDS_REVIEW、其余 FAILED）。
+- 改法：`ActionGate` 记 `actionsStarted`；`leaseLostError` 只看这条计数，不解析报错文本——已放行过动作记 UNKNOWN（副作用步骤由引擎转人工核查），没放行过记 INFRASTRUCTURE。`AiResult` 增加可选结构化 `error`，端口在丢租两处填它，执行器原样使用。
+- 附带：`shouldRetry` 对 `SESSION_LEASE_LOST` 不再重试——同一次执行复用同一份会话授权，guard 撤销后不会刷新，重试注定失败。
+- 用例：端口单测验证分类与"SDK 包过的报错不影响分类"；lab 用例用真实 SDK 验证规划阶段丢租零动作、点过一次后丢租记 UNKNOWN；Engine 用例验证副作用进 NEEDS_REVIEW、只读记 `SESSION_LEASE_LOST` 且不重试（作者设了 `retryLimit: 2`，仍只尝试 1 次）。
+- 反向验证：去掉"不重试"规则，未放行动作的用例重试 3 次而失败；去掉执行器的结构化错误透传，副作用步骤从 NEEDS_REVIEW 掉成 FAILED。

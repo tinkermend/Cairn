@@ -9,12 +9,12 @@ import {
 import { JwtService } from '@nestjs/jwt'
 import type { Response } from 'express'
 import {
-  findSessionByAuthHoldRun,
   getRun,
-  getSessionById,
-  getWorkerById,
   isBoundAuthHold,
+  resolveWorkerRoute,
   type DbHandle,
+  type SessionRecord,
+  type WorkerRecord,
 } from '@cairn/db'
 import {
   DEFAULT_MANAGED_BROWSER_CAPABILITIES,
@@ -22,15 +22,24 @@ import {
   authControlHeartbeatResponseSchema,
   authControlInputReceiptSchema,
   canObserveManagedFrames,
+  evaluateWorkerRoute,
   hasAllPermissions,
+  debugActionSchema,
   managedBrowserMetaSchema,
+  observeOperationSchema,
+  parseWorkerEndpoints,
+  targetObservationSchema,
   workerInternalPath,
+  workerRunsInternalPath,
   type AcquireAuthControlBody,
   type AuthControlInputBody,
   type AuthControlTokenBody,
+  type DebugAction,
   type ManagedBrowserMeta,
+  type ObserveOperation,
   type ResumeAuthBody,
 } from '@cairn/shared'
+import { config } from '../config/env'
 import { AuthService } from '../auth/auth.service'
 import type { RequestAccount } from '../common/request-account'
 import { rethrowDomain } from '../common/domain-error'
@@ -51,7 +60,7 @@ export class BrowserService {
     if (!target.session || !target.worker) return this.degraded(target, 'worker_unreachable')
     try {
       const raw = await this.workers.requestJson({
-        ...this.callBase(target, actor, workerInternalPath('/meta')),
+        ...this.callBase(target, actor, workerInternalPath('/meta'), 'headers'),
         method: 'GET',
         query: { pageId },
       })
@@ -83,7 +92,7 @@ export class BrowserService {
     try {
       upstream = await this.workers.requestStream(
         {
-          ...this.callBase(target, input.actor, workerInternalPath('/frames')),
+          ...this.callBase(target, input.actor, workerInternalPath('/frames'), 'stream'),
           method: 'GET',
           query: { pageId: input.pageId },
         },
@@ -144,6 +153,26 @@ export class BrowserService {
     return getRun(this.db, runId).catch(rethrowDomain)
   }
 
+  observe(runId: string, body: ObserveOperation, actor: RequestAccount) {
+    return this.mutate(
+      runId,
+      actor,
+      workerInternalPath('/observe'),
+      JSON.stringify(observeOperationSchema.parse(body)),
+      targetObservationSchema,
+    )
+  }
+
+  async debug(runId: string, body: DebugAction, actor: RequestAccount) {
+    await this.mutate(
+      runId,
+      actor,
+      workerRunsInternalPath('/debug-resume'),
+      JSON.stringify(debugActionSchema.parse(body)),
+    )
+    return getRun(this.db, runId).catch(rethrowDomain)
+  }
+
   private async mutate(
     runId: string,
     actor: RequestAccount,
@@ -157,7 +186,7 @@ export class BrowserService {
     }
     try {
       const raw = await this.workers.requestJson({
-        ...this.callBase(target, actor, path),
+        ...this.callBase(target, actor, path, 'auth'),
         method: 'POST',
         body,
       })
@@ -171,6 +200,7 @@ export class BrowserService {
     target: Awaited<ReturnType<BrowserService['resolveTarget']>>,
     actor: RequestAccount,
     path: string,
+    timeout: 'headers' | 'auth' | 'stream',
   ) {
     return {
       workerId: target.session!.ownerWorkerId,
@@ -179,17 +209,44 @@ export class BrowserService {
       runId: target.run.id,
       sessionGeneration: target.session!.generation,
       path,
+      endpoint: target.endpoint!,
+      timeout,
     }
   }
 
-  private async resolveTarget(runId: string) {
+  private async resolveTarget(runId: string): Promise<{
+    run: { id: string; status: string }
+    session: SessionRecord | null
+    worker: WorkerRecord | null
+    endpoint: string | null
+  }> {
     try {
-      const run = await getRun(this.db, runId)
-      const held = await findSessionByAuthHoldRun(this.db, runId)
-      const session =
-        held ?? (run.placement.sessionId ? await getSessionById(this.db, run.placement.sessionId) : null)
-      const worker = session ? await getWorkerById(this.db, session.ownerWorkerId) : null
-      return { run, session, worker: worker?.status === 'READY' ? worker : null }
+      const route = await resolveWorkerRoute(this.db, runId)
+      const endpoints = parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS, {
+        networkMode: config.CAIRN_WORKER_NETWORK_MODE,
+      })
+      const evaluation = evaluateWorkerRoute({
+        workerStatus: route.worker?.status ?? null,
+        workerInstanceId: route.worker?.instanceId ?? null,
+        sessionOwnerInstanceId: route.session?.ownerWorkerInstanceId ?? null,
+        lostAfterSeconds: route.worker?.lostAfterSeconds ?? null,
+        heartbeatExpiresAt: route.worker?.heartbeatExpiresAt ?? null,
+        internalBaseUrl: route.worker?.internalBaseUrl ?? null,
+        asOf: route.asOf,
+        networkMode: config.CAIRN_WORKER_NETWORK_MODE,
+        envEndpoint: route.worker ? endpoints[route.worker.id] : undefined,
+      })
+      const live =
+        route.associationLive &&
+        route.session?.status === 'OPEN' &&
+        evaluation.availability === 'eligible' &&
+        evaluation.endpoint
+      return {
+        run: { id: route.runId, status: route.runStatus },
+        session: route.session,
+        worker: live ? route.worker : null,
+        endpoint: live ? evaluation.endpoint : null,
+      }
     } catch (error) {
       rethrowDomain(error)
     }
@@ -263,14 +320,14 @@ export class BrowserService {
       const account = await this.auth.resolveAccount(accountId)
       if (account.status === 'disabled') return 'FORBIDDEN'
       if (!hasAllPermissions(account.permissions, ['run:read', 'session:view'])) return 'FORBIDDEN'
-      const run = await getRun(this.db, runId)
-      const session = await findSessionByAuthHoldRun(this.db, runId)
+      const target = await this.resolveTarget(runId)
+      if (!target.worker || !target.endpoint || target.session?.status !== 'OPEN') return 'FORBIDDEN'
       if (
         !canObserveManagedFrames({
-          runStatus: run.status,
+          runStatus: target.run.status,
           actorId: accountId,
-          controlActorId: session?.authControlActorId,
-          controlExpiresAt: session?.authControlExpiresAt,
+          controlActorId: target.session.authControlActorId,
+          controlExpiresAt: target.session.authControlExpiresAt,
         })
       ) {
         return 'FORBIDDEN'

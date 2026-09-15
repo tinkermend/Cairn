@@ -21,6 +21,7 @@ import {
 } from '@/lib/runs-api'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
+import { useAuthoringObserve } from '@/features/scenarios/authoring-observe'
 
 /** 画面是 object-contain，按整块按钮比例换算会点到留白而不是登录框。 */
 function framePointFromClick(
@@ -42,6 +43,7 @@ type Props = {
 }
 
 export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Props) {
+  const observe = useAuthoringObserve()
   const user = useAuthStore((state) => state.auth.user)
   const canView = Boolean(user && hasAllPermissions(user.permissions, ['run:read', 'session:view']))
   const canControl = Boolean(user && hasAllPermissions(user.permissions, ['session:control', 'run:execute']))
@@ -60,8 +62,12 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
   tokenRef.current = token
 
   useEffect(() => {
+    if (runStatus === 'HOLDING' || runStatus === 'WAITING_FOR_AUTH') setOpen(true)
+  }, [runStatus])
+
+  useEffect(() => {
     if (!canView) return
-    if (!open && runStatus !== 'WAITING_FOR_AUTH') return
+    if (!open && runStatus !== 'WAITING_FOR_AUTH' && runStatus !== 'HOLDING') return
     let cancelled = false
     void fetchManagedBrowser(runId, viewPageId)
       .then((next) => {
@@ -126,13 +132,22 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
   if (!canView) return null
 
   const waiting = runStatus === 'WAITING_FOR_AUTH'
+  const holding = runStatus === 'HOLDING'
+  const picking = holding && observe.pickMode
+  const highlightBox = observe.highlight?.preview?.box
   const controlling = Boolean(token)
   const remain =
     expiresAt && Date.parse(expiresAt)
       ? Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 1000))
       : null
 
-  const sendCommand = (partial: Omit<BrowserAuthInputCommand, 'pageRef' | 'commandId' | 'seq' | 'frameId' | 'viewport'>) => {
+  type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : never
+  type BrowserAuthInputPayload = DistributiveOmit<
+    BrowserAuthInputCommand,
+    'pageRef' | 'commandId' | 'seq' | 'frameId' | 'viewport'
+  >
+
+  const sendCommand = (partial: BrowserAuthInputPayload) => {
     if (!token || !pageRef || !frame) return
     seq.current += 1
     const command = {
@@ -154,14 +169,18 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
         <div>
           <h2 className='text-section font-semibold'>受管浏览器</h2>
           <p className='mt-1 text-label text-muted-foreground'>
-            {waiting ? '需要目标系统登录。画面只发给当前控制者。' : '只读跟随当前执行页。展开后才抓取画面。'}
+            {waiting
+              ? '需要目标系统登录。画面只发给当前控制者。'
+              : holding
+                ? '调试挂起中。指认在画面上点选，校验框画在叠加层，不会改目标页。'
+                : '只读跟随当前执行页。展开后才抓取画面。'}
           </p>
         </div>
         <div className='flex items-center gap-2'>
           {meta?.degradedReason ? <StatusBadge tone='warning'>画面不可用</StatusBadge> : null}
           {controlling ? <StatusBadge tone='warning'>正在输入</StatusBadge> : null}
           <Button variant='outline' onClick={() => setOpen((value) => !value)}>
-            {open ? '收起画面' : '展开画面'}
+            {open || waiting || holding ? (open ? '收起画面' : '展开画面') : '展开画面'}
           </Button>
         </div>
       </div>
@@ -277,8 +296,13 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
             <button
               type='button'
               className='relative block w-full overflow-hidden rounded-md border border-border-default bg-muted'
-              disabled={!controlling}
+              disabled={!controlling && !picking}
               onClick={(event) => {
+                if (picking) {
+                  const point = framePointFromClick(event, frame)
+                  observe.pickAt(point.x, point.y)
+                  return
+                }
                 if (!controlling) return
                 sendCommand({ type: 'mouse_click', ...framePointFromClick(event, frame), button: 'left' })
               }}
@@ -295,6 +319,24 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
               }}
             >
               <img src={frame.image} alt='受管浏览器当前画面' className='max-h-[28rem] w-full object-contain' />
+              {highlightBox ? (
+                <svg
+                  className='pointer-events-none absolute inset-0 h-full w-full'
+                  viewBox={`0 0 ${frame.width} ${frame.height}`}
+                  preserveAspectRatio='xMidYMid meet'
+                  aria-hidden
+                >
+                  <rect
+                    x={highlightBox.x}
+                    y={highlightBox.y}
+                    width={highlightBox.width}
+                    height={highlightBox.height}
+                    fill='none'
+                    stroke='var(--action-primary)'
+                    strokeWidth={2}
+                  />
+                </svg>
+              ) : null}
             </button>
           ) : null}
           {controlling && meta?.capabilities.authInput !== 'closed' ? (
@@ -312,7 +354,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
                 onCompositionEnd={(event) => {
                   composing.current = false
                   const text = event.currentTarget.value.trim()
-                  if (text && meta.capabilities.chineseInsertText !== 'closed') {
+                  if (text && meta?.capabilities.chineseInsertText !== 'closed') {
                     sendCommand({ type: 'insert_text', text })
                   }
                   event.currentTarget.value = ''

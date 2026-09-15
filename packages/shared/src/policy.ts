@@ -12,6 +12,9 @@ export const DEFAULT_EXECUTOR_VERSIONS = {
   fill: '1',
   extract: '1',
   assert: '1',
+  select: '1',
+  keyboard: '1',
+  wait: '1',
   ai_action: '1',
   ai_extract: '1',
   ai_assert: '1',
@@ -53,7 +56,7 @@ export function resolveStepPolicy(
   return {
     timeoutMs: stepPolicy?.timeoutMs ?? snapshotPolicy?.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS,
     retryLimit:
-      stepType === 'ai_action'
+      stepType === 'ai_action' || stepType === 'wait'
         ? 0
         : (stepPolicy?.retryLimit ?? snapshotPolicy?.retryLimit ?? DEFAULT_RETRY_LIMIT),
   }

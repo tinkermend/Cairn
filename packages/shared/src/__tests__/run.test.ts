@@ -46,9 +46,11 @@ describe('runStatusSchema', () => {
     expect(() => runStatusSchema.parse('CANCELLING')).toThrow()
   })
 
-  it('NEEDS_REVIEW 属于 HALTED 不属于 FINISHED', () => {
+  it('NEEDS_REVIEW 属于 HALTED 不属于 FINISHED；HOLDING 两者都不是', () => {
     expect(isHaltedRunStatus('NEEDS_REVIEW')).toBe(true)
     expect(isFinishedRunStatus('NEEDS_REVIEW')).toBe(false)
+    expect(isHaltedRunStatus('HOLDING')).toBe(false)
+    expect(isFinishedRunStatus('HOLDING')).toBe(false)
   })
 })
 

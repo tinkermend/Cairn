@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
+  canAdoptAssistantProposal,
   entityIdSchema,
   hasAiSteps,
   canExecuteRun,
@@ -32,15 +33,20 @@ import { notifyExtensionStart } from '@/lib/extension-bridge'
 import { closeRecordingBinding } from '@/lib/recordings-api'
 import {
   createRecordingBinding,
+  deleteScenario,
   fetchRecordingImports,
   fetchScenario,
   fetchScenarioCapabilities,
+  previewDeleteScenario,
   publishScenario,
   saveScenarioDraft,
+  updateScenario,
 } from '@/lib/scenarios-api'
+import { observeRun } from '@/lib/runs-api'
 import { fetchTarget } from '@/lib/targets-api'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
+import { useAssistantStore } from '@/stores/assistant-store'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -70,7 +76,11 @@ import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
+import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
+import { Input } from '@/components/ui/input'
 import { StatusBadge } from '@/components/status-badge'
+import { StudioHoldBar } from '@/features/runs/debug-hold-bar'
+import { useRunObservation } from '@/features/runs/use-run-observation'
 import { RunCreateDialog } from '@/features/runs/create-dialog'
 import {
   createBlankStep,
@@ -79,6 +89,7 @@ import {
   STEP_TYPE_HINTS,
   unavailableStudioTypes,
 } from './step-registry'
+import { AuthoringObserveProvider } from './authoring-observe'
 import { InputsEditor, StepEditor } from './step-editor'
 import { TrialDialog } from './trial-dialog'
 import { TrialPanel } from './trial-panel'
@@ -116,6 +127,10 @@ export function ScenarioDetailPage() {
   })
   const canReadTarget = useCan('target:read')
   const canWrite = useCan('workflow:write')
+  const canDelete = useCan('workflow:delete')
+  const canAssist = useCan('ai:assist')
+  const openAssistant = useAssistantStore((state) => state.openPanel)
+  const registerAdoptHandler = useAssistantStore((state) => state.registerAdoptHandler)
   const canStartFormalRun = Boolean(user && canExecuteRun(user.permissions))
   const canStartTrial = Boolean(user && canTrialRun(user.permissions))
   const canAi = Boolean(user && hasPermission(user.permissions, 'ai:execute'))
@@ -148,6 +163,10 @@ export function ScenarioDetailPage() {
   const [runOpen, setRunOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [startingRecord, setStartingRecord] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [nextName, setNextName] = useState('')
+  const [removing, setRemoving] = useState(false)
+  const [renaming, setRenaming] = useState(false)
   const importedQueryKey = ['scenarios', scenarioId, 'imported-step-ids'] as const
   const importedStepsQuery = useQuery({
     queryKey: importedQueryKey,
@@ -156,7 +175,12 @@ export function ScenarioDetailPage() {
     gcTime: 30 * 60 * 1000,
   })
   const importedStepIds = importedStepsQuery.data ?? []
-  const [mobilePane, setMobilePane] = useState<'steps' | 'properties'>('steps')
+  const [mobilePane, setMobilePane] = useState<'steps' | 'properties' | 'page'>('steps')
+  const { run: trialRun } = useRunObservation(runId ?? '', Boolean(runId))
+  const holdingStepId =
+    trialRun?.status === 'HOLDING' && trialRun.debugMode !== 'runThrough'
+      ? trialRun.checkpoint?.stepId
+      : undefined
   const canRecord = canWrite && canReadTarget
   const recordingQuery = useQuery({
     queryKey: ['scenarios', scenarioId, 'recording-imports'],
@@ -201,6 +225,45 @@ export function ScenarioDetailPage() {
   const applyStructure = draft.applyStructure
   const selectedIndex = draft.selectedIndex
   const selectedStepId = draft.selected?.id ?? null
+  const canPropose =
+    canAssist &&
+    canWrite &&
+    canReadTarget &&
+    !draft.dirty &&
+    !draft.hasFieldDrafts &&
+    !draft.conflict &&
+    !draft.remoteStale &&
+    Boolean(scenario?.draft && draft.selected)
+
+  useEffect(() => {
+    if (!canPropose || !scenario?.draft || !document) {
+      registerAdoptHandler(null)
+      return
+    }
+    const revision = scenario.draft.revision
+    const current = document
+    registerAdoptHandler(async (proposal) => {
+      const allowed = await canAdoptAssistantProposal({
+        proposal,
+        revision,
+        document: current,
+        hasFieldDrafts: false,
+        remoteConflict: draft.conflict || draft.remoteStale,
+      })
+      if (!allowed.ok) return allowed
+      applyStructure(proposal.document, proposal.stepId)
+      return { ok: true }
+    })
+    return () => registerAdoptHandler(null)
+  }, [
+    applyStructure,
+    canPropose,
+    document,
+    draft.conflict,
+    draft.remoteStale,
+    registerAdoptHandler,
+    scenario?.draft,
+  ])
 
   useEffect(() => {
     if (!canWrite || disabled || !document || selectedIndex < 0) return
@@ -298,12 +361,12 @@ export function ScenarioDetailPage() {
     }
   }
 
-  async function save() {
-    if (!document || !draft.baseline || saving) return
+  async function save(): Promise<boolean> {
+    if (!document || !draft.baseline || saving) return false
     if (draft.hasFieldDrafts) {
       toast.error('先修正尚未合法的字段')
       draft.focusFirstDraft()
-      return
+      return false
     }
     setSaving(true)
     try {
@@ -314,12 +377,21 @@ export function ScenarioDetailPage() {
       if (next.draft) draft.acceptServer({ revision: next.draft.revision, document: next.draft.document })
       queryClient.setQueryData(['scenarios', scenarioId], next)
       toast.success('草稿已保存')
+      if (runId && draft.selected) {
+        try {
+          await observeRun(runId, { op: 'highlight', clearOverlayStepId: draft.selected.id })
+        } catch {
+          // 草稿已按 OCC 落库；覆盖层清理失败不回滚保存
+        }
+      }
+      return true
     } catch (error) {
       if (error instanceof ApiRequestError && error.payload.code === 'SCENARIO_DRAFT_CONFLICT') {
         markConflict()
       } else {
         toast.error(error instanceof ApiRequestError ? error.message : '保存失败')
       }
+      return false
     } finally {
       setSaving(false)
     }
@@ -452,6 +524,48 @@ export function ScenarioDetailPage() {
                     运行已发布版本
                   </Button>
                 ) : null}
+                {canAssist && canReadTarget ? (
+                  <Button
+                    variant='outline'
+                    onClick={() =>
+                      openAssistant({
+                        question: '解释当前步骤',
+                        capabilityHint: 'scenario.explain',
+                        pageContext: {
+                          page: 'studio',
+                          scenarioId,
+                          stepId: draft.selected?.id,
+                          ...(scenario.draft
+                            ? { draftRevision: scenario.draft.revision }
+                            : scenario.latestVersionId
+                              ? { versionId: scenario.latestVersionId }
+                              : {}),
+                        },
+                      })
+                    }
+                  >
+                    解释步骤
+                  </Button>
+                ) : null}
+                {canPropose ? (
+                  <Button
+                    variant='outline'
+                    onClick={() =>
+                      openAssistant({
+                        question: '把这条指令写清楚',
+                        capabilityHint: 'scenario.propose-step',
+                        pageContext: {
+                          page: 'studio',
+                          scenarioId,
+                          stepId: draft.selected!.id,
+                          draftRevision: scenario.draft!.revision,
+                        },
+                      })
+                    }
+                  >
+                    修改建议
+                  </Button>
+                ) : null}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant='outline'>
@@ -480,6 +594,46 @@ export function ScenarioDetailPage() {
                         }}
                       >
                         导入已有录制
+                      </DropdownMenuItem>
+                    ) : null}
+                    {canWrite ? (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setNextName(scenario?.name ?? '')
+                            setRenameOpen(true)
+                          }}
+                        >
+                          重命名
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={disabled}
+                          onClick={() => {
+                            if (!scenario) return
+                            const next = scenario.status === 'active' ? 'disabled' : 'active'
+                            void updateScenario(scenario.id, { status: next })
+                              .then(() => {
+                                toast.success(next === 'active' ? '已启用' : '已停用')
+                                void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId] })
+                              })
+                              .catch((error) => {
+                                toast.error(
+                                  error instanceof ApiRequestError ? error.message : '更新失败',
+                                )
+                              })
+                          }}
+                        >
+                          {scenario?.status === 'active' ? '停用' : '启用'}
+                        </DropdownMenuItem>
+                      </>
+                    ) : null}
+                    {canDelete ? (
+                      <DropdownMenuItem
+                        className='text-destructive'
+                        onClick={() => setRemoving(true)}
+                      >
+                        删除
                       </DropdownMenuItem>
                     ) : null}
                   </DropdownMenuContent>
@@ -613,8 +767,33 @@ export function ScenarioDetailPage() {
               >
                 属性
               </Button>
+              {runId ? (
+                <Button
+                  size='sm'
+                  variant={mobilePane === 'page' ? 'default' : 'outline'}
+                  aria-pressed={mobilePane === 'page'}
+                  onClick={() => setMobilePane('page')}
+                >
+                  页面
+                </Button>
+              ) : null}
             </div>
-            <div className='grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]'>
+            <AuthoringObserveProvider
+              runId={runId}
+              selectedStepId={draft.selected?.id}
+              enabled={Boolean(runId)}
+              authoring={capabilitiesQuery.data?.authoring}
+              onWriteBack={() => save()}
+              onApplyTarget={(target) => {
+                const current = draft.selected
+                if (!current || !current.input || typeof current.input !== 'object' || !('target' in current.input)) {
+                  return
+                }
+                draft.updateStep({ ...current, input: { ...current.input, target } } as typeof current)
+              }}
+            >
+            {runId ? <StudioHoldBar runId={runId} /> : null}
+            <div className='grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)] xl:grid-cols-[minmax(16rem,0.9fr)_minmax(18rem,0.85fr)_minmax(22rem,1.15fr)]'>
               <section
                 aria-label='执行步骤'
                 className={cn(
@@ -655,7 +834,11 @@ export function ScenarioDetailPage() {
                       <DropdownMenuContent align='end'>
                         <DropdownMenuLabel>确定性</DropdownMenuLabel>
                         {editableTypes
-                          .filter((type) => ['navigate', 'click', 'fill', 'extract', 'assert'].includes(type))
+                          .filter((type) =>
+                            ['navigate', 'click', 'fill', 'extract', 'assert', 'select', 'keyboard', 'wait'].includes(
+                              type,
+                            ),
+                          )
                           .map((type) => (
                             <DropdownMenuItem key={type} onClick={() => addStep(type)}>
                               {stepTypeLabel(type)}
@@ -730,6 +913,7 @@ export function ScenarioDetailPage() {
                           <span className='min-w-0 flex-1'>
                             <span className='block text-body font-medium break-words'>{step.name}</span>
                             <span className='mt-1 flex flex-wrap items-center gap-2 text-label text-muted-foreground'>
+                              {holdingStepId === step.id ? <StatusBadge tone='warning'>挂起</StatusBadge> : null}
                               {imported ? <StatusBadge tone='info'>刚导入</StatusBadge> : null}
                               {isAiStepType(step.type) ? (
                                 <StatusBadge tone='ai'>{stepTypeLabel(step.type)}</StatusBadge>
@@ -853,15 +1037,18 @@ export function ScenarioDetailPage() {
                   )}
                 </div>
               </section>
-            </div>
             {runId ? (
-              <TrialPanel
-                runId={runId}
-                scenarioId={scenarioId}
-                selectedDraftStepId={draft.selected?.id ?? null}
-                onSelectDraftStep={draft.setSelectedId}
-              />
+              <div className={cn(mobilePane !== 'page' && 'max-lg:hidden', 'min-w-0 lg:col-span-2 xl:col-span-1')}>
+                <TrialPanel
+                  runId={runId}
+                  scenarioId={scenarioId}
+                  selectedDraftStepId={draft.selected?.id ?? null}
+                  onSelectDraftStep={draft.setSelectedId}
+                />
+              </div>
             ) : null}
+            </div>
+            </AuthoringObserveProvider>
           </>
         )}
       </Main>
@@ -977,6 +1164,56 @@ export function ScenarioDetailPage() {
           defaultTargetId={scenario.targetId}
         />
       ) : null}
+      <AlertDialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>重命名场景</AlertDialogTitle>
+            <AlertDialogDescription>只改展示名称，不改变步骤定义和历史运行。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            aria-label='场景名称'
+            value={nextName}
+            onChange={(event) => setNextName(event.target.value)}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={renaming}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={renaming || !nextName.trim()}
+              onClick={(event) => {
+                event.preventDefault()
+                if (!scenario || renaming) return
+                setRenaming(true)
+                void updateScenario(scenario.id, { name: nextName.trim() })
+                  .then(() => {
+                    toast.success('已重命名')
+                    setRenameOpen(false)
+                    void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId] })
+                  })
+                  .catch((error) => {
+                    toast.error(error instanceof ApiRequestError ? error.message : '重命名失败')
+                  })
+                  .finally(() => setRenaming(false))
+              }}
+            >
+              保存
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <ResourceDeleteDialog
+        open={removing}
+        onOpenChange={setRemoving}
+        resourceId={scenarioId}
+        resourceName={scenario?.name ?? ''}
+        resourceType='scenario'
+        previewFn={() => previewDeleteScenario(scenarioId)}
+        deleteFn={(body) => deleteScenario(scenarioId, body)}
+        onSuccess={() => {
+          setRemoving(false)
+          void queryClient.invalidateQueries({ queryKey: ['scenarios'] })
+          void navigate({ to: '/scenarios' })
+        }}
+      />
     </>
   )
 }

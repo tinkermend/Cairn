@@ -104,8 +104,27 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
     const capabilities = await scenarios.capabilities()
     expect(await getPlatformConfig(handle)).toBeNull()
     expect(capabilities.executableStepTypes).toEqual(
-      expect.arrayContaining(['navigate', 'click', 'fill', 'extract', 'assert', 'echo', 'delay', 'fail']),
+      expect.arrayContaining([
+        'navigate',
+        'click',
+        'fill',
+        'extract',
+        'assert',
+        'select',
+        'keyboard',
+        'wait',
+        'echo',
+        'delay',
+        'fail',
+      ]),
     )
+    expect(capabilities.authoring).toMatchObject({
+      indicate: 'open',
+      highlight: 'open',
+      debugHold: 'open',
+      assist: 'closed',
+      stepTypesExtra: ['select', 'keyboard', 'wait'],
+    })
     const aiTypes = ['ai_action', 'ai_extract', 'ai_assert']
     const executable = aiTypes.filter((type) => capabilities.executableStepTypes.includes(type))
     const blocked = aiTypes.filter((type) =>

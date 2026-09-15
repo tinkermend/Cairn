@@ -2,12 +2,19 @@
 
 本目录专门存放技术方案，记录设计、范围、实施约定和验收标准，可附简短实施状态。代码 Review、复查、测试验证与验收结果统一见[评审与验证报告目录](../reviews/README.md)。
 
+历史方案中的宪法数字节号保留当时语境；2026-09-14 瘦身后的对应条款见[原章节迁移映射](../reviews/2026-09-14-constitution-slimming-review.md#7-原章节迁移映射)。新增引用使用当前条款名称或锚点。
+
 交付顺序与里程碑只维护在[识途开发路线与工程实施计划](../plan/识途开发路线与工程实施计划.md#5-当前交付顺序与验收样例)。
 
 | 方案 | 状态 | 原型 |
 | --- | --- | --- |
+| [Worker 登记、内部入口与执行节点治理](2026-09-14-worker-registry-and-fleet.md) | 已落地（2026-09-14）：显式广告入口、持久化期限、Worker/Session 代次隔离、查表转发与治理页。WR03 跨命名空间 HTTPS、WR13 旧/新二进制升级未跑，跳过≠通过；[实施报告](../reviews/2026-09-14-worker-registry-implementation.md)、[修订对照](../reviews/2026-09-14-worker-registry-review.md)。不新增 D 阶段 | — |
+| [编写观察面：指认、调试会话与步骤词表](2026-09-14-authoring-observation-debug-steps.md) | 已实施（2026-09-14）：I1–I5 已落地并二次收口指认/覆盖拆分、Resolver pick、页变确认与 grant 过期；I6 编写辅助保持 closed。正式开放前验收见[实施报告](../reviews/2026-09-14-authoring-observation-debug-steps-implementation.md) | — |
+| [平台助手一期：运行诊断、步骤辅助与功能导览](2026-09-14-platform-assistant-phase-one.md) | 已落地（2026-09-14）：权限先行，`ai:assist` 只赋能已有角色能力；运行诊断 / 步骤解释 / 单步候选 / 功能导览与独立 `platformAi` 配置。真实 60 条模型门槛未跑，效果门槛待验证 | — |
+| [平台助手：架构复用边界与分层约定](2026-09-14-platform-assistant-architecture.md) | 复用方向已确认（2026-09-14）：借鉴 snc-log 的意图路由、分槽、校验与 Agent 分派；具体业务 Agent 由识途定义，分层与契约为设计建议，未实施 | — |
+| [资源生命周期与列表管理补齐方案](2026-09-14-resource-lifecycle-and-list-management.md) | 已落地（2026-09-14）：软删除与级联、活跃运行闸门、对象清理登记、服务端筛选分页与删除 200/202；[实施报告](../reviews/2026-09-14-resource-lifecycle-and-lists-implementation.md)。真 S3 版本桶与根目录全量门禁未宣称通过 | — |
 | [A · P7：运行实时状态、SSE 与断线恢复](2026-09-13-run-realtime-observation.md) | 已落地（2026-09-13）：事务事件账本、一致观察查询、单 Run SSE、断线恢复；PG 用 LISTEN/NOTIFY，MySQL/SQLite 可接 Redis，未配置则 realtime=false。不含 Live View、录制回填与 Worker 唤醒 | — |
-| [B · P7 / P5：受管浏览器查看、认证续跑与页面交接](2026-09-13-managed-browser-view-and-auth.md) | 已落地（2026-09-13）：PageRef / pageAfter、绑定 authHold 与 AuthControl、Worker 内部 HMAC、API 转发、Studio/详情 BrowserView。S-LIVE 探针已不是占位（`CAIRN_S_LIVE=1` + Chromium）；跳过不等于通过。BV08 展示路径 / 20 次循环与 BV09 真机登录仍待控制台实测 | — |
+| [B · P7 / P5：受管浏览器查看、认证续跑与页面交接](2026-09-13-managed-browser-view-and-auth.md) | 已落地（2026-09-13），2026-09-14 补齐认证 fencing 与关流回收：[复查整改](../reviews/2026-09-14-managed-browser-auth-fence.md)。S-LIVE 已关 Worker 侧 20 次循环与等待认证登录续跑；Web 展示路径 p95 与 Studio 控制台发现入口仍待实测 | — |
 | [C · D2：从平台发起录制并回填同一 Scenario Studio](2026-09-13-recording-studio-integration.md) | 已落地（2026-09-14）：绑定票据、`recording-normalizer@2` 精确转换、预览/OCC 回填、Studio 次级入口与插件握手；同日按实现收口网页不写录制中、open 绑定全局、replace 仅参数化 fill、本地 origin 等偏差 | — |
 | [平台动态配置与参数中心：现状评估及范围建议](2026-09-13-platform-configuration-center-assessment.md) | 已落地并修复复查问题（2026-09-14）：四组配置使用数据库修订，新 Run 冻结完整策略；表单并发、密钥绑定、有效超时、旧摘要和 Trace 保留期已补回归 | — |
 | [受控执行 API 与服务凭据基础方案](2026-09-13-controlled-execution-api-and-service-credentials.md) | 基础已实施；二次复查的 3 项缺陷已修复（2026-09-13）：未知副作用保留核查、64 KiB 解析入口、PG 0020 前向修复；424 项回归通过，验证及 API 既有类型检查错误见第 14 节 | 3 项缺陷已关闭；其余验收缺口及外部 Target/AI 试点仍按方案 Gate |

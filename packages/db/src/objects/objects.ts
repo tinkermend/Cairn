@@ -1,7 +1,7 @@
 import type { StoredObjectRow } from '../records.js'
 import { atomic, schemaFor } from '../native.js'
 import { updateRows, locked } from '../native.js'
-import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, asc, eq, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import {
   OBJECT_MISSING_REASONS,
   ObjectStoreError,
@@ -16,6 +16,7 @@ import {
   type StoredObjectStatus,
 } from '@cairn/shared'
 import { toEvidenceMetadata } from './evidence-map.js'
+import { requireLiveRun } from '../lifecycle.js'
 import { lockRunRow } from '../leases/leases.js'
 import { appendRunEvents } from '../observe/events.js'
 import type { Db } from '../client.js'
@@ -43,6 +44,7 @@ export type PurgeCandidate = {
   status: Extract<StoredObjectStatus, 'pending' | 'available'>
   retainUntil: Date
   purgeAttempts: number
+  deleteRequestedAt?: Date | null
 }
 
 function rethrow(error: unknown): never {
@@ -55,16 +57,19 @@ export async function reserveStoredObject(
   db: Db,
   input: { runId: string; retainUntil: Date; id?: string },
 ): Promise<{ id: string; objectKey: string }> {
-  const { storedObjects } = schemaFor(db)
   const id = input.id ?? newId()
   const objectKey = objectKeyFor(input.runId, id)
   try {
-    await db.insert(storedObjects).values({
-      id,
-      objectKey,
-      runId: input.runId,
-      status: 'pending',
-      retainUntil: input.retainUntil,
+    await atomic(db, async (tx) => {
+      await requireLiveRun(tx as unknown as Db, input.runId)
+      const { storedObjects } = schemaFor(tx)
+      await tx.insert(storedObjects).values({
+        id,
+        objectKey,
+        runId: input.runId,
+        status: 'pending',
+        retainUntil: input.retainUntil,
+      })
     })
   } catch (error) {
     rethrow(error)
@@ -108,7 +113,7 @@ export async function commitStoredObject(
   const contentType = objectContentTypeSchema.parse(input.contentType)
   const digest = objectDigestSchema.parse(input.digest)
   const [row] = await db.select().from(storedObjects).where(eq(storedObjects.id, input.id)).limit(1)
-  if (!row || row.status !== 'pending') {
+  if (!row || row.status !== 'pending' || row.deleteRequestedAt) {
     throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '对象不是待提交状态，无法提交')
   }
   if (
@@ -149,6 +154,10 @@ export async function listPurgeCandidates(
       or(
         and(eq(storedObjects.status, 'available'), lt(storedObjects.retainUntil, input.now)),
         and(eq(storedObjects.status, 'pending'), lt(storedObjects.createdAt, pendingBefore)),
+        and(
+          or(eq(storedObjects.status, 'pending'), eq(storedObjects.status, 'available')),
+          isNotNull(storedObjects.deleteRequestedAt),
+        ),
       ),
     )
     .orderBy(asc(storedObjects.purgeAttempts), asc(storedObjects.retainUntil))
@@ -164,6 +173,7 @@ export async function listPurgeCandidates(
       status: row.status,
       retainUntil: row.retainUntil,
       purgeAttempts: row.purgeAttempts,
+      deleteRequestedAt: row.deleteRequestedAt,
     }))
 }
 
@@ -336,7 +346,9 @@ export async function reserveObjectEvidence(
 ): Promise<EvidenceMetadata> {
   const { evidences } = schemaFor(db)
   return db.transaction(async (tx) => {
-    await lockRunRow(tx as unknown as Db, input.runId)
+    if (!(await lockRunRow(tx as unknown as Db, input.runId))) {
+      throw new ObjectStoreError('OBJECT_KEY_INVALID', '运行不存在')
+    }
     const reserved = await reserveStoredObject(tx as unknown as Db, {
       runId: input.runId,
       retainUntil: input.retainUntil,

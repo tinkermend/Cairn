@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { FORBIDDEN_CONTEXT_KEYS } from './run.js'
 import { nextCursorSchema } from './rbac.js'
+import { resourceDeletedBySchema } from './resource-lifecycle.js'
 import { contextKeySchema, stepSchema, type Step } from './step.js'
 import { entityIdSchema, RUNTIME_SCHEMA_VERSION, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
 
@@ -17,6 +18,8 @@ export const SCENARIO_ERROR_CODES = [
   'SCENARIO_VERSION_NOT_FOUND',
   'SCENARIO_NAME_CONFLICT',
   'SCENARIO_HAS_RUNS',
+  'RESOURCE_BUSY',
+  'RESOURCE_DELETED',
   'SCENARIO_UNRESOLVED_REF',
   'SCENARIO_DISABLED',
   'SCENARIO_DRAFT_CONFLICT',
@@ -94,7 +97,7 @@ export class ScenarioValidationError extends Error {
 }
 
 function contextFrom(step: Step): string | undefined {
-  if (step.type === 'echo' || step.type === 'fill') return step.input.from
+  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') return step.input.from
   return undefined
 }
 
@@ -148,6 +151,8 @@ export const scenarioSchema = z.object({
   latestVersionNo: z.number().int().min(1),
   stepCount: z.number().int().min(1).max(MAX_SCENARIO_STEPS),
   draftDirty: z.boolean().default(false),
+  deletedAt: utcInstantSchema.nullable().optional(),
+  deletedBy: resourceDeletedBySchema.nullable().optional(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
 })
@@ -197,6 +202,16 @@ export const scenarioDetailSchema = scenarioSchema.extend({
   compile: compileResultSchema.optional(),
 })
 export type ScenarioDetailDto = z.infer<typeof scenarioDetailSchema>
+
+export const scenarioListQuerySchema = z.object({
+  search: z.string().trim().optional(),
+  targetId: entityIdSchema.optional(),
+  status: scenarioStatusSchema.optional(),
+  hasDraft: z.coerce.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().min(1).optional(),
+})
+export type ScenarioListQuery = z.input<typeof scenarioListQuerySchema>
 
 export const scenarioListResponseSchema = z.object({
   items: z.array(scenarioSchema),

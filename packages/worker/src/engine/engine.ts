@@ -1,9 +1,14 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common'
 import {
+  conflict,
+  appendRunEvents,
+  continueRunDebug,
+  enterRunHolding,
   expireRunDeadlines,
   failRunValidation,
   finishAttempt,
   finishRunIfDrained,
+  getSessionById,
   loadRunDetail,
   loadRunRow,
   loadSecretCiphertext,
@@ -11,6 +16,8 @@ import {
   reconcileOrphanAttempts,
   settleRunEvidence,
   startAttempt,
+  stopRunDebug,
+  updateRunDebugOverlay,
   type DbHandle,
   type FinishAttemptInput,
 } from '@cairn/db'
@@ -27,18 +34,25 @@ import {
   isPlacementYieldCode,
   isSessionConfigErrorCode,
   jsonValueSchema,
+  pageIdentityChanged,
   resolveEvidencePolicy,
   resolveStepPolicy,
   retainUntilFor,
   runSnapshotSchema,
   type BrowserCommand,
+  type DebugAction,
+  type DebugCheckpointReason,
   type ExecutionError,
   type JsonValue,
+  type PageRef,
   type ResolverDiagnostics,
   type RunDetailDto,
   type RunGrant,
   type RunSnapshot,
   type ScreenshotPointer,
+  type DebugCheckpoint,
+  type DebugMode,
+  type DebugOverlay,
   type SessionGrant,
   type Step,
   type TargetDescriptor,
@@ -57,6 +71,7 @@ import {
   StepExecutorRegistry,
   type StepExecutionOutcome,
 } from './step-executor.js'
+import { DebugHoldRegistry } from './debug-hold.js'
 
 export type ExecuteOptions = {
   grant: RunGrant
@@ -78,6 +93,7 @@ type ExecutorOutcome = StepExecutionOutcome & {
 export class ExecutionEngine {
   private readonly logger = new Logger(ExecutionEngine.name)
   private readonly registry: StepExecutorRegistry
+  readonly holds: DebugHoldRegistry
 
   constructor(
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
@@ -85,6 +101,7 @@ export class ExecutionEngine {
     @Optional() @Inject(BROWSER_PORT) private readonly browser?: BrowserPort,
     @Optional() @Inject(SECRET_PROVIDER) private readonly secrets?: LocalSecretProvider,
     @Optional() @Inject(STEP_EXECUTOR_REGISTRY) registry?: StepExecutorRegistry,
+    @Optional() holds?: DebugHoldRegistry,
   ) {
     this.registry =
       registry ??
@@ -92,6 +109,7 @@ export class ExecutionEngine {
         new FixtureStepExecutor(),
         new BrowserStepExecutor(this.handle, this.browser),
       ])
+    this.holds = holds ?? new DebugHoldRegistry()
   }
 
   async execute(runId: string, options: ExecuteOptions): Promise<void> {
@@ -163,29 +181,66 @@ export class ExecutionEngine {
         return
       }
 
-      for (const step of snapshot.steps) {
+      for (let index = 0; index < snapshot.steps.length; ) {
+        const step = snapshot.steps[index]!
         const current = await loadRunRow(db, runId)
-        if (!current || current.status !== 'RUNNING') return
+        if (!current) return
         if (current.cancelRequestedAt) {
           await markRunCancelled(db, runId, { grant })
           return
         }
+        if (current.status !== 'RUNNING' && current.status !== 'HOLDING') return
         if (stop.signal.aborted) {
           if (!yielding()) await markRunCancelled(db, runId, { grant })
           return
         }
 
+        const debugMode = (current.debugMode ?? 'runThrough') as DebugMode
         const detail = await loadRunDetail(db, runId)
         if (!detail) return
         const stepRun = detail.stepRuns.find((item) => item.stepId === step.id)
         // PENDING：尚未执行。RUNNING 且无在途 Attempt：接管后孤儿已收，或失败重试间隙——必须续跑，不得跳过。
-        if (!stepRun || !isRunnableStepRun(stepRun)) continue
+        if (!stepRun || !isRunnableStepRun(stepRun)) {
+          index += 1
+          continue
+        }
 
-        const resolved = resolveStepInput(step, detail.context)
+        if (this.holds.consumePause(runId) && debugMode !== 'runThrough') {
+          const previous = [...detail.stepRuns].reverse().find((item) => item.status === 'SUCCEEDED')
+          const heldStep = previous ?? stepRun
+          const entered = await this.holdRun({
+            runId,
+            grant,
+            debugMode,
+            reason: 'author_pause',
+            stepId: heldStep.stepId,
+            stepOrdinal: heldStep.ordinal,
+            contextKeys: Object.keys(detail.context),
+            sessionGrant,
+            overlay: detail.debugOverlay,
+          })
+          if (!entered) return
+          const afterHold = await this.awaitHold({
+            runId,
+            grant,
+            stop: stop.signal,
+            yielding,
+            sessionGrant,
+          })
+          if (afterHold === 'retry') continue
+          if (afterHold === 'continue') {
+            index = await this.indexAfterContinue(runId, index, snapshot)
+            continue
+          }
+          return
+        }
+
+        const overlayTarget = detail.debugOverlay?.stepOverrides[step.id]?.target
+        const resolved = resolveStepInput(step, detail.context, overlayTarget)
         const started = await startAttempt(db, {
           runId,
           stepRunId: stepRun.id,
-          inputPayload: evidencePayloadForStep(step, resolved.input),
+          inputPayload: evidencePayloadForStep(step, resolved.input, Boolean(overlayTarget)),
           grant,
           secrets,
         })
@@ -201,12 +256,39 @@ export class ExecutionEngine {
             attemptStatus: 'FAILED',
             error: resolved.error,
             stepRunStatus: 'FAILED',
-            runStatus: 'FAILED',
-            skipRemaining: true,
+            runStatus: debugMode === 'runThrough' ? 'FAILED' : 'HOLDING',
+            skipRemaining: debugMode === 'runThrough',
+            checkpoint:
+              debugMode === 'runThrough'
+                ? undefined
+                : await this.buildCheckpoint({
+                    runId,
+                    debugMode,
+                    reason: 'step_failed',
+                    stepId: step.id,
+                    stepOrdinal: stepRun.ordinal,
+                    contextKeys: Object.keys(detail.context),
+                    sessionGrant,
+                    grant,
+                    overlay: detail.debugOverlay,
+                  }),
             grant,
             sessionLease: sessionLeaseFor({ step, sessionGrant, grant }),
             secrets,
           })
+          if (debugMode === 'runThrough') return
+          const afterHold = await this.awaitHold({
+            runId,
+            grant,
+            stop: stop.signal,
+            yielding,
+            sessionGrant,
+          })
+          if (afterHold === 'retry') continue
+          if (afterHold === 'continue') {
+            index = await this.indexAfterContinue(runId, index, snapshot)
+            continue
+          }
           return
         }
 
@@ -218,6 +300,7 @@ export class ExecutionEngine {
           grant,
           step,
           stepRunId: stepRun.id,
+          stepOrdinal: stepRun.ordinal,
           attemptId: started.attemptId,
           attemptNo: started.attemptNo,
           input: resolved.input,
@@ -233,9 +316,27 @@ export class ExecutionEngine {
           secrets,
           evidencePolicy,
           taint,
+          debugMode,
+          overlay: detail.debugOverlay,
         })
         sessionMustClose = sessionMustClose || taint.hung
-        if (!finished) return
+        if (finished === 'stop') return
+        if (finished === 'held') {
+          const afterHold = await this.awaitHold({
+            runId,
+            grant,
+            stop: stop.signal,
+            yielding,
+            sessionGrant,
+          })
+          if (afterHold === 'retry') continue
+          if (afterHold === 'continue') {
+            index = await this.indexAfterContinue(runId, index, snapshot)
+            continue
+          }
+          return
+        }
+        index += 1
       }
 
       // 步骤都终结但 Run 还停在 RUNNING（续跑、恢复）：补一次成功终态。
@@ -317,6 +418,7 @@ export class ExecutionEngine {
     grant: RunGrant
     step: Step
     stepRunId: string
+    stepOrdinal: number
     attemptId: string
     attemptNo: number
     input: JsonValue
@@ -333,7 +435,9 @@ export class ExecutionEngine {
     evidencePolicy: ReturnType<typeof resolveEvidencePolicy>
     snapshot: RunSnapshot
     taint: { hung: boolean }
-  }): Promise<boolean> {
+    debugMode: DebugMode
+    overlay?: DebugOverlay | null
+  }): Promise<'next' | 'stop' | 'held'> {
     const db = this.handle
     let attemptId = input.attemptId
     let attemptNo = input.attemptNo
@@ -343,7 +447,7 @@ export class ExecutionEngine {
       // 重试之间也要看取消（D6 的「步骤间隙」），否则取消之后还会再开一次 Attempt。
       if (input.stop.aborted) {
         // 停机：这一轮的 Attempt 还没跑，原样留给接管方收孤儿，不替用户写取消。
-        if (input.yielding()) return false
+        if (input.yielding()) return 'stop'
         await this.close({
           runId: input.runId,
           attemptId,
@@ -356,7 +460,7 @@ export class ExecutionEngine {
           sessionLease: sessionLeaseFor(input),
           secrets: input.secrets,
         })
-        return false
+        return 'stop'
       }
 
       const outcome = await this.runExecutor({
@@ -385,7 +489,9 @@ export class ExecutionEngine {
             [input.step.outputKey]: jsonValueSchema.parse(contextValue(input.step, outcome.output)),
           }
         }
-        return this.close({
+        const pause = this.holds.consumePause(input.runId)
+        const hold = input.debugMode === 'holdAfterEach' || pause
+        const closed = await this.close({
           runId: input.runId,
           attemptId,
           attemptStatus: 'SUCCEEDED',
@@ -394,11 +500,28 @@ export class ExecutionEngine {
           screenshot: outcome.screenshot,
           trace: outcome.trace,
           stepRunStatus: 'SUCCEEDED',
-          runStatus: input.last ? 'SUCCEEDED' : undefined,
+          runStatus: hold ? 'HOLDING' : input.last ? 'SUCCEEDED' : undefined,
+          skipRemaining: false,
+          checkpoint: hold
+            ? await this.buildCheckpoint({
+                runId: input.runId,
+                debugMode: input.debugMode,
+                reason: pause ? 'author_pause' : 'step_succeeded',
+                stepId: input.step.id,
+                stepOrdinal: input.stepOrdinal,
+                contextKeys: Object.keys(context),
+                sessionGrant: input.sessionGrant,
+                grant: input.grant,
+                overlay: input.overlay,
+              })
+            : undefined,
           grant: input.grant,
           sessionLease: sessionLeaseFor(input),
           secrets: input.secrets,
         })
+        if (!closed) return 'stop'
+        if (hold) return 'held'
+        return input.last ? 'stop' : 'next'
       }
 
       const error = outcome.error
@@ -420,11 +543,11 @@ export class ExecutionEngine {
           sessionLease: sessionLeaseFor(input),
           secrets: input.secrets,
         })
-        return false
+        return 'stop'
       }
 
       // 停机中止。SIDE_EFFECT 已在上面的 needs_review 分支拿到结论，能走到这里的都可安全重跑。
-      if (outcome.aborted && !outcome.timedOut && input.yielding()) return false
+      if (outcome.aborted && !outcome.timedOut && input.yielding()) return 'stop'
 
       if (outcome.kind === 'cancelled' || (outcome.aborted && !outcome.timedOut)) {
         await this.close({
@@ -442,10 +565,12 @@ export class ExecutionEngine {
           sessionLease: sessionLeaseFor(input),
           secrets: input.secrets,
         })
-        return false
+        return 'stop'
       }
 
       const retry = shouldRetry(input.step, error, attemptNo, input.policy.retryLimit)
+      const hold =
+        !retry && (input.debugMode === 'holdOnFailure' || input.debugMode === 'holdAfterEach')
       const closed = await this.close({
         runId: input.runId,
         attemptId,
@@ -456,13 +581,28 @@ export class ExecutionEngine {
         screenshot: outcome.screenshot,
         trace: outcome.trace,
         stepRunStatus: retry ? 'RUNNING' : 'FAILED',
-        runStatus: retry ? undefined : 'FAILED',
-        skipRemaining: !retry,
+        runStatus: retry ? undefined : hold ? 'HOLDING' : 'FAILED',
+        skipRemaining: !retry && !hold,
+        checkpoint: hold
+          ? await this.buildCheckpoint({
+              runId: input.runId,
+              debugMode: input.debugMode,
+              reason: 'step_failed',
+              stepId: input.step.id,
+              stepOrdinal: input.stepOrdinal,
+              contextKeys: Object.keys(context),
+              sessionGrant: input.sessionGrant,
+              grant: input.grant,
+              overlay: input.overlay,
+            })
+          : undefined,
         grant: input.grant,
         sessionLease: sessionLeaseFor(input),
         secrets: input.secrets,
       })
-      if (!closed || !retry) return false
+      if (!closed) return 'stop'
+      if (hold) return 'held'
+      if (!retry) return 'stop'
 
       const next = await startAttempt(db, {
         runId: input.runId,
@@ -473,7 +613,7 @@ export class ExecutionEngine {
       })
       if (!next) {
         await this.finishAfterZeroRow(input.runId, input.grant, input.stop, input.yielding)
-        return false
+        return 'stop'
       }
       attemptId = next.attemptId
       attemptNo = next.attemptNo
@@ -633,10 +773,13 @@ export class ExecutionEngine {
         if (signal.aborted) return
         await expireRunDeadlines(this.handle, runId)
         const row = await loadRunRow(this.handle, runId)
-        if (!row || row.status !== 'RUNNING' || row.cancelRequestedAt) {
+        if (!row || row.cancelRequestedAt) {
           controller.abort()
           return
         }
+        if (row.status === 'RUNNING' || row.status === 'HOLDING') continue
+        controller.abort()
+        return
       }
     }
     void loop().catch((error: unknown) => {
@@ -656,6 +799,187 @@ export class ExecutionEngine {
   private async close(input: FinishAttemptInput): Promise<boolean> {
     const result = await finishAttempt(this.handle, input)
     return result.updated && !result.cancelled
+  }
+
+  async resumeDebug(runId: string, action: DebugAction, actorId: string): Promise<{ ok: true }> {
+    if (action.action === 'pause') {
+      if (!this.holds.resume(runId, { ...action, actorId })) {
+        throw conflict('RUN_NOT_RUNNING', '只有运行中的调试会话可以请求暂停，且在途动作会先跑完')
+      }
+      return { ok: true }
+    }
+    if (action.action === 'stop') {
+      if (this.holds.has(runId)) {
+        this.holds.resume(runId, { ...action, actorId })
+      } else {
+        await stopRunDebug(this.handle, runId, { id: actorId })
+      }
+      return { ok: true }
+    }
+    if (!this.holds.has(runId)) {
+      throw conflict('RUN_NOT_HOLDING', '没有等待中的调试挂起')
+    }
+    await this.assertCanResume(runId, action)
+    if (action.action === 'retry_current' && action.targetOverride) {
+      const detail = await loadRunDetail(this.handle, runId)
+      const stepId = detail?.checkpoint?.stepId
+      if (stepId) {
+        await updateRunDebugOverlay(this.handle, runId, {
+          revision: (detail.debugOverlay?.revision ?? 0) + 1,
+          stepOverrides: {
+            ...(detail.debugOverlay?.stepOverrides ?? {}),
+            [stepId]: { target: action.targetOverride },
+          },
+        })
+      }
+    }
+    this.holds.resume(runId, { ...action, actorId })
+    return { ok: true }
+  }
+
+  private async holdRun(input: {
+    runId: string
+    grant: RunGrant
+    debugMode: DebugMode
+    reason: DebugCheckpointReason
+    stepId: string
+    stepOrdinal: number
+    contextKeys: string[]
+    sessionGrant?: SessionGrant
+    overlay?: DebugOverlay | null
+  }): Promise<boolean> {
+    return enterRunHolding(this.handle, {
+      runId: input.runId,
+      grant: input.grant,
+      checkpoint: await this.buildCheckpoint(input),
+      debugOverlay: input.overlay,
+    })
+  }
+
+  /** continue 只在检查点步已成功时前进；暂停在未跑步上则从当前步开跑。 */
+  private async indexAfterContinue(runId: string, index: number, snapshot: RunSnapshot): Promise<number> {
+    const after = await loadRunDetail(this.handle, runId)
+    const currentId = snapshot.steps[index]?.id
+    const current = after?.stepRuns.find((item) => item.stepId === currentId)
+    return current?.status === 'SUCCEEDED' ? index + 1 : index
+  }
+
+  private async awaitHold(input: {
+    runId: string
+    grant: RunGrant
+    stop: AbortSignal
+    yielding: () => boolean
+    sessionGrant?: SessionGrant
+  }): Promise<'retry' | 'continue' | 'stop'> {
+    const result = await this.holds.wait(input.runId, config.CAIRN_DEBUG_HOLD_TIMEOUT_MS, input.stop)
+    if (result === 'timeout') {
+      await failRunValidation(
+        this.handle,
+        input.runId,
+        { grant: input.grant },
+        {
+          code: 'DEBUG_SESSION_TIMEOUT',
+          category: 'TIMEOUT',
+          retryable: false,
+          safeMessage: '调试会话等待超时',
+        },
+        { skipRemaining: false },
+      )
+      return 'stop'
+    }
+    if (result === 'cancelled') {
+      if (input.yielding()) return 'stop'
+      const row = await loadRunRow(this.handle, input.runId)
+      if (row?.cancelRequestedAt) {
+        await markRunCancelled(this.handle, input.runId, { grant: input.grant })
+      }
+      return 'stop'
+    }
+    if (result.action === 'stop') {
+      const row = await loadRunRow(this.handle, input.runId)
+      if (row?.status === 'HOLDING') {
+        await stopRunDebug(this.handle, input.runId, { id: result.actorId ?? input.grant.holderWorkerId })
+      }
+      return 'stop'
+    }
+    if (result.action === 'continue') {
+      const resumed = await continueRunDebug(this.handle, {
+        runId: input.runId,
+        grant: input.grant,
+      })
+      return resumed ? 'continue' : 'stop'
+    }
+    if (result.action === 'retry_current') return 'retry'
+    return this.awaitHold(input)
+  }
+
+  private async assertCanResume(runId: string, action: DebugAction): Promise<void> {
+    const detail = await loadRunDetail(this.handle, runId)
+    if (!detail || detail.status !== 'HOLDING' || !detail.checkpoint) {
+      throw conflict('RUN_NOT_HOLDING', '仅 HOLDING 状态的运行允许调试操作')
+    }
+    const checkpoint = detail.checkpoint
+    if (!action.fencingToken || action.fencingToken !== checkpoint.fencingToken) {
+      throw conflict('DEBUG_FENCING_MISMATCH', '调试会话代次不匹配')
+    }
+    if (checkpoint.sessionGeneration > 0 && detail.placement.sessionId) {
+      const session = await getSessionById(this.handle, detail.placement.sessionId)
+      if (session && session.generation !== checkpoint.sessionGeneration) {
+        throw conflict('DEBUG_FENCING_MISMATCH', '浏览器会话已变化，不能再试这一步')
+      }
+    }
+    const current = detail.stepRuns.find((item) => item.stepId === checkpoint.stepId)
+    if (action.action === 'continue') {
+      if (checkpoint.reason === 'author_pause' && current?.status === 'PENDING') return
+      if (current?.status !== 'SUCCEEDED') {
+        throw conflict('STEP_CANNOT_RETRY', '只有当前步骤已成功时才能继续下一步')
+      }
+      return
+    }
+    if (
+      current?.status !== 'FAILED' &&
+      !(checkpoint.reason === 'author_pause' && current?.status === 'PENDING')
+    ) {
+      throw conflict('STEP_CANNOT_RETRY', '当前步骤不能再试')
+    }
+    const missing = checkpoint.contextKeys.filter((key) => !(key in detail.context))
+    if (missing.length > 0) {
+      throw conflict('CONTEXT_KEY_MISSING', `缺少上下文：${missing.join('、')}`)
+    }
+    const step = detail.snapshot.steps.find((item) => item.id === checkpoint.stepId)
+    const sideEffect = step?.effectType === 'SIDE_EFFECT'
+    if (sideEffect && !action.confirmSideEffect) {
+      throw conflict('SIDE_EFFECT_CONFIRM_REQUIRED', '副作用步骤再试需要确认，可能对目标系统重复操作')
+    }
+    if (action.action === 'retry_current' && this.browser?.describeHold) {
+      const current = await this.browser.describeHold(runId)
+      if (pageIdentityChanged(checkpoint, current)) {
+        if (action.pageChangedAck !== true) {
+          throw conflict('PAGE_CHANGED_ACK_REQUIRED', '页面已变化，需确认后再试')
+        }
+        await appendRunEvents(this.handle, runId, [
+          {
+            type: 'run.debug_resumed',
+            payload: { action: 'retry_current', pageChangedAck: true, url: current?.url ?? null },
+          },
+        ])
+      }
+    }
+  }
+
+  private async buildCheckpoint(input: {
+    runId: string
+    debugMode: DebugMode
+    reason: DebugCheckpointReason
+    stepId: string
+    stepOrdinal: number
+    contextKeys: string[]
+    sessionGrant?: SessionGrant
+    grant: RunGrant
+    overlay?: DebugOverlay | null
+  }): Promise<DebugCheckpoint> {
+    const page = await this.browser?.describeHold?.(input.runId)
+    return checkpointOf({ ...input, pageRef: page?.pageRef, url: page?.url })
   }
 
   private async resolveRedactionSecrets(snapshot: RunSnapshot): Promise<string[]> {
@@ -691,6 +1015,7 @@ export class ExecutionEngine {
 function resolveStepInput(
   step: Step,
   context: Record<string, JsonValue>,
+  overlayTarget?: TargetDescriptor,
 ): { ok: true; input: JsonValue } | { ok: false; input: JsonValue; error: ExecutionError } {
   if (step.type === 'echo') {
     if (step.input.value !== undefined) return { ok: true, input: step.input.value }
@@ -714,8 +1039,9 @@ function resolveStepInput(
     return { ok: true, input: resolved.value }
   }
   if (step.type === 'fill') {
+    const target = overlayTarget ?? step.input.target
     if (step.input.value !== undefined) {
-      return { ok: true, input: { target: step.input.target, value: step.input.value } }
+      return { ok: true, input: { target, value: step.input.value } }
     }
     const from = step.input.from!
     const resolved = fillTextFromContext(context, from, step.input.fromField)
@@ -723,7 +1049,7 @@ function resolveStepInput(
       return {
         ok: false,
         input: {
-          target: step.input.target,
+          target,
           from,
           ...(step.input.fromField ? { fromField: step.input.fromField } : {}),
         },
@@ -735,14 +1061,38 @@ function resolveStepInput(
         },
       }
     }
-    return { ok: true, input: { target: step.input.target, value: resolved.text } }
+    return { ok: true, input: { target, value: resolved.text } }
+  }
+  if (step.type === 'select') {
+    const target = overlayTarget ?? step.input.target
+    if (step.input.by === 'index' || step.input.value !== undefined) {
+      return { ok: true, input: { ...step.input, target } }
+    }
+    const from = step.input.from!
+    const resolved = fillTextFromContext(context, from, step.input.fromField)
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        input: { ...step.input, target },
+        error: {
+          code: resolved.code,
+          category: 'VALIDATION',
+          retryable: false,
+          safeMessage: resolved.message,
+        },
+      }
+    }
+    return { ok: true, input: { ...step.input, target, value: resolved.text } }
+  }
+  if (overlayTarget && step.input && typeof step.input === 'object' && 'target' in step.input) {
+    return { ok: true, input: { ...step.input, target: overlayTarget } }
   }
   return { ok: true, input: step.input }
 }
 
 /** 可被 Engine 推进：未开始，或已在跑但没有未关闭的 Attempt（接管收孤儿后）。 */
 function isRunnableStepRun(stepRun: RunDetailDto['stepRuns'][number]): boolean {
-  if (stepRun.status === 'PENDING') return true
+  if (stepRun.status === 'PENDING' || stepRun.status === 'FAILED') return true
   if (stepRun.status !== 'RUNNING') return false
   return !stepRun.attempts.some((attempt) => attempt.status === 'RUNNING')
 }
@@ -808,7 +1158,9 @@ function acquireValidationError(outcome: { code: string; message: string }): Exe
   }
 }
 
-function evidencePayloadForStep(step: Step, input: JsonValue): JsonValue {
+function evidencePayloadForStep(step: Step, input: JsonValue, targetOverride = false): JsonValue {
+  const withOverride = (value: { [key: string]: JsonValue }): JsonValue =>
+    targetOverride ? { ...value, targetOverride: true } : value
   if (
     step.type === 'fill' &&
     step.input.sensitive &&
@@ -816,14 +1168,45 @@ function evidencePayloadForStep(step: Step, input: JsonValue): JsonValue {
     typeof input === 'object' &&
     !Array.isArray(input)
   ) {
-    return { ...input, value: REDACTED }
+    return withOverride({ ...input, value: REDACTED })
   }
-  return input
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    return withOverride({ ...input })
+  }
+  return targetOverride ? { value: input, targetOverride: true } : input
+}
+
+function checkpointOf(input: {
+  debugMode: DebugMode
+  reason: DebugCheckpointReason
+  stepId: string
+  stepOrdinal: number
+  contextKeys: string[]
+  sessionGrant?: SessionGrant
+  grant: RunGrant
+  overlay?: DebugOverlay | null
+  pageRef?: PageRef
+  url?: string
+}): DebugCheckpoint {
+  return {
+    mode: input.debugMode === 'holdAfterEach' ? 'holdAfterEach' : 'holdOnFailure',
+    reason: input.reason,
+    stepId: input.stepId,
+    stepOrdinal: input.stepOrdinal,
+    ...(input.pageRef ? { pageRef: input.pageRef } : {}),
+    ...(input.url ? { url: input.url } : {}),
+    contextKeys: input.contextKeys,
+    sessionGeneration: input.sessionGrant?.generation ?? 0,
+    fencingToken: String(input.grant.fencingToken),
+    overlayRevision: input.overlay?.revision ?? 0,
+  }
 }
 
 function shouldRetry(step: Step, error: ExecutionError, attemptNo: number, retryLimit: number): boolean {
   if (attemptNo >= retryLimit + 1) return false
   if (error.code === ASSERT_FAILED_CODE) return false
+  // 同一次执行复用同一份会话授权，guard 撤销后不再刷新：丢租后重试注定失败。
+  if (error.code === 'SESSION_LEASE_LOST') return false
   if (isAiStepType(step.type) && step.type === 'ai_action') return false
   if (step.effectType === 'SIDE_EFFECT' && (error.category === 'UNKNOWN' || error.category === 'TIMEOUT')) {
     return false

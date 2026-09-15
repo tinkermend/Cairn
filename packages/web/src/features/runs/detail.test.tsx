@@ -21,6 +21,12 @@ const mocks = vi.hoisted(() => ({
   heartbeatAuthControl: vi.fn(),
   inputAuthControl: vi.fn(),
   releaseAuthControl: vi.fn(),
+  fetchRunCleanup: vi.fn(),
+  previewDeleteRun: vi.fn(),
+  deleteRun: vi.fn(),
+  retryRunCleanup: vi.fn(),
+  observeRun: vi.fn(),
+  debugRun: vi.fn(),
 }))
 
 vi.mock('@/lib/runs-api', () => mocks)
@@ -58,6 +64,7 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     finishedAt: null,
     evidenceStatus: 'PENDING',
     lease: null,
+    debugMode: 'runThrough',
     placement: {
       state: 'not_applicable',
       sessionId: null,
@@ -203,6 +210,29 @@ describe('RunDetailPage', () => {
       degradedReason: null,
     })
     mocks.subscribeBrowserFrames.mockResolvedValue(undefined)
+    mocks.fetchRunCleanup.mockResolvedValue({
+      resourceId: RUN_ID,
+      resourceType: 'run',
+      status: 'completed',
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+      lastError: null,
+      completedAt: '2026-09-14T00:00:00.000Z',
+    })
+    mocks.previewDeleteRun.mockResolvedValue({ previewToken: 'tok', counts: {}, blockers: [] })
+    mocks.deleteRun.mockResolvedValue({
+      resourceId: RUN_ID,
+      resourceType: 'run',
+      status: 'completed',
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+    })
   })
 
   afterEach(() => {
@@ -276,6 +306,64 @@ describe('RunDetailPage', () => {
     expect(screen.getByRole('region', { name: '受管浏览器' }).elements()).toHaveLength(0)
     // 刷新是只读操作，任何人都能点
     await expect.element(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '分析本次运行' }).elements()).toHaveLength(0)
+    expect(screen.getByRole('button', { name: '删除' }).elements()).toHaveLength(0)
+  })
+
+  it('已删除场景与目标不再提供可编辑链接', async () => {
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          scenarioDeleted: true,
+          targetDeleted: true,
+          scenarioName: '旧场景',
+          targetName: '旧目标',
+        }),
+      ),
+    )
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('旧场景')).toBeInTheDocument()
+    await expect.element(screen.getByText('旧目标')).toBeInTheDocument()
+    expect(screen.getByText('已删除').elements().length).toBeGreaterThanOrEqual(2)
+    expect(document.querySelector('a[href*="scenarios"]')).toBeNull()
+    expect(document.querySelector('a[href*="targets"]')).toBeNull()
+  })
+
+  it('终态运行在具备 run:delete 时展示删除入口', async () => {
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(runDetail({ status: 'SUCCEEDED', finishedAt: '2026-09-11T02:01:00.000Z' })),
+    )
+    signIn(['run:read', 'run:delete'])
+    const screen = await renderPage()
+    await expect.element(screen.getByRole('button', { name: '删除' })).toBeInTheDocument()
+  })
+
+  it('已删除运行展示清理状态而不是普通加载失败', async () => {
+    mocks.fetchRunObservation.mockRejectedValue(new Error('运行不存在'))
+    mocks.fetchRunCleanup.mockResolvedValue({
+      resourceId: RUN_ID,
+      resourceType: 'run',
+      status: 'failed',
+      totalObjects: 2,
+      purgedObjects: 1,
+      failedObjects: 1,
+      totalBytes: 2048,
+      purgedBytes: 1024,
+      lastError: '部分对象文件清理失败，请重试',
+    })
+    signIn(['run:read', 'run:delete'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('运行已删除。业务记录不可访问，附件按清理状态处理。')).toBeInTheDocument()
+    await expect.element(screen.getByText(/清理失败/)).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
+  })
+
+  it('具备 ai:assist 与目标可见性时出现次级分析入口，核查仍是主操作', async () => {
+    signIn(['ai:assist', 'run:read', 'run:review', 'target:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByRole('button', { name: '分析本次运行' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '判定失败' })).toBeInTheDocument()
   })
 
   it('等待认证：有控制权的用户在详情页直接看到处理登录', async () => {

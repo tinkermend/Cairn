@@ -7,6 +7,8 @@ import { RecordingsPage } from './index'
 
 const mocks = vi.hoisted(() => ({
   fetchRecordings: vi.fn(),
+  renameRecording: vi.fn(),
+  deleteRecording: vi.fn(),
 }))
 
 vi.mock('@/lib/recordings-api', () => mocks)

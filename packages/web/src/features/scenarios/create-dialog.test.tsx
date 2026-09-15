@@ -9,10 +9,14 @@ const TARGET_ID = '11111111-1111-4111-8111-111111111111'
 const mocks = vi.hoisted(() => ({
   createScenario: vi.fn(),
   fetchTargets: vi.fn(),
+  fetchTarget: vi.fn(),
 }))
 
 vi.mock('@/lib/scenarios-api', () => ({ createScenario: mocks.createScenario }))
-vi.mock('@/lib/targets-api', () => ({ fetchTargets: mocks.fetchTargets }))
+vi.mock('@/lib/targets-api', () => ({
+  fetchTargets: mocks.fetchTargets,
+  fetchTarget: mocks.fetchTarget,
+}))
 
 const targets: TargetListResponse = {
   items: [

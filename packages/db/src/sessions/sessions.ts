@@ -32,6 +32,7 @@ export type SessionRecord = {
   health: SessionHealth
   authState: SessionAuthState
   ownerWorkerId: string
+  ownerWorkerInstanceId: string | null
   generation: number
   fencingToken: number
   version: number
@@ -106,6 +107,7 @@ function toSession(row: BrowserSessionRow): SessionRecord {
     health: row.health,
     authState: row.authState,
     ownerWorkerId: row.ownerWorkerId,
+    ownerWorkerInstanceId: row.ownerWorkerInstanceId,
     generation: row.generation,
     fencingToken: row.fencingToken,
     version: row.version,
@@ -235,6 +237,7 @@ export async function nextGenerationForKey(db: Db, key: SessionKey): Promise<num
 export type CreateSessionInput = {
   key: SessionKey
   ownerWorkerId: string
+  ownerWorkerInstanceId?: string
   reusePolicy: SessionReusePolicy
   idleTtlSeconds: number
   maxLifetimeSeconds: number
@@ -243,18 +246,37 @@ export type CreateSessionInput = {
 
 export type CreateSessionResult =
   | { ok: true; session: SessionRecord }
-  | { ok: false; code: 'SESSION_POLICY_INVALID'; message: string }
+  | { ok: false; code: 'SESSION_POLICY_INVALID' | 'SESSION_TARGET_MISSING'; message: string }
 
 export async function createSession(
   db: Db,
   input: CreateSessionInput,
 ): Promise<CreateSessionResult> {
-  const { browserSessions } = schemaFor(db)
+  const { browserSessions, targetAccounts, targets } = schemaFor(db)
   if (input.maxLifetimeSeconds <= input.idleTtlSeconds) {
     return {
       ok: false,
       code: 'SESSION_POLICY_INVALID',
       message: 'maxLifetimeSeconds 必须大于 idleTtlSeconds',
+    }
+  }
+  const [target] = await db
+    .select({ id: targets.id })
+    .from(targets)
+    .where(and(eq(targets.id, input.key.targetId), isNull(targets.deletedAt)))
+    .limit(1)
+  const [account] = await db
+    .select({ id: targetAccounts.id })
+    .from(targetAccounts)
+    .where(
+      and(eq(targetAccounts.id, input.key.targetAccountId), isNull(targetAccounts.deletedAt)),
+    )
+    .limit(1)
+  if (!target || !account) {
+    return {
+      ok: false,
+      code: 'SESSION_TARGET_MISSING',
+      message: '目标系统或账号不存在',
     }
   }
   const generation = await nextGenerationForKey(db, input.key)
@@ -270,6 +292,7 @@ export async function createSession(
       health: 'UNKNOWN',
       authState: 'UNKNOWN',
       ownerWorkerId: input.ownerWorkerId,
+      ownerWorkerInstanceId: input.ownerWorkerInstanceId ?? null,
       generation,
       fencingToken: 0,
       version: 0,
@@ -307,6 +330,7 @@ export async function requireCreatedSession(
 export async function findEvictableSession(
   db: Db,
   workerId: string,
+  ownerWorkerInstanceId?: string,
 ): Promise<SessionRecord | null> {
   const { browserSessions, sessionLeases } = schemaFor(db)
   const [row] = await db
@@ -315,6 +339,9 @@ export async function findEvictableSession(
     .where(
       and(
         eq(browserSessions.ownerWorkerId, workerId),
+        ...(ownerWorkerInstanceId
+          ? [eq(browserSessions.ownerWorkerInstanceId, ownerWorkerInstanceId)]
+          : []),
         eq(browserSessions.status, 'OPEN'),
         isNull(browserSessions.authHoldWorkerId),
         sql`NOT EXISTS (
@@ -337,6 +364,7 @@ export async function setSessionStatus(
     status: SessionStatus
     closeReason?: string | null
     ownerWorkerId?: string
+    ownerWorkerInstanceId?: string
   },
 ): Promise<boolean> {
   const { browserSessions } = schemaFor(db)
@@ -348,6 +376,9 @@ export async function setSessionStatus(
   ]
   if (input.ownerWorkerId) {
     conditions.push(eq(browserSessions.ownerWorkerId, input.ownerWorkerId))
+  }
+  if (input.ownerWorkerInstanceId) {
+    conditions.push(eq(browserSessions.ownerWorkerInstanceId, input.ownerWorkerInstanceId))
   }
   const [row] = await updateRows(
     db,
@@ -377,6 +408,7 @@ export async function setSessionProbe(
   input: {
     sessionId: string
     ownerWorkerId: string
+    ownerWorkerInstanceId?: string
     health?: SessionHealth
     authState?: SessionAuthState
   },
@@ -394,6 +426,9 @@ export async function setSessionProbe(
     and(
       eq(browserSessions.id, input.sessionId),
       eq(browserSessions.ownerWorkerId, input.ownerWorkerId),
+      ...(input.ownerWorkerInstanceId
+        ? [eq(browserSessions.ownerWorkerInstanceId, input.ownerWorkerInstanceId)]
+        : []),
       ne(browserSessions.status, 'CLOSED'),
     ),
     { id: browserSessions.id },
@@ -732,9 +767,30 @@ export async function listReapableSessions(
   return rows.map(toSession)
 }
 
+export async function listRequestedCloseSessions(
+  db: Db,
+  workerId: string,
+  limit = 50,
+): Promise<SessionRecord[]> {
+  const { browserSessions } = schemaFor(db)
+  const rows = await db
+    .select()
+    .from(browserSessions)
+    .where(
+      and(
+        eq(browserSessions.ownerWorkerId, workerId),
+        eq(browserSessions.status, 'CLOSING'),
+        eq(browserSessions.closeReason, 'resource_deleted'),
+      ),
+    )
+    .orderBy(browserSessions.updatedAt, browserSessions.id)
+    .limit(limit)
+  return rows.map(toSession)
+}
+
 export async function markSessionsClosing(
   db: Db,
-  input: { workerId: string; sessionIds: string[]; reason: string },
+  input: { workerId: string; ownerWorkerInstanceId?: string; sessionIds: string[]; reason: string },
 ): Promise<string[]> {
   const { browserSessions } = schemaFor(db)
   if (input.sessionIds.length === 0) return []
@@ -752,6 +808,9 @@ export async function markSessionsClosing(
       and(
         eq(browserSessions.id, sessionId),
         eq(browserSessions.ownerWorkerId, input.workerId),
+        ...(input.ownerWorkerInstanceId
+          ? [eq(browserSessions.ownerWorkerInstanceId, input.ownerWorkerInstanceId)]
+          : []),
         eq(browserSessions.status, 'OPEN'),
       ),
       { id: browserSessions.id },
@@ -1025,12 +1084,17 @@ export async function loadSecretCiphertext(
 }
 
 /** 占着键的会话：CLOSED 之外的全部状态。控制面列表只给这一批。 */
-export async function listSessions(db: Db): Promise<SessionDto[]> {
+export async function listSessions(
+  db: Db,
+  input?: { ownerWorkerId?: string },
+): Promise<SessionDto[]> {
   const { browserSessions, sessionLeases } = schemaFor(db)
+  const conditions = [inArray(browserSessions.status, LIVE_STATUSES)]
+  if (input?.ownerWorkerId) conditions.push(eq(browserSessions.ownerWorkerId, input.ownerWorkerId))
   const rows = await db
     .select()
     .from(browserSessions)
-    .where(inArray(browserSessions.status, LIVE_STATUSES))
+    .where(and(...conditions))
     .orderBy(desc(browserSessions.createdAt), desc(browserSessions.id))
   if (rows.length === 0) return []
 
@@ -1060,6 +1124,7 @@ export function toSessionDto(row: BrowserSessionRow, lease: SessionLeaseRow | nu
     health: row.health,
     authState: row.authState,
     ownerWorkerId: row.ownerWorkerId,
+    ownerWorkerInstanceId: row.ownerWorkerInstanceId,
     generation: row.generation,
     reusePolicy: row.reusePolicy,
     profileKey: row.profileKey,

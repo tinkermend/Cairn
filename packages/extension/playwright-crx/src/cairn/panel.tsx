@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { RECORDER_SOURCE_VERSION, type RecordingBindingDto, type TargetDto } from '@cairn/shared'
+import { RECORDER_SOURCE_VERSION, targetDescriptorFromInspectSelector, type RecordingBindingDto, type TargetDto } from '@cairn/shared'
 import type { ElementInfo, Mode, Source } from '@recorder/recorderTypes'
 import { describeAttachment } from './attachment'
 import { canAttachRecorder, canReadTargets, canUploadRecording } from './auth-gate'
@@ -13,6 +13,7 @@ import {
   formatRecordingUploadError,
   login,
   studioReturnUrl,
+  submitAuthoringObservation,
   uploadRecording,
 } from './api'
 import { bindingTargetUrl, resolveStudioBinding } from './binding'
@@ -55,6 +56,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   const [email, setEmail] = React.useState('')
   const [password, setPassword] = React.useState('')
   const [targetId, setTargetId] = React.useState('')
+  const [targetSearch, setTargetSearch] = React.useState('')
   const [targets, setTargets] = React.useState<TargetDto[]>([])
   const [busy, setBusy] = React.useState(false)
   const [loginError, setLoginError] = React.useState<string | null>(null)
@@ -103,7 +105,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
         account,
       })
       if (canReadTargets(account.permissions)) {
-        const list = await fetchTargets()
+        const list = await fetchTargets({ limit: 100 })
         const active = list.items.filter((item) => item.status === 'active')
         setTargets(active)
         // 挂录制器会重载侧栏，这里把上次选的目标系统接回来。
@@ -193,6 +195,22 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     void saveTargetId(value)
   }
 
+  React.useEffect(() => {
+    if (!session || !canReadTargets(session.account?.permissions ?? [])) return
+    const handle = window.setTimeout(() => {
+      void fetchTargets({
+        limit: 100,
+        search: targetSearch.trim() || undefined,
+      })
+        .then((list) => {
+          const active = list.items.filter((item) => item.status === 'active')
+          setTargets(active)
+        })
+        .catch(() => {})
+    }, 200)
+    return () => window.clearTimeout(handle)
+  }, [session, targetSearch])
+
   const onLogout = async () => {
     await requestDetach().catch(() => {})
     await clearAuth()
@@ -273,6 +291,44 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
       return
     }
     await dispatchMode(next)
+  }
+
+  const onSubmitObservation = async () => {
+    if (!targetId) {
+      setMessage({ tone: 'error', text: '请先选择目标系统' })
+      return
+    }
+    if (!picked?.selector) {
+      setMessage({ tone: 'error', text: '请先在页面上选取元素' })
+      return
+    }
+    const target = targetDescriptorFromInspectSelector(picked.selector)
+    if (!target) {
+      setMessage({ tone: 'error', text: '无法把当前选取转成平台目标' })
+      return
+    }
+    setBusy(true)
+    setMessage(null)
+    try {
+      const page = attachment ?? (await requestStatus())
+      const observation = await submitAuthoringObservation({
+        targetId,
+        url: page.url || 'https://invalid.example/',
+        title: page.title,
+        target,
+      })
+      setMessage({
+        tone: observation.outcome === 'FOUND' ? 'ok' : 'warning',
+        text:
+          observation.outcome === 'FOUND'
+            ? '已提交指认，可在 Studio 写回当前步骤'
+            : '已提交观察，但没有得到唯一目标',
+      })
+    } catch (error) {
+      setMessage({ tone: 'error', text: formatCairnError(error) })
+    } finally {
+      setBusy(false)
+    }
   }
 
   const onClear = () => {
@@ -385,6 +441,15 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
           </p>
         ) : null}
         <div className='cairn-field'>
+          <label htmlFor='cairn-target-search'>搜索目标系统</label>
+          <input
+            id='cairn-target-search'
+            type='search'
+            value={targetSearch}
+            disabled={Boolean(binding)}
+            placeholder='名称或编码'
+            onChange={(event) => setTargetSearch(event.target.value)}
+          />
           <label htmlFor='cairn-target'>目标系统</label>
           <select
             id='cairn-target'
@@ -433,6 +498,14 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
           onClick={() => void onInspect()}
         >
           {inspecting ? '停止选取' : '选取'}
+        </button>
+        <button
+          type='button'
+          className='cairn-btn cairn-btn-ghost'
+          disabled={busy || !inspecting || !picked || !targetId}
+          onClick={() => void onSubmitObservation()}
+        >
+          提交指认
         </button>
         <button type='button' className='cairn-btn cairn-btn-ghost' disabled={!items.length} onClick={() => setConfirmClear(true)}>
           清空

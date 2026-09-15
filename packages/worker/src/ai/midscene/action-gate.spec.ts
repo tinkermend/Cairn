@@ -31,6 +31,29 @@ describe('ActionGate', () => {
     await expect(click!.call()).rejects.toThrow('CAIRN_LEASE_LOST:action')
   })
 
+  it('租约校验抛错即视为丢租，之后不再恢复', () => {
+    let held = true
+    const gate = new ActionGate(undefined, () => {
+      if (!held) throw new Error('revoked')
+    })
+    expect(() => gate.assertAllowed('action')).not.toThrow()
+    held = false
+    expect(() => gate.assertAllowed('model')).toThrow('CAIRN_LEASE_LOST:model')
+    held = true
+    expect(() => gate.assertAllowed('action')).toThrow('CAIRN_LEASE_LOST:action')
+  })
+
+  it('只统计通过检查、真正交给页面的动作', async () => {
+    const controller = new AbortController()
+    const gate = new ActionGate(controller.signal)
+    const [click] = gateActions([{ name: 'Click', call: async () => undefined }], gate)
+    await click!.call()
+    expect(gate.actionsStarted).toBe(1)
+    controller.abort()
+    await expect(click!.call()).rejects.toThrow('CAIRN_ABORTED:action')
+    expect(gate.actionsStarted).toBe(1)
+  })
+
   it('屏障扣住第 N 次再放行', async () => {
     const barrier = createCallBarrier()
     const order: string[] = []

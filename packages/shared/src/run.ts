@@ -1,10 +1,12 @@
 import { z } from 'zod'
 import { aiExecutionConfigSchema } from './ai-runtime.js'
 import { evidencePolicySchema } from './evidence-policy.js'
+import { pageRefSchema } from './managed-browser.js'
 import { frozenTargetAuthSchema } from './platform-config.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
 import { contextKeySchema, executionPolicySchema, hasAiSteps, stepSchema } from './step.js'
+import { targetDescriptorSchema } from './target-descriptor.js'
 import {
   entityIdSchema,
   jsonValueSchema,
@@ -27,6 +29,7 @@ export const RUN_STATUSES = [
   'RUNNING',
   'RECOVERING',
   'WAITING_FOR_AUTH',
+  'HOLDING',
   'NEEDS_REVIEW',
   'SUCCEEDED',
   'FAILED',
@@ -34,6 +37,51 @@ export const RUN_STATUSES = [
 ] as const
 export type RunStatus = (typeof RUN_STATUSES)[number]
 export const runStatusSchema = z.enum(RUN_STATUSES)
+
+export const ACTIVE_RUN_STATUSES = [
+  'QUEUED',
+  'RUNNING',
+  'RECOVERING',
+  'WAITING_FOR_AUTH',
+  'HOLDING',
+  'NEEDS_REVIEW',
+] as const
+export type ActiveRunStatus = (typeof ACTIVE_RUN_STATUSES)[number]
+
+export const DEBUG_MODES = ['holdOnFailure', 'holdAfterEach', 'runThrough'] as const
+export type DebugMode = (typeof DEBUG_MODES)[number]
+export const debugModeSchema = z.enum(DEBUG_MODES)
+
+export const debugCheckpointReasonSchema = z.enum(['step_failed', 'step_succeeded', 'author_pause'])
+export type DebugCheckpointReason = z.infer<typeof debugCheckpointReasonSchema>
+
+export const debugCheckpointSchema = z.strictObject({
+  mode: z.enum(['holdOnFailure', 'holdAfterEach']),
+  reason: debugCheckpointReasonSchema,
+  stepId: entityIdSchema,
+  stepOrdinal: z.number().int().nonnegative(),
+  pageRef: pageRefSchema.optional(),
+  url: z.string().optional(),
+  contextKeys: z.array(z.string()),
+  sessionGeneration: z.number().int().nonnegative(),
+  fencingToken: z.string(),
+  overlayRevision: z.number().int().nonnegative(),
+})
+export type DebugCheckpoint = z.infer<typeof debugCheckpointSchema>
+
+export const debugOverlaySchema = z.strictObject({
+  revision: z.number().int().nonnegative(),
+  stepOverrides: z.record(
+    z.string(),
+    z.strictObject({
+      target: targetDescriptorSchema,
+    }),
+  ),
+})
+export type DebugOverlay = z.infer<typeof debugOverlaySchema>
+
+export const TERMINAL_RUN_STATUSES = ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const
+export type TerminalRunStatus = (typeof TERMINAL_RUN_STATUSES)[number]
 
 export const STEP_RUN_STATUSES = [
   'PENDING',

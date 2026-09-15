@@ -283,10 +283,15 @@ export class ObjectService {
     for (const candidate of candidates) {
       try {
         await this.store.delete(candidate.objectKey)
+        const reason = candidate.deleteRequestedAt
+          ? ('run_deleted' as const)
+          : candidate.status === 'pending'
+            ? ('upload_incomplete' as const)
+            : ('expired' as const)
         const marked = await markStoredObjectPurged(this.handle, {
           id: candidate.id,
           expectedStatus: candidate.status,
-          reason: candidate.status === 'pending' ? 'upload_incomplete' : 'expired',
+          reason,
           now,
         })
         if (marked.updated) purged += 1

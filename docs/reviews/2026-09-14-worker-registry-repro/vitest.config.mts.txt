@@ -1,0 +1,15 @@
+export default {
+  root: '/Users/tinker/src/singe/Cairn',
+  resolve: {
+    alias: {
+      '@cairn/shared': '/Users/tinker/src/singe/Cairn/packages/shared/src/index.ts',
+      vitest: '/Users/tinker/src/singe/Cairn/packages/db/node_modules/vitest/dist/index.js',
+    },
+  },
+  test: {
+    include: ['.run/worker-registry-review/probe.test.ts'],
+    testTimeout: 15000,
+    hookTimeout: 30000,
+    reporters: ['verbose'],
+  },
+}

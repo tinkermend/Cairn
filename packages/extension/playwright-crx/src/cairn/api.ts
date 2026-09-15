@@ -9,6 +9,8 @@ import {
   recordingBindingSchema,
   recordingDraftDetailSchema,
   recordingStudioPath,
+  authoringObservationSubmitSchema,
+  targetObservationSchema,
   targetListResponseSchema,
   type ClaimRecordingBindingBody,
   type CreateRecordingBody,
@@ -17,7 +19,9 @@ import {
   type MeResponse,
   type RecordingBindingDto,
   type RecordingDraftDetailDto,
+  type AuthoringObservationSubmit,
   type TargetListResponse,
+  type TargetObservation,
 } from '@cairn/shared'
 import { CAIRN_API, performCairnRequest, type CairnApiCall, type CairnApiResult } from './api-bridge'
 
@@ -115,8 +119,20 @@ export function fetchMe(): Promise<MeResponse> {
   return cairnFetch('/api/me', meResponseSchema)
 }
 
-export function fetchTargets(): Promise<TargetListResponse> {
-  return cairnFetch('/api/targets', targetListResponseSchema)
+export function fetchTargets(query?: { search?: string; limit?: number }): Promise<TargetListResponse> {
+  const params = new URLSearchParams()
+  if (query?.search) params.set('search', query.search)
+  if (query?.limit) params.set('limit', String(query.limit))
+  const qs = params.toString()
+  return cairnFetch(`/api/targets${qs ? `?${qs}` : ''}`, targetListResponseSchema)
+}
+
+export function submitAuthoringObservation(body: AuthoringObservationSubmit): Promise<TargetObservation> {
+  return cairnFetch('/api/authoring/observations', targetObservationSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(authoringObservationSubmitSchema.parse(body)),
+  })
 }
 
 export function uploadRecording(body: CreateRecordingBody): Promise<RecordingDraftDetailDto> {

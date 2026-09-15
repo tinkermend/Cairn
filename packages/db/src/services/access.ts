@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { and, asc, count, eq, gt, inArray, or, sql } from 'drizzle-orm'
+import { and, asc, count, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm'
 import {
   stepUsesBrowser,
   externalRunBodySchema,
@@ -360,7 +360,7 @@ async function ownRun(db: Db, actor: ServicePrincipal, id: string) {
   const [row] = await db
     .select()
     .from(runs)
-    .where(and(eq(runs.id, id), eq(runs.serviceCallerId, actor.id)))
+    .where(and(eq(runs.id, id), eq(runs.serviceCallerId, actor.id), isNull(runs.deletedAt)))
   if (!row) throw notFound('RUN_NOT_FOUND', '运行不存在')
   try {
     await assertTarget(db, actor.credentialId, row.targetId, row.targetAccountId)

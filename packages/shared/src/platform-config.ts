@@ -114,6 +114,61 @@ const platformBrowserAiShape = {
 export const platformBrowserAiConfigSchema = z.strictObject(platformBrowserAiShape)
 export type PlatformBrowserAiConfig = z.infer<typeof platformBrowserAiConfigSchema>
 
+export const PLATFORM_AI_ROUTE_ID = 'platform-default' as const
+
+export const FACTORY_PLATFORM_AI = {
+  enabled: false,
+  routeId: PLATFORM_AI_ROUTE_ID,
+  requestTimeoutMs: 20_000,
+  turnTimeoutMs: 60_000,
+  maxCallsPerTurn: 3,
+  maxOutputTokens: 2048,
+  userInflightLimit: 1,
+  platformInflightLimit: 4,
+} as const
+
+export const platformAiConfigSchema = z
+  .strictObject({
+    enabled: z.boolean(),
+    routeId: z.literal(PLATFORM_AI_ROUTE_ID).default(PLATFORM_AI_ROUTE_ID),
+    baseUrl: platformModelUrlSchema.optional(),
+    model: z.string().trim().min(1).max(256).optional(),
+    secretRef: secretRefSchema.optional(),
+    requestTimeoutMs: z.number().int().positive().max(120_000),
+    turnTimeoutMs: z.number().int().positive().max(180_000),
+    maxCallsPerTurn: z.number().int().positive().max(8),
+    maxOutputTokens: z.number().int().positive().max(8192),
+    userInflightLimit: z.number().int().positive().max(8),
+    platformInflightLimit: z.number().int().positive().max(32),
+  })
+  .superRefine((ai, ctx) => {
+    if (ai.requestTimeoutMs > ai.turnTimeoutMs) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['requestTimeoutMs'],
+        message: '单请求超时不能大于整轮超时',
+      })
+    }
+    if (ai.userInflightLimit > ai.platformInflightLimit) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['userInflightLimit'],
+        message: '用户在途上限不能大于平台在途上限',
+      })
+    }
+    if (!ai.enabled) return
+    if (!ai.baseUrl) {
+      ctx.addIssue({ code: 'custom', path: ['baseUrl'], message: '启用平台通用 AI 时必须配置服务地址' })
+    }
+    if (!ai.model) {
+      ctx.addIssue({ code: 'custom', path: ['model'], message: '启用平台通用 AI 时必须配置模型名' })
+    }
+    if (!ai.secretRef) {
+      ctx.addIssue({ code: 'custom', path: ['secretRef'], message: '启用平台通用 AI 时必须配置 Secret 引用' })
+    }
+  })
+export type PlatformAiConfig = z.infer<typeof platformAiConfigSchema>
+
 export const platformConfigDocumentSchema = z
   .strictObject({
     schemaVersion: z.literal(PLATFORM_CONFIG_SCHEMA_VERSION),
@@ -121,6 +176,7 @@ export const platformConfigDocumentSchema = z
     session: platformSessionDefaultsSchema,
     evidence: platformEvidenceDefaultsSchema,
     browserAi: platformBrowserAiConfigSchema,
+    platformAi: platformAiConfigSchema.default(FACTORY_PLATFORM_AI),
   })
   .superRefine((document, ctx) => {
     const ai = document.browserAi
@@ -192,6 +248,16 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     requestTimeoutMs: 15_000,
     stepMaxCalls: 20,
     maxOutputTokens: 2048,
+  },
+  platformAi: {
+    enabled: false,
+    routeId: PLATFORM_AI_ROUTE_ID,
+    requestTimeoutMs: 20_000,
+    turnTimeoutMs: 60_000,
+    maxCallsPerTurn: 3,
+    maxOutputTokens: 2048,
+    userInflightLimit: 1,
+    platformInflightLimit: 4,
   },
 }
 

@@ -1,10 +1,21 @@
 import { useState } from 'react'
-import { Link, useParams } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
+import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { isAiStepType, isFinishedRunStatus, resolveEvidencePolicy, type ExecutableStepType } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { cancelRun, reviewRun } from '@/lib/runs-api'
+import {
+  cancelRun,
+  deleteRun,
+  fetchRunCleanup,
+  previewDeleteRun,
+  retryRunCleanup,
+  reviewRun,
+} from '@/lib/runs-api'
+import { useCan } from '@/hooks/use-permissions'
 import { connectionLabel, connectionTone, useRunObservation } from './use-run-observation'
+import { CleanupStatusIndicator } from '@/components/cleanup-status-indicator'
+import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
 import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
@@ -30,14 +41,28 @@ import {
 } from './labels'
 import { AttemptEvidenceList } from './evidence-viewer'
 import { AiAttemptSummary } from './ai-evidence'
+import { CatalogName } from './catalog-name'
 import { BrowserView } from './browser-view'
+import { DebugHoldBar } from './debug-hold-bar'
+import { useAssistantStore } from '@/stores/assistant-store'
 
 export function RunDetailPage() {
   const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
+  const navigate = useNavigate()
   const { run, evidence, connection, query: runQuery, refresh, eventSeq } = useRunObservation(runId)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const canDelete = useCan('run:delete')
   const evidenceItems = evidence?.items ?? []
+  const openAssistant = useAssistantStore((state) => state.openPanel)
+  const finished = Boolean(run && isFinishedRunStatus(run.status))
+  const cleanupQuery = useQuery({
+    queryKey: ['runs', runId, 'cleanup'],
+    queryFn: () => fetchRunCleanup(runId),
+    enabled: finished || runQuery.isError,
+  })
+  const deletedView = runQuery.isError && !run && cleanupQuery.isSuccess
 
   return (
     <>
@@ -52,6 +77,20 @@ export function RunDetailPage() {
               <Button variant='outline' onClick={() => void refresh()}>
                 刷新
               </Button>
+              <Can allOf={['ai:assist', 'run:read', 'target:read']}>
+                <Button
+                  variant='outline'
+                  onClick={() =>
+                    openAssistant({
+                      question: '分析本次运行',
+                      capabilityHint: 'run.diagnose',
+                      pageContext: { page: 'run', runId },
+                    })
+                  }
+                >
+                  分析本次运行
+                </Button>
+              </Can>
               {run && !isFinishedRunStatus(run.status) && run.status !== 'NEEDS_REVIEW' ? (
                 <Can permission='run:cancel'>
                   <Button
@@ -74,11 +113,30 @@ export function RunDetailPage() {
                   </Button>
                 </Can>
               ) : null}
+              {finished ? (
+                <Can permission='run:delete'>
+                  <Button variant='ghost' className='text-destructive' onClick={() => setRemoving(true)}>
+                    删除
+                  </Button>
+                </Can>
+              ) : null}
             </div>
           }
         />
         {runQuery.isPending ? (
           <PageSkeleton />
+        ) : deletedView && cleanupQuery.data ? (
+          <section className='space-y-4 rounded-lg border border-border-card bg-card p-5 shadow-card'>
+            <p className='text-body'>运行已删除。业务记录不可访问，附件按清理状态处理。</p>
+            <CleanupStatusIndicator
+              status={cleanupQuery.data}
+              onRetry={canDelete ? () => retryRunCleanup(runId) : undefined}
+              onStatusUpdated={() => void cleanupQuery.refetch()}
+            />
+            <Button variant='outline' onClick={() => void navigate({ to: '/runs' })}>
+              返回运行列表
+            </Button>
+          </section>
         ) : runQuery.isError || !run ? (
           <QueryErrorState title='无法加载运行' onRetry={refresh} />
         ) : (
@@ -97,23 +155,29 @@ export function RunDetailPage() {
               </div>
               <p className='mt-3 text-body text-muted-foreground'>
                 {run.source?.kind === 'service' ? '服务 API 调用 · ' : ''}场景{' '}
-                <Link
-                  to='/scenarios/$scenarioId'
-                  params={{ scenarioId: run.scenarioId }}
-                  className='text-primary hover:underline'
-                >
-                  {run.scenarioName}
-                </Link>
+                <CatalogName name={run.scenarioName} deleted={run.scenarioDeleted}>
+                  <Link
+                    to='/scenarios/$scenarioId'
+                    params={{ scenarioId: run.scenarioId }}
+                    className='text-primary hover:underline'
+                  >
+                    {run.scenarioName}
+                  </Link>
+                </CatalogName>
                 {' · '}
                 目标系统{' '}
-                <Link
-                  to='/targets/$targetId'
-                  params={{ targetId: run.targetId }}
-                  className='text-primary hover:underline'
-                >
-                  {run.targetName}
-                </Link>
-                {run.targetAccountName ? ` · 目标账号 ${run.targetAccountName}` : ''}
+                <CatalogName name={run.targetName} deleted={run.targetDeleted}>
+                  <Link
+                    to='/targets/$targetId'
+                    params={{ targetId: run.targetId }}
+                    className='text-primary hover:underline'
+                  >
+                    {run.targetName}
+                  </Link>
+                </CatalogName>
+                {run.targetAccountName
+                  ? ` · 目标账号 ${run.targetAccountName}${run.targetAccountDeleted ? '（已删除）' : ''}`
+                  : ''}
               </p>
               {(() => {
                 const policy = resolveEvidencePolicy(run.snapshot.evidencePolicy)
@@ -124,6 +188,15 @@ export function RunDetailPage() {
                   </p>
                 )
               })()}
+              {cleanupQuery.data ? (
+                <div className='mt-3'>
+                  <CleanupStatusIndicator
+                    status={cleanupQuery.data}
+                    onRetry={canDelete ? () => retryRunCleanup(runId) : undefined}
+                    onStatusUpdated={() => void cleanupQuery.refetch()}
+                  />
+                </div>
+              ) : null}
               {run.lease ? (
                 <p className='mt-2 text-label text-muted-foreground'>
                   执行租约 Worker {run.lease.holderWorkerId} · fencing {run.lease.fencingToken}
@@ -204,6 +277,9 @@ export function RunDetailPage() {
               eventSeq={eventSeq}
               onRunChanged={refresh}
             />
+            {run.scenarioVersionKind === 'trial' && run.debugMode !== 'runThrough' ? (
+              <DebugHoldBar run={run} onChanged={refresh} />
+            ) : null}
 
             {(() => {
               const runLevel = evidenceItems.filter((item) => !item.attemptId)
@@ -294,6 +370,19 @@ export function RunDetailPage() {
           </div>
         )}
       </Main>
+      <ResourceDeleteDialog
+        open={removing}
+        onOpenChange={setRemoving}
+        resourceId={runId}
+        resourceName={run ? `${run.scenarioName} (${run.id.slice(0, 8)})` : runId}
+        resourceType='run'
+        previewFn={() => previewDeleteRun(runId)}
+        deleteFn={(body) => deleteRun(runId, body)}
+        onSuccess={() => {
+          setRemoving(false)
+          void navigate({ to: '/runs' })
+        }}
+      />
     </>
   )
 }

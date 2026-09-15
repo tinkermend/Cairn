@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Res } from '@nestjs/common'
 import type { Response } from 'express'
 import {
   applyRecordingImportBodySchema,
@@ -7,14 +7,18 @@ import {
   previewRecordingImportBodySchema,
   publishScenarioBodySchema,
   saveScenarioDraftBodySchema,
+  scenarioListQuerySchema,
   trialRunBodySchema,
   updateScenarioBodySchema,
+  deleteResourceBodySchema,
   type ApplyRecordingImportBody,
+  type DeleteResourceBody,
   type CreateRecordingBindingBody,
   type CreateScenarioBody,
   type PreviewRecordingImportBody,
   type PublishScenarioBody,
   type SaveScenarioDraftBody,
+  type ScenarioListQuery,
   type TrialRunBody,
   type UpdateScenarioBody,
 } from '@cairn/shared'
@@ -30,8 +34,8 @@ export class ScenariosController {
 
   @Get()
   @RequirePermissions('workflow:read')
-  list() {
-    return this.scenarios.list()
+  list(@Query(new ZodValidationPipe(scenarioListQuerySchema)) query: ScenarioListQuery) {
+    return this.scenarios.list(query)
   }
 
   @Get('capabilities')
@@ -101,11 +105,21 @@ export class ScenariosController {
     return detail
   }
 
-  @Post(':scenarioId/delete')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @Get(':scenarioId/delete-preview')
   @RequirePermissions('workflow:delete')
-  remove(@Param('scenarioId') scenarioId: string, @CurrentAccount() actor: RequestAccount) {
-    return this.scenarios.remove(scenarioId, actor)
+  previewDelete(@Param('scenarioId') scenarioId: string) {
+    return this.scenarios.previewDelete(scenarioId)
+  }
+
+  @Post(':scenarioId/delete')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:delete')
+  remove(
+    @Param('scenarioId') scenarioId: string,
+    @CurrentAccount() actor: RequestAccount,
+    @Body(new ZodValidationPipe(deleteResourceBodySchema.optional())) body?: DeleteResourceBody,
+  ) {
+    return this.scenarios.remove(scenarioId, actor, body)
   }
 
   @Get(':scenarioId/versions')

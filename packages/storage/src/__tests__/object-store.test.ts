@@ -103,6 +103,19 @@ describe('S3ObjectStore 契约（mock）', () => {
 
     await expect(store.get(CONTRACT_KEY)).rejects.toMatchObject({ code: 'OBJECT_NOT_FOUND' })
   })
+
+  it('版本桶按 VersionId 清全部版本，不能只打删除标记', async () => {
+    const memory = new MemoryS3()
+    memory.versioning = 'Enabled'
+    memory.putVersioned(CONTRACT_KEY, new TextEncoder().encode('v1'), 'd1')
+    memory.putVersioned(CONTRACT_KEY, new TextEncoder().encode('v2'), 'd2')
+    const store = new S3ObjectStore(memory, 'cairn-evidence', MAX)
+    await store.delete(CONTRACT_KEY)
+    expect(memory.versions.get(CONTRACT_KEY) ?? []).toEqual([])
+    expect(memory.commands).toContain('GetBucketVersioning')
+    expect(memory.commands).toContain('ListObjectVersions')
+    expect(memory.commands.filter((name) => name === 'DeleteObject').length).toBeGreaterThan(1)
+  })
 })
 
 describe('仓根解析', () => {

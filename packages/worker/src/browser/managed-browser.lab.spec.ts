@@ -6,12 +6,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   claimRun,
   consoleAccounts,
   createRunWithSnapshot,
   createScenarioWithVersion,
+  getRun,
   newId,
   openIsolatedDb,
   registerWorker,
@@ -92,10 +93,18 @@ describe.skipIf(!enabled)('S-LIVE 受管浏览器探针', { timeout: 180_000 }, 
         return
       }
       if (url.pathname === '/login' && req.method === 'POST') {
-        req.resume()
+        const chunks: Buffer[] = []
+        req.on('data', (chunk: Buffer) => chunks.push(chunk))
         req.on('end', () => {
-          res.writeHead(302, { Location: '/probe.html', 'Set-Cookie': 'lab=ok; Path=/' })
-          res.end()
+          const body = Buffer.concat(chunks).toString('utf8')
+          const password = new URLSearchParams(body).get('password')
+          if (password === 'lab') {
+            res.writeHead(302, { Location: '/probe.html', 'Set-Cookie': 'lab=ok; Path=/' })
+            res.end()
+            return
+          }
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+          res.end(LOGIN_HTML)
         })
         return
       }
@@ -217,7 +226,12 @@ describe.skipIf(!enabled)('S-LIVE 受管浏览器探针', { timeout: 180_000 }, 
     if (!acquired.ok) throw new Error(acquired.message)
     const page = manager.pageForGrant(acquired.grant)
     if (!page) throw new Error('pageForGrant 为空')
-    return { page, grant: acquired.grant, snapshot: created.detail.snapshot }
+    return {
+      page,
+      grant: acquired.grant,
+      snapshot: created.detail.snapshot,
+      runId: created.detail.id,
+    }
   }
 
   it('画面首帧、中文输入、popup 后 pageForGrant 交给 AI 适配层同一页', async () => {
@@ -302,5 +316,181 @@ describe.skipIf(!enabled)('S-LIVE 受管浏览器探针', { timeout: 180_000 }, 
     expect(process.platform).toBeTruthy()
 
     await manager.release(grant.leaseId, 's-live')
+  })
+
+  it('20 次订阅/关闭不残留采集，首帧回调 p95 ≤ 3s', async () => {
+    const { grant, runId } = await acquireProbe()
+    const origin = new URL(baseUrl).origin
+    const nav = await manager.execute(grant, {
+      type: 'navigate',
+      url: `${baseUrl}/probe.html`,
+      allowedOrigins: [origin],
+    })
+    expect(nav.ok).toBe(true)
+    const times: number[] = []
+    for (let i = 0; i < 20; i += 1) {
+      const controller = new AbortController()
+      const started = Date.now()
+      const seen = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`第 ${i + 1} 次订阅首帧超时`)), 3_000)
+        void manager
+          .subscribeRunFrames({
+            runId,
+            actorId,
+            onFrame: () => {
+              times.push(Date.now() - started)
+              clearTimeout(timer)
+              controller.abort()
+              resolve()
+            },
+            signal: controller.signal,
+          })
+          .catch(() => undefined)
+      })
+      await seen
+      await vi.waitFor(() => expect(manager.countScreencastObservers(grant.sessionId)).toBe(0))
+    }
+    times.sort((a, b) => a - b)
+    const p95 = times[Math.min(times.length - 1, Math.ceil(times.length * 0.95) - 1)] ?? Number.POSITIVE_INFINITY
+    expect(times).toHaveLength(20)
+    expect(p95).toBeLessThanOrEqual(3_000)
+    expect(manager.countScreencastObservers(grant.sessionId)).toBe(0)
+    await manager.release(grant.leaseId, 's-live')
+  })
+
+  it('等待认证后独占输入、登录并续跑', async () => {
+    const waitTargetId = newId()
+    const waitAccountId = newId()
+    const waitSecretId = newId()
+    const secretsProvider = new LocalSecretProvider(credentialKeyFromEnv(DEV_CREDENTIAL_KEY))
+    await handle.db.insert(targets).values({
+      id: waitTargetId,
+      code: `slive-wait-${SCHEMA.slice(-8)}`,
+      name: 'S-LIVE-WAIT',
+      entryUrl: `${baseUrl}/probe.html`,
+      loginUrl: `${baseUrl}/login`,
+      authMethod: 'password',
+      captchaMode: 'none',
+      loginFields: {
+        username: { by: 'name', value: 'username' },
+        password: { by: 'name', value: 'password' },
+        submit: { by: 'css', value: 'button[type=submit]' },
+      },
+    })
+    await handle.db.insert(secrets).values({
+      id: waitSecretId,
+      provider: 'local',
+      ciphertext: secretsProvider.encrypt(waitSecretId, 'wrong'),
+    })
+    await handle.db.insert(targetAccounts).values({
+      id: waitAccountId,
+      targetId: waitTargetId,
+      displayName: 'lab-wrong',
+      username: 'lab',
+      secretProvider: 'local',
+      secretId: waitSecretId,
+      status: 'active',
+    })
+    const steps = [
+      {
+        id: newId(),
+        name: '打开',
+        type: 'navigate' as const,
+        effectType: 'IDEMPOTENT' as const,
+        input: { url: `${baseUrl}/probe.html` },
+      },
+    ]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId: waitTargetId,
+      name: `slive-auth-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      targetAccountId: waitAccountId,
+      actor: { id: actorId },
+    })
+    const runGrant = await claimRun(handle, {
+      workerId,
+      instanceId: workerInstanceId,
+      leaseTtlSeconds: 60,
+    })
+    expect(runGrant?.runId).toBe(created.detail.id)
+    const acquired = await manager.acquire(created.detail.snapshot, runGrant!)
+    expect(acquired.ok).toBe(false)
+    if (acquired.ok || !acquired.waitingForAuth) {
+      throw new Error(`预期进入等待认证，实际 ${acquired.ok ? '成功' : acquired.code}`)
+    }
+    expect((await getRun(handle.db, created.detail.id)).status).toBe('WAITING_FOR_AUTH')
+
+    const granted = await manager.acquireRunAuthControl({
+      runId: created.detail.id,
+      actor: { id: actorId },
+    })
+    const lives = (
+      manager as unknown as {
+        lives: Map<string, { pages: Map<string, { page: import('playwright').Page }> }>
+      }
+    ).lives
+    let page: import('playwright').Page | undefined
+    for (const live of lives.values()) {
+      for (const entry of live.pages.values()) {
+        if (entry.page.url().includes('/login')) {
+          page = entry.page
+          break
+        }
+      }
+    }
+    if (!page) throw new Error('等待认证后没有登录页')
+    const userBox = await page.locator('#user').boundingBox()
+    const passBox = await page.locator('#pass').boundingBox()
+    const goBox = await page.locator('#go').boundingBox()
+    if (!userBox || !passBox || !goBox) throw new Error('登录框不可见')
+    const viewport = page.viewportSize() ?? { width: 1280, height: 720 }
+    const click = async (box: { x: number; y: number; width: number; height: number }, seq: number) =>
+      manager.inputRunAuthControl({
+        runId: created.detail.id,
+        actorId,
+        token: granted.token,
+        command: {
+          type: 'mouse_click',
+          x: box.x + box.width / 2,
+          y: box.y + box.height / 2,
+          button: 'left',
+          pageRef: granted.pageRef,
+          commandId: newId(),
+          seq,
+          frameId: 'lab',
+          viewport,
+        },
+      })
+    const type = async (text: string, seq: number) =>
+      manager.inputRunAuthControl({
+        runId: created.detail.id,
+        actorId,
+        token: granted.token,
+        command: {
+          type: 'insert_text',
+          text,
+          pageRef: granted.pageRef,
+          commandId: newId(),
+          seq,
+          frameId: 'lab',
+          viewport,
+        },
+      })
+    await click(userBox, 1)
+    await type('lab', 2)
+    await click(passBox, 3)
+    await type('lab', 4)
+    await click(goBox, 5)
+    await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 5_000 })
+    await manager.resumeRunAuth({
+      runId: created.detail.id,
+      actor: { id: actorId },
+      token: granted.token,
+    })
+    expect((await getRun(handle.db, created.detail.id)).status).toBe('RECOVERING')
   })
 })

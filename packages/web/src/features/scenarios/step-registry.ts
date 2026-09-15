@@ -14,6 +14,9 @@ export const DETERMINISTIC_STUDIO_TYPES = [
   'fill',
   'extract',
   'assert',
+  'select',
+  'keyboard',
+  'wait',
   'echo',
   'delay',
   'fail',
@@ -30,6 +33,9 @@ export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
   fill: '填写',
   extract: '提取',
   assert: '断言',
+  select: '下拉选择',
+  keyboard: '按键',
+  wait: '等待条件',
   ai_action: 'AI 操作',
   ai_extract: 'AI 提取',
   ai_assert: 'AI 判断',
@@ -41,6 +47,9 @@ export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
   fill: '填写输入',
   extract: '提取文本或属性',
   assert: '确定性断言',
+  select: '选择下拉选项',
+  keyboard: '按键操作',
+  wait: '等待条件满足',
   echo: '回显上下文',
   delay: '等待一段时间',
   fail: '主动失败',
@@ -54,10 +63,13 @@ export const DEFAULT_EFFECT: Record<DeterministicStudioType, EffectType> = {
   assert: 'READ_ONLY',
   echo: 'READ_ONLY',
   delay: 'READ_ONLY',
+  wait: 'READ_ONLY',
   navigate: 'SIDE_EFFECT',
   click: 'SIDE_EFFECT',
   fill: 'SIDE_EFFECT',
   fail: 'SIDE_EFFECT',
+  select: 'SIDE_EFFECT',
+  keyboard: 'SIDE_EFFECT',
 }
 
 export function stepTypeLabel(type: string): string {
@@ -147,5 +159,11 @@ export function createBlankStep(type: ExecutableStepType, used: Iterable<string>
       return { id, name, type, effectType, input: { durationMs: 100 } }
     case 'fail':
       return { id, name, type, effectType, input: { message: '主动失败' } }
+    case 'select':
+      return { id, name, type, effectType, input: { target: defaultTarget('下拉框'), by: 'value', value: '' } }
+    case 'keyboard':
+      return { id, name, type, effectType, input: { keys: ['Enter'] } }
+    case 'wait':
+      return { id, name, type, effectType: 'READ_ONLY' as const, input: { kind: 'time', durationMs: 1000 } }
   }
 }

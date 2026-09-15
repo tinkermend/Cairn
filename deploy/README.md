@@ -41,7 +41,22 @@ pnpm infra:down          # 停容器，保留 .data
 
 需要清盘时再 `podman compose -f deploy/compose.yml down -v`，并手动删 `.data/postgres`、`.data/minio`。
 
-数据库后端配置、SQLite 部署限制、跨库受控迁移和运行观察提示通道见[数据库配置与受控迁移](database-backends.md)。PostgreSQL 默认用 LISTEN/NOTIFY；若部署 MySQL / SQLite 并要实时推送，需另配 `CAIRN_REDIS_URL`，不要把 Redis 当成队列或锁。
+数据库后端配置、SQLite 部署限制、跨库受控迁移和运行观察提示通道见[数据库配置与受控迁移](database-backends.md)。PostgreSQL 默认用 LISTEN/NOTIFY；若部署 MySQL / SQLite 并要实时推送，需另配 `CAIRN_REDIS_URL`，不要把 Redis 当成队列或锁。SQLite 只支持本机文件与同机进程，不能用共享网络文件给多台 API/Worker。
+
+## Worker 内部入口与控制面入口
+
+两条链路分开，即使都用 Nginx 也不能混成注册服务：
+
+```text
+浏览器 ──► 控制面 Nginx / VIP ──► API
+API ──HTTPS + HMAC──► 每 Worker 专用 TLS 入口 ──同机 loopback HTTP──► Worker
+```
+
+本机默认 `CAIRN_WORKER_NETWORK_MODE=local`，可不设 `CAIRN_WORKER_ADVERTISE_URL`，API 可用 `CAIRN_WORKER_ENDPOINTS` 回退到 `127.0.0.1`。跨机或跨容器网络必须 `distributed`：每个 Worker 设唯一 `CAIRN_WORKER_ID` 与非 loopback 的 `CAIRN_WORKER_ADVERTISE_URL=https://...`，Worker 进程仍只监听 `127.0.0.1:$CAIRN_WORKER_INTERNAL_PORT`。同机或同网络命名空间的 TLS 代理把该 HTTPS 转到 loopback；不要在 TLS 终止后再跨网络明文转发。
+
+代理须保留内部签名头和原始请求体，关闭 SSE 缓冲，超时不短于连接 3s / 响应头 10s / 认证 POST 30s。不要把多个 Worker 随机负载均衡到同一个广告 origin，也不要关闭证书校验。HMAC 密钥继续走 `CAIRN_INTERNAL_AUTH_SECRET`，不要写进广告 URL。
+
+排查：治理页「执行节点」看登记是否 READY、心跳是否新鲜、`routeAvailability`；库内入口无效或过期时 API 不会改去猜另一个地址。控制面入口只解决浏览器到 API，Worker 专用入口失败不要先改 CORS。
 
 ## 升级注意：产品角色
 

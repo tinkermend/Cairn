@@ -1,6 +1,7 @@
 import type { Page } from 'playwright'
 import type { AiExecutionConfig, AiOutputSchema } from '@cairn/shared'
 import { ActionGate, gateActions } from './action-gate.js'
+import { beginMidsceneLogScope } from './run-dir.js'
 import { buildDataDemand } from './extract.js'
 import type { OpenAiLike } from './model-client.js'
 
@@ -19,6 +20,22 @@ export function midsceneModelConfig(input: { config: AiExecutionConfig; apiKey: 
     MIDSCENE_MODEL_API_KEY: input.apiKey,
     MIDSCENE_MODEL_BASE_URL: input.config.modelBaseUrl,
   }
+}
+
+/** 只读步骤拒绝整条动作通道（含 SDK 以后新增的动作名），不维护写操作名单；其余动作先过 gate。 */
+export function wrapActionSpace<A extends { name: string; call: (...args: never[]) => unknown }>(
+  actions: readonly A[],
+  gate: ActionGate,
+  readonly: boolean,
+): A[] {
+  const gated = gateActions(actions, gate)
+  if (!readonly) return gated
+  return gated.map((action) => ({
+    ...action,
+    call: (async () => {
+      throw new Error(`CAIRN_READONLY:${action.name}`)
+    }) as A['call'],
+  }))
 }
 
 export async function createFormalMidsceneAgent(input: {
@@ -57,23 +74,21 @@ export async function createFormalMidsceneAgent(input: {
     forceChromeSelectRendering: false,
   })
   const originalSpace = webPage.actionSpace.bind(webPage)
-  webPage.actionSpace = () => {
-    if (input.readonly) {
-      return gateActions(originalSpace(), input.gate).map((action: { name: string }) => ({
-        ...action,
-        call: async () => {
-          throw new Error(`CAIRN_READONLY:${action.name}`)
-        },
-      }))
-    }
-    return gateActions(originalSpace(), input.gate)
-  }
+  webPage.actionSpace = () => wrapActionSpace(originalSpace(), input.gate, input.readonly)
 
-  const agent = new AgentCtor(webPage, {
-    generateReport: false,
-    modelConfig: { ...input.modelConfig },
-    createOpenAIClient: async (client: OpenAiLike) => input.wrapClient(client),
-  })
+  // SDK 日志以 Agent 存活期计数，全部销毁后才轮换删除，见 run-dir.ts。
+  const endLogScope = beginMidsceneLogScope()
+  let agent: InstanceType<typeof AgentCtor>
+  try {
+    agent = new AgentCtor(webPage, {
+      generateReport: false,
+      modelConfig: { ...input.modelConfig },
+      createOpenAIClient: async (client: OpenAiLike) => input.wrapClient(client),
+    })
+  } catch (error) {
+    endLogScope()
+    throw error
+  }
 
   return {
     gate: input.gate,
@@ -92,7 +107,11 @@ export async function createFormalMidsceneAgent(input: {
       }
     },
     async destroy() {
-      if (typeof agent.destroy === 'function') await agent.destroy()
+      try {
+        if (typeof agent.destroy === 'function') await agent.destroy()
+      } finally {
+        endLogScope()
+      }
     },
   }
 }

@@ -294,7 +294,7 @@ export function CredentialDialog({
   )
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('')
-  const targets = useQuery({ queryKey: ['targets'], queryFn: fetchTargets })
+  const targets = useQuery({ queryKey: ['targets'], queryFn: () => fetchTargets() })
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')

@@ -51,7 +51,7 @@ export function errorCodeForStatus(status: number): string {
  * 平台自有的请求关联 ID 头。出站只写这一个，不接受旧称 `x-cairn-run-id`。
  *
  * 它与 `runId` 是两条线：这里的值标识「一次 HTTP 请求」，
- * `runId` / `stepRunId` / `attemptId` 标识执行链路上的 Run，见宪法 §16。
+ * `runId` / `stepRunId` / `attemptId` 标识执行链路上的 Run，见宪法「可观测性」。
  */
 export const REQUEST_ID_HEADER = 'x-cairn-request-id'
 

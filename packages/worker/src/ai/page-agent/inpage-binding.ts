@@ -50,6 +50,7 @@ export async function installInpageBinding(
   return handle
 }
 
+/** 页内 Agent 替身：只转调 binding，用来验证 binding 机制；不是 Page Agent（`PageAgentCore`）本体。 */
 export async function bootstrapInpageAgent(page: Page): Promise<void> {
   await page.evaluate(() => {
     const g = globalThis as typeof globalThis & {

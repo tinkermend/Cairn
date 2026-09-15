@@ -386,7 +386,9 @@ describe('RunLease / fencing（集成）', { timeout: RF06_FULL ? 180_000 : 120_
       expectedVersion: session.version,
       status: 'OPEN',
     })
-    await handle.pool.query(`UPDATE workers SET heartbeat_at = now() - interval '2 minutes' WHERE id = 'lost-worker'`)
+    await handle.pool.query(
+      `UPDATE workers SET heartbeat_at = now() - interval '2 minutes', heartbeat_expires_at = now() - interval '1 minute' WHERE id = 'lost-worker'`,
+    )
     const lost = await markLostWorkers(handle.db, 1)
     expect(lost).toContain('lost-worker')
     expect(await markSessionsLostForWorkers(handle.db, lost)).toBeGreaterThanOrEqual(1)
@@ -499,9 +501,10 @@ describe('RunLease / fencing（集成）', { timeout: RF06_FULL ? 180_000 : 120_
 
     // 被 kill：没人释放，心跳停了；超过 LOST_AFTER 之后同 ID 重启
     const killed = await forceGrantForRun(handle, runId, worker.workerId)
-    await handle.pool.query(`UPDATE workers SET heartbeat_at = now() - interval '120 seconds' WHERE id = $1`, [
-      worker.workerId,
-    ])
+    await handle.pool.query(
+      `UPDATE workers SET heartbeat_at = now() - interval '120 seconds', heartbeat_expires_at = now() - interval '1 second' WHERE id = $1`,
+      [worker.workerId],
+    )
     const restarted = await registerWorker(handle.db, {
       workerId: worker.workerId,
       instanceId: newId(),

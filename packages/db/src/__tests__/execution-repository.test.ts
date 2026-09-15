@@ -467,7 +467,7 @@ describe.each(DRIVERS)('%s 执行账本 Repository（集成）', { timeout: 30_0
     expect((await getRun(handle.db, cancelledRun.detail.id)).status).toBe('RUNNING')
   })
 
-  it('删除仍有 Run 的场景 → SCENARIO_HAS_RUNS；23503 兜底可映射', async () => {
+  it('删除仍有活跃 Run 的场景 → RUN_NOT_TERMINAL；23503 兜底可映射', async () => {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
       name: '删不掉',
@@ -476,7 +476,7 @@ describe.each(DRIVERS)('%s 执行账本 Repository（集成）', { timeout: 30_0
     })
     await createRunWithSnapshot(handle.db, { scenarioId: scenario.id, actor: { id: actorId } })
     await expect(deleteScenario(handle.db, scenario.id, { id: actorId })).rejects.toMatchObject({
-      code: 'SCENARIO_HAS_RUNS',
+      code: 'RUN_NOT_TERMINAL',
     })
 
     const accountId = newId()

@@ -143,12 +143,12 @@ describe('Scenarios HTTP', () => {
     expect(service.create).not.toHaveBeenCalled()
   })
 
-  it('创建返回 201，删除返回 204', async () => {
+  it('创建返回 201，删除返回 200', async () => {
     await request(adminApp.getHttpServer())
       .post('/scenarios')
       .send({ targetId: scenario.targetId, name: 'x', steps: scenario.steps })
       .expect(201)
-    await request(adminApp.getHttpServer()).post(`/scenarios/${scenario.id}/delete`).expect(204)
+    await request(adminApp.getHttpServer()).post(`/scenarios/${scenario.id}/delete`).expect(200)
   })
 
   it('领域码 SCENARIO_DISABLED / TARGET_DISABLED / SCENARIO_HAS_RUNS 原样透传', async () => {

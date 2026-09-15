@@ -27,6 +27,7 @@ export const browserSessions = cairnSchema.table(
     health: text('health').notNull().default('UNKNOWN').$type<SessionHealth>(),
     authState: text('auth_state').notNull().default('UNKNOWN').$type<SessionAuthState>(),
     ownerWorkerId: text('owner_worker_id').notNull(),
+    ownerWorkerInstanceId: uuid('owner_worker_instance_id'),
     generation: integer('generation').notNull(),
     fencingToken: integer('fencing_token').notNull().default(0),
     version: integer('version').notNull().default(0),

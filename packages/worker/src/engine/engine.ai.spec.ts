@@ -200,6 +200,102 @@ describe('ExecutionEngine × AI 边界', { timeout: 60_000 }, () => {
     expect(order.slice(-2)).toEqual(['invalidate', 'release'])
   })
 
+  it('丢租：放行过动作的副作用 AI 步骤进 NEEDS_REVIEW；未放行动作的记 SESSION_LEASE_LOST 且不重试', async () => {
+    const sessionGrant: SessionGrant = {
+      sessionId: newId(),
+      leaseId: newId(),
+      generation: 1,
+      sessionFencingToken: 1,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }
+    const browser: BrowserPort = {
+      acquire: async () => ({ ok: true, grant: sessionGrant }),
+      release: async () => {},
+      invalidate: async () => {},
+      execute: async () => ({ ok: true, output: null }),
+    }
+
+    const acted: AiPort = {
+      execute: async () => ({
+        ok: false,
+        summary: '会话租约在 AI 动作开始后失效，页面上的结果未确认',
+        error: {
+          code: 'SESSION_LEASE_LOST',
+          category: 'UNKNOWN',
+          retryable: false,
+          safeMessage: '会话租约在 AI 动作开始后失效，页面上的结果未确认',
+        },
+      }),
+    }
+    const actionScenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '丢租已动作',
+      steps: [
+        {
+          id: newId(),
+          name: '操作',
+          type: 'ai_action',
+          effectType: 'SIDE_EFFECT',
+          input: { instruction: '点提交' },
+        },
+      ],
+      actor: { id: actorId },
+    })
+    const actionRun = await createRunWithSnapshot(handle.db, {
+      scenarioId: actionScenario.id,
+      actor: { id: actorId },
+      aiExecution: testAiExecution(),
+    })
+    await new ExecutionEngine(
+      handle,
+      browser,
+      undefined,
+      new StepExecutorRegistry([new AiStepExecutor(acted)]),
+    ).execute(actionRun.detail.id, { grant: await claimThis(actionRun.detail.id) })
+    const actionDetail = await getRun(handle.db, actionRun.detail.id)
+    expect(actionDetail.status).toBe('NEEDS_REVIEW')
+    expect(actionDetail.stepRuns[0]?.attempts[0]?.error?.code).toBe('SESSION_LEASE_LOST')
+
+    let calls = 0
+    const idle: AiPort = {
+      execute: async () => {
+        calls += 1
+        return {
+          ok: false,
+          summary: '会话租约已失效，AI 步骤未发出动作',
+          error: {
+            code: 'SESSION_LEASE_LOST',
+            category: 'INFRASTRUCTURE',
+            retryable: false,
+            safeMessage: '会话租约已失效，AI 步骤未发出动作',
+          },
+        }
+      },
+    }
+    const readScenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '丢租未动作',
+      steps: [aiAssert(2)],
+      actor: { id: actorId },
+    })
+    const readRun = await createRunWithSnapshot(handle.db, {
+      scenarioId: readScenario.id,
+      actor: { id: actorId },
+      aiExecution: testAiExecution(),
+    })
+    await new ExecutionEngine(
+      handle,
+      browser,
+      undefined,
+      new StepExecutorRegistry([new AiStepExecutor(idle)]),
+    ).execute(readRun.detail.id, { grant: await claimThis(readRun.detail.id) })
+    const readDetail = await getRun(handle.db, readRun.detail.id)
+    expect(readDetail.status).toBe('FAILED')
+    expect(calls).toBe(1)
+    expect(readDetail.stepRuns[0]?.attempts).toHaveLength(1)
+    expect(readDetail.stepRuns[0]?.attempts[0]?.error?.code).toBe('SESSION_LEASE_LOST')
+  })
+
   // 真实 SDK 会把 abort 包成自己的错误再返回，执行器拿不到 AbortError。
   // 中止判定必须回落到引擎信号，否则 AI Action 超时会被记成可解释的普通失败。
   it('AI Action 超时被 SDK 包成普通失败时仍进 NEEDS_REVIEW', async () => {

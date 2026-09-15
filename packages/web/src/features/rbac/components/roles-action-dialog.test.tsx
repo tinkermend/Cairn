@@ -89,7 +89,7 @@ describe('RolesActionDialog', () => {
     await expect.element(getByText('能力预览')).toBeInTheDocument()
     await expect.element(getByTestId('capability-preview')).toBeInTheDocument()
     await expect.element(getByText(/工作台：首页、目标系统、场景、运行/)).toBeInTheDocument()
-    await expect.element(getByText(/治理：无/)).toBeInTheDocument()
+    await expect.element(getByText(/治理：执行节点/)).toBeInTheDocument()
     await expect.element(getByText('对目标系统发起运行')).toBeInTheDocument()
     expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('account:read')
     await expect.element(getByText('用户', { exact: true })).not.toBeInTheDocument()

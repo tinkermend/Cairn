@@ -451,3 +451,68 @@ describe('parseDurationSeconds', () => {
     expect(parseDurationSeconds('7d')).toBe(7 * 86400)
   })
 })
+
+describe('Worker 网络模式与广告入口', () => {
+  it('local 默认不注入广告 URL，API 仍可用本机映射', () => {
+    const worker = workerEnvSchema.parse({})
+    expect(worker.CAIRN_WORKER_NETWORK_MODE).toBe('local')
+    expect(worker.CAIRN_WORKER_ADVERTISE_URL).toBeUndefined()
+    expect(apiEnvSchema.parse({}).CAIRN_WORKER_ENDPOINTS).toBe('local-worker=http://127.0.0.1:8091')
+  })
+
+  it('distributed 且未配置映射时 API 使用空映射', () => {
+    expect(apiEnvSchema.parse({ CAIRN_WORKER_NETWORK_MODE: 'distributed' }).CAIRN_WORKER_ENDPOINTS).toBe('')
+  })
+
+  it('无广告 URL 不从监听地址自动拼接；distributed 缺广告或 loopback/HTTP 拒启', () => {
+    expect(workerEnvSchema.parse({}).CAIRN_WORKER_ADVERTISE_URL).toBeUndefined()
+    expect(
+      workerEnvSchema.safeParse({
+        CAIRN_WORKER_NETWORK_MODE: 'distributed',
+      }).success,
+    ).toBe(false)
+    expect(
+      workerEnvSchema.safeParse({
+        CAIRN_WORKER_NETWORK_MODE: 'distributed',
+        CAIRN_WORKER_ADVERTISE_URL: 'http://127.0.0.1:8443',
+      }).success,
+    ).toBe(false)
+    expect(
+      workerEnvSchema.safeParse({
+        CAIRN_WORKER_NETWORK_MODE: 'distributed',
+        CAIRN_WORKER_ADVERTISE_URL: 'https://127.0.0.1:8443',
+      }).success,
+    ).toBe(false)
+    expect(
+      workerEnvSchema.safeParse({
+        CAIRN_WORKER_NETWORK_MODE: 'distributed',
+        CAIRN_WORKER_ADVERTISE_URL: 'http://worker-a.internal:8443',
+      }).success,
+    ).toBe(false)
+    expect(
+      workerEnvSchema.parse({
+        CAIRN_WORKER_NETWORK_MODE: 'distributed',
+        CAIRN_WORKER_ADVERTISE_URL: 'https://worker-a.internal:8443',
+      }).CAIRN_WORKER_ADVERTISE_URL,
+    ).toBe('https://worker-a.internal:8443')
+  })
+
+  it('通配监听与 port=0 配广告 URL 拒启；distributed 拒绝不监听', () => {
+    expect(workerEnvSchema.safeParse({ CAIRN_WORKER_INTERNAL_HOST: '0.0.0.0' }).success).toBe(false)
+    expect(workerEnvSchema.safeParse({ CAIRN_WORKER_INTERNAL_HOST: '::' }).success).toBe(false)
+    expect(
+      workerEnvSchema.safeParse({
+        CAIRN_WORKER_INTERNAL_PORT: '0',
+        CAIRN_WORKER_ADVERTISE_URL: 'http://127.0.0.1:8091',
+      }).success,
+    ).toBe(false)
+    expect(
+      workerEnvSchema.safeParse({
+        CAIRN_WORKER_NETWORK_MODE: 'distributed',
+        CAIRN_WORKER_INTERNAL_PORT: '0',
+        CAIRN_WORKER_ADVERTISE_URL: 'https://worker-a.internal:8443',
+      }).success,
+    ).toBe(false)
+    expect(workerEnvSchema.parse({ CAIRN_WORKER_INTERNAL_PORT: '0' }).CAIRN_WORKER_INTERNAL_PORT).toBe(0)
+  })
+})

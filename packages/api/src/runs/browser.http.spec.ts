@@ -74,6 +74,13 @@ function mockBrowser() {
     input: vi.fn(async () => ({ commandId: '00000000-0000-4000-8000-000000000001', seq: 1, status: 'accepted' })),
     release: vi.fn(async () => ({ released: true })),
     resumeAuth: vi.fn(async () => ({ id: runId, status: 'RECOVERING' })),
+    observe: vi.fn(async () => ({
+      outcome: 'FOUND',
+      page: { url: 'https://shop.example.com' },
+      diagnostics: { outcome: 'FOUND', candidatesTried: [] },
+      source: 'managed',
+    })),
+    debug: vi.fn(async () => ({ id: runId, status: 'HOLDING' })),
   }
 }
 
@@ -131,5 +138,14 @@ describe('受管浏览器 HTTP', () => {
     expect(JSON.stringify(res.body)).not.toMatch(/127\.0\.0\.1|:8091|playwright/i)
     await request(adminApp.getHttpServer()).post(`/runs/${runId}/browser/auth-control/acquire`).send({}).expect(200)
     expect(browser.acquire).toHaveBeenCalled()
+  })
+
+  it('observe 需要 run:read + session:view + workflow:write，debug 需要 run:execute + workflow:write', async () => {
+    await request(viewerApp.getHttpServer()).post(`/runs/${runId}/observe`).send({ op: 'highlight' }).expect(403)
+    await request(viewerApp.getHttpServer()).post(`/runs/${runId}/debug`).send({ action: 'stop' }).expect(403)
+    await request(adminApp.getHttpServer()).post(`/runs/${runId}/observe`).send({ op: 'highlight' }).expect(200)
+    await request(adminApp.getHttpServer()).post(`/runs/${runId}/debug`).send({ action: 'stop' }).expect(200)
+    expect(browser.observe).toHaveBeenCalled()
+    expect(browser.debug).toHaveBeenCalled()
   })
 })

@@ -6,6 +6,7 @@ describe('step-registry', () => {
   it('步骤库不遍历 EXECUTABLE_STEP_TYPES，也不开放未登记类型', () => {
     expect(EXECUTABLE_STEP_TYPES).toEqual(expect.arrayContaining(['ai_action', 'navigate']))
     expect(selectableStudioTypes(undefined)).toEqual([...DETERMINISTIC_STUDIO_TYPES])
+    expect(DETERMINISTIC_STUDIO_TYPES).toEqual(expect.arrayContaining(['select', 'keyboard', 'wait']))
     expect(
       selectableStudioTypes({
         executableStepTypes: ['navigate', 'http', 'ai_action'],

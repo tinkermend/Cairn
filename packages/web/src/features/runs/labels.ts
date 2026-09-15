@@ -25,7 +25,7 @@ export const PLACEMENT_COPY: Record<
 export function runStatusTone(status: RunStatus): StatusTone {
   if (status === 'SUCCEEDED') return 'success'
   if (status === 'FAILED') return 'error'
-  if (status === 'NEEDS_REVIEW' || status === 'WAITING_FOR_AUTH') return 'warning'
+  if (status === 'NEEDS_REVIEW' || status === 'WAITING_FOR_AUTH' || status === 'HOLDING') return 'warning'
   if (status === 'RUNNING' || status === 'RECOVERING') return 'info'
   return 'neutral'
 }

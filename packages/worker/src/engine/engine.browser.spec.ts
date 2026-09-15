@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   acquireSessionLease,
   claimRun,
@@ -7,6 +7,8 @@ import {
   countFailedRecoveries,
   createRunWithSnapshot,
   createScenarioWithVersion,
+  createTrialRunFromDraft,
+  saveScenarioDraft,
   eq,
   getRun,
   listRunEvidence,
@@ -51,7 +53,7 @@ const clickTarget = {
   candidates: [{ by: 'text' as const, value: '查询' }],
 }
 
-function clickStep(id: string, effectType: Step['effectType'] = 'READ_ONLY'): Step {
+function clickStep(id: string, effectType: Step['effectType'] = 'READ_ONLY'): Extract<Step, { type: 'click' }> {
   return {
     id,
     name: '点击',
@@ -212,6 +214,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     acquire?: BrowserPort['acquire']
     execute?: BrowserPort['execute']
     release?: BrowserPort['release']
+    describeHold?: BrowserPort['describeHold']
   }): BrowserPort & { calls: string[] } {
     const calls: string[] = []
     return {
@@ -230,6 +233,12 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
         calls.push('release')
         if (hooks.release) return hooks.release(grant, reason)
       },
+      describeHold: hooks.describeHold
+        ? async (runId) => {
+            calls.push('describeHold')
+            return hooks.describeHold!(runId)
+          }
+        : undefined,
     }
   }
 
@@ -765,5 +774,309 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
     const evidence = await listRunEvidence(handle.db, created.detail.id)
     expect(evidence.items.some((item) => item.type === 'screenshot')).toBe(false)
+  })
+
+  it('试跑失败进入 HOLDING：不 release、不 SKIPPED，再试后继续同一会话', async () => {
+    const steps = [clickStep(newId(), 'READ_ONLY'), clickStep(newId(), 'READ_ONLY')]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `hold-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor: { id: actorId },
+      document: { schemaVersion: 1, steps },
+    })
+    const created = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 2,
+      targetAccountId: accountId,
+      actor: { id: actorId },
+    })
+    expect(created.detail.debugMode).toBe('holdOnFailure')
+    let attempts = 0
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => {
+        attempts += 1
+        if (attempts === 1) {
+          return {
+            ok: false,
+            error: {
+              code: 'TARGET_NOT_FOUND',
+              category: 'VALIDATION',
+              retryable: false,
+              safeMessage: '未找到',
+            },
+          }
+        }
+        return { ok: true, output: {} }
+      },
+    })
+    const engine = new ExecutionEngine(handle, port)
+    const grant = await claimThis(created.detail.id)
+    const done = engine.execute(created.detail.id, { grant })
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+    })
+    const held = await getRun(handle.db, created.detail.id)
+    expect(held.stepRuns[0]?.status).toBe('FAILED')
+    expect(held.stepRuns[1]?.status).toBe('PENDING')
+    expect(port.calls.filter((item) => item === 'release')).toEqual([])
+    await engine.resumeDebug(
+      created.detail.id,
+      { action: 'retry_current', fencingToken: held.checkpoint?.fencingToken },
+      actorId,
+    )
+    await done
+    const after = await getRun(handle.db, created.detail.id)
+    expect(after.status).toBe('SUCCEEDED')
+    expect(after.stepRuns[0]?.attempts.length).toBe(2)
+    expect(after.stepRuns.some((item) => item.status === 'SKIPPED')).toBe(false)
+    expect(port.calls.filter((item) => item === 'release')).toEqual(['release'])
+    expect(port.calls.filter((item) => item === 'acquire')).toEqual(['acquire'])
+  })
+
+  it('暂停在未跑步上后 continue 不会跳过当前步', async () => {
+    const steps: Step[] = [
+      {
+        id: newId(),
+        name: '第一步',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        outputKey: 'first',
+        input: { value: 'one' },
+      },
+      {
+        id: newId(),
+        name: '第二步',
+        type: 'echo',
+        effectType: 'READ_ONLY',
+        outputKey: 'second',
+        input: { value: 'two' },
+      },
+    ]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `pause-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor: { id: actorId },
+      document: { schemaVersion: 1, steps },
+    })
+    const created = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 2,
+      actor: { id: actorId },
+    })
+    const engine = new ExecutionEngine(handle)
+    const grant = await claimThis(created.detail.id)
+    expect(engine.holds.resume(created.detail.id, { action: 'pause', actorId })).toBe(true)
+    const done = engine.execute(created.detail.id, { grant })
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+    })
+    const held = await getRun(handle.db, created.detail.id)
+    expect(held.stepRuns[0]?.status).toBe('PENDING')
+    await engine.resumeDebug(
+      created.detail.id,
+      { action: 'continue', fencingToken: held.checkpoint?.fencingToken },
+      actorId,
+    )
+    await done
+    const after = await getRun(handle.db, created.detail.id)
+    expect(after.status).toBe('SUCCEEDED')
+    expect(after.context.first).toBe('one')
+    expect(after.context.second).toBe('two')
+    expect(after.stepRuns.every((item) => item.status === 'SUCCEEDED')).toBe(true)
+  })
+
+  it('副作用步骤再试必须确认，否则拒绝且不新开 Attempt', async () => {
+    const steps = [clickStep(newId(), 'SIDE_EFFECT')]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `side-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor: { id: actorId },
+      document: { schemaVersion: 1, steps },
+    })
+    const created = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 2,
+      targetAccountId: accountId,
+      actor: { id: actorId },
+    })
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => ({
+        ok: false,
+        error: {
+          code: 'TARGET_NOT_FOUND',
+          category: 'VALIDATION',
+          retryable: false,
+          safeMessage: '未找到',
+        },
+      }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    const grant = await claimThis(created.detail.id)
+    const done = engine.execute(created.detail.id, { grant })
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+    })
+    const held = await getRun(handle.db, created.detail.id)
+    await expect(
+      engine.resumeDebug(
+        created.detail.id,
+        { action: 'retry_current', fencingToken: held.checkpoint?.fencingToken },
+        actorId,
+      ),
+    ).rejects.toMatchObject({ code: 'SIDE_EFFECT_CONFIRM_REQUIRED' })
+    expect((await getRun(handle.db, created.detail.id)).stepRuns[0]?.attempts).toHaveLength(1)
+    await engine.resumeDebug(
+      created.detail.id,
+      { action: 'retry_current', fencingToken: held.checkpoint?.fencingToken, confirmSideEffect: true },
+      actorId,
+    )
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).stepRuns[0]?.attempts.length).toBe(2)
+    })
+    await engine.resumeDebug(created.detail.id, { action: 'stop' }, actorId)
+    await done
+    const after = await getRun(handle.db, created.detail.id)
+    expect(after.status).toBe('FAILED')
+    expect(after.stepRuns[0]?.attempts.length).toBe(2)
+  })
+
+  it('成功 Hold 后 continue 进入下一步，快照步骤不被截断', async () => {
+    const steps = [clickStep(newId(), 'READ_ONLY'), clickStep(newId(), 'READ_ONLY')]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `hold-each-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor: { id: actorId },
+      document: { schemaVersion: 1, steps },
+    })
+    const created = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 2,
+      targetAccountId: accountId,
+      actor: { id: actorId },
+      debugMode: 'holdAfterEach',
+    })
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => ({ ok: true, output: {} }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    const grant = await claimThis(created.detail.id)
+    const done = engine.execute(created.detail.id, { grant })
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+    })
+    const held = await getRun(handle.db, created.detail.id)
+    expect(held.checkpoint?.reason).toBe('step_succeeded')
+    expect(held.snapshot.steps).toHaveLength(2)
+    expect(held.stepRuns[1]?.status).toBe('PENDING')
+    await engine.resumeDebug(
+      created.detail.id,
+      { action: 'continue', fencingToken: held.checkpoint?.fencingToken },
+      actorId,
+    )
+    await vi.waitFor(async () => {
+      const next = await getRun(handle.db, created.detail.id)
+      expect(next.status).toBe('HOLDING')
+      expect(next.stepRuns[1]?.status).toBe('SUCCEEDED')
+    })
+    const second = await getRun(handle.db, created.detail.id)
+    await engine.resumeDebug(
+      created.detail.id,
+      { action: 'continue', fencingToken: second.checkpoint?.fencingToken },
+      actorId,
+    )
+    await done
+    const after = await getRun(handle.db, created.detail.id)
+    expect(after.status).toBe('SUCCEEDED')
+    expect(after.snapshot.steps).toHaveLength(2)
+    expect(after.stepRuns.every((item) => item.status === 'SUCCEEDED')).toBe(true)
+  })
+
+  it('检查点页变后未确认不能再试', async () => {
+    const pageRef = {
+      sessionId: '00000000-0000-4000-8000-0000000000aa',
+      sessionGeneration: 1,
+      pageId: '00000000-0000-4000-8000-0000000000ab',
+      documentEpoch: 1,
+    }
+    let epoch = 1
+    const steps = [clickStep(newId(), 'READ_ONLY')]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `page-ack-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor: { id: actorId },
+      document: { schemaVersion: 1, steps },
+    })
+    const created = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 2,
+      targetAccountId: accountId,
+      actor: { id: actorId },
+    })
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => ({
+        ok: false,
+        error: {
+          code: 'TARGET_NOT_FOUND',
+          category: 'VALIDATION',
+          retryable: false,
+          safeMessage: '未找到',
+        },
+      }),
+      describeHold: async () => ({
+        pageRef: { ...pageRef, documentEpoch: epoch },
+        url: epoch === 1 ? 'https://shop.example/a' : 'https://shop.example/b',
+      }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    const grant = await claimThis(created.detail.id)
+    const done = engine.execute(created.detail.id, { grant })
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).status).toBe('HOLDING')
+    })
+    const held = await getRun(handle.db, created.detail.id)
+    expect(held.checkpoint?.url).toBe('https://shop.example/a')
+    epoch = 2
+    await expect(
+      engine.resumeDebug(
+        created.detail.id,
+        { action: 'retry_current', fencingToken: held.checkpoint?.fencingToken },
+        actorId,
+      ),
+    ).rejects.toMatchObject({ code: 'PAGE_CHANGED_ACK_REQUIRED' })
+    expect((await getRun(handle.db, created.detail.id)).stepRuns[0]?.attempts).toHaveLength(1)
+    await engine.resumeDebug(
+      created.detail.id,
+      { action: 'retry_current', fencingToken: held.checkpoint?.fencingToken, pageChangedAck: true },
+      actorId,
+    )
+    await vi.waitFor(async () => {
+      expect((await getRun(handle.db, created.detail.id)).stepRuns[0]?.attempts.length).toBe(2)
+    })
+    await engine.resumeDebug(created.detail.id, { action: 'stop' }, actorId)
+    await done
   })
 })

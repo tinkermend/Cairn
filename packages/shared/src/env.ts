@@ -8,6 +8,12 @@ import {
   DEFAULT_WORKER_HEARTBEAT_MS,
   DEFAULT_WORKER_LOST_AFTER_SECONDS,
 } from './run-lease.js'
+import {
+  assertWorkerListenHostAllowed,
+  parseWorkerEndpoints,
+  resolveWorkerAdvertiseUrl,
+  workerNetworkModeSchema,
+} from './worker-registry.js'
 
 /**
  * `.env` 里留空的项与未设置等价。
@@ -159,8 +165,6 @@ const internalAuthSecretSchema = z
     }
   })
 
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
-
 function refineInternalAuthSecret(
   env: { CAIRN_ENV: (typeof CAIRN_ENVS)[number]; CAIRN_INTERNAL_AUTH_SECRET: string },
   ctx: z.RefinementCtx,
@@ -174,42 +178,19 @@ function refineInternalAuthSecret(
   }
 }
 
-function refineWorkerEndpoints(raw: string, ctx: z.RefinementCtx): void {
-  for (const part of raw.split(',')) {
-    const trimmed = part.trim()
-    if (!trimmed) continue
-    const eq = trimmed.indexOf('=')
-    if (eq <= 0) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['CAIRN_WORKER_ENDPOINTS'],
-        message: '须为 workerId=baseUrl 的逗号分隔列表',
-      })
-      return
-    }
-    try {
-      const parsed = new URL(trimmed.slice(eq + 1).trim())
-      const loopback = LOOPBACK_HOSTS.has(parsed.hostname)
-      if (parsed.protocol === 'http:' && !loopback) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['CAIRN_WORKER_ENDPOINTS'],
-          message: '非 loopback 的 Worker 内部地址必须使用 https',
-        })
-      } else if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['CAIRN_WORKER_ENDPOINTS'],
-          message: 'Worker 内部地址只允许 http(loopback) 或 https',
-        })
-      }
-    } catch {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['CAIRN_WORKER_ENDPOINTS'],
-        message: 'Worker 内部地址不是合法 URL',
-      })
-    }
+function refineWorkerEndpoints(
+  raw: string,
+  networkMode: 'local' | 'distributed',
+  ctx: z.RefinementCtx,
+): void {
+  try {
+    parseWorkerEndpoints(raw, { networkMode })
+  } catch (error) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_WORKER_ENDPOINTS'],
+      message: error instanceof Error ? error.message : 'Worker 内部地址不合法',
+    })
   }
 }
 
@@ -509,7 +490,8 @@ export const apiEnvSchema = z.preprocess(
           }
         }),
       CAIRN_INTERNAL_AUTH_SECRET: internalAuthSecretSchema,
-      CAIRN_WORKER_ENDPOINTS: z.string().min(1).default(DEFAULT_WORKER_ENDPOINTS),
+      CAIRN_WORKER_NETWORK_MODE: workerNetworkModeSchema.default('local'),
+      CAIRN_WORKER_ENDPOINTS: z.string().optional(),
       ...runtimeEnvShape,
       ...objectStoreEnvShape,
       ...browserAiEnvShape,
@@ -519,7 +501,11 @@ export const apiEnvSchema = z.preprocess(
       // 「默认值方便本地」与「生产不得裸奔」由同一个 schema 同时成立，
       // 不依赖部署清单上的一行提醒。
       refineInternalAuthSecret(env, ctx)
-      refineWorkerEndpoints(env.CAIRN_WORKER_ENDPOINTS, ctx)
+      refineWorkerEndpoints(
+        env.CAIRN_WORKER_ENDPOINTS ?? (env.CAIRN_WORKER_NETWORK_MODE === 'distributed' ? '' : DEFAULT_WORKER_ENDPOINTS),
+        env.CAIRN_WORKER_NETWORK_MODE,
+        ctx,
+      )
       if (env.CAIRN_ENV !== 'development') {
         if (env.CAIRN_JWT_SECRET === DEV_JWT_SECRET) {
           ctx.addIssue({
@@ -549,6 +535,9 @@ export const apiEnvSchema = z.preprocess(
     })
     .transform((env) => ({
       ...env,
+      CAIRN_WORKER_ENDPOINTS:
+        env.CAIRN_WORKER_ENDPOINTS ??
+        (env.CAIRN_WORKER_NETWORK_MODE === 'distributed' ? '' : DEFAULT_WORKER_ENDPOINTS),
       CAIRN_S3_FORCE_PATH_STYLE: env.CAIRN_S3_FORCE_PATH_STYLE ?? Boolean(env.CAIRN_S3_ENDPOINT),
     })),
 )
@@ -606,6 +595,8 @@ export const workerEnvSchema = z.preprocess(
           }
         }),
       CAIRN_INTERNAL_AUTH_SECRET: internalAuthSecretSchema,
+      CAIRN_WORKER_NETWORK_MODE: workerNetworkModeSchema.default('local'),
+      CAIRN_WORKER_ADVERTISE_URL: z.string().optional(),
       CAIRN_WORKER_INTERNAL_HOST: z.string().min(1).default(DEFAULT_WORKER_INTERNAL_HOST),
       CAIRN_WORKER_INTERNAL_PORT: z.coerce
         .number()
@@ -613,6 +604,7 @@ export const workerEnvSchema = z.preprocess(
         .min(0)
         .max(65535)
         .default(DEFAULT_WORKER_INTERNAL_PORT),
+      CAIRN_DEBUG_HOLD_TIMEOUT_MS: z.coerce.number().int().positive().max(3_600_000).default(900_000),
       ...runtimeEnvShape,
       ...objectStoreEnvShape,
       ...browserSessionEnvShape,
@@ -621,6 +613,30 @@ export const workerEnvSchema = z.preprocess(
     })
     .superRefine((env, ctx) => {
       refineInternalAuthSecret(env, ctx)
+      if (env.CAIRN_WORKER_INTERNAL_PORT > 0) {
+        try {
+          assertWorkerListenHostAllowed(env.CAIRN_WORKER_INTERNAL_HOST)
+        } catch (error) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['CAIRN_WORKER_INTERNAL_HOST'],
+            message: error instanceof Error ? error.message : '内部监听地址不合法',
+          })
+        }
+      }
+      try {
+        resolveWorkerAdvertiseUrl({
+          networkMode: env.CAIRN_WORKER_NETWORK_MODE,
+          advertiseUrl: env.CAIRN_WORKER_ADVERTISE_URL,
+          internalPort: env.CAIRN_WORKER_INTERNAL_PORT,
+        })
+      } catch (error) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_WORKER_ADVERTISE_URL'],
+          message: error instanceof Error ? error.message : '广告 URL 不合法',
+        })
+      }
       if (env.CAIRN_ENV !== 'development' && env.CAIRN_CREDENTIAL_KEY === DEV_CREDENTIAL_KEY) {
         ctx.addIssue({
           code: 'custom',

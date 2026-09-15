@@ -19,6 +19,8 @@ import { RecordingsController } from '../recordings/recordings.controller'
 import { RecordingsService } from '../recordings/recordings.service'
 import { RunsController } from '../runs/runs.controller'
 import { RunsService } from '../runs/runs.service'
+import { ObserveService } from '../runs/observe.service'
+import { BrowserService } from '../runs/browser.service'
 import { ScenariosController } from '../scenarios/scenarios.controller'
 import { ScenariosService } from '../scenarios/scenarios.service'
 import { listenForSupertest } from '../__tests__/http-app'
@@ -103,6 +105,8 @@ async function buildApp(account: RequestAccount, services: ReturnType<typeof moc
       { provide: RecordingsService, useValue: services.recordings },
       { provide: RunsService, useValue: services.runs },
       { provide: ScenariosService, useValue: services.scenarios },
+      { provide: ObserveService, useValue: {} },
+      { provide: BrowserService, useValue: {} },
       { provide: APP_GUARD, useValue: new StaticAuthGuard(account) },
       { provide: APP_GUARD, useClass: PermissionsGuard },
       { provide: APP_FILTER, useClass: AllExceptionsFilter },

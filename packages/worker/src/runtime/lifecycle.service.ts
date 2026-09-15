@@ -5,7 +5,6 @@ import {
   expireRunDeadlines,
   expireStaleRunLeases,
   heartbeatWorker,
-  listActiveLeasesForWorker,
   markLostWorkers,
   markSessionsLostForWorkers,
   markWorkerDraining,
@@ -20,7 +19,7 @@ import {
   type DbHandle,
   type WorkerHeartbeatOutcome,
 } from '@cairn/db'
-import type { RunGrant } from '@cairn/shared'
+import { resolveWorkerAdvertiseUrl, type RunGrant } from '@cairn/shared'
 import { BrowserSessionManager } from '../browser/session-manager'
 import { startManagedBrowserHttp, type ManagedBrowserHttp } from '../internal/http-server'
 import { config } from '../config/env'
@@ -89,8 +88,12 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   async onApplicationBootstrap(): Promise<void> {
     await this.handle.ping()
     try {
+      this.instanceId = randomUUID()
+      await this.bindInternalHttp()
       await this.register()
     } catch (error) {
+      await this.internalHttp?.close().catch(() => undefined)
+      this.internalHttp = undefined
       // 本地最先踩到的错误路径：默认 ID 只够单进程，开第二个就撞。
       // 冒泡让 Nest 启动失败是对的，但得先说清楚是什么、怎么办；只带 ID 与秒数，不带凭证。
       if (error instanceof DomainError && error.code === WORKER_ID_CONFLICT) {
@@ -101,20 +104,24 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       }
       throw error
     }
-    await this.sessions.reconcileOwn()
-    await this.bindInternalHttp()
-    this.sessions.startHeartbeat()
-    this.startClaiming()
-    this.claimTask = this.pump()
-    this.heartbeatTick = setInterval(() => {
-      void this.beat()
-    }, config.CAIRN_WORKER_HEARTBEAT_MS)
-    this.cleanupTick = setInterval(() => {
-      void this.runCleanup()
-    }, config.CAIRN_OBJECT_CLEANUP_INTERVAL_MS)
-    this.reaperTick = setInterval(() => {
-      void this.runReaper()
-    }, config.CAIRN_SESSION_REAPER_INTERVAL_MS)
+    try {
+      await this.sessions.reconcileOwn()
+      this.sessions.startHeartbeat()
+      this.startClaiming()
+      this.claimTask = this.pump()
+      this.heartbeatTick = setInterval(() => {
+        void this.beat()
+      }, config.CAIRN_WORKER_HEARTBEAT_MS)
+      this.cleanupTick = setInterval(() => {
+        void this.runCleanup()
+      }, config.CAIRN_OBJECT_CLEANUP_INTERVAL_MS)
+      this.reaperTick = setInterval(() => {
+        void this.runReaper()
+      }, config.CAIRN_SESSION_REAPER_INTERVAL_MS)
+    } catch (error) {
+      await markWorkerStopped(this.handle, config.CAIRN_WORKER_ID, this.instanceId).catch(() => undefined)
+      throw error
+    }
     this.logger.log(
       { workerId: config.CAIRN_WORKER_ID, instanceId: this.instanceId },
       '执行面已就绪，等待任务',
@@ -130,13 +137,13 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
    * 对应 Run 交回恢复扫描。启动与失联自愈走同一条路径。
    */
   private async register(): Promise<void> {
-    this.instanceId = randomUUID()
     const registered = await registerWorker(this.handle, {
       workerId: config.CAIRN_WORKER_ID,
       instanceId: this.instanceId,
       capacity: config.CAIRN_WORKER_CAPACITY,
       maxSessions: config.CAIRN_BROWSER_MAX_SESSIONS,
       lostAfterSeconds: config.CAIRN_WORKER_LOST_AFTER_SECONDS,
+      internalBaseUrl: this.advertiseUrl(),
     })
     await settleRevokedRuns(
       this.handle,
@@ -161,7 +168,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     this.shutdownSignal = signal
     this.shutdownCalled = true
     this.stopped = true
-    await markWorkerDraining(this.handle, config.CAIRN_WORKER_ID).catch(() => undefined)
+    await markWorkerDraining(this.handle, config.CAIRN_WORKER_ID, this.instanceId).catch(() => undefined)
     if (this.tick) {
       clearInterval(this.tick)
       this.tick = undefined
@@ -185,15 +192,15 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     const claiming = this.claimTask
     const cleanup = this.cleanupInFlight
     const reaper = this.reaperInFlight
+    const owned = [...this.inFlight.values()]
     if (claiming) await claiming
-    await Promise.all([...this.inFlight.values()].map((item) => item.done))
+    await Promise.all(owned.map((item) => item.done))
     if (cleanup) await cleanup
     if (reaper) await reaper
-    const leftover = await listActiveLeasesForWorker(this.handle, config.CAIRN_WORKER_ID)
-    for (const grant of leftover) {
-      await yieldUnfinishedRun(this.handle, grant)
+    for (const item of owned) {
+      await yieldUnfinishedRun(this.handle, item.grant).catch(() => undefined)
     }
-    await markWorkerStopped(this.handle, config.CAIRN_WORKER_ID).catch(() => undefined)
+    await markWorkerStopped(this.handle, config.CAIRN_WORKER_ID, this.instanceId).catch(() => undefined)
     await this.internalHttp?.close().catch(() => undefined)
     this.internalHttp = undefined
     await this.sessions.shutdown()
@@ -253,7 +260,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
       maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
     })
-    const lostWorkerIds = await markLostWorkers(this.handle, config.CAIRN_WORKER_LOST_AFTER_SECONDS)
+    const lostWorkerIds = await markLostWorkers(this.handle)
     if (lostWorkerIds.length > 0) {
       await markSessionsLostForWorkers(this.handle, lostWorkerIds)
     }
@@ -263,7 +270,10 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   private async beat(): Promise<void> {
     if (this.stopped || this.healing) return
     try {
-      const outcome = await heartbeatWorker(this.handle, config.CAIRN_WORKER_ID, this.instanceId)
+      const outcome = await heartbeatWorker(this.handle, config.CAIRN_WORKER_ID, this.instanceId, {
+        internalBaseUrl: this.advertiseUrl(),
+        liveHandleCount: this.sessions.liveHandleCount(),
+      })
       if (outcome !== 'ok') {
         this.healing = this.healIdentity(outcome).finally(() => {
           this.healing = undefined
@@ -331,7 +341,9 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
         '自愈停浏览器失败，继续重新注册',
       )
     })
+    this.instanceId = randomUUID()
     try {
+      await this.bindInternalHttp()
       await this.register()
     } catch (error) {
       // 重新注册被 WORKER_ID_CONFLICT 挡住 = 自愈期间别人拿走了这个 ID，等同身份被接管。
@@ -342,12 +354,29 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       this.exitProcess(1)
       return
     }
-    await this.bindInternalHttp()
+    try {
+      await this.sessions.reconcileOwn()
+    } catch (error) {
+      this.logger.error(
+        { workerId: config.CAIRN_WORKER_ID, err: error instanceof Error ? error.message : error },
+        '自愈后会话核对失败，本进程退出',
+      )
+      this.exitProcess(1)
+      return
+    }
     this.startClaiming()
     this.logger.log(
       { workerId: config.CAIRN_WORKER_ID, instanceId: this.instanceId },
       'Worker 已以新代重新注册，恢复领取',
     )
+  }
+
+  private advertiseUrl(): string | null {
+    return resolveWorkerAdvertiseUrl({
+      networkMode: config.CAIRN_WORKER_NETWORK_MODE,
+      advertiseUrl: config.CAIRN_WORKER_ADVERTISE_URL,
+      internalPort: config.CAIRN_WORKER_INTERNAL_PORT,
+    })
   }
 
   private async bindInternalHttp(): Promise<void> {
@@ -360,6 +389,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       secret: config.CAIRN_INTERNAL_AUTH_SECRET,
       workerInstanceId: this.instanceId,
       sessions: this.sessions,
+      engine: this.engine,
     })
   }
 

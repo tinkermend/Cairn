@@ -37,7 +37,7 @@ function* walkFiles(dir, extensions = ['.ts', '.js']) {
 export const INVARIANT_RULES = [
   {
     id: 'INV001_ONLY_GET_POST',
-    articles: [12, 18, 19],
+    articles: ['业务接口'],
     title: '平台 API 对外只允许 GET 与 POST',
     rationale: '识途宪法规定控制面接口仅允许 GET 查询与 POST 变更，禁止 PUT/PATCH/DELETE',
     targetDir: 'packages/api/src',
@@ -59,7 +59,7 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV002_WORKER_NO_API_CALLBACK',
-    articles: [12, 19],
+    articles: ['执行分层', '持久化事实与调度'],
     title: 'Worker 执行面严禁通过 API 回调写回执行事实',
     rationale: 'Worker 是执行面，状态必须原子持久化至数据库，Worker 与 API 不得形成双向业务回调',
     targetDir: 'packages/worker/src',
@@ -79,7 +79,7 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV003_SNAPSHOT_IMMUTABLE',
-    articles: [2, 8, 9, 18],
+    articles: ['运行快照'],
     title: '执行期快照绝对不可变 (Snapshot Freeze)',
     rationale: 'Run 启动后必须冻结快照，历史 Run 必须依赖自身 Snapshot 解释，严禁执行期 UPDATE 快照',
     targetDir: 'packages/db/src',
@@ -100,7 +100,7 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV004_SECRET_REDACTION',
-    articles: [15, 18, 19],
+    articles: ['目标与身份', '凭据与授权'],
     title: '控制台身份与目标系统凭据彻底隔离，严禁明文暴露',
     rationale: '目标凭据必须通过 SecretProvider 访问，Evidence 与日志必须自动脱敏，严禁明文字段暴露',
     targetDir: 'packages/shared/src',
@@ -117,7 +117,7 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV005_NO_DB_TESTING_IN_PROD',
-    articles: [18],
+    articles: ['可执行约束'],
     title: '生产业务代码严禁导入 @cairn/db/testing',
     rationale: '测试基础设施与测试夹具仅限测试使用，严禁泄露至生产发布构建中',
     targetDir: 'packages',
@@ -138,7 +138,7 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV006_WORKER_AI_ISOLATION',
-    articles: [9, 16, 18],
+    articles: ['AI 步骤语义', '执行分层', '可执行约束'],
     title: 'Engine / Runtime / WorkerModule 不得导入 Midscene 适配层',
     rationale: 'SDK 与假模型只允许留在 worker/src/ai/。Engine 只认端口契约，装配层不得把 ai/midscene 或 @midscene/ 泄漏进调度与生命周期',
     targetDir: 'packages/worker/src',
@@ -159,7 +159,7 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV007_WEB_NO_WORKER_INTERNAL',
-    articles: [12, 14, 18],
+    articles: ['执行分层', '编写与执行分离'],
     title: 'Web 不得直连 Worker 内部入口或 CDP',
     rationale: '画面与认证控制必须经 API 鉴权转发，Web 不能持有 Worker 地址映射或调试串',
     targetDir: 'packages/web/src',
@@ -180,7 +180,7 @@ export const INVARIANT_RULES = [
   },
   {
     id: 'INV008_API_NO_PLAYWRIGHT',
-    articles: [6, 7, 12],
+    articles: ['执行分层'],
     title: 'API 不得导入 Playwright 或持有 Page',
     rationale: '控制面只转发，正式浏览器对象只属于 Worker',
     targetDir: 'packages/api/src',
@@ -234,7 +234,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   if (violations.length > 0) {
     console.error('\n🚨 【识途宪法看门狗】拦截到违反架构不变量的代码变动：')
     for (const v of violations) {
-      console.error(`\n❌ [${v.ruleId}] (宪法第 ${v.articles.join('/')} 条)`)
+      console.error(`\n❌ [${v.ruleId}] (宪法「${v.articles.join('」「')}」)`)
       console.error(`   文件: ${v.file}`)
       console.error(`   原因: ${v.message}`)
       console.error(`   依据: ${v.rationale}`)

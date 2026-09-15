@@ -66,6 +66,11 @@ export function constraintName(error: unknown): string | undefined {
         'targets.code': 'targets_code_idx',
         'target_accounts.target_id,target_accounts.username': 'target_accounts_target_username_idx',
         'evidences.run_id': 'evidences_run_incomplete_idx',
+        'assistant_conversations.owner_account_id,assistant_conversations.idempotency_key':
+          'assistant_conversations_owner_idem_idx',
+        'assistant_turns.conversation_id,assistant_turns.client_turn_id':
+          'assistant_turns_conversation_client_idx',
+        'assistant_turns.owner_account_id': 'assistant_turns_owner_running_idx',
       }
       return names[columns] ?? columns
     }

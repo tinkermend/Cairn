@@ -115,7 +115,21 @@ export class BrowserStepExecutor implements StepExecutor {
         input && typeof input === 'object' && !Array.isArray(input) && (input.pageAfter === 'same' || input.pageAfter === 'popup')
           ? input.pageAfter
           : step.input.pageAfter
-      return { ok: true, command: { type: 'click', target, ...(pageAfter ? { pageAfter } : {}) } }
+      const extras =
+        input && typeof input === 'object' && !Array.isArray(input) ? input : step.input
+      return {
+        ok: true,
+        command: {
+          type: 'click',
+          target,
+          ...(pageAfter ? { pageAfter } : {}),
+          ...('button' in extras && extras.button ? { button: extras.button as 'left' | 'right' | 'middle' } : {}),
+          ...('clickCount' in extras && extras.clickCount ? { clickCount: extras.clickCount as 1 | 2 } : {}),
+          ...('modifiers' in extras && Array.isArray(extras.modifiers) && extras.modifiers.length
+            ? { modifiers: extras.modifiers as ('Alt' | 'Control' | 'Meta' | 'Shift')[] }
+            : {}),
+        },
+      }
     }
 
     if (step.type === 'fill') {
@@ -146,6 +160,53 @@ export class BrowserStepExecutor implements StepExecutor {
           type: 'assert',
           target: descriptorFrom(input) ?? step.input.target,
           expect: step.input.expect,
+        },
+      }
+    }
+
+    if (step.type === 'select') {
+      const target = descriptorFrom(input) ?? step.input.target
+      const value =
+        input && typeof input === 'object' && !Array.isArray(input) && typeof input.value === 'string'
+          ? input.value
+          : step.input.value
+      return {
+        ok: true,
+        command: {
+          type: 'select',
+          target,
+          by: step.input.by,
+          ...(value !== undefined ? { value } : {}),
+          ...(step.input.index !== undefined ? { index: step.input.index } : {}),
+        },
+      }
+    }
+
+    if (step.type === 'keyboard') {
+      return {
+        ok: true,
+        command: {
+          type: 'keyboard',
+          ...(step.input.target || descriptorFrom(input)
+            ? { target: descriptorFrom(input) ?? step.input.target }
+            : {}),
+          keys: step.input.keys,
+        },
+      }
+    }
+
+    if (step.type === 'wait') {
+      const target = descriptorFrom(input) ?? step.input.target
+      return {
+        ok: true,
+        command: {
+          type: 'wait',
+          kind: step.input.kind,
+          ...(target ? { target } : {}),
+          ...(step.input.urlPattern ? { urlPattern: step.input.urlPattern } : {}),
+          ...(step.input.text ? { text: step.input.text } : {}),
+          ...(step.input.durationMs !== undefined ? { durationMs: step.input.durationMs } : {}),
+          ...(step.input.timeoutMs !== undefined ? { timeoutMs: step.input.timeoutMs } : {}),
         },
       }
     }

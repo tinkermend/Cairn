@@ -40,7 +40,7 @@ function GrantSummary({
 }: {
   grant: ServiceCredentialDto['grants'][number]
 }) {
-  const targets = useQuery({ queryKey: ['targets'], queryFn: fetchTargets })
+  const targets = useQuery({ queryKey: ['targets'], queryFn: () => fetchTargets() })
   const accounts = useQuery({
     queryKey: ['targets', grant.targetId, 'accounts'],
     queryFn: () => fetchTargetAccounts(grant.targetId),

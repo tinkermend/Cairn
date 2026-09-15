@@ -13,7 +13,7 @@ export const STORED_OBJECT_STATUSES = ['pending', 'available', 'purged'] as cons
 export type StoredObjectStatus = (typeof STORED_OBJECT_STATUSES)[number]
 export const storedObjectStatusSchema = z.enum(STORED_OBJECT_STATUSES)
 
-export const PURGE_REASONS = ['expired', 'upload_incomplete'] as const
+export const PURGE_REASONS = ['expired', 'upload_incomplete', 'run_deleted'] as const
 export type PurgeReason = (typeof PURGE_REASONS)[number]
 export const purgeReasonSchema = z.enum(PURGE_REASONS)
 

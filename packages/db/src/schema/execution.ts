@@ -15,6 +15,10 @@ import type {
   ScenarioStatus,
   ScenarioVersionKind,
   StepRunStatus,
+  ResourceDeletedBy,
+  DebugMode,
+  DebugCheckpoint,
+  DebugOverlay,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
@@ -36,12 +40,15 @@ export const scenarios = cairnSchema.table(
     createdByConsoleAccountId: uuid('created_by_console_account_id')
       .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex('scenarios_target_name_idx').on(t.targetId, t.name),
     index('scenarios_target_id_idx').on(t.targetId),
+    index('scenarios_deleted_at_idx').on(t.deletedAt),
   ],
 )
 
@@ -112,6 +119,9 @@ export const runs = cairnSchema.table(
     cancelReason: text('cancel_reason'),
     status: text('status').notNull().$type<RunStatus>(),
     evidenceStatus: text('evidence_status').notNull().default('PENDING').$type<RunEvidenceStatus>(),
+    debugMode: text('debug_mode').notNull().default('runThrough').$type<DebugMode>(),
+    checkpoint: jsonb('checkpoint').$type<DebugCheckpoint>(),
+    debugOverlay: jsonb('debug_overlay').$type<DebugOverlay>(),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
@@ -120,6 +130,8 @@ export const runs = cairnSchema.table(
     context: jsonb('context').$type<Record<string, JsonValue>>().notNull(),
     idempotencyKey: text('idempotency_key'),
     idempotencyDigest: text('idempotency_digest'),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     eventSeq: integer('event_seq').notNull().default(0),
@@ -130,6 +142,7 @@ export const runs = cairnSchema.table(
     index('runs_service_status_idx').on(t.serviceCallerId, t.status),
     index('runs_deadline_idx').on(t.deadlineAt, t.status),
     index('runs_claim_idx').on(t.status, t.createdAt, t.id),
+    index('runs_deleted_at_idx').on(t.deletedAt),
   ],
 )
 

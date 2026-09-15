@@ -2,18 +2,22 @@ import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { executionErrorSchema } from './runtime-error.js'
 import {
+  attemptStatusSchema,
+  debugCheckpointSchema,
+  debugModeSchema,
+  debugOverlaySchema,
   isFinishedRunStatus,
   runInputSchema,
   runSnapshotSchema,
   runStatusSchema,
   stepRunStatusSchema,
-  attemptStatusSchema,
   type RunStatus,
 } from './run.js'
 import { sessionPolicyOverrideSchema, sessionStatusSchema } from './session.js'
 import { executionPolicySchema } from './step.js'
 import { evidenceMetadataSchema, runEvidenceStatusSchema, type RunEvidenceStatus } from './evidence.js'
 import { evidencePolicySchema } from './evidence-policy.js'
+import { resourceDeletedBySchema } from './resource-lifecycle.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
 export const RUN_ERROR_CODES = [
@@ -23,8 +27,14 @@ export const RUN_ERROR_CODES = [
   'RUN_ACCOUNT_DISABLED',
   'RUN_ACCOUNT_REQUIRED',
   'RUN_NOT_REVIEWABLE',
+  'RUN_NOT_TERMINAL',
+  'RUN_BUSY',
+  'RESOURCE_BUSY',
+  'RESOURCE_DELETED',
+  'DELETE_SCOPE_EXPANDED',
   'RUN_NOT_WAITING_FOR_AUTH',
   'WORKER_UNREACHABLE',
+  'WORKER_RESULT_UNKNOWN',
   'WORKER_GENERATION_MISMATCH',
   'AUTH_HOLD_UNBOUND',
   'AUTH_CONTROL_HELD',
@@ -38,6 +48,19 @@ export const RUN_ERROR_CODES = [
   'AI_CONFIG_INVALID',
   'AI_EXECUTE_FORBIDDEN',
   'AI_BUDGET_EXCEEDED',
+  'DEBUG_MODE_NOT_ALLOWED',
+  'DEBUG_NOT_ALLOWED',
+  'RUN_NOT_HOLDING',
+  'WAITING_FOR_STABLE_HOLD',
+  'STEP_CANNOT_RETRY',
+  'OBSERVE_TARGET_MISMATCH',
+  'OBSERVE_TARGET_NOT_FOUND',
+  'OBSERVE_GRANT_EXPIRED',
+  'DEBUG_WORKER_LOST',
+  'DEBUG_SESSION_EXPIRED',
+  'DEBUG_SESSION_TIMEOUT',
+  'SIDE_EFFECT_CONFIRM_REQUIRED',
+  'PAGE_CHANGED_ACK_REQUIRED',
 ] as const
 export type RunErrorCode = (typeof RUN_ERROR_CODES)[number]
 
@@ -55,6 +78,7 @@ export const createRunBodySchema = z.strictObject({
   sessionPolicy: sessionPolicyOverrideSchema.optional(),
   evidencePolicy: evidencePolicySchema.optional(),
   idempotencyKey: idempotencyKeySchema.optional(),
+  debugMode: debugModeSchema.optional(),
 })
 export type CreateRunBody = z.infer<typeof createRunBodySchema>
 
@@ -66,6 +90,7 @@ export const trialRunBodySchema = z.strictObject({
   sessionPolicy: sessionPolicyOverrideSchema.optional(),
   evidencePolicy: evidencePolicySchema.optional(),
   idempotencyKey: idempotencyKeySchema.optional(),
+  debugMode: debugModeSchema.optional(),
 })
 export type TrialRunBody = z.infer<typeof trialRunBodySchema>
 
@@ -121,6 +146,9 @@ export const runSummarySchema = z.object({
   targetAccountName: z.string().min(1).max(128).nullable(),
   scenarioId: entityIdSchema,
   scenarioName: z.string().min(1).max(128),
+  targetDeleted: z.boolean().optional(),
+  scenarioDeleted: z.boolean().optional(),
+  targetAccountDeleted: z.boolean().optional(),
   scenarioVersionId: entityIdSchema,
   scenarioVersionKind: z.enum(['published', 'trial']).optional(),
   createdAt: utcInstantSchema,
@@ -128,6 +156,9 @@ export const runSummarySchema = z.object({
   finishedAt: instantOrNull,
   evidenceStatus: runEvidenceStatusSchema,
   lease: runListLeaseSchema,
+  debugMode: debugModeSchema.default('runThrough'),
+  deletedAt: instantOrNull.optional(),
+  deletedBy: resourceDeletedBySchema.nullable().optional(),
 })
 export type RunSummaryDto = z.infer<typeof runSummarySchema>
 
@@ -163,8 +194,25 @@ export const runDetailSchema = runSummarySchema
     stepRuns: z.array(stepRunDtoSchema),
     lease: runDetailLeaseSchema,
     placement: runPlacementSchema,
+    checkpoint: debugCheckpointSchema.nullable().optional(),
+    debugOverlay: debugOverlaySchema.nullable().optional(),
   })
 export type RunDetailDto = z.infer<typeof runDetailSchema>
+
+export const runListQuerySchema = z.object({
+  search: z.string().trim().optional(),
+  targetId: entityIdSchema.optional(),
+  scenarioId: entityIdSchema.optional(),
+  status: runStatusSchema.optional(),
+  evidenceStatus: runEvidenceStatusSchema.optional(),
+  isTrial: z.coerce.boolean().optional(),
+  sourceKind: z.enum(['console', 'service']).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().min(1).optional(),
+})
+export type RunListQuery = z.input<typeof runListQuerySchema>
 
 export const runListResponseSchema = z.object({
   items: z.array(runSummarySchema),

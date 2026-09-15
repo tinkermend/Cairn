@@ -43,7 +43,7 @@ export const consoleAccountRoles = cairnSchema.table(
       .notNull()
       .references(() => consoleRoles.id, { onDelete: 'restrict' }),
     assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
-    /** 同表多外键用角色前缀区分，见 CLAUDE.md「数据库约定」 */
+    /** 同表多外键用角色前缀区分 */
     assignedByConsoleAccountId: uuid('assigned_by_console_account_id').references(
       () => consoleAccounts.id,
       { onDelete: 'set null' },

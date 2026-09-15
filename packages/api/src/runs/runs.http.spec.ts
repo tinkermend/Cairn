@@ -82,6 +82,43 @@ function mockService() {
     resumeAuth: vi.fn(async () => ({ ...detail, status: 'RECOVERING' })),
     evidence: vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] })),
     evidenceContent: vi.fn(),
+    previewDelete: vi.fn(async () => ({ previewToken: 'tok', counts: {}, blockers: [] })),
+    delete: vi.fn(async () => ({
+      resourceId: detail.id,
+      resourceType: 'run' as const,
+      status: 'completed' as const,
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+      lastError: null,
+      completedAt: '2026-09-10T00:00:00.000Z',
+    })),
+    cleanupStatus: vi.fn(async () => ({
+      resourceId: detail.id,
+      resourceType: 'run' as const,
+      status: 'completed' as const,
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+      lastError: null,
+      completedAt: '2026-09-10T00:00:00.000Z',
+    })),
+    retryCleanup: vi.fn(async () => ({
+      resourceId: detail.id,
+      resourceType: 'run' as const,
+      status: 'completed' as const,
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+      lastError: null,
+      completedAt: '2026-09-10T00:00:00.000Z',
+    })),
   }
 }
 
@@ -408,6 +445,25 @@ describe('Runs HTTP', () => {
       }),
     )
     expect(res.request.url).not.toMatch(/token=|access_token=/)
+    await app.close()
+  })
+
+  it('删除无对象返回 200，有待清理对象返回 202', async () => {
+    const service = mockService()
+    const app = await buildApp(admin, service)
+    await request(app.getHttpServer()).post(`/runs/${detail.id}/delete`).expect(200)
+    service.delete.mockResolvedValueOnce({
+      resourceId: detail.id,
+      resourceType: 'run',
+      status: 'pending',
+      totalObjects: 2,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 128,
+      purgedBytes: 0,
+    })
+    const accepted = await request(app.getHttpServer()).post(`/runs/${detail.id}/delete`).expect(202)
+    expect(accepted.body.totalObjects).toBe(2)
     await app.close()
   })
 })

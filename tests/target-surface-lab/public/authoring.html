@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Authoring Lab</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/lab-events.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1 data-testid="page-title">编写观察夹具</h1>
+      <label>城市
+        <select id="city" aria-label="城市">
+          <option value="">请选择</option>
+          <option value="bj">北京</option>
+          <option value="sh">上海</option>
+        </select>
+      </label>
+      <label>搜索 <input id="search" aria-label="搜索" /></label>
+      <button type="button" data-testid="go">搜索</button>
+      <ul>
+        <li>甲订单 <button type="button" class="dup">删除</button></li>
+        <li>乙订单 <button type="button" class="dup">删除</button></li>
+      </ul>
+      <label>密码 <input id="secret" type="password" autocomplete="current-password" aria-label="密码" /></label>
+      <p id="late" hidden>已出现</p>
+      <button type="button" id="reveal">显示</button>
+      <iframe name="inner" src="/frame-inner.html" title="内嵌"></iframe>
+    </main>
+    <script>
+      document.getElementById('city').addEventListener('change', (event) => {
+        document.getElementById('late').dataset.city = event.target.value
+      })
+      document.getElementById('reveal').addEventListener('click', () => {
+        document.getElementById('late').hidden = false
+      })
+      document.getElementById('search').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') document.getElementById('late').dataset.enter = '1'
+      })
+    </script>
+  </body>
+</html>

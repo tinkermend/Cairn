@@ -5,8 +5,11 @@ import {
   authControlInputBodySchema,
   authControlInputReceiptSchema,
   authControlTokenBodySchema,
+  debugActionSchema,
   createRunBodySchema,
   encodeRunEventCursor,
+  observeOperationSchema,
+  targetObservationSchema,
   managedBrowserFrameSchema,
   managedBrowserMetaSchema,
   persistedRunEventSchema,
@@ -22,6 +25,9 @@ import {
   type AuthControlInputBody,
   type AuthControlTokenBody,
   type CreateRunBody,
+  type DebugAction,
+  type ObserveOperation,
+  type TargetObservation,
   type ManagedBrowserFrame,
   type ManagedBrowserMeta,
   type PersistedRunEvent,
@@ -29,18 +35,47 @@ import {
   type ReviewRunBody,
   type RunDetailDto,
   type RunEvidenceListResponse,
+  type RunListQuery,
   type RunListResponse,
   type RunObservation,
   type RunStreamControl,
+  cleanupStatusResponseSchema,
+  deletePreviewResponseSchema,
+  deleteResourceBodySchema,
+  type CleanupStatusResponse,
+  type DeletePreviewResponse,
+  type DeleteResourceBody,
 } from '@cairn/shared'
 import { z } from 'zod'
-import { ApiRequestError, apiFetch, apiFetchBlob } from '@/lib/api-client'
+import { ApiRequestError, apiFetch, apiFetchBlob, toQueryString } from '@/lib/api-client'
 import { REQUEST_ID_HEADER, apiErrorSchema } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { readSseStream } from '@/lib/sse'
 
-export function fetchRuns(): Promise<RunListResponse> {
-  return apiFetch('/api/runs', runListResponseSchema)
+export function fetchRuns(query?: RunListQuery): Promise<RunListResponse> {
+  return apiFetch(`/api/runs${toQueryString(query)}`, runListResponseSchema)
+}
+
+export function previewDeleteRun(id: string): Promise<DeletePreviewResponse> {
+  return apiFetch(`/api/runs/${id}/delete-preview`, deletePreviewResponseSchema)
+}
+
+export function deleteRun(id: string, body?: DeleteResourceBody): Promise<CleanupStatusResponse> {
+  return apiFetch(`/api/runs/${id}/delete`, cleanupStatusResponseSchema, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(deleteResourceBodySchema.parse(body)) : undefined,
+  })
+}
+
+export function fetchRunCleanup(id: string): Promise<CleanupStatusResponse> {
+  return apiFetch(`/api/runs/${id}/cleanup`, cleanupStatusResponseSchema)
+}
+
+export function retryRunCleanup(id: string): Promise<CleanupStatusResponse> {
+  return apiFetch(`/api/runs/${id}/cleanup/retry`, cleanupStatusResponseSchema, {
+    method: 'POST',
+  })
 }
 
 export function fetchRun(id: string): Promise<RunDetailDto> {
@@ -149,6 +184,22 @@ export function reviewRun(id: string, body: ReviewRunBody): Promise<RunDetailDto
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(reviewRunBodySchema.parse(body)),
+  })
+}
+
+export function observeRun(id: string, body: ObserveOperation): Promise<TargetObservation> {
+  return apiFetch(`/api/runs/${id}/observe`, targetObservationSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(observeOperationSchema.parse(body)),
+  })
+}
+
+export function debugRun(id: string, body: DebugAction): Promise<RunDetailDto> {
+  return apiFetch(`/api/runs/${id}/debug`, runDetailSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(debugActionSchema.parse(body)),
   })
 }
 

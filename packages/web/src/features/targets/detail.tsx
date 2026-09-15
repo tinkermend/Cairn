@@ -1,8 +1,8 @@
-import { useState, type ReactNode } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMemo, useState, type ReactNode } from 'react'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import type { TargetAccountDto } from '@cairn/shared'
-import { ArrowLeft, Plus, Users } from 'lucide-react'
+import { ArrowLeft, Plus, Search, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -10,9 +10,18 @@ import {
   deleteTargetAccount,
   fetchTarget,
   fetchTargetAccounts,
+  fetchTargetCleanup,
+  previewDeleteTarget,
+  retryTargetCleanup,
 } from '@/lib/targets-api'
+import { CleanupStatusIndicator } from '@/components/cleanup-status-indicator'
+import { useCan } from '@/hooks/use-permissions'
+import { useCursorPage } from '@/hooks/use-cursor-page'
+import { CursorPagination } from '@/components/data-table'
+import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Table,
@@ -47,13 +56,33 @@ export function TargetDetailPage() {
   const { targetId } = route.useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const page = useCursorPage()
+  const [accountSearch, setAccountSearch] = useState('')
+  const [accountStatus, setAccountStatus] = useState<'all' | 'active' | 'disabled'>('all')
+  const accountFilters = useMemo(
+    () => ({
+      search: accountSearch.trim() || undefined,
+      status: accountStatus === 'all' ? undefined : accountStatus,
+      limit: page.pageSize,
+      cursor: page.cursor,
+    }),
+    [accountSearch, accountStatus, page.pageSize, page.cursor],
+  )
   const targetQuery = useQuery({
     queryKey: ['target', targetId],
     queryFn: () => fetchTarget(targetId),
   })
+  const canDeleteTarget = useCan('target:delete')
+  const cleanupQuery = useQuery({
+    queryKey: ['targets', targetId, 'cleanup'],
+    queryFn: () => fetchTargetCleanup(targetId),
+    enabled: targetQuery.isError,
+  })
+  const deletedView = targetQuery.isError && !targetQuery.data && cleanupQuery.isSuccess
   const accountsQuery = useQuery({
-    queryKey: ['target', targetId, 'accounts'],
-    queryFn: () => fetchTargetAccounts(targetId),
+    queryKey: ['target', targetId, 'accounts', accountFilters],
+    queryFn: () => fetchTargetAccounts(targetId, accountFilters),
+    placeholderData: keepPreviousData,
   })
   const [editOpen, setEditOpen] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
@@ -67,6 +96,16 @@ export function TargetDetailPage() {
 
   const target = targetQuery.data
   const accounts = accountsQuery.data?.items ?? []
+  const accountsFiltered = Boolean(accountSearch.trim() || accountStatus !== 'all')
+
+  const handleAccountSearchChange = (value: string) => {
+    setAccountSearch(value)
+    page.reset()
+  }
+  const handleAccountStatusChange = (value: 'all' | 'active' | 'disabled') => {
+    setAccountStatus(value)
+    page.reset()
+  }
 
   return (
     <>
@@ -106,6 +145,17 @@ export function TargetDetailPage() {
         />
         {targetQuery.isPending ? (
           <PageSkeleton />
+        ) : deletedView && cleanupQuery.data ? (
+          <section className='rounded-lg border border-border-card bg-card p-5 shadow-card'>
+            <p className='text-body'>目标系统已删除。业务记录不可访问，附件按清理状态处理。</p>
+            <div className='mt-3'>
+              <CleanupStatusIndicator
+                status={cleanupQuery.data}
+                onRetry={canDeleteTarget ? () => retryTargetCleanup(targetId) : undefined}
+                onStatusUpdated={() => void cleanupQuery.refetch()}
+              />
+            </div>
+          </section>
         ) : targetQuery.isError || !target ? (
           <QueryErrorState
             title='无法加载目标系统'
@@ -144,7 +194,7 @@ export function TargetDetailPage() {
                         编辑
                       </Button>
                     </Can>
-                    <Can permission='target:delete'>
+                    <Can allOf={['target:delete', 'run:delete']}>
                       <Button
                         variant='ghost'
                         size='sm'
@@ -240,16 +290,45 @@ export function TargetDetailPage() {
                   <h2 className='flex items-center gap-2 text-section font-semibold'>
                     <Users className='size-4 text-primary' />
                     目标账号
-                    <span className='ml-auto text-small font-normal text-muted-foreground'>
-                      {accountsQuery.isSuccess
-                        ? `${accounts.length} 个账号`
-                        : ''}
-                    </span>
                   </h2>
                   <p className='text-small text-muted-foreground'>
                     用于登录「{target.name}
                     」。凭据只写不读，与控制台成员分别管理。
                   </p>
+                </div>
+                <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-divider p-4'>
+                  <div className='flex flex-wrap gap-1' aria-label='账号状态筛选'>
+                    {(
+                      [
+                        ['all', '全部账号'],
+                        ['active', '已启用'],
+                        ['disabled', '已停用'],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <Button
+                        key={value}
+                        variant={accountStatus === value ? 'secondary' : 'ghost'}
+                        size='sm'
+                        aria-pressed={accountStatus === value}
+                        onClick={() => handleAccountStatusChange(value)}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className='relative w-full sm:w-64'>
+                    <Search
+                      aria-hidden='true'
+                      className='pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground'
+                    />
+                    <Input
+                      aria-label='搜索目标账号'
+                      placeholder='搜索登录名或显示名'
+                      value={accountSearch}
+                      onChange={(event) => handleAccountSearchChange(event.target.value)}
+                      className='pl-9'
+                    />
+                  </div>
                 </div>
                 {accountsQuery.isPending ? (
                   <PageSkeleton />
@@ -262,8 +341,26 @@ export function TargetDetailPage() {
                   />
                 ) : accounts.length === 0 ? (
                   <EmptyState
-                    title='该系统还没有目标账号'
-                    description='添加登录该外部系统所用的账号。密码只写不读。'
+                    title={accountsFiltered ? '没有匹配的目标账号' : '该系统还没有目标账号'}
+                    description={
+                      accountsFiltered
+                        ? '试试其他关键词，或清除筛选条件。'
+                        : '添加登录该外部系统所用的账号。密码只写不读。'
+                    }
+                    action={
+                      accountsFiltered ? (
+                        <Button
+                          variant='outline'
+                          onClick={() => {
+                            setAccountSearch('')
+                            setAccountStatus('all')
+                            page.reset()
+                          }}
+                        >
+                          清除筛选
+                        </Button>
+                      ) : undefined
+                    }
                   />
                 ) : (
                   <div className='overflow-hidden'>
@@ -341,6 +438,23 @@ export function TargetDetailPage() {
                         ))}
                       </TableBody>
                     </Table>
+                    <div className='flex flex-wrap items-center justify-between border-t border-border-divider px-4 py-3 gap-3'>
+                      <p role='status' className='text-label text-muted-foreground'>
+                        本页 {accounts.length} 条
+                      </p>
+                      <CursorPagination
+                        pageIndex={page.pageIndex}
+                        pageSize={page.pageSize}
+                        hasPreviousPage={page.pageIndex > 0}
+                        hasNextPage={Boolean(accountsQuery.data?.nextCursor)}
+                        updating={accountsQuery.isFetching && accountsQuery.isPlaceholderData}
+                        onPageSizeChange={page.setPageSize}
+                        onPreviousPage={page.goPrev}
+                        onNextPage={() => {
+                          if (accountsQuery.data?.nextCursor) page.goNext(accountsQuery.data.nextCursor)
+                        }}
+                      />
+                    </div>
                   </div>
                 )}
               </section>
@@ -364,32 +478,22 @@ export function TargetDetailPage() {
           </>
         )}
       </Main>
-      <ConfirmDialog
+      <ResourceDeleteDialog
         open={removingTarget}
         onOpenChange={setRemovingTarget}
-        title='删除目标系统'
-        desc={
-          target
-            ? `确定删除「${target.name}」吗？其下仍有目标账号时无法删除。`
-            : ''
-        }
-        confirmText='删除'
-        destructive
-        isLoading={saving}
-        handleConfirm={() => {
-          setSaving(true)
-          void deleteTarget(targetId)
-            .then(async () => {
-              toast.success('已删除')
-              await queryClient.invalidateQueries({ queryKey: ['targets'] })
-              await navigate({ to: '/targets' })
-            })
-            .catch((error) => {
-              toast.error(
-                error instanceof ApiRequestError ? error.message : '删除失败'
-              )
-            })
-            .finally(() => setSaving(false))
+        resourceId={targetId}
+        resourceName={target ? `${target.name}（${target.code}）` : ''}
+        resourceType='target'
+        previewFn={() => previewDeleteTarget(targetId)}
+        deleteFn={(body) => deleteTarget(targetId, body)}
+        onSuccess={async (result) => {
+          await queryClient.invalidateQueries({ queryKey: ['targets'] })
+          await queryClient.invalidateQueries({ queryKey: ['target', targetId] })
+          if (result && typeof result === 'object' && 'totalObjects' in result && result.totalObjects > 0) {
+            await queryClient.invalidateQueries({ queryKey: ['targets', targetId, 'cleanup'] })
+            return
+          }
+          await navigate({ to: '/targets' })
         }}
       />
       <ConfirmDialog
@@ -413,6 +517,7 @@ export function TargetDetailPage() {
             .then(async () => {
               toast.success('已删除')
               setRemovingAccount(null)
+              if (accounts.length <= 1 && page.pageIndex > 0) page.goPrev()
               await queryClient.invalidateQueries({
                 queryKey: ['target', targetId],
               })

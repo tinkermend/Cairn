@@ -78,7 +78,55 @@ function mockService() {
     getTarget: vi.fn(async () => target),
     createTarget: vi.fn(async () => target),
     updateTarget: vi.fn(async () => target),
-    deleteTarget: vi.fn(async () => undefined),
+    previewDeleteTarget: vi.fn(async () => ({
+      resourceId: target.id,
+      resourceType: 'target' as const,
+      activeRuns: 0,
+      activeLeases: 0,
+      cascadeSummary: {
+        scenarios: 0,
+        targetAccounts: 0,
+        recordingDrafts: 0,
+        runs: 0,
+        storedObjects: 0,
+      },
+    })),
+    deleteTarget: vi.fn(async () => ({
+      resourceId: target.id,
+      resourceType: 'target' as const,
+      status: 'completed' as const,
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+      lastError: null,
+      completedAt: now,
+    })),
+    getTargetCleanupStatus: vi.fn(async () => ({
+      resourceId: target.id,
+      resourceType: 'target' as const,
+      status: 'completed' as const,
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+      lastError: null,
+      completedAt: now,
+    })),
+    retryTargetCleanup: vi.fn(async () => ({
+      resourceId: target.id,
+      resourceType: 'target' as const,
+      status: 'completed' as const,
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+      lastError: null,
+      completedAt: now,
+    })),
     listAccounts: vi.fn(async () => ({ items: [account] })),
     createAccount: vi.fn(async () => account),
     updateAccount: vi.fn(async () => ({ ...account, hasPassword: false })),
@@ -137,6 +185,23 @@ describe('Targets HTTP', () => {
     }
   })
 
+  it('只有 target:delete 不能删除目标系统', async () => {
+    const onlyTargetDelete = await buildApp(
+      {
+        ...adminPrincipal,
+        id: 'acc-target-delete',
+        permissions: ['target:read', 'target:delete'],
+      },
+      service,
+    )
+    try {
+      await request(onlyTargetDelete.getHttpServer()).post(`/targets/${target.id}/delete`).expect(403)
+      expect(service.deleteTarget).not.toHaveBeenCalled()
+    } finally {
+      await onlyTargetDelete.close()
+    }
+  })
+
   it('viewer 可读不能写', async () => {
     await request(viewerApp.getHttpServer()).get('/targets').expect(200)
     await request(viewerApp.getHttpServer())
@@ -174,12 +239,13 @@ describe('Targets HTTP', () => {
       .expect(400)
   })
 
-  it('更新返回 200，删除返回 204', async () => {
+  it('更新返回 200，删除返回 200', async () => {
     await request(adminApp.getHttpServer())
       .post(`/targets/${target.id}`)
       .send({ name: '新名称' })
       .expect(200)
-    await request(adminApp.getHttpServer()).post(`/targets/${target.id}/delete`).expect(204)
+    const res = await request(adminApp.getHttpServer()).post(`/targets/${target.id}/delete`).expect(200)
+    expect(res.body).toMatchObject({ resourceId: target.id, resourceType: 'target' })
   })
 
   it('创建可带 loginFields 与首个账号，响应无 password 字段', async () => {
@@ -306,14 +372,14 @@ describe('Targets HTTP', () => {
       .expect(400)
   })
 
-  it('更新账号返回 200，删除账号返回 204', async () => {
+  it('更新账号返回 200，删除账号返回 200', async () => {
     await request(adminApp.getHttpServer())
       .post(`/targets/${target.id}/accounts/${account.id}`)
       .send({ displayName: '值班' })
       .expect(200)
     await request(adminApp.getHttpServer())
       .post(`/targets/${target.id}/accounts/${account.id}/delete`)
-      .expect(204)
+      .expect(200)
   })
 
   it('GET 账号列表无 password 字段', async () => {
@@ -322,5 +388,20 @@ describe('Targets HTTP', () => {
       .expect(200)
     expect(res.body.items[0]).not.toHaveProperty('password')
     expect(res.body.items[0]).toHaveProperty('hasPassword')
+  })
+
+  it('删除有待清理对象时返回 202', async () => {
+    service.deleteTarget.mockResolvedValueOnce({
+      resourceId: target.id,
+      resourceType: 'target',
+      status: 'pending',
+      totalObjects: 3,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 512,
+      purgedBytes: 0,
+    })
+    const res = await request(adminApp.getHttpServer()).post(`/targets/${target.id}/delete`).expect(202)
+    expect(res.body.totalObjects).toBe(3)
   })
 })

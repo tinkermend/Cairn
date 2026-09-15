@@ -6,6 +6,7 @@ import { and, asc, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm'
 import {
   DEFAULT_BROWSER_MAX_SESSIONS,
   isFinishedRunStatus,
+  nextHandleMismatchStreak,
   runGrantSchema,
   type RunGrant,
   type RunLeaseErrorCode,
@@ -31,6 +32,13 @@ export type WorkerRecord = {
   capacity: number
   maxSessions: number
   heartbeatAt: Date
+  internalBaseUrl: string | null
+  lostAfterSeconds: number | null
+  heartbeatExpiresAt: Date | null
+  liveHandleCount: number | null
+  sampledSlotCount: number | null
+  handleMismatchStreak: number
+  handleSampledAt: Date | null
 }
 
 export type RegisterWorkerResult = {
@@ -46,7 +54,99 @@ function toWorker(row: WorkerRow): WorkerRecord {
     capacity: row.capacity,
     maxSessions: row.maxSessions,
     heartbeatAt: row.heartbeatAt,
+    internalBaseUrl: row.internalBaseUrl,
+    lostAfterSeconds: row.lostAfterSeconds,
+    heartbeatExpiresAt: row.heartbeatExpiresAt,
+    liveHandleCount: row.liveHandleCount,
+    sampledSlotCount: row.sampledSlotCount,
+    handleMismatchStreak: row.handleMismatchStreak,
+    handleSampledAt: row.liveHandleCount === null && row.sampledSlotCount === null ? null : row.heartbeatAt,
   }
+}
+
+function registrationValues(input: {
+  instanceId: string
+  capacity: number
+  maxSessions?: number
+  lostAfterSeconds: number
+  internalBaseUrl?: string | null
+  now: Date
+}) {
+  const expires = new Date(input.now.getTime() + input.lostAfterSeconds * 1000)
+  return {
+    instanceId: input.instanceId,
+    status: 'READY' as const,
+    capacity: input.capacity,
+    maxSessions: input.maxSessions ?? DEFAULT_BROWSER_MAX_SESSIONS,
+    heartbeatAt: input.now,
+    startedAt: input.now,
+    updatedAt: input.now,
+    stoppedAt: null,
+    internalBaseUrl: input.internalBaseUrl ?? null,
+    lostAfterSeconds: input.lostAfterSeconds,
+    heartbeatExpiresAt: expires,
+    liveHandleCount: null,
+    sampledSlotCount: null,
+    handleMismatchStreak: 0,
+  }
+}
+
+function canTakeOver(existing: WorkerRow, now: Date): boolean {
+  if (existing.status === 'STOPPED') return true
+  if (!existing.heartbeatExpiresAt) return false
+  return existing.heartbeatExpiresAt.getTime() <= now.getTime()
+}
+
+async function isolateOrphanedSessionsTx(
+  tx: Db,
+  workerId: string,
+  currentInstanceId: string,
+): Promise<number> {
+  const { browserSessions, sessionLeases, workers } = schemaFor(tx)
+  const [current] = await locked(
+    tx,
+    tx.select({ instanceId: workers.instanceId }).from(workers).where(eq(workers.id, workerId)),
+  )
+  if (!current || current.instanceId !== currentInstanceId) return 0
+  const now = await clockNow(tx)
+  const rows = await updateRows(
+    tx,
+    browserSessions,
+    {
+      status: 'LOST',
+      updatedAt: now,
+      closeReason: 'owner_instance_replaced',
+      version: sql`${browserSessions.version} + 1`,
+    },
+    and(
+      eq(browserSessions.ownerWorkerId, workerId),
+      inArray(browserSessions.status, ['CREATING', 'OPEN', 'CLOSING']),
+      or(
+        isNull(browserSessions.ownerWorkerInstanceId),
+        sql`${browserSessions.ownerWorkerInstanceId} <> ${currentInstanceId}`,
+      ),
+    ),
+    { id: browserSessions.id },
+  )
+  if (rows.length > 0) {
+    await updateRows(
+      tx,
+      sessionLeases,
+      {
+        status: 'REVOKED',
+        releasedAt: now,
+        releaseReason: 'owner_instance_replaced',
+      },
+      and(
+        eq(sessionLeases.status, 'ACTIVE'),
+        inArray(
+          sessionLeases.sessionId,
+          rows.map((row) => row.id),
+        ),
+      ),
+    )
+  }
+  return rows.length
 }
 
 function toGrant(
@@ -69,48 +169,36 @@ export async function registerWorker(
     capacity: number
     maxSessions?: number
     lostAfterSeconds: number
+    internalBaseUrl?: string | null
   },
 ): Promise<RegisterWorkerResult> {
   const { runLeases, workers } = schemaFor(db)
   return db
     .transaction(async (tx) => {
-      const now = await clockNow(tx as unknown as Db)
       const [existing] = await locked(
         tx,
         tx.select().from(workers).where(eq(workers.id, input.workerId)),
       )
-      if (existing) {
-        const ageSeconds = (now.getTime() - new Date(existing.heartbeatAt).getTime()) / 1000
-        if (existing.instanceId !== input.instanceId && ageSeconds < input.lostAfterSeconds) {
-          throw conflict(WORKER_ID_CONFLICT, `Worker ${input.workerId} 仍有新鲜心跳`)
-        }
+      const now = await clockNow(tx as unknown as Db)
+      const values = registrationValues({ ...input, now })
+
+      if (existing && existing.instanceId === input.instanceId) {
+        const [row] = await tx.select().from(workers).where(eq(workers.id, input.workerId)).limit(1)
+        return { worker: toWorker(row!), revokedRunIds: [] }
+      }
+
+      if (existing && existing.instanceId !== input.instanceId && !canTakeOver(existing, now)) {
+        throw conflict(WORKER_ID_CONFLICT, `Worker ${input.workerId} 仍有有效登记`)
       }
 
       if (!existing) {
         await tx.insert(workers).values({
           id: input.workerId,
-          instanceId: input.instanceId,
-          status: 'READY',
-          capacity: input.capacity,
-          maxSessions: input.maxSessions ?? DEFAULT_BROWSER_MAX_SESSIONS,
-          heartbeatAt: now,
-          startedAt: now,
-          updatedAt: now,
+          ...values,
         })
       } else {
-        await tx
-          .update(workers)
-          .set({
-            instanceId: input.instanceId,
-            status: 'READY',
-            capacity: input.capacity,
-            maxSessions: input.maxSessions ?? DEFAULT_BROWSER_MAX_SESSIONS,
-            heartbeatAt: now,
-            startedAt: now,
-            updatedAt: now,
-            stoppedAt: null,
-          })
-          .where(eq(workers.id, input.workerId))
+        await tx.update(workers).set(values).where(eq(workers.id, input.workerId))
+        await isolateOrphanedSessionsTx(tx as unknown as Db, input.workerId, input.instanceId)
       }
 
       const revoked = await updateRows(
@@ -150,23 +238,63 @@ export async function heartbeatWorker(
   db: Db,
   workerId: string,
   instanceId: string,
+  telemetry?: { internalBaseUrl?: string | null; liveHandleCount?: number | null },
 ): Promise<WorkerHeartbeatOutcome> {
-  const { workers } = schemaFor(db)
-  const now = await clockNow(db)
-  const [row] = await updateRows(
-    db,
-    workers,
-    { heartbeatAt: now, updatedAt: now },
-    and(eq(workers.id, workerId), eq(workers.instanceId, instanceId), eq(workers.status, 'READY')),
-    { id: workers.id },
-  )
-  if (row) return 'ok'
-  const [current] = await db
-    .select({ instanceId: workers.instanceId })
-    .from(workers)
-    .where(eq(workers.id, workerId))
-    .limit(1)
-  return current && current.instanceId !== instanceId ? 'instance_taken' : 'lost'
+  const { workers, browserSessions } = schemaFor(db)
+  return db.transaction(async (tx) => {
+    const [current] = await locked(
+      tx,
+      tx.select().from(workers).where(eq(workers.id, workerId)),
+    )
+    const now = await clockNow(tx as unknown as Db)
+    if (!current) return 'lost'
+    if (current.instanceId !== instanceId) return 'instance_taken'
+    if (current.status !== 'READY') return 'lost'
+    if (!current.heartbeatExpiresAt || current.heartbeatExpiresAt.getTime() <= now.getTime()) {
+      return 'lost'
+    }
+    const lostAfter = current.lostAfterSeconds
+    if (!lostAfter) return 'lost'
+
+    const occupied = await tx
+      .select({ id: browserSessions.id })
+      .from(browserSessions)
+      .where(
+        and(
+          eq(browserSessions.ownerWorkerId, workerId),
+          inArray(browserSessions.status, ['CREATING', 'OPEN', 'CLOSING']),
+        ),
+      )
+    const liveHandleCount = telemetry?.liveHandleCount ?? null
+    const sampledSlotCount = liveHandleCount === null ? null : occupied.length
+    const streak = nextHandleMismatchStreak({
+      previous: current.handleMismatchStreak,
+      liveHandleCount,
+      sampledSlotCount,
+    })
+
+    const [row] = await updateRows(
+      tx,
+      workers,
+      {
+        heartbeatAt: now,
+        heartbeatExpiresAt: new Date(now.getTime() + lostAfter * 1000),
+        updatedAt: now,
+        internalBaseUrl: telemetry?.internalBaseUrl ?? current.internalBaseUrl,
+        liveHandleCount,
+        sampledSlotCount,
+        handleMismatchStreak: streak,
+      },
+      and(
+        eq(workers.id, workerId),
+        eq(workers.instanceId, instanceId),
+        eq(workers.status, 'READY'),
+        sql`${workers.heartbeatExpiresAt} > ${databaseNow(tx as unknown as Db)}`,
+      ),
+      { id: workers.id },
+    )
+    return row ? 'ok' : 'lost'
+  })
 }
 
 export async function getWorkerById(db: Db, workerId: string): Promise<WorkerRecord | null> {
@@ -175,25 +303,45 @@ export async function getWorkerById(db: Db, workerId: string): Promise<WorkerRec
   return row ? toWorker(row) : null
 }
 
-export async function markWorkerDraining(db: Db, workerId: string): Promise<void> {
+export async function markWorkerDraining(
+  db: Db,
+  workerId: string,
+  instanceId: string,
+): Promise<boolean> {
   const { workers } = schemaFor(db)
-  const now = new Date()
-  await db
-    .update(workers)
-    .set({ status: 'DRAINING', updatedAt: now })
-    .where(and(eq(workers.id, workerId), eq(workers.status, 'READY')))
+  const now = await clockNow(db)
+  const [row] = await updateRows(
+    db,
+    workers,
+    { status: 'DRAINING', updatedAt: now },
+    and(eq(workers.id, workerId), eq(workers.instanceId, instanceId), eq(workers.status, 'READY')),
+    { id: workers.id },
+  )
+  return row !== undefined
 }
 
-export async function markWorkerStopped(db: Db, workerId: string): Promise<void> {
+export async function markWorkerStopped(
+  db: Db,
+  workerId: string,
+  instanceId: string,
+): Promise<boolean> {
   const { workers } = schemaFor(db)
-  const now = new Date()
-  await db
-    .update(workers)
-    .set({ status: 'STOPPED', stoppedAt: now, updatedAt: now })
-    .where(eq(workers.id, workerId))
+  const now = await clockNow(db)
+  const [row] = await updateRows(
+    db,
+    workers,
+    { status: 'STOPPED', stoppedAt: now, updatedAt: now },
+    and(
+      eq(workers.id, workerId),
+      eq(workers.instanceId, instanceId),
+      inArray(workers.status, ['READY', 'DRAINING']),
+    ),
+    { id: workers.id },
+  )
+  return row !== undefined
 }
 
-export async function markLostWorkers(db: Db, lostAfterSeconds: number): Promise<string[]> {
+export async function markLostWorkers(db: Db, _lostAfterSeconds?: number): Promise<string[]> {
   const { workers } = schemaFor(db)
   const now = new Date()
   const rows = await updateRows(
@@ -201,10 +349,21 @@ export async function markLostWorkers(db: Db, lostAfterSeconds: number): Promise
     workers,
     { status: 'LOST', updatedAt: now, stoppedAt: now },
     sql`${workers.status} IN ('READY', 'DRAINING')
-        AND ${afterSeconds(db, lostAfterSeconds, workers.heartbeatAt)} <= ${databaseNow(db)}`,
+        AND ${workers.heartbeatExpiresAt} IS NOT NULL
+        AND ${workers.heartbeatExpiresAt} <= ${databaseNow(db)}`,
     { id: workers.id },
   )
   return rows.map((row) => row.id)
+}
+
+export async function isolateOrphanedSessions(
+  db: Db,
+  workerId: string,
+  currentInstanceId: string,
+): Promise<number> {
+  return db.transaction((tx) =>
+    isolateOrphanedSessionsTx(tx as unknown as Db, workerId, currentInstanceId),
+  )
 }
 
 export async function lockRunRow(tx: Db, runId: string) {
@@ -220,7 +379,7 @@ export async function lockRunRow(tx: Db, runId: string) {
         eventSeq: runs.eventSeq,
       })
       .from(runs)
-      .where(eq(runs.id, runId)),
+      .where(and(eq(runs.id, runId), isNull(runs.deletedAt))),
   )
   return row ?? null
 }
@@ -293,6 +452,7 @@ export async function claimRun(
           .where(
             and(
               eq(runs.status, status),
+              isNull(runs.deletedAt),
               isNull(runs.cancelRequestedAt),
               or(isNull(runs.deadlineAt), sql`${runs.deadlineAt} > ${databaseNow(tx)}`),
               input.excludeRunIds?.length ? notInArray(runs.id, input.excludeRunIds) : undefined,
@@ -481,7 +641,7 @@ export async function listDriftedRunningIds(
     .from(runs)
     .where(
       and(
-        eq(runs.status, 'RUNNING'),
+        or(eq(runs.status, 'RUNNING'), eq(runs.status, 'HOLDING')),
         sql`${runs.updatedAt} < ${afterSeconds(db, -leaseTtlSeconds)}`,
         sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
       ),

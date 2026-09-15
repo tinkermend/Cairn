@@ -120,6 +120,11 @@ export const indexedTextLimits: Record<string, number> = {
   'recording_import_receipts.request_digest': 64,
   'recording_import_receipts.source_digest': 64,
   'recording_import_receipts.normalizer_version': 64,
+  'assistant_conversations.idempotency_key': 128,
+  'assistant_turns.client_turn_id': 128,
+  'assistant_turns.status': 32,
+  'assistant_turns.processing_token': 64,
+  'assistant_turns.request_digest': 64,
   'stored_objects.object_key': 512,
   'workers.id': 256,
 }

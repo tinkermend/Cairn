@@ -4,7 +4,7 @@
 
 对应工程计划 D1 的 P8 / P9，以及 AI 接入直接需要的 Compiler、专用步骤表单与 Evidence 增量。公共编辑、参数选择、草稿保护与工作区试跑展示由并行的[顺序编排与 AI 步骤编辑增强方案](2026-09-13-sequence-studio-foundation.md)负责，两边共用同一套 Step 与运行契约。交付优先级只维护在[工程计划第 5 节](../plan/识途开发路线与工程实施计划.md#5-当前交付顺序与验收样例)。本次开始正式 AI 接入；SSE、Live View、完整 Foundation 联合验收不作为开发前置。完整 D1 的画面、认证与实时观察验收仍按原计划完成，不能用本方案通过代替。
 
-前置依据：[D0 受管 Page 探针](2026-09-13-d0-hybrid-probes.md)、[确定性场景编写](2026-09-13-deterministic-authoring-studio.md)、[两类 AI 配置边界](2026-09-13-ai-model-configuration-boundaries.md)。按 [AGENTS.md 第 22 节](../../AGENTS.md#22-文档编写)，审查通过后进入实现。
+前置依据：[D0 受管 Page 探针](2026-09-13-d0-hybrid-probes.md)、[确定性场景编写](2026-09-13-deterministic-authoring-studio.md)、[两类 AI 配置边界](2026-09-13-ai-model-configuration-boundaries.md)。按 [宪法「开发与交付」](../../CLAUDE.md#开发与交付)，审查通过后进入实现。
 
 ## 1. 本轮交付
 
@@ -249,8 +249,22 @@ AI 配置与冻结页面范围进入 `snapshotDigestPayload`；旧快照缺字�
 
 实现过程中由实测暴露并修掉的四处偏差：AI 步骤超时被 SDK 包成普通失败后没能进 `NEEDS_REVIEW`；`aiQuery` 的输出 Schema 没有真正传给模型，导致模型自造中文字段名；必填字符串字段接受了空值，让未渲染完的表格被当成有效提取；`ai_assert` 的 `passed:false` 没有触发失败抓图。另外确认 SDK 在关闭报告后仍会把模型响应与页面描述写进 `<cwd>/midscene_run/log/`，已改为进程启动时一次性指向 Worker 自己的临时目录并在退出时清理；`uploadTestInfoToServer` 未配置服务端地址，不产生外发。
 
+### 离线完整停止验证（2026-09-14）
+
+对应上表「完整停止」。`packages/worker/src/ai/midscene/managed-page.lab.spec.ts` 在受管 Page（真实 PG + SessionLease）上跑真 Midscene 规划循环，模型响应按序号回放；在第 1 次规划已返回、动作尚未开始时注入取消、超时和 `SessionGuard.revoke`。对照组真实点中画布；三种注入均零新动作、出站模型调用保持 1 次；只读 Agent 在同一循环里零动作。
+
+复查发现并修复：续租失败只 revoke 进程内 guard、不 abort 步骤信号，而 gate 原先只看信号，真实丢租后 Agent 仍会点击。现由 `createStepGate` 让动作边与模型边同时校验 `SessionGuard.assertHeld`。反向验证：去掉该校验后「真实丢租」用例点击 1 次而失败。
+
+「迟到不串 Run」：同一文件扣住规划响应，模拟卡在底层调用里的 SDK（gate 故意不接信号）。先 invalidate 再 release 时，下一 Run 换了新页、旧页已关、零迟到点击；对照组不作废会话时，迟到点击落到下一 Run 复用的页面。复查同时修正两处：`settleAiCommand` 让未落定结果原样返回，页面检查不再抛错盖掉 hung（`withManagedPage` 范围检查失败的分支同样保留）；AI 新开的窗口先关闭再报 `AI_POPUP_UNSUPPORTED`，不再留在 Session 里带进后续 Run。
+
+丢租的分类此前落到了 `AI_EXECUTION_FAILED / EXECUTOR`：gate 拦下动作后 SDK 抛的是被它包过一层的报错，AiResult 也没有错误码字段，于是副作用 AI 步骤被记成普通失败，绕过了提交边界对「成功但会话租约已失效」的处置。现在 `ActionGate` 记放行过的动作数，`leaseLostError` 据此分类：已放行过记 UNKNOWN（副作用步骤进 NEEDS_REVIEW），没放行过记 INFRASTRUCTURE；`AiResult` 增加可选结构化 `error`，执行器原样使用；`shouldRetry` 对 `SESSION_LEASE_LOST` 不再重试。真实 SDK 的 lab 用例验证零动作与已动作两种分类，Engine 用例验证副作用进 NEEDS_REVIEW、只读不重试。
+
+SDK 调试日志（含模型响应与页面描述）改为按 Agent 存活期轮换：全部销毁后切到新一代目录并删除旧代，仍有 Agent 在途但单代超过 64 MiB 也轮换（`run-dir.ts`）。gate 拦下模型请求后 SDK 自带一次约 2s 的重试，同样被拦、不出站。
+
 ## 9. 修订记录
 
+- 2026-09-14：补迟到调用跨 Run 用例；AI 新开窗口收尾关闭、hung 不被页面检查盖掉；SDK 调试日志轮换。
+- 2026-09-14：补离线完整停止验证记录；AI 步骤 gate 接入 SessionGuard，修复真实丢租后仍可动作。
 - 2026-09-13：补记在线真模型实测结果与两项实测限制（原生 `<select>` 不在开放交互内、SDK 关闭报告后仍落盘日志）；`CAIRN_BROWSER_AI_HANG_WAIT_MS` 补进配置表。
 - 2026-09-13：与 D1 编排增强方案对齐分工：本线提供 AI 契约、能力查询、专用表单和 AI 证据组件，Studio 线负责公共编辑与页面接入；补字段定位及输出描述交接，明确能力未开放时既有草稿的编辑边界。运行时与模型验收要求保持不变。
 - 2026-09-13：补记平台变量名与 SDK `modelConfig` 键名的两层关系——不改 Midscene 源码、不写进程 `MIDSCENE_*`；`MODEL_FAMILY` 枚举知识留在 `src/ai/` 并在启用时做启动期校验，`MODEL` 取值由服务商决定。

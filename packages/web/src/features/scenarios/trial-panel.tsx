@@ -20,6 +20,17 @@ import { StatusBadge } from '@/components/status-badge'
 import { stepTypeLabel } from './labels'
 import { BrowserView } from '@/features/runs/browser-view'
 
+function formatTrialValue(value: unknown): string {
+  if (value === undefined) return '无'
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return '无法展示'
+  }
+}
+
 export function TrialPanel({
   runId,
   scenarioId,
@@ -141,6 +152,16 @@ export function TrialPanel({
                         ? ` · ${formatDuration(latestAttempt.startedAt, latestAttempt.finishedAt)}`
                         : ''}
                     </p>
+                    {latestAttempt.output &&
+                    typeof latestAttempt.output === 'object' &&
+                    !Array.isArray(latestAttempt.output) &&
+                    ('expected' in latestAttempt.output || 'actual' in latestAttempt.output) ? (
+                      <p>
+                        期望 {formatTrialValue((latestAttempt.output as { expected?: unknown }).expected)}
+                        {' · '}
+                        实际 {formatTrialValue((latestAttempt.output as { actual?: unknown }).actual)}
+                      </p>
+                    ) : null}
                     {latestAttempt.error ? (
                       <p className='text-status-error-foreground'>
                         {latestAttempt.error.code}: {latestAttempt.error.safeMessage}

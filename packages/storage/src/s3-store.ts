@@ -1,7 +1,9 @@
 import {
   DeleteObjectCommand,
+  GetBucketVersioningCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectVersionsCommand,
   PutObjectCommand,
 } from '@aws-sdk/client-s3'
 import { ObjectStoreError } from '@cairn/shared'
@@ -77,8 +79,34 @@ export class S3ObjectStore implements ObjectStore {
   async delete(key: string): Promise<void> {
     const parsed = requireObjectKey(key)
     try {
+      const versioning = (await this.client.send(
+        new GetBucketVersioningCommand({ Bucket: this.bucket }),
+      )) as { Status?: string }
+      if (versioning.Status === 'Enabled' || versioning.Status === 'Suspended') {
+        const listed = (await this.client.send(
+          new ListObjectVersionsCommand({ Bucket: this.bucket, Prefix: parsed }),
+        )) as {
+          Versions?: { Key?: string; VersionId?: string }[]
+          DeleteMarkers?: { Key?: string; VersionId?: string }[]
+        }
+        const versions = [...(listed.Versions ?? []), ...(listed.DeleteMarkers ?? [])].filter(
+          (item) => item.Key === parsed && item.VersionId,
+        )
+        if (versions.length === 0) return
+        for (const item of versions) {
+          await this.client.send(
+            new DeleteObjectCommand({
+              Bucket: this.bucket,
+              Key: parsed,
+              VersionId: item.VersionId,
+            }),
+          )
+        }
+        return
+      }
       await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: parsed }))
     } catch (error) {
+      if (error instanceof ObjectStoreError) throw error
       if (isNotFound(error)) return
       throw mapS3Error(error, '对象删除失败')
     }

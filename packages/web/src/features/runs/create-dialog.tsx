@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { runInputSchema, type EvidenceCaptureMode } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { createRun } from '@/lib/runs-api'
-import { fetchScenarioCapabilities, fetchScenarios } from '@/lib/scenarios-api'
+import { fetchScenario, fetchScenarioCapabilities, fetchScenarios } from '@/lib/scenarios-api'
 import { fetchTargetAccounts } from '@/lib/targets-api'
 import { inheritCaptureLabel } from '@/features/platform-config/labels'
 import { Button } from '@/components/ui/button'
@@ -45,18 +45,44 @@ export function RunCreateDialog({
   defaultTargetId,
 }: RunCreateDialogProps) {
   const navigate = useNavigate()
-  const scenarios = useQuery({ queryKey: ['scenarios'], queryFn: fetchScenarios, enabled: open })
+  const [scenarioSearch, setScenarioSearch] = useState('')
+  const scenarios = useQuery({
+    queryKey: ['scenarios', { limit: 100, search: scenarioSearch.trim() || undefined }],
+    queryFn: () => fetchScenarios({ limit: 100, search: scenarioSearch.trim() || undefined }),
+    enabled: open,
+  })
+  const fallbackScenario = useQuery({
+    queryKey: ['scenario', defaultScenarioId],
+    queryFn: () => fetchScenario(defaultScenarioId!),
+    enabled:
+      open &&
+      Boolean(defaultScenarioId) &&
+      !scenarios.data?.items.some((s) => s.id === defaultScenarioId),
+  })
+  const scenarioItems = useMemo(() => {
+    const list = [...(scenarios.data?.items ?? [])]
+    if (fallbackScenario.data && !list.some((s) => s.id === fallbackScenario.data?.id)) {
+      list.unshift(fallbackScenario.data)
+    }
+    return list
+  }, [scenarios.data?.items, fallbackScenario.data])
+
   const capabilities = useQuery({
     queryKey: ['scenarios', 'capabilities'],
     queryFn: fetchScenarioCapabilities,
     enabled: open,
   })
   const [scenarioId, setScenarioId] = useState(defaultScenarioId ?? '')
-  const selected = scenarios.data?.items.find((item) => item.id === scenarioId)
-  const targetId = selected?.targetId ?? defaultTargetId
+  const selected = scenarioItems.find((item) => item.id === scenarioId)
+  const targetId = selected?.targetId ?? fallbackScenario.data?.targetId ?? defaultTargetId
+  const [accountSearch, setAccountSearch] = useState('')
   const accounts = useQuery({
-    queryKey: ['target-accounts', targetId],
-    queryFn: () => fetchTargetAccounts(targetId!),
+    queryKey: ['target-accounts', targetId, { limit: 100, search: accountSearch.trim() || undefined }],
+    queryFn: () =>
+      fetchTargetAccounts(targetId!, {
+        limit: 100,
+        search: accountSearch.trim() || undefined,
+      }),
     enabled: open && !!targetId,
   })
   const [targetAccountId, setTargetAccountId] = useState('')
@@ -84,12 +110,18 @@ export function RunCreateDialog({
         <div className='space-y-4'>
           <div className='space-y-2'>
             <Label htmlFor='run-scenario'>场景</Label>
+            <Input
+              aria-label='搜索场景'
+              placeholder='搜索场景名称'
+              value={scenarioSearch}
+              onChange={(event) => setScenarioSearch(event.target.value)}
+            />
             <Select value={scenarioId || undefined} onValueChange={setScenarioId}>
               <SelectTrigger id='run-scenario' className='w-full' aria-label='场景'>
                 <SelectValue placeholder='选择场景' />
               </SelectTrigger>
               <SelectContent>
-                {(scenarios.data?.items ?? [])
+                {scenarioItems
                   .filter((item) => item.status === 'active')
                   .map((item) => (
                   <SelectItem key={item.id} value={item.id}>
@@ -101,6 +133,12 @@ export function RunCreateDialog({
           </div>
           <div className='space-y-2'>
             <Label>目标账号{usableAccounts.length > 0 ? '' : '（可选）'}</Label>
+            <Input
+              aria-label='搜索目标账号'
+              placeholder='搜索登录名或显示名'
+              value={accountSearch}
+              onChange={(event) => setAccountSearch(event.target.value)}
+            />
             <Select
               value={targetAccountId || (usableAccounts.length > 0 ? undefined : '__none__')}
               onValueChange={(value) => setTargetAccountId(value === '__none__' ? '' : value)}

@@ -12,6 +12,7 @@ import type {
   Step,
   TargetDescriptor,
 } from '@cairn/shared'
+import { observationShowsFragileCss } from '@cairn/shared'
 import {
   ASSERT_KINDS,
   EFFECT_TYPES,
@@ -34,6 +35,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { EFFECT_TYPE_LABELS, STEP_TYPE_LABELS } from './labels'
 import { defaultTarget } from './blank-step'
+import { useAuthoringObserve } from './authoring-observe'
 import { AiStepFields } from './ai-step-fields'
 import { fieldElementId, type BindingOption } from './studio-document'
 
@@ -143,10 +145,10 @@ export function StepEditor({
           <Label>副作用</Label>
           <Select
             value={step.effectType}
-            disabled={disabled || aiLocked}
+            disabled={disabled || aiLocked || step.type === 'wait'}
             onValueChange={(value) => {
-              if (step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert') return
-              replace({ ...step, effectType: value as EffectType })
+              if (step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert' || step.type === 'wait') return
+              replace({ ...step, effectType: value as EffectType } as Step)
             }}
           >
             <SelectTrigger className='w-full' aria-label={`步骤 ${index + 1} 副作用`}>
@@ -438,14 +440,63 @@ function StepFields({
           disabled={disabled}
           onChange={(target) => onChange({ ...step, input: { ...step.input, target } })}
         />
+        <div className='grid gap-3 sm:grid-cols-3'>
+          <div className='space-y-2'>
+            <Label>鼠标键</Label>
+            <Select
+              value={step.input.button ?? 'left'}
+              disabled={disabled}
+              onValueChange={(value) =>
+                onChange({
+                  ...step,
+                  input: {
+                    ...step.input,
+                    button: value === 'left' ? undefined : (value as 'right' | 'middle'),
+                  },
+                })
+              }
+            >
+              <SelectTrigger className='w-full' aria-label='鼠标键'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='left'>左键</SelectItem>
+                <SelectItem value='right'>右键</SelectItem>
+                <SelectItem value='middle'>中键</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className='space-y-2'>
+            <Label>次数</Label>
+            <Select
+              value={String(step.input.clickCount ?? 1)}
+              disabled={disabled}
+              onValueChange={(value) =>
+                onChange({
+                  ...step,
+                  input: { ...step.input, clickCount: value === '2' ? 2 : undefined },
+                })
+              }
+            >
+              <SelectTrigger className='w-full' aria-label='点击次数'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='1'>单击</SelectItem>
+                <SelectItem value='2'>双击</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
         <div className='space-y-2'>
           <Label>点击后页面</Label>
           <Select
             value={step.input.pageAfter ?? 'unset'}
             disabled={disabled}
             onValueChange={(value) => {
-              const pageAfter = value === 'same' || value === 'popup' ? value : undefined
-              const next = { ...step.input, pageAfter }
+              const pageAfter: 'same' | 'popup' | undefined =
+                value === 'same' || value === 'popup' ? value : undefined
+              const next = { ...step.input, ...(pageAfter ? { pageAfter } : {}) }
               if (!pageAfter) delete next.pageAfter
               onChange({ ...step, input: next })
             }}
@@ -460,6 +511,221 @@ function StepFields({
             </SelectContent>
           </Select>
         </div>
+      </div>
+    )
+  }
+  if (step.type === 'select') {
+    const from = step.input.from ?? ''
+    return (
+      <div className='space-y-3'>
+        <TargetFields
+          target={step.input.target}
+          disabled={disabled}
+          onChange={(target) => onChange({ ...step, input: { ...step.input, target } })}
+        />
+        <div className='space-y-2'>
+          <Label>选择方式</Label>
+          <Select
+            value={step.input.by}
+            disabled={disabled}
+            onValueChange={(value) => {
+              const by = value as 'label' | 'value' | 'index'
+              onChange({
+                ...step,
+                input:
+                  by === 'index'
+                    ? { target: step.input.target, by, index: step.input.index ?? 0 }
+                    : { target: step.input.target, by, value: step.input.value ?? '' },
+              })
+            }}
+          >
+            <SelectTrigger className='w-full' aria-label='选择方式'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='label'>可见文本</SelectItem>
+              <SelectItem value='value'>选项值</SelectItem>
+              <SelectItem value='index'>序号</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {step.input.by === 'index' ? (
+          <div className='space-y-2'>
+            <Label htmlFor={`step-select-index-${step.id}`}>选项序号（从 0）</Label>
+            <Input
+              id={`step-select-index-${step.id}`}
+              type='number'
+              min={0}
+              disabled={disabled}
+              value={step.input.index ?? 0}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  input: { target: step.input.target, by: 'index', index: Number(event.target.value) },
+                })
+              }
+            />
+          </div>
+        ) : (
+          <BindingFields
+            id={step.id}
+            from={from}
+            fromField={step.input.fromField}
+            value={step.input.value ?? ''}
+            bindings={bindings}
+            shape={from ? shapes.get(from) : undefined}
+            disabled={disabled}
+            onBinding={(nextFrom, nextValue, nextField) =>
+              onChange({
+                ...step,
+                input: nextFrom
+                  ? { target: step.input.target, by: step.input.by, from: nextFrom, fromField: nextField }
+                  : { target: step.input.target, by: step.input.by, value: nextValue },
+              })
+            }
+          />
+        )}
+      </div>
+    )
+  }
+  if (step.type === 'keyboard') {
+    return (
+      <div className='space-y-3'>
+        <TargetFields
+          target={step.input.target ?? defaultTarget('焦点元素')}
+          optional
+          disabled={disabled}
+          onChange={(target) => onChange({ ...step, input: { ...step.input, target } })}
+        />
+        <label className='flex items-center gap-2 text-small'>
+          <input
+            type='checkbox'
+            checked={Boolean(step.input.target)}
+            disabled={disabled}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                input: event.target.checked
+                  ? { ...step.input, target: step.input.target ?? defaultTarget('焦点元素') }
+                  : { keys: step.input.keys },
+              })
+            }
+          />
+          先聚焦目标再按键
+        </label>
+        <div className='space-y-2'>
+          <Label htmlFor={`step-keys-${step.id}`}>按键（逗号分隔，如 Enter 或 Control+s）</Label>
+          <Input
+            id={`step-keys-${step.id}`}
+            value={step.input.keys.join(',')}
+            disabled={disabled}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                input: {
+                  ...step.input,
+                  keys: event.target.value
+                    .split(',')
+                    .map((item) => item.trim())
+                    .filter(Boolean)
+                    .slice(0, 4) as typeof step.input.keys,
+                },
+              })
+            }
+          />
+        </div>
+      </div>
+    )
+  }
+  if (step.type === 'wait') {
+    return (
+      <div className='space-y-3'>
+        <div className='space-y-2'>
+          <Label>等待条件</Label>
+          <Select
+            value={step.input.kind}
+            disabled={disabled}
+            onValueChange={(value) => {
+              const kind = value as typeof step.input.kind
+              if (kind === 'time') {
+                onChange({ ...step, input: { kind, durationMs: step.input.durationMs ?? 1000 } })
+                return
+              }
+              if (kind === 'url') {
+                onChange({ ...step, input: { kind, urlPattern: step.input.urlPattern ?? '' } })
+                return
+              }
+              onChange({
+                ...step,
+                input: {
+                  kind,
+                  target: step.input.target ?? defaultTarget('等待元素'),
+                  ...(kind === 'text' ? { text: step.input.text ?? '' } : {}),
+                },
+              })
+            }}
+          >
+            <SelectTrigger className='w-full' aria-label='等待条件'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='time'>固定时间</SelectItem>
+              <SelectItem value='visible'>元素可见</SelectItem>
+              <SelectItem value='hidden'>元素消失</SelectItem>
+              <SelectItem value='url'>地址匹配</SelectItem>
+              <SelectItem value='text'>包含文本</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {step.input.kind === 'time' ? (
+          <div className='space-y-2'>
+            <Label htmlFor={`step-wait-ms-${step.id}`}>等待毫秒（最长 60 秒）</Label>
+            <Input
+              id={`step-wait-ms-${step.id}`}
+              type='number'
+              min={1}
+              max={60_000}
+              disabled={disabled}
+              value={step.input.durationMs ?? 1000}
+              onChange={(event) =>
+                onChange({ ...step, input: { kind: 'time', durationMs: Number(event.target.value) } })
+              }
+            />
+          </div>
+        ) : null}
+        {step.input.kind === 'url' ? (
+          <div className='space-y-2'>
+            <Label htmlFor={`step-wait-url-${step.id}`}>地址包含</Label>
+            <Input
+              id={`step-wait-url-${step.id}`}
+              disabled={disabled}
+              value={step.input.urlPattern ?? ''}
+              onChange={(event) =>
+                onChange({ ...step, input: { kind: 'url', urlPattern: event.target.value } })
+              }
+            />
+          </div>
+        ) : null}
+        {step.input.kind === 'visible' || step.input.kind === 'hidden' || step.input.kind === 'text' ? (
+          <TargetFields
+            target={step.input.target ?? defaultTarget('等待元素')}
+            disabled={disabled}
+            onChange={(target) => onChange({ ...step, input: { ...step.input, target } })}
+          />
+        ) : null}
+        {step.input.kind === 'text' ? (
+          <div className='space-y-2'>
+            <Label htmlFor={`step-wait-text-${step.id}`}>可见文本包含</Label>
+            <Input
+              id={`step-wait-text-${step.id}`}
+              disabled={disabled}
+              value={step.input.text ?? ''}
+              onChange={(event) =>
+                onChange({ ...step, input: { ...step.input, target: step.input.target, kind: 'text', text: event.target.value } })
+              }
+            />
+          </div>
+        ) : null}
       </div>
     )
   }
@@ -515,20 +781,23 @@ function StepFields({
       </div>
     )
   }
-  return (
-    <div className='space-y-3'>
-      <TargetFields
-        target={step.input.target ?? defaultTarget('结果')}
-        disabled={disabled}
-        onChange={(target) => onChange({ ...step, input: { ...step.input, target } })}
-      />
-      <AssertFields
-        expect={step.input.expect}
-        disabled={disabled}
-        onChange={(next) => onChange({ ...step, input: { ...step.input, expect: next } })}
-      />
-    </div>
-  )
+  if (step.type === 'assert') {
+    return (
+      <div className='space-y-3'>
+        <TargetFields
+          target={step.input.target ?? defaultTarget('结果')}
+          disabled={disabled}
+          onChange={(target) => onChange({ ...step, input: { ...step.input, target } })}
+        />
+        <AssertFields
+          expect={step.input.expect}
+          disabled={disabled}
+          onChange={(next) => onChange({ ...step, input: { ...step.input, expect: next } })}
+        />
+      </div>
+    )
+  }
+  return null
 }
 
 function BindingFields({
@@ -642,18 +911,65 @@ function BindingFields({
 function TargetFields({
   target,
   disabled,
+  optional,
   onChange,
 }: {
   target: TargetDescriptor
   disabled?: boolean
+  optional?: boolean
   onChange: (target: TargetDescriptor) => void
 }) {
+  const observe = useAuthoringObserve()
   const candidates = target.candidates.length > 0 ? target.candidates : [{ by: 'label' as const, value: '' }]
   const frames = target.framePath ?? []
+  const observeDisabled = disabled && !observe.holding
   return (
     <div className='space-y-3'>
-      <div className='flex items-center justify-between'>
-        <Label>页面元素</Label>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <Label>页面元素{optional ? '（可选）' : ''}</Label>
+        <div className='flex flex-wrap gap-2'>
+          {observe.canIndicate ? (
+            <Button
+              type='button'
+              size='sm'
+              disabled={observeDisabled}
+              onClick={() => {
+                if (!observe.holding) {
+                  observe.highlightTarget(target)
+                  return
+                }
+                observe.setPickMode(true)
+              }}
+            >
+              {observe.pickMode ? '在画面上点选…' : '在页面上指认'}
+            </Button>
+          ) : null}
+          {observe.canHighlight ? (
+            <Button type='button' size='sm' variant='outline' disabled={observeDisabled} onClick={() => observe.highlightTarget(target)}>
+              校验高亮
+            </Button>
+          ) : null}
+          {observe.holding && observe.canDebugHold ? (
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              disabled={observeDisabled || !(observe.lastPicked || observe.highlight?.target)}
+              onClick={() => observe.applyForTrial()}
+            >
+              本次验证
+            </Button>
+          ) : null}
+          {observe.holding ? (
+            <Button type='button' size='sm' variant='outline' disabled={observeDisabled} onClick={() => observe.writeBack()}>
+              写回草稿
+            </Button>
+          ) : null}
+          {observe.overlayStepId ? (
+            <Button type='button' size='sm' variant='ghost' disabled={observeDisabled} onClick={() => observe.clearOverlay(observe.overlayStepId!)}>
+              恢复原始快照
+            </Button>
+          ) : null}
         <Button
           type='button'
           size='sm'
@@ -670,7 +986,21 @@ function TargetFields({
         >
           添加候选
         </Button>
+        </div>
       </div>
+      {observe.overlayStepId ? (
+        <p className='text-small text-status-warning-foreground'>正在使用临时覆盖目标，只影响本次再试。</p>
+      ) : null}
+      {observe.highlight?.outcome === 'AMBIGUOUS' && observe.highlight.alternatives?.length ? (
+        <ul className='list-disc space-y-1 ps-5 text-small text-status-warning-foreground' aria-label='多个匹配'>
+          {observe.highlight.alternatives.map((item) => (
+            <li key={`${item.index}-${item.reason}`}>{item.reason}</li>
+          ))}
+        </ul>
+      ) : null}
+      {observe.highlight && observationShowsFragileCss(observe.highlight) ? (
+        <p className='text-small text-status-warning-foreground'>当前只能用较脆弱的 CSS 定位，建议改成测试标识或角色。</p>
+      ) : null}
       {candidates.map((candidate, index) => (
         <div key={`${candidate.by}-${index}`} className='space-y-2'>
           <div className='grid gap-2 sm:grid-cols-[7rem_1fr_auto]'>

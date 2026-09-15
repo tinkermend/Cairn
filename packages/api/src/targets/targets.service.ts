@@ -31,6 +31,18 @@ export class TargetsService {
     return this.store.deleteTarget(...args).catch(rethrowDomain)
   }
 
+  previewDeleteTarget(...args: Parameters<TargetsStore['previewDeleteTarget']>) {
+    return this.store.previewDeleteTarget(...args).catch(rethrowDomain)
+  }
+
+  getTargetCleanupStatus(...args: Parameters<TargetsStore['getTargetCleanupStatus']>) {
+    return this.store.getTargetCleanupStatus(...args).catch(rethrowDomain)
+  }
+
+  retryTargetCleanup(...args: Parameters<TargetsStore['retryTargetCleanup']>) {
+    return this.store.retryTargetCleanup(...args).catch(rethrowDomain)
+  }
+
   listAccounts(...args: Parameters<TargetsStore['listAccounts']>) {
     return this.store.listAccounts(...args).catch(rethrowDomain)
   }

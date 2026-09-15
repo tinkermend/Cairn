@@ -7,6 +7,7 @@ import type {
 } from '@cairn/shared'
 import type { Locator, Page } from './runtime'
 import {
+  BrowserCapabilityMissingError,
   SurfaceLostError,
   clickLocator,
   countCandidate,
@@ -16,11 +17,14 @@ import {
   locatorForCandidate,
   navigateInScope,
   pageClosed,
+  pressKeys,
   readLocator,
   resolveFramePath,
   scopeForAnchor,
   screenshotPage,
+  selectLocator,
   waitForPopup,
+  waitOnPage,
 } from './runtime'
 import { candidateTries, decideResolverOutcome, errorForOutcome } from './resolver'
 
@@ -65,6 +69,19 @@ export async function executeOnPage(
       return { ok: true, output: { url: result.href } }
     }
 
+    if (command.type === 'wait' && command.kind === 'time') {
+      await waitOnPage(page, { kind: 'time', durationMs: command.durationMs }, signal)
+      return { ok: true, output: { waitedMs: command.durationMs ?? 0 } }
+    }
+    if (command.type === 'wait' && command.kind === 'url') {
+      await waitOnPage(page, { kind: 'url', urlPattern: command.urlPattern, timeoutMs: command.timeoutMs }, signal)
+      return { ok: true, output: { url: page.url() } }
+    }
+    if (command.type === 'keyboard' && !command.target) {
+      await pressKeys(page, command.keys)
+      return { ok: true, output: {} }
+    }
+
     if (command.type === 'assert' && !command.target) {
       return {
         ok: false,
@@ -77,7 +94,7 @@ export async function executeOnPage(
       }
     }
 
-    const target = command.type === 'assert' ? command.target : command.target
+    const target = 'target' in command ? command.target : undefined
     if (!target) {
       return {
         ok: false,
@@ -96,7 +113,13 @@ export async function executeOnPage(
     }
 
     if (command.type === 'click') {
-      const popup = await waitForPopup(page, () => clickLocator(located.locator))
+      const popup = await waitForPopup(page, () =>
+        clickLocator(located.locator, {
+          button: command.button,
+          clickCount: command.clickCount,
+          modifiers: command.modifiers,
+        }),
+      )
       if (popup) {
         // P5：点击可以打开 popup，但不把新窗收成后续步骤的当前 Surface。
         await popup.waitForLoadState('domcontentloaded').catch(() => undefined)
@@ -112,6 +135,30 @@ export async function executeOnPage(
     if (command.type === 'extract') {
       const value = await readLocator(located.locator, command.as, command.attribute)
       return { ok: true, output: { value }, diagnostics: located.diagnostics }
+    }
+
+    if (command.type === 'select') {
+      await selectLocator(located.locator, { by: command.by, value: command.value, index: command.index })
+      return { ok: true, output: {}, diagnostics: located.diagnostics }
+    }
+
+    if (command.type === 'keyboard') {
+      await pressKeys(page, command.keys, located.locator)
+      return { ok: true, output: {}, diagnostics: located.diagnostics }
+    }
+
+    if (command.type === 'wait') {
+      await waitOnPage(
+        page,
+        {
+          kind: command.kind,
+          locator: located.locator,
+          text: command.text,
+          timeoutMs: command.timeoutMs,
+        },
+        signal,
+      )
+      return { ok: true, output: {}, diagnostics: located.diagnostics }
     }
 
     const assertion = await evaluateAssert(located.locator, command.expect)
@@ -130,6 +177,9 @@ export async function executeOnPage(
     }
     return { ok: true, output: assertion, diagnostics: located.diagnostics }
   } catch (error) {
+    if (error instanceof BrowserCapabilityMissingError) {
+      return failOutcome('CAPABILITY_MISSING', { outcome: 'CAPABILITY_MISSING', candidatesTried: [] })
+    }
     if (error instanceof SurfaceLostError || isClosedMessage(error)) {
       return failOutcome('SURFACE_LOST', { outcome: 'SURFACE_LOST', candidatesTried: [] })
     }
@@ -165,7 +215,7 @@ type LocateFail = {
   diagnostics: ResolverDiagnostics
 }
 
-async function locate(page: Page, target: TargetDescriptor): Promise<LocateOk | LocateFail> {
+export async function locate(page: Page, target: TargetDescriptor): Promise<LocateOk | LocateFail> {
   try {
     const { frame, trail } = await resolveFramePath(page, target.framePath, DEFAULT_LOCATE_MS)
     const gap = await detectCapabilityGap(frame, target)

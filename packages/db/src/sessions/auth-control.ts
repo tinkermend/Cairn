@@ -422,6 +422,7 @@ export async function findSessionByAuthHoldRun(db: Db, runId: string): Promise<S
         health: row.health,
         authState: row.authState,
         ownerWorkerId: row.ownerWorkerId,
+        ownerWorkerInstanceId: row.ownerWorkerInstanceId,
         generation: row.generation,
         fencingToken: row.fencingToken,
         version: row.version,

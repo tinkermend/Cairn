@@ -16,7 +16,9 @@
 
 ## 本探针已覆盖
 
-- 自建无头注入（非 demo IIFE）
+以下均用只转调 binding 的替身脚本验证，没有注入 Page Agent（`PageAgentCore` + `PageController`）本体，`@page-agent/*` 也不在依赖里。结论只对 binding 机制成立。
+
+- 替身脚本注入（非 demo IIFE）
 - nonce + 形状校验
 - Worker 侧 stop
 - CSP 页不加载外网脚本；`connect-src 'self'` 拦页内 fetch
@@ -26,6 +28,7 @@
 
 ## 留给 P8
 
+- Page Agent 本体的注入、`stop()` 与导航后重建（替身验证不了 SDK 自己的循环）
 - 真实 tool-calling 模型
 - 凭据代理与预算
 - 分类别评估与采用 / 限制 / 拒绝

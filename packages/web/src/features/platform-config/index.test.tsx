@@ -83,7 +83,7 @@ describe('PlatformConfigPage', () => {
     useAuthStore.getState().auth.setUser(null)
   })
 
-  it('管理员能看见四组策略，主操作是保存并生效，页面不回显密钥', async () => {
+  it('管理员能看见五组策略，主操作是保存并生效，页面不回显密钥', async () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await expect
@@ -91,6 +91,9 @@ describe('PlatformConfigPage', () => {
       .toBeInTheDocument()
     await expect
       .element(screen.getByRole('tab', { name: '浏览器 AI' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('tab', { name: '平台 AI' }))
       .toBeInTheDocument()
     await expect
       .element(screen.getByRole('tab', { name: '执行默认值' }))
@@ -223,6 +226,7 @@ describe('PlatformConfigPage', () => {
       '证据策略',
       '变更记录',
       '浏览器 AI',
+      '平台 AI',
     ]) {
       await screen.getByRole('tab', { name }).click()
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(

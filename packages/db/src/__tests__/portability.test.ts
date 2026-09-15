@@ -139,7 +139,7 @@ async function finish(f: Awaited<ReturnType<typeof fixture>>) {
     type: 'screenshot',
     objectKey: object.objectKey,
   })
-  await api.markWorkerStopped(f.db, worker.workerId)
+  await api.markWorkerStopped(f.db, worker.workerId, worker.instanceId)
   return { runId: grant.runId, object }
 }
 function childClaims(
@@ -148,6 +148,10 @@ function childClaims(
 ): Promise<RunGrant[]> {
   return new Promise((resolveClaims, reject) => {
     const child = fork(resolve(import.meta.dirname, 'claim-child.mjs'), { silent: true })
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderr += String(chunk)
+    })
     const timer = setTimeout(() => {
       child.kill()
       reject(new Error('Claim child timed out'))
@@ -160,7 +164,7 @@ function childClaims(
     })
     child.once('exit', (code) => {
       clearTimeout(timer)
-      if (code) reject(new Error(`Claim child exit ${code}`))
+      if (code) reject(new Error(`Claim child exit ${code}${stderr ? `: ${stderr.trim()}` : ''}`))
     })
     child.send({ env, worker })
   })
@@ -225,8 +229,10 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
         f.actor,
       ),
     ).rejects.toMatchObject({ code: 'TARGET_ACCOUNT_CONFLICT' })
-    await expect(f.targets.deleteTarget(f.target.id, f.actor)).rejects.toMatchObject({
-      code: 'TARGET_HAS_ACCOUNTS',
+    await expect(
+      f.targets.deleteTarget(f.target.id, f.actor, { expectedCounts: { targetAccounts: 0 } }),
+    ).rejects.toMatchObject({
+      code: 'DELETE_SCOPE_EXPANDED',
     })
     await expect(
       f.rbac.createRole(
@@ -244,7 +250,7 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
     expect(await f.h.db.select().from(secrets)).toHaveLength(0)
   })
 
-  it('target referenced only by a recording returns a business conflict', async () => {
+  it('target referenced only by a recording cascades soft delete to recordings', async () => {
     const f = await fixture(driver)
     const target = await f.targets.createTarget(
       createTargetBodySchema.parse({
@@ -254,7 +260,7 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
       }),
       f.actor,
     )
-    await api.createRecordingDraft(
+    const draft = await api.createRecordingDraft(
       f.db,
       {
         targetId: target.id,
@@ -273,11 +279,11 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
       },
       f.actor,
     )
-    await expect(f.targets.deleteTarget(target.id, f.actor)).rejects.toMatchObject({
-      code: 'TARGET_HAS_RECORDINGS',
-      kind: 'conflict',
+    await f.targets.deleteTarget(target.id, f.actor)
+    await expect(f.targets.getTarget(target.id)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    await expect(api.getRecordingDraft(f.db, draft.detail.id, f.actor.id)).rejects.toMatchObject({
+      code: 'RECORDING_NOT_FOUND',
     })
-    expect(await f.targets.getTarget(target.id)).toMatchObject({ id: target.id })
   })
 
   it('simultaneous first worker registrations return one owner and stable conflicts', async () => {
@@ -438,7 +444,7 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
     })
     const before = await api.getRun(source.db, runId)
     const archive = await exportDatabase(source.db, source.h.env, transferOptions)
-    expect(archive.logicalVersion).toBe('0026')
+    expect(archive.logicalVersion).toBe('0030')
     expect(archive.tables.scenarioDrafts).toHaveLength(1)
     for (const targetDriver of DRIVERS.filter((d) => d !== driver)) {
       const target = await openContractDb(targetDriver)

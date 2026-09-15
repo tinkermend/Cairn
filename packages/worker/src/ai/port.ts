@@ -9,10 +9,12 @@ import {
   type AiExecutionConfig,
   type AiResult,
   type BrowserCommandEvidence,
+  type ExecutionError,
   type RunGrant,
   type SessionGrant,
 } from '@cairn/shared'
 import { OBJECT_MISSING_REASONS, shouldCaptureEvidence } from '@cairn/shared'
+import type { Page } from 'playwright'
 import type { BrowserSessionManager } from '../browser/session-manager.js'
 import { attachObjectEvidence } from '../browser/port.js'
 import type { ObjectService } from '../objects/object.service.js'
@@ -36,13 +38,15 @@ export function createAiPort(input: {
 }): AiPort {
   return {
     async execute(grant, command, signal, evidence) {
-      const gate = new ActionGate(signal)
+      const gate = createStepGate(input.manager, grant, signal)
+      // withManagedPage 的页面范围检查失败时拿不到回调结果：单独记住未落定，否则会话会被当成健康留给下一个 Run。
+      let hung = false
       const scoped = await input.manager.withManagedPage(
         grant,
         evidence,
         async (page) => {
           assertPageScope(page.url(), command)
-          const pagesBefore = page.context().pages().length
+          const pagesBefore = new Set(page.context().pages())
           const apiKey = await input.resolveApiKey(evidence.config)
           await validateBrowserAiModelFamily(evidence.config.modelFamily)
           const agent = await createFormalMidsceneAgent({
@@ -64,11 +68,14 @@ export function createAiPort(input: {
           })
           try {
             const result = await runCommand(agent, command, signal)
-            assertPageScope(page.url(), command)
-            if (page.context().pages().length > pagesBefore) {
-              throw Object.assign(new Error('AI 打开了未支持的新窗口'), { code: 'AI_POPUP_UNSUPPORTED' })
+            hung = result.hung === true
+            if (!hung && gate.leaseLost) {
+              // 丢租后 SDK 的返回值不可信（它可能吞掉被拦下的动作照样完成）：先收尾新开的页，再报结构化丢租。
+              await closeUnsupportedPages(page, pagesBefore).catch(() => undefined)
+              const error = leaseLostError(gate)
+              return { ok: false, summary: error.safeMessage, error }
             }
-            return result
+            return await settleAiCommand(page, pagesBefore, command, result)
           } finally {
             await agent.destroy().catch(() => undefined)
           }
@@ -109,11 +116,24 @@ export function createAiPort(input: {
         }
       }
       if (!scoped.ok) {
-        return { ok: false, hung: false, summary: scoped.error.safeMessage, screenshot, trace }
+        const error =
+          scoped.error.code === 'SESSION_LEASE_LOST' && gate.actionsStarted > 0 ? leaseLostError(gate) : scoped.error
+        return { ok: false, hung, summary: error.safeMessage, error, screenshot, trace }
       }
       return { ...scoped.value, screenshot, trace }
     },
   }
+}
+
+/** AI 步骤的停止条件：步骤信号（取消 / 超时）加进程内 SessionGuard 的租约状态。 */
+export function createStepGate(
+  manager: Pick<BrowserSessionManager, 'guard'>,
+  grant: SessionGrant,
+  signal: AbortSignal,
+): ActionGate {
+  return new ActionGate(signal, () => {
+    manager.guard.assertHeld(grant.leaseId, grant)
+  })
 }
 
 function createBudgetClient(input: {
@@ -303,6 +323,50 @@ export function assertPageScope(url: string, command: AiCommand): void {
       throw Object.assign(new Error('认证页面不执行 AI'), { code: 'AI_AUTH_PAGE_DENIED' })
     }
   }
+}
+
+/**
+ * 丢租的结构化错误，判定只看 gate，不解析 SDK 包过一层的报错文本。
+ *
+ * 已放行过动作：页面上可能已经发生点击，记 UNKNOWN，副作用步骤由引擎转人工核查——
+ * 与 finishAttempt 对「成功但会话租约已失效」的处置一致。没放行过动作记 INFRASTRUCTURE。
+ */
+export function leaseLostError(gate: ActionGate): ExecutionError {
+  const acted = gate.actionsStarted > 0
+  return {
+    code: 'SESSION_LEASE_LOST',
+    category: acted ? 'UNKNOWN' : 'INFRASTRUCTURE',
+    retryable: false,
+    safeMessage: acted ? '会话租约在 AI 动作开始后失效，页面上的结果未确认' : '会话租约已失效，AI 步骤未发出动作',
+  }
+}
+
+/**
+ * 命令返回后的页面收尾。
+ *
+ * 未落定（hung）原样返回：Engine 随后先 invalidate 再 release，会话连同页面整体作废；
+ * 这里若再做页面检查并抛错，会盖掉 hung，会话就会被当成健康的留给下一个 Run。
+ */
+export async function settleAiCommand(
+  page: Page,
+  pagesBefore: ReadonlySet<Page>,
+  command: AiCommand,
+  result: AiResult,
+): Promise<AiResult> {
+  if (result.hung) return result
+  await closeUnsupportedPages(page, pagesBefore)
+  assertPageScope(page.url(), command)
+  return result
+}
+
+/** AI 步骤里新开的页不属于任何 Run，release 只关 runPages，留着会带进后续 Run：先关掉再报未支持。 */
+export async function closeUnsupportedPages(page: Page, pagesBefore: ReadonlySet<Page>): Promise<void> {
+  const opened = page.context().pages().filter((item) => !pagesBefore.has(item))
+  if (opened.length === 0) return
+  await Promise.all(opened.map((item) => item.close().catch(() => undefined)))
+  throw Object.assign(new Error(`AI 打开了未支持的新窗口，已关闭 ${opened.length} 个`), {
+    code: 'AI_POPUP_UNSUPPORTED',
+  })
 }
 
 export type AiExecuteEvidence = BrowserCommandEvidence & {

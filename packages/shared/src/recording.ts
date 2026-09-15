@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
-import { stepSchema, type Step } from './step.js'
+import { resourceDeletedBySchema } from './resource-lifecycle.js'
+import { keyComboSchema, stepSchema, type Step } from './step.js'
 import {
   MAX_FRAME_DEPTH,
   MAX_LOCATOR_CANDIDATES,
@@ -11,11 +12,12 @@ import {
 import { entityIdSchema, jsonValueSchema, utcInstantSchema, type JsonValue } from './wire.js'
 import { idempotencyKeySchema } from './run-api.js'
 import { scenarioNameSchema } from './scenario.js'
+import { SENSITIVE_AUTOCOMPLETE, SENSITIVE_LOCATOR } from './sensitive-fill.js'
 
 /** 当前识途录制器壳对应的来源版本。导入路径只接受这一版。 */
 export const RECORDER_SOURCE_VERSION = 'playwright-crx@0.15.0'
 /** 可执行转换规则版本。预览/回填必须带上并重跑。 */
-export const RECORDING_NORMALIZER_VERSION = 'recording-normalizer@2'
+export const RECORDING_NORMALIZER_VERSION = 'recording-normalizer@3'
 
 export const MAX_RECORDING_EVENTS = 200
 export const MAX_RECORDING_JSON_BYTES = 256_000
@@ -23,6 +25,7 @@ export const MAX_RECORDING_JSON_BYTES = 256_000
 export const RECORDING_ERROR_CODES = [
   'RECORDING_NOT_FOUND',
   'RECORDING_IDEMPOTENCY_CONFLICT',
+  'RESOURCE_DELETED',
   'RECORDING_EMPTY',
   'RECORDING_TOO_LARGE',
   'RECORDING_TOO_MANY_EVENTS',
@@ -63,7 +66,14 @@ export type RecordingActionName = (typeof RECORDING_ACTION_NAMES)[number]
 export const RECORDING_ITEM_STATUSES = ['mapped', 'unresolved', 'parameterized'] as const
 export type RecordingItemStatus = (typeof RECORDING_ITEM_STATUSES)[number]
 
-export const RECORDING_CANDIDATE_STEP_TYPES = ['navigate', 'click', 'fill', 'assert'] as const
+export const RECORDING_CANDIDATE_STEP_TYPES = [
+  'navigate',
+  'click',
+  'fill',
+  'assert',
+  'select',
+  'keyboard',
+] as const
 export type RecordingCandidateStepType = (typeof RECORDING_CANDIDATE_STEP_TYPES)[number]
 
 const recordingLocatorSchema: z.ZodType<{
@@ -92,12 +102,13 @@ export const recordingEventSchema = z
     text: z.string().max(16_384).optional(),
     button: z.string().max(16).optional(),
     clickCount: z.number().int().optional(),
-    modifiers: z.number().int().optional(),
+    modifiers: z.union([z.number().int(), z.array(z.string())]).optional(),
     key: z.string().max(64).optional(),
     options: z.array(z.string().max(512)).max(32).optional(),
     files: z.array(z.string().max(512)).max(16).optional(),
     substring: z.boolean().optional(),
     value: z.string().max(16_384).optional(),
+    label: z.string().max(512).optional(),
     checked: z.boolean().optional(),
     snapshot: z.string().max(16_384).optional(),
     pageAlias: z.string().max(64).optional(),
@@ -152,10 +163,19 @@ export const recordingDraftSchema = z.object({
   itemCount: z.number().int().nonnegative(),
   unresolvedCount: z.number().int().nonnegative(),
   createdBy: recordingActorSchema,
+  imported: z.boolean().optional(),
+  importedScenarioId: entityIdSchema.optional(),
+  deletedAt: utcInstantSchema.nullable().optional(),
+  deletedBy: resourceDeletedBySchema.nullable().optional(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
 })
 export type RecordingDraftDto = z.infer<typeof recordingDraftSchema>
+
+export const renameRecordingBodySchema = z.strictObject({
+  name: scenarioNameSchema,
+})
+export type RenameRecordingBody = z.infer<typeof renameRecordingBodySchema>
 
 export const recordingDraftDetailSchema = recordingDraftSchema.extend({
   items: z.array(recordingItemSchema),
@@ -163,6 +183,18 @@ export const recordingDraftDetailSchema = recordingDraftSchema.extend({
   events: z.array(recordingEventSchema),
 })
 export type RecordingDraftDetailDto = z.infer<typeof recordingDraftDetailSchema>
+
+export const recordingDraftListQuerySchema = z.object({
+  search: z.string().trim().optional(),
+  targetId: entityIdSchema.optional(),
+  hasPending: z.coerce.boolean().optional(),
+  imported: z.coerce.boolean().optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().min(1).optional(),
+})
+export type RecordingDraftListQuery = z.input<typeof recordingDraftListQuerySchema>
 
 export const recordingDraftListResponseSchema = z.object({
   items: z.array(recordingDraftSchema),
@@ -179,14 +211,6 @@ export type NormalizeRecordingResult = {
   sourceDigestEvents: RecordingEvent[]
 }
 
-const SENSITIVE_LOCATOR = /password|passwd|secret|token|otp|\bpin\b|密码|口令|验证码/i
-const SENSITIVE_AUTOCOMPLETE = new Set([
-  'current-password',
-  'new-password',
-  'one-time-code',
-  'cc-number',
-  'cc-csc',
-])
 const SECRET_QUERY_KEYS = new Set([
   'password',
   'passwd',
@@ -215,16 +239,49 @@ export class RecordingNormalizationError extends Error {
  * `actions` 是逐条 JSON；`text` 含 codegen 头行，没有 `name` 的行会跳过。
  */
 export function parseJsonlSource(source: { text?: string; actions?: string[] }): unknown[] {
-  if (source.actions?.length) {
-    return source.actions.map((line, index) => parseJsonlLine(line, index))
+  const rows = source.actions?.length
+    ? source.actions.map((line, index) => parseJsonlLine(line, index))
+    : source.text?.trim()
+      ? source.text
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line, index) => parseJsonlLine(line, index))
+          .filter((row) => isActionRow(row))
+      : []
+  return rows.map((row) => enrichRecordingCollectorFields(row))
+}
+
+/**
+ * 采集端补字段：只根据已有定位推断 password，不把缺字段的 click 猜成左键。
+ */
+export function enrichRecordingCollectorFields(row: unknown): unknown {
+  if (!row || typeof row !== 'object') return row
+  const event = { ...(row as Record<string, unknown>) }
+  if (event.name === 'fill' && typeof event.inputType !== 'string') {
+    const hay = [typeof event.selector === 'string' ? event.selector : '', locatorHaystack(event.locator as RecordingEvent['locator'])].join(' ')
+    if (SENSITIVE_LOCATOR.test(hay)) event.inputType = 'password'
   }
-  if (!source.text?.trim()) return []
-  return source.text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => parseJsonlLine(line, index))
-    .filter((row) => isActionRow(row))
+  return event
+}
+
+export function targetDescriptorFromInspectSelector(selector: string): TargetDescriptor | undefined {
+  const trimmed = selector.trim()
+  if (!trimmed) return undefined
+  const role = trimmed.match(/^internal:role=([^\s[]+)(?:\[name=["']([^"']+)["']i?\])?/i)
+  if (role?.[1]) {
+    return {
+      framePath: [],
+      candidates: role[2] ? [{ by: 'role', value: role[1], name: role[2] }] : [{ by: 'role', value: role[1] }],
+    }
+  }
+  const label = trimmed.match(/^internal:label=["']([^"']+)["']/i)
+  if (label?.[1]) return { framePath: [], candidates: [{ by: 'label', value: label[1] }] }
+  const text = trimmed.match(/^internal:text=["']([^"']+)["']/i)
+  if (text?.[1]) return { framePath: [], candidates: [{ by: 'text', value: text[1] }] }
+  const testId = trimmed.match(/^internal:(?:test-id|testid)=([^\s]+)/i)
+  if (testId?.[1]) return { framePath: [], candidates: [{ by: 'testId', value: testId[1] }] }
+  return targetFromEvent({ name: 'click', selector: trimmed })
 }
 
 function parseJsonlLine(line: string, index: number): unknown {
@@ -454,7 +511,7 @@ function stripSecretQuery(url: string | undefined): string | undefined {
   }
 }
 
-function isSensitiveFill(event: RecordingEvent): boolean {
+export function isSensitiveFill(event: RecordingEvent): boolean {
   if (event.name !== 'fill') return false
   if (event.markedSensitive) return true
   if ((event.inputType ?? '').toLowerCase() === 'password') return true
@@ -479,6 +536,27 @@ function locatorHaystack(locator: RecordingEvent['locator']): string {
   return `${locator.kind} ${body} ${name} ${next}`
 }
 
+function parseModifiers(
+  modifiers: number | string[] | undefined,
+): ('Alt' | 'Control' | 'Meta' | 'Shift')[] | undefined {
+  if (!modifiers) return undefined
+  if (Array.isArray(modifiers)) {
+    const valid = modifiers.filter((m): m is 'Alt' | 'Control' | 'Meta' | 'Shift' =>
+      ['Alt', 'Control', 'Meta', 'Shift'].includes(m),
+    )
+    return valid.length > 0 ? valid : undefined
+  }
+  if (typeof modifiers === 'number') {
+    const res: ('Alt' | 'Control' | 'Meta' | 'Shift')[] = []
+    if (modifiers & 1) res.push('Alt')
+    if (modifiers & 2) res.push('Control')
+    if (modifiers & 4) res.push('Meta')
+    if (modifiers & 8) res.push('Shift')
+    return res.length > 0 ? res : undefined
+  }
+  return undefined
+}
+
 function mapEvent(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem | null {
   if (event.name === 'openPage') {
     const url = event.url?.trim() ?? ''
@@ -493,15 +571,19 @@ function mapEvent(event: RecordingEvent, sourceIndexes: number[], index: number)
     return navigateItem(event, sourceIndexes, index, url)
   }
   if (event.name === 'check' || event.name === 'uncheck') {
-    return unresolved(event, sourceIndexes, index, clickName(event), [
-      '勾选/取消勾选不能降为点击，当前 Step Type 无法精确表达',
-    ])
+    return checkItem(event, sourceIndexes, index, event.name === 'check' ? '勾选' : '取消勾选')
   }
   if (event.name === 'click') {
     return clickItem(event, sourceIndexes, index)
   }
   if (event.name === 'fill') {
     return fillItem(event, sourceIndexes, index)
+  }
+  if (event.name === 'press') {
+    return pressItem(event, sourceIndexes, index)
+  }
+  if (event.name === 'select') {
+    return selectItem(event, sourceIndexes, index)
   }
   if (event.name === 'assertVisible' || event.name === 'assertText') {
     return assertItem(event, sourceIndexes, index)
@@ -529,6 +611,25 @@ function navigateItem(
   }
 }
 
+function checkItem(event: RecordingEvent, sourceIndexes: number[], index: number, name: string): RecordingItem {
+  const target = targetFromEvent(event)
+  if (!target) {
+    return unresolved(event, sourceIndexes, index, name, targetDiagnostics(event))
+  }
+  return {
+    index,
+    sourceIndexes,
+    status: 'mapped',
+    sourceAction: event.name as RecordingActionName,
+    name,
+    candidateStepType: 'click',
+    input: asJson({ target }),
+    pageAlias: event.pageAlias,
+    framePath: event.framePath,
+    diagnostics: signalDiagnostics(event),
+  }
+}
+
 function clickItem(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem {
   const popups = popupSignals(event)
   if (popups > 1) {
@@ -538,7 +639,24 @@ function clickItem(event: RecordingEvent, sourceIndexes: number[], index: number
   if (!target) {
     return unresolved(event, sourceIndexes, index, '点击', targetDiagnostics(event))
   }
-  const input = popups === 1 ? { target, pageAfter: 'popup' as const } : { target }
+  if (event.button === undefined || event.clickCount === undefined || event.modifiers === undefined) {
+    return unresolved(event, sourceIndexes, index, '点击', ['缺少 button / clickCount / modifiers，不能猜测为普通左键'])
+  }
+  const button = event.button === 'right' || event.button === 'middle' ? event.button : undefined
+  const clickCount = event.clickCount === 2 ? 2 : undefined
+  const modifiers = parseModifiers(event.modifiers)
+  const input: Record<string, unknown> = { target }
+  if (popups === 1) input.pageAfter = 'popup'
+  if (button) input.button = button
+  if (clickCount) input.clickCount = clickCount
+  if (modifiers) input.modifiers = modifiers
+
+  let name = '点击'
+  if (button === 'right') name = '右键点击'
+  else if (button === 'middle') name = '中键点击'
+  else if (clickCount === 2) name = '双击'
+  else if (modifiers && modifiers.length > 0) name = `${modifiers.join('+')}+点击`
+
   const diagnostics = signalDiagnostics(event)
   if (popups === 1) diagnostics.push('将交接至弹出页')
   return {
@@ -546,13 +664,78 @@ function clickItem(event: RecordingEvent, sourceIndexes: number[], index: number
     sourceIndexes,
     status: 'mapped',
     sourceAction: 'click',
-    name: '点击',
+    name,
     candidateStepType: 'click',
     input: asJson(input),
     pageAlias: event.pageAlias,
     framePath: event.framePath,
     diagnostics,
   }
+}
+
+function pressItem(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem {
+  const key = event.key?.trim()
+  if (!key) {
+    return unresolved(event, sourceIndexes, index, '按键', ['缺少按键键名'])
+  }
+  if (!keyComboSchema.safeParse(key).success) {
+    return unresolved(event, sourceIndexes, index, `按键 ${key}`, [`按键 ${key} 暂未开放`])
+  }
+  const target = targetFromEvent(event)
+  return {
+    index,
+    sourceIndexes,
+    status: 'mapped',
+    sourceAction: 'press',
+    name: `按键 ${key}`,
+    candidateStepType: 'keyboard',
+    input: asJson({
+      ...(target ? { target } : {}),
+      keys: [key],
+    }),
+    pageAlias: event.pageAlias,
+    framePath: event.framePath,
+    diagnostics: signalDiagnostics(event),
+  }
+}
+
+function selectItem(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem {
+  const target = targetFromEvent(event)
+  if (!target) {
+    return unresolved(event, sourceIndexes, index, '下拉选择', targetDiagnostics(event))
+  }
+  const label = event.label?.trim()
+  const firstOption = Array.isArray(event.options) && event.options[0] ? event.options[0].trim() : undefined
+  const value = (event.value ?? firstOption)?.trim()
+  if (label) {
+    return {
+      index,
+      sourceIndexes,
+      status: 'mapped',
+      sourceAction: 'select',
+      name: `选择 ${label}`,
+      candidateStepType: 'select',
+      input: asJson({ target, by: 'label', value: label }),
+      pageAlias: event.pageAlias,
+      framePath: event.framePath,
+      diagnostics: signalDiagnostics(event),
+    }
+  }
+  if (value !== undefined && value.length > 0) {
+    return {
+      index,
+      sourceIndexes,
+      status: 'mapped',
+      sourceAction: 'select',
+      name: `选择 ${value}`,
+      candidateStepType: 'select',
+      input: asJson({ target, by: 'value', value }),
+      pageAlias: event.pageAlias,
+      framePath: event.framePath,
+      diagnostics: signalDiagnostics(event),
+    }
+  }
+  return unresolved(event, sourceIndexes, index, '下拉选择', ['未捕获有效选项'])
 }
 
 function fillItem(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem {

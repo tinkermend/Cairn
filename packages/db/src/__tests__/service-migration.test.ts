@@ -42,6 +42,15 @@ it('service target FKs use the requested schema and repair applied 0019 without 
     expect((await migrate(h.pool, schema)).applied).toEqual([
       '0020_service_target_foreign_key.sql',
       '0021_audit_login_shape_portable.sql',
+      '0022_platform_config.sql',
+      '0023_run_events.sql',
+      '0024_managed_browser_auth.sql',
+      '0025_recording_studio_import.sql',
+      '0026_platform_ai_secret_binding.sql',
+      '0027_resource_lifecycle.sql',
+      '0028_assistant.sql',
+      '0029_debug_mode_and_overlay.sql',
+      '0030_worker_registry.sql',
     ])
     expect(await referencedSchema()).toBe(schema)
     expect((await h.pool.query(`SELECT credential_id,target_id FROM "${schema}".credential_target_grants`)).rows)

@@ -1,9 +1,12 @@
 import { expireRunDeadlines } from './deadline.js'
 import { settleRunCancellationTx } from './recover.js'
-import { atomic, databaseNow, schemaFor, updateRows } from '../native.js'
-import { and, asc, count, desc, eq, inArray, isNull, max, sql } from 'drizzle-orm'
+import { atomic, databaseNow, locked, schemaFor, updateRows } from '../native.js'
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, max, ne, or, sql, type SQL } from 'drizzle-orm'
 import {
   CANCELLED_ATTEMPT_ERROR,
+  TERMINAL_RUN_STATUSES,
+  cleanupStatusResponseSchema,
+  deletePreviewResponseSchema,
   executionActorSchema,
   serviceAdmissionSchema,
   freezeExecutorVersions,
@@ -28,10 +31,14 @@ import {
   resolvePlatformSessionPolicy,
   runDetailSchema,
   runEvidenceListResponseSchema,
+  runListQuerySchema,
   runListResponseSchema,
   runSnapshotSchema,
   type AiExecutionConfig,
+  type CleanupStatus,
+  type CleanupStatusResponse,
   type CreateRunBody,
+  type DeletePreviewResponse,
   type ExecutionActor,
   type ServiceAdmission,
   type EvidenceType,
@@ -40,6 +47,7 @@ import {
   type JsonValue,
   type RunDetailDto,
   type RunGrant,
+  type RunListQuery,
   type RunListResponse,
   type RunPlacement,
   type RunSnapshot,
@@ -48,7 +56,20 @@ import {
   type ScreenshotPointer,
   type SessionGrant,
   type StepRunStatus,
+  type DebugMode,
+  type DebugCheckpoint,
+  type DebugOverlay,
 } from '@cairn/shared'
+import { cursorFilter, paginateResults } from '../cursor.js'
+import {
+  assertExpectedCounts,
+  assertResourceIdle,
+  createdAtBounds,
+  pendingWriteBlockers,
+  resourceDeletedConflict,
+  revokeExternalEvidence,
+  snapshotDeletedBy,
+} from '../lifecycle.js'
 import { recordAudit, type AuditActor } from '../audit/record.js'
 import {
   findActiveLeaseForRun,
@@ -96,9 +117,40 @@ export async function getRun(db: Db, runId: string): Promise<RunDetailDto> {
   return detail
 }
 
-export async function listRuns(db: Db): Promise<RunListResponse> {
+export async function listRuns(
+  db: Db,
+  query: RunListQuery = {},
+): Promise<RunListResponse> {
+  const parsed = runListQuerySchema.parse(query)
   const { runs, scenarioVersions, scenarios, targetAccounts, targets } = schemaFor(db)
-  // 带上场景名与目标系统名：两者都是 NOT NULL 外键，innerJoin 不会漏行。
+  const limit = parsed.limit
+  const filters: (SQL | undefined)[] = [
+    isNull(runs.deletedAt),
+    parsed.targetId ? eq(runs.targetId, parsed.targetId) : undefined,
+    parsed.scenarioId ? eq(runs.scenarioId, parsed.scenarioId) : undefined,
+    parsed.status ? eq(runs.status, parsed.status) : undefined,
+    parsed.sourceKind === 'service'
+      ? isNotNull(runs.serviceCallerId)
+      : parsed.sourceKind === 'console'
+        ? isNull(runs.serviceCallerId)
+        : undefined,
+    parsed.search
+      ? or(
+          sql`lower(${runs.id}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+          sql`lower(${scenarios.name}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+          sql`lower(${targets.name}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+        )
+      : undefined,
+    parsed.evidenceStatus ? eq(runs.evidenceStatus, parsed.evidenceStatus) : undefined,
+    parsed.isTrial === true
+      ? eq(scenarioVersions.kind, 'trial')
+      : parsed.isTrial === false
+        ? ne(scenarioVersions.kind, 'trial')
+        : undefined,
+    ...createdAtBounds(runs.createdAt, parsed.from, parsed.to),
+    cursorFilter(runs.createdAt, runs.id, parsed.cursor),
+  ]
+
   const rows = await db
     .select({
       run: runs,
@@ -106,40 +158,248 @@ export async function listRuns(db: Db): Promise<RunListResponse> {
       targetName: targets.name,
       targetAccountName: targetAccounts.displayName,
       scenarioVersionKind: scenarioVersions.kind,
+      scenarioDeletedAt: scenarios.deletedAt,
+      targetDeletedAt: targets.deletedAt,
+      targetAccountDeletedAt: targetAccounts.deletedAt,
     })
     .from(runs)
     .innerJoin(scenarios, eq(scenarios.id, runs.scenarioId))
     .innerJoin(targets, eq(targets.id, runs.targetId))
     .innerJoin(scenarioVersions, eq(scenarioVersions.id, runs.scenarioVersionId))
     .leftJoin(targetAccounts, eq(targetAccounts.id, runs.targetAccountId))
+    .where(and(...filters.filter((f): f is SQL => f !== undefined)))
     .orderBy(desc(runs.createdAt), desc(runs.id))
+    .limit(limit + 1)
+
   const leases = await listActiveLeasesByRunIds(
     db,
     rows.map((row) => row.run.id),
   )
+
+  const paginated = paginateResults(
+    rows.map((r) => ({
+      ...r,
+      id: r.run.id,
+      createdAt: r.run.createdAt,
+    })),
+    limit,
+  )
+
   return runListResponseSchema.parse({
-    items: rows.map(
-      ({ run: row, scenarioName, targetName, targetAccountName, scenarioVersionKind }) => ({
-        source: row.serviceCallerId ? { kind: 'service', callerId: row.serviceCallerId, credentialId: row.serviceCredentialId } : { kind: 'console' },
+    items: paginated.items.map(
+      ({
+        run: row,
+        scenarioName,
+        targetName,
+        targetAccountName,
+        scenarioVersionKind,
+        scenarioDeletedAt,
+        targetDeletedAt,
+        targetAccountDeletedAt,
+      }) => ({
+        source: row.serviceCallerId
+          ? {
+              kind: 'service',
+              callerId: row.serviceCallerId,
+              credentialId: row.serviceCredentialId,
+            }
+          : { kind: 'console' },
         id: row.id,
         status: row.status,
         cancelRequested: row.cancelRequestedAt !== null,
         targetId: row.targetId,
         targetName,
+        targetDeleted: Boolean(targetDeletedAt),
         targetAccountId: row.targetAccountId,
         targetAccountName,
+        targetAccountDeleted: Boolean(targetAccountDeletedAt),
         scenarioId: row.scenarioId,
         scenarioName,
+        scenarioDeleted: Boolean(scenarioDeletedAt),
         scenarioVersionId: row.scenarioVersionId,
         scenarioVersionKind,
         createdAt: row.createdAt.toISOString(),
         startedAt: iso(row.startedAt),
         finishedAt: iso(row.finishedAt),
         evidenceStatus: row.evidenceStatus,
+        debugMode: row.debugMode ?? 'runThrough',
         lease: leases.get(row.id) ? { holderWorkerId: leases.get(row.id)!.holderWorkerId } : null,
       }),
     ),
+    nextCursor: paginated.nextCursor,
+    hasMore: paginated.hasMore,
   })
+}
+
+export async function previewDeleteRun(db: Db, runId: string): Promise<DeletePreviewResponse> {
+  const { runs, runLeases, storedObjects } = schemaFor(db)
+  const [run] = await db
+    .select()
+    .from(runs)
+    .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+    .limit(1)
+  if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
+
+  const activeBlockers: { id: string; code: string; message: string }[] = []
+  if (!TERMINAL_RUN_STATUSES.includes(run.status as any)) {
+    activeBlockers.push({
+      id: 'run_not_terminal',
+      code: 'RUN_NOT_TERMINAL',
+      message: '仅终态（成功、失败、已取消）运行允许删除',
+    })
+  }
+
+  const activeLeases = await db
+    .select({ id: runLeases.id })
+    .from(runLeases)
+    .where(and(eq(runLeases.runId, runId), eq(runLeases.status, 'ACTIVE')))
+  if (activeLeases.length > 0) {
+    activeBlockers.push({
+      id: 'run_busy',
+      code: 'RESOURCE_BUSY',
+      message: '该运行仍有关联活跃任务租约',
+    })
+  }
+
+  activeBlockers.push(...(await pendingWriteBlockers(db, [runId])))
+
+  const objects = await db
+    .select({ id: storedObjects.id, byteSize: storedObjects.byteSize })
+    .from(storedObjects)
+    .where(and(eq(storedObjects.runId, runId), isNull(storedObjects.purgedAt)))
+
+  const totalBytes = objects.reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+
+  return deletePreviewResponseSchema.parse({
+    previewToken: newId(),
+    counts: {
+      storedObjects: objects.length,
+      totalBytes,
+    },
+    blockers: activeBlockers,
+  })
+}
+
+export async function deleteRun(
+  db: Db,
+  runId: string,
+  actor: AuditActor,
+  input: { expectedCounts?: { runs?: number } } = {},
+): Promise<CleanupStatusResponse> {
+  const { runs, storedObjects } = schemaFor(db)
+  try {
+    await db.transaction(async (tx) => {
+      const [run] = await locked(tx, tx.select().from(runs).where(eq(runs.id, runId)))
+      if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
+      if (run.deletedAt) return
+      if (!TERMINAL_RUN_STATUSES.includes(run.status as any)) {
+        throw conflict('RUN_NOT_TERMINAL', '仅终态（成功、失败、已取消）运行允许删除')
+      }
+      await assertResourceIdle(tx as unknown as Db, { runIds: [runId], checkPendingWrites: true })
+      assertExpectedCounts({ runs: 1 }, input.expectedCounts)
+
+      const now = new Date()
+      const deletedBy = await snapshotDeletedBy(tx as unknown as Db, actor)
+      await tx
+        .update(runs)
+        .set({ deletedAt: now, deletedBy, updatedAt: now })
+        .where(eq(runs.id, runId))
+
+      await revokeExternalEvidence(tx as unknown as Db, [runId])
+      await tx
+        .update(storedObjects)
+        .set({ deleteRequestedAt: now })
+        .where(
+          and(
+            eq(storedObjects.runId, runId),
+            isNull(storedObjects.deleteRequestedAt),
+            isNull(storedObjects.purgedAt),
+          ),
+        )
+
+      const [objectRow] = await tx
+        .select({
+          n: sql<number>`count(*)`,
+          bytes: sql<number>`coalesce(sum(${storedObjects.byteSize}), 0)`,
+        })
+        .from(storedObjects)
+        .where(eq(storedObjects.runId, runId))
+      await recordAudit(
+        tx as unknown as Db,
+        actor,
+        'run.delete',
+        'run',
+        runId,
+        `删除运行 ${runId.slice(0, 8)}：对象 ${Number(objectRow?.n ?? 0)}、${Number(objectRow?.bytes ?? 0)} 字节`,
+      )
+    })
+  } catch (error) {
+    throw mapRestriction(error) ?? error
+  }
+
+  return getRunCleanupStatus(db, runId)
+}
+
+export async function getRunCleanupStatus(db: Db, runId: string): Promise<CleanupStatusResponse> {
+  const { runs, storedObjects } = schemaFor(db)
+  const [run] = await db.select({ id: runs.id }).from(runs).where(eq(runs.id, runId)).limit(1)
+  if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
+  const objects = await db
+    .select({
+      status: storedObjects.status,
+      byteSize: storedObjects.byteSize,
+      purgeAttempts: storedObjects.purgeAttempts,
+      lastPurgeErrorAt: storedObjects.lastPurgeErrorAt,
+    })
+    .from(storedObjects)
+    .where(eq(storedObjects.runId, runId))
+
+  const total = objects.length
+  const purged = objects.filter((o) => o.status === 'purged').length
+  const failed = objects.filter(
+    (o) => o.status !== 'purged' && (o.purgeAttempts >= 5 || o.lastPurgeErrorAt !== null),
+  ).length
+  const totalBytes = objects.reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+  const purgedBytes = objects
+    .filter((o) => o.status === 'purged')
+    .reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+
+  const status: CleanupStatus =
+    failed > 0
+      ? 'failed'
+      : total === purged || total === 0
+        ? 'completed'
+        : purged > 0
+          ? 'in_progress'
+          : 'pending'
+
+  return cleanupStatusResponseSchema.parse({
+    resourceId: runId,
+    resourceType: 'run',
+    status,
+    totalObjects: total,
+    purgedObjects: purged,
+    failedObjects: failed,
+    totalBytes,
+    purgedBytes,
+    lastError: failed > 0 ? '部分对象文件清理失败，请重试' : null,
+    completedAt: status === 'completed' ? new Date().toISOString() : null,
+  })
+}
+
+export async function retryRunCleanup(
+  db: Db,
+  runId: string,
+  actor: AuditActor,
+): Promise<CleanupStatusResponse> {
+  await getRunCleanupStatus(db, runId)
+  const { storedObjects } = schemaFor(db)
+  await db
+    .update(storedObjects)
+    .set({ purgeAttempts: 0, lastPurgeErrorAt: null })
+    .where(and(eq(storedObjects.runId, runId), ne(storedObjects.status, 'purged')))
+  await recordAudit(db, actor, 'run.cleanup_retry', 'run', runId, '重试对象清理')
+  return getRunCleanupStatus(db, runId)
 }
 
 export async function listRunEvidence(db: Db, runId: string) {
@@ -230,13 +490,16 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
       targetName: targets.name,
       targetAccountName: targetAccounts.displayName,
       scenarioVersionKind: scenarioVersions.kind,
+      scenarioDeletedAt: scenarios.deletedAt,
+      targetDeletedAt: targets.deletedAt,
+      targetAccountDeletedAt: targetAccounts.deletedAt,
     })
     .from(runs)
     .innerJoin(scenarios, eq(scenarios.id, runs.scenarioId))
     .innerJoin(targets, eq(targets.id, runs.targetId))
     .innerJoin(scenarioVersions, eq(scenarioVersions.id, runs.scenarioVersionId))
     .leftJoin(targetAccounts, eq(targetAccounts.id, runs.targetAccountId))
-    .where(eq(runs.id, runId))
+    .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
     .limit(1)
   if (!joined) return null
   const row = joined.run
@@ -273,16 +536,20 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     cancelRequested: row.cancelRequestedAt !== null,
     targetId: row.targetId,
     targetName: joined.targetName,
+    targetDeleted: Boolean(joined.targetDeletedAt),
     targetAccountId: row.targetAccountId,
     targetAccountName: joined.targetAccountName,
+    targetAccountDeleted: Boolean(joined.targetAccountDeletedAt),
     scenarioId: row.scenarioId,
     scenarioName: joined.scenarioName,
+    scenarioDeleted: Boolean(joined.scenarioDeletedAt),
     scenarioVersionId: row.scenarioVersionId,
     scenarioVersionKind: joined.scenarioVersionKind,
     createdAt: row.createdAt.toISOString(),
     startedAt: iso(row.startedAt),
     finishedAt: iso(row.finishedAt),
     evidenceStatus: row.evidenceStatus,
+    debugMode: row.debugMode ?? 'runThrough',
     lease: lease
       ? {
           holderWorkerId: lease.holderWorkerId,
@@ -293,6 +560,8 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     placement,
     snapshot,
     context: row.context,
+    checkpoint: row.checkpoint ?? null,
+    debugOverlay: row.debugOverlay ?? null,
     stepRuns: stepRows.map((step) => {
       const definition = stepsById.get(step.stepId)
       return {
@@ -330,7 +599,13 @@ async function resolveRunTargetAccountId(
   const rows = await db
     .select()
     .from(targetAccounts)
-    .where(and(eq(targetAccounts.targetId, input.targetId), eq(targetAccounts.status, 'active')))
+    .where(
+      and(
+        eq(targetAccounts.targetId, input.targetId),
+        eq(targetAccounts.status, 'active'),
+        isNull(targetAccounts.deletedAt),
+      ),
+    )
   const withSecret = rows.filter((row) => row.secretId && row.secretProvider)
   if (withSecret.length === 1) return withSecret[0]!.id
   if (withSecret.length > 1) {
@@ -361,11 +636,17 @@ export async function createRunWithSnapshot(
   if (version.kind === 'trial' && !input.allowTrialVersion) {
     throw badRequest('SCENARIO_VERSION_NOT_PUBLISHED', '正式运行只能使用已发布版本')
   }
+  const isTrial = version.kind === 'trial' && Boolean(input.allowTrialVersion)
+  if (!isTrial && input.debugMode && input.debugMode !== 'runThrough') {
+    throw badRequest('DEBUG_MODE_NOT_ALLOWED', '正式运行只能使用 runThrough 模式')
+  }
+  const debugMode: DebugMode = isTrial ? (input.debugMode ?? 'holdOnFailure') : 'runThrough'
+
   if (scenario.status === 'disabled')
     throw conflict('SCENARIO_DISABLED', '场景已停用，不能创建新运行')
 
   const [target] = await db.select().from(targets).where(eq(targets.id, scenario.targetId)).limit(1)
-  if (!target) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
+  if (!target || target.deletedAt) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
   if (target.status === 'disabled')
     throw conflict('TARGET_DISABLED', '目标系统已停用，不能创建新运行')
 
@@ -391,7 +672,7 @@ export async function createRunWithSnapshot(
       .from(targetAccounts)
       .where(eq(targetAccounts.id, targetAccountId))
       .limit(1)
-    if (!account || account.targetId !== scenario.targetId) {
+    if (!account || account.deletedAt || account.targetId !== scenario.targetId) {
       throw badRequest('RUN_ACCOUNT_MISMATCH', '目标账号不属于该场景绑定的目标系统')
     }
     if (account.status === 'disabled') throw conflict('RUN_ACCOUNT_DISABLED', '目标账号已停用')
@@ -440,6 +721,7 @@ export async function createRunWithSnapshot(
             snapshotEvidence: existing.snapshot.evidencePolicy,
             snapshotPolicy: existing.snapshot.policy,
           })
+      if (existing.deletedAt) resourceDeletedConflict()
       if (!same) {
         throw conflict('RUN_IDEMPOTENCY_CONFLICT', '相同幂等键对应不同的运行输入')
       }
@@ -520,6 +802,7 @@ export async function createRunWithSnapshot(
         deadlineAt: input.deadlineAt,
         status: 'QUEUED',
         evidenceStatus: 'PENDING',
+        debugMode,
         snapshot,
         snapshotDigest: digest,
         context: runInput,
@@ -555,6 +838,7 @@ export async function createRunWithSnapshot(
     if (input.idempotencyKey && mapRestriction(error)?.code === 'RUN_IDEMPOTENCY_CONFLICT') {
       const raced = await findIdempotent(db, input.actor, input.idempotencyKey)
       if (raced && raced.idempotencyDigest === idempotencyDigest) {
+        if (raced.deletedAt) resourceDeletedConflict()
         return { detail: await getRun(db, raced.id), created: false }
       }
     }
@@ -579,6 +863,7 @@ export async function createTrialRunFromDraft(
     executableTypes?: readonly string[]
     aiExecution?: AiExecutionConfig
     hangWaitMs?: number
+    debugMode?: DebugMode
   },
 ): Promise<{ detail: RunDetailDto; created: boolean }> {
   try {
@@ -602,6 +887,7 @@ export async function createTrialRunFromDraft(
         aiExecution: input.aiExecution,
         hangWaitMs: input.hangWaitMs,
         allowTrialVersion: true,
+        debugMode: input.debugMode,
       })
     })
   } catch (error) {
@@ -664,22 +950,33 @@ export async function startAttempt(
   return db.transaction(async (tx) => {
     await expireRunDeadlines(tx as unknown as Db, input.runId)
     const run = await lockRunRow(tx as unknown as Db, input.runId)
-    if (!run || run.status !== 'RUNNING' || run.cancelRequestedAt) return null
+    if (!run || (run.status !== 'RUNNING' && run.status !== 'HOLDING') || run.cancelRequestedAt) return null
     if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return null
     const [full] = await tx.select().from(runs).where(eq(runs.id, input.runId)).limit(1)
     if (!full) return null
     const [step] = await tx.select().from(stepRuns).where(eq(stepRuns.id, input.stepRunId)).limit(1)
-    if (!step || (step.status !== 'PENDING' && step.status !== 'RUNNING')) return null
+    if (!step || (step.status !== 'PENDING' && step.status !== 'RUNNING' && step.status !== 'FAILED')) return null
+    if (step.status === 'FAILED' && full.status !== 'HOLDING') return null
 
-    if (step.status === 'PENDING') {
+    const stepNeedsStart = step.status === 'PENDING' || step.status === 'FAILED'
+    if (stepNeedsStart) {
       const moved = await updateRows(
         tx,
         stepRuns,
-        { status: 'RUNNING', startedAt: new Date() },
-        and(eq(stepRuns.id, input.stepRunId), eq(stepRuns.status, 'PENDING')),
+        { status: 'RUNNING', startedAt: step.startedAt ?? new Date() },
+        and(eq(stepRuns.id, input.stepRunId), inArray(stepRuns.status, ['PENDING', 'FAILED'])),
         { id: stepRuns.id },
       )
       if (moved.length === 0) return null
+    }
+
+    const wasHolding = full.status === 'HOLDING'
+    const now = new Date()
+    if (wasHolding) {
+      await tx
+        .update(runs)
+        .set({ status: 'RUNNING', updatedAt: now })
+        .where(eq(runs.id, input.runId))
     }
 
     const [agg] = await tx
@@ -688,7 +985,6 @@ export async function startAttempt(
       .where(eq(attempts.stepRunId, input.stepRunId))
     const attemptNo = Number(agg?.n ?? 0) + 1
     const attemptId = newId()
-    const now = new Date()
     await tx.insert(attempts).values({
       id: attemptId,
       stepRunId: input.stepRunId,
@@ -709,7 +1005,13 @@ export async function startAttempt(
       createdAt: now,
     })
     await appendRunEvents(tx as unknown as Db, input.runId, [
-      ...(step.status === 'PENDING'
+      ...(wasHolding
+        ? [
+            { type: 'run.status_changed' as const, payload: { status: 'RUNNING' } },
+            { type: 'run.debug_resumed' as const, payload: { action: 'retry_current', stepRunId: input.stepRunId } },
+          ]
+        : []),
+      ...(stepNeedsStart
         ? [{ type: 'step_run.started' as const, stepRunId: input.stepRunId, payload: { status: 'RUNNING' } }]
         : []),
       {
@@ -740,6 +1042,8 @@ export type FinishAttemptInput = {
   runStatus?: RunStatus
   skipRemaining?: boolean
   cancelPending?: boolean
+  checkpoint?: DebugCheckpoint | null
+  debugOverlay?: DebugOverlay | null
   /**
    * 浏览器步骤提交边界：若提供，写 SUCCEEDED 前在事务内校验租约仍有效。
    * 丢租时 SIDE_EFFECT → NEEDS_REVIEW，其余 → FAILED，不写成功结果。
@@ -953,6 +1257,8 @@ export async function finishAttemptTx(
         // NEEDS_REVIEW 只是停下来等人，结论要等 reviewRun 才写，否则耗时统计会把待核查
         // 算成已完成，同一条 Run 还会先后写两个不同的完成时间。
         ...(isFinishedRunStatus(finalRunStatus) ? { finishedAt: now } : {}),
+        ...(input.checkpoint !== undefined ? { checkpoint: input.checkpoint } : {}),
+        ...(input.debugOverlay !== undefined ? { debugOverlay: input.debugOverlay } : {}),
       })
       .where(eq(runs.id, input.runId))
     if (isHaltedRunStatus(finalRunStatus) || finalRunStatus === 'WAITING_FOR_AUTH') {
@@ -962,6 +1268,15 @@ export async function finishAttemptTx(
         finalRunStatus === 'WAITING_FOR_AUTH' ? 'waiting_for_auth' : 'run_halted',
       )
     }
+  } else if (input.checkpoint !== undefined || input.debugOverlay !== undefined) {
+    await tx
+      .update(runs)
+      .set({
+        ...(input.checkpoint !== undefined ? { checkpoint: input.checkpoint } : {}),
+        ...(input.debugOverlay !== undefined ? { debugOverlay: input.debugOverlay } : {}),
+        updatedAt: now,
+      })
+      .where(eq(runs.id, input.runId))
   }
 
   if (input.injectFailure) throw input.injectFailure
@@ -991,6 +1306,9 @@ export async function finishAttemptTx(
       : []),
     ...(finalRunStatus
       ? [{ type: 'run.status_changed' as const, payload: { status: finalRunStatus } }]
+      : []),
+    ...(finalRunStatus === 'HOLDING'
+      ? [{ type: 'run.holding' as const, payload: { checkpoint: input.checkpoint ?? null } }]
       : []),
   ])
 
@@ -1120,6 +1438,7 @@ export async function failRunValidation(
   runId: string,
   authority: RunWriteAuthority,
   error: ExecutionError = RUN_VALIDATION_FAILED_ERROR,
+  options?: { skipRemaining?: boolean },
 ): Promise<void> {
   const { evidences, runs } = schemaFor(db)
   const now = new Date()
@@ -1145,7 +1464,9 @@ export async function failRunValidation(
       },
       createdAt: now,
     })
-    await skipRemainingStepRunsTx(tx as unknown as Db, runId, now)
+    if (options?.skipRemaining !== false) {
+      await skipRemainingStepRunsTx(tx as unknown as Db, runId, now)
+    }
     if ('grant' in authority) {
       await releaseRunLeaseTx(tx as unknown as Db, authority.grant, 'run_halted')
     }
@@ -1236,6 +1557,142 @@ export async function listRunsWaitingForAuthByAccount(
     .from(runs)
     .where(and(eq(runs.status, 'WAITING_FOR_AUTH'), eq(runs.targetAccountId, targetAccountId)))
   return rows.map((r) => r.id)
+}
+
+export async function updateRunDebugOverlay(
+  db: Db,
+  runId: string,
+  overlay: DebugOverlay | null,
+): Promise<RunDetailDto> {
+  const { runs } = schemaFor(db)
+  const now = new Date()
+  await atomic(db, async (tx) => {
+    const run = await lockRunRow(tx as unknown as Db, runId)
+    if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
+    if (run.status !== 'HOLDING') {
+      throw conflict('RUN_NOT_HOLDING', '仅 HOLDING 状态的运行允许设置临时覆盖')
+    }
+    await tx
+      .update(runs)
+      .set({ debugOverlay: overlay, updatedAt: now })
+      .where(eq(runs.id, runId))
+  })
+  return getRun(db, runId)
+}
+
+export async function enterRunHolding(
+  db: Db,
+  input: {
+    runId: string
+    grant: RunGrant
+    checkpoint: DebugCheckpoint
+    debugOverlay?: DebugOverlay | null
+  },
+): Promise<boolean> {
+  const { runs } = schemaFor(db)
+  const now = new Date()
+  return db.transaction(async (tx) => {
+    const run = await lockRunRow(tx as unknown as Db, input.runId)
+    if (!run || run.status !== 'RUNNING' || run.cancelRequestedAt) return false
+    if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return false
+    await tx
+      .update(runs)
+      .set({
+        status: 'HOLDING',
+        checkpoint: input.checkpoint,
+        ...(input.debugOverlay !== undefined ? { debugOverlay: input.debugOverlay } : {}),
+        updatedAt: now,
+      })
+      .where(eq(runs.id, input.runId))
+    await appendRunEvents(tx as unknown as Db, input.runId, [
+      { type: 'run.status_changed', payload: { status: 'HOLDING' } },
+      { type: 'run.holding', payload: { checkpoint: input.checkpoint } },
+    ])
+    return true
+  })
+}
+
+export async function stopRunDebug(
+  db: Db,
+  runId: string,
+  actor: AuditActor,
+): Promise<RunDetailDto> {
+  const { runs } = schemaFor(db)
+  const now = new Date()
+  await atomic(db, async (tx) => {
+    const run = await lockRunRow(tx as unknown as Db, runId)
+    if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
+    if (run.status !== 'HOLDING') {
+      throw conflict('RUN_NOT_HOLDING', '仅 HOLDING 状态的运行允许结束调试会话')
+    }
+    const detail = await loadRunDetail(tx as unknown as Db, runId)
+    const hasFailedStep = detail?.stepRuns.some((s) => s.status === 'FAILED')
+    const hasSucceededStep = detail?.stepRuns.some((s) => s.status === 'SUCCEEDED')
+    const finalStatus: RunStatus = hasFailedStep ? 'FAILED' : hasSucceededStep ? 'SUCCEEDED' : 'CANCELLED'
+
+    await tx
+      .update(runs)
+      .set({
+        status: finalStatus,
+        finishedAt: now,
+        debugOverlay: null,
+        checkpoint: null,
+        updatedAt: now,
+      })
+      .where(eq(runs.id, runId))
+
+    const activeLease = await findActiveLeaseForRun(tx as unknown as Db, runId)
+    if (activeLease) {
+      await releaseRunLeaseTx(tx as unknown as Db, activeLease, 'run_halted')
+    }
+
+    await appendRunEvents(tx as unknown as Db, runId, [
+      { type: 'run.status_changed', payload: { status: finalStatus } },
+      { type: 'run.debug_stopped', payload: { reason: 'author_stop', finalStatus } },
+    ])
+    await recordAudit(tx as unknown as Db, actor, 'run.debug', 'run', runId, '结束调试会话')
+  })
+  return getRun(db, runId)
+}
+
+export async function continueRunDebug(
+  db: Db,
+  input: {
+    runId: string
+    grant: RunGrant
+  },
+): Promise<boolean> {
+  const { runs } = schemaFor(db)
+  const now = new Date()
+  return db.transaction(async (tx) => {
+    const run = await lockRunRow(tx as unknown as Db, input.runId)
+    if (!run || run.status !== 'HOLDING' || run.cancelRequestedAt) return false
+    if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return false
+    const detail = await loadRunDetail(tx as unknown as Db, input.runId)
+    const current = detail?.checkpoint
+      ? detail.stepRuns.find((item) => item.stepId === detail.checkpoint?.stepId)
+      : undefined
+    if (!current) {
+      throw conflict('STEP_CANNOT_RETRY', '没有可继续的当前步骤')
+    }
+    const pausePending = detail?.checkpoint?.reason === 'author_pause' && current.status === 'PENDING'
+    if (!pausePending && current.status !== 'SUCCEEDED') {
+      throw conflict('STEP_CANNOT_RETRY', '只有当前步骤已成功时才能继续下一步')
+    }
+    await tx
+      .update(runs)
+      .set({
+        status: 'RUNNING',
+        debugOverlay: null,
+        updatedAt: now,
+      })
+      .where(eq(runs.id, input.runId))
+    await appendRunEvents(tx as unknown as Db, input.runId, [
+      { type: 'run.status_changed', payload: { status: 'RUNNING' } },
+      { type: 'run.debug_resumed', payload: { action: 'continue', stepId: current.stepId } },
+    ])
+    return true
+  })
 }
 
 export async function loadRunRow(db: Db, runId: string) {

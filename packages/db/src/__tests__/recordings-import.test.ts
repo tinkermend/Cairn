@@ -134,7 +134,7 @@ describe.each(DRIVERS)('%s 录制绑定与回填', { timeout: 30_000 }, (driver)
       recordingBody(targetId, { bindingId: bound.binding.id }),
       { id: actorId },
     )
-    expect(uploaded.detail.items.some((item) => item.sourceAction === 'check' && item.status === 'unresolved')).toBe(
+    expect(uploaded.detail.items.some((item) => item.sourceAction === 'check' && item.status === 'mapped')).toBe(
       true,
     )
 

@@ -1,25 +1,35 @@
 import {
+  cleanupStatusResponseSchema,
   createTargetAccountBodySchema,
   createTargetBodySchema,
+  deletePreviewResponseSchema,
+  deleteResourceBodySchema,
+  deleteResourceResultSchema,
   targetAccountListResponseSchema,
   targetAccountSchema,
   targetListResponseSchema,
   targetSchema,
   updateTargetAccountBodySchema,
   updateTargetBodySchema,
+  type CleanupStatusResponse,
   type CreateTargetAccountBody,
   type CreateTargetBody,
+  type DeletePreviewResponse,
+  type DeleteResourceBody,
+  type DeleteResourceResult,
   type TargetAccountDto,
+  type TargetAccountListQuery,
   type TargetAccountListResponse,
   type TargetDto,
+  type TargetListQuery,
   type TargetListResponse,
   type UpdateTargetAccountBody,
   type UpdateTargetBody,
 } from '@cairn/shared'
-import { apiFetch } from '@/lib/api-client'
+import { apiFetch, toQueryString } from '@/lib/api-client'
 
-export function fetchTargets(): Promise<TargetListResponse> {
-  return apiFetch('/api/targets', targetListResponseSchema)
+export function fetchTargets(query?: TargetListQuery): Promise<TargetListResponse> {
+  return apiFetch(`/api/targets${toQueryString(query)}`, targetListResponseSchema)
 }
 
 export function fetchTarget(id: string): Promise<TargetDto> {
@@ -42,14 +52,36 @@ export function updateTarget(id: string, body: UpdateTargetBody): Promise<Target
   })
 }
 
-export function deleteTarget(id: string): Promise<void> {
-  return apiFetch(`/api/targets/${id}/delete`, targetSchema, { method: 'POST' }).then(
-    () => undefined,
-  )
+export function previewDeleteTarget(id: string): Promise<DeletePreviewResponse> {
+  return apiFetch(`/api/targets/${id}/delete-preview`, deletePreviewResponseSchema)
 }
 
-export function fetchTargetAccounts(targetId: string): Promise<TargetAccountListResponse> {
-  return apiFetch(`/api/targets/${targetId}/accounts`, targetAccountListResponseSchema)
+export function deleteTarget(id: string, body?: DeleteResourceBody): Promise<CleanupStatusResponse> {
+  return apiFetch(`/api/targets/${id}/delete`, cleanupStatusResponseSchema, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(deleteResourceBodySchema.parse(body)) : undefined,
+  })
+}
+
+export function fetchTargetCleanup(id: string): Promise<CleanupStatusResponse> {
+  return apiFetch(`/api/targets/${id}/cleanup`, cleanupStatusResponseSchema)
+}
+
+export function retryTargetCleanup(id: string): Promise<CleanupStatusResponse> {
+  return apiFetch(`/api/targets/${id}/cleanup/retry`, cleanupStatusResponseSchema, {
+    method: 'POST',
+  })
+}
+
+export function fetchTargetAccounts(
+  targetId: string,
+  query?: TargetAccountListQuery,
+): Promise<TargetAccountListResponse> {
+  return apiFetch(
+    `/api/targets/${targetId}/accounts${toQueryString(query)}`,
+    targetAccountListResponseSchema,
+  )
 }
 
 export function createTargetAccount(
@@ -75,10 +107,13 @@ export function updateTargetAccount(
   })
 }
 
-export function deleteTargetAccount(targetId: string, accountId: string): Promise<void> {
+export function deleteTargetAccount(
+  targetId: string,
+  accountId: string,
+): Promise<DeleteResourceResult> {
   return apiFetch(
     `/api/targets/${targetId}/accounts/${accountId}/delete`,
-    targetSchema,
+    deleteResourceResultSchema,
     { method: 'POST' },
-  ).then(() => undefined)
+  )
 }

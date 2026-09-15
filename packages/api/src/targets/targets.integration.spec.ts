@@ -214,7 +214,7 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
     expect(leftover).toHaveLength(0)
   })
 
-  it('有账号时删除系统失败；审计与成功写入同行', async () => {
+  it('OCC 预期不一致时删除系统失败；审计与成功写入同行', async () => {
     const target = await service.createTarget(
       {
         code: `${prefix}-del`,
@@ -233,11 +233,11 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
       actor,
     )
     try {
-      await service.deleteTarget(target.id, actor)
+      await service.deleteTarget(target.id, actor, { expectedCounts: { targetAccounts: 0 } })
       expect.unreachable()
     } catch (error) {
       expect(error).toBeInstanceOf(ConflictException)
-      expect((error as ConflictException).getResponse()).toMatchObject({ code: 'TARGET_HAS_ACCOUNTS' })
+      expect((error as ConflictException).getResponse()).toMatchObject({ code: 'DELETE_SCOPE_EXPANDED' })
     }
     const { rows: audits } = await handle.pool.query<{ action: string }>(
       `SELECT action FROM ${parsed.data!.CAIRN_DB_SCHEMA}.console_audit_events

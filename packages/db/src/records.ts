@@ -22,6 +22,7 @@ import type {
   WorkerStatus,
   RecordingEvent,
   RecordingItem,
+  ResourceDeletedBy,
 } from '@cairn/shared'
 
 export type ConsoleAccount = {
@@ -127,6 +128,8 @@ export type Target = {
     password?: { by: 'id' | 'name' | 'css'; value: string }
     submit?: { by: 'id' | 'name' | 'css'; value: string }
   } | null
+  deletedAt: Date | null
+  deletedBy: ResourceDeletedBy | null
 }
 
 export type NewTarget = {
@@ -148,6 +151,8 @@ export type NewTarget = {
       }
     | null
     | undefined
+  deletedAt?: Date | null | undefined
+  deletedBy?: ResourceDeletedBy | null | undefined
 }
 
 export type TargetAccount = {
@@ -160,6 +165,8 @@ export type TargetAccount = {
   username: string
   secretProvider: string | null
   secretId: string | null
+  deletedAt: Date | null
+  deletedBy: ResourceDeletedBy | null
 }
 
 export type NewTargetAccount = {
@@ -172,6 +179,8 @@ export type NewTargetAccount = {
   updatedAt?: Date | undefined
   secretProvider?: string | null | undefined
   secretId?: string | null | undefined
+  deletedAt?: Date | null | undefined
+  deletedBy?: ResourceDeletedBy | null | undefined
 }
 
 export type SecretRow = {
@@ -190,6 +199,8 @@ export type ScenarioRow = {
   updatedAt: Date
   targetId: string
   createdByConsoleAccountId: string
+  deletedAt: Date | null
+  deletedBy: ResourceDeletedBy | null
 }
 
 export type ScenarioVersionRow = {
@@ -424,6 +435,8 @@ export type RunRow = {
   context: Record<string, JsonValue>
   idempotencyKey: string | null
   idempotencyDigest: string | null
+  deletedAt: Date | null
+  deletedBy: ResourceDeletedBy | null
 }
 
 export type StepRunRow = {
@@ -478,8 +491,9 @@ export type StoredObjectRow = {
   byteSize: number | null
   retainUntil: Date
   availableAt: Date | null
+  deleteRequestedAt: Date | null
   purgedAt: Date | null
-  purgeReason: 'expired' | 'upload_incomplete' | null
+  purgeReason: PurgeReason | null
   purgeAttempts: number
   lastPurgeErrorAt: Date | null
 }
@@ -497,6 +511,7 @@ export type BrowserSessionRow = {
   health: 'UNKNOWN' | 'HEALTHY' | 'UNHEALTHY'
   authState: 'UNKNOWN' | 'AUTHENTICATED' | 'EXPIRED'
   ownerWorkerId: string
+  ownerWorkerInstanceId: string | null
   generation: number
   fencingToken: number
   version: number
@@ -524,6 +539,7 @@ export type NewBrowserSession = {
   idleTtlSeconds: number
   maxLifetimeSeconds: number
   ownerWorkerId: string
+  ownerWorkerInstanceId?: string | null | undefined
   generation: number
   profileKey: string
   reusePolicy: 'REUSE_PAGE' | 'NEW_PAGE' | 'RECREATE_SESSION'
@@ -592,6 +608,12 @@ export type WorkerRow = {
   capacity: number
   maxSessions: number
   stoppedAt: Date | null
+  internalBaseUrl: string | null
+  lostAfterSeconds: number | null
+  heartbeatExpiresAt: Date | null
+  liveHandleCount: number | null
+  sampledSlotCount: number | null
+  handleMismatchStreak: number
 }
 
 export type RunLeaseRow = {
@@ -658,6 +680,8 @@ export type RecordingDraftRow = {
     sensitive?: boolean | undefined
   }[]
   diagnostics: string[]
+  deletedAt: Date | null
+  deletedBy: ResourceDeletedBy | null
 }
 
 export type NewRecordingDraftRow = {
@@ -711,4 +735,6 @@ export type NewRecordingDraftRow = {
   id?: string | undefined
   createdAt?: Date | undefined
   updatedAt?: Date | undefined
+  deletedAt?: Date | null | undefined
+  deletedBy?: ResourceDeletedBy | null | undefined
 }

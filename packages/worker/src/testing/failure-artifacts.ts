@@ -19,7 +19,7 @@ export type FailureArtifactResult = {
 }
 
 /**
- * 递归脱敏凭据信息，防止密码、Token、密钥落盘明文泄漏（违反宪法第 15、18、19 条）
+ * 递归脱敏凭据信息，防止密码、Token、密钥落盘明文泄漏（宪法「凭据与授权」「可执行约束」）
  */
 export function sanitizeContext(data: unknown): unknown {
   if (data === null || data === undefined) return data

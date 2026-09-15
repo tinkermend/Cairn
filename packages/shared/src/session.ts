@@ -164,7 +164,7 @@ export type SessionGrant = z.infer<typeof sessionGrantSchema>
 
 /**
  * 控制面会话视图。只给元数据：没有 Cookie、没有 profile 绝对路径，
- * 也没有任何可用于驱动浏览器的句柄（宪法 §12：API 不持有正式 Browser Session）。
+ * 也没有任何可用于驱动浏览器的句柄（宪法「执行分层」：API 不持有正式 Browser Session）。
  */
 export const sessionDtoSchema = z.object({
   id: z.uuid(),
@@ -174,6 +174,7 @@ export const sessionDtoSchema = z.object({
   health: sessionHealthSchema,
   authState: sessionAuthStateSchema,
   ownerWorkerId: z.string().min(1),
+  ownerWorkerInstanceId: z.uuid().nullable(),
   generation: z.number().int().positive(),
   reusePolicy: sessionReusePolicySchema,
   profileKey: z.string().min(1),

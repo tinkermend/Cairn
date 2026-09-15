@@ -1,6 +1,5 @@
-import { decodeCredentialKey, DEFAULT_WORKER_INTERNAL_HOST, DEFAULT_WORKER_INTERNAL_PORT } from './env.js'
+import { decodeCredentialKey } from './env.js'
 import { entityIdSchema } from './wire.js'
-import { z } from 'zod'
 
 /**
  * 服务间 HMAC。只用 globalThis.crypto.subtle，不引入 node:crypto，
@@ -8,51 +7,25 @@ import { z } from 'zod'
  */
 
 export { DEV_INTERNAL_AUTH_SECRET, DEFAULT_WORKER_INTERNAL_HOST, DEFAULT_WORKER_INTERNAL_PORT } from './env.js'
+export {
+  workerEndpointMapSchema,
+  parseWorkerEndpoints,
+  assertWorkerEndpointAllowed,
+  type WorkerEndpointMap,
+  type WorkerEndpointOptions,
+} from './worker-registry.js'
 export const INTERNAL_REQUEST_TTL_SECONDS = 30
 export const WORKER_INTERNAL_PATH_PREFIX = '/internal/managed-browser'
-
-export const workerEndpointMapSchema = z.record(z.string().min(1).max(128), z.string().url())
-export type WorkerEndpointMap = z.infer<typeof workerEndpointMapSchema>
-
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
-
-export function parseWorkerEndpoints(raw: string | undefined): WorkerEndpointMap {
-  if (!raw || raw.trim() === '') {
-    return { 'local-worker': `http://${DEFAULT_WORKER_INTERNAL_HOST}:${DEFAULT_WORKER_INTERNAL_PORT}` }
-  }
-  const entries: Record<string, string> = {}
-  for (const part of raw.split(',')) {
-    const trimmed = part.trim()
-    if (!trimmed) continue
-    const eq = trimmed.indexOf('=')
-    if (eq <= 0) {
-      throw new Error('CAIRN_WORKER_ENDPOINTS 须为 workerId=baseUrl 的逗号分隔列表')
-    }
-    entries[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim()
-  }
-  return workerEndpointMapSchema.parse(entries)
-}
-
-export function assertWorkerEndpointAllowed(
-  url: string,
-  _env: 'development' | 'staging' | 'production',
-): void {
-  const parsed = new URL(url)
-  const loopback = LOOPBACK_HOSTS.has(parsed.hostname)
-  if (parsed.protocol === 'http:') {
-    if (!loopback) {
-      throw new Error('非 loopback 的 Worker 内部地址必须使用 https')
-    }
-    return
-  }
-  if (parsed.protocol !== 'https:') {
-    throw new Error('Worker 内部地址只允许 http(loopback) 或 https')
-  }
-}
+export const WORKER_RUNS_INTERNAL_PATH_PREFIX = '/internal/runs'
 
 export function workerInternalPath(suffix: string): string {
   const path = suffix.startsWith('/') ? suffix : `/${suffix}`
   return `${WORKER_INTERNAL_PATH_PREFIX}${path}`
+}
+
+export function workerRunsInternalPath(suffix: string): string {
+  const path = suffix.startsWith('/') ? suffix : `/${suffix}`
+  return `${WORKER_RUNS_INTERNAL_PATH_PREFIX}${path}`
 }
 
 export type InternalSignInput = {

@@ -60,14 +60,14 @@ export function priorOutputShapes(document: ScenarioDocument, stepIndex: number)
 }
 
 export function stepBindingFrom(step: Step): string | undefined {
-  if (step.type === 'echo' || step.type === 'fill') return step.input.from
+  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') return step.input.from
   return undefined
 }
 
 export function outputConsumers(document: ScenarioDocument, outputKey: string | undefined): { id: string; name: string }[] {
   if (!outputKey) return []
   return document.steps.filter((step) => {
-    if (step.type !== 'echo' && step.type !== 'fill') return false
+    if (step.type !== 'echo' && step.type !== 'fill' && step.type !== 'select') return false
     return step.input.from === outputKey
   }).map((step) => ({ id: step.id, name: step.name }))
 }

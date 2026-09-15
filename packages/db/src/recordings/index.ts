@@ -1,4 +1,10 @@
-export { createRecordingDraft, getRecordingDraft, listRecordingDrafts } from './recordings.js'
+export {
+  createRecordingDraft,
+  deleteRecordingDraft,
+  getRecordingDraft,
+  listRecordingDrafts,
+  renameRecordingDraft,
+} from './recordings.js'
 export {
   hashRecordingTicket,
   newRecordingTicket,

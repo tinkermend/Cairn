@@ -54,7 +54,7 @@ export type CompileResult = {
 }
 
 function stepFrom(step: Step): { from?: string; fromField?: string } {
-  if (step.type === 'echo' || step.type === 'fill') {
+  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') {
     return { from: step.input.from, fromField: step.input.fromField }
   }
   return {}
@@ -97,7 +97,15 @@ export function outputShapeForStep(step: Step): OutputShape {
 }
 
 function locatorSteps(step: Step): Extract<Step, { input: { target?: unknown } }>[] {
-  if (step.type === 'click' || step.type === 'fill' || step.type === 'extract' || step.type === 'assert') {
+  if (
+    step.type === 'click' ||
+    step.type === 'fill' ||
+    step.type === 'extract' ||
+    step.type === 'assert' ||
+    step.type === 'select' ||
+    step.type === 'keyboard' ||
+    step.type === 'wait'
+  ) {
     return [step]
   }
   return []

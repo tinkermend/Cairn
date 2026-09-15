@@ -6,6 +6,7 @@ export {
   markWorkerDraining,
   markWorkerStopped,
   markLostWorkers,
+  isolateOrphanedSessions,
   lockRunRow,
   verifyRunLeaseForWrite,
   claimRun,
@@ -23,3 +24,10 @@ export {
   type WorkerHeartbeatOutcome,
   type RegisterWorkerResult,
 } from './leases.js'
+export {
+  resolveWorkerRoute,
+  listWorkers,
+  getWorkerDetail,
+  summarizeWorker,
+  type WorkerRouteResolution,
+} from './fleet.js'

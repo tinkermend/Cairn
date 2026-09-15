@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { extname, join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { BrowserCommand, TargetDescriptor } from '@cairn/shared'
+import { highlightOnPage, pickOnPage } from './observe'
 import { executeOnPage } from './surface'
 import { launchSession, stopSession, type BrowserHandle } from './runtime'
 import { ensureProfileDir } from './profiles'
@@ -272,5 +273,59 @@ describe('Browser Surface × target-surface-lab（L2）', { timeout: 180_000 }, 
     expect(nav.ok).toBe(false)
     if (nav.ok) throw new Error('nav')
     expect(nav.error.code).toBe('NAVIGATE_OUT_OF_SCOPE')
+  })
+
+  it('select / keyboard / wait 在编写夹具页可执行', async ({ skip }) => {
+    if (!hasBrowser) skip()
+    const page = await open('/authoring.html')
+    const selected = await executeOnPage(page, {
+      type: 'select',
+      target: { framePath: [], candidates: [{ by: 'role', value: 'combobox', name: '城市' }] },
+      by: 'label',
+      value: '北京',
+    })
+    expect(selected.ok).toBe(true)
+    expect(await page.locator('#city').inputValue()).toBe('bj')
+
+    const typed = await executeOnPage(page, {
+      type: 'keyboard',
+      target: { framePath: [], candidates: [{ by: 'label', value: '搜索' }] },
+      keys: ['Enter'],
+    })
+    expect(typed.ok).toBe(true)
+    expect(await page.locator('#late').getAttribute('data-enter')).toBe('1')
+
+    await page.locator('#reveal').click()
+    const waited = await executeOnPage(page, {
+      type: 'wait',
+      kind: 'visible',
+      target: { framePath: [], candidates: [{ by: 'text', value: '已出现' }] },
+    })
+    expect(waited.ok).toBe(true)
+  })
+
+  it('指认走 Resolver：唯一匹配 FOUND，多匹配 AMBIGUOUS 且列出邻近文本', async ({ skip }) => {
+    if (!hasBrowser) skip()
+    const page = await open('/authoring.html')
+    const go = page.getByTestId('go')
+    const box = await go.boundingBox()
+    expect(box).toBeTruthy()
+    const picked = await pickOnPage(page, box!.x + box!.width / 2, box!.y + box!.height / 2)
+    expect(picked.outcome).toBe('FOUND')
+    expect(picked.target?.candidates[0]).toMatchObject({ by: 'testId', value: 'go' })
+    expect(picked.diagnostics.candidatesTried.some((item) => item.matches === 1)).toBe(true)
+
+    const highlighted = await highlightOnPage(page, {
+      framePath: [],
+      candidates: [{ by: 'role', value: 'button', name: '删除' }],
+    })
+    expect(highlighted.outcome).toBe('AMBIGUOUS')
+    expect(highlighted.alternatives?.some((item) => /甲订单|乙订单/.test(item.reason))).toBe(true)
+
+    const missing = await highlightOnPage(page, {
+      framePath: [],
+      candidates: [{ by: 'testId', value: 'no-such' }],
+    })
+    expect(missing.outcome).toBe('NOT_FOUND')
   })
 })

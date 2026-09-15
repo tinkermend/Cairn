@@ -30,6 +30,9 @@ const mocks = vi.hoisted(() => ({
   fetchRecordingImports: vi.fn(),
   previewRecordingImport: vi.fn(),
   applyRecordingImport: vi.fn(),
+  updateScenario: vi.fn(),
+  deleteScenario: vi.fn(),
+  previewDeleteScenario: vi.fn(),
   fetchTarget: vi.fn(),
   fetchTargets: vi.fn(),
   fetchTargetAccounts: vi.fn(),
@@ -38,6 +41,8 @@ const mocks = vi.hoisted(() => ({
 const runMocks = vi.hoisted(() => ({
   fetchRunObservation: vi.fn(),
   subscribeRunEvents: vi.fn(),
+  debugRun: vi.fn(),
+  observeRun: vi.fn(),
 }))
 
 const router = vi.hoisted(() => ({
@@ -62,6 +67,8 @@ vi.mock('@/lib/runs-api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/runs-api')>()),
   fetchRunObservation: runMocks.fetchRunObservation,
   subscribeRunEvents: runMocks.subscribeRunEvents,
+  debugRun: runMocks.debugRun,
+  observeRun: runMocks.observeRun,
 }))
 vi.mock('@/components/layout/app-header', () => ({
   AppHeader: () => null,
@@ -159,6 +166,7 @@ function trialRun(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     finishedAt: null,
     evidenceStatus: 'PENDING',
     lease: null,
+    debugMode: 'runThrough',
     placement: {
       state: 'not_applicable',
       sessionId: null,
@@ -244,6 +252,12 @@ describe('Scenario Studio', () => {
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
     mocks.fetchScenarios.mockResolvedValue({ items: [detail()] })
     runMocks.fetchRunObservation.mockResolvedValue(trialObservation())
+    runMocks.observeRun.mockResolvedValue({
+      outcome: 'FOUND',
+      page: { url: 'https://shop.example.com' },
+      diagnostics: { outcome: 'FOUND', candidatesTried: [] },
+      source: 'managed',
+    })
     hangSubscribe()
     mocks.saveScenarioDraft.mockImplementation(async (_id: string, body: { revision: number; document: typeof document }) =>
       detail({
@@ -744,6 +758,199 @@ describe('Scenario Studio', () => {
     await screen.getByRole('button', { name: '刷新' }).click()
     await vi.waitFor(() => expect(runMocks.fetchRunObservation).toHaveBeenCalled())
     await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
+  })
+
+  it('HOLDING 试跑展示再试与结束，不出现在正式 runThrough', async () => {
+    signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read'])
+    router.search = { runId: RUN_ID, import: undefined }
+    const stepId = document.steps[0]!.id
+    runMocks.fetchRunObservation.mockResolvedValue(
+      trialObservation(
+        trialRun({
+          status: 'HOLDING',
+          debugMode: 'holdOnFailure',
+          checkpoint: {
+            mode: 'holdOnFailure',
+            reason: 'step_failed',
+            stepId,
+            stepOrdinal: 0,
+            contextKeys: [],
+            sessionGeneration: 1,
+            fencingToken: '1',
+            overlayRevision: 0,
+          },
+          stepRuns: [
+            {
+              id: '00000000-0000-4000-8000-0000000000a1',
+              stepId,
+              ordinal: 0,
+              status: 'FAILED',
+              startedAt: '2026-09-13T02:00:01.000Z',
+              finishedAt: '2026-09-13T02:00:02.000Z',
+              attempts: [
+                {
+                  id: '00000000-0000-4000-8000-0000000000a2',
+                  attemptNo: 1,
+                  status: 'FAILED',
+                  startedAt: '2026-09-13T02:00:01.000Z',
+                  finishedAt: '2026-09-13T02:00:02.000Z',
+                  output: null,
+                  error: {
+                    code: 'TARGET_NOT_FOUND',
+                    category: 'EXECUTOR',
+                    retryable: false,
+                    safeMessage: '未找到',
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    )
+    const { screen } = await renderPage()
+    await expect.element(screen.getByRole('button', { name: '再试这一步' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '结束会话' })).toBeInTheDocument()
+    await expect.element(screen.getByText('挂起', { exact: true })).toBeInTheDocument()
+  })
+
+  it('HOLDING 写回草稿后丢掉该步临时覆盖', async () => {
+    signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read', 'session:view'])
+    router.search = { runId: RUN_ID, import: undefined }
+    const clickStep = {
+      id: STEP_ID,
+      name: '点击查询',
+      type: 'click' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      input: { target: { framePath: [], candidates: [{ by: 'label' as const, value: '查询' }] } },
+    }
+    const clickDocument = { ...document, steps: [clickStep] }
+    mocks.fetchScenario.mockResolvedValue(
+      detail({
+        steps: [clickStep],
+        draft: {
+          revision: 1,
+          document: clickDocument,
+          updatedAt: '2026-09-13T00:00:00.000Z',
+          updatedBy: { id: 'acc-1', displayName: '测试' },
+        },
+        published: {
+          versionId: '44444444-4444-4444-8444-444444444444',
+          versionNo: 1,
+          definition: clickDocument,
+          compilerVersion: 1,
+          createdAt: '2026-09-13T00:00:00.000Z',
+        },
+      }),
+    )
+    runMocks.fetchRunObservation.mockResolvedValue(
+      trialObservation(
+        trialRun({
+          status: 'HOLDING',
+          debugMode: 'holdOnFailure',
+          debugOverlay: {
+            revision: 1,
+            stepOverrides: {
+              [STEP_ID]: { target: { framePath: [], candidates: [{ by: 'testId', value: 'btn-search' }] } },
+            },
+          },
+          checkpoint: {
+            mode: 'holdOnFailure',
+            reason: 'step_failed',
+            stepId: STEP_ID,
+            stepOrdinal: 0,
+            contextKeys: [],
+            sessionGeneration: 1,
+            fencingToken: '1',
+            overlayRevision: 1,
+          },
+          snapshot: {
+            schemaVersion: 1,
+            runId: RUN_ID,
+            targetId: TARGET_ID,
+            scenarioId: SCENARIO_ID,
+            scenarioVersionId: '44444444-4444-4444-8444-444444444444',
+            steps: [clickStep],
+            input: {},
+            createdAt: '2026-09-13T02:00:00.000Z',
+          },
+          stepRuns: [
+            {
+              id: '00000000-0000-4000-8000-0000000000a1',
+              stepId: STEP_ID,
+              ordinal: 0,
+              status: 'FAILED',
+              startedAt: '2026-09-13T02:00:01.000Z',
+              finishedAt: '2026-09-13T02:00:02.000Z',
+              attempts: [
+                {
+                  id: '00000000-0000-4000-8000-0000000000a2',
+                  attemptNo: 1,
+                  status: 'FAILED',
+                  startedAt: '2026-09-13T02:00:01.000Z',
+                  finishedAt: '2026-09-13T02:00:02.000Z',
+                  output: null,
+                  error: {
+                    code: 'TARGET_NOT_FOUND',
+                    category: 'EXECUTOR',
+                    retryable: false,
+                    safeMessage: '未找到',
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    )
+    const { screen } = await renderPage()
+    await expect.element(screen.getByText('正在使用临时覆盖目标，只影响本次再试。')).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '恢复原始快照' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '写回草稿' }).click()
+    await vi.waitFor(() => expect(mocks.saveScenarioDraft).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() =>
+      expect(runMocks.observeRun).toHaveBeenCalledWith(RUN_ID, {
+        op: 'highlight',
+        clearOverlayStepId: STEP_ID,
+      }),
+    )
+  })
+
+  it('编写观察能力位关闭时不出现指认和校验', async () => {
+    mocks.fetchScenarioCapabilities.mockResolvedValue(
+      scenarioCapabilitiesFor({
+        browserAiEnabled: false,
+        authoring: {
+          indicate: 'closed',
+          highlight: 'closed',
+          debugHold: 'open',
+          assist: 'closed',
+          stepTypesExtra: ['select', 'keyboard', 'wait'],
+        },
+      }),
+    )
+    const clickStep = {
+      id: STEP_ID,
+      name: '点击查询',
+      type: 'click' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      input: { target: { framePath: [], candidates: [{ by: 'label' as const, value: '查询' }] } },
+    }
+    mocks.fetchScenario.mockResolvedValue(
+      detail({
+        steps: [clickStep],
+        draft: {
+          revision: 1,
+          document: { ...document, steps: [clickStep] },
+          updatedAt: '2026-09-13T00:00:00.000Z',
+          updatedBy: { id: 'acc-1', displayName: '测试' },
+        },
+      }),
+    )
+    const { screen } = await renderPage()
+    await expect.element(screen.getByRole('heading', { name: '点击查询' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '在页面上指认' })).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '校验高亮' })).not.toBeInTheDocument()
   })
 
   it('工作区主列不会横向撑破容器', async () => {

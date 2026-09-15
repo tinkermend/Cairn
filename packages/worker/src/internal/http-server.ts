@@ -2,16 +2,22 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { DomainError } from '@cairn/db'
 import {
   INTERNAL_SIGNATURE_HEADERS,
+  WORKER_RUNS_INTERNAL_PATH_PREFIX,
   acquireAuthControlBodySchema,
   authControlInputBodySchema,
   authControlTokenBodySchema,
+  debugActionSchema,
   entityIdSchema,
+  observeOperationSchema,
   requireInternalSecret,
   resumeAuthBodySchema,
+  targetObservationSchema,
   verifyInternalHeaders,
   workerInternalPath,
+  workerRunsInternalPath,
 } from '@cairn/shared'
 import type { BrowserSessionManager } from '../browser/session-manager'
+import type { ExecutionEngine } from '../engine/engine'
 
 const MAX_BODY = 65_536
 const PREFIX = '/internal/managed-browser'
@@ -27,6 +33,7 @@ export async function startManagedBrowserHttp(input: {
   secret: string
   workerInstanceId: string
   sessions: BrowserSessionManager
+  engine?: ExecutionEngine
 }): Promise<ManagedBrowserHttp> {
   const secret = requireInternalSecret(input.secret)
   const server = createServer((req, res) => {
@@ -34,6 +41,7 @@ export async function startManagedBrowserHttp(input: {
       secret,
       workerInstanceId: input.workerInstanceId,
       sessions: input.sessions,
+      engine: input.engine,
     }).catch((error) => writeError(res, error))
   })
   await new Promise<void>((resolve, reject) => {
@@ -52,14 +60,23 @@ export async function startManagedBrowserHttp(input: {
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  ctx: { secret: Uint8Array; workerInstanceId: string; sessions: BrowserSessionManager },
+  ctx: {
+    secret: Uint8Array
+    workerInstanceId: string
+    sessions: BrowserSessionManager
+    engine?: ExecutionEngine
+  },
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-  if (!url.pathname.startsWith(PREFIX)) {
+  if (
+    !url.pathname.startsWith(PREFIX) &&
+    !url.pathname.startsWith(WORKER_RUNS_INTERNAL_PATH_PREFIX)
+  ) {
     writeJson(res, 404, { code: 'NOT_FOUND', message: '未知内部入口' })
     return
   }
-  const raw = await readBody(req)
+  const raw = req.method === 'POST' ? await readBody(req) : ''
+  if (req.method !== 'POST') req.resume()
   const actorId = header(req, INTERNAL_SIGNATURE_HEADERS.actor)
   const runId = header(req, INTERNAL_SIGNATURE_HEADERS.run)
   const sessionGeneration = Number(header(req, INTERNAL_SIGNATURE_HEADERS.sessionGeneration))
@@ -157,6 +174,25 @@ async function handleRequest(
     writeJson(res, 200, { ok: true })
     return
   }
+  if (req.method === 'POST' && url.pathname === workerInternalPath('/observe')) {
+    const body = observeOperationSchema.parse(raw ? JSON.parse(raw) : {})
+    writeJson(
+      res,
+      200,
+      targetObservationSchema.parse(await ctx.sessions.observeRun({ runId, actorId, op: body })),
+    )
+    return
+  }
+  if (req.method === 'POST' && url.pathname === workerRunsInternalPath('/debug-resume')) {
+    if (!ctx.engine) {
+      writeJson(res, 503, { code: 'WORKER_UNREACHABLE', message: '执行引擎未就绪' })
+      return
+    }
+    const body = debugActionSchema.parse(raw ? JSON.parse(raw) : {})
+    ctx.sessions.invalidateObserveGrant(runId)
+    writeJson(res, 200, await ctx.engine.resumeDebug(runId, body, actorId))
+    return
+  }
   writeJson(res, 404, { code: 'NOT_FOUND', message: '未知内部入口' })
 }
 
@@ -167,20 +203,35 @@ async function streamFrames(
   input: { runId: string; actorId: string; pageId?: string },
 ): Promise<void> {
   const controller = new AbortController()
-  req.on('close', () => controller.abort())
+  bindSseAbort(req, res, controller)
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive',
   })
-  await sessions.subscribeRunFrames({
-    ...input,
-    signal: controller.signal,
-    onFrame: (frame) => {
-      res.write(`event: frame\ndata: ${JSON.stringify(frame)}\n\n`)
-    },
-  })
-  if (!res.writableEnded) res.end()
+  try {
+    await sessions.subscribeRunFrames({
+      ...input,
+      signal: controller.signal,
+      onFrame: (frame) => {
+        if (controller.signal.aborted || res.writableEnded) return
+        res.write(`event: frame\ndata: ${JSON.stringify(frame)}\n\n`)
+      },
+    })
+  } finally {
+    if (!res.writableEnded) res.end()
+  }
+}
+
+function bindSseAbort(req: IncomingMessage, res: ServerResponse, controller: AbortController): void {
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort()
+  }
+  res.once('close', abort)
+  res.once('error', abort)
+  req.socket?.once('close', abort)
+  req.socket?.once('error', abort)
+  if (req.destroyed || res.writableEnded || req.socket?.destroyed) abort()
 }
 
 function header(req: IncomingMessage, name: string): string {

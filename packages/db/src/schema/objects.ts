@@ -23,12 +23,14 @@ export const storedObjects = cairnSchema.table(
     purgeReason: text('purge_reason').$type<PurgeReason>(),
     purgeAttempts: integer('purge_attempts').notNull().default(0),
     lastPurgeErrorAt: timestamp('last_purge_error_at', { withTimezone: true }),
+    deleteRequestedAt: timestamp('delete_requested_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('stored_objects_object_key_idx').on(t.objectKey),
     index('stored_objects_purge_idx').on(t.status, t.purgeAttempts, t.retainUntil),
     index('stored_objects_pending_idx').on(t.status, t.createdAt),
     index('stored_objects_run_id_idx').on(t.runId),
+    index('stored_objects_delete_requested_idx').on(t.deleteRequestedAt),
   ],
 )
 

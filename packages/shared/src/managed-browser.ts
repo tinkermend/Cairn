@@ -201,6 +201,7 @@ export function canObserveManagedFrames(input: {
 
 export const MANAGED_BROWSER_ERROR_CODES = [
   'WORKER_UNREACHABLE',
+  'WORKER_RESULT_UNKNOWN',
   'WORKER_GENERATION_MISMATCH',
   'AUTH_HOLD_UNBOUND',
   'AUTH_CONTROL_HELD',

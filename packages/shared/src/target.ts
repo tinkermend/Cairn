@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { loginFieldsInputSchema, targetLoginFieldsDtoSchema } from './login-fields.js'
 import { nextCursorSchema } from './rbac.js'
+import { resourceDeletedBySchema } from './resource-lifecycle.js'
 
 export {
   LOGIN_FIELD_HEURISTICS,
@@ -35,6 +36,11 @@ export const TARGET_ERROR_CODES = [
   'TARGET_HAS_RECORDINGS',
   'TARGET_DISABLED',
   'TARGET_ACCOUNT_HAS_RUNS',
+  'TARGET_ACCOUNT_BUSY',
+  'RESOURCE_BUSY',
+  'RESOURCE_DELETED',
+  'RUN_NOT_TERMINAL',
+  'DELETE_SCOPE_EXPANDED',
 ] as const
 export type TargetErrorCode = (typeof TARGET_ERROR_CODES)[number]
 
@@ -95,10 +101,21 @@ export const targetSchema = z.object({
   status: targetStatusSchema,
   loginFields: targetLoginFieldsDtoSchema,
   accountCount: z.number().int().nonnegative(),
+  deletedAt: z.string().nullable().optional(),
+  deletedBy: resourceDeletedBySchema.nullable().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 })
 export type TargetDto = z.infer<typeof targetSchema>
+
+export const targetListQuerySchema = z.object({
+  search: z.string().trim().optional(),
+  status: targetStatusSchema.optional(),
+  authMethod: authMethodSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().min(1).optional(),
+})
+export type TargetListQuery = z.input<typeof targetListQuerySchema>
 
 export const targetListResponseSchema = z.object({
   items: z.array(targetSchema),
@@ -113,10 +130,20 @@ export const targetAccountSchema = z.object({
   username: z.string().min(1),
   hasPassword: z.boolean(),
   status: targetStatusSchema,
+  deletedAt: z.string().nullable().optional(),
+  deletedBy: resourceDeletedBySchema.nullable().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 })
 export type TargetAccountDto = z.infer<typeof targetAccountSchema>
+
+export const targetAccountListQuerySchema = z.object({
+  search: z.string().trim().optional(),
+  status: targetStatusSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().min(1).optional(),
+})
+export type TargetAccountListQuery = z.input<typeof targetAccountListQuerySchema>
 
 export const targetAccountListResponseSchema = z.object({
   items: z.array(targetAccountSchema),

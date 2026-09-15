@@ -5,6 +5,7 @@ import type {
   RecordingImportReceipt,
   RecordingInsertAnchor,
   RecordingItem,
+  ResourceDeletedBy,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
@@ -32,6 +33,8 @@ export const recordingDrafts = cairnSchema.table(
     events: jsonb('events').$type<RecordingEvent[]>().notNull(),
     items: jsonb('items').$type<RecordingItem[]>().notNull(),
     diagnostics: jsonb('diagnostics').$type<string[]>().notNull(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -39,6 +42,7 @@ export const recordingDrafts = cairnSchema.table(
     uniqueIndex('recording_drafts_actor_idempotency_idx').on(t.createdByConsoleAccountId, t.idempotencyKey),
     index('recording_drafts_target_id_idx').on(t.targetId),
     index('recording_drafts_created_at_idx').on(t.createdAt),
+    index('recording_drafts_deleted_at_idx').on(t.deletedAt),
   ],
 )
 

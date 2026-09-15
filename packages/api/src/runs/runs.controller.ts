@@ -1,18 +1,26 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, NotFoundException, Param, Post, Req, Res } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, NotFoundException, Param, Post, Query, Req, Res } from '@nestjs/common'
 import type { Request, Response } from 'express'
 import {
   acquireAuthControlBodySchema,
   authControlInputBodySchema,
   authControlTokenBodySchema,
   createRunBodySchema,
+  debugActionSchema,
+  observeOperationSchema,
   resumeAuthBodySchema,
   reviewRunBodySchema,
+  deleteResourceBodySchema,
+  runListQuerySchema,
   type AcquireAuthControlBody,
+  type DeleteResourceBody,
   type AuthControlInputBody,
   type AuthControlTokenBody,
   type CreateRunBody,
+  type DebugAction,
+  type ObserveOperation,
   type ResumeAuthBody,
   type ReviewRunBody,
+  type RunListQuery,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
@@ -21,19 +29,20 @@ import { RequirePermissions } from '../rbac/require-permission.decorator'
 import { BrowserService } from './browser.service'
 import { ObserveService } from './observe.service'
 import { RunsService } from './runs.service'
+import { cleanupAcceptedStatus } from '../common/cleanup-status'
 
 @Controller('runs')
 export class RunsController {
   constructor(
     private readonly runs: RunsService,
-    private readonly observe: ObserveService,
+    private readonly observations: ObserveService,
     private readonly browser: BrowserService,
   ) {}
 
   @Get()
   @RequirePermissions('run:read')
-  list() {
-    return this.runs.list()
+  list(@Query(new ZodValidationPipe(runListQuerySchema)) query: RunListQuery) {
+    return this.runs.list(query)
   }
 
   @Post()
@@ -51,7 +60,7 @@ export class RunsController {
   @Get(':runId/observation')
   @RequirePermissions('run:read')
   async observation(@Param('runId') runId: string) {
-    const result = await this.observe.observation(runId)
+    const result = await this.observations.observation(runId)
     if (!result) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
     return result
   }
@@ -64,16 +73,16 @@ export class RunsController {
     @Req() req: Request,
     @Res() res: Response,
   ) {
-    const result = await this.observe.observation(runId)
+    const result = await this.observations.observation(runId)
     if (!result) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
     const lastEventId = headerValue(req.headers['last-event-id'])
-    await this.observe.stream({
+    await this.observations.stream({
       runId,
       lastEventId,
       authorization: headerValue(req.headers.authorization),
       account: actor,
       response: res,
-      signal: abortFrom(req),
+      signal: abortFrom(req, res),
     })
   }
 
@@ -122,6 +131,38 @@ export class RunsController {
     return this.runs.review(runId, body, actor)
   }
 
+  @Get(':runId/delete-preview')
+  @RequirePermissions('run:delete')
+  previewDelete(@Param('runId') runId: string) {
+    return this.runs.previewDelete(runId)
+  }
+
+  @Post(':runId/delete')
+  @RequirePermissions('run:delete')
+  async delete(
+    @Param('runId') runId: string,
+    @CurrentAccount() actor: RequestAccount,
+    @Body(new ZodValidationPipe(deleteResourceBodySchema.optional())) body: DeleteResourceBody | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const cleanup = await this.runs.delete(runId, actor, body)
+    res.status(cleanupAcceptedStatus(cleanup))
+    return cleanup
+  }
+
+  @Get(':runId/cleanup')
+  @RequirePermissions('run:read')
+  cleanupStatus(@Param('runId') runId: string) {
+    return this.runs.cleanupStatus(runId)
+  }
+
+  @Post(':runId/cleanup/retry')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('run:delete')
+  retryCleanup(@Param('runId') runId: string, @CurrentAccount() actor: RequestAccount) {
+    return this.runs.retryCleanup(runId, actor)
+  }
+
   @Get(':runId/browser')
   @RequirePermissions('run:read', 'session:view')
   browserMeta(@Param('runId') runId: string, @CurrentAccount() actor: RequestAccount, @Req() req: Request) {
@@ -142,7 +183,7 @@ export class RunsController {
       actor,
       authorization: headerValue(req.headers.authorization),
       response: res,
-      signal: abortFrom(req),
+      signal: abortFrom(req, res),
     })
   }
 
@@ -190,6 +231,28 @@ export class RunsController {
     return this.browser.release(runId, body, actor)
   }
 
+  @Post(':runId/observe')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('run:read', 'session:view', 'workflow:write')
+  observe(
+    @Param('runId') runId: string,
+    @Body(new ZodValidationPipe(observeOperationSchema)) body: ObserveOperation,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.browser.observe(runId, body, actor)
+  }
+
+  @Post(':runId/debug')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('run:execute', 'workflow:write')
+  debug(
+    @Param('runId') runId: string,
+    @Body(new ZodValidationPipe(debugActionSchema)) body: DebugAction,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.browser.debug(runId, body, actor)
+  }
+
   @Post(':runId/resume-auth')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('session:control', 'run:execute')
@@ -213,8 +276,13 @@ function queryValue(value: unknown): string | undefined {
   return undefined
 }
 
-function abortFrom(req: Request): AbortSignal {
+function abortFrom(req: Request, res?: Response): AbortSignal {
   const controller = new AbortController()
-  req.on('close', () => controller.abort())
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort()
+  }
+  req.on('close', abort)
+  req.socket?.on('close', abort)
+  res?.on('close', abort)
   return controller.signal
 }

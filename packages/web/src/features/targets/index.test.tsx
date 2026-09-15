@@ -25,6 +25,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 }))
 vi.mock('@/lib/targets-api', () => ({
   deleteTarget: vi.fn(),
+  previewDeleteTarget: vi.fn(async () => ({ previewToken: 'test', counts: {}, blockers: [] })),
   fetchTargets: async () => ({
     items: [
       {

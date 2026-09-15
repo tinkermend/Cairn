@@ -1,11 +1,19 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Res } from '@nestjs/common'
+import type { Response } from 'express'
+import { cleanupAcceptedStatus } from '../common/cleanup-status'
 import {
   createTargetAccountBodySchema,
   createTargetBodySchema,
+  deleteResourceBodySchema,
+  targetAccountListQuerySchema,
+  targetListQuerySchema,
   updateTargetAccountBodySchema,
   updateTargetBodySchema,
   type CreateTargetAccountBody,
   type CreateTargetBody,
+  type DeleteResourceBody,
+  type TargetAccountListQuery,
+  type TargetListQuery,
   type UpdateTargetAccountBody,
   type UpdateTargetBody,
 } from '@cairn/shared'
@@ -21,8 +29,8 @@ export class TargetsController {
 
   @Get()
   @RequirePermissions('target:read')
-  listTargets() {
-    return this.targets.listTargets()
+  listTargets(@Query(new ZodValidationPipe(targetListQuerySchema)) query: TargetListQuery) {
+    return this.targets.listTargets(query)
   }
 
   @Post()
@@ -51,17 +59,48 @@ export class TargetsController {
     return this.targets.updateTarget(targetId, body, actor)
   }
 
-  @Post(':targetId/delete')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @Get(':targetId/delete-preview')
   @RequirePermissions('target:delete')
-  deleteTarget(@Param('targetId') targetId: string, @CurrentAccount() actor: RequestAccount) {
-    return this.targets.deleteTarget(targetId, actor)
+  previewDeleteTarget(@Param('targetId') targetId: string) {
+    return this.targets.previewDeleteTarget(targetId)
+  }
+
+  @Post(':targetId/delete')
+  @RequirePermissions('target:delete', 'run:delete')
+  async deleteTarget(
+    @Param('targetId') targetId: string,
+    @CurrentAccount() actor: RequestAccount,
+    @Body(new ZodValidationPipe(deleteResourceBodySchema.optional())) body: DeleteResourceBody | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const cleanup = await this.targets.deleteTarget(targetId, actor, body)
+    res.status(cleanupAcceptedStatus(cleanup))
+    return cleanup
+  }
+
+  @Get(':targetId/cleanup')
+  @RequirePermissions('target:read')
+  getTargetCleanupStatus(@Param('targetId') targetId: string) {
+    return this.targets.getTargetCleanupStatus(targetId)
+  }
+
+  @Post(':targetId/cleanup/retry')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:delete')
+  retryTargetCleanup(
+    @Param('targetId') targetId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.retryTargetCleanup(targetId, actor)
   }
 
   @Get(':targetId/accounts')
   @RequirePermissions('target:read')
-  listAccounts(@Param('targetId') targetId: string) {
-    return this.targets.listAccounts(targetId)
+  listAccounts(
+    @Param('targetId') targetId: string,
+    @Query(new ZodValidationPipe(targetAccountListQuerySchema)) query: TargetAccountListQuery,
+  ) {
+    return this.targets.listAccounts(targetId, query)
   }
 
   @Post(':targetId/accounts')
@@ -87,7 +126,7 @@ export class TargetsController {
   }
 
   @Post(':targetId/accounts/:accountId/delete')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   @RequirePermissions('target:delete')
   deleteAccount(
     @Param('targetId') targetId: string,

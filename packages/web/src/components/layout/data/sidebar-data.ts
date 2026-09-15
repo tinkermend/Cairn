@@ -7,6 +7,7 @@ import {
   Palette,
   Play,
   ScrollText,
+  Server,
   Settings,
   Shield,
   SlidersHorizontal,
@@ -83,6 +84,12 @@ export const sidebarData: SidebarData = {
           url: '/platform-config',
           icon: SlidersHorizontal,
           permission: 'platform-config:read',
+        },
+        {
+          title: '执行节点',
+          url: '/workers',
+          icon: Server,
+          permission: 'session:read',
         },
         {
           title: '审计',

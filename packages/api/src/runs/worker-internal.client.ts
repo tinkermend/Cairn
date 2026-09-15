@@ -1,13 +1,28 @@
 import { Injectable } from '@nestjs/common'
+import { Agent } from 'undici'
 import {
   INTERNAL_REQUEST_TTL_SECONDS,
   INTERNAL_SIGNATURE_HEADERS,
+  WORKER_FORWARD_AUTH_TIMEOUT_MS,
+  WORKER_FORWARD_CONNECT_TIMEOUT_MS,
+  WORKER_FORWARD_HEADER_TIMEOUT_MS,
+  WORKER_RESULT_UNKNOWN_MESSAGE,
   assertWorkerEndpointAllowed,
-  parseWorkerEndpoints,
   requireInternalSecret,
   signInternalHeaders,
 } from '@cairn/shared'
 import { config } from '../config/env'
+
+const workerForwardDispatcher = new Agent({
+  connectTimeout: WORKER_FORWARD_CONNECT_TIMEOUT_MS,
+  bodyTimeout: 0,
+})
+
+type WorkerFetchInit = RequestInit & {
+  dispatcher?: Agent
+  headersTimeout?: number
+  bodyTimeout?: number
+}
 
 export type WorkerCall = {
   workerId: string
@@ -17,6 +32,8 @@ export type WorkerCall = {
   sessionGeneration: number
   path: string
   method: 'GET' | 'POST'
+  endpoint: string
+  timeout: 'headers' | 'auth' | 'stream'
   body?: string
   query?: Record<string, string | undefined>
 }
@@ -51,13 +68,8 @@ export class WorkerInternalClient {
   }
 
   private async send(call: WorkerCall, signal?: AbortSignal): Promise<Response> {
-    const endpoints = parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS)
-    const base = endpoints[call.workerId]
-    if (!base) {
-      throw new WorkerForwardError(503, 'WORKER_UNREACHABLE', '执行面暂时不可达')
-    }
     try {
-      assertWorkerEndpointAllowed(base, config.CAIRN_ENV)
+      assertWorkerEndpointAllowed(call.endpoint, { networkMode: config.CAIRN_WORKER_NETWORK_MODE })
     } catch {
       throw new WorkerForwardError(503, 'WORKER_UNREACHABLE', '执行面暂时不可达')
     }
@@ -77,17 +89,29 @@ export class WorkerInternalClient {
       if (value) query.set(key, value)
     }
     const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    const headersTimeout =
+      call.timeout === 'auth' ? WORKER_FORWARD_AUTH_TIMEOUT_MS : WORKER_FORWARD_HEADER_TIMEOUT_MS
+    const timeout = call.timeout === 'stream' ? undefined : AbortSignal.timeout(headersTimeout)
+    const combined = timeout && signal ? AbortSignal.any([signal, timeout]) : (timeout ?? signal)
+    const init: WorkerFetchInit = {
+      method: call.method,
+      headers: {
+        ...headers,
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
+      body: body || undefined,
+      signal: combined,
+      redirect: 'error',
+      dispatcher: workerForwardDispatcher,
+      headersTimeout,
+      bodyTimeout: call.timeout === 'stream' ? 0 : headersTimeout,
+    }
     try {
-      return await fetch(`${base}${call.path}${suffix}`, {
-        method: call.method,
-        headers: {
-          ...headers,
-          ...(body ? { 'content-type': 'application/json' } : {}),
-        },
-        body: body || undefined,
-        signal,
-      })
+      return await fetch(`${call.endpoint}${call.path}${suffix}`, init)
     } catch {
+      if (call.method === 'POST') {
+        throw new WorkerForwardError(503, 'WORKER_RESULT_UNKNOWN', WORKER_RESULT_UNKNOWN_MESSAGE)
+      }
       throw new WorkerForwardError(503, 'WORKER_UNREACHABLE', '执行面暂时不可达')
     }
   }

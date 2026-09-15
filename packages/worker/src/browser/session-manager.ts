@@ -4,7 +4,7 @@ import {
   acquireAuthControl,
   acquireSessionLease,
   appendRunEvents,
-  closeWorkerSessions,
+  isolateOrphanedSessions,
   conflict,
   enterRunWaitingForAuth,
   expireStaleAuthControl,
@@ -17,12 +17,16 @@ import {
   findLiveSession,
   findSessionByAuthHoldRun,
   getRun,
+  loadRunDetail,
   getSessionById,
+  getWorkerById,
+  hashAuthControlToken,
   heartbeatAuthControl,
   isBoundAuthHold,
   listOwnedLiveSessions,
   listExpiredAuthHolds,
   listReapableSessions,
+  listRequestedCloseSessions,
   loadSecretCiphertext,
   markSessionsClosing,
   recordInlineLogEvidence,
@@ -31,9 +35,9 @@ import {
   releaseSessionLease,
   renewSessionLease,
   resumeRunAfterAuth,
-  revokeWorkerLeases,
   setSessionProbe,
   setSessionStatus,
+  updateRunDebugOverlay,
   loadAccountForExecution,
   loadTargetForExecution,
   type DbHandle,
@@ -61,8 +65,11 @@ import {
   type ManagedBrowserFrame,
   type ManagedBrowserMeta,
   type ManagedPageSummary,
+  type ObserveGrant,
+  type ObserveOperation,
   type PageRef,
   type RunGrant,
+  type TargetObservation,
   type RunSnapshot,
   type SessionErrorCode,
   type SessionGrant,
@@ -91,6 +98,8 @@ import {
 } from './runtime'
 import { assertPageTargetScope, hasTargetScope, installTargetScope, TargetScopeError } from './target-scope'
 import { executeOnPage } from './surface'
+import { highlightOnPage, pickOnPage } from './observe'
+import { resolveObserveGrant } from './observe-grant'
 import { refreshScreencastIfStale, startScreencast, type ScreencastHandle } from './screencast'
 import { applyAuthInput, enqueueSerial, handoffMessage, rememberReceipt, viewportMatches } from './managed-helpers'
 import { createManagedPage, originAllowed, pageRefFor, pickPopupHandoff, type ManagedPageEntry } from './page-identity'
@@ -135,12 +144,14 @@ type LiveHandle = {
   currentPageIdByLease: Map<string, string>
   currentPageIdByRun: Map<string, string>
   autoInputClosed: boolean
+  inputAccepting: boolean
   serial: Promise<void>
   allowedOrigins: string[]
   receipts: Map<string, AuthControlInputReceipt>
   lastSeq: number
   controlEpoch: number
   screencasts: Map<string, ScreencastHandle>
+  screencastObservers: Map<string, number>
 }
 
 @Injectable()
@@ -153,6 +164,7 @@ export class BrowserSessionManager {
   private readonly leaseToRun = new Map<string, string>()
   private readonly leaseTtls = new Map<string, number>()
   private readonly tracingByLease = new Map<string, boolean>()
+  private readonly observeGrants = new Map<string, { grant: ObserveGrant; expiresAt: number }>()
   private heartbeat: NodeJS.Timeout | undefined
   private reconciled = false
   private browserUnavailable = false
@@ -167,6 +179,35 @@ export class BrowserSessionManager {
 
   getWorkerInstanceId(): string {
     return this.workerInstanceId
+  }
+
+  private ownerScope() {
+    return {
+      ownerWorkerId: this.options.workerId,
+      ownerWorkerInstanceId: this.workerInstanceId,
+    }
+  }
+
+  private async dropLocalHandle(sessionId: string): Promise<'stopped' | 'unconfirmed'> {
+    const live = this.lives.get(sessionId)
+    if (!live) return 'unconfirmed'
+    live.screencastObservers.clear()
+    for (const cast of live.screencasts.values()) {
+      await cast.stop().catch(() => undefined)
+    }
+    for (const page of live.runPages.values()) {
+      await closePage(page)
+    }
+    const stopResult = await stopSession(live.handle)
+    this.lives.delete(sessionId)
+    for (const [leaseId, mapped] of [...this.leaseToSession.entries()]) {
+      if (mapped === sessionId) {
+        this.leaseToSession.delete(leaseId)
+        this.leaseToRun.delete(leaseId)
+        this.leaseTtls.delete(leaseId)
+      }
+    }
+    return stopResult
   }
 
   constructor(
@@ -196,20 +237,23 @@ export class BrowserSessionManager {
     }
   }
 
-  /** Worker 启动自愈：名下活会话必然已不在。 */
+  liveHandleCount(): number {
+    return this.lives.size
+  }
+
+  /** Worker 启动自愈：旧代次或未知归属的会话隔离为 LOST，不放账号键。 */
   async reconcileOwn(): Promise<{ leasesRevoked: number; sessionsClosed: number }> {
     if (this.reconciled) {
       return { leasesRevoked: 0, sessionsClosed: 0 }
     }
     const db = this.dbHandle
-    const leasesRevoked = await revokeWorkerLeases(db, this.options.workerId)
-    const sessionsClosed = await closeWorkerSessions(db, this.options.workerId)
+    const sessionsClosed = await isolateOrphanedSessions(db, this.options.workerId, this.workerInstanceId)
     this.reconciled = true
     this.logger.log(
-      { workerId: this.options.workerId, leasesRevoked, sessionsClosed },
+      { workerId: this.options.workerId, instanceId: this.workerInstanceId, sessionsClosed },
       'session.reconcile_own',
     )
-    return { leasesRevoked, sessionsClosed }
+    return { leasesRevoked: 0, sessionsClosed }
   }
 
   async acquire(run: RunSnapshot, runGrant: RunGrant, signal?: AbortSignal): Promise<SessionAcquireResult> {
@@ -245,6 +289,14 @@ export class BrowserSessionManager {
     const db = this.dbHandle
 
     let live = await findLiveSession(db, key)
+    if (live && (live.status === 'CLOSING' || live.status === 'LOST')) {
+      return {
+        ok: false,
+        code: live.closeReason === 'resource_deleted' ? 'SESSION_TARGET_MISSING' : 'SESSION_BUSY',
+        message:
+          live.closeReason === 'resource_deleted' ? '目标系统或账号不存在' : '会话正在关闭或已失联',
+      }
+    }
 
     if (shouldRecreateSession(policy.reuse) && live) {
       if (live.ownerWorkerId === this.options.workerId) {
@@ -262,7 +314,7 @@ export class BrowserSessionManager {
     if (!live) {
       let openCount = await countOpenSessionsForWorker(db, this.options.workerId)
       if (openCount >= this.options.maxSessions) {
-        const evictable = await findEvictableSession(db, this.options.workerId)
+        const evictable = await findEvictableSession(db, this.options.workerId, this.workerInstanceId)
         if (evictable) {
           await this.close(evictable.id, 'capacity_evict')
           openCount = await countOpenSessionsForWorker(db, this.options.workerId)
@@ -288,6 +340,7 @@ export class BrowserSessionManager {
         const created = await createSession(db, {
           key,
           ownerWorkerId: this.options.workerId,
+          ownerWorkerInstanceId: this.workerInstanceId,
           reusePolicy: policy.reuse,
           idleTtlSeconds: policy.idleTtlSeconds,
           maxLifetimeSeconds: policy.maxLifetimeSeconds,
@@ -332,6 +385,13 @@ export class BrowserSessionManager {
           ok: false,
           code: 'SESSION_BUSY',
           message: `会话 owner 为 ${live.ownerWorkerId}`,
+        }
+      }
+      if (!live.ownerWorkerInstanceId || live.ownerWorkerInstanceId !== this.workerInstanceId) {
+        return {
+          ok: false,
+          code: 'SESSION_NOT_CLAIMABLE',
+          message: '会话归属实例未知或已更换，禁止复用',
         }
       }
       if (live.status !== 'OPEN' || live.health === 'UNHEALTHY') {
@@ -486,7 +546,14 @@ export class BrowserSessionManager {
     const db = this.dbHandle
     const session = await getSessionById(db, sessionId)
     if (!session) return
-    if (session.ownerWorkerId !== this.options.workerId) return
+    if (session.ownerWorkerId !== this.options.workerId) {
+      await this.dropLocalHandle(sessionId)
+      return
+    }
+    if (!session.ownerWorkerInstanceId || session.ownerWorkerInstanceId !== this.workerInstanceId) {
+      await this.dropLocalHandle(sessionId)
+      return
+    }
 
     this.logger.log(
       { sessionId, generation: session.generation, reason, workerId: this.options.workerId },
@@ -497,40 +564,27 @@ export class BrowserSessionManager {
       expectedVersion: session.version,
       status: 'CLOSING',
       closeReason: reason,
-      ownerWorkerId: this.options.workerId,
+      ...this.ownerScope(),
     })
 
     const live = this.lives.get(sessionId)
     let stopResult: 'stopped' | 'unconfirmed' = 'stopped'
     if (live) {
-      for (const cast of live.screencasts.values()) {
-        await cast.stop().catch(() => undefined)
-      }
-      for (const page of live.runPages.values()) {
-        await closePage(page)
-      }
-      stopResult = await stopSession(live.handle)
-      this.lives.delete(sessionId)
-      for (const [leaseId, mapped] of [...this.leaseToSession.entries()]) {
-        if (mapped === sessionId) {
-          this.leaseToSession.delete(leaseId)
-          this.leaseToRun.delete(leaseId)
-          this.leaseTtls.delete(leaseId)
-        }
-      }
+      stopResult = await this.dropLocalHandle(sessionId)
     } else {
       // 无本进程句柄：无法确认浏览器是否仍在 → LOST（阻塞键）
       stopResult = 'unconfirmed'
     }
 
-    const latest = (await getSessionById(db, sessionId))!
+    const latest = await getSessionById(db, sessionId)
+    if (!latest || latest.ownerWorkerInstanceId !== this.workerInstanceId) return
     if (stopResult === 'stopped') {
       await setSessionStatus(db, {
         sessionId,
         expectedVersion: latest.version,
         status: 'CLOSED',
         closeReason: reason,
-        ownerWorkerId: this.options.workerId,
+        ...this.ownerScope(),
       })
       this.logger.log({ sessionId, reason, workerId: this.options.workerId }, 'session.closed')
     } else {
@@ -539,7 +593,7 @@ export class BrowserSessionManager {
         expectedVersion: latest.version,
         status: 'LOST',
         closeReason: reason,
-        ownerWorkerId: this.options.workerId,
+        ...this.ownerScope(),
       })
       this.logger.warn({ sessionId, reason, workerId: this.options.workerId }, 'session.lost')
     }
@@ -567,14 +621,20 @@ export class BrowserSessionManager {
     if (reapable.length > 0) {
       await markSessionsClosing(db, {
         workerId: this.options.workerId,
+        ownerWorkerInstanceId: this.workerInstanceId,
         sessionIds: reapable.map((s) => s.id),
         reason: 'idle_or_max_lifetime',
       })
     }
+    const requestedClose = await listRequestedCloseSessions(db, this.options.workerId)
 
     let sessionsClosed = 0
     for (const session of reapable) {
       await this.close(session.id, 'idle_or_max_lifetime')
+      sessionsClosed += 1
+    }
+    for (const session of requestedClose) {
+      await this.close(session.id, session.closeReason ?? 'resource_deleted')
       sessionsClosed += 1
     }
 
@@ -583,7 +643,7 @@ export class BrowserSessionManager {
       const health = await probeHealth(live.handle)
       await setSessionProbe(db, {
         sessionId,
-        ownerWorkerId: this.options.workerId,
+        ...this.ownerScope(),
         health,
       })
       if (health === 'UNHEALTHY') {
@@ -813,7 +873,7 @@ export class BrowserSessionManager {
     const sessionId = this.leaseToSession.get(grant.leaseId) ?? grant.sessionId
     await setSessionProbe(this.dbHandle, {
       sessionId,
-      ownerWorkerId: this.options.workerId,
+      ...this.ownerScope(),
       health: 'UNHEALTHY',
     }).catch(() => undefined)
     await this.close(sessionId, reason).catch(() => undefined)
@@ -962,6 +1022,102 @@ export class BrowserSessionManager {
     return this.buildMeta(input.runId, input.actorId, input.pageId)
   }
 
+  invalidateObserveGrant(runId: string): void {
+    const current = this.observeGrants.get(runId)
+    if (current) this.observeGrants.set(runId, { grant: { ...current.grant, epoch: current.grant.epoch + 1 }, expiresAt: 0 })
+    this.observeGrants.delete(runId)
+  }
+
+  async describeHoldPage(runId: string): Promise<{ pageRef?: PageRef; url?: string } | undefined> {
+    const sessionId = this.liveSessionIdForRun(runId)
+    if (!sessionId) return undefined
+    const live = this.lives.get(sessionId)
+    const session = await getSessionById(this.dbHandle, sessionId)
+    if (!live || !session) return undefined
+    const entry = this.ensureRunPage(live, runId)
+    if (entry.page.isClosed()) return undefined
+    return {
+      pageRef: pageRefFor(session.id, session.generation, entry),
+      url: entry.page.url(),
+    }
+  }
+
+  async observeRun(input: { runId: string; actorId: string; op: ObserveOperation }): Promise<TargetObservation> {
+    const { session, live, run } = await this.requireLiveAuthSession(input.runId)
+    if (run.status === 'WAITING_FOR_AUTH') {
+      throw conflict('AUTH_CONTROL_HELD', '登录等待时不能指认或校验，请先完成认证')
+    }
+    if (run.status !== 'HOLDING') {
+      throw conflict('RUN_NOT_HOLDING', '只有调试挂起中的运行允许观察页面')
+    }
+    const detail = await loadRunDetail(this.dbHandle, input.runId)
+    if (detail?.stepRuns.some((step) => step.attempts.some((attempt) => attempt.status === 'RUNNING'))) {
+      throw conflict('WAITING_FOR_STABLE_HOLD', '在途业务动作尚未停稳，不能签发观察授权')
+    }
+    const entry = this.ensureRunPage(live, input.runId)
+    const pageRef = pageRefFor(session.id, session.generation, entry)
+    const now = Date.now()
+    const resolved = resolveObserveGrant({
+      op: input.op.op,
+      existing: this.observeGrants.get(input.runId),
+      now,
+      pageRef,
+      sessionGeneration: session.generation,
+      runId: input.runId,
+    })
+    if (!resolved.ok) {
+      throw conflict('OBSERVE_GRANT_EXPIRED', '观察授权已过期，请重新校验或再次点选指认')
+    }
+    this.observeGrants.set(input.runId, resolved.issued)
+    const grantOnly = input.op.op === 'highlight' && !input.op.target && !input.op.clearOverlayStepId
+    const url = entry.page.url()
+    const title = await entry.page.title().catch(() => undefined)
+    const observation = grantOnly
+      ? {
+          outcome: 'NOT_FOUND' as const,
+          page: { url, title, pageRef },
+          diagnostics: { outcome: 'NOT_FOUND' as const, candidatesTried: [] },
+          source: 'managed' as const,
+        }
+      : input.op.op === 'pick'
+        ? await pickOnPage(entry.page, input.op.x ?? 0, input.op.y ?? 0)
+        : input.op.target
+          ? await highlightOnPage(entry.page, input.op.target)
+          : {
+              outcome: 'NOT_FOUND' as const,
+              page: { url, title, pageRef },
+              diagnostics: { outcome: 'NOT_FOUND' as const, candidatesTried: [] },
+              source: 'managed' as const,
+            }
+    const withPage = { ...observation, page: { ...observation.page, pageRef } }
+    if (!grantOnly) {
+      await appendRunEvents(this.dbHandle, input.runId, [
+        {
+          type: input.op.op === 'pick' ? 'observation.picked' : 'observation.highlighted',
+          payload: { outcome: observation.outcome, source: observation.source },
+        },
+      ])
+      const stepId = input.op.clearOverlayStepId ?? detail?.checkpoint?.stepId
+      if (input.op.clearOverlayStepId && detail) {
+        const next = { ...(detail.debugOverlay?.stepOverrides ?? {}) }
+        delete next[input.op.clearOverlayStepId]
+        await updateRunDebugOverlay(this.dbHandle, input.runId, {
+          revision: (detail.debugOverlay?.revision ?? 0) + 1,
+          stepOverrides: next,
+        })
+      } else if (input.op.applyOverlay && observation.target && stepId) {
+        await updateRunDebugOverlay(this.dbHandle, input.runId, {
+          revision: (detail?.debugOverlay?.revision ?? 0) + 1,
+          stepOverrides: {
+            ...(detail?.debugOverlay?.stepOverrides ?? {}),
+            [stepId]: { target: observation.target },
+          },
+        })
+      }
+    }
+    return withPage
+  }
+
   async acquireRunAuthControl(input: {
     runId: string
     actor: { id: string }
@@ -984,6 +1140,7 @@ export class BrowserSessionManager {
     live.receipts.clear()
     live.lastSeq = 0
     live.controlEpoch = granted.epoch
+    live.inputAccepting = true
     const meta = await this.buildMeta(input.runId, input.actor.id, input.pageId ?? page.pageId)
     return {
       token: granted.token,
@@ -1018,6 +1175,9 @@ export class BrowserSessionManager {
     command: BrowserAuthInputCommand
   }): Promise<AuthControlInputReceipt> {
     const { session, live, run } = await this.requireLiveAuthSession(input.runId)
+    if (!live.inputAccepting || run.status !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
+      throw conflict('AUTH_INPUT_REJECTED', '当前不是认证输入窗口')
+    }
     await heartbeatAuthControl(this.dbHandle, {
       sessionId: session.id,
       runId: input.runId,
@@ -1025,19 +1185,58 @@ export class BrowserSessionManager {
       token: input.token,
       workerInstanceId: this.workerInstanceId,
     })
-    if (run.status !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
-      throw conflict('AUTH_INPUT_REJECTED', '当前不是认证输入窗口')
+    const boundEpoch = session.authControlEpoch
+    const boundGeneration = session.generation
+    return enqueueSerial(live, async () => this.executeAuthInput({
+      sessionId: session.id,
+      live,
+      boundEpoch,
+      boundGeneration,
+      input,
+    }))
+  }
+
+  private async executeAuthInput(params: {
+    sessionId: string
+    live: LiveHandle
+    boundEpoch: number
+    boundGeneration: number
+    input: {
+      runId: string
+      actorId: string
+      token: string
+      command: BrowserAuthInputCommand
     }
+  }): Promise<AuthControlInputReceipt> {
+    const { sessionId, live, boundEpoch, boundGeneration, input } = params
     const known = live.receipts.get(input.command.commandId)
     if (known) return { ...known, status: 'duplicate' }
     if (input.command.seq <= live.lastSeq) {
       throw conflict('AUTH_INPUT_REJECTED', '输入序号乱序')
     }
+    const latestRun = await getRun(this.dbHandle, input.runId)
+    if (latestRun.status !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
+      throw conflict('AUTH_INPUT_REJECTED', '当前不是认证输入窗口')
+    }
+    const latest = await getSessionById(this.dbHandle, sessionId)
+    if (!latest?.authControlExpiresAt || latest.authControlExpiresAt.getTime() <= Date.now()) {
+      throw conflict('AUTH_CONTROL_INVALID', '认证输入权已过期')
+    }
+    if (latest.authControlActorId !== input.actorId) {
+      throw conflict('AUTH_CONTROL_HELD', '由其他用户处理登录')
+    }
+    if (latest.authControlEpoch !== boundEpoch) {
+      throw conflict('AUTH_CONTROL_INVALID', '认证输入权已更换')
+    }
+    if (!latest.authControlTokenHash || latest.authControlTokenHash !== hashAuthControlToken(input.token)) {
+      throw conflict('AUTH_CONTROL_INVALID', '认证输入权已更换')
+    }
     const entry = live.pages.get(input.command.pageRef.pageId)
     if (!entry || entry.page.isClosed()) throw conflict('PAGE_STALE', '页面已关闭或已失效')
     if (
-      input.command.pageRef.sessionId !== session.id ||
-      input.command.pageRef.sessionGeneration !== session.generation ||
+      input.command.pageRef.sessionId !== latest.id ||
+      input.command.pageRef.sessionGeneration !== boundGeneration ||
+      input.command.pageRef.sessionGeneration !== latest.generation ||
       input.command.pageRef.documentEpoch !== entry.documentEpoch
     ) {
       throw conflict('PAGE_STALE', '页面代次已变化，请刷新画面')
@@ -1051,13 +1250,13 @@ export class BrowserSessionManager {
         await refreshScreencastIfStale(
           entry.page,
           cast,
-          pageRefFor(session.id, session.generation, entry),
+          pageRefFor(latest.id, latest.generation, entry),
           2_000,
         )
       }
-      const latest = live.screencasts.get(entry.pageId)?.latest
-      if (latest) {
-        const age = Date.now() - Date.parse(latest.capturedAt)
+      const latestFrame = live.screencasts.get(entry.pageId)?.latest
+      if (latestFrame) {
+        const age = Date.now() - Date.parse(latestFrame.capturedAt)
         if (!Number.isFinite(age) || age > 5_000) {
           throw conflict('PAGE_STALE', '画面已过期，请按当前帧操作')
         }
@@ -1067,21 +1266,14 @@ export class BrowserSessionManager {
     if (live.allowedOrigins.length > 0 && pageUrl && !originAllowed(pageUrl, live.allowedOrigins)) {
       throw conflict('AUTH_INPUT_REJECTED', '当前页超出目标系统允许范围')
     }
-    return enqueueSerial(live, async () => {
-      const latest = await getSessionById(this.dbHandle, session.id)
-      if (!latest?.authControlExpiresAt || latest.authControlExpiresAt.getTime() <= Date.now()) {
-        throw conflict('AUTH_CONTROL_INVALID', '认证输入权已过期')
-      }
-      if (latest.authControlActorId !== input.actorId) {
-        throw conflict('AUTH_CONTROL_HELD', '由其他用户处理登录')
-      }
-      await applyAuthInput(entry.page, input.command)
-      live.lastSeq = input.command.seq
-      return rememberReceipt(live.receipts, {
-        commandId: input.command.commandId,
-        seq: input.command.seq,
-        status: 'accepted',
-      })
+    this.assertSessionOwnedHere(latest)
+    await this.assertOwnLiveRegistration()
+    await applyAuthInput(entry.page, input.command)
+    live.lastSeq = input.command.seq
+    return rememberReceipt(live.receipts, {
+      commandId: input.command.commandId,
+      seq: input.command.seq,
+      status: 'accepted',
     })
   }
 
@@ -1090,13 +1282,15 @@ export class BrowserSessionManager {
     actor: { id: string }
     token: string
   }): Promise<boolean> {
-    const { session } = await this.requireLiveAuthSession(input.runId)
-    return releaseAuthControl(this.dbHandle, {
+    const { session, live } = await this.requireLiveAuthSession(input.runId)
+    const released = await releaseAuthControl(this.dbHandle, {
       sessionId: session.id,
       runId: input.runId,
       actor: input.actor,
       token: input.token,
     })
+    if (released) live.inputAccepting = false
+    return released
   }
 
   async resumeRunAuth(input: {
@@ -1109,25 +1303,37 @@ export class BrowserSessionManager {
     if (run.status !== 'WAITING_FOR_AUTH') {
       throw conflict('RUN_NOT_WAITING_FOR_AUTH', '只有等待认证的运行可以恢复领取')
     }
-    await enqueueSerial(live, async () => undefined)
-    const target = await this.loadTargetAuth(run.snapshot)
-    if (!target) throw conflict('SESSION_TARGET_MISSING', '目标系统不存在')
-    const page = this.ensureRunPage(live, input.runId).page
-    const auth = await probeAuthOnPage(page, target)
-    if (auth !== 'AUTHENTICATED') {
-      throw conflict('AUTH_NOT_VERIFIED', '目标系统仍未登录')
+    live.inputAccepting = false
+    try {
+      await enqueueSerial(live, async () => {
+        const latestSession = (await getSessionById(this.dbHandle, session.id)) ?? session
+        const target = await this.loadTargetAuth(run.snapshot)
+        if (!target) throw conflict('SESSION_TARGET_MISSING', '目标系统不存在')
+        const page = this.ensureRunPage(live, input.runId).page
+        const auth = await probeAuthOnPage(page, target)
+        if (auth !== 'AUTHENTICATED') {
+          throw conflict('AUTH_NOT_VERIFIED', '目标系统仍未登录')
+        }
+        await resumeRunAfterAuth(this.dbHandle, {
+          runId: input.runId,
+          actor: input.actor,
+          note: input.note,
+          token: input.token,
+          sessionId: latestSession.id,
+          workerId: this.options.workerId,
+          workerInstanceId: this.workerInstanceId,
+          controlEpoch: latestSession.authControlEpoch,
+        })
+        live.autoInputClosed = false
+        live.inputAccepting = false
+      })
+    } catch (error) {
+      const latest = await getRun(this.dbHandle, input.runId).catch(() => run)
+      if (latest.status === 'WAITING_FOR_AUTH' && live.autoInputClosed) {
+        live.inputAccepting = true
+      }
+      throw error
     }
-    await resumeRunAfterAuth(this.dbHandle, {
-      runId: input.runId,
-      actor: input.actor,
-      note: input.note,
-      token: input.token,
-      sessionId: session.id,
-      workerId: this.options.workerId,
-      workerInstanceId: this.workerInstanceId,
-      controlEpoch: session.authControlEpoch,
-    })
-    live.autoInputClosed = false
   }
 
   subscribeRunFrames(input: {
@@ -1164,61 +1370,106 @@ export class BrowserSessionManager {
     }
     const entry = this.pageForView(live, input.runId, input.pageId)
     if (!entry) throw conflict('PAGE_STALE', '没有可观察的页面')
+    const pageRef = pageRefFor(session.id, session.generation, entry)
     let cast = live.screencasts.get(entry.pageId)
     if (!cast) {
-      cast = await startScreencast(entry.page, pageRefFor(session.id, session.generation, entry))
+      cast = await startScreencast(entry.page, pageRef)
       live.screencasts.set(entry.pageId, cast)
     }
+    live.screencastObservers.set(entry.pageId, (live.screencastObservers.get(entry.pageId) ?? 0) + 1)
+    if (cast) await refreshScreencastIfStale(entry.page, cast, pageRef)
     const interval = Math.max(500, Math.floor(1000 / BROWSER_FRAME_MAX_FPS))
-    await new Promise<void>((resolve) => {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      let ticking = false
-      const finish = () => {
-        if (timer) clearTimeout(timer)
-        resolve()
-      }
-      const tick = () => {
-        if (input.signal.aborted) {
-          finish()
-          return
+    try {
+      await new Promise<void>((resolve) => {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let ticking = false
+        let closed = false
+        const finish = () => {
+          if (closed) return
+          closed = true
+          if (timer) clearTimeout(timer)
+          timer = undefined
+          input.signal.removeEventListener('abort', finish)
+          resolve()
         }
-        if (ticking) {
-          timer = setTimeout(tick, interval)
-          return
-        }
-        ticking = true
-        void Promise.all([getRun(this.dbHandle, input.runId), getSessionById(this.dbHandle, session.id)])
-          .then(async ([latestRun, latestSession]) => {
-            if (input.signal.aborted) return
-            if (
-              !canObserveManagedFrames({
-                runStatus: latestRun.status,
-                actorId: input.actorId,
-                controlActorId: latestSession?.authControlActorId,
-                controlExpiresAt: latestSession?.authControlExpiresAt,
-              })
-            ) {
-              finish()
-              return
-            }
-            if (cast) {
-              await refreshScreencastIfStale(
-                entry.page,
-                cast,
-                pageRefFor(session.id, session.generation, entry),
-              )
-            }
-            if (cast?.latest) input.onFrame(cast.latest)
+        const tick = () => {
+          if (closed || input.signal.aborted) {
+            finish()
+            return
+          }
+          if (ticking) {
             timer = setTimeout(tick, interval)
-          })
-          .catch(() => finish())
-          .finally(() => {
-            ticking = false
-          })
-      }
-      timer = setTimeout(tick, interval)
-      input.signal.addEventListener('abort', finish, { once: true })
-    })
+            return
+          }
+          ticking = true
+          void Promise.all([
+            getRun(this.dbHandle, input.runId),
+            getSessionById(this.dbHandle, session.id),
+            getWorkerById(this.dbHandle, this.options.workerId),
+          ])
+            .then(async ([latestRun, latestSession, worker]) => {
+              if (closed || input.signal.aborted) return
+              if (
+                !latestSession ||
+                latestSession.generation !== session.generation ||
+                !this.sessionOwnedHere(latestSession) ||
+                !this.registrationLive(worker)
+              ) {
+                finish()
+                return
+              }
+              if (
+                !canObserveManagedFrames({
+                  runStatus: latestRun.status,
+                  actorId: input.actorId,
+                  controlActorId: latestSession.authControlActorId,
+                  controlExpiresAt: latestSession.authControlExpiresAt,
+                })
+              ) {
+                finish()
+                return
+              }
+              if (cast) {
+                await refreshScreencastIfStale(entry.page, cast, pageRef)
+              }
+              if (closed || input.signal.aborted) return
+              if (cast?.latest) input.onFrame(cast.latest)
+              if (closed || input.signal.aborted) return
+              timer = setTimeout(tick, interval)
+            })
+            .catch(() => finish())
+            .finally(() => {
+              ticking = false
+            })
+        }
+        if (cast?.latest && !input.signal.aborted) input.onFrame(cast.latest)
+        timer = setTimeout(tick, interval)
+        input.signal.addEventListener('abort', finish, { once: true })
+        if (input.signal.aborted) finish()
+      })
+    } finally {
+      await this.dropScreencastObserver(live, entry.pageId)
+    }
+  }
+
+  countScreencastObservers(sessionId: string): number {
+    const live = this.lives.get(sessionId)
+    if (!live) return 0
+    let total = 0
+    for (const count of live.screencastObservers.values()) total += count
+    return total
+  }
+
+  private async dropScreencastObserver(live: LiveHandle, pageId: string): Promise<void> {
+    const current = live.screencastObservers.get(pageId) ?? 0
+    if (current <= 1) {
+      live.screencastObservers.delete(pageId)
+      const cast = live.screencasts.get(pageId)
+      live.screencasts.delete(pageId)
+      await cast?.stop().catch(() => undefined)
+      return
+    }
+    live.screencastObservers.set(pageId, current - 1)
   }
 
   private pageForView(live: LiveHandle, runId: string, pageId?: string): ManagedPageEntry | undefined {
@@ -1240,24 +1491,61 @@ export class BrowserSessionManager {
     run: Awaited<ReturnType<typeof getRun>>
   }> {
     const run = await getRun(this.dbHandle, runId)
-    const held = await findSessionByAuthHoldRun(this.dbHandle, runId)
+    const held = this.liveAuthHold(await findSessionByAuthHoldRun(this.dbHandle, runId))
     const sessionId = held?.id ?? run.placement.sessionId ?? this.liveSessionIdForRun(runId)
     const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
     if (!session) throw conflict('WORKER_UNREACHABLE', '运行没有可观察的受管会话')
-    if (session.ownerWorkerId !== this.options.workerId) {
-      throw conflict('WORKER_GENERATION_MISMATCH', '会话不属于当前 Worker')
-    }
-    if (
-      session.authHoldWorkerInstanceId &&
-      session.authHoldWorkerInstanceId !== this.workerInstanceId
-    ) {
-      throw conflict('WORKER_GENERATION_MISMATCH', 'Worker 进程代次已变化')
-    }
+    this.assertSessionOwnedHere(session)
     const live = this.lives.get(session.id)
     if (!live) throw conflict('WORKER_UNREACHABLE', '本进程没有会话句柄')
     await expireStaleAuthControl(this.dbHandle, session.id, runId).catch(() => undefined)
+    await this.assertOwnLiveRegistration()
     const latest = (await getSessionById(this.dbHandle, session.id)) ?? session
+    this.assertSessionOwnedHere(latest)
     return { session: latest, live, run }
+  }
+
+  private liveAuthHold(session: SessionRecord | null): SessionRecord | null {
+    if (!session?.authHoldExpiresAt || session.authHoldExpiresAt.getTime() <= Date.now()) return null
+    return session
+  }
+
+  private sessionOwnedHere(session: SessionRecord): boolean {
+    return (
+      session.ownerWorkerId === this.options.workerId &&
+      Boolean(session.ownerWorkerInstanceId) &&
+      session.ownerWorkerInstanceId === this.workerInstanceId &&
+      (!session.authHoldWorkerInstanceId || session.authHoldWorkerInstanceId === this.workerInstanceId)
+    )
+  }
+
+  private assertSessionOwnedHere(session: SessionRecord): void {
+    if (session.ownerWorkerId !== this.options.workerId) {
+      throw conflict('WORKER_GENERATION_MISMATCH', '会话不属于当前 Worker')
+    }
+    if (!session.ownerWorkerInstanceId || session.ownerWorkerInstanceId !== this.workerInstanceId) {
+      throw conflict('WORKER_GENERATION_MISMATCH', '会话不属于当前 Worker 实例')
+    }
+    if (session.authHoldWorkerInstanceId && session.authHoldWorkerInstanceId !== this.workerInstanceId) {
+      throw conflict('WORKER_GENERATION_MISMATCH', 'Worker 进程代次已变化')
+    }
+  }
+
+  private registrationLive(worker: Awaited<ReturnType<typeof getWorkerById>>): boolean {
+    return Boolean(
+      worker &&
+        worker.instanceId === this.workerInstanceId &&
+        worker.status === 'READY' &&
+        worker.heartbeatExpiresAt &&
+        worker.heartbeatExpiresAt.getTime() > Date.now(),
+    )
+  }
+
+  private async assertOwnLiveRegistration(): Promise<void> {
+    const worker = await getWorkerById(this.dbHandle, this.options.workerId)
+    if (!this.registrationLive(worker)) {
+      throw conflict('WORKER_GENERATION_MISMATCH', '当前登记已失效')
+    }
   }
 
   private liveSessionIdForRun(runId: string): string | undefined {
@@ -1271,13 +1559,11 @@ export class BrowserSessionManager {
 
   private async buildMeta(runId: string, actorId: string, viewPageId?: string): Promise<ManagedBrowserMeta> {
     const run = await getRun(this.dbHandle, runId)
-    const held = await findSessionByAuthHoldRun(this.dbHandle, runId)
+    const held = this.liveAuthHold(await findSessionByAuthHoldRun(this.dbHandle, runId))
     const session =
       held ?? (run.placement.sessionId ? await getSessionById(this.dbHandle, run.placement.sessionId) : null)
     const live = session ? this.lives.get(session.id) : undefined
-    const generationOk =
-      !session?.authHoldWorkerInstanceId || session.authHoldWorkerInstanceId === this.workerInstanceId
-    const liveOk = Boolean(live && session && session.ownerWorkerId === this.options.workerId && generationOk)
+    const liveOk = Boolean(live && session && this.sessionOwnedHere(session))
     const waiting = run.status === 'WAITING_FOR_AUTH'
     const controlLive =
       Boolean(
@@ -1336,7 +1622,7 @@ export class BrowserSessionManager {
       capabilities,
       degradedReason: liveOk
         ? null
-        : session && !generationOk
+        : session && !this.sessionOwnedHere(session)
           ? 'worker_generation_mismatch'
           : session
             ? 'worker_unreachable'
@@ -1390,14 +1676,14 @@ export class BrowserSessionManager {
       const health = await probeHealth(handle)
       await setSessionProbe(db, {
         sessionId: created.id,
-        ownerWorkerId: this.options.workerId,
+        ...this.ownerScope(),
         health,
       })
       const opened = await setSessionStatus(db, {
         sessionId: created.id,
         expectedVersion: created.version,
         status: 'OPEN',
-        ownerWorkerId: this.options.workerId,
+        ...this.ownerScope(),
       })
       if (!opened) {
         await stopSession(handle)
@@ -1413,7 +1699,7 @@ export class BrowserSessionManager {
           expectedVersion: created.version,
           status: 'LOST',
           closeReason: 'profile_locked',
-          ownerWorkerId: this.options.workerId,
+          ...this.ownerScope(),
         }).catch(() => {})
         return { ok: false, code: error.code, message: error.message }
       }
@@ -1422,7 +1708,7 @@ export class BrowserSessionManager {
         expectedVersion: created.version,
         status: 'CLOSED',
         closeReason: 'launch_failed',
-        ownerWorkerId: this.options.workerId,
+        ...this.ownerScope(),
       }).catch(() => {})
       if (error instanceof BrowserRuntimeError) {
         this.markBrowserUnavailable(error.code)
@@ -1459,7 +1745,7 @@ export class BrowserSessionManager {
       signal?.throwIfAborted()
       await setSessionProbe(db, {
         sessionId: session.id,
-        ownerWorkerId: this.options.workerId,
+        ...this.ownerScope(),
         authState: auth,
       })
       if (auth === 'AUTHENTICATED') {
@@ -1520,7 +1806,7 @@ export class BrowserSessionManager {
     const authState = ok ? 'AUTHENTICATED' : 'EXPIRED'
     await setSessionProbe(db, {
       sessionId: session.id,
-      ownerWorkerId: this.options.workerId,
+      ...this.ownerScope(),
       health: 'HEALTHY',
       authState,
     })
@@ -1560,6 +1846,7 @@ export class BrowserSessionManager {
     const live = this.lives.get(session.id)
     if (live) {
       live.autoInputClosed = true
+      live.inputAccepting = false
       const entry = this.ensureRunPage(live, runGrant.runId)
       const loginUrl = target?.loginUrl ?? target?.entryUrl
       if (entry?.page && loginUrl) {
@@ -1698,12 +1985,14 @@ function emptyLive(handle: BrowserHandle, sessionId: string): LiveHandle {
     currentPageIdByLease: new Map(),
     currentPageIdByRun: new Map(),
     autoInputClosed: false,
+    inputAccepting: false,
     serial: Promise.resolve(),
     allowedOrigins: [],
     receipts: new Map(),
     lastSeq: 0,
     controlEpoch: 0,
     screencasts: new Map(),
+    screencastObservers: new Map(),
   }
 }
 

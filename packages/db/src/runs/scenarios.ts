@@ -1,26 +1,33 @@
 import type { ScenarioRow, ScenarioVersionRow } from '../records.js'
 import { atomic, locked, schemaFor } from '../native.js'
-import { and, asc, count, desc, eq } from 'drizzle-orm'
+import { and, asc, count, desc, eq, inArray, isNull, notInArray, sql, type SQL } from 'drizzle-orm'
 import {
+  ACTIVE_RUN_STATUSES,
   COMPILER_VERSION,
   ScenarioValidationError,
   assertRunFromResolved,
   compileScenarioDocument,
+  deletePreviewResponseSchema,
   parseScenarioDocument,
   scenarioDefinitionFromSteps,
   scenarioDetailSchema,
   scenarioDocumentSchema,
+  scenarioListQuerySchema,
   scenarioListResponseSchema,
   scenarioSchema,
   scenarioVersionListResponseSchema,
   scenarioVersionSchema,
   validateScenarioDefinition,
   type CompileResult,
+  type DeletePreviewResponse,
+  type DeleteResourceBody,
+  type DeleteResourceResult,
   type ScenarioDefinition,
   type ScenarioDetailDto,
   type ScenarioDocument,
   type ScenarioDto,
   type ScenarioInputDecl,
+  type ScenarioListQuery,
   type ScenarioListResponse,
   type ScenarioStatus,
   type ScenarioVersionDto,
@@ -31,7 +38,17 @@ import { recordAudit, type AuditActor } from '../audit/record.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { sha256Hex } from './digest.js'
-import { badRequest, conflict, mapRestriction, notFound } from './errors.js'
+import { badRequest, conflict, isUniqueViolation, mapRestriction, notFound } from './errors.js'
+import { cursorFilter, paginateResults } from '../cursor.js'
+import {
+  activeRunBlockers,
+  assertExpectedCounts,
+  assertResourceIdle,
+  closeOpenBindings,
+  deletedOccupancyMessage,
+  snapshotDeletedBy,
+  toDeleteResult,
+} from '../lifecycle.js'
 
 function iso(value: Date): string {
   return value.toISOString()
@@ -80,7 +97,7 @@ async function latestPublishedVersion(db: Db, scenarioId: string) {
 async function loadTargetContext(db: Db, targetId: string) {
   const { targets } = schemaFor(db)
   const [target] = await db.select().from(targets).where(eq(targets.id, targetId)).limit(1)
-  if (!target) return { exists: false as const, status: 'disabled' as const, row: null }
+  if (!target || target.deletedAt) return { exists: false as const, status: 'disabled' as const, row: null }
   return { exists: true as const, status: target.status, row: target }
 }
 
@@ -217,29 +234,74 @@ export async function getScenario(
   options?: ScenarioCompileOptions,
 ): Promise<ScenarioDetailDto> {
   const { scenarios } = schemaFor(db)
-  const [row] = await db.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1)
+  const [row] = await db
+    .select()
+    .from(scenarios)
+    .where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt)))
+    .limit(1)
   if (!row) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   const latest = await latestPublishedVersion(db, scenarioId)
   return toDetailDto(db, row, latest, options)
 }
 
-export async function listScenarios(db: Db): Promise<ScenarioListResponse> {
+export async function listScenarios(
+  db: Db,
+  query: ScenarioListQuery = {},
+): Promise<ScenarioListResponse> {
+  const parsed = scenarioListQuerySchema.parse(query)
   const { scenarioDrafts, scenarios } = schemaFor(db)
+  const limit = parsed.limit
+  const filters: (SQL | undefined)[] = [
+    isNull(scenarios.deletedAt),
+    parsed.targetId ? eq(scenarios.targetId, parsed.targetId) : undefined,
+    parsed.status ? eq(scenarios.status, parsed.status) : undefined,
+    parsed.search
+      ? sql`lower(${scenarios.name}) like ${'%' + parsed.search.toLowerCase() + '%'}`
+      : undefined,
+    parsed.hasDraft === true
+      ? inArray(
+          scenarios.id,
+          db.select({ scenarioId: scenarioDrafts.scenarioId }).from(scenarioDrafts),
+        )
+      : parsed.hasDraft === false
+        ? notInArray(
+            scenarios.id,
+            db.select({ scenarioId: scenarioDrafts.scenarioId }).from(scenarioDrafts),
+          )
+        : undefined,
+    cursorFilter(scenarios.createdAt, scenarios.id, parsed.cursor),
+  ]
   const rows = await db
     .select()
     .from(scenarios)
-    .orderBy(asc(scenarios.createdAt), asc(scenarios.id))
-  const drafts = await db.select().from(scenarioDrafts)
+    .where(and(...filters.filter((f): f is SQL => f !== undefined)))
+    .orderBy(desc(scenarios.createdAt), desc(scenarios.id))
+    .limit(limit + 1)
+
+  const scenarioIds = rows.map((r) => r.id)
+  const drafts =
+    scenarioIds.length > 0
+      ? await db
+          .select()
+          .from(scenarioDrafts)
+          .where(inArray(scenarioDrafts.scenarioId, scenarioIds))
+      : []
   const draftById = new Map(drafts.map((draft) => [draft.scenarioId, draft]))
+
+  const paginated = paginateResults(rows, limit)
   const items: ScenarioDto[] = []
-  for (const row of rows) {
+  for (const row of paginated.items) {
     const latest = await latestPublishedVersion(db, row.id)
     const draft = draftById.get(row.id)
     items.push(
       toScenarioDto(row, latest, draft ? isDraftDirty(draft.document, latest.definition) : false),
     )
   }
-  return scenarioListResponseSchema.parse({ items })
+  return scenarioListResponseSchema.parse({
+    items,
+    nextCursor: paginated.nextCursor,
+    hasMore: paginated.hasMore,
+  })
 }
 
 export async function listScenarioVersions(
@@ -247,7 +309,11 @@ export async function listScenarioVersions(
   scenarioId: string,
 ): Promise<ScenarioVersionListResponse> {
   const { scenarioVersions, scenarios } = schemaFor(db)
-  const [row] = await db.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1)
+  const [row] = await db
+    .select()
+    .from(scenarios)
+    .where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt)))
+    .limit(1)
   if (!row) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   const versions = await db
     .select()
@@ -324,6 +390,13 @@ export async function createScenarioWithVersion(
       )
     })
   } catch (error) {
+    if (isUniqueViolation(error)) {
+      const occupied = await deletedOccupancyMessage(db, 'scenario_name', {
+        targetId: input.targetId,
+        name: input.name,
+      })
+      if (occupied) throw conflict('SCENARIO_NAME_CONFLICT', occupied)
+    }
     rethrow(error)
   }
   return getScenario(db, id, input)
@@ -335,7 +408,11 @@ export async function updateScenarioMeta(
   input: { name?: string; status?: ScenarioStatus; actor: AuditActor },
 ): Promise<ScenarioDetailDto> {
   const { scenarios } = schemaFor(db)
-  const [current] = await db.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1)
+  const [current] = await db
+    .select()
+    .from(scenarios)
+    .where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt)))
+    .limit(1)
   if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   const now = new Date()
   try {
@@ -370,6 +447,13 @@ export async function updateScenarioMeta(
       }
     })
   } catch (error) {
+    if (isUniqueViolation(error) && input.name) {
+      const occupied = await deletedOccupancyMessage(db, 'scenario_name', {
+        targetId: current.targetId,
+        name: input.name,
+      })
+      if (occupied) throw conflict('SCENARIO_NAME_CONFLICT', occupied)
+    }
     rethrow(error)
   }
   return getScenario(db, scenarioId)
@@ -387,7 +471,7 @@ export async function appendScenarioVersion(
     await db.transaction(async (tx) => {
       const [current] = await locked(
         tx,
-        tx.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1),
+        tx.select().from(scenarios).where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt))).limit(1),
       )
       if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
       const target = await loadTargetContext(tx as unknown as Db, current.targetId)
@@ -433,7 +517,7 @@ export async function saveScenarioDraft(
     await db.transaction(async (tx) => {
       const [current] = await locked(
         tx,
-        tx.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1),
+        tx.select().from(scenarios).where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt))).limit(1),
       )
       if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
       const [draft] = await locked(
@@ -485,7 +569,7 @@ export async function publishScenarioDraft(
     await db.transaction(async (tx) => {
       const [current] = await locked(
         tx,
-        tx.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1),
+        tx.select().from(scenarios).where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt))).limit(1),
       )
       if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
       if (current.status === 'disabled') throw conflict('SCENARIO_DISABLED', '场景已停用，不能发布')
@@ -554,7 +638,7 @@ export async function prepareTrialVersion(
     await atomic(db, async (tx) => {
       const [current] = await locked(
         tx,
-        tx.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1),
+        tx.select().from(scenarios).where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt))).limit(1),
       )
       if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
       if (current.status === 'disabled') throw conflict('SCENARIO_DISABLED', '场景已停用，不能试跑')
@@ -645,32 +729,90 @@ export async function prepareTrialVersion(
   return { versionId }
 }
 
-export async function deleteScenario(db: Db, scenarioId: string, actor: AuditActor): Promise<void> {
-  const { scenarioDrafts, scenarioVersions, scenarios, runs } = schemaFor(db)
+export async function previewDeleteScenario(
+  db: Db,
+  scenarioId: string,
+): Promise<DeletePreviewResponse> {
+  const { scenarios, runs } = schemaFor(db)
+  const [current] = await db
+    .select()
+    .from(scenarios)
+    .where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt)))
+    .limit(1)
+  if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
+
+  const scenarioRuns = await db
+    .select({ id: runs.id, status: runs.status })
+    .from(runs)
+    .where(and(eq(runs.scenarioId, scenarioId), isNull(runs.deletedAt)))
+
+  const activeRuns = scenarioRuns.filter((r) => ACTIVE_RUN_STATUSES.includes(r.status as any))
+  const activeBlockers = activeRunBlockers(activeRuns)
+
+  return deletePreviewResponseSchema.parse({
+    previewToken: newId(),
+    counts: {
+      runs: scenarioRuns.length,
+    },
+    blockers: activeBlockers,
+  })
+}
+
+export async function deleteScenario(
+  db: Db,
+  scenarioId: string,
+  actor: AuditActor,
+  input: DeleteResourceBody = {},
+): Promise<DeleteResourceResult> {
+  const { scenarios, runs } = schemaFor(db)
   try {
-    await db.transaction(async (tx) => {
-      const [current] = await locked(
-        tx,
-        tx.select().from(scenarios).where(eq(scenarios.id, scenarioId)),
-      )
+    return await db.transaction(async (tx) => {
+      const [current] = await locked(tx, tx.select().from(scenarios).where(eq(scenarios.id, scenarioId)))
       if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
-      const [run] = await tx
+      if (current.deletedAt && current.deletedBy) {
+        return toDeleteResult({
+          id: scenarioId,
+          deletedAt: current.deletedAt,
+          deletedBy: current.deletedBy,
+        })
+      }
+      const activeRuns = await tx
         .select({ id: runs.id })
         .from(runs)
-        .where(eq(runs.scenarioId, scenarioId))
+        .where(
+          and(
+            eq(runs.scenarioId, scenarioId),
+            inArray(runs.status, ACTIVE_RUN_STATUSES as any),
+            isNull(runs.deletedAt),
+          ),
+        )
         .limit(1)
-      if (run) throw conflict('SCENARIO_HAS_RUNS', '请先删除该场景下的运行')
-      await tx.delete(scenarioDrafts).where(eq(scenarioDrafts.scenarioId, scenarioId))
-      await tx.delete(scenarioVersions).where(eq(scenarioVersions.scenarioId, scenarioId))
-      await tx.delete(scenarios).where(eq(scenarios.id, scenarioId))
+      if (activeRuns.length > 0) {
+        throw conflict('RUN_NOT_TERMINAL', '该场景存在运行中的任务，请先等待完成或取消')
+      }
+      await assertResourceIdle(tx as unknown as Db, { scenarioId })
+      const [runCount] = await tx
+        .select({ value: count() })
+        .from(runs)
+        .where(and(eq(runs.scenarioId, scenarioId), isNull(runs.deletedAt)))
+      assertExpectedCounts({ runs: Number(runCount?.value ?? 0) }, input.expectedCounts)
+
+      const now = new Date()
+      const deletedBy = await snapshotDeletedBy(tx as unknown as Db, actor)
+      await closeOpenBindings(tx as unknown as Db, { scenarioId }, now)
+      await tx
+        .update(scenarios)
+        .set({ deletedAt: now, deletedBy, updatedAt: now })
+        .where(eq(scenarios.id, scenarioId))
       await recordAudit(
         tx as unknown as Db,
         actor,
         'scenario.delete',
         'scenario',
         scenarioId,
-        current.name,
+        `删除场景 ${current.name}：保留历史运行 ${Number(runCount?.value ?? 0)} 条`,
       )
+      return toDeleteResult({ id: scenarioId, deletedAt: now, deletedBy })
     })
   } catch (error) {
     rethrow(error)
@@ -699,7 +841,7 @@ export async function loadScenarioVersion(
 ): Promise<{ scenario: ScenarioRow; version: ScenarioVersionRow }> {
   const { scenarioVersions, scenarios } = schemaFor(db)
   const [scenario] = await db.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1)
-  if (!scenario) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
+  if (!scenario || scenario.deletedAt) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   if (versionId) {
     const [version] = await db
       .select()

@@ -28,10 +28,13 @@ describe('StepEditor click pageAfter', () => {
         onRequestTypeChange={vi.fn()}
       />,
     )
+    await expect.element(screen.getByRole('button', { name: '在页面上指认' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '校验高亮' })).toBeInTheDocument()
     await expect.element(screen.getByRole('combobox', { name: '点击后页面' })).toBeInTheDocument()
     await screen.getByRole('combobox', { name: '点击后页面' }).click()
     await screen.getByRole('option', { name: '切换到弹出窗口' }).click()
-    const next = onChange.mock.calls.at(-1)?.[0] as Step
+    const calls = onChange.mock.calls
+    const next = calls[calls.length - 1]?.[0] as Step
     expect(next.type === 'click' && next.input.pageAfter).toBe('popup')
   })
 })

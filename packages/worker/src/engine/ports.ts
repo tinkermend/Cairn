@@ -5,6 +5,8 @@ import type {
   BrowserCommand,
   BrowserCommandEvidence,
   BrowserCommandResult,
+  ExecutionError,
+  PageRef,
   RunGrant,
   RunSnapshot,
   ScreenshotPointer,
@@ -34,6 +36,7 @@ export type BrowserPort = {
     signal?: AbortSignal,
     evidence?: BrowserCommandEvidence,
   ): Promise<BrowserCommandResult>
+  describeHold?(runId: string): Promise<{ pageRef?: PageRef; url?: string } | undefined>
 }
 
 export type AiPort = {
@@ -47,7 +50,14 @@ export type AiPort = {
       model?: string
       config: AiExecutionConfig
     },
-  ): Promise<AiResult & { screenshot?: ScreenshotPointer; trace?: ScreenshotPointer }>
+  ): Promise<
+    AiResult & {
+      screenshot?: ScreenshotPointer
+      trace?: ScreenshotPointer
+      /** 端口能判定时给出结构化错误（如丢租），执行器原样使用，不再笼统记成 AI_EXECUTION_FAILED。 */
+      error?: ExecutionError
+    }
+  >
 }
 
 export const AI_PORT = Symbol('AI_PORT')

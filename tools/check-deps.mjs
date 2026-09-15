@@ -61,15 +61,29 @@ function* sourceFiles(dir) {
   }
 }
 
+function isTestFile(file) {
+  return (
+    /\.(?:spec|test)\.[cm]?[jt]sx?$/.test(file) ||
+    file.includes(`${sep}__tests__${sep}`) ||
+    file.includes(`${sep}testing${sep}`)
+  )
+}
+
+/**
+ * Engine 连测试也不许碰 AI SDK（与 engine.boundary.spec.ts 同一口径）。
+ * 其余 Worker 目录只管会进 dist 的生产代码：测试可以借 src/ai/ 的替身与 gate 搭夹具。
+ */
 function checkWorkerAiIsolation(report) {
   if (!existsSync(WORKER_SRC)) return
   for (const file of sourceFiles(WORKER_SRC)) {
     if (file.startsWith(AI_SRC + sep)) continue
+    const inEngine = file.startsWith(ENGINE_SRC + sep)
+    if (!inEngine && isTestFile(file)) continue
     const source = readFileSync(file, 'utf8')
     for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
       if (!AI_SDK_PATTERN.test(specifier)) continue
       const rel = relative(root, file)
-      if (file.startsWith(ENGINE_SRC + sep)) {
+      if (inEngine) {
         report(`Engine 不得引用 Midscene / page-agent：${rel} → ${specifier}`)
       } else {
         report(`Worker 生产路径不得引用 Midscene / page-agent（只允许 src/ai/）：${rel} → ${specifier}`)
@@ -82,7 +96,7 @@ function checkDatabaseBoundary(report) {
   const forbidden = /^(?:pg|mysql2|drizzle-orm)(?:\/|$)|^node:sqlite$/
   for (const area of ['api', 'worker']) {
     for (const file of sourceFiles(resolve(root, `packages/${area}/src`))) {
-      if (/\.(?:spec|test)\.[cm]?[jt]sx?$/.test(file) || file.includes(`${sep}__tests__${sep}`) || file.includes(`${sep}testing${sep}`)) continue
+      if (isTestFile(file)) continue
       const source = readFileSync(file, 'utf8')
       for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
         if (forbidden.test(specifier) || specifier === '@cairn/db/testing' || specifier.includes('/testing/') ||

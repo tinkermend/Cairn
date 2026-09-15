@@ -231,15 +231,12 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
     expect(JSON.stringify(listed)).not.toContain('hello-object')
   })
 
-  it('删除仍有场景的 Target / 仍有 Run 的场景 / 仍被引用的账号', async () => {
+  it('删除级联 Target / 仍有 Run 的 Target / 仍有 Run 的场景 / 仍被引用的账号', async () => {
     const withScenarioOnly = await createTarget(slug('dels'))
-    await scenarios.create({ targetId: withScenarioOnly.id, name: '占坑', steps: [echoStep] }, actor)
-    try {
-      await targets.deleteTarget(withScenarioOnly.id, actor)
-      expect.unreachable()
-    } catch (error) {
-      expect((error as ConflictException).getResponse()).toMatchObject({ code: 'TARGET_HAS_SCENARIOS' })
-    }
+    const childScenario = await scenarios.create({ targetId: withScenarioOnly.id, name: '占坑', steps: [echoStep] }, actor)
+    await targets.deleteTarget(withScenarioOnly.id, actor)
+    await expect(targets.getTarget(withScenarioOnly.id)).rejects.toThrow()
+    await expect(scenarios.get(childScenario.id)).rejects.toThrow()
 
     const target = await createTarget(slug('dela'))
     const account = await targets.createAccount(
@@ -251,16 +248,23 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
     await runs.create({ scenarioId: scenario.id, targetAccountId: account.id }, actor)
 
     try {
+      await targets.deleteTarget(target.id, actor)
+      expect.unreachable()
+    } catch (error) {
+      expect((error as ConflictException).getResponse()).toMatchObject({ code: 'RUN_NOT_TERMINAL' })
+    }
+
+    try {
       await scenarios.remove(scenario.id, actor)
       expect.unreachable()
     } catch (error) {
-      expect((error as ConflictException).getResponse()).toMatchObject({ code: 'SCENARIO_HAS_RUNS' })
+      expect((error as ConflictException).getResponse()).toMatchObject({ code: 'RUN_NOT_TERMINAL' })
     }
     try {
       await targets.deleteAccount(target.id, account.id, actor)
       expect.unreachable()
     } catch (error) {
-      expect((error as ConflictException).getResponse()).toMatchObject({ code: 'TARGET_ACCOUNT_HAS_RUNS' })
+      expect((error as ConflictException).getResponse()).toMatchObject({ code: 'TARGET_ACCOUNT_BUSY' })
     }
   })
 

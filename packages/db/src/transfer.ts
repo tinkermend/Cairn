@@ -47,8 +47,11 @@ const ORDER = [
   'consoleAuditEvents',
   'platformConfig',
   'platformConfigRevisions',
+  'assistantConversations',
+  'assistantTurns',
+  'platformAiCalls',
 ] as const
-const LOGICAL_VERSION = '0026'
+const LOGICAL_VERSION = '0030'
 const bundleSchema = z
   .object({
     format: z.literal('cairn-database-v1'),

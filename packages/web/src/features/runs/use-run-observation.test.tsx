@@ -32,6 +32,7 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     finishedAt: null,
     evidenceStatus: 'PENDING',
     lease: null,
+    debugMode: 'runThrough',
     placement: {
       state: 'not_applicable',
       sessionId: null,
@@ -77,7 +78,7 @@ type StreamInput = {
 
 function captureSubscribe() {
   let handlers: StreamInput['handlers'] | undefined
-  mocks.subscribeRunEvents.mockImplementation(async (id: string, input: StreamInput) => {
+  mocks.subscribeRunEvents.mockImplementation(async (_id: string, input: StreamInput) => {
     handlers = input.handlers
     input.handlers.onControl?.({
       kind: 'ready',
@@ -203,7 +204,7 @@ describe('useRunObservation', () => {
   })
 
   it('实时未配置显示辅助灰标，不是 Run 失败', async () => {
-    mocks.subscribeRunEvents.mockImplementation(async (id: string, input: StreamInput) => {
+    mocks.subscribeRunEvents.mockImplementation(async (_id: string, input: StreamInput) => {
       input.handlers.onControl?.({ kind: 'ready', realtime: false })
       await new Promise<void>((resolve) => {
         input.signal.addEventListener('abort', () => resolve(), { once: true })

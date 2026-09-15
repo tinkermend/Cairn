@@ -40,7 +40,7 @@ const RECOVERY_EXHAUSTED_ERROR: ExecutionError = {
   safeMessage: '同一运行恢复次数已耗尽',
 }
 
-export type SettleOutcome = 'skipped' | 'expired' | 'cancelled' | 'needs_review' | 'recovering'
+export type SettleOutcome = 'skipped' | 'expired' | 'cancelled' | 'needs_review' | 'recovering' | 'failed'
 
 export async function settleLeaselessRun(
   db: Db,
@@ -75,6 +75,34 @@ export async function settleLeaselessRun(
     if (run.cancelRequestedAt) {
       const outcome = await settleRunCancellationTx(tx as unknown as Db, input.runId, now)
       return outcome === 'pending' ? 'skipped' : outcome
+    }
+
+    if (run.status === 'HOLDING') {
+      await closeRunningAttemptsTx(tx as unknown as Db, input.runId, now)
+      await tx
+        .update(runs)
+        .set({ status: 'FAILED', finishedAt: now, updatedAt: now })
+        .where(eq(runs.id, input.runId))
+      const debugWorkerLostError: ExecutionError = {
+        code: 'DEBUG_WORKER_LOST',
+        category: 'INFRASTRUCTURE',
+        retryable: false,
+        safeMessage: '调试会话执行节点失联或租约已过期',
+      }
+      await tx.insert(evidences).values({
+        id: newId(),
+        runId: input.runId,
+        type: 'error',
+        schemaVersion: 1,
+        payload: debugWorkerLostError,
+        createdAt: now,
+      })
+      await appendRunEvents(tx as unknown as Db, input.runId, [
+        { type: 'run.status_changed', payload: { status: 'FAILED' } },
+        { type: 'run.debug_stopped', payload: { reason: 'debug_worker_lost' } },
+        { type: 'evidence.recorded', payload: { type: 'error', status: 'available' } },
+      ])
+      return 'failed'
     }
 
     const failed = await countFailedRecoveries(tx as unknown as Db, input.runId)

@@ -42,6 +42,7 @@ describe('侧栏导航', () => {
       '角色',
       '开放服务',
       '平台配置',
+      '执行节点',
       '审计',
     ])
     const audit = governance.items.find((item) => item.title === '审计')
@@ -54,16 +55,16 @@ describe('侧栏导航', () => {
     expect(visibleTitles(governance, user(['audit:login']))).toEqual(['审计'])
   })
 
-  it('执行者只见业务与设置，不见录制和治理', () => {
+  it('执行者只见业务与设置，不见录制；治理仅见执行节点', () => {
     const operator = user([...SYSTEM_ROLE_DEFINITIONS.operator.permissions])
     expect(visibleTitles(workbench, operator)).toEqual(['首页', '目标系统', '场景', '运行'])
-    expect(visibleTitles(governance, operator)).toEqual([])
+    expect(visibleTitles(governance, operator)).toEqual(['执行节点'])
   })
 
   it('编写者能看见录制草稿', () => {
     const author = user([...SYSTEM_ROLE_DEFINITIONS.author.permissions])
     expect(visibleTitles(workbench, author)).toContain('录制草稿')
-    expect(visibleTitles(governance, author)).toEqual([])
+    expect(visibleTitles(governance, author)).toEqual(['执行节点'])
   })
 
   it('带 permission 的侧栏项能在能力地图找到相同 allOf；首页是唯一例外', () => {
@@ -127,7 +128,14 @@ describe('侧栏导航', () => {
         return [item.title, ...subs.map((sub) => sub.title)]
       }),
     )
+    const urls = sidebarData.navGroups.flatMap((group) =>
+      group.items.flatMap((item) => {
+        const own = 'url' in item && typeof item.url === 'string' ? [item.url] : []
+        const subs = Array.isArray(item.items) ? item.items : []
+        return [...own, ...subs.flatMap((sub) => ('url' in sub && typeof sub.url === 'string' ? [sub.url] : []))]
+      }),
+    )
     expect(titles.filter((title) => title.includes('会话'))).toEqual([])
-    expect(JSON.stringify(sidebarData)).not.toMatch(/sessions?|会话/)
+    expect(urls.filter((url) => /session/i.test(url))).toEqual([])
   })
 })

@@ -69,17 +69,19 @@ describe('click pageAfter', () => {
 
 describe('auth input whitelist', () => {
   it('接受 composition 完成后的中文，拒绝脚本字段', () => {
-    expect(
-      browserAuthInputCommandSchema.parse({
-        type: 'insert_text',
-        pageRef,
-        commandId: '00000000-0000-4000-8000-000000000021',
-        seq: 1,
-        frameId: 'main',
-        viewport: { width: 1280, height: 720 },
-        text: '验证码一二三',
-      }).text,
-    ).toBe('验证码一二三')
+    const parsed = browserAuthInputCommandSchema.parse({
+      type: 'insert_text',
+      pageRef,
+      commandId: '00000000-0000-4000-8000-000000000021',
+      seq: 1,
+      frameId: 'main',
+      viewport: { width: 1280, height: 720 },
+      text: '验证码一二三',
+    })
+    expect(parsed.type).toBe('insert_text')
+    if (parsed.type === 'insert_text') {
+      expect(parsed.text).toBe('验证码一二三')
+    }
     expect(() =>
       browserAuthInputCommandSchema.parse({
         type: 'evaluate',

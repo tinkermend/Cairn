@@ -9,11 +9,28 @@ const mocks = vi.hoisted(() => ({
   fetchRuns: vi.fn(),
   cancelRun: vi.fn(),
   createRun: vi.fn(),
+  previewDeleteRun: vi.fn(),
+  deleteRun: vi.fn(),
+  fetchScenarios: vi.fn().mockResolvedValue({ items: [] }),
+  fetchTargets: vi.fn().mockResolvedValue({ items: [] }),
 }))
 
-vi.mock('@/lib/runs-api', () => mocks)
-vi.mock('@/lib/scenarios-api', () => ({ fetchScenarios: vi.fn() }))
-vi.mock('@/lib/targets-api', () => ({ fetchTargetAccounts: vi.fn() }))
+vi.mock('@/lib/runs-api', () => ({
+  fetchRuns: mocks.fetchRuns,
+  cancelRun: mocks.cancelRun,
+  createRun: mocks.createRun,
+  previewDeleteRun: mocks.previewDeleteRun,
+  deleteRun: mocks.deleteRun,
+}))
+vi.mock('@/lib/scenarios-api', () => ({
+  fetchScenarios: mocks.fetchScenarios,
+  fetchScenario: vi.fn(),
+  fetchScenarioCapabilities: vi.fn().mockResolvedValue({}),
+}))
+vi.mock('@/lib/targets-api', () => ({
+  fetchTargets: mocks.fetchTargets,
+  fetchTargetAccounts: vi.fn().mockResolvedValue({ items: [] }),
+}))
 vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
@@ -41,6 +58,7 @@ function summary(overrides: Partial<RunSummaryDto>): RunSummaryDto {
     finishedAt: null,
     evidenceStatus: 'PENDING',
     lease: null,
+    debugMode: 'runThrough',
     ...overrides,
   }
 }
@@ -83,6 +101,23 @@ describe('RunsPage', () => {
     vi.clearAllMocks()
     mocks.fetchRuns.mockResolvedValue(list)
     mocks.cancelRun.mockResolvedValue({ status: 'CANCELLED' })
+    mocks.previewDeleteRun.mockResolvedValue({
+      canDelete: true,
+      blockers: [],
+      cascadeImpact: {
+        targets: 0,
+        targetAccounts: 0,
+        scenarios: 0,
+        recordingDrafts: 0,
+        runs: 1,
+        stepRuns: 2,
+        attempts: 2,
+        storedObjects: 3,
+      },
+    })
+    mocks.deleteRun.mockResolvedValue({ success: true })
+    mocks.fetchScenarios.mockResolvedValue({ items: [] })
+    mocks.fetchTargets.mockResolvedValue({ items: [] })
   })
 
   afterEach(() => {
@@ -125,6 +160,18 @@ describe('RunsPage', () => {
     expect(mocks.cancelRun).toHaveBeenCalledWith('44444444-4444-4444-8444-444444444444')
   })
 
+  /** 终态运行支持删除；非终态运行不展示删除入口 */
+  it('具备 run:delete 权限时，仅终态运行展示删除按钮', async () => {
+    signIn(['run:read', 'run:delete'])
+    const screen = await renderPage()
+
+    await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
+    // 第一条是 QUEUED，第二条是 SUCCEEDED
+    const deleteButtons = screen.getByRole('button', { name: /删除运行/ })
+    expect(deleteButtons.elements()).toHaveLength(1)
+    await expect.element(screen.getByRole('button', { name: '删除运行44444444-4444-4444-8444-444444444445' })).toBeInTheDocument()
+  })
+
   /** 验收 37：viewer 看得见列表，但没有创建与取消。 */
   it('只读权限：没有创建运行与取消', async () => {
     signIn(['run:read'])
@@ -133,6 +180,7 @@ describe('RunsPage', () => {
     await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /创建运行/ }).elements()).toHaveLength(0)
     expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
+    expect(screen.getByRole('button', { name: /删除运行/ }).elements()).toHaveLength(0)
   })
 
   it('仅有 run:execute 时不显示创建运行', async () => {
@@ -141,6 +189,45 @@ describe('RunsPage', () => {
 
     await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /创建运行/ }).elements()).toHaveLength(0)
+  })
+
+  it('状态筛选包含排队与待核查', async () => {
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByRole('button', { name: '排队' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '待核查' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '恢复中' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '需要登录' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '挂起中' })).toBeInTheDocument()
+  })
+
+  it('具备编写权限时提供场景筛选', async () => {
+    mocks.fetchScenarios.mockResolvedValue({
+      items: [{ id: '33333333-3333-4333-8333-333333333333', name: '下单巡检' }],
+    })
+    signIn(['run:read', 'workflow:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByRole('combobox', { name: '场景筛选' })).toBeInTheDocument()
+  })
+
+  it('已删除目录只显示名称和已删除标记', async () => {
+    mocks.fetchRuns.mockResolvedValue({
+      items: [
+        summary({
+          scenarioDeleted: true,
+          targetDeleted: true,
+          scenarioName: '旧场景',
+          targetName: '旧目标',
+        }),
+      ],
+    })
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('旧场景')).toBeInTheDocument()
+    await expect.element(screen.getByText('旧目标')).toBeInTheDocument()
+    expect(screen.getByText('已删除').elements().length).toBeGreaterThanOrEqual(2)
+    expect(document.querySelector('a[href*="scenarios"]')).toBeNull()
+    expect(document.querySelector('a[href*="targets"]')).toBeNull()
   })
 
   it('具备开跑组合权限时显示创建运行', async () => {

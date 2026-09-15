@@ -1,7 +1,7 @@
 import type { EvidenceRow } from '../records.js'
 import { atomic, schemaFor } from '../native.js'
 import { updateRows } from '../native.js'
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
 import {
   EVIDENCE_INCOMPLETE_CODE,
   FINISHED_RUN_STATUSES,
@@ -39,13 +39,20 @@ export async function getEvidenceForRun(
   db: Db,
   input: { runId: string; evidenceId: string },
 ): Promise<EvidenceRow | null> {
-  const { evidences } = schemaFor(db)
+  const { evidences, runs } = schemaFor(db)
   const [row] = await db
-    .select()
+    .select({ evidence: evidences })
     .from(evidences)
-    .where(and(eq(evidences.id, input.evidenceId), eq(evidences.runId, input.runId)))
+    .innerJoin(runs, eq(runs.id, evidences.runId))
+    .where(
+      and(
+        eq(evidences.id, input.evidenceId),
+        eq(evidences.runId, input.runId),
+        isNull(runs.deletedAt),
+      ),
+    )
     .limit(1)
-  return row ?? null
+  return row?.evidence ?? null
 }
 
 export async function listPendingEvidence(

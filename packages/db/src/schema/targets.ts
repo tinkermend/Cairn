@@ -1,4 +1,5 @@
 import { relations } from 'drizzle-orm'
+import type { ResourceDeletedBy } from '@cairn/shared'
 import {
   customType,
   index,
@@ -39,10 +40,15 @@ export const targets = cairnSchema.table(
       password?: { by: 'id' | 'name' | 'css'; value: string }
       submit?: { by: 'id' | 'name' | 'css'; value: string }
     }>(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('targets_code_idx').on(t.code)],
+  (t) => [
+    uniqueIndex('targets_code_idx').on(t.code),
+    index('targets_deleted_at_idx').on(t.deletedAt),
+  ],
 )
 
 export const secrets = cairnSchema.table('secrets', {
@@ -67,12 +73,15 @@ export const targetAccounts = cairnSchema.table(
     status: text('status', { enum: ['active', 'disabled'] })
       .notNull()
       .default('active'),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex('target_accounts_target_username_idx').on(t.targetId, t.username),
     index('target_accounts_target_id_idx').on(t.targetId),
+    index('target_accounts_deleted_at_idx').on(t.deletedAt),
   ],
 )
 

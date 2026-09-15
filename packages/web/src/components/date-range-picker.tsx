@@ -68,6 +68,9 @@ export function DateRangePicker({
           </Button>
         </PopoverTrigger>
         <PopoverContent align='start' className='w-auto p-0'>
+          <p className='border-b border-border-divider px-3 py-2 text-label text-muted-foreground'>
+            按浏览器本地日历日筛选；服务端按 UTC 半开区间 [from, to) 查询。
+          </p>
           <Calendar
             mode='range'
             locale={zhCN}

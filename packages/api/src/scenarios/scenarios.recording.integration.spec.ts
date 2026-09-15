@@ -129,7 +129,7 @@ describe('录制绑定与回填（真实库）', { timeout: 30_000 }, () => {
       },
       actor,
     )
-    expect(uploaded.items.some((item) => item.sourceAction === 'check' && item.status === 'unresolved')).toBe(true)
+    expect(uploaded.items.some((item) => item.sourceAction === 'check' && item.status === 'mapped')).toBe(true)
 
     const preview = await scenarios.previewRecordingImport(
       created.id,

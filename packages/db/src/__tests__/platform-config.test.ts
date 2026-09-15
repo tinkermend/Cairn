@@ -189,6 +189,7 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
     const legacy = computeIdempotencyDigest({
       scenarioVersionId: sample.scenarioVersionId,
       input: sample.input,
+      targetAccountId: sample.targetAccountId,
       sessionPolicy: sample.sessionPolicy,
       evidencePolicy: sample.evidencePolicy,
     })

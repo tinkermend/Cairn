@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMemo, useState } from 'react'
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import type { TargetDto } from '@cairn/shared'
 import {
@@ -12,9 +12,10 @@ import {
   ShieldAlert,
   Users,
 } from 'lucide-react'
-import { toast } from 'sonner'
-import { ApiRequestError } from '@/lib/api-client'
-import { deleteTarget, fetchTargets } from '@/lib/targets-api'
+import { fetchTargets, previewDeleteTarget, deleteTarget } from '@/lib/targets-api'
+import { useCursorPage } from '@/hooks/use-cursor-page'
+import { CursorPagination } from '@/components/data-table'
+import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -26,7 +27,6 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { CollectionSummary } from '@/components/collection-summary'
-import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
@@ -43,26 +43,50 @@ import {
 import { TargetFormDialog } from './target-form-dialog'
 
 export function TargetsPage() {
-  const query = useQuery({ queryKey: ['targets'], queryFn: fetchTargets })
+  const page = useCursorPage()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [createOpen, setCreateOpen] = useState(false)
   const [removing, setRemoving] = useState<TargetDto | null>(null)
-  const [saving, setSaving] = useState(false)
   const [search, setSearch] = useState('')
-  const [status, setStatus] = useState('all')
+  const [status, setStatus] = useState<'all' | 'active' | 'disabled'>('all')
+  const [authMethod, setAuthMethod] = useState<'all' | 'password' | 'manual'>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const items = query.data?.items ?? []
-  const keyword = search.trim().toLocaleLowerCase()
-  const filtered = items.filter(
-    (item) =>
-      (status === 'all' || item.status === status) &&
-      [item.name, item.code, item.entryUrl].some((value) =>
-        value.toLocaleLowerCase().includes(keyword)
-      )
+
+  const filters = useMemo(
+    () => ({
+      search: search.trim() || undefined,
+      status: status === 'all' ? undefined : status,
+      authMethod: authMethod === 'all' ? undefined : authMethod,
+      limit: page.pageSize,
+      cursor: page.cursor,
+    }),
+    [search, status, authMethod, page.pageSize, page.cursor],
   )
-  const selected =
-    filtered.find((item) => item.id === selectedId) ?? filtered[0]
+
+  const query = useQuery({
+    queryKey: ['targets', filters],
+    queryFn: () => fetchTargets(filters),
+    placeholderData: keepPreviousData,
+  })
+
+  const handleSearchChange = (val: string) => {
+    setSearch(val)
+    page.reset()
+  }
+
+  const handleStatusChange = (val: 'all' | 'active' | 'disabled') => {
+    setStatus(val)
+    page.reset()
+  }
+
+  const handleAuthMethodChange = (val: 'all' | 'password' | 'manual') => {
+    setAuthMethod(val)
+    page.reset()
+  }
+
+  const items = query.data?.items ?? []
+  const selected = items.find((item) => item.id === selectedId) ?? items[0]
 
   return (
     <>
@@ -94,44 +118,39 @@ export function TargetsPage() {
             title='无法加载目标系统'
             onRetry={() => void query.refetch()}
           />
-        ) : items.length === 0 ? (
-          <EmptyState
-            title='还没有目标系统'
-            description='登记第一个业务系统，然后添加用于执行场景的目标账号。'
-          />
         ) : (
           <>
             <CollectionSummary
               items={[
                 {
-                  label: '已登记系统',
+                  label: '本页系统',
                   value: items.length,
-                  description: '统一管理系统入口',
+                  description: '当前页已加载，不是全部总量',
                   icon: <Globe2 className='size-4' />,
                 },
                 {
-                  label: '已启用',
+                  label: '本页已启用',
                   value: items.filter((item) => item.status === 'active')
                     .length,
-                  description: '已启用的系统配置',
+                  description: '当前页中已启用的系统',
                   icon: (
                     <CheckCircle2 className='size-4 text-status-success-foreground' />
                   ),
                 },
                 {
-                  label: '目标账号',
+                  label: '本页账号',
                   value: items.reduce(
                     (sum, item) => sum + item.accountCount,
                     0
                   ),
-                  description: '登录外部系统的身份',
+                  description: '当前页系统下的账号合计',
                   icon: <Users className='size-4' />,
                 },
                 {
-                  label: '存在验证码',
+                  label: '本页验证码',
                   value: items.filter((item) => item.captchaMode !== 'none')
                     .length,
-                  description: '执行前需关注认证方式',
+                  description: '当前页中需要关注认证的系统',
                   icon: (
                     <ShieldAlert className='size-4 text-status-warning-foreground' />
                   ),
@@ -160,7 +179,26 @@ export function TargetsPage() {
                         variant={status === value ? 'secondary' : 'ghost'}
                         size='sm'
                         aria-pressed={status === value}
-                        onClick={() => setStatus(value)}
+                        onClick={() => handleStatusChange(value)}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className='flex flex-wrap gap-1' aria-label='认证方式筛选'>
+                    {(
+                      [
+                        ['all', '全部认证'],
+                        ['password', '口令登录'],
+                        ['manual', '手工登录'],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <Button
+                        key={value}
+                        variant={authMethod === value ? 'secondary' : 'ghost'}
+                        size='sm'
+                        aria-pressed={authMethod === value}
+                        onClick={() => handleAuthMethodChange(value)}
                       >
                         {label}
                       </Button>
@@ -175,25 +213,37 @@ export function TargetsPage() {
                       aria-label='搜索目标系统'
                       placeholder='搜索名称、编码或入口'
                       value={search}
-                      onChange={(event) => setSearch(event.target.value)}
+                      onChange={(event) => handleSearchChange(event.target.value)}
                       className='pl-9'
                     />
                   </div>
                 </div>
-                {filtered.length === 0 ? (
+                {items.length === 0 ? (
                   <EmptyState
-                    title='没有匹配的目标系统'
-                    description='试试其他关键词，或清除筛选条件。'
+                    title={
+                      search || status !== 'all' || authMethod !== 'all'
+                        ? '没有匹配的目标系统'
+                        : '还没有目标系统'
+                    }
+                    description={
+                      search || status !== 'all' || authMethod !== 'all'
+                        ? '试试其他关键词，或清除筛选条件。'
+                        : '登记第一个业务系统，然后添加用于执行场景的目标账号。'
+                    }
                     action={
+                      search || status !== 'all' || authMethod !== 'all' ? (
                       <Button
                         variant='outline'
                         onClick={() => {
                           setSearch('')
                           setStatus('all')
+                          setAuthMethod('all')
+                          page.reset()
                         }}
                       >
                         清除筛选
                       </Button>
+                      ) : undefined
                     }
                   />
                 ) : (
@@ -210,7 +260,7 @@ export function TargetsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filtered.map((item) => (
+                      {items.map((item) => (
                         <TableRow
                           key={item.id}
                           className='cursor-pointer'
@@ -278,12 +328,26 @@ export function TargetsPage() {
                     </TableBody>
                   </Table>
                 )}
-                <p
-                  role='status'
-                  className='border-t border-border-divider px-4 py-3 text-label text-muted-foreground'
-                >
-                  显示 {filtered.length} / {items.length} 个系统
-                </p>
+                <div className='flex flex-wrap items-center justify-between border-t border-border-divider px-4 py-3 gap-3'>
+                  <p
+                    role='status'
+                    className='text-label text-muted-foreground'
+                  >
+                    本页 {items.length} 条
+                  </p>
+                  <CursorPagination
+                    pageIndex={page.pageIndex}
+                    pageSize={page.pageSize}
+                    hasPreviousPage={page.pageIndex > 0}
+                    hasNextPage={Boolean(query.data?.nextCursor)}
+                    updating={query.isFetching && query.isPlaceholderData}
+                    onPageSizeChange={page.setPageSize}
+                    onPreviousPage={page.goPrev}
+                    onNextPage={() => {
+                      if (query.data?.nextCursor) page.goNext(query.data.nextCursor)
+                    }}
+                  />
+                </div>
               </section>
               {selected ? (
                 <aside
@@ -369,7 +433,7 @@ export function TargetsPage() {
                         <ArrowUpRight />
                       </Link>
                     </Button>
-                    <Can permission='target:delete'>
+                    <Can allOf={['target:delete', 'run:delete']}>
                       <Button
                         variant='ghost'
                         size='sm'
@@ -396,35 +460,25 @@ export function TargetsPage() {
           })
         }}
       />
-      <ConfirmDialog
-        open={!!removing}
+      <ResourceDeleteDialog
+        open={Boolean(removing)}
         onOpenChange={(next) => {
           if (!next) setRemoving(null)
         }}
-        title='删除目标系统'
-        desc={
-          removing
-            ? `确定删除「${removing.name}」（${removing.code}）吗？其下仍有目标账号时无法删除。`
-            : ''
-        }
-        confirmText='删除'
-        destructive
-        isLoading={saving}
-        handleConfirm={() => {
-          if (!removing) return
-          setSaving(true)
-          void deleteTarget(removing.id)
-            .then(async () => {
-              toast.success('已删除')
-              setRemoving(null)
-              await queryClient.invalidateQueries({ queryKey: ['targets'] })
-            })
-            .catch((error) => {
-              toast.error(
-                error instanceof ApiRequestError ? error.message : '删除失败'
-              )
-            })
-            .finally(() => setSaving(false))
+        resourceId={removing?.id ?? ''}
+        resourceName={removing ? `${removing.name}（${removing.code}）` : ''}
+        resourceType='target'
+        previewFn={removing ? () => previewDeleteTarget(removing.id) : undefined}
+        deleteFn={(body) => (removing ? deleteTarget(removing.id, body) : Promise.resolve())}
+        onSuccess={async (result) => {
+          const id = removing?.id
+          setRemoving(null)
+          await queryClient.invalidateQueries({ queryKey: ['targets'] })
+          if (result && typeof result === 'object' && 'totalObjects' in result && result.totalObjects > 0 && id) {
+            await navigate({ to: '/targets/$targetId', params: { targetId: id } })
+            return
+          }
+          if (items.length <= 1 && page.pageIndex > 0) page.goPrev()
         }}
       />
     </>

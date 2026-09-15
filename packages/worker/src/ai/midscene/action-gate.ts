@@ -4,14 +4,30 @@
  */
 export class ActionGate {
   leaseLost = false
+  /** 通过检查、真正交给页面执行的动作数。丢租时据此判断页面上是否可能已有副作用。 */
+  actionsStarted = 0
 
-  constructor(public signal?: AbortSignal) {}
+  /**
+   * @param leaseCheck 进程内租约校验，抛错即视为丢租且不再恢复。续租失败只 revoke
+   *   SessionGuard、不会 abort 步骤信号，只看 signal 的 gate 在真实丢租后仍会放行动作。
+   */
+  constructor(
+    public signal?: AbortSignal,
+    private readonly leaseCheck?: () => void,
+  ) {}
 
   markLeaseLost(): void {
     this.leaseLost = true
   }
 
   assertAllowed(kind: 'action' | 'model'): void {
+    if (!this.leaseLost && this.leaseCheck) {
+      try {
+        this.leaseCheck()
+      } catch {
+        this.leaseLost = true
+      }
+    }
     if (this.leaseLost) {
       throw new Error(`CAIRN_LEASE_LOST:${kind}`)
     }
@@ -34,6 +50,7 @@ export function gateActions<A extends { name: string; call: (...args: never[]) =
     ...action,
     call: (async (...args: never[]) => {
       gate.assertAllowed('action')
+      gate.actionsStarted += 1
       return action.call(...args)
     }) as A['call'],
   }))

@@ -26,6 +26,7 @@ const session = {
   health: 'UNKNOWN',
   authState: 'UNKNOWN',
   ownerWorkerId: 'local-worker',
+  ownerWorkerInstanceId: null,
   generation: 1,
   reusePolicy: 'NEW_PAGE',
   profileKey: '11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222',
@@ -113,7 +114,15 @@ describe('BrowserSessions HTTP', () => {
     await app.close()
 
     await request(viewerApp.getHttpServer()).get('/browser-sessions').expect(200)
-    expect(service.list).toHaveBeenCalled()
+    expect(service.list).toHaveBeenCalledWith({})
+  })
+
+  it('列表可按 ownerWorkerId 筛选且信封不变', async () => {
+    await request(viewerApp.getHttpServer())
+      .get('/browser-sessions')
+      .query({ ownerWorkerId: 'local-worker' })
+      .expect(200)
+    expect(service.list).toHaveBeenCalledWith({ ownerWorkerId: 'local-worker' })
   })
 
   it('处置需要 session:dispose，viewer 只有 read 时被拒', async () => {

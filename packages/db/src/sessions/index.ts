@@ -21,6 +21,7 @@ export {
   releaseSessionLease,
   expireStaleLeases,
   listReapableSessions,
+  listRequestedCloseSessions,
   markSessionsClosing,
   markSessionsLostForWorkers,
   revokeWorkerLeases,

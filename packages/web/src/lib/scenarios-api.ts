@@ -28,24 +28,43 @@ import {
   type SaveScenarioDraftBody,
   type ScenarioCapabilities,
   type ScenarioDetailDto,
+  type ScenarioListQuery,
   type ScenarioListResponse,
   type TrialRunBody,
   type UpdateScenarioBody,
+  deletePreviewResponseSchema,
+  deleteResourceBodySchema,
+  deleteResourceResultSchema,
+  type DeletePreviewResponse,
+  type DeleteResourceBody,
+  type DeleteResourceResult,
 } from '@cairn/shared'
 import { z } from 'zod'
-import { apiFetch } from '@/lib/api-client'
+import { apiFetch, toQueryString } from '@/lib/api-client'
 
 const applyRecordingImportResponseSchema = z.object({
   receipt: recordingImportReceiptSchema,
   scenario: scenarioDetailSchema,
 })
 
-export function fetchScenarios(): Promise<ScenarioListResponse> {
-  return apiFetch('/api/scenarios', scenarioListResponseSchema)
+export function fetchScenarios(query?: ScenarioListQuery): Promise<ScenarioListResponse> {
+  return apiFetch(`/api/scenarios${toQueryString(query)}`, scenarioListResponseSchema)
 }
 
 export function fetchScenario(id: string): Promise<ScenarioDetailDto> {
   return apiFetch(`/api/scenarios/${id}`, scenarioDetailSchema)
+}
+
+export function previewDeleteScenario(id: string): Promise<DeletePreviewResponse> {
+  return apiFetch(`/api/scenarios/${id}/delete-preview`, deletePreviewResponseSchema)
+}
+
+export function deleteScenario(id: string, body?: DeleteResourceBody): Promise<DeleteResourceResult> {
+  return apiFetch(`/api/scenarios/${id}/delete`, deleteResourceResultSchema, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(deleteResourceBodySchema.parse(body)) : undefined,
+  })
 }
 
 export function fetchScenarioCapabilities(): Promise<ScenarioCapabilities> {

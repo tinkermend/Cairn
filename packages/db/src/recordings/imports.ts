@@ -62,13 +62,13 @@ export async function createRecordingBinding(
 ): Promise<RecordingBindingCreated> {
   const { recordingBindings, scenarioDrafts, scenarios, targets } = schemaFor(db)
   const [scenario] = await db.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1)
-  if (!scenario) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
+  if (!scenario || scenario.deletedAt) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   const [draft] = await db.select().from(scenarioDrafts).where(eq(scenarioDrafts.scenarioId, scenarioId)).limit(1)
   if (!draft) throw notFound('SCENARIO_NOT_FOUND', '场景草稿不存在')
   const document = parseScenarioDocument(draft.document)
   assertAnchor(document, input.insertAnchor)
   const [target] = await db.select().from(targets).where(eq(targets.id, scenario.targetId)).limit(1)
-  if (!target) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
+  if (!target || target.deletedAt) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
   if (target.status === 'disabled') throw conflict('TARGET_DISABLED', '目标系统已停用，不能开始录制')
 
   const id = newId()
@@ -265,7 +265,7 @@ export async function previewRecordingImport(
 ): Promise<RecordingImportPreview> {
   const { scenarioDrafts, scenarios } = schemaFor(db)
   const [scenario] = await db.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1)
-  if (!scenario) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
+  if (!scenario || scenario.deletedAt) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   const [draft] = await db.select().from(scenarioDrafts).where(eq(scenarioDrafts.scenarioId, scenarioId)).limit(1)
   if (!draft) throw notFound('SCENARIO_NOT_FOUND', '场景草稿不存在')
   const document = parseScenarioDocument(draft.document)
@@ -309,7 +309,7 @@ export async function applyRecordingImport(
         tx,
         tx.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1),
       )
-      if (!scenario) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
+      if (!scenario || scenario.deletedAt) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
       const [draft] = await locked(
         tx,
         tx.select().from(scenarioDrafts).where(eq(scenarioDrafts.scenarioId, scenarioId)).limit(1),

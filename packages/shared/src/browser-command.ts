@@ -80,6 +80,9 @@ export const browserCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('click'),
     target: targetDescriptorSchema,
     pageAfter: pageAfterSchema.optional(),
+    button: z.enum(['left', 'right', 'middle']).optional(),
+    clickCount: z.union([z.literal(1), z.literal(2)]).optional(),
+    modifiers: z.array(z.enum(['Alt', 'Control', 'Meta', 'Shift'])).optional(),
   }),
   z.strictObject({
     type: z.literal('fill'),
@@ -96,6 +99,27 @@ export const browserCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('assert'),
     target: targetDescriptorSchema.optional(),
     expect: assertExpectSchema,
+  }),
+  z.strictObject({
+    type: z.literal('select'),
+    target: targetDescriptorSchema,
+    by: z.enum(['label', 'value', 'index']),
+    value: z.string().optional(),
+    index: z.number().int().min(0).optional(),
+  }),
+  z.strictObject({
+    type: z.literal('keyboard'),
+    target: targetDescriptorSchema.optional(),
+    keys: z.array(z.string().min(1).max(64)).min(1).max(4),
+  }),
+  z.strictObject({
+    type: z.literal('wait'),
+    kind: z.enum(['time', 'visible', 'hidden', 'url', 'text']),
+    target: targetDescriptorSchema.optional(),
+    urlPattern: z.string().trim().min(1).max(2048).optional(),
+    text: z.string().min(1).max(1024).optional(),
+    durationMs: z.number().int().positive().max(60_000).optional(),
+    timeoutMs: z.number().int().positive().optional(),
   }),
 ])
 export type BrowserCommand = z.infer<typeof browserCommandSchema>

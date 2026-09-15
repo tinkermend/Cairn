@@ -10,6 +10,7 @@ import {
   listScenarioRecordingImports,
   listScenarioVersions,
   listScenarios,
+  previewDeleteScenario,
   previewRecordingImport,
   publishScenarioDraft,
   saveScenarioDraft,
@@ -25,6 +26,8 @@ import {
   type PreviewRecordingImportBody,
   type PublishScenarioBody,
   type SaveScenarioDraftBody,
+  type ScenarioListQuery,
+  type DeleteResourceBody,
   type TrialRunBody,
   type UpdateScenarioBody,
 } from '@cairn/shared'
@@ -65,8 +68,12 @@ export class ScenariosService {
     )
   }
 
-  list() {
-    return listScenarios(this.db)
+  list(query?: ScenarioListQuery) {
+    return listScenarios(this.db, query).catch(rethrowDomain)
+  }
+
+  previewDelete(id: string) {
+    return previewDeleteScenario(this.db, id).catch(rethrowDomain)
   }
 
   async capabilities() {
@@ -154,6 +161,7 @@ export class ScenariosService {
         sessionPolicy: body.sessionPolicy,
         evidencePolicy: body.evidencePolicy,
         idempotencyKey: body.idempotencyKey,
+        debugMode: body.debugMode,
         actor: { id: actor.id },
         executableTypes: types,
         hangWaitMs: config.CAIRN_BROWSER_AI_HANG_WAIT_MS,
@@ -163,9 +171,9 @@ export class ScenariosService {
     }
   }
 
-  async remove(id: string, actor: RequestAccount) {
+  async remove(id: string, actor: RequestAccount, body?: DeleteResourceBody) {
     try {
-      await deleteScenario(this.db, id, { id: actor.id })
+      return await deleteScenario(this.db, id, { id: actor.id }, body)
     } catch (error) {
       rethrowDomain(error)
     }

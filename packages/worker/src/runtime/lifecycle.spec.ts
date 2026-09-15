@@ -19,7 +19,6 @@ vi.mock('@cairn/db', async (importOriginal) => {
     settleRevokedRuns: vi.fn(async () => undefined),
     markWorkerDraining: vi.fn(async () => undefined),
     markWorkerStopped: vi.fn(async () => undefined),
-    listActiveLeasesForWorker: vi.fn(async () => []),
     claimRun: vi.fn(async () => null),
     heartbeatWorker: vi.fn(async () => 'ok' as const),
     renewRunLease: vi.fn(async () => new Date()),
@@ -27,6 +26,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
     sweepDriftedRuns: vi.fn(async () => 0),
     markLostWorkers: vi.fn(async () => []),
     markSessionsLostForWorkers: vi.fn(async () => 0),
+    listActiveLeasesForWorker: vi.fn(async () => []),
     yieldUnfinishedRun: vi.fn(async () => undefined),
     yieldClaimedRun: vi.fn(async () => 'yielded' as const),
   }
@@ -45,6 +45,7 @@ function stubSessions() {
     shutdown: vi.fn(async () => {}),
     reap: vi.fn(async () => ({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 })),
     stopAllLocal: vi.fn(async () => []),
+    liveHandleCount: vi.fn(() => 0),
   }
 }
 
@@ -148,6 +149,17 @@ describe('LifecycleService', () => {
     expect(sessions.startHeartbeat).toHaveBeenCalledOnce()
   })
 
+  it('启动时先绑定内部入口再登记', async () => {
+    const { registerWorker } = await import('@cairn/db')
+    vi.mocked(registerWorker).mockClear()
+    const svc = await buildLifecycle()
+    const sessions = app!.get(BrowserSessionManager)
+    expect(sessions.setWorkerInstance).toHaveBeenCalledWith(instanceIdOf(svc))
+    expect(vi.mocked(registerWorker).mock.invocationCallOrder[0]!).toBeGreaterThan(
+      vi.mocked(sessions.setWorkerInstance).mock.invocationCallOrder[0]!,
+    )
+  })
+
   it('uptime 非负且随时间增长', async () => {
     app = await buildApp(stubDb())
     const svc = app.get(LifecycleService)
@@ -167,6 +179,9 @@ describe('LifecycleService', () => {
     svc.exitProcess = exit
     const abort = injectInFlight(svc)
     const instanceBefore = instanceIdOf(svc)
+    const sessions = app!.get(BrowserSessionManager)
+    vi.mocked(sessions.setWorkerInstance).mockClear()
+    vi.mocked(sessions.reconcileOwn).mockClear()
 
     await beat(svc)
 
@@ -176,19 +191,26 @@ describe('LifecycleService', () => {
     expect(instanceIdOf(svc)).not.toBe(instanceBefore)
     expect(svc.isRunning()).toBe(true)
     expect(exit).not.toHaveBeenCalled()
-    const sessions = app!.get(BrowserSessionManager)
     expect(sessions.stopAllLocal).toHaveBeenCalled()
+    expect(sessions.setWorkerInstance).toHaveBeenCalledWith(instanceIdOf(svc))
+    expect(sessions.reconcileOwn).toHaveBeenCalledOnce()
     expect(vi.mocked(registerWorker).mock.invocationCallOrder[0]!).toBeGreaterThan(
       vi.mocked(sessions.stopAllLocal).mock.invocationCallOrder[0]!,
     )
+    expect(vi.mocked(registerWorker).mock.invocationCallOrder[0]!).toBeGreaterThan(
+      vi.mocked(sessions.setWorkerInstance).mock.invocationCallOrder[0]!,
+    )
   })
 
-  it('登记时写入 maxSessions；pump 把冷却中的 runId 传给 claimRun', async () => {
+  it('登记时写入 maxSessions 与广告入口，不从监听地址拼接', async () => {
     const { claimRun, registerWorker } = await import('@cairn/db')
     const svc = await buildLifecycle()
     expect(registerWorker).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ maxSessions: config.CAIRN_BROWSER_MAX_SESSIONS }),
+      expect.objectContaining({
+        maxSessions: config.CAIRN_BROWSER_MAX_SESSIONS,
+        internalBaseUrl: null,
+      }),
     )
     await (svc as unknown as { claimTask?: Promise<void> }).claimTask
     vi.mocked(claimRun).mockClear()
@@ -292,6 +314,25 @@ describe('LifecycleService', () => {
     expect(explained).toContain('CAIRN_WORKER_ID=local-worker')
     expect(explained).toContain('每实例一个 ID')
     expect(explained).not.toMatch(/password|CairnDB/i)
+  })
+
+  it('停机按本实例收尾，不按 Worker ID 重查租约', async () => {
+    const { markWorkerDraining, markWorkerStopped, listActiveLeasesForWorker } = await import('@cairn/db')
+    const svc = await buildLifecycle()
+    const instanceId = instanceIdOf(svc)
+    injectInFlight(svc)
+
+    await svc.onApplicationShutdown('SIGTERM')
+
+    expect(markWorkerDraining).toHaveBeenCalledWith(expect.anything(), config.CAIRN_WORKER_ID, instanceId)
+    expect(markWorkerStopped).toHaveBeenCalledWith(expect.anything(), config.CAIRN_WORKER_ID, instanceId)
+    expect(listActiveLeasesForWorker).not.toHaveBeenCalled()
+  })
+
+  it('生产路径不向控制面发 HTTP', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('./lifecycle.service.ts', import.meta.url), 'utf8')
+    expect(src).not.toMatch(/@cairn\/api|\/api\/workers|fetch\(/)
   })
 
   async function buildLifecycle(): Promise<LifecycleService> {

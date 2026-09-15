@@ -13,5 +13,6 @@ import { TargetsService } from './targets.service'
     },
     TargetsService,
   ],
+  exports: [TargetsService],
 })
 export class TargetsModule {}

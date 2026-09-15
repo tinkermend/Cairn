@@ -32,10 +32,12 @@ import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_auth
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
 import { Route as AuthenticatedTargetsIndexRouteImport } from './routes/_authenticated/targets/index'
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
+import { Route as AuthenticatedWorkersIndexRouteImport } from './routes/_authenticated/workers/index'
 import { Route as AuthenticatedRecordingsRecordingIdIndexRouteImport } from './routes/_authenticated/recordings/$recordingId/index'
 import { Route as AuthenticatedRunsRunIdIndexRouteImport } from './routes/_authenticated/runs/$runId/index'
 import { Route as AuthenticatedScenariosScenarioIdIndexRouteImport } from './routes/_authenticated/scenarios/$scenarioId/index'
 import { Route as AuthenticatedTargetsTargetIdIndexRouteImport } from './routes/_authenticated/targets/$targetId/index'
+import { Route as AuthenticatedWorkersWorkerIdIndexRouteImport } from './routes/_authenticated/workers/$workerId/index'
 
 const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
   id: '/_authenticated',
@@ -162,6 +164,12 @@ const AuthenticatedUsersIndexRoute = AuthenticatedUsersIndexRouteImport.update({
   path: '/users/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedWorkersIndexRoute =
+  AuthenticatedWorkersIndexRouteImport.update({
+    id: '/workers/',
+    path: '/workers/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedRecordingsRecordingIdIndexRoute =
   AuthenticatedRecordingsRecordingIdIndexRouteImport.update({
     id: '/recordings/$recordingId/',
@@ -184,6 +192,12 @@ const AuthenticatedTargetsTargetIdIndexRoute =
   AuthenticatedTargetsTargetIdIndexRouteImport.update({
     id: '/targets/$targetId/',
     path: '/targets/$targetId/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedWorkersWorkerIdIndexRoute =
+  AuthenticatedWorkersWorkerIdIndexRouteImport.update({
+    id: '/workers/$workerId/',
+    path: '/workers/$workerId/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 
@@ -210,10 +224,12 @@ export interface FileRoutesByFullPath {
   '/settings/': typeof AuthenticatedSettingsIndexRoute
   '/targets/': typeof AuthenticatedTargetsIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
+  '/workers/': typeof AuthenticatedWorkersIndexRoute
   '/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
   '/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
+  '/workers/$workerId/': typeof AuthenticatedWorkersWorkerIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof authSignInRoute
@@ -237,10 +253,12 @@ export interface FileRoutesByTo {
   '/settings': typeof AuthenticatedSettingsIndexRoute
   '/targets': typeof AuthenticatedTargetsIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
+  '/workers': typeof AuthenticatedWorkersIndexRoute
   '/recordings/$recordingId': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/runs/$runId': typeof AuthenticatedRunsRunIdIndexRoute
   '/scenarios/$scenarioId': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/targets/$targetId': typeof AuthenticatedTargetsTargetIdIndexRoute
+  '/workers/$workerId': typeof AuthenticatedWorkersWorkerIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -267,10 +285,12 @@ export interface FileRoutesById {
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
   '/_authenticated/targets/': typeof AuthenticatedTargetsIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
+  '/_authenticated/workers/': typeof AuthenticatedWorkersIndexRoute
   '/_authenticated/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/_authenticated/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
   '/_authenticated/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/_authenticated/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
+  '/_authenticated/workers/$workerId/': typeof AuthenticatedWorkersWorkerIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -297,10 +317,12 @@ export interface FileRouteTypes {
     | '/settings/'
     | '/targets/'
     | '/users/'
+    | '/workers/'
     | '/recordings/$recordingId/'
     | '/runs/$runId/'
     | '/scenarios/$scenarioId/'
     | '/targets/$targetId/'
+    | '/workers/$workerId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/sign-in'
@@ -324,10 +346,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/targets'
     | '/users'
+    | '/workers'
     | '/recordings/$recordingId'
     | '/runs/$runId'
     | '/scenarios/$scenarioId'
     | '/targets/$targetId'
+    | '/workers/$workerId'
   id:
     | '__root__'
     | '/_authenticated'
@@ -353,10 +377,12 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/'
     | '/_authenticated/targets/'
     | '/_authenticated/users/'
+    | '/_authenticated/workers/'
     | '/_authenticated/recordings/$recordingId/'
     | '/_authenticated/runs/$runId/'
     | '/_authenticated/scenarios/$scenarioId/'
     | '/_authenticated/targets/$targetId/'
+    | '/_authenticated/workers/$workerId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -532,6 +558,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedUsersIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/workers/': {
+      id: '/_authenticated/workers/'
+      path: '/workers'
+      fullPath: '/workers/'
+      preLoaderRoute: typeof AuthenticatedWorkersIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/recordings/$recordingId/': {
       id: '/_authenticated/recordings/$recordingId/'
       path: '/recordings/$recordingId'
@@ -558,6 +591,13 @@ declare module '@tanstack/react-router' {
       path: '/targets/$targetId'
       fullPath: '/targets/$targetId/'
       preLoaderRoute: typeof AuthenticatedTargetsTargetIdIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/workers/$workerId/': {
+      id: '/_authenticated/workers/$workerId/'
+      path: '/workers/$workerId'
+      fullPath: '/workers/$workerId/'
+      preLoaderRoute: typeof AuthenticatedWorkersWorkerIdIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
   }
@@ -595,10 +635,12 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedServicesIndexRoute: typeof AuthenticatedServicesIndexRoute
   AuthenticatedTargetsIndexRoute: typeof AuthenticatedTargetsIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
+  AuthenticatedWorkersIndexRoute: typeof AuthenticatedWorkersIndexRoute
   AuthenticatedRecordingsRecordingIdIndexRoute: typeof AuthenticatedRecordingsRecordingIdIndexRoute
   AuthenticatedRunsRunIdIndexRoute: typeof AuthenticatedRunsRunIdIndexRoute
   AuthenticatedScenariosScenarioIdIndexRoute: typeof AuthenticatedScenariosScenarioIdIndexRoute
   AuthenticatedTargetsTargetIdIndexRoute: typeof AuthenticatedTargetsTargetIdIndexRoute
+  AuthenticatedWorkersWorkerIdIndexRoute: typeof AuthenticatedWorkersWorkerIdIndexRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -615,6 +657,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedServicesIndexRoute: AuthenticatedServicesIndexRoute,
   AuthenticatedTargetsIndexRoute: AuthenticatedTargetsIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,
+  AuthenticatedWorkersIndexRoute: AuthenticatedWorkersIndexRoute,
   AuthenticatedRecordingsRecordingIdIndexRoute:
     AuthenticatedRecordingsRecordingIdIndexRoute,
   AuthenticatedRunsRunIdIndexRoute: AuthenticatedRunsRunIdIndexRoute,
@@ -622,6 +665,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
     AuthenticatedScenariosScenarioIdIndexRoute,
   AuthenticatedTargetsTargetIdIndexRoute:
     AuthenticatedTargetsTargetIdIndexRoute,
+  AuthenticatedWorkersWorkerIdIndexRoute:
+    AuthenticatedWorkersWorkerIdIndexRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =

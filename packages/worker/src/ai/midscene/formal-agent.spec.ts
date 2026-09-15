@@ -1,7 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { midsceneModelConfig, validateBrowserAiModelFamily } from './formal-agent.js'
+import { ActionGate } from './action-gate.js'
+import { midsceneModelConfig, validateBrowserAiModelFamily, wrapActionSpace } from './formal-agent.js'
 
 describe('正式适配层与 SDK 的接缝', () => {
+  it('只读步骤拒绝整条动作通道，SDK 新增的未知动作名也不例外', async () => {
+    const gate = new ActionGate()
+    let called = 0
+    const actions = [
+      { name: 'Tap', call: async () => void (called += 1) },
+      { name: 'FutureAction', call: async () => void (called += 1) },
+    ]
+    for (const action of wrapActionSpace(actions, gate, true)) {
+      await expect(action.call()).rejects.toThrow(`CAIRN_READONLY:${action.name}`)
+    }
+    expect(called).toBe(0)
+
+    const [tap] = wrapActionSpace(actions, gate, false)
+    await tap!.call()
+    expect(called).toBe(1)
+    gate.markLeaseLost()
+    await expect(tap!.call()).rejects.toThrow('CAIRN_LEASE_LOST:action')
+    expect(called).toBe(1)
+  })
+
   it('模型族按 SDK 枚举校验，拼写错误在启动期就失败', async () => {
     await expect(validateBrowserAiModelFamily('doubao-seed')).resolves.toBeUndefined()
     await expect(validateBrowserAiModelFamily('doubao-seed-2-1-turbo')).rejects.toThrow(

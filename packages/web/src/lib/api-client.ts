@@ -17,6 +17,18 @@ export class ApiRequestError extends Error {
   }
 }
 
+export function toQueryString(params?: Record<string, unknown>): string {
+  if (!params) return ''
+  const searchParams = new URLSearchParams()
+  for (const [key, val] of Object.entries(params)) {
+    if (val !== undefined && val !== null && val !== '') {
+      searchParams.set(key, String(val))
+    }
+  }
+  const qs = searchParams.toString()
+  return qs ? `?${qs}` : ''
+}
+
 /**
  * 前端侧生成关联 ID。
  *

@@ -121,6 +121,36 @@ export class PlatformConfigService {
     }
   }
 
+  async resolvePlatformAiAccess(): Promise<{
+    revision: number
+    baseUrl: string
+    model: string
+    apiKey: string
+    requestTimeoutMs: number
+    maxCallsPerTurn: number
+    maxOutputTokens: number
+  } | null> {
+    const current = await this.get()
+    const ai = current.document.platformAi
+    if (!ai.enabled || !ai.baseUrl || !ai.model || !ai.secretRef) return null
+    try {
+      const row = await this.loadBoundSecret(ai.secretRef, ai.baseUrl)
+      const apiKey = this.secrets.decrypt(row.id, row.ciphertext)
+      if (!apiKey.trim()) return null
+      return {
+        revision: current.revision,
+        baseUrl: ai.baseUrl,
+        model: ai.model,
+        apiKey,
+        requestTimeoutMs: ai.requestTimeoutMs,
+        maxCallsPerTurn: ai.maxCallsPerTurn,
+        maxOutputTokens: ai.maxOutputTokens,
+      }
+    } catch {
+      return null
+    }
+  }
+
   async testConnection(body: PlatformConfigTestConnectionBody) {
     let apiKey: string | undefined
     if (body.secretRef) {
@@ -155,16 +185,24 @@ export class PlatformConfigService {
   }
 
   private async assertSecretBinding(document: PlatformConfigDocument) {
-    const { secretRef, baseUrl } = document.browserAi
-    if (!document.browserAi.enabled && !secretRef) return
-    if (!secretRef || !baseUrl) {
+    await this.assertGroupSecret(document.browserAi)
+    await this.assertGroupSecret(document.platformAi)
+  }
+
+  private async assertGroupSecret(group: {
+    enabled: boolean
+    secretRef?: SecretRef
+    baseUrl?: string
+  }) {
+    if (!group.enabled && !group.secretRef) return
+    if (!group.secretRef || !group.baseUrl) {
       throw new DomainError(
         'bad_request',
         'AI_CONFIG_INVALID',
         '模型凭据必须同时配置服务地址及有效 Secret 引用',
       )
     }
-    await this.loadBoundSecret(secretRef, baseUrl)
+    await this.loadBoundSecret(group.secretRef, group.baseUrl)
   }
 
   private async loadBoundSecret(ref: SecretRef, baseUrl: string) {

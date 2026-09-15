@@ -1,7 +1,18 @@
 import type { Target, TargetAccount } from '../records.js'
 import { schemaFor, locked } from '../native.js'
-import { asc, eq, sql } from 'drizzle-orm'
-import { consoleAuditEvents, secrets, targetAccounts, targets } from '../schema/index.js'
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm'
+import {
+  consoleAuditEvents,
+  recordingDrafts,
+  runLeases,
+  runs,
+  scenarios,
+  secrets,
+  sessionLeases,
+  storedObjects,
+  targetAccounts,
+  targets,
+} from '../schema/index.js'
 import { newId } from '../id.js'
 import type { Db } from '../client.js'
 import { connection, type Database } from '../database.js'
@@ -12,20 +23,47 @@ import {
   constraintName,
   mapRestriction,
 } from '../runs/errors.js'
-import { countRunsForAccount } from '../runs/runs.js'
 import {
+  activeRunBlockers,
+  assertExpectedCounts,
+  assertResourceIdle,
+  closeOpenBindings,
+  deletedOccupancyMessage,
+  pendingWriteBlockers,
+  exclusiveSecretIds,
+  requestSessionClose,
+  revokeAccountGrants,
+  revokeExternalEvidence,
+  revokeTargetGrants,
+  snapshotDeletedBy,
+  toDeleteResult,
+} from '../lifecycle.js'
+import { cursorFilter, paginateResults } from '../cursor.js'
+import {
+  ACTIVE_RUN_STATUSES,
   LOCAL_SECRET_PROVIDER,
+  cleanupStatusResponseSchema,
   compactLoginFields,
+  deletePreviewResponseSchema,
+  targetAccountListQuerySchema,
   targetAccountListResponseSchema,
   targetAccountSchema,
+  targetListQuerySchema,
   targetListResponseSchema,
   targetSchema,
   type AuditAction,
+  type CleanupStatus,
+  type CleanupStatusResponse,
   type CreateTargetAccountBody,
   type CreateTargetBody,
+  type DeletePreviewResponse,
+  type DeleteResourceBody,
+  type DeleteResourceResult,
   type TargetAccountDto,
+  type TargetAccountListQuery,
   type TargetAccountListResponse,
   type TargetDto,
+  type TargetListQuery,
   type TargetListResponse,
   type TargetLoginFields,
   type UpdateTargetAccountBody,
@@ -37,16 +75,29 @@ function iso(value: Date): string {
   return value.toISOString()
 }
 
-function rethrowUnique(error: unknown, kind: 'target' | 'account'): never {
+async function rethrowUnique(
+  db: Db,
+  error: unknown,
+  kind: 'target' | 'account',
+  lookup: { code?: string; targetId?: string; username?: string },
+): Promise<never> {
   if (isUniqueViolation(error)) {
     const name = constraintName(error)
     const accountConflict = name?.includes('target_accounts') || kind === 'account'
     if (!accountConflict || name?.includes('targets_code')) {
-      throw failure('conflict', { code: 'TARGET_CODE_CONFLICT', message: '目标系统编码已存在' })
+      const occupied = await deletedOccupancyMessage(db, 'target_code', { code: lookup.code })
+      throw failure('conflict', {
+        code: 'TARGET_CODE_CONFLICT',
+        message: occupied ?? '目标系统编码已存在',
+      })
     }
+    const occupied = await deletedOccupancyMessage(db, 'account_username', {
+      targetId: lookup.targetId,
+      username: lookup.username,
+    })
     throw failure('conflict', {
       code: 'TARGET_ACCOUNT_CONFLICT',
-      message: '该目标系统下登录名已存在',
+      message: occupied ?? '该目标系统下登录名已存在',
     })
   }
   throw error
@@ -62,15 +113,34 @@ export class TargetsStore {
     return connection(this.database)
   }
 
-  async listTargets(): Promise<TargetListResponse> {
+  async listTargets(query: TargetListQuery = {}): Promise<TargetListResponse> {
+    const parsed = targetListQuerySchema.parse(query)
     const { targets } = schemaFor(this.db)
+    const limit = parsed.limit
+    const filters: (SQL | undefined)[] = [
+      isNull(targets.deletedAt),
+      parsed.status ? eq(targets.status, parsed.status) : undefined,
+      parsed.authMethod ? eq(targets.authMethod, parsed.authMethod) : undefined,
+      parsed.search
+        ? or(
+            sql`lower(${targets.name}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+            sql`lower(${targets.code}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+          )
+        : undefined,
+      cursorFilter(targets.createdAt, targets.id, parsed.cursor),
+    ]
     const rows = await this.db
       .select()
       .from(targets)
-      .orderBy(asc(targets.createdAt), asc(targets.id))
+      .where(and(...filters.filter((f): f is SQL => f !== undefined)))
+      .orderBy(desc(targets.createdAt), desc(targets.id))
+      .limit(limit + 1)
     const counts = await this.accountCounts()
+    const paginated = paginateResults(rows, limit)
     return targetListResponseSchema.parse({
-      items: rows.map((row) => this.toTarget(row, counts.get(row.id) ?? 0)),
+      items: paginated.items.map((row) => this.toTarget(row, counts.get(row.id) ?? 0)),
+      nextCursor: paginated.nextCursor,
+      hasMore: paginated.hasMore,
     })
   }
 
@@ -112,7 +182,7 @@ export class TargetsStore {
         }
       })
     } catch (error) {
-      rethrowUnique(error, 'target')
+      await rethrowUnique(this.db, error, 'target', { code: body.code })
     }
     return this.getTarget(id)
   }
@@ -158,65 +228,403 @@ export class TargetsStore {
         )
       })
     } catch (error) {
-      rethrowUnique(error, 'target')
+      await rethrowUnique(this.db, error, 'target', { code: current.code })
     }
     return this.getTarget(id)
   }
 
-  async deleteTarget(id: string, actor: RequestAccount): Promise<void> {
-    const { targets, targetAccounts, scenarios, recordingDrafts } = schemaFor(this.db)
+  async previewDeleteTarget(id: string): Promise<DeletePreviewResponse> {
+    const {
+      targets,
+      targetAccounts,
+      scenarios,
+      recordingDrafts,
+      runs,
+      storedObjects,
+      runLeases,
+      sessionLeases,
+      browserSessions,
+    } = schemaFor(this.db)
+    const [target] = await this.db
+      .select()
+      .from(targets)
+      .where(and(eq(targets.id, id), isNull(targets.deletedAt)))
+      .limit(1)
+    if (!target) {
+      throw failure('not_found', { code: 'TARGET_NOT_FOUND', message: '目标系统不存在' })
+    }
+
+    const targetRunRows = await this.db
+      .select({ id: runs.id, status: runs.status })
+      .from(runs)
+      .where(and(eq(runs.targetId, id), isNull(runs.deletedAt)))
+
+    const activeRuns = targetRunRows.filter((r) => ACTIVE_RUN_STATUSES.includes(r.status as any))
+    const runIds = targetRunRows.map((r) => r.id)
+    const activeRunLeases =
+      runIds.length > 0
+        ? await this.db
+            .select({ id: runLeases.id })
+            .from(runLeases)
+            .where(and(inArray(runLeases.runId, runIds), eq(runLeases.status, 'ACTIVE')))
+        : []
+
+    const now = new Date()
+    const sessions = await this.db
+      .select({
+        id: browserSessions.id,
+        authHoldExpiresAt: browserSessions.authHoldExpiresAt,
+        authControlExpiresAt: browserSessions.authControlExpiresAt,
+      })
+      .from(browserSessions)
+      .where(eq(browserSessions.targetId, id))
+    const sessionIds = sessions.map((row) => row.id)
+    const activeSessionLeases =
+      sessionIds.length > 0
+        ? await this.db
+            .select({ id: sessionLeases.id })
+            .from(sessionLeases)
+            .where(
+              and(inArray(sessionLeases.sessionId, sessionIds), eq(sessionLeases.status, 'ACTIVE')),
+            )
+        : []
+    const authHeld = sessions.some(
+      (row) =>
+        (row.authHoldExpiresAt && row.authHoldExpiresAt > now) ||
+        (row.authControlExpiresAt && row.authControlExpiresAt > now),
+    )
+
+    const activeBlockers: { id: string; code: string; message: string }[] = [
+      ...activeRunBlockers(activeRuns),
+    ]
+    if (activeRunLeases.length > 0 || activeSessionLeases.length > 0 || authHeld) {
+      activeBlockers.push({
+        id: 'resource_busy',
+        code: 'RESOURCE_BUSY',
+        message: '目标系统仍有活跃租约或认证占用，无法删除',
+      })
+    }
+    activeBlockers.push(...(await pendingWriteBlockers(this.db, runIds)))
+
+    const accounts = await this.db
+      .select({ id: targetAccounts.id })
+      .from(targetAccounts)
+      .where(and(eq(targetAccounts.targetId, id), isNull(targetAccounts.deletedAt)))
+
+    const scenarioRows = await this.db
+      .select({ id: scenarios.id })
+      .from(scenarios)
+      .where(and(eq(scenarios.targetId, id), isNull(scenarios.deletedAt)))
+
+    const recordingRows = await this.db
+      .select({ id: recordingDrafts.id })
+      .from(recordingDrafts)
+      .where(and(eq(recordingDrafts.targetId, id), isNull(recordingDrafts.deletedAt)))
+
+    const objects =
+      runIds.length > 0
+        ? await this.db
+            .select({ id: storedObjects.id, byteSize: storedObjects.byteSize })
+            .from(storedObjects)
+            .where(and(inArray(storedObjects.runId, runIds), isNull(storedObjects.purgedAt)))
+        : []
+    const totalBytes = objects.reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+
+    return deletePreviewResponseSchema.parse({
+      previewToken: newId(),
+      counts: {
+        targetAccounts: accounts.length,
+        scenarios: scenarioRows.length,
+        recordings: recordingRows.length,
+        runs: targetRunRows.length,
+        storedObjects: objects.length,
+        totalBytes,
+      },
+      blockers: activeBlockers,
+    })
+  }
+
+  async deleteTarget(
+    id: string,
+    actor: RequestAccount,
+    body?: DeleteResourceBody,
+  ): Promise<CleanupStatusResponse> {
+    const { targets, targetAccounts, scenarios, recordingDrafts, runs, storedObjects } = schemaFor(
+      this.db,
+    )
+
     try {
       await this.db.transaction(async (tx) => {
         const [current] = await locked(tx, tx.select().from(targets).where(eq(targets.id, id)))
-        if (!current)
+        if (!current) {
           throw failure('not_found', { code: 'TARGET_NOT_FOUND', message: '目标系统不存在' })
-        // Hold the parent until deletion commits: child inserts cannot race these checks.
-        // SQLite has no constraint names, so derive the business error from the references.
-        for (const { table, code, message } of [
-          {
-            table: targetAccounts,
-            code: 'TARGET_HAS_ACCOUNTS',
-            message: '请先删除该目标系统下的目标账号',
-          },
-          { table: scenarios, code: 'TARGET_HAS_SCENARIOS', message: '请先删除该目标系统下的场景' },
-          {
-            table: recordingDrafts,
-            code: 'TARGET_HAS_RECORDINGS',
-            message: '请先处理该目标系统下的录制草稿',
-          },
-        ]) {
-          const [reference] = await tx
-            .select({ id: table.id })
-            .from(table)
-            .where(eq(table.targetId, id))
-            .limit(1)
-          if (reference) throw failure('conflict', { code, message })
         }
-        await tx.delete(targets).where(eq(targets.id, id))
+        if (current.deletedAt) return
+
+        const targetRunRows = await tx
+          .select({ id: runs.id, status: runs.status })
+          .from(runs)
+          .where(and(eq(runs.targetId, id), isNull(runs.deletedAt)))
+
+        const activeRuns = targetRunRows.filter((r) =>
+          ACTIVE_RUN_STATUSES.includes(r.status as any),
+        )
+        if (activeRuns.length > 0) {
+          throw failure('conflict', {
+            code: 'RUN_NOT_TERMINAL',
+            message: `目标系统存在 ${activeRuns.length} 个进行中的运行任务，无法删除`,
+          })
+        }
+
+        const runIds = targetRunRows.map((r) => r.id)
+        await assertResourceIdle(tx as unknown as Db, {
+          runIds,
+          targetId: id,
+          checkPendingWrites: true,
+        })
+
+        const accounts = await tx
+          .select({ id: targetAccounts.id })
+          .from(targetAccounts)
+          .where(and(eq(targetAccounts.targetId, id), isNull(targetAccounts.deletedAt)))
+
+        const scenarioRows = await tx
+          .select({ id: scenarios.id })
+          .from(scenarios)
+          .where(and(eq(scenarios.targetId, id), isNull(scenarios.deletedAt)))
+
+        const recordingRows = await tx
+          .select({ id: recordingDrafts.id })
+          .from(recordingDrafts)
+          .where(and(eq(recordingDrafts.targetId, id), isNull(recordingDrafts.deletedAt)))
+
+        assertExpectedCounts(
+          {
+            targetAccounts: accounts.length,
+            scenarios: scenarioRows.length,
+            recordings: recordingRows.length,
+            runs: targetRunRows.length,
+          },
+          body?.expectedCounts,
+        )
+
+        const now = new Date()
+        const deletedBy = await snapshotDeletedBy(tx as unknown as Db, actor)
+
+        await tx
+          .update(targets)
+          .set({ deletedAt: now, deletedBy, updatedAt: now })
+          .where(eq(targets.id, id))
+
+        if (accounts.length > 0) {
+          const accountsWithSecrets = await tx
+            .select({ id: targetAccounts.id, secretId: targetAccounts.secretId })
+            .from(targetAccounts)
+            .where(and(eq(targetAccounts.targetId, id), isNotNull(targetAccounts.secretId)))
+          const secretIds = accountsWithSecrets
+            .map((a) => a.secretId)
+            .filter((s): s is string => s !== null)
+          const exclusive = await exclusiveSecretIds(
+            tx as unknown as Db,
+            secretIds,
+            accounts.map((row) => row.id),
+          )
+
+          await tx
+            .update(targetAccounts)
+            .set({ deletedAt: now, deletedBy, secretId: null, secretProvider: null, updatedAt: now })
+            .where(and(eq(targetAccounts.targetId, id), isNull(targetAccounts.deletedAt)))
+
+          if (exclusive.length > 0) {
+            await tx.delete(secrets).where(inArray(secrets.id, exclusive))
+          }
+        }
+
+        await closeOpenBindings(tx as unknown as Db, { targetId: id }, now)
+        await revokeTargetGrants(tx as unknown as Db, id)
+        await requestSessionClose(tx as unknown as Db, { targetId: id }, now)
+
+        if (scenarioRows.length > 0) {
+          await tx
+            .update(scenarios)
+            .set({ deletedAt: now, deletedBy, updatedAt: now })
+            .where(and(eq(scenarios.targetId, id), isNull(scenarios.deletedAt)))
+        }
+
+        if (recordingRows.length > 0) {
+          await tx
+            .update(recordingDrafts)
+            .set({ deletedAt: now, deletedBy, updatedAt: now })
+            .where(and(eq(recordingDrafts.targetId, id), isNull(recordingDrafts.deletedAt)))
+        }
+
+        if (targetRunRows.length > 0) {
+          await tx
+            .update(runs)
+            .set({ deletedAt: now, deletedBy, updatedAt: now })
+            .where(and(eq(runs.targetId, id), isNull(runs.deletedAt)))
+        }
+
+        if (runIds.length > 0) {
+          await revokeExternalEvidence(tx as unknown as Db, runIds)
+          await tx
+            .update(storedObjects)
+            .set({ deleteRequestedAt: now })
+            .where(
+              and(
+                inArray(storedObjects.runId, runIds),
+                isNull(storedObjects.deleteRequestedAt),
+                isNull(storedObjects.purgedAt),
+              ),
+            )
+        }
+
+        const [objectRow] = runIds.length
+          ? await tx
+              .select({
+                n: sql<number>`count(*)`,
+                bytes: sql<number>`coalesce(sum(${storedObjects.byteSize}), 0)`,
+              })
+              .from(storedObjects)
+              .where(inArray(storedObjects.runId, runIds))
+          : [{ n: 0, bytes: 0 }]
         await this.writeAudit(
           tx,
           actor,
           'target.delete',
           'target',
           id,
-          `${current.name}（${current.code}）`,
+          `删除目标 ${current.name}（${current.code}）：账号 ${accounts.length}、场景 ${scenarioRows.length}、录制 ${recordingRows.length}、运行 ${targetRunRows.length}、对象 ${Number(objectRow?.n ?? 0)}、${Number(objectRow?.bytes ?? 0)} 字节`,
         )
       })
     } catch (error) {
       throw mapRestriction(error) ?? error
     }
+
+    return this.getTargetCleanupStatus(id)
   }
 
-  async listAccounts(targetId: string): Promise<TargetAccountListResponse> {
-    const { targetAccounts } = schemaFor(this.db)
+  async getTargetCleanupStatus(id: string): Promise<CleanupStatusResponse> {
+    const { runs, storedObjects, targets } = schemaFor(this.db)
+    const [target] = await this.db.select({ id: targets.id }).from(targets).where(eq(targets.id, id)).limit(1)
+    if (!target) {
+      throw failure('not_found', { code: 'TARGET_NOT_FOUND', message: '目标系统不存在' })
+    }
+    const targetRunRows = await this.db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(eq(runs.targetId, id))
+    const targetRunIds = targetRunRows.map((r) => r.id)
+
+    if (targetRunIds.length === 0) {
+      return cleanupStatusResponseSchema.parse({
+        resourceId: id,
+        resourceType: 'target',
+        status: 'completed',
+        totalObjects: 0,
+        purgedObjects: 0,
+        failedObjects: 0,
+        totalBytes: 0,
+        purgedBytes: 0,
+        lastError: null,
+        completedAt: new Date().toISOString(),
+      })
+    }
+
+    const objects = await this.db
+      .select({
+        status: storedObjects.status,
+        byteSize: storedObjects.byteSize,
+        purgeAttempts: storedObjects.purgeAttempts,
+        lastPurgeErrorAt: storedObjects.lastPurgeErrorAt,
+      })
+      .from(storedObjects)
+      .where(inArray(storedObjects.runId, targetRunIds))
+
+    const total = objects.length
+    const purged = objects.filter((o) => o.status === 'purged').length
+    const failed = objects.filter(
+      (o) => o.status !== 'purged' && (o.purgeAttempts >= 5 || o.lastPurgeErrorAt !== null),
+    ).length
+    const totalBytes = objects.reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+    const purgedBytes = objects
+      .filter((o) => o.status === 'purged')
+      .reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+
+    const status: CleanupStatus =
+      failed > 0
+        ? 'failed'
+        : total === purged || total === 0
+          ? 'completed'
+          : purged > 0
+            ? 'in_progress'
+            : 'pending'
+
+    return cleanupStatusResponseSchema.parse({
+      resourceId: id,
+      resourceType: 'target',
+      status,
+      totalObjects: total,
+      purgedObjects: purged,
+      failedObjects: failed,
+      totalBytes,
+      purgedBytes,
+      lastError: failed > 0 ? '部分对象文件清理失败，请重试' : null,
+      completedAt: status === 'completed' ? new Date().toISOString() : null,
+    })
+  }
+
+  async retryTargetCleanup(id: string, actor: RequestAccount): Promise<CleanupStatusResponse> {
+    await this.getTargetCleanupStatus(id)
+    const { runs, storedObjects } = schemaFor(this.db)
+    const targetRunRows = await this.db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(eq(runs.targetId, id))
+    const targetRunIds = targetRunRows.map((r) => r.id)
+    if (targetRunIds.length > 0) {
+      await this.db
+        .update(storedObjects)
+        .set({ purgeAttempts: 0, lastPurgeErrorAt: null })
+        .where(
+          and(inArray(storedObjects.runId, targetRunIds), ne(storedObjects.status, 'purged')),
+        )
+      await this.writeAudit(this.db, actor, 'target.cleanup_retry', 'target', id, '重试对象清理')
+    }
+    return this.getTargetCleanupStatus(id)
+  }
+
+  async listAccounts(
+    targetId: string,
+    query: TargetAccountListQuery = {},
+  ): Promise<TargetAccountListResponse> {
     await this.loadTarget(targetId)
+    const parsed = targetAccountListQuerySchema.parse(query)
+    const { targetAccounts } = schemaFor(this.db)
+    const limit = parsed.limit
+    const filters: (SQL | undefined)[] = [
+      eq(targetAccounts.targetId, targetId),
+      isNull(targetAccounts.deletedAt),
+      parsed.status ? eq(targetAccounts.status, parsed.status) : undefined,
+      parsed.search
+        ? or(
+            sql`lower(${targetAccounts.displayName}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+            sql`lower(${targetAccounts.username}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+          )
+        : undefined,
+      cursorFilter(targetAccounts.createdAt, targetAccounts.id, parsed.cursor),
+    ]
     const rows = await this.db
       .select()
       .from(targetAccounts)
-      .where(eq(targetAccounts.targetId, targetId))
-      .orderBy(asc(targetAccounts.createdAt), asc(targetAccounts.id))
+      .where(and(...filters.filter((f): f is SQL => f !== undefined)))
+      .orderBy(desc(targetAccounts.createdAt), desc(targetAccounts.id))
+      .limit(limit + 1)
+    const paginated = paginateResults(rows, limit)
     return targetAccountListResponseSchema.parse({
-      items: rows.map((row) => this.toAccount(row)),
+      items: paginated.items.map((row) => this.toAccount(row)),
+      nextCursor: paginated.nextCursor,
+      hasMore: paginated.hasMore,
     })
   }
 
@@ -233,7 +641,10 @@ export class TargetsStore {
         id = await this.insertAccount(tx, targetId, body, actor, now)
       })
     } catch (error) {
-      rethrowUnique(error, 'account')
+      await rethrowUnique(this.db, error, 'account', {
+        targetId,
+        username: body.username,
+      })
     }
     return this.getAccount(targetId, id)
   }
@@ -301,27 +712,76 @@ export class TargetsStore {
         }
       })
     } catch (error) {
-      rethrowUnique(error, 'account')
+      await rethrowUnique(this.db, error, 'account', {
+        targetId,
+        username: body.username ?? current.username,
+      })
     }
     return this.getAccount(targetId, accountId)
   }
 
-  async deleteAccount(targetId: string, accountId: string, actor: RequestAccount): Promise<void> {
-    const { secrets, targetAccounts } = schemaFor(this.db)
-    const current = await this.loadAccount(targetId, accountId)
-    const runCount = await countRunsForAccount(this.db, accountId)
-    if (runCount > 0) {
-      throw failure('conflict', {
-        code: 'TARGET_ACCOUNT_HAS_RUNS',
-        message: '请先处理引用该目标账号的运行',
-      })
-    }
+  async deleteAccount(
+    targetId: string,
+    accountId: string,
+    actor: RequestAccount,
+  ): Promise<DeleteResourceResult> {
+    const { secrets, targetAccounts, runs } = schemaFor(this.db)
     try {
-      await this.db.transaction(async (tx) => {
-        await tx.delete(targetAccounts).where(eq(targetAccounts.id, accountId))
-        if (current.secretId) {
-          await tx.delete(secrets).where(eq(secrets.id, current.secretId))
+      return await this.db.transaction(async (tx) => {
+        const [current] = await locked(
+          tx,
+          tx
+            .select()
+            .from(targetAccounts)
+            .where(and(eq(targetAccounts.id, accountId), eq(targetAccounts.targetId, targetId))),
+        )
+        if (!current) {
+          throw failure('not_found', { code: 'TARGET_ACCOUNT_NOT_FOUND', message: '目标账号不存在' })
         }
+        if (current.deletedAt && current.deletedBy) {
+          return toDeleteResult({
+            id: accountId,
+            deletedAt: current.deletedAt,
+            deletedBy: current.deletedBy,
+          })
+        }
+
+        const activeRuns = await tx
+          .select({ id: runs.id })
+          .from(runs)
+          .where(
+            and(
+              eq(runs.targetAccountId, accountId),
+              inArray(runs.status, ACTIVE_RUN_STATUSES as any),
+              isNull(runs.deletedAt),
+            ),
+          )
+          .limit(1)
+        if (activeRuns.length > 0) {
+          throw failure('conflict', {
+            code: 'TARGET_ACCOUNT_BUSY',
+            message: '目标账号有进行中的运行，无法删除',
+          })
+        }
+        await assertResourceIdle(tx as unknown as Db, { targetAccountId: accountId })
+        const now = new Date()
+        const deletedBy = await snapshotDeletedBy(tx as unknown as Db, actor)
+        await requestSessionClose(tx as unknown as Db, { targetAccountId: accountId }, now)
+        await tx
+          .update(targetAccounts)
+          .set({ deletedAt: now, deletedBy, secretId: null, secretProvider: null, updatedAt: now })
+          .where(eq(targetAccounts.id, accountId))
+
+        if (current.secretId) {
+          const exclusive = await exclusiveSecretIds(tx as unknown as Db, [current.secretId], [
+            accountId,
+          ])
+          if (exclusive.length > 0) {
+            await tx.delete(secrets).where(eq(secrets.id, current.secretId))
+          }
+        }
+        await revokeAccountGrants(tx as unknown as Db, accountId)
+
         await this.writeAudit(
           tx,
           actor,
@@ -330,6 +790,7 @@ export class TargetsStore {
           accountId,
           `${current.displayName}（${current.username}）`,
         )
+        return toDeleteResult({ id: accountId, deletedAt: now, deletedBy })
       })
     } catch (error) {
       const mapped = mapRestriction(error, 'target_account')
@@ -347,7 +808,11 @@ export class TargetsStore {
 
   private async loadTarget(id: string) {
     const { targets } = schemaFor(this.db)
-    const [row] = await this.db.select().from(targets).where(eq(targets.id, id)).limit(1)
+    const [row] = await this.db
+      .select()
+      .from(targets)
+      .where(and(eq(targets.id, id), isNull(targets.deletedAt)))
+      .limit(1)
     if (!row) {
       throw failure('not_found', { code: 'TARGET_NOT_FOUND', message: '目标系统不存在' })
     }
@@ -360,9 +825,15 @@ export class TargetsStore {
     const [row] = await this.db
       .select()
       .from(targetAccounts)
-      .where(eq(targetAccounts.id, accountId))
+      .where(
+        and(
+          eq(targetAccounts.id, accountId),
+          eq(targetAccounts.targetId, targetId),
+          isNull(targetAccounts.deletedAt),
+        ),
+      )
       .limit(1)
-    if (!row || row.targetId !== targetId) {
+    if (!row) {
       throw failure('not_found', { code: 'TARGET_ACCOUNT_NOT_FOUND', message: '目标账号不存在' })
     }
     return row
@@ -370,16 +841,18 @@ export class TargetsStore {
 
   private async accountCounts(targetId?: string): Promise<Map<string, number>> {
     const { targetAccounts } = schemaFor(this.db)
-    const base = this.db
+    const condition = targetId
+      ? and(eq(targetAccounts.targetId, targetId), isNull(targetAccounts.deletedAt))
+      : isNull(targetAccounts.deletedAt)
+    const rows = await this.db
       .select({
         targetId: targetAccounts.targetId,
         n: sql<number>`count(*)`.as('n'),
       })
       .from(targetAccounts)
-    const rows = targetId
-      ? await base.where(eq(targetAccounts.targetId, targetId)).groupBy(targetAccounts.targetId)
-      : await base.groupBy(targetAccounts.targetId)
-    return new Map(rows.map((row) => [row.targetId, Number(row.n)]))
+      .where(condition)
+      .groupBy(targetAccounts.targetId)
+    return new Map(rows.map((row: { targetId: string; n: unknown }) => [row.targetId, Number(row.n)]))
   }
 
   private seal(password: string): { id: string; ciphertext: Buffer } {

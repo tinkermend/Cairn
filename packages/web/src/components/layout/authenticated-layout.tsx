@@ -5,6 +5,7 @@ import { SearchProvider } from '@/context/search-provider'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { AppSidebar } from '@/components/layout/app-sidebar'
 import { SkipToMain } from '@/components/skip-to-main'
+import { AssistantHost } from '@/features/assistant/host'
 
 type AuthenticatedLayoutProps = {
   children?: React.ReactNode
@@ -33,6 +34,7 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
         >
           {children ?? <Outlet />}
         </SidebarInset>
+        <AssistantHost />
       </SidebarProvider>
     </SearchProvider>
   )
