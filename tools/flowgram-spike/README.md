@@ -1,11 +1,11 @@
 # FlowGram 10 步混编验证
 
-本目录用于独立 worktree 中的接入验证。正式方案仍待审查，默认步骤列表保留。FlowGram 仅负责顺序画布；ScenarioDocument、Compiler、草稿 revision、试跑和 Evidence 继续走识途已有链路。
+本目录记录最初独立 worktree 的接入验证及后续交互验收。2026-09-15 按用户授权合入主分支；正式方案中未覆盖的范围仍待审查，默认步骤列表保留。FlowGram 仅负责顺序画布；ScenarioDocument、Compiler、草稿 revision、试跑和 Evidence 继续走识途已有链路。
 
 ## 本次工作区
 
 - 分支：`codex/flowgram-sequence-spike`
-- 基线：`97cf9629b119fdc734619c329b1497d2042423f9`。该提交保存了原工作区当时的未提交状态；审查本次变化应对比此提交，不能把它与更早主线之间的差异当成 FlowGram 改动。
+- 原始 PoC 基线：`97cf9629b119fdc734619c329b1497d2042423f9`，保存了当时的工作区快照。合入时只提取其后的两个 FlowGram 提交，适配主线 `16bb7e3`；合并记录为 `93d15a9`。审查最终增量比较 `16bb7e3..93d15a9`，不把快照内其他模块算作本次变更。原始历史保留在 `codex/flowgram-spike-before-integration`。
 - 独立前端默认 5186；独立靶场 4186；复用本地 API 3030 和已运行 Worker。本次未重启或迁移既有服务。
 - 样例需要平台 browser AI 已配置可执行模型。平台管理员使用 `.env` 中的 bootstrap 配置登录；脚本不打印或落盘登录 token、账号口令。
 

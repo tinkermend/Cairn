@@ -33,3 +33,9 @@
 截图已逐张检查：[1440px 蛇形](assets/2026-09-15-flowgram-snake/desktop.png)、[纵向对照](assets/2026-09-15-flowgram-snake/vertical.png)、[1920px](assets/2026-09-15-flowgram-snake/wide.png)、[无试跑列表](assets/2026-09-15-flowgram-snake/list.png)、[含试跑列表](assets/2026-09-15-flowgram-snake/list-with-run.png)、[窄屏列表](assets/2026-09-15-flowgram-snake/mobile-list.png)、[32 步前端样本](assets/2026-09-15-flowgram-snake/32-steps.png)。测量及浏览器结果见[检查摘要](assets/2026-09-15-flowgram-snake/checks.json)。
 
 结论：当前线性编排范围的阅读密度、连续编辑和空白修正达到本次合入条件。蛇形的反向行仍需要用户理解箭头，因此保留纵向和列表，不将最大节点数作为唯一体验标准。本次没有声称完成正式方案中的长期内存、全部角色组合、多级撤销或通用控制流验收。
+
+## 主线合入复核
+
+已按用户授权合入本地 main，合并提交 `93d15a9`。只将原 PoC 基线后的 FlowGram 提交适配到主线 `16bb7e3`，保留主线的 Studio 试跑自动展示页面等行为；原工作区快照留在备份分支。主工作区原有 14 个已修改或未跟踪文件完整保留，CHANGELOG 的两条未提交记录也已恢复，未夹带进本次提交。
+
+适配主线后再次通过 14 组浏览器交互、43 项定向测试、依赖/迁移/架构检查、设计检查及 Vite 打包。冻结锁文件安装通过，主工作区已安装 FlowGram 依赖。完整 typecheck 仍为上文同一组既有错误。复测图保留为[主线兼容画布](assets/2026-09-15-flowgram-snake/integrated-desktop.png)和[主线兼容列表](assets/2026-09-15-flowgram-snake/integrated-list.png)，其运行结果区文案来自主线较新的受管浏览器实现；原截图保留用于比较。

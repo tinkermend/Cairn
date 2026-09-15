@@ -1,6 +1,6 @@
 # FlowGram Sequence Editor 正式接入方案（待审）
 
-日期：2026-09-14。状态：**正式范围仍待审；用户已授权线性画布及本轮交互修正通过验收后合入主分支**。依据：[10 步混编验证报告](../reviews/2026-09-14-flowgram-sequence-spike.md)、[9/15 交互修正](../reviews/2026-09-15-flowgram-editor-ux.md)、[蛇形排布验收](../reviews/2026-09-15-flowgram-snake-layout.md)、[Sequence Studio 基础](2026-09-13-sequence-studio-foundation.md)、[前端工作流](../design/front/ai-workflow.md)。不新增开发阶段，交付顺序引用[主计划](../plan/识途开发路线与工程实施计划.md)。
+日期：2026-09-14。状态：**线性画布基础与本轮交互修正已按用户授权合入 main；其余正式范围仍待审**。依据：[10 步混编验证报告](../reviews/2026-09-14-flowgram-sequence-spike.md)、[9/15 交互修正](../reviews/2026-09-15-flowgram-editor-ux.md)、[蛇形排布验收](../reviews/2026-09-15-flowgram-snake-layout.md)、[Sequence Studio 基础](2026-09-13-sequence-studio-foundation.md)、[前端工作流](../design/front/ai-workflow.md)。不新增开发阶段，交付顺序引用[主计划](../plan/识途开发路线与工程实施计划.md)。
 
 ## 1. 目标与选型
 
@@ -77,6 +77,6 @@ PoC 结果仅证明报告中列出的子集，不能代替上述完整验收。
 
 ## 7. 合入与回退
 
-审查批准后，从独立 worktree 的基线之后提取本模块变更，适配届时主线，不能将工作区快照整批合并。保留异步加载和列表回退；关闭画布开关应不影响既有 Scenario、版本或 Run 的解释和执行。升级 FlowGram 必须重复兼容与结构往返检查。
+2026-09-15 按用户“截图自查通过后合入”的授权，已完成本轮页面验收，并以 `93d15a9` 合入 main；提取原始基线后的本模块变更，适配当时主线，没有合入原工作区快照。后续未验收范围按本方案继续审查与实施。保留异步加载和列表回退；关闭画布开关应不影响既有 Scenario、版本或 Run 的解释和执行。升级 FlowGram 必须重复兼容与结构往返检查。
 
 此次草案没有授权或执行生产部署。正式实施完成后更新 CHANGELOG，并将验收结果单独记录到 docs/reviews。

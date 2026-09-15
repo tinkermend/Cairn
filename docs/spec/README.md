@@ -8,7 +8,7 @@
 
 | 方案 | 状态 | 原型 |
 | --- | --- | --- |
-| [FlowGram Sequence Editor 正式接入](2026-09-14-flowgram-sequence-editor.md) | 待审：独立 10 步 PoC 的核心编辑与真实执行已验证，正式接入未开发；[验证报告](../reviews/2026-09-14-flowgram-sequence-spike.md) | [真实画布](../reviews/assets/2026-09-14-flowgram/desktop.png) |
+| [FlowGram Sequence Editor 正式接入](2026-09-14-flowgram-sequence-editor.md) | 线性画布基础、蛇形排布与列表 UX 已验收并合入 main；其余正式范围待审；[验收报告](../reviews/2026-09-15-flowgram-snake-layout.md) | [蛇形画布](../reviews/assets/2026-09-15-flowgram-snake/integrated-desktop.png) |
 | [Worker 登记、内部入口与执行节点治理](2026-09-14-worker-registry-and-fleet.md) | 已落地（2026-09-14）：显式广告入口、持久化期限、Worker/Session 代次隔离、查表转发与治理页。WR03 跨命名空间 HTTPS、WR13 旧/新二进制升级未跑，跳过≠通过；[实施报告](../reviews/2026-09-14-worker-registry-implementation.md)、[修订对照](../reviews/2026-09-14-worker-registry-review.md)。不新增 D 阶段 | — |
 | [编写观察面：指认、调试会话与步骤词表](2026-09-14-authoring-observation-debug-steps.md) | 已实施（2026-09-14）：I1–I5 已落地并二次收口指认/覆盖拆分、Resolver pick、页变确认与 grant 过期；I6 编写辅助保持 closed。正式开放前验收见[实施报告](../reviews/2026-09-14-authoring-observation-debug-steps-implementation.md) | — |
 | [平台助手一期：运行诊断、步骤辅助与功能导览](2026-09-14-platform-assistant-phase-one.md) | 已落地（2026-09-14）：权限先行，`ai:assist` 只赋能已有角色能力；运行诊断 / 步骤解释 / 单步候选 / 功能导览与独立 `platformAi` 配置。真实 60 条模型门槛未跑，效果门槛待验证 | — |
