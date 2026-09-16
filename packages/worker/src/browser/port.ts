@@ -32,6 +32,9 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
     async describeHold(runId: string) {
       return manager.describeHoldPage(runId)
     },
+    async restoreAuthGate(runId, grant) {
+      return manager.restoreAuthGateFromCheckpoint(runId, grant)
+    },
     async recoverAuth(grant, input) {
       return manager.recoverAuth(grant, input)
     },

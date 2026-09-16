@@ -113,6 +113,25 @@ describe.each(DRIVERS)('%s 会话占用与调度', { timeout: 60_000 }, (driver)
     })
   }
 
+  it('EXECUTION 拒绝无效 Run fencing', async () => {
+    const accountId = await makeAccount('fence0')
+    const created = await queueRun(accountId)
+    const worker = await seedWorker(handle, `fence0-${newId().slice(0, 8)}`)
+    const rejected = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      owner: { kind: 'RUN', runId: created.detail.id, runFencingToken: 0 },
+      purpose: 'EXECUTION',
+      holderWorkerId: worker.workerId,
+      holderInstanceId: worker.instanceId,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(rejected.ok).toBe(false)
+    if (!rejected.ok) expect(rejected.code).toBe('SESSION_NOT_CLAIMABLE')
+  })
+
   it('SM28 未声明 session-occupancy@2 的 Worker 不能 READY', async () => {
     await expect(
       registerWorker(handle.db, {

@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
-  acquireSessionLease,
+  claimSessionUse,
   claimRun,
   computeSnapshotDigest,
   consoleAccounts,
@@ -17,7 +17,7 @@ import {
   openIsolatedDb,
   registerWorker,
   requestRunCancel,
-  releaseSessionLease,
+  releaseSessionUse,
   requireCreatedSession,
   runs,
   sessionLeases,
@@ -241,6 +241,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: account },
       ownerWorkerId: workerId,
+      ownerWorkerInstanceId: workerInstanceId,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,
@@ -256,21 +257,24 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
       health: 'HEALTHY',
       authState: 'AUTHENTICATED',
     })
-    const lease = await acquireSessionLease(handle.db, {
-      sessionId: session.id,
-      runId,
+    const lease = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: account },
+      owner: { kind: 'RUN', runId, runFencingToken: fencingToken },
+      purpose: 'EXECUTION',
       holderWorkerId: workerId,
+      holderInstanceId: workerInstanceId,
       leaseTtlSeconds: 60,
-      runFencingToken: fencingToken,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
     })
-    expect(lease.ok).toBe(true)
-    if (!lease.ok) throw new Error('lease')
+    if (!lease.ok) throw new Error(lease.message ?? lease.code)
     return {
       sessionId: session.id,
-      leaseId: lease.lease.id,
-      generation: lease.lease.sessionGeneration,
-      sessionFencingToken: lease.lease.sessionFencingToken,
-      expiresAt: lease.lease.expiresAt.toISOString(),
+      leaseId: lease.grant.leaseId,
+      generation: lease.grant.generation,
+      sessionFencingToken: lease.grant.sessionFencingToken,
+      expiresAt: lease.grant.expiresAt,
     }
   }
 
@@ -280,6 +284,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     release?: BrowserPort['release']
     describeHold?: BrowserPort['describeHold']
     recoverAuth?: BrowserPort['recoverAuth']
+    restoreAuthGate?: BrowserPort['restoreAuthGate']
   }): BrowserPort & { calls: string[] } {
     const calls: string[] = []
     return {
@@ -308,6 +313,12 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
         ? async (grant, input) => {
             calls.push('recoverAuth')
             return hooks.recoverAuth!(grant, input)
+          }
+        : undefined,
+      restoreAuthGate: hooks.restoreAuthGate
+        ? async (runId, grant) => {
+            calls.push('restoreAuthGate')
+            return hooks.restoreAuthGate!(runId, grant)
           }
         : undefined,
     }
@@ -445,7 +456,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     const port = fakePort({
       acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
       execute: async (grant) => {
-        await releaseSessionLease(handle.db, {
+        await releaseSessionUse(handle.db, {
           leaseId: grant.leaseId,
           holderWorkerId: workerId,
           reason: 'test_revoke',
@@ -469,7 +480,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     const port = fakePort({
       acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
       execute: async (grant) => {
-        await releaseSessionLease(handle.db, {
+        await releaseSessionUse(handle.db, {
           leaseId: grant.leaseId,
           holderWorkerId: workerId,
           reason: 'test_revoke',
@@ -1324,5 +1335,48 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     expect(port.calls).toContain('recoverAuth')
     expect(detail.authCheckpoint?.autoRecoveriesUsed).toBe(1)
     expect(detail.status).toBe('SUCCEEDED')
+  })
+
+  it('重启后 recovering 检查点先 restoreAuthGate，第一次派发不发浏览器命令', async () => {
+    await setSharedCapability('IDENTITY_VERIFIED')
+    const created = await queue([clickStep(newId())])
+    const grant = await claimThis(created.detail.id)
+    const recovering: AuthCheckpoint = {
+      schemaVersion: 1,
+      status: 'recovering',
+      closedAt: '2026-09-16T04:00:00.000Z',
+      trigger: { kind: 'navigated_to_login', at: '2026-09-16T04:00:00.000Z', summary: '/login' },
+      nextStepId: created.detail.snapshot.steps[0]!.id,
+      nextOrdinal: 0,
+      interruptedClassification: 'not_dispatched',
+      contextVersion: await computeContextVersion(created.detail.context),
+      contextKeys: [],
+      sessionGeneration: 1,
+      fencingToken: String(grant.fencingToken),
+      recoveryRule: {
+        reuse: 'NEW_PAGE',
+        entryUrl: 'https://shop.example.com/',
+        allowedOrigins: ['https://shop.example.com'],
+      },
+      capability: 'IDENTITY_VERIFIED',
+      autoRecoveriesUsed: 1,
+      manualRecoveriesUsed: 0,
+      recoveryKind: 'auto',
+    }
+    await handle.db.update(runs).set({ authCheckpoint: recovering }).where(eq(runs.id, created.detail.id))
+    const port = fakePort({
+      acquire: async (_run, runGrant) => ({ ok: true, grant: await openLease(created.detail.id, runGrant.fencingToken) }),
+      restoreAuthGate: async () => true,
+      execute: async () => ({ ok: true, output: {} }),
+      recoverAuth: async () => ({ ok: true }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant })
+    expect(port.calls.filter((item) => item === 'restoreAuthGate')).toEqual(['restoreAuthGate'])
+    expect(port.calls.indexOf('restoreAuthGate')).toBeLessThan(port.calls.indexOf('recoverAuth'))
+    expect(port.calls.filter((item) => item === 'execute')).toHaveLength(1)
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(detail.status).toBe('SUCCEEDED')
+    expect(detail.authCheckpoint?.status).toBe('recovered')
   })
 })

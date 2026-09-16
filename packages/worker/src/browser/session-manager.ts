@@ -1,19 +1,36 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync, rmSync } from 'node:fs'
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common'
 import {
   acquireAuthControl,
+  adoptSessionRetention,
   appendRunEvents,
+  assertLiveAuthConfiguration,
+  appendSessionEvent,
   isolateOrphanedSessions,
   claimSessionUse,
+  createSession,
   occupancyGrantFromLease,
   conflict,
   enterRunWaitingForAuth,
   expireStaleAuthControl,
   countOpenSessionsForWorker,
+  failRunValidation,
+  findActiveLeaseRow,
+  findAuthWaitLeaseForOperation,
+  findAuthWaitLeaseForRun,
   findEvictableSession,
+  finishSessionOperation,
+  freezeAuthVerificationForRun,
+  getSessionOperation,
+  invalidateSessionProfile,
+  loadAuthProfileRevision,
+  markSessionOperationWaitingForAuth,
+  occupyAutoLoginBudget,
+  readLiveSessionAuth,
+  recordAutoLoginOutcome,
   reapSessionLeases,
   expireAuthHold,
-  expireStaleLeases,
   failRunAuthTimeout,
   findLiveSession,
   findSessionByAuthHoldRun,
@@ -36,9 +53,13 @@ import {
   releaseSessionUse,
   renewSessionUse,
   resumeRunAfterAuth,
+  scheduleNextAuthCheck,
+  setSessionAuthSummary,
   setSessionProbe,
   setSessionStatus,
+  transitionSessionUse,
   updateRunDebugOverlay,
+  writeRunAuthCheckpoint,
   loadAccountForExecution,
   loadTargetForExecution,
   type DbHandle,
@@ -58,14 +79,35 @@ import {
   shouldCaptureEvidence,
   type AcquireAuthControlResponse,
   type AuthControlInputReceipt,
+  type AuthCheckpoint,
+  type AuthObservation,
+  type AuthRecoveryOutcome,
+  type AuthSignal,
   type BrowserAuthInputCommand,
   type BrowserCommand,
   type BrowserCommandEvidence,
   type BrowserCommandResult,
+  type ExecutionError,
+  type FrozenAuthVerification,
+  authGateClosedError,
+  classifyAuthSignals,
+  classifyInterruptedAttempt,
+  computeContextVersion,
+  deriveRecoveryRule,
+  inRunAuthVerifyAllowed,
+  isAuthEvidenceFresh,
+  isContextRecoverable,
+  isSessionMaintenanceKind,
+  pageLooksLikeLogin,
+  redactAuthUrl,
+  planAuthEnsure,
+  shouldCloseAuthGate,
+  type RecoveryRule,
   type ManagedBrowserCapabilities,
   type ManagedBrowserFrame,
   type ManagedBrowserMeta,
   type ManagedPageSummary,
+  type MapViewport,
   type ObserveGrant,
   type ObserveOperation,
   type PageRef,
@@ -73,13 +115,15 @@ import {
   type TargetObservation,
   type RunSnapshot,
   type SessionErrorCode,
+  type SessionEventType,
   type SessionGrant,
   type SessionPolicy,
 } from '@cairn/shared'
 import type { LocalSecretProvider } from '@cairn/secret'
 import { DB_HANDLE } from '../db/db.module'
 import { SessionGuard, GuardError } from './guard'
-import { ensureProfileDir } from './profiles'
+import { ensureProfileDir, profileDirFor } from './profiles'
+import { verifyAuthProfile } from './session-auth'
 import { pageStrategyForReuse, shouldRecreateSession } from './reuse'
 import {
   BrowserRuntimeError,
@@ -94,6 +138,8 @@ import {
   probeAuthOnPage,
   probeHealth,
   runWithOccupancy,
+  runWithSessionRestart,
+  submitLoginCredentials,
   waitForPopupsFrom,
   screenshotPage,
   stopSession,
@@ -169,6 +215,17 @@ export class BrowserSessionManager {
   private readonly leaseTtls = new Map<string, number>()
   private readonly tracingByLease = new Map<string, boolean>()
   private readonly observeGrants = new Map<string, { grant: ObserveGrant; expiresAt: number }>()
+  private readonly authGateClosed = new Set<string>()
+  private readonly inRunVerifyCounts = new Map<string, number>()
+  private readonly runAuth = new Map<
+    string,
+    {
+      snapshot?: RunSnapshot
+      observer?: { inspect: () => Promise<void> }
+      pendingSignal?: boolean
+      transient?: boolean
+    }
+  >()
   private heartbeat: NodeJS.Timeout | undefined
   private reconciled = false
   private browserUnavailable = false
@@ -486,7 +543,9 @@ export class BrowserSessionManager {
     signal?.throwIfAborted()
     const authSessionId = live.id
     let closing: Promise<void> | undefined
-    const abortAuth = () => { closing = this.close(authSessionId, 'acquire_aborted').catch(() => {}) }
+    const abortAuth = () => {
+      closing = this.close(authSessionId, 'acquire_aborted').then(() => undefined).catch(() => undefined)
+    }
     signal?.addEventListener('abort', abortAuth, { once: true })
     try {
       signal?.throwIfAborted()
@@ -501,6 +560,11 @@ export class BrowserSessionManager {
       signal?.removeEventListener('abort', abortAuth)
       await closing
     }
+    const ready = this.lives.get(live.id)
+    if (ready) {
+      ready.autoInputClosed = false
+      ready.inputAccepting = false
+    }
 
     await this.startTracingForLease(grant.leaseId, live.id, run)
     this.logger.log(
@@ -514,7 +578,939 @@ export class BrowserSessionManager {
       },
       'lease.acquired',
     )
+    this.runAuth.set(grant.leaseId, { ...this.runAuth.get(grant.leaseId), snapshot: run })
     return { ok: true, grant: this.guard.assertHeld(grant.leaseId) }
+  }
+
+  private liveSessionIdForOwner(ownerId: string): string | undefined {
+    const leaseId = [...this.leaseToRun.entries()].find(([, mapped]) => mapped === ownerId)?.[0]
+    return leaseId ? this.leaseToSession.get(leaseId) : undefined
+  }
+
+  countInRunVerify(phase: string): number {
+    return this.inRunVerifyCounts.get(phase) ?? 0
+  }
+
+  assertAuthGate(leaseId: string): void {
+    if (this.authGateClosed.has(leaseId)) {
+      throw new Error('AUTH_GATE_CLOSED')
+    }
+  }
+
+  private expiredAuthObservation(summary: string, snapshot?: RunSnapshot): AuthObservation {
+    return {
+      authState: 'EXPIRED',
+      identityState: 'UNVERIFIED',
+      observedIdentity: null,
+      unknownClass: null,
+      evidenceSummary: summary,
+      authProfileRevision: snapshot?.authVerification?.profileRevision ?? null,
+      diagnosticCode: 'verified',
+    }
+  }
+
+  private async applyRecoveryRule(
+    page: { url: () => string },
+    rule: RecoveryRule,
+  ): Promise<boolean> {
+    if (rule.reuse === 'NEW_PAGE') {
+      try {
+        await gotoPage(page as Parameters<typeof gotoPage>[0], rule.entryUrl)
+      } catch {
+        return false
+      }
+      return Boolean(rule.entryUrl) && !pageLooksLikeLogin({ pageUrl: page.url(), loginUrl: rule.loginUrl })
+    }
+    return isContextRecoverable({ rule, pageUrl: page.url() })
+  }
+
+  markTransientPageState(grant: SessionGrant): void {
+    const current = this.runAuth.get(grant.leaseId) ?? {}
+    this.runAuth.set(grant.leaseId, { ...current, transient: true })
+  }
+
+  async restoreAuthGateFromCheckpoint(runId: string, grant: SessionGrant): Promise<boolean> {
+    const run = await getRun(this.dbHandle, runId)
+    const status = run?.authCheckpoint?.status
+    if (status === 'recovering' || status === 'closed') {
+      this.authGateClosed.add(grant.leaseId)
+      return true
+    }
+    return false
+  }
+
+  async verifyInRunAuth(
+    grant: SessionGrant,
+    phase?: string,
+    snapshot?: RunSnapshot,
+  ): Promise<Pick<AuthObservation, 'authState' | 'identityState'>> {
+    if (phase) this.inRunVerifyCounts.set(phase, (this.inRunVerifyCounts.get(phase) ?? 0) + 1)
+    const snap = snapshot ?? this.runAuth.get(grant.leaseId)?.snapshot
+    const sessionId = this.leaseToSession.get(grant.leaseId) ?? grant.sessionId
+    const live = this.lives.get(sessionId)
+    if (!live || !snap) return { authState: 'UNKNOWN', identityState: 'UNVERIFIED' }
+    const verification = snap.authVerification
+    if (verification?.profileRevision) {
+      const profile = await loadAuthProfileRevision(this.dbHandle, snap.targetId, verification.profileRevision)
+      if (profile) {
+        const verified = await verifyAuthProfile(live.handle, {
+          definition: profile.definition,
+          verification,
+        })
+        return verified.observation
+      }
+    }
+    const target = await this.loadTargetAuth(snap)
+    if (!target) return { authState: 'UNKNOWN', identityState: 'UNVERIFIED' }
+    const auth = await probeAuth(live.handle, target)
+    return {
+      authState: auth === 'AUTHENTICATED' || auth === 'EXPIRED' ? auth : 'UNKNOWN',
+      identityState: 'UNVERIFIED',
+    }
+  }
+
+  async observeInRunAuth(
+    grant: SessionGrant,
+    classification: 'dispatched' | 'not_dispatched',
+    _signal?: AbortSignal,
+  ): Promise<ExecutionError | null> {
+    const state = this.runAuth.get(grant.leaseId)
+    if (state?.observer?.inspect) await state.observer.inspect()
+    const page = this.pageForGrant(grant)
+    const pageUrl = page && typeof page.url === 'function' ? page.url() : ''
+    const snapshot = state?.snapshot
+    const loginUrl = snapshot?.targetAuth?.loginUrl
+    const onLogin = pageLooksLikeLogin({ pageUrl, loginUrl })
+    if (!onLogin && !state?.pendingSignal) return null
+    const capability = snapshot?.authVerification?.capability ?? 'LEGACY'
+    const signals = classifyAuthSignals({
+      observation: {
+        authState: onLogin ? 'EXPIRED' : 'UNKNOWN',
+        identityState: 'UNVERIFIED',
+        observedIdentity: null,
+        unknownClass: null,
+        evidenceSummary: onLogin ? '失效定位可见' : null,
+        authProfileRevision: snapshot?.authVerification?.profileRevision ?? null,
+        diagnosticCode: null,
+      },
+      pageUrl,
+      loginUrl,
+    })
+    const runId = this.leaseToRun.get(grant.leaseId)
+    if (signals.length > 0 && runId) {
+      await appendRunEvents(
+        this.dbHandle,
+        runId,
+        signals.map((signal) => ({ type: 'run.auth_signal' as const, payload: signal })),
+      ).catch(() => undefined)
+    }
+    if (!shouldCloseAuthGate({ capability, signals })) return null
+    this.authGateClosed.add(grant.leaseId)
+    this.runAuth.set(grant.leaseId, { ...state, pendingSignal: true })
+    const observation = await this.verifyInRunAuth(grant, 'signal_confirm', snapshot)
+    if (
+      observation.authState === 'AUTHENTICATED' &&
+      (capability !== 'IDENTITY_VERIFIED' || observation.identityState === 'MATCH')
+    ) {
+      this.authGateClosed.delete(grant.leaseId)
+      return null
+    }
+    const error = authGateClosedError(
+      classification === 'dispatched'
+        ? classifyInterruptedAttempt({ effectType: 'IDEMPOTENT', dispatched: true })
+        : 'not_dispatched',
+    )
+    const kind =
+      observation.identityState === 'MISMATCH'
+        ? 'MISMATCH'
+        : onLogin || observation.authState === 'EXPIRED'
+          ? 'EXPIRED'
+          : 'UNKNOWN'
+    if (snapshot?.sessionPolicy?.reuse === 'REUSE_PAGE') {
+      const sessionId = this.leaseToSession.get(grant.leaseId) ?? grant.sessionId
+      await setSessionAuthSummary(this.dbHandle, {
+        sessionId,
+        ...this.ownerScope(),
+        authState: kind === 'MISMATCH' ? 'AUTHENTICATED' : 'EXPIRED',
+        identityState: kind === 'MISMATCH' ? 'MISMATCH' : 'UNVERIFIED',
+        lastAuthError: null,
+        authProfileRevision: snapshot?.authVerification?.profileRevision ?? null,
+        observedTier: capability === 'LEGACY' ? null : capability,
+        recordSuccess: false,
+      }).catch(() => undefined)
+    }
+    return { ...error, cause: { ...error.cause, message: kind } }
+  }
+
+  async sampleMapConditions(
+    grant: SessionGrant,
+    _signal?: AbortSignal,
+  ): Promise<{ locale?: string; viewport?: MapViewport; pageFrameObserved: boolean }> {
+    try {
+      return await this.withHeldOccupancy(grant.leaseId, grant, async () => {
+        const page = this.pageForGrant(grant)
+        if (!page) return { pageFrameObserved: false }
+        let locale: string | undefined
+        try {
+          locale = await page.evaluate(() => navigator.language)
+        } catch {
+          locale = undefined
+        }
+        const size = typeof page.viewportSize === 'function' ? page.viewportSize() : null
+        const viewport = size
+          ? {
+              category:
+                size.width >= 1024 ? ('desktop' as const) : size.width >= 768 ? ('tablet' as const) : ('mobile' as const),
+              widthPx: size.width,
+              heightPx: size.height,
+            }
+          : undefined
+        return { locale, viewport, pageFrameObserved: true }
+      })
+    } catch {
+      return { pageFrameObserved: false }
+    }
+  }
+
+  async recoverAuth(
+    grant: SessionGrant,
+    input: {
+      kind: 'auto' | 'manual'
+      runGrant: RunGrant
+      snapshot: RunSnapshot
+      resuming?: boolean
+      signal?: AbortSignal
+    },
+  ): Promise<AuthRecoveryOutcome> {
+    const current = this.runAuth.get(grant.leaseId) ?? {}
+    this.runAuth.set(grant.leaseId, { ...current, snapshot: input.snapshot })
+    return this.withHeldOccupancy(grant.leaseId, grant, () => this.recoverAuthHeld(grant, input))
+  }
+
+  private async recoverAuthHeld(
+    grant: SessionGrant,
+    input: {
+      kind: 'auto' | 'manual'
+      runGrant: RunGrant
+      snapshot: RunSnapshot
+      resuming?: boolean
+    },
+  ): Promise<AuthRecoveryOutcome> {
+    const run = await getRun(this.dbHandle, input.runGrant.runId)
+    const checkpoint = run?.authCheckpoint
+    const sessionId = this.leaseToSession.get(grant.leaseId) ?? grant.sessionId
+    const session = await getSessionById(this.dbHandle, sessionId)
+    const live = this.lives.get(sessionId)
+    const page = this.pageForGrant(grant) ?? live?.handle.basePage
+    const policy = resolveSessionPolicy(input.snapshot.sessionPolicy)
+    const target = await this.loadTargetAuth(input.snapshot)
+    const waiting = async (
+      code: SessionErrorCode,
+      message: string,
+    ): Promise<AuthRecoveryOutcome> => {
+      if (!session) return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+      const result = await this.enterWaitingForAuth(session, input.runGrant, policy, grant, code, message, target ?? undefined)
+      return result.waitingForAuth
+        ? { ok: false, waitingForAuth: true }
+        : { ok: false, unrecoverable: true, code: result.code, runStatus: 'FAILED' }
+    }
+    if (input.resuming) {
+      const after = await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
+      const passed = after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH'
+      if (!passed) {
+        this.authGateClosed.add(grant.leaseId)
+        return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+      }
+      this.authGateClosed.delete(grant.leaseId)
+      return { ok: true }
+    }
+    if (checkpoint?.recoveryRule?.reuse === 'REUSE_PAGE') {
+      const hold = await this.describeHoldPage(input.runGrant.runId)
+      if (checkpoint.pageRef && hold?.pageRef && hold.pageRef.documentEpoch !== checkpoint.pageRef.documentEpoch) {
+        return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+      }
+      const pageUrl = (page && typeof page.url === 'function' ? page.url() : hold?.url) ?? ''
+      if (pageUrl && !this.originAllowed(pageUrl, checkpoint.recoveryRule.allowedOrigins ?? [])) {
+        return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+      }
+    }
+    if (checkpoint?.recoveryRule?.reuse === 'NEW_PAGE' && page) {
+      const entryUrl = checkpoint.recoveryRule.entryUrl
+      if (entryUrl) {
+        try {
+          await gotoPage(page, entryUrl)
+        } catch {
+          return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+        }
+      }
+    }
+    if (input.kind === 'auto' && checkpoint?.confirmObservation?.authState === 'UNKNOWN') {
+      return { ok: false, manualRequired: true, code: 'AUTH_PROBE_UNKNOWN' }
+    }
+    if (input.kind === 'manual') {
+      return waiting('SESSION_AUTH_UNSUPPORTED', '登录已失效，等待人工认证')
+    }
+    if (!inRunAuthVerifyAllowed('recovery')) {
+      return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+    }
+    if (!input.snapshot.targetAccountId || input.snapshot.authVerification?.capability !== 'IDENTITY_VERIFIED') {
+      return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+    }
+    const occupied = await occupyAutoLoginBudget(this.dbHandle, {
+      targetId: input.snapshot.targetId,
+      targetAccountId: input.snapshot.targetAccountId,
+    })
+    if (!occupied.ok) {
+      return waiting(occupied.code as SessionErrorCode, occupied.message)
+    }
+    const credential = await this.resolveLoginCredential(input.snapshot)
+    if (!credential || !live || !target) {
+      return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+    }
+    await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
+    const submitted = await submitLoginCredentials(
+      live.handle,
+      target,
+      credential,
+      input.snapshot.authVerification?.loginTimeoutMs,
+    )
+    const after = await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
+    const passed =
+      submitted && after.authState === 'AUTHENTICATED' && after.identityState === 'MATCH'
+    const liveAuth = await readLiveSessionAuth(this.dbHandle)
+    await recordAutoLoginOutcome(this.dbHandle, {
+      targetAccountId: input.snapshot.targetAccountId,
+      result: passed ? 'success' : after.identityState === 'MISMATCH' ? 'credential' : 'verify_failed',
+      sessionAuth: liveAuth.sessionAuth,
+    })
+    if (after.identityState === 'MISMATCH') {
+      this.authGateClosed.add(grant.leaseId)
+      return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+    }
+    if (!passed) {
+      return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+    }
+    const rule =
+      checkpoint?.recoveryRule ??
+      deriveRecoveryRule({
+        reuse: input.snapshot.sessionPolicy?.reuse,
+        entryUrl: input.snapshot.targetAuth?.entryUrl,
+        loginUrl: input.snapshot.targetAuth?.loginUrl,
+        allowedOrigins: input.snapshot.allowedOrigins,
+      })
+    if (page && !(await this.applyRecoveryRule(page, rule))) {
+      return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+    }
+    this.authGateClosed.delete(grant.leaseId)
+    return { ok: true }
+  }
+
+  async attachValidationOperation(input: {
+    operation: { id: string; targetId: string; targetAccountId: string }
+    grant: SessionGrant
+    session: SessionRecord
+  }): Promise<void> {
+    const db = this.dbHandle
+    const key = { targetId: input.operation.targetId, targetAccountId: input.operation.targetAccountId }
+    this.bindOccupancy(input.grant, input.operation.id, this.options.defaultLeaseTtlSeconds)
+    await runWithOccupancy(input.grant, async () => {
+      let session = input.session
+      if (!this.lives.has(session.id)) {
+        const launched = await this.launchAndOpen(session, key)
+        if (!launched.ok) {
+          await this.abandonOccupancy(input.grant.leaseId, 'launch_failed')
+          throw new SessionLeaseError(launched.code, launched.message)
+        }
+        session = launched.session
+      }
+      const live = this.lives.get(session.id)
+      if (live) {
+        this.ensureRunPage(live, input.operation.id, input.grant.leaseId)
+        const target = await loadTargetForExecution(db, input.operation.targetId)
+        const loginUrl = target?.loginUrl ?? target?.entryUrl
+        if (loginUrl) {
+          const page = this.ensureRunPage(live, input.operation.id, input.grant.leaseId).page
+          await gotoPage(page, loginUrl).catch(() => undefined)
+        }
+      }
+      const waitGrant = await transitionSessionUse(db, {
+        sessionId: session.id,
+        fromPurpose: 'MAINTENANCE',
+        toPurpose: 'AUTH_WAIT',
+        owner: { kind: 'SESSION_OPERATION', operationId: input.operation.id },
+        holderWorkerId: this.options.workerId,
+        holderInstanceId: this.workerInstanceId,
+        leaseTtlSeconds: this.options.defaultLeaseTtlSeconds,
+        waitSeconds: this.options.defaultAuthWaitSeconds,
+        reason: 'validate_auth_profile',
+      })
+      if (waitGrant) {
+        this.unbindOccupancy(input.grant.leaseId)
+        this.bindOccupancy(waitGrant, input.operation.id, this.options.defaultLeaseTtlSeconds)
+      }
+      if (live) {
+        live.autoInputClosed = true
+        live.inputAccepting = false
+      }
+      await markSessionOperationWaitingForAuth(db, {
+        operationId: input.operation.id,
+        workerId: this.options.workerId,
+      })
+    })
+  }
+
+  async verifyOccupiedOwner(ownerId: string): Promise<AuthObservation> {
+    const operation = await getSessionOperation(this.dbHandle, ownerId)
+    if (!operation || (operation.kind !== 'VALIDATE_AUTH_PROFILE' && !isSessionMaintenanceKind(operation.kind))) {
+      throw conflict('AUTH_VALIDATION_NOT_FOUND', '验收操作不存在')
+    }
+    const sessionId = this.liveSessionIdForOwner(ownerId)
+    const live = sessionId ? this.lives.get(sessionId) : undefined
+    const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
+    if (!live || !session) throw conflict('SESSION_NOT_CLAIMABLE', '验收会话尚未就绪')
+    const liveAuth = await readLiveSessionAuth(this.dbHandle)
+    const target = await loadTargetForExecution(this.dbHandle, operation.targetId)
+    if (isSessionMaintenanceKind(operation.kind)) {
+      const verification = await freezeAuthVerificationForRun(this.dbHandle, {
+        targetId: operation.targetId,
+        targetAccountId: operation.targetAccountId,
+        loginFields: target?.loginFields ?? null,
+        platformRevision: liveAuth.revision,
+        sessionAuth: liveAuth.sessionAuth,
+      })
+      if (!verification.profileRevision) throw conflict('AUTH_PROFILE_REQUIRED', '验收修订不存在')
+      const profile = await loadAuthProfileRevision(this.dbHandle, operation.targetId, verification.profileRevision)
+      if (!profile) throw conflict('AUTH_PROFILE_REQUIRED', '验收修订不存在')
+      const result = await verifyAuthProfile(live.handle, { definition: profile.definition, verification })
+      await this.persistProfileObservation(session, verification, result)
+      return result.observation
+    }
+    const params = (operation.kindParams ?? {}) as { revision?: number }
+    const revision = Number(params.revision)
+    const profile = await loadAuthProfileRevision(this.dbHandle, operation.targetId, revision)
+    if (!profile) throw conflict('AUTH_PROFILE_REQUIRED', '验收修订不存在')
+    const account = await loadAccountForExecution(this.dbHandle, operation.targetAccountId)
+    const result = await verifyAuthProfile(live.handle, {
+      definition: profile.definition,
+      verification: {
+        profileRevision: profile.revision,
+        profileDigest: profile.digest,
+        loginFieldsDigest: profile.digest,
+        expectedIdentity: account?.expectedIdentity ?? null,
+        capability: 'LOGIN_VERIFIED',
+        freshnessSeconds: liveAuth.sessionAuth.freshnessSecondsDefault,
+        verifyTimeoutMs: liveAuth.sessionAuth.verifyTimeoutMs,
+        loginTimeoutMs: liveAuth.sessionAuth.loginTimeoutMs,
+        verifyRetryBackoffSeconds: [...liveAuth.sessionAuth.verifyRetryBackoffSeconds],
+        platformConfigRevision: liveAuth.revision,
+      },
+    })
+    return result.observation
+  }
+
+  async completeOccupiedAuth(
+    ownerId: string,
+    _input?: { actorId: string; token?: string },
+  ): Promise<AuthObservation> {
+    const observation = await this.verifyOccupiedOwner(ownerId)
+    const operation = await getSessionOperation(this.dbHandle, ownerId)
+    if (operation && isSessionMaintenanceKind(operation.kind) && observation.authState === 'AUTHENTICATED') {
+      const sessionId = this.liveSessionIdForOwner(ownerId)
+      const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
+      await this.finishMaintenance(
+        operation.id,
+        { targetId: operation.targetId, targetAccountId: operation.targetAccountId },
+        'SUCCEEDED',
+        { type: 'auth.verified', sessionId: session?.id, generation: session?.generation },
+      )
+      const leaseId = [...this.leaseToRun.entries()].find(([, mapped]) => mapped === ownerId)?.[0]
+      if (leaseId) await this.release(leaseId, 'auth_completed').catch(() => undefined)
+      const live = sessionId ? this.lives.get(sessionId) : undefined
+      if (live) {
+        live.autoInputClosed = false
+        live.inputAccepting = false
+      }
+    }
+    return observation
+  }
+
+  async attachMaintenanceOperation(input: {
+    operation: { id: string; kind: string; targetId: string; targetAccountId: string; kindParams?: Record<string, unknown> | null }
+    grant: SessionGrant | null
+    session: SessionRecord | null
+    reusedRunId: string | null
+  }): Promise<void> {
+    const db = this.dbHandle
+    const key = { targetId: input.operation.targetId, targetAccountId: input.operation.targetAccountId }
+    if (input.reusedRunId) {
+      await appendSessionEvent(db, {
+        key,
+        type: 'operation.claimed',
+        operationId: input.operation.id,
+        runId: input.reusedRunId,
+        payload: { kind: input.operation.kind, reusedRunId: input.reusedRunId },
+      })
+      return
+    }
+    await appendSessionEvent(db, {
+      key,
+      type: 'operation.claimed',
+      sessionId: input.session?.id ?? input.grant?.sessionId ?? null,
+      generation: input.session?.generation ?? input.grant?.generation ?? null,
+      operationId: input.operation.id,
+      payload: { kind: input.operation.kind },
+    })
+    const attempt = { loginSubmitted: false }
+    let occupiedGrant = input.grant
+    try {
+      if (input.operation.kind === 'CLOSE') {
+        if (!input.session) throw conflict('SESSION_NOT_CLAIMABLE', '没有可关闭的会话')
+        const closed = await this.close(input.session.id, 'operator_close')
+        if (closed === 'unconfirmed') {
+          await this.markSessionLost(input.session.id, 'operator_close')
+          await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'SESSION_STOP_UNCONFIRMED')
+          return
+        }
+        await this.finishMaintenance(input.operation.id, key, 'SUCCEEDED', {
+          type: 'session.closed',
+          sessionId: input.session.id,
+          generation: input.session.generation,
+        })
+        return
+      }
+      if (input.operation.kind === 'RESET_PROFILE') {
+        if (input.session && (input.session.status === 'OPEN' || input.session.status === 'CREATING')) {
+          const closed = await this.close(input.session.id, 'reset_profile')
+          if (closed === 'unconfirmed') {
+            await this.markSessionLost(input.session.id, 'reset_profile')
+            await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'SESSION_STOP_UNCONFIRMED')
+            return
+          }
+        }
+        await invalidateSessionProfile(db, key)
+        const dir = profileDirFor(this.options.profileRoot, key)
+        if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+        await this.finishMaintenance(input.operation.id, key, 'SUCCEEDED', {
+          type: 'profile.reset',
+          sessionId: input.session?.id,
+          generation: input.session?.generation,
+        })
+        return
+      }
+      if (input.operation.kind === 'RESTART') {
+        if (!input.session) throw conflict('SESSION_NOT_CLAIMABLE', '没有可重启的会话')
+        const predecessor = input.session
+        const closed = await this.close(predecessor.id, 'operator_restart')
+        if (closed === 'unconfirmed') {
+          await this.markSessionLost(predecessor.id, 'operator_restart')
+          await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'SESSION_STOP_UNCONFIRMED')
+          return
+        }
+        const created = await createSession(db, {
+          key,
+          ownerWorkerId: this.options.workerId,
+          ownerWorkerInstanceId: this.workerInstanceId,
+          reusePolicy: predecessor.reusePolicy,
+          idleTtlSeconds: predecessor.idleTtlSeconds,
+          maxLifetimeSeconds: predecessor.maxLifetimeSeconds,
+        })
+        if (!created.ok) {
+          await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, created.code)
+          return
+        }
+        await adoptSessionRetention(db, { fromSessionId: predecessor.id, toSessionId: created.session.id })
+        const launched = await runWithSessionRestart(created.session.id, () =>
+          this.launchAndOpen(created.session, key),
+        )
+        if (!launched.ok) {
+          await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, launched.code)
+          return
+        }
+        await appendSessionEvent(db, {
+          key,
+          type: 'session.restarted',
+          sessionId: launched.session.id,
+          generation: launched.session.generation,
+          operationId: input.operation.id,
+          payload: { predecessorSessionId: predecessor.id },
+        })
+        const claimed = await claimSessionUse(db, {
+          key,
+          owner: { kind: 'SESSION_OPERATION', operationId: input.operation.id },
+          purpose: 'MAINTENANCE',
+          holderWorkerId: this.options.workerId,
+          holderInstanceId: this.workerInstanceId,
+          leaseTtlSeconds: this.options.defaultLeaseTtlSeconds,
+          reusePolicy: launched.session.reusePolicy,
+          idleTtlSeconds: launched.session.idleTtlSeconds,
+          maxLifetimeSeconds: launched.session.maxLifetimeSeconds,
+        })
+        if (!claimed.ok) {
+          await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'SESSION_NOT_CLAIMABLE')
+          return
+        }
+        occupiedGrant = claimed.grant
+        this.bindOccupancy(claimed.grant, input.operation.id, this.options.defaultLeaseTtlSeconds)
+        const auth = await runWithOccupancy(claimed.grant, () =>
+          this.runMaintenanceAuth(launched.session, input.operation, claimed.grant, 'verify', attempt),
+        )
+        if (auth === 'waiting') return
+        await this.abandonOccupancy(claimed.grant.leaseId, auth.ok ? 'restart_verified' : 'restart_failed')
+        await this.finishMaintenance(
+          input.operation.id,
+          key,
+          auth.ok ? 'SUCCEEDED' : 'FAILED',
+          {
+            type: auth.ok ? 'auth.verified' : 'auth.unknown',
+            sessionId: launched.session.id,
+            generation: launched.session.generation,
+          },
+          auth.ok ? undefined : auth.code,
+        )
+        return
+      }
+
+      if (!input.grant || !input.session) {
+        await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'SESSION_NOT_CLAIMABLE')
+        return
+      }
+      this.bindOccupancy(input.grant, input.operation.id, this.options.defaultLeaseTtlSeconds)
+      await runWithOccupancy(input.grant, async () => {
+        let session = input.session!
+        if (!this.lives.has(session.id)) {
+          const launched = await this.launchAndOpen(session, key)
+          if (!launched.ok) {
+            await this.abandonOccupancy(input.grant!.leaseId, 'launch_failed')
+            throw new SessionLeaseError(launched.code, launched.message)
+          }
+          session = launched.session
+        }
+        const live = this.lives.get(session.id)
+        if (live) this.ensureRunPage(live, input.operation.id, input.grant!.leaseId)
+
+        if (input.operation.kind === 'REFRESH_LOGIN_PAGE') {
+          const target = await loadTargetForExecution(db, key.targetId)
+          const loginUrl = target?.loginUrl ?? target?.entryUrl
+          const page = live ? this.ensureRunPage(live, input.operation.id, input.grant!.leaseId).page : undefined
+          const current = page && typeof page.url === 'function' ? page.url() : ''
+          if (!loginUrl || !page || !this.isSafeLoginRefresh(current, loginUrl, target?.entryUrl ?? null)) {
+            await this.abandonOccupancy(input.grant!.leaseId, 'refresh_unsafe')
+            await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'PAGE_REFRESH_UNSAFE')
+            return
+          }
+          await gotoPage(page, loginUrl).catch(() => undefined)
+          await this.abandonOccupancy(input.grant!.leaseId, 'refresh_done')
+          await this.finishMaintenance(input.operation.id, key, 'SUCCEEDED', {
+            type: 'operation.finished',
+            sessionId: session.id,
+            generation: session.generation,
+          })
+          return
+        }
+
+        const mode =
+          input.operation.kind === 'LOGIN' || input.operation.kind === 'PREPARE' || input.operation.kind === 'RENEW_AUTH'
+            ? 'ensure'
+            : 'verify'
+        const auth = await this.runMaintenanceAuth(session, input.operation, input.grant, mode, attempt)
+        if (auth === 'waiting') return
+        await this.abandonOccupancy(input.grant!.leaseId, auth.ok ? 'maintenance_done' : 'maintenance_failed')
+        if (auth.ok && session.retainUntil && session.retainUntil.getTime() > Date.now()) {
+          await scheduleNextAuthCheck(db, session.id)
+        }
+        await this.finishMaintenance(
+          input.operation.id,
+          key,
+          auth.ok ? 'SUCCEEDED' : 'FAILED',
+          {
+            type: auth.ok ? 'auth.verified' : 'auth.unknown',
+            sessionId: session.id,
+            generation: session.generation,
+          },
+          auth.ok ? undefined : auth.code,
+        )
+      })
+    } catch (error) {
+      const code = attempt.loginSubmitted
+        ? 'OUTCOME_UNKNOWN'
+        : error instanceof SessionLeaseError || error instanceof BrowserRuntimeError
+          ? error.code
+          : 'OPERATION_INTERRUPTED'
+      if (attempt.loginSubmitted && input.session) {
+        await this.markMaintenanceOutcomeUnknown(input.session, input.operation)
+      }
+      if (occupiedGrant) await this.abandonOccupancy(occupiedGrant.leaseId, code).catch(() => undefined)
+      await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, code)
+    }
+  }
+
+  private originAllowed(url: string, origins: string[]): boolean {
+    try {
+      const origin = new URL(url).origin.replace(/\/$/, '')
+      return origins.some((item) => item.replace(/\/$/, '') === origin)
+    } catch {
+      return false
+    }
+  }
+
+  private async markSessionLost(sessionId: string, reason: string): Promise<void> {
+    const latest = await getSessionById(this.dbHandle, sessionId)
+    if (!latest || latest.status === 'LOST' || latest.status === 'CLOSED') return
+    await setSessionStatus(this.dbHandle, {
+      sessionId,
+      expectedVersion: latest.version,
+      status: 'LOST',
+      closeReason: reason,
+      ...this.ownerScope(),
+    }).catch(() => undefined)
+  }
+
+  private async markMaintenanceOutcomeUnknown(
+    session: SessionRecord,
+    operation: { targetId: string; targetAccountId: string },
+  ): Promise<void> {
+    await setSessionAuthSummary(this.dbHandle, {
+      sessionId: session.id,
+      ...this.ownerScope(),
+      authState: 'UNKNOWN',
+      identityState: 'UNVERIFIED',
+      lastAuthError: 'OUTCOME_UNKNOWN',
+      authProfileRevision: null,
+      observedTier: null,
+      recordSuccess: false,
+    }).catch(() => undefined)
+    const liveAuth = await readLiveSessionAuth(this.dbHandle).catch(() => null)
+    if (liveAuth) {
+      await recordAutoLoginOutcome(this.dbHandle, {
+        targetAccountId: operation.targetAccountId,
+        result: 'verify_failed',
+        sessionAuth: liveAuth.sessionAuth,
+      }).catch(() => undefined)
+    }
+  }
+
+  isSafeLoginRefresh(currentUrl: string, loginUrl: string, entryUrl: string | null): boolean {
+    try {
+      const current = new URL(currentUrl)
+      return [loginUrl, entryUrl].filter((value): value is string => Boolean(value)).some((value) => {
+        const allowed = new URL(value)
+        return (
+          allowed.origin === current.origin &&
+          allowed.pathname === current.pathname &&
+          allowed.search === current.search
+        )
+      })
+    } catch {
+      return false
+    }
+  }
+
+  async finishMaintenance(
+    operationId: string,
+    key: { targetId: string; targetAccountId: string },
+    status: 'SUCCEEDED' | 'FAILED' | 'CANCELLED',
+    event?: {
+      type: SessionEventType
+      sessionId?: string | null
+      generation?: number | null
+    },
+    errorCode?: string,
+  ): Promise<void> {
+    await finishSessionOperation(this.dbHandle, {
+      operationId,
+      workerId: this.options.workerId,
+      workerInstanceId: this.workerInstanceId,
+      status,
+      errorCode,
+    })
+    await appendSessionEvent(this.dbHandle, {
+      key,
+      type: event?.type ?? 'operation.finished',
+      sessionId: event?.sessionId,
+      generation: event?.generation,
+      operationId,
+      payload: { status, errorCode: errorCode ?? null },
+    })
+  }
+
+  async runMaintenanceAuth(
+    session: SessionRecord,
+    operation: { id: string; kind: string; targetId: string; targetAccountId: string },
+    grant: SessionGrant | null,
+    mode: 'verify' | 'ensure',
+    attempt?: { loginSubmitted: boolean },
+  ): Promise<{ ok: true } | { ok: false; code?: SessionErrorCode } | 'waiting'> {
+    const db = this.dbHandle
+    const live = this.lives.get(session.id)
+    if (!live) return { ok: false, code: 'SESSION_NOT_CLAIMABLE' }
+    const liveAuth = await readLiveSessionAuth(db)
+    const target = await loadTargetForExecution(db, operation.targetId)
+    if (!target) return { ok: false, code: 'SESSION_TARGET_MISSING' }
+    const verification = await freezeAuthVerificationForRun(db, {
+      targetId: operation.targetId,
+      targetAccountId: operation.targetAccountId,
+      loginFields: target.loginFields,
+      platformRevision: liveAuth.revision,
+      sessionAuth: liveAuth.sessionAuth,
+    })
+    if (verification.capability === 'LEGACY' || !verification.profileRevision) {
+      return { ok: false, code: 'AUTH_PROFILE_REQUIRED' }
+    }
+    const profile = await loadAuthProfileRevision(db, operation.targetId, verification.profileRevision)
+    if (!profile) return { ok: false, code: 'AUTH_PROFILE_REQUIRED' }
+
+    const verifyOnce = async () => {
+      const verified = await verifyAuthProfile(live.handle, { definition: profile.definition, verification })
+      await this.persistProfileObservation(session, verification, verified)
+      return verified.observation
+    }
+
+    const observation = await verifyOnce()
+    const passed =
+      observation.authState === 'AUTHENTICATED' &&
+      (verification.capability !== 'IDENTITY_VERIFIED' || observation.identityState === 'MATCH')
+
+    if (operation.kind === 'RENEW_AUTH' && profile.definition.renew === 'verify_slides') {
+      return passed ? { ok: true } : { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+    }
+    if (mode === 'verify') {
+      return passed ? { ok: true } : { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+    }
+    const needsManual =
+      target.authMethod === 'manual' ||
+      target.captchaMode !== 'none' ||
+      observation.authState === 'UNKNOWN' ||
+      observation.identityState === 'MISMATCH'
+    if (needsManual) {
+      if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+    } else if (passed) {
+      return { ok: true }
+    } else {
+    const shouldLogin =
+      operation.kind === 'LOGIN' ||
+      operation.kind === 'PREPARE' ||
+      (operation.kind === 'RENEW_AUTH' && profile.definition.renew === 'relogin')
+    if (shouldLogin) {
+      const credential = await this.resolveAccountCredential(operation.targetAccountId)
+      if (!credential) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+      const occupied = await occupyAutoLoginBudget(db, {
+        targetId: operation.targetId,
+        targetAccountId: operation.targetAccountId,
+      })
+      if (occupied.ok) {
+        if (attempt) attempt.loginSubmitted = true
+        try {
+          const submitted = await submitLoginCredentials(
+            live.handle,
+            {
+              entryUrl: target.entryUrl,
+              loginUrl: target.loginUrl,
+              loginFields: target.loginFields,
+            },
+            credential,
+            verification.loginTimeoutMs,
+          )
+          const after = await verifyOnce()
+          const liveAfter = await readLiveSessionAuth(db)
+          await recordAutoLoginOutcome(db, {
+            targetAccountId: operation.targetAccountId,
+            result:
+              after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH'
+                ? 'success'
+                : after.identityState === 'MISMATCH'
+                  ? 'credential'
+                  : 'verify_failed',
+            sessionAuth: liveAfter.sessionAuth,
+          })
+          if (submitted && after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') return { ok: true }
+        } catch {
+          await this.markMaintenanceOutcomeUnknown(session, operation)
+          return { ok: false, code: 'OUTCOME_UNKNOWN' }
+        }
+      }
+    }
+    }
+
+    if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+    const waitGrant = await transitionSessionUse(db, {
+      sessionId: session.id,
+      fromPurpose: 'MAINTENANCE',
+      toPurpose: 'AUTH_WAIT',
+      owner: { kind: 'SESSION_OPERATION', operationId: operation.id },
+      holderWorkerId: this.options.workerId,
+      holderInstanceId: this.workerInstanceId,
+      leaseTtlSeconds: this.options.defaultLeaseTtlSeconds,
+      waitSeconds: this.options.defaultAuthWaitSeconds,
+      reason: 'maintenance_auth',
+    })
+    if (waitGrant) {
+      this.unbindOccupancy(grant.leaseId)
+      this.bindOccupancy(waitGrant, operation.id, this.options.defaultLeaseTtlSeconds)
+    }
+    live.autoInputClosed = true
+    live.inputAccepting = false
+    const loginUrl = target.loginUrl ?? target.entryUrl
+    if (loginUrl) {
+      const page = this.ensureRunPage(live, operation.id, waitGrant?.leaseId ?? grant.leaseId).page
+      await gotoPage(page, loginUrl).catch(() => undefined)
+    }
+    await markSessionOperationWaitingForAuth(db, {
+      operationId: operation.id,
+      workerId: this.options.workerId,
+    })
+    await appendSessionEvent(db, {
+      key: { targetId: operation.targetId, targetAccountId: operation.targetAccountId },
+      type: 'operation.waiting_for_auth',
+      sessionId: session.id,
+      generation: session.generation,
+      operationId: operation.id,
+      payload: { kind: operation.kind },
+    })
+    return 'waiting'
+  }
+
+  async persistProfileObservation(
+    session: SessionRecord,
+    verification: FrozenAuthVerification,
+    verified: Awaited<ReturnType<typeof verifyAuthProfile>>,
+  ): Promise<void> {
+    const observation = verified.observation
+    const success =
+      observation.authState === 'AUTHENTICATED' &&
+      (verification.capability !== 'IDENTITY_VERIFIED' || observation.identityState === 'MATCH')
+    await setSessionAuthSummary(this.dbHandle, {
+      sessionId: session.id,
+      ...this.ownerScope(),
+      authState: observation.authState,
+      identityState: observation.identityState,
+      lastAuthError:
+        observation.diagnosticCode === 'verified' ? null : (observation.diagnosticCode ?? observation.unknownClass),
+      authProfileRevision: verification.profileRevision,
+      observedTier: verification.capability,
+      authValidUntil: verified.authValidUntil,
+      authExpirySource: verified.authExpirySource,
+      recordSuccess: success,
+    })
+    await setSessionProbe(this.dbHandle, {
+      sessionId: session.id,
+      ...this.ownerScope(),
+      health: 'HEALTHY',
+      authState: observation.authState,
+    })
+  }
+
+  async resolveAccountCredential(
+    accountId: string,
+  ): Promise<{ username: string; password: string } | null> {
+    const account = await loadAccountForExecution(this.dbHandle, accountId)
+    if (!account?.secretId || !this.secrets) return null
+    const row = await loadSecretCiphertext(this.dbHandle, account.secretId)
+    if (!row) return null
+    try {
+      return { username: account.username ?? '', password: this.secrets.decrypt(row.id, row.ciphertext) }
+    } catch {
+      return null
+    }
   }
 
   async renew(leaseId: string, leaseTtlSeconds?: number): Promise<'ok' | 'lost'> {
@@ -560,17 +1556,15 @@ export class BrowserSessionManager {
     )
   }
 
-  async close(sessionId: string, reason: string): Promise<void> {
+  async close(sessionId: string, reason: string): Promise<'stopped' | 'unconfirmed'> {
     const db = this.dbHandle
     const session = await getSessionById(db, sessionId)
-    if (!session) return
+    if (!session) return 'unconfirmed'
     if (session.ownerWorkerId !== this.options.workerId) {
-      await this.dropLocalHandle(sessionId)
-      return
+      return this.dropLocalHandle(sessionId)
     }
     if (!session.ownerWorkerInstanceId || session.ownerWorkerInstanceId !== this.workerInstanceId) {
-      await this.dropLocalHandle(sessionId)
-      return
+      return this.dropLocalHandle(sessionId)
     }
 
     this.logger.log(
@@ -595,7 +1589,7 @@ export class BrowserSessionManager {
     }
 
     const latest = await getSessionById(db, sessionId)
-    if (!latest || latest.ownerWorkerInstanceId !== this.workerInstanceId) return
+    if (!latest || latest.ownerWorkerInstanceId !== this.workerInstanceId) return stopResult
     if (stopResult === 'stopped') {
       await setSessionStatus(db, {
         sessionId,
@@ -615,6 +1609,7 @@ export class BrowserSessionManager {
       })
       this.logger.warn({ sessionId, reason, workerId: this.options.workerId }, 'session.lost')
     }
+    return stopResult
   }
 
   async reap(): Promise<{
@@ -624,7 +1619,7 @@ export class BrowserSessionManager {
   }> {
     this.browserUnavailable = false
     const db = this.dbHandle
-    const leasesExpired = await expireStaleLeases(db)
+    const leasesExpired = await reapSessionLeases(db)
     if (leasesExpired > 0) {
       this.logger.log({ leasesExpired, workerId: this.options.workerId }, 'lease.expired')
     }
@@ -715,7 +1710,7 @@ export class BrowserSessionManager {
    */
   async reapAuthTimeouts(): Promise<number> {
     const db = this.dbHandle
-    let n = await reapSessionLeases(db)
+    let n = 0
     const expired = await listExpiredAuthHolds(db, this.options.workerId)
     for (const session of expired) {
       const boundRunId = session.authHoldRunId
@@ -903,12 +1898,24 @@ export class BrowserSessionManager {
     signal?: AbortSignal,
     evidence?: BrowserCommandEvidence,
   ): Promise<BrowserCommandResult & { screenshotBytes?: Buffer; tracePath?: string }> {
+    if (this.authGateClosed.has(grant.leaseId)) {
+      return { ok: false, error: authGateClosedError('not_dispatched') }
+    }
     const scoped = await this.withManagedPage(
       grant,
       evidence,
       (page) => this.runSurfaceCommand(grant, page, command, signal, evidence),
       (result) => !result.ok,
     )
+    const authClosed = await this.observeInRunAuth(grant, 'dispatched', signal)
+    if (authClosed) {
+      return {
+        ok: false,
+        error: authClosed,
+        screenshotBytes: scoped.ok ? scoped.screenshotBytes : scoped.screenshotBytes,
+        tracePath: scoped.ok ? scoped.tracePath : scoped.tracePath,
+      }
+    }
     if (!scoped.ok) {
       return { ok: false, error: scoped.error, screenshotBytes: scoped.screenshotBytes, tracePath: scoped.tracePath }
     }
@@ -1076,7 +2083,13 @@ export class BrowserSessionManager {
     this.observeGrants.delete(runId)
   }
 
-  async describeHoldPage(runId: string): Promise<{ pageRef?: PageRef; url?: string } | undefined> {
+  async describeHoldPage(runId: string): Promise<{
+    pageRef?: PageRef
+    url?: string
+    authSignal?: AuthSignal
+    authObservation?: AuthObservation
+    contextRecoverable?: boolean
+  } | undefined> {
     const sessionId = this.liveSessionIdForRun(runId)
     if (!sessionId) return undefined
     const live = this.lives.get(sessionId)
@@ -1084,9 +2097,33 @@ export class BrowserSessionManager {
     if (!live || !session) return undefined
     const entry = this.ensureRunPage(live, runId)
     if (entry.page.isClosed()) return undefined
+    const url = entry.page.url()
+    const leaseId = [...this.leaseToRun.entries()].find(([, mapped]) => mapped === runId)?.[0]
+    const snapshot = leaseId ? this.runAuth.get(leaseId)?.snapshot : undefined
+    const loginUrl = snapshot?.targetAuth?.loginUrl
+    const onLogin = pageLooksLikeLogin({ pageUrl: url, loginUrl })
+    const rule = snapshot
+      ? deriveRecoveryRule({
+          reuse: snapshot.sessionPolicy?.reuse,
+          entryUrl: snapshot.targetAuth?.entryUrl,
+          loginUrl: snapshot.targetAuth?.loginUrl,
+          allowedOrigins: snapshot.allowedOrigins,
+        })
+      : undefined
     return {
       pageRef: pageRefFor(session.id, session.generation, entry),
-      url: entry.page.url(),
+      url: redactAuthUrl(url) ?? url,
+      contextRecoverable: rule ? isContextRecoverable({ rule, pageUrl: url }) : false,
+      ...(onLogin
+        ? {
+            authSignal: {
+              kind: 'navigated_to_login' as const,
+              at: new Date().toISOString(),
+              summary: (redactAuthUrl(url) ?? url).slice(0, 512),
+            },
+            authObservation: this.expiredAuthObservation('导航到登录页', snapshot),
+          }
+        : {}),
     }
   }
 
@@ -1262,7 +2299,7 @@ export class BrowserSessionManager {
     if (input.command.seq <= live.lastSeq) {
       throw conflict('AUTH_INPUT_REJECTED', '输入序号乱序')
     }
-    const latestRun = await getRun(this.dbHandle, input.runId)
+    const { run: latestRun } = await this.lookupRunSession(input.runId)
     if (latestRun.status !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
       throw conflict('AUTH_INPUT_REJECTED', '当前不是认证输入窗口')
     }
@@ -1358,9 +2395,43 @@ export class BrowserSessionManager {
         const target = await this.loadTargetAuth(run.snapshot)
         if (!target) throw conflict('SESSION_TARGET_MISSING', '目标系统不存在')
         const page = this.ensureRunPage(live, input.runId).page
-        const auth = await probeAuthOnPage(page, target)
-        if (auth !== 'AUTHENTICATED') {
-          throw conflict('AUTH_NOT_VERIFIED', '目标系统仍未登录')
+        const waitLease = await findAuthWaitLeaseForRun(this.dbHandle, input.runId)
+        if (!waitLease) throw conflict('AUTH_HOLD_UNBOUND', '缺少认证等待租约')
+        const checkpoint = run.authCheckpoint
+        const inRunManual = checkpoint?.status === 'recovering' && checkpoint.recoveryKind === 'manual'
+        const withWait = <T>(fn: () => Promise<T>) => runWithOccupancy(occupancyGrantFromLease(waitLease), fn)
+        if (inRunManual && run.snapshot.authVerification?.capability === 'IDENTITY_VERIFIED') {
+          const verification = run.snapshot.authVerification
+          const profile = verification.profileRevision
+            ? await loadAuthProfileRevision(this.dbHandle, run.snapshot.targetId, verification.profileRevision)
+            : null
+          if (!profile) throw conflict('AUTH_NOT_VERIFIED', '目标系统仍未登录')
+          const observation = await withWait(() =>
+            verifyAuthProfile(live.handle, { definition: profile.definition, verification }),
+          )
+          if (
+            observation.observation.authState !== 'AUTHENTICATED' ||
+            observation.observation.identityState !== 'MATCH'
+          ) {
+            if (observation.observation.identityState === 'MISMATCH') {
+              await this.failInRunAuthRecovery(input.runId, latestSession, checkpoint, 'AUTH_CONTEXT_NOT_RECOVERABLE')
+              throw conflict('AUTH_CONTEXT_NOT_RECOVERABLE', '登录已恢复，当前运行无法安全续跑')
+            }
+            throw conflict('AUTH_NOT_VERIFIED', '目标系统仍未登录')
+          }
+          if (!(await withWait(() => this.applyRecoveryRule(page, checkpoint.recoveryRule)))) {
+            await this.failInRunAuthRecovery(input.runId, latestSession, checkpoint, 'AUTH_CONTEXT_NOT_RECOVERABLE')
+            throw conflict('AUTH_CONTEXT_NOT_RECOVERABLE', '登录已恢复，当前运行无法安全续跑')
+          }
+          if ((await computeContextVersion(run.context)) !== checkpoint.contextVersion) {
+            await this.failInRunAuthRecovery(input.runId, latestSession, checkpoint, 'AUTH_CONTEXT_NOT_RECOVERABLE')
+            throw conflict('AUTH_CONTEXT_NOT_RECOVERABLE', '登录已恢复，当前运行无法安全续跑')
+          }
+        } else {
+          const auth = await withWait(() => probeAuthOnPage(page, target))
+          if (auth !== 'AUTHENTICATED') {
+            throw conflict('AUTH_NOT_VERIFIED', '目标系统仍未登录')
+          }
         }
         await resumeRunAfterAuth(this.dbHandle, {
           runId: input.runId,
@@ -1371,6 +2442,7 @@ export class BrowserSessionManager {
           workerId: this.options.workerId,
           workerInstanceId: this.workerInstanceId,
           controlEpoch: latestSession.authControlEpoch,
+          recoveredAuthCheckpoint: inRunManual && checkpoint ? { ...checkpoint, status: 'recovered' } : undefined,
         })
         live.autoInputClosed = false
         live.inputAccepting = false
@@ -1382,6 +2454,37 @@ export class BrowserSessionManager {
       }
       throw error
     }
+  }
+
+  private async failInRunAuthRecovery(
+    runId: string,
+    session: SessionRecord,
+    checkpoint: AuthCheckpoint,
+    code: 'AUTH_CONTEXT_NOT_RECOVERABLE' | 'AUTH_RECOVERY_LIMIT',
+  ): Promise<void> {
+    const next = { ...checkpoint, status: 'unrecoverable' as const, unrecoverableCode: code }
+    await writeRunAuthCheckpoint(this.dbHandle, { runId, recover: true, checkpoint: next }).catch(() => false)
+    await failRunValidation(
+      this.dbHandle,
+      runId,
+      { recover: true },
+      {
+        code,
+        category: 'VALIDATION',
+        retryable: false,
+        safeMessage: '登录已恢复，当前运行无法安全续跑',
+      },
+    ).catch(() => undefined)
+    await transitionSessionUse(this.dbHandle, {
+      sessionId: session.id,
+      fromPurpose: 'AUTH_WAIT',
+      toPurpose: 'RELEASE',
+      owner: { kind: 'RUN', runId, runFencingToken: 1 },
+      holderWorkerId: this.options.workerId,
+      holderInstanceId: this.workerInstanceId,
+      leaseTtlSeconds: 30,
+      reason: 'auth_unrecoverable',
+    }).catch(() => undefined)
   }
 
   subscribeRunFrames(input: {
@@ -1608,6 +2711,43 @@ export class BrowserSessionManager {
     session: SessionRecord | null
     live: LiveHandle | undefined
   }> {
+    const operation = await getSessionOperation(this.dbHandle, runId)
+    if (operation) {
+      if (typeof operation.kindParams?.reusedRunId === 'string') {
+        return this.lookupRunSession(operation.kindParams.reusedRunId)
+      }
+      const liveId = this.liveSessionIdForRun(runId)
+      const lease =
+        (await findAuthWaitLeaseForOperation(this.dbHandle, runId)) ??
+        (liveId ? await findActiveLeaseRow(this.dbHandle, liveId) : null)
+      const sessionId = lease?.sessionId ?? liveId ?? operation.expectedSessionId
+      const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
+      const live = session ? this.lives.get(session.id) : undefined
+      return {
+        run: {
+          id: operation.id,
+          status: operation.status === 'WAITING_FOR_AUTH' ? 'WAITING_FOR_AUTH' : operation.status,
+          placement: { sessionId: session?.id ?? null },
+        } as Awaited<ReturnType<typeof getRun>>,
+        session,
+        live,
+      }
+    }
+    const instance = await getSessionById(this.dbHandle, runId)
+    if (instance) {
+      const lease = await findActiveLeaseRow(this.dbHandle, instance.id)
+      const ownerId = lease?.runId ?? lease?.operationId
+      if (ownerId) return this.lookupRunSession(ownerId)
+      return {
+        run: {
+          id: instance.id,
+          status: instance.status === 'OPEN' ? 'RUNNING' : 'FAILED',
+          placement: { sessionId: instance.id },
+        } as Awaited<ReturnType<typeof getRun>>,
+        session: instance,
+        live: this.lives.get(instance.id),
+      }
+    }
     const run = await getRun(this.dbHandle, runId)
     const held = this.liveAuthHold(await findSessionByAuthHoldRun(this.dbHandle, runId))
     const sessionId = held?.id ?? run.placement.sessionId ?? this.liveSessionIdForRun(runId)
@@ -1783,6 +2923,186 @@ export class BrowserSessionManager {
     }
   }
 
+  private async waitInterruptible(ms: number, runId: string, signal?: AbortSignal): Promise<void> {
+    const end = Date.now() + ms
+    while (Date.now() < end) {
+      signal?.throwIfAborted()
+      const run = await getRun(this.dbHandle, runId)
+      if (run?.cancelRequested) {
+        const error = new Error('cancelled')
+        error.name = 'AbortError'
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(200, Math.max(0, end - Date.now()))))
+    }
+  }
+
+  private async ensureProfileAuth(
+    session: SessionRecord,
+    run: RunSnapshot,
+    runGrant: RunGrant,
+    policy: SessionPolicy,
+    occupancy: SessionGrant,
+    verification: FrozenAuthVerification,
+    signal?: AbortSignal,
+  ): Promise<
+    | { ok: true; session: SessionRecord }
+    | { ok: false; code: SessionErrorCode; message: string; waitingForAuth?: boolean }
+  > {
+    const db = this.dbHandle
+    const live = this.lives.get(session.id)
+    if (!live) return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: '无浏览器句柄' }
+    if (!run.targetAccountId) return { ok: false, code: 'SESSION_ACCOUNT_REQUIRED', message: '运行未指定目标账号' }
+    const liveConfig = await assertLiveAuthConfiguration(db, {
+      targetId: run.targetId,
+      targetAccountId: run.targetAccountId,
+    })
+    if (!liveConfig.ok) return { ok: false, code: liveConfig.code, message: liveConfig.message }
+    if (!verification.profileRevision) {
+      return { ok: false, code: 'AUTH_PROFILE_REQUIRED', message: '冻结规则缺少修订' }
+    }
+    const profile = await loadAuthProfileRevision(db, run.targetId, verification.profileRevision)
+    if (!profile || profile.digest !== verification.profileDigest) {
+      return { ok: false, code: 'AUTH_CONFIGURATION_REVOKED', message: '冻结的核验规则已不可用' }
+    }
+    const targetInfo = await this.loadTargetAuth(run)
+    if (!targetInfo) return { ok: false, code: 'SESSION_TARGET_MISSING', message: '目标系统不存在' }
+    const successAt = session.lastAuthSuccessAt
+    const page = this.pageForGrant(occupancy) ?? live.handle.basePage
+    const pageUrl = page && typeof page.url === 'function' ? page.url() : ''
+    const onLogin = pageLooksLikeLogin({ pageUrl, loginUrl: targetInfo.loginUrl })
+    const fresh =
+      !onLogin &&
+      session.authState === 'AUTHENTICATED' &&
+      (verification.capability !== 'IDENTITY_VERIFIED' || session.identityState === 'MATCH') &&
+      isAuthEvidenceFresh({
+        lastAuthSuccessAt: successAt instanceof Date ? successAt.toISOString() : successAt,
+        freshnessSeconds: verification.freshnessSeconds,
+        nowMs: Date.now(),
+        sessionGeneration: session.generation,
+        frozenGeneration: null,
+        profileRevision: session.authProfileRevision,
+        frozenRevision: verification.profileRevision,
+        expectedIdentity: verification.expectedIdentity,
+        frozenExpectedIdentity: verification.expectedIdentity,
+      })
+    let plan = planAuthEnsure({
+      capability: verification.capability,
+      fresh,
+      infraAttempts: 0,
+      backoffSeconds: verification.verifyRetryBackoffSeconds,
+    })
+    let observation: AuthObservation | null = null
+    let infraAttempts = 0
+    while (true) {
+      signal?.throwIfAborted()
+      if (plan.action === 'reuse') {
+        await releaseAuthHold(db, { sessionId: session.id, workerId: this.options.workerId }).catch(() => undefined)
+        return { ok: true, session: (await getSessionById(db, session.id))! }
+      }
+      if (plan.action === 'fail' || plan.action === 'yield') {
+        return { ok: false, code: plan.code, message: plan.message }
+      }
+      if (plan.action === 'manual') {
+        return this.enterWaitingForAuth(
+          session,
+          runGrant,
+          policy,
+          occupancy,
+          plan.code,
+          plan.message,
+          targetInfo,
+        )
+      }
+      if (plan.action === 'backoff_verify') {
+        await this.waitInterruptible(plan.delaySeconds * 1000, run.runId, signal)
+        infraAttempts += 1
+        plan = { action: 'verify' }
+        continue
+      }
+      if (plan.action === 'verify') {
+        const verified = await verifyAuthProfile(live.handle, { definition: profile.definition, verification })
+        observation = verified.observation
+        await this.persistProfileObservation(session, verification, verified)
+        plan = planAuthEnsure({
+          capability: verification.capability,
+          fresh: false,
+          observation,
+          infraAttempts,
+          backoffSeconds: verification.verifyRetryBackoffSeconds,
+        })
+        continue
+      }
+      const occupied = await occupyAutoLoginBudget(db, {
+        targetId: run.targetId,
+        targetAccountId: run.targetAccountId,
+      })
+      if (!occupied.ok) {
+        return this.enterWaitingForAuth(
+          session,
+          runGrant,
+          policy,
+          occupancy,
+          (occupied.code as SessionErrorCode) ?? 'SESSION_AUTH_UNSUPPORTED',
+          occupied.message,
+          targetInfo,
+        )
+      }
+      const credential = await this.resolveLoginCredential(run)
+      if (!credential) {
+        return this.enterWaitingForAuth(
+          session,
+          runGrant,
+          policy,
+          occupancy,
+          'SESSION_AUTH_UNSUPPORTED',
+          '无法解析登录凭据',
+          targetInfo,
+        )
+      }
+      const submitted = await submitLoginCredentials(
+        live.handle,
+        targetInfo,
+        credential,
+        verification.loginTimeoutMs,
+      )
+      const verified = await verifyAuthProfile(live.handle, { definition: profile.definition, verification })
+      observation = verified.observation
+      await this.persistProfileObservation(session, verification, verified)
+      const passed =
+        observation.authState === 'AUTHENTICATED' &&
+        (verification.capability !== 'IDENTITY_VERIFIED' || observation.identityState === 'MATCH')
+      const liveAfter = await readLiveSessionAuth(db)
+      await recordAutoLoginOutcome(db, {
+        targetAccountId: run.targetAccountId,
+        result: passed ? 'success' : observation.identityState === 'MISMATCH' ? 'credential' : 'verify_failed',
+        sessionAuth: liveAfter.sessionAuth,
+      })
+      if (submitted && passed) {
+        await releaseAuthHold(db, { sessionId: session.id, workerId: this.options.workerId }).catch(() => undefined)
+        return { ok: true, session: (await getSessionById(db, session.id))! }
+      }
+      plan = planAuthEnsure({
+        capability: verification.capability,
+        fresh: false,
+        observation,
+        infraAttempts,
+        backoffSeconds: verification.verifyRetryBackoffSeconds,
+      })
+      if (plan.action === 'auto_login') {
+        return this.enterWaitingForAuth(
+          session,
+          runGrant,
+          policy,
+          occupancy,
+          observation.identityState === 'MISMATCH' ? 'AUTH_IDENTITY_MISMATCH' : 'SESSION_AUTH_UNSUPPORTED',
+          '自动登录后仍未通过核验',
+          targetInfo,
+        )
+      }
+    }
+  }
+
   private async ensureAuth(
     session: SessionRecord,
     run: RunSnapshot,
@@ -1805,7 +3125,10 @@ export class BrowserSessionManager {
       return { ok: false, code: 'SESSION_TARGET_MISSING', message: '目标系统不存在' }
     }
 
-    // 已认证则探针确认（不刷新 last_used_at）
+    const verification = run.authVerification
+    if (verification && verification.capability !== 'LEGACY') {
+      return this.ensureProfileAuth(session, run, runGrant, policy, occupancy, verification, signal)
+    }
     if (session.authState === 'AUTHENTICATED' || session.authState === 'EXPIRED') {
       const auth = await probeAuth(live.handle, targetInfo)
       signal?.throwIfAborted()
@@ -1820,6 +3143,17 @@ export class BrowserSessionManager {
     }
 
     signal?.throwIfAborted()
+    if (verification?.capability === 'LOGIN_VERIFIED') {
+      return this.enterWaitingForAuth(
+        session,
+        runGrant,
+        policy,
+        occupancy,
+        'SESSION_AUTH_UNSUPPORTED',
+        'LOGIN_VERIFIED 不能自动提交凭据',
+        targetInfo,
+      )
+    }
     const missingFields =
       !targetInfo.loginFields?.username ||
       !targetInfo.loginFields?.password ||

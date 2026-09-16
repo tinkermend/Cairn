@@ -193,6 +193,49 @@ export const INVARIANT_RULES = [
       return issues
     },
   },
+  {
+    id: 'INV009_SESSION_LEASE_SINGLE_INSERT',
+    articles: ['会话与租约'],
+    title: 'session_leases 的 ACTIVE 插入只允许 occupancy 写入器',
+    rationale: '会话 A 的占用事实只能由 claimSessionUse / transitionSessionUse 写入，禁止第二套插入器',
+    targetDir: 'packages/db/src',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      const normalized = rel.replaceAll('\\', '/')
+      if (normalized.endsWith('sessions/occupancy.ts')) return []
+      const issues = []
+      if (/insertRows\s*\(\s*\w+\s*,\s*sessionLeases\b/.test(content)) {
+        issues.push('生产代码禁止在 occupancy.ts 以外 insertRows(..., sessionLeases)')
+      }
+      if (/\.insert\s*\(\s*sessionLeases\s*\)/.test(content)) {
+        issues.push('生产代码禁止在 occupancy.ts 以外 .insert(sessionLeases)')
+      }
+      return issues
+    },
+  },
+  {
+    id: 'INV010_SESSION_LEASE_NO_LEGACY_WRITERS',
+    articles: ['会话与租约'],
+    title: '禁止复活旧 session_leases 写入器',
+    rationale: 'acquireSessionLease / expireStaleLeases 旧栈已删除，生产代码不得再引用',
+    targetDir: 'packages',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      if (rel.includes(`${sep}dist${sep}`) || rel.includes(`${sep}vendor${sep}`)) return []
+      const issues = []
+      for (const name of [
+        'acquireSessionLease',
+        'renewSessionLease',
+        'releaseSessionLease',
+        'expireStaleLeases',
+      ]) {
+        if (new RegExp(`\\b${name}\\b`).test(content)) {
+          issues.push(`生产代码严禁引用已删除的 ${name}`)
+        }
+      }
+      return issues
+    },
+  },
 ]
 
 export function runInvariantChecks() {

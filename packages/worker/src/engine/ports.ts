@@ -54,6 +54,7 @@ export type BrowserPort = {
     pageFrameObserved: boolean
   }>
   describeHold?(runId: string): Promise<{ pageRef?: PageRef; url?: string; authSignal?: AuthSignal; authObservation?: AuthObservation; contextRecoverable?: boolean } | undefined>
+  restoreAuthGate?(runId: string, grant: SessionGrant): Promise<boolean>
   recoverAuth?(
     grant: SessionGrant,
     input: { kind: 'auto' | 'manual'; runGrant: RunGrant; snapshot: RunSnapshot; resuming?: boolean; signal?: AbortSignal },

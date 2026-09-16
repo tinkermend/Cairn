@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm'
 import {
   SESSION_MAINTENANCE_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
@@ -660,6 +660,13 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
   if (input.purpose === 'EXECUTION' && input.owner.kind !== 'RUN') {
     return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: 'EXECUTION 只能由 Run 持有' }
   }
+  if (
+    input.purpose === 'EXECUTION' &&
+    input.owner.kind === 'RUN' &&
+    (!Number.isInteger(input.owner.runFencingToken) || input.owner.runFencingToken < 1)
+  ) {
+    return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: 'EXECUTION 必须带有效 Run fencing' }
+  }
   if (input.purpose === 'MAINTENANCE' && input.owner.kind !== 'SESSION_OPERATION') {
     return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: 'MAINTENANCE 只能由会话操作持有' }
   }
@@ -1243,7 +1250,7 @@ async function expireAuthWaitHolderLost(
   now: Date,
   maxRecoveries: number,
 ): Promise<void> {
-  const { sessionLeases, browserSessions, runs, sessionOperations, workers } = schemaFor(tx)
+  const { sessionLeases, browserSessions, runs, sessionOperations, workers, runLeases } = schemaFor(tx)
   await updateRows(
     tx,
     sessionLeases,
@@ -1273,6 +1280,43 @@ async function expireAuthWaitHolderLost(
     and(eq(browserSessions.id, lease.sessionId), inArray(browserSessions.status, ['OPEN', 'CREATING', 'CLOSING'])))
   if (lease.ownerKind === 'RUN' && lease.runId) {
     await lockRunRow(tx, lease.runId)
+    const [counted] = await tx
+      .select({ id: runLeases.id })
+      .from(runLeases)
+      .where(
+        and(
+          eq(runLeases.runId, lease.runId),
+          or(
+            eq(runLeases.status, 'ACTIVE'),
+            and(eq(runLeases.status, 'RELEASED'), eq(runLeases.releaseReason, 'waiting_for_auth')),
+          ),
+        ),
+      )
+      .orderBy(desc(runLeases.fencingToken))
+      .limit(1)
+    if (counted) {
+      await updateRows(
+        tx,
+        runLeases,
+        { status: 'EXPIRED', releasedAt: now, releaseReason: 'auth_wait_holder_lost' },
+        eq(runLeases.id, counted.id),
+      )
+    } else {
+      const [token] = await tx
+        .select({ t: sql<number>`COALESCE(MAX(${runLeases.fencingToken}), 0) + 1` })
+        .from(runLeases)
+        .where(eq(runLeases.runId, lease.runId))
+      await insertRows(tx, runLeases, {
+        id: newId(),
+        runId: lease.runId,
+        fencingToken: Number(token?.t ?? 1),
+        holderWorkerId: lease.holderWorkerId,
+        status: 'EXPIRED',
+        expiresAt: now,
+        releasedAt: now,
+        releaseReason: 'auth_wait_holder_lost',
+      })
+    }
     const failed = await countFailedRecoveries(tx, lease.runId)
     if (failed >= maxRecoveries) {
       await updateRows(

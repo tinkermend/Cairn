@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { SESSION_OCCUPANCY_PROTOCOL, type Step } from '@cairn/shared'
 import {
   DomainError,
-  acquireSessionLease,
   claimRun,
+  claimSessionUse,
   countFailedRecoveries,
   createRunWithSnapshot,
   createScenarioWithVersion,
@@ -340,26 +340,19 @@ describe('RunLease / fencing（集成）', { timeout: RF06_FULL ? 180_000 : 120_
       username: `u-${accountId.slice(0, 8)}`,
     })
     const created = await queueEcho(`会话fencing-${newId().slice(0, 8)}`)
-    const session = await requireCreatedSession(handle.db, {
+    const rejected = await claimSessionUse(handle.db, {
       key: { targetId, targetAccountId: accountId },
-      ownerWorkerId: 'sess-worker',
+      owner: { kind: 'RUN', runId: created.detail.id, runFencingToken: 0 },
+      purpose: 'EXECUTION',
+      holderWorkerId: 'sess-worker',
+      holderInstanceId: newId(),
+      leaseTtlSeconds: 30,
       reusePolicy: 'REUSE_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,
     })
-    await setSessionStatus(handle.db, {
-      sessionId: session.id,
-      expectedVersion: session.version,
-      status: 'OPEN',
-    })
-    const rejected = await acquireSessionLease(handle.db, {
-      sessionId: session.id,
-      runId: created.detail.id,
-      holderWorkerId: 'sess-worker',
-      leaseTtlSeconds: 30,
-      runFencingToken: 0,
-    })
     expect(rejected.ok).toBe(false)
+    if (!rejected.ok) expect(rejected.code).toBe('SESSION_NOT_CLAIMABLE')
   })
 
   it('失联 Worker 只把未关闭浏览器会话标 LOST，不动控制台账号', async () => {

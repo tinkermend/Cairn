@@ -56,6 +56,18 @@ try {
   })
   let target, account, scenario, sessionId
   const accountPath = () => `/targets/${target.id}/accounts/${account.id}`
+  async function resetAutoLoginBudget() {
+    const { targetAccountAuthBudget } = schemaFor(stack.db.db)
+    await stack.db.db
+      .update(targetAccountAuthBudget)
+      .set({
+        autoLoginCount: 0,
+        consecutiveFailures: 0,
+        pausedReason: null,
+        nextAllowedAt: null,
+      })
+      .where(eq(targetAccountAuthBudget.targetAccountId, account.id))
+  }
   async function operation(kind, extra = {}) {
     const view = await api(`${accountPath()}/session`)
     const expected = view.session
@@ -479,6 +491,9 @@ try {
   await check(
     'SM14 expired between steps recovers once without replaying completed output',
     async () => {
+      // One auto-login slot per window. Earlier cases may have used it; SM14
+      // must consume the slot so SM17C LOGIN falls through to human control.
+      await resetAutoLoginBudget()
       const created = await run([
         step('navigate', { url: `${lab.url}/app` }),
         step('echo', { value: 'kept' }, { outputKey: 'before' }),

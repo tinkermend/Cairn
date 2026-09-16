@@ -210,6 +210,7 @@ it('关闭排队后出现占用应失败，而不在运行结束后再关闭', a
     actor: { id: actorId },
   })
   const { sessionLeases } = schemaFor(h.db)
+  // 故障注入：CLOSE 仍 QUEUED 时 claimSessionUse 不能写 MAINTENANCE，只能直插非法占用。
   await h.db
     .insert(sessionLeases)
     .values({

@@ -50,6 +50,7 @@ import {
   computeContextVersion,
   decideAuthRecovery,
   deriveRecoveryRule,
+  authGateClosedError,
   isContextRecoverable,
   redactAuthUrl,
   resolveRunAuthRecovery,
@@ -207,6 +208,10 @@ export class ExecutionEngine {
         }
         sessionGrant = acquired.grant
       }
+      const authGate = { restored: false }
+      if (sessionGrant && this.browser?.restoreAuthGate) {
+        authGate.restored = await this.browser.restoreAuthGate(runId, sessionGrant)
+      }
 
       if (row.cancelRequestedAt) {
         await markRunCancelled(db, runId, { grant })
@@ -356,6 +361,7 @@ export class ExecutionEngine {
           overlay: detail.debugOverlay,
           mapSourceType,
           mapBudget,
+          authGate,
         })
         sessionMustClose = sessionMustClose || taint.hung
         if (finished === 'stop') return
@@ -513,6 +519,7 @@ export class ExecutionEngine {
     overlay?: DebugOverlay | null
     mapSourceType: MapRunSourceType
     mapBudget: CapturePhaseBudget
+    authGate?: { restored: boolean }
   }): Promise<'next' | 'stop' | 'held'> {
     const db = this.handle
     let attemptId = input.attemptId
@@ -539,47 +546,60 @@ export class ExecutionEngine {
         return 'stop'
       }
 
-      const before = await persistBeforeObservation({
-        db: this.handle,
-        grant: input.grant,
-        snapshot: input.snapshot,
-        step: input.step,
-        stepRunId: input.stepRunId,
-        attemptId,
-        sessionGrant: input.sessionGrant,
-        remainingStepMs: input.policy.timeoutMs,
-        budget: input.mapBudget,
-        sourceType: input.mapSourceType,
-        port: this.mapObservation,
-        signal: input.stop,
-      })
-      if (before === 'abort') return 'stop'
+      const skipDispatch = Boolean(input.authGate?.restored)
+      if (input.authGate?.restored) input.authGate.restored = false
+      let outcome: Awaited<ReturnType<ExecutionEngine['runExecutor']>>
+      let mapFacts: MapFactBatchItem[] | undefined
+      if (skipDispatch) {
+        outcome = {
+          kind: 'failed',
+          error: authGateClosedError('not_dispatched'),
+          timedOut: false,
+          aborted: false,
+        }
+      } else {
+        const before = await persistBeforeObservation({
+          db: this.handle,
+          grant: input.grant,
+          snapshot: input.snapshot,
+          step: input.step,
+          stepRunId: input.stepRunId,
+          attemptId,
+          sessionGrant: input.sessionGrant,
+          remainingStepMs: input.policy.timeoutMs,
+          budget: input.mapBudget,
+          sourceType: input.mapSourceType,
+          port: this.mapObservation,
+          signal: input.stop,
+        })
+        if (before === 'abort') return 'stop'
 
-      const stepStarted = input.clock.now()
-      const outcome = await this.runExecutor({
-        step: input.step,
-        input: input.input,
-        context,
-        timeoutMs: input.policy.timeoutMs,
-        stop: input.stop,
-        clock: input.clock,
-        sessionGrant: input.sessionGrant,
-        runId: input.runId,
-        stepRunId: input.stepRunId,
-        attemptId,
-        targetId: input.targetId,
-        evidencePolicy: input.evidencePolicy,
-        grant: input.grant,
-        snapshot: input.snapshot,
-      })
-      const remainingAfter = Math.max(0, input.policy.timeoutMs - (input.clock.now() - stepStarted))
-      const mapFacts = await this.collectAfterFacts({
-        input,
-        attemptId,
-        remainingStepMs: remainingAfter,
-        extraFacts: outcome.mapFacts,
-      })
-      if (outcome.hung) input.taint.hung = true
+        const stepStarted = input.clock.now()
+        outcome = await this.runExecutor({
+          step: input.step,
+          input: input.input,
+          context,
+          timeoutMs: input.policy.timeoutMs,
+          stop: input.stop,
+          clock: input.clock,
+          sessionGrant: input.sessionGrant,
+          runId: input.runId,
+          stepRunId: input.stepRunId,
+          attemptId,
+          targetId: input.targetId,
+          evidencePolicy: input.evidencePolicy,
+          grant: input.grant,
+          snapshot: input.snapshot,
+        })
+        const remainingAfter = Math.max(0, input.policy.timeoutMs - (input.clock.now() - stepStarted))
+        mapFacts = await this.collectAfterFacts({
+          input,
+          attemptId,
+          remainingStepMs: remainingAfter,
+          extraFacts: outcome.mapFacts,
+        })
+        if (outcome.hung) input.taint.hung = true
+      }
 
       // 成功也要看写入结果：取消请求抢先到达时 finishAttempt 会把它改写成取消，此时必须停手。
       if (outcome.kind === 'success') {
@@ -1037,7 +1057,7 @@ export class ExecutionEngine {
               autoUsed: existing?.autoRecoveriesUsed ?? 0,
               manualUsed: existing?.manualRecoveriesUsed ?? 0,
               limits,
-              contextRecoverable: page?.contextRecoverable !== false && isContextRecoverable({ rule, pageUrl: page?.url }),
+              contextRecoverable: page?.contextRecoverable ?? isContextRecoverable({ rule, pageUrl: page?.url }),
             }))
       : { kind: 'fail' as const, code: 'AUTH_CONTEXT_NOT_RECOVERABLE' as const }
     const base: AuthCheckpoint = resuming ? existing : {
@@ -1124,7 +1144,14 @@ export class ExecutionEngine {
             kind: 'manual', runGrant: input.grant, snapshot: input.snapshot, signal: input.stop,
           })
         }
-      } catch {
+      } catch (error) {
+        this.logger.error(
+          {
+            runId: input.runId,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          '认证恢复失败',
+        )
         if (input.stop.aborted) return stopAfterAbort()
         return fail('AUTH_CONTEXT_NOT_RECOVERABLE')
       }

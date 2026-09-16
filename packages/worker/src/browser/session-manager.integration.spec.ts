@@ -5,7 +5,6 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { Step } from '@cairn/shared'
 import {
-  acquireSessionLease,
   claimRun,
   claimSessionUse,
   enterRunWaitingForAuth,
@@ -17,6 +16,9 @@ import {
   forceLeaseExpiresAt,
   getLeaseById,
   getRun,
+  getSessionOperation,
+  requestMaintenanceOperation,
+  claimSessionOperation,
   getSessionById,
   newId,
   registerWorker,
@@ -30,7 +32,13 @@ import {
   targets,
   type DbHandle,
 } from '@cairn/db/testing'
-import { DEFAULT_SESSION_POLICY, DEV_CREDENTIAL_KEY, type RunGrant, type RunSnapshot } from '@cairn/shared'
+import {
+  DEFAULT_SESSION_POLICY,
+  DEV_CREDENTIAL_KEY,
+  SESSION_MAINTENANCE_PROTOCOL,
+  type RunGrant,
+  type RunSnapshot,
+} from '@cairn/shared'
 import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { BrowserRuntimeError, currentOccupancyGrant, type BrowserHandle } from './runtime'
@@ -282,6 +290,29 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     return { snapshot: (await getRun(handle.db, created.detail.id)).snapshot, grant }
   }
 
+  async function occupyExisting(input: {
+    targetId: string
+    accountId: string
+    runId: string
+    workerId: string
+    instanceId: string
+    fencingToken?: number
+  }) {
+    const claimed = await claimSessionUse(handle.db, {
+      key: { targetId: input.targetId, targetAccountId: input.accountId },
+      owner: { kind: 'RUN', runId: input.runId, runFencingToken: input.fencingToken ?? 1 },
+      purpose: 'EXECUTION',
+      holderWorkerId: input.workerId,
+      holderInstanceId: input.instanceId,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    if (!claimed.ok) throw new Error(claimed.message ?? claimed.code)
+    return claimed
+  }
+
   it('SM37 未发布规则的 Run 冻结为 LEGACY', async () => {
     const account = await makeAccount('password', 'legacy')
     const { snapshot } = await makeRunningSnapshot({ targetId, accountId: account })
@@ -400,12 +431,12 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       status: 'OPEN',
     })
     const { snapshot: run } = await makeRunningSnapshot({ targetId, accountId: account })
-    await acquireSessionLease(handle.db, {
-      sessionId: session.id,
+    await occupyExisting({
+      targetId,
+      accountId: account,
       runId: run.runId,
-      holderWorkerId: WORKER,
-      leaseTtlSeconds: 30,
-      runFencingToken: 1,
+      workerId: WORKER,
+      instanceId: WORKER_INSTANCE,
     })
 
     await handle.pool.query(`UPDATE workers SET heartbeat_expires_at = now() - interval '1 second' WHERE id = $1`, [
@@ -539,8 +570,8 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
        WHERE id = ${waitGrant.leaseId}
     `)
 
-    const n = await manager.reapAuthTimeouts()
-    expect(n).toBeGreaterThanOrEqual(1)
+    const reaped = await manager.reap()
+    expect(reaped.leasesExpired).toBeGreaterThanOrEqual(1)
     expect((await getRun(handle.db, run.runId)).status).toBe('FAILED')
     const sess = await getSessionById(handle.db, claimed.session.id)
     expect(sess?.status).toBe('OPEN')
@@ -680,12 +711,12 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       targetAccountId: busy,
       actor: { id: actorId },
     })
-    await acquireSessionLease(handle.db, {
-      sessionId: busySession.id,
+    await occupyExisting({
+      targetId,
+      accountId: busy,
       runId: busyRun.detail.id,
-      holderWorkerId: `${WORKER}-evict`,
-      leaseTtlSeconds: 30,
-      runFencingToken: 1,
+      workerId: `${WORKER}-evict`,
+      instanceId: evictInstance,
     })
 
     evictor.installLiveHandleForTest(idleSession.id, stubBrowserHandle(join(profileRoot, 'idle')))
@@ -756,12 +787,12 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
         targetAccountId: account,
         actor: { id: actorId },
       })
-      await acquireSessionLease(handle.db, {
-        sessionId: session.id,
+      await occupyExisting({
+        targetId,
+        accountId: account,
         runId: run.detail.id,
-        holderWorkerId: `${WORKER}-full`,
-        leaseTtlSeconds: 30,
-        runFencingToken: 1,
+        workerId: `${WORKER}-full`,
+        instanceId: fullInstance,
       })
     }
     const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: next })
@@ -1030,5 +1061,79 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       [WORKER],
     )
     expect(rows.map((row) => row.purpose)).toEqual(['AUTH_WAIT'])
+  })
+
+  it('SLW04 AUTH_WAIT 持有者失联经 reap() 计次并标 LOST', async () => {
+    const account = await makeAccount('password', 'slw04')
+    const session = await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: account },
+      ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+      ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
+    })
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: account })
+    const claimed = await occupyExisting({
+      targetId,
+      accountId: account,
+      runId: snapshot.runId,
+      workerId: WORKER,
+      instanceId: WORKER_INSTANCE,
+      fencingToken: grant.fencingToken,
+    })
+    const waitGrant = await enterRunWaitingForAuth(handle.db, {
+      grant,
+      sessionId: claimed.session.id,
+      workerId: WORKER,
+      workerInstanceId: WORKER_INSTANCE,
+      holdSeconds: 600,
+    })
+    if (!waitGrant) throw new Error('enter wait failed')
+    await forceLeaseExpiresAt(handle.db, waitGrant.leaseId, new Date(Date.now() - 5_000))
+    const reaped = await manager.reap()
+    expect(reaped.leasesExpired).toBeGreaterThanOrEqual(1)
+    const lease = await getLeaseById(handle.db, waitGrant.leaseId)
+    expect(lease?.status).toBe('EXPIRED')
+    expect(lease?.releaseReason).toBe('auth_wait_holder_lost')
+    expect((await getRun(handle.db, snapshot.runId)).status).toBe('RECOVERING')
+    expect((await getSessionById(handle.db, claimed.session.id))?.status).toBe('LOST')
+  })
+
+  it('SLW05 MAINTENANCE 过期经 reap() 使操作 FAILED', async () => {
+    const account = await makeAccount('password', 'slw05')
+    const maintInstance = newId()
+    const maintWorker = `${WORKER}-slw05`
+    await registerWorker(handle.db, {
+      workerId: maintWorker,
+      instanceId: maintInstance,
+      capacity: 4,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS, SESSION_MAINTENANCE_PROTOCOL],
+    })
+    await requestMaintenanceOperation(handle.db, {
+      key: { targetId, targetAccountId: account },
+      body: { kind: 'PREPARE', idempotencyKey: `slw05-${account}-xxxxxxxx` },
+      actor: { id: actorId },
+    })
+    const claimed = await claimSessionOperation(handle.db, {
+      workerId: maintWorker,
+      instanceId: maintInstance,
+      leaseTtlSeconds: 60,
+    })
+    expect(claimed?.grant?.leaseId).toBeTruthy()
+    if (!claimed?.grant) throw new Error('未领到维护占用')
+    await forceLeaseExpiresAt(handle.db, claimed.grant.leaseId, new Date(Date.now() - 5_000))
+    const reaped = await manager.reap()
+    expect(reaped.leasesExpired).toBeGreaterThanOrEqual(1)
+    expect((await getSessionOperation(handle.db, claimed.operation.id))?.status).toBe('FAILED')
+    expect((await getLeaseById(handle.db, claimed.grant.leaseId))?.releaseReason).toBe('lease_expired')
   })
 })

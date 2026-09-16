@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
-  acquireSessionLease,
+  claimSessionUse,
   claimRun,
   createRunWithSnapshot,
   createScenarioWithVersion,
@@ -147,6 +147,7 @@ describe('ExecutionEngine 被动地图采集', { timeout: 60_000 }, () => {
     const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: account },
       ownerWorkerId: workerId,
+      ownerWorkerInstanceId: workerInstanceId,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,
@@ -162,21 +163,24 @@ describe('ExecutionEngine 被动地图采集', { timeout: 60_000 }, () => {
       health: 'HEALTHY',
       authState: 'AUTHENTICATED',
     })
-    const lease = await acquireSessionLease(handle.db, {
-      sessionId: session.id,
-      runId,
+    const lease = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: account },
+      owner: { kind: 'RUN', runId, runFencingToken: fencingToken },
+      purpose: 'EXECUTION',
       holderWorkerId: workerId,
+      holderInstanceId: workerInstanceId,
       leaseTtlSeconds: 60,
-      runFencingToken: fencingToken,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
     })
-    expect(lease.ok).toBe(true)
-    if (!lease.ok) throw new Error('lease')
+    if (!lease.ok) throw new Error(lease.message ?? lease.code)
     return {
       sessionId: session.id,
-      leaseId: lease.lease.id,
-      generation: lease.lease.sessionGeneration,
-      sessionFencingToken: lease.lease.sessionFencingToken,
-      expiresAt: lease.lease.expiresAt.toISOString(),
+      leaseId: lease.grant.leaseId,
+      generation: lease.grant.generation,
+      sessionFencingToken: lease.grant.sessionFencingToken,
+      expiresAt: lease.grant.expiresAt,
     }
   }
 

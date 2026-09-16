@@ -6,7 +6,7 @@ import { newId } from '../id.js'
 import { schemaFor, afterSeconds, clockNow } from '../native.js'
 import {
   DomainError,
-  acquireSessionLease,
+  claimSessionUse,
   createRunWithSnapshot,
   createScenarioWithVersion,
   eq,
@@ -407,15 +407,19 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
       targetAccountId: slotAccount,
       actor: { id: actorId },
     })
-    const lease = await acquireSessionLease(handle.db, {
-      sessionId: session.id,
-      runId: created.detail.id,
+    const lease = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: slotAccount },
+      owner: { kind: 'RUN', runId: created.detail.id, runFencingToken: 1 },
+      purpose: 'EXECUTION',
       holderWorkerId: readyId,
+      holderInstanceId: readyInstance,
       leaseTtlSeconds: 30,
-      runFencingToken: 1,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
     })
-    expect(lease.ok).toBe(true)
-    if (lease.ok) await forceLeaseExpiresAt(handle.db, lease.lease.id, afterSeconds(handle.db, -1))
+    if (!lease.ok) throw new Error(lease.message ?? lease.code)
+    await forceLeaseExpiresAt(handle.db, lease.grant.leaseId, afterSeconds(handle.db, -1))
 
     const listed = await listWorkers(
       handle.db,
@@ -492,19 +496,23 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
       targetAccountId: accountId,
       actor: { id: actorId },
     })
-    const lease = await acquireSessionLease(handle.db, {
-      sessionId: session.id,
-      runId: created.detail.id,
+    const lease = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      owner: { kind: 'RUN', runId: created.detail.id, runFencingToken: 1 },
+      purpose: 'EXECUTION',
       holderWorkerId: workerId,
+      holderInstanceId: instanceId,
       leaseTtlSeconds: 30,
-      runFencingToken: 1,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
     })
-    expect(lease.ok).toBe(true)
+    if (!lease.ok) throw new Error(lease.message ?? lease.code)
     const live = await resolveWorkerRoute(handle.db, created.detail.id)
     expect(live.associationLive).toBe(true)
     expect(live.session?.id).toBe(session.id)
 
-    if (lease.ok) await forceLeaseExpiresAt(handle.db, lease.lease.id, afterSeconds(handle.db, -1))
+    await forceLeaseExpiresAt(handle.db, lease.grant.leaseId, afterSeconds(handle.db, -1))
     const staleLease = await resolveWorkerRoute(handle.db, created.detail.id)
     expect(staleLease.associationLive).toBe(false)
     expect(staleLease.session?.id).toBe(session.id)

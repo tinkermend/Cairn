@@ -39,6 +39,7 @@ describe('session 词表', () => {
     expect(SESSION_ERROR_CODES).toContain('BROWSER_UNAVAILABLE')
     expect(SESSION_ERROR_CODES).toContain('SESSION_TARGET_MISSING')
     expect(SESSION_ERROR_CODES).toContain('SESSION_POLICY_INVALID')
+    expect(SESSION_ERROR_CODES).toContain('SESSION_STOP_UNCONFIRMED')
     expect(sessionErrorCodeSchema.parse('SESSION_BUSY')).toBe('SESSION_BUSY')
     expect(() => sessionErrorCodeSchema.parse('UNKNOWN')).toThrow()
   })

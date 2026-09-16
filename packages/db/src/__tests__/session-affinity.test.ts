@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Step } from '@cairn/shared'
 import {
-  acquireSessionLease,
   claimAuthHold,
+  claimSessionUse,
   claimRun,
   closeWorkerSessions,
   computeRunPlacement,
@@ -357,13 +357,18 @@ describe('P4 后半 Affinity / 容量 / 失联隔离（集成）', { timeout: 12
     ])
     const run = await queueBound(busy)
     const grant = await forceGrantForRun(handle, run.detail.id, worker.workerId)
-    await acquireSessionLease(handle.db, {
-      sessionId: busySession.id,
-      runId: run.detail.id,
+    const claimed = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: busy },
+      owner: { kind: 'RUN', runId: run.detail.id, runFencingToken: grant.fencingToken },
+      purpose: 'EXECUTION',
       holderWorkerId: worker.workerId,
+      holderInstanceId: worker.instanceId,
       leaseTtlSeconds: 30,
-      runFencingToken: grant.fencingToken,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
     })
+    if (!claimed.ok) throw new Error(claimed.message ?? claimed.code)
     const authRun = await queueBound(held)
     await forceGrantForRun(handle, authRun.detail.id, worker.workerId)
     await claimAuthHold(handle.db, {
