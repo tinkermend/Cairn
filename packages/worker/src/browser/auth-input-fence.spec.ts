@@ -17,6 +17,18 @@ vi.mock('@cairn/db', async (original) => {
     }),
     getSessionById: async () => state.session,
     getRun: async () => state.run,
+    // 人工续跑要碰页面，生产路径要求先拿到 AUTH_WAIT 租约再装占用（不变量 2）。
+    findAuthWaitLeaseForRun: async () => ({
+      id: '00000000-0000-4000-8000-000000000005',
+      sessionId: '00000000-0000-4000-8000-000000000001',
+      sessionGeneration: 1,
+      sessionFencingToken: 1,
+      expiresAt: new Date(Date.now() + 30_000),
+      purpose: 'AUTH_WAIT',
+      ownerKind: 'RUN',
+      runId: '00000000-0000-4000-8000-000000000002',
+      operationId: null,
+    }),
     getWorkerById: async () => ({
       id: 'test-worker',
       instanceId: 'test-worker',
