@@ -1,0 +1,78 @@
+-- 0031_system_role_permissions_reconcile：按当前产品目录补齐系统角色权限
+--
+-- 存量库如果漏跑过往补种（session:view / session:control / run:delete 等），
+-- 管理员账号看起来仍是 admin，受管画面和登录控制却 403。
+-- 只插入缺失行，不删自定义角色，不改账号绑定。全文幂等。
+
+INSERT INTO "__SCHEMA__".console_role_permissions (console_role_id, permission)
+SELECT r.id, p.permission
+FROM "__SCHEMA__".console_roles r
+JOIN (VALUES
+  ('admin', 'account:read'),
+  ('admin', 'account:write'),
+  ('admin', 'account:delete'),
+  ('admin', 'role:read'),
+  ('admin', 'role:write'),
+  ('admin', 'role:delete'),
+  ('admin', 'workflow:read'),
+  ('admin', 'workflow:write'),
+  ('admin', 'workflow:delete'),
+  ('admin', 'run:read'),
+  ('admin', 'run:execute'),
+  ('admin', 'run:cancel'),
+  ('admin', 'run:review'),
+  ('admin', 'run:delete'),
+  ('admin', 'session:read'),
+  ('admin', 'session:view'),
+  ('admin', 'session:control'),
+  ('admin', 'session:dispose'),
+  ('admin', 'target:read'),
+  ('admin', 'target:write'),
+  ('admin', 'target:delete'),
+  ('admin', 'service:read'),
+  ('admin', 'service:write'),
+  ('admin', 'settings:read'),
+  ('admin', 'settings:write'),
+  ('admin', 'audit:read'),
+  ('admin', 'audit:login'),
+  ('admin', 'ai:execute'),
+  ('admin', 'ai:assist'),
+  ('admin', 'platform-config:read'),
+  ('admin', 'platform-config:write'),
+  ('author', 'target:read'),
+  ('author', 'target:write'),
+  ('author', 'target:delete'),
+  ('author', 'workflow:read'),
+  ('author', 'workflow:write'),
+  ('author', 'workflow:delete'),
+  ('author', 'run:read'),
+  ('author', 'run:execute'),
+  ('author', 'run:cancel'),
+  ('author', 'run:review'),
+  ('author', 'ai:execute'),
+  ('author', 'ai:assist'),
+  ('author', 'session:read'),
+  ('author', 'session:view'),
+  ('author', 'session:control'),
+  ('author', 'settings:read'),
+  ('operator', 'target:read'),
+  ('operator', 'workflow:read'),
+  ('operator', 'run:read'),
+  ('operator', 'run:execute'),
+  ('operator', 'run:cancel'),
+  ('operator', 'run:review'),
+  ('operator', 'ai:execute'),
+  ('operator', 'ai:assist'),
+  ('operator', 'session:read'),
+  ('operator', 'session:view'),
+  ('operator', 'session:control'),
+  ('operator', 'session:dispose'),
+  ('operator', 'settings:read'),
+  ('viewer', 'target:read'),
+  ('viewer', 'workflow:read'),
+  ('viewer', 'run:read'),
+  ('viewer', 'settings:read'),
+  ('viewer', 'ai:assist')
+) AS p(role_key, permission) ON p.role_key = r.key
+WHERE r.kind = 'system'
+ON CONFLICT DO NOTHING;

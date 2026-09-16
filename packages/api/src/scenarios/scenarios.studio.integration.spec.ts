@@ -2,7 +2,7 @@ import { ConflictException, ForbiddenException } from '@nestjs/common'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getPlatformConfig } from '@cairn/db'
 import { consoleAccounts, newId, openIsolatedDb, type DbHandle } from '@cairn/db/testing'
-import { DEV_CREDENTIAL_KEY, type Step } from '@cairn/shared'
+import { authoringSteps, DEV_CREDENTIAL_KEY, type Step } from '@cairn/shared'
 import type { RequestAccount } from '../common/request-account'
 import { ScenariosService } from './scenarios.service'
 import { TargetsService } from '../targets/targets.service'
@@ -125,6 +125,8 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
       assist: 'closed',
       stepTypesExtra: ['select', 'keyboard', 'wait'],
     })
+    expect(capabilities.authoringSchemaVersions).toEqual([1, 2])
+    expect(capabilities.actionModules).toBe(true)
     const aiTypes = ['ai_action', 'ai_extract', 'ai_assert']
     const executable = aiTypes.filter((type) => capabilities.executableStepTypes.includes(type))
     const blocked = aiTypes.filter((type) =>
@@ -140,12 +142,12 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
     const nextDoc = {
       schemaVersion: 1 as const,
       inputs: [],
-      steps: [first.document.steps[0]!, extractStep()],
+      steps: [authoringSteps(first.document)[0]!, extractStep()],
     }
     const saved = await scenarios.saveDraft(created.id, { revision: first.revision, document: nextDoc }, actor)
     expect(saved.draft?.revision).toBe(first.revision + 1)
-    expect(saved.draft?.document.steps.map((step) => step.type)).toEqual(['navigate', 'extract'])
-    expect(saved.draft?.document.steps[1]).toMatchObject({ outputKey: 'extracted' })
+    expect(authoringSteps(saved.draft!.document).map((step) => step.type)).toEqual(['navigate', 'extract'])
+    expect(authoringSteps(saved.draft!.document)[1]).toMatchObject({ outputKey: 'extracted' })
 
     try {
       await scenarios.saveDraft(
@@ -178,8 +180,8 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
     }
 
     const latest = await scenarios.get(created.id)
-    expect(latest.draft?.document.steps).toHaveLength(2)
-    expect(latest.draft?.document.steps[1]?.type).toBe('extract')
+    expect(authoringSteps(latest.draft!.document)).toHaveLength(2)
+    expect(authoringSteps(latest.draft!.document)[1]?.type).toBe('extract')
   })
 
   it('试跑只跑已保存草稿，幂等键复用同一 Run，改草稿不改旧 Snapshot', async () => {
@@ -202,14 +204,14 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
         document: {
           schemaVersion: 1,
           inputs: [],
-          steps: [created.draft!.document.steps[0]!, extractStep('extracted2')],
+          steps: [authoringSteps(created.draft!.document)[0]!, extractStep('extracted2')],
         },
       },
       actor,
     )
-    expect(saved.draft?.document.steps).toHaveLength(2)
+    expect(authoringSteps(saved.draft!.document)).toHaveLength(2)
     const after = await scenarios.get(created.id)
-    expect(after.draft?.document.steps.map((step) => step.outputKey)).toEqual([undefined, 'extracted2'])
+    expect(authoringSteps(after.draft!.document).map((step) => step.outputKey)).toEqual([undefined, 'extracted2'])
 
     const runs = new RunsService(handle)
     const live = await runs.get(first.detail.id)
@@ -227,12 +229,12 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
         document: {
           schemaVersion: 1,
           inputs: [],
-          steps: [created.draft!.document.steps[0]!, aiActionStep()],
+          steps: [authoringSteps(created.draft!.document)[0]!, aiActionStep()],
         },
       },
       actor,
     )
-    expect(saved.draft?.document.steps.some((step) => step.type === 'ai_action')).toBe(true)
+    expect(authoringSteps(saved.draft!.document).some((step) => step.type === 'ai_action')).toBe(true)
     await expect(scenarios.trial(saved.id, { revision: saved.draft!.revision }, actor)).rejects.toBeInstanceOf(
       ForbiddenException,
     )
@@ -243,6 +245,6 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
       expect((error as ForbiddenException).getResponse()).toMatchObject({ code: 'AI_EXECUTE_FORBIDDEN' })
     }
     const latest = await scenarios.get(created.id)
-    expect(latest.draft?.document.steps.some((step) => step.type === 'ai_action')).toBe(true)
+    expect(authoringSteps(latest.draft!.document).some((step) => step.type === 'ai_action')).toBe(true)
   })
 })

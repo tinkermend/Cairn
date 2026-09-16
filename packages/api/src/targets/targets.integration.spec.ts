@@ -48,6 +48,14 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
         [`${prefix}%`],
       )
       await handle.pool.query(
+        `DELETE FROM ${schema}.target_account_auth_budget
+         WHERE target_account_id IN (
+           SELECT id FROM ${schema}.target_accounts
+           WHERE target_id IN (SELECT id FROM ${schema}.targets WHERE code LIKE $1)
+         )`,
+        [`${prefix}%`],
+      )
+      await handle.pool.query(
         `DELETE FROM ${schema}.target_accounts
          WHERE target_id IN (SELECT id FROM ${schema}.targets WHERE code LIKE $1)`,
         [`${prefix}%`],

@@ -30,6 +30,9 @@ chrome-profiles/
 
 # ── 内部文档，另行传递 ─────────────────────────
 docs/arch/
+docs/spec/
+docs/reviews/
+docs/plan/
 # 含明文凭据的部署记录（远端 shsnc-ah3、本机 Podman 等），不入库
 docs/deploy/
 # 联调 / L3 外部目标系统清单：URL、账号、口令，不入库
@@ -37,7 +40,9 @@ docs/targets/
 
 # 指令草稿，可能含凭据
 .prompt
+.prompt.md
 *.prompt
+*.prompt.md
 
 # ── 环境与密钥 ────────────────────────────────
 .env
@@ -55,6 +60,9 @@ deploy/.env
 .data/
 pgdata/
 minio-data/
+
+# 迁移领号锁（正常放在 .git；无 git 时会落在迁移目录）
+packages/db/migrations/.alloc.lock
 
 # ── 日志与临时文件 ──────────────────────────────
 .run/
@@ -87,6 +95,12 @@ tests/*
 !tests/target-snc-dpm/**
 !tests/harness/
 !tests/harness/**
+!tests/target-module-lab/
+!tests/target-module-lab/**
+!tests/session-management-e2e/
+!tests/session-management-e2e/**
+!tests/operational-map/
+!tests/operational-map/**
 tests/target-snc-dpm/catalog.local.json
 
 # ── 整仓二开快照 ────────────────────────────────

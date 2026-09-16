@@ -166,6 +166,14 @@ export function AssistantResultView({
       </div>
     )
   }
+  if (result.kind === 'knowledge_proposal') return (
+    <div className='space-y-3'>
+      <p>{result.reason}</p>
+      <p className='text-small text-muted-foreground'>知识建议已保存。请在场景中核对完整步骤与来源，再显式接受到草稿。</p>
+      <p className='break-all text-small'>建议编号：{result.proposalId}</p>
+      {result.diffs.length ? <details><summary>查看具体变更</summary><pre className='max-h-80 overflow-auto whitespace-pre-wrap break-all text-small'>{JSON.stringify(result.diffs, null, 2)}</pre></details> : null}
+    </div>
+  )
   return (
     <div className='space-y-3'>
       <p>{result.reason}</p>

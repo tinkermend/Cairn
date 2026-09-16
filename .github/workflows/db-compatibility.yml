@@ -1,0 +1,61 @@
+name: Database compatibility
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: database-compatibility-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cairn
+          POSTGRES_PASSWORD: cairn
+          POSTGRES_DB: cairn
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cairn"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: cairn-contract
+          MYSQL_ROOT_HOST: '%'
+          MYSQL_DATABASE: cairn_portability
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pcairn-contract"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    env:
+      CAIRN_TEST_MYSQL_PASSWORD: cairn-contract
+      CAIRN_TEST_MYSQL_PORT: 3307
+      CAIRN_DB_HOST: 127.0.0.1
+      CAIRN_DB_PORT: 5432
+      CAIRN_DB_NAME: cairn
+      CAIRN_DB_USER: cairn
+      CAIRN_DB_PASSWORD: cairn
+      CAIRN_DB_SCHEMA: cairn
+      CAIRN_ENV: development
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:db:compatibility

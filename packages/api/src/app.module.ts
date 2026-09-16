@@ -22,7 +22,10 @@ import { AssistantModule } from './assistant/assistant.module'
 import { PlatformConfigModule } from './platform-config/platform-config.module'
 import { RunsModule } from './runs/runs.module'
 import { ScenariosModule } from './scenarios/scenarios.module'
+import { ActionModulesModule } from './action-modules/action-modules.module'
 import { TargetsModule } from './targets/targets.module'
+import { MapModule } from './map/map.module'
+import { SchedulesModule } from './schedules/schedules.module'
 
 @Module({
   imports: [
@@ -38,7 +41,10 @@ import { TargetsModule } from './targets/targets.module'
     AuthModule,
     RbacModule,
     TargetsModule,
+    MapModule,
+    SchedulesModule,
     ScenariosModule,
+    ActionModulesModule,
     AuthoringModule,
     RecordingsModule,
     RunsModule,

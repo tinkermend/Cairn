@@ -1,6 +1,6 @@
 import { schemaFor } from '../native.js'
 import { updateRows } from '../native.js'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import {
   CANCELLED_ATTEMPT_ERROR,
   isFinishedRunStatus,
@@ -29,6 +29,7 @@ import { attempts, evidences, runs, stepRuns } from '../schema/execution.js'
 import { settleRunEvidence } from '../objects/evidence.js'
 import { appendRunEvents } from '../observe/events.js'
 import { conflict, notFound } from './errors.js'
+import { appendOrphanAfterGapTx } from '../map/attempt-facts.js'
 import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.js'
 
 const RUN_RECOVERY_EXHAUSTED: RunLeaseErrorCode = 'RUN_RECOVERY_EXHAUSTED'
@@ -303,6 +304,17 @@ export async function reconcileOrphanAttempts(
               safeMessage: '接管时副作用步骤结果未确认',
             },
           })
+          if ('grant' in input) {
+            await appendOrphanAfterGapTx(tx as unknown as Db, {
+              grant: input.grant,
+              snapshot,
+              scenarioVersionId: snapshot.scenarioVersionId,
+              runId,
+              stepRunId: stepRow.id,
+              attemptId: attempt.id,
+              now,
+            })
+          }
         }
         await tx
           .update(stepRuns)
@@ -329,6 +341,17 @@ export async function reconcileOrphanAttempts(
           status: 'CANCELLED',
           error: CANCELLED_ATTEMPT_ERROR,
         })
+        if ('grant' in input) {
+          await appendOrphanAfterGapTx(tx as unknown as Db, {
+            grant: input.grant,
+            snapshot,
+            scenarioVersionId: snapshot.scenarioVersionId,
+            runId,
+            stepRunId: stepRow.id,
+            attemptId: attempt.id,
+            now,
+          })
+        }
       }
     }
     return 'continue'
@@ -343,6 +366,20 @@ export async function settleRunCancellationTx(
 ): Promise<'pending' | 'cancelled' | 'needs_review'> {
   if (await findActiveLeaseForRun(tx, runId)) return 'pending'
   const outcome = await reconcileOrphanAttempts(tx, { recoverRunId: runId })
+  // AUTH_WAIT has no active RunLease. Cancellation must revoke its separate
+  // session occupation and human control in this same terminal-state transaction.
+  const { browserSessions, sessionLeases } = schemaFor(tx)
+  const authLeases = await tx.select({ sessionId: sessionLeases.sessionId }).from(sessionLeases)
+    .where(and(eq(sessionLeases.runId, runId), eq(sessionLeases.purpose, 'AUTH_WAIT'), eq(sessionLeases.status, 'ACTIVE')))
+  await tx.update(browserSessions).set({
+    authHoldWorkerId: null, authHoldExpiresAt: null, authHoldRunId: null,
+    authHoldSessionGeneration: null, authHoldWorkerInstanceId: null,
+    authControlActorId: null, authControlTokenHash: null, authControlExpiresAt: null,
+    authControlPageId: null, authControlEpoch: sql`${browserSessions.authControlEpoch} + 1`, updatedAt: now,
+  }).where(or(eq(browserSessions.authHoldRunId, runId),
+    authLeases.length ? inArray(browserSessions.id, authLeases.map(lease => lease.sessionId)) : undefined))
+  await tx.update(sessionLeases).set({ status: 'REVOKED', releasedAt: now, releaseReason: 'run_cancelled' })
+    .where(and(eq(sessionLeases.runId, runId), eq(sessionLeases.purpose, 'AUTH_WAIT'), eq(sessionLeases.status, 'ACTIVE')))
   if (outcome !== 'continue') return outcome
   const { runs, stepRuns } = schemaFor(tx)
   await tx.update(runs).set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
@@ -394,6 +431,8 @@ export async function reviewRun(
   await settleRunEvidence(db, input.runId, { pendingTtlSeconds: 3600, maxUploadAttempts: 3 }).catch(
     () => undefined,
   )
+  const { projectModuleInvocationResults } = await import('../action-modules/quality.js')
+  await projectModuleInvocationResults(db, input.runId).catch(() => undefined)
 }
 
 export { resumeRunAfterAuth } from '../sessions/auth-control.js'

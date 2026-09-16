@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common'
 import { config } from '../config/env'
 import { credentialKeyFromEnv, LocalSecretProvider } from '../secrets/local-secret-provider'
+import { WorkerInternalClient } from '../runs/worker-internal.client'
 import { TargetsController } from './targets.controller'
 import { TargetsService } from './targets.service'
 
@@ -11,6 +12,7 @@ import { TargetsService } from './targets.service'
       provide: LocalSecretProvider,
       useFactory: () => new LocalSecretProvider(credentialKeyFromEnv(config.CAIRN_CREDENTIAL_KEY)),
     },
+    WorkerInternalClient,
     TargetsService,
   ],
   exports: [TargetsService],

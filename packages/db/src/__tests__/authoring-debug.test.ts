@@ -110,6 +110,7 @@ describe.each(DRIVERS)('%s 编写调试与 HOLDING 状态', { timeout: 30_000 },
       actor,
       document: {
         schemaVersion: 1,
+        inputs: [],
         steps: [echoStep, secondStep],
       },
     })
@@ -143,6 +144,7 @@ describe.each(DRIVERS)('%s 编写调试与 HOLDING 状态', { timeout: 30_000 },
       actor,
       document: {
         schemaVersion: 1,
+        inputs: [],
         steps: [echoStep, secondStep],
       },
     })
@@ -216,6 +218,7 @@ describe.each(DRIVERS)('%s 编写调试与 HOLDING 状态', { timeout: 30_000 },
       actor,
       document: {
         schemaVersion: 1,
+        inputs: [],
         steps: [echoStep],
       },
     })
@@ -302,6 +305,7 @@ describe.each(DRIVERS)('%s 编写调试与 HOLDING 状态', { timeout: 30_000 },
       actor,
       document: {
         schemaVersion: 1,
+        inputs: [],
         steps: [echoStep, secondStep],
       },
     })
@@ -353,6 +357,7 @@ describe.each(DRIVERS)('%s 编写调试与 HOLDING 状态', { timeout: 30_000 },
       actor,
       document: {
         schemaVersion: 1,
+        inputs: [],
         steps: [echoStep],
       },
     })
@@ -408,7 +413,7 @@ describe.each(DRIVERS)('%s 编写调试与 HOLDING 状态', { timeout: 30_000 },
     await saveScenarioDraft(handle.db, scenario.id, {
       revision: 1,
       actor,
-      document: { schemaVersion: 1, steps: [echoStep, secondStep] },
+      document: { schemaVersion: 1, inputs: [], steps: [echoStep, secondStep] },
     })
     const trial = await createTrialRunFromDraft(handle.db, scenario.id, { revision: 2, actor })
     const workerId = `w-${newId()}`

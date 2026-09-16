@@ -11,6 +11,7 @@ import {
   createRunWithSnapshot,
   createScenarioWithVersion,
   getRun,
+  findLiveSession,
   listRunEvidence,
   newId,
   openIsolatedDb,
@@ -21,6 +22,7 @@ import {
   type DbHandle,
 } from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, type Step } from '@cairn/shared'
+import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { createBrowserPort } from './port.js'
 import { BrowserSessionManager } from './session-manager.js'
@@ -184,11 +186,13 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
       instanceId: workerInstanceId,
       capacity: 4,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
     manager = new BrowserSessionManager(
       handle,
       {
         workerId,
+        workerInstanceId,
         profileRoot: mkdtempSync(join(tmpdir(), 'cairn-dpm-')),
         headless: true,
         maxSessions: 2,
@@ -207,7 +211,7 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
     if (objectDir) rmSync(objectDir, { recursive: true, force: true })
   }, 30_000)
 
-  it('自动登录后只读提取「数据库」菜单', async () => {
+  it('自动登录后只读提取「数据库」菜单，第二次运行复用同一会话', async () => {
     const steps: Step[] = [
       {
         id: newId(),
@@ -253,6 +257,15 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
     const detail = await getRun(handle.db, created.detail.id)
     expect(detail.status).toBe('SUCCEEDED')
     expect(String(detail.context.module)).toContain('数据库')
+    const firstSession = await findLiveSession(handle.db, { targetId, targetAccountId: accountId })
+    const repeated = await createRunWithSnapshot(handle.db, { scenarioId: scenario.id, targetAccountId: accountId, actor: { id: actorId } })
+    const repeatedGrant = await claimRun(handle, { workerId, instanceId: workerInstanceId, leaseTtlSeconds: 90 })
+    expect(repeatedGrant?.runId).toBe(repeated.detail.id)
+    await engine.execute(repeated.detail.id, { grant: repeatedGrant! })
+    const repeatedDetail = await getRun(handle.db, repeated.detail.id)
+    expect(repeatedDetail.status).toBe('SUCCEEDED')
+    expect(String(repeatedDetail.context.module)).toContain('数据库')
+    expect((await findLiveSession(handle.db, { targetId, targetAccountId: accountId }))?.id).toBe(firstSession?.id)
   })
 
   it('缺口令走 WAITING_FOR_AUTH，不把 Run 写成 FAILED', async () => {

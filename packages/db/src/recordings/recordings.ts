@@ -31,6 +31,7 @@ import { consoleAccounts } from '../schema/console.js'
 import { recordingDrafts } from '../schema/authoring.js'
 import { targets } from '../schema/targets.js'
 import { cursorFilter, paginateResults } from '../cursor.js'
+import { continueRecordingMapIngest, ensureRecordingMapIngestTx } from './map-ingest.js'
 
 function iso(value: Date): string {
   return value.toISOString()
@@ -95,6 +96,9 @@ export async function createRecordingDraft(
     if (input.bindingId) {
       await attachBindingDraft(db, input.bindingId, actor.id, existing.id)
     }
+    if (input.mapIngest) {
+      await continueRecordingMapIngest(db, { recordingDraftId: existing.id })
+    }
     return { created: false, detail: await toDetail(db, existing.id, actor.id) }
   }
 
@@ -132,6 +136,9 @@ export async function createRecordingDraft(
       if (input.bindingId) {
         await attachBindingDraft(tx as unknown as Db, input.bindingId, actor.id, id)
       }
+      if (input.mapIngest) {
+        await ensureRecordingMapIngestTx(tx as unknown as Db, id, now)
+      }
     })
   } catch (error) {
     const mapped = mapRestriction(error)
@@ -140,6 +147,9 @@ export async function createRecordingDraft(
       if (raced) {
         if (raced.deletedAt) resourceDeletedConflict()
         if (raced.payloadDigest === digest) {
+          if (input.mapIngest) {
+            await continueRecordingMapIngest(db, { recordingDraftId: raced.id })
+          }
           return { created: false, detail: await toDetail(db, raced.id, actor.id) }
         }
       }
@@ -148,6 +158,9 @@ export async function createRecordingDraft(
     throw error
   }
 
+  if (input.mapIngest) {
+    await continueRecordingMapIngest(db, { recordingDraftId: id })
+  }
   return { created: true, detail: await toDetail(db, id, actor.id) }
 }
 

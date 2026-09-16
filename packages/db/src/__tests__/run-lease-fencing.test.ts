@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import type { Step } from '@cairn/shared'
+import { SESSION_OCCUPANCY_PROTOCOL, type Step } from '@cairn/shared'
 import {
   DomainError,
   acquireSessionLease,
@@ -16,7 +16,7 @@ import {
   markLostWorkers,
   markSessionsLostForWorkers,
   openIsolatedDb,
-  registerWorker,
+  registerWorker as registerWorkerRaw,
   renewRunLease,
   requestRunCancel,
   reviewRun,
@@ -34,6 +34,8 @@ import { targetAccounts, targets } from '../schema/targets.js'
 import { browserSessions } from '../schema/session.js'
 import { forceGrantForRun, seedWorker, type SeededWorker } from './lease-harness.js'
 import { eq } from 'drizzle-orm'
+
+const registerWorker: typeof registerWorkerRaw = (db, input) => registerWorkerRaw(db, { protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL], ...input })
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_lease`
 const echoStep: Step = {

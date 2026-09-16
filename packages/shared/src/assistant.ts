@@ -20,6 +20,7 @@ export const ASSISTANT_CAPABILITY_IDS = [
   'run.diagnose',
   'scenario.explain',
   'scenario.propose-step',
+  'scenario.compose_with_knowledge',
   'platform.guide',
 ] as const
 export type AssistantCapabilityId = (typeof ASSISTANT_CAPABILITY_IDS)[number]
@@ -116,6 +117,12 @@ export const ASSISTANT_CAPABILITIES: readonly AssistantCapabilityDef[] = [
     label: '单步修改建议',
     requiredPermissions: ['ai:assist', 'workflow:read', 'workflow:write', 'target:read'],
     description: '为已保存草稿中的现有步骤生成受限候选',
+  },
+  {
+    id: 'scenario.compose_with_knowledge',
+    label: '知识辅助编写',
+    requiredPermissions: ['ai:assist', 'workflow:read', 'workflow:write', 'target:read', 'map:read'],
+    description: '基于已授权术语、地图与已发布做法生成可编辑草稿建议',
   },
   {
     id: 'platform.guide',
@@ -220,6 +227,46 @@ export const assistantStepChangeSchema = z.discriminatedUnion('kind', [
   }),
 ])
 export type AssistantStepChange = z.infer<typeof assistantStepChangeSchema>
+
+export const assistantKnowledgeProposalSchema = z.strictObject({
+  kind: z.literal('knowledge_proposal'),
+  proposalId: entityIdSchema,
+  status: z.enum([
+    'proposed',
+    'needs_input',
+    'unsupported',
+    'failed',
+    'accepted',
+    'stale',
+    'rejected',
+    'generating',
+  ]),
+  reason: z.string().min(1).max(1024),
+  diffs: z
+    .array(
+      z.strictObject({
+        fieldPath: z.array(z.string().min(1)).max(8),
+        from: z.unknown().optional(),
+        to: z.unknown().optional(),
+      }),
+    )
+    .max(64),
+  diagnostics: z
+    .array(
+      z.strictObject({
+        code: z.string().min(1).max(64),
+        message: z.string().min(1).max(512),
+        fieldPath: z.array(z.string()).max(8).optional(),
+      }),
+    )
+    .max(32),
+  sources: z.array(z.unknown()).max(16),
+  unknowns: z.array(z.string().min(1).max(256)).max(16),
+  executable: z.boolean(),
+  draftRevision: z.number().int().min(1),
+  documentDigest: z.string().regex(/^[a-f0-9]{64}$/),
+})
+export type AssistantKnowledgeProposal = z.infer<typeof assistantKnowledgeProposalSchema>
 
 export const assistantProposalSchema = z.strictObject({
   kind: z.literal('proposal'),
@@ -389,6 +436,7 @@ export const assistantResultSchema = z.discriminatedUnion('kind', [
   assistantDiagnosisSchema,
   assistantExplanationSchema,
   assistantProposalSchema,
+  assistantKnowledgeProposalSchema,
   assistantGuideSchema,
   assistantClarifySchema,
   assistantUnsupportedSchema,
@@ -520,6 +568,8 @@ export function availableAssistantCapabilities(granted: readonly string[]): Assi
       requiredContext:
         capability.id === 'run.diagnose'
           ? ['runId']
+          : capability.id === 'scenario.compose_with_knowledge'
+            ? ['scenarioId', 'draftRevision']
           : capability.id.startsWith('scenario.')
             ? ['scenarioId']
             : [],
@@ -531,6 +581,7 @@ const GUIDE_QUESTION = /在哪|哪里|怎么看|如何配置|入口|菜单|怎�
 const DIAGNOSE_QUESTION = /为什么失败|失败原因|一直等|慢在|诊断这次|分析本次|这次运行/
 const EXPLAIN_QUESTION = /这个场景|这一步|在做什么|解释步骤|引用不到/
 const PROPOSE_QUESTION = /改成|写清楚|修改建议|改用前一步|把.{1,16}改/
+const KNOWLEDGE_QUESTION = /按知识|根据术语|用做法|根据地图|知识建议|补全场景|按订单号|根据已有知识/
 
 const GUIDE_TOPIC_MATCHES: readonly { topic: AssistantGuideTopic; pattern: RegExp }[] = [
   { topic: 'accounts', pattern: /目标账号|账号表|登录账号/ },
@@ -560,6 +611,7 @@ export function inferAssistantCapability(question: string): AssistantCapabilityI
   if (DIAGNOSE_QUESTION.test(question)) hits.push('run.diagnose')
   if (EXPLAIN_QUESTION.test(question)) hits.push('scenario.explain')
   if (PROPOSE_QUESTION.test(question)) hits.push('scenario.propose-step')
+  if (KNOWLEDGE_QUESTION.test(question)) hits.push('scenario.compose_with_knowledge')
   return hits.length === 1 ? hits[0]! : null
 }
 
@@ -594,7 +646,7 @@ export function routeAssistantTurn(input: {
     return {
       type: 'unsupported',
       reasonCode: 'TASK_UNSUPPORTED',
-      message: '一期只支持运行诊断、场景解释、单步修改建议和功能导览。请选择其中一项。',
+      message: '当前支持运行诊断、场景解释、单步修改建议、知识辅助编写和功能导览。请选择其中一项。',
     }
   }
   if (!input.available.includes(chosen)) {
@@ -641,6 +693,16 @@ export function routeAssistantTurn(input: {
         type: 'clarify',
         missingFields: [!slots.stepId ? 'stepId' : 'draftRevision'],
         question: '请先保存草稿并选中要修改的步骤。',
+      }
+    }
+  }
+  if (chosen === 'scenario.compose_with_knowledge') {
+    slots.changeRequest = input.question
+    if (!slots.draftRevision) {
+      return {
+        type: 'clarify',
+        missingFields: ['draftRevision'],
+        question: '请先保存草稿后再生成知识建议。',
       }
     }
   }

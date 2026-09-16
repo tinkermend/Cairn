@@ -21,6 +21,7 @@ import {
 } from '../index.js'
 
 const fillTarget = {
+  framePath: [],
   candidates: [{ by: 'css' as const, value: '#amount' }],
 }
 
@@ -91,7 +92,7 @@ const observation: RunObservation = {
             startedAt: '2026-09-14T00:00:01.000Z',
             finishedAt: '2026-09-14T00:00:01.500Z',
             output: { secret: 'hidden' },
-            error: { code: 'TIMEOUT', message: 'timeout' },
+            error: { code: 'TIMEOUT', category: 'TIMEOUT', retryable: true, safeMessage: 'timeout' },
           },
           {
             id: '99999999-9999-4999-8999-999999999999',
@@ -106,11 +107,20 @@ const observation: RunObservation = {
       },
     ],
     lease: null,
+    debugMode: 'runThrough',
     placement: {
       state: 'claimed',
       sessionId: null,
       ownerWorkerId: null,
       sessionStatus: null,
+      waitReason: null,
+      occupyingRunId: null,
+      occupyingOperationId: null,
+      targetWorkerId: null,
+      profileAffinityUntil: null,
+      generation: null,
+      acquireReason: null,
+      profileFallback: null,
     },
   },
   evidence: { items: [] },
@@ -187,6 +197,17 @@ describe('助手路由', () => {
     expect(inferAssistantCapability('把指令写清楚')).toBe('scenario.propose-step')
   })
 
+  it('知识辅助编写需要已保存草稿', () => {
+    expect(inferAssistantCapability('根据已有知识补全场景')).toBe('scenario.compose_with_knowledge')
+    const decision = routeAssistantTurn({
+      question: '根据地图按订单号查询状态',
+      capabilityHint: 'scenario.compose_with_knowledge',
+      pageContext: { page: 'studio', scenarioId: observation.run.scenarioId },
+      available: ['scenario.compose_with_knowledge'],
+    })
+    expect(decision).toMatchObject({ type: 'clarify', missingFields: ['draftRevision'] })
+  })
+
   it('诊断问句带上 focus，解释优先用草稿 revision', () => {
     expect(inferAssistantFocus('为什么一直等登录')).toBe('waiting')
     const explain = routeAssistantTurn({
@@ -232,7 +253,7 @@ describe('单步候选构造', () => {
       ...document,
         steps: [
           fillStep({
-            target: { candidates: [{ by: 'css', value: 'input[type=password]' }] },
+            target: { framePath: [], candidates: [{ by: 'css', value: 'input[type=password]' }] },
             value: 'secret',
             sensitive: true,
           }),

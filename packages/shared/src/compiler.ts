@@ -1,6 +1,5 @@
 import { type OutputShape } from './output-schema.js'
-import { FORBIDDEN_CONTEXT_KEYS } from './run.js'
-import { EXECUTABLE_STEP_TYPES, stepUsesBrowser, type Step } from './step.js'
+import { EXECUTABLE_STEP_TYPES, FORBIDDEN_CONTEXT_KEYS, stepUsesBrowser, type Step } from './step.js'
 import {
   assertNoForwardFrom,
   ScenarioValidationError,
@@ -10,7 +9,7 @@ import {
   type ScenarioStatus,
 } from './scenario.js'
 
-export const COMPILER_VERSION = 2 as const
+export const COMPILER_VERSION = 3 as const
 
 export const COMPILE_DIAGNOSTIC_CODES = [
   'SCENARIO_EMPTY',
@@ -30,6 +29,18 @@ export const COMPILE_DIAGNOSTIC_CODES = [
   'SCENARIO_FROM_FIELD_MISSING',
   'SCENARIO_FROM_FIELD_UNKNOWN',
   'SCENARIO_AI_RETRY_FORBIDDEN',
+  'MODULE_VERSION_UNAVAILABLE',
+  'MODULE_TARGET_MISMATCH',
+  'MODULE_DIGEST_MISMATCH',
+  'MODULE_VERSION_DEPRECATED',
+  'MODULE_VERSION_WITHDRAWN',
+  'MODULE_DRAFT_REFERENCE_NOT_PUBLISHABLE',
+  'MODULE_NESTING_FORBIDDEN',
+  'MODULE_INPUT_UNBOUND',
+  'MODULE_INPUT_TYPE_MISMATCH',
+  'MODULE_BINDING_UNSUPPORTED',
+  'SCENARIO_EXPANDED_STEP_LIMIT',
+  'SCENARIO_COMPILE_ERROR',
 ] as const
 export type CompileDiagnosticCode = (typeof COMPILE_DIAGNOSTIC_CODES)[number]
 

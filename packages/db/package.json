@@ -25,6 +25,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:compatibility": "CAIRN_DB_CONTRACT_DRIVERS=postgres,mysql vitest run",
     "test:rf06": "CAIRN_RF06_FULL=1 vitest run src/__tests__/run-lease-fencing.test.ts",
     "migrate": "node dist/bin/migrate-cli.js",
     "dev": "tsc -w --preserveWatchOutput -p tsconfig.build.json"

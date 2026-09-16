@@ -1,15 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import type { ScenarioDocument, Step } from '@cairn/shared'
 import {
+  authoringNodeLabel,
+  bindingUiKind,
+  documentNodeCount,
+  documentUsesBrowser,
   fieldElementId,
+  findInsertedModuleInvocationId,
+  insertNode,
   insertStep,
   isTypingTarget,
+  moveNode,
   moveStep,
   outputConsumers,
   priorBindings,
+  priorBindingsV2,
+  priorOutputShapesAny,
+  removeAuthoringNode,
+  tryReplaceInputs,
   tryReplaceStep,
   uniqueOutputKey,
 } from './studio-document'
+import type { ScenarioAuthoringDocumentV2 } from '@cairn/shared'
 
 const navigate: Step = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -93,5 +105,61 @@ describe('studio-document', () => {
     expect(isTypingTarget(input)).toBe(true)
     expect(isTypingTarget(document.body)).toBe(false)
     input.remove()
+  })
+
+  it('V2 节点插入、移动、删除与绑定候选保持模块暴露名', () => {
+    const v2: ScenarioAuthoringDocumentV2 = {
+      authoringSchemaVersion: 2,
+      schemaVersion: 1,
+      inputs: [{ key: 'orderId', label: '订单号' }],
+      nodes: [
+        { kind: 'step', step: extract },
+        {
+          kind: 'module',
+          invocationId: '55555555-5555-4555-8555-555555555555',
+          name: '查询订单',
+          moduleId: '66666666-6666-4666-8666-666666666666',
+          moduleVersionId: '77777777-7777-4777-8777-777777777777',
+          implementationKey: 'default',
+          inputBindings: { orderId: { kind: 'from', key: 'orderId' } },
+          outputBindings: { status: 'orderStatus' },
+        },
+      ],
+    }
+    expect(documentNodeCount(v2)).toBe(2)
+    expect(documentUsesBrowser(v2)).toBe(true)
+    expect(authoringNodeLabel(v2.nodes[1]!)).toBe('查询订单')
+    expect(priorBindingsV2(v2, 1).map((item) => item.key)).toEqual(['orderId', 'extracted'])
+    expect(priorOutputShapesAny(v2, 1).get('extracted')?.kind).toBe('scalar')
+    const inserted = insertNode(v2, { kind: 'step', step: echo }, 0)
+    expect(inserted.nodes.map((node) => (node.kind === 'step' ? node.step.type : node.kind))).toEqual([
+      'extract',
+      'echo',
+      'module',
+    ])
+    expect(moveNode(v2, 0, 1)?.nodes[0]?.kind).toBe('module')
+    expect(removeAuthoringNode(v2, '55555555-5555-4555-8555-555555555555').nodes).toHaveLength(1)
+    expect(tryReplaceInputs(v2, [{ key: 'shop', label: '店铺' }]).ok).toBe(true)
+    expect(bindingUiKind({ kind: 'literal', value: 'A' }, ['orderId'])).toBe('literal')
+    expect(bindingUiKind({ kind: 'from', key: 'orderId' }, ['orderId'])).toBe('input')
+    expect(bindingUiKind({ kind: 'from', key: 'extracted', field: 'id' }, ['orderId'])).toBe('step')
+    expect(findInsertedModuleInvocationId(v2, inserted as ScenarioAuthoringDocumentV2)).toBeUndefined()
+    const withNewModule: ScenarioAuthoringDocumentV2 = {
+      ...v2,
+      nodes: [
+        ...v2.nodes,
+        {
+          kind: 'module',
+          invocationId: '99999999-9999-4999-8999-999999999999',
+          name: '新插入',
+          moduleId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          moduleVersionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          implementationKey: 'default',
+          inputBindings: {},
+          outputBindings: {},
+        },
+      ],
+    }
+    expect(findInsertedModuleInvocationId(v2, withNewModule)).toBe('99999999-9999-4999-8999-999999999999')
   })
 })

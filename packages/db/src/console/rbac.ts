@@ -34,6 +34,7 @@ import {
   type OperationAuditQuery,
   hasAllPermissions,
   isSystemRoleKey,
+  SYSTEM_ROLE_DEFINITIONS,
   type ChangePasswordBody,
   type SetPasswordBody,
   type UpdateMeBody,
@@ -80,6 +81,24 @@ export class RbacStore {
 
   listPermissions(): PermissionCatalogResponse {
     return permissionCatalogResponseSchema.parse({ items: [...PERMISSION_CATALOG] })
+  }
+
+  /** 按代码目录给系统角色补缺失权限。不改自定义角色，不删已有授权。 */
+  async reconcileSystemRolePermissions(): Promise<{ inserted: number }> {
+    const { consoleRolePermissions, consoleRoles } = schemaFor(this.db)
+    const roles = await this.db.select().from(consoleRoles)
+    let inserted = 0
+    for (const role of roles) {
+      if (role.kind !== 'system' || !isSystemRoleKey(role.key)) continue
+      const have = new Set(await this.permissionsOf(role.id))
+      const missing = SYSTEM_ROLE_DEFINITIONS[role.key].permissions.filter((code) => !have.has(code))
+      if (missing.length === 0) continue
+      await this.db.insert(consoleRolePermissions).values(
+        missing.map((permission) => ({ consoleRoleId: role.id, permission })),
+      )
+      inserted += missing.length
+    }
+    return { inserted }
   }
 
   async listRoles(): Promise<RoleListResponse> {

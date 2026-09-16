@@ -12,6 +12,8 @@ describe('step-registry', () => {
         executableStepTypes: ['navigate', 'http', 'ai_action'],
         unavailableReasons: [],
         defaults: platformRuntimeDefaultsFrom(FACTORY_PLATFORM_CONFIG, 1),
+        authoringSchemaVersions: [1, 2],
+        actionModules: true,
       }),
     ).toEqual(['navigate', 'ai_action'])
   })

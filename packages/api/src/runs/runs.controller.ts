@@ -10,7 +10,9 @@ import {
   resumeAuthBodySchema,
   reviewRunBodySchema,
   deleteResourceBodySchema,
+  mapDecisionListQuerySchema,
   runListQuerySchema,
+  type MapDecisionListQuery,
   type AcquireAuthControlBody,
   type DeleteResourceBody,
   type AuthControlInputBody,
@@ -85,6 +87,15 @@ export class RunsController {
       response: res,
       signal: abortWhenSseClientDrops(req, res),
     })
+  }
+
+  @Get(':runId/map-decisions')
+  @RequirePermissions('run:read', 'target:read')
+  mapDecisions(
+    @Param('runId') runId: string,
+    @Query(new ZodValidationPipe(mapDecisionListQuerySchema)) query: MapDecisionListQuery,
+  ) {
+    return this.runs.mapDecisions(runId, query)
   }
 
   @Get(':runId')

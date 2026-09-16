@@ -175,7 +175,13 @@ export function WorkerDetailPage() {
                     {sessions.map((session) => (
                       <TableRow key={session.id}>
                         <TableCell>
-                          <p className='font-mono text-label break-all'>{session.profileKey}</p>
+                          <Link
+                            className='font-mono text-label break-all underline'
+                            to='/sessions/$targetId/$accountId'
+                            params={{ targetId: session.targetId, accountId: session.targetAccountId }}
+                          >
+                            {session.profileKey}
+                          </Link>
                         </TableCell>
                         <TableCell>
                           <StatusBadge tone={session.status === 'LOST' ? 'warning' : 'neutral'}>

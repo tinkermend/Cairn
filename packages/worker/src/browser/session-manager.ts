@@ -2,15 +2,16 @@ import { randomUUID } from 'node:crypto'
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common'
 import {
   acquireAuthControl,
-  acquireSessionLease,
   appendRunEvents,
   isolateOrphanedSessions,
+  claimSessionUse,
+  occupancyGrantFromLease,
   conflict,
   enterRunWaitingForAuth,
   expireStaleAuthControl,
   countOpenSessionsForWorker,
-  createSession,
   findEvictableSession,
+  reapSessionLeases,
   expireAuthHold,
   expireStaleLeases,
   failRunAuthTimeout,
@@ -32,8 +33,8 @@ import {
   recordInlineLogEvidence,
   releaseAuthControl,
   releaseAuthHold,
-  releaseSessionLease,
-  renewSessionLease,
+  releaseSessionUse,
+  renewSessionUse,
   resumeRunAfterAuth,
   setSessionProbe,
   setSessionStatus,
@@ -82,14 +83,17 @@ import { ensureProfileDir } from './profiles'
 import { pageStrategyForReuse, shouldRecreateSession } from './reuse'
 import {
   BrowserRuntimeError,
+  OccupancyRequiredError,
   closePage,
   countPages,
+  gotoPage,
   launchSession,
   loginWithCredentials,
   openRunPage,
   probeAuth,
   probeAuthOnPage,
   probeHealth,
+  runWithOccupancy,
   waitForPopupsFrom,
   screenshotPage,
   stopSession,
@@ -264,6 +268,37 @@ export class BrowserSessionManager {
     finally { this.acquiring.delete(key) }
   }
 
+  private bindOccupancy(grant: SessionGrant, runId: string, ttlSeconds: number) {
+    this.guard.install(grant)
+    this.leaseToSession.set(grant.leaseId, grant.sessionId)
+    this.leaseToRun.set(grant.leaseId, runId)
+    this.leaseTtls.set(grant.leaseId, ttlSeconds)
+  }
+
+  private unbindOccupancy(leaseId: string) {
+    this.guard.revoke(leaseId)
+    this.leaseToSession.delete(leaseId)
+    this.leaseToRun.delete(leaseId)
+    this.leaseTtls.delete(leaseId)
+  }
+
+  private async abandonOccupancy(leaseId: string, reason: string) {
+    this.unbindOccupancy(leaseId)
+    await releaseSessionUse(this.dbHandle, {
+      leaseId,
+      holderWorkerId: this.options.workerId,
+      reason,
+    }).catch(() => {})
+  }
+
+  private withHeldOccupancy<T>(
+    leaseId: string,
+    expected: Partial<SessionGrant> | undefined,
+    fn: () => Promise<T> | T,
+  ): Promise<T> | T {
+    return runWithOccupancy(this.guard.assertHeld(leaseId, expected), fn)
+  }
+
   private async acquireExclusive(run: RunSnapshot, runGrant: RunGrant, signal?: AbortSignal): Promise<SessionAcquireResult> {
     if (!run.targetAccountId) {
       return {
@@ -335,50 +370,6 @@ export class BrowserSessionManager {
           message: '本机浏览器不可用，已暂停新建会话',
         }
       }
-
-      try {
-        const created = await createSession(db, {
-          key,
-          ownerWorkerId: this.options.workerId,
-          ownerWorkerInstanceId: this.workerInstanceId,
-          reusePolicy: policy.reuse,
-          idleTtlSeconds: policy.idleTtlSeconds,
-          maxLifetimeSeconds: policy.maxLifetimeSeconds,
-        })
-        if (!created.ok) {
-          return { ok: false, code: created.code, message: created.message }
-        }
-        const launched = await this.launchAndOpen(created.session, key)
-        if (!launched.ok) return launched
-        live = launched.session
-        this.logger.log(
-          {
-            sessionId: live.id,
-            generation: live.generation,
-            workerId: this.options.workerId,
-            runId: run.runId,
-          },
-          'session.created',
-        )
-      } catch (error) {
-        if (error instanceof BrowserRuntimeError) {
-          this.markBrowserUnavailable(error.code)
-          return { ok: false, code: error.code, message: error.message }
-        }
-        if (error && typeof error === 'object' && 'code' in error) {
-          const code = String((error as { code: unknown }).code)
-          if (code === 'SESSION_BUSY') {
-            live = await findLiveSession(db, key)
-            if (!live) {
-              return { ok: false, code: 'SESSION_BUSY', message: '同键会话创建冲突' }
-            }
-          } else {
-            throw error
-          }
-        } else {
-          throw error
-        }
-      }
     } else {
       if (live.ownerWorkerId !== this.options.workerId) {
         return {
@@ -408,6 +399,69 @@ export class BrowserSessionManager {
           message: '本进程无会话句柄，请等待自愈或重建',
         }
       }
+    }
+
+    const claimed = await claimSessionUse(db, {
+      key,
+      owner: { kind: 'RUN', runId: run.runId, runFencingToken: runGrant.fencingToken },
+      purpose: 'EXECUTION',
+      holderWorkerId: this.options.workerId,
+      holderInstanceId: this.workerInstanceId,
+      leaseTtlSeconds: policy.leaseTtlSeconds,
+      reusePolicy: policy.reuse,
+      idleTtlSeconds: policy.idleTtlSeconds,
+      maxLifetimeSeconds: policy.maxLifetimeSeconds,
+    })
+    if (!claimed.ok) {
+      return { ok: false, code: claimed.code, message: claimed.message ?? '会话不可领取' }
+    }
+
+    const grant = claimed.grant
+    this.bindOccupancy(grant, run.runId, policy.leaseTtlSeconds)
+    try {
+      return await runWithOccupancy(grant, () =>
+        this.finishClaimedAcquire(claimed.created, claimed.session, run, runGrant, policy, grant, signal),
+      )
+    } catch (error) {
+      if (error instanceof OccupancyRequiredError) {
+        await this.abandonOccupancy(grant.leaseId, 'occupancy_required')
+        return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: error.message }
+      }
+      await this.abandonOccupancy(grant.leaseId, 'acquire_failed')
+      throw error
+    }
+  }
+
+  private async finishClaimedAcquire(
+    created: boolean,
+    session: SessionRecord,
+    run: RunSnapshot,
+    runGrant: RunGrant,
+    policy: SessionPolicy,
+    grant: SessionGrant,
+    signal?: AbortSignal,
+  ): Promise<SessionAcquireResult> {
+    let live = session
+    if (created || !this.lives.has(session.id)) {
+      const launched = await this.launchAndOpen(session, {
+        targetId: run.targetId,
+        targetAccountId: run.targetAccountId!,
+      })
+      if (!launched.ok) {
+        await this.abandonOccupancy(grant.leaseId, launched.code.toLowerCase())
+        return launched
+      }
+      live = launched.session
+      this.logger.log(
+        {
+          sessionId: live.id,
+          generation: live.generation,
+          workerId: this.options.workerId,
+          runId: run.runId,
+        },
+        'session.created',
+      )
+    } else {
       this.logger.log(
         {
           sessionId: live.id,
@@ -419,7 +473,6 @@ export class BrowserSessionManager {
       )
     }
 
-    if ([...this.leaseToSession.values()].includes(live.id)) return { ok: false, code: 'SESSION_BUSY', message: '会话已有执行租约' }
     const managed = this.lives.get(live.id)
     if (managed) {
       managed.allowedOrigins = run.allowedOrigins ?? []
@@ -427,6 +480,9 @@ export class BrowserSessionManager {
         await installTargetScope(managed.handle.context, managed.allowedOrigins)
       }
     }
+    await this.applyReuse(live, policy, grant.leaseId)
+    if (managed) this.ensureRunPage(managed, run.runId, grant.leaseId)
+
     signal?.throwIfAborted()
     const authSessionId = live.id
     let closing: Promise<void> | undefined
@@ -434,68 +490,37 @@ export class BrowserSessionManager {
     signal?.addEventListener('abort', abortAuth, { once: true })
     try {
       signal?.throwIfAborted()
-      const auth = await this.ensureAuth(live, run, runGrant, policy, signal)
+      const auth = await this.ensureAuth(live, run, runGrant, policy, grant, signal)
       signal?.throwIfAborted()
-      if (!auth.ok) return auth
+      if (!auth.ok) {
+        if (!auth.waitingForAuth) await this.abandonOccupancy(grant.leaseId, 'auth_failed')
+        return auth
+      }
       live = auth.session
     } finally {
       signal?.removeEventListener('abort', abortAuth)
       await closing
     }
 
-    const leaseOutcome = await acquireSessionLease(db, {
-      sessionId: live.id,
-      runId: run.runId,
-      holderWorkerId: this.options.workerId,
-      leaseTtlSeconds: policy.leaseTtlSeconds,
-      runFencingToken: runGrant.fencingToken,
-    })
-    if (!leaseOutcome.ok) {
-      return {
-        ok: false,
-        code: leaseOutcome.code,
-        message:
-          leaseOutcome.code === 'SESSION_BUSY'
-            ? `会话忙 holder=${leaseOutcome.busy.holderWorkerId}`
-            : '会话不可领取',
-      }
-    }
-
-    const lease = leaseOutcome.lease
-    await this.applyReuse(live, policy, lease.id)
-
-    const sessionGrant: SessionGrant = {
-      sessionId: live.id,
-      leaseId: lease.id,
-      generation: lease.sessionGeneration,
-      sessionFencingToken: lease.sessionFencingToken,
-      expiresAt: lease.expiresAt.toISOString(),
-    }
-    this.guard.install(sessionGrant)
-    this.leaseToSession.set(lease.id, live.id)
-    this.leaseToRun.set(lease.id, run.runId)
-    const managedAfterLease = this.lives.get(live.id)
-    if (managedAfterLease) this.ensureRunPage(managedAfterLease, run.runId, lease.id)
-    this.leaseTtls.set(lease.id, policy.leaseTtlSeconds)
-    await this.startTracingForLease(lease.id, live.id, run)
+    await this.startTracingForLease(grant.leaseId, live.id, run)
     this.logger.log(
       {
-        sessionId: sessionGrant.sessionId,
-        leaseId: sessionGrant.leaseId,
-        sessionGeneration: sessionGrant.generation,
-        fencingToken: sessionGrant.sessionFencingToken,
+        sessionId: grant.sessionId,
+        leaseId: grant.leaseId,
+        sessionGeneration: grant.generation,
+        fencingToken: grant.sessionFencingToken,
         workerId: this.options.workerId,
         runId: run.runId,
       },
       'lease.acquired',
     )
-    return { ok: true, grant: sessionGrant }
+    return { ok: true, grant: this.guard.assertHeld(grant.leaseId) }
   }
 
   async renew(leaseId: string, leaseTtlSeconds?: number): Promise<'ok' | 'lost'> {
     const ttl =
       leaseTtlSeconds ?? this.leaseTtls.get(leaseId) ?? this.options.defaultLeaseTtlSeconds
-    const row = await renewSessionLease(this.dbHandle, {
+    const row = await renewSessionUse(this.dbHandle, {
       leaseId,
       holderWorkerId: this.options.workerId,
       leaseTtlSeconds: ttl,
@@ -506,14 +531,7 @@ export class BrowserSessionManager {
       this.logger.warn({ leaseId, workerId: this.options.workerId }, 'lease.renew_failed')
       return 'lost'
     }
-    const grant: SessionGrant = {
-      sessionId: row.sessionId,
-      leaseId: row.id,
-      generation: row.sessionGeneration,
-      sessionFencingToken: row.sessionFencingToken,
-      expiresAt: row.expiresAt.toISOString(),
-    }
-    this.guard.refresh(grant)
+    this.guard.refresh(occupancyGrantFromLease(row))
     return 'ok'
   }
 
@@ -524,7 +542,7 @@ export class BrowserSessionManager {
     const sessionId = this.leaseToSession.get(leaseId)
     await this.stopTracingForLease(leaseId, sessionId)
     await this.closeRunPage(leaseId)
-    const result = await releaseSessionLease(this.dbHandle, {
+    const result = await releaseSessionUse(this.dbHandle, {
       leaseId,
       holderWorkerId: this.options.workerId,
       reason,
@@ -697,8 +715,8 @@ export class BrowserSessionManager {
    */
   async reapAuthTimeouts(): Promise<number> {
     const db = this.dbHandle
+    let n = await reapSessionLeases(db)
     const expired = await listExpiredAuthHolds(db, this.options.workerId)
-    let n = 0
     for (const session of expired) {
       const boundRunId = session.authHoldRunId
       await expireAuthHold(db, { sessionId: session.id, workerId: this.options.workerId })
@@ -780,6 +798,25 @@ export class BrowserSessionManager {
       }
       throw error
     }
+    return this.withHeldOccupancy(grant.leaseId, grant, () =>
+      this.runManagedPage(grant, evidence, fn, failed),
+    )
+  }
+
+  private async runManagedPage<T>(
+    grant: SessionGrant,
+    evidence: BrowserCommandEvidence | undefined,
+    fn: (page: import('playwright').Page) => Promise<T>,
+    failed: (value: T) => boolean,
+  ): Promise<
+    | { ok: true; value: T; screenshotBytes?: Buffer; tracePath?: string }
+    | {
+        ok: false
+        error: Extract<BrowserCommandResult, { ok: false }>['error']
+        screenshotBytes?: Buffer
+        tracePath?: string
+      }
+  > {
     const live = this.lives.get(this.leaseToSession.get(grant.leaseId) ?? grant.sessionId)
     if (live?.autoInputClosed) {
       return {
@@ -822,6 +859,17 @@ export class BrowserSessionManager {
       return { ok: true, value, screenshotBytes, tracePath }
     } catch (error) {
       if (error instanceof TargetScopeError) return { ok: false, error: { code: error.code, category: 'VALIDATION', retryable: false, safeMessage: error.message } }
+      if (error instanceof OccupancyRequiredError) {
+        return {
+          ok: false,
+          error: {
+            code: 'SESSION_LEASE_LOST',
+            category: 'INFRASTRUCTURE',
+            retryable: false,
+            safeMessage: error.message,
+          },
+        }
+      }
       const screenshotBytes = evidence
         ? await screenshotPage(page).catch(() => undefined)
         : undefined
@@ -1700,6 +1748,16 @@ export class BrowserSessionManager {
       const session = (await getSessionById(db, created.id))!
       return { ok: true, session }
     } catch (error) {
+      if (error instanceof OccupancyRequiredError) {
+        await setSessionStatus(db, {
+          sessionId: created.id,
+          expectedVersion: created.version,
+          status: 'CLOSED',
+          closeReason: 'launch_failed',
+          ...this.ownerScope(),
+        }).catch(() => {})
+        return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: error.message }
+      }
       if (error instanceof BrowserRuntimeError && error.code === 'PROFILE_LOCKED') {
         await setSessionStatus(db, {
           sessionId: created.id,
@@ -1730,6 +1788,7 @@ export class BrowserSessionManager {
     run: RunSnapshot,
     runGrant: RunGrant,
     policy: SessionPolicy,
+    occupancy: SessionGrant,
     signal?: AbortSignal,
   ): Promise<
     | { ok: true; session: SessionRecord }
@@ -1747,7 +1806,7 @@ export class BrowserSessionManager {
     }
 
     // 已认证则探针确认（不刷新 last_used_at）
-    if (session.authState === 'AUTHENTICATED') {
+    if (session.authState === 'AUTHENTICATED' || session.authState === 'EXPIRED') {
       const auth = await probeAuth(live.handle, targetInfo)
       signal?.throwIfAborted()
       await setSessionProbe(db, {
@@ -1783,6 +1842,7 @@ export class BrowserSessionManager {
         session,
         runGrant,
         policy,
+        occupancy,
         'SESSION_AUTH_UNSUPPORTED',
         message,
         targetInfo,
@@ -1796,6 +1856,7 @@ export class BrowserSessionManager {
         session,
         runGrant,
         policy,
+        occupancy,
         'SESSION_AUTH_UNSUPPORTED',
         '无法解析登录凭据',
         targetInfo,
@@ -1826,6 +1887,7 @@ export class BrowserSessionManager {
         session,
         runGrant,
         policy,
+        occupancy,
         'SESSION_AUTH_UNSUPPORTED',
         '自动登录失败',
         targetInfo,
@@ -1845,6 +1907,7 @@ export class BrowserSessionManager {
     session: SessionRecord,
     runGrant: RunGrant,
     policy: SessionPolicy,
+    occupancy: SessionGrant,
     code: SessionErrorCode,
     message: string,
     target?: { entryUrl: string; loginUrl?: string | null },
@@ -1854,22 +1917,27 @@ export class BrowserSessionManager {
     if (live) {
       live.autoInputClosed = true
       live.inputAccepting = false
-      const entry = this.ensureRunPage(live, runGrant.runId)
+      const entry = this.ensureRunPage(live, runGrant.runId, occupancy.leaseId)
       const loginUrl = target?.loginUrl ?? target?.entryUrl
       if (entry?.page && loginUrl) {
-        await entry.page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined)
+        await gotoPage(entry.page, loginUrl).catch(() => undefined)
       }
       for (const [leaseId, mapped] of this.leaseToRun) {
         if (mapped === runGrant.runId) await this.stopTracingForLease(leaseId, session.id)
       }
     }
-    await enterRunWaitingForAuth(db, {
+    const waitGrant = await enterRunWaitingForAuth(db, {
       grant: runGrant,
       sessionId: session.id,
       workerId: this.options.workerId,
       workerInstanceId: this.workerInstanceId,
       holdSeconds: policy.authWaitSeconds,
+      leaseTtlSeconds: policy.leaseTtlSeconds,
     })
+    if (waitGrant && waitGrant.leaseId !== occupancy.leaseId) {
+      this.unbindOccupancy(occupancy.leaseId)
+      this.bindOccupancy(waitGrant, runGrant.runId, policy.leaseTtlSeconds)
+    }
     this.logger.log(
       { sessionId: session.id, runId: runGrant.runId, workerId: this.options.workerId, code },
       'session.auth_changed',

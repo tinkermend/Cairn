@@ -159,6 +159,7 @@ describe('BrowserView', () => {
         capturedAt: '2026-09-15T00:00:01.000Z',
         image: 'data:image/jpeg;base64,ZmFrZQ==',
       })
+      await new Promise<void>(resolve => input.signal.addEventListener('abort', () => resolve(), { once: true }))
     })
     signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
     const screen = await renderView('RUNNING')

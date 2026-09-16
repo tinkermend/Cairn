@@ -4,6 +4,7 @@ import {
   RECORDING_NORMALIZER_VERSION,
   type CreateRecordingBody,
   type Step,
+  authoringSteps,
 } from '@cairn/shared'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import {
@@ -13,6 +14,7 @@ import {
   createRecordingDraft,
   createScenarioWithVersion,
   previewRecordingImport,
+  saveScenarioDraft,
   type NativeHandle as DbHandle,
 } from '../test-entry.js'
 import { newId } from '../id.js'
@@ -101,7 +103,7 @@ describe.each(DRIVERS)('%s 录制绑定与回填', { timeout: 30_000 }, (driver)
       created.id,
       {
         revision: created.draft!.revision,
-        insertAnchor: { kind: 'after', stepId: created.draft!.document.steps[0]!.id },
+        insertAnchor: { kind: 'after', stepId: authoringSteps(created.draft!.document)[0]!.id },
         apiOrigin: 'http://localhost:3030',
       },
       { id: actorId },
@@ -144,7 +146,7 @@ describe.each(DRIVERS)('%s 录制绑定与回填', { timeout: 30_000 }, (driver)
       {
         recordingDraftId: uploaded.detail.id,
         baseRevision: created.draft!.revision,
-        insertAnchor: { kind: 'after', stepId: created.draft!.document.steps[0]!.id },
+        insertAnchor: { kind: 'after', stepId: authoringSteps(created.draft!.document)[0]!.id },
       },
       actorId,
     )
@@ -182,6 +184,97 @@ describe.each(DRIVERS)('%s 录制绑定与回填', { timeout: 30_000 }, (driver)
       },
       { id: actorId },
     )
-    expect(applied.scenario.draft?.document.steps.map((step) => step.type)).toEqual(['navigate', 'navigate', 'click'])
+    expect(authoringSteps(applied.scenario.draft!.document).map((step) => step.type)).toEqual(['navigate', 'navigate', 'click'])
+  })
+
+  it('AMB-12: 录制回填插入 V2 草稿的节点锚点，不丢已有节点', async () => {
+    const first = navigateStep()
+    const second: Step = {
+      id: newId(),
+      name: '等待',
+      type: 'delay',
+      effectType: 'READ_ONLY',
+      input: { durationMs: 10 },
+    }
+    const created = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `V2导入 ${newId().slice(0, 8)}`,
+      steps: [first],
+      actor: { id: actorId },
+    })
+    await saveScenarioDraft(handle.db, created.id, {
+      revision: created.draft!.revision,
+      document: {
+        authoringSchemaVersion: 2,
+        schemaVersion: 1,
+        inputs: [],
+        nodes: [
+          { kind: 'step', step: first },
+          { kind: 'step', step: second },
+        ],
+      },
+      actor: { id: actorId },
+    })
+    const bound = await createRecordingBinding(
+      handle.db,
+      created.id,
+      {
+        revision: 2,
+        insertAnchor: { kind: 'after', stepId: first.id },
+        apiOrigin: 'http://localhost:3030',
+      },
+      { id: actorId },
+    )
+    await claimRecordingBinding(
+      handle.db,
+      { ticket: bound.ticket, apiOrigin: 'http://localhost:3030' },
+      { id: actorId },
+    )
+    const uploaded = await createRecordingDraft(
+      handle.db,
+      recordingBody(targetId, { bindingId: bound.binding.id, idempotencyKey: `v2-rec-${newId()}` }),
+      { id: actorId },
+    )
+    const preview = await previewRecordingImport(
+      handle.db,
+      created.id,
+      {
+        recordingDraftId: uploaded.detail.id,
+        baseRevision: 2,
+        insertAnchor: { kind: 'after', stepId: first.id },
+      },
+      actorId,
+    )
+    const applied = await applyRecordingImport(
+      handle.db,
+      created.id,
+      {
+        idempotencyKey: `apply-v2-${uploaded.detail.id}`,
+        baseRevision: 2,
+        recordingDraftId: uploaded.detail.id,
+        normalizerVersion: RECORDING_NORMALIZER_VERSION,
+        sourceDigest: preview.sourceDigest,
+        insertAnchor: preview.insertAnchor,
+        dispositions: preview.items.map((item) =>
+          item.ready
+            ? { sourceIndexes: item.sourceIndexes, disposition: 'accept' as const }
+            : { sourceIndexes: item.sourceIndexes, disposition: 'discard' as const, reason: '勾选尚不能映射' },
+        ),
+      },
+      { id: actorId },
+    )
+    const document = applied.scenario.draft?.document as {
+      authoringSchemaVersion?: number
+      nodes?: Array<{ kind: string; step?: { id: string; type: string } }>
+    }
+    expect(document.authoringSchemaVersion).toBe(2)
+    expect(document.nodes?.map((node) => (node.kind === 'step' ? node.step?.type : node.kind))).toEqual([
+      'navigate',
+      'navigate',
+      'click',
+      'delay',
+    ])
+    expect(document.nodes?.[0]?.step?.id).toBe(first.id)
+    expect(document.nodes?.[3]?.step?.id).toBe(second.id)
   })
 })

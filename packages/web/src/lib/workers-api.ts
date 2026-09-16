@@ -17,7 +17,7 @@ export function fetchWorkers(query: WorkerListQuery): Promise<WorkerListResponse
 
 export function fetchWorker(
   workerId: string,
-  query: WorkerSessionListQuery = {},
+  query: Partial<WorkerSessionListQuery> = {},
 ): Promise<WorkerDetailResponse> {
   return apiFetch(`/api/workers/${encodeURIComponent(workerId)}${toQueryString(query)}`, workerDetailResponseSchema)
 }

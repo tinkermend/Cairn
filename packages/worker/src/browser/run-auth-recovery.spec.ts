@@ -1,0 +1,82 @@
+import { beforeEach, expect, it, vi } from 'vitest'
+import { BrowserSessionManager } from './session-manager'
+import { computeContextVersion } from '@cairn/shared'
+import { currentOccupancyGrant, submitLoginCredentials } from './runtime'
+const db = vi.hoisted(() => ({ run: null as any }))
+vi.mock('@cairn/db', async (original) => ({ ...await original<typeof import('@cairn/db')>(),
+  getRun: vi.fn(async () => db.run),
+  getSessionById: vi.fn(async () => ({ id: 'session', generation: 1 })),
+  assertLiveAuthConfiguration: vi.fn(async () => ({ ok: true })),
+  occupyAutoLoginBudget: vi.fn(async () => ({ ok: true })),
+  readLiveSessionAuth: vi.fn(async () => ({ sessionAuth: {} })),
+  recordAutoLoginOutcome: vi.fn(async () => {}),
+}))
+vi.mock('./runtime', async (original) => {
+  const actual = await original<typeof import('./runtime')>()
+  return { ...actual, submitLoginCredentials: vi.fn(async () => {
+    expect(actual.currentOccupancyGrant()?.purpose).toBe('EXECUTION')
+    return true
+  }) }
+})
+let manager: any, grant: any, snapshot: any, page: any
+beforeEach(async () => {
+  vi.clearAllMocks()
+  manager = new BrowserSessionManager({} as any, { workerId: 'w', workerInstanceId: 'i' } as any)
+  grant = { sessionId: 'session', leaseId: 'lease', generation: 1, sessionFencingToken: 1, expiresAt: new Date(Date.now() + 60000).toISOString(), purpose: 'EXECUTION', ownerKind: 'RUN', runId: 'run', operationId: null }
+  manager.guard.install(grant)
+  let url = 'https://app.example/orders'
+  page = { goto: vi.fn(async (next: string) => { url = next }), url: () => url }
+  manager.lives.set('session', { handle: { basePage: page } })
+  manager.pageForGrant = () => page
+  manager.loadTargetAuth = vi.fn(async () => ({ entryUrl: 'https://app.example/', authMethod: 'password', captchaMode: 'none' }))
+  manager.resolveLoginCredential = vi.fn(async () => ({ username: 'user', password: 'example-test-only' }))
+  manager.verifyInRunAuth = vi.fn(async () => ({ authState: 'AUTHENTICATED', identityState: 'MATCH' }))
+  snapshot = { targetId: 'target', targetAccountId: 'account', authVerification: { capability: 'IDENTITY_VERIFIED', loginTimeoutMs: 1000 }, runAuthRecovery: { maxAutoRecoveriesPerRun: 1, maxManualRecoveriesPerRun: 1 } }
+  db.run = { status: 'RUNNING', context: {}, snapshot, stepRuns: [{ stepId: 'step', status: 'RUNNING' }],
+    authCheckpoint: { status: 'recovering', contextVersion: await computeContextVersion({}), nextStepId: 'step', sessionGeneration: 1, recoveryKind: 'auto', autoRecoveriesUsed: 1, manualRecoveriesUsed: 0,
+      confirmObservation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' }, recoveryRule: { reuse: 'NEW_PAGE', entryUrl: 'https://app.example/', loginUrl: 'https://app.example/login', allowedOrigins: ['https://app.example'] } } }
+})
+const recover = (extra = {}) => manager.recoverAuth(grant, { kind: 'auto', runGrant: { runId: 'run' }, snapshot, ...extra })
+it('自动登录在 EXECUTION 授权内执行，导航后再次核验', async () => {
+  expect(await recover()).toEqual({ ok: true })
+  expect(submitLoginCredentials).toHaveBeenCalledTimes(1)
+  expect(manager.verifyInRunAuth).toHaveBeenCalledTimes(2)
+  expect(page.goto).toHaveBeenCalledWith('https://app.example/', expect.anything())
+  expect(currentOccupancyGrant()).toBeUndefined()
+})
+it('续接已开始的自动恢复仅核验，不再次提交凭据', async () => {
+  expect(await recover({ resuming: true })).toEqual({ ok: true })
+  expect(submitLoginCredentials).not.toHaveBeenCalled()
+})
+it('UNKNOWN 不提交密码，交由 Engine 检查人工预算', async () => {
+  db.run.authCheckpoint.confirmObservation.authState = 'UNKNOWN'
+  expect(await recover()).toMatchObject({ ok: false, manualRequired: true })
+  expect(submitLoginCredentials).not.toHaveBeenCalled()
+})
+it('goto 超时不能伪装成已恢复', async () => {
+  page.goto.mockRejectedValue(new Error('timeout'))
+  expect(await recover()).toMatchObject({ ok: false, unrecoverable: true })
+})
+it('导航后身份改变不能打开门禁', async () => {
+  manager.authGateClosed.add('lease')
+  manager.verifyInRunAuth.mockResolvedValueOnce({ authState: 'AUTHENTICATED', identityState: 'MATCH' }).mockResolvedValueOnce({ authState: 'AUTHENTICATED', identityState: 'MISMATCH' })
+  expect(await recover()).toMatchObject({ ok: false, unrecoverable: true })
+  expect(() => manager.assertAuthGate('lease')).toThrow('AUTH_GATE_CLOSED')
+})
+it('没有被动信号时不主动核验（SM41）', async () => {
+  manager.runAuth.set('lease', { snapshot, confirmed: false, observer: { inspect: vi.fn(async () => {}) } })
+  for (let i = 0; i < 5; i++) expect(await manager.observeInRunAuth(grant, 'not_dispatched')).toBeNull()
+  expect(manager.verifyInRunAuth).not.toHaveBeenCalled()
+  expect(manager.countInRunVerify('step_boundary')).toBe(0)
+})
+it('重启发现检查点只关门，不凭身份 MATCH 跳过恢复规则', async () => {
+  expect(await manager.restoreAuthGateFromCheckpoint('run', grant)).toBe(true)
+  expect(() => manager.assertAuthGate('lease')).toThrow('AUTH_GATE_CLOSED')
+  expect(manager.verifyInRunAuth).not.toHaveBeenCalled()
+})
+it('REUSE_PAGE 不接受已变更的文档', async () => {
+  db.run.authCheckpoint.recoveryRule.reuse = 'REUSE_PAGE'
+  db.run.authCheckpoint.pageRef = { sessionId: 'session', pageId: 'page', documentEpoch: 1 }
+  manager.describeHoldPage = vi.fn(async () => ({ pageRef: { sessionId: 'session', pageId: 'page', documentEpoch: 2 } }))
+  expect(await recover()).toMatchObject({ ok: false, unrecoverable: true })
+})

@@ -33,6 +33,62 @@ describe('平台配置契约', () => {
     )
   })
 
+  it('旧修订没有 sessionScheduling 时补出厂亲和与排队期限', () => {
+    const { sessionScheduling: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.sessionScheduling).toEqual(FACTORY_PLATFORM_CONFIG.sessionScheduling)
+    expect('sessionScheduling' in legacy).toBe(false)
+  })
+
+  it('旧修订没有 sessionAuth 时补出厂核验与登录预算', () => {
+    const { sessionAuth: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.sessionAuth).toEqual(FACTORY_PLATFORM_CONFIG.sessionAuth)
+    expect('sessionAuth' in legacy).toBe(false)
+  })
+
+  it('旧修订没有 sessionRetention 时补出厂保留配额与后台间隔', () => {
+    const { sessionRetention: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.sessionRetention).toEqual(FACTORY_PLATFORM_CONFIG.sessionRetention)
+    expect(parsed.sessionRetention.maxRetainSeconds).toBe(28_800)
+    expect(parsed.sessionRetention.reservedFreeSlotsPerWorker).toBe(1)
+    expect('sessionRetention' in legacy).toBe(false)
+  })
+
+  it('旧修订没有 runAuthRecovery 时补出厂每 Run 恢复次数', () => {
+    const { runAuthRecovery: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.runAuthRecovery).toEqual(FACTORY_PLATFORM_CONFIG.runAuthRecovery)
+    expect(parsed.runAuthRecovery.maxAutoRecoveriesPerRun).toBe(1)
+    expect(parsed.runAuthRecovery.maxManualRecoveriesPerRun).toBe(1)
+    expect('runAuthRecovery' in legacy).toBe(false)
+  })
+
+  it('旧修订没有 moduleResolver 时补出厂候选上限与保留期', () => {
+    const { moduleResolver: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.moduleResolver).toEqual(FACTORY_PLATFORM_CONFIG.moduleResolver)
+    expect(parsed.moduleResolver.maxCandidates).toBe(10)
+    expect('moduleResolver' in legacy).toBe(false)
+  })
+
+  it('旧修订没有 moduleQuality 时补出厂窗口与退化阈值', () => {
+    const { moduleQuality: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.moduleQuality).toEqual(FACTORY_PLATFORM_CONFIG.moduleQuality)
+    expect(parsed.moduleQuality.windowDays).toBe(7)
+    expect(parsed.moduleQuality.minSamples).toBe(10)
+    expect('moduleQuality' in legacy).toBe(false)
+  })
+
+  it('旧修订没有 moduleFallback 时补出厂关闭', () => {
+    const { moduleFallback: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.moduleFallback).toEqual({ enabled: false })
+    expect('moduleFallback' in legacy).toBe(false)
+  })
+
   it('旧修订没有 platformAi 时按关闭补齐，不改写调用方对象', () => {
     const { platformAi: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
     const parsed = platformConfigDocumentSchema.parse(legacy)

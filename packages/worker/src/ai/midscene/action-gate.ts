@@ -14,6 +14,9 @@ export class ActionGate {
   constructor(
     public signal?: AbortSignal,
     private readonly leaseCheck?: () => void,
+    private readonly authCheck?: () => void,
+    readonly beforeAction?: () => Promise<void>,
+    readonly afterAction?: () => Promise<void>,
   ) {}
 
   markLeaseLost(): void {
@@ -21,6 +24,17 @@ export class ActionGate {
   }
 
   assertAllowed(kind: 'action' | 'model'): void {
+    if (this.authCheck) {
+      try {
+        this.authCheck()
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+        if (code === 'AUTH_GATE_CLOSED' || (error instanceof Error && error.message.includes('AUTH_GATE'))) {
+          throw new Error(`CAIRN_AUTH_GATE:${kind}`)
+        }
+        throw error
+      }
+    }
     if (!this.leaseLost && this.leaseCheck) {
       try {
         this.leaseCheck()
@@ -49,9 +63,11 @@ export function gateActions<A extends { name: string; call: (...args: never[]) =
   return actions.map((action) => ({
     ...action,
     call: (async (...args: never[]) => {
+      await gate.beforeAction?.()
       gate.assertAllowed('action')
       gate.actionsStarted += 1
-      return action.call(...args)
+      try { return await action.call(...args) }
+      finally { await gate.afterAction?.() }
     }) as A['call'],
   }))
 }

@@ -30,6 +30,10 @@ export function forbidden(code: string, message: string, details?: unknown): Dom
   return new DomainError('forbidden', code, message, details)
 }
 
+export function unavailable(code: string, message: string, details?: unknown): DomainError {
+  return new DomainError('unavailable', code, message, details)
+}
+
 export function pgCode(error: unknown): string | undefined {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     return String((error as { code: unknown }).code)
@@ -71,6 +75,15 @@ export function constraintName(error: unknown): string | undefined {
         'assistant_turns.conversation_id,assistant_turns.client_turn_id':
           'assistant_turns_conversation_client_idx',
         'assistant_turns.owner_account_id': 'assistant_turns_owner_running_idx',
+        'map_observations.target_id,map_observations.dedupe_key': 'map_observations_target_dedupe_idx',
+        'map_observations.target_id,map_observations.ingest_seq': 'map_observations_target_seq_idx',
+        'map_verifications.target_id,map_verifications.dedupe_key': 'map_verifications_target_dedupe_idx',
+        'map_verifications.target_id,map_verifications.ingest_seq': 'map_verifications_target_seq_idx',
+        'map_fact_receipts.target_id,map_fact_receipts.dedupe_key': 'map_fact_receipts_pkey',
+        'map_fact_receipts.target_id,map_fact_receipts.ingest_seq': 'map_fact_receipts_seq_idx',
+        'map_ingest_heads.target_id': 'map_ingest_heads_pkey',
+        'action_modules.target_id,action_modules.key': 'action_modules_target_key_idx',
+        'action_module_versions.module_id,action_module_versions.version_no': 'action_module_versions_module_version_idx',
       }
       return names[columns] ?? columns
     }
@@ -85,6 +98,12 @@ export function mapRestriction(
 ): DomainError | undefined {
   if (isUniqueViolation(error)) {
     const name = constraintName(error) ?? ''
+    if (name.includes('action_modules_target_key')) {
+      return conflict('MODULE_KEY_DUPLICATE', '该目标系统下模块 key 已存在')
+    }
+    if (name.includes('action_module_versions_module_version')) {
+      return conflict('MODULE_VERSION_DUPLICATE', '模块版本号重复')
+    }
     if (name.includes('scenarios_target_name')) {
       return conflict('SCENARIO_NAME_CONFLICT', '该目标系统下场景名已存在')
     }

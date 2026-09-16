@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { runInputSchema, type EvidenceCaptureMode } from '@cairn/shared'
+import { stepUsesBrowser, runInputSchema, type EvidenceCaptureMode } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { createRun } from '@/lib/runs-api'
@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { CAPTURE_MODE_LABELS } from './labels'
+import { AccountSessionHint, accountCapabilityLabel } from './account-session-hint'
 import { passwordAccounts, preferredPasswordAccountId } from './target-account'
 
 type RunCreateDialogProps = {
@@ -74,6 +75,8 @@ export function RunCreateDialog({
   })
   const [scenarioId, setScenarioId] = useState(defaultScenarioId ?? '')
   const selected = scenarioItems.find((item) => item.id === scenarioId)
+  const executionScenario = useQuery({ queryKey: ['scenario', scenarioId], queryFn: () => fetchScenario(scenarioId), enabled: open && Boolean(scenarioId) })
+  const needsAccount = executionScenario.data?.steps.some(step => stepUsesBrowser(step.type)) ?? false
   const targetId = selected?.targetId ?? fallbackScenario.data?.targetId ?? defaultTargetId
   const [accountSearch, setAccountSearch] = useState('')
   const accounts = useQuery({
@@ -132,7 +135,7 @@ export function RunCreateDialog({
             </Select>
           </div>
           <div className='space-y-2'>
-            <Label>目标账号{usableAccounts.length > 0 ? '' : '（可选）'}</Label>
+            <Label>目标账号{needsAccount ? '（必选）' : '（可选）'}</Label>
             <Input
               aria-label='搜索目标账号'
               placeholder='搜索登录名或显示名'
@@ -144,7 +147,7 @@ export function RunCreateDialog({
               onValueChange={(value) => setTargetAccountId(value === '__none__' ? '' : value)}
             >
               <SelectTrigger className='w-full'>
-                <SelectValue placeholder={usableAccounts.length > 0 ? '选择已保存口令的账号' : '不指定目标账号'} />
+                <SelectValue placeholder={usableAccounts.length > 0 ? '选择目标账号' : '不指定目标账号'} />
               </SelectTrigger>
               <SelectContent>
                 {usableAccounts.length === 0 ? <SelectItem value='__none__'>不指定</SelectItem> : null}
@@ -153,15 +156,16 @@ export function RunCreateDialog({
                   .map((item) => (
                     <SelectItem key={item.id} value={item.id}>
                       {item.displayName}（{item.username}
-                      {item.hasPassword ? '' : ' · 未保存口令'}）
+                      {item.hasPassword ? '' : ' · 未保存口令'}） · {accountCapabilityLabel(item)}
                     </SelectItem>
                   ))}
               </SelectContent>
             </Select>
+            {targetId ? <AccountSessionHint targetId={targetId} account={accounts.data?.items.find(item => item.id === targetAccountId)} /> : null}
             <p className='text-label text-muted-foreground'>
               {usableAccounts.length > 0
-                ? '将使用该账号已保存的口令自动登录目标系统。'
-                : '这里选的是目标系统账号。未保存口令时运行会等待人工登录。'}
+                ? '未保存口令或不满足身份核验时，运行可能等待人工登录。可先到浏览器会话页准备该账号。'
+                : '这里选的是目标系统账号，不要求事先保存口令。'}
             </p>
           </div>
           <div className='space-y-2'>
@@ -221,7 +225,7 @@ export function RunCreateDialog({
         </div>
         <DialogFooter>
           <Button
-            disabled={!scenarioId || saving || (usableAccounts.length > 0 && !targetAccountId)}
+            disabled={!scenarioId || saving || executionScenario.isPending || accounts.isPending || (needsAccount && !targetAccountId) || Boolean(targetAccountId && !accounts.data?.items.some(item => item.id === targetAccountId && item.status === 'active'))}
             onClick={() => {
               let parsedJson: unknown
               try {

@@ -174,6 +174,14 @@ async function handleRequest(
     writeJson(res, 200, { ok: true })
     return
   }
+  if (req.method === 'POST' && url.pathname === workerInternalPath('/auth/verify')) {
+    writeJson(res, 200, await ctx.sessions.verifyOccupiedOwner(runId))
+    return
+  }
+  if (req.method === 'POST' && url.pathname === workerInternalPath('/auth/complete')) {
+    writeJson(res, 200, await ctx.sessions.completeOccupiedAuth(runId, { actorId, ...authControlTokenBodySchema.parse(JSON.parse(raw || '{}')) }))
+    return
+  }
   if (req.method === 'POST' && url.pathname === workerInternalPath('/observe')) {
     const body = observeOperationSchema.parse(raw ? JSON.parse(raw) : {})
     writeJson(

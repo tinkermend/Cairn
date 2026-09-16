@@ -19,6 +19,9 @@ import type {
   DebugMode,
   DebugCheckpoint,
   DebugOverlay,
+  AuthCheckpoint,
+  ScenarioAuthoringDocumentV2,
+  ModuleManifest,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
@@ -37,6 +40,10 @@ export const scenarios = cairnSchema.table(
       .notNull()
       .default('active')
       .$type<ScenarioStatus>(),
+    purpose: text('purpose', { enum: ['user', 'module_verification', 'map_job'] })
+      .notNull()
+      .default('user')
+      .$type<'user' | 'module_verification' | 'map_job'>(),
     createdByConsoleAccountId: uuid('created_by_console_account_id')
       .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
@@ -67,6 +74,8 @@ export const scenarioVersions = cairnSchema.table(
     definition: jsonb('definition').$type<ScenarioDefinition>().notNull(),
     compilerVersion: integer('compiler_version').notNull().default(1),
     sourceDigest: text('source_digest').notNull().default(''),
+    authoringDocument: jsonb('authoring_document').$type<ScenarioAuthoringDocumentV2>(),
+    moduleManifest: jsonb('module_manifest').$type<ModuleManifest>(),
     createdByConsoleAccountId: uuid('created_by_console_account_id')
       .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
@@ -87,7 +96,7 @@ export const scenarioDrafts = cairnSchema.table(
       .primaryKey()
       .references(() => scenarios.id, { onDelete: 'restrict' }),
     revision: integer('revision').notNull(),
-    document: jsonb('document').$type<ScenarioDocument>().notNull(),
+    document: jsonb('document').$type<ScenarioAuthoringDocumentV2 | ScenarioDocument>().notNull(),
     updatedByConsoleAccountId: uuid('updated_by_console_account_id')
       .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
@@ -122,6 +131,7 @@ export const runs = cairnSchema.table(
     debugMode: text('debug_mode').notNull().default('runThrough').$type<DebugMode>(),
     checkpoint: jsonb('checkpoint').$type<DebugCheckpoint>(),
     debugOverlay: jsonb('debug_overlay').$type<DebugOverlay>(),
+    authCheckpoint: jsonb('auth_checkpoint').$type<AuthCheckpoint>(),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),

@@ -211,7 +211,7 @@ describe('变化提示发布与重连', () => {
       hint: 'redis',
       redisUrl: 'redis://127.0.0.1:6379',
       namespace: 'redis-race',
-      dbEnv: { CAIRN_DB_DRIVER: 'sqlite', CAIRN_DB_FILE: ':memory:' },
+      dbEnv: { CAIRN_DB_DRIVER: 'mysql', CAIRN_DB_HOST: '127.0.0.1', CAIRN_DB_PORT: 3306, CAIRN_DB_NAME: 'cairn', CAIRN_DB_USER: 'u', CAIRN_DB_PASSWORD: 'p' },
     })
     const first = bus.publish({ namespace: 'redis-race', runId, eventSeq: 1 })
     const second = bus.publish({ namespace: 'redis-race', runId, eventSeq: 2 })

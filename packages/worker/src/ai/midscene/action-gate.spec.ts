@@ -43,6 +43,15 @@ describe('ActionGate', () => {
     expect(() => gate.assertAllowed('action')).toThrow('CAIRN_LEASE_LOST:action')
   })
 
+  it('认证门禁拒绝时不增加已派发动作数（SM43）', async () => {
+    const gate = new ActionGate(undefined, undefined, () => {
+      throw Object.assign(new Error('AUTH_GATE_CLOSED'), { code: 'AUTH_GATE_CLOSED' })
+    })
+    const [click] = gateActions([{ name: 'Click', call: async () => 'acted' }], gate)
+    await expect(click!.call()).rejects.toThrow('CAIRN_AUTH_GATE:action')
+    expect(gate.actionsStarted).toBe(0)
+  })
+
   it('只统计通过检查、真正交给页面的动作', async () => {
     const controller = new AbortController()
     const gate = new ActionGate(controller.signal)

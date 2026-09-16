@@ -10,9 +10,14 @@ import { extname, join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { BrowserCommand, TargetDescriptor } from '@cairn/shared'
 import { highlightOnPage, pickOnPage } from './observe'
-import { executeOnPage } from './surface'
+import { executeOnPage as executeOnPageRaw } from './surface'
 import { launchSession, stopSession, type BrowserHandle } from './runtime'
 import { ensureProfileDir } from './profiles'
+import { withTestOccupancy } from './test-occupancy'
+
+function executeOnPage(...args: Parameters<typeof executeOnPageRaw>) {
+  return withTestOccupancy(() => executeOnPageRaw(...args))
+}
 
 const LAB_PUBLIC = resolve(__dirname, '../../../../tests/target-surface-lab/public')
 const MIME: Record<string, string> = {
@@ -76,7 +81,7 @@ describe('Browser Surface × target-surface-lab（L2）', { timeout: 180_000 }, 
       targetId: '00000000-0000-4000-8000-0000000000aa',
       targetAccountId: '00000000-0000-4000-8000-0000000000ab',
     })
-    handle = await launchSession(profile.profileDir, { headless: true })
+    handle = await withTestOccupancy(() => launchSession(profile.profileDir, { headless: true }))
   })
 
   afterAll(async () => {

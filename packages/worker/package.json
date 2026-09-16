@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@cairn/db": "workspace:*",
+    "@cairn/map": "workspace:*",
     "@cairn/secret": "workspace:*",
     "@cairn/shared": "workspace:*",
     "@cairn/storage": "workspace:*",

@@ -6,6 +6,7 @@ import { ApiRequestError } from '@/lib/api-client'
 import { fetchScenarioCapabilities, trialScenario } from '@/lib/scenarios-api'
 import { inheritCaptureLabel } from '@/features/platform-config/labels'
 import { fetchTargetAccounts } from '@/lib/targets-api'
+import { AccountSessionHint, accountCapabilityLabel } from '@/features/runs/account-session-hint'
 import { passwordAccounts, preferredPasswordAccountId } from '@/features/runs/target-account'
 import { Button } from '@/components/ui/button'
 import {
@@ -33,6 +34,7 @@ type TrialDialogProps = {
   targetId: string
   revision: number
   inputs: ScenarioInputDecl[]
+  needsAccount?: boolean
   onCreated: (run: RunDetailDto) => void
   onConflict: () => void
 }
@@ -49,6 +51,7 @@ export function TrialDialog({
   targetId,
   revision,
   inputs,
+  needsAccount = false,
   onCreated,
   onConflict,
 }: TrialDialogProps) {
@@ -90,13 +93,13 @@ export function TrialDialog({
         </DialogHeader>
         <div className='space-y-4'>
           <div className='space-y-2'>
-            <Label>目标账号{usableAccounts.length > 0 ? '' : '（可选）'}</Label>
+            <Label>目标账号{needsAccount ? '（必选）' : '（可选）'}</Label>
             <Select
               value={targetAccountId || (usableAccounts.length > 0 ? undefined : '__none__')}
               onValueChange={(value) => setTargetAccountId(value === '__none__' ? '' : value)}
             >
               <SelectTrigger className='w-full'>
-                <SelectValue placeholder={usableAccounts.length > 0 ? '选择已保存口令的账号' : '不指定目标账号'} />
+                <SelectValue placeholder={usableAccounts.length > 0 ? '选择目标账号' : '不指定目标账号'} />
               </SelectTrigger>
               <SelectContent>
                 {usableAccounts.length === 0 ? <SelectItem value='__none__'>不指定</SelectItem> : null}
@@ -105,11 +108,12 @@ export function TrialDialog({
                   .map((item) => (
                     <SelectItem key={item.id} value={item.id}>
                       {item.displayName}（{item.username}
-                      {item.hasPassword ? '' : ' · 未保存口令'}）
+                      {item.hasPassword ? '' : ' · 未保存口令'}） · {accountCapabilityLabel(item)}
                     </SelectItem>
                   ))}
               </SelectContent>
             </Select>
+            <AccountSessionHint targetId={targetId} account={accounts.data?.items.find(item => item.id === targetAccountId)} />
           </div>
           <p className='text-label text-muted-foreground'>
             试跑继承平台默认证据策略
@@ -134,7 +138,7 @@ export function TrialDialog({
         <DialogFooter>
           <Button
             loading={saving}
-            disabled={usableAccounts.length > 0 && !targetAccountId}
+            disabled={accounts.isPending || (needsAccount && !targetAccountId) || Boolean(targetAccountId && !accounts.data?.items.some(item => item.id === targetAccountId && item.status === 'active'))}
             onClick={() => {
               const parsed = runInputSchema.safeParse(values)
               if (!parsed.success) {

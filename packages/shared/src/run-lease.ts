@@ -17,7 +17,11 @@ export const runLeaseStatusSchema = z.enum(RUN_LEASE_STATUSES)
  * 会让人以为存在一条不存在的错误通道，和被删掉的 `WORKER_CAPACITY_EXCEEDED` 同类。
  * 将来真有产生者时再加回来。
  */
-export const RUN_LEASE_ERROR_CODES = ['WORKER_ID_CONFLICT', 'RUN_RECOVERY_EXHAUSTED'] as const
+export const RUN_LEASE_ERROR_CODES = [
+  'WORKER_ID_CONFLICT',
+  'WORKER_PROTOCOL_UNSUPPORTED',
+  'RUN_RECOVERY_EXHAUSTED',
+] as const
 export type RunLeaseErrorCode = (typeof RUN_LEASE_ERROR_CODES)[number]
 export const runLeaseErrorCodeSchema = z.enum(RUN_LEASE_ERROR_CODES)
 

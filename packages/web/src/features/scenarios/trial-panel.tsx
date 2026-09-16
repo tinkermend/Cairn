@@ -19,6 +19,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { StatusBadge } from '@/components/status-badge'
 import { stepTypeLabel } from './labels'
 import { BrowserView } from '@/features/runs/browser-view'
+import { PlacementHint } from '@/features/runs/placement-hint'
+import { StepTimeline } from '@/features/runs/step-timeline'
 
 function formatTrialValue(value: unknown): string {
   if (value === undefined) return '无'
@@ -55,14 +57,26 @@ export function TrialPanel({
   }
 
   const mismatch = run && run.scenarioId !== scenarioId
-  const historic = run?.snapshot.steps.find((step) => step.id === selectedDraftStepId) ?? run?.snapshot.steps[0]
+  const selectedModule = run?.snapshot.moduleManifest?.entries.find(
+    (entry) => entry.invocationId === selectedDraftStepId,
+  )
+  const historic =
+    (selectedModule
+      ? run?.snapshot.steps.find((step) => selectedModule.expandedStepIds.includes(step.id))
+      : run?.snapshot.steps.find((step) => step.id === selectedDraftStepId)) ?? run?.snapshot.steps[0]
   const stepRun = historic ? run?.stepRuns.find((item) => item.stepId === historic.id) : undefined
   const latestAttempt = stepRun?.attempts[stepRun.attempts.length - 1]
   const attemptEvidence = (evidence?.items ?? []).filter((item) => item.attemptId === latestAttempt?.id)
   const screenshot = attemptEvidence.find((item) => item.type === 'screenshot')
   const runLevel = (evidence?.items ?? []).filter((item) => !item.attemptId)
-  const draftMissing = Boolean(selectedDraftStepId && run && !run.snapshot.steps.some((step) => step.id === selectedDraftStepId))
+  const draftMissing = Boolean(
+    selectedDraftStepId &&
+      run &&
+      !run.snapshot.steps.some((step) => step.id === selectedDraftStepId) &&
+      !run.snapshot.moduleManifest?.entries.some((entry) => entry.invocationId === selectedDraftStepId),
+  )
   const fetchedAt = runQuery.dataUpdatedAt ? new Date(runQuery.dataUpdatedAt).toLocaleTimeString() : null
+  const hasModuleGroups = Boolean(run?.snapshot.moduleManifest?.entries.length)
 
   return (
     <Collapsible defaultOpen className='rounded-lg border border-border-card bg-card shadow-card'>
@@ -111,6 +125,36 @@ export function TrialPanel({
                 {run.scenarioVersionKind === 'trial' ? '试跑版本' : '正式版本'}
               </StatusBadge>
             </div>
+            <PlacementHint placement={run.placement} />
+            {run.authCheckpoint ? (
+              <div className='space-y-2 rounded-md border border-border-card bg-muted/30 p-3'>
+                <p className='text-body'>
+                  {run.status === 'NEEDS_REVIEW' ? '操作结果待核查，请先确认业务结果' : run.authCheckpoint.status === 'recovering'
+                    ? run.authCheckpoint.recoveryKind === 'manual'
+                      ? '正在等待人工认证恢复'
+                      : '正在恢复登录'
+                    : run.authCheckpoint.status === 'recovered'
+                      ? '登录已恢复，已通过续跑校验'
+                      : run.authCheckpoint.status === 'unrecoverable'
+                        ? '登录已失效，本次运行无法安全续跑'
+                        : '认证门禁已关闭'}
+                </p>
+                <p className='text-label text-muted-foreground'>
+                  {run.authCheckpoint.trigger.summary}
+                  {run.authCheckpoint.unrecoverableCode
+                    ? ` · ${run.authCheckpoint.unrecoverableCode === 'AUTH_RECOVERY_LIMIT' ? '恢复次数已用尽' : '无法安全续跑'}`
+                    : ''}
+                </p>
+                <p className='text-label text-muted-foreground'>恢复位置：第 {run.authCheckpoint.nextOrdinal + 1} 步 · {run.snapshot.steps.find((step) => step.id === run.authCheckpoint?.nextStepId)?.name ?? run.authCheckpoint.nextStepId}</p>
+                {run.authCheckpoint.status === 'unrecoverable' && run.status !== 'NEEDS_REVIEW' && user && hasPermission(user.permissions, 'run:execute') ? (
+                  <Button size='sm' variant='outline' asChild>
+                    <Link to='/scenarios/$scenarioId' params={{ scenarioId }}>
+                      新建完整试跑
+                    </Link>
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
             <BrowserView
               runId={run.id}
               runStatus={run.status}
@@ -127,6 +171,9 @@ export function TrialPanel({
                 <p className='text-small text-status-warning-foreground'>运行在步骤开始前失败。</p>
                 <AttemptEvidenceList runId={run.id} items={runLevel} />
               </div>
+            ) : null}
+            {hasModuleGroups && run ? (
+              <StepTimeline run={run} evidenceItems={evidence?.items ?? []} />
             ) : null}
             {historic ? (
               <div className='space-y-2 rounded-md border border-border-default p-4'>

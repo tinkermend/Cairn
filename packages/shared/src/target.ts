@@ -41,6 +41,10 @@ export const TARGET_ERROR_CODES = [
   'RESOURCE_DELETED',
   'RUN_NOT_TERMINAL',
   'DELETE_SCOPE_EXPANDED',
+  'AUTH_FRESHNESS_OUT_OF_RANGE',
+  'AUTH_VALIDATION_INCOMPLETE',
+  'AUTH_PROFILE_REQUIRED',
+  'AUTH_SCOPE_INVALID',
 ] as const
 export type TargetErrorCode = (typeof TARGET_ERROR_CODES)[number]
 
@@ -103,6 +107,7 @@ export const targetSchema = z.object({
   accountCount: z.number().int().nonnegative(),
   deletedAt: z.string().nullable().optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
+  currentAuthProfileRevision: z.number().int().positive().nullable().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 })
@@ -130,6 +135,13 @@ export const targetAccountSchema = z.object({
   username: z.string().min(1),
   hasPassword: z.boolean(),
   status: targetStatusSchema,
+  expectedIdentity: z.string().trim().min(1).max(256).nullable().optional(),
+  configRevision: z.number().int().positive().optional(),
+  authCapability: z.enum(['IDENTITY_VERIFIED', 'LOGIN_VERIFIED', 'LEGACY']).optional(),
+  lastAuthCheckedAt: z.string().nullable().optional(),
+  lastAuthSuccessAt: z.string().nullable().optional(),
+  lastAuthError: z.string().nullable().optional(),
+  autoLoginPausedReason: z.string().nullable().optional(),
   deletedAt: z.string().nullable().optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
   createdAt: z.string().min(1),

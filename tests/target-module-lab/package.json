@@ -1,0 +1,11 @@
+{
+  "name": "target-module-lab",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "识途动作模块前置验证靶场：仿 SNC DPM 的实例查询、详情、告警页，可重置、可注入变体与故障，非正式 Runtime。",
+  "scripts": {
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  }
+}

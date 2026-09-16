@@ -2,14 +2,76 @@
  * 唯一碰 playwright 的模块。Engine 不得 import 本文件。
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { targetScopeReady } from './target-scope'
-import type { BrowserContext, Frame, Locator, Page } from 'playwright'
+import type { BrowserContext, Frame, Locator, Page, Request } from 'playwright'
 import type {
   LocatorCandidate,
   RelativeAnchor,
   TargetDescriptor,
   FrameStep,
+  SessionGrant,
 } from '@cairn/shared'
+
+const occupancy = new AsyncLocalStorage<SessionGrant>()
+
+export class NavigationOutcomeUnknownError extends Error {
+  constructor() {
+    super('页面导航请求已发出但响应失败，操作结果需要核查')
+    this.name = 'NavigationOutcomeUnknownError'
+  }
+}
+
+/** A completed Playwright click does not prove its form navigation succeeded. */
+export async function withNavigationOutcome<T>(page: Page, action: () => Promise<T>): Promise<T> {
+  let failedNavigation = false
+  const onFailed = (request: Request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) failedNavigation = true
+  }
+  page.on('requestfailed', onFailed)
+  try {
+    const value = await action()
+    if (failedNavigation) throw new NavigationOutcomeUnknownError()
+    return value
+  } finally {
+    page.off('requestfailed', onFailed)
+  }
+}
+// RESTART is protected by the persisted idle-operation reservation, not a lease.
+const restartAuthority = new AsyncLocalStorage<{ sessionId: string; expiresAt: number }>()
+export function runWithSessionRestart<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  return restartAuthority.run({ sessionId, expiresAt: Date.now() + 60_000 }, fn)
+}
+const occupancyRejects: Array<{ action: string; at: string }> = []
+
+export class OccupancyRequiredError extends Error {
+  readonly code = 'SESSION_OCCUPANCY_REQUIRED' as const
+  constructor(readonly action: string) {
+    super(`浏览器调用 ${action} 缺少合法占用 grant`)
+    this.name = 'OccupancyRequiredError'
+  }
+}
+
+export function runWithOccupancy<T>(grant: SessionGrant, fn: () => Promise<T> | T): Promise<T> | T {
+  return occupancy.run(grant, fn)
+}
+
+export function currentOccupancyGrant(): SessionGrant | undefined {
+  return occupancy.getStore()
+}
+
+export function takeOccupancyRejects(): Array<{ action: string; at: string }> {
+  return occupancyRejects.splice(0)
+}
+
+function requireOccupancy(action: string): SessionGrant {
+  const grant = occupancy.getStore()
+  if (!grant || Date.parse(grant.expiresAt) <= Date.now()) {
+    occupancyRejects.push({ action, at: new Date().toISOString() })
+    throw new OccupancyRequiredError(action)
+  }
+  return grant
+}
 
 export type LaunchSessionOpts = {
   headless: boolean
@@ -53,6 +115,7 @@ export async function launchSession(
   profileDir: string,
   opts: LaunchSessionOpts,
 ): Promise<BrowserHandle> {
+  if ((restartAuthority.getStore()?.expiresAt ?? 0) <= Date.now()) requireOccupancy('launchSession')
   let chromium: typeof import('playwright').chromium
   try {
     ;({ chromium } = await import('playwright'))
@@ -84,15 +147,83 @@ export async function launchSession(
   }
 }
 
-export async function probeHealth(handle: BrowserHandle): Promise<'HEALTHY' | 'UNHEALTHY'> {
+export async function probeHealth(handle: BrowserHandle): Promise<'HEALTHY' | 'UNHEALTHY' | 'UNKNOWN'> {
   try {
-    if (!handle.context.browser()?.isConnected() && handle.context.pages().length === 0) {
-      // persistent context 可能 browser() 为 null，但 pages 仍可用
-    }
     await handle.basePage.evaluate(() => true)
     return 'HEALTHY'
-  } catch {
+  } catch (error) {
+    // Navigation replaces the JS execution context while the browser remains
+    // healthy. Leave this sample unknown and retry on the next health cycle;
+    // closing here would revoke a concurrently active Run or auth operation.
+    const message = error instanceof Error ? error.message : String(error)
+    if (/Execution context was destroyed|Cannot find context with (?:specified )?id|Inspected target navigated/i.test(message) &&
+        !handle.basePage.isClosed() && handle.context.browser()?.isConnected() !== false) {
+      return 'UNKNOWN'
+    }
     return 'UNHEALTHY'
+  }
+}
+
+function pageUrlUnusable(url: string): boolean {
+  return !url || url === 'about:blank' || url.startsWith('chrome-error://') || url.startsWith('chrome://')
+}
+
+/** 当前 URL 是否仍像登录页。入口与登录同路径时不能单靠 URL 判过期。 */
+export function loginUrlLooksPending(url: string, target: TargetAuthInfo): boolean {
+  if (pageUrlUnusable(url)) return true
+  try {
+    const current = new URL(url)
+    if (!target.loginUrl) {
+      return current.pathname === '/login' || current.pathname.endsWith('/login')
+    }
+    const login = new URL(target.loginUrl, target.entryUrl)
+    const entry = new URL(target.entryUrl)
+    if (login.pathname === entry.pathname) return false
+    return current.pathname === login.pathname || current.pathname.startsWith(`${login.pathname}/`)
+  } catch {
+    return true
+  }
+}
+
+async function passwordFieldVisible(
+  page: Page,
+  target: TargetAuthInfo,
+): Promise<boolean> {
+  if (!target.loginFields?.password) return false
+  const pwd = locatorFor(page, target.loginFields.password)
+  if (!(await pwd.count().then((n) => n > 0).catch(() => false))) return false
+  return pwd.first().isVisible().catch(() => false)
+}
+
+export async function inspectAuthOnPage(
+  page: Page,
+  target: TargetAuthInfo,
+): Promise<'AUTHENTICATED' | 'EXPIRED'> {
+  try {
+    const url = page.url()
+    if (await passwordFieldVisible(page, target)) return 'EXPIRED'
+    if (loginUrlLooksPending(url, target)) return 'EXPIRED'
+    return 'AUTHENTICATED'
+  } catch {
+    return 'EXPIRED'
+  }
+}
+
+/**
+ * 先看当前页，仍像未登录再打开入口核验 cookie。
+ * 人工刚登完时常还停在 /login，只看当前 URL 会误判 EXPIRED。
+ */
+export async function verifyAuthOnPage(
+  page: Page,
+  target: TargetAuthInfo,
+): Promise<'AUTHENTICATED' | 'EXPIRED'> {
+  if ((restartAuthority.getStore()?.expiresAt ?? 0) <= Date.now()) requireOccupancy('verifyAuthOnPage')
+  try {
+    if ((await inspectAuthOnPage(page, target)) === 'AUTHENTICATED') return 'AUTHENTICATED'
+    await page.goto(target.entryUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    return inspectAuthOnPage(page, target)
+  } catch {
+    return 'EXPIRED'
   }
 }
 
@@ -100,31 +231,7 @@ export async function probeAuth(
   handle: BrowserHandle,
   target: TargetAuthInfo,
 ): Promise<'AUTHENTICATED' | 'EXPIRED'> {
-  try {
-    await handle.basePage.goto(target.entryUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    const url = handle.basePage.url()
-    if (target.loginUrl) {
-      const login = new URL(target.loginUrl, target.entryUrl)
-      const current = new URL(url)
-      if (
-        current.pathname === login.pathname ||
-        current.href.startsWith(login.href) ||
-        current.pathname.includes('/login')
-      ) {
-        return 'EXPIRED'
-      }
-    }
-    if (target.loginFields?.password) {
-      const pwd = locatorFor(handle.basePage, target.loginFields.password)
-      if (await pwd.count().then((n) => n > 0).catch(() => false)) {
-        const visible = await pwd.first().isVisible().catch(() => false)
-        if (visible) return 'EXPIRED'
-      }
-    }
-    return 'AUTHENTICATED'
-  } catch {
-    return 'EXPIRED'
-  }
+  return verifyAuthOnPage(handle.basePage, target)
 }
 
 /**
@@ -135,26 +242,55 @@ export async function probeAuth(
  * `acquire` 会把一个可解释的认证失败变成调用方的未捕获异常，Run 也就得不到
  * WAITING_FOR_AUTH 这条正确的处置路径。
  */
+export async function submitLoginCredentials(
+  handle: BrowserHandle,
+  target: TargetAuthInfo,
+  credential: { username: string; password: string },
+  timeoutMs = 30_000,
+  beforeAction?: () => void | Promise<void>,
+): Promise<boolean> {
+  requireOccupancy('submitLoginCredentials')
+  const fields = target.loginFields
+  if (!fields?.username || !fields.password || !fields.submit) return false
+  let authorityRejected = false
+  const authorize = async () => {
+    try { await beforeAction?.() }
+    catch (error) { authorityRejected = true; throw error }
+  }
+  try {
+    const loginUrl = target.loginUrl ?? target.entryUrl
+    await authorize()
+    await handle.basePage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
+    const user = locatorFor(handle.basePage, fields.username)
+    await user.waitFor({ state: 'visible', timeout: Math.min(15_000, timeoutMs) })
+    await authorize()
+    await user.fill(credential.username)
+    await authorize()
+    await locatorFor(handle.basePage, fields.password).fill(credential.password)
+    await authorize()
+    await locatorFor(handle.basePage, fields.submit).click()
+    await handle.basePage.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => {})
+    await handle.basePage
+      .waitForFunction('!location.pathname.includes("/login")', undefined, { timeout: timeoutMs })
+      .catch(() => {})
+    return true
+  } catch (error) {
+    // Authorization failure is terminal; it is not a wrong-password result.
+    if (authorityRejected) throw error
+    return false
+  }
+}
+
 export async function loginWithCredentials(
   handle: BrowserHandle,
   target: TargetAuthInfo,
   credential: { username: string; password: string },
+  beforeAction?: () => void | Promise<void>,
 ): Promise<boolean> {
-  const fields = target.loginFields
-  if (!fields?.username || !fields.password || !fields.submit) return false
+  requireOccupancy('loginWithCredentials')
+  const submitted = await submitLoginCredentials(handle, target, credential, undefined, beforeAction)
+  if (!submitted) return false
   try {
-    const loginUrl = target.loginUrl ?? target.entryUrl
-    await handle.basePage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    const user = locatorFor(handle.basePage, fields.username)
-    await user.waitFor({ state: 'visible', timeout: 15_000 })
-    await user.fill(credential.username)
-    await locatorFor(handle.basePage, fields.password).fill(credential.password)
-    await locatorFor(handle.basePage, fields.submit).click()
-    await handle.basePage.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => {})
-    // Vue / XHR 登录不会整页跳转；等到离开 /login 再探针，避免过早判定 EXPIRED。
-    await handle.basePage
-      .waitForFunction('!location.pathname.includes("/login")', undefined, { timeout: 30_000 })
-      .catch(() => {})
     const auth = await probeAuth(handle, target)
     return auth === 'AUTHENTICATED'
   } catch {
@@ -166,23 +302,24 @@ export async function stopSession(
   handle: BrowserHandle,
   graceMs = 3_000,
 ): Promise<'stopped' | 'unconfirmed'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
     await Promise.race([
       handle.context.close(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('close timeout')), graceMs)),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('close timeout')), graceMs) }),
     ])
     return 'stopped'
   } catch {
-    try {
-      await handle.context.close()
-    } catch {
-      return 'unconfirmed'
-    }
+    // Do not wait on the same stuck browser a second time without a deadline.
+    // The caller preserves LOST until shutdown can be positively confirmed.
     return 'unconfirmed'
+  } finally {
+    clearTimeout(timer)
   }
 }
 
 export async function openRunPage(handle: BrowserHandle): Promise<Page> {
+  requireOccupancy('openRunPage')
   const page = await handle.context.newPage()
   await targetScopeReady(page)
   return page
@@ -314,11 +451,13 @@ export async function countCandidate(
   scope: Page | Frame | Locator,
   candidate: LocatorCandidate,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<number> {
   const locator = locatorForCandidate(scope, candidate)
   const deadline = Date.now() + timeoutMs
   let last = 0
   while (Date.now() <= deadline) {
+    signal?.throwIfAborted()
     try {
       last = await locator.count()
     } catch (error) {
@@ -382,6 +521,7 @@ export async function navigateInScope(
   url: string,
   allowedOrigins: string[],
 ): Promise<{ href: string } | { outOfScope: true; href: string }> {
+  requireOccupancy('navigateInScope')
   const base = allowedOrigins[0]
   if (!base) return { outOfScope: true, href: url }
   const resolved = new URL(url, base.endsWith('/') ? base : `${base}/`)
@@ -392,6 +532,11 @@ export async function navigateInScope(
   return { href: page.url() }
 }
 
+export async function gotoPage(page: Page, url: string, timeoutMs = 30_000): Promise<void> {
+  requireOccupancy('gotoPage')
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
+}
+
 export async function clickLocator(
   locator: Locator,
   options?: {
@@ -400,6 +545,7 @@ export async function clickLocator(
     modifiers?: Array<'Alt' | 'Control' | 'Meta' | 'Shift'>
   },
 ): Promise<void> {
+  requireOccupancy('clickLocator')
   await locator.click({
     timeout: 5_000,
     button: options?.button ?? 'left',
@@ -412,6 +558,7 @@ export async function selectLocator(
   locator: Locator,
   input: { by: 'label' | 'value' | 'index'; value?: string; index?: number },
 ): Promise<void> {
+  requireOccupancy('selectLocator')
   const tag = await locator.evaluate((el) => el.tagName.toLowerCase()).catch(() => '')
   const role = await locator.getAttribute('role').catch(() => null)
   const native = tag === 'select'
@@ -445,6 +592,7 @@ export async function pressKeys(
   keys: string[],
   target?: Locator,
 ): Promise<void> {
+  requireOccupancy('pressKeys')
   if (target) await target.focus({ timeout: 5_000 })
   for (const key of keys) {
     await page.keyboard.press(key, { delay: 10 })
@@ -506,6 +654,7 @@ export class BrowserCapabilityMissingError extends Error {
 }
 
 export async function fillLocator(locator: Locator, value: string): Promise<void> {
+  requireOccupancy('fillLocator')
   await locator.fill(value, { timeout: 5_000 })
 }
 
@@ -559,30 +708,7 @@ export async function probeAuthOnPage(
   page: Page,
   target: TargetAuthInfo,
 ): Promise<'AUTHENTICATED' | 'EXPIRED'> {
-  try {
-    const url = page.url()
-    if (target.loginUrl) {
-      const login = new URL(target.loginUrl, target.entryUrl)
-      const current = new URL(url)
-      if (
-        current.pathname === login.pathname ||
-        current.href.startsWith(login.href) ||
-        current.pathname.includes('/login')
-      ) {
-        return 'EXPIRED'
-      }
-    }
-    if (target.loginFields?.password) {
-      const pwd = locatorFor(page, target.loginFields.password)
-      if (await pwd.count().then((n) => n > 0).catch(() => false)) {
-        const visible = await pwd.first().isVisible().catch(() => false)
-        if (visible) return 'EXPIRED'
-      }
-    }
-    return 'AUTHENTICATED'
-  } catch {
-    return 'EXPIRED'
-  }
+  return inspectAuthOnPage(page, target)
 }
 
 export async function screenshotPage(page: Page): Promise<Buffer> {

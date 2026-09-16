@@ -2,7 +2,7 @@ import type { RunLeaseRow, WorkerRow } from '../records.js'
 import { expireRunDeadlines } from '../runs/deadline.js'
 import { schemaFor } from '../native.js'
 import { updateRows } from '../native.js'
-import { and, asc, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, not, notInArray, or, sql } from 'drizzle-orm'
 import {
   DEFAULT_BROWSER_MAX_SESSIONS,
   isFinishedRunStatus,
@@ -19,7 +19,7 @@ import type { Db, DbHandle } from '../client.js'
 import { newId } from '../id.js'
 import { runs } from '../schema/execution.js'
 import { browserSessions } from '../schema/session.js'
-import { locked, databaseNow, afterSeconds, clockNow, insertRows } from '../native.js'
+import { locked, databaseNow, afterSeconds, clockNow, insertRows, jsonHasKey } from '../native.js'
 import { runLeases, workers } from '../schema/worker.js'
 
 /** 用共享枚举标注，让"抛出的码"与"对外声明的码"由类型接住，而不是各写一遍字面量。 */
@@ -39,6 +39,7 @@ export type WorkerRecord = {
   sampledSlotCount: number | null
   handleMismatchStreak: number
   handleSampledAt: Date | null
+  protocolCapabilities: string[]
 }
 
 export type RegisterWorkerResult = {
@@ -61,6 +62,7 @@ function toWorker(row: WorkerRow): WorkerRecord {
     sampledSlotCount: row.sampledSlotCount,
     handleMismatchStreak: row.handleMismatchStreak,
     handleSampledAt: row.liveHandleCount === null && row.sampledSlotCount === null ? null : row.heartbeatAt,
+    protocolCapabilities: row.protocolCapabilities ?? [],
   }
 }
 
@@ -69,6 +71,7 @@ function registrationValues(input: {
   capacity: number
   maxSessions?: number
   lostAfterSeconds: number
+  protocolCapabilities?: string[]
   internalBaseUrl?: string | null
   now: Date
 }) {
@@ -88,6 +91,7 @@ function registrationValues(input: {
     liveHandleCount: null,
     sampledSlotCount: null,
     handleMismatchStreak: 0,
+    protocolCapabilities: input.protocolCapabilities ?? [],
   }
 }
 
@@ -169,6 +173,7 @@ export async function registerWorker(
     capacity: number
     maxSessions?: number
     lostAfterSeconds: number
+    protocolCapabilities?: string[]
     internalBaseUrl?: string | null
   },
 ): Promise<RegisterWorkerResult> {
@@ -181,6 +186,10 @@ export async function registerWorker(
       )
       const now = await clockNow(tx as unknown as Db)
       const values = registrationValues({ ...input, now })
+
+      if (!input.protocolCapabilities?.includes('session-occupancy@2')) {
+        throw conflict('WORKER_PROTOCOL_UNSUPPORTED', 'Worker 未声明 session-occupancy@2')
+      }
 
       if (existing && existing.instanceId === input.instanceId) {
         const [row] = await tx.select().from(workers).where(eq(workers.id, input.workerId)).limit(1)
@@ -377,6 +386,9 @@ export async function lockRunRow(tx: Db, runId: string) {
         cancelRequestedAt: runs.cancelRequestedAt,
         updatedAt: runs.updatedAt,
         eventSeq: runs.eventSeq,
+        authCheckpoint: runs.authCheckpoint,
+        deadlineAt: runs.deadlineAt,
+        context: runs.context,
       })
       .from(runs)
       .where(and(eq(runs.id, runId), isNull(runs.deletedAt))),
@@ -456,6 +468,12 @@ export async function claimRun(
               isNull(runs.cancelRequestedAt),
               or(isNull(runs.deadlineAt), sql`${runs.deadlineAt} > ${databaseNow(tx)}`),
               input.excludeRunIds?.length ? notInArray(runs.id, input.excludeRunIds) : undefined,
+              worker.protocolCapabilities?.includes('snapshot.moduleManifest@1')
+                ? undefined
+                : not(jsonHasKey(tx, runs.snapshot, 'moduleManifest')),
+              worker.protocolCapabilities?.includes('snapshot.candidateGroups@1')
+                ? undefined
+                : not(jsonHasKey(tx, runs.snapshot, 'candidateGroups')),
               sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
               or(
                 isNull(runs.targetAccountId),

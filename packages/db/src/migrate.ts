@@ -9,21 +9,25 @@ export interface Migration {
   sql: string
 }
 
+export interface MigrationFile {
+  prefix: string
+  filename: string
+}
+
 const MIGRATIONS_DIR = resolve(import.meta.dirname, '../migrations')
 const FILENAME_PATTERN = /^(\d{4})_[a-z0-9_]+\.sql$/
 
 /**
- * 读取并校验迁移文件。
+ * 列出并校验迁移文件名。不读 SQL 正文，供导出版本和加载共用。
  *
  * 前一代平台出现过两个 0005、两个 0018 和缺失的 0016——执行顺序由
  * 前缀之后的名字决定，任何新增同前缀文件都可能改变相对顺序。这里在
  * 运行时就拦住，CI 另有一份静态检查（tools/check-migrations.mjs）。
  */
-export function loadMigrations(dir: string = MIGRATIONS_DIR): Migration[] {
+export function listMigrationFiles(dir: string = MIGRATIONS_DIR): MigrationFile[] {
   const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
-
   const seen = new Map<string, string>()
-  const migrations: Migration[] = []
+  const listed: MigrationFile[] = []
 
   for (const filename of files) {
     const match = FILENAME_PATTERN.exec(filename)
@@ -31,25 +35,37 @@ export function loadMigrations(dir: string = MIGRATIONS_DIR): Migration[] {
       throw new Error(`迁移文件名不合规范（应为 NNNN_name.sql）：${filename}`)
     }
     const prefix = match[1]!
-
     const duplicate = seen.get(prefix)
     if (duplicate) {
       throw new Error(`迁移前缀重复：${prefix} 同时出现在 ${duplicate} 与 ${filename}`)
     }
     seen.set(prefix, filename)
-
-    migrations.push({ prefix, filename, sql: readFileSync(resolve(dir, filename), 'utf8') })
+    listed.push({ prefix, filename })
   }
 
-  // 序号必须连续，缺号说明有迁移被删除或未合入，历史不完整
-  migrations.forEach((m, i) => {
+  listed.forEach((m, i) => {
     const expected = String(i + 1).padStart(4, '0')
     if (m.prefix !== expected) {
       throw new Error(`迁移序号不连续：期望 ${expected}，实际 ${m.prefix}（${m.filename}）`)
     }
   })
 
-  return migrations
+  return listed
+}
+
+export function loadMigrations(dir: string = MIGRATIONS_DIR): Migration[] {
+  return listMigrationFiles(dir).map(({ prefix, filename }) => ({
+    prefix,
+    filename,
+    sql: readFileSync(resolve(dir, filename), 'utf8'),
+  }))
+}
+
+/** 导出版本跟仓库当前最新 PG 前缀，禁止各功能手写抢号。 */
+export function latestLogicalVersion(dir: string = MIGRATIONS_DIR): string {
+  const files = listMigrationFiles(dir)
+  if (!files.length) throw new Error('迁移目录为空，无法确定 logicalVersion')
+  return files[files.length - 1]!.prefix
 }
 
 export interface MigrateResult {

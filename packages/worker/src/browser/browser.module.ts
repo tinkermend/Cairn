@@ -7,8 +7,10 @@ import { ObjectsModule } from '../objects/objects.module'
 import { ObjectService } from '../objects/object.service'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { resolveProfileRoot } from './profiles'
+import { createPassiveMapObservationPort } from './map-observer'
 import { createBrowserPort } from './port'
 import { BROWSER_SESSION_OPTIONS, BrowserSessionManager, SECRET_PROVIDER } from './session-manager'
+import { MAP_OBSERVATION_PORT } from '../engine/ports'
 
 @Module({
   imports: [DbModule, ObjectsModule],
@@ -43,7 +45,12 @@ import { BROWSER_SESSION_OPTIONS, BrowserSessionManager, SECRET_PROVIDER } from 
         createBrowserPort(manager, objects),
       inject: [BrowserSessionManager, ObjectService],
     },
+    {
+      provide: MAP_OBSERVATION_PORT,
+      useFactory: (manager: BrowserSessionManager) => createPassiveMapObservationPort(manager),
+      inject: [BrowserSessionManager],
+    },
   ],
-  exports: [BrowserSessionManager, BROWSER_PORT, BROWSER_SESSION_OPTIONS, SECRET_PROVIDER],
+  exports: [BrowserSessionManager, BROWSER_PORT, MAP_OBSERVATION_PORT, BROWSER_SESSION_OPTIONS, SECRET_PROVIDER],
 })
 export class BrowserModule {}

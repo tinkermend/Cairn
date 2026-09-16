@@ -1,9 +1,19 @@
 import { z } from 'zod'
-import { FORBIDDEN_CONTEXT_KEYS } from './run.js'
 import { nextCursorSchema } from './rbac.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
-import { contextKeySchema, stepSchema, type Step } from './step.js'
+import {
+  contextKeySchema,
+  FORBIDDEN_CONTEXT_KEYS,
+  scenarioInputDeclSchema,
+  stepSchema,
+  type ScenarioInputDecl,
+  type Step,
+} from './step.js'
 import { entityIdSchema, RUNTIME_SCHEMA_VERSION, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
+import {
+  moduleManifestSchema,
+  scenarioAuthoringDocumentV2Schema,
+} from './authoring-document.js'
 
 export const SCENARIO_STATUSES = ['active', 'disabled'] as const
 export type ScenarioStatus = (typeof SCENARIO_STATUSES)[number]
@@ -32,14 +42,7 @@ export const MAX_SCENARIO_STEPS = 32
 
 export const scenarioNameSchema = z.string().trim().min(1).max(128)
 
-export const scenarioInputDeclSchema = z.strictObject({
-  key: contextKeySchema.refine(
-    (key) => !(FORBIDDEN_CONTEXT_KEYS as readonly string[]).includes(key),
-    'input 键不得使用对象保留名',
-  ),
-  label: z.string().trim().min(1).max(128),
-})
-export type ScenarioInputDecl = z.infer<typeof scenarioInputDeclSchema>
+export { scenarioInputDeclSchema, type ScenarioInputDecl }
 
 export const scenarioDocumentSchema = z
   .strictObject({
@@ -147,6 +150,7 @@ export const scenarioSchema = z.object({
   targetId: entityIdSchema,
   name: scenarioNameSchema,
   status: scenarioStatusSchema,
+  purpose: z.enum(['user', 'module_verification', 'map_job']).default('user'),
   latestVersionId: entityIdSchema,
   latestVersionNo: z.number().int().min(1),
   stepCount: z.number().int().min(1).max(MAX_SCENARIO_STEPS),
@@ -177,7 +181,7 @@ export type CompileResultDto = z.infer<typeof compileResultSchema>
 
 export const scenarioDraftDtoSchema = z.object({
   revision: z.number().int().min(1),
-  document: scenarioDocumentSchema,
+  document: z.lazy(() => z.union([scenarioAuthoringDocumentV2Schema, scenarioDocumentSchema])),
   updatedAt: utcInstantSchema,
   updatedBy: z.object({
     id: entityIdSchema,
@@ -191,6 +195,8 @@ export const scenarioPublishedDtoSchema = z.object({
   versionNo: z.number().int().min(1),
   definition: scenarioDefinitionSchema,
   compilerVersion: z.number().int().min(1),
+  authoringDocument: z.lazy(() => scenarioAuthoringDocumentV2Schema).optional(),
+  moduleManifest: z.lazy(() => moduleManifestSchema).optional(),
   createdAt: utcInstantSchema,
 })
 export type ScenarioPublishedDto = z.infer<typeof scenarioPublishedDtoSchema>
@@ -207,6 +213,7 @@ export const scenarioListQuerySchema = z.object({
   search: z.string().trim().optional(),
   targetId: entityIdSchema.optional(),
   status: scenarioStatusSchema.optional(),
+  purpose: z.enum(['user', 'module_verification']).optional(),
   hasDraft: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().min(1).optional(),
@@ -226,6 +233,8 @@ export const scenarioVersionSchema = z.object({
   kind: scenarioVersionKindSchema,
   definition: scenarioDefinitionSchema,
   compilerVersion: z.number().int().min(1),
+  authoringDocument: z.lazy(() => scenarioAuthoringDocumentV2Schema).optional(),
+  moduleManifest: z.lazy(() => moduleManifestSchema).optional(),
   createdAt: utcInstantSchema,
 })
 export type ScenarioVersionDto = z.infer<typeof scenarioVersionSchema>
@@ -257,7 +266,7 @@ export type UpdateScenarioBody = z.infer<typeof updateScenarioBodySchema>
 
 export const saveScenarioDraftBodySchema = z.strictObject({
   revision: z.number().int().min(1),
-  document: scenarioDocumentSchema,
+  document: z.lazy(() => z.union([scenarioAuthoringDocumentV2Schema, scenarioDocumentSchema])),
 })
 export type SaveScenarioDraftBody = z.infer<typeof saveScenarioDraftBodySchema>
 
@@ -265,6 +274,23 @@ export const publishScenarioBodySchema = z.strictObject({
   revision: z.number().int().min(1),
 })
 export type PublishScenarioBody = z.infer<typeof publishScenarioBodySchema>
+
+export const previewScenarioExpansionBodySchema = z.strictObject({
+  document: z.unknown().optional(),
+})
+export type PreviewScenarioExpansionBody = z.infer<typeof previewScenarioExpansionBodySchema>
+
+export const previewScenarioExpansionResponseSchema = z.strictObject({
+  definition: scenarioDefinitionSchema.optional(),
+  manifest: z.lazy(() => moduleManifestSchema).optional(),
+  diagnostics: z.array(z.any()),
+})
+export type PreviewScenarioExpansionResponse = z.infer<typeof previewScenarioExpansionResponseSchema>
+
+export const inlineScenarioModuleInvocationBodySchema = z.strictObject({
+  expectedDraftLockVersion: z.number().int().min(1),
+})
+export type InlineScenarioModuleInvocationBody = z.infer<typeof inlineScenarioModuleInvocationBodySchema>
 
 export function scenarioDefinitionFromSteps(
   steps: ScenarioDefinition['steps'],

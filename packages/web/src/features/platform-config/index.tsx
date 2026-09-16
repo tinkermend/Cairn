@@ -831,6 +831,66 @@ function ExecutionFields({ canWrite }: { canWrite: boolean }) {
   return (
     <div className='grid gap-4 md:grid-cols-2'>
       <FormField
+        name='mapScheduledRefreshEnabled'
+        render={({ field }) => (
+          <FormItem className='md:col-span-2 flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2'>
+            <div>
+              <FormLabel>开放地图自动复查</FormLabel>
+              <FormDescription>
+                出厂关闭。打开后 Worker 才会物化到期窗口；已保存的计划不会补跑错过的窗口。
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='moduleFallback.enabled'
+        render={({ field }) => (
+          <FormItem className='md:col-span-2 flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2'>
+            <div>
+              <FormLabel>开放动作模块冻结回退</FormLabel>
+              <FormDescription>
+                出厂关闭。未完成独立评价前不要对业务打开；打开后也只能用于只读模块的冻结候选。
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='mapExplorationEnabled'
+        render={({ field }) => (
+          <FormItem className='md:col-span-2 flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2'>
+            <div>
+              <FormLabel>开放有界地图探索</FormLabel>
+              <FormDescription>
+                出厂关闭。打开后仍需每个目标单独开启探索政策，且不会自动升可信。
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
         name='execution.defaultTimeoutMs'
         render={({ field }) => (
           <FormItem>
@@ -857,6 +917,133 @@ function ExecutionFields({ canWrite }: { canWrite: boolean }) {
           平台默认重试保持关闭。AI Action 即使步骤未写重试也不会自动重试。
         </FormDescription>
       </FormItem>
+      <FormField
+        name='moduleResolver.maxCandidates'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>模块映射候选上限</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>编写期按说法查找时最多返回的候选数。立即生效。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='moduleResolver.aiCandidateLimit'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>模块映射 AI 候选上限</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>预留给 AI 层；当前未开放，不调用模型。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='moduleResolver.logRetentionDays'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>模块映射记录保留天数</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>过期记录按创建时间清理，不影响已写入草稿的调用。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='moduleQuality.windowDays'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>模块质量窗口（天）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>只允许 7 或 30。立即生效，不改变执行。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='moduleQuality.minSamples'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>模块质量最少样本</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>少于此数只显示样本不足，不给百分比。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='moduleQuality.degradedVerifiedRateBelow'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>模块降级通过率阈值</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                step='0.01'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>正式运行通过率低于此值标为降级，只作提示。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='moduleQuality.recentFailureStreak'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>模块连续失败次数</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>最近连续这么多次模块归因失败也标降级。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
     </div>
   )
 }
@@ -942,6 +1129,220 @@ function SessionFields({ canWrite }: { canWrite: boolean }) {
                 onChange={(event) => field.onChange(Number(event.target.value))}
               />
             </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionScheduling.profileAffinityWaitSeconds'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Profile 亲和等待（秒）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>原节点 READY 时，其他节点要等满这段时间才能接手。修改后立即影响后续领取。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionScheduling.operationQueueTimeoutSeconds'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>维护操作排队期限（秒）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>请求时冻结，已排队操作的期限不随这次修改变化。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.freshnessSecondsDefault'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>默认核验新鲜度（秒，冻结）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>新 Run 写入快照；已开跑的 Run 不改。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.freshnessSecondsMin'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>新鲜度下限（秒）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>收窄后若已发布 Target 越界，保存会被拒绝。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.freshnessSecondsMax'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>新鲜度上限（秒）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionRetention.maxRetainSeconds'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>单次保留上限（秒，实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>新的设置／延长按当前值校验；已写下的截止不回溯缩短。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionRetention.reservedFreeSlotsPerWorker'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>每节点预留空闲位</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>保留配额 = 登记的 max_sessions − 该值。结果 ≤ 0 的节点不接受保留。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionRetention.maintenanceIntervalSeconds'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>保留会话后台核验间隔（秒）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>只作用于已保留会话的下一次排程。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionRetention.renewBeforeSeconds'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>到期前提前续登（秒）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='runAuthRecovery.maxAutoRecoveriesPerRun'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>每 Run 自动登录恢复次数</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>创建 Run 时冻结；改值不回溯在途运行。0 表示不自动恢复。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='runAuthRecovery.maxManualRecoveriesPerRun'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>每 Run 人工认证恢复次数</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>创建 Run 时冻结；改值不回溯在途运行。0 表示不进入人工恢复。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.autoLoginMaxPerWindow'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>窗口内自动登录次数（实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>立即作用于下一次自动登录判定，不冻结进 Run。</FormDescription>
             <FormMessage />
           </FormItem>
         )}

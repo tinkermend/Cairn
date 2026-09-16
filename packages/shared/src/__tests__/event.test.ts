@@ -37,8 +37,22 @@ describe('eventEnvelopeSchema', () => {
       'run.cancel_requested',
     )
     expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.auth_wait' }).type).toBe('run.auth_wait')
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.auth_decision' }).type).toBe('run.auth_decision')
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.auth_signal' }).type).toBe('run.auth_signal')
     expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.auth_control_changed' }).type).toBe(
       'run.auth_control_changed',
+    )
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.auth_gate_closed' }).type).toBe(
+      'run.auth_gate_closed',
+    )
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.auth_recovering' }).type).toBe(
+      'run.auth_recovering',
+    )
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.auth_recovered' }).type).toBe(
+      'run.auth_recovered',
+    )
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.auth_unrecoverable' }).type).toBe(
+      'run.auth_unrecoverable',
     )
     expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.page_handoff' }).type).toBe('run.page_handoff')
     expect(eventEnvelopeSchema.parse({ ...valid, type: 'evidence.missing' }).type).toBe(

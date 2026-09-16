@@ -8,7 +8,7 @@ import {
   workerListResponseSchema,
   workerSessionListQuerySchema,
   type WorkerDetailResponse,
-  type WorkerListQuery,
+  type WorkerListQueryInput,
   type WorkerListResponse,
   type WorkerNetworkMode,
   type WorkerSessionListQuery,
@@ -32,22 +32,13 @@ export type WorkerRouteResolution = {
   associationLive: boolean
 }
 
-function authHoldLive(session: SessionRecord, asOf: Date): boolean {
-  if (!session.authHoldRunId || !session.authHoldExpiresAt) return false
-  if (session.authHoldExpiresAt.getTime() <= asOf.getTime()) return false
-  if (
-    session.authHoldSessionGeneration != null &&
-    session.authHoldSessionGeneration !== session.generation
-  ) {
-    return false
-  }
-  if (
-    session.authHoldWorkerInstanceId &&
-    session.ownerWorkerInstanceId &&
-    session.authHoldWorkerInstanceId !== session.ownerWorkerInstanceId
-  ) {
-    return false
-  }
+function authWaitLeaseLive(
+  lease: { purpose: string; expiresAt: Date; waitDeadlineAt: Date | null },
+  asOf: Date,
+): boolean {
+  if (lease.purpose !== 'AUTH_WAIT') return false
+  if (lease.expiresAt.getTime() <= asOf.getTime()) return false
+  if (lease.waitDeadlineAt && lease.waitDeadlineAt.getTime() <= asOf.getTime()) return false
   return true
 }
 
@@ -63,8 +54,12 @@ export async function resolveWorkerRoute(db: Db, runId: string): Promise<WorkerR
       .from(sessionLeases)
       .where(and(eq(sessionLeases.runId, runId), eq(sessionLeases.status, 'ACTIVE')))
       .limit(1)
-    const holdLive = Boolean(held && authHoldLive(held, asOf))
-    const leaseLive = Boolean(lease && lease.expiresAt.getTime() > asOf.getTime())
+    const holdLive = Boolean(lease && authWaitLeaseLive(lease, asOf))
+    const leaseLive = Boolean(
+      lease &&
+        lease.purpose !== 'AUTH_WAIT' &&
+        lease.expiresAt.getTime() > asOf.getTime(),
+    )
     const leased = lease ? await getSessionById(tx as unknown as Db, lease.sessionId) : null
     let session = (holdLive ? held : null) ?? leased ?? held
     // 续跑后占用已清、新租约尚未领取：仍要把画面转到这个账号上的活会话。
@@ -199,9 +194,13 @@ async function countForWorkers(
           .from(sessionLeases)
           .where(and(inArray(sessionLeases.sessionId, sessionIds), eq(sessionLeases.status, 'ACTIVE')))
   const leaseBySession = new Map(leases.map((lease) => [lease.sessionId, lease]))
-  const runIds = [...new Set(leases.map((lease) => lease.runId))]
+  const runIds = [...new Set(leases.map((lease) => lease.runId).filter((id): id is string => Boolean(id)))]
   const holdRunIds = [
-    ...new Set(sessions.flatMap((row) => (row.authHoldRunId ? [row.authHoldRunId] : []))),
+    ...new Set(
+      leases.flatMap((lease) =>
+        lease.purpose === 'AUTH_WAIT' && lease.runId ? [lease.runId] : [],
+      ),
+    ),
   ]
   const allRunIds = [...new Set([...runIds, ...holdRunIds])]
   const runRows =
@@ -235,29 +234,18 @@ async function countForWorkers(
     const lease = leaseBySession.get(session.id)
     if (lease && lease.expiresAt.getTime() <= asOf.getTime()) counts.expiredLeaseResidue += 1
     const worker = workerById.get(session.ownerWorkerId)
-    const boundHold = Boolean(
-      session.authHoldRunId &&
-        session.authHoldSessionGeneration &&
-        session.authHoldWorkerInstanceId &&
-        session.authHoldExpiresAt &&
-        session.authHoldExpiresAt.getTime() > asOf.getTime(),
-    )
+    const boundHold = Boolean(lease && authWaitLeaseLive(lease, asOf))
     const leftoverHold = Boolean(
-      session.authHoldExpiresAt &&
-        session.authHoldExpiresAt.getTime() > asOf.getTime() &&
-        !boundHold,
+      lease?.purpose === 'AUTH_WAIT' &&
+        lease.waitDeadlineAt &&
+        lease.waitDeadlineAt.getTime() <= asOf.getTime() &&
+        lease.status === 'ACTIVE',
     )
     if (leftoverHold) counts.leftoverAuthHolds += 1
     if (boundHold) {
-      const holdRun = session.authHoldRunId ? runById.get(session.authHoldRunId) : undefined
-      if (
-        holdRun?.status === 'WAITING_FOR_AUTH' &&
-        session.authHoldSessionGeneration === session.generation &&
-        session.authHoldWorkerInstanceId === session.ownerWorkerInstanceId
-      ) {
+      const holdRun = lease?.runId ? runById.get(lease.runId) : undefined
+      if (holdRun?.status === 'WAITING_FOR_AUTH') {
         counts.waitingForAuth += 1
-      } else if (holdRun?.status !== 'WAITING_FOR_AUTH') {
-        // 绑定完整但 Run 不是等待认证，不计等待认证
       }
     }
     const runLease =
@@ -280,7 +268,7 @@ async function countForWorkers(
       Boolean(runLease)
     if (!executing) continue
     counts.executingSlots += 1
-    const run = lease ? runById.get(lease.runId) : undefined
+    const run = lease?.runId ? runById.get(lease.runId) : undefined
     if (run?.status === 'RUNNING') counts.running += 1
     if (run?.status === 'HOLDING') counts.holding += 1
   }
@@ -289,7 +277,7 @@ async function countForWorkers(
 
 export async function listWorkers(
   db: Db,
-  query: WorkerListQuery,
+  query: WorkerListQueryInput,
   options: { networkMode: WorkerNetworkMode; envEndpoints: Record<string, string>; canSeeEndpoint: boolean },
 ): Promise<WorkerListResponse> {
   const parsed = workerListQuerySchema.parse(query)
@@ -335,6 +323,7 @@ export async function listWorkers(
         sampledSlotCount: row.sampledSlotCount,
         handleMismatchStreak: row.handleMismatchStreak,
         handleSampledAt: row.liveHandleCount === null && row.sampledSlotCount === null ? null : row.heartbeatAt,
+        protocolCapabilities: row.protocolCapabilities ?? [],
       },
       asOf,
       counts: counts.get(row.id) ?? emptyCounts(),

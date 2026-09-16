@@ -15,6 +15,8 @@ import {
   persistedRunEventSchema,
   resumeAuthBodySchema,
   reviewRunBodySchema,
+  mapDecisionListQuerySchema,
+  mapDecisionListResponseSchema,
   runDetailSchema,
   runEvidenceListResponseSchema,
   runListResponseSchema,
@@ -33,6 +35,8 @@ import {
   type PersistedRunEvent,
   type ResumeAuthBody,
   type ReviewRunBody,
+  type MapDecisionListQuery,
+  type MapDecisionListResponse,
   type RunDetailDto,
   type RunEvidenceListResponse,
   type RunListQuery,
@@ -80,6 +84,14 @@ export function retryRunCleanup(id: string): Promise<CleanupStatusResponse> {
 
 export function fetchRun(id: string): Promise<RunDetailDto> {
   return apiFetch(`/api/runs/${id}`, runDetailSchema)
+}
+
+export function fetchRunMapDecisions(
+  runId: string,
+  query?: MapDecisionListQuery,
+): Promise<MapDecisionListResponse> {
+  const parsed = query ? mapDecisionListQuerySchema.parse(query) : undefined
+  return apiFetch(`/api/runs/${runId}/map-decisions${toQueryString(parsed)}`, mapDecisionListResponseSchema)
 }
 
 export function fetchRunEvidence(id: string): Promise<RunEvidenceListResponse> {

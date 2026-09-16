@@ -13,6 +13,7 @@ export {
   findEvictableSession,
   setSessionStatus,
   setSessionProbe,
+  setSessionAuthSummary,
   touchSessionUsed,
   claimAuthHold,
   releaseAuthHold,
@@ -40,6 +41,7 @@ export {
   registerStandaloneSecret,
   listSessions,
   toSessionDto,
+  getSessionDto,
   disposeStuckSession,
   DISPOSABLE_SESSION_STATUSES,
   type SessionKey,
@@ -61,3 +63,75 @@ export {
   expireStaleAuthControl,
   findSessionByAuthHoldRun,
 } from './auth-control.js'
+export {
+  readSessionScheduling,
+  lockWorkerRow,
+  findActiveLeaseRow,
+  findAuthWaitLeaseForRun,
+  findAuthWaitLeaseForOperation,
+  getSessionOperation,
+  markSessionOperationWaitingForAuth,
+  getSessionProfile,
+  upsertSessionProfile,
+  invalidateSessionProfile,
+  evaluateRunSessionEligibility,
+  computeOccupancyPlacement,
+  claimSessionUse,
+  transitionSessionUse,
+  renewSessionUse,
+  releaseSessionUse,
+  reapSessionLeases,
+  requestSessionOperation,
+  claimSessionOperation,
+  finishSessionOperation,
+  occupancyGrantFromLease,
+  contentDigestFor,
+  workerHasOccupancyProtocol,
+  workerHasMaintenanceProtocol,
+  toSessionOperationDto,
+  type OccupancyOwner,
+  type ClaimSessionUseInput,
+  type ClaimSessionUseResult,
+  type ClaimedSessionOperation,
+  type PlacementFacts,
+} from './occupancy.js'
+export {
+  appendSessionEvent,
+  listSessionEvents,
+  listSessionEventsAfter,
+  requestMaintenanceOperation,
+  cancelSessionOperation,
+  setSessionRetention,
+  adoptSessionRetention,
+  scheduleNextAuthCheck,
+  listDueRetainedSessions,
+  listAccountSessionOverview,
+  getAccountSessionDetail,
+  countSessionEventWatermark,
+} from './maintenance.js'
+export {
+  readLiveSessionAuth,
+  loadAuthProfileRevision,
+  loadCurrentAuthProfile,
+  freezeAuthVerificationForRun,
+  getTargetAuthProfileView,
+  publishTargetAuthProfile,
+  updateTargetAccountIdentity,
+  resetAuthBudgetAfterCredentialChange,
+  occupyAutoLoginBudget,
+  recordAutoLoginOutcome,
+  startAuthProfileValidation,
+  getAuthProfileValidation,
+  observeAuthProfileValidation,
+  listTargetsOutsideFreshnessRange,
+  loadAccountAuthDisplay,
+  assertLiveAuthConfiguration,
+} from './auth-profile.js'
+
+export { assertSessionAccountActive, assertSessionActorPermission, assertMaintenanceAuthorized } from './access.js'
+
+export { recoverSessionOperations, markMaintenanceLoginSubmitted } from './occupancy.js'
+
+export { bindOperationSession } from './occupancy.js'
+
+export { recreateSessionForOperation } from './occupancy.js'

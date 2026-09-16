@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+import type { ElementHandle } from 'playwright'
 import type {
   BrowserCommand,
   BrowserCommandResult,
@@ -31,6 +33,79 @@ import { candidateTries, decideResolverOutcome, errorForOutcome } from './resolv
 export type SurfacePage = Page
 
 const DEFAULT_LOCATE_MS = 8_000
+// Opaque handles stay within the managed browser and never enter a Run snapshot.
+const locatedTargets = new WeakMap<Page, Map<string, { handle: ElementHandle; expiresAt: number }>>()
+
+async function rememberTarget(page: Page, locator: Locator): Promise<string | undefined> {
+  const handles = await locator.elementHandles()
+  if (handles.length !== 1) {
+    await Promise.all(handles.map(handle => handle.dispose()))
+    return undefined
+  }
+  const entries = locatedTargets.get(page) ?? new Map()
+  for (const [key, value] of entries) {
+    if (entries.size >= 5 || value.expiresAt <= Date.now()) {
+      entries.delete(key)
+      await value.handle.dispose().catch(() => undefined)
+    }
+  }
+  const token = randomUUID()
+  entries.set(token, { handle: handles[0]!, expiresAt: Date.now() + 5_000 })
+  locatedTargets.set(page, entries)
+  return token
+}
+
+async function readRememberedTarget(page: Page, locator: Locator,
+  command: Extract<BrowserCommand, { type: 'extract' | 'assert' }>, signal?: AbortSignal,
+): Promise<BrowserCommandResult> {
+  const entries = locatedTargets.get(page)
+  const receipt = entries?.get(command.expectedTargetToken!)
+  entries?.delete(command.expectedTargetToken!)
+  if (!receipt || receipt.expiresAt <= Date.now()) {
+    await receipt?.handle.dispose().catch(() => undefined)
+    return failOutcome('SURFACE_LOST', { outcome: 'SURFACE_LOST', candidatesTried: [] })
+  }
+  try {
+    const handles = await locator.elementHandles()
+    try {
+      signal?.throwIfAborted()
+      if (handles.length !== 1) return failOutcome('AMBIGUOUS', { outcome: 'AMBIGUOUS', candidatesTried: [] })
+      // Node identity, connectedness and the read happen in one browser task. A dynamic
+      // Locator must not retarget a replacement node between comparison and extraction.
+      const sample = await receipt.handle.evaluate((node, args) => {
+        if (!node.isConnected || node !== args.current) return null
+        const element = node as unknown as { innerText: string; value?: string; offsetWidth: number; offsetHeight: number;
+          getAttribute(name: string): string | null; getClientRects(): { length: number };
+          ownerDocument: { defaultView: { getComputedStyle(element: unknown): { visibility: string } } } }
+        return {
+          text: element.innerText,
+          value: typeof element.value === 'string' ? element.value : null,
+          attribute: args.attribute ? element.getAttribute(args.attribute) ?? '' : '',
+          visible: !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length) && element.ownerDocument.defaultView.getComputedStyle(element).visibility === 'visible',
+        }
+      }, { current: handles[0]!, attribute: command.type === 'extract' ? command.attribute : undefined })
+      signal?.throwIfAborted()
+      if (!sample) return failOutcome('SURFACE_LOST', { outcome: 'SURFACE_LOST', candidatesTried: [] })
+      if (command.type === 'extract') {
+        const value = sample[command.as]
+        if (typeof value !== 'string') throw new Error('目标元素不支持请求的提取方式')
+        return { ok: true, output: { value } }
+      }
+      if (typeof sample.text !== 'string' && command.expect.kind !== 'exists' && command.expect.kind !== 'visible') throw new Error('目标元素不支持文本断言')
+      const expected = command.expect
+      const actual = expected.kind === 'exists' ? 1 : expected.kind === 'visible' ? sample.visible :
+        expected.kind === 'number_compare' ? Number(sample.text.replace(/[^\d.-]/g, '')) : sample.text
+      const passed = expected.kind === 'exists' ? true : expected.kind === 'visible' ? sample.visible :
+        expected.kind === 'text_equals' ? actual === expected.value : expected.kind === 'text_contains' ? sample.text.includes(expected.value) :
+        typeof actual === 'number' && Number.isFinite(actual) && compareNumber(actual, expected.op, expected.value)
+      const output = { passed, expected: expected.kind === 'exists' ? 1 : expected.kind === 'visible' ? true :
+        expected.kind === 'number_compare' ? { op: expected.op, value: expected.value } : expected.value,
+        actual: typeof actual === 'number' && !Number.isFinite(actual) ? sample.text : actual }
+      return passed ? { ok: true, output } : { ok: false, output,
+        error: { code: 'ASSERT_FAILED', category: 'EXECUTOR', retryable: false, safeMessage: '断言不成立' } }
+    } finally { await Promise.all(handles.map(handle => handle.dispose().catch(() => undefined))) }
+  } finally { await receipt.handle.dispose().catch(() => undefined) }
+}
 
 export async function executeOnPage(
   page: Page,
@@ -107,9 +182,21 @@ export async function executeOnPage(
       }
     }
 
-    const located = await locate(page, target)
+    const located = await locate(page, target, command.type === 'locate' ? command.timeoutMs : undefined, signal)
+    signal?.throwIfAborted()
     if (located.kind !== 'found') {
       return failOutcome(located.outcome, located.diagnostics)
+    }
+
+    if (command.type === 'locate') {
+      const resolvedTargetToken = await rememberTarget(page, located.locator)
+      signal?.throwIfAborted()
+      if (!resolvedTargetToken) return failOutcome('SURFACE_LOST', located.diagnostics)
+      return { ok: true, output: {}, diagnostics: located.diagnostics, resolvedTargetToken }
+    }
+
+    if ((command.type === 'extract' || command.type === 'assert') && command.expectedTargetToken) {
+      return { ...await readRememberedTarget(page, located.locator, command, signal), diagnostics: located.diagnostics }
     }
 
     if (command.type === 'click') {
@@ -177,6 +264,7 @@ export async function executeOnPage(
     }
     return { ok: true, output: assertion, diagnostics: located.diagnostics }
   } catch (error) {
+    if (signal?.aborted) return { ok: false, error: { code: 'CANCELLED', category: 'CANCELLED', retryable: false, safeMessage: '步骤已取消' } }
     if (error instanceof BrowserCapabilityMissingError) {
       return failOutcome('CAPABILITY_MISSING', { outcome: 'CAPABILITY_MISSING', candidatesTried: [] })
     }
@@ -215,9 +303,14 @@ type LocateFail = {
   diagnostics: ResolverDiagnostics
 }
 
-export async function locate(page: Page, target: TargetDescriptor): Promise<LocateOk | LocateFail> {
+export async function locate(page: Page, target: TargetDescriptor, timeoutMs?: number, signal?: AbortSignal): Promise<LocateOk | LocateFail> {
+  const deadline = Date.now() + (timeoutMs ?? DEFAULT_LOCATE_MS)
+  // Baseline keeps its existing per-locator wait; map probes share one bounded budget.
+  const remaining = () => timeoutMs === undefined ? DEFAULT_LOCATE_MS : Math.max(1, deadline - Date.now())
   try {
-    const { frame, trail } = await resolveFramePath(page, target.framePath, DEFAULT_LOCATE_MS)
+    signal?.throwIfAborted()
+    const { frame, trail } = await resolveFramePath(page, target.framePath, remaining())
+    signal?.throwIfAborted()
     const gap = await detectCapabilityGap(frame, target)
     if (gap) {
       return {
@@ -230,7 +323,8 @@ export async function locate(page: Page, target: TargetDescriptor): Promise<Loca
     const matches: number[] = []
     let found: Locator | undefined
     for (const candidate of target.candidates) {
-      const n = await countCandidate(scoped, candidate, DEFAULT_LOCATE_MS)
+      signal?.throwIfAborted()
+      const n = await countCandidate(scoped, candidate, remaining(), signal)
       matches.push(n)
       if (n === 1) {
         found = locatorForCandidate(scoped, candidate)

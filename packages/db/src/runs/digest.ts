@@ -7,6 +7,10 @@ import {
   type JsonValue,
   type RunSnapshot,
   type EvidencePolicy,
+  type MapCapturePolicy,
+  type MapCapturePolicyOverride,
+  type FrozenMapConsumption,
+  type MapConsumptionOverride,
   type SessionPolicy,
   type SessionPolicyOverride,
 } from '@cairn/shared'
@@ -26,6 +30,8 @@ export function computeIdempotencyDigest(input: {
   policy?: ExecutionPolicy
   sessionPolicy?: SessionPolicy | SessionPolicyOverride | null
   evidencePolicy?: EvidencePolicy | null
+  mapCapturePolicy?: MapCapturePolicy | MapCapturePolicyOverride | null
+  mapConsumption?: FrozenMapConsumption | MapConsumptionOverride | null
 }): string {
   return sha256Hex(idempotencyDigestPayload(input))
 }

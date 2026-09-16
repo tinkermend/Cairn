@@ -13,7 +13,7 @@ import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
 import { listenForSupertest } from '../__tests__/http-app'
-import { BrowserSessionsController } from './browser-sessions.controller'
+import { AccountSessionController, BrowserSessionsController, SessionOperationsController } from './browser-sessions.controller'
 import { BrowserSessionsService } from './browser-sessions.service'
 
 const SESSION_ID = '77777777-7777-4777-8777-777777777777'
@@ -68,13 +68,34 @@ class StaticAuthGuard implements CanActivate {
 function mockService() {
   return {
     list: vi.fn(async () => ({ items: [session] })),
+    overview: vi.fn(async () => ({
+      items: [],
+      summary: {
+        total: 0,
+        available: 0,
+        needsCheck: 0,
+        needsLogin: 0,
+        identityMismatch: 0,
+        maintenance: 0,
+        executing: 0,
+        lost: 0,
+        unprepared: 0,
+        retained: 0,
+      },
+      asOf: '2026-09-16T00:00:00.000Z',
+    })),
+    requestAccountOperation: vi.fn(async () => ({
+      operationId: '88888888-8888-4888-8888-888888888888',
+      reusedRunId: null,
+      created: true,
+    })),
     dispose: vi.fn(async () => ({ ...session, status: 'CLOSED', closeReason: 'operator_disposed', disposable: false })),
   }
 }
 
 async function buildApp(account: RequestAccount | null, service: ReturnType<typeof mockService>) {
   const moduleRef = await Test.createTestingModule({
-    controllers: [BrowserSessionsController],
+    controllers: [BrowserSessionsController, AccountSessionController, SessionOperationsController],
     providers: [
       Reflector,
       { provide: BrowserSessionsService, useValue: service },
@@ -115,6 +136,14 @@ describe('BrowserSessions HTTP', () => {
 
     await request(viewerApp.getHttpServer()).get('/browser-sessions').expect(200)
     expect(service.list).toHaveBeenCalledWith({})
+  })
+
+  it('非法会话、操作及账号 ID 在访问存储前返回 400', async () => {
+    for (const path of ['/browser-sessions/undefined', '/session-operations/not-a-uuid', `/targets/${session.targetId}/accounts/bad/session`]) {
+      await request(adminApp.getHttpServer()).get(path).expect(400)
+    }
+    await request(adminApp.getHttpServer()).post('/browser-sessions/bad/dispose').send({}).expect(400)
+    expect(service.dispose).not.toHaveBeenCalled()
   })
 
   it('列表可按 ownerWorkerId 筛选且信封不变', async () => {
@@ -159,6 +188,39 @@ describe('BrowserSessions HTTP', () => {
       .post(`/browser-sessions/${SESSION_ID}/dispose`)
       .send({ note: 'x'.repeat(513) })
       .expect(400)
+  })
+
+  it('overview 在 :sessionId 之前且只需要 session:read', async () => {
+    await request(viewerApp.getHttpServer()).get('/browser-sessions/overview').expect(200)
+    expect(service.overview).toHaveBeenCalled()
+  })
+
+  it('关闭会话需要 session:manage', async () => {
+    const operator: RequestAccount = {
+      ...admin,
+      id: 'acc-op',
+      permissions: ['session:read', 'session:control', 'session:manage'],
+    }
+    const author: RequestAccount = {
+      ...admin,
+      id: 'acc-author',
+      permissions: ['session:read', 'session:control'],
+    }
+    const opApp = await buildApp(operator, service)
+    const authorApp = await buildApp(author, service)
+    const targetId = '11111111-1111-4111-8111-111111111111'
+    const accountId = '22222222-2222-4222-8222-222222222222'
+    await request(authorApp.getHttpServer())
+      .post(`/targets/${targetId}/accounts/${accountId}/session/operations`)
+      .send({ kind: 'CLOSE', idempotencyKey: 'close-account-xxxxxxxx' })
+      .expect(403)
+    await request(opApp.getHttpServer())
+      .post(`/targets/${targetId}/accounts/${accountId}/session/operations`)
+      .send({ kind: 'CLOSE', idempotencyKey: 'close-account-xxxxxxxx' })
+      .expect(202)
+    expect(service.requestAccountOperation).toHaveBeenCalled()
+    await opApp.close()
+    await authorApp.close()
   })
 
   it('未认证被拒', async () => {

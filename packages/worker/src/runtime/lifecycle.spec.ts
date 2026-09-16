@@ -16,10 +16,32 @@ vi.mock('@cairn/db', async (importOriginal) => {
   return {
     ...actual,
     registerWorker: vi.fn(async () => ({ worker: { id: 'stub' }, revokedRunIds: [] })),
+    backfillModuleInvocationResults: vi.fn(async () => ({ projected: 0, skipped: false })),
+    materializeDueSchedules: vi.fn(async () => ({
+      outcome: { scanned: 0, materialized: 0, skipped: 0, admitted: 0, conflicts: 0 },
+      pending: [],
+    })),
+    admitScheduleOccurrence: vi.fn(async () => undefined),
+    expireClosedScheduleWindows: vi.fn(async () => 0),
+    expireScheduledMapJobs: vi.fn(async () => 0),
+    getMapJobPolicy: vi.fn(async () => ({ revision: 0, policy: {} })),
+    getMapSafeEntry: vi.fn(async () => ({ entryId: 'e' })),
+    getMapSummary: vi.fn(async () => ({ publishedReleaseId: undefined })),
+    listMapAssets: vi.fn(async () => ({ items: [] })),
     settleRevokedRuns: vi.fn(async () => undefined),
     markWorkerDraining: vi.fn(async () => undefined),
     markWorkerStopped: vi.fn(async () => undefined),
     claimRun: vi.fn(async () => null),
+    claimSessionOperation: vi.fn(async () => null),
+    loadAccountForExecution: vi.fn(async () => null),
+    loadCurrentAuthProfile: vi.fn(async () => null),
+    scheduleNextAuthCheck: vi.fn(async () => undefined),
+    listDueRetainedSessions: vi.fn(async () => []),
+    requestMaintenanceOperation: vi.fn(async () => ({ operation: null, created: false, reusedRunId: null })),
+    getOrCreatePlatformConfig: vi.fn(async () => {
+      const { FACTORY_PLATFORM_CONFIG } = await import('@cairn/shared')
+      return { document: FACTORY_PLATFORM_CONFIG, revision: 1 }
+    }),
     heartbeatWorker: vi.fn(async () => 'ok' as const),
     renewRunLease: vi.fn(async () => new Date()),
     expireStaleRunLeases: vi.fn(async () => ({ expired: 0, outcomes: [] })),
@@ -46,6 +68,8 @@ function stubSessions() {
     reap: vi.fn(async () => ({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 })),
     stopAllLocal: vi.fn(async () => []),
     liveHandleCount: vi.fn(() => 0),
+    attachValidationOperation: vi.fn(async () => {}),
+    attachMaintenanceOperation: vi.fn(async () => {}),
   }
 }
 
@@ -158,6 +182,53 @@ describe('LifecycleService', () => {
     expect(vi.mocked(registerWorker).mock.invocationCallOrder[0]!).toBeGreaterThan(
       vi.mocked(sessions.setWorkerInstance).mock.invocationCallOrder[0]!,
     )
+    expect(vi.mocked(registerWorker).mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({
+        protocolCapabilities: [
+          'session-occupancy@2',
+          'session-maintenance@1',
+          'session-auth-recovery@1',
+          'snapshot.moduleManifest@1',
+          'snapshot.candidateGroups@1',
+          'map-consumption@1',
+          'map-jobs@1',
+          'map-explore@1',
+          'map-scheduler@1',
+        ],
+      }),
+    )
+  })
+
+  it('启动时仅为到期保留会话排队后台维护', async () => {
+    const { listDueRetainedSessions, requestMaintenanceOperation } = await import('@cairn/db')
+    vi.mocked(listDueRetainedSessions).mockResolvedValueOnce([
+      {
+        session: {
+          id: '11111111-1111-4111-8111-111111111111',
+          targetId: '22222222-2222-4222-8222-222222222222',
+          targetAccountId: '33333333-3333-4333-8333-333333333333',
+          generation: 2,
+          createdAt: new Date(),
+          maxLifetimeSeconds: 14400,
+          observedTier: 'LOGIN_VERIFIED',
+          authValidUntil: null,
+        },
+      } as never,
+    ])
+    app = await buildApp(stubDb())
+    await vi.waitFor(() => {
+      expect(requestMaintenanceOperation).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          origin: 'BACKGROUND',
+          body: expect.objectContaining({
+            kind: 'VERIFY_AUTH',
+            expectedSessionId: '11111111-1111-4111-8111-111111111111',
+            expectedGeneration: 2,
+          }),
+        }),
+      )
+    })
   })
 
   it('uptime 非负且随时间增长', async () => {
@@ -200,6 +271,27 @@ describe('LifecycleService', () => {
     expect(vi.mocked(registerWorker).mock.invocationCallOrder[0]!).toBeGreaterThan(
       vi.mocked(sessions.setWorkerInstance).mock.invocationCallOrder[0]!,
     )
+  })
+
+  it('数据库阻塞跨过多个心跳周期时，只执行一个心跳和一次重新注册', async () => {
+    const { heartbeatWorker, registerWorker } = await import('@cairn/db')
+    const svc = await buildLifecycle()
+    vi.mocked(registerWorker).mockClear()
+    vi.mocked(heartbeatWorker).mockClear()
+    let release!: () => void
+    const blocked = new Promise<'lost'>(resolve => { release = () => resolve('lost') })
+    vi.mocked(heartbeatWorker).mockImplementationOnce(() => blocked)
+    const exit = vi.fn()
+    svc.exitProcess = exit
+    const pending = beat(svc)
+    await Promise.all([beat(svc), beat(svc), beat(svc)])
+    const calls = vi.mocked(heartbeatWorker).mock.calls.length
+    release()
+    await pending
+    expect(calls).toBe(1)
+    expect(registerWorker).toHaveBeenCalledOnce()
+    expect(exit).not.toHaveBeenCalled()
+    expect(svc.isRunning()).toBe(true)
   })
 
   it('登记时写入 maxSessions 与广告入口，不从监听地址拼接', async () => {
@@ -331,7 +423,8 @@ describe('LifecycleService', () => {
 
   it('生产路径不向控制面发 HTTP', async () => {
     const { readFileSync } = await import('node:fs')
-    const src = readFileSync(new URL('./lifecycle.service.ts', import.meta.url), 'utf8')
+    const { join } = await import('node:path')
+    const src = readFileSync(join(process.cwd(), 'src/runtime/lifecycle.service.ts'), 'utf8')
     expect(src).not.toMatch(/@cairn\/api|\/api\/workers|fetch\(/)
   })
 

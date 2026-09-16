@@ -14,6 +14,9 @@ import {
   hasAllPermissions,
   projectRunFacts,
   routeAssistantTurn,
+  hasPermission,
+  parseScenarioDocument,
+  isAuthoringDocumentV2,
   scenarioDocumentDigest,
   scenarioFactsForModel,
   sha256Hex,
@@ -41,6 +44,8 @@ import {
 } from '@cairn/db'
 import { DB_HANDLE } from '../db/db.module'
 import { rethrowDomain } from '../common/domain-error'
+import { composeScenarioKnowledge } from '../scenarios/knowledge-operations'
+import { redactKnowledgeQuestion } from '@cairn/map'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import { TargetsService } from '../targets/targets.service'
 import { createOpenAiCompatibleClient, type PlatformModelClient } from './model-client'
@@ -56,7 +61,7 @@ import type { RequestAccount as Actor } from '../common/request-account'
 const TITLE_MAX = 40
 
 function redactQuestion(question: string): string {
-  return question.replace(/(password|token|secret|api[_-]?key|口令|密码)\s*[:=]\s*\S+/gi, '$1=***')
+  return redactKnowledgeQuestion(question)
 }
 
 function conversationTitle(question: string): string {
@@ -68,6 +73,16 @@ function isUnsupportedChange(
   change: AssistantStepChange | Extract<AssistantResult, { kind: 'unsupported' }>,
 ): change is Extract<AssistantResult, { kind: 'unsupported' }> {
   return 'reasonCode' in change
+}
+
+function requireFlatDocument(document: unknown): ScenarioDocument {
+  if (isAuthoringDocumentV2(document) && document.nodes.every(node => node.kind === 'step')) {
+    return parseScenarioDocument({ schemaVersion: document.schemaVersion, inputs: document.inputs, steps: document.nodes.flatMap(node => node.kind === 'step' ? [node.step] : []) })
+  }
+  if (document && typeof document === 'object' && 'authoringSchemaVersion' in document) {
+    throw new DomainError('bad_request', 'AUTHORING_SCHEMA_UNSUPPORTED', '含模块调用的草稿不支持扁平知识建议')
+  }
+  return parseScenarioDocument(document)
 }
 
 @Injectable()
@@ -278,7 +293,47 @@ export class AssistantService {
     if (capabilityId === 'scenario.explain') {
       return this.explain(actor, decision.slots, body.question, session, signal)
     }
+    if (capabilityId === 'scenario.compose_with_knowledge') {
+      return this.composeWithKnowledge(actor, decision.slots, body.question)
+    }
     return this.propose(actor, decision.slots, body.question, platformAi, session, signal)
+  }
+
+  private async composeWithKnowledge(actor: Actor, slots: Record<string, unknown>, question: string) {
+    const scenarioId = String(slots.scenarioId ?? '')
+    const draftRevision = Number(slots.draftRevision)
+    const detail = await getScenario(this.db, scenarioId).catch(rethrowDomain)
+    await this.requireVisibleTarget(actor, detail.targetId)
+    if (!detail.draft || detail.draft.revision !== draftRevision) {
+      throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新生成')
+    }
+    const document = requireFlatDocument(detail.draft.document)
+    const digest = await scenarioDocumentDigest(document)
+    const config = await this.platformConfig.get()
+    const composed = await composeScenarioKnowledge(this.db, scenarioId, {
+      idempotencyKey: `asst-${crypto.randomUUID()}`, question: redactKnowledgeQuestion(question),
+      expectedDraftRevision: draftRevision, documentDigest: digest,
+    }, actor, config.revision).catch(rethrowDomain)
+    return {
+      kind: 'knowledge_proposal' as const,
+      proposalId: composed.proposalId,
+      status:
+        composed.proposalStatus === 'requested' || composed.proposalStatus === 'cancelled'
+          ? 'failed'
+          : composed.proposalStatus,
+      reason: composed.diagnostics[0]?.message ?? '已生成知识建议，采纳后才会写入草稿。',
+      diffs: composed.diffs,
+      diagnostics: composed.diagnostics.map((item) => ({
+        code: item.code,
+        message: item.message,
+        fieldPath: item.fieldPath,
+      })),
+      sources: composed.sources,
+      unknowns: composed.unknowns,
+      executable: composed.proposalStatus === 'proposed',
+      draftRevision,
+      documentDigest: digest,
+    }
   }
 
   private guide(actor: Actor, slots: Record<string, unknown>): AssistantResult {
@@ -430,7 +485,7 @@ export class AssistantService {
       if (!detail.draft || detail.draft.revision !== revision) {
         throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新解释')
       }
-      return detail.draft.document
+      return requireFlatDocument(detail.draft.document)
     }
     if (typeof slots.versionId === 'string' && slots.versionId) {
       const loaded = await loadScenarioVersion(this.db, detail.id, slots.versionId).catch(rethrowDomain)
@@ -455,8 +510,9 @@ export class AssistantService {
     if (!detail.draft || detail.draft.revision !== draftRevision) {
       throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新生成')
     }
+    const document = requireFlatDocument(detail.draft.document)
     const change = await this.proposeChange(
-      detail.draft.document,
+      document,
       stepId,
       question,
       platformAi.maxOutputTokens,
@@ -464,7 +520,7 @@ export class AssistantService {
       signal,
     )
     if (isUnsupportedChange(change)) return change
-    const applied = applyStepProposal(detail.draft.document, stepId, change)
+    const applied = applyStepProposal(document, stepId, change)
     if (!applied.ok) {
       return {
         kind: 'unsupported' as const,
@@ -472,7 +528,7 @@ export class AssistantService {
         message: applied.error.message,
       }
     }
-    const baseline = compileForAssistant(detail.draft.document)
+    const baseline = compileForAssistant(document)
     const next = compileForAssistant(applied.document)
     const compared = compareCompileDiagnostics(baseline.diagnostics, next.diagnostics)
     if (compared.added.some((item) => item.severity === 'error')) {
@@ -488,7 +544,7 @@ export class AssistantService {
       document: applied.document,
       stepId,
       draftRevision,
-      documentDigest: await scenarioDocumentDigest(detail.draft.document),
+      documentDigest: await scenarioDocumentDigest(document),
       reason: '已按你的要求生成受限单步候选，采纳后仍需保存并试跑。',
       diffs: applied.diffs,
       diagnostics: next.diagnostics.map((item) => ({
@@ -597,7 +653,7 @@ export class AssistantService {
         }
       }
     }
-    if (turn.result.kind === 'explanation' || turn.result.kind === 'proposal') {
+    if (turn.result.kind === 'explanation' || turn.result.kind === 'proposal' || turn.result.kind === 'knowledge_proposal') {
       const scenarioId = typeof slots?.scenarioId === 'string' ? slots.scenarioId : ''
       if (
         !scenarioId ||

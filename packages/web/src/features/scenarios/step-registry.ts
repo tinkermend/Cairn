@@ -1,5 +1,6 @@
 import {
   isAiStepType,
+  isMapExploreStepType,
   type EffectType,
   type ExecutableStepType,
   type ScenarioCapabilities,
@@ -39,6 +40,10 @@ export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
   ai_action: 'AI 操作',
   ai_extract: 'AI 提取',
   ai_assert: 'AI 判断',
+  map_observe: '探索观察',
+  map_propose: '探索提名',
+  map_guarded_action: '探索守卫',
+  map_verify: '探索核验',
 }
 
 export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
@@ -56,6 +61,10 @@ export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
   ai_action: '按业务意图操作页面',
   ai_extract: '按契约提取结构化字段',
   ai_assert: '判断业务条件是否成立',
+  map_observe: '系统步骤：观察当前页与 allowlist 候选',
+  map_propose: '系统步骤：零 AI 提名下一跳',
+  map_guarded_action: '系统步骤：按守卫决定是否导航',
+  map_verify: '系统步骤：核验探索结果且不升可信',
 }
 
 export const DEFAULT_EFFECT: Record<DeterministicStudioType, EffectType> = {
@@ -133,6 +142,9 @@ export function createBlankStep(type: ExecutableStepType, used: Iterable<string>
       outputKey: uniqueOutputKey('asserted', taken),
       input: { instruction: '判断当前页是否满足业务条件' },
     }
+  }
+  if (isMapExploreStepType(type)) {
+    throw new Error('探索步骤不进入 Studio 步骤库')
   }
   const effectType = DEFAULT_EFFECT[type]
   switch (type) {

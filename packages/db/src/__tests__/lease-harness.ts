@@ -1,8 +1,15 @@
 import { eq, sql } from 'drizzle-orm'
 import { schemaFor, afterSeconds, databaseNow, insertRows } from '../native.js'
-import { registerWorker, claimRun, type NativeHandle as DbHandle } from '../test-entry.js'
+import {
+  claimSessionUse,
+  enterRunWaitingForAuth,
+  registerWorker,
+  claimRun,
+  setSessionStatus,
+  type NativeHandle as DbHandle,
+} from '../test-entry.js'
 import { newId } from '../id.js'
-import { runGrantSchema, type RunGrant } from '@cairn/shared'
+import { runGrantSchema, SESSION_OCCUPANCY_PROTOCOL, type RunGrant } from '@cairn/shared'
 
 export type SeededWorker = { workerId: string; instanceId: string }
 
@@ -15,6 +22,7 @@ export async function seedWorker(
     workerId,
     instanceId,
     capacity: 8,
+    protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL],
     lostAfterSeconds: 60,
   })
   return { workerId, instanceId }
@@ -55,4 +63,61 @@ export async function forceGrantForRun(
     holderWorkerId: workerId,
     expiresAt: inserted!.expiresAt.toISOString(),
   })
+}
+
+export async function claimExecutionForRun(
+  handle: DbHandle,
+  input: {
+    targetId: string
+    targetAccountId: string
+    grant: RunGrant
+    workerId: string
+    instanceId: string
+  },
+) {
+  const claimed = await claimSessionUse(handle.db, {
+    key: { targetId: input.targetId, targetAccountId: input.targetAccountId },
+    owner: { kind: 'RUN', runId: input.grant.runId, runFencingToken: input.grant.fencingToken },
+    purpose: 'EXECUTION',
+    holderWorkerId: input.workerId,
+    holderInstanceId: input.instanceId,
+    leaseTtlSeconds: 30,
+    reusePolicy: 'NEW_PAGE',
+    idleTtlSeconds: 600,
+    maxLifetimeSeconds: 3600,
+  })
+  if (!claimed.ok) throw new Error(claimed.message ?? claimed.code)
+  return claimed
+}
+
+export async function enterAuthWaitForRun(
+  handle: DbHandle,
+  input: {
+    targetId: string
+    targetAccountId: string
+    grant: RunGrant
+    workerId: string
+    instanceId: string
+    holdSeconds: number
+  },
+) {
+  const claimed = await claimExecutionForRun(handle, input)
+  if (claimed.session.status === 'CREATING') {
+    await setSessionStatus(handle.db, {
+      sessionId: claimed.session.id,
+      expectedVersion: claimed.session.version,
+      status: 'OPEN',
+      ownerWorkerId: input.workerId,
+      ownerWorkerInstanceId: input.instanceId,
+    })
+  }
+  const waitGrant = await enterRunWaitingForAuth(handle.db, {
+    grant: input.grant,
+    sessionId: claimed.session.id,
+    workerId: input.workerId,
+    workerInstanceId: input.instanceId,
+    holdSeconds: input.holdSeconds,
+  })
+  if (!waitGrant) throw new Error('enterRunWaitingForAuth 未建立 AUTH_WAIT')
+  return { claimed, waitGrant }
 }

@@ -90,6 +90,23 @@ function mockService() {
     listRecordingImports: vi.fn(async () => ({ bindings: [], drafts: [], receipts: [] })),
     previewRecordingImport: vi.fn(async () => ({ items: [] })),
     applyRecordingImport: vi.fn(async () => ({ receipt: { id: 'r1' }, scenario })),
+    createKnowledgeProposal: vi.fn(async () => ({ proposalId: scenario.id })),
+    getKnowledgeProposal: vi.fn(),
+    acceptKnowledgeProposal: vi.fn(),
+    rejectKnowledgeProposal: vi.fn(),
+    previewModuleExpansion: vi.fn(async () => ({ definition: { schemaVersion: 1, inputs: [], steps: [] }, diagnostics: [] })),
+    inlineModuleInvocation: vi.fn(async () => scenario),
+    previewModuleUpgrade: vi.fn(async () => ({ diffs: [], document: { authoringSchemaVersion: 2, schemaVersion: 1, inputs: [], nodes: [] }, diagnostics: [] })),
+    upgradeModule: vi.fn(async () => scenario),
+    previewModuleExtract: vi.fn(async () => ({ ok: true, stepIds: [], inputs: [], outputs: [], effectCeiling: 'READ_ONLY', postconditionCandidates: [], parameterizable: [] })),
+    extractModule: vi.fn(async () => ({ id: scenario.id })),
+    previewModuleReplace: vi.fn(async () => ({ equal: true, steps: [], invocation: { kind: 'module', invocationId: scenario.id, name: 'm', moduleId: scenario.id, implementationKey: 'default', inputBindings: {}, outputBindings: {} } })),
+    replaceModule: vi.fn(async () => scenario),
+    acceptModuleResolution: vi.fn(async () => ({
+      request: { requestId: scenario.id, status: 'matched', candidates: [], inputSuggestions: {}, unknowns: [], outcome: 'accepted' },
+      scenario,
+      diagnostics: [],
+    })),
   }
 }
 
@@ -258,5 +275,130 @@ describe('Scenarios HTTP', () => {
       .send({ revision: 1, insertAnchor: { kind: 'start' } })
       .expect(201)
     expect(service.createRecordingBinding).toHaveBeenCalled()
+  })
+
+  it('OME14 无 map:read 不能接受知识建议，无 ai:assist 不能生成', async () => {
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/knowledge-proposals/${scenario.id}/accept`)
+      .send({
+        idempotencyKey: 'accept-0001',
+        expectedDraftRevision: 1,
+        documentDigest: 'a'.repeat(64),
+      })
+      .expect(403)
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/knowledge-proposals`)
+      .send({
+        idempotencyKey: 'propose-0001',
+        question: '根据已有知识按订单号查询状态',
+        expectedDraftRevision: 1,
+        documentDigest: 'a'.repeat(64),
+      })
+      .expect(403)
+    expect(service.acceptKnowledgeProposal).not.toHaveBeenCalled()
+    expect(service.createKnowledgeProposal).not.toHaveBeenCalled()
+  })
+
+  it('动作模块展开预览需要 module:read，内联替换需要写权限且校验 expectedDraftLockVersion', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-expansion-preview`)
+      .send({})
+      .expect(403)
+
+    const previewRes = await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-expansion-preview`)
+      .send({})
+      .expect(200)
+    expect(previewRes.body).toHaveProperty('definition')
+    expect(service.previewModuleExpansion).toHaveBeenCalled()
+
+    await request(viewerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/nodes/inv-1/inline`)
+      .send({ expectedDraftLockVersion: 1 })
+      .expect(403)
+
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/nodes/inv-1/inline`)
+      .send({})
+      .expect(400)
+
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/nodes/inv-1/inline`)
+      .send({ expectedDraftLockVersion: 2 })
+      .expect(200)
+    expect(service.inlineModuleInvocation).toHaveBeenCalled()
+  })
+
+  it('AM-C 升级预览需要 module:read，写入与提炼需要对应写权限', async () => {
+    const invocationId = '55555555-5555-4555-8555-555555555555'
+    const versionId = '44444444-4444-4444-8444-444444444444'
+    await request(viewerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-upgrade-preview`)
+      .send({ invocationId, toVersionId: versionId })
+      .expect(403)
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-upgrade`)
+      .send({
+        invocationId,
+        toVersionId: versionId,
+        baseRevision: 1,
+        idempotencyKey: 'up-1',
+      })
+      .expect(403)
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-extract`)
+      .send({
+        stepIds: [scenario.steps[0]!.id],
+        name: '提炼',
+        key: 'order.extract',
+        idempotencyKey: 'ex-1',
+      })
+      .expect(403)
+
+    await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-upgrade-preview`)
+      .send({ invocationId, toVersionId: versionId })
+      .expect(200)
+    await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-upgrade`)
+      .send({
+        invocationId,
+        toVersionId: versionId,
+        baseRevision: 1,
+        idempotencyKey: 'up-1',
+      })
+      .expect(200)
+    await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-extract-preview`)
+      .send({ stepIds: [scenario.steps[0]!.id] })
+      .expect(200)
+    expect(service.previewModuleUpgrade).toHaveBeenCalled()
+    expect(service.upgradeModule).toHaveBeenCalled()
+    expect(service.previewModuleExtract).toHaveBeenCalled()
+  })
+
+  it('AM-D 接受映射需要 workflow:write、module:read 与 target:read', async () => {
+    const requestId = '66666666-6666-4666-8666-666666666666'
+    const versionId = '44444444-4444-4444-8444-444444444444'
+    const body = {
+      moduleVersionId: versionId,
+      inputBindings: {},
+      outputBindings: {},
+      baseRevision: 1,
+      idempotencyKey: 'accept-01',
+    }
+    await request(viewerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-resolutions/${requestId}/accept`)
+      .send(body)
+      .expect(403)
+    await request(writerApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-resolutions/${requestId}/accept`)
+      .send(body)
+      .expect(403)
+    await request(adminApp.getHttpServer())
+      .post(`/scenarios/${scenario.id}/module-resolutions/${requestId}/accept`)
+      .send(body)
+      .expect(200)
+    expect(service.acceptModuleResolution).toHaveBeenCalled()
   })
 })

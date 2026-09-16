@@ -4,11 +4,20 @@
 
 | 脚本 | 命令 | 卡住什么 |
 | --- | --- | --- |
-| `check-migrations.mjs` | `pnpm check:migrations` | 迁移文件名规范、前缀唯一、序号连续 |
+| `check-migrations.mjs` | `pnpm check:migrations` | 迁移文件名规范、前缀唯一、序号连续；`transfer.ts` 必须用目录派生的 `logicalVersion`；含领号自测 |
+| `allocate-migration.mjs` | `pnpm db:new-migration <name>` | 锁内领取 PostgreSQL / MySQL 下一号并立刻落盘，避免并发任务扫到同一最大号 |
 | `check-deps.mjs` | `pnpm check:deps` | 包边界与依赖方向：package.json 声明的仓内依赖，以及绕开声明的跨包相对路径 import；允许边表在脚本顶部，改边界必须改脚本 |
 | `use-env.mjs` | `pnpm env:use local\|remote`、`pnpm env:status` | 开发连接画像：`.env.local` / `.env.remote` 与 `.env.example` 键集必须对齐；`.env` 只是当前生效指针 |
 
 两个检查合并为 `pnpm check`，并挂在 `pnpm test` 前面；`.github/workflows/ci.yml` 在 push 与 PR 上按同一顺序执行（install → build → check → lint → typecheck → migrate → test）。
+
+## 领取迁移号
+
+PostgreSQL / MySQL 的前缀必须连续且唯一。不要先扫目录再手写 `0035_foo.sql`：两个并发任务会领到同一个号。`pnpm db:new-migration map_widgets` 在锁内同时写下两份占位 SQL，占号就是文件本身。同机多个 worktree 走 git common dir 上的锁。
+
+导出 `logicalVersion` 跟仓库当前最新 PG 前缀，不必再改 `transfer.ts`。方案里只写意图名；跨克隆合入时若仍撞号，按当时目录重领，不要预占未落地的序号。
+
+放弃本次增量且它仍是各目录最后一份时，删掉两份文件再让别人领号。中间抽走会留下缺号，检查会失败。
 
 ## 开发连接画像
 

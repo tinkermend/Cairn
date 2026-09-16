@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { Page } from 'playwright'
+import type { Frame, Page, Request } from 'playwright'
 import type { PageRef } from '@cairn/shared'
 
 export type ManagedPageKind = 'base' | 'run' | 'popup'
@@ -10,12 +10,16 @@ export type ManagedPageEntry = {
   page: Page
   runId: string
   kind: ManagedPageKind
+  lastNavigationMethod?: string
+  dispose?: () => void
 }
 
 export function createManagedPage(input: {
   page: Page
   runId: string
   kind: ManagedPageKind
+  lastNavigationMethod?: string
+  dispose?: () => void
 }): ManagedPageEntry {
   const entry: ManagedPageEntry = {
     pageId: randomUUID(),
@@ -25,11 +29,21 @@ export function createManagedPage(input: {
     kind: input.kind,
   }
   if (typeof input.page.on === 'function') {
-    input.page.on('framenavigated', (frame) => {
-      if (typeof input.page.mainFrame === 'function' && frame === input.page.mainFrame()) {
-        entry.documentEpoch += 1
+    const onRequest = (request: Request) => {
+      if (request.isNavigationRequest() && request.frame() === input.page.mainFrame()) {
+        let source: Request | null = request
+        let method = 'GET'
+        while (source) { if (source.method() !== 'GET') method = source.method(); source = source.redirectedFrom() }
+        entry.lastNavigationMethod = method
       }
-    })
+    }
+    const onNavigation = (frame: Frame) => {
+      if (typeof input.page.mainFrame === 'function' && frame === input.page.mainFrame()) entry.documentEpoch += 1
+    }
+    input.page.on('request', onRequest)
+    input.page.on('framenavigated', onNavigation)
+    entry.dispose = () => { input.page.off?.('request', onRequest); input.page.off?.('framenavigated', onNavigation) }
+
   }
   return entry
 }

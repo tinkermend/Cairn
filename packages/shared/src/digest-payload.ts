@@ -1,4 +1,6 @@
 import type { EvidencePolicy } from './evidence-policy.js'
+import type { MapCapturePolicy, MapCapturePolicyOverride } from './map-capture.js'
+import type { FrozenMapConsumption, MapConsumptionOverride } from './map-consumption.js'
 import type { ExecutionPolicy } from './step.js'
 import type { RunSnapshot } from './run.js'
 import type { SessionPolicy, SessionPolicyOverride } from './session.js'
@@ -28,6 +30,12 @@ export function snapshotDigestPayload(snapshot: RunSnapshot): Record<string, unk
       ? { platformConfigRevision: snapshot.platformConfigRevision }
       : {}),
     ...(snapshot.targetAuth ? { targetAuth: snapshot.targetAuth } : {}),
+    ...(snapshot.authVerification ? { authVerification: snapshot.authVerification } : {}),
+    ...(snapshot.mapCapturePolicy ? { mapCapturePolicy: snapshot.mapCapturePolicy } : {}),
+    ...(snapshot.mapConsumption ? { mapConsumption: snapshot.mapConsumption } : {}),
+    ...(snapshot.accessPolicy ? { accessPolicy: snapshot.accessPolicy } : {}),
+    ...(snapshot.mapJob ? { mapJob: snapshot.mapJob } : {}),
+    ...(snapshot.moduleManifest ? { moduleManifest: snapshot.moduleManifest } : {}),
   }
 }
 
@@ -38,6 +46,8 @@ export function idempotencyDigestPayload(input: {
   policy?: ExecutionPolicy
   sessionPolicy?: SessionPolicy | SessionPolicyOverride | null
   evidencePolicy?: EvidencePolicy | null
+  mapCapturePolicy?: MapCapturePolicy | MapCapturePolicyOverride | null
+  mapConsumption?: FrozenMapConsumption | MapConsumptionOverride | null
 }): Record<string, unknown> {
   return {
     scenarioVersionId: input.scenarioVersionId,
@@ -46,5 +56,7 @@ export function idempotencyDigestPayload(input: {
     policy: input.policy,
     sessionPolicy: input.sessionPolicy ?? null,
     evidencePolicy: input.evidencePolicy ?? null,
+    mapCapturePolicy: input.mapCapturePolicy ?? null,
+    mapConsumption: input.mapConsumption ?? null,
   }
 }

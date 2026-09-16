@@ -1,0 +1,10 @@
+# .gitignore 挡住的本机文档，Agent 仍须读写。
+# Cursor 默认把 gitignore 当成 Agent 禁区，不在这里放行就会读失败或劝你移出忽略列表。
+!docs/arch/
+!docs/arch/**
+!docs/spec/
+!docs/spec/**
+!docs/reviews/
+!docs/reviews/**
+!docs/plan/
+!docs/plan/**

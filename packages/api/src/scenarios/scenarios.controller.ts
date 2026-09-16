@@ -8,10 +8,25 @@ import {
   publishScenarioBodySchema,
   saveScenarioDraftBodySchema,
   scenarioListQuerySchema,
+  acceptKnowledgeProposalBodySchema,
+  createKnowledgeProposalBodySchema,
+  rejectKnowledgeProposalBodySchema,
   trialRunBodySchema,
   updateScenarioBodySchema,
   deleteResourceBodySchema,
+  previewScenarioExpansionBodySchema,
+  inlineScenarioModuleInvocationBodySchema,
+  moduleUpgradePreviewBodySchema,
+  moduleUpgradeBodySchema,
+  moduleExtractPreviewBodySchema,
+  moduleExtractBodySchema,
+  moduleReplacePreviewBodySchema,
+  moduleReplaceBodySchema,
+  moduleResolveAcceptBodySchema,
+  type AcceptKnowledgeProposalBody,
   type ApplyRecordingImportBody,
+  type CreateKnowledgeProposalBody,
+  type RejectKnowledgeProposalBody,
   type DeleteResourceBody,
   type CreateRecordingBindingBody,
   type CreateScenarioBody,
@@ -21,6 +36,15 @@ import {
   type ScenarioListQuery,
   type TrialRunBody,
   type UpdateScenarioBody,
+  type PreviewScenarioExpansionBody,
+  type InlineScenarioModuleInvocationBody,
+  type ModuleUpgradePreviewBody,
+  type ModuleUpgradeBody,
+  type ModuleExtractPreviewBody,
+  type ModuleExtractBody,
+  type ModuleReplacePreviewBody,
+  type ModuleReplaceBody,
+  type ModuleResolveAcceptBody,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
@@ -90,6 +114,50 @@ export class ScenariosController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.scenarios.publish(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/knowledge-proposals')
+  @RequirePermissions('workflow:write', 'map:read', 'target:read', 'ai:assist')
+  createKnowledgeProposal(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(createKnowledgeProposalBodySchema)) body: CreateKnowledgeProposalBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.createKnowledgeProposal(scenarioId, body, actor)
+  }
+
+  @Get(':scenarioId/knowledge-proposals/:proposalId')
+  @RequirePermissions('workflow:read', 'map:read', 'target:read')
+  getKnowledgeProposal(
+    @Param('scenarioId') scenarioId: string,
+    @Param('proposalId') proposalId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.getKnowledgeProposal(scenarioId, proposalId, actor)
+  }
+
+  @Post(':scenarioId/knowledge-proposals/:proposalId/accept')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write', 'map:read', 'target:read')
+  acceptKnowledgeProposal(
+    @Param('scenarioId') scenarioId: string,
+    @Param('proposalId') proposalId: string,
+    @Body(new ZodValidationPipe(acceptKnowledgeProposalBodySchema)) body: AcceptKnowledgeProposalBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.acceptKnowledgeProposal(scenarioId, proposalId, body, actor)
+  }
+
+  @Post(':scenarioId/knowledge-proposals/:proposalId/reject')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write', 'map:read', 'target:read')
+  rejectKnowledgeProposal(
+    @Param('scenarioId') scenarioId: string,
+    @Param('proposalId') proposalId: string,
+    @Body(new ZodValidationPipe(rejectKnowledgeProposalBodySchema)) _body: RejectKnowledgeProposalBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.rejectKnowledgeProposal(scenarioId, proposalId, actor)
   }
 
   @Post(':scenarioId/trial')
@@ -167,5 +235,102 @@ export class ScenariosController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.scenarios.applyRecordingImport(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/module-expansion-preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:read', 'module:read')
+  previewModuleExpansion(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(previewScenarioExpansionBodySchema.optional())) body?: PreviewScenarioExpansionBody,
+  ) {
+    return this.scenarios.previewModuleExpansion(scenarioId, body)
+  }
+
+  @Post(':scenarioId/nodes/:invocationId/inline')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write')
+  inlineModuleInvocation(
+    @Param('scenarioId') scenarioId: string,
+    @Param('invocationId') invocationId: string,
+    @Body(new ZodValidationPipe(inlineScenarioModuleInvocationBodySchema)) body: InlineScenarioModuleInvocationBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.inlineModuleInvocation(scenarioId, invocationId, body, actor)
+  }
+
+  @Post(':scenarioId/module-upgrade-preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:read', 'module:read')
+  previewModuleUpgrade(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(moduleUpgradePreviewBodySchema)) body: ModuleUpgradePreviewBody,
+  ) {
+    return this.scenarios.previewModuleUpgrade(scenarioId, body)
+  }
+
+  @Post(':scenarioId/module-upgrade')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write', 'module:read')
+  upgradeModule(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(moduleUpgradeBodySchema)) body: ModuleUpgradeBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.upgradeModule(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/module-extract-preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:read', 'module:read')
+  previewModuleExtract(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(moduleExtractPreviewBodySchema)) body: ModuleExtractPreviewBody,
+  ) {
+    return this.scenarios.previewModuleExtract(scenarioId, body)
+  }
+
+  @Post(':scenarioId/module-extract')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write', 'module:write')
+  extractModule(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(moduleExtractBodySchema)) body: ModuleExtractBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.extractModule(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/module-replace-preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:read', 'module:read')
+  previewModuleReplace(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(moduleReplacePreviewBodySchema)) body: ModuleReplacePreviewBody,
+  ) {
+    return this.scenarios.previewModuleReplace(scenarioId, body)
+  }
+
+  @Post(':scenarioId/module-replace')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write', 'module:read')
+  replaceModule(
+    @Param('scenarioId') scenarioId: string,
+    @Body(new ZodValidationPipe(moduleReplaceBodySchema)) body: ModuleReplaceBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.replaceModule(scenarioId, body, actor)
+  }
+
+  @Post(':scenarioId/module-resolutions/:requestId/accept')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write', 'module:read', 'target:read')
+  acceptModuleResolution(
+    @Param('scenarioId') scenarioId: string,
+    @Param('requestId') requestId: string,
+    @Body(new ZodValidationPipe(moduleResolveAcceptBodySchema)) body: ModuleResolveAcceptBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.scenarios.acceptModuleResolution(scenarioId, requestId, body, actor)
   }
 }

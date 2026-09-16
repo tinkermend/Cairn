@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RunDetailDto, RunObservation } from '@cairn/shared'
+import { runPlacement, type RunDetailDto, type RunObservation } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth-store'
 import { connectionLabel, useRunObservation } from './use-run-observation'
@@ -33,12 +33,12 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     evidenceStatus: 'PENDING',
     lease: null,
     debugMode: 'runThrough',
-    placement: {
+    placement: runPlacement({
       state: 'not_applicable',
       sessionId: null,
       ownerWorkerId: null,
       sessionStatus: null,
-    },
+    }),
     snapshot: {
       schemaVersion: 1,
       runId: RUN_ID,

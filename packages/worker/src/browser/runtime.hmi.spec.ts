@@ -19,6 +19,7 @@ import {
   type BrowserHandle,
 } from './runtime'
 import { ensureProfileDir } from './profiles'
+import { withTestOccupancy } from './test-occupancy'
 
 async function chromiumAvailable(): Promise<boolean> {
   try {
@@ -115,27 +116,31 @@ describe('browser runtime + HMI 夹具', { timeout: 120_000 }, () => {
       targetAccountId: '00000000-0000-4000-8000-0000000000bb',
     }
     const { profileDir } = ensureProfileDir(profileRoot, key)
-    handle = await launchSession(profileDir, { headless: true })
-    expect(await probeHealth(handle)).toBe('HEALTHY')
+    await withTestOccupancy(async () => {
+      handle = await launchSession(profileDir, { headless: true })
+      expect(await probeHealth(handle)).toBe('HEALTHY')
 
-    const target = {
-      entryUrl: `${baseUrl}/`,
-      loginUrl: `${baseUrl}/login`,
-      loginFields: {
-        username: { by: 'name' as const, value: 'username' },
-        password: { by: 'name' as const, value: 'password' },
-        submit: { by: 'css' as const, value: 'button[type=submit]' },
-      },
-    }
-    expect(await probeAuth(handle, target)).toBe('EXPIRED')
-    expect(
-      await loginWithCredentials(handle, target, { username: 'demo', password: 'x' }),
-    ).toBe(true)
-    expect(await probeAuth(handle, target)).toBe('AUTHENTICATED')
+      const target = {
+        entryUrl: `${baseUrl}/`,
+        loginUrl: `${baseUrl}/login`,
+        loginFields: {
+          username: { by: 'name' as const, value: 'username' },
+          password: { by: 'name' as const, value: 'password' },
+          submit: { by: 'css' as const, value: 'button[type=submit]' },
+        },
+      }
+      expect(await probeAuth(handle, target)).toBe('EXPIRED')
+      expect(
+        await loginWithCredentials(handle, target, { username: 'demo', password: 'x' }),
+      ).toBe(true)
+      expect(await probeAuth(handle, target)).toBe('AUTHENTICATED')
+    })
+    if (!handle) throw new Error('session not launched')
+    const launched = handle
 
     // RF17：50 次 acquire 风格开页并关闭后，页面数 ≤ 会话数×1（仅 basePage）
     for (let i = 0; i < 50; i++) {
-      const page = await openRunPage(handle)
+      const page = await withTestOccupancy(() => openRunPage(launched))
       await closePage(page)
     }
     expect(countPages(handle)).toBe(1)

@@ -1,4 +1,4 @@
-import type { SessionGrant } from '@cairn/shared'
+import { isExecutorGrant, type SessionGrant, type SessionLeasePurpose } from '@cairn/shared'
 
 /**
  * 进程内命令面 guard：四元组 + 到期时间任一不符即拒绝。
@@ -59,6 +59,25 @@ export class SessionGuard {
     if (Date.parse(grant.expiresAt) <= Date.now()) {
       this.revoke(leaseId)
       throw new GuardError('SESSION_LEASE_LOST', '租约已过期（进程侧）')
+    }
+    if (expected?.purpose && grant.purpose !== expected.purpose) {
+      throw new GuardError('SESSION_LEASE_LOST', `租约用途 ${grant.purpose} 不匹配`)
+    }
+    return grant
+  }
+
+  assertExecutor(leaseId: string, expected?: Partial<SessionGrant>): SessionGrant {
+    const grant = this.assertHeld(leaseId, expected)
+    if (!isExecutorGrant(grant)) {
+      throw new GuardError('SESSION_LEASE_LOST', `${grant.purpose ?? 'UNKNOWN'} 不能作为执行器 grant`)
+    }
+    return grant
+  }
+
+  assertPurpose(leaseId: string, purposes: SessionLeasePurpose[], expected?: Partial<SessionGrant>): SessionGrant {
+    const grant = this.assertHeld(leaseId, expected)
+    if (!purposes.includes(grant.purpose ?? 'EXECUTION')) {
+      throw new GuardError('SESSION_LEASE_LOST', `租约用途 ${grant.purpose} 不允许`)
     }
     return grant
   }

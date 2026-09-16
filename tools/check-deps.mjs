@@ -26,8 +26,9 @@ const ALLOWED_EDGES = {
   '@cairn/storage': ['@cairn/shared'],
   '@cairn/secret': ['@cairn/shared'],
   '@cairn/db': ['@cairn/shared'],
-  '@cairn/api': ['@cairn/db', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
-  '@cairn/worker': ['@cairn/db', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
+  '@cairn/map': ['@cairn/shared'],
+  '@cairn/api': ['@cairn/db', '@cairn/map', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
+  '@cairn/worker': ['@cairn/db', '@cairn/map', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
   '@cairn/web': ['@cairn/shared'],
   '@cairn/extension-playwright-crx': ['@cairn/shared'],
 }
@@ -129,6 +130,7 @@ const NON_WORKER_SRC_ROOTS = [
   resolve(root, 'packages/db/src'),
   resolve(root, 'packages/secret/src'),
   resolve(root, 'packages/storage/src'),
+  resolve(root, 'packages/map/src'),
   resolve(root, 'packages/extension'),
 ]
 

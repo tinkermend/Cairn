@@ -8,12 +8,16 @@ import {
   failRunValidation,
   finishAttempt,
   finishRunIfDrained,
+  projectModuleInvocationResults,
+  completeMapJobSlice,
+  writeRunAuthCheckpoint,
   getSessionById,
   loadRunDetail,
   loadRunRow,
   loadSecretCiphertext,
   markRunCancelled,
   reconcileOrphanAttempts,
+  resolveMapRunSourceType,
   settleRunEvidence,
   startAttempt,
   stopRunDebug,
@@ -38,12 +42,26 @@ import {
   resolveEvidencePolicy,
   resolveStepPolicy,
   retainUntilFor,
+  isHaltedRunStatus,
+  isMapJobRun,
   runSnapshotSchema,
+  authGateDoesNotConsumeRetry,
+  classifyInterruptedAttempt,
+  computeContextVersion,
+  decideAuthRecovery,
+  deriveRecoveryRule,
+  isContextRecoverable,
+  redactAuthUrl,
+  resolveRunAuthRecovery,
+  type AuthCheckpoint,
+  type AuthObservation,
   type BrowserCommand,
   type DebugAction,
   type DebugCheckpointReason,
   type ExecutionError,
   type JsonValue,
+  type MapFactBatchItem,
+  type MapRunSourceType,
   type PageRef,
   type ResolverDiagnostics,
   type RunDetailDto,
@@ -56,6 +74,16 @@ import {
   type SessionGrant,
   type Step,
   type TargetDescriptor,
+  type CandidateGroup,
+  type SelectionDecision,
+  candidateGroupsOf,
+  commitStagedOutputs,
+  fallbackAttribution,
+  findCandidateGroup,
+  laterAlternativeStepIds,
+  remainingStepIdsOfAlternative,
+  selectionDecisionFromGroup,
+  shouldFallbackToNext,
 } from '@cairn/shared'
 import type { LocalSecretProvider } from '@cairn/secret'
 import { config } from '../config/env.js'
@@ -63,9 +91,11 @@ import { DB_HANDLE } from '../db/db.module'
 import { SECRET_PROVIDER } from '../tokens.js'
 import { yieldPlacement } from '../runtime/placement-backoff.js'
 import { isAbortError, systemClock, type EngineClock } from './clock.js'
-import { BROWSER_PORT, type BrowserPort } from './ports.js'
+import { BROWSER_PORT, MAP_OBSERVATION_PORT, type BrowserPort, type PassiveMapObservationPort } from './ports.js'
+import { buildAfterMapFacts, persistBeforeObservation, type CapturePhaseBudget } from '../map/passive-capture.js'
 import { BrowserStepExecutor } from './browser-executor.js'
 import { FixtureStepExecutor } from './fixture-executor.js'
+import { MapExploreExecutor } from './explore-executor.js'
 import {
   STEP_EXECUTOR_REGISTRY,
   StepExecutorRegistry,
@@ -94,6 +124,7 @@ export class ExecutionEngine {
   private readonly logger = new Logger(ExecutionEngine.name)
   private readonly registry: StepExecutorRegistry
   readonly holds: DebugHoldRegistry
+  mapObservation?: PassiveMapObservationPort
 
   constructor(
     @Inject(DB_HANDLE) private readonly handle: DbHandle,
@@ -102,12 +133,15 @@ export class ExecutionEngine {
     @Optional() @Inject(SECRET_PROVIDER) private readonly secrets?: LocalSecretProvider,
     @Optional() @Inject(STEP_EXECUTOR_REGISTRY) registry?: StepExecutorRegistry,
     @Optional() holds?: DebugHoldRegistry,
+    @Optional() @Inject(MAP_OBSERVATION_PORT) mapObservation?: PassiveMapObservationPort,
   ) {
+    this.mapObservation = mapObservation
     this.registry =
       registry ??
       new StepExecutorRegistry([
         new FixtureStepExecutor(),
         new BrowserStepExecutor(this.handle, this.browser),
+        new MapExploreExecutor(this.browser),
       ])
     this.holds = holds ?? new DebugHoldRegistry()
   }
@@ -145,6 +179,8 @@ export class ExecutionEngine {
     const snapshot = parsed.data
     const secrets = await this.resolveRedactionSecrets(snapshot)
     const evidencePolicy = resolveEvidencePolicy(snapshot.evidencePolicy)
+    const mapSourceType = await resolveMapRunSourceType(db, snapshot.scenarioVersionId)
+    const mapBudget: CapturePhaseBudget = { usedMs: 0 }
     const needsBrowser = snapshot.steps.some((step) => stepUsesBrowser(step.type))
     let sessionMustClose = false
 
@@ -318,6 +354,8 @@ export class ExecutionEngine {
           taint,
           debugMode,
           overlay: detail.debugOverlay,
+          mapSourceType,
+          mapBudget,
         })
         sessionMustClose = sessionMustClose || taint.hung
         if (finished === 'stop') return
@@ -342,6 +380,7 @@ export class ExecutionEngine {
       // 步骤都终结但 Run 还停在 RUNNING（续跑、恢复）：补一次成功终态。
       // 正常的最后一步已在同一事务里写过 SUCCEEDED，这里只是兜底。
       await finishRunIfDrained(db, grant)
+      await this.settleMapJob(db, runId)
     } finally {
       if (sessionGrant && this.browser) {
         if (sessionMustClose && this.browser.invalidate) {
@@ -368,8 +407,35 @@ export class ExecutionEngine {
           '证据收尾失败',
         )
       })
+      await this.settleMapJob(db, runId)
+      await this.projectModuleResults(db, runId)
       stop.stop()
     }
+  }
+
+  private async projectModuleResults(db: DbHandle, runId: string): Promise<void> {
+    const row = await loadRunRow(db, runId)
+    if (!row || !isHaltedRunStatus(row.status) || !row.snapshot.moduleManifest?.entries.length) return
+    await projectModuleInvocationResults(db, runId).catch((error: unknown) => {
+      this.logger.warn(
+        { runId, message: error instanceof Error ? error.message : String(error) },
+        '模块调用结果投影失败',
+      )
+    })
+  }
+
+  private async settleMapJob(db: DbHandle, runId: string): Promise<void> {
+    const row = await loadRunRow(db, runId)
+    if (!row || !isMapJobRun(row.snapshot)) return
+    const outcome =
+      row.status === 'SUCCEEDED' ? 'completed' : row.status === 'CANCELLED' ? 'cancelled' : row.status === 'FAILED' || row.status === 'NEEDS_REVIEW' ? 'failed' : null
+    if (!outcome) return
+    await completeMapJobSlice(db, runId, outcome).catch((error: unknown) => {
+      this.logger.warn(
+        { runId, message: error instanceof Error ? error.message : String(error) },
+        '地图作业分片收尾失败',
+      )
+    })
   }
 
   private async acquireSession(
@@ -381,6 +447,14 @@ export class ExecutionEngine {
       await yieldPlacement(this.handle, grant)
       return { kind: 'stop' }
     }
+    const failAcquisition = async (error: ExecutionError) => {
+      const current = await loadRunDetail(this.handle, grant.runId)
+      const checkpoint = current?.authCheckpoint
+      await failRunValidation(this.handle, grant.runId, { grant }, error, checkpoint ? {
+        authCheckpoint: { ...checkpoint, status: 'unrecoverable', unrecoverableCode: error.code },
+        stepRunId: current?.stepRuns.find(step => step.stepId === checkpoint.nextStepId)?.id,
+      } : undefined)
+    }
     try {
       const outcome = await this.browser.acquire(snapshot, grant, signal)
       if (outcome.ok) return { kind: 'held', grant: outcome.grant }
@@ -391,11 +465,11 @@ export class ExecutionEngine {
         return { kind: 'stop' }
       }
       if (isSessionConfigErrorCode(outcome.code)) {
-        await failRunValidation(this.handle, grant.runId, { grant }, acquireValidationError(outcome))
+        await failAcquisition(acquireValidationError(outcome))
         return { kind: 'stop' }
       }
       this.logger.warn({ runId: grant.runId, code: outcome.code }, 'acquire 未识别的失败，按配置错误收场')
-      await failRunValidation(this.handle, grant.runId, { grant }, acquireValidationError(outcome))
+      await failAcquisition(acquireValidationError(outcome))
       return { kind: 'stop' }
     } catch (error) {
       if (signal.aborted) return { kind: 'stop' }
@@ -403,7 +477,7 @@ export class ExecutionEngine {
         { runId: grant.runId, message: error instanceof Error ? error.message : String(error) },
         'acquire 抛出异常，按配置错误收场',
       )
-      await failRunValidation(this.handle, grant.runId, { grant }, {
+      await failAcquisition({
         code: 'SESSION_ACQUIRE_FAILED',
         category: 'INFRASTRUCTURE',
         retryable: false,
@@ -437,6 +511,8 @@ export class ExecutionEngine {
     taint: { hung: boolean }
     debugMode: DebugMode
     overlay?: DebugOverlay | null
+    mapSourceType: MapRunSourceType
+    mapBudget: CapturePhaseBudget
   }): Promise<'next' | 'stop' | 'held'> {
     const db = this.handle
     let attemptId = input.attemptId
@@ -463,6 +539,23 @@ export class ExecutionEngine {
         return 'stop'
       }
 
+      const before = await persistBeforeObservation({
+        db: this.handle,
+        grant: input.grant,
+        snapshot: input.snapshot,
+        step: input.step,
+        stepRunId: input.stepRunId,
+        attemptId,
+        sessionGrant: input.sessionGrant,
+        remainingStepMs: input.policy.timeoutMs,
+        budget: input.mapBudget,
+        sourceType: input.mapSourceType,
+        port: this.mapObservation,
+        signal: input.stop,
+      })
+      if (before === 'abort') return 'stop'
+
+      const stepStarted = input.clock.now()
       const outcome = await this.runExecutor({
         step: input.step,
         input: input.input,
@@ -479,6 +572,13 @@ export class ExecutionEngine {
         grant: input.grant,
         snapshot: input.snapshot,
       })
+      const remainingAfter = Math.max(0, input.policy.timeoutMs - (input.clock.now() - stepStarted))
+      const mapFacts = await this.collectAfterFacts({
+        input,
+        attemptId,
+        remainingStepMs: remainingAfter,
+        extraFacts: outcome.mapFacts,
+      })
       if (outcome.hung) input.taint.hung = true
 
       // 成功也要看写入结果：取消请求抢先到达时 finishAttempt 会把它改写成取消，此时必须停手。
@@ -489,6 +589,14 @@ export class ExecutionEngine {
             [input.step.outputKey]: jsonValueSchema.parse(contextValue(input.step, outcome.output)),
           }
         }
+        const groupPlan = planCandidateSuccess({
+          snapshot: input.snapshot,
+          stepId: input.step.id,
+          context,
+          last: input.last,
+          detail: await loadRunDetail(db, input.runId),
+        })
+        if (groupPlan?.context) context = groupPlan.context
         const pause = this.holds.consumePause(input.runId)
         const hold = input.debugMode === 'holdAfterEach' || pause
         const closed = await this.close({
@@ -500,8 +608,10 @@ export class ExecutionEngine {
           screenshot: outcome.screenshot,
           trace: outcome.trace,
           stepRunStatus: 'SUCCEEDED',
-          runStatus: hold ? 'HOLDING' : input.last ? 'SUCCEEDED' : undefined,
+          runStatus: hold ? 'HOLDING' : groupPlan?.last ?? input.last ? 'SUCCEEDED' : undefined,
           skipRemaining: false,
+          skipStepIds: groupPlan?.skipStepIds,
+          selectionDecision: groupPlan?.selectionDecision,
           checkpoint: hold
             ? await this.buildCheckpoint({
                 runId: input.runId,
@@ -518,6 +628,7 @@ export class ExecutionEngine {
           grant: input.grant,
           sessionLease: sessionLeaseFor(input),
           secrets: input.secrets,
+          mapFacts,
         })
         if (!closed) return 'stop'
         if (hold) return 'held'
@@ -525,10 +636,33 @@ export class ExecutionEngine {
       }
 
       const error = outcome.error
+      if (error.code === 'AUTH_GATE_CLOSED') {
+        const handled = await this.handleAuthGate({
+          ...input,
+          attemptId,
+          attemptNo,
+          context,
+          outcome,
+          mapFacts,
+        })
+        if (handled.kind === 'retry') {
+          attemptId = handled.attemptId
+          attemptNo = handled.attemptNo
+          continue
+        }
+        return handled.kind
+      }
       if (
         outcome.kind === 'needs_review' ||
         shouldNeedsReview(input.step, error, outcome.timedOut, outcome.aborted)
       ) {
+        const reviewPlan = planCandidateHalt({
+          snapshot: input.snapshot,
+          stepId: input.step.id,
+          error,
+          runStatus: 'NEEDS_REVIEW',
+          detail: await loadRunDetail(db, input.runId),
+        })
         await this.close({
           runId: input.runId,
           attemptId,
@@ -539,9 +673,12 @@ export class ExecutionEngine {
           trace: outcome.trace,
           stepRunStatus: 'FAILED',
           runStatus: 'NEEDS_REVIEW',
+          skipStepIds: reviewPlan?.skipStepIds,
+          selectionDecision: reviewPlan?.selectionDecision,
           grant: input.grant,
           sessionLease: sessionLeaseFor(input),
           secrets: input.secrets,
+          mapFacts,
         })
         return 'stop'
       }
@@ -564,13 +701,24 @@ export class ExecutionEngine {
           grant: input.grant,
           sessionLease: sessionLeaseFor(input),
           secrets: input.secrets,
+          mapFacts,
         })
         return 'stop'
       }
 
-      const retry = shouldRetry(input.step, error, attemptNo, input.policy.retryLimit)
+      const retryDetail = await loadRunDetail(db, input.runId)
+      const retry = shouldRetry(input.step, error, retryDetail ? chargedAttemptCount(retryDetail, input.stepRunId) : attemptNo, input.policy.retryLimit)
       const hold =
         !retry && (input.debugMode === 'holdOnFailure' || input.debugMode === 'holdAfterEach')
+      const failPlan = !retry
+        ? planCandidateFailure({
+            snapshot: input.snapshot,
+            stepId: input.step.id,
+            error,
+            debugHold: hold,
+            detail: retryDetail,
+          })
+        : undefined
       const closed = await this.close({
         runId: input.runId,
         attemptId,
@@ -581,8 +729,10 @@ export class ExecutionEngine {
         screenshot: outcome.screenshot,
         trace: outcome.trace,
         stepRunStatus: retry ? 'RUNNING' : 'FAILED',
-        runStatus: retry ? undefined : hold ? 'HOLDING' : 'FAILED',
-        skipRemaining: !retry && !hold,
+        runStatus: retry || failPlan?.keepRunOpen ? undefined : hold ? 'HOLDING' : 'FAILED',
+        skipRemaining: !retry && !hold && !failPlan?.keepRunOpen,
+        skipStepIds: failPlan?.keepRunOpen ? failPlan.skipStepIds : undefined,
+        selectionDecision: failPlan?.selectionDecision,
         checkpoint: hold
           ? await this.buildCheckpoint({
               runId: input.runId,
@@ -599,9 +749,11 @@ export class ExecutionEngine {
         grant: input.grant,
         sessionLease: sessionLeaseFor(input),
         secrets: input.secrets,
+        mapFacts,
       })
       if (!closed) return 'stop'
       if (hold) return 'held'
+      if (failPlan?.keepRunOpen) return 'next'
       if (!retry) return 'stop'
 
       const next = await startAttempt(db, {
@@ -637,6 +789,7 @@ export class ExecutionEngine {
     snapshot: RunSnapshot
   }): Promise<ExecutorOutcome> {
     const { step, timeoutMs, stop, clock } = input
+    const deadlineAtMs = clock.now() + timeoutMs
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(), timeoutMs)
     const combined = AbortSignal.any([stop, timeout.signal])
@@ -665,6 +818,7 @@ export class ExecutionEngine {
         input: input.input,
         context: input.context,
         signal: combined,
+        deadlineAtMs,
         clock,
         sessionGrant: input.sessionGrant,
         evidencePolicy: input.evidencePolicy,
@@ -796,12 +950,234 @@ export class ExecutionEngine {
    * 返回 true 表示这次收尾真的落库、且没有被取消请求改写成取消——只有此时才允许继续推进。
    * `updated: false`（Attempt 已被关闭，迟到回调）与 `cancelled: true` 都必须立刻停手。
    */
+  private async collectAfterFacts(input: {
+    input: {
+      grant: RunGrant
+      snapshot: RunSnapshot
+      step: Step
+      stepRunId: string
+      sessionGrant?: SessionGrant
+      stop: AbortSignal
+      mapSourceType: MapRunSourceType
+      mapBudget: CapturePhaseBudget
+    }
+    attemptId: string
+    remainingStepMs: number
+    extraFacts?: MapFactBatchItem[]
+  }): Promise<MapFactBatchItem[] | undefined> {
+    const facts = await buildAfterMapFacts({
+      grant: input.input.grant,
+      snapshot: input.input.snapshot,
+      step: input.input.step,
+      stepRunId: input.input.stepRunId,
+      attemptId: input.attemptId,
+      sessionGrant: input.input.sessionGrant,
+      remainingStepMs: input.remainingStepMs,
+      budget: input.input.mapBudget,
+      sourceType: input.input.mapSourceType,
+      port: this.mapObservation,
+      signal: input.input.stop,
+      extraFacts: input.extraFacts,
+    })
+    return facts.length > 0 ? facts : undefined
+  }
+
+  private async handleAuthGate(input: {
+    runId: string
+    grant: RunGrant
+    step: Step
+    stepRunId: string
+    stepOrdinal: number
+    attemptId: string
+    attemptNo: number
+    context: Record<string, JsonValue>
+    sessionGrant?: SessionGrant
+    snapshot: RunSnapshot
+    policy: { timeoutMs: number; retryLimit: number }
+    last: boolean
+    secrets: readonly string[]
+    outcome: Exclude<ExecutorOutcome, { kind: 'success' }>
+    debugMode: DebugMode
+    overlay?: DebugOverlay | null
+    input: JsonValue
+    stop: AbortSignal
+    mapFacts?: MapFactBatchItem[]
+    yielding?: () => boolean
+  }): Promise<{ kind: 'stop' } | { kind: 'retry'; attemptId: string; attemptNo: number }> {
+    const error = input.outcome.error
+    const detail = await loadRunDetail(this.handle, input.runId)
+    if (!detail) return { kind: 'stop' }
+    const existing = detail.authCheckpoint
+    const resuming = existing?.status === 'closed' || existing?.status === 'recovering'
+    const classification = resuming ? existing.interruptedClassification : classifyInterruptedAttempt({
+      effectType: input.step.effectType,
+      dispatched: error.cause?.code !== 'not_dispatched',
+    })
+    const capability = input.snapshot.authVerification?.capability ?? 'LEGACY'
+    const limits = resolveRunAuthRecovery(input.snapshot.runAuthRecovery)
+    const rule = deriveRecoveryRule({
+      reuse: input.snapshot.sessionPolicy?.reuse,
+      entryUrl: input.snapshot.targetAuth?.entryUrl,
+      loginUrl: input.snapshot.targetAuth?.loginUrl,
+      allowedOrigins: input.snapshot.allowedOrigins,
+    })
+    const page = input.sessionGrant ? await this.browser?.describeHold?.(input.runId) : undefined
+    const confirm = page?.authObservation ?? confirmFromCause(error.cause?.message)
+    const contextVersion = await computeContextVersion(detail.context)
+    const resumeValid = !resuming || (
+      existing.contextVersion === contextVersion && existing.nextStepId === input.step.id &&
+      existing.sessionGeneration === input.sessionGrant?.generation &&
+      (!existing.pageRef || existing.pageRef.sessionId === input.sessionGrant?.sessionId)
+    )
+    let decision = resumeValid
+      ? (resuming && existing.status === 'recovering' && existing.recoveryKind
+          ? { kind: existing.recoveryKind }
+          : decideAuthRecovery({
+              capability, classification, confirm,
+              autoUsed: existing?.autoRecoveriesUsed ?? 0,
+              manualUsed: existing?.manualRecoveriesUsed ?? 0,
+              limits,
+              contextRecoverable: page?.contextRecoverable !== false && isContextRecoverable({ rule, pageUrl: page?.url }),
+            }))
+      : { kind: 'fail' as const, code: 'AUTH_CONTEXT_NOT_RECOVERABLE' as const }
+    const base: AuthCheckpoint = resuming ? existing : {
+      schemaVersion: 1,
+      status: 'closed',
+      closedAt: new Date().toISOString(),
+      trigger: page?.authSignal ?? {
+        kind: 'navigated_to_login', at: new Date().toISOString(),
+        summary: redactAuthUrl(page?.url)?.slice(0, 512) ?? '认证门禁已关闭',
+      },
+      nextStepId: input.step.id, nextOrdinal: input.stepOrdinal,
+      interruptedAttemptId: input.attemptId, interruptedClassification: classification,
+      contextVersion, contextKeys: Object.keys(detail.context),
+      ...(page?.pageRef ? { pageRef: page.pageRef } : {}),
+      ...(page?.url ? { url: redactAuthUrl(page.url) } : {}),
+      ...(confirm ? { confirmObservation: confirm } : {}),
+      ...(input.snapshot.deadlineAt ? { deadlineAt: input.snapshot.deadlineAt } : {}),
+      sessionGeneration: input.sessionGrant?.generation ?? 0,
+      fencingToken: String(input.grant.fencingToken), recoveryRule: rule, capability,
+      autoRecoveriesUsed: existing?.autoRecoveriesUsed ?? 0,
+      manualRecoveriesUsed: existing?.manualRecoveriesUsed ?? 0,
+    }
+    const charged = chargedAttemptCount(detail, input.stepRunId)
+    const retryAllowed = authGateDoesNotConsumeRetry(classification) ||
+      shouldRetry(input.step, error, charged, input.policy.retryLimit)
+    if (decision.kind !== 'review' && decision.kind !== 'fail' && decision.kind !== 'none' && !retryAllowed) {
+      decision = { kind: 'fail', code: 'AUTH_CONTEXT_NOT_RECOVERABLE' }
+    }
+    if (decision.kind === 'review' || decision.kind === 'fail' || decision.kind === 'none') {
+      const code = decision.kind === 'fail' ? decision.code : 'AUTH_CONTEXT_NOT_RECOVERABLE'
+      await this.close({
+        runId: input.runId, attemptId: input.attemptId, attemptStatus: 'FAILED',
+        error: decision.kind === 'review' ? error : { code, category: 'VALIDATION', retryable: false,
+          safeMessage: code === 'AUTH_RECOVERY_LIMIT' ? '认证恢复次数已用尽，本次运行无法安全续跑' : '登录已失效，本次运行无法安全续跑' },
+        diagnostics: input.outcome.diagnostics, screenshot: input.outcome.screenshot, trace: input.outcome.trace,
+        stepRunStatus: 'FAILED', runStatus: decision.kind === 'review' ? 'NEEDS_REVIEW' : 'FAILED',
+        skipRemaining: decision.kind !== 'review',
+        authCheckpoint: { ...base, status: 'unrecoverable', unrecoverableCode: code },
+        grant: input.grant, sessionLease: sessionLeaseFor(input), secrets: input.secrets, mapFacts: input.mapFacts,
+      })
+      return { kind: 'stop' }
+    }
+    let checkpoint: AuthCheckpoint = decision.kind === 'reopen'
+      ? { ...base, status: 'recovered' }
+      : resuming && existing.status === 'recovering' ? existing : {
+          ...base, status: 'recovering', recoveryKind: decision.kind,
+          autoRecoveriesUsed: base.autoRecoveriesUsed + (decision.kind === 'auto' ? 1 : 0),
+          manualRecoveriesUsed: base.manualRecoveriesUsed + (decision.kind === 'manual' ? 1 : 0),
+        }
+    const closed = await this.close({
+      runId: input.runId, attemptId: input.attemptId, attemptStatus: 'FAILED', error,
+      diagnostics: input.outcome.diagnostics, screenshot: input.outcome.screenshot, trace: input.outcome.trace,
+      stepRunStatus: 'RUNNING', authCheckpoint: checkpoint, grant: input.grant,
+      sessionLease: sessionLeaseFor(input), secrets: input.secrets, mapFacts: input.mapFacts,
+    })
+    // 取消、丢失 fencing 或迟到回调，绝不能再执行登录副作用。
+    const stopAfterAbort = async () => {
+      if (!input.yielding?.()) await markRunCancelled(this.handle, input.runId, { grant: input.grant })
+      return { kind: 'stop' as const }
+    }
+    if (!closed) return { kind: 'stop' }
+    if (input.stop.aborted) return stopAfterAbort()
+    const fail = async (code: string, runStatus: 'FAILED' | 'NEEDS_REVIEW' = 'FAILED') => {
+      await failRunValidation(this.handle, input.runId, { grant: input.grant }, {
+        code, category: runStatus === 'NEEDS_REVIEW' ? 'UNKNOWN' : 'VALIDATION', retryable: false,
+        safeMessage: code === 'AUTH_RECOVERY_LIMIT' ? '认证恢复次数已用尽，本次运行无法安全续跑' : '当前运行无法安全续跑',
+      }, { runStatus, stepRunId: input.stepRunId, skipRemaining: runStatus !== 'NEEDS_REVIEW',
+        authCheckpoint: { ...checkpoint, status: 'unrecoverable', unrecoverableCode: code } })
+      return { kind: 'stop' as const }
+    }
+    if (decision.kind !== 'reopen') {
+      if (!input.sessionGrant || !this.browser?.recoverAuth) return fail('AUTH_CONTEXT_NOT_RECOVERABLE')
+      let result: Awaited<ReturnType<NonNullable<BrowserPort['recoverAuth']>>>
+      try {
+        result = await this.browser.recoverAuth(input.sessionGrant, {
+          kind: decision.kind, runGrant: input.grant, snapshot: input.snapshot,
+          resuming: existing?.status === 'recovering', signal: input.stop,
+        })
+        if (!result.ok && 'manualRequired' in result) {
+          if (checkpoint.manualRecoveriesUsed >= limits.maxManualRecoveriesPerRun) return fail('AUTH_RECOVERY_LIMIT')
+          checkpoint = { ...checkpoint, recoveryKind: 'manual', manualRecoveriesUsed: checkpoint.manualRecoveriesUsed + 1 }
+          if (!(await writeRunAuthCheckpoint(this.handle, { runId: input.runId, grant: input.grant, checkpoint }))) return { kind: 'stop' }
+          result = await this.browser.recoverAuth(input.sessionGrant, {
+            kind: 'manual', runGrant: input.grant, snapshot: input.snapshot, signal: input.stop,
+          })
+        }
+      } catch {
+        if (input.stop.aborted) return stopAfterAbort()
+        return fail('AUTH_CONTEXT_NOT_RECOVERABLE')
+      }
+      if (!result.ok) {
+        if ('waitingForAuth' in result) return { kind: 'stop' }
+        return fail(result.code, 'runStatus' in result ? result.runStatus : 'FAILED')
+      }
+    }
+    const latest = await loadRunDetail(this.handle, input.runId)
+    if (input.stop.aborted) return stopAfterAbort()
+    if (!latest || latest.status !== 'RUNNING' || latest.cancelRequested) return { kind: 'stop' }
+    if (await computeContextVersion(latest.context) !== checkpoint.contextVersion) return fail('AUTH_CONTEXT_NOT_RECOVERABLE')
+    if (!(await writeRunAuthCheckpoint(this.handle, { runId: input.runId, grant: input.grant,
+      checkpoint: { ...checkpoint, status: 'recovered' } }))) return { kind: 'stop' }
+    const next = await startAttempt(this.handle, {
+      runId: input.runId, stepRunId: input.stepRunId,
+      inputPayload: evidencePayloadForStep(input.step, input.input), grant: input.grant, secrets: input.secrets,
+    })
+    return next ? { kind: 'retry', attemptId: next.attemptId, attemptNo: next.attemptNo } : { kind: 'stop' }
+  }
+
+  /**
+   * 收尾一次 Attempt。瞬时失败最多再试 2 次，不重跑 Executor、不重采。
+   * 第一次已提交则第二次 `updated: false` 按已收口解释。
+   */
   private async close(input: FinishAttemptInput): Promise<boolean> {
-    const result = await finishAttempt(this.handle, input)
-    return result.updated && !result.cancelled
+    let lastError: unknown
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const result = await finishAttempt(this.handle, input)
+        if (result.cancelled) return false
+        if (result.updated) return true
+        return attempt > 0 ? this.alreadyClosedContinues(input) : false
+      } catch (error) {
+        lastError = error
+      }
+    }
+    throw lastError
+  }
+
+  private async alreadyClosedContinues(input: FinishAttemptInput): Promise<boolean> {
+    const detail = await loadRunDetail(this.handle, input.runId)
+    const attempt = detail?.stepRuns
+      .flatMap((step) => step.attempts)
+      .find((item) => item.id === input.attemptId)
+    return attempt?.status === 'SUCCEEDED'
   }
 
   async resumeDebug(runId: string, action: DebugAction, actorId: string): Promise<{ ok: true }> {
+    const current = await loadRunRow(this.handle, runId)
+    if (current?.status === 'WAITING_FOR_AUTH') {
+      throw conflict('RUN_WAITING_FOR_AUTH', '认证等待期间不能执行调试命令')
+    }
     if (action.action === 'pause') {
       if (!this.holds.resume(runId, { ...action, actorId })) {
         throw conflict('RUN_NOT_RUNNING', '只有运行中的调试会话可以请求暂停，且在途动作会先跑完')
@@ -1091,6 +1467,144 @@ function resolveStepInput(
 }
 
 /** 可被 Engine 推进：未开始，或已在跑但没有未关闭的 Attempt（接管收孤儿后）。 */
+function jsonContext(value: Record<string, unknown>): Record<string, JsonValue> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, jsonValueSchema.parse(item)]),
+  )
+}
+
+function attemptedFromDetail(
+  group: CandidateGroup,
+  detail: RunDetailDto | null | undefined,
+  current: { implementationKey: string; outcome: 'succeeded' | 'failed'; attribution?: 'MODULE' | 'EXTERNAL_INFRA' | 'UNKNOWN'; failedStepId?: string },
+) {
+  const byId = new Map(detail?.stepRuns.map((item) => [item.stepId, item]) ?? [])
+  const attempts = group.alternatives.map((alternative) => {
+    if (alternative.implementationKey === current.implementationKey) return current
+    const failed = alternative.stepIds.find((stepId) => byId.get(stepId)?.status === 'FAILED')
+    if (failed) {
+      const error = byId.get(failed)?.attempts.find((item) => item.status === 'FAILED')?.error
+      return {
+        implementationKey: alternative.implementationKey,
+        outcome: 'failed' as const,
+        attribution: fallbackAttribution(error),
+        failedStepId: failed,
+      }
+    }
+    if (alternative.stepIds.every((stepId) => byId.get(stepId)?.status === 'SUCCEEDED')) {
+      return { implementationKey: alternative.implementationKey, outcome: 'succeeded' as const }
+    }
+    if (alternative.stepIds.some((stepId) => byId.get(stepId)?.status === 'SKIPPED' || byId.get(stepId)?.status === 'PENDING')) {
+      return { implementationKey: alternative.implementationKey, outcome: 'skipped' as const }
+    }
+    return { implementationKey: alternative.implementationKey, outcome: 'skipped' as const }
+  })
+  return attempts
+}
+
+function planCandidateSuccess(input: {
+  snapshot: RunSnapshot
+  stepId: string
+  context: Record<string, JsonValue>
+  last: boolean
+  detail: RunDetailDto | null
+}): { context?: Record<string, JsonValue>; skipStepIds?: string[]; selectionDecision?: SelectionDecision; last: boolean } | undefined {
+  const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
+  if (!found) return undefined
+  const alternative = found.group.alternatives[found.alternativeIndex]!
+  if (found.stepIndex !== alternative.stepIds.length - 1) return { last: input.last }
+  const skipStepIds = laterAlternativeStepIds(found.group, found.alternativeIndex)
+  const last =
+    input.last ||
+    Boolean(
+      input.detail &&
+        input.detail.stepRuns.every(
+          (item) =>
+            item.stepId === input.stepId ||
+            skipStepIds.includes(item.stepId) ||
+            (item.status !== 'PENDING' && item.status !== 'RUNNING'),
+        ),
+    )
+  return {
+    context: jsonContext(commitStagedOutputs(input.context, alternative.outputStaging)),
+    skipStepIds,
+    selectionDecision: selectionDecisionFromGroup({
+      group: found.group,
+      attempted: attemptedFromDetail(found.group, input.detail, {
+        implementationKey: alternative.implementationKey,
+        outcome: 'succeeded',
+      }),
+      selected: alternative.implementationKey,
+    }),
+    last,
+  }
+}
+
+function planCandidateFailure(input: {
+  snapshot: RunSnapshot
+  stepId: string
+  error: ExecutionError
+  debugHold: boolean
+  detail: RunDetailDto | null
+}): { keepRunOpen?: boolean; skipStepIds?: string[]; selectionDecision?: SelectionDecision } | undefined {
+  const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
+  if (!found) return undefined
+  const attribution = fallbackAttribution(input.error)
+  const hasNext = found.alternativeIndex < found.group.alternatives.length - 1
+  const current = {
+    implementationKey: found.group.alternatives[found.alternativeIndex]!.implementationKey,
+    outcome: 'failed' as const,
+    attribution,
+    failedStepId: input.stepId,
+  }
+  if (
+    shouldFallbackToNext({
+      attribution,
+      debugHold: input.debugHold,
+      hasNextAlternative: hasNext,
+    })
+  ) {
+    return {
+      keepRunOpen: true,
+      skipStepIds: remainingStepIdsOfAlternative(found.group, found.alternativeIndex, input.stepId),
+    }
+  }
+  return {
+    selectionDecision: selectionDecisionFromGroup({
+      group: found.group,
+      attempted: attemptedFromDetail(found.group, input.detail, current),
+      runStatus: 'FAILED',
+    }),
+  }
+}
+
+function planCandidateHalt(input: {
+  snapshot: RunSnapshot
+  stepId: string
+  error: ExecutionError
+  runStatus: 'NEEDS_REVIEW'
+  detail: RunDetailDto | null
+}): { skipStepIds?: string[]; selectionDecision?: SelectionDecision } | undefined {
+  const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
+  if (!found) return undefined
+  return {
+    skipStepIds: [
+      ...remainingStepIdsOfAlternative(found.group, found.alternativeIndex, input.stepId),
+      ...laterAlternativeStepIds(found.group, found.alternativeIndex),
+    ],
+    selectionDecision: selectionDecisionFromGroup({
+      group: found.group,
+      attempted: attemptedFromDetail(found.group, input.detail, {
+        implementationKey: found.group.alternatives[found.alternativeIndex]!.implementationKey,
+        outcome: 'failed',
+        attribution: fallbackAttribution(input.error),
+        failedStepId: input.stepId,
+      }),
+      runStatus: input.runStatus,
+    }),
+  }
+}
+
 function isRunnableStepRun(stepRun: RunDetailDto['stepRuns'][number]): boolean {
   if (stepRun.status === 'PENDING' || stepRun.status === 'FAILED') return true
   if (stepRun.status !== 'RUNNING') return false
@@ -1108,6 +1622,40 @@ function isLastOpenStep(detail: RunDetailDto, stepId: string): boolean {
     (item) =>
       item.ordinal <= current.ordinal || (item.status !== 'PENDING' && item.status !== 'RUNNING'),
   )
+}
+
+function confirmFromCause(message?: string): AuthObservation | null {
+  if (message === 'MATCH') {
+    return {
+      authState: 'AUTHENTICATED',
+      identityState: 'MATCH',
+      observedIdentity: null,
+      unknownClass: null,
+      evidenceSummary: '确认核验通过',
+      authProfileRevision: null,
+      diagnosticCode: 'verified',
+    }
+  }
+  if (message === 'MISMATCH') {
+    return {
+      authState: 'AUTHENTICATED',
+      identityState: 'MISMATCH',
+      observedIdentity: null,
+      unknownClass: null,
+      evidenceSummary: '确认核验身份不符',
+      authProfileRevision: null,
+      diagnosticCode: 'verified',
+    }
+  }
+  return {
+    authState: message === 'EXPIRED' ? 'EXPIRED' : 'UNKNOWN',
+    identityState: 'UNVERIFIED',
+    observedIdentity: null,
+    unknownClass: null,
+    evidenceSummary: message === 'EXPIRED' ? '确认核验登录已失效' : '无法确认登录状态',
+    authProfileRevision: null,
+    diagnosticCode: 'verified',
+  }
 }
 
 function shouldNeedsReview(step: Step, error: ExecutionError, timedOut: boolean, aborted: boolean): boolean {
@@ -1200,6 +1748,12 @@ function checkpointOf(input: {
     fencingToken: String(input.grant.fencingToken),
     overlayRevision: input.overlay?.revision ?? 0,
   }
+}
+
+function chargedAttemptCount(detail: RunDetailDto, stepRunId: string): number {
+  return detail.stepRuns.find((step) => step.id === stepRunId)?.attempts.filter((attempt) =>
+    !(attempt.error?.code === 'AUTH_GATE_CLOSED' && attempt.error.cause?.code === 'not_dispatched'),
+  ).length ?? 1
 }
 
 function shouldRetry(step: Step, error: ExecutionError, attemptNo: number, retryLimit: number): boolean {

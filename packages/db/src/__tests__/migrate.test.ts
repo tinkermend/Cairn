@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { loadMigrations } from '../migrate.js'
+import { latestLogicalVersion, loadMigrations } from '../migrate.js'
 
 function fixture(files: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'cairn-mig-'))
@@ -36,5 +36,11 @@ describe('loadMigrations', () => {
     expect(migrations.length).toBeGreaterThan(0)
     expect(migrations[0]?.prefix).toBe('0001')
     expect(migrations[0]?.sql).toContain('__SCHEMA__')
+  })
+
+  it('logicalVersion 取目录最后一个连续前缀', () => {
+    const dir = fixture(['0001_a.sql', '0002_b.sql'])
+    expect(latestLogicalVersion(dir)).toBe('0002')
+    expect(latestLogicalVersion()).toBe(loadMigrations().at(-1)?.prefix)
   })
 })

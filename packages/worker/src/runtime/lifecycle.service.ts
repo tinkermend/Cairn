@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common'
+import { Inject, Injectable, Logger, Optional, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common'
 import {
   claimRun,
+  claimSessionOperation,
   expireRunDeadlines,
+  getOrCreatePlatformConfig,
+  listDueRetainedSessions,
+  loadCurrentAuthProfile,
+  loadAccountForExecution,
+  scheduleNextAuthCheck,
+  requestMaintenanceOperation,
   expireStaleRunLeases,
   heartbeatWorker,
   markLostWorkers,
@@ -11,6 +18,15 @@ import {
   markWorkerStopped,
   registerWorker,
   renewRunLease,
+  materializeDueSchedules,
+  admitScheduleOccurrence,
+  expireClosedScheduleWindows,
+  expireScheduledMapJobs,
+  backfillModuleInvocationResults,
+  getMapJobPolicy,
+  getMapSafeEntry,
+  getMapSummary,
+  listMapAssets,
   settleRevokedRuns,
   sweepDriftedRuns,
   yieldUnfinishedRun,
@@ -19,12 +35,33 @@ import {
   type DbHandle,
   type WorkerHeartbeatOutcome,
 } from '@cairn/db'
-import { resolveWorkerAdvertiseUrl, type RunGrant } from '@cairn/shared'
+import {
+  MAP_CONSUMPTION_PROTOCOL,
+  MAP_EXPLORE_PROTOCOL,
+  MAP_JOBS_PROTOCOL,
+  MAP_SCHEDULER_PROTOCOL,
+  CANDIDATE_GROUPS_PROTOCOL,
+  MODULE_MANIFEST_PROTOCOL,
+  mapListQuerySchema,
+  SCHEDULE_TICK_INTERVAL_MS,
+  SESSION_AUTH_RECOVERY_PROTOCOL,
+  SESSION_MAINTENANCE_PROTOCOL,
+  SESSION_OCCUPANCY_PROTOCOL,
+  maintenanceIdempotencyKey,
+  maintenanceWindowSlot,
+  deriveAuthCapability,
+  platformConfigDocumentSchema,
+  resolveWorkerAdvertiseUrl,
+  type RunGrant,
+} from '@cairn/shared'
 import { BrowserSessionManager } from '../browser/session-manager'
 import { startManagedBrowserHttp, type ManagedBrowserHttp } from '../internal/http-server'
 import { config } from '../config/env'
 import { placementYieldExcludes } from './placement-backoff'
 import { DB_HANDLE } from '../db/db.module'
+import { compileMapJobSlice, selectMapJobAssets } from '@cairn/map'
+import { MapProjectionService } from '../map/projection.service'
+import { MapReferenceScanService } from '../map/reference-scan.service'
 import { ExecutionEngine } from '../engine/engine'
 import { EvidenceSettleService } from '../evidence/settle.service'
 import { ObjectService } from '../objects/object.service'
@@ -52,9 +89,11 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   private instanceId = randomUUID()
   private readonly inFlight = new Map<string, InFlight>()
   private tick: NodeJS.Timeout | undefined
+  private scheduleTick: NodeJS.Timeout | undefined
   private heartbeatTick: NodeJS.Timeout | undefined
   private cleanupTick: NodeJS.Timeout | undefined
   private reaperTick: NodeJS.Timeout | undefined
+  private scheduleTask: Promise<void> | undefined
   private stopped = false
   private claiming = false
   private claimTask: Promise<void> | undefined
@@ -64,6 +103,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     | Promise<{ leasesExpired: number; sessionsClosed: number; authTimeouts: number }>
     | undefined
   private healing: Promise<void> | undefined
+  private beating = false
   private internalHttp: ManagedBrowserHttp | undefined
 
   shutdownSignal: string | undefined
@@ -83,6 +123,8 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     private readonly objects: ObjectService,
     private readonly evidence: EvidenceSettleService,
     private readonly sessions: BrowserSessionManager,
+    @Optional() private readonly projections?: MapProjectionService,
+    @Optional() private readonly referenceScans?: MapReferenceScanService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -108,7 +150,10 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       await this.sessions.reconcileOwn()
       this.sessions.startHeartbeat()
       this.startClaiming()
+      this.startScheduling()
       this.claimTask = this.pump()
+      void this.pumpOperation()
+      void this.enqueueBackgroundMaintenance()
       this.heartbeatTick = setInterval(() => {
         void this.beat()
       }, config.CAIRN_WORKER_HEARTBEAT_MS)
@@ -144,6 +189,17 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       maxSessions: config.CAIRN_BROWSER_MAX_SESSIONS,
       lostAfterSeconds: config.CAIRN_WORKER_LOST_AFTER_SECONDS,
       internalBaseUrl: this.advertiseUrl(),
+      protocolCapabilities: [
+        SESSION_OCCUPANCY_PROTOCOL,
+        SESSION_MAINTENANCE_PROTOCOL,
+        SESSION_AUTH_RECOVERY_PROTOCOL,
+        MODULE_MANIFEST_PROTOCOL,
+        CANDIDATE_GROUPS_PROTOCOL,
+        MAP_CONSUMPTION_PROTOCOL,
+        MAP_JOBS_PROTOCOL,
+        MAP_EXPLORE_PROTOCOL,
+        MAP_SCHEDULER_PROTOCOL,
+      ],
     })
     await settleRevokedRuns(
       this.handle,
@@ -157,7 +213,104 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     this.stopped = false
     this.tick = setInterval(() => {
       this.claimTask = this.pump()
+      void this.pumpOperation()
+      void this.enqueueBackgroundMaintenance()
     }, TICK_INTERVAL_MS)
+  }
+
+  private startScheduling(): void {
+    if (this.scheduleTick || this.shutdownCalled) return
+    this.scheduleTick = setInterval(() => {
+      this.scheduleTask = this.runScheduleTick()
+    }, SCHEDULE_TICK_INTERVAL_MS)
+    this.scheduleTask = this.runScheduleTick()
+  }
+
+  private async runScheduleTick(): Promise<void> {
+    if (this.stopped) return
+    try {
+      await expireClosedScheduleWindows(this.handle)
+      await expireScheduledMapJobs(this.handle)
+      const { pending } = await materializeDueSchedules(this.handle)
+      for (const item of pending) {
+        if (this.stopped) break
+        try {
+          const policy = await getMapJobPolicy(this.handle, item.definition.consumer.targetId)
+          const entry = await getMapSafeEntry(this.handle, item.definition.consumer.targetId, item.definition.consumer.entryId)
+          const objects = await listMapAssets(
+            this.handle,
+            item.definition.consumer.targetId,
+            'objects',
+            mapListQuerySchema.parse({ limit: 50 }),
+          )
+          const assets = objects.items.map((asset) => ({
+            assetRef: asset.assetRef,
+            name: asset.name ?? '未命名对象',
+            routeTemplate: asset.routeTemplate,
+            importance: asset.lifecycle === 'TRUSTED' || asset.lifecycle === 'VERIFIED' ? 2 : 1,
+            failed: asset.lifecycle === 'DEGRADED',
+            stale: asset.lifecycle === 'STALE',
+          }))
+          const selected = selectMapJobAssets(
+            'map_refresh',
+            policy.policy,
+            assets,
+            item.definition.consumer.selectedAssetRefs,
+          )
+          const included = assets.filter((asset) =>
+            selected.some(
+              (row) =>
+                row.included &&
+                (row.assetRef.objectId ?? row.assetRef.pageId) === (asset.assetRef.objectId ?? asset.assetRef.pageId),
+            ),
+          )
+          if (included.length === 0) {
+            await admitScheduleOccurrence(
+              this.handle,
+              item.occurrence.occurrenceId,
+              { steps: [], includedCount: 0 },
+              { kind: 'console', id: item.authorizedActorId },
+            )
+            continue
+          }
+          const compiled = compileMapJobSlice({
+            jobKind: 'map_refresh',
+            entry: {
+              entryId: entry.entryId,
+              version: entry.version,
+              name: entry.name,
+              url: entry.url,
+              arrivalName: entry.arrivalName,
+              arrivalTarget: entry.arrivalTarget,
+              safetyBasis: entry.safetyBasis,
+              jobKinds: entry.jobKinds,
+            },
+            included,
+            policy: policy.policy,
+          })
+          if (!compiled.ok) {
+            await admitScheduleOccurrence(
+              this.handle,
+              item.occurrence.occurrenceId,
+              { steps: [], includedCount: included.length, skipReason: 'SAFETY_BASIS_REQUIRED' },
+              { kind: 'console', id: item.authorizedActorId },
+            )
+            continue
+          }
+          const summary = await getMapSummary(this.handle, item.definition.consumer.targetId, { limit: 1 })
+          await admitScheduleOccurrence(
+            this.handle,
+            item.occurrence.occurrenceId,
+            { steps: compiled.steps, releaseId: summary.publishedReleaseId, includedCount: included.length },
+            { kind: 'console', id: item.authorizedActorId },
+          )
+        } catch (error) {
+          this.logger.warn(error instanceof Error ? error.message : error, '调度准入失败，窗口保持待处理')
+        }
+      }
+    } catch (error) {
+      this.logger.error(error instanceof Error ? error.message : error, '调度 ticker 失败')
+    }
   }
 
   uptimeSeconds(): number {
@@ -168,6 +321,11 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     this.shutdownSignal = signal
     this.shutdownCalled = true
     this.stopped = true
+    if (this.scheduleTick) {
+      clearInterval(this.scheduleTick)
+      this.scheduleTick = undefined
+    }
+    await this.scheduleTask?.catch(() => undefined)
     await markWorkerDraining(this.handle, config.CAIRN_WORKER_ID, this.instanceId).catch(() => undefined)
     if (this.tick) {
       clearInterval(this.tick)
@@ -212,7 +370,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     if (this.cleanupInFlight) return this.cleanupInFlight
     this.cleanupInFlight = this.runCleanupTick()
       .catch((error) => {
-        this.logger.error(error instanceof Error ? error.message : error, '对象清理失败')
+        this.logger.error(error instanceof Error ? error.stack : error, '对象清理失败')
         return { purged: 0 }
       })
       .finally(() => {
@@ -223,6 +381,15 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
 
   private async runCleanupTick(): Promise<{ purged: number }> {
     await this.evidence.settleExpired()
+    await this.projections?.tick().catch((error) => {
+      this.logger.error(error instanceof Error ? error.message : error, '地图投影 tick 失败')
+    })
+    await this.referenceScans?.tick().catch((error) => {
+      this.logger.error(error instanceof Error ? error.message : error, '地图引用扫描 tick 失败')
+    })
+    await backfillModuleInvocationResults(this.handle, { limit: 20 }).catch((error) => {
+      this.logger.error(error instanceof Error ? error.message : error, '模块调用结果补算失败')
+    })
     return this.objects.purgeExpiredObjects({ limit: 100 })
   }
 
@@ -268,7 +435,8 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   }
 
   private async beat(): Promise<void> {
-    if (this.stopped || this.healing) return
+    if (this.stopped || this.healing || this.beating) return
+    this.beating = true
     try {
       const outcome = await heartbeatWorker(this.handle, config.CAIRN_WORKER_ID, this.instanceId, {
         internalBaseUrl: this.advertiseUrl(),
@@ -294,6 +462,8 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       }
     } catch (error) {
       this.logger.error(error instanceof Error ? error.message : error, '心跳或续租失败')
+    } finally {
+      this.beating = false
     }
   }
 
@@ -423,6 +593,68 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     } finally {
       if (this.pendingClaim === controller) this.pendingClaim = undefined
       this.claiming = false
+    }
+  }
+
+  private async pumpOperation(): Promise<void> {
+    if (this.stopped) return
+    try {
+      const claimed = await claimSessionOperation(this.handle, {
+        workerId: config.CAIRN_WORKER_ID,
+        instanceId: this.instanceId,
+        leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
+      })
+      if (!claimed) return
+      if (claimed.operation.kind === 'VALIDATE_AUTH_PROFILE') {
+        if (!claimed.grant || !claimed.session) return
+        await this.sessions.attachValidationOperation({
+          operation: claimed.operation,
+          grant: claimed.grant,
+          session: claimed.session,
+        })
+        this.logger.log({ operationId: claimed.operation.id }, '领取到认证验收操作')
+        return
+      }
+      await this.sessions.attachMaintenanceOperation(claimed)
+      this.logger.log({ operationId: claimed.operation.id, kind: claimed.operation.kind }, '领取到会话维护操作')
+    } catch (error) {
+      this.logger.error(error instanceof Error ? error.message : error, '领取会话操作失败')
+    }
+  }
+
+  private async enqueueBackgroundMaintenance(): Promise<void> {
+    if (this.stopped) return
+    try {
+      const due = await listDueRetainedSessions(this.handle, config.CAIRN_WORKER_ID)
+      const current = await getOrCreatePlatformConfig(this.handle)
+      const document = platformConfigDocumentSchema.parse(current.document)
+      const interval = document.sessionRetention.maintenanceIntervalSeconds
+      const renewBefore = document.sessionRetention.renewBeforeSeconds
+      const slot = maintenanceWindowSlot(Date.now(), interval)
+      for (const { session } of due) {
+        const nearExpiry =
+          session.authValidUntil != null &&
+          session.authValidUntil.getTime() - Date.now() <= renewBefore * 1000
+        const profile = await loadCurrentAuthProfile(this.handle, session.targetId)
+        const account = await loadAccountForExecution(this.handle, session.targetAccountId)
+        const tier = deriveAuthCapability({ definition: profile?.definition ?? null, validation: profile?.validation ?? null, expectedIdentity: account?.expectedIdentity ?? null })
+        const maxAge = Date.now() - session.createdAt.getTime() >= session.maxLifetimeSeconds * 1000
+        const kind = maxAge ? 'RESTART' : nearExpiry && session.authState === 'AUTHENTICATED' && tier === 'IDENTITY_VERIFIED' && profile?.definition.renew !== 'none' && profile ? 'RENEW_AUTH' : 'VERIFY_AUTH'
+        const prefix = kind === 'RESTART' ? 'bg-restart' : kind === 'RENEW_AUTH' ? 'bg-renew' : 'bg-verify'
+        await scheduleNextAuthCheck(this.handle, session.id)
+        await requestMaintenanceOperation(this.handle, {
+          key: { targetId: session.targetId, targetAccountId: session.targetAccountId },
+          body: {
+            kind,
+            idempotencyKey: maintenanceIdempotencyKey(prefix, session.targetAccountId, slot),
+            expectedSessionId: session.id,
+            expectedGeneration: session.generation,
+          },
+          origin: 'BACKGROUND',
+        }).catch(() => undefined)
+      }
+    } catch (error) {
+      this.logger.error(error instanceof Error ? error.message : error, '排队后台会话维护失败')
     }
   }
 }

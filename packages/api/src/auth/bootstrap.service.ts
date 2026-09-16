@@ -15,6 +15,10 @@ export class BootstrapService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     try {
+      const { inserted } = await this.rbac.reconcileSystemRolePermissions()
+      if (inserted > 0) {
+        this.logger.warn({ inserted }, '已按权限目录补齐系统角色缺失授权')
+      }
       await this.ensureAdmin()
     } catch (error) {
       this.logger.warn({ err: error }, 'bootstrap admin 跳过（数据库未就绪或查询失败）')

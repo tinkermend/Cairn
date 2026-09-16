@@ -11,13 +11,13 @@ import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth-store'
 import {
-  acquireAuthControl,
-  fetchManagedBrowser,
-  heartbeatAuthControl,
-  inputAuthControl,
-  releaseAuthControl,
-  resumeRunAuth,
-  subscribeBrowserFrames,
+  acquireAuthControl as runAcquireAuthControl,
+  fetchManagedBrowser as runFetchManagedBrowser,
+  heartbeatAuthControl as runHeartbeatAuthControl,
+  inputAuthControl as runInputAuthControl,
+  releaseAuthControl as runReleaseAuthControl,
+  resumeRunAuth as runResumeRunAuth,
+  subscribeBrowserFrames as runSubscribeBrowserFrames,
 } from '@/lib/runs-api'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
@@ -60,18 +60,39 @@ function framePointFromClick(
   return { x, y }
 }
 
+export type BrowserTransport = {
+  fetchManagedBrowser: typeof runFetchManagedBrowser
+  acquireAuthControl: typeof runAcquireAuthControl
+  heartbeatAuthControl: typeof runHeartbeatAuthControl
+  inputAuthControl: typeof runInputAuthControl
+  releaseAuthControl: typeof runReleaseAuthControl
+  resumeRunAuth: (id: string, body: { token?: string }) => Promise<unknown>
+  subscribeBrowserFrames: typeof runSubscribeBrowserFrames
+}
+const runTransport: BrowserTransport = {
+  fetchManagedBrowser: runFetchManagedBrowser, acquireAuthControl: runAcquireAuthControl,
+  heartbeatAuthControl: runHeartbeatAuthControl, inputAuthControl: runInputAuthControl,
+  releaseAuthControl: runReleaseAuthControl, resumeRunAuth: runResumeRunAuth,
+  subscribeBrowserFrames: runSubscribeBrowserFrames,
+}
+
 type Props = {
   runId: string
   runStatus: string
   eventSeq?: number
   onRunChanged?: () => void
+  transport?: BrowserTransport
+  sessionMode?: boolean
+  observationConnected?: boolean
+  onRefreshLogin?: (pageRef: PageRef) => Promise<unknown>
 }
 
-export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Props) {
+export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged, transport = runTransport, sessionMode = false, observationConnected = true, onRefreshLogin }: Props) {
+  const { fetchManagedBrowser, acquireAuthControl, heartbeatAuthControl, inputAuthControl, releaseAuthControl, resumeRunAuth, subscribeBrowserFrames } = transport
   const observe = useAuthoringObserve()
   const user = useAuthStore((state) => state.auth.user)
-  const canView = Boolean(user && hasAllPermissions(user.permissions, ['run:read', 'session:view']))
-  const canControl = Boolean(user && hasAllPermissions(user.permissions, ['session:control', 'run:execute']))
+  const canView = Boolean(user && hasAllPermissions(user.permissions, [sessionMode ? 'session:read' : 'run:read', 'session:view']))
+  const canControl = Boolean(user && hasAllPermissions(user.permissions, sessionMode ? ['session:control'] : ['session:control', 'run:execute']))
   const [open, setOpen] = useState(false)
   const [meta, setMeta] = useState<ManagedBrowserMeta | null>(null)
   const [frame, setFrame] = useState<ManagedBrowserFrame | null>(null)
@@ -88,12 +109,12 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
   tokenRef.current = token
 
   useEffect(() => {
-    if (isLiveViewRun(runStatus)) setOpen(true)
-  }, [runId, runStatus])
+    if (!sessionMode && isLiveViewRun(runStatus)) setOpen(true)
+  }, [runId, runStatus, sessionMode])
 
   useEffect(() => {
     if (!canView) return
-    if (!open && !isLiveViewRun(runStatus)) return
+    if (!open && (sessionMode || !isLiveViewRun(runStatus))) return
     let cancelled = false
     let timer = 0
     const load = () => {
@@ -108,12 +129,12 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
             !next.framesAvailable &&
             next.degradedReason !== 'worker_generation_mismatch' &&
             !waitingAuthGate
-          if (needRetry) timer = window.setTimeout(load, 800)
+          if (needRetry && !sessionMode) timer = window.setTimeout(load, 800)
         })
         .catch((error) => {
           if (cancelled) return
           toast.error(error instanceof ApiRequestError ? error.message : '无法读取浏览器状态')
-          if (open && isLiveViewRun(runStatus)) timer = window.setTimeout(load, 1600)
+          if (!sessionMode && open && isLiveViewRun(runStatus)) timer = window.setTimeout(load, 1600)
         })
     }
     load()
@@ -121,14 +142,14 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [open, canView, runId, runStatus, eventSeq, viewPageId, token])
+  }, [open, canView, runId, runStatus, eventSeq, viewPageId, token, fetchManagedBrowser, sessionMode])
 
   useEffect(() => {
     return () => {
       const held = tokenRef.current
       if (held) void releaseAuthControl(runId, { token: held }).catch(() => undefined)
     }
-  }, [runId])
+  }, [runId, releaseAuthControl])
 
   useEffect(() => {
     if (!open || !canView || !meta?.framesAvailable) {
@@ -154,12 +175,20 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
         .then(() => {
           if (cancelled || controller?.signal.aborted) return
           if (!isLiveViewRun(runStatus)) return
+          const held = tokenRef.current
+          if (held) void releaseAuthControl(runId, { token: held }).catch(() => undefined)
+          setToken(null)
+          setFrame(null)
           setStreamError('画面流已中断，正在重连…')
           retryTimer = window.setTimeout(connect, 800)
         })
         .catch((error) => {
           if (cancelled || controller?.signal.aborted) return
           const message = error instanceof ApiRequestError ? error.message : '无法订阅受管浏览器画面'
+          const held = tokenRef.current
+          if (held) void releaseAuthControl(runId, { token: held }).catch(() => undefined)
+          setToken(null)
+          setFrame(null)
           setStreamError(message)
           toast.error(message)
           if (isLiveViewRun(runStatus)) retryTimer = window.setTimeout(connect, 1600)
@@ -171,7 +200,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
       controller?.abort()
       window.clearTimeout(retryTimer)
     }
-  }, [open, canView, runId, runStatus, viewPageId, meta?.framesAvailable, meta?.authControl?.epoch])
+  }, [open, canView, runId, runStatus, viewPageId, meta?.framesAvailable, meta?.authControl?.epoch, subscribeBrowserFrames, releaseAuthControl])
 
   useEffect(() => {
     if (!token || !canControl) return
@@ -198,7 +227,16 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [token, canControl, runId])
+  }, [token, canControl, runId, heartbeatAuthControl])
+
+  useEffect(() => {
+    if (!observationConnected || !canControl || !open || runStatus !== 'WAITING_FOR_AUTH') {
+      const held = tokenRef.current
+      tokenRef.current = null
+      setToken(null)
+      if (held) void releaseAuthControl(runId, { token: held }).catch(() => undefined)
+    }
+  }, [observationConnected, canControl, open, runStatus, runId, releaseAuthControl])
 
   if (!canView) return null
 
@@ -206,7 +244,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
   const holding = runStatus === 'HOLDING'
   const picking = holding && observe.pickMode
   const highlightBox = observe.highlight?.preview?.box
-  const controlling = Boolean(token)
+  const controlling = Boolean(token && observationConnected && canControl)
   const remain =
     expiresAt && Date.parse(expiresAt)
       ? Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 1000))
@@ -219,17 +257,18 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
   >
 
   const sendCommand = (partial: BrowserAuthInputPayload) => {
-    if (!token || !pageRef || !frame) return
+    if (!token || !pageRef || !frame || !observationConnected || !canControl) return
     seq.current += 1
     const command = {
       ...partial,
-      pageRef,
+      pageRef: frame.pageRef,
       commandId: crypto.randomUUID(),
       seq: seq.current,
       frameId: frame.frameId,
       viewport: { width: frame.width, height: frame.height },
     } as BrowserAuthInputCommand
     void inputAuthControl(runId, { token, command }).catch((error) => {
+      if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403 || error.payload.code.startsWith('AUTH_'))) setToken(null)
       toast.error(error instanceof ApiRequestError ? error.message : '输入被拒绝')
     })
   }
@@ -244,7 +283,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
               ? '需要目标系统登录。画面只发给当前控制者。'
               : holding
                 ? '调试挂起中。指认在画面上点选，校验框画在叠加层，不会改目标页。'
-                : isLiveViewRun(runStatus)
+                : sessionMode ? '按需查看会话画面，离开或收起后停止采集。' : isLiveViewRun(runStatus)
                   ? '只读跟随当前执行页。在途运行会自动展开画面。'
                   : '只读跟随当前执行页。运行结束后不再抓取实时画面。'}
           </p>
@@ -261,7 +300,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
       {waiting && canControl && !controlling ? (
         <div className='mt-4 flex flex-wrap gap-2'>
           <Button
-            disabled={busy || Boolean(meta?.authControl?.actorId && !meta.authControl.heldByViewer)}
+            disabled={busy || !observationConnected || Boolean(meta?.authControl?.actorId && !meta.authControl.heldByViewer)}
             onClick={() => {
               setBusy(true)
               void acquireAuthControl(runId)
@@ -288,6 +327,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
       ) : null}
       {controlling ? (
         <div className='mt-4 flex flex-wrap gap-2'>
+          {onRefreshLogin ? <Button variant='outline' disabled={busy || !pageRef} onClick={() => { const ref = frame?.pageRef ?? pageRef; if (!ref) return; setBusy(true); void onRefreshLogin(ref).catch(error => toast.error(error.message)).finally(() => setBusy(false)) }}>刷新登录页</Button> : null}
           <Button
             disabled={busy}
             onClick={() => {
@@ -295,7 +335,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
               void resumeRunAuth(runId, { token: token ?? undefined })
                 .then(() => {
                   setToken(null)
-                  toast.success('已确认目标系统登录，等待再次领取')
+                  toast.success(sessionMode ? '已完成认证' : '已确认目标系统登录，等待再次领取')
                   onRunChanged?.()
                 })
                 .catch((error) => {
@@ -304,7 +344,7 @@ export function BrowserView({ runId, runStatus, eventSeq = 0, onRunChanged }: Pr
                 .finally(() => setBusy(false))
             }}
           >
-            登录完成，继续运行
+            {sessionMode ? '完成认证' : '登录完成，继续运行'}
           </Button>
           <Button
             variant='outline'

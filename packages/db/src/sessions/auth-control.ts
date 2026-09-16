@@ -1,13 +1,16 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
-import { AUTH_CONTROL_TTL_SECONDS, type RunGrant } from '@cairn/shared'
+import { AUTH_CONTROL_TTL_SECONDS, authCheckpointSchema, computeContextVersion, canonicalJson, type AuthCheckpoint, type RunGrant } from '@cairn/shared'
 import { recordAudit, type AuditActor } from '../audit/record.js'
+import { assertSessionAccountActive, assertSessionActorPermission } from './access.js'
+import { appendSessionEvent } from './maintenance.js'
 import type { Db } from '../client.js'
-import { lockRunRow, releaseRunLeaseTx, verifyRunLeaseForWrite } from '../leases/leases.js'
+import { lockRunRow } from '../leases/leases.js'
 import { clockNow, locked, schemaFor, updateRows } from '../native.js'
 import { appendRunEvents } from '../observe/events.js'
 import { conflict, notFound } from '../runs/errors.js'
 import type { BrowserSessionRow } from '../records.js'
+import { findAuthWaitLeaseForOperation, findAuthWaitLeaseForRun, getSessionOperation, transitionSessionUse, lockWorkerRow } from './occupancy.js'
 import type { SessionRecord } from './sessions.js'
 
 export function hashAuthControlToken(token: string): string {
@@ -19,7 +22,9 @@ export function newAuthControlToken(): string {
 }
 
 export async function lockSessionRow(tx: Db, sessionId: string): Promise<BrowserSessionRow | null> {
-  const { browserSessions } = schemaFor(tx)
+  const { browserSessions, targetAccounts } = schemaFor(tx)
+  const [initial] = await tx.select({ accountId: browserSessions.targetAccountId }).from(browserSessions).where(eq(browserSessions.id, sessionId)).limit(1)
+  if (initial) await locked(tx, tx.select({ id: targetAccounts.id }).from(targetAccounts).where(eq(targetAccounts.id, initial.accountId)))
   const [row] = await locked(tx, tx.select().from(browserSessions).where(eq(browserSessions.id, sessionId)))
   return row ?? null
 }
@@ -39,6 +44,57 @@ export function isBoundAuthHold(
   )
 }
 
+async function findOwnerWait(db: Db, ownerId: string) {
+  return (await findAuthWaitLeaseForOperation(db, ownerId)) ?? (await findAuthWaitLeaseForRun(db, ownerId))
+}
+
+async function authControlEvent(db: Db, ownerId: string, payload: { phase: 'acquired' | 'released' | 'expired'; epoch: number; actorId?: string }) {
+  const operation = await getSessionOperation(db, ownerId)
+  if (operation) {
+    await appendSessionEvent(db, { key: operation, operationId: operation.id, sessionId: operation.expectedSessionId, type: 'auth.control_changed', payload })
+  } else {
+    await appendRunEvents(db, ownerId, [{ type: 'run.auth_control_changed', payload }])
+  }
+}
+
+async function assertOwnerControl(db: Db, ownerId: string, actorId: string) {
+  const operation = await getSessionOperation(db, ownerId)
+  if (operation) {
+    if (operation.status !== 'WAITING_FOR_AUTH') throw conflict('AUTH_INPUT_REJECTED', '操作不在认证等待阶段')
+    await assertSessionAccountActive(db, operation)
+    await assertSessionActorPermission(db, actorId, 'session:control')
+  } else {
+    const { runs } = schemaFor(db)
+    const [run] = await db.select().from(runs).where(eq(runs.id, ownerId)).limit(1)
+    if (run?.targetAccountId) await assertSessionAccountActive(db, { targetId: run.targetId, targetAccountId: run.targetAccountId })
+    if (run?.authCheckpoint) {
+      await assertSessionActorPermission(db, actorId, 'session:control')
+    }
+  }
+}
+
+async function lockAuthScope(tx: Db, sessionId: string, workerId: string, workerInstanceId: string) {
+  const worker = await lockWorkerRow(tx, workerId)
+  if (!worker || worker.instanceId !== workerInstanceId) throw conflict('WORKER_GENERATION_MISMATCH', 'Worker 进程代次已变化')
+  const { browserSessions, targetAccounts } = schemaFor(tx)
+  const [initial] = await tx.select({ accountId: browserSessions.targetAccountId }).from(browserSessions).where(eq(browserSessions.id, sessionId))
+  if (initial) await locked(tx, tx.select({ id: targetAccounts.id }).from(targetAccounts).where(eq(targetAccounts.id, initial.accountId)))
+}
+
+async function requireAuthWaitLease(
+  db: Db,
+  input: { sessionId: string; runId: string; workerInstanceId?: string },
+) {
+  const lease =
+    (await findAuthWaitLeaseForRun(db, input.runId)) ?? (await findAuthWaitLeaseForOperation(db, input.runId))
+  const now = (await clockNow(db)).getTime()
+  if (!lease || lease.sessionId !== input.sessionId || lease.status !== 'ACTIVE' || lease.expiresAt.getTime() <= now || (lease.waitDeadlineAt && lease.waitDeadlineAt.getTime() <= now)) {
+    console.log('requireAuthWaitLease failed in resume:', { lease, sessionId: input.sessionId, now, expiresAt: lease?.expiresAt?.getTime(), waitDeadlineAt: lease?.waitDeadlineAt?.getTime() })
+    throw forbiddenHold()
+  }
+  return lease
+}
+
 export async function enterRunWaitingForAuth(
   db: Db,
   input: {
@@ -47,52 +103,22 @@ export async function enterRunWaitingForAuth(
     workerId: string
     workerInstanceId: string
     holdSeconds: number
+    leaseTtlSeconds?: number
   },
-): Promise<boolean> {
-  const { browserSessions, runs } = schemaFor(db)
-  return db.transaction(async (tx) => {
-    const session = await lockSessionRow(tx as unknown as Db, input.sessionId)
-    const run = await lockRunRow(tx as unknown as Db, input.grant.runId)
-    if (!session || session.status !== 'OPEN' || session.ownerWorkerId !== input.workerId) return false
-    if (!run || run.status !== 'RUNNING') return false
-    if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return false
-    if (session.authHoldWorkerId && session.authHoldRunId !== input.grant.runId) return false
-    const now = await clockNow(tx as unknown as Db)
-    const expires = new Date(now.getTime() + input.holdSeconds * 1000)
-    const [held] = await updateRows(
-      tx,
-      browserSessions,
-      {
-        authHoldWorkerId: input.workerId,
-        authHoldExpiresAt: expires,
-        authHoldRunId: input.grant.runId,
-        authHoldSessionGeneration: session.generation,
-        authHoldWorkerInstanceId: input.workerInstanceId,
-        authState: 'EXPIRED',
-        authControlActorId: null,
-        authControlTokenHash: null,
-        authControlExpiresAt: null,
-        authControlPageId: null,
-        updatedAt: now,
-      },
-      and(eq(browserSessions.id, input.sessionId), eq(browserSessions.status, 'OPEN')),
-      { id: browserSessions.id },
-    )
-    if (!held) return false
-    const [moved] = await updateRows(
-      tx,
-      runs,
-      { status: 'WAITING_FOR_AUTH', updatedAt: now },
-      and(eq(runs.id, input.grant.runId), eq(runs.status, 'RUNNING')),
-      { id: runs.id },
-    )
-    if (!moved) return false
-    await releaseRunLeaseTx(tx as unknown as Db, input.grant, 'waiting_for_auth')
-    await appendRunEvents(tx as unknown as Db, input.grant.runId, [
-      { type: 'run.auth_wait', payload: { status: 'WAITING_FOR_AUTH' } },
-    ])
-    return true
+): Promise<import('@cairn/shared').SessionGrant | null> {
+  const next = await transitionSessionUse(db, {
+    sessionId: input.sessionId,
+    fromPurpose: 'EXECUTION',
+    toPurpose: 'AUTH_WAIT',
+    owner: { kind: 'RUN', runId: input.grant.runId, runFencingToken: input.grant.fencingToken },
+    holderWorkerId: input.workerId,
+    holderInstanceId: input.workerInstanceId,
+    leaseTtlSeconds: input.leaseTtlSeconds ?? 30,
+    waitSeconds: input.holdSeconds,
+    runGrant: input.grant,
+    reason: 'waiting_for_auth',
   })
+  return next
 }
 
 export async function acquireAuthControl(
@@ -112,8 +138,11 @@ export async function acquireAuthControl(
   const token = newAuthControlToken()
   const tokenHash = hashAuthControlToken(token)
   return db.transaction(async (tx) => {
+    await lockAuthScope(tx as unknown as Db, input.sessionId, input.workerId, input.workerInstanceId)
+    const operation = await getSessionOperation(tx, input.runId)
+    const run = operation ?? await lockRunRow(tx as unknown as Db, input.runId)
     const session = await lockSessionRow(tx as unknown as Db, input.sessionId)
-    const run = await lockRunRow(tx as unknown as Db, input.runId)
+    await assertOwnerControl(tx, input.runId, input.actor.id)
     if (!run || run.status !== 'WAITING_FOR_AUTH') {
       throw conflict('RUN_NOT_WAITING_FOR_AUTH', '只有等待认证的运行可以授予输入权')
     }
@@ -123,14 +152,16 @@ export async function acquireAuthControl(
     if (session.generation !== input.sessionGeneration) {
       throw conflict('WORKER_GENERATION_MISMATCH', '会话代次已变化')
     }
-    if (!isBoundAuthHold(session) || session.authHoldRunId !== input.runId) {
-      throw forbiddenHold()
-    }
-    if (session.authHoldWorkerInstanceId !== input.workerInstanceId) {
+    const waitLease = await requireAuthWaitLease(tx as unknown as Db, {
+      sessionId: input.sessionId,
+      runId: input.runId,
+      workerInstanceId: input.workerInstanceId,
+    })
+    if (session.ownerWorkerInstanceId !== input.workerInstanceId) {
       throw conflict('WORKER_GENERATION_MISMATCH', 'Worker 进程代次已变化')
     }
     const now = await clockNow(tx as unknown as Db)
-    if (session.authHoldExpiresAt && session.authHoldExpiresAt.getTime() <= now.getTime()) {
+    if (waitLease.waitDeadlineAt && waitLease.waitDeadlineAt.getTime() <= now.getTime()) {
       throw conflict('AUTH_HOLD_UNBOUND', '认证占用已过期')
     }
     if (
@@ -143,8 +174,8 @@ export async function acquireAuthControl(
     }
     const ttl = input.ttlSeconds ?? AUTH_CONTROL_TTL_SECONDS
     const expires = new Date(now.getTime() + ttl * 1000)
-    if (session.authHoldExpiresAt && expires.getTime() > session.authHoldExpiresAt.getTime()) {
-      expires.setTime(session.authHoldExpiresAt.getTime())
+    if (waitLease.waitDeadlineAt && expires.getTime() > waitLease.waitDeadlineAt.getTime()) {
+      expires.setTime(waitLease.waitDeadlineAt.getTime())
     }
     const nextEpoch = session.authControlEpoch + 1
     const [row] = await updateRows(
@@ -160,7 +191,6 @@ export async function acquireAuthControl(
       },
       and(
         eq(browserSessions.id, input.sessionId),
-        eq(browserSessions.authHoldRunId, input.runId),
         eq(browserSessions.generation, input.sessionGeneration),
       ),
       { id: browserSessions.id },
@@ -174,12 +204,7 @@ export async function acquireAuthControl(
       input.runId,
       '取得目标系统登录输入权',
     )
-    await appendRunEvents(tx as unknown as Db, input.runId, [
-      {
-        type: 'run.auth_control_changed',
-        payload: { phase: 'acquired', epoch: nextEpoch, actorId: input.actor.id },
-      },
-    ])
+    await authControlEvent(tx, input.runId, { phase: 'acquired', epoch: nextEpoch, actorId: input.actor.id })
     return { token, epoch: nextEpoch, expiresAt: expires }
   })
 }
@@ -199,11 +224,14 @@ export async function heartbeatAuthControl(
   return db.transaction(async (tx) => {
     const session = await lockSessionRow(tx as unknown as Db, input.sessionId)
     const now = await clockNow(tx as unknown as Db)
+    await assertOwnerControl(tx, input.runId, input.actorId)
+    await requireAuthWaitLease(tx, input)
     assertLiveControl(session, input, now)
     const ttl = input.ttlSeconds ?? AUTH_CONTROL_TTL_SECONDS
     let expires = new Date(now.getTime() + ttl * 1000)
-    if (session!.authHoldExpiresAt && expires.getTime() > session!.authHoldExpiresAt.getTime()) {
-      expires = session!.authHoldExpiresAt
+    const waitLease = await findOwnerWait(tx as unknown as Db, input.runId)
+    if (waitLease?.waitDeadlineAt && expires.getTime() > waitLease.waitDeadlineAt.getTime()) {
+      expires = waitLease.waitDeadlineAt
     }
     const [row] = await updateRows(
       tx,
@@ -234,8 +262,9 @@ export async function releaseAuthControl(
   const { browserSessions } = schemaFor(db)
   return db.transaction(async (tx) => {
     const session = await lockSessionRow(tx as unknown as Db, input.sessionId)
-    if (!session || session.authHoldRunId !== input.runId) return false
-    if (session.authControlTokenHash !== hashAuthControlToken(input.token)) {
+    const waitLease = await findOwnerWait(tx as unknown as Db, input.runId)
+    if (!session || !waitLease || waitLease.sessionId !== input.sessionId) return false
+    if (session.authControlActorId !== input.actor.id || session.authControlTokenHash !== hashAuthControlToken(input.token)) {
       throw conflict('AUTH_CONTROL_INVALID', '认证输入权已失效')
     }
     const now = await clockNow(tx as unknown as Db)
@@ -265,9 +294,7 @@ export async function releaseAuthControl(
       input.runId,
       input.reason ?? '释放目标系统登录输入权',
     )
-    await appendRunEvents(tx as unknown as Db, input.runId, [
-      { type: 'run.auth_control_changed', payload: { phase: 'released', epoch } },
-    ])
+    await authControlEvent(tx, input.runId, { phase: 'released', epoch })
     return true
   })
 }
@@ -276,7 +303,8 @@ export async function expireStaleAuthControl(db: Db, sessionId: string, runId: s
   const { browserSessions } = schemaFor(db)
   return db.transaction(async (tx) => {
     const session = await lockSessionRow(tx as unknown as Db, sessionId)
-    if (!session || session.authHoldRunId !== runId || !session.authControlTokenHash) return false
+    const waitLease = await findOwnerWait(tx as unknown as Db, runId)
+    if (!session || !waitLease || waitLease.sessionId !== sessionId || !session.authControlTokenHash) return false
     const now = await clockNow(tx as unknown as Db)
     if (session.authControlExpiresAt && session.authControlExpiresAt.getTime() > now.getTime()) return false
     const epoch = session.authControlEpoch
@@ -290,13 +318,11 @@ export async function expireStaleAuthControl(db: Db, sessionId: string, runId: s
         authControlPageId: null,
         updatedAt: now,
       },
-      and(eq(browserSessions.id, sessionId), eq(browserSessions.authHoldRunId, runId)),
+      and(eq(browserSessions.id, sessionId)),
       { id: browserSessions.id },
     )
     if (!row) return false
-    await appendRunEvents(tx as unknown as Db, runId, [
-      { type: 'run.auth_control_changed', payload: { phase: 'expired', epoch } },
-    ])
+    await authControlEvent(tx, runId, { phase: 'expired', epoch })
     return true
   })
 }
@@ -316,6 +342,7 @@ export async function resumeRunAfterAuth(
     workerInstanceId?: string
     controlEpoch?: number
     token?: string
+    recoveredAuthCheckpoint?: AuthCheckpoint
   },
 ): Promise<void> {
   const { browserSessions, runs } = schemaFor(db)
@@ -327,8 +354,9 @@ export async function resumeRunAfterAuth(
     throw conflict('AUTH_HOLD_UNBOUND', '恢复必须由持有会话的 Worker 携带绑定占用')
   }
   await db.transaction(async (tx) => {
-    const session = await lockSessionRow(tx as unknown as Db, sessionId)
+    await lockAuthScope(tx as unknown as Db, sessionId, workerId, workerInstanceId)
     const run = await lockRunRow(tx as unknown as Db, input.runId)
+    const session = await lockSessionRow(tx as unknown as Db, sessionId)
     if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
     if (run.status !== 'WAITING_FOR_AUTH') {
       throw conflict('RUN_NOT_WAITING_FOR_AUTH', '只有等待认证的运行可以恢复领取')
@@ -336,16 +364,40 @@ export async function resumeRunAfterAuth(
     if (!session || session.status !== 'OPEN' || session.ownerWorkerId !== workerId) {
       throw conflict('WORKER_GENERATION_MISMATCH', '会话不属于当前 Worker')
     }
-    if (!isBoundAuthHold(session) || session.authHoldRunId !== input.runId) {
-      throw forbiddenHold()
-    }
-    if (session.authHoldWorkerInstanceId !== workerInstanceId) {
+    await assertSessionAccountActive(tx as unknown as Db, session)
+    const waitLease = await requireAuthWaitLease(tx as unknown as Db, {
+      sessionId,
+      runId: input.runId,
+      workerInstanceId,
+    })
+    if (session.ownerWorkerInstanceId !== workerInstanceId) {
       throw conflict('WORKER_GENERATION_MISMATCH', 'Worker 进程代次已变化')
+    }
+    const now = await clockNow(tx as unknown as Db)
+    if (waitLease.waitDeadlineAt && waitLease.waitDeadlineAt.getTime() <= now.getTime()) {
+      throw conflict('AUTH_HOLD_UNBOUND', '认证占用已过期')
     }
     if (session.authControlEpoch !== controlEpoch) {
       throw conflict('AUTH_CONTROL_INVALID', '控制代次不匹配')
     }
-    const now = await clockNow(tx as unknown as Db)
+    const checkpoint = run.authCheckpoint == null ? null : authCheckpointSchema.parse(run.authCheckpoint)
+    if (checkpoint?.status === 'recovering') {
+      await assertSessionActorPermission(tx as unknown as Db, input.actor.id, 'session:control')
+      await assertSessionActorPermission(tx as unknown as Db, input.actor.id, 'run:execute')
+      if (!input.token || session.authControlActorId !== input.actor.id ||
+          session.authControlTokenHash !== hashAuthControlToken(input.token) ||
+          !session.authControlExpiresAt || session.authControlExpiresAt <= now) {
+        throw conflict('AUTH_CONTROL_INVALID', '完成认证需要当前有效的控制令牌')
+      }
+      if (run.cancelRequestedAt || (run.deadlineAt && run.deadlineAt <= now) ||
+          checkpoint.recoveryKind !== 'manual' || checkpoint.sessionGeneration !== session.generation ||
+          (checkpoint.pageRef && checkpoint.pageRef.sessionId !== sessionId) ||
+          checkpoint.contextVersion !== await computeContextVersion(run.context) ||
+          !input.recoveredAuthCheckpoint ||
+          canonicalJson(authCheckpointSchema.parse(input.recoveredAuthCheckpoint)) !== canonicalJson({ ...checkpoint, status: 'recovered' })) {
+        throw conflict('AUTH_CONTEXT_NOT_RECOVERABLE', '认证恢复现场或检查点已变化')
+      }
+    }
     if (
       session.authControlActorId &&
       session.authControlExpiresAt &&
@@ -374,23 +426,22 @@ export async function resumeRunAfterAuth(
         authState: 'AUTHENTICATED',
         updatedAt: now,
       },
-      and(
-        eq(browserSessions.id, sessionId),
-        eq(browserSessions.authHoldRunId, input.runId),
-        eq(browserSessions.authControlEpoch, controlEpoch),
-      ),
+      and(eq(browserSessions.id, sessionId), eq(browserSessions.authControlEpoch, controlEpoch)),
       { id: browserSessions.id },
     )
     if (!held) throw conflict('AUTH_CONTROL_INVALID', '认证占用已变化')
     const moved = await updateRows(
       tx,
       runs,
-      { status: 'RECOVERING', updatedAt: now },
+      { status: 'RECOVERING', ...(checkpoint?.status === 'recovering' ? { authCheckpoint: { ...checkpoint, status: 'recovered' as const } } : {}), updatedAt: now },
       and(eq(runs.id, input.runId), eq(runs.status, 'WAITING_FOR_AUTH')),
       { id: runs.id },
     )
     if (moved.length === 0) {
       throw conflict('RUN_NOT_WAITING_FOR_AUTH', '只有等待认证的运行可以恢复领取')
+    }
+    if (checkpoint?.status === 'recovering') {
+      await appendRunEvents(tx as unknown as Db, input.runId, [{ type: 'run.auth_recovered', payload: { ...checkpoint, status: 'recovered' } }])
     }
     await recordAudit(
       tx as unknown as Db,
@@ -400,18 +451,27 @@ export async function resumeRunAfterAuth(
       input.runId,
       `确认目标系统已登录${input.note ? `：${input.note}` : ''}`,
     )
-    await appendRunEvents(tx as unknown as Db, input.runId, [
-      { type: 'run.auth_resumed', payload: { status: 'RECOVERING' } },
-    ])
+    await transitionSessionUse(tx as unknown as Db, {
+      sessionId,
+      fromPurpose: 'AUTH_WAIT',
+      toPurpose: 'RELEASE',
+      owner: { kind: 'RUN', runId: input.runId, runFencingToken: 1 },
+      holderWorkerId: workerId,
+      holderInstanceId: workerInstanceId,
+      leaseTtlSeconds: 30,
+      reason: 'auth_resumed',
+    })
   })
 }
 
 export async function findSessionByAuthHoldRun(db: Db, runId: string): Promise<SessionRecord | null> {
+  const lease = await findAuthWaitLeaseForRun(db, runId)
+  if (!lease) return null
   const { browserSessions } = schemaFor(db)
   const [row] = await db
     .select()
     .from(browserSessions)
-    .where(and(eq(browserSessions.authHoldRunId, runId), eq(browserSessions.status, 'OPEN')))
+    .where(and(eq(browserSessions.id, lease.sessionId), eq(browserSessions.status, 'OPEN')))
     .limit(1)
   return row
     ? {
@@ -442,10 +502,24 @@ export async function findSessionByAuthHoldRun(db: Db, runId: string): Promise<S
         authControlTokenHash: row.authControlTokenHash,
         authControlExpiresAt: row.authControlExpiresAt,
         authControlPageId: row.authControlPageId,
+        lastAuthCheckedAt: row.lastAuthCheckedAt,
+        lastAuthSuccessAt: row.lastAuthSuccessAt,
+        lastAuthGeneration: row.lastAuthGeneration,
+        lastExpectedIdentity: row.lastExpectedIdentity,
+        authValidUntil: row.authValidUntil,
+        authExpirySource: row.authExpirySource,
+        lastAuthError: row.lastAuthError,
+        authProfileRevision: row.authProfileRevision,
+        identityState: row.identityState,
+        identityVerifiedAt: row.identityVerifiedAt,
+        observedTier: row.observedTier,
         closeReason: row.closeReason,
         closedAt: row.closedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
+        retainUntil: row.retainUntil ?? null,
+        nextAuthCheckAt: row.nextAuthCheckAt ?? null,
+        predecessorSessionId: row.predecessorSessionId ?? null,
       }
     : null
 }
@@ -459,10 +533,10 @@ function assertLiveControl(
   input: { runId: string; actorId: string; token: string; workerInstanceId: string },
   now: Date,
 ): asserts session is BrowserSessionRow {
-  if (!session || session.authHoldRunId !== input.runId || !isBoundAuthHold(session)) {
+  if (!session) {
     throw conflict('AUTH_HOLD_UNBOUND', '缺少绑定的认证占用')
   }
-  if (session.authHoldWorkerInstanceId !== input.workerInstanceId) {
+  if (session.ownerWorkerInstanceId !== input.workerInstanceId) {
     throw conflict('WORKER_GENERATION_MISMATCH', 'Worker 进程代次已变化')
   }
   if (!session.authControlTokenHash || session.authControlActorId !== input.actorId) {

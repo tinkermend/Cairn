@@ -19,7 +19,8 @@ import { recordAudit, type AuditActor } from '../audit/record.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { atomic, schemaFor, updateRows } from '../native.js'
-import { conflict, isUniqueViolation, notFound } from '../runs/errors.js'
+import { badRequest, conflict, isUniqueViolation, notFound } from '../runs/errors.js'
+import { listTargetsOutsideFreshnessRange } from '../sessions/auth-profile.js'
 import { loadSecretCiphertext, registerStandaloneSecret } from '../sessions/sessions.js'
 
 export type PlatformBootstrap = {
@@ -109,6 +110,13 @@ async function writeRevision(
   },
 ): Promise<PlatformConfigCurrent> {
   const document = platformConfigDocumentSchema.parse(input.document)
+  const current = await getPlatformConfig(db)
+  if (current) {
+    const affected = await listTargetsOutsideFreshnessRange(db, document.sessionAuth)
+    if (affected.length > 0) {
+      throw badRequest('AUTH_FRESHNESS_OUT_OF_RANGE', '已发布规则的新鲜度超出新范围', { targets: affected })
+    }
+  }
   return atomic(db, async (tx) => {
     const { platformConfig, platformConfigRevisions } = schemaFor(tx)
     const now = new Date()

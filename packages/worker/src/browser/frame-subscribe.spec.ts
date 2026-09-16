@@ -1,3 +1,14 @@
+import { vi } from "vitest"
+vi.mock("@cairn/db", async (original) => ({
+  ...(await original()),
+  getSessionOperation: vi.fn(async () => null),
+  getSessionById: vi.fn(async (db, id) => id === "00000000-0000-4000-8000-000000000011" ? { id, status: "OPEN" } : null),
+  getWorkerById: vi.fn(async () => ({ id: "worker" })),
+  getRun: vi.fn(async () => ({ status: "RUNNING", placement: {} })),
+  findSessionByAuthHoldRun: vi.fn(async () => null),
+  findActiveLeaseRow: vi.fn(async () => null),
+}))
+
 import { describe, expect, it, vi } from 'vitest'
 import { BrowserSessionManager } from './session-manager'
 
@@ -65,6 +76,10 @@ function subscribeManager() {
     workerInstanceId: 'test-worker',
     options: { workerId: 'test-worker' },
     lives: new Map([[sessionId, live]]),
+    leaseToRun: new Map(),
+    leaseToSession: new Map(),
+    leaseToRun: new Map(),
+    leaseToSession: new Map(),
     requireLiveAuthSession: async () => ({ session, live, run }),
     sessionOwnedHere: () => true,
     registrationLive: () => true,

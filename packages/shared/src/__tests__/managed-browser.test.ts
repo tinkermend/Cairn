@@ -136,6 +136,11 @@ describe('internal HMAC', () => {
 })
 
 describe('auth-stage frame visibility', () => {
+  it('终态操作和运行不再提供实时画面', () => {
+    for (const runStatus of ['SUCCEEDED', 'FAILED', 'CANCELLED', 'EXPIRED', 'NEEDS_REVIEW']) {
+      expect(canObserveManagedFrames({ runStatus, actorId: 'viewer' })).toBe(false)
+    }
+  })
   it('等待认证时只有未过期的当前控制者能看画面', () => {
     const now = Date.parse('2026-09-13T00:00:20.000Z')
     expect(

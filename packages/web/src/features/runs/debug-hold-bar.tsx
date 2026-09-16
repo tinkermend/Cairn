@@ -71,7 +71,7 @@ export function DebugHoldBar({
   const [confirmRetry, setConfirmRetry] = useState(false)
   const [confirmPageChange, setConfirmPageChange] = useState(false)
   const latestAttempt = step
-    ? run.stepRuns.find((item) => item.stepId === step.id)?.attempts.at(-1)
+    ? run.stepRuns.find((item) => item.stepId === step.id)?.attempts.slice(-1)[0]
     : undefined
   const expectActual = expectActualFrom(latestAttempt?.output)
 

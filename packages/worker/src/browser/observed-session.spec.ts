@@ -13,6 +13,8 @@ vi.mock('@cairn/db', async (original) => {
     ...actual,
     getRun: mocks.getRun,
     getSessionById: mocks.getSessionById,
+    getSessionOperation: vi.fn(async () => null),
+    findActiveLeaseRow: vi.fn(async () => null),
     findSessionByAuthHoldRun: mocks.findSessionByAuthHoldRun,
   }
 })

@@ -31,8 +31,14 @@ import {
   type Step,
 } from '@cairn/shared'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
+import { WORKER_TEST_PROTOCOLS } from '../../__tests__/worker-protocols.js'
 import { BrowserSessionManager } from '../../browser/session-manager.js'
-import { executeOnPage } from '../../browser/surface.js'
+import { executeOnPage as executeOnPageRaw } from '../../browser/surface.js'
+import { withTestOccupancy } from '../../browser/test-occupancy.js'
+
+function executeOnPage(...args: Parameters<typeof executeOnPageRaw>) {
+  return withTestOccupancy(() => executeOnPageRaw(...args))
+}
 import { ActionGate, createCallBarrier, gateActions } from './action-gate.js'
 import { detectFabrication, takeStringField } from './extract.js'
 import { banNewContext, withLaunchBanned } from './launch-guard.js'
@@ -186,12 +192,14 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
       // 每个用例领取一条 Run 且不结束，容量要覆盖本文件的领取次数，否则 claimRun 领不到。
       capacity: 32,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
     profileRoot = mkdtempSync(join(tmpdir(), 'cairn-s06-'))
     manager = new BrowserSessionManager(
       handle,
       {
         workerId,
+        workerInstanceId,
         profileRoot,
         headless: true,
         maxSessions: 2,

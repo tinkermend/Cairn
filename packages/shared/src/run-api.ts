@@ -17,6 +17,9 @@ import { sessionPolicyOverrideSchema, sessionStatusSchema } from './session.js'
 import { executionPolicySchema } from './step.js'
 import { evidenceMetadataSchema, runEvidenceStatusSchema, type RunEvidenceStatus } from './evidence.js'
 import { evidencePolicySchema } from './evidence-policy.js'
+import { mapCapturePolicyOverrideSchema } from './map-capture.js'
+import { mapConsumptionOverrideSchema } from './map-consumption.js'
+import { authCheckpointSchema } from './session-auth-recovery.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
@@ -61,6 +64,13 @@ export const RUN_ERROR_CODES = [
   'DEBUG_SESSION_TIMEOUT',
   'SIDE_EFFECT_CONFIRM_REQUIRED',
   'PAGE_CHANGED_ACK_REQUIRED',
+  'RUN_WAITING_FOR_AUTH',
+  'AUTH_CONTEXT_NOT_RECOVERABLE',
+  'AUTH_RECOVERY_LIMIT',
+  'MAP_CONSUMER_UNAVAILABLE',
+  'MAP_CONSUMPTION_NOT_ELIGIBLE',
+  'MAP_RELEASE_NOT_PUBLISHED',
+  'MAP_RELEASE_WITHDRAWN',
 ] as const
 export type RunErrorCode = (typeof RUN_ERROR_CODES)[number]
 
@@ -77,6 +87,8 @@ export const createRunBodySchema = z.strictObject({
   /** 会话策略覆盖；与 policy 并列，不进 Step 级 executionPolicy。 */
   sessionPolicy: sessionPolicyOverrideSchema.optional(),
   evidencePolicy: evidencePolicySchema.optional(),
+  mapCapturePolicy: mapCapturePolicyOverrideSchema.optional(),
+  mapConsumption: mapConsumptionOverrideSchema.optional(),
   idempotencyKey: idempotencyKeySchema.optional(),
   debugMode: debugModeSchema.optional(),
 })
@@ -89,6 +101,8 @@ export const trialRunBodySchema = z.strictObject({
   policy: executionPolicySchema.optional(),
   sessionPolicy: sessionPolicyOverrideSchema.optional(),
   evidencePolicy: evidencePolicySchema.optional(),
+  mapCapturePolicy: mapCapturePolicyOverrideSchema.optional(),
+  mapConsumption: mapConsumptionOverrideSchema.optional(),
   idempotencyKey: idempotencyKeySchema.optional(),
   debugMode: debugModeSchema.optional(),
 })
@@ -122,14 +136,37 @@ export const RUN_PLACEMENT_STATES = [
 export type RunPlacementState = (typeof RUN_PLACEMENT_STATES)[number]
 export const runPlacementStateSchema = z.enum(RUN_PLACEMENT_STATES)
 
-/** GET 派生，不落库。列表不带，详情必带。 */
+/** GET 派生，不落库。列表不带，详情必带。等待原因与占用主体只在读时计算。 */
 export const runPlacementSchema = z.strictObject({
   state: runPlacementStateSchema,
   sessionId: entityIdSchema.nullable(),
   ownerWorkerId: z.string().min(1).max(128).nullable(),
   sessionStatus: sessionStatusSchema.nullable(),
+  waitReason: z
+    .enum([
+      'SESSION_IN_USE_BY_RUN',
+      'SESSION_IN_MAINTENANCE',
+      'SESSION_WAITING_FOR_AUTH',
+      'SESSION_LOST',
+      'WORKER_SESSION_CAPACITY',
+      'PROFILE_AFFINITY_WAIT',
+      'NO_ELIGIBLE_WORKER',
+    ])
+    .nullable()
+    .default(null),
+  occupyingRunId: entityIdSchema.nullable().default(null),
+  occupyingOperationId: entityIdSchema.nullable().default(null),
+  targetWorkerId: z.string().min(1).max(128).nullable().default(null),
+  profileAffinityUntil: utcInstantSchema.nullable().default(null),
+  generation: z.number().int().positive().nullable().default(null),
+  acquireReason: z.enum(['reused', 'created']).nullable().default(null),
+  profileFallback: z.boolean().nullable().default(null),
 })
 export type RunPlacement = z.infer<typeof runPlacementSchema>
+
+export function runPlacement(input: z.input<typeof runPlacementSchema>): RunPlacement {
+  return runPlacementSchema.parse(input)
+}
 
 export const runSummarySchema = z.object({
   source: z.object({ kind: z.enum(['console', 'service']), callerId: entityIdSchema.optional(), credentialId: entityIdSchema.optional() }).optional(),
@@ -196,6 +233,7 @@ export const runDetailSchema = runSummarySchema
     placement: runPlacementSchema,
     checkpoint: debugCheckpointSchema.nullable().optional(),
     debugOverlay: debugOverlaySchema.nullable().optional(),
+    authCheckpoint: authCheckpointSchema.nullable().optional(),
   })
 export type RunDetailDto = z.infer<typeof runDetailSchema>
 

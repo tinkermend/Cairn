@@ -4,16 +4,18 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
   canAdoptAssistantProposal,
   entityIdSchema,
-  hasAiSteps,
   canExecuteRun,
   canTrialRun,
   hasPermission,
   isAiStepType,
+  isAuthoringDocumentV2,
+  MAX_AUTHORING_NODES,
   MAX_SCENARIO_STEPS,
   type CompileDiagnostic,
   type ExecutableStepType,
   type RecordingInsertAnchor,
   type RunDetailDto,
+  type ScenarioModuleInvocationNode,
 } from '@cairn/shared'
 import {
   ArrowLeft,
@@ -21,6 +23,7 @@ import {
   ChevronDown,
   ChevronRight,
   Info,
+  Layers,
   ListOrdered,
   Play,
   Plus,
@@ -62,6 +65,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   DropdownMenu,
@@ -97,18 +101,34 @@ import { InputsEditor, StepEditor } from './step-editor'
 import { TrialDialog } from './trial-dialog'
 import { TrialPanel } from './trial-panel'
 import { SCENARIO_STATUS_LABELS, stepTypeLabel } from './labels'
+import { MapStepBinding } from '@/features/map/step-binding'
+import { KnowledgeProposal } from '@/features/scenarios/knowledge-proposal'
 import { RecordingImportPanel } from './recording-import-panel'
 import { useStudioDraft } from './use-studio-draft'
 import {
-  documentContextKeys,
+  authoringNodes,
+  consecutiveExtractStepIds,
+  findInsertedModuleInvocationId,
+  documentContextKeysAny,
+  documentHasAiSteps,
+  documentNodeCount,
+  documentUsesBrowser,
   focusStudioField,
   insertStep,
   isTypingTarget,
+  moveNode,
   moveStep,
+  nodeId,
   outputConsumers,
   priorBindings,
-  priorOutputShapes,
+  priorBindingsV2,
+  priorOutputShapesAny,
+  removeAuthoringNode,
 } from './studio-document'
+import { InsertModuleDialog } from './insert-module-dialog'
+import { ModuleInvocationEditor } from './module-invocation-editor'
+import { ModuleExtractWizard } from './extract-wizard'
+import { ModuleReplaceDialog } from './replace-module-dialog'
 
 const FlowgramCanvas = lazy(() => import('./flowgram/canvas'))
 
@@ -164,6 +184,11 @@ export function ScenarioDetailPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [typeChange, setTypeChange] = useState<ExecutableStepType | null>(null)
   const [reloadOpen, setReloadOpen] = useState(false)
+  const [insertModuleOpen, setInsertModuleOpen] = useState(false)
+  const [extractIds, setExtractIds] = useState<string[]>([])
+  const [extractOpen, setExtractOpen] = useState(false)
+  const [replaceOpen, setReplaceOpen] = useState(false)
+  const actionModulesEnabled = Boolean(capabilitiesQuery.data?.actionModules)
   const [leaveOpen, setLeaveOpen] = useState(false)
   const [trialOpen, setTrialOpen] = useState(false)
   const [runOpen, setRunOpen] = useState(false)
@@ -224,7 +249,15 @@ export function ScenarioDetailPage() {
   const disabled = !canWrite || saving || publishing
   const compile = draft.compile ?? (draft.hasFieldDrafts ? null : scenario?.compile)
   const editableTypes = selectableStudioTypes(capabilitiesQuery.data)
-  const draftHasAi = Boolean(document && hasAiSteps(document.steps))
+  const supportsAuthoringV2 = Boolean(
+    capabilitiesQuery.data?.authoringSchemaVersions?.includes(2),
+  )
+  const extractableStepIds =
+    draft.v2Document && isAuthoringDocumentV2(document) ? consecutiveExtractStepIds(draft.v2Document, extractIds) : []
+  const canExtract = Boolean(actionModulesEnabled && supportsAuthoringV2 && extractableStepIds.length > 0 && canWrite)
+  const draftHasAi = Boolean(document && documentHasAiSteps(document))
+  const nodeCount = document ? documentNodeCount(document) : 0
+  const nodeLimit = draft.v2Document ? MAX_AUTHORING_NODES : MAX_SCENARIO_STEPS
   const canTrial = Boolean(
     canStartTrial &&
       (!draftHasAi || canAi) &&
@@ -242,9 +275,18 @@ export function ScenarioDetailPage() {
       target?.status !== 'disabled',
   )
   const unpublishedDraft = Boolean(scenario?.draftDirty)
-  const consumers = document ? outputConsumers(document, document.steps.find((step) => step.id === deleteId)?.outputKey) : []
-  const bindings = document && draft.selectedIndex >= 0 ? priorBindings(document, draft.selectedIndex) : []
-  const shapes = document && draft.selectedIndex >= 0 ? priorOutputShapes(document, draft.selectedIndex) : new Map()
+  const consumers =
+    document && deleteId && !isAuthoringDocumentV2(document)
+      ? outputConsumers(document, document.steps.find((step) => step.id === deleteId)?.outputKey)
+      : []
+  const bindings =
+    draft.v2Document && isAuthoringDocumentV2(document) && draft.selectedIndex >= 0
+      ? priorBindingsV2(draft.v2Document, draft.selectedIndex)
+      : document && !isAuthoringDocumentV2(document) && draft.selectedIndex >= 0
+        ? priorBindings(document, draft.selectedIndex)
+        : []
+  const shapes =
+    document && draft.selectedIndex >= 0 ? priorOutputShapesAny(document, draft.selectedIndex) : new Map()
   const trialDisabledReason = useMemo(() => {
     if (compile?.ok === false) return '先修复编译错误'
     if (draft.hasFieldDrafts) return '先修正尚未合法的字段'
@@ -264,10 +306,10 @@ export function ScenarioDetailPage() {
     !draft.hasFieldDrafts &&
     !draft.conflict &&
     !draft.remoteStale &&
-    Boolean(scenario?.draft && draft.selected)
+    Boolean(scenario?.draft && draft.selected && document && !isAuthoringDocumentV2(document))
 
   useEffect(() => {
-    if (!canPropose || !scenario?.draft || !document) {
+    if (!canPropose || !scenario?.draft || !document || isAuthoringDocumentV2(document)) {
       registerAdoptHandler(null)
       return
     }
@@ -303,18 +345,28 @@ export function ScenarioDetailPage() {
       if (!event.altKey || isTypingTarget(event.target)) return
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        const next = moveStep(current, selectedIndex, -1)
-        if (next) applyStructure(next, selectedStepId)
+        if (isAuthoringDocumentV2(current)) {
+          const next = moveNode(current, selectedIndex, -1)
+          if (next) applyStructure(next, draft.selectedId)
+        } else {
+          const next = moveStep(current, selectedIndex, -1)
+          if (next) applyStructure(next, selectedStepId)
+        }
       }
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        const next = moveStep(current, selectedIndex, 1)
-        if (next) applyStructure(next, selectedStepId)
+        if (isAuthoringDocumentV2(current)) {
+          const next = moveNode(current, selectedIndex, 1)
+          if (next) applyStructure(next, draft.selectedId)
+        } else {
+          const next = moveStep(current, selectedIndex, 1)
+          if (next) applyStructure(next, selectedStepId)
+        }
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [applyStructure, canWrite, disabled, document, selectedIndex, selectedStepId])
+  }, [applyStructure, canWrite, disabled, document, selectedIndex, selectedStepId, draft.selectedId])
 
   useEffect(() => {
     function onBeforeUnload(event: BeforeUnloadEvent) {
@@ -331,8 +383,8 @@ export function ScenarioDetailPage() {
     toast.error('他人已更新这份草稿，请重新加载')
   }
 
-  const currentInsertAnchor: RecordingInsertAnchor = draft.selected?.id
-    ? { kind: 'after', stepId: draft.selected.id }
+  const currentInsertAnchor: RecordingInsertAnchor = draft.selectedId
+    ? { kind: 'after', stepId: draft.selectedId }
     : { kind: 'start' }
 
   function setImportSearch(next: string | undefined) {
@@ -392,7 +444,7 @@ export function ScenarioDetailPage() {
     }
   }
 
-  async function save(): Promise<boolean> {
+  async function save(): Promise<number | false> {
     if (!document || !draft.baseline || saving) return false
     if (draft.hasFieldDrafts) {
       toast.error('先修正尚未合法的字段')
@@ -415,7 +467,7 @@ export function ScenarioDetailPage() {
           // 草稿已按 OCC 落库；覆盖层清理失败不回滚保存
         }
       }
-      return true
+      return next.draft?.revision ?? false
     } catch (error) {
       if (error instanceof ApiRequestError && error.payload.code === 'SCENARIO_DRAFT_CONFLICT') {
         markConflict()
@@ -426,6 +478,19 @@ export function ScenarioDetailPage() {
     } finally {
       setSaving(false)
     }
+  }
+
+  async function ensureDraftSaved(): Promise<number | null> {
+    if (draft.hasFieldDrafts) {
+      toast.error('先修正尚未合法的字段')
+      draft.focusFirstDraft()
+      return null
+    }
+    if (draft.dirty) {
+      const revision = await save()
+      return revision === false ? null : revision
+    }
+    return draft.baseline?.revision ?? scenario?.draft?.revision ?? 0
   }
 
   async function publish() {
@@ -449,18 +514,45 @@ export function ScenarioDetailPage() {
 
   function addStep(type: ExecutableStepType) {
     if (!document) return
-    const nextStep = createBlankStep(type, documentContextKeys(document))
+    const nextStep = createBlankStep(type, documentContextKeysAny(document))
     const after = draft.selectedIndex
-    draft.applyStructure(insertStep(document, nextStep, after), nextStep.id)
+    if (isAuthoringDocumentV2(document)) {
+      draft.insertNode({ kind: 'step', step: nextStep }, after)
+    } else {
+      draft.applyStructure(insertStep(document, nextStep, after), nextStep.id)
+    }
+    setMobilePane('properties')
+  }
+
+  function insertModule(moduleId: string, versionId: string, name: string) {
+    const invocation: ScenarioModuleInvocationNode = {
+      kind: 'module',
+      invocationId: crypto.randomUUID(),
+      name,
+      moduleId,
+      moduleVersionId: versionId,
+      implementationKey: 'default',
+      inputBindings: {},
+      outputBindings: {},
+    }
+    draft.insertNode(invocation, draft.selectedIndex)
     setMobilePane('properties')
   }
 
   function changeType(type: ExecutableStepType) {
     if (!document || !draft.selected) return
-    const next = createBlankStep(type, documentContextKeys({
-      ...document,
-      steps: document.steps.filter((step) => step.id !== draft.selected!.id),
-    }))
+    const used = documentContextKeysAny(document)
+    if (draft.selected.outputKey) used.delete(draft.selected.outputKey)
+    const next = createBlankStep(type, used)
+    if (isAuthoringDocumentV2(document) && draft.selectedNode?.kind === 'step') {
+      draft.updateNode({
+        kind: 'step',
+        step: { ...next, id: draft.selected.id, name: draft.selected.name || next.name },
+      })
+      setTypeChange(null)
+      return
+    }
+    if (!('steps' in document)) return
     draft.applyStructure(
       {
         ...document,
@@ -814,7 +906,7 @@ export function ScenarioDetailPage() {
               selectedStepId={draft.selected?.id}
               enabled={Boolean(runId)}
               authoring={capabilitiesQuery.data?.authoring}
-              onWriteBack={() => save()}
+              onWriteBack={async () => Boolean(await save())}
               onApplyTarget={(target) => {
                 const current = draft.selected
                 if (!current || !current.input || typeof current.input !== 'object' || !('target' in current.input)) {
@@ -856,7 +948,7 @@ export function ScenarioDetailPage() {
                         <Button
                           size='sm'
                           variant='outline'
-                          disabled={disabled || document.steps.length >= MAX_SCENARIO_STEPS}
+                          disabled={disabled || nodeCount >= nodeLimit}
                         >
                           <Plus />
                           添加步骤
@@ -907,8 +999,31 @@ export function ScenarioDetailPage() {
                               ))}
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
+                        {actionModulesEnabled && supportsAuthoringV2 && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onSelect={() => {
+                                window.setTimeout(() => setInsertModuleOpen(true), 0)
+                              }}
+                            >
+                              <Layers className='size-4 mr-2 text-primary' />
+                              动作模块…
+                            </DropdownMenuItem>
+                          </>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    {canExtract ? (
+                      <>
+                        <Button size='sm' variant='outline' onClick={() => setExtractOpen(true)}>
+                          提炼为动作模块
+                        </Button>
+                        <Button size='sm' variant='outline' onClick={() => setReplaceOpen(true)}>
+                          替换为模块调用
+                        </Button>
+                      </>
+                    ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -919,15 +1034,25 @@ export function ScenarioDetailPage() {
                   </div>
                   <div className='flex min-w-0 flex-1 basis-48 items-center gap-1'>
                     <Button size='icon' variant='ghost' aria-label='定位上一步' title='定位上一步' disabled={draft.selectedIndex <= 0}
-                      onClick={() => locateStep(document.steps[draft.selectedIndex - 1]!.id)}><ArrowLeft /></Button>
-                    <Select value={draft.selected?.id ?? ''} onValueChange={locateStep}>
+                      onClick={() => {
+                        const prev = authoringNodes(document)[draft.selectedIndex - 1]
+                        if (prev) locateStep(nodeId(prev))
+                      }}><ArrowLeft /></Button>
+                    <Select value={draft.selectedId ?? ''} onValueChange={locateStep}>
                       <SelectTrigger aria-label='定位步骤' className='min-w-0 flex-1'><SelectValue placeholder='定位步骤' /></SelectTrigger>
                       <SelectContent>
-                        {document.steps.map((step, index) => <SelectItem key={step.id} value={step.id}>{String(index + 1).padStart(2, '0')} · {step.name}</SelectItem>)}
+                        {authoringNodes(document).map((node, index) => (
+                          <SelectItem key={nodeId(node)} value={nodeId(node)}>
+                            {String(index + 1).padStart(2, '0')} · {node.kind === 'module' ? (node.name || '动作模块') : node.step.name}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
-                    <Button size='icon' variant='ghost' aria-label='定位下一步' title='定位下一步' disabled={draft.selectedIndex >= document.steps.length - 1}
-                      onClick={() => locateStep(document.steps[draft.selectedIndex + 1]!.id)}><ArrowRight /></Button>
+                    <Button size='icon' variant='ghost' aria-label='定位下一步' title='定位下一步' disabled={draft.selectedIndex >= nodeCount - 1}
+                      onClick={() => {
+                        const next = authoringNodes(document)[draft.selectedIndex + 1]
+                        if (next) locateStep(nodeId(next))
+                      }}><ArrowRight /></Button>
                   </div>
                 </div>
                 {flowgram ? (
@@ -936,7 +1061,7 @@ export function ScenarioDetailPage() {
                       key={scenarioId}
                       trialRun={trialRun?.scenarioId === scenarioId ? trialRun : undefined}
                       document={document}
-                      selectedId={draft.selected?.id ?? null}
+                      selectedId={draft.selectedId}
                       navigation={stepNavigation}
                       layout={canvasLayout}
                       onLayoutChange={setCanvasLayout}
@@ -947,7 +1072,7 @@ export function ScenarioDetailPage() {
                         setMobilePane('properties')
                       }}
                       onInsertAfter={(id) => {
-                        if (disabled || document.steps.length >= MAX_SCENARIO_STEPS) return
+                        if (disabled || nodeCount >= nodeLimit) return
                         draft.setSelectedId(id)
                         setAddMenuOpen(true)
                       }}
@@ -956,13 +1081,77 @@ export function ScenarioDetailPage() {
                   </Suspense>
                 ) : (
                 <ol ref={stepList} aria-label='有序步骤列表' className='max-h-[65vh] space-y-2 overflow-y-auto p-4'>
-                  {document.steps.map((step, index) => {
+                  {authoringNodes(document).map((node, index) => {
+                    const key = nodeId(node)
+                    if (node.kind === 'module') {
+                      const isSelected = draft.selectedId === key
+                      const nodeDiagnostics = (compile?.diagnostics ?? []).filter((item) => item.stepId === key)
+                      const errorCount = nodeDiagnostics.filter((item) => item.severity === 'error').length
+                      const warningCount = nodeDiagnostics.filter((item) => item.severity === 'warning').length
+                      return (
+                        <li key={key} data-list-step={key} className='flex min-w-0 items-center gap-2'>
+                          <span className='w-5 shrink-0 text-center font-mono text-label text-muted-foreground'>
+                            {String(index + 1).padStart(2, '0')}
+                          </span>
+                          <button
+                            type='button'
+                            aria-pressed={isSelected}
+                            onClick={() => {
+                              draft.setSelectedId(key)
+                              setMobilePane('properties')
+                            }}
+                            className={cn(
+                              'flex min-w-0 flex-1 items-center gap-3 rounded-md border p-4 text-left',
+                              isSelected
+                                ? 'border-selection-border bg-selection-background shadow-control-focus'
+                                : 'border-border-default bg-card hover:bg-action-hover',
+                            )}
+                          >
+                            <span className='min-w-0 flex-1'>
+                              <span className='flex items-center gap-2'>
+                                <Layers className='size-4 text-primary shrink-0' />
+                                <span className='block text-body font-medium break-words'>
+                                  {node.name || '动作模块'}
+                                </span>
+                              </span>
+                              <span className='mt-1 flex flex-wrap items-center gap-2 text-label text-muted-foreground'>
+                                <StatusBadge tone='neutral'>动作模块</StatusBadge>
+                                {errorCount > 0 ? (
+                                  <span className='inline-flex items-center gap-1 text-status-error-foreground'>
+                                    <TriangleAlert className='size-3' />{errorCount} 项错误
+                                  </span>
+                                ) : null}
+                                {warningCount > 0 ? (
+                                  <span className='inline-flex items-center gap-1'>
+                                    <Info className='size-3' />{warningCount} 项提醒
+                                  </span>
+                                ) : null}
+                              </span>
+                            </span>
+                            <ChevronRight className='size-4 shrink-0 text-muted-foreground' />
+                          </button>
+                        </li>
+                      )
+                    }
+
+                    const step = node.step
                     const stepDiagnostics = (compile?.diagnostics ?? []).filter((item) => item.stepId === step.id)
                     const errorCount = stepDiagnostics.filter((item) => item.severity === 'error').length
                     const warningCount = stepDiagnostics.filter((item) => item.severity === 'warning').length
                     const imported = importedStepIds.includes(step.id)
                     return (
                       <li key={step.id} data-list-step={step.id} className='flex min-w-0 items-center gap-2'>
+                        {actionModulesEnabled && supportsAuthoringV2 && isAuthoringDocumentV2(document) ? (
+                          <Checkbox
+                            aria-label={`选择提炼 ${step.name}`}
+                            checked={extractIds.includes(step.id)}
+                            onCheckedChange={(value) =>
+                              setExtractIds((current) =>
+                                value === true ? [...current, step.id] : current.filter((id) => id !== step.id),
+                              )
+                            }
+                          />
+                        ) : null}
                         <span className='w-5 shrink-0 text-center font-mono text-label text-muted-foreground'>
                           {String(index + 1).padStart(2, '0')}
                         </span>
@@ -1010,7 +1199,7 @@ export function ScenarioDetailPage() {
                 </p>
               </section>
               <section
-                aria-label={draft.selected ? '步骤属性' : '场景输入'}
+                aria-label={draft.selectedNode?.kind === 'module' ? '模块调用属性' : draft.selected ? '步骤属性' : '场景输入'}
                 className={cn(
                   'min-w-0 rounded-lg border border-border-card bg-card shadow-card',
                   mobilePane !== 'properties' && 'max-lg:hidden',
@@ -1018,10 +1207,16 @@ export function ScenarioDetailPage() {
               >
                 <div className='border-b border-border-divider p-5'>
                   <p className='text-label text-muted-foreground'>
-                    {draft.selected ? `步骤 ${draft.selectedIndex + 1} / ${document.steps.length}` : '场景级'}
+                    {draft.selectedNode
+                      ? `${draft.selectedNode.kind === 'module' ? '模块' : '步骤'} ${draft.selectedIndex + 1} / ${draft.nodes.length}`
+                      : '场景级'}
                   </p>
                   <h2 className='mt-1 text-section font-semibold break-words'>
-                    {draft.selected ? draft.selected.name : '输入与诊断'}
+                    {draft.selectedNode?.kind === 'module'
+                      ? (draft.selectedNode.name || '动作模块')
+                      : draft.selected
+                        ? draft.selected.name
+                        : '输入与诊断'}
                   </h2>
                   <Button
                     size='sm'
@@ -1033,7 +1228,67 @@ export function ScenarioDetailPage() {
                   </Button>
                 </div>
                 <div className='space-y-6 p-5'>
-                  {draft.selected ? (
+                  {draft.selectedNode?.kind === 'module' ? (
+                    <>
+                      {!supportsAuthoringV2 ? (
+                        <Alert>
+                          <AlertDescription>调用节点只读。需要更新编辑器才能修改动作模块引用。</AlertDescription>
+                        </Alert>
+                      ) : null}
+                      <ModuleInvocationEditor
+                        node={draft.selectedNode}
+                        scenarioId={scenario.id}
+                        scenarioInputs={draft.displayInputs}
+                        priorBindings={draft.v2Document ? priorBindingsV2(draft.v2Document, draft.selectedIndex) : []}
+                        baselineRevision={scenario.draft?.revision ?? 1}
+                        document={draft.candidate!}
+                        diagnostics={(compile?.diagnostics ?? []).filter((item) => item.stepId === (draft.selectedNode as any)?.invocationId)}
+                        disabled={disabled || !supportsAuthoringV2}
+                        onChange={(updated) => draft.updateNode(updated)}
+                        onInlined={() => {
+                          void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId] })
+                        }}
+                      />
+                      <div className='flex flex-wrap gap-2'>
+                        <Button
+                          size='sm'
+                          variant='outline'
+                          disabled={disabled || draft.selectedIndex === 0}
+                          onClick={() => {
+                            if (!draft.v2Document) return
+                            const next = moveNode(draft.v2Document, draft.selectedIndex, -1)
+                            if (next) draft.applyStructure(next, nodeId(draft.selectedNode!))
+                          }}
+                        >
+                          上移
+                        </Button>
+                        <Button
+                          size='sm'
+                          variant='outline'
+                          disabled={disabled || draft.selectedIndex === draft.nodes.length - 1}
+                          onClick={() => {
+                            if (!draft.v2Document) return
+                            const next = moveNode(draft.v2Document, draft.selectedIndex, 1)
+                            if (next) draft.applyStructure(next, nodeId(draft.selectedNode!))
+                          }}
+                        >
+                          下移
+                        </Button>
+                        <Button
+                          size='sm'
+                          variant='outline'
+                          disabled={disabled || draft.nodes.length <= 1}
+                          onClick={() => setDeleteId(nodeId(draft.selectedNode!))}
+                        >
+                          删除
+                        </Button>
+                        <Button size='sm' variant='outline' disabled={!draft.undo} onClick={draft.undoStructure}>
+                          <Undo2 />
+                          撤销结构操作
+                        </Button>
+                      </div>
+                    </>
+                  ) : draft.selected ? (
                     <>
                       <StepEditor
                         step={draft.selected}
@@ -1046,12 +1301,43 @@ export function ScenarioDetailPage() {
                         onChange={draft.updateStep}
                         onRequestTypeChange={setTypeChange}
                       />
+                      <MapStepBinding
+                        targetId={scenario.targetId}
+                        scenarioId={scenario.id}
+                        stepId={draft.selected.id}
+                        draftRevision={scenario.draft?.revision ?? 0}
+                        disabled={disabled}
+                      />
+                      {document && scenario.draft ? (
+                        <KnowledgeProposal
+                          scenarioId={scenario.id}
+                          draftRevision={scenario.draft.revision}
+                          document={document}
+                          disabled={disabled || draft.dirty || draft.hasFieldDrafts || draft.conflict || draft.remoteStale}
+                          onAccepted={(revision, next) => {
+                            queryClient.setQueryData(['scenarios', scenarioId], {
+                              ...scenario,
+                              draft: { ...scenario.draft, revision, document: next },
+                            })
+                            if (draft.dirty || draft.hasFieldDrafts) {
+                              draft.setConflict(true)
+                              toast.error('建议已保存到服务器，编辑中的本地输入已保留，请处理草稿冲突。')
+                            } else draft.acceptServer({ revision, document: next })
+                          }}
+                        />
+                      ) : null}
                       <div className='flex flex-wrap gap-2'>
                         <Button
                           size='sm'
                           variant='outline'
                           disabled={disabled || draft.selectedIndex === 0}
                           onClick={() => {
+                            if (isAuthoringDocumentV2(document) && draft.v2Document) {
+                              const next = moveNode(draft.v2Document, draft.selectedIndex, -1)
+                              if (next) draft.applyStructure(next, draft.selectedId)
+                              return
+                            }
+                            if (isAuthoringDocumentV2(document)) return
                             const next = moveStep(document, draft.selectedIndex, -1)
                             if (next) draft.applyStructure(next, draft.selected?.id ?? null)
                           }}
@@ -1061,8 +1347,14 @@ export function ScenarioDetailPage() {
                         <Button
                           size='sm'
                           variant='outline'
-                          disabled={disabled || draft.selectedIndex === document.steps.length - 1}
+                          disabled={disabled || draft.selectedIndex === nodeCount - 1}
                           onClick={() => {
+                            if (isAuthoringDocumentV2(document) && draft.v2Document) {
+                              const next = moveNode(draft.v2Document, draft.selectedIndex, 1)
+                              if (next) draft.applyStructure(next, draft.selectedId)
+                              return
+                            }
+                            if (isAuthoringDocumentV2(document)) return
                             const next = moveStep(document, draft.selectedIndex, 1)
                             if (next) draft.applyStructure(next, draft.selected?.id ?? null)
                           }}
@@ -1072,7 +1364,7 @@ export function ScenarioDetailPage() {
                         <Button
                           size='sm'
                           variant='outline'
-                          disabled={disabled || document.steps.length <= 1}
+                          disabled={disabled || nodeCount <= 1}
                           onClick={() => setDeleteId(draft.selected!.id)}
                         >
                           删除
@@ -1114,7 +1406,7 @@ export function ScenarioDetailPage() {
                 <TrialPanel
                   runId={runId}
                   scenarioId={scenarioId}
-                  selectedDraftStepId={draft.selected?.id ?? null}
+                  selectedDraftStepId={draft.selectedId}
                   onSelectDraftStep={draft.setSelectedId}
                 />
               </div>
@@ -1139,6 +1431,14 @@ export function ScenarioDetailPage() {
             <AlertDialogAction
               onClick={() => {
                 if (!document || !deleteId) return
+                if (isAuthoringDocumentV2(document) && draft.v2Document) {
+                  const next = removeAuthoringNode(draft.v2Document, deleteId)
+                  const nextSelected = next.nodes[Math.max(0, draft.selectedIndex - 1)]
+                  draft.applyStructure(next, nextSelected ? nodeId(nextSelected) : null)
+                  setDeleteId(null)
+                  return
+                }
+                if (!('steps' in document)) return
                 const steps = document.steps.filter((step) => step.id !== deleteId)
                 const nextSelected = steps[Math.max(0, draft.selectedIndex - 1)]?.id ?? null
                 draft.applyStructure({ ...document, steps }, nextSelected)
@@ -1195,7 +1495,7 @@ export function ScenarioDetailPage() {
           recordingDraftId={importDraftId ?? null}
           revision={draft.baseline?.revision ?? scenario.draft?.revision ?? 1}
           insertAnchor={currentInsertAnchor}
-          stepCount={document?.steps.length ?? 0}
+          stepCount={nodeCount}
           inputs={document?.inputs ?? []}
           canApply={canWrite}
           onOpenChange={(open) => {
@@ -1223,8 +1523,56 @@ export function ScenarioDetailPage() {
           targetId={scenario.targetId}
           revision={draft.baseline?.revision ?? 1}
           inputs={document?.inputs ?? []}
+          needsAccount={document ? documentUsesBrowser(document) : false}
           onCreated={attachRun}
           onConflict={markConflict}
+        />
+      ) : null}
+      {scenario ? (
+        <InsertModuleDialog
+          open={insertModuleOpen}
+          onOpenChange={setInsertModuleOpen}
+          targetId={scenario.targetId}
+          scenarioId={scenario.id}
+          draftRevision={draft.baseline?.revision ?? scenario.draft?.revision ?? 0}
+          anchorNodeId={draft.selectedId ?? undefined}
+          onEnsureSaved={ensureDraftSaved}
+          onSelect={(module, version) => insertModule(module.id, version.id, module.name)}
+          onAccepted={(next) => {
+            queryClient.setQueryData(['scenarios', scenarioId], next)
+            if (next.draft) {
+              const previous = document && isAuthoringDocumentV2(document) ? document : undefined
+              draft.acceptServer({ revision: next.draft.revision, document: next.draft.document })
+              if (isAuthoringDocumentV2(next.draft.document)) {
+                const inserted = findInsertedModuleInvocationId(previous, next.draft.document)
+                if (inserted) draft.setSelectedId(inserted)
+              }
+            }
+          }}
+          onInsertAiStep={() => addStep('ai_action')}
+        />
+      ) : null}
+      {scenario && extractOpen ? (
+        <ModuleExtractWizard
+          open
+          onOpenChange={setExtractOpen}
+          scenarioId={scenario.id}
+          stepIds={extractableStepIds}
+        />
+      ) : null}
+      {scenario && replaceOpen ? (
+        <ModuleReplaceDialog
+          open
+          onOpenChange={setReplaceOpen}
+          scenarioId={scenario.id}
+          targetId={scenario.targetId}
+          stepIds={extractableStepIds}
+          baseRevision={scenario.draft?.revision ?? draft.baseline?.revision ?? 0}
+          onReplaced={() => {
+            setReplaceOpen(false)
+            setExtractIds([])
+            void queryClient.invalidateQueries({ queryKey: ['scenarios', scenarioId] })
+          }}
         />
       ) : null}
       {scenario && runOpen ? (

@@ -3,9 +3,21 @@ import { aiExecutionConfigSchema } from './ai-runtime.js'
 import { evidencePolicySchema } from './evidence-policy.js'
 import { pageRefSchema } from './managed-browser.js'
 import { frozenTargetAuthSchema } from './platform-config.js'
+import { mapCapturePolicySchema } from './map-capture.js'
+import { frozenMapConsumptionSchema } from './map-consumption.js'
+import { frozenMapJobSchema, frozenTargetAccessPolicySchema } from './map-jobs.js'
+import { frozenAuthVerificationSchema } from './session-auth.js'
+import { platformRunAuthRecoverySchema } from './session-auth-recovery.js'
+import { candidateGroupsSchema, moduleManifestSchema, type ModuleManifest } from './authoring-document.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
-import { contextKeySchema, executionPolicySchema, hasAiSteps, stepSchema } from './step.js'
+import {
+  contextKeySchema,
+  executionPolicySchema,
+  FORBIDDEN_CONTEXT_KEYS,
+  hasAiSteps,
+  stepSchema,
+} from './step.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
 import {
   entityIdSchema,
@@ -120,15 +132,7 @@ export function isFinishedRunStatus(status: RunStatus): boolean {
   return FINISHED_RUN.has(status)
 }
 
-/** input / context 键不得踩到原型链上的保留名。`contextKeySchema` 挡不住 `constructor`。 */
-export const FORBIDDEN_CONTEXT_KEYS = [
-  '__proto__',
-  'constructor',
-  'prototype',
-  'toString',
-  'valueOf',
-  'hasOwnProperty',
-] as const
+export { FORBIDDEN_CONTEXT_KEYS }
 
 export const MAX_RUN_INPUT_KEYS = 64
 
@@ -220,6 +224,38 @@ export const runSnapshotSchema = z
      * 冻结的 Target 认证解释。新 Run 必写；旧快照缺字段时 Worker 仍读当前行。
      */
     targetAuth: frozenTargetAuthSchema.optional(),
+    /**
+     * 冻结的核验规则与能力等级。缺省按 LEGACY 解释，旧快照仍可解码。
+     */
+    authVerification: frozenAuthVerificationSchema.optional(),
+    /**
+     * 冻结的运行中认证恢复次数。旧快照缺字段按 0/0（不恢复）。
+     */
+    runAuthRecovery: platformRunAuthRecoverySchema.optional(),
+    /**
+     * 冻结的地图被动采集策略。旧快照无字段按关闭解释。
+     */
+    mapCapturePolicy: mapCapturePolicySchema.optional(),
+    /**
+     * 冻结的地图运行消费。旧快照无字段按 off；新 Run 明确写入 off 或启用配置。
+     */
+    mapConsumption: frozenMapConsumptionSchema.optional(),
+    /**
+     * 冻结的 Target 授权修订。新 Run 必写；旧快照缺字段仍按 allowedOrigins 解释。
+     */
+    accessPolicy: frozenTargetAccessPolicySchema.optional(),
+    /**
+     * 地图作业分片。旧快照和无字段表示用户 Run。
+     */
+    mapJob: frozenMapJobSchema.optional(),
+    /**
+     * 冻结的动作模块引用清册。可选：旧快照没有此字段表示无动作模块。
+     */
+    moduleManifest: moduleManifestSchema.optional(),
+    /**
+     * 冻结的只读回退候选组。可选：旧快照和无字段表示 pinned / 无回退。
+     */
+    candidateGroups: candidateGroupsSchema.optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),
   })

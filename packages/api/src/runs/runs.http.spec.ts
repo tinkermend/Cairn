@@ -10,7 +10,7 @@ import { APP_FILTER, APP_GUARD, Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PERMISSIONS, RUN_ERROR_CODES, type RunPlacement } from '@cairn/shared'
+import { PERMISSIONS, RUN_ERROR_CODES, runPlacement } from '@cairn/shared'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
@@ -57,12 +57,12 @@ const detail = {
   finishedAt: null,
   evidenceStatus: 'PENDING',
   lease: null,
-  placement: {
+  placement: runPlacement({
     state: 'not_applicable',
     sessionId: null,
     ownerWorkerId: null,
     sessionStatus: null,
-  } as RunPlacement,
+  }),
 }
 
 const observation = {
@@ -119,6 +119,7 @@ function mockService() {
       lastError: null,
       completedAt: '2026-09-10T00:00:00.000Z',
     })),
+    mapDecisions: vi.fn(async () => ({ items: [] })),
   }
 }
 
@@ -306,12 +307,12 @@ describe('Runs HTTP', () => {
   it('viewer 能看 placement，信封不出现容量失败码', async () => {
     service.get.mockResolvedValueOnce({
       ...detail,
-      placement: {
+      placement: runPlacement({
         state: 'session_lost',
         sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         ownerWorkerId: 'worker-a',
         sessionStatus: 'LOST',
-      },
+      }),
     })
     const res = await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}`).expect(200)
     expect(res.body.placement).toMatchObject({
@@ -446,6 +447,13 @@ describe('Runs HTTP', () => {
     )
     expect(res.request.url).not.toMatch(/token=|access_token=/)
     await app.close()
+  })
+
+  it('可读运行地图选择记录，不走轮询协议', async () => {
+    await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/map-decisions`).expect(200)
+    expect(service.mapDecisions).toHaveBeenCalledWith(detail.id, { limit: 50 })
+    await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/map-decisions?cursor=invalid`).expect(400)
+    await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/map-decisions`).expect(403)
   })
 
   it('删除无对象返回 200，有待清理对象返回 202', async () => {

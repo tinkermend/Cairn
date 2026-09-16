@@ -10,7 +10,14 @@ import {
 } from './platform-config.js'
 import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
 import { authoringCapabilitiesSchema, type AuthoringCapabilities } from './authoring-observation.js'
-import { AI_STEP_TYPES, EXECUTABLE_STEP_TYPES, hasAiSteps, isAiStepType, type ExecutionPolicy } from './step.js'
+import {
+  AI_STEP_TYPES,
+  EXECUTABLE_STEP_TYPES,
+  hasAiSteps,
+  isAiStepType,
+  isMapExploreStepType,
+  type ExecutionPolicy,
+} from './step.js'
 import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
 
 export const BROWSER_AI_ADAPTER = 'midscene' as const
@@ -35,6 +42,8 @@ export const scenarioCapabilitiesSchema = z.strictObject({
   ),
   defaults: platformRuntimeDefaultsSchema,
   authoring: authoringCapabilitiesSchema.optional(),
+  authoringSchemaVersions: z.array(z.union([z.literal(1), z.literal(2)])).min(1).max(2).default([1, 2]),
+  actionModules: z.boolean().default(true),
 })
 export type ScenarioCapabilities = z.infer<typeof scenarioCapabilitiesSchema>
 
@@ -115,8 +124,9 @@ export function isAiCallEvidence(payload: unknown): payload is AiCallEvidence {
 }
 
 export function executableStepTypesFor(browserAiEnabled: boolean): string[] {
-  if (browserAiEnabled) return [...EXECUTABLE_STEP_TYPES]
-  return EXECUTABLE_STEP_TYPES.filter((type) => !isAiStepType(type))
+  const authoring = EXECUTABLE_STEP_TYPES.filter((type) => !isMapExploreStepType(type))
+  if (browserAiEnabled) return [...authoring]
+  return authoring.filter((type) => !isAiStepType(type))
 }
 
 export function defaultAuthoringCapabilities(): AuthoringCapabilities {
@@ -146,6 +156,8 @@ export function scenarioCapabilitiesFor(input: {
         })),
     defaults: input.defaults ?? platformRuntimeDefaultsFrom(FACTORY_PLATFORM_CONFIG, 1),
     authoring: input.authoring ?? defaultAuthoringCapabilities(),
+    authoringSchemaVersions: [1, 2],
+    actionModules: true,
   }
 }
 

@@ -1,0 +1,17 @@
+---
+description: 新增或编号数据库迁移时，先领取三库下一号，禁止手写前缀。
+globs: packages/db/migrations/**/*.sql,packages/db/src/migrate.ts,packages/db/src/transfer.ts,packages/db/src/schema/**/*.ts,docs/spec/**/*.md
+alwaysApply: false
+---
+
+# 领取迁移号
+
+需要新的 SQL 迁移时，自己先跑，不要改去提醒用户：
+
+```bash
+pnpm db:new-migration <name>
+```
+
+`<name>` 为小写意图名，例如 `map_widgets`。命令会在锁内写下 PG / MySQL / SQLite 三份占位文件。随后只改这些文件的 SQL，不要再扫目录猜 `0035`，不要新建同前缀文件，不要手写 `LOGICAL_VERSION`。
+
+方案和审查只写意图名。跨克隆合入若仍撞号，按当时目录重新领取。细节见 `tools/README.md` 的「领取迁移号」。

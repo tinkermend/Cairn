@@ -48,6 +48,16 @@ describe('runPlacementSchema', () => {
       ownerWorkerId: 'worker-1',
       sessionStatus: 'OPEN',
     }).state).toBe('owner_required')
+    expect(
+      runPlacementSchema.parse({
+        state: 'owner_required',
+        sessionId: ids.run,
+        ownerWorkerId: 'worker-1',
+        sessionStatus: 'OPEN',
+        waitReason: 'SESSION_IN_USE_BY_RUN',
+        occupyingRunId: ids.run,
+      }).waitReason,
+    ).toBe('SESSION_IN_USE_BY_RUN')
     expect(() =>
       runPlacementSchema.parse({
         state: 'waiting_for_capacity',
@@ -133,6 +143,8 @@ describe('digest payloads', () => {
       policy: undefined,
       sessionPolicy: null,
       evidencePolicy: null,
+      mapCapturePolicy: null,
+      mapConsumption: null,
     })
   })
 })

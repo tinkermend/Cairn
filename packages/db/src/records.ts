@@ -9,13 +9,24 @@ import type {
   RunStatus,
   ScenarioDefinition,
   ScenarioDocument,
+  ScenarioAuthoringDocumentV2,
+  ModuleManifest,
   ScenarioStatus,
   StepRunStatus,
   PurgeReason,
   StoredObjectStatus,
+  AuthCapabilityTier,
+  IdentityState,
   SessionAuthState,
   SessionHealth,
+  SessionLeaseOwnerKind,
+  SessionLeasePurpose,
   SessionLeaseStatus,
+  SessionOperationKind,
+  SessionOperationOrigin,
+  SessionOperationStatus,
+  SessionProfileCleanup,
+  SessionProfileState,
   SessionReusePolicy,
   SessionStatus,
   RunLeaseStatus,
@@ -128,6 +139,7 @@ export type Target = {
     password?: { by: 'id' | 'name' | 'css'; value: string }
     submit?: { by: 'id' | 'name' | 'css'; value: string }
   } | null
+  currentAuthProfileRevision: number | null
   deletedAt: Date | null
   deletedBy: ResourceDeletedBy | null
 }
@@ -151,6 +163,7 @@ export type NewTarget = {
       }
     | null
     | undefined
+  currentAuthProfileRevision?: number | null | undefined
   deletedAt?: Date | null | undefined
   deletedBy?: ResourceDeletedBy | null | undefined
 }
@@ -165,6 +178,8 @@ export type TargetAccount = {
   username: string
   secretProvider: string | null
   secretId: string | null
+  expectedIdentity: string | null
+  configRevision: number
   deletedAt: Date | null
   deletedBy: ResourceDeletedBy | null
 }
@@ -179,6 +194,8 @@ export type NewTargetAccount = {
   updatedAt?: Date | undefined
   secretProvider?: string | null | undefined
   secretId?: string | null | undefined
+  expectedIdentity?: string | null | undefined
+  configRevision?: number | undefined
   deletedAt?: Date | null | undefined
   deletedBy?: ResourceDeletedBy | null | undefined
 }
@@ -195,6 +212,7 @@ export type ScenarioRow = {
   id: string
   name: string
   status: 'active' | 'disabled'
+  purpose?: 'user' | 'module_verification' | 'map_job' | null
   createdAt: Date
   updatedAt: Date
   targetId: string
@@ -213,14 +231,26 @@ export type ScenarioVersionRow = {
   definition: ScenarioDefinition
   compilerVersion: number
   sourceDigest: string
+  authoringDocument?: ScenarioAuthoringDocumentV2 | null
+  moduleManifest?: ModuleManifest | null
 }
 
 export type ScenarioDraftRow = {
   updatedAt: Date
   scenarioId: string
   revision: number
-  document: ScenarioDocument
+  document: ScenarioAuthoringDocumentV2 | ScenarioDocument
   updatedByConsoleAccountId: string
+}
+
+export type ScenarioModuleRefRow = {
+  id: string
+  scenarioId: string
+  scenarioVersionId: string | null
+  invocationId: string
+  moduleId: string
+  moduleVersionId: string | null
+  createdAt: Date
 }
 
 export type RunRow = {
@@ -528,6 +558,20 @@ export type BrowserSessionRow = {
   authControlTokenHash: string | null
   authControlExpiresAt: Date | null
   authControlPageId: string | null
+  lastAuthCheckedAt: Date | null
+  lastAuthSuccessAt: Date | null
+  lastAuthGeneration: number | null
+  lastExpectedIdentity: string | null
+  authValidUntil: Date | null
+  authExpirySource: string | null
+  lastAuthError: string | null
+  authProfileRevision: number | null
+  identityState: IdentityState | null
+  identityVerifiedAt: Date | null
+  observedTier: AuthCapabilityTier | null
+  retainUntil: Date | null
+  nextAuthCheckAt: Date | null
+  predecessorSessionId: string | null
   closeReason: string | null
   closedAt: Date | null
 }
@@ -562,6 +606,9 @@ export type NewBrowserSession = {
   authControlTokenHash?: string | null | undefined
   authControlExpiresAt?: Date | null | undefined
   authControlPageId?: string | null | undefined
+  retainUntil?: Date | null | undefined
+  nextAuthCheckAt?: Date | null | undefined
+  predecessorSessionId?: string | null | undefined
   closeReason?: string | null | undefined
   closedAt?: Date | null | undefined
 }
@@ -569,12 +616,16 @@ export type NewBrowserSession = {
 export type SessionLeaseRow = {
   id: string
   status: 'EXPIRED' | 'ACTIVE' | 'RELEASED' | 'REVOKED'
-  runId: string
+  runId: string | null
   expiresAt: Date
   sessionId: string
   sessionGeneration: number
   sessionFencingToken: number
   runFencingToken: number | null
+  purpose: SessionLeasePurpose
+  ownerKind: SessionLeaseOwnerKind
+  operationId: string | null
+  waitDeadlineAt: Date | null
   holderWorkerId: string
   acquiredAt: Date
   heartbeatAt: Date
@@ -584,13 +635,17 @@ export type SessionLeaseRow = {
 
 export type NewSessionLease = {
   status: 'EXPIRED' | 'ACTIVE' | 'RELEASED' | 'REVOKED'
-  runId: string
   expiresAt: Date
   sessionId: string
   sessionGeneration: number
   sessionFencingToken: number
   holderWorkerId: string
+  purpose: SessionLeasePurpose
+  ownerKind: SessionLeaseOwnerKind
   id?: string | undefined
+  runId?: string | null | undefined
+  operationId?: string | null | undefined
+  waitDeadlineAt?: Date | null | undefined
   runFencingToken?: number | null | undefined
   acquiredAt?: Date | undefined
   heartbeatAt?: Date | undefined
@@ -614,6 +669,45 @@ export type WorkerRow = {
   liveHandleCount: number | null
   sampledSlotCount: number | null
   handleMismatchStreak: number
+  protocolCapabilities: string[]
+}
+
+export type SessionOperationRow = {
+  id: string
+  targetId: string
+  targetAccountId: string
+  kind: SessionOperationKind
+  kindParams: Record<string, unknown>
+  origin: SessionOperationOrigin
+  status: SessionOperationStatus
+  expectedSessionId: string | null
+  expectedGeneration: number | null
+  idempotencyKey: string
+  contentDigest: string
+  authRuleRevision: number | null
+  accountConfigDigest: string | null
+  secretRefs: unknown[]
+  resourcePolicy: Record<string, unknown> | null
+  platformConfigRevision: number
+  queueDeadlineAt: Date
+  claimToken: string | null
+  ownerWorkerId: string | null
+  ownerWorkerInstanceId: string | null
+  attemptNo: number
+  errorCode: string | null
+  createdAt: Date
+  updatedAt: Date
+  finishedAt: Date | null
+}
+
+export type SessionProfileRow = {
+  targetId: string
+  targetAccountId: string
+  revision: number
+  locationWorkerId: string | null
+  state: SessionProfileState
+  pendingCleanups: SessionProfileCleanup[]
+  updatedAt: Date
 }
 
 export type RunLeaseRow = {
@@ -738,3 +832,5 @@ export type NewRecordingDraftRow = {
   deletedAt?: Date | null | undefined
   deletedBy?: ResourceDeletedBy | null | undefined
 }
+
+export type { ActionModuleRow, ActionModuleVersionRow } from './schema/action-modules.js'

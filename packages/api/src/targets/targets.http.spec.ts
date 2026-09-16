@@ -131,6 +131,37 @@ function mockService() {
     createAccount: vi.fn(async () => account),
     updateAccount: vi.fn(async () => ({ ...account, hasPassword: false })),
     deleteAccount: vi.fn(async () => undefined),
+    getAuthProfile: vi.fn(async () => ({ current: null, history: [], accounts: [] })),
+    publishAuthProfile: vi.fn(async () => ({ current: null, history: [], accounts: [] })),
+    updateAccountIdentity: vi.fn(async () => account),
+    startAuthValidation: vi.fn(async () => ({ operation: { id: account.id }, created: true })),
+    getAuthValidation: vi.fn(async () => ({ id: account.id })),
+    observeAuthValidation: vi.fn(async () => ({ id: account.id })),
+    validationBrowserMeta: vi.fn(async () => ({ framesAvailable: false })),
+    getAccessPolicy: vi.fn(async () => ({
+      targetId: target.id,
+      revision: 0,
+      policy: {
+        schemaVersion: 1,
+        policyVersion: 1,
+        rules: [{ origin: 'https://example.com', purpose: 'business_surface', effect: 'allow' }],
+      },
+      seeded: true,
+      resourceLoadsUnrestricted: true,
+      updatedAt: now,
+    })),
+    updateAccessPolicy: vi.fn(async () => ({
+      targetId: target.id,
+      revision: 1,
+      policy: {
+        schemaVersion: 1,
+        policyVersion: 1,
+        rules: [{ origin: 'https://example.com', purpose: 'business_surface', effect: 'allow' }],
+      },
+      seeded: false,
+      resourceLoadsUnrestricted: true,
+      updatedAt: now,
+    })),
   }
 }
 
@@ -390,6 +421,35 @@ describe('Targets HTTP', () => {
     expect(res.body.items[0]).toHaveProperty('hasPassword')
   })
 
+  it('认证规则读用 target:read，写与验收用 target:write', async () => {
+    await request(viewerApp.getHttpServer()).get(`/targets/${target.id}/auth-profile`).expect(200)
+    expect(service.getAuthProfile).toHaveBeenCalledWith(target.id)
+    await request(viewerApp.getHttpServer())
+      .post(`/targets/${target.id}/auth-profile`)
+      .send({
+        expectedRevision: 0,
+        definition: {
+          verify: { mode: 'http', success: { status: 200 }, failure: { status: 401 } },
+          scope: { origins: ['https://example.com'], pathPrefixes: ['/'] },
+        },
+      })
+      .expect(403)
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/accounts/${account.id}/identity`)
+      .send({ expectedRevision: 1, expectedIdentity: 'alice' })
+      .expect(200)
+    expect(service.updateAccountIdentity).toHaveBeenCalled()
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/auth-profile/validations`)
+      .send({
+        targetAccountId: account.id,
+        expectedRevision: 1,
+        idempotencyKey: 'validate-profile-1',
+      })
+      .expect(202)
+    expect(service.startAuthValidation).toHaveBeenCalled()
+  })
+
   it('删除有待清理对象时返回 202', async () => {
     service.deleteTarget.mockResolvedValueOnce({
       resourceId: target.id,
@@ -403,5 +463,21 @@ describe('Targets HTTP', () => {
     })
     const res = await request(adminApp.getHttpServer()).post(`/targets/${target.id}/delete`).expect(202)
     expect(res.body.totalObjects).toBe(3)
+  })
+
+  it('读取授权需要 map:read，写入需要 target:write', async () => {
+    await request(viewerApp.getHttpServer()).get(`/targets/${target.id}/access-policy`).expect(403)
+    await request(adminApp.getHttpServer()).get(`/targets/${target.id}/access-policy`).expect(200)
+    expect(service.getAccessPolicy).toHaveBeenCalledWith(target.id)
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/access-policy`)
+      .send({
+        expectedRevision: 0,
+        idempotencyKey: 'access-policy-1',
+        reason: '确认业务域',
+        rules: [{ origin: 'https://example.com', purpose: 'business_surface', effect: 'allow' }],
+      })
+      .expect(200)
+    expect(service.updateAccessPolicy).toHaveBeenCalled()
   })
 })

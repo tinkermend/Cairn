@@ -94,4 +94,42 @@ describe('FlowGram 与 Structured Step 边界', () => {
       )
     }
   )
+  it('V2 往返保留调用节点与绑定，不另存图结构事实', () => {
+    const v2 = {
+      authoringSchemaVersion: 2 as const,
+      schemaVersion: 1 as const,
+      inputs: [{ key: 'customer', label: '客户' }],
+      nodes: [
+        { kind: 'step' as const, step: document.steps[0]! },
+        {
+          kind: 'module' as const,
+          invocationId: '44444444-4444-4444-8444-444444444444',
+          name: '统一登录',
+          moduleId: '55555555-5555-4555-8555-555555555555',
+          moduleVersionId: '66666666-6666-4666-8666-666666666666',
+          implementationKey: 'default',
+          inputBindings: { user: { kind: 'from' as const, key: 'order', field: 'id' } },
+          outputBindings: { token: 'sessionToken' },
+        },
+        { kind: 'step' as const, step: document.steps[2]! },
+      ],
+    }
+    const graph = toFlowgram(v2)
+    expect(graph.nodes.map((node) => node.id)).toEqual([
+      document.steps[0]!.id,
+      '44444444-4444-4444-8444-444444444444',
+      document.steps[2]!.id,
+    ])
+    expect(graph.nodes[1]!.data?.nodeKind).toBe('module')
+    const roundtrip = applyFlowgramOrder(v2, graph)
+    expect(roundtrip).toEqual(v2)
+    graph.nodes = [graph.nodes[2]!, graph.nodes[1]!, graph.nodes[0]!]
+    const reordered = applyFlowgramOrder(v2, graph)
+    expect(reordered.nodes.map((node) => (node.kind === 'step' ? node.step.id : node.invocationId))).toEqual([
+      document.steps[2]!.id,
+      '44444444-4444-4444-8444-444444444444',
+      document.steps[0]!.id,
+    ])
+    expect(reordered.nodes[1]).toEqual(v2.nodes[1])
+  })
 })

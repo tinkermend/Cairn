@@ -13,9 +13,12 @@ import { AI_PORT, BROWSER_PORT, type AiPort, type BrowserPort } from './engine/p
 import { BrowserStepExecutor } from './engine/browser-executor'
 import { FixtureStepExecutor } from './engine/fixture-executor'
 import { AiStepExecutor } from './engine/ai-executor'
+import { MapExploreExecutor } from './engine/explore-executor'
 import { STEP_EXECUTOR_REGISTRY, StepExecutorRegistry } from './engine/step-executor'
 import { ObjectsModule } from './objects/objects.module'
 import { ObjectService } from './objects/object.service'
+import { MapProjectionService } from './map/projection.service'
+import { MapReferenceScanService } from './map/reference-scan.service'
 import { LifecycleService } from './runtime/lifecycle.service'
 import { createAiPort } from './ai/port'
 
@@ -35,6 +38,8 @@ import { createAiPort } from './ai/port'
   ],
   providers: [
     LifecycleService,
+    MapProjectionService,
+    MapReferenceScanService,
     {
       provide: AI_PORT,
       useFactory: (
@@ -65,7 +70,11 @@ import { createAiPort } from './ai/port'
     {
       provide: STEP_EXECUTOR_REGISTRY,
       useFactory: (handle: DbHandle, browser?: BrowserPort, ai?: AiPort) => {
-        const executors = [new FixtureStepExecutor(), new BrowserStepExecutor(handle, browser)]
+        const executors = [
+          new FixtureStepExecutor(),
+          new BrowserStepExecutor(handle, browser),
+          new MapExploreExecutor(browser),
+        ]
         if (ai) executors.push(new AiStepExecutor(ai))
         return new StepExecutorRegistry(executors)
       },

@@ -1,6 +1,7 @@
 import type {
   ExecutionError,
   JsonValue,
+  MapFactBatchItem,
   ResolverDiagnostics,
   ScreenshotPointer,
   SessionGrant,
@@ -20,6 +21,7 @@ export interface StepExecutionContext {
   readonly input: JsonValue
   readonly context: Readonly<Record<string, JsonValue>>
   readonly signal: AbortSignal
+  readonly deadlineAtMs?: number
   readonly clock: EngineClock
   readonly sessionGrant?: SessionGrant
   readonly evidencePolicy: EvidencePolicyResolution
@@ -34,6 +36,7 @@ export type StepExecutionOutcome =
       screenshot?: ScreenshotPointer
       trace?: ScreenshotPointer
       hung?: boolean
+      mapFacts?: MapFactBatchItem[]
     }
   | {
       kind: 'failed' | 'cancelled' | 'needs_review'
@@ -45,6 +48,7 @@ export type StepExecutionOutcome =
       timedOut?: boolean
       aborted?: boolean
       hung?: boolean
+      mapFacts?: MapFactBatchItem[]
     }
 
 export interface StepExecutor {

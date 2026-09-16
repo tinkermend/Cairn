@@ -10,6 +10,7 @@ import {
   type Step,
   type TargetDescriptor,
 } from '@cairn/shared'
+import { MapConsumptionService } from '../map/consumption.service.js'
 import type { BrowserPort } from './ports.js'
 import type {
   StepExecutionContext,
@@ -23,6 +24,7 @@ export class BrowserStepExecutor implements StepExecutor {
   constructor(
     private readonly handle: DbHandle,
     private readonly browser?: BrowserPort,
+    private readonly consumption = new MapConsumptionService(handle, browser),
   ) {}
 
   async execute(ctx: StepExecutionContext): Promise<StepExecutionOutcome> {
@@ -62,22 +64,33 @@ export class BrowserStepExecutor implements StepExecutor {
       traceRetainUntil: retainUntilFor('trace', evidencePolicy).toISOString(),
     })
 
-    if (result.ok) {
+    const followUp = await this.consumption.afterBaseline(ctx, step, result, commandOutcome.command)
+    const finalResult = followUp.kind === 'replaced' ? followUp.result : result
+    if (followUp.kind === 'blocked') {
+      return {
+        kind: 'failed',
+        error: followUp.error,
+        timedOut: false,
+        aborted: false,
+      }
+    }
+
+    if (finalResult.ok) {
       return {
         kind: 'success',
-        output: result.output,
-        screenshot: result.screenshot,
-        trace: result.trace,
+        output: finalResult.output,
+        screenshot: finalResult.screenshot,
+        trace: finalResult.trace,
       }
     }
 
     return {
       kind: 'failed',
-      error: result.error,
-      output: result.output,
-      diagnostics: result.diagnostics,
-      screenshot: result.screenshot,
-      trace: result.trace,
+      error: finalResult.error,
+      output: finalResult.output,
+      diagnostics: finalResult.diagnostics,
+      screenshot: finalResult.screenshot,
+      trace: finalResult.trace,
       timedOut: false,
       aborted: false,
     }

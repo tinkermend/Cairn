@@ -5,6 +5,8 @@ import { and, asc, desc, eq, inArray, isNull, isNotNull, ne, or, sql } from 'dri
 import {
   LOCAL_SECRET_PROVIDER,
   sessionDtoSchema,
+  type AuthCapabilityTier,
+  type IdentityState,
   type SessionAuthState,
   type SessionDto,
   type SessionErrorCode,
@@ -52,6 +54,20 @@ export type SessionRecord = {
   authControlTokenHash: string | null
   authControlExpiresAt: Date | null
   authControlPageId: string | null
+  lastAuthCheckedAt: Date | null
+  lastAuthSuccessAt: Date | null
+  lastAuthGeneration: number | null
+  lastExpectedIdentity: string | null
+  authValidUntil: Date | null
+  authExpirySource: string | null
+  lastAuthError: string | null
+  authProfileRevision: number | null
+  identityState: IdentityState | null
+  identityVerifiedAt: Date | null
+  observedTier: AuthCapabilityTier | null
+  retainUntil: Date | null
+  nextAuthCheckAt: Date | null
+  predecessorSessionId: string | null
   closeReason: string | null
   closedAt: Date | null
   createdAt: Date
@@ -63,8 +79,12 @@ export type LeaseRecord = {
   sessionId: string
   sessionGeneration: number
   sessionFencingToken: number
-  runId: string
+  runId: string | null
   runFencingToken: number | null
+  purpose: SessionLeaseRow['purpose']
+  ownerKind: SessionLeaseRow['ownerKind']
+  operationId: string | null
+  waitDeadlineAt: Date | null
   holderWorkerId: string
   status: SessionLeaseRow['status']
   acquiredAt: Date
@@ -127,6 +147,20 @@ function toSession(row: BrowserSessionRow): SessionRecord {
     authControlTokenHash: row.authControlTokenHash,
     authControlExpiresAt: row.authControlExpiresAt,
     authControlPageId: row.authControlPageId,
+    lastAuthCheckedAt: row.lastAuthCheckedAt,
+    lastAuthSuccessAt: row.lastAuthSuccessAt,
+    lastAuthGeneration: row.lastAuthGeneration,
+    lastExpectedIdentity: row.lastExpectedIdentity,
+    authValidUntil: row.authValidUntil,
+    authExpirySource: row.authExpirySource,
+    lastAuthError: row.lastAuthError,
+    authProfileRevision: row.authProfileRevision,
+    identityState: row.identityState,
+    identityVerifiedAt: row.identityVerifiedAt,
+    observedTier: row.observedTier,
+    retainUntil: row.retainUntil ?? null,
+    nextAuthCheckAt: row.nextAuthCheckAt ?? null,
+    predecessorSessionId: row.predecessorSessionId ?? null,
     closeReason: row.closeReason,
     closedAt: row.closedAt,
     createdAt: row.createdAt,
@@ -142,6 +176,10 @@ function toLease(row: SessionLeaseRow): LeaseRecord {
     sessionFencingToken: row.sessionFencingToken,
     runId: row.runId,
     runFencingToken: row.runFencingToken,
+    purpose: row.purpose,
+    ownerKind: row.ownerKind,
+    operationId: row.operationId,
+    waitDeadlineAt: row.waitDeadlineAt,
     holderWorkerId: row.holderWorkerId,
     status: row.status,
     acquiredAt: row.acquiredAt,
@@ -343,7 +381,7 @@ export async function findEvictableSession(
           ? [eq(browserSessions.ownerWorkerInstanceId, ownerWorkerInstanceId)]
           : []),
         eq(browserSessions.status, 'OPEN'),
-        isNull(browserSessions.authHoldWorkerId),
+        sql`(${browserSessions.retainUntil} IS NULL OR ${browserSessions.retainUntil} <= ${databaseNow(db)})`,
         sql`NOT EXISTS (
           SELECT 1 FROM ${sessionLeases} l
            WHERE l.session_id = ${browserSessions.id}
@@ -422,6 +460,61 @@ export async function setSessionProbe(
       ...(input.health !== undefined ? { health: input.health } : {}),
       ...(input.authState !== undefined ? { authState: input.authState } : {}),
       updatedAt: new Date(),
+    },
+    and(
+      eq(browserSessions.id, input.sessionId),
+      eq(browserSessions.ownerWorkerId, input.ownerWorkerId),
+      ...(input.ownerWorkerInstanceId
+        ? [eq(browserSessions.ownerWorkerInstanceId, input.ownerWorkerInstanceId)]
+        : []),
+      ne(browserSessions.status, 'CLOSED'),
+    ),
+    { id: browserSessions.id },
+  )
+  return row !== undefined
+}
+
+export async function setSessionAuthSummary(
+  db: Db,
+  input: {
+    sessionId: string
+    ownerWorkerId: string
+    ownerWorkerInstanceId?: string
+    authState: SessionAuthState
+    identityState: IdentityState
+    lastAuthError: string | null
+    authProfileRevision: number | null
+    observedTier: AuthCapabilityTier | null
+    lastExpectedIdentity?: string | null
+    lastAuthGeneration?: number | null
+    authValidUntil?: Date | null
+    authExpirySource?: string | null
+    recordSuccess: boolean
+  },
+): Promise<boolean> {
+  const { browserSessions } = schemaFor(db)
+  const now = new Date()
+  const [row] = await updateRows(
+    db,
+    browserSessions,
+    {
+      authState: input.authState,
+      identityState: input.identityState,
+      lastAuthError: input.lastAuthError,
+      authProfileRevision: input.authProfileRevision,
+      observedTier: input.observedTier,
+      lastAuthCheckedAt: now,
+      updatedAt: now,
+      ...(input.authValidUntil !== undefined ? { authValidUntil: input.authValidUntil } : {}),
+      ...(input.authExpirySource !== undefined ? { authExpirySource: input.authExpirySource } : {}),
+      ...(input.recordSuccess
+        ? {
+            lastAuthSuccessAt: now,
+            lastAuthGeneration: input.lastAuthGeneration ?? null,
+            lastExpectedIdentity: input.lastExpectedIdentity ?? null,
+            identityVerifiedAt: input.identityState === 'MATCH' ? now : null,
+          }
+        : {}),
     },
     and(
       eq(browserSessions.id, input.sessionId),
@@ -621,6 +714,10 @@ export async function acquireSessionLease(
         sessionFencingToken: bumped.fencingToken,
         runId: input.runId,
         runFencingToken: input.runFencingToken,
+        purpose: 'EXECUTION',
+        ownerKind: 'RUN',
+        operationId: null,
+        waitDeadlineAt: null,
         holderWorkerId: input.holderWorkerId,
         status: 'ACTIVE',
         expiresAt: afterSeconds(db, input.leaseTtlSeconds),
@@ -754,8 +851,8 @@ export async function listReapableSessions(
       and(
         eq(browserSessions.ownerWorkerId, workerId),
         eq(browserSessions.status, 'OPEN'),
-        isNull(browserSessions.authHoldWorkerId),
         sql`NOT EXISTS (SELECT 1 FROM ${sessionLeases} l WHERE l.session_id = ${browserSessions.id} AND l.status = 'ACTIVE')`,
+        sql`(${browserSessions.retainUntil} IS NULL OR ${browserSessions.retainUntil} <= ${databaseNow(db)})`,
         or(
           sql`${afterSeconds(db, browserSessions.idleTtlSeconds, browserSessions.lastUsedAt)} <= ${databaseNow(db)}`,
           sql`${browserSessions.expiresAt} <= ${databaseNow(db)}`,
@@ -1132,33 +1229,70 @@ export function toSessionDto(row: BrowserSessionRow, lease: SessionLeaseRow | nu
     lastUsedAt: row.lastUsedAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
     authHold:
-      row.authHoldWorkerId && row.authHoldExpiresAt
+      lease?.purpose === 'AUTH_WAIT'
         ? {
-            workerId: row.authHoldWorkerId,
-            expiresAt: row.authHoldExpiresAt.toISOString(),
-            runId: row.authHoldRunId,
-            bound: Boolean(row.authHoldRunId && row.authHoldSessionGeneration && row.authHoldWorkerInstanceId),
+            workerId: lease.holderWorkerId,
+            expiresAt: (lease.waitDeadlineAt ?? lease.expiresAt).toISOString(),
+            runId: lease.runId,
+            bound: true,
           }
-        : null,
+        : row.authHoldWorkerId && row.authHoldExpiresAt
+          ? {
+              workerId: row.authHoldWorkerId,
+              expiresAt: row.authHoldExpiresAt.toISOString(),
+              runId: row.authHoldRunId,
+              bound: Boolean(row.authHoldRunId && row.authHoldSessionGeneration && row.authHoldWorkerInstanceId),
+            }
+          : null,
     authControl: {
       epoch: row.authControlEpoch,
       actorId: row.authControlActorId,
       expiresAt: row.authControlExpiresAt?.toISOString() ?? null,
     },
+    lastAuthCheckedAt: row.lastAuthCheckedAt?.toISOString() ?? null,
+    lastAuthSuccessAt: row.lastAuthSuccessAt?.toISOString() ?? null,
+    lastAuthGeneration: row.lastAuthGeneration,
+    lastExpectedIdentity: row.lastExpectedIdentity?.trim() || null,
+    authValidUntil: row.authValidUntil?.toISOString() ?? null,
+    authExpirySource: row.authExpirySource,
+    lastAuthError: row.lastAuthError,
+    authProfileRevision: row.authProfileRevision,
+    identityState: row.identityState,
+    identityVerifiedAt: row.identityVerifiedAt?.toISOString() ?? null,
+    observedTier: row.observedTier,
+    retainUntil: row.retainUntil?.toISOString() ?? null,
+    nextAuthCheckAt: row.nextAuthCheckAt?.toISOString() ?? null,
+    predecessorSessionId: row.predecessorSessionId,
     closeReason: row.closeReason,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     activeLease: lease
       ? {
           id: lease.id,
+          purpose: lease.purpose,
+          ownerKind: lease.ownerKind,
           runId: lease.runId,
+          operationId: lease.operationId,
           holderWorkerId: lease.holderWorkerId,
           acquiredAt: lease.acquiredAt.toISOString(),
           expiresAt: lease.expiresAt.toISOString(),
+          waitDeadlineAt: lease.waitDeadlineAt?.toISOString() ?? null,
         }
       : null,
     disposable: DISPOSABLE_SESSION_STATUSES.includes(row.status),
   })
+}
+
+export async function getSessionDto(db: Db, sessionId: string): Promise<SessionDto | null> {
+  const { browserSessions, sessionLeases } = schemaFor(db)
+  const [row] = await db.select().from(browserSessions).where(eq(browserSessions.id, sessionId)).limit(1)
+  if (!row) return null
+  const [lease] = await db
+    .select()
+    .from(sessionLeases)
+    .where(and(eq(sessionLeases.sessionId, sessionId), eq(sessionLeases.status, 'ACTIVE')))
+    .limit(1)
+  return toSessionDto(row, lease ?? null)
 }
 
 /** 人工可处置的状态：owner 已不在或已无法推进的那些。`OPEN` 必须走 owner 自己的回收。 */

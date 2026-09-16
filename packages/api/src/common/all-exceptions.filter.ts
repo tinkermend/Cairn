@@ -28,6 +28,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const res = ctx.getResponse<Response>()
     const requestId = req.requestId ?? 'unknown'
 
+    if (req.aborted || res.destroyed || res.writableEnded) return
+    if (res.headersSent) {
+      this.logger.warn({ requestId, path: req.originalUrl, err: exception }, '流式响应中断')
+      res.end()
+      return
+    }
+
     const status =
       exception instanceof HttpException
         ? exception.getStatus()

@@ -1,7 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { and, desc, eq, ne } from 'drizzle-orm'
 import {
+  MAX_AUTHORING_NODES,
   MAX_SCENARIO_STEPS,
+  authoringHasModuleInvocations,
+  authoringNodeId,
+  isAuthoringDocumentV2,
+  normalizeAuthoringDocument,
   RECORDING_NORMALIZER_VERSION,
   RECORDING_TICKET_TTL_SECONDS,
   RECORDING_UPLOAD_TTL_SECONDS,
@@ -29,6 +34,7 @@ import {
   type RecordingImportPreview,
   type RecordingImportReceipt,
   type RecordingInsertAnchor,
+  type ScenarioAuthoringDocumentV2,
   type ScenarioDetailDto,
   type ScenarioDocument,
   type Step,
@@ -39,7 +45,7 @@ import { newId } from '../id.js'
 import { locked, schemaFor } from '../native.js'
 import { sha256Hex } from '../runs/digest.js'
 import { badRequest, conflict, forbidden, mapRestriction, notFound } from '../runs/errors.js'
-import { getScenario } from '../runs/scenarios.js'
+import { expandWithLoader, getScenario, syncScenarioModuleRefsTx } from '../runs/scenarios.js'
 import { getRecordingDraft } from './recordings.js'
 
 function iso(value: Date): string {
@@ -65,8 +71,8 @@ export async function createRecordingBinding(
   if (!scenario || scenario.deletedAt) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   const [draft] = await db.select().from(scenarioDrafts).where(eq(scenarioDrafts.scenarioId, scenarioId)).limit(1)
   if (!draft) throw notFound('SCENARIO_NOT_FOUND', '场景草稿不存在')
-  const document = parseScenarioDocument(draft.document)
-  assertAnchor(document, input.insertAnchor)
+  const authoring = normalizeAuthoringDocument(draft.document)
+  assertNodeAnchor(authoring, input.insertAnchor)
   const [target] = await db.select().from(targets).where(eq(targets.id, scenario.targetId)).limit(1)
   if (!target || target.deletedAt) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
   if (target.status === 'disabled') throw conflict('TARGET_DISABLED', '目标系统已停用，不能开始录制')
@@ -268,8 +274,8 @@ export async function previewRecordingImport(
   if (!scenario || scenario.deletedAt) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
   const [draft] = await db.select().from(scenarioDrafts).where(eq(scenarioDrafts.scenarioId, scenarioId)).limit(1)
   if (!draft) throw notFound('SCENARIO_NOT_FOUND', '场景草稿不存在')
-  const document = parseScenarioDocument(draft.document)
-  assertAnchor(document, input.insertAnchor)
+  const authoring = normalizeAuthoringDocument(draft.document)
+  assertNodeAnchor(authoring, input.insertAnchor)
   const recording = await getRecordingDraft(db, input.recordingDraftId, actorId)
   if (recording.targetId !== scenario.targetId) {
     throw forbidden('RECORDING_BINDING_FORBIDDEN', '录制批次与场景的目标系统不一致')
@@ -278,7 +284,7 @@ export async function previewRecordingImport(
   return recordingImportPreviewSchema.parse({
     ...compiled,
     recordingDraftId: recording.id,
-    remainingStepCapacity: Math.max(0, MAX_SCENARIO_STEPS - document.steps.length),
+    remainingStepCapacity: remainingAuthoringCapacity(authoring),
     currentRevision: draft.revision,
     insertAnchor: input.insertAnchor,
   })
@@ -321,8 +327,8 @@ export async function applyRecordingImport(
           document: draft.document,
         })
       }
-      const document = parseScenarioDocument(draft.document)
-      assertAnchor(document, input.insertAnchor)
+      const authoring = normalizeAuthoringDocument(draft.document)
+      assertNodeAnchor(authoring, input.insertAnchor)
       const recording = await getRecordingDraft(tx as unknown as Db, input.recordingDraftId, actor.id)
       if (recording.targetId !== scenario.targetId) {
         throw forbidden('RECORDING_BINDING_FORBIDDEN', '录制批次与场景的目标系统不一致')
@@ -331,29 +337,64 @@ export async function applyRecordingImport(
       if (preview.sourceDigest !== input.sourceDigest || input.normalizerVersion !== RECORDING_NORMALIZER_VERSION) {
         throw conflict('RECORDING_IMPORT_STALE', '转换结果已变化，请重新预览')
       }
-      const next = applyDispositions(document, preview.items, input.dispositions, input.insertAnchor)
-      const compiled = compileScenarioDocument(next.document, {
-        mode: 'release',
-        target: { exists: true, status: 'active' },
-        executableTypes: options.executableTypes,
-      })
-      if (!compiled.ok) {
-        throw badRequest('SCENARIO_COMPILE_BLOCKED', '回填后的草稿未通过编译', {
-          diagnostics: compiled.diagnostics,
-        })
+      const next = applyDispositionsToAuthoring(authoring, preview.items, input.dispositions, input.insertAnchor)
+      if (authoringHasModuleInvocations(next.document)) {
+        const expanded = await expandWithLoader(
+          tx as unknown as Db,
+          scenario.targetId,
+          next.document,
+          'preview',
+          true,
+          { executableTypes: options.executableTypes },
+        )
+        if (!expanded.ok) {
+          throw badRequest('SCENARIO_COMPILE_BLOCKED', '回填后的草稿未通过编译', {
+            diagnostics: expanded.diagnostics,
+          })
+        }
+      } else {
+        const compiled = compileScenarioDocument(
+          {
+            schemaVersion: next.document.schemaVersion,
+            inputs: next.document.inputs,
+            steps: next.document.nodes
+              .filter((node): node is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => node.kind === 'step')
+              .map((node) => node.step),
+          },
+          {
+            mode: 'release',
+            target: { exists: true, status: 'active' },
+            executableTypes: options.executableTypes,
+          },
+        )
+        if (!compiled.ok) {
+          throw badRequest('SCENARIO_COMPILE_BLOCKED', '回填后的草稿未通过编译', {
+            diagnostics: compiled.diagnostics,
+          })
+        }
       }
       const now = new Date()
       const newRevision = draft.revision + 1
+      const savedDocument = authoringHasModuleInvocations(next.document) || isIncomingV2(draft.document)
+        ? next.document
+        : {
+            schemaVersion: next.document.schemaVersion,
+            inputs: next.document.inputs,
+            steps: next.document.nodes
+              .filter((node): node is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => node.kind === 'step')
+              .map((node) => node.step),
+          }
       await tx
         .update(scenarioDrafts)
         .set({
           revision: newRevision,
-          document: next.document,
+          document: savedDocument,
           updatedByConsoleAccountId: actor.id,
           updatedAt: now,
         })
         .where(eq(scenarioDrafts.scenarioId, scenarioId))
       await tx.update(scenarios).set({ updatedAt: now }).where(eq(scenarios.id, scenarioId))
+      await syncScenarioModuleRefsTx(tx as unknown as Db, scenarioId, null, next.document)
       await tx.insert(recordingImportReceipts).values({
         id: newId(),
         scenarioId,
@@ -432,6 +473,64 @@ function compileImportPreview(
     eventCount: normalized.eventCount,
     items,
     diagnostics: normalized.diagnostics,
+  }
+}
+
+function isIncomingV2(raw: unknown): boolean {
+  return isAuthoringDocumentV2(raw)
+}
+
+function remainingAuthoringCapacity(document: ScenarioAuthoringDocumentV2): number {
+  if (authoringHasModuleInvocations(document)) {
+    return Math.max(0, MAX_AUTHORING_NODES - document.nodes.length)
+  }
+  return Math.max(0, MAX_SCENARIO_STEPS - document.nodes.length)
+}
+
+function assertNodeAnchor(document: ScenarioAuthoringDocumentV2, anchor: RecordingInsertAnchor) {
+  if (anchor.kind === 'start') return
+  if (!document.nodes.some((node) => authoringNodeId(node) === anchor.stepId)) {
+    throw conflict('RECORDING_IMPORT_STALE', '插入位置的步骤已不存在，请重新预览')
+  }
+}
+
+function applyDispositionsToAuthoring(
+  document: ScenarioAuthoringDocumentV2,
+  items: RecordingImportPreview['items'],
+  dispositions: RecordingDisposition[],
+  anchor: RecordingInsertAnchor,
+): { document: ScenarioAuthoringDocumentV2; sourceMap: RecordingImportReceipt['sourceMap'] } {
+  const flat = applyDispositions(
+    {
+      schemaVersion: document.schemaVersion,
+      inputs: document.inputs,
+      steps: [],
+    },
+    items,
+    dispositions,
+    { kind: 'start' },
+  )
+  const insertedNodes = flat.document.steps.map((step) => ({ kind: 'step' as const, step }))
+  const limit = authoringHasModuleInvocations(document) ? MAX_AUTHORING_NODES : MAX_SCENARIO_STEPS
+  if (document.nodes.length + insertedNodes.length > limit) {
+    throw badRequest(
+      'RECORDING_IMPORT_CAPACITY',
+      `回填后将超过 ${limit} 个节点，当前还可插入 ${Math.max(0, limit - document.nodes.length)} 步`,
+    )
+  }
+  const at =
+    anchor.kind === 'start'
+      ? 0
+      : document.nodes.findIndex((node) => authoringNodeId(node) === anchor.stepId) + 1
+  if (anchor.kind === 'after' && at === 0) {
+    throw conflict('RECORDING_IMPORT_STALE', '插入位置的步骤已不存在，请重新预览')
+  }
+  return {
+    document: {
+      ...document,
+      nodes: [...document.nodes.slice(0, at), ...insertedNodes, ...document.nodes.slice(at)],
+    },
+    sourceMap: flat.sourceMap,
   }
 }
 

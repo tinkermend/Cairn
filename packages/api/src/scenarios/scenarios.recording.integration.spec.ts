@@ -2,6 +2,7 @@ import { ConflictException, NotFoundException } from '@nestjs/common'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { consoleAccounts, newId, openIsolatedDb, type DbHandle } from '@cairn/db/testing'
 import {
+  authoringSteps,
   DEV_CREDENTIAL_KEY,
   RECORDER_SOURCE_VERSION,
   RECORDING_NORMALIZER_VERSION,
@@ -83,7 +84,7 @@ describe('录制绑定与回填（真实库）', { timeout: 30_000 }, () => {
     const { target, created } = await seed()
     const bound = await scenarios.createRecordingBinding(
       created.id,
-      { revision: created.draft!.revision, insertAnchor: { kind: 'after', stepId: created.draft!.document.steps[0]!.id } },
+      { revision: created.draft!.revision, insertAnchor: { kind: 'after', stepId: authoringSteps(created.draft!.document)[0]!.id } },
       actor,
     )
     expect(bound.ticket).toHaveLength(64)
@@ -136,7 +137,7 @@ describe('录制绑定与回填（真实库）', { timeout: 30_000 }, () => {
       {
         recordingDraftId: uploaded.id,
         baseRevision: created.draft!.revision,
-        insertAnchor: { kind: 'after', stepId: created.draft!.document.steps[0]!.id },
+        insertAnchor: { kind: 'after', stepId: authoringSteps(created.draft!.document)[0]!.id },
       },
       actor,
     )
@@ -163,7 +164,7 @@ describe('录制绑定与回填（真实库）', { timeout: 30_000 }, () => {
       actor,
     )
     expect(first.receipt.newRevision).toBe(created.draft!.revision + 1)
-    expect(first.scenario.draft?.document.steps.map((step) => step.type)).toEqual(['navigate', 'navigate', 'click'])
+    expect(authoringSteps(first.scenario.draft!.document).map((step) => step.type)).toEqual(['navigate', 'navigate', 'click'])
 
     const again = await scenarios.applyRecordingImport(
       created.id,

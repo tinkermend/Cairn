@@ -1,41 +1,40 @@
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
-import { resolve, join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import type { DbEnv } from '@cairn/shared'
 import { createDb, type DbHandle } from '../client.js'
 import { expose } from '../database.js'
 import { migrateDatabase } from '../migrate-native.js'
 import { openIsolatedDb, requireReachableDb } from '../testing.js'
 import { newId } from '../id.js'
-export const DRIVERS = ['postgres', 'mysql', 'sqlite'] as const
+
+export const SUPPORTED_CONTRACT_DRIVERS = ['postgres', 'mysql'] as const
+export type ContractDriver = (typeof SUPPORTED_CONTRACT_DRIVERS)[number]
+
+function configuredContractDrivers(): ContractDriver[] {
+  const configured = process.env.CAIRN_DB_CONTRACT_DRIVERS
+  if (!configured) return ['postgres']
+  const requested = configured.split(',').map((driver) => driver.trim()).filter(Boolean)
+  const unsupported = requested.filter(
+    (driver) => !SUPPORTED_CONTRACT_DRIVERS.includes(driver as ContractDriver),
+  )
+  if (unsupported.length) {
+    throw new Error(
+      `CAIRN_DB_CONTRACT_DRIVERS 只接受 ${SUPPORTED_CONTRACT_DRIVERS.join(',')}；收到 ${unsupported.join(',')}`,
+    )
+  }
+  return [...new Set(requested as ContractDriver[])]
+}
+
+// 常规回归只跑 PostgreSQL；兼容性命令显式设置 PostgreSQL,MySQL。
+export const DRIVERS: readonly ContractDriver[] = configuredContractDrivers()
 export async function openContractDb(
-  driver: (typeof DRIVERS)[number],
+  driver: ContractDriver,
   _label?: string,
 ): Promise<DbHandle & { env: DbEnv }> {
   const name = `cairn_port_${newId().replaceAll('-', '')}`
   if (driver === 'postgres') {
     const handle = await openIsolatedDb(name)
     return Object.assign(handle, { env: { ...(await requireReachableDb()), CAIRN_DB_NAME: name } })
-  }
-  if (driver === 'sqlite') {
-    const dir = mkdtempSync(join(tmpdir(), 'cairn-port-'))
-    const env: DbEnv = { CAIRN_DB_DRIVER: driver, CAIRN_DB_FILE: join(dir, 'cairn.sqlite') }
-    const handle = createDb(env)
-    try {
-      await migrateDatabase(handle, env)
-    } catch (e) {
-      await handle.close()
-      rmSync(dir, { recursive: true })
-      throw e
-    }
-    return {
-      ...handle,
-      env,
-      close: async () => {
-        await handle.close()
-        rmSync(dir, { recursive: true, force: true })
-      },
-    }
   }
   let password = process.env.CAIRN_TEST_MYSQL_PASSWORD
   if (!password) {

@@ -61,8 +61,9 @@ describe('review / resume body', () => {
 describe('RUN_LEASE_ERROR_CODES', () => {
   it('只保留有产生者的码', () => {
     // WORKER_ID_CONFLICT 由 registerWorker 抛出，RUN_RECOVERY_EXHAUSTED 写进 Evidence。
+    // WORKER_PROTOCOL_UNSUPPORTED 用于 Worker 协议能力闸门。
     // 容量满、丢租、租约不明都没有产生者，不得留在枚举里。
-    expect(RUN_LEASE_ERROR_CODES).toEqual(['WORKER_ID_CONFLICT', 'RUN_RECOVERY_EXHAUSTED'])
+    expect(RUN_LEASE_ERROR_CODES).toEqual(['WORKER_ID_CONFLICT', 'WORKER_PROTOCOL_UNSUPPORTED', 'RUN_RECOVERY_EXHAUSTED'])
   })
 })
 

@@ -6,6 +6,13 @@ export {
   renameRecordingDraft,
 } from './recordings.js'
 export {
+  RECORDING_MAP_INGEST_SERVICE_ID,
+  continueRecordingMapIngest,
+  ensureRecordingMapIngestTx,
+  observationFromRecordingItem,
+  recordingMapIngestTestHooks,
+} from './map-ingest.js'
+export {
   hashRecordingTicket,
   newRecordingTicket,
   createRecordingBinding,

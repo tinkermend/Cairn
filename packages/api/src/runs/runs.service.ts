@@ -5,6 +5,7 @@ import {
   getEvidenceForRun,
   getRun,
   getRunCleanupStatus,
+  listMapSelectionDecisions,
   listRunEvidence,
   listRuns,
   loadScenarioVersion,
@@ -17,7 +18,7 @@ import {
 import { assertAiExecutePermission } from '../config/browser-ai'
 import { config } from '../config/env'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
-import type { CreateRunBody, DeleteResourceBody, ReviewRunBody, RunListQuery } from '@cairn/shared'
+import type { CreateRunBody, DeleteResourceBody, MapDecisionListQuery, ReviewRunBody, RunListQuery } from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
@@ -49,6 +50,10 @@ export class RunsService {
 
   get(id: string) {
     return getRun(this.db, id).catch(rethrowDomain)
+  }
+
+  mapDecisions(id: string, query: MapDecisionListQuery) {
+    return listMapSelectionDecisions(this.db, id, query).catch(rethrowDomain)
   }
 
   previewDelete(id: string) {

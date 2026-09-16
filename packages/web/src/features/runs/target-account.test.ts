@@ -12,8 +12,11 @@ describe('preferredPasswordAccountId', () => {
     ).toBe('ready')
   })
 
-  it('没有可用口令账号时为空', () => {
-    expect(preferredPasswordAccountId([{ id: 'empty', status: 'active', hasPassword: false }])).toBe('')
+  it('没有口令时仍可选中已启用账号', () => {
+    expect(preferredPasswordAccountId([{ id: 'empty', status: 'active', hasPassword: false }])).toBe('empty')
     expect(passwordAccounts([{ id: 'off', status: 'disabled', hasPassword: true }])).toEqual([])
+    expect(passwordAccounts([{ id: 'empty', status: 'active', hasPassword: false }])).toEqual([
+      { id: 'empty', status: 'active', hasPassword: false },
+    ])
   })
 })

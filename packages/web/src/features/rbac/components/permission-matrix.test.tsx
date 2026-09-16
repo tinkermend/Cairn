@@ -12,7 +12,7 @@ describe('PermissionMatrix', () => {
     await expect.element(getByText('控制台账号', { exact: true })).toBeInTheDocument()
     await expect.element(getByText('目标系统', { exact: true })).toBeInTheDocument()
     await expect.element(getByText('浏览器会话', { exact: true })).toBeInTheDocument()
-    await expect.element(getByText('浏览器 AI', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText('AI', { exact: true })).toBeInTheDocument()
     await expect.element(getByText('查看目标系统')).toBeInTheDocument()
     await expect.element(getByText('核查暂停的运行')).toBeInTheDocument()
     await expect.element(getByText('Target', { exact: true })).not.toBeInTheDocument()

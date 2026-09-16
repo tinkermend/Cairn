@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { RunDetailDto, RunObservation, ScenarioCapabilities, ScenarioDetailDto, TargetDto } from '@cairn/shared'
-import { scenarioCapabilitiesFor } from '@cairn/shared'
+import { runPlacement, scenarioCapabilitiesFor, type RunDetailDto, type RunObservation, type ScenarioCapabilities, type ScenarioDetailDto, type TargetDto } from '@cairn/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { ApiRequestError } from '@/lib/api-client'
@@ -52,7 +51,7 @@ const router = vi.hoisted(() => ({
   navigate: vi.fn(),
 }))
 
-vi.mock('@/lib/scenarios-api', () => mocks)
+vi.mock('@/lib/scenarios-api', async (original) => ({ ...await original<typeof import('@/lib/scenarios-api')>(), ...mocks }))
 vi.mock('@/lib/extension-bridge', () => ({
   notifyExtensionStart: vi.fn(async () => null),
   configuredExtensionId: () => '',
@@ -108,6 +107,7 @@ function detail(overrides: Partial<ScenarioDetailDto> = {}): ScenarioDetailDto {
     targetId: TARGET_ID,
     name: '打开商城',
     status: 'active',
+    purpose: 'user',
     latestVersionId: '44444444-4444-4444-8444-444444444444',
     latestVersionNo: 1,
     stepCount: 1,
@@ -171,12 +171,12 @@ function trialRun(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     evidenceStatus: 'PENDING',
     lease: null,
     debugMode: 'runThrough',
-    placement: {
+    placement: runPlacement({
       state: 'not_applicable',
       sessionId: null,
       ownerWorkerId: null,
       sessionStatus: null,
-    },
+    }),
     snapshot: {
       schemaVersion: 1,
       runId: RUN_ID,
@@ -253,7 +253,20 @@ describe('Scenario Studio', () => {
     mocks.fetchRecordingImports.mockResolvedValue({ bindings: [], drafts: [], receipts: [] })
     mocks.fetchTarget.mockResolvedValue(target)
     mocks.fetchTargets.mockResolvedValue({ items: [target] })
-    mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
+    mocks.fetchTargetAccounts.mockResolvedValue({
+      items: [
+        {
+          id: 'acc-1',
+          targetId: TARGET_ID,
+          displayName: '管理员',
+          username: 'admin',
+          hasPassword: true,
+          status: 'active',
+          createdAt: '2026-09-13T00:00:00.000Z',
+          updatedAt: '2026-09-13T00:00:00.000Z',
+        },
+      ],
+    })
     mocks.fetchScenarios.mockResolvedValue({ items: [detail()] })
     runMocks.fetchRunObservation.mockResolvedValue(trialObservation())
     runMocks.fetchManagedBrowser.mockResolvedValue({
@@ -785,6 +798,43 @@ describe('Scenario Studio', () => {
     await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
   })
 
+  it('试跑摘要展示无法安全续跑与新建完整试跑', async () => {
+    signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read'])
+    router.search = { runId: RUN_ID, import: undefined }
+    runMocks.fetchRunObservation.mockResolvedValue(
+      trialObservation(
+        trialRun({
+          status: 'FAILED',
+          authCheckpoint: {
+            schemaVersion: 1,
+            status: 'unrecoverable',
+            closedAt: '2026-09-16T04:00:00.000Z',
+            trigger: { kind: 'navigated_to_login', at: '2026-09-16T04:00:00.000Z', summary: '已跳到登录页' },
+            nextStepId: document.steps[0]!.id,
+            nextOrdinal: 0,
+            interruptedClassification: 'not_dispatched',
+            contextVersion: 'a'.repeat(64),
+            contextKeys: [],
+            sessionGeneration: 1,
+            fencingToken: '1',
+            recoveryRule: {
+              reuse: 'NEW_PAGE',
+              entryUrl: 'https://shop.example.com/',
+              allowedOrigins: ['https://shop.example.com'],
+            },
+            capability: 'LOGIN_VERIFIED',
+            autoRecoveriesUsed: 0,
+            manualRecoveriesUsed: 0,
+            unrecoverableCode: 'AUTH_CONTEXT_NOT_RECOVERABLE',
+          },
+        }),
+      ),
+    )
+    const { screen } = await renderPage()
+    await expect.element(screen.getByText('登录已失效，本次运行无法安全续跑')).toBeInTheDocument()
+    await expect.element(screen.getByRole('link', { name: '新建完整试跑' })).toBeInTheDocument()
+  })
+
   it('HOLDING 试跑展示再试与结束，不出现在正式 runThrough', async () => {
     signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read'])
     router.search = { runId: RUN_ID, import: undefined }
@@ -808,6 +858,8 @@ describe('Scenario Studio', () => {
             {
               id: '00000000-0000-4000-8000-0000000000a1',
               stepId,
+              name: '打开登录页',
+              type: 'navigate',
               ordinal: 0,
               status: 'FAILED',
               startedAt: '2026-09-13T02:00:01.000Z',
@@ -903,6 +955,8 @@ describe('Scenario Studio', () => {
             {
               id: '00000000-0000-4000-8000-0000000000a1',
               stepId: STEP_ID,
+              name: '点击按钮',
+              type: 'click',
               ordinal: 0,
               status: 'FAILED',
               startedAt: '2026-09-13T02:00:01.000Z',

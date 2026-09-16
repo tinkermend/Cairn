@@ -24,6 +24,19 @@ import {
   type SessionPolicy,
   type SessionPolicyOverride,
 } from './session.js'
+import {
+  FACTORY_SESSION_SCHEDULING,
+  platformSessionSchedulingSchema,
+} from './session-occupancy.js'
+import {
+  FACTORY_MAP_CAPTURE_POLICY,
+  mapCapturePolicySchema,
+  type MapCapturePolicy,
+  type MapCapturePolicyOverride,
+} from './map-capture.js'
+import { FACTORY_SESSION_AUTH, platformSessionAuthSchema } from './session-auth.js'
+import { FACTORY_SESSION_RETENTION, platformSessionRetentionSchema } from './session-maintenance.js'
+import { FACTORY_RUN_AUTH_RECOVERY, platformRunAuthRecoverySchema } from './session-auth-recovery.js'
 import { isAiStepType, type ExecutionPolicy } from './step.js'
 import { AUTH_METHODS, CAPTCHA_MODES, targetLoginFieldsDtoSchema } from './target.js'
 import { entityIdSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
@@ -169,6 +182,43 @@ export const platformAiConfigSchema = z
   })
 export type PlatformAiConfig = z.infer<typeof platformAiConfigSchema>
 
+export const FACTORY_MODULE_RESOLVER = {
+  maxCandidates: 10,
+  aiCandidateLimit: 5,
+  logRetentionDays: 90,
+} as const
+
+export const platformModuleResolverSchema = z.strictObject({
+  maxCandidates: z.number().int().min(1).max(20),
+  aiCandidateLimit: z.number().int().min(1).max(10),
+  logRetentionDays: z.number().int().min(1).max(365),
+})
+export type PlatformModuleResolver = z.infer<typeof platformModuleResolverSchema>
+
+export const FACTORY_MODULE_QUALITY = {
+  windowDays: 7,
+  minSamples: 10,
+  degradedVerifiedRateBelow: 0.8,
+  recentFailureStreak: 3,
+} as const
+
+export const platformModuleQualitySchema = z.strictObject({
+  windowDays: z.union([z.literal(7), z.literal(30)]),
+  minSamples: z.number().int().min(1).max(1000),
+  degradedVerifiedRateBelow: z.number().min(0).max(1),
+  recentFailureStreak: z.number().int().min(1).max(20),
+})
+export type PlatformModuleQuality = z.infer<typeof platformModuleQualitySchema>
+
+export const FACTORY_MODULE_FALLBACK = {
+  enabled: false,
+} as const
+
+export const platformModuleFallbackSchema = z.strictObject({
+  enabled: z.boolean(),
+})
+export type PlatformModuleFallback = z.infer<typeof platformModuleFallbackSchema>
+
 export const platformConfigDocumentSchema = z
   .strictObject({
     schemaVersion: z.literal(PLATFORM_CONFIG_SCHEMA_VERSION),
@@ -177,8 +227,25 @@ export const platformConfigDocumentSchema = z
     evidence: platformEvidenceDefaultsSchema,
     browserAi: platformBrowserAiConfigSchema,
     platformAi: platformAiConfigSchema.default(FACTORY_PLATFORM_AI),
+    sessionScheduling: platformSessionSchedulingSchema.default(FACTORY_SESSION_SCHEDULING),
+    sessionAuth: platformSessionAuthSchema.default(FACTORY_SESSION_AUTH),
+    sessionRetention: platformSessionRetentionSchema.default(FACTORY_SESSION_RETENTION),
+    runAuthRecovery: platformRunAuthRecoverySchema.default(FACTORY_RUN_AUTH_RECOVERY),
+    mapCapture: mapCapturePolicySchema.default(FACTORY_MAP_CAPTURE_POLICY),
+    mapScheduledRefreshEnabled: z.boolean().default(false),
+    mapExplorationEnabled: z.boolean().default(false),
+    moduleResolver: platformModuleResolverSchema.default(FACTORY_MODULE_RESOLVER),
+    moduleQuality: platformModuleQualitySchema.default(FACTORY_MODULE_QUALITY),
+    moduleFallback: platformModuleFallbackSchema.default(FACTORY_MODULE_FALLBACK),
   })
   .superRefine((document, ctx) => {
+    if (document.sessionAuth.verifyTimeoutMs >= document.execution.defaultTimeoutMs) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['sessionAuth', 'verifyTimeoutMs'],
+        message: `须小于默认步骤超时 ${document.execution.defaultTimeoutMs}ms`,
+      })
+    }
     const ai = document.browserAi
     if (ai.requestTimeoutMs >= document.execution.defaultTimeoutMs) {
       ctx.addIssue({
@@ -259,6 +326,16 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     userInflightLimit: 1,
     platformInflightLimit: 4,
   },
+  sessionScheduling: FACTORY_SESSION_SCHEDULING,
+  sessionAuth: FACTORY_SESSION_AUTH,
+  sessionRetention: FACTORY_SESSION_RETENTION,
+  runAuthRecovery: FACTORY_RUN_AUTH_RECOVERY,
+  mapCapture: FACTORY_MAP_CAPTURE_POLICY,
+  mapScheduledRefreshEnabled: false,
+  mapExplorationEnabled: false,
+  moduleResolver: FACTORY_MODULE_RESOLVER,
+  moduleQuality: FACTORY_MODULE_QUALITY,
+  moduleFallback: FACTORY_MODULE_FALLBACK,
 }
 
 export const platformRuntimeDefaultsSchema = z.strictObject({
@@ -475,9 +552,11 @@ export function idempotentRequestMatches(input: {
   sessionOverride?: SessionPolicyOverride | null
   evidenceOverride?: EvidencePolicy | null
   policyOverride?: ExecutionPolicy
+  mapCaptureOverride?: MapCapturePolicyOverride | null
   snapshotSession?: SessionPolicy
   snapshotEvidence?: EvidencePolicy
   snapshotPolicy?: ExecutionPolicy
+  snapshotMapCapture?: MapCapturePolicy
 }): boolean {
   if (input.existingDigest === input.rawDigest) return true
   if (input.existingDigest !== input.legacyDigest) return false
@@ -493,6 +572,10 @@ export function idempotentRequestMatches(input: {
     overridesCompatible(
       input.policyOverride as Record<string, unknown> | undefined,
       input.snapshotPolicy as Record<string, unknown> | undefined,
+    ) &&
+    overridesCompatible(
+      input.mapCaptureOverride as Record<string, unknown> | null | undefined,
+      input.snapshotMapCapture as unknown as Record<string, unknown> | undefined,
     )
   )
 }

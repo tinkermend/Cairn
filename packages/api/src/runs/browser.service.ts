@@ -126,6 +126,8 @@ export class BrowserService {
         if (done) break
         if (value) res.write(Buffer.from(value))
       }
+    } catch (error) {
+      if (!input.signal.aborted) throw error
     } finally {
       clearInterval(authTick)
       if (!res.writableEnded) res.end()
@@ -181,6 +183,9 @@ export class BrowserService {
     schema?: { parse: (value: unknown) => unknown },
   ) {
     const target = await this.resolveTarget(runId)
+    if (path === workerInternalPath('/resume-auth') && target.run.status !== 'WAITING_FOR_AUTH') {
+      throw new ConflictException({ code: 'RUN_NOT_WAITING_FOR_AUTH', message: '只有等待认证的运行可以恢复领取' })
+    }
     if (!target.session || !target.worker) {
       throw new ServiceUnavailableException({ code: 'WORKER_UNREACHABLE', message: '执行面暂时不可达' })
     }

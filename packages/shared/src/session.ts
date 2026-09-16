@@ -40,9 +40,24 @@ export const SESSION_ERROR_CODES = [
   'SESSION_LEASE_UNKNOWN',
   'SESSION_AUTH_UNSUPPORTED',
   'SESSION_AUTH_TIMEOUT',
+  'AUTH_PROBE_UNKNOWN',
+  'AUTH_IDENTITY_MISMATCH',
+  'AUTH_PROFILE_REQUIRED',
+  'AUTH_AUTO_LOGIN_PAUSED',
+  'AUTH_CONFIGURATION_REVOKED',
   'BROWSER_UNAVAILABLE',
   'BROWSER_LAUNCH_FAILED',
   'PROFILE_LOCKED',
+  'SESSION_OPERATION_CONFLICT',
+  'SESSION_GENERATION_CHANGED',
+  'RETENTION_QUOTA_EXCEEDED',
+  'PAGE_REFRESH_UNSAFE',
+  'OPERATION_INTERRUPTED',
+  'OUTCOME_UNKNOWN',
+  'AUTH_CONTEXT_NOT_RECOVERABLE',
+  'AUTH_RECOVERY_LIMIT',
+  'AUTH_GATE_CLOSED',
+  'AUTH_NOT_VERIFIED',
 ] as const
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number]
 export const sessionErrorCodeSchema = z.enum(SESSION_ERROR_CODES)
@@ -55,6 +70,7 @@ export const PLACEMENT_YIELD_CODES = [
   'PROFILE_LOCKED',
   'BROWSER_UNAVAILABLE',
   'BROWSER_LAUNCH_FAILED',
+  'AUTH_PROBE_UNKNOWN',
 ] as const
 export type PlacementYieldCode = (typeof PLACEMENT_YIELD_CODES)[number]
 
@@ -63,6 +79,10 @@ export const SESSION_CONFIG_ERROR_CODES = [
   'SESSION_ACCOUNT_REQUIRED',
   'SESSION_TARGET_MISSING',
   'SESSION_POLICY_INVALID',
+  'AUTH_CONFIGURATION_REVOKED',
+  'AUTH_PROFILE_REQUIRED',
+  'AUTH_CONTEXT_NOT_RECOVERABLE',
+  'AUTH_RECOVERY_LIMIT',
 ] as const
 export type SessionConfigErrorCode = (typeof SESSION_CONFIG_ERROR_CODES)[number]
 
@@ -159,8 +179,12 @@ export const sessionGrantSchema = z.strictObject({
   generation: z.number().int().positive(),
   sessionFencingToken: z.number().int().positive(),
   expiresAt: z.iso.datetime(),
+  purpose: z.enum(['EXECUTION', 'MAINTENANCE', 'AUTH_WAIT']).default('EXECUTION'),
+  ownerKind: z.enum(['RUN', 'SESSION_OPERATION']).default('RUN'),
+  runId: z.uuid().nullable().optional(),
+  operationId: z.uuid().nullable().optional(),
 })
-export type SessionGrant = z.infer<typeof sessionGrantSchema>
+export type SessionGrant = z.input<typeof sessionGrantSchema>
 
 /**
  * 控制面会话视图。只给元数据：没有 Cookie、没有 profile 绝对路径，
@@ -198,6 +222,20 @@ export const sessionDtoSchema = z.object({
       expiresAt: utcInstantSchema.nullable(),
     })
     .nullable(),
+  lastAuthCheckedAt: utcInstantSchema.nullable().optional(),
+  lastAuthSuccessAt: utcInstantSchema.nullable().optional(),
+  lastAuthGeneration: z.number().int().positive().nullable().optional(),
+  lastExpectedIdentity: z.string().trim().min(1).max(256).nullable().optional(),
+  authValidUntil: utcInstantSchema.nullable().optional(),
+  authExpirySource: z.string().min(1).max(64).nullable().optional(),
+  lastAuthError: z.string().min(1).max(128).nullable().optional(),
+  authProfileRevision: z.number().int().positive().nullable().optional(),
+  identityState: z.enum(['UNVERIFIED', 'MATCH', 'MISMATCH']).nullable().optional(),
+  identityVerifiedAt: utcInstantSchema.nullable().optional(),
+  observedTier: z.enum(['IDENTITY_VERIFIED', 'LOGIN_VERIFIED', 'LEGACY']).nullable().optional(),
+  retainUntil: utcInstantSchema.nullable().optional(),
+  nextAuthCheckAt: utcInstantSchema.nullable().optional(),
+  predecessorSessionId: z.uuid().nullable().optional(),
   closeReason: z.string().min(1).nullable(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
@@ -205,10 +243,14 @@ export const sessionDtoSchema = z.object({
   activeLease: z
     .object({
       id: z.uuid(),
-      runId: z.uuid(),
+      purpose: z.enum(['EXECUTION', 'MAINTENANCE', 'AUTH_WAIT']).default('EXECUTION'),
+      ownerKind: z.enum(['RUN', 'SESSION_OPERATION']).default('RUN'),
+      runId: z.uuid().nullable(),
+      operationId: z.uuid().nullable(),
       holderWorkerId: z.string().min(1),
       acquiredAt: utcInstantSchema,
       expiresAt: utcInstantSchema,
+      waitDeadlineAt: utcInstantSchema.nullable().optional(),
     })
     .nullable(),
   /** 是否能被人工处置：`OPEN` 是活会话，必须由 owner 自己回收。 */
@@ -227,4 +269,3 @@ export const disposeSessionBodySchema = z.strictObject({
   note: z.string().trim().min(1).max(512).optional(),
 })
 export type DisposeSessionBody = z.infer<typeof disposeSessionBodySchema>
-

@@ -3,7 +3,13 @@ import {
   browserSessions,
   claimRun,
   computeSnapshotDigest,
+  createActionModule,
+  listActionModuleVersions,
+  publishActionModule,
+  publishScenarioDraft,
   registerWorker,
+  saveActionModuleDraft,
+  saveScenarioDraft,
   consoleAccounts,
   createRunWithSnapshot,
   createScenarioWithVersion,
@@ -24,10 +30,14 @@ import {
 import {
   DEFAULT_EXECUTOR_VERSIONS,
   DEFAULT_SESSION_POLICY,
+  SESSION_OCCUPANCY_PROTOCOL,
   runGrantSchema,
   runSnapshotSchema,
+  type ModuleContent,
+  type ScenarioAuthoringDocumentV2,
   type Step,
 } from '@cairn/shared'
+import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
 import { ExecutionEngine } from './engine.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_eng`
@@ -72,6 +82,7 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       instanceId: workerInstanceId,
       capacity: 8,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
   })
 
@@ -814,6 +825,514 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     const after = await getRun(handle.db, runId)
     expect(after.status).toBe('SUCCEEDED')
     expect(after.stepRuns[0]?.attempts.map((attempt) => attempt.status)).toEqual(['CANCELLED', 'SUCCEEDED'])
+  })
+
+  it('AMB-09：含 moduleManifest 的 Run 只给声明协议的 Worker，展开后由现有引擎执行', async () => {
+    const echoStepId = newId()
+    const moduleContent: ModuleContent = {
+      contract: {
+        inputs: [{ key: 'msg', label: '消息', valueType: 'string', required: true }],
+        outputs: [{ key: 'out', label: '输出', shape: { kind: 'scalar', type: 'string' } }],
+        effectCeiling: 'READ_ONLY',
+        preconditions: [],
+        postconditions: [
+          { meaning: '验证输出', verification: { kind: 'output_required', outputKey: 'out' } },
+        ],
+      },
+      implementations: [
+        {
+          implementationKey: 'default',
+          kind: 'structured_steps',
+          steps: [
+            {
+              id: echoStepId,
+              name: '回显模块输入',
+              type: 'echo',
+              effectType: 'READ_ONLY',
+              input: { from: 'msg' },
+              outputKey: 'internal_out',
+            },
+          ],
+          outputMapping: { out: 'internal_out' },
+        },
+      ],
+    }
+    const createdModule = await createActionModule(handle.db, {
+      targetId,
+      key: 'worker.echo',
+      name: 'Worker 回显模块',
+      idempotencyKey: newId(),
+      actor: { id: actorId },
+    })
+    await saveActionModuleDraft(handle.db, createdModule.id, {
+      baseRevision: 0,
+      content: moduleContent,
+      actor: { id: actorId },
+    })
+    await publishActionModule(handle.db, createdModule.id, {
+      idempotencyKey: newId(),
+      expectedRevision: 1,
+      actor: { id: actorId },
+    })
+    const moduleVersionId = (await listActionModuleVersions(handle.db, createdModule.id)).items[0]!.id
+
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '模块展开执行',
+      steps: [
+        {
+          id: newId(),
+          name: '占位',
+          type: 'echo',
+          effectType: 'READ_ONLY',
+          input: { value: 'seed' },
+        },
+      ],
+      actor: { id: actorId },
+    })
+    const invocationId = newId()
+    const v2Draft: ScenarioAuthoringDocumentV2 = {
+      authoringSchemaVersion: 2,
+      schemaVersion: 1,
+      inputs: [],
+      nodes: [
+        {
+          kind: 'module',
+          invocationId,
+          moduleId: createdModule.id,
+          moduleVersionId,
+          implementationKey: 'default',
+          inputBindings: { msg: { kind: 'literal', value: 'hello-mod' } },
+          outputBindings: { out: 'mod_out' },
+        },
+      ],
+    }
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      document: v2Draft,
+      actor: { id: actorId },
+    })
+    const published = await publishScenarioDraft(handle.db, scenario.id, {
+      revision: 2,
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      scenarioVersionId: published.published!.versionId,
+      actor: { id: actorId },
+    })
+    expect(created.detail.snapshot.moduleManifest?.entries).toHaveLength(1)
+    expect(created.detail.snapshot.steps).toHaveLength(1)
+    expect(created.detail.snapshot.steps[0]?.effectType).toBe('READ_ONLY')
+
+    const oldWorkerId = `eng-old-${SCHEMA.slice(-8)}`
+    const oldInstanceId = newId()
+    await registerWorker(handle.db, {
+      workerId: oldWorkerId,
+      instanceId: oldInstanceId,
+      capacity: 2,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL],
+    })
+    await cancelOtherClaimable(created.detail.id)
+    expect(
+      await claimRun(handle, {
+        workerId: oldWorkerId,
+        instanceId: oldInstanceId,
+        leaseTtlSeconds: 30,
+      }),
+    ).toBeNull()
+
+    const grant = await claimThis(created.detail.id)
+    await engine.execute(created.detail.id, { grant })
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(detail.status).toBe('SUCCEEDED')
+    expect(detail.context.mod_out).toBe('hello-mod')
+    expect(detail.stepRuns).toHaveLength(1)
+    expect(detail.stepRuns[0]?.status).toBe('SUCCEEDED')
+    expect(detail.snapshot.moduleManifest?.entries[0]?.moduleKey).toBe('worker.echo')
+    expect(detail.snapshot.moduleManifest?.entries[0]?.expandedStepIds).toEqual([
+      detail.stepRuns[0]?.stepId,
+    ])
+  })
+
+  it('AMB-07：展开后 SIDE_EFFECT 步骤保持 effectType，结果未知仍进核查', async () => {
+    const failId = newId()
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '展开副作用核查',
+      compileMode: 'save',
+      steps: [
+        {
+          id: failId,
+          name: '失联提交',
+          type: 'fail',
+          effectType: 'SIDE_EFFECT',
+          policy: { retryLimit: 2 },
+          input: { message: '已发出', category: 'UNKNOWN', retryable: true },
+        },
+      ],
+      actor: { id: actorId },
+    })
+    const runId = newId()
+    const invocationId = newId()
+    const snapshot = runSnapshotSchema.parse({
+      schemaVersion: 1,
+      runId,
+      targetId,
+      scenarioId: scenario.id,
+      scenarioVersionId: scenario.latestVersionId,
+      steps: [
+        {
+          id: failId,
+          name: '失联提交',
+          type: 'fail',
+          effectType: 'SIDE_EFFECT',
+          policy: { retryLimit: 2 },
+          input: { message: '已发出', category: 'UNKNOWN', retryable: true },
+        },
+      ],
+      moduleManifest: {
+        entries: [
+          {
+            invocationId,
+            ordinal: 0,
+            name: '提交模块',
+            moduleId: newId(),
+            moduleKey: 'worker.submit',
+            moduleVersionId: newId(),
+            versionNo: 1,
+            contentDigest: 'sha256:content',
+            contractDigest: 'sha256:contract',
+            implementationDigest: 'sha256:impl',
+            implementationKey: 'default',
+            executionMode: 'DETERMINISTIC',
+            effectCeiling: 'SIDE_EFFECT',
+            expandedStepIds: [failId],
+            internalToExpanded: { [failId]: failId },
+            preconditionStepIds: [],
+            postconditionStepIds: [],
+            outputRequired: [],
+            inputBindingsDigest: 'sha256:bindings',
+          },
+        ],
+      },
+      input: {},
+      createdAt: new Date().toISOString(),
+      executorVersions: { ...DEFAULT_EXECUTOR_VERSIONS },
+    })
+    const digest = computeSnapshotDigest(snapshot)
+    await handle.db.insert(runs).values({
+      id: runId,
+      targetId,
+      scenarioId: scenario.id,
+      scenarioVersionId: scenario.latestVersionId,
+      createdByConsoleAccountId: actorId,
+      status: 'QUEUED',
+      snapshot: { ...snapshot, digest },
+      snapshotDigest: digest,
+      context: {},
+    })
+    await handle.db.insert(stepRuns).values({
+      id: newId(),
+      runId,
+      stepId: failId,
+      ordinal: 0,
+      status: 'PENDING',
+    })
+    const grant = await claimThis(runId)
+    await engine.execute(runId, { grant })
+    const detail = await getRun(handle.db, runId)
+    expect(detail.status).toBe('NEEDS_REVIEW')
+    expect(detail.snapshot.steps[0]?.effectType).toBe('SIDE_EFFECT')
+    expect(detail.snapshot.moduleManifest?.entries).toHaveLength(1)
+    expect(detail.stepRuns[0]?.attempts).toHaveLength(1)
+  })
+
+  async function insertCandidateRun(input: {
+    name: string
+    first: Step
+    leftover: Step
+    second: Step
+    after?: Step
+  }) {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: input.name,
+      compileMode: 'save',
+      steps: [input.first, input.leftover, input.second, ...(input.after ? [input.after] : [])],
+      actor: { id: actorId },
+    })
+    const testModule = await createActionModule(handle.db, {
+      targetId,
+      key: `worker.fallback.m${newId().replace(/-/g, '').toLowerCase()}`,
+      name: '只读回退',
+      idempotencyKey: newId(),
+      actor: { id: actorId },
+    })
+    const runId = newId()
+    const invocationId = newId()
+    const steps = [input.first, input.leftover, input.second, ...(input.after ? [input.after] : [])]
+    const snapshot = runSnapshotSchema.parse({
+      schemaVersion: 1,
+      runId,
+      targetId,
+      scenarioId: scenario.id,
+      scenarioVersionId: scenario.latestVersionId,
+      steps,
+      candidateGroups: {
+        groups: [
+          {
+            groupId: invocationId,
+            invocationId,
+            alternatives: [
+              {
+                implementationKey: 'default',
+                implementationDigest: 'sha256:default',
+                stepIds: [input.first.id, input.leftover.id],
+                postconditionStepIds: [],
+                outputStaging: { exposed: 'm0_alt_out' },
+              },
+              {
+                implementationKey: 'alt',
+                implementationDigest: 'sha256:alt',
+                stepIds: [input.second.id],
+                postconditionStepIds: [],
+                outputStaging: { exposed: 'm0_alt_out' },
+              },
+            ],
+          },
+        ],
+      },
+      moduleManifest: {
+        entries: [
+          {
+            invocationId,
+            ordinal: 0,
+            name: '只读回退',
+            moduleId: testModule.id,
+            moduleKey: testModule.key,
+            contentDigest: 'sha256:content',
+            contractDigest: 'sha256:contract',
+            implementationDigest: 'sha256:impl',
+            implementationKey: 'default',
+            executionMode: 'DETERMINISTIC',
+            effectCeiling: 'READ_ONLY',
+            expandedStepIds: [input.first.id, input.leftover.id, input.second.id],
+            internalToExpanded: {},
+            outputRequired: ['out'],
+            inputBindingsDigest: 'sha256:bindings',
+          },
+        ],
+        candidateGroups: [
+          {
+            groupId: invocationId,
+            invocationId,
+            alternatives: [
+              {
+                implementationKey: 'default',
+                implementationDigest: 'sha256:default',
+                stepIds: [input.first.id, input.leftover.id],
+                postconditionStepIds: [],
+                outputStaging: { exposed: 'm0_alt_out' },
+              },
+              {
+                implementationKey: 'alt',
+                implementationDigest: 'sha256:alt',
+                stepIds: [input.second.id],
+                postconditionStepIds: [],
+                outputStaging: { exposed: 'm0_alt_out' },
+              },
+            ],
+          },
+        ],
+      },
+      input: {},
+      createdAt: new Date().toISOString(),
+      executorVersions: { ...DEFAULT_EXECUTOR_VERSIONS },
+    })
+    const digest = computeSnapshotDigest(snapshot)
+    await handle.db.insert(runs).values({
+      id: runId,
+      targetId,
+      scenarioId: scenario.id,
+      scenarioVersionId: scenario.latestVersionId,
+      createdByConsoleAccountId: actorId,
+      status: 'QUEUED',
+      snapshot: { ...snapshot, digest },
+      snapshotDigest: digest,
+      context: {},
+    })
+    await handle.db.insert(stepRuns).values(steps.map((step, ordinal) => ({
+      id: newId(),
+      runId,
+      stepId: step.id,
+      ordinal,
+      status: 'PENDING' as const,
+    })))
+    return { runId, invocationId }
+  }
+
+  it('AMF-05/08 模块原因回退到下一候选并提交暴露输出', async () => {
+    const first = {
+      id: newId(),
+      name: '首选失败',
+      type: 'fail' as const,
+      effectType: 'READ_ONLY' as const,
+      policy: { retryLimit: 0 },
+      input: { message: '定位失败', code: 'FAIL', category: 'EXECUTOR' as const, retryable: false },
+    }
+    const leftover = {
+      id: newId(),
+      name: '首选剩余',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      input: { value: 'should-skip' },
+    }
+    const second = {
+      id: newId(),
+      name: '回退成功',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      outputKey: 'm0_alt_out',
+      input: { value: 'from-alt' },
+    }
+    const after = {
+      id: newId(),
+      name: '读暴露输出',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      outputKey: 'seen',
+      input: { from: 'exposed' },
+    }
+    const { runId, invocationId } = await insertCandidateRun({
+      name: '回退提交',
+      first,
+      leftover,
+      second,
+      after,
+    })
+    const grant = await claimThis(runId)
+    await engine.execute(runId, { grant })
+    const detail = await getRun(handle.db, runId)
+    expect(detail.status).toBe('SUCCEEDED')
+    expect(detail.context.exposed).toBe('from-alt')
+    expect(detail.context.seen).toBe('from-alt')
+    expect(detail.stepRuns.find((item) => item.stepId === leftover.id)?.status).toBe('SKIPPED')
+    expect(detail.stepRuns.find((item) => item.stepId === second.id)?.status).toBe('SUCCEEDED')
+    const evidence = await listRunEvidence(handle.db, runId)
+    expect(evidence.items.some((item) => {
+      const payload = item.payload as { protocol?: string; invocationId?: string; selected?: string } | undefined
+      return payload?.protocol === 'module.selectionDecision@1' && payload.invocationId === invocationId && payload.selected === 'alt'
+    })).toBe(true)
+  })
+
+  it('AMF-06 外部原因不回退', async () => {
+    const first = {
+      id: newId(),
+      name: '认证超时',
+      type: 'fail' as const,
+      effectType: 'READ_ONLY' as const,
+      policy: { retryLimit: 0 },
+      input: { message: '认证超时', code: 'SESSION_AUTH_TIMEOUT', category: 'INFRASTRUCTURE' as const, retryable: false },
+    }
+    const leftover = {
+      id: newId(),
+      name: '首选剩余',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      input: { value: 'skip' },
+    }
+    const second = {
+      id: newId(),
+      name: '不应执行',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      outputKey: 'm0_alt_out',
+      input: { value: 'from-alt' },
+    }
+    const { runId } = await insertCandidateRun({ name: '外部不回退', first, leftover, second })
+    const grant = await claimThis(runId)
+    await engine.execute(runId, { grant })
+    const detail = await getRun(handle.db, runId)
+    expect(detail.status).toBe('FAILED')
+    expect(detail.stepRuns.find((item) => item.stepId === second.id)?.status).toBe('SKIPPED')
+    expect(detail.context.exposed).toBeUndefined()
+  })
+
+  it('AMF-07 核查不回退', async () => {
+    const first = {
+      id: newId(),
+      name: '结果未知',
+      type: 'fail' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      policy: { retryLimit: 0 },
+      input: { message: '已发出', code: 'SIDE_EFFECT_UNKNOWN', category: 'UNKNOWN' as const, retryable: false },
+    }
+    const leftover = {
+      id: newId(),
+      name: '首选剩余',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      input: { value: 'skip' },
+    }
+    const second = {
+      id: newId(),
+      name: '不应执行',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      input: { value: 'from-alt' },
+    }
+    const { runId } = await insertCandidateRun({ name: '核查不回退', first, leftover, second })
+    const grant = await claimThis(runId)
+    await engine.execute(runId, { grant })
+    const detail = await getRun(handle.db, runId)
+    expect(detail.status).toBe('NEEDS_REVIEW')
+    expect(detail.stepRuns.find((item) => item.stepId === second.id)?.status).toBe('SKIPPED')
+  })
+
+  it('AMF-10 未声明候选组协议的 Worker 不领取', async () => {
+    const first = {
+      id: newId(),
+      name: '首选',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      input: { value: 'a' },
+    }
+    const leftover = {
+      id: newId(),
+      name: '剩余',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      input: { value: 'b' },
+    }
+    const second = {
+      id: newId(),
+      name: '备选',
+      type: 'echo' as const,
+      effectType: 'READ_ONLY' as const,
+      input: { value: 'c' },
+    }
+    const { runId } = await insertCandidateRun({ name: '协议闸门', first, leftover, second })
+    const oldWorkerId = `old-cg-${SCHEMA.slice(-8)}`
+    const oldInstanceId = newId()
+    await registerWorker(handle.db, {
+      workerId: oldWorkerId,
+      instanceId: oldInstanceId,
+      capacity: 2,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, 'snapshot.moduleManifest@1'],
+    })
+    await cancelOtherClaimable(runId)
+    expect(
+      await claimRun(handle, {
+        workerId: oldWorkerId,
+        instanceId: oldInstanceId,
+        leaseTtlSeconds: 30,
+      }),
+    ).toBeNull()
+    const grant = await claimThis(runId)
+    expect(grant.runId).toBe(runId)
   })
 
   /** 把 Run 推到 RUNNING 并伪造一份有效 grant：模拟"持有者已经跑了一半"。 */

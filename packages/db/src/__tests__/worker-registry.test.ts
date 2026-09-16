@@ -1,15 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import type { Step } from '@cairn/shared'
+import { SESSION_OCCUPANCY_PROTOCOL, type Step } from '@cairn/shared'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
-import { forceGrantForRun } from './lease-harness.js'
+import { enterAuthWaitForRun, forceGrantForRun } from './lease-harness.js'
 import { newId } from '../id.js'
-import { schemaFor } from '../native.js'
+import { schemaFor, afterSeconds, clockNow } from '../native.js'
 import {
   DomainError,
   acquireSessionLease,
   createRunWithSnapshot,
   createScenarioWithVersion,
-  enterRunWaitingForAuth,
   eq,
   forceLeaseExpiresAt,
   getSessionById,
@@ -22,7 +21,8 @@ import {
   markLostWorkers,
   markWorkerDraining,
   markWorkerStopped,
-  registerWorker,
+  registerWorker as registerWorkerRaw,
+  releaseSessionUse,
   requireCreatedSession,
   resolveWorkerRoute,
   setSessionStatus,
@@ -36,6 +36,8 @@ let consoleAccounts = pg_consoleAccounts
 let targetAccounts = pg_targetAccounts
 let targets = pg_targets
 let workers = pg_workers
+
+const registerWorker: typeof registerWorkerRaw = (db, input) => registerWorkerRaw(db, { protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL], ...input })
 
 const echoStep: Step = {
   id: '00000000-0000-4000-8000-000000000091',
@@ -151,7 +153,7 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
 
     await handle.db
       .update(workers)
-      .set({ heartbeatExpiresAt: new Date(Date.now() - 1000) })
+      .set({ heartbeatExpiresAt: afterSeconds(handle.db, -1) })
       .where(eq(workers.id, workerId))
 
     const taken = await registerWorker(handle.db, {
@@ -228,8 +230,8 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     await handle.db
       .update(workers)
       .set({
-        heartbeatAt: new Date(Date.now() - 90_000),
-        heartbeatExpiresAt: new Date(Date.now() + 30_000),
+        heartbeatAt: afterSeconds(handle.db, -90),
+        heartbeatExpiresAt: afterSeconds(handle.db, 30),
       })
       .where(eq(workers.id, workerId))
 
@@ -245,6 +247,34 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     expect(await heartbeatWorker(handle.db, workerId, instanceId)).toBe('ok')
   })
 
+  it('并发心跳与失联扫描不死锁，活跃登记保持 READY', async () => {
+    const first = { workerId: `race-a-${newId().slice(0, 8)}`, instanceId: newId() }
+    const second = { workerId: `race-b-${newId().slice(0, 8)}`, instanceId: newId() }
+    for (const worker of [first, second]) {
+      await registerWorker(handle.db, {
+        ...worker,
+        capacity: 1,
+        lostAfterSeconds: 60,
+      })
+    }
+
+    for (let round = 0; round < 20; round += 1) {
+      const [firstHeartbeat, secondHeartbeat, firstSweep, secondSweep] = await Promise.all([
+        heartbeatWorker(handle.db, first.workerId, first.instanceId),
+        heartbeatWorker(handle.db, second.workerId, second.instanceId),
+        markLostWorkers(handle.db),
+        markLostWorkers(handle.db),
+      ])
+      expect(firstHeartbeat).toBe('ok')
+      expect(secondHeartbeat).toBe('ok')
+      expect(firstSweep).not.toContain(first.workerId)
+      expect(secondSweep).not.toContain(second.workerId)
+    }
+
+    expect((await getWorkerById(handle.db, first.workerId))?.status).toBe('READY')
+    expect((await getWorkerById(handle.db, second.workerId))?.status).toBe('READY')
+  })
+
   it('到期边界：相等即过期，迟到心跳不能复活', async () => {
     const workerId = `exp-${newId().slice(0, 8)}`
     const instanceId = newId()
@@ -254,7 +284,8 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
       capacity: 1,
       lostAfterSeconds: 60,
     })
-    const expiredAt = new Date(Date.now() - 5)
+    const dbNow = await clockNow(handle.db as any)
+    const expiredAt = new Date(dbNow.getTime() - 5)
     await handle.db.update(workers).set({ heartbeatExpiresAt: expiredAt }).where(eq(workers.id, workerId))
     expect(await heartbeatWorker(handle.db, workerId, instanceId)).toBe('lost')
     const afterLate = await getWorkerById(handle.db, workerId)
@@ -285,7 +316,7 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
 
     await handle.db
       .update(workers)
-      .set({ heartbeatExpiresAt: new Date(Date.now() - 1000) })
+      .set({ heartbeatExpiresAt: afterSeconds(handle.db, -1) })
       .where(eq(workers.id, workerId))
     await registerWorker(handle.db, {
       workerId,
@@ -361,7 +392,7 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     )
     await handle.db
       .update(workers)
-      .set({ heartbeatExpiresAt: new Date(Date.now() - 1000) })
+      .set({ heartbeatExpiresAt: afterSeconds(handle.db, -1) })
       .where(eq(workers.id, lostId))
     expect(await markLostWorkers(handle.db)).toContain(lostId)
 
@@ -384,7 +415,7 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
       runFencingToken: 1,
     })
     expect(lease.ok).toBe(true)
-    if (lease.ok) await forceLeaseExpiresAt(handle.db, lease.lease.id, new Date(Date.now() - 1000))
+    if (lease.ok) await forceLeaseExpiresAt(handle.db, lease.lease.id, afterSeconds(handle.db, -1))
 
     const listed = await listWorkers(
       handle.db,
@@ -473,7 +504,7 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     expect(live.associationLive).toBe(true)
     expect(live.session?.id).toBe(session.id)
 
-    if (lease.ok) await forceLeaseExpiresAt(handle.db, lease.lease.id, new Date(Date.now() - 1000))
+    if (lease.ok) await forceLeaseExpiresAt(handle.db, lease.lease.id, afterSeconds(handle.db, -1))
     const staleLease = await resolveWorkerRoute(handle.db, created.detail.id)
     expect(staleLease.associationLive).toBe(false)
     expect(staleLease.session?.id).toBe(session.id)
@@ -484,29 +515,29 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
       actor: { id: actorId },
     })
     const grant = await forceGrantForRun(handle, waiting.detail.id, workerId)
-    const heldSession = await openOwnedSession({ workerId, account: await makeAccount('hold'), instanceId })
-    expect(
-      await enterRunWaitingForAuth(handle.db, {
-        grant,
-        sessionId: heldSession.id,
-        workerId,
-        workerInstanceId: instanceId,
-        holdSeconds: 30,
-      }),
-    ).toBe(true)
+    const holdAccount = await makeAccount('hold')
+    const { claimed, waitGrant } = await enterAuthWaitForRun(handle, {
+      targetId,
+      targetAccountId: holdAccount,
+      grant,
+      workerId,
+      instanceId,
+      holdSeconds: 30,
+    })
+    expect(waitGrant.purpose).toBe('AUTH_WAIT')
     const held = await resolveWorkerRoute(handle.db, waiting.detail.id)
     expect(held.associationLive).toBe(true)
-    expect(held.session?.id).toBe(heldSession.id)
+    expect(held.session?.id).toBe(claimed.session.id)
     expect(held.runStatus).toBe('WAITING_FOR_AUTH')
 
-    const { browserSessions } = schemaFor(handle.db)
+    const { sessionLeases } = schemaFor(handle.db)
     await handle.db
-      .update(browserSessions)
-      .set({ authHoldExpiresAt: new Date(Date.now() - 1000) })
-      .where(eq(browserSessions.id, heldSession.id))
+      .update(sessionLeases)
+      .set({ waitDeadlineAt: afterSeconds(handle.db, -1) })
+      .where(eq(sessionLeases.id, waitGrant.leaseId))
     const staleHold = await resolveWorkerRoute(handle.db, waiting.detail.id)
     expect(staleHold.associationLive).toBe(false)
-    expect(staleHold.session?.id).toBe(heldSession.id)
+    expect(staleHold.session?.id).toBe(claimed.session.id)
   })
 
   it('续跑后占用已清、租约未领时仍能转发到该账号活会话', async () => {
@@ -526,26 +557,20 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
       actor: { id: actorId },
     })
     const grant = await forceGrantForRun(handle, created.detail.id, workerId)
-    expect(
-      await enterRunWaitingForAuth(handle.db, {
-        grant,
-        sessionId: session.id,
-        workerId,
-        workerInstanceId: instanceId,
-        holdSeconds: 30,
-      }),
-    ).toBe(true)
-    const { browserSessions, runs } = schemaFor(handle.db)
-    await handle.db
-      .update(browserSessions)
-      .set({
-        authHoldWorkerId: null,
-        authHoldExpiresAt: null,
-        authHoldRunId: null,
-        authHoldSessionGeneration: null,
-        authHoldWorkerInstanceId: null,
-      })
-      .where(eq(browserSessions.id, session.id))
+    const { waitGrant } = await enterAuthWaitForRun(handle, {
+      targetId,
+      targetAccountId: account,
+      grant,
+      workerId,
+      instanceId,
+      holdSeconds: 30,
+    })
+    await releaseSessionUse(handle.db, {
+      leaseId: waitGrant.leaseId,
+      holderWorkerId: workerId,
+      reason: 'test_resume_cleared',
+    })
+    const { runs } = schemaFor(handle.db)
     await handle.db.update(runs).set({ status: 'RECOVERING' }).where(eq(runs.id, created.detail.id))
 
     const route = await resolveWorkerRoute(handle.db, created.detail.id)

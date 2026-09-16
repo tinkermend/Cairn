@@ -38,4 +38,22 @@ describe('SessionGuard', () => {
     guard.refresh({ ...base, sessionFencingToken: 9, expiresAt: new Date(Date.now() + 60_000).toISOString() })
     expect(() => guard.assertHeld(base.leaseId)).toThrow(GuardError)
   })
+
+  it('AUTH_WAIT 不能作为执行器 grant；EXECUTION 可以通过', () => {
+    const guard = new SessionGuard()
+    guard.install({ ...base, purpose: 'AUTH_WAIT' })
+    expect(() => guard.assertExecutor(base.leaseId)).toThrow(/不能作为执行器/)
+    guard.install({ ...base, purpose: 'EXECUTION' })
+    expect(guard.assertExecutor(base.leaseId).purpose).toBe('EXECUTION')
+  })
+
+  it('pageForGrant 允许 AUTH_WAIT 观察，不允许 MAINTENANCE 执行', () => {
+    const guard = new SessionGuard()
+    guard.install({ ...base, purpose: 'AUTH_WAIT' })
+    expect(guard.assertPurpose(base.leaseId, ['EXECUTION', 'AUTH_WAIT']).purpose).toBe('AUTH_WAIT')
+    guard.install({ ...base, purpose: 'MAINTENANCE', leaseId: '00000000-0000-4000-8000-000000000003' })
+    expect(() =>
+      guard.assertExecutor('00000000-0000-4000-8000-000000000003'),
+    ).toThrow(/不能作为执行器/)
+  })
 })

@@ -2,7 +2,7 @@ import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { schemaFor } from '../native.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { and, eq } from 'drizzle-orm'
-import type { Step } from '@cairn/shared'
+import { authoringSteps, type Step } from '@cairn/shared'
 import {
   appendScenarioVersion,
   createRunWithSnapshot,
@@ -106,7 +106,7 @@ describe.each(DRIVERS)('%s 场景草稿 / 发布 / 试跑（集成）', { timeou
       }),
     ).rejects.toMatchObject({ code: 'SCENARIO_DRAFT_CONFLICT', kind: 'conflict' })
     const latest = await getScenario(handle.db, scenario.id)
-    expect(latest.draft?.document.steps[0]?.name).toBe('甲')
+    expect(authoringSteps(latest.draft!.document)[0]?.name).toBe('甲')
   })
 
   it('同一 revision 连续发布两次只得到一个版本', async () => {

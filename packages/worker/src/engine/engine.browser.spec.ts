@@ -11,8 +11,8 @@ import {
   saveScenarioDraft,
   eq,
   getRun,
-  listRunEvidence,
   markRunWaitingForAuth,
+  listRunEvidence,
   newId,
   openIsolatedDb,
   registerWorker,
@@ -21,6 +21,7 @@ import {
   requireCreatedSession,
   runs,
   sessionLeases,
+  targetAuthProfiles,
   setSessionProbe,
   setSessionStatus,
   startAttempt,
@@ -31,9 +32,12 @@ import {
 } from '@cairn/db/testing'
 import {
   DEFAULT_EXECUTOR_VERSIONS,
+  computeContextVersion,
   PLACEMENT_YIELD_CODES,
   SESSION_CONFIG_ERROR_CODES,
   runSnapshotSchema,
+  targetAuthProfileDefinitionSchema,
+  type AuthCheckpoint,
   type BrowserCommand,
   type BrowserCommandResult,
   type SessionErrorCode,
@@ -42,6 +46,7 @@ import {
 } from '@cairn/shared'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
 import { ExecutionEngine } from './engine.js'
 import type { BrowserPort } from './ports.js'
 import { clearPlacementYields, placementYieldExcludes } from '../runtime/placement-backoff.js'
@@ -116,7 +121,9 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
       workerId,
       instanceId: workerInstanceId,
       capacity: 8,
+      maxSessions: 32,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
   })
 
@@ -163,6 +170,63 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
       targetAccountId: accountId,
       actor: { id: actorId },
     })
+  }
+
+  let authProfileRevision = 0
+
+  async function setSharedCapability(capability: 'IDENTITY_VERIFIED' | 'LOGIN_VERIFIED') {
+    authProfileRevision += 1
+    const definition = targetAuthProfileDefinitionSchema.parse({
+      verify: {
+        mode: 'http',
+        success: { status: 200, jsonPath: '$.ok', equals: true },
+        failure: { status: 401 },
+      },
+      ...(capability === 'IDENTITY_VERIFIED'
+        ? { identity: { source: 'json', jsonPath: '$.user', normalize: 'trim' } }
+        : {}),
+      scope: { origins: ['https://shop.example.com'], pathPrefixes: ['/'] },
+    })
+    const observation = (
+      authState: 'AUTHENTICATED' | 'EXPIRED',
+      identityState: 'MATCH' | 'MISMATCH' | 'UNVERIFIED',
+      observedIdentity: string | null,
+    ) => ({
+      authState,
+      identityState,
+      observedIdentity,
+      unknownClass: null,
+      evidenceSummary: 'seed',
+      authProfileRevision,
+      diagnosticCode: 'verified',
+    })
+    await handle.db.insert(targetAuthProfiles).values({
+      id: newId(),
+      targetId,
+      revision: authProfileRevision,
+      definition,
+      digest: `d${authProfileRevision}`.padEnd(64, 'd'),
+      validation: {
+        recordedAt: '2026-09-16T00:00:00.000Z',
+        actorId,
+        operationId: newId(),
+        steps: {
+          valid_pass: observation('AUTHENTICATED', 'MATCH', 'alice'),
+          server_revoked: observation('EXPIRED', 'UNVERIFIED', null),
+          ...(capability === 'IDENTITY_VERIFIED'
+            ? { other_account: observation('AUTHENTICATED', 'MISMATCH', 'bob') }
+            : {}),
+        },
+      },
+    })
+    await handle.db
+      .update(targets)
+      .set({ currentAuthProfileRevision: authProfileRevision })
+      .where(eq(targets.id, targetId))
+    await handle.db
+      .update(targetAccounts)
+      .set({ expectedIdentity: capability === 'IDENTITY_VERIFIED' ? 'alice' : null })
+      .where(eq(targetAccounts.id, accountId))
   }
 
   async function openLease(runId: string, fencingToken: number): Promise<SessionGrant> {
@@ -215,6 +279,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     execute?: BrowserPort['execute']
     release?: BrowserPort['release']
     describeHold?: BrowserPort['describeHold']
+    recoverAuth?: BrowserPort['recoverAuth']
   }): BrowserPort & { calls: string[] } {
     const calls: string[] = []
     return {
@@ -237,6 +302,12 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
         ? async (runId) => {
             calls.push('describeHold')
             return hooks.describeHold!(runId)
+          }
+        : undefined,
+      recoverAuth: hooks.recoverAuth
+        ? async (grant, input) => {
+            calls.push('recoverAuth')
+            return hooks.recoverAuth!(grant, input)
           }
         : undefined,
     }
@@ -787,7 +858,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     await saveScenarioDraft(handle.db, scenario.id, {
       revision: 1,
       actor: { id: actorId },
-      document: { schemaVersion: 1, steps },
+      document: { schemaVersion: 1, inputs: [], steps },
     })
     const created = await createTrialRunFromDraft(handle.db, scenario.id, {
       revision: 2,
@@ -866,7 +937,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     await saveScenarioDraft(handle.db, scenario.id, {
       revision: 1,
       actor: { id: actorId },
-      document: { schemaVersion: 1, steps },
+      document: { schemaVersion: 1, inputs: [], steps },
     })
     const created = await createTrialRunFromDraft(handle.db, scenario.id, {
       revision: 2,
@@ -905,7 +976,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     await saveScenarioDraft(handle.db, scenario.id, {
       revision: 1,
       actor: { id: actorId },
-      document: { schemaVersion: 1, steps },
+      document: { schemaVersion: 1, inputs: [], steps },
     })
     const created = await createTrialRunFromDraft(handle.db, scenario.id, {
       revision: 2,
@@ -965,7 +1036,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     await saveScenarioDraft(handle.db, scenario.id, {
       revision: 1,
       actor: { id: actorId },
-      document: { schemaVersion: 1, steps },
+      document: { schemaVersion: 1, inputs: [], steps },
     })
     const created = await createTrialRunFromDraft(handle.db, scenario.id, {
       revision: 2,
@@ -1028,7 +1099,7 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     await saveScenarioDraft(handle.db, scenario.id, {
       revision: 1,
       actor: { id: actorId },
-      document: { schemaVersion: 1, steps },
+      document: { schemaVersion: 1, inputs: [], steps },
     })
     const created = await createTrialRunFromDraft(handle.db, scenario.id, {
       revision: 2,
@@ -1078,5 +1149,180 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
     })
     await engine.resumeDebug(created.detail.id, { action: 'stop' }, actorId)
     await done
+  })
+
+  it('认证等待期间调试命令返回 RUN_WAITING_FOR_AUTH（SM17D）', async () => {
+    const created = await queue(echoThenClick())
+    await handle.db.update(runs).set({ status: 'WAITING_FOR_AUTH' }).where(eq(runs.id, created.detail.id))
+    const engine = new ExecutionEngine(handle)
+    await expect(
+      engine.resumeDebug(created.detail.id, { action: 'continue', fencingToken: '1' }, actorId),
+    ).rejects.toMatchObject({ code: 'RUN_WAITING_FOR_AUTH' })
+  })
+
+  it('旧模式收到门禁关闭则无法安全续跑，不调用 recoverAuth（SM42）', async () => {
+    const created = await queue([clickStep(newId())])
+    expect(created.detail.snapshot.authVerification?.capability ?? 'LEGACY').toBe('LEGACY')
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => ({
+        ok: false,
+        error: {
+          code: 'AUTH_GATE_CLOSED',
+          category: 'INFRASTRUCTURE',
+          retryable: false,
+          safeMessage: '登录已失效',
+          cause: { code: 'not_dispatched', message: 'EXPIRED' },
+        },
+      }),
+      recoverAuth: async () => ({ ok: true }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(detail.status).toBe('FAILED')
+    expect(detail.authCheckpoint?.status).toBe('unrecoverable')
+    expect(port.calls).not.toContain('recoverAuth')
+  })
+
+  it('SIDE_EFFECT 已派发后认证门禁关闭进入核查（SM15）', async () => {
+    await setSharedCapability('IDENTITY_VERIFIED')
+    const created = await queue([clickStep(newId(), 'SIDE_EFFECT')])
+    expect(created.detail.snapshot.authVerification?.capability).toBe('IDENTITY_VERIFIED')
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => ({
+        ok: false,
+        error: {
+          code: 'AUTH_GATE_CLOSED',
+          category: 'UNKNOWN',
+          retryable: false,
+          safeMessage: '登录已失效',
+          cause: { code: 'dispatched', message: 'EXPIRED' },
+        },
+      }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(detail.status).toBe('NEEDS_REVIEW')
+    expect(detail.authCheckpoint?.interruptedClassification).toBe('side_effect_dispatched')
+    expect(port.calls).not.toContain('recoverAuth')
+  })
+
+  it('LOGIN_VERIFIED 关门后失败且不重登（SM42）', async () => {
+    await setSharedCapability('LOGIN_VERIFIED')
+    const created = await queue([clickStep(newId())])
+    expect(created.detail.snapshot.authVerification?.capability).toBe('LOGIN_VERIFIED')
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => ({
+        ok: false,
+        error: {
+          code: 'AUTH_GATE_CLOSED',
+          category: 'INFRASTRUCTURE',
+          retryable: false,
+          safeMessage: '登录已失效',
+          cause: { code: 'not_dispatched', message: 'EXPIRED' },
+        },
+      }),
+      recoverAuth: async () => ({ ok: true }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(detail.status).toBe('FAILED')
+    expect(detail.authCheckpoint?.unrecoverableCode).toBe('AUTH_CONTEXT_NOT_RECOVERABLE')
+    expect(port.calls).not.toContain('recoverAuth')
+  })
+
+  it('IDENTITY_VERIFIED 自动恢复后不占重试次数继续原步骤（SM14/SM42）', async () => {
+    await setSharedCapability('IDENTITY_VERIFIED')
+    const created = await queue([clickStep(newId())])
+    expect(created.detail.snapshot.authVerification?.capability).toBe('IDENTITY_VERIFIED')
+    let executes = 0
+    const port = fakePort({
+      acquire: async (_run, grant) => ({ ok: true, grant: await openLease(created.detail.id, grant.fencingToken) }),
+      execute: async () => {
+        executes += 1
+        if (executes === 1) {
+          return {
+            ok: false,
+            error: {
+              code: 'AUTH_GATE_CLOSED',
+              category: 'INFRASTRUCTURE',
+              retryable: false,
+              safeMessage: '登录已失效',
+              cause: { code: 'not_dispatched', message: 'EXPIRED' },
+            },
+          }
+        }
+        return { ok: true, output: {} }
+      },
+      recoverAuth: async () => ({ ok: true }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant: await claimThis(created.detail.id) })
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(port.calls).toContain('recoverAuth')
+    expect(detail.status).toBe('SUCCEEDED')
+    expect(detail.authCheckpoint?.status).toBe('recovered')
+    expect(detail.stepRuns[0]?.attempts).toHaveLength(2)
+  })
+
+  it('进行中的自动恢复不重复计数', async () => {
+    await setSharedCapability('IDENTITY_VERIFIED')
+    const created = await queue([clickStep(newId())])
+    const grant = await claimThis(created.detail.id)
+    const recovering: AuthCheckpoint = {
+      schemaVersion: 1,
+      status: 'recovering',
+      closedAt: '2026-09-16T04:00:00.000Z',
+      trigger: { kind: 'navigated_to_login', at: '2026-09-16T04:00:00.000Z', summary: '/login' },
+      nextStepId: created.detail.snapshot.steps[0]!.id,
+      nextOrdinal: 0,
+      interruptedClassification: 'not_dispatched',
+      contextVersion: await computeContextVersion(created.detail.context),
+      contextKeys: [],
+      sessionGeneration: 1,
+      fencingToken: String(grant.fencingToken),
+      recoveryRule: {
+        reuse: 'NEW_PAGE',
+        entryUrl: 'https://shop.example.com/',
+        allowedOrigins: ['https://shop.example.com'],
+      },
+      capability: 'IDENTITY_VERIFIED',
+      autoRecoveriesUsed: 1,
+      manualRecoveriesUsed: 0,
+      recoveryKind: 'auto',
+    }
+    await handle.db.update(runs).set({ authCheckpoint: recovering }).where(eq(runs.id, created.detail.id))
+    let executes = 0
+    const port = fakePort({
+      acquire: async (_run, runGrant) => ({ ok: true, grant: await openLease(created.detail.id, runGrant.fencingToken) }),
+      execute: async () => {
+        executes += 1
+        if (executes === 1) {
+          return {
+            ok: false,
+            error: {
+              code: 'AUTH_GATE_CLOSED',
+              category: 'INFRASTRUCTURE',
+              retryable: false,
+              safeMessage: '登录已失效',
+              cause: { code: 'not_dispatched', message: 'EXPIRED' },
+            },
+          }
+        }
+        return { ok: true, output: {} }
+      },
+      recoverAuth: async () => ({ ok: true }),
+    })
+    const engine = new ExecutionEngine(handle, port)
+    await engine.execute(created.detail.id, { grant })
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(port.calls).toContain('recoverAuth')
+    expect(detail.authCheckpoint?.autoRecoveriesUsed).toBe(1)
+    expect(detail.status).toBe('SUCCEEDED')
   })
 })

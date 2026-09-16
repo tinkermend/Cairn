@@ -13,7 +13,7 @@ import {
   type RunGrant,
   type SessionGrant,
 } from '@cairn/shared'
-import { OBJECT_MISSING_REASONS, shouldCaptureEvidence } from '@cairn/shared'
+import { authGateClosedError, OBJECT_MISSING_REASONS, shouldCaptureEvidence } from '@cairn/shared'
 import type { Page } from 'playwright'
 import type { BrowserSessionManager } from '../browser/session-manager.js'
 import { attachObjectEvidence } from '../browser/port.js'
@@ -69,6 +69,9 @@ export function createAiPort(input: {
           try {
             const result = await runCommand(agent, command, signal)
             hung = result.hung === true
+            if (command.type === 'ai_action' && gate.actionsStarted > 0) input.manager.markTransientPageState(grant)
+            const authFailure = await input.manager.observeInRunAuth(grant, gate.actionsStarted > 0 ? 'dispatched' : 'not_dispatched', signal)
+            if (authFailure) return { ok: false, summary: authFailure.safeMessage, error: authFailure }
             if (!hung && gate.leaseLost) {
               // 丢租后 SDK 的返回值不可信（它可能吞掉被拦下的动作照样完成）：先收尾新开的页，再报结构化丢租。
               await closeUnsupportedPages(page, pagesBefore).catch(() => undefined)
@@ -120,6 +123,14 @@ export function createAiPort(input: {
           scoped.error.code === 'SESSION_LEASE_LOST' && gate.actionsStarted > 0 ? leaseLostError(gate) : scoped.error
         return { ok: false, hung, summary: error.safeMessage, error, screenshot, trace }
       }
+      if (!scoped.value.ok && scoped.value.summary === '登录已失效，已阻止继续操作') {
+        return {
+          ...scoped.value,
+          screenshot,
+          trace,
+          error: authGateClosedError(gate.actionsStarted > 0 ? 'idempotent_failed' : 'not_dispatched'),
+        }
+      }
       return { ...scoped.value, screenshot, trace }
     },
   }
@@ -131,9 +142,29 @@ export function createStepGate(
   grant: SessionGrant,
   signal: AbortSignal,
 ): ActionGate {
-  return new ActionGate(signal, () => {
-    manager.guard.assertHeld(grant.leaseId, grant)
-  })
+  return new ActionGate(
+    signal,
+    () => {
+      manager.guard.assertHeld(grant.leaseId, grant)
+    },
+    () => {
+      if ('assertAuthGate' in manager && typeof manager.assertAuthGate === 'function') {
+        manager.assertAuthGate(grant.leaseId)
+      }
+    },
+    async () => {
+      if ('observeInRunAuth' in manager && typeof manager.observeInRunAuth === 'function') {
+        const error = await manager.observeInRunAuth(grant, 'not_dispatched', signal)
+        if (error) throw new Error('CAIRN_AUTH_GATE:action')
+      }
+    },
+    async () => {
+      if ('observeInRunAuth' in manager && typeof manager.observeInRunAuth === 'function') {
+        const error = await manager.observeInRunAuth(grant, 'dispatched', signal)
+        if (error) throw new Error('CAIRN_AUTH_GATE:action')
+      }
+    },
+  )
 }
 
 function createBudgetClient(input: {
@@ -230,6 +261,9 @@ async function runCommand(
     }
     if (error instanceof Error && error.message.startsWith('CAIRN_READONLY')) {
       return { ok: false, hung: false, summary: '只读 AI 步骤拒绝动作通道' }
+    }
+    if (error instanceof Error && error.message.startsWith('CAIRN_AUTH_GATE')) {
+      return { ok: false, hung: false, summary: '登录已失效，已阻止继续操作' }
     }
     return {
       ok: false,

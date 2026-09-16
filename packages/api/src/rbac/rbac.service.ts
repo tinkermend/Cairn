@@ -15,6 +15,10 @@ export class RbacService {
     return this.store.listPermissions(...args)
   }
 
+  reconcileSystemRolePermissions(...args: Parameters<RbacStore['reconcileSystemRolePermissions']>) {
+    return this.store.reconcileSystemRolePermissions(...args).catch(rethrowDomain)
+  }
+
   listRoles(...args: Parameters<RbacStore['listRoles']>) {
     return this.store.listRoles(...args).catch(rethrowDomain)
   }

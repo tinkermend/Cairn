@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { TARGET_STATUSES, type TargetAccountDto } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { createTargetAccount, updateTargetAccount } from '@/lib/targets-api'
+import { createTargetAccount, updateTargetAccount, updateTargetAccountIdentity } from '@/lib/targets-api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -40,6 +40,7 @@ const formSchema = z.object({
   username: z.string().min(1, '请填写登录名。'),
   password: z.string(),
   status: z.enum(TARGET_STATUSES),
+  expectedIdentity: z.string(),
 })
 type FormValues = z.infer<typeof formSchema>
 
@@ -67,8 +68,9 @@ export function AccountFormDialog({
           username: current.username,
           password: '',
           status: current.status,
+          expectedIdentity: current.expectedIdentity ?? '',
         }
-      : { displayName: '', username: '', password: '', status: 'active' },
+      : { displayName: '', username: '', password: '', status: 'active', expectedIdentity: '' },
   })
 
   const invalidate = async () => {
@@ -91,6 +93,13 @@ export function AccountFormDialog({
             ? {}
             : { password: values.password }),
         })
+        const nextIdentity = values.expectedIdentity.trim() || null
+        if (nextIdentity !== (current.expectedIdentity ?? null)) {
+          await updateTargetAccountIdentity(targetId, current.id, {
+            expectedRevision: current.configRevision ?? 1,
+            expectedIdentity: nextIdentity,
+          })
+        }
         toast.success('目标账号已更新')
       } else {
         await createTargetAccount(targetId, {
@@ -164,6 +173,19 @@ export function AccountFormDialog({
                   <FormLabel>登录名</FormLabel>
                   <FormControl>
                     <Input {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='expectedIdentity'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>期望身份</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder='核验接口返回的账号标识，可空' />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

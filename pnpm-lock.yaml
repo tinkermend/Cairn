@@ -20,6 +20,9 @@ importers:
       '@cairn/db':
         specifier: workspace:*
         version: link:../db
+      '@cairn/map':
+        specifier: workspace:*
+        version: link:../map
       '@cairn/secret':
         specifier: workspace:*
         version: link:../secret
@@ -194,6 +197,19 @@ importers:
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@25.9.5)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(@vitest/ui@4.1.11)(vite@6.4.3(@types/node@25.9.5)(jiti@2.7.0)(lightningcss@1.33.0)(tsx@4.23.13)(yaml@2.9.0))
+
+  packages/map:
+    dependencies:
+      '@cairn/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@types/node@25.9.5)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(@vitest/ui@4.1.11)(vite@8.2.2(@types/node@25.9.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
 
   packages/secret:
     dependencies:
@@ -447,6 +463,9 @@ importers:
       '@cairn/db':
         specifier: workspace:*
         version: link:../db
+      '@cairn/map':
+        specifier: workspace:*
+        version: link:../map
       '@cairn/secret':
         specifier: workspace:*
         version: link:../secret

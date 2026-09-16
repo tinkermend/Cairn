@@ -41,7 +41,7 @@ pnpm infra:down          # 停容器，保留 .data
 
 需要清盘时再 `podman compose -f deploy/compose.yml down -v`，并手动删 `.data/postgres`、`.data/minio`。
 
-数据库后端配置、SQLite 部署限制、跨库受控迁移和运行观察提示通道见[数据库配置与受控迁移](database-backends.md)。PostgreSQL 默认用 LISTEN/NOTIFY；若部署 MySQL / SQLite 并要实时推送，需另配 `CAIRN_REDIS_URL`，不要把 Redis 当成队列或锁。SQLite 只支持本机文件与同机进程，不能用共享网络文件给多台 API/Worker。
+数据库后端配置、PostgreSQL / MySQL 的受控迁移和运行观察提示通道见[数据库配置与受控迁移](database-backends.md)。PostgreSQL 默认用 LISTEN/NOTIFY；部署 MySQL 并要实时推送时，需另配 `CAIRN_REDIS_URL`，不要把 Redis 当成队列或锁。
 
 ## Worker 内部入口与控制面入口
 
@@ -58,6 +58,20 @@ API ──HTTPS + HMAC──► 每 Worker 专用 TLS 入口 ──同机 loopba
 
 排查：治理页「执行节点」看登记是否 READY、心跳是否新鲜、`routeAvailability`；库内入口无效或过期时 API 不会改去猜另一个地址。控制面入口只解决浏览器到 API，Worker 专用入口失败不要先改 CORS。
 
+## 升级注意：会话占用协议 `session-occupancy@2`
+
+含 `0032_session_occupancy`（MySQL 为 `0016_session_occupancy`）的版本把认证等待占用迁入 `session_leases` 用途租约，并要求 Worker 声明协议能力 `session-occupancy@2`。这是会话管理中唯一的破坏性迁移，**不能新旧二进制混跑**。
+
+升级前：停止发放新 Run，等待 ACTIVE 执行租约与 `auth_hold_*` 占用排空（`WAITING_FOR_AUTH` 须完成、取消或超时），再部署新 API 与 Worker。未声明该能力的 Worker 不能进入 READY。LOST 和未确认停止的实例不会为升级自动放键。存量 Profile 目录首次加载按 `revision=1` 登记当前节点，不跨节点合并。回退时若已存在 `MAINTENANCE` / `AUTH_WAIT` 行或 `SESSION_OPERATION` 主体，拒绝启动旧二进制。
+
+## 升级注意：动作模块调用与快照协议 `snapshot.moduleManifest@1`
+
+含 `0044_scenario_action_module_refs`（MySQL 为 `0028_scenario_action_module_refs`）的版本给场景编写文档加上 V2 节点（可含动作模块调用）、`scenario_versions.authoring_document` / `module_manifest` 与 `scenario_module_refs` 引用索引。
+
+上线顺序：迁移 → Worker → API → Web。Worker 先部署到声明 `snapshot.moduleManifest@1` 的版本；未声明的 Worker 不会领取快照带 `moduleManifest` 的 Run，不含模块调用的 Run 照常领取。
+
+**一旦保存过含模块调用的 V2 草稿，就不能把 API 降级到不认识 V2 的版本**：旧 API 无法解析该草稿，也会拒绝写入。回退只回退二进制，不要删列——`authoring_document`、`module_manifest` 与 `scenario_module_refs` 对旧版本是多余字段，留着不影响运行。被场景版本引用的模块版本受外键 `restrict` 保护，不能物理删除。
+
 ## 升级注意：产品角色
 
-含 `0018_product_roles`（MySQL / SQLite 为 `0004_product_roles`）的版本会把系统角色收成「管理员 / 编写者 / 执行者 / 只读」。已有 `operator` 账号**不会**自动补挂编写者，升级后只能跑、不能改目标或场景，也看不见用户 / 角色 / 审计。这是预期降权，不是故障。若该用户仍要编写，由管理员在用户页补挂「编写者」。新建控制台账号默认是编写者。
+含 `0018_product_roles`（MySQL 为 `0004_product_roles`）的版本会把系统角色收成「管理员 / 编写者 / 执行者 / 只读」。已有 `operator` 账号**不会**自动补挂编写者，升级后只能跑、不能改目标或场景，也看不见用户 / 角色 / 审计。这是预期降权，不是故障。若该用户仍要编写，由管理员在用户页补挂「编写者」。新建控制台账号默认是编写者。

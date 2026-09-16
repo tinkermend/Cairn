@@ -1,7 +1,8 @@
+import { RunCreateDialog } from './create-dialog'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { isAiStepType, isFinishedRunStatus, resolveEvidencePolicy, type ExecutableStepType } from '@cairn/shared'
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { isFinishedRunStatus, RUN_EXECUTE_ALL_OF, resolveEvidencePolicy } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -27,30 +28,29 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
-  ATTEMPT_STATUS_LABELS,
   CAPTURE_MODE_LABELS,
-  PLACEMENT_COPY,
   RUN_EVIDENCE_STATUS_LABELS,
   RUN_STATUS_LABELS,
-  STEP_RUN_STATUS_LABELS,
-  STEP_TYPE_LABELS,
-  formatDuration,
   runEvidenceStatusTone,
   runStatusTone,
-  stepRunStatusTone,
 } from './labels'
 import { AttemptEvidenceList } from './evidence-viewer'
-import { AiAttemptSummary } from './ai-evidence'
 import { CatalogName } from './catalog-name'
 import { BrowserView } from './browser-view'
+import { RunMapClues } from '@/features/map/run-clues'
+import { RunMapConsumption, RunMapDecisions } from './map-decisions'
+import { PlacementHint } from './placement-hint'
 import { DebugHoldBar } from './debug-hold-bar'
+import { StepTimeline } from './step-timeline'
 import { useAssistantStore } from '@/stores/assistant-store'
 
 export function RunDetailPage() {
   const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
+  const search = useSearch({ from: '/_authenticated/runs/$runId/' })
   const navigate = useNavigate()
   const { run, evidence, connection, query: runQuery, refresh, eventSeq } = useRunObservation(runId)
   const [note, setNote] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [removing, setRemoving] = useState(false)
   const canDelete = useCan('run:delete')
@@ -204,21 +204,65 @@ export function RunDetailPage() {
               ) : (
                 <p className='mt-2 text-label text-muted-foreground'>当前没有执行租约</p>
               )}
-              {run.placement.state === 'session_lost' ||
-              run.placement.state === 'owner_required' ||
-              run.placement.state === 'owner_at_capacity' ||
-              run.placement.state === 'session_not_ready' ? (
-                <p
-                  className={
-                    run.placement.state === 'session_lost'
-                      ? 'mt-2 text-body text-status-warning-foreground'
-                      : 'mt-2 text-body text-muted-foreground'
-                  }
-                >
-                  {PLACEMENT_COPY[run.placement.state]}
-                  {run.placement.sessionId ? ` 会话 ${run.placement.sessionId}` : ''}
-                  {run.placement.ownerWorkerId ? ` · Worker ${run.placement.ownerWorkerId}` : ''}
+              <PlacementHint
+                placement={run.placement}
+                targetId={run.targetId}
+                accountId={run.targetAccountId}
+              />
+              <RunMapConsumption frozen={run.snapshot.mapConsumption} />
+              {run.snapshot.authVerification ? (
+                <p className='mt-2 text-label text-muted-foreground'>
+                  登录核验{' '}
+                  {run.snapshot.authVerification.capability === 'IDENTITY_VERIFIED'
+                    ? '身份已核验'
+                    : run.snapshot.authVerification.capability === 'LOGIN_VERIFIED'
+                      ? '登录已核验'
+                      : '旧模式'}
+                  {run.snapshot.authVerification.profileRevision
+                    ? ` · 规则修订 ${run.snapshot.authVerification.profileRevision}`
+                    : ''}
+                  {` · 新鲜度 ${run.snapshot.authVerification.freshnessSeconds} 秒`}
                 </p>
+              ) : (
+                <p className='mt-2 text-label text-muted-foreground'>历史运行未冻结核验规则，按旧模式解释。</p>
+              )}
+              {run.authCheckpoint ? (
+                <div className='mt-3 space-y-2 rounded-md border border-border-card bg-muted/30 p-3'>
+                  <p className='text-body'>
+                    {run.status === 'NEEDS_REVIEW' ? '操作结果待核查，请先确认业务结果' : run.authCheckpoint.status === 'recovering'
+                      ? run.authCheckpoint.recoveryKind === 'manual'
+                        ? '正在等待人工认证恢复'
+                        : '正在恢复登录'
+                      : run.authCheckpoint.status === 'recovered'
+                        ? '登录已恢复，已通过续跑校验'
+                        : run.authCheckpoint.status === 'unrecoverable'
+                          ? '登录已失效，本次运行无法安全续跑'
+                          : '认证门禁已关闭'}
+                  </p>
+                  <p className='text-label text-muted-foreground'>
+                    {run.authCheckpoint.trigger.summary}
+                    {run.authCheckpoint.unrecoverableCode
+                      ? ` · ${run.authCheckpoint.unrecoverableCode === 'AUTH_RECOVERY_LIMIT' ? '恢复次数已用尽' : '无法安全续跑'}`
+                      : ''}
+                  </p>
+                  <p className='text-label text-muted-foreground'>恢复位置：第 {run.authCheckpoint.nextOrdinal + 1} 步 · {run.snapshot.steps.find((step) => step.id === run.authCheckpoint?.nextStepId)?.name ?? run.authCheckpoint.nextStepId}</p>
+                  {run.authCheckpoint.status === 'unrecoverable' && run.status !== 'NEEDS_REVIEW' ? (
+                    <Can allOf={RUN_EXECUTE_ALL_OF}>
+                    <Button
+                      variant='outline'
+                      onClick={() => {
+                        if (run.scenarioVersionKind === 'trial') {
+                          void navigate({ to: '/scenarios/$scenarioId', params: { scenarioId: run.scenarioId } })
+                          return
+                        }
+                        setCreateOpen(true)
+                      }}
+                    >
+                      {run.scenarioVersionKind === 'trial' ? '新建完整试跑' : '新建运行'}
+                    </Button>
+                    </Can>
+                  ) : null}
+                </div>
               ) : null}
               {run.status === 'NEEDS_REVIEW' ? (
                 <Can permission='run:review'>
@@ -281,6 +325,8 @@ export function RunDetailPage() {
               <DebugHoldBar run={run} onChanged={refresh} />
             ) : null}
 
+            <RunMapClues targetId={run.targetId} runId={run.id} />
+            <RunMapDecisions key={run.id} runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} />
             {(() => {
               const runLevel = evidenceItems.filter((item) => !item.attemptId)
               return runLevel.length > 0 ? (
@@ -305,61 +351,7 @@ export function RunDetailPage() {
                     : '运行在步骤开始前失败，没有留下 Attempt 证据。常见原因是浏览器步骤未指定目标账号，或会话配置不被支持。'}
                 </p>
               ) : null}
-              <ol className='space-y-3'>
-                {run.stepRuns.map((step) => (
-                  <li key={step.id} className='rounded-md border border-border-card p-3'>
-                    <div className='flex flex-wrap items-center gap-2'>
-                      <span className='font-medium'>
-                        {step.ordinal + 1}. {step.name}
-                      </span>
-                      <StatusBadge tone={stepRunStatusTone(step.status)}>
-                        {STEP_RUN_STATUS_LABELS[step.status]}
-                      </StatusBadge>
-                    </div>
-                    <p className='mt-1 text-label text-muted-foreground'>
-                      {isAiStepType(step.type) ? (
-                        <StatusBadge tone='ai'>
-                          {step.type in STEP_TYPE_LABELS
-                            ? STEP_TYPE_LABELS[step.type as ExecutableStepType]
-                            : step.type}
-                        </StatusBadge>
-                      ) : step.type in STEP_TYPE_LABELS ? (
-                        STEP_TYPE_LABELS[step.type as ExecutableStepType]
-                      ) : (
-                        step.type
-                      )}
-                    </p>
-                    {step.attempts.length === 0 ? (
-                      <p className='mt-2 text-label text-muted-foreground'>尚未开始尝试。</p>
-                    ) : null}
-                    {step.attempts.map((attempt) => (
-                      <div key={attempt.id} className='mt-2 rounded-sm bg-muted/40 p-2 text-label'>
-                        <p>
-                          Attempt #{attempt.attemptNo} · {ATTEMPT_STATUS_LABELS[attempt.status]}
-                          {formatDuration(attempt.startedAt, attempt.finishedAt)
-                            ? ` · ${formatDuration(attempt.startedAt, attempt.finishedAt)}`
-                            : ''}
-                        </p>
-                        {attempt.error ? (
-                          <p className='mt-1 text-destructive'>
-                            {attempt.error.code}: {attempt.error.safeMessage}
-                          </p>
-                        ) : null}
-                        {isAiStepType(step.type) ? (
-                          <AiAttemptSummary
-                            output={attempt.output}
-                            evidence={evidenceItems.filter((item) => item.attemptId === attempt.id)}
-                          />
-                        ) : null}
-                        <AttemptEvidenceList
-                          runId={run.id}
-                          items={evidenceItems.filter((item) => item.attemptId === attempt.id)}
-                        />
-                      </div>
-                    ))}
-                  </li>
-                ))}
-              </ol>
+              <StepTimeline run={run} evidenceItems={evidenceItems} focusInvocationId={search.invocation} />
             </section>
 
             <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
@@ -370,6 +362,7 @@ export function RunDetailPage() {
           </div>
         )}
       </Main>
+      {run && createOpen ? <RunCreateDialog open={createOpen} onOpenChange={setCreateOpen} defaultScenarioId={run.scenarioId} defaultTargetId={run.targetId} /> : null}
       <ResourceDeleteDialog
         open={removing}
         onOpenChange={setRemoving}

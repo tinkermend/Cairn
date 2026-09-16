@@ -1,8 +1,10 @@
+import '@/styles/index.css'
+import { page } from 'vitest/browser'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RunDetailDto, RunEvidenceListResponse, RunObservation } from '@cairn/shared'
+import { runPlacement, type RunDetailDto, type RunEvidenceListResponse, type RunObservation } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { RunDetailPage } from './detail'
 
@@ -27,9 +29,12 @@ const mocks = vi.hoisted(() => ({
   retryRunCleanup: vi.fn(),
   observeRun: vi.fn(),
   debugRun: vi.fn(),
+  createRun: vi.fn(),
+  fetchRunMapDecisions: vi.fn(),
+  search: {} as { invocation?: string },
 }))
 
-vi.mock('@/lib/runs-api', () => mocks)
+vi.mock('@/lib/runs-api', async (original) => ({ ...await original<typeof import('@/lib/runs-api')>(), ...mocks }))
 
 // 顶栏是各页共用的外壳（侧栏上下文、搜索、账号菜单），与本页要验的东西无关。
 vi.mock('@/components/layout/app-header', () => ({
@@ -42,6 +47,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useParams: () => ({ runId: RUN_ID }),
+    useSearch: () => mocks.search,
     useNavigate: () => vi.fn(),
     Link: ({ children }: { children: ReactNode }) => <a href='#'>{children}</a>,
   }
@@ -65,12 +71,12 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     evidenceStatus: 'PENDING',
     lease: null,
     debugMode: 'runThrough',
-    placement: {
+    placement: runPlacement({
       state: 'not_applicable',
       sessionId: null,
       ownerWorkerId: null,
       sessionStatus: null,
-    },
+    }),
     snapshot: {
       schemaVersion: 1,
       runId: RUN_ID,
@@ -185,7 +191,9 @@ async function renderPage() {
 describe('RunDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.search = {}
     mocks.fetchRunObservation.mockResolvedValue(observationOf(runDetail()))
+    mocks.fetchRunMapDecisions.mockResolvedValue({ items: [] })
     hangSubscribe()
     mocks.cancelRun.mockResolvedValue({ status: 'CANCELLED' })
     mocks.reviewRun.mockResolvedValue(undefined)
@@ -366,6 +374,54 @@ describe('RunDetailPage', () => {
     await expect.element(screen.getByRole('button', { name: '判定失败' })).toBeInTheDocument()
   })
 
+  it.each(['FAILED', 'NEEDS_REVIEW'] as const)('认证恢复结论 %s：失败可新建，核查禁止重放', async (status) => {
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status,
+          scenarioVersionKind: 'trial',
+          authCheckpoint: {
+            schemaVersion: 1,
+            status: 'unrecoverable',
+            closedAt: '2026-09-16T04:00:00.000Z',
+            trigger: { kind: 'navigated_to_login', at: '2026-09-16T04:00:00.000Z', summary: '已跳到登录页' },
+            nextStepId: '77777777-7777-4777-8777-777777777777',
+            nextOrdinal: 0,
+            interruptedClassification: 'not_dispatched',
+            contextVersion: 'a'.repeat(64),
+            contextKeys: [],
+            sessionGeneration: 1,
+            fencingToken: '1',
+            recoveryRule: {
+              reuse: 'NEW_PAGE',
+              entryUrl: 'https://shop.example.com/',
+              allowedOrigins: ['https://shop.example.com'],
+            },
+            capability: 'LOGIN_VERIFIED',
+            autoRecoveriesUsed: 0,
+            manualRecoveriesUsed: 0,
+            unrecoverableCode: 'AUTH_CONTEXT_NOT_RECOVERABLE',
+          },
+        }),
+      ),
+    )
+    signIn(['run:read', 'run:execute', 'target:read', 'workflow:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText(/恢复位置：第 1 步/)).toBeInTheDocument()
+    if (status === 'NEEDS_REVIEW') {
+      await expect.element(screen.getByText('操作结果待核查，请先确认业务结果')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '新建完整试跑' }).elements()).toHaveLength(0)
+      for (const width of [1440, 390]) {
+        await page.viewport(width, 900)
+        await page.screenshot({ path: `/Users/tinker/src/singe/Cairn/.run/session-d-fixes/核查-${width}.png` })
+      }
+      await page.viewport(1440, 900)
+    } else {
+      await expect.element(screen.getByText('登录已失效，本次运行无法安全续跑')).toBeInTheDocument()
+      await expect.element(screen.getByRole('button', { name: '新建完整试跑' })).toBeInTheDocument()
+    }
+  })
+
   it('等待认证：有控制权的用户在详情页直接看到处理登录', async () => {
     mocks.fetchRunObservation.mockResolvedValue(
       observationOf(runDetail({ status: 'WAITING_FOR_AUTH', stepRuns: [] })),
@@ -384,12 +440,12 @@ describe('RunDetailPage', () => {
         runDetail({
           status: 'QUEUED',
           stepRuns: [],
-          placement: {
+          placement: runPlacement({
             state: 'session_lost',
             sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             ownerWorkerId: 'worker-a',
             sessionStatus: 'LOST',
-          },
+          }),
         }),
       ),
     )
@@ -403,18 +459,84 @@ describe('RunDetailPage', () => {
         runDetail({
           status: 'QUEUED',
           stepRuns: [],
-          placement: {
+          placement: runPlacement({
             state: 'owner_required',
             sessionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
             ownerWorkerId: 'worker-a',
             sessionStatus: 'OPEN',
-          },
+          }),
         }),
       ),
     )
     const waiting = await renderPage()
     await expect.element(waiting.getByText(/等待持有该账号会话的 Worker 领取/)).toBeInTheDocument()
     expect(waiting.getByText(/等待持有该账号会话/).element().className).toContain('text-muted-foreground')
+  })
+
+  it('排队中显示占用等待原因与 Session 代次', async () => {
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'QUEUED',
+          stepRuns: [],
+          placement: runPlacement({
+            state: 'session_not_ready',
+            sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            ownerWorkerId: 'worker-a',
+            sessionStatus: 'OPEN',
+            waitReason: 'SESSION_IN_USE_BY_RUN',
+            occupyingRunId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            generation: 3,
+            acquireReason: 'reused',
+          }),
+        }),
+      ),
+    )
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText(/同一账号会话正在被另一条运行占用/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/代次 3/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/复用会话/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/占用运行/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/历史运行未冻结核验规则，按旧模式解释/)).toBeInTheDocument()
+  })
+
+  it('快照含 authVerification 时显示等级与修订，不用可用绿', async () => {
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'QUEUED',
+          stepRuns: [],
+          snapshot: {
+            schemaVersion: 1,
+            runId: RUN_ID,
+            targetId: '11111111-1111-4111-8111-111111111111',
+            scenarioId: '33333333-3333-4333-8333-333333333333',
+            scenarioVersionId: '55555555-5555-4555-8555-555555555555',
+            steps: [],
+            input: {},
+            createdAt: '2026-09-11T02:00:00.000Z',
+            authVerification: {
+              profileRevision: 2,
+              profileDigest: 'digest',
+              loginFieldsDigest: 'fields',
+              expectedIdentity: 'alice',
+              capability: 'LOGIN_VERIFIED',
+              freshnessSeconds: 300,
+              verifyTimeoutMs: 15_000,
+              loginTimeoutMs: 60_000,
+              verifyRetryBackoffSeconds: [30, 120],
+              platformConfigRevision: 1,
+            },
+          },
+        }),
+      ),
+    )
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText(/登录已核验/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/规则修订 2/)).toBeInTheDocument()
+    expect(screen.getByText(/登录已核验/).element().className).toContain('text-muted-foreground')
   })
 
   it('两根轴并列：成功且证据不完整是橙色；终态收集中是灰色', async () => {
@@ -526,6 +648,167 @@ describe('RunDetailPage', () => {
     await screen.getByRole('button', { name: '刷新' }).click()
     await vi.waitFor(() => expect(mocks.fetchRunObservation).toHaveBeenCalledTimes(2))
     expect(mocks.subscribeRunEvents).toHaveBeenCalled()
+  })
+
+  it('当快照含 moduleManifest 时按动作模块分组展示，支持折叠与展开', async () => {
+    signIn(['run:read'])
+    const stepId1 = '77777777-7777-4777-8777-777777777771'
+    const stepId2 = '77777777-7777-4777-8777-777777777772'
+    const detailWithManifest = runDetail({
+      status: 'SUCCEEDED',
+      snapshot: {
+        schemaVersion: 1,
+        runId: RUN_ID,
+        targetId: '11111111-1111-4111-8111-111111111111',
+        scenarioId: '33333333-3333-4333-8333-333333333333',
+        scenarioVersionId: '55555555-5555-4555-8555-555555555555',
+        steps: [],
+        input: {},
+        createdAt: '2026-09-11T02:00:00.000Z',
+        moduleManifest: {
+          entries: [
+            {
+              invocationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+              ordinal: 0,
+              name: '统一登录',
+              moduleId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
+              moduleKey: 'login.auth',
+              moduleVersionId: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
+              versionNo: 2,
+              contentDigest: 'content-digest',
+              contractDigest: 'contract-digest',
+              implementationDigest: 'impl-digest',
+              implementationKey: 'default',
+              executionMode: 'DETERMINISTIC',
+              effectCeiling: 'SIDE_EFFECT',
+              expandedStepIds: [stepId1, stepId2],
+              internalToExpanded: { login: stepId1, submit: stepId2 },
+              preconditionStepIds: [],
+              postconditionStepIds: [],
+              outputRequired: [],
+              inputBindingsDigest: 'bindings-digest',
+            },
+          ],
+        },
+      },
+      stepRuns: [
+        {
+          id: 'step-run-1',
+          stepId: stepId1,
+          name: '输入用户名',
+          type: 'fill',
+          ordinal: 0,
+          status: 'SUCCEEDED',
+          startedAt: '2026-09-11T02:00:01.000Z',
+          finishedAt: '2026-09-11T02:00:02.000Z',
+          attempts: [],
+        },
+        {
+          id: 'step-run-2',
+          stepId: stepId2,
+          name: '点击登录',
+          type: 'click',
+          ordinal: 1,
+          status: 'SUCCEEDED',
+          startedAt: '2026-09-11T02:00:02.000Z',
+          finishedAt: '2026-09-11T02:00:03.000Z',
+          attempts: [],
+        },
+      ],
+    })
+    mocks.fetchRunObservation.mockResolvedValue({
+      run: detailWithManifest,
+      evidence: { items: [], nextCursor: null },
+      realtime: false,
+    })
+    const screen = await renderPage()
+    await expect.element(screen.getByText('统一登录')).toBeInTheDocument()
+    await expect.element(screen.getByText('v2')).toBeInTheDocument()
+    await expect.element(screen.getByText('步骤已按动作模块分组展示')).toBeInTheDocument()
+    // 成功分组默认折叠
+    await expect.element(screen.getByText('1. 输入用户名')).not.toBeInTheDocument()
+    // 点击分组头部展开
+    await screen.getByRole('button', { name: /统一登录/ }).click()
+    await expect.element(screen.getByText('1. 输入用户名')).toBeInTheDocument()
+    await expect.element(screen.getByText('2. 点击登录')).toBeInTheDocument()
+  })
+
+  it('AME-11 带 invocation 查询时展开对应模块分组', async () => {
+    signIn(['run:read'])
+    const stepId1 = '77777777-7777-4777-8777-777777777771'
+    const stepId2 = '77777777-7777-4777-8777-777777777772'
+    const invocationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
+    mocks.search = { invocation: invocationId }
+    const detailWithManifest = runDetail({
+      status: 'SUCCEEDED',
+      snapshot: {
+        schemaVersion: 1,
+        runId: RUN_ID,
+        targetId: '11111111-1111-4111-8111-111111111111',
+        scenarioId: '33333333-3333-4333-8333-333333333333',
+        scenarioVersionId: '55555555-5555-4555-8555-555555555555',
+        steps: [],
+        input: {},
+        createdAt: '2026-09-11T02:00:00.000Z',
+        moduleManifest: {
+          entries: [
+            {
+              invocationId,
+              ordinal: 0,
+              name: '统一登录',
+              moduleId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
+              moduleKey: 'login.auth',
+              moduleVersionId: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
+              versionNo: 2,
+              contentDigest: 'content-digest',
+              contractDigest: 'contract-digest',
+              implementationDigest: 'impl-digest',
+              implementationKey: 'default',
+              executionMode: 'DETERMINISTIC',
+              effectCeiling: 'SIDE_EFFECT',
+              expandedStepIds: [stepId1, stepId2],
+              internalToExpanded: { login: stepId1, submit: stepId2 },
+              preconditionStepIds: [],
+              postconditionStepIds: [],
+              outputRequired: [],
+              inputBindingsDigest: 'bindings-digest',
+            },
+          ],
+        },
+      },
+      stepRuns: [
+        {
+          id: 'step-run-1',
+          stepId: stepId1,
+          name: '输入用户名',
+          type: 'fill',
+          ordinal: 0,
+          status: 'SUCCEEDED',
+          startedAt: '2026-09-11T02:00:01.000Z',
+          finishedAt: '2026-09-11T02:00:02.000Z',
+          attempts: [],
+        },
+        {
+          id: 'step-run-2',
+          stepId: stepId2,
+          name: '点击登录',
+          type: 'click',
+          ordinal: 1,
+          status: 'SUCCEEDED',
+          startedAt: '2026-09-11T02:00:02.000Z',
+          finishedAt: '2026-09-11T02:00:03.000Z',
+          attempts: [],
+        },
+      ],
+    })
+    mocks.fetchRunObservation.mockResolvedValue({
+      run: detailWithManifest,
+      evidence: { items: [], nextCursor: null },
+      realtime: false,
+    })
+    const screen = await renderPage()
+    await expect.element(screen.getByText('1. 输入用户名')).toBeInTheDocument()
+    expect(document.getElementById(`module-group-${invocationId}`)?.dataset.focused).toBe('true')
   })
 })
 

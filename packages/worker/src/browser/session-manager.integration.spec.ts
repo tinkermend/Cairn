@@ -7,6 +7,7 @@ import type { Step } from '@cairn/shared'
 import {
   acquireSessionLease,
   claimRun,
+  claimSessionUse,
   enterRunWaitingForAuth,
   createRunWithSnapshot,
   createScenarioWithVersion,
@@ -21,6 +22,7 @@ import {
   registerWorker,
   markWorkerStopped,
   openIsolatedDb,
+  setSessionProbe,
   setSessionStatus,
   sql,
   consoleAccounts,
@@ -29,8 +31,9 @@ import {
   type DbHandle,
 } from '@cairn/db/testing'
 import { DEFAULT_SESSION_POLICY, DEV_CREDENTIAL_KEY, type RunGrant, type RunSnapshot } from '@cairn/shared'
+import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
-import { BrowserRuntimeError, type BrowserHandle } from './runtime'
+import { BrowserRuntimeError, currentOccupancyGrant, type BrowserHandle } from './runtime'
 import { clearPlacementYields, placementYieldExcludes, yieldPlacement } from '../runtime/placement-backoff'
 import { BrowserSessionManager, SessionLeaseError } from './session-manager'
 
@@ -193,7 +196,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
         workerInstanceId: WORKER_INSTANCE,
         profileRoot,
         headless: true,
-        maxSessions: 2,
+        maxSessions: 32,
         defaultLeaseTtlSeconds: 30,
         defaultAuthWaitSeconds: 60,
         heartbeatMs: 60_000,
@@ -204,13 +207,18 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       workerId: WORKER,
       instanceId: WORKER_INSTANCE,
       capacity: 32,
+      maxSessions: 32,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
     await manager.reconcileOwn()
   })
 
   afterEach(() => {
     clearPlacementYields()
+    manager.launchOverride = undefined
+    manager.resolveCredential = undefined
+    ;(manager as unknown as { browserUnavailable: boolean }).browserUnavailable = false
   })
 
   afterAll(async () => {
@@ -274,6 +282,12 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     return { snapshot: (await getRun(handle.db, created.detail.id)).snapshot, grant }
   }
 
+  it('SM37 未发布规则的 Run 冻结为 LEGACY', async () => {
+    const account = await makeAccount('password', 'legacy')
+    const { snapshot } = await makeRunningSnapshot({ targetId, accountId: account })
+    expect(snapshot.authVerification?.capability ?? 'LEGACY').toBe('LEGACY')
+  })
+
   it('无 targetAccountId → SESSION_ACCOUNT_REQUIRED', async () => {
     const { snapshot: run, grant } = await makeRunningSnapshot({ targetId, accountId })
     const { targetAccountId: _, ...noAccount } = run
@@ -332,7 +346,9 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       workerId: `${WORKER}-cap`,
       instanceId: capInstance,
       capacity: 8,
+      maxSessions: 1,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
     const limited = new BrowserSessionManager(
       handle,
@@ -400,7 +416,9 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       workerId: WORKER,
       instanceId: freshInstance,
       capacity: 32,
+      maxSessions: 32,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
     const fresh = new BrowserSessionManager(
       handle,
@@ -424,15 +442,18 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       workerId: WORKER,
       instanceId: WORKER_INSTANCE,
       capacity: 32,
+      maxSessions: 32,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
   })
 
-  it('认证超时 reap：WAITING_FOR_AUTH → FAILED，会话仍 OPEN', async () => {
-    const account = await makeAccount('manual', 'auth-timeout')
+  it('EXPIRED 会话入口已登录则复用，不再打回等待', async () => {
+    const account = await makeAccount('manual', 'reuse-expired')
     const session = await requireCreatedSession(handle.db, {
       key: { targetId: manualTargetId, targetAccountId: account },
       ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,
@@ -441,35 +462,92 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       sessionId: session.id,
       expectedVersion: session.version,
       status: 'OPEN',
+      ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
+    })
+    await setSessionProbe(handle.db, {
+      sessionId: session.id,
+      ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
+      health: 'HEALTHY',
+      authState: 'EXPIRED',
+    })
+    manager.setWorkerInstance(WORKER_INSTANCE)
+    manager.installLiveHandleForTest(session.id, stubBrowserHandle(profileRoot))
+    const { snapshot: run, grant } = await makeRunningSnapshot({
+      targetId: manualTargetId,
+      accountId: account,
+    })
+    const result = await manager.acquire(run, grant)
+    expect(result.ok).toBe(true)
+    expect((await getSessionById(handle.db, session.id))?.authState).toBe('AUTHENTICATED')
+    if (result.ok) await manager.release(result.grant.leaseId, 'test')
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: (await getSessionById(handle.db, session.id))!.version,
+      status: 'CLOSED',
+      closeReason: 'cleanup',
+      ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
+    })
+  })
+
+  it('认证超时 reap：WAITING_FOR_AUTH → FAILED，会话仍 OPEN', async () => {
+    const account = await makeAccount('manual', 'auth-timeout')
+    const session = await requireCreatedSession(handle.db, {
+      key: { targetId: manualTargetId, targetAccountId: account },
+      ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+      ownerWorkerId: WORKER,
+      ownerWorkerInstanceId: WORKER_INSTANCE,
     })
     const { snapshot: run, grant } = await makeRunningSnapshot({
       targetId: manualTargetId,
       accountId: account,
     })
     manager.setWorkerInstance(WORKER_INSTANCE)
-    await enterRunWaitingForAuth(handle.db, {
+    const claimed = await claimSessionUse(handle.db, {
+      key: { targetId: manualTargetId, targetAccountId: account },
+      owner: { kind: 'RUN', runId: grant.runId, runFencingToken: grant.fencingToken },
+      purpose: 'EXECUTION',
+      holderWorkerId: WORKER,
+      holderInstanceId: WORKER_INSTANCE,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    if (!claimed.ok) throw new Error(claimed.message ?? claimed.code)
+    const waitGrant = await enterRunWaitingForAuth(handle.db, {
       grant,
-      sessionId: session.id,
+      sessionId: claimed.session.id,
       workerId: WORKER,
       workerInstanceId: WORKER_INSTANCE,
       holdSeconds: 1,
     })
+    if (!waitGrant) throw new Error('enter wait failed')
     await handle.db.execute(sql`
-      UPDATE browser_sessions SET auth_hold_expires_at = now() - interval '5 seconds'
-       WHERE id = ${session.id}
+      UPDATE session_leases SET wait_deadline_at = now() - interval '5 seconds'
+       WHERE id = ${waitGrant.leaseId}
     `)
 
     const n = await manager.reapAuthTimeouts()
     expect(n).toBeGreaterThanOrEqual(1)
     expect((await getRun(handle.db, run.runId)).status).toBe('FAILED')
-    const sess = await getSessionById(handle.db, session.id)
+    const sess = await getSessionById(handle.db, claimed.session.id)
     expect(sess?.status).toBe('OPEN')
-    expect(sess?.authHoldWorkerId).toBeNull()
-    expect(sess?.authState).toBe('EXPIRED')
 
     await setSessionStatus(handle.db, {
-      sessionId: session.id,
-      expectedVersion: (await getSessionById(handle.db, session.id))!.version,
+      sessionId: claimed.session.id,
+      expectedVersion: (await getSessionById(handle.db, claimed.session.id))!.version,
       status: 'CLOSED',
       closeReason: 'cleanup',
       ownerWorkerId: WORKER,
@@ -545,6 +623,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       instanceId: evictInstance,
       capacity: 8,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
     const evictor = new BrowserSessionManager(
       handle,
@@ -632,6 +711,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       instanceId: fullInstance,
       capacity: 8,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
     const full = new BrowserSessionManager(
       handle,
@@ -766,6 +846,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       instanceId: healInstance,
       capacity: 8,
       lostAfterSeconds: 60,
+      protocolCapabilities: [...WORKER_TEST_PROTOCOLS],
     })
     const isolator = new BrowserSessionManager(
       handle,
@@ -834,5 +915,120 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
     await manager.acquire(third.snapshot, third.grant)
     expect(launches).toBe(2)
     manager.launchOverride = undefined
+  })
+
+  it('SM34A acquire 先写租约再启动，launch 期间 ALS 为 EXECUTION', async () => {
+    const account = await makeAccount('password', 'als-launch')
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: account })
+    let purpose: string | undefined
+    let activeBeforeLaunch = 0
+    manager.resolveCredential = async () => ({ username: 'alice', password: 'x' })
+    manager.launchOverride = async (dir) => {
+      purpose = currentOccupancyGrant()?.purpose
+      const { rows } = await handle.pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM session_leases
+          WHERE holder_worker_id = $1 AND status = 'ACTIVE' AND purpose = 'EXECUTION'`,
+        [WORKER],
+      )
+      activeBeforeLaunch = Number(rows[0]?.n ?? '0')
+      return stubBrowserHandle(dir)
+    }
+    const result = await manager.acquire(snapshot, grant)
+    manager.launchOverride = undefined
+    manager.resolveCredential = undefined
+    expect(result.ok).toBe(true)
+    expect(purpose).toBe('EXECUTION')
+    expect(activeBeforeLaunch).toBeGreaterThan(0)
+    if (result.ok) await manager.release(result.grant.leaseId, 'test')
+  })
+
+  it('SM34B execute 期间安装 ALS，离开后清空', async () => {
+    const account = await makeAccount('password', 'als-exec')
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId, accountId: account })
+    manager.resolveCredential = async () => ({ username: 'alice', password: 'x' })
+    manager.launchOverride = async (dir) => stubBrowserHandle(dir)
+    const result = await manager.acquire(snapshot, grant)
+    manager.launchOverride = undefined
+    manager.resolveCredential = undefined
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const seen: Array<string | undefined> = []
+    const page = manager.pageForGrant(result.grant) as { goto?: (...args: unknown[]) => Promise<unknown> } | undefined
+    const origGoto = page?.goto?.bind(page)
+    if (page && origGoto) {
+      page.goto = async (...args: unknown[]) => {
+        seen.push(currentOccupancyGrant()?.purpose)
+        return origGoto(...args)
+      }
+    }
+    const executed = await manager.execute(result.grant, {
+      type: 'navigate',
+      url: 'http://127.0.0.1/',
+      allowedOrigins: ['http://127.0.0.1'],
+    })
+    expect(executed.ok).toBe(true)
+    expect(seen).toEqual(['EXECUTION'])
+    expect(currentOccupancyGrant()).toBeUndefined()
+    await manager.release(result.grant.leaseId, 'test')
+  })
+
+  it('SM34C 同账号第二 Run 不能同时征用', async () => {
+    const account = await makeAccount('password', 'als-busy')
+    const first = await makeRunningSnapshot({ targetId, accountId: account })
+    const otherScenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `r-${newId()}`,
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const otherRun = await createRunWithSnapshot(handle.db, {
+      scenarioId: otherScenario.id,
+      targetAccountId: account,
+      actor: { id: actorId },
+      sessionPolicy: { ...DEFAULT_SESSION_POLICY, reuse: 'NEW_PAGE' },
+    })
+    const secondGrant: RunGrant = {
+      runId: otherRun.detail.id,
+      leaseId: newId(),
+      fencingToken: 1,
+      holderWorkerId: WORKER,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }
+    const secondSnapshot = (await getRun(handle.db, otherRun.detail.id)).snapshot
+    manager.resolveCredential = async () => ({ username: 'alice', password: 'x' })
+    let launches = 0
+    manager.launchOverride = async (dir) => {
+      launches += 1
+      return stubBrowserHandle(dir)
+    }
+    const held = await manager.acquire(first.snapshot, first.grant)
+    expect(held.ok).toBe(true)
+    const blocked = await manager.acquire(secondSnapshot, secondGrant)
+    expect(blocked).toMatchObject({ ok: false, code: 'SESSION_BUSY' })
+    expect(launches).toBe(1)
+    manager.launchOverride = undefined
+    manager.resolveCredential = undefined
+    if (held.ok) await manager.release(held.grant.leaseId, 'test')
+  })
+
+  it('SM34D 人工认证先 EXECUTION 再切 AUTH_WAIT', async () => {
+    const account = await makeAccount('manual', 'als-wait')
+    const { snapshot, grant } = await makeRunningSnapshot({ targetId: manualTargetId, accountId: account })
+    let purposeAtLaunch: string | undefined
+    manager.launchOverride = async (dir) => {
+      purposeAtLaunch = currentOccupancyGrant()?.purpose
+      return stubBrowserHandle(dir)
+    }
+    const result = await manager.acquire(snapshot, grant)
+    manager.launchOverride = undefined
+    expect(purposeAtLaunch).toBe('EXECUTION')
+    expect(result).toMatchObject({ ok: false, waitingForAuth: true })
+    expect((await getRun(handle.db, snapshot.runId)).status).toBe('WAITING_FOR_AUTH')
+    const { rows } = await handle.pool.query<{ purpose: string }>(
+      `SELECT purpose FROM session_leases
+        WHERE holder_worker_id = $1 AND status = 'ACTIVE'`,
+      [WORKER],
+    )
+    expect(rows.map((row) => row.purpose)).toEqual(['AUTH_WAIT'])
   })
 })

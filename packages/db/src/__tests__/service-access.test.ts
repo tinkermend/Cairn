@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
 import {
+  SESSION_OCCUPANCY_PROTOCOL,
   createAccountBodySchema,
   createTargetBodySchema,
   serviceCallerBodySchema,
@@ -103,7 +104,7 @@ describe.each(DRIVERS)('%s controlled service execution', (driver) => {
           [step, { ...echo, id: api.newId() }])
         const run = await api.createServiceRun(f.db, f.principal, f.body, 'orphan-review')
         const worker = { workerId: api.newId(), instanceId: api.newId() }
-        await api.registerWorker(f.db, { ...worker, capacity: 2, lostAfterSeconds: 60 })
+        await api.registerWorker(f.db, { ...worker, capacity: 2, lostAfterSeconds: 60, protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL] })
         const grant = (await api.claimRun(f.db, { ...worker, leaseTtlSeconds: 60 }))!
         const started = (await api.startAttempt(f.db, {
           runId: grant.runId, stepRunId: run.detail.stepRuns[0]!.id, inputPayload: {}, grant,
@@ -436,7 +437,7 @@ describe.each(DRIVERS)('%s controlled service execution', (driver) => {
       s = schemaFor(f.h.db)
     const first = await api.createServiceRun(f.db, f.principal, f.body, 'deadline')
     const worker = { workerId: api.newId(), instanceId: api.newId() }
-    await api.registerWorker(f.db, { ...worker, capacity: 2, lostAfterSeconds: 60 })
+    await api.registerWorker(f.db, { ...worker, capacity: 2, lostAfterSeconds: 60, protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL] })
     const grant = (await api.claimRun(f.db, { ...worker, leaseTtlSeconds: 60 }))!
     const started = (await api.startAttempt(f.db, {
       runId: grant.runId,
@@ -489,39 +490,4 @@ describe.each(DRIVERS)('%s controlled service execution', (driver) => {
     expect((await api.getServiceRun(f.db, f.principal, first.detail.id)).status).toBe('CANCELLED')
     expect(await api.claimRun(f.db, { ...worker, leaseTtlSeconds: 60 })).toBeNull()
   })
-})
-
-it('SQLite upgrade preserves pre-service Run/StepRun/Evidence rows and their foreign keys', async () => {
-  const { DatabaseSync } = await import('node:sqlite')
-  const { readFileSync, readdirSync } = await import('node:fs')
-  const { resolve } = await import('node:path')
-  const db = new DatabaseSync(':memory:')
-  try {
-    const dir = resolve(import.meta.dirname, '../../migrations/sqlite')
-    for (const file of readdirSync(dir)
-      .sort()
-      .filter((f) => f.endsWith('.sql') && f < '0005'))
-      db.exec(readFileSync(resolve(dir, file), 'utf8'))
-    db.exec(`
-      INSERT INTO console_accounts(id,display_name) VALUES('old-actor','历史用户');
-      INSERT INTO targets(id,code,name,entry_url) VALUES('old-target','old','历史目标','https://example.com');
-      INSERT INTO scenarios(id,target_id,name,created_by_console_account_id) VALUES('old-scenario','old-target','历史场景','old-actor');
-      INSERT INTO scenario_versions(id,scenario_id,version_no,definition,created_by_console_account_id,kind,source_digest) VALUES('old-version','old-scenario',1,'{}','old-actor','published','old-source-digest');
-      INSERT INTO runs(id,target_id,scenario_id,scenario_version_id,created_by_console_account_id,status,snapshot,snapshot_digest,context) VALUES('old-run','old-target','old-scenario','old-version','old-actor','SUCCEEDED','{"old":true}','historical-digest','{}');
-      INSERT INTO step_runs(id,run_id,step_id,ordinal,status) VALUES('old-step','old-run','step',0,'SUCCEEDED');
-      INSERT INTO evidences(id,run_id,step_run_id,type,payload) VALUES('old-evidence','old-run','old-step','output','{"result":42}');
-    `)
-    const before = db.prepare('SELECT * FROM runs').get()!
-    db.exec(readFileSync(resolve(dir, '0005_service_access.sql'), 'utf8'))
-    expect(db.prepare('SELECT * FROM runs').get()).toMatchObject(before)
-    expect(db.prepare('SELECT external_access,run_id FROM evidences').get()).toEqual({
-      external_access: 0,
-      run_id: 'old-run',
-    })
-    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-    expect(() => db.exec("DELETE FROM runs WHERE id='old-run'")).toThrow()
-    expect(() => db.exec("UPDATE runs SET snapshot='{}' WHERE id='old-run'")).toThrow()
-  } finally {
-    db.close()
-  }
 })

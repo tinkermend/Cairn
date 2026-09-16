@@ -25,10 +25,13 @@ export const PERMISSION_RESOURCES = [
   'audit',
   'ai',
   'platform-config',
+  'map',
+  'module',
+  'schedule',
 ] as const
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number]
 
-export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review', 'assist'] as const
+export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review', 'assist', 'publish', 'maintain', 'explore'] as const
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number]
 
 export const PERMISSIONS = [
@@ -49,6 +52,7 @@ export const PERMISSIONS = [
   'session:read',
   'session:view',
   'session:control',
+  'session:manage',
   'session:dispose',
   'target:read',
   'target:write',
@@ -63,6 +67,16 @@ export const PERMISSIONS = [
   'ai:assist',
   'platform-config:read',
   'platform-config:write',
+  'map:read',
+  'map:review',
+  'map:publish',
+  'map:maintain',
+  'map:explore',
+  'module:read',
+  'module:write',
+  'module:publish',
+  'schedule:read',
+  'schedule:write',
 ] as const
 export type PermissionCode = (typeof PERMISSIONS)[number]
 
@@ -87,6 +101,9 @@ export const RESOURCE_LABELS: Record<PermissionResource, string> = {
   audit: '审计',
   ai: 'AI',
   'platform-config': '平台配置',
+  map: '运营地图',
+  module: '动作模块',
+  schedule: '平台调度',
 }
 
 export const PERMISSION_LABELS: Record<PermissionCode, string> = {
@@ -107,6 +124,7 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'session:read': '查看浏览器会话',
   'session:view': '查看受管浏览器画面',
   'session:control': '处理目标系统登录',
+  'session:manage': '关闭、重启和清除浏览器会话',
   'session:dispose': '处置卡死的浏览器会话',
   'target:read': '查看目标系统',
   'target:write': '登记和维护目标系统',
@@ -121,6 +139,16 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'ai:assist': '使用平台助手',
   'platform-config:read': '查看平台配置',
   'platform-config:write': '修改平台配置',
+  'map:read': '查看目标知识',
+  'map:review': '复核地图身份与引用',
+  'map:publish': '发布和撤回地图版本',
+  'map:maintain': '维护安全进入并触发手工地图作业',
+  'map:explore': '配置并触发有界地图探索',
+  'module:read': '查看动作模块',
+  'module:write': '创建和编辑动作模块',
+  'module:publish': '发布动作模块版本',
+  'schedule:read': '查看平台调度计划',
+  'schedule:write': '创建和修订调度计划',
 }
 
 export interface PermissionDef {
@@ -165,6 +193,11 @@ const AUTHOR_PERMISSIONS: readonly PermissionCode[] = [
   'session:view',
   'session:control',
   'settings:read',
+  'map:read',
+  'map:review',
+  'module:read',
+  'module:write',
+  'module:publish',
 ]
 
 const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
@@ -179,8 +212,15 @@ const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
   'session:read',
   'session:view',
   'session:control',
+  'session:manage',
   'session:dispose',
   'settings:read',
+  'map:read',
+  'map:maintain',
+  'map:explore',
+  'module:read',
+  'schedule:read',
+  'schedule:write',
 ]
 
 const VIEWER_PERMISSIONS: readonly PermissionCode[] = [
@@ -189,6 +229,7 @@ const VIEWER_PERMISSIONS: readonly PermissionCode[] = [
   'run:read',
   'settings:read',
   'ai:assist',
+  'map:read',
 ]
 
 export const SYSTEM_ROLE_DEFINITIONS: Readonly<
@@ -273,9 +314,12 @@ export type ConsoleCapability = {
 export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'menu.home', kind: 'menu', group: 'workbench', label: '首页', allOf: [] },
   { id: 'menu.targets', kind: 'menu', group: 'workbench', label: '目标系统', allOf: ['target:read'] },
+  { id: 'menu.sessions', kind: 'menu', group: 'workbench', label: '浏览器会话', allOf: ['session:read'] },
   { id: 'menu.scenarios', kind: 'menu', group: 'workbench', label: '场景', allOf: ['workflow:read'] },
+  { id: 'menu.action-modules', kind: 'menu', group: 'workbench', label: '动作库', allOf: ['module:read'] },
   { id: 'menu.recordings', kind: 'menu', group: 'workbench', label: '录制草稿', allOf: ['workflow:write'] },
   { id: 'menu.runs', kind: 'menu', group: 'workbench', label: '运行', allOf: ['run:read'] },
+  { id: 'menu.schedules', kind: 'menu', group: 'workbench', label: '自动复查', allOf: ['schedule:read'] },
   { id: 'menu.users', kind: 'menu', group: 'governance', label: '用户', allOf: ['account:read'] },
   { id: 'menu.roles', kind: 'menu', group: 'governance', label: '角色', allOf: ['role:read'] },
   { id: 'menu.services', kind: 'menu', group: 'governance', label: '开放服务', allOf: ['service:read'] },
@@ -323,9 +367,17 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
     label: '处理目标系统登录',
     allOf: ['session:control', 'run:execute'],
   },
+  { id: 'action.session.manage', kind: 'action', label: '关闭、重启和清除浏览器会话', allOf: ['session:manage'] },
   { id: 'action.session.dispose', kind: 'action', label: '处置卡死的浏览器会话', allOf: ['session:dispose'] },
   { id: 'action.account.write', kind: 'action', label: '管理控制台账号', allOf: ['account:write'] },
   { id: 'action.role.write', kind: 'action', label: '管理自定义角色', allOf: ['role:write'] },
+  { id: 'action.map.review', kind: 'action', label: '复核地图身份与引用', allOf: ['map:review'] },
+  { id: 'action.map.publish', kind: 'action', label: '发布和撤回地图版本', allOf: ['map:publish'] },
+  { id: 'action.map.maintain', kind: 'action', label: '维护并触发手工地图作业', allOf: ['map:maintain'] },
+  { id: 'action.map.explore', kind: 'action', label: '配置并触发有界地图探索', allOf: ['map:explore', 'map:maintain'] },
+  { id: 'action.schedule.write', kind: 'action', label: '设置自动复查计划', allOf: ['schedule:write', 'map:maintain'] },
+  { id: 'action.module.write', kind: 'action', label: '创建和编辑动作模块', allOf: ['module:write'] },
+  { id: 'action.module.publish', kind: 'action', label: '发布动作模块版本', allOf: ['module:publish'] },
 ]
 
 export type CapabilityPreview = {
@@ -562,9 +614,43 @@ export const OPERATION_AUDIT_ACTIONS = [
   'session.auth_control_acquire',
   'session.auth_control_release',
   'session.dispose',
+  'session.operation',
+  'session.retention',
+  'session.complete_auth',
   'platform_config.update',
   'platform_config.restore',
   'platform_config.secret',
+  'module.create',
+  'module.update',
+  'module.delete',
+  'module.publish',
+  'module.publication',
+  'module.upgrade',
+  'module.extract',
+  'module.replace',
+  'module.resolve',
+  'module.resolve_accept',
+  'map.governance',
+  'map.publish',
+  'map.withdraw',
+  'map.bind',
+  'map.unbind',
+  'map.rebuild',
+  'map.scan',
+  'map.consumption_policy.update',
+  'target.access_policy.update',
+  'map.job_policy.update',
+  'map.safe_entry.create',
+  'map.job.create',
+  'map.job.cancel',
+  'map.exploration_policy.update',
+  'map.explore.create',
+  'schedule.create',
+  'schedule.update',
+  'schedule.enable',
+  'knowledge.term',
+  'knowledge.propose',
+  'knowledge.accept',
 ] as const
 export type OperationAuditAction = (typeof OPERATION_AUDIT_ACTIONS)[number]
 
@@ -630,9 +716,43 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   'session.auth_control_acquire': '取得认证输入权',
   'session.auth_control_release': '释放认证输入权',
   'session.dispose': '处置浏览器会话',
+  'session.operation': '发起会话维护操作',
+  'session.retention': '设置会话保留',
+  'session.complete_auth': '完成会话认证',
   'platform_config.update': '更新平台配置',
   'platform_config.restore': '恢复平台配置',
   'platform_config.secret': '登记平台模型密钥',
+  'module.create': '创建动作模块',
+  'module.update': '更新动作模块',
+  'module.delete': '删除动作模块',
+  'module.publish': '发布动作模块版本',
+  'module.publication': '变更动作模块发布状态',
+  'module.upgrade': '升级场景模块引用',
+  'module.extract': '从步骤提炼动作模块',
+  'module.replace': '用模块替换原步骤',
+  'module.resolve': '解析动作模块说法',
+  'module.resolve_accept': '接受模块映射写入草稿',
+  'map.governance': '提交地图治理命令',
+  'map.publish': '发布地图版本',
+  'map.withdraw': '撤回地图版本',
+  'map.bind': '绑定场景与地图对象',
+  'map.unbind': '解除场景地图绑定',
+  'map.rebuild': '重建地图投影',
+  'map.scan': '扫描场景地图候选',
+  'map.consumption_policy.update': '更新地图消费政策',
+  'target.access_policy.update': '更新目标授权',
+  'map.job_policy.update': '更新地图作业政策',
+  'map.safe_entry.create': '登记安全进入路径',
+  'map.job.create': '创建手工地图作业',
+  'map.job.cancel': '取消地图作业',
+  'map.exploration_policy.update': '更新地图探索政策',
+  'map.explore.create': '创建有界探索作业',
+  'schedule.create': '创建调度计划',
+  'schedule.update': '修订调度计划',
+  'schedule.enable': '启停调度计划',
+  'knowledge.term': '维护目标术语',
+  'knowledge.propose': '生成知识编写建议',
+  'knowledge.accept': '接受知识编写建议',
   'auth.login': '登录',
 }
 

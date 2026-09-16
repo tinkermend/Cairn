@@ -115,5 +115,17 @@ export const recordingImportReceipts = cairnSchema.table(
   ],
 )
 
+export const recordingMapIngests = cairnSchema.table('recording_map_ingests', {
+  recordingDraftId: uuid('recording_draft_id')
+    .primaryKey()
+    .references(() => recordingDrafts.id, { onDelete: 'restrict' }),
+  nextIndex: integer('next_index').notNull().default(0),
+  status: text('status').$type<'pending' | 'completed' | 'aborted'>().notNull().default('pending'),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
 export type RecordingBindingRow = typeof recordingBindings.$inferSelect
 export type RecordingImportReceiptRow = typeof recordingImportReceipts.$inferSelect
+export type RecordingMapIngestRow = typeof recordingMapIngests.$inferSelect

@@ -35,9 +35,39 @@ import {
   deletePreviewResponseSchema,
   deleteResourceBodySchema,
   deleteResourceResultSchema,
+  previewScenarioExpansionBodySchema,
+  previewScenarioExpansionResponseSchema,
+  inlineScenarioModuleInvocationBodySchema,
   type DeletePreviewResponse,
   type DeleteResourceBody,
   type DeleteResourceResult,
+  type PreviewScenarioExpansionBody,
+  type PreviewScenarioExpansionResponse,
+  type InlineScenarioModuleInvocationBody,
+  actionModuleDetailSchema,
+  moduleExtractBodySchema,
+  moduleExtractPreviewBodySchema,
+  moduleExtractProposalSchema,
+  moduleReplaceBodySchema,
+  moduleReplacePreviewBodySchema,
+  moduleReplacePreviewResponseSchema,
+  moduleUpgradeBodySchema,
+  moduleUpgradePreviewBodySchema,
+  moduleUpgradePreviewResponseSchema,
+  type ActionModuleDetail,
+  type ModuleExtractBody,
+  type ModuleExtractPreviewBody,
+  type ModuleExtractProposal,
+  type ModuleReplaceBody,
+  type ModuleReplacePreviewBody,
+  type ModuleReplacePreviewResponse,
+  type ModuleUpgradeBody,
+  type ModuleUpgradePreviewBody,
+  type ModuleUpgradePreviewResponse,
+  moduleResolveAcceptBodySchema,
+  moduleResolveAcceptResponseSchema,
+  type ModuleResolveAcceptBody,
+  type ModuleResolveAcceptResponse,
 } from '@cairn/shared'
 import { z } from 'zod'
 import { apiFetch, toQueryString } from '@/lib/api-client'
@@ -146,4 +176,133 @@ export function applyRecordingImport(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(applyRecordingImportBodySchema.parse(body)),
   })
+}
+
+export function previewScenarioExpansion(
+  scenarioId: string,
+  body: PreviewScenarioExpansionBody,
+): Promise<PreviewScenarioExpansionResponse> {
+  return apiFetch(
+    `/api/scenarios/${scenarioId}/module-expansion-preview`,
+    previewScenarioExpansionResponseSchema,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(previewScenarioExpansionBodySchema.parse(body)),
+    },
+  )
+}
+
+export function inlineScenarioModuleInvocation(
+  scenarioId: string,
+  invocationId: string,
+  body: InlineScenarioModuleInvocationBody,
+): Promise<ScenarioDetailDto> {
+  return apiFetch(
+    `/api/scenarios/${scenarioId}/nodes/${invocationId}/inline`,
+    scenarioDetailSchema,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(inlineScenarioModuleInvocationBodySchema.parse(body)),
+    },
+  )
+}
+
+export function previewScenarioModuleUpgrade(
+  scenarioId: string,
+  body: ModuleUpgradePreviewBody,
+): Promise<ModuleUpgradePreviewResponse> {
+  return apiFetch(
+    `/api/scenarios/${scenarioId}/module-upgrade-preview`,
+    moduleUpgradePreviewResponseSchema,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(moduleUpgradePreviewBodySchema.parse(body)),
+    },
+  )
+}
+
+export function upgradeScenarioModule(
+  scenarioId: string,
+  body: ModuleUpgradeBody,
+): Promise<ScenarioDetailDto> {
+  return apiFetch(`/api/scenarios/${scenarioId}/module-upgrade`, scenarioDetailSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(moduleUpgradeBodySchema.parse(body)),
+  })
+}
+
+export function previewScenarioModuleExtract(
+  scenarioId: string,
+  body: ModuleExtractPreviewBody,
+): Promise<ModuleExtractProposal> {
+  return apiFetch(
+    `/api/scenarios/${scenarioId}/module-extract-preview`,
+    moduleExtractProposalSchema,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(moduleExtractPreviewBodySchema.parse(body)),
+    },
+  )
+}
+
+export function extractScenarioModule(
+  scenarioId: string,
+  body: ModuleExtractBody,
+): Promise<ActionModuleDetail> {
+  return apiFetch(`/api/scenarios/${scenarioId}/module-extract`, actionModuleDetailSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(moduleExtractBodySchema.parse(body)),
+  })
+}
+
+export function previewScenarioModuleReplace(
+  scenarioId: string,
+  body: ModuleReplacePreviewBody,
+): Promise<ModuleReplacePreviewResponse> {
+  return apiFetch(
+    `/api/scenarios/${scenarioId}/module-replace-preview`,
+    moduleReplacePreviewResponseSchema,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(moduleReplacePreviewBodySchema.parse(body)),
+    },
+  )
+}
+
+export function replaceScenarioModule(
+  scenarioId: string,
+  body: ModuleReplaceBody,
+): Promise<ScenarioDetailDto> {
+  return apiFetch(`/api/scenarios/${scenarioId}/module-replace`, scenarioDetailSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(moduleReplaceBodySchema.parse(body)),
+  })
+}
+
+const acceptModuleResolutionResponseSchema = moduleResolveAcceptResponseSchema.extend({
+  scenario: scenarioDetailSchema,
+})
+
+export function acceptModuleResolution(
+  scenarioId: string,
+  requestId: string,
+  body: ModuleResolveAcceptBody,
+): Promise<ModuleResolveAcceptResponse & { scenario: ScenarioDetailDto }> {
+  return apiFetch(
+    `/api/scenarios/${scenarioId}/module-resolutions/${requestId}/accept`,
+    acceptModuleResolutionResponseSchema,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(moduleResolveAcceptBodySchema.parse(body)),
+    },
+  )
 }

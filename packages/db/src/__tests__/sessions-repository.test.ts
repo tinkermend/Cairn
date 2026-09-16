@@ -14,24 +14,22 @@ import {
   expireStaleLeases,
   findLiveSession,
   finishAttempt,
-  expireAuthHold,
-  failRunAuthTimeout,
+  findAuthWaitLeaseForRun,
   forceLastUsedAt,
   forceLeaseExpiresAt,
   forceSessionGeneration,
   getLeaseById,
   getRun,
   getSessionById,
-  listExpiredAuthHolds,
   listReapableSessions,
   listSessions,
-  listRunsWaitingForAuthByAccount,
-  enterRunWaitingForAuth,
   markSessionsClosing,
   registerWorker,
   requestRunCancel,
   openIsolatedDb,
   releaseAuthHold,
+  reapSessionLeases,
+  releaseSessionUse,
   releaseSessionLease,
   renewSessionLease,
   revokeWorkerLeases,
@@ -43,7 +41,7 @@ import {
   type NativeHandle as DbHandle,
 } from '../test-entry.js'
 import { newId } from '../id.js'
-import { forceGrantForRun } from './lease-harness.js'
+import { enterAuthWaitForRun, forceGrantForRun } from './lease-harness.js'
 import { consoleAccounts as pg_consoleAccounts } from '../schema/console.js'
 let consoleAccounts = pg_consoleAccounts
 import { runs as pg_runs } from '../schema/execution.js'
@@ -149,6 +147,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     const session = await requireCreatedSession(handle.db, {
       key,
       ownerWorkerId: opts?.worker ?? workerA,
+      ownerWorkerInstanceId: workerAInstance,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: opts?.idle ?? 600,
       maxLifetimeSeconds: opts?.maxLife ?? 3600,
@@ -264,7 +263,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     if (!winner.ok) throw new Error('expected win')
     const again = await acquireSessionLease(handle.db, {
       sessionId: session.id,
-      runId: winner.lease.runId,
+      runId: winner.lease.runId ?? runId,
       holderWorkerId: winner.lease.holderWorkerId,
       leaseTtlSeconds: 30,
       runFencingToken: 1,
@@ -374,7 +373,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     // 恢复 generation 以便后续过期路径
     await forceSessionGeneration(handle.db, session.id, got.lease.sessionGeneration)
 
-    await forceLeaseExpiresAt(handle.db, got.lease.id, new Date(Date.now() - 1000))
+    await forceLeaseExpiresAt(handle.db, got.lease.id, afterSeconds(handle.db, -1))
     expect(
       await renewSessionLease(handle.db, {
         leaseId: got.lease.id,
@@ -427,42 +426,36 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       actor: { id: actorId },
     })
     const grant = await forceGrantForRun(handle, created.detail.id, workerA)
-    const session = await openSession()
-    expect(
-      await enterRunWaitingForAuth(handle.db, {
-        grant,
-        sessionId: session.id,
-        workerId: workerA,
-        workerInstanceId: workerAInstance,
-        holdSeconds: 1,
-      }),
-    ).toBe(true)
+    const { claimed, waitGrant } = await enterAuthWaitForRun(handle, {
+      targetId,
+      targetAccountId: accountId,
+      grant,
+      workerId: workerA,
+      instanceId: workerAInstance,
+      holdSeconds: 1,
+    })
+    expect(waitGrant.purpose).toBe('AUTH_WAIT')
     expect((await getRun(handle.db, created.detail.id)).status).toBe('WAITING_FOR_AUTH')
-    expect((await getSessionById(handle.db, session.id))?.authHoldRunId).toBe(created.detail.id)
-    // 拨占用到期
-    await handle.db.update(schemaFor(handle.db).browserSessions).set({ authHoldExpiresAt: afterSeconds(handle.db, -1) }).where(eq(schemaFor(handle.db).browserSessions.id, session.id))
-    const expired = await listExpiredAuthHolds(handle.db, workerA)
-    expect(expired.map((s) => s.id)).toContain(session.id)
-
-    await expireAuthHold(handle.db, { sessionId: session.id, workerId: workerA })
-    const afterHold = (await getSessionById(handle.db, session.id))!
-    expect(afterHold.authHoldWorkerId).toBeNull()
-    expect(afterHold.authState).toBe('EXPIRED')
+    expect((await findAuthWaitLeaseForRun(handle.db, created.detail.id))?.id).toBe(waitGrant.leaseId)
+    await handle.db
+      .update(schemaFor(handle.db).sessionLeases)
+      .set({ waitDeadlineAt: afterSeconds(handle.db, -1) })
+      .where(eq(schemaFor(handle.db).sessionLeases.id, waitGrant.leaseId))
+    expect(await reapSessionLeases(handle.db, { limit: 20 })).toBeGreaterThanOrEqual(1)
+    const afterHold = (await getSessionById(handle.db, claimed.session.id))!
+    expect(afterHold.authState).toBe('UNKNOWN')
     expect(afterHold.status).toBe('OPEN')
-
-    const waiting = await listRunsWaitingForAuthByAccount(handle.db, accountId)
-    expect(waiting).toContain(created.detail.id)
-    expect(await failRunAuthTimeout(handle.db, created.detail.id)).toBe(true)
+    expect(await findAuthWaitLeaseForRun(handle.db, created.detail.id)).toBeNull()
     const failed = await getRun(handle.db, created.detail.id)
     expect(failed.status).toBe('FAILED')
 
-    await setSessionStatus(handle.db, {
-      sessionId: session.id,
-      expectedVersion: (await getSessionById(handle.db, session.id))!.version,
+    const _res = await setSessionStatus(handle.db, {
+      sessionId: claimed.session.id,
+      expectedVersion: (await getSessionById(handle.db, claimed.session.id))!.version,
       status: 'CLOSED',
       closeReason: 'cleanup',
       ownerWorkerId: workerA,
-    })
+    }); console.log('test 5 cleanup res:', _res)
   })
 
   it('过期扫描幂等；RELEASED 不被改成 EXPIRED', async () => {
@@ -475,7 +468,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       runFencingToken: 1,
     })
     if (!got.ok) throw new Error('lease')
-    await forceLeaseExpiresAt(handle.db, got.lease.id, new Date(Date.now() - 5000))
+    await forceLeaseExpiresAt(handle.db, got.lease.id, afterSeconds(handle.db, -5))
     const n1 = await expireStaleLeases(handle.db)
     expect(n1).toBeGreaterThanOrEqual(1)
     const n2 = await expireStaleLeases(handle.db)
@@ -496,7 +489,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       holderWorkerId: workerA,
       reason: 'done',
     })
-    await forceLeaseExpiresAt(handle.db, got2.lease.id, new Date(Date.now() - 5000)).catch(() => {})
+    await forceLeaseExpiresAt(handle.db, got2.lease.id, afterSeconds(handle.db, -5)).catch(() => {})
     const n3 = await expireStaleLeases(handle.db)
     expect(n3).toBe(0)
     expect((await getLeaseById(handle.db, got2.lease.id))?.status).toBe('RELEASED')
@@ -527,9 +520,12 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       sessionFencingToken: got.lease.sessionFencingToken,
       expiresAt: got.lease.expiresAt.toISOString(),
       holderWorkerId: workerA,
+      purpose: 'EXECUTION' as const,
+      ownerKind: 'RUN' as const,
+      runId,
     }
     expect(await verifySessionLeaseForCommit(handle.db, grant)).toBe(true)
-    await forceLeaseExpiresAt(handle.db, got.lease.id, new Date(Date.now() - 1000))
+    await forceLeaseExpiresAt(handle.db, got.lease.id, afterSeconds(handle.db, -1))
     expect(await verifySessionLeaseForCommit(handle.db, grant)).toBe(false)
 
     await expireStaleLeases(handle.db)
@@ -575,7 +571,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     const afterProbe = (await getSessionById(handle.db, session.id))!
     expect(afterProbe.lastUsedAt.getTime()).toBe(before.getTime())
 
-    await forceLastUsedAt(handle.db, session.id, new Date(Date.now() - 120_000))
+    await forceLastUsedAt(handle.db, session.id, afterSeconds(handle.db, -120))
     const got = await acquireSessionLease(handle.db, {
       sessionId: session.id,
       runId,
@@ -585,7 +581,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     })
     if (!got.ok) throw new Error('lease')
     // 获取会 touch last_used；拨回过去后有租约仍不可收
-    await forceLastUsedAt(handle.db, session.id, new Date(Date.now() - 120_000))
+    await forceLastUsedAt(handle.db, session.id, afterSeconds(handle.db, -120))
     expect(await listReapableSessions(handle.db, workerA)).toHaveLength(0)
 
     await releaseSessionLease(handle.db, {
@@ -593,32 +589,37 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       holderWorkerId: workerA,
       reason: 'done',
     })
-    await forceLastUsedAt(handle.db, session.id, new Date(Date.now() - 120_000))
-    await claimAuthHold(handle.db, {
-      sessionId: session.id,
+    const wait = await enterAuthWaitForRun(handle, {
+      targetId,
+      targetAccountId: accountId,
+      grant: await forceGrantForRun(handle, runId2, workerA),
       workerId: workerA,
+      instanceId: workerAInstance,
       holdSeconds: 300,
-      runId,
-      sessionGeneration: session.generation,
-      workerInstanceId: workerAInstance,
     })
+    await forceLastUsedAt(handle.db, wait.claimed.session.id, afterSeconds(handle.db, -120))
     expect(await listReapableSessions(handle.db, workerA)).toHaveLength(0)
 
-    await releaseAuthHold(handle.db, { sessionId: session.id, workerId: workerA })
-    await forceLastUsedAt(handle.db, session.id, new Date(Date.now() - 120_000))
+    await releaseSessionUse(handle.db, {
+      leaseId: wait.waitGrant.leaseId,
+      holderWorkerId: workerA,
+      reason: 'test_reap',
+    })
+    await forceLastUsedAt(handle.db, wait.claimed.session.id, afterSeconds(handle.db, -120))
+    const heldId = wait.claimed.session.id
     const reapable = await listReapableSessions(handle.db, workerA)
-    expect(reapable.map((s) => s.id)).toContain(session.id)
+    expect(reapable.map((s) => s.id)).toContain(heldId)
 
     const closing = await markSessionsClosing(handle.db, {
       workerId: workerA,
-      sessionIds: [session.id],
+      sessionIds: [heldId],
       reason: 'idle_ttl',
     })
-    expect(closing).toEqual([session.id])
-    const mid = (await getSessionById(handle.db, session.id))!
+    expect(closing).toEqual([heldId])
+    const mid = (await getSessionById(handle.db, heldId))!
     expect(mid.status).toBe('CLOSING')
     await setSessionStatus(handle.db, {
-      sessionId: session.id,
+      sessionId: heldId,
       expectedVersion: mid.version,
       status: 'CLOSED',
       closeReason: 'idle_ttl',
@@ -660,8 +661,8 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
   })
 
   it('另一账号独立键可并存', async () => {
-    const a = await openSession({ account: accountId })
-    const b = await openSession({ account: accountId2 })
+    console.log("A", targetId, accountId); const a = await openSession({ account: accountId })
+    console.log("B", targetId, accountId2); const b = await openSession({ account: accountId2 })
     expect(a.id).not.toBe(b.id)
     expect(a.profileKey).not.toBe(b.profileKey)
     for (const s of [a, b]) {
@@ -734,7 +735,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       })
       expect(lease.ok).toBe(true)
       if (!lease.ok) throw new Error('lease')
-      await forceLeaseExpiresAt(handle.db, lease.lease.id, new Date(Date.now() - 1000))
+      await forceLeaseExpiresAt(handle.db, lease.lease.id, afterSeconds(handle.db, -1))
       if (cancel) await requestRunCancel(handle.db, created.detail.id, { id: actorId })
 
       await finishAttempt(handle.db, {
@@ -752,6 +753,9 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
           sessionFencingToken: lease.lease.sessionFencingToken,
           expiresAt: lease.lease.expiresAt.toISOString(),
           holderWorkerId: workerA,
+          purpose: 'EXECUTION' as const,
+          ownerKind: 'RUN' as const,
+          runId: created.detail.id,
           effectType,
         },
       })
@@ -945,20 +949,17 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       actor: { id: actorId },
     })
     const grant = await forceGrantForRun(handle, created.detail.id, workerA)
-    const session = await openSession({ account })
-    expect(
-      await enterRunWaitingForAuth(handle.db, {
-        grant,
-        sessionId: session.id,
-        workerId: workerA,
-        workerInstanceId: workerAInstance,
-        holdSeconds: 60,
-      }),
-    ).toBe(true)
-    const held = (await getSessionById(handle.db, session.id))!
-    expect(held.authHoldRunId).toBe(created.detail.id)
-    expect(held.authHoldSessionGeneration).not.toBeNull()
-    expect(held.authHoldWorkerInstanceId).toBe(workerAInstance)
+    const { claimed, waitGrant } = await enterAuthWaitForRun(handle, {
+      targetId,
+      targetAccountId: account,
+      grant,
+      workerId: workerA,
+      instanceId: workerAInstance,
+      holdSeconds: 60,
+    })
+    expect(waitGrant.purpose).toBe('AUTH_WAIT')
+    expect((await findAuthWaitLeaseForRun(handle.db, created.detail.id))?.id).toBe(waitGrant.leaseId)
+    const held = (await getSessionById(handle.db, claimed.session.id))!
 
     await setSessionStatus(handle.db, {
       sessionId: held.id,
@@ -973,11 +974,8 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     })
     expect(dto.status).toBe('CLOSED')
     expect(dto.authHold).toBeNull()
-    const closed = (await getSessionById(handle.db, held.id))!
-    expect(closed.authHoldRunId).toBeNull()
-    expect(closed.authHoldSessionGeneration).toBeNull()
-    expect(closed.authHoldWorkerInstanceId).toBeNull()
-    expect(closed.authHoldWorkerId).toBeNull()
+    expect(dto.activeLease).toBeNull()
+    expect(await findAuthWaitLeaseForRun(handle.db, created.detail.id)).toBeNull()
     expect(await findLiveSession(handle.db, { targetId, targetAccountId: account })).toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import { index, integer, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { index, integer, jsonb, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 import type { RunLeaseStatus, WorkerStatus } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema } from './console.js'
@@ -24,6 +24,7 @@ export const workers = cairnSchema.table('workers', {
   liveHandleCount: integer('live_handle_count'),
   sampledSlotCount: integer('sampled_slot_count'),
   handleMismatchStreak: integer('handle_mismatch_streak').notNull().default(0),
+  protocolCapabilities: jsonb('protocol_capabilities').$type<string[]>().notNull().default([]),
 })
 
 export const runLeases = cairnSchema.table(

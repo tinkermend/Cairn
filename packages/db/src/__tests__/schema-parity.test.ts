@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { postgresEnvSchema as dbEnvSchema } from '../test-entry.js'
-import { migrate } from '../migrate.js'
+import { migrate, listMigrationFiles } from '../migrate.js'
 
 const envFile = resolve(import.meta.dirname, '../../../../.env')
 if (existsSync(envFile)) process.loadEnvFile(envFile)
@@ -70,6 +70,69 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'target_id', is_nullable: 'NO' },
       { column_name: 'unresolved_count', is_nullable: 'NO' },
       { column_name: 'updated_at', is_nullable: 'NO' },
+    ])
+  })
+
+  it('map_projections 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'map_projections' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'algorithm_version', is_nullable: 'NO' },
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'generation', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'identity_revision', is_nullable: 'NO' },
+      { column_name: 'ingest_cursor', is_nullable: 'NO' },
+      { column_name: 'last_error', is_nullable: 'YES' },
+      { column_name: 'policy_version', is_nullable: 'NO' },
+      { column_name: 'rebuild_completeness', is_nullable: 'YES' },
+      { column_name: 'revision', is_nullable: 'NO' },
+      { column_name: 'source_watermark', is_nullable: 'YES' },
+      { column_name: 'status', is_nullable: 'NO' },
+      { column_name: 'target_id', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ])
+  })
+
+  it('recording_map_ingests 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'recording_map_ingests' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'last_error', is_nullable: 'YES' },
+      { column_name: 'next_index', is_nullable: 'NO' },
+      { column_name: 'recording_draft_id', is_nullable: 'NO' },
+      { column_name: 'status', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ])
+  })
+
+  it('map_observations 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'map_observations' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual([
+      { column_name: 'capture_status', is_nullable: 'NO' },
+      { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'dedupe_key', is_nullable: 'NO' },
+      { column_name: 'envelope', is_nullable: 'NO' },
+      { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'ingest_seq', is_nullable: 'NO' },
+      { column_name: 'observed_at', is_nullable: 'NO' },
+      { column_name: 'payload_digest', is_nullable: 'NO' },
+      { column_name: 'source_attempt_id', is_nullable: 'YES' },
+      { column_name: 'source_recording_id', is_nullable: 'YES' },
+      { column_name: 'source_run_id', is_nullable: 'YES' },
+      { column_name: 'source_type', is_nullable: 'NO' },
+      { column_name: 'target_id', is_nullable: 'NO' },
     ])
   })
 
@@ -169,6 +232,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'captcha_mode', is_nullable: 'NO' },
       { column_name: 'code', is_nullable: 'NO' },
       { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'current_auth_profile_revision', is_nullable: 'YES' },
       { column_name: 'deleted_at', is_nullable: 'YES' },
       { column_name: 'deleted_by', is_nullable: 'YES' },
       { column_name: 'entry_url', is_nullable: 'NO' },
@@ -203,10 +267,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       [TEST_SCHEMA],
     )
     expect(rows).toEqual([
+      { column_name: 'config_revision', is_nullable: 'NO' },
       { column_name: 'created_at', is_nullable: 'NO' },
       { column_name: 'deleted_at', is_nullable: 'YES' },
       { column_name: 'deleted_by', is_nullable: 'YES' },
       { column_name: 'display_name', is_nullable: 'NO' },
+      { column_name: 'expected_identity', is_nullable: 'YES' },
       { column_name: 'id', is_nullable: 'NO' },
       { column_name: 'secret_id', is_nullable: 'YES' },
       { column_name: 'secret_provider', is_nullable: 'YES' },
@@ -230,6 +296,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'deleted_by', is_nullable: 'YES' },
       { column_name: 'id', is_nullable: 'NO' },
       { column_name: 'name', is_nullable: 'NO' },
+      { column_name: 'purpose', is_nullable: 'NO' },
       { column_name: 'status', is_nullable: 'NO' },
       { column_name: 'target_id', is_nullable: 'NO' },
       { column_name: 'updated_at', is_nullable: 'NO' },
@@ -243,12 +310,14 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       [TEST_SCHEMA],
     )
     expect(rows).toEqual([
+      { column_name: 'authoring_document', is_nullable: 'YES' },
       { column_name: 'compiler_version', is_nullable: 'NO' },
       { column_name: 'created_at', is_nullable: 'NO' },
       { column_name: 'created_by_console_account_id', is_nullable: 'NO' },
       { column_name: 'definition', is_nullable: 'NO' },
       { column_name: 'id', is_nullable: 'NO' },
       { column_name: 'kind', is_nullable: 'NO' },
+      { column_name: 'module_manifest', is_nullable: 'YES' },
       { column_name: 'scenario_id', is_nullable: 'NO' },
       { column_name: 'source_digest', is_nullable: 'NO' },
       { column_name: 'version_no', is_nullable: 'YES' },
@@ -360,12 +429,15 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'auth_control_expires_at', is_nullable: 'YES' },
       { column_name: 'auth_control_page_id', is_nullable: 'YES' },
       { column_name: 'auth_control_token_hash', is_nullable: 'YES' },
+      { column_name: 'auth_expiry_source', is_nullable: 'YES' },
       { column_name: 'auth_hold_expires_at', is_nullable: 'YES' },
       { column_name: 'auth_hold_run_id', is_nullable: 'YES' },
       { column_name: 'auth_hold_session_generation', is_nullable: 'YES' },
       { column_name: 'auth_hold_worker_id', is_nullable: 'YES' },
       { column_name: 'auth_hold_worker_instance_id', is_nullable: 'YES' },
+      { column_name: 'auth_profile_revision', is_nullable: 'YES' },
       { column_name: 'auth_state', is_nullable: 'NO' },
+      { column_name: 'auth_valid_until', is_nullable: 'YES' },
       { column_name: 'close_reason', is_nullable: 'YES' },
       { column_name: 'closed_at', is_nullable: 'YES' },
       { column_name: 'created_at', is_nullable: 'NO' },
@@ -374,12 +446,23 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'generation', is_nullable: 'NO' },
       { column_name: 'health', is_nullable: 'NO' },
       { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'identity_state', is_nullable: 'YES' },
+      { column_name: 'identity_verified_at', is_nullable: 'YES' },
       { column_name: 'idle_ttl_seconds', is_nullable: 'NO' },
+      { column_name: 'last_auth_checked_at', is_nullable: 'YES' },
+      { column_name: 'last_auth_error', is_nullable: 'YES' },
+      { column_name: 'last_auth_generation', is_nullable: 'YES' },
+      { column_name: 'last_auth_success_at', is_nullable: 'YES' },
+      { column_name: 'last_expected_identity', is_nullable: 'YES' },
       { column_name: 'last_used_at', is_nullable: 'NO' },
       { column_name: 'max_lifetime_seconds', is_nullable: 'NO' },
+      { column_name: 'next_auth_check_at', is_nullable: 'YES' },
+      { column_name: 'observed_tier', is_nullable: 'YES' },
       { column_name: 'owner_worker_id', is_nullable: 'NO' },
       { column_name: 'owner_worker_instance_id', is_nullable: 'YES' },
+      { column_name: 'predecessor_session_id', is_nullable: 'YES' },
       { column_name: 'profile_key', is_nullable: 'NO' },
+      { column_name: 'retain_until', is_nullable: 'YES' },
       { column_name: 'reuse_policy', is_nullable: 'NO' },
       { column_name: 'status', is_nullable: 'NO' },
       { column_name: 'target_account_id', is_nullable: 'NO' },
@@ -396,10 +479,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     )
     expect(indexes.map((r) => r.indexname)).toEqual(
       expect.arrayContaining([
+        'browser_sessions_auth_check_idx',
         'browser_sessions_key_live_idx',
         'browser_sessions_owner_idx',
         'browser_sessions_owner_instance_idx',
         'browser_sessions_reap_idx',
+        'browser_sessions_retain_idx',
       ]),
     )
   })
@@ -416,14 +501,18 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'heartbeat_at', is_nullable: 'NO' },
       { column_name: 'holder_worker_id', is_nullable: 'NO' },
       { column_name: 'id', is_nullable: 'NO' },
+      { column_name: 'operation_id', is_nullable: 'YES' },
+      { column_name: 'owner_kind', is_nullable: 'NO' },
+      { column_name: 'purpose', is_nullable: 'NO' },
       { column_name: 'release_reason', is_nullable: 'YES' },
       { column_name: 'released_at', is_nullable: 'YES' },
       { column_name: 'run_fencing_token', is_nullable: 'YES' },
-      { column_name: 'run_id', is_nullable: 'NO' },
+      { column_name: 'run_id', is_nullable: 'YES' },
       { column_name: 'session_fencing_token', is_nullable: 'NO' },
       { column_name: 'session_generation', is_nullable: 'NO' },
       { column_name: 'session_id', is_nullable: 'NO' },
       { column_name: 'status', is_nullable: 'NO' },
+      { column_name: 'wait_deadline_at', is_nullable: 'YES' },
     ])
 
     const { rows: indexes } = await pool.query<{ indexname: string }>(
@@ -454,6 +543,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'live_handle_count', is_nullable: 'YES' },
       { column_name: 'lost_after_seconds', is_nullable: 'YES' },
       { column_name: 'max_sessions', is_nullable: 'NO' },
+      { column_name: 'protocol_capabilities', is_nullable: 'NO' },
       { column_name: 'sampled_slot_count', is_nullable: 'YES' },
       { column_name: 'started_at', is_nullable: 'NO' },
       { column_name: 'status', is_nullable: 'NO' },
@@ -535,6 +625,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'owner_worker_id',
       'auth_hold_worker_id',
       'holder_worker_id',
+      'location_worker_id',
     ])
     const textIdExceptions = new Set([
       'workers.id',
@@ -592,12 +683,38 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'service_caller_id→service_credentials',
       'caller_id→service_callers',
       'credential_id→service_credentials',
+      'decision_id→map_selection_decisions',
       'credential_id→credential_target_grants',
       'target_id→credential_target_grants',
       'auth_control_actor_id→console_accounts',
       'owner_account_id→console_accounts',
       'turn_id→assistant_turns',
       'conversation_id→assistant_conversations',
+      'operation_id→session_operations',
+      'observation_id→map_observations',
+      'verification_id→map_verifications',
+      'target_id→map_observations',
+      'target_id→map_verifications',
+      'target_id→map_pages',
+      'target_id→map_objects',
+      'target_id→map_projections',
+      'target_id→map_releases',
+      'page_id→map_pages',
+      'object_id→map_objects',
+      'object_id→map_object_descriptors',
+      'projection_id→map_projections',
+      'current_projection_id→map_projections',
+      'release_id→map_releases',
+      'release_id→map_release_publications',
+      'term_id→map_terminology_entries',
+      'module_id→action_modules',
+      'module_version_id→action_module_versions',
+      'accepted_module_version_id→action_module_versions',
+      'actor_id→console_accounts',
+      'entry_id→map_safe_entries',
+      'job_id→map_jobs',
+      'current_version_id→schedule_versions',
+      'authorized_actor_id→console_accounts',
     ])
     const violations = rows.filter((r) => {
       if (!r.column_name.endsWith('_id')) return false
@@ -610,38 +727,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
   it('重复执行迁移不产生副作用（幂等）', async () => {
     const second = await migrate(pool, TEST_SCHEMA)
     expect(second.applied).toEqual([])
-    expect(second.skipped).toEqual([
-      '0001_initial.sql',
-      '0002_rbac.sql',
-      '0003_audit.sql',
-      '0004_targets.sql',
-      '0005_target_login_fields.sql',
-      '0006_execution.sql',
-      '0007_object_store.sql',
-      '0008_browser_session.sql',
-      '0009_session_dispose.sql',
-      '0010_admin_login_account.sql',
-      '0011_run_lease.sql',
-      '0012_session_affinity.sql',
-      '0013_evidence_status.sql',
-      '0014_recording_drafts.sql',
-      '0015_scenario_drafts.sql',
-      '0016_audit_login.sql',
-      '0017_ai_execute.sql',
-      '0018_product_roles.sql',
-      '0019_service_access.sql',
-      '0020_service_target_foreign_key.sql',
-      '0021_audit_login_shape_portable.sql',
-      '0022_platform_config.sql',
-      '0023_run_events.sql',
-      '0024_managed_browser_auth.sql',
-      '0025_recording_studio_import.sql',
-      '0026_platform_ai_secret_binding.sql',
-      '0027_resource_lifecycle.sql',
-      '0028_assistant.sql',
-      '0029_debug_mode_and_overlay.sql',
-      '0030_worker_registry.sql',
-    ])
+    expect(second.skipped).toEqual(listMigrationFiles().map(item => item.filename))
   })
 })
 
@@ -749,28 +835,7 @@ describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集�
 
   it('0011 装得上，并把缺 run_fencing 的存量 ACTIVE 租约撤销', async () => {
     const up = await migrate(pool, SCHEMA)
-    expect(up.applied).toEqual([
-      '0011_run_lease.sql',
-      '0012_session_affinity.sql',
-      '0013_evidence_status.sql',
-      '0014_recording_drafts.sql',
-      '0015_scenario_drafts.sql',
-      '0016_audit_login.sql',
-      '0017_ai_execute.sql',
-      '0018_product_roles.sql',
-      '0019_service_access.sql',
-      '0020_service_target_foreign_key.sql',
-      '0021_audit_login_shape_portable.sql',
-      '0022_platform_config.sql',
-      '0023_run_events.sql',
-      '0024_managed_browser_auth.sql',
-      '0025_recording_studio_import.sql',
-      '0026_platform_ai_secret_binding.sql',
-      '0027_resource_lifecycle.sql',
-      '0028_assistant.sql',
-      '0029_debug_mode_and_overlay.sql',
-      '0030_worker_registry.sql',
-    ])
+    expect(up.applied).toEqual(listMigrationFiles().filter(item => item.prefix >= '0011').map(item => item.filename))
 
     const { rows } = await pool.query<{ status: string; release_reason: string; released_at: Date }>(
       `SELECT status, release_reason, released_at FROM "${SCHEMA}".session_leases WHERE id = $1`,
@@ -790,7 +855,7 @@ describe.skipIf(!parsed.success)('带存量数据的 0010 → 0011 升级（集�
          VALUES ($1, $2, 1, 2, $3, NULL, 'w', 'ACTIVE', now() + interval '30 seconds')`,
         [randomUUID(), sessionId, runId],
       ),
-    ).rejects.toThrow(/session_leases_run_fencing_active_check/)
+    ).rejects.toThrow(/session_leases_run_fencing_purpose_check/)
   })
 })
 
@@ -886,26 +951,7 @@ describe.skipIf(!parsed.success)('带存量数据的 0012 → 0013 升级（集�
 
   it('0013 装得上，回填不产生 status 与 missing_reason 矛盾行', async () => {
     const up = await migrate(pool, SCHEMA)
-    expect(up.applied).toEqual([
-      '0013_evidence_status.sql',
-      '0014_recording_drafts.sql',
-      '0015_scenario_drafts.sql',
-      '0016_audit_login.sql',
-      '0017_ai_execute.sql',
-      '0018_product_roles.sql',
-      '0019_service_access.sql',
-      '0020_service_target_foreign_key.sql',
-      '0021_audit_login_shape_portable.sql',
-      '0022_platform_config.sql',
-      '0023_run_events.sql',
-      '0024_managed_browser_auth.sql',
-      '0025_recording_studio_import.sql',
-      '0026_platform_ai_secret_binding.sql',
-      '0027_resource_lifecycle.sql',
-      '0028_assistant.sql',
-      '0029_debug_mode_and_overlay.sql',
-      '0030_worker_registry.sql',
-    ])
+    expect(up.applied).toEqual(listMigrationFiles().filter(item => item.prefix >= '0013').map(item => item.filename))
 
     const { rows: runRows } = await pool.query<{ id: string; evidence_status: string }>(
       `SELECT id, evidence_status FROM "${SCHEMA}".runs WHERE id = ANY($1::uuid[])`,

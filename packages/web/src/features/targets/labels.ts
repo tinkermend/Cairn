@@ -1,4 +1,5 @@
 import type {
+  AuthCapabilityTier,
   AuthMethod,
   CaptchaMode,
   LoginLocator,
@@ -28,6 +29,12 @@ export const LOGIN_LOCATOR_BY_LABELS: Record<LoginLocatorBy, string> = {
   id: '元素 id',
   name: 'name 属性',
   css: 'CSS 选择器',
+}
+
+export const AUTH_CAPABILITY_LABELS: Record<AuthCapabilityTier, string> = {
+  IDENTITY_VERIFIED: '身份已核验',
+  LOGIN_VERIFIED: '登录已核验',
+  LEGACY: '旧模式',
 }
 
 export const LOGIN_FIELD_ROLE_LABELS = {

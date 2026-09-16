@@ -16,6 +16,7 @@ import {
   getRun,
   listRunEvidence,
   getSessionById,
+  getWorkerById,
   newId,
   openIsolatedDb,
   requireCreatedSession,
@@ -106,9 +107,11 @@ describe('P4 后半 Affinity / 容量 / 失联隔离（集成）', { timeout: 12
   }
 
   async function openOwnedSession(accountId: string, workerId: string, status: 'OPEN' | 'LOST' | 'CLOSING' | 'CREATING' = 'OPEN') {
+    const worker = await getWorkerById(handle.db, workerId)
     const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: accountId },
       ownerWorkerId: workerId,
+      ownerWorkerInstanceId: worker?.instanceId,
       reusePolicy: 'NEW_PAGE',
       idleTtlSeconds: 600,
       maxLifetimeSeconds: 3600,

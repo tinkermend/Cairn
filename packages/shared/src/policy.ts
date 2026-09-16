@@ -18,6 +18,10 @@ export const DEFAULT_EXECUTOR_VERSIONS = {
   ai_action: '1',
   ai_extract: '1',
   ai_assert: '1',
+  map_observe: '1',
+  map_propose: '1',
+  map_guarded_action: '1',
+  map_verify: '1',
 } as const
 export type DefaultExecutorVersions = typeof DEFAULT_EXECUTOR_VERSIONS
 

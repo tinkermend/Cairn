@@ -1,12 +1,15 @@
 import { Inject, Injectable, Optional } from '@nestjs/common'
 import {
+  acceptKnowledgeProposal,
   applyRecordingImport,
   createRecordingBinding,
   createScenarioWithVersion,
   createTrialRunFromDraft,
   deleteScenario,
+  getKnowledgeProposal,
   getPlatformConfig,
   getScenario,
+  rejectKnowledgeProposal,
   listScenarioRecordingImports,
   listScenarioVersions,
   listScenarios,
@@ -15,11 +18,22 @@ import {
   publishScenarioDraft,
   saveScenarioDraft,
   updateScenarioMeta,
+  previewScenarioExpansion,
+  inlineScenarioModuleInvocation,
+  previewScenarioModuleUpgrade,
+  upgradeScenarioModuleDraft,
+  extractModuleFromScenario,
+  proposeExtractFromScenario,
+  previewReplaceStepsWithModule,
+  replaceStepsWithModule,
+  acceptModuleResolution,
   type DbHandle,
 } from '@cairn/db'
 import {
   FACTORY_PLATFORM_CONFIG,
+  type AcceptKnowledgeProposalBody,
   type ApplyRecordingImportBody,
+  type CreateKnowledgeProposalBody,
   type CreateRecordingBindingBody,
   type CreateScenarioBody,
   type PlatformConfigCurrent,
@@ -30,7 +44,18 @@ import {
   type DeleteResourceBody,
   type TrialRunBody,
   type UpdateScenarioBody,
+  type PreviewScenarioExpansionBody,
+  type InlineScenarioModuleInvocationBody,
+  type ModuleExtractBody,
+  type ModuleExtractPreviewBody,
+  type ModuleReplaceBody,
+  type ModuleReplacePreviewBody,
+  type ModuleUpgradeBody,
+  type ModuleUpgradePreviewBody,
+  type ModuleResolveAcceptBody,
 } from '@cairn/shared'
+import { composeScenarioKnowledge } from './knowledge-operations'
+import { requireProposalAccess } from '../map/knowledge-access'
 import { publicApiOrigin } from '../recordings/recordings.service'
 import {
   assertAiExecutePermission,
@@ -151,7 +176,11 @@ export class ScenariosService {
       const current = await this.currentConfig()
       const types = executableTypesFrom(current.document)
       const detail = await getScenario(this.db, id, { executableTypes: types })
-      const steps = detail.draft?.document.steps ?? detail.published?.definition.steps ?? []
+      const draftDocument = detail.draft?.document
+      const steps =
+        (draftDocument && 'steps' in draftDocument ? draftDocument.steps : undefined) ??
+        detail.published?.definition.steps ??
+        []
       assertAiExecutePermission(actor, steps)
       return await createTrialRunFromDraft(this.db, id, {
         revision: body.revision,
@@ -160,6 +189,7 @@ export class ScenariosService {
         policy: body.policy,
         sessionPolicy: body.sessionPolicy,
         evidencePolicy: body.evidencePolicy,
+        mapCapturePolicy: body.mapCapturePolicy,
         idempotencyKey: body.idempotencyKey,
         debugMode: body.debugMode,
         actor: { id: actor.id },
@@ -204,6 +234,30 @@ export class ScenariosService {
     }
   }
 
+  private actor(account: RequestAccount) {
+    return { kind: 'console' as const, id: account.id }
+  }
+
+  async createKnowledgeProposal(id: string, body: CreateKnowledgeProposalBody, account: RequestAccount) {
+    try { return await composeScenarioKnowledge(this.db, id, body, account, (await this.currentConfig()).revision) }
+    catch (error) { rethrowDomain(error) }
+  }
+
+  async getKnowledgeProposal(id: string, proposalId: string, account: RequestAccount) {
+    try { return await requireProposalAccess(this.db, await getKnowledgeProposal(this.db, id, proposalId), account) }
+    catch (error) { rethrowDomain(error) }
+  }
+
+  async acceptKnowledgeProposal(id: string, proposalId: string, body: AcceptKnowledgeProposalBody, account: RequestAccount) {
+    await this.getKnowledgeProposal(id, proposalId, account)
+    return acceptKnowledgeProposal(this.db, id, proposalId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  async rejectKnowledgeProposal(id: string, proposalId: string, account: RequestAccount) {
+    await this.getKnowledgeProposal(id, proposalId, account)
+    return rejectKnowledgeProposal(this.db, id, proposalId, this.actor(account)).catch(rethrowDomain)
+  }
+
   async applyRecordingImport(id: string, body: ApplyRecordingImportBody, actor: RequestAccount) {
     try {
       return await applyRecordingImport(this.db, id, body, { id: actor.id }, {
@@ -212,5 +266,57 @@ export class ScenariosService {
     } catch (error) {
       rethrowDomain(error)
     }
+  }
+
+  async previewModuleExpansion(id: string, body?: PreviewScenarioExpansionBody) {
+    try {
+      return await previewScenarioExpansion(this.db, id, body)
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async inlineModuleInvocation(
+    scenarioId: string,
+    invocationId: string,
+    body: InlineScenarioModuleInvocationBody,
+    actor: RequestAccount,
+  ) {
+    try {
+      return await inlineScenarioModuleInvocation(this.db, scenarioId, invocationId, {
+        revision: body.expectedDraftLockVersion,
+        actor: this.actor(actor),
+      })
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  previewModuleUpgrade(id: string, body: ModuleUpgradePreviewBody) {
+    return previewScenarioModuleUpgrade(this.db, id, body).catch(rethrowDomain)
+  }
+
+  upgradeModule(id: string, body: ModuleUpgradeBody, actor: RequestAccount) {
+    return upgradeScenarioModuleDraft(this.db, id, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
+  }
+
+  previewModuleExtract(id: string, body: ModuleExtractPreviewBody) {
+    return proposeExtractFromScenario(this.db, id, body.stepIds).catch(rethrowDomain)
+  }
+
+  extractModule(id: string, body: ModuleExtractBody, actor: RequestAccount) {
+    return extractModuleFromScenario(this.db, id, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
+  }
+
+  previewModuleReplace(id: string, body: ModuleReplacePreviewBody) {
+    return previewReplaceStepsWithModule(this.db, id, body).catch(rethrowDomain)
+  }
+
+  replaceModule(id: string, body: ModuleReplaceBody, actor: RequestAccount) {
+    return replaceStepsWithModule(this.db, id, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
+  }
+
+  acceptModuleResolution(id: string, requestId: string, body: ModuleResolveAcceptBody, actor: RequestAccount) {
+    return acceptModuleResolution(this.db, id, requestId, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
   }
 }

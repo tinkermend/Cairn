@@ -190,6 +190,7 @@ export function canObserveManagedFrames(input: {
   controlExpiresAt?: Date | string | null
   now?: number
 }): boolean {
+  if (!['QUEUED', 'RUNNING', 'RECOVERING', 'WAITING_FOR_AUTH', 'HOLDING'].includes(input.runStatus)) return false
   if (input.runStatus !== 'WAITING_FOR_AUTH') return true
   if (!input.controlActorId || !input.controlExpiresAt) return false
   const expires =

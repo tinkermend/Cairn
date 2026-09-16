@@ -1,8 +1,9 @@
 import { relations } from 'drizzle-orm'
-import type { ResourceDeletedBy } from '@cairn/shared'
+import type { AuthProfileValidation, ResourceDeletedBy, TargetAuthProfileDefinition } from '@cairn/shared'
 import {
   customType,
   index,
+  integer,
   jsonb,
   text,
   timestamp,
@@ -40,6 +41,7 @@ export const targets = cairnSchema.table(
       password?: { by: 'id' | 'name' | 'css'; value: string }
       submit?: { by: 'id' | 'name' | 'css'; value: string }
     }>(),
+    currentAuthProfileRevision: integer('current_auth_profile_revision'),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -73,6 +75,8 @@ export const targetAccounts = cairnSchema.table(
     status: text('status', { enum: ['active', 'disabled'] })
       .notNull()
       .default('active'),
+    expectedIdentity: text('expected_identity'),
+    configRevision: integer('config_revision').notNull().default(1),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -104,4 +108,41 @@ export type Target = typeof targets.$inferSelect
 export type NewTarget = typeof targets.$inferInsert
 export type TargetAccount = typeof targetAccounts.$inferSelect
 export type NewTargetAccount = typeof targetAccounts.$inferInsert
+export const targetAuthProfiles = cairnSchema.table(
+  'target_auth_profiles',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    targetId: uuid('target_id')
+      .notNull()
+      .references(() => targets.id, { onDelete: 'restrict' }),
+    revision: integer('revision').notNull(),
+    definition: jsonb('definition').$type<TargetAuthProfileDefinition>().notNull(),
+    digest: text('digest').notNull(),
+    validation: jsonb('validation').$type<AuthProfileValidation | null>(),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('target_auth_profiles_target_revision_key').on(t.targetId, t.revision)],
+)
+
+export const targetAccountAuthBudget = cairnSchema.table(
+  'target_account_auth_budget',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    targetAccountId: uuid('target_account_id')
+      .notNull()
+      .references(() => targetAccounts.id, { onDelete: 'restrict' }),
+    windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
+    autoLoginCount: integer('auto_login_count').notNull().default(0),
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    pausedReason: text('paused_reason'),
+    nextAllowedAt: timestamp('next_allowed_at', { withTimezone: true }),
+    lastConfigRevision: integer('last_config_revision').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('target_account_auth_budget_account_key').on(t.targetAccountId)],
+)
+
 export type SecretRow = typeof secrets.$inferSelect
+export type TargetAuthProfileRow = typeof targetAuthProfiles.$inferSelect
+export type TargetAccountAuthBudgetRow = typeof targetAccountAuthBudget.$inferSelect

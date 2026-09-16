@@ -4,6 +4,7 @@ import {
   ACTIVE_RUN_STATUSES,
   RECORDER_SOURCE_VERSION,
   RECORDING_NORMALIZER_VERSION,
+  authoringSteps,
   createTargetBodySchema,
   type CreateRecordingBody,
   type Step,
@@ -267,10 +268,10 @@ describe.each(DRIVERS)('%s 资源生命周期', { timeout: 30_000 }, (driver) =>
       },
       f.actor,
     )
-    const before = applied.scenario.draft!.document.steps
+    const before = authoringSteps(applied.scenario.draft!.document)
     await api.deleteRecordingDraft(f.db, draft.detail.id, f.actor)
     const after = await api.getScenario(f.db, scenario.id)
-    expect(after.draft!.document.steps).toEqual(before)
+    expect(authoringSteps(after.draft!.document)).toEqual(before)
   })
 
   it('LM09 列表半开日期、试跑筛选与非法游标', async () => {

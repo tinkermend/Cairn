@@ -18,6 +18,7 @@ import * as api from '../index.js'
 import { expose } from '../database.js'
 import { createDb as openNative, type DbHandle } from '../client.js'
 import { schemaFor, afterSeconds } from '../native.js'
+import { latestLogicalVersion } from '../migrate.js'
 import { assertSchemaReady, migrateDatabase } from '../migrate-native.js'
 import { exportDatabase, importDatabase } from '../transfer.js'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
@@ -43,14 +44,8 @@ const transferOptions = {
     expect(o).toMatchObject({ digest: objectDigest, byteSize: objectBytes.length })
   },
 }
-it('driver configuration validates independently and rejects unknown backends', () => {
-  expect(
-    dbEnvSchema.parse({ CAIRN_DB_DRIVER: 'sqlite', CAIRN_DB_FILE: '/tmp/cairn.sqlite' }),
-  ).toEqual({ CAIRN_DB_DRIVER: 'sqlite', CAIRN_DB_FILE: '/tmp/cairn.sqlite' })
+it('driver configuration validates supported server configurations and rejects unknown backends', () => {
   expect(dbEnvSchema.safeParse({ CAIRN_DB_DRIVER: 'unknown' }).success).toBe(false)
-  expect(
-    dbEnvSchema.safeParse({ CAIRN_DB_DRIVER: 'sqlite', CAIRN_DB_FILE: ':memory:' }).success,
-  ).toBe(false)
   const server = {
     CAIRN_DB_HOST: 'localhost',
     CAIRN_DB_NAME: 'cairn',
@@ -420,7 +415,7 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
     expect(await empty.db.select().from(schemaFor(empty.db).consoleRoles)).toHaveLength(4)
   })
 
-  it('completed history, secrets and evidence migrate in both outgoing directions', async () => {
+  it.runIf(DRIVERS.length > 1)('completed history, secrets and evidence migrate in both supported directions', async () => {
     const source = await fixture(driver)
     const legacyId = api.newId()
     await api.registerStandaloneSecret(source.db, { id: legacyId, ciphertext: bytes })
@@ -444,7 +439,7 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
     })
     const before = await api.getRun(source.db, runId)
     const archive = await exportDatabase(source.db, source.h.env, transferOptions)
-    expect(archive.logicalVersion).toBe('0030')
+    expect(archive.logicalVersion).toBe(latestLogicalVersion())
     expect(archive.tables.scenarioDrafts).toHaveLength(1)
     for (const targetDriver of DRIVERS.filter((d) => d !== driver)) {
       const target = await openContractDb(targetDriver)

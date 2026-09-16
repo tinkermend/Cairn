@@ -42,6 +42,7 @@ import { cursorFilter, paginateResults } from '../cursor.js'
 import {
   ACTIVE_RUN_STATUSES,
   LOCAL_SECRET_PROVIDER,
+  deriveAuthCapability,
   cleanupStatusResponseSchema,
   compactLoginFields,
   deletePreviewResponseSchema,
@@ -70,6 +71,7 @@ import {
   type UpdateTargetBody,
 } from '@cairn/shared'
 import type { PersistenceActor as RequestAccount } from './actor.js'
+import { loadAccountAuthDisplay, loadCurrentAuthProfile, resetAuthBudgetAfterCredentialChange } from '../sessions/auth-profile.js'
 
 function iso(value: Date): string {
   return value.toISOString()
@@ -349,7 +351,7 @@ export class TargetsStore {
     actor: RequestAccount,
     body?: DeleteResourceBody,
   ): Promise<CleanupStatusResponse> {
-    const { targets, targetAccounts, scenarios, recordingDrafts, runs, storedObjects } = schemaFor(
+    const { targets, targetAccounts, actionModules, scenarios, recordingDrafts, runs, storedObjects } = schemaFor(
       this.db,
     )
 
@@ -415,6 +417,9 @@ export class TargetsStore {
           .update(targets)
           .set({ deletedAt: now, deletedBy, updatedAt: now })
           .where(eq(targets.id, id))
+
+        await tx.update(actionModules).set({ deletedAt: now, deletedBy, updatedAt: now })
+          .where(and(eq(actionModules.targetId, id), isNull(actionModules.deletedAt)))
 
         if (accounts.length > 0) {
           const accountsWithSecrets = await tx
@@ -621,8 +626,13 @@ export class TargetsStore {
       .orderBy(desc(targetAccounts.createdAt), desc(targetAccounts.id))
       .limit(limit + 1)
     const paginated = paginateResults(rows, limit)
+    const profile = await loadCurrentAuthProfile(this.db, targetId)
+    const extras = await loadAccountAuthDisplay(
+      this.db,
+      paginated.items.map((row) => row.id),
+    )
     return targetAccountListResponseSchema.parse({
-      items: paginated.items.map((row) => this.toAccount(row)),
+      items: paginated.items.map((row) => this.toAccount(row, profile, extras.get(row.id))),
       nextCursor: paginated.nextCursor,
       hasMore: paginated.hasMore,
     })
@@ -701,6 +711,7 @@ export class TargetsStore {
           )
         }
         if (nextSecret || body.clearPassword) {
+          await resetAuthBudgetAfterCredentialChange(tx, accountId)
           await this.writeAudit(
             tx,
             actor,
@@ -801,9 +812,11 @@ export class TargetsStore {
     }
   }
 
-  private async getAccount(targetId: string, accountId: string): Promise<TargetAccountDto> {
+  async getAccount(targetId: string, accountId: string): Promise<TargetAccountDto> {
     const row = await this.loadAccount(targetId, accountId)
-    return this.toAccount(row)
+    const profile = await loadCurrentAuthProfile(this.db, targetId)
+    const extras = await loadAccountAuthDisplay(this.db, [accountId])
+    return this.toAccount(row, profile, extras.get(accountId))
   }
 
   private async loadTarget(id: string) {
@@ -927,12 +940,22 @@ export class TargetsStore {
       status: row.status,
       loginFields: compactLoginFields((row.loginFields as TargetLoginFields | null) ?? null),
       accountCount,
+      currentAuthProfileRevision: row.currentAuthProfileRevision,
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
     })
   }
 
-  private toAccount(row: TargetAccount): TargetAccountDto {
+  private toAccount(
+    row: TargetAccount,
+    profile: Awaited<ReturnType<typeof loadCurrentAuthProfile>>,
+    extras?: {
+      lastAuthCheckedAt: string | null
+      lastAuthSuccessAt: string | null
+      lastAuthError: string | null
+      autoLoginPausedReason: string | null
+    },
+  ): TargetAccountDto {
     return targetAccountSchema.parse({
       id: row.id,
       targetId: row.targetId,
@@ -940,6 +963,17 @@ export class TargetsStore {
       username: row.username,
       hasPassword: Boolean(row.secretId),
       status: row.status,
+      expectedIdentity: row.expectedIdentity,
+      configRevision: row.configRevision,
+      authCapability: deriveAuthCapability({
+        definition: profile?.definition ?? null,
+        validation: profile?.validation ?? null,
+        expectedIdentity: row.expectedIdentity,
+      }),
+      lastAuthCheckedAt: extras?.lastAuthCheckedAt ?? null,
+      lastAuthSuccessAt: extras?.lastAuthSuccessAt ?? null,
+      lastAuthError: extras?.lastAuthError ?? null,
+      autoLoginPausedReason: extras?.autoLoginPausedReason ?? null,
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
     })

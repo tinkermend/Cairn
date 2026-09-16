@@ -144,6 +144,7 @@ export const createRecordingBodySchema = z.strictObject({
   name: scenarioNameSchema.optional(),
   bindingId: entityIdSchema.optional(),
   events: z.array(recordingEventSchema).min(1).max(MAX_RECORDING_EVENTS),
+  mapIngest: z.boolean().optional(),
 })
 export type CreateRecordingBody = z.infer<typeof createRecordingBodySchema>
 

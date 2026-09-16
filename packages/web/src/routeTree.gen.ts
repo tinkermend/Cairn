@@ -18,6 +18,7 @@ import { Route as errors500RouteImport } from './routes/(errors)/500'
 import { Route as errors503RouteImport } from './routes/(errors)/503'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
 import { Route as AuthenticatedSettingsRouteRouteImport } from './routes/_authenticated/settings/route'
+import { Route as AuthenticatedActionModulesIndexRouteImport } from './routes/_authenticated/action-modules/index'
 import { Route as AuthenticatedAuditIndexRouteImport } from './routes/_authenticated/audit/index'
 import { Route as AuthenticatedAuditLoginsRouteImport } from './routes/_authenticated/audit/logins'
 import { Route as AuthenticatedAuditOperationsRouteImport } from './routes/_authenticated/audit/operations'
@@ -26,18 +27,23 @@ import { Route as AuthenticatedRecordingsIndexRouteImport } from './routes/_auth
 import { Route as AuthenticatedRolesIndexRouteImport } from './routes/_authenticated/roles/index'
 import { Route as AuthenticatedRunsIndexRouteImport } from './routes/_authenticated/runs/index'
 import { Route as AuthenticatedScenariosIndexRouteImport } from './routes/_authenticated/scenarios/index'
+import { Route as AuthenticatedSchedulesIndexRouteImport } from './routes/_authenticated/schedules/index'
 import { Route as AuthenticatedServicesIndexRouteImport } from './routes/_authenticated/services/index'
+import { Route as AuthenticatedSessionsIndexRouteImport } from './routes/_authenticated/sessions/index'
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
 import { Route as AuthenticatedTargetsIndexRouteImport } from './routes/_authenticated/targets/index'
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
 import { Route as AuthenticatedWorkersIndexRouteImport } from './routes/_authenticated/workers/index'
+import { Route as AuthenticatedActionModulesModuleIdIndexRouteImport } from './routes/_authenticated/action-modules/$moduleId/index'
 import { Route as AuthenticatedRecordingsRecordingIdIndexRouteImport } from './routes/_authenticated/recordings/$recordingId/index'
 import { Route as AuthenticatedRunsRunIdIndexRouteImport } from './routes/_authenticated/runs/$runId/index'
 import { Route as AuthenticatedScenariosScenarioIdIndexRouteImport } from './routes/_authenticated/scenarios/$scenarioId/index'
 import { Route as AuthenticatedTargetsTargetIdIndexRouteImport } from './routes/_authenticated/targets/$targetId/index'
 import { Route as AuthenticatedWorkersWorkerIdIndexRouteImport } from './routes/_authenticated/workers/$workerId/index'
+import { Route as AuthenticatedSessionsTargetIdAccountIdIndexRouteImport } from './routes/_authenticated/sessions/$targetId/$accountId/index'
+import { Route as AuthenticatedTargetsTargetIdMapIndexRouteImport } from './routes/_authenticated/targets/$targetId/map/index'
 
 const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
   id: '/_authenticated',
@@ -82,6 +88,12 @@ const AuthenticatedSettingsRouteRoute =
   AuthenticatedSettingsRouteRouteImport.update({
     id: '/settings',
     path: '/settings',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedActionModulesIndexRoute =
+  AuthenticatedActionModulesIndexRouteImport.update({
+    id: '/action-modules/',
+    path: '/action-modules/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedAuditIndexRoute = AuthenticatedAuditIndexRouteImport.update({
@@ -129,10 +141,22 @@ const AuthenticatedScenariosIndexRoute =
     path: '/scenarios/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedSchedulesIndexRoute =
+  AuthenticatedSchedulesIndexRouteImport.update({
+    id: '/schedules/',
+    path: '/schedules/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedServicesIndexRoute =
   AuthenticatedServicesIndexRouteImport.update({
     id: '/services/',
     path: '/services/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedSessionsIndexRoute =
+  AuthenticatedSessionsIndexRouteImport.update({
+    id: '/sessions/',
+    path: '/sessions/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedSettingsIndexRoute =
@@ -170,6 +194,12 @@ const AuthenticatedWorkersIndexRoute =
     path: '/workers/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedActionModulesModuleIdIndexRoute =
+  AuthenticatedActionModulesModuleIdIndexRouteImport.update({
+    id: '/action-modules/$moduleId/',
+    path: '/action-modules/$moduleId/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedRecordingsRecordingIdIndexRoute =
   AuthenticatedRecordingsRecordingIdIndexRouteImport.update({
     id: '/recordings/$recordingId/',
@@ -200,6 +230,18 @@ const AuthenticatedWorkersWorkerIdIndexRoute =
     path: '/workers/$workerId/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedSessionsTargetIdAccountIdIndexRoute =
+  AuthenticatedSessionsTargetIdAccountIdIndexRouteImport.update({
+    id: '/sessions/$targetId/$accountId/',
+    path: '/sessions/$targetId/$accountId/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedTargetsTargetIdMapIndexRoute =
+  AuthenticatedTargetsTargetIdMapIndexRouteImport.update({
+    id: '/targets/$targetId/map/',
+    path: '/targets/$targetId/map/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
@@ -214,22 +256,28 @@ export interface FileRoutesByFullPath {
   '/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
+  '/action-modules/': typeof AuthenticatedActionModulesIndexRoute
   '/audit/': typeof AuthenticatedAuditIndexRoute
   '/platform-config/': typeof AuthenticatedPlatformConfigIndexRoute
   '/recordings/': typeof AuthenticatedRecordingsIndexRoute
   '/roles/': typeof AuthenticatedRolesIndexRoute
   '/runs/': typeof AuthenticatedRunsIndexRoute
   '/scenarios/': typeof AuthenticatedScenariosIndexRoute
+  '/schedules/': typeof AuthenticatedSchedulesIndexRoute
   '/services/': typeof AuthenticatedServicesIndexRoute
+  '/sessions/': typeof AuthenticatedSessionsIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
   '/targets/': typeof AuthenticatedTargetsIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
   '/workers/': typeof AuthenticatedWorkersIndexRoute
+  '/action-modules/$moduleId/': typeof AuthenticatedActionModulesModuleIdIndexRoute
   '/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
   '/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
   '/workers/$workerId/': typeof AuthenticatedWorkersWorkerIdIndexRoute
+  '/sessions/$targetId/$accountId/': typeof AuthenticatedSessionsTargetIdAccountIdIndexRoute
+  '/targets/$targetId/map/': typeof AuthenticatedTargetsTargetIdMapIndexRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof authSignInRoute
@@ -243,22 +291,28 @@ export interface FileRoutesByTo {
   '/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
+  '/action-modules': typeof AuthenticatedActionModulesIndexRoute
   '/audit': typeof AuthenticatedAuditIndexRoute
   '/platform-config': typeof AuthenticatedPlatformConfigIndexRoute
   '/recordings': typeof AuthenticatedRecordingsIndexRoute
   '/roles': typeof AuthenticatedRolesIndexRoute
   '/runs': typeof AuthenticatedRunsIndexRoute
   '/scenarios': typeof AuthenticatedScenariosIndexRoute
+  '/schedules': typeof AuthenticatedSchedulesIndexRoute
   '/services': typeof AuthenticatedServicesIndexRoute
+  '/sessions': typeof AuthenticatedSessionsIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
   '/targets': typeof AuthenticatedTargetsIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
   '/workers': typeof AuthenticatedWorkersIndexRoute
+  '/action-modules/$moduleId': typeof AuthenticatedActionModulesModuleIdIndexRoute
   '/recordings/$recordingId': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/runs/$runId': typeof AuthenticatedRunsRunIdIndexRoute
   '/scenarios/$scenarioId': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/targets/$targetId': typeof AuthenticatedTargetsTargetIdIndexRoute
   '/workers/$workerId': typeof AuthenticatedWorkersWorkerIdIndexRoute
+  '/sessions/$targetId/$accountId': typeof AuthenticatedSessionsTargetIdAccountIdIndexRoute
+  '/targets/$targetId/map': typeof AuthenticatedTargetsTargetIdMapIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -275,22 +329,28 @@ export interface FileRoutesById {
   '/_authenticated/audit/operations': typeof AuthenticatedAuditOperationsRoute
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
+  '/_authenticated/action-modules/': typeof AuthenticatedActionModulesIndexRoute
   '/_authenticated/audit/': typeof AuthenticatedAuditIndexRoute
   '/_authenticated/platform-config/': typeof AuthenticatedPlatformConfigIndexRoute
   '/_authenticated/recordings/': typeof AuthenticatedRecordingsIndexRoute
   '/_authenticated/roles/': typeof AuthenticatedRolesIndexRoute
   '/_authenticated/runs/': typeof AuthenticatedRunsIndexRoute
   '/_authenticated/scenarios/': typeof AuthenticatedScenariosIndexRoute
+  '/_authenticated/schedules/': typeof AuthenticatedSchedulesIndexRoute
   '/_authenticated/services/': typeof AuthenticatedServicesIndexRoute
+  '/_authenticated/sessions/': typeof AuthenticatedSessionsIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
   '/_authenticated/targets/': typeof AuthenticatedTargetsIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
   '/_authenticated/workers/': typeof AuthenticatedWorkersIndexRoute
+  '/_authenticated/action-modules/$moduleId/': typeof AuthenticatedActionModulesModuleIdIndexRoute
   '/_authenticated/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/_authenticated/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
   '/_authenticated/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
   '/_authenticated/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
   '/_authenticated/workers/$workerId/': typeof AuthenticatedWorkersWorkerIdIndexRoute
+  '/_authenticated/sessions/$targetId/$accountId/': typeof AuthenticatedSessionsTargetIdAccountIdIndexRoute
+  '/_authenticated/targets/$targetId/map/': typeof AuthenticatedTargetsTargetIdMapIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -307,22 +367,28 @@ export interface FileRouteTypes {
     | '/audit/operations'
     | '/settings/account'
     | '/settings/appearance'
+    | '/action-modules/'
     | '/audit/'
     | '/platform-config/'
     | '/recordings/'
     | '/roles/'
     | '/runs/'
     | '/scenarios/'
+    | '/schedules/'
     | '/services/'
+    | '/sessions/'
     | '/settings/'
     | '/targets/'
     | '/users/'
     | '/workers/'
+    | '/action-modules/$moduleId/'
     | '/recordings/$recordingId/'
     | '/runs/$runId/'
     | '/scenarios/$scenarioId/'
     | '/targets/$targetId/'
     | '/workers/$workerId/'
+    | '/sessions/$targetId/$accountId/'
+    | '/targets/$targetId/map/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/sign-in'
@@ -336,22 +402,28 @@ export interface FileRouteTypes {
     | '/audit/operations'
     | '/settings/account'
     | '/settings/appearance'
+    | '/action-modules'
     | '/audit'
     | '/platform-config'
     | '/recordings'
     | '/roles'
     | '/runs'
     | '/scenarios'
+    | '/schedules'
     | '/services'
+    | '/sessions'
     | '/settings'
     | '/targets'
     | '/users'
     | '/workers'
+    | '/action-modules/$moduleId'
     | '/recordings/$recordingId'
     | '/runs/$runId'
     | '/scenarios/$scenarioId'
     | '/targets/$targetId'
     | '/workers/$workerId'
+    | '/sessions/$targetId/$accountId'
+    | '/targets/$targetId/map'
   id:
     | '__root__'
     | '/_authenticated'
@@ -367,22 +439,28 @@ export interface FileRouteTypes {
     | '/_authenticated/audit/operations'
     | '/_authenticated/settings/account'
     | '/_authenticated/settings/appearance'
+    | '/_authenticated/action-modules/'
     | '/_authenticated/audit/'
     | '/_authenticated/platform-config/'
     | '/_authenticated/recordings/'
     | '/_authenticated/roles/'
     | '/_authenticated/runs/'
     | '/_authenticated/scenarios/'
+    | '/_authenticated/schedules/'
     | '/_authenticated/services/'
+    | '/_authenticated/sessions/'
     | '/_authenticated/settings/'
     | '/_authenticated/targets/'
     | '/_authenticated/users/'
     | '/_authenticated/workers/'
+    | '/_authenticated/action-modules/$moduleId/'
     | '/_authenticated/recordings/$recordingId/'
     | '/_authenticated/runs/$runId/'
     | '/_authenticated/scenarios/$scenarioId/'
     | '/_authenticated/targets/$targetId/'
     | '/_authenticated/workers/$workerId/'
+    | '/_authenticated/sessions/$targetId/$accountId/'
+    | '/_authenticated/targets/$targetId/map/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -460,6 +538,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsRouteRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/action-modules/': {
+      id: '/_authenticated/action-modules/'
+      path: '/action-modules'
+      fullPath: '/action-modules/'
+      preLoaderRoute: typeof AuthenticatedActionModulesIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/audit/': {
       id: '/_authenticated/audit/'
       path: '/audit'
@@ -516,11 +601,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedScenariosIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/schedules/': {
+      id: '/_authenticated/schedules/'
+      path: '/schedules'
+      fullPath: '/schedules/'
+      preLoaderRoute: typeof AuthenticatedSchedulesIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/services/': {
       id: '/_authenticated/services/'
       path: '/services'
       fullPath: '/services/'
       preLoaderRoute: typeof AuthenticatedServicesIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/sessions/': {
+      id: '/_authenticated/sessions/'
+      path: '/sessions'
+      fullPath: '/sessions/'
+      preLoaderRoute: typeof AuthenticatedSessionsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/settings/': {
@@ -565,6 +664,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedWorkersIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/action-modules/$moduleId/': {
+      id: '/_authenticated/action-modules/$moduleId/'
+      path: '/action-modules/$moduleId'
+      fullPath: '/action-modules/$moduleId/'
+      preLoaderRoute: typeof AuthenticatedActionModulesModuleIdIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/recordings/$recordingId/': {
       id: '/_authenticated/recordings/$recordingId/'
       path: '/recordings/$recordingId'
@@ -600,6 +706,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedWorkersWorkerIdIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/sessions/$targetId/$accountId/': {
+      id: '/_authenticated/sessions/$targetId/$accountId/'
+      path: '/sessions/$targetId/$accountId'
+      fullPath: '/sessions/$targetId/$accountId/'
+      preLoaderRoute: typeof AuthenticatedSessionsTargetIdAccountIdIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/targets/$targetId/map/': {
+      id: '/_authenticated/targets/$targetId/map/'
+      path: '/targets/$targetId/map'
+      fullPath: '/targets/$targetId/map/'
+      preLoaderRoute: typeof AuthenticatedTargetsTargetIdMapIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
   }
 }
 
@@ -626,21 +746,27 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedAuditLoginsRoute: typeof AuthenticatedAuditLoginsRoute
   AuthenticatedAuditOperationsRoute: typeof AuthenticatedAuditOperationsRoute
+  AuthenticatedActionModulesIndexRoute: typeof AuthenticatedActionModulesIndexRoute
   AuthenticatedAuditIndexRoute: typeof AuthenticatedAuditIndexRoute
   AuthenticatedPlatformConfigIndexRoute: typeof AuthenticatedPlatformConfigIndexRoute
   AuthenticatedRecordingsIndexRoute: typeof AuthenticatedRecordingsIndexRoute
   AuthenticatedRolesIndexRoute: typeof AuthenticatedRolesIndexRoute
   AuthenticatedRunsIndexRoute: typeof AuthenticatedRunsIndexRoute
   AuthenticatedScenariosIndexRoute: typeof AuthenticatedScenariosIndexRoute
+  AuthenticatedSchedulesIndexRoute: typeof AuthenticatedSchedulesIndexRoute
   AuthenticatedServicesIndexRoute: typeof AuthenticatedServicesIndexRoute
+  AuthenticatedSessionsIndexRoute: typeof AuthenticatedSessionsIndexRoute
   AuthenticatedTargetsIndexRoute: typeof AuthenticatedTargetsIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
   AuthenticatedWorkersIndexRoute: typeof AuthenticatedWorkersIndexRoute
+  AuthenticatedActionModulesModuleIdIndexRoute: typeof AuthenticatedActionModulesModuleIdIndexRoute
   AuthenticatedRecordingsRecordingIdIndexRoute: typeof AuthenticatedRecordingsRecordingIdIndexRoute
   AuthenticatedRunsRunIdIndexRoute: typeof AuthenticatedRunsRunIdIndexRoute
   AuthenticatedScenariosScenarioIdIndexRoute: typeof AuthenticatedScenariosScenarioIdIndexRoute
   AuthenticatedTargetsTargetIdIndexRoute: typeof AuthenticatedTargetsTargetIdIndexRoute
   AuthenticatedWorkersWorkerIdIndexRoute: typeof AuthenticatedWorkersWorkerIdIndexRoute
+  AuthenticatedSessionsTargetIdAccountIdIndexRoute: typeof AuthenticatedSessionsTargetIdAccountIdIndexRoute
+  AuthenticatedTargetsTargetIdMapIndexRoute: typeof AuthenticatedTargetsTargetIdMapIndexRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -648,16 +774,21 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
   AuthenticatedAuditLoginsRoute: AuthenticatedAuditLoginsRoute,
   AuthenticatedAuditOperationsRoute: AuthenticatedAuditOperationsRoute,
+  AuthenticatedActionModulesIndexRoute: AuthenticatedActionModulesIndexRoute,
   AuthenticatedAuditIndexRoute: AuthenticatedAuditIndexRoute,
   AuthenticatedPlatformConfigIndexRoute: AuthenticatedPlatformConfigIndexRoute,
   AuthenticatedRecordingsIndexRoute: AuthenticatedRecordingsIndexRoute,
   AuthenticatedRolesIndexRoute: AuthenticatedRolesIndexRoute,
   AuthenticatedRunsIndexRoute: AuthenticatedRunsIndexRoute,
   AuthenticatedScenariosIndexRoute: AuthenticatedScenariosIndexRoute,
+  AuthenticatedSchedulesIndexRoute: AuthenticatedSchedulesIndexRoute,
   AuthenticatedServicesIndexRoute: AuthenticatedServicesIndexRoute,
+  AuthenticatedSessionsIndexRoute: AuthenticatedSessionsIndexRoute,
   AuthenticatedTargetsIndexRoute: AuthenticatedTargetsIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,
   AuthenticatedWorkersIndexRoute: AuthenticatedWorkersIndexRoute,
+  AuthenticatedActionModulesModuleIdIndexRoute:
+    AuthenticatedActionModulesModuleIdIndexRoute,
   AuthenticatedRecordingsRecordingIdIndexRoute:
     AuthenticatedRecordingsRecordingIdIndexRoute,
   AuthenticatedRunsRunIdIndexRoute: AuthenticatedRunsRunIdIndexRoute,
@@ -667,6 +798,10 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
     AuthenticatedTargetsTargetIdIndexRoute,
   AuthenticatedWorkersWorkerIdIndexRoute:
     AuthenticatedWorkersWorkerIdIndexRoute,
+  AuthenticatedSessionsTargetIdAccountIdIndexRoute:
+    AuthenticatedSessionsTargetIdAccountIdIndexRoute,
+  AuthenticatedTargetsTargetIdMapIndexRoute:
+    AuthenticatedTargetsTargetIdMapIndexRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =

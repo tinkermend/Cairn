@@ -90,13 +90,20 @@ export const browserCommandSchema = z.discriminatedUnion('type', [
     value: z.string().max(16_384),
   }),
   z.strictObject({
+    type: z.literal('locate'),
+    target: targetDescriptorSchema,
+    timeoutMs: z.number().int().min(1).max(5_000).optional(),
+  }),
+  z.strictObject({
     type: z.literal('extract'),
+    expectedTargetToken: z.string().uuid().optional(),
     target: targetDescriptorSchema,
     as: z.enum(EXTRACT_AS),
     attribute: z.string().trim().min(1).max(128).optional(),
   }),
   z.strictObject({
     type: z.literal('assert'),
+    expectedTargetToken: z.string().uuid().optional(),
     target: targetDescriptorSchema.optional(),
     expect: assertExpectSchema,
   }),
@@ -139,6 +146,7 @@ export type EvidenceObjectPointer = ScreenshotPointer
 export const browserCommandResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({
     ok: z.literal(true),
+    resolvedTargetToken: z.string().uuid().optional(),
     output: jsonValueSchema,
     diagnostics: resolverDiagnosticsSchema.optional(),
     screenshot: screenshotPointerSchema.optional(),

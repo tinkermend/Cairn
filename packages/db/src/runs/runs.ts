@@ -1,5 +1,8 @@
+import { freezeAuthVerificationForRun } from '../sessions/auth-profile.js'
+import { ensureFrozenAccessPolicyTx } from '../map/access.js'
 import { expireRunDeadlines } from './deadline.js'
 import { settleRunCancellationTx } from './recover.js'
+import { lockRunAccountScope } from './lock-scope.js'
 import { atomic, databaseNow, locked, schemaFor, updateRows } from '../native.js'
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, max, ne, or, sql, type SQL } from 'drizzle-orm'
 import {
@@ -12,7 +15,6 @@ import {
   freezeExecutorVersions,
   hasAiSteps,
   loginScopeFromTargetUrl,
-  originsFromTargetUrls,
   RUNTIME_SCHEMA_VERSION,
   ScenarioValidationError,
   assertRunFromResolved,
@@ -26,6 +28,7 @@ import {
   frozenTargetAuthSchema,
   idempotentRequestMatches,
   resolveAiExecutionFromPlatform,
+  resolveMapCapturePolicy,
   resolvePlatformEvidencePolicy,
   resolvePlatformExecutionPolicy,
   resolvePlatformSessionPolicy,
@@ -34,6 +37,8 @@ import {
   runListQuerySchema,
   runListResponseSchema,
   runSnapshotSchema,
+  authCheckpointSchema,
+  computeContextVersion,
   type AiExecutionConfig,
   type CleanupStatus,
   type CleanupStatusResponse,
@@ -45,6 +50,7 @@ import {
   type ExecutionError,
   type ExecutionPolicy,
   type JsonValue,
+  type MapFactBatchItem,
   type RunDetailDto,
   type RunGrant,
   type RunListQuery,
@@ -59,6 +65,10 @@ import {
   type DebugMode,
   type DebugCheckpoint,
   type DebugOverlay,
+  type AuthCheckpoint,
+  type FrozenMapJob,
+  type SelectionDecision,
+  selectionDecisionSchema,
 } from '@cairn/shared'
 import { cursorFilter, paginateResults } from '../cursor.js'
 import {
@@ -79,13 +89,16 @@ import {
   verifyRunLeaseForWrite,
 } from '../leases/leases.js'
 import { findLiveSession, verifySessionLeaseForCommit } from '../sessions/sessions.js'
+import { computeOccupancyPlacement } from '../sessions/occupancy.js'
 import { runLeases, workers } from '../schema/worker.js'
 import type { Db } from '../client.js'
-import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.js'
+import { cancelPendingStepRunsTx, skipRemainingStepRunsTx, skipStepRunsTx } from './step-status.js'
 import { newId } from '../id.js'
 import { attempts, evidences, runs, scenarios, stepRuns } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
 import { getPlatformConfig } from '../platform-config/store.js'
+import { appendFinishAttemptMapFactsTx } from '../map/attempt-facts.js'
+import { freezeMapConsumptionTx, insertMapRunReleaseRefTx } from '../map/consumption.js'
 import { computeIdempotencyDigest, computeSnapshotDigest } from './digest.js'
 import { badRequest, conflict, mapRestriction, notFound } from './errors.js'
 import { toEvidenceMetadata } from '../objects/evidence-map.js'
@@ -415,69 +428,23 @@ export async function listRunEvidence(db: Db, runId: string) {
   })
 }
 
-const emptyPlacement = (state: RunPlacement['state'] = 'not_applicable'): RunPlacement => ({
-  state,
-  sessionId: null,
-  ownerWorkerId: null,
-  sessionStatus: null,
-})
-
 export async function computeRunPlacement(
   db: Db,
   run: {
     status: RunStatus
+    createdAt?: Date
     targetId: string
     targetAccountId: string | null
     hasActiveLease: boolean
   },
 ): Promise<RunPlacement> {
-  const { runLeases, workers } = schemaFor(db)
-  if (
-    isFinishedRunStatus(run.status) ||
-    run.status === 'NEEDS_REVIEW' ||
-    run.status === 'WAITING_FOR_AUTH' ||
-    !run.targetAccountId
-  ) {
-    return emptyPlacement()
-  }
-  if (run.hasActiveLease) {
-    return emptyPlacement('claimed')
-  }
-  const live = await findLiveSession(db, {
+  return computeOccupancyPlacement(db, {
+    status: run.status,
+    createdAt: run.createdAt ?? new Date(0),
     targetId: run.targetId,
     targetAccountId: run.targetAccountId,
+    hasActiveLease: run.hasActiveLease,
   })
-  if (!live) return emptyPlacement('claimable')
-  const withSession = {
-    sessionId: live.id,
-    ownerWorkerId: live.ownerWorkerId,
-    sessionStatus: live.status,
-  }
-  if (live.status === 'LOST') return { state: 'session_lost', ...withSession }
-  if (live.status === 'CREATING' || live.status === 'CLOSING') {
-    return { state: 'session_not_ready', ...withSession }
-  }
-  const [owner] = await db
-    .select({ capacity: workers.capacity })
-    .from(workers)
-    .where(eq(workers.id, live.ownerWorkerId))
-    .limit(1)
-  if (owner) {
-    const [held] = await db
-      .select({ n: sql<number>`count(*)` })
-      .from(runLeases)
-      .where(
-        and(
-          eq(runLeases.holderWorkerId, live.ownerWorkerId),
-          eq(runLeases.status, 'ACTIVE'),
-          sql`${runLeases.expiresAt} > ${databaseNow(db)}`,
-        ),
-      )
-    if (Number(held?.n ?? 0) >= owner.capacity) {
-      return { state: 'owner_at_capacity', ...withSession }
-    }
-  }
-  return { state: 'owner_required', ...withSession }
 }
 
 export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto | null> {
@@ -525,6 +492,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
   const lease = await findActiveLeaseForRun(db, runId)
   const placement = await computeRunPlacement(db, {
     status: row.status,
+    createdAt: row.createdAt,
     targetId: row.targetId,
     targetAccountId: row.targetAccountId,
     hasActiveLease: lease !== null,
@@ -562,6 +530,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     context: row.context,
     checkpoint: row.checkpoint ?? null,
     debugOverlay: row.debugOverlay ?? null,
+    authCheckpoint: parseAuthCheckpoint(row.authCheckpoint),
     stepRuns: stepRows.map((step) => {
       const definition = stepsById.get(step.stepId)
       return {
@@ -624,6 +593,7 @@ export async function createRunWithSnapshot(
     allowTrialVersion?: boolean
     aiExecution?: AiExecutionConfig
     hangWaitMs?: number
+    mapJob?: FrozenMapJob
   },
 ): Promise<{ detail: RunDetailDto; created: boolean }> {
   input = { ...input, actor: executionActorSchema.parse(input.actor), ...(input.serviceAdmission ? { serviceAdmission: serviceAdmissionSchema.parse(input.serviceAdmission) } : {}) }
@@ -695,6 +665,8 @@ export async function createRunWithSnapshot(
         policy: input.policy,
         sessionPolicy: input.sessionPolicy ?? null,
         evidencePolicy: input.evidencePolicy ?? null,
+        mapCapturePolicy: input.mapCapturePolicy ?? null,
+        mapConsumption: input.mapConsumption ?? null,
       })
     : null)
 
@@ -714,12 +686,14 @@ export async function createRunWithSnapshot(
               sessionPolicy: existing.snapshot.sessionPolicy ?? null,
               evidencePolicy: existing.snapshot.evidencePolicy ?? null,
             }),
+            mapCaptureOverride: input.mapCapturePolicy ?? null,
             sessionOverride: input.sessionPolicy,
             evidenceOverride: input.evidencePolicy,
             policyOverride: input.policy,
             snapshotSession: existing.snapshot.sessionPolicy,
             snapshotEvidence: existing.snapshot.evidencePolicy,
             snapshotPolicy: existing.snapshot.policy,
+            snapshotMapCapture: existing.snapshot.mapCapturePolicy,
           })
       if (existing.deletedAt) resourceDeletedConflict()
       if (!same) {
@@ -741,6 +715,10 @@ export async function createRunWithSnapshot(
     scenarioId: scenario.id,
     scenarioVersionId: version.id,
     steps: version.definition.steps,
+    moduleManifest: version.moduleManifest ?? undefined,
+    ...(version.moduleManifest?.candidateGroups?.length
+      ? { candidateGroups: { groups: version.moduleManifest.candidateGroups } }
+      : {}),
     input: runInput,
     createdAt: now.toISOString(),
     ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),
@@ -748,7 +726,6 @@ export async function createRunWithSnapshot(
     sessionPolicy,
     evidencePolicy,
     executorVersions: freezeExecutorVersions(version.definition.steps.map((step) => step.type)),
-    allowedOrigins: originsFromTargetUrls(target.entryUrl, target.loginUrl),
     ...loginScopeFromTargetUrl(target.entryUrl, target.loginUrl),
     targetAuth: frozenTargetAuthSchema.parse({
       entryUrl: target.entryUrl,
@@ -757,8 +734,20 @@ export async function createRunWithSnapshot(
       captchaMode: target.captchaMode,
       loginFields: target.loginFields ?? null,
     }),
+    authVerification: await freezeAuthVerificationForRun(db, {
+      targetId: scenario.targetId,
+      targetAccountId,
+      loginFields: target.loginFields ?? null,
+      platformRevision: platform?.revision ?? 1,
+      sessionAuth: document.sessionAuth,
+    }),
     ...(platform ? { platformConfigRevision: platform.revision } : {}),
+    runAuthRecovery: document.runAuthRecovery,
     aiExecution: input.aiExecution,
+    mapCapturePolicy: resolveMapCapturePolicy(
+      input.mapJob ? { ...input.mapCapturePolicy, enabled: true } : input.mapCapturePolicy,
+      document.mapCapture,
+    ),
   }
   if (hasAiSteps(snapshotBase.steps) && !snapshotBase.aiExecution) {
     try {
@@ -783,12 +772,28 @@ export async function createRunWithSnapshot(
       throw badRequest('AI_CONFIG_INVALID', error instanceof Error ? error.message : 'AI 请求超时配置无效')
     }
   }
-  const parsed = runSnapshotSchema.parse(snapshotBase)
-  const digest = computeSnapshotDigest(parsed)
-  const snapshot = runSnapshotSchema.parse({ ...parsed, digest })
-
   try {
     await atomic(db, async (tx) => {
+      const access = await ensureFrozenAccessPolicyTx(tx as unknown as Db, {
+        targetId: scenario.targetId,
+        actorId: input.actor.id,
+        mapJob: Boolean(input.mapJob),
+      })
+      const mapConsumption = await freezeMapConsumptionTx(tx as unknown as Db, {
+        targetId: scenario.targetId,
+        scenarioId: scenario.id,
+        scenarioVersionId: version.id,
+        override: input.mapJob ? { mode: 'off' } : input.mapConsumption,
+      })
+      const parsed = runSnapshotSchema.parse({
+        ...snapshotBase,
+        allowedOrigins: access.allowedOrigins,
+        accessPolicy: access.frozen,
+        mapConsumption,
+        ...(input.mapJob ? { mapJob: input.mapJob } : {}),
+      })
+      const digest = computeSnapshotDigest(parsed)
+      const snapshot = runSnapshotSchema.parse({ ...parsed, digest })
       await tx.insert(runs).values({
         id: runId,
         targetId: scenario.targetId,
@@ -811,6 +816,7 @@ export async function createRunWithSnapshot(
         createdAt: now,
         updatedAt: now,
       })
+      await insertMapRunReleaseRefTx(tx as unknown as Db, { runId, frozen: mapConsumption })
       if (snapshot.steps.length > 0) {
         await tx.insert(stepRuns).values(
           snapshot.steps.map((step, ordinal) => ({
@@ -858,6 +864,8 @@ export async function createTrialRunFromDraft(
     policy?: ExecutionPolicy
     sessionPolicy?: CreateRunBody['sessionPolicy']
     evidencePolicy?: CreateRunBody['evidencePolicy']
+    mapCapturePolicy?: CreateRunBody['mapCapturePolicy']
+    mapConsumption?: CreateRunBody['mapConsumption']
     idempotencyKey?: string
     actor: AuditActor
     executableTypes?: readonly string[]
@@ -882,6 +890,8 @@ export async function createTrialRunFromDraft(
         policy: input.policy,
         sessionPolicy: input.sessionPolicy,
         evidencePolicy: input.evidencePolicy,
+        mapCapturePolicy: input.mapCapturePolicy,
+        mapConsumption: input.mapConsumption,
         idempotencyKey: input.idempotencyKey,
         actor: input.actor,
         aiExecution: input.aiExecution,
@@ -913,6 +923,7 @@ export async function requestRunCancel(
   const { runs } = schemaFor(db)
   const now = new Date()
   await atomic(db, async (tx) => {
+    await lockRunAccountScope(tx, runId)
     const current = await lockRunRow(tx as unknown as Db, runId)
     if (!current) throw notFound('RUN_NOT_FOUND', '运行不存在')
     if (isFinishedRunStatus(current.status) || current.status === 'NEEDS_REVIEW') return
@@ -1041,9 +1052,12 @@ export type FinishAttemptInput = {
   stepRunStatus: StepRunStatus
   runStatus?: RunStatus
   skipRemaining?: boolean
+  skipStepIds?: string[]
+  selectionDecision?: SelectionDecision
   cancelPending?: boolean
   checkpoint?: DebugCheckpoint | null
   debugOverlay?: DebugOverlay | null
+  authCheckpoint?: AuthCheckpoint | null
   /**
    * 浏览器步骤提交边界：若提供，写 SUCCEEDED 前在事务内校验租约仍有效。
    * 丢租时 SIDE_EFFECT → NEEDS_REVIEW，其余 → FAILED，不写成功结果。
@@ -1070,6 +1084,8 @@ export type FinishAttemptInput = {
    * 屏障必须留在生产代码里，否则这条不变量只能靠人看，没有任何检查卡得住。
    */
   barrierAfterVerify?: () => Promise<void>
+  /** 动作后预构建的地图事实，与 Attempt 同事务写入；地图契约错误不得回滚 Attempt。 */
+  mapFacts?: MapFactBatchItem[]
 }
 
 /**
@@ -1089,6 +1105,7 @@ export async function finishAttemptTx(
   tx: Db,
   input: FinishAttemptInput,
 ): Promise<FinishAttemptResult> {
+  if (input.authCheckpoint) input = { ...input, authCheckpoint: authCheckpointSchema.parse(input.authCheckpoint) }
   const { attempts, evidences, runs, stepRuns } = schemaFor(tx)
   const now = new Date()
   await expireRunDeadlines(tx, input.runId)
@@ -1114,6 +1131,7 @@ export async function finishAttemptTx(
    * 例外是 NEEDS_REVIEW：副作用结果未知优先于取消，不能被取消洗成干净终态。
    */
   let cancelled = run.cancelRequestedAt !== null && input.runStatus !== 'NEEDS_REVIEW'
+  if (cancelled) input = { ...input, authCheckpoint: undefined }
 
   let attemptStatus = input.attemptStatus
   let output = input.output
@@ -1192,6 +1210,22 @@ export async function finishAttemptTx(
     recorded.push({ evidenceId, type: evidenceType, status: 'available' })
   }
 
+  if (!cancelled && input.selectionDecision) {
+    const evidenceId = newId()
+    await tx.insert(evidences).values({
+      id: evidenceId,
+      runId: input.runId,
+      stepRunId: attempt.stepRunId,
+      attemptId: input.attemptId,
+      type: 'log',
+      status: 'available',
+      schemaVersion: 1,
+      payload: redactJson(selectionDecisionSchema.parse(input.selectionDecision), secrets),
+      createdAt: now,
+    })
+    recorded.push({ evidenceId, type: 'log', status: 'available' })
+  }
+
   if (!cancelled && attemptStatus !== 'SUCCEEDED' && input.diagnostics) {
     const evidenceId = newId()
     await tx.insert(evidences).values({
@@ -1243,8 +1277,25 @@ export async function finishAttemptTx(
     })
     .where(eq(stepRuns.id, attempt.stepRunId))
 
+  let skipped: { id: string; stepId: string }[] = []
   if (cancelled || input.cancelPending) await cancelPendingStepRunsTx(tx, input.runId, now)
-  else if (skipRemaining) await skipRemainingStepRunsTx(tx, input.runId, now)
+  else if (skipRemaining) skipped = await skipRemainingStepRunsTx(tx, input.runId, now)
+  else if (input.skipStepIds?.length) skipped = await skipStepRunsTx(tx, input.runId, input.skipStepIds, now)
+
+  const untrustedOutcome =
+    cancelled || (input.attemptStatus === 'SUCCEEDED' && attemptStatus !== 'SUCCEEDED')
+  await appendFinishAttemptMapFactsTx(tx, {
+    grant: input.grant,
+    snapshot: run.snapshot as RunSnapshot,
+    scenarioVersionId: run.scenarioVersionId,
+    runId: input.runId,
+    attemptId: input.attemptId,
+    stepRunId: attempt.stepRunId,
+    facts: input.mapFacts,
+    skipped,
+    untrustedOutcome,
+    now,
+  })
 
   const finalRunStatus = cancelled ? 'CANCELLED' : runStatus
   if (finalRunStatus) {
@@ -1259,6 +1310,7 @@ export async function finishAttemptTx(
         ...(isFinishedRunStatus(finalRunStatus) ? { finishedAt: now } : {}),
         ...(input.checkpoint !== undefined ? { checkpoint: input.checkpoint } : {}),
         ...(input.debugOverlay !== undefined ? { debugOverlay: input.debugOverlay } : {}),
+        ...(input.authCheckpoint !== undefined ? { authCheckpoint: input.authCheckpoint } : {}),
       })
       .where(eq(runs.id, input.runId))
     if (isHaltedRunStatus(finalRunStatus) || finalRunStatus === 'WAITING_FOR_AUTH') {
@@ -1268,12 +1320,13 @@ export async function finishAttemptTx(
         finalRunStatus === 'WAITING_FOR_AUTH' ? 'waiting_for_auth' : 'run_halted',
       )
     }
-  } else if (input.checkpoint !== undefined || input.debugOverlay !== undefined) {
+  } else if (input.checkpoint !== undefined || input.debugOverlay !== undefined || input.authCheckpoint !== undefined) {
     await tx
       .update(runs)
       .set({
         ...(input.checkpoint !== undefined ? { checkpoint: input.checkpoint } : {}),
         ...(input.debugOverlay !== undefined ? { debugOverlay: input.debugOverlay } : {}),
+        ...(input.authCheckpoint !== undefined ? { authCheckpoint: input.authCheckpoint } : {}),
         updatedAt: now,
       })
       .where(eq(runs.id, input.runId))
@@ -1310,6 +1363,10 @@ export async function finishAttemptTx(
     ...(finalRunStatus === 'HOLDING'
       ? [{ type: 'run.holding' as const, payload: { checkpoint: input.checkpoint ?? null } }]
       : []),
+    ...(input.authCheckpoint && input.authCheckpoint.status !== 'closed' &&
+      !['closed', 'recovering'].includes(parseAuthCheckpoint(run.authCheckpoint)?.status ?? '')
+      ? [{ type: 'run.auth_gate_closed' as const, payload: { ...input.authCheckpoint, status: 'closed' } }] : []),
+    ...authCheckpointEvents(input.authCheckpoint),
   ])
 
   return { updated: true, cancelled }
@@ -1390,6 +1447,10 @@ export async function skipRemainingStepRuns(db: Db, runId: string): Promise<void
   await skipRemainingStepRunsTx(db, runId, new Date())
 }
 
+export async function skipStepRuns(db: Db, runId: string, stepIds: readonly string[]): Promise<void> {
+  await skipStepRunsTx(db, runId, stepIds, new Date())
+}
+
 export async function cancelPendingStepRuns(db: Db, runId: string): Promise<void> {
   await cancelPendingStepRunsTx(db, runId, new Date())
 }
@@ -1438,18 +1499,27 @@ export async function failRunValidation(
   runId: string,
   authority: RunWriteAuthority,
   error: ExecutionError = RUN_VALIDATION_FAILED_ERROR,
-  options?: { skipRemaining?: boolean },
+  options?: { skipRemaining?: boolean; runStatus?: 'FAILED' | 'NEEDS_REVIEW'; authCheckpoint?: AuthCheckpoint; stepRunId?: string },
 ): Promise<void> {
-  const { evidences, runs } = schemaFor(db)
+  const { evidences, runs, stepRuns } = schemaFor(db)
+  const status = options?.runStatus ?? 'FAILED'
+  const checkpoint = options?.authCheckpoint ? authCheckpointSchema.parse(options.authCheckpoint) : undefined
   const now = new Date()
   await db.transaction(async (tx) => {
     if (!(await assertWriteAuthority(tx as unknown as Db, runId, authority))) return
     const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1)
     if (!run || isHaltedRunStatus(run.status)) return
+    if (run.cancelRequestedAt && status !== 'NEEDS_REVIEW') {
+      await settleRunCancellationTx(tx as unknown as Db, runId, now)
+      return
+    }
     await tx
       .update(runs)
-      .set({ status: 'FAILED', finishedAt: now, updatedAt: now })
+      .set({ status, ...(status === 'FAILED' ? { finishedAt: now } : {}), ...(checkpoint ? { authCheckpoint: checkpoint } : {}), updatedAt: now })
       .where(eq(runs.id, runId))
+    if (options?.stepRunId) {
+      await tx.update(stepRuns).set({ status: 'FAILED', finishedAt: now }).where(and(eq(stepRuns.id, options.stepRunId), eq(stepRuns.runId, runId), eq(stepRuns.status, 'RUNNING')))
+    }
     await tx.insert(evidences).values({
       id: newId(),
       runId,
@@ -1471,8 +1541,9 @@ export async function failRunValidation(
       await releaseRunLeaseTx(tx as unknown as Db, authority.grant, 'run_halted')
     }
     await appendRunEvents(tx as unknown as Db, runId, [
-      { type: 'run.status_changed', payload: { status: 'FAILED' } },
+      { type: 'run.status_changed', payload: { status } },
       { type: 'evidence.recorded', payload: { type: 'error', status: 'available' } },
+      ...authCheckpointEvents(checkpoint),
     ])
   })
 }
@@ -1691,6 +1762,48 @@ export async function continueRunDebug(
       { type: 'run.status_changed', payload: { status: 'RUNNING' } },
       { type: 'run.debug_resumed', payload: { action: 'continue', stepId: current.stepId } },
     ])
+    return true
+  })
+}
+
+function parseAuthCheckpoint(value: unknown): AuthCheckpoint | null {
+  if (value == null) return null
+  const raw = typeof value === 'string' ? JSON.parse(value) : value
+  return authCheckpointSchema.parse(raw)
+}
+
+function authCheckpointEvents(checkpoint?: AuthCheckpoint | null) {
+  if (!checkpoint) return []
+  const type =
+    checkpoint.status === 'closed'
+      ? ('run.auth_gate_closed' as const)
+      : checkpoint.status === 'recovering'
+        ? ('run.auth_recovering' as const)
+        : checkpoint.status === 'recovered'
+          ? ('run.auth_recovered' as const)
+          : ('run.auth_unrecoverable' as const)
+  return [{ type, payload: checkpoint }]
+}
+
+export async function writeRunAuthCheckpoint(
+  db: Db,
+  input: { runId: string; checkpoint: AuthCheckpoint } & RunWriteAuthority,
+): Promise<boolean> {
+  input = { ...input, checkpoint: authCheckpointSchema.parse(input.checkpoint) }
+  const { runs } = schemaFor(db)
+  return db.transaction(async (tx) => {
+    const locked = await lockRunRow(tx as unknown as Db, input.runId)
+    if (!locked || locked.cancelRequestedAt || isHaltedRunStatus(locked.status)) return false
+    if (!(await assertWriteAuthority(tx as unknown as Db, input.runId, input))) return false
+    if (input.checkpoint.status === 'recovered' && input.checkpoint.contextVersion !== await computeContextVersion(locked.context)) return false
+    const previous = parseAuthCheckpoint(locked.authCheckpoint)
+    if (previous && (input.checkpoint.autoRecoveriesUsed < previous.autoRecoveriesUsed || input.checkpoint.manualRecoveriesUsed < previous.manualRecoveriesUsed)) return false
+    const now = new Date()
+    await tx
+      .update(runs)
+      .set({ authCheckpoint: input.checkpoint, updatedAt: now })
+      .where(eq(runs.id, input.runId))
+    await appendRunEvents(tx as unknown as Db, input.runId, authCheckpointEvents(input.checkpoint))
     return true
   })
 }

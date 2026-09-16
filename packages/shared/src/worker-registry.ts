@@ -235,11 +235,16 @@ export const workerListQuerySchema = z.object({
   search: z.string().trim().min(1).max(128).optional(),
   status: workerStatusSchema.optional(),
   heartbeatFresh: z
-    .enum(['true', 'false'])
+    .union([z.boolean(), z.enum(['true', 'false'])])
     .optional()
-    .transform((value) => (value === undefined ? undefined : value === 'true')),
+    .transform((value) => {
+      if (value === undefined) return undefined
+      if (typeof value === 'boolean') return value
+      return value === 'true'
+    }),
 })
 export type WorkerListQuery = z.infer<typeof workerListQuerySchema>
+export type WorkerListQueryInput = z.input<typeof workerListQuerySchema>
 
 export const workerListResponseSchema = z.object({
   items: z.array(workerSummarySchema),

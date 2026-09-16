@@ -184,7 +184,7 @@ describe('能力地图', () => {
 
   it('执行者预览只有业务菜单，没有治理；编写者能看见录制', () => {
     const operator = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.operator.permissions)
-    expect(operator.menus.workbench).toEqual(['首页', '目标系统', '场景', '运行'])
+    expect(operator.menus.workbench).toEqual(['首页', '目标系统', '浏览器会话', '场景', '动作库', '运行', '自动复查'])
     expect(operator.menus.governance).toEqual(['执行节点'])
     expect(operator.menus.other).toEqual(['设置'])
     expect(operator.actions).toContain('对目标系统发起运行')
@@ -192,7 +192,7 @@ describe('能力地图', () => {
     expect(operator.actions).toContain('执行含 AI 步骤的运行')
 
     const author = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.author.permissions)
-    expect(author.menus.workbench).toEqual(['首页', '目标系统', '场景', '录制草稿', '运行'])
+    expect(author.menus.workbench).toEqual(['首页', '目标系统', '浏览器会话', '场景', '动作库', '录制草稿', '运行'])
     expect(author.menus.governance).toEqual(['执行节点'])
     expect(author.actions).toContain('在工作区试跑')
     expect(author.actions).toContain('对目标系统发起运行')

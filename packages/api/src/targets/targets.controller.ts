@@ -5,12 +5,22 @@ import {
   createTargetAccountBodySchema,
   createTargetBodySchema,
   deleteResourceBodySchema,
+  observeAuthProfileValidationBodySchema,
+  publishTargetAuthProfileBodySchema,
+  startAuthProfileValidationBodySchema,
+  updateTargetAccountIdentityBodySchema,
+  targetAccessPolicyUpdateBodySchema,
   targetAccountListQuerySchema,
   targetListQuerySchema,
   updateTargetAccountBodySchema,
   updateTargetBodySchema,
   type CreateTargetAccountBody,
   type CreateTargetBody,
+  type ObserveAuthProfileValidationBody,
+  type PublishTargetAuthProfileBody,
+  type StartAuthProfileValidationBody,
+  type UpdateTargetAccountIdentityBody,
+  type TargetAccessPolicyUpdateBody,
   type DeleteResourceBody,
   type TargetAccountListQuery,
   type TargetListQuery,
@@ -46,6 +56,23 @@ export class TargetsController {
   @RequirePermissions('target:read')
   getTarget(@Param('targetId') targetId: string) {
     return this.targets.getTarget(targetId)
+  }
+
+  @Get(':targetId/access-policy')
+  @RequirePermissions('target:read', 'map:read')
+  getAccessPolicy(@Param('targetId') targetId: string) {
+    return this.targets.getAccessPolicy(targetId)
+  }
+
+  @Post(':targetId/access-policy')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  updateAccessPolicy(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(targetAccessPolicyUpdateBodySchema)) body: TargetAccessPolicyUpdateBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.updateAccessPolicy(targetId, body, actor)
   }
 
   @Post(':targetId')
@@ -92,6 +119,77 @@ export class TargetsController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.targets.retryTargetCleanup(targetId, actor)
+  }
+
+  @Get(':targetId/auth-profile')
+  @RequirePermissions('target:read')
+  getAuthProfile(@Param('targetId') targetId: string) {
+    return this.targets.getAuthProfile(targetId)
+  }
+
+  @Post(':targetId/auth-profile')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  publishAuthProfile(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(publishTargetAuthProfileBodySchema)) body: PublishTargetAuthProfileBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.publishAuthProfile(targetId, body, actor)
+  }
+
+  @Post(':targetId/auth-profile/validations')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermissions('target:write')
+  startAuthValidation(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(startAuthProfileValidationBodySchema)) body: StartAuthProfileValidationBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.startAuthValidation(targetId, body, actor)
+  }
+
+  @Get(':targetId/auth-profile/validations/:operationId')
+  @RequirePermissions('target:read')
+  getAuthValidation(
+    @Param('targetId') targetId: string,
+    @Param('operationId') operationId: string,
+  ) {
+    return this.targets.getAuthValidation(targetId, operationId)
+  }
+
+  @Get(':targetId/auth-profile/validations/:operationId/browser')
+  @RequirePermissions('target:write')
+  validationBrowser(
+    @Param('targetId') targetId: string,
+    @Param('operationId') operationId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.validationBrowserMeta(targetId, operationId, actor)
+  }
+
+  @Post(':targetId/auth-profile/validations/:operationId/observe')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  observeAuthValidation(
+    @Param('targetId') targetId: string,
+    @Param('operationId') operationId: string,
+    @Body(new ZodValidationPipe(observeAuthProfileValidationBodySchema)) body: ObserveAuthProfileValidationBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.observeAuthValidation(targetId, operationId, body, actor)
+  }
+
+  @Post(':targetId/accounts/:accountId/identity')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  updateAccountIdentity(
+    @Param('targetId') targetId: string,
+    @Param('accountId') accountId: string,
+    @Body(new ZodValidationPipe(updateTargetAccountIdentityBodySchema)) body: UpdateTargetAccountIdentityBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.updateAccountIdentity(targetId, accountId, body, actor)
   }
 
   @Get(':targetId/accounts')

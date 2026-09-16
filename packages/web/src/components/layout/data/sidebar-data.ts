@@ -2,10 +2,12 @@ import {
   Home,
   KeyRound,
   CircleDot,
+  Laptop,
   ListChecks,
   Monitor,
   Palette,
   Play,
+  RefreshCw,
   ScrollText,
   Server,
   Settings,
@@ -14,6 +16,7 @@ import {
   UserCog,
   Users,
   Wrench,
+  Boxes,
 } from 'lucide-react'
 import { type SidebarData } from '../types'
 
@@ -39,10 +42,22 @@ export const sidebarData: SidebarData = {
           permission: 'target:read',
         },
         {
+          title: '浏览器会话',
+          url: '/sessions',
+          icon: Laptop,
+          permission: 'session:read',
+        },
+        {
           title: '场景',
           url: '/scenarios',
           icon: ListChecks,
           permission: 'workflow:read',
+        },
+        {
+          title: '动作库',
+          url: '/action-modules',
+          icon: Boxes,
+          permission: 'module:read',
         },
         {
           title: '录制草稿',
@@ -55,6 +70,12 @@ export const sidebarData: SidebarData = {
           url: '/runs',
           icon: Play,
           permission: 'run:read',
+        },
+        {
+          title: '自动复查',
+          url: '/schedules',
+          icon: RefreshCw,
+          permission: 'schedule:read',
         },
       ],
     },

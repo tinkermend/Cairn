@@ -1,0 +1,94 @@
+{
+  "fixture": "action-module-candidates@1",
+  "note": "动作模块前置验证用候选模块。契约字段按 AM-A 方案草案书写，步骤只用当前 stepSchema 已有能力。steps[].ref 是夹具内局部名，测试物化时换成 EntityId 并删除。{{origin}} 由测试替换为靶场或 DPM 源。未实现平台模块能力，本文件不是正式契约。",
+  "modules": [
+    {
+      "key": "dpm.open_instance_list",
+      "name": "打开数据库实例列表",
+      "capabilityKey": "database.instance.list",
+      "effectCeiling": "IDEMPOTENT",
+      "inputs": [],
+      "outputs": [],
+      "targets": ["lab", "dpm"],
+      "postconditions": [
+        { "meaning": "面包屑末级为“数据库实例”", "verification": { "kind": "step", "ref": "assert-crumb" } }
+      ],
+      "exitState": { "meaning": "位于实例列表且查询框可用", "verification": { "kind": "step", "ref": "wait-search-box" } },
+      "steps": [
+        { "ref": "open", "name": "打开实例页", "type": "navigate", "effectType": "IDEMPOTENT", "input": { "url": "{{origin}}/front/database/dbInstance" } },
+        { "ref": "wait-search-box", "name": "等待查询框", "type": "wait", "effectType": "READ_ONLY", "input": { "kind": "visible", "target": { "framePath": [], "candidates": [{ "by": "css", "value": "input[placeholder=\"请输入设备名称\"]" }] }, "timeoutMs": 20000 } },
+        { "ref": "assert-crumb", "name": "断言面包屑", "type": "assert", "effectType": "READ_ONLY", "input": { "target": { "framePath": [], "candidates": [{ "by": "css", "value": ".el-breadcrumb__item:last-child .el-breadcrumb__inner" }] }, "expect": { "kind": "text_equals", "value": "数据库实例" } } }
+      ]
+    },
+    {
+      "key": "dpm.search_instance",
+      "name": "按设备名称查询实例",
+      "capabilityKey": "database.instance.search",
+      "effectCeiling": "READ_ONLY",
+      "inputs": [{ "key": "instanceName", "label": "设备名称关键字", "valueType": "string", "required": true }],
+      "outputs": [{ "key": "matchedTotal", "label": "命中条数文本", "shape": "text" }],
+      "outputMapping": { "matchedTotal": "total" },
+      "targets": ["lab", "dpm"],
+      "entryState": { "meaning": "位于实例列表（由 dpm.open_instance_list 保证）", "verification": { "kind": "manual_requirement" } },
+      "postconditions": [
+        { "meaning": "查询完成且显示命中条数", "verification": { "kind": "step", "ref": "assert-total" } },
+        { "meaning": "命中结果确为输入实例（需参数化断言，当前不可执行）", "verification": { "kind": "manual_requirement" } }
+      ],
+      "steps": [
+        { "ref": "fill", "name": "输入设备名称", "type": "fill", "effectType": "READ_ONLY", "input": { "target": { "framePath": [], "candidates": [{ "by": "css", "value": "input[placeholder=\"请输入设备名称\"]" }] }, "from": "instanceName" } },
+        { "ref": "search", "name": "点击搜索", "type": "click", "effectType": "READ_ONLY", "input": { "target": { "framePath": [], "candidates": [{ "by": "role", "value": "button", "name": "搜 索" }] } } },
+        { "ref": "wait-loading", "name": "等待加载结束", "type": "wait", "effectType": "READ_ONLY", "input": { "kind": "hidden", "target": { "framePath": [], "candidates": [{ "by": "css", "value": ".el-loading-mask" }] }, "timeoutMs": 15000 } },
+        { "ref": "extract-total", "name": "提取命中条数", "type": "extract", "effectType": "READ_ONLY", "outputKey": "total", "input": { "target": { "framePath": [], "candidates": [{ "by": "css", "value": ".el-pagination__total" }] }, "as": "text" } },
+        { "ref": "assert-total", "name": "断言显示条数", "type": "assert", "effectType": "READ_ONLY", "input": { "target": { "framePath": [], "candidates": [{ "by": "css", "value": ".el-pagination__total" }] }, "expect": { "kind": "text_contains", "value": "条" } } }
+      ]
+    },
+    {
+      "key": "dpm.read_top_alarm_resource",
+      "name": "读取告警分析首条资源",
+      "capabilityKey": "alarm.current.top",
+      "effectCeiling": "IDEMPOTENT",
+      "inputs": [],
+      "outputs": [{ "key": "topResource", "label": "首条告警资源名", "shape": "text" }],
+      "outputMapping": { "topResource": "top" },
+      "targets": ["lab", "dpm"],
+      "postconditions": [
+        { "meaning": "首条资源名非空", "verification": { "kind": "output_required", "outputKey": "topResource" } }
+      ],
+      "steps": [
+        { "ref": "open", "name": "打开告警分析", "type": "navigate", "effectType": "IDEMPOTENT", "input": { "url": "{{origin}}/front/alerter/alarmAnalysis" } },
+        { "ref": "wait-table", "name": "等待告警表", "type": "wait", "effectType": "READ_ONLY", "input": { "kind": "visible", "target": { "framePath": [], "candidates": [{ "by": "css", "value": ".el-table__body tr.el-table__row" }] }, "timeoutMs": 20000 } },
+        { "ref": "extract-top", "name": "提取首条资源", "type": "extract", "effectType": "READ_ONLY", "outputKey": "top", "input": { "target": { "framePath": [], "candidates": [{ "by": "css", "value": ".el-table__body tr.el-table__row:first-child td:nth-child(2)" }] }, "as": "text" } }
+      ]
+    },
+    {
+      "key": "lab.dispose_alarm_db2_primary",
+      "name": "处置 db2_hadr_primay 告警（仅靶场）",
+      "capabilityKey": "alarm.dispose",
+      "effectCeiling": "SIDE_EFFECT",
+      "inputs": [],
+      "outputs": [],
+      "targets": ["lab"],
+      "postconditions": [
+        { "meaning": "该行状态为已处置", "verification": { "kind": "step", "ref": "assert-disposed" } }
+      ],
+      "steps": [
+        { "ref": "open", "name": "打开告警分析", "type": "navigate", "effectType": "IDEMPOTENT", "input": { "url": "{{origin}}/front/alerter/alarmAnalysis" } },
+        { "ref": "dispose", "name": "点击处置", "type": "click", "effectType": "SIDE_EFFECT", "input": { "target": { "framePath": [], "anchor": { "withinText": "db2_hadr_primay", "scope": "row" }, "candidates": [{ "by": "role", "value": "button", "name": "处 置" }] } } },
+        { "ref": "confirm", "name": "确认处置", "type": "click", "effectType": "SIDE_EFFECT", "input": { "target": { "framePath": [], "candidates": [{ "by": "role", "value": "button", "name": "确 定" }] } } },
+        { "ref": "assert-disposed", "name": "断言已处置", "type": "assert", "effectType": "READ_ONLY", "input": { "target": { "framePath": [], "anchor": { "withinText": "db2_hadr_primay", "scope": "row" }, "candidates": [{ "by": "css", "value": ".alarm-status" }] }, "expect": { "kind": "text_equals", "value": "已处置" } } }
+      ]
+    }
+  ],
+  "notExpressible": [
+    {
+      "key": "dpm.read_instance_app_by_name",
+      "name": "按实例名读取业务系统",
+      "reason": "需要把输入实例名用于行锚点或精确单元格定位；当前 TargetDescriptor 不接受 from 参数，row 锚点为大小写不敏感子串匹配（Mysql_主 会同时命中 mysql_主从架构_…）。"
+    },
+    {
+      "key": "dpm.open_instance_detail_by_name",
+      "name": "按实例名打开详情",
+      "reason": "同上：点击目标名称来自输入；且详情与列表同 URL，只能用面包屑末级文本断言，而断言期望值也不能引用输入。"
+    }
+  ]
+}
