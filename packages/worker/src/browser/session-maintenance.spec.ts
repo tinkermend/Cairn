@@ -34,6 +34,7 @@ vi.mock('@cairn/db', async (load) => ({
   setSessionAuthSummary: vi.fn(async () => true),
   createSession: vi.fn(),
   claimSessionUse: vi.fn(),
+  releaseSessionUse: vi.fn(async () => {}),
   adoptSessionRetention: vi.fn(async () => {}),
 }))
 vi.mock('./session-auth', () => ({ verifyAuthProfile: vi.fn() }))
@@ -49,7 +50,34 @@ beforeEach(() => {
     {} as any,
     { workerId: 'w', workerInstanceId: 'i', defaultLeaseTtlSeconds: 60, defaultAuthWaitSeconds: 600 } as any,
   )
-  manager.lives.set('s', { handle: {} })
+  const stubPage = {
+    isClosed: () => false,
+    url: () => 'https://example.com/login',
+    goto: vi.fn(async () => undefined),
+    on: vi.fn(),
+    off: vi.fn(),
+  }
+  manager.lives.set(
+    's',
+    {
+      handle: { basePage: stubPage },
+      sessionId: 's',
+      runPageIds: new Set(),
+      runPages: new Map(),
+      pages: new Map(),
+      currentPageIdByLease: new Map(),
+      currentPageIdByRun: new Map(),
+      autoInputClosed: false,
+      inputAccepting: false,
+      serial: Promise.resolve(),
+      allowedOrigins: [],
+      receipts: new Map(),
+      lastSeq: 0,
+      controlEpoch: 0,
+      screencasts: new Map(),
+      screencastObservers: new Map(),
+    },
+  )
   manager.assertMaintenanceLive = vi.fn(async () => ({ origin: 'USER' }))
   manager.persistProfileObservation = vi.fn(async () => {})
   manager.resolveAccountCredential = vi.fn(async () => ({ username: 'alice', password: 'fixture' }))
@@ -206,6 +234,10 @@ it('RESTART 未确认停止时不创建、不启动，并按 CLOSE 收口', asyn
     undefined,
     'SESSION_STOP_UNCONFIRMED',
   )
+  expect(setSessionStatus).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ sessionId: 's', status: 'LOST' }),
+  )
 })
 
 it('LOGIN 加 grant 时验证码路径转入 AUTH_WAIT，不取凭据', async () => {
@@ -234,6 +266,34 @@ it('LOGIN 加 grant 时验证码路径转入 AUTH_WAIT，不取凭据', async ()
   )
   expect(manager.resolveAccountCredential).not.toHaveBeenCalled()
   expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+})
+
+it('提交登录前抛错不得记 OUTCOME_UNKNOWN', async () => {
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true } as any)
+  vi.mocked(verifyAuthProfile).mockResolvedValue({
+    observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' },
+  } as any)
+  vi.mocked(submitLoginCredentials).mockRejectedValueOnce(new Error('page closed'))
+  manager.finishMaintenance = vi.fn(async () => undefined)
+  manager.abandonOccupancy = vi.fn(async () => undefined)
+  manager.bindOccupancy = vi.fn()
+  await manager.attachMaintenanceOperation({
+    operation: { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' },
+    session: { id: 's', status: 'OPEN', generation: 1 },
+    grant: maintenanceGrant,
+    reusedRunId: null,
+  })
+  expect(setSessionAuthSummary).not.toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ authState: 'UNKNOWN' }),
+  )
+  expect(manager.finishMaintenance).toHaveBeenCalledWith(
+    'op',
+    { targetId: 't', targetAccountId: 'a' },
+    'FAILED',
+    undefined,
+    'OPERATION_INTERRUPTED',
+  )
 })
 
 it('登录已提交后核验抛错记 OUTCOME_UNKNOWN，并写未知失败 outcome', async () => {
@@ -297,7 +357,24 @@ it('RESTART 成功路径在新实例 MAINTENANCE 占用内核验', async () => {
   manager.close = vi.fn(async () => 'stopped')
   manager.launchAndOpen = vi.fn(async (session: typeof newSession) => ({ ok: true, session }))
   manager.finishMaintenance = vi.fn(async () => undefined)
-  manager.lives.set('new', { handle: {} })
+  manager.lives.set('new', {
+    handle: { basePage: { isClosed: () => false, url: () => 'https://example.com/', on: vi.fn(), off: vi.fn() } },
+    sessionId: 'new',
+    runPageIds: new Set(),
+    runPages: new Map(),
+    pages: new Map(),
+    currentPageIdByLease: new Map(),
+    currentPageIdByRun: new Map(),
+    autoInputClosed: false,
+    inputAccepting: false,
+    serial: Promise.resolve(),
+    allowedOrigins: [],
+    receipts: new Map(),
+    lastSeq: 0,
+    controlEpoch: 0,
+    screencasts: new Map(),
+    screencastObservers: new Map(),
+  })
   vi.mocked(createSession).mockResolvedValue({ ok: true, session: newSession } as any)
   vi.mocked(claimSessionUse).mockResolvedValue({
     ok: true,
@@ -333,6 +410,10 @@ it('RESTART 成功路径在新实例 MAINTENANCE 占用内核验', async () => {
     undefined,
   )
   expect(currentOccupancyGrant()).toBeUndefined()
+  expect(claimSessionUse).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ purpose: 'MAINTENANCE', touchLastUsed: false }),
+  )
 })
 
 it('维护抛错只写一次 FAILED，不留 RUNNING', async () => {

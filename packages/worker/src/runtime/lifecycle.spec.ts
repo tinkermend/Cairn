@@ -33,6 +33,20 @@ vi.mock('@cairn/db', async (importOriginal) => {
     markWorkerStopped: vi.fn(async () => undefined),
     claimRun: vi.fn(async () => null),
     claimSessionOperation: vi.fn(async () => null),
+    appendSessionEvent: vi.fn(async () => {}),
+    finishSessionOperation: vi.fn(async () => true),
+    getSessionById: vi.fn(async () => ({ id: 's', status: 'OPEN', version: 1, generation: 1 })),
+    setSessionStatus: vi.fn(async () => true),
+    readLiveSessionAuth: vi.fn(async () => ({ revision: 1, sessionAuth: {} })),
+    freezeAuthVerificationForRun: vi.fn(async () => ({ capability: 'IDENTITY_VERIFIED', profileRevision: 1 })),
+    loadAuthProfileRevision: vi.fn(async () => ({ definition: { renew: 'verify_slides' } })),
+    loadTargetForExecution: vi.fn(async () => ({
+      id: 't',
+      entryUrl: 'https://example.com',
+      authMethod: 'password',
+      captchaMode: 'none',
+    })),
+    releaseSessionUse: vi.fn(async () => {}),
     loadAccountForExecution: vi.fn(async () => null),
     loadCurrentAuthProfile: vi.fn(async () => null),
     scheduleNextAuthCheck: vi.fn(async () => undefined),
@@ -419,6 +433,91 @@ describe('LifecycleService', () => {
     expect(markWorkerDraining).toHaveBeenCalledWith(expect.anything(), config.CAIRN_WORKER_ID, instanceId)
     expect(markWorkerStopped).toHaveBeenCalledWith(expect.anything(), config.CAIRN_WORKER_ID, instanceId)
     expect(listActiveLeasesForWorker).not.toHaveBeenCalled()
+  })
+
+  it('领取维护后调用真实 BrowserSessionManager.attachMaintenanceOperation', async () => {
+    const { claimSessionOperation } = await import('@cairn/db')
+    const manager = new BrowserSessionManager(stubDb(), {
+      workerId: 'w',
+      workerInstanceId: 'i',
+      profileRoot: '/tmp/cairn-session-cd-v2',
+      headless: true,
+      maxSessions: 1,
+      defaultLeaseTtlSeconds: 60,
+      defaultAuthWaitSeconds: 600,
+      heartbeatMs: 60_000,
+    })
+    expect(Object.getPrototypeOf(manager)).toBe(BrowserSessionManager.prototype)
+    vi.spyOn(manager, 'reconcileOwn').mockResolvedValue({ leasesRevoked: 0, sessionsClosed: 0 })
+    vi.spyOn(manager, 'startHeartbeat').mockImplementation(() => undefined)
+    vi.spyOn(manager, 'stopHeartbeat').mockImplementation(() => undefined)
+    vi.spyOn(manager, 'shutdown').mockResolvedValue(undefined)
+    vi.spyOn(manager, 'reap').mockResolvedValue({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 })
+    const stubPage = {
+      isClosed: () => false,
+      url: () => 'https://example.com/login',
+      on: vi.fn(),
+      off: vi.fn(),
+    }
+    ;(manager as unknown as { lives: Map<string, unknown> }).lives.set('s', {
+      handle: { basePage: stubPage },
+      sessionId: 's',
+      runPageIds: new Set(),
+      runPages: new Map(),
+      pages: new Map(),
+      currentPageIdByLease: new Map(),
+      currentPageIdByRun: new Map(),
+      autoInputClosed: false,
+      inputAccepting: false,
+      serial: Promise.resolve(),
+      allowedOrigins: [],
+      receipts: new Map(),
+      lastSeq: 0,
+      controlEpoch: 0,
+      screencasts: new Map(),
+      screencastObservers: new Map(),
+    })
+    vi.spyOn(manager, 'runMaintenanceAuth').mockResolvedValue({ ok: true })
+    const finish = vi.spyOn(manager, 'finishMaintenance')
+    const attached = vi.spyOn(manager, 'attachMaintenanceOperation')
+    const claimed = {
+      operation: { id: 'op-v2', kind: 'VERIFY_AUTH', targetId: 't', targetAccountId: 'a' },
+      grant: {
+        sessionId: 's',
+        leaseId: 'l',
+        generation: 1,
+        sessionFencingToken: 1,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        purpose: 'MAINTENANCE',
+        ownerKind: 'SESSION_OPERATION',
+        operationId: 'op-v2',
+      },
+      session: { id: 's', status: 'OPEN', generation: 1 },
+      reusedRunId: null,
+    }
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        LifecycleService,
+        { provide: DB_HANDLE, useValue: stubDb() },
+        { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
+        { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
+        { provide: BrowserSessionManager, useValue: manager },
+      ],
+    }).compile()
+    app = moduleRef.createNestApplication()
+    await app.init()
+    vi.mocked(claimSessionOperation).mockResolvedValueOnce(claimed as never)
+    await (app.get(LifecycleService) as unknown as { pumpOperation: () => Promise<void> }).pumpOperation()
+    expect(attached).toHaveBeenCalledWith(claimed)
+    expect(attached.mock.contexts[0]).toBe(manager)
+    expect(finish).toHaveBeenCalledWith(
+      'op-v2',
+      { targetId: 't', targetAccountId: 'a' },
+      'SUCCEEDED',
+      expect.objectContaining({ sessionId: 's' }),
+      undefined,
+    )
   })
 
   it('生产路径不向控制面发 HTTP', async () => {

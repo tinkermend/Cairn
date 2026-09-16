@@ -341,11 +341,15 @@ export class BrowserSessionManager {
 
   private async abandonOccupancy(leaseId: string, reason: string) {
     this.unbindOccupancy(leaseId)
-    await releaseSessionUse(this.dbHandle, {
-      leaseId,
-      holderWorkerId: this.options.workerId,
-      reason,
-    }).catch(() => {})
+    try {
+      await releaseSessionUse(this.dbHandle, {
+        leaseId,
+        holderWorkerId: this.options.workerId,
+        reason,
+      })
+    } catch {
+      // 释放占用不得挡住维护终态；句柄已失效时租约由收割收敛。
+    }
   }
 
   private withHeldOccupancy<T>(
@@ -672,6 +676,22 @@ export class BrowserSessionManager {
   async observeInRunAuth(
     grant: SessionGrant,
     classification: 'dispatched' | 'not_dispatched',
+    signal?: AbortSignal,
+  ): Promise<ExecutionError | null> {
+    // 被动观察同样要读页面，必须在合法占用内进行（不变量 2）。
+    // 租约已失效时命令根本没落到页面，无从观察，直接放行给调用方的丢租收口。
+    let held: SessionGrant
+    try {
+      held = this.guard.assertHeld(grant.leaseId, grant)
+    } catch {
+      return null
+    }
+    return runWithOccupancy(held, () => this.observeInRunAuthHeld(grant, classification, signal))
+  }
+
+  private async observeInRunAuthHeld(
+    grant: SessionGrant,
+    classification: 'dispatched' | 'not_dispatched',
     _signal?: AbortSignal,
   ): Promise<ExecutionError | null> {
     const state = this.runAuth.get(grant.leaseId)
@@ -814,16 +834,6 @@ export class BrowserSessionManager {
         ? { ok: false, waitingForAuth: true }
         : { ok: false, unrecoverable: true, code: result.code, runStatus: 'FAILED' }
     }
-    if (input.resuming) {
-      const after = await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
-      const passed = after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH'
-      if (!passed) {
-        this.authGateClosed.add(grant.leaseId)
-        return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
-      }
-      this.authGateClosed.delete(grant.leaseId)
-      return { ok: true }
-    }
     if (checkpoint?.recoveryRule?.reuse === 'REUSE_PAGE') {
       const hold = await this.describeHoldPage(input.runGrant.runId)
       if (checkpoint.pageRef && hold?.pageRef && hold.pageRef.documentEpoch !== checkpoint.pageRef.documentEpoch) {
@@ -833,6 +843,16 @@ export class BrowserSessionManager {
       if (pageUrl && !this.originAllowed(pageUrl, checkpoint.recoveryRule.allowedOrigins ?? [])) {
         return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
       }
+    }
+    if (input.resuming) {
+      const after = await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
+      const passed = after.authState === 'AUTHENTICATED' && after.identityState === 'MATCH'
+      if (!passed) {
+        this.authGateClosed.add(grant.leaseId)
+        return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+      }
+      this.authGateClosed.delete(grant.leaseId)
+      return { ok: true }
     }
     if (checkpoint?.recoveryRule?.reuse === 'NEW_PAGE' && page) {
       const entryUrl = checkpoint.recoveryRule.entryUrl
@@ -856,6 +876,11 @@ export class BrowserSessionManager {
     if (!input.snapshot.targetAccountId || input.snapshot.authVerification?.capability !== 'IDENTITY_VERIFIED') {
       return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
     }
+    // 先备齐凭据与句柄再占预算：拿不到凭据时不该白计一次自动登录。
+    const credential = await this.resolveLoginCredential(input.snapshot)
+    if (!credential || !live || !target) {
+      return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
+    }
     const occupied = await occupyAutoLoginBudget(this.dbHandle, {
       targetId: input.snapshot.targetId,
       targetAccountId: input.snapshot.targetAccountId,
@@ -863,26 +888,36 @@ export class BrowserSessionManager {
     if (!occupied.ok) {
       return waiting(occupied.code as SessionErrorCode, occupied.message)
     }
-    const credential = await this.resolveLoginCredential(input.snapshot)
-    if (!credential || !live || !target) {
+    const accountId = input.snapshot.targetAccountId
+    const recordOutcome = async (result: 'success' | 'credential' | 'verify_failed') => {
+      const liveAuth = await readLiveSessionAuth(this.dbHandle).catch(() => null)
+      if (!liveAuth) return
+      await recordAutoLoginOutcome(this.dbHandle, {
+        targetAccountId: accountId,
+        result,
+        sessionAuth: liveAuth.sessionAuth,
+      }).catch(() => undefined)
+    }
+    let after: Pick<AuthObservation, 'authState' | 'identityState'>
+    let submitted: boolean
+    try {
+      await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
+      submitted = await submitLoginCredentials(
+        live.handle,
+        target,
+        credential,
+        input.snapshot.authVerification?.loginTimeoutMs,
+      )
+      after = await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
+    } catch {
+      // 预算已计次：结果不可观察也必须补记一次失败，否则 consecutiveFailures 不增长、熔断永不触发。
+      await recordOutcome('verify_failed')
+      this.authGateClosed.add(grant.leaseId)
       return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
     }
-    await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
-    const submitted = await submitLoginCredentials(
-      live.handle,
-      target,
-      credential,
-      input.snapshot.authVerification?.loginTimeoutMs,
-    )
-    const after = await this.verifyInRunAuth(grant, 'recovery', input.snapshot)
     const passed =
       submitted && after.authState === 'AUTHENTICATED' && after.identityState === 'MATCH'
-    const liveAuth = await readLiveSessionAuth(this.dbHandle)
-    await recordAutoLoginOutcome(this.dbHandle, {
-      targetAccountId: input.snapshot.targetAccountId,
-      result: passed ? 'success' : after.identityState === 'MISMATCH' ? 'credential' : 'verify_failed',
-      sessionAuth: liveAuth.sessionAuth,
-    })
+    await recordOutcome(passed ? 'success' : after.identityState === 'MISMATCH' ? 'credential' : 'verify_failed')
     if (after.identityState === 'MISMATCH') {
       this.authGateClosed.add(grant.leaseId)
       return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
@@ -1144,6 +1179,7 @@ export class BrowserSessionManager {
           reusePolicy: launched.session.reusePolicy,
           idleTtlSeconds: launched.session.idleTtlSeconds,
           maxLifetimeSeconds: launched.session.maxLifetimeSeconds,
+          touchLastUsed: false,
         })
         if (!claimed.ok) {
           await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'SESSION_NOT_CLAIMABLE')
@@ -1231,6 +1267,14 @@ export class BrowserSessionManager {
         )
       })
     } catch (error) {
+      this.logger.error(
+        {
+          operationId: input.operation.id,
+          kind: input.operation.kind,
+          message: error instanceof Error ? error.message : String(error),
+        },
+        '会话维护失败',
+      )
       const code = attempt.loginSubmitted
         ? 'OUTCOME_UNKNOWN'
         : error instanceof SessionLeaseError || error instanceof BrowserRuntimeError
@@ -1316,13 +1360,15 @@ export class BrowserSessionManager {
     },
     errorCode?: string,
   ): Promise<void> {
-    await finishSessionOperation(this.dbHandle, {
+    const written = await finishSessionOperation(this.dbHandle, {
       operationId,
       workerId: this.options.workerId,
       workerInstanceId: this.workerInstanceId,
       status,
       errorCode,
     })
+    // 终态已被别人写过（迟到结果）：状态不覆盖，账本也不能追加一条自相矛盾的收尾事件。
+    if (!written) return
     await appendSessionEvent(this.dbHandle, {
       key,
       type: event?.type ?? 'operation.finished',
@@ -1398,34 +1444,36 @@ export class BrowserSessionManager {
         targetAccountId: operation.targetAccountId,
       })
       if (occupied.ok) {
-        if (attempt) attempt.loginSubmitted = true
-        try {
-          const submitted = await submitLoginCredentials(
-            live.handle,
-            {
-              entryUrl: target.entryUrl,
-              loginUrl: target.loginUrl,
-              loginFields: target.loginFields,
-            },
-            credential,
-            verification.loginTimeoutMs,
-          )
-          const after = await verifyOnce()
-          const liveAfter = await readLiveSessionAuth(db)
-          await recordAutoLoginOutcome(db, {
-            targetAccountId: operation.targetAccountId,
-            result:
-              after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH'
-                ? 'success'
-                : after.identityState === 'MISMATCH'
-                  ? 'credential'
-                  : 'verify_failed',
-            sessionAuth: liveAfter.sessionAuth,
-          })
-          if (submitted && after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') return { ok: true }
-        } catch {
-          await this.markMaintenanceOutcomeUnknown(session, operation)
-          return { ok: false, code: 'OUTCOME_UNKNOWN' }
+        const submitted = await submitLoginCredentials(
+          live.handle,
+          {
+            entryUrl: target.entryUrl,
+            loginUrl: target.loginUrl,
+            loginFields: target.loginFields,
+          },
+          credential,
+          verification.loginTimeoutMs,
+        )
+        if (attempt && submitted) attempt.loginSubmitted = true
+        if (submitted) {
+          try {
+            const after = await verifyOnce()
+            const liveAfter = await readLiveSessionAuth(db)
+            await recordAutoLoginOutcome(db, {
+              targetAccountId: operation.targetAccountId,
+              result:
+                after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH'
+                  ? 'success'
+                  : after.identityState === 'MISMATCH'
+                    ? 'credential'
+                    : 'verify_failed',
+              sessionAuth: liveAfter.sessionAuth,
+            })
+            if (after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') return { ok: true }
+          } catch {
+            await this.markMaintenanceOutcomeUnknown(session, operation)
+            return { ok: false, code: 'OUTCOME_UNKNOWN' }
+          }
         }
       }
     }
@@ -2299,8 +2347,10 @@ export class BrowserSessionManager {
     if (input.command.seq <= live.lastSeq) {
       throw conflict('AUTH_INPUT_REJECTED', '输入序号乱序')
     }
-    const { run: latestRun } = await this.lookupRunSession(input.runId)
-    if (latestRun.status !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
+    // 这里只要认证输入窗口的状态。调用方已经给了 sessionId / live，不必再走一遍
+    // lookupRunSession 的会话解析——那会给每次按键多压两三次查询。
+    const latestStatus = await this.authWindowStatus(input.runId)
+    if (latestStatus !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
       throw conflict('AUTH_INPUT_REJECTED', '当前不是认证输入窗口')
     }
     const latest = await getSessionById(this.dbHandle, sessionId)
@@ -2706,11 +2756,34 @@ export class BrowserSessionManager {
     return undefined
   }
 
+  /** 只解析「是不是认证输入窗口」的状态：先 Run，落空再按维护操作 id 兜底。 */
+  private async authWindowStatus(runId: string): Promise<string> {
+    const run = await getRun(this.dbHandle, runId).catch(() => null)
+    if (run) return run.status
+    const operation = await getSessionOperation(this.dbHandle, runId)
+    if (operation) {
+      return typeof operation.kindParams?.reusedRunId === 'string'
+        ? this.authWindowStatus(operation.kindParams.reusedRunId)
+        : operation.status
+    }
+    // 两种寻址都落空：把 getRun 的真实错误抛回去，不伪造状态。
+    return (await getRun(this.dbHandle, runId)).status
+  }
+
   private async lookupRunSession(runId: string): Promise<{
     run: Awaited<ReturnType<typeof getRun>>
     session: SessionRecord | null
     live: LiveHandle | undefined
   }> {
+    // Run 是正常寻址方式，必须先问；维护操作 id 与会话 id 只是控制台接管用的兜底，
+    // 抢在 Run 前面会让真实 Run 被合成行盖掉，也让每次认证输入都多付一次查询。
+    const detail = await getRun(this.dbHandle, runId).catch(() => null)
+    if (detail) {
+      const held = this.liveAuthHold(await findSessionByAuthHoldRun(this.dbHandle, runId))
+      const sessionId = held?.id ?? detail.placement.sessionId ?? this.liveSessionIdForRun(runId)
+      const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
+      return { run: detail, session, live: session ? this.lives.get(session.id) : undefined }
+    }
     const operation = await getSessionOperation(this.dbHandle, runId)
     if (operation) {
       if (typeof operation.kindParams?.reusedRunId === 'string') {
@@ -2748,12 +2821,10 @@ export class BrowserSessionManager {
         live: this.lives.get(instance.id),
       }
     }
+    // 三种寻址都落空：把 getRun 的真实错误抛回去（未知 id 即 RUN_NOT_FOUND，库故障即原错误），
+    // 不要在这里伪造一个空 Run。上面已经问过一次且失败，这行必定抛出。
     const run = await getRun(this.dbHandle, runId)
-    const held = this.liveAuthHold(await findSessionByAuthHoldRun(this.dbHandle, runId))
-    const sessionId = held?.id ?? run.placement.sessionId ?? this.liveSessionIdForRun(runId)
-    const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
-    const live = session ? this.lives.get(session.id) : undefined
-    return { run, session, live }
+    return { run, session: null, live: undefined }
   }
 
   private async buildMeta(runId: string, actorId: string, viewPageId?: string): Promise<ManagedBrowserMeta> {

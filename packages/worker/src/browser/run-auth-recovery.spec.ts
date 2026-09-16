@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { BrowserSessionManager } from './session-manager'
 import { computeContextVersion } from '@cairn/shared'
-import { occupyAutoLoginBudget, enterRunWaitingForAuth } from '@cairn/db'
+import { occupyAutoLoginBudget, recordAutoLoginOutcome, enterRunWaitingForAuth } from '@cairn/db'
 import { currentOccupancyGrant, submitLoginCredentials } from './runtime'
 const db = vi.hoisted(() => ({ run: null as any }))
 vi.mock('@cairn/db', async (original) => ({ ...await original<typeof import('@cairn/db')>(),
@@ -12,6 +12,7 @@ vi.mock('@cairn/db', async (original) => ({ ...await original<typeof import('@ca
   readLiveSessionAuth: vi.fn(async () => ({ sessionAuth: {} })),
   recordAutoLoginOutcome: vi.fn(async () => {}),
   setSessionStatus: vi.fn(async () => true),
+  touchSessionUsed: vi.fn(async () => true),
   enterRunWaitingForAuth: vi.fn(async () => {
     db.run.status = 'WAITING_FOR_AUTH'
     return {
@@ -40,8 +41,33 @@ beforeEach(async () => {
   grant = { sessionId: 'session', leaseId: 'lease', generation: 1, sessionFencingToken: 1, expiresAt: new Date(Date.now() + 60000).toISOString(), purpose: 'EXECUTION', ownerKind: 'RUN', runId: 'run', operationId: null }
   manager.guard.install(grant)
   let url = 'https://app.example/orders'
-  page = { goto: vi.fn(async (next: string) => { url = next }), url: () => url }
-  manager.lives.set('session', { handle: { basePage: page } })
+  page = {
+    goto: vi.fn(async (next: string) => { url = next }),
+    url: () => url,
+    isClosed: () => false,
+    on: vi.fn(),
+    off: vi.fn(),
+  }
+  manager.lives.set('session', {
+    handle: { basePage: page },
+    sessionId: 'session',
+    runPageIds: new Set(),
+    runPages: new Map(),
+    pages: new Map(),
+    currentPageIdByLease: new Map(),
+    currentPageIdByRun: new Map(),
+    autoInputClosed: false,
+    inputAccepting: false,
+    serial: Promise.resolve(),
+    allowedOrigins: ['https://app.example'],
+    receipts: new Map(),
+    lastSeq: 0,
+    controlEpoch: 0,
+    screencasts: new Map(),
+    screencastObservers: new Map(),
+  })
+  manager.leaseToSession.set('lease', 'session')
+  manager.leaseToRun.set('lease', 'run')
   manager.pageForGrant = () => page
   manager.loadTargetAuth = vi.fn(async () => ({ entryUrl: 'https://app.example/', authMethod: 'password', captchaMode: 'none' }))
   manager.resolveLoginCredential = vi.fn(async () => ({ username: 'user', password: 'example-test-only' }))
@@ -103,6 +129,27 @@ it('REUSE_PAGE origin 已离开 allowedOrigins 则不可恢复', async () => {
   expect(submitLoginCredentials).not.toHaveBeenCalled()
   expect(page.goto).not.toHaveBeenCalled()
 })
+it('续接时 origin 已离开也不可恢复，且不再核验登录', async () => {
+  db.run.authCheckpoint.recoveryRule.reuse = 'REUSE_PAGE'
+  db.run.authCheckpoint.recoveryRule.allowedOrigins = ['https://app.example']
+  page.url = () => 'https://other.example/orders'
+  manager.authGateClosed.add('lease')
+  expect(await recover({ resuming: true })).toMatchObject({
+    ok: false,
+    unrecoverable: true,
+    code: 'AUTH_CONTEXT_NOT_RECOVERABLE',
+  })
+  expect(manager.verifyInRunAuth).not.toHaveBeenCalled()
+  expect(submitLoginCredentials).not.toHaveBeenCalled()
+  expect(() => manager.assertAuthGate('lease')).toThrow('AUTH_GATE_CLOSED')
+})
+it('续接核验未 MATCH 不得开门', async () => {
+  manager.authGateClosed.add('lease')
+  manager.verifyInRunAuth.mockResolvedValue({ authState: 'AUTHENTICATED', identityState: 'UNVERIFIED' })
+  expect(await recover({ resuming: true })).toMatchObject({ ok: false, unrecoverable: true })
+  expect(submitLoginCredentials).not.toHaveBeenCalled()
+  expect(() => manager.assertAuthGate('lease')).toThrow('AUTH_GATE_CLOSED')
+})
 it('人工恢复写 AUTH_WAIT', async () => {
   expect(await recover({ kind: 'manual' })).toMatchObject({ ok: false, waitingForAuth: true })
   expect(enterRunWaitingForAuth).toHaveBeenCalled()
@@ -129,6 +176,22 @@ it('自动登录预算占用失败不提交凭据', async () => {
   expect(await recover()).toMatchObject({ waitingForAuth: true })
   expect(submitLoginCredentials).not.toHaveBeenCalled()
 })
+it('提交登录后抛错：预算已计次，必须补记一次失败 outcome 并保持门禁关闭', async () => {
+  vi.mocked(submitLoginCredentials).mockRejectedValueOnce(new Error('login page crashed'))
+  expect(await recover()).toMatchObject({ ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE' })
+  expect(occupyAutoLoginBudget).toHaveBeenCalledTimes(1)
+  expect(recordAutoLoginOutcome).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ targetAccountId: 'account', result: 'verify_failed' }),
+  )
+  expect(() => manager.assertAuthGate('lease')).toThrow('AUTH_GATE_CLOSED')
+})
+it('拿不到凭据不占自动登录额度', async () => {
+  manager.resolveLoginCredential = vi.fn(async () => null)
+  expect(await recover()).toMatchObject({ ok: false, unrecoverable: true })
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+  expect(submitLoginCredentials).not.toHaveBeenCalled()
+})
 it('采样无页面或无占用都不 evaluate', async () => {
   const evaluate = vi.fn()
   manager.pageForGrant = () => undefined
@@ -145,11 +208,12 @@ it('采样无页面或无占用都不 evaluate', async () => {
   expect(evaluate).not.toHaveBeenCalled()
 })
 it('采样成功不写 lastUsedAt', async () => {
-  const { setSessionStatus } = await import('@cairn/db')
+  const { setSessionStatus, touchSessionUsed } = await import('@cairn/db')
   manager.pageForGrant = () => ({
     evaluate: vi.fn(async () => 'en-US'),
     viewportSize: () => ({ width: 1440, height: 900 }),
   })
   expect(await manager.sampleMapConditions(grant)).toMatchObject({ pageFrameObserved: true, locale: 'en-US' })
   expect(vi.mocked(setSessionStatus)).not.toHaveBeenCalled()
+  expect(vi.mocked(touchSessionUsed)).not.toHaveBeenCalled()
 })
