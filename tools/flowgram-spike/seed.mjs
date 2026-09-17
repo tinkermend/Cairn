@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { compileScenarioDocument, createScenarioBodySchema } from '../../packages/shared/dist/index.js'
+import { compileScenarioDocument } from '../../packages/authoring/dist/index.js'
+import { createScenarioBodySchema } from '../../packages/shared/dist/index.js'
 
 const api = process.env.CAIRN_API_ORIGIN ?? 'http://127.0.0.1:3030'
 const lab = process.env.FLOWGRAM_LAB_ORIGIN ?? 'http://127.0.0.1:4186'

@@ -2,15 +2,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const listMapProjectionWork = vi.fn()
 const ensureMapProjection = vi.fn()
-const loadMapProjectionState = vi.fn()
+const getMapProjection = vi.fn()
+const loadMapProjectionWorkingSet = vi.fn()
 const readMapFacts = vi.fn()
 const commitMapProjectionBatch = vi.fn()
 const recordMapProjectionFailure = vi.fn()
+const projectionWorkingSetHints = vi.fn(() => ({
+  pageAllocationKeys: ['page:v1:top:orders:top'],
+  objectAllocationKeys: ['object:v1:n001-btn'],
+  observationIds: [],
+}))
 
 vi.mock('@cairn/db', () => ({
   listMapProjectionWork,
   ensureMapProjection,
-  loadMapProjectionState,
+  getMapProjection,
+  loadMapProjectionWorkingSet,
   readMapFacts,
   commitMapProjectionBatch,
   recordMapProjectionFailure,
@@ -24,6 +31,7 @@ vi.mock('@cairn/db', () => ({
 }))
 
 vi.mock('@cairn/map', () => ({
+  projectionWorkingSetHints,
   planProjectionBatch: vi.fn(() => ({
     protocol: 'map-assets@1',
     algorithmVersion: 'map-identity@1',
@@ -56,7 +64,13 @@ describe('MapProjectionService', () => {
         committedSeq: 2,
       },
     ])
-    loadMapProjectionState.mockResolvedValue({
+    getMapProjection.mockResolvedValue({
+      id: '22222222-2222-4222-8222-222222222222',
+      targetId: '11111111-1111-4111-8111-111111111111',
+      cursor: 0,
+      revision: 0,
+    })
+    loadMapProjectionWorkingSet.mockResolvedValue({
       targetId: '11111111-1111-4111-8111-111111111111',
       projectionId: '22222222-2222-4222-8222-222222222222',
       generation: 1,
@@ -76,6 +90,14 @@ describe('MapProjectionService', () => {
     commitMapProjectionBatch.mockResolvedValue({ cursor: 1, revision: 1, status: 'active' })
     const result = await advanceMapProjections({} as never, { limit: 1 })
     expect(result.advanced).toBe(1)
+    expect(projectionWorkingSetHints).toHaveBeenCalled()
+    expect(loadMapProjectionWorkingSet).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        projectionId: '22222222-2222-4222-8222-222222222222',
+        pageAllocationKeys: ['page:v1:top:orders:top'],
+      }),
+    )
     expect(planProjectionBatch).toHaveBeenCalled()
     expect(commitMapProjectionBatch).toHaveBeenCalled()
     expect(recordMapProjectionFailure).not.toHaveBeenCalled()

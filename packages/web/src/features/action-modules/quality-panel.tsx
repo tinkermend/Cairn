@@ -70,7 +70,7 @@ export function ActionModuleQualityPanel({
   return (
     <div className='space-y-4'>
       <div className='flex flex-wrap items-end gap-3'>
-        <label className='space-y-1 text-bodyall'>
+        <label className='space-y-1 text-body'>
           版本
           <Select
             value={versionId}
@@ -92,7 +92,7 @@ export function ActionModuleQualityPanel({
             </SelectContent>
           </Select>
         </label>
-        <label className='space-y-1 text-bodyall'>
+        <label className='space-y-1 text-body'>
           窗口
           <Select
             value={String(windowDays)}
@@ -117,27 +117,60 @@ export function ActionModuleQualityPanel({
         {data.pendingBackfill > 0 ? ` · 待补算 ${data.pendingBackfill}` : ''}
         {data.health.verificationInsufficient ? ' · 验证强度不足，不参与退化判定' : ''}
       </p>
-      <div className='grid gap-3 rounded-xl border bg-card p-4 sm:grid-cols-3'>
-        <p className='text-body'>正式调用 {data.overall.calls}</p>
-        <p className='text-body'>
-          通过率 {data.overall.verifiedRate === null ? '样本不足' : `${(data.overall.verifiedRate * 100).toFixed(0)}%`}
-          （样本 {data.overall.sampleCount}）
-        </p>
-        <p className='text-body'>外部原因 {data.overall.externalInfra} · 未执行 {data.overall.notReached} · 取消 {data.overall.cancelled} · 待核查 {data.overall.needsReview}</p>
-        <p className='text-body'>经重试成功 {data.overall.retriedSuccess}</p>
-        <p className='text-body'>
-          耗时中位 {data.overall.durationMsP50 ?? '—'} ms · p95 {data.overall.durationMsP95 ?? '—'} ms
-        </p>
-        <p className='text-body'>
-          AI 调用 {data.overall.aiCalls}
-          {data.overall.aiCost !== null ? ` · 成本 ${data.overall.aiCost}` : ''}
-        </p>
+      <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
+        <div className='space-y-1.5 rounded-xl border border-card bg-card p-4 shadow-card'>
+          <p className='text-label font-medium text-muted-foreground'>正式调用</p>
+          <div className='text-stat font-semibold tracking-tight text-foreground'>
+            {data.overall.calls}
+          </div>
+          <p className='text-label text-muted-foreground'>
+            经重试成功 {data.overall.retriedSuccess}
+            {data.trial.calls > 0 ? ` · 试跑 ${data.trial.calls}` : ''}
+          </p>
+        </div>
+        <div className='space-y-1.5 rounded-xl border border-card bg-card p-4 shadow-card'>
+          <p className='text-label font-medium text-muted-foreground'>验证通过率</p>
+          <div className='text-stat font-semibold tracking-tight text-foreground'>
+            {data.overall.verifiedRate === null ? '—' : `${(data.overall.verifiedRate * 100).toFixed(0)}%`}
+          </div>
+          <p className='text-label text-muted-foreground'>
+            通过率 {data.overall.verifiedRate === null ? '样本不足' : `${(data.overall.verifiedRate * 100).toFixed(0)}%`}（样本 {data.overall.sampleCount}）
+          </p>
+        </div>
+        <div className='space-y-1.5 rounded-xl border border-card bg-card p-4 shadow-card'>
+          <p className='text-label font-medium text-muted-foreground'>响应延迟 (P50)</p>
+          <div className='text-stat font-semibold tracking-tight text-foreground'>
+            {data.overall.durationMsP50 ?? '—'} <span className='text-body font-normal text-muted-foreground'>ms</span>
+          </div>
+          <p className='text-label text-muted-foreground'>
+            耗时中位 {data.overall.durationMsP50 ?? '—'} ms · p95 {data.overall.durationMsP95 ?? '—'} ms
+          </p>
+        </div>
+        <div className='space-y-1.5 rounded-xl border border-card bg-card p-4 shadow-card'>
+          <p className='text-label font-medium text-muted-foreground'>异常与未执行</p>
+          <div className='text-stat font-semibold tracking-tight text-foreground'>
+            {data.overall.externalInfra + data.overall.notReached + data.overall.cancelled + data.overall.needsReview}
+          </div>
+          <p className='text-label text-muted-foreground truncate' title={`外部原因 ${data.overall.externalInfra} · 未执行 ${data.overall.notReached} · 取消 ${data.overall.cancelled} · 待核查 ${data.overall.needsReview}`}>
+            外部原因 {data.overall.externalInfra} · 未执行 {data.overall.notReached} · 取消 {data.overall.cancelled} · 待核查 {data.overall.needsReview}
+          </p>
+        </div>
       </div>
-      {data.fallback ? (
-        <p className='text-body'>
-          回退发生 {data.fallback.occurred} 次 · 回退后成功 {data.fallback.succeeded} 次
-        </p>
-      ) : null}
+      {(data.overall.aiCalls > 0 || Boolean(data.overall.aiCost) || Boolean(data.fallback)) && (
+        <div className='flex flex-wrap items-center gap-4 rounded-lg border bg-muted/20 px-4 py-2 text-body text-muted-foreground'>
+          {data.overall.aiCalls > 0 ? (
+            <span>
+              AI 调用 {data.overall.aiCalls}
+              {data.overall.aiCost !== null ? ` · 成本 ${data.overall.aiCost}` : ''}
+            </span>
+          ) : null}
+          {data.fallback ? (
+            <span>
+              回退发生 {data.fallback.occurred} 次 · 回退后成功 {data.fallback.succeeded} 次
+            </span>
+          ) : null}
+        </div>
+      )}
       {data.implementations && data.implementations.length > 0 ? (
         <div className='overflow-x-auto rounded-xl border'>
           <table className='w-full min-w-[28rem] text-left text-body'>
@@ -194,7 +227,9 @@ export function ActionModuleQualityPanel({
       {invocations.isError ? (
         <QueryErrorState description={invocations.error.message} onRetry={() => void invocations.refetch()} />
       ) : items.length === 0 ? (
-        <p className='text-body text-muted-foreground'>还没有可展示的模块调用结果。</p>
+        <div className='rounded-xl border border-dashed border-border-default bg-card/40 p-8 text-center'>
+          <p className='text-body text-muted-foreground'>还没有可展示的模块调用结果。</p>
+        </div>
       ) : (
         <div className='overflow-x-auto rounded-xl border'>
           <table className='w-full min-w-[40rem] text-left text-body'>

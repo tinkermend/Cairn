@@ -20,9 +20,9 @@ import {
   type DbHandle,
 } from '@cairn/db'
 import { eq, expose, newId, openIsolatedDb, schemaFor } from '@cairn/db/testing'
+import { compileModuleContent } from '@cairn/authoring'
 import {
   PERMISSIONS,
-  compileModuleContent,
   moduleWarningKey,
   type ModuleContent,
   type ScenarioAuthoringDocumentV2,

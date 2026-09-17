@@ -40,6 +40,7 @@ import { Route as AuthenticatedActionModulesModuleIdIndexRouteImport } from './r
 import { Route as AuthenticatedRecordingsRecordingIdIndexRouteImport } from './routes/_authenticated/recordings/$recordingId/index'
 import { Route as AuthenticatedRunsRunIdIndexRouteImport } from './routes/_authenticated/runs/$runId/index'
 import { Route as AuthenticatedScenariosScenarioIdIndexRouteImport } from './routes/_authenticated/scenarios/$scenarioId/index'
+import { Route as AuthenticatedSessionsTargetIdIndexRouteImport } from './routes/_authenticated/sessions/$targetId/index'
 import { Route as AuthenticatedTargetsTargetIdIndexRouteImport } from './routes/_authenticated/targets/$targetId/index'
 import { Route as AuthenticatedWorkersWorkerIdIndexRouteImport } from './routes/_authenticated/workers/$workerId/index'
 import { Route as AuthenticatedSessionsTargetIdAccountIdIndexRouteImport } from './routes/_authenticated/sessions/$targetId/$accountId/index'
@@ -218,6 +219,12 @@ const AuthenticatedScenariosScenarioIdIndexRoute =
     path: '/scenarios/$scenarioId/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedSessionsTargetIdIndexRoute =
+  AuthenticatedSessionsTargetIdIndexRouteImport.update({
+    id: '/sessions/$targetId/',
+    path: '/sessions/$targetId/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedTargetsTargetIdIndexRoute =
   AuthenticatedTargetsTargetIdIndexRouteImport.update({
     id: '/targets/$targetId/',
@@ -274,6 +281,7 @@ export interface FileRoutesByFullPath {
   '/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
   '/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
+  '/sessions/$targetId/': typeof AuthenticatedSessionsTargetIdIndexRoute
   '/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
   '/workers/$workerId/': typeof AuthenticatedWorkersWorkerIdIndexRoute
   '/sessions/$targetId/$accountId/': typeof AuthenticatedSessionsTargetIdAccountIdIndexRoute
@@ -309,6 +317,7 @@ export interface FileRoutesByTo {
   '/recordings/$recordingId': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/runs/$runId': typeof AuthenticatedRunsRunIdIndexRoute
   '/scenarios/$scenarioId': typeof AuthenticatedScenariosScenarioIdIndexRoute
+  '/sessions/$targetId': typeof AuthenticatedSessionsTargetIdIndexRoute
   '/targets/$targetId': typeof AuthenticatedTargetsTargetIdIndexRoute
   '/workers/$workerId': typeof AuthenticatedWorkersWorkerIdIndexRoute
   '/sessions/$targetId/$accountId': typeof AuthenticatedSessionsTargetIdAccountIdIndexRoute
@@ -347,6 +356,7 @@ export interface FileRoutesById {
   '/_authenticated/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
   '/_authenticated/runs/$runId/': typeof AuthenticatedRunsRunIdIndexRoute
   '/_authenticated/scenarios/$scenarioId/': typeof AuthenticatedScenariosScenarioIdIndexRoute
+  '/_authenticated/sessions/$targetId/': typeof AuthenticatedSessionsTargetIdIndexRoute
   '/_authenticated/targets/$targetId/': typeof AuthenticatedTargetsTargetIdIndexRoute
   '/_authenticated/workers/$workerId/': typeof AuthenticatedWorkersWorkerIdIndexRoute
   '/_authenticated/sessions/$targetId/$accountId/': typeof AuthenticatedSessionsTargetIdAccountIdIndexRoute
@@ -385,6 +395,7 @@ export interface FileRouteTypes {
     | '/recordings/$recordingId/'
     | '/runs/$runId/'
     | '/scenarios/$scenarioId/'
+    | '/sessions/$targetId/'
     | '/targets/$targetId/'
     | '/workers/$workerId/'
     | '/sessions/$targetId/$accountId/'
@@ -420,6 +431,7 @@ export interface FileRouteTypes {
     | '/recordings/$recordingId'
     | '/runs/$runId'
     | '/scenarios/$scenarioId'
+    | '/sessions/$targetId'
     | '/targets/$targetId'
     | '/workers/$workerId'
     | '/sessions/$targetId/$accountId'
@@ -457,6 +469,7 @@ export interface FileRouteTypes {
     | '/_authenticated/recordings/$recordingId/'
     | '/_authenticated/runs/$runId/'
     | '/_authenticated/scenarios/$scenarioId/'
+    | '/_authenticated/sessions/$targetId/'
     | '/_authenticated/targets/$targetId/'
     | '/_authenticated/workers/$workerId/'
     | '/_authenticated/sessions/$targetId/$accountId/'
@@ -692,6 +705,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedScenariosScenarioIdIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/sessions/$targetId/': {
+      id: '/_authenticated/sessions/$targetId/'
+      path: '/sessions/$targetId'
+      fullPath: '/sessions/$targetId/'
+      preLoaderRoute: typeof AuthenticatedSessionsTargetIdIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/targets/$targetId/': {
       id: '/_authenticated/targets/$targetId/'
       path: '/targets/$targetId'
@@ -763,6 +783,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedRecordingsRecordingIdIndexRoute: typeof AuthenticatedRecordingsRecordingIdIndexRoute
   AuthenticatedRunsRunIdIndexRoute: typeof AuthenticatedRunsRunIdIndexRoute
   AuthenticatedScenariosScenarioIdIndexRoute: typeof AuthenticatedScenariosScenarioIdIndexRoute
+  AuthenticatedSessionsTargetIdIndexRoute: typeof AuthenticatedSessionsTargetIdIndexRoute
   AuthenticatedTargetsTargetIdIndexRoute: typeof AuthenticatedTargetsTargetIdIndexRoute
   AuthenticatedWorkersWorkerIdIndexRoute: typeof AuthenticatedWorkersWorkerIdIndexRoute
   AuthenticatedSessionsTargetIdAccountIdIndexRoute: typeof AuthenticatedSessionsTargetIdAccountIdIndexRoute
@@ -794,6 +815,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedRunsRunIdIndexRoute: AuthenticatedRunsRunIdIndexRoute,
   AuthenticatedScenariosScenarioIdIndexRoute:
     AuthenticatedScenariosScenarioIdIndexRoute,
+  AuthenticatedSessionsTargetIdIndexRoute:
+    AuthenticatedSessionsTargetIdIndexRoute,
   AuthenticatedTargetsTargetIdIndexRoute:
     AuthenticatedTargetsTargetIdIndexRoute,
   AuthenticatedWorkersWorkerIdIndexRoute:

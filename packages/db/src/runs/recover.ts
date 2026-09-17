@@ -1,6 +1,6 @@
 import { schemaFor } from '../native.js'
 import { updateRows } from '../native.js'
-import { and, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import {
   CANCELLED_ATTEMPT_ERROR,
   isFinishedRunStatus,
@@ -31,6 +31,7 @@ import { appendRunEvents } from '../observe/events.js'
 import { conflict, notFound } from './errors.js'
 import { appendOrphanAfterGapTx } from '../map/attempt-facts.js'
 import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.js'
+import { recalculateRunOutcomeTx } from './outcome-results.js'
 
 const RUN_RECOVERY_EXHAUSTED: RunLeaseErrorCode = 'RUN_RECOVERY_EXHAUSTED'
 
@@ -324,6 +325,7 @@ export async function reconcileOrphanAttempts(
           .update(runs)
           .set({ status: 'NEEDS_REVIEW', updatedAt: now })
           .where(eq(runs.id, runId))
+        await recalculateRunOutcomeTx(tx as unknown as Db, runId, snapshot as RunSnapshot, now)
         if ('grant' in input) {
           await releaseRunLeaseTx(tx as unknown as Db, input.grant, 'run_halted')
         }
@@ -371,19 +373,22 @@ export async function settleRunCancellationTx(
   const { browserSessions, sessionLeases } = schemaFor(tx)
   const authLeases = await tx.select({ sessionId: sessionLeases.sessionId }).from(sessionLeases)
     .where(and(eq(sessionLeases.runId, runId), eq(sessionLeases.purpose, 'AUTH_WAIT'), eq(sessionLeases.status, 'ACTIVE')))
-  await tx.update(browserSessions).set({
-    authHoldWorkerId: null, authHoldExpiresAt: null, authHoldRunId: null,
-    authHoldSessionGeneration: null, authHoldWorkerInstanceId: null,
-    authControlActorId: null, authControlTokenHash: null, authControlExpiresAt: null,
-    authControlPageId: null, authControlEpoch: sql`${browserSessions.authControlEpoch} + 1`, updatedAt: now,
-  }).where(or(eq(browserSessions.authHoldRunId, runId),
-    authLeases.length ? inArray(browserSessions.id, authLeases.map(lease => lease.sessionId)) : undefined))
+  if (authLeases.length > 0) {
+    await tx.update(browserSessions).set({
+      authControlActorId: null, authControlTokenHash: null, authControlExpiresAt: null,
+      authControlPageId: null, authControlEpoch: sql`${browserSessions.authControlEpoch} + 1`, updatedAt: now,
+    }).where(inArray(browserSessions.id, authLeases.map(lease => lease.sessionId)))
+  }
   await tx.update(sessionLeases).set({ status: 'REVOKED', releasedAt: now, releaseReason: 'run_cancelled' })
     .where(and(eq(sessionLeases.runId, runId), eq(sessionLeases.purpose, 'AUTH_WAIT'), eq(sessionLeases.status, 'ACTIVE')))
   if (outcome !== 'continue') return outcome
   const { runs, stepRuns } = schemaFor(tx)
   await tx.update(runs).set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
     .where(eq(runs.id, runId))
+  const [cancelledRun] = await tx.select({ snapshot: runs.snapshot }).from(runs).where(eq(runs.id, runId)).limit(1)
+  if (cancelledRun) {
+    await recalculateRunOutcomeTx(tx, runId, cancelledRun.snapshot as RunSnapshot, now)
+  }
   // Orphan attempts are now closed. A read-only orphan can still have a RUNNING StepRun.
   await tx.update(stepRuns).set({ status: 'CANCELLED', finishedAt: now })
     .where(and(eq(stepRuns.runId, runId), inArray(stepRuns.status, ['PENDING', 'RUNNING'])))
@@ -410,6 +415,10 @@ export async function reviewRun(
       .update(runs)
       .set({ status, finishedAt: now, updatedAt: now })
       .where(eq(runs.id, input.runId))
+    const [runRow] = await tx.select({ snapshot: runs.snapshot }).from(runs).where(eq(runs.id, input.runId)).limit(1)
+    if (runRow) {
+      await recalculateRunOutcomeTx(tx as unknown as Db, input.runId, runRow.snapshot as RunSnapshot, now)
+    }
     if (input.conclusion === 'fail') {
       await skipRemainingStepRunsTx(tx as unknown as Db, input.runId, now)
     } else {

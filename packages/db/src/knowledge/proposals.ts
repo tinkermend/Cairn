@@ -1,9 +1,9 @@
+import { compileScenarioDocument } from '@cairn/authoring'
 import { and, eq } from 'drizzle-orm'
 import {
   acceptKnowledgeProposalBodySchema,
   authoringProposalSchema,
   canonicalJson,
-  compileScenarioDocument,
   createKnowledgeProposalBodySchema,
   isAuthoringDocumentV2,
   knowledgeProposalAcceptedSchema,

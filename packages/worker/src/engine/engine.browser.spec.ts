@@ -717,10 +717,12 @@ describe('ExecutionEngine × BrowserPort（L1）', { timeout: 60_000 }, () => {
   })
 
   it('Engine 源码不抄第二份回交 / 配置错误码清单', () => {
-    const text = readFileSync(join(__dirname, 'engine.ts'), 'utf8')
-    expect(text).not.toMatch(/SESSION_BUSY[\s\S]*SESSION_CAPACITY_EXCEEDED/)
-    expect(text).toContain('isPlacementYieldCode')
-    expect(text).toContain('isSessionConfigErrorCode')
+    const engine = readFileSync(join(__dirname, 'engine.ts'), 'utf8')
+    const preflight = readFileSync(join(__dirname, 'engine-preflight.ts'), 'utf8')
+    expect(engine).not.toMatch(/SESSION_BUSY[\s\S]*SESSION_CAPACITY_EXCEEDED/)
+    expect(preflight).not.toMatch(/SESSION_BUSY[\s\S]*SESSION_CAPACITY_EXCEEDED/)
+    expect(preflight).toContain('isPlacementYieldCode')
+    expect(preflight).toContain('isSessionConfigErrorCode')
   })
 
   it('acquire waitingForAuth：Engine 停手、不 release、Run 保持 WAITING_FOR_AUTH', async () => {

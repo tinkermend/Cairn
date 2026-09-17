@@ -24,6 +24,7 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
   const canWrite = useCan('target:write')
   const queryClient = useQueryClient()
   const [origin, setOrigin] = useState('')
+  const [pathPrefix, setPathPrefix] = useState('')
   const [purpose, setPurpose] = useState<TargetAccessPurpose>('business_surface')
   const [effect, setEffect] = useState<'allow' | 'deny'>('allow')
   const [reason, setReason] = useState('')
@@ -46,6 +47,7 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
       toast.success('已更新目标授权')
       setReason('')
       setOrigin('')
+      setPathPrefix('')
       void queryClient.invalidateQueries({ queryKey: ['target', targetId, 'access-policy'] })
     },
     onError: (error) => {
@@ -113,7 +115,7 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
                 <ul className='space-y-2 text-body'>
                   {rules.map((rule, index) => (
                     <li
-                      key={`${rule.origin}:${rule.purpose}:${rule.effect}:${index}`}
+                      key={`${rule.origin}:${rule.purpose}:${rule.effect}:${rule.pathPrefix ?? ''}:${index}`}
                       className='flex flex-wrap items-center justify-between gap-2 rounded-md border border-border-divider bg-surface-subtle p-3'
                     >
                       <div className='flex flex-wrap items-center gap-2'>
@@ -126,9 +128,13 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
                         <code className='font-mono text-small text-text-primary'>
                           {rule.origin}
                         </code>
+                        <span className='text-label text-muted-foreground'>
+                          {rule.pathPrefix ?? '整个 origin'}
+                        </span>
                       </div>
                       <span className='sr-only'>
-                        {rule.effect === 'deny' ? '拒绝' : '允许'} {PURPOSE_LABELS[rule.purpose]} {rule.origin}
+                        {rule.effect === 'deny' ? '拒绝' : '允许'} {PURPOSE_LABELS[rule.purpose]} {rule.origin}{' '}
+                        {rule.pathPrefix ?? '整个 origin'}
                       </span>
                     </li>
                   ))}
@@ -179,6 +185,18 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
                     </select>
                   </div>
                   <div className='space-y-1.5 sm:col-span-3'>
+                    <Label htmlFor='access-prefix'>可选 pathPrefix</Label>
+                    <Input
+                      id='access-prefix'
+                      value={pathPrefix}
+                      onChange={(event) => setPathPrefix(event.target.value)}
+                      placeholder='/orders'
+                    />
+                    <p className='text-label text-muted-foreground'>
+                      留空表示整个 origin。`/orders` 含 `/orders/1`，不含 `/orders-admin`。
+                    </p>
+                  </div>
+                  <div className='space-y-1.5 sm:col-span-3'>
                     <Label htmlFor='access-reason'>理由</Label>
                     <Input
                       id='access-reason'
@@ -191,9 +209,19 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
                 <div className='flex justify-end pt-1'>
                   <Button
                     disabled={mutation.isPending || !origin.trim() || !reason.trim()}
-                    onClick={() =>
-                      mutation.mutate([...rules, { origin: origin.trim(), purpose, effect }])
-                    }
+                    onClick={() => {
+                      const prefix = pathPrefix.trim()
+                      const normalized = prefix && !prefix.startsWith('/') ? `/${prefix}` : prefix
+                      mutation.mutate([
+                        ...rules,
+                        {
+                          origin: origin.trim(),
+                          purpose,
+                          effect,
+                          ...(normalized ? { pathPrefix: normalized } : {}),
+                        },
+                      ])
+                    }}
                   >
                     {mutation.isPending ? '保存中…' : '保存授权'}
                   </Button>

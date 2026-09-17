@@ -20,6 +20,7 @@ import { evidencePolicySchema } from './evidence-policy.js'
 import { mapCapturePolicyOverrideSchema } from './map-capture.js'
 import { mapConsumptionOverrideSchema } from './map-consumption.js'
 import { authCheckpointSchema } from './session-auth-recovery.js'
+import { outcomeResultDtoSchema, outcomeStatusSchema, type OutcomeResultDto, type OutcomeStatus } from './outcome.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
@@ -192,6 +193,7 @@ export const runSummarySchema = z.object({
   startedAt: instantOrNull,
   finishedAt: instantOrNull,
   evidenceStatus: runEvidenceStatusSchema,
+  outcomeStatus: outcomeStatusSchema.default('NOT_EVALUATED'),
   lease: runListLeaseSchema,
   debugMode: debugModeSchema.default('runThrough'),
   deletedAt: instantOrNull.optional(),
@@ -217,6 +219,7 @@ export const stepRunDtoSchema = z.object({
   type: z.string().min(1),
   ordinal: z.number().int().min(0),
   status: stepRunStatusSchema,
+  outcomeStatus: outcomeStatusSchema.default('NOT_EVALUATED'),
   startedAt: instantOrNull,
   finishedAt: instantOrNull,
   attempts: z.array(attemptDtoSchema),
@@ -231,6 +234,7 @@ export const runDetailSchema = runSummarySchema
     stepRuns: z.array(stepRunDtoSchema),
     lease: runDetailLeaseSchema,
     placement: runPlacementSchema,
+    outcomeResults: z.array(outcomeResultDtoSchema).default([]),
     checkpoint: debugCheckpointSchema.nullable().optional(),
     debugOverlay: debugOverlaySchema.nullable().optional(),
     authCheckpoint: authCheckpointSchema.nullable().optional(),
@@ -243,6 +247,7 @@ export const runListQuerySchema = z.object({
   scenarioId: entityIdSchema.optional(),
   status: runStatusSchema.optional(),
   evidenceStatus: runEvidenceStatusSchema.optional(),
+  outcomeStatus: outcomeStatusSchema.optional(),
   isTrial: z.coerce.boolean().optional(),
   sourceKind: z.enum(['console', 'service']).optional(),
   from: z.string().datetime().optional(),

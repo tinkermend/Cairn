@@ -1,11 +1,17 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common'
 import {
   createRoleBodySchema,
   replaceRolePermissionsBodySchema,
   updateRoleBodySchema,
+  roleAccountsQuerySchema,
+  addRoleAccountsBodySchema,
+  removeRoleAccountsBodySchema,
   type CreateRoleBody,
   type ReplaceRolePermissionsBody,
   type UpdateRoleBody,
+  type RoleAccountsQuery,
+  type AddRoleAccountsBody,
+  type RemoveRoleAccountsBody,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import { CurrentAccount } from './current-account.decorator'
@@ -72,4 +78,36 @@ export class RbacController {
   deleteRole(@Param('id') id: string, @CurrentAccount() actor: RequestAccount) {
     return this.rbac.deleteRole(id, actor)
   }
+
+  @Get('roles/:id/accounts')
+  @RequirePermissions('role:read')
+  listRoleAccounts(
+    @Param('id') id: string,
+    @Query(new ZodValidationPipe(roleAccountsQuerySchema)) query: RoleAccountsQuery,
+  ) {
+    return this.rbac.listRoleAccounts(id, query)
+  }
+
+  @Post('roles/:id/accounts')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('role:write', 'account:write')
+  addRoleAccounts(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(addRoleAccountsBodySchema)) body: AddRoleAccountsBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.rbac.addRoleAccounts(id, body, actor)
+  }
+
+  @Post('roles/:id/accounts/remove')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('role:write', 'account:write')
+  removeRoleAccounts(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(removeRoleAccountsBodySchema)) body: RemoveRoleAccountsBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.rbac.removeRoleAccounts(id, body, actor)
+  }
 }
+

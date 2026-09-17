@@ -29,7 +29,15 @@ import {
   type SetPasswordBody,
   type UpdateAccountBody,
   type UpdateRoleBody,
+  addRoleAccountsBodySchema,
+  removeRoleAccountsBodySchema,
+  roleAccountsResponseSchema,
+  type AddRoleAccountsBody,
+  type RemoveRoleAccountsBody,
+  type RoleAccountsQuery,
+  type RoleAccountsResponse,
 } from '@cairn/shared'
+import { z } from 'zod'
 import { apiFetch } from '@/lib/api-client'
 
 export function fetchPermissionCatalog(): Promise<PermissionCatalogResponse> {
@@ -61,6 +69,49 @@ export function deleteRole(id: string): Promise<void> {
     method: 'POST',
   }).then(() => undefined)
 }
+
+export function fetchRoleAccounts(
+  id: string,
+  query?: RoleAccountsQuery,
+): Promise<RoleAccountsResponse> {
+  const params = new URLSearchParams()
+  if (query?.cursor) params.set('cursor', query.cursor)
+  if (query?.limit) params.set('limit', String(query.limit))
+  if (query?.search) params.set('search', query.search)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  return apiFetch(`/api/rbac/roles/${id}/accounts${qs}`, roleAccountsResponseSchema)
+}
+
+export function addRoleAccounts(
+  id: string,
+  body: AddRoleAccountsBody,
+): Promise<{ addedCount: number }> {
+  return apiFetch(
+    `/api/rbac/roles/${id}/accounts`,
+    z.object({ addedCount: z.number() }),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(addRoleAccountsBodySchema.parse(body)),
+    },
+  )
+}
+
+export function removeRoleAccounts(
+  id: string,
+  body: RemoveRoleAccountsBody,
+): Promise<{ removedCount: number }> {
+  return apiFetch(
+    `/api/rbac/roles/${id}/accounts/remove`,
+    z.object({ removedCount: z.number() }),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(removeRoleAccountsBodySchema.parse(body)),
+    },
+  )
+}
+
 
 export function fetchAccounts(): Promise<AccountListResponse> {
   return apiFetch('/api/console/accounts', accountListResponseSchema)

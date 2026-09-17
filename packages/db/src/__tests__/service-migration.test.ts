@@ -75,6 +75,8 @@ it('service target FKs use the requested schema and repair applied 0019 without 
       '0052_map_exploration.sql',
       '0053_map_explore_job_kind.sql',
       '0054_module_invocation_results.sql',
+      '0055_session_auth_driven_retention.sql',
+      '0056_drop_legacy_auth_hold.sql',
     ])
     expect(await referencedSchema()).toBe(schema)
     expect((await h.pool.query(`SELECT credential_id,target_id FROM "${schema}".credential_target_grants`)).rows)

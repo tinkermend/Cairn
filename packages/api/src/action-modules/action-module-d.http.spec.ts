@@ -17,7 +17,8 @@ import {
   type DbHandle,
 } from '@cairn/db'
 import { expose, newId, openIsolatedDb } from '@cairn/db/testing'
-import { PERMISSIONS, compileModuleContent, moduleWarningKey, type ModuleContent } from '@cairn/shared'
+import { compileModuleContent } from '@cairn/authoring'
+import { PERMISSIONS, moduleWarningKey, type ModuleContent } from '@cairn/shared'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter.js'
 import type { RequestAccount } from '../common/request-account.js'
 import { PermissionsGuard } from '../rbac/permissions.guard.js'

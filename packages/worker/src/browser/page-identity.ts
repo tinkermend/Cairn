@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Frame, Page, Request } from 'playwright'
-import type { PageRef } from '@cairn/shared'
+import { urlAllowedByCompiledScope, type CompiledAccessScope, type PageRef } from '@cairn/shared'
 
 export type ManagedPageKind = 'base' | 'run' | 'popup'
 
@@ -61,15 +61,22 @@ export function pageRefFor(
   }
 }
 
-export function originAllowed(url: string, allowedOrigins: readonly string[]): boolean {
+export function originAllowed(
+  url: string,
+  allowedOrigins: readonly string[],
+  scope?: CompiledAccessScope,
+): boolean {
   try {
     const parsed = new URL(url)
-    return (
-      ['http:', 'https:'].includes(parsed.protocol) &&
-      !parsed.username &&
-      !parsed.password &&
-      allowedOrigins.includes(parsed.origin)
-    )
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      !allowedOrigins.includes(parsed.origin)
+    ) {
+      return false
+    }
+    return scope ? urlAllowedByCompiledScope(url, scope) : true
   } catch {
     return false
   }
@@ -78,12 +85,13 @@ export function originAllowed(url: string, allowedOrigins: readonly string[]): b
 export function pickPopupHandoff(
   candidates: Array<{ page: Page; url: string }>,
   allowedOrigins: readonly string[],
+  scope?: CompiledAccessScope,
 ):
   | { ok: true; page: Page }
   | { ok: false; code: 'PAGE_HANDOFF_NO_POPUP' | 'PAGE_HANDOFF_AMBIGUOUS' | 'PAGE_HANDOFF_OUT_OF_SCOPE' | 'PAGE_HANDOFF_CLOSED' } {
   const open = candidates.filter((item) => !item.page.isClosed())
   if (open.length === 0) return { ok: false, code: 'PAGE_HANDOFF_NO_POPUP' }
-  const inScope = open.filter((item) => originAllowed(item.url, allowedOrigins))
+  const inScope = open.filter((item) => originAllowed(item.url, allowedOrigins, scope))
   if (inScope.length === 0) return { ok: false, code: 'PAGE_HANDOFF_OUT_OF_SCOPE' }
   if (inScope.length > 1) return { ok: false, code: 'PAGE_HANDOFF_AMBIGUOUS' }
   const chosen = inScope[0]!

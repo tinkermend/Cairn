@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common'
 import { LoggerModule } from 'nestjs-pino'
 import { loadSecretCiphertext, type DbHandle } from '@cairn/db'
-import { LOGGING_CENSOR, LOGGING_REDACT_PATHS } from '@cairn/shared'
 import type { LocalSecretProvider } from '@cairn/secret'
+import { buildWorkerLoggerOptions } from './logger-options'
 import { BrowserModule } from './browser/browser.module'
 import { BrowserSessionManager, SECRET_PROVIDER } from './browser/session-manager'
 import { config } from './config/env'
@@ -25,11 +25,10 @@ import { createAiPort } from './ai/port'
 @Module({
   imports: [
     LoggerModule.forRoot({
-      pinoHttp: {
+      pinoHttp: buildWorkerLoggerOptions({
         level: config.CAIRN_LOG_LEVEL,
-        base: { service: 'cairn-worker' },
-        redact: { paths: [...LOGGING_REDACT_PATHS], censor: LOGGING_CENSOR },
-      },
+        workerId: config.CAIRN_WORKER_ID,
+      }),
     }),
     DbModule,
     ChangeHintModule,

@@ -44,7 +44,7 @@ export function queryMap(view: MapQueryView, request: MapQueryRequest): MapQuery
   if (request.clues?.name) {
     pool = pool.filter((asset) => !asset.features?.semanticName || asset.features.semanticName === request.clues?.name)
   }
-  if (pool.length > MAP_QUERY_PAGE_CANDIDATE_MAX) {
+  if (view.candidateOverflow || pool.length > MAP_QUERY_PAGE_CANDIDATE_MAX) {
     return mapQueryResultSchema.parse({
       matchResult: 'AMBIGUOUS',
       candidates: [],

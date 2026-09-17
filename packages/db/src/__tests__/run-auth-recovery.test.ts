@@ -13,6 +13,7 @@ import { newId } from '../id.js'
 import {
   acquireAuthControl,
   resumeRunAfterAuth,
+  createSession,
   findAuthWaitLeaseForRun,
   findLiveSession,
   eq,
@@ -205,13 +206,65 @@ describe.each(DRIVERS)('%s 运行中认证检查点', { timeout: 30_000 }, (driv
     expect((await getRun(handle.db, request.runId)).status).toBe('WAITING_FOR_AUTH')
   })
 
+  it('AH-03 取消没有 AUTH_WAIT 租约的 Run 不改动任何 browser_sessions 行', async () => {
+    const { targetAccounts, browserSessions } = schemaFor(handle.db)
+    const accountId = newId()
+    await handle.db.insert(targetAccounts).values({
+      id: accountId,
+      targetId,
+      username: `ah03-${accountId.slice(0, 8)}`,
+      displayName: 'ah03',
+      status: 'active',
+    })
+    const createdSession = await createSession(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      ownerWorkerId: 'ah03-sentinel',
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 60,
+      maxLifetimeSeconds: 600,
+    })
+    if (!createdSession.ok) throw new Error(createdSession.message)
+    const fingerprint = async () => {
+      const rows = await handle.db.select().from(browserSessions)
+      return rows
+        .map((row) => ({
+          id: row.id,
+          status: row.status,
+          version: row.version,
+          updatedAt: row.updatedAt.toISOString(),
+          authControlEpoch: row.authControlEpoch,
+          authControlActorId: row.authControlActorId,
+          authControlTokenHash: row.authControlTokenHash,
+          authControlExpiresAt: row.authControlExpiresAt?.toISOString() ?? null,
+          authControlPageId: row.authControlPageId,
+          ownerWorkerId: row.ownerWorkerId,
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id))
+    }
+    const before = await fingerprint()
+    expect(before.length).toBeGreaterThan(0)
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `ah03-${newId()}`,
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const queued = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    expect(await findAuthWaitLeaseForRun(handle.db, queued.detail.id)).toBeNull()
+    await requestRunCancel(handle.db, queued.detail.id, { id: actorId })
+    expect((await getRun(handle.db, queued.detail.id)).status).toBe('CANCELLED')
+    expect(await fingerprint()).toEqual(before)
+  })
+
   it('取消等待认证的 Run 同事务释放占用及控制权，迟到完成不能复活 Run', async () => {
     const { request, session } = await manualRecovery()
     await requestRunCancel(handle.db, request.runId, { id: actorId })
     expect((await getRun(handle.db, request.runId)).status).toBe('CANCELLED')
     expect(await findAuthWaitLeaseForRun(handle.db, request.runId)).toBeNull()
     expect(await getSessionById(handle.db, session.id)).toMatchObject({
-      authHoldRunId: null,
       authControlTokenHash: null,
       authControlActorId: null,
     })

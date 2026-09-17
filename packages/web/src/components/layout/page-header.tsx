@@ -5,6 +5,7 @@ type PageHeaderProps = {
   title: string
   description?: ReactNode
   actions?: ReactNode
+  parent?: ReactNode
   className?: string
 }
 
@@ -12,6 +13,7 @@ export function PageHeader({
   title,
   description,
   actions,
+  parent,
   className,
 }: PageHeaderProps) {
   return (
@@ -22,6 +24,9 @@ export function PageHeader({
       )}
     >
       <div className='min-w-0 space-y-1'>
+        {parent ? (
+          <div className='text-small text-muted-foreground'>{parent}</div>
+        ) : null}
         <h1 className='text-page font-semibold break-words'>{title}</h1>
         {description ? (
           <p className='max-w-[72ch] text-body text-muted-foreground'>

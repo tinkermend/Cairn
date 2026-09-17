@@ -18,7 +18,6 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { EmptyState } from '@/components/empty-state'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -75,26 +74,16 @@ export function WorkerDetailPage() {
 
   return (
     <>
-      <AppHeader
-        fixed
-        leading={
-          <span className='me-auto text-small text-muted-foreground'>
-            治理 <span className='mx-2'>/</span> 执行节点
-          </span>
-        }
-      />
       <Main className='flex min-w-0 flex-1 flex-col gap-6'>
         <PageHeader
+          parent={
+            <Link to='/workers' className='inline-flex items-center gap-1.5 hover:text-link'>
+              <ArrowLeft className='size-4' />
+              返回列表
+            </Link>
+          }
           title={workerId}
           description={query.data ? `截至 ${formatAsOf(query.data.asOf)}` : '查看节点占用与可处置残留。'}
-          actions={
-            <Button variant='outline' asChild>
-              <Link to='/workers'>
-                <ArrowLeft />
-                返回列表
-              </Link>
-            </Button>
-          }
         />
         {query.isPending ? (
           <PageSkeleton />
@@ -126,6 +115,9 @@ export function WorkerDetailPage() {
                   {MISMATCH_LABELS[worker.handleSample.mismatchState]}
                 </StatusBadge>
               </div>
+              <p className='mt-3 text-label text-muted-foreground'>
+                策略保活不占人工保留配额，但占会话容量。容量不足时先驱逐空闲会话。
+              </p>
               <dl className='mt-4 grid gap-4 sm:grid-cols-2 text-small'>
                 <div>
                   <dt className='text-label text-muted-foreground'>心跳时间</dt>
@@ -142,6 +134,10 @@ export function WorkerDetailPage() {
                   <dd className='mt-1 tabular-nums'>
                     {worker.counts.holding} / {worker.counts.waitingForAuth} / {worker.counts.expiredLeaseResidue}
                   </dd>
+                </div>
+                <div>
+                  <dt className='text-label text-muted-foreground'>会话容量</dt>
+                  <dd className='mt-1 tabular-nums'>{worker.maxSessions}</dd>
                 </div>
                 {worker.internalEndpoint ? (
                   <div>

@@ -31,8 +31,10 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     startedAt: null,
     finishedAt: null,
     evidenceStatus: 'PENDING',
+    outcomeStatus: 'NOT_EVALUATED',
     lease: null,
     debugMode: 'runThrough',
+    outcomeResults: [],
     placement: runPlacement({
       state: 'not_applicable',
       sessionId: null,

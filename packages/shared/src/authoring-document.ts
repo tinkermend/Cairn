@@ -4,6 +4,7 @@ import {
   moduleExecutionModeSchema,
   type ModuleExecutionMode,
 } from './action-module-vocabulary.js'
+import { outcomeContractSchema, type OutcomeContract } from './outcome.js'
 import { outputFieldNameSchema } from './output-schema.js'
 import type { ScenarioDocument } from './scenario.js'
 import {
@@ -56,6 +57,8 @@ export const authoringStepNodeSchema = z.strictObject({
       invocationId: entityIdSchema,
     })
     .optional(),
+  /** 挂载在该步骤上的成功条件契约 */
+  outcomes: z.array(outcomeContractSchema).optional(),
 })
 export type AuthoringStepNode = z.infer<typeof authoringStepNodeSchema>
 
@@ -155,6 +158,7 @@ export const scenarioAuthoringDocumentV2Schema = z
     schemaVersion: runtimeSchemaVersionSchema.default(RUNTIME_SCHEMA_VERSION),
     inputs: z.array(scenarioInputDeclSchema).max(64).default([]),
     nodes: z.array(authoringNodeSchema).min(1).max(MAX_AUTHORING_NODES),
+    scenarioOutcomes: z.array(outcomeContractSchema).optional(),
   })
   .superRefine((document, ctx) => {
     const inputKeys = new Set<string>()

@@ -3,10 +3,8 @@ import {
   MAP_ASSETS_PROTOCOL,
   MAP_IDENTITY_RULE_VERSION,
   canonicalJson,
-  deriveMapEvidenceAvailability,
   mapConditionSnapshotSchema,
   mapDescriptorFeaturesSchema,
-  mapAssetRefSchema,
   mapQueryViewSchema,
   mapReleaseManifestSchema,
   mapReleaseSchema,
@@ -28,7 +26,13 @@ import {
   mapSealConflict,
   mapTargetMismatch,
 } from './errors.js'
-import { loadOverlays, resolveAssetOverlay } from './view.js'
+import {
+  countMatchCandidates,
+  loadHydratedViewAssets,
+  matchViewOverflow,
+  toQueryViewAsset,
+} from './query-read.js'
+import { loadOverlays, resolveAssetOverlay, type ResolvedMapView } from './view.js'
 import { mapProjectionTestHooks } from './projections.js'
 
 export async function sealMapReleaseTx(tx: Db, input: MapSealReleaseInput): Promise<MapRelease> {
@@ -208,44 +212,46 @@ export async function getMapRelease(
   })
 }
 
-export async function loadMapQueryView(db: Db, request: MapQueryRequest): Promise<MapQueryView> {
+export async function loadMapQueryView(
+  db: Db,
+  request: MapQueryRequest,
+  extras: { routeTemplate?: string } = {},
+): Promise<MapQueryView> {
   if (request.view.kind === 'projection' && 'releaseId' in request.view) mapQueryViewConflict()
-  const { mapPages, mapProjectionAssets, mapProjections, mapReleaseItems, mapReleases } = schemaFor(db)
+  const { mapProjections, mapReleases } = schemaFor(db)
+  const filters = {
+    assetRef: request.assetRef,
+    routeTemplate: extras.routeTemplate,
+    clues: request.clues,
+  }
   if (request.view.kind === 'release') {
     const [release] = await db.select().from(mapReleases).where(eq(mapReleases.id, request.view.releaseId)).limit(1)
     if (!release) mapReleaseNotFound()
     if (release.targetId !== request.targetId) mapTargetMismatch()
     if (release.manifestDigest !== request.view.manifestDigest) mapReleaseNotFound()
-    const manifest = mapReleaseManifestSchema.parse(release.manifest)
-    const items = manifest.items
+    const view: ResolvedMapView = {
+      kind: 'release',
+      targetId: release.targetId,
+      releaseId: release.id,
+      manifestDigest: release.manifestDigest,
+      cursor: 0,
+      revision: 0,
+      identityRevision:
+        release.manifest && typeof release.manifest === 'object' && 'identityRevision' in release.manifest
+          ? Number(release.manifest.identityRevision)
+          : 0,
+      sourceWatermark: release.sourceWatermark,
+      policyVersion: release.policyVersion,
+    }
+    const count = await countMatchCandidates(db, view, filters)
+    const overflow = matchViewOverflow(count)
+    const assets = overflow ? [] : await loadHydratedViewAssets(db, view, filters)
     return mapQueryViewSchema.parse({
       targetId: release.targetId,
       viewRef: { kind: 'release', releaseId: release.id, manifestDigest: release.manifestDigest },
-      identityRevision: release.manifest && typeof release.manifest === 'object' && 'identityRevision' in release.manifest
-        ? Number(release.manifest.identityRevision)
-        : 0,
-      assets: items.map((item) => ({
-        assetRef: mapAssetRefSchema.parse({
-          targetId: release.targetId,
-          pageId: item.pageId ?? undefined,
-          objectId: item.objectId ?? undefined,
-          implementationKey: item.implementationKey ?? undefined,
-          descriptorVersion: item.descriptorVersion ?? undefined,
-        }),
-        assetRefKey: item.assetRefKey,
-        lifecycle: item.lifecycle,
-        importance: 0,
-        executable: item.executable,
-        rejectReasons: [],
-        dimensions: item.dimensions ?? [],
-        lastVerifiedAt: item.lastVerifiedAt,
-        sampleCount: item.sampleCount ?? 0,
-        changeCount: item.changeCount ?? 0,
-        condition: item.condition,
-        features: item.features,
-        routeTemplate: item.routeTemplate,
-        evidenceAvailability: 'available',
-      })),
+      identityRevision: view.identityRevision,
+      candidateOverflow: overflow || undefined,
+      assets: assets.map(toQueryViewAsset),
     })
   }
   const [projection] = await db
@@ -255,15 +261,21 @@ export async function loadMapQueryView(db: Db, request: MapQueryRequest): Promis
     .limit(1)
   if (!projection) mapProjectionNotFound()
   if (projection.targetId !== request.targetId) mapTargetMismatch()
-  const assets = await db
-    .select()
-    .from(mapProjectionAssets)
-    .where(eq(mapProjectionAssets.projectionId, projection.id))
-  const pages = await db.select().from(mapPages).where(eq(mapPages.targetId, projection.targetId))
-  const pageById = new Map(pages.map((page) => [page.id, page]))
-  const { mapObjectDescriptors } = schemaFor(db)
-  const descriptors = await db.select().from(mapObjectDescriptors).where(eq(mapObjectDescriptors.targetId, projection.targetId))
-  const overlays = await loadOverlays(db, projection.targetId)
+  const view: ResolvedMapView = {
+    kind: 'projection',
+    targetId: projection.targetId,
+    projectionId: projection.id,
+    cursor: projection.cursor,
+    revision: projection.revision,
+    identityRevision: projection.identityRevision,
+    sourceWatermark: projection.sourceWatermark ?? projection.cursor,
+    policyVersion: projection.policyVersion,
+    status: projection.status,
+    rebuildCompleteness: projection.rebuildCompleteness,
+  }
+  const count = await countMatchCandidates(db, view, filters)
+  const overflow = matchViewOverflow(count)
+  const assets = overflow ? [] : await loadHydratedViewAssets(db, view, filters)
   return mapQueryViewSchema.parse({
     targetId: projection.targetId,
     viewRef: {
@@ -273,30 +285,7 @@ export async function loadMapQueryView(db: Db, request: MapQueryRequest): Promis
       revision: projection.revision,
     },
     identityRevision: projection.identityRevision,
-    assets: assets.map((item) => {
-      const descriptor = descriptors.find(row => row.objectId === item.objectId && row.implementationKey === item.implementationKey && row.descriptorVersion === item.descriptorVersion)
-      const overlay = resolveAssetOverlay(overlays, { targetId: projection.targetId, pageId: item.pageId ?? undefined, objectId: item.objectId ?? undefined, implementationKey: item.implementationKey ?? undefined, descriptorVersion: item.descriptorVersion ?? undefined })
-      return ({
-      assetRef: mapAssetRefSchema.parse({
-        targetId: projection.targetId,
-        pageId: item.pageId ?? undefined,
-        objectId: item.objectId ?? undefined,
-        implementationKey: item.implementationKey ?? undefined,
-        descriptorVersion: item.descriptorVersion ?? undefined,
-      }),
-      assetRefKey: item.assetRefKey,
-      lifecycle: overlay ?? item.lifecycle,
-      importance: item.importance,
-      executable: overlay !== 'RETIRED' && item.executable === 1,
-      condition: descriptor ? mapConditionSnapshotSchema.parse(descriptor.conditionSnapshot) : undefined,
-      features: descriptor ? mapDescriptorFeaturesSchema.parse(descriptor.features) : undefined,
-      rejectReasons: item.rejectReasons,
-      dimensions: item.dimensions,
-      lastVerifiedAt: item.lastVerifiedAt ? item.lastVerifiedAt.toISOString() : undefined,
-      sampleCount: item.sampleCount,
-      changeCount: item.changeCount,
-      routeTemplate: pageById.get(item.pageId ?? '')?.routeTemplate,
-      evidenceAvailability: deriveMapEvidenceAvailability({ sealed: false, projectionStatus: projection.status, rebuildCompleteness: projection.rebuildCompleteness, lastVerifiedAt: item.lastVerifiedAt?.toISOString(), changeCount: item.changeCount, hasDimensions: item.dimensions.length > 0 }),
-    })}),
+    candidateOverflow: overflow || undefined,
+    assets: assets.map(toQueryViewAsset),
   })
 }

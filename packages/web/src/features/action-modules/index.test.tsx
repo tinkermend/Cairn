@@ -37,10 +37,6 @@ vi.mock('@/hooks/use-permissions', () => ({
 vi.mock('@/components/rbac/can', () => ({
   Can: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
-vi.mock('@/components/layout/app-header', () => ({
-  AppHeader: () => null,
-}))
-
 const dummyList: ModuleListResponse = {
   items: [
     {

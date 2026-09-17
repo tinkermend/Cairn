@@ -292,4 +292,52 @@ describe.each(DRIVERS)('%s 有界探索账本', { timeout: 60_000 }, (driver) =>
     expect(created.job.slices).toHaveLength(1)
     await disableFactory()
   })
+
+  it('LEGACY 已登录会话可以创建探索作业', async () => {
+    const { targetId, accountId } = await freshTarget()
+    await enableFactory()
+    const explore = await enableExplore(targetId)
+    const entry = await addEntry(targetId)
+    const worker = await readyWorker(`${targetId.slice(0, 6)}L`, [MAP_JOBS_PROTOCOL, MAP_EXPLORE_PROTOCOL])
+    const session = await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      ownerWorkerId: worker.workerId,
+      ownerWorkerInstanceId: worker.instanceId,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+    })
+    await setSessionProbe(handle.db, {
+      sessionId: session.id,
+      ownerWorkerId: worker.workerId,
+      ownerWorkerInstanceId: worker.instanceId,
+      health: 'HEALTHY',
+      authState: 'AUTHENTICATED',
+    })
+    const { browserSessions } = schemaFor(handle.db)
+    await handle.db.update(browserSessions).set({ observedTier: 'LEGACY' }).where(eq(browserSessions.id, session.id))
+    const created = await createMapJob(
+      handle.db,
+      targetId,
+      {
+        source: 'explore',
+        manualId: `legacy-${targetId}`.slice(0, 32),
+        expectedPolicyRevision: 0,
+        expectedExplorationRevision: explore.revision,
+        jobKind: 'map_explore',
+        targetAccountId: accountId,
+        entryId: entry.entryId,
+      },
+      actor(),
+      { steps: exploreSteps() },
+    )
+    expect(created.created).toBe(true)
+    expect(created.job.jobKind).toBe('map_explore')
+    await disableFactory()
+  })
 })

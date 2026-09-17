@@ -43,6 +43,18 @@ export class RbacService {
     return this.store.deleteRole(...args).catch(rethrowDomain)
   }
 
+  listRoleAccounts(...args: Parameters<RbacStore['listRoleAccounts']>) {
+    return this.store.listRoleAccounts(...args).catch(rethrowDomain)
+  }
+
+  addRoleAccounts(...args: Parameters<RbacStore['addRoleAccounts']>) {
+    return this.store.addRoleAccounts(...args).catch(rethrowDomain)
+  }
+
+  removeRoleAccounts(...args: Parameters<RbacStore['removeRoleAccounts']>) {
+    return this.store.removeRoleAccounts(...args).catch(rethrowDomain)
+  }
+
   listAccounts(...args: Parameters<RbacStore['listAccounts']>) {
     return this.store.listAccounts(...args).catch(rethrowDomain)
   }

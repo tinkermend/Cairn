@@ -49,6 +49,12 @@ describe('AI 端口边界', () => {
     expect(() => assertPageScope('https://evil.example/app', command)).toThrow(/不在允许范围/)
     expect(() => assertPageScope('https://shop.example/login', command)).toThrow(/认证页面/)
     expect(() => assertPageScope('https://shop.example/orders', command)).not.toThrow()
+    expect(() =>
+      assertPageScope('https://shop.example/admin', command, {
+        purposes: ['business_surface'],
+        rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow', pathPrefix: '/orders' }],
+      }),
+    ).toThrow(/不在允许范围/)
   })
 
   it('取消后有界等待，未落定则标 hung', async () => {
@@ -78,6 +84,8 @@ describe('AI 端口边界', () => {
     const sessionGrant = { sessionId: 's1', leaseId: 'l1', fencingToken: 1 } as unknown as SessionGrant
     const captureDecisions: boolean[] = []
     const manager = {
+      observeInRunAuth: async () => null,
+      markTransientPageState: () => undefined,
       withManagedPage: async (
         _grant: SessionGrant,
         _evidence: unknown,
@@ -204,6 +212,8 @@ describe('AI 端口边界', () => {
     let held = true
     const pages = [{ close: async () => undefined }]
     const manager = {
+      observeInRunAuth: async () => null,
+      markTransientPageState: () => undefined,
       guard: {
         assertHeld: () => {
           if (!held) throw new Error('revoked')

@@ -3,15 +3,16 @@ import { and, eq } from 'drizzle-orm'
 import { AUTH_CONTROL_TTL_SECONDS, authCheckpointSchema, computeContextVersion, canonicalJson, type AuthCheckpoint, type RunGrant } from '@cairn/shared'
 import { recordAudit, type AuditActor } from '../audit/record.js'
 import { assertSessionAccountActive, assertSessionActorPermission } from './access.js'
-import { appendSessionEvent } from './maintenance.js'
+import { appendSessionEvent } from './session-events.js'
 import type { Db } from '../client.js'
 import { lockRunRow } from '../leases/leases.js'
 import { clockNow, locked, schemaFor, updateRows } from '../native.js'
 import { appendRunEvents } from '../observe/events.js'
 import { conflict, notFound } from '../runs/errors.js'
 import type { BrowserSessionRow } from '../records.js'
+import type { SessionLeaseRow } from '../records.js'
 import { findAuthWaitLeaseForOperation, findAuthWaitLeaseForRun, getSessionOperation, transitionSessionUse, lockWorkerRow } from './occupancy.js'
-import type { SessionRecord } from './sessions.js'
+import { getSessionById, type SessionRecord } from './sessions.js'
 
 export function hashAuthControlToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
@@ -29,20 +30,7 @@ export async function lockSessionRow(tx: Db, sessionId: string): Promise<Browser
   return row ?? null
 }
 
-export function isBoundAuthHold(
-  session: Pick<
-    SessionRecord,
-    'authHoldWorkerId' | 'authHoldExpiresAt' | 'authHoldRunId' | 'authHoldSessionGeneration' | 'authHoldWorkerInstanceId'
-  >,
-): boolean {
-  return Boolean(
-    session.authHoldWorkerId &&
-      session.authHoldExpiresAt &&
-      session.authHoldRunId &&
-      session.authHoldSessionGeneration &&
-      session.authHoldWorkerInstanceId,
-  )
-}
+export { authHoldFromLease } from './occupancy-read.js'
 
 async function findOwnerWait(db: Db, ownerId: string) {
   return (await findAuthWaitLeaseForOperation(db, ownerId)) ?? (await findAuthWaitLeaseForRun(db, ownerId))
@@ -89,7 +77,6 @@ async function requireAuthWaitLease(
     (await findAuthWaitLeaseForRun(db, input.runId)) ?? (await findAuthWaitLeaseForOperation(db, input.runId))
   const now = (await clockNow(db)).getTime()
   if (!lease || lease.sessionId !== input.sessionId || lease.status !== 'ACTIVE' || lease.expiresAt.getTime() <= now || (lease.waitDeadlineAt && lease.waitDeadlineAt.getTime() <= now)) {
-    console.log('requireAuthWaitLease failed in resume:', { lease, sessionId: input.sessionId, now, expiresAt: lease?.expiresAt?.getTime(), waitDeadlineAt: lease?.waitDeadlineAt?.getTime() })
     throw forbiddenHold()
   }
   return lease
@@ -414,11 +401,6 @@ export async function resumeRunAfterAuth(
       tx,
       browserSessions,
       {
-        authHoldWorkerId: null,
-        authHoldExpiresAt: null,
-        authHoldRunId: null,
-        authHoldSessionGeneration: null,
-        authHoldWorkerInstanceId: null,
         authControlActorId: null,
         authControlTokenHash: null,
         authControlExpiresAt: null,
@@ -464,64 +446,15 @@ export async function resumeRunAfterAuth(
   })
 }
 
-export async function findSessionByAuthHoldRun(db: Db, runId: string): Promise<SessionRecord | null> {
+export async function findSessionByAuthWaitRun(
+  db: Db,
+  runId: string,
+): Promise<{ session: SessionRecord; lease: SessionLeaseRow } | null> {
   const lease = await findAuthWaitLeaseForRun(db, runId)
   if (!lease) return null
-  const { browserSessions } = schemaFor(db)
-  const [row] = await db
-    .select()
-    .from(browserSessions)
-    .where(and(eq(browserSessions.id, lease.sessionId), eq(browserSessions.status, 'OPEN')))
-    .limit(1)
-  return row
-    ? {
-        id: row.id,
-        targetId: row.targetId,
-        targetAccountId: row.targetAccountId,
-        status: row.status,
-        health: row.health,
-        authState: row.authState,
-        ownerWorkerId: row.ownerWorkerId,
-        ownerWorkerInstanceId: row.ownerWorkerInstanceId,
-        generation: row.generation,
-        fencingToken: row.fencingToken,
-        version: row.version,
-        profileKey: row.profileKey,
-        reusePolicy: row.reusePolicy,
-        idleTtlSeconds: row.idleTtlSeconds,
-        maxLifetimeSeconds: row.maxLifetimeSeconds,
-        expiresAt: row.expiresAt,
-        lastUsedAt: row.lastUsedAt,
-        authHoldWorkerId: row.authHoldWorkerId,
-        authHoldExpiresAt: row.authHoldExpiresAt,
-        authHoldRunId: row.authHoldRunId,
-        authHoldSessionGeneration: row.authHoldSessionGeneration,
-        authHoldWorkerInstanceId: row.authHoldWorkerInstanceId,
-        authControlEpoch: row.authControlEpoch,
-        authControlActorId: row.authControlActorId,
-        authControlTokenHash: row.authControlTokenHash,
-        authControlExpiresAt: row.authControlExpiresAt,
-        authControlPageId: row.authControlPageId,
-        lastAuthCheckedAt: row.lastAuthCheckedAt,
-        lastAuthSuccessAt: row.lastAuthSuccessAt,
-        lastAuthGeneration: row.lastAuthGeneration,
-        lastExpectedIdentity: row.lastExpectedIdentity,
-        authValidUntil: row.authValidUntil,
-        authExpirySource: row.authExpirySource,
-        lastAuthError: row.lastAuthError,
-        authProfileRevision: row.authProfileRevision,
-        identityState: row.identityState,
-        identityVerifiedAt: row.identityVerifiedAt,
-        observedTier: row.observedTier,
-        closeReason: row.closeReason,
-        closedAt: row.closedAt,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-        retainUntil: row.retainUntil ?? null,
-        nextAuthCheckAt: row.nextAuthCheckAt ?? null,
-        predecessorSessionId: row.predecessorSessionId ?? null,
-      }
-    : null
+  const session = await getSessionById(db, lease.sessionId)
+  if (!session || session.status !== 'OPEN') return null
+  return { session, lease }
 }
 
 function forbiddenHold(): never {

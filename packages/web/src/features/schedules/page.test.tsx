@@ -12,7 +12,6 @@ const mocks = vi.hoisted(() => ({
   fetchTargetAccounts: vi.fn(),
 }))
 
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@/lib/schedules-api', () => ({
   fetchSchedules: mocks.fetchSchedules,
 }))

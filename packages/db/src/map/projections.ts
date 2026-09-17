@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import {
   MAP_IDENTITY_RULE_VERSION,
   canonicalJson,
@@ -149,24 +149,152 @@ export async function listMapProjectionWork(db: Db, input: { limit?: number } = 
     .from(mapProjections)
     .leftJoin(mapProjectionHeads, eq(mapProjectionHeads.targetId, mapProjections.targetId))
     .leftJoin(mapIngestHeads, eq(mapIngestHeads.targetId, mapProjections.targetId))
-    .where(sql`${mapProjections.status} in ('active','shadow')`)
-  const work = rows
-    .filter((row) => {
-      const committed = Number(row.committedSeq ?? 0)
-      if (row.status === 'shadow') return row.cursor < Number(row.sourceWatermark ?? 0) || row.cursor === 0
-      return row.projectionId === row.currentProjectionId && row.cursor < committed
-    })
-    .slice(0, limit)
-    .map((row) => ({
-      targetId: row.targetId,
-      projectionId: row.projectionId,
-      status: row.status,
-      cursor: row.cursor,
-      revision: row.revision,
-      committedSeq: Number(row.committedSeq ?? 0),
-      sourceWatermark: row.sourceWatermark ?? undefined,
-    }))
-  return work
+    .where(
+      or(
+        and(
+          eq(mapProjections.status, 'shadow'),
+          or(sql`${mapProjections.cursor} < coalesce(${mapProjections.sourceWatermark}, 0)`, eq(mapProjections.cursor, 0)),
+        ),
+        and(
+          eq(mapProjections.status, 'active'),
+          sql`${mapProjections.id} = ${mapProjectionHeads.currentProjectionId}`,
+          sql`${mapProjections.cursor} < coalesce(${mapIngestHeads.committedSeq}, 0)`,
+        ),
+      ),
+    )
+    .limit(limit)
+  return rows.map((row) => ({
+    targetId: row.targetId,
+    projectionId: row.projectionId,
+    status: row.status,
+    cursor: row.cursor,
+    revision: row.revision,
+    committedSeq: Number(row.committedSeq ?? 0),
+    sourceWatermark: row.sourceWatermark ?? undefined,
+  }))
+}
+
+function hydrateProjectionState(input: {
+  projection: {
+    id: string
+    targetId: string
+    generation: number
+    status: MapProjectionState['status']
+    cursor: number
+    revision: number
+    identityRevision: number
+    sourceWatermark: number | null
+    rebuildCompleteness: MapProjectionState['rebuildCompleteness'] | null
+  }
+  pages: Array<{ id: string; allocationKey: string; kind: MapProjectionState['pages'][number]['kind']; routeTemplate: string }>
+  objects: Array<{ id: string; allocationKey: string; pageId: string }>
+  implementations: Array<{
+    objectId: string
+    implementationKey: string
+    conditionSnapshot: unknown
+    currentDescriptorVersion: number | null
+  }>
+  descriptors: Array<{
+    objectId: string
+    implementationKey: string
+    descriptorVersion: number
+    features: unknown
+    conditionSnapshot: unknown
+    contentDigest: string
+  }>
+  assignments: Array<{
+    observationId: string
+    pageId: string | null
+    objectId: string | null
+    assignmentRevision: number
+  }>
+  assets: Array<{
+    assetRefKey: string
+    pageId: string | null
+    objectId: string | null
+    implementationKey: string | null
+    descriptorVersion: number | null
+    lifecycle: MapProjectionState['assets'][number]['lifecycle']
+    importance: number
+    executable: number
+    rejectReasons: string[]
+    dimensions: unknown[]
+    sampleCount: number
+    changeCount: number
+    lastVerifiedAt: Date | null
+  }>
+  aliases: MapProjectionState['aliases']
+}): MapProjectionState {
+  const pageById = new Map(input.pages.map((page) => [page.id, page]))
+  const objectById = new Map(input.objects.map((object) => [object.id, object]))
+  const latestAssignments = new Map<string, (typeof input.assignments)[number]>()
+  for (const row of input.assignments) {
+    const current = latestAssignments.get(row.observationId)
+    if (!current || current.assignmentRevision < row.assignmentRevision) latestAssignments.set(row.observationId, row)
+  }
+  return mapProjectionStateSchema.parse({
+    targetId: input.projection.targetId,
+    projectionId: input.projection.id,
+    generation: input.projection.generation,
+    status: input.projection.status,
+    cursor: input.projection.cursor,
+    revision: input.projection.revision,
+    identityRevision: input.projection.identityRevision,
+    sourceWatermark: input.projection.sourceWatermark ?? undefined,
+    rebuildCompleteness: input.projection.rebuildCompleteness ?? undefined,
+    pages: input.pages.map((page) => ({
+      id: page.id,
+      allocationKey: page.allocationKey,
+      kind: page.kind,
+      routeTemplate: page.routeTemplate,
+    })),
+    objects: input.objects.map((object) => ({
+      id: object.id,
+      allocationKey: object.allocationKey,
+      pageId: object.pageId,
+      pageAllocationKey: pageById.get(object.pageId)?.allocationKey ?? object.allocationKey,
+      regionKey: object.allocationKey.split(':')[3],
+      stableToken: object.allocationKey.split(':')[4],
+    })),
+    implementations: input.implementations.map((item) => ({
+      objectId: item.objectId,
+      objectAllocationKey: objectById.get(item.objectId)?.allocationKey ?? item.implementationKey,
+      implementationKey: item.implementationKey,
+      condition: mapConditionSnapshotSchema.parse(item.conditionSnapshot),
+      currentDescriptorVersion: item.currentDescriptorVersion ?? undefined,
+      changeCount: 0,
+    })),
+    descriptors: input.descriptors.map((item) => ({
+      objectId: item.objectId,
+      implementationKey: item.implementationKey,
+      version: item.descriptorVersion,
+      features: mapDescriptorFeaturesSchema.parse(item.features),
+      condition: mapConditionSnapshotSchema.parse(item.conditionSnapshot),
+      digest: item.contentDigest,
+    })),
+    assignments: [...latestAssignments.values()].map((item) => ({
+      observationId: item.observationId,
+      pageId: item.pageId ?? undefined,
+      objectId: item.objectId ?? undefined,
+      assignmentRevision: item.assignmentRevision,
+    })),
+    assets: input.assets.map((item) => ({
+      assetRefKey: item.assetRefKey,
+      pageId: item.pageId ?? undefined,
+      objectId: item.objectId ?? undefined,
+      implementationKey: item.implementationKey ?? undefined,
+      descriptorVersion: item.descriptorVersion ?? undefined,
+      lifecycle: item.lifecycle,
+      importance: item.importance,
+      executable: item.executable === 1,
+      rejectReasons: item.rejectReasons,
+      dimensions: item.dimensions.map((dimension) => mapDimensionStatSchema.parse(dimension)),
+      sampleCount: item.sampleCount,
+      changeCount: item.changeCount,
+      lastVerifiedAt: item.lastVerifiedAt ? item.lastVerifiedAt.toISOString() : undefined,
+    })),
+    aliases: input.aliases,
+  })
 }
 
 export async function loadMapProjectionState(db: Db, projectionId: string): Promise<MapProjectionState> {
@@ -189,74 +317,87 @@ export async function loadMapProjectionState(db: Db, projectionId: string): Prom
     db.select().from(mapIdentityAssignments).where(eq(mapIdentityAssignments.projectionId, projectionId)),
     db.select().from(mapProjectionAssets).where(eq(mapProjectionAssets.projectionId, projectionId)),
   ])
-  const pageById = new Map(pages.map((page) => [page.id, page]))
+  return hydrateProjectionState({
+    projection,
+    pages,
+    objects,
+    implementations,
+    descriptors,
+    assignments,
+    assets,
+    aliases: await loadIdentityAliases(db, projection.targetId, projection.identityRevision),
+  })
+}
+
+export async function loadMapProjectionWorkingSet(
+  db: Db,
+  input: {
+    projectionId: string
+    pageAllocationKeys?: readonly string[]
+    objectAllocationKeys?: readonly string[]
+    observationIds?: readonly string[]
+  },
+): Promise<MapProjectionState> {
+  const { mapIdentityAssignments, mapObjects, mapPages, mapProjectionAssets, mapProjections } = schemaFor(db)
+  const [projection] = await db.select().from(mapProjections).where(eq(mapProjections.id, input.projectionId)).limit(1)
+  if (!projection) mapProjectionNotFound()
   const aliases = await loadIdentityAliases(db, projection.targetId, projection.identityRevision)
-  const latestAssignments = new Map<string, (typeof assignments)[number]>()
-  for (const row of assignments) {
-    const current = latestAssignments.get(row.observationId)
-    if (!current || current.assignmentRevision < row.assignmentRevision) latestAssignments.set(row.observationId, row)
+  const pageKeys = [...new Set(input.pageAllocationKeys ?? [])]
+  const objectKeys = new Set(input.objectAllocationKeys ?? [])
+  for (const alias of aliases) {
+    if (alias.oldAllocationKey && objectKeys.has(alias.oldAllocationKey) && alias.newAllocationKey) {
+      objectKeys.add(alias.newAllocationKey)
+    }
+    if (alias.newAllocationKey && objectKeys.has(alias.newAllocationKey) && alias.oldAllocationKey) {
+      objectKeys.add(alias.oldAllocationKey)
+    }
   }
-  return mapProjectionStateSchema.parse({
-    targetId: projection.targetId,
-    projectionId: projection.id,
-    generation: projection.generation,
-    status: projection.status,
-    cursor: projection.cursor,
-    revision: projection.revision,
-    identityRevision: projection.identityRevision,
-    sourceWatermark: projection.sourceWatermark ?? undefined,
-    rebuildCompleteness: projection.rebuildCompleteness ?? undefined,
-    pages: pages.map((page) => ({
-      id: page.id,
-      allocationKey: page.allocationKey,
-      kind: page.kind,
-      routeTemplate: page.routeTemplate,
-    })),
-    objects: objects.map((object) => ({
-      id: object.id,
-      allocationKey: object.allocationKey,
-      pageId: object.pageId,
-      pageAllocationKey: pageById.get(object.pageId)?.allocationKey ?? object.allocationKey,
-      regionKey: object.allocationKey.split(':')[3],
-      stableToken: object.allocationKey.split(':')[4],
-    })),
-    implementations: implementations.map((item) => ({
-      objectId: item.objectId,
-      objectAllocationKey: objects.find((object) => object.id === item.objectId)?.allocationKey ?? item.implementationKey,
-      implementationKey: item.implementationKey,
-      condition: mapConditionSnapshotSchema.parse(item.conditionSnapshot),
-      currentDescriptorVersion: item.currentDescriptorVersion ?? undefined,
-      changeCount: 0,
-    })),
-    descriptors: descriptors.map((item) => ({
-      objectId: item.objectId,
-      implementationKey: item.implementationKey,
-      version: item.descriptorVersion,
-      features: mapDescriptorFeaturesSchema.parse(item.features),
-      condition: mapConditionSnapshotSchema.parse(item.conditionSnapshot),
-      digest: item.contentDigest,
-    })),
-    assignments: [...latestAssignments.values()].map((item) => ({
-      observationId: item.observationId,
-      pageId: item.pageId ?? undefined,
-      objectId: item.objectId ?? undefined,
-      assignmentRevision: item.assignmentRevision,
-    })),
-    assets: assets.map((item) => ({
-      assetRefKey: item.assetRefKey,
-      pageId: item.pageId ?? undefined,
-      objectId: item.objectId ?? undefined,
-      implementationKey: item.implementationKey ?? undefined,
-      descriptorVersion: item.descriptorVersion ?? undefined,
-      lifecycle: item.lifecycle,
-      importance: item.importance,
-      executable: item.executable === 1,
-      rejectReasons: item.rejectReasons,
-      dimensions: item.dimensions.map((dimension) => mapDimensionStatSchema.parse(dimension)),
-      sampleCount: item.sampleCount,
-      changeCount: item.changeCount,
-      lastVerifiedAt: item.lastVerifiedAt ? item.lastVerifiedAt.toISOString() : undefined,
-    })),
+  const pages = pageKeys.length
+    ? await db
+        .select()
+        .from(mapPages)
+        .where(and(eq(mapPages.targetId, projection.targetId), inArray(mapPages.allocationKey, pageKeys)))
+    : []
+  const pageIds = pages.map((page) => page.id)
+  const objectKeyList = [...objectKeys]
+  const objectScope = [
+    ...(objectKeyList.length ? [inArray(mapObjects.allocationKey, objectKeyList)] : []),
+    ...(pageIds.length ? [inArray(mapObjects.pageId, pageIds)] : []),
+  ]
+  const objects = objectScope.length
+    ? await db.select().from(mapObjects).where(and(eq(mapObjects.targetId, projection.targetId), or(...objectScope)))
+    : []
+  const objectIds = objects.map((object) => object.id)
+  const assetScope = [
+    ...(pageIds.length ? [inArray(mapProjectionAssets.pageId, pageIds)] : []),
+    ...(objectIds.length ? [inArray(mapProjectionAssets.objectId, objectIds)] : []),
+  ]
+  const assets = assetScope.length
+    ? await db
+        .select()
+        .from(mapProjectionAssets)
+        .where(and(eq(mapProjectionAssets.projectionId, projection.id), or(...assetScope)))
+    : []
+  const observationIds = [...new Set(input.observationIds ?? [])]
+  const assignments = observationIds.length
+    ? await db
+        .select()
+        .from(mapIdentityAssignments)
+        .where(
+          and(
+            eq(mapIdentityAssignments.projectionId, projection.id),
+            inArray(mapIdentityAssignments.observationId, observationIds),
+          ),
+        )
+    : []
+  return hydrateProjectionState({
+    projection,
+    pages,
+    objects,
+    implementations: [],
+    descriptors: [],
+    assignments,
+    assets,
     aliases,
   })
 }
@@ -455,8 +596,15 @@ export async function commitMapProjectionBatch(
       }
     }
     for (const asset of plan.assets) {
-      const pageId = asset.pageAllocationKey ? pages.get(asset.pageAllocationKey) : undefined
-      const objectId = asset.objectAllocationKey ? objects.get(asset.objectAllocationKey) : undefined
+      const pageId = asset.pageAllocationKey
+        ? pages.get(asset.pageAllocationKey) ?? (await lookupPageId(tx, projection.targetId, asset.pageAllocationKey))
+        : undefined
+      if (asset.pageAllocationKey && pageId) pages.set(asset.pageAllocationKey, pageId)
+      const objectId = asset.objectAllocationKey
+        ? objects.get(asset.objectAllocationKey) ??
+          (await lookupObjectId(tx, projection.targetId, asset.objectAllocationKey))
+        : undefined
+      if (asset.objectAllocationKey && objectId) objects.set(asset.objectAllocationKey, objectId)
       const [impl] =
         objectId && asset.implementationKey
           ? await tx
@@ -563,6 +711,16 @@ async function lookupPageId(tx: Db, targetId: string, allocationKey: string): Pr
     .select()
     .from(mapPages)
     .where(and(eq(mapPages.targetId, targetId), eq(mapPages.allocationKey, allocationKey)))
+    .limit(1)
+  return row?.id
+}
+
+async function lookupObjectId(tx: Db, targetId: string, allocationKey: string): Promise<string | undefined> {
+  const { mapObjects } = schemaFor(tx)
+  const [row] = await tx
+    .select()
+    .from(mapObjects)
+    .where(and(eq(mapObjects.targetId, targetId), eq(mapObjects.allocationKey, allocationKey)))
     .limit(1)
   return row?.id
 }

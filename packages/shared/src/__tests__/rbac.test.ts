@@ -13,6 +13,8 @@ import {
   canExecuteRun,
   canTrialRun,
   previewCapabilities,
+  CAPABILITY_TREE_GROUPS,
+  getPermissionDependencies,
   WILDCARD_PERMISSION,
   AUDIT_ACTION_LABELS,
   AUDIT_ACTIONS,
@@ -362,3 +364,58 @@ describe('response schemas', () => {
     expect(() => roleListResponseSchema.parse({ items: [role], nextCursor: '' })).toThrow()
   })
 })
+
+describe('CAPABILITY_TREE_GROUPS & dependencies', () => {
+  it('能力树必须完整覆盖 PERMISSIONS 中的每一项，无重复无遗漏', () => {
+    const collected: string[] = []
+    for (const group of CAPABILITY_TREE_GROUPS) {
+      for (const mod of group.modules) {
+        for (const item of mod.items) {
+          collected.push(item.code)
+        }
+      }
+    }
+    expect(collected.sort()).toEqual([...PERMISSIONS].sort())
+  })
+
+  it('展示名只从 PERMISSION_LABELS 取，树里不得再抄一份 label', () => {
+    for (const group of CAPABILITY_TREE_GROUPS) {
+      for (const mod of group.modules) {
+        for (const item of mod.items) {
+          expect(Object.keys(item)).not.toContain('label')
+          expect(PERMISSION_LABELS[item.code]).toBeTruthy()
+        }
+      }
+    }
+  })
+
+  it('依赖项必须是合法的 PermissionCode，且不能自依赖', () => {
+    for (const group of CAPABILITY_TREE_GROUPS) {
+      for (const mod of group.modules) {
+        for (const item of mod.items) {
+          if (item.dependencies) {
+            for (const dep of item.dependencies) {
+              expect(isPermissionCode(dep)).toBe(true)
+              expect(dep).not.toBe(item.code)
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('getPermissionDependencies 正确递归解析依赖项', () => {
+    const runDeps = getPermissionDependencies('run:execute')
+    expect(runDeps).toContain('target:read')
+    expect(runDeps).toContain('workflow:read')
+
+    const sessionControlDeps = getPermissionDependencies('session:control')
+    expect(sessionControlDeps).toContain('run:execute')
+    expect(sessionControlDeps).toContain('target:read')
+    expect(sessionControlDeps).toContain('workflow:read')
+
+    const noDeps = getPermissionDependencies('target:read')
+    expect(noDeps).toHaveLength(0)
+  })
+})
+

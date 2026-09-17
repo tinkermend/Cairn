@@ -20,6 +20,7 @@
     "dev": "tsc -w --preserveWatchOutput -p tsconfig.build.json"
   },
   "dependencies": {
+    "@cairn/authoring": "workspace:*",
     "@cairn/shared": "workspace:*"
   },
   "devDependencies": {

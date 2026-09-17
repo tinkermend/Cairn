@@ -1,10 +1,11 @@
 import { createServer, type Server } from 'node:http'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { chromium, type Browser } from 'playwright'
+import { compileAccessScopeFromSnapshot } from '@cairn/shared'
 import { installTargetScope, targetScopeReady } from './target-scope'
 // Browser globals used only inside page.evaluate; do not add DOM globals to Worker production types.
 declare const document: {
-  createElement(tag: string): { src: string; onload: (() => void) | null }
+  createElement(tag: string): { src: string; onload: (() => void) | null; onerror: (() => void) | null }
   body: { append(node: unknown): void }
 }
 let browser: Browser, good: Server, bad: Server, origin: string, forbidden: string
@@ -110,6 +111,83 @@ it('an authorized cross-site iframe cannot escape scope via redirects after proc
     expect(page.frames().map((f) => f.url())).toContain(second + '/ok')
     await frame.goto(second + '/redirect').catch(() => {})
     expect(hits).toBe(0)
+  } finally {
+    await context.close()
+  }
+})
+
+it('PP07 同 origin 越权路径在出网前被拦', async () => {
+  const context = await browser.newContext({ serviceWorkers: 'block' })
+  try {
+    const page = await context.newPage()
+    await installTargetScope(context, {
+      purposes: ['business_surface'],
+      rules: [
+        { origin, purpose: 'business_surface', effect: 'allow', pathPrefix: '/ok' },
+        { origin, purpose: 'business_surface', effect: 'allow', pathPrefix: '/safe-redirect' },
+      ],
+    })
+    await page.goto(origin + '/safe-redirect')
+    expect(page.url()).toBe(origin + '/ok')
+    const blocked = await context.newPage()
+    await targetScopeReady(blocked)
+    await expect(blocked.goto(origin + '/redirect')).rejects.toThrow()
+    await blocked.close()
+    await page.goto(origin + '/ok')
+    await page.evaluate(
+      (url) =>
+        new Promise<void>((resolve) => {
+          const frame = document.createElement('iframe')
+          frame.src = url
+          const done = () => resolve()
+          frame.onload = done
+          frame.onerror = done
+          document.body.append(frame)
+          setTimeout(done, 1000)
+        }),
+      origin + '/redirect',
+    )
+    expect(hits).toBe(0)
+  } finally {
+    await context.close()
+  }
+})
+
+it('PP10 探索 allowlist 交集拒绝同 origin 的越权路径', async () => {
+  const context = await browser.newContext({ serviceWorkers: 'block' })
+  try {
+    const page = await context.newPage()
+    await installTargetScope(
+      context,
+      compileAccessScopeFromSnapshot({
+        accessPolicy: {
+          revision: 1,
+          digest: 'c'.repeat(64),
+          policy: {
+            schemaVersion: 1,
+            policyVersion: 1,
+            rules: [{ origin, purpose: 'business_surface', effect: 'allow' }],
+          },
+        },
+        mapJob: {
+          jobId: '00000000-0000-4000-8000-000000000001',
+          purpose: 'map_explore',
+          source: 'explore',
+        },
+        steps: [
+          { type: 'navigate', input: { url: `${origin}/` } },
+          { type: 'map_observe', input: { mode: 'allowlist', allowlist: [{ origin, pathPrefix: '/ok' }] } },
+        ],
+      }),
+    )
+    await page.goto(`${origin}/`)
+    expect(page.url()).toBe(`${origin}/`)
+    await page.goto(`${origin}/ok`)
+    expect(page.url()).toBe(`${origin}/ok`)
+    const blocked = await context.newPage()
+    await targetScopeReady(blocked)
+    await expect(blocked.goto(`${origin}/redirect`)).rejects.toThrow()
+    await blocked.close()
   } finally {
     await context.close()
   }

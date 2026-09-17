@@ -32,6 +32,7 @@ export function RecordingRenameDialog({
 
   useEffect(() => {
     if (recording) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setName(recording.name)
     }
   }, [recording])

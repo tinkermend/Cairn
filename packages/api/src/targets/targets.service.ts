@@ -60,6 +60,10 @@ export class TargetsService {
     return this.store.updateTarget(...args).catch(rethrowDomain)
   }
 
+  updateSessionPolicy(...args: Parameters<TargetsStore['updateSessionPolicy']>) {
+    return this.store.updateSessionPolicy(...args).catch(rethrowDomain)
+  }
+
   deleteTarget(...args: Parameters<TargetsStore['deleteTarget']>) {
     return this.store.deleteTarget(...args).catch(rethrowDomain)
   }

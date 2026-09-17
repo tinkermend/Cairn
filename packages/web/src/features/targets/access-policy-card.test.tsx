@@ -75,5 +75,23 @@ describe('目标授权卡片', () => {
         ]),
       }),
     )
+    expect(mocks.updateTargetAccessPolicy.mock.calls[0]?.[1].rules.at(-1)?.pathPrefix).toBeUndefined()
+  })
+
+  it('保存带 pathPrefix 的规则，空前缀不写回斜杠', async () => {
+    const screen = await renderCard()
+    await expect.element(page.getByText('整个 origin', { exact: true })).toBeVisible()
+    await screen.getByLabelText('Origin').fill('https://shop.example')
+    await screen.getByLabelText('可选 pathPrefix').fill('/app')
+    await screen.getByLabelText('理由').fill('收窄业务表面')
+    await screen.getByRole('button', { name: '保存授权' }).click()
+    expect(mocks.updateTargetAccessPolicy).toHaveBeenCalledWith(
+      TARGET_ID,
+      expect.objectContaining({
+        rules: expect.arrayContaining([
+          expect.objectContaining({ origin: 'https://shop.example', pathPrefix: '/app' }),
+        ]),
+      }),
+    )
   })
 })

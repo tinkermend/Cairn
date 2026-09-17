@@ -5,20 +5,25 @@ import {
 } from '@cairn/db'
 import {
   parseAiOutput,
+  urlAllowedByCompiledScope,
   type AiCommand,
   type AiExecutionConfig,
   type AiResult,
   type BrowserCommandEvidence,
+  type CompiledAccessScope,
   type ExecutionError,
   type RunGrant,
   type SessionGrant,
 } from '@cairn/shared'
 import { authGateClosedError, OBJECT_MISSING_REASONS, shouldCaptureEvidence } from '@cairn/shared'
 import type { Page } from 'playwright'
+import { installedCompiledScope } from '../browser/target-scope.js'
 import type { BrowserSessionManager } from '../browser/session-manager.js'
 import { attachObjectEvidence } from '../browser/port.js'
 import type { ObjectService } from '../objects/object.service.js'
+import { Logger } from '@nestjs/common'
 import { ActionGate } from './midscene/action-gate.js'
+import { emitAiModelCallLog } from './model-call-log.js'
 import {
   createFormalMidsceneAgent,
   midsceneModelConfig,
@@ -29,6 +34,8 @@ import type { OpenAiLike } from './midscene/model-client.js'
 import { AI_PORT, type AiPort } from '../engine/ports.js'
 
 export { AI_PORT }
+
+const aiLogger = new Logger('AiPort')
 
 export function createAiPort(input: {
   manager: BrowserSessionManager
@@ -45,7 +52,7 @@ export function createAiPort(input: {
         grant,
         evidence,
         async (page) => {
-          assertPageScope(page.url(), command)
+          assertPageScope(page.url(), command, installedCompiledScope(page.context()))
           const pagesBefore = new Set(page.context().pages())
           const apiKey = await input.resolveApiKey(evidence.config)
           await validateBrowserAiModelFamily(evidence.config.modelFamily)
@@ -208,23 +215,48 @@ function createBudgetClient(input: {
             const result = await input.inner.chat.completions.create(patched, {
               signal: options?.signal ?? input.signal,
             })
+            const durationMs = Date.now() - started
+            const inputTokens = usageOf(result, 'prompt')
+            const outputTokens = usageOf(result, 'completion')
             await completeAiModelCall(input.handle, {
               evidenceId: reserved.evidenceId,
               phase: 'completed',
               model: input.evidence.model,
-              durationMs: Date.now() - started,
-              inputTokens: usageOf(result, 'prompt'),
-              outputTokens: usageOf(result, 'completion'),
+              durationMs,
+              inputTokens,
+              outputTokens,
               cost: null,
+            })
+            emitAiModelCallLog(aiLogger, {
+              runId: input.evidence.runId,
+              stepRunId: input.evidence.stepRunId,
+              attemptId: input.evidence.attemptId,
+              model: input.evidence.model,
+              durationMs,
+              phase: 'completed',
+              inputTokens,
+              outputTokens,
             })
             return result
           } catch (error) {
+            const durationMs = Date.now() - started
+            const errorCode =
+              error && typeof error === 'object' && 'code' in error ? String(error.code) : 'AI_CALL_FAILED'
             await completeAiModelCall(input.handle, {
               evidenceId: reserved.evidenceId,
               phase: 'failed',
               model: input.evidence.model,
-              durationMs: Date.now() - started,
-              errorCode: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'AI_CALL_FAILED',
+              durationMs,
+              errorCode,
+            })
+            emitAiModelCallLog(aiLogger, {
+              runId: input.evidence.runId,
+              stepRunId: input.evidence.stepRunId,
+              attemptId: input.evidence.attemptId,
+              model: input.evidence.model,
+              durationMs,
+              phase: 'failed',
+              errorCode,
             })
             throw error
           }
@@ -338,7 +370,7 @@ export async function waitWithHang<T>(
   return (await wrapped) as { done: true; ok: true; value: T } | { done: true; ok: false; error: unknown }
 }
 
-export function assertPageScope(url: string, command: AiCommand): void {
+export function assertPageScope(url: string, command: AiCommand, scope?: CompiledAccessScope): void {
   let origin: string
   let pathname = '/'
   try {
@@ -349,6 +381,9 @@ export function assertPageScope(url: string, command: AiCommand): void {
     throw Object.assign(new Error('当前页面地址无法解析'), { code: 'AI_ORIGIN_INVALID' })
   }
   if (!command.allowedOrigins.includes(origin)) {
+    throw Object.assign(new Error(`当前页面源 ${origin} 不在允许范围内`), { code: 'AI_ORIGIN_DENIED' })
+  }
+  if (scope && !urlAllowedByCompiledScope(url, scope)) {
     throw Object.assign(new Error(`当前页面源 ${origin} 不在允许范围内`), { code: 'AI_ORIGIN_DENIED' })
   }
   if (command.loginOrigin && origin === command.loginOrigin) {
@@ -389,7 +424,7 @@ export async function settleAiCommand(
 ): Promise<AiResult> {
   if (result.hung) return result
   await closeUnsupportedPages(page, pagesBefore)
-  assertPageScope(page.url(), command)
+  assertPageScope(page.url(), command, installedCompiledScope(page.context()))
   return result
 }
 

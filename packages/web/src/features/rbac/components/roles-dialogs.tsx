@@ -1,3 +1,4 @@
+import { RoleMembersSheet } from './role-members-sheet'
 import { RolesActionDialog } from './roles-action-dialog'
 import { RolesDeleteDialog } from './roles-delete-dialog'
 import { useRoles } from './roles-provider'
@@ -21,6 +22,25 @@ export function RolesDialogs() {
               setTimeout(() => setCurrentRow(null), 500)
             }}
             currentRow={currentRow}
+          />
+          <RolesActionDialog
+            key={`role-clone-${currentRow.id}`}
+            open={open === 'clone'}
+            onOpenChange={() => {
+              setOpen('clone')
+              setTimeout(() => setCurrentRow(null), 500)
+            }}
+            currentRow={currentRow}
+            isClone
+          />
+          <RoleMembersSheet
+            key={`role-members-${currentRow.id}`}
+            role={currentRow}
+            open={open === 'members'}
+            onOpenChange={() => {
+              setOpen('members')
+              setTimeout(() => setCurrentRow(null), 500)
+            }}
           />
           <RolesDeleteDialog
             key={`role-delete-${currentRow.id}`}

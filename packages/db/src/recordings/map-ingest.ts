@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import {
   MAP_FACT_BATCH_MAX,
   mapGapObservation,
@@ -11,14 +11,15 @@ import {
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { appendMapFacts } from '../map/facts.js'
-import { schemaFor } from '../native.js'
-import { DomainError } from '../runs/errors.js'
+import { schemaFor, updateRows } from '../native.js'
+import { DomainError, isUniqueViolation } from '../runs/errors.js'
 
 /** 录制转地图的固定服务主体，禁止冒用 RunGrant。 */
 export const RECORDING_MAP_INGEST_SERVICE_ID = '00000000-0000-4000-8000-00000000b019'
 
 export const recordingMapIngestTestHooks = {
   afterBatch: null as null | ((nextIndex: number) => void | Promise<void>),
+  beforeAdvanceCursor: null as null | ((expectedNextIndex: number) => void | Promise<void>),
 }
 
 export type RecordingMapIngestStatus = 'pending' | 'completed' | 'aborted'
@@ -40,6 +41,10 @@ function safeUrlPattern(url: string | undefined): string {
   } catch {
     return 'https://unknown.invalid/'
   }
+}
+
+function isoTimestamp(value: Date | string): string {
+  return (value instanceof Date ? value : new Date(value)).toISOString()
 }
 
 function framePathOf(item: RecordingItem) {
@@ -117,6 +122,38 @@ export async function ensureRecordingMapIngestTx(
   })
 }
 
+async function commitRecordingMapIngestCursor(
+  db: Db,
+  input: {
+    recordingDraftId: string
+    expectedNextIndex: number
+    nextIndex: number
+    status: RecordingMapIngestStatus
+    lastError: string | null
+  },
+): Promise<boolean> {
+  const { recordingMapIngests } = schemaFor(db)
+  if (recordingMapIngestTestHooks.beforeAdvanceCursor) {
+    await recordingMapIngestTestHooks.beforeAdvanceCursor(input.expectedNextIndex)
+  }
+  const updated = await updateRows(
+    db,
+    recordingMapIngests,
+    {
+      nextIndex: input.nextIndex,
+      status: input.status,
+      lastError: input.lastError,
+      updatedAt: new Date(),
+    },
+    and(
+      eq(recordingMapIngests.recordingDraftId, input.recordingDraftId),
+      eq(recordingMapIngests.nextIndex, input.expectedNextIndex),
+      eq(recordingMapIngests.status, 'pending'),
+    ),
+  )
+  return updated.length > 0
+}
+
 export async function continueRecordingMapIngest(
   db: Db,
   input: { recordingDraftId: string },
@@ -135,11 +172,17 @@ export async function continueRecordingMapIngest(
       written: 0,
     }
   }
-  await db.transaction(async (tx) => {
-    await ensureRecordingMapIngestTx(tx as unknown as Db, input.recordingDraftId)
-  })
+  try {
+    await db.transaction(async (tx) => {
+      await ensureRecordingMapIngestTx(tx as unknown as Db, input.recordingDraftId)
+    })
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error
+  }
 
   let written = 0
+  let conflictAt = -1
+  let conflictStreak = 0
   while (true) {
     const [cursor] = await db
       .select()
@@ -161,14 +204,14 @@ export async function continueRecordingMapIngest(
       .where(eq(recordingDrafts.id, input.recordingDraftId))
       .limit(1)
     if (!live || live.deletedAt) {
-      await db
-        .update(recordingMapIngests)
-        .set({
-          status: 'aborted',
-          lastError: 'draft_deleted',
-          updatedAt: new Date(),
-        })
-        .where(eq(recordingMapIngests.recordingDraftId, input.recordingDraftId))
+      const aborted = await commitRecordingMapIngestCursor(db, {
+        recordingDraftId: input.recordingDraftId,
+        expectedNextIndex: cursor.nextIndex,
+        nextIndex: cursor.nextIndex,
+        status: 'aborted',
+        lastError: 'draft_deleted',
+      })
+      if (!aborted) continue
       return {
         recordingDraftId: input.recordingDraftId,
         nextIndex: cursor.nextIndex,
@@ -179,10 +222,14 @@ export async function continueRecordingMapIngest(
 
     const items = live.items
     if (cursor.nextIndex >= items.length) {
-      await db
-        .update(recordingMapIngests)
-        .set({ status: 'completed', lastError: null, updatedAt: new Date() })
-        .where(eq(recordingMapIngests.recordingDraftId, input.recordingDraftId))
+      const completed = await commitRecordingMapIngestCursor(db, {
+        recordingDraftId: input.recordingDraftId,
+        expectedNextIndex: cursor.nextIndex,
+        nextIndex: cursor.nextIndex,
+        status: 'completed',
+        lastError: null,
+      })
+      if (!completed) continue
       return {
         recordingDraftId: input.recordingDraftId,
         nextIndex: cursor.nextIndex,
@@ -192,7 +239,7 @@ export async function continueRecordingMapIngest(
     }
 
     const batch = items.slice(cursor.nextIndex, cursor.nextIndex + MAP_FACT_BATCH_MAX)
-    const observedAt = new Date().toISOString()
+    const observedAt = isoTimestamp(live.createdAt)
     const facts: MapFactBatchItem[] = batch.map((item) => ({
       type: 'observation',
       observation: observationFromRecordingItem({
@@ -211,15 +258,23 @@ export async function continueRecordingMapIngest(
         facts,
       })
     } catch (error) {
+      if (error instanceof DomainError && error.code === 'MAP_FACT_IDEMPOTENCY_CONFLICT') {
+        if (conflictAt === cursor.nextIndex) conflictStreak += 1
+        else {
+          conflictAt = cursor.nextIndex
+          conflictStreak = 1
+        }
+        if (conflictStreak < 8) continue
+      }
       if (error instanceof DomainError) {
-        await db
-          .update(recordingMapIngests)
-          .set({
-            status: 'aborted',
-            lastError: error.code.slice(0, 512),
-            updatedAt: new Date(),
-          })
-          .where(eq(recordingMapIngests.recordingDraftId, input.recordingDraftId))
+        const aborted = await commitRecordingMapIngestCursor(db, {
+          recordingDraftId: input.recordingDraftId,
+          expectedNextIndex: cursor.nextIndex,
+          nextIndex: cursor.nextIndex,
+          status: 'aborted',
+          lastError: error.code.slice(0, 512),
+        })
+        if (!aborted) continue
         return {
           recordingDraftId: input.recordingDraftId,
           nextIndex: cursor.nextIndex,
@@ -231,17 +286,18 @@ export async function continueRecordingMapIngest(
     }
 
     const nextIndex = cursor.nextIndex + batch.length
-    written += batch.length
     const done = nextIndex >= items.length
-    await db
-      .update(recordingMapIngests)
-      .set({
-        nextIndex,
-        status: done ? 'completed' : 'pending',
-        lastError: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(recordingMapIngests.recordingDraftId, input.recordingDraftId))
+    const advanced = await commitRecordingMapIngestCursor(db, {
+      recordingDraftId: input.recordingDraftId,
+      expectedNextIndex: cursor.nextIndex,
+      nextIndex,
+      status: done ? 'completed' : 'pending',
+      lastError: null,
+    })
+    if (!advanced) continue
+    conflictAt = -1
+    conflictStreak = 0
+    written += batch.length
     if (recordingMapIngestTestHooks.afterBatch) {
       await recordingMapIngestTestHooks.afterBatch(nextIndex)
     }

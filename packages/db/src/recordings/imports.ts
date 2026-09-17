@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
+import { compileScenarioDocument } from '@cairn/authoring'
 import { and, desc, eq, ne } from 'drizzle-orm'
 import {
   MAX_AUTHORING_NODES,
@@ -14,7 +15,6 @@ import {
   applyRecordingImportBodySchema,
   candidateStepFromItem,
   canonicalJson,
-  compileScenarioDocument,
   normalizeApiOrigin,
   normalizeRecording,
   parseScenarioDocument,

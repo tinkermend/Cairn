@@ -15,8 +15,6 @@ export {
   setSessionProbe,
   setSessionAuthSummary,
   touchSessionUsed,
-  claimAuthHold,
-  releaseAuthHold,
   listReapableSessions,
   listRequestedCloseSessions,
   markSessionsClosing,
@@ -28,13 +26,6 @@ export {
   listActiveSessionLeasesForWorker,
   listOwnedLiveSessions,
   listOwnedOpenSessions,
-  forceLastUsedAt,
-  forceLeaseExpiresAt,
-  forceSessionGeneration,
-  listExpiredAuthHolds,
-  expireAuthHold,
-  loadSecretCiphertext,
-  registerStandaloneSecret,
   listSessions,
   toSessionDto,
   getSessionDto,
@@ -51,13 +42,13 @@ export {
 export {
   hashAuthControlToken,
   newAuthControlToken,
-  isBoundAuthHold,
+  authHoldFromLease,
   enterRunWaitingForAuth,
   acquireAuthControl,
   heartbeatAuthControl,
   releaseAuthControl,
   expireStaleAuthControl,
-  findSessionByAuthHoldRun,
+  findSessionByAuthWaitRun,
 } from './auth-control.js'
 export {
   readSessionScheduling,
@@ -65,6 +56,7 @@ export {
   findActiveLeaseRow,
   findAuthWaitLeaseForRun,
   findAuthWaitLeaseForOperation,
+  authWaitLeaseLive,
   getSessionOperation,
   markSessionOperationWaitingForAuth,
   getSessionProfile,
@@ -81,6 +73,7 @@ export {
   claimSessionOperation,
   finishSessionOperation,
   occupancyGrantFromLease,
+  hasQueuedSessionCreateOperation,
   contentDigestFor,
   workerHasOccupancyProtocol,
   workerHasMaintenanceProtocol,
@@ -100,8 +93,11 @@ export {
   setSessionRetention,
   adoptSessionRetention,
   scheduleNextAuthCheck,
+  abandonSessionKeepAlive,
   listDueRetainedSessions,
   listAccountSessionOverview,
+  listSessionSystemOverview,
+  sessionOverviewReadStats,
   getAccountSessionDetail,
   countSessionEventWatermark,
 } from './maintenance.js'
@@ -123,6 +119,14 @@ export {
   loadAccountAuthDisplay,
   assertLiveAuthConfiguration,
 } from './auth-profile.js'
+
+export {
+  parseTargetSessionPolicyOverride,
+  loadResolvedSessionPolicyForTarget,
+  loadResolvedSessionPolicyLayers,
+  sessionLifecycleFieldsFromPolicy,
+  effectiveSessionPolicyForTarget,
+} from './session-policy.js'
 
 export { assertSessionAccountActive, assertSessionActorPermission, assertMaintenanceAuthorized } from './access.js'
 

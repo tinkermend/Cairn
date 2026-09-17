@@ -87,6 +87,7 @@ describe('OM-I 探索契约', () => {
     expect(isUrlInExploreAllowlist('https://shop.example/orders/1', allowlist)).toBe(true)
     expect(isUrlInExploreAllowlist('https://shop.example/pay', allowlist)).toBe(false)
     expect(isUrlInExploreAllowlist('https://other.example/orders', allowlist)).toBe(false)
+    expect(isUrlInExploreAllowlist('https://shop.example/orders-admin', allowlist)).toBe(false)
   })
 
   it('探索步骤只读，propose 不占用浏览器', () => {

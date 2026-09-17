@@ -38,6 +38,17 @@ describe('登录探针', () => {
     expect(loginUrlLooksPending('http://127.0.0.1:4177/login', hmi)).toBe(true)
   })
 
+  it('about:blank 视为未登录，verify 会打开入口再判定', async () => {
+    const page = fakePage('about:blank', { gotoUrl: 'http://127.0.0.1:4177/' })
+    expect(loginUrlLooksPending('about:blank', hmi)).toBe(true)
+    expect(await inspectAuthOnPage(page as never, hmi)).toBe('EXPIRED')
+    expect(await withTestOccupancy(() => verifyAuthOnPage(page as never, hmi))).toBe('AUTHENTICATED')
+    expect(page.goto).toHaveBeenCalledWith('http://127.0.0.1:4177/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    })
+  })
+
   it('登录 URL 等于入口时不靠路径判过期', () => {
     expect(
       loginUrlLooksPending('http://shop.example/', {

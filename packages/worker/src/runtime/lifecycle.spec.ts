@@ -34,6 +34,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
     markWorkerStopped: vi.fn(async () => undefined),
     claimRun: vi.fn(async () => null),
     claimSessionOperation: vi.fn(async () => null),
+    hasQueuedSessionCreateOperation: vi.fn(async () => false),
     appendSessionEvent: vi.fn(async () => {}),
     finishSessionOperation: vi.fn(async () => true),
     getSessionById: vi.fn(async () => ({ id: 's', status: 'OPEN', version: 1, generation: 1 })),
@@ -80,11 +81,12 @@ function stubSessions() {
     startHeartbeat: vi.fn(),
     stopHeartbeat: vi.fn(),
     shutdown: vi.fn(async () => {}),
-    reap: vi.fn(async () => ({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 })),
+    reap: vi.fn(async () => ({ leasesExpired: 0, sessionsClosed: 0 })),
     stopAllLocal: vi.fn(async () => []),
     liveHandleCount: vi.fn(() => 0),
     attachValidationOperation: vi.fn(async () => {}),
     attachMaintenanceOperation: vi.fn(async () => {}),
+    evictIfAtCapacity: vi.fn(async () => false),
   }
 }
 
@@ -227,9 +229,17 @@ describe('LifecycleService', () => {
           maxLifetimeSeconds: 14400,
           observedTier: 'LOGIN_VERIFIED',
           authValidUntil: null,
+          authProbeIntervalSeconds: 900,
         },
       } as never,
     ])
+    const { backgroundVerifyWindowSlot, FACTORY_SESSION_RETENTION, maintenanceIdempotencyKey } =
+      await import('@cairn/shared')
+    const verifySlot = backgroundVerifyWindowSlot(
+      Date.now(),
+      900,
+      FACTORY_SESSION_RETENTION.maintenanceIntervalSeconds,
+    )
     app = await buildApp(stubDb())
     await vi.waitFor(() => {
       expect(requestMaintenanceOperation).toHaveBeenCalledWith(
@@ -240,6 +250,11 @@ describe('LifecycleService', () => {
             kind: 'VERIFY_AUTH',
             expectedSessionId: '11111111-1111-4111-8111-111111111111',
             expectedGeneration: 2,
+            idempotencyKey: maintenanceIdempotencyKey(
+              'bg-verify',
+              '33333333-3333-4333-8333-333333333333',
+              verifySlot,
+            ),
           }),
         }),
       )
@@ -453,7 +468,7 @@ describe('LifecycleService', () => {
     vi.spyOn(manager, 'startHeartbeat').mockImplementation(() => undefined)
     vi.spyOn(manager, 'stopHeartbeat').mockImplementation(() => undefined)
     vi.spyOn(manager, 'shutdown').mockResolvedValue(undefined)
-    vi.spyOn(manager, 'reap').mockResolvedValue({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 })
+    vi.spyOn(manager, 'reap').mockResolvedValue({ leasesExpired: 0, sessionsClosed: 0 })
     const stubPage = {
       isClosed: () => false,
       url: () => 'https://example.com/login',
@@ -519,6 +534,69 @@ describe('LifecycleService', () => {
       expect.objectContaining({ sessionId: 's' }),
       undefined,
     )
+  })
+
+  it('仅在排队会建会话的维护时腾位', async () => {
+    const { hasQueuedSessionCreateOperation } = await import('@cairn/db')
+    let queued = false
+    vi.mocked(hasQueuedSessionCreateOperation).mockImplementation(async () => queued)
+    const sessions = stubSessions()
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        LifecycleService,
+        { provide: DB_HANDLE, useValue: stubDb() },
+        { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
+        { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
+        { provide: BrowserSessionManager, useValue: sessions },
+      ],
+    }).compile()
+    app = moduleRef.createNestApplication()
+    await app.init()
+    sessions.evictIfAtCapacity.mockClear()
+    await (app.get(LifecycleService) as unknown as { pumpOperation: () => Promise<void> }).pumpOperation()
+    expect(sessions.evictIfAtCapacity).not.toHaveBeenCalled()
+    queued = true
+    await (app.get(LifecycleService) as unknown as { pumpOperation: () => Promise<void> }).pumpOperation()
+    expect(sessions.evictIfAtCapacity).toHaveBeenCalled()
+    vi.mocked(hasQueuedSessionCreateOperation).mockResolvedValue(false)
+  })
+
+  it('执行失败日志带 runId 与 leaseId', async () => {
+    const { claimRun } = await import('@cairn/db')
+    const execute = vi.fn(async () => {
+      throw new Error('boom')
+    })
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        LifecycleService,
+        { provide: DB_HANDLE, useValue: stubDb() },
+        { provide: ExecutionEngine, useValue: { execute } },
+        { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })) } },
+        { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
+        { provide: BrowserSessionManager, useValue: stubSessions() },
+      ],
+    }).compile()
+    app = moduleRef.createNestApplication()
+    await app.init()
+    const svc = app.get(LifecycleService)
+    vi.mocked(claimRun).mockResolvedValueOnce({
+      runId: 'run-log-1',
+      leaseId: 'lease-log-1',
+      fencingToken: 1,
+      holderWorkerId: 'w',
+      expiresAt: new Date().toISOString(),
+    } as never)
+    const error = vi.spyOn(Logger.prototype, 'error')
+    await (svc as unknown as { pump: () => Promise<void> }).pump()
+    await execute.mock.results[0]?.value.catch(() => undefined)
+    await vi.waitFor(() => {
+      expect(error).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: 'run-log-1', leaseId: 'lease-log-1' }),
+        '执行失败',
+      )
+    })
+    error.mockRestore()
   })
 
   it('生产路径不向控制面发 HTTP', async () => {

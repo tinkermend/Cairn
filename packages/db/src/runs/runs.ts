@@ -1,4 +1,5 @@
 import { freezeAuthVerificationForRun } from '../sessions/auth-profile.js'
+import { assembleRunSnapshot, AssembleRunSnapshotError, resolveAssembledAiExecution } from './assemble-snapshot.js'
 import { ensureFrozenAccessPolicyTx } from '../map/access.js'
 import { expireRunDeadlines } from './deadline.js'
 import { settleRunCancellationTx } from './recover.js'
@@ -12,31 +13,18 @@ import {
   deletePreviewResponseSchema,
   executionActorSchema,
   serviceAdmissionSchema,
-  freezeExecutorVersions,
-  hasAiSteps,
-  loginScopeFromTargetUrl,
-  RUNTIME_SCHEMA_VERSION,
   ScenarioValidationError,
   assertRunFromResolved,
   isFinishedRunStatus,
   redactJson,
   resolverDiagnosticsSchema,
   isHaltedRunStatus,
-  DEFAULT_BROWSER_AI_HANG_WAIT_MS,
-  assertAiRequestTimeoutFitsSteps,
   FACTORY_PLATFORM_CONFIG,
-  frozenTargetAuthSchema,
   idempotentRequestMatches,
-  resolveAiExecutionFromPlatform,
-  resolveMapCapturePolicy,
-  resolvePlatformEvidencePolicy,
-  resolvePlatformExecutionPolicy,
-  resolvePlatformSessionPolicy,
   runDetailSchema,
   runEvidenceListResponseSchema,
   runListQuerySchema,
   runListResponseSchema,
-  runSnapshotSchema,
   authCheckpointSchema,
   computeContextVersion,
   type AiExecutionConfig,
@@ -94,16 +82,22 @@ import { runLeases, workers } from '../schema/worker.js'
 import type { Db } from '../client.js'
 import { cancelPendingStepRunsTx, skipRemainingStepRunsTx, skipStepRunsTx } from './step-status.js'
 import { newId } from '../id.js'
-import { attempts, evidences, runs, scenarios, stepRuns } from '../schema/execution.js'
+import { attempts, evidences, outcomeResults, runs, scenarios, stepRuns } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
 import { getPlatformConfig } from '../platform-config/store.js'
 import { appendFinishAttemptMapFactsTx } from '../map/attempt-facts.js'
 import { freezeMapConsumptionTx, insertMapRunReleaseRefTx } from '../map/consumption.js'
-import { computeIdempotencyDigest, computeSnapshotDigest } from './digest.js'
+import { computeIdempotencyDigest } from './digest.js'
 import { badRequest, conflict, mapRestriction, notFound } from './errors.js'
 import { toEvidenceMetadata } from '../objects/evidence-map.js'
 import { appendRunEvents } from '../observe/events.js'
 import { loadScenarioVersion, prepareTrialVersion } from './scenarios.js'
+import { deriveOutcomeManifest } from '@cairn/authoring'
+import {
+  saveStepOutcomeResultsTx,
+  recalculateRunOutcomeTx,
+  type OutcomeResultInsertItem,
+} from './outcome-results.js'
 
 function iso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null
@@ -155,6 +149,7 @@ export async function listRuns(
         )
       : undefined,
     parsed.evidenceStatus ? eq(runs.evidenceStatus, parsed.evidenceStatus) : undefined,
+    parsed.outcomeStatus ? eq(runs.outcomeStatus, parsed.outcomeStatus) : undefined,
     parsed.isTrial === true
       ? eq(scenarioVersions.kind, 'trial')
       : parsed.isTrial === false
@@ -219,6 +214,7 @@ export async function listRuns(
           : { kind: 'console' },
         id: row.id,
         status: row.status,
+        outcomeStatus: row.outcomeStatus,
         cancelRequested: row.cancelRequestedAt !== null,
         targetId: row.targetId,
         targetName,
@@ -497,10 +493,17 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     targetAccountId: row.targetAccountId,
     hasActiveLease: lease !== null,
   })
+  const outcomeResultRows = await db
+    .select()
+    .from(outcomeResults)
+    .where(eq(outcomeResults.runId, runId))
+    .orderBy(asc(outcomeResults.evaluatedAt))
+
   return runDetailSchema.parse({
     source: row.serviceCallerId ? { kind: 'service', callerId: row.serviceCallerId, credentialId: row.serviceCredentialId } : { kind: 'console' },
     id: row.id,
     status: row.status,
+    outcomeStatus: row.outcomeStatus ?? 'NOT_EVALUATED',
     cancelRequested: row.cancelRequestedAt !== null,
     targetId: row.targetId,
     targetName: joined.targetName,
@@ -528,6 +531,25 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     placement,
     snapshot,
     context: row.context,
+    outcomeResults: outcomeResultRows.map((r) => ({
+      id: r.id,
+      runId: r.runId,
+      stepRunId: r.stepRunId,
+      attemptId: r.attemptId,
+      contractId: r.contractId,
+      scope: r.scope,
+      meaning: r.meaning,
+      severity: r.severity,
+      onViolation: r.onViolation,
+      provenance: r.provenance,
+      verdict: r.verdict,
+      expected: r.expected ?? null,
+      actual: r.actual ?? null,
+      evidenceId: r.evidenceId ?? null,
+      details: r.details ?? null,
+      evaluatedAt: r.evaluatedAt.toISOString(),
+      createdAt: r.createdAt.toISOString(),
+    })),
     checkpoint: row.checkpoint ?? null,
     debugOverlay: row.debugOverlay ?? null,
     authCheckpoint: parseAuthCheckpoint(row.authCheckpoint),
@@ -540,6 +562,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
         type: definition?.type ?? 'unknown',
         ordinal: step.ordinal,
         status: step.status,
+        outcomeStatus: step.outcomeStatus ?? 'NOT_EVALUATED',
         startedAt: iso(step.startedAt),
         finishedAt: iso(step.finishedAt),
         attempts: attemptRows
@@ -653,9 +676,13 @@ export async function createRunWithSnapshot(
 
   const platform = await getPlatformConfig(db)
   const document = platform?.document ?? FACTORY_PLATFORM_CONFIG
-  const sessionPolicy = resolvePlatformSessionPolicy(input.sessionPolicy, document.session)
-  const evidencePolicy = resolvePlatformEvidencePolicy(input.evidencePolicy, document.evidence)
-  const policy = resolvePlatformExecutionPolicy(input.policy, document.execution)
+  const authVerification = await freezeAuthVerificationForRun(db, {
+    targetId: scenario.targetId,
+    targetAccountId,
+    loginFields: target.loginFields ?? null,
+    platformRevision: platform?.revision ?? 1,
+    sessionAuth: document.sessionAuth,
+  })
 
   const idempotencyDigest = input.externalIdempotencyDigest ?? (input.idempotencyKey
     ? computeIdempotencyDigest({
@@ -706,71 +733,19 @@ export async function createRunWithSnapshot(
 
   const runId = newId()
   const now = new Date()
-  const snapshotBase = {
-    schemaVersion: RUNTIME_SCHEMA_VERSION,
-    runId,
-    targetId: scenario.targetId,
-    targetAccountId,
-    secretRef,
-    scenarioId: scenario.id,
-    scenarioVersionId: version.id,
-    steps: version.definition.steps,
-    moduleManifest: version.moduleManifest ?? undefined,
-    ...(version.moduleManifest?.candidateGroups?.length
-      ? { candidateGroups: { groups: version.moduleManifest.candidateGroups } }
-      : {}),
-    input: runInput,
-    createdAt: now.toISOString(),
-    ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),
-    policy,
-    sessionPolicy,
-    evidencePolicy,
-    executorVersions: freezeExecutorVersions(version.definition.steps.map((step) => step.type)),
-    ...loginScopeFromTargetUrl(target.entryUrl, target.loginUrl),
-    targetAuth: frozenTargetAuthSchema.parse({
-      entryUrl: target.entryUrl,
-      loginUrl: target.loginUrl,
-      authMethod: target.authMethod,
-      captchaMode: target.captchaMode,
-      loginFields: target.loginFields ?? null,
-    }),
-    authVerification: await freezeAuthVerificationForRun(db, {
-      targetId: scenario.targetId,
-      targetAccountId,
-      loginFields: target.loginFields ?? null,
-      platformRevision: platform?.revision ?? 1,
-      sessionAuth: document.sessionAuth,
-    }),
-    ...(platform ? { platformConfigRevision: platform.revision } : {}),
-    runAuthRecovery: document.runAuthRecovery,
-    aiExecution: input.aiExecution,
-    mapCapturePolicy: resolveMapCapturePolicy(
-      input.mapJob ? { ...input.mapCapturePolicy, enabled: true } : input.mapCapturePolicy,
-      document.mapCapture,
-    ),
-  }
-  if (hasAiSteps(snapshotBase.steps) && !snapshotBase.aiExecution) {
-    try {
-      snapshotBase.aiExecution = resolveAiExecutionFromPlatform(snapshotBase.steps, document, {
-        revision: platform?.revision ?? 1,
-        hangWaitMs: input.hangWaitMs ?? DEFAULT_BROWSER_AI_HANG_WAIT_MS,
-        policy,
-      })
-    } catch (error) {
-      const code =
-        error && typeof error === 'object' && 'code' in error ? String(error.code) : 'AI_CONFIG_INVALID'
-      throw badRequest(code, error instanceof Error ? error.message : '浏览器仿真 AI 配置无效')
-    }
-  }
-  if (hasAiSteps(snapshotBase.steps) && !snapshotBase.aiExecution) {
-    throw badRequest('AI_CONFIG_INVALID', '含 AI 步骤的运行必须冻结 AI 执行配置')
-  }
-  if (snapshotBase.aiExecution) {
-    try {
-      assertAiRequestTimeoutFitsSteps(snapshotBase.steps, policy, snapshotBase.aiExecution.requestTimeoutMs)
-    } catch (error) {
-      throw badRequest('AI_CONFIG_INVALID', error instanceof Error ? error.message : 'AI 请求超时配置无效')
-    }
+  let aiExecution = input.aiExecution
+  try {
+    aiExecution = resolveAssembledAiExecution({
+      steps: version.definition.steps,
+      platformDocument: document,
+      platformRevision: platform?.revision,
+      aiExecution: input.aiExecution,
+      hangWaitMs: input.hangWaitMs,
+      executionPolicyOverride: input.policy,
+    })
+  } catch (error) {
+    if (error instanceof AssembleRunSnapshotError) throw badRequest(error.code, error.message)
+    throw error
   }
   try {
     await atomic(db, async (tx) => {
@@ -785,15 +760,45 @@ export async function createRunWithSnapshot(
         scenarioVersionId: version.id,
         override: input.mapJob ? { mode: 'off' } : input.mapConsumption,
       })
-      const parsed = runSnapshotSchema.parse({
-        ...snapshotBase,
-        allowedOrigins: access.allowedOrigins,
-        accessPolicy: access.frozen,
-        mapConsumption,
-        ...(input.mapJob ? { mapJob: input.mapJob } : {}),
-      })
-      const digest = computeSnapshotDigest(parsed)
-      const snapshot = runSnapshotSchema.parse({ ...parsed, digest })
+      let snapshot
+      try {
+        const outcomeManifest = deriveOutcomeManifest({
+          definition: version.definition,
+          authoringDocument: version.authoringDocument,
+        })
+        snapshot = assembleRunSnapshot({
+          runId,
+          createdAt: now,
+          deadlineAt: input.deadlineAt,
+          targetId: scenario.targetId,
+          targetAccountId,
+          secretRef,
+          scenarioId: scenario.id,
+          scenarioVersionId: version.id,
+          steps: version.definition.steps,
+          moduleManifest: version.moduleManifest,
+          outcomeManifest,
+          input: runInput,
+          sessionPolicyOverride: input.sessionPolicy,
+          evidencePolicyOverride: input.evidencePolicy,
+          executionPolicyOverride: input.policy,
+          mapCapturePolicyOverride: input.mapCapturePolicy,
+          mapJob: input.mapJob,
+          target,
+          platformDocument: document,
+          platformRevision: platform?.revision,
+          aiExecution,
+          hangWaitMs: input.hangWaitMs,
+          authVerification,
+          allowedOrigins: access.allowedOrigins,
+          accessPolicy: access.frozen,
+          mapConsumption,
+        })
+      } catch (error) {
+        if (error instanceof AssembleRunSnapshotError) throw badRequest(error.code, error.message)
+        throw error
+      }
+      const digest = snapshot.digest
       await tx.insert(runs).values({
         id: runId,
         targetId: scenario.targetId,
@@ -1086,6 +1091,8 @@ export type FinishAttemptInput = {
   barrierAfterVerify?: () => Promise<void>
   /** 动作后预构建的地图事实，与 Attempt 同事务写入；地图契约错误不得回滚 Attempt。 */
   mapFacts?: MapFactBatchItem[]
+  /** 本次 Attempt 产生的结果轴评价项（若有），与 Attempt 同事务持久化 */
+  outcomeResults?: OutcomeResultInsertItem[]
 }
 
 /**
@@ -1284,6 +1291,14 @@ export async function finishAttemptTx(
 
   const untrustedOutcome =
     cancelled || (input.attemptStatus === 'SUCCEEDED' && attemptStatus !== 'SUCCEEDED')
+  await saveStepOutcomeResultsTx(tx, {
+    runId: input.runId,
+    stepRunId: attempt.stepRunId,
+    attemptId: input.attemptId,
+    results: input.outcomeResults,
+    snapshot: run.snapshot as RunSnapshot,
+    now,
+  })
   await appendFinishAttemptMapFactsTx(tx, {
     grant: input.grant,
     snapshot: run.snapshot as RunSnapshot,
@@ -1313,6 +1328,9 @@ export async function finishAttemptTx(
         ...(input.authCheckpoint !== undefined ? { authCheckpoint: input.authCheckpoint } : {}),
       })
       .where(eq(runs.id, input.runId))
+    if (isHaltedRunStatus(finalRunStatus)) {
+      await recalculateRunOutcomeTx(tx, input.runId, run.snapshot as RunSnapshot, now)
+    }
     if (isHaltedRunStatus(finalRunStatus) || finalRunStatus === 'WAITING_FOR_AUTH') {
       await releaseRunLeaseTx(
         tx,
@@ -1435,6 +1453,10 @@ export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ fin
       { id: runs.id },
     )
     if (drained.length === 0) return { finished: false }
+    const [run] = await tx.select().from(runs).where(eq(runs.id, grant.runId)).limit(1)
+    if (run) {
+      await recalculateRunOutcomeTx(tx as unknown as Db, grant.runId, run.snapshot as RunSnapshot, now)
+    }
     await releaseRunLeaseTx(tx as unknown as Db, grant, 'run_halted')
     await appendRunEvents(tx as unknown as Db, grant.runId, [
       { type: 'run.status_changed', payload: { status: 'SUCCEEDED' } },
@@ -1484,6 +1506,7 @@ export async function markRunCancelled(
       await releaseRunLeaseTx(tx as unknown as Db, authority.grant, 'run_halted')
     }
     await settleRunCancellationTx(tx as unknown as Db, runId, now)
+    await recalculateRunOutcomeTx(tx as unknown as Db, runId, run.snapshot as RunSnapshot, now)
   })
 }
 
@@ -1517,6 +1540,7 @@ export async function failRunValidation(
       .update(runs)
       .set({ status, ...(status === 'FAILED' ? { finishedAt: now } : {}), ...(checkpoint ? { authCheckpoint: checkpoint } : {}), updatedAt: now })
       .where(eq(runs.id, runId))
+    await recalculateRunOutcomeTx(tx as unknown as Db, runId, run.snapshot as RunSnapshot, now)
     if (options?.stepRunId) {
       await tx.update(stepRuns).set({ status: 'FAILED', finishedAt: now }).where(and(eq(stepRuns.id, options.stepRunId), eq(stepRuns.runId, runId), eq(stepRuns.status, 'RUNNING')))
     }
@@ -1549,7 +1573,7 @@ export async function failRunValidation(
 }
 
 /**
- * 只改 Run 状态并释放执行租约，不写 Session authHold。
+ * 只改 Run 状态并释放执行租约，不写认证等待占用。
  * 生产进入等待必须走 `enterRunWaitingForAuth`；本函数留给引擎/夹具模拟“已经在等登录”。
  */
 export async function markRunWaitingForAuth(db: Db, grant: RunGrant): Promise<boolean> {
@@ -1573,61 +1597,6 @@ export async function markRunWaitingForAuth(db: Db, grant: RunGrant): Promise<bo
     ])
     return true
   })
-}
-
-/**
- * 认证等待超时：Run → FAILED，挂 SESSION_AUTH_TIMEOUT 错误证据，跳过剩余步骤。
- * recover 权威：行锁后确认无 ACTIVE 租约。
- */
-export async function failRunAuthTimeout(db: Db, runId: string): Promise<boolean> {
-  const { evidences, runs } = schemaFor(db)
-  const now = new Date()
-  return db.transaction(async (tx) => {
-    const locked = await lockRunRow(tx as unknown as Db, runId)
-    if (!locked || locked.status !== 'WAITING_FOR_AUTH') return false
-    const active = await findActiveLeaseForRun(tx as unknown as Db, runId)
-    if (active) return false
-    const [run] = await updateRows(
-      tx,
-      runs,
-      { status: 'FAILED', finishedAt: now, updatedAt: now },
-      and(eq(runs.id, runId), eq(runs.status, 'WAITING_FOR_AUTH')),
-      { id: runs.id },
-    )
-    if (!run) return false
-    await tx.insert(evidences).values({
-      id: newId(),
-      runId,
-      type: 'error',
-      schemaVersion: 1,
-      payload: {
-        code: 'SESSION_AUTH_TIMEOUT',
-        category: 'INFRASTRUCTURE',
-        retryable: false,
-        safeMessage: '等待人工认证超时',
-      },
-      createdAt: now,
-    })
-    await skipRemainingStepRunsTx(tx as unknown as Db, runId, now)
-    await appendRunEvents(tx as unknown as Db, runId, [
-      { type: 'run.status_changed', payload: { status: 'FAILED' } },
-      { type: 'evidence.recorded', payload: { type: 'error', status: 'available' } },
-    ])
-    return true
-  })
-}
-
-/** 找出仍在 WAITING_FOR_AUTH 且绑定该 TargetAccount 的 Run。 */
-export async function listRunsWaitingForAuthByAccount(
-  db: Db,
-  targetAccountId: string,
-): Promise<string[]> {
-  const { runs } = schemaFor(db)
-  const rows = await db
-    .select({ id: runs.id })
-    .from(runs)
-    .where(and(eq(runs.status, 'WAITING_FOR_AUTH'), eq(runs.targetAccountId, targetAccountId)))
-  return rows.map((r) => r.id)
 }
 
 export async function updateRunDebugOverlay(

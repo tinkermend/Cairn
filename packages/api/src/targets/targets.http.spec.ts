@@ -78,6 +78,7 @@ function mockService() {
     getTarget: vi.fn(async () => target),
     createTarget: vi.fn(async () => target),
     updateTarget: vi.fn(async () => target),
+    updateSessionPolicy: vi.fn(async () => target),
     previewDeleteTarget: vi.fn(async () => ({
       resourceId: target.id,
       resourceType: 'target' as const,
@@ -479,5 +480,21 @@ describe('Targets HTTP', () => {
       })
       .expect(200)
     expect(service.updateAccessPolicy).toHaveBeenCalled()
+  })
+
+  it('POST /targets/:id/session-policy 写入目标会话策略', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/session-policy`)
+      .send({ reclaim: 'AUTH_DRIVEN', keepAliveSeconds: 1800 })
+      .expect(200)
+    expect(service.updateSessionPolicy).toHaveBeenCalledWith(
+      target.id,
+      { reclaim: 'AUTH_DRIVEN', keepAliveSeconds: 1800 },
+      expect.anything(),
+    )
+    await request(viewerApp.getHttpServer())
+      .post(`/targets/${target.id}/session-policy`)
+      .send({ reclaim: 'IDLE' })
+      .expect(403)
   })
 })

@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
+  normalizeResolverText,
+  type ResolverCatalogModule,
+  type ScenarioAuthoringDocumentV2,
+} from '@cairn/shared'
+import { redactAuthoringExpression } from '@cairn/shared'
+import {
   collectAvailableContextKeys,
   decideResolveStatus,
   extractLiteralCandidates,
   insertModuleInvocation,
-  normalizeResolverText,
   resolveModulesByRules,
   suggestModuleInputs,
-} from '../action-module-resolver.js'
-import { redactAuthoringExpression } from '../redact.js'
-import type { ResolverCatalogModule } from '../action-module-resolver.js'
-import type { ScenarioAuthoringDocumentV2 } from '../authoring-document.js'
+} from '../index.js'
 import {
   EVAL_TARGET_A,
   MODULE_RESOLVER_EVAL_CASES,
@@ -253,6 +255,63 @@ describe('AM-D 规则层', () => {
     expect(uniqueAmbiguousDecisions).toBe(0)
     expect(noMatchMarkedExact).toBe(0)
     expect(inventedLiterals).toBe(0)
+  })
+
+  it('AME-10 健康信号不改变 D 规则层排序', () => {
+    const catalog: ResolverCatalogModule[] = [
+      {
+        moduleId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+        targetId: EVAL_TARGET_A,
+        key: 'order.query',
+        name: '查询订单',
+        aliases: [],
+        intentExamples: [],
+        tags: [],
+        versions: [{
+          versionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2',
+          versionNo: 2,
+          publishedAt: '2026-09-16T00:00:00.000Z',
+          publicationStatus: 'published',
+          executionMode: 'DETERMINISTIC',
+          effectCeiling: 'READ_ONLY',
+          inputs: [],
+        }],
+      },
+      {
+        moduleId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
+        targetId: EVAL_TARGET_A,
+        key: 'order.cancel',
+        name: '取消订单',
+        aliases: [],
+        intentExamples: [],
+        tags: [],
+        versions: [{
+          versionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2',
+          versionNo: 1,
+          publishedAt: '2026-09-16T00:00:00.000Z',
+          publicationStatus: 'published',
+          executionMode: 'DETERMINISTIC',
+          effectCeiling: 'SIDE_EFFECT',
+          inputs: [],
+        }],
+      },
+    ]
+    const before = resolveModulesByRules({
+      expression: '查询订单',
+      catalog,
+      terms: [],
+      maxCandidates: 10,
+    })
+    const after = resolveModulesByRules({
+      expression: '查询订单',
+      catalog,
+      terms: [],
+      maxCandidates: 10,
+    })
+    after.candidates[0] = { ...after.candidates[0]!, notes: ['healthDegraded'] }
+    expect(before.candidates.map((item) => item.moduleVersionId)).toEqual(
+      after.candidates.map((item) => item.moduleVersionId),
+    )
   })
 
   it('脱敏后记录里没有凭证明文', () => {

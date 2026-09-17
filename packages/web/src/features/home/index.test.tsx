@@ -4,7 +4,6 @@ import { PERMISSIONS, SYSTEM_ROLE_DEFINITIONS } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { HomePage } from './index'
 
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {

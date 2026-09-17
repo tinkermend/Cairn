@@ -38,3 +38,61 @@ export const LOGGING_REDACT_PATHS: readonly string[] = [
   'CAIRN_BROWSER_AI_API_KEY',
   'env.CAIRN_BROWSER_AI_API_KEY',
 ]
+
+export const PROCESS_LOG_EVENTS = {
+  runStarted: 'run.started',
+  runFinished: 'run.finished',
+  attemptStarted: 'attempt.started',
+  attemptFinished: 'attempt.finished',
+  runHolding: 'run.holding',
+  aiModelCall: 'ai.model_call',
+  aiModelCallFailed: 'ai.model_call_failed',
+} as const
+
+export type ProcessLogEvent = (typeof PROCESS_LOG_EVENTS)[keyof typeof PROCESS_LOG_EVENTS]
+
+export const PROCESS_LOG_EXITS = [
+  'completed',
+  'failed',
+  'cancelled',
+  'held',
+  'yielded',
+  'stopped',
+] as const
+
+export type ProcessLogExit = (typeof PROCESS_LOG_EXITS)[number]
+
+export const processLogServiceSchema = z.enum(['cairn-api', 'cairn-worker'])
+export type ProcessLogService = z.infer<typeof processLogServiceSchema>
+
+/** 去掉 undefined，禁止调用方用 "unknown" 冒充缺失字段。 */
+export function bindLogFields(
+  fields: Record<string, unknown>,
+): Record<string, string | number | boolean | null> {
+  const bound: Record<string, string | number | boolean | null> = {}
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue
+    if (value === 'unknown') continue
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) {
+      bound[key] = value
+    }
+  }
+  return bound
+}
+
+/** api / worker 共用的 level、base、redact。HTTP 相关项仍只属于 api。 */
+export function buildProcessLoggerBindings(input: {
+  service: ProcessLogService
+  level: LogLevel
+  workerId?: string
+}): {
+  level: LogLevel
+  base: Record<string, string>
+  redact: { paths: string[]; censor: string }
+} {
+  return {
+    level: input.level,
+    base: bindLogFields({ service: input.service, workerId: input.workerId }) as Record<string, string>,
+    redact: { paths: [...LOGGING_REDACT_PATHS], censor: LOGGING_CENSOR },
+  }
+}

@@ -1,7 +1,10 @@
 import {
-  FACTORY_PLATFORM_CONFIG,
   collectAvailableContextKeys,
   insertModuleInvocation,
+  resolveModulesByRules,
+} from '@cairn/authoring'
+import {
+  FACTORY_PLATFORM_CONFIG,
   isSelectablePublication,
   moduleResolveAcceptBodySchema,
   moduleResolveCloseBodySchema,
@@ -9,7 +12,6 @@ import {
   moduleResolveResultSchema,
   normalizeAuthoringDocument,
   redactAuthoringExpression,
-  resolveModulesByRules,
   type ExecutionActor,
   type ModuleResolveAcceptBody,
   type ModuleResolveAcceptResponse,

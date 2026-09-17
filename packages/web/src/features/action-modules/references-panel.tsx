@@ -67,23 +67,29 @@ export function ActionModuleReferencesPanel({ moduleId }: { moduleId: string }) 
     return <QueryErrorState description={refs.error.message} onRetry={() => void refs.refetch()} />
   }
   if (rows.length === 0) {
-    return <p className='text-body text-muted-foreground'>还没有场景引用这个模块。</p>
+    return (
+      <div className='rounded-xl border border-dashed p-8 text-center bg-card/40'>
+        <p className='text-body text-muted-foreground'>还没有场景引用这个模块。</p>
+      </div>
+    )
   }
   return (
     <div className='space-y-4'>
-      <div className='flex flex-wrap items-center justify-between gap-3'>
-        <p className='text-body text-muted-foreground'>
-          {latest ? `最新可选版本 v${latest.versionNo}` : '没有可升级的版本'}
-        </p>
-        <ModuleHealthBadge health={quality.data?.health} />
+      <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card/60 px-4 py-3'>
+        <div className='flex items-center gap-3'>
+          <span className='text-body font-medium'>
+            {latest ? `最新可选版本 v${latest.versionNo}` : '没有可升级的版本'}
+          </span>
+          <ModuleHealthBadge health={quality.data?.health} />
+        </div>
         <Button disabled={!latest || selected.length === 0 || busy} onClick={() => void runBatch()}>
           {busy ? '处理中…' : `批量升级已选（${selected.length}）`}
         </Button>
       </div>
-      <div className='overflow-x-auto rounded-xl border'>
+      <div className='overflow-x-auto rounded-xl border border-card bg-card shadow-card'>
         <table className='w-full min-w-[40rem] text-left text-body'>
           <thead>
-            <tr className='border-b text-label text-muted-foreground'>
+            <tr className='border-b bg-surface-header text-label text-muted-foreground'>
               <th className='p-3 font-medium'>选择</th>
               <th className='p-3 font-medium'>场景</th>
               <th className='p-3 font-medium'>草稿</th>
@@ -92,9 +98,9 @@ export function ActionModuleReferencesPanel({ moduleId }: { moduleId: string }) 
               <th className='p-3 font-medium'>操作</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className='divide-y'>
             {rows.map((item) => (
-              <tr key={item.scenarioId} className='border-b last:border-0'>
+              <tr key={item.scenarioId} className='hover:bg-muted/30 transition-[background-color]'>
                 <td className='p-3'>
                   {item.purpose === 'user' ? (
                     <Checkbox
@@ -109,7 +115,7 @@ export function ActionModuleReferencesPanel({ moduleId }: { moduleId: string }) 
                 <td className='p-3'>
                   <button
                     type='button'
-                    className='text-left underline-offset-2 hover:underline'
+                    className='text-left font-medium text-foreground underline-offset-2 hover:underline'
                     onClick={() => void navigate({ to: '/scenarios/$scenarioId', params: { scenarioId: item.scenarioId } })}
                   >
                     {item.name}
@@ -118,11 +124,11 @@ export function ActionModuleReferencesPanel({ moduleId }: { moduleId: string }) 
                     {item.status}{item.purpose !== 'user' ? ' · 验证场景' : ''}
                   </p>
                 </td>
-                <td className='p-3'>
+                <td className='p-3 font-mono text-small'>
                   {item.draftUses.map((use) => (use.versionNo ? `v${use.versionNo}` : `草稿 r${use.moduleDraftRevision ?? '?'}`)).join('、') || '—'}
                 </td>
-                <td className='p-3'>{item.publishedUses.map((use) => `v${use.versionNo}`).join('、') || '—'}</td>
-                <td className='p-3'>{item.lastRun ? item.lastRun.status : '无'}</td>
+                <td className='p-3 font-mono text-small'>{item.publishedUses.map((use) => `v${use.versionNo}`).join('、') || '—'}</td>
+                <td className='p-3 text-small'>{item.lastRun ? item.lastRun.status : '无'}</td>
                 <td className='p-3'>
                   {item.upgradeAvailable && item.draftUses[0] && latest ? (
                     <Button

@@ -476,7 +476,7 @@ export async function createMapJob(
     if (!entry || entry.targetId !== targetId) mapNotFound('安全进入路径不存在')
     if (!entry.jobKinds.includes(parsed.jobKind)) mapForbidden('该进入路径不适用于此作业类型')
     const session = await findLiveSession(tx, { targetId, targetAccountId: parsed.targetAccountId })
-    if (!session || session.authState !== 'AUTHENTICATED' || !session.observedTier || session.observedTier === 'LEGACY') {
+    if (!session || session.authState !== 'AUTHENTICATED') {
       mapAuthPreparationRequired()
     }
     if (parsed.jobKind === 'map_explore') {

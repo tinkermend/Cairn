@@ -5,7 +5,9 @@ vi.mock("@cairn/db", async (original) => ({
   getSessionById: vi.fn(async (db, id) => id === "00000000-0000-4000-8000-000000000011" ? { id, status: "OPEN" } : null),
   getWorkerById: vi.fn(async () => ({ id: "worker" })),
   getRun: vi.fn(async () => ({ status: "RUNNING", placement: {} })),
-  findSessionByAuthHoldRun: vi.fn(async () => null),
+  findSessionByAuthWaitRun: vi.fn(async () => null),
+  findAuthWaitLeaseForRun: vi.fn(async () => null),
+  findAuthWaitLeaseForOperation: vi.fn(async () => null),
   findActiveLeaseRow: vi.fn(async () => null),
 }))
 
@@ -110,5 +112,47 @@ describe('画面订阅生命周期', () => {
     expect(stop).toHaveBeenCalledTimes(20)
     expect(live.screencasts.size).toBe(0)
     expect(manager.countScreencastObservers(sessionId)).toBe(0)
+  })
+
+  it('会话实例订阅在 getRun 找不到运行时仍持续出帧', async () => {
+    const { manager, live } = subscribeManager()
+    const db = await import('@cairn/db')
+    vi.mocked(db.getRun).mockRejectedValue(Object.assign(new Error('运行不存在'), { code: 'RUN_NOT_FOUND' }))
+    Object.assign(manager, {
+      lookupRunSession: async () => ({
+        run: { id: sessionId, status: 'RUNNING', placement: { sessionId } },
+        session: {
+          id: sessionId,
+          generation: 1,
+          ownerWorkerId: 'test-worker',
+          ownerWorkerInstanceId: 'test-worker',
+          authControlActorId: null,
+          authControlExpiresAt: null,
+        },
+        live,
+      }),
+      pageForView: () => live.pages.get(pageId),
+    })
+    stop.mockClear()
+    let frames = 0
+    const controller = new AbortController()
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`只收到 ${frames} 帧`)), 2000)
+      void manager.subscribeRunFrames({
+        runId: sessionId,
+        actorId,
+        onFrame: () => {
+          frames += 1
+          if (frames >= 2) {
+            clearTimeout(timer)
+            controller.abort()
+            resolve()
+          }
+        },
+        signal: controller.signal,
+      })
+    })
+    expect(frames).toBeGreaterThanOrEqual(2)
+    vi.mocked(db.getRun).mockResolvedValue({ status: 'RUNNING', placement: {} } as never)
   })
 })

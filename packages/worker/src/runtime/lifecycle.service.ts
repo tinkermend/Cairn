@@ -3,6 +3,7 @@ import { Inject, Injectable, Logger, Optional, type OnApplicationBootstrap, type
 import {
   claimRun,
   claimSessionOperation,
+  hasQueuedSessionCreateOperation,
   expireRunDeadlines,
   getOrCreatePlatformConfig,
   listDueRetainedSessions,
@@ -23,6 +24,7 @@ import {
   expireClosedScheduleWindows,
   expireScheduledMapJobs,
   backfillModuleInvocationResults,
+  backfillOutcomeResults,
   getMapJobPolicy,
   getMapSafeEntry,
   getMapSummary,
@@ -42,10 +44,12 @@ import {
   MAP_SCHEDULER_PROTOCOL,
   CANDIDATE_GROUPS_PROTOCOL,
   MODULE_MANIFEST_PROTOCOL,
+  OUTCOME_MANIFEST_PROTOCOL,
   SCHEDULE_TICK_INTERVAL_MS,
   SESSION_AUTH_RECOVERY_PROTOCOL,
   SESSION_MAINTENANCE_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
+  backgroundVerifyWindowSlot,
   maintenanceIdempotencyKey,
   maintenanceWindowSlot,
   deriveAuthCapability,
@@ -99,7 +103,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   private pendingClaim: AbortController | undefined
   private cleanupInFlight: Promise<{ purged: number }> | undefined
   private reaperInFlight:
-    | Promise<{ leasesExpired: number; sessionsClosed: number; authTimeouts: number }>
+    | Promise<{ leasesExpired: number; sessionsClosed: number }>
     | undefined
   private healing: Promise<void> | undefined
   private beating = false
@@ -198,6 +202,7 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
         MAP_JOBS_PROTOCOL,
         MAP_EXPLORE_PROTOCOL,
         MAP_SCHEDULER_PROTOCOL,
+        OUTCOME_MANIFEST_PROTOCOL,
       ],
     })
     await settleRevokedRuns(
@@ -378,20 +383,22 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
     await backfillModuleInvocationResults(this.handle, { limit: 20 }).catch((error) => {
       this.logger.error(error instanceof Error ? error.message : error, '模块调用结果补算失败')
     })
+    await backfillOutcomeResults(this.handle).catch((error) => {
+      this.logger.error(error instanceof Error ? error.message : error, '结果轴补算失败')
+    })
     return this.objects.purgeExpiredObjects({ limit: 100 })
   }
 
   async runReaper(): Promise<{
     leasesExpired: number
     sessionsClosed: number
-    authTimeouts: number
   }> {
-    if (this.stopped) return { leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }
+    if (this.stopped) return { leasesExpired: 0, sessionsClosed: 0 }
     if (this.reaperInFlight) return this.reaperInFlight
     this.reaperInFlight = this.reapAll()
       .catch((error) => {
         this.logger.error(error instanceof Error ? error.message : error, '回收失败')
-        return { leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }
+        return { leasesExpired: 0, sessionsClosed: 0 }
       })
       .finally(() => {
         this.reaperInFlight = undefined
@@ -402,7 +409,6 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   private async reapAll(): Promise<{
     leasesExpired: number
     sessionsClosed: number
-    authTimeouts: number
   }> {
     await expireRunDeadlines(this.handle)
     const session = await this.sessions.reap()
@@ -570,7 +576,14 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
       const done = this.engine
         .execute(grant.runId, { grant, signal: controller.signal })
         .catch((error) => {
-          this.logger.error(error instanceof Error ? error.message : error, '执行失败')
+          this.logger.error(
+            {
+              runId: grant.runId,
+              leaseId: grant.leaseId,
+              err: error instanceof Error ? error.message : error,
+            },
+            '执行失败',
+          )
         })
         .finally(() => {
           this.inFlight.delete(grant.leaseId)
@@ -587,6 +600,9 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
   private async pumpOperation(): Promise<void> {
     if (this.stopped) return
     try {
+      if (await hasQueuedSessionCreateOperation(this.handle)) {
+        await this.sessions.evictIfAtCapacity().catch(() => undefined)
+      }
       const claimed = await claimSessionOperation(this.handle, {
         workerId: config.CAIRN_WORKER_ID,
         instanceId: this.instanceId,
@@ -629,12 +645,16 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
         const maxAge = Date.now() - session.createdAt.getTime() >= session.maxLifetimeSeconds * 1000
         const kind = maxAge ? 'RESTART' : nearExpiry && session.authState === 'AUTHENTICATED' && tier === 'IDENTITY_VERIFIED' && profile?.definition.renew !== 'none' && profile ? 'RENEW_AUTH' : 'VERIFY_AUTH'
         const prefix = kind === 'RESTART' ? 'bg-restart' : kind === 'RENEW_AUTH' ? 'bg-renew' : 'bg-verify'
+        const verifySlot =
+          kind === 'VERIFY_AUTH'
+            ? backgroundVerifyWindowSlot(Date.now(), session.authProbeIntervalSeconds, interval)
+            : slot
         await scheduleNextAuthCheck(this.handle, session.id)
         await requestMaintenanceOperation(this.handle, {
           key: { targetId: session.targetId, targetAccountId: session.targetAccountId },
           body: {
             kind,
-            idempotencyKey: maintenanceIdempotencyKey(prefix, session.targetAccountId, slot),
+            idempotencyKey: maintenanceIdempotencyKey(prefix, session.targetAccountId, verifySlot),
             expectedSessionId: session.id,
             expectedGeneration: session.generation,
           },

@@ -419,7 +419,7 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
       maxLifetimeSeconds: 3600,
     })
     if (!lease.ok) throw new Error(lease.message ?? lease.code)
-    await forceLeaseExpiresAt(handle.db, lease.grant.leaseId, afterSeconds(handle.db, -1))
+    await forceLeaseExpiresAt(handle.db, lease.grant.leaseId, new Date(Date.now() - 1000))
 
     const listed = await listWorkers(
       handle.db,
@@ -512,7 +512,7 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     expect(live.associationLive).toBe(true)
     expect(live.session?.id).toBe(session.id)
 
-    await forceLeaseExpiresAt(handle.db, lease.grant.leaseId, afterSeconds(handle.db, -1))
+    await forceLeaseExpiresAt(handle.db, lease.grant.leaseId, new Date(Date.now() - 1000))
     const staleLease = await resolveWorkerRoute(handle.db, created.detail.id)
     expect(staleLease.associationLive).toBe(false)
     expect(staleLease.session?.id).toBe(session.id)

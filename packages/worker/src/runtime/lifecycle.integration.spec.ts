@@ -78,7 +78,7 @@ describe('LifecycleService（集成）', { timeout: 60_000 }, () => {
       startHeartbeat: () => {},
       stopHeartbeat: () => {},
       shutdown: async () => {},
-      reap: async () => ({ leasesExpired: 0, sessionsClosed: 0, authTimeouts: 0 }),
+      reap: async () => ({ leasesExpired: 0, sessionsClosed: 0 }),
     }
     const restoreConnect = gatePoolConnect(handle, gate.promise, () => claimEntered.resolve())
     const lifecycle = new LifecycleService(

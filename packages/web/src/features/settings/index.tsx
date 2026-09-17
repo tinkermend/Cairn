@@ -1,7 +1,6 @@
 import { Outlet } from '@tanstack/react-router'
 import { Palette, Wrench, UserCog } from 'lucide-react'
 import { Separator } from '@/components/ui/separator'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { SidebarNav } from './components/sidebar-nav'
@@ -26,11 +25,7 @@ const sidebarNavItems = [
 
 export function Settings() {
   return (
-    <>
-      {/* ===== Top Heading ===== */}
-      <AppHeader />
-
-      <Main fixed>
+    <Main fixed>
         <PageHeader title='设置' description='管理个人资料、账号与界面偏好。' />
         <Separator className='my-4 lg:my-6' />
         <div className='flex flex-1 flex-col space-y-2 overflow-hidden md:space-y-2 lg:flex-row lg:space-y-0 lg:space-x-12'>
@@ -41,7 +36,6 @@ export function Settings() {
             <Outlet />
           </div>
         </div>
-      </Main>
-    </>
+    </Main>
   )
 }

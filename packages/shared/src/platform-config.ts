@@ -13,14 +13,18 @@ import { nextCursorSchema } from './rbac.js'
 import { DEFAULT_RETRY_LIMIT, DEFAULT_STEP_TIMEOUT_MS, resolveStepPolicy } from './policy.js'
 import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
 import {
+  DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
   DEFAULT_SESSION_AUTH_WAIT_SECONDS,
+  DEFAULT_SESSION_EVICTION_PRIORITY,
   DEFAULT_SESSION_IDLE_TTL_SECONDS,
+  DEFAULT_SESSION_KEEP_ALIVE_SECONDS,
   DEFAULT_SESSION_LEASE_TTL_SECONDS,
   DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
-  DEFAULT_SESSION_POLICY,
+  DEFAULT_SESSION_RECLAIM_MODE,
   DEFAULT_SESSION_REUSE_POLICY,
-  resolveSessionPolicy,
+  resolveSessionPolicyLayers,
   sessionPolicySchema,
+  sessionReclaimModeSchema,
   type SessionPolicy,
   type SessionPolicyOverride,
 } from './session.js'
@@ -42,6 +46,9 @@ import { AUTH_METHODS, CAPTCHA_MODES, targetLoginFieldsDtoSchema } from './targe
 import { entityIdSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
 
 export const PLATFORM_CONFIG_SCHEMA_VERSION = 1 as const
+/** 仍能被本版本读取的最早文档版本。低于它的存量文档必须先跑数据迁移。 */
+export const PLATFORM_CONFIG_MIN_SCHEMA_VERSION = 1 as const
+export const PLATFORM_CONFIG_SCHEMA_UNSUPPORTED = 'PLATFORM_CONFIG_SCHEMA_UNSUPPORTED' as const
 export const PLATFORM_CONFIG_SINGLETON_ID = '00000000-0000-4000-8000-c01f16000001'
 export const PLATFORM_CONFIG_SOURCES = ['bootstrap', 'update', 'restore'] as const
 export type PlatformConfigSource = (typeof PLATFORM_CONFIG_SOURCES)[number]
@@ -90,6 +97,20 @@ export const platformSessionDefaultsSchema = z
     idleTtlSeconds: z.number().int().min(60).max(604_800),
     maxLifetimeSeconds: z.number().int().min(120).max(2_592_000),
     authWaitSeconds: z.number().int().min(30).max(3_600),
+    reclaim: sessionReclaimModeSchema.default(DEFAULT_SESSION_RECLAIM_MODE),
+    keepAliveSeconds: z
+      .number()
+      .int()
+      .min(60)
+      .max(2_592_000)
+      .default(DEFAULT_SESSION_KEEP_ALIVE_SECONDS),
+    authProbeIntervalSeconds: z
+      .number()
+      .int()
+      .min(30)
+      .max(86_400)
+      .default(DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS),
+    evictionPriority: z.number().int().min(-1000).max(1000).default(DEFAULT_SESSION_EVICTION_PRIORITY),
   })
   .superRefine((session, ctx) => {
     if (session.maxLifetimeSeconds <= session.idleTtlSeconds) {
@@ -98,6 +119,22 @@ export const platformSessionDefaultsSchema = z
         path: ['maxLifetimeSeconds'],
         message: 'maxLifetimeSeconds 必须大于 idleTtlSeconds',
       })
+    }
+    if (session.reclaim === 'AUTH_DRIVEN') {
+      if (session.keepAliveSeconds >= session.maxLifetimeSeconds) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['keepAliveSeconds'],
+          message: 'AUTH_DRIVEN 时 keepAliveSeconds 必须小于 maxLifetimeSeconds',
+        })
+      }
+      if (session.authProbeIntervalSeconds >= session.keepAliveSeconds) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['authProbeIntervalSeconds'],
+          message: 'AUTH_DRIVEN 时 authProbeIntervalSeconds 必须小于 keepAliveSeconds',
+        })
+      }
     }
   })
 export type PlatformSessionDefaults = z.infer<typeof platformSessionDefaultsSchema>
@@ -300,6 +337,10 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     idleTtlSeconds: DEFAULT_SESSION_IDLE_TTL_SECONDS,
     maxLifetimeSeconds: DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
     authWaitSeconds: DEFAULT_SESSION_AUTH_WAIT_SECONDS,
+    reclaim: DEFAULT_SESSION_RECLAIM_MODE,
+    keepAliveSeconds: DEFAULT_SESSION_KEEP_ALIVE_SECONDS,
+    authProbeIntervalSeconds: DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
+    evictionPriority: DEFAULT_SESSION_EVICTION_PRIORITY,
   },
   evidence: {
     screenshot: DEFAULT_EVIDENCE_POLICY.screenshot,
@@ -316,16 +357,7 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     stepMaxCalls: 20,
     maxOutputTokens: 2048,
   },
-  platformAi: {
-    enabled: false,
-    routeId: PLATFORM_AI_ROUTE_ID,
-    requestTimeoutMs: 20_000,
-    turnTimeoutMs: 60_000,
-    maxCallsPerTurn: 3,
-    maxOutputTokens: 2048,
-    userInflightLimit: 1,
-    platformInflightLimit: 4,
-  },
+  platformAi: FACTORY_PLATFORM_AI,
   sessionScheduling: FACTORY_SESSION_SCHEDULING,
   sessionAuth: FACTORY_SESSION_AUTH,
   sessionRetention: FACTORY_SESSION_RETENTION,
@@ -337,6 +369,59 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   moduleQuality: FACTORY_MODULE_QUALITY,
   moduleFallback: FACTORY_MODULE_FALLBACK,
 }
+
+/**
+ * 文档按写入当时的 schemaVersion 保存，读取时先逐级升级再按当前 schema 校验。
+ *
+ * 加新版本时只做两件事：把 PLATFORM_CONFIG_SCHEMA_VERSION 加一，并在此登记 n -> n+1
+ * 的升级函数。读取处不需要改，也不允许在别处按版本号分支。
+ */
+export type PlatformConfigUpgrade = (raw: Record<string, unknown>) => Record<string, unknown>
+
+const PLATFORM_CONFIG_UPGRADES = new Map<number, PlatformConfigUpgrade>()
+
+function schemaUnsupported(message: string): Error {
+  return Object.assign(new Error(message), { code: PLATFORM_CONFIG_SCHEMA_UNSUPPORTED })
+}
+
+/** 把任意存量平台配置文档升级到当前版本并严格校验。读取持久化文档一律走这里。 */
+export function upgradePlatformConfigDocument(raw: unknown): PlatformConfigDocument {
+  if (!isPlainObject(raw)) throw schemaUnsupported('平台配置文档不是对象')
+  const declared = raw.schemaVersion
+  if (
+    typeof declared !== 'number' ||
+    !Number.isInteger(declared) ||
+    declared < PLATFORM_CONFIG_MIN_SCHEMA_VERSION
+  ) {
+    throw schemaUnsupported(`平台配置 schemaVersion 非法：${JSON.stringify(declared)}`)
+  }
+  if (declared > PLATFORM_CONFIG_SCHEMA_VERSION) {
+    throw schemaUnsupported(
+      `平台配置 schemaVersion ${declared} 高于本版本支持的 ${PLATFORM_CONFIG_SCHEMA_VERSION}，请先升级服务`,
+    )
+  }
+  let document: Record<string, unknown> = raw
+  for (let version = declared; version < PLATFORM_CONFIG_SCHEMA_VERSION; version += 1) {
+    const upgrade = PLATFORM_CONFIG_UPGRADES.get(version)
+    if (!upgrade) {
+      throw schemaUnsupported(`缺少平台配置 schemaVersion ${version} -> ${version + 1} 的升级函数`)
+    }
+    document = upgrade(document)
+    if (document.schemaVersion !== version + 1) {
+      throw schemaUnsupported(
+        `平台配置 schemaVersion ${version} 的升级函数未把版本推进到 ${version + 1}`,
+      )
+    }
+  }
+  return platformConfigDocumentSchema.parse(document)
+}
+
+/**
+ * 历史修订原样返回：变更记录只用于展示与差异，不能因为当前 schema 删改了某一节
+ * 就让整页打不开。严格校验只发生在恢复写回时。
+ */
+export const storedPlatformConfigDocumentSchema = z.record(z.string(), z.unknown())
+export type StoredPlatformConfigDocument = z.infer<typeof storedPlatformConfigDocumentSchema>
 
 export const platformRuntimeDefaultsSchema = z.strictObject({
   revision: z.number().int().positive(),
@@ -410,7 +495,7 @@ export type PlatformConfigTestConnectionResponse = z.infer<
 export const platformConfigRevisionSchema = z.strictObject({
   id: entityIdSchema,
   revision: z.number().int().positive(),
-  document: platformConfigDocumentSchema,
+  document: storedPlatformConfigDocumentSchema,
   actorAccountId: entityIdSchema.nullable(),
   reason: z.string().min(1).max(512),
   source: z.enum(PLATFORM_CONFIG_SOURCES),
@@ -460,14 +545,23 @@ export function sessionPolicyFromPlatform(session: PlatformSessionDefaults): Ses
     maxLifetimeSeconds: session.maxLifetimeSeconds,
     leaseTtlSeconds: DEFAULT_SESSION_LEASE_TTL_SECONDS,
     authWaitSeconds: session.authWaitSeconds,
+    reclaim: session.reclaim,
+    keepAliveSeconds: session.keepAliveSeconds,
+    authProbeIntervalSeconds: session.authProbeIntervalSeconds,
+    evictionPriority: session.evictionPriority,
   })
 }
 
 export function resolvePlatformSessionPolicy(
   override: SessionPolicyOverride | null | undefined,
   platform: PlatformSessionDefaults,
+  targetOverride?: SessionPolicyOverride | null,
 ): SessionPolicy {
-  return resolveSessionPolicy(override, sessionPolicyFromPlatform(platform))
+  return resolveSessionPolicyLayers({
+    platformDefault: sessionPolicyFromPlatform(platform),
+    targetOverride,
+    runOverride: override,
+  })
 }
 
 export function resolvePlatformEvidencePolicy(
@@ -588,8 +682,8 @@ function redactConfigValue(path: string, value: unknown): unknown {
 }
 
 export function platformConfigDiff(
-  previous: PlatformConfigDocument | undefined,
-  next: PlatformConfigDocument,
+  previous: Record<string, unknown> | undefined,
+  next: Record<string, unknown>,
 ): { path: string; from?: unknown; to?: unknown }[] {
   if (!previous) return []
   const diffs: { path: string; from?: unknown; to?: unknown }[] = []

@@ -199,6 +199,7 @@ export type ModuleInvocationListResponse = z.infer<typeof moduleInvocationListRe
 export type ModuleQualityDeriveStepRun = {
   stepId: string
   status: StepRunStatus
+  outcomeStatus?: string | null
   startedAt?: string | Date | null
   finishedAt?: string | Date | null
 }
@@ -219,6 +220,11 @@ export type ModuleQualityDeriveEvidence = {
   payload?: unknown
 }
 
+export type ModuleQualityDeriveOutcomeResult = {
+  stepId?: string | null
+  verdict: 'PASS' | 'WARN' | 'FAIL' | 'UNKNOWN'
+}
+
 export type DeriveInvocationResultsInput = {
   snapshot: Pick<RunSnapshot, 'runId' | 'targetId' | 'targetAccountId' | 'steps' | 'moduleManifest' | 'candidateGroups'>
   run: {
@@ -231,6 +237,7 @@ export type DeriveInvocationResultsInput = {
   stepRuns: readonly ModuleQualityDeriveStepRun[]
   attempts: readonly ModuleQualityDeriveAttempt[]
   evidences?: readonly ModuleQualityDeriveEvidence[]
+  outcomeResults?: readonly ModuleQualityDeriveOutcomeResult[]
   manualRequirementCounts?: Readonly<Record<string, number>>
   projectorVersion?: number
 }
@@ -368,7 +375,15 @@ function deriveOne(
   const aiCost = aiCostValues.length > 0 ? aiCostValues.reduce((sum, item) => sum + item, 0) : undefined
   const missingOutput = entry.outputRequired.some((key) => !contextHasOutput(input.run.context, entry, key))
   const postconditionIds = winningAlt?.postconditionStepIds ?? entry.postconditionStepIds
-  const postconditionFailed = postconditionIds.some((stepId) => byId.get(stepId)?.status === 'FAILED')
+  const postconditionFailed = postconditionIds.some((stepId) => {
+    const step = byId.get(stepId)
+    if (step?.status === 'FAILED' || step?.outcomeStatus === 'FAIL') return true
+    return Boolean(
+      input.outcomeResults?.some(
+        (r) => r.stepId === stepId && r.verdict === 'FAIL',
+      ),
+    )
+  })
   const allSucceeded = Boolean(
     winningAlt ||
       (focusStepIds.length > 0 && focusStepIds.every((stepId) => byId.get(stepId)?.status === 'SUCCEEDED')),

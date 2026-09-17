@@ -1,8 +1,8 @@
+import { compileModuleContent } from '@cairn/authoring'
 import {
   actionModuleDetailSchema,
   actionModuleSummarySchema,
   actionModuleVersionDtoSchema,
-  compileModuleContent,
   createModuleBodySchema,
   updateModuleMetaBodySchema,
   publishModuleBodySchema,

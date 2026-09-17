@@ -1,7 +1,7 @@
 import type { ConsoleRole, ConsoleAccount } from '../records.js'
 import { schemaFor } from '../native.js'
 import { updateRows, deleteRows } from '../native.js'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm'
 import {
   consoleAccountRoles,
   consoleAccounts,
@@ -57,6 +57,10 @@ import {
   type RoleListResponse,
   type UpdateAccountBody,
   type UpdateRoleBody,
+  roleAccountsResponseSchema,
+  type RoleAccountsResponse,
+  type AddRoleAccountsBody,
+  type RemoveRoleAccountsBody,
 } from '@cairn/shared'
 import type { PersistenceActor as RequestAccount } from './actor.js'
 import { recordLoginAudit } from '../audit/record.js'
@@ -257,6 +261,150 @@ export class RbacStore {
       )
       await tx.delete(consoleRoles).where(eq(consoleRoles.id, id))
     })
+  }
+
+  async listRoleAccounts(
+    roleId: string,
+    query?: { cursor?: string; limit?: number; search?: string },
+  ): Promise<RoleAccountsResponse> {
+    await this.requireRole(roleId)
+    const { consoleAccountRoles, consoleAccounts } = schemaFor(this.db)
+    const limit = query?.limit ?? 50
+    const conditions = [eq(consoleAccountRoles.consoleRoleId, roleId)]
+    if (query?.search?.trim()) {
+      const term = `%${query.search.trim().toLowerCase()}%`
+      conditions.push(
+        or(
+          sql`lower(${consoleAccounts.displayName}) like ${term}`,
+          sql`lower(${consoleAccounts.email}) like ${term}`,
+        )!,
+      )
+    }
+    const rows = await this.db
+      .select({
+        id: consoleAccounts.id,
+        displayName: consoleAccounts.displayName,
+        email: consoleAccounts.email,
+        status: consoleAccounts.status,
+        assignedAt: consoleAccountRoles.assignedAt,
+      })
+      .from(consoleAccountRoles)
+      .innerJoin(consoleAccounts, eq(consoleAccounts.id, consoleAccountRoles.consoleAccountId))
+      .where(and(...conditions))
+      .orderBy(desc(consoleAccountRoles.assignedAt), desc(consoleAccounts.id))
+      .limit(limit + 1)
+
+    const hasNext = rows.length > limit
+    const pageRows = hasNext ? rows.slice(0, limit) : rows
+    const lastItem = pageRows[pageRows.length - 1]
+    const nextCursor = hasNext && lastItem ? lastItem.id : undefined
+
+    return roleAccountsResponseSchema.parse({
+      items: pageRows.map((r) => ({
+        id: r.id,
+        displayName: r.displayName,
+        email: r.email,
+        status: r.status,
+        assignedAt: iso(r.assignedAt),
+      })),
+      nextCursor,
+    })
+  }
+
+  async addRoleAccounts(
+    roleId: string,
+    body: AddRoleAccountsBody,
+    actor: RequestAccount | null,
+  ): Promise<{ addedCount: number }> {
+    const role = await this.requireRole(roleId)
+    const { consoleAccountRoles, consoleAccounts } = schemaFor(this.db)
+    await this.assertCanGrantRoles(actor, [roleId])
+
+    const accountIds = [...new Set(body.accountIds)]
+    if (accountIds.length === 0) return { addedCount: 0 }
+
+    const existingAccounts = await this.db
+      .select({ id: consoleAccounts.id })
+      .from(consoleAccounts)
+      .where(inArray(consoleAccounts.id, accountIds))
+
+    if (existingAccounts.length !== accountIds.length) {
+      throw failure('bad_request', '包含不存在的账号')
+    }
+
+    const alreadyAssigned = await this.db
+      .select({ accountId: consoleAccountRoles.consoleAccountId })
+      .from(consoleAccountRoles)
+      .where(
+        and(
+          eq(consoleAccountRoles.consoleRoleId, roleId),
+          inArray(consoleAccountRoles.consoleAccountId, accountIds),
+        ),
+      )
+    const alreadySet = new Set(alreadyAssigned.map((r) => r.accountId))
+    const toInsert = accountIds.filter((id) => !alreadySet.has(id))
+
+    if (toInsert.length === 0) return { addedCount: 0 }
+
+    const now = new Date()
+    await this.db.transaction(async (tx) => {
+      await tx.insert(consoleAccountRoles).values(
+        toInsert.map((consoleAccountId) => ({
+          consoleAccountId,
+          consoleRoleId: roleId,
+          assignedAt: now,
+          assignedByConsoleAccountId: actor?.id ?? null,
+        })),
+      )
+      await this.insertAudit(
+        tx,
+        actor?.id ?? null,
+        'account.roles',
+        'role',
+        roleId,
+        `向角色 ${role.name} 添加了 ${toInsert.length} 名成员`,
+      )
+    })
+
+    return { addedCount: toInsert.length }
+  }
+
+  async removeRoleAccounts(
+    roleId: string,
+    body: RemoveRoleAccountsBody,
+    actor: RequestAccount | null,
+  ): Promise<{ removedCount: number }> {
+    const role = await this.requireRole(roleId)
+    const { consoleAccountRoles } = schemaFor(this.db)
+    const accountIds = [...new Set(body.accountIds)]
+    if (accountIds.length === 0) return { removedCount: 0 }
+
+    if (role.key === ADMIN_ROLE_KEY) {
+      for (const accountId of accountIds) {
+        await this.assertNotLastActiveAdmin(accountId, 'active', [])
+      }
+    }
+
+    await this.db.transaction(async (tx) => {
+      await tx
+        .delete(consoleAccountRoles)
+        .where(
+          and(
+            eq(consoleAccountRoles.consoleRoleId, roleId),
+            inArray(consoleAccountRoles.consoleAccountId, accountIds),
+          ),
+        )
+      await this.insertAudit(
+        tx,
+        actor?.id ?? null,
+        'account.roles',
+        'role',
+        roleId,
+        `从角色 ${role.name} 移除了成员`,
+      )
+    })
+
+    return { removedCount: accountIds.length }
   }
 
   async listAccounts(): Promise<AccountListResponse> {

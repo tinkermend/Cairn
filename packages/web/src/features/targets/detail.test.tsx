@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_SESSION_POLICY } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { TargetDetailPage } from './detail'
 
@@ -22,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   previewDeleteTarget: vi.fn(),
   deleteTarget: vi.fn(),
   deleteTargetAccount: vi.fn(),
+  updateTargetSessionPolicy: vi.fn(),
   fetchSessionOverview: vi.fn(),
   fetchScenarios: vi.fn(),
 }))
@@ -33,7 +35,6 @@ vi.mock('@/lib/sessions-api', () => ({
 vi.mock('@/lib/scenarios-api', () => ({
   fetchScenarios: mocks.fetchScenarios,
 }))
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('./account-form-dialog', () => ({ AccountFormDialog: () => null }))
 vi.mock('./target-form-dialog', () => ({ TargetFormDialog: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -161,6 +162,7 @@ describe('TargetDetailPage 账号列表', () => {
       search: 'ops',
       limit: 20,
     })
+    expect(mocks.fetchSessionOverview).toHaveBeenCalledWith({ targetId: TARGET_ID })
   })
 
   it('筛选无结果时仍保留搜索框和清除筛选', async () => {
@@ -197,5 +199,40 @@ describe('TargetDetailPage 账号列表', () => {
 
     await screen.getByRole('tab', { name: /目标授权/ }).click()
     await expect.element(screen.getByText(/已配置授权边界/)).toBeInTheDocument()
+  })
+
+  it('登录核验规则页可覆盖会话回收模式', async () => {
+    const baseTarget = {
+      id: TARGET_ID,
+      name: '演示商城',
+      code: 'shop',
+      entryUrl: 'https://shop.example.test',
+      authMethod: 'password',
+      captchaMode: 'none',
+      status: 'active',
+      accountCount: 1,
+      updatedAt: '2026-09-14T00:00:00.000Z',
+      sessionPolicy: null,
+      effectiveSessionPolicy: DEFAULT_SESSION_POLICY,
+    }
+    mocks.fetchTarget.mockResolvedValue(baseTarget)
+    mocks.updateTargetSessionPolicy.mockImplementation(async (_id: string, body: { reclaim?: string | null }) => ({
+      ...baseTarget,
+      sessionPolicy: { reclaim: body.reclaim },
+      effectiveSessionPolicy: { ...DEFAULT_SESSION_POLICY, reclaim: body.reclaim },
+    }))
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: /登录核验规则/ }).click()
+    await expect.element(screen.getByText('会话策略')).toBeInTheDocument()
+    await expect.element(screen.getByLabelText('回收模式')).toBeInTheDocument()
+    await screen.getByLabelText('回收模式').click()
+    await screen.getByRole('option', { name: '认证有效即保活' }).click()
+    await expect.poll(() => {
+      const calls = mocks.updateTargetSessionPolicy.mock.calls
+      return calls[calls.length - 1]?.[1]
+    }).toMatchObject({
+      reclaim: 'AUTH_DRIVEN',
+    })
+    await expect.element(screen.getByText(/认证保活不占人工保留配额/)).toBeInTheDocument()
   })
 })

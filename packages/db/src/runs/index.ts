@@ -1,4 +1,5 @@
 export { DomainError, badRequest, conflict, forbidden, mapRestriction, notFound, pgCode, constraintName, unavailable } from './errors.js'
+export { assembleRunSnapshot, AssembleRunSnapshotError } from './assemble-snapshot.js'
 export { computeIdempotencyDigest, computeSnapshotDigest, sha256Hex } from './digest.js'
 export {
   appendScenarioVersion,
@@ -28,7 +29,6 @@ export {
   createRunWithSnapshot,
   createTrialRunFromDraft,
   deleteRun,
-  failRunAuthTimeout,
   failRunValidation,
   finishAttempt,
   finishAttemptTx,
@@ -38,7 +38,6 @@ export {
   getRunCleanupStatus,
   listRunEvidence,
   listRuns,
-  listRunsWaitingForAuthByAccount,
   loadRunDetail,
   computeRunPlacement,
   loadRunRow,
@@ -72,3 +71,10 @@ export {
   type YieldClaimReason,
   type YieldClaimResult,
 } from './recover.js'
+export {
+  backfillOutcomeResults,
+  recalculateRunOutcomeTx,
+  saveStepOutcomeResultsTx,
+  settleRunOutcome,
+  type OutcomeResultInsertItem,
+} from './outcome-results.js'

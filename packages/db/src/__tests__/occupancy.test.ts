@@ -4,9 +4,10 @@ import { PLATFORM_CONFIG_SINGLETON_ID, SESSION_OCCUPANCY_PROTOCOL, type Step } f
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { afterSeconds, schemaFor } from '../native.js'
 import { newId } from '../id.js'
-import { claimExecutionForRun, forceGrantForRun, seedWorker } from './lease-harness.js'
+import { claimExecutionForRun, enterAuthWaitForRun, forceGrantForRun, seedWorker } from './lease-harness.js'
 import {
   claimRun,
+  claimSessionOperation,
   claimSessionUse,
   countFailedRecoveries,
   computeRunPlacement,
@@ -18,6 +19,7 @@ import {
   findLiveSession,
   getRun,
   getSessionById,
+  getSessionOperation,
   getSessionProfile,
   invalidateSessionProfile,
   markWorkerDraining,
@@ -27,9 +29,12 @@ import {
   resumeRunAfterAuth,
   setSessionStatus,
   upsertSessionProfile,
+  expose,
   type NativeHandle as DbHandle,
 } from '../test-entry.js'
+import { TargetsStore } from '../console/targets.js'
 import { getOrCreatePlatformConfig, updatePlatformConfig } from '../platform-config/store.js'
+import { leaseWaitFacts } from '../sessions/occupancy-read.js'
 
 const echoStep: Step = {
   id: '00000000-0000-4000-8000-0000000000b1',
@@ -311,7 +316,6 @@ describe.each(DRIVERS)('%s 会话占用与调度', { timeout: 60_000 }, (driver)
     expect((await getRun(handle.db, created.detail.id)).status).toBe('RECOVERING')
     expect(await countFailedRecoveries(handle.db, created.detail.id)).toBe(1)
     expect(await findAuthWaitLeaseForRun(handle.db, created.detail.id)).toBeNull()
-    expect((await getSessionById(handle.db, claimed.session.id))?.authHoldRunId).toBeNull()
     expect((await getSessionById(handle.db, claimed.session.id))?.status).toBe('LOST')
     expect((await findLiveSession(handle.db, { targetId, targetAccountId: accountId }))?.status).toBe('LOST')
     await reapSessionLeases(handle.db, { maxRecoveries: 3 })
@@ -457,5 +461,219 @@ describe.each(DRIVERS)('%s 会话占用与调度', { timeout: 60_000 }, (driver)
     expect(next!.revision).toBe(4)
     expect(next!.state).toBe('ABSENT')
     expect(next!.pendingCleanups.some((item) => item.workerId === worker.workerId && item.revision === 3)).toBe(true)
+  })
+
+  it.each([
+    ['EXECUTION', { purpose: 'EXECUTION', runId: 'run-1', operationId: null }, 'SESSION_IN_USE_BY_RUN', 'run-1', null],
+    ['MAINTENANCE', { purpose: 'MAINTENANCE', runId: null, operationId: 'op-1' }, 'SESSION_IN_MAINTENANCE', null, 'op-1'],
+    ['AUTH_WAIT/RUN', { purpose: 'AUTH_WAIT', runId: 'run-2', operationId: null }, 'SESSION_WAITING_FOR_AUTH', 'run-2', null],
+    ['AUTH_WAIT/OP', { purpose: 'AUTH_WAIT', runId: null, operationId: 'op-2' }, 'SESSION_WAITING_FOR_AUTH', null, 'op-2'],
+  ] as const)('leaseWaitFacts %s', (_label, lease, waitReason, occupyingRunId, occupyingOperationId) => {
+    expect(leaseWaitFacts(lease)).toMatchObject({ waitReason, occupyingRunId, occupyingOperationId })
+  })
+
+  it('leaseWaitFacts 无租约为空', () => {
+    expect(leaseWaitFacts(null)).toBeNull()
+  })
+
+  it('claimSessionUse 拒绝用途与主体不配、他人占用和容量耗尽', async () => {
+    const accountId = await makeAccount('claim-codes')
+    const other = await makeAccount('claim-other')
+    const worker = await seedWorker(handle, `claimc-${newId().slice(0, 8)}`)
+    const created = await queueRun(accountId)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    const mismatched = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      owner: { kind: 'SESSION_OPERATION', operationId: newId() },
+      purpose: 'EXECUTION',
+      holderWorkerId: worker.workerId,
+      holderInstanceId: worker.instanceId,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(mismatched).toMatchObject({ ok: false, code: 'SESSION_NOT_CLAIMABLE' })
+    const first = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      owner: { kind: 'RUN', runId: grant.runId, runFencingToken: grant.fencingToken },
+      purpose: 'EXECUTION',
+      holderWorkerId: worker.workerId,
+      holderInstanceId: worker.instanceId,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(first.ok).toBe(true)
+    const secondRun = await queueRun(accountId)
+    const secondGrant = await forceGrantForRun(handle, secondRun.detail.id, worker.workerId)
+    const busy = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      owner: { kind: 'RUN', runId: secondGrant.runId, runFencingToken: secondGrant.fencingToken },
+      purpose: 'EXECUTION',
+      holderWorkerId: worker.workerId,
+      holderInstanceId: worker.instanceId,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(busy).toMatchObject({ ok: false, code: 'SESSION_BUSY' })
+    if (first.ok) await closeSession(first.session.id, worker.workerId)
+
+    const tinyId = `tiny-${newId().slice(0, 8)}`
+    const tinyInstance = newId()
+    await registerWorker(handle.db, {
+      workerId: tinyId,
+      instanceId: tinyInstance,
+      capacity: 2,
+      maxSessions: 1,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL],
+    })
+    const tinyRun = await queueRun(other)
+    const tinyGrant = await forceGrantForRun(handle, tinyRun.detail.id, tinyId)
+    const tinyFirst = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: other },
+      owner: { kind: 'RUN', runId: tinyGrant.runId, runFencingToken: tinyGrant.fencingToken },
+      purpose: 'EXECUTION',
+      holderWorkerId: tinyId,
+      holderInstanceId: tinyInstance,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(tinyFirst.ok).toBe(true)
+    const extra = await makeAccount('claim-cap')
+    const extraRun = await queueRun(extra)
+    const extraGrant = await forceGrantForRun(handle, extraRun.detail.id, tinyId)
+    const capped = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: extra },
+      owner: { kind: 'RUN', runId: extraGrant.runId, runFencingToken: extraGrant.fencingToken },
+      purpose: 'EXECUTION',
+      holderWorkerId: tinyId,
+      holderInstanceId: tinyInstance,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(capped).toMatchObject({ ok: false, code: 'SESSION_CAPACITY_EXCEEDED' })
+    if (tinyFirst.ok) await closeSession(tinyFirst.session.id, tinyId)
+  })
+
+  it('reapSessionLeases 普通执行租约过期只写 lease_expired', async () => {
+    const accountId = await makeAccount('lease-exp')
+    const worker = await seedWorker(handle, `lexp-${newId().slice(0, 8)}`)
+    const created = await queueRun(accountId)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    const claimed = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      owner: { kind: 'RUN', runId: grant.runId, runFencingToken: grant.fencingToken },
+      purpose: 'EXECUTION',
+      holderWorkerId: worker.workerId,
+      holderInstanceId: worker.instanceId,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(claimed.ok).toBe(true)
+    if (!claimed.ok) return
+    const { sessionLeases } = schemaFor(handle.db)
+    await handle.db
+      .update(sessionLeases)
+      .set({ expiresAt: afterSeconds(handle.db, -5) })
+      .where(eq(sessionLeases.id, claimed.grant.leaseId))
+    expect(await reapSessionLeases(handle.db)).toBeGreaterThanOrEqual(1)
+    const [row] = await handle.db.select().from(sessionLeases).where(eq(sessionLeases.id, claimed.grant.leaseId))
+    expect(row).toMatchObject({ status: 'EXPIRED', releaseReason: 'lease_expired' })
+    expect((await getRun(handle.db, created.detail.id)).status).toBe('RUNNING')
+    await closeSession(claimed.session.id, worker.workerId)
+  })
+
+  it('AH-04 仅有 AUTH_WAIT 租约时删除目标系统／账号仍被 RESOURCE_BUSY 拦住', async () => {
+    const { targets, targetAccounts, runs } = schemaFor(handle.db)
+    const isolatedTargetId = newId()
+    const accountId = newId()
+    await handle.db.insert(targets).values({
+      id: isolatedTargetId,
+      code: `ah04-${isolatedTargetId.slice(0, 8)}`,
+      name: 'AH-04',
+      entryUrl: 'https://ah04.example',
+    })
+    await handle.db.insert(targetAccounts).values({
+      id: accountId,
+      targetId: isolatedTargetId,
+      displayName: 'ah04',
+      username: `u-ah04-${accountId.slice(0, 8)}`,
+      status: 'active',
+    })
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId: isolatedTargetId,
+      name: `ah04-${newId()}`,
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      targetAccountId: accountId,
+      actor: { id: actorId },
+    })
+    const worker = await seedWorker(handle, `ah04-${newId().slice(0, 8)}`)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    await enterAuthWaitForRun(handle, {
+      targetId: isolatedTargetId,
+      targetAccountId: accountId,
+      grant,
+      workerId: worker.workerId,
+      instanceId: worker.instanceId,
+      holdSeconds: 120,
+    })
+    expect(await findAuthWaitLeaseForRun(handle.db, created.detail.id)).not.toBeNull()
+    await handle.db
+      .update(runs)
+      .set({ status: 'FAILED', finishedAt: new Date(), updatedAt: new Date() })
+      .where(eq(runs.id, created.detail.id))
+    const store = new TargetsStore(expose(handle), () => Buffer.from('secret'))
+    const actor = {
+      id: actorId,
+      displayName: 'occupancy',
+      email: `occ-${actorId}@example.com`,
+      status: 'active' as const,
+      roles: [],
+      permissions: [],
+    }
+    await expect(store.deleteAccount(isolatedTargetId, accountId, actor)).rejects.toMatchObject({
+      code: 'RESOURCE_BUSY',
+    })
+    await expect(store.deleteTarget(isolatedTargetId, actor)).rejects.toMatchObject({
+      code: 'RESOURCE_BUSY',
+    })
+  })
+
+  it('未声明 session-maintenance@1 的 Worker 不能领取 C kind', async () => {
+    const accountId = await makeAccount('no-maint')
+    const workerId = `nomaint-${newId().slice(0, 8)}`
+    const instanceId = newId()
+    await registerWorker(handle.db, {
+      workerId,
+      instanceId,
+      capacity: 2,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL],
+    })
+    const queued = await requestSessionOperation(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      kind: 'PREPARE',
+      origin: 'USER',
+      idempotencyKey: `prep-${newId().slice(0, 8)}`,
+    })
+    const claimed = await claimSessionOperation(handle.db, { workerId, instanceId, leaseTtlSeconds: 30 })
+    expect(claimed?.operation.id === queued.operation.id).toBe(false)
+    expect((await getSessionOperation(handle.db, queued.operation.id))?.status).toBe('QUEUED')
+    expect((await getSessionOperation(handle.db, queued.operation.id))?.kind).toBe('PREPARE')
   })
 })

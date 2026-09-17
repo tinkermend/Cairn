@@ -1,3 +1,8 @@
+import {
+  compileAccessScopeFromOrigins,
+  urlAllowedByCompiledScope,
+  type CompiledAccessScope,
+} from '@cairn/shared'
 import type { BrowserContext, Page } from 'playwright'
 
 export class TargetScopeError extends Error {
@@ -6,32 +11,42 @@ export class TargetScopeError extends Error {
     super('页面超出目标系统授权范围')
   }
 }
-type Scope = { origins: Set<string>; ready: Map<Page, Promise<void>>; failed: boolean }
+export type TargetScopeInput = readonly string[] | CompiledAccessScope
+type Scope = { compiled: CompiledAccessScope; ready: Map<Page, Promise<void>>; failed: boolean }
 const scopes = new WeakMap<BrowserContext, Scope>()
-function allowed(scope: Scope, url: string): boolean {
-  try {
-    const u = new URL(url)
-    return (
-      ['http:', 'https:'].includes(u.protocol) &&
-      scope.origins.has(u.origin) &&
-      !u.username &&
-      !u.password
-    )
-  } catch {
-    return false
-  }
+
+function asCompiled(input: TargetScopeInput): CompiledAccessScope {
+  if ('rules' in input) return input
+  return compileAccessScopeFromOrigins(input)
 }
+
+function allowed(scope: Scope, url: string): boolean {
+  return urlAllowedByCompiledScope(url, scope.compiled)
+}
+
 export function hasTargetScope(context: BrowserContext) {
   return scopes.has(context)
 }
-export async function installTargetScope(context: BrowserContext, origins: readonly string[]) {
+
+export function installedCompiledScope(context: BrowserContext): CompiledAccessScope | undefined {
+  return scopes.get(context)?.compiled
+}
+
+export function installedScopeAllows(context: BrowserContext, url: string): boolean | null {
+  const scope = scopes.get(context)
+  if (!scope) return null
+  return allowed(scope, url)
+}
+
+export async function installTargetScope(context: BrowserContext, input: TargetScopeInput) {
+  const compiled = asCompiled(input)
   const previous = scopes.get(context)
   if (previous) {
     if (previous.failed) throw new TargetScopeError()
-    previous.origins = new Set(origins)
+    previous.compiled = compiled
     return
   }
-  const scope: Scope = { origins: new Set(origins), ready: new Map(), failed: false }
+  const scope: Scope = { compiled, ready: new Map(), failed: false }
   scopes.set(context, scope)
   const ensure = (page: Page) => {
     if (!scope.ready.has(page)) {

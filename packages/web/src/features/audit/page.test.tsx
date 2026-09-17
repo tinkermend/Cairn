@@ -15,7 +15,6 @@ vi.mock('@/lib/rbac-api', () => ({
   fetchOperationAudit: mocks.fetchOperationAudit,
   fetchLoginAudit: mocks.fetchLoginAudit,
 }))
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {

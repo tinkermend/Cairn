@@ -1,5 +1,4 @@
 import { useNavigate } from '@tanstack/react-router'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -34,22 +33,16 @@ export function AuditPage({ pane }: { pane: AuditPane }) {
   ) : null
 
   return (
-    <>
-      <AppHeader
-        fixed
-        leading={<span className='me-auto text-small text-muted-foreground'>审计</span>}
-      />
-      <Main
-        fixed
-        className='flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden sm:gap-6'
-      >
+    <Main
+      fixed
+      className='flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden sm:gap-6'
+    >
         <PageHeader className='shrink-0' title='审计' description={copy.description} />
         {pane === 'operations' ? (
           <OperationsAuditPanel header={tabs} />
         ) : (
           <LoginsAuditPanel header={tabs} />
         )}
-      </Main>
-    </>
+    </Main>
   )
 }

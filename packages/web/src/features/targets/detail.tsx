@@ -43,7 +43,6 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -52,6 +51,7 @@ import { Can } from '@/components/rbac/can'
 import { StatusBadge } from '@/components/status-badge'
 import { AccessPolicyCard } from './access-policy-card'
 import { AuthProfileCard } from './auth-profile-card'
+import { SessionPolicyCard } from './session-policy-card'
 import { AccountFormDialog } from './account-form-dialog'
 import { TargetFormDialog } from './target-form-dialog'
 import { SystemInfoCard } from './system-info-card'
@@ -126,20 +126,17 @@ export function TargetDetailPage() {
 
   return (
     <>
-      <AppHeader
-        fixed
-        leading={
-          <Link
-            to='/targets'
-            className='me-auto flex items-center gap-2 text-small text-muted-foreground hover:text-link'
-          >
-            <ArrowLeft className='size-4' />
-            返回目标系统
-          </Link>
-        }
-      />
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
+          parent={
+            <Link
+              to='/targets'
+              className='inline-flex items-center gap-1.5 hover:text-link'
+            >
+              <ArrowLeft className='size-4' />
+              返回目标系统
+            </Link>
+          }
           title={target?.name ?? '目标系统'}
           description={
             <span className='flex flex-wrap items-center gap-2 text-small text-muted-foreground'>
@@ -425,10 +422,10 @@ export function TargetDetailPage() {
                                   <Can permission='session:read'>
                                     <Button variant='ghost' size='sm' asChild>
                                       <Link
-                                        to='/sessions'
-                                        search={{
+                                        to='/sessions/$targetId/$accountId'
+                                        params={{
                                           targetId,
-                                          targetAccountId: item.id,
+                                          accountId: item.id,
                                         }}
                                       >
                                         管理会话
@@ -490,7 +487,10 @@ export function TargetDetailPage() {
               {/* Tab 3: 登录核验规则与系统资料 */}
               <TabsContent value='auth-profile'>
                 <div className='grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]'>
-                  <AuthProfileCard target={target} />
+                  <div className='space-y-5'>
+                    <AuthProfileCard target={target} />
+                    <SessionPolicyCard target={target} />
+                  </div>
                   <SystemInfoCard
                     target={target}
                     onEdit={() => setEditOpen(true)}

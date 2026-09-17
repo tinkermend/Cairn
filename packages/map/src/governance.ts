@@ -86,18 +86,37 @@ export function proposeMapReferenceCandidates(input: {
   steps: readonly ScenarioStepClue[]
   assets: readonly MapScanAsset[]
 }): MapReferenceCandidate[] {
+  const byRoute = new Map<string, MapScanAsset[]>()
+  const byName = new Map<string, MapScanAsset[]>()
+  const byRole = new Map<string, MapScanAsset[]>()
+  const index = (map: Map<string, MapScanAsset[]>, key: string | undefined, asset: MapScanAsset) => {
+    if (!key) return
+    const list = map.get(key)
+    if (list) list.push(asset)
+    else map.set(key, [asset])
+  }
+  for (const asset of input.assets) {
+    index(byRoute, asset.routeTemplate, asset)
+    index(byName, asset.semanticName, asset)
+    index(byRole, asset.role, asset)
+  }
   const out: MapReferenceCandidate[] = []
   for (const step of input.steps) {
     const route = step.url ? classifyRoute({ url: step.url }).routeTemplate : undefined
-    for (const asset of input.assets) {
-      const reasons: string[] = []
-      if (route && asset.routeTemplate && route === asset.routeTemplate) reasons.push('route-template')
-      if (step.name && asset.semanticName && step.name === asset.semanticName) reasons.push('semantic-name')
-      if (step.locatorName && asset.semanticName && step.locatorName === asset.semanticName) {
-        reasons.push('locator-name')
+    const merged = new Map<string, { asset: MapScanAsset; reasons: string[] }>()
+    const touch = (asset: MapScanAsset, reason: string) => {
+      const current = merged.get(asset.assetRefKey)
+      if (current) {
+        if (!current.reasons.includes(reason)) current.reasons.push(reason)
+        return
       }
-      if (step.role && asset.role && step.role === asset.role) reasons.push('role')
-      if (reasons.length === 0) continue
+      merged.set(asset.assetRefKey, { asset, reasons: [reason] })
+    }
+    if (route) for (const asset of byRoute.get(route) ?? []) touch(asset, 'route-template')
+    if (step.name) for (const asset of byName.get(step.name) ?? []) touch(asset, 'semantic-name')
+    if (step.locatorName) for (const asset of byName.get(step.locatorName) ?? []) touch(asset, 'locator-name')
+    if (step.role) for (const asset of byRole.get(step.role) ?? []) touch(asset, 'role')
+    for (const { asset, reasons } of merged.values()) {
       out.push({
         stepId: step.stepId,
         assetRefKey: asset.assetRefKey,

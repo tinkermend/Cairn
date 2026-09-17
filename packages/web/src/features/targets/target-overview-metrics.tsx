@@ -23,8 +23,8 @@ export function TargetOverviewMetrics({
   onSelectTab,
 }: TargetOverviewMetricsProps) {
   const sessionQuery = useQuery({
-    queryKey: ['browser-sessions', 'overview', { search: target.name }],
-    queryFn: () => fetchSessionOverview({ search: target.name }),
+    queryKey: ['sessions-overview', { targetId: target.id }],
+    queryFn: () => fetchSessionOverview({ targetId: target.id }),
     staleTime: 10_000,
   })
 
@@ -94,7 +94,8 @@ export function TargetOverviewMetrics({
               : '单会话单租约保障'}
           </span>
           <Link
-            to='/sessions'
+            to='/sessions/$targetId'
+            params={{ targetId: target.id }}
             className='text-link hover:underline'
           >
             会话总览 →

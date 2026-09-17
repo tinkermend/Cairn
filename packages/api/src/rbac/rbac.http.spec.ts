@@ -111,6 +111,9 @@ function mockService() {
     changePassword: vi.fn(async () => undefined),
     setPassword: vi.fn(async () => undefined),
     updateMe: vi.fn(async () => ({ account: adminAccount })),
+    listRoleAccounts: vi.fn(async () => ({ items: [adminAccount] })),
+    addRoleAccounts: vi.fn(async () => ({ addedCount: 1 })),
+    removeRoleAccounts: vi.fn(async () => ({ removedCount: 1 })),
   }
 }
 
@@ -282,4 +285,46 @@ describe('RBAC HTTP', () => {
     await request(viewerApp.getHttpServer()).get('/console/audit/logins').expect(403)
     await request(viewerApp.getHttpServer()).get('/console/audit/operations').expect(200)
   })
+
+  it('GET /rbac/roles/:id/accounts 需要 role:read', async () => {
+    await request(viewerApp.getHttpServer()).get(`/rbac/roles/${customRole.id}/accounts`).expect(200)
+    expect(service.listRoleAccounts).toHaveBeenCalledWith(customRole.id, expect.any(Object))
+  })
+
+  it('POST /rbac/roles/:id/accounts 需要 role:write 与 account:write，viewer 返回 403', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/rbac/roles/${customRole.id}/accounts`)
+      .send({ accountIds: ['acc-1'] })
+      .expect(403)
+
+    const res = await request(adminApp.getHttpServer())
+      .post(`/rbac/roles/${customRole.id}/accounts`)
+      .send({ accountIds: ['acc-1'] })
+      .expect(200)
+    expect(res.body).toEqual({ addedCount: 1 })
+    expect(service.addRoleAccounts).toHaveBeenCalledWith(
+      customRole.id,
+      { accountIds: ['acc-1'] },
+      expect.any(Object),
+    )
+  })
+
+  it('POST /rbac/roles/:id/accounts/remove 需要 role:write 与 account:write，viewer 返回 403', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/rbac/roles/${customRole.id}/accounts/remove`)
+      .send({ accountIds: ['acc-1'] })
+      .expect(403)
+
+    const res = await request(adminApp.getHttpServer())
+      .post(`/rbac/roles/${customRole.id}/accounts/remove`)
+      .send({ accountIds: ['acc-1'] })
+      .expect(200)
+    expect(res.body).toEqual({ removedCount: 1 })
+    expect(service.removeRoleAccounts).toHaveBeenCalledWith(
+      customRole.id,
+      { accountIds: ['acc-1'] },
+      expect.any(Object),
+    )
+  })
 })
+

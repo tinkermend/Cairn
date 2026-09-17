@@ -36,11 +36,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/runs-api', async (original) => ({ ...await original<typeof import('@/lib/runs-api')>(), ...mocks }))
 
-// 顶栏是各页共用的外壳（侧栏上下文、搜索、账号菜单），与本页要验的东西无关。
-vi.mock('@/components/layout/app-header', () => ({
-  AppHeader: () => null,
-}))
-
 // Link / useParams 需要路由上下文，本用例只关心页面本身：给最小替身。
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
@@ -69,8 +64,10 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     startedAt: '2026-09-11T02:00:01.000Z',
     finishedAt: null,
     evidenceStatus: 'PENDING',
+    outcomeStatus: 'NOT_EVALUATED',
     lease: null,
     debugMode: 'runThrough',
+    outcomeResults: [],
     placement: runPlacement({
       state: 'not_applicable',
       sessionId: null,
@@ -96,6 +93,7 @@ function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
         type: 'delay',
         ordinal: 0,
         status: 'FAILED',
+        outcomeStatus: 'NOT_EVALUATED',
         startedAt: '2026-09-11T02:00:01.000Z',
         finishedAt: '2026-09-11T02:00:09.000Z',
         attempts: [
@@ -581,6 +579,7 @@ describe('RunDetailPage', () => {
               type: 'navigate',
               ordinal: 0,
               status: 'SKIPPED',
+              outcomeStatus: 'NOT_EVALUATED',
               startedAt: null,
               finishedAt: '2026-09-11T02:00:02.000Z',
               attempts: [],
@@ -699,6 +698,7 @@ describe('RunDetailPage', () => {
           type: 'fill',
           ordinal: 0,
           status: 'SUCCEEDED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-11T02:00:01.000Z',
           finishedAt: '2026-09-11T02:00:02.000Z',
           attempts: [],
@@ -710,6 +710,7 @@ describe('RunDetailPage', () => {
           type: 'click',
           ordinal: 1,
           status: 'SUCCEEDED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-11T02:00:02.000Z',
           finishedAt: '2026-09-11T02:00:03.000Z',
           attempts: [],
@@ -784,6 +785,7 @@ describe('RunDetailPage', () => {
           type: 'fill',
           ordinal: 0,
           status: 'SUCCEEDED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-11T02:00:01.000Z',
           finishedAt: '2026-09-11T02:00:02.000Z',
           attempts: [],
@@ -795,6 +797,7 @@ describe('RunDetailPage', () => {
           type: 'click',
           ordinal: 1,
           status: 'SUCCEEDED',
+          outcomeStatus: 'NOT_EVALUATED',
           startedAt: '2026-09-11T02:00:02.000Z',
           finishedAt: '2026-09-11T02:00:03.000Z',
           attempts: [],

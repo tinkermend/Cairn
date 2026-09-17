@@ -202,13 +202,13 @@ export const INVARIANT_RULES = [
     excludeTests: true,
     check: (file, rel, content) => {
       const normalized = rel.replaceAll('\\', '/')
-      if (normalized.endsWith('sessions/occupancy.ts')) return []
+      if (normalized.endsWith('sessions/occupancy-lease.ts')) return []
       const issues = []
       if (/insertRows\s*\(\s*\w+\s*,\s*sessionLeases\b/.test(content)) {
-        issues.push('生产代码禁止在 occupancy.ts 以外 insertRows(..., sessionLeases)')
+        issues.push('生产代码禁止在 occupancy-lease.ts 以外 insertRows(..., sessionLeases)')
       }
       if (/\.insert\s*\(\s*sessionLeases\s*\)/.test(content)) {
-        issues.push('生产代码禁止在 occupancy.ts 以外 .insert(sessionLeases)')
+        issues.push('生产代码禁止在 occupancy-lease.ts 以外 .insert(sessionLeases)')
       }
       return issues
     },
@@ -231,6 +231,45 @@ export const INVARIANT_RULES = [
       ]) {
         if (new RegExp(`\\b${name}\\b`).test(content)) {
           issues.push(`生产代码严禁引用已删除的 ${name}`)
+        }
+      }
+      return issues
+    },
+  },
+  {
+    id: 'INV011_SESSION_OCCUPANCY_IMPORT_ACYCLIC',
+    articles: ['会话与租约'],
+    title: '会话占用与维护模块禁止循环依赖',
+    rationale: '事件账本是底层，occupancy 实现不得反向依赖维护请求/总览/保留',
+    targetDir: 'packages/db/src/sessions',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      const normalized = rel.replaceAll('\\', '/')
+      const base = normalized.split('/').pop() ?? ''
+      const issues = []
+      if (base === 'occupancy.ts' || base === 'maintenance.ts') {
+        if (/^import\s/m.test(content)) issues.push('桶文件只许再导出，不得 import')
+        if (/^(export )?(async )?function\s/m.test(content)) issues.push('桶文件不得包含函数实现')
+      }
+      if (base.startsWith('occupancy-') && base.endsWith('.ts')) {
+        for (const forbidden of [
+          'maintenance.js',
+          'maintenance-request.js',
+          'session-overview.js',
+          'session-retention.js',
+        ]) {
+          if (content.includes(`from './${forbidden}'`) || content.includes(`from "./${forbidden}"`)) {
+            issues.push(`occupancy-* 不得 import ${forbidden}`)
+          }
+        }
+      }
+      if (base === 'session-events.ts') {
+        if (
+          /from ['"]\.\/(?:occupancy|maintenance|maintenance-request|session-overview|session-retention)/.test(
+            content,
+          )
+        ) {
+          issues.push('session-events 不得依赖 occupancy/maintenance 实现')
         }
       }
       return issues

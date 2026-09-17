@@ -12,7 +12,6 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/recordings-api', () => mocks)
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {

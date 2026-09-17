@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { accessPathMatches, canonicalOrigin, normalizeAccessPathPrefix, parseHttpUrl } from './access-scope.js'
 import { mapAssetRefSchema } from './map-c0.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 
@@ -182,23 +183,14 @@ export function isUrlInExploreAllowlist(
   url: string,
   allowlist: readonly ExplorationAllowlistEntry[],
 ): boolean {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return false
-  }
-  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username || parsed.password) {
-    return false
-  }
+  const parsed = parseHttpUrl(url)
+  if (!parsed) return false
   return allowlist.some((entry) => {
-    try {
-      const origin = new URL(entry.origin).origin
-      if (parsed.origin !== origin) return false
-      if (!entry.pathPrefix) return true
-      return parsed.pathname.startsWith(entry.pathPrefix)
-    } catch {
-      return false
-    }
+    const origin = canonicalOrigin(entry.origin)
+    if (!origin || parsed.origin !== origin) return false
+    const prefix = normalizeAccessPathPrefix(entry.pathPrefix)
+    if (prefix.kind === 'invalid') return false
+    if (prefix.kind === 'all') return true
+    return accessPathMatches(parsed.pathname, prefix.value)
   })
 }

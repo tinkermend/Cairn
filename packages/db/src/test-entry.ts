@@ -22,6 +22,7 @@ import { registerWorker as registerWorkerRaw } from './leases/index.js'
 import { SESSION_OCCUPANCY_PROTOCOL } from '@cairn/shared'
 export const registerWorker: typeof registerWorkerRaw = (db, input) => registerWorkerRaw(db, { protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL], ...input })
 export * from './sessions/index.js'
+export { forceLastUsedAt, forceLeaseExpiresAt, forceSessionGeneration } from './sessions/test-hooks.js'
 export * from './objects/index.js'
 export * from './observe/index.js'
 export * from './recordings/index.js'

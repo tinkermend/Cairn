@@ -1,16 +1,14 @@
-import type { EffectType, RunStatus, ScenarioStatus, StepRunStatus } from '@cairn/shared'
+import type { RunStatus, ScenarioStatus, StepRunStatus } from '@cairn/shared'
 
-export { STEP_TYPE_LABELS, stepTypeLabel } from './step-registry'
+export {
+  EFFECT_TYPE_LABELS,
+  STEP_TYPE_LABELS,
+  stepTypeLabel,
+} from '@/features/authoring/labels'
 
 export const SCENARIO_STATUS_LABELS: Record<ScenarioStatus, string> = {
   active: '已启用',
   disabled: '已停用',
-}
-
-export const EFFECT_TYPE_LABELS: Record<EffectType, string> = {
-  READ_ONLY: '只读',
-  IDEMPOTENT: '可重入',
-  SIDE_EFFECT: '有副作用',
 }
 
 export const RUN_STATUS_LABELS: Record<RunStatus, string> = {

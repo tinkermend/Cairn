@@ -1,21 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import {
-  applyModuleReplace,
-  applyModuleUpgrade,
-  buildExtractedModuleContent,
-  buildReplaceInvocation,
-  compareReplaceSteps,
-  diffModuleVersions,
   latestSelectableVersion,
-  proposeModuleFromSteps,
-  unconfirmedUpgradeWarnings,
-  unresolvedUpgradeBlockers,
   upgradeWarningKey,
   type AuthoringModuleInvocation,
   type ModuleContent,
   type ScenarioAuthoringDocumentV2,
   type Step,
   type UpgradeModuleVersion,
+} from '@cairn/shared'
+import {
+  applyModuleReplace,
+  applyModuleUpgrade,
+  buildExtractedModuleContent,
+  buildReplaceInvocation,
+  compareReplaceSteps,
+  diffModuleVersions,
+  proposeModuleFromSteps,
+  unconfirmedUpgradeWarnings,
+  unresolvedUpgradeBlockers,
 } from '../index.js'
 
 const moduleId = '22222222-2222-4222-8222-222222222222'

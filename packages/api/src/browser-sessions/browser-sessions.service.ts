@@ -23,6 +23,7 @@ import {
   getSessionOperation,
   getWorkerById,
   listAccountSessionOverview,
+  listSessionSystemOverview,
   listSessionEvents,
   listSessionEventsAfter,
   listSessions,
@@ -52,6 +53,7 @@ import {
   type SessionObserveQuery,
   type SessionOverviewQuery,
   type SessionRetentionBody,
+  type SessionSystemOverviewQuery,
 } from '@cairn/shared'
 import { AuthService } from '../auth/auth.service'
 import { classifyAccountRecheck, rethrowDomain } from '../common/domain-error'
@@ -75,6 +77,10 @@ export class BrowserSessionsService {
 
   async overview(query: SessionOverviewQuery) {
     return listAccountSessionOverview(this.handle, query)
+  }
+
+  async systemOverview(query: SessionSystemOverviewQuery) {
+    return listSessionSystemOverview(this.handle, query)
   }
 
   async get(sessionId: string) {

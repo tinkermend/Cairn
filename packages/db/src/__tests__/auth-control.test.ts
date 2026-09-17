@@ -10,14 +10,12 @@ import {
   createScenarioWithVersion,
   DomainError,
   markRunWaitingForAuth,
-  findSessionByAuthHoldRun,
+  findSessionByAuthWaitRun,
   getRun,
   getSessionById,
   heartbeatAuthControl,
   setSessionProbe,
   setSessionStatus,
-  listExpiredAuthHolds,
-  listRunsWaitingForAuthByAccount,
   releaseAuthControl,
   requireCreatedSession,
   resumeRunAfterAuth,
@@ -136,9 +134,10 @@ describe.each(DRIVERS)('%s AuthHold / AuthControl 原子性', { timeout: 60_000 
     const run = await getRun(handle.db, created.detail.id)
     expect(run.status).toBe('WAITING_FOR_AUTH')
     expect(run.lease).toBeNull()
-    const held = await findSessionByAuthHoldRun(handle.db, created.detail.id)
-    expect(held?.id).toBe(claimed.session.id)
-    expect(held?.authState).toBe('UNKNOWN')
+    const held = await findSessionByAuthWaitRun(handle.db, created.detail.id)
+    expect(held?.session.id).toBe(claimed.session.id)
+    expect(held?.lease.purpose).toBe('AUTH_WAIT')
+    expect(held?.session.authState).toBe('UNKNOWN')
     await closeSession(claimed.session.id, worker.workerId)
   })
 
@@ -268,9 +267,7 @@ describe.each(DRIVERS)('%s AuthHold / AuthControl 原子性', { timeout: 60_000 
       token: control.token,
     })
     expect((await getRun(handle.db, created.detail.id)).status).toBe('RECOVERING')
-    expect(await findSessionByAuthHoldRun(handle.db, created.detail.id)).toBeNull()
-    expect(await listRunsWaitingForAuthByAccount(handle.db, accountId)).not.toContain(created.detail.id)
-    expect(await listExpiredAuthHolds(handle.db, worker.workerId)).toEqual([])
+    expect(await findSessionByAuthWaitRun(handle.db, created.detail.id)).toBeNull()
     await closeSession(session.id, worker.workerId)
   })
 
@@ -294,5 +291,14 @@ describe.each(DRIVERS)('%s AuthHold / AuthControl 原子性', { timeout: 60_000 
     ).rejects.toMatchObject({ code: 'AUTH_HOLD_UNBOUND' })
     expect((await getRun(handle.db, created.detail.id)).status).toBe('WAITING_FOR_AUTH')
     await closeSession(claimed.session.id, worker.workerId)
+  })
+})
+
+describe('auth-control 日志出口', () => {
+  it('领域路径不打 console.log', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const source = readFileSync(join(process.cwd(), 'src/sessions/auth-control.ts'), 'utf8')
+    expect(source).not.toMatch(/console\.log/)
   })
 })

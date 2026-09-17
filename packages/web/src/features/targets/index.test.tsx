@@ -6,7 +6,6 @@ import { expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { TargetsPage } from './index'
 
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('./target-form-dialog', () => ({ TargetFormDialog: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),

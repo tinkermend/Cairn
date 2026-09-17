@@ -28,7 +28,7 @@ beforeEach(async () => {
   engine = new ExecutionEngine(db as any, { recoverAuth: recover, describeHold: async () => ({ url: 'https://app.example/' }) } as any)
   input = { runId: grant.runId, grant, step, stepRunId, stepOrdinal: 0, ...attempt, context: {}, input: {}, sessionGrant: { sessionId: newId(), generation: 1 },
     snapshot: { ...created.detail.snapshot, authVerification: { capability: 'IDENTITY_VERIFIED' }, targetAuth: { entryUrl: 'https://app.example/', loginUrl: 'https://app.example/login' }, allowedOrigins: ['https://app.example'], runAuthRecovery: { maxAutoRecoveriesPerRun: 1, maxManualRecoveriesPerRun: 1 } },
-    policy: { timeoutMs: 5000, retryLimit: 1 }, last: true, secrets: [], outcome: { kind: 'failed', error: { ...authGateClosedError('not_dispatched'), cause: { code: 'not_dispatched', message: 'EXPIRED' } } }, debugMode: 'runThrough', stop: new AbortController().signal }
+    policy: { timeoutMs: 5000, retryLimit: 1 }, last: true, secrets: [], outcome: { kind: 'failed', error: { ...authGateClosedError('not_dispatched'), cause: { code: 'not_dispatched', message: 'EXPIRED' } } }, debugMode: 'runThrough', stop: new AbortController().signal, clock: systemClock }
 })
 afterEach(async () => { await db?.close() })
 const detail = () => getRun(db.db, input.runId)
@@ -61,7 +61,7 @@ it('转人工先持久化 manual 类别及次数', async () => {
     expect((await detail()).authCheckpoint?.recoveryKind).toBe('manual'); expect((await detail()).authCheckpoint?.manualRecoveriesUsed).toBe(1)
     return { ok: false, waitingForAuth: true }
   })
-  expect(await engine.handleAuthGate(input)).toEqual({ kind: 'stop' }); expect(recover).toHaveBeenCalledTimes(2)
+  expect(await engine.handleAuthGate(input)).toEqual({ kind: 'leave', exit: 'held' }); expect(recover).toHaveBeenCalledTimes(2)
 })
 it('恢复端口异常会终结 Run，不留下 RUNNING 空转', async () => {
   recover.mockRejectedValue(new Error('login disconnected')); await engine.handleAuthGate(input)

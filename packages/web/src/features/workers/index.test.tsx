@@ -8,7 +8,6 @@ import { WorkersPage } from './index'
 
 const fetchWorkers = vi.fn()
 
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => vi.fn(),

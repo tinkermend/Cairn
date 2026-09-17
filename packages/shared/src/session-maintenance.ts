@@ -52,6 +52,30 @@ export const SESSION_OVERVIEW_FILTERS = [
 export type SessionOverviewFilter = (typeof SESSION_OVERVIEW_FILTERS)[number]
 export const sessionOverviewFilterSchema = z.enum(SESSION_OVERVIEW_FILTERS)
 
+export const SESSION_SYSTEM_OVERVIEW_FILTERS = [
+  'problem',
+  'unprepared',
+  'ready',
+  'busy',
+  'retained',
+] as const
+export type SessionSystemOverviewFilter = (typeof SESSION_SYSTEM_OVERVIEW_FILTERS)[number]
+export const sessionSystemOverviewFilterSchema = z.enum(SESSION_SYSTEM_OVERVIEW_FILTERS)
+
+export const ACCOUNT_SESSION_BUCKETS = ['ready', 'problem', 'unprepared', 'busy'] as const
+export type AccountSessionBucket = (typeof ACCOUNT_SESSION_BUCKETS)[number]
+
+const WORST_ACCOUNT_SESSION_STATUS: readonly AccountSessionStatus[] = [
+  'lost',
+  'identity_mismatch',
+  'needs_login',
+  'needs_check',
+  'maintenance',
+  'executing',
+  'unprepared',
+  'ready',
+]
+
 export const SESSION_MAINTENANCE_ERROR_CODES = [
   'SESSION_OPERATION_CONFLICT',
   'SESSION_GENERATION_CHANGED',
@@ -60,9 +84,23 @@ export const SESSION_MAINTENANCE_ERROR_CODES = [
   'OPERATION_INTERRUPTED',
   'OUTCOME_UNKNOWN',
   'OPERATION_QUEUE_EXPIRED',
+  'AUTH_PROFILE_REQUIRED',
+  'SESSION_KEEPALIVE_ABANDONED',
 ] as const
 export type SessionMaintenanceErrorCode = (typeof SESSION_MAINTENANCE_ERROR_CODES)[number]
 export const sessionMaintenanceErrorCodeSchema = z.enum(SESSION_MAINTENANCE_ERROR_CODES)
+
+export const SESSION_MAINTENANCE_ERROR_MESSAGES: Record<SessionMaintenanceErrorCode, string> = {
+  SESSION_OPERATION_CONFLICT: '会话操作冲突',
+  SESSION_GENERATION_CHANGED: '会话已重建',
+  RETENTION_QUOTA_EXCEEDED: '该执行节点保留配额已满',
+  PAGE_REFRESH_UNSAFE: '当前页不能安全刷新到登录页',
+  OPERATION_INTERRUPTED: '操作被中断',
+  OUTCOME_UNKNOWN: '登录结果无法确认',
+  OPERATION_QUEUE_EXPIRED: '维护操作排队已过期',
+  AUTH_PROFILE_REQUIRED: '尚未发布认证画像，无法核验或准备已登录会话',
+  SESSION_KEEPALIVE_ABANDONED: '认证已失效且自动登录不可用，已停止保活巡检',
+}
 
 export const SESSION_EVENT_TYPES = [
   'operation.requested',
@@ -81,6 +119,9 @@ export const SESSION_EVENT_TYPES = [
   'auth.attempt_started',
   'auth.verified',
   'auth.unknown',
+  'auth.signal_observed',
+  'session.keepalive_extended',
+  'session.evicted',
 ] as const
 export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number]
 export const sessionEventTypeSchema = z.enum(SESSION_EVENT_TYPES)
@@ -129,6 +170,19 @@ export function maintenanceWindowSlot(nowMs: number, intervalSeconds: number): n
   return Math.floor(nowMs / 1000 / intervalSeconds)
 }
 
+/** 信号与兜底巡检共用同一把尺，避免排出两个 bg-verify。 */
+export function backgroundVerifyWindowSlot(
+  nowMs: number,
+  authProbeIntervalSeconds: number | null | undefined,
+  fallbackIntervalSeconds: number,
+): number {
+  const interval =
+    authProbeIntervalSeconds != null && authProbeIntervalSeconds > 0
+      ? authProbeIntervalSeconds
+      : fallbackIntervalSeconds
+  return maintenanceWindowSlot(nowMs, interval)
+}
+
 export function retentionQuota(maxSessions: number, reservedFreeSlots: number): number {
   return Math.max(0, maxSessions - reservedFreeSlots)
 }
@@ -171,6 +225,61 @@ export function matchesOverviewFilter(
   if (filter === 'retained') return retained
   if (filter === 'available') return status === 'ready'
   return status === filter
+}
+
+export function accountSessionBucket(status: AccountSessionStatus): AccountSessionBucket {
+  if (status === 'ready') return 'ready'
+  if (status === 'unprepared') return 'unprepared'
+  if (status === 'maintenance' || status === 'executing') return 'busy'
+  return 'problem'
+}
+
+export function worstAccountSessionStatus(
+  current: AccountSessionStatus | null,
+  next: AccountSessionStatus,
+): AccountSessionStatus {
+  if (!current) return next
+  return WORST_ACCOUNT_SESSION_STATUS.indexOf(next) < WORST_ACCOUNT_SESSION_STATUS.indexOf(current)
+    ? next
+    : current
+}
+
+export function canCloseAccountSession(input: {
+  status: AccountSessionStatus
+  sessionId: string | null
+}): boolean {
+  if (!input.sessionId) return false
+  return (
+    input.status === 'ready' ||
+    input.status === 'needs_check' ||
+    input.status === 'needs_login' ||
+    input.status === 'identity_mismatch'
+  )
+}
+
+export function matchesSystemOverviewFilter(
+  item: {
+    problemCount: number
+    unpreparedCount: number
+    readyCount: number
+    busyCount: number
+    retainedCount: number
+    accountTotal: number
+  },
+  filter: SessionSystemOverviewFilter | undefined,
+): boolean {
+  if (!filter) return true
+  if (filter === 'problem') return item.problemCount > 0
+  if (filter === 'unprepared') return item.unpreparedCount > 0
+  if (filter === 'busy') return item.busyCount > 0
+  if (filter === 'retained') return item.retainedCount > 0
+  return (
+    item.accountTotal > 0 &&
+    item.readyCount === item.accountTotal &&
+    item.problemCount === 0 &&
+    item.unpreparedCount === 0 &&
+    item.busyCount === 0
+  )
 }
 
 const optionalId = entityIdSchema.optional()
@@ -251,10 +360,47 @@ export type AccountSessionOverviewItem = z.infer<typeof accountSessionOverviewIt
 export const sessionOverviewQuerySchema = z.object({
   search: z.string().trim().min(1).max(128).optional(),
   filter: sessionOverviewFilterSchema.optional(),
+  targetId: entityIdSchema.optional(),
   cursor: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 })
 export type SessionOverviewQuery = z.infer<typeof sessionOverviewQuerySchema>
+
+export const sessionSystemOverviewQuerySchema = z.object({
+  search: z.string().trim().min(1).max(128).optional(),
+  filter: sessionSystemOverviewFilterSchema.optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+})
+export type SessionSystemOverviewQuery = z.infer<typeof sessionSystemOverviewQuerySchema>
+
+export const sessionSystemOverviewItemSchema = z.strictObject({
+  targetId: entityIdSchema,
+  targetName: z.string().min(1),
+  targetCode: z.string().min(1),
+  targetStatus: z.enum(['active', 'disabled']),
+  accountTotal: z.number().int().nonnegative(),
+  readyCount: z.number().int().nonnegative(),
+  problemCount: z.number().int().nonnegative(),
+  unpreparedCount: z.number().int().nonnegative(),
+  busyCount: z.number().int().nonnegative(),
+  retainedCount: z.number().int().nonnegative(),
+  worstStatus: accountSessionStatusSchema,
+})
+export type SessionSystemOverviewItem = z.infer<typeof sessionSystemOverviewItemSchema>
+
+export const sessionSystemOverviewResponseSchema = z.strictObject({
+  items: z.array(sessionSystemOverviewItemSchema),
+  nextCursor: nextCursorSchema,
+  summary: z.strictObject({
+    systems: z.number().int().nonnegative(),
+    readyAccounts: z.number().int().nonnegative(),
+    problemAccounts: z.number().int().nonnegative(),
+    unpreparedAccounts: z.number().int().nonnegative(),
+  }),
+  asOf: utcInstantSchema,
+})
+export type SessionSystemOverviewResponse = z.infer<typeof sessionSystemOverviewResponseSchema>
 
 export const sessionOverviewResponseSchema = z.strictObject({
   items: z.array(accountSessionOverviewItemSchema),
@@ -301,6 +447,9 @@ export const accountSessionDetailSchema = z.strictObject({
       authValidUntil: utcInstantSchema.nullable(),
       lastExpectedIdentity: z.string().nullable(),
       retainUntil: utcInstantSchema.nullable(),
+      reclaimMode: z.enum(['IDLE', 'AUTH_DRIVEN']).nullable().optional(),
+      keepAliveUntil: utcInstantSchema.nullable().optional(),
+      nextAuthCheckAt: utcInstantSchema.nullable().optional(),
     })
     .nullable(),
   occupancy: z

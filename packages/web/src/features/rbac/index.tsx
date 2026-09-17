@@ -1,5 +1,4 @@
 import { useQuery } from '@tanstack/react-query'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { EmptyState } from '@/components/empty-state'
@@ -16,8 +15,6 @@ export function RolesPage() {
 
   return (
     <RolesProvider>
-      <AppHeader fixed />
-
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title='角色'

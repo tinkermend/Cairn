@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { compileScenarioDocument, type ScenarioDocument, type Step } from '../index.js'
+import { compileScenarioDocument } from '../compiler.js'
+import type { ScenarioDocument, Step } from '@cairn/shared'
 
 const ids = {
   a: '00000000-0000-4000-8000-000000000071',

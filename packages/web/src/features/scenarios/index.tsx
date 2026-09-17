@@ -37,7 +37,6 @@ import {
 } from '@/components/ui/table'
 import { CollectionSummary } from '@/components/collection-summary'
 import { EmptyState } from '@/components/empty-state'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -112,14 +111,6 @@ export function ScenariosPage() {
 
   return (
     <>
-      <AppHeader
-        fixed
-        leading={
-          <span className='me-auto text-small text-muted-foreground'>
-            自动化 <span className='mx-2'>/</span> 场景
-          </span>
-        }
-      />
       <Main className='flex min-w-0 flex-1 flex-col gap-6'>
         <PageHeader
           title='场景'

@@ -90,6 +90,11 @@ function mockService() {
       created: true,
     })),
     dispose: vi.fn(async () => ({ ...session, status: 'CLOSED', closeReason: 'operator_disposed', disposable: false })),
+    systemOverview: vi.fn(async () => ({
+      items: [],
+      summary: { systems: 0, readyAccounts: 0, problemAccounts: 0, unpreparedAccounts: 0 },
+      asOf: '2026-09-16T00:00:00.000Z',
+    })),
   }
 }
 
@@ -193,6 +198,15 @@ describe('BrowserSessions HTTP', () => {
   it('overview 在 :sessionId 之前且只需要 session:read', async () => {
     await request(viewerApp.getHttpServer()).get('/browser-sessions/overview').expect(200)
     expect(service.overview).toHaveBeenCalled()
+  })
+
+  it('systems 在 :sessionId 之前且只需要 session:read', async () => {
+    await request(viewerApp.getHttpServer()).get('/browser-sessions/systems').expect(200)
+    expect(service.systemOverview).toHaveBeenCalled()
+    const noRead: RequestAccount = { ...viewer, permissions: ['run:read'] }
+    const app = await buildApp(noRead, service)
+    await request(app.getHttpServer()).get('/browser-sessions/systems').expect(403)
+    await app.close()
   })
 
   it('关闭会话需要 session:manage', async () => {

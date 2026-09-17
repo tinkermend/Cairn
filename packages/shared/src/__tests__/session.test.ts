@@ -10,6 +10,7 @@ import {
   isPlacementYieldCode,
   isSessionConfigErrorCode,
   resolveSessionPolicy,
+  resolveSessionPolicyLayers,
   sessionErrorCodeSchema,
   sessionGrantSchema,
   sessionPolicySchema,
@@ -40,6 +41,7 @@ describe('session 词表', () => {
     expect(SESSION_ERROR_CODES).toContain('SESSION_TARGET_MISSING')
     expect(SESSION_ERROR_CODES).toContain('SESSION_POLICY_INVALID')
     expect(SESSION_ERROR_CODES).toContain('SESSION_STOP_UNCONFIRMED')
+    expect(SESSION_ERROR_CODES).toContain('SESSION_KEEPALIVE_ABANDONED')
     expect(sessionErrorCodeSchema.parse('SESSION_BUSY')).toBe('SESSION_BUSY')
     expect(() => sessionErrorCodeSchema.parse('UNKNOWN')).toThrow()
   })
@@ -75,6 +77,43 @@ describe('sessionPolicySchema', () => {
       }),
     ).toThrow()
   })
+
+  it('旧快照缺新字段时按 IDLE 补齐', () => {
+    const legacy = {
+      reuse: 'NEW_PAGE' as const,
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 14_400,
+      leaseTtlSeconds: 30,
+      authWaitSeconds: 300,
+    }
+    const parsed = sessionPolicySchema.parse(legacy)
+    expect(parsed.reclaim).toBe('IDLE')
+    expect(parsed.keepAliveSeconds).toBe(3600)
+    expect(parsed.authProbeIntervalSeconds).toBe(900)
+    expect(parsed.evictionPriority).toBe(0)
+    expect(resolveSessionPolicy(legacy)).toEqual(parsed)
+    expect(
+      resolveSessionPolicy(legacy, { ...DEFAULT_SESSION_POLICY, reclaim: 'AUTH_DRIVEN' }).reclaim,
+    ).toBe('AUTH_DRIVEN')
+  })
+
+  it('AUTH_DRIVEN 要求保活短于寿命且巡检短于保活', () => {
+    expect(() =>
+      sessionPolicySchema.parse({
+        ...DEFAULT_SESSION_POLICY,
+        reclaim: 'AUTH_DRIVEN',
+        keepAliveSeconds: 14_400,
+      }),
+    ).toThrow()
+    expect(() =>
+      sessionPolicySchema.parse({
+        ...DEFAULT_SESSION_POLICY,
+        reclaim: 'AUTH_DRIVEN',
+        keepAliveSeconds: 600,
+        authProbeIntervalSeconds: 600,
+      }),
+    ).toThrow()
+  })
 })
 
 describe('resolveSessionPolicy', () => {
@@ -103,7 +142,23 @@ describe('resolveSessionPolicy', () => {
       maxLifetimeSeconds: env.CAIRN_SESSION_MAX_LIFETIME_SECONDS,
       leaseTtlSeconds: env.CAIRN_SESSION_LEASE_TTL_SECONDS,
       authWaitSeconds: env.CAIRN_SESSION_AUTH_WAIT_SECONDS,
+      reclaim: 'IDLE',
+      keepAliveSeconds: 3600,
+      authProbeIntervalSeconds: 900,
+      evictionPriority: 0,
     })
+  })
+
+  it('三级覆盖按 平台 → Target → Run', () => {
+    const resolved = resolveSessionPolicyLayers({
+      platformDefault: DEFAULT_SESSION_POLICY,
+      targetOverride: { reclaim: 'AUTH_DRIVEN', keepAliveSeconds: 1800 },
+      runOverride: { leaseTtlSeconds: 20 },
+    })
+    expect(resolved.reclaim).toBe('AUTH_DRIVEN')
+    expect(resolved.keepAliveSeconds).toBe(1800)
+    expect(resolved.leaseTtlSeconds).toBe(20)
+    expect(resolved.idleTtlSeconds).toBe(DEFAULT_SESSION_POLICY.idleTtlSeconds)
   })
 })
 

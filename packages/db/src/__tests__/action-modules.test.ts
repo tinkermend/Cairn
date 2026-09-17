@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
+import { compileModuleContent } from '@cairn/authoring'
 import {
-  compileModuleContent, moduleWarningKey,
+  moduleWarningKey,
   type ModuleContent,
 } from '@cairn/shared'
 import { newId } from '../id.js'

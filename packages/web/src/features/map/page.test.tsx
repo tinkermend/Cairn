@@ -62,7 +62,6 @@ vi.mock('@/lib/platform-config-api', () => ({
     updatedAt: '2026-09-16T00:00:00.000Z',
   })),
 }))
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {
@@ -299,13 +298,18 @@ describe('目标知识页', () => {
   it('OMD02 中文桌面实现显示适用未知项，不以可信徽标概括', async () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('查看知识')).toBeVisible()
-    await expect.element(screen.getByRole('heading', { name: '地图维护' })).toBeVisible()
-    await expect.element(screen.getByText('手工作业关闭')).toBeVisible()
     await expect.element(screen.getByText('保存', { exact: true })).toBeVisible()
     await expect.element(screen.getByText(/workspace/)).toBeVisible()
     await expect
       .element(screen.getByRole('button', { name: '发布此版本' }))
       .toBeVisible()
+
+    await screen.getByRole('tab', { name: /地图维护/ }).click()
+    await expect.element(screen.getByRole('heading', { name: '地图维护' })).toBeVisible()
+    await expect.element(screen.getByText('手工作业关闭')).toBeVisible()
+
+    await screen.getByRole('tab', { name: /知识资产/ }).click()
+    await expect.element(screen.getByText('查看知识')).toBeVisible()
     await page.screenshot({
       path: '../../../../../.run/omd-review/desktop.png',
     })

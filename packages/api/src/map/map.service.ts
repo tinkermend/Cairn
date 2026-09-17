@@ -18,6 +18,7 @@ import {
   listMapReferences,
   listMapReleases,
   loadMapQueryView,
+  resolveMapView,
   loadRunMapClues,
   getMapConsumptionPolicy,
   updateMapConsumptionPolicy,
@@ -56,6 +57,7 @@ import {
   evaluateCondition,
   gradeMapImpact,
   groupMapDiagnosisClues,
+  classifyRoute,
   queryMap,
   selectMapJobAssets,
   toMapJobCompileAssets,
@@ -129,17 +131,16 @@ export class MapService {
       let releaseId = query.releaseId
       let manifestDigest = query.manifestDigest
       if (!projectionId && !releaseId) {
-        const summary = await getMapSummary(this.database, targetId, { limit: 20 })
-        if (summary.view.viewRef.kind === 'projection' && summary.projectionStatus !== 'missing') {
-          projectionId = summary.view.viewRef.projectionId
-        } else {
+        const resolved = await resolveMapView(this.database, targetId, {})
+        if (!resolved.projectionId || resolved.status === 'missing') {
           return {
             matchResult: 'MISS' as const,
             candidates: [],
             usedRefs: [],
-            viewRef: summary.view.viewRef,
+            viewRef: { kind: 'missing' as const },
           }
         }
+        projectionId = resolved.projectionId
       }
       if (releaseId && !manifestDigest) {
         const publication = await getMapReleasePublication(this.database, targetId, releaseId)
@@ -159,7 +160,9 @@ export class MapService {
         clues: query.clues,
         limit: query.limit,
       })
-      const view = await loadMapQueryView(this.database, request)
+      const view = await loadMapQueryView(this.database, request, {
+        routeTemplate: query.clues?.url ? classifyRoute({ url: query.clues.url }).routeTemplate : undefined,
+      })
       return queryMap(view, request)
     } catch (error) {
       rethrowDomain(error)
@@ -407,7 +410,7 @@ export class MapService {
       const entry = await getMapSafeEntry(this.database, targetId, body.entryId)
       const assets = toMapJobCompileAssets(await listMapJobCandidateAssets(this.database, targetId))
       const items = selectMapJobAssets(body.jobKind, policy.policy, assets, body.selectedAssetRefs)
-      const included = assets.filter((asset) =>)
+      const included = assets.filter((asset) =>
         items.some(
           (item) =>
             item.included &&

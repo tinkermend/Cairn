@@ -36,6 +36,44 @@ describe('地图作业契约', () => {
     expect(originsForAccessPurposes(policy, ['business_surface'])).toEqual([])
   })
 
+  it('路径级 deny 不从 allowedOrigins 删除 origin', () => {
+    const policy = {
+      schemaVersion: 1 as const,
+      policyVersion: 1,
+      rules: [
+        { origin: 'https://shop.example', purpose: 'business_surface' as const, effect: 'allow' as const, pathPrefix: '/' },
+        { origin: 'https://shop.example', purpose: 'business_surface' as const, effect: 'deny' as const, pathPrefix: '/admin' },
+      ],
+    }
+    expect(originsForAccessPurposes(policy, ['business_surface'])).toEqual(['https://shop.example'])
+  })
+
+  it('发布 pathPrefix 必须是路径且不含 query', () => {
+    const base = {
+      expectedRevision: 0,
+      idempotencyKey: 'policy-path-1',
+      reason: '收窄路径',
+    }
+    expect(() =>
+      targetAccessPolicyUpdateBodySchema.parse({
+        ...base,
+        rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow', pathPrefix: 'orders' }],
+      }),
+    ).toThrow()
+    expect(() =>
+      targetAccessPolicyUpdateBodySchema.parse({
+        ...base,
+        rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow', pathPrefix: '/orders?x=1' }],
+      }),
+    ).toThrow()
+    expect(
+      targetAccessPolicyUpdateBodySchema.parse({
+        ...base,
+        rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow', pathPrefix: '/orders' }],
+      }).rules[0]?.pathPrefix,
+    ).toBe('/orders')
+  })
+
   it('缺 mapJob 视为用户 Run', () => {
     expect(isMapJobRun({})).toBe(false)
     expect(mapJobIdempotencyKey({

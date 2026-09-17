@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   MAP_ASSETS_PROTOCOL,
   MAP_IDENTITY_RULE_VERSION,
+  MAP_QUERY_PAGE_CANDIDATE_MAX,
   mapDescriptorFeaturesSchema,
   mapDimensionStatSchema,
   mapLifecycleSchema,
@@ -97,6 +98,7 @@ export const mapQueryViewSchema = z.strictObject({
     }),
   ]),
   identityRevision: z.number().int().nonnegative().max(1_000_000_000),
+  candidateOverflow: z.boolean().optional(),
   assets: z.array(
     z.strictObject({
       assetRef: mapAssetRefSchema,
@@ -125,6 +127,6 @@ export const mapQueryViewSchema = z.strictObject({
       routeTemplate: z.string().trim().min(1).max(512).optional(),
       evidenceAvailability: z.enum(['available', 'partial', 'unavailable']).default('available'),
     }),
-  ),
+  ).max(MAP_QUERY_PAGE_CANDIDATE_MAX),
 })
 export type MapQueryView = z.infer<typeof mapQueryViewSchema>

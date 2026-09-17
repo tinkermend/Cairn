@@ -16,6 +16,7 @@ export function useSessionObservation(targetId?: string, accountId?: string) {
       clearTimeout(refresh)
       refresh = setTimeout(() => {
         void client.invalidateQueries({ queryKey: ['sessions-overview'] })
+        void client.invalidateQueries({ queryKey: ['sessions-systems'] })
         void client.invalidateQueries({
           queryKey: ['account-session', ...(targetId ? [targetId, accountId] : [])],
         })

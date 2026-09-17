@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import { canonicalJson } from './canonical.js'
-import { compileScenarioDocument } from './compiler.js'
 import { sha256Hex } from './internal-auth.js'
 import { hasPermission, nextCursorSchema, type PermissionCode } from './rbac.js'
 import { assertExpectSchema } from './browser-command.js'
@@ -821,9 +820,6 @@ export function compareCompileDiagnostics(
   }
 }
 
-export function compileForAssistant(document: ScenarioDocument) {
-  return compileScenarioDocument(document, { mode: 'release' })
-}
 
 export type ProjectedFactPack = {
   text: string

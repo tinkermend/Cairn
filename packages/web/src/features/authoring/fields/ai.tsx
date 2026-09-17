@@ -1,5 +1,9 @@
-import type { AiOutputSchema, OutputFieldType, Step } from '@cairn/shared'
-import { OUTPUT_FIELD_TYPES } from '@cairn/shared'
+import {
+  OUTPUT_FIELD_TYPES,
+  type AiOutputSchema,
+  type OutputFieldType,
+  type Step,
+} from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,7 +15,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { fieldElementId } from './studio-document'
+import { fieldElementId } from '../document'
 
 const TYPE_LABELS: Record<OutputFieldType, string> = {
   string: '文本',
@@ -31,7 +35,9 @@ export function AiStepFields({
   return (
     <div className='space-y-3'>
       <div className='space-y-2'>
-        <Label htmlFor={fieldElementId(step.id, ['input', 'instruction'])}>业务指令</Label>
+        <Label htmlFor={fieldElementId(step.id, ['input', 'instruction'])}>
+          业务指令
+        </Label>
         <Textarea
           id={fieldElementId(step.id, ['input', 'instruction'])}
           value={step.input.instruction}
@@ -51,7 +57,9 @@ export function AiStepFields({
           stepId={step.id}
           schema={step.input.outputSchema}
           disabled={disabled}
-          onChange={(outputSchema) => onChange({ ...step, input: { ...step.input, outputSchema } })}
+          onChange={(outputSchema) =>
+            onChange({ ...step, input: { ...step.input, outputSchema } })
+          }
         />
       ) : null}
       <p className='text-label text-muted-foreground'>
@@ -83,7 +91,11 @@ function OutputSchemaFields({
           disabled={disabled}
           onValueChange={(value) => {
             if (value === 'scalar') onChange({ kind: 'scalar', type: 'string' })
-            else onChange({ kind: 'object', fields: [{ name: 'value', type: 'string', required: true }] })
+            else
+              onChange({
+                kind: 'object',
+                fields: [{ name: 'value', type: 'string', required: true }],
+              })
           }}
         >
           <SelectTrigger className='w-full' aria-label='输出形状'>
@@ -101,7 +113,9 @@ function OutputSchemaFields({
           <Select
             value={schema.type}
             disabled={disabled}
-            onValueChange={(value) => onChange({ kind: 'scalar', type: value as OutputFieldType })}
+            onValueChange={(value) =>
+              onChange({ kind: 'scalar', type: value as OutputFieldType })
+            }
           >
             <SelectTrigger className='w-full' aria-label='标量类型'>
               <SelectValue />
@@ -127,7 +141,14 @@ function OutputSchemaFields({
               onClick={() =>
                 onChange({
                   ...schema,
-                  fields: [...schema.fields, { name: `field${schema.fields.length + 1}`, type: 'string', required: true }],
+                  fields: [
+                    ...schema.fields,
+                    {
+                      name: `field${schema.fields.length + 1}`,
+                      type: 'string',
+                      required: true,
+                    },
+                  ],
                 })
               }
             >
@@ -135,9 +156,16 @@ function OutputSchemaFields({
             </Button>
           </div>
           {schema.fields.map((field, index) => (
-            <div key={`${field.name}-${index}`} className='grid gap-2 sm:grid-cols-[1fr_7rem_auto]'>
+            <div
+              key={`${field.name}-${index}`}
+              className='grid gap-2 sm:grid-cols-[1fr_7rem_auto]'
+            >
               <Input
-                id={index === 0 ? fieldElementId(stepId, ['input', 'outputSchema']) : undefined}
+                id={
+                  index === 0
+                    ? fieldElementId(stepId, ['input', 'outputSchema'])
+                    : undefined
+                }
                 aria-label={`字段名 ${index + 1}`}
                 value={field.name}
                 disabled={disabled}
@@ -145,7 +173,9 @@ function OutputSchemaFields({
                   onChange({
                     ...schema,
                     fields: schema.fields.map((item, itemIndex) =>
-                      itemIndex === index ? { ...item, name: event.target.value } : item,
+                      itemIndex === index
+                        ? { ...item, name: event.target.value }
+                        : item
                     ),
                   })
                 }
@@ -157,12 +187,17 @@ function OutputSchemaFields({
                   onChange({
                     ...schema,
                     fields: schema.fields.map((item, itemIndex) =>
-                      itemIndex === index ? { ...item, type: value as OutputFieldType } : item,
+                      itemIndex === index
+                        ? { ...item, type: value as OutputFieldType }
+                        : item
                     ),
                   })
                 }
               >
-                <SelectTrigger className='w-full' aria-label={`字段类型 ${index + 1}`}>
+                <SelectTrigger
+                  className='w-full'
+                  aria-label={`字段类型 ${index + 1}`}
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -179,7 +214,12 @@ function OutputSchemaFields({
                 size='sm'
                 disabled={disabled || schema.fields.length <= 1}
                 onClick={() =>
-                  onChange({ ...schema, fields: schema.fields.filter((_, itemIndex) => itemIndex !== index) })
+                  onChange({
+                    ...schema,
+                    fields: schema.fields.filter(
+                      (_, itemIndex) => itemIndex !== index
+                    ),
+                  })
                 }
               >
                 移除

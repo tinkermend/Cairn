@@ -45,7 +45,6 @@ import {
 } from '@/components/ui/table'
 import { DataTablePagination } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -155,7 +154,6 @@ export function ActionModulesPage() {
 
   return (
     <>
-      <AppHeader />
       <Main>
         <PageHeader
           title='动作库'

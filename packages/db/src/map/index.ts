@@ -64,6 +64,7 @@ export {
   getMapProjection,
   listMapProjectionWork,
   loadMapProjectionState,
+  loadMapProjectionWorkingSet,
   mapProjectionTestHooks,
   promoteMapProjection,
   recordMapProjectionFailure,
@@ -71,6 +72,7 @@ export {
   type MapProjectionWorkItem,
 } from './projections.js'
 export { getMapRelease, loadMapQueryView, sealMapRelease, sealMapReleaseTx } from './releases.js'
+export { resolveMapView } from './view.js'
 export {
   applyMapGovernanceCommand,
   getMapAssetDetail,
@@ -133,6 +135,8 @@ export {
   listMapReferences,
   listMapReferenceScanWork,
   loadRunMapClues,
+  loadTargetScanAssets,
+  loadTargetScanScenarios,
   loadTargetScanSource,
   removeMapScenarioBinding,
   startMapReferenceScan,

@@ -32,7 +32,6 @@ const meta: ManagedBrowserMeta = {
   pages: [],
   authHold: {
     expiresAt: '2026-09-13T00:01:00.000Z',
-    bound: true,
     runId: '44444444-4444-4444-8444-444444444444',
   },
   authControl: { epoch: 0, actorId: null, expiresAt: null, heldByViewer: false },

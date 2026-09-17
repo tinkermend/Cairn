@@ -3,7 +3,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { targetScopeReady } from './target-scope'
+import { installedScopeAllows, targetScopeReady } from './target-scope'
 import type { BrowserContext, Frame, Locator, Page, Request } from 'playwright'
 import type {
   LocatorCandidate,
@@ -288,11 +288,10 @@ export async function loginWithCredentials(
   beforeAction?: () => void | Promise<void>,
 ): Promise<boolean> {
   requireOccupancy('loginWithCredentials')
-  const submitted = await submitLoginCredentials(handle, target, credential, undefined, beforeAction)
-  if (!submitted) return false
+  await submitLoginCredentials(handle, target, credential, undefined, beforeAction)
   try {
-    const auth = await probeAuth(handle, target)
-    return auth === 'AUTHENTICATED'
+    // 表单没填上也不等于没登录：已有 cookie 的站点常直接跳出 /login。
+    return (await probeAuth(handle, target)) === 'AUTHENTICATED'
   } catch {
     return false
   }
@@ -526,6 +525,10 @@ export async function navigateInScope(
   if (!base) return { outOfScope: true, href: url }
   const resolved = new URL(url, base.endsWith('/') ? base : `${base}/`)
   if (!allowedOrigins.includes(resolved.origin)) {
+    return { outOfScope: true, href: resolved.href }
+  }
+  const installed = installedScopeAllows(page.context(), resolved.href)
+  if (installed === false) {
     return { outOfScope: true, href: resolved.href }
   }
   await page.goto(resolved.href, { waitUntil: 'domcontentloaded', timeout: 30_000 })

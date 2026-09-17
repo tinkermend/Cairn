@@ -102,7 +102,7 @@ for (const file of [
 }
 // ── 源码约束 ──────────────────────────────────────────────
 // 宪法「可执行约束」：必须遵守的约束应由自动化检查卡住，而不是依赖自觉。
-// 以下三条各自对应一类真实发生过的回归，不要因为"暂时没人违反"就删掉。
+// 以下各自对应一类真实发生过的回归，不要因为"暂时没人违反"就删掉。
 import { readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -181,6 +181,24 @@ const existingAuthFonts = {
 for (const file of allTsx) {
   const issues = sourceStyleIssues(readFileSync(file, "utf8"), contentTsx.includes(file), existingAuthFonts[rel(file)]);
   assert.deepEqual(issues, [], `${rel(file)}: 样式绕过统一规则（color 用语义 Token，font 用页面刻度，motion 用明确属性）：${JSON.stringify(issues)}`);
+}
+
+// 顶栏由认证布局渲染。业务页再引入 AppHeader / Header 就会重新各写各的。
+const headerImport = /@\/components\/layout\/(?:app-header|header)\b/;
+function featureSourceFiles(dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const full = dir + name;
+    if (statSync(full).isDirectory()) out.push(...featureSourceFiles(full + "/"));
+    else if (/\.(tsx|ts)$/.test(name)) out.push(full);
+  }
+  return out;
+}
+for (const file of featureSourceFiles(`${webSrc}features/`)) {
+  assert.ok(
+    !headerImport.test(readFileSync(file, "utf8")),
+    `${rel(file)}: 业务页不得引入 AppHeader / Header，顶栏由认证布局渲染`,
+  );
 }
 
 const constitution = readFileSync(new URL("../../../CLAUDE.md", root), "utf8");
@@ -291,7 +309,7 @@ try {
     });
   }
   console.log(
-    `PASS: ${pairs.length} text contrast pairs, control border, 明度阶梯, token references, document links; ${sourceCases.length} 个样式误报/漏报回归样本，${allTsx.length} tsx 静态样式检查，${contentTsx.length} 个页面文件字号检查; 5 widths; form, tabs, toggle, dialog, 5 empty states, reduced motion.`,
+    `PASS: ${pairs.length} text contrast pairs, control border, 明度阶梯, token references, document links; ${sourceCases.length} 个样式误报/漏报回归样本，${allTsx.length} tsx 静态样式检查，${contentTsx.length} 个页面文件字号检查，业务页顶栏引入检查; 5 widths; form, tabs, toggle, dialog, 5 empty states, reduced motion.`,
   );
 } finally {
   await browser.close();

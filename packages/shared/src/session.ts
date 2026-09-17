@@ -59,6 +59,7 @@ export const SESSION_ERROR_CODES = [
   'AUTH_RECOVERY_LIMIT',
   'AUTH_GATE_CLOSED',
   'AUTH_NOT_VERIFIED',
+  'SESSION_KEEPALIVE_ABANDONED',
 ] as const
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number]
 export const sessionErrorCodeSchema = z.enum(SESSION_ERROR_CODES)
@@ -103,11 +104,19 @@ export function isSessionConfigErrorCode(code: string): code is SessionConfigErr
  * Worker 运行时续租/等待用 env，默认一致则历史 Run 与本机行为可解释。
  * 改默认值时两处一起改，并由 session.test 卡住。
  */
+export const SESSION_RECLAIM_MODES = ['IDLE', 'AUTH_DRIVEN'] as const
+export type SessionReclaimMode = (typeof SESSION_RECLAIM_MODES)[number]
+export const sessionReclaimModeSchema = z.enum(SESSION_RECLAIM_MODES)
+
 export const DEFAULT_SESSION_IDLE_TTL_SECONDS = 600
 export const DEFAULT_SESSION_MAX_LIFETIME_SECONDS = 14_400
 export const DEFAULT_SESSION_LEASE_TTL_SECONDS = 30
 export const DEFAULT_SESSION_AUTH_WAIT_SECONDS = 300
 export const DEFAULT_SESSION_REUSE_POLICY: SessionReusePolicy = 'NEW_PAGE'
+export const DEFAULT_SESSION_RECLAIM_MODE: SessionReclaimMode = 'IDLE'
+export const DEFAULT_SESSION_KEEP_ALIVE_SECONDS = 3600
+export const DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS = 900
+export const DEFAULT_SESSION_EVICTION_PRIORITY = 0
 
 /**
  * 落进快照的会话策略。历史 Run 必须能解释当时怎么执行。
@@ -121,6 +130,14 @@ export const sessionPolicySchema = z
     maxLifetimeSeconds: z.number().int().positive(),
     leaseTtlSeconds: z.number().int().positive(),
     authWaitSeconds: z.number().int().positive(),
+    reclaim: sessionReclaimModeSchema.default(DEFAULT_SESSION_RECLAIM_MODE),
+    keepAliveSeconds: z.number().int().positive().default(DEFAULT_SESSION_KEEP_ALIVE_SECONDS),
+    authProbeIntervalSeconds: z
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS),
+    evictionPriority: z.number().int().default(DEFAULT_SESSION_EVICTION_PRIORITY),
   })
   .superRefine((policy, ctx) => {
     if (policy.maxLifetimeSeconds <= policy.idleTtlSeconds) {
@@ -129,6 +146,22 @@ export const sessionPolicySchema = z
         path: ['maxLifetimeSeconds'],
         message: 'maxLifetimeSeconds 必须大于 idleTtlSeconds',
       })
+    }
+    if (policy.reclaim === 'AUTH_DRIVEN') {
+      if (policy.keepAliveSeconds >= policy.maxLifetimeSeconds) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['keepAliveSeconds'],
+          message: 'AUTH_DRIVEN 时 keepAliveSeconds 必须小于 maxLifetimeSeconds',
+        })
+      }
+      if (policy.authProbeIntervalSeconds >= policy.keepAliveSeconds) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['authProbeIntervalSeconds'],
+          message: 'AUTH_DRIVEN 时 authProbeIntervalSeconds 必须小于 keepAliveSeconds',
+        })
+      }
     }
   })
 export type SessionPolicy = z.infer<typeof sessionPolicySchema>
@@ -139,6 +172,10 @@ export const DEFAULT_SESSION_POLICY: SessionPolicy = {
   maxLifetimeSeconds: DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
   leaseTtlSeconds: DEFAULT_SESSION_LEASE_TTL_SECONDS,
   authWaitSeconds: DEFAULT_SESSION_AUTH_WAIT_SECONDS,
+  reclaim: DEFAULT_SESSION_RECLAIM_MODE,
+  keepAliveSeconds: DEFAULT_SESSION_KEEP_ALIVE_SECONDS,
+  authProbeIntervalSeconds: DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
+  evictionPriority: DEFAULT_SESSION_EVICTION_PRIORITY,
 }
 
 /** POST /runs 可只覆盖部分字段；解析后写完整值进快照。 */
@@ -148,17 +185,62 @@ export const sessionPolicyOverrideSchema = z.strictObject({
   maxLifetimeSeconds: z.number().int().positive().optional(),
   leaseTtlSeconds: z.number().int().positive().optional(),
   authWaitSeconds: z.number().int().positive().optional(),
+  reclaim: sessionReclaimModeSchema.optional(),
+  keepAliveSeconds: z.number().int().positive().optional(),
+  authProbeIntervalSeconds: z.number().int().positive().optional(),
+  evictionPriority: z.number().int().optional(),
 })
 export type SessionPolicyOverride = z.infer<typeof sessionPolicyOverrideSchema>
+
+export const targetSessionPolicyOverrideSchema = sessionPolicyOverrideSchema
+export type TargetSessionPolicyOverride = SessionPolicyOverride
+
+/** 写 Target 覆盖：显式 null 表示清除该项。 */
+export const targetSessionPolicyPatchSchema = z.strictObject({
+  reuse: sessionReusePolicySchema.nullable().optional(),
+  idleTtlSeconds: z.number().int().positive().nullable().optional(),
+  maxLifetimeSeconds: z.number().int().positive().nullable().optional(),
+  leaseTtlSeconds: z.number().int().positive().nullable().optional(),
+  authWaitSeconds: z.number().int().positive().nullable().optional(),
+  reclaim: sessionReclaimModeSchema.nullable().optional(),
+  keepAliveSeconds: z.number().int().positive().nullable().optional(),
+  authProbeIntervalSeconds: z.number().int().positive().nullable().optional(),
+  evictionPriority: z.number().int().nullable().optional(),
+})
+export type TargetSessionPolicyPatch = z.infer<typeof targetSessionPolicyPatchSchema>
 
 export function resolveSessionPolicy(
   override?: SessionPolicyOverride | null,
   platformDefault: SessionPolicy = DEFAULT_SESSION_POLICY,
 ): SessionPolicy {
+  return resolveSessionPolicyLayers({ platformDefault, runOverride: override })
+}
+
+export function resolveSessionPolicyLayers(input: {
+  platformDefault?: SessionPolicy
+  targetOverride?: SessionPolicyOverride | null
+  runOverride?: SessionPolicyOverride | null
+}): SessionPolicy {
   return sessionPolicySchema.parse({
-    ...platformDefault,
-    ...stripUndefined(override ?? undefined),
+    ...(input.platformDefault ?? DEFAULT_SESSION_POLICY),
+    ...stripUndefined(input.targetOverride ?? undefined),
+    ...stripUndefined(input.runOverride ?? undefined),
   })
+}
+
+export function applyTargetSessionPolicyPatch(
+  current: SessionPolicyOverride | null | undefined,
+  patch: TargetSessionPolicyPatch,
+): SessionPolicyOverride | null {
+  const next: Record<string, unknown> = { ...(current ?? {}) }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue
+    if (value === null) delete next[key]
+    else next[key] = value
+  }
+  const cleaned = stripUndefined(next)
+  if (Object.keys(cleaned).length === 0) return null
+  return sessionPolicyOverrideSchema.parse(cleaned)
 }
 
 function stripUndefined<T extends Record<string, unknown>>(
@@ -213,7 +295,6 @@ export const sessionDtoSchema = z.object({
       workerId: z.string().min(1),
       expiresAt: utcInstantSchema,
       runId: z.uuid().nullable(),
-      bound: z.boolean(),
     })
     .nullable(),
   authControl: z

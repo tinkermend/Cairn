@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isNoiseMapRoute,
   mapImplementationKey,
   type MapConditionSnapshot,
   type MapObservation,
@@ -9,7 +10,7 @@ import {
 import { classifyRoute, matchObjectIdentity, matchPageIdentity } from '../identity.js'
 import { chooseImplementation, evaluateCondition } from '../conditions.js'
 import { attributeVerification, lifecycleFromEvidence } from '../verification.js'
-import { planProjectionBatch } from '../projection.js'
+import { planProjectionBatch, projectionWorkingSetHints } from '../projection.js'
 import { queryMap } from '../query.js'
 import type { MapFactPageItem } from '../ports.js'
 
@@ -127,6 +128,16 @@ function fact(obs: MapObservation, ingestSeq: number): MapFactPageItem {
 }
 
 describe('OMC 身份与条件', () => {
+  it('默认知识视图把空白和无效路由当成噪声', () => {
+    expect(isNoiseMapRoute('nullblank')).toBe(true)
+    expect(isNoiseMapRoute('about:blank')).toBe(true)
+    expect(isNoiseMapRoute('chrome-error://chromewebdata/')).toBe(true)
+    expect(isNoiseMapRoute('https://unknown.invalid/')).toBe(true)
+    expect(isNoiseMapRoute('')).toBe(true)
+    expect(isNoiseMapRoute('https://shop.example/orders')).toBe(false)
+    expect(isNoiseMapRoute('http://61.144.35.2:18804/front/login')).toBe(false)
+  })
+
   it('OMC01 同模板订单归同页，不同 module 与未知参数区分', () => {
     const a = classifyRoute({ url: 'https://shop.example/orders/111' })
     const b = classifyRoute({ url: 'https://shop.example/orders/222' })
@@ -371,13 +382,38 @@ describe('OMC 身份与条件', () => {
       facts: [fact(obs, 1)],
       now: '2026-09-16T00:00:00.000Z',
     })
+    const pageId = '33333333-3333-4333-8333-333333333333'
+    const objectId = '44444444-4444-4444-8444-444444444444'
+    const page = first.pages[0]!
+    const object = first.objects[0]!
     const second = planProjectionBatch({
       state: {
         ...emptyState(),
+        pages: [
+          {
+            id: pageId,
+            allocationKey: page.allocationKey,
+            kind: page.kind,
+            routeTemplate: page.routeTemplate,
+          },
+        ],
+        objects: [
+          {
+            id: objectId,
+            allocationKey: object.allocationKey,
+            pageId,
+            pageAllocationKey: object.pageAllocationKey,
+            regionKey: object.regionKey,
+            stableToken: object.stableToken,
+          },
+        ],
         assignments: [{ observationId: obs.id, assignmentRevision: 1 }],
         assets: [
           {
             assetRefKey: 'p:x:o:x:i:x:d:0',
+            pageId,
+            objectId,
+            implementationKey: first.assets[0]?.implementationKey,
             lifecycle: 'OBSERVED',
             importance: 0,
             executable: false,
@@ -394,8 +430,50 @@ describe('OMC 身份与条件', () => {
       now: '2026-09-16T00:00:00.000Z',
     })
     expect(first.assets[0]?.sampleCount).toBe(1)
+    expect(second.assets).toHaveLength(1)
     expect(second.assets[0]?.sampleCount).toBe(1)
     expect(second.assets[0]?.dimensions.some((item) => item.verdict === 'rejected')).toBe(true)
+  })
+
+  it('计划只带本批脏资产，超过 200 条存量不撑爆契约', () => {
+    const obs = observation({
+      id: '55555555-5555-4555-8555-5555555555c1',
+      url: 'https://shop.example/orders/9',
+      label: '提交',
+    })
+    const facts = [fact(obs, 1)]
+    const hints = projectionWorkingSetHints(facts)
+    expect(hints.pageAllocationKeys).toHaveLength(1)
+    expect(hints.objectAllocationKeys).toHaveLength(1)
+    expect(hints.observationIds).toEqual([obs.id])
+    const untouched = Array.from({ length: 201 }, (_, index) => ({
+      id: `33333333-3333-4333-8333-33333333${String(index).padStart(4, '0')}`,
+      allocationKey: `page:v1:top:stock${String(index).padStart(3, '0')}:top`,
+      kind: 'top' as const,
+      routeTemplate: `https://shop.example/stock/${index}`,
+    }))
+    const plan = planProjectionBatch({
+      state: {
+        ...emptyState(),
+        pages: untouched,
+        assets: untouched.map((page) => ({
+          assetRefKey: `p:${page.id}:o:x:i:x:d:0`,
+          pageId: page.id,
+          lifecycle: 'OBSERVED' as const,
+          importance: 0,
+          executable: false,
+          rejectReasons: [],
+          dimensions: [],
+          sampleCount: 1,
+          changeCount: 0,
+        })),
+      },
+      facts,
+      now: '2026-09-16T00:00:00.000Z',
+    })
+    expect(plan.assets.length).toBeLessThanOrEqual(2)
+    expect(plan.pages).toHaveLength(1)
+    expect(plan.assets.some((asset) => asset.pageAllocationKey === hints.pageAllocationKeys[0])).toBe(true)
   })
 
   it('OMC13 查询冻结视图不跟 latest', () => {
@@ -427,6 +505,25 @@ describe('OMC 身份与条件', () => {
     )
     expect(result.usedRefs[0]?.descriptorVersion).toBe(1)
     expect(result.viewRef.kind).toBe('release')
+  })
+
+  it('装载层标记 candidateOverflow 时直接 AMBIGUOUS', () => {
+    const result = queryMap(
+      {
+        targetId,
+        viewRef: { kind: 'projection', projectionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', cursor: 0, revision: 0 },
+        identityRevision: 0,
+        candidateOverflow: true,
+        assets: [],
+      },
+      {
+        targetId,
+        view: { kind: 'projection', projectionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' },
+        limit: 10,
+      },
+    )
+    expect(result.matchResult).toBe('AMBIGUOUS')
+    expect(result.candidates).toEqual([])
   })
 })
 

@@ -1,12 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Request, Response } from 'express'
 import type { Options } from 'pino-http'
-import {
-  LOGGING_CENSOR,
-  LOGGING_REDACT_PATHS,
-  resolveRequestId,
-  type LogLevel,
-} from '@cairn/shared'
+import { buildProcessLoggerBindings, resolveRequestId, type LogLevel } from '@cairn/shared'
 
 /** pino 记录里的请求关联 ID 字段。`runId` 属于 Run，不得由请求 ID 冒充。 */
 export interface RequestWithId extends Request {
@@ -26,8 +21,7 @@ export interface LoggerOptionsInput {
  */
 export function buildApiLoggerOptions({ service, level }: LoggerOptionsInput): Options<Request, Response> {
   return {
-    level,
-    base: { service },
+    ...buildProcessLoggerBindings({ service, level }),
     // pino-http 在 Nest 中间件之前执行，值在这里确定，
     // RequestIdMiddleware 只负责把它镜像到响应头。
     genReqId: (req) => {
@@ -39,9 +33,6 @@ export function buildApiLoggerOptions({ service, level }: LoggerOptionsInput): O
     customProps: (req) => ({ requestId: (req as RequestWithId).requestId,
       ...(req.servicePrincipal ? { serviceCallerId: req.servicePrincipal.id, serviceCredentialId: req.servicePrincipal.credentialId } : {}),
     }),
-    // 默认序列化器不可信：pino-http 的 req 序列化器会把整份 headers 写出，
-    // 已认证请求因此把可重放的 Bearer 令牌与 Cookie 明文落盘。
-    redact: { paths: [...LOGGING_REDACT_PATHS], censor: LOGGING_CENSOR },
     autoLogging: { ignore: (req) => req.url === '/health' },
   }
 }

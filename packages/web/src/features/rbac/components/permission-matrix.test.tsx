@@ -42,4 +42,27 @@ describe('PermissionMatrix', () => {
     )
     await expect.element(getByLabelText('workflow:write')).toBeDisabled()
   })
+
+  it('auto-cascades required dependencies when enabled', async () => {
+    const onChange = vi.fn()
+    const { getByLabelText } = await render(
+      <PermissionMatrix value={[]} onChange={onChange} autoCascade />
+    )
+    // Clicking run:execute requires target:read and workflow:read
+    await userEvent.click(getByLabelText('run:execute'))
+    expect(onChange).toHaveBeenCalledWith(
+      expect.arrayContaining(['run:execute', 'target:read', 'workflow:read'])
+    )
+  })
+
+  it('filters permissions when typing into search box', async () => {
+    const { getByPlaceholder, getByText } = await render(
+      <PermissionMatrix value={[]} onChange={vi.fn()} />
+    )
+    const searchInput = getByPlaceholder('搜索权限名称或编码（如：场景、运行、AI）...')
+    await userEvent.fill(searchInput, 'AI')
+    await expect.element(getByText('AI', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText('控制台账号', { exact: true })).not.toBeInTheDocument()
+  })
 })
+

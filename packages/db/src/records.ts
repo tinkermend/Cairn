@@ -140,6 +140,7 @@ export type Target = {
     submit?: { by: 'id' | 'name' | 'css'; value: string }
   } | null
   currentAuthProfileRevision: number | null
+  sessionPolicy: Record<string, unknown> | null
   deletedAt: Date | null
   deletedBy: ResourceDeletedBy | null
 }
@@ -548,11 +549,6 @@ export type BrowserSessionRow = {
   profileKey: string
   reusePolicy: 'REUSE_PAGE' | 'NEW_PAGE' | 'RECREATE_SESSION'
   expiresAt: Date
-  authHoldWorkerId: string | null
-  authHoldExpiresAt: Date | null
-  authHoldRunId: string | null
-  authHoldSessionGeneration: number | null
-  authHoldWorkerInstanceId: string | null
   authControlEpoch: number
   authControlActorId: string | null
   authControlTokenHash: string | null
@@ -571,6 +567,11 @@ export type BrowserSessionRow = {
   observedTier: AuthCapabilityTier | null
   retainUntil: Date | null
   nextAuthCheckAt: Date | null
+  reclaimMode: 'IDLE' | 'AUTH_DRIVEN'
+  keepAliveUntil: Date | null
+  keepAliveSeconds: number | null
+  authProbeIntervalSeconds: number | null
+  evictionPriority: number
   predecessorSessionId: string | null
   closeReason: string | null
   closedAt: Date | null
@@ -596,11 +597,6 @@ export type NewBrowserSession = {
   authState?: 'UNKNOWN' | 'AUTHENTICATED' | 'EXPIRED' | undefined
   fencingToken?: number | undefined
   version?: number | undefined
-  authHoldWorkerId?: string | null | undefined
-  authHoldExpiresAt?: Date | null | undefined
-  authHoldRunId?: string | null | undefined
-  authHoldSessionGeneration?: number | null | undefined
-  authHoldWorkerInstanceId?: string | null | undefined
   authControlEpoch?: number | undefined
   authControlActorId?: string | null | undefined
   authControlTokenHash?: string | null | undefined
@@ -608,6 +604,11 @@ export type NewBrowserSession = {
   authControlPageId?: string | null | undefined
   retainUntil?: Date | null | undefined
   nextAuthCheckAt?: Date | null | undefined
+  reclaimMode?: 'IDLE' | 'AUTH_DRIVEN' | undefined
+  keepAliveUntil?: Date | null | undefined
+  keepAliveSeconds?: number | null | undefined
+  authProbeIntervalSeconds?: number | null | undefined
+  evictionPriority?: number | undefined
   predecessorSessionId?: string | null | undefined
   closeReason?: string | null | undefined
   closedAt?: Date | null | undefined

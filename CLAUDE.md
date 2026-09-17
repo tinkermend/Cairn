@@ -32,7 +32,7 @@ AI Step 保存业务意图、契约和执行策略，每次运行基于当前页
 
 Execution Engine 负责运行生命周期，通过 Executor Registry 分派能力，不直接实现浏览器动作或 AI 推理。正式执行浏览器统一由 Browser Runtime 纳管，Executor 不得私自创建无法纳管的会话；新增执行能力不应要求重写 Scenario、Run 或 Evidence 的核心生命周期。
 
-API 是无状态控制面，不执行 Scenario、不持有正式 Browser Session。Worker 负责执行和持久化运行事实，不通过 API 回调写回事实；二者通过持久化数据和变化提示协作。Web 不得直连数据库或正式 Worker。
+API 是无状态控制面，不执行 Scenario、不持有正式 Browser Session。Worker 负责执行和持久化运行事实，不通过 API 回调写回事实；二者通过持久化数据和变化提示协作。Web 不得直连数据库或正式 Worker。控制面 API Service 负责鉴权上下文、外部模型与不必同事务的编排，不是只能透传。跨进程且必须同事务的领域操作仍经 `@cairn/db` 不透明句柄。纯内存算法与带 Port 的领域包按[分层方案](docs/spec/2026-09-17-domain-layer-and-usecase-layering-architecture.md)安放；db 不得依赖 Port 包。
 
 ### 会话与租约
 

@@ -1,5 +1,9 @@
 import { z } from 'zod'
 import { loginFieldsInputSchema, targetLoginFieldsDtoSchema } from './login-fields.js'
+import {
+  sessionPolicyOverrideSchema,
+  sessionPolicySchema,
+} from './session.js'
 import { nextCursorSchema } from './rbac.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
 
@@ -108,6 +112,8 @@ export const targetSchema = z.object({
   deletedAt: z.string().nullable().optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
   currentAuthProfileRevision: z.number().int().positive().nullable().optional(),
+  sessionPolicy: sessionPolicyOverrideSchema.nullable().optional(),
+  effectiveSessionPolicy: sessionPolicySchema.optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 })

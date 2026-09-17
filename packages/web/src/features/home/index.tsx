@@ -3,7 +3,6 @@ import type { PermissionCode } from '@cairn/shared'
 import { ListChecks, Monitor, Play, ScrollText, Settings, Shield, SlidersHorizontal, Users } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { can, canAny } from '@/lib/rbac'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 
@@ -81,9 +80,7 @@ export function HomePage() {
   )
 
   return (
-    <>
-      <AppHeader fixed />
-      <Main className='flex flex-1 flex-col gap-6'>
+    <Main className='flex flex-1 flex-col gap-6'>
         <PageHeader
           title={greeting}
           description='识途是面向真实 Web 系统的智能仿真平台。控制台账号管平台权限；目标系统与目标账号是被仿真对象；浏览器会话由执行面纳管，不在这张工作台菜单里。'
@@ -111,6 +108,5 @@ export function HomePage() {
           })}
         </section>
       </Main>
-    </>
   )
 }

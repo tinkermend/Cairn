@@ -1,9 +1,8 @@
 import type { BrowserSessionRow, SessionLeaseRow } from '../records.js'
 import { schemaFor } from '../native.js'
 import { insertRows } from '../native.js'
-import { and, asc, desc, eq, inArray, isNull, isNotNull, ne, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import {
-  LOCAL_SECRET_PROVIDER,
   sessionDtoSchema,
   type AuthCapabilityTier,
   type IdentityState,
@@ -12,16 +11,18 @@ import {
   type SessionErrorCode,
   type SessionGrant,
   type SessionHealth,
+  type SessionReclaimMode,
   type SessionReusePolicy,
   type SessionStatus,
 } from '@cairn/shared'
 import { recordAudit, type AuditActor } from '../audit/record.js'
+import { appendSessionEvent } from './session-events.js'
 import type { Db } from '../client.js'
 import { locked, databaseNow, afterSeconds, updateRows, clockNow } from '../native.js'
 import { newId } from '../id.js'
-import { constraintName, isUniqueViolation, badRequest, conflict, notFound } from '../runs/errors.js'
+import { constraintName, isUniqueViolation, conflict, notFound } from '../runs/errors.js'
 import { browserSessions, sessionLeases } from '../schema/session.js'
-import { secrets } from '../schema/targets.js'
+import { authHoldFromLease } from './occupancy-read.js'
 
 export type SessionKey = { targetId: string; targetAccountId: string }
 
@@ -43,11 +44,6 @@ export type SessionRecord = {
   maxLifetimeSeconds: number
   expiresAt: Date
   lastUsedAt: Date
-  authHoldWorkerId: string | null
-  authHoldExpiresAt: Date | null
-  authHoldRunId: string | null
-  authHoldSessionGeneration: number | null
-  authHoldWorkerInstanceId: string | null
   authControlEpoch: number
   authControlActorId: string | null
   authControlTokenHash: string | null
@@ -66,6 +62,11 @@ export type SessionRecord = {
   observedTier: AuthCapabilityTier | null
   retainUntil: Date | null
   nextAuthCheckAt: Date | null
+  reclaimMode: SessionReclaimMode
+  keepAliveUntil: Date | null
+  keepAliveSeconds: number | null
+  authProbeIntervalSeconds: number | null
+  evictionPriority: number
   predecessorSessionId: string | null
   closeReason: string | null
   closedAt: Date | null
@@ -136,11 +137,6 @@ function toSession(row: BrowserSessionRow): SessionRecord {
     maxLifetimeSeconds: row.maxLifetimeSeconds,
     expiresAt: row.expiresAt,
     lastUsedAt: row.lastUsedAt,
-    authHoldWorkerId: row.authHoldWorkerId,
-    authHoldExpiresAt: row.authHoldExpiresAt,
-    authHoldRunId: row.authHoldRunId,
-    authHoldSessionGeneration: row.authHoldSessionGeneration,
-    authHoldWorkerInstanceId: row.authHoldWorkerInstanceId,
     authControlEpoch: row.authControlEpoch,
     authControlActorId: row.authControlActorId,
     authControlTokenHash: row.authControlTokenHash,
@@ -159,6 +155,11 @@ function toSession(row: BrowserSessionRow): SessionRecord {
     observedTier: row.observedTier,
     retainUntil: row.retainUntil ?? null,
     nextAuthCheckAt: row.nextAuthCheckAt ?? null,
+    reclaimMode: row.reclaimMode ?? 'IDLE',
+    keepAliveUntil: row.keepAliveUntil ?? null,
+    keepAliveSeconds: row.keepAliveSeconds ?? null,
+    authProbeIntervalSeconds: row.authProbeIntervalSeconds ?? null,
+    evictionPriority: row.evictionPriority ?? 0,
     predecessorSessionId: row.predecessorSessionId ?? null,
     closeReason: row.closeReason,
     closedAt: row.closedAt,
@@ -278,6 +279,10 @@ export type CreateSessionInput = {
   reusePolicy: SessionReusePolicy
   idleTtlSeconds: number
   maxLifetimeSeconds: number
+  reclaimMode?: SessionReclaimMode
+  keepAliveSeconds?: number | null
+  authProbeIntervalSeconds?: number | null
+  evictionPriority?: number
   id?: string
 }
 
@@ -295,6 +300,23 @@ export async function createSession(
       ok: false,
       code: 'SESSION_POLICY_INVALID',
       message: 'maxLifetimeSeconds 必须大于 idleTtlSeconds',
+    }
+  }
+  const reclaimMode = input.reclaimMode ?? 'IDLE'
+  if (reclaimMode === 'AUTH_DRIVEN') {
+    if (input.keepAliveSeconds == null || input.keepAliveSeconds <= 0) {
+      return {
+        ok: false,
+        code: 'SESSION_POLICY_INVALID',
+        message: 'AUTH_DRIVEN 必须写入 keepAliveSeconds',
+      }
+    }
+    if (input.authProbeIntervalSeconds == null || input.authProbeIntervalSeconds <= 0) {
+      return {
+        ok: false,
+        code: 'SESSION_POLICY_INVALID',
+        message: 'AUTH_DRIVEN 必须写入 authProbeIntervalSeconds',
+      }
     }
   }
   const [target] = await db
@@ -337,6 +359,10 @@ export async function createSession(
       reusePolicy: input.reusePolicy,
       idleTtlSeconds: input.idleTtlSeconds,
       maxLifetimeSeconds: input.maxLifetimeSeconds,
+      reclaimMode,
+      keepAliveSeconds: input.keepAliveSeconds ?? null,
+      authProbeIntervalSeconds: input.authProbeIntervalSeconds ?? null,
+      evictionPriority: input.evictionPriority ?? 0,
       expiresAt,
       lastUsedAt: now,
       createdAt: now,
@@ -388,7 +414,12 @@ export async function findEvictableSession(
         )`,
       ),
     )
-    .orderBy(asc(browserSessions.lastUsedAt), asc(browserSessions.id))
+    .orderBy(
+      sql`CASE WHEN ${browserSessions.reclaimMode} = 'IDLE' THEN 0 ELSE 1 END`,
+      asc(browserSessions.evictionPriority),
+      asc(browserSessions.lastUsedAt),
+      asc(browserSessions.id),
+    )
     .limit(1)
   return row ? toSession(row) : null
 }
@@ -493,6 +524,31 @@ export async function setSessionAuthSummary(
 ): Promise<boolean> {
   const { browserSessions } = schemaFor(db)
   const now = new Date()
+  const [current] = await db
+    .select({
+      id: browserSessions.id,
+      targetId: browserSessions.targetId,
+      targetAccountId: browserSessions.targetAccountId,
+      generation: browserSessions.generation,
+      reclaimMode: browserSessions.reclaimMode,
+      keepAliveSeconds: browserSessions.keepAliveSeconds,
+      authProbeIntervalSeconds: browserSessions.authProbeIntervalSeconds,
+    })
+    .from(browserSessions)
+    .where(eq(browserSessions.id, input.sessionId))
+    .limit(1)
+  const extendKeepAlive =
+    input.recordSuccess &&
+    current?.reclaimMode === 'AUTH_DRIVEN' &&
+    current.keepAliveSeconds != null &&
+    current.keepAliveSeconds > 0
+  const keepAliveUntil = extendKeepAlive
+    ? new Date(now.getTime() + current.keepAliveSeconds! * 1000)
+    : undefined
+  const nextAuthCheckAt =
+    extendKeepAlive && current?.authProbeIntervalSeconds
+      ? new Date(now.getTime() + current.authProbeIntervalSeconds * 1000)
+      : undefined
   const [row] = await updateRows(
     db,
     browserSessions,
@@ -514,6 +570,8 @@ export async function setSessionAuthSummary(
             identityVerifiedAt: input.identityState === 'MATCH' ? now : null,
           }
         : {}),
+      ...(keepAliveUntil ? { keepAliveUntil } : {}),
+      ...(nextAuthCheckAt ? { nextAuthCheckAt } : {}),
     },
     and(
       eq(browserSessions.id, input.sessionId),
@@ -525,6 +583,15 @@ export async function setSessionAuthSummary(
     ),
     { id: browserSessions.id },
   )
+  if (row && keepAliveUntil && current) {
+    await appendSessionEvent(db, {
+      key: { targetId: current.targetId, targetAccountId: current.targetAccountId },
+      type: 'session.keepalive_extended',
+      sessionId: current.id,
+      generation: current.generation,
+      payload: { keepAliveUntil: keepAliveUntil.toISOString() },
+    })
+  }
   return row !== undefined
 }
 
@@ -547,73 +614,6 @@ export async function touchSessionUsed(
   return row !== undefined
 }
 
-export async function claimAuthHold(
-  db: Db,
-  input: {
-    sessionId: string
-    workerId: string
-    holdSeconds: number
-    runId: string
-    sessionGeneration: number
-    workerInstanceId: string
-  },
-): Promise<boolean> {
-  if (!input.runId || input.sessionGeneration === undefined || !input.workerInstanceId) {
-    throw badRequest('AUTH_HOLD_UNBOUND', '认证占用必须绑定 Run、会话代次与 Worker 进程')
-  }
-  const { browserSessions } = schemaFor(db)
-  const now = await clockNow(db)
-  const expires = new Date(now.getTime() + input.holdSeconds * 1000)
-  const [row] = await updateRows(
-    db,
-    browserSessions,
-    {
-      authHoldWorkerId: input.workerId,
-      authHoldExpiresAt: expires,
-      authHoldRunId: input.runId,
-      authHoldSessionGeneration: input.sessionGeneration,
-      authHoldWorkerInstanceId: input.workerInstanceId,
-      updatedAt: now,
-    },
-    and(
-      eq(browserSessions.id, input.sessionId),
-      eq(browserSessions.status, 'OPEN'),
-      isNull(browserSessions.authHoldWorkerId),
-    ),
-    { id: browserSessions.id },
-  )
-  return row !== undefined
-}
-
-export async function releaseAuthHold(
-  db: Db,
-  input: { sessionId: string; workerId: string },
-): Promise<boolean> {
-  const { browserSessions } = schemaFor(db)
-  const [row] = await updateRows(
-    db,
-    browserSessions,
-    {
-      authHoldWorkerId: null,
-      authHoldExpiresAt: null,
-      authHoldRunId: null,
-      authHoldSessionGeneration: null,
-      authHoldWorkerInstanceId: null,
-      authControlActorId: null,
-      authControlTokenHash: null,
-      authControlExpiresAt: null,
-      authControlPageId: null,
-      updatedAt: new Date(),
-    },
-    and(
-      eq(browserSessions.id, input.sessionId),
-      eq(browserSessions.authHoldWorkerId, input.workerId),
-    ),
-    { id: browserSessions.id },
-  )
-  return row !== undefined
-}
-
 export async function listReapableSessions(
   db: Db,
   workerId: string,
@@ -630,8 +630,21 @@ export async function listReapableSessions(
         sql`NOT EXISTS (SELECT 1 FROM ${sessionLeases} l WHERE l.session_id = ${browserSessions.id} AND l.status = 'ACTIVE')`,
         sql`(${browserSessions.retainUntil} IS NULL OR ${browserSessions.retainUntil} <= ${databaseNow(db)})`,
         or(
-          sql`${afterSeconds(db, browserSessions.idleTtlSeconds, browserSessions.lastUsedAt)} <= ${databaseNow(db)}`,
-          sql`${browserSessions.expiresAt} <= ${databaseNow(db)}`,
+          and(
+            sql`${browserSessions.reclaimMode} = 'IDLE'`,
+            or(
+              sql`${afterSeconds(db, browserSessions.idleTtlSeconds, browserSessions.lastUsedAt)} <= ${databaseNow(db)}`,
+              sql`${browserSessions.expiresAt} <= ${databaseNow(db)}`,
+            ),
+          ),
+          and(
+            sql`${browserSessions.reclaimMode} = 'AUTH_DRIVEN'`,
+            or(
+              sql`${browserSessions.expiresAt} <= ${databaseNow(db)}`,
+              sql`${browserSessions.keepAliveUntil} IS NULL`,
+              sql`${browserSessions.keepAliveUntil} <= ${databaseNow(db)}`,
+            ),
+          ),
         ),
       ),
     )
@@ -839,123 +852,6 @@ export async function listOwnedOpenSessions(db: Db, workerId: string): Promise<S
   return rows.map(toSession)
 }
 
-/** 仅测试 / 排障：把 last_used_at 拨到过去。 */
-export async function forceLastUsedAt(db: Db, sessionId: string, at: Date): Promise<void> {
-  const { browserSessions } = schemaFor(db)
-  await db
-    .update(browserSessions)
-    .set({ lastUsedAt: at, updatedAt: new Date() })
-    .where(eq(browserSessions.id, sessionId))
-}
-
-/** 仅测试：把租约 expires_at 拨到过去。 */
-export async function forceLeaseExpiresAt(db: Db, leaseId: string, at: Date): Promise<void> {
-  const { sessionLeases } = schemaFor(db)
-  await db
-    .update(sessionLeases)
-    .set({ expiresAt: at })
-    .where(and(eq(sessionLeases.id, leaseId), eq(sessionLeases.status, 'ACTIVE')))
-}
-
-/** 仅测试：强制改 generation（续租换代判定）。 */
-export async function forceSessionGeneration(
-  db: Db,
-  sessionId: string,
-  generation: number,
-): Promise<void> {
-  const { browserSessions } = schemaFor(db)
-  await db
-    .update(browserSessions)
-    .set({ generation, updatedAt: new Date() })
-    .where(eq(browserSessions.id, sessionId))
-}
-
-/**
- * 本 Worker 名下已过期的认证占用。
- * 超时后清占用、置 auth_state=EXPIRED，会话保持 OPEN（不关浏览器）。
- */
-export async function listExpiredAuthHolds(
-  db: Db,
-  workerId: string,
-  limit = 50,
-): Promise<SessionRecord[]> {
-  const { browserSessions } = schemaFor(db)
-  const rows = await db
-    .select()
-    .from(browserSessions)
-    .where(
-      and(
-        eq(browserSessions.ownerWorkerId, workerId),
-        eq(browserSessions.status, 'OPEN'),
-        isNotNull(browserSessions.authHoldWorkerId),
-        isNotNull(browserSessions.authHoldExpiresAt),
-        sql`${browserSessions.authHoldExpiresAt} <= ${databaseNow(db)}`,
-      ),
-    )
-    .orderBy(browserSessions.authHoldExpiresAt, browserSessions.id)
-    .limit(limit)
-  return rows.map(toSession)
-}
-
-export async function expireAuthHold(
-  db: Db,
-  input: { sessionId: string; workerId: string },
-): Promise<boolean> {
-  const { browserSessions } = schemaFor(db)
-  const [row] = await updateRows(
-    db,
-    browserSessions,
-    {
-      authHoldWorkerId: null,
-      authHoldExpiresAt: null,
-      authHoldRunId: null,
-      authHoldSessionGeneration: null,
-      authHoldWorkerInstanceId: null,
-      authControlActorId: null,
-      authControlTokenHash: null,
-      authControlExpiresAt: null,
-      authControlPageId: null,
-      authState: 'EXPIRED',
-      updatedAt: new Date(),
-    },
-    and(
-      eq(browserSessions.id, input.sessionId),
-      eq(browserSessions.ownerWorkerId, input.workerId),
-      eq(browserSessions.status, 'OPEN'),
-    ),
-    { id: browserSessions.id },
-  )
-  return row !== undefined
-}
-
-/** 登记一条不绑定 TargetAccount 的独立 Secret，供模型密钥等使用。 */
-export async function registerStandaloneSecret(
-  db: Db,
-  input: { id: string; ciphertext: Buffer },
-): Promise<{ id: string }> {
-  const now = new Date()
-  const { secrets: table } = schemaFor(db)
-  await db.insert(table).values({
-    id: input.id,
-    provider: LOCAL_SECRET_PROVIDER,
-    ciphertext: input.ciphertext,
-    createdAt: now,
-    updatedAt: now,
-  })
-  return { id: input.id }
-}
-
-/** 读取 secrets 密文（不解密）。 */
-export async function loadSecretCiphertext(
-  db: Db,
-  secretId: string,
-): Promise<{ id: string; provider: string; ciphertext: Buffer } | null> {
-  const { secrets } = schemaFor(db)
-  const [row] = await db.select().from(secrets).where(eq(secrets.id, secretId)).limit(1)
-  if (!row) return null
-  return { id: row.id, provider: row.provider, ciphertext: row.ciphertext }
-}
-
 /** 占着键的会话：CLOSED 之外的全部状态。控制面列表只给这一批。 */
 export async function listSessions(
   db: Db,
@@ -1004,22 +900,16 @@ export function toSessionDto(row: BrowserSessionRow, lease: SessionLeaseRow | nu
     idleTtlSeconds: row.idleTtlSeconds,
     lastUsedAt: row.lastUsedAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
-    authHold:
-      lease?.purpose === 'AUTH_WAIT'
+    authHold: (() => {
+      const hold = authHoldFromLease(lease)
+      return hold
         ? {
-            workerId: lease.holderWorkerId,
-            expiresAt: (lease.waitDeadlineAt ?? lease.expiresAt).toISOString(),
-            runId: lease.runId,
-            bound: true,
+            workerId: hold.workerId,
+            expiresAt: hold.expiresAt.toISOString(),
+            runId: hold.runId,
           }
-        : row.authHoldWorkerId && row.authHoldExpiresAt
-          ? {
-              workerId: row.authHoldWorkerId,
-              expiresAt: row.authHoldExpiresAt.toISOString(),
-              runId: row.authHoldRunId,
-              bound: Boolean(row.authHoldRunId && row.authHoldSessionGeneration && row.authHoldWorkerInstanceId),
-            }
-          : null,
+        : null
+    })(),
     authControl: {
       epoch: row.authControlEpoch,
       actorId: row.authControlActorId,
@@ -1127,12 +1017,6 @@ export async function disposeStuckSession(
         status: 'CLOSED',
         closedAt: now,
         closeReason: 'operator_disposed',
-        // 处置就是收回一切占用。只清 worker/到期、留下 runId 会违反 hold 绑定约束。
-        authHoldWorkerId: null,
-        authHoldExpiresAt: null,
-        authHoldRunId: null,
-        authHoldSessionGeneration: null,
-        authHoldWorkerInstanceId: null,
         authControlActorId: null,
         authControlTokenHash: null,
         authControlExpiresAt: null,

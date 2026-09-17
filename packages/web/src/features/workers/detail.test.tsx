@@ -8,7 +8,6 @@ import { WorkerDetailPage } from './detail'
 
 const fetchWorker = vi.fn()
 
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   getRouteApi: () => ({ useParams: () => ({ workerId: 'worker-a' }) }),

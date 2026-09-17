@@ -19,6 +19,8 @@ import {
   sessionOperationAcceptedSchema,
   sessionOverviewQuerySchema,
   sessionOverviewResponseSchema,
+  sessionSystemOverviewQuerySchema,
+  sessionSystemOverviewResponseSchema,
   sessionRetentionBodySchema,
   utcInstantSchema,
   type AccountSessionDetail,
@@ -27,6 +29,8 @@ import {
   type SessionOperationAccepted,
   type SessionOverviewQuery,
   type SessionOverviewResponse,
+  type SessionSystemOverviewQuery,
+  type SessionSystemOverviewResponse,
   type SessionRetentionBody,
 } from '@cairn/shared'
 import { apiFetch, toQueryString } from '@/lib/api-client'
@@ -35,6 +39,15 @@ export function fetchSessionOverview(query?: SessionOverviewQuery): Promise<Sess
   return apiFetch(
     `/api/browser-sessions/overview${toQueryString(sessionOverviewQuerySchema.parse(query ?? {}))}`,
     sessionOverviewResponseSchema,
+  )
+}
+
+export function fetchSessionSystemOverview(
+  query?: SessionSystemOverviewQuery,
+): Promise<SessionSystemOverviewResponse> {
+  return apiFetch(
+    `/api/browser-sessions/systems${toQueryString(sessionSystemOverviewQuerySchema.parse(query ?? {}))}`,
+    sessionSystemOverviewResponseSchema,
   )
 }
 
@@ -113,6 +126,18 @@ async function subscribeSessionStream(
   if (!res.ok) throw new Error(`连接失败（${res.status}）`)
   if (res.body) await readSseStream(res.body, onFrame, signal)
 }
+export function sessionObserveQuery(input: {
+  targetId?: string
+  accountId?: string
+  cursor?: string
+}) {
+  const scoped = Boolean(input.targetId) && Boolean(input.accountId)
+  return {
+    ...(scoped ? { targetId: input.targetId, accountId: input.accountId } : {}),
+    cursor: input.cursor,
+  }
+}
+
 export async function subscribeSessionEvents(input: {
   targetId?: string
   accountId?: string
@@ -122,7 +147,7 @@ export async function subscribeSessionEvents(input: {
   onReady: () => void
 }) {
   await subscribeSessionStream(
-    `/api/browser-sessions/observe${toQueryString({ targetId: input.targetId, accountId: input.accountId, cursor: input.cursor })}`,
+    `/api/browser-sessions/observe${toQueryString(sessionObserveQuery(input))}`,
     input.signal,
     (frame) => {
       input.onReady()

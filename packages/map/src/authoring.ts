@@ -1,6 +1,6 @@
+import { compileScenarioDocument } from '@cairn/authoring'
 import {
   MAX_SCENARIO_STEPS,
-  compileScenarioDocument,
   scenarioDocumentSchema,
   type KnowledgeDiagnostic,
   type KnowledgeDiff,

@@ -1,4 +1,5 @@
-import { compileScenarioDocument, type ScenarioDocument } from '@cairn/shared'
+import { compileScenarioDocument } from '@cairn/authoring'
+import { type ScenarioDocument } from '@cairn/shared'
 import { describe, expect, it } from 'vitest'
 import { applyFlowgramOrder, toFlowgram } from './adapter'
 

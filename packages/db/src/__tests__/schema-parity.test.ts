@@ -240,6 +240,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'login_fields', is_nullable: 'YES' },
       { column_name: 'login_url', is_nullable: 'YES' },
       { column_name: 'name', is_nullable: 'NO' },
+      { column_name: 'session_policy', is_nullable: 'YES' },
       { column_name: 'status', is_nullable: 'NO' },
       { column_name: 'updated_at', is_nullable: 'NO' },
     ])
@@ -430,17 +431,14 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'auth_control_page_id', is_nullable: 'YES' },
       { column_name: 'auth_control_token_hash', is_nullable: 'YES' },
       { column_name: 'auth_expiry_source', is_nullable: 'YES' },
-      { column_name: 'auth_hold_expires_at', is_nullable: 'YES' },
-      { column_name: 'auth_hold_run_id', is_nullable: 'YES' },
-      { column_name: 'auth_hold_session_generation', is_nullable: 'YES' },
-      { column_name: 'auth_hold_worker_id', is_nullable: 'YES' },
-      { column_name: 'auth_hold_worker_instance_id', is_nullable: 'YES' },
+      { column_name: 'auth_probe_interval_seconds', is_nullable: 'YES' },
       { column_name: 'auth_profile_revision', is_nullable: 'YES' },
       { column_name: 'auth_state', is_nullable: 'NO' },
       { column_name: 'auth_valid_until', is_nullable: 'YES' },
       { column_name: 'close_reason', is_nullable: 'YES' },
       { column_name: 'closed_at', is_nullable: 'YES' },
       { column_name: 'created_at', is_nullable: 'NO' },
+      { column_name: 'eviction_priority', is_nullable: 'NO' },
       { column_name: 'expires_at', is_nullable: 'NO' },
       { column_name: 'fencing_token', is_nullable: 'NO' },
       { column_name: 'generation', is_nullable: 'NO' },
@@ -449,6 +447,8 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'identity_state', is_nullable: 'YES' },
       { column_name: 'identity_verified_at', is_nullable: 'YES' },
       { column_name: 'idle_ttl_seconds', is_nullable: 'NO' },
+      { column_name: 'keep_alive_seconds', is_nullable: 'YES' },
+      { column_name: 'keep_alive_until', is_nullable: 'YES' },
       { column_name: 'last_auth_checked_at', is_nullable: 'YES' },
       { column_name: 'last_auth_error', is_nullable: 'YES' },
       { column_name: 'last_auth_generation', is_nullable: 'YES' },
@@ -462,6 +462,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'owner_worker_instance_id', is_nullable: 'YES' },
       { column_name: 'predecessor_session_id', is_nullable: 'YES' },
       { column_name: 'profile_key', is_nullable: 'NO' },
+      { column_name: 'reclaim_mode', is_nullable: 'NO' },
       { column_name: 'retain_until', is_nullable: 'YES' },
       { column_name: 'reuse_policy', is_nullable: 'NO' },
       { column_name: 'status', is_nullable: 'NO' },
@@ -480,6 +481,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     expect(indexes.map((r) => r.indexname)).toEqual(
       expect.arrayContaining([
         'browser_sessions_auth_check_idx',
+        'browser_sessions_keep_alive_idx',
         'browser_sessions_key_live_idx',
         'browser_sessions_owner_idx',
         'browser_sessions_owner_instance_idx',
@@ -623,7 +625,6 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
   it('所有 id / *_id 列都是 uuid 类型（Worker 身份列除外）', async () => {
     const workerIdColumns = new Set([
       'owner_worker_id',
-      'auth_hold_worker_id',
       'holder_worker_id',
       'location_worker_id',
     ])
@@ -988,5 +989,85 @@ describe.skipIf(!parsed.success)('带存量数据的 0012 → 0013 升级（集�
         [randomUUID(), succeededRunId],
       ),
     ).rejects.toThrow(/evidences_status_missing_reason_check/)
+  })
+})
+
+describe.skipIf(!parsed.success)('带存量数据的 0055 → 0056 升级（集成）', () => {
+  const SCHEMA = `${TEST_SCHEMA}_ah56`
+  const MIGRATIONS_DIR = resolve(import.meta.dirname, '../../migrations')
+  let pool: Pool
+  let throughDir: string
+  let sessionId: string
+
+  beforeAll(async () => {
+    const env = parsed.data!
+    pool = new Pool({
+      host: env.CAIRN_DB_HOST,
+      port: env.CAIRN_DB_PORT,
+      database: env.CAIRN_DB_NAME,
+      user: env.CAIRN_DB_USER,
+      password: env.CAIRN_DB_PASSWORD,
+    })
+    throughDir = mkdtempSync(join(tmpdir(), 'cairn-mig-0055-'))
+    for (const filename of readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql') && file < '0056')) {
+      copyFileSync(resolve(MIGRATIONS_DIR, filename), resolve(throughDir, filename))
+    }
+    const through = await migrate(pool, SCHEMA, throughDir)
+    expect(through.applied.at(-1)).toBe('0055_session_auth_driven_retention.sql')
+
+    const actorId = randomUUID()
+    const targetId = randomUUID()
+    const accountId = randomUUID()
+    sessionId = randomUUID()
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".console_accounts (id, display_name, email, status)
+       VALUES ($1, 'AH-56', $2, 'active')`,
+      [actorId, `ah56-${actorId}@example.com`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".targets (id, code, name, entry_url)
+       VALUES ($1, $2, 'AH-56', 'https://example.com')`,
+      [targetId, `ah56-${targetId.slice(0, 8)}`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".target_accounts (id, target_id, display_name, username)
+       VALUES ($1, $2, 'AH-56', $3)`,
+      [accountId, targetId, `u-${accountId.slice(0, 8)}`],
+    )
+    await pool.query(
+      `INSERT INTO "${SCHEMA}".browser_sessions
+         (id, target_id, target_account_id, status, health, owner_worker_id, generation,
+          fencing_token, profile_key, reuse_policy, idle_ttl_seconds, max_lifetime_seconds, expires_at)
+       VALUES ($1, $2, $3, 'OPEN', 'HEALTHY', 'ah56-worker', 1, 1, $4,
+               'REUSE_PAGE', 600, 3600, now() + interval '1 hour')`,
+      [sessionId, targetId, accountId, `p/${sessionId.slice(0, 8)}`],
+    )
+    const { rows } = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM "${SCHEMA}".browser_sessions WHERE auth_hold_worker_id IS NOT NULL`,
+    )
+    expect(rows[0]?.n).toBe('0')
+  })
+
+  afterAll(async () => {
+    await pool?.query(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`)
+    await pool?.end()
+    if (throughDir) rmSync(throughDir, { recursive: true, force: true })
+  })
+
+  it('0056 摘除 auth_hold 列后存量会话仍在', async () => {
+    const up = await migrate(pool, SCHEMA)
+    expect(up.applied).toEqual(['0056_drop_legacy_auth_hold.sql'])
+    const { rows: columns } = await pool.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'browser_sessions'
+          AND column_name LIKE 'auth_hold_%'`,
+      [SCHEMA],
+    )
+    expect(columns).toEqual([])
+    const { rows } = await pool.query<{ id: string; status: string }>(
+      `SELECT id, status FROM "${SCHEMA}".browser_sessions WHERE id = $1`,
+      [sessionId],
+    )
+    expect(rows).toEqual([{ id: sessionId, status: 'OPEN' }])
   })
 })

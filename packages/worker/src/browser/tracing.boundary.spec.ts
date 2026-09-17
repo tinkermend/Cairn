@@ -2,7 +2,10 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const SESSION = readFileSync(join(__dirname, 'session-manager.ts'), 'utf8')
+const SESSION = [
+  readFileSync(join(__dirname, 'session-manager.ts'), 'utf8'),
+  readFileSync(join(__dirname, 'session-command.ts'), 'utf8'),
+].join('\n')
 
 describe('Trace 开录边界', () => {
   it('startChunk 必须在 executeOnPage 之前', () => {

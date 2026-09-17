@@ -9,6 +9,14 @@ function page() {
   p.locator = vi.fn(() => ({ first: () => ({ isVisible: async () => false }) }))
   return p
 }
+it('完全静置且不在登录页时不发信号', async () => {
+  const p = page(), signal = vi.fn()
+  const observer = observeRunAuthPage({ page: p, loginUrl: 'https://app.example/login', onSignal: signal })
+  await observer.inspect()
+  expect(signal).not.toHaveBeenCalled()
+  observer.dispose()
+})
+
 it('被动跳转立即关门且 URL 不携带令牌', () => {
   const p = page(), signal = vi.fn()
   const observer = observeRunAuthPage({ page: p, loginUrl: 'https://app.example/login', onSignal: signal })

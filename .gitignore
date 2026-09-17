@@ -33,6 +33,7 @@ docs/arch/
 docs/spec/
 docs/reviews/
 docs/plan/
+docs/design/
 # 含明文凭据的部署记录（远端 shsnc-ah3、本机 Podman 等），不入库
 docs/deploy/
 # 联调 / L3 外部目标系统清单：URL、账号、口令，不入库

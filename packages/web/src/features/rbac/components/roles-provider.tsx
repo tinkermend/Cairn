@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import type { RoleDto } from '@cairn/shared'
 import useDialogState from '@/hooks/use-dialog-state'
 
-type RolesDialogType = 'add' | 'edit' | 'delete'
+type RolesDialogType = 'add' | 'edit' | 'delete' | 'clone' | 'members'
 
 type RolesContextType = {
   open: RolesDialogType | null

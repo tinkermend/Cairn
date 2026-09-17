@@ -28,7 +28,6 @@ const mocks = vi.hoisted(() => ({
   setAccountSessionRetention: vi.fn(),
 }))
 
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@/lib/workers-api', () => ({ disposeWorkerSession: vi.fn() }))
 vi.mock('./use-session-observation', () => ({
   useSessionObservation: () => ({ connected: true, eventSeq: 1 }),
@@ -203,5 +202,32 @@ describe('SessionDetailPage', () => {
         expectedGeneration: 1,
       }),
     )
+  })
+
+  it('未准备时不渲染关闭会话', async () => {
+    const base = await mocks.fetchAccountSession()
+    mocks.fetchAccountSession.mockResolvedValue({
+      ...base,
+      status: 'unprepared',
+      session: null,
+      occupancy: null,
+      actions: ['CLOSE', 'RESTART', 'RESET_PROFILE'].map((kind) => ({
+        kind,
+        enabled: kind === 'RESET_PROFILE',
+        disabledReason: kind === 'RESET_PROFILE' ? null : '需要空闲实例',
+      })),
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionDetailPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+    await expect.element(screen.getByRole('button', { name: '更多' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '更多' }).click()
+    expect(screen.getByRole('menuitem', { name: '关闭会话' })).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('menuitem', { name: '清除登录数据' })).toBeInTheDocument()
   })
 })

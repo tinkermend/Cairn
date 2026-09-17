@@ -13,10 +13,15 @@ import {
   cancelSessionOperation,
   DomainError,
   findEvictableSession,
+  getAccountSessionDetail,
   listAccountSessionOverview,
+  listSessionSystemOverview,
+  sessionOverviewReadStats,
   listSessionEventsAfter,
   registerWorker,
   requestMaintenanceOperation,
+  requireCreatedSession,
+  setSessionProbe,
   setSessionRetention,
   setSessionStatus,
 } from '../test-entry.js'
@@ -105,9 +110,271 @@ describe.each(DRIVERS)('%s 会话维护账本', { timeout: 60_000 }, (driver) =>
     expect((await getSessionById(handle.db, session.id))?.authControlActorId).toBeNull()
   })
 
+  it('总览批量装占用事实，查询次数不随账号数线性增长', async () => {
+    const workerId = `ovw-${newId()}`
+    const instanceId = newId()
+    await registerWorker(handle.db, {
+      workerId,
+      instanceId,
+      capacity: 8,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, SESSION_MAINTENANCE_PROTOCOL],
+    })
+    const label = `ovw-${newId().slice(0, 8)}`
+    const unprepared = await makeAccount(`${label}-unprepared`)
+    const ready = await makeAccount(`${label}-ready`)
+    const expired = await makeAccount(`${label}-expired`)
+    const lost = await makeAccount(`${label}-lost`)
+    const maintenance = await makeAccount(`${label}-maint`)
+    await Promise.all(Array.from({ length: 8 }, (_, index) => makeAccount(`${label}-extra-${index}`)))
+
+    const openAccount = async (accountId: string, authState: 'AUTHENTICATED' | 'EXPIRED') => {
+      const session = await requireCreatedSession(handle.db, {
+        key: { targetId, targetAccountId: accountId },
+        ownerWorkerId: workerId,
+        ownerWorkerInstanceId: instanceId,
+        reusePolicy: 'NEW_PAGE',
+        idleTtlSeconds: 600,
+        maxLifetimeSeconds: 3600,
+      })
+      await setSessionStatus(handle.db, {
+        sessionId: session.id,
+        expectedVersion: session.version,
+        status: 'OPEN',
+        ownerWorkerId: workerId,
+        ownerWorkerInstanceId: instanceId,
+      })
+      await setSessionProbe(handle.db, {
+        sessionId: session.id,
+        ownerWorkerId: workerId,
+        ownerWorkerInstanceId: instanceId,
+        health: 'HEALTHY',
+        authState,
+      })
+      return session
+    }
+    await openAccount(ready, 'AUTHENTICATED')
+    await openAccount(expired, 'EXPIRED')
+    const lostSession = await openAccount(lost, 'AUTHENTICATED')
+    await setSessionStatus(handle.db, {
+      sessionId: lostSession.id,
+      expectedVersion: lostSession.version + 1,
+      status: 'LOST',
+      ownerWorkerId: workerId,
+      ownerWorkerInstanceId: instanceId,
+    })
+    await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: maintenance },
+      ownerWorkerId: workerId,
+      ownerWorkerInstanceId: instanceId,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+
+    const originalSelect = handle.db.select
+    let selects = 0
+    handle.db.select = ((...args: Parameters<typeof originalSelect>) => {
+      selects += 1
+      return originalSelect.apply(handle.db, args)
+    }) as typeof originalSelect
+    try {
+      const overview = await listAccountSessionOverview(handle.db, { search: label, limit: 20 })
+      expect(selects).toBeGreaterThanOrEqual(4)
+      expect(selects).toBeLessThanOrEqual(8)
+      const byAccount = new Map(overview.items.map((item) => [item.targetAccountId, item]))
+      expect(byAccount.get(unprepared)?.status).toBe('unprepared')
+      expect(byAccount.get(ready)?.status).toBe('ready')
+      expect(byAccount.get(expired)?.status).toBe('needs_login')
+      expect(byAccount.get(lost)?.status).toBe('lost')
+      expect(byAccount.get(maintenance)?.status).toBe('maintenance')
+      expect(overview.summary.unprepared).toBeGreaterThanOrEqual(9)
+      expect(overview.summary.available).toBe(1)
+      expect(overview.summary.needsLogin).toBe(1)
+      expect(overview.summary.lost).toBe(1)
+      expect(overview.summary.maintenance).toBe(1)
+      for (const item of overview.items) {
+        const detail = await getAccountSessionDetail(handle.db, {
+          targetId: item.targetId,
+          targetAccountId: item.targetAccountId,
+        })
+        expect(detail.status).toBe(item.status)
+        expect(detail.occupancy?.occupyingRunId ?? null).toBe(item.occupyingRunId)
+        expect(detail.occupancy?.occupyingOperationId ?? detail.currentOperation?.id ?? null).toBe(
+          item.occupyingOperationId,
+        )
+      }
+    } finally {
+      handle.db.select = originalSelect
+    }
+  })
+
+  it('系统总览按目标聚合，targetId 账号摘要不受搜索影响', async () => {
+    const { targets } = schemaFor(handle.db)
+    const otherId = newId()
+    await handle.db.insert(targets).values({
+      id: otherId,
+      code: `sys-${otherId.slice(0, 8)}`,
+      name: '另一系统',
+      entryUrl: 'https://other.example.com',
+      status: 'active',
+    })
+    const prefix = `sysov-${newId().slice(0, 6)}`
+    const localReady = await makeAccount(`${prefix}-ready`)
+    const localUnprepared = await makeAccount(`${prefix}-wait`)
+    const otherAccount = newId()
+    const { targetAccounts } = schemaFor(handle.db)
+    await handle.db.insert(targetAccounts).values({
+      id: otherAccount,
+      targetId: otherId,
+      displayName: `${prefix}-foreign`,
+      username: `u-${prefix}-foreign`,
+      status: 'active',
+    })
+    const workerId = `sysov-${newId()}`
+    const instanceId = newId()
+    await registerWorker(handle.db, {
+      workerId,
+      instanceId,
+      capacity: 4,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, SESSION_MAINTENANCE_PROTOCOL],
+    })
+    const session = await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: localReady },
+      ownerWorkerId: workerId,
+      ownerWorkerInstanceId: instanceId,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+      ownerWorkerId: workerId,
+      ownerWorkerInstanceId: instanceId,
+    })
+    await setSessionProbe(handle.db, {
+      sessionId: session.id,
+      ownerWorkerId: workerId,
+      ownerWorkerInstanceId: instanceId,
+      health: 'HEALTHY',
+      authState: 'AUTHENTICATED',
+    })
+
+    const systems = await listSessionSystemOverview(handle.db, { search: '维护夹具', limit: 1 })
+    expect(systems.items).toHaveLength(1)
+    expect(systems.items[0]?.targetId).toBe(targetId)
+    expect(systems.items[0]?.accountTotal).toBeGreaterThanOrEqual(2)
+    expect(systems.items[0]?.targetCode).toContain('mnt-')
+    expect(systems.summary.systems).toBeGreaterThanOrEqual(2)
+    expect(systems.nextCursor).toBeUndefined()
+
+    const paged = await listSessionSystemOverview(handle.db, { limit: 1 })
+    expect(paged.items).toHaveLength(1)
+    expect(paged.nextCursor).toBe('1')
+    const page2 = await listSessionSystemOverview(handle.db, { limit: 1, cursor: paged.nextCursor })
+    expect(page2.items[0]?.targetId).not.toBe(paged.items[0]?.targetId)
+
+    const scoped = await listAccountSessionOverview(handle.db, {
+      targetId,
+      search: `${prefix}-wait`,
+      limit: 20,
+    })
+    expect(scoped.items.every((item) => item.targetId === targetId)).toBe(true)
+    expect(scoped.items.map((item) => item.targetAccountId)).toEqual([localUnprepared])
+    expect(scoped.summary.total).toBeGreaterThanOrEqual(2)
+    expect(scoped.summary.unprepared).toBeGreaterThanOrEqual(1)
+    expect(scoped.items.some((item) => item.targetAccountId === otherAccount)).toBe(false)
+
+    const byName = await listAccountSessionOverview(handle.db, { targetId: otherId, search: '维护夹具' })
+    expect(byName.items).toHaveLength(0)
+    expect(byName.summary.total).toBe(1)
+
+    const stamp = `zzpage-${newId().slice(0, 8)}`
+    for (let index = 0; index < 6; index += 1) {
+      const extraId = newId()
+      await handle.db.insert(targets).values({
+        id: extraId,
+        code: `${stamp}-${index}`,
+        name: `${stamp}-${index}`,
+        entryUrl: 'https://page.example.com',
+        status: 'active',
+      })
+      for (let accountIndex = 0; accountIndex < 4; accountIndex += 1) {
+        await handle.db.insert(targetAccounts).values({
+          id: newId(),
+          targetId: extraId,
+          displayName: `${stamp}-acc-${index}-${accountIndex}`,
+          username: `u-${stamp}-${index}-${accountIndex}`,
+          status: 'active',
+        })
+      }
+    }
+    sessionOverviewReadStats.reset()
+    const firstPage = await listSessionSystemOverview(handle.db, { search: stamp, limit: 1 })
+    expect(firstPage.items).toHaveLength(1)
+    expect(firstPage.items[0]?.accountTotal).toBe(4)
+    expect(firstPage.summary.systems).toBeGreaterThanOrEqual(6)
+    expect(firstPage.nextCursor).toBe('1')
+    expect(Math.max(0, ...sessionOverviewReadStats.occupancyKeyCounts)).toBe(4)
+
+    sessionOverviewReadStats.reset()
+    const secondPage = await listSessionSystemOverview(handle.db, {
+      search: stamp,
+      limit: 1,
+      cursor: firstPage.nextCursor,
+    })
+    expect(secondPage.items).toHaveLength(1)
+    expect(secondPage.items[0]?.targetId).not.toBe(firstPage.items[0]?.targetId)
+    expect(secondPage.items[0]?.accountTotal).toBe(4)
+    expect(Math.max(0, ...sessionOverviewReadStats.occupancyKeyCounts)).toBe(4)
+
+    const isolatedId = newId()
+    await handle.db.insert(targets).values({
+      id: isolatedId,
+      code: `accpage-${isolatedId.slice(0, 8)}`,
+      name: `账号页-${isolatedId.slice(0, 8)}`,
+      entryUrl: 'https://accounts.example.com',
+      status: 'active',
+    })
+    const isolatedPrefix = `accpage-${newId().slice(0, 6)}`
+    const isolatedAccounts = []
+    for (let index = 0; index < 3; index += 1) {
+      const accountId = newId()
+      isolatedAccounts.push(accountId)
+      await handle.db.insert(targetAccounts).values({
+        id: accountId,
+        targetId: isolatedId,
+        displayName: `${isolatedPrefix}-${index}`,
+        username: `u-${isolatedPrefix}-${index}`,
+        status: 'active',
+      })
+    }
+    const accountPage = await listAccountSessionOverview(handle.db, { targetId: isolatedId, limit: 1 })
+    expect(accountPage.items).toHaveLength(1)
+    expect(accountPage.summary.total).toBe(3)
+    expect(accountPage.nextCursor).toBe('1')
+    const accountPage2 = await listAccountSessionOverview(handle.db, {
+      targetId: isolatedId,
+      limit: 1,
+      cursor: accountPage.nextCursor,
+    })
+    expect(accountPage2.items[0]?.targetAccountId).not.toBe(accountPage.items[0]?.targetAccountId)
+    expect(accountPage2.summary.total).toBe(3)
+    const searched = await listAccountSessionOverview(handle.db, {
+      targetId: isolatedId,
+      search: `${isolatedPrefix}-1`,
+      limit: 20,
+    })
+    expect(searched.items.map((item) => item.targetAccountId)).toEqual([isolatedAccounts[1]])
+    expect(searched.summary.total).toBe(3)
+  })
+
   it('总览包含未准备账号，CLOSE 不得创建会话', async () => {
     const accountId = await makeAccount('unprepared')
-    const overview = await listAccountSessionOverview(handle.db, {})
+    const overview = await listAccountSessionOverview(handle.db, { search: 'unprepared', limit: 20 })
     expect(overview.items.some((item) => item.targetAccountId === accountId && item.status === 'unprepared')).toBe(true)
     await expect(
       requestMaintenanceOperation(handle.db, {

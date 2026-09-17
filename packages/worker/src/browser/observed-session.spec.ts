@@ -4,7 +4,7 @@ import { BrowserSessionManager } from './session-manager'
 const mocks = vi.hoisted(() => ({
   getRun: vi.fn(),
   getSessionById: vi.fn(),
-  findSessionByAuthHoldRun: vi.fn(),
+  findSessionByAuthWaitRun: vi.fn(),
 }))
 
 vi.mock('@cairn/db', async (original) => {
@@ -15,7 +15,9 @@ vi.mock('@cairn/db', async (original) => {
     getSessionById: mocks.getSessionById,
     getSessionOperation: vi.fn(async () => null),
     findActiveLeaseRow: vi.fn(async () => null),
-    findSessionByAuthHoldRun: mocks.findSessionByAuthHoldRun,
+    findSessionByAuthWaitRun: mocks.findSessionByAuthWaitRun,
+    findAuthWaitLeaseForRun: vi.fn(async () => null),
+    findAuthWaitLeaseForOperation: vi.fn(async () => null),
   }
 })
 
@@ -56,9 +58,6 @@ function observedManager() {
     authControlActorId: null,
     authControlExpiresAt: null,
     authControlEpoch: 0,
-    authHoldRunId: null,
-    authHoldExpiresAt: null,
-    authHoldWorkerId: null,
   }
   const manager = Object.create(BrowserSessionManager.prototype) as BrowserSessionManager
   Object.assign(manager, {
@@ -69,7 +68,6 @@ function observedManager() {
     leaseToRun: new Map([[leaseId, runId]]),
     leaseToSession: new Map([[leaseId, sessionId]]),
     sessionOwnedHere: () => true,
-    liveAuthHold: () => null,
   })
   return { manager, session }
 }
@@ -81,7 +79,7 @@ describe('续跑后观察会话', () => {
 
   it('领取后 placement 不含 sessionId 仍报告可观察画面', async () => {
     const { manager, session } = observedManager()
-    mocks.findSessionByAuthHoldRun.mockResolvedValue(null)
+    mocks.findSessionByAuthWaitRun.mockResolvedValue(null)
     mocks.getRun.mockResolvedValue({
       id: runId,
       status: 'RUNNING',
@@ -100,7 +98,7 @@ describe('续跑后观察会话', () => {
       leaseToRun: new Map(),
       leaseToSession: new Map(),
     })
-    mocks.findSessionByAuthHoldRun.mockResolvedValue(null)
+    mocks.findSessionByAuthWaitRun.mockResolvedValue(null)
     mocks.getRun.mockResolvedValue({
       id: runId,
       status: 'RECOVERING',

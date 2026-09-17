@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { suggestionToBinding } from '@cairn/authoring'
 import {
-  suggestionToBinding,
   type ActionModuleSummary,
   type ActionModuleVersionDto,
   type ModuleInputBinding,

@@ -18,7 +18,6 @@ const mocks = vi.hoisted(() => ({
   registerPlatformConfigSecret: vi.fn(),
 }))
 
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@/lib/platform-config-api', () => ({
   fetchPlatformConfig: mocks.fetchPlatformConfig,
   fetchPlatformConfigRevisions: mocks.fetchPlatformConfigRevisions,
@@ -113,27 +112,57 @@ describe('PlatformConfigPage', () => {
     expect(document.body.innerText).not.toMatch(/sk-|apiKey/)
     expect(JSON.stringify(current)).not.toMatch(/sk-|apiKey/)
     await screen.getByRole('tab', { name: '会话策略' }).click()
-    await expect.element(screen.getByText('Profile 亲和等待（秒）')).toBeInTheDocument()
-    await expect.element(screen.getByText('维护操作排队期限（秒）')).toBeInTheDocument()
-    await expect.element(screen.getByText('默认核验新鲜度（秒，冻结）')).toBeInTheDocument()
-    await expect.element(screen.getByText('窗口内自动登录次数（实时）')).toBeInTheDocument()
-    await expect.element(screen.getByText('单次保留上限（秒，实时）')).toBeInTheDocument()
-    await expect.element(screen.getByText('每 Run 自动登录恢复次数')).toBeInTheDocument()
-    await expect.element(screen.getByText('每 Run 人工认证恢复次数')).toBeInTheDocument()
-    await expect.element(screen.getByText('每节点预留空闲位')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Profile 亲和等待（秒）'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('维护操作排队期限（秒）'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('默认核验新鲜度（秒，冻结）'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('窗口内自动登录次数（实时）'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('单次人工保留上限（秒，实时）'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('每 Run 自动登录恢复次数'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('每 Run 人工认证恢复次数'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('每节点预留空闲位'))
+      .toBeInTheDocument()
   })
 
   it('执行默认值展示模块映射三项配置', async () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
-    await expect.element(screen.getByLabelText('模块映射候选上限')).toHaveValue(10)
-    await expect.element(screen.getByLabelText('模块映射 AI 候选上限')).toHaveValue(5)
-    await expect.element(screen.getByLabelText('模块映射记录保留天数')).toHaveValue(90)
-    await expect.element(screen.getByLabelText('模块质量窗口（天）')).toHaveValue(7)
-    await expect.element(screen.getByLabelText('模块质量最少样本')).toHaveValue(10)
-    await expect.element(screen.getByLabelText('模块降级通过率阈值')).toHaveValue(0.8)
-    await expect.element(screen.getByLabelText('模块连续失败次数')).toHaveValue(3)
+    await expect
+      .element(screen.getByLabelText('模块映射候选上限'))
+      .toHaveValue(10)
+    await expect
+      .element(screen.getByLabelText('模块映射 AI 候选上限'))
+      .toHaveValue(5)
+    await expect
+      .element(screen.getByLabelText('模块映射记录保留天数'))
+      .toHaveValue(90)
+    await expect
+      .element(screen.getByLabelText('模块质量窗口（天）'))
+      .toHaveValue(7)
+    await expect
+      .element(screen.getByLabelText('模块质量最少样本'))
+      .toHaveValue(10)
+    await expect
+      .element(screen.getByLabelText('模块降级通过率阈值'))
+      .toHaveValue(0.8)
+    await expect
+      .element(screen.getByLabelText('模块连续失败次数'))
+      .toHaveValue(3)
     await expect
       .element(screen.getByRole('switch', { name: '开放动作模块冻结回退' }))
       .not.toBeChecked()

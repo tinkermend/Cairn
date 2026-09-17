@@ -13,9 +13,61 @@ import {
   type MapVerification,
 } from '@cairn/shared'
 import { evaluateCondition } from './conditions.js'
-import { cluesFromObservation, matchObjectIdentity, matchPageIdentity } from './identity.js'
+import {
+  classifyRoute,
+  cluesFromObservation,
+  matchObjectIdentity,
+  matchPageIdentity,
+  objectAllocationKey,
+  stableObjectToken,
+} from './identity.js'
 import type { MapFactPageItem } from './ports.js'
 import { applyDimension, attributeVerification, lifecycleFromEvidence } from './verification.js'
+
+export type ProjectionWorkingSetHints = {
+  pageAllocationKeys: string[]
+  objectAllocationKeys: string[]
+  observationIds: string[]
+}
+
+export function projectionWorkingSetHints(facts: readonly MapFactPageItem[]): ProjectionWorkingSetHints {
+  const pageAllocationKeys = new Set<string>()
+  const objectAllocationKeys = new Set<string>()
+  const observationIds = new Set<string>()
+  for (const fact of facts) {
+    if (fact.type === 'verification') {
+      for (const id of fact.verification.observationIds) observationIds.add(id)
+      continue
+    }
+    observationIds.add(fact.observation.id)
+    const frameName = fact.observation.framePath[0]?.name ?? fact.observation.framePath[0]?.urlPattern
+    const page = classifyRoute({
+      url: fact.observation.topUrlPattern,
+      framePathLength: fact.observation.framePath.length,
+      frameName,
+    })
+    pageAllocationKeys.add(page.allocationKey)
+    const clues = cluesFromObservation(fact.observation)
+    const stable = stableObjectToken({
+      testId: clues.testId,
+      role: clues.role,
+      name: clues.name,
+      sourceEventKey: fact.observation.sourceEventKey,
+    })
+    objectAllocationKeys.add(
+      objectAllocationKey({
+        pageAllocationKey: page.allocationKey,
+        regionKey: clues.regionKey,
+        stableToken: stable.token,
+      }),
+    )
+  }
+  return {
+    pageAllocationKeys: [...pageAllocationKeys],
+    objectAllocationKeys: [...objectAllocationKeys],
+    observationIds: [...observationIds],
+  }
+}
 
 function featuresFromObservation(observation: MapObservation): MapDescriptorFeatures {
   const clues = cluesFromObservation(observation)
@@ -56,12 +108,14 @@ export function planProjectionBatch(input: {
   const budgetMs = input.budgetMs ?? MAP_PROJECTION_BATCH_BUDGET_MS
   const pages = new Map(input.state.pages.map((page) => [page.allocationKey, page]))
   const objects = new Map(input.state.objects.map((object) => [object.allocationKey, object]))
+  const pageById = new Map(input.state.pages.map((page) => [page.id, page]))
+  const objectById = new Map(input.state.objects.map((object) => [object.id, object]))
   const assigned = new Set(input.state.assignments.map((item) => item.observationId))
-  const assets = new Map<string, MapAssetPlan>()
+  const knownAssets = new Map<string, MapAssetPlan>()
   for (const asset of input.state.assets) {
-    const page = input.state.pages.find((item) => item.id === asset.pageId)
-    const object = input.state.objects.find((item) => item.id === asset.objectId)
-    assets.set(
+    const page = asset.pageId ? pageById.get(asset.pageId) : undefined
+    const object = asset.objectId ? objectById.get(asset.objectId) : undefined
+    knownAssets.set(
       assetKey({
         pageAllocationKey: page?.allocationKey,
         objectAllocationKey: object?.allocationKey,
@@ -85,6 +139,7 @@ export function planProjectionBatch(input: {
       },
     )
   }
+  const assets = new Map<string, MapAssetPlan>()
 
   const planPages = new Map<string, MapProjectionPlan['pages'][number]>()
   const planObjects = new Map<string, MapProjectionPlan['objects'][number]>()
@@ -101,7 +156,7 @@ export function planProjectionBatch(input: {
     mutate: (asset: MapAssetPlan) => void,
   ) => {
     const key = assetKey(keys)
-    const current = assets.get(key)
+    const current = assets.get(key) ?? knownAssets.get(key)
     const next = current
       ? cloneAsset(current)
       : {

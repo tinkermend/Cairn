@@ -177,6 +177,7 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
                 onChange={(event) => setPathPrefix(event.target.value)}
                 placeholder='/orders'
               />
+              <p className='text-label text-muted-foreground'>`/orders` 含 `/orders/1`，不含 `/orders-admin`。</p>
               <Button
                 disabled={policyMutation.isPending || !reason.trim()}
                 onClick={() => policyMutation.mutate(!enabled)}

@@ -1,11 +1,16 @@
 import {
-  ACTIVE_RUN_STATUSES,
   applyModuleReplace,
   applyModuleUpgrade,
   buildExtractedModuleContent,
   buildReplaceInvocation,
   compareReplaceSteps,
   diffModuleVersions,
+  proposeModuleFromSteps,
+  unconfirmedUpgradeWarnings,
+  unresolvedUpgradeBlockers,
+} from '@cairn/authoring'
+import {
+  ACTIVE_RUN_STATUSES,
   disableAffectedScenariosBodySchema,
   disableAffectedScenariosResponseSchema,
   isSelectablePublication,
@@ -24,10 +29,7 @@ import {
   moduleUpgradePreviewBodySchema,
   moduleUpgradePreviewResponseSchema,
   normalizeAuthoringDocument,
-  proposeModuleFromSteps,
   sourceDescription,
-  unconfirmedUpgradeWarnings,
-  unresolvedUpgradeBlockers,
   upgradeModuleVersionSchema,
   type ActionModuleDetail,
   type ActionModuleVersionDto,

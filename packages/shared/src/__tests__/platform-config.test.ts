@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { resolveStepPolicy } from '../policy.js'
 import {
   FACTORY_PLATFORM_CONFIG,
+  PLATFORM_CONFIG_SCHEMA_UNSUPPORTED,
+  PLATFORM_CONFIG_SCHEMA_VERSION,
   assertAiRequestTimeoutFitsSteps,
   idempotentRequestMatches,
   platformConfigDiff,
@@ -10,6 +12,9 @@ import {
   overridesCompatible,
   resolvePlatformEvidencePolicy,
   resolvePlatformExecutionPolicy,
+  platformConfigRevisionSchema,
+  storedPlatformConfigDocumentSchema,
+  upgradePlatformConfigDocument,
 } from '../platform-config.js'
 
 const enabledAi = platformConfigDocumentSchema.parse({
@@ -24,6 +29,99 @@ const enabledAi = platformConfigDocumentSchema.parse({
     stepMaxCalls: 20,
     maxOutputTokens: 2048,
   },
+})
+
+describe('平台配置默认值单源', () => {
+  /** 每一节的 .default() 只能有一个来源：FACTORY_PLATFORM_CONFIG。 */
+  it('只带必填节的文档补默认后必须逐字等于出厂配置', () => {
+    const minimal = {
+      schemaVersion: FACTORY_PLATFORM_CONFIG.schemaVersion,
+      execution: FACTORY_PLATFORM_CONFIG.execution,
+      session: FACTORY_PLATFORM_CONFIG.session,
+      evidence: FACTORY_PLATFORM_CONFIG.evidence,
+      browserAi: FACTORY_PLATFORM_CONFIG.browserAi,
+    }
+    expect(platformConfigDocumentSchema.parse(minimal)).toEqual(FACTORY_PLATFORM_CONFIG)
+  })
+
+  it('平台 AI 出厂值不是另抄的一份字面量', () => {
+    const { platformAi: _dropped, ...legacy } = FACTORY_PLATFORM_CONFIG
+    expect(platformConfigDocumentSchema.parse(legacy).platformAi).toEqual(
+      FACTORY_PLATFORM_CONFIG.platformAi,
+    )
+  })
+})
+
+describe('平台配置文档版本升级', () => {
+  it('当前版本文档原样通过并补齐缺省节', () => {
+    const { moduleResolver: _dropped, ...legacy } = FACTORY_PLATFORM_CONFIG
+    expect(upgradePlatformConfigDocument(legacy)).toEqual(FACTORY_PLATFORM_CONFIG)
+  })
+
+  it('schemaVersion 缺失或非法时给出可识别的错误码', () => {
+    for (const bad of [undefined, null, 0, -1, 1.5, '1']) {
+      const { schemaVersion: _dropped, ...rest } = FACTORY_PLATFORM_CONFIG
+      const document = bad === undefined ? rest : { ...rest, schemaVersion: bad }
+      expect(() => upgradePlatformConfigDocument(document)).toThrowError(
+        expect.objectContaining({ code: PLATFORM_CONFIG_SCHEMA_UNSUPPORTED }),
+      )
+    }
+  })
+
+  it('文档版本高于本版本时拒绝读取，而不是当成当前版本解析', () => {
+    expect(() =>
+      upgradePlatformConfigDocument({
+        ...FACTORY_PLATFORM_CONFIG,
+        schemaVersion: PLATFORM_CONFIG_SCHEMA_VERSION + 1,
+      }),
+    ).toThrowError(/高于本版本支持的/)
+  })
+
+  it('非对象文档被拒绝', () => {
+    for (const bad of [null, undefined, 'x', 1, []]) {
+      expect(() => upgradePlatformConfigDocument(bad)).toThrowError(
+        expect.objectContaining({ code: PLATFORM_CONFIG_SCHEMA_UNSUPPORTED }),
+      )
+    }
+  })
+
+  it('内容非法仍按 Schema 报错，不被升级流程吞掉', () => {
+    expect(() =>
+      upgradePlatformConfigDocument({
+        ...FACTORY_PLATFORM_CONFIG,
+        execution: { defaultTimeoutMs: -1, defaultRetryLimit: 0 },
+      }),
+    ).toThrowError()
+  })
+})
+
+describe('历史修订读取不被当前 Schema 绑死', () => {
+  it('含已删除节或未知节的历史文档仍可解析出来展示', () => {
+    const stored = { ...FACTORY_PLATFORM_CONFIG, retiredSection: { legacy: true } }
+    expect(storedPlatformConfigDocumentSchema.parse(stored)).toEqual(stored)
+  })
+
+  it('修订 DTO 不按当前文档 Schema 校验历史内容', () => {
+    const item = platformConfigRevisionSchema.parse({
+      id: '00000000-0000-4000-8000-000000000001',
+      revision: 7,
+      document: { schemaVersion: 1, retiredSection: { legacy: true } },
+      actorAccountId: null,
+      reason: '历史修订',
+      source: 'update',
+      createdAt: '2026-09-17T00:00:00.000Z',
+      diff: [],
+    })
+    expect(item.document).toEqual({ schemaVersion: 1, retiredSection: { legacy: true } })
+  })
+
+  it('差异计算接受任意历史形状', () => {
+    const diffs = platformConfigDiff(
+      { schemaVersion: 1, retiredSection: { legacy: true } },
+      { schemaVersion: 1, retiredSection: { legacy: false } },
+    )
+    expect(diffs).toEqual([{ path: 'retiredSection.legacy', from: true, to: false }])
+  })
 })
 
 describe('平台配置契约', () => {
@@ -54,6 +152,23 @@ describe('平台配置契约', () => {
     expect(parsed.sessionRetention.maxRetainSeconds).toBe(28_800)
     expect(parsed.sessionRetention.reservedFreeSlotsPerWorker).toBe(1)
     expect('sessionRetention' in legacy).toBe(false)
+  })
+
+  it('旧修订 session 缺保活字段时补出厂 IDLE', () => {
+    const { session, ...rest } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse({
+      ...rest,
+      session: {
+        reuse: session.reuse,
+        idleTtlSeconds: session.idleTtlSeconds,
+        maxLifetimeSeconds: session.maxLifetimeSeconds,
+        authWaitSeconds: session.authWaitSeconds,
+      },
+    })
+    expect(parsed.session.reclaim).toBe('IDLE')
+    expect(parsed.session.keepAliveSeconds).toBe(3600)
+    expect(parsed.session.authProbeIntervalSeconds).toBe(900)
+    expect(parsed.session.evictionPriority).toBe(0)
   })
 
   it('旧修订没有 runAuthRecovery 时补出厂每 Run 恢复次数', () => {
@@ -184,6 +299,10 @@ describe('平台配置契约', () => {
           maxLifetimeSeconds: 14_400,
           leaseTtlSeconds: 30,
           authWaitSeconds: 300,
+          reclaim: 'IDLE',
+          keepAliveSeconds: 3_600,
+          authProbeIntervalSeconds: 900,
+          evictionPriority: 0,
         },
         snapshotEvidence: { screenshot: 'on_failure', trace: 'off' },
       }),

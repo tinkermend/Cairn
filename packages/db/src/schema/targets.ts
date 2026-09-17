@@ -42,6 +42,7 @@ export const targets = cairnSchema.table(
       submit?: { by: 'id' | 'name' | 'css'; value: string }
     }>(),
     currentAuthProfileRevision: integer('current_auth_profile_revision'),
+    sessionPolicy: jsonb('session_policy').$type<Record<string, unknown>>(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -12,6 +12,8 @@ import {
   createScenarioWithVersion,
   getMapJobPolicy,
   getTargetAccessPolicy,
+  updateTargetAccessPolicy,
+  requestRunCancel,
   listScenarios,
   registerWorker,
   requireCreatedSession,
@@ -182,6 +184,42 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     ])
     expect(created.detail.snapshot.allowedOrigins).toEqual(expect.arrayContaining(['https://shop.example', 'https://idp.example']))
     expect(created.detail.snapshot.mapJob).toBeUndefined()
+  })
+
+  it('冻结 pathPrefix，路径级 deny 不掏空 allowedOrigins', async () => {
+    const { targetId } = await freshTarget()
+    await updateTargetAccessPolicy(
+      handle.db,
+      targetId,
+      {
+        expectedRevision: 0,
+        idempotencyKey: `path:${targetId}`.slice(0, 128),
+        reason: '收窄业务路径',
+        rules: [
+          { origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow', pathPrefix: '/' },
+          { origin: 'https://shop.example', purpose: 'business_surface', effect: 'deny', pathPrefix: '/admin' },
+          { origin: 'https://idp.example', purpose: 'authentication', effect: 'allow' },
+        ],
+      },
+      actor(),
+    )
+    const access = await getTargetAccessPolicy(handle.db, targetId)
+    expect(access.policy?.rules.some((rule) => rule.pathPrefix === '/admin')).toBe(true)
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `路径-${newId().slice(0, 8)}`,
+      actor: { kind: 'console', id: actorId },
+      steps: probeSteps(),
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { kind: 'console', id: actorId },
+    })
+    expect(created.detail.snapshot.accessPolicy?.policy.rules.some((rule) => rule.pathPrefix === '/admin')).toBe(true)
+    expect(created.detail.snapshot.allowedOrigins).toEqual(
+      expect.arrayContaining(['https://shop.example', 'https://idp.example']),
+    )
+    await requestRunCancel(handle.db, created.detail.id, actor())
   })
 
   it('OMG04 未准备会话不能建作业；OMG12 开关关闭也不能建', async () => {

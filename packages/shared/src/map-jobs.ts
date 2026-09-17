@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isPublishedAccessPathPrefix, originsForAccessPurposes as originsFromPolicy } from './access-scope.js'
 import { mapAssetRefSchema } from './map-c0.js'
 import { originsFromTargetUrls } from './origin.js'
 import { nextCursorSchema } from './rbac.js'
@@ -91,12 +92,24 @@ export const targetAccessPolicyDtoSchema = z.strictObject({
 })
 export type TargetAccessPolicyDto = z.infer<typeof targetAccessPolicyDtoSchema>
 
-export const targetAccessPolicyUpdateBodySchema = z.strictObject({
-  expectedRevision: z.number().int().min(0),
-  idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/),
-  rules: z.array(targetAccessRuleSchema).min(1).max(64),
-  reason: z.string().trim().min(1).max(512),
-})
+export const targetAccessPolicyUpdateBodySchema = z
+  .strictObject({
+    expectedRevision: z.number().int().min(0),
+    idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/),
+    rules: z.array(targetAccessRuleSchema).min(1).max(64),
+    reason: z.string().trim().min(1).max(512),
+  })
+  .superRefine((value, ctx) => {
+    value.rules.forEach((rule, index) => {
+      if (rule.pathPrefix !== undefined && !isPublishedAccessPathPrefix(rule.pathPrefix)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rules', index, 'pathPrefix'],
+          message: 'pathPrefix 必须以 / 开头且不含 query 或 hash',
+        })
+      }
+    })
+  })
 export type TargetAccessPolicyUpdateBody = z.infer<typeof targetAccessPolicyUpdateBodySchema>
 
 export const mapJobPolicySchema = z.strictObject({
@@ -316,14 +329,7 @@ export function originsForAccessPurposes(
   policy: TargetAccessPolicy | null | undefined,
   purposes: readonly TargetAccessPurpose[],
 ): string[] {
-  if (!policy) return []
-  const denied = new Set(
-    policy.rules.filter((rule) => rule.effect === 'deny' && purposes.includes(rule.purpose)).map((rule) => rule.origin),
-  )
-  const allowed = policy.rules
-    .filter((rule) => rule.effect === 'allow' && purposes.includes(rule.purpose) && !denied.has(rule.origin))
-    .map((rule) => new URL(rule.origin).origin)
-  return [...new Set(allowed)]
+  return originsFromPolicy(policy, purposes)
 }
 
 export function isMapJobRun(snapshot: { mapJob?: FrozenMapJob | null }): snapshot is { mapJob: FrozenMapJob } {

@@ -52,7 +52,13 @@ import {
   targetListQuerySchema,
   targetListResponseSchema,
   targetSchema,
+  applyTargetSessionPolicyPatch,
+  FACTORY_PLATFORM_CONFIG,
+  platformConfigDocumentSchema,
+  resolveSessionPolicyLayers,
+  sessionPolicyFromPlatform,
   type AuditAction,
+  type TargetSessionPolicyPatch,
   type CleanupStatus,
   type CleanupStatusResponse,
   type CreateTargetAccountBody,
@@ -72,6 +78,8 @@ import {
 } from '@cairn/shared'
 import type { PersistenceActor as RequestAccount } from './actor.js'
 import { loadAccountAuthDisplay, loadCurrentAuthProfile, resetAuthBudgetAfterCredentialChange } from '../sessions/auth-profile.js'
+import { getPlatformConfig } from '../platform-config/store.js'
+import { parseTargetSessionPolicyOverride } from '../sessions/session-policy.js'
 
 function iso(value: Date): string {
   return value.toISOString()
@@ -115,6 +123,14 @@ export class TargetsStore {
     return connection(this.database)
   }
 
+  private async platformSessionDefaults() {
+    const platform = await getPlatformConfig(this.db)
+    const document = platform
+      ? platformConfigDocumentSchema.parse(platform.document)
+      : FACTORY_PLATFORM_CONFIG
+    return sessionPolicyFromPlatform(document.session)
+  }
+
   async listTargets(query: TargetListQuery = {}): Promise<TargetListResponse> {
     const parsed = targetListQuerySchema.parse(query)
     const { targets } = schemaFor(this.db)
@@ -149,7 +165,47 @@ export class TargetsStore {
   async getTarget(id: string): Promise<TargetDto> {
     const row = await this.loadTarget(id)
     const counts = await this.accountCounts(id)
-    return this.toTarget(row, counts.get(id) ?? 0)
+    const sessionPolicy = parseTargetSessionPolicyOverride(row.sessionPolicy)
+    return this.toTarget(row, counts.get(id) ?? 0, {
+      sessionPolicy,
+      effectiveSessionPolicy: resolveSessionPolicyLayers({
+        platformDefault: await this.platformSessionDefaults(),
+        targetOverride: sessionPolicy,
+      }),
+    })
+  }
+
+  async updateSessionPolicy(
+    id: string,
+    patch: TargetSessionPolicyPatch,
+    actor: RequestAccount,
+  ): Promise<TargetDto> {
+    const { targets } = schemaFor(this.db)
+    const current = await this.loadTarget(id)
+    const nextOverride = applyTargetSessionPolicyPatch(
+      parseTargetSessionPolicyOverride(current.sessionPolicy),
+      patch,
+    )
+    try {
+      resolveSessionPolicyLayers({
+        platformDefault: await this.platformSessionDefaults(),
+        targetOverride: nextOverride,
+      })
+    } catch (error) {
+      throw failure('conflict', {
+        code: 'SESSION_POLICY_INVALID',
+        message: error instanceof Error ? error.message : '目标会话策略非法',
+      })
+    }
+    const now = new Date()
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(targets)
+        .set({ sessionPolicy: nextOverride, updatedAt: now })
+        .where(eq(targets.id, id))
+      await this.writeAudit(tx, actor, 'target.update', 'target', id, '更新了会话策略')
+    })
+    return this.getTarget(id)
   }
 
   async createTarget(body: CreateTargetBody, actor: RequestAccount): Promise<TargetDto> {
@@ -275,7 +331,6 @@ export class TargetsStore {
     const sessions = await this.db
       .select({
         id: browserSessions.id,
-        authHoldExpiresAt: browserSessions.authHoldExpiresAt,
         authControlExpiresAt: browserSessions.authControlExpiresAt,
       })
       .from(browserSessions)
@@ -290,11 +345,7 @@ export class TargetsStore {
               and(inArray(sessionLeases.sessionId, sessionIds), eq(sessionLeases.status, 'ACTIVE')),
             )
         : []
-    const authHeld = sessions.some(
-      (row) =>
-        (row.authHoldExpiresAt && row.authHoldExpiresAt > now) ||
-        (row.authControlExpiresAt && row.authControlExpiresAt > now),
-    )
+    const authHeld = sessions.some((row) => row.authControlExpiresAt && row.authControlExpiresAt > now)
 
     const activeBlockers: { id: string; code: string; message: string }[] = [
       ...activeRunBlockers(activeRuns),
@@ -928,7 +979,14 @@ export class TargetsStore {
     return id
   }
 
-  private toTarget(row: Target, accountCount: number): TargetDto {
+  private toTarget(
+    row: Target,
+    accountCount: number,
+    extras?: {
+      sessionPolicy?: TargetDto['sessionPolicy']
+      effectiveSessionPolicy?: TargetDto['effectiveSessionPolicy']
+    },
+  ): TargetDto {
     return targetSchema.parse({
       id: row.id,
       code: row.code,
@@ -941,6 +999,10 @@ export class TargetsStore {
       loginFields: compactLoginFields((row.loginFields as TargetLoginFields | null) ?? null),
       accountCount,
       currentAuthProfileRevision: row.currentAuthProfileRevision,
+      ...(extras?.sessionPolicy !== undefined ? { sessionPolicy: extras.sessionPolicy } : {}),
+      ...(extras?.effectiveSessionPolicy
+        ? { effectiveSessionPolicy: extras.effectiveSessionPolicy }
+        : {}),
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
     })

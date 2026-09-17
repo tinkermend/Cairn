@@ -18,7 +18,9 @@ import {
   ensureMapProjection,
   expireMapFactContents,
   getMapRelease,
+  listMapProjectionWork,
   loadMapProjectionState,
+  loadMapProjectionWorkingSet,
   loadMapQueryView,
   mapProjectionTestHooks,
   sealMapRelease,
@@ -355,5 +357,118 @@ describe.each(DRIVERS)('%s 地图投影与封存', { timeout: 60_000 }, (driver)
     const state = await loadMapProjectionState(handle.db, shadow.id)
     expect(state.rebuildCompleteness).toBe('partial')
     expect(obs.id).toBeTruthy()
+  })
+
+  it('工作集只装本批页面，脏资产提交能回补已有 page/object', async () => {
+    const targetId = await freshTarget()
+    const projection = await ensureMapProjection(handle.db, targetId)
+    await commitMapProjectionBatch(handle.db, {
+      projectionId: projection.id,
+      expectedCursor: 0,
+      expectedRevision: 0,
+      plan: emptyPlan(1, {
+        pages: [
+          {
+            kind: 'top',
+            allocationKey: 'page:v1:top:orders:top',
+            routeTemplate: 'https://shop.example/orders',
+            frameKey: 'top',
+            reasons: ['discover-page'],
+            matchResult: 'MATCH',
+          },
+          {
+            kind: 'top',
+            allocationKey: 'page:v1:top:customers:top',
+            routeTemplate: 'https://shop.example/customers',
+            frameKey: 'top',
+            reasons: ['discover-page'],
+            matchResult: 'MATCH',
+          },
+        ],
+        objects: [
+          {
+            allocationKey: 'object:v1:orders-save',
+            pageAllocationKey: 'page:v1:top:orders:top',
+            regionKey: 'action',
+            stableToken: 'save',
+            reasons: ['discover-object'],
+            matchResult: 'MATCH',
+          },
+        ],
+        assets: [
+          {
+            pageAllocationKey: 'page:v1:top:orders:top',
+            objectAllocationKey: 'object:v1:orders-save',
+            implementationKey: 'impl:v1:orders',
+            lifecycle: 'OBSERVED',
+            importance: 0,
+            executable: false,
+            rejectReasons: [],
+            dimensions: [],
+            sampleCount: 1,
+            changeCount: 0,
+          },
+        ],
+      }),
+    })
+    const full = await loadMapProjectionState(handle.db, projection.id)
+    expect(full.pages).toHaveLength(2)
+    expect(full.assets).toHaveLength(1)
+    const working = await loadMapProjectionWorkingSet(handle.db, {
+      projectionId: projection.id,
+      pageAllocationKeys: ['page:v1:top:orders:top'],
+      objectAllocationKeys: ['object:v1:orders-save'],
+    })
+    expect(working.pages).toHaveLength(1)
+    expect(working.pages[0]?.allocationKey).toBe('page:v1:top:orders:top')
+    expect(working.objects).toHaveLength(1)
+    expect(working.assets).toHaveLength(1)
+    expect(working.implementations).toEqual([])
+    const pageId = full.assets[0]?.pageId
+    const objectId = full.assets[0]?.objectId
+    expect(pageId).toBeTruthy()
+    await commitMapProjectionBatch(handle.db, {
+      projectionId: projection.id,
+      expectedCursor: 1,
+      expectedRevision: 1,
+      plan: emptyPlan(2, {
+        assets: [
+          {
+            pageAllocationKey: 'page:v1:top:orders:top',
+            objectAllocationKey: 'object:v1:orders-save',
+            implementationKey: 'impl:v1:orders',
+            lifecycle: 'OBSERVED',
+            importance: 0,
+            executable: false,
+            rejectReasons: [],
+            dimensions: [],
+            sampleCount: 2,
+            changeCount: 0,
+          },
+        ],
+      }),
+    })
+    const after = await loadMapProjectionState(handle.db, projection.id)
+    expect(after.pages).toHaveLength(2)
+    expect(after.assets).toHaveLength(1)
+    expect(after.assets[0]?.pageId).toBe(pageId)
+    expect(after.assets[0]?.objectId).toBe(objectId)
+    expect(after.assets[0]?.sampleCount).toBe(2)
+  })
+
+  it('投影作业查询在 SQL 侧过滤，只返回未追上水位的当前投影', async () => {
+    const targetId = await freshTarget()
+    await seedObservation(targetId)
+    const projection = await ensureMapProjection(handle.db, targetId)
+    const work = await listMapProjectionWork(handle.db, { limit: 32 })
+    expect(work.some((item) => item.projectionId === projection.id && item.committedSeq >= 1)).toBe(true)
+    await commitMapProjectionBatch(handle.db, {
+      projectionId: projection.id,
+      expectedCursor: 0,
+      expectedRevision: 0,
+      plan: emptyPlan(work.find((item) => item.projectionId === projection.id)!.committedSeq),
+    })
+    const after = await listMapProjectionWork(handle.db, { limit: 32 })
+    expect(after.some((item) => item.projectionId === projection.id)).toBe(false)
   })
 })

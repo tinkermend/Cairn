@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@cairn/authoring": "workspace:*",
     "@cairn/db": "workspace:*",
     "@cairn/map": "workspace:*",
     "@cairn/secret": "workspace:*",

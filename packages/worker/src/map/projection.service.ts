@@ -2,13 +2,14 @@ import {
   commitMapProjectionBatch,
   DomainError,
   ensureMapProjection,
+  getMapProjection,
   listMapProjectionWork,
-  loadMapProjectionState,
+  loadMapProjectionWorkingSet,
   readMapFacts,
   recordMapProjectionFailure,
   type DbHandle,
 } from '@cairn/db'
-import { planProjectionBatch } from '@cairn/map'
+import { planProjectionBatch, projectionWorkingSetHints } from '@cairn/map'
 import { MAP_PROJECTION_BATCH_MAX, type MapContentAvailability } from '@cairn/shared'
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import { DB_HANDLE } from '../db/db.module'
@@ -42,31 +43,40 @@ export async function advanceMapProjections(
   let advanced = 0
   for (const item of work) {
     await ensureMapProjection(handle, item.targetId)
-    const state = await loadMapProjectionState(handle, item.projectionId)
-    const throughSeq = item.status === 'shadow' ? (item.sourceWatermark ?? state.cursor) : item.committedSeq
+    const projection = await getMapProjection(handle, item.projectionId)
+    const throughSeq = item.status === 'shadow' ? (item.sourceWatermark ?? projection.cursor) : item.committedSeq
     const page = await readMapFacts(handle, {
       targetId: item.targetId,
-      afterSeq: state.cursor,
+      afterSeq: projection.cursor,
       throughSeq,
       limit: MAP_PROJECTION_BATCH_MAX,
     })
+    const facts = page.facts.map((fact) =>
+      fact.type === 'observation'
+        ? {
+            type: 'observation' as const,
+            ingestSeq: fact.ingestSeq,
+            observation: fact.observation,
+            contentAvailability: fact.contentAvailability as MapContentAvailability,
+          }
+        : {
+            type: 'verification' as const,
+            ingestSeq: fact.ingestSeq,
+            verification: fact.verification,
+            contentAvailability: fact.contentAvailability as MapContentAvailability,
+          },
+    )
+    const hints = projectionWorkingSetHints(facts)
+    const state = await loadMapProjectionWorkingSet(handle, {
+      projectionId: item.projectionId,
+      pageAllocationKeys: hints.pageAllocationKeys,
+      objectAllocationKeys: hints.objectAllocationKeys,
+      observationIds: hints.observationIds,
+    })
+    if (state.cursor !== projection.cursor || state.revision !== projection.revision) continue
     const plan = planProjectionBatch({
       state,
-      facts: page.facts.map((fact) =>
-        fact.type === 'observation'
-          ? {
-              type: 'observation' as const,
-              ingestSeq: fact.ingestSeq,
-              observation: fact.observation,
-              contentAvailability: fact.contentAvailability as MapContentAvailability,
-            }
-          : {
-              type: 'verification' as const,
-              ingestSeq: fact.ingestSeq,
-              verification: fact.verification,
-              contentAvailability: fact.contentAvailability as MapContentAvailability,
-            },
-      ),
+      facts,
       now: new Date().toISOString(),
     })
     try {

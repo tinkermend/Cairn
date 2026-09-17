@@ -1,6 +1,6 @@
+import { compileScenarioDocument } from '@cairn/authoring'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  compileScenarioDocument,
   isAuthoringDocumentV2,
   toAuthoringDocumentV2,
   type ScenarioAuthoringDocumentV2,

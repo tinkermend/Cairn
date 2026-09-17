@@ -18,7 +18,8 @@ import {
 import type { Db } from '../client.js'
 import { clockNow, schemaFor } from '../native.js'
 import { failure } from '../runs/errors.js'
-import { findSessionByAuthHoldRun } from '../sessions/auth-control.js'
+import { findSessionByAuthWaitRun } from '../sessions/auth-control.js'
+import { authWaitLeaseLive } from '../sessions/occupancy-read.js'
 import { findLiveSession, getSessionById, toSessionDto, type SessionRecord } from '../sessions/sessions.js'
 import { notFound } from '../runs/errors.js'
 import { getWorkerById, type WorkerRecord } from './leases.js'
@@ -32,23 +33,13 @@ export type WorkerRouteResolution = {
   associationLive: boolean
 }
 
-function authWaitLeaseLive(
-  lease: { purpose: string; expiresAt: Date; waitDeadlineAt: Date | null },
-  asOf: Date,
-): boolean {
-  if (lease.purpose !== 'AUTH_WAIT') return false
-  if (lease.expiresAt.getTime() <= asOf.getTime()) return false
-  if (lease.waitDeadlineAt && lease.waitDeadlineAt.getTime() <= asOf.getTime()) return false
-  return true
-}
-
 export async function resolveWorkerRoute(db: Db, runId: string): Promise<WorkerRouteResolution> {
   return db.transaction(async (tx) => {
     const asOf = await clockNow(tx as unknown as Db)
     const { runs, sessionLeases } = schemaFor(tx)
     const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1)
     if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
-    const held = await findSessionByAuthHoldRun(tx as unknown as Db, runId)
+    const held = await findSessionByAuthWaitRun(tx as unknown as Db, runId)
     const [lease] = await tx
       .select()
       .from(sessionLeases)
@@ -61,7 +52,7 @@ export async function resolveWorkerRoute(db: Db, runId: string): Promise<WorkerR
         lease.expiresAt.getTime() > asOf.getTime(),
     )
     const leased = lease ? await getSessionById(tx as unknown as Db, lease.sessionId) : null
-    let session = (holdLive ? held : null) ?? leased ?? held
+    let session = (holdLive ? held?.session : null) ?? leased ?? held?.session ?? null
     // 续跑后占用已清、新租约尚未领取：仍要把画面转到这个账号上的活会话。
     if (!session && run.status === 'RECOVERING' && run.targetAccountId) {
       const recovering = await findLiveSession(tx as unknown as Db, {

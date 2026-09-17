@@ -22,10 +22,13 @@ import {
   getMapAssetDetail,
   getMapReleasePublication,
   publishMapRelease,
+  loadTargetScanAssets,
   loadTargetScanSource,
   listMapReferenceScanWork,
   removeMapScenarioBinding,
   listMapAssets,
+  listMapJobCandidateAssets,
+  loadMapQueryView,
   loadMapImpactSource,
   listMapReferences,
   loadMapProjectionState,
@@ -793,6 +796,230 @@ describe.each(DRIVERS)('%s 地图查询与治理', { timeout: 60_000 }, (driver)
     const restarted = await startMapReferenceScan(handle.db, targetId, actor())
     expect(restarted.scannedCount).toBe(0)
     expect(restarted.completeness).toBe('unknown')
+  })
+
+  async function seedMany(targetId: string, count: number, start = 0) {
+    const projection = await ensureMapProjection(handle.db, targetId)
+    let remaining = count
+    let index = 0
+    while (remaining > 0) {
+      const n = Math.min(100, remaining)
+      const state = await loadMapProjectionState(handle.db, projection.id)
+      const slice = Array.from({ length: n }, (_, offset) => String(start + index + offset).padStart(3, '0'))
+      await commitMapProjectionBatch(handle.db, {
+        projectionId: projection.id,
+        expectedCursor: state.cursor,
+        expectedRevision: state.revision,
+        plan: emptyPlan(state.cursor + 1, {
+          pages: slice.map((suffix) => ({
+            kind: 'top' as const,
+            allocationKey: `page:v1:top:n${suffix}:top`,
+            routeTemplate: `https://shop.example/orders/${suffix}`,
+            frameKey: 'top',
+            reasons: ['allocation-key'],
+            matchResult: 'MATCH' as const,
+          })),
+          objects: slice.map((suffix) => ({
+            allocationKey: `object:v1:n${suffix}-btn`,
+            pageAllocationKey: `page:v1:top:n${suffix}:top`,
+            regionKey: 'action',
+            stableToken: `n${suffix}`,
+            reasons: ['allocation-key'],
+            matchResult: 'MATCH' as const,
+          })),
+          implementations: slice.map((suffix) => ({
+            objectAllocationKey: `object:v1:n${suffix}-btn`,
+            implementationKey: `impl:v1:n${suffix}`,
+            condition: condition(targetId),
+          })),
+          descriptors: slice.map((suffix) => ({
+            objectAllocationKey: `object:v1:n${suffix}-btn`,
+            implementationKey: `impl:v1:n${suffix}`,
+            features: { semanticName: `对象${suffix}` },
+            condition: condition(targetId),
+          })),
+          assets: slice.map((suffix) => ({
+            pageAllocationKey: `page:v1:top:n${suffix}:top`,
+            objectAllocationKey: `object:v1:n${suffix}-btn`,
+            implementationKey: `impl:v1:n${suffix}`,
+            lifecycle: 'VERIFIED' as const,
+            importance: 0,
+            executable: true,
+            rejectReasons: [],
+            dimensions: [
+              { dimension: 'locator' as const, verdict: 'confirmed' as const, confirmedCount: 1, rejectedCount: 0, unknownCount: 0 },
+            ],
+            sampleCount: 1,
+            changeCount: 1,
+          })),
+        }),
+      })
+      index += n
+      remaining -= n
+    }
+    return projection
+  }
+
+  it('列表按 limit 翻页，摘要用计数，匹配超限不 hydrate', async () => {
+    const targetId = await freshTarget('pageq')
+    const projection = await seedMany(targetId, 60)
+    const keys = new Set<string>()
+    let cursor: string | undefined
+    for (let pageNo = 0; pageNo < 3; pageNo += 1) {
+      const page = await listMapAssets(handle.db, targetId, 'objects', mapListQuerySchema.parse({ limit: 20, cursor }))
+      expect(page.items).toHaveLength(20)
+      for (const item of page.items) {
+        expect(keys.has(item.assetRefKey)).toBe(false)
+        keys.add(item.assetRefKey)
+      }
+      cursor = page.nextCursor
+      if (pageNo < 2) expect(cursor).toBeTruthy()
+      else expect(cursor).toBeUndefined()
+    }
+    expect(keys.size).toBe(60)
+    const firstPage = await listMapAssets(handle.db, targetId, 'objects', mapListQuerySchema.parse({ limit: 50 }))
+    expect(firstPage.items).toHaveLength(50)
+    expect(firstPage.nextCursor).toBeTruthy()
+    const candidates = await listMapJobCandidateAssets(handle.db, targetId)
+    expect(candidates).toHaveLength(60)
+    expect(new Set(candidates.map((item) => item.assetRefKey))).toEqual(keys)
+    const summary = await getMapSummary(handle.db, targetId, mapListQuerySchema.parse({}))
+    expect(summary.objectCount).toBe(60)
+    expect(summary.pageCount).toBe(60)
+    expect(summary.changeCount).toBe(60)
+    await seedMany(targetId, 41, 60)
+    const overflow = await loadMapQueryView(handle.db, {
+      targetId,
+      view: { kind: 'projection', projectionId: projection.id },
+      limit: 10,
+    })
+    expect(overflow.candidateOverflow).toBe(true)
+    expect(overflow.assets).toEqual([])
+    const first = await listMapAssets(handle.db, targetId, 'objects', mapListQuerySchema.parse({ limit: 1 }))
+    const one = await loadMapQueryView(handle.db, {
+      targetId,
+      view: { kind: 'projection', projectionId: first.view.viewRef.kind === 'projection' ? first.view.viewRef.projectionId : projection.id },
+      assetRef: { targetId, objectId: first.items[0]!.assetRef.objectId },
+      limit: 10,
+    })
+    expect(one.candidateOverflow).toBeUndefined()
+    expect(one.assets).toHaveLength(1)
+    expect(one.assets[0]?.assetRef.objectId).toBe(first.items[0]!.assetRef.objectId)
+  })
+
+  it('引用扫描资产按当前投影 join，不整表拼 pages/descriptors', async () => {
+    const targetId = await freshTarget('scan-join')
+    await seedMany(targetId, 3)
+    const loaded = await loadTargetScanAssets(handle.db, targetId)
+    expect(loaded.projectionId).toBeTruthy()
+    expect(loaded.assets).toHaveLength(3)
+    expect(loaded.assets.every((asset) => asset.routeTemplate?.includes('/orders/'))).toBe(true)
+    expect(loaded.assets.some((asset) => asset.semanticName?.startsWith('对象'))).toBe(true)
+  })
+
+  it('默认知识视图过滤空白与无效路由页，不删除事实', async () => {
+    const targetId = await freshTarget('noise')
+    const projection = await ensureMapProjection(handle.db, targetId)
+    const state = await loadMapProjectionState(handle.db, projection.id)
+    await commitMapProjectionBatch(handle.db, {
+      projectionId: projection.id,
+      expectedCursor: state.cursor,
+      expectedRevision: state.revision,
+      plan: emptyPlan(state.cursor + 1, {
+        pages: [
+          {
+            kind: 'top',
+            allocationKey: 'page:v1:top:blank1:top',
+            routeTemplate: 'nullblank',
+            frameKey: 'top',
+            reasons: ['allocation-key'],
+            matchResult: 'MATCH',
+          },
+          {
+            kind: 'top',
+            allocationKey: 'page:v1:top:orders:top',
+            routeTemplate: 'https://shop.example/orders',
+            frameKey: 'top',
+            reasons: ['allocation-key'],
+            matchResult: 'MATCH',
+          },
+        ],
+        objects: [
+          {
+            allocationKey: 'object:v1:blank-btn',
+            pageAllocationKey: 'page:v1:top:blank1:top',
+            regionKey: 'action',
+            stableToken: 'blank',
+            reasons: ['allocation-key'],
+            matchResult: 'MATCH',
+          },
+          {
+            allocationKey: 'object:v1:orders-btn',
+            pageAllocationKey: 'page:v1:top:orders:top',
+            regionKey: 'action',
+            stableToken: 'orders',
+            reasons: ['allocation-key'],
+            matchResult: 'MATCH',
+          },
+        ],
+        implementations: [
+          { objectAllocationKey: 'object:v1:blank-btn', implementationKey: 'impl:v1:blank', condition: condition(targetId) },
+          { objectAllocationKey: 'object:v1:orders-btn', implementationKey: 'impl:v1:orders', condition: condition(targetId) },
+        ],
+        descriptors: [
+          {
+            objectAllocationKey: 'object:v1:blank-btn',
+            implementationKey: 'impl:v1:blank',
+            features: { semanticName: '空白' },
+            condition: condition(targetId),
+          },
+          {
+            objectAllocationKey: 'object:v1:orders-btn',
+            implementationKey: 'impl:v1:orders',
+            features: { semanticName: '订单' },
+            condition: condition(targetId),
+          },
+        ],
+        assets: [
+          {
+            pageAllocationKey: 'page:v1:top:blank1:top',
+            objectAllocationKey: 'object:v1:blank-btn',
+            implementationKey: 'impl:v1:blank',
+            lifecycle: 'VERIFIED',
+            importance: 0,
+            executable: true,
+            rejectReasons: [],
+            dimensions: [
+              { dimension: 'locator', verdict: 'confirmed', confirmedCount: 1, rejectedCount: 0, unknownCount: 0 },
+            ],
+            sampleCount: 1,
+            changeCount: 0,
+          },
+          {
+            pageAllocationKey: 'page:v1:top:orders:top',
+            objectAllocationKey: 'object:v1:orders-btn',
+            implementationKey: 'impl:v1:orders',
+            lifecycle: 'VERIFIED',
+            importance: 0,
+            executable: true,
+            rejectReasons: [],
+            dimensions: [
+              { dimension: 'locator', verdict: 'confirmed', confirmedCount: 1, rejectedCount: 0, unknownCount: 0 },
+            ],
+            sampleCount: 1,
+            changeCount: 1,
+          },
+        ],
+      }),
+    })
+    const pages = await listMapAssets(handle.db, targetId, 'pages', mapListQuerySchema.parse({}))
+    expect(pages.items.map((item) => item.routeTemplate)).toEqual(['https://shop.example/orders'])
+    const objects = await listMapAssets(handle.db, targetId, 'objects', mapListQuerySchema.parse({}))
+    expect(objects.items).toHaveLength(1)
+    expect(objects.items[0]?.name).toBe('订单')
+    const summary = await getMapSummary(handle.db, targetId, mapListQuerySchema.parse({}))
+    expect(summary.pageCount).toBe(1)
+    expect(summary.objectCount).toBe(1)
   })
 
 })

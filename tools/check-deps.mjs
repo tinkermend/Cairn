@@ -23,13 +23,14 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  */
 const ALLOWED_EDGES = {
   '@cairn/shared': [],
+  '@cairn/authoring': ['@cairn/shared'],
   '@cairn/storage': ['@cairn/shared'],
   '@cairn/secret': ['@cairn/shared'],
-  '@cairn/db': ['@cairn/shared'],
-  '@cairn/map': ['@cairn/shared'],
-  '@cairn/api': ['@cairn/db', '@cairn/map', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
-  '@cairn/worker': ['@cairn/db', '@cairn/map', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
-  '@cairn/web': ['@cairn/shared'],
+  '@cairn/db': ['@cairn/shared', '@cairn/authoring'],
+  '@cairn/map': ['@cairn/shared', '@cairn/authoring'],
+  '@cairn/api': ['@cairn/db', '@cairn/authoring', '@cairn/map', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
+  '@cairn/worker': ['@cairn/db', '@cairn/authoring', '@cairn/map', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
+  '@cairn/web': ['@cairn/shared', '@cairn/authoring'],
   '@cairn/extension-playwright-crx': ['@cairn/shared'],
 }
 
@@ -125,6 +126,7 @@ function checkManifestAiDeps(self, declared, report) {
 
 const NON_WORKER_SRC_ROOTS = [
   resolve(root, 'packages/shared/src'),
+  resolve(root, 'packages/authoring/src'),
   resolve(root, 'packages/api/src'),
   resolve(root, 'packages/web/src'),
   resolve(root, 'packages/db/src'),
@@ -238,8 +240,41 @@ for (const packagesDir of PACKAGE_ROOTS) {
   }
 }
 
+function checkAuthoringPurity(report) {
+  const dir = resolve(root, 'packages/authoring/src')
+  if (!existsSync(dir)) return
+  const forbidden = /^(?:node:|drizzle-orm|@midscene\/|@page-agent\/|page-agent|pg|mysql2)(?:\/|$)/
+  for (const file of sourceFiles(dir)) {
+    if (isTestFile(file)) continue
+    const source = readFileSync(file, 'utf8')
+    for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+      if (!forbidden.test(specifier)) continue
+      report(`@cairn/authoring 必须 browser-safe：${relative(root, file)} → ${specifier}`)
+    }
+  }
+}
+
+function checkDbNoControlPlaneAccount(report) {
+  const dir = resolve(root, 'packages/db/src')
+  if (!existsSync(dir)) return
+  for (const file of sourceFiles(dir)) {
+    if (isTestFile(file)) continue
+    const source = readFileSync(file, 'utf8')
+    for (const [, specifier] of source.matchAll(SPECIFIER_PATTERN)) {
+      if (specifier === '@cairn/api' || specifier.startsWith('@cairn/api/')) {
+        report(`@cairn/db 不得引用控制面：${relative(root, file)} → ${specifier}`)
+      }
+      if (specifier.includes('request-account')) {
+        report(`@cairn/db 不得接收控制面账号类型：${relative(root, file)} → ${specifier}`)
+      }
+    }
+  }
+}
+
 checkOtherPackagesAiIsolation((message) => errors.push(message))
 checkDatabaseBoundary((message) => errors.push(message))
+checkAuthoringPurity((message) => errors.push(message))
+checkDbNoControlPlaneAccount((message) => errors.push(message))
 
 for (const dep of SHARED_VERSION_DEPS) {
   const seen = versionsByDep.get(dep)

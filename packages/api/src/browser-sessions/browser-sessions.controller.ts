@@ -25,6 +25,7 @@ import {
   sessionObserveQuerySchema,
   sessionOverviewQuerySchema,
   sessionRetentionBodySchema,
+  sessionSystemOverviewQuerySchema,
   type AcquireAuthControlBody,
   type AuthControlInputBody,
   type AuthControlTokenBody,
@@ -34,6 +35,7 @@ import {
   type SessionObserveQuery,
   type SessionOverviewQuery,
   type SessionRetentionBody,
+  type SessionSystemOverviewQuery,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
@@ -56,6 +58,12 @@ export class BrowserSessionsController {
   @RequirePermissions('session:read')
   overview(@Query(new ZodValidationPipe(sessionOverviewQuerySchema)) query: SessionOverviewQuery) {
     return this.sessions.overview(query)
+  }
+
+  @Get('systems')
+  @RequirePermissions('session:read')
+  systems(@Query(new ZodValidationPipe(sessionSystemOverviewQuerySchema)) query: SessionSystemOverviewQuery) {
+    return this.sessions.systemOverview(query)
   }
 
   @Get('observe')

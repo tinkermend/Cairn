@@ -78,7 +78,6 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -586,25 +585,22 @@ export function ScenarioDetailPage() {
 
   return (
     <>
-      <AppHeader
-        fixed
-        leading={
-          <Link
-            to='/scenarios'
-            className='me-auto flex items-center gap-2 text-small text-muted-foreground hover:text-link'
-            onClick={(event) => {
-              if (!draft.dirty) return
-              event.preventDefault()
-              setLeaveOpen(true)
-            }}
-          >
-            <ArrowLeft className='size-4' />
-            返回场景
-          </Link>
-        }
-      />
       <Main className='flex min-w-0 flex-1 flex-col gap-5 overflow-x-clip'>
         <PageHeader
+          parent={
+            <Link
+              to='/scenarios'
+              className='inline-flex items-center gap-1.5 hover:text-link'
+              onClick={(event) => {
+                if (!draft.dirty) return
+                event.preventDefault()
+                setLeaveOpen(true)
+              }}
+            >
+              <ArrowLeft className='size-4' />
+              返回场景
+            </Link>
+          }
           title={scenario?.name ?? '场景'}
           description='编辑有序步骤、查看编译诊断。保存后再试跑；试跑结果留在本页，完整复盘另开。'
           actions={

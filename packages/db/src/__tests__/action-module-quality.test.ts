@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { compileModuleContent, moduleWarningKey, type ModuleContent, type ScenarioAuthoringDocumentV2 } from '@cairn/shared'
+import { compileModuleContent } from '@cairn/authoring'
+import { moduleWarningKey, type ModuleContent, type ScenarioAuthoringDocumentV2 } from '@cairn/shared'
 import { newId } from '../id.js'
 import * as api from '../index.js'
 import { connection, expose } from '../database.js'

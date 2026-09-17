@@ -22,6 +22,13 @@ import type {
   AuthCheckpoint,
   ScenarioAuthoringDocumentV2,
   ModuleManifest,
+  OutcomeStatus,
+  OutcomeScope,
+  OutcomeSeverity,
+  OutcomeOnViolation,
+  OutcomeProvenance,
+  OutcomeVerdict,
+  OutcomeManifest,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
@@ -127,6 +134,7 @@ export const runs = cairnSchema.table(
     deadlineAt: timestamp('deadline_at', { withTimezone: true }),
     cancelReason: text('cancel_reason'),
     status: text('status').notNull().$type<RunStatus>(),
+    outcomeStatus: text('outcome_status').notNull().default('NOT_EVALUATED').$type<OutcomeStatus>(),
     evidenceStatus: text('evidence_status').notNull().default('PENDING').$type<RunEvidenceStatus>(),
     debugMode: text('debug_mode').notNull().default('runThrough').$type<DebugMode>(),
     checkpoint: jsonb('checkpoint').$type<DebugCheckpoint>(),
@@ -166,6 +174,7 @@ export const stepRuns = cairnSchema.table(
     stepId: uuid('step_id').notNull(),
     ordinal: integer('ordinal').notNull(),
     status: text('status').notNull().$type<StepRunStatus>(),
+    outcomeStatus: text('outcome_status').notNull().default('NOT_EVALUATED').$type<OutcomeStatus>(),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
   },
@@ -245,6 +254,41 @@ export const runEvents = cairnSchema.table(
   ],
 )
 
+export const outcomeResults = cairnSchema.table(
+  'outcome_results',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'restrict' }),
+    stepRunId: uuid('step_run_id')
+      .notNull()
+      .references(() => stepRuns.id, { onDelete: 'restrict' }),
+    attemptId: uuid('attempt_id')
+      .notNull()
+      .references(() => attempts.id, { onDelete: 'restrict' }),
+    contractId: uuid('contract_id').notNull(),
+    scope: text('scope').notNull().$type<OutcomeScope>(),
+    meaning: text('meaning').notNull(),
+    severity: text('severity').notNull().$type<OutcomeSeverity>(),
+    onViolation: text('on_violation').notNull().$type<OutcomeOnViolation>(),
+    provenance: text('provenance').notNull().$type<OutcomeProvenance>(),
+    verdict: text('verdict').notNull().$type<OutcomeVerdict>(),
+    expected: jsonb('expected').$type<JsonValue>(),
+    actual: jsonb('actual').$type<JsonValue>(),
+    evidenceId: uuid('evidence_id').references(() => evidences.id, { onDelete: 'restrict' }),
+    details: jsonb('details').$type<Record<string, JsonValue>>(),
+    evaluatedAt: timestamp('evaluated_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('outcome_results_attempt_contract_idx').on(t.attemptId, t.contractId),
+    index('outcome_results_run_idx').on(t.runId),
+    index('outcome_results_step_run_idx').on(t.stepRunId),
+    index('outcome_results_verdict_idx').on(t.verdict),
+  ],
+)
+
 export const scenariosRelations = relations(scenarios, ({ one, many }) => ({
   target: one(targets, { fields: [scenarios.targetId], references: [targets.id] }),
   versions: many(scenarioVersions),
@@ -262,11 +306,20 @@ export const scenarioVersionsRelations = relations(scenarioVersions, ({ one }) =
 export const runsRelations = relations(runs, ({ one, many }) => ({
   scenario: one(scenarios, { fields: [runs.scenarioId], references: [scenarios.id] }),
   stepRuns: many(stepRuns),
+  outcomeResults: many(outcomeResults),
 }))
 
 export const stepRunsRelations = relations(stepRuns, ({ one, many }) => ({
   run: one(runs, { fields: [stepRuns.runId], references: [runs.id] }),
   attempts: many(attempts),
+  outcomeResults: many(outcomeResults),
+}))
+
+export const outcomeResultsRelations = relations(outcomeResults, ({ one }) => ({
+  run: one(runs, { fields: [outcomeResults.runId], references: [runs.id] }),
+  stepRun: one(stepRuns, { fields: [outcomeResults.stepRunId], references: [stepRuns.id] }),
+  attempt: one(attempts, { fields: [outcomeResults.attemptId], references: [attempts.id] }),
+  evidence: one(evidences, { fields: [outcomeResults.evidenceId], references: [evidences.id] }),
 }))
 
 export type ScenarioRow = typeof scenarios.$inferSelect
@@ -276,3 +329,5 @@ export type RunRow = typeof runs.$inferSelect
 export type StepRunRow = typeof stepRuns.$inferSelect
 export type AttemptRow = typeof attempts.$inferSelect
 export type EvidenceRow = typeof evidences.$inferSelect
+export type OutcomeResultRow = typeof outcomeResults.$inferSelect
+export type OutcomeResultInsert = typeof outcomeResults.$inferInsert

@@ -31,7 +31,6 @@ vi.mock('@/lib/targets-api', () => ({
   fetchTargets: mocks.fetchTargets,
   fetchTargetAccounts: vi.fn().mockResolvedValue({ items: [] }),
 }))
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {
@@ -57,6 +56,7 @@ function summary(overrides: Partial<RunSummaryDto>): RunSummaryDto {
     startedAt: null,
     finishedAt: null,
     evidenceStatus: 'PENDING',
+    outcomeStatus: 'NOT_EVALUATED',
     lease: null,
     debugMode: 'runThrough',
     ...overrides,

@@ -135,7 +135,7 @@ Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用
 
 ### 测试范围
 
-`check.mjs` 另有四条**源码 / Token 断言**，对应真实发生过的回归，不要因为"暂时没人违反"就删掉：
+`check.mjs` 另有五条**源码 / Token 断言**，对应真实发生过的回归，不要因为"暂时没人违反"就删掉：
 
 | 断言 | 范围 | 为什么 |
 | --- | --- | --- |
@@ -143,6 +143,7 @@ Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用
 | 不得出现 `transition-all` | 全部 `.tsx` | 什么都动等于不解释任何东西，见[设计语言 §10](design-language.md#10-动效与无障碍) |
 | 字号必须在职务刻度上 | `features/` + `components/layout/` | 检查默认字号类、任意数值字号与直接数值 fontSize；`components/ui/` 是控件字号，不在此列 |
 | `surface-control` 必须与 `surface-card` 同色 | `tokens.css` | 输入不得再铺浅灰或冷白底；叠在白卡片上会发脏 |
+| 业务页不得引入顶栏 | `features/` 全部 `.ts` / `.tsx`（含测试） | 顶栏由认证布局渲染；页面再挂 `AppHeader` 就会重新各写搜索或页名 |
 
 视觉样本的 `check.mjs` 还验证内部文档链接、核心色对、1366/1440/1920px 布局、原生表单校验、确认取消与焦点返回。它是可运行的样本检查，不是正式应用的无障碍认证，也不替代应用现有测试。
 

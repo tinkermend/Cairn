@@ -206,7 +206,6 @@ describe('managed browser meta', () => {
         pages: [],
         authHold: {
           expiresAt: '2026-09-13T00:00:00.000Z',
-          bound: true,
           runId: '00000000-0000-4000-8000-000000000041',
         },
         authControl: { epoch: 0, actorId: null, expiresAt: null, heldByViewer: false },

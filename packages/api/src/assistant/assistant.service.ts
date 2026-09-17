@@ -1,3 +1,4 @@
+import { compileForAssistant } from '@cairn/authoring'
 import { Inject, Injectable, NotFoundException, Optional } from '@nestjs/common'
 import {
   applyStepProposal,
@@ -7,7 +8,6 @@ import {
   availableAssistantCapabilities,
   canonicalJson,
   citationKey,
-  compileForAssistant,
   compareCompileDiagnostics,
   createAssistantTurnBodySchema,
   filterGuideCatalog,

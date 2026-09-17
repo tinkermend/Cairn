@@ -17,10 +17,10 @@ import {
   type DbHandle,
 } from '@cairn/db'
 import { expose, newId, openIsolatedDb } from '@cairn/db/testing'
+import { compileModuleContent } from '@cairn/authoring'
 import {
   FACTORY_PLATFORM_CONFIG,
   PERMISSIONS,
-  compileModuleContent,
   moduleWarningKey,
   upgradeWarningKey,
   type ModuleContent,

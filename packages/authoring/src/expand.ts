@@ -1,37 +1,36 @@
-import { syncSha256 } from './sha256-sync.js'
 import {
-  compileScenarioDocument,
-  type CompileContext,
-} from './compiler.js'
-import {
+  canonicalJson,
   deriveExecutionMode,
   findModuleImplementation,
-  type ModuleContent,
-  type ModuleImplementation,
-  type ModulePublicationStatus,
-  type ModuleValueType,
-} from './action-module.js'
-import {
   isAuthoringDocumentV2,
+  MAX_SCENARIO_STEPS,
   normalizeAuthoringDocument,
   resolveInvocationSelection,
+  scenarioDocumentSchema,
+  syncSha256,
   type AuthoringModuleInvocation,
   type AuthoringNode,
   type CandidateGroup,
+  type CompileContext,
+  type CompileDiagnostic,
+  type EffectType,
+  type ModuleContent,
+  type ModuleImplementation,
   type ModuleInputBinding,
   type ModuleManifest,
   type ModuleManifestEntry,
+  type ModulePublicationStatus,
+  type ModuleValueType,
+  type OutcomeManifest,
+  type OutcomeManifestEntry,
+  type OutcomeRule,
   type ScenarioAuthoringDocument,
-} from './authoring-document.js'
-import {
-  MAX_SCENARIO_STEPS,
-  scenarioDocumentSchema,
-  type CompileDiagnostic,
+  type ScenarioAuthoringDocumentV2,
   type ScenarioDefinition,
   type ScenarioInputDecl,
-} from './scenario.js'
-import { type EffectType, type Step } from './step.js'
-import { canonicalJson } from './canonical.js'
+  type Step,
+} from '@cairn/shared'
+import { compileScenarioDocument } from './compiler.js'
 
 // ---------------------------------------------------------------------------
 // Context & Loaded Module interfaces
@@ -64,6 +63,7 @@ export type ExpansionResult = {
   ok: boolean
   definition?: ScenarioDefinition
   manifest: ModuleManifest
+  outcomeManifest?: OutcomeManifest
   diagnostics: CompileDiagnostic[]
   sourceDigest: string
 }
@@ -93,6 +93,129 @@ export function deterministicStepId(
     ((parseInt(hash.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0') + hash.slice(18, 20),
     hash.slice(20, 32),
   ].join('-')
+}
+
+/**
+ * 从 Authoring Document 或 ScenarioDefinition 中提取/重构 OutcomeManifest。
+ * 若提供 authoringDocument，则从其契约定义与存量断言中生成；
+ * 若未提供 authoringDocument 但有 definition，则从 definition.steps 中按 legacy_assert 收编存量断言。
+ */
+export function deriveOutcomeManifest(input: {
+  definition?: ScenarioDefinition | null
+  authoringDocument?: ScenarioAuthoringDocumentV2 | null
+}): OutcomeManifest | undefined {
+  const entries: OutcomeManifestEntry[] = []
+
+  if (input.authoringDocument) {
+    const doc = input.authoringDocument
+    for (const node of doc.nodes) {
+      if (node.kind === 'step') {
+        const step = node.step
+        if (node.outcomes && node.outcomes.length > 0) {
+          for (const contract of node.outcomes) {
+            if (step.type === 'assert' || step.type === 'ai_assert') {
+              entries.push({
+                contractId: contract.id,
+                scope: contract.scope,
+                meaning: contract.meaning,
+                severity: contract.severity,
+                onViolation: contract.onViolation,
+                provenance: contract.provenance,
+                stepId: step.id,
+                rule: contract.rule,
+              })
+            } else {
+              const derivedId = deterministicStepId(step.id, contract.id)
+              entries.push({
+                contractId: contract.id,
+                scope: contract.scope,
+                meaning: contract.meaning,
+                severity: contract.severity,
+                onViolation: contract.onViolation,
+                provenance: contract.provenance,
+                stepId: derivedId,
+                sourceStepId: step.id,
+                rule: contract.rule,
+              })
+            }
+          }
+        } else if (step.type === 'assert' || step.type === 'ai_assert') {
+          const rule: OutcomeRule =
+            step.type === 'assert'
+              ? {
+                  kind: 'deterministic',
+                  ...((step.input as { target?: any; expect: any }).target
+                    ? { target: (step.input as { target?: any; expect: any }).target }
+                    : {}),
+                  expect: (step.input as { target?: any; expect: any }).expect,
+                }
+              : {
+                  kind: 'ai',
+                  instruction: (step.input as { instruction: string }).instruction,
+                }
+          entries.push({
+            contractId: step.id,
+            scope: 'step',
+            meaning: step.name,
+            severity: 'MUST',
+            onViolation: 'halt',
+            provenance: 'legacy_assert',
+            stepId: step.id,
+            rule,
+          })
+        }
+      }
+    }
+
+    if (doc.scenarioOutcomes && doc.scenarioOutcomes.length > 0) {
+      for (const contract of doc.scenarioOutcomes) {
+        const derivedId = deterministicStepId('scenario', contract.id)
+        entries.push({
+          contractId: contract.id,
+          scope: contract.scope,
+          meaning: contract.meaning,
+          severity: contract.severity,
+          onViolation: contract.onViolation,
+          provenance: contract.provenance,
+          stepId: derivedId,
+          rule: contract.rule,
+        })
+      }
+    }
+  }
+
+  if (input.definition) {
+    const existingStepIds = new Set(entries.map((e) => e.stepId))
+    for (const step of input.definition.steps) {
+      if ((step.type === 'assert' || step.type === 'ai_assert') && !existingStepIds.has(step.id)) {
+        const rule: OutcomeRule =
+          step.type === 'assert'
+            ? {
+                kind: 'deterministic',
+                ...((step.input as { target?: any; expect: any }).target
+                  ? { target: (step.input as { target?: any; expect: any }).target }
+                  : {}),
+                expect: (step.input as { target?: any; expect: any }).expect,
+              }
+            : {
+                kind: 'ai',
+                instruction: (step.input as { instruction: string }).instruction,
+              }
+        entries.push({
+          contractId: step.id,
+          scope: 'step',
+          meaning: step.name,
+          severity: 'MUST',
+          onViolation: 'halt',
+          provenance: 'legacy_assert',
+          stepId: step.id,
+          rule,
+        })
+      }
+    }
+  }
+
+  return entries.length > 0 ? { entries } : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -324,9 +447,43 @@ export function expandAuthoringDocument(
   rawDocument: unknown,
   ctx: ExpansionContext,
 ): ExpansionResult {
-  const document = normalizeAuthoringDocument(rawDocument)
+  let document: ScenarioAuthoringDocumentV2
+  try {
+    document = normalizeAuthoringDocument(rawDocument)
+  } catch (err) {
+    if (err && typeof err === 'object' && 'issues' in err && Array.isArray((err as { issues: unknown }).issues)) {
+      const issues = (err as { issues: Array<{ message: string; path: Array<string | number> }> }).issues
+      return {
+        ok: false,
+        manifest: { entries: [] },
+        diagnostics: issues.map((issue) =>
+          clampDiagnostic({
+            code: 'OUTCOME_CONTRACT_INVALID',
+            severity: 'error',
+            message: issue.message,
+            fieldPath: issue.path.map(String),
+          }),
+        ),
+        sourceDigest: '',
+      }
+    }
+    return {
+      ok: false,
+      manifest: { entries: [] },
+      diagnostics: [
+        clampDiagnostic({
+          code: 'SCENARIO_AUTHORING_DOCUMENT_INVALID',
+          severity: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      ],
+      sourceDigest: '',
+    }
+  }
+
   const diagnostics: CompileDiagnostic[] = []
   const manifestEntries: ModuleManifestEntry[] = []
+  const outcomeManifestEntries: OutcomeManifestEntry[] = []
   const candidateGroups: CandidateGroup[] = []
   const expandedSteps: Step[] = []
 
@@ -355,6 +512,82 @@ export function expandAuthoringDocument(
         availableContextKeys.add(step.outputKey)
       }
       expandedSteps.push(step)
+
+      if (node.outcomes && node.outcomes.length > 0) {
+        for (const contract of node.outcomes) {
+          if (step.type === 'assert' || step.type === 'ai_assert') {
+            outcomeManifestEntries.push({
+              contractId: contract.id,
+              scope: contract.scope,
+              meaning: contract.meaning,
+              severity: contract.severity,
+              onViolation: contract.onViolation,
+              provenance: contract.provenance,
+              stepId: step.id,
+              rule: contract.rule,
+            })
+          } else {
+            const derivedId = deterministicStepId(step.id, contract.id)
+            const derivedStep: Step =
+              contract.rule.kind === 'deterministic'
+                ? {
+                    id: derivedId,
+                    name: contract.meaning.slice(0, 128),
+                    type: 'assert',
+                    effectType: 'READ_ONLY',
+                    input: {
+                      ...(contract.rule.target ? { target: contract.rule.target } : {}),
+                      expect: contract.rule.expect,
+                    },
+                  }
+                : {
+                    id: derivedId,
+                    name: contract.meaning.slice(0, 128),
+                    type: 'ai_assert',
+                    effectType: 'READ_ONLY',
+                    input: {
+                      instruction: contract.rule.instruction,
+                    },
+                  }
+            expandedSteps.push(derivedStep)
+            outcomeManifestEntries.push({
+              contractId: contract.id,
+              scope: contract.scope,
+              meaning: contract.meaning,
+              severity: contract.severity,
+              onViolation: contract.onViolation,
+              provenance: contract.provenance,
+              stepId: derivedId,
+              sourceStepId: step.id,
+              rule: contract.rule,
+            })
+          }
+        }
+      } else if (step.type === 'assert' || step.type === 'ai_assert') {
+        const rule: OutcomeRule =
+          step.type === 'assert'
+            ? {
+                kind: 'deterministic',
+                ...((step.input as { target?: any; expect: any }).target
+                  ? { target: (step.input as { target?: any; expect: any }).target }
+                  : {}),
+                expect: (step.input as { target?: any; expect: any }).expect,
+              }
+            : {
+                kind: 'ai',
+                instruction: (step.input as { instruction: string }).instruction,
+              }
+        outcomeManifestEntries.push({
+          contractId: step.id,
+          scope: 'step',
+          meaning: step.name,
+          severity: 'MUST',
+          onViolation: 'halt',
+          provenance: 'legacy_assert',
+          stepId: step.id,
+          rule,
+        })
+      }
       continue
     }
 
@@ -616,6 +849,48 @@ export function expandAuthoringDocument(
     })
   }
 
+  // 处理场景级契约 scenarioOutcomes
+  if (document.scenarioOutcomes && document.scenarioOutcomes.length > 0) {
+    for (const contract of document.scenarioOutcomes) {
+      const derivedId = deterministicStepId('scenario', contract.id)
+      const derivedStep: Step =
+        contract.rule.kind === 'deterministic'
+          ? {
+              id: derivedId,
+              name: contract.meaning.slice(0, 128),
+              type: 'assert',
+              effectType: 'READ_ONLY',
+              input: {
+                ...(contract.rule.target ? { target: contract.rule.target } : {}),
+                expect: contract.rule.expect,
+              },
+            }
+          : {
+              id: derivedId,
+              name: contract.meaning.slice(0, 128),
+              type: 'ai_assert',
+              effectType: 'READ_ONLY',
+              input: {
+                instruction: contract.rule.instruction,
+              },
+            }
+      expandedSteps.push(derivedStep)
+      outcomeManifestEntries.push({
+        contractId: contract.id,
+        scope: contract.scope,
+        meaning: contract.meaning,
+        severity: contract.severity,
+        onViolation: contract.onViolation,
+        provenance: contract.provenance,
+        stepId: derivedId,
+        rule: contract.rule,
+      })
+    }
+  }
+
+  const outcomeManifest: OutcomeManifest | undefined =
+    outcomeManifestEntries.length > 0 ? { entries: outcomeManifestEntries } : undefined
+
   // 规则 10：步数上限限制
   if (expandedSteps.length > MAX_SCENARIO_STEPS) {
     const details = manifestEntries
@@ -676,6 +951,7 @@ export function expandAuthoringDocument(
     ok: !diagnostics.some((d) => d.severity === 'error'),
     definition,
     manifest,
+    ...(outcomeManifest ? { outcomeManifest } : {}),
     diagnostics: diagnostics.map(clampDiagnostic),
     sourceDigest,
   }

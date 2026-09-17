@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   canonicalJson,
+  type AuthoringModuleInvocation,
+  type ModuleContent,
+  type ScenarioAuthoringDocumentV2,
+} from '@cairn/shared'
+import {
   deterministicStepId,
   expandAuthoringDocument,
   moduleContentDigest,
-  type AuthoringModuleInvocation,
   type ExpansionContext,
   type LoadedModuleVersion,
-  type ModuleContent,
-  type ScenarioAuthoringDocumentV2,
 } from '../index.js'
 
 describe('AM-B: 编写展开纯函数 (expandAuthoringDocument)', () => {

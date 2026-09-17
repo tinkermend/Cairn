@@ -177,6 +177,7 @@ describe.skipIf(!enabled)('S-LIVE 受管浏览器探针', { timeout: 180_000 }, 
       handle,
       {
         workerId,
+        workerInstanceId,
         profileRoot,
         headless: true,
         maxSessions: 2,

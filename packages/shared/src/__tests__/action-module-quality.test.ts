@@ -6,11 +6,9 @@ import {
   deriveInvocationResults,
   evaluateModuleHealth,
   passRateBucket,
-  resolveModulesByRules,
   runHrefForInvocation,
   type DeriveInvocationResultsInput,
   type ModuleManifestEntry,
-  type ResolverCatalogModule,
 } from '../index.js'
 
 const runId = '10000000-0000-4000-8000-000000000001'
@@ -58,6 +56,7 @@ function derive(
     entries?: ModuleManifestEntry[]
     runKind?: DeriveInvocationResultsInput['run']['runKind']
     manualRequirementCounts?: Record<string, number>
+    outcomeResults?: DeriveInvocationResultsInput['outcomeResults']
   } = {},
 ) {
   return deriveInvocationResults({
@@ -83,6 +82,7 @@ function derive(
       { stepId: stepAssert, attemptNo: 1, status: 'SUCCEEDED' },
     ],
     evidences: overrides.evidences,
+    outcomeResults: overrides.outcomeResults,
     manualRequirementCounts: overrides.manualRequirementCounts,
   })
 }
@@ -142,6 +142,23 @@ describe('AM-E: 调用结果派生与健康信号', () => {
       ],
       attempts: [{ stepId: stepAct, attemptNo: 1, status: 'FAILED', error: { code: 'WEIRD', category: 'UNKNOWN' } }],
     })[0]).toMatchObject({ outcome: 'FAILED_IMPLEMENTATION', attribution: 'UNKNOWN' })
+
+    // OCA-11: continue 模式下，StepRun 状态为 SUCCEEDED，但 outcomeStatus 为 FAIL，依然识别为 FAILED_VERIFICATION
+    expect(derive({
+      status: 'SUCCEEDED',
+      context: { result: 'ok' },
+      stepRuns: [
+        { stepId: stepAct, status: 'SUCCEEDED', startedAt: '2026-09-16T00:00:00.000Z' },
+        { stepId: stepAssert, status: 'SUCCEEDED', outcomeStatus: 'FAIL', startedAt: '2026-09-16T00:00:01.000Z' },
+      ],
+      attempts: [
+        { stepId: stepAct, attemptNo: 1, status: 'SUCCEEDED' },
+        { stepId: stepAssert, attemptNo: 1, status: 'SUCCEEDED' },
+      ],
+      outcomeResults: [
+        { stepId: stepAssert, verdict: 'FAIL' },
+      ],
+    })[0]).toMatchObject({ outcome: 'FAILED_VERIFICATION', attribution: 'MODULE' })
   })
 
   it('AME-02 后置失败与人工说明不作为 VERIFIED 依据', () => {
@@ -294,61 +311,7 @@ describe('AM-E: 调用结果派生与健康信号', () => {
     }).signal).toBe('healthy')
   })
 
-  it('AME-10 健康信号不改变 D 规则层排序', () => {
-    const catalog: ResolverCatalogModule[] = [
-      {
-        moduleId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
-        targetId,
-        key: 'order.query',
-        name: '查询订单',
-        aliases: [],
-        intentExamples: [],
-        tags: [],
-        versions: [{
-          versionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2',
-          versionNo: 2,
-          publishedAt: '2026-09-16T00:00:00.000Z',
-          publicationStatus: 'published',
-          executionMode: 'DETERMINISTIC',
-          effectCeiling: 'READ_ONLY',
-          inputs: [],
-        }],
-      },
-      {
-        moduleId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
-        targetId,
-        key: 'order.cancel',
-        name: '取消订单',
-        aliases: [],
-        intentExamples: [],
-        tags: [],
-        versions: [{
-          versionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2',
-          versionNo: 1,
-          publishedAt: '2026-09-16T00:00:00.000Z',
-          publicationStatus: 'published',
-          executionMode: 'DETERMINISTIC',
-          effectCeiling: 'SIDE_EFFECT',
-          inputs: [],
-        }],
-      },
-    ]
-    const before = resolveModulesByRules({
-      expression: '查询订单',
-      catalog,
-      terms: [],
-      maxCandidates: 10,
-    })
-    const after = resolveModulesByRules({
-      expression: '查询订单',
-      catalog,
-      terms: [],
-      maxCandidates: 10,
-    })
-    after.candidates[0] = { ...after.candidates[0]!, notes: ['healthDegraded'] }
-    expect(before.candidates.map((item) => item.moduleVersionId)).toEqual(
-      after.candidates.map((item) => item.moduleVersionId),
-    )
+  it('AME-10 健康注释不改变运行种类与链接判定', () => {
     expect(classifyModuleRunKind({ scenarioPurpose: 'module_verification', versionKind: 'trial' })).toBe('module_verification')
     expect(classifyModuleRunKind({ scenarioPurpose: 'map_job' })).toBe('map_job')
     expect(runHrefForInvocation(runId, invocationA)).toBe(`/runs/${runId}?invocation=${invocationA}`)

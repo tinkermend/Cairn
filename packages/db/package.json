@@ -31,6 +31,7 @@
     "dev": "tsc -w --preserveWatchOutput -p tsconfig.build.json"
   },
   "dependencies": {
+    "@cairn/authoring": "workspace:*",
     "@cairn/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "mysql2": "^3.24.4",

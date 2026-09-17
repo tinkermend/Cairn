@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   FACTORY_PLATFORM_CONFIG,
+  PLATFORM_CONFIG_SCHEMA_UNSUPPORTED,
+  PLATFORM_CONFIG_SCHEMA_VERSION,
+  PLATFORM_CONFIG_SINGLETON_ID,
   createAccountBodySchema,
   createTargetBodySchema,
   resolveAiExecutionFromPlatform,
@@ -306,6 +309,97 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
     const history = await api.listPlatformConfigRevisions(db)
     expect(history.items.map((item) => item.revision)).toEqual([3, 2, 1])
     expect(await api.getPlatformConfigRevision(db, 1)).toEqual(FACTORY_PLATFORM_CONFIG)
+  })
+
+  it('历史修订含当前 Schema 已无的节：变更记录照常列出，恢复给出可读拒绝', async () => {
+    const { db, actor } = await fixture(driver)
+    await api.getOrCreatePlatformConfig(db, {
+      document: FACTORY_PLATFORM_CONFIG,
+      reason: '初始化',
+    })
+    await api.updatePlatformConfig(db, {
+      expectedRevision: 1,
+      reason: '提高超时',
+      document: {
+        ...FACTORY_PLATFORM_CONFIG,
+        execution: { defaultTimeoutMs: 45_000, defaultRetryLimit: 0 },
+      },
+      actor,
+    })
+
+    // 修订表不可变，只能追加：直接插入一条"当前 Schema 已无此节"的历史修订。
+    const native = connection(db)
+    const { platformConfigRevisions } = schemaFor(native)
+    await native.insert(platformConfigRevisions).values({
+      id: api.newId(),
+      revision: 3,
+      document: {
+        ...FACTORY_PLATFORM_CONFIG,
+        retiredSection: { legacy: true },
+      } as unknown as typeof FACTORY_PLATFORM_CONFIG,
+      actorConsoleAccountId: actor.id,
+      reason: '写入时还存在的旧节',
+      source: 'update',
+      createdAt: new Date(),
+    })
+
+    const history = await api.listPlatformConfigRevisions(db)
+    expect(history.items.map((item) => item.revision)).toEqual([3, 2, 1])
+    expect(history.items[0]?.document).toMatchObject({ retiredSection: { legacy: true } })
+    expect(history.items[0]?.diff.map((change) => change.path)).toContain('retiredSection')
+
+    await expect(api.getPlatformConfigRevision(db, 3)).rejects.toMatchObject({
+      code: 'PLATFORM_CONFIG_REVISION_INCOMPATIBLE',
+    })
+    await expect(
+      api.restorePlatformConfig(db, {
+        revision: 3,
+        expectedRevision: 2,
+        reason: '尝试恢复不兼容修订',
+        actor,
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONFIG_REVISION_INCOMPATIBLE' })
+    expect((await api.getPlatformConfig(db))?.revision).toBe(2)
+  })
+
+  it('当前配置行缺某一节时读取补出厂默认，不需要先保存一次', async () => {
+    const { db } = await fixture(driver)
+    await api.getOrCreatePlatformConfig(db, {
+      document: FACTORY_PLATFORM_CONFIG,
+      reason: '初始化',
+    })
+    const { moduleResolver: _dropped, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const native = connection(db)
+    const { platformConfig } = schemaFor(native)
+    await native
+      .update(platformConfig)
+      .set({ document: legacy as unknown as typeof FACTORY_PLATFORM_CONFIG })
+      .where(eq(platformConfig.id, PLATFORM_CONFIG_SINGLETON_ID))
+    expect((await api.getPlatformConfig(db))?.document.moduleResolver).toEqual(
+      FACTORY_PLATFORM_CONFIG.moduleResolver,
+    )
+  })
+
+  it('配置行版本高于本版本时明确拒绝，而不是按当前 Schema 误读', async () => {
+    const { db } = await fixture(driver)
+    await api.getOrCreatePlatformConfig(db, {
+      document: FACTORY_PLATFORM_CONFIG,
+      reason: '初始化',
+    })
+    const native = connection(db)
+    const { platformConfig } = schemaFor(native)
+    await native
+      .update(platformConfig)
+      .set({
+        document: {
+          ...FACTORY_PLATFORM_CONFIG,
+          schemaVersion: PLATFORM_CONFIG_SCHEMA_VERSION + 1,
+        } as unknown as typeof FACTORY_PLATFORM_CONFIG,
+      })
+      .where(eq(platformConfig.id, PLATFORM_CONFIG_SINGLETON_ID))
+    await expect(api.getPlatformConfig(db)).rejects.toMatchObject({
+      code: PLATFORM_CONFIG_SCHEMA_UNSUPPORTED,
+    })
   })
 
   it('新 Run 冻结当前修订；改默认后同键重发仍返回原 Run', async () => {

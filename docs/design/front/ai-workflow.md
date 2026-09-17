@@ -40,7 +40,9 @@ HTML 原型保留为设计记录。其“当前 Token”会跟随生产 Token �
 | 创建、编辑、验证一组步骤 | 步骤入口 → 有序序列 → 当前属性 → 试跑反馈 | Sequence First；AI 与确定性步骤同列；高频编辑保持上下文 | [场景编排](../../front_design/2026-09-13-foundation-lab/index.html#studio) |
 | 排查执行、核对结果与证据 | 运行状态 → 步骤列表 → 当前 Attempt 与证据 → 输出与判断 | 选中对象之间必须关联；步骤、断言、证据直接可达 | [运行复盘](../../front_design/2026-09-13-foundation-lab/index.html#run) |
 
-这些是组合规则，不要求为三种布局各造一套框架。优先扩展 `Main`、`PageHeader` 与已有组件，用 CSS Grid / Flex 组合。重复需求出现后再抽取共用组合。
+这些是组合规则，不要求为三种布局各造一套框架。认证壳由布局提供：侧栏导航、底栏账号、顶栏全局搜索。新页面只组合 `Main` 与 `PageHeader`，不渲染顶栏。列表标题与侧栏 `title` 一致；详情才加 `PageHeader.parent`。优先扩展 `Main`、`PageHeader` 与已有组件，用 CSS Grid / Flex 组合。重复需求出现后再抽取共用组合。
+
+新菜单三步：在 `sidebar-data.ts` 登记 → 页用 `Main` + `PageHeader` → 标题与侧栏文案一致。不要为新菜单改顶栏。
 
 新增任务无法自然放入现有组织方式时，先为该局部做可操作样本并说明取舍。常规 CRUD、已有组件状态和现有布局的组合可以直接实施，不要求每个功能重复画 HTML。
 

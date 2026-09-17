@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, or } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, or, sql } from 'drizzle-orm'
 import {
   canonicalJson,
   MAP_LIST_LIMIT_MAX,
@@ -11,8 +11,6 @@ import {
   mapListQuerySchema,
   mapSummaryResponseSchema,
   type MapAssetListItem,
-  type MapConditionSnapshot,
-  type MapConditionTri,
   type MapGovernanceCommandBody,
   type MapGovernancePreviewBody,
   type MapListQuery,
@@ -24,8 +22,16 @@ import { newId } from '../id.js'
 import { atomic, clockNow, insertRows, locked, schemaFor } from '../native.js'
 import { isUniqueViolation } from '../runs/errors.js'
 import { applyMapIdentityCommand } from './identities.js'
-import { loadMapQueryView } from './releases.js'
 import { startMapProjectionRebuild } from './projections.js'
+import {
+  loadHydratedViewAssets,
+  matchesSearch,
+  pageViewChangedAssets,
+  pageViewListAssets,
+  summarizeViewAssets,
+  type HydratedViewAsset,
+  type MapConditionEvaluator,
+} from './query-read.js'
 import {
   mapCommandIdempotencyConflict,
   mapNotFound,
@@ -39,55 +45,15 @@ import {
   ensureGovernanceHead,
   listDigest,
   loadOverlays,
-  resolveAssetOverlay,
   requireLiveTarget,
   requireMapAsset,
   resolveMapView,
   viewMeta,
 } from './view.js'
 
-function matchesSearch(
-  item: { name?: string; routeTemplate?: string; assetRefKey: string },
-  search?: string,
-): boolean {
-  if (!search) return true
-  const needle = search.toLowerCase()
-  return [item.name, item.routeTemplate, item.assetRefKey].some((value) => value?.toLowerCase().includes(needle))
-}
-
-async function loadViewAssets(db: Db, view: Awaited<ReturnType<typeof resolveMapView>>) {
-  if (!view.projectionId && !view.releaseId) return []
-  const queryView = await loadMapQueryView(db, {
-    targetId: view.targetId,
-    view: view.releaseId
-      ? { kind: 'release', releaseId: view.releaseId, manifestDigest: view.manifestDigest! }
-      : { kind: 'projection', projectionId: view.projectionId! },
-    limit: 50,
-  })
-  const overlays = view.kind === 'release' ? new Map() : await loadOverlays(db, view.targetId)
-  return queryView.assets.map(item => ({
-    ...item,
-    pageId: item.assetRef.pageId,
-    objectId: item.assetRef.objectId,
-    implementationKey: item.assetRef.implementationKey,
-    descriptorVersion: item.assetRef.descriptorVersion,
-    overlayLifecycle: resolveAssetOverlay(overlays, item.assetRef),
-    unknownFields: item.condition?.unknownFields ?? ['permissionProfile', 'workspace', 'locale', 'viewport', 'featureVersion'],
-    name: item.features?.semanticName,
-  })).sort((a, b) => (b.descriptorVersion ?? 0) - (a.descriptorVersion ?? 0))
-}
-
-type ConditionEvaluator = (required: MapConditionSnapshot, observed: MapConditionSnapshot) => MapConditionTri
-function filterViewAssets(assets: Awaited<ReturnType<typeof loadViewAssets>>, query: MapListQuery, evaluate?: ConditionEvaluator) {
-  if (query.conditionSnapshot && !evaluate) throw new Error('Map condition evaluator is required')
-  return assets.filter(item => matchesSearch(item, query.search))
-    .filter(item => !query.lifecycle || item.lifecycle === query.lifecycle)
-    .filter(item => !query.conditionSnapshot || !item.condition || evaluate!(item.condition, query.conditionSnapshot) !== 'unsatisfied')
-}
-
 function toListItem(
   targetId: string,
-  item: Awaited<ReturnType<typeof loadViewAssets>>[number],
+  item: HydratedViewAsset,
 ): MapAssetListItem {
   return {
     assetRef: assetRef({ ...item, targetId }),
@@ -122,38 +88,36 @@ function paginate<T extends { assetRefKey: string }>(
   }
 }
 
-export async function getMapSummary(db: Db, targetId: string, query: MapListQuery, evaluate?: ConditionEvaluator) {
+export async function getMapSummary(db: Db, targetId: string, query: MapListQuery, evaluate?: MapConditionEvaluator) {
   await requireLiveTarget(db, targetId)
   const view = await resolveMapView(db, targetId, query)
-  const assets = filterViewAssets(await loadViewAssets(db, view), query, evaluate)
+  const counts = await summarizeViewAssets(db, view, query, evaluate)
   const { mapConflicts, mapReleasePublications, mapProjections } = schemaFor(db)
   const [latestProjection] = view.kind === 'projection' ? await db.select().from(mapProjections).where(eq(mapProjections.targetId, targetId)).orderBy(desc(mapProjections.generation)).limit(1) : []
   const rebuilding = latestProjection && latestProjection.id !== view.projectionId && ['shadow', 'ready', 'failed'].includes(latestProjection.status) ? latestProjection : undefined
-  const conflicts = view.projectionId
+  const [conflictRow] = view.projectionId
     ? await db
-        .select({ id: mapConflicts.id })
+        .select({ n: sql<number>`count(*)`.as('n') })
         .from(mapConflicts)
         .where(and(eq(mapConflicts.targetId, targetId), eq(mapConflicts.projectionId, view.projectionId!), eq(mapConflicts.status, 'open')))
-    : []
+    : [{ n: 0 }]
   const [published] = await db
     .select()
     .from(mapReleasePublications)
     .where(and(eq(mapReleasePublications.targetId, targetId), eq(mapReleasePublications.publicationStatus, 'published')))
     .orderBy(desc(mapReleasePublications.publishedAt), desc(mapReleasePublications.releaseId))
     .limit(1)
-  const pages = new Set(assets.map((item) => item.pageId).filter(Boolean))
-  const objects = new Set(assets.map((item) => item.objectId).filter(Boolean))
   return mapSummaryResponseSchema.parse({
     view: await viewMeta(db, view),
     projectionStatus: view.kind === 'release' ? 'ready' : view.status ?? 'missing',
     rebuildStatus: rebuilding?.status,
     rebuildProjectionId: rebuilding?.id,
     rebuildCompleteness: view.rebuildCompleteness ?? undefined,
-    pageCount: pages.size,
-    objectCount: objects.size,
-    conflictCount: conflicts.length,
-    unknownConditionCount: assets.filter((item) => item.unknownFields.length > 0).length,
-    changeCount: assets.filter((item) => item.changeCount > 0).length,
+    pageCount: counts.pageCount,
+    objectCount: counts.objectCount,
+    conflictCount: Number(conflictRow?.n ?? 0),
+    unknownConditionCount: counts.unknownConditionCount,
+    changeCount: counts.changeCount,
     publishedReleaseId: published?.releaseId,
     publicationStatus: published?.publicationStatus,
   })
@@ -164,10 +128,11 @@ export async function listMapAssets(
   targetId: string,
   kind: 'pages' | 'objects',
   query: MapListQuery,
-  evaluate?: ConditionEvaluator,
+  evaluate?: MapConditionEvaluator,
 ) {
   await requireLiveTarget(db, targetId)
   const view = await resolveMapView(db, targetId, query)
+  const meta = await viewMeta(db, view)
   const digest = listDigest({
     targetId,
     kind,
@@ -177,32 +142,38 @@ export async function listMapAssets(
     lifecycle: query.lifecycle,
     conditionSnapshot: query.conditionSnapshot,
     revision: view.revision,
-    governanceRevision: (await viewMeta(db, view)).governanceRevision,
+    governanceRevision: meta.governanceRevision,
   })
-  const loaded = filterViewAssets(await loadViewAssets(db, view), query, evaluate)
-  const grouped = new Map<string, (typeof loaded)[number]>()
-  for (const item of loaded) {
-    const key = kind === 'pages' ? (item.pageId ?? item.assetRefKey) : (item.objectId ?? item.assetRefKey)
-    if (kind === 'objects' && !item.objectId) continue
-    if (kind === 'pages' && !item.pageId) continue
-    if (!grouped.has(key)) grouped.set(key, item)
-  }
-  const items = [...grouped.values()]
-    .map(item => kind === 'pages' ? toListItem(targetId, { ...item, objectId: undefined, implementationKey: undefined, descriptorVersion: undefined, assetRefKey: assetKey({ targetId, pageId: item.pageId }), name: undefined }) : toListItem(targetId, item))
+  const after = query.cursor ? decodeMapCursor(query.cursor, digest) : undefined
+  const loaded = await pageViewListAssets(db, view, kind, query, after, evaluate)
+  const items = loaded
+    .map((item) =>
+      kind === 'pages'
+        ? toListItem(targetId, {
+            ...item,
+            objectId: undefined,
+            implementationKey: undefined,
+            descriptorVersion: undefined,
+            assetRefKey: assetKey({ targetId, pageId: item.pageId }),
+            assetRef: assetRef({ targetId, pageId: item.pageId }),
+            name: undefined,
+          })
+        : toListItem(targetId, item),
+    )
     .filter((item) => matchesSearch(item, query.search))
     .filter((item) => !query.lifecycle || item.lifecycle === query.lifecycle)
-  const page = paginate(items, digest, query)
+  const page = paginate(items, digest, { ...query, cursor: undefined })
   return mapAssetListResponseSchema.parse({
     items: page.items,
     nextCursor: page.nextCursor,
-    view: await viewMeta(db, view),
+    view: meta,
   })
 }
 
 export async function listMapJobCandidateAssets(
   db: Db,
   targetId: string,
-  evaluate?: ConditionEvaluator,
+  evaluate?: MapConditionEvaluator,
 ): Promise<MapAssetListItem[]> {
   const items: MapAssetListItem[] = []
   let cursor: string | undefined
@@ -228,7 +199,9 @@ export async function getMapAssetDetail(
 ) {
   await requireLiveTarget(db, targetId)
   const view = await resolveMapView(db, targetId, query)
-  const assets = (await loadViewAssets(db, view)).filter((item) => item.objectId === objectId)
+  const assets = (await loadHydratedViewAssets(db, view, { objectId })).sort(
+    (a, b) => (b.descriptorVersion ?? 0) - (a.descriptorVersion ?? 0),
+  )
   const primary = assets[0]
   if (!primary) mapNotFound('地图对象不存在')
   const { mapIdentityRevisions } = schemaFor(db)
@@ -269,9 +242,10 @@ export async function getMapAssetDetail(
   })
 }
 
-export async function listMapChanges(db: Db, targetId: string, query: MapListQuery, evaluate?: ConditionEvaluator) {
+export async function listMapChanges(db: Db, targetId: string, query: MapListQuery, evaluate?: MapConditionEvaluator) {
   await requireLiveTarget(db, targetId)
   const view = await resolveMapView(db, targetId, query)
+  const meta = await viewMeta(db, view)
   const digest = listDigest({
     targetId,
     kind: 'changes',
@@ -281,22 +255,29 @@ export async function listMapChanges(db: Db, targetId: string, query: MapListQue
     lifecycle: query.lifecycle,
     conditionSnapshot: query.conditionSnapshot,
     revision: view.revision,
-    governanceRevision: (await viewMeta(db, view)).governanceRevision,
+    governanceRevision: meta.governanceRevision,
   })
-  const assets = filterViewAssets(await loadViewAssets(db, view), query, evaluate)
-    .filter((item) => item.changeCount > 0)
-    .map((item) => ({
-      kind: 'asset' as const,
-      assetRefKey: item.assetRefKey,
-      changeCount: item.changeCount,
-    }))
+  const after = query.cursor ? decodeMapCursor(query.cursor, digest) : undefined
+  const assets = (await pageViewChangedAssets(db, view, query, after, evaluate)).map((item) => ({
+    kind: 'asset' as const,
+    assetRefKey: item.assetRefKey,
+    changeCount: item.changeCount,
+  }))
   const { mapConflicts } = schemaFor(db)
+  const conflictFilter = [
+    eq(mapConflicts.targetId, targetId),
+    eq(mapConflicts.projectionId, view.projectionId!),
+    eq(mapConflicts.status, 'open'),
+  ]
+  if (after) conflictFilter.push(gt(mapConflicts.conflictKey, after))
   const conflicts = view.projectionId
     ? (
         await db
           .select()
           .from(mapConflicts)
-          .where(and(eq(mapConflicts.targetId, targetId), eq(mapConflicts.projectionId, view.projectionId!), eq(mapConflicts.status, 'open')))
+          .where(and(...conflictFilter))
+          .orderBy(asc(mapConflicts.conflictKey))
+          .limit(query.limit + 1)
       ).map((row) => ({
         kind: 'conflict' as const,
         conflictKey: row.conflictKey,
@@ -305,7 +286,7 @@ export async function listMapChanges(db: Db, targetId: string, query: MapListQue
         assetRefKey: row.conflictKey,
       }))
     : []
-  const page = paginate([...assets, ...conflicts], digest, query)
+  const page = paginate([...assets, ...conflicts], digest, { ...query, cursor: undefined })
   return mapChangeListResponseSchema.parse({
     items: page.items.map((item) =>
       item.kind === 'asset'
@@ -313,7 +294,7 @@ export async function listMapChanges(db: Db, targetId: string, query: MapListQue
         : { kind: 'conflict', conflictKey: item.conflictKey, status: item.status, payload: item.payload },
     ),
     nextCursor: page.nextCursor,
-    view: await viewMeta(db, view),
+    view: meta,
   })
 }
 

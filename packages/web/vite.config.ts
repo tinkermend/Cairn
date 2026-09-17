@@ -1,7 +1,7 @@
 /// <reference types="vitest/config" />
 import { existsSync } from 'node:fs'
 import path from 'path'
-import { defineConfig } from 'vite'
+import { defineConfig, type Logger, type Plugin, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
@@ -12,6 +12,54 @@ if (existsSync(repoEnv)) process.loadEnvFile(repoEnv)
 
 const API_ORIGIN = process.env.CAIRN_API_ORIGIN ?? 'http://127.0.0.1:3030'
 
+/** Vite 默认只在代理失败时打日志。开发期 API 重启后补一条恢复日志。 */
+function apiProxyRecovery(): {
+  plugin: Plugin
+  configure: NonNullable<ProxyOptions['configure']>
+} {
+  let logger: Logger | undefined
+  let down = false
+
+  return {
+    plugin: {
+      name: 'cairn-api-proxy-recovery',
+      apply: 'serve',
+      configResolved(config) {
+        logger = config.logger
+      },
+    },
+    configure(proxy) {
+      proxy.on('error', () => {
+        down = true
+      })
+      proxy.on('proxyRes', (_proxyRes, req) => {
+        if (!down) return
+        down = false
+        logger?.info(`http proxy recovered: ${req.url ?? '/'}`, { timestamp: true })
+      })
+    },
+  }
+}
+
+const apiProxyRecoveryHooks = apiProxyRecovery()
+
+const proxyConfig = {
+  // 开发与预览期把后端调用转发到本地 api，避免跨域并让前端代码里只写相对路径。
+  // 画面 SSE 必须禁用代理超时，否则首帧会被缓冲到连接结束，试跑页一直空白。
+  '/api': {
+    target: API_ORIGIN,
+    changeOrigin: true,
+    timeout: 0,
+    proxyTimeout: 0,
+    configure: apiProxyRecoveryHooks.configure,
+  },
+  '/health': {
+    target: API_ORIGIN,
+    changeOrigin: true,
+    configure: apiProxyRecoveryHooks.configure,
+  },
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -21,6 +69,7 @@ export default defineConfig({
     }),
     react(),
     tailwindcss(),
+    apiProxyRecoveryHooks.plugin,
   ],
   resolve: {
     alias: {
@@ -40,12 +89,10 @@ export default defineConfig({
     fs: {
       allow: [path.resolve(import.meta.dirname, '../..')],
     },
-    proxy: {
-      // 开发期把后端调用转发到本地 api，避免跨域并让前端代码里只写相对路径。
-      // 画面 SSE 必须禁用代理超时，否则首帧会被缓冲到连接结束，试跑页一直空白。
-      '/api': { target: API_ORIGIN, changeOrigin: true, timeout: 0, proxyTimeout: 0 },
-      '/health': { target: API_ORIGIN, changeOrigin: true },
-    },
+    proxy: proxyConfig,
+  },
+  preview: {
+    proxy: proxyConfig,
   },
   test: {
     silent: 'passed-only',

@@ -41,4 +41,16 @@ describe('popup handoff selection', () => {
     expect(originAllowed('https://user:pass@app.example', ['https://app.example'])).toBe(false)
     expect(originAllowed('https://app.example/path', ['https://app.example'])).toBe(true)
   })
+
+  it('有编译范围时拒绝同 origin 越权路径', () => {
+    const scope = {
+      purposes: ['business_surface' as const],
+      rules: [{ origin: 'https://app.example', purpose: 'business_surface' as const, effect: 'allow' as const, pathPrefix: '/ok' }],
+    }
+    expect(originAllowed('https://app.example/ok', ['https://app.example'], scope)).toBe(true)
+    expect(originAllowed('https://app.example/admin', ['https://app.example'], scope)).toBe(false)
+    expect(
+      pickPopupHandoff([{ page, url: 'https://app.example/admin' }], ['https://app.example'], scope),
+    ).toMatchObject({ ok: false, code: 'PAGE_HANDOFF_OUT_OF_SCOPE' })
+  })
 })

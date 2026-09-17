@@ -8,7 +8,8 @@ export {
 } from './identity.js'
 export { chooseImplementation, evaluateCondition, isMoreSpecific, knownConditionFields } from './conditions.js'
 export { applyDimension, attributeVerification, lifecycleFromEvidence, mergeLocalState } from './verification.js'
-export { emptyProjectionPlan, planProjectionBatch } from './projection.js'
+export { emptyProjectionPlan, planProjectionBatch, projectionWorkingSetHints } from './projection.js'
+export type { ProjectionWorkingSetHints } from './projection.js'
 export { queryMap } from './query.js'
 export {
   applyGovernanceOverlay,

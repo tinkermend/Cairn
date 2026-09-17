@@ -9,6 +9,8 @@ import {
   platformConfigDiff,
   platformModelUrlSchema,
   platformConfigRevisionListSchema,
+  upgradePlatformConfigDocument,
+  PLATFORM_CONFIG_SCHEMA_UNSUPPORTED,
   type PlatformConfigCurrent,
   type PlatformConfigDocument,
   type PlatformConfigRevisionList,
@@ -21,7 +23,7 @@ import { newId } from '../id.js'
 import { atomic, schemaFor, updateRows } from '../native.js'
 import { badRequest, conflict, isUniqueViolation, notFound } from '../runs/errors.js'
 import { listTargetsOutsideFreshnessRange } from '../sessions/auth-profile.js'
-import { loadSecretCiphertext, registerStandaloneSecret } from '../sessions/sessions.js'
+import { loadSecretCiphertext, registerStandaloneSecret } from '../secrets/store.js'
 
 export type PlatformBootstrap = {
   document: PlatformConfigDocument
@@ -38,7 +40,7 @@ function toCurrent(row: {
 }): PlatformConfigCurrent {
   return platformConfigCurrentSchema.parse({
     revision: row.revision,
-    document: platformConfigDocumentSchema.parse(row.document),
+    document: upgradePlatformConfigDocument(row.document),
     updatedAt: row.updatedAt.toISOString(),
     updatedByAccountId: row.updatedByConsoleAccountId,
     reason: row.reason,
@@ -181,6 +183,29 @@ export async function updatePlatformConfig(
   })
 }
 
+/**
+ * 历史修订只在写回时严格校验：当前代码跑不了的旧文档必须给出可读的拒绝原因，
+ * 而不是抛裸 ZodError。
+ */
+function readRevisionDocument(raw: unknown, revision: number): PlatformConfigDocument {
+  try {
+    return upgradePlatformConfigDocument(raw)
+  } catch (error) {
+    throw badRequest(
+      'PLATFORM_CONFIG_REVISION_INCOMPATIBLE',
+      `修订 ${revision} 的配置与当前版本不兼容，无法恢复`,
+      {
+        revision,
+        reason: error instanceof Error ? error.message : String(error),
+        schemaUnsupported:
+          typeof error === 'object' &&
+          error !== null &&
+          (error as { code?: unknown }).code === PLATFORM_CONFIG_SCHEMA_UNSUPPORTED,
+      },
+    )
+  }
+}
+
 export async function getPlatformConfigRevision(
   db: Db,
   revision: number,
@@ -192,7 +217,7 @@ export async function getPlatformConfigRevision(
     .where(eq(platformConfigRevisions.revision, revision))
     .limit(1)
   if (!row) throw notFound('PLATFORM_CONFIG_REVISION_NOT_FOUND', '要恢复的配置修订不存在')
-  return platformConfigDocumentSchema.parse(row.document)
+  return readRevisionDocument(row.document, revision)
 }
 
 export async function restorePlatformConfig(
@@ -213,7 +238,7 @@ export async function restorePlatformConfig(
   if (!row) throw notFound('PLATFORM_CONFIG_REVISION_NOT_FOUND', '要恢复的配置修订不存在')
   return writeRevision(db, {
     expectedRevision: input.expectedRevision,
-    document: platformConfigDocumentSchema.parse(row.document),
+    document: readRevisionDocument(row.document, input.revision),
     reason: input.reason,
     source: 'restore',
     actor: input.actor,
@@ -264,9 +289,9 @@ export async function loadPlatformAiSecret(db: Db, secretId: string) {
     .from(platformConfigRevisions)
     .orderBy(asc(platformConfigRevisions.revision))
   for (const row of history) {
-    const ai = row.document.browserAi
+    const ai = (row.document as { browserAi?: PlatformConfigDocument['browserAi'] }).browserAi
     if (
-      ai.secretRef?.provider === LOCAL_SECRET_PROVIDER &&
+      ai?.secretRef?.provider === LOCAL_SECRET_PROVIDER &&
       ai.secretRef.secretId === secretId &&
       ai.baseUrl
     ) {
@@ -313,13 +338,13 @@ export async function listPlatformConfigRevisions(
           .from(platformConfigRevisions)
           .where(inArray(platformConfigRevisions.revision, [...wanted]))
   const byRevision = new Map(
-    history.map((row) => [row.revision, platformConfigDocumentSchema.parse(row.document)] as const),
+    history.map((row) => [row.revision, row.document as Record<string, unknown>] as const),
   )
 
   const last = slice.at(-1)
   return platformConfigRevisionListSchema.parse({
     items: slice.map((row) => {
-      const document = platformConfigDocumentSchema.parse(row.document)
+      const document = row.document as Record<string, unknown>
       return {
         id: row.id,
         revision: row.revision,

@@ -9,6 +9,7 @@ import { frozenMapJobSchema, frozenTargetAccessPolicySchema } from './map-jobs.j
 import { frozenAuthVerificationSchema } from './session-auth.js'
 import { platformRunAuthRecoverySchema } from './session-auth-recovery.js'
 import { candidateGroupsSchema, moduleManifestSchema, type ModuleManifest } from './authoring-document.js'
+import { outcomeManifestSchema, type OutcomeManifest } from './outcome.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
 import {
@@ -256,6 +257,11 @@ export const runSnapshotSchema = z
      * 冻结的只读回退候选组。可选：旧快照和无字段表示 pinned / 无回退。
      */
     candidateGroups: candidateGroupsSchema.optional(),
+    /**
+     * 冻结的成功条件清册。可选：旧快照没有此字段表示当时未定义成功条件。
+     * 严禁增加 .default()，避免存量快照重算 digest 漂移。
+     */
+    outcomeManifest: outcomeManifestSchema.optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),
   })

@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
-  compileModuleContent,
   commitStagedOutputs,
-  deterministicStepId,
-  expandAuthoringDocument,
-  moduleContentDigest,
   fallbackAttribution,
   shouldFallbackToNext,
   skipReasonForStep,
-  type ExpansionContext,
-  type LoadedModuleVersion,
   type ModuleContent,
   type ScenarioAuthoringDocumentV2,
+} from '@cairn/shared'
+import {
+  compileModuleContent,
+  deterministicStepId,
+  expandAuthoringDocument,
+  moduleContentDigest,
+  type ExpansionContext,
+  type LoadedModuleVersion,
 } from '../index.js'
 
 const moduleId = '22222222-2222-4222-8222-222222222222'

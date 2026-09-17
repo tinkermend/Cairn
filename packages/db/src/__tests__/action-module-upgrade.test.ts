@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { compileModuleContent, moduleWarningKey, type ModuleContent, type ScenarioAuthoringDocumentV2, type Step } from '@cairn/shared'
+import { compileModuleContent } from '@cairn/authoring'
+import { moduleWarningKey, type ModuleContent, type ScenarioAuthoringDocumentV2, type Step } from '@cairn/shared'
 import { newId } from '../id.js'
 import * as api from '../index.js'
 import { expose } from '../database.js'

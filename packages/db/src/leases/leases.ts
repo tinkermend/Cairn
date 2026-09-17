@@ -2,14 +2,18 @@ import type { RunLeaseRow, WorkerRow } from '../records.js'
 import { expireRunDeadlines } from '../runs/deadline.js'
 import { schemaFor } from '../native.js'
 import { updateRows } from '../native.js'
-import { and, asc, eq, inArray, isNull, not, notInArray, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm'
 import {
   DEFAULT_BROWSER_MAX_SESSIONS,
+  MAP_JOBS_PROTOCOL,
+  OUTCOME_MANIFEST_PROTOCOL,
   isFinishedRunStatus,
+  isMapJobRun,
   nextHandleMismatchStreak,
   runGrantSchema,
   type RunGrant,
   type RunLeaseErrorCode,
+  type RunSnapshot,
   type RunStatus,
   type WorkerStatus,
 } from '@cairn/shared'
@@ -20,6 +24,9 @@ import { newId } from '../id.js'
 import { runs } from '../schema/execution.js'
 import { browserSessions } from '../schema/session.js'
 import { locked, databaseNow, afterSeconds, clockNow, insertRows, jsonHasKey } from '../native.js'
+import { mapJobs } from '../schema/map-jobs.js'
+import { evaluateRunSessionEligibility } from '../sessions/occupancy-placement.js'
+import { readSessionScheduling } from '../sessions/occupancy-read.js'
 import { runLeases, workers } from '../schema/worker.js'
 
 /** 用共享枚举标注，让"抛出的码"与"对外声明的码"由类型接住，而不是各写一遍字面量。 */
@@ -121,6 +128,11 @@ async function isolateOrphanedSessionsTx(
       updatedAt: now,
       closeReason: 'owner_instance_replaced',
       version: sql`${browserSessions.version} + 1`,
+      authControlActorId: null,
+      authControlTokenHash: null,
+      authControlExpiresAt: null,
+      authControlPageId: null,
+      authControlEpoch: sql`${browserSessions.authControlEpoch} + 1`,
     },
     and(
       eq(browserSessions.ownerWorkerId, workerId),
@@ -133,6 +145,19 @@ async function isolateOrphanedSessionsTx(
     { id: browserSessions.id },
   )
   if (rows.length > 0) {
+    const sessionIds = rows.map((row) => row.id)
+    // AUTH_WAIT 留给 reapSessionLeases 走 holder-lost：立刻到期，但不先 REVOKED，
+    // 否则统一回收器看不见 ACTIVE 租约，等待中的 Run 会永远停在 WAITING_FOR_AUTH。
+    await updateRows(
+      tx,
+      sessionLeases,
+      { expiresAt: now, heartbeatAt: now },
+      and(
+        eq(sessionLeases.status, 'ACTIVE'),
+        eq(sessionLeases.purpose, 'AUTH_WAIT'),
+        inArray(sessionLeases.sessionId, sessionIds),
+      ),
+    )
     await updateRows(
       tx,
       sessionLeases,
@@ -143,10 +168,8 @@ async function isolateOrphanedSessionsTx(
       },
       and(
         eq(sessionLeases.status, 'ACTIVE'),
-        inArray(
-          sessionLeases.sessionId,
-          rows.map((row) => row.id),
-        ),
+        ne(sessionLeases.purpose, 'AUTH_WAIT'),
+        inArray(sessionLeases.sessionId, sessionIds),
       ),
     )
   }
@@ -415,6 +438,47 @@ export async function verifyRunLeaseForWrite(tx: Db, grant: RunGrant): Promise<b
   return row !== undefined
 }
 
+async function markMapJobWindowClosed(tx: Db, jobId: string): Promise<void> {
+  const [job] = await locked(tx, tx.select().from(mapJobs).where(eq(mapJobs.id, jobId)))
+  if (!job || job.jobStatus === 'cancelled' || job.jobStatus === 'completed' || job.jobStatus === 'failed') return
+  const now = await clockNow(tx)
+  await tx
+    .update(mapJobs)
+    .set({ jobStatus: 'cancelled', stopReason: 'window_closed', activeGuard: null, updatedAt: now })
+    .where(eq(mapJobs.id, jobId))
+}
+
+async function hasClaimableUserRunOnKey(
+  tx: Db,
+  run: { id: string; targetId: string; targetAccountId: string | null; snapshot: RunSnapshot },
+): Promise<boolean> {
+  if (!run.targetAccountId || !isMapJobRun(run.snapshot)) return false
+  const { runs, runLeases } = schemaFor(tx)
+  const rows = await tx
+    .select({ id: runs.id, snapshot: runs.snapshot })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.targetId, run.targetId),
+        eq(runs.targetAccountId, run.targetAccountId),
+        inArray(runs.status, ['QUEUED', 'RECOVERING']),
+        isNull(runs.deletedAt),
+        isNull(runs.cancelRequestedAt),
+        ne(runs.id, run.id),
+      ),
+    )
+  for (const row of rows) {
+    if (isMapJobRun(row.snapshot as RunSnapshot)) continue
+    const [lease] = await tx
+      .select({ id: runLeases.id })
+      .from(runLeases)
+      .where(and(eq(runLeases.runId, row.id), eq(runLeases.status, 'ACTIVE')))
+      .limit(1)
+    if (!lease) return true
+  }
+  return false
+}
+
 export async function claimRun(
   handle: DbHandle,
   input: {
@@ -443,6 +507,12 @@ export async function claimRun(
         ),
     )
     if (!worker) return null
+    let scheduling
+    try {
+      ;({ scheduling } = await readSessionScheduling(tx))
+    } catch {
+      return null
+    }
     const held = await tx
       .select({ id: runLeases.id })
       .from(runLeases)
@@ -454,67 +524,109 @@ export async function claimRun(
         ),
       )
     if (held.length >= worker.capacity) return null
+    const skipped = new Set(input.excludeRunIds ?? [])
     for (const status of ['RECOVERING', 'QUEUED'] as const) {
-      // Lock only Run rows; correlated predicates avoid outer-join lock differences.
-      const [run] = await locked(
-        tx,
-        tx
-          .select({ id: runs.id })
-          .from(runs)
-          .where(
-            and(
-              eq(runs.status, status),
-              isNull(runs.deletedAt),
-              isNull(runs.cancelRequestedAt),
-              or(isNull(runs.deadlineAt), sql`${runs.deadlineAt} > ${databaseNow(tx)}`),
-              input.excludeRunIds?.length ? notInArray(runs.id, input.excludeRunIds) : undefined,
-              worker.protocolCapabilities?.includes('snapshot.moduleManifest@1')
-                ? undefined
-                : not(jsonHasKey(tx, runs.snapshot, 'moduleManifest')),
-              worker.protocolCapabilities?.includes('snapshot.candidateGroups@1')
-                ? undefined
-                : not(jsonHasKey(tx, runs.snapshot, 'candidateGroups')),
-              sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
-              or(
-                isNull(runs.targetAccountId),
-                sql`NOT EXISTS (
+      for (;;) {
+        const exclude = [...skipped]
+        // Lock only Run rows; correlated predicates avoid outer-join lock differences.
+        const [run] = await locked(
+          tx,
+          tx
+            .select({
+              id: runs.id,
+              createdAt: runs.createdAt,
+              targetId: runs.targetId,
+              targetAccountId: runs.targetAccountId,
+              snapshot: runs.snapshot,
+            })
+            .from(runs)
+            .where(
+              and(
+                eq(runs.status, status),
+                isNull(runs.deletedAt),
+                isNull(runs.cancelRequestedAt),
+                or(isNull(runs.deadlineAt), sql`${runs.deadlineAt} > ${databaseNow(tx)}`),
+                exclude.length ? notInArray(runs.id, exclude) : undefined,
+                worker.protocolCapabilities?.includes('snapshot.moduleManifest@1')
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'moduleManifest')),
+                worker.protocolCapabilities?.includes('snapshot.candidateGroups@1')
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'candidateGroups')),
+                worker.protocolCapabilities?.includes(MAP_JOBS_PROTOCOL)
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'mapJob')),
+                worker.protocolCapabilities?.includes(OUTCOME_MANIFEST_PROTOCOL)
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'outcomeManifest')),
+                sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
+                or(
+                  isNull(runs.targetAccountId),
+                  sql`NOT EXISTS (
           SELECT 1 FROM ${browserSessions} s
            WHERE s.target_id = ${runs.targetId} AND s.target_account_id = ${runs.targetAccountId}
              AND s.status IN ('CREATING', 'OPEN', 'CLOSING', 'LOST')
              AND NOT (s.status = 'OPEN' AND s.owner_worker_id = ${input.workerId})
         )`,
+                ),
               ),
-            ),
-          )
-          .orderBy(asc(runs.createdAt), asc(runs.id))
-          .limit(1),
-        true,
-      )
-      if (!run) continue
-      await tx
-        .update(runs)
-        .set({
-          status: 'RUNNING',
-          startedAt: sql`COALESCE(${runs.startedAt}, ${databaseNow(tx)})`,
-          updatedAt: databaseNow(tx),
+            )
+            .orderBy(asc(runs.createdAt), asc(runs.id))
+            .limit(1),
+          true,
+        )
+        if (!run) break
+        skipped.add(run.id)
+        const snapshot = run.snapshot as RunSnapshot
+        if (isMapJobRun(snapshot)) {
+          const startBefore = snapshot.mapJob.startBefore
+          if (startBefore) {
+            const now = await clockNow(tx)
+            if (Date.parse(startBefore) <= now.getTime()) {
+              await markMapJobWindowClosed(tx, snapshot.mapJob.jobId)
+              continue
+            }
+          }
+          if (await hasClaimableUserRunOnKey(tx, { ...run, snapshot })) continue
+        }
+        const eligibility = await evaluateRunSessionEligibility(tx, {
+          run: {
+            id: run.id,
+            createdAt: run.createdAt,
+            targetId: run.targetId,
+            targetAccountId: run.targetAccountId,
+          },
+          workerId: input.workerId,
+          instanceId: input.instanceId,
+          maxSessions: worker.maxSessions,
+          scheduling,
         })
-        .where(eq(runs.id, run.id))
-      await appendRunEvents(tx, run.id, [
-        { type: 'run.status_changed', payload: { status: 'RUNNING' } },
-      ])
-      const [max] = await tx
-        .select({ token: sql<number>`COALESCE(MAX(${runLeases.fencingToken}), 0) + 1` })
-        .from(runLeases)
-        .where(eq(runLeases.runId, run.id))
-      const [lease] = await insertRows(tx, runLeases, {
-        id: newId(),
-        runId: run.id,
-        fencingToken: Number(max!.token),
-        holderWorkerId: input.workerId,
-        status: 'ACTIVE',
-        expiresAt: afterSeconds(tx, input.leaseTtlSeconds),
-      })
-      return toGrant(lease!)
+        if (!eligibility.eligible) continue
+        await tx
+          .update(runs)
+          .set({
+            status: 'RUNNING',
+            startedAt: sql`COALESCE(${runs.startedAt}, ${databaseNow(tx)})`,
+            updatedAt: databaseNow(tx),
+          })
+          .where(eq(runs.id, run.id))
+        await appendRunEvents(tx, run.id, [
+          { type: 'run.status_changed', payload: { status: 'RUNNING' } },
+        ])
+        const [max] = await tx
+          .select({ token: sql<number>`COALESCE(MAX(${runLeases.fencingToken}), 0) + 1` })
+          .from(runLeases)
+          .where(eq(runLeases.runId, run.id))
+        const [lease] = await insertRows(tx, runLeases, {
+          id: newId(),
+          runId: run.id,
+          fencingToken: Number(max!.token),
+          holderWorkerId: input.workerId,
+          status: 'ACTIVE',
+          expiresAt: afterSeconds(tx, input.leaseTtlSeconds),
+        })
+        return toGrant(lease!)
+      }
     }
     return null
   })

@@ -107,7 +107,6 @@ export type ManagedPageSummary = z.infer<typeof managedPageSummarySchema>
 
 export const managedBrowserAuthHoldSchema = z.strictObject({
   expiresAt: utcInstantSchema,
-  bound: z.boolean(),
   runId: entityIdSchema.nullable(),
 })
 

@@ -426,6 +426,213 @@ export function canTrialRun(granted: readonly string[]): boolean {
   return hasAllPermissions(granted, RUN_TRIAL_ALL_OF)
 }
 
+/** 展示名只有 PERMISSION_LABELS 一个来源，树里不再抄一份。 */
+export type CapabilityTreeNode = {
+  code: PermissionCode
+  isPageAccess?: boolean
+  dependencies?: readonly PermissionCode[]
+}
+
+export type CapabilityTreeModule = {
+  key: PermissionResource
+  label: string
+  description?: string
+  items: readonly CapabilityTreeNode[]
+}
+
+export type CapabilityTreeCategory = {
+  key: CapabilityGroup
+  label: string
+  modules: readonly CapabilityTreeModule[]
+}
+
+export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
+  {
+    key: 'workbench',
+    label: '工作台',
+    modules: [
+      {
+        key: 'target',
+        label: '目标系统',
+        description: '目标系统身份与凭据接入',
+        items: [
+          { code: 'target:read', isPageAccess: true },
+          { code: 'target:write' },
+          { code: 'target:delete' },
+        ],
+      },
+      {
+        key: 'workflow',
+        label: '场景',
+        description: '业务场景编排与步骤定义',
+        items: [
+          { code: 'workflow:read', isPageAccess: true },
+          { code: 'workflow:write' },
+          { code: 'workflow:delete' },
+        ],
+      },
+      {
+        key: 'run',
+        label: '运行',
+        description: '场景仿真执行与证据',
+        items: [
+          { code: 'run:read', isPageAccess: true },
+          { code: 'run:execute', dependencies: ['target:read', 'workflow:read'] },
+          { code: 'run:cancel' },
+          { code: 'run:review' },
+          { code: 'run:delete' },
+        ],
+      },
+      {
+        key: 'module',
+        label: '动作模块',
+        description: '可复用的标准化步骤组件',
+        items: [
+          { code: 'module:read', isPageAccess: true },
+          { code: 'module:write' },
+          { code: 'module:publish' },
+        ],
+      },
+      {
+        key: 'session',
+        label: '浏览器会话',
+        description: '受管浏览器实例与登录态',
+        items: [
+          { code: 'session:read', isPageAccess: true },
+          { code: 'session:view' },
+          { code: 'session:control', dependencies: ['run:execute'] },
+          { code: 'session:manage' },
+          { code: 'session:dispose' },
+        ],
+      },
+      {
+        key: 'schedule',
+        label: '平台调度',
+        description: '定时与自动复查计划',
+        items: [
+          { code: 'schedule:read', isPageAccess: true },
+          { code: 'schedule:write', dependencies: ['map:maintain'] },
+        ],
+      },
+      {
+        key: 'map',
+        label: '运营地图',
+        description: '目标系统可操作世界模型与知识',
+        items: [
+          { code: 'map:read' },
+          { code: 'map:review' },
+          { code: 'map:publish' },
+          { code: 'map:maintain' },
+          { code: 'map:explore', dependencies: ['map:maintain'] },
+        ],
+      },
+    ],
+  },
+  {
+    key: 'governance',
+    label: '治理与运维',
+    modules: [
+      {
+        key: 'account',
+        label: '控制台账号',
+        description: '平台用户与密码身份管理',
+        items: [
+          { code: 'account:read', isPageAccess: true },
+          { code: 'account:write' },
+          { code: 'account:delete' },
+        ],
+      },
+      {
+        key: 'role',
+        label: '角色权限',
+        description: '角色定义与权限配置',
+        items: [
+          { code: 'role:read', isPageAccess: true },
+          { code: 'role:write' },
+          { code: 'role:delete' },
+        ],
+      },
+      {
+        key: 'audit',
+        label: '审计记录',
+        description: '操作审计与登录审计',
+        items: [
+          { code: 'audit:read', isPageAccess: true },
+          { code: 'audit:login' },
+        ],
+      },
+      {
+        key: 'service',
+        label: '开放服务',
+        description: '受控执行 API 与服务凭据',
+        items: [
+          { code: 'service:read', isPageAccess: true },
+          { code: 'service:write' },
+        ],
+      },
+      {
+        key: 'platform-config',
+        label: '平台配置',
+        description: '运行时策略与超时参数中心',
+        items: [
+          { code: 'platform-config:read', isPageAccess: true },
+          { code: 'platform-config:write' },
+        ],
+      },
+    ],
+  },
+  {
+    key: 'other',
+    label: '通用设置与 AI',
+    modules: [
+      {
+        key: 'settings',
+        label: '系统设置',
+        description: '个人偏好与全局环境设置',
+        items: [
+          { code: 'settings:read', isPageAccess: true },
+          { code: 'settings:write' },
+        ],
+      },
+      {
+        key: 'ai',
+        label: 'AI 能力',
+        description: '浏览器 AI 执行与平台助手',
+        items: [
+          { code: 'ai:execute' },
+          { code: 'ai:assist' },
+        ],
+      },
+    ],
+  },
+]
+
+export function getPermissionDependencies(code: PermissionCode): PermissionCode[] {
+  const result = new Set<PermissionCode>()
+  const visited = new Set<PermissionCode>()
+
+  function collect(target: PermissionCode) {
+    if (visited.has(target)) return
+    visited.add(target)
+    for (const group of CAPABILITY_TREE_GROUPS) {
+      for (const mod of group.modules) {
+        for (const item of mod.items) {
+          if (item.code === target && item.dependencies) {
+            for (const dep of item.dependencies) {
+              result.add(dep)
+              collect(dep)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  collect(code)
+  return [...result]
+}
+
+
 /**
  * 集合信封的游标。
  *
@@ -880,3 +1087,41 @@ export const assignAccountRolesBodySchema = z.object({
   roleIds: z.array(z.string().min(1)).min(1, '账号至少保留一个角色'),
 })
 export type AssignAccountRolesBody = z.infer<typeof assignAccountRolesBodySchema>
+
+export const roleAccountItemSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  email: z.string().nullable(),
+  status: accountStatusSchema,
+  assignedAt: z.string().min(1),
+})
+export type RoleAccountItemDto = z.infer<typeof roleAccountItemSchema>
+
+export const roleAccountsResponseSchema = z.object({
+  items: z.array(roleAccountItemSchema),
+  nextCursor: nextCursorSchema,
+})
+export type RoleAccountsResponse = z.infer<typeof roleAccountsResponseSchema>
+
+export const roleAccountsQuerySchema = z.object({
+  cursor: optionalQueryString,
+  limit: z
+    .preprocess(
+      (value) => (value === '' || value === undefined || value === null ? 50 : value),
+      z.coerce.number().int().min(1).max(100),
+    )
+    .optional(),
+  search: optionalQueryString,
+})
+export type RoleAccountsQuery = z.infer<typeof roleAccountsQuerySchema>
+
+export const addRoleAccountsBodySchema = z.object({
+  accountIds: z.array(z.string().min(1)).min(1, '至少选择一个账号').max(100),
+})
+export type AddRoleAccountsBody = z.infer<typeof addRoleAccountsBodySchema>
+
+export const removeRoleAccountsBodySchema = z.object({
+  accountIds: z.array(z.string().min(1)).min(1, '至少选择一个账号').max(100),
+})
+export type RemoveRoleAccountsBody = z.infer<typeof removeRoleAccountsBodySchema>
+

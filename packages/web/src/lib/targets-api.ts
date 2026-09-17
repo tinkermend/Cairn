@@ -20,6 +20,7 @@ import {
   updateTargetAccountIdentityBodySchema,
   updateTargetAccountBodySchema,
   updateTargetBodySchema,
+  targetSessionPolicyPatchSchema,
   type CleanupStatusResponse,
   type CreateTargetAccountBody,
   type CreateTargetBody,
@@ -42,6 +43,7 @@ import {
   type UpdateTargetAccountIdentityBody,
   type UpdateTargetAccountBody,
   type UpdateTargetBody,
+  type TargetSessionPolicyPatch,
 } from '@cairn/shared'
 import { apiFetch, toQueryString } from '@/lib/api-client'
 
@@ -81,6 +83,17 @@ export function updateTarget(id: string, body: UpdateTargetBody): Promise<Target
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updateTargetBodySchema.parse(body)),
+  })
+}
+
+export function updateTargetSessionPolicy(
+  id: string,
+  body: TargetSessionPolicyPatch,
+): Promise<TargetDto> {
+  return apiFetch(`/api/targets/${id}/session-policy`, targetSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(targetSessionPolicyPatchSchema.parse(body)),
   })
 }
 

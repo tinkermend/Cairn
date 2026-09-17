@@ -2,13 +2,17 @@ import type { ScenarioRow, ScenarioVersionRow } from '../records.js'
 import { atomic, locked, schemaFor } from '../native.js'
 import { and, asc, count, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import {
+  compileScenarioDocument,
+  expandAuthoringDocument,
+  type ExpansionResult,
+  type LoadedModuleVersion,
+} from '@cairn/authoring'
+import {
   ACTIVE_RUN_STATUSES,
   COMPILER_VERSION,
   ScenarioValidationError,
   assertRunFromResolved,
-  compileScenarioDocument,
   deletePreviewResponseSchema,
-  expandAuthoringDocument,
   isAuthoringDocumentV2,
   authoringHasModuleInvocations,
   authoringNodeId,
@@ -44,8 +48,6 @@ import {
   type ScenarioVersionDto,
   type ScenarioVersionListResponse,
   type Step,
-  type ExpansionResult,
-  type LoadedModuleVersion,
   type ModuleContent,
   type CompileContext,
 } from '@cairn/shared'

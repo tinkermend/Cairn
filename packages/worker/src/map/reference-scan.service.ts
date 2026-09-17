@@ -1,7 +1,8 @@
 import {
   advanceMapReferenceScan,
   listMapReferenceScanWork,
-  loadTargetScanSource,
+  loadTargetScanAssets,
+  loadTargetScanScenarios,
   type DbHandle,
 } from '@cairn/db'
 import { cluesFromScenarioStep, proposeMapReferenceCandidates } from '@cairn/map'
@@ -9,10 +10,14 @@ import { isAuthoringDocumentV2, normalizeAuthoringDocument, parseScenarioDocumen
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import { DB_HANDLE } from '../db/db.module'
 
+type ScanAssetRow = Awaited<ReturnType<typeof loadTargetScanAssets>>['assets'][number]
+type ScanAssetCache = Map<string, { projectionId: string; assets: ScanAssetRow[] }>
+
 @Injectable()
 export class MapReferenceScanService {
   private readonly logger = new Logger(MapReferenceScanService.name)
   private ticking = false
+  private readonly assetCache: ScanAssetCache = new Map()
 
   constructor(@Inject(DB_HANDLE) private readonly handle: DbHandle) {}
 
@@ -20,7 +25,7 @@ export class MapReferenceScanService {
     if (this.ticking) return { advanced: 0 }
     this.ticking = true
     try {
-      return await advanceMapReferenceScans(this.handle, { limit })
+      return await advanceMapReferenceScans(this.handle, { limit }, this.assetCache)
     } catch (error) {
       this.logger.error(error instanceof Error ? error.message : error, '地图引用扫描失败')
       return { advanced: 0 }
@@ -33,19 +38,22 @@ export class MapReferenceScanService {
 export async function advanceMapReferenceScans(
   handle: DbHandle,
   input: { limit?: number } = {},
+  cache: ScanAssetCache = new Map(),
 ): Promise<{ advanced: number }> {
   const work = await listMapReferenceScanWork(handle, { limit: input.limit ?? 2 })
   let advanced = 0
   for (const item of work) {
-    const source = await loadTargetScanSource(handle, item.targetId, { afterScenarioId: item.lastScenarioId, limit: 9 })
-    const assets = source.assets.map((asset) => ({
-      assetRefKey: asset.assetRefKey,
-      pageId: asset.pageId,
-      objectId: asset.objectId,
-      routeTemplate: asset.routeTemplate,
-      semanticName: asset.semanticName || undefined,
-    }))
-    const remaining = source.scenarios
+    if (!item.lastScenarioId && item.scannedCount === 0) cache.delete(item.targetId)
+    let cached = cache.get(item.targetId)
+    if (!cached) {
+      const loaded = await loadTargetScanAssets(handle, item.targetId)
+      cached = { projectionId: loaded.projectionId ?? '', assets: loaded.assets }
+      cache.set(item.targetId, cached)
+    }
+    const remaining = await loadTargetScanScenarios(handle, item.targetId, {
+      afterScenarioId: item.lastScenarioId,
+      limit: 9,
+    })
     const batch = remaining.slice(0, 8).map((scenario) => {
       const documentSteps = isAuthoringDocumentV2(scenario.document)
         ? normalizeAuthoringDocument(scenario.document).nodes.flatMap(node => node.kind === 'step' ? [node.step] : [])
@@ -54,16 +62,17 @@ export async function advanceMapReferenceScans(
       return {
         scenarioId: scenario.scenarioId,
         scenarioVersionId: scenario.scenarioVersionId,
-        steps: proposeMapReferenceCandidates({ steps, assets }),
+        steps: proposeMapReferenceCandidates({ steps, assets: cached.assets }),
       }
     })
-    await advanceMapReferenceScan(handle, {
+    const result = await advanceMapReferenceScan(handle, {
       targetId: item.targetId,
       expectedLastScenarioId: item.lastScenarioId,
       requestedAt: item.requestedAt,
       batch,
       complete: remaining.length <= 8,
     })
+    if (result.complete) cache.delete(item.targetId)
     advanced += 1
   }
   return { advanced }

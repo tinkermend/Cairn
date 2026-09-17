@@ -1,10 +1,18 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { runPlacement, scenarioCapabilitiesFor, type RunDetailDto, type RunObservation, type ScenarioCapabilities, type ScenarioDetailDto, type TargetDto } from '@cairn/shared'
+import {
+  runPlacement,
+  scenarioCapabilitiesFor,
+  type RunDetailDto,
+  type RunObservation,
+  type ScenarioCapabilities,
+  type ScenarioDetailDto,
+  type TargetDto,
+} from '@cairn/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
-import { ApiRequestError } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth-store'
+import { ApiRequestError } from '@/lib/api-client'
 import { ScenarioDetailPage } from './detail'
 
 const SCENARIO_ID = '33333333-3333-4333-8333-333333333333'
@@ -13,7 +21,6 @@ const TARGET_ID = '11111111-1111-4111-8111-111111111111'
 const RUN_ID = '77777777-7777-4777-8777-777777777777'
 const EXTRACT_ID = '66666666-6666-4666-8666-666666666666'
 const ECHO_ID = '88888888-8888-4888-8888-888888888888'
-const LATER_ID = '99999999-9999-4999-8999-999999999999'
 const AI_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const RECORDING_DRAFT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const IMPORTED_STEP_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
@@ -47,11 +54,17 @@ const runMocks = vi.hoisted(() => ({
 }))
 
 const router = vi.hoisted(() => ({
-  search: { runId: undefined as string | undefined, import: undefined as string | undefined },
+  search: {
+    runId: undefined as string | undefined,
+    import: undefined as string | undefined,
+  },
   navigate: vi.fn(),
 }))
 
-vi.mock('@/lib/scenarios-api', async (original) => ({ ...await original<typeof import('@/lib/scenarios-api')>(), ...mocks }))
+vi.mock('@/lib/scenarios-api', async (original) => ({
+  ...(await original<typeof import('@/lib/scenarios-api')>()),
+  ...mocks,
+}))
 vi.mock('@/lib/extension-bridge', () => ({
   notifyExtensionStart: vi.fn(async () => null),
   configuredExtensionId: () => '',
@@ -72,9 +85,6 @@ vi.mock('@/lib/runs-api', async (importOriginal) => ({
   observeRun: runMocks.observeRun,
   fetchManagedBrowser: runMocks.fetchManagedBrowser,
   subscribeBrowserFrames: runMocks.subscribeBrowserFrames,
-}))
-vi.mock('@/components/layout/app-header', () => ({
-  AppHeader: () => null,
 }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
@@ -148,9 +158,13 @@ const target: TargetDto = {
   updatedAt: '2026-09-01T00:00:00.000Z',
 }
 
-const defaultCapabilities: ScenarioCapabilities = scenarioCapabilitiesFor({ browserAiEnabled: false })
+const defaultCapabilities: ScenarioCapabilities = scenarioCapabilitiesFor({
+  browserAiEnabled: false,
+})
 
-const openAiCapabilities: ScenarioCapabilities = scenarioCapabilitiesFor({ browserAiEnabled: true })
+const openAiCapabilities: ScenarioCapabilities = scenarioCapabilitiesFor({
+  browserAiEnabled: true,
+})
 
 function trialRun(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
   return {
@@ -169,8 +183,10 @@ function trialRun(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
     startedAt: '2026-09-13T02:00:01.000Z',
     finishedAt: null,
     evidenceStatus: 'PENDING',
+    outcomeStatus: 'NOT_EVALUATED',
     lease: null,
     debugMode: 'runThrough',
+    outcomeResults: [],
     placement: runPlacement({
       state: 'not_applicable',
       sessionId: null,
@@ -204,7 +220,13 @@ function trialObservation(run: RunDetailDto = trialRun()): RunObservation {
 
 function hangSubscribe() {
   runMocks.subscribeRunEvents.mockImplementation(
-    async (id: string, input: { signal: AbortSignal; handlers: { onControl?: (control: { kind: string }) => void } }) => {
+    async (
+      id: string,
+      input: {
+        signal: AbortSignal
+        handlers: { onControl?: (control: { kind: string }) => void }
+      }
+    ) => {
       input.handlers.onControl?.({
         kind: 'ready',
         runId: id,
@@ -219,11 +241,18 @@ function hangSubscribe() {
         }
         input.signal.addEventListener('abort', () => resolve(), { once: true })
       })
-    },
+    }
   )
 }
 
-function signIn(permissions = ['workflow:read', 'workflow:write', 'run:execute', 'target:read']) {
+function signIn(
+  permissions = [
+    'workflow:read',
+    'workflow:write',
+    'run:execute',
+    'target:read',
+  ]
+) {
   useAuthStore.getState().auth.setUser({
     id: 'u1',
     displayName: '测试',
@@ -234,11 +263,13 @@ function signIn(permissions = ['workflow:read', 'workflow:write', 'run:execute',
 }
 
 async function renderPage() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   const screen = await render(
     <QueryClientProvider client={client}>
       <ScenarioDetailPage />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
   return { screen, client }
 }
@@ -250,7 +281,11 @@ describe('Scenario Studio', () => {
     signIn()
     mocks.fetchScenario.mockResolvedValue(detail())
     mocks.fetchScenarioCapabilities.mockResolvedValue(defaultCapabilities)
-    mocks.fetchRecordingImports.mockResolvedValue({ bindings: [], drafts: [], receipts: [] })
+    mocks.fetchRecordingImports.mockResolvedValue({
+      bindings: [],
+      drafts: [],
+      receipts: [],
+    })
     mocks.fetchTarget.mockResolvedValue(target)
     mocks.fetchTargets.mockResolvedValue({ items: [target] })
     mocks.fetchTargetAccounts.mockResolvedValue({
@@ -297,16 +332,20 @@ describe('Scenario Studio', () => {
       source: 'managed',
     })
     hangSubscribe()
-    mocks.saveScenarioDraft.mockImplementation(async (_id: string, body: { revision: number; document: typeof document }) =>
-      detail({
-        draft: {
-          revision: body.revision + 1,
-          document: body.document,
-          updatedAt: '2026-09-13T01:00:00.000Z',
-          updatedBy: { id: 'acc-1', displayName: '测试' },
-        },
-        draftDirty: true,
-      }),
+    mocks.saveScenarioDraft.mockImplementation(
+      async (
+        _id: string,
+        body: { revision: number; document: typeof document }
+      ) =>
+        detail({
+          draft: {
+            revision: body.revision + 1,
+            document: body.document,
+            updatedAt: '2026-09-13T01:00:00.000Z',
+            updatedBy: { id: 'acc-1', displayName: '测试' },
+          },
+          draftDirty: true,
+        })
     )
   })
 
@@ -320,11 +359,18 @@ describe('Scenario Studio', () => {
     const url = screen.getByLabelText('页面地址')
     await url.fill('https://shop.example.com/search')
     await screen.getByRole('button', { name: '保存草稿' }).click()
-    await vi.waitFor(() => expect(mocks.saveScenarioDraft).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() =>
+      expect(mocks.saveScenarioDraft).toHaveBeenCalledTimes(1)
+    )
     expect(mocks.saveScenarioDraft.mock.calls[0]![1]).toMatchObject({
       revision: 1,
       document: {
-        steps: [{ type: 'navigate', input: { url: 'https://shop.example.com/search' } }],
+        steps: [
+          {
+            type: 'navigate',
+            input: { url: 'https://shop.example.com/search' },
+          },
+        ],
       },
     })
   })
@@ -335,30 +381,52 @@ describe('Scenario Studio', () => {
         code: 'SCENARIO_DRAFT_CONFLICT',
         message: '草稿已被他人更新',
         requestId: 'req-conflict',
-      }),
+      })
     )
     const { screen } = await renderPage()
-    await screen.getByLabelText('页面地址').fill('https://shop.example.com/search')
+    await screen
+      .getByLabelText('页面地址')
+      .fill('https://shop.example.com/search')
     await screen.getByRole('button', { name: '保存草稿' }).click()
-    await expect.element(screen.getByText(/他人已更新这份草稿/)).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '重新加载' })).toBeInTheDocument()
-    await expect.element(screen.getByLabelText('页面地址')).toHaveValue('https://shop.example.com/search')
+    await expect
+      .element(screen.getByText(/他人已更新这份草稿/))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '重新加载' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByLabelText('页面地址'))
+      .toHaveValue('https://shop.example.com/search')
   })
 
   it('未选步骤时展示场景输入与全局诊断', async () => {
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '查看场景输入与全局诊断' }).click()
-    await expect.element(screen.getByRole('heading', { name: '输入与诊断' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('heading', { name: '场景输入' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('list', { name: '编译诊断' })).toBeInTheDocument()
-    await expect.element(screen.getByText('含浏览器步骤的场景没有断言')).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('heading', { name: '输入与诊断' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('heading', { name: '场景输入' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('list', { name: '编译诊断' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('含浏览器步骤的场景没有断言'))
+      .toBeInTheDocument()
   })
 
   it('未保存时试跑禁用而不是消失', async () => {
     const { screen } = await renderPage()
-    await screen.getByLabelText('页面地址').fill('https://shop.example.com/search')
-    await expect.element(screen.getByRole('button', { name: '试跑' })).toBeDisabled()
-    await expect.element(screen.getByRole('button', { name: '保存草稿' })).toBeEnabled()
+    await screen
+      .getByLabelText('页面地址')
+      .fill('https://shop.example.com/search')
+    await expect
+      .element(screen.getByRole('button', { name: '试跑' }))
+      .toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: '保存草稿' }))
+      .toBeEnabled()
   })
 
   it('空地址只留在字段草稿，保存不会发出请求', async () => {
@@ -399,46 +467,22 @@ describe('Scenario Studio', () => {
             {
               code: 'SCENARIO_UNRESOLVED_REF',
               severity: 'error',
-              message: '步骤「读单号」的 from=orderId 不是已声明输入或更早步骤的 outputKey',
+              message:
+                '步骤「读单号」的 from=orderId 不是已声明输入或更早步骤的 outputKey',
               stepId: STEP_ID,
             },
           ],
         },
-      }),
+      })
     )
     const { screen } = await renderPage()
     await expect.element(screen.getByText(/from=orderId/)).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '试跑' })).toBeDisabled()
-    await expect.element(screen.getByRole('button', { name: '保存草稿' })).toBeInTheDocument()
-  })
-
-  it('填写步骤不展示输出名称，引用可选尚未声明的键', async () => {
-    const fill = {
-      id: EXTRACT_ID,
-      name: '填写',
-      type: 'fill' as const,
-      effectType: 'SIDE_EFFECT' as const,
-      input: {
-        target: { framePath: [], candidates: [{ by: 'label' as const, value: '关键字' }] },
-        value: '订单',
-      },
-    }
-    mocks.fetchScenario.mockResolvedValue(
-      detail({
-        draft: {
-          revision: 1,
-          document: { schemaVersion: 1, inputs: [], steps: [fill] },
-          updatedAt: '2026-09-13T00:00:00.000Z',
-          updatedBy: { id: 'acc-1', displayName: '测试' },
-        },
-        steps: [fill],
-      }),
-    )
-    const { screen } = await renderPage()
-    await expect.element(screen.getByLabelText('内容')).toBeInTheDocument()
-    await expect.poll(() => screen.container.querySelector('#step-output-66666666-6666-4666-8666-666666666666')).toBeNull()
-    await screen.getByLabelText('引用上下文').click()
-    await expect.element(screen.getByRole('option', { name: '尚未声明的键' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '试跑' }))
+      .toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: '保存草稿' }))
+      .toBeInTheDocument()
   })
 
   it('上移下移会改顺序', async () => {
@@ -448,7 +492,10 @@ describe('Scenario Studio', () => {
       type: 'fill' as const,
       effectType: 'SIDE_EFFECT' as const,
       input: {
-        target: { framePath: [], candidates: [{ by: 'label' as const, value: '关键字' }] },
+        target: {
+          framePath: [],
+          candidates: [{ by: 'label' as const, value: '关键字' }],
+        },
         value: '订单',
       },
     }
@@ -456,22 +503,27 @@ describe('Scenario Studio', () => {
       detail({
         draft: {
           revision: 1,
-          document: { schemaVersion: 1, inputs: [], steps: [document.steps[0]!, second] },
+          document: {
+            schemaVersion: 1,
+            inputs: [],
+            steps: [document.steps[0]!, second],
+          },
           updatedAt: '2026-09-13T00:00:00.000Z',
           updatedBy: { id: 'acc-1', displayName: '测试' },
         },
         steps: [document.steps[0]!, second],
-      }),
+      })
     )
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: /填写/ }).click()
     await screen.getByRole('button', { name: '上移' }).click()
     await screen.getByRole('button', { name: '保存草稿' }).click()
     await vi.waitFor(() => expect(mocks.saveScenarioDraft).toHaveBeenCalled())
-    expect(mocks.saveScenarioDraft.mock.calls[0]![1].document.steps.map((step: { type: string }) => step.type)).toEqual([
-      'fill',
-      'navigate',
-    ])
+    expect(
+      mocks.saveScenarioDraft.mock.calls[0]![1].document.steps.map(
+        (step: { type: string }) => step.type
+      )
+    ).toEqual(['fill', 'navigate'])
   })
 
   it('选中步骤后添加会插入其后，连续提取默认输出不重名', async () => {
@@ -481,111 +533,51 @@ describe('Scenario Studio', () => {
     await expect.element(screen.getByText(/输出 extracted/)).toBeInTheDocument()
     await screen.getByRole('button', { name: '添加步骤' }).click()
     await screen.getByRole('menuitem', { name: '提取', exact: true }).click()
-    await expect.element(screen.getByText(/输出 extracted2/)).toBeInTheDocument()
+    await expect
+      .element(screen.getByText(/输出 extracted2/))
+      .toBeInTheDocument()
     await screen.getByRole('button', { name: '保存草稿' }).click()
     await vi.waitFor(() => expect(mocks.saveScenarioDraft).toHaveBeenCalled())
-    const steps = mocks.saveScenarioDraft.mock.calls[0]![1].document.steps as { type: string; outputKey?: string }[]
-    expect(steps.map((step) => step.type)).toEqual(['navigate', 'extract', 'extract'])
-    expect(steps.map((step) => step.outputKey)).toEqual([undefined, 'extracted', 'extracted2'])
-  })
-
-  it('新绑定候选不含后序输出，失效引用仍保留', async () => {
-    const extract = {
-      id: EXTRACT_ID,
-      name: '提取单号',
-      type: 'extract' as const,
-      effectType: 'READ_ONLY' as const,
-      outputKey: 'extracted',
-      input: { target: { framePath: [], candidates: [{ by: 'label' as const, value: '单号' }] }, as: 'text' as const },
-    }
-    const echo = {
-      id: ECHO_ID,
-      name: '回显',
-      type: 'echo' as const,
-      effectType: 'READ_ONLY' as const,
-      input: { from: 'gone' },
-    }
-    const later = {
-      id: LATER_ID,
-      name: '后序提取',
-      type: 'extract' as const,
-      effectType: 'READ_ONLY' as const,
-      outputKey: 'later',
-      input: { target: { framePath: [], candidates: [{ by: 'label' as const, value: '金额' }] }, as: 'text' as const },
-    }
-    mocks.fetchScenario.mockResolvedValue(
-      detail({
-        draft: {
-          revision: 1,
-          document: { schemaVersion: 1, inputs: [], steps: [extract, echo, later] },
-          updatedAt: '2026-09-13T00:00:00.000Z',
-          updatedBy: { id: 'acc-1', displayName: '测试' },
-        },
-        steps: [extract, echo, later],
-      }),
-    )
-    const { screen } = await renderPage()
-    await screen.getByRole('button', { name: /回显/ }).click()
-    await screen.getByLabelText('引用上下文').click()
-    await expect.element(screen.getByRole('option', { name: '失效引用 · gone' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('option', { name: '步骤 · 提取单号' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('option', { name: '步骤 · 后序提取' })).not.toBeInTheDocument()
-  })
-
-  it('有静态对象形状时 echo 才出现 fromField', async () => {
-    const extract = {
-      id: EXTRACT_ID,
-      name: 'AI 提取',
-      type: 'ai_extract' as const,
-      effectType: 'READ_ONLY' as const,
-      outputKey: 'extracted',
-      input: {
-        instruction: '提取订单字段',
-        outputSchema: {
-          kind: 'object' as const,
-          fields: [{ name: 'orderNo', type: 'string' as const, required: true }],
-        },
-      },
-    }
-    const echo = {
-      id: ECHO_ID,
-      name: '回显字段',
-      type: 'echo' as const,
-      effectType: 'READ_ONLY' as const,
-      input: { from: 'extracted', fromField: 'orderNo' },
-    }
-    mocks.fetchScenarioCapabilities.mockResolvedValue(openAiCapabilities)
-    mocks.fetchScenario.mockResolvedValue(
-      detail({
-        draft: {
-          revision: 1,
-          document: { schemaVersion: 1, inputs: [], steps: [extract, echo] },
-          updatedAt: '2026-09-13T00:00:00.000Z',
-          updatedBy: { id: 'acc-1', displayName: '测试' },
-        },
-        steps: [extract, echo],
-      }),
-    )
-    const { screen } = await renderPage()
-    await screen.getByRole('button', { name: /回显字段/ }).click()
-    await expect.element(screen.getByLabelText('输出字段')).toBeInTheDocument()
-    await screen.getByLabelText('输出字段').click()
-    await expect.element(screen.getByRole('option', { name: /orderNo/ })).toBeInTheDocument()
+    const steps = mocks.saveScenarioDraft.mock.calls[0]![1].document.steps as {
+      type: string
+      outputKey?: string
+    }[]
+    expect(steps.map((step) => step.type)).toEqual([
+      'navigate',
+      'extract',
+      'extract',
+    ])
+    expect(steps.map((step) => step.outputKey)).toEqual([
+      undefined,
+      'extracted',
+      'extracted2',
+    ])
   })
 
   it('后台 refetch 发现新 revision 时不覆盖本地修改', async () => {
     const { screen, client } = await renderPage()
-    await screen.getByLabelText('页面地址').fill('https://shop.example.com/search')
-    client.setQueryData(['scenarios', SCENARIO_ID], detail({
-      draft: {
-        revision: 2,
-        document,
-        updatedAt: '2026-09-13T03:00:00.000Z',
-        updatedBy: { id: 'acc-2', displayName: '他人' },
-      },
-    }))
-    await expect.element(screen.getByText('服务端草稿已更新。本地修改仍保留，确认后才重载。')).toBeInTheDocument()
-    await expect.element(screen.getByLabelText('页面地址')).toHaveValue('https://shop.example.com/search')
+    await screen
+      .getByLabelText('页面地址')
+      .fill('https://shop.example.com/search')
+    client.setQueryData(
+      ['scenarios', SCENARIO_ID],
+      detail({
+        draft: {
+          revision: 2,
+          document,
+          updatedAt: '2026-09-13T03:00:00.000Z',
+          updatedBy: { id: 'acc-2', displayName: '他人' },
+        },
+      })
+    )
+    await expect
+      .element(
+        screen.getByText('服务端草稿已更新。本地修改仍保留，确认后才重载。')
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByLabelText('页面地址'))
+      .toHaveValue('https://shop.example.com/search')
   })
 
   it('改类型先确认，删除列出消费方，撤销只回退结构操作', async () => {
@@ -595,7 +587,13 @@ describe('Scenario Studio', () => {
       type: 'extract' as const,
       effectType: 'READ_ONLY' as const,
       outputKey: 'extracted',
-      input: { target: { framePath: [], candidates: [{ by: 'label' as const, value: '单号' }] }, as: 'text' as const },
+      input: {
+        target: {
+          framePath: [],
+          candidates: [{ by: 'label' as const, value: '单号' }],
+        },
+        as: 'text' as const,
+      },
     }
     const echo = {
       id: ECHO_ID,
@@ -613,7 +611,7 @@ describe('Scenario Studio', () => {
           updatedBy: { id: 'acc-1', displayName: '测试' },
         },
         steps: [extract, echo],
-      }),
+      })
     )
     const { screen } = await renderPage()
     await screen.getByRole('combobox', { name: '步骤 1 类型' }).click()
@@ -623,12 +621,21 @@ describe('Scenario Studio', () => {
     await expect.element(screen.getByText(/输出 extracted/)).toBeInTheDocument()
 
     await screen.getByRole('button', { name: '删除' }).click()
-    await expect.element(screen.getByText(/后续 回显 引用了它的输出/)).toBeInTheDocument()
-    await screen.getByRole('alertdialog').getByRole('button', { name: '删除' }).click()
-    await expect.element(screen.getByRole('button', { name: /回显/ })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText(/后续 回显 引用了它的输出/))
+      .toBeInTheDocument()
+    await screen
+      .getByRole('alertdialog')
+      .getByRole('button', { name: '删除' })
+      .click()
+    await expect
+      .element(screen.getByRole('button', { name: /回显/ }))
+      .toBeInTheDocument()
     await screen.getByLabelText('步骤名称').fill('回显已改名')
     await screen.getByRole('button', { name: '撤销结构操作' }).click()
-    await expect.element(screen.getByRole('button', { name: /提取单号/ })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: /提取单号/ }))
+      .toBeInTheDocument()
   })
 
   it('输入框内的 Alt 方向键不会重排', async () => {
@@ -638,7 +645,10 @@ describe('Scenario Studio', () => {
       type: 'fill' as const,
       effectType: 'SIDE_EFFECT' as const,
       input: {
-        target: { framePath: [], candidates: [{ by: 'label' as const, value: '关键字' }] },
+        target: {
+          framePath: [],
+          candidates: [{ by: 'label' as const, value: '关键字' }],
+        },
         value: '订单',
       },
     }
@@ -646,26 +656,44 @@ describe('Scenario Studio', () => {
       detail({
         draft: {
           revision: 1,
-          document: { schemaVersion: 1, inputs: [], steps: [document.steps[0]!, second] },
+          document: {
+            schemaVersion: 1,
+            inputs: [],
+            steps: [document.steps[0]!, second],
+          },
           updatedAt: '2026-09-13T00:00:00.000Z',
           updatedBy: { id: 'acc-1', displayName: '测试' },
         },
         steps: [document.steps[0]!, second],
-      }),
+      })
     )
     const { screen } = await renderPage()
     const url = screen.getByLabelText('页面地址')
     await url.click()
-    const node = screen.container.querySelector('#studio-field-55555555-5555-4555-8555-555555555555-input-url')
-    node?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }))
-    await expect.element(screen.getByRole('button', { name: '上移' })).toBeDisabled()
+    const node = screen.container.querySelector(
+      '#studio-field-55555555-5555-4555-8555-555555555555-input-url'
+    )
+    node?.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        altKey: true,
+        bubbles: true,
+      })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: '上移' }))
+      .toBeDisabled()
   })
 
   it('默认步骤库不出现可添加的 AI 类型', async () => {
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '添加步骤' }).click()
-    await expect.element(screen.getByRole('menuitem', { name: /AI 操作/ })).toBeDisabled()
-    await expect.element(screen.getByRole('menuitem', { name: '导航' })).toBeEnabled()
+    await expect
+      .element(screen.getByRole('menuitem', { name: /AI 操作/ }))
+      .toBeDisabled()
+    await expect
+      .element(screen.getByRole('menuitem', { name: '导航' }))
+      .toBeEnabled()
   })
 
   it('缺 ai:execute 时仍可发布，文案与能力未开放不同', async () => {
@@ -693,12 +721,18 @@ describe('Scenario Studio', () => {
           updatedAt: '2026-09-13T00:00:00.000Z',
           updatedBy: { id: 'acc-1', displayName: '测试' },
         },
-      }),
+      })
     )
     const { screen } = await renderPage()
-    await expect.element(screen.getByText(/缺少 AI 执行权限。仍可保存和发布/)).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '试跑' })).toBeDisabled()
-    await expect.element(screen.getByRole('button', { name: '发布' })).toBeEnabled()
+    await expect
+      .element(screen.getByText(/缺少 AI 执行权限。仍可保存和发布/))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '试跑' }))
+      .toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: '发布' }))
+      .toBeEnabled()
   })
 
   it('能力未开放的既有 AI 草稿不能试跑或发布', async () => {
@@ -725,12 +759,16 @@ describe('Scenario Studio', () => {
           updatedAt: '2026-09-13T00:00:00.000Z',
           updatedBy: { id: 'acc-1', displayName: '测试' },
         },
-      }),
+      })
     )
     const { screen } = await renderPage()
     await expect.element(screen.getByText(/类型尚未开放/)).toBeInTheDocument()
-    await expect.element(screen.getByText(/试跑不可用：先修复编译错误/)).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '发布' })).toBeDisabled()
+    await expect
+      .element(screen.getByText(/试跑不可用：先修复编译错误/))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '发布' }))
+      .toBeDisabled()
   })
 
   it('发布冲突与保存冲突同一套处理', async () => {
@@ -739,13 +777,17 @@ describe('Scenario Studio', () => {
         code: 'SCENARIO_DRAFT_CONFLICT',
         message: '草稿已被他人更新',
         requestId: 'req-pub',
-      }),
+      })
     )
     mocks.fetchScenario.mockResolvedValue(detail({ draftDirty: true }))
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '发布' }).click()
-    await expect.element(screen.getByText(/他人已更新这份草稿/)).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '重新加载' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText(/他人已更新这份草稿/))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '重新加载' }))
+      .toBeInTheDocument()
   })
 
   it('试跑成功后用 replace 写入 runId，不离开 Studio', async () => {
@@ -764,7 +806,7 @@ describe('Scenario Studio', () => {
         to: '/scenarios/$scenarioId',
         params: { scenarioId: SCENARIO_ID },
         search: { runId: RUN_ID },
-      }),
+      })
     )
     await expect.element(screen.getByText('打开商城')).toBeInTheDocument()
   })
@@ -775,31 +817,55 @@ describe('Scenario Studio', () => {
         code: 'SCENARIO_DRAFT_CONFLICT',
         message: '草稿已被他人更新',
         requestId: 'req-trial',
-      }),
+      })
     )
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '试跑' }).click()
     await screen.getByRole('button', { name: '开始试跑' }).click()
-    await expect.element(screen.getByText(/他人已更新这份草稿/)).toBeInTheDocument()
+    await expect
+      .element(screen.getByText(/他人已更新这份草稿/))
+      .toBeInTheDocument()
   })
 
   it('带 runId 时展示可折叠试跑摘要和最近获取时间', async () => {
-    signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read'])
+    signIn([
+      'workflow:read',
+      'workflow:write',
+      'run:execute',
+      'run:read',
+      'target:read',
+    ])
     router.search = { runId: RUN_ID, import: undefined }
     const { screen } = await renderPage()
-    await expect.element(screen.getByRole('heading', { name: '试跑结果' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('heading', { name: '试跑结果' }))
+      .toBeInTheDocument()
     await expect.element(screen.getByText(/最近获取/)).toBeInTheDocument()
     await expect.element(screen.getByText('试跑版本')).toBeInTheDocument()
-    await expect.element(screen.getByText(/结果来自 Snapshot/)).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
-    await expect.element(screen.getByText('打开完整运行详情')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText(/结果来自 Snapshot/))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '刷新' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('打开完整运行详情'))
+      .toBeInTheDocument()
     await screen.getByRole('button', { name: '刷新' }).click()
-    await vi.waitFor(() => expect(runMocks.fetchRunObservation).toHaveBeenCalled())
+    await vi.waitFor(() =>
+      expect(runMocks.fetchRunObservation).toHaveBeenCalled()
+    )
     await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
   })
 
   it('试跑摘要展示无法安全续跑与新建完整试跑', async () => {
-    signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read'])
+    signIn([
+      'workflow:read',
+      'workflow:write',
+      'run:execute',
+      'run:read',
+      'target:read',
+    ])
     router.search = { runId: RUN_ID, import: undefined }
     runMocks.fetchRunObservation.mockResolvedValue(
       trialObservation(
@@ -809,7 +875,11 @@ describe('Scenario Studio', () => {
             schemaVersion: 1,
             status: 'unrecoverable',
             closedAt: '2026-09-16T04:00:00.000Z',
-            trigger: { kind: 'navigated_to_login', at: '2026-09-16T04:00:00.000Z', summary: '已跳到登录页' },
+            trigger: {
+              kind: 'navigated_to_login',
+              at: '2026-09-16T04:00:00.000Z',
+              summary: '已跳到登录页',
+            },
             nextStepId: document.steps[0]!.id,
             nextOrdinal: 0,
             interruptedClassification: 'not_dispatched',
@@ -827,16 +897,26 @@ describe('Scenario Studio', () => {
             manualRecoveriesUsed: 0,
             unrecoverableCode: 'AUTH_CONTEXT_NOT_RECOVERABLE',
           },
-        }),
-      ),
+        })
+      )
     )
     const { screen } = await renderPage()
-    await expect.element(screen.getByText('登录已失效，本次运行无法安全续跑')).toBeInTheDocument()
-    await expect.element(screen.getByRole('link', { name: '新建完整试跑' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('登录已失效，本次运行无法安全续跑'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('link', { name: '新建完整试跑' }))
+      .toBeInTheDocument()
   })
 
   it('HOLDING 试跑展示再试与结束，不出现在正式 runThrough', async () => {
-    signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read'])
+    signIn([
+      'workflow:read',
+      'workflow:write',
+      'run:execute',
+      'run:read',
+      'target:read',
+    ])
     router.search = { runId: RUN_ID, import: undefined }
     const stepId = document.steps[0]!.id
     runMocks.fetchRunObservation.mockResolvedValue(
@@ -862,6 +942,7 @@ describe('Scenario Studio', () => {
               type: 'navigate',
               ordinal: 0,
               status: 'FAILED',
+              outcomeStatus: 'NOT_EVALUATED',
               startedAt: '2026-09-13T02:00:01.000Z',
               finishedAt: '2026-09-13T02:00:02.000Z',
               attempts: [
@@ -882,24 +963,42 @@ describe('Scenario Studio', () => {
               ],
             },
           ],
-        }),
-      ),
+        })
+      )
     )
     const { screen } = await renderPage()
-    await expect.element(screen.getByRole('button', { name: '再试这一步' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '结束会话' })).toBeInTheDocument()
-    await expect.element(screen.getByText('挂起', { exact: true })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '再试这一步' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '结束会话' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('挂起', { exact: true }))
+      .toBeInTheDocument()
   })
 
   it('HOLDING 写回草稿后丢掉该步临时覆盖', async () => {
-    signIn(['workflow:read', 'workflow:write', 'run:execute', 'run:read', 'target:read', 'session:view'])
+    signIn([
+      'workflow:read',
+      'workflow:write',
+      'run:execute',
+      'run:read',
+      'target:read',
+      'session:view',
+    ])
     router.search = { runId: RUN_ID, import: undefined }
     const clickStep = {
       id: STEP_ID,
       name: '点击查询',
       type: 'click' as const,
       effectType: 'SIDE_EFFECT' as const,
-      input: { target: { framePath: [], candidates: [{ by: 'label' as const, value: '查询' }] } },
+      input: {
+        target: {
+          framePath: [],
+          candidates: [{ by: 'label' as const, value: '查询' }],
+        },
+      },
     }
     const clickDocument = { ...document, steps: [clickStep] }
     mocks.fetchScenario.mockResolvedValue(
@@ -918,7 +1017,7 @@ describe('Scenario Studio', () => {
           compilerVersion: 1,
           createdAt: '2026-09-13T00:00:00.000Z',
         },
-      }),
+      })
     )
     runMocks.fetchRunObservation.mockResolvedValue(
       trialObservation(
@@ -928,7 +1027,12 @@ describe('Scenario Studio', () => {
           debugOverlay: {
             revision: 1,
             stepOverrides: {
-              [STEP_ID]: { target: { framePath: [], candidates: [{ by: 'testId', value: 'btn-search' }] } },
+              [STEP_ID]: {
+                target: {
+                  framePath: [],
+                  candidates: [{ by: 'testId', value: 'btn-search' }],
+                },
+              },
             },
           },
           checkpoint: {
@@ -959,6 +1063,7 @@ describe('Scenario Studio', () => {
               type: 'click',
               ordinal: 0,
               status: 'FAILED',
+              outcomeStatus: 'NOT_EVALUATED',
               startedAt: '2026-09-13T02:00:01.000Z',
               finishedAt: '2026-09-13T02:00:02.000Z',
               attempts: [
@@ -979,19 +1084,25 @@ describe('Scenario Studio', () => {
               ],
             },
           ],
-        }),
-      ),
+        })
+      )
     )
     const { screen } = await renderPage()
-    await expect.element(screen.getByText('正在使用临时覆盖目标，只影响本次再试。')).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '恢复原始快照' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('正在使用临时覆盖目标，只影响本次再试。'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '恢复原始快照' }))
+      .toBeInTheDocument()
     await screen.getByRole('button', { name: '写回草稿' }).click()
-    await vi.waitFor(() => expect(mocks.saveScenarioDraft).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() =>
+      expect(mocks.saveScenarioDraft).toHaveBeenCalledTimes(1)
+    )
     await vi.waitFor(() =>
       expect(runMocks.observeRun).toHaveBeenCalledWith(RUN_ID, {
         op: 'highlight',
         clearOverlayStepId: STEP_ID,
-      }),
+      })
     )
   })
 
@@ -1006,14 +1117,19 @@ describe('Scenario Studio', () => {
           assist: 'closed',
           stepTypesExtra: ['select', 'keyboard', 'wait'],
         },
-      }),
+      })
     )
     const clickStep = {
       id: STEP_ID,
       name: '点击查询',
       type: 'click' as const,
       effectType: 'SIDE_EFFECT' as const,
-      input: { target: { framePath: [], candidates: [{ by: 'label' as const, value: '查询' }] } },
+      input: {
+        target: {
+          framePath: [],
+          candidates: [{ by: 'label' as const, value: '查询' }],
+        },
+      },
     }
     mocks.fetchScenario.mockResolvedValue(
       detail({
@@ -1024,12 +1140,18 @@ describe('Scenario Studio', () => {
           updatedAt: '2026-09-13T00:00:00.000Z',
           updatedBy: { id: 'acc-1', displayName: '测试' },
         },
-      }),
+      })
     )
     const { screen } = await renderPage()
-    await expect.element(screen.getByRole('heading', { name: '点击查询' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '在页面上指认' })).not.toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '校验高亮' })).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('heading', { name: '点击查询' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '在页面上指认' }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '校验高亮' }))
+      .not.toBeInTheDocument()
   })
 
   it('工作区主列不会横向撑破容器', async () => {
@@ -1043,13 +1165,21 @@ describe('Scenario Studio', () => {
   it('无 run:read 或不匹配的 Run 不影响草稿', async () => {
     router.search = { runId: RUN_ID, import: undefined }
     const { screen } = await renderPage()
-    await expect.element(screen.getByText('没有运行读取权限，不能展示试跑结果。草稿不受影响。')).toBeInTheDocument()
-    await expect.element(screen.getByLabelText('页面地址')).toHaveValue('https://shop.example.com')
+    await expect
+      .element(
+        screen.getByText('没有运行读取权限，不能展示试跑结果。草稿不受影响。')
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByLabelText('页面地址'))
+      .toHaveValue('https://shop.example.com')
   })
 
   it('未保存时不能开始录制', async () => {
     const { screen } = await renderPage()
-    await screen.getByLabelText('页面地址').fill('https://shop.example.com/search')
+    await screen
+      .getByLabelText('页面地址')
+      .fill('https://shop.example.com/search')
     await screen.getByRole('button', { name: '录制步骤' }).click()
     expect(mocks.createRecordingBinding).not.toHaveBeenCalled()
   })
@@ -1105,14 +1235,24 @@ describe('Scenario Studio', () => {
         baseRevision: 1,
         newRevision: 2,
         insertedStepIds: [IMPORTED_STEP_ID],
-        sourceMap: [{ sourceIndexes: [0], stepId: IMPORTED_STEP_ID, disposition: 'accept' }],
+        sourceMap: [
+          {
+            sourceIndexes: [0],
+            stepId: IMPORTED_STEP_ID,
+            disposition: 'accept',
+          },
+        ],
         createdAt: '2026-09-14T00:00:00.000Z',
       },
       scenario: detail({
         draftDirty: true,
         draft: {
           revision: 2,
-          document: { schemaVersion: 1, inputs: [], steps: [document.steps[0]!, imported] },
+          document: {
+            schemaVersion: 1,
+            inputs: [],
+            steps: [document.steps[0]!, imported],
+          },
           updatedAt: '2026-09-14T00:00:00.000Z',
           updatedBy: { id: 'acc-1', displayName: '测试' },
         },
@@ -1120,10 +1260,16 @@ describe('Scenario Studio', () => {
       }),
     })
     const { screen } = await renderPage()
-    await expect.element(screen.getByRole('heading', { name: '录制回填预览' })).toBeInTheDocument()
-    await expect.element(screen.getByText('打开 shop.example.com/orders')).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('heading', { name: '录制回填预览' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('打开 shop.example.com/orders'))
+      .toBeInTheDocument()
     await screen.getByRole('button', { name: '回填 1 步' }).click()
-    await vi.waitFor(() => expect(mocks.applyRecordingImport).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() =>
+      expect(mocks.applyRecordingImport).toHaveBeenCalledTimes(1)
+    )
     expect(mocks.applyRecordingImport.mock.calls[0]![1]).toMatchObject({
       recordingDraftId: RECORDING_DRAFT_ID,
       baseRevision: 1,

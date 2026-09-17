@@ -14,6 +14,7 @@ import {
   targetListQuerySchema,
   updateTargetAccountBodySchema,
   updateTargetBodySchema,
+  targetSessionPolicyPatchSchema,
   type CreateTargetAccountBody,
   type CreateTargetBody,
   type ObserveAuthProfileValidationBody,
@@ -26,6 +27,7 @@ import {
   type TargetListQuery,
   type UpdateTargetAccountBody,
   type UpdateTargetBody,
+  type TargetSessionPolicyPatch,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
@@ -119,6 +121,17 @@ export class TargetsController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.targets.retryTargetCleanup(targetId, actor)
+  }
+
+  @Post(':targetId/session-policy')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  updateSessionPolicy(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(targetSessionPolicyPatchSchema)) body: TargetSessionPolicyPatch,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.updateSessionPolicy(targetId, body, actor)
   }
 
   @Get(':targetId/auth-profile')

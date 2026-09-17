@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   MAX_MODULE_IMPLEMENTATIONS,
   MAX_SCENARIO_STEPS,
@@ -11,21 +11,23 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { AuthoringObserveProvider } from '@/features/scenarios/authoring-observe'
-import { StepEditor } from '@/features/scenarios/step-editor'
 import {
   createBlankStep,
-  STEP_TYPE_LABELS,
-} from '@/features/scenarios/step-registry'
-import {
   priorBindings,
   priorOutputShapes,
-} from '@/features/scenarios/studio-document'
+  StepEditor,
+  STEP_TYPE_LABELS,
+} from '@/features/authoring'
 import { MODULE_EFFECT_CEILING_LABELS } from './labels'
 
-const selectClass =
-  'h-9 max-w-full rounded-md border border-input bg-background px-2 text-body'
 const sections = [
   'preconditions',
   'postconditions',
@@ -46,6 +48,8 @@ export function ModuleContentEditor({
   types,
   diagnostics,
   implementationsQuality,
+  metaSlot,
+  rightBottomSlot,
 }: {
   content: ModuleContent
   onChange: (content: ModuleContent) => void
@@ -58,11 +62,16 @@ export function ModuleContentEditor({
     verifiedRate?: number | null
     calls?: number
   }[]
+  metaSlot?: ReactNode
+  rightBottomSlot?: ReactNode
 }) {
   const [selected, setSelected] = useState(0)
   const [implIndex, setImplIndex] = useState(0)
   const [addType, setAddType] = useState<ExecutableStepType>('assert')
-  const safeImplIndex = Math.min(implIndex, Math.max(0, content.implementations.length - 1))
+  const safeImplIndex = Math.min(
+    implIndex,
+    Math.max(0, content.implementations.length - 1)
+  )
   const impl = content.implementations[safeImplIndex]!
   const { contract } = content
   const index = Math.min(selected, Math.max(0, impl.steps.length - 1))
@@ -77,11 +86,13 @@ export function ModuleContentEditor({
     onChange({
       ...content,
       implementations: content.implementations.map((item, i) =>
-        i === safeImplIndex ? { ...item, ...patch } : item,
+        i === safeImplIndex ? { ...item, ...patch } : item
       ),
     })
   const nextImplementationKey = () => {
-    const used = new Set(content.implementations.map((item) => item.implementationKey))
+    const used = new Set(
+      content.implementations.map((item) => item.implementationKey)
+    )
     if (!used.has('alt')) return 'alt'
     let n = 2
     while (used.has(`alt${n}`)) n += 1
@@ -92,11 +103,16 @@ export function ModuleContentEditor({
     values: ModuleCondition[]
   ) => {
     let nextImplementations = content.implementations
-    if (section === 'postconditions' && values.length < contract.postconditions.length) {
+    if (
+      section === 'postconditions' &&
+      values.length < contract.postconditions.length
+    ) {
       nextImplementations = content.implementations.map((item) => {
         if (!item.postconditionBindings) return item
         const kept = values.map((val) => {
-          const oldIndex = contract.postconditions.findIndex((orig) => orig === val)
+          const oldIndex = contract.postconditions.findIndex(
+            (orig) => orig === val
+          )
           return oldIndex >= 0 && item.postconditionBindings?.[oldIndex]
             ? item.postconditionBindings[oldIndex]!
             : val.verification
@@ -104,11 +120,16 @@ export function ModuleContentEditor({
         return { ...item, postconditionBindings: kept }
       })
     }
-    if (section === 'preconditions' && values.length < contract.preconditions.length) {
+    if (
+      section === 'preconditions' &&
+      values.length < contract.preconditions.length
+    ) {
       nextImplementations = content.implementations.map((item) => {
         if (!item.preconditionBindings) return item
         const kept = values.map((val) => {
-          const oldIndex = contract.preconditions.findIndex((orig) => orig === val)
+          const oldIndex = contract.preconditions.findIndex(
+            (orig) => orig === val
+          )
           return oldIndex >= 0 && item.preconditionBindings?.[oldIndex]
             ? item.preconditionBindings[oldIndex]!
             : val.verification
@@ -129,381 +150,424 @@ export function ModuleContentEditor({
     })
   }
   return (
-    <div className='space-y-6'>
-      <section className='space-y-4 rounded-xl border bg-card p-4'>
-        <h2 className='text-section font-semibold'>输入输出与副作用</h2>
-        <label className='flex flex-wrap items-center gap-3 text-body'>
-          副作用上限
-          <select
-            aria-label='副作用上限'
-            className={selectClass}
-            value={contract.effectCeiling}
-            disabled={disabled}
-            onChange={(e) =>
-              updateContract({
-                effectCeiling: e.target.value as typeof contract.effectCeiling,
-              })
-            }
-          >
-            {Object.entries(MODULE_EFFECT_CEILING_LABELS).map(
-              ([value, name]) => (
-                <option key={value} value={value}>
-                  {name}
-                </option>
-              )
-            )}
-          </select>
-        </label>
-        <div className='flex items-center justify-between gap-2'>
-          <h3 className='text-body font-medium'>输入声明</h3>
-          {!disabled && (
-            <Button
-              variant='outline'
-              size='sm'
-              disabled={contract.inputs.length >= 32}
-              onClick={() =>
+    <div className='grid items-start gap-6 lg:grid-cols-12'>
+      {/* 左侧：契约与配置 (~42% 宽度，lg:col-span-5) */}
+      <div className='min-w-0 space-y-6 lg:col-span-5'>
+        {metaSlot}
+
+        <section className='space-y-4 rounded-xl border bg-card p-4'>
+          <h2 className='text-section font-semibold'>输入输出与副作用</h2>
+          <label className='flex flex-wrap items-center gap-3 text-body'>
+            <span className='font-medium'>
+              副作用上限{' '}
+              <span className='text-destructive' aria-hidden='true'>
+                *
+              </span>
+            </span>
+            <Select
+              value={contract.effectCeiling}
+              disabled={disabled}
+              onValueChange={(val) =>
                 updateContract({
-                  inputs: [
-                    ...contract.inputs,
-                    { key: '', label: '', valueType: 'string', required: true },
-                  ],
+                  effectCeiling: val as typeof contract.effectCeiling,
                 })
               }
             >
-              添加输入
-            </Button>
-          )}
-        </div>
-        {contract.inputs.map((input, i) => (
-          <div
-            key={i}
-            className='grid gap-3 rounded-md border p-3 sm:grid-cols-2'
-          >
-            <label className='text-bodyall space-y-1'>
-              输入 Key
-              <Input
-                aria-label={`输入 ${i + 1} Key`}
-                value={input.key}
-                disabled={disabled}
-                onChange={(e) =>
+              <SelectTrigger className='w-44' aria-label='副作用上限'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(MODULE_EFFECT_CEILING_LABELS).map(
+                  ([value, name]) => (
+                    <SelectItem key={value} value={value}>
+                      {name}
+                    </SelectItem>
+                  )
+                )}
+              </SelectContent>
+            </Select>
+          </label>
+          <div className='flex items-center justify-between gap-2'>
+            <h3 className='flex items-center gap-1.5 text-body font-medium'>
+              输入声明
+              <span className='text-label font-normal text-muted-foreground'>
+                (可选)
+              </span>
+            </h3>
+            {!disabled && (
+              <Button
+                variant='outline'
+                size='sm'
+                disabled={contract.inputs.length >= 32}
+                onClick={() =>
                   updateContract({
-                    inputs: contract.inputs.map((v, n) =>
-                      n === i ? { ...v, key: e.target.value } : v
-                    ),
-                  })
-                }
-              />
-            </label>
-            <label className='text-bodyall space-y-1'>
-              输入名称
-              <Input
-                aria-label={`输入 ${i + 1} 名称`}
-                value={input.label}
-                disabled={disabled}
-                onChange={(e) =>
-                  updateContract({
-                    inputs: contract.inputs.map((v, n) =>
-                      n === i ? { ...v, label: e.target.value } : v
-                    ),
-                  })
-                }
-              />
-            </label>
-            <label className='text-bodyall flex items-center gap-2'>
-              类型
-              <select
-                aria-label={`输入 ${i + 1} 类型`}
-                className={selectClass}
-                disabled={disabled}
-                value={input.valueType}
-                onChange={(e) =>
-                  updateContract({
-                    inputs: contract.inputs.map((v, n) =>
-                      n === i
-                        ? {
-                            ...v,
-                            valueType: e.target.value as typeof v.valueType,
-                          }
-                        : v
-                    ),
+                    inputs: [
+                      ...contract.inputs,
+                      {
+                        key: '',
+                        label: '',
+                        valueType: 'string',
+                        required: true,
+                      },
+                    ],
                   })
                 }
               >
-                {['string', 'number', 'boolean', 'json'].map((t) => (
-                  <option key={t}>{t}</option>
-                ))}
-              </select>
-            </label>
-            <div className='flex items-center justify-between gap-2'>
-              <label className='text-bodyall flex items-center gap-2'>
-                <input
-                  type='checkbox'
-                  checked={input.required}
+                添加输入
+              </Button>
+            )}
+          </div>
+          {contract.inputs.map((input, i) => (
+            <div
+              key={i}
+              className='grid gap-3 rounded-md border p-3 sm:grid-cols-2'
+            >
+              <label className='block space-y-1 text-body'>
+                <span className='flex items-center gap-1 font-medium'>
+                  输入 Key{' '}
+                  <span className='text-destructive' aria-hidden='true'>
+                    *
+                  </span>
+                </span>
+                <Input
+                  aria-label={`输入 ${i + 1} Key`}
+                  placeholder='例如：orderNo'
+                  value={input.key}
                   disabled={disabled}
                   onChange={(e) =>
                     updateContract({
                       inputs: contract.inputs.map((v, n) =>
-                        n === i ? { ...v, required: e.target.checked } : v
+                        n === i ? { ...v, key: e.target.value } : v
                       ),
                     })
                   }
                 />
-                必填
               </label>
-              {!disabled && (
-                <Button
-                  size='sm'
-                  variant='ghost'
-                  onClick={() =>
+              <label className='block space-y-1 text-body'>
+                <span className='flex items-center gap-1 font-medium'>
+                  输入名称{' '}
+                  <span className='text-destructive' aria-hidden='true'>
+                    *
+                  </span>
+                </span>
+                <Input
+                  aria-label={`输入 ${i + 1} 名称`}
+                  placeholder='例如：订单号'
+                  value={input.label}
+                  disabled={disabled}
+                  onChange={(e) =>
                     updateContract({
-                      inputs: contract.inputs.filter((_, n) => n !== i),
+                      inputs: contract.inputs.map((v, n) =>
+                        n === i ? { ...v, label: e.target.value } : v
+                      ),
+                    })
+                  }
+                />
+              </label>
+              <label className='flex items-center gap-2 text-body'>
+                <span className='font-medium'>
+                  类型{' '}
+                  <span className='text-destructive' aria-hidden='true'>
+                    *
+                  </span>
+                </span>
+                <Select
+                  value={input.valueType}
+                  disabled={disabled}
+                  onValueChange={(val) =>
+                    updateContract({
+                      inputs: contract.inputs.map((v, n) =>
+                        n === i
+                          ? {
+                              ...v,
+                              valueType: val as typeof v.valueType,
+                            }
+                          : v
+                      ),
                     })
                   }
                 >
-                  删除输入 {i + 1}
-                </Button>
-              )}
-            </div>
-            <label className='text-bodyall space-y-1 sm:col-span-2'>
-              说明
-              <Input
-                value={input.description ?? ''}
-                disabled={disabled}
-                onChange={(e) =>
-                  updateContract({
-                    inputs: contract.inputs.map((v, n) =>
-                      n === i ? { ...v, description: e.target.value } : v
-                    ),
-                  })
-                }
-              />
-            </label>
-          </div>
-        ))}
-        <div className='flex items-center justify-between gap-2'>
-          <h3 className='text-body font-medium'>输出声明与映射</h3>
-          {!disabled && (
-            <Button
-              size='sm'
-              variant='outline'
-              disabled={contract.outputs.length >= 32}
-              onClick={() =>
-                updateContract({
-                  outputs: [
-                    ...contract.outputs,
-                    {
-                      key: '',
-                      label: '',
-                      shape: { kind: 'scalar', type: 'string' },
-                    },
-                  ],
-                })
-              }
-            >
-              添加输出
-            </Button>
-          )}
-        </div>
-        {contract.outputs.map((output, i) => (
-          <div
-            key={i}
-            className='grid gap-3 rounded-md border p-3 sm:grid-cols-2'
-          >
-            <label className='text-bodyall space-y-1'>
-              输出 Key
-              <Input
-                aria-label={`输出 ${i + 1} Key`}
-                value={output.key}
-                disabled={disabled}
-                onChange={(e) => {
-                  const oldKey = output.key
-                  const newKey = e.target.value
-                  const nextImplementations = content.implementations.map((item) => {
-                    const outputMapping = { ...item.outputMapping }
-                    if (Object.prototype.hasOwnProperty.call(outputMapping, oldKey)) {
-                      const value = outputMapping[oldKey]!
-                      delete outputMapping[oldKey]
-                      outputMapping[newKey] = value
+                  <SelectTrigger
+                    className='w-32'
+                    aria-label={`输入 ${i + 1} 类型`}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {['string', 'number', 'boolean', 'json'].map((t) => (
+                      <SelectItem key={t} value={t}>
+                        {t}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <div className='flex items-center justify-between gap-2'>
+                <label className='flex items-center gap-2 text-body'>
+                  <input
+                    type='checkbox'
+                    checked={input.required}
+                    disabled={disabled}
+                    onChange={(e) =>
+                      updateContract({
+                        inputs: contract.inputs.map((v, n) =>
+                          n === i ? { ...v, required: e.target.checked } : v
+                        ),
+                      })
                     }
-                    return { ...item, outputMapping }
-                  })
-                  onChange({
-                    ...content,
-                    contract: {
-                      ...contract,
-                      outputs: contract.outputs.map((v, n) =>
-                        n === i ? { ...v, key: newKey } : v
+                  />
+                  必填
+                </label>
+                {!disabled && (
+                  <Button
+                    size='sm'
+                    variant='ghost'
+                    onClick={() =>
+                      updateContract({
+                        inputs: contract.inputs.filter((_, n) => n !== i),
+                      })
+                    }
+                  >
+                    删除输入 {i + 1}
+                  </Button>
+                )}
+              </div>
+              <label className='block space-y-1 text-body sm:col-span-2'>
+                <span className='flex items-center gap-1 font-medium'>
+                  说明{' '}
+                  <span className='text-label font-normal text-muted-foreground'>
+                    (可选)
+                  </span>
+                </span>
+                <Input
+                  placeholder='参数用途或约束说明'
+                  value={input.description ?? ''}
+                  disabled={disabled}
+                  onChange={(e) =>
+                    updateContract({
+                      inputs: contract.inputs.map((v, n) =>
+                        n === i ? { ...v, description: e.target.value } : v
                       ),
-                    },
-                    implementations: nextImplementations,
-                  })
-                }}
-              />
-            </label>
-            <label className='text-bodyall space-y-1'>
-              输出名称
-              <Input
-                aria-label={`输出 ${i + 1} 名称`}
-                value={output.label}
-                disabled={disabled}
-                onChange={(e) =>
+                    })
+                  }
+                />
+              </label>
+            </div>
+          ))}
+          <div className='flex items-center justify-between gap-2'>
+            <h3 className='flex items-center gap-1.5 text-body font-medium'>
+              输出声明与映射
+              <span className='text-label font-normal text-muted-foreground'>
+                (可选)
+              </span>
+            </h3>
+            {!disabled && (
+              <Button
+                size='sm'
+                variant='outline'
+                disabled={contract.outputs.length >= 32}
+                onClick={() =>
                   updateContract({
-                    outputs: contract.outputs.map((v, n) =>
-                      n === i ? { ...v, label: e.target.value } : v
-                    ),
-                  })
-                }
-              />
-            </label>
-            <label className='text-bodyall space-y-1'>
-              输出类型
-              <select
-                aria-label={`输出 ${i + 1} 类型`}
-                className={`${selectClass} block w-full`}
-                disabled={disabled}
-                value={
-                  output.shape.kind === 'scalar'
-                    ? output.shape.type
-                    : output.shape.kind
-                }
-                onChange={(e) =>
-                  updateContract({
-                    outputs: contract.outputs.map((v, n) =>
-                      n !== i
-                        ? v
-                        : {
-                            ...v,
-                            shape:
-                              e.target.value === 'unknown'
-                                ? { kind: 'unknown' }
-                                : e.target.value === 'object'
-                                  ? {
-                                      kind: 'object',
-                                      fields: [
-                                        {
-                                          name: 'value',
-                                          type: 'string',
-                                          required: true,
-                                        },
-                                      ],
-                                    }
-                                  : {
-                                      kind: 'scalar',
-                                      type: e.target.value as
-                                        | 'string'
-                                        | 'number'
-                                        | 'boolean'
-                                        | 'json',
-                                    },
-                          }
-                    ),
+                    outputs: [
+                      ...contract.outputs,
+                      {
+                        key: '',
+                        label: '',
+                        shape: { kind: 'scalar', type: 'string' },
+                      },
+                    ],
                   })
                 }
               >
-                {[
-                  'string',
-                  'number',
-                  'boolean',
-                  'json',
-                  'object',
-                  'unknown',
-                ].map((t) => (
-                  <option key={t}>{t}</option>
-                ))}
-              </select>
-            </label>
-            <label className='text-bodyall space-y-1'>
-              实现输出
-              <select
-                aria-label={`输出 ${i + 1} 映射`}
-                className={`${selectClass} block w-full`}
-                disabled={disabled}
-                value={impl.outputMapping[output.key] ?? ''}
-                onChange={(e) =>
-                  updateImpl({
-                    outputMapping: {
-                      ...impl.outputMapping,
-                      [output.key]: e.target.value,
-                    },
-                  })
-                }
-              >
-                <option value=''>选择步骤 outputKey</option>
-                {impl.steps
-                  .filter((s) => s.outputKey)
-                  .map((s) => (
-                    <option key={s.id} value={s.outputKey}>
-                      {s.outputKey} · {s.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            {output.shape.kind === 'object' && (
-              <div className='space-y-2 sm:col-span-2'>
-                {output.shape.fields.map((field, n) => (
-                  <div key={n} className='flex flex-wrap items-center gap-2'>
-                    <Input
-                      className='w-40'
-                      aria-label={`输出 ${i + 1} 字段 ${n + 1}`}
-                      value={field.name}
-                      disabled={disabled}
-                      onChange={(e) =>
-                        updateContract({
-                          outputs: contract.outputs.map((v, k) =>
-                            k !== i || v.shape.kind !== 'object'
-                              ? v
-                              : {
-                                  ...v,
-                                  shape: {
-                                    ...v.shape,
-                                    fields: v.shape.fields.map((f, j) =>
-                                      j === n
-                                        ? { ...f, name: e.target.value }
-                                        : f
-                                    ),
-                                  },
-                                }
-                          ),
-                        })
+                添加输出
+              </Button>
+            )}
+          </div>
+          {contract.outputs.map((output, i) => (
+            <div
+              key={i}
+              className='grid gap-3 rounded-md border p-3 sm:grid-cols-2'
+            >
+              <label className='block space-y-1 text-body'>
+                <span className='flex items-center gap-1 font-medium'>
+                  输出 Key{' '}
+                  <span className='text-destructive' aria-hidden='true'>
+                    *
+                  </span>
+                </span>
+                <Input
+                  aria-label={`输出 ${i + 1} Key`}
+                  placeholder='例如：result'
+                  value={output.key}
+                  disabled={disabled}
+                  onChange={(e) => {
+                    const oldKey = output.key
+                    const newKey = e.target.value
+                    const nextImplementations = content.implementations.map(
+                      (item) => {
+                        const outputMapping = { ...item.outputMapping }
+                        if (
+                          Object.prototype.hasOwnProperty.call(
+                            outputMapping,
+                            oldKey
+                          )
+                        ) {
+                          const value = outputMapping[oldKey]!
+                          delete outputMapping[oldKey]
+                          outputMapping[newKey] = value
+                        }
+                        return { ...item, outputMapping }
                       }
-                    />
-                    <select
-                      aria-label={`输出 ${i + 1} 字段 ${n + 1} 类型`}
-                      className={selectClass}
-                      value={field.type}
-                      disabled={disabled}
-                      onChange={(e) =>
-                        updateContract({
-                          outputs: contract.outputs.map((v, k) =>
-                            k !== i || v.shape.kind !== 'object'
-                              ? v
-                              : {
-                                  ...v,
-                                  shape: {
-                                    ...v.shape,
-                                    fields: v.shape.fields.map((f, j) =>
-                                      j === n
-                                        ? {
-                                            ...f,
-                                            type: e.target
-                                              .value as typeof f.type,
-                                          }
-                                        : f
-                                    ),
-                                  },
-                                }
-                          ),
-                        })
-                      }
-                    >
-                      {['string', 'number', 'boolean'].map((t) => (
-                        <option key={t}>{t}</option>
+                    )
+                    onChange({
+                      ...content,
+                      contract: {
+                        ...contract,
+                        outputs: contract.outputs.map((v, n) =>
+                          n === i ? { ...v, key: newKey } : v
+                        ),
+                      },
+                      implementations: nextImplementations,
+                    })
+                  }}
+                />
+              </label>
+              <label className='block space-y-1 text-body'>
+                <span className='flex items-center gap-1 font-medium'>
+                  输出名称{' '}
+                  <span className='text-destructive' aria-hidden='true'>
+                    *
+                  </span>
+                </span>
+                <Input
+                  aria-label={`输出 ${i + 1} 名称`}
+                  placeholder='例如：处理结果'
+                  value={output.label}
+                  disabled={disabled}
+                  onChange={(e) =>
+                    updateContract({
+                      outputs: contract.outputs.map((v, n) =>
+                        n === i ? { ...v, label: e.target.value } : v
+                      ),
+                    })
+                  }
+                />
+              </label>
+              <label className='block space-y-1 text-body'>
+                <span className='flex items-center gap-1 font-medium'>
+                  输出类型{' '}
+                  <span className='text-destructive' aria-hidden='true'>
+                    *
+                  </span>
+                </span>
+                <Select
+                  value={
+                    output.shape.kind === 'scalar'
+                      ? output.shape.type
+                      : output.shape.kind
+                  }
+                  disabled={disabled}
+                  onValueChange={(val) =>
+                    updateContract({
+                      outputs: contract.outputs.map((v, n) =>
+                        n !== i
+                          ? v
+                          : {
+                              ...v,
+                              shape:
+                                val === 'unknown'
+                                  ? { kind: 'unknown' }
+                                  : val === 'object'
+                                    ? {
+                                        kind: 'object',
+                                        fields: [
+                                          {
+                                            name: 'value',
+                                            type: 'string',
+                                            required: true,
+                                          },
+                                        ],
+                                      }
+                                    : {
+                                        kind: 'scalar',
+                                        type: val as
+                                          | 'string'
+                                          | 'number'
+                                          | 'boolean'
+                                          | 'json',
+                                      },
+                            }
+                      ),
+                    })
+                  }
+                >
+                  <SelectTrigger
+                    className='w-full'
+                    aria-label={`输出 ${i + 1} 类型`}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[
+                      'string',
+                      'number',
+                      'boolean',
+                      'json',
+                      'object',
+                      'unknown',
+                    ].map((t) => (
+                      <SelectItem key={t} value={t}>
+                        {t}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className='block space-y-1 text-body'>
+                <span className='flex items-center gap-1 font-medium'>
+                  实现输出{' '}
+                  <span className='text-destructive' aria-hidden='true'>
+                    *
+                  </span>
+                </span>
+                <Select
+                  value={impl.outputMapping[output.key] || '__empty__'}
+                  disabled={disabled}
+                  onValueChange={(val) =>
+                    updateImpl({
+                      outputMapping: {
+                        ...impl.outputMapping,
+                        [output.key]: val === '__empty__' ? '' : val,
+                      },
+                    })
+                  }
+                >
+                  <SelectTrigger
+                    className='w-full'
+                    aria-label={`输出 ${i + 1} 映射`}
+                  >
+                    <SelectValue placeholder='选择步骤 outputKey' />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value='__empty__'>未映射（空）</SelectItem>
+                    {impl.steps
+                      .filter((s) => s.outputKey)
+                      .map((s) => (
+                        <SelectItem key={s.id} value={s.outputKey!}>
+                          {s.outputKey} · {s.name}
+                        </SelectItem>
                       ))}
-                    </select>
-                    <label className='text-bodyall'>
-                      <input
-                        type='checkbox'
-                        checked={field.required}
+                  </SelectContent>
+                </Select>
+              </label>
+              {output.shape.kind === 'object' && (
+                <div className='space-y-2 sm:col-span-2'>
+                  {output.shape.fields.map((field, n) => (
+                    <div key={n} className='flex flex-wrap items-center gap-2'>
+                      <Input
+                        className='w-40'
+                        aria-label={`输出 ${i + 1} 字段 ${n + 1}`}
+                        value={field.name}
                         disabled={disabled}
                         onChange={(e) =>
                           updateContract({
@@ -516,7 +580,7 @@ export function ModuleContentEditor({
                                       ...v.shape,
                                       fields: v.shape.fields.map((f, j) =>
                                         j === n
-                                          ? { ...f, required: e.target.checked }
+                                          ? { ...f, name: e.target.value }
                                           : f
                                       ),
                                     },
@@ -524,14 +588,11 @@ export function ModuleContentEditor({
                             ),
                           })
                         }
-                      />{' '}
-                      必填字段
-                    </label>
-                    {!disabled && (
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        onClick={() =>
+                      />
+                      <Select
+                        value={field.type}
+                        disabled={disabled}
+                        onValueChange={(val) =>
                           updateContract({
                             outputs: contract.outputs.map((v, k) =>
                               k !== i || v.shape.kind !== 'object'
@@ -540,8 +601,13 @@ export function ModuleContentEditor({
                                     ...v,
                                     shape: {
                                       ...v.shape,
-                                      fields: v.shape.fields.filter(
-                                        (_, j) => j !== n
+                                      fields: v.shape.fields.map((f, j) =>
+                                        j === n
+                                          ? {
+                                              ...f,
+                                              type: val as typeof f.type,
+                                            }
+                                          : f
                                       ),
                                     },
                                   }
@@ -549,555 +615,750 @@ export function ModuleContentEditor({
                           })
                         }
                       >
-                        删除字段
-                      </Button>
-                    )}
-                  </div>
-                ))}
-                {!disabled && (
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={output.shape.fields.length >= 32}
-                    onClick={() =>
-                      updateContract({
-                        outputs: contract.outputs.map((v, k) =>
-                          k !== i || v.shape.kind !== 'object'
-                            ? v
-                            : {
-                                ...v,
-                                shape: {
-                                  ...v.shape,
-                                  fields: [
-                                    ...v.shape.fields,
-                                    {
-                                      name: '',
-                                      type: 'string',
-                                      required: true,
-                                    },
-                                  ],
-                                },
-                              }
-                        ),
-                      })
-                    }
-                  >
-                    添加输出字段
-                  </Button>
-                )}
-              </div>
-            )}
-            <label className='text-bodyall space-y-1 sm:col-span-2'>
-              说明
-              <Input
-                value={output.description ?? ''}
-                disabled={disabled}
-                onChange={(e) =>
-                  updateContract({
-                    outputs: contract.outputs.map((v, n) =>
-                      n === i ? { ...v, description: e.target.value } : v
-                    ),
-                  })
-                }
-              />
-            </label>
-            {!disabled && (
-              <Button
-                size='sm'
-                variant='ghost'
-                onClick={() => {
-                  const delKey = output.key
-                  const nextImplementations = content.implementations.map((item) => {
-                    const outputMapping = { ...item.outputMapping }
-                    delete outputMapping[delKey]
-                    return { ...item, outputMapping }
-                  })
-                  onChange({
-                    ...content,
-                    contract: {
-                      ...contract,
-                      outputs: contract.outputs.filter((_, n) => n !== i),
-                    },
-                    implementations: nextImplementations,
-                  })
-                }}
-              >
-                删除输出 {i + 1}
-              </Button>
-            )}
-          </div>
-        ))}
-      </section>
-      <section className='space-y-4 rounded-xl border bg-card p-4'>
-        <h2 className='text-section font-semibold'>条件与起止状态</h2>
-        <p className='text-bodyall text-muted-foreground'>
-          声明描述验证方式；静态编译通过不表示条件已经执行验证。与输入相关的动态判据当前需保留为人工说明。
-        </p>
-        {sections.map((section) => {
-          const value = contract[section]
-          const conditions = !value
-            ? []
-            : Array.isArray(value)
-              ? value
-              : [value]
-          const limit =
-            section === 'entryState' || section === 'exitState' ? 1 : 16
-          return (
-            <div key={section} className='space-y-3'>
-              <div className='flex items-center justify-between gap-2'>
-                <h3 className='text-body font-medium'>
-                  {sectionNames[section]}
-                </h3>
-                {!disabled && (
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={conditions.length >= limit}
-                    onClick={() =>
-                      setConditions(section, [
-                        ...conditions,
-                        {
-                          meaning: '',
-                          verification: { kind: 'manual_requirement' },
-                        },
-                      ])
-                    }
-                  >
-                    添加{sectionNames[section]}
-                  </Button>
-                )}
-              </div>
-              {conditions.map((condition, i) => {
-                const update = (patch: Partial<ModuleCondition>) =>
-                  setConditions(
-                    section,
-                    conditions.map((c, n) => (n === i ? { ...c, ...patch } : c))
-                  )
-                return (
-                  <div
-                    key={i}
-                    className='grid gap-3 rounded-md border p-3 sm:grid-cols-2'
-                  >
-                    <label className='text-bodyall space-y-1 sm:col-span-2'>
-                      业务含义
-                      <Textarea
-                        aria-label={`${sectionNames[section]} ${i + 1} 含义`}
-                        disabled={disabled}
-                        value={condition.meaning}
-                        onChange={(e) => update({ meaning: e.target.value })}
-                      />
-                    </label>
-                    <select
-                      aria-label={`${sectionNames[section]} ${i + 1} 验证方式`}
-                      className={selectClass}
-                      value={condition.verification.kind}
-                      disabled={disabled}
-                      onChange={(e) =>
-                        update({
-                          verification:
-                            e.target.value === 'step'
-                              ? { kind: 'step', stepId: '' }
-                              : e.target.value === 'output_required'
-                                ? { kind: 'output_required', outputKey: '' }
-                                : { kind: 'manual_requirement' },
+                        <SelectTrigger
+                          className='w-28'
+                          aria-label={`输出 ${i + 1} 字段 ${n + 1} 类型`}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {['string', 'number', 'boolean'].map((t) => (
+                            <SelectItem key={t} value={t}>
+                              {t}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <label className='text-body'>
+                        <input
+                          type='checkbox'
+                          checked={field.required}
+                          disabled={disabled}
+                          onChange={(e) =>
+                            updateContract({
+                              outputs: contract.outputs.map((v, k) =>
+                                k !== i || v.shape.kind !== 'object'
+                                  ? v
+                                  : {
+                                      ...v,
+                                      shape: {
+                                        ...v.shape,
+                                        fields: v.shape.fields.map((f, j) =>
+                                          j === n
+                                            ? {
+                                                ...f,
+                                                required: e.target.checked,
+                                              }
+                                            : f
+                                        ),
+                                      },
+                                    }
+                              ),
+                            })
+                          }
+                        />{' '}
+                        必填字段
+                      </label>
+                      {!disabled && (
+                        <Button
+                          variant='ghost'
+                          size='sm'
+                          onClick={() =>
+                            updateContract({
+                              outputs: contract.outputs.map((v, k) =>
+                                k !== i || v.shape.kind !== 'object'
+                                  ? v
+                                  : {
+                                      ...v,
+                                      shape: {
+                                        ...v.shape,
+                                        fields: v.shape.fields.filter(
+                                          (_, j) => j !== n
+                                        ),
+                                      },
+                                    }
+                              ),
+                            })
+                          }
+                        >
+                          删除字段
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  {!disabled && (
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={output.shape.fields.length >= 32}
+                      onClick={() =>
+                        updateContract({
+                          outputs: contract.outputs.map((v, k) =>
+                            k !== i || v.shape.kind !== 'object'
+                              ? v
+                              : {
+                                  ...v,
+                                  shape: {
+                                    ...v.shape,
+                                    fields: [
+                                      ...v.shape.fields,
+                                      {
+                                        name: '',
+                                        type: 'string',
+                                        required: true,
+                                      },
+                                    ],
+                                  },
+                                }
+                          ),
                         })
                       }
                     >
-                      <option value='manual_requirement'>
-                        人工说明，未自动验证
-                      </option>
-                      <option value='step'>断言步骤</option>
-                      <option value='output_required'>必需输出</option>
-                    </select>
-                    {condition.verification.kind === 'step' && (
-                      <select
-                        aria-label={`${sectionNames[section]} ${i + 1} 断言步骤`}
-                        className={selectClass}
-                        value={condition.verification.stepId}
+                      添加输出字段
+                    </Button>
+                  )}
+                </div>
+              )}
+              <label className='block space-y-1 text-body sm:col-span-2'>
+                <span className='flex items-center gap-1 font-medium'>
+                  说明{' '}
+                  <span className='text-label font-normal text-muted-foreground'>
+                    (可选)
+                  </span>
+                </span>
+                <Input
+                  placeholder='输出用途或业务含义说明'
+                  value={output.description ?? ''}
+                  disabled={disabled}
+                  onChange={(e) =>
+                    updateContract({
+                      outputs: contract.outputs.map((v, n) =>
+                        n === i ? { ...v, description: e.target.value } : v
+                      ),
+                    })
+                  }
+                />
+              </label>
+              {!disabled && (
+                <Button
+                  size='sm'
+                  variant='ghost'
+                  onClick={() => {
+                    const delKey = output.key
+                    const nextImplementations = content.implementations.map(
+                      (item) => {
+                        const outputMapping = { ...item.outputMapping }
+                        delete outputMapping[delKey]
+                        return { ...item, outputMapping }
+                      }
+                    )
+                    onChange({
+                      ...content,
+                      contract: {
+                        ...contract,
+                        outputs: contract.outputs.filter((_, n) => n !== i),
+                      },
+                      implementations: nextImplementations,
+                    })
+                  }}
+                >
+                  删除输出 {i + 1}
+                </Button>
+              )}
+            </div>
+          ))}
+        </section>
+        <section className='space-y-4 rounded-xl border bg-card p-4'>
+          <div className='flex items-center justify-between gap-2'>
+            <h2 className='flex items-center gap-1.5 text-section font-semibold'>
+              条件与起止状态
+              <span className='text-label font-normal text-muted-foreground'>
+                (可选约束)
+              </span>
+            </h2>
+          </div>
+          <p className='text-body text-muted-foreground'>
+            声明描述验证方式；静态编译通过不表示条件已经执行验证。与输入相关的动态判据当前需保留为人工说明。
+          </p>
+          {sections.map((section) => {
+            const value = contract[section]
+            const conditions = !value
+              ? []
+              : Array.isArray(value)
+                ? value
+                : [value]
+            const limit =
+              section === 'entryState' || section === 'exitState' ? 1 : 16
+            return (
+              <div key={section} className='space-y-3'>
+                <div className='flex items-center justify-between gap-2'>
+                  <h3 className='text-body font-medium'>
+                    {sectionNames[section]}
+                  </h3>
+                  {!disabled && (
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={conditions.length >= limit}
+                      onClick={() =>
+                        setConditions(section, [
+                          ...conditions,
+                          {
+                            meaning: '',
+                            verification: { kind: 'manual_requirement' },
+                          },
+                        ])
+                      }
+                    >
+                      添加{sectionNames[section]}
+                    </Button>
+                  )}
+                </div>
+                {conditions.map((condition, i) => {
+                  const update = (patch: Partial<ModuleCondition>) =>
+                    setConditions(
+                      section,
+                      conditions.map((c, n) =>
+                        n === i ? { ...c, ...patch } : c
+                      )
+                    )
+                  return (
+                    <div
+                      key={i}
+                      className='grid gap-3 rounded-md border p-3 sm:grid-cols-2'
+                    >
+                      <label className='block space-y-1 text-body sm:col-span-2'>
+                        <span className='flex items-center gap-1 font-medium'>
+                          业务含义{' '}
+                          <span className='text-destructive' aria-hidden='true'>
+                            *
+                          </span>
+                        </span>
+                        <Textarea
+                          aria-label={`${sectionNames[section]} ${i + 1} 含义`}
+                          placeholder='例如：执行前需处于系统已登录状态'
+                          disabled={disabled}
+                          value={condition.meaning}
+                          onChange={(e) => update({ meaning: e.target.value })}
+                        />
+                      </label>
+                      <Select
+                        value={condition.verification.kind}
                         disabled={disabled}
-                        onChange={(e) =>
+                        onValueChange={(val) =>
                           update({
-                            verification: {
-                              kind: 'step',
-                              stepId: e.target.value,
-                            },
+                            verification:
+                              val === 'step'
+                                ? { kind: 'step', stepId: '' }
+                                : val === 'output_required'
+                                  ? { kind: 'output_required', outputKey: '' }
+                                  : { kind: 'manual_requirement' },
                           })
                         }
                       >
-                        <option value=''>选择断言</option>
-                        {impl.steps
-                          .filter(
-                            (s) => s.type === 'assert' || s.type === 'ai_assert'
+                        <SelectTrigger
+                          className='w-full'
+                          aria-label={`${sectionNames[section]} ${i + 1} 验证方式`}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value='manual_requirement'>
+                            人工说明，未自动验证
+                          </SelectItem>
+                          <SelectItem value='step'>断言步骤</SelectItem>
+                          <SelectItem value='output_required'>
+                            必需输出
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {condition.verification.kind === 'step' && (
+                        <Select
+                          value={condition.verification.stepId || '__empty__'}
+                          disabled={disabled}
+                          onValueChange={(val) =>
+                            update({
+                              verification: {
+                                kind: 'step',
+                                stepId: val === '__empty__' ? '' : val,
+                              },
+                            })
+                          }
+                        >
+                          <SelectTrigger
+                            className='w-full'
+                            aria-label={`${sectionNames[section]} ${i + 1} 断言步骤`}
+                          >
+                            <SelectValue placeholder='选择断言' />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value='__empty__'>选择断言</SelectItem>
+                            {impl.steps
+                              .filter(
+                                (s) =>
+                                  s.type === 'assert' || s.type === 'ai_assert'
+                              )
+                              .map((s) => (
+                                <SelectItem key={s.id} value={s.id}>
+                                  {s.name}
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                      {condition.verification.kind === 'output_required' && (
+                        <Select
+                          value={
+                            condition.verification.outputKey || '__empty__'
+                          }
+                          disabled={disabled}
+                          onValueChange={(val) =>
+                            update({
+                              verification: {
+                                kind: 'output_required',
+                                outputKey: val === '__empty__' ? '' : val,
+                              },
+                            })
+                          }
+                        >
+                          <SelectTrigger
+                            className='w-full'
+                            aria-label={`${sectionNames[section]} ${i + 1} 输出`}
+                          >
+                            <SelectValue placeholder='选择输出' />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value='__empty__'>选择输出</SelectItem>
+                            {contract.outputs
+                              .filter((o) => o.key)
+                              .map((o) => (
+                                <SelectItem key={o.key} value={o.key}>
+                                  {o.label} ({o.key})
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                      {condition.verification.kind === 'manual_requirement' && (
+                        <Badge variant='outline'>人工说明，未自动验证</Badge>
+                      )}
+                      {!disabled && (
+                        <Button
+                          variant='ghost'
+                          size='sm'
+                          onClick={() =>
+                            setConditions(
+                              section,
+                              conditions.filter((_, n) => n !== i)
+                            )
+                          }
+                        >
+                          删除{sectionNames[section]} {i + 1}
+                        </Button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })}
+        </section>
+      </div>
+
+      {/* 右侧：核心步骤工作台 (~58% 宽度，lg:col-span-7) */}
+      <div className='min-w-0 space-y-6 lg:col-span-7'>
+        <section className='space-y-4 rounded-xl border bg-card p-4'>
+          <div className='flex flex-wrap items-center justify-between gap-3'>
+            <div className='flex items-center gap-2'>
+              <h2 className='flex items-center gap-1.5 text-section font-semibold'>
+                步骤编排
+                <span className='text-destructive' aria-hidden='true'>
+                  *
+                </span>
+              </h2>
+              <span className='text-label text-muted-foreground'>
+                ({impl.steps.length} 步骤 · {impl.implementationKey})
+              </span>
+            </div>
+            {!disabled &&
+            content.implementations.length < MAX_MODULE_IMPLEMENTATIONS ? (
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => {
+                  onChange({
+                    ...content,
+                    implementations: [
+                      ...content.implementations,
+                      {
+                        implementationKey: nextImplementationKey(),
+                        kind: 'structured_steps',
+                        steps: [],
+                        outputMapping: {},
+                      },
+                    ],
+                  })
+                  setImplIndex(content.implementations.length)
+                  setSelected(0)
+                }}
+              >
+                添加实现
+              </Button>
+            ) : null}
+          </div>
+          <div className='flex flex-wrap gap-2'>
+            {content.implementations.map((item, i) => (
+              <Button
+                key={item.implementationKey}
+                type='button'
+                size='sm'
+                variant={i === safeImplIndex ? 'secondary' : 'outline'}
+                onClick={() => {
+                  setImplIndex(i)
+                  setSelected(0)
+                }}
+              >
+                {item.implementationKey}
+              </Button>
+            ))}
+          </div>
+          <label className='space-y-1 text-body'>
+            实现 key
+            <Input
+              aria-label='实现 key'
+              value={impl.implementationKey}
+              disabled={disabled}
+              onChange={(e) =>
+                updateImpl({ implementationKey: e.target.value })
+              }
+            />
+          </label>
+          {(() => {
+            const stats = implementationsQuality?.find(
+              (q) => q.implementationKey === impl.implementationKey
+            )
+            if (!stats) return null
+            return (
+              <p className='text-small text-muted-foreground'>
+                {stats.lastVerifiedAt
+                  ? `最近验证试跑：${new Date(stats.lastVerifiedAt).toLocaleString()}${stats.verifiedRate !== null && stats.verifiedRate !== undefined ? `（通过率 ${(stats.verifiedRate * 100).toFixed(0)}%）` : ''}`
+                  : '该实现尚未有已验证的试跑记录'}
+              </p>
+            )
+          })()}
+          {contract.postconditions.length > 0 ? (
+            <div className='space-y-3 rounded-lg border bg-muted/20 p-3'>
+              <div className='space-y-1'>
+                <h3 className='text-body font-medium'>后置条件映射</h3>
+                <p className='text-small text-muted-foreground'>
+                  为当前实现指定后置条件的断言步骤映射。
+                </p>
+              </div>
+              {contract.postconditions.map((postcondition, i) => {
+                const currentBinding =
+                  impl.postconditionBindings?.[i] ?? postcondition.verification
+                const assertSteps = impl.steps.filter(
+                  (s) => s.type === 'assert' || s.type === 'ai_assert'
+                )
+                return (
+                  <div
+                    key={i}
+                    className='grid items-center gap-2 text-body sm:grid-cols-2'
+                  >
+                    <div>
+                      <span className='font-medium'>
+                        {postcondition.meaning}
+                      </span>
+                      <Badge variant='outline' className='ms-2 text-label'>
+                        {postcondition.verification.kind === 'output_required'
+                          ? '必需输出'
+                          : postcondition.verification.kind ===
+                              'manual_requirement'
+                            ? '人工说明'
+                            : '断言步骤'}
+                      </Badge>
+                    </div>
+                    {postcondition.verification.kind === 'step' ? (
+                      <Select
+                        value={
+                          currentBinding.kind === 'step' &&
+                          currentBinding.stepId
+                            ? currentBinding.stepId
+                            : '__empty__'
+                        }
+                        disabled={disabled}
+                        onValueChange={(val) => {
+                          const newBindings = contract.postconditions.map(
+                            (cond, idx) =>
+                              idx === i
+                                ? {
+                                    kind: 'step' as const,
+                                    stepId: val === '__empty__' ? '' : val,
+                                  }
+                                : (impl.postconditionBindings?.[idx] ??
+                                  cond.verification)
                           )
-                          .map((s) => (
-                            <option key={s.id} value={s.id}>
+                          updateImpl({ postconditionBindings: newBindings })
+                        }}
+                      >
+                        <SelectTrigger
+                          className='w-full'
+                          aria-label={`后置条件 ${i + 1} 步骤映射`}
+                        >
+                          <SelectValue placeholder='选择断言步骤' />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value='__empty__'>
+                            选择断言步骤
+                          </SelectItem>
+                          {assertSteps.map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
                               {s.name}
-                            </option>
+                            </SelectItem>
                           ))}
-                      </select>
-                    )}
-                    {condition.verification.kind === 'output_required' && (
-                      <select
-                        aria-label={`${sectionNames[section]} ${i + 1} 输出`}
-                        className={selectClass}
-                        value={condition.verification.outputKey}
-                        disabled={disabled}
-                        onChange={(e) =>
-                          update({
-                            verification: {
-                              kind: 'output_required',
-                              outputKey: e.target.value,
-                            },
-                          })
-                        }
-                      >
-                        <option value=''>选择输出</option>
-                        {contract.outputs
-                          .filter((o) => o.key)
-                          .map((o) => (
-                            <option key={o.key} value={o.key}>
-                              {o.label} ({o.key})
-                            </option>
-                          ))}
-                      </select>
-                    )}
-                    {condition.verification.kind === 'manual_requirement' && (
-                      <Badge variant='outline'>人工说明，未自动验证</Badge>
-                    )}
-                    {!disabled && (
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        onClick={() =>
-                          setConditions(
-                            section,
-                            conditions.filter((_, n) => n !== i)
-                          )
-                        }
-                      >
-                        删除{sectionNames[section]} {i + 1}
-                      </Button>
+                        </SelectContent>
+                      </Select>
+                    ) : postcondition.verification.kind ===
+                      'output_required' ? (
+                      <span className='text-small text-muted-foreground'>
+                        要求输出「{postcondition.verification.outputKey}」
+                        {impl.outputMapping[
+                          postcondition.verification.outputKey
+                        ]
+                          ? `（映射至 ${impl.outputMapping[postcondition.verification.outputKey]}）`
+                          : '（未映射）'}
+                      </span>
+                    ) : (
+                      <span className='text-small text-muted-foreground'>
+                        人工说明，无需步骤映射
+                      </span>
                     )}
                   </div>
                 )
               })}
             </div>
-          )
-        })}
-      </section>
-      <section className='space-y-4 rounded-xl border bg-card p-4'>
-        <div className='flex flex-wrap items-center justify-between gap-3'>
-          <h2 className='text-section font-semibold'>实现</h2>
-          {!disabled && content.implementations.length < MAX_MODULE_IMPLEMENTATIONS ? (
+          ) : null}
+          {contract.preconditions.some(
+            (p) => p.verification.kind === 'step'
+          ) ? (
+            <div className='space-y-3 rounded-lg border bg-muted/20 p-3'>
+              <div className='space-y-1'>
+                <h3 className='text-body font-medium'>前置条件映射</h3>
+                <p className='text-small text-muted-foreground'>
+                  为当前实现指定前置条件的断言步骤映射。
+                </p>
+              </div>
+              {contract.preconditions.map((precondition, i) => {
+                const currentBinding =
+                  impl.preconditionBindings?.[i] ?? precondition.verification
+                const assertSteps = impl.steps.filter(
+                  (s) => s.type === 'assert' || s.type === 'ai_assert'
+                )
+                return (
+                  <div
+                    key={i}
+                    className='grid items-center gap-2 text-body sm:grid-cols-2'
+                  >
+                    <div>
+                      <span className='font-medium'>
+                        {precondition.meaning}
+                      </span>
+                    </div>
+                    {precondition.verification.kind === 'step' ? (
+                      <Select
+                        value={
+                          currentBinding.kind === 'step' &&
+                          currentBinding.stepId
+                            ? currentBinding.stepId
+                            : '__empty__'
+                        }
+                        disabled={disabled}
+                        onValueChange={(val) => {
+                          const newBindings = contract.preconditions.map(
+                            (cond, idx) =>
+                              idx === i
+                                ? {
+                                    kind: 'step' as const,
+                                    stepId: val === '__empty__' ? '' : val,
+                                  }
+                                : (impl.preconditionBindings?.[idx] ??
+                                  cond.verification)
+                          )
+                          updateImpl({ preconditionBindings: newBindings })
+                        }}
+                      >
+                        <SelectTrigger
+                          className='w-full'
+                          aria-label={`前置条件 ${i + 1} 步骤映射`}
+                        >
+                          <SelectValue placeholder='选择断言步骤' />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value='__empty__'>
+                            选择断言步骤
+                          </SelectItem>
+                          {assertSteps.map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
+                              {s.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <span className='text-small text-muted-foreground'>
+                        非断言步骤，无需映射
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ) : null}
+          {content.implementations.length > 1 && !disabled ? (
             <Button
-              variant='outline'
+              variant='ghost'
               size='sm'
+              disabled={content.implementations.length <= 1}
               onClick={() => {
                 onChange({
                   ...content,
-                  implementations: [
-                    ...content.implementations,
-                    {
-                      implementationKey: nextImplementationKey(),
-                      kind: 'structured_steps',
-                      steps: [],
-                      outputMapping: {},
-                    },
-                  ],
+                  implementations: content.implementations.filter(
+                    (_, i) => i !== safeImplIndex
+                  ),
                 })
-                setImplIndex(content.implementations.length)
+                setImplIndex(0)
                 setSelected(0)
               }}
             >
-              添加实现
+              删除当前实现
             </Button>
           ) : null}
-        </div>
-        <div className='flex flex-wrap gap-2'>
-          {content.implementations.map((item, i) => (
-            <Button
-              key={item.implementationKey}
-              type='button'
-              size='sm'
-              variant={i === safeImplIndex ? 'secondary' : 'outline'}
-              onClick={() => {
-                setImplIndex(i)
-                setSelected(0)
-              }}
-            >
-              {item.implementationKey}
-            </Button>
-          ))}
-        </div>
-        <label className='space-y-1 text-bodyall'>
-          实现 key
-          <Input
-            aria-label='实现 key'
-            value={impl.implementationKey}
-            disabled={disabled}
-            onChange={(e) => updateImpl({ implementationKey: e.target.value })}
-          />
-        </label>
-        {(() => {
-          const stats = implementationsQuality?.find((q) => q.implementationKey === impl.implementationKey)
-          if (!stats) return null
-          return (
-            <p className='text-small text-muted-foreground'>
-              {stats.lastVerifiedAt
-                ? `最近验证试跑：${new Date(stats.lastVerifiedAt).toLocaleString()}${stats.verifiedRate !== null && stats.verifiedRate !== undefined ? `（通过率 ${(stats.verifiedRate * 100).toFixed(0)}%）` : ''}`
-                : '该实现尚未有已验证的试跑记录'}
-            </p>
-          )
-        })()}
-        {contract.postconditions.length > 0 ? (
-          <div className='space-y-3 rounded-lg border p-3 bg-muted/20'>
-            <div className='space-y-1'>
-              <h3 className='text-body font-medium'>后置条件映射</h3>
-              <p className='text-small text-muted-foreground'>
-                为当前实现指定后置条件的断言步骤映射。
-              </p>
-            </div>
-            {contract.postconditions.map((postcondition, i) => {
-              const currentBinding = impl.postconditionBindings?.[i] ?? postcondition.verification
-              const assertSteps = impl.steps.filter((s) => s.type === 'assert' || s.type === 'ai_assert')
-              return (
-                <div key={i} className='grid gap-2 sm:grid-cols-2 items-center text-body'>
-                  <div>
-                    <span className='font-medium'>{postcondition.meaning}</span>
-                    <Badge variant='outline' className='ms-2 text-label'>
-                      {postcondition.verification.kind === 'output_required'
-                        ? '必需输出'
-                        : postcondition.verification.kind === 'manual_requirement'
-                          ? '人工说明'
-                          : '断言步骤'}
-                    </Badge>
-                  </div>
-                  {postcondition.verification.kind === 'step' ? (
-                    <select
-                      aria-label={`后置条件 ${i + 1} 步骤映射`}
-                      className={selectClass}
-                      disabled={disabled}
-                      value={currentBinding.kind === 'step' ? currentBinding.stepId : ''}
-                      onChange={(e) => {
-                        const newBindings = contract.postconditions.map((cond, idx) =>
-                          idx === i
-                            ? { kind: 'step' as const, stepId: e.target.value }
-                            : (impl.postconditionBindings?.[idx] ?? cond.verification),
-                        )
-                        updateImpl({ postconditionBindings: newBindings })
-                      }}
-                    >
-                      <option value=''>选择断言步骤</option>
-                      {assertSteps.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : postcondition.verification.kind === 'output_required' ? (
-                    <span className='text-muted-foreground text-small'>
-                      要求输出「{postcondition.verification.outputKey}」
-                      {impl.outputMapping[postcondition.verification.outputKey]
-                        ? `（映射至 ${impl.outputMapping[postcondition.verification.outputKey]}）`
-                        : '（未映射）'}
-                    </span>
-                  ) : (
-                    <span className='text-muted-foreground text-small'>人工说明，无需步骤映射</span>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        ) : null}
-        {contract.preconditions.some((p) => p.verification.kind === 'step') ? (
-          <div className='space-y-3 rounded-lg border p-3 bg-muted/20'>
-            <div className='space-y-1'>
-              <h3 className='text-body font-medium'>前置条件映射</h3>
-              <p className='text-small text-muted-foreground'>
-                为当前实现指定前置条件的断言步骤映射。
-              </p>
-            </div>
-            {contract.preconditions.map((precondition, i) => {
-              const currentBinding = impl.preconditionBindings?.[i] ?? precondition.verification
-              const assertSteps = impl.steps.filter((s) => s.type === 'assert' || s.type === 'ai_assert')
-              return (
-                <div key={i} className='grid gap-2 sm:grid-cols-2 items-center text-bodyall'>
-                  <div>
-                    <span className='font-medium'>{precondition.meaning}</span>
-                  </div>
-                  {precondition.verification.kind === 'step' ? (
-                    <select
-                      aria-label={`前置条件 ${i + 1} 步骤映射`}
-                      className={selectClass}
-                      disabled={disabled}
-                      value={currentBinding.kind === 'step' ? currentBinding.stepId : ''}
-                      onChange={(e) => {
-                        const newBindings = contract.preconditions.map((cond, idx) =>
-                          idx === i
-                            ? { kind: 'step' as const, stepId: e.target.value }
-                            : (impl.preconditionBindings?.[idx] ?? cond.verification),
-                        )
-                        updateImpl({ preconditionBindings: newBindings })
-                      }}
-                    >
-                      <option value=''>选择断言步骤</option>
-                      {assertSteps.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span className='text-muted-foreground text-small'>非断言步骤，无需映射</span>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        ) : null}
-        {content.implementations.length > 1 && !disabled ? (
-          <Button
-            variant='ghost'
-            size='sm'
-            disabled={content.implementations.length <= 1}
-            onClick={() => {
-              onChange({
-                ...content,
-                implementations: content.implementations.filter((_, i) => i !== safeImplIndex),
-              })
-              setImplIndex(0)
-              setSelected(0)
-            }}
-          >
-            删除当前实现
-          </Button>
-        ) : null}
-      </section>
-      <section className='space-y-4 rounded-xl border bg-card p-4'>
-        <div className='flex flex-wrap items-center justify-between gap-3'>
-          <h2 className='text-section font-semibold'>
-            实现步骤 · {impl.implementationKey} ({impl.steps.length}/{MAX_SCENARIO_STEPS})
-          </h2>
-          {!disabled && (
-            <div className='flex flex-wrap gap-2'>
-              <select
-                aria-label='添加步骤类型'
-                className={selectClass}
-                value={types.includes(addType) ? addType : (types[0] ?? '')}
-                onChange={(e) =>
-                  setAddType(e.target.value as ExecutableStepType)
-                }
-              >
-                {types.map((type) => (
-                  <option key={type} value={type}>
-                    {STEP_TYPE_LABELS[type]}
-                  </option>
-                ))}
-              </select>
-              <Button
-                variant='outline'
-                disabled={
-                  !types.length || impl.steps.length >= MAX_SCENARIO_STEPS
-                }
-                onClick={() => {
-                  const next = createBlankStep(
-                    types.includes(addType) ? addType : types[0]!,
-                    [
-                      ...contract.inputs.map((i) => i.key),
-                      ...impl.steps.flatMap((s) =>
-                        s.outputKey ? [s.outputKey] : []
-                      ),
-                    ]
-                  )
-                  updateImpl({ steps: [...impl.steps, next] })
-                  setSelected(impl.steps.length)
-                }}
-              >
-                添加步骤
-              </Button>
-            </div>
-          )}
-        </div>
-        {!impl.steps.length ? (
-          <p className='text-body text-muted-foreground'>
-            暂无步骤，请添加实现。
-          </p>
-        ) : (
-          <div className='grid min-w-0 gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]'>
-            <div className='space-y-2'>
-              {impl.steps.map((s, i) => (
+        </section>
+        <section className='space-y-4 rounded-xl border bg-card p-4'>
+          <div className='flex flex-wrap items-center justify-between gap-3'>
+            <h2 className='text-section font-semibold'>
+              实现步骤 · {impl.implementationKey} ({impl.steps.length}/
+              {MAX_SCENARIO_STEPS})
+            </h2>
+            {!disabled && (
+              <div className='flex flex-wrap gap-2'>
+                <Select
+                  value={types.includes(addType) ? addType : (types[0] ?? '')}
+                  onValueChange={(val) => setAddType(val as ExecutableStepType)}
+                >
+                  <SelectTrigger className='w-32' aria-label='添加步骤类型'>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {types.map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {STEP_TYPE_LABELS[type]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Button
-                  key={s.id}
-                  variant={index === i ? 'secondary' : 'ghost'}
-                  className='w-full justify-start overflow-hidden'
-                  onClick={() => setSelected(i)}
-                >
-                  <span className='truncate'>
-                    {i + 1}. {s.name} · {STEP_TYPE_LABELS[s.type]}
-                  </span>
-                </Button>
-              ))}
-            </div>
-            <div className='min-w-0 space-y-4'>
-              {!disabled && (
-                <div className='flex flex-wrap gap-2'>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={index === 0}
-                    onClick={() => {
-                      const steps = [...impl.steps]
-                      ;[steps[index - 1], steps[index]] = [
-                        steps[index]!,
-                        steps[index - 1]!,
+                  variant='outline'
+                  disabled={
+                    !types.length || impl.steps.length >= MAX_SCENARIO_STEPS
+                  }
+                  onClick={() => {
+                    const next = createBlankStep(
+                      types.includes(addType) ? addType : types[0]!,
+                      [
+                        ...contract.inputs.map((i) => i.key),
+                        ...impl.steps.flatMap((s) =>
+                          s.outputKey ? [s.outputKey] : []
+                        ),
                       ]
-                      updateImpl({ steps })
-                      setSelected(index - 1)
-                    }}
-                  >
-                    上移
-                  </Button>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={index === impl.steps.length - 1}
-                    onClick={() => {
-                      const steps = [...impl.steps]
-                      ;[steps[index], steps[index + 1]] = [
-                        steps[index + 1]!,
-                        steps[index]!,
-                      ]
-                      updateImpl({ steps })
-                      setSelected(index + 1)
-                    }}
-                  >
-                    下移
-                  </Button>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    onClick={() =>
-                      updateImpl({
-                        steps: impl.steps.filter((_, i) => i !== index),
-                      })
-                    }
-                  >
-                    删除步骤
-                  </Button>
-                </div>
-              )}
-              {step && (
-                <AuthoringObserveProvider
-                  enabled={false}
-                  authoring={{
-                    indicate: 'closed',
-                    highlight: 'closed',
-                    debugHold: 'closed',
-                    assist: 'closed',
-                    stepTypesExtra: [],
+                    )
+                    updateImpl({ steps: [...impl.steps, next] })
+                    setSelected(impl.steps.length)
                   }}
-                  onApplyTarget={() => {}}
                 >
+                  添加步骤
+                </Button>
+              </div>
+            )}
+          </div>
+          {!impl.steps.length ? (
+            <p className='text-body text-muted-foreground'>
+              暂无步骤，请添加实现。
+            </p>
+          ) : (
+            <div className='grid min-w-0 gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]'>
+              <div className='space-y-2'>
+                {impl.steps.map((s, i) => (
+                  <Button
+                    key={s.id}
+                    variant={index === i ? 'secondary' : 'ghost'}
+                    className='w-full justify-start gap-2 overflow-hidden text-left'
+                    onClick={() => setSelected(i)}
+                  >
+                    <span className='flex size-5 shrink-0 items-center justify-center rounded bg-muted font-mono text-label font-medium text-muted-foreground'>
+                      {i + 1}
+                    </span>
+                    <span className='truncate text-small font-medium'>
+                      {s.name}
+                    </span>
+                    <Badge
+                      variant='outline'
+                      className='ms-auto shrink-0 text-label font-normal'
+                    >
+                      {STEP_TYPE_LABELS[s.type]}
+                    </Badge>
+                  </Button>
+                ))}
+              </div>
+              <div className='min-w-0 space-y-4'>
+                {!disabled && (
+                  <div className='flex flex-wrap gap-2'>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={index === 0}
+                      onClick={() => {
+                        const steps = [...impl.steps]
+                        ;[steps[index - 1], steps[index]] = [
+                          steps[index]!,
+                          steps[index - 1]!,
+                        ]
+                        updateImpl({ steps })
+                        setSelected(index - 1)
+                      }}
+                    >
+                      上移
+                    </Button>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={index === impl.steps.length - 1}
+                      onClick={() => {
+                        const steps = [...impl.steps]
+                        ;[steps[index], steps[index + 1]] = [
+                          steps[index + 1]!,
+                          steps[index]!,
+                        ]
+                        updateImpl({ steps })
+                        setSelected(index + 1)
+                      }}
+                    >
+                      下移
+                    </Button>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      onClick={() =>
+                        updateImpl({
+                          steps: impl.steps.filter((_, i) => i !== index),
+                        })
+                      }
+                    >
+                      删除步骤
+                    </Button>
+                  </div>
+                )}
+                {step && (
                   <StepEditor
                     step={step}
                     index={index}
@@ -1125,12 +1386,13 @@ export function ModuleContentEditor({
                       })
                     }}
                   />
-                </AuthoringObserveProvider>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+        {rightBottomSlot}
+      </div>
     </div>
   )
 }

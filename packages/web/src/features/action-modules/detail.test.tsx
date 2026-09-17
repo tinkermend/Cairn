@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/styles/index.css'
+import { compileModuleContent } from '@cairn/authoring'
 import {
   actionModuleDetailSchema,
-  compileModuleContent,
   moduleContentSchema,
   moduleWarningKey,
   scenarioCapabilitiesFor,
@@ -46,7 +46,6 @@ vi.mock('@/hooks/use-permissions', () => ({
 vi.mock('@/lib/targets-api', () => ({
   fetchTarget: async () => ({ name: '复查目标' }),
 }))
-vi.mock('@/components/layout/app-header', () => ({ AppHeader: () => null }))
 const moduleId = '11111111-1111-4111-8111-111111111111'
 const stepId = '33333333-3333-4333-8333-333333333333'
 const fixture = (): ActionModuleDetail =>
@@ -217,6 +216,12 @@ describe('AM-A action module editor review', () => {
   it('添加、编辑、排序步骤并保存当前内容；未保存时禁止发布', async () => {
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '添加步骤', exact: true }).click()
+    await expect
+      .element(screen.getByRole('button', { name: '在页面上指认' }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '校验高亮' }))
+      .not.toBeInTheDocument()
     await screen.getByLabelText('步骤名称', { exact: true }).fill('新断言')
     await expect
       .element(screen.getByRole('button', { name: '发布新版本' }))
@@ -426,10 +431,14 @@ describe('AM-A action module editor review', () => {
     await expect.element(screen.getByText('场景甲')).toBeInTheDocument()
     await screen.getByRole('tab', { name: '编辑' }).click()
     await screen.getByRole('button', { name: '弃用' }).click()
-    await expect.element(screen.getByRole('button', { name: '弃用此版本' })).toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: '弃用此版本' }))
+      .toBeDisabled()
     await screen.getByLabelText('发布状态变更原因').fill('准备升级')
     await screen.getByRole('button', { name: '弃用此版本' }).click()
-    await expect.poll(() => mocks.updateActionModulePublication.mock.calls.length).toBe(1)
+    await expect
+      .poll(() => mocks.updateActionModulePublication.mock.calls.length)
+      .toBe(1)
     expect(mocks.updateActionModulePublication.mock.calls[0]).toEqual([
       moduleId,
       stepId,
@@ -440,9 +449,12 @@ describe('AM-A action module editor review', () => {
   it('运行质量页签展示空态与健康提示', async () => {
     const { screen } = await renderPage()
     await screen.getByRole('tab', { name: '运行质量' }).click()
-    await expect.element(screen.getByText('还没有可展示的模块调用结果。')).toBeInTheDocument()
-    await expect.element(screen.getByText('通过率 样本不足（样本 0）')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('还没有可展示的模块调用结果。'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('通过率 样本不足（样本 0）'))
+      .toBeInTheDocument()
     expect(mocks.fetchActionModuleQuality).toHaveBeenCalled()
   })
 })
-

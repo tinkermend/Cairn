@@ -1,6 +1,6 @@
+import { compileScenarioDocument } from '@cairn/authoring'
 import { and, asc, eq, gt, inArray, isNull, or } from 'drizzle-orm'
 import {
-  compileScenarioDocument,
   mapAssetRefKey,
   isAuthoringDocumentV2,
   normalizeAuthoringDocument,
@@ -535,48 +535,76 @@ export async function advanceMapReferenceScan(
   })
 }
 
-export async function loadTargetScanSource(db: Db, targetId: string, input: { afterScenarioId?: string | null; limit?: number } = {}) {
-  const { mapImplementations, mapObjectDescriptors, mapPages, mapProjectionAssets, mapProjectionHeads, scenarioDrafts, scenarioVersions, scenarios } =
-    schemaFor(db)
+export async function loadTargetScanAssets(db: Db, targetId: string) {
+  const { mapObjectDescriptors, mapPages, mapProjectionAssets, mapProjectionHeads } = schemaFor(db)
   const [head] = await db.select().from(mapProjectionHeads).where(eq(mapProjectionHeads.targetId, targetId)).limit(1)
-  const assets = head
-    ? await db.select().from(mapProjectionAssets).where(eq(mapProjectionAssets.projectionId, head.currentProjectionId))
-    : []
-  const pages = await db.select().from(mapPages).where(eq(mapPages.targetId, targetId))
-  const descriptors = await db.select().from(mapObjectDescriptors).where(eq(mapObjectDescriptors.targetId, targetId))
-  void mapImplementations
+  if (!head) return { projectionId: undefined as string | undefined, assets: [] }
+  const rows = await db
+    .select({
+      assetRefKey: mapProjectionAssets.assetRefKey,
+      pageId: mapProjectionAssets.pageId,
+      objectId: mapProjectionAssets.objectId,
+      routeTemplate: mapPages.routeTemplate,
+      features: mapObjectDescriptors.features,
+    })
+    .from(mapProjectionAssets)
+    .leftJoin(mapPages, eq(mapPages.id, mapProjectionAssets.pageId))
+    .leftJoin(
+      mapObjectDescriptors,
+      and(
+        eq(mapObjectDescriptors.objectId, mapProjectionAssets.objectId),
+        eq(mapObjectDescriptors.implementationKey, mapProjectionAssets.implementationKey),
+        eq(mapObjectDescriptors.descriptorVersion, mapProjectionAssets.descriptorVersion),
+      ),
+    )
+    .where(eq(mapProjectionAssets.projectionId, head.currentProjectionId))
+  return {
+    projectionId: head.currentProjectionId,
+    assets: rows.map((row) => {
+      const features = row.features as { semanticName?: unknown; role?: unknown } | null
+      return {
+        assetRefKey: row.assetRefKey,
+        pageId: row.pageId ?? undefined,
+        objectId: row.objectId ?? undefined,
+        routeTemplate: row.routeTemplate ?? undefined,
+        semanticName: typeof features?.semanticName === 'string' ? features.semanticName : undefined,
+        role: typeof features?.role === 'string' ? features.role : undefined,
+      }
+    }),
+  }
+}
+
+export async function loadTargetScanScenarios(
+  db: Db,
+  targetId: string,
+  input: { afterScenarioId?: string | null; limit?: number } = {},
+) {
+  const { scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
   const scenarioRows = await db
     .select()
     .from(scenarios)
     .where(and(eq(scenarios.targetId, targetId), isNull(scenarios.deletedAt), input.afterScenarioId ? gt(scenarios.id, input.afterScenarioId) : undefined))
     .orderBy(asc(scenarios.id))
     .limit(Math.min(input.limit ?? 9, 100))
-  const ids = scenarioRows.map(row => row.id)
+  const ids = scenarioRows.map((row) => row.id)
   const drafts = ids.length ? await db.select().from(scenarioDrafts).where(inArray(scenarioDrafts.scenarioId, ids)) : []
   const versions = ids.length ? await db.select().from(scenarioVersions).where(inArray(scenarioVersions.scenarioId, ids)) : []
-  return {
-    assets: assets.map((asset) => ({
-      assetRefKey: asset.assetRefKey,
-      pageId: asset.pageId ?? undefined,
-      objectId: asset.objectId ?? undefined,
-      routeTemplate: pages.find((page) => page.id === asset.pageId)?.routeTemplate,
-      semanticName: descriptors.find((row) => row.objectId === asset.objectId)?.features
-        ? String((descriptors.find((row) => row.objectId === asset.objectId)?.features as { semanticName?: string }).semanticName ?? '')
-        : undefined,
-    })),
-    scenarios: scenarioRows.map((scenario) => {
-      const published = versions
-        .filter((row) => row.scenarioId === scenario.id && row.kind === 'published')
-        .sort((a, b) => (b.versionNo ?? 0) - (a.versionNo ?? 0))[0]
-      const draft = drafts.find((row) => row.scenarioId === scenario.id)
-      const document = published?.definition ?? draft?.document
-      return {
-        scenarioId: scenario.id,
-        scenarioVersionId: published?.id,
-        document,
-      }
-    }),
-  }
+  return scenarioRows.map((scenario) => {
+    const published = versions
+      .filter((row) => row.scenarioId === scenario.id && row.kind === 'published')
+      .sort((a, b) => (b.versionNo ?? 0) - (a.versionNo ?? 0))[0]
+    const draft = drafts.find((row) => row.scenarioId === scenario.id)
+    return {
+      scenarioId: scenario.id,
+      scenarioVersionId: published?.id,
+      document: published?.definition ?? draft?.document,
+    }
+  })
+}
+
+export async function loadTargetScanSource(db: Db, targetId: string, input: { afterScenarioId?: string | null; limit?: number } = {}) {
+  const { assets, projectionId } = await loadTargetScanAssets(db, targetId)
+  return { projectionId, assets, scenarios: await loadTargetScanScenarios(db, targetId, input) }
 }
 
 export async function loadRunMapClues(db: Db, targetId: string, runId: string) {

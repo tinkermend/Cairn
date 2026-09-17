@@ -28,7 +28,6 @@ import {
 } from '@/components/ui/table'
 import { CollectionSummary } from '@/components/collection-summary'
 import { EmptyState } from '@/components/empty-state'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -90,14 +89,6 @@ export function TargetsPage() {
 
   return (
     <>
-      <AppHeader
-        fixed
-        leading={
-          <span className='me-auto text-small text-muted-foreground'>
-            资源管理 <span className='mx-2'>/</span> 目标系统
-          </span>
-        }
-      />
       <Main className='flex min-w-0 flex-1 flex-col gap-6'>
         <PageHeader
           title='目标系统'

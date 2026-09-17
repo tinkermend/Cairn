@@ -8,7 +8,6 @@ import { useCan } from '@/hooks/use-permissions'
 import { CursorPagination } from '@/components/data-table'
 import { CollectionSummary } from '@/components/collection-summary'
 import { EmptyState } from '@/components/empty-state'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -78,12 +77,7 @@ export function SchedulesPage() {
   const accountNames = new Map((accountsQuery.data ?? []).map((item) => [item.id, item.displayName]))
 
   return (
-    <>
-      <AppHeader
-        fixed
-        leading={<span className='me-auto text-small text-muted-foreground'>自动复查</span>}
-      />
-      <Main className='flex min-w-0 flex-1 flex-col gap-6'>
+    <Main className='flex min-w-0 flex-1 flex-col gap-6'>
         <PageHeader
           title='自动复查'
           description='查看平台调度计划、下次窗口和最近准入。已准入只表示创建了地图作业，不表示复查成功。'
@@ -170,7 +164,6 @@ export function SchedulesPage() {
             </Button>
           </>
         )}
-      </Main>
-    </>
+    </Main>
   )
 }

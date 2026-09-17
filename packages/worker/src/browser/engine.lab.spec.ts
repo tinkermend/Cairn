@@ -6,7 +6,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, join, resolve } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { Logger } from '@nestjs/common'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   claimRun,
   consoleAccounts,
@@ -24,7 +25,7 @@ import {
   targets,
   type DbHandle,
 } from '@cairn/db/testing'
-import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, type Step } from '@cairn/shared'
+import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, PROCESS_LOG_EVENTS, type Step } from '@cairn/shared'
 import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
 import { saveServiceCaller, issueServiceCredential, authenticateService, createServiceRun, getServiceRun, listScenarioVersions, releaseServiceEvidence } from '@cairn/db'
@@ -50,6 +51,29 @@ const LOGIN_HTML = `<!doctype html><html><body>
   <button type="submit" id="go">登录</button>
 </form>
 </body></html>`
+
+type LogLine = { level: string; event: string; fields: Record<string, unknown> }
+
+function captureProcessLogs() {
+  const lines: LogLine[] = []
+  const take = (level: string) => (first: unknown, second?: unknown) => {
+    if (first && typeof first === 'object' && typeof second === 'string') {
+      lines.push({ level, event: second, fields: { ...(first as Record<string, unknown>) } })
+    }
+  }
+  const spies = [
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(take('info') as never),
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(take('warn') as never),
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(take('error') as never),
+    vi.spyOn(Logger.prototype, 'debug').mockImplementation(take('debug') as never),
+  ]
+  return {
+    lines,
+    restore() {
+      for (const spy of spies) spy.mockRestore()
+    },
+  }
+}
 
 async function requireChromium(): Promise<void> {
   try {
@@ -189,6 +213,7 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       handle,
       {
         workerId,
+        workerInstanceId,
         profileRoot: mkdtempSync(join(tmpdir(), 'cairn-elab-')),
         headless: true,
         maxSessions: 2,
@@ -200,6 +225,25 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
     )
     await manager.reconcileOwn()
   })
+
+  async function claimThis(runId: string) {
+    await handle.pool.query(
+      `UPDATE runs
+          SET status = 'CANCELLED',
+              finished_at = COALESCE(finished_at, now()),
+              updated_at = now()
+        WHERE status IN ('QUEUED', 'RECOVERING')
+          AND id <> $1`,
+      [runId],
+    )
+    const grant = await claimRun(handle, {
+      workerId,
+      instanceId: workerInstanceId,
+      leaseTtlSeconds: 60,
+    })
+    expect(grant?.runId).toBe(runId)
+    return grant!
+  }
 
   afterAll(async () => {
     await manager?.shutdown()
@@ -257,19 +301,40 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       targetAccountId: accountId,
       actor: { id: actorId },
     })
-    const grant = await claimRun(handle, {
-      workerId,
-      instanceId: workerInstanceId,
-      leaseTtlSeconds: 60,
-    })
-    expect(grant?.runId).toBe(created.detail.id)
+    const grant = await claimThis(created.detail.id)
     const engine = new ExecutionEngine(handle, createBrowserPort(manager))
-    await engine.execute(created.detail.id, { grant: grant! })
+    const logs = captureProcessLogs()
+    try {
+      await engine.execute(created.detail.id, { grant })
+    } finally {
+      logs.restore()
+    }
     const detail = await getRun(handle.db, created.detail.id)
     expect(detail.status).toBe('SUCCEEDED')
     expect(detail.context.hit).toBe('查到 42 条')
     expect(detail.stepRuns).toHaveLength(3)
     expect(detail.stepRuns.every((step) => step.attempts.length === 1)).toBe(true)
+    const started = logs.lines.filter((line) => line.event === PROCESS_LOG_EVENTS.runStarted)
+    const finished = logs.lines.filter((line) => line.event === PROCESS_LOG_EVENTS.runFinished)
+    const attemptStarted = logs.lines.filter((line) => line.event === PROCESS_LOG_EVENTS.attemptStarted)
+    const attemptFinished = logs.lines.filter((line) => line.event === PROCESS_LOG_EVENTS.attemptFinished)
+    expect(started).toHaveLength(1)
+    expect(finished).toHaveLength(1)
+    expect(finished[0]?.fields.exit).toBe('completed')
+    expect(finished[0]?.fields.runId).toBe(detail.id)
+    expect(finished[0]?.fields.leaseId).toBe(grant.leaseId)
+    expect(attemptStarted).toHaveLength(3)
+    expect(attemptFinished).toHaveLength(3)
+    for (const line of [...attemptStarted, ...attemptFinished]) {
+      expect(line.fields.runId).toBe(detail.id)
+      expect(line.fields.stepRunId).toBeTruthy()
+      expect(line.fields.attemptId).toBeTruthy()
+      expect(line.fields.stepType).toMatch(/navigate|click|extract/)
+      expect(JSON.stringify(line.fields)).not.toMatch(/password|cookie|secret/i)
+    }
+    expect(new Set(attemptFinished.map((line) => line.fields.attemptId))).toEqual(
+      new Set(detail.stepRuns.flatMap((step) => step.attempts.map((attempt) => attempt.id))),
+    )
     const leftover = await handle.db
       .select({ id: sessionLeases.id, status: sessionLeases.status })
       .from(sessionLeases)
@@ -298,16 +363,23 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
         ? { id: newId(), name: '业务结果', type: 'echo', effectType: 'READ_ONLY', input: { value: 'approved-result' } }
         : { id: newId(), name: '等待不存在元素', type: 'click', effectType: 'READ_ONLY', policy: { timeoutMs: mode === 'cancel' ? 10000 : 200, retryLimit: 0 }, input: { target: { framePath: [], candidates: [{ by: 'css', value: '#service-missing' }] } } }]
       const created = await serviceRun(steps)
-      const grant = (await claimRun(handle, { workerId, instanceId: workerInstanceId, leaseTtlSeconds: 60 }))!
-      expect(grant.runId).toBe(created.detail.id)
-      const execution = engine.execute(grant.runId, { grant, cancelPollMs: 20 })
-      if (mode === 'cancel') {
-        await expect.poll(async () => (await getServiceRun(handle, principal, grant.runId)).stepRuns[1]?.attempts.length, { timeout: 10000 }).toBe(1)
-        await getServiceRun(handle, principal, grant.runId, true)
+      const grant = await claimThis(created.detail.id)
+      const logs = captureProcessLogs()
+      try {
+        const execution = engine.execute(grant.runId, { grant, cancelPollMs: 20 })
+        if (mode === 'cancel') {
+          await expect.poll(async () => (await getServiceRun(handle, principal, grant.runId)).stepRuns[1]?.attempts.length, { timeout: 10000 }).toBe(1)
+          await getServiceRun(handle, principal, grant.runId, true)
+        }
+        await execution
+      } finally {
+        logs.restore()
       }
-      await execution
       const result = await getServiceRun(handle, principal, grant.runId)
       expect(result.status).toBe(mode === 'success' ? 'SUCCEEDED' : mode === 'failure' ? 'FAILED' : 'CANCELLED')
+      expect(logs.lines.find((line) => line.event === PROCESS_LOG_EVENTS.runFinished)?.fields.exit).toBe(
+        mode === 'success' ? 'completed' : mode === 'failure' ? 'failed' : 'cancelled',
+      )
       if (mode === 'success') {
         expect(result.stepRuns[1]!.attempts[0]!.output).toBeNull()
         const output = (await listRunEvidence(handle.db, grant.runId)).items.find(e => e.type === 'output' && e.attemptId === result.stepRuns[1]!.attempts[0]!.id)!
@@ -320,7 +392,7 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
     await handle.db.update(targets).set({ loginFields: { username: { by: 'css', value: '#never-login' }, password: { by: 'css', value: '#pass' }, submit: { by: 'css', value: '#go' } } }).where(eq(targets.id, targetId))
     await saveServiceCaller(handle, caller.id, serviceCallerBodySchema.parse({ name: caller.name, owner: caller.owner, runTimeoutSeconds: 1 }), actor)
     const timed = await serviceRun([navigate()])
-    const grant = (await claimRun(handle, { workerId, instanceId: workerInstanceId, leaseTtlSeconds: 60 }))!
+    const grant = await claimThis(timed.detail.id)
     const start = Date.now()
     await engine.execute(grant.runId, { grant, cancelPollMs: 20 })
     expect(Date.now() - start).toBeLessThan(6000)
@@ -344,12 +416,7 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       evidencePolicy,
       actor: { id: actorId },
     })
-    const grant = await claimRun(handle, {
-      workerId,
-      instanceId: workerInstanceId,
-      leaseTtlSeconds: 60,
-    })
-    expect(grant?.runId).toBe(created.detail.id)
+    const grant = await claimThis(created.detail.id)
     const engine = new ExecutionEngine(handle, createBrowserPort(manager, objects))
     const started = Date.now()
     await engine.execute(created.detail.id, { grant: grant! })

@@ -36,6 +36,7 @@ export function snapshotDigestPayload(snapshot: RunSnapshot): Record<string, unk
     ...(snapshot.accessPolicy ? { accessPolicy: snapshot.accessPolicy } : {}),
     ...(snapshot.mapJob ? { mapJob: snapshot.mapJob } : {}),
     ...(snapshot.moduleManifest ? { moduleManifest: snapshot.moduleManifest } : {}),
+    ...(snapshot.outcomeManifest ? { outcomeManifest: snapshot.outcomeManifest } : {}),
   }
 }
 

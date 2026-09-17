@@ -172,7 +172,6 @@ export async function assertResourceIdle(
   const sessions = await tx
     .select({
       id: browserSessions.id,
-      authHoldExpiresAt: browserSessions.authHoldExpiresAt,
       authControlExpiresAt: browserSessions.authControlExpiresAt,
     })
     .from(browserSessions)
@@ -189,11 +188,7 @@ export async function assertResourceIdle(
     throw conflict('RESOURCE_BUSY', '仍有活跃会话租约，无法删除')
   }
   if (
-    sessions.some(
-      (row) =>
-        (row.authHoldExpiresAt && row.authHoldExpiresAt > now) ||
-        (row.authControlExpiresAt && row.authControlExpiresAt > now),
-    )
+    sessions.some((row) => row.authControlExpiresAt && row.authControlExpiresAt > now)
   ) {
     throw conflict('RESOURCE_BUSY', '仍有认证占用，无法删除')
   }

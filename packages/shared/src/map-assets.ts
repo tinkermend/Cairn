@@ -21,6 +21,21 @@ export const MAP_QUERY_LIMIT_DEFAULT = 10
 export const MAP_QUERY_LIMIT_MAX = 50
 export const MAP_QUERY_PAGE_CANDIDATE_MAX = 100
 
+/** 默认知识视图不展示空白页、about: 页和采集占位 URL。 */
+export function isNoiseMapRoute(routeTemplate: string | null | undefined): boolean {
+  if (!routeTemplate?.trim()) return true
+  const value = routeTemplate.trim().toLowerCase()
+  if (value === 'nullblank' || value === 'null' || value === 'blank') return true
+  if (value.startsWith('about:') || value.startsWith('chrome:') || value.startsWith('chrome-error:')) return true
+  if (value.includes('unknown.invalid')) return true
+  try {
+    const url = new URL(routeTemplate)
+    return url.protocol !== 'http:' && url.protocol !== 'https:'
+  } catch {
+    return true
+  }
+}
+
 const technicalKeySchema = z
   .string()
   .regex(/^[A-Za-z0-9:._-]{8,192}$/, '技术键须为 8–192 位 [A-Za-z0-9:._-]')

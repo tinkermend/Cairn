@@ -10,7 +10,8 @@ import { JwtService } from '@nestjs/jwt'
 import type { Response } from 'express'
 import {
   getRun,
-  isBoundAuthHold,
+  authHoldFromLease,
+  findAuthWaitLeaseForRun,
   resolveWorkerRoute,
   type DbHandle,
   type SessionRecord,
@@ -57,7 +58,7 @@ export class BrowserService {
 
   async meta(runId: string, actor: RequestAccount, pageId?: string): Promise<ManagedBrowserMeta> {
     const target = await this.resolveTarget(runId)
-    if (!target.session || !target.worker) return this.degraded(target, 'worker_unreachable')
+    if (!target.session || !target.worker) return await this.degraded(target, 'worker_unreachable')
     try {
       const raw = await this.workers.requestJson({
         ...this.callBase(target, actor, workerInternalPath('/meta'), 'headers'),
@@ -67,10 +68,10 @@ export class BrowserService {
       return managedBrowserMetaSchema.parse(raw)
     } catch (error) {
       if (error instanceof WorkerForwardError && error.code === 'WORKER_UNREACHABLE') {
-        return this.degraded(target, 'worker_unreachable')
+        return await this.degraded(target, 'worker_unreachable')
       }
       if (error instanceof WorkerForwardError && error.code === 'WORKER_GENERATION_MISMATCH') {
-        return this.degraded(target, 'worker_generation_mismatch')
+        return await this.degraded(target, 'worker_generation_mismatch')
       }
       this.rethrowForward(error)
     }
@@ -257,11 +258,12 @@ export class BrowserService {
     }
   }
 
-  private degraded(
+  private async degraded(
     target: Awaited<ReturnType<BrowserService['resolveTarget']>>,
     reason: 'worker_unreachable' | 'worker_generation_mismatch',
-  ): ManagedBrowserMeta {
+  ): Promise<ManagedBrowserMeta> {
     const session = target.session
+    const hold = authHoldFromLease(await findAuthWaitLeaseForRun(this.db, target.run.id))
     return managedBrowserMetaSchema.parse({
       runId: target.run.id,
       runStatus: target.run.status,
@@ -272,14 +274,9 @@ export class BrowserService {
       viewingOtherPage: false,
       currentPage: null,
       pages: [],
-      authHold:
-        session && isBoundAuthHold(session) && session.authHoldExpiresAt
-          ? {
-              expiresAt: session.authHoldExpiresAt.toISOString(),
-              bound: true,
-              runId: session.authHoldRunId,
-            }
-          : null,
+      authHold: hold
+        ? { expiresAt: hold.expiresAt.toISOString(), runId: hold.runId }
+        : null,
       authControl: session
         ? {
             epoch: session.authControlEpoch,

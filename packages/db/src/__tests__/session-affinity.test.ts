@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Step } from '@cairn/shared'
 import {
-  claimAuthHold,
   claimSessionUse,
   claimRun,
   closeWorkerSessions,
@@ -27,7 +26,7 @@ import {
 } from '../test-entry.js'
 import { consoleAccounts } from '../schema/console.js'
 import { targetAccounts, targets } from '../schema/targets.js'
-import { forceGrantForRun, seedWorker, type SeededWorker } from './lease-harness.js'
+import { enterAuthWaitForRun, forceGrantForRun, seedWorker, type SeededWorker } from './lease-harness.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_aff`
 const echoStep: Step = {
@@ -370,15 +369,16 @@ describe('P4 后半 Affinity / 容量 / 失联隔离（集成）', { timeout: 12
     })
     if (!claimed.ok) throw new Error(claimed.message ?? claimed.code)
     const authRun = await queueBound(held)
-    await forceGrantForRun(handle, authRun.detail.id, worker.workerId)
-    await claimAuthHold(handle.db, {
-      sessionId: authSession.id,
+    const authGrant = await forceGrantForRun(handle, authRun.detail.id, worker.workerId)
+    const authWait = await enterAuthWaitForRun(handle, {
+      targetId,
+      targetAccountId: held,
+      grant: authGrant,
       workerId: worker.workerId,
+      instanceId: worker.instanceId,
       holdSeconds: 120,
-      runId: authRun.detail.id,
-      sessionGeneration: authSession.generation,
-      workerInstanceId: worker.instanceId,
     })
+    expect(authWait.claimed.session.id).toBe(authSession.id)
 
     const evictable = await findEvictableSession(handle.db, worker.workerId)
     expect(evictable?.id).toBe(oldSession.id)

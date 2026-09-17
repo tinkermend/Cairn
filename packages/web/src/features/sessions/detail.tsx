@@ -5,7 +5,7 @@ import { BrowserView } from '@/features/runs/browser-view'
 import { useSessionObservation } from './use-session-observation'
 import { ArrowLeft } from 'lucide-react'
 import { toast } from 'sonner'
-import { hasPermission } from '@cairn/shared'
+import { canCloseAccountSession, hasPermission } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   fetchAccountSession,
@@ -21,7 +21,6 @@ import { disposeWorkerSession } from '@/lib/workers-api'
 import { useAuthStore } from '@/stores/auth-store'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -37,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { AUTH_CAPABILITY_LABELS } from '@/features/targets/labels'
+import { SESSION_MAINTENANCE_ERROR_MESSAGES } from '@cairn/shared'
 import {
   ACCOUNT_SESSION_STATUS_LABELS,
   ACCOUNT_SESSION_STATUS_TONE,
@@ -159,7 +159,7 @@ export function SessionDetailPage() {
   })
 
   const data = detail.data
-  const primary =
+  const statusPrimary =
     data?.status === 'unprepared'
       ? 'PREPARE'
       : data?.status === 'needs_check'
@@ -169,29 +169,40 @@ export function SessionDetailPage() {
           : data?.status === 'lost'
             ? 'dispose'
             : 'VERIFY_AUTH'
+  const claimKinds = ['PREPARE', 'VERIFY_AUTH', 'LOGIN', 'RENEW_AUTH'] as const
+  const statusClaim = data?.actions.find((action) => action.kind === statusPrimary)
+  const enabledClaim = data?.actions.find(
+    (action) => claimKinds.includes(action.kind as (typeof claimKinds)[number]) && action.enabled,
+  )
+  const primary =
+    statusPrimary === 'dispose'
+      ? 'dispose'
+      : statusClaim?.enabled
+        ? statusPrimary
+        : (enabledClaim?.kind as typeof statusPrimary | undefined) ?? statusPrimary
+  const primaryAction = data?.actions.find((action) => action.kind === primary)
+  const primaryDisabled =
+    operate.isPending ||
+    data?.status === 'executing' ||
+    data?.status === 'maintenance' ||
+    (primary !== 'dispose' && primaryAction?.enabled === false)
 
   return (
     <>
-      <AppHeader
-        fixed
-        leading={
-          <span className="me-auto text-small text-muted-foreground">
-            工作台 <span className="mx-2">/</span> 浏览器会话
-          </span>
-        }
-      />
       <Main className="flex min-w-0 flex-1 flex-col gap-6">
         <PageHeader
+          parent={
+            <Link
+              to="/sessions/$targetId"
+              params={{ targetId }}
+              className="inline-flex items-center gap-1.5 hover:text-link"
+            >
+              <ArrowLeft className="size-4" />
+              返回系统会话
+            </Link>
+          }
           title={data ? `${data.targetName} / ${data.accountDisplayName}` : '账号会话'}
           description={data ? `登录名 ${data.accountUsername}` : '查看该账号当前实例、核验与保留。'}
-          actions={
-            <Button variant="outline" asChild>
-              <Link to="/sessions">
-                <ArrowLeft />
-                返回总览
-              </Link>
-            </Button>
-          }
         />
         {detail.isPending ? (
           <PageSkeleton />
@@ -220,6 +231,9 @@ export function SessionDetailPage() {
                     }
                   </StatusBadge>
                   {data.retained ? <StatusBadge tone="info">保留中</StatusBadge> : null}
+                  {data.session?.reclaimMode === 'AUTH_DRIVEN' ? (
+                    <StatusBadge tone="info">认证保活</StatusBadge>
+                  ) : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {primary === 'dispose' ? (
@@ -231,9 +245,8 @@ export function SessionDetailPage() {
                   ) : (
                     <Can permission="session:control">
                       <Button
-                        disabled={
-                          operate.isPending || data.status === 'executing' || data.status === 'maintenance'
-                        }
+                        disabled={primaryDisabled}
+                        title={primaryAction?.disabledReason ?? undefined}
                         onClick={() => operate.mutate(primary)}
                       >
                         {PRIMARY_ACTION_LABELS[primary]}
@@ -246,15 +259,20 @@ export function SessionDetailPage() {
                         <Button variant="outline">更多</Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          disabled={
-                            operate.isPending ||
-                            !data.actions.find((action) => action.kind === 'CLOSE')?.enabled
-                          }
-                          onClick={() => setConfirmKind('CLOSE')}
-                        >
-                          关闭会话
-                        </DropdownMenuItem>
+                        {canCloseAccountSession({
+                          status: data.status,
+                          sessionId: data.session?.id ?? null,
+                        }) ? (
+                          <DropdownMenuItem
+                            disabled={
+                              operate.isPending ||
+                              !data.actions.find((action) => action.kind === 'CLOSE')?.enabled
+                            }
+                            onClick={() => setConfirmKind('CLOSE')}
+                          >
+                            关闭会话
+                          </DropdownMenuItem>
+                        ) : null}
                         <DropdownMenuItem
                           disabled={
                             operate.isPending ||
@@ -306,6 +324,22 @@ export function SessionDetailPage() {
                   <dd>{data.expectedIdentity ?? '未设置'}</dd>
                 </div>
                 <div>
+                  <dt className="text-label text-muted-foreground">保活截止</dt>
+                  <dd>
+                    {data.session?.keepAliveUntil
+                      ? new Date(data.session.keepAliveUntil).toLocaleString()
+                      : '未保活'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-label text-muted-foreground">下次巡检</dt>
+                  <dd>
+                    {data.session?.nextAuthCheckAt
+                      ? new Date(data.session.nextAuthCheckAt).toLocaleString()
+                      : '未排期'}
+                  </dd>
+                </div>
+                <div>
                   <dt className="text-label text-muted-foreground">占用</dt>
                   <dd>
                     {data.occupancy?.occupyingRunId ? (
@@ -339,7 +373,11 @@ export function SessionDetailPage() {
                   {operationStatusLabels[operation.data?.status ?? data.currentOperation?.status ?? 'QUEUED']}
                 </p>
                 {operation.data?.errorCode ? (
-                  <p className="mt-2 text-small text-status-warning-foreground">{operation.data.errorCode}</p>
+                  <p className="mt-2 text-small text-status-warning-foreground">
+                    {SESSION_MAINTENANCE_ERROR_MESSAGES[
+                      operation.data.errorCode as keyof typeof SESSION_MAINTENANCE_ERROR_MESSAGES
+                    ] ?? operation.data.errorCode}
+                  </p>
                 ) : null}
                 {['QUEUED', 'WAITING_FOR_AUTH'].includes(
                   operation.data?.status ?? data.currentOperation?.status ?? '',

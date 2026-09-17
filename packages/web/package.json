@@ -20,6 +20,7 @@
     "test:browser:install": "playwright install chromium --with-deps"
   },
   "dependencies": {
+    "@cairn/authoring": "workspace:*",
     "@cairn/shared": "workspace:*",
     "@flowgram.ai/fixed-layout-editor": "1.0.15",
     "@hookform/resolvers": "^5.9.1",

@@ -2,8 +2,7 @@ import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Edit2, Search, Trash2 } from 'lucide-react'
-import type { RecordingDraftDto } from '@cairn/shared'
-import { hasPermission } from '@cairn/shared'
+import { hasPermission, type RecordingDraftDto } from '@cairn/shared'
 import { deleteRecording, fetchRecordings } from '@/lib/recordings-api'
 import { fetchTargets } from '@/lib/targets-api'
 import { useCursorPage } from '@/hooks/use-cursor-page'
@@ -11,7 +10,6 @@ import { useCan } from '@/hooks/use-permissions'
 import { useAuthStore } from '@/stores/auth-store'
 import { CursorPagination } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -107,7 +105,6 @@ export function RecordingsPage() {
 
   return (
     <>
-      <AppHeader fixed />
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title='录制草稿'

@@ -1,4 +1,4 @@
-import type { AccountSessionStatus, SessionOverviewFilter } from '@cairn/shared'
+import type { AccountSessionStatus, SessionOverviewFilter, SessionSystemOverviewFilter } from '@cairn/shared'
 
 export const ACCOUNT_SESSION_STATUS_LABELS: Record<AccountSessionStatus, string> = {
   unprepared: '未准备',
@@ -25,6 +25,15 @@ export const ACCOUNT_SESSION_STATUS_TONE: Record<
   lost: 'warning',
 }
 
+export const SESSION_SYSTEM_FILTER_LABELS: Record<SessionSystemOverviewFilter | 'all', string> = {
+  all: '全部',
+  problem: '有问题',
+  unprepared: '未准备',
+  ready: '已就绪',
+  busy: '占用中',
+  retained: '保留中',
+}
+
 export const SESSION_FILTER_LABELS: Record<SessionOverviewFilter | 'all', string> = {
   all: '全部',
   available: '可用',
@@ -43,7 +52,7 @@ export const PRIMARY_ACTION_LABELS: Record<string, string> = {
   VERIFY_AUTH: '检查登录',
   LOGIN: '登录',
   RENEW_AUTH: '续登',
-  view: '查看进度',
+  view: '查看',
   dispose: '处置失联',
 }
 
@@ -65,6 +74,24 @@ export function sessionAuthLabel(authState?: string | null, identityState?: stri
   return [auth[authState ?? 'UNKNOWN'] ?? '登录待核验', identityState ? identity[identityState] : null].filter(Boolean).join(' · ')
 }
 
+export function sessionOverviewAuthLabel(
+  status: AccountSessionStatus,
+  authState?: string | null,
+  identityState?: string | null,
+) {
+  if (status === 'unprepared') return '尚未准备'
+  return sessionAuthLabel(authState, identityState)
+}
+
+export function sessionOccupancyLabel(item: {
+  occupyingRunId: string | null
+  occupyingOperationId: string | null
+}) {
+  if (item.occupyingRunId) return '运行占用'
+  if (item.occupyingOperationId) return '维护占用'
+  return '—'
+}
+
 export function sessionEventLabel(type: string, payload: Record<string, unknown>) {
   const labels: Record<string, string> = {
     'operation.requested': '已提交', 'operation.claimed': '开始执行',
@@ -73,6 +100,8 @@ export function sessionEventLabel(type: string, payload: Record<string, unknown>
     'session.closed': '会话已关闭', 'session.restarted': '会话已重启', 'session.lost': '会话已失联',
     'profile.reset': '登录数据已清除', 'auth.control_changed': '认证控制权已变更',
     'auth.attempt_started': '开始登录', 'auth.verified': '登录核验完成', 'auth.unknown': '登录状态待确认',
+    'auth.signal_observed': '观察到登出信号', 'session.keepalive_extended': '已续期保活',
+    'session.evicted': '因容量被驱逐',
   }
   const status: Record<string, string> = { SUCCEEDED: '已完成', FAILED: '失败', CANCELLED: '已取消' }
   const label = type === 'operation.finished' ? status[String(payload.status)] ?? labels[type] : labels[type]

@@ -43,7 +43,31 @@ describe.each(DRIVERS)('%s 录制地图转换', { timeout: 60_000 }, (driver) =>
 
   afterEach(() => {
     recordingMapIngestTestHooks.afterBatch = null
+    recordingMapIngestTestHooks.beforeAdvanceCursor = null
   })
+
+  function manyEvents(count: number): CreateRecordingBody['events'] {
+    return Array.from({ length: count }, (_, index) =>
+      index === 0
+        ? {
+            name: 'navigate' as const,
+            url: 'https://shop.example/list',
+            signals: [] as [],
+            pageAlias: 'page',
+            framePath: [] as string[],
+          }
+        : {
+            name: 'click' as const,
+            selector: `text=Item ${index}`,
+            signals: [] as [],
+            pageAlias: 'page',
+            framePath: [] as string[],
+            button: 'left',
+            clickCount: 1,
+            modifiers: 0,
+          },
+    )
+  }
 
   function body(overrides: Partial<CreateRecordingBody> = {}): CreateRecordingBody {
     return {
@@ -130,33 +154,13 @@ describe.each(DRIVERS)('%s 录制地图转换', { timeout: 60_000 }, (driver) =>
     recordingMapIngestTestHooks.afterBatch = () => {
       throw new Error('interrupt ingest')
     }
-    const events = Array.from({ length: 25 }, (_, index) =>
-      index === 0
-        ? {
-            name: 'navigate' as const,
-            url: 'https://shop.example/list',
-            signals: [] as [],
-            pageAlias: 'page',
-            framePath: [] as string[],
-          }
-        : {
-            name: 'click' as const,
-            selector: `text=Item ${index}`,
-            signals: [] as [],
-            pageAlias: 'page',
-            framePath: [] as string[],
-            button: 'left',
-            clickCount: 1,
-            modifiers: 0,
-          },
-    )
     const payload: CreateRecordingBody = {
       targetId,
       recordingId: newId(),
       sourceVersion: RECORDER_SOURCE_VERSION,
       idempotencyKey: `rec-map-int-${newId()}`,
       mapIngest: true,
-      events,
+      events: manyEvents(25),
     }
     await expect(createRecordingDraft(handle.db, payload, { id: actorId })).rejects.toThrow('interrupt ingest')
     const { recordingDrafts, recordingMapIngests } = schemaFor(handle.db)
@@ -182,5 +186,85 @@ describe.each(DRIVERS)('%s 录制地图转换', { timeout: 60_000 }, (driver) =>
     await deleteRecordingDraft(handle.db, doomed.detail.id, { id: actorId })
     const aborted = await continueRecordingMapIngest(handle.db, { recordingDraftId: doomed.detail.id })
     expect(aborted.status).toBe('aborted')
+  })
+
+  it('事实已落后游标未推进时续跑不中止', async () => {
+    recordingMapIngestTestHooks.beforeAdvanceCursor = () => {
+      throw new Error('interrupt before cursor')
+    }
+    const payload: CreateRecordingBody = {
+      targetId,
+      recordingId: newId(),
+      sourceVersion: RECORDER_SOURCE_VERSION,
+      idempotencyKey: `rec-map-cas-${newId()}`,
+      mapIngest: true,
+      events: manyEvents(25),
+    }
+    await expect(createRecordingDraft(handle.db, payload, { id: actorId })).rejects.toThrow('interrupt before cursor')
+    const { recordingDrafts, recordingMapIngests } = schemaFor(handle.db)
+    const [draft] = await handle.db
+      .select()
+      .from(recordingDrafts)
+      .where(eq(recordingDrafts.recordingId, payload.recordingId))
+    const [cursor] = await handle.db
+      .select()
+      .from(recordingMapIngests)
+      .where(eq(recordingMapIngests.recordingDraftId, draft!.id))
+    expect(cursor?.status).toBe('pending')
+    expect(cursor?.nextIndex).toBe(0)
+    recordingMapIngestTestHooks.beforeAdvanceCursor = null
+    const continued = await continueRecordingMapIngest(handle.db, { recordingDraftId: draft!.id })
+    expect(continued.status).toBe('completed')
+    expect(continued.nextIndex).toBe(draft!.itemCount)
+  })
+
+  it('并发续跑不得把已推进的游标回退', async () => {
+    let releaseStale!: () => void
+    const staleMayProceed = new Promise<void>((resolve) => {
+      releaseStale = resolve
+    })
+    let staleReached!: () => void
+    const staleHeld = new Promise<void>((resolve) => {
+      staleReached = resolve
+    })
+    let holding = false
+    recordingMapIngestTestHooks.beforeAdvanceCursor = async (expectedNextIndex) => {
+      if (expectedNextIndex !== 0) return
+      if (holding) return
+      holding = true
+      staleReached()
+      await staleMayProceed
+    }
+
+    const created = await createRecordingDraft(handle.db, body({ events: manyEvents(25) }), { id: actorId })
+    const stale = continueRecordingMapIngest(handle.db, { recordingDraftId: created.detail.id })
+    await staleHeld
+    const fast = await continueRecordingMapIngest(handle.db, { recordingDraftId: created.detail.id })
+    expect(fast.status).toBe('completed')
+    expect(fast.nextIndex).toBe(created.detail.itemCount)
+    releaseStale()
+    const late = await stale
+    expect(late.status).toBe('completed')
+
+    const { recordingMapIngests } = schemaFor(handle.db)
+    const [cursor] = await handle.db
+      .select()
+      .from(recordingMapIngests)
+      .where(eq(recordingMapIngests.recordingDraftId, created.detail.id))
+    expect(cursor?.status).toBe('completed')
+    expect(cursor?.nextIndex).toBe(created.detail.itemCount)
+  })
+
+  it('已完成的转换不会因删除草稿被改成中止', async () => {
+    const ingested = await createRecordingDraft(handle.db, body({ mapIngest: true }), { id: actorId })
+    await deleteRecordingDraft(handle.db, ingested.detail.id, { id: actorId })
+    const again = await continueRecordingMapIngest(handle.db, { recordingDraftId: ingested.detail.id })
+    expect(again.status).toBe('completed')
+    const { recordingMapIngests } = schemaFor(handle.db)
+    const [cursor] = await handle.db
+      .select()
+      .from(recordingMapIngests)
+      .where(eq(recordingMapIngests.recordingDraftId, ingested.detail.id))
+    expect(cursor?.status).toBe('completed')
   })
 })

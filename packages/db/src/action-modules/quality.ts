@@ -150,7 +150,7 @@ export async function projectModuleInvocationResults(
   db: Db,
   runId: string,
 ): Promise<{ projected: number; skipped: boolean }> {
-  const { runs, scenarios, scenarioVersions, stepRuns, attempts, evidences, actionModules, actionModuleVersions } =
+  const { runs, scenarios, scenarioVersions, stepRuns, attempts, evidences, outcomeResults, actionModules, actionModuleVersions } =
     schemaFor(db)
   const [run] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1)
   if (!run) return { projected: 0, skipped: true }
@@ -171,6 +171,7 @@ export async function projectModuleInvocationResults(
     ? []
     : await db.select().from(attempts).where(inArray(attempts.stepRunId, stepRows.map((item) => item.id)))
   const evidenceRows = await db.select().from(evidences).where(eq(evidences.runId, runId))
+  const outcomeResultRows = await db.select().from(outcomeResults).where(eq(outcomeResults.runId, runId))
   const stepIdByRun = new Map(stepRows.map((item) => [item.id, item.stepId]))
 
   const versionIds = [...new Set(entries.map((item) => item.moduleVersionId).filter((item): item is string => Boolean(item)))]
@@ -204,6 +205,7 @@ export async function projectModuleInvocationResults(
     stepRuns: stepRows.map((item) => ({
       stepId: item.stepId,
       status: item.status,
+      outcomeStatus: item.outcomeStatus,
       startedAt: item.startedAt,
       finishedAt: item.finishedAt,
     })),
@@ -220,6 +222,10 @@ export async function projectModuleInvocationResults(
       stepId: item.stepRunId ? stepIdByRun.get(item.stepRunId) ?? null : null,
       type: item.type,
       payload: item.payload,
+    })),
+    outcomeResults: outcomeResultRows.map((r) => ({
+      stepId: stepIdByRun.get(r.stepRunId) ?? null,
+      verdict: r.verdict,
     })),
     manualRequirementCounts,
   })

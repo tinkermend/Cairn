@@ -17,7 +17,6 @@ import { useCan } from '@/hooks/use-permissions'
 import { connectionLabel, connectionTone, useRunObservation } from './use-run-observation'
 import { CleanupStatusIndicator } from '@/components/cleanup-status-indicator'
 import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
-import { AppHeader } from '@/components/layout/app-header'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -66,7 +65,6 @@ export function RunDetailPage() {
 
   return (
     <>
-      <AppHeader fixed />
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title='运行详情'
