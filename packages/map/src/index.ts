@@ -47,7 +47,7 @@ export {
   canEnterCandidateBranch,
 } from './consumption.js'
 export type { LocatedCandidate } from './consumption.js'
-export { isUnsafeMapActionName, selectMapJobAssets, compileMapJobSlice } from './jobs.js'
+export { isUnsafeMapActionName, toMapJobCompileAssets, selectMapJobAssets, compileMapJobSlice } from './jobs.js'
 export type { MapJobCompileAsset } from './jobs.js'
 export {
   seedUrlsForExploration,

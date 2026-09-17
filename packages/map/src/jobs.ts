@@ -2,6 +2,7 @@ import {
   FACTORY_EXPLORATION_POLICY,
   FACTORY_MAP_JOB_POLICY,
   type ExplorationPolicy,
+  type MapAssetListItem,
   type MapAssetRef,
   type MapJobKind,
   type MapJobPolicy,
@@ -26,6 +27,19 @@ export type MapJobCompileAsset = {
 
 export function isUnsafeMapActionName(name: string): boolean {
   return UNSAFE_NAME.test(name)
+}
+
+export function toMapJobCompileAssets(
+  items: readonly Pick<MapAssetListItem, 'assetRef' | 'name' | 'routeTemplate' | 'lifecycle'>[],
+): MapJobCompileAsset[] {
+  return items.map((item) => ({
+    assetRef: item.assetRef,
+    name: item.name ?? '未命名对象',
+    routeTemplate: item.routeTemplate,
+    importance: item.lifecycle === 'TRUSTED' || item.lifecycle === 'VERIFIED' ? 2 : 1,
+    failed: item.lifecycle === 'DEGRADED',
+    stale: item.lifecycle === 'STALE',
+  }))
 }
 
 export function selectMapJobAssets(

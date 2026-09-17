@@ -77,6 +77,7 @@ export {
   getMapGovernanceCommand,
   getMapSummary,
   listMapAssets,
+  listMapJobCandidateAssets,
   listMapChanges,
   loadLifecycleOverrides,
   previewMapGovernance,

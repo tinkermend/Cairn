@@ -11,6 +11,7 @@ import {
   notFound,
   getMapSummary,
   listMapAssets,
+  listMapJobCandidateAssets,
   listMapChanges,
   loadMapImpactSource,
   conflict,
@@ -57,6 +58,7 @@ import {
   groupMapDiagnosisClues,
   queryMap,
   selectMapJobAssets,
+  toMapJobCompileAssets,
 } from '@cairn/map'
 import {
   hasPermission,
@@ -382,15 +384,7 @@ export class MapService {
     try {
       const policy = await getMapJobPolicy(this.database, targetId)
       const entry = await getMapSafeEntry(this.database, targetId, body.entryId)
-      const objects = await listMapAssets(this.database, targetId, 'objects', { limit: 50 })
-      const assets = objects.items.map((item) => ({
-        assetRef: item.assetRef,
-        name: item.name ?? '未命名对象',
-        routeTemplate: item.routeTemplate,
-        importance: item.lifecycle === 'TRUSTED' || item.lifecycle === 'VERIFIED' ? 2 : 1,
-        failed: item.lifecycle === 'DEGRADED',
-        stale: item.lifecycle === 'STALE',
-      }))
+      const assets = toMapJobCompileAssets(await listMapJobCandidateAssets(this.database, targetId))
       const items = selectMapJobAssets(body.jobKind, policy.policy, assets, body.selectedAssetRefs)
       return mapJobPreviewResponseSchema.parse({
         jobKind: body.jobKind,
@@ -411,17 +405,9 @@ export class MapService {
       }
       const policy = await getMapJobPolicy(this.database, targetId)
       const entry = await getMapSafeEntry(this.database, targetId, body.entryId)
-      const objects = await listMapAssets(this.database, targetId, 'objects', { limit: 50 })
-      const assets = objects.items.map((item) => ({
-        assetRef: item.assetRef,
-        name: item.name ?? '未命名对象',
-        routeTemplate: item.routeTemplate,
-        importance: item.lifecycle === 'TRUSTED' || item.lifecycle === 'VERIFIED' ? 2 : 1,
-        failed: item.lifecycle === 'DEGRADED',
-        stale: item.lifecycle === 'STALE',
-      }))
+      const assets = toMapJobCompileAssets(await listMapJobCandidateAssets(this.database, targetId))
       const items = selectMapJobAssets(body.jobKind, policy.policy, assets, body.selectedAssetRefs)
-      const included = assets.filter((asset) =>
+      const included = assets.filter((asset) =>)
         items.some(
           (item) =>
             item.included &&

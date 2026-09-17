@@ -26,7 +26,7 @@ import {
   getMapJobPolicy,
   getMapSafeEntry,
   getMapSummary,
-  listMapAssets,
+  listMapJobCandidateAssets,
   settleRevokedRuns,
   sweepDriftedRuns,
   yieldUnfinishedRun,
@@ -42,7 +42,6 @@ import {
   MAP_SCHEDULER_PROTOCOL,
   CANDIDATE_GROUPS_PROTOCOL,
   MODULE_MANIFEST_PROTOCOL,
-  mapListQuerySchema,
   SCHEDULE_TICK_INTERVAL_MS,
   SESSION_AUTH_RECOVERY_PROTOCOL,
   SESSION_MAINTENANCE_PROTOCOL,
@@ -59,7 +58,7 @@ import { startManagedBrowserHttp, type ManagedBrowserHttp } from '../internal/ht
 import { config } from '../config/env'
 import { placementYieldExcludes } from './placement-backoff'
 import { DB_HANDLE } from '../db/db.module'
-import { compileMapJobSlice, selectMapJobAssets } from '@cairn/map'
+import { compileMapJobSlice, selectMapJobAssets, toMapJobCompileAssets } from '@cairn/map'
 import { MapProjectionService } from '../map/projection.service'
 import { MapReferenceScanService } from '../map/reference-scan.service'
 import { ExecutionEngine } from '../engine/engine'
@@ -237,20 +236,9 @@ export class LifecycleService implements OnApplicationBootstrap, OnApplicationSh
         try {
           const policy = await getMapJobPolicy(this.handle, item.definition.consumer.targetId)
           const entry = await getMapSafeEntry(this.handle, item.definition.consumer.targetId, item.definition.consumer.entryId)
-          const objects = await listMapAssets(
-            this.handle,
-            item.definition.consumer.targetId,
-            'objects',
-            mapListQuerySchema.parse({ limit: 50 }),
+          const assets = toMapJobCompileAssets(
+            await listMapJobCandidateAssets(this.handle, item.definition.consumer.targetId),
           )
-          const assets = objects.items.map((asset) => ({
-            assetRef: asset.assetRef,
-            name: asset.name ?? '未命名对象',
-            routeTemplate: asset.routeTemplate,
-            importance: asset.lifecycle === 'TRUSTED' || asset.lifecycle === 'VERIFIED' ? 2 : 1,
-            failed: asset.lifecycle === 'DEGRADED',
-            stale: asset.lifecycle === 'STALE',
-          }))
           const selected = selectMapJobAssets(
             'map_refresh',
             policy.policy,

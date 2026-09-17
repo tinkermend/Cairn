@@ -1,12 +1,14 @@
 import { and, asc, desc, eq, inArray, or } from 'drizzle-orm'
 import {
   canonicalJson,
+  MAP_LIST_LIMIT_MAX,
   mapAssetDetailSchema,
   mapAssetListResponseSchema,
   mapChangeListResponseSchema,
   mapAssetRefSchema,
   mapGovernanceCommandSchema,
   mapGovernancePreviewResponseSchema,
+  mapListQuerySchema,
   mapSummaryResponseSchema,
   type MapAssetListItem,
   type MapConditionSnapshot,
@@ -195,6 +197,27 @@ export async function listMapAssets(
     nextCursor: page.nextCursor,
     view: await viewMeta(db, view),
   })
+}
+
+export async function listMapJobCandidateAssets(
+  db: Db,
+  targetId: string,
+  evaluate?: ConditionEvaluator,
+): Promise<MapAssetListItem[]> {
+  const items: MapAssetListItem[] = []
+  let cursor: string | undefined
+  do {
+    const page = await listMapAssets(
+      db,
+      targetId,
+      'objects',
+      mapListQuerySchema.parse({ limit: MAP_LIST_LIMIT_MAX, cursor }),
+      evaluate,
+    )
+    items.push(...page.items)
+    cursor = page.nextCursor
+  } while (cursor)
+  return items
 }
 
 export async function getMapAssetDetail(

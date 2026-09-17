@@ -28,6 +28,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
     getMapSafeEntry: vi.fn(async () => ({ entryId: 'e' })),
     getMapSummary: vi.fn(async () => ({ publishedReleaseId: undefined })),
     listMapAssets: vi.fn(async () => ({ items: [] })),
+    listMapJobCandidateAssets: vi.fn(async () => []),
     settleRevokedRuns: vi.fn(async () => undefined),
     markWorkerDraining: vi.fn(async () => undefined),
     markWorkerStopped: vi.fn(async () => undefined),

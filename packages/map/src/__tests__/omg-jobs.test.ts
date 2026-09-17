@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileMapJobSlice, isUnsafeMapActionName, selectMapJobAssets } from '../jobs.js'
+import { compileMapJobSlice, isUnsafeMapActionName, selectMapJobAssets, toMapJobCompileAssets } from '../jobs.js'
 import { FACTORY_MAP_JOB_POLICY, type MapSafeEntry } from '@cairn/shared'
 
 const targetId = '00000000-0000-4000-8000-000000000010'
@@ -32,6 +32,17 @@ describe('OM-G 选点与编译', () => {
       included: [],
     })
     expect(compiled.ok).toBe(false)
+  })
+
+  it('列表生命周期映射到作业候选优先级', () => {
+    const [trusted, degraded, stale] = toMapJobCompileAssets([
+      { assetRef: { targetId, objectId: objectA }, name: '订单号', lifecycle: 'TRUSTED' },
+      { assetRef: { targetId, objectId: objectB }, lifecycle: 'DEGRADED' },
+      { assetRef: { targetId, objectId: objectA }, name: '金额', lifecycle: 'STALE' },
+    ])
+    expect(trusted).toMatchObject({ importance: 2, failed: false, stale: false })
+    expect(degraded).toMatchObject({ name: '未命名对象', importance: 1, failed: true, stale: false })
+    expect(stale).toMatchObject({ importance: 1, failed: false, stale: true })
   })
 
   it('OMG07 配额截断并解释未纳入', () => {
