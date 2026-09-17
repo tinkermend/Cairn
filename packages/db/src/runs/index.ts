@@ -43,6 +43,7 @@ export {
   loadRunRow,
   markRunCancelled,
   markRunWaitingForAuth,
+  openPreStepAuthValidityWindow,
   previewDeleteRun,
   requestRunCancel,
   retryRunCleanup,

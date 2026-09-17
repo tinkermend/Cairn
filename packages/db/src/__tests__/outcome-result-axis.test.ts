@@ -2,10 +2,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
 import {
   OUTCOME_MANIFEST_PROTOCOL,
+  RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
+  computeContextVersion,
+  createRuntimeInvariant,
+  type AuthCheckpoint,
   type AuthoringNode,
   type OutcomeContract,
   type OutcomeManifest,
+  type RuntimeInvariant,
   type RunSnapshot,
   type Step,
 } from '@cairn/shared'
@@ -28,6 +33,9 @@ import {
   saveScenarioDraft,
   schemaFor,
   startAttempt,
+  settleRunOutcome,
+  markRunWaitingForAuth,
+  writeRunAuthCheckpoint,
   type NativeHandle as DbHandle,
 } from '../test-entry.js'
 import { newId } from '../id.js'
@@ -108,6 +116,7 @@ describe('Outcome 结果轴与契约底座（集成）', () => {
     name: string
     nodes: AuthoringNode[]
     scenarioOutcomes?: OutcomeContract[]
+    runtimeInvariants?: RuntimeInvariant[]
   }) {
     // 初始版本放一个临时步骤，确保草稿发布时 sourceDocumentDigest 发生变化，从而成功落库 version 2
     const scenario = await createScenarioWithVersion(handle.db, {
@@ -121,6 +130,7 @@ describe('Outcome 结果轴与契约底座（集成）', () => {
       authoringSchemaVersion: 2 as const,
       nodes: input.nodes,
       scenarioOutcomes: input.scenarioOutcomes,
+      runtimeInvariants: input.runtimeInvariants,
     }
 
     await saveScenarioDraft(handle.db, scenario.id, {
@@ -177,6 +187,14 @@ describe('Outcome 结果轴与契约底座（集成）', () => {
 
     // 再次计算无 outcomeManifest 的对象，与之前完全一致
     expect(computeSnapshotDigest(baseSnapshot)).toBe(digestWithout)
+
+    const snapshotInvariant: RunSnapshot = {
+      ...baseSnapshot,
+      runtimeInvariantManifest: {
+        entries: [createRuntimeInvariant('navigation_boundary', contractMustId)],
+      },
+    }
+    expect(computeSnapshotDigest(snapshotInvariant)).not.toBe(digestWithout)
   })
 
   it('调度排他：未声明 snapshot.outcomeManifest@1 的 Worker 跳过含契约清单的 Run', async () => {
@@ -617,5 +635,316 @@ describe('Outcome 结果轴与契约底座（集成）', () => {
     // 验证已被修复回 PASS
     const detail = await loadRunDetail(handle.db, targetRun.id)
     expect(detail?.outcomeStatus).toBe('PASS')
+  })
+
+  it('OCC：含 runtimeInvariantManifest 的 Run 要求新协议，收尾写 PASS', async () => {
+    const invariantId = '00000000-0000-4000-8000-000000000083'
+    const scenario = await createScenarioWithNodes({
+      name: '运行期约束协议',
+      nodes: [{ kind: 'step', step: echoStep }],
+      runtimeInvariants: [createRuntimeInvariant('readonly_guarantee', invariantId)],
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    expect(created.detail.snapshot.runtimeInvariantManifest?.entries).toHaveLength(1)
+
+    const legacy = await seedWorker(handle, `worker-inv-legacy-${newId()}`)
+    const leftover = await claimRun(handle, {
+      workerId: legacy.workerId,
+      instanceId: legacy.instanceId,
+      leaseTtlSeconds: 30,
+    })
+    expect(leftover?.runId ?? null).not.toBe(created.detail.id)
+
+    const grant = await forceGrantForRun(handle, created.detail.id, `worker-inv-${newId()}`)
+
+    const start = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      grant: grant!,
+      inputPayload: { value: 'val1' },
+    })
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: start!.attemptId,
+      attemptStatus: 'SUCCEEDED',
+      output: { echoed: 'ok' },
+      stepRunStatus: 'SUCCEEDED',
+      runStatus: 'SUCCEEDED',
+      grant: grant!,
+    })
+    await settleRunOutcome(handle, created.detail.id)
+    const detail = await loadRunDetail(handle.db, created.detail.id)
+    expect(detail?.outcomeStatus).toBe('PASS')
+    expect(detail?.outcomeResults.some((row) => row.contractId === invariantId && row.verdict === 'PASS')).toBe(
+      true,
+    )
+  })
+
+  function authCheckpointFor(run: { snapshot: { steps: { id: string }[] } }, extra: Partial<AuthCheckpoint> = {}): AuthCheckpoint {
+    return {
+      schemaVersion: 1,
+      status: 'closed',
+      closedAt: '2026-09-17T04:00:00.000Z',
+      trigger: { kind: 'navigated_to_login', at: '2026-09-17T04:00:00.000Z', summary: '/login' },
+      nextStepId: run.snapshot.steps[0]!.id,
+      nextOrdinal: 0,
+      interruptedClassification: 'not_dispatched',
+      contextVersion: 'a'.repeat(64),
+      contextKeys: [],
+      sessionGeneration: 1,
+      fencingToken: '1',
+      recoveryRule: {
+        reuse: 'NEW_PAGE',
+        entryUrl: 'https://example.com/',
+        allowedOrigins: ['https://example.com'],
+      },
+      capability: 'IDENTITY_VERIFIED',
+      autoRecoveriesUsed: 0,
+      manualRecoveriesUsed: 0,
+      ...extra,
+    }
+  }
+
+  it('OCC-02：越界导航错误码不变，同时写 navigation_boundary FAIL', async () => {
+    const invariantId = '00000000-0000-4000-8000-000000000084'
+    const scenario = await createScenarioWithNodes({
+      name: '越界导航约束',
+      nodes: [{ kind: 'step', step: echoStep }],
+      runtimeInvariants: [createRuntimeInvariant('navigation_boundary', invariantId)],
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, created.detail.id, `worker-nav-${newId()}`)
+    const start = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      grant: grant!,
+      inputPayload: { value: 'val1' },
+    })
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: start!.attemptId,
+      attemptStatus: 'FAILED',
+      error: {
+        code: 'NAVIGATE_OUT_OF_SCOPE',
+        category: 'VALIDATION',
+        retryable: false,
+        safeMessage: '导航离开允许范围',
+      },
+      stepRunStatus: 'FAILED',
+      runStatus: 'FAILED',
+      grant: grant!,
+    })
+    const detail = await loadRunDetail(handle.db, created.detail.id)
+    expect(detail?.status).toBe('FAILED')
+    expect(detail?.stepRuns[0]?.attempts[0]?.error).toMatchObject({ code: 'NAVIGATE_OUT_OF_SCOPE' })
+    expect(detail?.outcomeStatus).toBe('FAIL')
+    const row = detail?.outcomeResults.find((item) => item.contractId === invariantId)
+    expect(row).toMatchObject({
+      provenance: 'runtime_invariant',
+      verdict: 'FAIL',
+      actual: { errorCode: 'NAVIGATE_OUT_OF_SCOPE' },
+    })
+  })
+
+  it('OCC-03：恢复成功仍保留 auth_validity FAIL，结果轴 WARN，检查点写入即记账', async () => {
+    const invariantId = '00000000-0000-4000-8000-000000000085'
+    const scenario = await createScenarioWithNodes({
+      name: '认证约束',
+      nodes: [{ kind: 'step', step: echoStep }],
+      runtimeInvariants: [createRuntimeInvariant('auth_validity', invariantId)],
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, created.detail.id, `worker-auth-${newId()}`)
+    const start = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      grant: grant!,
+      inputPayload: { value: 'val1' },
+    })
+    const closed = authCheckpointFor(created.detail, {
+      interruptedAttemptId: start!.attemptId,
+      fencingToken: String(grant!.fencingToken),
+      contextVersion: await computeContextVersion(created.detail.context),
+    })
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: start!.attemptId,
+      attemptStatus: 'FAILED',
+      error: {
+        code: 'AUTH_GATE_CLOSED',
+        category: 'INFRASTRUCTURE',
+        retryable: false,
+        safeMessage: '登录已失效',
+      },
+      stepRunStatus: 'RUNNING',
+      authCheckpoint: closed,
+      grant: grant!,
+    })
+    const written = await writeRunAuthCheckpoint(handle.db, {
+      runId: created.detail.id,
+      grant: grant!,
+      checkpoint: { ...closed, status: 'recovering', recoveryKind: 'auto', autoRecoveriesUsed: 1 },
+    })
+    expect(written).toBe(true)
+    const holding = await loadRunDetail(handle.db, created.detail.id)
+    expect(holding?.status).toBe('RUNNING')
+    expect(holding?.authCheckpoint?.status).toBe('recovering')
+    expect(holding?.outcomeStatus).toBe('WARN')
+    expect(holding?.outcomeResults.some((row) => row.contractId === invariantId && row.verdict === 'FAIL')).toBe(true)
+
+    await writeRunAuthCheckpoint(handle.db, {
+      runId: created.detail.id,
+      grant: grant!,
+      checkpoint: { ...closed, status: 'recovered', recoveryKind: 'auto', autoRecoveriesUsed: 1 },
+    })
+    const recovered = await loadRunDetail(handle.db, created.detail.id)
+    expect(recovered?.authCheckpoint?.status).toBe('recovered')
+    expect(recovered?.outcomeStatus).toBe('WARN')
+    expect(recovered?.outcomeResults.filter((row) => row.contractId === invariantId && row.verdict === 'FAIL')).toHaveLength(1)
+  })
+
+  it('OCC-03：开跑前 WAITING_FOR_AUTH 补首步窗口并记 SHOULD FAIL / WARN', async () => {
+    const invariantId = '00000000-0000-4000-8000-00000000008a'
+    const scenario = await createScenarioWithNodes({
+      name: '开跑前认证约束',
+      nodes: [{ kind: 'step', step: echoStep }],
+      runtimeInvariants: [createRuntimeInvariant('auth_validity', invariantId)],
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, created.detail.id, `worker-auth-pre-${newId()}`)
+    expect(created.detail.stepRuns[0]?.attempts ?? []).toHaveLength(0)
+    expect(await markRunWaitingForAuth(handle.db, grant!)).toBe(true)
+    const detail = await loadRunDetail(handle.db, created.detail.id)
+    expect(detail?.status).toBe('WAITING_FOR_AUTH')
+    expect(detail?.stepRuns[0]?.status).toBe('RUNNING')
+    expect(detail?.stepRuns[0]?.attempts[0]?.error).toMatchObject({ code: 'AUTH_GATE_CLOSED' })
+    expect(detail?.outcomeStatus).toBe('WARN')
+    expect(detail?.outcomeResults.some((row) => row.contractId === invariantId && row.verdict === 'FAIL')).toBe(
+      true,
+    )
+  })
+
+  it('OCC-04：只读约束对照 SIDE_EFFECT 记 FAIL，不要求写拦截', async () => {
+    const invariantId = '00000000-0000-4000-8000-000000000086'
+    const clickId = '00000000-0000-4000-8000-000000000093'
+    const clickStep: Step = {
+      id: clickId,
+      name: '点击',
+      type: 'click',
+      effectType: 'SIDE_EFFECT',
+      input: { target: { framePath: [], candidates: [{ by: 'css', value: 'button' }] } },
+    }
+    const scenario = await createScenarioWithNodes({
+      name: '只读约束',
+      nodes: [{ kind: 'step', step: clickStep }],
+      runtimeInvariants: [createRuntimeInvariant('readonly_guarantee', invariantId)],
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, created.detail.id, `worker-ro-${newId()}`)
+    const start = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      grant: grant!,
+      inputPayload: {},
+    })
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: start!.attemptId,
+      attemptStatus: 'SUCCEEDED',
+      output: { clicked: true },
+      stepRunStatus: 'SUCCEEDED',
+      runStatus: 'SUCCEEDED',
+      grant: grant!,
+    })
+    const detail = await loadRunDetail(handle.db, created.detail.id)
+    expect(detail?.status).toBe('SUCCEEDED')
+    expect(detail?.outcomeStatus).toBe('FAIL')
+    expect(detail?.outcomeResults).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          contractId: invariantId,
+          verdict: 'FAIL',
+          actual: expect.objectContaining({ effectType: 'SIDE_EFFECT' }),
+        }),
+      ]),
+    )
+  })
+
+  it('OCC-05：页面探测命中写 FAIL 并脱敏；CHECK 拒绝未知 provenance', async () => {
+    const invariantId = '00000000-0000-4000-8000-000000000087'
+    const scenario = await createScenarioWithNodes({
+      name: '错误弹窗约束',
+      nodes: [{ kind: 'step', step: echoStep }],
+      runtimeInvariants: [createRuntimeInvariant('error_surface', invariantId)],
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, created.detail.id, `worker-surf-${newId()}`)
+    const start = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      grant: grant!,
+      inputPayload: { value: 'val1' },
+    })
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: start!.attemptId,
+      attemptStatus: 'SUCCEEDED',
+      output: {
+        echoed: 'ok',
+        errorSurface: {
+          probed: true,
+          matches: [{ role: 'alertdialog', text: 'password=hunter2 系统异常 user@example.com' }],
+        },
+      },
+      stepRunStatus: 'SUCCEEDED',
+      runStatus: 'SUCCEEDED',
+      grant: grant!,
+    })
+    const detail = await loadRunDetail(handle.db, created.detail.id)
+    expect(detail?.status).toBe('SUCCEEDED')
+    expect(detail?.outcomeStatus).toBe('FAIL')
+    const row = detail?.outcomeResults.find((item) => item.contractId === invariantId)
+    expect(row?.verdict).toBe('FAIL')
+    expect(JSON.stringify(row?.actual)).toMatch(/password=\*\*\*/)
+    expect(JSON.stringify(row?.actual)).toMatch(/\[redacted-email\]/)
+    expect(JSON.stringify(row?.actual)).not.toMatch(/hunter2/)
+
+    await expect(
+      handle.db.insert(outcomeResults).values({
+        id: newId(),
+        runId: created.detail.id,
+        stepRunId: created.detail.stepRuns[0]!.id,
+        attemptId: start!.attemptId,
+        contractId: '00000000-0000-4000-8000-000000000088',
+        scope: 'scenario',
+        meaning: '非法来源',
+        severity: 'MUST',
+        onViolation: 'continue',
+        provenance: 'not_a_source' as never,
+        verdict: 'PASS',
+        evaluatedAt: new Date(),
+        createdAt: new Date(),
+      }),
+    ).rejects.toSatisfy((error: Error) =>
+      String(error.cause ?? error).match(/outcome_results_provenance_check|23514|CHECK/i) !== null,
+    )
   })
 })

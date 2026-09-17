@@ -91,12 +91,16 @@ import { RunCreateDialog } from '@/features/runs/create-dialog'
 import {
   createBlankStep,
   DETERMINISTIC_STUDIO_TYPES,
-  selectableStudioTypes,
+  selectableScenarioStudioTypes,
   STEP_TYPE_HINTS,
   unavailableStudioTypes,
 } from './step-registry'
 import { AuthoringObserveProvider } from './authoring-observe'
 import { InputsEditor, StepEditor } from './step-editor'
+import { OutcomeListEditor } from '@/features/authoring/outcome-editor'
+import { RuntimeInvariantEditor } from '@/features/authoring/invariant-editor'
+import { resolveOutcomeWriteback } from '@cairn/authoring'
+import { fetchPlatformConfig } from '@/lib/platform-config-api'
 import { TrialDialog } from './trial-dialog'
 import { TrialPanel } from './trial-panel'
 import { SCENARIO_STATUS_LABELS, stepTypeLabel } from './labels'
@@ -149,6 +153,10 @@ export function ScenarioDetailPage() {
   const capabilitiesQuery = useQuery({
     queryKey: ['scenarios', 'capabilities'],
     queryFn: fetchScenarioCapabilities,
+  })
+  const platformConfigQuery = useQuery({
+    queryKey: ['platform-config'],
+    queryFn: fetchPlatformConfig,
   })
   const canReadTarget = useCan('target:read')
   const canWrite = useCan('workflow:write')
@@ -247,7 +255,7 @@ export function ScenarioDetailPage() {
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const disabled = !canWrite || saving || publishing
   const compile = draft.compile ?? (draft.hasFieldDrafts ? null : scenario?.compile)
-  const editableTypes = selectableStudioTypes(capabilitiesQuery.data)
+  const editableTypes = selectableScenarioStudioTypes(capabilitiesQuery.data)
   const supportsAuthoringV2 = Boolean(
     capabilitiesQuery.data?.authoringSchemaVersions?.includes(2),
   )
@@ -904,6 +912,26 @@ export function ScenarioDetailPage() {
               authoring={capabilitiesQuery.data?.authoring}
               onWriteBack={async () => Boolean(await save())}
               onApplyTarget={(target) => {
+                const writeback = resolveOutcomeWriteback(
+                  trialRun?.snapshot.outcomeManifest,
+                  trialRun?.checkpoint?.stepId,
+                )
+                if (writeback?.sourceStepId) {
+                  draft.updateOutcomeTarget({
+                    stepId: writeback.sourceStepId,
+                    contractId: writeback.contractId,
+                    target,
+                  })
+                  return
+                }
+                if (writeback?.scope === 'scenario') {
+                  draft.updateOutcomeTarget({
+                    contractId: writeback.contractId,
+                    target,
+                    scenario: true,
+                  })
+                  return
+                }
                 const current = draft.selected
                 if (!current || !current.input || typeof current.input !== 'object' || !('target' in current.input)) {
                   return
@@ -954,7 +982,7 @@ export function ScenarioDetailPage() {
                         <DropdownMenuLabel>确定性</DropdownMenuLabel>
                         {editableTypes
                           .filter((type) =>
-                            ['navigate', 'click', 'fill', 'extract', 'assert', 'select', 'keyboard', 'wait'].includes(
+                            ['navigate', 'click', 'fill', 'extract', 'select', 'keyboard', 'wait'].includes(
                               type,
                             ),
                           )
@@ -976,11 +1004,13 @@ export function ScenarioDetailPage() {
                               ))}
                           </>
                         ) : null}
-                        {unavailableStudioTypes(capabilitiesQuery.data).map((item) => (
-                          <DropdownMenuItem key={item.type} disabled>
-                            {stepTypeLabel(item.type)}（{item.message}）
-                          </DropdownMenuItem>
-                        ))}
+                        {unavailableStudioTypes(capabilitiesQuery.data)
+                          .filter((item) => item.type !== 'assert' && item.type !== 'ai_assert')
+                          .map((item) => (
+                            <DropdownMenuItem key={item.type} disabled>
+                              {stepTypeLabel(item.type)}（{item.message}）
+                            </DropdownMenuItem>
+                          ))}
                         <DropdownMenuSeparator />
                         <DropdownMenuSub>
                           <DropdownMenuSubTrigger>调试夹具</DropdownMenuSubTrigger>
@@ -1294,7 +1324,11 @@ export function ScenarioDetailPage() {
                         editableTypes={editableTypes}
                         diagnostics={(compile?.diagnostics ?? []) as CompileDiagnostic[]}
                         disabled={disabled}
+                        outcomes={
+                          draft.selectedNode?.kind === 'step' ? draft.selectedNode.outcomes ?? [] : []
+                        }
                         onChange={draft.updateStep}
+                        onOutcomesChange={(outcomes) => draft.updateOutcomes(draft.selected.id, outcomes)}
                         onRequestTypeChange={setTypeChange}
                       />
                       <MapStepBinding
@@ -1372,11 +1406,27 @@ export function ScenarioDetailPage() {
                       </div>
                     </>
                   ) : (
+                    <>
                     <InputsEditor
                       inputs={draft.displayInputs}
                       disabled={disabled}
                       onChange={draft.updateInputs}
                     />
+                    <OutcomeListEditor
+                      outcomes={draft.v2Document?.scenarioOutcomes ?? []}
+                      scope='scenario'
+                      disabled={disabled}
+                      onChange={draft.updateScenarioOutcomes}
+                    />
+                    <RuntimeInvariantEditor
+                      invariants={draft.v2Document?.runtimeInvariants ?? []}
+                      disabled={disabled}
+                      allowEachStepProbe={
+                        platformConfigQuery.data?.document.runtimeInvariants.allowEachStepProbe
+                      }
+                      onChange={draft.updateRuntimeInvariants}
+                    />
+                    </>
                   )}
                   {!draft.selected ? (
                     <DiagnosticList

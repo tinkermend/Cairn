@@ -8,10 +8,12 @@ import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstant
  * 二进制不进 schema。上传失败必须带 `missingReason`，
  * 不能靠「没有 objectKey」让调用方猜是没采集还是丢了。
  *
+ * `video` 是运行级证据：无 stepRunId / attemptId。
+ *
  * `status` 是采集状态，与 Run 的执行结论无关（见 `RUN_EVIDENCE_STATUSES`）。
  */
 
-export const EVIDENCE_TYPES = ['input', 'output', 'error', 'screenshot', 'log', 'trace'] as const
+export const EVIDENCE_TYPES = ['input', 'output', 'error', 'screenshot', 'log', 'trace', 'video'] as const
 export type EvidenceType = (typeof EVIDENCE_TYPES)[number]
 export const evidenceTypeSchema = z.enum(EVIDENCE_TYPES)
 

@@ -7,6 +7,7 @@ import {
   DEFAULT_BROWSER_MAX_SESSIONS,
   MAP_JOBS_PROTOCOL,
   OUTCOME_MANIFEST_PROTOCOL,
+  RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
   isFinishedRunStatus,
   isMapJobRun,
   nextHandleMismatchStreak,
@@ -559,6 +560,9 @@ export async function claimRun(
                 worker.protocolCapabilities?.includes(OUTCOME_MANIFEST_PROTOCOL)
                   ? undefined
                   : not(jsonHasKey(tx, runs.snapshot, 'outcomeManifest')),
+                worker.protocolCapabilities?.includes(RUNTIME_INVARIANT_MANIFEST_PROTOCOL)
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'runtimeInvariantManifest')),
                 sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
                 or(
                   isNull(runs.targetAccountId),

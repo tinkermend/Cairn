@@ -1,13 +1,16 @@
-import { compileScenarioDocument } from '@cairn/authoring'
+import { compileScenarioDocument, deriveOutcomeManifest } from '@cairn/authoring'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   isAuthoringDocumentV2,
   toAuthoringDocumentV2,
+  type OutcomeContract,
+  type RuntimeInvariant,
   type ScenarioAuthoringDocumentV2,
   type ScenarioAuthoringNode,
   type ScenarioDocument,
   type ScenarioInputDecl,
   type Step,
+  type TargetDescriptor,
 } from '@cairn/shared'
 import {
   focusStudioField,
@@ -128,6 +131,7 @@ export function useStudioDraft(
           mode: 'release',
           target: compileTarget,
           executableTypes,
+          outcomeManifest: deriveOutcomeManifest({ authoringDocument: candidate }) ?? { entries: [] },
         },
       )
     }
@@ -135,6 +139,8 @@ export function useStudioDraft(
       mode: 'release',
       target: compileTarget,
       executableTypes,
+      outcomeManifest:
+        deriveOutcomeManifest({ authoringDocument: toAuthoringDocumentV2(candidate) }) ?? { entries: [] },
     })
   }, [candidate, compileTarget, executableTypes, hasFieldDrafts])
 
@@ -152,7 +158,11 @@ export function useStudioDraft(
     (next: Step) => {
       if (!candidate) return
       if (isAuthoringDocumentV2(candidate)) {
-        const nextNode: ScenarioAuthoringNode = { kind: 'step', step: next }
+        const current = candidate.nodes.find(
+          (node) => node.kind === 'step' && node.step.id === next.id,
+        )
+        const nextNode: ScenarioAuthoringNode =
+          current?.kind === 'step' ? { ...current, step: next } : { kind: 'step', step: next }
         const committed = tryReplaceNode(candidate, nextNode)
         if (committed.ok) {
           setCandidate(committed.document)
@@ -179,6 +189,67 @@ export function useStudioDraft(
       setStepOverlays((current) => ({ ...current, [next.id]: next }))
     },
     [candidate],
+  )
+
+  const ensureV2 = useCallback((): ScenarioAuthoringDocumentV2 | null => {
+    if (!candidate) return null
+    return toAuthoringDocumentV2(candidate)
+  }, [candidate])
+
+  const updateOutcomes = useCallback(
+    (stepId: string, outcomes: OutcomeContract[]) => {
+      const v2 = ensureV2()
+      if (!v2) return
+      const current = v2.nodes.find((node) => node.kind === 'step' && node.step.id === stepId)
+      if (current?.kind !== 'step') return
+      const committed = tryReplaceNode(v2, { ...current, outcomes })
+      if (committed.ok) setCandidate(committed.document)
+    },
+    [ensureV2],
+  )
+
+  const updateScenarioOutcomes = useCallback(
+    (scenarioOutcomes: OutcomeContract[]) => {
+      const v2 = ensureV2()
+      if (!v2) return
+      setCandidate({ ...v2, scenarioOutcomes })
+    },
+    [ensureV2],
+  )
+
+  const updateRuntimeInvariants = useCallback(
+    (runtimeInvariants: RuntimeInvariant[]) => {
+      const v2 = ensureV2()
+      if (!v2) return
+      setCandidate({ ...v2, runtimeInvariants })
+    },
+    [ensureV2],
+  )
+
+  const updateOutcomeTarget = useCallback(
+    (input: { stepId?: string; contractId: string; target: TargetDescriptor; scenario?: boolean }) => {
+      const v2 = ensureV2()
+      if (!v2) return
+      if (input.scenario || !input.stepId) {
+        const next = (v2.scenarioOutcomes ?? []).map((contract) =>
+          contract.id === input.contractId && contract.rule.kind === 'deterministic'
+            ? { ...contract, rule: { ...contract.rule, target: input.target } }
+            : contract,
+        )
+        setCandidate({ ...v2, scenarioOutcomes: next })
+        return
+      }
+      const current = v2.nodes.find((node) => node.kind === 'step' && node.step.id === input.stepId)
+      if (current?.kind !== 'step') return
+      const outcomes = (current.outcomes ?? []).map((contract) =>
+        contract.id === input.contractId && contract.rule.kind === 'deterministic'
+          ? { ...contract, rule: { ...contract.rule, target: input.target } }
+          : contract,
+      )
+      const committed = tryReplaceNode(v2, { ...current, outcomes })
+      if (committed.ok) setCandidate(committed.document)
+    },
+    [ensureV2],
   )
 
   const updateNode = useCallback(
@@ -283,6 +354,10 @@ export function useStudioDraft(
     compile,
     applyStructure,
     updateStep,
+    updateOutcomes,
+    updateScenarioOutcomes,
+    updateRuntimeInvariants,
+    updateOutcomeTarget,
     updateNode,
     insertNode,
     updateInputs,

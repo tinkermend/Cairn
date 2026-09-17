@@ -35,6 +35,7 @@ export const OBJECT_MISSING_REASONS = {
   uploadIncomplete: 'upload_incomplete',
   workerLost: 'worker_lost',
   traceTooLarge: 'trace_too_large',
+  videoTooLarge: 'video_too_large',
   captureFailed: 'capture_failed',
 } as const
 export type ObjectMissingReason = (typeof OBJECT_MISSING_REASONS)[keyof typeof OBJECT_MISSING_REASONS]

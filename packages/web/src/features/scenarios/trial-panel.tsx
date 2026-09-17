@@ -19,8 +19,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { StatusBadge } from '@/components/status-badge'
 import { stepTypeLabel } from './labels'
 import { BrowserView } from '@/features/runs/browser-view'
+import { RunVideoSection, StepFaceScreenshot, stepFaceScreenshot } from '@/features/runs/run-video'
 import { PlacementHint } from '@/features/runs/placement-hint'
 import { StepTimeline } from '@/features/runs/step-timeline'
+import { OutcomeAxisSummary, OutcomeConditionList, RUN_EXECUTION_AXIS_LABELS } from '@/features/runs/outcome-axis'
 
 function formatTrialValue(value: unknown): string {
   if (value === undefined) return '无'
@@ -42,7 +44,7 @@ export function TrialPanel({
   runId: string
   scenarioId: string
   selectedDraftStepId: string | null
-  onSelectDraftStep: (stepId: string) => void
+  onSelectDraftStep: (stepId: string | null) => void
 }) {
   const user = useAuthStore((state) => state.auth.user)
   const canRead = Boolean(user && hasPermission(user.permissions, 'run:read'))
@@ -60,10 +62,14 @@ export function TrialPanel({
   const selectedModule = run?.snapshot.moduleManifest?.entries.find(
     (entry) => entry.invocationId === selectedDraftStepId,
   )
+  const derivedForDraft = run?.snapshot.outcomeManifest?.entries.find(
+    (entry) => entry.sourceStepId === selectedDraftStepId,
+  )
   const historic =
     (selectedModule
       ? run?.snapshot.steps.find((step) => selectedModule.expandedStepIds.includes(step.id))
-      : run?.snapshot.steps.find((step) => step.id === selectedDraftStepId)) ?? run?.snapshot.steps[0]
+      : run?.snapshot.steps.find((step) => step.id === selectedDraftStepId) ??
+        run?.snapshot.steps.find((step) => step.id === derivedForDraft?.stepId)) ?? run?.snapshot.steps[0]
   const stepRun = historic ? run?.stepRuns.find((item) => item.stepId === historic.id) : undefined
   const latestAttempt = stepRun?.attempts[stepRun.attempts.length - 1]
   const attemptEvidence = (evidence?.items ?? []).filter((item) => item.attemptId === latestAttempt?.id)
@@ -73,6 +79,7 @@ export function TrialPanel({
     selectedDraftStepId &&
       run &&
       !run.snapshot.steps.some((step) => step.id === selectedDraftStepId) &&
+      !run.snapshot.outcomeManifest?.entries.some((entry) => entry.sourceStepId === selectedDraftStepId) &&
       !run.snapshot.moduleManifest?.entries.some((entry) => entry.invocationId === selectedDraftStepId),
   )
   const fetchedAt = runQuery.dataUpdatedAt ? new Date(runQuery.dataUpdatedAt).toLocaleTimeString() : null
@@ -125,6 +132,22 @@ export function TrialPanel({
                 {run.scenarioVersionKind === 'trial' ? '试跑版本' : '正式版本'}
               </StatusBadge>
             </div>
+            <OutcomeAxisSummary
+              executionLabel={RUN_EXECUTION_AXIS_LABELS[run.status]}
+              outcomeStatus={run.outcomeStatus}
+            />
+            <OutcomeConditionList
+              runId={run.id}
+              run={run}
+              evidenceItems={evidence?.items ?? []}
+              onEdit={(row) => {
+                if (row.entry.scope === 'scenario') {
+                  onSelectDraftStep(null)
+                  return
+                }
+                onSelectDraftStep(row.entry.sourceStepId ?? selectedDraftStepId)
+              }}
+            />
             <PlacementHint placement={run.placement} />
             {run.authCheckpoint ? (
               <div className='space-y-2 rounded-md border border-border-card bg-muted/30 p-3'>
@@ -161,6 +184,7 @@ export function TrialPanel({
               eventSeq={eventSeq}
               onRunChanged={refresh}
             />
+            <RunVideoSection run={run} items={evidence?.items ?? []} />
             <p className='text-small text-muted-foreground'>
               冻结版本 {run.scenarioVersionId}
               {run.startedAt ? ` · 开始 ${new Date(run.startedAt).toLocaleString()}` : ''}
@@ -215,7 +239,10 @@ export function TrialPanel({
                       </p>
                     ) : null}
                     <AiAttemptSummary output={latestAttempt.output} evidence={attemptEvidence} />
-                    {screenshot ? <AttemptEvidenceList runId={run.id} items={[screenshot]} /> : null}
+                    {(() => {
+                      const face = stepRun ? stepFaceScreenshot(stepRun.attempts, evidence?.items ?? []) : screenshot
+                      return face ? <StepFaceScreenshot runId={run.id} item={face} /> : null
+                    })()}
                   </div>
                 ) : null}
               </div>

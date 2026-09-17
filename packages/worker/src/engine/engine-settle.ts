@@ -67,7 +67,12 @@ export const RUN_SETTLERS: readonly RunSettler[] = [
   {
     name: 'outcomeResults',
     applies(row) {
-      return Boolean(row && isHaltedRunStatus(row.status) && row.snapshot.outcomeManifest?.entries.length)
+      return Boolean(
+        row &&
+          isHaltedRunStatus(row.status) &&
+          (row.snapshot.outcomeManifest?.entries.length ||
+            row.snapshot.runtimeInvariantManifest?.entries.length),
+      )
     },
     async settle(db, runId, row) {
       await settleRunOutcome(db, runId, row)

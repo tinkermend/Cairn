@@ -84,6 +84,7 @@ export const MISSING_REASON_LABELS: Record<string, string> = {
   upload_incomplete: '上传未完成',
   trace_too_large: 'Trace 超过体积上限，未上传',
   capture_failed: '采集失败，没有留下可用字节',
+  video_too_large: '录像超过体积上限，且没有可播前缀',
 }
 
 export function missingReasonLabel(reason: string): string {

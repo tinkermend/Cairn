@@ -3,6 +3,8 @@ import { atomic, locked, schemaFor } from '../native.js'
 import { and, asc, count, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import {
   compileScenarioDocument,
+  deriveOutcomeManifest,
+  deriveRuntimeInvariantManifest,
   expandAuthoringDocument,
   type ExpansionResult,
   type LoadedModuleVersion,
@@ -15,6 +17,7 @@ import {
   deletePreviewResponseSchema,
   isAuthoringDocumentV2,
   authoringHasModuleInvocations,
+  authoringHasOutcomes,
   authoringNodeId,
   normalizeAuthoringDocument,
   parseScenarioDocument,
@@ -90,6 +93,19 @@ function sourceDocumentDigest(value: unknown): string {
   return sha256Hex(scenarioDocumentSchema.parse(value))
 }
 
+function authoringExtrasDigest(input: {
+  authoringDocument?: ScenarioAuthoringDocumentV2 | null
+  definition?: ScenarioDefinition | null
+}): string {
+  return sha256Hex({
+    runtimeInvariantManifest: deriveRuntimeInvariantManifest(input.authoringDocument ?? null) ?? null,
+    outcomeManifest: deriveOutcomeManifest({
+      authoringDocument: input.authoringDocument ?? null,
+      definition: input.definition ?? null,
+    }) ?? null,
+  })
+}
+
 function isDraftDirty(draftDocument: unknown, publishedDefinition: unknown): boolean {
   try {
     return sourceDocumentDigest(draftDocument) !== sourceDocumentDigest(publishedDefinition)
@@ -133,11 +149,13 @@ function compileDocument(
   target: { exists: boolean; status: 'active' | 'disabled' },
   mode: 'save' | 'release',
   options?: ScenarioCompileOptions,
+  outcomeManifest?: ReturnType<typeof deriveOutcomeManifest> | { entries: [] },
 ): CompileResult {
   return compileScenarioDocument(document, {
     mode,
     target,
     executableTypes: mode === 'save' ? undefined : options?.executableTypes,
+    ...(outcomeManifest !== undefined ? { outcomeManifest } : {}),
   })
 }
 
@@ -389,7 +407,13 @@ async function toDetailDto(
         .filter((s): s is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => s.kind === 'step')
         .map((s) => s.step),
     }
-    compiled = compileDocument(legacyDoc, target, 'release', options)
+    compiled = compileDocument(
+      legacyDoc,
+      target,
+      'release',
+      options,
+      deriveOutcomeManifest({ authoringDocument: authoringDoc }) ?? { entries: [] },
+    )
   }
   const dirty = draft ? isDraftDirty(draft.document, latest.definition) : false
   return scenarioDetailSchema.parse({
@@ -734,10 +758,17 @@ export async function saveScenarioDraft(
           '草稿已包含动作模块调用，旧客户端不能覆盖为 V1 文档。请更新编辑器。',
         )
       }
+      if (authoringHasOutcomes(existingDoc) && !isAuthoringDocumentV2(input.document)) {
+        throw badRequest(
+          'AUTHORING_SCHEMA_UNSUPPORTED',
+          '草稿已包含成功条件或运行期约束，旧客户端不能覆盖为 V1 文档。请更新编辑器。',
+        )
+      }
       const hasModuleInvocations = authoringHasModuleInvocations(document)
+      const hasOutcomes = authoringHasOutcomes(document)
       const isV2 = isAuthoringDocumentV2(input.document) || isV2Document(input.document)
       let savedDoc: unknown
-      if (isV2 || hasModuleInvocations) {
+      if (isV2 || hasModuleInvocations || hasOutcomes) {
         savedDoc = document
       } else {
         const legacyDoc: ScenarioDocument = {
@@ -818,9 +849,24 @@ export async function publishScenarioDraft(
           diagnostics: expandResult.diagnostics,
         })
       }
-      const compiled = throwIfBlocked(compileDocument(expandResult.definition!, target, 'release', input))
+      const compiled = throwIfBlocked(
+        compileDocument(
+          expandResult.definition!,
+          target,
+          'release',
+          input,
+          expandResult.outcomeManifest ?? { entries: [] },
+        ),
+      )
       const latest = await latestPublishedVersion(tx as unknown as Db, scenarioId)
-      if (sourceDocumentDigest(compiled.definition) === sourceDocumentDigest(latest.definition)) {
+      if (
+        sourceDocumentDigest(compiled.definition) === sourceDocumentDigest(latest.definition) &&
+        authoringExtrasDigest({ authoringDocument: authoringDoc, definition: compiled.definition }) ===
+          authoringExtrasDigest({
+            authoringDocument: latest.authoringDocument ?? null,
+            definition: latest.definition,
+          })
+      ) {
         return
       }
       const versionNo = publishedVersionNo(latest) + 1
@@ -908,17 +954,22 @@ export async function prepareTrialVersion(
           diagnostics: expandResult.diagnostics,
         })
       }
-      const compiled = throwIfBlocked(compileDocument(expandResult.definition!, target, 'release', input))
+      const compiled = throwIfBlocked(
+        compileDocument(
+          expandResult.definition!,
+          target,
+          'release',
+          input,
+          expandResult.outcomeManifest ?? { entries: [] },
+        ),
+      )
       try {
         assertRunFromResolved(compiled.definition.steps, input.runInput)
       } catch (error) {
         if (error instanceof ScenarioValidationError) throw badRequest(error.code, error.message)
         throw error
       }
-      const digest =
-        expandResult.manifest.entries.length > 0
-          ? expandResult.sourceDigest
-          : sourceDocumentDigest(compiled.definition)
+      const digest = expandResult.sourceDigest
       const [existing] = await tx
         .select()
         .from(scenarioVersions)

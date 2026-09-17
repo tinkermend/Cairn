@@ -23,6 +23,7 @@ import {
 import {
   type AuthoringNode,
   type OutcomeContract,
+  type RuntimeInvariant,
   type RunSnapshot,
   type SessionGrant,
   type Step,
@@ -222,6 +223,8 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
   let workerId: string
   let workerInstanceId: string
   let browserBehavior: 'pass' | 'fail_assertion' | 'fail_infra' = 'pass'
+  let executeCalls = 0
+  let surfaceMatches: { role: string; text: string }[] = []
 
   async function openLease(runId: string, fencingToken: number): Promise<SessionGrant> {
     const account = newId()
@@ -288,7 +291,11 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
         holderInstanceId: workerInstanceId,
       }).catch(() => undefined)
     },
+    async probeErrorSurface() {
+      return surfaceMatches
+    },
     async execute(): Promise<BrowserCommandResult> {
+      executeCalls += 1
       if (browserBehavior === 'fail_assertion') {
         return {
           ok: false,
@@ -355,6 +362,8 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
 
   beforeEach(() => {
     browserBehavior = 'pass'
+    executeCalls = 0
+    surfaceMatches = []
   })
 
   async function claimThis(runId: string) {
@@ -380,6 +389,7 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
     name: string
     nodes: AuthoringNode[]
     scenarioOutcomes?: OutcomeContract[]
+    runtimeInvariants?: RuntimeInvariant[]
   }) {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
@@ -392,6 +402,7 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
       authoringSchemaVersion: 2 as const,
       nodes: input.nodes,
       scenarioOutcomes: input.scenarioOutcomes,
+      runtimeInvariants: input.runtimeInvariants,
     }
 
     await saveScenarioDraft(handle.db, scenario.id, {
@@ -608,5 +619,116 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
       verdict: 'UNKNOWN',
       actual: null,
     })
+  })
+
+  function clickStep(id: string): Step {
+    return {
+      id,
+      name: '点击',
+      type: 'click',
+      effectType: 'SIDE_EFFECT',
+      input: { target: { framePath: [], candidates: [{ by: 'css', value: '#action-btn' }] } },
+    }
+  }
+
+  function surfaceInvariant(id: string, onViolation: 'halt' | 'continue'): RuntimeInvariant {
+    return {
+      id,
+      meaning: '不得出现系统错误弹窗',
+      kind: 'error_surface',
+      severity: 'MUST',
+      onViolation,
+      evaluateAt: 'before_side_effect',
+    }
+  }
+
+  it('OCC-07：error_surface + halt 跳过执行器并截断后续步', async () => {
+    surfaceMatches = [{ role: 'alertdialog', text: '系统异常' }]
+    const invariantId = newId()
+    const step1Id = newId()
+    const step2Id = newId()
+    const scenario = await createScenarioWithNodes({
+      name: '错误弹窗停机',
+      nodes: [
+        { kind: 'step', step: clickStep(step1Id) },
+        { kind: 'step', step: { id: step2Id, name: '后续', type: 'echo', effectType: 'READ_ONLY', input: { value: 'skip' } } },
+      ],
+      runtimeInvariants: [surfaceInvariant(invariantId, 'halt')],
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    expect(created.detail.snapshot.runtimeInvariantManifest?.entries).toHaveLength(1)
+    const grant = await claimThis(created.detail.id)
+    await engine.execute(created.detail.id, { grant })
+
+    expect(executeCalls).toBe(0)
+    const run = await getRun(handle.db, created.detail.id)
+    expect(run.status).toBe('FAILED')
+    expect(run.stepRuns.find((item) => item.stepId === step2Id)?.status).toBe('SKIPPED')
+    const detail = await loadRunDetail(handle.db, created.detail.id)
+    expect(detail?.outcomeStatus).toBe('FAIL')
+    expect(detail?.outcomeResults.some((row) => row.contractId === invariantId && row.verdict === 'FAIL')).toBe(true)
+    expect(detail?.stepRuns.find((item) => item.stepId === step1Id)?.attempts[0]?.error).toMatchObject({
+      code: 'ERROR_SURFACE_VIOLATED',
+    })
+  })
+
+  it('OCC-05：探测抛错按未观察处理，不得写成 PASS', async () => {
+    const originalProbe = mockBrowser.probeErrorSurface
+    mockBrowser.probeErrorSurface = async () => {
+      throw new Error('page gone')
+    }
+    try {
+      const invariantId = newId()
+      const scenario = await createScenarioWithNodes({
+        name: '探测失败不写通过',
+        nodes: [{ kind: 'step', step: clickStep(newId()) }],
+        runtimeInvariants: [surfaceInvariant(invariantId, 'continue')],
+      })
+      const created = await createRunWithSnapshot(handle.db, {
+        scenarioId: scenario.id,
+        actor: { id: actorId },
+      })
+      const grant = await claimThis(created.detail.id)
+      await engine.execute(created.detail.id, { grant })
+      const detail = await loadRunDetail(handle.db, created.detail.id)
+      expect(detail?.status).toBe('SUCCEEDED')
+      expect(detail?.outcomeStatus).toBe('UNKNOWN')
+      expect(detail?.outcomeResults.some((row) => row.contractId === invariantId)).toBe(false)
+    } finally {
+      mockBrowser.probeErrorSurface = originalProbe
+    }
+  })
+
+  it('OCC-07：error_surface + continue 跑完且结果轴 FAIL', async () => {
+    surfaceMatches = [{ role: 'alertdialog', text: '系统异常' }]
+    const invariantId = newId()
+    const step1Id = newId()
+    const step2Id = newId()
+    const scenario = await createScenarioWithNodes({
+      name: '错误弹窗继续',
+      nodes: [
+        { kind: 'step', step: clickStep(step1Id) },
+        { kind: 'step', step: { id: step2Id, name: '后续', type: 'echo', effectType: 'READ_ONLY', input: { value: 'after' } } },
+      ],
+      runtimeInvariants: [surfaceInvariant(invariantId, 'continue')],
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    expect(created.detail.snapshot.runtimeInvariantManifest?.entries).toHaveLength(1)
+    const grant = await claimThis(created.detail.id)
+    await engine.execute(created.detail.id, { grant })
+
+    expect(executeCalls).toBe(1)
+    const run = await getRun(handle.db, created.detail.id)
+    expect(run.status).toBe('SUCCEEDED')
+    expect(run.stepRuns.find((item) => item.stepId === step2Id)?.status).toBe('SUCCEEDED')
+    const detail = await loadRunDetail(handle.db, created.detail.id)
+    expect(detail?.outcomeStatus).toBe('FAIL')
+    expect(detail?.outcomeResults.some((row) => row.contractId === invariantId && row.verdict === 'FAIL')).toBe(true)
   })
 })

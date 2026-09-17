@@ -4,10 +4,14 @@ import {
   type CompileDiagnostic,
   type EffectType,
   type ExecutableStepType,
+  type OutcomeContract,
   type OutputShape,
   type ScenarioInputDecl,
   type Step,
 } from '@cairn/shared'
+import { OutcomeListEditor } from './outcome-editor'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -30,7 +34,9 @@ type StepEditorProps = {
   editableTypes: readonly ExecutableStepType[]
   diagnostics: CompileDiagnostic[]
   disabled?: boolean
+  outcomes?: OutcomeContract[]
   onChange: (step: Step) => void
+  onOutcomesChange?: (outcomes: OutcomeContract[]) => void
   onRequestTypeChange: (type: ExecutableStepType) => void
 }
 
@@ -42,7 +48,9 @@ export function StepEditor({
   editableTypes,
   diagnostics,
   disabled,
+  outcomes,
   onChange,
+  onOutcomesChange,
   onRequestTypeChange,
 }: StepEditorProps) {
   const own = diagnostics.filter((item) => item.stepId === step.id)
@@ -57,6 +65,7 @@ export function StepEditor({
 
   return (
     <div className='space-y-5'>
+      <section className='space-y-5' aria-label='操作'>
       <div className='space-y-2'>
         <Label htmlFor={fieldElementId(step.id, ['name'])}>步骤名称</Label>
         <Input
@@ -159,6 +168,23 @@ export function StepEditor({
           />
         </div>
       ) : null}
+      </section>
+      {onOutcomesChange ? (
+        <OutcomeListEditor
+          outcomes={outcomes ?? []}
+          scope='step'
+          disabled={disabled}
+          onChange={onOutcomesChange}
+        />
+      ) : null}
+      <Collapsible>
+        <CollapsibleTrigger asChild>
+          <Button type='button' variant='ghost' size='sm' className='gap-1'>
+            高级
+            <ChevronDown className='size-3.5' />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className='space-y-5 pt-3'>
       <div className='grid gap-3 sm:grid-cols-2'>
         <div className='space-y-2'>
           <Label htmlFor={fieldElementId(step.id, ['policy', 'timeoutMs'])}>
@@ -214,6 +240,8 @@ export function StepEditor({
           />
         </div>
       </div>
+        </CollapsibleContent>
+      </Collapsible>
       {own.length > 0 ? (
         <ul
           id={`studio-step-diagnostics-${step.id}`}

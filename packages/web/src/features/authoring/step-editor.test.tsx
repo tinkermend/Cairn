@@ -215,4 +215,27 @@ describe('StepEditor', () => {
       .element(screen.getByRole('option', { name: /orderNo/ }))
       .toBeInTheDocument()
   })
+
+  it('成功条件默认展开，超时进入高级区', async () => {
+    const screen = await render(
+      withObserve(
+        <StepEditor
+          step={click}
+          index={0}
+          bindings={[]}
+          shapes={new Map()}
+          editableTypes={EXECUTABLE_STEP_TYPES.filter((type) => type !== 'assert' && type !== 'ai_assert')}
+          diagnostics={[]}
+          outcomes={[]}
+          onChange={vi.fn()}
+          onOutcomesChange={vi.fn()}
+          onRequestTypeChange={vi.fn()}
+        />,
+      ),
+    )
+    await expect.element(screen.getByRole('heading', { name: '成功条件' })).toBeInTheDocument()
+    await expect.element(screen.getByLabelText('超时（毫秒，可选）')).not.toBeInTheDocument()
+    await screen.getByRole('button', { name: '高级' }).click()
+    await expect.element(screen.getByLabelText('超时（毫秒，可选）')).toBeInTheDocument()
+  })
 })

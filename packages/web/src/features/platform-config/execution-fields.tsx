@@ -54,6 +54,26 @@ export function ExecutionFields({ canWrite }: { canWrite: boolean }) {
         )}
       />
       <FormField
+        name='runtimeInvariants.allowEachStepProbe'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
+            <div>
+              <FormLabel>允许每步探测错误弹窗</FormLabel>
+              <FormDescription>
+                出厂关闭。打开后仍须在场景里显式选择「每一步后探测」；已开始的运行以快照为准。
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
         name='mapExplorationEnabled'
         render={({ field }) => (
           <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>

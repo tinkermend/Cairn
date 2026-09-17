@@ -7,6 +7,7 @@ import {
 import {
   deterministicStepId,
   expandAuthoringDocument,
+  resolveOutcomeWriteback,
   type ExpansionContext,
 } from '../index.js'
 
@@ -333,5 +334,75 @@ describe('OC-A: 编写展开与契约派生 (expand-outcome)', () => {
     expect(r1.definition?.steps).toEqual(r2.definition?.steps)
     expect(r1.outcomeManifest).toEqual(r2.outcomeManifest)
     expect(r1.sourceDigest).toBe(r2.sourceDigest)
+  })
+
+  it('派生 stepId 回写到 sourceStepId 与 contractId，而不是源动作步', () => {
+    const contract: OutcomeContract = {
+      id: '20000000-0000-4000-8000-000000000009',
+      scope: 'step',
+      meaning: '提交成功',
+      severity: 'MUST',
+      onViolation: 'halt',
+      provenance: 'manual',
+      rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+    }
+    const doc: ScenarioAuthoringDocumentV2 = {
+      authoringSchemaVersion: 2,
+      schemaVersion: 1,
+      inputs: [],
+      nodes: [{ kind: 'step', step: clickStep, outcomes: [contract] }],
+    }
+    const expanded = expandAuthoringDocument(doc, makeContext())
+    expect(expanded.ok).toBe(true)
+    const derivedId = deterministicStepId(clickStep.id, contract.id)
+    expect(resolveOutcomeWriteback(expanded.outcomeManifest, derivedId)).toEqual({
+      contractId: contract.id,
+      sourceStepId: clickStep.id,
+      scope: 'step',
+    })
+    expect(resolveOutcomeWriteback(expanded.outcomeManifest, clickStep.id)).toBeUndefined()
+    expect(resolveOutcomeWriteback(expanded.outcomeManifest, 'not-a-step')).toBeUndefined()
+  })
+
+  it('展开冻结 runtimeInvariantManifest，非法 evaluateAt 记编译错误', () => {
+    const doc: ScenarioAuthoringDocumentV2 = {
+      authoringSchemaVersion: 2,
+      schemaVersion: 1,
+      inputs: [],
+      nodes: [{ kind: 'step', step: clickStep }],
+      runtimeInvariants: [
+        {
+          id: '20000000-0000-4000-8000-000000000010',
+          meaning: '不得离开允许的访问范围',
+          kind: 'navigation_boundary',
+          severity: 'MUST',
+          onViolation: 'halt',
+          evaluateAt: 'step_boundary',
+        },
+      ],
+    }
+    const expanded = expandAuthoringDocument(doc, makeContext())
+    expect(expanded.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+    expect(expanded.ok).toBe(true)
+    expect(expanded.runtimeInvariantManifest?.entries).toHaveLength(1)
+
+    const invalid = expandAuthoringDocument(
+      {
+        ...doc,
+        runtimeInvariants: [
+          {
+            id: '20000000-0000-4000-8000-000000000011',
+            meaning: '不得出现系统错误弹窗',
+            kind: 'error_surface',
+            severity: 'MUST',
+            onViolation: 'halt',
+            evaluateAt: 'step_boundary',
+          },
+        ],
+      },
+      makeContext(),
+    )
+    expect(invalid.ok).toBe(false)
+    expect(invalid.diagnostics.some((item) => item.code === 'RUNTIME_INVARIANT_INVALID')).toBe(true)
   })
 })

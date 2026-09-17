@@ -320,4 +320,28 @@ describe('OCA-13 digest 不漂移反向验收', () => {
     const newDigest = syncSha256(canonicalJson(newPayload))
     expect(newDigest).not.toBe(oldDigest)
   })
+
+  it('runtimeInvariantManifest 缺省不进 digest，写入后摘要变化', () => {
+    const parsedOld = runSnapshotSchema.parse(baseHistoricalSnapshot)
+    expect(parsedOld.runtimeInvariantManifest).toBeUndefined()
+    expect('runtimeInvariantManifest' in snapshotDigestPayload(parsedOld)).toBe(false)
+    const oldDigest = syncSha256(canonicalJson(snapshotDigestPayload(parsedOld)))
+    const parsedNew = runSnapshotSchema.parse({
+      ...baseHistoricalSnapshot,
+      runtimeInvariantManifest: {
+        entries: [
+          {
+            id: validContractId,
+            meaning: '不得离开允许的访问范围',
+            kind: 'navigation_boundary',
+            severity: 'MUST',
+            onViolation: 'halt',
+            evaluateAt: 'step_boundary',
+          },
+        ],
+      },
+    })
+    expect('runtimeInvariantManifest' in snapshotDigestPayload(parsedNew)).toBe(true)
+    expect(syncSha256(canonicalJson(snapshotDigestPayload(parsedNew)))).not.toBe(oldDigest)
+  })
 })

@@ -44,6 +44,16 @@ describe('平台配置默认值单源', () => {
     expect(platformConfigDocumentSchema.parse(minimal)).toEqual(FACTORY_PLATFORM_CONFIG)
   })
 
+  it('旧文档缺证据录像字段时补出厂值，与出厂配置同源', () => {
+    const { video: _mode, retainDays, ...evidence } = FACTORY_PLATFORM_CONFIG.evidence
+    const { video: _days, ...legacyRetainDays } = retainDays
+    const parsed = platformConfigDocumentSchema.parse({
+      ...FACTORY_PLATFORM_CONFIG,
+      evidence: { ...evidence, retainDays: legacyRetainDays },
+    })
+    expect(parsed.evidence).toEqual(FACTORY_PLATFORM_CONFIG.evidence)
+  })
+
   it('平台 AI 出厂值不是另抄的一份字面量', () => {
     const { platformAi: _dropped, ...legacy } = FACTORY_PLATFORM_CONFIG
     expect(platformConfigDocumentSchema.parse(legacy).platformAi).toEqual(
@@ -83,6 +93,29 @@ describe('平台配置文档版本升级', () => {
         expect.objectContaining({ code: PLATFORM_CONFIG_SCHEMA_UNSUPPORTED }),
       )
     }
+  })
+
+  it('存量文档补录像字段且不改已有截图策略，也不占一个 schema 版本', () => {
+    const stored = {
+      ...FACTORY_PLATFORM_CONFIG,
+      schemaVersion: PLATFORM_CONFIG_SCHEMA_VERSION,
+      evidence: {
+        screenshot: 'on_failure' as const,
+        trace: 'off' as const,
+        retainDays: {
+          screenshot: 30,
+          trace: 14,
+          debugTrace: 7,
+        },
+      },
+    }
+    const read = upgradePlatformConfigDocument(stored)
+    expect(read.schemaVersion).toBe(PLATFORM_CONFIG_SCHEMA_VERSION)
+    expect(read.evidence.screenshot).toBe('on_failure')
+    expect(read.evidence.video).toBe(FACTORY_PLATFORM_CONFIG.evidence.video)
+    expect(read.evidence.retainDays.video).toBe(
+      FACTORY_PLATFORM_CONFIG.evidence.retainDays.video,
+    )
   })
 
   it('内容非法仍按 Schema 报错，不被升级流程吞掉', () => {
@@ -195,6 +228,13 @@ describe('平台配置契约', () => {
     expect(parsed.moduleQuality.windowDays).toBe(7)
     expect(parsed.moduleQuality.minSamples).toBe(10)
     expect('moduleQuality' in legacy).toBe(false)
+  })
+
+  it('旧修订没有 runtimeInvariants 时补出厂关闭逐步探测', () => {
+    const { runtimeInvariants: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.runtimeInvariants).toEqual({ allowEachStepProbe: false })
+    expect('runtimeInvariants' in legacy).toBe(false)
   })
 
   it('旧修订没有 moduleFallback 时补出厂关闭', () => {
@@ -354,7 +394,7 @@ describe('平台配置契约', () => {
       const platform = {
         ...FACTORY_PLATFORM_CONFIG.evidence,
         trace: platformMode,
-        retainDays: { screenshot: 30, trace: 21, debugTrace: 5 },
+        retainDays: { screenshot: 30, video: 14, trace: 21, debugTrace: 5 },
       }
       for (const mode of ['off', 'on_failure', 'always'] as const) {
         expect(resolvePlatformEvidencePolicy({ trace: mode }, platform).retainDays.trace).toBe(

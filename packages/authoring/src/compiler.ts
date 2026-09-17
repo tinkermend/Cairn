@@ -10,6 +10,8 @@ import {
   type CompileDiagnostic,
   type CompileDiagnosticCode,
   type CompileResult,
+  type OutcomeManifest,
+  type OutcomeManifestEntry,
   type ScenarioDocument,
   type Step,
 } from '@cairn/shared'
@@ -197,12 +199,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
     }
   }
 
-  if (
-    document.steps.some((step) => stepUsesBrowser(step.type)) &&
-    !document.steps.some((step) => step.type === 'assert' || step.type === 'ai_assert')
-  ) {
-    add(diagnostics, 'SCENARIO_NO_ASSERT', 'warning', '含浏览器步骤的场景没有断言')
-  }
+  addOutcomeCoverageDiagnostics(diagnostics, document, ctx.outcomeManifest)
 
   if (ctx.target) {
     if (!ctx.target.exists) {
@@ -217,5 +214,69 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
     compilerVersion: COMPILER_VERSION,
     definition: document,
     diagnostics,
+  }
+}
+
+function synthesizedOutcomeEntries(document: ScenarioDocument): OutcomeManifestEntry[] {
+  return document.steps
+    .filter((step) => step.type === 'assert' || step.type === 'ai_assert')
+    .map((step) => ({
+      contractId: step.id,
+      scope: 'step' as const,
+      meaning: step.name,
+      severity: 'MUST' as const,
+      onViolation: 'halt' as const,
+      provenance: 'legacy_assert' as const,
+      stepId: step.id,
+      rule:
+        step.type === 'assert'
+          ? { kind: 'deterministic' as const, expect: step.input.expect }
+          : { kind: 'ai' as const, instruction: step.input.instruction },
+    }))
+}
+
+function addOutcomeCoverageDiagnostics(
+  diagnostics: CompileDiagnostic[],
+  document: ScenarioDocument,
+  manifest?: OutcomeManifest | null,
+): void {
+  const hasBrowser = document.steps.some((step) => stepUsesBrowser(step.type))
+  if (!hasBrowser) return
+
+  const entries = manifest?.entries ?? synthesizedOutcomeEntries(document)
+  if (entries.length === 0) {
+    add(diagnostics, 'SCENARIO_NO_OUTCOME', 'warning', '含浏览器步骤的场景没有成功条件')
+    return
+  }
+
+  const active = entries.filter((entry) => entry.severity !== 'INFO')
+  if (active.length === 0) {
+    add(diagnostics, 'SCENARIO_OUTCOME_INFO_ONLY', 'warning', '场景只有提示级成功条件，没有必须或应当成立的条件')
+  }
+
+  if (active.some((entry) => entry.scope === 'scenario')) return
+
+  const indexByStepId = new Map(document.steps.map((step, index) => [step.id, index]))
+  const coveringIndexes = active
+    .map((entry) => {
+      const source = entry.sourceStepId ? indexByStepId.get(entry.sourceStepId) : undefined
+      const bound = indexByStepId.get(entry.stepId)
+      if (source !== undefined && bound !== undefined) return Math.min(source, bound)
+      return source ?? bound
+    })
+    .filter((index): index is number => index !== undefined)
+  const lastCover = coveringIndexes.length > 0 ? Math.max(...coveringIndexes) : -1
+
+  for (const [index, step] of document.steps.entries()) {
+    if (!stepUsesBrowser(step.type) || step.effectType !== 'SIDE_EFFECT') continue
+    if (lastCover < index) {
+      add(
+        diagnostics,
+        'SCENARIO_SIDE_EFFECT_WITHOUT_OUTCOME',
+        'warning',
+        `步骤「${step.name}」会改动页面，其后没有成功条件`,
+        { stepId: step.id },
+      )
+    }
   }
 }

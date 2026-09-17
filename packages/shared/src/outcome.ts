@@ -28,6 +28,7 @@ export const OUTCOME_PROVENANCES = [
   'recorded',
   'ai_compiled',
   'legacy_assert',
+  'runtime_invariant',
 ] as const
 export type OutcomeProvenance = (typeof OUTCOME_PROVENANCES)[number]
 export const outcomeProvenanceSchema = z.enum(OUTCOME_PROVENANCES)
@@ -155,6 +156,15 @@ export type OutcomeResultEvaluation = {
   verdict: OutcomeVerdict
 }
 
+export function foldOutcomeVerdicts(verdicts: readonly OutcomeVerdict[]): OutcomeVerdict | undefined {
+  if (verdicts.length === 0) return undefined
+  if (verdicts.includes('FAIL')) return 'FAIL'
+  if (verdicts.includes('UNKNOWN')) return 'UNKNOWN'
+  if (verdicts.includes('WARN')) return 'WARN'
+  if (verdicts.includes('PASS')) return 'PASS'
+  return undefined
+}
+
 /**
  * Run 级结果轴聚合纯函数。
  * 按既定瀑布顺序判定（先判未知再判结论）：
@@ -168,52 +178,51 @@ export type OutcomeResultEvaluation = {
 export function aggregateRunOutcomeStatus(
   manifest?: OutcomeManifest | null,
   results?: readonly OutcomeResultEvaluation[] | null,
+  invariantManifest?: { entries: readonly { id: string; severity: OutcomeSeverity }[] } | null,
 ): OutcomeStatus {
-  if (!manifest || !Array.isArray(manifest.entries) || manifest.entries.length === 0) {
-    return 'NOT_EVALUATED'
-  }
+  const activeEntries = [
+    ...(manifest?.entries ?? []).map((entry) => ({ id: entry.contractId, severity: entry.severity })),
+    ...(invariantManifest?.entries ?? []).map((entry) => ({ id: entry.id, severity: entry.severity })),
+  ].filter((entry) => entry.severity !== 'INFO')
 
-  const resultsByContractId = new Map<string, OutcomeVerdict>()
-  for (const item of results ?? []) {
-    resultsByContractId.set(item.contractId, item.verdict)
-  }
-
-  const activeEntries = manifest.entries.filter((e) => e.severity !== 'INFO')
   if (activeEntries.length === 0) {
     return 'NOT_EVALUATED'
   }
 
-  // 2. 检查是否存在未求值或为 UNKNOWN 的 MUST 条件
+  const verdictsByContractId = new Map<string, OutcomeVerdict[]>()
+  for (const item of results ?? []) {
+    const list = verdictsByContractId.get(item.contractId) ?? []
+    list.push(item.verdict)
+    verdictsByContractId.set(item.contractId, list)
+  }
+
   for (const entry of activeEntries) {
     if (entry.severity === 'MUST') {
-      const verdict = resultsByContractId.get(entry.contractId)
+      const verdict = foldOutcomeVerdicts(verdictsByContractId.get(entry.id) ?? [])
       if (!verdict || verdict === 'UNKNOWN') {
         return 'UNKNOWN'
       }
     }
   }
 
-  // 3. 检查是否存在失败的 MUST 条件
   for (const entry of activeEntries) {
     if (entry.severity === 'MUST') {
-      const verdict = resultsByContractId.get(entry.contractId)
+      const verdict = foldOutcomeVerdicts(verdictsByContractId.get(entry.id) ?? [])
       if (verdict === 'FAIL') {
         return 'FAIL'
       }
     }
   }
 
-  // 4. 检查是否存在失败的 SHOULD 条件
   for (const entry of activeEntries) {
     if (entry.severity === 'SHOULD') {
-      const verdict = resultsByContractId.get(entry.contractId)
+      const verdict = foldOutcomeVerdicts(verdictsByContractId.get(entry.id) ?? [])
       if (verdict === 'FAIL') {
         return 'WARN'
       }
     }
   }
 
-  // 5. 其余已求值
   return 'PASS'
 }
 
@@ -230,35 +239,34 @@ export function aggregateStepRunOutcomeStatus(
     return 'NOT_EVALUATED'
   }
 
-  const resultsByContractId = new Map<string, OutcomeVerdict>()
+  const verdictsByContractId = new Map<string, OutcomeVerdict[]>()
   for (const item of results ?? []) {
-    resultsByContractId.set(item.contractId, item.verdict)
+    const list = verdictsByContractId.get(item.contractId) ?? []
+    list.push(item.verdict)
+    verdictsByContractId.set(item.contractId, list)
   }
 
-  // 检查未求值或 UNKNOWN 的 MUST 条件
   for (const contract of activeContracts) {
     if (contract.severity === 'MUST') {
-      const verdict = resultsByContractId.get(contract.id)
+      const verdict = foldOutcomeVerdicts(verdictsByContractId.get(contract.id) ?? [])
       if (!verdict || verdict === 'UNKNOWN') {
         return 'UNKNOWN'
       }
     }
   }
 
-  // 检查失败的 MUST 条件
   for (const contract of activeContracts) {
     if (contract.severity === 'MUST') {
-      const verdict = resultsByContractId.get(contract.id)
+      const verdict = foldOutcomeVerdicts(verdictsByContractId.get(contract.id) ?? [])
       if (verdict === 'FAIL') {
         return 'FAIL'
       }
     }
   }
 
-  // 检查失败的 SHOULD 条件
   for (const contract of activeContracts) {
     if (contract.severity === 'SHOULD') {
-      const verdict = resultsByContractId.get(contract.id)
+      const verdict = foldOutcomeVerdicts(verdictsByContractId.get(contract.id) ?? [])
       if (verdict === 'FAIL') {
         return 'WARN'
       }
@@ -266,4 +274,28 @@ export function aggregateStepRunOutcomeStatus(
   }
 
   return 'PASS'
+}
+
+export type JoinedOutcomeEvaluation = {
+  entry: OutcomeManifestEntry
+  result?: OutcomeResultDto
+  displayVerdict: OutcomeStatus
+}
+
+/** 以 manifest 为全集左连接结果行，未求值条件保留为 NOT_EVALUATED。 */
+export function joinOutcomeEvaluations(
+  manifest?: OutcomeManifest | null,
+  results?: readonly OutcomeResultDto[] | null,
+): JoinedOutcomeEvaluation[] {
+  const byContract = new Map<string, OutcomeResultDto>()
+  for (const item of results ?? []) {
+    byContract.set(item.contractId, item)
+  }
+  return (manifest?.entries ?? []).map((entry) => {
+    const result = byContract.get(entry.contractId)
+    if (!result) {
+      return { entry, displayVerdict: 'NOT_EVALUATED' as const }
+    }
+    return { entry, result, displayVerdict: result.verdict }
+  })
 }

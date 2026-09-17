@@ -2,7 +2,7 @@ import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { schemaFor } from '../native.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { and, eq } from 'drizzle-orm'
-import { authoringSteps, type Step } from '@cairn/shared'
+import { authoringSteps, createRuntimeInvariant, type Step } from '@cairn/shared'
 import {
   appendScenarioVersion,
   createRunWithSnapshot,
@@ -208,6 +208,41 @@ describe.each(DRIVERS)('%s 场景草稿 / 发布 / 试跑（集成）', { timeou
     ).rejects.toMatchObject({ code: 'SCENARIO_VERSION_NOT_PUBLISHED' })
   })
 
+  it('只改运行期约束也要新开 trial 版本，快照带上 runtimeInvariantManifest', async () => {
+    const stepId = newId()
+    const invariantId = newId()
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '试跑约束增量',
+      steps: [echoStep(stepId, '回显', { input: { value: 't1' } })],
+      actor: { id: actorId },
+    })
+    const first = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor: { id: actorId },
+    })
+    expect(first.detail.snapshot.runtimeInvariantManifest).toBeUndefined()
+    const saved = await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      document: {
+        authoringSchemaVersion: 2,
+        schemaVersion: 1,
+        inputs: [],
+        nodes: [{ kind: 'step', step: echoStep(stepId, '回显', { input: { value: 't1' } }) }],
+        runtimeInvariants: [createRuntimeInvariant('auth_validity', invariantId)],
+      },
+      actor: { id: actorId },
+    })
+    const next = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: saved.draft!.revision,
+      actor: { id: actorId },
+    })
+    expect(next.detail.scenarioVersionId).not.toBe(first.detail.scenarioVersionId)
+    expect(next.detail.snapshot.runtimeInvariantManifest?.entries).toEqual([
+      expect.objectContaining({ id: invariantId, kind: 'auth_validity' }),
+    ])
+  })
+
   it('缺声明输入值时试跑失败且不落 trial 行', async () => {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
@@ -268,5 +303,147 @@ describe.each(DRIVERS)('%s 场景草稿 / 发布 / 试跑（集成）', { timeou
     await expect(
       publishScenarioDraft(handle.db, scenario.id, { revision: 2, actor: { id: actorId } }),
     ).rejects.toMatchObject({ code: 'SCENARIO_COMPILE_BLOCKED' })
+  })
+
+  it('挂载成功条件后按 V2 保存，改步骤名不丢契约，V1 覆盖被拒', async () => {
+    const stepId = newId()
+    const contractId = newId()
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '成功条件草稿',
+      steps: [echoStep(stepId, '回显', { input: { value: 'x' } })],
+      actor: { id: actorId },
+    })
+    const withOutcome = {
+      authoringSchemaVersion: 2 as const,
+      schemaVersion: 1 as const,
+      inputs: [],
+      nodes: [
+        {
+          kind: 'step' as const,
+          step: echoStep(stepId, '回显', { input: { value: 'x' } }),
+          outcomes: [
+            {
+              id: contractId,
+              scope: 'step' as const,
+              meaning: '回显成功',
+              severity: 'MUST' as const,
+              onViolation: 'halt' as const,
+              provenance: 'manual' as const,
+              rule: { kind: 'deterministic' as const, expect: { kind: 'exists' as const } },
+            },
+          ],
+        },
+      ],
+    }
+    const saved = await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      document: withOutcome,
+      actor: { id: actorId },
+    })
+    expect(saved.draft?.revision).toBe(2)
+    expect(saved.draft?.document).toMatchObject({ authoringSchemaVersion: 2 })
+    const renamed = {
+      ...withOutcome,
+      nodes: [
+        {
+          kind: 'step' as const,
+          step: {
+            id: stepId,
+            name: '点击提交',
+            type: 'click' as const,
+            effectType: 'SIDE_EFFECT' as const,
+            input: { target: { framePath: [], candidates: [{ by: 'label' as const, value: '提交' }] } },
+          },
+          outcomes: withOutcome.nodes[0]!.outcomes,
+        },
+      ],
+    }
+    const again = await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 2,
+      document: renamed,
+      actor: { id: actorId },
+    })
+    const node = (again.draft?.document as typeof renamed).nodes[0]
+    expect(node?.step.name).toBe('点击提交')
+    expect(node?.step.type).toBe('click')
+    expect(node?.outcomes?.[0]?.id).toBe(contractId)
+    expect(again.compile?.diagnostics.some((item) => item.code === 'SCENARIO_NO_OUTCOME')).toBe(false)
+    await expect(
+      saveScenarioDraft(handle.db, scenario.id, {
+        revision: 2,
+        document: {
+          ...renamed,
+          nodes: [
+            {
+              ...renamed.nodes[0]!,
+              step: { ...renamed.nodes[0]!.step, name: '并发覆盖' },
+            },
+          ],
+        },
+        actor: { id: actorId },
+      }),
+    ).rejects.toMatchObject({ code: 'SCENARIO_DRAFT_CONFLICT', kind: 'conflict' })
+    const latest = await getScenario(handle.db, scenario.id)
+    const latestNode = (latest.draft?.document as typeof renamed).nodes[0]
+    expect(latestNode?.outcomes?.[0]?.id).toBe(contractId)
+    await expect(
+      saveScenarioDraft(handle.db, scenario.id, {
+        revision: 3,
+        document: {
+          schemaVersion: 1,
+          inputs: [],
+          steps: [echoStep(stepId, '旧客户端', { input: { value: 'x' } })],
+        },
+        actor: { id: actorId },
+      }),
+    ).rejects.toMatchObject({ code: 'AUTHORING_SCHEMA_UNSUPPORTED' })
+  })
+
+  it('挂载运行期约束后按 V2 保存，V1 覆盖被拒', async () => {
+    const stepId = newId()
+    const invariantId = newId()
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '运行期约束草稿',
+      steps: [echoStep(stepId, '回显', { input: { value: 'x' } })],
+      actor: { id: actorId },
+    })
+    const withInvariant = {
+      authoringSchemaVersion: 2 as const,
+      schemaVersion: 1 as const,
+      inputs: [],
+      nodes: [{ kind: 'step' as const, step: echoStep(stepId, '回显', { input: { value: 'x' } }) }],
+      runtimeInvariants: [
+        {
+          id: invariantId,
+          meaning: '不得离开允许的访问范围',
+          kind: 'navigation_boundary' as const,
+          severity: 'MUST' as const,
+          onViolation: 'halt' as const,
+          evaluateAt: 'step_boundary' as const,
+        },
+      ],
+    }
+    const saved = await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      document: withInvariant,
+      actor: { id: actorId },
+    })
+    expect(saved.draft?.document).toMatchObject({
+      authoringSchemaVersion: 2,
+      runtimeInvariants: [{ id: invariantId }],
+    })
+    await expect(
+      saveScenarioDraft(handle.db, scenario.id, {
+        revision: saved.draft!.revision,
+        document: {
+          schemaVersion: 1 as const,
+          inputs: [],
+          steps: [echoStep(stepId, '回显', { input: { value: 'x' } })],
+        },
+        actor: { id: actorId },
+      }),
+    ).rejects.toMatchObject({ code: 'AUTHORING_SCHEMA_UNSUPPORTED' })
   })
 })

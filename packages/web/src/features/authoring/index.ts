@@ -9,6 +9,7 @@ export {
   defaultTarget,
   isDeterministicStudioType,
   selectableStudioTypes,
+  selectableScenarioStudioTypes,
   stepTypeLabel,
   unavailableStudioTypes,
   type DeterministicStudioType,

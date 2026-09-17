@@ -27,6 +27,12 @@ import { planCandidateFailure, planCandidateHalt, planCandidateSuccess } from '.
 import { chargedAttemptCount, contextValue, evidencePayloadForStep, sessionLeaseFor } from './engine-step-plan.js'
 import { shouldNeedsReview, shouldRetry } from './engine-decisions.js'
 import { collectAttemptOutcomeResults } from './outcome-collector.js'
+import {
+  collectErrorSurfaceResults,
+  ERROR_SURFACE_VIOLATED,
+  mergeErrorSurfaceOutput,
+  shouldProbeErrorSurface,
+} from './error-surface.js'
 import type { AttemptOutcome, ExecutorOutcome } from './engine-types.js'
 import type { ExecutionEngine } from './engine.js'
 
@@ -87,8 +93,9 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
 
     const skipDispatch = Boolean(input.authGate?.restored)
     if (input.authGate?.restored) input.authGate.restored = false
-    let outcome: ExecutorOutcome
+    let outcome: ExecutorOutcome | undefined
     let mapFacts: MapFactBatchItem[] | undefined
+    let beforeMatches: import('@cairn/shared').ErrorSurfaceNode[] | undefined
     if (skipDispatch) {
       outcome = {
         kind: 'failed',
@@ -117,31 +124,110 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         return 'stopped'
       }
 
-      const stepStarted = input.clock.now()
-      outcome = await this.runExecutor({
-        step: input.step,
-        input: input.input,
-        context,
-        timeoutMs: input.policy.timeoutMs,
-        stop: input.stop,
-        clock: input.clock,
-        sessionGrant: input.sessionGrant,
-        runId: input.runId,
-        stepRunId: input.stepRunId,
-        attemptId,
-        targetId: input.targetId,
-        evidencePolicy: input.evidencePolicy,
-        grant: input.grant,
-        snapshot: input.snapshot,
-      })
-      const remainingAfter = Math.max(0, input.policy.timeoutMs - (input.clock.now() - stepStarted))
-      mapFacts = await this.collectAfterFacts({
-        input,
-        attemptId,
-        remainingStepMs: remainingAfter,
-        extraFacts: outcome.mapFacts,
-      })
-      if (outcome.hung) input.taint.hung = true
+      const probeSurface = async () => {
+        if (!input.sessionGrant || !this.browser?.probeErrorSurface) return undefined
+        try {
+          return await this.browser.probeErrorSurface(input.sessionGrant, input.stop)
+        } catch {
+          // 探测失败按未观察处理，不得写成干净页 PASS。
+          return undefined
+        }
+      }
+
+      let skipExecutor = false
+      if (shouldProbeErrorSurface(input.snapshot, input.step, 'before')) {
+        const matches = await probeSurface()
+        beforeMatches = matches
+        if (matches) {
+          const collected = collectErrorSurfaceResults({
+            snapshot: input.snapshot,
+            stepRunId: input.stepRunId,
+            attemptId,
+            now: new Date(input.clock.now()),
+            matches,
+          })
+          if (collected.violated && collected.halt) {
+            skipExecutor = true
+            outcome = {
+              kind: 'failed',
+              error: ERROR_SURFACE_VIOLATED,
+              output: mergeErrorSurfaceOutput(null, { probed: true, matches }),
+              timedOut: false,
+              aborted: false,
+            }
+          }
+        }
+      }
+
+      if (!skipExecutor) {
+        const stepStarted = input.clock.now()
+        outcome = await this.runExecutor({
+          step: input.step,
+          input: input.input,
+          context,
+          timeoutMs: input.policy.timeoutMs,
+          stop: input.stop,
+          clock: input.clock,
+          sessionGrant: input.sessionGrant,
+          runId: input.runId,
+          stepRunId: input.stepRunId,
+          attemptId,
+          targetId: input.targetId,
+          evidencePolicy: input.evidencePolicy,
+          grant: input.grant,
+          snapshot: input.snapshot,
+        })
+        const remainingAfter = Math.max(0, input.policy.timeoutMs - (input.clock.now() - stepStarted))
+        mapFacts = await this.collectAfterFacts({
+          input,
+          attemptId,
+          remainingStepMs: remainingAfter,
+          extraFacts: outcome.mapFacts,
+        })
+        if (outcome.hung) input.taint.hung = true
+      } else {
+        mapFacts = await this.collectAfterFacts({
+          input,
+          attemptId,
+          remainingStepMs: input.policy.timeoutMs,
+          extraFacts: undefined,
+        })
+      }
+    }
+    if (!outcome) {
+      throw new Error('ENGINE_ATTEMPT_OUTCOME_MISSING')
+    }
+
+    let surfaceMatches: import('@cairn/shared').ErrorSurfaceNode[] | undefined
+    if (!skipDispatch && shouldProbeErrorSurface(input.snapshot, input.step, 'after') && outcome.kind === 'success') {
+      if (input.sessionGrant && this.browser?.probeErrorSurface) {
+        try {
+          surfaceMatches = await this.browser.probeErrorSurface(input.sessionGrant, input.stop)
+        } catch {
+          surfaceMatches = undefined
+        }
+      }
+    } else if (outcome.output && typeof outcome.output === 'object' && 'errorSurface' in outcome.output) {
+      const raw = (outcome.output as { errorSurface?: { matches?: import('@cairn/shared').ErrorSurfaceNode[] } }).errorSurface
+      surfaceMatches = raw?.matches
+    } else if (beforeMatches) {
+      surfaceMatches = beforeMatches
+    }
+
+    const surfaceCollected = surfaceMatches
+      ? collectErrorSurfaceResults({
+          snapshot: input.snapshot,
+          stepRunId: input.stepRunId,
+          attemptId,
+          now: new Date(input.clock.now()),
+          matches: surfaceMatches,
+        })
+      : undefined
+    if (surfaceCollected && outcome.kind === 'success') {
+      outcome = {
+        ...outcome,
+        output: mergeErrorSurfaceOutput(outcome.output, { probed: true, matches: surfaceMatches ?? [] }),
+      }
     }
 
     const { outcomeResults: stepOutcomeResults, continueMode } = collectAttemptOutcomeResults({
@@ -151,7 +237,9 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       attemptId,
       now: new Date(input.clock.now()),
     })
-    const outcomeResults = stepOutcomeResults.length > 0 ? stepOutcomeResults : undefined
+    const outcomeResults = [...stepOutcomeResults, ...(surfaceCollected?.results ?? [])]
+    const haltAfterSurface =
+      Boolean(surfaceCollected?.halt && surfaceCollected.violated && outcome.kind === 'success')
 
     // 成功也要看写入结果：取消请求抢先到达时 finishAttempt 会把它改写成取消，此时必须停手。
     // 在 continue 模式下，即便断言失败也视为业务巡检步骤完成，按成功继续下一逻辑步，OutcomeResult 记 FAIL。
@@ -182,8 +270,14 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         screenshot: outcome.screenshot,
         trace: outcome.trace,
         stepRunStatus: 'SUCCEEDED',
-        runStatus: hold ? 'HOLDING' : groupPlan?.last ?? input.last ? 'SUCCEEDED' : undefined,
-        skipRemaining: false,
+        runStatus: hold
+          ? 'HOLDING'
+          : haltAfterSurface
+            ? 'FAILED'
+            : groupPlan?.last ?? input.last
+              ? 'SUCCEEDED'
+              : undefined,
+        skipRemaining: haltAfterSurface,
         skipStepIds: groupPlan?.skipStepIds,
         selectionDecision: groupPlan?.selectionDecision,
         checkpoint: hold
@@ -207,6 +301,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       })
       if (!closed) return input.stop.aborted && !input.yielding() ? 'cancelled' : input.yielding() ? 'yielded' : 'stopped'
       if (hold) return 'await_hold'
+      if (haltAfterSurface) return 'failed'
       return input.last ? 'completed' : 'next'
     }
 

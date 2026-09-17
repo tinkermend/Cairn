@@ -4,8 +4,10 @@ import {
   DEFAULT_EVIDENCE_POLICY,
   DEFAULT_SCREENSHOT_RETAIN_DAYS,
   DEFAULT_TRACE_RETAIN_DAYS,
+  DEFAULT_VIDEO_RETAIN_DAYS,
   evidenceCaptureModeSchema,
   resolveEvidencePolicy,
+  videoCaptureModeSchema,
   type EvidencePolicy,
   type ResolvedEvidencePolicy,
 } from './evidence-policy.js'
@@ -44,6 +46,10 @@ import { FACTORY_RUN_AUTH_RECOVERY, platformRunAuthRecoverySchema } from './sess
 import { isAiStepType, type ExecutionPolicy } from './step.js'
 import { AUTH_METHODS, CAPTCHA_MODES, targetLoginFieldsDtoSchema } from './target.js'
 import { entityIdSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
+import {
+  FACTORY_RUNTIME_INVARIANT_DEFAULTS,
+  platformRuntimeInvariantDefaultsSchema,
+} from './runtime-invariant.js'
 
 export const PLATFORM_CONFIG_SCHEMA_VERSION = 1 as const
 /** 仍能被本版本读取的最早文档版本。低于它的存量文档必须先跑数据迁移。 */
@@ -139,11 +145,22 @@ export const platformSessionDefaultsSchema = z
   })
 export type PlatformSessionDefaults = z.infer<typeof platformSessionDefaultsSchema>
 
+/**
+ * 新产品出厂的录像默认。存量文档缺 video 时按它补齐，与 FACTORY_PLATFORM_CONFIG 同源；
+ * 注意它不同于 DEFAULT_EVIDENCE_POLICY.video（那是历史 Run Snapshot 的解释）。
+ */
+export const FACTORY_EVIDENCE_VIDEO = {
+  mode: 'always',
+  retainDays: DEFAULT_VIDEO_RETAIN_DAYS,
+} as const
+
 export const platformEvidenceDefaultsSchema = z.strictObject({
   screenshot: evidenceCaptureModeSchema,
+  video: videoCaptureModeSchema.default(FACTORY_EVIDENCE_VIDEO.mode),
   trace: evidenceCaptureModeSchema,
   retainDays: z.strictObject({
     screenshot: z.number().int().positive().max(3650),
+    video: z.number().int().positive().max(3650).default(FACTORY_EVIDENCE_VIDEO.retainDays),
     trace: z.number().int().positive().max(3650),
     debugTrace: z.number().int().positive().max(3650),
   }),
@@ -274,6 +291,7 @@ export const platformConfigDocumentSchema = z
     moduleResolver: platformModuleResolverSchema.default(FACTORY_MODULE_RESOLVER),
     moduleQuality: platformModuleQualitySchema.default(FACTORY_MODULE_QUALITY),
     moduleFallback: platformModuleFallbackSchema.default(FACTORY_MODULE_FALLBACK),
+    runtimeInvariants: platformRuntimeInvariantDefaultsSchema.default(FACTORY_RUNTIME_INVARIANT_DEFAULTS),
   })
   .superRefine((document, ctx) => {
     if (document.sessionAuth.verifyTimeoutMs >= document.execution.defaultTimeoutMs) {
@@ -343,10 +361,12 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     evictionPriority: DEFAULT_SESSION_EVICTION_PRIORITY,
   },
   evidence: {
-    screenshot: DEFAULT_EVIDENCE_POLICY.screenshot,
+    screenshot: 'always',
+    video: FACTORY_EVIDENCE_VIDEO.mode,
     trace: DEFAULT_EVIDENCE_POLICY.trace,
     retainDays: {
       screenshot: DEFAULT_SCREENSHOT_RETAIN_DAYS,
+      video: FACTORY_EVIDENCE_VIDEO.retainDays,
       trace: DEFAULT_TRACE_RETAIN_DAYS,
       debugTrace: DEFAULT_DEBUG_TRACE_RETAIN_DAYS,
     },
@@ -368,6 +388,7 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   moduleResolver: FACTORY_MODULE_RESOLVER,
   moduleQuality: FACTORY_MODULE_QUALITY,
   moduleFallback: FACTORY_MODULE_FALLBACK,
+  runtimeInvariants: FACTORY_RUNTIME_INVARIANT_DEFAULTS,
 }
 
 /**
@@ -571,10 +592,12 @@ export function resolvePlatformEvidencePolicy(
   const trace = override?.trace ?? platform.trace
   const base: ResolvedEvidencePolicy = {
     screenshot: platform.screenshot,
+    video: platform.video,
     trace: platform.trace,
     required: [...DEFAULT_EVIDENCE_POLICY.required],
     retainDays: {
       screenshot: platform.retainDays.screenshot,
+      video: platform.retainDays.video,
       trace: trace === 'always' ? platform.retainDays.debugTrace : platform.retainDays.trace,
     },
   }

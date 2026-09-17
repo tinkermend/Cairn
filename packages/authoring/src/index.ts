@@ -3,7 +3,9 @@ export { compileForAssistant } from './assistant-compile.js'
 export { compileModuleContent } from './module-compile.js'
 export {
   deriveOutcomeManifest,
+  deriveRuntimeInvariantManifest,
   deterministicStepId,
+  resolveOutcomeWriteback,
   expandAuthoringDocument,
   moduleContentDigest,
   singleImplementationDigest,

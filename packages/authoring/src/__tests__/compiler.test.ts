@@ -186,10 +186,10 @@ describe('compileScenarioDocument', () => {
       { mode: 'release', target: { exists: true, status: 'active' } },
     )
     expect(asserted.ok).toBe(true)
-    expect(asserted.diagnostics.some((item) => item.code === 'SCENARIO_NO_ASSERT')).toBe(false)
+    expect(asserted.diagnostics.some((item) => item.code === 'SCENARIO_NO_OUTCOME')).toBe(false)
   })
 
-  it('仅 CSS 定位、无断言、未使用输入给出 warning', () => {
+  it('仅 CSS 定位、无成功条件、未使用输入给出 warning', () => {
     const source = document(
       [
         navigate(ids.a),
@@ -215,8 +215,71 @@ describe('compileScenarioDocument', () => {
     expect(result.diagnostics.map((item) => item.code).sort()).toEqual([
       'SCENARIO_EXTRACT_NO_OUTPUT_KEY',
       'SCENARIO_INPUT_UNUSED',
-      'SCENARIO_NO_ASSERT',
+      'SCENARIO_NO_OUTCOME',
       'SCENARIO_WEAK_LOCATOR',
     ])
+  })
+
+  it('只有 INFO 条件时给出业务语义提示且不阻断发布', () => {
+    const source = document([navigate(ids.a), echo(ids.b, '回显', { value: 'ok' })])
+    const result = compileScenarioDocument(source, {
+      mode: 'release',
+      target: { exists: true, status: 'active' },
+      outcomeManifest: {
+        entries: [
+          {
+            contractId: ids.c,
+            scope: 'scenario',
+            meaning: '仅提示',
+            severity: 'INFO',
+            onViolation: 'continue',
+            provenance: 'manual',
+            stepId: ids.c,
+            rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+          },
+        ],
+      },
+    })
+    expect(result.ok).toBe(true)
+    expect(result.diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining(['SCENARIO_OUTCOME_INFO_ONLY', 'SCENARIO_SIDE_EFFECT_WITHOUT_OUTCOME']),
+    )
+  })
+
+  it('副作用步后没有必须或应当条件时给出提示', () => {
+    const source = document([
+      navigate(ids.a),
+      {
+        id: ids.b,
+        name: '点',
+        type: 'click',
+        effectType: 'SIDE_EFFECT',
+        input: { target: { framePath: [], candidates: [{ by: 'label', value: '提交' }] } },
+      },
+    ])
+    const result = compileScenarioDocument(source, {
+      mode: 'release',
+      outcomeManifest: {
+        entries: [
+          {
+            contractId: ids.c,
+            scope: 'step',
+            meaning: '打开后可见',
+            severity: 'MUST',
+            onViolation: 'halt',
+            provenance: 'manual',
+            stepId: ids.d,
+            sourceStepId: ids.a,
+            rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+          },
+        ],
+      },
+    })
+    expect(result.ok).toBe(true)
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SCENARIO_SIDE_EFFECT_WITHOUT_OUTCOME', stepId: ids.b }),
+      ]),
+    )
   })
 })

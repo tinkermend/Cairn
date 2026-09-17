@@ -26,6 +26,7 @@ import {
   runListQuerySchema,
   runListResponseSchema,
   authCheckpointSchema,
+  authGateClosedError,
   computeContextVersion,
   type AiExecutionConfig,
   type CleanupStatus,
@@ -82,7 +83,7 @@ import { runLeases, workers } from '../schema/worker.js'
 import type { Db } from '../client.js'
 import { cancelPendingStepRunsTx, skipRemainingStepRunsTx, skipStepRunsTx } from './step-status.js'
 import { newId } from '../id.js'
-import { attempts, evidences, outcomeResults, runs, scenarios, stepRuns } from '../schema/execution.js'
+import { attempts, evidences, runs, scenarios, stepRuns } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
 import { getPlatformConfig } from '../platform-config/store.js'
 import { appendFinishAttemptMapFactsTx } from '../map/attempt-facts.js'
@@ -92,10 +93,11 @@ import { badRequest, conflict, mapRestriction, notFound } from './errors.js'
 import { toEvidenceMetadata } from '../objects/evidence-map.js'
 import { appendRunEvents } from '../observe/events.js'
 import { loadScenarioVersion, prepareTrialVersion } from './scenarios.js'
-import { deriveOutcomeManifest } from '@cairn/authoring'
+import { deriveOutcomeManifest, deriveRuntimeInvariantManifest } from '@cairn/authoring'
 import {
   saveStepOutcomeResultsTx,
   recalculateRunOutcomeTx,
+  settleRunOutcome,
   type OutcomeResultInsertItem,
 } from './outcome-results.js'
 
@@ -444,7 +446,7 @@ export async function computeRunPlacement(
 }
 
 export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto | null> {
-  const { attempts, runs, scenarioVersions, scenarios, stepRuns, targetAccounts, targets } =
+  const { attempts, outcomeResults, runs, scenarioVersions, scenarios, stepRuns, targetAccounts, targets } =
     schemaFor(db)
   const [joined] = await db
     .select({
@@ -766,6 +768,9 @@ export async function createRunWithSnapshot(
           definition: version.definition,
           authoringDocument: version.authoringDocument,
         })
+        const runtimeInvariantManifest = deriveRuntimeInvariantManifest(
+          version.authoringDocument ?? null,
+        )
         snapshot = assembleRunSnapshot({
           runId,
           createdAt: now,
@@ -778,6 +783,7 @@ export async function createRunWithSnapshot(
           steps: version.definition.steps,
           moduleManifest: version.moduleManifest,
           outcomeManifest,
+          runtimeInvariantManifest,
           input: runInput,
           sessionPolicyOverride: input.sessionPolicy,
           evidencePolicyOverride: input.evidencePolicy,
@@ -1328,7 +1334,7 @@ export async function finishAttemptTx(
         ...(input.authCheckpoint !== undefined ? { authCheckpoint: input.authCheckpoint } : {}),
       })
       .where(eq(runs.id, input.runId))
-    if (isHaltedRunStatus(finalRunStatus)) {
+    if (isHaltedRunStatus(finalRunStatus) || input.authCheckpoint) {
       await recalculateRunOutcomeTx(tx, input.runId, run.snapshot as RunSnapshot, now)
     }
     if (isHaltedRunStatus(finalRunStatus) || finalRunStatus === 'WAITING_FOR_AUTH') {
@@ -1348,6 +1354,9 @@ export async function finishAttemptTx(
         updatedAt: now,
       })
       .where(eq(runs.id, input.runId))
+    if (input.authCheckpoint) {
+      await recalculateRunOutcomeTx(tx, input.runId, run.snapshot as RunSnapshot, now)
+    }
   }
 
   if (input.injectFailure) throw input.injectFailure
@@ -1573,13 +1582,63 @@ export async function failRunValidation(
 }
 
 /**
+ * 开跑前转入 WAITING_FOR_AUTH 时，C0 仍要求 OutcomeResult 挂在 Attempt 上。
+ * 若还没有任何 Attempt，给首步补一条 not_dispatched 的 AUTH_GATE_CLOSED，StepRun 保持 RUNNING，
+ * 恢复后仍从该步继续。没有 auth_validity 时不写，避免改无约束场景的执行轴。
+ */
+export async function openPreStepAuthValidityWindow(
+  db: Db,
+  grant: RunGrant,
+): Promise<string | null> {
+  const { attempts, runs, stepRuns } = schemaFor(db)
+  const [run] = await db.select().from(runs).where(eq(runs.id, grant.runId)).limit(1)
+  if (!run) return null
+  const snapshot = run.snapshot as RunSnapshot
+  if (!snapshot.runtimeInvariantManifest?.entries.some((item) => item.kind === 'auth_validity')) {
+    return null
+  }
+  const [existing] = await db
+    .select({ id: attempts.id })
+    .from(attempts)
+    .innerJoin(stepRuns, eq(attempts.stepRunId, stepRuns.id))
+    .where(eq(stepRuns.runId, grant.runId))
+    .limit(1)
+  if (existing) return existing.id
+  const firstStep = snapshot.steps[0]
+  if (!firstStep) return null
+  const [stepRun] = await db
+    .select()
+    .from(stepRuns)
+    .where(and(eq(stepRuns.runId, grant.runId), eq(stepRuns.stepId, firstStep.id)))
+    .limit(1)
+  if (!stepRun) return null
+  const started = await startAttempt(db, {
+    runId: grant.runId,
+    stepRunId: stepRun.id,
+    inputPayload: { reason: 'auth_validity_window' },
+    grant,
+  })
+  if (!started) return null
+  const closed = await finishAttempt(db, {
+    runId: grant.runId,
+    attemptId: started.attemptId,
+    attemptStatus: 'FAILED',
+    error: authGateClosedError('not_dispatched'),
+    stepRunStatus: 'RUNNING',
+    grant,
+  })
+  return closed.updated ? started.attemptId : null
+}
+
+/**
  * 只改 Run 状态并释放执行租约，不写认证等待占用。
  * 生产进入等待必须走 `enterRunWaitingForAuth`；本函数留给引擎/夹具模拟“已经在等登录”。
  */
 export async function markRunWaitingForAuth(db: Db, grant: RunGrant): Promise<boolean> {
+  await openPreStepAuthValidityWindow(db, grant)
   const { runs } = schemaFor(db)
   const now = new Date()
-  return db.transaction(async (tx) => {
+  const ok = await db.transaction(async (tx) => {
     const locked = await lockRunRow(tx as unknown as Db, grant.runId)
     if (!locked || locked.status !== 'RUNNING') return false
     if (!(await verifyRunLeaseForWrite(tx as unknown as Db, grant))) return false
@@ -1597,6 +1656,8 @@ export async function markRunWaitingForAuth(db: Db, grant: RunGrant): Promise<bo
     ])
     return true
   })
+  if (ok) await settleRunOutcome(db, grant.runId)
+  return ok
 }
 
 export async function updateRunDebugOverlay(
@@ -1773,6 +1834,10 @@ export async function writeRunAuthCheckpoint(
       .set({ authCheckpoint: input.checkpoint, updatedAt: now })
       .where(eq(runs.id, input.runId))
     await appendRunEvents(tx as unknown as Db, input.runId, authCheckpointEvents(input.checkpoint))
+    const [run] = await tx.select({ snapshot: runs.snapshot }).from(runs).where(eq(runs.id, input.runId)).limit(1)
+    if (run) {
+      await recalculateRunOutcomeTx(tx as unknown as Db, input.runId, run.snapshot as RunSnapshot, now)
+    }
     return true
   })
 }

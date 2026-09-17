@@ -24,6 +24,8 @@ import {
   type OutcomeManifest,
   type OutcomeManifestEntry,
   type OutcomeRule,
+  runtimeInvariantSchema,
+  type RuntimeInvariantManifest,
   type ScenarioAuthoringDocument,
   type ScenarioAuthoringDocumentV2,
   type ScenarioDefinition,
@@ -64,6 +66,7 @@ export type ExpansionResult = {
   definition?: ScenarioDefinition
   manifest: ModuleManifest
   outcomeManifest?: OutcomeManifest
+  runtimeInvariantManifest?: RuntimeInvariantManifest
   diagnostics: CompileDiagnostic[]
   sourceDigest: string
 }
@@ -100,6 +103,13 @@ export function deterministicStepId(
  * 若提供 authoringDocument，则从其契约定义与存量断言中生成；
  * 若未提供 authoringDocument 但有 definition，则从 definition.steps 中按 legacy_assert 收编存量断言。
  */
+export function deriveRuntimeInvariantManifest(
+  authoringDocument?: ScenarioAuthoringDocumentV2 | null,
+): RuntimeInvariantManifest | undefined {
+  const entries = authoringDocument?.runtimeInvariants ?? []
+  return entries.length > 0 ? { entries } : undefined
+}
+
 export function deriveOutcomeManifest(input: {
   definition?: ScenarioDefinition | null
   authoringDocument?: ScenarioAuthoringDocumentV2 | null
@@ -216,6 +226,20 @@ export function deriveOutcomeManifest(input: {
   }
 
   return entries.length > 0 ? { entries } : undefined
+}
+
+export function resolveOutcomeWriteback(
+  manifest: OutcomeManifest | undefined,
+  derivedStepId: string | undefined,
+): { contractId: string; sourceStepId?: string; scope: OutcomeManifestEntry['scope'] } | undefined {
+  if (!manifest || !derivedStepId) return undefined
+  const entry = manifest.entries.find((item) => item.stepId === derivedStepId)
+  if (!entry) return undefined
+  return {
+    contractId: entry.contractId,
+    ...(entry.sourceStepId ? { sourceStepId: entry.sourceStepId } : {}),
+    scope: entry.scope,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +482,9 @@ export function expandAuthoringDocument(
         manifest: { entries: [] },
         diagnostics: issues.map((issue) =>
           clampDiagnostic({
-            code: 'OUTCOME_CONTRACT_INVALID',
+            code: issue.path.includes('runtimeInvariants')
+              ? 'RUNTIME_INVARIANT_INVALID'
+              : 'OUTCOME_CONTRACT_INVALID',
             severity: 'error',
             message: issue.message,
             fieldPath: issue.path.map(String),
@@ -891,6 +917,21 @@ export function expandAuthoringDocument(
   const outcomeManifest: OutcomeManifest | undefined =
     outcomeManifestEntries.length > 0 ? { entries: outcomeManifestEntries } : undefined
 
+  const runtimeInvariantEntries = document.runtimeInvariants ?? []
+  for (const [index, invariant] of runtimeInvariantEntries.entries()) {
+    const parsed = runtimeInvariantSchema.safeParse(invariant)
+    if (!parsed.success) {
+      diagnostics.push({
+        code: 'RUNTIME_INVARIANT_INVALID',
+        severity: 'error',
+        message: parsed.error.issues[0]?.message ?? '运行期约束不合法',
+        fieldPath: ['runtimeInvariants', String(index)],
+      })
+    }
+  }
+  const runtimeInvariantManifest: RuntimeInvariantManifest | undefined =
+    runtimeInvariantEntries.length > 0 ? { entries: runtimeInvariantEntries } : undefined
+
   // 规则 10：步数上限限制
   if (expandedSteps.length > MAX_SCENARIO_STEPS) {
     const details = manifestEntries
@@ -924,6 +965,7 @@ export function expandAuthoringDocument(
       const compileRes = compileScenarioDocument(definition, {
         mode: compileMode,
         ...ctx.compilerCtx,
+        outcomeManifest: outcomeManifest ?? { entries: [] },
       })
       diagnostics.push(...compileRes.diagnostics)
     } else {
@@ -952,6 +994,7 @@ export function expandAuthoringDocument(
     definition,
     manifest,
     ...(outcomeManifest ? { outcomeManifest } : {}),
+    ...(runtimeInvariantManifest ? { runtimeInvariantManifest } : {}),
     diagnostics: diagnostics.map(clampDiagnostic),
     sourceDigest,
   }

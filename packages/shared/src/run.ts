@@ -10,6 +10,7 @@ import { frozenAuthVerificationSchema } from './session-auth.js'
 import { platformRunAuthRecoverySchema } from './session-auth-recovery.js'
 import { candidateGroupsSchema, moduleManifestSchema, type ModuleManifest } from './authoring-document.js'
 import { outcomeManifestSchema, type OutcomeManifest } from './outcome.js'
+import { runtimeInvariantManifestSchema, type RuntimeInvariantManifest } from './runtime-invariant.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
 import {
@@ -262,6 +263,11 @@ export const runSnapshotSchema = z
      * 严禁增加 .default()，避免存量快照重算 digest 漂移。
      */
     outcomeManifest: outcomeManifestSchema.optional(),
+    /**
+     * 冻结的运行期约束清册。可选：旧快照没有此字段表示当时未声明运行期约束。
+     * 严禁增加 .default()，避免存量快照重算 digest 漂移。
+     */
+    runtimeInvariantManifest: runtimeInvariantManifestSchema.optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),
   })

@@ -1,3 +1,4 @@
+import { type OutcomeManifest } from './outcome.js'
 import { type OutputShape } from './output-schema.js'
 import { type Step } from './step.js'
 import {
@@ -24,6 +25,11 @@ export const COMPILE_DIAGNOSTIC_CODES = [
   'SCENARIO_EXTRACT_NO_OUTPUT_KEY',
   'SCENARIO_INPUT_UNUSED',
   'SCENARIO_NO_ASSERT',
+  'SCENARIO_NO_OUTCOME',
+  'SCENARIO_OUTCOME_INFO_ONLY',
+  'SCENARIO_SIDE_EFFECT_WITHOUT_OUTCOME',
+  'OUTCOME_CONTRACT_INVALID',
+  'RUNTIME_INVARIANT_INVALID',
   'SCENARIO_FROM_FIELD_MISSING',
   'SCENARIO_FROM_FIELD_UNKNOWN',
   'SCENARIO_AI_RETRY_FORBIDDEN',
@@ -53,6 +59,8 @@ export type CompileContext = {
   mode: CompileMode
   target?: CompileTargetContext | null
   executableTypes?: readonly string[]
+  /** 传入后按成功条件语义诊断；缺省时从扁平 assert / ai_assert 步合成 */
+  outcomeManifest?: OutcomeManifest | null
 }
 
 export type CompileResult = {

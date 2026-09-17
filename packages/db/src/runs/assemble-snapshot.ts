@@ -25,6 +25,7 @@ import {
   type MapCapturePolicyOverride,
   type ModuleManifest,
   type OutcomeManifest,
+  type RuntimeInvariantManifest,
   type PlatformConfigDocument,
   type RunSnapshot,
   type SessionPolicyOverride,
@@ -99,6 +100,7 @@ export type AssembleRunSnapshotInput = {
   steps: readonly Step[]
   moduleManifest?: ModuleManifest | null
   outcomeManifest?: OutcomeManifest | null
+  runtimeInvariantManifest?: RuntimeInvariantManifest | null
   input: Record<string, JsonValue>
   sessionPolicyOverride?: SessionPolicyOverride | null
   evidencePolicyOverride?: EvidencePolicy | null
@@ -146,6 +148,9 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
       ? { candidateGroups: { groups: input.moduleManifest.candidateGroups } }
       : {}),
     ...(input.outcomeManifest ? { outcomeManifest: input.outcomeManifest } : {}),
+    ...(input.runtimeInvariantManifest
+      ? { runtimeInvariantManifest: input.runtimeInvariantManifest }
+      : {}),
     input: input.input,
     createdAt: input.createdAt.toISOString(),
     ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),

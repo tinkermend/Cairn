@@ -138,6 +138,7 @@ export const DEFAULT_OBJECT_RETAIN_DAYS = 30
 export const DEFAULT_OBJECT_PENDING_TTL_SECONDS = 3600
 export const DEFAULT_OBJECT_CLEANUP_INTERVAL_MS = 60_000
 export const DEFAULT_TRACE_MAX_BYTES = 134_217_728
+export const DEFAULT_VIDEO_MAX_BYTES = 134_217_728
 export const DEFAULT_EVIDENCE_UPLOAD_MAX_ATTEMPTS = 3
 
 export const DEFAULT_BROWSER_PROFILE_DIR = '.data/browser-profiles'
@@ -213,6 +214,7 @@ const objectStoreEnvShape = {
   CAIRN_OBJECT_STORE: objectStoreDriverSchema.default('local'),
   CAIRN_OBJECT_STORE_DIR: z.string().min(1).default(DEFAULT_OBJECT_STORE_DIR),
   CAIRN_OBJECT_MAX_BYTES: z.coerce.number().int().positive().default(DEFAULT_OBJECT_MAX_BYTES),
+  CAIRN_VIDEO_MAX_BYTES: z.coerce.number().int().positive().default(DEFAULT_VIDEO_MAX_BYTES),
   CAIRN_OBJECT_RETAIN_DAYS: z.coerce.number().int().positive().default(DEFAULT_OBJECT_RETAIN_DAYS),
   CAIRN_OBJECT_PENDING_TTL_SECONDS: z.coerce
     .number()

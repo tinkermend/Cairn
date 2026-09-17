@@ -250,7 +250,7 @@ describe('RunDetailPage', () => {
     signIn(['run:read', 'run:review', 'run:cancel', 'run:execute'])
     const screen = await renderPage()
 
-    const badge = screen.getByText('待核查')
+    const badge = screen.getByText('待核查', { exact: true })
     await expect.element(badge).toBeInTheDocument()
     // D14：待核查用橙色（warning），不能混进红色失败语义
     expect(badge.element().closest('[data-slot="status-badge"]')?.className).toContain(
@@ -303,7 +303,7 @@ describe('RunDetailPage', () => {
     signIn(['run:read'])
     const screen = await renderPage()
 
-    await expect.element(screen.getByText('待核查')).toBeInTheDocument()
+    await expect.element(screen.getByText('待核查', { exact: true })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '判定失败' }).elements()).toHaveLength(0)
     expect(screen.getByRole('button', { name: '判定取消' }).elements()).toHaveLength(0)
     expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
@@ -426,7 +426,7 @@ describe('RunDetailPage', () => {
     )
     signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
     const screen = await renderPage()
-    await expect.element(screen.getByText('需要登录')).toBeInTheDocument()
+    await expect.element(screen.getByText('需要登录', { exact: true })).toBeInTheDocument()
     await expect.element(screen.getByRole('region', { name: '受管浏览器' })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '处理登录' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '确认目标系统已登录' }).elements()).toHaveLength(0)
@@ -543,7 +543,7 @@ describe('RunDetailPage', () => {
     )
     signIn(['run:read'])
     const incomplete = await renderPage()
-    await expect.element(incomplete.getByText('成功')).toBeInTheDocument()
+    await expect.element(incomplete.getByText('成功', { exact: true })).toBeInTheDocument()
     const incompleteBadge = incomplete.getByText('证据不完整')
     await expect.element(incompleteBadge).toBeInTheDocument()
     expect(incompleteBadge.element().closest('[data-slot="status-badge"]')?.className).toContain(
@@ -637,10 +637,115 @@ describe('RunDetailPage', () => {
     await expect.element(screen.getByText(/本次采集：截图 失败时/)).toBeInTheDocument()
   })
 
+  it('终态先展示本次录像，步骤标题下可见主截图', async () => {
+    mocks.fetchEvidenceContent.mockResolvedValue({
+      blob: new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'video/webm' }),
+      contentType: 'video/webm',
+    })
+    const base = runDetail()
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'SUCCEEDED',
+          evidenceStatus: 'COMPLETE',
+          snapshot: {
+            ...base.snapshot,
+            evidencePolicy: { screenshot: 'always', video: 'always', trace: 'off' },
+            steps: [
+              {
+                id: '77777777-7777-4777-8777-777777777777',
+                name: '打开',
+                type: 'navigate',
+                effectType: 'READ_ONLY',
+                input: { url: 'https://shop.example/orders' },
+              },
+            ],
+          },
+          stepRuns: [
+            {
+              ...base.stepRuns[0]!,
+              name: '打开',
+              type: 'navigate',
+              status: 'SUCCEEDED',
+              attempts: [
+                {
+                  ...base.stepRuns[0]!.attempts[0]!,
+                  status: 'SUCCEEDED',
+                  error: null,
+                },
+              ],
+            },
+          ],
+        }),
+        [
+          {
+            schemaVersion: 1,
+            id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            runId: RUN_ID,
+            type: 'video',
+            status: 'available',
+            createdAt: '2026-09-11T02:00:09.000Z',
+            contentType: 'video/webm',
+            byteSize: 2048,
+            payload: { truncated: true, passwordMask: 'applied' },
+          },
+          {
+            schemaVersion: 1,
+            id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            runId: RUN_ID,
+            stepRunId: '66666666-6666-4666-8666-666666666666',
+            attemptId: '88888888-8888-4888-8888-888888888888',
+            type: 'screenshot',
+            status: 'available',
+            createdAt: '2026-09-11T02:00:09.000Z',
+            contentType: 'image/png',
+            byteSize: 12,
+          },
+        ],
+      ),
+    )
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByRole('heading', { name: '本次录像' })).toBeInTheDocument()
+    await expect.element(screen.getByText('录像已截断')).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '下载录像' })).toBeInTheDocument()
+    await expect.element(screen.getByAltText('该步骤最后一次尝试的截图')).toBeInTheDocument()
+  })
+
+  it('录像对象清理后写明已过期，不假装还能播', async () => {
+    const base = runDetail()
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'SUCCEEDED',
+          evidenceStatus: 'INCOMPLETE',
+          snapshot: {
+            ...base.snapshot,
+            evidencePolicy: { screenshot: 'always', video: 'always', trace: 'off' },
+          },
+        }),
+        [
+          {
+            schemaVersion: 1,
+            id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            runId: RUN_ID,
+            type: 'video',
+            status: 'missing',
+            missingReason: 'object_purged',
+            createdAt: '2026-09-11T02:00:09.000Z',
+          },
+        ],
+      ),
+    )
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('录像已过期，步骤截图仍可查看。')).toBeInTheDocument()
+  })
+
   it('点刷新重新拉取运行与证据', async () => {
     signIn(['run:read'])
     const screen = await renderPage()
-    await expect.element(screen.getByText('待核查')).toBeInTheDocument()
+    await expect.element(screen.getByText('待核查', { exact: true })).toBeInTheDocument()
     expect(mocks.fetchRunObservation).toHaveBeenCalledTimes(1)
     await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
 
@@ -812,6 +917,106 @@ describe('RunDetailPage', () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('1. 输入用户名')).toBeInTheDocument()
     expect(document.getElementById(`module-group-${invocationId}`)?.dataset.focused).toBe('true')
+  })
+
+  it('执行与业务分两轴，未求值条件仍出现在列表中', async () => {
+    const passedId = '00000000-0000-4000-8000-000000000401'
+    const unknownId = '00000000-0000-4000-8000-000000000403'
+    const pendingId = '00000000-0000-4000-8000-000000000405'
+    signIn(['run:read'])
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'SUCCEEDED',
+          outcomeStatus: 'UNKNOWN',
+          snapshot: {
+            ...runDetail().snapshot,
+            outcomeManifest: {
+              entries: [
+                {
+                  contractId: passedId,
+                  scope: 'step',
+                  meaning: '订单存在',
+                  severity: 'MUST',
+                  onViolation: 'halt',
+                  provenance: 'manual',
+                  stepId: '00000000-0000-4000-8000-000000000411',
+                  rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+                },
+                {
+                  contractId: unknownId,
+                  scope: 'step',
+                  meaning: '状态正常',
+                  severity: 'MUST',
+                  onViolation: 'halt',
+                  provenance: 'manual',
+                  stepId: '00000000-0000-4000-8000-000000000412',
+                  rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+                },
+                {
+                  contractId: pendingId,
+                  scope: 'step',
+                  meaning: '无风险提示',
+                  severity: 'SHOULD',
+                  onViolation: 'continue',
+                  provenance: 'manual',
+                  stepId: '00000000-0000-4000-8000-000000000413',
+                  rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+                },
+              ],
+            },
+          },
+          outcomeResults: [
+            {
+              id: '00000000-0000-4000-8000-000000000421',
+              runId: RUN_ID,
+              stepRunId: '66666666-6666-4666-8666-666666666666',
+              attemptId: '88888888-8888-4888-8888-888888888888',
+              contractId: passedId,
+              scope: 'step',
+              meaning: '订单存在',
+              severity: 'MUST',
+              onViolation: 'halt',
+              provenance: 'manual',
+              verdict: 'PASS',
+              expected: { kind: 'exists' },
+              actual: true,
+              evaluatedAt: '2026-09-17T12:00:00.000Z',
+            },
+            {
+              id: '00000000-0000-4000-8000-000000000422',
+              runId: RUN_ID,
+              stepRunId: '66666666-6666-4666-8666-666666666666',
+              attemptId: '88888888-8888-4888-8888-888888888888',
+              contractId: unknownId,
+              scope: 'step',
+              meaning: '状态正常',
+              severity: 'MUST',
+              onViolation: 'halt',
+              provenance: 'manual',
+              verdict: 'UNKNOWN',
+              evaluatedAt: '2026-09-17T12:00:01.000Z',
+            },
+          ],
+        }),
+      ),
+    )
+    const screen = await renderPage()
+    await expect.element(screen.getByLabelText('执行轴')).toBeInTheDocument()
+    await expect.element(screen.getByLabelText('业务结果轴')).toBeInTheDocument()
+    await expect.element(screen.getByText('执行完成', { exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByText('业务未知', { exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByText('订单存在')).toBeInTheDocument()
+    await expect.element(screen.getByText('状态正常')).toBeInTheDocument()
+    await expect.element(screen.getByText('无风险提示')).toBeInTheDocument()
+    await expect.element(screen.getByText('无法判断')).toBeInTheDocument()
+    await expect.element(screen.getByText('未求值')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('运行尚未执行到这条条件。'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('取值或定位没有完成，不能把这种情况记成业务不通过。'))
+      .toBeInTheDocument()
   })
 })
 

@@ -34,8 +34,10 @@ import {
   runStatusTone,
 } from './labels'
 import { AttemptEvidenceList } from './evidence-viewer'
+import { OutcomeAxisSummary, OutcomeConditionList, RUN_EXECUTION_AXIS_LABELS } from './outcome-axis'
 import { CatalogName } from './catalog-name'
 import { BrowserView } from './browser-view'
+import { RunVideoSection } from './run-video'
 import { RunMapClues } from '@/features/map/run-clues'
 import { RunMapConsumption, RunMapDecisions } from './map-decisions'
 import { PlacementHint } from './placement-hint'
@@ -151,6 +153,12 @@ export function RunDetailPage() {
                   <StatusBadge tone='neutral'>正式</StatusBadge>
                 )}
               </div>
+              <div className='mt-4'>
+                <OutcomeAxisSummary
+                  executionLabel={RUN_EXECUTION_AXIS_LABELS[run.status]}
+                  outcomeStatus={run.outcomeStatus}
+                />
+              </div>
               <p className='mt-3 text-body text-muted-foreground'>
                 {run.source?.kind === 'service' ? '服务 API 调用 · ' : ''}场景{' '}
                 <CatalogName name={run.scenarioName} deleted={run.scenarioDeleted}>
@@ -181,7 +189,8 @@ export function RunDetailPage() {
                 const policy = resolveEvidencePolicy(run.snapshot.evidencePolicy)
                 return (
                   <p className='mt-2 text-label text-muted-foreground'>
-                    本次采集：截图 {CAPTURE_MODE_LABELS[policy.screenshot]} · Trace{' '}
+                    本次采集：截图 {CAPTURE_MODE_LABELS[policy.screenshot]} · 录像{' '}
+                    {policy.video === 'always' ? '始终' : '关闭'} · Trace{' '}
                     {CAPTURE_MODE_LABELS[policy.trace]}
                   </p>
                 )
@@ -319,6 +328,7 @@ export function RunDetailPage() {
               eventSeq={eventSeq}
               onRunChanged={refresh}
             />
+            <RunVideoSection run={run} items={evidenceItems} />
             {run.scenarioVersionKind === 'trial' && run.debugMode !== 'runThrough' ? (
               <DebugHoldBar run={run} onChanged={refresh} />
             ) : null}
@@ -326,7 +336,7 @@ export function RunDetailPage() {
             <RunMapClues targetId={run.targetId} runId={run.id} />
             <RunMapDecisions key={run.id} runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} />
             {(() => {
-              const runLevel = evidenceItems.filter((item) => !item.attemptId)
+              const runLevel = evidenceItems.filter((item) => !item.attemptId && item.type !== 'video')
               return runLevel.length > 0 ? (
                 <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
                   <h2 className='text-section font-semibold'>运行级证据</h2>
@@ -334,6 +344,11 @@ export function RunDetailPage() {
                 </section>
               ) : null
             })()}
+
+            <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
+              <h2 className='text-section font-semibold'>成功条件</h2>
+              <OutcomeConditionList runId={run.id} run={run} evidenceItems={evidenceItems} />
+            </section>
 
             <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
               <h2 className='text-section font-semibold'>步骤时间线</h2>

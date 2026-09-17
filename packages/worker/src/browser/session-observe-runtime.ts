@@ -72,6 +72,42 @@ export async function sampleMapConditions(this: SessionManagerContext,
     }
   }
 
+export async function probeErrorSurface(
+  this: SessionManagerContext,
+  grant: SessionGrant,
+  _signal?: AbortSignal,
+): Promise<{ role: string; text: string }[]> {
+  return this.withHeldOccupancy(grant.leaseId, grant, async () => {
+    const page = this.pageForGrant(grant)
+    if (!page) {
+      throw new Error('ERROR_SURFACE_PAGE_MISSING')
+    }
+    return page.evaluate(() => {
+      const g = globalThis as typeof globalThis & {
+        document: {
+          querySelectorAll: (selector: string) => Iterable<{ innerText?: string }>
+        }
+        getComputedStyle: (el: unknown) => { display: string; visibility: string; opacity: string }
+      }
+      const nodes: { role: string; text: string }[] = []
+      const push = (el: { innerText?: string }, role: string) => {
+        const style = g.getComputedStyle(el)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return
+        const text = (el.innerText || '').trim()
+        if (!text) return
+        nodes.push({ role, text: text.slice(0, 500) })
+      }
+      for (const el of g.document.querySelectorAll('[role="alertdialog"]')) push(el, 'alertdialog')
+      for (const el of g.document.querySelectorAll('[data-cairn-error-surface]')) {
+        push(el, 'data-cairn-error-surface')
+      }
+      for (const el of g.document.querySelectorAll('[role="alert"]')) push(el, 'alert')
+      for (const el of g.document.querySelectorAll('dialog[open]')) push(el, 'dialog')
+      return nodes
+    })
+  })
+}
+
 export async function describeRunBrowser(this: SessionManagerContext, input: { runId: string; actorId: string; pageId?: string }): Promise<ManagedBrowserMeta> {
     return this.buildMeta(input.runId, input.actorId, input.pageId)
   }
@@ -319,6 +355,10 @@ export async function dropScreencastObserver(this: SessionManagerContext, live: 
     const current = live.screencastObservers.get(pageId) ?? 0
     if (current <= 1) {
       live.screencastObservers.delete(pageId)
+      const recording = [...(this.videoRecorders?.values() ?? [])].some(
+        (recorder) => recorder.pageId === pageId && !recorder.stopped,
+      )
+      if (recording) return
       const cast = live.screencasts.get(pageId)
       live.screencasts.delete(pageId)
       await cast?.stop().catch(() => undefined)

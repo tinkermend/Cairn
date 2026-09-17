@@ -5,6 +5,7 @@ import {
   type ModuleExecutionMode,
 } from './action-module-vocabulary.js'
 import { outcomeContractSchema, type OutcomeContract } from './outcome.js'
+import { runtimeInvariantSchema } from './runtime-invariant.js'
 import { outputFieldNameSchema } from './output-schema.js'
 import type { ScenarioDocument } from './scenario.js'
 import {
@@ -159,6 +160,7 @@ export const scenarioAuthoringDocumentV2Schema = z
     inputs: z.array(scenarioInputDeclSchema).max(64).default([]),
     nodes: z.array(authoringNodeSchema).min(1).max(MAX_AUTHORING_NODES),
     scenarioOutcomes: z.array(outcomeContractSchema).optional(),
+    runtimeInvariants: z.array(runtimeInvariantSchema).optional(),
   })
   .superRefine((document, ctx) => {
     const inputKeys = new Set<string>()
@@ -175,6 +177,18 @@ export const scenarioAuthoringDocumentV2Schema = z
 
     const invocationIds = new Set<string>()
     const stepIds = new Set<string>()
+    const contractIds = new Set<string>()
+    const registerContractId = (id: string, path: Array<string | number>) => {
+      if (contractIds.has(id)) {
+        ctx.addIssue({
+          code: 'custom',
+          path,
+          message: '同一场景内成功条件 id 不能重复',
+        })
+        return
+      }
+      contractIds.add(id)
+    }
     for (const [index, node] of document.nodes.entries()) {
       if (node.kind === 'step') {
         if (stepIds.has(node.step.id)) {
@@ -185,6 +199,9 @@ export const scenarioAuthoringDocumentV2Schema = z
           })
         }
         stepIds.add(node.step.id)
+        for (const [outcomeIndex, contract] of (node.outcomes ?? []).entries()) {
+          registerContractId(contract.id, ['nodes', index, 'outcomes', outcomeIndex, 'id'])
+        }
       } else if (node.kind === 'module') {
         if (invocationIds.has(node.invocationId)) {
           ctx.addIssue({
@@ -203,6 +220,12 @@ export const scenarioAuthoringDocumentV2Schema = z
           })
         }
       }
+    }
+    for (const [index, contract] of (document.scenarioOutcomes ?? []).entries()) {
+      registerContractId(contract.id, ['scenarioOutcomes', index, 'id'])
+    }
+    for (const [index, invariant] of (document.runtimeInvariants ?? []).entries()) {
+      registerContractId(invariant.id, ['runtimeInvariants', index, 'id'])
     }
   })
 export type ScenarioAuthoringDocumentV2 = z.infer<typeof scenarioAuthoringDocumentV2Schema>
@@ -344,6 +367,12 @@ export function authoringNodeId(node: AuthoringNode): string {
 
 export function authoringHasModuleInvocations(document: ScenarioAuthoringDocumentV2): boolean {
   return document.nodes.some((node) => node.kind === 'module')
+}
+
+export function authoringHasOutcomes(document: ScenarioAuthoringDocumentV2): boolean {
+  if ((document.scenarioOutcomes?.length ?? 0) > 0) return true
+  if ((document.runtimeInvariants?.length ?? 0) > 0) return true
+  return document.nodes.some((node) => node.kind === 'step' && (node.outcomes?.length ?? 0) > 0)
 }
 
 /** V1 取 steps；V2 只收集 StepNode，调用节点不计入。 */

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
-import { AUTH_CONTROL_TTL_SECONDS, authCheckpointSchema, computeContextVersion, canonicalJson, type AuthCheckpoint, type RunGrant } from '@cairn/shared'
+import { AUTH_CONTROL_TTL_SECONDS, authCheckpointSchema, computeContextVersion, canonicalJson, type AuthCheckpoint, type RunGrant, type RunSnapshot } from '@cairn/shared'
 import { recordAudit, type AuditActor } from '../audit/record.js'
 import { assertSessionAccountActive, assertSessionActorPermission } from './access.js'
 import { appendSessionEvent } from './session-events.js'
@@ -9,6 +9,8 @@ import { lockRunRow } from '../leases/leases.js'
 import { clockNow, locked, schemaFor, updateRows } from '../native.js'
 import { appendRunEvents } from '../observe/events.js'
 import { conflict, notFound } from '../runs/errors.js'
+import { openPreStepAuthValidityWindow } from '../runs/runs.js'
+import { recalculateRunOutcomeTx, settleRunOutcome } from '../runs/outcome-results.js'
 import type { BrowserSessionRow } from '../records.js'
 import type { SessionLeaseRow } from '../records.js'
 import { findAuthWaitLeaseForOperation, findAuthWaitLeaseForRun, getSessionOperation, transitionSessionUse, lockWorkerRow } from './occupancy.js'
@@ -93,6 +95,7 @@ export async function enterRunWaitingForAuth(
     leaseTtlSeconds?: number
   },
 ): Promise<import('@cairn/shared').SessionGrant | null> {
+  await openPreStepAuthValidityWindow(db, input.grant)
   const next = await transitionSessionUse(db, {
     sessionId: input.sessionId,
     fromPurpose: 'EXECUTION',
@@ -105,6 +108,7 @@ export async function enterRunWaitingForAuth(
     runGrant: input.grant,
     reason: 'waiting_for_auth',
   })
+  if (next) await settleRunOutcome(db, input.grant.runId)
   return next
 }
 
@@ -424,6 +428,10 @@ export async function resumeRunAfterAuth(
     }
     if (checkpoint?.status === 'recovering') {
       await appendRunEvents(tx as unknown as Db, input.runId, [{ type: 'run.auth_recovered', payload: { ...checkpoint, status: 'recovered' } }])
+    }
+    const [runRow] = await tx.select({ snapshot: runs.snapshot }).from(runs).where(eq(runs.id, input.runId)).limit(1)
+    if (runRow) {
+      await recalculateRunOutcomeTx(tx as unknown as Db, input.runId, runRow.snapshot as RunSnapshot, now)
     }
     await recordAudit(
       tx as unknown as Db,
