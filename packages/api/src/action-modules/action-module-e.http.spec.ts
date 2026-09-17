@@ -257,6 +257,17 @@ describe('AM-E HTTP → 真实库', { timeout: 30_000 }, () => {
     expect(quality.body.health.signal).toBe('unknown')
     expect(quality.body.accounts?.length).toBeGreaterThan(0)
 
+    const listed = await request(app.getHttpServer()).get('/action-modules').query({ targetId }).expect(200)
+    const row = listed.body.items.find((item: { id: string }) => item.id === published.id)
+    expect(row?.health).toMatchObject({
+      signal: quality.body.health.signal,
+      sampleCount: quality.body.health.sampleCount,
+      verifiedRate: quality.body.health.verifiedRate,
+      windowDays: quality.body.health.windowDays,
+      configRevision: quality.body.health.configRevision,
+      verificationInsufficient: quality.body.health.verificationInsufficient,
+    })
+
     const republish = await request(app.getHttpServer())
       .post(`/action-modules/${published.id}/draft`)
       .send({ baseRevision: 1, content: published.content })

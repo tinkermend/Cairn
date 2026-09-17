@@ -1,5 +1,6 @@
 import {
   MODULE_INVOCATION_PROJECTOR_VERSION,
+  MODULE_INVOCATION_RUN_KINDS,
   classifyModuleRunKind,
   deriveInvocationResults,
   evaluateModuleHealth,
@@ -20,13 +21,14 @@ import {
   type ModuleInvocationListQuery,
   type ModuleInvocationListResponse,
   type ModuleInvocationResult,
+  type ModuleInvocationRunKind,
   type ModuleQualityQuery,
   type ModuleQualityResponse,
   type ModuleQualityStats,
   type PlatformModuleQuality,
   type RunSnapshot,
 } from '@cairn/shared'
-import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { atomic, schemaFor } from '../native.js'
@@ -359,10 +361,8 @@ function aggregateStats(
   return moduleQualityStatsSchema.parse(stats)
 }
 
-function inWindow(row: { finishedAt: Date | null }, since: Date): boolean {
-  if (!row.finishedAt) return true
-  return row.finishedAt.getTime() >= since.getTime()
-}
+const QUALITY_PAGE_RUN_KINDS = MODULE_INVOCATION_RUN_KINDS.filter((kind) => !isExcludedFromFormalStats(kind))
+const LIST_HEALTH_RUN_KINDS = MODULE_INVOCATION_RUN_KINDS.filter(isFormalModuleRunKind)
 
 function recentFailureStreak(rows: ModuleInvocationResult[]): number {
   const ordered = [...rows].sort((a, b) => String(b.finishedAt ?? '').localeCompare(String(a.finishedAt ?? '')))
@@ -384,28 +384,86 @@ async function loadModuleOrThrow(db: Db, moduleId: string) {
   if (!module) throw notFound('MODULE_NOT_FOUND', '动作模块不存在')
 }
 
+function evaluateHealthForOfficial(
+  official: ModuleInvocationResult[],
+  input: { windowDays: number; revision: number; config: PlatformModuleQuality; asOf: string },
+): ModuleHealthSummary {
+  const overall = aggregateStats(official)
+  return evaluateModuleHealth({
+    sampleCount: overall.sampleCount,
+    verifiedRate: overall.verifiedRate,
+    recentFailureStreak: recentFailureStreak(official),
+    verificationInsufficient: official.length > 0 && official.every((item) => item.verificationStrength === 'insufficient'),
+    windowDays: input.windowDays,
+    configRevision: input.revision,
+    config: input.config,
+    asOf: input.asOf,
+  })
+}
+
+function appendQualityRow(grouped: Map<string, ModuleInvocationResult[]>, result: ModuleInvocationResult) {
+  const list = grouped.get(result.moduleId) ?? []
+  list.push(result)
+  grouped.set(result.moduleId, list)
+}
+
+async function loadQualityRowsByModules(
+  db: Db,
+  input: {
+    moduleIds: string[]
+    versionId?: string
+    since: Date
+    runKinds: readonly ModuleInvocationRunKind[]
+    includeSnapshot: boolean
+  },
+): Promise<Map<string, ModuleInvocationResult[]>> {
+  const grouped = new Map<string, ModuleInvocationResult[]>()
+  if (input.moduleIds.length === 0 || input.runKinds.length === 0) return grouped
+  const { moduleInvocationResults, runs } = schemaFor(db)
+  const conditions = [
+    input.moduleIds.length === 1
+      ? eq(moduleInvocationResults.moduleId, input.moduleIds[0]!)
+      : inArray(moduleInvocationResults.moduleId, input.moduleIds),
+    eq(moduleInvocationResults.projectorVersion, MODULE_INVOCATION_PROJECTOR_VERSION),
+    isNull(runs.deletedAt),
+    inArray(moduleInvocationResults.runKind, [...input.runKinds]),
+    or(isNull(moduleInvocationResults.finishedAt), gte(moduleInvocationResults.finishedAt, input.since))!,
+  ]
+  if (input.versionId) conditions.push(eq(moduleInvocationResults.moduleVersionId, input.versionId))
+  if (input.includeSnapshot) {
+    const rows = await db
+      .select({ result: moduleInvocationResults, snapshot: runs.snapshot })
+      .from(moduleInvocationResults)
+      .innerJoin(runs, eq(runs.id, moduleInvocationResults.runId))
+      .where(and(...conditions))
+      .orderBy(desc(moduleInvocationResults.finishedAt), desc(moduleInvocationResults.id))
+    for (const row of rows) appendQualityRow(grouped, withSnapshotMeta(asResult(row.result), row.snapshot))
+    return grouped
+  }
+  const rows = await db
+    .select({ result: moduleInvocationResults })
+    .from(moduleInvocationResults)
+    .innerJoin(runs, eq(runs.id, moduleInvocationResults.runId))
+    .where(and(...conditions))
+    .orderBy(desc(moduleInvocationResults.finishedAt), desc(moduleInvocationResults.id))
+  for (const row of rows) appendQualityRow(grouped, asResult(row.result))
+  return grouped
+}
+
 async function loadQualityRows(
   db: Db,
   moduleId: string,
   versionId: string | undefined,
   since: Date,
 ): Promise<ModuleInvocationResult[]> {
-  const { moduleInvocationResults, runs } = schemaFor(db)
-  const conditions = [
-    eq(moduleInvocationResults.moduleId, moduleId),
-    eq(moduleInvocationResults.projectorVersion, MODULE_INVOCATION_PROJECTOR_VERSION),
-    isNull(runs.deletedAt),
-  ]
-  if (versionId) conditions.push(eq(moduleInvocationResults.moduleVersionId, versionId))
-  const rows = await db
-    .select({ result: moduleInvocationResults, deletedAt: runs.deletedAt, runFinishedAt: runs.finishedAt, snapshot: runs.snapshot })
-    .from(moduleInvocationResults)
-    .innerJoin(runs, eq(runs.id, moduleInvocationResults.runId))
-    .where(and(...conditions))
-    .orderBy(desc(moduleInvocationResults.finishedAt), desc(moduleInvocationResults.id))
-  return rows
-    .filter((item) => inWindow(item.result, since) && !isExcludedFromFormalStats(item.result.runKind))
-    .map((item) => withSnapshotMeta(asResult(item.result), item.snapshot))
+  const grouped = await loadQualityRowsByModules(db, {
+    moduleIds: [moduleId],
+    versionId,
+    since,
+    runKinds: QUALITY_PAGE_RUN_KINDS,
+    includeSnapshot: true,
+  })
+  return grouped.get(moduleId) ?? []
 }
 
 export async function getActionModuleQuality(
@@ -423,16 +481,7 @@ export async function getActionModuleQuality(
   const official = rows.filter((item) => isFormalModuleRunKind(item.runKind))
   const trial = aggregateStats(rows.filter((item) => item.runKind === 'trial'))
   const overall = aggregateStats(official)
-  const health = evaluateModuleHealth({
-    sampleCount: overall.sampleCount,
-    verifiedRate: overall.verifiedRate,
-    recentFailureStreak: recentFailureStreak(official),
-    verificationInsufficient: official.length > 0 && official.every((item) => item.verificationStrength === 'insufficient'),
-    windowDays,
-    configRevision: revision,
-    config,
-    asOf,
-  })
+  const health = evaluateHealthForOfficial(official, { windowDays, revision, config, asOf })
   const pending = await backfillPendingCount(db)
   const response: ModuleQualityResponse = {
     moduleId,
@@ -555,6 +604,7 @@ export async function listModuleInvocations(
   })
 }
 
+/** 列表只装本页健康摘要：一次按模块批量查询，不走单模块质量接口。 */
 export async function attachModuleListHealth(
   db: Db,
   items: ActionModuleSummary[],
@@ -566,13 +616,34 @@ export async function attachModuleListHealth(
   } catch {
     return items
   }
-  return Promise.all(items.map(async (item) => {
+  const windowDays = config.config.windowDays
+  const since = new Date(Date.now() - windowDays * 86_400_000)
+  const asOf = new Date().toISOString()
+  let grouped: Map<string, ModuleInvocationResult[]>
+  try {
+    grouped = await loadQualityRowsByModules(db, {
+      moduleIds: items.map((item) => item.id),
+      since,
+      runKinds: LIST_HEALTH_RUN_KINDS,
+      includeSnapshot: false,
+    })
+  } catch {
+    return items
+  }
+  return items.map((item) => {
     try {
-      const quality = await getActionModuleQuality(db, item.id, { window: config.config.windowDays, groupBy: 'none' })
-      const health: ModuleHealthSummary = quality.health
-      return { ...item, health }
+      const official = (grouped.get(item.id) ?? []).filter((row) => isFormalModuleRunKind(row.runKind))
+      return {
+        ...item,
+        health: evaluateHealthForOfficial(official, {
+          windowDays,
+          revision: config.revision,
+          config: config.config,
+          asOf,
+        }),
+      }
     } catch {
       return item
     }
-  }))
+  })
 }

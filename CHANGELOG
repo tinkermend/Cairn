@@ -1,3 +1,4 @@
+2026-09-17--动作库列表改为批量装载模块健康，避免按模块全量质量查询 N+1
 2026-09-17--收口 C/D 生产接线复查：续接恢复仍校验 origin 与 MATCH，登录标记改在提交之后，RESTART 核验不刷新 lastUsedAt
 2026-09-16--接线会话 C/D 生产方法：维护分派与运行中恢复落到正式 SessionManager，补门禁端口、未确认停止与登录提交后结果未知
 2026-09-16--收口 session_leases 单一写入器：删除 acquireSessionLease / expireStaleLeases 旧栈，回收只走 reapSessionLeases

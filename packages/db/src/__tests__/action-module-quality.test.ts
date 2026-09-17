@@ -286,6 +286,74 @@ describe('AM-E: 模块调用结果投影与统计', { timeout: 30_000 }, () => {
     expect(quality.overall.calls).toBe(0)
     expect(quality.trial.calls).toBe(1)
     expect(quality.health.signal).toBe('unknown')
+    const catalog = await api.listActionModules(db, { targetId: target.id })
+    const withHealth = await api.attachModuleListHealth(db, catalog.items.filter((item) => item.id === published.module.id))
+    expect(withHealth[0]?.health).toMatchObject({
+      signal: quality.health.signal,
+      sampleCount: quality.health.sampleCount,
+      verifiedRate: quality.health.verifiedRate,
+      windowDays: quality.health.windowDays,
+      configRevision: quality.health.configRevision,
+      verificationInsufficient: quality.health.verificationInsufficient,
+    })
+  })
+
+  it('列表健康一次批量装载，与单模块质量摘要一致且不计入窗口外行', async () => {
+    const { db, account, target } = await setup()
+    expect(await api.attachModuleListHealth(db, [])).toEqual([])
+    const verified = await publishModule(db, account.id, target.id, 'order.list.ok')
+    const failed = await publishModule(db, account.id, target.id, 'order.list.fail')
+    const verifiedScenario = await publishScenarioWithModule(db, account.id, target.id, verified.module.id, verified.version.id)
+    const failedScenario = await publishScenarioWithModule(db, account.id, target.id, failed.module.id, failed.version.id)
+    const aged = await api.createRunWithSnapshot(db, {
+      scenarioId: verifiedScenario.scenario.id,
+      actor: { id: account.id },
+    })
+    await markRun(db, aged.detail.id, { status: 'SUCCEEDED', stepStatus: 'SUCCEEDED', context: { result: 'ok' } })
+    await api.projectModuleInvocationResults(db, aged.detail.id)
+    const recent = await api.createRunWithSnapshot(db, {
+      scenarioId: verifiedScenario.scenario.id,
+      actor: { id: account.id },
+    })
+    await markRun(db, recent.detail.id, { status: 'SUCCEEDED', stepStatus: 'SUCCEEDED', context: { result: 'ok' } })
+    await api.projectModuleInvocationResults(db, recent.detail.id)
+    const failedRun = await api.createRunWithSnapshot(db, {
+      scenarioId: failedScenario.scenario.id,
+      actor: { id: account.id },
+    })
+    await markRun(db, failedRun.detail.id, {
+      status: 'FAILED',
+      stepStatus: 'FAILED',
+      error: { code: 'STEP_FAILED', category: 'EXECUTOR' },
+    })
+    await api.projectModuleInvocationResults(db, failedRun.detail.id)
+
+    const native = connection(db)
+    const { moduleInvocationResults } = schemaFor(native)
+    await native.update(moduleInvocationResults).set({
+      finishedAt: new Date(Date.now() - 40 * 86_400_000),
+    }).where(eq(moduleInvocationResults.runId, aged.detail.id))
+
+    const listed = await api.listActionModules(db, { targetId: target.id, pageSize: 20 })
+    const withHealth = await api.attachModuleListHealth(db, listed.items)
+    expect(withHealth).toHaveLength(listed.items.length)
+    for (const item of withHealth) {
+      const quality = await api.getActionModuleQuality(db, item.id, { window: 7, groupBy: 'none' })
+      expect(item.health).toMatchObject({
+        signal: quality.health.signal,
+        sampleCount: quality.health.sampleCount,
+        verifiedRate: quality.health.verifiedRate,
+        windowDays: quality.health.windowDays,
+        configRevision: quality.health.configRevision,
+        verificationInsufficient: quality.health.verificationInsufficient,
+      })
+    }
+    const verifiedHealth = withHealth.find((item) => item.id === verified.module.id)?.health
+    const failedHealth = withHealth.find((item) => item.id === failed.module.id)?.health
+    expect(verifiedHealth?.sampleCount).toBe(1)
+    expect(verifiedHealth?.verifiedRate).toBe(1)
+    expect(failedHealth?.sampleCount).toBe(1)
+    expect(failedHealth?.verifiedRate).toBe(0)
   })
 
   it('AME-12 同一 Run+invocation 不能插入第二行', async () => {
