@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createBlankStep,
   DETERMINISTIC_STUDIO_TYPES,
+  selectableScenarioStudioTypes,
   selectableStudioTypes,
 } from './step-registry'
 
@@ -30,6 +31,12 @@ describe('step-registry', () => {
         actionModules: true,
       })
     ).toEqual(['navigate', 'ai_action'])
+  })
+
+  it('场景步骤库不再提供断言类型', () => {
+    expect(selectableScenarioStudioTypes(undefined)).not.toContain('assert')
+    expect(selectableScenarioStudioTypes(undefined)).not.toContain('ai_assert')
+    expect(selectableStudioTypes(undefined)).toContain('assert')
   })
 
   it('连续提取使用去重后的默认输出名', () => {

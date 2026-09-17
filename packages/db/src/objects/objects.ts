@@ -12,6 +12,7 @@ import {
   objectKeySchema,
   type EvidenceMetadata,
   type EvidenceType,
+  type JsonValue,
   type PurgeReason,
   type StoredObjectStatus,
 } from '@cairn/shared'
@@ -349,6 +350,22 @@ export async function reserveObjectEvidence(
     if (!(await lockRunRow(tx as unknown as Db, input.runId))) {
       throw new ObjectStoreError('OBJECT_KEY_INVALID', '运行不存在')
     }
+    if (input.type === 'video' && !input.attemptId && !input.stepRunId) {
+      const [existing] = await tx
+        .select()
+        .from(evidences)
+        .where(
+          and(
+            eq(evidences.runId, input.runId),
+            eq(evidences.type, input.type),
+            isNull(evidences.attemptId),
+            isNull(evidences.stepRunId),
+          ),
+        )
+        .orderBy(asc(evidences.createdAt), asc(evidences.id))
+        .limit(1)
+      if (existing) return toEvidenceMetadata(existing)
+    }
     const reserved = await reserveStoredObject(tx as unknown as Db, {
       runId: input.runId,
       retainUntil: input.retainUntil,
@@ -415,6 +432,27 @@ export async function findObjectEvidenceByAttemptType(
   return row ? toEvidenceMetadata(row) : null
 }
 
+export async function findObjectEvidenceByRunType(
+  db: Db,
+  input: { runId: string; type: EvidenceType },
+): Promise<EvidenceMetadata | null> {
+  const { evidences } = schemaFor(db)
+  const [row] = await db
+    .select()
+    .from(evidences)
+    .where(
+      and(
+        eq(evidences.runId, input.runId),
+        eq(evidences.type, input.type),
+        isNull(evidences.attemptId),
+        isNull(evidences.stepRunId),
+      ),
+    )
+    .orderBy(asc(evidences.createdAt), asc(evidences.id))
+    .limit(1)
+  return row ? toEvidenceMetadata(row) : null
+}
+
 export async function commitObjectEvidence(
   db: Db,
   input: {
@@ -422,6 +460,7 @@ export async function commitObjectEvidence(
     contentType: string
     byteSize: number
     digest: string
+    payload?: JsonValue
   },
 ): Promise<EvidenceMetadata | null> {
   const { evidences } = schemaFor(db)
@@ -440,6 +479,7 @@ export async function commitObjectEvidence(
         byteSize: input.byteSize,
         digest,
         missingReason: null,
+        ...(input.payload !== undefined ? { payload: input.payload } : {}),
       },
       and(eq(evidences.id, input.id), eq(evidences.status, 'pending')),
     )

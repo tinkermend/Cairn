@@ -58,6 +58,12 @@ describe('resolveEvidencePolicy', () => {
     })
     expect(snapshot.evidencePolicy).toBeUndefined()
     expect(resolveEvidencePolicy(snapshot.evidencePolicy).screenshot).toBe('on_failure')
+    expect(resolveEvidencePolicy(snapshot.evidencePolicy).video).toBe('off')
+  })
+
+  it('显式 video 覆盖历史默认，不把出厂 always 回写到缺字段 Snapshot', () => {
+    expect(resolveEvidencePolicy({ video: 'always' }).video).toBe('always')
+    expect(resolveEvidencePolicy({}).video).toBe('off')
   })
 })
 

@@ -231,6 +231,7 @@ export const bumpEvidenceUploadAttempts = operation(impl3.bumpEvidenceUploadAtte
 export const commitObjectEvidence = operation(impl3.commitObjectEvidence)
 export const commitStoredObject = operation(impl3.commitStoredObject)
 export const findObjectEvidenceByAttemptType = operation(impl3.findObjectEvidenceByAttemptType)
+export const findObjectEvidenceByRunType = operation(impl3.findObjectEvidenceByRunType)
 export const findPendingObjectEvidence = operation(impl3.findPendingObjectEvidence)
 export const getStoredObjectById = operation(impl3.getStoredObjectById)
 export const getStoredObjectByKey = operation(impl3.getStoredObjectByKey)
@@ -246,6 +247,7 @@ export type { PurgeCandidate } from './objects/index.js'
 export type { StoredObjectRecord } from './objects/index.js'
 export const getEvidenceForRun = operation(impl3.getEvidenceForRun)
 export const listPendingEvidence = operation(impl3.listPendingEvidence)
+export const markOrphanedRunVideoLost = operation(impl3.markOrphanedRunVideoLost)
 export const settleExpiredPendingEvidence = operation(impl3.settleExpiredPendingEvidence)
 export const settleFinishedPendingRuns = operation(impl3.settleFinishedPendingRuns)
 export const settleRunEvidence = operation(impl3.settleRunEvidence)

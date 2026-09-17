@@ -474,4 +474,43 @@ describe('对象存储托管协议（集成）', { timeout: 30_000 }, () => {
     expect(row?.missingReason).toBe(OBJECT_MISSING_REASONS.traceTooLarge)
     expect(row?.objectKey).toBeUndefined()
   })
+
+  it('视频上限一路传到 put，超限记 video_too_large；重复 put 回同一运行级行', async () => {
+    const svc = new ObjectService(handle, store, {
+      retainDays: 30,
+      pendingTtlSeconds: 3600,
+      maxBytes: 8,
+      videoMaxBytes: 32,
+      uploadMaxAttempts: 3,
+    })
+    await expect(
+      svc.putObjectEvidence({
+        runId,
+        type: 'video',
+        body: new Uint8Array(64),
+        contentType: 'video/webm',
+      }),
+    ).rejects.toMatchObject({ code: 'OBJECT_TOO_LARGE' })
+    const missing = (await listRunEvidence(handle.db, runId)).items.find((item) => item.type === 'video')
+    expect(missing?.status).toBe('missing')
+    expect(missing?.missingReason).toBe(OBJECT_MISSING_REASONS.videoTooLarge)
+
+    const first = await svc.putObjectEvidence({
+      runId: otherRunId,
+      type: 'video',
+      body: new Uint8Array(16).fill(7),
+      contentType: 'video/webm',
+      payload: { truncated: false, passwordMask: 'applied' },
+    })
+    const again = await svc.putObjectEvidence({
+      runId: otherRunId,
+      type: 'video',
+      body: new Uint8Array(16).fill(9),
+      contentType: 'video/webm',
+    })
+    expect(again.id).toBe(first.id)
+    expect(again.status).toBe('available')
+    expect(again.payload).toMatchObject({ passwordMask: 'applied' })
+    expect(again.byteSize).toBe(16)
+  })
 })

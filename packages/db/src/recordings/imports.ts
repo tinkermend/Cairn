@@ -5,8 +5,12 @@ import {
   MAX_AUTHORING_NODES,
   MAX_SCENARIO_STEPS,
   authoringHasModuleInvocations,
+  authoringHasOutcomes,
   authoringNodeId,
   isAuthoringDocumentV2,
+  outcomeContractFromCandidate,
+  proposeOutcomeCandidate,
+  outcomeCandidateMeaning,
   normalizeAuthoringDocument,
   RECORDING_NORMALIZER_VERSION,
   RECORDING_TICKET_TTL_SECONDS,
@@ -33,6 +37,7 @@ import {
   type RecordingImportListResponse,
   type RecordingImportPreview,
   type RecordingImportReceipt,
+  type OutcomeContract,
   type RecordingInsertAnchor,
   type ScenarioAuthoringDocumentV2,
   type ScenarioDetailDto,
@@ -375,7 +380,10 @@ export async function applyRecordingImport(
       }
       const now = new Date()
       const newRevision = draft.revision + 1
-      const savedDocument = authoringHasModuleInvocations(next.document) || isIncomingV2(draft.document)
+      const savedDocument =
+        authoringHasModuleInvocations(next.document) ||
+        isIncomingV2(draft.document) ||
+        authoringHasOutcomes(next.document)
         ? next.document
         : {
             schemaVersion: next.document.schemaVersion,
@@ -463,6 +471,21 @@ function compileImportPreview(
       ...item,
       ready: recordingItemReady(item),
       candidateStep,
+      ...(candidateStep?.type === 'assert'
+        ? {
+            outcomeCandidate: proposeOutcomeCandidate({
+              meaning: outcomeCandidateMeaning({
+                expect: candidateStep.input.expect,
+                ...(candidateStep.input.target ? { target: candidateStep.input.target } : {}),
+              }),
+              scope: 'step',
+              provenance: 'recorded',
+              ...(candidateStep.input.target ? { target: candidateStep.input.target } : {}),
+              expect: candidateStep.input.expect,
+              sourceIndexes: item.sourceIndexes,
+            }),
+          }
+        : {}),
     }
   })
   return {
@@ -500,23 +523,8 @@ function applyDispositionsToAuthoring(
   dispositions: RecordingDisposition[],
   anchor: RecordingInsertAnchor,
 ): { document: ScenarioAuthoringDocumentV2; sourceMap: RecordingImportReceipt['sourceMap'] } {
-  const flat = applyDispositions(
-    {
-      schemaVersion: document.schemaVersion,
-      inputs: document.inputs,
-      steps: [],
-    },
-    items,
-    dispositions,
-    { kind: 'start' },
-  )
-  const insertedNodes = flat.document.steps.map((step) => ({ kind: 'step' as const, step }))
-  const limit = authoringHasModuleInvocations(document) ? MAX_AUTHORING_NODES : MAX_SCENARIO_STEPS
-  if (document.nodes.length + insertedNodes.length > limit) {
-    throw badRequest(
-      'RECORDING_IMPORT_CAPACITY',
-      `回填后将超过 ${limit} 个节点，当前还可插入 ${Math.max(0, limit - document.nodes.length)} 步`,
-    )
+  if (dispositions.length !== items.length) {
+    throw badRequest('RECORDING_IMPORT_INCOMPLETE', '必须处理预览中的每一项')
   }
   const at =
     anchor.kind === 'start'
@@ -525,12 +533,100 @@ function applyDispositionsToAuthoring(
   if (anchor.kind === 'after' && at === 0) {
     throw conflict('RECORDING_IMPORT_STALE', '插入位置的步骤已不存在，请重新预览')
   }
+
+  const used = new Set<number>()
+  const inserted: Array<{ kind: 'step'; step: Step; outcomes?: OutcomeContract[] }> = []
+  const extraOutcomes = new Map<string, OutcomeContract[]>()
+  const scenarioOutcomes = [...(document.scenarioOutcomes ?? [])]
+  const sourceMap: RecordingImportReceipt['sourceMap'] = []
+  let lastActionId =
+    [...document.nodes.slice(0, at)].reverse().find((node) => node.kind === 'step')?.step.id
+
+  for (const item of items) {
+    const index = dispositions.findIndex((entry) => sameSourceIndexes(entry.sourceIndexes, item.sourceIndexes))
+    if (index < 0 || used.has(index)) {
+      throw badRequest('RECORDING_IMPORT_INCOMPLETE', '必须处理预览中的每一项，且不能重复')
+    }
+    used.add(index)
+    const disposition = dispositions[index]!
+    if (disposition.disposition === 'discard') {
+      sourceMap.push({
+        sourceIndexes: item.sourceIndexes,
+        disposition: 'discard',
+        reason: disposition.reason,
+      })
+      continue
+    }
+
+    const asOutcome = disposition.disposition === 'accept' && Boolean(item.outcomeCandidate)
+    if (asOutcome) {
+      const contract = outcomeContractFromCandidate(item.outcomeCandidate!, newId())
+      if (lastActionId) {
+        const insertedNode = inserted.find((node) => node.step.id === lastActionId)
+        if (insertedNode) {
+          insertedNode.outcomes = [...(insertedNode.outcomes ?? []), { ...contract, scope: 'step' }]
+        } else {
+          extraOutcomes.set(lastActionId, [...(extraOutcomes.get(lastActionId) ?? []), { ...contract, scope: 'step' }])
+        }
+        sourceMap.push({
+          sourceIndexes: item.sourceIndexes,
+          stepId: lastActionId,
+          disposition: 'accept',
+        })
+      } else {
+        scenarioOutcomes.push({ ...contract, scope: 'scenario' })
+        sourceMap.push({
+          sourceIndexes: item.sourceIndexes,
+          disposition: 'accept',
+        })
+      }
+      continue
+    }
+
+    let step: Step
+    if (disposition.disposition === 'accept') {
+      if (!item.ready || !item.candidateStep) {
+        throw badRequest('RECORDING_IMPORT_INCOMPLETE', `「${item.name}」还不能接受，请修正或舍弃`)
+      }
+      step = { ...item.candidateStep, id: newId() }
+    } else {
+      step = { ...disposition.step, id: newId() }
+    }
+    inserted.push({ kind: 'step', step })
+    lastActionId = step.id
+    sourceMap.push({
+      sourceIndexes: item.sourceIndexes,
+      stepId: step.id,
+      disposition: disposition.disposition,
+    })
+  }
+
+  if (inserted.length === 0 && extraOutcomes.size === 0 && scenarioOutcomes.length === (document.scenarioOutcomes?.length ?? 0)) {
+    throw badRequest('RECORDING_IMPORT_INCOMPLETE', '全部舍弃请使用放弃导入，不要提交空回填')
+  }
+
+  const limit = authoringHasModuleInvocations(document) ? MAX_AUTHORING_NODES : MAX_SCENARIO_STEPS
+  if (document.nodes.length + inserted.length > limit) {
+    throw badRequest(
+      'RECORDING_IMPORT_CAPACITY',
+      `回填后将超过 ${limit} 个节点，当前还可插入 ${Math.max(0, limit - document.nodes.length)} 步`,
+    )
+  }
+
+  const prefix = document.nodes.slice(0, at).map((node) => {
+    if (node.kind !== 'step') return node
+    const added = extraOutcomes.get(node.step.id)
+    if (!added?.length) return node
+    return { ...node, outcomes: [...(node.outcomes ?? []), ...added] }
+  })
+  const suffix = document.nodes.slice(at)
   return {
     document: {
       ...document,
-      nodes: [...document.nodes.slice(0, at), ...insertedNodes, ...document.nodes.slice(at)],
+      nodes: [...prefix, ...inserted, ...suffix],
+      ...(scenarioOutcomes.length > 0 ? { scenarioOutcomes } : {}),
     },
-    sourceMap: flat.sourceMap,
+    sourceMap,
   }
 }
 

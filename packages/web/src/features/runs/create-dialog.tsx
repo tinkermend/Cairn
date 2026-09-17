@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { stepUsesBrowser, runInputSchema, type EvidenceCaptureMode } from '@cairn/shared'
+import { stepUsesBrowser, runInputSchema, type EvidenceCaptureMode, type VideoCaptureMode } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { createRun } from '@/lib/runs-api'
@@ -92,9 +92,11 @@ export function RunCreateDialog({
   const usableAccounts = passwordAccounts(accounts.data?.items ?? [])
   const [inputJson, setInputJson] = useState('{}')
   const [screenshotOverride, setScreenshotOverride] = useState<EvidenceCaptureMode | null>(null)
+  const [videoOverride, setVideoOverride] = useState<VideoCaptureMode | null>(null)
   const [traceOverride, setTraceOverride] = useState<EvidenceCaptureMode | null>(null)
   const [saving, setSaving] = useState(false)
-    const inheritScreenshot = capabilities.data?.defaults?.evidence.screenshot ?? 'on_failure'
+    const inheritScreenshot = capabilities.data?.defaults?.evidence.screenshot ?? 'always'
+  const inheritVideo = capabilities.data?.defaults?.evidence.video ?? 'always'
   const inheritTrace = capabilities.data?.defaults?.evidence.trace ?? 'off'
 
   useEffect(() => {
@@ -197,6 +199,27 @@ export function RunCreateDialog({
               </Select>
             </div>
             <div className='space-y-2'>
+              <Label>录像采集</Label>
+              <Select
+                value={videoOverride ?? INHERIT}
+                onValueChange={(value) =>
+                  setVideoOverride(value === INHERIT ? null : (value as VideoCaptureMode))
+                }
+              >
+                <SelectTrigger className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={INHERIT}>{inheritCaptureLabel(inheritVideo, '继承平台默认')}</SelectItem>
+                  {(['always', 'off'] as const).map((mode) => (
+                    <SelectItem key={mode} value={mode}>
+                      {CAPTURE_MODE_LABELS[mode]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className='space-y-2'>
               <Label>Trace 采集</Label>
               <Select
                 value={traceOverride ?? INHERIT}
@@ -219,7 +242,7 @@ export function RunCreateDialog({
             </div>
           </div>
           <p className='text-label text-muted-foreground'>
-            未改采集方式时继承平台证据策略。Trace 选「始终」用于当场调试。失败保留的 Trace 用
+            未改采集方式时继承平台证据策略，出厂默认成功失败都留截图和整次录像。Trace 选「始终」用于当场调试，用
             Playwright Trace Viewer 打开。
           </p>
         </div>
@@ -241,9 +264,10 @@ export function RunCreateDialog({
               }
               const input = parsed.data
               const evidencePolicy =
-                screenshotOverride || traceOverride
+                screenshotOverride || videoOverride || traceOverride
                   ? {
                       ...(screenshotOverride ? { screenshot: screenshotOverride } : {}),
+                      ...(videoOverride ? { video: videoOverride } : {}),
                       ...(traceOverride ? { trace: traceOverride } : {}),
                     }
                   : undefined

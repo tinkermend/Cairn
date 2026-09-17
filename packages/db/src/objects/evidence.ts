@@ -1,10 +1,11 @@
 import type { EvidenceRow } from '../records.js'
 import { atomic, schemaFor } from '../native.js'
 import { updateRows } from '../native.js'
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import {
   EVIDENCE_INCOMPLETE_CODE,
   FINISHED_RUN_STATUSES,
+  OBJECT_MISSING_REASONS,
   RUNTIME_SCHEMA_VERSION,
   stepUsesBrowser,
   isFinishedRunStatus,
@@ -24,7 +25,7 @@ import { storedObjects } from '../schema/objects.js'
 import { toEvidenceMetadata } from './evidence-map.js'
 import { lockRunRow } from '../leases/leases.js'
 import { appendRunEvents } from '../observe/events.js'
-import { commitObjectEvidence, markEvidenceMissing } from './objects.js'
+import { commitObjectEvidence, findObjectEvidenceByRunType, markEvidenceMissing } from './objects.js'
 
 export type PendingEvidenceRow = EvidenceMetadata & {
   objectId: string | null
@@ -152,6 +153,59 @@ export async function settleExpiredPendingEvidence(
 }
 
 /**
+ * 本 Worker 换代后，旧进程的会话已 LOST，现场文件不在：pending 运行级录像立刻记 worker_lost，不等 pending TTL。
+ */
+export async function markOrphanedRunVideoLost(
+  db: Db,
+  input: { workerId: string; workerInstanceId: string },
+): Promise<{ marked: number; runIds: string[] }> {
+  const { browserSessions, sessionLeases } = schemaFor(db)
+  const lost = await db
+    .select({ id: browserSessions.id })
+    .from(browserSessions)
+    .where(
+      and(
+        eq(browserSessions.ownerWorkerId, input.workerId),
+        eq(browserSessions.status, 'LOST'),
+        eq(browserSessions.closeReason, 'owner_instance_replaced'),
+        or(
+          isNull(browserSessions.ownerWorkerInstanceId),
+          sql`${browserSessions.ownerWorkerInstanceId} <> ${input.workerInstanceId}`,
+        ),
+      ),
+    )
+  if (lost.length === 0) return { marked: 0, runIds: [] }
+  const leases = await db
+    .select({ runId: sessionLeases.runId })
+    .from(sessionLeases)
+    .where(
+      and(
+        inArray(
+          sessionLeases.sessionId,
+          lost.map((row) => row.id),
+        ),
+        isNotNull(sessionLeases.runId),
+      ),
+    )
+  const runIds = [
+    ...new Set(leases.map((row) => row.runId).filter((id): id is string => Boolean(id))),
+  ]
+  const marked: string[] = []
+  for (const runId of runIds) {
+    const row = await findObjectEvidenceByRunType(db, { runId, type: 'video' })
+    if (!row || row.status !== 'pending') continue
+    const updated = await markEvidenceMissing(db, {
+      id: row.id,
+      reason: OBJECT_MISSING_REASONS.workerLost,
+    })
+    if (!updated) continue
+    marked.push(runId)
+    await settleRunEvidence(db, runId, { pendingTtlSeconds: 3600, maxUploadAttempts: 3 })
+  }
+  return { marked: marked.length, runIds: marked }
+}
+
+/**
  * 已终态、轴仍 PENDING 的 Run。覆盖 finally 收尾失败、核查后未收、以及没有任何 pending 证据行可被 TTL 扫到的成功 Run。
  */
 export async function settleFinishedPendingRuns(
@@ -242,7 +296,8 @@ export async function settleRunEvidence(
 }
 
 type RequiredSlot = {
-  attemptId: string
+  scope: 'attempt' | 'run'
+  attemptId?: string
   type: EvidenceType
   missingReason?: string
 }
@@ -271,7 +326,12 @@ function collectRequiredEvidence(
     const failed = attempt.status === 'FAILED' || attempt.status === 'CANCELLED'
 
     for (const type of policy.required) {
-      required.push({ attemptId: attempt.id, type, missingReason: reasonFor(rows, type) })
+      required.push({
+        scope: 'attempt',
+        attemptId: attempt.id,
+        type,
+        missingReason: reasonFor(rows, type),
+      })
     }
 
     const hasOutcome = rows.some(
@@ -279,6 +339,7 @@ function collectRequiredEvidence(
     )
     if (!hasOutcome) {
       required.push({
+        scope: 'attempt',
         attemptId: attempt.id,
         type: 'error',
         missingReason: reasonFor(rows, 'error') ?? 'missing_outcome',
@@ -288,6 +349,7 @@ function collectRequiredEvidence(
     if (step && stepUsesBrowser(step.type)) {
       if (shouldCaptureEvidence(policy.screenshot, failed)) {
         required.push({
+          scope: 'attempt',
           attemptId: attempt.id,
           type: 'screenshot',
           missingReason: reasonFor(rows, 'screenshot'),
@@ -295,12 +357,30 @@ function collectRequiredEvidence(
       }
       if (shouldCaptureEvidence(policy.trace, failed)) {
         required.push({
+          scope: 'attempt',
           attemptId: attempt.id,
           type: 'trace',
           missingReason: reasonFor(rows, 'trace'),
         })
       }
     }
+  }
+
+  const finishedBrowserAttempt = attemptRows.some((attempt) => {
+    if (attempt.status === 'RUNNING') return false
+    const stepRow = stepRows.find((row) => row.id === attempt.stepRunId)
+    const step = stepRow ? stepsById.get(stepRow.stepId) : undefined
+    return Boolean(step && stepUsesBrowser(step.type))
+  })
+  if (policy.video === 'always' && finishedBrowserAttempt) {
+    const videoRows = evidenceRows
+      .filter((row) => row.type === 'video' && !row.attemptId && !row.stepRunId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
+    required.push({
+      scope: 'run',
+      type: 'video',
+      missingReason: reasonFor(videoRows, 'video'),
+    })
   }
   return required
 }
@@ -323,9 +403,22 @@ function decideEvidenceStatus(input: {
       .filter((row) => row.attemptId)
       .map((row) => [`${row.attemptId}:${row.type}`, row]),
   )
+  const byRunType = new Map<string, EvidenceRow>()
+  for (const row of [...input.evidenceRows]
+    .filter((item) => !item.attemptId && !item.stepRunId)
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))) {
+    if (!byRunType.has(row.type)) byRunType.set(row.type, row)
+  }
   let pending = false
   let missing = false
   for (const slot of input.required) {
+    if (slot.scope === 'run') {
+      const row = byRunType.get(slot.type)
+      if (!row) missing = true
+      else if (row.status === 'pending') pending = true
+      else if (row.status === 'missing') missing = true
+      continue
+    }
     if (slot.type === 'error' && slot.missingReason === 'missing_outcome') {
       const rows = input.evidenceRows.filter((row) => row.attemptId === slot.attemptId)
       const outcome = rows.find((row) => row.type === 'output' || row.type === 'error')
@@ -368,7 +461,8 @@ async function insertIncompleteEvidence(
   const missing = required
     .filter((slot): slot is RequiredSlot & { missingReason: string } => Boolean(slot.missingReason))
     .map((slot) => ({
-      attemptId: slot.attemptId,
+      scope: slot.scope,
+      ...(slot.attemptId ? { attemptId: slot.attemptId } : {}),
       type: slot.type,
       reason: slot.missingReason,
     }))

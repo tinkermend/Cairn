@@ -125,4 +125,28 @@ describe('证据正文下载（集成）', { timeout: 30_000 }, () => {
     const listed = await listRunEvidence(handle.db, runId)
     expect(listed.items.find((item) => item.id === evidence.id)?.status).toBe('available')
   })
+
+  it('转发 video/webm 正文，下载名为 run-{runId前8位}.webm', async () => {
+    const body = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00, 0x00, 0x00])
+    const reserved = await reserveStoredObject(handle.db, {
+      runId,
+      retainUntil: new Date(Date.now() + 86_400_000),
+    })
+    const head = await store.put({ key: reserved.objectKey, body, contentType: 'video/webm' })
+    await commitStoredObject(handle.db, {
+      id: reserved.id,
+      contentType: 'video/webm',
+      byteSize: head.byteSize,
+      digest: head.digest,
+    })
+    const evidence = await recordObjectEvidence(handle.db, {
+      runId,
+      type: 'video',
+      objectKey: reserved.objectKey,
+    })
+    const file = await runs.evidenceContent(runId, evidence.id)
+    expect(file.contentType).toBe('video/webm')
+    expect(file.filename).toBe(`run-${runId.slice(0, 8)}.webm`)
+    expect(file.body).toEqual(body)
+  })
 })

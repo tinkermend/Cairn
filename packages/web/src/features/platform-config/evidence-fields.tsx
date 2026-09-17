@@ -24,10 +24,29 @@ export function EvidenceFields({ canWrite }: { canWrite: boolean }) {
         label='截图采集'
         canWrite={canWrite}
       />
+      <VideoCaptureField canWrite={canWrite} />
       <CaptureField
         name='evidence.trace'
         label='Trace 采集'
         canWrite={canWrite}
+      />
+      <FormField
+        name='evidence.retainDays.video'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>录像保留（天）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>录像比截图重，出厂 14 天。到期后步骤截图仍在。</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
       />
       <FormField
         name='evidence.retainDays.screenshot'
@@ -87,6 +106,39 @@ export function EvidenceFields({ canWrite }: { canWrite: boolean }) {
         必要证据由代码约束，不能在这里删掉。
       </p>
     </div>
+  )
+}
+
+function VideoCaptureField({ canWrite }: { canWrite: boolean }) {
+  return (
+    <FormField
+      name='evidence.video'
+      render={({ field }) => (
+        <FormItem>
+          <FormLabel>录像采集</FormLabel>
+          <Select
+            disabled={!canWrite}
+            value={field.value ?? ''}
+            onValueChange={field.onChange}
+          >
+            <FormControl>
+              <SelectTrigger className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+            </FormControl>
+            <SelectContent>
+              {(['off', 'always'] as const).map((mode) => (
+                <SelectItem key={mode} value={mode}>
+                  {CAPTURE_MODE_LABELS[mode]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <FormDescription>整次 Run 一条录像。成功失败都留。</FormDescription>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
   )
 }
 

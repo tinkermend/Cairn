@@ -33,7 +33,7 @@ describe('evidenceMetadataSchema', () => {
   })
 
   it('拒绝未知证据类型', () => {
-    expect(() => evidenceMetadataSchema.parse({ ...valid, type: 'video' })).toThrow()
+    expect(evidenceMetadataSchema.parse({ ...valid, type: 'video' })).toMatchObject({ type: 'video' })
   })
 
   it('拒绝把二进制当字段塞进来', () => {

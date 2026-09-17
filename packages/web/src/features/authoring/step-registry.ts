@@ -109,6 +109,15 @@ export function selectableStudioTypes(
   return types
 }
 
+/** 场景编写入口收口：成功条件不再以步骤类型出现。模块实现仍可用 selectableStudioTypes。 */
+export function selectableScenarioStudioTypes(
+  capabilities: ScenarioCapabilities | undefined
+): ExecutableStepType[] {
+  return selectableStudioTypes(capabilities).filter(
+    (type) => type !== 'assert' && type !== 'ai_assert'
+  )
+}
+
 export function unavailableStudioTypes(
   capabilities: ScenarioCapabilities | undefined
 ): { type: ExecutableStepType; message: string }[] {

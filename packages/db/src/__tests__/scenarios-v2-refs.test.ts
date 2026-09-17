@@ -216,7 +216,10 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
 
     // 4. 展开预览验证
     const preview = await previewScenarioExpansion(handle.db, scenario.id)
-    expect(preview.diagnostics).toHaveLength(0)
+    expect(preview.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+    expect(preview.diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining(['SCENARIO_NO_OUTCOME']),
+    )
     expect(preview.definition.steps).toHaveLength(3) // 1 nav + 2 module steps
     expect(preview.manifest?.entries).toHaveLength(1)
     expect(preview.manifest?.entries[0]!.moduleKey).toBe('search.box')

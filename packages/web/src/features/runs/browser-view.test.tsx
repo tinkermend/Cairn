@@ -181,6 +181,6 @@ describe('BrowserView', () => {
     await expect.element(screen.getByRole('button', { name: '展开画面' })).toBeInTheDocument()
     expect(mocks.subscribeBrowserFrames).not.toHaveBeenCalled()
     await screen.getByRole('button', { name: '展开画面' }).click()
-    await expect.element(screen.getByText('运行已结束，实时画面已关闭。步骤截图仍在证据里。')).toBeInTheDocument()
+    await expect.element(screen.getByText('运行已结束，实时画面已关闭。本次录像与步骤截图在结果里。')).toBeInTheDocument()
   })
 })

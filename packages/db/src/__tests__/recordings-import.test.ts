@@ -277,4 +277,134 @@ describe.each(DRIVERS)('%s 录制绑定与回填', { timeout: 30_000 }, (driver)
     expect(document.nodes?.[0]?.step?.id).toBe(first.id)
     expect(document.nodes?.[3]?.step?.id).toBe(second.id)
   })
+
+  it('录制 assertVisible / assertText 只在确认后进入成功条件，未确认不入库', async () => {
+    const events = [
+      {
+        name: 'navigate',
+        url: 'https://shop.example.com/orders',
+        signals: [],
+        pageAlias: 'page',
+        framePath: [],
+      },
+      {
+        name: 'assertVisible',
+        locator: { kind: 'text', body: '提交成功' },
+        pageAlias: 'page',
+        framePath: [],
+      },
+      {
+        name: 'assertText',
+        locator: { kind: 'text', body: '提交成功' },
+        text: '提交成功',
+        pageAlias: 'page',
+        framePath: [],
+      },
+      {
+        name: 'assertValue',
+        locator: { kind: 'css', body: '#amount' },
+        pageAlias: 'page',
+        framePath: [],
+      },
+    ]
+
+    async function previewFor(name: string) {
+      const created = await createScenarioWithVersion(handle.db, {
+        targetId,
+        name,
+        steps: [navigateStep()],
+        actor: { id: actorId },
+      })
+      const uploaded = await createRecordingDraft(
+        handle.db,
+        recordingBody(targetId, {
+          events,
+          idempotencyKey: `assert-rec-${newId()}`,
+        }),
+        { id: actorId },
+      )
+      const preview = await previewRecordingImport(
+        handle.db,
+        created.id,
+        {
+          recordingDraftId: uploaded.detail.id,
+          baseRevision: created.draft!.revision,
+          insertAnchor: { kind: 'start' },
+        },
+        actorId,
+      )
+      return { created, uploaded, preview }
+    }
+
+    const discardedCase = await previewFor(`录制候选舍弃 ${newId().slice(0, 8)}`)
+    const visible = discardedCase.preview.items.find(
+      (item) => item.outcomeCandidate && item.sourceAction === 'assertVisible',
+    )
+    const text = discardedCase.preview.items.find(
+      (item) => item.outcomeCandidate && item.sourceAction === 'assertText',
+    )
+    const value = discardedCase.preview.items.find((item) => item.sourceAction === 'assertValue')
+    expect(visible).toBeTruthy()
+    expect(text).toBeTruthy()
+    expect(visible?.outcomeCandidate?.meaning).toMatch(/提交成功/)
+    expect(text?.outcomeCandidate?.meaning).toBe('提交成功')
+    expect(discardedCase.preview.items.some((item) => item.candidateStep?.type === 'assert' && item.outcomeCandidate)).toBe(
+      true,
+    )
+    expect(value?.outcomeCandidate).toBeUndefined()
+
+    const discarded = await applyRecordingImport(
+      handle.db,
+      discardedCase.created.id,
+      {
+        idempotencyKey: `discard-outcome-${discardedCase.uploaded.detail.id}`,
+        baseRevision: discardedCase.created.draft!.revision,
+        recordingDraftId: discardedCase.uploaded.detail.id,
+        normalizerVersion: RECORDING_NORMALIZER_VERSION,
+        sourceDigest: discardedCase.preview.sourceDigest,
+        insertAnchor: discardedCase.preview.insertAnchor,
+        dispositions: discardedCase.preview.items.map((item) =>
+          item.candidateStep?.type === 'navigate'
+            ? { sourceIndexes: item.sourceIndexes, disposition: 'accept' as const }
+            : { sourceIndexes: item.sourceIndexes, disposition: 'discard' as const, reason: '未确认为成功条件' },
+        ),
+      },
+      { id: actorId },
+    )
+    const discardedDoc = discarded.scenario.draft?.document as {
+      nodes?: Array<{ outcomes?: unknown[] }>
+      scenarioOutcomes?: unknown[]
+    }
+    expect(discardedDoc.nodes?.some((node) => (node.outcomes?.length ?? 0) > 0)).toBeFalsy()
+    expect(discardedDoc.scenarioOutcomes ?? []).toHaveLength(0)
+
+    const acceptedCase = await previewFor(`录制候选确认 ${newId().slice(0, 8)}`)
+    const accepted = await applyRecordingImport(
+      handle.db,
+      acceptedCase.created.id,
+      {
+        idempotencyKey: `accept-outcome-${acceptedCase.uploaded.detail.id}`,
+        baseRevision: acceptedCase.created.draft!.revision,
+        recordingDraftId: acceptedCase.uploaded.detail.id,
+        normalizerVersion: RECORDING_NORMALIZER_VERSION,
+        sourceDigest: acceptedCase.preview.sourceDigest,
+        insertAnchor: acceptedCase.preview.insertAnchor,
+        dispositions: acceptedCase.preview.items.map((item) =>
+          item.outcomeCandidate || item.candidateStep?.type === 'navigate'
+            ? { sourceIndexes: item.sourceIndexes, disposition: 'accept' as const }
+            : { sourceIndexes: item.sourceIndexes, disposition: 'discard' as const, reason: '不支持的判定' },
+        ),
+      },
+      { id: actorId },
+    )
+    const acceptedDoc = accepted.scenario.draft?.document as {
+      authoringSchemaVersion?: number
+      nodes?: Array<{ kind: string; outcomes?: Array<{ provenance: string }>; step?: { type: string } }>
+    }
+    expect(acceptedDoc.authoringSchemaVersion).toBe(2)
+    expect(acceptedDoc.nodes?.some((node) => node.step?.type === 'assert')).toBe(false)
+    expect(acceptedDoc.nodes?.some((node) => node.outcomes?.some((item) => item.provenance === 'recorded'))).toBe(
+      true,
+    )
+  })
 })

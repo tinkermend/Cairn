@@ -46,7 +46,7 @@ function viewPlaceholder(input: {
 }) {
   if (input.streamError) return input.streamError
   if (!isLiveViewRun(input.runStatus))
-    return '运行已结束，实时画面已关闭。步骤截图仍在证据里。'
+    return '运行已结束，实时画面已关闭。本次录像与步骤截图在结果里。'
   if (input.waiting && !input.controlling)
     return '取得登录权后才会显示认证画面，避免把验证码广播给其他观察者。'
   if (input.degradedReason === 'worker_generation_mismatch')
@@ -56,7 +56,7 @@ function viewPlaceholder(input: {
   if (input.connecting) return '正在连接受管浏览器画面…'
   if (!input.framesAvailable)
     return '等待执行面就绪。会话建立后会自动开始抓取画面。'
-  return '运行已结束，实时画面已关闭。步骤截图仍在证据里。'
+  return '运行已结束，实时画面已关闭。本次录像与步骤截图在结果里。'
 }
 
 /** 画面是 object-contain，按整块按钮比例换算会点到留白而不是登录框。 */

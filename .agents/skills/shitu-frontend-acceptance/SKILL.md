@@ -49,7 +49,7 @@ description: 验收识途 Cairn 前端的业务交互、视觉层次和响应式
 
 ## 成本与工具边界
 
-优先复用已运行的预览、已有浏览器会话、项目测试与 fixtures；需要浏览器时再启动环境。可用项目现有 Playwright / Vitest，不为本次验收引入框架、批量脚手架或新依赖。
+优先复用已运行的预览、已有浏览器会话、项目测试与 fixtures；需要浏览器时再启动环境。打开真实控制台前先跑 `pnpm check:stack`（或 `pnpm check:stack web`）。栈未起来不得把 mock / 单测写成页面验收通过。可用项目现有 Playwright / Vitest，不为本次验收引入框架、批量脚手架或新依赖。
 
 `pnpm check:design` 是现有的确定性设计检查，已接入 CI 配置。改到 Token、共用组件或布局时本地运行；仅改文案或展示格式无需在 skill 中重复运行整套。它验证源码规则与 HTML 样本，不能替代真实 React 页面的能力和视觉验收。
 

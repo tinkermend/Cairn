@@ -18,6 +18,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { MODULE_EXECUTION_MODE_LABELS } from '@/features/action-modules/labels'
 import { AiAttemptSummary } from './ai-evidence'
 import { AttemptEvidenceList } from './evidence-viewer'
+import { StepFaceScreenshot, stepFaceScreenshot } from './run-video'
 import {
   ATTEMPT_STATUS_LABELS,
   formatDuration,
@@ -324,6 +325,10 @@ function StepRunItem({
           step.type
         )}
       </p>
+      {(() => {
+        const face = stepFaceScreenshot(step.attempts, evidenceItems)
+        return face ? <StepFaceScreenshot runId={runId} item={face} /> : null
+      })()}
       {step.attempts.length === 0 ? (
         <p className='mt-2 text-label text-muted-foreground'>尚未开始尝试。</p>
       ) : null}

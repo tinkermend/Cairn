@@ -28,6 +28,7 @@ const TYPE_LABELS: Record<EvidenceMetadata['type'], string> = {
   screenshot: '截图',
   log: '诊断',
   trace: 'Trace',
+  video: '录像',
 }
 
 export function AttemptEvidenceList({
@@ -58,7 +59,7 @@ export function AttemptEvidenceList({
 function shouldOpenByDefault(item: EvidenceMetadata): boolean {
   if (item.status === 'missing') return true
   return (
-    item.type === 'error' || item.type === 'screenshot' || item.type === 'trace'
+    item.type === 'error' || item.type === 'screenshot' || item.type === 'trace' || item.type === 'video'
   )
 }
 

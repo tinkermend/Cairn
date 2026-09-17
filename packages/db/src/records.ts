@@ -454,9 +454,14 @@ export type RunRow = {
     evidencePolicy?:
       | {
           screenshot?: 'always' | 'off' | 'on_failure' | undefined
+          video?: 'always' | 'off' | undefined
           trace?: 'always' | 'off' | 'on_failure' | undefined
-          required?: ('output' | 'input' | 'screenshot' | 'trace' | 'error' | 'log')[] | undefined
-          retainDays?: { screenshot?: number | undefined; trace?: number | undefined } | undefined
+          required?: ('output' | 'input' | 'screenshot' | 'trace' | 'error' | 'log' | 'video')[] | undefined
+          retainDays?: {
+            screenshot?: number | undefined
+            video?: number | undefined
+            trace?: number | undefined
+          } | undefined
         }
       | undefined
     executorVersions?: Record<string, string> | undefined
@@ -497,7 +502,7 @@ export type EvidenceRow = {
   status: 'available' | 'pending' | 'missing'
   createdAt: Date
   schemaVersion: number
-  type: 'output' | 'input' | 'screenshot' | 'trace' | 'error' | 'log'
+  type: 'output' | 'input' | 'screenshot' | 'trace' | 'error' | 'log' | 'video'
   runId: string
   digest: string | null
   stepRunId: string | null

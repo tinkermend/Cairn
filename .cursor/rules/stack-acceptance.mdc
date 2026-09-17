@@ -1,0 +1,16 @@
+---
+description: 宣称本机服务可用或开发完成前，必须做进程探活。
+alwaysApply: true
+---
+
+# 本机服务探活
+
+准备说「开发完成」「服务正常」「可以验收」且改动可能影响 api / worker / web 启动时，先跑：
+
+```bash
+pnpm check:stack
+```
+
+`STACK_DOWN` 或 `STACK_UNHEALTHY` 不得宣称服务正常。测试通过、代码存在、旧截图都不能代替。探活只证明进程与接线，不代替本次功能验收。
+
+细节见 `.cursor/skills/shitu-stack-acceptance/SKILL.md`。

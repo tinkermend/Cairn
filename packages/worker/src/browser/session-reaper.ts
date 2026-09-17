@@ -1,5 +1,6 @@
 import {
   isolateOrphanedSessions,
+  markOrphanedRunVideoLost,
   occupancyGrantFromLease,
   reapSessionLeases,
   getSessionById,
@@ -27,6 +28,9 @@ export function ownerScope(this: SessionManagerContext) {
 export async function dropLocalHandle(this: SessionManagerContext, sessionId: string): Promise<'stopped' | 'unconfirmed'> {
     const live = this.lives.get(sessionId)
     if (!live) return 'unconfirmed'
+    for (const [leaseId, recorder] of [...(this.videoRecorders?.entries() ?? [])]) {
+      if (recorder.sessionId === sessionId) await this.stopVideoForLease(leaseId)
+    }
     live.authObserver?.dispose()
     live.authObserver = undefined
     live.screencastObservers.clear()
@@ -57,6 +61,10 @@ export async function reconcileOwn(this: SessionManagerContext): Promise<{ lease
     }
     const db = this.dbHandle
     const sessionsClosed = await isolateOrphanedSessions(db, this.options.workerId, this.workerInstanceId)
+    await markOrphanedRunVideoLost(db, {
+      workerId: this.options.workerId,
+      workerInstanceId: this.workerInstanceId,
+    })
     this.reconciled = true
     this.logger.log(
       { workerId: this.options.workerId, instanceId: this.workerInstanceId, sessionsClosed },
@@ -85,6 +93,7 @@ export async function renew(this: SessionManagerContext, leaseId: string, leaseT
 
 export async function release(this: SessionManagerContext, leaseId: string, reason: string): Promise<void> {
     const sessionId = this.leaseToSession.get(leaseId)
+    await this.stopVideoForLease(leaseId)
     await this.stopTracingForLease(leaseId, sessionId)
     await this.closeRunPage(leaseId)
     const result = await releaseSessionUse(this.dbHandle, {

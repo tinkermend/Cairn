@@ -91,6 +91,7 @@ export function unbindOccupancy(this: SessionManagerContext, leaseId: string) {
   }
 
 export async function abandonOccupancy(this: SessionManagerContext, leaseId: string, reason: string) {
+    await this.stopVideoForLease(leaseId)
     this.unbindOccupancy(leaseId)
     try {
       await releaseSessionUse(this.dbHandle, {
@@ -306,6 +307,8 @@ export async function finishClaimedAcquire(this: SessionManagerContext,
     }
     await this.applyReuse(live, policy, grant.leaseId)
     if (managed) this.ensureRunPage(managed, run.runId, grant.leaseId)
+    this.runAuth.set(grant.leaseId, { ...this.runAuth.get(grant.leaseId), snapshot: run })
+    await this.startVideoForLease(grant.leaseId, live.id, run)
 
     signal?.throwIfAborted()
     const authSessionId = live.id
@@ -334,6 +337,8 @@ export async function finishClaimedAcquire(this: SessionManagerContext,
     }
 
     await this.startTracingForLease(grant.leaseId, live.id, run)
+    await this.startVideoForLease(grant.leaseId, live.id, run)
+    if (ready) await this.retargetVideoForLease(ready, grant.leaseId)
     this.logger.log(
       {
         sessionId: grant.sessionId,
@@ -386,6 +391,7 @@ export async function recoverAuthHeld(this: SessionManagerContext,
     const page = this.pageForGrant(grant) ?? live?.handle.basePage
     const policy = resolveSessionPolicy(input.snapshot.sessionPolicy)
     const target = await this.loadTargetAuth(input.snapshot)
+    if (live) await this.startVideoForLease(grant.leaseId, sessionId, input.snapshot)
     const waiting = async (
       code: SessionErrorCode,
       message: string,
@@ -421,6 +427,7 @@ export async function recoverAuthHeld(this: SessionManagerContext,
         return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
       }
       this.authGateClosed.delete(grant.leaseId)
+      if (live) await this.retargetVideoForLease(live, grant.leaseId)
       return { ok: true }
     }
     if (checkpoint?.recoveryRule?.reuse === 'NEW_PAGE' && page) {
@@ -514,6 +521,7 @@ export async function recoverAuthHeld(this: SessionManagerContext,
       return { ok: false, unrecoverable: true, code: 'AUTH_CONTEXT_NOT_RECOVERABLE', runStatus: 'FAILED' }
     }
     this.authGateClosed.delete(grant.leaseId)
+    if (live) await this.retargetVideoForLease(live, grant.leaseId)
     return { ok: true }
   }
 
@@ -1009,6 +1017,12 @@ export async function enterWaitingForAuth(this: SessionManagerContext,
       return { ok: false, code: 'SESSION_NOT_CLAIMABLE', message: '未能转入认证等待', waitingForAuth: false }
     }
     if (waitGrant.leaseId !== occupancy.leaseId) {
+      this.rebindVideoForLease(occupancy.leaseId, waitGrant.leaseId)
+      const authState = this.runAuth.get(occupancy.leaseId)
+      if (authState) {
+        this.runAuth.delete(occupancy.leaseId)
+        this.runAuth.set(waitGrant.leaseId, authState)
+      }
       this.unbindOccupancy(occupancy.leaseId)
       this.bindOccupancy(waitGrant, runGrant.runId, policy.leaseTtlSeconds)
     }
@@ -1021,6 +1035,11 @@ export async function enterWaitingForAuth(this: SessionManagerContext,
       live.inputAccepting = false
       for (const [leaseId, mapped] of this.leaseToRun) {
         if (mapped === runGrant.runId) await this.stopTracingForLease(leaseId, session.id)
+      }
+      const snapshot = this.runAuth.get(waitGrant.leaseId)?.snapshot
+      if (snapshot) {
+        await this.startVideoForLease(waitGrant.leaseId, session.id, snapshot)
+        await this.retargetVideoForLease(live, waitGrant.leaseId)
       }
     }
     this.logger.log(

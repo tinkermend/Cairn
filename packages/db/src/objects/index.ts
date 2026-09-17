@@ -3,6 +3,7 @@ export {
   commitObjectEvidence,
   commitStoredObject,
   findObjectEvidenceByAttemptType,
+  findObjectEvidenceByRunType,
   findPendingObjectEvidence,
   getStoredObjectById,
   getStoredObjectByKey,
@@ -20,6 +21,7 @@ export {
 export {
   getEvidenceForRun,
   listPendingEvidence,
+  markOrphanedRunVideoLost,
   settleExpiredPendingEvidence,
   settleFinishedPendingRuns,
   settleRunEvidence,

@@ -99,7 +99,7 @@ export class RunsService {
         body: got.body,
         contentType: row.contentType ?? 'application/octet-stream',
         byteSize: row.byteSize ?? got.body.byteLength,
-        filename: filenameFor(row.type),
+        filename: filenameFor(row.type, runId),
       }
     } catch {
       throw new NotFoundException({
@@ -148,8 +148,9 @@ export class RunsService {
 
 }
 
-function filenameFor(type: string): string {
+function filenameFor(type: string, runId: string): string {
   if (type === 'screenshot') return 'screenshot.png'
   if (type === 'trace') return 'trace.zip'
+  if (type === 'video') return `run-${runId.slice(0, 8)}.webm`
   return 'evidence.bin'
 }

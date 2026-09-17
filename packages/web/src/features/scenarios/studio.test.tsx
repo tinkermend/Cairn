@@ -412,7 +412,7 @@ describe('Scenario Studio', () => {
       .element(screen.getByRole('list', { name: '编译诊断' }))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('含浏览器步骤的场景没有断言'))
+      .element(screen.getByText('含浏览器步骤的场景没有成功条件'))
       .toBeInTheDocument()
   })
 
@@ -685,6 +685,28 @@ describe('Scenario Studio', () => {
       .toBeDisabled()
   })
 
+  it('步骤卡用成功条件而不是断言步', async () => {
+    const { screen } = await renderPage()
+    await expect
+      .element(screen.getByRole('heading', { name: '成功条件' }))
+      .toBeInTheDocument()
+    await screen.getByRole('button', { name: '添加条件' }).click()
+    await expect
+      .element(screen.getByLabelText('成功条件 1 含义'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '从页面选择' }))
+      .toBeInTheDocument()
+    expect(screen.container.textContent).not.toMatch(/断言条件|确定性断言/)
+    await screen.getByRole('combobox', { name: '步骤 1 类型' }).click()
+    await expect
+      .element(screen.getByRole('option', { name: '断言' }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('option', { name: 'AI 判断' }))
+      .not.toBeInTheDocument()
+  })
+
   it('默认步骤库不出现可添加的 AI 类型', async () => {
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '添加步骤' }).click()
@@ -694,6 +716,12 @@ describe('Scenario Studio', () => {
     await expect
       .element(screen.getByRole('menuitem', { name: '导航' }))
       .toBeEnabled()
+    await expect
+      .element(screen.getByRole('menuitem', { name: '断言' }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('menuitem', { name: /AI 判断/ }))
+      .not.toBeInTheDocument()
   })
 
   it('缺 ai:execute 时仍可发布，文案与能力未开放不同', async () => {
@@ -1266,7 +1294,7 @@ describe('Scenario Studio', () => {
     await expect
       .element(screen.getByText('打开 shop.example.com/orders'))
       .toBeInTheDocument()
-    await screen.getByRole('button', { name: '回填 1 步' }).click()
+    await screen.getByRole('button', { name: '回填 1 项' }).click()
     await vi.waitFor(() =>
       expect(mocks.applyRecordingImport).toHaveBeenCalledTimes(1)
     )
@@ -1276,5 +1304,103 @@ describe('Scenario Studio', () => {
       dispositions: [{ sourceIndexes: [0], disposition: 'accept' }],
     })
     await expect.element(screen.getByText('刚导入')).toBeInTheDocument()
+  })
+
+  it('录制判定默认不确认为成功条件', async () => {
+    router.search = { runId: undefined, import: RECORDING_DRAFT_ID }
+    mocks.previewRecordingImport.mockResolvedValue({
+      recordingDraftId: RECORDING_DRAFT_ID,
+      recordingName: '录制 shop.example.com',
+      normalizerVersion: 'recording-normalizer@2',
+      sourceVersion: 'playwright-crx@0.15.0',
+      sourceDigest: 'b'.repeat(64),
+      eventCount: 2,
+      remainingStepCapacity: 30,
+      currentRevision: 1,
+      insertAnchor: { kind: 'start' },
+      items: [
+        {
+          index: 0,
+          sourceIndexes: [0],
+          status: 'mapped',
+          sourceAction: 'navigate',
+          name: '打开 shop.example.com/orders',
+          candidateStepType: 'navigate',
+          input: { url: 'https://shop.example.com/orders' },
+          diagnostics: [],
+          ready: true,
+          candidateStep: {
+            id: '00000000-0000-4000-8000-000000000000',
+            name: '打开 shop.example.com/orders',
+            type: 'navigate',
+            effectType: 'SIDE_EFFECT',
+            input: { url: 'https://shop.example.com/orders' },
+          },
+        },
+        {
+          index: 1,
+          sourceIndexes: [1],
+          status: 'mapped',
+          sourceAction: 'assertVisible',
+          name: '断言可见',
+          candidateStepType: 'assert',
+          input: { expect: { kind: 'visible' } },
+          diagnostics: [],
+          ready: true,
+          outcomeCandidate: {
+            meaning: '对象可见',
+            scope: 'step',
+            severity: 'MUST',
+            onViolation: 'halt',
+            provenance: 'recorded',
+            expect: { kind: 'visible' },
+            reasons: [],
+          },
+          candidateStep: {
+            id: '00000000-0000-4000-8000-000000000001',
+            name: '断言可见',
+            type: 'assert',
+            effectType: 'READ_ONLY',
+            input: { expect: { kind: 'visible' } },
+          },
+        },
+      ],
+      diagnostics: [],
+    })
+    mocks.applyRecordingImport.mockResolvedValue({
+      receipt: {
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        scenarioId: SCENARIO_ID,
+        recordingDraftId: RECORDING_DRAFT_ID,
+        sourceDigest: 'b'.repeat(64),
+        normalizerVersion: 'recording-normalizer@2',
+        baseRevision: 1,
+        newRevision: 2,
+        insertedStepIds: [IMPORTED_STEP_ID],
+        sourceMap: [
+          { sourceIndexes: [0], stepId: IMPORTED_STEP_ID, disposition: 'accept' },
+          { sourceIndexes: [1], disposition: 'discard', reason: '未确认为成功条件' },
+        ],
+        createdAt: '2026-09-14T00:00:00.000Z',
+      },
+      scenario: detail({
+        draftDirty: true,
+        draft: {
+          revision: 2,
+          document,
+          updatedAt: '2026-09-14T00:00:00.000Z',
+          updatedBy: { id: 'acc-1', displayName: '测试' },
+        },
+      }),
+    })
+    const { screen } = await renderPage()
+    await expect.element(screen.getByText('成功条件候选', { exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '确认为成功条件' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '回填 1 项' }).click()
+    await vi.waitFor(() => expect(mocks.applyRecordingImport).toHaveBeenCalledTimes(1))
+    expect(mocks.applyRecordingImport.mock.calls[0]![1].dispositions).toEqual([
+      { sourceIndexes: [0], disposition: 'accept' },
+      { sourceIndexes: [1], disposition: 'discard', reason: '未确认为成功条件' },
+    ])
   })
 })

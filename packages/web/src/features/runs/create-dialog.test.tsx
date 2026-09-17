@@ -50,7 +50,8 @@ describe('RunCreateDialog', () => {
 
   it('未改采集方式时不提交 evidencePolicy', async () => {
     const screen = await renderDialog()
-    await expect.element(screen.getByText('继承平台默认（失败时）')).toBeInTheDocument()
+    await expect.element(screen.getByText('录像采集')).toBeInTheDocument()
+    expect(document.body.innerText).toContain('继承平台默认（始终）')
     await expect.element(screen.getByText('继承平台默认（关闭）')).toBeInTheDocument()
     await screen.getByRole('combobox', { name: '场景' }).click()
     await screen.getByRole('option', { name: '回显' }).click()

@@ -8,6 +8,7 @@ import {
   RUN_STATUSES,
   TERMINAL_RUN_STATUSES,
   isFinishedRunStatus,
+  type OutcomeStatus,
   type RunStatus,
   type RunSummaryDto,
 } from '@cairn/shared'
@@ -16,6 +17,7 @@ import { cancelRun, deleteRun, fetchRuns, previewDeleteRun } from '@/lib/runs-ap
 import { fetchScenarios } from '@/lib/scenarios-api'
 import { fetchTargets } from '@/lib/targets-api'
 import { CatalogName } from './catalog-name'
+import { RUN_OUTCOME_STATUS_LABELS, runOutcomeStatusTone } from './outcome-labels'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { useCan } from '@/hooks/use-permissions'
 import { CursorPagination } from '@/components/data-table'
@@ -83,6 +85,9 @@ export function RunsPage() {
   const [evidenceStatus, setEvidenceStatus] = useState<'all' | 'PENDING' | 'COMPLETE' | 'INCOMPLETE'>(
     'all',
   )
+  const [outcomeStatus, setOutcomeStatus] = useState<
+    'all' | 'PASS' | 'WARN' | 'FAIL' | 'UNKNOWN' | 'NOT_EVALUATED'
+  >('all')
   const [sourceKind, setSourceKind] = useState<'all' | 'console' | 'service'>('all')
   const [range, setRange] = useState<DateRange | undefined>()
 
@@ -96,13 +101,14 @@ export function RunsPage() {
       status: status === 'all' ? undefined : (status as RunStatus),
       isTrial: isTrial === 'all' ? undefined : true,
       evidenceStatus: evidenceStatus === 'all' ? undefined : evidenceStatus,
+      outcomeStatus: outcomeStatus === 'all' ? undefined : outcomeStatus,
       sourceKind: sourceKind === 'all' ? undefined : sourceKind,
       from: bounds.from?.toISOString(),
       to: bounds.to?.toISOString(),
       limit: page.pageSize,
       cursor: page.cursor,
     }
-  }, [search, targetId, scenarioId, status, isTrial, evidenceStatus, sourceKind, range, page.pageSize, page.cursor])
+  }, [search, targetId, scenarioId, status, isTrial, evidenceStatus, outcomeStatus, sourceKind, range, page.pageSize, page.cursor])
 
   const query = useQuery({
     queryKey: ['runs', filters],
@@ -137,6 +143,11 @@ export function RunsPage() {
 
   const handleEvidenceChange = (val: 'all' | 'PENDING' | 'COMPLETE' | 'INCOMPLETE') => {
     setEvidenceStatus(val)
+    page.reset()
+  }
+
+  const handleOutcomeChange = (val: typeof outcomeStatus) => {
+    setOutcomeStatus(val)
     page.reset()
   }
 
@@ -249,6 +260,20 @@ export function RunsPage() {
                   </SelectContent>
                 </Select>
 
+                <Select value={outcomeStatus} onValueChange={(val) => handleOutcomeChange(val as typeof outcomeStatus)}>
+                  <SelectTrigger className='h-8 w-36' aria-label='业务结果筛选'>
+                    <SelectValue placeholder='业务结果' />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value='all'>全部业务结果</SelectItem>
+                    <SelectItem value='PASS'>业务通过</SelectItem>
+                    <SelectItem value='WARN'>业务告警</SelectItem>
+                    <SelectItem value='FAIL'>业务异常</SelectItem>
+                    <SelectItem value='UNKNOWN'>业务未知</SelectItem>
+                    <SelectItem value='NOT_EVALUATED'>未评价</SelectItem>
+                  </SelectContent>
+                </Select>
+
                 <Select value={sourceKind} onValueChange={handleSourceChange}>
                   <SelectTrigger className='h-8 w-32' aria-label='来源筛选'>
                     <SelectValue placeholder='来源' />
@@ -295,6 +320,7 @@ export function RunsPage() {
                   scenarioId !== 'all' ||
                   isTrial !== 'all' ||
                   evidenceStatus !== 'all' ||
+                  outcomeStatus !== 'all' ||
                   sourceKind !== 'all' ||
                   range ? (
                     <Button
@@ -306,6 +332,7 @@ export function RunsPage() {
                         setScenarioId('all')
                         setIsTrial('all')
                         setEvidenceStatus('all')
+                        setOutcomeStatus('all')
                         setSourceKind('all')
                         setRange(undefined)
                         page.reset()
@@ -321,6 +348,7 @@ export function RunsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>状态</TableHead>
+                    <TableHead>业务结果</TableHead>
                     <TableHead>证据</TableHead>
                     <TableHead>场景</TableHead>
                     <TableHead>目标系统</TableHead>
@@ -339,6 +367,13 @@ export function RunsPage() {
                           <StatusBadge tone={runStatusTone(item.status)}>
                             {RUN_STATUS_LABELS[item.status]}
                           </StatusBadge>
+                        </TableCell>
+                        <TableCell>
+                          {item.outcomeStatus !== 'NOT_EVALUATED' ? (
+                            <StatusBadge tone={runOutcomeStatusTone(item.outcomeStatus)}>
+                              {RUN_OUTCOME_STATUS_LABELS[item.outcomeStatus as OutcomeStatus]}
+                            </StatusBadge>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           {item.evidenceStatus === 'INCOMPLETE' ||

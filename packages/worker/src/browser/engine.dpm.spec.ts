@@ -176,6 +176,7 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
         retainDays: 30,
         pendingTtlSeconds: 3600,
         maxBytes: 32 * 1024 * 1024,
+        videoMaxBytes: 128 * 1024 * 1024,
         uploadMaxAttempts: 3,
       },
     )
@@ -201,6 +202,7 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
         heartbeatMs: 60_000,
       },
       secretsProvider,
+      objects,
     )
     await manager.reconcileOwn()
   })

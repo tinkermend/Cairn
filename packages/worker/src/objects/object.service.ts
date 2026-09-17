@@ -4,6 +4,7 @@ import {
   commitObjectEvidence,
   commitStoredObject,
   findObjectEvidenceByAttemptType,
+  findObjectEvidenceByRunType,
   getStoredObjectById,
   getStoredObjectByKey,
   listPurgeCandidates,
@@ -22,8 +23,11 @@ import {
   ObjectStoreError,
   isObjectStoreError,
   objectContentTypeSchema,
+  DEFAULT_TRACE_RETAIN_DAYS,
+  DEFAULT_VIDEO_RETAIN_DAYS,
   type EvidenceMetadata,
   type EvidenceType,
+  type JsonValue,
 } from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
@@ -38,6 +42,7 @@ export type ObjectServiceOptions = {
   pendingTtlSeconds: number
   maxBytes: number
   traceMaxBytes?: number
+  videoMaxBytes?: number
   uploadMaxAttempts?: number
   /** 进程内补传退避。生产默认 200ms；测试置 0。 */
   uploadBackoffMs?: number
@@ -52,6 +57,7 @@ export type PutObjectInput = {
   contentType: string
   retainUntil?: Date
   objectId?: string
+  maxBytes?: number
 }
 
 @Injectable()
@@ -68,6 +74,10 @@ export class ObjectService {
     return this.options.now?.() ?? new Date()
   }
 
+  videoMaxBytes(): number {
+    return this.options.videoMaxBytes ?? this.options.maxBytes
+  }
+
   async putObject(input: PutObjectInput): Promise<{
     objectId: string
     objectKey: string
@@ -76,8 +86,9 @@ export class ObjectService {
     digest: string
   }> {
     const contentType = objectContentTypeSchema.parse(input.contentType)
-    if (input.body.byteLength > this.options.maxBytes) {
-      throw new ObjectStoreError('OBJECT_TOO_LARGE', `对象超过 ${this.options.maxBytes} 字节上限`)
+    const limit = input.maxBytes ?? this.options.maxBytes
+    if (input.body.byteLength > limit) {
+      throw new ObjectStoreError('OBJECT_TOO_LARGE', `对象超过 ${limit} 字节上限`)
     }
 
     const retainUntil =
@@ -161,9 +172,10 @@ export class ObjectService {
     type: EvidenceType
     stepRunId?: string
     attemptId?: string
+    payload?: JsonValue
   }): Promise<EvidenceMetadata> {
     const contentType = objectContentTypeSchema.parse(input.contentType)
-    const limit = input.type === 'trace' ? (this.options.traceMaxBytes ?? this.options.maxBytes) : this.options.maxBytes
+    const limit = evidenceByteLimit(input.type, this.options)
     const maxAttempts = this.options.uploadMaxAttempts ?? 3
 
     let existing = input.attemptId
@@ -171,11 +183,15 @@ export class ObjectService {
           attemptId: input.attemptId,
           type: input.type,
         })
-      : null
+      : input.type === 'video'
+        ? await findObjectEvidenceByRunType(this.handle, {
+            runId: input.runId,
+            type: input.type,
+          })
+        : null
     if (existing?.status === 'available' || existing?.status === 'missing') return existing
 
-    const tooLargeReason =
-      input.type === 'trace' ? OBJECT_MISSING_REASONS.traceTooLarge : OBJECT_MISSING_REASONS.storeUnavailable
+    const tooLargeReason = evidenceTooLargeReason(input.type)
     if (input.body.byteLength > limit) {
       if (existing?.status === 'pending') {
         await markEvidenceMissing(this.handle, { id: existing.id, reason: tooLargeReason })
@@ -194,10 +210,7 @@ export class ObjectService {
     if (!existing || existing.status !== 'pending') {
       const retainUntil =
         input.retainUntil ??
-        new Date(
-          this.now().getTime() +
-            (input.type === 'trace' ? 14 : this.options.retainDays) * 86_400_000,
-        )
+        new Date(this.now().getTime() + evidenceRetainDays(input.type, this.options) * 86_400_000)
       existing = await reserveObjectEvidence(this.handle, {
         runId: input.runId,
         stepRunId: input.stepRunId,
@@ -226,6 +239,7 @@ export class ObjectService {
             contentType: object.contentType,
             byteSize: object.byteSize,
             digest: object.digest,
+            payload: input.payload,
           })
           return committed ?? existing
         }
@@ -239,6 +253,7 @@ export class ObjectService {
           contentType,
           objectId: object.id,
           retainUntil: input.retainUntil,
+          maxBytes: limit,
         })
         if (this.options.afterObjectPut) await this.options.afterObjectPut()
         const committed = await commitObjectEvidence(this.handle, {
@@ -246,6 +261,7 @@ export class ObjectService {
           contentType: put.contentType,
           byteSize: put.byteSize,
           digest: put.digest,
+          payload: input.payload,
         })
         return committed ?? existing
       } catch (error) {
@@ -325,6 +341,24 @@ export class ObjectService {
  * 写失败证据时该记什么原因。
  * 挂指针阶段的失败不产生缺失证据——对象可能好好地在那儿，只是这条证据没挂上。
  */
+function evidenceByteLimit(type: EvidenceType, options: ObjectServiceOptions): number {
+  if (type === 'trace') return options.traceMaxBytes ?? options.maxBytes
+  if (type === 'video') return options.videoMaxBytes ?? options.maxBytes
+  return options.maxBytes
+}
+
+function evidenceRetainDays(type: EvidenceType, options: ObjectServiceOptions): number {
+  if (type === 'video') return DEFAULT_VIDEO_RETAIN_DAYS
+  if (type === 'trace') return DEFAULT_TRACE_RETAIN_DAYS
+  return options.retainDays
+}
+
+function evidenceTooLargeReason(type: EvidenceType): string {
+  if (type === 'trace') return OBJECT_MISSING_REASONS.traceTooLarge
+  if (type === 'video') return OBJECT_MISSING_REASONS.videoTooLarge
+  return OBJECT_MISSING_REASONS.storeUnavailable
+}
+
 function missingReasonFor(error: unknown): string | undefined {
   if (!isObjectStoreError(error)) return OBJECT_MISSING_REASONS.storeUnavailable
   switch (error.code) {

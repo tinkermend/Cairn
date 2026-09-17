@@ -7,6 +7,7 @@ import {
   recordingItemSchema,
 } from './recording.js'
 import { scenarioNameSchema } from './scenario.js'
+import { outcomeCandidateSchema } from './outcome-candidate.js'
 import { stepSchema } from './step.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 
@@ -93,6 +94,7 @@ export type RecordingDisposition = z.infer<typeof recordingDispositionSchema>
 export const recordingImportPreviewItemSchema = recordingItemSchema.extend({
   ready: z.boolean(),
   candidateStep: stepSchema.optional(),
+  outcomeCandidate: outcomeCandidateSchema.optional(),
 })
 export type RecordingImportPreviewItem = z.infer<typeof recordingImportPreviewItemSchema>
 

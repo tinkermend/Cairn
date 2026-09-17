@@ -103,7 +103,11 @@ export function RecordingImportPanel({
           Object.fromEntries(
             next.items.map((item) => [
               item.sourceIndexes.join(','),
-              item.ready ? { disposition: 'accept' as const } : { disposition: 'discard' as const, reason: '' },
+              item.outcomeCandidate
+                ? { disposition: 'discard' as const, reason: '未确认为成功条件' }
+                : item.ready
+                  ? { disposition: 'accept' as const }
+                  : { disposition: 'discard' as const, reason: '' },
             ]),
           ),
         )
@@ -167,7 +171,11 @@ export function RecordingImportPanel({
         dispositions,
       })
       onApplied(result.scenario, result.receipt.insertedStepIds)
-      toast.success(`已插入 ${result.receipt.insertedStepIds.length} 个步骤`)
+      toast.success(
+        result.receipt.insertedStepIds.length > 0
+          ? `已插入 ${result.receipt.insertedStepIds.length} 个步骤`
+          : '已确认成功条件',
+      )
       onOpenChange(false)
     } catch (error) {
       if (error instanceof ApiRequestError && error.payload.code === 'SCENARIO_DRAFT_CONFLICT') {
@@ -187,7 +195,7 @@ export function RecordingImportPanel({
         <SheetHeader>
           <SheetTitle>录制回填预览</SheetTitle>
           <SheetDescription>
-            将源操作转成 Structured Step 后再写入当前草稿。未处理项不会被悄悄丢掉。
+            将源操作写入当前草稿。判定类事件只会变成成功条件候选，确认后才进入定义。
           </SheetDescription>
         </SheetHeader>
         {!recordingDraftId ? (
@@ -237,7 +245,7 @@ export function RecordingImportPanel({
                 loading={applying}
                 onClick={() => void apply()}
               >
-                {insertCount === 0 ? '放弃导入' : `回填 ${insertCount} 步`}
+                {insertCount === 0 ? '放弃导入' : `回填 ${insertCount} 项`}
               </Button>
             </SheetFooter>
           </>
@@ -267,16 +275,27 @@ function PreviewItem({
     <li className='rounded-lg border border-border-card bg-card p-3 shadow-card'>
       <div className='flex items-start justify-between gap-3'>
         <div>
-          <p className='text-body font-medium'>{item.name}</p>
+          <p className='text-body font-medium'>
+            {item.outcomeCandidate ? item.outcomeCandidate.meaning : item.name}
+          </p>
           <p className='text-label text-muted-foreground'>
-            {item.sourceAction}
-            {item.candidateStep ? ` → ${item.candidateStep.type}` : ''}
+            {item.outcomeCandidate ? '成功条件候选' : item.sourceAction}
+            {item.outcomeCandidate
+              ? ''
+              : item.candidateStep
+                ? ` → ${item.candidateStep.type}`
+                : ''}
           </p>
         </div>
         <StatusBadge tone={item.ready ? 'success' : item.sensitive ? 'warning' : 'neutral'}>
-          {item.ready ? '可接受' : item.sensitive ? '需绑定参数' : '待处理'}
+          {item.outcomeCandidate ? (item.ready ? '待确认' : '不能确认') : item.ready ? '可接受' : item.sensitive ? '需绑定参数' : '待处理'}
         </StatusBadge>
       </div>
+      {item.outcomeCandidate?.reasons.map((line) => (
+        <p key={line} className='mt-1 text-label text-muted-foreground'>
+          {line}
+        </p>
+      ))}
       {item.diagnostics.map((line) => (
         <p key={line} className='mt-1 text-label text-status-warning-foreground'>
           {line}
@@ -290,7 +309,7 @@ function PreviewItem({
           onClick={() => onChange({ disposition: 'accept' })}
         >
           <CircleCheck className='size-3.5' />
-          接受
+          {item.outcomeCandidate ? '确认为成功条件' : '接受'}
         </Button>
         <Button
           size='sm'

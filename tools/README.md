@@ -7,9 +7,24 @@
 | `check-migrations.mjs` | `pnpm check:migrations` | 迁移文件名规范、前缀唯一、序号连续；`transfer.ts` 必须用目录派生的 `logicalVersion`；含领号自测 |
 | `allocate-migration.mjs` | `pnpm db:new-migration <name>` | 锁内领取 PostgreSQL / MySQL 下一号并立刻落盘，避免并发任务扫到同一最大号 |
 | `check-deps.mjs` | `pnpm check:deps` | 包边界与依赖方向：package.json 声明的仓内依赖，以及绕开声明的跨包相对路径 import；允许边表在脚本顶部，改边界必须改脚本 |
+| `check-stack.mjs` | `pnpm check:stack` | 本机 api / worker / web 进程探活；不启动进程，也不进 CI |
 | `use-env.mjs` | `pnpm env:use local\|remote`、`pnpm env:status` | 开发连接画像：`.env.local` / `.env.remote` 与 `.env.example` 键集必须对齐；`.env` 只是当前生效指针 |
 
-两个检查合并为 `pnpm check`，并挂在 `pnpm test` 前面；`.github/workflows/ci.yml` 在 push 与 PR 上按同一顺序执行（install → build → check → lint → typecheck → migrate → test）。
+`pnpm check` 含依赖、迁移、架构不变量和探活判定单测，并挂在 `pnpm test` 前面；`.github/workflows/ci.yml` 在 push 与 PR 上按同一顺序执行（install → build → check → lint → typecheck → migrate → test）。`pnpm check:stack` 探本机正在跑的进程，不进 CI。
+
+## 本机进程探活
+
+宣称本机服务可用或开发完成前跑 `pnpm check:stack`。它只回答 api / worker / web **现在能不能被连上**：
+
+| 级 | 检查 | 失败含义 |
+| --- | --- | --- |
+| S1 | 端口是否在听 | 进程没起来或已崩溃 |
+| S2 | `GET /health` 契约与数据库 | 控制面在听但库不可用，或响应已漂 |
+| S3 | Web 页面 + 经 Web 代理的 `/health` | 页面在，前后端没接通 |
+
+范围：`all`（默认）、`backend`、`api`、`worker`、`web`。`web` 仍会探 api。`--strict` 把控制面降级也判失败。不启动进程；开发热重载用 `pnpm dev`，构建产物用 `pnpm start`。
+
+`STACK_OK` 不是功能验收，更不是核心生命周期验收。判定细节见 `.cursor/skills/shitu-stack-acceptance/SKILL.md`。
 
 ## 领取迁移号
 

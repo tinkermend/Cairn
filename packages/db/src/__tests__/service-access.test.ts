@@ -319,6 +319,32 @@ describe.each(DRIVERS)('%s controlled service execution', (driver) => {
       api.serviceEvidence(f.db, f.principal, run.detail.id, { limit: 20 }, evidenceId),
     ).rejects.toMatchObject({ code: 'EVIDENCE_NOT_FOUND' })
     await api.releaseServiceEvidence(f.db, run.detail.id, evidenceId, true, f.actor)
+    const videoId = api.newId()
+    const videoObject = await api.reserveStoredObject(f.db, {
+      runId: run.detail.id,
+      retainUntil: new Date(Date.now() + 3600000),
+    })
+    await api.commitStoredObject(f.db, {
+      id: videoObject.id,
+      contentType: 'video/webm',
+      byteSize: 8,
+      digest: 'sha256:' + 'b'.repeat(64),
+    })
+    await f.h.db.insert(s.evidences).values({
+      id: videoId,
+      runId: run.detail.id,
+      type: 'video',
+      status: 'available',
+      contentType: 'video/webm',
+      objectKey: videoObject.objectKey,
+      objectId: videoObject.id,
+    })
+    await expect(api.releaseServiceEvidence(f.db, run.detail.id, videoId, true, f.actor)).rejects.toMatchObject({
+      code: 'EVIDENCE_RELEASE_DENIED',
+    })
+    expect(
+      (await api.serviceEvidence(f.db, f.principal, run.detail.id, { limit: 20 })).items.some((item) => item.id === videoId),
+    ).toBe(false)
     await f.h.db.update(s.runs).set({ status: 'SUCCEEDED' }).where(eq(s.runs.id, run.detail.id))
     await api.deleteRun(f.db, run.detail.id, f.actor)
     await expect(api.serviceEvidence(f.db, f.principal, run.detail.id, { limit: 20 })).rejects.toMatchObject({

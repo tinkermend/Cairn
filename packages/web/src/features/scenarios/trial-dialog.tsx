@@ -66,6 +66,7 @@ export function TrialDialog({
     enabled: open,
   })
     const inheritScreenshot = capabilities.data?.defaults?.evidence.screenshot
+    const inheritVideo = capabilities.data?.defaults?.evidence.video
     const inheritTrace = capabilities.data?.defaults?.evidence.trace
   const [targetAccountId, setTargetAccountId] = useState('')
   const usableAccounts = passwordAccounts(accounts.data?.items ?? [])
@@ -117,8 +118,8 @@ export function TrialDialog({
           </div>
           <p className='text-label text-muted-foreground'>
             试跑继承平台默认证据策略
-            {inheritScreenshot || inheritTrace
-              ? `：截图 ${inheritCaptureLabel(inheritScreenshot, '平台默认')}，Trace ${inheritCaptureLabel(inheritTrace, '平台默认')}`
+            {inheritScreenshot || inheritVideo || inheritTrace
+              ? `：截图 ${inheritCaptureLabel(inheritScreenshot, '平台默认')}，录像 ${inheritCaptureLabel(inheritVideo, '平台默认')}，Trace ${inheritCaptureLabel(inheritTrace, '平台默认')}`
               : '。'}
             本次不单独覆盖。
           </p>

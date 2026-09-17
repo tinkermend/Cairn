@@ -20,6 +20,7 @@ import type {
   ScreenshotPointer,
   SessionErrorCode,
   SessionGrant,
+  ErrorSurfaceNode,
 } from '@cairn/shared'
 
 /**
@@ -59,6 +60,7 @@ export type BrowserPort = {
     grant: SessionGrant,
     input: { kind: 'auto' | 'manual'; runGrant: RunGrant; snapshot: RunSnapshot; resuming?: boolean; signal?: AbortSignal },
   ): Promise<AuthRecoveryOutcome>
+  probeErrorSurface?(grant: SessionGrant, signal?: AbortSignal): Promise<ErrorSurfaceNode[]>
 }
 
 export type AiPort = {

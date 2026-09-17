@@ -55,6 +55,7 @@ describe('apiEnvSchema', () => {
   it('端口、CORS、环境与日志级别有默认值', () => {
     const env = apiEnvSchema.parse({})
     expect(env.CAIRN_API_PORT).toBe(3030)
+    expect(env.CAIRN_VIDEO_MAX_BYTES).toBe(134_217_728)
     expect(env.CAIRN_CORS_ORIGINS).toEqual(['http://localhost:5173'])
     expect(env.CAIRN_TRUST_PROXY_HOPS).toBe(0)
     expect(env.CAIRN_ENV).toBe('development')
@@ -222,6 +223,7 @@ describe('workerEnvSchema', () => {
     expect(env.CAIRN_OBJECT_STORE_DIR).toBe('.data/object-store')
     expect(env.CAIRN_OBJECT_MAX_BYTES).toBe(33_554_432)
     expect(env.CAIRN_TRACE_MAX_BYTES).toBe(134_217_728)
+    expect(env.CAIRN_VIDEO_MAX_BYTES).toBe(134_217_728)
     expect(env.CAIRN_EVIDENCE_UPLOAD_MAX_ATTEMPTS).toBe(3)
     expect(env.CAIRN_OBJECT_RETAIN_DAYS).toBe(30)
     expect(env.CAIRN_S3_FORCE_PATH_STYLE).toBe(false)

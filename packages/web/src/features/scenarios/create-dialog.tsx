@@ -122,7 +122,7 @@ export function ScenarioCreateDialog({
         <DialogHeader>
           <DialogTitle>新建场景</DialogTitle>
           <DialogDescription>
-            选择目标系统并填写首步要打开的地址。创建后进入顺序编辑，再补充填写、点击、提取和断言。
+            选择目标系统并填写首步要打开的地址。创建后进入顺序编辑，再补充填写、点击、提取和成功条件。
           </DialogDescription>
         </DialogHeader>
         <fieldset disabled={saving} className='min-w-0 space-y-5'>

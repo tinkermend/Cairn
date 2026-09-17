@@ -72,6 +72,9 @@ beforeEach(async () => {
   manager.loadTargetAuth = vi.fn(async () => ({ entryUrl: 'https://app.example/', authMethod: 'password', captchaMode: 'none' }))
   manager.resolveLoginCredential = vi.fn(async () => ({ username: 'user', password: 'example-test-only' }))
   manager.verifyInRunAuth = vi.fn(async () => ({ authState: 'AUTHENTICATED', identityState: 'MATCH' }))
+  manager.startVideoForLease = vi.fn(async () => {})
+  manager.retargetVideoForLease = vi.fn(async () => {})
+  manager.rebindVideoForLease = vi.fn()
   snapshot = { targetId: 'target', targetAccountId: 'account', authVerification: { capability: 'IDENTITY_VERIFIED', loginTimeoutMs: 1000 }, runAuthRecovery: { maxAutoRecoveriesPerRun: 1, maxManualRecoveriesPerRun: 1 } }
   db.run = { status: 'RUNNING', context: {}, snapshot, stepRuns: [{ stepId: 'step', status: 'RUNNING' }],
     authCheckpoint: { status: 'recovering', contextVersion: await computeContextVersion({}), nextStepId: 'step', sessionGeneration: 1, recoveryKind: 'auto', autoRecoveriesUsed: 1, manualRecoveriesUsed: 0,
@@ -84,6 +87,8 @@ it('自动登录在 EXECUTION 授权内执行，导航后再次核验', async ()
   expect(manager.verifyInRunAuth).toHaveBeenCalledTimes(2)
   expect(page.goto).toHaveBeenCalledWith('https://app.example/', expect.anything())
   expect(currentOccupancyGrant()).toBeUndefined()
+  expect(manager.startVideoForLease).toHaveBeenCalledWith('lease', 'session', snapshot)
+  expect(manager.retargetVideoForLease).toHaveBeenCalled()
 })
 it('续接已开始的自动恢复仅核验，不再次提交凭据', async () => {
   expect(await recover({ resuming: true })).toEqual({ ok: true })
@@ -171,6 +176,8 @@ it('人工恢复写 AUTH_WAIT', async () => {
   expect(await recover({ kind: 'manual' })).toMatchObject({ ok: false, waitingForAuth: true })
   expect(enterRunWaitingForAuth).toHaveBeenCalled()
   expect(db.run.status).toBe('WAITING_FOR_AUTH')
+  expect(manager.startVideoForLease).toHaveBeenCalled()
+  expect(manager.rebindVideoForLease).toHaveBeenCalledWith('lease', 'wait')
 })
 it('自动恢复成功后开门，失败保持关闭', async () => {
   manager.authGateClosed.add('lease')

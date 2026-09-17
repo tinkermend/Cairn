@@ -40,6 +40,7 @@ import {
   type SessionPolicy
 } from '@cairn/shared'
 import type { LocalSecretProvider } from '@cairn/secret'
+import { ObjectService } from '../objects/object.service'
 import { DB_HANDLE } from '../db/db.module'
 import { SessionGuard } from './guard'
 import { verifyAuthProfile } from './session-auth'
@@ -64,7 +65,14 @@ import { attachSessionAuthObserver } from './session-idle-observer.js'
 import { attachMaintenanceOperation, attachValidationOperation, completeOccupiedAuth, finishMaintenance, markMaintenanceOutcomeUnknown, markSessionLost, persistProfileObservation, resolveAccountCredential, runMaintenanceAuth, verifyOccupiedOwner } from './session-maintenance-runtime.js'
 import { acquireRunAuthControl, applyRecoveryRule, executeAuthInput, expiredAuthObservation, failInRunAuthRecovery, heartbeatRunAuthControl, inputRunAuthControl, observeInRunAuth, observeInRunAuthHeld, releaseRunAuthControl, restoreAuthGateFromCheckpoint, resumeRunAuth, verifyInRunAuth } from './session-auth-control.js'
 import { adoptPage, assertCommand, closeRunPage, ensureRunPage, execute, invalidate, pageForGrant, runManagedPage, runSurfaceCommand, startTracingForLease, stopTracingForLease, withManagedPage } from './session-command.js'
-import { assertOwnLiveRegistration, assertSessionOwnedHere, authWindowStatus, buildMeta, describeHoldPage, describeRunBrowser, dropScreencastObserver, invalidateObserveGrant, liveSessionIdForRun, lookupRunSession, observeRun, pageForView, pipeFrames, registrationLive, requireLiveAuthSession, sampleMapConditions, sessionOwnedHere, subscribeRunFrames } from './session-observe-runtime.js'
+import {
+  rebindVideoForLease,
+  retargetVideoForLease,
+  startVideoForLease,
+  stopVideoForLease,
+  type RunVideoRecorder,
+} from './run-video.js'
+import { assertOwnLiveRegistration, assertSessionOwnedHere, authWindowStatus, buildMeta, describeHoldPage, describeRunBrowser, dropScreencastObserver, invalidateObserveGrant, liveSessionIdForRun, lookupRunSession, observeRun, pageForView, pipeFrames, probeErrorSurface, registrationLive, requireLiveAuthSession, sampleMapConditions, sessionOwnedHere, subscribeRunFrames } from './session-observe-runtime.js'
 import { close, dropDisposedHandles, dropLocalHandle, ownerScope, platformDefaultPolicy, reap, reconcileOwn, release, renew, renewAll, shutdown, stopAllLocal } from './session-reaper.js'
 
 export const BROWSER_SESSION_OPTIONS = Symbol('BROWSER_SESSION_OPTIONS')
@@ -82,6 +90,7 @@ export class BrowserSessionManager {
   readonly leaseToRun = new Map<string, string>()
   readonly leaseTtls = new Map<string, number>()
   readonly tracingByLease = new Map<string, boolean>()
+  readonly videoRecorders = new Map<string, RunVideoRecorder>()
   readonly observeGrants = new Map<string, ObserveGrantEntry>()
   readonly authGateClosed = new Set<string>()
   readonly inRunVerifyCounts = new Map<string, number>()
@@ -114,6 +123,7 @@ export class BrowserSessionManager {
     @Inject(DB_HANDLE) readonly dbHandle: DbHandle,
     @Inject(BROWSER_SESSION_OPTIONS) readonly options: BrowserSessionManagerOptions,
     @Optional() @Inject(SECRET_PROVIDER) readonly secrets?: LocalSecretProvider,
+    @Optional() @Inject(ObjectService) readonly objects?: ObjectService,
   ) {
     this.workerInstanceId = options.workerInstanceId ?? randomUUID()
   }
@@ -261,6 +271,10 @@ export class BrowserSessionManager {
     _signal?: AbortSignal,
   ): Promise<{ locale?: string; viewport?: MapViewport; pageFrameObserved: boolean }> {
     return sampleMapConditions.call(this, grant, _signal)
+  }
+
+  async probeErrorSurface(grant: SessionGrant, _signal?: AbortSignal): Promise<{ role: string; text: string }[]> {
+    return probeErrorSurface.call(this, grant, _signal)
   }
 
   async recoverAuth(
@@ -482,6 +496,22 @@ export class BrowserSessionManager {
 
   async stopTracingForLease(leaseId: string, sessionId: string | undefined): Promise<void> {
     return stopTracingForLease.call(this, leaseId, sessionId)
+  }
+
+  async startVideoForLease(leaseId: string, sessionId: string, run: RunSnapshot): Promise<void> {
+    return startVideoForLease.call(this, leaseId, sessionId, run)
+  }
+
+  async stopVideoForLease(leaseId: string): Promise<void> {
+    return stopVideoForLease.call(this, leaseId)
+  }
+
+  rebindVideoForLease(fromLeaseId: string, toLeaseId: string): void {
+    return rebindVideoForLease.call(this, fromLeaseId, toLeaseId)
+  }
+
+  async retargetVideoForLease(live: LiveHandle, leaseId: string): Promise<void> {
+    return retargetVideoForLease.call(this, live, leaseId)
   }
 
   pageForGrant(grant: SessionGrant) {

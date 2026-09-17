@@ -324,7 +324,12 @@ export function adoptPage(this: SessionManagerContext,
     const entry = createManagedPage({ page, runId, kind })
     live.pages.set(entry.pageId, entry)
     live.currentPageIdByRun.set(runId, entry.pageId)
-    if (leaseId) live.currentPageIdByLease.set(leaseId, entry.pageId)
+    if (leaseId) {
+      live.currentPageIdByLease.set(leaseId, entry.pageId)
+      if (typeof this.retargetVideoForLease === 'function') {
+        void this.retargetVideoForLease(live, leaseId)
+      }
+    }
     return entry
   }
 

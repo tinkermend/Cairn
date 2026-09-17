@@ -15,7 +15,11 @@ import { OBJECT_SERVICE_OPTIONS, OBJECT_STORE, ObjectService } from './object.se
         return createObjectStore(
           {
             ...env,
-            CAIRN_OBJECT_MAX_BYTES: Math.max(env.CAIRN_OBJECT_MAX_BYTES, env.CAIRN_TRACE_MAX_BYTES),
+            CAIRN_OBJECT_MAX_BYTES: Math.max(
+              env.CAIRN_OBJECT_MAX_BYTES,
+              env.CAIRN_TRACE_MAX_BYTES,
+              env.CAIRN_VIDEO_MAX_BYTES,
+            ),
           },
           { repoRoot: () => findRepoRoot(__dirname) },
         )
@@ -30,6 +34,7 @@ import { OBJECT_SERVICE_OPTIONS, OBJECT_STORE, ObjectService } from './object.se
           pendingTtlSeconds: env.CAIRN_OBJECT_PENDING_TTL_SECONDS,
           maxBytes: env.CAIRN_OBJECT_MAX_BYTES,
           traceMaxBytes: env.CAIRN_TRACE_MAX_BYTES,
+          videoMaxBytes: env.CAIRN_VIDEO_MAX_BYTES,
           uploadMaxAttempts: env.CAIRN_EVIDENCE_UPLOAD_MAX_ATTEMPTS,
         }
       },

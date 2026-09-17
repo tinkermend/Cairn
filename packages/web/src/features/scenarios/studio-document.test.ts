@@ -18,6 +18,7 @@ import {
   priorOutputShapesAny,
   removeAuthoringNode,
   tryReplaceInputs,
+  tryReplaceNode,
   tryReplaceStep,
   uniqueOutputKey,
 } from './studio-document'
@@ -161,5 +162,42 @@ describe('studio-document', () => {
       ],
     }
     expect(findInsertedModuleInvocationId(v2, withNewModule)).toBe('99999999-9999-4999-8999-999999999999')
+  })
+
+  it('替换步骤节点时保留已挂载的成功条件', () => {
+    const contractId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const v2: ScenarioAuthoringDocumentV2 = {
+      authoringSchemaVersion: 2,
+      schemaVersion: 1,
+      inputs: [],
+      nodes: [
+        {
+          kind: 'step',
+          step: navigate,
+          outcomes: [
+            {
+              id: contractId,
+              scope: 'step',
+              meaning: '页面已打开',
+              severity: 'MUST',
+              onViolation: 'halt',
+              provenance: 'manual',
+              rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+            },
+          ],
+        },
+      ],
+    }
+    const replaced = tryReplaceNode(v2, {
+      ...v2.nodes[0]!,
+      step: { ...navigate, name: '打开首页' },
+    })
+    expect(replaced.ok).toBe(true)
+    if (!replaced.ok) return
+    const node = replaced.document.nodes[0]
+    expect(node?.kind).toBe('step')
+    if (node?.kind !== 'step') return
+    expect(node.step.name).toBe('打开首页')
+    expect(node.outcomes?.[0]?.id).toBe(contractId)
   })
 })

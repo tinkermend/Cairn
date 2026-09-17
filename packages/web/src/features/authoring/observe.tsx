@@ -5,9 +5,11 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { resolveOutcomeWriteback } from '@cairn/authoring'
 import {
   observationShowsFragileCss,
   type AuthoringCapabilities,
+  type RunDetailDto,
   type TargetDescriptor,
   type TargetObservation,
 } from '@cairn/shared'
@@ -47,6 +49,22 @@ const closedObserve: AuthoringObserveValue = {
   applyForTrial: () => undefined,
   clearOverlay: () => undefined,
   writeBack: () => undefined,
+}
+
+export function overlayStepIdForSelection(
+  run: Pick<RunDetailDto, 'checkpoint' | 'debugOverlay' | 'snapshot'> | undefined,
+  selectedStepId?: string | null,
+): string | undefined {
+  const overrides = run?.debugOverlay?.stepOverrides
+  if (!overrides) return undefined
+  if (selectedStepId && overrides[selectedStepId]) return selectedStepId
+  const checkpointId = run?.checkpoint?.stepId
+  if (!checkpointId || !overrides[checkpointId]) return undefined
+  const writeback = resolveOutcomeWriteback(run.snapshot?.outcomeManifest, checkpointId)
+  if (!writeback) return undefined
+  if (writeback.scope === 'scenario' && !selectedStepId) return checkpointId
+  if (writeback.sourceStepId && writeback.sourceStepId === selectedStepId) return checkpointId
+  return undefined
 }
 
 const AuthoringObserveContext =
@@ -92,10 +110,7 @@ export function AuthoringObserveProvider({
       runId,
       holding,
       checkpointStepId: holding ? run?.checkpoint?.stepId : undefined,
-      overlayStepId:
-        selectedStepId && run?.debugOverlay?.stepOverrides[selectedStepId]
-          ? selectedStepId
-          : undefined,
+      overlayStepId: overlayStepIdForSelection(run, selectedStepId),
       highlight,
       lastPicked,
       pickMode,

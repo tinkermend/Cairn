@@ -9,6 +9,12 @@ import {
 export type ScreencastHandle = {
   latest: ManagedBrowserFrame | null
   stop: () => Promise<void>
+  subscribe: (listener: (frame: ManagedBrowserFrame) => void) => () => void
+}
+
+function emit(state: ScreencastHandle & { listeners: Set<(frame: ManagedBrowserFrame) => void> }, frame: ManagedBrowserFrame) {
+  state.latest = frame
+  for (const listener of state.listeners) listener(frame)
 }
 
 /** CDP 投屏在静止登录页上可能十几秒不推新帧；过期后鼠标会被拒。用截图补新鲜度。 */
@@ -24,13 +30,18 @@ export async function refreshScreencastIfStale(
   try {
     const buffer = await page.screenshot({ type: 'jpeg', quality: BROWSER_FRAME_QUALITY })
     const viewport = page.viewportSize() ?? { width: BROWSER_FRAME_MAX_EDGE, height: 720 }
-    state.latest = {
+    const frame: ManagedBrowserFrame = {
       pageRef,
       frameId: `s-${Date.now().toString(36)}`,
       width: viewport.width,
       height: viewport.height,
       capturedAt: new Date().toISOString(),
       image: `data:image/jpeg;base64,${buffer.toString('base64')}`,
+    }
+    const listeners = 'listeners' in state ? (state as typeof state & { listeners: Set<(frame: ManagedBrowserFrame) => void> }).listeners : undefined
+    state.latest = frame
+    if (listeners) {
+      for (const listener of listeners) listener(frame)
     }
   } catch {
     return
@@ -39,17 +50,26 @@ export async function refreshScreencastIfStale(
 
 export async function startScreencast(page: Page, pageRef: PageRef): Promise<ScreencastHandle> {
   const cdp: CDPSession = await page.context().newCDPSession(page)
-  const state: ScreencastHandle = { latest: null, stop: async () => undefined }
+  const listeners = new Set<(frame: ManagedBrowserFrame) => void>()
+  const state: ScreencastHandle & { listeners: typeof listeners } = {
+    latest: null,
+    listeners,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    stop: async () => undefined,
+  }
   const onFrame = (event: { data: string; sessionId: number; metadata?: { deviceWidth?: number; deviceHeight?: number } }) => {
     void cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => undefined)
-    state.latest = {
+    emit(state, {
       pageRef,
       frameId: `f-${event.sessionId}`,
       width: event.metadata?.deviceWidth ?? BROWSER_FRAME_MAX_EDGE,
       height: event.metadata?.deviceHeight ?? BROWSER_FRAME_MAX_EDGE,
       capturedAt: new Date().toISOString(),
       image: `data:image/jpeg;base64,${event.data}`,
-    }
+    })
   }
   cdp.on('Page.screencastFrame', onFrame)
   await cdp.send('Page.startScreencast', {
@@ -60,6 +80,7 @@ export async function startScreencast(page: Page, pageRef: PageRef): Promise<Scr
   })
   state.stop = async () => {
     cdp.off('Page.screencastFrame', onFrame)
+    listeners.clear()
     await cdp.send('Page.stopScreencast').catch(() => undefined)
     await cdp.detach().catch(() => undefined)
   }

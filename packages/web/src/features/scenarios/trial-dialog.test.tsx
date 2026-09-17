@@ -44,7 +44,7 @@ describe('TrialDialog', () => {
       </QueryClientProvider>,
     )
     await expect
-      .element(screen.getByText(/试跑继承平台默认证据策略：截图 继承平台默认（失败时），Trace 继承平台默认（关闭）/))
+      .element(screen.getByText(/试跑继承平台默认证据策略：截图 继承平台默认（始终），录像 继承平台默认（始终），Trace 继承平台默认（关闭）/))
       .toBeInTheDocument()
     await screen.getByRole('button', { name: '开始试跑' }).click()
     await vi.waitFor(() => expect(mocks.trialScenario).toHaveBeenCalledTimes(1))

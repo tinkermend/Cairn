@@ -41,6 +41,9 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
     async sampleMapConditions(grant, signal) {
       return manager.sampleMapConditions(grant, signal)
     },
+    async probeErrorSurface(grant, signal) {
+      return manager.probeErrorSurface(grant, signal)
+    },
     async execute(
       grant: SessionGrant,
       command: BrowserCommand,

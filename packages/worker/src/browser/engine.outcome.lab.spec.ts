@@ -171,6 +171,7 @@ describe('ExecutionEngine × 真浏览器 Outcome 结果轴联调', { timeout: 1
         pendingTtlSeconds: 3600,
         maxBytes: 32 * 1024 * 1024,
         traceMaxBytes: 128 * 1024 * 1024,
+        videoMaxBytes: 128 * 1024 * 1024,
         uploadMaxAttempts: 3,
       },
     )
@@ -196,6 +197,7 @@ describe('ExecutionEngine × 真浏览器 Outcome 结果轴联调', { timeout: 1
         heartbeatMs: 60_000,
       },
       secretsProvider,
+      objects,
     )
     await manager.reconcileOwn()
   })

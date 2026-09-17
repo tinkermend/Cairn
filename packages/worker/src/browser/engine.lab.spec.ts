@@ -35,6 +35,7 @@ import { BrowserSessionManager } from './session-manager.js'
 import { LocalObjectStore } from '@cairn/storage'
 import { ObjectService } from '../objects/object.service.js'
 import { ExecutionEngine } from '../engine/engine.js'
+import { isPlayableWebm } from './video-encoder.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_elab`
 const LAB_PUBLIC = resolve(__dirname, '../../../../tests/target-surface-lab/public')
@@ -197,6 +198,7 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
         pendingTtlSeconds: 3600,
         maxBytes: 32 * 1024 * 1024,
         traceMaxBytes: 128 * 1024 * 1024,
+        videoMaxBytes: 128 * 1024 * 1024,
         uploadMaxAttempts: 3,
       },
     )
@@ -222,6 +224,7 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
         heartbeatMs: 60_000,
       },
       secretsProvider,
+      objects,
     )
     await manager.reconcileOwn()
   })
@@ -302,7 +305,7 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       actor: { id: actorId },
     })
     const grant = await claimThis(created.detail.id)
-    const engine = new ExecutionEngine(handle, createBrowserPort(manager))
+    const engine = new ExecutionEngine(handle, createBrowserPort(manager, objects))
     const logs = captureProcessLogs()
     try {
       await engine.execute(created.detail.id, { grant })
@@ -341,9 +344,15 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       .where(eq(sessionLeases.runId, created.detail.id))
     expect(leftover.filter((row) => row.status === 'ACTIVE')).toEqual([])
     const evidence = await listRunEvidence(handle.db, created.detail.id)
-    expect(evidence.items.some((item) => item.type === 'screenshot' || item.type === 'trace')).toBe(false)
+    expect(evidence.items.some((item) => item.type === 'screenshot' && item.status === 'available')).toBe(true)
+    const video = evidence.items.find((item) => item.type === 'video' && !item.attemptId)
+    expect(video?.status).toBe('available')
+    expect(video?.contentType).toBe('video/webm')
+    expect(video?.objectKey).toBeTruthy()
+    const stored = await objects.getObject(video!.objectKey!)
+    expect(isPlayableWebm(stored.body)).toBe(true)
     expect(created.detail.evidenceStatus).toBe('PENDING')
-    expect(detail.evidenceStatus === 'COMPLETE' || detail.evidenceStatus === 'PENDING').toBe(true)
+    expect(detail.evidenceStatus).toBe('COMPLETE')
   })
 
   it('服务任务复用真实 Engine：成功/失败/取消与发布输出；登录中总时限关闭浏览器', async () => {
@@ -402,7 +411,11 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
 
   async function runWithPolicy(
     steps: Step[],
-    evidencePolicy: { screenshot?: 'off' | 'on_failure' | 'always'; trace?: 'off' | 'on_failure' | 'always' },
+    evidencePolicy: {
+      screenshot?: 'off' | 'on_failure' | 'always'
+      video?: 'off' | 'always'
+      trace?: 'off' | 'on_failure' | 'always'
+    },
   ) {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,
@@ -471,6 +484,46 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
     )
     expect(ok.detail.status).toBe('SUCCEEDED')
     expect(ok.evidence.items.some((item) => item.type === 'trace')).toBe(false)
+  })
+
+  it('成功与失败都留整次录像，同一 Session 连跑两条互不串联', async () => {
+    const nav = (): Step => ({
+      id: newId(),
+      name: '打开',
+      type: 'navigate',
+      effectType: 'IDEMPOTENT',
+      input: { url: `${baseUrl}/` },
+    })
+    const failClick: Step = {
+      id: newId(),
+      name: '点不存在',
+      type: 'click',
+      effectType: 'READ_ONLY',
+      input: {
+        target: {
+          framePath: [],
+          candidates: [{ by: 'text', value: '不存在的按钮' }],
+        },
+      },
+    }
+    const ok = await runWithPolicy([nav()], { screenshot: 'always', video: 'always', trace: 'off' })
+    expect(ok.detail.status).toBe('SUCCEEDED')
+    const video1 = ok.evidence.items.find((item) => item.type === 'video')
+    expect(video1?.status).toBe('available')
+    expect(video1?.objectKey).toBeTruthy()
+    expect(isPlayableWebm((await objects.getObject(video1!.objectKey!)).body)).toBe(true)
+    expect(ok.evidence.items.some((item) => item.type === 'screenshot' && item.status === 'available')).toBe(true)
+    expect(ok.detail.evidenceStatus).toBe('COMPLETE')
+
+    const failed = await runWithPolicy([nav(), failClick], { screenshot: 'always', video: 'always', trace: 'off' })
+    expect(failed.detail.status).toBe('FAILED')
+    const video2 = failed.evidence.items.find((item) => item.type === 'video')
+    expect(video2?.status).toBe('available')
+    expect(video2?.objectKey).toBeTruthy()
+    expect(isPlayableWebm((await objects.getObject(video2!.objectKey!)).body)).toBe(true)
+    expect(video1?.objectKey).not.toBe(video2?.objectKey)
+    expect(failed.evidence.items.some((item) => item.type === 'screenshot' && item.status === 'available')).toBe(true)
+    expect(failed.detail.status).toBe('FAILED')
   })
 
   it('同一 Session 连续两个失败 Run 的 Trace 互不串联', async () => {
