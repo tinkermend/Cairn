@@ -19,6 +19,28 @@ export const RECORDER_SOURCE_VERSION = 'playwright-crx@0.15.0'
 /** 可执行转换规则版本。预览/回填必须带上并重跑。 */
 export const RECORDING_NORMALIZER_VERSION = 'recording-normalizer@3'
 
+/** 录制草稿的产品来源，不是引擎版本号。 */
+export const RECORDING_SOURCES = ['script', 'ai'] as const
+export type RecordingSource = (typeof RECORDING_SOURCES)[number]
+
+export const RECORDING_SOURCE_LABELS = {
+  script: '脚本录制',
+  ai: 'AI录制',
+} as const satisfies Record<RecordingSource, string>
+
+const AI_SOURCE_VERSION_PREFIXES = ['midscene', 'ai-recorder', 'cairn-ai'] as const
+
+export function recordingSourceFromVersion(sourceVersion: string): RecordingSource {
+  const version = sourceVersion.trim().toLowerCase()
+  if (version.startsWith('playwright-crx')) return 'script'
+  if (AI_SOURCE_VERSION_PREFIXES.some((prefix) => version.startsWith(prefix))) return 'ai'
+  return 'script'
+}
+
+export function recordingSourceLabel(sourceVersion: string): string {
+  return RECORDING_SOURCE_LABELS[recordingSourceFromVersion(sourceVersion)]
+}
+
 export const MAX_RECORDING_EVENTS = 200
 export const MAX_RECORDING_JSON_BYTES = 256_000
 

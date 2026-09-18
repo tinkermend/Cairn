@@ -1695,6 +1695,10 @@ export {
 export {
   RECORDER_SOURCE_VERSION,
   RECORDING_NORMALIZER_VERSION,
+  RECORDING_SOURCES,
+  RECORDING_SOURCE_LABELS,
+  recordingSourceFromVersion,
+  recordingSourceLabel,
   MAX_RECORDING_EVENTS,
   MAX_RECORDING_JSON_BYTES,
   RECORDING_ERROR_CODES,
@@ -1719,6 +1723,7 @@ export {
   candidateStepFromItem,
   recordingItemReady,
   RecordingNormalizationError,
+  type RecordingSource,
   type RecordingErrorCode,
   type RecordingActionName,
   type RecordingItemStatus,

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
-import { hasPermission } from '@cairn/shared'
+import { hasPermission, recordingSourceLabel } from '@cairn/shared'
 import {
   ArrowLeft,
   ArrowRight,
@@ -125,9 +125,9 @@ export function RecordingDetailPage() {
                   {draft.targetName}
                 </Link>
                 <span>·</span>
-                <span>创建者: {draft.createdBy.displayName}</span>
+                <span>来源 {recordingSourceLabel(draft.sourceVersion)}</span>
                 <span>·</span>
-                <span>录制版本: {draft.sourceVersion}</span>
+                <span>创建者: {draft.createdBy.displayName}</span>
                 <span>·</span>
                 {draft.imported && draft.importedScenarioId ? (
                   <span className='text-status-success-foreground font-medium'>已回填到场景</span>

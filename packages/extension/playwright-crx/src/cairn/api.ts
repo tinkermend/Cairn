@@ -119,10 +119,15 @@ export function fetchMe(): Promise<MeResponse> {
   return cairnFetch('/api/me', meResponseSchema)
 }
 
-export function fetchTargets(query?: { search?: string; limit?: number }): Promise<TargetListResponse> {
+export function fetchTargets(query?: {
+  search?: string
+  limit?: number
+  status?: 'active' | 'disabled'
+}): Promise<TargetListResponse> {
   const params = new URLSearchParams()
   if (query?.search) params.set('search', query.search)
   if (query?.limit) params.set('limit', String(query.limit))
+  if (query?.status) params.set('status', query.status)
   const qs = params.toString()
   return cairnFetch(`/api/targets${qs ? `?${qs}` : ''}`, targetListResponseSchema)
 }

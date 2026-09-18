@@ -18,6 +18,7 @@ import {
 } from './api'
 import { bindingTargetUrl, resolveStudioBinding } from './binding'
 import { DEFAULT_ENVIRONMENT_ID } from './config'
+import { resolveRecordingUploadMeta } from './draft-meta'
 import { formatPickedElement } from './inspect'
 import { recordingItemMeta } from './labels'
 import { LoginForm } from './login-form'
@@ -27,6 +28,7 @@ import {
   clearAuth,
   loadCairnSession,
   saveAuth,
+  saveDraftName,
   saveEnvironmentId,
   saveTargetId,
   type CairnSession,
@@ -56,8 +58,10 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   const [email, setEmail] = React.useState('')
   const [password, setPassword] = React.useState('')
   const [targetId, setTargetId] = React.useState('')
+  const [draftName, setDraftName] = React.useState('')
   const [targetSearch, setTargetSearch] = React.useState('')
   const [targets, setTargets] = React.useState<TargetDto[]>([])
+  const [selectedTarget, setSelectedTarget] = React.useState<TargetDto | null>(null)
   const [busy, setBusy] = React.useState(false)
   const [loginError, setLoginError] = React.useState<string | null>(null)
   const [message, setMessage] = React.useState<{
@@ -88,8 +92,10 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     const next = await loadCairnSession()
     setSession(next)
     setEnvironmentId(next.environmentId)
+    setDraftName((current) => current || next.draftName)
     if (!canAttachRecorder(next)) {
       setTargets([])
+      setSelectedTarget(null)
       return next
     }
     try {
@@ -105,15 +111,19 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
         account,
       })
       if (canReadTargets(account.permissions)) {
-        const list = await fetchTargets({ limit: 100 })
+        const list = await fetchTargets({ limit: 100, status: 'active' })
         const active = list.items.filter((item) => item.status === 'active')
         setTargets(active)
         // 挂录制器会重载侧栏，这里把上次选的目标系统接回来。
-        setTargetId((current) =>
-          current || !active.some((item) => item.id === next.targetId) ? current : next.targetId,
-        )
+        setTargetId((current) => {
+          const nextId = current || (active.some((item) => item.id === next.targetId) ? next.targetId : current)
+          const remembered = active.find((item) => item.id === nextId)
+          if (remembered) setSelectedTarget(remembered)
+          return nextId
+        })
       } else {
         setTargets([])
+        setSelectedTarget(null)
       }
       setSession({ ...next, account })
       try {
@@ -122,6 +132,11 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
         if (nextBinding) {
           setTargetId(nextBinding.targetId)
           await saveTargetId(nextBinding.targetId)
+          setDraftName((current) => {
+            const nextName = current.trim() || nextBinding.scenarioName
+            void saveDraftName(nextName)
+            return nextName
+          })
           const url = bindingTargetUrl(nextBinding)
           if (url && openedTargetRef.current !== nextBinding.id) {
             openedTargetRef.current = nextBinding.id
@@ -137,6 +152,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
         await clearAuth()
         setSession({ ...next, accessToken: '', account: null, expiresAt: null })
         setTargets([])
+        setSelectedTarget(null)
         if (opts?.announceAuthFailure) throw error
         return next
       }
@@ -192,7 +208,14 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
 
   const onTargetId = (value: string) => {
     setTargetId(value)
+    const found = targets.find((item) => item.id === value) ?? null
+    if (found) setSelectedTarget(found)
     void saveTargetId(value)
+  }
+
+  const onDraftName = (value: string) => {
+    setDraftName(value)
+    void saveDraftName(value)
   }
 
   React.useEffect(() => {
@@ -200,6 +223,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     const handle = window.setTimeout(() => {
       void fetchTargets({
         limit: 100,
+        status: 'active',
         search: targetSearch.trim() || undefined,
       })
         .then((list) => {
@@ -215,14 +239,21 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     await requestDetach().catch(() => {})
     await clearAuth()
     setTargets([])
+    setSelectedTarget(null)
     setTargetId('')
+    setDraftName('')
     setMessage(null)
     await refresh()
   }
 
   const onUpload = async () => {
-    if (!targetId) {
-      setMessage({ tone: 'error', text: '请先选择目标系统' })
+    const meta = resolveRecordingUploadMeta({
+      name: draftName,
+      targetId,
+      binding: binding ? { scenarioName: binding.scenarioName, targetId: binding.targetId } : null,
+    })
+    if (!meta.ok) {
+      setMessage({ tone: 'error', text: meta.error })
       return
     }
     if (!preview || 'error' in preview) {
@@ -238,10 +269,11 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
       }
       const recordingId = attemptRef.current.recordingId
       const detail = await uploadRecording({
-        targetId,
+        targetId: meta.targetId,
         recordingId,
         sourceVersion: RECORDER_SOURCE_VERSION,
         idempotencyKey: recordingId,
+        name: meta.name,
         bindingId: binding?.id,
         events: preview.events,
       })
@@ -392,7 +424,23 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   const items = ready?.items ?? []
   const recording = RECORDING_MODES.includes(mode)
   const inspecting = INSPECT_MODES.includes(mode)
-  const uploadDisabled = busy || !canUpload || !targetId || !items.length || Boolean(preview && 'error' in preview)
+  const uploadMeta = resolveRecordingUploadMeta({
+    name: draftName,
+    targetId,
+    binding: binding ? { scenarioName: binding.scenarioName, targetId: binding.targetId } : null,
+  })
+  const uploadDisabled =
+    busy || !canUpload || !uploadMeta.ok || !items.length || Boolean(preview && 'error' in preview)
+  const targetOptions: { id: string; name: string }[] = []
+  const seenTargetIds = new Set<string>()
+  const addTargetOption = (id: string, name: string) => {
+    if (!id || seenTargetIds.has(id)) return
+    seenTargetIds.add(id)
+    targetOptions.push({ id, name })
+  }
+  if (binding) addTargetOption(binding.targetId, binding.targetName)
+  if (selectedTarget) addTargetOption(selectedTarget.id, selectedTarget.name)
+  for (const target of targets) addTargetOption(target.id, target.name)
   // 一屏只留一个最醒目的操作：还没录到步骤时是录制，录到了才轮到上传。
   const uploadIsPrimary = items.length > 0
   const attachmentLine = describeAttachment(attachment, {
@@ -441,6 +489,18 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
           </p>
         ) : null}
         <div className='cairn-field'>
+          <label htmlFor='cairn-draft-name'>场景名称</label>
+          <input
+            id='cairn-draft-name'
+            type='text'
+            value={draftName}
+            disabled={Boolean(binding)}
+            maxLength={128}
+            placeholder='例如：报销审批'
+            onChange={(event) => onDraftName(event.target.value)}
+          />
+        </div>
+        <div className='cairn-field'>
           <label htmlFor='cairn-target-search'>搜索目标系统</label>
           <input
             id='cairn-target-search'
@@ -458,7 +518,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
             onChange={(event) => onTargetId(event.target.value)}
           >
             <option value=''>选择目标系统</option>
-            {targets.map((target) => (
+            {targetOptions.map((target) => (
               <option key={target.id} value={target.id}>
                 {target.name}
               </option>
@@ -474,6 +534,10 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
           {busy ? '上传中…' : '上传到平台'}
         </button>
         {!canUpload ? <p className='cairn-hint'>{RECORDING_UPLOAD_DENIED_HINT}</p> : null}
+        {canUpload && items.length > 0 && !uploadMeta.ok ? <p className='cairn-hint'>{uploadMeta.error}</p> : null}
+        {!binding && canReadTargets(permissions) && targetOptions.length === 0 ? (
+          <p className='cairn-hint'>当前账号没有可访问的目标系统</p>
+        ) : null}
         {binding?.recordingDraftId && session ? (
           <a className='cairn-hint' href={studioReturnUrl(session.apiOrigin, binding)} target='_blank' rel='noreferrer'>
             回到 Studio 预览回填

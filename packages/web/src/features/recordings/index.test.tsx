@@ -65,10 +65,11 @@ describe('录制草稿列表', () => {
     useAuthStore.getState().auth.reset()
   })
 
-  it('列出草稿名称、目标与待处理数', async () => {
+  it('列出场景名称、目标系统、来源与待处理数', async () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('录制 shop.example')).toBeVisible()
     await expect.element(screen.getByText('演示商城')).toBeVisible()
+    await expect.element(screen.getByText('脚本录制')).toBeVisible()
     await expect.element(screen.getByText('管理员')).toBeVisible()
     await expect.element(screen.getByRole('cell', { name: '3', exact: true })).toBeVisible()
   })

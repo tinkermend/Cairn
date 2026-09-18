@@ -13,6 +13,7 @@ import { describeStepTarget, stepDetail } from '../step-detail'
 import { recordingAllowedOrigins, recordingBridgeStartSchema, recordingStudioPath, targetDescriptorFromInspectSelector } from '@cairn/shared'
 import { canRecordTab, chooseRecordingTab } from '../tab-choice'
 import { studioReturnUrl } from '../api'
+import { resolveRecordingUploadMeta } from '../draft-meta'
 
 function previewOf(sources: readonly Source[], excluded: readonly number[] = []) {
   const preview = previewRecording(sources, excluded)
@@ -373,6 +374,46 @@ describe('挂哪个标签页', () => {
     expect(chooseRecordingTab([panel, blank, page])?.id).toBe(3)
     expect(canRecordTab(panel)).toBe(false)
     expect(canRecordTab(page)).toBe(true)
+  })
+})
+
+describe('上传草稿元数据', () => {
+  it('独立上传必须填写场景名称并选择目标系统', () => {
+    expect(resolveRecordingUploadMeta({ name: '', targetId: '' })).toEqual({
+      ok: false,
+      error: '请填写场景名称',
+    })
+    expect(resolveRecordingUploadMeta({ name: '报销审批', targetId: '' })).toEqual({
+      ok: false,
+      error: '请先选择目标系统',
+    })
+    expect(
+      resolveRecordingUploadMeta({
+        name: ' 报销审批 ',
+        targetId: '11111111-1111-4111-8111-111111111111',
+      }),
+    ).toEqual({
+      ok: true,
+      name: '报销审批',
+      targetId: '11111111-1111-4111-8111-111111111111',
+    })
+  })
+
+  it('从 Studio 发起时可用绑定补场景名和目标系统', () => {
+    expect(
+      resolveRecordingUploadMeta({
+        name: '',
+        targetId: '',
+        binding: {
+          scenarioName: '打开商城',
+          targetId: '11111111-1111-4111-8111-111111111111',
+        },
+      }),
+    ).toEqual({
+      ok: true,
+      name: '打开商城',
+      targetId: '11111111-1111-4111-8111-111111111111',
+    })
   })
 })
 

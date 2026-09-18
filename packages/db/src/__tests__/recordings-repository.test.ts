@@ -63,8 +63,9 @@ describe('录制草稿 Repository（集成）', { timeout: 30_000 }, () => {
   })
 
   it('上传归一化后重传不重复，敏感值不落库', async () => {
-    const first = await createRecordingDraft(handle.db, body(targetId), { id: actorId })
+    const first = await createRecordingDraft(handle.db, body(targetId, { name: '报销审批' }), { id: actorId })
     expect(first.created).toBe(true)
+    expect(first.detail.name).toBe('报销审批')
     expect(first.detail.targetName).toBe('录制夹具')
     expect(first.detail.unresolvedCount).toBe(0)
     expect(first.detail.items.some((item) => item.sensitive && !('value' in (item.input as object)))).toBe(true)

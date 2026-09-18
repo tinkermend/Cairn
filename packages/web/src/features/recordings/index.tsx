@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Edit2, Search, Trash2 } from 'lucide-react'
-import { hasPermission, type RecordingDraftDto } from '@cairn/shared'
+import { hasPermission, recordingSourceLabel, type RecordingDraftDto } from '@cairn/shared'
 import { deleteRecording, fetchRecordings } from '@/lib/recordings-api'
 import { fetchTargets } from '@/lib/targets-api'
 import { useCursorPage } from '@/hooks/use-cursor-page'
@@ -201,8 +201,9 @@ export function RecordingsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>名称</TableHead>
+                    <TableHead>场景名称</TableHead>
                     <TableHead>目标系统</TableHead>
+                    <TableHead>来源</TableHead>
                     <TableHead>步骤</TableHead>
                     <TableHead>待处理</TableHead>
                     <TableHead>上传人</TableHead>
@@ -233,6 +234,7 @@ export function RecordingsPage() {
                           {item.targetName}
                         </Link>
                       </TableCell>
+                      <TableCell>{recordingSourceLabel(item.sourceVersion)}</TableCell>
                       <TableCell>{item.itemCount}</TableCell>
                       <TableCell>{item.unresolvedCount}</TableCell>
                       <TableCell>{item.createdBy.displayName}</TableCell>

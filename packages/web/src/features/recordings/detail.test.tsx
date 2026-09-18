@@ -132,6 +132,7 @@ describe('录制草稿详情页', () => {
     // 标题与目标系统
     await expect.element(screen.getByText('报销审批流程录制')).toBeVisible()
     await expect.element(screen.getByText('财务核算系统')).toBeVisible()
+    await expect.element(screen.getByText('来源 脚本录制')).toBeVisible()
     await expect.element(screen.getByText('创建者: 张三')).toBeVisible()
 
     // 4 宫格指标卡

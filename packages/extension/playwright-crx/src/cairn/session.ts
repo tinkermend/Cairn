@@ -18,6 +18,7 @@ export type CairnSession = {
   expiresAt: number | null
   account: CairnAccount | null
   targetId: string
+  draftName: string
 }
 
 const KEYS = [
@@ -26,6 +27,7 @@ const KEYS = [
   'cairnExpiresAt',
   'cairnAccount',
   'cairnTargetId',
+  'cairnDraftName',
 ] as const
 
 function asAccount(value: unknown): CairnAccount | null {
@@ -54,12 +56,17 @@ export async function loadCairnSession(): Promise<CairnSession> {
     expiresAt: typeof stored.cairnExpiresAt === 'number' ? stored.cairnExpiresAt : null,
     account: asAccount(stored.cairnAccount),
     targetId: typeof stored.cairnTargetId === 'string' ? stored.cairnTargetId : '',
+    draftName: typeof stored.cairnDraftName === 'string' ? stored.cairnDraftName : '',
   }
 }
 
 /** 挂录制器会重载侧栏，选中的目标系统必须活过这次重载。 */
 export async function saveTargetId(targetId: string): Promise<void> {
   await chrome.storage.local.set({ cairnTargetId: targetId })
+}
+
+export async function saveDraftName(draftName: string): Promise<void> {
+  await chrome.storage.local.set({ cairnDraftName: draftName })
 }
 
 export async function saveEnvironmentId(environmentId: string): Promise<ApiEnvironment> {
@@ -86,5 +93,6 @@ export async function clearAuth(): Promise<void> {
     'cairnExpiresAt',
     'cairnAccount',
     'cairnTargetId',
+    'cairnDraftName',
   ])
 }

@@ -3,8 +3,11 @@ import {
   MAX_RECORDING_EVENTS,
   MAX_RECORDING_JSON_BYTES,
   RECORDER_SOURCE_VERSION,
+  RECORDING_SOURCE_LABELS,
   assertRecordingPayloadSize,
   createRecordingBodySchema,
+  recordingSourceFromVersion,
+  recordingSourceLabel,
   normalizeRecording,
   parseJsonlSource,
   isSensitiveFill,
@@ -488,6 +491,16 @@ describe('normalizeRecording JSONL 探针', () => {
     } catch (error) {
       expect(error).toMatchObject({ code: 'RECORDING_TOO_LARGE' })
     }
+  })
+})
+
+describe('录制来源', () => {
+  it('playwright-crx 是脚本录制，AI 采集器是 AI录制', () => {
+    expect(recordingSourceFromVersion(RECORDER_SOURCE_VERSION)).toBe('script')
+    expect(recordingSourceLabel(RECORDER_SOURCE_VERSION)).toBe(RECORDING_SOURCE_LABELS.script)
+    expect(recordingSourceFromVersion('midscene@1.0.0')).toBe('ai')
+    expect(recordingSourceLabel('ai-recorder@1')).toBe(RECORDING_SOURCE_LABELS.ai)
+    expect(recordingSourceFromVersion('unknown-tool@1')).toBe('script')
   })
 })
 
