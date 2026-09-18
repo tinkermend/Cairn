@@ -634,7 +634,12 @@ describe('ExecutionEngine × 真浏览器 OC-C 运行期约束', { timeout: 240_
     const unseen = await executeScenario({
       name: `occ-05-flash-unseen-${newId()}`,
       steps: [navigate(newId(), '/flash')],
-      runtimeInvariants: [createRuntimeInvariant('error_surface', unseenId)],
+      runtimeInvariants: [
+        {
+          ...createRuntimeInvariant('error_surface', unseenId),
+          evaluateAt: 'before_side_effect',
+        },
+      ],
     })
     expect(unseen.status).toBe('SUCCEEDED')
     expect(unseen.outcomeStatus).toBe('UNKNOWN')
@@ -654,7 +659,12 @@ describe('ExecutionEngine × 真浏览器 OC-C 运行期约束', { timeout: 240_
         },
         click(newId(), '#after-flash'),
       ],
-      runtimeInvariants: [createRuntimeInvariant('error_surface', seenId)],
+      runtimeInvariants: [
+        {
+          ...createRuntimeInvariant('error_surface', seenId),
+          evaluateAt: 'before_side_effect',
+        },
+      ],
     })
     expect(seen.status).toBe('SUCCEEDED')
     expect(invariantRow(seen, seenId)?.verdict).toBe('PASS')

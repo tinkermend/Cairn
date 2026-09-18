@@ -48,7 +48,8 @@ export function effectTypeExceedsCeiling(actual: EffectType, ceiling: EffectType
 }
 
 export function defaultEvaluateAt(kind: RuntimeInvariantKind): RuntimeInvariantEvaluateAt {
-  if (kind === 'effect_ceiling' || kind === 'readonly_guarantee' || kind === 'error_surface') {
+  if (kind === 'error_surface') return 'each_step'
+  if (kind === 'effect_ceiling' || kind === 'readonly_guarantee') {
     return 'before_side_effect'
   }
   return 'step_boundary'

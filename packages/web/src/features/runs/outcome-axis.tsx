@@ -23,6 +23,20 @@ export {
   runOutcomeStatusTone,
 } from './outcome-labels'
 
+function evidenceForOutcomeResult(
+  result: { evidenceId?: string | null; attemptId: string } | undefined,
+  evidenceItems: EvidenceMetadata[] | undefined,
+): EvidenceMetadata[] {
+  if (!evidenceItems?.length || !result) return []
+  if (result.evidenceId) {
+    const matched = evidenceItems.filter((item) => item.id === result.evidenceId)
+    if (matched.length > 0) return matched
+  }
+  return evidenceItems.filter(
+    (item) => item.attemptId === result.attemptId && item.type === 'screenshot',
+  )
+}
+
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return '无'
   if (typeof value === 'string') return value
@@ -84,9 +98,7 @@ export function OutcomeConditionList({
     {rows.length > 0 ? (
     <ul className='space-y-3' aria-label='成功条件判定'>
       {rows.map((row) => {
-        const evidence = row.result?.evidenceId
-          ? evidenceItems?.filter((item) => item.id === row.result?.evidenceId)
-          : []
+        const evidence = evidenceForOutcomeResult(row.result, evidenceItems)
         const expectLabel =
           row.entry.rule.kind === 'deterministic'
             ? expectKindLabel(row.entry.rule.expect.kind)
@@ -141,9 +153,7 @@ export function OutcomeConditionList({
     {invariantRows.length > 0 ? (
       <ul className='space-y-3' aria-label='运行期约束判定'>
         {invariantRows.map((row) => {
-          const evidence = row.result?.evidenceId
-            ? evidenceItems?.filter((item) => item.id === row.result?.evidenceId)
-            : []
+          const evidence = evidenceForOutcomeResult(row.result, evidenceItems)
           return (
             <li key={row.entry.id} className='space-y-2 rounded-md border border-border-card p-3'>
               <div className='flex flex-wrap items-start justify-between gap-2'>

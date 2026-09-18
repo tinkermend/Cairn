@@ -35,13 +35,10 @@ describe('RuntimeInvariantEditor', () => {
     expect(screen.container.textContent).not.toMatch(/每一步后探测/)
   })
 
-  it('each_step 仅错误弹窗且平台开关打开后才出现', async () => {
-    const closed = await render(<SurfaceEditorHarness />)
-    await closed.getByRole('button', { name: '高级' }).click()
-    expect(closed.container.textContent).not.toMatch(/每一步后探测/)
-
-    const opened = await render(<SurfaceEditorHarness allowEachStepProbe />)
-    await opened.getByRole('button', { name: '高级' }).click()
-    expect(opened.container.textContent).toMatch(/每一步后探测/)
+  it('错误弹窗默认展示每一步后探测', async () => {
+    const screen = await render(<SurfaceEditorHarness />)
+    expect(screen.container.textContent).toMatch(/默认在每一步后检查当前页/)
+    await screen.getByRole('button', { name: '高级' }).click()
+    expect(screen.container.textContent).toMatch(/每一步后探测/)
   })
 })

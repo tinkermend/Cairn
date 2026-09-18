@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm'
 import {
   aggregateRunOutcomeStatus,
   aggregateStepRunOutcomeStatus,
@@ -20,7 +20,7 @@ import {
 } from '@cairn/shared'
 import type { Db, DbHandle } from '../client.js'
 import { newId } from '../id.js'
-import { schemaFor } from '../native.js'
+import { jsonHasKey, schemaFor } from '../native.js'
 import type { RunRow } from '../schema/execution.js'
 
 export type OutcomeResultInsertItem = {
@@ -36,6 +36,22 @@ export type OutcomeResultInsertItem = {
   evidenceId?: string | null
   details?: Record<string, JsonValue> | null
   evaluatedAt: Date
+}
+
+async function resolveAttemptOutcomeEvidenceId(tx: Db, attemptId: string): Promise<string | null> {
+  const { evidences } = schemaFor(tx)
+  const rows = await tx
+    .select({ id: evidences.id, type: evidences.type })
+    .from(evidences)
+    .where(eq(evidences.attemptId, attemptId))
+    .orderBy(asc(evidences.createdAt))
+  const screenshot = rows.find((row) => row.type === 'screenshot')
+  if (screenshot) return screenshot.id
+  const output = rows.find((row) => row.type === 'output')
+  if (output) return output.id
+  const error = rows.find((row) => row.type === 'error')
+  if (error) return error.id
+  return null
 }
 
 /**
@@ -55,6 +71,7 @@ export async function saveStepOutcomeResultsTx(
   const { outcomeResults, stepRuns } = schemaFor(tx)
 
   if (input.results && input.results.length > 0) {
+    const fallbackEvidenceId = await resolveAttemptOutcomeEvidenceId(tx, input.attemptId)
     for (const item of input.results) {
       await tx.insert(outcomeResults).values({
         id: newId(),
@@ -70,7 +87,7 @@ export async function saveStepOutcomeResultsTx(
         verdict: item.verdict,
         expected: item.expected ?? null,
         actual: item.actual ?? null,
-        evidenceId: item.evidenceId ?? null,
+        evidenceId: item.evidenceId ?? fallbackEvidenceId,
         details: item.details ?? null,
         evaluatedAt: item.evaluatedAt,
         createdAt: input.now,
@@ -224,6 +241,7 @@ async function syncRuntimeInvariantResultsTx(
     runStatus: input.runStatus,
   })
 
+  const evidenceByAttempt = new Map<string, string | null>()
   for (const item of derived) {
     const [existing] = await tx
       .select({ id: outcomeResults.id })
@@ -233,6 +251,9 @@ async function syncRuntimeInvariantResultsTx(
       )
       .limit(1)
     if (existing) continue
+    if (!evidenceByAttempt.has(item.attemptId)) {
+      evidenceByAttempt.set(item.attemptId, await resolveAttemptOutcomeEvidenceId(tx, item.attemptId))
+    }
     await tx.insert(outcomeResults).values({
       id: newId(),
       runId: input.runId,
@@ -247,6 +268,7 @@ async function syncRuntimeInvariantResultsTx(
       verdict: item.verdict,
       expected: item.expected,
       actual: item.actual,
+      evidenceId: evidenceByAttempt.get(item.attemptId) ?? null,
       details: item.details,
       evaluatedAt: input.now,
       createdAt: input.now,
@@ -321,38 +343,49 @@ export async function settleRunOutcome(
 }
 
 /**
- * 后台定时补算任务：扫描终态但 outcome_status 缺失或需重算的 Run。
+ * 后台定时补算：只扫未删除、已停机、结果轴仍是 NOT_EVALUATED 且快照里确有契约的孤儿 Run。
  */
-export async function backfillOutcomeResults(db: Db): Promise<{ scanned: number; updated: number }> {
-  const { runs, outcomeResults } = schemaFor(db)
-  const candidateRows = await db
+export async function backfillOutcomeResults(
+  db: Db,
+  input: { limit?: number } = {},
+): Promise<{ scanned: number; updated: number }> {
+  const limit = Math.max(1, Math.min(input.limit ?? 20, 100))
+  const { runs } = schemaFor(db)
+  const candidates = await db
     .select()
     .from(runs)
-    .where(inArray(runs.status, ['SUCCEEDED', 'FAILED', 'CANCELLED', 'NEEDS_REVIEW']))
-    .limit(100)
+    .where(
+      and(
+        isNull(runs.deletedAt),
+        inArray(runs.status, ['SUCCEEDED', 'FAILED', 'CANCELLED', 'NEEDS_REVIEW']),
+        eq(runs.outcomeStatus, 'NOT_EVALUATED'),
+        or(
+          jsonHasKey(db, runs.snapshot, 'outcomeManifest'),
+          jsonHasKey(db, runs.snapshot, 'runtimeInvariantManifest'),
+        ),
+      ),
+    )
+    .orderBy(asc(runs.updatedAt), asc(runs.id))
+    .limit(limit * 5)
 
   let scanned = 0
   let updated = 0
   const now = new Date()
 
-  for (const row of candidateRows) {
-    scanned++
+  for (const row of candidates) {
     const snapshot = row.snapshot as RunSnapshot
     if (
       !snapshot.outcomeManifest?.entries.length &&
       !snapshot.runtimeInvariantManifest?.entries.length
     ) {
-      if (row.outcomeStatus !== 'NOT_EVALUATED') {
-        await db.update(runs).set({ outcomeStatus: 'NOT_EVALUATED', updatedAt: now }).where(eq(runs.id, row.id))
-        updated++
-      }
       continue
     }
-
+    scanned++
     const newStatus = await db.transaction((tx) =>
       recalculateRunOutcomeTx(tx as unknown as Db, row.id, snapshot, now),
     )
     if (newStatus !== row.outcomeStatus) updated++
+    if (updated >= limit) break
   }
 
   return { scanned, updated }

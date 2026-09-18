@@ -111,9 +111,7 @@ function InvariantCard({
   const haltBlocked = invariant.severity === 'SHOULD' || invariant.severity === 'INFO'
   const evaluateOptions: RuntimeInvariantEvaluateAt[] =
     invariant.kind === 'error_surface'
-      ? allowEachStepProbe
-        ? ['before_side_effect', 'each_step']
-        : ['before_side_effect']
+      ? ['before_side_effect', 'each_step']
       : ['step_boundary', 'before_side_effect']
 
   return (
@@ -141,6 +139,14 @@ function InvariantCard({
       {invariant.kind === 'readonly_guarantee' ? (
         <p className='text-label text-muted-foreground'>
           对照已执行步骤的副作用类型，不会额外拦截写入。
+        </p>
+      ) : null}
+      {invariant.kind === 'error_surface' ? (
+        <p className='text-label text-muted-foreground'>
+          默认在每一步后检查当前页；只想在改数据前看一眼时，到高级里改成副作用前。
+          {invariant.evaluateAt === 'each_step' && !allowEachStepProbe
+            ? ' 每一步后探测会增加页面检查次数。'
+            : ''}
         </p>
       ) : null}
       <Collapsible open={advanced} onOpenChange={setAdvanced}>

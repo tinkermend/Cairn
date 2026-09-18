@@ -66,6 +66,11 @@ describe('OCC-01 RuntimeInvariant Schema', () => {
     expect(created.severity).toBe('SHOULD')
     expect(created.onViolation).toBe('continue')
   })
+
+  it('error_surface 默认 each_step，只读巡检也能求值', () => {
+    expect(createRuntimeInvariant('error_surface', id(15)).evaluateAt).toBe('each_step')
+    expect(createRuntimeInvariant('readonly_guarantee', id(16)).evaluateAt).toBe('before_side_effect')
+  })
 })
 
 describe('派生规则', () => {

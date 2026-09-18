@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { type RunSnapshot, type Step } from '@cairn/shared'
+import { createRuntimeInvariant, type RunSnapshot, type Step } from '@cairn/shared'
 
 function surfaceInvariant(evaluateAt: 'before_side_effect' | 'each_step') {
   return {
@@ -102,5 +102,15 @@ describe('error_surface 调度', () => {
     const elapsedMs = performance.now() - started
     expect(elapsedMs / 200).toBeLessThan(5)
     expect(shouldProbeErrorSurface(snapshot('before_side_effect'), echoStep, 'after')).toBe(false)
+  })
+
+  it('默认 each_step 会在只读步后探测', () => {
+    const snap = {
+      runtimeInvariantManifest: {
+        entries: [createRuntimeInvariant('error_surface', '00000000-0000-4000-8000-000000000066')],
+      },
+    } as RunSnapshot
+    expect(shouldProbeErrorSurface(snap, echoStep, 'after')).toBe(true)
+    expect(shouldProbeErrorSurface(snap, echoStep, 'before')).toBe(false)
   })
 })

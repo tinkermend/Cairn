@@ -343,6 +343,74 @@ describe('Outcome 结果轴与契约底座（集成）', () => {
     expect(detail?.stepRuns[1]!.outcomeStatus).toBe('PASS')
     expect(detail?.outcomeResults).toHaveLength(1)
     expect(detail?.outcomeResults[0]!.verdict).toBe('PASS')
+    expect(detail?.outcomeResults[0]!.evidenceId).toBeTruthy()
+  })
+
+  it('finishAttempt 结果行优先挂 Attempt 截图 evidenceId', async () => {
+    const scenario = await createScenarioWithNodes({
+      name: '结果行挂截图',
+      nodes: [
+        {
+          kind: 'step',
+          step: assertStep,
+          outcomes: [
+            {
+              id: contractMustId,
+              scope: 'step',
+              meaning: '核心断言必须成立',
+              severity: 'MUST',
+              onViolation: 'continue',
+              provenance: 'manual',
+              rule: { kind: 'deterministic', expect: { kind: 'text_equals', value: 'expected_val' } },
+            },
+          ],
+        },
+      ],
+    })
+    const run = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, run.detail.id, 'tester-w-evidence')
+    const start = await startAttempt(handle.db, {
+      runId: run.detail.id,
+      stepRunId: run.detail.stepRuns[0]!.id,
+      grant,
+      inputPayload: {},
+    })
+    await finishAttempt(handle.db, {
+      runId: run.detail.id,
+      attemptId: start!.attemptId,
+      attemptStatus: 'SUCCEEDED',
+      output: { passed: true },
+      stepRunStatus: 'SUCCEEDED',
+      runStatus: 'SUCCEEDED',
+      grant,
+      screenshot: { missingReason: 'capture_failed' },
+      outcomeResults: [
+        {
+          contractId: contractMustId,
+          scope: 'step',
+          meaning: '核心断言必须成立',
+          severity: 'MUST',
+          onViolation: 'continue',
+          provenance: 'manual',
+          verdict: 'PASS',
+          expected: 'expected_val',
+          actual: 'expected_val',
+          evaluatedAt: new Date(),
+        },
+      ],
+    })
+    const detail = await loadRunDetail(handle.db, run.detail.id)
+    const { evidences } = schemaFor(handle.db)
+    const shots = await handle.db
+      .select({ id: evidences.id, type: evidences.type })
+      .from(evidences)
+      .where(eq(evidences.attemptId, start!.attemptId))
+    const screenshot = shots.find((row) => row.type === 'screenshot')
+    expect(screenshot).toBeTruthy()
+    expect(detail?.outcomeResults[0]!.evidenceId).toBe(screenshot!.id)
   })
 
   it('终态路径 1 (WARN): SHOULD 条件不满足时 Run 状态为 SUCCEEDED 但 outcomeStatus 为 WARN', async () => {
@@ -635,6 +703,23 @@ describe('Outcome 结果轴与契约底座（集成）', () => {
     // 验证已被修复回 PASS
     const detail = await loadRunDetail(handle.db, targetRun.id)
     expect(detail?.outcomeStatus).toBe('PASS')
+
+    const deletedId = targetRun.id
+    await handle.db
+      .update(runs)
+      .set({
+        outcomeStatus: 'NOT_EVALUATED',
+        deletedAt: new Date(),
+        deletedBy: { id: actorId, displayName: 'outcome-tester', kind: 'console' },
+      })
+      .where(eq(runs.id, deletedId))
+    await backfillOutcomeResults(handle.db, { limit: 20 })
+    expect(await loadRunDetail(handle.db, deletedId)).toBeNull()
+    const [deletedRow] = await handle.db
+      .select({ outcomeStatus: runs.outcomeStatus })
+      .from(runs)
+      .where(eq(runs.id, deletedId))
+    expect(deletedRow?.outcomeStatus).toBe('NOT_EVALUATED')
   })
 
   it('OCC：含 runtimeInvariantManifest 的 Run 要求新协议，收尾写 PASS', async () => {
@@ -923,6 +1008,7 @@ describe('Outcome 结果轴与契约底座（集成）', () => {
     expect(detail?.outcomeStatus).toBe('FAIL')
     const row = detail?.outcomeResults.find((item) => item.contractId === invariantId)
     expect(row?.verdict).toBe('FAIL')
+    expect(row?.evidenceId).toBeTruthy()
     expect(JSON.stringify(row?.actual)).toMatch(/password=\*\*\*/)
     expect(JSON.stringify(row?.actual)).toMatch(/\[redacted-email\]/)
     expect(JSON.stringify(row?.actual)).not.toMatch(/hunter2/)
