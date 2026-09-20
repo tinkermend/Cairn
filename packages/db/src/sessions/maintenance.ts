@@ -10,6 +10,7 @@ export {
 } from './maintenance-request.js'
 export {
   setSessionRetention,
+  applyPendingRetentionIntent,
   adoptSessionRetention,
   scheduleNextAuthCheck,
   abandonSessionKeepAlive,

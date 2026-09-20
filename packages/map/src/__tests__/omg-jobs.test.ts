@@ -69,6 +69,16 @@ describe('OM-G 选点与编译', () => {
     if (compiled.ok) {
       expect(compiled.steps).toHaveLength(2)
       expect(compiled.steps.every((step) => step.effectType === 'READ_ONLY')).toBe(true)
+      const assertStep = compiled.steps[1]
+      expect(assertStep?.type).toBe('assert')
+      expect(assertStep && 'input' in assertStep ? assertStep.input : undefined).toMatchObject({
+        target: {
+          candidates: expect.arrayContaining([
+            { by: 'role', value: 'heading', name: '订单标题' },
+            { by: 'role', value: 'menuitem', name: '订单标题' },
+          ]),
+        },
+      })
     }
   })
 })

@@ -1,4 +1,11 @@
-export type { ObjectHead, ObjectStore, PutObjectInput } from './types.js'
+export type {
+  ObjectGetOptions,
+  ObjectGetResult,
+  ObjectHead,
+  ObjectStore,
+  ObjectStoreProbeResult,
+  PutObjectInput,
+} from './types.js'
 export { LocalObjectStore } from './local-store.js'
 export { S3ObjectStore, type S3Sender } from './s3-store.js'
 export { createObjectStore, type ObjectStoreConfig } from './create-store.js'

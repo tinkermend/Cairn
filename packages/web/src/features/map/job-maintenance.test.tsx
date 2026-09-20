@@ -1,3 +1,4 @@
+import { arrivalTargetForName } from '@cairn/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/styles/index.css'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -72,7 +73,7 @@ describe('知识页地图维护', () => {
     })
     mocks.fetchMapSafeEntries.mockResolvedValue({ items: [] })
     targetMocks.fetchTargetAccounts.mockResolvedValue({
-      items: [{ id: ACCOUNT_ID, targetId: TARGET_ID, displayName: '值班账号', username: 'ops', status: 'active' }],
+      items: [{ id: ACCOUNT_ID, targetId: TARGET_ID, displayName: '值班账号', username: 'ops', status: 'active', usage: 'both' }],
     })
   })
 
@@ -98,8 +99,85 @@ describe('知识页地图维护', () => {
     await screen.getByRole('button', { name: '登记进入路径' }).click()
     expect(mocks.createMapSafeEntry).toHaveBeenCalledWith(
       TARGET_ID,
-      expect.objectContaining({ name: '订单入口', url: 'https://shop.example/orders' }),
+      expect.objectContaining({
+        name: '订单入口',
+        url: 'https://shop.example/orders',
+        arrivalTarget: arrivalTargetForName('订单标题'),
+      }),
     )
+  })
+
+  it('探查作业不列出仅探索进入路径', async () => {
+    mocks.fetchMapJobPolicy.mockResolvedValue({
+      targetId: TARGET_ID,
+      revision: 1,
+      policy: {
+        schemaVersion: 1,
+        policyVersion: 1,
+        manualJobsEnabled: true,
+        maxProbePages: 1,
+        maxProbeObjects: 8,
+        maxProbeActions: 8,
+        maxProbeSeconds: 300,
+        maxRefreshPages: 5,
+        maxRefreshObjects: 20,
+        maxRefreshActions: 20,
+        maxRefreshSeconds: 900,
+        sliceWorkSeconds: 20,
+        defaultDepth: 'structure',
+        staticRefreshDays: 7,
+      },
+      updatedAt: '1970-01-01T00:00:00.000Z',
+    })
+    mocks.fetchMapSafeEntries.mockResolvedValue({
+      items: [
+        {
+          targetId: TARGET_ID,
+          entryId: '33333333-3333-4333-8333-333333333333',
+          version: 1,
+          name: '仅探索入口',
+          url: 'https://shop.example/explore',
+          arrivalName: '探索',
+          arrivalTarget: arrivalTargetForName('探索'),
+          safetyBasis: {
+            kind: 'confirmed_path',
+            summary: '探索',
+            confirmedBy: ACCOUNT_ID,
+            confirmedAt: '2026-09-16T00:00:00.000Z',
+          },
+          jobKinds: ['map_explore'],
+          createdAt: '2026-09-16T00:00:00.000Z',
+        },
+        {
+          targetId: TARGET_ID,
+          entryId: '44444444-4444-4444-8444-444444444444',
+          version: 1,
+          name: '总览探查',
+          url: 'https://shop.example/orders',
+          arrivalName: '总览',
+          arrivalTarget: arrivalTargetForName('总览'),
+          safetyBasis: {
+            kind: 'confirmed_path',
+            summary: '探查',
+            confirmedBy: ACCOUNT_ID,
+            confirmedAt: '2026-09-16T00:00:00.000Z',
+          },
+          jobKinds: ['map_probe', 'map_refresh'],
+          createdAt: '2026-09-16T00:00:00.000Z',
+        },
+      ],
+    })
+    await renderCard()
+    await expect.element(page.getByRole('option', { name: '总览探查' })).toBeInTheDocument()
+    await expect.element(page.getByRole('option', { name: '仅探索入口' })).not.toBeInTheDocument()
+  })
+
+  it('没有地图用途账号时不能开放手工作业', async () => {
+    targetMocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
+    const screen = await renderCard()
+    await screen.getByLabelText('政策理由').fill('想打开')
+    await expect.element(screen.getByRole('button', { name: '开放手工作业' })).toBeDisabled()
+    expect(mocks.updateMapJobPolicy).not.toHaveBeenCalled()
   })
 
   it('无维护权限只读政策', async () => {

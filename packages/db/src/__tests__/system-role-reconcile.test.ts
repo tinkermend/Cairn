@@ -21,8 +21,13 @@ describe('系统角色权限对账', { timeout: 30_000 }, () => {
       hash: async (value: string) => value,
       verify: async (value: string, hash: string) => value === hash,
     })
-    const admin = (await rbac.listRoles()).items.find((role) => role.key === 'admin')
+    const catalog = await rbac.reconcileSystemRolePermissions()
+    expect(catalog.inserted).toBeGreaterThanOrEqual(0)
+    const roles = await rbac.listRoles()
+    const admin = roles.items.find((role) => role.key === 'admin')
+    const operator = roles.items.find((role) => role.key === 'operator')
     expect(admin).toBeDefined()
+    expect(operator?.permissions).toEqual(expect.arrayContaining(['monitor:read', 'monitor:operate']))
     const { consoleRolePermissions } = schemaFor(handle.db)
     await handle.db.delete(consoleRolePermissions).where(
       and(

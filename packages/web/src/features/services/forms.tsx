@@ -4,8 +4,11 @@ import {
   SERVICE_SCOPES,
   issueServiceCredentialSchema,
   serviceCallerBodySchema,
+  serviceCredentialMetadataBodySchema,
   serviceCredentialPolicySchema,
+  serviceIpWhitelistBodySchema,
   type ServiceCallerDto,
+  type ServiceCredentialCatalog,
   type ServiceCredentialDto,
   type ServiceCredentialPolicy,
   type ServiceScope,
@@ -13,8 +16,11 @@ import {
 import { toast } from 'sonner'
 import {
   issueCredential,
+  fetchServiceCredentialCatalog,
   saveService,
+  setServiceIpWhitelist,
   updateCredential,
+  updateCredentialMetadata,
 } from '@/lib/services-api'
 import { fetchTargets, fetchTargetAccounts } from '@/lib/targets-api'
 import { Button } from '@/components/ui/button'
@@ -27,16 +33,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+import { Textarea } from '@/components/ui/textarea'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
-
-export const SCOPE_LABELS: Record<ServiceScope, string> = {
-  'run:execute': '执行已发布场景',
-  'run:read': '查看本应用的运行',
-  'run:cancel': '取消本应用的运行',
-  'evidence:read': '读取已发布证据',
-  'ai:execute': '执行 AI 步骤',
-}
+import { SCOPE_LABELS } from './scope-labels'
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : '保存失败，请重试'
 export function CallerDialog({
@@ -58,7 +65,7 @@ export function CallerDialog({
     const parsed = serviceCallerBodySchema.safeParse({
       name: data.get('name'),
       owner: data.get('owner'),
-      status: data.get('status'),
+      status: caller?.status ?? 'active',
       requestsPerMinute: Number(data.get('rpm')),
       maxOutstandingRuns: Number(data.get('capacity')),
       runTimeoutSeconds: Number(data.get('timeout')),
@@ -159,25 +166,6 @@ export function CallerDialog({
               defaultValue={caller?.runTimeoutSeconds ?? 600}
             />
           </label>
-          <label
-            htmlFor={`${id}-status`}
-            className='block space-y-2 text-small'
-          >
-            <span>服务状态</span>
-            <select
-              id={`${id}-status`}
-              name='status'
-              defaultValue={caller?.status ?? 'active'}
-              className='h-10 w-full rounded-md border bg-background px-3'
-            >
-              <option value='active'>启用</option>
-              <option value='disabled'>停用</option>
-            </select>
-          </label>
-          <p className='text-small text-muted-foreground'>
-            停用立即阻止新 API
-            调用；已接纳的运行继续遵循原时限，可在运行页取消。
-          </p>
           {error && (
             <p role='alert' className='text-small text-destructive'>
               {error}
@@ -294,7 +282,10 @@ export function CredentialDialog({
   )
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('')
-  const targets = useQuery({ queryKey: ['targets'], queryFn: () => fetchTargets() })
+  const targets = useQuery({
+    queryKey: ['targets'],
+    queryFn: () => fetchTargets(),
+  })
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -354,16 +345,21 @@ export function CredentialDialog({
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={(event) => void submit(event)} className='space-y-5'>
-          <label htmlFor={`${id}-name`} className='block space-y-2 text-small'>
-            <span>凭据名称</span>
-            <Input
-              id={`${id}-name`}
-              required
-              maxLength={128}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
+          {!editing && (
+            <label
+              htmlFor={`${id}-name`}
+              className='block space-y-2 text-small'
+            >
+              <span>凭据名称</span>
+              <Input
+                id={`${id}-name`}
+                required
+                maxLength={128}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </label>
+          )}
           <fieldset className='space-y-2'>
             <legend className='mb-2 text-small font-medium'>可调用能力</legend>
             <div className='grid gap-1 sm:grid-cols-2'>
@@ -508,6 +504,104 @@ export function CredentialDialog({
     </Dialog>
   )
 }
+export function CredentialMetadataDialog({
+  callerId,
+  credential,
+  onClose,
+  onSaved,
+}: {
+  callerId: string
+  credential: ServiceCredentialDto
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const id = useId()
+  const [name, setName] = useState(credential.name)
+  const [notes, setNotes] = useState(credential.notes ?? '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    const parsed = serviceCredentialMetadataBodySchema.safeParse({
+      name,
+      notes: notes.trim() || null,
+      expectedMetadataRevision: credential.metadataRevision,
+    })
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]!.message)
+      return
+    }
+    setBusy(true)
+    try {
+      await updateCredentialMetadata(callerId, credential.id, parsed.data)
+      onSaved()
+      onClose()
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>编辑凭据展示信息</DialogTitle>
+          <DialogDescription>
+            名称和备注只用于控制台展示，不会改变 Key 的调用范围或使正在使用的
+            Key 失效。
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={(event) => void submit(event)} className='space-y-4'>
+          <label htmlFor={`${id}-name`} className='block space-y-2 text-small'>
+            <span>凭据名称</span>
+            <Input
+              id={`${id}-name`}
+              required
+              maxLength={128}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label htmlFor={`${id}-notes`} className='block space-y-2 text-small'>
+            <span>备注</span>
+            <Textarea
+              id={`${id}-notes`}
+              maxLength={2000}
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder='例如：生产环境轮换窗口、接入方联系人'
+            />
+          </label>
+          {error && (
+            <p role='alert' className='text-small text-destructive'>
+              {error}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              type='button'
+              variant='outline'
+              onClick={onClose}
+              disabled={busy}
+            >
+              取消
+            </Button>
+            <Button type='submit' loading={busy} disabled={busy}>
+              保存展示信息
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
 export function TokenDialog({
   token,
   onClose,
@@ -552,5 +646,241 @@ export function TokenDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+export function IpWhitelistDialog({
+  caller,
+  onClose,
+  onSaved,
+}: {
+  caller: ServiceCallerDto
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const id = useId()
+  const [entries, setEntries] = useState(caller.ipWhitelist.join('\n'))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    const parsed = serviceIpWhitelistBodySchema.safeParse({
+      entries: entries
+        .split(/[\n,]/)
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    })
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]!.message)
+      return
+    }
+    setBusy(true)
+    try {
+      await setServiceIpWhitelist(caller.id, parsed.data)
+      onSaved()
+      onClose()
+    } catch (cause) {
+      setError(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>来源 IP 白名单</DialogTitle>
+          <DialogDescription>
+            这项策略作用于调用方的全部凭据。每行填写一个 IPv4、IPv6 或
+            CIDR；留空表示不限制来源。
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={(event) => void submit(event)} className='space-y-4'>
+          <label
+            htmlFor={`${id}-entries`}
+            className='block space-y-2 text-small'
+          >
+            <span>来源 IP/CIDR 白名单</span>
+            <Textarea
+              id={`${id}-entries`}
+              aria-label='来源 IP/CIDR 白名单'
+              value={entries}
+              onChange={(event) => setEntries(event.target.value)}
+              rows={8}
+              maxLength={4096}
+              placeholder={'203.0.113.0/24\n2001:db8::/32'}
+            />
+          </label>
+          <p className='text-small text-muted-foreground'>
+            平台仅在配置了可信代理跳数时读取反向代理解析后的地址；默认直接使用连接来源地址。
+          </p>
+          {error ? (
+            <p role='alert' className='text-small text-destructive'>
+              {error}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button
+              type='button'
+              variant='outline'
+              onClick={onClose}
+              disabled={busy}
+            >
+              取消
+            </Button>
+            <Button type='submit' loading={busy} disabled={busy}>
+              保存白名单
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function requestTemplate(
+  item: ServiceCredentialCatalog['items'][number],
+  scenario: ServiceCredentialCatalog['items'][number]['scenarios'][number]
+) {
+  return JSON.stringify(
+    {
+      scenarioId: scenario.scenarioId,
+      scenarioVersionId: scenario.versionId,
+      ...(item.accounts[0] ? { targetAccountId: item.accounts[0].id } : {}),
+      input: Object.fromEntries(
+        scenario.inputs.map((input) => [input.key, `<${input.label}>`])
+      ),
+      idempotencyKey: 'replace-with-a-stable-request-key',
+    },
+    null,
+    2
+  )
+}
+
+export function CredentialCatalogSheet({
+  callerId,
+  credential,
+  onClose,
+}: {
+  callerId: string
+  credential: ServiceCredentialDto
+  onClose: () => void
+}) {
+  const catalog = useQuery({
+    queryKey: ['service', callerId, 'credential', credential.id, 'catalog'],
+    queryFn: () => fetchServiceCredentialCatalog(callerId, credential.id),
+  })
+  const copy = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      toast.success('调用模板已复制')
+    } catch {
+      toast.error('无法复制调用模板，请手动复制')
+    }
+  }
+  return (
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <SheetContent side='right' className='w-full overflow-y-auto sm:max-w-xl'>
+        <SheetHeader className='border-b border-border p-6 pb-4'>
+          <SheetTitle>可用场景与调用模板</SheetTitle>
+          <SheetDescription>
+            基于当前凭据授权和已发布版本实时生成，不包含 Key 明文。
+          </SheetDescription>
+        </SheetHeader>
+        <div className='space-y-5 px-6 pb-6'>
+          {catalog.isPending ? (
+            <PageSkeleton />
+          ) : catalog.isError ? (
+            <QueryErrorState
+              title='无法加载可用场景'
+              onRetry={() => void catalog.refetch()}
+            />
+          ) : !catalog.data?.items.length ? (
+            <p className='rounded-md border p-3 text-small text-muted-foreground'>
+              该凭据当前没有可调用的已发布场景。请检查目标、账号和凭据授权。
+            </p>
+          ) : (
+            catalog.data.items.map((item) => (
+              <section
+                key={item.targetId}
+                className='space-y-3 rounded-md border p-4'
+              >
+                <div>
+                  <h3 className='font-medium'>{item.targetName}</h3>
+                  <p className='mt-1 text-small text-muted-foreground'>
+                    {item.accounts.length
+                      ? `已授权账号：${item.accounts.map((account) => account.name).join('、')}`
+                      : item.allowAnonymous
+                        ? '允许无账号任务'
+                        : '没有可用账号授权'}
+                  </p>
+                </div>
+                {item.scenarios.map((scenario) => {
+                  const template = requestTemplate(item, scenario)
+                  return (
+                    <article
+                      key={scenario.versionId}
+                      className='space-y-2 border-t pt-3'
+                    >
+                      <div className='flex flex-wrap items-start justify-between gap-2'>
+                        <div>
+                          <h4 className='text-small font-medium'>
+                            {scenario.name}
+                          </h4>
+                          <p className='mt-1 text-small text-muted-foreground'>
+                            版本 {scenario.versionNo}
+                            {scenario.hasAi
+                              ? ' · 包含 AI 步骤，需 ai:execute 权限'
+                              : ''}
+                          </p>
+                        </div>
+                        <Button
+                          type='button'
+                          variant='outline'
+                          size='sm'
+                          onClick={() => void copy(template)}
+                        >
+                          复制 JSON 模板
+                        </Button>
+                      </div>
+                      <p className='text-small text-muted-foreground'>
+                        参数：
+                        {scenario.inputs.length
+                          ? scenario.inputs
+                              .map((input) => `${input.label} (${input.key})`)
+                              .join('、')
+                          : '无声明参数'}
+                      </p>
+                      <pre className='overflow-x-auto rounded-md bg-muted p-3 text-small'>
+                        {template}
+                      </pre>
+                    </article>
+                  )
+                })}
+              </section>
+            ))
+          )}
+          <section className='rounded-md border p-4 text-small text-muted-foreground'>
+            <p>将保存的 Key 放进环境变量后调用：</p>
+            <code className='mt-2 block overflow-x-auto rounded bg-muted p-3 text-small'>
+              curl -X POST "$CAIRN_API_ORIGIN/api/open/v1/runs" -H
+              "Authorization: Bearer $CAIRN_SERVICE_KEY" -H "Content-Type:
+              application/json" --data @request.json
+            </code>
+          </section>
+        </div>
+      </SheetContent>
+    </Sheet>
   )
 }

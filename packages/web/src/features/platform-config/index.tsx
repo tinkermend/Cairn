@@ -47,6 +47,7 @@ const TABS = [
   { id: 'execution', title: '执行默认值' },
   { id: 'session', title: '会话策略' },
   { id: 'evidence', title: '证据策略' },
+  { id: 'alerting', title: '告警' },
   { id: 'revisions', title: '变更记录' },
 ] as const
 
@@ -62,7 +63,11 @@ export function PlatformConfigPage() {
     queryKey: ['platform-config'],
     queryFn: fetchPlatformConfig,
   })
-  const [tab, setTab] = useState<TabId>('ai')
+  const [tab, setTab] = useState<TabId>(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('tab') === 'alerting'
+      ? 'alerting'
+      : 'ai',
+  )
   const [reason, setReason] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [platformApiKey, setPlatformApiKey] = useState('')
@@ -330,6 +335,10 @@ export function PlatformConfigPage() {
                   <TabsContent value='evidence'>
                     <EvidenceFields canWrite={canWrite && !busy} />
                   </TabsContent>
+                  <TabsContent value='alerting'>
+                    <p className='text-body text-muted-foreground'>告警规则和发送渠道已统一到通知。</p>
+                    <Button variant='outline' asChild><a href='/notifications?tab=alerts'>管理告警通知</a></Button>
+                  </TabsContent>
                   {tab !== 'revisions' ? (
                     <div className='space-y-3 border-t border-border pt-4'>
                       <div className='space-y-2'>
@@ -342,10 +351,12 @@ export function PlatformConfigPage() {
                           placeholder='说明这次修改的原因，会写入变更记录。'
                         />
                       </div>
-                      <p className='text-label text-muted-foreground'>
-                        当前默认超时 {document.execution.defaultTimeoutMs}{' '}
-                        ms。AI 请求超时必须小于每个 AI 步骤解析后的超时。
-                      </p>
+                      {tab === 'execution' ? (
+                        <p className='text-label text-muted-foreground'>
+                          当前默认超时 {document.execution.defaultTimeoutMs}{' '}
+                          ms。AI 请求超时必须小于每个 AI 步骤解析后的超时。
+                        </p>
+                      ) : null}
                       <div className='flex flex-wrap gap-2'>
                         <Can permission='platform-config:write'>
                           <Button

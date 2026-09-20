@@ -11,6 +11,7 @@ export type ManagedPageEntry = {
   runId: string
   kind: ManagedPageKind
   lastNavigationMethod?: string
+  retarget?: Promise<void>
   dispose?: () => void
 }
 

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { demonstrationReceiptMetadataSchema } from './demonstration.js'
 import { nextCursorSchema } from './rbac.js'
 import { idempotencyKeySchema } from './run-api.js'
 import {
@@ -132,6 +133,7 @@ export const applyRecordingImportBodySchema = z.strictObject({
 export type ApplyRecordingImportBody = z.infer<typeof applyRecordingImportBodySchema>
 
 export const recordingImportReceiptSchema = z.strictObject({
+  demonstration: demonstrationReceiptMetadataSchema.optional(),
   id: entityIdSchema,
   scenarioId: entityIdSchema,
   recordingDraftId: entityIdSchema,

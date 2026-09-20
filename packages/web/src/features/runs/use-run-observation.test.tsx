@@ -17,6 +17,7 @@ vi.mock('@/lib/runs-api', () => mocks)
 
 function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
   return {
+    executionOrigin: 'standalone',
     id: RUN_ID,
     status: 'QUEUED',
     cancelRequested: false,

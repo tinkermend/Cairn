@@ -17,6 +17,8 @@ import {
   recordAutoLoginOutcome,
   getSessionById,
   loadSecretCiphertext,
+  recordCredentialVerification,
+  resolveAccountCurrentCredential,
   scheduleNextAuthCheck,
   setSessionAuthSummary,
   setSessionProbe,
@@ -24,6 +26,7 @@ import {
   transitionSessionUse,
   loadAccountForExecution,
   loadTargetForExecution,
+  recordCaptchaLoginAttempt,
   type SessionRecord
 } from '@cairn/db'
 import {
@@ -39,6 +42,8 @@ import { verifyAuthProfile } from './session-auth'
 import {
   BrowserRuntimeError,
   gotoPage,
+  applySessionAuthToTarget,
+  attemptLoginWithCredentials,
   loginWithCredentials,
   probeAuth,
   runWithOccupancy,
@@ -47,6 +52,7 @@ import {
   type TargetAuthInfo
 } from './runtime'
 import { SessionLeaseError, type LiveHandle, type SessionManagerContext } from './session-live.js'
+import { shouldContinueCaptchaRetry } from './captcha/login-outcome.js'
 
 export async function attachValidationOperation(this: SessionManagerContext, input: {
     operation: { id: string; targetId: string; targetAccountId: string }
@@ -265,6 +271,10 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
           reusePolicy: predecessor.reusePolicy,
           idleTtlSeconds: predecessor.idleTtlSeconds,
           maxLifetimeSeconds: predecessor.maxLifetimeSeconds,
+          reclaimMode: predecessor.reclaimMode,
+          keepAliveSeconds: predecessor.keepAliveSeconds,
+          authProbeIntervalSeconds: predecessor.authProbeIntervalSeconds,
+          evictionPriority: predecessor.evictionPriority,
         })
         if (!created.ok) {
           await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, created.code)
@@ -296,6 +306,10 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
           reusePolicy: launched.session.reusePolicy,
           idleTtlSeconds: launched.session.idleTtlSeconds,
           maxLifetimeSeconds: launched.session.maxLifetimeSeconds,
+          reclaimMode: launched.session.reclaimMode,
+          keepAliveSeconds: launched.session.keepAliveSeconds,
+          authProbeIntervalSeconds: launched.session.authProbeIntervalSeconds,
+          evictionPriority: launched.session.evictionPriority,
           touchLastUsed: false,
         })
         if (!claimed.ok) {
@@ -331,7 +345,19 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
       await runWithOccupancy(input.grant, async () => {
         let session = input.session!
         if (!this.lives.has(session.id)) {
-          const launched = await this.launchAndOpen(session, key)
+          let launched = await this.launchAndOpen(session, key)
+          if (!launched.ok && launched.code === 'SESSION_NOT_CLAIMABLE') {
+            this.logger.warn(
+              {
+                operationId: input.operation.id,
+                sessionId: session.id,
+                expiresAt: input.grant?.expiresAt,
+                message: launched.message,
+              },
+              '启动会话缺少占用，按当前 grant 再试一次',
+            )
+            launched = await runWithOccupancy(input.grant!, () => this.launchAndOpen(session, key))
+          }
           if (!launched.ok) {
             await this.abandonOccupancy(input.grant!.leaseId, 'launch_failed')
             throw new SessionLeaseError(launched.code, launched.message)
@@ -564,6 +590,20 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
                   : 'verify_failed',
             sessionAuth: liveAfter.sessionAuth,
           })
+          if (credential.secretId) {
+            await recordCredentialVerification(db, {
+              secretId: credential.secretId,
+              sessionId: session.id,
+              sessionGeneration: session.generation,
+              source: 'maintenance',
+              sourceId: operation.id,
+              outcome:
+                after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH'
+                  ? 'verified'
+                  : 'failed',
+              submittedPassword: true,
+            }).catch(() => undefined)
+          }
           if (after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') return { ok: true }
         } catch {
           await this.markMaintenanceOutcomeUnknown(session, operation)
@@ -572,9 +612,14 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
       }
       return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
     }
+    const isSupportedCaptcha =
+      target.captchaMode === 'image' ||
+      target.captchaMode === 'slider' ||
+      String(target.captchaMode) === 'graphic' ||
+      Boolean(target.captcha)
     const needsManual =
       target.authMethod === 'manual' ||
-      target.captchaMode !== 'none' ||
+      (target.captchaMode !== 'none' && !isSupportedCaptcha) ||
       observation.authState === 'UNKNOWN' ||
       observation.identityState === 'MISMATCH'
     if (needsManual) {
@@ -626,6 +671,20 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
                     : 'verify_failed',
               sessionAuth: liveAfter.sessionAuth,
             })
+            if (credential.secretId) {
+              await recordCredentialVerification(db, {
+                secretId: credential.secretId,
+                sessionId: session.id,
+                sessionGeneration: session.generation,
+                source: 'maintenance',
+                sourceId: operation.id,
+                outcome:
+                  after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH'
+                    ? 'verified'
+                    : 'failed',
+                submittedPassword: true,
+              }).catch(() => undefined)
+            }
             if (after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') return { ok: true }
           } catch {
             await this.markMaintenanceOutcomeUnknown(session, operation)
@@ -680,6 +739,7 @@ async function enterMaintenanceAuthWait(
   grant: SessionGrant,
   target: { entryUrl: string; loginUrl?: string | null },
   live: LiveHandle,
+  waitSeconds?: number,
 ): Promise<'waiting' | { ok: false; code: SessionErrorCode }> {
   const loginUrl = target.loginUrl ?? target.entryUrl
   if (loginUrl) {
@@ -694,7 +754,7 @@ async function enterMaintenanceAuthWait(
     holderWorkerId: ctx.options.workerId,
     holderInstanceId: ctx.workerInstanceId,
     leaseTtlSeconds: ctx.options.defaultLeaseTtlSeconds,
-    waitSeconds: ctx.options.defaultAuthWaitSeconds,
+    waitSeconds: waitSeconds ?? ctx.options.defaultAuthWaitSeconds,
     reason: 'maintenance_auth',
   })
   if (!waitGrant) return { ok: false, code: 'SESSION_NOT_CLAIMABLE' }
@@ -751,15 +811,63 @@ async function loginLegacyMaintenance(
     generation: session.generation,
     payload: { origin: operation.origin ?? 'USER', kind: operation.kind },
   }).catch(() => undefined)
-  const ok = await loginWithCredentials(
-    live.handle,
+  const captchaRetries =
+    target.captchaMode === 'image' ||
+    target.captchaMode === 'slider' ||
+    String(target.captchaMode) === 'graphic' ||
+    Boolean(target.captcha)
+  const liveAuth = await readLiveSessionAuth(ctx.dbHandle).catch(() => null)
+  const loginTarget = applySessionAuthToTarget(
     {
       entryUrl: target.entryUrl,
       loginUrl: target.loginUrl,
       loginFields: target.loginFields,
+      captchaMode: target.captchaMode,
+      captcha: target.captcha,
     },
-    credential,
+    liveAuth?.sessionAuth,
   )
+  const maxAttempts = captchaRetries ? Math.max(1, loginTarget.captchaMaxAttempts ?? 2) : 1
+  // 同 session-claim.ts：这层循环是验证码重试预算的唯一持有者，loginWithCredentials 内部
+  // 会按同一个 captchaMaxAttempts 再循环一次，不收紧到 1 会让实际提交次数变成 maxAttempts²。
+  const singleAttemptTarget = captchaRetries ? { ...loginTarget, captchaMaxAttempts: 1 } : loginTarget
+  let ok = false
+  for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
+    const loginResult = await attemptLoginWithCredentials(live.handle, singleAttemptTarget, credential)
+    ok = loginResult.authenticated
+    if (captchaRetries) {
+      const outcome =
+        ok
+          ? 'success'
+          : loginResult.submit === 'ambiguous'
+            ? 'ambiguous'
+            : loginResult.submit === 'credential_failed'
+              ? 'credential_failed'
+              : 'captcha_failed'
+      await recordCaptchaLoginAttempt(ctx.dbHandle, {
+        key: { targetId: operation.targetId, targetAccountId: operation.targetAccountId },
+        sessionId: session.id,
+        generation: session.generation,
+        operationId: operation.id,
+        attempt: attemptNo,
+        maxAttempts,
+        challengeType: target.captchaMode === 'slider' ? 'SLIDER_CAPTCHA' : 'IMAGE_CAPTCHA',
+        outcome,
+        audit: {
+          challengeId: operation.id,
+          sessionId: session.id,
+          challengeType: target.captchaMode === 'slider' ? 'SLIDER_CAPTCHA' : 'IMAGE_CAPTCHA',
+          handledBy: 'MACHINE',
+          attemptsUsed: attemptNo,
+          success: ok,
+          durationMs: 0,
+          timestamp: new Date().toISOString(),
+        },
+      }).catch(() => undefined)
+    }
+    if (ok) break
+    if (captchaRetries && !shouldContinueCaptchaRetry(loginResult)) break
+  }
   if (attempt) attempt.loginSubmitted = true
   await persistLegacyObservation(ctx, session, ok ? 'AUTHENTICATED' : 'EXPIRED')
   const liveAfter = await readLiveSessionAuth(ctx.dbHandle)
@@ -788,7 +896,11 @@ async function runLegacyMaintenanceAuth(
     loginFields: target.loginFields,
   })
   await persistLegacyObservation(this, session, probed)
-  if (probed === 'AUTHENTICATED') return { ok: true }
+  // 与领取路径一致：inspectAuthOnPage 在看不到密码框、也不像登录 URL 时默认
+  // AUTHENTICATED。新会话（UNKNOWN）不能凭这个启发式短路，否则缺字段的 hash
+  // 登录页会被写成就绪。
+  // EXPIRED 只说明上次看过这页，不能和启发式 AUTHENTICATED 叠成「已经登录」。
+  if (probed === 'AUTHENTICATED' && session.authState === 'AUTHENTICATED') return { ok: true }
 
   if (mode === 'verify') {
     const backgroundKeepAlive =
@@ -802,7 +914,15 @@ async function runLegacyMaintenanceAuth(
 
   const missingFields =
     !target.loginFields?.username || !target.loginFields?.password || !target.loginFields?.submit
-  const needsManual = target.authMethod === 'manual' || target.captchaMode !== 'none' || missingFields
+  const isSupportedCaptcha =
+    target.captchaMode === 'image' ||
+    target.captchaMode === 'slider' ||
+    String(target.captchaMode) === 'graphic' ||
+    Boolean(target.captcha)
+  const needsManual =
+    target.authMethod === 'manual' ||
+    (target.captchaMode !== 'none' && !isSupportedCaptcha) ||
+    missingFields
   if (needsManual) {
     if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
     return enterMaintenanceAuthWait(this, session, operation, grant, target, live)
@@ -814,7 +934,16 @@ async function runLegacyMaintenanceAuth(
     const logged = await loginLegacyMaintenance(this, session, operation, attempt, target, live)
     if (logged.ok) return logged
     if (!grant) return logged
-    return enterMaintenanceAuthWait(this, session, operation, grant, target, live)
+    const liveAuth = await readLiveSessionAuth(this.dbHandle).catch(() => null)
+    return enterMaintenanceAuthWait(
+      this,
+      session,
+      operation,
+      grant,
+      target,
+      live,
+      isSupportedCaptcha ? liveAuth?.sessionAuth.captchaHumanWaitSeconds : undefined,
+    )
   }
   if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
   return enterMaintenanceAuthWait(this, session, operation, grant, target, live)
@@ -852,13 +981,18 @@ export async function persistProfileObservation(this: SessionManagerContext,
 
 export async function resolveAccountCredential(this: SessionManagerContext, 
     accountId: string,
-  ): Promise<{ username: string; password: string } | null> {
-    const account = await loadAccountForExecution(this.dbHandle, accountId)
-    if (!account?.secretId || !this.secrets) return null
-    const row = await loadSecretCiphertext(this.dbHandle, account.secretId)
+  ): Promise<{ username: string; password: string; secretId?: string } | null> {
+    if (!this.secrets) return null
+    const grant = await resolveAccountCurrentCredential(this.dbHandle, accountId)
+    if (!grant || grant.provider !== 'local') return null
+    const row = await loadSecretCiphertext(this.dbHandle, grant.secretId)
     if (!row) return null
     try {
-      return { username: account.username ?? '', password: this.secrets.decrypt(row.id, row.ciphertext) }
+      return {
+        username: grant.username,
+        password: this.secrets.decrypt(row.id, row.ciphertext),
+        secretId: grant.secretId,
+      }
     } catch {
       return null
     }

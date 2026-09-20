@@ -539,6 +539,64 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
     })
   })
 
+  it('分目标授权不能跨目标列表、读取或创建动作模块', async () => {
+    const { db, account, target1, target2 } = await setupFixture()
+    const rbac = new api.RbacStore(db, { hash: async (v) => v, verify: async (v, h) => v === h })
+    const write = await rbac.createRole({
+      key: `mod_write_${newId().slice(0, 8)}`,
+      name: '模块编写',
+      permissions: ['target:read', 'module:read', 'module:write', 'module:publish'],
+    }, account)
+    const read = await rbac.createRole({
+      key: `tgt_read_${newId().slice(0, 8)}`,
+      name: '目标只读',
+      permissions: ['target:read'],
+    }, account)
+    const operator = await rbac.createAccount({
+      email: `op_${newId()}@test.com`,
+      displayName: '分范围操作员',
+      password: 'Password123!',
+      roleIds: [write.id, read.id],
+      targetScopes: [
+        { roleId: write.id, mode: 'selected', targetIds: [target1.id] },
+        { roleId: read.id, mode: 'selected', targetIds: [target2.id] },
+      ],
+    }, account)
+
+    const allowed = await api.createActionModule(db, {
+      targetId: target1.id, key: 'scope.allowed', name: '可见模块', idempotencyKey: newId(), actor: { id: operator.id },
+    })
+    await expect(api.createActionModule(db, {
+      targetId: target2.id, key: 'scope.denied', name: '越权模块', idempotencyKey: newId(), actor: { id: operator.id },
+    })).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+
+    const hidden = await api.createActionModule(db, {
+      targetId: target2.id, key: 'scope.hidden', name: '隐藏模块', idempotencyKey: newId(), actor: { id: account.id },
+    })
+
+    expect((await api.listActionModules(db, {})).items.map((item) => item.id).sort()).toEqual([allowed.id, hidden.id].sort())
+    expect((await api.listActionModules(db, {}, operator.id)).items.map((item) => item.id)).toEqual([allowed.id])
+    expect((await api.listActionModules(db, { targetId: target2.id }, operator.id)).items).toEqual([])
+    await expect(api.getActionModule(db, hidden.id, operator.id)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    expect((await api.getActionModule(db, allowed.id, operator.id)).id).toBe(allowed.id)
+    await expect(api.updateActionModuleMeta(db, hidden.id, {
+      baseRevision: 0, name: '不应成功', actor: { id: operator.id },
+    })).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+
+    await expect(api.authorizeTargetRequest(db, operator.id, {
+      targetId: target2.id, permissions: ['module:write', 'target:read'],
+    })).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    await expect(api.authorizeTargetRequest(db, operator.id, {
+      moduleId: hidden.id, permissions: ['module:read', 'target:read'],
+    })).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    await api.authorizeTargetRequest(db, operator.id, {
+      targetId: target1.id, permissions: ['module:write', 'target:read'],
+    })
+    await api.authorizeTargetRequest(db, operator.id, {
+      moduleId: allowed.id, permissions: ['module:read', 'target:read'],
+    })
+  })
+
   it.runIf(DRIVERS.includes('mysql'))('模块、不可变版本与幂等回执在支持后端间完整保留', async () => {
     const { db, account, target1, handle } = await setupFixture('postgres')
     const actor = { id: account.id }

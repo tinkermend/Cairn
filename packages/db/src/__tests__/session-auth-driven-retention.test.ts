@@ -66,7 +66,12 @@ describe.each(DRIVERS)('%s 认证驱动保活', { timeout: 60_000 }, (driver) =>
     })
     const [admin] = await handle.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
     if (!admin) throw new Error('missing admin role fixture')
-    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin.id })
+    await handle.db.insert(consoleAccountRoles).values({
+      consoleAccountId: actorId,
+      consoleRoleId: admin.id,
+      targetScopeMode: 'all',
+      targetScopeIds: [],
+    })
     await handle.db.insert(targets).values({
       id: targetId,
       code: `adr-${targetId.slice(0, 8)}`,
@@ -688,6 +693,65 @@ describe.each(DRIVERS)('%s 认证驱动保活', { timeout: 60_000 }, (driver) =>
     expect(await findActiveLeaseForSession(handle.db, live.id)).toBeNull()
   })
 
+  it('重建实例时沿用账号上未过期的人工保留意图', async () => {
+    const worker = await seedWorker(handle, `intent-${newId().slice(0, 8)}`)
+    const accountId = await makeAccount('intent-adopt')
+    const previous = await openSession({
+      accountId,
+      workerId: worker.workerId,
+      instanceId: worker.instanceId,
+    })
+    await setSessionRetention(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      body: { action: 'set', retainSeconds: 1800 },
+      actor: { id: actorId },
+    })
+    const closed = (await getSessionById(handle.db, previous.id))!
+    await setSessionStatus(handle.db, {
+      sessionId: closed.id,
+      expectedVersion: closed.version,
+      status: 'CLOSED',
+      closeReason: 'owner_instance_replaced',
+      ownerWorkerId: worker.workerId,
+      ownerWorkerInstanceId: worker.instanceId,
+    })
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `adr-intent-${newId()}`,
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const run = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      targetAccountId: accountId,
+      actor: { id: actorId },
+    })
+    const grant = await forceGrantForRun(handle, run.detail.id, worker.workerId)
+    const claimed = await claimSessionUse(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      owner: { kind: 'RUN', runId: grant.runId, runFencingToken: grant.fencingToken },
+      purpose: 'EXECUTION',
+      holderWorkerId: worker.workerId,
+      holderInstanceId: worker.instanceId,
+      leaseTtlSeconds: 30,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 60,
+      maxLifetimeSeconds: 14_400,
+    })
+    expect(claimed.ok).toBe(true)
+    if (!claimed.ok) throw new Error(claimed.message)
+    expect(claimed.created).toBe(true)
+    expect(claimed.session.id).not.toBe(previous.id)
+    expect(claimed.session.retainUntil?.getTime()).toBeGreaterThan(Date.now())
+    const detail = await getAccountSessionDetail(handle.db, { targetId, targetAccountId: accountId })
+    expect(detail.retained).toBe(true)
+    expect(detail.session?.id).toBe(claimed.session.id)
+    await forceLastUsedAt(handle.db, claimed.session.id, new Date(Date.now() - 120_000))
+    expect((await listReapableSessions(handle.db, worker.workerId)).map((row) => row.id)).not.toContain(
+      claimed.session.id,
+    )
+  })
+
   it('取消人工保留时保活会话不清空 nextAuthCheckAt', async () => {
     const worker = await seedWorker(handle, `clr-${newId().slice(0, 8)}`)
     const accountId = await makeAccount('clear-keep')
@@ -734,15 +798,28 @@ describe.each(DRIVERS)('%s 认证驱动保活', { timeout: 60_000 }, (driver) =>
     expect(delta).toBeLessThan(130_000)
   })
 
-  it('无画像时 PREPARE / LOGIN 仍可用（LEGACY 旁路）', async () => {
+  it('无主动检测时 PREPARE / LOGIN 仍可用，VERIFY_AUTH / RENEW_AUTH 不可用', async () => {
     const accountId = await makeAccount('no-profile')
     const detail = await getAccountSessionDetail(handle.db, { targetId, targetAccountId: accountId })
     const prepare = detail.actions.find((action) => action.kind === 'PREPARE')
     const login = detail.actions.find((action) => action.kind === 'LOGIN')
+    const verify = detail.actions.find((action) => action.kind === 'VERIFY_AUTH')
+    const renew = detail.actions.find((action) => action.kind === 'RENEW_AUTH')
     expect(prepare?.enabled).toBe(true)
     expect(prepare?.disabledReason).toBeNull()
     expect(login?.enabled).toBe(true)
     expect(login?.disabledReason).toBeNull()
+    expect(verify?.enabled).toBe(false)
+    expect(verify?.disabledReason).toMatch(/未配置主动检测/)
+    expect(renew?.enabled).toBe(false)
+    expect(renew?.disabledReason).toMatch(/未配置主动检测/)
+  })
+
+  it('无主动检测时不能把回收模式改成 AUTH_DRIVEN', async () => {
+    const store = new TargetsStore(registerFixture(handle), () => Buffer.from('fixture'))
+    await expect(store.updateSessionPolicy(targetId, { reclaim: 'AUTH_DRIVEN' }, { id: actorId })).rejects.toMatchObject({
+      code: 'AUTH_PROFILE_REQUIRED',
+    })
   })
 
   it('缺字段历史策略仍解析为 IDLE', async () => {

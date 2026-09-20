@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { utcInstantSchema } from './wire.js'
 
 /**
  * `/health` 的响应契约。
@@ -18,3 +19,19 @@ export const healthResponseSchema = z.object({
 })
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>
+
+export const workerNodeHealthNodeSchema = z.object({
+  workerId: z.string().min(1),
+  instanceId: z.string().min(1),
+  lastTickAt: utcInstantSchema.nullable(),
+  loopAlive: z.boolean(),
+  runningRunCount: z.number().int().nonnegative(),
+  liveHandleCount: z.number().int().nonnegative(),
+  shuttingDown: z.boolean(),
+})
+export type WorkerNodeHealthNode = z.infer<typeof workerNodeHealthNodeSchema>
+
+export const workerNodeHealthResponseSchema = healthResponseSchema.extend({
+  node: workerNodeHealthNodeSchema,
+})
+export type WorkerNodeHealthResponse = z.infer<typeof workerNodeHealthResponseSchema>

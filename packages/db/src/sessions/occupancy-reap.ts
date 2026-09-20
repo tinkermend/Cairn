@@ -11,11 +11,12 @@ import type { SessionLeaseRow } from '../records.js'
 import { lockOperationRow, lockSession } from './occupancy-tx.js'
 import { getSessionOperation } from './occupancy-read.js'
 import { recoverSessionOperations } from './occupancy-operations.js'
+import type { ScanBatchResult } from '../runtime/scan-batch.js'
 
 export async function reapSessionLeases(
   db: Db,
   input: { limit?: number; maxRecoveries?: number } = {},
-): Promise<number> {
+): Promise<ScanBatchResult> {
   await recoverSessionOperations(db)
   const limit = input.limit ?? 100
   const maxRecoveries = input.maxRecoveries ?? 3
@@ -98,7 +99,7 @@ export async function reapSessionLeases(
         payload: { status: op.status, errorCode: op.errorCode, attemptId: `${op.id}:${op.attemptNo}` },
       })
   }
-  return count
+  return { settled: count, scanned: candidates.length }
 }
 
 export async function expireAuthWaitHolderLost(

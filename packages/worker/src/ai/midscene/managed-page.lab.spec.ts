@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { extname, join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Page } from 'playwright'
+import { ensureTargetAccountCredential, getOrCreatePlatformConfig } from '@cairn/db'
 import {
   claimRun,
   consoleAccounts,
@@ -20,11 +21,14 @@ import {
   registerWorker,
   secrets,
   targetAccounts,
+  targetAuthProfiles,
   targets,
   type DbHandle,
 } from '@cairn/db/testing'
 import {
   DEV_CREDENTIAL_KEY,
+  FACTORY_PLATFORM_CONFIG,
+  targetAuthProfileDefinitionSchema,
   type AiCommand,
   type SessionGrant,
   type SessionPolicyOverride,
@@ -111,6 +115,11 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
 
     server = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      if (url.pathname === '/auth') {
+        const ok = (req.headers.cookie ?? '').includes('lab=ok')
+        res.writeHead(ok ? 200 : 401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok, user: ok ? 'lab' : null })); return
+      }
       if (url.pathname === '/login' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
         res.end(LOGIN_HTML)
@@ -163,6 +172,7 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
       loginUrl: `${baseUrl}/login`,
       authMethod: 'password',
       captchaMode: 'none',
+      currentAuthProfileRevision: 1,
       loginFields: {
         username: { by: 'name', value: 'username' },
         password: { by: 'name', value: 'password' },
@@ -182,8 +192,22 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
       secretProvider: 'local',
       secretId,
       status: 'active',
+      expectedIdentity: 'lab',
     })
 
+    await ensureTargetAccountCredential(handle, { account: { id: accountId, targetId, displayName: 'lab', username: 'lab', configRevision: 1, secretId, secretProvider: 'local' }, sealed: { id: secretId, provider: 'local' }, actor: { id: actorId } })
+    await handle.db.insert(targetAuthProfiles).values({
+      id: newId(), targetId, revision: 1,
+      definition: targetAuthProfileDefinitionSchema.parse({ verify: { mode: 'http', path: '/auth', success: { status: 200, jsonPath: '$.ok', equals: true }, failure: { status: 401 } }, identity: { source: 'json', jsonPath: '$.user', normalize: 'trim' }, scope: { origins: [baseUrl], pathPrefixes: ['/auth'] } }),
+      digest: 'a'.repeat(64), validation: { recordedAt: new Date().toISOString(), actorId, operationId: newId(), steps: {
+        valid_pass: { authState: 'AUTHENTICATED', identityState: 'MATCH', observedIdentity: 'lab', unknownClass: null, evidenceSummary: 'local fixture', authProfileRevision: 1, diagnosticCode: 'verified' },
+        server_revoked: { authState: 'EXPIRED', identityState: 'UNVERIFIED', observedIdentity: null, unknownClass: null, evidenceSummary: 'local fixture', authProfileRevision: 1, diagnosticCode: 'verified' },
+        other_account: { authState: 'AUTHENTICATED', identityState: 'MISMATCH', observedIdentity: 'other', unknownClass: null, evidenceSummary: 'local fixture', authProfileRevision: 1, diagnosticCode: 'verified' },
+      } },
+    })
+
+    // This suite intentionally destroys and re-creates sessions many times.
+    await getOrCreatePlatformConfig(handle, { document: { ...FACTORY_PLATFORM_CONFIG, sessionAuth: { ...FACTORY_PLATFORM_CONFIG.sessionAuth, autoLoginMaxPerWindow: 20 } }, reason: 'isolated SDK lifecycle fixture' })
     workerId = `s06-${SCHEMA.slice(-8)}`
     workerInstanceId = newId()
     await registerWorker(handle.db, {
@@ -422,6 +446,40 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
     } finally {
       rmSync(runDir, { recursive: true, force: true })
     }
+  })
+
+  it('示教原子操作：当前 SDK 在受管页面执行 replace/type_only/clear/tap/焦点按键/相对滚动', async () => {
+    const { page, grant } = await acquirePage('/canvas')
+    const { createFormalMidsceneAgent } = await import('./formal-agent.js')
+    await withTestOccupancy(() => page.setContent('<input id="di-input" aria-label="订单号" value="old" style="width:240px;height:40px"><button id="di-submit" style="width:120px;height:40px" onclick="document.body.dataset.submitted=String(Number(document.body.dataset.submitted||0)+1)">查询</button><div style="height:3000px">滚动区域</div>'))
+    let selector = '#di-input'; const prompts: string[] = []
+    const gate = new ActionGate()
+    const agent = await createFormalMidsceneAgent({ page, gate, readonly: false, modelConfig: { ...PROBE_MODEL_CONFIG }, wrapClient: () => createFakeChatClient(async (_n, params) => {
+      prompts.push(JSON.stringify(params))
+      const box = await page.locator(selector).boundingBox(); const viewport = page.viewportSize()!
+      if (!box) throw new Error('locate fixture missing')
+      const bbox = [box.x, box.y, box.x + box.width, box.y + box.height].map((v, i) => Math.round(v / (i % 2 ? viewport.height : viewport.width) * 1000))
+      return { id: 'atomic-lab', object: 'chat.completion', created: 1, model: 'cairn-fake', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify({ bbox }) } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }
+    }) })
+    try {
+      await withTestOccupancy(() => agent.aiAtomic({ operation: 'input', targetDescription: '订单号', mode: 'replace', value: 'SO-' }))
+      expect(await page.locator('#di-input').inputValue()).toBe('SO-')
+      await withTestOccupancy(() => agent.aiAtomic({ operation: 'input', targetDescription: '订单号', mode: 'type_only', value: '12' }))
+      expect(await page.locator('#di-input').inputValue()).toBe('SO-12')
+      await withTestOccupancy(() => agent.aiAtomic({ operation: 'input', targetDescription: '订单号', mode: 'clear' }))
+      expect(await page.locator('#di-input').inputValue()).toBe('')
+      const calls = prompts.length
+      await withTestOccupancy(() => agent.aiAtomic({ operation: 'keyboard', key: 'Tab' }))
+      expect(prompts).toHaveLength(calls)
+      expect(await page.evaluate('document.activeElement?.id')).toBe('di-submit')
+      selector = '#di-submit'
+      await withTestOccupancy(() => agent.aiAtomic({ operation: 'tap', targetDescription: '查询' }))
+      expect(await page.getAttribute('body', 'data-submitted')).toBe('1')
+      await withTestOccupancy(() => agent.aiAtomic({ operation: 'scroll', direction: 'down', distance: 300 }))
+      await expect.poll(() => page.evaluate<number>('window.scrollY')).toBeGreaterThan(0)
+      expect(prompts.every((p) => !p.includes('<action-type>'))).toBe(true)
+      await expect(agent.aiAtomic({ operation: 'input', targetDescription: '订单号', mode: 'replace', value: '' })).rejects.toThrow()
+    } finally { await agent.destroy(); await manager.release(grant.leaseId, 'di-atomic-sdk') }
   })
 
   describe('正式适配层：完整 aiAct 循环里的停止', () => {

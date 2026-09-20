@@ -11,6 +11,9 @@ import {
   isFinishedRunStatus,
   resolveEvidencePolicy,
   shouldCaptureEvidence,
+  readRunVideoPayload,
+  requiredScreenshotRole,
+  writeEvidenceArtifactKey,
   type EvidenceMetadata,
   type EvidenceType,
   type JsonValue,
@@ -299,6 +302,7 @@ type RequiredSlot = {
   scope: 'attempt' | 'run'
   attemptId?: string
   type: EvidenceType
+  artifactKey?: string
   missingReason?: string
 }
 
@@ -348,11 +352,18 @@ function collectRequiredEvidence(
 
     if (step && stepUsesBrowser(step.type)) {
       if (shouldCaptureEvidence(policy.screenshot, failed)) {
+        const role = requiredScreenshotRole({ failed, stepType: step.type })
+        const artifactKey = writeEvidenceArtifactKey({
+          type: 'screenshot',
+          attemptId: attempt.id,
+          role,
+        })
         required.push({
           scope: 'attempt',
           attemptId: attempt.id,
           type: 'screenshot',
-          missingReason: reasonFor(rows, 'screenshot'),
+          artifactKey,
+          missingReason: reasonFor(rows, 'screenshot', artifactKey),
         })
       }
       if (shouldCaptureEvidence(policy.trace, failed)) {
@@ -379,16 +390,29 @@ function collectRequiredEvidence(
     required.push({
       scope: 'run',
       type: 'video',
-      missingReason: reasonFor(videoRows, 'video'),
+      artifactKey: writeEvidenceArtifactKey({ type: 'video' }),
+      missingReason: reasonFor(videoRows, 'video', writeEvidenceArtifactKey({ type: 'video' })) ?? coverageDebtReason(videoRows[0]),
     })
   }
   return required
 }
 
-function reasonFor(rows: EvidenceRow[], type: EvidenceType): string | undefined {
-  const row = rows.find((item) => item.type === type)
+function reasonFor(rows: EvidenceRow[], type: EvidenceType, artifactKey?: string): string | undefined {
+  const row =
+    (artifactKey ? rows.find((item) => item.artifactKey === artifactKey) : undefined) ??
+    rows.find((item) => item.type === type)
   if (!row) return 'missing'
   if (row.status === 'missing') return row.missingReason ?? 'missing'
+  return undefined
+}
+
+function coverageDebtReason(row: EvidenceRow | undefined): string | undefined {
+  if (!row || row.status !== 'available') return undefined
+  const coverage = readRunVideoPayload(row.payload)?.coverage
+  if (coverage?.status === 'none') return 'capture_failed'
+  if (coverage?.status === 'partial') {
+    return coverage.gaps.some((gap) => gap.reason === 'budget') ? 'coverage_budget' : 'coverage_partial'
+  }
   return undefined
 }
 
@@ -398,6 +422,9 @@ function decideEvidenceStatus(input: {
   evidenceRows: EvidenceRow[]
 }): RunEvidenceStatus {
   if (!isFinishedRunStatus(input.runStatus as never)) return 'PENDING'
+  const byArtifactKey = new Map(
+    input.evidenceRows.filter((row) => row.artifactKey).map((row) => [row.artifactKey, row]),
+  )
   const byAttemptType = new Map(
     input.evidenceRows
       .filter((row) => row.attemptId)
@@ -417,6 +444,7 @@ function decideEvidenceStatus(input: {
       if (!row) missing = true
       else if (row.status === 'pending') pending = true
       else if (row.status === 'missing') missing = true
+      else if (slot.type === 'video' && coverageDebtReason(row)) missing = true
       continue
     }
     if (slot.type === 'error' && slot.missingReason === 'missing_outcome') {
@@ -427,7 +455,9 @@ function decideEvidenceStatus(input: {
       else if (outcome.status === 'missing') missing = true
       continue
     }
-    const row = byAttemptType.get(`${slot.attemptId}:${slot.type}`)
+    const row =
+      (slot.artifactKey ? byArtifactKey.get(slot.artifactKey) : undefined) ??
+      byAttemptType.get(`${slot.attemptId}:${slot.type}`)
     if (!row) {
       missing = true
       continue

@@ -68,6 +68,12 @@ export function latestLogicalVersion(dir: string = MIGRATIONS_DIR): string {
   return files[files.length - 1]!.prefix
 }
 
+/** 当前驱动自己的迁移目录最新前缀。MySQL 前缀不得与 PG logicalVersion 直接比较。 */
+export function latestLogicalVersionForDriver(driver: 'postgres' | 'mysql' | 'sqlite'): string {
+  if (driver === 'postgres') return latestLogicalVersion()
+  return latestLogicalVersion(resolve(MIGRATIONS_DIR, driver))
+}
+
 export interface MigrateResult {
   applied: string[]
   skipped: string[]

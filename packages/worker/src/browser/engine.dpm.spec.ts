@@ -21,6 +21,7 @@ import {
   targets,
   type DbHandle,
 } from '@cairn/db/testing'
+import { ensureTargetAccountCredential } from '@cairn/db'
 import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, type Step } from '@cairn/shared'
 import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
@@ -167,6 +168,19 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
       secretProvider: LOCAL_SECRET_PROVIDER,
       secretId,
       status: 'active',
+    })
+    await ensureTargetAccountCredential(handle, {
+      account: {
+        id: accountId,
+        targetId,
+        displayName: CATALOG.account.displayName,
+        username: USERNAME,
+        configRevision: 1,
+        secretId,
+        secretProvider: LOCAL_SECRET_PROVIDER,
+      },
+      sealed: { id: secretId, provider: LOCAL_SECRET_PROVIDER },
+      actor: { id: actorId },
     })
     objectDir = mkdtempSync(join(tmpdir(), 'cairn-dpm-obj-'))
     objects = new ObjectService(
@@ -362,5 +376,73 @@ describe.skipIf(!ENABLED)('ExecutionEngine × SNC DPM（L3 只读）', { timeout
     const got = await objects.getObject(shot!.objectKey!)
     expect(got.contentType).toBe('image/png')
     expect(got.body.byteLength).toBeGreaterThan(100)
+  })
+
+  it('VE01：停留后的录像时长接近采集区间', async () => {
+    const { readRunVideoPayload } = await import('@cairn/shared')
+    const steps: Step[] = [
+      {
+        id: newId(),
+        name: '打开总览',
+        type: 'navigate',
+        effectType: 'IDEMPOTENT',
+        input: { url: ENTRY_URL },
+      },
+      {
+        id: newId(),
+        name: '停留总览',
+        type: 'wait',
+        effectType: 'READ_ONLY',
+        input: { kind: 'time', durationMs: 6_000 },
+      },
+      {
+        id: newId(),
+        name: '提取数据库菜单',
+        type: 'extract',
+        effectType: 'READ_ONLY',
+        outputKey: 'module',
+        input: {
+          target: {
+            framePath: [],
+            candidates: [{ by: 'role', value: 'menuitem', name: '数据库' }],
+          },
+          as: 'text',
+        },
+      },
+      {
+        id: newId(),
+        name: '停留数据库入口',
+        type: 'wait',
+        effectType: 'READ_ONLY',
+        input: { kind: 'time', durationMs: 6_000 },
+      },
+    ]
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `dpm-ve01-${newId()}`,
+      steps,
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      targetAccountId: accountId,
+      evidencePolicy: { screenshot: 'always', video: 'always', trace: 'off' },
+      actor: { id: actorId },
+    })
+    const grant = await claimRun(handle, {
+      workerId,
+      instanceId: workerInstanceId,
+      leaseTtlSeconds: 90,
+    })
+    const engine = new ExecutionEngine(handle, createBrowserPort(manager, objects))
+    await engine.execute(created.detail.id, { grant: grant! })
+    const detail = await getRun(handle.db, created.detail.id)
+    expect(detail.status).toBe('SUCCEEDED')
+    const video = (await listRunEvidence(handle.db, created.detail.id)).items.find((item) => item.type === 'video')
+    const timing = readRunVideoPayload(video?.payload)?.timing
+    expect(video?.status).toBe('available')
+    expect(timing?.decodedFrames).toBeGreaterThanOrEqual(2)
+    expect(timing && Math.abs(timing.decodedDurationMs - timing.capturedSpanMs)).toBeLessThanOrEqual(1_000)
+    expect(timing && timing.capturedSpanMs).toBeGreaterThanOrEqual(10_000)
   })
 })

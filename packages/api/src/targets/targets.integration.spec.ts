@@ -1,36 +1,37 @@
-import { postgresEnvSchema as dbEnvSchema } from '@cairn/db/testing'
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { RbacStore } from '@cairn/db'
 import { ConflictException } from '@nestjs/common'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createDb, eq, secrets, sql, targetAccounts, type DbHandle } from '@cairn/db/testing'
+import { openIsolatedDb, eq, secrets, sql, targetAccounts, type DbHandle } from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY } from '@cairn/shared'
 import type { RequestAccount } from '../common/request-account'
 import { credentialKeyFromEnv, LocalSecretProvider } from '../secrets/local-secret-provider'
 import { TargetsService } from './targets.service'
 
-// api 的 tsconfig 带 types:["node"]，CJS 程序不允许 import.meta；vitest 运行时提供 __dirname
-const envFile = resolve(__dirname, '../../../../.env')
-if (existsSync(envFile)) process.loadEnvFile(envFile)
-const parsed = dbEnvSchema.safeParse(process.env)
-
 const prefix = `itest-${Date.now().toString(36)}`
+const schema = 'cairn'
 
-describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL）', () => {
+describe('TargetsService（集成，隔离 PostgreSQL）', () => {
   let handle: DbHandle
   let service: TargetsService
   let actor: RequestAccount
 
   beforeAll(async () => {
-    handle = createDb(parsed.data!)
-    const { rows } = await handle.pool.query<{ id: string; display_name: string; email: string | null }>(
-      `SELECT id, display_name, email FROM ${parsed.data!.CAIRN_DB_SCHEMA}.console_accounts LIMIT 1`,
-    )
-    const row = rows[0]
-    if (!row) throw new Error('集成测试需要至少一条 console_accounts')
+    handle = await openIsolatedDb(`cairn_targets_${randomUUID().replaceAll('-', '')}`)
+    const rbac = new RbacStore(handle, {
+      hash: async (value) => value,
+      verify: async (value, hashed) => value === hashed,
+    })
+    const admin = (await rbac.listRoles()).items.find((role) => role.key === 'admin')!
+    const row = await rbac.createAccount({
+      email: 'targets-test@example.com',
+      displayName: '目标账号测试管理员',
+      password: 'TargetsTest123!',
+      roleIds: [admin.id],
+    }, null)
     actor = {
       id: row.id,
-      displayName: row.display_name,
+      displayName: row.displayName,
       email: row.email,
       status: 'active',
       roles: [],
@@ -40,33 +41,7 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
   })
 
   afterAll(async () => {
-    if (handle) {
-      const schema = parsed.data!.CAIRN_DB_SCHEMA
-      const { rows: secretRows } = await handle.pool.query<{ secret_id: string | null }>(
-        `SELECT secret_id FROM ${schema}.target_accounts
-         WHERE target_id IN (SELECT id FROM ${schema}.targets WHERE code LIKE $1)`,
-        [`${prefix}%`],
-      )
-      await handle.pool.query(
-        `DELETE FROM ${schema}.target_account_auth_budget
-         WHERE target_account_id IN (
-           SELECT id FROM ${schema}.target_accounts
-           WHERE target_id IN (SELECT id FROM ${schema}.targets WHERE code LIKE $1)
-         )`,
-        [`${prefix}%`],
-      )
-      await handle.pool.query(
-        `DELETE FROM ${schema}.target_accounts
-         WHERE target_id IN (SELECT id FROM ${schema}.targets WHERE code LIKE $1)`,
-        [`${prefix}%`],
-      )
-      const secretIds = secretRows.map((row) => row.secret_id).filter((id): id is string => !!id)
-      if (secretIds.length > 0) {
-        await handle.pool.query(`DELETE FROM ${schema}.secrets WHERE id = ANY($1::uuid[])`, [secretIds])
-      }
-      await handle.pool.query(`DELETE FROM ${schema}.targets WHERE code LIKE $1`, [`${prefix}%`])
-      await handle.close()
-    }
+    await handle?.close()
   })
 
   it('重复 code 返回 TARGET_CODE_CONFLICT，不是 500', async () => {
@@ -178,7 +153,7 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
       .where(eq(targetAccounts.id, created.id))
     expect(Number(rotated[0]?.n ?? 0)).toBe(1)
     const leftover = await handle.db.select().from(secrets).where(eq(secrets.id, firstSecretId!))
-    expect(leftover).toHaveLength(0)
+    expect(leftover).toHaveLength(1)
 
     const cleared = await service.updateAccount(target.id, created.id, { clearPassword: true }, actor)
     expect(cleared.hasPassword).toBe(false)
@@ -248,7 +223,7 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
       expect((error as ConflictException).getResponse()).toMatchObject({ code: 'DELETE_SCOPE_EXPANDED' })
     }
     const { rows: audits } = await handle.pool.query<{ action: string }>(
-      `SELECT action FROM ${parsed.data!.CAIRN_DB_SCHEMA}.console_audit_events
+      `SELECT action FROM ${schema}.console_audit_events
        WHERE resource_id = $1 ORDER BY created_at`,
       [target.id],
     )
@@ -282,7 +257,7 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
     expect(JSON.stringify(accounts)).not.toContain('bundle-secret')
 
     const { rows: audits } = await handle.pool.query<{ action: string; summary: string }>(
-      `SELECT action, summary FROM ${parsed.data!.CAIRN_DB_SCHEMA}.console_audit_events
+      `SELECT action, summary FROM ${schema}.console_audit_events
        WHERE resource_id IN ($1, $2) ORDER BY created_at`,
       [created.id, accounts.items[0]!.id],
     )
@@ -307,15 +282,31 @@ describe.skipIf(!parsed.success)('TargetsService（集成，需真实 PostgreSQL
     )
     expect(created.loginFields).toBeNull()
 
+    const account = await service.createAccount(
+      created.id,
+      { displayName: '定位账号', username: 'locator', status: 'active' },
+      actor,
+    )
+    const [before] = await handle.db
+      .select({ configRevision: targetAccounts.configRevision })
+      .from(targetAccounts)
+      .where(eq(targetAccounts.id, account.id))
+    expect(before?.configRevision).toBe(1)
+
     const updated = await service.updateTarget(
       created.id,
       { loginFields: { password: { by: 'name', value: 'password' } } },
       actor,
     )
     expect(updated.loginFields).toEqual({ password: { by: 'name', value: 'password' } })
+    const [after] = await handle.db
+      .select({ configRevision: targetAccounts.configRevision })
+      .from(targetAccounts)
+      .where(eq(targetAccounts.id, account.id))
+    expect(after?.configRevision).toBe(2)
 
     const { rows: audits } = await handle.pool.query<{ summary: string }>(
-      `SELECT summary FROM ${parsed.data!.CAIRN_DB_SCHEMA}.console_audit_events
+      `SELECT summary FROM ${schema}.console_audit_events
        WHERE resource_id = $1 AND action = 'target.update'`,
       [created.id],
     )

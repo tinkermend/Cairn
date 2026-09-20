@@ -12,6 +12,7 @@ import {
   signInternalHeaders,
 } from '@cairn/shared'
 import { config } from '../config/env'
+import { trackInternalForward } from '../common/process-gauges'
 
 const workerForwardDispatcher = new Agent({
   connectTimeout: WORKER_FORWARD_CONNECT_TIMEOUT_MS,
@@ -52,19 +53,30 @@ export class WorkerForwardError extends Error {
 @Injectable()
 export class WorkerInternalClient {
   async requestJson(call: WorkerCall): Promise<unknown> {
-    const res = await this.send(call)
-    const text = await res.text()
-    if (!res.ok) throw decodeFailure(res.status, text)
-    return text ? JSON.parse(text) : {}
+    const release = trackInternalForward()
+    try {
+      const res = await this.send(call)
+      const text = await res.text()
+      if (!res.ok) throw decodeFailure(res.status, text)
+      return text ? JSON.parse(text) : {}
+    } finally {
+      release()
+    }
   }
 
   async requestStream(call: WorkerCall, signal: AbortSignal): Promise<Response> {
-    const res = await this.send(call, signal)
-    if (!res.ok) {
-      const text = await res.text()
-      throw decodeFailure(res.status, text)
+    const release = trackInternalForward()
+    try {
+      const res = await this.send(call, signal)
+      if (!res.ok) {
+        const text = await res.text()
+        throw decodeFailure(res.status, text)
+      }
+      return holdForwardUntilClosed(res, signal, release)
+    } catch (error) {
+      release()
+      throw error
     }
-    return res
   }
 
   private async send(call: WorkerCall, signal?: AbortSignal): Promise<Response> {
@@ -115,6 +127,24 @@ export class WorkerInternalClient {
       throw new WorkerForwardError(503, 'WORKER_UNREACHABLE', '执行面暂时不可达')
     }
   }
+}
+
+function holdForwardUntilClosed(res: Response, signal: AbortSignal, release: () => void): Response {
+  const done = () => {
+    signal.removeEventListener('abort', done)
+    release()
+  }
+  signal.addEventListener('abort', done, { once: true })
+  if (!res.body) {
+    done()
+    return res
+  }
+  const stream = res.body.pipeThrough(
+    new TransformStream({
+      flush: done,
+    }),
+  )
+  return new Response(stream, { status: res.status, statusText: res.statusText, headers: res.headers })
 }
 
 function decodeFailure(status: number, text: string): WorkerForwardError {

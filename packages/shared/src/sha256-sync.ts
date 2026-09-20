@@ -19,8 +19,10 @@ const K = new Uint32Array([
 ])
 
 export function syncSha256(str: string): string {
-  const encoder = new TextEncoder()
-  const bytes = encoder.encode(str)
+  return syncSha256Bytes(new TextEncoder().encode(str))
+}
+
+export function syncSha256Bytes(bytes: Uint8Array): string {
   const l = bytes.length
   const bitLen = l * 8
 

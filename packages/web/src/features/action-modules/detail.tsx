@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link } from '@tanstack/react-router'
 import { compileModuleContent } from '@cairn/authoring'
 import {
   canonicalJson,
@@ -17,8 +17,15 @@ import {
   ArrowLeft,
   CheckCircle2,
   ChevronDown,
+  Download,
+  RotateCcw,
+  Upload,
+  Wand2,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { ImportModuleDialog } from './import-dialog'
+import { TrialRunSheet } from './trial-run-sheet'
+import { ModuleFixturesPanel, type ModuleTestFixture } from './fixtures-panel'
 import {
   fetchActionModule,
   fetchActionModuleQuality,
@@ -58,6 +65,7 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
+import { useOptionalSidebar } from '@/components/ui/sidebar'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -140,7 +148,6 @@ function ActionModuleEditor({
   initial: ActionModuleDetail
 }) {
   const client = useQueryClient()
-  const navigate = useNavigate()
   const canWrite = useCan('module:write')
   const canPublish = useCan('module:publish')
   const canExecuteRun = useCan('run:execute')
@@ -180,11 +187,132 @@ function ActionModuleEditor({
   const publishButton = useRef<HTMLButtonElement>(null)
   const [version, setVersion] = useState<ActionModuleVersionDto | null>(null)
   const [trialOpen, setTrialOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [trialInputs, setTrialInputs] = useState<Record<string, string>>({})
   const [trialAccountId, setTrialAccountId] = useState('')
   const [trialBusy, setTrialBusy] = useState(false)
   const [trialError, setTrialError] = useState('')
   const [tab, setTab] = useState('edit')
+  const trialStorageKey = `cairn:trial-inputs:${moduleId}`
+
+  const openTrialModal = () => {
+    try {
+      const cached = localStorage.getItem(trialStorageKey)
+      if (cached) {
+        const parsed = JSON.parse(cached)
+        if (typeof parsed === 'object' && parsed !== null) {
+          setTrialInputs((prev) => ({ ...parsed, ...prev }))
+        }
+      }
+    } catch {}
+    setTrialOpen(true)
+  }
+
+  const fillDefaultTrialInputs = () => {
+    const defaults: Record<string, string> = {}
+    for (const input of content.contract.inputs) {
+      if (input.valueType === 'boolean') {
+        defaults[input.key] = 'true'
+      } else if (input.valueType === 'number') {
+        defaults[input.key] = '1'
+      } else if (input.valueType === 'json') {
+        defaults[input.key] = '{"test": true}'
+      } else {
+        defaults[input.key] = `test-${input.key}`
+      }
+    }
+    setTrialInputs((prev) => ({ ...prev, ...defaults }))
+    toast.success('已填充默认测试入参')
+  }
+
+  const clearTrialInputs = () => {
+    setTrialInputs({})
+    try {
+      localStorage.removeItem(trialStorageKey)
+    } catch {}
+    toast.success('已清空入参')
+  }
+
+  const fixturesStorageKey = `cairn:module-fixtures:${moduleId}`
+  const loadFixtures = (id: string): ModuleTestFixture[] => {
+    try {
+      const raw = localStorage.getItem(`cairn:module-fixtures:${id}`)
+      if (!raw) return []
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+  const [fixtures, setFixtures] = useState<ModuleTestFixture[]>(() =>
+    loadFixtures(moduleId)
+  )
+  const saveFixtures = (updated: ModuleTestFixture[]) => {
+    setFixtures(updated)
+    try {
+      localStorage.setItem(fixturesStorageKey, JSON.stringify(updated))
+    } catch {}
+  }
+
+  const [activeTrialRunId, setActiveTrialRunId] = useState<string | null>(null)
+  const [trialSheetOpen, setTrialSheetOpen] = useState(false)
+
+  const handleExport = () => {
+    const payload = {
+      $schema: 'https://cairn.dev/schemas/action-module-v1.json',
+      exportedAt: new Date().toISOString(),
+      moduleKey: base.key,
+      name: meta.name,
+      description: meta.description,
+      capabilityKey: meta.capabilityKey,
+      tags: meta.tags
+        ? meta.tags
+            .split(/[,，、]/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [],
+      content,
+      fixtures,
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${base.key || 'module'}-draft.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    toast.success(`已导出模块定义：${base.key || 'module'}-draft.json`)
+  }
+
+  const handleImport = (
+    importedContent: ModuleContent,
+    importedMeta?: {
+      name?: string
+      description?: string
+      capabilityKey?: string
+      tags?: string[]
+    },
+    importedFixtures?: ModuleTestFixture[]
+  ) => {
+    setContent(importedContent)
+    if (importedMeta) {
+      setMeta((prev) => ({
+        ...prev,
+        name: importedMeta.name ?? prev.name,
+        description: importedMeta.description ?? prev.description,
+        capabilityKey: importedMeta.capabilityKey ?? prev.capabilityKey,
+        tags: importedMeta.tags ? importedMeta.tags.join('、') : prev.tags,
+      }))
+    }
+    if (importedFixtures && Array.isArray(importedFixtures)) {
+      saveFixtures(importedFixtures)
+    }
+    toast.success('已导入模块定义，请核对草稿并保存')
+  }
   const [publication, setPublication] = useState<{
     version: ActionModuleVersionDto
     status: ModulePublicationStatus
@@ -208,6 +336,13 @@ function ActionModuleEditor({
     base && query.data && base.draftRevision !== query.data.draftRevision
   )
   const [advancedMetaOpen, setAdvancedMetaOpen] = useState(false)
+  const sidebar = useOptionalSidebar()
+  const sidebarOffset =
+    !sidebar || sidebar.isMobile
+      ? 'left-0'
+      : sidebar.state === 'collapsed'
+        ? 'left-0 md:left-[72px]'
+        : 'left-0 md:left-[224px]'
   const types = useMemo(
     () => (capabilities.data ? selectableStudioTypes(capabilities.data) : []),
     [capabilities.data]
@@ -226,6 +361,8 @@ function ActionModuleEditor({
     [content, types]
   )
   const warnings = release.diagnostics.filter((d) => d.severity === 'warning')
+  const errors = release.diagnostics.filter((d) => d.severity === 'error')
+  const [diagnosticsDrawerOpen, setDiagnosticsDrawerOpen] = useState(false)
   const latest = versions.data?.items[0]
   const fail = (e: unknown) => {
     setError(e instanceof Error ? e.message : '操作失败')
@@ -336,6 +473,28 @@ function ActionModuleEditor({
         }
         actions={
           <>
+            <Button
+              variant='outline'
+              size='sm'
+              className='h-8 gap-1.5 text-label'
+              title='导出当前模块定义为 JSON 文件'
+              onClick={handleExport}
+            >
+              <Download className='size-3.5' />
+              导出
+            </Button>
+            {canWrite && (
+              <Button
+                variant='outline'
+                size='sm'
+                className='h-8 gap-1.5 text-label'
+                title='从 JSON 导入覆盖草稿'
+                onClick={() => setImportOpen(true)}
+              >
+                <Upload className='size-3.5' />
+                导入
+              </Button>
+            )}
             {canWrite && (
               <Button
                 variant={dirty ? 'default' : 'outline'}
@@ -350,10 +509,9 @@ function ActionModuleEditor({
                 variant='outline'
                 disabled={busy || trialBusy || !base.draftContent}
                 onClick={() => {
-                  setTrialInputs({})
                   setTrialAccountId('')
                   setTrialError('')
-                  setTrialOpen(true)
+                  openTrialModal()
                 }}
               >
                 试跑
@@ -469,9 +627,51 @@ function ActionModuleEditor({
       <Tabs value={tab} onValueChange={setTab} className='gap-4'>
         <TabsList>
           <TabsTrigger value='edit'>编辑</TabsTrigger>
+          <TabsTrigger value='fixtures'>
+            测试用例 {fixtures.length > 0 ? `(${fixtures.length})` : ''}
+          </TabsTrigger>
           <TabsTrigger value='references'>引用</TabsTrigger>
           <TabsTrigger value='quality'>运行质量</TabsTrigger>
         </TabsList>
+        <TabsContent value='fixtures'>
+          <ModuleFixturesPanel
+            moduleId={moduleId}
+            fixtures={fixtures}
+            onUpdateFixtures={saveFixtures}
+            contractInputs={content.contract.inputs}
+            canWrite={canWrite}
+            onRunFixture={async (fixture) => {
+              const newInputs: Record<string, string> = {}
+              for (const [k, v] of Object.entries(fixture.inputs)) {
+                newInputs[k] =
+                  typeof v === 'object' && v !== null
+                    ? JSON.stringify(v)
+                    : String(v)
+              }
+              setTrialInputs(newInputs)
+              setBusy(true)
+              try {
+                const run = await trialActionModule(moduleId, {
+                  inputs: fixture.inputs,
+                  implementationKey:
+                    fixture.implementationKey ||
+                    content.implementations[0]?.implementationKey,
+                  targetAccountId:
+                    fixture.targetAccountId ||
+                    trialAccountId.trim() ||
+                    undefined,
+                })
+                setActiveTrialRunId(run.id)
+                setTrialSheetOpen(true)
+                toast.success(`已发起测试用例「${fixture.name}」试跑`)
+              } catch (e) {
+                toast.error(e instanceof Error ? e.message : '运行测试用例失败')
+              } finally {
+                setBusy(false)
+              }
+            }}
+          />
+        </TabsContent>
         <TabsContent value='references'>
           <ActionModuleReferencesPanel moduleId={moduleId} />
         </TabsContent>
@@ -481,7 +681,7 @@ function ActionModuleEditor({
             versions={versions.data?.items ?? []}
           />
         </TabsContent>
-        <TabsContent value='edit' className='space-y-6'>
+        <TabsContent value='edit' className='space-y-6 pb-28'>
           <fieldset disabled={busy} className='min-w-0'>
             {!version && (
               <ModuleContentEditor
@@ -848,6 +1048,95 @@ function ActionModuleEditor({
               />
             )}
           </fieldset>
+          {tab === 'edit' && (
+            <div
+              data-slot='module-diagnostics-bar'
+              data-testid='module-diagnostics-bar'
+              className={cn(
+                'fixed bottom-4 right-0 z-20 pointer-events-none px-4 md:px-6 xl:px-8 transition-[left] duration-200 ease-linear',
+                sidebarOffset
+              )}
+            >
+              <div className='pointer-events-auto mx-auto max-w-5xl rounded-xl border border-card bg-card/95 p-3 shadow-popover backdrop-blur'>
+                <div className='flex items-center justify-between gap-3'>
+                  <div className='flex min-w-0 flex-1 items-center gap-2'>
+                    {errors.length > 0 ? (
+                      <Badge
+                        variant='outline'
+                        className='gap-1 border-destructive/30 bg-destructive/10 text-destructive shrink-0'
+                      >
+                        <AlertTriangle className='size-3.5' />
+                        {errors.length} 项编译错误
+                      </Badge>
+                    ) : warnings.length > 0 ? (
+                      <Badge
+                        variant='outline'
+                        className='gap-1 border-status-warning-accent/30 bg-status-warning-background text-status-warning-foreground shrink-0'
+                      >
+                        <AlertTriangle className='size-3.5' />
+                        {warnings.length} 项警告
+                      </Badge>
+                    ) : (
+                      <Badge
+                        variant='outline'
+                        className='gap-1 border-status-success/30 bg-status-success-background text-status-success shrink-0'
+                      >
+                        <CheckCircle2 className='size-3.5' />
+                        静态编译通过
+                      </Badge>
+                    )}
+                    <span className='truncate text-small text-muted-foreground'>
+                      {errors[0]
+                        ? `${errors[0].code} · ${errors[0].message}`
+                        : warnings[0]
+                          ? `${warnings[0].code} · ${warnings[0].message}`
+                          : '契约与实现校验正常，可以保存草稿或发布。'}
+                    </span>
+                  </div>
+                  {release.diagnostics.length > 0 && (
+                    <Button
+                      variant='ghost'
+                      size='sm'
+                      className='h-7 gap-1 text-small shrink-0'
+                      onClick={() => setDiagnosticsDrawerOpen((prev) => !prev)}
+                    >
+                      {diagnosticsDrawerOpen ? '收起详情' : '展开详情'}
+                      <ChevronDown
+                        className={cn(
+                          'size-3.5 transition-transform duration-200',
+                          diagnosticsDrawerOpen && 'rotate-180'
+                        )}
+                      />
+                    </Button>
+                  )}
+                </div>
+                {diagnosticsDrawerOpen && release.diagnostics.length > 0 && (
+                  <div className='mt-2.5 max-h-48 space-y-1.5 overflow-y-auto border-t border-border-divider pt-2 text-small'>
+                    {release.diagnostics.map((d, i) => (
+                      <div
+                        key={i}
+                        className={cn(
+                          'flex items-start gap-2 rounded p-1.5',
+                          d.severity === 'error'
+                            ? 'bg-destructive/10 text-destructive'
+                            : 'bg-muted/40 text-muted-foreground'
+                        )}
+                      >
+                        <span className='font-mono font-medium'>{d.code}</span>
+                        <span>·</span>
+                        <span className='flex-1'>{d.message}</span>
+                        {d.fieldPath && (
+                          <span className='font-mono text-label opacity-80'>
+                            {d.fieldPath.join('.')}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </TabsContent>
       </Tabs>
       {publication ? (
@@ -999,7 +1288,31 @@ function ActionModuleEditor({
             )}
             {content.contract.inputs.length > 0 ? (
               <div className='space-y-3'>
-                <h4 className='text-small font-medium'>模块输入参数</h4>
+                <div className='flex items-center justify-between'>
+                  <h4 className='text-small font-medium'>模块输入参数</h4>
+                  <div className='flex items-center gap-1.5'>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      className='h-6 gap-1 px-2 text-label text-muted-foreground hover:text-foreground'
+                      onClick={fillDefaultTrialInputs}
+                    >
+                      <Wand2 className='size-3 text-primary' />
+                      填充示例
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      className='h-6 gap-1 px-2 text-label text-muted-foreground hover:text-destructive'
+                      onClick={clearTrialInputs}
+                    >
+                      <RotateCcw className='size-3' />
+                      清空
+                    </Button>
+                  </div>
+                </div>
                 {content.contract.inputs.map((input) => (
                   <label key={input.key} className='block space-y-1 text-small'>
                     <div className='flex items-center justify-between'>
@@ -1010,19 +1323,66 @@ function ActionModuleEditor({
                         {input.valueType} · {input.required ? '必填' : '选填'}
                       </span>
                     </div>
-                    <Input
-                      placeholder={
-                        input.description ||
-                        `请输入 ${input.label || input.key}`
-                      }
-                      value={trialInputs[input.key] ?? ''}
-                      onChange={(e) =>
-                        setTrialInputs({
-                          ...trialInputs,
-                          [input.key]: e.target.value,
-                        })
-                      }
-                    />
+                    {input.valueType === 'boolean' ? (
+                      <Select
+                        value={trialInputs[input.key] ?? ''}
+                        onValueChange={(val) =>
+                          setTrialInputs({
+                            ...trialInputs,
+                            [input.key]: val === '__none__' ? '' : val,
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          className='w-full'
+                          aria-label={input.label || input.key}
+                        >
+                          <SelectValue
+                            placeholder={
+                              input.required ? '请选择布尔值' : '未指定 (可选)'
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {!input.required && (
+                            <SelectItem value='__none__'>未指定</SelectItem>
+                          )}
+                          <SelectItem value='true'>true (是)</SelectItem>
+                          <SelectItem value='false'>false (否)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : input.valueType === 'json' ? (
+                      <Textarea
+                        className='font-mono text-small'
+                        rows={3}
+                        placeholder={
+                          input.description ||
+                          '例如：{"id": 123, "status": "active"}'
+                        }
+                        value={trialInputs[input.key] ?? ''}
+                        onChange={(e) =>
+                          setTrialInputs({
+                            ...trialInputs,
+                            [input.key]: e.target.value,
+                          })
+                        }
+                      />
+                    ) : (
+                      <Input
+                        type={input.valueType === 'number' ? 'number' : 'text'}
+                        placeholder={
+                          input.description ||
+                          `请输入 ${input.label || input.key}`
+                        }
+                        value={trialInputs[input.key] ?? ''}
+                        onChange={(e) =>
+                          setTrialInputs({
+                            ...trialInputs,
+                            [input.key]: e.target.value,
+                          })
+                        }
+                      />
+                    )}
                   </label>
                 ))}
               </div>
@@ -1118,12 +1478,16 @@ function ActionModuleEditor({
                       content.implementations[0]?.implementationKey,
                     targetAccountId: trialAccountId.trim() || undefined,
                   })
+                  try {
+                    localStorage.setItem(
+                      trialStorageKey,
+                      JSON.stringify(trialInputs)
+                    )
+                  } catch {}
                   setTrialOpen(false)
-                  toast.success('试跑已发起')
-                  void navigate({
-                    to: '/runs/$runId',
-                    params: { runId: run.id },
-                  })
+                  setActiveTrialRunId(run.id)
+                  setTrialSheetOpen(true)
+                  toast.success('已发起试跑，原地观测中…')
                 } catch (e) {
                   setTrialError(e instanceof Error ? e.message : '发起试跑失败')
                 } finally {
@@ -1136,6 +1500,49 @@ function ActionModuleEditor({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ImportModuleDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImport={handleImport}
+      />
+      <TrialRunSheet
+        runId={activeTrialRunId}
+        open={trialSheetOpen}
+        onOpenChange={setTrialSheetOpen}
+        currentInputs={trialInputs}
+        onSaveAsFixture={(name, inputs, lastRun) => {
+          const parsedInputs: Record<string, JsonValue> = {}
+          for (const [k, v] of Object.entries(inputs)) {
+            if (v !== '') {
+              const contractInput = content.contract.inputs.find(
+                (i) => i.key === k
+              )
+              if (contractInput?.valueType === 'number') {
+                const num = Number(v)
+                parsedInputs[k] = Number.isNaN(num) ? v : num
+              } else if (contractInput?.valueType === 'boolean') {
+                parsedInputs[k] = v === 'true' || v === '1'
+              } else if (contractInput?.valueType === 'json') {
+                try {
+                  parsedInputs[k] = JSON.parse(v) as JsonValue
+                } catch {
+                  parsedInputs[k] = v
+                }
+              } else {
+                parsedInputs[k] = v
+              }
+            }
+          }
+          const newFixture: ModuleTestFixture = {
+            id: crypto.randomUUID(),
+            name,
+            inputs: parsedInputs,
+            lastRun,
+          }
+          saveFixtures([...fixtures, newFixture])
+          toast.success(`已将当前入参沉淀为测试用例「${name}」`)
+        }}
+      />
     </Main>
   )
 }

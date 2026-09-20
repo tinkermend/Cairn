@@ -1,5 +1,9 @@
+import { resolveAccountCurrentCredential } from '../credentials/index.js'
+import { freezeRunReportContext } from '../reports/profiles.js'
+import { computeSnapshotDigest } from './digest.js'
 import { freezeAuthVerificationForRun } from '../sessions/auth-profile.js'
 import { assembleRunSnapshot, AssembleRunSnapshotError, resolveAssembledAiExecution } from './assemble-snapshot.js'
+import { assertDemonstrationExecutorRolloutTx, saveRunValidationContextTx, markValidationInterventionTx } from './validation.js'
 import { ensureFrozenAccessPolicyTx } from '../map/access.js'
 import { expireRunDeadlines } from './deadline.js'
 import { settleRunCancellationTx } from './recover.js'
@@ -10,6 +14,8 @@ import {
   CANCELLED_ATTEMPT_ERROR,
   TERMINAL_RUN_STATUSES,
   cleanupStatusResponseSchema,
+  isCleanupFailed,
+  tallyKnownBytes,
   deletePreviewResponseSchema,
   executionActorSchema,
   serviceAdmissionSchema,
@@ -20,6 +26,7 @@ import {
   resolverDiagnosticsSchema,
   isHaltedRunStatus,
   FACTORY_PLATFORM_CONFIG,
+  sessionPolicyOverrideSchema,
   idempotentRequestMatches,
   runDetailSchema,
   runEvidenceListResponseSchema,
@@ -57,6 +64,8 @@ import {
   type AuthCheckpoint,
   type FrozenMapJob,
   type SelectionDecision,
+  type ExecutionOrigin,
+  type SuiteAdmissionSnapshot,
   selectionDecisionSchema,
 } from '@cairn/shared'
 import { cursorFilter, paginateResults } from '../cursor.js'
@@ -83,9 +92,11 @@ import { runLeases, workers } from '../schema/worker.js'
 import type { Db } from '../client.js'
 import { cancelPendingStepRunsTx, skipRemainingStepRunsTx, skipStepRunsTx } from './step-status.js'
 import { newId } from '../id.js'
+import { runCleanupObjectScope } from '../reports/cleanup.js'
 import { attempts, evidences, runs, scenarios, stepRuns } from '../schema/execution.js'
 import { targetAccounts, targets } from '../schema/targets.js'
 import { getPlatformConfig } from '../platform-config/store.js'
+import { assertAccountAllowsBusiness } from '../console/account-usage.js'
 import { appendFinishAttemptMapFactsTx } from '../map/attempt-facts.js'
 import { freezeMapConsumptionTx, insertMapRunReleaseRefTx } from '../map/consumption.js'
 import { computeIdempotencyDigest } from './digest.js'
@@ -129,11 +140,13 @@ export async function getRun(db: Db, runId: string): Promise<RunDetailDto> {
 export async function listRuns(
   db: Db,
   query: RunListQuery = {},
+  actorId?: string,
 ): Promise<RunListResponse> {
   const parsed = runListQuerySchema.parse(query)
   const { runs, scenarioVersions, scenarios, targetAccounts, targets } = schemaFor(db)
   const limit = parsed.limit
   const filters: (SQL | undefined)[] = [
+    await (await import('../console/target-authorization.js')).scopedTargetFilter(db, actorId, runs.targetId, 'run:read'),
     isNull(runs.deletedAt),
     parsed.targetId ? eq(runs.targetId, parsed.targetId) : undefined,
     parsed.scenarioId ? eq(runs.scenarioId, parsed.scenarioId) : undefined,
@@ -143,6 +156,8 @@ export async function listRuns(
       : parsed.sourceKind === 'console'
         ? isNull(runs.serviceCallerId)
         : undefined,
+    parsed.suiteRunId ? eq(runs.suiteRunId, parsed.suiteRunId) : undefined,
+    parsed.executionOrigin ? eq(runs.executionOrigin, parsed.executionOrigin) : undefined,
     parsed.search
       ? or(
           sql`lower(${runs.id}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
@@ -157,6 +172,9 @@ export async function listRuns(
       : parsed.isTrial === false
         ? ne(scenarioVersions.kind, 'trial')
         : undefined,
+    parsed.isMapJob === true
+      ? eq(scenarios.purpose, 'map_job')
+      : ne(scenarios.purpose, 'map_job'),
     ...createdAtBounds(runs.createdAt, parsed.from, parsed.to),
     cursorFilter(runs.createdAt, runs.id, parsed.cursor),
   ]
@@ -234,6 +252,9 @@ export async function listRuns(
         finishedAt: iso(row.finishedAt),
         evidenceStatus: row.evidenceStatus,
         debugMode: row.debugMode ?? 'runThrough',
+        executionOrigin: row.executionOrigin ?? 'standalone',
+        suiteRunId: row.suiteRunId ?? null,
+        suiteMemberId: row.suiteMemberId ?? null,
         lease: leases.get(row.id) ? { holderWorkerId: leases.get(row.id)!.holderWorkerId } : null,
       }),
     ),
@@ -274,10 +295,11 @@ export async function previewDeleteRun(db: Db, runId: string): Promise<DeletePre
 
   activeBlockers.push(...(await pendingWriteBlockers(db, [runId])))
 
+  const reportScope = await runCleanupObjectScope(db, runId)
   const objects = await db
     .select({ id: storedObjects.id, byteSize: storedObjects.byteSize })
     .from(storedObjects)
-    .where(and(eq(storedObjects.runId, runId), isNull(storedObjects.purgedAt)))
+    .where(and(reportScope.filter, isNull(storedObjects.purgedAt)))
 
   const totalBytes = objects.reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
 
@@ -286,6 +308,8 @@ export async function previewDeleteRun(db: Db, runId: string): Promise<DeletePre
     counts: {
       storedObjects: objects.length,
       totalBytes,
+      reports: reportScope.reportIds.length,
+      unknownByteObjects: objects.filter((object) => object.byteSize === null).length,
     },
     blockers: activeBlockers,
   })
@@ -334,7 +358,7 @@ export async function deleteRun(
           bytes: sql<number>`coalesce(sum(${storedObjects.byteSize}), 0)`,
         })
         .from(storedObjects)
-        .where(eq(storedObjects.runId, runId))
+        .where((await runCleanupObjectScope(tx as unknown as Db, runId)).filter)
       await recordAudit(
         tx as unknown as Db,
         actor,
@@ -353,8 +377,27 @@ export async function deleteRun(
 
 export async function getRunCleanupStatus(db: Db, runId: string): Promise<CleanupStatusResponse> {
   const { runs, storedObjects } = schemaFor(db)
-  const [run] = await db.select({ id: runs.id }).from(runs).where(eq(runs.id, runId)).limit(1)
+  const [run] = await db
+    .select({ id: runs.id, deletedAt: runs.deletedAt })
+    .from(runs)
+    .where(eq(runs.id, runId))
+    .limit(1)
   if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
+
+  if (!run.deletedAt) {
+    return cleanupStatusResponseSchema.parse({
+      resourceId: runId,
+      resourceType: 'run',
+      status: 'completed',
+      totalObjects: 0,
+      purgedObjects: 0,
+      failedObjects: 0,
+      totalBytes: 0,
+      purgedBytes: 0,
+      lastError: null,
+      completedAt: new Date().toISOString(),
+    })
+  }
   const objects = await db
     .select({
       status: storedObjects.status,
@@ -363,17 +406,16 @@ export async function getRunCleanupStatus(db: Db, runId: string): Promise<Cleanu
       lastPurgeErrorAt: storedObjects.lastPurgeErrorAt,
     })
     .from(storedObjects)
-    .where(eq(storedObjects.runId, runId))
+    .where((await runCleanupObjectScope(db, runId)).filter)
 
   const total = objects.length
   const purged = objects.filter((o) => o.status === 'purged').length
-  const failed = objects.filter(
-    (o) => o.status !== 'purged' && (o.purgeAttempts >= 5 || o.lastPurgeErrorAt !== null),
-  ).length
-  const totalBytes = objects.reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
-  const purgedBytes = objects
-    .filter((o) => o.status === 'purged')
-    .reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+  const failed = objects.filter((o) => isCleanupFailed(o)).length
+  const byteTally = tallyKnownBytes(objects.map((o) => o.byteSize))
+  const totalBytes = byteTally.knownBytes
+  const purgedBytes = tallyKnownBytes(
+    objects.filter((o) => o.status === 'purged').map((o) => o.byteSize),
+  ).knownBytes
 
   const status: CleanupStatus =
     failed > 0
@@ -395,6 +437,7 @@ export async function getRunCleanupStatus(db: Db, runId: string): Promise<Cleanu
     purgedBytes,
     lastError: failed > 0 ? '部分对象文件清理失败，请重试' : null,
     completedAt: status === 'completed' ? new Date().toISOString() : null,
+    unknownByteObjects: byteTally.unknownCount,
   })
 }
 
@@ -408,7 +451,7 @@ export async function retryRunCleanup(
   await db
     .update(storedObjects)
     .set({ purgeAttempts: 0, lastPurgeErrorAt: null })
-    .where(and(eq(storedObjects.runId, runId), ne(storedObjects.status, 'purged')))
+    .where(and((await runCleanupObjectScope(db, runId)).filter, ne(storedObjects.status, 'purged')))
   await recordAudit(db, actor, 'run.cleanup_retry', 'run', runId, '重试对象清理')
   return getRunCleanupStatus(db, runId)
 }
@@ -523,6 +566,9 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     finishedAt: iso(row.finishedAt),
     evidenceStatus: row.evidenceStatus,
     debugMode: row.debugMode ?? 'runThrough',
+    executionOrigin: row.executionOrigin ?? 'standalone',
+    suiteRunId: row.suiteRunId ?? null,
+    suiteMemberId: row.suiteMemberId ?? null,
     lease: lease
       ? {
           holderWorkerId: lease.holderWorkerId,
@@ -584,7 +630,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
   })
 }
 
-async function resolveRunTargetAccountId(
+export async function resolveRunTargetAccountId(
   db: Db,
   input: { targetId: string; requestedAccountId?: string },
 ): Promise<string | undefined> {
@@ -598,6 +644,7 @@ async function resolveRunTargetAccountId(
         eq(targetAccounts.targetId, input.targetId),
         eq(targetAccounts.status, 'active'),
         isNull(targetAccounts.deletedAt),
+        ne(targetAccounts.usage, 'map'),
       ),
     )
   const withSecret = rows.filter((row) => row.secretId && row.secretProvider)
@@ -608,20 +655,28 @@ async function resolveRunTargetAccountId(
   return undefined
 }
 
-export async function createRunWithSnapshot(
+export type CreateRunWithSnapshotInput = CreateRunBody & {
+  actor: ExecutionActor
+  serviceAdmission?: ServiceAdmission
+  externalIdempotencyDigest?: string
+  deadlineAt?: Date
+  allowTrialVersion?: boolean
+  aiExecution?: AiExecutionConfig
+  hangWaitMs?: number
+  mapJob?: FrozenMapJob
+  suiteAdmission?: SuiteAdmissionSnapshot
+  executionOrigin?: ExecutionOrigin
+  suiteRunId?: string
+  suiteMemberId?: string
+  reportDefaults?: { profileId?: string; displayName?: string }
+}
+
+export async function writeRunWithSnapshot(
   db: Db,
-  input: CreateRunBody & {
-    actor: ExecutionActor
-    serviceAdmission?: ServiceAdmission
-    externalIdempotencyDigest?: string
-    deadlineAt?: Date
-    allowTrialVersion?: boolean
-    aiExecution?: AiExecutionConfig
-    hangWaitMs?: number
-    mapJob?: FrozenMapJob
-  },
-): Promise<{ detail: RunDetailDto; created: boolean }> {
+  input: CreateRunWithSnapshotInput,
+): Promise<{ runId: string; created: boolean }> {
   input = { ...input, actor: executionActorSchema.parse(input.actor), ...(input.serviceAdmission ? { serviceAdmission: serviceAdmissionSchema.parse(input.serviceAdmission) } : {}) }
+  if (input.sessionPolicy !== undefined) sessionPolicyOverrideSchema.parse(input.sessionPolicy)
   const { runs, stepRuns, targetAccounts, targets } = schemaFor(db)
   const { scenario, version } = await loadScenarioVersion(
     db,
@@ -661,6 +716,7 @@ export async function createRunWithSnapshot(
   })
 
   let secretRef: RunSnapshot['secretRef']
+  let credentialBinding: RunSnapshot['credentialBinding']
   if (targetAccountId) {
     const [account] = await db
       .select()
@@ -671,8 +727,28 @@ export async function createRunWithSnapshot(
       throw badRequest('RUN_ACCOUNT_MISMATCH', '目标账号不属于该场景绑定的目标系统')
     }
     if (account.status === 'disabled') throw conflict('RUN_ACCOUNT_DISABLED', '目标账号已停用')
+    if (!input.mapJob) assertAccountAllowsBusiness(account.usage)
     if (account.secretId && account.secretProvider) {
-      secretRef = { provider: account.secretProvider, secretId: account.secretId }
+      const current = await resolveAccountCurrentCredential(db, account.id)
+      if (current) {
+        secretRef = { provider: current.provider, secretId: current.secretId }
+        credentialBinding = {
+          credentialId: current.credentialId,
+          versionId: current.versionId,
+          identityRevision: current.identityRevision ?? account.configRevision,
+          identityUsername: current.username,
+        }
+      } else {
+        const { credentialBindings } = schemaFor(db)
+        const [binding] = await db
+          .select()
+          .from(credentialBindings)
+          .where(eq(credentialBindings.targetAccountId, account.id))
+          .limit(1)
+        if (binding?.identityConfirmStatus !== 'pending_reconfirm') {
+          secretRef = { provider: account.secretProvider, secretId: account.secretId }
+        }
+      }
     }
   }
 
@@ -728,8 +804,7 @@ export async function createRunWithSnapshot(
       if (!same) {
         throw conflict('RUN_IDEMPOTENCY_CONFLICT', '相同幂等键对应不同的运行输入')
       }
-      const detail = await getRun(db, existing.id)
-      return { detail, created: false }
+      return { runId: existing.id, created: false }
     }
   }
 
@@ -778,6 +853,7 @@ export async function createRunWithSnapshot(
           targetId: scenario.targetId,
           targetAccountId,
           secretRef,
+          credentialBinding,
           scenarioId: scenario.id,
           scenarioVersionId: version.id,
           steps: version.definition.steps,
@@ -799,12 +875,21 @@ export async function createRunWithSnapshot(
           allowedOrigins: access.allowedOrigins,
           accessPolicy: access.frozen,
           mapConsumption,
+          suiteAdmission: input.suiteAdmission,
         })
       } catch (error) {
         if (error instanceof AssembleRunSnapshotError) throw badRequest(error.code, error.message)
         throw error
       }
+      const { freezeRunNotificationPolicy } = await import('../notifications/core.js')
+      snapshot.notificationPolicy = await freezeRunNotificationPolicy(tx as unknown as Db, {
+        scenarioId: scenario.id, targetId: scenario.targetId, scenarioName: scenario.name,
+        targetName: target.name, source: input.actor.kind === 'service' ? 'service' : 'console',
+        eligible: !isTrial && !input.mapJob && scenario.purpose === 'user' && debugMode === 'runThrough',
+      })
+      snapshot.digest = computeSnapshotDigest(snapshot)
       const digest = snapshot.digest
+      await assertDemonstrationExecutorRolloutTx(tx as unknown as Db, snapshot)
       await tx.insert(runs).values({
         id: runId,
         targetId: scenario.targetId,
@@ -821,19 +906,26 @@ export async function createRunWithSnapshot(
         debugMode,
         snapshot,
         snapshotDigest: digest,
+        notificationExpected: snapshot.notificationPolicy.enabled,
         context: runInput,
         idempotencyKey: input.idempotencyKey,
         idempotencyDigest,
         createdAt: now,
         updatedAt: now,
+        executionOrigin: input.executionOrigin ?? 'standalone',
+        suiteRunId: input.suiteRunId,
+        suiteMemberId: input.suiteMemberId,
       })
       await insertMapRunReleaseRefTx(tx as unknown as Db, { runId, frozen: mapConsumption })
+      await freezeRunReportContext(tx as unknown as Db, { runId, scenarioId: scenario.id, targetId: scenario.targetId, scenarioName: scenario.name, targetName: target.name, overrideProfileId: input.reportDefaults?.profileId, displayName: input.reportDefaults?.displayName })
+      await saveRunValidationContextTx(tx as unknown as Db, snapshot)
       if (snapshot.steps.length > 0) {
         await tx.insert(stepRuns).values(
           snapshot.steps.map((step, ordinal) => ({
             id: newId(),
             runId,
             stepId: step.id,
+            name: step.name,
             ordinal,
             status: 'PENDING' as const,
           })),
@@ -856,13 +948,21 @@ export async function createRunWithSnapshot(
       const raced = await findIdempotent(db, input.actor, input.idempotencyKey)
       if (raced && raced.idempotencyDigest === idempotencyDigest) {
         if (raced.deletedAt) resourceDeletedConflict()
-        return { detail: await getRun(db, raced.id), created: false }
+        return { runId: raced.id, created: false }
       }
     }
     rethrow(error)
   }
 
-  return { detail: await getRun(db, runId), created: true }
+  return { runId, created: true }
+}
+
+export async function createRunWithSnapshot(
+  db: Db,
+  input: CreateRunWithSnapshotInput,
+): Promise<{ detail: RunDetailDto; created: boolean }> {
+  const result = await writeRunWithSnapshot(db, input)
+  return { detail: await getRun(db, result.runId), created: result.created }
 }
 
 export async function createTrialRunFromDraft(
@@ -955,6 +1055,11 @@ export async function requestRunCancel(
     await settleRunCancellationTx(tx as unknown as Db, runId, now)
     await recordAudit(tx as unknown as Db, actor, 'run.cancel', 'run', runId, '取消运行')
   })
+  try {
+    await import('../suites/runs.js').then((mod) => mod.scheduleSuiteAdvanceForChild(db, runId))
+  } catch (error) {
+    console.error('[suites] advance after cancel failed', runId, error)
+  }
   return getRun(db, runId)
 }
 
@@ -979,6 +1084,7 @@ export async function startAttempt(
     const [step] = await tx.select().from(stepRuns).where(eq(stepRuns.id, input.stepRunId)).limit(1)
     if (!step || (step.status !== 'PENDING' && step.status !== 'RUNNING' && step.status !== 'FAILED')) return null
     if (step.status === 'FAILED' && full.status !== 'HOLDING') return null
+    if (step.status === 'FAILED') await markValidationInterventionTx(tx as unknown as Db, input.runId, 'manual_retry')
 
     const stepNeedsStart = step.status === 'PENDING' || step.status === 'FAILED'
     if (stepNeedsStart) {
@@ -1254,6 +1360,7 @@ export async function finishAttemptTx(
     })
     recorded.push({ evidenceId, type: 'log', status: 'available' })
   }
+  if (input.debugOverlay) await markValidationInterventionTx(tx, input.runId, 'debug_overlay')
   if (!cancelled) {
     const screenshotId = await insertMissingObjectEvidence(tx, {
       runId: input.runId,
@@ -1471,6 +1578,15 @@ export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ fin
       { type: 'run.status_changed', payload: { status: 'SUCCEEDED' } },
     ])
     return { finished: true }
+  }).then(async (result) => {
+    if (result.finished) {
+      try {
+        await import('../suites/runs.js').then((mod) => mod.scheduleSuiteAdvanceForChild(db, grant.runId))
+      } catch (error) {
+        console.error('[suites] advance after finish failed', grant.runId, error)
+      }
+    }
+    return result
   })
 }
 
@@ -1673,6 +1789,7 @@ export async function updateRunDebugOverlay(
     if (run.status !== 'HOLDING') {
       throw conflict('RUN_NOT_HOLDING', '仅 HOLDING 状态的运行允许设置临时覆盖')
     }
+    if (overlay) await markValidationInterventionTx(tx as unknown as Db, runId, 'debug_overlay')
     await tx
       .update(runs)
       .set({ debugOverlay: overlay, updatedAt: now })
@@ -1696,6 +1813,7 @@ export async function enterRunHolding(
     const run = await lockRunRow(tx as unknown as Db, input.runId)
     if (!run || run.status !== 'RUNNING' || run.cancelRequestedAt) return false
     if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return false
+    if (input.debugOverlay) await markValidationInterventionTx(tx as unknown as Db, input.runId, 'debug_overlay')
     await tx
       .update(runs)
       .set({

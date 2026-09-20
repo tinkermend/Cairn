@@ -85,6 +85,12 @@ export function objectKeyFor(runId: string, objectId: string): string {
   return objectKeySchema.parse(`v1/runs/${run}/${id}`)
 }
 
+export function artifactObjectKeyFor(artifactId: string, objectId: string): string {
+  const artifact = entityIdSchema.parse(artifactId)
+  const id = entityIdSchema.parse(objectId)
+  return objectKeySchema.parse(`v1/artifacts/${artifact}/${id}`)
+}
+
 export function isAbsoluteFsPath(value: string): boolean {
   return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)
 }

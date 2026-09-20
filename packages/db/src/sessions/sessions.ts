@@ -1,5 +1,6 @@
 import type { BrowserSessionRow, SessionLeaseRow } from '../records.js'
 import { schemaFor } from '../native.js'
+import { readableSessionTargets } from '../console/target-authorization.js'
 import { insertRows } from '../native.js'
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import {
@@ -856,9 +857,12 @@ export async function listOwnedOpenSessions(db: Db, workerId: string): Promise<S
 export async function listSessions(
   db: Db,
   input?: { ownerWorkerId?: string },
+  actorId?: string,
 ): Promise<SessionDto[]> {
   const { browserSessions, sessionLeases } = schemaFor(db)
   const conditions = [inArray(browserSessions.status, LIVE_STATUSES)]
+  const targetIds = actorId ? await readableSessionTargets(db, actorId) : undefined
+  if (targetIds) conditions.push(targetIds.length ? inArray(browserSessions.targetId, targetIds) : sql`1 = 0`)
   if (input?.ownerWorkerId) conditions.push(eq(browserSessions.ownerWorkerId, input.ownerWorkerId))
   const rows = await db
     .select()
@@ -979,6 +983,8 @@ export async function disposeStuckSession(
   const { browserSessions, sessionLeases } = schemaFor(db)
   return db.transaction(async (tx) => {
     // 行锁：与同一会话的 acquire / owner 回收串行，避免处置与领取交错。
+    const { lockConsoleAuthorization, assertTargetPermission } = await import('../console/target-authorization.js')
+    await lockConsoleAuthorization(tx, input.actor.id)
     const found = await locked(
       tx,
       tx
@@ -991,6 +997,7 @@ export async function disposeStuckSession(
     }
 
     const session = (await getSessionById(tx as unknown as Db, input.sessionId))!
+    await assertTargetPermission(tx, input.actor.id, session.targetId, 'session:dispose')
     if (session.status === 'CLOSED') {
       return toSessionDto(await loadSessionRow(tx as unknown as Db, input.sessionId), null)
     }

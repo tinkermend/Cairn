@@ -125,6 +125,7 @@ function mockService() {
       updatedAt: '1970-01-01T00:00:00.000Z',
     })),
     updateConsumptionPolicy: vi.fn(),
+    grantConsumptionEligibility: vi.fn(),
     jobPolicy: vi.fn(async () => ({
       targetId,
       revision: 0,
@@ -354,6 +355,10 @@ describe('地图查询 HTTP', () => {
       mode: 'shadow',
       reason: '仅比较',
     }).expect(403)
+    await request(limited.getHttpServer()).post(`/targets/${targetId}/map/consumption-eligibility`).send({
+      reportId: 'omt-grant-01',
+      reason: '独立对照',
+    }).expect(403)
     await limited.close()
   })
 
@@ -367,6 +372,11 @@ describe('地图查询 HTTP', () => {
       reason: '仅比较',
     }).expect(200)
     expect(maps.updateConsumptionPolicy).toHaveBeenCalled()
+    await request(app.getHttpServer()).post(`/targets/${targetId}/map/consumption-eligibility`).send({
+      reportId: 'omt-grant-01',
+      reason: '独立对照',
+    }).expect(200)
+    expect(maps.grantConsumptionEligibility).toHaveBeenCalled()
   })
 
   it('可读作业政策，写政策与建作业需要 map:maintain', async () => {

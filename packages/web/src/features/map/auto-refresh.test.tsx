@@ -100,7 +100,7 @@ describe('知识页自动复查', () => {
       items: [{ entryId: ENTRY_ID, name: '订单入口', url: 'https://shop.example/orders' }],
     })
     mocks.fetchTargetAccounts.mockResolvedValue({
-      items: [{ id: ACCOUNT_ID, targetId: TARGET_ID, displayName: '值班账号', username: 'ops', status: 'active' }],
+      items: [{ id: ACCOUNT_ID, targetId: TARGET_ID, displayName: '值班账号', username: 'ops', status: 'active', usage: 'both' }],
     })
   })
 

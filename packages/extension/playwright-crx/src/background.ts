@@ -21,6 +21,22 @@ import { recordingBridgeAckSchema, recordingBridgeStartSchema } from '@cairn/sha
 import { CAIRN_API, CAIRN_ATTACH, CAIRN_DETACH, CAIRN_OPEN_TARGET, CAIRN_STATUS, WORKBENCH_PATH, canAttachRecorder, chooseRecordingTab, handleCairnApiMessage, loadCairnSession, nextRecorderPanelPath, onExtensionInstalled, savePendingBridge, withDeadline } from './cairn';
 import type { CrxSettings } from './settings';
 import { addSettingsChangedListener, defaultSettings, loadSettings } from './settings';
+import { CAPTURE_CHANGED, CAPTURE_GET, CAPTURE_RESET, DemonstrationCapture } from './cairn/capture';
+
+const demonstrationCapture = new DemonstrationCapture(state => { void chrome.runtime.sendMessage({ event: CAPTURE_CHANGED, state }).catch(() => {}); });
+// A different actor/environment must never inherit the previous actor's local facts.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  const account = changes.cairnAccount;
+  const environment = changes.cairnEnvironmentId;
+  if ((account && account.oldValue?.id !== account.newValue?.id) || (environment && environment.oldValue !== environment.newValue)) demonstrationCapture.reset();
+});
+Object.assign(globalThis, { __cairnCaptureBegin: demonstrationCapture.begin.bind(demonstrationCapture) });
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return;
+  if (message?.event === CAPTURE_GET) reply(demonstrationCapture.get());
+  if (message?.event === CAPTURE_RESET) { demonstrationCapture.reset(); reply(demonstrationCapture.get()); }
+});
 
 type CrxMode = Mode | 'detached';
 

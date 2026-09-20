@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   FACTORY_MAP_JOB_POLICY,
   isMapJobRun,
+  MAP_JOB_EVIDENCE_POLICY,
   mapJobCommandKey,
   mapJobIdempotencyKey,
   originsForAccessPurposes,
+  runListQuerySchema,
   seedTargetAccessRules,
   targetAccessPolicyUpdateBodySchema,
-} from '../map-jobs.js'
+} from '../index.js'
 
 describe('地图作业契约', () => {
   it('工厂作业政策默认关闭', () => {
@@ -72,6 +74,19 @@ describe('地图作业契约', () => {
         rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow', pathPrefix: '/orders' }],
       }).rules[0]?.pathPrefix,
     ).toBe('/orders')
+  })
+
+  it('地图作业证据策略关闭截图与录像', () => {
+    expect(MAP_JOB_EVIDENCE_POLICY).toEqual({
+      screenshot: 'off',
+      video: 'off',
+      trace: 'off',
+    })
+  })
+
+  it('运行列表缺省不含 isMapJob，显式 true 才只看作业', () => {
+    expect(runListQuerySchema.parse({}).isMapJob).toBeUndefined()
+    expect(runListQuerySchema.parse({ isMapJob: true }).isMapJob).toBe(true)
   })
 
   it('缺 mapJob 视为用户 Run', () => {

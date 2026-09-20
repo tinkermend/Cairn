@@ -133,6 +133,44 @@ describe('internal HMAC', () => {
       }),
     ).toBe(false)
   })
+
+  it('节点健康签名与业务 HMAC 互不通用', async () => {
+    const { signNodeHealthHeaders, verifyNodeHealthHeaders, WORKER_NODE_HEALTH_PATH } = await import(
+      '../internal-auth.js'
+    )
+    const secret = requireInternalSecret(DEV_INTERNAL_AUTH_SECRET)
+    const node = {
+      method: 'GET' as const,
+      path: WORKER_NODE_HEALTH_PATH,
+      body: '',
+      expiresUnix: Math.floor(Date.now() / 1000) + 10,
+      workerId: 'local-worker',
+    }
+    const headers = await signNodeHealthHeaders(secret, node)
+    expect(
+      await verifyNodeHealthHeaders(secret, { ...node, signature: headers['x-cairn-node-signature']! }),
+    ).toBe(true)
+    expect(
+      await verifyNodeHealthHeaders(secret, {
+        ...node,
+        workerId: 'other-worker',
+        signature: headers['x-cairn-node-signature']!,
+      }),
+    ).toBe(false)
+    expect(
+      await verifyInternalHeaders(secret, {
+        method: 'GET',
+        path: WORKER_NODE_HEALTH_PATH,
+        body: '',
+        expiresUnix: node.expiresUnix,
+        actorId: '00000000-0000-4000-8000-000000000031',
+        runId: '00000000-0000-4000-8000-000000000032',
+        sessionGeneration: 0,
+        workerInstanceId: 'local-worker',
+        signature: headers['x-cairn-node-signature']!,
+      }),
+    ).toBe(false)
+  })
 })
 
 describe('auth-stage frame visibility', () => {

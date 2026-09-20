@@ -1,7 +1,12 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Res } from '@nestjs/common'
 import type { Response } from 'express'
+import { z } from 'zod'
 import {
   applyRecordingImportBodySchema,
+  applyDemonstrationBodySchema,
+  previewDemonstrationBodySchema,
+  type ApplyDemonstrationBody,
+  type PreviewDemonstrationBody,
   createRecordingBindingBodySchema,
   createScenarioBodySchema,
   previewRecordingImportBodySchema,
@@ -58,8 +63,8 @@ export class ScenariosController {
 
   @Get()
   @RequirePermissions('workflow:read')
-  list(@Query(new ZodValidationPipe(scenarioListQuerySchema)) query: ScenarioListQuery) {
-    return this.scenarios.list(query)
+  list(@Query(new ZodValidationPipe(scenarioListQuerySchema)) query: ScenarioListQuery, @CurrentAccount() account: RequestAccount) {
+    return this.scenarios.list(query, account.id)
   }
 
   @Get('capabilities')
@@ -81,6 +86,12 @@ export class ScenariosController {
   @RequirePermissions('workflow:read')
   get(@Param('scenarioId') scenarioId: string) {
     return this.scenarios.get(scenarioId)
+  }
+
+  @Get(':scenarioId/validation')
+  @RequirePermissions('workflow:read', 'run:read', 'target:read')
+  validation(@Param('scenarioId') scenarioId: string, @CurrentAccount() actor: RequestAccount) {
+    return this.scenarios.validation(scenarioId, actor)
   }
 
   @Post(':scenarioId')
@@ -220,7 +231,7 @@ export class ScenariosController {
   @RequirePermissions('workflow:read', 'target:read')
   previewRecordingImport(
     @Param('scenarioId') scenarioId: string,
-    @Body(new ZodValidationPipe(previewRecordingImportBodySchema)) body: PreviewRecordingImportBody,
+    @Body(new ZodValidationPipe(z.union([previewDemonstrationBodySchema, previewRecordingImportBodySchema]))) body: PreviewRecordingImportBody | PreviewDemonstrationBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.scenarios.previewRecordingImport(scenarioId, body, actor)
@@ -231,7 +242,7 @@ export class ScenariosController {
   @RequirePermissions('workflow:write', 'target:read')
   applyRecordingImport(
     @Param('scenarioId') scenarioId: string,
-    @Body(new ZodValidationPipe(applyRecordingImportBodySchema)) body: ApplyRecordingImportBody,
+    @Body(new ZodValidationPipe(z.union([applyDemonstrationBodySchema, applyRecordingImportBodySchema]))) body: ApplyRecordingImportBody | ApplyDemonstrationBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.scenarios.applyRecordingImport(scenarioId, body, actor)

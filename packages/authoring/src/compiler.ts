@@ -17,6 +17,7 @@ import {
 } from '@cairn/shared'
 
 function stepFrom(step: Step): { from?: string; fromField?: string } {
+  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') return step.input
   if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') {
     return { from: step.input.from, fromField: step.input.fromField }
   }

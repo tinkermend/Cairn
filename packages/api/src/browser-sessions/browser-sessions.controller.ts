@@ -50,20 +50,20 @@ export class BrowserSessionsController {
 
   @Get()
   @RequirePermissions('session:read')
-  list(@Query(new ZodValidationPipe(browserSessionListQuerySchema)) query: BrowserSessionListQuery) {
-    return this.sessions.list(query)
+  list(@Query(new ZodValidationPipe(browserSessionListQuerySchema)) query: BrowserSessionListQuery, @CurrentAccount() actor: RequestAccount) {
+    return this.sessions.list(query, actor)
   }
 
   @Get('overview')
   @RequirePermissions('session:read')
-  overview(@Query(new ZodValidationPipe(sessionOverviewQuerySchema)) query: SessionOverviewQuery) {
-    return this.sessions.overview(query)
+  overview(@Query(new ZodValidationPipe(sessionOverviewQuerySchema)) query: SessionOverviewQuery, @CurrentAccount() actor: RequestAccount) {
+    return this.sessions.overview(query, actor)
   }
 
   @Get('systems')
   @RequirePermissions('session:read')
-  systems(@Query(new ZodValidationPipe(sessionSystemOverviewQuerySchema)) query: SessionSystemOverviewQuery) {
-    return this.sessions.systemOverview(query)
+  systems(@Query(new ZodValidationPipe(sessionSystemOverviewQuerySchema)) query: SessionSystemOverviewQuery, @CurrentAccount() actor: RequestAccount) {
+    return this.sessions.systemOverview(query, actor)
   }
 
   @Get('observe')

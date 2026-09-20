@@ -1,9 +1,12 @@
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import {
   bumpEvidenceUploadAttempts,
+  claimRecordingArtifactCleanup,
+  settleRecordingArtifactCleanup,
   commitObjectEvidence,
   commitStoredObject,
   findObjectEvidenceByAttemptType,
+  findObjectEvidenceByArtifactKey,
   findObjectEvidenceByRunType,
   getStoredObjectById,
   getStoredObjectByKey,
@@ -14,6 +17,7 @@ import {
   recordMissingObjectEvidence,
   recordObjectEvidence as recordObjectEvidenceRow,
   reserveObjectEvidence,
+  reopenAvailableRunVideo,
   reserveStoredObject,
   settleExpiredPendingEvidence,
   type DbHandle,
@@ -21,6 +25,7 @@ import {
 import {
   OBJECT_MISSING_REASONS,
   ObjectStoreError,
+  capturedSpanMsOf,
   isObjectStoreError,
   objectContentTypeSchema,
   DEFAULT_TRACE_RETAIN_DAYS,
@@ -29,7 +34,7 @@ import {
   type EvidenceType,
   type JsonValue,
 } from '@cairn/shared'
-import type { ObjectStore } from '@cairn/storage'
+import type { ObjectStore, ObjectStoreProbeResult } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
 
 export const OBJECT_STORE = Symbol('OBJECT_STORE')
@@ -76,6 +81,14 @@ export class ObjectService {
 
   videoMaxBytes(): number {
     return this.options.videoMaxBytes ?? this.options.maxBytes
+  }
+
+  probeStore(): Promise<ObjectStoreProbeResult> {
+    return this.store.probe()
+  }
+
+  objectStore(): ObjectStore {
+    return this.store
   }
 
   async putObject(input: PutObjectInput): Promise<{
@@ -172,13 +185,19 @@ export class ObjectService {
     type: EvidenceType
     stepRunId?: string
     attemptId?: string
+    artifactKey?: string
     payload?: JsonValue
   }): Promise<EvidenceMetadata> {
     const contentType = objectContentTypeSchema.parse(input.contentType)
     const limit = evidenceByteLimit(input.type, this.options)
     const maxAttempts = this.options.uploadMaxAttempts ?? 3
 
-    let existing = input.attemptId
+    let existing = input.artifactKey
+      ? await findObjectEvidenceByArtifactKey(this.handle, {
+          runId: input.runId,
+          artifactKey: input.artifactKey,
+        })
+      : input.attemptId
       ? await findObjectEvidenceByAttemptType(this.handle, {
           attemptId: input.attemptId,
           type: input.type,
@@ -189,7 +208,21 @@ export class ObjectService {
             type: input.type,
           })
         : null
-    if (existing?.status === 'available' || existing?.status === 'missing') return existing
+    if (existing?.status === 'missing') return existing
+    if (existing?.status === 'available') {
+      const nextSpan = capturedSpanMsOf(input.payload)
+      if (input.type !== 'video' || input.attemptId || nextSpan < 0) return existing
+      const retainUntil =
+        input.retainUntil ??
+        new Date(this.now().getTime() + evidenceRetainDays(input.type, this.options) * 86_400_000)
+      const reopened = await reopenAvailableRunVideo(this.handle, {
+        runId: input.runId,
+        retainUntil,
+        capturedSpanMs: nextSpan,
+      })
+      if (!reopened || reopened.status !== 'pending') return reopened ?? existing
+      existing = reopened
+    }
 
     const tooLargeReason = evidenceTooLargeReason(input.type)
     if (input.body.byteLength > limit) {
@@ -216,6 +249,7 @@ export class ObjectService {
         stepRunId: input.stepRunId,
         attemptId: input.attemptId,
         type: input.type,
+        artifactKey: input.artifactKey,
         retainUntil,
       })
     }
@@ -320,6 +354,16 @@ export class ObjectService {
             `对象删除持续失败：${message}`,
           )
         }
+      }
+    }
+    // Independent bounded quota: recording uploads never consume Run evidence cleanup capacity.
+    const recordings = await claimRecordingArtifactCleanup(this.handle, { now, limit: 10 })
+    for (const candidate of recordings) {
+      try {
+        await this.store.delete(candidate.objectKey)
+        await settleRecordingArtifactCleanup(this.handle, candidate.id, now)
+      } catch {
+        this.logger.warn({ generationId: candidate.id }, '录制附件清理失败，将按台账重试')
       }
     }
     return { purged }

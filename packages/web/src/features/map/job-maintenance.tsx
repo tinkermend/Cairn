@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { MapJobKind } from '@cairn/shared'
+import { arrivalTargetForName, type MapJobKind } from '@cairn/shared'
+import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -75,7 +76,7 @@ export function JobMaintenanceCard({ targetId }: { targetId: string }) {
         name: entryName.trim(),
         url: entryUrl.trim(),
         arrivalName: arrivalName.trim(),
-        arrivalTarget: { framePath: [], candidates: [{ by: 'role', value: 'heading', name: arrivalName.trim() }] },
+        arrivalTarget: arrivalTargetForName(arrivalName),
         safetyBasisKind: 'confirmed_path',
         summary: summary.trim(),
         jobKinds: ['map_probe', 'map_refresh'],
@@ -121,8 +122,9 @@ export function JobMaintenanceCard({ targetId }: { targetId: string }) {
   if (!canRead) return null
   const policy = policyQuery.data
   const entries = entriesQuery.data?.items ?? []
-  const accounts = accountsQuery.data?.items ?? []
+  const accounts = mapCapableAccounts(accountsQuery.data?.items ?? [])
   const enabled = policy?.policy.manualJobsEnabled === true
+  const kindEntries = entries.filter((entry) => entry.jobKinds.includes(jobKind))
 
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
@@ -153,8 +155,11 @@ export function JobMaintenanceCard({ targetId }: { targetId: string }) {
                   placeholder='说明为何开放或关闭'
                 />
               </div>
+              {!enabled && accounts.length === 0 ? (
+                <p className='text-label text-muted-foreground'>{MAP_ACCOUNT_REQUIRED}</p>
+              ) : null}
               <Button
-                disabled={policyMutation.isPending || !reason.trim()}
+                disabled={policyMutation.isPending || !reason.trim() || (!enabled && accounts.length === 0)}
                 onClick={() => policyMutation.mutate(!enabled)}
               >
                 {enabled ? '关闭手工作业' : '开放手工作业'}
@@ -178,6 +183,7 @@ export function JobMaintenanceCard({ targetId }: { targetId: string }) {
                 <Input id='entry-url' value={entryUrl} onChange={(event) => setEntryUrl(event.target.value)} />
                 <Label htmlFor='arrival-name'>到达断言</Label>
                 <Input id='arrival-name' value={arrivalName} onChange={(event) => setArrivalName(event.target.value)} />
+                <p className='text-label text-muted-foreground'>按标题、菜单项、链接、按钮依次匹配，不必是页面标题。</p>
                 <Label htmlFor='entry-summary'>安全依据</Label>
                 <Input id='entry-summary' value={summary} onChange={(event) => setSummary(event.target.value)} />
                 <Button
@@ -196,7 +202,10 @@ export function JobMaintenanceCard({ targetId }: { targetId: string }) {
                   id='job-kind'
                   className='flex h-10 w-full rounded-md border border-input bg-background px-3 text-body'
                   value={jobKind}
-                  onChange={(event) => setJobKind(event.target.value as MapJobKind)}
+                  onChange={(event) => {
+                    setJobKind(event.target.value as MapJobKind)
+                    setEntryId('')
+                  }}
                 >
                   <option value='map_probe'>探查入口</option>
                   <option value='map_refresh'>复查所选</option>
@@ -215,6 +224,9 @@ export function JobMaintenanceCard({ targetId }: { targetId: string }) {
                     </option>
                   ))}
                 </select>
+                {accounts.length === 0 ? (
+                  <p className='text-label text-muted-foreground'>{MAP_ACCOUNT_REQUIRED}</p>
+                ) : null}
                 <Label htmlFor='job-entry'>进入路径</Label>
                 <select
                   id='job-entry'
@@ -223,12 +235,15 @@ export function JobMaintenanceCard({ targetId }: { targetId: string }) {
                   onChange={(event) => setEntryId(event.target.value)}
                 >
                   <option value=''>选择路径</option>
-                  {entries.map((entry) => (
+                  {kindEntries.map((entry) => (
                     <option key={entry.entryId} value={entry.entryId}>
                       {entry.name}
                     </option>
                   ))}
                 </select>
+                {entries.length > 0 && kindEntries.length === 0 ? (
+                  <p className='text-label text-muted-foreground'>没有适用于当前作业类型的进入路径。</p>
+                ) : null}
                 <div className='flex flex-wrap gap-2'>
                   <Button
                     variant='outline'

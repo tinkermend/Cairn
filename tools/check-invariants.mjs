@@ -275,6 +275,25 @@ export const INVARIANT_RULES = [
       return issues
     },
   },
+  {
+    id: 'INV012_WORKER_INTERVALS_IN_LIFECYCLE',
+    articles: ['执行分层'],
+    title: 'Worker 进程级 setInterval 只允许生命周期与既有会话/录像心跳',
+    rationale: '新增能力不得另起一套失管循环；领取、调度与回收都挂在 LifecycleService',
+    targetDir: 'packages/worker/src',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      if (!/\bsetInterval\s*\(/.test(content)) return []
+      const normalized = rel.replaceAll('\\', '/')
+      const allowed = [
+        'runtime/lifecycle.service.ts',
+        'browser/session-manager.ts',
+        'browser/run-video.ts',
+      ]
+      if (allowed.some((item) => normalized.endsWith(item))) return []
+      return ['生产代码不得在 LifecycleService / session-manager / run-video 以外使用 setInterval']
+    },
+  },
 ]
 
 export function runInvariantChecks() {

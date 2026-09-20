@@ -22,6 +22,7 @@ export const schedules = cairnSchema.table(
       .references(() => targetAccounts.id, { onDelete: 'restrict' }),
     consumerKey: text('consumer_key').notNull(),
     enabled: integer('enabled').notNull(),
+    enabledGuard: text('enabled_guard'),
     revision: integer('revision').notNull(),
     currentVersionId: uuid('current_version_id').notNull(),
     nextDueAt: timestamp('next_due_at', { withTimezone: true }),
@@ -30,7 +31,7 @@ export const schedules = cairnSchema.table(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('schedules_account_consumer').on(t.targetAccountId, t.consumerKey),
+    uniqueIndex('schedules_account_consumer').on(t.targetAccountId, t.consumerKey, t.enabledGuard),
     index('schedules_due_idx').on(t.enabled, t.nextDueAt),
     index('schedules_target_idx').on(t.targetId, t.createdAt),
   ],

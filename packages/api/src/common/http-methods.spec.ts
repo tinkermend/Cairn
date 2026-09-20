@@ -41,6 +41,7 @@ describe('对外 HTTP 方法', () => {
         ping: vi.fn(async () => true),
         close: vi.fn(async () => {}),
         driver: 'postgres',
+        poolStats: () => null,
       } satisfies DbHandle)
       .overrideProvider(CHANGE_HINT)
       .useValue(unusedChangeHint)

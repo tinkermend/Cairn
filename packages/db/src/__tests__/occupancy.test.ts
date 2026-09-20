@@ -1,6 +1,12 @@
 import { eq, inArray } from 'drizzle-orm'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { PLATFORM_CONFIG_SINGLETON_ID, SESSION_OCCUPANCY_PROTOCOL, type Step } from '@cairn/shared'
+import {
+  MAP_JOBS_PROTOCOL,
+  MAP_SCHEDULER_PROTOCOL,
+  PLATFORM_CONFIG_SINGLETON_ID,
+  SESSION_OCCUPANCY_PROTOCOL,
+  type Step,
+} from '@cairn/shared'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { afterSeconds, schemaFor } from '../native.js'
 import { newId } from '../id.js'
@@ -137,20 +143,39 @@ describe.each(DRIVERS)('%s 会话占用与调度', { timeout: 60_000 }, (driver)
     if (!rejected.ok) expect(rejected.code).toBe('SESSION_NOT_CLAIMABLE')
   })
 
-  it('SM28 未声明 session-occupancy@2 的 Worker 不能 READY', async () => {
+  it('SM28 声明执行协议但未声明 session-occupancy@2 的 Worker 不能 READY', async () => {
     await expect(
       registerWorker(handle.db, {
         workerId: `old-${newId().slice(0, 8)}`,
         instanceId: newId(),
         capacity: 2,
         lostAfterSeconds: 60,
-        protocolCapabilities: [],
+        protocolCapabilities: [MAP_JOBS_PROTOCOL],
       }),
     ).rejects.toMatchObject({ code: 'WORKER_PROTOCOL_UNSUPPORTED' })
     const ready = await seedWorker(handle, `ready-${newId().slice(0, 8)}`)
     const { workers } = schemaFor(handle.db)
     const [row] = await handle.db.select().from(workers).where(eq(workers.id, ready.workerId))
     expect(row?.protocolCapabilities).toContain(SESSION_OCCUPANCY_PROTOCOL)
+  })
+
+  it('A2 调度与维护角色可以不声明占用协议就登记', async () => {
+    const scheduler = await registerWorker(handle.db, {
+      workerId: `sched-${newId().slice(0, 8)}`,
+      instanceId: newId(),
+      capacity: 1,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [MAP_SCHEDULER_PROTOCOL],
+    })
+    expect(scheduler.worker.status).toBe('READY')
+    const maintenance = await registerWorker(handle.db, {
+      workerId: `mnt-${newId().slice(0, 8)}`,
+      instanceId: newId(),
+      capacity: 1,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [],
+    })
+    expect(maintenance.worker.status).toBe('READY')
   })
 
   it('SM05 连续 20 轮同键并发领取至多一条 ACTIVE 租约', async () => {
@@ -263,7 +288,7 @@ describe.each(DRIVERS)('%s 会话占用与调度', { timeout: 60_000 }, (driver)
       .update(sessionLeases)
       .set({ waitDeadlineAt: afterSeconds(handle.db, -5) })
       .where(eq(sessionLeases.id, waitGrant!.leaseId))
-    expect(await reapSessionLeases(handle.db, { limit: 20 })).toBeGreaterThanOrEqual(1)
+    expect((await reapSessionLeases(handle.db, { limit: 20 })).settled).toBeGreaterThanOrEqual(1)
     expect((await getRun(handle.db, created.detail.id)).status).toBe('FAILED')
     await expect(
       resumeRunAfterAuth(handle.db, {
@@ -312,7 +337,7 @@ describe.each(DRIVERS)('%s 会话占用与调度', { timeout: 60_000 }, (driver)
       .update(sessionLeases)
       .set({ expiresAt: afterSeconds(handle.db, -5) })
       .where(eq(sessionLeases.id, waitGrant!.leaseId))
-    expect(await reapSessionLeases(handle.db, { maxRecoveries: 3 })).toBeGreaterThanOrEqual(1)
+    expect((await reapSessionLeases(handle.db, { maxRecoveries: 3 })).settled).toBeGreaterThanOrEqual(1)
     expect((await getRun(handle.db, created.detail.id)).status).toBe('RECOVERING')
     expect(await countFailedRecoveries(handle.db, created.detail.id)).toBe(1)
     expect(await findAuthWaitLeaseForRun(handle.db, created.detail.id)).toBeNull()
@@ -587,7 +612,7 @@ describe.each(DRIVERS)('%s 会话占用与调度', { timeout: 60_000 }, (driver)
       .update(sessionLeases)
       .set({ expiresAt: afterSeconds(handle.db, -5) })
       .where(eq(sessionLeases.id, claimed.grant.leaseId))
-    expect(await reapSessionLeases(handle.db)).toBeGreaterThanOrEqual(1)
+    expect((await reapSessionLeases(handle.db)).settled).toBeGreaterThanOrEqual(1)
     const [row] = await handle.db.select().from(sessionLeases).where(eq(sessionLeases.id, claimed.grant.leaseId))
     expect(row).toMatchObject({ status: 'EXPIRED', releaseReason: 'lease_expired' })
     expect((await getRun(handle.db, created.detail.id)).status).toBe('RUNNING')

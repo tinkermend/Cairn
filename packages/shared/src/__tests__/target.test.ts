@@ -78,10 +78,26 @@ describe('createTargetBodySchema', () => {
       name: '带账号',
       entryUrl: 'https://example.com',
       loginFields: { username: { by: 'id', value: 'username' } },
-      account: { displayName: '演示', username: 'demo', password: 'secret' },
+      account: {
+        displayName: '演示',
+        username: 'demo',
+        password: 'secret',
+        validity: { mode: 'days', amount: 90, timeZone: 'Asia/Shanghai' },
+      },
     })
     expect(parsed.loginFields).toEqual({ username: { by: 'id', value: 'username' } })
     expect(parsed.account).toMatchObject({ displayName: '演示', username: 'demo', password: 'secret' })
+  })
+
+  it('首个账号带密码但没有维护期限时拒绝', () => {
+    expect(() =>
+      createTargetBodySchema.parse({
+        code: 'no-validity',
+        name: '带账号',
+        entryUrl: 'https://example.com',
+        account: { displayName: '演示', username: 'demo', password: 'secret' },
+      }),
+    ).toThrow(/维护有效期/)
   })
 
   it('拒绝 heuristicVersion / 非法 by', () => {

@@ -60,8 +60,8 @@ export class ActionModulesService {
     return browserAiCapabilitiesFrom(config?.document ?? FACTORY_PLATFORM_CONFIG, config?.revision ?? 1)
   }
 
-  async list(query: ModuleListQuery) {
-    const listed = await listActionModules(this.db, query).catch(rethrowDomain)
+  async list(query: ModuleListQuery, actor: RequestAccount) {
+    const listed = await listActionModules(this.db, query, actor.id).catch(rethrowDomain)
     listed.items = await attachModuleListHealth(this.db, listed.items).catch(() => listed.items)
     return listed
   }
@@ -74,8 +74,8 @@ export class ActionModulesService {
     return listModuleInvocations(this.db, id, query).catch(rethrowDomain)
   }
 
-  get(id: string) {
-    return getActionModule(this.db, id).catch(rethrowDomain)
+  get(id: string, actor: RequestAccount) {
+    return getActionModule(this.db, id, actor.id).catch(rethrowDomain)
   }
 
   create(body: CreateModuleBody, actor: RequestAccount) {

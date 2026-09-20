@@ -11,6 +11,7 @@ import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
 import { scenarios } from './execution.js'
 import { targets } from './targets.js'
+import type { DemonstrationReceiptMetadata } from './demonstration.js'
 
 export const recordingDrafts = cairnSchema.table(
   'recording_drafts',
@@ -24,6 +25,7 @@ export const recordingDrafts = cairnSchema.table(
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
     recordingId: uuid('recording_id').notNull(),
     sourceVersion: text('source_version').notNull(),
+    sourceProtocol: text('source_protocol').notNull().default('recording@1'),
     idempotencyKey: text('idempotency_key').notNull(),
     payloadDigest: text('payload_digest').notNull(),
     name: text('name').notNull(),
@@ -103,6 +105,7 @@ export const recordingImportReceipts = cairnSchema.table(
     newRevision: integer('new_revision').notNull(),
     insertAnchor: jsonb('insert_anchor').$type<RecordingInsertAnchor>().notNull(),
     sourceMap: jsonb('source_map').$type<RecordingImportReceipt['sourceMap']>().notNull(),
+    demonstration: jsonb('demonstration').$type<DemonstrationReceiptMetadata>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

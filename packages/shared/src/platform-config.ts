@@ -24,11 +24,14 @@ import {
   DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
   DEFAULT_SESSION_RECLAIM_MODE,
   DEFAULT_SESSION_REUSE_POLICY,
+  DEFAULT_SESSION_LOST_DISPOSITION,
   resolveSessionPolicyLayers,
   sessionPolicySchema,
   sessionReclaimModeSchema,
+  sessionLostDispositionSchema,
   type SessionPolicy,
   type SessionPolicyOverride,
+  type TargetSessionPolicyOverride,
 } from './session.js'
 import {
   FACTORY_SESSION_SCHEDULING,
@@ -40,7 +43,7 @@ import {
   type MapCapturePolicy,
   type MapCapturePolicyOverride,
 } from './map-capture.js'
-import { FACTORY_SESSION_AUTH, platformSessionAuthSchema } from './session-auth.js'
+import { FACTORY_SESSION_AUTH, platformSessionAuthSchema, targetCaptchaDefinitionSchema } from './session-auth.js'
 import { FACTORY_SESSION_RETENTION, platformSessionRetentionSchema } from './session-maintenance.js'
 import { FACTORY_RUN_AUTH_RECOVERY, platformRunAuthRecoverySchema } from './session-auth-recovery.js'
 import { isAiStepType, type ExecutionPolicy } from './step.js'
@@ -50,8 +53,10 @@ import {
   FACTORY_RUNTIME_INVARIANT_DEFAULTS,
   platformRuntimeInvariantDefaultsSchema,
 } from './runtime-invariant.js'
+import { FACTORY_ALERTING, alertRuleSchema, credentialMaintenanceAlertingSchema } from './alerting.js'
+import { FACTORY_NOTIFICATIONS, platformNotificationsSchema } from './notifications.js'
 
-export const PLATFORM_CONFIG_SCHEMA_VERSION = 1 as const
+export const PLATFORM_CONFIG_SCHEMA_VERSION = 2 as const
 /** 仍能被本版本读取的最早文档版本。低于它的存量文档必须先跑数据迁移。 */
 export const PLATFORM_CONFIG_MIN_SCHEMA_VERSION = 1 as const
 export const PLATFORM_CONFIG_SCHEMA_UNSUPPORTED = 'PLATFORM_CONFIG_SCHEMA_UNSUPPORTED' as const
@@ -117,6 +122,7 @@ export const platformSessionDefaultsSchema = z
       .max(86_400)
       .default(DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS),
     evictionPriority: z.number().int().min(-1000).max(1000).default(DEFAULT_SESSION_EVICTION_PRIORITY),
+    lostDisposition: sessionLostDispositionSchema.default(DEFAULT_SESSION_LOST_DISPOSITION),
   })
   .superRefine((session, ctx) => {
     if (session.maxLifetimeSeconds <= session.idleTtlSeconds) {
@@ -292,8 +298,17 @@ export const platformConfigDocumentSchema = z
     moduleQuality: platformModuleQualitySchema.default(FACTORY_MODULE_QUALITY),
     moduleFallback: platformModuleFallbackSchema.default(FACTORY_MODULE_FALLBACK),
     runtimeInvariants: platformRuntimeInvariantDefaultsSchema.default(FACTORY_RUNTIME_INVARIANT_DEFAULTS),
+    alerting: z.strictObject({
+      rules: z.array(alertRuleSchema).max(64),
+      credentialMaintenance: credentialMaintenanceAlertingSchema.default({ enabled: false, channelIds: [] }),
+    }).default({ rules: FACTORY_ALERTING.rules, credentialMaintenance: FACTORY_ALERTING.credentialMaintenance }),
+    notifications: platformNotificationsSchema.default(FACTORY_NOTIFICATIONS),
   })
   .superRefine((document, ctx) => {
+    const ids = new Set(document.notifications.channels.map(c => c.id))
+    for (const rule of document.alerting.rules) {
+      if (rule.channelIds.some(id => !ids.has(id))) ctx.addIssue({ code: 'custom', path: ['alerting', 'rules'], message: '告警引用的通知渠道不存在' })
+    }
     if (document.sessionAuth.verifyTimeoutMs >= document.execution.defaultTimeoutMs) {
       ctx.addIssue({
         code: 'custom',
@@ -359,6 +374,7 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     keepAliveSeconds: DEFAULT_SESSION_KEEP_ALIVE_SECONDS,
     authProbeIntervalSeconds: DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
     evictionPriority: DEFAULT_SESSION_EVICTION_PRIORITY,
+    lostDisposition: DEFAULT_SESSION_LOST_DISPOSITION,
   },
   evidence: {
     screenshot: 'always',
@@ -389,6 +405,8 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   moduleQuality: FACTORY_MODULE_QUALITY,
   moduleFallback: FACTORY_MODULE_FALLBACK,
   runtimeInvariants: FACTORY_RUNTIME_INVARIANT_DEFAULTS,
+  alerting: { rules: FACTORY_ALERTING.rules, credentialMaintenance: FACTORY_ALERTING.credentialMaintenance },
+  notifications: FACTORY_NOTIFICATIONS,
 }
 
 /**
@@ -399,7 +417,19 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
  */
 export type PlatformConfigUpgrade = (raw: Record<string, unknown>) => Record<string, unknown>
 
-const PLATFORM_CONFIG_UPGRADES = new Map<number, PlatformConfigUpgrade>()
+const PLATFORM_CONFIG_UPGRADES = new Map<number, PlatformConfigUpgrade>([[1, raw => {
+  const alerting = (raw.alerting ?? FACTORY_ALERTING) as typeof FACTORY_ALERTING
+  const channels = (alerting.channels ?? []).map(c => ({
+    id: c.id, name: c.name, kind: 'webhook', enabled: c.enabled, allowAlerts: true, targetIds: [],
+    version: 1, secretRef: c.secretRef, host: c.urlHost, recipients: [],
+    format: 'legacy_alert@1', replay: 'manual_on_unknown',
+  }))
+  return {
+    ...raw, schemaVersion: 2,
+    alerting: { rules: alerting.rules, credentialMaintenance: alerting.credentialMaintenance ?? { enabled: false, channelIds: [] } },
+    notifications: { enabled: channels.some(c => c.enabled), consoleBaseUrl: '', smtp: null, channels },
+  }
+}]])
 
 function schemaUnsupported(message: string): Error {
   return Object.assign(new Error(message), { code: PLATFORM_CONFIG_SCHEMA_UNSUPPORTED })
@@ -543,6 +573,8 @@ export const frozenTargetAuthSchema = z.strictObject({
   authMethod: z.enum(AUTH_METHODS),
   captchaMode: z.enum(CAPTCHA_MODES),
   loginFields: targetLoginFieldsDtoSchema,
+  captcha: targetCaptchaDefinitionSchema.optional(),
+  sensitiveSelectors: z.array(z.string().trim().min(1).max(256)).max(32).optional(),
 })
 export type FrozenTargetAuth = z.infer<typeof frozenTargetAuthSchema>
 
@@ -570,13 +602,14 @@ export function sessionPolicyFromPlatform(session: PlatformSessionDefaults): Ses
     keepAliveSeconds: session.keepAliveSeconds,
     authProbeIntervalSeconds: session.authProbeIntervalSeconds,
     evictionPriority: session.evictionPriority,
+    lostDisposition: session.lostDisposition,
   })
 }
 
 export function resolvePlatformSessionPolicy(
   override: SessionPolicyOverride | null | undefined,
   platform: PlatformSessionDefaults,
-  targetOverride?: SessionPolicyOverride | null,
+  targetOverride?: SessionPolicyOverride | TargetSessionPolicyOverride | null,
 ): SessionPolicy {
   return resolveSessionPolicyLayers({
     platformDefault: sessionPolicyFromPlatform(platform),
@@ -600,6 +633,7 @@ export function resolvePlatformEvidencePolicy(
       video: platform.retainDays.video,
       trace: trace === 'always' ? platform.retainDays.debugTrace : platform.retainDays.trace,
     },
+    screenshotViewport: override?.screenshotViewport ?? 'viewport',
   }
   const resolved = resolveEvidencePolicy(override, base)
   if (override?.retainDays?.trace === undefined) {

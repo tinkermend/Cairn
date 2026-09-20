@@ -1,6 +1,9 @@
 import {
   DEFAULT_BROWSER_AI_HANG_WAIT_MS,
+  AI_ATOMIC_ACTIONS_PROTOCOL,
+  IMPORTED_OUTCOME_PROTOCOL,
   FACTORY_PLATFORM_CONFIG,
+  MAP_JOB_EVIDENCE_POLICY,
   RUNTIME_SCHEMA_VERSION,
   assertAiRequestTimeoutFitsSteps,
   freezeExecutorVersions,
@@ -13,7 +16,7 @@ import {
   resolvePlatformExecutionPolicy,
   resolvePlatformSessionPolicy,
   runSnapshotSchema,
-  sessionPolicyOverrideSchema,
+  targetSessionPolicyOverrideSchema,
   type AiExecutionConfig,
   type EvidencePolicy,
   type ExecutionPolicy,
@@ -30,6 +33,7 @@ import {
   type RunSnapshot,
   type SessionPolicyOverride,
   type Step,
+  type SuiteAdmissionSnapshot,
 } from '@cairn/shared'
 import { computeSnapshotDigest } from './digest.js'
 
@@ -45,7 +49,7 @@ export class AssembleRunSnapshotError extends Error {
 
 function parseTargetSessionPolicyOverride(value: unknown) {
   if (value == null) return null
-  return sessionPolicyOverrideSchema.parse(value)
+  return targetSessionPolicyOverrideSchema.parse(value)
 }
 
 export function resolveAssembledAiExecution(input: {
@@ -95,6 +99,7 @@ export type AssembleRunSnapshotInput = {
   targetId: string
   targetAccountId?: string
   secretRef?: RunSnapshot['secretRef']
+  credentialBinding?: RunSnapshot['credentialBinding']
   scenarioId: string
   scenarioVersionId: string
   steps: readonly Step[]
@@ -113,7 +118,9 @@ export type AssembleRunSnapshotInput = {
     authMethod: string
     captchaMode: string
     loginFields: unknown
+    captcha?: unknown
     sessionPolicy: unknown
+    sensitiveSelectors?: string[] | null
   }
   platformDocument: PlatformConfigDocument
   platformRevision?: number
@@ -123,6 +130,7 @@ export type AssembleRunSnapshotInput = {
   allowedOrigins: string[]
   accessPolicy: FrozenTargetAccessPolicy
   mapConsumption: FrozenMapConsumption
+  suiteAdmission?: SuiteAdmissionSnapshot
 }
 
 export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapshot & { digest: string } {
@@ -132,7 +140,10 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     document.session,
     parseTargetSessionPolicyOverride(input.target.sessionPolicy),
   )
-  const evidencePolicy = resolvePlatformEvidencePolicy(input.evidencePolicyOverride, document.evidence)
+  const evidencePolicy = resolvePlatformEvidencePolicy(
+    input.mapJob ? MAP_JOB_EVIDENCE_POLICY : input.evidencePolicyOverride,
+    document.evidence,
+  )
   const policy = resolvePlatformExecutionPolicy(input.executionPolicyOverride, document.execution)
   const snapshotBase = {
     schemaVersion: RUNTIME_SCHEMA_VERSION,
@@ -140,9 +151,14 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     targetId: input.targetId,
     targetAccountId: input.targetAccountId,
     secretRef: input.secretRef,
+    ...(input.credentialBinding ? { credentialBinding: input.credentialBinding } : {}),
     scenarioId: input.scenarioId,
     scenarioVersionId: input.scenarioVersionId,
     steps: [...input.steps],
+    ...(input.steps.some((step) => step.type === 'ai_action' && 'operation' in step.input)
+      ? { aiAtomicActionsProtocol: AI_ATOMIC_ACTIONS_PROTOCOL } : {}),
+    ...(input.outcomeManifest?.entries.some((entry) => entry.provenance === 'imported')
+      ? { importedOutcomeProtocol: IMPORTED_OUTCOME_PROTOCOL } : {}),
     moduleManifest: input.moduleManifest ?? undefined,
     ...(input.moduleManifest?.candidateGroups?.length
       ? { candidateGroups: { groups: input.moduleManifest.candidateGroups } }
@@ -156,7 +172,11 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),
     policy,
     sessionPolicy,
-    evidencePolicy,
+    evidencePolicy: {
+      ...evidencePolicy,
+      captureContractVersion: 1 as const,
+      screenshotViewport: evidencePolicy.screenshotViewport,
+    },
     executorVersions: freezeExecutorVersions(input.steps.map((step) => step.type)),
     ...loginScopeFromTargetUrl(input.target.entryUrl, input.target.loginUrl),
     targetAuth: frozenTargetAuthSchema.parse({
@@ -165,6 +185,10 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
       authMethod: input.target.authMethod,
       captchaMode: input.target.captchaMode,
       loginFields: input.target.loginFields ?? null,
+      captcha: input.target.captcha ?? undefined,
+      ...(input.target.sensitiveSelectors?.length
+        ? { sensitiveSelectors: input.target.sensitiveSelectors }
+        : {}),
     }),
     authVerification: input.authVerification,
     ...(input.platformRevision ? { platformConfigRevision: input.platformRevision } : {}),
@@ -188,6 +212,7 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     accessPolicy: input.accessPolicy,
     mapConsumption: input.mapConsumption,
     ...(input.mapJob ? { mapJob: input.mapJob } : {}),
+    ...(input.suiteAdmission ? { suiteAdmission: input.suiteAdmission } : {}),
   })
   const digest = computeSnapshotDigest(parsed)
   return runSnapshotSchema.parse({ ...parsed, digest }) as RunSnapshot & { digest: string }

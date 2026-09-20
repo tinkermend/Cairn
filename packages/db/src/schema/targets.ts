@@ -1,5 +1,10 @@
 import { relations } from 'drizzle-orm'
-import type { AuthProfileValidation, ResourceDeletedBy, TargetAuthProfileDefinition } from '@cairn/shared'
+import type {
+  AuthProfileValidation,
+  ResourceDeletedBy,
+  TargetAuthProfileDefinition,
+  TargetCaptchaDefinition,
+} from '@cairn/shared'
 import {
   customType,
   index,
@@ -41,8 +46,10 @@ export const targets = cairnSchema.table(
       password?: { by: 'id' | 'name' | 'css'; value: string }
       submit?: { by: 'id' | 'name' | 'css'; value: string }
     }>(),
+    captcha: jsonb('captcha').$type<TargetCaptchaDefinition>(),
     currentAuthProfileRevision: integer('current_auth_profile_revision'),
     sessionPolicy: jsonb('session_policy').$type<Record<string, unknown>>(),
+    sensitiveSelectors: jsonb('sensitive_selectors').$type<string[]>().notNull().default([]),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -77,6 +84,8 @@ export const targetAccounts = cairnSchema.table(
       .notNull()
       .default('active'),
     expectedIdentity: text('expected_identity'),
+    usage: text('usage').notNull().default('business').$type<'map' | 'business' | 'both'>(),
+    mapUsageGuard: text('map_usage_guard'),
     configRevision: integer('config_revision').notNull().default(1),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
@@ -85,6 +94,7 @@ export const targetAccounts = cairnSchema.table(
   },
   (t) => [
     uniqueIndex('target_accounts_target_username_idx').on(t.targetId, t.username),
+    uniqueIndex('target_accounts_map_usage').on(t.targetId, t.mapUsageGuard),
     index('target_accounts_target_id_idx').on(t.targetId),
     index('target_accounts_deleted_at_idx').on(t.deletedAt),
   ],

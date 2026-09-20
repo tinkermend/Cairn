@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   FACTORY_MAP_CAPTURE_POLICY,
   FACTORY_PLATFORM_CONFIG,
+  enrichMapCondition,
   isMapCaptureEnabled,
+  mapConditionSnapshot,
   mapGapObservation,
   mapRecordingFactKey,
   mapRunFactKey,
@@ -98,5 +100,19 @@ describe('地图采集策略', () => {
     })
     expect(skipped.captureStatus).toBe('skipped')
     expect(skipped.sourceRef).not.toHaveProperty('attemptId')
+  })
+
+  it('补齐可见的 locale/viewport 后从 unknownFields 拿掉', () => {
+    const base = mapConditionSnapshot({ targetId: ids.target, targetAccountId: ids.attempt })
+    expect(base.unknownFields).toEqual(
+      expect.arrayContaining(['locale', 'viewport', 'permissionProfile']),
+    )
+    const enriched = enrichMapCondition(base, {
+      locale: 'zh-CN',
+      viewport: { category: 'desktop', widthPx: 1440, heightPx: 900 },
+    })
+    expect(enriched.locale).toBe('zh-CN')
+    expect(enriched.viewport).toEqual({ category: 'desktop', widthPx: 1440, heightPx: 900 })
+    expect(enriched.unknownFields).toEqual(['permissionProfile', 'workspace', 'featureVersion'])
   })
 })

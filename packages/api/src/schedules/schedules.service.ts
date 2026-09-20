@@ -29,8 +29,8 @@ export class SchedulesService {
     return { kind: 'console' as const, id: account.id }
   }
 
-  list(query: ScheduleListQuery) {
-    return listSchedules(this.database, query).catch(rethrowDomain)
+  list(query: ScheduleListQuery, actorId?: string) {
+    return listSchedules(this.database, query, actorId).catch(rethrowDomain)
   }
 
   get(scheduleId: string) {

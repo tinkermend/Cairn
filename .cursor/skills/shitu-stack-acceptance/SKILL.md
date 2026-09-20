@@ -22,7 +22,7 @@ description: 用本机进程探活标尺确认 api / worker / web 是否真的�
 
 `STACK_OK` 只覆盖 S1–S3。`STACK_DEGRADED` 表示进程可访问但控制面降级，通常是 changeHint；可以继续做 S4，不得写成全部正常。`STACK_DOWN` / `STACK_UNHEALTHY` 一律未完成。
 
-Worker 没有公开 `/health`，S1 只证明内部端口在听。不要为此补造探活接口。
+Worker 的 S1 仍看内部端口是否在听。监听之后必须用节点健康 HMAC（`GET /internal/node/health`，签 `CAIRN_WORKER_ID`）确认 `node.loopAlive === true`。在听但 loop 已停、缺 `CAIRN_INTERNAL_AUTH_SECRET`、签不出或解析失败，一律 `STACK_UNHEALTHY`，禁止回退成只做 TCP。
 
 ## 怎么跑
 

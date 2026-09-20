@@ -339,6 +339,25 @@ describe('Runs HTTP', () => {
     expect(res.body).toEqual(png)
   })
 
+  it('证据正文支持 Range 返回 206', async () => {
+    const webm = Buffer.from('0123456789abcdefghij')
+    service.evidenceContent.mockResolvedValueOnce({
+      body: webm.subarray(0, 10),
+      contentType: 'video/webm',
+      byteSize: 10,
+      filename: 'run.webm',
+      totalSize: 20,
+      range: { start: 0, end: 9 },
+    })
+    const res = await request(viewerApp.getHttpServer())
+      .get(`/runs/${detail.id}/evidence/77777777-7777-4777-8777-777777777777/content`)
+      .set('Range', 'bytes=0-9')
+      .expect(206)
+    expect(res.headers['accept-ranges']).toBe('bytes')
+    expect(res.headers['content-range']).toBe('bytes 0-9/20')
+    expect(res.headers['content-length']).toBe('10')
+  })
+
   it('无 run:read 不能下载证据正文', async () => {
     const noRead: RequestAccount = { ...viewer, permissions: ['workflow:read'] }
     const app = await buildApp(noRead, service)

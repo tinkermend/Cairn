@@ -57,6 +57,7 @@ import {
 } from './errors.js'
 import { getPlatformConfig } from '../platform-config/store.js'
 import { requireLiveTarget } from './view.js'
+import { requireMapCapableAccount, requireTargetHasMapCapableAccount } from '../console/account-usage.js'
 
 function jobPolicyFromRow(row: {
   policySchemaVersion: number
@@ -127,6 +128,7 @@ export async function updateMapJobPolicy(
     const [current] = await locked(tx, tx.select().from(mapJobPolicies).where(eq(mapJobPolicies.targetId, targetId)))
     const expected = current?.revision ?? 0
     if (expected !== parsed.expectedRevision) mapRevisionConflict('作业政策修订已变更')
+    if (parsed.manualJobsEnabled) await requireTargetHasMapCapableAccount(tx, targetId)
     const now = await clockNow(tx)
     const nextRevision = expected + 1
     const policy = mapJobPolicySchema.parse({
@@ -475,8 +477,9 @@ export async function createMapJob(
     const [entry] = await tx.select().from(mapSafeEntries).where(eq(mapSafeEntries.id, parsed.entryId)).limit(1)
     if (!entry || entry.targetId !== targetId) mapNotFound('安全进入路径不存在')
     if (!entry.jobKinds.includes(parsed.jobKind)) mapForbidden('该进入路径不适用于此作业类型')
+    await requireMapCapableAccount(tx, targetId, parsed.targetAccountId)
     const session = await findLiveSession(tx, { targetId, targetAccountId: parsed.targetAccountId })
-    if (!session || session.authState !== 'AUTHENTICATED') {
+    if (!session || session.status !== 'OPEN' || session.authState !== 'AUTHENTICATED') {
       mapAuthPreparationRequired()
     }
     if (parsed.jobKind === 'map_explore') {
@@ -622,7 +625,7 @@ export async function completeMapJobSlice(
     if (!job || job.jobStatus === 'cancelled') return { continue: false, jobId: slice.jobId }
     const now = await clockNow(tx)
     const stop: MapJobStopReason =
-      outcome === 'cancelled' ? 'cancelled' : outcome === 'failed' ? 'budget_exhausted' : 'completed'
+      outcome === 'cancelled' ? 'cancelled' : outcome === 'failed' ? 'slice_failed' : 'completed'
     await tx
       .update(mapJobs)
       .set({
@@ -674,8 +677,17 @@ export async function hasClaimableUserRun(
       ),
     )
   for (const row of rows) {
-    if (isMapJobRun(row.snapshot)) continue
-    const [lease] = await db
+        if (isMapJobRun(row.snapshot)) continue
+        if (row.snapshot.suiteAdmission) {
+          const { suiteRunItems } = schemaFor(db)
+          const [admitted] = await db
+            .select({ id: suiteRunItems.id })
+            .from(suiteRunItems)
+            .where(and(eq(suiteRunItems.childRunId, row.id), eq(suiteRunItems.admissionStatus, 'ACTIVE')))
+            .limit(1)
+          if (!admitted) continue
+        }
+        const [lease] = await db
       .select({ id: runLeases.id })
       .from(runLeases)
       .where(and(eq(runLeases.runId, row.id), eq(runLeases.status, 'ACTIVE')))

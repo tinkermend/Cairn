@@ -81,7 +81,7 @@ async function fixture(driver: (typeof DRIVERS)[number]) {
       code: 'portable-test',
       name: '目标 🧪',
       entryUrl: 'https://example.com',
-      account: { username: 'User', displayName: '账号', password: 'hidden-value' },
+      account: { username: 'User', displayName: '账号', password: 'hidden-value', validity: { mode: 'permanent' } },
     }),
     actor,
   )

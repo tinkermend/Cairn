@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { DomainError } from '@cairn/db'
 import {
   INTERNAL_SIGNATURE_HEADERS,
+  NODE_HEALTH_SIGNATURE_HEADERS,
+  WORKER_NODE_HEALTH_PATH,
   WORKER_RUNS_INTERNAL_PATH_PREFIX,
   acquireAuthControlBodySchema,
   authControlInputBodySchema,
@@ -13,8 +15,11 @@ import {
   resumeAuthBodySchema,
   targetObservationSchema,
   verifyInternalHeaders,
+  verifyNodeHealthHeaders,
   workerInternalPath,
+  workerNodeHealthResponseSchema,
   workerRunsInternalPath,
+  type WorkerNodeHealthResponse,
 } from '@cairn/shared'
 import type { BrowserSessionManager } from '../browser/session-manager'
 import type { ExecutionEngine } from '../engine/engine'
@@ -31,17 +36,21 @@ export async function startManagedBrowserHttp(input: {
   host: string
   port: number
   secret: string
+  workerId: string
   workerInstanceId: string
   sessions: BrowserSessionManager
   engine?: ExecutionEngine
+  nodeHealth?: () => Promise<WorkerNodeHealthResponse>
 }): Promise<ManagedBrowserHttp> {
   const secret = requireInternalSecret(input.secret)
   const server = createServer((req, res) => {
     void handleRequest(req, res, {
       secret,
+      workerId: input.workerId,
       workerInstanceId: input.workerInstanceId,
       sessions: input.sessions,
       engine: input.engine,
+      nodeHealth: input.nodeHealth,
     }).catch((error) => writeError(res, error))
   })
   await new Promise<void>((resolve, reject) => {
@@ -62,12 +71,18 @@ async function handleRequest(
   res: ServerResponse,
   ctx: {
     secret: Uint8Array
+    workerId: string
     workerInstanceId: string
     sessions: BrowserSessionManager
     engine?: ExecutionEngine
+    nodeHealth?: () => Promise<WorkerNodeHealthResponse>
   },
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+  if (url.pathname === WORKER_NODE_HEALTH_PATH) {
+    await handleNodeHealth(req, res, ctx)
+    return
+  }
   if (
     !url.pathname.startsWith(PREFIX) &&
     !url.pathname.startsWith(WORKER_RUNS_INTERNAL_PATH_PREFIX)
@@ -294,6 +309,46 @@ function writeError(res: ServerResponse, error: unknown): void {
     return
   }
   writeJson(res, 500, { code: 'INTERNAL', message: '内部处理失败' })
+}
+
+async function handleNodeHealth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: {
+    secret: Uint8Array
+    workerId: string
+    nodeHealth?: () => Promise<WorkerNodeHealthResponse>
+  },
+): Promise<void> {
+  if (req.method !== 'GET') {
+    writeJson(res, 405, { code: 'METHOD_NOT_ALLOWED', message: '节点健康只接受 GET' })
+    return
+  }
+  req.resume()
+  const expiresUnix = Number(header(req, NODE_HEALTH_SIGNATURE_HEADERS.expires))
+  const signature = header(req, NODE_HEALTH_SIGNATURE_HEADERS.signature)
+  const workerId = header(req, NODE_HEALTH_SIGNATURE_HEADERS.worker)
+  if (!signature || !workerId || !Number.isFinite(expiresUnix)) {
+    writeJson(res, 401, { code: 'UNAUTHORIZED', message: '节点健康签名不完整' })
+    return
+  }
+  const ok = await verifyNodeHealthHeaders(ctx.secret, {
+    method: 'GET',
+    path: WORKER_NODE_HEALTH_PATH,
+    body: '',
+    expiresUnix,
+    workerId,
+    signature,
+  })
+  if (!ok || workerId !== ctx.workerId) {
+    writeJson(res, 401, { code: 'UNAUTHORIZED', message: '节点健康签名无效' })
+    return
+  }
+  if (!ctx.nodeHealth) {
+    writeJson(res, 503, { code: 'WORKER_UNREACHABLE', message: '节点健康未就绪' })
+    return
+  }
+  writeJson(res, 200, workerNodeHealthResponseSchema.parse(await ctx.nodeHealth()))
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {

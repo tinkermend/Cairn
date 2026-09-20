@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,6 +18,27 @@ import { CONTRACT_KEY, runObjectStoreContract } from './contract.js'
 import { MemoryS3, s3Error } from './memory-s3.js'
 
 const MAX = 1024
+
+describe.each(['local', 's3'] as const)('%s 有界派生文件上传', (driver) => {
+  it('文件流上传保留摘要、拒绝超限与冲突，取消不发布对象', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cairn-upload-test-'))
+    try {
+      const store = driver === 'local' ? new LocalObjectStore(join(dir, 'objects'), MAX) : new S3ObjectStore(new MemoryS3(), 'reports', MAX)
+      const path = join(dir, 'bundle.zip'), body = Buffer.alloc(2 * 1024 * 1024, 7)
+      await writeFile(path, body)
+      const input = { key: CONTRACT_KEY, path, contentType: 'application/zip', maxBytes: body.length }
+      const first = await store.putFile(input)
+      expect(first.byteSize).toBe(body.length)
+      expect(await store.putFile(input)).toEqual(first)
+      expect((await store.get(CONTRACT_KEY)).head.digest).toBe(first.digest)
+      await expect(store.putFile({ ...input, maxBytes: body.length - 1 })).rejects.toMatchObject({ code: 'OBJECT_TOO_LARGE' })
+      await writeFile(path, 'changed')
+      await expect(store.putFile(input)).rejects.toMatchObject({ code: 'OBJECT_KEY_CONFLICT' })
+      const controller = new AbortController(); controller.abort()
+      await expect(store.putFile({ ...input, signal: controller.signal })).rejects.toBeTruthy()
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+})
 
 describe('LocalObjectStore 契约', () => {
   const dirs: string[] = []
@@ -59,6 +80,19 @@ describe('LocalObjectStore 契约', () => {
     expect(createdOutside).toEqual([])
     expect(existsSync(join(parent, 'escape'))).toBe(false)
     expect(await readdir(dir, { recursive: true })).toEqual([])
+  })
+
+  it('get 支持字节 Range', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cairn-obj-range-'))
+    dirs.push(dir)
+    const store = new LocalObjectStore(dir, MAX)
+    const key = objectKeyFor('00000000-0000-4000-8000-0000000000b1', '00000000-0000-4000-8000-0000000000b2')
+    const body = new TextEncoder().encode('abcdefghij')
+    await store.put({ key, body, contentType: 'text/plain' })
+    const got = await store.get(key, { start: 2, end: 5 })
+    expect(Buffer.from(got.body).toString()).toBe('cdef')
+    expect(got.range).toEqual({ start: 2, end: 5, size: 10 })
+    expect(got.head.byteSize).toBe(10)
   })
 })
 

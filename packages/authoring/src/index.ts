@@ -33,3 +33,6 @@ export {
   suggestModuleInputs,
   suggestionToBinding,
 } from './resolver.js'
+export { DemonstrationParseError, parseDemonstrationFile, sanitizeDemonstrationSource, sanitizeDemonstrationUrl, demonstrationFactDigest } from './demonstration-adapters.js'
+export { suggestDemonstration, previewDemonstration, applyDemonstrationToDocument, DemonstrationApplyError } from './demonstration.js'
+export { validationSubjectDigest, validationRunDigests, classifyValidationSample } from './validation.js'

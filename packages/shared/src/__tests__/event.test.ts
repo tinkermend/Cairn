@@ -58,6 +58,15 @@ describe('eventEnvelopeSchema', () => {
     expect(eventEnvelopeSchema.parse({ ...valid, type: 'evidence.missing' }).type).toBe(
       'evidence.missing',
     )
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.captcha_attempted' }).type).toBe(
+      'run.captcha_attempted',
+    )
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.captcha_solved' }).type).toBe(
+      'run.captcha_solved',
+    )
+    expect(eventEnvelopeSchema.parse({ ...valid, type: 'run.captcha_escalated' }).type).toBe(
+      'run.captcha_escalated',
+    )
   })
 })
 

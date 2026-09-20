@@ -15,6 +15,7 @@ import {
   studioReturnUrl,
   submitAuthoringObservation,
   uploadRecording,
+  uploadDemonstration,
 } from './api'
 import { bindingTargetUrl, resolveStudioBinding } from './binding'
 import { DEFAULT_ENVIRONMENT_ID } from './config'
@@ -24,6 +25,7 @@ import { recordingItemMeta } from './labels'
 import { LoginForm } from './login-form'
 import { CAIRN_OPEN_TARGET, requestAttach, requestDetach, requestStatus, type CairnAttachStatus } from './messages'
 import { previewRecording } from './preview'
+import { CAPTURE_CHANGED, CAPTURE_GET, CAPTURE_RESET, captureSource, previewCapture, type CaptureState } from './capture'
 import {
   clearAuth,
   loadCairnSession,
@@ -78,15 +80,24 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   const attachedRef = React.useRef(false)
   const attemptRef = React.useRef<{ fingerprint: string; recordingId: string } | null>(null)
   const [binding, setBinding] = React.useState<RecordingBindingDto | null>(null)
+  const [capture, setCapture] = React.useState<CaptureState>({ facts: [] })
+  React.useEffect(() => {
+    void chrome.runtime.sendMessage({ event: CAPTURE_GET }).then((state) => { if (state?.facts) setCapture(state) }).catch(() => {})
+    const listener = (message: { event?: string; state?: CaptureState }, sender: chrome.runtime.MessageSender) => {
+      if (sender.id === chrome.runtime.id && message.event === CAPTURE_CHANGED && message.state) setCapture(message.state)
+    }
+    chrome.runtime.onMessage.addListener(listener)
+    return () => chrome.runtime.onMessage.removeListener(listener)
+  }, [])
   const openedTargetRef = React.useRef<string | null>(null)
 
   const preview = React.useMemo(() => {
     try {
-      return previewRecording(sources, excluded)
+      return previewCapture(capture, excluded) ?? previewRecording(sources, excluded)
     } catch (error) {
       return { error: error instanceof Error ? error.message : '录制还不能上传' }
     }
-  }, [sources, excluded])
+  }, [sources, excluded, capture])
 
   const refresh = React.useCallback(async (opts?: { announceAuthFailure?: boolean }) => {
     const next = await loadCairnSession()
@@ -237,6 +248,8 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
 
   const onLogout = async () => {
     await requestDetach().catch(() => {})
+    await chrome.runtime.sendMessage({ event: CAPTURE_RESET }).catch(() => {})
+    setCapture({ facts: [] }); setExcluded([]); attemptRef.current = null
     await clearAuth()
     setTargets([])
     setSelectedTarget(null)
@@ -263,12 +276,16 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     setBusy(true)
     setMessage(null)
     try {
-      const fingerprint = JSON.stringify(preview.events)
+      const facts = capture.facts.filter((_, index) => !excluded.includes(index))
+      const fingerprint = JSON.stringify({ targetId: meta.targetId, bindingId: binding?.id, name: meta.name, facts, events: preview.events })
       if (!attemptRef.current || attemptRef.current.fingerprint !== fingerprint) {
         attemptRef.current = { fingerprint, recordingId: crypto.randomUUID() }
       }
       const recordingId = attemptRef.current.recordingId
-      const detail = await uploadRecording({
+      const detail = facts.length ? await uploadDemonstration({
+        idempotencyKey: recordingId, name: meta.name, acknowledgedOmittedConfig: true,
+        source: captureSource(facts, meta.targetId, recordingId, binding?.id),
+      }).then((result) => ({ id: result.recordingDraftId, name: meta.name, unresolvedCount: preview.unresolvedCount })) : await uploadRecording({
         targetId: meta.targetId,
         recordingId,
         sourceVersion: RECORDER_SOURCE_VERSION,
@@ -364,6 +381,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   }
 
   const onClear = () => {
+    void chrome.runtime.sendMessage({ event: CAPTURE_RESET }).then(() => setCapture({ facts: [] }))
     window.dispatch?.({ event: 'clear' })
     setConfirmClear(false)
     setExpanded([])

@@ -15,6 +15,7 @@ import {
 import { recordAudit, type AuditActor } from '../audit/record.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
+import type { ScanBatchResult } from '../runtime/scan-batch.js'
 import {
   countFailedRecoveries,
   expireLeaseIfDue,
@@ -167,14 +168,14 @@ export async function expireStaleRunLeases(
 export async function sweepDriftedRuns(
   db: Db,
   input: { limit: number; leaseTtlSeconds: number; maxRecoveries: number },
-): Promise<number> {
+): Promise<ScanBatchResult> {
   const ids = await listDriftedRunningIds(db, input.leaseTtlSeconds, input.limit)
   let settled = 0
   for (const runId of ids) {
     const outcome = await settleLeaselessRun(db, { runId, maxRecoveries: input.maxRecoveries })
     if (outcome !== 'skipped') settled += 1
   }
-  return settled
+  return { settled, scanned: ids.length }
 }
 
 export async function settleRevokedRuns(
@@ -442,6 +443,11 @@ export async function reviewRun(
   )
   const { projectModuleInvocationResults } = await import('../action-modules/quality.js')
   await projectModuleInvocationResults(db, input.runId).catch(() => undefined)
+  try {
+    await import('../suites/runs.js').then((mod) => mod.scheduleSuiteAdvanceForChild(db, input.runId))
+  } catch (error) {
+    console.error('[suites] advance after review failed', input.runId, error)
+  }
 }
 
 export { resumeRunAfterAuth } from '../sessions/auth-control.js'

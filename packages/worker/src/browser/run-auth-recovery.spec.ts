@@ -51,6 +51,7 @@ beforeEach(async () => {
   manager.lives.set('session', {
     handle: { basePage: page },
     sessionId: 'session',
+    generation: 1,
     runPageIds: new Set(),
     runPages: new Map(),
     pages: new Map(),

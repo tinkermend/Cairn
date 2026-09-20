@@ -6,7 +6,7 @@ import { ApiRequestError } from '@/lib/api-client'
 import { fetchScenarioCapabilities, trialScenario } from '@/lib/scenarios-api'
 import { inheritCaptureLabel } from '@/features/platform-config/labels'
 import { fetchTargetAccounts } from '@/lib/targets-api'
-import { AccountSessionHint, accountCapabilityLabel } from '@/features/runs/account-session-hint'
+import { AccountSessionHint } from '@/features/runs/account-session-hint'
 import { passwordAccounts, preferredPasswordAccountId } from '@/features/runs/target-account'
 import { Button } from '@/components/ui/button'
 import {
@@ -104,12 +104,10 @@ export function TrialDialog({
               </SelectTrigger>
               <SelectContent>
                 {usableAccounts.length === 0 ? <SelectItem value='__none__'>不指定</SelectItem> : null}
-                {(accounts.data?.items ?? [])
-                  .filter((item) => item.status === 'active')
-                  .map((item) => (
+                {usableAccounts.map((item) => (
                     <SelectItem key={item.id} value={item.id}>
                       {item.displayName}（{item.username}
-                      {item.hasPassword ? '' : ' · 未保存口令'}） · {accountCapabilityLabel(item)}
+                      {item.hasPassword ? '' : ' · 未保存口令'}）
                     </SelectItem>
                   ))}
               </SelectContent>

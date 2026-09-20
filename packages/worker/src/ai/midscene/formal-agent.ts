@@ -1,5 +1,6 @@
 import type { Page } from 'playwright'
-import type { AiExecutionConfig, AiOutputSchema } from '@cairn/shared'
+import { aiAtomicActionInputSchema, type AiAtomicActionInput, type AiExecutionConfig, type AiOutputSchema } from '@cairn/shared'
+import { gatePageWrites } from './page-write-gate.js'
 import { ActionGate, gateActions } from './action-gate.js'
 import { beginMidsceneLogScope } from './run-dir.js'
 import { buildDataDemand } from './extract.js'
@@ -8,6 +9,7 @@ import type { OpenAiLike } from './model-client.js'
 export type FormalAgentHandle = {
   gate: ActionGate
   aiAct(instruction: string, signal?: AbortSignal): Promise<string | undefined>
+  aiAtomic(action: AiAtomicActionInput): Promise<void>
   aiQuery(instruction: string, schema?: AiOutputSchema): Promise<unknown>
   aiAssert(instruction: string): Promise<{ pass: boolean; thought?: string; message?: string }>
   destroy(): Promise<void>
@@ -60,6 +62,10 @@ export async function createFormalMidsceneAgent(input: {
     },
   ) => {
     aiAct(instruction: string, options?: { abortSignal?: AbortSignal }): Promise<string | undefined>
+    aiTap(target: string): Promise<unknown>
+    aiInput(target: string, options: { value: string; mode: 'replace' | 'typeOnly' | 'clear' }): Promise<unknown>
+    aiKeyboardPress(target: string | undefined, options: { keyName: string }): Promise<unknown>
+    aiScroll(target: string | undefined, options: { direction: string; distance: number; scrollType: 'singleAction' }): Promise<unknown>
     aiQuery(dataDemand: string, options?: object): Promise<unknown>
     aiAssert(
       instruction: string,
@@ -69,7 +75,7 @@ export async function createFormalMidsceneAgent(input: {
     destroy?: () => Promise<void>
   }
 
-  const webPage = new PlaywrightWebPage(input.page, {
+  const webPage = new PlaywrightWebPage(gatePageWrites(input.page, input.gate), {
     forceSameTabNavigation: false,
     forceChromeSelectRendering: false,
   })
@@ -93,6 +99,23 @@ export async function createFormalMidsceneAgent(input: {
   return {
     gate: input.gate,
     aiAct: (instruction, signal) => agent.aiAct(instruction, { abortSignal: signal }),
+    aiAtomic: async (action) => {
+      const parsed = aiAtomicActionInputSchema.parse(action)
+      input.gate.assertAllowed('action')
+      if (input.readonly) throw new Error('CAIRN_READONLY:atomic')
+      if (parsed.operation === 'tap') await agent.aiTap(parsed.targetDescription)
+      else if (parsed.operation === 'input') {
+        if (parsed.from !== undefined) throw new Error('CAIRN_AI_INPUT: unresolved from')
+        await agent.aiInput(parsed.targetDescription, {
+          mode: parsed.mode === 'type_only' ? 'typeOnly' : parsed.mode,
+          value: parsed.mode === 'clear' ? '' : parsed.value!,
+        })
+      } else if (parsed.operation === 'keyboard') {
+        await agent.aiKeyboardPress(parsed.targetDescription, { keyName: parsed.key })
+      } else {
+        await agent.aiScroll(parsed.targetDescription, { direction: parsed.direction, distance: parsed.distance, scrollType: 'singleAction' })
+      }
+    },
     aiQuery: (instruction, schema) => agent.aiQuery(buildDataDemand(instruction, schema)),
     aiAssert: async (instruction) => {
       const raw = await agent.aiAssert(instruction, undefined, { keepRawResponse: true })

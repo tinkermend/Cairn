@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm'
 import {
   AI_CALL_KIND,
   RUNTIME_SCHEMA_VERSION,
+  SCENARIO_AI_LEDGER_PURPOSE,
   aiCallEvidenceSchema,
   isAiCallEvidence,
   type AiCallEvidence,
@@ -9,7 +10,7 @@ import {
   type RunGrant,
   type SessionGrant,
 } from '@cairn/shared'
-import { atomic, schemaFor } from '../native.js'
+import { atomic, insertIgnoreRows, schemaFor } from '../native.js'
 import { lockRunRow, verifyRunLeaseForWrite } from '../leases/leases.js'
 import { verifySessionLeaseForCommit } from '../sessions/sessions.js'
 import type { Db } from '../client.js'
@@ -106,8 +107,30 @@ export async function completeAiModelCall(
     errorCode: input.errorCode,
     summary: input.summary,
   })
-  await db
-    .update(table)
-    .set({ payload: payload as JsonValue })
-    .where(eq(table.id, input.evidenceId))
+  await atomic(db, async (tx) => {
+    await tx
+      .update(table)
+      .set({ payload: payload as JsonValue })
+      .where(eq(table.id, input.evidenceId))
+  })
+  try {
+    const { scenarioAiCalls } = schemaFor(db)
+    await insertIgnoreRows(db, scenarioAiCalls, {
+      id: newId(),
+      evidenceId: input.evidenceId,
+      runId: row.runId,
+      stepRunId: row.stepRunId ?? row.runId,
+      attemptId: row.attemptId,
+      purpose: SCENARIO_AI_LEDGER_PURPOSE,
+      model: payload.model ?? null,
+      phase: input.phase,
+      durationMs: input.durationMs ?? null,
+      inputTokens: input.inputTokens ?? null,
+      outputTokens: input.outputTokens ?? null,
+      cost: null,
+      errorCode: input.errorCode ?? null,
+    })
+  } catch (error) {
+    console.error('[db] scenario_ai_calls 写入失败，不影响 evidence', error instanceof Error ? error.message : error)
+  }
 }

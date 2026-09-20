@@ -27,6 +27,7 @@ import {
 import { and, count, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm'
 import { recordAudit } from '../audit/record.js'
 import type { Db } from '../client.js'
+import { assertTargetPermission, lockConsoleAuthorization, scopedTargetFilter } from '../console/target-authorization.js'
 import { getPlatformConfig } from '../platform-config/store.js'
 import { newId } from '../id.js'
 import { atomic, driverOf, locked, schemaFor } from '../native.js'
@@ -145,13 +146,15 @@ function toDetailDto(
 // 1. listActionModules
 // ---------------------------------------------------------------------------
 
-export async function listActionModules(db: Db, query: ModuleListQuery): Promise<ModuleListResponse> {
+export async function listActionModules(db: Db, query: ModuleListQuery, actorId?: string): Promise<ModuleListResponse> {
   const { actionModules: modules, actionModuleVersions: versions, targets } = schemaFor(db)
   const q = moduleListQuerySchema.parse(query)
   const driver = driverOf(db)
   const escapeLike = (value: string) => value.replace(/[!%_]/g, (char) => `!${char}`)
   const pattern = `%${escapeLike(q.q?.toLowerCase() ?? '')}%`
   const conditions: SQL[] = [isNull(modules.deletedAt), isNull(targets.deletedAt)]
+  const scope = await scopedTargetFilter(db, actorId, modules.targetId, 'module:read')
+  if (scope) conditions.push(scope)
   if (q.targetId) conditions.push(eq(modules.targetId, q.targetId))
   if (q.capabilityKey) conditions.push(eq(modules.capabilityKey, q.capabilityKey))
   if (q.q) {
@@ -196,8 +199,9 @@ async function runtimeTypes(db: Db) {
   return executableStepTypesFor(((await getPlatformConfig(db))?.document ?? FACTORY_PLATFORM_CONFIG).browserAi.enabled)
 }
 
-/** 与 Target 删除保持同一锁顺序：Target → Module。 */
-async function writableModule(db: Db, moduleId: string) {
+/** 与 Target 删除保持同一锁顺序：账号授权 → Target → Module。 */
+async function writableModule(db: Db, moduleId: string, actorId: string, permission = 'module:write') {
+  await lockConsoleAuthorization(db, actorId)
   const { actionModules, targets } = schemaFor(db)
   const [candidate] = await db.select({ targetId: actionModules.targetId }).from(actionModules).where(eq(actionModules.id, moduleId))
   if (!candidate) throw notFound('MODULE_NOT_FOUND', '动作模块不存在')
@@ -205,6 +209,7 @@ async function writableModule(db: Db, moduleId: string) {
   if (!target || target.deletedAt) throw notFound('MODULE_NOT_FOUND', '动作模块不存在')
   const [module] = await locked(db, db.select().from(actionModules).where(and(eq(actionModules.id, moduleId), isNull(actionModules.deletedAt))))
   if (!module) throw notFound('MODULE_NOT_FOUND', '动作模块不存在')
+  await assertTargetPermission(db, actorId, module.targetId, permission)
   return module
 }
 
@@ -231,7 +236,7 @@ async function withReceipt(db: Db, actor: ExecutionActor, key: string, request: 
 // 2. getActionModule
 // ---------------------------------------------------------------------------
 
-export async function getActionModule(db: Db, moduleId: string): Promise<ActionModuleDetail> {
+export async function getActionModule(db: Db, moduleId: string, actorId?: string): Promise<ActionModuleDetail> {
   const { actionModules } = schemaFor(db)
   const [module] = await db
     .select()
@@ -242,6 +247,7 @@ export async function getActionModule(db: Db, moduleId: string): Promise<ActionM
   if (!module) throw notFound('MODULE_NOT_FOUND', '动作模块不存在')
   const latest = await latestPublishedVersion(db, moduleId)
   if (!(await loadTargetContext(db, module.targetId)).exists) throw notFound('MODULE_NOT_FOUND', '动作模块不存在')
+  if (actorId) await assertTargetPermission(db, actorId, module.targetId, 'module:read')
   return toDetailDto(module, latest, await runtimeTypes(db))
 }
 
@@ -269,6 +275,7 @@ export async function createActionModule(
       const [target] = await locked(tx, tx.select().from(targets).where(eq(targets.id, parsed.targetId)))
       if (!target || target.deletedAt) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
       if (target.status === 'disabled') throw conflict('TARGET_DISABLED', '目标系统已停用，不能新建动作模块')
+      await assertTargetPermission(tx, actor.id, parsed.targetId, 'module:write')
       const { idempotencyKey: _, ...metadata } = parsed
       const id = newId()
       const now = new Date()
@@ -308,7 +315,7 @@ export async function updateActionModuleMeta(
 
   try {
     return await atomic(db, async (tx) => {
-      const current = await writableModule(tx as unknown as Db, moduleId)
+      const current = await writableModule(tx as unknown as Db, moduleId, input.actor.id)
 
       if (current.draftRevision !== input.baseRevision) throw conflict('MODULE_DRAFT_CONFLICT', '草稿已被他人更新', { currentRevision: current.draftRevision })
       const patch: Record<string, unknown> = { updatedAt: now, draftRevision: current.draftRevision + 1 }
@@ -357,7 +364,7 @@ export async function saveActionModuleDraft(
 
   try {
     return await atomic(db, async (tx) => {
-      const current = await writableModule(tx as unknown as Db, moduleId)
+      const current = await writableModule(tx as unknown as Db, moduleId, input.actor.id)
 
       if (current.draftRevision !== input.baseRevision) {
         throw conflict('MODULE_DRAFT_CONFLICT', '草稿已被他人更新', {
@@ -412,7 +419,7 @@ export async function publishActionModule(
 
   try {
     return await withReceipt(db, actor, request.idempotencyKey, { operation: 'publish', moduleId, ...request }, async (tx) => {
-      const current = await writableModule(tx as unknown as Db, moduleId)
+      const current = await writableModule(tx as unknown as Db, moduleId, actor.id, 'module:publish')
 
       if (current.draftRevision !== input.expectedRevision) {
         throw conflict('MODULE_DRAFT_CONFLICT', '草稿已被他人更新，请刷新重试', {

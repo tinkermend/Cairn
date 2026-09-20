@@ -35,12 +35,15 @@ import {
 import { DateRangePicker, type DateRange } from '@/components/date-range-picker'
 import { dateRange, rangeToDayKeys } from '@/features/audit/range'
 import { RecordingRenameDialog } from './rename-dialog'
+import { DemonstrationFileDialog } from './import-file-dialog'
 
 export function RecordingsPage() {
   const page = useCursorPage()
   const queryClient = useQueryClient()
   const user = useAuthStore((s) => s.auth.user)
   const isAdmin = Boolean(user?.roles.includes('admin'))
+  const [fileImportOpen, setFileImportOpen] = useState(false)
+  const canImport = useCan('workflow:write')
   const canReadTargets = useCan('target:read')
 
   const targets = useQuery({
@@ -108,7 +111,8 @@ export function RecordingsPage() {
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title='录制草稿'
-          description='插件上传的操作序列。这里是 Authoring 草稿，还不是可运行场景。'
+          description='从浏览器或录制文件采集操作，审查后回填到场景。'
+          actions={canImport ? <Button onClick={() => setFileImportOpen(true)}>导入录制文件</Button> : undefined}
         />
         {query.isPending ? (
           <PageSkeleton />
@@ -293,6 +297,7 @@ export function RecordingsPage() {
         )}
       </Main>
 
+      {fileImportOpen && <DemonstrationFileDialog open onOpenChange={setFileImportOpen} />}
       <RecordingRenameDialog
         open={Boolean(renaming)}
         onOpenChange={(open) => {

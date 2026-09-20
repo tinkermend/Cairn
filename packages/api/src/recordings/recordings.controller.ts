@@ -1,6 +1,8 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common'
+import { Body, Controller, Get, Header, Headers, HttpCode, HttpStatus, Param, Post, Query, StreamableFile } from '@nestjs/common'
 import {
   claimRecordingBindingBodySchema,
+  createDemonstrationBodySchema,
+  type CreateDemonstrationBody,
   createRecordingBodySchema,
   recordingDraftListQuerySchema,
   renameRecordingBodySchema,
@@ -14,10 +16,40 @@ import type { RequestAccount } from '../common/request-account'
 import { CurrentAccount } from '../rbac/current-account.decorator'
 import { RequirePermissions } from '../rbac/require-permission.decorator'
 import { RecordingsService } from './recordings.service'
+import { RecordingArtifactsService } from './artifacts.service'
 
 @Controller('recordings')
 export class RecordingsController {
-  constructor(private readonly recordings: RecordingsService) {}
+  constructor(private readonly recordings: RecordingsService, private readonly artifacts: RecordingArtifactsService) {}
+
+  @Post('demonstrations')
+  @RequirePermissions('workflow:write', 'target:read')
+  createDemonstration(@Body(new ZodValidationPipe(createDemonstrationBodySchema)) body: CreateDemonstrationBody, @CurrentAccount() actor: RequestAccount) {
+    return this.recordings.createDemonstration(body, actor)
+  }
+
+  @Get(':recordingId/demonstration')
+  @RequirePermissions('workflow:write', 'target:read')
+  demonstration(@Param('recordingId') id: string, @CurrentAccount() actor: RequestAccount) {
+    return this.recordings.demonstration(id, actor)
+  }
+
+  @Post(':recordingId/artifacts/:artifactId/content')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write', 'target:read')
+  uploadArtifact(@Param('recordingId') id: string, @Param('artifactId') artifactId: string,
+    @Headers('x-upload-generation') generationId: string, @Body() body: Buffer, @CurrentAccount() actor: RequestAccount) {
+    return this.artifacts.upload(id, artifactId, generationId, body, actor.id)
+  }
+
+  @Get(':recordingId/artifacts/:artifactId/content')
+  @Header('Cache-Control', 'no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
+  @RequirePermissions('workflow:write', 'target:read')
+  async artifact(@Param('recordingId') id: string, @Param('artifactId') artifactId: string, @CurrentAccount() actor: RequestAccount) {
+    const content = await this.artifacts.read(id, artifactId, actor.id)
+    return new StreamableFile(content.bytes, { type: content.contentType, disposition: 'inline', length: content.bytes.length })
+  }
 
   @Get()
   @RequirePermissions('workflow:write')

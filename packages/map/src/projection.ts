@@ -2,12 +2,16 @@ import {
   MAP_ASSETS_PROTOCOL,
   MAP_IDENTITY_RULE_VERSION,
   MAP_PROJECTION_BATCH_BUDGET_MS,
+  MAP_PROJECTION_PLAN_OBJECT_MAX,
   mapImplementationKey,
   mapProjectionPlanSchema,
+  targetDescriptorSchema,
   type MapAssetPlan,
   type MapDescriptorFeatures,
   type MapDimensionStat,
   type MapObservation,
+  type MapProjectionObjectState,
+  type MapProjectionPageState,
   type MapProjectionPlan,
   type MapProjectionState,
   type MapVerification,
@@ -47,20 +51,9 @@ export function projectionWorkingSetHints(facts: readonly MapFactPageItem[]): Pr
       frameName,
     })
     pageAllocationKeys.add(page.allocationKey)
-    const clues = cluesFromObservation(fact.observation)
-    const stable = stableObjectToken({
-      testId: clues.testId,
-      role: clues.role,
-      name: clues.name,
-      sourceEventKey: fact.observation.sourceEventKey,
-    })
-    objectAllocationKeys.add(
-      objectAllocationKey({
-        pageAllocationKey: page.allocationKey,
-        regionKey: clues.regionKey,
-        stableToken: stable.token,
-      }),
-    )
+    for (const observation of observationsForProjection(fact.observation)) {
+      objectAllocationKeys.add(objectAllocationFromObservation(observation, page.allocationKey))
+    }
   }
   return {
     pageAllocationKeys: [...pageAllocationKeys],
@@ -69,9 +62,94 @@ export function projectionWorkingSetHints(facts: readonly MapFactPageItem[]): Pr
   }
 }
 
+const INVENTORY_ROLES = new Set(['menuitem', 'link', 'button', 'heading', 'tab', 'treeitem'])
+const INVENTORY_REGION = 'control'
+const INVENTORY_ITEM_CAP = 80
+
+type InventoryItem = { role: string; name: string }
+
+function clip(value: string, max: number): string {
+  const trimmed = value.trim()
+  return trimmed.length <= max ? trimmed : trimmed.slice(0, max)
+}
+
+export function inventoryItemsFromObservation(observation: MapObservation): InventoryItem[] {
+  const features = observation.structuralSummary.features
+  if (!features || typeof features !== 'object' || Array.isArray(features)) return []
+  const named = (features as { kind?: unknown; named?: unknown }).kind === 'surface-inventory'
+    ? (features as { named?: unknown }).named
+    : undefined
+  if (!Array.isArray(named)) return []
+  const items: InventoryItem[] = []
+  const seen = new Set<string>()
+  for (const raw of named) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const role = typeof (raw as { role?: unknown }).role === 'string' ? clip((raw as { role: string }).role, 64) : ''
+    const name = typeof (raw as { name?: unknown }).name === 'string' ? clip((raw as { name: string }).name, 128) : ''
+    if (!role || !name || !INVENTORY_ROLES.has(role)) continue
+    const key = `${role}:${name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    items.push({ role, name })
+    if (items.length >= INVENTORY_ITEM_CAP) break
+  }
+  return items
+}
+
+function observationFromInventory(observation: MapObservation, item: InventoryItem): MapObservation {
+  return {
+    ...observation,
+    regionRefs: [{ key: INVENTORY_REGION, kind: 'action_object' }],
+    semanticSummary: {
+      predicates: [
+        { name: 'role', value: item.role },
+        { name: 'label', value: item.name },
+        { name: 'name', value: item.name },
+      ],
+    },
+  }
+}
+
+function observationsForProjection(observation: MapObservation): MapObservation[] {
+  return [observation, ...inventoryItemsFromObservation(observation).map((item) => observationFromInventory(observation, item))]
+}
+
+function objectAllocationFromObservation(observation: MapObservation, pageAllocationKey: string): string {
+  const clues = cluesFromObservation(observation)
+  const stable = stableObjectToken({
+    testId: clues.testId,
+    role: clues.role,
+    name: clues.name,
+    regionKey: clues.regionKey,
+    url: clues.url,
+    sourceEventKey: observation.sourceEventKey,
+  })
+  return objectAllocationKey({
+    pageAllocationKey,
+    regionKey: clues.regionKey,
+    stableToken: stable.token,
+  })
+}
+
+function locatorsFromObservation(observation: MapObservation) {
+  const clues = cluesFromObservation(observation)
+  const candidates: Array<{ by: 'testId' | 'role' | 'text'; value: string; name?: string }> = []
+  if (clues.testId) candidates.push({ by: 'testId', value: clip(clues.testId, 512) })
+  if (clues.role && clues.name) candidates.push({ by: 'role', value: clip(clues.role, 512), name: clip(clues.name, 256) })
+  else if (clues.role) candidates.push({ by: 'role', value: clip(clues.role, 512) })
+  if (clues.name && candidates.length < 5) candidates.push({ by: 'text', value: clip(clues.name, 512) })
+  if (candidates.length === 0) return undefined
+  const parsed = targetDescriptorSchema.safeParse({
+    framePath: observation.framePath,
+    candidates,
+  })
+  return parsed.success ? parsed.data : undefined
+}
+
 function featuresFromObservation(observation: MapObservation): MapDescriptorFeatures {
   const clues = cluesFromObservation(observation)
   return {
+    locators: locatorsFromObservation(observation),
     semanticName: clues.name,
     role: clues.role,
     testId: clues.testId,
@@ -80,6 +158,42 @@ function featuresFromObservation(observation: MapObservation): MapDescriptorFeat
       ? { template: 'instance', bindingKey: observation.actionRef.instanceBinding.key }
       : undefined,
   }
+}
+
+function pagesForIdentity(
+  pages: Iterable<MapProjectionPageState>,
+  planPages: Iterable<MapProjectionPlan['pages'][number]>,
+): MapProjectionPageState[] {
+  const merged = new Map<string, MapProjectionPageState>()
+  for (const page of pages) merged.set(page.allocationKey, page)
+  for (const page of planPages) {
+    merged.set(page.allocationKey, {
+      id: merged.get(page.allocationKey)?.id ?? page.allocationKey,
+      allocationKey: page.allocationKey,
+      kind: page.kind,
+      routeTemplate: page.routeTemplate,
+    })
+  }
+  return [...merged.values()]
+}
+
+function objectsForIdentity(
+  objects: Iterable<MapProjectionObjectState>,
+  planObjects: Iterable<MapProjectionPlan['objects'][number]>,
+): MapProjectionObjectState[] {
+  const merged = new Map<string, MapProjectionObjectState>()
+  for (const object of objects) merged.set(object.allocationKey, object)
+  for (const object of planObjects) {
+    merged.set(object.allocationKey, {
+      id: merged.get(object.allocationKey)?.id ?? object.allocationKey,
+      allocationKey: object.allocationKey,
+      pageId: merged.get(object.allocationKey)?.pageId ?? object.pageAllocationKey,
+      pageAllocationKey: object.pageAllocationKey,
+      regionKey: object.regionKey,
+      stableToken: object.stableToken,
+    })
+  }
+  return [...merged.values()]
 }
 
 function assetKey(input: {
@@ -189,12 +303,7 @@ export function planProjectionBatch(input: {
       observations.set(fact.observation.id, fact.observation)
       const pageMatch = matchPageIdentity({
         observation: fact.observation,
-        pages: [...pages.values(), ...[...planPages.values()].map((item) => ({
-          id: item.allocationKey,
-          allocationKey: item.allocationKey,
-          kind: item.kind,
-          routeTemplate: item.routeTemplate,
-        }))],
+        pages: pagesForIdentity(pages.values(), planPages.values()),
       })
       planPages.set(pageMatch.allocation.allocationKey, {
         kind: pageMatch.allocation.kind,
@@ -212,66 +321,73 @@ export function planProjectionBatch(input: {
         })
         continue
       }
-      const objectMatch = matchObjectIdentity({
-        observation: fact.observation,
-        pageAllocationKey: pageMatch.allocation.allocationKey,
-        objects: [...objects.values(), ...[...planObjects.values()].map((item) => ({
-          id: item.allocationKey,
-          allocationKey: item.allocationKey,
-          pageId: item.pageAllocationKey,
-          pageAllocationKey: item.pageAllocationKey,
-          regionKey: item.regionKey,
-          stableToken: item.stableToken,
-        }))],
-        aliases: input.state.aliases,
-      })
-      planObjects.set(objectMatch.allocationKey, {
-        allocationKey: objectMatch.allocationKey,
-        pageAllocationKey: pageMatch.allocation.allocationKey,
-        regionKey: objectMatch.regionKey,
-        stableToken: objectMatch.stableToken,
-        reasons: objectMatch.reasons,
-        matchResult: objectMatch.matchResult,
-      })
+      const pageAllocationKey = pageMatch.allocation.allocationKey
+      const rememberObject = (observed: MapObservation, sampleKey: string) => {
+        const objectMatch = matchObjectIdentity({
+          observation: observed,
+          pageAllocationKey,
+          objects: objectsForIdentity(objects.values(), planObjects.values()),
+          aliases: input.state.aliases,
+        })
+        if (objectMatch.matchResult === 'AMBIGUOUS') return objectMatch
+        if (!planObjects.has(objectMatch.allocationKey) && planObjects.size >= MAP_PROJECTION_PLAN_OBJECT_MAX) {
+          completeness = 'partial'
+          return objectMatch
+        }
+        planObjects.set(objectMatch.allocationKey, {
+          allocationKey: objectMatch.allocationKey,
+          pageAllocationKey,
+          regionKey: objectMatch.regionKey,
+          stableToken: objectMatch.stableToken,
+          reasons: objectMatch.reasons,
+          matchResult: objectMatch.matchResult,
+        })
+        const implementationKey = mapImplementationKey(observed.conditionSnapshot)
+        const implKey = `${objectMatch.allocationKey}:${implementationKey}`
+        implementations.set(implKey, {
+          objectAllocationKey: objectMatch.allocationKey,
+          implementationKey,
+          condition: observed.conditionSnapshot,
+        })
+        descriptors.set(implKey, {
+          objectAllocationKey: objectMatch.allocationKey,
+          implementationKey,
+          features: featuresFromObservation(observed),
+          condition: observed.conditionSnapshot,
+        })
+        const already = assigned.has(sampleKey)
+        upsertAsset(
+          {
+            pageAllocationKey,
+            objectAllocationKey: objectMatch.allocationKey,
+            implementationKey,
+          },
+          (asset) => {
+            if (!already) asset.sampleCount += 1
+            assigned.add(sampleKey)
+            const condition = evaluateCondition(observed.conditionSnapshot, observed.conditionSnapshot)
+            if (condition === 'unknown') asset.rejectReasons = unique(asset.rejectReasons.concat('CONDITION_UNKNOWN'))
+            if (observed.truncated || observed.missingReasons.includes('TRUNCATED')) {
+              asset.rejectReasons = unique(asset.rejectReasons.concat('coverage-unknown'))
+            }
+          },
+        )
+        return objectMatch
+      }
+      const objectMatch = rememberObject(fact.observation, fact.observation.id)
       assignments.push({
         observationId: fact.observation.id,
-        pageAllocationKey: pageMatch.allocation.allocationKey,
+        pageAllocationKey,
         objectAllocationKey: objectMatch.matchResult === 'AMBIGUOUS' ? undefined : objectMatch.allocationKey,
         matchResult: objectMatch.matchResult,
         reasons: objectMatch.reasons,
       })
       if (objectMatch.matchResult === 'AMBIGUOUS') continue
-      const implementationKey = mapImplementationKey(fact.observation.conditionSnapshot)
-      const implKey = `${objectMatch.allocationKey}:${implementationKey}`
-      implementations.set(implKey, {
-        objectAllocationKey: objectMatch.allocationKey,
-        implementationKey,
-        condition: fact.observation.conditionSnapshot,
-      })
-      const features = featuresFromObservation(fact.observation)
-      descriptors.set(implKey, {
-        objectAllocationKey: objectMatch.allocationKey,
-        implementationKey,
-        features,
-        condition: fact.observation.conditionSnapshot,
-      })
-      const already = assigned.has(fact.observation.id)
-      upsertAsset(
-        {
-          pageAllocationKey: pageMatch.allocation.allocationKey,
-          objectAllocationKey: objectMatch.allocationKey,
-          implementationKey,
-        },
-        (asset) => {
-          if (!already) asset.sampleCount += 1
-          assigned.add(fact.observation.id)
-          const condition = evaluateCondition(fact.observation.conditionSnapshot, fact.observation.conditionSnapshot)
-          if (condition === 'unknown') asset.rejectReasons = unique(asset.rejectReasons.concat('CONDITION_UNKNOWN'))
-          if (fact.observation.truncated || fact.observation.missingReasons.includes('TRUNCATED')) {
-            asset.rejectReasons = unique(asset.rejectReasons.concat('coverage-unknown'))
-          }
-        },
-      )
+      for (const item of inventoryItemsFromObservation(fact.observation)) {
+        const derived = observationFromInventory(fact.observation, item)
+        if (objectAllocationFromObservation(derived, pageAllocationKey) === objectMatch.allocationKey) continue
+        rememberObject(derived, `${fact.observation.id}:${item.role}:${item.name}`)
+      }
       continue
     }
     applyVerification(fact.verification, observations, input.state, upsertAsset, conflicts)

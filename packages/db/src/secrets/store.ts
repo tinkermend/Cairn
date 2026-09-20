@@ -30,3 +30,16 @@ export async function loadSecretCiphertext(
   if (!row) return null
   return { id: row.id, provider: row.provider, ciphertext: row.ciphertext }
 }
+
+/** 登记或覆盖独立 Secret。须在 OCC 成功之后、同一事务内调用。 */
+export async function upsertStandaloneSecret(
+  db: Db,
+  input: { id: string; ciphertext: Buffer },
+): Promise<{ id: string }> {
+  const existing = await loadSecretCiphertext(db, input.id)
+  if (!existing) return registerStandaloneSecret(db, input)
+  const now = new Date()
+  const { secrets: table } = schemaFor(db)
+  await db.update(table).set({ ciphertext: input.ciphertext, updatedAt: now }).where(eq(table.id, input.id))
+  return { id: input.id }
+}

@@ -30,4 +30,24 @@ describe('TargetFormDialog', () => {
 
     expect(document.body.textContent).not.toMatch(/探测登录|打开录制|启发式管理|会话|插件/)
   })
+
+  it('选择图形验证码后展示图片与输入框定位，并说明自动识别', async () => {
+    const { getByRole, getByLabelText, getByText } = await renderDialog()
+    await getByLabelText('验证码').click()
+    await getByRole('option', { name: '图形验证码' }).click()
+    await getByRole('button', { name: /登录框定位（可选）/ }).click()
+    await expect.element(getByText('验证码图片', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText('验证码输入框', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText(/进程内自动识别/)).toBeInTheDocument()
+  })
+
+  it('选择滑动验证码后展示滑块定位，并说明自动识别', async () => {
+    const { getByRole, getByLabelText, getByText } = await renderDialog()
+    await getByLabelText('验证码').click()
+    await getByRole('option', { name: '滑动验证码' }).click()
+    await getByRole('button', { name: /登录框定位（可选）/ }).click()
+    await expect.element(getByText('滑块手柄', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText('滑块背景或轨道', { exact: true })).toBeInTheDocument()
+    await expect.element(getByText(/进程内自动识别/)).toBeInTheDocument()
+  })
 })

@@ -5,6 +5,7 @@ import {
 } from '@cairn/db'
 import {
   parseAiOutput,
+  aiCommandSchema,
   urlAllowedByCompiledScope,
   type AiCommand,
   type AiExecutionConfig,
@@ -45,6 +46,7 @@ export function createAiPort(input: {
 }): AiPort {
   return {
     async execute(grant, command, signal, evidence) {
+      command = aiCommandSchema.parse(command)
       const gate = createStepGate(input.manager, grant, signal)
       // withManagedPage 的页面范围检查失败时拿不到回调结果：单独记住未落定，否则会话会被当成健康留给下一个 Run。
       let hung = false
@@ -83,6 +85,10 @@ export function createAiPort(input: {
               // 丢租后 SDK 的返回值不可信（它可能吞掉被拦下的动作照样完成）：先收尾新开的页，再报结构化丢租。
               await closeUnsupportedPages(page, pagesBefore).catch(() => undefined)
               const error = leaseLostError(gate)
+              return { ok: false, summary: error.safeMessage, error }
+            }
+            if (!hung && command.type === 'ai_action' && signal.aborted && gate.actionsStarted > 0) {
+              const error = interruptedActionError()
               return { ok: false, summary: error.safeMessage, error }
             }
             return await settleAiCommand(page, pagesBefore, command, result)
@@ -127,7 +133,8 @@ export function createAiPort(input: {
       }
       if (!scoped.ok) {
         const error =
-          scoped.error.code === 'SESSION_LEASE_LOST' && gate.actionsStarted > 0 ? leaseLostError(gate) : scoped.error
+          scoped.error.code === 'SESSION_LEASE_LOST' && gate.actionsStarted > 0 ? leaseLostError(gate)
+            : command.type === 'ai_action' && signal.aborted && gate.actionsStarted > 0 ? interruptedActionError() : scoped.error
         return { ok: false, hung, summary: error.safeMessage, error, screenshot, trace }
       }
       if (!scoped.value.ok && scoped.value.summary === '登录已失效，已阻止继续操作') {
@@ -308,17 +315,21 @@ async function runCommand(
 
 async function invoke(agent: FormalAgentHandle, command: AiCommand): Promise<AiResult> {
   if (command.type === 'ai_action') {
-    const summary = await agent.aiAct(command.instruction)
+    if (command.action) {
+      await agent.aiAtomic(command.action)
+      return { ok: true, output: { summary: '原子操作已完成' }, summary: '原子操作已完成' }
+    }
+    const summary = await agent.aiAct(command.instruction!)
     return { ok: true, output: { summary: summary ?? 'ok' }, summary: summary ?? '已完成' }
   }
   if (command.type === 'ai_extract') {
     const schema = command.outputSchema
     if (!schema) return { ok: false, summary: '缺少 Output Schema' }
-    const parsed = parseAiOutput(await agent.aiQuery(command.instruction, schema), schema)
+    const parsed = parseAiOutput(await agent.aiQuery(command.instruction!, schema), schema)
     if (!parsed.ok) return { ok: false, summary: parsed.message }
     return { ok: true, output: parsed.value }
   }
-  const asserted = await agent.aiAssert(command.instruction)
+  const asserted = await agent.aiAssert(command.instruction!)
   const output = {
     passed: asserted.pass,
     reason: asserted.thought ?? asserted.message ?? (asserted.pass ? '条件成立' : '条件不成立'),
@@ -408,6 +419,10 @@ export function leaseLostError(gate: ActionGate): ExecutionError {
     retryable: false,
     safeMessage: acted ? '会话租约在 AI 动作开始后失效，页面上的结果未确认' : '会话租约已失效，AI 步骤未发出动作',
   }
+}
+
+export function interruptedActionError(): ExecutionError {
+  return { code: 'AI_ACTION_INTERRUPTED', category: 'UNKNOWN', retryable: false, safeMessage: 'AI 动作发出后被取消或超时，页面上的结果需要核查' }
 }
 
 /**

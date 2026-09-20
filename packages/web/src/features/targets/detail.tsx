@@ -1,16 +1,18 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
-import type { TargetAccountDto } from '@cairn/shared'
+import type { AccountSessionStatus, TargetAccountDto } from '@cairn/shared'
 import {
   ArrowLeft,
   Compass,
+  Copy,
   ExternalLink as ExternalLinkIcon,
   Layers,
   Plus,
   Search,
   Shield,
   ShieldCheck,
+  SlidersHorizontal,
   Users,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -24,6 +26,7 @@ import {
   previewDeleteTarget,
   retryTargetCleanup,
 } from '@/lib/targets-api'
+import { fetchSessionOverview } from '@/lib/sessions-api'
 import { CleanupStatusIndicator } from '@/components/cleanup-status-indicator'
 import { useCan } from '@/hooks/use-permissions'
 import { useCursorPage } from '@/hooks/use-cursor-page'
@@ -54,14 +57,19 @@ import { AuthProfileCard } from './auth-profile-card'
 import { SessionPolicyCard } from './session-policy-card'
 import { AccountFormDialog } from './account-form-dialog'
 import { TargetFormDialog } from './target-form-dialog'
-import { SystemInfoCard } from './system-info-card'
+import { SystemInfoSheet } from './system-info-sheet'
 import { TargetOverviewMetrics } from './target-overview-metrics'
 import { TargetScenariosTab } from './target-scenarios-tab'
 import {
-  AUTH_CAPABILITY_LABELS,
+  ACCOUNT_USAGE_LABELS,
+  AUTH_METHOD_LABELS,
   CAPTCHA_MODE_LABELS,
   TARGET_STATUS_LABELS,
 } from './labels'
+import {
+  ACCOUNT_SESSION_STATUS_LABELS,
+  ACCOUNT_SESSION_STATUS_TONE,
+} from '@/features/sessions/labels'
 
 const route = getRouteApi('/_authenticated/targets/$targetId/')
 
@@ -103,7 +111,21 @@ export function TargetDetailPage() {
     placeholderData: keepPreviousData,
   })
 
+  const sessionOverviewQuery = useQuery({
+    queryKey: ['sessions-overview', { targetId, limit: 100 }],
+    queryFn: () => fetchSessionOverview({ targetId, limit: 100 }),
+    staleTime: 10_000,
+  })
+  const sessionStatusByAccount = useMemo(() => {
+    const map = new Map<string, AccountSessionStatus>()
+    for (const item of sessionOverviewQuery.data?.items ?? []) {
+      map.set(item.targetAccountId, item.status)
+    }
+    return map
+  }, [sessionOverviewQuery.data])
+
   const [editOpen, setEditOpen] = useState(false)
+  const [infoOpen, setInfoOpen] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [editingAccount, setEditingAccount] = useState<TargetAccountDto | undefined>()
   const [removingTarget, setRemovingTarget] = useState(false)
@@ -146,25 +168,41 @@ export function TargetDetailPage() {
               {target ? (
                 <>
                   <span>/</span>
-                  <code className='font-mono text-label text-text-primary'>{target.code}</code>
+                  <code className='rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-label text-text-primary border border-border-divider'>
+                    {target.code}
+                  </code>
                   <span>·</span>
                   <StatusBadge tone={target.status === 'active' ? 'success' : 'neutral'}>
                     {TARGET_STATUS_LABELS[target.status]}
                   </StatusBadge>
                   <span>·</span>
-                  <StatusBadge tone='info'>
-                    {AUTH_CAPABILITY_LABELS[target.currentAuthProfileRevision ? 'LOGIN_VERIFIED' : 'LEGACY']}
-                  </StatusBadge>
+                  <span className='rounded bg-surface-subtle px-2 py-0.5 text-label text-text-secondary border border-border-divider'>
+                    {AUTH_METHOD_LABELS[target.authMethod]} · {CAPTCHA_MODE_LABELS[target.captchaMode]}
+                  </span>
                   <span>·</span>
-                  <a
-                    href={target.entryUrl}
-                    target='_blank'
-                    rel='noreferrer'
-                    className='inline-flex items-center gap-1 text-link hover:underline'
-                  >
-                    <span>入口 URL</span>
-                    <ExternalLinkIcon className='size-3 shrink-0' />
-                  </a>
+                  <span className='inline-flex items-center gap-1.5'>
+                    <a
+                      href={target.entryUrl}
+                      target='_blank'
+                      rel='noreferrer'
+                      className='inline-flex items-center gap-1 text-link hover:underline'
+                    >
+                      <span>入口 URL</span>
+                      <ExternalLinkIcon className='size-3 shrink-0' />
+                    </a>
+                    <button
+                      type='button'
+                      onClick={() => {
+                        void navigator.clipboard.writeText(target.entryUrl)
+                        toast.success('已复制入口 URL')
+                      }}
+                      className='inline-flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-surface-subtle hover:text-text-primary'
+                      title='复制入口 URL'
+                    >
+                      <Copy className='size-3' />
+                      <span className='sr-only'>复制入口 URL</span>
+                    </button>
+                  </span>
                 </>
               ) : null}
             </span>
@@ -172,6 +210,10 @@ export function TargetDetailPage() {
           actions={
             target && !targetQuery.isError ? (
               <div className='flex flex-wrap items-center gap-2'>
+                <Button variant='outline' onClick={() => setInfoOpen(true)}>
+                  <SlidersHorizontal className='size-4' />
+                  系统资料
+                </Button>
                 <Can permission='map:read'>
                   <Button variant='outline' asChild>
                     <Link to='/targets/$targetId/map' params={{ targetId }}>
@@ -228,14 +270,6 @@ export function TargetDetailPage() {
                 </AlertDescription>
               </Alert>
             ) : null}
-            {target.captchaMode !== 'none' ? (
-              <Alert variant='warning'>
-                <AlertDescription>
-                  该系统使用{CAPTCHA_MODE_LABELS[target.captchaMode]}
-                  ，执行前请确认目标账号的登录状态。
-                </AlertDescription>
-              </Alert>
-            ) : null}
 
             {/* 指标统计栏 */}
             <TargetOverviewMetrics
@@ -256,7 +290,7 @@ export function TargetDetailPage() {
                 </TabsTrigger>
                 <TabsTrigger value='auth-profile'>
                   <ShieldCheck className='size-4' />
-                  登录核验规则
+                  主动检测
                 </TabsTrigger>
                 <TabsTrigger value='access-policy'>
                   <Shield className='size-4' />
@@ -353,8 +387,9 @@ export function TargetDetailPage() {
                             <TableHead>显示名</TableHead>
                             <TableHead>登录名</TableHead>
                             <TableHead>凭据</TableHead>
-                            <TableHead>核验等级</TableHead>
+                            <TableHead>会话</TableHead>
                             <TableHead>期望身份</TableHead>
+                            <TableHead>用途</TableHead>
                             <TableHead>状态</TableHead>
                             <TableHead className='w-36 text-right'>操作</TableHead>
                           </TableRow>
@@ -387,15 +422,9 @@ export function TargetDetailPage() {
                               </TableCell>
                               <TableCell>
                                 <StatusBadge
-                                  tone={
-                                    item.authCapability === 'IDENTITY_VERIFIED'
-                                      ? 'info'
-                                      : item.authCapability === 'LOGIN_VERIFIED'
-                                        ? 'neutral'
-                                        : 'neutral'
-                                  }
+                                  tone={ACCOUNT_SESSION_STATUS_TONE[sessionStatusByAccount.get(item.id) ?? 'unprepared']}
                                 >
-                                  {AUTH_CAPABILITY_LABELS[item.authCapability ?? 'LEGACY']}
+                                  {ACCOUNT_SESSION_STATUS_LABELS[sessionStatusByAccount.get(item.id) ?? 'unprepared']}
                                 </StatusBadge>
                                 {item.autoLoginPausedReason ? (
                                   <p className='mt-1 text-label text-muted-foreground'>
@@ -405,6 +434,9 @@ export function TargetDetailPage() {
                               </TableCell>
                               <TableCell className='text-label text-muted-foreground'>
                                 {item.expectedIdentity ?? '未设置'}
+                              </TableCell>
+                              <TableCell className='text-label text-muted-foreground'>
+                                {ACCOUNT_USAGE_LABELS[item.usage ?? 'business']}
                               </TableCell>
                               <TableCell>
                                 <StatusBadge
@@ -484,19 +516,10 @@ export function TargetDetailPage() {
                 <TargetScenariosTab targetId={targetId} targetName={target.name} />
               </TabsContent>
 
-              {/* Tab 3: 登录核验规则与系统资料 */}
-              <TabsContent value='auth-profile'>
-                <div className='grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]'>
-                  <div className='space-y-5'>
-                    <AuthProfileCard target={target} />
-                    <SessionPolicyCard target={target} />
-                  </div>
-                  <SystemInfoCard
-                    target={target}
-                    onEdit={() => setEditOpen(true)}
-                    onDelete={() => setRemovingTarget(true)}
-                  />
-                </div>
+              {/* Tab 3: 登录核验规则与会话策略 */}
+              <TabsContent value='auth-profile' className='space-y-5'>
+                <AuthProfileCard target={target} />
+                <SessionPolicyCard target={target} />
               </TabsContent>
 
               {/* Tab 4: 目标安全授权 */}
@@ -506,6 +529,13 @@ export function TargetDetailPage() {
             </Tabs>
 
             {/* 对话框与表单弹窗 */}
+            <SystemInfoSheet
+              open={infoOpen}
+              onOpenChange={setInfoOpen}
+              target={target}
+              onEdit={() => setEditOpen(true)}
+              onDelete={() => setRemovingTarget(true)}
+            />
             <TargetFormDialog
               open={editOpen}
               onOpenChange={setEditOpen}

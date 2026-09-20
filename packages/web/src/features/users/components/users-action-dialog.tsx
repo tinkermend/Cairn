@@ -3,9 +3,15 @@ import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
-import { ACCOUNT_STATUS, hasAllPermissions, type RoleDto } from '@cairn/shared'
-import { useAuthStore } from '@/stores/auth-store'
+import {
+  ACCOUNT_STATUS,
+  hasAllPermissions,
+  type RoleDto,
+  type RoleTargetScope,
+  roleTargetScopeSchema,
+} from '@cairn/shared'
 import { toast } from 'sonner'
+import { useAuthStore } from '@/stores/auth-store'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   assignAccountRoles,
@@ -32,7 +38,6 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { PasswordInput } from '@/components/password-input'
 import {
   Select,
   SelectContent,
@@ -40,7 +45,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { PasswordInput } from '@/components/password-input'
 import { type User } from '../data/schema'
+import { TargetScopeFields } from './target-scope-fields'
 
 const formSchema = z.object({
   displayName: z.string().min(1, '请填写显示名称。'),
@@ -66,11 +73,27 @@ export function UsersActionDialog({
 }: UserActionDialogProps) {
   const isEdit = !!currentRow
   const queryClient = useQueryClient()
-  const actorPermissions = useAuthStore((s) => s.auth.user?.permissions)
+  const actor = useAuthStore((s) => s.auth.user)
+  const actorPermissions = actor?.permissions
+  const adminRole = roles.find(
+    (role) => role.kind === 'system' && role.key === 'admin'
+  )
+  const canDelegate =
+    !!adminRole &&
+    !!actor?.roles.includes('admin') &&
+    !!actor.targetScopes?.some(
+      (scope) => scope.roleId === adminRole.id && scope.mode === 'all'
+    )
   const [saving, setSaving] = useState(false)
-  const defaultAuthor = roles.find((role) => role.key === 'author')?.id ?? roles[0]?.id ?? ''
+  const [scopes, setScopes] = useState<RoleTargetScope[]>(
+    currentRow?.targetScopes ?? []
+  )
+  const defaultAuthor =
+    roles.find((role) => role.key === 'author')?.id ?? roles[0]?.id ?? ''
   const canAssign = (role: RoleDto) =>
-    actorPermissions == null || hasAllPermissions(actorPermissions, role.permissions)
+    canDelegate &&
+    (actorPermissions == null ||
+      hasAllPermissions(actorPermissions, role.permissions))
   const form = useForm<UserForm>({
     resolver: zodResolver(formSchema),
     defaultValues: isEdit
@@ -93,13 +116,29 @@ export function UsersActionDialog({
   const onSubmit = async (values: UserForm) => {
     setSaving(true)
     try {
+      const targetScopes = values.roleIds.map((roleId) =>
+        roleTargetScopeSchema.parse(
+          scopes.find((s) => s.roleId === roleId) ?? {
+            roleId,
+            mode:
+              roles.find((r) => r.id === roleId)?.key === 'admin'
+                ? 'all'
+                : 'none',
+            targetIds: [],
+          }
+        )
+      )
       if (isEdit && currentRow) {
         await updateAccount(currentRow.id, {
           displayName: values.displayName,
           email: values.email,
           status: values.status,
         })
-        await assignAccountRoles(currentRow.id, { roleIds: values.roleIds })
+        if (canDelegate)
+          await assignAccountRoles(currentRow.id, {
+            roleIds: values.roleIds,
+            targetScopes,
+          })
         if (values.password) {
           await setAccountPassword(currentRow.id, { password: values.password })
         }
@@ -115,6 +154,7 @@ export function UsersActionDialog({
           password: values.password,
           status: values.status,
           roleIds: values.roleIds,
+          targetScopes,
         })
         toast.success('账号已创建')
       }
@@ -134,15 +174,18 @@ export function UsersActionDialog({
     <Dialog
       open={open}
       onOpenChange={(state) => {
+        if (saving) return
         form.reset()
         onOpenChange(state)
       }}
     >
-      <DialogContent className='sm:max-w-lg'>
+      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-xl'>
         <DialogHeader className='text-start'>
           <DialogTitle>{isEdit ? '编辑用户' : '新增用户'}</DialogTitle>
           <DialogDescription>
-            {isEdit ? '更新账号信息与角色分配。' : '创建使用本地密码的控制台账号。'}
+            {isEdit
+              ? '更新账号信息与角色分配。'
+              : '创建使用本地密码的控制台账号。'}
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -156,9 +199,16 @@ export function UsersActionDialog({
               name='displayName'
               render={({ field }) => (
                 <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>显示名称</FormLabel>
+                  <FormLabel className='col-span-2 text-end'>
+                    显示名称
+                  </FormLabel>
                   <FormControl>
-                    <Input placeholder='Ada Admin' className='col-span-4' autoComplete='off' {...field} />
+                    <Input
+                      placeholder='Ada Admin'
+                      className='col-span-4'
+                      autoComplete='off'
+                      {...field}
+                    />
                   </FormControl>
                   <FormMessage className='col-span-4 col-start-3' />
                 </FormItem>
@@ -171,7 +221,12 @@ export function UsersActionDialog({
                 <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
                   <FormLabel className='col-span-2 text-end'>账号</FormLabel>
                   <FormControl>
-                    <Input placeholder='admin' className='col-span-4' autoComplete='off' {...field} />
+                    <Input
+                      placeholder='admin'
+                      className='col-span-4'
+                      autoComplete='off'
+                      {...field}
+                    />
                   </FormControl>
                   <FormMessage className='col-span-4 col-start-3' />
                 </FormItem>
@@ -222,7 +277,9 @@ export function UsersActionDialog({
               name='roleIds'
               render={() => (
                 <FormItem className='grid grid-cols-6 items-start space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 pt-1 text-end'>角色</FormLabel>
+                  <FormLabel className='col-span-2 pt-1 text-end'>
+                    角色
+                  </FormLabel>
                   <div className='col-span-4 space-y-2'>
                     {roles.map((role) => (
                       <FormField
@@ -241,7 +298,9 @@ export function UsersActionDialog({
                                   field.onChange(
                                     on
                                       ? [...field.value, role.id]
-                                      : field.value.filter((id) => id !== role.id),
+                                      : field.value.filter(
+                                          (id) => id !== role.id
+                                        )
                                   )
                                 }}
                               />
@@ -256,10 +315,25 @@ export function UsersActionDialog({
                 </FormItem>
               )}
             />
+            <TargetScopeFields
+              disabled={!canDelegate}
+              roles={roles.filter((r) => form.watch('roleIds').includes(r.id))}
+              value={scopes}
+              onChange={setScopes}
+            />
+            {!canDelegate && (
+              <p className='text-label text-muted-foreground'>
+                角色与目标范围由全范围管理员配置。
+              </p>
+            )}
           </form>
         </Form>
         <DialogFooter>
-          <Button type='submit' form='user-form' disabled={saving}>
+          <Button
+            type='submit'
+            form='user-form'
+            disabled={saving || (!isEdit && !canDelegate)}
+          >
             保存
           </Button>
         </DialogFooter>

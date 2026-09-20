@@ -7,7 +7,7 @@ import {
   type MapProjectionState,
   type MapVerification,
 } from '@cairn/shared'
-import { classifyRoute, matchObjectIdentity, matchPageIdentity } from '../identity.js'
+import { classifyRoute, matchObjectIdentity, matchPageIdentity, stableObjectToken } from '../identity.js'
 import { chooseImplementation, evaluateCondition } from '../conditions.js'
 import { attributeVerification, lifecycleFromEvidence } from '../verification.js'
 import { planProjectionBatch, projectionWorkingSetHints } from '../projection.js'
@@ -46,6 +46,7 @@ function observation(input: {
   loading?: boolean
   virtualized?: boolean
   judgement?: MapObservation['judgement']
+  inventory?: Array<{ role: string; name: string }>
 }): MapObservation {
   return {
     id: input.id,
@@ -97,7 +98,21 @@ function observation(input: {
         },
       },
     },
-    structuralSummary: { nodeCount: 8, truncated: Boolean(input.truncated) },
+    structuralSummary: {
+      nodeCount: 8,
+      truncated: Boolean(input.truncated),
+      ...(input.inventory
+        ? {
+            features: {
+              kind: 'surface-inventory',
+              title: '',
+              heading: '',
+              landmarks: [],
+              named: input.inventory,
+            },
+          }
+        : {}),
+    },
     evidenceRefs: [],
     captureStatus: 'observed',
     judgement: input.judgement,
@@ -239,6 +254,29 @@ describe('OMC 身份与条件', () => {
       aliases: [],
     })
     expect(saveA.allocationKey).not.toBe(saveB.allocationKey)
+    const pageKey = page.allocation.allocationKey
+    const known = [saveA, saveB].map((item) => ({
+      id: item.allocationKey,
+      allocationKey: item.allocationKey,
+      pageId: '33333333-3333-4333-8333-333333333333',
+      pageAllocationKey: pageKey,
+      regionKey: item.regionKey,
+      stableToken: item.stableToken,
+    }))
+    const overview = matchObjectIdentity({
+      observation: observation({
+        id: '55555555-5555-4555-8555-555555555565',
+        url: 'https://shop.example/console',
+        label: '总览',
+        role: 'menuitem',
+        region: 'toolbar',
+      }),
+      pageAllocationKey: pageKey,
+      objects: known,
+      aliases: [],
+    })
+    expect(overview.matchResult).toBe('MATCH')
+    expect(overview.reasons).toContain('discover-object')
   })
 
   it('OMC03 中英/视口/角色并存且不互相 supersede', () => {
@@ -269,6 +307,32 @@ describe('OMC 身份与条件', () => {
     })
     expect(plan.implementations).toHaveLength(4)
     expect(plan.assets.every((asset) => asset.changeCount === 0)).toBe(true)
+  })
+
+  it('RJ-07 账号身份不参与条件匹配，实现键仍不含账号', () => {
+    const ops = condition({
+      accountBinding: { presence: 'known', targetAccountId: accountId },
+    })
+    const other = condition({
+      accountBinding: { presence: 'known', targetAccountId: '77777777-7777-4777-8777-777777777777' },
+    })
+    expect(evaluateCondition(ops, other)).toBe('satisfied')
+    expect(mapImplementationKey(ops)).toBe(mapImplementationKey(other))
+  })
+
+  it('B1-3 稳定对象 token 优先用角色与区域，而不是每次 pending', () => {
+    expect(stableObjectToken({ role: 'button', name: 'save' }).token).toContain('role-button-save')
+    expect(stableObjectToken({ role: 'menuitem', name: '总览' }).token).not.toBe(
+      stableObjectToken({ role: 'menuitem', name: '告警' }).token,
+    )
+    expect(stableObjectToken({ role: 'menuitem', name: '总览' }).token).toMatch(/^role-menuitem-[a-f0-9]{12}$/)
+    expect(stableObjectToken({ regionKey: 'toolbar', url: 'https://shop.example/orders' }).reasons).toContain(
+      'stable:region+url',
+    )
+    const first = stableObjectToken({ regionKey: 'list', url: 'https://shop.example/orders', sourceEventKey: 'evt-1' })
+    const second = stableObjectToken({ regionKey: 'list', url: 'https://shop.example/orders', sourceEventKey: 'evt-2' })
+    expect(first.token).toBe(second.token)
+    expect(first.token).not.toContain('pending-')
   })
 
   it('OMC04 workspace 未知为 UNKNOWN，变化则新条件', () => {
@@ -524,6 +588,203 @@ describe('OMC 身份与条件', () => {
     )
     expect(result.matchResult).toBe('AMBIGUOUS')
     expect(result.candidates).toEqual([])
+  })
+
+  it('表面清单具名控件投影为带 locator 的可检索对象', () => {
+    const obs = observation({
+      id: '55555555-5555-4555-8555-5555555555e1',
+      url: 'https://shop.example/console?module=home',
+      label: '控制台',
+      role: 'document',
+      region: 'main',
+      inventory: [
+        { role: 'menuitem', name: '总览' },
+        { role: 'menuitem', name: '告警' },
+        { role: 'link', name: '设备列表' },
+      ],
+    })
+    const facts = [fact(obs, 1)]
+    const hints = projectionWorkingSetHints(facts)
+    expect(hints.objectAllocationKeys.length).toBe(4)
+    const plan = planProjectionBatch({
+      state: emptyState(),
+      facts,
+      now: '2026-09-16T00:00:00.000Z',
+    })
+    expect(plan.assignments).toHaveLength(1)
+    expect(plan.objects).toHaveLength(4)
+    const overview = plan.descriptors.find((item) => item.features.semanticName === '总览')
+    expect(overview?.features.role).toBe('menuitem')
+    expect(overview?.features.locators?.candidates).toEqual(
+      expect.arrayContaining([
+        { by: 'role', value: 'menuitem', name: '总览' },
+        { by: 'text', value: '总览' },
+      ]),
+    )
+    const page = plan.descriptors.find((item) => item.features.semanticName === '控制台')
+    expect(page?.features.locators?.candidates).toEqual(
+      expect.arrayContaining([{ by: 'role', value: 'document', name: '控制台' }]),
+    )
+    const result = queryMap(
+      {
+        targetId,
+        viewRef: { kind: 'projection', projectionId: emptyState().projectionId, cursor: 1, revision: 1 },
+        identityRevision: 0,
+        assets: plan.assets.map((asset, index) => ({
+          assetRef: {
+            targetId,
+            pageId: '33333333-3333-4333-8333-333333333333',
+            objectId: `44444444-4444-4444-8444-44444444444${index}`,
+            implementationKey: asset.implementationKey ?? 'impl:v1:zh-CN:desktop:rbac.v1:ops:u',
+            descriptorVersion: 1,
+          },
+          assetRefKey: `asset-${index}`,
+          lifecycle: asset.lifecycle,
+          importance: 0,
+          executable: false,
+          rejectReasons: asset.rejectReasons,
+          dimensions: [],
+          sampleCount: asset.sampleCount,
+          changeCount: 0,
+          evidenceAvailability: 'available' as const,
+          features: plan.descriptors.find((item) => item.objectAllocationKey === asset.objectAllocationKey)?.features,
+          condition: condition(),
+        })),
+      },
+      {
+        targetId,
+        view: { kind: 'projection', projectionId: emptyState().projectionId },
+        clues: { role: 'menuitem', name: '总览' },
+        condition: condition(),
+        limit: 10,
+      },
+    )
+    expect(result.matchResult).toBe('MATCH')
+    expect(result.candidates).toHaveLength(1)
+    const catalog = queryMap(
+      {
+        targetId,
+        viewRef: { kind: 'projection', projectionId: emptyState().projectionId, cursor: 1, revision: 1 },
+        identityRevision: 0,
+        assets: result.candidates.length
+          ? [
+              {
+                assetRef: {
+                  targetId,
+                  pageId: '33333333-3333-4333-8333-333333333333',
+                  objectId: '44444444-4444-4444-8444-444444444440',
+                  implementationKey: 'impl:v1:zh-CN:desktop:rbac.v1:ops:u',
+                  descriptorVersion: 1,
+                },
+                assetRefKey: 'asset-overview',
+                lifecycle: 'OBSERVED',
+                importance: 0,
+                executable: false,
+                rejectReasons: ['CONDITION_UNKNOWN'],
+                dimensions: [],
+                sampleCount: 1,
+                changeCount: 0,
+                evidenceAvailability: 'available',
+                features: overview?.features,
+                condition: condition({ unknownFields: ['permissionProfile', 'workspace', 'featureVersion'] }),
+              },
+            ]
+          : [],
+      },
+      {
+        targetId,
+        view: { kind: 'projection', projectionId: emptyState().projectionId },
+        clues: { role: 'menuitem', name: '总览' },
+        limit: 10,
+      },
+    )
+    expect(catalog.matchResult).toBe('MATCH')
+    const withUnnamed = queryMap(
+      {
+        targetId,
+        viewRef: { kind: 'projection', projectionId: emptyState().projectionId, cursor: 1, revision: 1 },
+        identityRevision: 0,
+        assets: [
+          {
+            assetRef: { targetId, pageId: '33333333-3333-4333-8333-333333333333' },
+            assetRefKey: 'unnamed-page',
+            lifecycle: 'OBSERVED',
+            importance: 0,
+            executable: false,
+            rejectReasons: [],
+            dimensions: [],
+            sampleCount: 1,
+            changeCount: 0,
+            evidenceAvailability: 'available',
+          },
+          {
+            assetRef: {
+              targetId,
+              pageId: '33333333-3333-4333-8333-333333333333',
+              objectId: '44444444-4444-4444-8444-444444444440',
+              implementationKey: 'impl:v1:zh-CN:desktop:rbac.v1:ops:u',
+              descriptorVersion: 1,
+            },
+            assetRefKey: 'asset-overview',
+            lifecycle: 'OBSERVED',
+            importance: 0,
+            executable: false,
+            rejectReasons: [],
+            dimensions: [],
+            sampleCount: 1,
+            changeCount: 0,
+            evidenceAvailability: 'available',
+            features: overview?.features,
+          },
+        ],
+      },
+      {
+        targetId,
+        view: { kind: 'projection', projectionId: emptyState().projectionId },
+        clues: { role: 'menuitem', name: '总览' },
+        limit: 10,
+      },
+    )
+    expect(withUnnamed.matchResult).toBe('MATCH')
+    expect(withUnnamed.candidates).toHaveLength(1)
+  })
+
+  it('同页后续观察不再因工作集与本批页面重复判歧义，清单仍展开', () => {
+    const first = observation({
+      id: '55555555-5555-4555-8555-5555555555f1',
+      url: 'https://shop.example/console?module=home',
+      region: 'action',
+    })
+    const second = observation({
+      id: '55555555-5555-4555-8555-5555555555f2',
+      url: 'https://shop.example/console?module=home',
+      label: '控制台',
+      role: 'document',
+      region: 'banner',
+      inventory: [
+        { role: 'menuitem', name: '总览' },
+        { role: 'menuitem', name: '告警' },
+      ],
+    })
+    const page = classifyRoute({ url: first.topUrlPattern })
+    const plan = planProjectionBatch({
+      state: {
+        ...emptyState(),
+        pages: [
+          {
+            id: '33333333-3333-4333-8333-3333333333aa',
+            allocationKey: page.allocationKey,
+            kind: page.kind,
+            routeTemplate: page.routeTemplate,
+          },
+        ],
+      },
+      facts: [fact(first, 1), fact(second, 2)],
+      now: '2026-09-16T00:00:00.000Z',
+    })
+    expect(plan.assignments.every((item) => item.matchResult === 'MATCH')).toBe(true)
+    expect(plan.objects.length).toBeGreaterThanOrEqual(3)
+    expect(plan.descriptors.some((item) => item.features.semanticName === '总览')).toBe(true)
   })
 })
 

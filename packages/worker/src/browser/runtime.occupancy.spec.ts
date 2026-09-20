@@ -61,6 +61,8 @@ describe('SM34 先占用后触碰', () => {
         testOccupancyGrant({ expiresAt: new Date(Date.now() - 1000).toISOString() }),
       ),
     ).rejects.toBeInstanceOf(OccupancyRequiredError)
-    expect(takeOccupancyRejects().some((item) => item.action === 'verifyAuthOnPage')).toBe(true)
+    const rejected = takeOccupancyRejects().find((item) => item.action === 'verifyAuthOnPage')
+    expect(rejected?.expiresAt).toBeDefined()
+    expect(Date.parse(rejected!.expiresAt!)).toBeLessThan(Date.now())
   })
 })

@@ -1,6 +1,7 @@
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { schemaFor } from '../native.js'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import * as native from '../native.js'
 import { isAiCallEvidence, type Step } from '@cairn/shared'
 import {
   completeAiModelCall,
@@ -95,6 +96,56 @@ describe.each(DRIVERS)('%s AI 调用预算', { timeout: 30_000 }, (driver) => {
     const calls = evidence.items.filter((item) => isAiCallEvidence(item.payload))
     expect(calls).toHaveLength(1)
     expect(isAiCallEvidence(calls[0]!.payload) && calls[0]!.payload.phase).toBe('failed')
+    const { scenarioAiCalls } = schemaFor(handle.db)
+    const ledger = await handle.db.select().from(scenarioAiCalls)
+    expect(ledger.some((row) => row.evidenceId === first.evidenceId && row.phase === 'failed')).toBe(true)
+    await completeAiModelCall(handle.db, {
+      evidenceId: first.evidenceId,
+      phase: 'failed',
+      errorCode: 'AI_CALL_FAILED',
+    })
+    const again = await handle.db.select().from(scenarioAiCalls)
+    expect(again.filter((row) => row.evidenceId === first.evidenceId)).toHaveLength(1)
+  })
+
+  it('RMC09 账本写入失败不影响已提交 evidence', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '账本失败',
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    const reserved = await reserveAiModelCall(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      maxCalls: 1,
+      grant,
+      model: 'cairn-fake',
+    })
+    expect(reserved.ok).toBe(true)
+    if (!reserved.ok) return
+    const spy = vi.spyOn(native, 'insertIgnoreRows').mockRejectedValueOnce(new Error('ledger down'))
+    await expect(
+      completeAiModelCall(handle.db, {
+        evidenceId: reserved.evidenceId,
+        phase: 'failed',
+        errorCode: 'AI_CALL_FAILED',
+      }),
+    ).resolves.toBeUndefined()
+    spy.mockRestore()
+    const evidence = await listRunEvidence(handle.db, created.detail.id)
+    const calls = evidence.items.filter((item) => isAiCallEvidence(item.payload))
+    expect(calls).toHaveLength(1)
+    expect(isAiCallEvidence(calls[0]!.payload) && calls[0]!.payload.phase).toBe('failed')
+    const { scenarioAiCalls } = schemaFor(handle.db)
+    const ledger = await handle.db.select().from(scenarioAiCalls)
+    expect(ledger.some((row) => row.evidenceId === reserved.evidenceId)).toBe(false)
   })
 
   it('含 AI 步骤但没有冻结配置时拒绝创建', async () => {

@@ -12,6 +12,7 @@
     "dev": "vite build --watch"
   },
   "dependencies": {
+    "@cairn/authoring": "workspace:*",
     "@cairn/shared": "workspace:*",
     "codemirror": "5.65.18",
     "idb-keyval": "^6.2.1",

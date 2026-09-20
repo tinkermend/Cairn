@@ -9,6 +9,7 @@ import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 // ---------------------------------------------------------------------------
 
 export const OUTCOME_MANIFEST_PROTOCOL = 'snapshot.outcomeManifest@1'
+export const IMPORTED_OUTCOME_PROTOCOL = 'outcome.imported@1' as const
 
 export const OUTCOME_SCOPES = ['step', 'scenario'] as const
 export type OutcomeScope = (typeof OUTCOME_SCOPES)[number]
@@ -26,6 +27,7 @@ export const OUTCOME_PROVENANCES = [
   'manual',
   'module_inherited',
   'recorded',
+  'imported',
   'ai_compiled',
   'legacy_assert',
   'runtime_invariant',

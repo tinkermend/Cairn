@@ -11,6 +11,7 @@ import { JwtService } from '@nestjs/jwt'
 import type { Response } from 'express'
 import {
   cancelSessionOperation,
+  assertTargetPermission,
   disposeStuckSession,
   findActiveLeaseForSession,
   findAuthWaitLeaseForOperation,
@@ -57,6 +58,7 @@ import {
 } from '@cairn/shared'
 import { AuthService } from '../auth/auth.service'
 import { classifyAccountRecheck, rethrowDomain } from '../common/domain-error'
+import { trackSseConnection } from '../common/process-gauges'
 import type { RequestAccount } from '../common/request-account'
 import { config } from '../config/env'
 import { DB_HANDLE } from '../db/db.module'
@@ -71,16 +73,16 @@ export class BrowserSessionsService {
     private readonly auth: AuthService,
   ) {}
 
-  async list(query: BrowserSessionListQuery = {}): Promise<SessionListResponse> {
-    return { items: await listSessions(this.handle, query) }
+  async list(query: BrowserSessionListQuery = {}, actor?: RequestAccount): Promise<SessionListResponse> {
+    return { items: await listSessions(this.handle, query, actor?.id) }
   }
 
-  async overview(query: SessionOverviewQuery) {
-    return listAccountSessionOverview(this.handle, query)
+  async overview(query: SessionOverviewQuery, actor?: RequestAccount) {
+    return listAccountSessionOverview(this.handle, query, actor?.id)
   }
 
-  async systemOverview(query: SessionSystemOverviewQuery) {
-    return listSessionSystemOverview(this.handle, query)
+  async systemOverview(query: SessionSystemOverviewQuery, actor?: RequestAccount) {
+    return listSessionSystemOverview(this.handle, query, actor?.id)
   }
 
   async get(sessionId: string) {
@@ -358,6 +360,7 @@ export class BrowserSessionsService {
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
     res.flushHeaders()
+    const releaseObserveSse = trackSseConnection()
     let watermarks: Record<string, number> = {}
     if (parsed.cursor) {
       try {
@@ -371,12 +374,14 @@ export class BrowserSessionsService {
     const expiresAt = this.tokenExpiresAt(input.authorization)
     let timer: ReturnType<typeof setTimeout> | undefined
     const stop = () => {
+      releaseObserveSse()
       clearTimeout(timer)
       if (!res.writableEnded) res.end()
     }
     input.signal.addEventListener('abort', stop, { once: true })
     res.once('close', stop)
     let lastPing = 0
+    let authorization = JSON.stringify([input.account.permissions, input.account.targetScopes, input.account.targetScopePermissions])
     const tick = async () => {
       if (input.signal.aborted || res.writableEnded) return
       try {
@@ -389,7 +394,13 @@ export class BrowserSessionsService {
           stop()
           return
         }
-        const events = await listSessionEventsAfter(this.handle, { key, watermarks, limit: 100 })
+        const currentAuthorization = JSON.stringify([account.permissions, account.targetScopes, account.targetScopePermissions])
+        if (currentAuthorization !== authorization) {
+          watermarks = {}
+          authorization = currentAuthorization
+          res.write('event: reset\ndata: {}\n\n')
+        }
+        const events = await listSessionEventsAfter(this.handle, { key, watermarks, limit: 100 }, account.id)
         for (const event of events) {
           if (input.signal.aborted || res.writableEnded) return
           watermarks[event.targetAccountId] = event.seq
@@ -548,6 +559,8 @@ export class BrowserSessionsService {
       if (!sessionId) return 'FORBIDDEN'
       const session = await getSessionById(this.handle, sessionId)
       if (!session || session.status !== 'OPEN') return 'FORBIDDEN'
+      await assertTargetPermission(this.handle, accountId, session.targetId, 'session:read')
+      await assertTargetPermission(this.handle, accountId, session.targetId, 'session:view')
       const latestOwner = await this.resolveOwner(sessionId)
       if (
         !canObserveManagedFrames({

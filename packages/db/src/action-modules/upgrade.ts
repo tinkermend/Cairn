@@ -52,6 +52,7 @@ import {
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import { recordAudit } from '../audit/record.js'
 import type { Db } from '../client.js'
+import { assertTargetPermission, lockConsoleAuthorization } from '../console/target-authorization.js'
 import { snapshotDeletedBy, toDeleteResult } from '../lifecycle.js'
 import { newId } from '../id.js'
 import { atomic, locked, schemaFor } from '../native.js'
@@ -551,8 +552,10 @@ export async function updateModulePublication(
   input: ModulePublicationBody & { actor: ExecutionActor },
 ): Promise<ActionModuleVersionDto> {
   const parsed = modulePublicationBodySchema.parse({ status: input.status, reason: input.reason })
-  await requireModule(db, moduleId)
+  const current = await requireModule(db, moduleId)
   return atomic(db, async (tx) => {
+    await lockConsoleAuthorization(tx, input.actor.id)
+    await assertTargetPermission(tx, input.actor.id, current.targetId, 'module:publish')
     const { actionModuleVersions } = schemaFor(tx)
     const [row] = await locked(
       tx,
@@ -615,6 +618,10 @@ export async function disableAffectedScenarios(
       moduleId,
     },
     async (tx) => {
+      await lockConsoleAuthorization(tx, input.actor.id)
+      const current = await requireModule(tx, moduleId)
+      await assertTargetPermission(tx, input.actor.id, current.targetId, 'module:publish')
+      await assertTargetPermission(tx, input.actor.id, current.targetId, 'workflow:write')
       const refs = await listModuleReferences(tx, moduleId, { versionId: parsed.versionId, page: 1, pageSize: 100 })
       const allowed = new Set(
         refs.items
@@ -672,7 +679,8 @@ export async function deleteActionModuleProtected(
   moduleId: string,
   actor: ExecutionActor,
 ): Promise<DeleteResourceResult> {
-  await requireModule(db, moduleId)
+  const currentModule = await requireModule(db, moduleId)
+  await assertTargetPermission(db, actor.id, currentModule.targetId, 'module:write')
   const users = await userReferenceItems(db, moduleId)
   if (users.some((item) => item.draftUses.length > 0 || item.publishedUses.length > 0)) {
     throw conflict('MODULE_REFERENCED', '模块仍被用户场景引用，不能删除', { references: users })
@@ -687,8 +695,10 @@ export async function deleteActionModuleProtected(
   const { actionModules } = schemaFor(db)
   const now = new Date()
   return atomic(db, async (tx) => {
+    await lockConsoleAuthorization(tx, actor.id)
     const [current] = await locked(tx, tx.select().from(actionModules).where(eq(actionModules.id, moduleId)))
     if (!current) throw notFound('MODULE_NOT_FOUND', '动作模块不存在')
+    await assertTargetPermission(tx, actor.id, current.targetId, 'module:write')
     if (current.deletedAt && current.deletedBy) {
       return toDeleteResult({ id: moduleId, deletedAt: current.deletedAt, deletedBy: current.deletedBy })
     }

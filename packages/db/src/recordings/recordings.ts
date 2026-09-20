@@ -235,6 +235,7 @@ export async function listRecordingDrafts(
         name: row.draft.name,
         recordingId: row.draft.recordingId,
         sourceVersion: row.draft.sourceVersion,
+        sourceProtocol: row.draft.sourceProtocol,
         eventCount: row.draft.eventCount,
         itemCount: row.draft.itemCount,
         unresolvedCount: row.draft.unresolvedCount,
@@ -380,6 +381,7 @@ async function toDetail(db: Db, id: string, actorId?: string): Promise<Recording
     name: row.draft.name,
     recordingId: row.draft.recordingId,
     sourceVersion: row.draft.sourceVersion,
+    sourceProtocol: row.draft.sourceProtocol,
     eventCount: row.draft.eventCount,
     itemCount: row.draft.itemCount,
     unresolvedCount: row.draft.unresolvedCount,
@@ -394,7 +396,7 @@ async function toDetail(db: Db, id: string, actorId?: string): Promise<Recording
   })
 }
 
-async function assertBindingAcceptsUpload(db: Db, bindingId: string, actorId: string, targetId: string) {
+export async function assertBindingAcceptsUpload(db: Db, bindingId: string, actorId: string, targetId: string) {
   const { recordingBindings, scenarios } = schemaFor(db)
   const [row] = await db
     .select({ binding: recordingBindings, scenarioTargetId: scenarios.targetId })
@@ -415,7 +417,7 @@ async function assertBindingAcceptsUpload(db: Db, bindingId: string, actorId: st
   }
 }
 
-async function attachBindingDraft(db: Db, bindingId: string, actorId: string, draftId: string) {
+export async function attachBindingDraft(db: Db, bindingId: string, actorId: string, draftId: string) {
   const { recordingBindings } = schemaFor(db)
   const [row] = await db.select().from(recordingBindings).where(eq(recordingBindings.id, bindingId)).limit(1)
   if (!row || row.createdByConsoleAccountId !== actorId) {

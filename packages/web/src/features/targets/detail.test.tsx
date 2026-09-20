@@ -153,8 +153,11 @@ describe('TargetDetailPage 账号列表', () => {
   it('账号表保留筛选入口，并把关键词交给服务端', async () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('值班账号')).toBeInTheDocument()
-    await expect.element(screen.getByText('登录核验规则')).toBeInTheDocument()
-    await expect.element(screen.getByText('核验等级')).toBeInTheDocument()
+    await expect.element(screen.getByText('主动检测')).toBeInTheDocument()
+    await expect.element(screen.getByText('会话', { exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByText('未准备')).toBeInTheDocument()
+    expect(document.body.innerText).not.toContain('旧模式')
+    expect(document.body.innerText).not.toContain('核验等级')
     await expect.element(screen.getByText('期望身份')).toBeInTheDocument()
     await expect.element(screen.getByLabelText('搜索目标账号')).toBeInTheDocument()
     await screen.getByLabelText('搜索目标账号').fill('ops')
@@ -201,7 +204,7 @@ describe('TargetDetailPage 账号列表', () => {
     await expect.element(screen.getByText(/已配置授权边界/)).toBeInTheDocument()
   })
 
-  it('登录核验规则页可覆盖会话回收模式', async () => {
+  it('无主动检测时不能选用认证保活', async () => {
     const baseTarget = {
       id: TARGET_ID,
       name: '演示商城',
@@ -222,8 +225,76 @@ describe('TargetDetailPage 账号列表', () => {
       effectiveSessionPolicy: { ...DEFAULT_SESSION_POLICY, reclaim: body.reclaim },
     }))
     const screen = await renderPage()
-    await screen.getByRole('tab', { name: /登录核验规则/ }).click()
+    await screen.getByRole('tab', { name: /主动检测/ }).click()
     await expect.element(screen.getByText('会话策略')).toBeInTheDocument()
+    await expect.element(screen.getByText(/未配置主动检测时不能选用认证保活/)).toBeInTheDocument()
+    await screen.getByLabelText('回收模式').click()
+    await expect.element(screen.getByRole('option', { name: '认证有效即保活' })).toBeDisabled()
+    expect(mocks.updateTargetSessionPolicy).not.toHaveBeenCalled()
+  })
+
+  it('已验收主动检测后可覆盖会话回收模式为认证保活', async () => {
+    const baseTarget = {
+      id: TARGET_ID,
+      name: '演示商城',
+      code: 'shop',
+      entryUrl: 'https://shop.example.test',
+      authMethod: 'password',
+      captchaMode: 'none',
+      status: 'active',
+      accountCount: 1,
+      updatedAt: '2026-09-14T00:00:00.000Z',
+      sessionPolicy: null,
+      effectiveSessionPolicy: DEFAULT_SESSION_POLICY,
+    }
+    mocks.fetchTarget.mockResolvedValue(baseTarget)
+    mocks.fetchTargetAuthProfile.mockResolvedValue({
+      current: {
+        revision: 1,
+        digest: 'd'.repeat(64),
+        createdAt: '2026-09-19T00:00:00.000Z',
+        createdBy: null,
+        definition: {
+          verify: { mode: 'http', success: { status: 200 }, failure: { status: 401 } },
+          renew: 'none',
+          scope: { origins: ['https://shop.example.test'], pathPrefixes: ['/'] },
+        },
+        validation: {
+          recordedAt: '2026-09-19T00:00:00.000Z',
+          actorId: '11111111-1111-4111-8111-111111111111',
+          operationId: '33333333-3333-4333-8333-333333333333',
+          steps: {
+            valid_pass: {
+              authState: 'AUTHENTICATED',
+              identityState: 'UNVERIFIED',
+              observedIdentity: null,
+              unknownClass: null,
+              evidenceSummary: 'ok',
+              authProfileRevision: 1,
+              diagnosticCode: null,
+            },
+            server_revoked: {
+              authState: 'EXPIRED',
+              identityState: 'UNVERIFIED',
+              observedIdentity: null,
+              unknownClass: null,
+              evidenceSummary: 'expired',
+              authProfileRevision: 1,
+              diagnosticCode: null,
+            },
+          },
+        },
+      },
+      history: [],
+      accounts: [],
+    })
+    mocks.updateTargetSessionPolicy.mockImplementation(async (_id: string, body: { reclaim?: string | null }) => ({
+      ...baseTarget,
+      sessionPolicy: { reclaim: body.reclaim },
+      effectiveSessionPolicy: { ...DEFAULT_SESSION_POLICY, reclaim: body.reclaim },
+    }))
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: /主动检测/ }).click()
     await expect.element(screen.getByLabelText('回收模式')).toBeInTheDocument()
     await screen.getByLabelText('回收模式').click()
     await screen.getByRole('option', { name: '认证有效即保活' }).click()
@@ -234,5 +305,48 @@ describe('TargetDetailPage 账号列表', () => {
       reclaim: 'AUTH_DRIVEN',
     })
     await expect.element(screen.getByText(/认证保活不占人工保留配额/)).toBeInTheDocument()
+  })
+
+  it('登录核验规则页可覆盖失联处置并提示风险', async () => {
+    const baseTarget = {
+      id: TARGET_ID,
+      name: '演示商城',
+      code: 'shop',
+      entryUrl: 'https://shop.example.test',
+      authMethod: 'password',
+      captchaMode: 'none',
+      status: 'active',
+      accountCount: 1,
+      updatedAt: '2026-09-14T00:00:00.000Z',
+      sessionPolicy: null,
+      effectiveSessionPolicy: DEFAULT_SESSION_POLICY,
+    }
+    mocks.fetchTarget.mockResolvedValue(baseTarget)
+    mocks.updateTargetSessionPolicy.mockImplementation(
+      async (_id: string, body: { lostDisposition?: string | null }) => ({
+        ...baseTarget,
+        sessionPolicy: { lostDisposition: body.lostDisposition },
+        effectiveSessionPolicy: { ...DEFAULT_SESSION_POLICY, lostDisposition: body.lostDisposition },
+      }),
+    )
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: /主动检测/ }).click()
+    await expect.element(screen.getByLabelText('失联处置')).toBeInTheDocument()
+    await screen.getByLabelText('失联处置').click()
+    await screen.getByRole('option', { name: '失联后自动让路' }).click()
+    await expect.poll(() => {
+      const calls = mocks.updateTargetSessionPolicy.mock.calls
+      return calls[calls.length - 1]?.[1]
+    }).toMatchObject({
+      lostDisposition: 'AUTO',
+    })
+    await expect.element(screen.getByText(/只释放账本上的活会话键/)).toBeInTheDocument()
+  })
+
+  it('可从顶栏点击系统资料查看抽屉', async () => {
+    const screen = await renderPage()
+    await screen.getByRole('button', { name: /系统资料/ }).click()
+    await expect.element(screen.getByText('系统完整资料')).toBeInTheDocument()
+    await expect.element(screen.getByText('登录框定位')).toBeInTheDocument()
   })
 })

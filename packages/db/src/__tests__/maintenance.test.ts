@@ -52,7 +52,7 @@ describe.each(DRIVERS)('%s 会话维护账本', { timeout: 60_000 }, (driver) =>
     })
     const [admin] = await handle.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
     if (!admin) throw new Error('missing admin role fixture')
-    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin.id })
+    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin.id, targetScopeMode: 'all', targetScopeIds: [] })
     await handle.db.insert(targets).values({
       id: targetId,
       code: `mnt-${targetId.slice(0, 8)}`,
@@ -486,6 +486,56 @@ describe.each(DRIVERS)('%s 会话维护账本', { timeout: 60_000 }, (driver) =>
     })
     expect(reused.operation?.kindParams?.reusedRunId).toBe(created.detail.id)
     expect(reused.reusedRunId).toBe(created.detail.id)
+  })
+
+  it('RESET 在失联实例上不可提交', async () => {
+    const accountId = await makeAccount('reset-lost')
+    const worker = await seedWorker(handle)
+    const opened = await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      ownerWorkerId: worker.workerId,
+      ownerWorkerInstanceId: worker.instanceId,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    expect(
+      await setSessionStatus(handle.db, {
+        sessionId: opened.id,
+        expectedVersion: opened.version,
+        status: 'OPEN',
+        ownerWorkerId: worker.workerId,
+        ownerWorkerInstanceId: worker.instanceId,
+      }),
+    ).toBe(true)
+    expect(
+      await setSessionStatus(handle.db, {
+        sessionId: opened.id,
+        expectedVersion: opened.version + 1,
+        status: 'LOST',
+        ownerWorkerId: worker.workerId,
+        ownerWorkerInstanceId: worker.instanceId,
+      }),
+    ).toBe(true)
+    const detail = await getAccountSessionDetail(handle.db, { targetId, targetAccountId: accountId })
+    expect(detail.status).toBe('lost')
+    expect(detail.actions.find((action) => action.kind === 'RESET_PROFILE')).toMatchObject({
+      enabled: false,
+      disabledReason: '失联实例须先处置',
+    })
+    await expect(
+      requestMaintenanceOperation(handle.db, {
+        key: { targetId, targetAccountId: accountId },
+        body: {
+          kind: 'RESET_PROFILE',
+          idempotencyKey: `reset-lost-${accountId}-xxxxxxxx`,
+          confirmAccountId: accountId,
+          expectedSessionId: detail.session?.id,
+          expectedGeneration: detail.session?.generation,
+        },
+        actor: { id: actorId },
+      }),
+    ).rejects.toMatchObject({ code: 'SESSION_NOT_CLAIMABLE' })
   })
 
   it('RESET 在无活实例时可提交', async () => {

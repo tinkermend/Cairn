@@ -3,9 +3,10 @@ import {
   platformConfigDocumentSchema,
   resolveSessionPolicyLayers,
   sessionPolicyFromPlatform,
-  sessionPolicyOverrideSchema,
+  targetSessionPolicyOverrideSchema,
   type SessionPolicy,
   type SessionPolicyOverride,
+  type TargetSessionPolicyOverride,
 } from '@cairn/shared'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../client.js'
@@ -14,9 +15,9 @@ import { getPlatformConfig } from '../platform-config/store.js'
 
 export function parseTargetSessionPolicyOverride(
   value: unknown,
-): SessionPolicyOverride | null {
+): TargetSessionPolicyOverride | null {
   if (value == null) return null
-  return sessionPolicyOverrideSchema.parse(value)
+  return targetSessionPolicyOverrideSchema.parse(value)
 }
 
 export async function loadResolvedSessionPolicyForTarget(
@@ -61,7 +62,7 @@ export function sessionLifecycleFieldsFromPolicy(policy: SessionPolicy) {
 
 export function effectiveSessionPolicyForTarget(
   documentSession: Parameters<typeof resolveSessionPolicyLayers>[0]['platformDefault'],
-  targetOverride: SessionPolicyOverride | null,
+  targetOverride: TargetSessionPolicyOverride | null,
 ): SessionPolicy {
   return resolveSessionPolicyLayers({
     platformDefault: documentSession,

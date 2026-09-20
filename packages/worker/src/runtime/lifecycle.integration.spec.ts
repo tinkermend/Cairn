@@ -70,7 +70,10 @@ describe('LifecycleService（集成）', { timeout: 60_000 }, () => {
     const claimEntered = Promise.withResolvers<void>()
     const gate = Promise.withResolvers<void>()
     // 第三/四个构造参数是 ObjectService / BrowserSessionManager，与本用例无关：给同形占位。
-    const noObjects = { purgeExpiredObjects: async () => ({ purged: 0 }) }
+    const noObjects = {
+      purgeExpiredObjects: async () => ({ purged: 0 }),
+      probeStore: async () => ({ ok: true, latencyMs: 1, errorClass: null }),
+    }
     const noEvidence = { settleExpired: async () => ({ marked: 0 }), settleRun: async () => {} }
     const noSessions = {
       reconcileOwn: async () => ({ leasesRevoked: 0, sessionsClosed: 0 }),
@@ -79,6 +82,8 @@ describe('LifecycleService（集成）', { timeout: 60_000 }, () => {
       stopHeartbeat: () => {},
       shutdown: async () => {},
       reap: async () => ({ leasesExpired: 0, sessionsClosed: 0 }),
+      stopAllLocal: async () => [],
+      liveHandleCount: () => 0,
     }
     const restoreConnect = gatePoolConnect(handle, gate.promise, () => claimEntered.resolve())
     const lifecycle = new LifecycleService(

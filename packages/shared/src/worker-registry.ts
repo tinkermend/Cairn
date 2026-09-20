@@ -288,9 +288,13 @@ export function nextHandleMismatchStreak(input: {
   previous: number
   liveHandleCount: number | null
   sampledSlotCount: number | null
+  browserProcessCount?: number | null
 }): number {
   if (input.liveHandleCount === null || input.sampledSlotCount === null) return 0
-  if (input.liveHandleCount === input.sampledSlotCount) return 0
+  const handleAligned = input.liveHandleCount === input.sampledSlotCount
+  const browserAligned =
+    input.browserProcessCount == null || input.browserProcessCount === input.liveHandleCount
+  if (handleAligned && browserAligned) return 0
   return Math.min(2, Math.max(0, input.previous) + 1)
 }
 

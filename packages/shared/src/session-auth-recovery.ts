@@ -1,8 +1,7 @@
 import { z } from 'zod'
-import { canonicalJson } from './canonical.js'
-import { sha256Hex } from './internal-auth.js'
+import { canonicalJson, sha256Hex } from './canonical.js'
 import { pageRefSchema } from './managed-browser.js'
-import { authCapabilityTierSchema, authObservationSchema, authSignalSchema, type AuthCapabilityTier, type AuthObservation, type AuthSignal } from './session-auth.js'
+import { authCapabilityTierSchema, authObservationSchema, authSignalSchema, pageLooksLikeLogin, type AuthCapabilityTier, type AuthObservation, type AuthSignal } from './session-auth.js'
 import { effectTypeSchema, type EffectType } from './step.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 
@@ -146,16 +145,7 @@ export function inRunAuthVerifyAllowed(phase: InRunAuthVerifyPhase): boolean {
   return phase === 'signal_confirm' || phase === 'recovery'
 }
 
-export function pageLooksLikeLogin(input: { pageUrl?: string | null; loginUrl?: string | null }): boolean {
-  if (!input.pageUrl || !input.loginUrl) return false
-  try {
-    const page = new URL(input.pageUrl)
-    const login = new URL(input.loginUrl)
-    return page.origin === login.origin && page.pathname === login.pathname
-  } catch {
-    return false
-  }
-}
+export { authRoutePath, pageLooksLikeLogin } from './session-auth.js'
 
 export function isContextRecoverable(input: {
   rule: RecoveryRule

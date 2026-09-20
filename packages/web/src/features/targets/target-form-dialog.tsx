@@ -12,6 +12,7 @@ import {
   createTargetBodySchema,
   type CreateTargetAccountBody,
   type LoginLocatorBy,
+  type TargetCaptchaDefinition,
   type TargetDto,
   type TargetLoginFields,
 } from '@cairn/shared'
@@ -39,6 +40,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Select,
   SelectContent,
@@ -47,6 +49,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { PasswordInput } from '@/components/password-input'
+import { ValidityFields } from '@/features/credentials/validity-fields'
 import {
   AUTH_METHOD_LABELS,
   CAPTCHA_MODE_LABELS,
@@ -67,12 +70,24 @@ const formSchema = z
     accountDisplayName: z.string(),
     accountUsername: z.string(),
     accountPassword: z.string(),
+    validityMode: z.enum(['days', 'months', 'permanent']),
+    validityAmount: z.string(),
+    validityTimeZone: z.string(),
     usernameBy: z.enum(LOGIN_LOCATOR_BY),
     usernameValue: z.string(),
     passwordBy: z.enum(LOGIN_LOCATOR_BY),
     passwordValue: z.string(),
     submitBy: z.enum(LOGIN_LOCATOR_BY),
     submitValue: z.string(),
+    captchaImageBy: z.enum(LOGIN_LOCATOR_BY),
+    captchaImageValue: z.string(),
+    captchaInputBy: z.enum(LOGIN_LOCATOR_BY),
+    captchaInputValue: z.string(),
+    captchaKnobBy: z.enum(LOGIN_LOCATOR_BY),
+    captchaKnobValue: z.string(),
+    captchaBgBy: z.enum(LOGIN_LOCATOR_BY),
+    captchaBgValue: z.string(),
+    sensitiveSelectors: z.string(),
   })
   .superRefine((values, ctx) => {
     const hasAny =
@@ -107,13 +122,25 @@ const EMPTY_VALUES: FormValues = {
   status: 'active',
   accountDisplayName: '',
   accountUsername: '',
-  accountPassword: '',
+    accountPassword: '',
+    validityMode: 'days',
+    validityAmount: '90',
+    validityTimeZone: 'Asia/Shanghai',
   usernameBy: 'id',
   usernameValue: '',
   passwordBy: 'id',
   passwordValue: '',
   submitBy: 'id',
   submitValue: '',
+  captchaImageBy: 'css',
+  captchaImageValue: '',
+  captchaInputBy: 'css',
+  captchaInputValue: '',
+  captchaKnobBy: 'css',
+  captchaKnobValue: '',
+  captchaBgBy: 'css',
+  captchaBgValue: '',
+  sensitiveSelectors: '',
 }
 
 function locatorFromForm(by: LoginLocatorBy, value: string) {
@@ -129,6 +156,33 @@ function loginFieldsFromForm(values: FormValues): TargetLoginFields | null {
   })
 }
 
+function captchaFromForm(values: FormValues): TargetCaptchaDefinition | null {
+  if (values.captchaMode === 'image') {
+    const imageLocator = locatorFromForm(values.captchaImageBy, values.captchaImageValue)
+    const inputLocator = locatorFromForm(values.captchaInputBy, values.captchaInputValue)
+    if (imageLocator && inputLocator) {
+      return { type: 'IMAGE', image: { imageLocator, inputLocator } }
+    }
+    return { type: 'AUTO' }
+  }
+  if (values.captchaMode === 'slider') {
+    const knobLocator = locatorFromForm(values.captchaKnobBy, values.captchaKnobValue)
+    const bgLocator = locatorFromForm(values.captchaBgBy, values.captchaBgValue)
+    if (knobLocator) {
+      return {
+        type: 'SLIDER',
+        slider: {
+          knobLocator,
+          ...(bgLocator ? { bgLocator } : {}),
+          mode: 'TRACK',
+        },
+      }
+    }
+    return { type: 'AUTO' }
+  }
+  return null
+}
+
 function accountFromForm(
   values: FormValues
 ): CreateTargetAccountBody | undefined {
@@ -140,7 +194,19 @@ function accountFromForm(
     displayName,
     username,
     status: 'active',
-    ...(password.trim() === '' ? {} : { password }),
+    usage: 'business',
+    ...(password.trim() === ''
+      ? {}
+      : {
+          password,
+          validity: {
+            mode: values.validityMode,
+            ...(values.validityMode === 'permanent'
+              ? {}
+              : { amount: Number(values.validityAmount), timeZone: values.validityTimeZone }),
+            startedAt: new Date().toISOString(),
+          },
+        }),
   }
 }
 
@@ -160,13 +226,39 @@ function valuesFromTarget(current: TargetDto): FormValues {
     passwordValue: current.loginFields?.password?.value ?? '',
     submitBy: current.loginFields?.submit?.by ?? 'id',
     submitValue: current.loginFields?.submit?.value ?? '',
+    captchaImageBy: current.captcha?.image?.imageLocator.by ?? 'css',
+    captchaImageValue: current.captcha?.image?.imageLocator.value ?? '',
+    captchaInputBy: current.captcha?.image?.inputLocator.by ?? 'css',
+    captchaInputValue: current.captcha?.image?.inputLocator.value ?? '',
+    captchaKnobBy: current.captcha?.slider?.knobLocator?.by ?? 'css',
+    captchaKnobValue: current.captcha?.slider?.knobLocator?.value ?? '',
+    captchaBgBy: current.captcha?.slider?.bgLocator?.by ?? 'css',
+    captchaBgValue: current.captcha?.slider?.bgLocator?.value ?? '',
+    sensitiveSelectors: (current.sensitiveSelectors ?? []).join('\n'),
   }
+}
+
+function selectorsFromForm(value: string): string[] {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 32)
 }
 
 function hasAnyLoginField(
   fields: TargetLoginFields | null | undefined
 ): boolean {
   return Boolean(fields?.username || fields?.password || fields?.submit)
+}
+
+function hasCaptchaLocator(captcha: TargetCaptchaDefinition | null | undefined): boolean {
+  return Boolean(
+    captcha?.image?.imageLocator.value ||
+      captcha?.image?.inputLocator.value ||
+      captcha?.slider?.knobLocator?.value ||
+      captcha?.slider?.bgLocator?.value,
+  )
 }
 
 type TargetFormDialogProps = {
@@ -206,7 +298,7 @@ function TargetFormFields({
   const [saving, setSaving] = useState(false)
   const [accountOpen, setAccountOpen] = useState(!current)
   const [locatorOpen, setLocatorOpen] = useState(
-    hasAnyLoginField(current?.loginFields)
+    hasAnyLoginField(current?.loginFields) || hasCaptchaLocator(current?.captcha)
   )
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -220,6 +312,7 @@ function TargetFormFields({
     setSaving(true)
     try {
       const loginFields = loginFieldsFromForm(values)
+      const captcha = captchaFromForm(values)
       if (isEdit && current) {
         await updateTarget(current.id, {
           name: values.name,
@@ -229,6 +322,8 @@ function TargetFormFields({
           captchaMode: values.captchaMode,
           status: values.status,
           loginFields,
+          captcha,
+          sensitiveSelectors: selectorsFromForm(values.sensitiveSelectors),
         })
         toast.success('目标系统已更新')
         await queryClient.invalidateQueries({ queryKey: ['targets'] })
@@ -246,6 +341,8 @@ function TargetFormFields({
           captchaMode: values.captchaMode,
           status: values.status,
           loginFields,
+          captcha,
+          sensitiveSelectors: selectorsFromForm(values.sensitiveSelectors),
           account: accountFromForm(values),
         })
         const created = await createTarget(parsed)
@@ -412,6 +509,26 @@ function TargetFormFields({
               </FormItem>
             )}
           />
+          <FormField
+            control={form.control}
+            name='sensitiveSelectors'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>敏感区域选择器</FormLabel>
+                <FormControl>
+                  <Textarea
+                    rows={3}
+                    placeholder='每行一个 CSS 选择器，例如 input[name=idCard]'
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  截图与录像在这些元素可见时遮罩像素，不改页面值。用于“显示密码”后的明文框、证件号等。
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           {!isEdit ? (
             <section className='space-y-3 border-t border-border pt-4'>
@@ -469,6 +586,9 @@ function TargetFormFields({
                       </FormItem>
                     )}
                   />
+                  {form.watch('accountPassword').trim() !== '' ? (
+                    <ValidityFields control={form.control} required />
+                  ) : null}
                 </div>
               ) : null}
             </section>
@@ -482,7 +602,15 @@ function TargetFormFields({
             />
             {locatorOpen ? (
               <div className='space-y-4'>
-                {captchaMode !== 'none' ? (
+                {captchaMode === 'image' || captchaMode === 'slider' ? (
+                  <Alert>
+                    <AlertDescription>
+                      开跑前与会话维护会由 Worker 进程内自动识别
+                      {CAPTCHA_MODE_LABELS[captchaMode]}
+                      ；预算耗尽后降级到远程画板人工接管。未填定位时按内置指纹库探测。
+                    </AlertDescription>
+                  </Alert>
+                ) : captchaMode !== 'none' ? (
                   <Alert variant='warning'>
                     <AlertDescription>
                       已声明{CAPTCHA_MODE_LABELS[captchaMode]}
@@ -510,6 +638,34 @@ function TargetFormFields({
                   placeholder='password'
                 />
                 <LocatorRow form={form} role='submit' placeholder='login' />
+                {captchaMode === 'image' ? (
+                  <>
+                    <LocatorRow
+                      form={form}
+                      role='captchaImage'
+                      placeholder='img.captcha'
+                    />
+                    <LocatorRow
+                      form={form}
+                      role='captchaInput'
+                      placeholder='input[name="captcha"]'
+                    />
+                  </>
+                ) : null}
+                {captchaMode === 'slider' ? (
+                  <>
+                    <LocatorRow
+                      form={form}
+                      role='captchaKnob'
+                      placeholder='.slider-knob'
+                    />
+                    <LocatorRow
+                      form={form}
+                      role='captchaBg'
+                      placeholder='.slider-bg'
+                    />
+                  </>
+                ) : null}
               </div>
             ) : null}
           </section>
@@ -563,7 +719,7 @@ function LocatorRow({
   placeholder,
 }: {
   form: UseFormReturn<FormValues>
-  role: 'username' | 'password' | 'submit'
+  role: keyof typeof LOGIN_FIELD_ROLE_LABELS
   placeholder: string
 }) {
   const byName = `${role}By` as const

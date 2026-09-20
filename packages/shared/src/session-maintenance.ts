@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { pageRefSchema } from './managed-browser.js'
-import type { AuthCapabilityTier, IdentityState } from './session-auth.js'
+import type { IdentityState } from './session-auth.js'
 import type { SessionAuthState, SessionStatus } from './session.js'
 import { SESSION_MAINTENANCE_KINDS, type SessionLeasePurpose } from './session-occupancy.js'
 export { SESSION_MAINTENANCE_KINDS } from './session-occupancy.js'
@@ -98,7 +98,7 @@ export const SESSION_MAINTENANCE_ERROR_MESSAGES: Record<SessionMaintenanceErrorC
   OPERATION_INTERRUPTED: '操作被中断',
   OUTCOME_UNKNOWN: '登录结果无法确认',
   OPERATION_QUEUE_EXPIRED: '维护操作排队已过期',
-  AUTH_PROFILE_REQUIRED: '尚未发布认证画像，无法核验或准备已登录会话',
+  AUTH_PROFILE_REQUIRED: '尚未发布并通过验收的主动检测规则，无法做主动核验、续登或认证保活',
   SESSION_KEEPALIVE_ABANDONED: '认证已失效且自动登录不可用，已停止保活巡检',
 }
 
@@ -521,13 +521,22 @@ export const sessionObserveQuerySchema = z
   })
 export type SessionObserveQuery = z.infer<typeof sessionObserveQuerySchema>
 
+export function captchaModeBlocksAutoLogin(mode?: string | null): boolean {
+  return mode === 'sms' || mode === 'other'
+}
+
 export function accountPickerHint(input: {
-  hasLiveSession: boolean
+  liveStatus?: 'CREATING' | 'OPEN' | 'CLOSING' | 'CLOSED' | 'LOST' | null
   hasPassword: boolean
-  capability: AuthCapabilityTier | string
-}): { reuse: boolean; manualLikely: boolean } {
+  authMethod?: string | null
+  captchaMode?: string | null
+}): { reuse: boolean; lost: boolean; manualLikely: boolean } {
   return {
-    reuse: input.hasLiveSession,
-    manualLikely: !input.hasPassword || input.capability !== 'IDENTITY_VERIFIED',
+    reuse: input.liveStatus === 'OPEN',
+    lost: input.liveStatus === 'LOST',
+    manualLikely:
+      !input.hasPassword ||
+      input.authMethod === 'manual' ||
+      captchaModeBlocksAutoLogin(input.captchaMode),
   }
 }

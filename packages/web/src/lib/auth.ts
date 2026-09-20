@@ -8,6 +8,8 @@ export function toAuthUser(account: AccountDto): AuthUser {
     email: account.email,
     roles: account.roles.map((role) => role.key),
     permissions: account.permissions,
+    targetScopes: account.targetScopes,
+    targetScopePermissions: account.targetScopePermissions,
   }
 }
 

@@ -392,7 +392,8 @@ function expandImplementation(input: {
     if (step.outputKey && outputRenames.has(step.outputKey)) {
       step.outputKey = outputRenames.get(step.outputKey)
     }
-    if (step.type === 'fill' || step.type === 'echo' || step.type === 'select') {
+    if (step.type === 'fill' || step.type === 'echo' || step.type === 'select' ||
+      (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input')) {
       const stepInput = step.input as { value?: unknown; from?: string; fromField?: string }
       if (stepInput.from) {
         const binding = invocation.inputBindings[stepInput.from]

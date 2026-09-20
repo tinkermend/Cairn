@@ -31,7 +31,7 @@ const ALLOWED_EDGES = {
   '@cairn/api': ['@cairn/db', '@cairn/authoring', '@cairn/map', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
   '@cairn/worker': ['@cairn/db', '@cairn/authoring', '@cairn/map', '@cairn/secret', '@cairn/shared', '@cairn/storage'],
   '@cairn/web': ['@cairn/shared', '@cairn/authoring'],
-  '@cairn/extension-playwright-crx': ['@cairn/shared'],
+  '@cairn/extension-playwright-crx': ['@cairn/shared', '@cairn/authoring'],
 }
 
 /**

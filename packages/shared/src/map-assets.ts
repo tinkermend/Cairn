@@ -16,6 +16,8 @@ export const MAP_ROUTE_RULE_VERSION = 'map-route@1' as const
 export const MAP_VERIFY_RULE_VERSION = 'map-verify@1' as const
 export const DEFAULT_MAP_FRESHNESS_MS = 7 * 24 * 60 * 60 * 1000
 export const MAP_PROJECTION_BATCH_MAX = 100
+/** 一观察可展开多对象，计划里的对象/实现/描述符上限高于事实批大小。 */
+export const MAP_PROJECTION_PLAN_OBJECT_MAX = 400
 export const MAP_PROJECTION_BATCH_BUDGET_MS = 500
 export const MAP_QUERY_LIMIT_DEFAULT = 10
 export const MAP_QUERY_LIMIT_MAX = 50
@@ -238,11 +240,11 @@ export const mapProjectionPlanSchema = z.strictObject({
   protocol: z.literal(MAP_ASSETS_PROTOCOL),
   algorithmVersion: z.literal(MAP_IDENTITY_RULE_VERSION),
   pages: z.array(mapPageAllocationSchema).max(MAP_PROJECTION_BATCH_MAX),
-  objects: z.array(mapObjectAllocationSchema).max(MAP_PROJECTION_BATCH_MAX),
+  objects: z.array(mapObjectAllocationSchema).max(MAP_PROJECTION_PLAN_OBJECT_MAX),
   assignments: z.array(mapAssignmentPlanSchema).max(MAP_PROJECTION_BATCH_MAX),
-  implementations: z.array(mapImplementationPlanSchema).max(MAP_PROJECTION_BATCH_MAX),
-  descriptors: z.array(mapDescriptorPlanSchema).max(MAP_PROJECTION_BATCH_MAX),
-  assets: z.array(mapAssetPlanSchema).max(200),
+  implementations: z.array(mapImplementationPlanSchema).max(MAP_PROJECTION_PLAN_OBJECT_MAX),
+  descriptors: z.array(mapDescriptorPlanSchema).max(MAP_PROJECTION_PLAN_OBJECT_MAX),
+  assets: z.array(mapAssetPlanSchema).max(MAP_PROJECTION_PLAN_OBJECT_MAX),
   conflicts: z.array(mapConflictPlanSchema).max(50),
   nextCursor: z.number().int().nonnegative().max(1_000_000_000),
   rebuildCompleteness: mapRebuildCompletenessSchema.optional(),

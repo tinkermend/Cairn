@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm'
+import { readableSessionTargets } from '../console/target-authorization.js'
 import type { SessionEventDto, SessionEventType } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
@@ -101,9 +102,11 @@ export async function listSessionEvents(
 export async function listSessionEventsAfter(
   db: Db,
   input: { key?: SessionKey; afterSeq?: number; watermarks?: Record<string, number>; limit?: number },
+  actorId?: string,
 ): Promise<SessionEventDto[]> {
   const { sessionEvents } = schemaFor(db)
   const watermarks = input.watermarks ?? {}
+  const targetIds = actorId ? await readableSessionTargets(db, actorId) : undefined
   const conditions = [
     input.key
       ? sql`${sessionEvents.seq} > ${input.afterSeq ?? watermarks[input.key.targetAccountId] ?? 0}`
@@ -117,6 +120,7 @@ export async function listSessionEventsAfter(
     conditions.push(eq(sessionEvents.targetId, input.key.targetId))
     conditions.push(eq(sessionEvents.targetAccountId, input.key.targetAccountId))
   }
+  if (targetIds) conditions.push(targetIds.length ? inArray(sessionEvents.targetId, targetIds) : sql`1 = 0`)
   const rows = await db
     .select()
     .from(sessionEvents)

@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { CAPTURE_MODE_LABELS } from './labels'
-import { AccountSessionHint, accountCapabilityLabel } from './account-session-hint'
+import { AccountSessionHint } from './account-session-hint'
 import { passwordAccounts, preferredPasswordAccountId } from './target-account'
 
 type RunCreateDialogProps = {
@@ -153,12 +153,10 @@ export function RunCreateDialog({
               </SelectTrigger>
               <SelectContent>
                 {usableAccounts.length === 0 ? <SelectItem value='__none__'>不指定</SelectItem> : null}
-                {(accounts.data?.items ?? [])
-                  .filter((item) => item.status === 'active')
-                  .map((item) => (
+                {usableAccounts.map((item) => (
                     <SelectItem key={item.id} value={item.id}>
                       {item.displayName}（{item.username}
-                      {item.hasPassword ? '' : ' · 未保存口令'}） · {accountCapabilityLabel(item)}
+                      {item.hasPassword ? '' : ' · 未保存口令'}）
                     </SelectItem>
                   ))}
               </SelectContent>
@@ -166,7 +164,7 @@ export function RunCreateDialog({
             {targetId ? <AccountSessionHint targetId={targetId} account={accounts.data?.items.find(item => item.id === targetAccountId)} /> : null}
             <p className='text-label text-muted-foreground'>
               {usableAccounts.length > 0
-                ? '未保存口令或不满足身份核验时，运行可能等待人工登录。可先到浏览器会话页准备该账号。'
+                ? '未保存口令、仅手工登录或验证码不能自动处理时，运行可能等待人工登录。可先到浏览器会话页准备该账号。'
                 : '这里选的是目标系统账号，不要求事先保存口令。'}
             </p>
           </div>

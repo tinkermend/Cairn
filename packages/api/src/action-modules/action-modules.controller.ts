@@ -1,4 +1,5 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Res } from '@nestjs/common'
+import type { Response } from 'express'
 import {
   createModuleBodySchema,
   disableAffectedScenariosBodySchema,
@@ -41,8 +42,11 @@ export class ActionModulesController {
 
   @Get()
   @RequirePermissions('module:read', 'target:read')
-  list(@Query(new ZodValidationPipe(moduleListQuerySchema)) query: ModuleListQuery) {
-    return this.actionModules.list(query)
+  list(
+    @Query(new ZodValidationPipe(moduleListQuerySchema)) query: ModuleListQuery,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.list(query, actor)
   }
 
   @Post()
@@ -88,117 +92,117 @@ export class ActionModulesController {
     return this.actionModules.closeResolution(requestId, body, actor)
   }
 
-  @Get(':id/quality')
+  @Get(':moduleId/quality')
   @RequirePermissions('module:read', 'target:read')
   quality(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Query(new ZodValidationPipe(moduleQualityQuerySchema)) query: ModuleQualityQuery,
   ) {
     return this.actionModules.quality(id, query)
   }
 
-  @Get(':id/invocations')
+  @Get(':moduleId/invocations')
   @RequirePermissions('module:read', 'target:read', 'run:read')
   invocations(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Query(new ZodValidationPipe(moduleInvocationListQuerySchema)) query: ModuleInvocationListQuery,
   ) {
     return this.actionModules.invocations(id, query)
   }
 
-  @Get(':id')
+  @Get(':moduleId')
   @RequirePermissions('module:read', 'target:read')
-  get(@Param('id') id: string) {
-    return this.actionModules.get(id)
+  get(@Param('moduleId') id: string, @CurrentAccount() actor: RequestAccount) {
+    return this.actionModules.get(id, actor)
   }
 
-  @Post(':id')
+  @Post(':moduleId')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('module:write', 'target:read')
   updateMeta(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Body(new ZodValidationPipe(updateModuleMetaBodySchema)) body: UpdateModuleMetaBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.actionModules.updateMeta(id, body, actor)
   }
 
-  @Post(':id/draft')
+  @Post(':moduleId/draft')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('module:write', 'target:read')
   saveDraft(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Body(new ZodValidationPipe(saveModuleDraftBodySchema)) body: SaveModuleDraftBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.actionModules.saveDraft(id, body, actor)
   }
 
-  @Post(':id/publish')
+  @Post(':moduleId/publish')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('module:publish', 'target:read')
   publish(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Body(new ZodValidationPipe(publishModuleBodySchema)) body: PublishModuleBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.actionModules.publish(id, body, actor)
   }
 
-  @Get(':id/references')
+  @Get(':moduleId/references')
   @RequirePermissions('module:read', 'target:read')
   listReferences(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Query(new ZodValidationPipe(moduleReferenceListQuerySchema)) query: ModuleReferenceListQuery,
   ) {
     return this.actionModules.listReferences(id, query)
   }
 
-  @Get(':id/delete-preview')
+  @Get(':moduleId/delete-preview')
   @RequirePermissions('module:read', 'target:read')
-  previewDelete(@Param('id') id: string) {
+  previewDelete(@Param('moduleId') id: string) {
     return this.actionModules.previewDelete(id)
   }
 
-  @Post(':id/batch-upgrade-drafts')
+  @Post(':moduleId/batch-upgrade-drafts')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('workflow:write', 'module:read', 'target:read')
   batchUpgrade(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Body(new ZodValidationPipe(moduleBatchUpgradeBodySchema)) body: ModuleBatchUpgradeBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.actionModules.batchUpgrade(id, body, actor)
   }
 
-  @Post(':id/disable-affected-scenarios')
+  @Post(':moduleId/disable-affected-scenarios')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('workflow:write', 'module:publish', 'target:read')
   disableAffected(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Body(new ZodValidationPipe(disableAffectedScenariosBodySchema)) body: DisableAffectedScenariosBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.actionModules.disableAffected(id, body, actor)
   }
 
-  @Get(':id/versions')
+  @Get(':moduleId/versions')
   @RequirePermissions('module:read', 'target:read')
-  listVersions(@Param('id') id: string) {
+  listVersions(@Param('moduleId') id: string) {
     return this.actionModules.listVersions(id)
   }
 
-  @Get(':id/versions/:versionId')
+  @Get(':moduleId/versions/:versionId')
   @RequirePermissions('module:read', 'target:read')
-  getVersion(@Param('id') id: string, @Param('versionId') versionId: string) {
+  getVersion(@Param('moduleId') id: string, @Param('versionId') versionId: string) {
     return this.actionModules.getVersion(id, versionId)
   }
 
-  @Post(':id/versions/:versionId/publication')
+  @Post(':moduleId/versions/:versionId/publication')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('module:publish', 'target:read')
   updatePublication(
-    @Param('id') id: string,
+    @Param('moduleId') id: string,
     @Param('versionId') versionId: string,
     @Body(new ZodValidationPipe(modulePublicationBodySchema)) body: ModulePublicationBody,
     @CurrentAccount() actor: RequestAccount,
@@ -206,21 +210,23 @@ export class ActionModulesController {
     return this.actionModules.updatePublication(id, versionId, body, actor)
   }
 
-  @Post(':id/delete')
+  @Post(':moduleId/delete')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('module:write', 'target:read')
-  delete(@Param('id') id: string, @CurrentAccount() actor: RequestAccount) {
+  delete(@Param('moduleId') id: string, @CurrentAccount() actor: RequestAccount) {
     return this.actionModules.delete(id, actor)
   }
 
-  @Post(':id/trial')
-  @HttpCode(HttpStatus.OK)
+  @Post(':moduleId/trial')
   @RequirePermissions('module:write', 'run:execute', 'target:read')
-  trial(
-    @Param('id') id: string,
+  async trial(
+    @Param('moduleId') id: string,
     @Body(new ZodValidationPipe(moduleTrialRunBodySchema.optional())) body: ModuleTrialRunBody | undefined,
     @CurrentAccount() actor: RequestAccount,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    return this.actionModules.trial(id, body, actor)
+    const { detail, created } = await this.actionModules.trial(id, body, actor)
+    res.status(created ? HttpStatus.CREATED : HttpStatus.OK)
+    return detail
   }
 }

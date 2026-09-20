@@ -6,6 +6,9 @@ import { useAuthStore } from '@/stores/auth-store'
 
 const searchSchema = z.object({
   invocation: z.string().optional().catch(undefined),
+  stepRunId: z.string().optional().catch(undefined),
+  attemptId: z.string().optional().catch(undefined),
+  evidenceId: z.string().optional().catch(undefined),
 })
 
 export const Route = createFileRoute('/_authenticated/runs/$runId/')({

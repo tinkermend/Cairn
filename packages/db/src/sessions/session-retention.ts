@@ -1,25 +1,25 @@
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
-import { platformConfigDocumentSchema, retentionQuota, type SessionRetentionBody } from '@cairn/shared'
+import { retentionQuota, type SessionRetentionBody } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { atomic, clockNow, databaseNow, insertRows, locked, schemaFor, updateRows } from '../native.js'
-import { getOrCreatePlatformConfig } from '../platform-config/store.js'
 import { conflict } from '../runs/errors.js'
 import { recordAudit, type AuditActor } from '../audit/record.js'
 import { assertSessionAccountActive, assertSessionActorPermission } from './access.js'
 import { appendSessionEvent } from './session-events.js'
+import { lockConsoleAuthorization, assertTargetPermission } from '../console/target-authorization.js'
 import { findLiveSession, getSessionById, type SessionKey } from './sessions.js'
+import { readRetentionConfig } from './session-retention-intent.js'
 
-export async function readRetentionConfig(db: Db) {
-  const current = await getOrCreatePlatformConfig(db)
-  const document = platformConfigDocumentSchema.parse(current.document)
-  return { retention: document.sessionRetention, revision: current.revision }
-}
+export { applyPendingRetentionIntent, readRetentionConfig } from './session-retention-intent.js'
+
 export async function setSessionRetention(
   db: Db,
   input: { key: SessionKey; body: SessionRetentionBody; actor: AuditActor },
 ) {
   return atomic(db, async (tx) => {
+    await lockConsoleAuthorization(tx, input.actor.id)
+    await assertTargetPermission(tx, input.actor.id, input.key.targetId, 'session:control')
     await assertSessionAccountActive(tx, input.key)
     await assertSessionActorPermission(tx, input.actor.id, 'session:control')
     const { retention, revision } = await readRetentionConfig(tx)

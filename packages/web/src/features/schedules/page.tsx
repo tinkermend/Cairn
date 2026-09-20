@@ -34,6 +34,7 @@ const SKIP_LABELS: Partial<Record<ScheduleSkipReason, string>> = {
   DST_NONEXISTENT: '夏令时不存在',
   FACTORY_DISABLED: '工厂关闭',
   AUTH_PREPARATION_REQUIRED: '认证未准备',
+  MAP_ACCOUNT_USAGE_REQUIRED: '账号已收回地图用途',
   NO_ELIGIBLE_ASSETS: '无可用资产',
   ACTIVE_SLICE_EXISTS: '会话或作业占用',
 }

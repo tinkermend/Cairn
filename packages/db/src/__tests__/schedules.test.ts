@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { MAP_JOBS_PROTOCOL, SESSION_OCCUPANCY_PROTOCOL, type Step } from '@cairn/shared'
+import { MAP_JOBS_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL, SESSION_OCCUPANCY_PROTOCOL, type Step } from '@cairn/shared'
 import { newId } from '../id.js'
 import { schemaFor } from '../native.js'
 import { getOrCreatePlatformConfig, updatePlatformConfig } from '../platform-config/store.js'
@@ -74,6 +74,14 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
     return { kind: 'console' as const, id: actorId }
   }
 
+  async function cancelClaimable() {
+    const { runs } = schemaFor(handle.db)
+    await handle.db
+      .update(runs)
+      .set({ status: 'CANCELLED', cancelRequestedAt: new Date() })
+      .where(inArray(runs.status, ['QUEUED', 'RECOVERING']))
+  }
+
   async function freshTarget() {
     const { targets, targetAccounts } = schemaFor(handle.db)
     const targetId = newId()
@@ -91,6 +99,8 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
       displayName: '值班账号',
       username: `ops-${accountId}`,
       status: 'active',
+      usage: 'both',
+      mapUsageGuard: 'Y',
     })
     return { targetId, accountId }
   }
@@ -102,7 +112,7 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
       instanceId,
       capacity: 2,
       lostAfterSeconds: 60,
-      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, MAP_JOBS_PROTOCOL],
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, MAP_JOBS_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL],
     })
     return { workerId: `omh-w-${suffix}`, instanceId }
   }
@@ -296,7 +306,7 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
     expect(jobRuns).toHaveLength(1)
   })
 
-  it('OMH02 双账号同 Target 第二份保持 PENDING', async () => {
+  it('OMH02 第二账号未标地图用途不能保存自动复查', async () => {
     await enableFactory()
     const { targetId, accountId } = await freshTarget()
     const otherAccount = newId()
@@ -310,26 +320,49 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
     })
     const worker = await readyWorker(`b${targetId.slice(0, 6)}`)
     await prepareSession(targetId, accountId, worker.workerId, worker.instanceId)
-    await prepareSession(targetId, otherAccount, worker.workerId, worker.instanceId)
     await enableJobs(targetId)
     const entry = await addEntry(targetId)
-    const firstSchedule = await openSchedule(targetId, accountId, entry.entryId)
-    const secondSchedule = await openSchedule(targetId, otherAccount, entry.entryId)
-    await materializeDueSchedules(handle.db)
-    const firstOcc = (await listScheduleOccurrences(handle.db, firstSchedule.scheduleId, { limit: 5 })).items[0]
-    const secondOcc = (await listScheduleOccurrences(handle.db, secondSchedule.scheduleId, { limit: 5 })).items[0]
-    expect(firstOcc?.admissionStatus).toBe('PENDING')
-    expect(secondOcc?.admissionStatus).toBe('PENDING')
-    const admitted = await admitScheduleOccurrence(handle.db, firstOcc!.occurrenceId, { steps: probeSteps(), includedCount: 2 }, actor())
-    const waiting = await admitScheduleOccurrence(handle.db, secondOcc!.occurrenceId, { steps: probeSteps(), includedCount: 2 }, actor())
-    expect(admitted.admissionStatus).toBe('ADMITTED')
-    expect(admitted.jobId).toBeTruthy()
-    expect(waiting.admissionStatus).toBe('PENDING')
-    expect(waiting.jobId).toBeNull()
-    const { mapJobs } = schemaFor(handle.db)
-    const jobs = await handle.db.select().from(mapJobs).where(eq(mapJobs.targetId, targetId))
-    expect(jobs).toHaveLength(1)
-    expect(jobs[0]!.targetAccountId).toBe(accountId)
+    await openSchedule(targetId, accountId, entry.entryId)
+    await expect(openSchedule(targetId, otherAccount, entry.entryId)).rejects.toMatchObject({
+      code: 'MAP_ACCOUNT_USAGE_REQUIRED',
+    })
+  })
+
+  it('RJ-04 同账号先停用再建新计划允许，同时启用两份仍被拒', async () => {
+    await enableFactory()
+    const { targetId, accountId } = await freshTarget()
+    const entry = await addEntry(targetId)
+    const first = await openSchedule(targetId, accountId, entry.entryId)
+    const disabled = await setScheduleEnabled(
+      handle.db,
+      first.scheduleId,
+      { expectedRevision: first.revision, idempotencyKey: `off:${newId()}`, enabled: false },
+      actor(),
+    )
+    const second = await writeSchedule(
+      handle.db,
+      {
+        expectedRevision: 0,
+        idempotencyKey: `create:${newId()}`,
+        definition: definition(targetId, accountId, entry.entryId, { windowStart: '04:00', windowEnd: '05:00' }),
+      },
+      actor(),
+    )
+    const enabledSecond = await setScheduleEnabled(
+      handle.db,
+      second.schedule.scheduleId,
+      { expectedRevision: second.schedule.revision, idempotencyKey: `on2:${newId()}`, enabled: true },
+      actor(),
+    )
+    expect(enabledSecond.enabled).toBe(true)
+    await expect(
+      setScheduleEnabled(
+        handle.db,
+        first.scheduleId,
+        { expectedRevision: disabled.revision, idempotencyKey: `on1:${newId()}`, enabled: true },
+        actor(),
+      ),
+    ).rejects.toMatchObject({ code: 'SCHEDULE_ACCOUNT_CONFLICT' })
   })
 
   it('OMH05 错过多个窗只跳过，不集中补跑', async () => {
@@ -379,6 +412,7 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
   })
 
   it('OMH08/09 窗截止拒领，用户 Run 让位', async () => {
+    await cancelClaimable()
     await enableFactory()
     const { targetId, accountId } = await freshTarget()
     const worker = await readyWorker(`c${targetId.slice(0, 6)}`)
@@ -460,5 +494,33 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
       .set({ windowEndUtc: new Date(Date.now() - 1000), admissionStatus: 'PENDING', reason: null })
       .where(eq(scheduleOccurrences.id, occurrence!.occurrenceId))
     expect(await expireClosedScheduleWindows(handle.db)).toBeGreaterThan(0)
+  })
+
+  it('收回地图用途后准入跳过，不空转抛错', async () => {
+    await enableFactory()
+    const { targetId, accountId } = await freshTarget()
+    const worker = await readyWorker(`u${targetId.slice(0, 6)}`)
+    await prepareSession(targetId, accountId, worker.workerId, worker.instanceId)
+    await enableJobs(targetId)
+    const entry = await addEntry(targetId)
+    const schedule = await openSchedule(targetId, accountId, entry.entryId)
+    await materializeDueSchedules(handle.db)
+    const occurrence = (await listScheduleOccurrences(handle.db, schedule.scheduleId, { limit: 5 })).items[0]
+    const { targetAccounts } = schemaFor(handle.db)
+    await handle.db
+      .update(targetAccounts)
+      .set({ usage: 'business', mapUsageGuard: null })
+      .where(eq(targetAccounts.id, accountId))
+    const skipped = await admitScheduleOccurrence(
+      handle.db,
+      occurrence!.occurrenceId,
+      { steps: probeSteps(), includedCount: 2 },
+      actor(),
+    )
+    expect(skipped.admissionStatus).toBe('SKIPPED')
+    expect(skipped.reason).toBe('MAP_ACCOUNT_USAGE_REQUIRED')
+    const { mapJobs } = schemaFor(handle.db)
+    const jobs = await handle.db.select().from(mapJobs).where(eq(mapJobs.targetId, targetId))
+    expect(jobs).toHaveLength(0)
   })
 })

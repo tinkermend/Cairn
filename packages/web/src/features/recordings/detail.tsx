@@ -22,6 +22,7 @@ import { RecordingMetricStrip } from './components/metric-strip'
 import { RecordingStepInspector } from './components/step-inspector'
 import { type FilterOption, RecordingStepStream } from './components/step-stream'
 import { RecordingRenameDialog } from './rename-dialog'
+import { SavedDemonstrationFacts } from './demonstration-facts'
 
 export function RecordingDetailPage() {
   const { recordingId } = useParams({ from: '/_authenticated/recordings/$recordingId/' })
@@ -188,6 +189,8 @@ export function RecordingDetailPage() {
           <PageSkeleton />
         ) : query.isError || !draft ? (
           <QueryErrorState title='无法加载录制草稿' onRetry={() => void query.refetch()} />
+        ) : draft.sourceProtocol === 'demonstration@1' ? (
+          <SavedDemonstrationFacts id={draft.id} />
         ) : (
           <div className='flex flex-col gap-5'>
             {/* 就绪度看板条 */}

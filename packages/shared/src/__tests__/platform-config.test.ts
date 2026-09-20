@@ -202,6 +202,7 @@ describe('平台配置契约', () => {
     expect(parsed.session.keepAliveSeconds).toBe(3600)
     expect(parsed.session.authProbeIntervalSeconds).toBe(900)
     expect(parsed.session.evictionPriority).toBe(0)
+    expect(parsed.session.lostDisposition).toBe('MANUAL')
   })
 
   it('旧修订没有 runAuthRecovery 时补出厂每 Run 恢复次数', () => {
@@ -235,6 +236,15 @@ describe('平台配置契约', () => {
     const parsed = platformConfigDocumentSchema.parse(legacy)
     expect(parsed.runtimeInvariants).toEqual({ allowEachStepProbe: false })
     expect('runtimeInvariants' in legacy).toBe(false)
+  })
+
+  it('旧修订没有 alerting 时补出厂全关建议规则', () => {
+    const { alerting: _ignored, ...legacy } = FACTORY_PLATFORM_CONFIG
+    const parsed = platformConfigDocumentSchema.parse(legacy)
+    expect(parsed.alerting).toEqual(FACTORY_PLATFORM_CONFIG.alerting)
+    expect(parsed.alerting.rules.every((rule) => rule.enabled === false)).toBe(true)
+    expect(parsed.notifications.channels).toEqual([])
+    expect('alerting' in legacy).toBe(false)
   })
 
   it('旧修订没有 moduleFallback 时补出厂关闭', () => {

@@ -80,6 +80,9 @@ export class MapExploreExecutor implements StepExecutor {
         trace: ctx.evidencePolicy.trace,
         screenshotRetainUntil: retainUntilFor('screenshot', ctx.evidencePolicy).toISOString(),
         traceRetainUntil: retainUntilFor('trace', ctx.evidencePolicy).toISOString(),
+        commandType: 'navigate',
+        screenshotViewport: ctx.evidencePolicy.screenshotViewport,
+        sensitiveSelectors: ctx.snapshot.targetAuth?.sensitiveSelectors ?? [],
       },
     )
     if (!result.ok) {

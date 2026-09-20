@@ -1,8 +1,12 @@
 import {
+  Activity,
+  Bell,
+  FileSearch,
   Home,
   KeyRound,
   CircleDot,
   Laptop,
+  Layers,
   ListChecks,
   Monitor,
   Palette,
@@ -42,16 +46,16 @@ export const sidebarData: SidebarData = {
           permission: 'target:read',
         },
         {
-          title: '浏览器会话',
-          url: '/sessions',
-          icon: Laptop,
-          permission: 'session:read',
-        },
-        {
           title: '场景',
           url: '/scenarios',
           icon: ListChecks,
           permission: 'workflow:read',
+        },
+        {
+          title: '场景集',
+          url: '/suites',
+          icon: Layers,
+          permission: 'suite:read',
         },
         {
           title: '动作库',
@@ -65,6 +69,11 @@ export const sidebarData: SidebarData = {
           icon: CircleDot,
           permission: 'workflow:write',
         },
+      ],
+    },
+    {
+      title: '执行与观测',
+      items: [
         {
           title: '运行',
           url: '/runs',
@@ -77,6 +86,25 @@ export const sidebarData: SidebarData = {
           icon: RefreshCw,
           permission: 'schedule:read',
         },
+        {
+          title: '浏览器会话',
+          url: '/sessions',
+          icon: Laptop,
+          permission: 'session:read',
+        },
+        {
+          title: '证据与报告',
+          url: '/evidence',
+          icon: FileSearch,
+          permission: 'run:read',
+        },
+        {
+          title: '运行监控',
+          url: '/monitoring',
+          icon: Activity,
+          permission: 'monitor:read',
+        },
+        { title: '通知', url: '/notifications', icon: Bell, permission: 'notification:read' },
       ],
     },
     {
@@ -99,6 +127,12 @@ export const sidebarData: SidebarData = {
           url: '/services',
           icon: KeyRound,
           permission: 'service:read',
+        },
+        {
+          title: '凭据管理',
+          url: '/credentials',
+          icon: KeyRound,
+          permission: 'credential:read',
         },
         {
           title: '平台配置',

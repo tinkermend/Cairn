@@ -12,6 +12,9 @@ import {
 import {
   ACTIVE_RUN_STATUSES,
   COMPILER_VERSION,
+  hasAiSteps,
+  canonicalJson,
+  syncSha256,
   ScenarioValidationError,
   assertRunFromResolved,
   deletePreviewResponseSchema,
@@ -64,7 +67,9 @@ import {
   computeContractDigest,
   computeImplementationDigest,
 } from '../action-modules/digest.js'
-import { badRequest, conflict, isUniqueViolation, mapRestriction, notFound } from './errors.js'
+import { badRequest, conflict, forbidden, isUniqueViolation, mapRestriction, notFound } from './errors.js'
+import { assertTargetPermission, lockConsoleAuthorization, targetScopeFor } from '../console/target-authorization.js'
+import { draftValidationSubject, saveValidationSubjectTx } from './validation.js'
 import { cursorFilter, paginateResults } from '../cursor.js'
 import {
   activeRunBlockers,
@@ -463,11 +468,13 @@ export async function getScenario(
 export async function listScenarios(
   db: Db,
   query: ScenarioListQuery = {},
+  actorId?: string,
 ): Promise<ScenarioListResponse> {
   const parsed = scenarioListQuerySchema.parse(query)
   const { scenarioDrafts, scenarios } = schemaFor(db)
   const limit = parsed.limit
   const filters: (SQL | undefined)[] = [
+    await (await import('../console/target-authorization.js')).scopedTargetFilter(db, actorId, scenarios.targetId, 'workflow:read'),
     isNull(scenarios.deletedAt),
     parsed.targetId ? eq(scenarios.targetId, parsed.targetId) : undefined,
     parsed.status ? eq(scenarios.status, parsed.status) : undefined,
@@ -599,6 +606,9 @@ export async function createScenarioWithVersion(
         updatedByConsoleAccountId: input.actor.id,
         updatedAt: now,
       })
+      const authoring = normalizeAuthoringDocument(compiled.definition)
+      const expansion = await expandWithLoader(tx as unknown as Db, input.targetId, authoring, 'preview', true)
+      if (expansion.ok) await saveValidationSubjectTx(tx as unknown as Db, versionId, await draftValidationSubject(tx as unknown as Db, input.targetId, id, authoring, expansion))
       await recordAudit(
         tx as unknown as Db,
         input.actor,
@@ -697,8 +707,9 @@ export async function appendScenarioVersion(
       throwIfBlocked(compileDocument(document, target, 'release', input))
       const latest = await latestPublishedVersion(tx as unknown as Db, scenarioId)
       const versionNo = publishedVersionNo(latest) + 1
+      const versionId = newId()
       await tx.insert(scenarioVersions).values({
-        id: newId(),
+        id: versionId,
         scenarioId,
         versionNo,
         kind: 'published',
@@ -708,6 +719,10 @@ export async function appendScenarioVersion(
         createdByConsoleAccountId: input.actor.id,
         createdAt: now,
       })
+      const authoring = normalizeAuthoringDocument(document)
+      const expansion = await expandWithLoader(tx as unknown as Db, current.targetId, authoring, 'preview', true)
+      await saveValidationSubjectTx(tx as unknown as Db, versionId, await draftValidationSubject(tx as unknown as Db, current.targetId, scenarioId, authoring, expansion))
+      await freezeMapDraftBindingsTx(tx as unknown as Db, { scenarioId, targetId: current.targetId, scenarioVersionId: versionId })
       await tx.update(scenarios).set({ updatedAt: now }).where(eq(scenarios.id, scenarioId))
       await recordAudit(
         tx as unknown as Db,
@@ -859,7 +874,11 @@ export async function publishScenarioDraft(
         ),
       )
       const latest = await latestPublishedVersion(tx as unknown as Db, scenarioId)
+      const validationDigest = await draftValidationSubject(tx as unknown as Db, current.targetId, scenarioId, authoringDoc, expandResult)
+      const { scenarioValidationSubjects } = schemaFor(tx)
+      const [latestSubject] = await tx.select().from(scenarioValidationSubjects).where(eq(scenarioValidationSubjects.scenarioVersionId, latest.id)).limit(1)
       if (
+        latestSubject?.subjectDigest === validationDigest &&
         sourceDocumentDigest(compiled.definition) === sourceDocumentDigest(latest.definition) &&
         authoringExtrasDigest({ authoringDocument: authoringDoc, definition: compiled.definition }) ===
           authoringExtrasDigest({
@@ -890,6 +909,7 @@ export async function publishScenarioDraft(
         createdAt: now,
       })
       await syncScenarioModuleRefsTx(tx as unknown as Db, scenarioId, versionId, authoringDoc)
+      await saveValidationSubjectTx(tx as unknown as Db, versionId, validationDigest)
       await freezeMapDraftBindingsTx(tx as unknown as Db, {
         scenarioId,
         targetId: current.targetId,
@@ -926,6 +946,7 @@ export async function prepareTrialVersion(
   let versionId = ''
   try {
     await atomic(db, async (tx) => {
+      await lockConsoleAuthorization(tx as unknown as Db, input.actor.id)
       const [current] = await locked(
         tx,
         tx.select().from(scenarios).where(and(eq(scenarios.id, scenarioId), isNull(scenarios.deletedAt))).limit(1),
@@ -969,7 +990,12 @@ export async function prepareTrialVersion(
         if (error instanceof ScenarioValidationError) throw badRequest(error.code, error.message)
         throw error
       }
-      const digest = expandResult.sourceDigest
+      if (hasAiSteps(compiled.definition.steps)) {
+        const scope = await targetScopeFor(tx as unknown as Db, input.actor.id, 'ai:execute')
+        if (!scope.all && !scope.ids.includes(current.targetId)) throw forbidden('AI_EXECUTE_FORBIDDEN', '缺少 ai:execute，不能运行含 AI 步骤的场景')
+      }
+      const validationDigest = await draftValidationSubject(tx as unknown as Db, current.targetId, scenarioId, authoringDoc, expandResult)
+      const digest = syncSha256(canonicalJson({ protocolVersion: 'trialSourceDigest@2', sourceDigest: expandResult.sourceDigest, validationSubjectDigest: validationDigest }))
       const [existing] = await tx
         .select()
         .from(scenarioVersions)
@@ -1020,13 +1046,10 @@ export async function prepareTrialVersion(
           versionId = again.id
         }
       }
-      await syncScenarioModuleRefsTx(tx as unknown as Db, scenarioId, versionId, authoringDoc)
-      await freezeMapDraftBindingsTx(tx as unknown as Db, {
-        scenarioId,
-        targetId: current.targetId,
-        scenarioVersionId: versionId,
-      })
       if (created) {
+        await saveValidationSubjectTx(tx as unknown as Db, versionId, validationDigest)
+        await syncScenarioModuleRefsTx(tx as unknown as Db, scenarioId, versionId, authoringDoc)
+        await freezeMapDraftBindingsTx(tx as unknown as Db, { scenarioId, targetId: current.targetId, scenarioVersionId: versionId })
         await recordAudit(
           tx as unknown as Db,
           input.actor,
@@ -1520,6 +1543,7 @@ export async function prepareModuleDraftTrial(
     .where(and(eq(actionModules.id, moduleId), isNull(actionModules.deletedAt)))
     .limit(1)
   if (!mod) throw notFound('ACTION_MODULE_NOT_FOUND', '动作模块不存在')
+  await assertTargetPermission(db, input.actor.id, mod.targetId, 'module:write')
   if (!mod.draftContent) {
     throw badRequest('MODULE_COMPILE_BLOCKED', '模块没有可试跑的草稿')
   }

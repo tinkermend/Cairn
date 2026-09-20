@@ -3,6 +3,7 @@ import {
   MAP_FACT_MAX_BYTES,
   mapFactBatchItemSchema,
   mapObservationSchema,
+  mapConditionSnapshotSchema,
   type MapConditionSnapshot,
   type MapFactBatchItem,
   type MapMissingReason,
@@ -10,6 +11,7 @@ import {
   type MapObservationPhase,
   type MapRunSourceType,
   type MapSourceType,
+  type MapViewport,
 } from './map-c0.js'
 import { entityIdSchema } from './wire.js'
 
@@ -119,6 +121,25 @@ export function mapConditionSnapshot(input: {
       'featureVersion',
     ],
   }
+}
+
+export function enrichMapCondition(
+  base: MapConditionSnapshot,
+  extra: { locale?: string; viewport?: MapViewport },
+): MapConditionSnapshot {
+  const unknown = new Set(base.unknownFields)
+  const next: MapConditionSnapshot = { ...base, unknownFields: [...unknown] }
+  const locale = extra.locale?.trim().slice(0, 64)
+  if (locale) {
+    next.locale = locale
+    unknown.delete('locale')
+  }
+  if (extra.viewport) {
+    next.viewport = extra.viewport
+    unknown.delete('viewport')
+  }
+  next.unknownFields = [...unknown]
+  return mapConditionSnapshotSchema.parse(next)
 }
 
 export function mapObservationShell(input: {

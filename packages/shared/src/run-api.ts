@@ -22,6 +22,7 @@ import { mapConsumptionOverrideSchema } from './map-consumption.js'
 import { authCheckpointSchema } from './session-auth-recovery.js'
 import { outcomeResultDtoSchema, outcomeStatusSchema, type OutcomeResultDto, type OutcomeStatus } from './outcome.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
+import { executionOriginSchema } from './suites.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
 export const RUN_ERROR_CODES = [
@@ -30,6 +31,7 @@ export const RUN_ERROR_CODES = [
   'RUN_ACCOUNT_MISMATCH',
   'RUN_ACCOUNT_DISABLED',
   'RUN_ACCOUNT_REQUIRED',
+  'RUN_ACCOUNT_MAP_ONLY',
   'RUN_NOT_REVIEWABLE',
   'RUN_NOT_TERMINAL',
   'RUN_BUSY',
@@ -196,6 +198,9 @@ export const runSummarySchema = z.object({
   outcomeStatus: outcomeStatusSchema.default('NOT_EVALUATED'),
   lease: runListLeaseSchema,
   debugMode: debugModeSchema.default('runThrough'),
+  executionOrigin: executionOriginSchema.default('standalone'),
+  suiteRunId: entityIdSchema.nullable().optional(),
+  suiteMemberId: z.string().nullable().optional(),
   deletedAt: instantOrNull.optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
 })
@@ -249,7 +254,11 @@ export const runListQuerySchema = z.object({
   evidenceStatus: runEvidenceStatusSchema.optional(),
   outcomeStatus: outcomeStatusSchema.optional(),
   isTrial: z.coerce.boolean().optional(),
+  /** 缺省或 false：排除地图作业。true：只列地图作业。不改变业务运行的默认列表。 */
+  isMapJob: z.coerce.boolean().optional(),
   sourceKind: z.enum(['console', 'service']).optional(),
+  suiteRunId: entityIdSchema.optional(),
+  executionOrigin: executionOriginSchema.optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),

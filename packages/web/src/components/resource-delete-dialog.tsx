@@ -37,7 +37,7 @@ export type ResourceDeleteDialogProps = {
   onOpenChange: (open: boolean) => void
   resourceId: string
   resourceName: string
-  resourceType: 'target' | 'scenario' | 'run' | 'recording'
+  resourceType: 'target' | 'scenario' | 'run' | 'recording' | 'suite' | 'report'
   previewFn?: () => Promise<DeletePreviewResponse>
   deleteFn: (body?: DeleteResourceBody) => Promise<CleanupStatusResponse | DeleteResourceResult | void>
   onSuccess: (result?: CleanupStatusResponse | DeleteResourceResult | void) => void
@@ -72,6 +72,8 @@ export function ResourceDeleteDialog({
     scenario: '删除场景',
     run: '删除运行记录',
     recording: '删除录制草稿',
+    suite: '删除场景集',
+    report: '删除报告',
   }
 
   const handleConfirm = async () => {
@@ -172,7 +174,7 @@ export function ResourceDeleteDialog({
                   {!hasBlockers && resourceType === 'target' && (
                     <div className='rounded-md border border-border-default bg-muted/40 p-3.5 space-y-2.5'>
                       <p className='text-label font-medium text-text-secondary'>
-                        该目标系统下的所有关联资源将一并级联软删除：
+                        删除将影响该目标系统下的关联资源：
                       </p>
                       <div className='grid grid-cols-2 gap-2 text-label'>
                         <div className='flex items-center gap-2'>
@@ -194,8 +196,8 @@ export function ResourceDeleteDialog({
                         <div className='col-span-2 flex items-center gap-2 text-muted-foreground pt-1 border-t border-border-divider'>
                           <History className='size-3.5' />
                           <span>
-                            存储附件：{counts.storedObjects ?? 0} 个对象（约{' '}
-                            {formatBytes(counts.totalBytes)}）待物理清理
+                            原始证据与报告附件：{counts.storedObjects ?? 0} 个对象（已知{' '}
+                            {formatBytes(counts.totalBytes)}）待物理清理；关联 {counts.reports ?? 0} 份报告停止访问。
                           </span>
                         </div>
                       </div>
@@ -218,12 +220,23 @@ export function ResourceDeleteDialog({
                     <div className='rounded-md border border-border-default bg-muted/40 p-3 text-label text-text-secondary space-y-1.5'>
                       <p>
                         该运行记录及其执行证据将被软删除。包含的{' '}
-                        <strong>{counts.storedObjects ?? 0}</strong> 个存储对象（约{' '}
-                        {formatBytes(counts.totalBytes)}）将进入物理清理队列。
+                        <strong>{counts.storedObjects ?? 0}</strong> 个存储对象（已知{' '}
+                        {formatBytes(counts.totalBytes)}）将进入物理清理队列，含 {counts.reports ?? 0} 份关联报告的文件。
                       </p>
                     </div>
                   )}
 
+                  {!hasBlockers && ['target', 'run'].includes(resourceType) && !!counts.unknownByteObjects && (
+                    <p className='text-label text-muted-foreground'>
+                      另有 {counts.unknownByteObjects} 个对象大小未知，未计入已知字节。
+                    </p>
+                  )}
+
+                  {!hasBlockers && resourceType === 'report' && (
+                    <p className='text-label text-muted-foreground'>
+                      将删除 {counts.reports ?? 1} 份报告（包含从其派生的子报告），撤销文件访问并清理 {counts.storedObjects ?? 0} 个派生对象。已知文件合计 {formatBytes(counts.totalBytes)}，另有 {counts.unknownByteObjects ?? 0} 个对象大小未知。原始运行和证据保留。
+                    </p>
+                  )}
                   {!hasBlockers && resourceType === 'recording' && (
                     <div className='rounded-md border border-border-default bg-muted/40 p-3 text-label text-text-secondary space-y-1.5'>
                       <p>录制草稿删除后，已导入至场景的步骤不会受到影响。</p>

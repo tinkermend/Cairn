@@ -10,29 +10,35 @@ import {
 import { CURSOR_PAGE_SIZES, type CursorPageSize } from '@/hooks/use-cursor-page'
 import { cn } from '@/lib/utils'
 
-type CursorPaginationProps = {
+/**
+ * 每页行数的类型由调用方决定：默认用 `CURSOR_PAGE_SIZES`（10 / 20 / 50），
+ * 需要别的档位（如证据中心的 20 / 50 / 100）时传 `sizes`，处理函数收到的仍是同一类型。
+ */
+type CursorPaginationProps<S extends number> = {
   pageIndex: number
-  pageSize: CursorPageSize
+  pageSize: S
   hasPreviousPage: boolean
   hasNextPage: boolean
   updating?: boolean
-  onPageSizeChange: (size: CursorPageSize) => void
+  sizes?: readonly S[]
+  onPageSizeChange: (size: S) => void
   onPreviousPage: () => void
   onNextPage: () => void
   className?: string
 }
 
-export function CursorPagination({
+export function CursorPagination<S extends number = CursorPageSize>({
   pageIndex,
   pageSize,
   hasPreviousPage,
   hasNextPage,
   updating = false,
+  sizes = CURSOR_PAGE_SIZES as unknown as readonly S[],
   onPageSizeChange,
   onPreviousPage,
   onNextPage,
   className,
-}: CursorPaginationProps) {
+}: CursorPaginationProps<S>) {
   return (
     <div
       className={cn(
@@ -44,14 +50,14 @@ export function CursorPagination({
         <Select
           value={`${pageSize}`}
           onValueChange={(value) => {
-            onPageSizeChange(Number(value) as CursorPageSize)
+            onPageSizeChange(Number(value) as S)
           }}
         >
           <SelectTrigger className='h-8 w-17.5' aria-label='每页行数'>
             <SelectValue />
           </SelectTrigger>
           <SelectContent side='top'>
-            {CURSOR_PAGE_SIZES.map((size) => (
+            {sizes.map((size) => (
               <SelectItem key={size} value={`${size}`}>
                 {size}
               </SelectItem>

@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto'
 import { decodeCredentialKey } from '@cairn/shared'
 
 const VERSION = 1
@@ -19,6 +19,11 @@ export function credentialKeyFromEnv(raw: string): Buffer {
 export class LocalSecretProvider {
   constructor(private readonly key: Buffer) {
     if (this.key.length !== 32) throw new Error('凭据主密钥必须是 32 字节')
+  }
+
+  /** Purpose-separated, keyed equality check; never expose a public password digest. */
+  fingerprint(value: string): string {
+    return createHmac('sha256', this.key).update('cairn:credential-batch:v1\0').update(value).digest('hex')
   }
 
   encrypt(secretId: string, plaintext: string): Buffer {

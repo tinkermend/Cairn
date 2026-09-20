@@ -153,6 +153,33 @@ export function SessionFields({ canWrite }: { canWrite: boolean }) {
         )}
       />
       <FormField
+        name='session.lostDisposition'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>失联处置</FormLabel>
+            <Select
+              disabled={!canWrite}
+              value={field.value ?? 'MANUAL'}
+              onValueChange={field.onChange}
+            >
+              <FormControl>
+                <SelectTrigger className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+              </FormControl>
+              <SelectContent>
+                <SelectItem value='MANUAL'>失联后需人工处置</SelectItem>
+                <SelectItem value='AUTO'>失联后自动让路</SelectItem>
+              </SelectContent>
+            </Select>
+            <FormDescription>
+              执行节点崩溃换代后，默认仍等人点「处置失联」。自动让路只释放账本键，不能证明旧浏览器已退出。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
         name='session.evictionPriority'
         render={({ field }) => (
           <FormItem>
@@ -421,6 +448,97 @@ export function SessionFields({ canWrite }: { canWrite: boolean }) {
             <FormDescription>
               立即作用于下一次自动登录判定，不冻结进 Run。
             </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.captchaMaxAttempts'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>验证码机器尝试次数（实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>
+              开跑前与会话维护立即生效，无需重启 Worker。1–5 次。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.captchaSolveTimeoutMs'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>验证码求解超时（毫秒，实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.captchaHumanWaitSeconds'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>验证码人工接管等待（秒，实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>
+              机器预算耗尽后 AUTH_WAIT 防抢占期限。只影响验证码熔断，不改普通认证等待。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.sliderDragMinDurationMs'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>滑块拖拽最短耗时（毫秒，实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.sliderDragMaxDurationMs'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>滑块拖拽最长耗时（毫秒，实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
             <FormMessage />
           </FormItem>
         )}

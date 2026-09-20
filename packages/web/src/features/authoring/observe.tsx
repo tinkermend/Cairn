@@ -52,7 +52,11 @@ const closedObserve: AuthoringObserveValue = {
 }
 
 export function overlayStepIdForSelection(
-  run: Pick<RunDetailDto, 'checkpoint' | 'debugOverlay' | 'snapshot'> | undefined,
+  run: {
+    checkpoint?: Pick<NonNullable<RunDetailDto['checkpoint']>, 'stepId'> | null
+    debugOverlay?: Pick<NonNullable<RunDetailDto['debugOverlay']>, 'stepOverrides'> | null
+    snapshot?: Pick<RunDetailDto['snapshot'], 'outcomeManifest'>
+  } | undefined,
   selectedStepId?: string | null,
 ): string | undefined {
   const overrides = run?.debugOverlay?.stepOverrides

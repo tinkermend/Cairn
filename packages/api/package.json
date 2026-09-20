@@ -26,6 +26,7 @@
     "pino-http": "^11.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "sharp": "^0.35.4",
     "undici": "7.28.0",
     "zod": "^4.5.4"
   },

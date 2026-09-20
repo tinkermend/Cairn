@@ -153,6 +153,12 @@ describe('句柄采样连续差异', () => {
     expect(nextHandleMismatchStreak({ previous: 2, liveHandleCount: 2, sampledSlotCount: 0 })).toBe(2)
     expect(nextHandleMismatchStreak({ previous: 2, liveHandleCount: 1, sampledSlotCount: 1 })).toBe(0)
     expect(
+      nextHandleMismatchStreak({ previous: 0, liveHandleCount: 1, sampledSlotCount: 1, browserProcessCount: 3 }),
+    ).toBe(1)
+    expect(
+      nextHandleMismatchStreak({ previous: 0, liveHandleCount: 1, sampledSlotCount: 1, browserProcessCount: null }),
+    ).toBe(0)
+    expect(
       handleMismatchState({
         liveHandleCount: 1,
         sampledSlotCount: 0,

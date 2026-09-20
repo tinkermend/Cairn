@@ -232,7 +232,7 @@ function clueFilters(
   ] as const) {
     if (!value) continue
     const text = jsonText(db, columns.features, path)
-    filters.push(sql`(${columns.features} is null or ${text} is null or ${text} = '' or ${text} = ${value})`)
+    filters.push(sql`${text} = ${value}`)
   }
   return filters
 }

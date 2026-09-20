@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEV_INTERNAL_AUTH_SECRET,
+  WORKER_NODE_HEALTH_PATH,
   requireInternalSecret,
   signInternalHeaders,
+  signNodeHealthHeaders,
   workerInternalPath,
   workerRunsInternalPath,
 } from '@cairn/shared'
@@ -58,6 +60,7 @@ describe('内部 HTTP', () => {
       host: '127.0.0.1',
       port: 0,
       secret: DEV_INTERNAL_AUTH_SECRET,
+      workerId: 'local-worker',
       workerInstanceId,
       sessions: sessions as never,
     })
@@ -102,6 +105,7 @@ describe('内部 HTTP', () => {
       host: '127.0.0.1',
       port: 0,
       secret: DEV_INTERNAL_AUTH_SECRET,
+      workerId: 'local-worker',
       workerInstanceId,
       sessions: sessions as never,
     })
@@ -149,6 +153,7 @@ describe('内部 HTTP', () => {
       host: '127.0.0.1',
       port: 0,
       secret: DEV_INTERNAL_AUTH_SECRET,
+      workerId: 'local-worker',
       workerInstanceId,
       sessions: sessions as never,
     })
@@ -197,6 +202,7 @@ describe('内部 HTTP', () => {
       host: '127.0.0.1',
       port: 0,
       secret: DEV_INTERNAL_AUTH_SECRET,
+      workerId: 'local-worker',
       workerInstanceId,
       sessions: sessions as never,
       engine: engine as never,
@@ -247,5 +253,71 @@ describe('内部 HTTP', () => {
     expect(debugPath).toBe('/internal/runs/debug-resume')
     expect(engine.resumeDebug).toHaveBeenCalled()
     expect(sessions.invalidateObserveGrant).toHaveBeenCalledWith(runId)
+  })
+
+  it('RMC06 节点健康签名与业务 HMAC 隔离', async () => {
+    const sessions = stubSessions()
+    const http = await startManagedBrowserHttp({
+      host: '127.0.0.1',
+      port: 0,
+      secret: DEV_INTERNAL_AUTH_SECRET,
+      workerId: 'local-worker',
+      workerInstanceId,
+      sessions: sessions as never,
+      nodeHealth: async () => ({
+        status: 'ok',
+        service: 'cairn-worker',
+        uptimeSeconds: 1,
+        checks: { database: 'up', changeHint: 'unused' },
+        node: {
+          workerId: 'local-worker',
+          instanceId: workerInstanceId,
+          lastTickAt: new Date().toISOString(),
+          loopAlive: true,
+          runningRunCount: 0,
+          liveHandleCount: 0,
+          shuttingDown: false,
+        },
+      }),
+    })
+    closers.push(http.close)
+    const addr = http.server.address()
+    if (!addr || typeof addr === 'string') throw new Error('no port')
+    const unsigned = await fetch(`http://127.0.0.1:${addr.port}${WORKER_NODE_HEALTH_PATH}`)
+    expect(unsigned.status).toBe(401)
+    const business = await signInternalHeaders(requireInternalSecret(DEV_INTERNAL_AUTH_SECRET), {
+      method: 'GET',
+      path: WORKER_NODE_HEALTH_PATH,
+      body: '',
+      expiresUnix: Math.floor(Date.now() / 1000) + 10,
+      actorId,
+      runId,
+      sessionGeneration: 1,
+      workerInstanceId,
+    })
+    const mixed = await fetch(`http://127.0.0.1:${addr.port}${WORKER_NODE_HEALTH_PATH}`, { headers: business })
+    expect(mixed.status).toBe(401)
+    const headers = await signNodeHealthHeaders(requireInternalSecret(DEV_INTERNAL_AUTH_SECRET), {
+      method: 'GET',
+      path: WORKER_NODE_HEALTH_PATH,
+      body: '',
+      expiresUnix: Math.floor(Date.now() / 1000) + 10,
+      workerId: 'local-worker',
+    })
+    const ok = await fetch(`http://127.0.0.1:${addr.port}${WORKER_NODE_HEALTH_PATH}`, { headers })
+    expect(ok.status).toBe(200)
+    const body = (await ok.json()) as { node: { workerId: string }; service: string }
+    expect(body.service).toBe('cairn-worker')
+    expect(body.node.workerId).toBe('local-worker')
+    expect(JSON.stringify(body)).not.toMatch(/127\.0\.0\.1|CAIRN_INTERNAL_AUTH_SECRET/)
+    const wrong = await signNodeHealthHeaders(requireInternalSecret(DEV_INTERNAL_AUTH_SECRET), {
+      method: 'GET',
+      path: WORKER_NODE_HEALTH_PATH,
+      body: '',
+      expiresUnix: Math.floor(Date.now() / 1000) + 10,
+      workerId: 'other-worker',
+    })
+    const rejected = await fetch(`http://127.0.0.1:${addr.port}${WORKER_NODE_HEALTH_PATH}`, { headers: wrong })
+    expect(rejected.status).toBe(401)
   })
 })

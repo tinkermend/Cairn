@@ -1,6 +1,5 @@
 import { z } from 'zod'
-import { canonicalJson } from './canonical.js'
-import { sha256Hex } from './internal-auth.js'
+import { canonicalJson, sha256Hex } from './canonical.js'
 import { loginLocatorSchema } from './login-fields.js'
 import { entityIdSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
 
@@ -23,6 +22,17 @@ export const authSignalKindSchema = z.enum(AUTH_SIGNAL_KINDS)
 export const AUTH_DECISION_KINDS = ['reused', 'verified', 'auto_login', 'manual_auth'] as const
 export type AuthDecisionKind = (typeof AUTH_DECISION_KINDS)[number]
 export const authDecisionKindSchema = z.enum(AUTH_DECISION_KINDS)
+
+export const CHALLENGE_TYPES = [
+  'IMAGE_CAPTCHA',
+  'SLIDER_CAPTCHA',
+  'SMS_OTP',
+  'EMAIL_OTP',
+  'TOTP',
+  'UNKNOWN',
+] as const
+export type ChallengeType = (typeof CHALLENGE_TYPES)[number]
+export const challengeTypeSchema = z.enum(CHALLENGE_TYPES)
 
 export const AUTH_VALIDATION_STEPS = ['valid_pass', 'server_revoked', 'other_account'] as const
 export type AuthValidationStep = (typeof AUTH_VALIDATION_STEPS)[number]
@@ -61,6 +71,11 @@ export const DEFAULT_VERIFY_RETRY_BACKOFF_SECONDS = [30, 120] as const
 export const DEFAULT_AUTO_LOGIN_WINDOW_SECONDS = 600
 export const DEFAULT_AUTO_LOGIN_MAX_PER_WINDOW = 1
 export const DEFAULT_AUTO_LOGIN_PAUSE_AFTER_FAILURES = 2
+export const DEFAULT_CAPTCHA_MAX_ATTEMPTS = 2
+export const DEFAULT_CAPTCHA_SOLVE_TIMEOUT_MS = 20_000
+export const DEFAULT_CAPTCHA_HUMAN_WAIT_SECONDS = 300
+export const DEFAULT_SLIDER_DRAG_MIN_DURATION_MS = 800
+export const DEFAULT_SLIDER_DRAG_MAX_DURATION_MS = 1_500
 
 export const platformSessionAuthSchema = z
   .strictObject({
@@ -73,6 +88,11 @@ export const platformSessionAuthSchema = z
     autoLoginWindowSeconds: z.number().int().min(60).max(86_400),
     autoLoginMaxPerWindow: z.number().int().min(1).max(20),
     autoLoginPauseAfterFailures: z.number().int().min(1).max(20),
+    captchaMaxAttempts: z.number().int().min(1).max(5).default(DEFAULT_CAPTCHA_MAX_ATTEMPTS),
+    captchaSolveTimeoutMs: timeoutMsSchema.default(DEFAULT_CAPTCHA_SOLVE_TIMEOUT_MS),
+    captchaHumanWaitSeconds: z.number().int().min(60).max(1_800).default(DEFAULT_CAPTCHA_HUMAN_WAIT_SECONDS),
+    sliderDragMinDurationMs: z.number().int().min(300).max(3_000).default(DEFAULT_SLIDER_DRAG_MIN_DURATION_MS),
+    sliderDragMaxDurationMs: z.number().int().min(500).max(5_000).default(DEFAULT_SLIDER_DRAG_MAX_DURATION_MS),
   })
   .superRefine((value, ctx) => {
     if (value.freshnessSecondsMin > value.freshnessSecondsDefault) {
@@ -98,6 +118,13 @@ export const platformSessionAuthSchema = z
         })
       }
     }
+    if (value.sliderDragMinDurationMs > value.sliderDragMaxDurationMs) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['sliderDragMinDurationMs'],
+        message: '滑块拖拽最小耗时不得大于最大耗时',
+      })
+    }
   })
 export type PlatformSessionAuth = z.infer<typeof platformSessionAuthSchema>
 
@@ -111,6 +138,11 @@ export const FACTORY_SESSION_AUTH: PlatformSessionAuth = {
   autoLoginWindowSeconds: DEFAULT_AUTO_LOGIN_WINDOW_SECONDS,
   autoLoginMaxPerWindow: DEFAULT_AUTO_LOGIN_MAX_PER_WINDOW,
   autoLoginPauseAfterFailures: DEFAULT_AUTO_LOGIN_PAUSE_AFTER_FAILURES,
+  captchaMaxAttempts: DEFAULT_CAPTCHA_MAX_ATTEMPTS,
+  captchaSolveTimeoutMs: DEFAULT_CAPTCHA_SOLVE_TIMEOUT_MS,
+  captchaHumanWaitSeconds: DEFAULT_CAPTCHA_HUMAN_WAIT_SECONDS,
+  sliderDragMinDurationMs: DEFAULT_SLIDER_DRAG_MIN_DURATION_MS,
+  sliderDragMaxDurationMs: DEFAULT_SLIDER_DRAG_MAX_DURATION_MS,
 }
 
 const httpConditionSchema = z.strictObject({
@@ -123,6 +155,33 @@ const httpConditionSchema = z.strictObject({
 const pageConditionSchema = z.strictObject({
   locator: loginLocatorSchema,
 })
+
+const captchaCharsetRangeSchema = z.union([
+  z.number().int().min(0).max(7),
+  z.string().trim().min(1).max(128),
+])
+
+export const targetCaptchaDefinitionSchema = z.strictObject({
+  type: z.enum(['IMAGE', 'SLIDER', 'AUTO']).default('AUTO'),
+  image: z
+    .strictObject({
+      imageLocator: loginLocatorSchema,
+      inputLocator: loginLocatorSchema,
+      charsetRange: captchaCharsetRangeSchema.optional(),
+      expectedLength: z.number().int().min(1).max(32).optional(),
+      colors: z.array(z.string().trim().min(1).max(32)).max(8).optional(),
+    })
+    .optional(),
+  slider: z
+    .strictObject({
+      bgLocator: loginLocatorSchema.optional(),
+      knobLocator: loginLocatorSchema.optional(),
+      containerLocator: loginLocatorSchema.optional(),
+      mode: z.enum(['TRACK', 'PUZZLE']).default('TRACK'),
+    })
+    .optional(),
+})
+export type TargetCaptchaDefinition = z.infer<typeof targetCaptchaDefinitionSchema>
 
 export const targetAuthProfileDefinitionSchema = z
   .strictObject({
@@ -148,6 +207,7 @@ export const targetAuthProfileDefinitionSchema = z
       origins: z.array(z.string().trim().min(1).max(256)).min(1).max(16),
       pathPrefixes: z.array(z.string().trim().min(1).max(256)).min(1).max(16),
     }),
+    captcha: targetCaptchaDefinitionSchema.optional(),
   })
   .superRefine((definition, ctx) => {
     if (definition.verify.mode === 'http') {
@@ -165,6 +225,37 @@ export const targetAuthProfileDefinitionSchema = z
     }
   })
 export type TargetAuthProfileDefinition = z.infer<typeof targetAuthProfileDefinitionSchema>
+
+export const captchaFingerprintRuleSchema = z.strictObject({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(128),
+  challengeType: z.enum(['IMAGE_CAPTCHA', 'SLIDER_CAPTCHA']),
+  confidence: z.number().min(0).max(1),
+  charsetRange: captchaCharsetRangeSchema.optional(),
+  expectedLength: z.number().int().min(1).max(32).optional(),
+  colors: z.array(z.string().trim().min(1).max(32)).max(8).optional(),
+  detectors: z.strictObject({
+    containerSelector: z.string().optional(),
+    imageSelector: z.string().optional(),
+    inputSelector: z.string().optional(),
+    bgSelector: z.string().optional(),
+    knobSelector: z.string().optional(),
+  }),
+})
+export type CaptchaFingerprintRule = z.infer<typeof captchaFingerprintRuleSchema>
+
+export const challengeAuditRecordSchema = z.strictObject({
+  challengeId: entityIdSchema,
+  sessionId: entityIdSchema,
+  runId: entityIdSchema.optional(),
+  challengeType: challengeTypeSchema,
+  handledBy: z.enum(['MACHINE', 'HUMAN']),
+  attemptsUsed: z.number().int().nonnegative(),
+  success: z.boolean(),
+  durationMs: z.number().int().nonnegative(),
+  timestamp: utcInstantSchema,
+})
+export type ChallengeAuditRecord = z.infer<typeof challengeAuditRecordSchema>
 
 export const authObservationSchema = z.strictObject({
   authState: z.enum(['UNKNOWN', 'AUTHENTICATED', 'EXPIRED']),
@@ -245,6 +336,13 @@ export function deriveAuthCapability(input: {
   return 'LOGIN_VERIFIED'
 }
 
+export function activeDetectionReady(input: {
+  definition: TargetAuthProfileDefinition | null
+  validation: AuthProfileValidation | null
+}): boolean {
+  return deriveAuthCapability({ ...input, expectedIdentity: null }) !== 'LEGACY'
+}
+
 export function resolveFreshnessSeconds(
   definition: TargetAuthProfileDefinition | null,
   sessionAuth: PlatformSessionAuth,
@@ -259,6 +357,35 @@ export function assertFreshnessInRange(
   if (freshnessSeconds == null) return
   if (freshnessSeconds < sessionAuth.freshnessSecondsMin || freshnessSeconds > sessionAuth.freshnessSecondsMax) {
     throw Object.assign(new Error('新鲜度超出平台允许范围'), { code: 'AUTH_FRESHNESS_OUT_OF_RANGE' as const })
+  }
+}
+
+function normalizeAuthPath(path: string): string {
+  if (!path) return '/'
+  const stripped = path.replace(/\/+$/, '')
+  return stripped === '' ? '/' : stripped
+}
+
+/** Hash 路由把业务路径放在 # 后；只比 pathname 会把 /#/login 和后台当成同一页。 */
+export function authRoutePath(url: string | URL): string {
+  try {
+    const parsed = typeof url === 'string' ? new URL(url) : url
+    const hashPath = (parsed.hash.replace(/^#/, '').split('?')[0] ?? '').trim()
+    if (hashPath.startsWith('/')) return normalizeAuthPath(hashPath)
+    return normalizeAuthPath(parsed.pathname)
+  } catch {
+    return '/'
+  }
+}
+
+export function pageLooksLikeLogin(input: { pageUrl?: string | null; loginUrl?: string | null }): boolean {
+  if (!input.pageUrl || !input.loginUrl) return false
+  try {
+    const page = new URL(input.pageUrl)
+    const login = new URL(input.loginUrl)
+    return page.origin === login.origin && authRoutePath(page) === authRoutePath(login)
+  } catch {
+    return false
   }
 }
 
@@ -277,16 +404,8 @@ export function classifyAuthSignals(input: {
       summary: input.observation.evidenceSummary ?? '核验判定登录已失效',
     })
   }
-  if (input.pageUrl && input.loginUrl) {
-    try {
-      const page = new URL(input.pageUrl)
-      const login = new URL(input.loginUrl)
-      if (page.origin === login.origin && page.pathname === login.pathname) {
-        signals.push({ kind: 'navigated_to_login', at, summary: input.pageUrl.slice(0, 512) })
-      }
-    } catch {
-      /* 非法 URL 不记导航信号 */
-    }
+  if (pageLooksLikeLogin({ pageUrl: input.pageUrl, loginUrl: input.loginUrl })) {
+    signals.push({ kind: 'navigated_to_login', at, summary: input.pageUrl!.slice(0, 512) })
   }
   if (input.observation.evidenceSummary?.includes('失效定位可见')) {
     signals.push({
@@ -587,6 +706,7 @@ export function planAuthEnsure(input: {
   }
 
   if (observation.authState === 'AUTHENTICATED') return { action: 'reuse' }
+  if (observation.authState === 'EXPIRED') return { action: 'auto_login' }
   if (observation.unknownClass === 'infra') {
     const delay = input.backoffSeconds[input.infraAttempts]
     if (delay != null) return { action: 'backoff_verify', delaySeconds: delay }
@@ -647,3 +767,68 @@ export const startAuthProfileValidationResponseSchema = z.strictObject({
   created: z.boolean(),
 })
 export type StartAuthProfileValidationResponse = z.infer<typeof startAuthProfileValidationResponseSchema>
+
+export interface ChallengeContext {
+  targetId: string
+  targetAccountId: string
+  attempt: number
+  maxAttempts: number
+  timeoutMs: number
+}
+
+export interface ChallengeOutcome {
+  solved: boolean
+  challengeType: ChallengeType
+  handledBy: 'MACHINE' | 'HUMAN'
+  confidence?: number
+  durationMs: number
+  error?: string
+}
+
+export interface ChallengeHandler {
+  readonly supportedType: ChallengeType
+  detect(context: unknown): Promise<boolean>
+  handle(context: unknown): Promise<ChallengeOutcome>
+}
+
+export const CAPTCHA_ATTEMPT_OUTCOMES = ['success', 'captcha_failed', 'ambiguous', 'credential_failed'] as const
+export type CaptchaAttemptOutcome = (typeof CAPTCHA_ATTEMPT_OUTCOMES)[number]
+
+export function mergeCaptchaLoginKindParams(
+  previous: Record<string, unknown> | undefined,
+  input: {
+    attempt: number
+    maxAttempts: number
+    challengeType: ChallengeType
+    outcome: CaptchaAttemptOutcome
+    audit: ChallengeAuditRecord
+  },
+): Record<string, unknown> {
+  const priorAttempts = Array.isArray(previous?.attempts) ? [...previous.attempts] : []
+  return {
+    ...previous,
+    captchaPhase: 'MACHINE_HANDLING',
+    attempt: input.attempt,
+    maxAttempts: input.maxAttempts,
+    challengeType: input.challengeType,
+    outcome: input.outcome,
+    challenge: input.audit,
+    attempts: [
+      ...priorAttempts,
+      {
+        attempt: input.attempt,
+        outcome: input.outcome,
+        challengeType: input.challengeType,
+        challenge: input.audit,
+      },
+    ],
+  }
+}
+
+export function resolveCaptchaHoldSeconds(
+  sessionAuth: Pick<PlatformSessionAuth, 'captchaHumanWaitSeconds'> | null | undefined,
+  fallbackSeconds: number,
+): number {
+  return sessionAuth?.captchaHumanWaitSeconds ?? fallbackSeconds
+}
+

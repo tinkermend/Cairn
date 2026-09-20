@@ -1,6 +1,7 @@
 import {
   MAP_IDENTITY_RULE_VERSION,
   MAP_ROUTE_RULE_VERSION,
+  syncSha256,
   type MapIdentityAlias,
   type MapMatchResult,
   type MapObservation,
@@ -30,6 +31,16 @@ function sanitize(value: string, max = 80): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, max)
   return cleaned || 'x'
+}
+
+/** 技术键不能含中文；无 ASCII 可读片段时用摘要，避免「总览」「告警」收成同一个 token。 */
+function identityFragment(value: string, max = 24): string {
+  const trimmed = value.trim()
+  const cleaned = sanitize(trimmed, max)
+  if (!/[^\x00-\x7F]/.test(trimmed)) return cleaned
+  const digest = syncSha256(trimmed).slice(0, 12)
+  if (!cleaned || cleaned === 'x') return digest
+  return sanitize(`${cleaned}-${digest}`, max + 13)
 }
 
 function fitKey(parts: string[], max = 192): string {
@@ -144,13 +155,26 @@ export function stableObjectToken(input: {
   testId?: string
   role?: string
   name?: string
+  regionKey?: string
+  url?: string
   sourceEventKey?: string
 }): { token: string; reasons: string[] } {
-  if (input.testId) return { token: sanitize(`testid-${input.testId}`, 48), reasons: ['stable:testId'] }
+  if (input.testId) return { token: sanitize(`testid-${identityFragment(input.testId, 32)}`, 48), reasons: ['stable:testId'] }
   if (input.role && input.name) {
-    return { token: sanitize(`role-${input.role}-${input.name}`, 48), reasons: ['stable:role+name'] }
+    return {
+      token: sanitize(`role-${sanitize(input.role, 16)}-${identityFragment(input.name, 24)}`, 48),
+      reasons: ['stable:role+name'],
+    }
   }
-  if (input.name) return { token: sanitize(`name-${input.name}`, 48), reasons: ['stable:name'] }
+  if (input.name) return { token: sanitize(`name-${identityFragment(input.name, 32)}`, 48), reasons: ['stable:name'] }
+  if (input.role) return { token: sanitize(`role-${input.role}`, 48), reasons: ['stable:role'] }
+  if (input.regionKey && input.url) {
+    return {
+      token: sanitize(`surface-${input.regionKey}-${syncSha256(input.url).slice(0, 12)}`, 48),
+      reasons: ['stable:region+url'],
+    }
+  }
+  if (input.regionKey) return { token: sanitize(`surface-${input.regionKey}`, 48), reasons: ['stable:region'] }
   return {
     token: sanitize(`pending-${input.sourceEventKey ?? 'unknown'}`, 48),
     reasons: ['stable:pending-source'],
@@ -246,6 +270,8 @@ export function matchObjectIdentity(input: {
     testId: clues.testId,
     role: clues.role,
     name: clues.name,
+    regionKey: clues.regionKey,
+    url: clues.url,
     sourceEventKey: input.observation.sourceEventKey,
   })
   const allocationKey = objectAllocationKey({
@@ -262,8 +288,9 @@ export function matchObjectIdentity(input: {
       object.pageAllocationKey === input.pageAllocationKey && object.regionKey === clues.regionKey,
   )
   const exact = input.objects.filter((object) => object.allocationKey === resolvedKey)
+  const sameStable = sameRegion.filter((object) => object.stableToken === stable.token)
   const reasons = [...stable.reasons, `ruleVersion:${MAP_IDENTITY_RULE_VERSION}`]
-  if (clues.role && clues.name && !clues.rowBound && sameRegion.length > 1 && exact.length !== 1) {
+  if (clues.role && clues.name && !clues.rowBound && sameStable.length > 1 && exact.length !== 1) {
     return {
       allocationKey: resolvedKey,
       regionKey: clues.regionKey,

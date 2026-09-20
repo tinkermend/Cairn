@@ -42,7 +42,10 @@ export class MemoryS3 implements S3Sender {
       this.commands.push('PutObject')
       const key = command.input.Key ?? ''
       const raw = command.input.Body
-      const body = raw instanceof Uint8Array ? raw : new Uint8Array()
+      if (command.input.IfNoneMatch === '*' && this.objects.has(key)) throw s3Error('PreconditionFailed', 412)
+      const chunks: Buffer[] = []
+      if (raw && typeof raw === 'object' && Symbol.asyncIterator in raw) for await (const chunk of raw as AsyncIterable<Uint8Array>) chunks.push(Buffer.from(chunk))
+      const body = raw instanceof Uint8Array ? raw : Buffer.concat(chunks)
       this.objects.set(key, {
         body,
         contentType: command.input.ContentType,
@@ -55,6 +58,20 @@ export class MemoryS3 implements S3Sender {
       const key = command.input.Key ?? ''
       const obj = this.objects.get(key)
       if (!obj) throw s3Error('NoSuchKey', 404)
+      const size = obj.body.byteLength
+      const rangeHeader = command.input.Range
+      if (rangeHeader) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader)
+        if (!match) throw s3Error('InvalidRange', 416)
+        const start = match[1] ? Number(match[1]) : 0
+        const end = Math.min(match[2] ? Number(match[2]) : size - 1, size - 1)
+        const slice = obj.body.subarray(start, end + 1)
+        return {
+          Body: { transformToByteArray: async () => slice },
+          ContentLength: slice.byteLength,
+          ContentRange: `bytes ${start}-${end}/${size}`,
+        }
+      }
       return {
         Body: {
           transformToByteArray: async () => obj.body,

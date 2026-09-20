@@ -59,6 +59,21 @@ function viewPlaceholder(input: {
   return '运行已结束，实时画面已关闭。本次录像与步骤截图在结果里。'
 }
 
+/** 展开后还没有帧时是加载中，不能写成「没有页面」。 */
+export function isBrowserViewConnecting(input: {
+  open: boolean
+  hasFrame: boolean
+  waitingWithoutControl: boolean
+  degradedReason: ManagedBrowserMeta['degradedReason']
+}) {
+  return (
+    input.open &&
+    !input.hasFrame &&
+    !input.waitingWithoutControl &&
+    input.degradedReason !== 'worker_generation_mismatch'
+  )
+}
+
 /** 画面是 object-contain，按整块按钮比例换算会点到留白而不是登录框。 */
 function framePointFromClick(
   event: { currentTarget: HTMLElement; clientX: number; clientY: number },
@@ -176,7 +191,7 @@ export function BrowserView({
             !next.framesAvailable &&
             next.degradedReason !== 'worker_generation_mismatch' &&
             !waitingAuthGate
-          if (needRetry && !sessionMode) timer = window.setTimeout(load, 800)
+          if (needRetry) timer = window.setTimeout(load, 800)
         })
         .catch((error) => {
           if (cancelled) return
@@ -185,7 +200,7 @@ export function BrowserView({
               ? error.message
               : '无法读取浏览器状态'
           )
-          if (!sessionMode && open && isLiveViewRun(runStatus))
+          if (open && isLiveViewRun(runStatus))
             timer = window.setTimeout(load, 1600)
         })
     }
@@ -199,12 +214,27 @@ export function BrowserView({
     canView,
     runId,
     runStatus,
-    eventSeq,
     viewPageId,
     token,
     fetchManagedBrowser,
     sessionMode,
   ])
+
+  useEffect(() => {
+    if (!canView || !open || !eventSeq) return
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void fetchManagedBrowser(runId, viewPageId)
+        .then((next) => {
+          if (!cancelled) setMeta(next)
+        })
+        .catch(() => undefined)
+    }, 250)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [eventSeq, open, canView, runId, viewPageId, fetchManagedBrowser])
 
   useEffect(() => {
     return () => {
@@ -345,6 +375,12 @@ export function BrowserView({
   const picking = holding && observe.pickMode
   const highlightBox = observe.highlight?.preview?.box
   const controlling = Boolean(token && observationConnected && canControl)
+  const connecting = isBrowserViewConnecting({
+    open,
+    hasFrame: Boolean(frame),
+    waitingWithoutControl: waiting && !controlling,
+    degradedReason: meta?.degradedReason ?? null,
+  })
   const remain =
     expiresAt && Date.parse(expiresAt)
       ? Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 1000))
@@ -568,7 +604,9 @@ export function BrowserView({
             <p className='text-small text-muted-foreground'>
               {meta?.degradedReason === 'worker_unreachable'
                 ? '执行面暂时不可达，仍显示会话所有权。'
-                : '还没有可观察的受管页面。'}
+                : connecting
+                  ? '正在连接受管浏览器画面…'
+                  : '还没有可观察的受管页面。'}
             </p>
           )}
           {frame && meta?.capabilities.screencast !== 'closed' ? (
@@ -637,7 +675,7 @@ export function BrowserView({
                 framesAvailable: Boolean(meta?.framesAvailable),
                 degradedReason: meta?.degradedReason ?? null,
                 streamError,
-                connecting: Boolean(open && meta?.framesAvailable && !frame),
+                connecting,
               })}
             </div>
           )}

@@ -66,11 +66,15 @@ import { attachMaintenanceOperation, attachValidationOperation, completeOccupied
 import { acquireRunAuthControl, applyRecoveryRule, executeAuthInput, expiredAuthObservation, failInRunAuthRecovery, heartbeatRunAuthControl, inputRunAuthControl, observeInRunAuth, observeInRunAuthHeld, releaseRunAuthControl, restoreAuthGateFromCheckpoint, resumeRunAuth, verifyInRunAuth } from './session-auth-control.js'
 import { adoptPage, assertCommand, closeRunPage, ensureRunPage, execute, invalidate, pageForGrant, runManagedPage, runSurfaceCommand, startTracingForLease, stopTracingForLease, withManagedPage } from './session-command.js'
 import {
+  discardSealedVideo,
+  finalizeSealedVideo,
   rebindVideoForLease,
   retargetVideoForLease,
+  sealVideoForLease,
   startVideoForLease,
   stopVideoForLease,
   type RunVideoRecorder,
+  type SealedRunVideo,
 } from './run-video.js'
 import { assertOwnLiveRegistration, assertSessionOwnedHere, authWindowStatus, buildMeta, describeHoldPage, describeRunBrowser, dropScreencastObserver, invalidateObserveGrant, liveSessionIdForRun, lookupRunSession, observeRun, pageForView, pipeFrames, probeErrorSurface, registrationLive, requireLiveAuthSession, sampleMapConditions, sessionOwnedHere, subscribeRunFrames } from './session-observe-runtime.js'
 import { close, dropDisposedHandles, dropLocalHandle, ownerScope, platformDefaultPolicy, reap, reconcileOwn, release, renew, renewAll, shutdown, stopAllLocal } from './session-reaper.js'
@@ -115,8 +119,11 @@ export class BrowserSessionManager {
     return ownerScope.call(this)
   }
 
-  async dropLocalHandle(sessionId: string): Promise<'stopped' | 'unconfirmed'> {
-    return dropLocalHandle.call(this, sessionId)
+  async dropLocalHandle(
+    sessionId: string,
+    options?: { commitVideo?: boolean },
+  ): Promise<'stopped' | 'unconfirmed'> {
+    return dropLocalHandle.call(this, sessionId, options)
   }
 
   constructor(
@@ -391,7 +398,7 @@ export class BrowserSessionManager {
 
   async resolveAccountCredential(
     accountId: string,
-  ): Promise<{ username: string; password: string } | null> {
+  ): Promise<{ username: string; password: string; secretId?: string } | null> {
     return resolveAccountCredential.call(this, accountId)
   }
 
@@ -410,11 +417,11 @@ export class BrowserSessionManager {
     return close.call(this, sessionId, reason)
   }
 
-  async reap(): Promise<{
+  async reap(options?: { includeGlobalLeases?: boolean }): Promise<{
     leasesExpired: number
     sessionsClosed: number
   }> {
-    return reap.call(this)
+    return reap.call(this, options)
   }
 
   /**
@@ -446,11 +453,22 @@ export class BrowserSessionManager {
     fn: (page: import('playwright').Page) => Promise<T>,
     failed: (value: T) => boolean = () => false,
   ): Promise<
-    | { ok: true; value: T; screenshotBytes?: Buffer; tracePath?: string }
+    | {
+        ok: true
+        value: T
+        screenshotBytes?: Buffer
+        extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+        faceRole?: import('@cairn/shared').ScreenshotRole
+        pageRef?: import('@cairn/shared').PageRef
+        tracePath?: string
+      }
     | {
         ok: false
         error: Extract<BrowserCommandResult, { ok: false }>['error']
         screenshotBytes?: Buffer
+        extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+        faceRole?: import('@cairn/shared').ScreenshotRole
+        pageRef?: import('@cairn/shared').PageRef
         tracePath?: string
       }
   > {
@@ -463,11 +481,22 @@ export class BrowserSessionManager {
     fn: (page: import('playwright').Page) => Promise<T>,
     failed: (value: T) => boolean,
   ): Promise<
-    | { ok: true; value: T; screenshotBytes?: Buffer; tracePath?: string }
+    | {
+        ok: true
+        value: T
+        screenshotBytes?: Buffer
+        extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+        faceRole?: import('@cairn/shared').ScreenshotRole
+        pageRef?: import('@cairn/shared').PageRef
+        tracePath?: string
+      }
     | {
         ok: false
         error: Extract<BrowserCommandResult, { ok: false }>['error']
         screenshotBytes?: Buffer
+        extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+        faceRole?: import('@cairn/shared').ScreenshotRole
+        pageRef?: import('@cairn/shared').PageRef
         tracePath?: string
       }
   > {
@@ -482,7 +511,15 @@ export class BrowserSessionManager {
     command: BrowserCommand,
     signal?: AbortSignal,
     evidence?: BrowserCommandEvidence,
-  ): Promise<BrowserCommandResult & { screenshotBytes?: Buffer; tracePath?: string }> {
+  ): Promise<
+    BrowserCommandResult & {
+      screenshotBytes?: Buffer
+      extraShots?: { role: import('@cairn/shared').ScreenshotRole; bytes: Buffer }[]
+      faceRole?: import('@cairn/shared').ScreenshotRole
+      pageRef?: import('@cairn/shared').PageRef
+      tracePath?: string
+    }
+  > {
     return execute.call(this, grant, command, signal, evidence)
   }
 
@@ -500,6 +537,18 @@ export class BrowserSessionManager {
 
   async startVideoForLease(leaseId: string, sessionId: string, run: RunSnapshot): Promise<void> {
     return startVideoForLease.call(this, leaseId, sessionId, run)
+  }
+
+  async sealVideoForLease(leaseId: string): Promise<SealedRunVideo | null> {
+    return sealVideoForLease.call(this, leaseId)
+  }
+
+  async finalizeSealedVideo(sealed: SealedRunVideo | null): Promise<void> {
+    return finalizeSealedVideo.call(this, sealed)
+  }
+
+  async discardSealedVideo(sealed: SealedRunVideo | null): Promise<void> {
+    return discardSealedVideo.call(this, sealed)
   }
 
   async stopVideoForLease(leaseId: string): Promise<void> {
@@ -718,7 +767,7 @@ export class BrowserSessionManager {
   }
 
   /** 测试钩子：覆盖默认 SecretProvider 解密。 */
-  resolveCredential?: (run: RunSnapshot) => Promise<{ username: string; password: string } | null>
+  resolveCredential?: (run: RunSnapshot) => Promise<{ username: string; password: string; secretId?: string } | null>
 
   platformDefaultPolicy(): SessionPolicy {
     return platformDefaultPolicy.call(this)
@@ -782,14 +831,14 @@ export class BrowserSessionManager {
     occupancy: SessionGrant,
     code: SessionErrorCode,
     message: string,
-    target?: { entryUrl: string; loginUrl?: string | null },
+    target?: { entryUrl: string; loginUrl?: string | null; captchaHumanWaitSeconds?: number },
   ): Promise<{ ok: false; code: SessionErrorCode; message: string; waitingForAuth: boolean }> {
     return enterWaitingForAuth.call(this, session, runGrant, policy, occupancy, code, message, target)
   }
 
   async resolveLoginCredential(
     run: RunSnapshot,
-  ): Promise<{ username: string; password: string } | null> {
+  ): Promise<{ username: string; password: string; secretId?: string } | null> {
     return resolveLoginCredential.call(this, run)
   }
 

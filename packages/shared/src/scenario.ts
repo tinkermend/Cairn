@@ -100,6 +100,7 @@ export class ScenarioValidationError extends Error {
 }
 
 function contextFrom(step: Step): string | undefined {
+  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') return step.input.from
   if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') return step.input.from
   return undefined
 }

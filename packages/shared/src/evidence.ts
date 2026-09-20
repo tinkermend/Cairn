@@ -34,6 +34,7 @@ export const evidenceMetadataSchema = z.strictObject({
   runId: entityIdSchema,
   stepRunId: entityIdSchema.optional(),
   attemptId: entityIdSchema.optional(),
+  artifactKey: z.string().min(1).max(160).optional(),
   type: evidenceTypeSchema,
   status: evidenceStatusSchema,
   createdAt: utcInstantSchema,

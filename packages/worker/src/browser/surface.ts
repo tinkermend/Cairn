@@ -12,7 +12,7 @@ import {
   BrowserCapabilityMissingError,
   SurfaceLostError,
   clickLocator,
-  countCandidate,
+  countCandidateNow,
   detectCapabilityGap,
   fillLocator,
   isLocatorVisible,
@@ -28,7 +28,7 @@ import {
   waitForPopup,
   waitOnPage,
 } from './runtime'
-import { candidateTries, decideResolverOutcome, errorForOutcome } from './resolver'
+import { candidateTries, errorForOutcome, pickResolvedCandidate } from './resolver'
 
 export type SurfacePage = Page
 
@@ -320,30 +320,37 @@ export async function locate(page: Page, target: TargetDescriptor, timeoutMs?: n
       }
     }
     const scoped = scopeForAnchor(frame, target.anchor)
-    const matches: number[] = []
-    let found: Locator | undefined
-    for (const candidate of target.candidates) {
-      signal?.throwIfAborted()
-      const n = await countCandidate(scoped, candidate, remaining(), signal)
-      matches.push(n)
-      if (n === 1) {
-        found = locatorForCandidate(scoped, candidate)
-        break
+    const countNow = async () => {
+      const next: number[] = []
+      for (const candidate of target.candidates) {
+        signal?.throwIfAborted()
+        next.push(await countCandidateNow(scoped, candidate, signal))
+      }
+      return next
+    }
+    let matches = await countNow()
+    let picked = pickResolvedCandidate(matches)
+    if (picked.kind === 'miss' && picked.outcome === 'NOT_FOUND') {
+      while (Date.now() <= deadline) {
+        signal?.throwIfAborted()
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        matches = await countNow()
+        picked = pickResolvedCandidate(matches)
+        if (picked.kind === 'found' || picked.outcome === 'AMBIGUOUS') break
       }
     }
     const tried = candidateTries(target.candidates, matches)
-    if (found) {
+    if (picked.kind === 'found') {
       return {
         kind: 'found',
-        locator: found,
+        locator: locatorForCandidate(scoped, target.candidates[picked.index]!),
         diagnostics: { outcome: 'FOUND', candidatesTried: tried, framePathResolved: trail },
       }
     }
-    const outcome = decideResolverOutcome(matches.map((n) => ({ matches: n })))
     return {
       kind: 'miss',
-      outcome,
-      diagnostics: { outcome, candidatesTried: tried, framePathResolved: trail },
+      outcome: picked.outcome,
+      diagnostics: { outcome: picked.outcome, candidatesTried: tried, framePathResolved: trail },
     }
   } catch (error) {
     if (error instanceof SurfaceLostError || isClosedMessage(error)) {

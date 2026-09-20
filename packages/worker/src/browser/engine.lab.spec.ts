@@ -28,13 +28,14 @@ import {
 import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, PROCESS_LOG_EVENTS, type Step } from '@cairn/shared'
 import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
 import { credentialKeyFromEnv, LocalSecretProvider } from '@cairn/secret'
-import { saveServiceCaller, issueServiceCredential, authenticateService, createServiceRun, getServiceRun, listScenarioVersions, releaseServiceEvidence } from '@cairn/db'
+import { saveServiceCaller, issueServiceCredential, authenticateService, createServiceRun, getServiceRun, listScenarioVersions, releaseServiceEvidence, ensureTargetAccountCredential } from '@cairn/db'
 import { serviceCallerBodySchema } from '@cairn/shared'
 import { createBrowserPort } from './port.js'
 import { BrowserSessionManager } from './session-manager.js'
 import { LocalObjectStore } from '@cairn/storage'
 import { ObjectService } from '../objects/object.service.js'
 import { ExecutionEngine } from '../engine/engine.js'
+import { readRunVideoPayload } from '@cairn/shared'
 import { isPlayableWebm } from './video-encoder.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_elab`
@@ -187,6 +188,19 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       secretProvider: LOCAL_SECRET_PROVIDER,
       secretId,
       status: 'active',
+    })
+    await ensureTargetAccountCredential(handle, {
+      account: {
+        id: accountId,
+        targetId,
+        displayName: 'lab',
+        username: 'lab',
+        configRevision: 1,
+        secretId,
+        secretProvider: LOCAL_SECRET_PROVIDER,
+      },
+      sealed: { id: secretId, provider: LOCAL_SECRET_PROVIDER },
+      actor: { id: actorId },
     })
 
     objectDir = mkdtempSync(join(tmpdir(), 'cairn-elab-obj-'))
@@ -351,6 +365,10 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
     expect(video?.objectKey).toBeTruthy()
     const stored = await objects.getObject(video!.objectKey!)
     expect(isPlayableWebm(stored.body)).toBe(true)
+    const timing = readRunVideoPayload(video?.payload)?.timing
+    expect(timing?.contractVersion).toBe(1)
+    expect(timing?.framesWritten).toBeGreaterThanOrEqual(1)
+    expect(timing?.decodedFrames).toBeGreaterThanOrEqual(1)
     expect(created.detail.evidenceStatus).toBe('PENDING')
     expect(detail.evidenceStatus).toBe('COMPLETE')
   })
@@ -512,6 +530,7 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
     expect(video1?.status).toBe('available')
     expect(video1?.objectKey).toBeTruthy()
     expect(isPlayableWebm((await objects.getObject(video1!.objectKey!)).body)).toBe(true)
+    expect(readRunVideoPayload(video1?.payload)?.timing?.contractVersion).toBe(1)
     expect(ok.evidence.items.some((item) => item.type === 'screenshot' && item.status === 'available')).toBe(true)
     expect(ok.detail.evidenceStatus).toBe('COMPLETE')
 
@@ -521,7 +540,11 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
     expect(video2?.status).toBe('available')
     expect(video2?.objectKey).toBeTruthy()
     expect(isPlayableWebm((await objects.getObject(video2!.objectKey!)).body)).toBe(true)
+    expect(readRunVideoPayload(video2?.payload)?.timing?.contractVersion).toBe(1)
     expect(video1?.objectKey).not.toBe(video2?.objectKey)
+    expect(readRunVideoPayload(video1?.payload)?.timing?.captureStartedAt).not.toBe(
+      readRunVideoPayload(video2?.payload)?.timing?.captureStartedAt,
+    )
     expect(failed.evidence.items.some((item) => item.type === 'screenshot' && item.status === 'available')).toBe(true)
     expect(failed.detail.status).toBe('FAILED')
   })

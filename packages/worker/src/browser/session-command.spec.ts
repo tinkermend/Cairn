@@ -18,6 +18,23 @@ function stubPage(url: string) {
   return page
 }
 
+describe('adoptPage 录像切换可等待', () => {
+  it('把 retarget 挂到页面条目上供交接等待', async () => {
+    const page = stubPage('https://app.example/popup')
+    const live = emptyLive({ basePage: stubPage('about:blank') } as never, 'sess', 2)
+    const retarget = vi.fn(async () => {})
+    const ctx = {
+      retargetVideoForLease: retarget,
+    }
+    const entry = adoptPage.call(ctx, live, 'run-1', page as never, 'popup', 'lease-1')
+    expect(entry.retarget).toBeDefined()
+    await entry.retarget
+    expect(retarget).toHaveBeenCalled()
+    expect(live.currentPageIdByLease.get('lease-1')).toBe(entry.pageId)
+    expect(entry.documentEpoch).toBe(0)
+  })
+})
+
 describe('closeRunPage 保留 last page', () => {
   it('NEW_PAGE 释放后保留可用页，并关掉上一张', async () => {
     const base = stubPage('about:blank')

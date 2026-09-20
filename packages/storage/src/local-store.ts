@@ -1,10 +1,19 @@
-import { mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, link, mkdir, open, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises'
+import { inspectUpload } from './file-upload.js'
 import { dirname, join, relative, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { ObjectStoreError } from '@cairn/shared'
 import { sha256Digest } from './digest.js'
 import { requireObjectKey, requireSize } from './keys.js'
-import type { ObjectHead, ObjectStore, PutObjectInput } from './types.js'
+import { probeObjectStore } from './probe.js'
+import type {
+  ObjectGetOptions,
+  ObjectGetResult,
+  ObjectHead,
+  ObjectStore,
+  ObjectStoreProbeResult,
+  PutObjectInput,
+} from './types.js'
 
 export class LocalObjectStore implements ObjectStore {
   private resolvedRoot: string | undefined
@@ -46,19 +55,65 @@ export class LocalObjectStore implements ObjectStore {
     return { key, byteSize: input.body.byteLength, digest }
   }
 
-  async get(key: string): Promise<{ head: ObjectHead; body: Uint8Array }> {
+  async putFile(input: { key: string; path: string; contentType: string; maxBytes: number; signal?: AbortSignal }): Promise<ObjectHead> {
+    const key = requireObjectKey(input.key)
+    const head = await inspectUpload(input.path, input.maxBytes, input.signal)
+    const dest = await this.resolveKeyPath(key)
+    await mkdir(dirname(dest), { recursive: true })
+    const tmp = `${dest}.${randomBytes(8).toString('hex')}.tmp`
+    try {
+      input.signal?.throwIfAborted()
+      await copyFile(input.path, tmp)
+      input.signal?.throwIfAborted()
+      try { await link(tmp, dest) } catch (error) {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error
+        const existing = await inspectUpload(dest, input.maxBytes, input.signal)
+        if (existing.digest !== head.digest) throw new ObjectStoreError('OBJECT_KEY_CONFLICT', '同键对象正文不一致，拒绝覆盖')
+      }
+    } finally { await unlink(tmp).catch(() => undefined) }
+    return { key, ...head }
+  }
+
+  async get(key: string, options?: ObjectGetOptions): Promise<ObjectGetResult> {
     const parsed = requireObjectKey(key)
     const dest = await this.resolveKeyPath(parsed)
     try {
+      if (options && (options.start != null || options.end != null)) {
+        const handle = await open(dest, 'r')
+        try {
+          const stat = await handle.stat()
+          const size = stat.size
+          const start = Math.max(0, options.start ?? 0)
+          const end = Math.min(size - 1, options.end ?? size - 1)
+          if (start >= size || end < start) {
+            throw new ObjectStoreError('OBJECT_NOT_FOUND', '对象范围不可用')
+          }
+          const length = end - start + 1
+          const body = new Uint8Array(length)
+          await handle.read(body, 0, length, start)
+          return {
+            head: { key: parsed, byteSize: size, digest: '' },
+            body,
+            range: { start, end, size },
+          }
+        } finally {
+          await handle.close()
+        }
+      }
       const body = toBytes(await readFile(dest))
       const digest = sha256Digest(body)
       return { head: { key: parsed, byteSize: body.byteLength, digest }, body }
     } catch (error) {
+      if (error instanceof ObjectStoreError) throw error
       if (isNotFound(error)) {
         throw new ObjectStoreError('OBJECT_NOT_FOUND', '对象不存在')
       }
       throw new ObjectStoreError('OBJECT_STORE_UNAVAILABLE', '本地对象读取失败', { cause: error })
     }
+  }
+
+  probe(): Promise<ObjectStoreProbeResult> {
+    return probeObjectStore(this)
   }
 
   async delete(key: string): Promise<void> {

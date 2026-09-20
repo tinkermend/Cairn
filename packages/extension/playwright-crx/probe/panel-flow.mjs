@@ -43,6 +43,9 @@ const FIXTURE = `<!doctype html>
   <input id="orderNo" name="orderNo">
   <button id="search" type="button">查询</button>
   <button id="extra" type="button">多余按钮</button>
+  <iframe title="子页面" src="/frame"></iframe>
+  <a id="next" href="/next">下一页</a>
+  <a id="popup" href="/popup" target="_blank">打开子窗</a>
   <p id="result"></p>
   <script>
     document.getElementById('search').onclick = () => {
@@ -68,9 +71,9 @@ if (!health) {
   process.exit(2)
 }
 
-const fixture = createServer((_, response) => {
+const fixture = createServer((request, response) => {
   response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-  response.end(FIXTURE)
+  response.end(request.url === '/frame' ? '<button onclick="this.textContent=\'子页面已点击\'">子页面按钮</button>' : FIXTURE)
 })
 await new Promise((done) => fixture.listen(0, '127.0.0.1', done))
 const fixtureUrl = `http://127.0.0.1:${fixture.address().port}/orders`
@@ -138,13 +141,23 @@ try {
   await target.bringToFront()
   await target.fill('#orderNo', 'SO-9')
   await target.click('#search')
+  await target.locator('#result').getByText('已查询', { exact: true }).waitFor()
   await target.click('#extra')
   await panel.bringToFront()
-  await panel.waitForFunction(() => document.querySelectorAll('.cairn-step').length >= 3, undefined, {
+  await panel.waitForFunction(() => document.querySelectorAll('.cairn-step').length >= 4, undefined, {
     timeout: 20_000,
   })
   const names = await panel.locator('.cairn-step .cairn-step-name').allInnerTexts()
-  check('录到真实步骤', names.length >= 3, names.join(' | '))
+  check('录到全部真实步骤', names.length === 4, names.join(' | '))
+  let facts
+  for (let attempt = 0; attempt < 50; attempt++) {
+    facts = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
+    const clicks = facts.facts.filter((f) => f.action === 'click')
+    if (clicks.length === 2 && clicks.every((f) => f.after.status === 'captured')) break
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  check('事实在合并前采集并保留唯一身份', facts.facts.length === 4 && new Set(facts.facts.map((f) => f.id)).size === 4)
+  check('点击前观察可溯源且不是点击后快照', facts.facts.filter((f) => f.action === 'click').every((f) => f.before.status === 'captured' && f.before.observedAt <= f.after.observedAt), JSON.stringify(facts.facts.filter((f) => f.action === 'click').map((f) => ({ before: f.before, after: f.after }))))
   check(
     '在录哪一页写在面板上',
     (await panel.locator('.cairn-status').innerText()).includes('正在录制'),
@@ -176,6 +189,33 @@ try {
     timeout: 10_000,
   })
   check('撤销把那一步放回来', true)
+
+  // Native input is deliberately rapid: L0 retains each event even when L1 merges it.
+  await target.bringToFront()
+  await target.fill('#orderNo', '')
+  await target.locator('#orderNo').pressSequentially('ABC', { delay: 5 })
+  await panel.waitForFunction(async () => (await chrome.runtime.sendMessage({ event: 'cairn.capture.get' })).facts.some((f) => f.data.value?.text === 'ABC'))
+  const rapid = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
+  check('快速输入保留每次原始终值', ['A', 'AB', 'ABC'].every((text) => rapid.facts.some((f) => f.data.value?.text === text)))
+  await target.frameLocator('iframe').getByRole('button', { name: '子页面按钮' }).click()
+  await target.frameLocator('iframe').getByRole('button', { name: '子页面已点击' }).waitFor()
+  const frameFacts = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
+  check('Frame 动作保留归属且不另造子帧导航', frameFacts.facts.some((f) => f.framePath?.length > 0) && frameFacts.facts.filter((f) => f.action === 'openPage').length === 1)
+  await target.click('#next')
+  await target.waitForURL('**/next')
+  await target.click('#search')
+  await target.locator('#result').getByText('已查询', { exact: true }).waitFor()
+  const navigation = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
+  check('导航后使用新的 documentEpoch', new Set(navigation.facts.filter((f) => f.documentEpoch).map((f) => f.documentEpoch)).size >= 2)
+  const popupReady = context.waitForEvent('page')
+  await target.click('#popup')
+  const popup = await popupReady
+  await popup.waitForLoadState()
+  await popup.click('#search')
+  await popup.locator('#result').getByText('已查询', { exact: true }).waitFor()
+  const popupFacts = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
+  check('popup 的操作身份与原页面区分', new Set(popupFacts.facts.filter((f) => f.pageId).map((f) => f.pageId)).size >= 2)
+  await popup.close()
 
   // 7. 退出要回到登录，并且扩展自己不再认为有页面被接管。
   // 不能用 chrome.debugger.getTargets 判断：这一页本来就挂着 Playwright 的调试连接。

@@ -12,6 +12,18 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
+  Bot,
+  CheckCircle2,
+  Clock,
+  Globe,
+  Layers,
+  MousePointer,
+  Plus,
+  Sparkles,
+  TextCursorInput,
+  Trash2,
+} from 'lucide-react'
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -27,6 +39,7 @@ import {
   STEP_TYPE_LABELS,
 } from '@/features/authoring'
 import { MODULE_EFFECT_CEILING_LABELS } from './labels'
+import { ScopeVariablesBar } from './scope-variables-bar'
 
 const sections = [
   'preconditions',
@@ -39,6 +52,30 @@ const sectionNames = {
   postconditions: '后置条件',
   entryState: '入口状态',
   exitState: '结束状态',
+}
+
+function stepTypeIcon(type: ExecutableStepType) {
+  switch (type) {
+    case 'navigate':
+      return Globe
+    case 'click':
+      return MousePointer
+    case 'fill':
+    case 'keyboard':
+      return TextCursorInput
+    case 'assert':
+      return CheckCircle2
+    case 'ai_action':
+      return Bot
+    case 'ai_assert':
+    case 'ai_extract':
+      return Sparkles
+    case 'wait':
+    case 'delay':
+      return Clock
+    default:
+      return Layers
+  }
 }
 
 export function ModuleContentEditor({
@@ -188,12 +225,17 @@ export function ModuleContentEditor({
             </Select>
           </label>
           <div className='flex items-center justify-between gap-2'>
-            <h3 className='flex items-center gap-1.5 text-body font-medium'>
-              输入声明
-              <span className='text-label font-normal text-muted-foreground'>
-                (可选)
-              </span>
-            </h3>
+            <div>
+              <h3 className='flex items-center gap-1.5 text-body font-medium'>
+                输入声明
+                <span className='text-label font-normal text-muted-foreground'>
+                  ({contract.inputs.length}/32)
+                </span>
+              </h3>
+              <p className='text-label text-muted-foreground'>
+                向模块传入外部参数，可在实现步骤中引用。
+              </p>
+            </div>
             {!disabled && (
               <Button
                 variant='outline'
@@ -213,154 +255,176 @@ export function ModuleContentEditor({
                   })
                 }
               >
+                <Plus className='mr-1.5 size-3.5' />
                 添加输入
               </Button>
             )}
           </div>
-          {contract.inputs.map((input, i) => (
-            <div
-              key={i}
-              className='grid gap-3 rounded-md border p-3 sm:grid-cols-2'
-            >
-              <label className='block space-y-1 text-body'>
-                <span className='flex items-center gap-1 font-medium'>
-                  输入 Key{' '}
-                  <span className='text-destructive' aria-hidden='true'>
-                    *
-                  </span>
-                </span>
-                <Input
-                  aria-label={`输入 ${i + 1} Key`}
-                  placeholder='例如：orderNo'
-                  value={input.key}
-                  disabled={disabled}
-                  onChange={(e) =>
-                    updateContract({
-                      inputs: contract.inputs.map((v, n) =>
-                        n === i ? { ...v, key: e.target.value } : v
-                      ),
-                    })
-                  }
-                />
-              </label>
-              <label className='block space-y-1 text-body'>
-                <span className='flex items-center gap-1 font-medium'>
-                  输入名称{' '}
-                  <span className='text-destructive' aria-hidden='true'>
-                    *
-                  </span>
-                </span>
-                <Input
-                  aria-label={`输入 ${i + 1} 名称`}
-                  placeholder='例如：订单号'
-                  value={input.label}
-                  disabled={disabled}
-                  onChange={(e) =>
-                    updateContract({
-                      inputs: contract.inputs.map((v, n) =>
-                        n === i ? { ...v, label: e.target.value } : v
-                      ),
-                    })
-                  }
-                />
-              </label>
-              <label className='flex items-center gap-2 text-body'>
-                <span className='font-medium'>
-                  类型{' '}
-                  <span className='text-destructive' aria-hidden='true'>
-                    *
-                  </span>
-                </span>
-                <Select
-                  value={input.valueType}
-                  disabled={disabled}
-                  onValueChange={(val) =>
-                    updateContract({
-                      inputs: contract.inputs.map((v, n) =>
-                        n === i
-                          ? {
-                              ...v,
-                              valueType: val as typeof v.valueType,
-                            }
-                          : v
-                      ),
-                    })
-                  }
-                >
-                  <SelectTrigger
-                    className='w-32'
-                    aria-label={`输入 ${i + 1} 类型`}
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {['string', 'number', 'boolean', 'json'].map((t) => (
-                      <SelectItem key={t} value={t}>
-                        {t}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-              <div className='flex items-center justify-between gap-2'>
-                <label className='flex items-center gap-2 text-body'>
-                  <input
-                    type='checkbox'
-                    checked={input.required}
-                    disabled={disabled}
-                    onChange={(e) =>
-                      updateContract({
-                        inputs: contract.inputs.map((v, n) =>
-                          n === i ? { ...v, required: e.target.checked } : v
-                        ),
-                      })
-                    }
-                  />
-                  必填
-                </label>
-                {!disabled && (
-                  <Button
-                    size='sm'
-                    variant='ghost'
-                    onClick={() =>
-                      updateContract({
-                        inputs: contract.inputs.filter((_, n) => n !== i),
-                      })
-                    }
-                  >
-                    删除输入 {i + 1}
-                  </Button>
-                )}
-              </div>
-              <label className='block space-y-1 text-body sm:col-span-2'>
-                <span className='flex items-center gap-1 font-medium'>
-                  说明{' '}
-                  <span className='text-label font-normal text-muted-foreground'>
-                    (可选)
-                  </span>
-                </span>
-                <Input
-                  placeholder='参数用途或约束说明'
-                  value={input.description ?? ''}
-                  disabled={disabled}
-                  onChange={(e) =>
-                    updateContract({
-                      inputs: contract.inputs.map((v, n) =>
-                        n === i ? { ...v, description: e.target.value } : v
-                      ),
-                    })
-                  }
-                />
-              </label>
+          {contract.inputs.length === 0 ? (
+            <div className='rounded-lg border border-dashed p-4 text-center text-small text-muted-foreground'>
+              暂无输入参数。若该模块无需接收外部参数，可留空。
             </div>
-          ))}
+          ) : (
+            <div className='overflow-x-auto rounded-lg border bg-card/60'>
+              <table className='w-full min-w-[34rem] text-left text-small'>
+                <thead>
+                  <tr className='border-b bg-muted/40 text-label text-muted-foreground'>
+                    <th className='p-2.5 font-medium'>
+                      Key <span className='text-destructive'>*</span>
+                    </th>
+                    <th className='p-2.5 font-medium'>
+                      名称 <span className='text-destructive'>*</span>
+                    </th>
+                    <th className='p-2.5 font-medium'>
+                      类型 <span className='text-destructive'>*</span>
+                    </th>
+                    <th className='p-2.5 text-center font-medium'>必填</th>
+                    <th className='p-2.5 font-medium'>说明</th>
+                    {!disabled && (
+                      <th className='w-12 p-2.5 text-center font-medium'>操作</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody className='divide-y'>
+                  {contract.inputs.map((input, i) => (
+                    <tr key={i} className='hover:bg-muted/20'>
+                      <td className='p-2'>
+                        <Input
+                          aria-label={`输入 ${i + 1} Key`}
+                          placeholder='例如：orderNo'
+                          value={input.key}
+                          disabled={disabled}
+                          className='h-8 font-mono text-small'
+                          onChange={(e) =>
+                            updateContract({
+                              inputs: contract.inputs.map((v, n) =>
+                                n === i ? { ...v, key: e.target.value } : v
+                              ),
+                            })
+                          }
+                        />
+                      </td>
+                      <td className='p-2'>
+                        <Input
+                          aria-label={`输入 ${i + 1} 名称`}
+                          placeholder='例如：订单号'
+                          value={input.label}
+                          disabled={disabled}
+                          className='h-8 text-small'
+                          onChange={(e) =>
+                            updateContract({
+                              inputs: contract.inputs.map((v, n) =>
+                                n === i ? { ...v, label: e.target.value } : v
+                              ),
+                            })
+                          }
+                        />
+                      </td>
+                      <td className='p-2'>
+                        <Select
+                          value={input.valueType}
+                          disabled={disabled}
+                          onValueChange={(val) =>
+                            updateContract({
+                              inputs: contract.inputs.map((v, n) =>
+                                n === i
+                                  ? {
+                                      ...v,
+                                      valueType: val as typeof v.valueType,
+                                    }
+                                  : v
+                              ),
+                            })
+                          }
+                        >
+                          <SelectTrigger
+                            className='h-8 w-24 text-small'
+                            aria-label={`输入 ${i + 1} 类型`}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {['string', 'number', 'boolean', 'json'].map(
+                              (t) => (
+                                <SelectItem key={t} value={t}>
+                                  {t}
+                                </SelectItem>
+                              )
+                            )}
+                          </SelectContent>
+                        </Select>
+                      </td>
+                      <td className='p-2 text-center'>
+                        <input
+                          type='checkbox'
+                          aria-label={`输入 ${i + 1} 必填`}
+                          checked={input.required}
+                          disabled={disabled}
+                          className='h-4 w-4 rounded border-border align-middle'
+                          onChange={(e) =>
+                            updateContract({
+                              inputs: contract.inputs.map((v, n) =>
+                                n === i ? { ...v, required: e.target.checked } : v
+                              ),
+                            })
+                          }
+                        />
+                      </td>
+                      <td className='p-2'>
+                        <Input
+                          placeholder='可选用途说明'
+                          value={input.description ?? ''}
+                          disabled={disabled}
+                          className='h-8 text-small'
+                          onChange={(e) =>
+                            updateContract({
+                              inputs: contract.inputs.map((v, n) =>
+                                n === i
+                                  ? { ...v, description: e.target.value }
+                                  : v
+                              ),
+                            })
+                          }
+                        />
+                      </td>
+                      {!disabled && (
+                        <td className='p-2 text-center'>
+                          <Button
+                            size='icon'
+                            variant='ghost'
+                            className='h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive'
+                            title={`删除输入 ${i + 1}`}
+                            aria-label={`删除输入 ${i + 1}`}
+                            onClick={() =>
+                              updateContract({
+                                inputs: contract.inputs.filter(
+                                  (_, n) => n !== i
+                                ),
+                              })
+                            }
+                          >
+                            <Trash2 className='h-4 w-4' />
+                          </Button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           <div className='flex items-center justify-between gap-2'>
-            <h3 className='flex items-center gap-1.5 text-body font-medium'>
-              输出声明与映射
-              <span className='text-label font-normal text-muted-foreground'>
-                (可选)
-              </span>
-            </h3>
+            <div>
+              <h3 className='flex items-center gap-1.5 text-body font-medium'>
+                输出声明与映射
+                <span className='text-label font-normal text-muted-foreground'>
+                  ({contract.outputs.length}/32)
+                </span>
+              </h3>
+              <p className='text-label text-muted-foreground'>
+                定义模块对外输出字段，并映射至实现中步骤的 outputKey。
+              </p>
+            </div>
             {!disabled && (
               <Button
                 size='sm'
@@ -379,394 +443,425 @@ export function ModuleContentEditor({
                   })
                 }
               >
+                <Plus className='mr-1.5 size-3.5' />
                 添加输出
               </Button>
             )}
           </div>
-          {contract.outputs.map((output, i) => (
-            <div
-              key={i}
-              className='grid gap-3 rounded-md border p-3 sm:grid-cols-2'
-            >
-              <label className='block space-y-1 text-body'>
-                <span className='flex items-center gap-1 font-medium'>
-                  输出 Key{' '}
-                  <span className='text-destructive' aria-hidden='true'>
-                    *
-                  </span>
-                </span>
-                <Input
-                  aria-label={`输出 ${i + 1} Key`}
-                  placeholder='例如：result'
-                  value={output.key}
-                  disabled={disabled}
-                  onChange={(e) => {
-                    const oldKey = output.key
-                    const newKey = e.target.value
-                    const nextImplementations = content.implementations.map(
-                      (item) => {
-                        const outputMapping = { ...item.outputMapping }
-                        if (
-                          Object.prototype.hasOwnProperty.call(
-                            outputMapping,
-                            oldKey
-                          )
-                        ) {
-                          const value = outputMapping[oldKey]!
-                          delete outputMapping[oldKey]
-                          outputMapping[newKey] = value
-                        }
-                        return { ...item, outputMapping }
-                      }
-                    )
-                    onChange({
-                      ...content,
-                      contract: {
-                        ...contract,
-                        outputs: contract.outputs.map((v, n) =>
-                          n === i ? { ...v, key: newKey } : v
-                        ),
-                      },
-                      implementations: nextImplementations,
-                    })
-                  }}
-                />
-              </label>
-              <label className='block space-y-1 text-body'>
-                <span className='flex items-center gap-1 font-medium'>
-                  输出名称{' '}
-                  <span className='text-destructive' aria-hidden='true'>
-                    *
-                  </span>
-                </span>
-                <Input
-                  aria-label={`输出 ${i + 1} 名称`}
-                  placeholder='例如：处理结果'
-                  value={output.label}
-                  disabled={disabled}
-                  onChange={(e) =>
-                    updateContract({
-                      outputs: contract.outputs.map((v, n) =>
-                        n === i ? { ...v, label: e.target.value } : v
-                      ),
-                    })
-                  }
-                />
-              </label>
-              <label className='block space-y-1 text-body'>
-                <span className='flex items-center gap-1 font-medium'>
-                  输出类型{' '}
-                  <span className='text-destructive' aria-hidden='true'>
-                    *
-                  </span>
-                </span>
-                <Select
-                  value={
-                    output.shape.kind === 'scalar'
-                      ? output.shape.type
-                      : output.shape.kind
-                  }
-                  disabled={disabled}
-                  onValueChange={(val) =>
-                    updateContract({
-                      outputs: contract.outputs.map((v, n) =>
-                        n !== i
-                          ? v
-                          : {
-                              ...v,
-                              shape:
-                                val === 'unknown'
-                                  ? { kind: 'unknown' }
-                                  : val === 'object'
-                                    ? {
-                                        kind: 'object',
-                                        fields: [
-                                          {
-                                            name: 'value',
-                                            type: 'string',
-                                            required: true,
-                                          },
-                                        ],
-                                      }
-                                    : {
-                                        kind: 'scalar',
-                                        type: val as
-                                          | 'string'
-                                          | 'number'
-                                          | 'boolean'
-                                          | 'json',
-                                      },
-                            }
-                      ),
-                    })
-                  }
+          {contract.outputs.length === 0 ? (
+            <div className='rounded-lg border border-dashed p-4 text-center text-small text-muted-foreground'>
+              暂无输出声明。如需向场景传递执行结果，请点击「添加输出」。
+            </div>
+          ) : (
+            <div className='space-y-3'>
+              {contract.outputs.map((output, i) => (
+                <div
+                  key={i}
+                  className='rounded-lg border bg-card/60 p-3.5 space-y-3 shadow-card'
                 >
-                  <SelectTrigger
-                    className='w-full'
-                    aria-label={`输出 ${i + 1} 类型`}
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {[
-                      'string',
-                      'number',
-                      'boolean',
-                      'json',
-                      'object',
-                      'unknown',
-                    ].map((t) => (
-                      <SelectItem key={t} value={t}>
-                        {t}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-              <label className='block space-y-1 text-body'>
-                <span className='flex items-center gap-1 font-medium'>
-                  实现输出{' '}
-                  <span className='text-destructive' aria-hidden='true'>
-                    *
-                  </span>
-                </span>
-                <Select
-                  value={impl.outputMapping[output.key] || '__empty__'}
-                  disabled={disabled}
-                  onValueChange={(val) =>
-                    updateImpl({
-                      outputMapping: {
-                        ...impl.outputMapping,
-                        [output.key]: val === '__empty__' ? '' : val,
-                      },
-                    })
-                  }
-                >
-                  <SelectTrigger
-                    className='w-full'
-                    aria-label={`输出 ${i + 1} 映射`}
-                  >
-                    <SelectValue placeholder='选择步骤 outputKey' />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value='__empty__'>未映射（空）</SelectItem>
-                    {impl.steps
-                      .filter((s) => s.outputKey)
-                      .map((s) => (
-                        <SelectItem key={s.id} value={s.outputKey!}>
-                          {s.outputKey} · {s.name}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </label>
-              {output.shape.kind === 'object' && (
-                <div className='space-y-2 sm:col-span-2'>
-                  {output.shape.fields.map((field, n) => (
-                    <div key={n} className='flex flex-wrap items-center gap-2'>
+                  <div className='flex items-center justify-between border-b pb-2 text-small'>
+                    <div className='flex items-center gap-2 min-w-0'>
+                      <span className='font-semibold text-foreground shrink-0'>
+                        输出 #{i + 1}
+                      </span>
+                      {output.key ? (
+                        <code className='rounded bg-muted px-1.5 py-0.5 font-mono text-label text-muted-foreground truncate max-w-[180px]'>
+                          {output.key}
+                        </code>
+                      ) : null}
+                    </div>
+                    {!disabled && (
+                      <Button
+                        size='icon'
+                        variant='ghost'
+                        className='h-7 w-7 text-muted-foreground hover:bg-destructive/10 hover:text-destructive shrink-0'
+                        title={`删除输出 ${i + 1}`}
+                        aria-label={`删除输出 ${i + 1}`}
+                        onClick={() => {
+                          const delKey = output.key
+                          const nextImplementations =
+                            content.implementations.map((item) => {
+                              const outputMapping = { ...item.outputMapping }
+                              delete outputMapping[delKey]
+                              return { ...item, outputMapping }
+                            })
+                          onChange({
+                            ...content,
+                            contract: {
+                              ...contract,
+                              outputs: contract.outputs.filter(
+                                (_, n) => n !== i
+                              ),
+                            },
+                            implementations: nextImplementations,
+                          })
+                        }}
+                      >
+                        <Trash2 className='h-3.5 w-3.5' />
+                      </Button>
+                    )}
+                  </div>
+
+                  <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                    <div className='min-w-0'>
+                      <label className='block space-y-1 text-label font-medium text-muted-foreground'>
+                        Key <span className='text-destructive'>*</span>
+                      </label>
                       <Input
-                        className='w-40'
-                        aria-label={`输出 ${i + 1} 字段 ${n + 1}`}
-                        value={field.name}
+                        aria-label={`输出 ${i + 1} Key`}
+                        placeholder='例如：result'
+                        value={output.key}
                         disabled={disabled}
+                        className='h-8 w-full font-mono text-small'
+                        onChange={(e) => {
+                          const oldKey = output.key
+                          const newKey = e.target.value
+                          const nextImplementations =
+                            content.implementations.map((item) => {
+                              const outputMapping = { ...item.outputMapping }
+                              if (
+                                Object.prototype.hasOwnProperty.call(
+                                  outputMapping,
+                                  oldKey
+                                )
+                              ) {
+                                const value = outputMapping[oldKey]!
+                                delete outputMapping[oldKey]
+                                outputMapping[newKey] = value
+                              }
+                              return { ...item, outputMapping }
+                            })
+                          onChange({
+                            ...content,
+                            contract: {
+                              ...contract,
+                              outputs: contract.outputs.map((v, n) =>
+                                n === i ? { ...v, key: newKey } : v
+                              ),
+                            },
+                            implementations: nextImplementations,
+                          })
+                        }}
+                      />
+                    </div>
+                    <div className='min-w-0'>
+                      <label className='block space-y-1 text-label font-medium text-muted-foreground'>
+                        名称 <span className='text-destructive'>*</span>
+                      </label>
+                      <Input
+                        aria-label={`输出 ${i + 1} 名称`}
+                        placeholder='例如：处理结果'
+                        value={output.label}
+                        disabled={disabled}
+                        className='h-8 w-full text-small'
                         onChange={(e) =>
                           updateContract({
-                            outputs: contract.outputs.map((v, k) =>
-                              k !== i || v.shape.kind !== 'object'
-                                ? v
-                                : {
-                                    ...v,
-                                    shape: {
-                                      ...v.shape,
-                                      fields: v.shape.fields.map((f, j) =>
-                                        j === n
-                                          ? { ...f, name: e.target.value }
-                                          : f
-                                      ),
-                                    },
-                                  }
+                            outputs: contract.outputs.map((v, n) =>
+                              n === i ? { ...v, label: e.target.value } : v
                             ),
                           })
                         }
                       />
+                    </div>
+                    <div className='min-w-0'>
+                      <label className='block space-y-1 text-label font-medium text-muted-foreground'>
+                        形态 <span className='text-destructive'>*</span>
+                      </label>
                       <Select
-                        value={field.type}
+                        value={
+                          output.shape.kind === 'scalar'
+                            ? output.shape.type
+                            : output.shape.kind
+                        }
                         disabled={disabled}
                         onValueChange={(val) =>
                           updateContract({
-                            outputs: contract.outputs.map((v, k) =>
-                              k !== i || v.shape.kind !== 'object'
+                            outputs: contract.outputs.map((v, n) =>
+                              n !== i
                                 ? v
                                 : {
                                     ...v,
-                                    shape: {
-                                      ...v.shape,
-                                      fields: v.shape.fields.map((f, j) =>
-                                        j === n
+                                    shape:
+                                      val === 'unknown'
+                                        ? { kind: 'unknown' }
+                                        : val === 'object'
                                           ? {
-                                              ...f,
-                                              type: val as typeof f.type,
+                                              kind: 'object',
+                                              fields: [
+                                                {
+                                                  name: 'value',
+                                                  type: 'string',
+                                                  required: true,
+                                                },
+                                              ],
                                             }
-                                          : f
-                                      ),
-                                    },
+                                          : {
+                                              kind: 'scalar',
+                                              type: val as
+                                                | 'string'
+                                                | 'number'
+                                                | 'boolean'
+                                                | 'json',
+                                            },
                                   }
                             ),
                           })
                         }
                       >
                         <SelectTrigger
-                          className='w-28'
-                          aria-label={`输出 ${i + 1} 字段 ${n + 1} 类型`}
+                          className='h-8 w-full text-small'
+                          aria-label={`输出 ${i + 1} 类型`}
                         >
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {['string', 'number', 'boolean'].map((t) => (
+                          {[
+                            'string',
+                            'number',
+                            'boolean',
+                            'json',
+                            'object',
+                            'unknown',
+                          ].map((t) => (
                             <SelectItem key={t} value={t}>
                               {t}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <label className='text-body'>
-                        <input
-                          type='checkbox'
-                          checked={field.required}
-                          disabled={disabled}
-                          onChange={(e) =>
-                            updateContract({
-                              outputs: contract.outputs.map((v, k) =>
-                                k !== i || v.shape.kind !== 'object'
-                                  ? v
-                                  : {
-                                      ...v,
-                                      shape: {
-                                        ...v.shape,
-                                        fields: v.shape.fields.map((f, j) =>
-                                          j === n
-                                            ? {
-                                                ...f,
-                                                required: e.target.checked,
-                                              }
-                                            : f
-                                        ),
-                                      },
-                                    }
-                              ),
-                            })
-                          }
-                        />{' '}
-                        必填字段
-                      </label>
-                      {!disabled && (
-                        <Button
-                          variant='ghost'
-                          size='sm'
-                          onClick={() =>
-                            updateContract({
-                              outputs: contract.outputs.map((v, k) =>
-                                k !== i || v.shape.kind !== 'object'
-                                  ? v
-                                  : {
-                                      ...v,
-                                      shape: {
-                                        ...v.shape,
-                                        fields: v.shape.fields.filter(
-                                          (_, j) => j !== n
-                                        ),
-                                      },
-                                    }
-                              ),
-                            })
-                          }
-                        >
-                          删除字段
-                        </Button>
-                      )}
                     </div>
-                  ))}
-                  {!disabled && (
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      disabled={output.shape.fields.length >= 32}
-                      onClick={() =>
+                    <div className='min-w-0'>
+                      <label className='block space-y-1 text-label font-medium text-muted-foreground'>
+                        实现映射 <span className='text-destructive'>*</span>
+                      </label>
+                      <Select
+                        value={impl.outputMapping[output.key] || '__empty__'}
+                        disabled={disabled}
+                        onValueChange={(val) =>
+                          updateImpl({
+                            outputMapping: {
+                              ...impl.outputMapping,
+                              [output.key]: val === '__empty__' ? '' : val,
+                            },
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          className='h-8 w-full text-small min-w-0 truncate'
+                          aria-label={`输出 ${i + 1} 映射`}
+                        >
+                          <span className='truncate block w-full text-left'>
+                            <SelectValue placeholder='选择步骤 outputKey' />
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value='__empty__'>未映射（空）</SelectItem>
+                          {impl.steps
+                            .filter((s) => s.outputKey)
+                            .map((s) => (
+                              <SelectItem key={s.id} value={s.outputKey!}>
+                                <span className='font-mono font-medium'>{s.outputKey}</span>
+                                <span className='text-muted-foreground ml-1.5'>· {s.name}</span>
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className='min-w-0'>
+                    <label className='block space-y-1 text-label font-medium text-muted-foreground'>
+                      说明描述（可选）
+                    </label>
+                    <Input
+                      placeholder='输出用途或业务含义说明（可选）'
+                      value={output.description ?? ''}
+                      disabled={disabled}
+                      className='h-8 w-full text-small'
+                      onChange={(e) =>
                         updateContract({
-                          outputs: contract.outputs.map((v, k) =>
-                            k !== i || v.shape.kind !== 'object'
-                              ? v
-                              : {
-                                  ...v,
-                                  shape: {
-                                    ...v.shape,
-                                    fields: [
-                                      ...v.shape.fields,
-                                      {
-                                        name: '',
-                                        type: 'string',
-                                        required: true,
-                                      },
-                                    ],
-                                  },
-                                }
+                          outputs: contract.outputs.map((v, n) =>
+                            n === i ? { ...v, description: e.target.value } : v
                           ),
                         })
                       }
-                    >
-                      添加输出字段
-                    </Button>
+                    />
+                  </div>
+
+                  {output.shape.kind === 'object' && (
+                    <div className='space-y-2 rounded border bg-muted/20 p-2.5'>
+                      <div className='flex items-center justify-between text-label font-medium text-muted-foreground'>
+                        <span>嵌套字段结构 ({output.shape.fields.length})</span>
+                        {!disabled && (
+                          <Button
+                            size='sm'
+                            variant='outline'
+                            className='h-7 text-label'
+                            disabled={output.shape.fields.length >= 32}
+                            onClick={() =>
+                              updateContract({
+                                outputs: contract.outputs.map((v, k) =>
+                                  k !== i || v.shape.kind !== 'object'
+                                    ? v
+                                    : {
+                                        ...v,
+                                        shape: {
+                                          ...v.shape,
+                                          fields: [
+                                            ...v.shape.fields,
+                                            {
+                                              name: '',
+                                              type: 'string',
+                                              required: true,
+                                            },
+                                          ],
+                                        },
+                                      }
+                                ),
+                              })
+                            }
+                          >
+                            <Plus className='mr-1 size-3' />
+                            添加字段
+                          </Button>
+                        )}
+                      </div>
+                      {output.shape.fields.map((field, n) => (
+                        <div
+                          key={n}
+                          className='flex flex-wrap items-center gap-2'
+                        >
+                          <Input
+                            className='h-7 w-36 font-mono text-small'
+                            aria-label={`输出 ${i + 1} 字段 ${n + 1}`}
+                            placeholder='字段名'
+                            value={field.name}
+                            disabled={disabled}
+                            onChange={(e) =>
+                              updateContract({
+                                outputs: contract.outputs.map((v, k) =>
+                                  k !== i || v.shape.kind !== 'object'
+                                    ? v
+                                    : {
+                                        ...v,
+                                        shape: {
+                                          ...v.shape,
+                                          fields: v.shape.fields.map((f, j) =>
+                                            j === n
+                                              ? { ...f, name: e.target.value }
+                                              : f
+                                          ),
+                                        },
+                                      }
+                                ),
+                              })
+                            }
+                          />
+                          <Select
+                            value={field.type}
+                            disabled={disabled}
+                            onValueChange={(val) =>
+                              updateContract({
+                                outputs: contract.outputs.map((v, k) =>
+                                  k !== i || v.shape.kind !== 'object'
+                                    ? v
+                                    : {
+                                        ...v,
+                                        shape: {
+                                          ...v.shape,
+                                          fields: v.shape.fields.map((f, j) =>
+                                            j === n
+                                              ? {
+                                                  ...f,
+                                                  type: val as typeof f.type,
+                                                }
+                                              : f
+                                          ),
+                                        },
+                                      }
+                                ),
+                              })
+                            }
+                          >
+                            <SelectTrigger
+                              className='h-7 w-24 text-label'
+                              aria-label={`输出 ${i + 1} 字段 ${n + 1} 类型`}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {['string', 'number', 'boolean'].map((t) => (
+                                <SelectItem key={t} value={t}>
+                                  {t}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <label className='flex items-center gap-1 text-label'>
+                            <input
+                              type='checkbox'
+                              checked={field.required}
+                              disabled={disabled}
+                              className='h-3.5 w-3.5 rounded'
+                              onChange={(e) =>
+                                updateContract({
+                                  outputs: contract.outputs.map((v, k) =>
+                                    k !== i || v.shape.kind !== 'object'
+                                      ? v
+                                      : {
+                                          ...v,
+                                          shape: {
+                                            ...v.shape,
+                                            fields: v.shape.fields.map((f, j) =>
+                                              j === n
+                                                ? {
+                                                    ...f,
+                                                    required: e.target.checked,
+                                                  }
+                                                : f
+                                            ),
+                                          },
+                                        }
+                                  ),
+                                })
+                              }
+                            />
+                            必填
+                          </label>
+                          {!disabled && (
+                            <Button
+                              variant='ghost'
+                              size='sm'
+                              className='h-7 px-2 text-label text-muted-foreground hover:text-destructive'
+                              onClick={() =>
+                                updateContract({
+                                  outputs: contract.outputs.map((v, k) =>
+                                    k !== i || v.shape.kind !== 'object'
+                                      ? v
+                                      : {
+                                          ...v,
+                                          shape: {
+                                            ...v.shape,
+                                            fields: v.shape.fields.filter(
+                                              (_, j) => j !== n
+                                            ),
+                                          },
+                                        }
+                                  ),
+                                })
+                              }
+                            >
+                              删除
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
-              )}
-              <label className='block space-y-1 text-body sm:col-span-2'>
-                <span className='flex items-center gap-1 font-medium'>
-                  说明{' '}
-                  <span className='text-label font-normal text-muted-foreground'>
-                    (可选)
-                  </span>
-                </span>
-                <Input
-                  placeholder='输出用途或业务含义说明'
-                  value={output.description ?? ''}
-                  disabled={disabled}
-                  onChange={(e) =>
-                    updateContract({
-                      outputs: contract.outputs.map((v, n) =>
-                        n === i ? { ...v, description: e.target.value } : v
-                      ),
-                    })
-                  }
-                />
-              </label>
-              {!disabled && (
-                <Button
-                  size='sm'
-                  variant='ghost'
-                  onClick={() => {
-                    const delKey = output.key
-                    const nextImplementations = content.implementations.map(
-                      (item) => {
-                        const outputMapping = { ...item.outputMapping }
-                        delete outputMapping[delKey]
-                        return { ...item, outputMapping }
-                      }
-                    )
-                    onChange({
-                      ...content,
-                      contract: {
-                        ...contract,
-                        outputs: contract.outputs.filter((_, n) => n !== i),
-                      },
-                      implementations: nextImplementations,
-                    })
-                  }}
-                >
-                  删除输出 {i + 1}
-                </Button>
-              )}
+              ))}
             </div>
-          ))}
+          )}
         </section>
         <section className='space-y-4 rounded-xl border bg-card p-4'>
           <div className='flex items-center justify-between gap-2'>
@@ -1288,27 +1383,59 @@ export function ModuleContentEditor({
           ) : (
             <div className='grid min-w-0 gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]'>
               <div className='space-y-2'>
-                {impl.steps.map((s, i) => (
-                  <Button
-                    key={s.id}
-                    variant={index === i ? 'secondary' : 'ghost'}
-                    className='w-full justify-start gap-2 overflow-hidden text-left'
-                    onClick={() => setSelected(i)}
-                  >
-                    <span className='flex size-5 shrink-0 items-center justify-center rounded bg-muted font-mono text-label font-medium text-muted-foreground'>
-                      {i + 1}
-                    </span>
-                    <span className='truncate text-small font-medium'>
-                      {s.name}
-                    </span>
-                    <Badge
-                      variant='outline'
-                      className='ms-auto shrink-0 text-label font-normal'
+                {impl.steps.map((s, i) => {
+                  const StepIcon = stepTypeIcon(s.type)
+                  const hasErrors = diagnostics.some(
+                    (d) => d.stepId === s.id && d.severity === 'error'
+                  )
+                  const hasWarnings = diagnostics.some(
+                    (d) => d.stepId === s.id && d.severity === 'warning'
+                  )
+                  return (
+                    <Button
+                      key={s.id}
+                      variant={index === i ? 'secondary' : 'ghost'}
+                      className='w-full justify-start gap-2 overflow-hidden px-2.5 py-2 text-left'
+                      onClick={() => setSelected(i)}
                     >
-                      {STEP_TYPE_LABELS[s.type]}
-                    </Badge>
-                  </Button>
-                ))}
+                      <span className='flex size-5 shrink-0 items-center justify-center rounded bg-muted font-mono text-label font-medium text-muted-foreground'>
+                        {i + 1}
+                      </span>
+                      <StepIcon className='size-3.5 shrink-0 text-muted-foreground' />
+                      <span className='truncate text-small font-medium'>
+                        {s.name}
+                      </span>
+                      {s.outputKey && (
+                        <span
+                          className='ms-0.5 shrink-0 rounded bg-status-success-background px-1.5 py-0.5 font-mono text-label text-status-success-foreground'
+                          title={`输出产物: ${s.outputKey}`}
+                        >
+                          → {s.outputKey}
+                        </span>
+                      )}
+                      <div className='ms-auto flex shrink-0 items-center gap-1.5'>
+                        {hasErrors && (
+                          <span
+                            className='size-2 rounded-full bg-destructive'
+                            title='该步骤存在编译错误'
+                          />
+                        )}
+                        {!hasErrors && hasWarnings && (
+                          <span
+                            className='size-2 rounded-full bg-status-warning-accent'
+                            title='该步骤存在编译警告'
+                          />
+                        )}
+                        <Badge
+                          variant='outline'
+                          className='shrink-0 text-label font-normal'
+                        >
+                          {STEP_TYPE_LABELS[s.type]}
+                        </Badge>
+                      </div>
+                    </Button>
+                  )
+                })}
               </div>
               <div className='min-w-0 space-y-4'>
                 {!disabled && (
@@ -1359,33 +1486,39 @@ export function ModuleContentEditor({
                   </div>
                 )}
                 {step && (
-                  <StepEditor
-                    step={step}
-                    index={index}
-                    bindings={priorBindings(document, index)}
-                    shapes={priorOutputShapes(document, index)}
-                    editableTypes={types}
-                    diagnostics={diagnostics}
-                    disabled={disabled}
-                    onChange={(next) =>
-                      updateImpl({
-                        steps: impl.steps.map((s, i) =>
-                          i === index ? next : s
-                        ),
-                      })
-                    }
-                    onRequestTypeChange={(type) => {
-                      const replacement = {
-                        ...createBlankStep(type),
-                        id: step.id,
+                  <div className='space-y-4'>
+                    <ScopeVariablesBar
+                      inputs={contract.inputs}
+                      priorSteps={impl.steps.slice(0, index)}
+                    />
+                    <StepEditor
+                      step={step}
+                      index={index}
+                      bindings={priorBindings(document, index)}
+                      shapes={priorOutputShapes(document, index)}
+                      editableTypes={types}
+                      diagnostics={diagnostics}
+                      disabled={disabled}
+                      onChange={(next) =>
+                        updateImpl({
+                          steps: impl.steps.map((s, i) =>
+                            i === index ? next : s
+                          ),
+                        })
                       }
-                      updateImpl({
-                        steps: impl.steps.map((s, i) =>
-                          i === index ? replacement : s
-                        ),
-                      })
-                    }}
-                  />
+                      onRequestTypeChange={(type) => {
+                        const replacement = {
+                          ...createBlankStep(type),
+                          id: step.id,
+                        }
+                        updateImpl({
+                          steps: impl.steps.map((s, i) =>
+                            i === index ? replacement : s
+                          ),
+                        })
+                      }}
+                    />
+                  </div>
                 )}
               </div>
             </div>

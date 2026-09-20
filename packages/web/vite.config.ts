@@ -83,9 +83,11 @@ export default defineConfig({
       'react-day-picker',
       'react-day-picker/locale',
       'date-fns',
+      'recharts',
     ],
   },
   server: {
+    host: '127.0.0.1',
     fs: {
       allow: [path.resolve(import.meta.dirname, '../..')],
     },

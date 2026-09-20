@@ -33,6 +33,9 @@ type StepTimelineProps = {
   run: RunDetailDto
   evidenceItems: EvidenceItem[]
   focusInvocationId?: string
+  focusStepRunId?: string
+  focusAttemptId?: string
+  focusEvidenceId?: string
 }
 
 type TimelineGroup =
@@ -57,7 +60,14 @@ const SKIP_REASON_LABELS = {
   not_needed: '不再需要',
 } as const
 
-export function StepTimeline({ run, evidenceItems, focusInvocationId }: StepTimelineProps) {
+export function StepTimeline({
+  run,
+  evidenceItems,
+  focusInvocationId,
+  focusStepRunId,
+  focusAttemptId,
+  focusEvidenceId,
+}: StepTimelineProps) {
   const manifest = run.snapshot?.moduleManifest
   const entries = manifest?.entries ?? []
 
@@ -106,20 +116,29 @@ export function StepTimeline({ run, evidenceItems, focusInvocationId }: StepTime
     for (const g of groups) {
       if (g.kind === 'module') {
         const groupStatus = computeGroupStatus(g.stepRuns)
-        const shouldExpand = groupStatus !== 'SUCCEEDED' || g.entry.invocationId === focusInvocationId
+        const shouldExpand =
+          groupStatus !== 'SUCCEEDED' ||
+          g.entry.invocationId === focusInvocationId ||
+          g.stepRuns.some((step) => step.id === focusStepRunId)
         state[g.entry.invocationId] = shouldExpand
       }
     }
     return state
-  }, [groups, run.status, focusInvocationId])
+  }, [groups, run.status, focusInvocationId, focusStepRunId])
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>(initialExpanded)
 
   useEffect(() => {
-    if (!focusInvocationId) return
-    setExpanded((prev) => ({ ...prev, [focusInvocationId]: true }))
-    document.getElementById(`module-group-${focusInvocationId}`)?.scrollIntoView({ block: 'nearest' })
-  }, [focusInvocationId])
+    if (focusInvocationId) {
+      setExpanded((prev) => ({ ...prev, [focusInvocationId]: true }))
+    }
+    const target =
+      (focusEvidenceId && document.getElementById(`evidence-${focusEvidenceId}`)) ||
+      (focusAttemptId && document.getElementById(`attempt-${focusAttemptId}`)) ||
+      (focusStepRunId && document.getElementById(`step-run-${focusStepRunId}`)) ||
+      (focusInvocationId && document.getElementById(`module-group-${focusInvocationId}`))
+    if (target) target.scrollIntoView({ block: 'nearest' })
+  }, [focusInvocationId, focusStepRunId, focusAttemptId, focusEvidenceId])
 
   const toggleGroup = (invocationId: string) => {
     setExpanded((prev) => ({ ...prev, [invocationId]: !prev[invocationId] }))
@@ -168,6 +187,9 @@ export function StepTimeline({ run, evidenceItems, focusInvocationId }: StepTime
                 step={group.stepRun}
                 runId={run.id}
                 evidenceItems={evidenceItems}
+                focusStepRunId={focusStepRunId}
+                focusAttemptId={focusAttemptId}
+                focusEvidenceId={focusEvidenceId}
               />
             )
           }
@@ -223,6 +245,9 @@ export function StepTimeline({ run, evidenceItems, focusInvocationId }: StepTime
                     stepRuns: group.stepRuns,
                     run,
                     evidenceItems,
+                    focusStepRunId,
+                    focusAttemptId,
+                    focusEvidenceId,
                   })}
                 </ol>
               )}
@@ -239,11 +264,17 @@ function renderModuleSteps({
   stepRuns,
   run,
   evidenceItems,
+  focusStepRunId,
+  focusAttemptId,
+  focusEvidenceId,
 }: {
   entry: ModuleManifestEntry
   stepRuns: StepRunDto[]
   run: RunDetailDto
   evidenceItems: EvidenceItem[]
+  focusStepRunId?: string
+  focusAttemptId?: string
+  focusEvidenceId?: string
 }) {
   const group = candidateGroupsOf(run.snapshot).find((item) => item.invocationId === entry.invocationId)
   const decision = evidenceItems.map((item) => item.payload).find(isSelectionDecision)
@@ -254,7 +285,15 @@ function renderModuleSteps({
       : []
   if (!group) {
     return stepRuns.map((step) => (
-      <StepRunItem key={step.id} step={step} runId={run.id} evidenceItems={evidenceItems} />
+      <StepRunItem
+        key={step.id}
+        step={step}
+        runId={run.id}
+        evidenceItems={evidenceItems}
+        focusStepRunId={focusStepRunId}
+        focusAttemptId={focusAttemptId}
+        focusEvidenceId={focusEvidenceId}
+      />
     ))
   }
   return group.alternatives.map((alternative) => {
@@ -273,6 +312,9 @@ function renderModuleSteps({
               step={step}
               runId={run.id}
               evidenceItems={evidenceItems}
+              focusStepRunId={focusStepRunId}
+              focusAttemptId={focusAttemptId}
+              focusEvidenceId={focusEvidenceId}
               skipReason={skipReasonForStep({
                 stepId: step.stepId,
                 group,
@@ -293,14 +335,24 @@ function StepRunItem({
   runId,
   evidenceItems,
   skipReason,
+  focusStepRunId,
+  focusAttemptId,
+  focusEvidenceId,
 }: {
   step: StepRunDto
   runId: string
   evidenceItems: EvidenceItem[]
   skipReason?: keyof typeof SKIP_REASON_LABELS
+  focusStepRunId?: string
+  focusAttemptId?: string
+  focusEvidenceId?: string
 }) {
   return (
-    <li className='rounded-md border border-border-card bg-background p-3'>
+    <li
+      id={`step-run-${step.id}`}
+      data-focused={focusStepRunId === step.id ? 'true' : undefined}
+      className='rounded-md border border-border-card bg-background p-3'
+    >
       <div className='flex flex-wrap items-center gap-2'>
         <span className='font-medium'>
           {step.ordinal + 1}. {step.name}
@@ -333,7 +385,12 @@ function StepRunItem({
         <p className='mt-2 text-label text-muted-foreground'>尚未开始尝试。</p>
       ) : null}
       {step.attempts.map((attempt) => (
-        <div key={attempt.id} className='mt-2 rounded-sm bg-muted/40 p-2 text-label'>
+        <div
+          key={attempt.id}
+          id={`attempt-${attempt.id}`}
+          data-focused={focusAttemptId === attempt.id ? 'true' : undefined}
+          className='mt-2 rounded-sm bg-muted/40 p-2 text-label'
+        >
           <p>
             Attempt #{attempt.attemptNo} · {ATTEMPT_STATUS_LABELS[attempt.status]}
             {formatDuration(attempt.startedAt, attempt.finishedAt)
@@ -354,6 +411,7 @@ function StepRunItem({
           <AttemptEvidenceList
             runId={runId}
             items={evidenceItems.filter((item) => item.attemptId === attempt.id)}
+            focusEvidenceId={focusEvidenceId}
           />
         </div>
       ))}

@@ -13,6 +13,7 @@ import {
   updateSchedule,
 } from '@/lib/schedules-api'
 import { fetchTargetAccounts } from '@/lib/targets-api'
+import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -41,6 +42,7 @@ const SKIP_LABELS: Record<ScheduleSkipReason, string> = {
   NO_ELIGIBLE_ASSETS: '没有可纳入的资产',
   COVERED_BY_RUN: '已被正式运行覆盖',
   PERMISSION_REVOKED: '授权已被收回',
+  MAP_ACCOUNT_USAGE_REQUIRED: '账号已收回地图用途',
   WORKER_UNAVAILABLE: '没有可执行的节点',
   TARGET_PAUSED: '目标已停用',
   ACTIVE_SLICE_EXISTS: '同目标已有进行中的地图作业',
@@ -188,7 +190,7 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
   const factoryOn = configQuery.data?.document.mapScheduledRefreshEnabled === true
   const jobsOn = policyQuery.data?.policy.manualJobsEnabled === true
   const entries = entriesQuery.data?.items ?? []
-  const accounts = accountsQuery.data?.items ?? []
+  const accounts = mapCapableAccounts(accountsQuery.data?.items ?? [])
   const last = schedule?.lastOccurrence
   const readyToSave = Boolean(accountId && entryId && weekdays.length && timezone.trim())
 
@@ -302,6 +304,9 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
                     </option>
                   ))}
                 </select>
+                {accounts.length === 0 ? (
+                  <p className='text-label text-muted-foreground'>{MAP_ACCOUNT_REQUIRED}</p>
+                ) : null}
               </div>
               <div className='space-y-2'>
                 <Label htmlFor='refresh-entry'>进入路径</Label>

@@ -3,6 +3,7 @@ import {
   FACTORY_SESSION_AUTH,
   assertFreshnessInRange,
   compareAuthIdentity,
+  activeDetectionReady,
   deriveAuthCapability,
   isAuthEvidenceFresh,
   platformSessionAuthSchema,
@@ -12,11 +13,17 @@ import {
   readJsonPath,
   resolveVerifyUrl,
   targetAuthProfileDefinitionSchema,
+  targetCaptchaDefinitionSchema,
+  captchaFingerprintRuleSchema,
+  mergeCaptchaLoginKindParams,
+  resolveCaptchaHoldSeconds,
+  challengeAuditRecordSchema,
   validationStepComplete,
   type AuthObservation,
   type AuthProfileValidation,
   type TargetAuthProfileDefinition,
 } from '../session-auth.js'
+import { BUILTIN_CAPTCHA_FINGERPRINTS } from '../captcha-fingerprints.js'
 
 const httpDefinition: TargetAuthProfileDefinition = targetAuthProfileDefinitionSchema.parse({
   verify: {
@@ -76,6 +83,25 @@ describe('deriveAuthCapability', () => {
         expectedIdentity: 'alice',
       }),
     ).toBe('LOGIN_VERIFIED')
+  })
+
+  it('主动检测就绪只看规则与验收，不看期望身份', () => {
+    expect(activeDetectionReady({ definition: null, validation: null })).toBe(false)
+    expect(
+      activeDetectionReady({
+        definition: httpDefinition,
+        validation: validation({ valid_pass: observation({ authState: 'AUTHENTICATED' }) }),
+      }),
+    ).toBe(false)
+    expect(
+      activeDetectionReady({
+        definition: httpDefinition,
+        validation: validation({
+          valid_pass: observation({ authState: 'AUTHENTICATED' }),
+          server_revoked: observation({ authState: 'EXPIRED' }),
+        }),
+      }),
+    ).toBe(true)
   })
 
   it('三项通过且账号有期望身份为 IDENTITY_VERIFIED', () => {
@@ -162,6 +188,23 @@ describe('identity 与新鲜度', () => {
       at: '2026-09-16T00:00:00.000Z',
     })
     expect(expired.map((item) => item.kind)).toEqual(['auth_endpoint_expired', 'navigated_to_login'])
+  })
+
+  it('hash 登录页记导航信号，同 pathname 的后台不记', () => {
+    const login = classifyAuthSignals({
+      observation: observation({ authState: 'EXPIRED' }),
+      pageUrl: 'https://demo.gin-vue-admin.com/#/login',
+      loginUrl: 'https://demo.gin-vue-admin.com/#/login',
+      at: '2026-09-16T00:00:00.000Z',
+    })
+    expect(login.map((item) => item.kind)).toEqual(['auth_endpoint_expired', 'navigated_to_login'])
+    const dashboard = classifyAuthSignals({
+      observation: observation({ authState: 'AUTHENTICATED' }),
+      pageUrl: 'https://demo.gin-vue-admin.com/#/layout/dashboard',
+      loginUrl: 'https://demo.gin-vue-admin.com/#/login',
+      at: '2026-09-16T00:00:00.000Z',
+    })
+    expect(dashboard.map((item) => item.kind)).toEqual([])
   })
 
   it('覆盖值越界被拒绝，范围内通过', () => {
@@ -270,12 +313,21 @@ describe('planAuthEnsure', () => {
     ).toMatchObject({ action: 'manual', code: 'AUTH_IDENTITY_MISMATCH' })
   })
 
-  it('LOGIN_VERIFIED 不自动登录；infra 先退避再回交', () => {
+  it('LOGIN_VERIFIED 失效后自动登录，不因该档改走人工；infra 先退避再回交', () => {
     expect(
       planAuthEnsure({
         capability: 'LOGIN_VERIFIED',
         fresh: false,
         observation: observation({ authState: 'EXPIRED' }),
+        infraAttempts: 0,
+        backoffSeconds: [30],
+      }).action,
+    ).toBe('auto_login')
+    expect(
+      planAuthEnsure({
+        capability: 'LOGIN_VERIFIED',
+        fresh: false,
+        observation: observation({ authState: 'UNKNOWN', unknownClass: 'unmatched' }),
         infraAttempts: 0,
         backoffSeconds: [30],
       }).action,
@@ -300,3 +352,125 @@ describe('planAuthEnsure', () => {
     ).toBe('yield')
   })
 })
+
+describe('captcha schemas and fingerprints', () => {
+  it('验证 targetCaptchaDefinitionSchema 支持图形与滑块配置', () => {
+    const graphic = targetCaptchaDefinitionSchema.parse({
+      type: 'IMAGE',
+      image: {
+        imageLocator: { by: 'css', value: 'img.captcha' },
+        inputLocator: { by: 'css', value: 'input[name="code"]' },
+        charsetRange: 0,
+        expectedLength: 6,
+        colors: ['red'],
+      },
+    })
+    expect(graphic.type).toBe('IMAGE')
+    expect(graphic.image?.imageLocator.value).toBe('img.captcha')
+    expect(graphic.image?.charsetRange).toBe(0)
+
+    const slider = targetCaptchaDefinitionSchema.parse({
+      type: 'SLIDER',
+      slider: {
+        bgLocator: { by: 'css', value: '.slider-bg' },
+        knobLocator: { by: 'css', value: '.slider-knob' },
+        mode: 'TRACK',
+      },
+    })
+    expect(slider.type).toBe('SLIDER')
+    expect(slider.slider?.mode).toBe('TRACK')
+  })
+
+  it('出厂平台配置包含合法的验证码与拖拽参数', () => {
+    expect(FACTORY_SESSION_AUTH.captchaMaxAttempts).toBe(2)
+    expect(FACTORY_SESSION_AUTH.captchaSolveTimeoutMs).toBe(20_000)
+    expect(FACTORY_SESSION_AUTH.captchaHumanWaitSeconds).toBe(300)
+    expect(FACTORY_SESSION_AUTH.sliderDragMinDurationMs).toBe(800)
+    expect(FACTORY_SESSION_AUTH.sliderDragMaxDurationMs).toBe(1_500)
+
+    // 最小耗时大于最大耗时应抛错
+    expect(() =>
+      platformSessionAuthSchema.parse({
+        ...FACTORY_SESSION_AUTH,
+        sliderDragMinDurationMs: 2000,
+        sliderDragMaxDurationMs: 1000,
+      }),
+    ).toThrow('滑块拖拽最小耗时不得大于最大耗时')
+  })
+
+  it('内置指纹库包含 Gin-Vue-Admin 与 Vben Admin 探针', () => {
+    expect(BUILTIN_CAPTCHA_FINGERPRINTS.length).toBeGreaterThanOrEqual(2)
+    const gva = BUILTIN_CAPTCHA_FINGERPRINTS.find((f) => f.id === 'gin-vue-admin-image')
+    expect(gva?.challengeType).toBe('IMAGE_CAPTCHA')
+    expect(gva?.detectors.imageSelector).toContain('data:image/png;base64')
+    expect(gva?.charsetRange).toBe(0)
+    expect(gva?.expectedLength).toBe(6)
+    expect(
+      captchaFingerprintRuleSchema.parse(gva).charsetRange,
+    ).toBe(0)
+
+    const vben = BUILTIN_CAPTCHA_FINGERPRINTS.find((f) => f.id === 'vben-admin-slider')
+    expect(vben?.challengeType).toBe('SLIDER_CAPTCHA')
+    expect(vben?.detectors.knobSelector).toBe('.cursor-move')
+  })
+
+  it('challengeAuditRecord 接受合法的挑战事实', () => {
+    const record = challengeAuditRecordSchema.parse({
+      challengeId: '00000000-0000-4000-8000-000000000091',
+      sessionId: '00000000-0000-4000-8000-000000000092',
+      challengeType: 'SLIDER_CAPTCHA',
+      handledBy: 'MACHINE',
+      attemptsUsed: 1,
+      success: true,
+      durationMs: 950,
+      timestamp: '2026-09-18T12:00:00.000Z',
+    })
+    expect(record.handledBy).toBe('MACHINE')
+    expect(record.attemptsUsed).toBe(1)
+  })
+
+  it('mergeCaptchaLoginKindParams 累积尝试并保留 MACHINE_HANDLING', () => {
+    const first = mergeCaptchaLoginKindParams(undefined, {
+      attempt: 1,
+      maxAttempts: 2,
+      challengeType: 'IMAGE_CAPTCHA',
+      outcome: 'captcha_failed',
+      audit: {
+        challengeId: '00000000-0000-4000-8000-000000000091',
+        sessionId: '00000000-0000-4000-8000-000000000092',
+        challengeType: 'IMAGE_CAPTCHA',
+        handledBy: 'MACHINE',
+        attemptsUsed: 1,
+        success: false,
+        durationMs: 120,
+        timestamp: '2026-09-18T12:00:00.000Z',
+      },
+    })
+    expect(first.captchaPhase).toBe('MACHINE_HANDLING')
+    expect(first.attempt).toBe(1)
+    const second = mergeCaptchaLoginKindParams(first, {
+      attempt: 2,
+      maxAttempts: 2,
+      challengeType: 'IMAGE_CAPTCHA',
+      outcome: 'ambiguous',
+      audit: {
+        challengeId: '00000000-0000-4000-8000-000000000091',
+        sessionId: '00000000-0000-4000-8000-000000000092',
+        challengeType: 'IMAGE_CAPTCHA',
+        handledBy: 'MACHINE',
+        attemptsUsed: 2,
+        success: false,
+        durationMs: 240,
+        timestamp: '2026-09-18T12:00:01.000Z',
+      },
+    })
+    expect(second.outcome).toBe('ambiguous')
+    expect(second.attempts).toHaveLength(2)
+  })
+
+  it('resolveCaptchaHoldSeconds 优先用平台验证码人工等待', () => {
+    expect(resolveCaptchaHoldSeconds({ captchaHumanWaitSeconds: 180 }, 300)).toBe(180)
+    expect(resolveCaptchaHoldSeconds(undefined, 300)).toBe(300)
+  })
+})
+

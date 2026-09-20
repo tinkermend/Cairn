@@ -7,7 +7,7 @@ import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
 import { useAuthStore } from '@/stores/auth-store'
 import { ThemeProvider } from '@/context/theme-provider'
-import { SessionDetailPage } from './detail'
+import { SessionDetailPage, sessionOperationProgress, sessionRetentionHint } from './detail'
 
 const TARGET_ID = '11111111-1111-4111-8111-111111111111'
 const ACCOUNT_ID = '22222222-2222-4222-8222-222222222222'
@@ -137,6 +137,67 @@ describe('SessionDetailPage', () => {
     mocks.fetchSessionEvents.mockResolvedValue({ items: [], nextCursor: null })
   })
 
+  it('未落到当前实例的保留意图不当成正在保留', () => {
+    expect(
+      sessionRetentionHint({
+        retained: false,
+        retainUntil: null,
+        quotaUsed: 0,
+        quotaLimit: 1,
+      }),
+    ).toBe('未设置保留。当前节点配额 0/1。只有打开的实例可以占用节点配额。')
+    expect(
+      sessionRetentionHint({
+        retained: true,
+        retainUntil: '2026-09-18T03:39:04.673Z',
+        quotaUsed: 1,
+        quotaLimit: 1,
+      }),
+    ).toMatch(/^截止 /)
+  })
+
+  it('只在进行中的会话操作显示进度', () => {
+    expect(sessionOperationProgress({ currentKind: 'PREPARE', currentStatus: 'SUCCEEDED' })).toBeNull()
+    expect(sessionOperationProgress({ currentKind: 'PREPARE', currentStatus: 'RUNNING' })).toEqual({
+      kind: 'PREPARE',
+      status: 'RUNNING',
+    })
+    expect(
+      sessionOperationProgress({
+        submittingKind: 'VERIFY_AUTH',
+        currentKind: 'PREPARE',
+        currentStatus: 'SUCCEEDED',
+      }),
+    ).toEqual({ kind: 'VERIFY_AUTH', status: 'SUBMITTING' })
+  })
+
+  it('完成后不再悬挂操作进度', async () => {
+    mocks.requestAccountSessionOperation.mockResolvedValue({
+      operationId: 'op-verify',
+      reusedRunId: null,
+      created: true,
+    })
+    mocks.fetchSessionOperation.mockResolvedValue({
+      id: 'op-verify',
+      kind: 'VERIFY_AUTH',
+      status: 'SUCCEEDED',
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionDetailPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+    await expect.element(screen.getByRole('button', { name: '检查登录' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '操作进度' }).elements()).toHaveLength(0)
+    await screen.getByRole('button', { name: '检查登录' }).click()
+    await expect.poll(() => mocks.requestAccountSessionOperation.mock.calls.length).toBeGreaterThan(0)
+    expect(screen.getByRole('region', { name: '操作进度' }).elements()).toHaveLength(0)
+    expect(screen.getByText('检查登录 · 已完成').elements()).toHaveLength(0)
+  })
+
   it('展示账号会话并允许设置保留与破坏性操作', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const screen = await render(
@@ -192,6 +253,8 @@ describe('SessionDetailPage', () => {
     )
     await screen.getByRole('button', { name: '更多' }).click()
     await screen.getByRole('menuitem', { name: '关闭会话' }).click()
+    await expect.element(screen.getByText(/执行该操作/)).toBeInTheDocument()
+    expect(screen.getByText(/执行该操作/).element().textContent).not.toContain('清除登录数据')
     await screen.getByRole('button', { name: '确认执行' }).click()
     expect(mocks.requestAccountSessionOperation).toHaveBeenCalledWith(
       TARGET_ID,
@@ -230,4 +293,48 @@ describe('SessionDetailPage', () => {
     expect(screen.getByRole('menuitem', { name: '关闭会话' })).not.toBeInTheDocument()
     await expect.element(screen.getByRole('menuitem', { name: '清除登录数据' })).toBeInTheDocument()
   })
+
+  it('高频连续登出信号自动聚合折叠并展示摘要', async () => {
+    mocks.fetchSessionEvents.mockResolvedValue({
+      items: [
+        {
+          id: 'e3',
+          seq: 3,
+          type: 'auth.signal_observed',
+          payload: { kind: 'logout_signal', summary: '匹配登出URL: /login' },
+          createdAt: '2026-09-19T02:31:33.000Z',
+          runId: null,
+        },
+        {
+          id: 'e2',
+          seq: 2,
+          type: 'auth.signal_observed',
+          payload: { kind: 'logout_signal', summary: '匹配登出URL: /login' },
+          createdAt: '2026-09-19T02:31:24.000Z',
+          runId: null,
+        },
+        {
+          id: 'e1',
+          seq: 1,
+          type: 'auth.signal_observed',
+          payload: { kind: 'logout_signal', summary: '匹配登出URL: /login' },
+          createdAt: '2026-09-19T02:31:16.000Z',
+          runId: null,
+        },
+      ],
+      nextCursor: null,
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionDetailPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+    await expect.element(screen.getByText('使用记录')).toBeInTheDocument()
+    await expect.element(screen.getByText('× 3')).toBeInTheDocument()
+    await expect.element(screen.getByText('匹配登出URL: /login')).toBeInTheDocument()
+  })
 })
+

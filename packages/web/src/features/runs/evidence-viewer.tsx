@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   isAiCallEvidence,
+  readScreenshotPayload,
+  SCREENSHOT_ROLE_LABELS,
   type EvidenceMetadata,
   type JsonValue,
 } from '@cairn/shared'
@@ -34,9 +36,11 @@ const TYPE_LABELS: Record<EvidenceMetadata['type'], string> = {
 export function AttemptEvidenceList({
   runId,
   items,
+  focusEvidenceId,
 }: {
   runId: string
   items: EvidenceMetadata[]
+  focusEvidenceId?: string
 }) {
   if (items.length === 0) {
     return (
@@ -48,8 +52,12 @@ export function AttemptEvidenceList({
   return (
     <ul className='mt-2 space-y-2'>
       {items.map((item) => (
-        <li key={item.id}>
-          <EvidenceItem runId={runId} item={item} />
+        <li
+          key={item.id}
+          id={`evidence-${item.id}`}
+          data-focused={focusEvidenceId === item.id ? 'true' : undefined}
+        >
+          <EvidenceItem runId={runId} item={item} forceOpen={focusEvidenceId === item.id} />
         </li>
       ))}
     </ul>
@@ -66,17 +74,19 @@ function shouldOpenByDefault(item: EvidenceMetadata): boolean {
 function EvidenceItem({
   runId,
   item,
+  forceOpen,
 }: {
   runId: string
   item: EvidenceMetadata
+  forceOpen?: boolean
 }) {
   return (
     <Collapsible
-      defaultOpen={shouldOpenByDefault(item)}
+      defaultOpen={forceOpen || shouldOpenByDefault(item)}
       className='rounded-sm border border-border-card bg-card'
     >
       <CollapsibleTrigger className='flex w-full items-center justify-between px-3 py-2 text-left text-label'>
-        <span>{TYPE_LABELS[item.type]}</span>
+        <span>{screenshotTitle(item)}</span>
         <span className='text-muted-foreground'>{statusHint(item)}</span>
       </CollapsibleTrigger>
       <CollapsibleContent className='space-y-2 border-t border-border-card px-3 py-2'>
@@ -112,6 +122,12 @@ function EvidenceItem({
       </CollapsibleContent>
     </Collapsible>
   )
+}
+
+function screenshotTitle(item: EvidenceMetadata): string {
+  if (item.type !== 'screenshot') return TYPE_LABELS[item.type]
+  const role = readScreenshotPayload(item.payload)?.role
+  return role ? `${TYPE_LABELS.screenshot} · ${SCREENSHOT_ROLE_LABELS[role]}` : TYPE_LABELS.screenshot
 }
 
 function statusHint(item: EvidenceMetadata): string {

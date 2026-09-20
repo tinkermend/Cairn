@@ -1,6 +1,7 @@
 import {
   FACTORY_EXPLORATION_POLICY,
   FACTORY_MAP_JOB_POLICY,
+  expandArrivalTarget,
   type ExplorationPolicy,
   type MapAssetListItem,
   type MapAssetRef,
@@ -122,7 +123,7 @@ export function compileMapJobSlice(input: {
       type: 'assert',
       effectType: 'READ_ONLY',
       policy: { timeoutMs: 8_000, retryLimit: 0 },
-      input: { target: input.entry.arrivalTarget, expect: { kind: 'visible' } },
+      input: { target: expandArrivalTarget(input.entry.arrivalTarget, input.entry.arrivalName), expect: { kind: 'visible' } },
     },
   ]
   if (input.jobKind === 'map_refresh') {
@@ -177,7 +178,7 @@ function compileExploreSlice(input: {
       type: 'assert',
       effectType: 'READ_ONLY',
       policy: { timeoutMs: 8_000, retryLimit: 0 },
-      input: { target: input.entry.arrivalTarget, expect: { kind: 'visible' } },
+      input: { target: expandArrivalTarget(input.entry.arrivalTarget, input.entry.arrivalName), expect: { kind: 'visible' } },
     },
     {
       id: '00000000-0000-4000-8000-000000000103',

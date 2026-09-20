@@ -13,6 +13,14 @@ describe('被动观察表面状态夹具', () => {
     })
     expect(blocked.reason).toBe('CAPABILITY_MISSING')
     expect(blocked.capability.frames).toBe('blocked')
+    expect(
+      classifySurface({
+        url: 'https://shop.example/orders',
+        origin: 'https://shop.example',
+        frames: [{ origin: 'https://shop.example', authorized: true }],
+        canvas: true,
+      }).capability.canvas,
+    ).toBe('unsupported')
 
     const changed = classifySurface({
       url: 'https://shop.example/next',
@@ -23,6 +31,23 @@ describe('被动观察表面状态夹具', () => {
     })
     expect(changed.reason).toBe('SURFACE_CHANGED')
     expect(changed.stateSummary.regions.page).toMatchObject({ surfaceChanged: true })
+  })
+
+  it('空白页和占位 URL 不记为已观察表面', () => {
+    expect(
+      classifySurface({
+        url: 'about:blank',
+        origin: 'null',
+        frames: [],
+      }).reason,
+    ).toBe('NOT_APPLICABLE')
+    expect(
+      classifySurface({
+        url: 'https://unknown.invalid/',
+        origin: 'https://unknown.invalid',
+        frames: [],
+      }).reason,
+    ).toBe('NOT_APPLICABLE')
   })
 
   it('OMB09 empty+ready、loading、虚拟未挂载、遮挡同时保留', () => {

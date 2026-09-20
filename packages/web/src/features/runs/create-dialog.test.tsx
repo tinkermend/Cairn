@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   fetchScenario: vi.fn(),
   fetchScenarioCapabilities: vi.fn(),
   fetchTargetAccounts: vi.fn(),
+  fetchTarget: vi.fn(),
   navigate: vi.fn(),
 }))
 
@@ -22,7 +23,10 @@ vi.mock('@/lib/scenarios-api', () => ({
   fetchScenario: mocks.fetchScenario,
   fetchScenarioCapabilities: mocks.fetchScenarioCapabilities,
 }))
-vi.mock('@/lib/targets-api', () => ({ fetchTargetAccounts: mocks.fetchTargetAccounts }))
+vi.mock('@/lib/targets-api', () => ({
+  fetchTargetAccounts: mocks.fetchTargetAccounts,
+  fetchTarget: mocks.fetchTarget,
+}))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return { ...actual, useNavigate: () => mocks.navigate }
@@ -45,6 +49,11 @@ describe('RunCreateDialog', () => {
     })
     mocks.fetchScenarioCapabilities.mockResolvedValue(scenarioCapabilitiesFor({ browserAiEnabled: false }))
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
+    mocks.fetchTarget.mockResolvedValue({
+      id: TARGET_ID,
+      authMethod: 'form',
+      captchaMode: 'none',
+    })
     mocks.createRun.mockResolvedValue({ id: 'run-1' })
   })
 

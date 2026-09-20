@@ -209,7 +209,19 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'assigned_by_console_account_id', is_nullable: 'YES' },
       { column_name: 'console_account_id', is_nullable: 'NO' },
       { column_name: 'console_role_id', is_nullable: 'NO' },
+      { column_name: 'target_scope_ids', is_nullable: 'NO' },
+      { column_name: 'target_scope_mode', is_nullable: 'NO' },
     ])
+  })
+
+  it('凭据增补迁移与目录、批次 Schema 一致', async () => {
+    for (const table of [logicalSchema.credentials, logicalSchema.credentialBatches, logicalSchema.credentialBatchItems]) {
+      const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+        `SELECT column_name, is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY column_name`,
+        [TEST_SCHEMA, getTableName(table)],
+      )
+      expect(rows).toEqual(Object.values(getTableColumns(table)).map(c => ({ column_name: c.name, is_nullable: c.notNull ? 'NO' : 'YES' })).sort((a, b) => a.column_name.localeCompare(b.column_name)))
+    }
   })
 
   it('console_audit_events 的列与 Drizzle 定义一致', async () => {
@@ -229,6 +241,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     )
     expect(rows).toEqual([
       { column_name: 'auth_method', is_nullable: 'NO' },
+      { column_name: 'captcha', is_nullable: 'YES' },
       { column_name: 'captcha_mode', is_nullable: 'NO' },
       { column_name: 'code', is_nullable: 'NO' },
       { column_name: 'created_at', is_nullable: 'NO' },
@@ -355,15 +368,11 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
        WHERE table_schema = $1 AND table_name = 'step_runs' ORDER BY column_name`,
       [TEST_SCHEMA],
     )
-    expect(rows).toEqual([
-      { column_name: 'finished_at', is_nullable: 'YES' },
-      { column_name: 'id', is_nullable: 'NO' },
-      { column_name: 'ordinal', is_nullable: 'NO' },
-      { column_name: 'run_id', is_nullable: 'NO' },
-      { column_name: 'started_at', is_nullable: 'YES' },
-      { column_name: 'status', is_nullable: 'NO' },
-      { column_name: 'step_id', is_nullable: 'NO' },
-    ])
+    expect(rows).toEqual(
+      Object.values(getTableColumns(logicalSchema.stepRuns))
+        .map((c) => ({ column_name: c.name, is_nullable: c.notNull ? 'NO' : 'YES' }))
+        .sort((a, b) => a.column_name.localeCompare(b.column_name)),
+    )
   })
 
   it('attempts 的列与 Drizzle 定义一致', async () => {
@@ -393,6 +402,19 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     expect(rows).toEqual(Object.values(getTableColumns(logicalSchema.evidences)).map(c => ({ column_name: c.name, is_nullable: c.notNull ? 'NO' : 'YES' })).sort((a,b) => a.column_name.localeCompare(b.column_name)))
   })
 
+  it('run_video_media_jobs 的列与 Drizzle 定义一致', async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
+      `SELECT column_name, is_nullable FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'run_video_media_jobs' ORDER BY column_name`,
+      [TEST_SCHEMA],
+    )
+    expect(rows).toEqual(
+      Object.values(getTableColumns(logicalSchema.runVideoMediaJobs))
+        .map((c) => ({ column_name: c.name, is_nullable: c.notNull ? 'NO' : 'YES' }))
+        .sort((a, b) => a.column_name.localeCompare(b.column_name)),
+    )
+  })
+
   it('stored_objects 的列与 Drizzle 定义一致', async () => {
     const { rows } = await pool.query<{ column_name: string; is_nullable: string }>(
       `SELECT column_name, is_nullable FROM information_schema.columns
@@ -400,6 +422,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       [TEST_SCHEMA],
     )
     expect(rows).toEqual([
+      { column_name: 'artifact_id', is_nullable: 'YES' },
       { column_name: 'available_at', is_nullable: 'YES' },
       { column_name: 'byte_size', is_nullable: 'YES' },
       { column_name: 'content_type', is_nullable: 'YES' },
@@ -409,11 +432,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'id', is_nullable: 'NO' },
       { column_name: 'last_purge_error_at', is_nullable: 'YES' },
       { column_name: 'object_key', is_nullable: 'NO' },
+      { column_name: 'owner_kind', is_nullable: 'NO' },
       { column_name: 'purge_attempts', is_nullable: 'NO' },
       { column_name: 'purge_reason', is_nullable: 'YES' },
       { column_name: 'purged_at', is_nullable: 'YES' },
       { column_name: 'retain_until', is_nullable: 'NO' },
-      { column_name: 'run_id', is_nullable: 'NO' },
+      { column_name: 'run_id', is_nullable: 'YES' },
       { column_name: 'status', is_nullable: 'NO' },
     ])
   })
@@ -635,6 +659,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'run_events.worker_id',
       'assistant_turns.capability_id',
       'assistant_turns.client_turn_id',
+      'credential_bindings.alert_channel_id',
+      'credential_verifications.session_id',
+      'credential_verifications.source_id',
+      'runs.suite_member_id',
+      'suite_run_items.member_id',
+      'suite_run_items.group_id',
     ])
     const { rows } = await pool.query<{ table_name: string; column_name: string; data_type: string }>(
       `SELECT table_name, column_name, data_type FROM information_schema.columns
@@ -716,6 +746,14 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'job_id→map_jobs',
       'current_version_id→schedule_versions',
       'authorized_actor_id→console_accounts',
+      'version_id→credential_versions',
+      'batch_id→credential_batches',
+      'suite_id→scenario_suites',
+      'suite_version_id→scenario_suite_versions',
+      'version_id→scenario_suite_versions',
+      'source_snapshot_id→report_source_snapshots',
+      'revision_id→report_revisions',
+      'job_id→export_jobs',
     ])
     const violations = rows.filter((r) => {
       if (!r.column_name.endsWith('_id')) return false
@@ -1056,7 +1094,7 @@ describe.skipIf(!parsed.success)('带存量数据的 0055 → 0056 升级（集�
 
   it('0056 摘除 auth_hold 列后存量会话仍在', async () => {
     const up = await migrate(pool, SCHEMA)
-    expect(up.applied).toEqual(['0056_drop_legacy_auth_hold.sql'])
+    expect(up.applied).toEqual(listMigrationFiles().filter(m => m.prefix >= '0056').map(m => m.filename))
     const { rows: columns } = await pool.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = $1 AND table_name = 'browser_sessions'

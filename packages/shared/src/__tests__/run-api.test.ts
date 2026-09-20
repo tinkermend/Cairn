@@ -84,6 +84,15 @@ describe('createRunBodySchema', () => {
     expect(parsed.input).toBeUndefined()
     expect(parsed.idempotencyKey).toBeUndefined()
   })
+
+  it('拒绝 Run 覆盖 lostDisposition', () => {
+    expect(() =>
+      createRunBodySchema.parse({
+        scenarioId: ids.scenario,
+        sessionPolicy: { lostDisposition: 'AUTO' },
+      }),
+    ).toThrow()
+  })
 })
 
 describe('resolveStepPolicy', () => {

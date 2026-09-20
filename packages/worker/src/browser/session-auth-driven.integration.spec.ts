@@ -53,7 +53,14 @@ const echoStep: Step = {
 
 function cookieHandle(baseUrl: string, jar: { cookie: string }, profileDir: string): BrowserHandle {
   let address = `${baseUrl}/`
-  const locator = () => ({
+  const loginField = (selector = '') =>
+    selector === 'body' ||
+    selector.includes('[name="username"]') ||
+    selector.includes('[name="password"]') ||
+    selector.includes('button[type=submit]') ||
+    selector.includes('#username') ||
+    selector.includes('#password')
+  const locator = (selector = '') => ({
     fill: async () => undefined,
     click: async () => {
       const res = await fetch(`${baseUrl}/login`, {
@@ -64,9 +71,14 @@ function cookieHandle(baseUrl: string, jar: { cookie: string }, profileDir: stri
       if (setCookie?.includes('bsm=ok')) jar.cookie = 'bsm=ok'
       address = `${baseUrl}/`
     },
-    count: async () => 1,
-    first: () => ({ isVisible: async () => true }),
+    count: async () => (loginField(selector) ? 1 : 0),
+    first: () => ({
+      isVisible: async () => loginField(selector),
+      waitFor: async () => undefined,
+    }),
+    isVisible: async () => loginField(selector),
     waitFor: async () => undefined,
+    innerText: async () => '',
   })
   const page = {
     evaluate: async () => true,
@@ -76,6 +88,7 @@ function cookieHandle(baseUrl: string, jar: { cookie: string }, profileDir: stri
     url: () => address,
     waitForLoadState: async () => undefined,
     waitForFunction: async () => undefined,
+    waitForTimeout: async () => undefined,
     locator,
     isClosed: () => false,
     on: () => undefined,

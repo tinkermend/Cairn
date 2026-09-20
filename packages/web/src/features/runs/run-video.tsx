@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react'
 import {
+  faceScreenshot,
   isFinishedRunStatus,
+  readRunVideoPayload,
   resolveEvidencePolicy,
   stepUsesBrowser,
+  videoAbsenceCaption,
+  videoCoverageLines,
   type EvidenceMetadata,
   type RunDetailDto,
 } from '@cairn/shared'
@@ -51,26 +55,38 @@ export function RunVideoSection({
 }) {
   if (!shouldShowRunVideo(run, items)) return null
   const video = findRunVideo(items)
-  const truncated = payloadFlag(video, 'truncated') === true
-  const passwordMask = payloadFlag(video, 'passwordMask')
+  const videoPayload = readRunVideoPayload(video?.payload)
+  const truncated = videoPayload?.truncated === true || payloadFlag(video, 'truncated') === true
+  const passwordMask = videoPayload?.passwordMask ?? payloadFlag(video, 'passwordMask')
+  const coverageLines = video?.status === 'available' ? videoCoverageLines(videoPayload) : []
+  const absence = videoAbsenceCaption({
+    video,
+    policyVideo: resolveEvidencePolicy(run.snapshot.evidencePolicy).video,
+  })
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
       <h2 className='text-section font-semibold'>本次录像</h2>
       {!video ? (
         <p className='text-label text-muted-foreground'>
-          {isFinishedRunStatus(run.status) ? '没有留下可播录像。' : '录像采集中…'}
+          {isFinishedRunStatus(run.status)
+            ? (absence ?? '没有留下可播录像。')
+            : '录像采集中…'}
         </p>
       ) : video.status === 'pending' ? (
         <p className='text-label text-muted-foreground'>录像正在收尾…</p>
       ) : video.status === 'missing' ? (
         <p className='text-label text-status-warning-foreground'>
-          {video.missingReason === 'object_purged'
-            ? '录像已过期，步骤截图仍可查看。'
-            : `录像不可用${video.missingReason ? `：${missingReasonLabel(video.missingReason)}` : ''}`}
+          {absence ??
+            `录像不可用${video.missingReason ? `：${missingReasonLabel(video.missingReason)}` : ''}`}
         </p>
       ) : (
         <RunVideoPlayer runId={run.id} evidence={video} />
       )}
+      {coverageLines.map((line) => (
+        <p key={line} className='text-label text-muted-foreground'>
+          {line}
+        </p>
+      ))}
       {video?.status === 'available' && video.byteSize != null ? (
         <p className='text-label text-muted-foreground'>体积 {(video.byteSize / 1024).toFixed(1)} KiB</p>
       ) : null}
@@ -213,7 +229,7 @@ export function stepFaceScreenshot(
   const finished = attempts
     .filter((attempt) => attempt.status !== 'RUNNING')
     .sort((a, b) => a.attemptNo - b.attemptNo)
-  const last = finished.at(-1)
+  const last = finished[finished.length - 1]
   if (!last) return undefined
-  return items.find((item) => item.attemptId === last.id && item.type === 'screenshot')
+  return faceScreenshot(items, last.id)
 }

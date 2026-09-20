@@ -8,6 +8,8 @@ import type { AccountStatus, RoleKind } from '@cairn/shared'
  * 测试里用替身 Guard 注入本对象。
  */
 export interface RequestAccount {
+  targetScopes?: import('@cairn/shared').AccountDto['targetScopes']
+  targetScopePermissions?: import('@cairn/shared').AccountDto['targetScopePermissions']
   id: string
   displayName: string
   email: string | null

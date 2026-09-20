@@ -50,7 +50,7 @@ async function fixture(driver: (typeof DRIVERS)[number]) {
   const handle = await openContractDb(driver)
   handles.push(handle)
   const db = expose(handle)
-  const { consoleAccounts } = schemaFor(handle.db)
+  const { consoleAccounts, consoleRoles, consoleAccountRoles } = schemaFor(handle.db)
   const actorId = newId()
   await handle.db.insert(consoleAccounts).values({
     id: actorId,
@@ -58,6 +58,8 @@ async function fixture(driver: (typeof DRIVERS)[number]) {
     email: `life-${actorId}@example.com`,
     status: 'active',
   })
+  const [admin] = await handle.db.select({ id: consoleRoles.id }).from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
+  await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin!.id, targetScopeMode: 'all' })
   const actor = {
     id: actorId,
     displayName: '生命周期',

@@ -10,6 +10,8 @@ import {
   objectDigestSchema,
   objectKeyFor,
   objectKeySchema,
+  capturedSpanMsOf,
+  writeEvidenceArtifactKey,
   type EvidenceMetadata,
   type EvidenceType,
   type JsonValue,
@@ -29,7 +31,9 @@ import { mapRestriction } from '../runs/errors.js'
 export type StoredObjectRecord = {
   id: string
   objectKey: string
-  runId: string
+  runId: string | null
+  ownerKind: 'run' | 'artifact'
+  artifactId: string | null
   status: StoredObjectStatus
   contentType: string | null
   byteSize: number | null
@@ -68,6 +72,7 @@ export async function reserveStoredObject(
         id,
         objectKey,
         runId: input.runId,
+        ownerKind: 'run',
         status: 'pending',
         retainUntil: input.retainUntil,
       })
@@ -343,6 +348,7 @@ export async function reserveObjectEvidence(
     type: EvidenceType
     retainUntil: Date
     objectId?: string
+    artifactKey?: string
   },
 ): Promise<EvidenceMetadata> {
   const { evidences } = schemaFor(db)
@@ -350,6 +356,15 @@ export async function reserveObjectEvidence(
     if (!(await lockRunRow(tx as unknown as Db, input.runId))) {
       throw new ObjectStoreError('OBJECT_KEY_INVALID', '运行不存在')
     }
+    const artifactKey =
+      input.artifactKey ??
+      writeEvidenceArtifactKey({ type: input.type, attemptId: input.attemptId })
+    const [keyed] = await tx
+      .select()
+      .from(evidences)
+      .where(and(eq(evidences.runId, input.runId), eq(evidences.artifactKey, artifactKey)))
+      .limit(1)
+    if (keyed) return toEvidenceMetadata(keyed)
     if (input.type === 'video' && !input.attemptId && !input.stepRunId) {
       const [existing] = await tx
         .select()
@@ -379,6 +394,7 @@ export async function reserveObjectEvidence(
       stepRunId: input.stepRunId,
       attemptId: input.attemptId,
       type: input.type,
+      artifactKey,
       status: 'pending',
       schemaVersion: RUNTIME_SCHEMA_VERSION,
       objectId: reserved.id,
@@ -399,6 +415,58 @@ export async function reserveObjectEvidence(
   })
 }
 
+export async function reopenAvailableRunVideo(
+  db: Db,
+  input: { runId: string; retainUntil: Date; capturedSpanMs: number },
+): Promise<EvidenceMetadata | null> {
+  const { evidences } = schemaFor(db)
+  return db.transaction(async (tx) => {
+    if (!(await lockRunRow(tx as unknown as Db, input.runId))) {
+      throw new ObjectStoreError('OBJECT_KEY_INVALID', '运行不存在')
+    }
+    const [existing] = await tx
+      .select()
+      .from(evidences)
+      .where(
+        and(
+          eq(evidences.runId, input.runId),
+          eq(evidences.type, 'video'),
+          isNull(evidences.attemptId),
+          isNull(evidences.stepRunId),
+        ),
+      )
+      .orderBy(asc(evidences.createdAt), asc(evidences.id))
+      .limit(1)
+    if (!existing) return null
+    if (existing.status === 'pending') return toEvidenceMetadata(existing)
+    if (existing.status !== 'available') return toEvidenceMetadata(existing)
+    if (capturedSpanMsOf(existing.payload) >= input.capturedSpanMs) {
+      return toEvidenceMetadata(existing)
+    }
+    const reserved = await reserveStoredObject(tx as unknown as Db, {
+      runId: input.runId,
+      retainUntil: input.retainUntil,
+    })
+    const [updated] = await updateRows(
+      tx,
+      evidences,
+      {
+        status: 'pending',
+        objectId: reserved.id,
+        objectKey: reserved.objectKey,
+        contentType: null,
+        byteSize: null,
+        digest: null,
+        payload: null,
+        missingReason: null,
+        uploadAttempts: 0,
+      },
+      and(eq(evidences.id, existing.id), eq(evidences.status, 'available')),
+    )
+    return toEvidenceMetadata(updated ?? existing)
+  })
+}
+
 export async function findPendingObjectEvidence(
   db: Db,
   input: { attemptId: string; type: EvidenceType },
@@ -414,6 +482,19 @@ export async function findPendingObjectEvidence(
         eq(evidences.status, 'pending'),
       ),
     )
+    .limit(1)
+  return row ? toEvidenceMetadata(row) : null
+}
+
+export async function findObjectEvidenceByArtifactKey(
+  db: Db,
+  input: { runId: string; artifactKey: string },
+): Promise<EvidenceMetadata | null> {
+  const { evidences } = schemaFor(db)
+  const [row] = await db
+    .select()
+    .from(evidences)
+    .where(and(eq(evidences.runId, input.runId), eq(evidences.artifactKey, input.artifactKey)))
     .limit(1)
   return row ? toEvidenceMetadata(row) : null
 }
@@ -544,6 +625,8 @@ function toRecord(row: StoredObjectRow): StoredObjectRecord {
     id: row.id,
     objectKey: row.objectKey,
     runId: row.runId,
+    ownerKind: row.ownerKind ?? 'run',
+    artifactId: row.artifactId ?? null,
     status: row.status,
     contentType: row.contentType,
     byteSize: row.byteSize,

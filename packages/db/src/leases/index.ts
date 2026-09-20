@@ -10,6 +10,10 @@ export {
   lockRunRow,
   verifyRunLeaseForWrite,
   claimRun,
+  CLAIM_SCAN_LIMIT,
+  CLAIM_EXCLUDE_LIMIT,
+  takeLastClaimDiagnostics,
+  type ClaimRunDiagnostics,
   renewRunLease,
   releaseRunLeaseTx,
   findActiveLeaseForRun,
@@ -22,6 +26,7 @@ export {
   isFinishedOrNeedsReview,
   type WorkerRecord,
   type WorkerHeartbeatOutcome,
+  type WorkerHeartbeatTelemetry,
   type RegisterWorkerResult,
 } from './leases.js'
 export {

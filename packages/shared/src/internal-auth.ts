@@ -17,6 +17,7 @@ export {
 export const INTERNAL_REQUEST_TTL_SECONDS = 30
 export const WORKER_INTERNAL_PATH_PREFIX = '/internal/managed-browser'
 export const WORKER_RUNS_INTERNAL_PATH_PREFIX = '/internal/runs'
+export const WORKER_NODE_HEALTH_PATH = '/internal/node/health'
 
 export function workerInternalPath(suffix: string): string {
   const path = suffix.startsWith('/') ? suffix : `/${suffix}`
@@ -128,6 +129,77 @@ export async function verifyInternalHeaders(
   if (Math.abs(input.expiresUnix - now) > INTERNAL_REQUEST_TTL_SECONDS) return false
   const signed = { ...input, body: await sha256Hex(input.body) }
   const expected = await hmacSha256Hex(secret, internalCanonicalString(signed))
+  if (expected.length !== input.signature.length) return false
+  let mismatch = 0
+  for (let i = 0; i < expected.length; i += 1) {
+    mismatch |= expected.charCodeAt(i)! ^ input.signature.charCodeAt(i)!
+  }
+  return mismatch === 0
+}
+
+export const NODE_HEALTH_SIGNATURE_HEADERS = {
+  expires: 'x-cairn-node-expires',
+  signature: 'x-cairn-node-signature',
+  worker: 'x-cairn-node-worker',
+} as const
+
+export type NodeHealthSignInput = {
+  method: 'GET'
+  path: typeof WORKER_NODE_HEALTH_PATH
+  body: string
+  expiresUnix: number
+  workerId: string
+}
+
+export function nodeHealthCanonicalString(input: {
+  method: 'GET'
+  path: string
+  bodyHash: string
+  expiresUnix: number
+  workerId: string
+}): string {
+  return ['NODE_HEALTH', input.method, input.path, input.bodyHash, String(input.expiresUnix), input.workerId].join(
+    '\n',
+  )
+}
+
+export async function signNodeHealthHeaders(
+  secret: Uint8Array,
+  input: NodeHealthSignInput,
+): Promise<Record<string, string>> {
+  if (!input.workerId || input.workerId.length > 256) {
+    throw new Error('节点健康签名缺少合法 Worker ID')
+  }
+  const signed = {
+    method: input.method,
+    path: input.path,
+    bodyHash: await sha256Hex(input.body),
+    expiresUnix: input.expiresUnix,
+    workerId: input.workerId,
+  }
+  const signature = await hmacSha256Hex(secret, nodeHealthCanonicalString(signed))
+  return {
+    [NODE_HEALTH_SIGNATURE_HEADERS.expires]: String(input.expiresUnix),
+    [NODE_HEALTH_SIGNATURE_HEADERS.signature]: signature,
+    [NODE_HEALTH_SIGNATURE_HEADERS.worker]: input.workerId,
+  }
+}
+
+export async function verifyNodeHealthHeaders(
+  secret: Uint8Array,
+  input: NodeHealthSignInput & { signature: string; nowUnix?: number },
+): Promise<boolean> {
+  const now = input.nowUnix ?? Math.floor(Date.now() / 1000)
+  if (Math.abs(input.expiresUnix - now) > INTERNAL_REQUEST_TTL_SECONDS) return false
+  if (!input.workerId || input.workerId.length > 256) return false
+  const signed = {
+    method: input.method,
+    path: input.path,
+    bodyHash: await sha256Hex(input.body),
+    expiresUnix: input.expiresUnix,
+    workerId: input.workerId,
+  }
+  const expected = await hmacSha256Hex(secret, nodeHealthCanonicalString(signed))
   if (expected.length !== input.signature.length) return false
   let mismatch = 0
   for (let i = 0; i < expected.length; i += 1) {

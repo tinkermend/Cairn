@@ -1,5 +1,7 @@
 import {
   AI_STEP_TYPES,
+  aiCommandSchema,
+  aiAtomicActionInputSchema,
   ASSERT_FAILED_CODE,
   retainUntilFor,
   type AiCommand,
@@ -43,7 +45,7 @@ export class AiStepExecutor implements StepExecutor {
         safeMessage: '运行快照没有冻结页面范围',
       })
     }
-    const command = commandFor(step, snapshot)
+    const command = commandFor(step, snapshot, ctx.input)
     const result = await this.ai.execute(sessionGrant, command, signal, {
       runId,
       stepRunId,
@@ -126,15 +128,17 @@ export class AiStepExecutor implements StepExecutor {
   }
 }
 
-function commandFor(step: Step, snapshot: RunSnapshot): AiCommand {
+function commandFor(step: Step, snapshot: RunSnapshot, resolvedInput: JsonValue): AiCommand {
   const config = snapshot.aiExecution!
   const instruction =
     step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert'
-      ? step.input.instruction
+      ? ('instruction' in step.input ? step.input.instruction : undefined)
       : ''
-  return {
+  return aiCommandSchema.parse({
     type: step.type as AiCommand['type'],
-    instruction,
+    ...(step.type === 'ai_action' && 'operation' in step.input
+      ? { action: aiAtomicActionInputSchema.parse(resolvedInput) }
+      : { instruction }),
     outputSchema: step.type === 'ai_extract' ? step.input.outputSchema : undefined,
     maxCalls: config.maxCalls,
     maxOutputTokens: config.maxOutputTokens,
@@ -143,7 +147,7 @@ function commandFor(step: Step, snapshot: RunSnapshot): AiCommand {
     allowedOrigins: snapshot.allowedOrigins ?? [],
     loginOrigin: snapshot.loginOrigin,
     loginPath: snapshot.loginPath,
-  }
+  })
 }
 
 function fail(

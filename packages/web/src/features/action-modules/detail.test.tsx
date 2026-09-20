@@ -46,6 +46,20 @@ vi.mock('@/hooks/use-permissions', () => ({
 vi.mock('@/lib/targets-api', () => ({
   fetchTarget: async () => ({ name: '复查目标' }),
 }))
+vi.mock('@/lib/runs-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/runs-api')>()
+  return {
+    ...actual,
+    fetchRun: vi.fn().mockResolvedValue({
+      id: '99999999-9999-4999-8999-999999999999',
+      status: 'QUEUED',
+      startedAt: null,
+      finishedAt: null,
+      context: {},
+      stepRuns: [],
+    }),
+  }
+})
 const moduleId = '11111111-1111-4111-8111-111111111111'
 const stepId = '33333333-3333-4333-8333-333333333333'
 const fixture = (): ActionModuleDetail =>
@@ -382,7 +396,7 @@ describe('AM-A action module editor review', () => {
       .element(screen.getByRole('button', { name: '发布新版本' }))
       .toHaveFocus()
   })
-  it('点击试跑弹出输入参数弹窗并成功发起试跑并跳转', async () => {
+  it('点击试跑弹出输入参数弹窗并成功发起原地试跑并在抽屉中观测', async () => {
     const trialRunDto = {
       id: '99999999-9999-4999-8999-999999999999',
       status: 'QUEUED',
@@ -399,10 +413,7 @@ describe('AM-A action module editor review', () => {
         inputs: {},
       })
     )
-    expect(mocks.navigate).toHaveBeenCalledWith({
-      to: '/runs/$runId',
-      params: { runId: trialRunDto.id },
-    })
+    await expect.element(screen.getByText('试跑原地观测')).toBeVisible()
   })
   it('引用页签列出场景，弃用版本必须填写原因', async () => {
     const content = fixture().draftContent!
@@ -456,5 +467,37 @@ describe('AM-A action module editor review', () => {
       .element(screen.getByText('通过率 样本不足（样本 0）'))
       .toBeInTheDocument()
     expect(mocks.fetchActionModuleQuality).toHaveBeenCalled()
+  })
+
+  it('编辑页视口底端常驻诊断浮动条，可展开和收起详情', async () => {
+    const module = fixture()
+    module.draftContent!.contract.inputs = [
+      { key: 'param_warn', label: 'param_warn', required: false, valueType: 'string' },
+    ]
+    mocks.fetchActionModule.mockResolvedValue(module)
+    const { screen } = await renderPage()
+
+    const bar = screen.getByTestId('module-diagnostics-bar')
+    await expect.element(bar).toBeInTheDocument()
+    await expect.element(bar).toHaveClass('fixed')
+    await expect.element(bar).toHaveClass('bottom-4')
+
+    // 检查警告摘要
+    await expect.element(screen.getByText('1 项警告')).toBeVisible()
+
+    // 点击展开详情
+    const toggleBtn = screen.getByRole('button', { name: '展开详情' })
+    await expect.element(toggleBtn).toBeVisible()
+    await toggleBtn.click()
+
+    // 详情抽屉展开显示代码
+    await expect
+      .element(screen.getByText('MODULE_INPUT_UNUSED', { exact: true }))
+      .toBeVisible()
+    await expect.element(screen.getByRole('button', { name: '收起详情' })).toBeVisible()
+
+    // 点击收起详情
+    await screen.getByRole('button', { name: '收起详情' }).click()
+    await expect.element(screen.getByRole('button', { name: '展开详情' })).toBeVisible()
   })
 })

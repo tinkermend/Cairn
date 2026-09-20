@@ -233,7 +233,7 @@ describe('RunLease / fencing（集成）', { timeout: RF06_FULL ? 180_000 : 120_
       [created.detail.id],
     )
     const n = await sweepDriftedRuns(handle.db, { limit: 10, leaseTtlSeconds: 30, maxRecoveries: 3 })
-    expect(n).toBeGreaterThanOrEqual(1)
+    expect(n.settled).toBeGreaterThanOrEqual(1)
     expect((await getRun(handle.db, created.detail.id)).status).toBe('RECOVERING')
   })
 

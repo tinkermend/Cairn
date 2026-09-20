@@ -8,8 +8,9 @@ import {
 } from '../logging.js'
 
 describe('LOGGING_REDACT_PATHS', () => {
-  it('覆盖请求体里的 password，避免目标账号设密进日志', () => {
+  it('覆盖请求体里的 password 和 secret，避免密钥进日志', () => {
     expect(LOGGING_REDACT_PATHS).toContain('req.body.password')
+    expect(LOGGING_REDACT_PATHS).toContain('req.body.secret')
     expect(LOGGING_REDACT_PATHS).toContain('req.body.account.password')
     expect(LOGGING_REDACT_PATHS).toContain('req.headers.authorization')
   })

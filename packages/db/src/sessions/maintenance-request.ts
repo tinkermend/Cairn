@@ -13,6 +13,7 @@ import { requestSessionOperation, contentDigestFor } from './occupancy.js'
 import { appendSessionEvent } from './session-events.js'
 import type { SessionKey } from './sessions.js'
 import { loadOccupancyFacts } from './session-overview.js'
+import { lockConsoleAuthorization, assertTargetPermission } from '../console/target-authorization.js'
 
 export async function requestMaintenanceOperation(
   db: Db,
@@ -24,6 +25,7 @@ export async function requestMaintenanceOperation(
   },
 ): Promise<{ operation: SessionOperationRow | null; created: boolean; reusedRunId: string | null }> {
   return atomic(db, async (tx) => {
+    if (input.actor && input.origin !== 'BACKGROUND') await lockConsoleAuthorization(tx, input.actor.id)
     const origin = input.origin ?? 'USER'
     const { targetAccounts, sessionOperations } = schemaFor(tx)
     await locked(
@@ -141,8 +143,13 @@ export async function requestMaintenanceOperation(
         throw conflict('SESSION_NOT_CLAIMABLE', '关闭或重启只能在空闲活实例上执行')
       }
     }
-    if (input.body.kind === 'RESET_PROFILE' && facts.lease) {
-      throw conflict('SESSION_OPERATION_CONFLICT', '该账号正在被占用，不能清除登录数据')
+    if (input.body.kind === 'RESET_PROFILE') {
+      if (facts.lease) {
+        throw conflict('SESSION_OPERATION_CONFLICT', '该账号正在被占用，不能清除登录数据')
+      }
+      if (facts.live?.status === 'LOST') {
+        throw conflict('SESSION_NOT_CLAIMABLE', '失联实例须先处置，不能直接清除登录数据')
+      }
     }
     const requested = await requestSessionOperation(tx, {
       key: input.key,
@@ -194,6 +201,7 @@ export async function cancelSessionOperation(
   input: { operationId: string; actor?: AuditActor },
 ): Promise<SessionOperationRow> {
   return atomic(db, async (tx) => {
+    if (input.actor) await lockConsoleAuthorization(tx, input.actor.id)
     const { sessionOperations, sessionLeases, targetAccounts } = schemaFor(tx)
     const [row] = await tx
       .select()
@@ -201,6 +209,7 @@ export async function cancelSessionOperation(
       .where(eq(sessionOperations.id, input.operationId))
       .limit(1)
     if (!row) throw notFound('OPERATION_NOT_FOUND', '会话操作不存在')
+    if (input.actor) await assertTargetPermission(tx, input.actor.id, row.targetId, 'session:control')
     await locked(
       tx,
       tx

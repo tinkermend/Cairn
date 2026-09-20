@@ -360,6 +360,10 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     expect(persistent?.sampledSlotCount).toBe(1)
     expect(await heartbeatWorker(handle.db, workerId, instanceId, { liveHandleCount: 1 })).toBe('ok')
     expect((await getWorkerById(handle.db, workerId))?.handleMismatchStreak).toBe(0)
+    expect(await heartbeatWorker(handle.db, workerId, instanceId, { liveHandleCount: 1, browserProcessCount: 4 })).toBe(
+      'ok',
+    )
+    expect((await getWorkerById(handle.db, workerId))?.handleMismatchStreak).toBe(1)
   })
 
   it('列表含四值状态，分页后详情计数不随 Session 页变化；过期租约不算执行中', async () => {

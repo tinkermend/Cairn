@@ -78,7 +78,7 @@ describe('助手接入平台 AI（模拟供应商）', { timeout: 30_000 }, () =
         code: 'titan-model',
         name: '泰坦',
         entryUrl: 'https://example.com',
-        account: { username: 'tester', displayName: '测试账号', password: 'hidden' },
+        account: { username: 'tester', displayName: '测试账号', password: 'hidden', validity: { mode: 'permanent' } },
       }),
       current,
     )

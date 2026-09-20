@@ -176,6 +176,7 @@ const recordingActorSchema = z.object({
 })
 
 export const recordingDraftSchema = z.object({
+  sourceProtocol: z.enum(['recording@1', 'demonstration@1']).optional(),
   id: entityIdSchema,
   targetId: entityIdSchema,
   targetName: z.string().min(1),

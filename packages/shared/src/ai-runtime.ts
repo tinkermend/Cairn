@@ -12,6 +12,7 @@ import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
 import { authoringCapabilitiesSchema, type AuthoringCapabilities } from './authoring-observation.js'
 import {
   AI_STEP_TYPES,
+  aiAtomicActionInputSchema,
   EXECUTABLE_STEP_TYPES,
   hasAiSteps,
   isAiStepType,
@@ -44,6 +45,7 @@ export const scenarioCapabilitiesSchema = z.strictObject({
   authoring: authoringCapabilitiesSchema.optional(),
   authoringSchemaVersions: z.array(z.union([z.literal(1), z.literal(2)])).min(1).max(2).default([1, 2]),
   actionModules: z.boolean().default(true),
+  demonstrationImport: z.boolean().optional(),
 })
 export type ScenarioCapabilities = z.infer<typeof scenarioCapabilitiesSchema>
 
@@ -71,7 +73,8 @@ export type AiCommandType = (typeof AI_COMMAND_TYPES)[number]
 
 export const aiCommandSchema = z.strictObject({
   type: z.enum(AI_COMMAND_TYPES),
-  instruction: z.string().trim().min(1).max(4096),
+  instruction: z.string().trim().min(1).max(4096).optional(),
+  action: aiAtomicActionInputSchema.optional(),
   outputSchema: aiOutputSchemaSchema.optional(),
   maxCalls: z.number().int().positive(),
   maxOutputTokens: z.number().int().positive(),
@@ -80,6 +83,15 @@ export const aiCommandSchema = z.strictObject({
   allowedOrigins: z.array(z.string().min(1)).min(1).max(16),
   loginOrigin: z.string().min(1).max(256).optional(),
   loginPath: z.string().max(2048).optional(),
+}).superRefine((command, ctx) => {
+  if (command.action) {
+    if (command.type !== 'ai_action' || command.instruction !== undefined ||
+      (command.action.operation === 'input' && command.action.from !== undefined)) {
+      ctx.addIssue({ code: 'custom', message: '原子 AI 命令必须是已解析输入的 ai_action，不能同时携带 instruction' })
+    }
+  } else if (!command.instruction) {
+    ctx.addIssue({ code: 'custom', message: 'AI 命令缺少 instruction 或 action' })
+  }
 })
 export type AiCommand = z.infer<typeof aiCommandSchema>
 

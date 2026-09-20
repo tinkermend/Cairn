@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render } from 'vitest-browser-react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RunListResponse, RunSummaryDto } from '@cairn/shared'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { render } from 'vitest-browser-react'
 import { useAuthStore } from '@/stores/auth-store'
 import { RunsPage } from './index'
 
@@ -29,6 +29,7 @@ vi.mock('@/lib/scenarios-api', () => ({
 }))
 vi.mock('@/lib/targets-api', () => ({
   fetchTargets: mocks.fetchTargets,
+  fetchTarget: vi.fn(),
   fetchTargetAccounts: vi.fn().mockResolvedValue({ items: [] }),
 }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -36,12 +37,15 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => vi.fn(),
-    Link: ({ children }: { children: React.ReactNode }) => <a href='#'>{children}</a>,
+    Link: ({ children }: { children: React.ReactNode }) => (
+      <a href='#'>{children}</a>
+    ),
   }
 })
 
 function summary(overrides: Partial<RunSummaryDto>): RunSummaryDto {
   return {
+    executionOrigin: 'standalone',
     id: '44444444-4444-4444-8444-444444444444',
     status: 'QUEUED',
     cancelRequested: false,
@@ -89,11 +93,13 @@ function signIn(permissions: string[]) {
 }
 
 async function renderPage() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   return render(
     <QueryClientProvider client={client}>
       <RunsPage />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
 }
 
@@ -133,21 +139,38 @@ describe('RunsPage', () => {
     await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
     await expect.element(screen.getByText('登录巡检')).toBeInTheDocument()
     expect(screen.getByText('演示商城').elements()).toHaveLength(2)
-    expect(document.body.textContent).not.toContain('33333333-3333-4333-8333-333333333333')
-    expect(document.body.textContent).not.toContain('11111111-1111-4111-8111-111111111111')
-    await expect.element(screen.getByText('证据不完整')).toBeInTheDocument()
-    const headers = [...document.querySelectorAll('thead th')].map((node) => node.textContent?.trim())
-    expect(headers.slice(0, 6)).toEqual(['状态', '业务结果', '证据', '场景', '目标系统', '创建时间'])
-    const incompleteRow = [...document.querySelectorAll('tbody tr')].find((row) =>
-      row.textContent?.includes('登录巡检'),
+    expect(document.body.textContent).not.toContain(
+      '33333333-3333-4333-8333-333333333333'
     )
-    const cells = [...(incompleteRow?.querySelectorAll('td') ?? [])].map((node) => node.textContent ?? '')
+    expect(document.body.textContent).not.toContain(
+      '11111111-1111-4111-8111-111111111111'
+    )
+    await expect.element(screen.getByText('证据不完整')).toBeInTheDocument()
+    const headers = [...document.querySelectorAll('thead th')].map((node) =>
+      node.textContent?.trim()
+    )
+    expect(headers.slice(0, 6)).toEqual([
+      '状态',
+      '业务结果',
+      '证据',
+      '场景',
+      '目标系统',
+      '创建时间',
+    ])
+    const incompleteRow = [...document.querySelectorAll('tbody tr')].find(
+      (row) => row.textContent?.includes('登录巡检')
+    )
+    const cells = [...(incompleteRow?.querySelectorAll('td') ?? [])].map(
+      (node) => node.textContent ?? ''
+    )
     expect(cells[0]).toContain('成功')
     expect(cells[1]).toContain('业务异常')
     expect(cells[2]).toContain('证据不完整')
     expect(cells[3]).toContain('登录巡检')
     expect(cells[1]).not.toContain('登录巡检')
-    await expect.element(screen.getByRole('combobox', { name: '业务结果筛选' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('combobox', { name: '业务结果筛选' }))
+      .toBeInTheDocument()
   })
 
   /** 验收 35：排队中可取消；已成功的不给取消入口。 */
@@ -160,19 +183,34 @@ describe('RunsPage', () => {
     expect(cancels.elements()).toHaveLength(1)
 
     await cancels.first().click()
-    expect(mocks.cancelRun).toHaveBeenCalledWith('44444444-4444-4444-8444-444444444444')
+    expect(mocks.cancelRun).toHaveBeenCalledWith(
+      '44444444-4444-4444-8444-444444444444'
+    )
   })
 
-  /** 终态运行支持删除；非终态运行不展示删除入口 */
-  it('具备 run:delete 权限时，仅终态运行展示删除按钮', async () => {
+  /** 终态运行支持删除；非终态运行不展示删除入口并渲染占位以对齐按钮 */
+  it('具备 run:delete 权限时，仅终态运行展示删除按钮，非终态渲染对齐占位', async () => {
     signIn(['run:read', 'run:delete'])
     const screen = await renderPage()
 
     await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
-    // 第一条是 QUEUED，第二条是 SUCCEEDED
+    // 第一条是 QUEUED（无取消无删除），第二条是 SUCCEEDED（有删除）
     const deleteButtons = screen.getByRole('button', { name: /删除运行/ })
     expect(deleteButtons.elements()).toHaveLength(1)
-    await expect.element(screen.getByRole('button', { name: '删除运行44444444-4444-4444-8444-444444444445' })).toBeInTheDocument()
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: '删除运行44444444-4444-4444-8444-444444444445',
+        })
+      )
+      .toBeInTheDocument()
+
+    // 检查第一行渲染了 size-9 占位元素保持操作列「查看」按钮对齐
+    const rows = document.querySelectorAll('tbody tr')
+    const firstRowActionCell = rows[0]?.querySelector('td:last-child')
+    expect(
+      firstRowActionCell?.querySelector('div.size-9[aria-hidden="true"]')
+    ).not.toBeNull()
   })
 
   /** 验收 37：viewer 看得见列表，但没有创建与取消。 */
@@ -181,9 +219,15 @@ describe('RunsPage', () => {
     const screen = await renderPage()
 
     await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /创建运行/ }).elements()).toHaveLength(0)
-    expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
-    expect(screen.getByRole('button', { name: /删除运行/ }).elements()).toHaveLength(0)
+    expect(
+      screen.getByRole('button', { name: /创建运行/ }).elements()
+    ).toHaveLength(0)
+    expect(
+      screen.getByRole('button', { name: '取消', exact: true }).elements()
+    ).toHaveLength(0)
+    expect(
+      screen.getByRole('button', { name: /删除运行/ }).elements()
+    ).toHaveLength(0)
   })
 
   it('仅有 run:execute 时不显示创建运行', async () => {
@@ -191,17 +235,29 @@ describe('RunsPage', () => {
     const screen = await renderPage()
 
     await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /创建运行/ }).elements()).toHaveLength(0)
+    expect(
+      screen.getByRole('button', { name: /创建运行/ }).elements()
+    ).toHaveLength(0)
   })
 
   it('状态筛选包含排队与待核查', async () => {
     signIn(['run:read'])
     const screen = await renderPage()
-    await expect.element(screen.getByRole('button', { name: '排队' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '待核查' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '恢复中' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '需要登录' })).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: '挂起中' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '排队' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '待核查' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '恢复中' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '需要登录' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: '挂起中' }))
+      .toBeInTheDocument()
   })
 
   it('具备编写权限时提供场景筛选', async () => {
@@ -210,7 +266,9 @@ describe('RunsPage', () => {
     })
     signIn(['run:read', 'workflow:read'])
     const screen = await renderPage()
-    await expect.element(screen.getByRole('combobox', { name: '场景筛选' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('combobox', { name: '场景筛选' }))
+      .toBeInTheDocument()
   })
 
   it('已删除目录只显示名称和已删除标记', async () => {
@@ -228,15 +286,36 @@ describe('RunsPage', () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('旧场景')).toBeInTheDocument()
     await expect.element(screen.getByText('旧目标')).toBeInTheDocument()
-    expect(screen.getByText('已删除').elements().length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('已删除').elements().length).toBeGreaterThanOrEqual(
+      2
+    )
     expect(document.querySelector('a[href*="scenarios"]')).toBeNull()
     expect(document.querySelector('a[href*="targets"]')).toBeNull()
+  })
+
+  it('默认不请求地图作业，点筛选才带 isMapJob', async () => {
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('下单巡检')).toBeInTheDocument()
+    expect(mocks.fetchRuns).toHaveBeenCalled()
+    const initial = mocks.fetchRuns.mock.calls[mocks.fetchRuns.mock.calls.length - 1]?.[0] as { isMapJob?: boolean }
+    expect(initial.isMapJob).toBeUndefined()
+
+    await screen.getByRole('button', { name: '地图作业' }).click()
+    await vi.waitFor(() => {
+      const filtered = mocks.fetchRuns.mock.calls[mocks.fetchRuns.mock.calls.length - 1]?.[0] as {
+        isMapJob?: boolean
+      }
+      expect(filtered.isMapJob).toBe(true)
+    })
   })
 
   it('具备开跑组合权限时显示创建运行', async () => {
     signIn(['run:read', 'run:execute', 'target:read', 'workflow:read'])
     const screen = await renderPage()
 
-    await expect.element(screen.getByRole('button', { name: /创建运行/ }).first()).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: /创建运行/ }).first())
+      .toBeInTheDocument()
   })
 })

@@ -2,10 +2,13 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   decideVerdict,
+  decodeInternalSecret,
   isFailure,
   looksLikeHtml,
   parseHealthBody,
+  parseWorkerNodeHealth,
   resolveScope,
+  signWorkerNodeHealthHeaders,
 } from './stack-health.mjs'
 
 const okHealth = {
@@ -62,6 +65,7 @@ describe('decideVerdict', () => {
     workerListen: true,
     webListen: true,
     apiHealth: { ok: true, value: okHealth },
+    workerHealth: { ok: true, value: { service: 'cairn-worker', loopAlive: true } },
     webPage: { ok: true },
     webHealth: { ok: true },
   }
@@ -99,6 +103,26 @@ describe('decideVerdict', () => {
     assert.match(verdict.fail, /web→api/)
   })
 
+  it('RMC07 在听但 loopAlive=false 必须 UNHEALTHY，不得只看 TCP', () => {
+    const verdict = decideVerdict({
+      ...healthy,
+      workerListen: true,
+      workerHealth: { ok: true, value: { service: 'cairn-worker', loopAlive: false } },
+    })
+    assert.equal(verdict.result, 'STACK_UNHEALTHY')
+    assert.match(verdict.fail, /loopAlive/)
+  })
+
+  it('RMC07/RMC18 节点健康失败不得回退成只看监听', () => {
+    const verdict = decideVerdict({
+      ...healthy,
+      workerListen: true,
+      workerHealth: { ok: false, error: '缺少可用的 CAIRN_INTERNAL_AUTH_SECRET，禁止回退 TCP' },
+    })
+    assert.equal(verdict.result, 'STACK_UNHEALTHY')
+    assert.match(verdict.fail, /CAIRN_INTERNAL_AUTH_SECRET/)
+  })
+
   it('changeHint 降级默认不失败，--strict 才失败', () => {
     const input = {
       ...healthy,
@@ -114,5 +138,42 @@ describe('decideVerdict', () => {
     assert.equal(strict.result, 'STACK_DEGRADED')
     assert.ok(strict.fail)
     assert.equal(isFailure(strict.result, true), true)
+  })
+})
+
+describe('parseWorkerNodeHealth', () => {
+  it('要求 cairn-worker 且读取 node.loopAlive', () => {
+    const parsed = parseWorkerNodeHealth(
+      JSON.stringify({
+        status: 'ok',
+        service: 'cairn-worker',
+        uptimeSeconds: 1,
+        checks: { database: 'up', changeHint: 'unused' },
+        node: { workerId: 'local-worker', instanceId: 'i', lastTickAt: null, loopAlive: true, runningRunCount: 0, liveHandleCount: 0, shuttingDown: false },
+      }),
+    )
+    assert.equal(parsed.ok, true)
+    assert.equal(parsed.value.loopAlive, true)
+    assert.equal(
+      parseWorkerNodeHealth(
+        JSON.stringify({
+          status: 'ok',
+          service: 'cairn-api',
+          uptimeSeconds: 1,
+          checks: { database: 'up' },
+        }),
+      ).ok,
+      false,
+    )
+  })
+})
+
+describe('signWorkerNodeHealthHeaders', () => {
+  it('RMC18 只持 Worker ID 即可签名，不读 instanceId', () => {
+    const secret = decodeInternalSecret('Y2Fpcm4tZGV2LW9ubHktaW50ZXJuYWwtYXV0aC1rMDE=')
+    assert.ok(secret)
+    const headers = signWorkerNodeHealthHeaders(secret, 'local-worker', 1_700_000_000)
+    assert.equal(headers['x-cairn-node-worker'], 'local-worker')
+    assert.equal(Object.values(headers).join(' ').includes('instance'), false)
   })
 })

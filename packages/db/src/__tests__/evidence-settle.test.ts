@@ -6,6 +6,8 @@ import {
   EVIDENCE_INCOMPLETE_CODE,
   OBJECT_MISSING_REASONS,
   REDACTED,
+  writeRunVideoPayload,
+  writeEvidenceArtifactKey,
   type Step,
 } from '@cairn/shared'
 import {
@@ -422,6 +424,110 @@ describe.each(DRIVERS)('%s 证据轴与收尾（集成）', { timeout: 30_000 },
     return { runId: created.detail.id, attemptId: started!.attemptId }
   }
 
+  it('VE07 失败 Attempt 与成功重试各有独立截图槽，互不覆盖', async () => {
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: browserScenarioId,
+      evidencePolicy: { screenshot: 'always', video: 'off' },
+      actor: { id: actorId },
+    })
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    const [step] = await handle.db.select().from(stepRuns).where(eq(stepRuns.runId, created.detail.id))
+    const first = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: step!.id,
+      inputPayload: { url: 'https://shop.example/orders' },
+      grant,
+    })
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: first!.attemptId,
+      attemptStatus: 'FAILED',
+      error: { code: 'TIMEOUT', category: 'TIMEOUT', retryable: true, safeMessage: '打开失败' },
+      stepRunStatus: 'RUNNING',
+      runStatus: 'RUNNING',
+      grant,
+    })
+    const failedKey = writeEvidenceArtifactKey({
+      type: 'screenshot',
+      attemptId: first!.attemptId,
+      role: 'on_error',
+    })
+    const failedShot = await reserveObjectEvidence(handle.db, {
+      runId: created.detail.id,
+      attemptId: first!.attemptId,
+      type: 'screenshot',
+      artifactKey: failedKey,
+      retainUntil: new Date(Date.now() + 86_400_000),
+    })
+    await commitStoredObject(handle.db, {
+      id: failedShot.objectKey!.split('/').at(-1)!,
+      contentType: 'image/png',
+      byteSize: 4,
+      digest: `sha256:${'aa'.repeat(32)}`,
+    })
+    await commitObjectEvidence(handle.db, {
+      id: failedShot.id,
+      contentType: 'image/png',
+      byteSize: 4,
+      digest: `sha256:${'aa'.repeat(32)}`,
+      payload: { role: 'on_error', viewport: 'viewport', capturedAt: '2026-09-19T02:00:00.000Z' },
+    })
+
+    const second = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: step!.id,
+      inputPayload: { url: 'https://shop.example/orders' },
+      grant,
+    })
+    expect(second?.attemptId).not.toBe(first!.attemptId)
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: second!.attemptId,
+      attemptStatus: 'SUCCEEDED',
+      output: { ok: true },
+      stepRunStatus: 'SUCCEEDED',
+      runStatus: 'SUCCEEDED',
+      grant,
+    })
+    const okKey = writeEvidenceArtifactKey({
+      type: 'screenshot',
+      attemptId: second!.attemptId,
+      role: 'after_action',
+    })
+    const okShot = await reserveObjectEvidence(handle.db, {
+      runId: created.detail.id,
+      attemptId: second!.attemptId,
+      type: 'screenshot',
+      artifactKey: okKey,
+      retainUntil: new Date(Date.now() + 86_400_000),
+    })
+    await commitStoredObject(handle.db, {
+      id: okShot.objectKey!.split('/').at(-1)!,
+      contentType: 'image/png',
+      byteSize: 5,
+      digest: `sha256:${'bb'.repeat(32)}`,
+    })
+    await commitObjectEvidence(handle.db, {
+      id: okShot.id,
+      contentType: 'image/png',
+      byteSize: 5,
+      digest: `sha256:${'bb'.repeat(32)}`,
+      payload: { role: 'after_action', viewport: 'viewport', capturedAt: '2026-09-19T02:00:02.000Z' },
+    })
+
+    const settled = await settleRunEvidence(handle.db, created.detail.id, {
+      pendingTtlSeconds: 3600,
+      maxUploadAttempts: 3,
+    })
+    expect(settled.evidenceStatus).toBe('COMPLETE')
+    const listed = await listRunEvidence(handle.db, created.detail.id)
+    const shots = listed.items.filter((item) => item.type === 'screenshot')
+    expect(shots.map((item) => item.artifactKey).sort()).toEqual([failedKey, okKey].sort())
+    expect(shots.find((item) => item.artifactKey === failedKey)?.byteSize).toBe(4)
+    expect(shots.find((item) => item.artifactKey === okKey)?.byteSize).toBe(5)
+  })
+
   it('纯 Echo 即使出厂录像 always 也不建 video 槽', async () => {
     const { runId } = await succeedEcho({})
     const settled = await settleRunEvidence(handle.db, runId, {
@@ -543,6 +649,88 @@ describe.each(DRIVERS)('%s 证据轴与收尾（集成）', { timeout: 30_000 },
     expect(settled.evidenceStatus).toBe('COMPLETE')
     const listed = await listRunEvidence(handle.db, runId)
     expect(listed.items.filter((item) => item.type === 'video' && !item.attemptId)).toHaveLength(1)
+  })
+
+  async function commitAvailableRunVideo(runId: string, payload: unknown) {
+    const reserved = await reserveObjectEvidence(handle.db, {
+      runId,
+      type: 'video',
+      retainUntil: new Date(Date.now() + 86_400_000),
+    })
+    await commitStoredObject(handle.db, {
+      id: reserved.objectKey!.split('/').at(-1)!,
+      contentType: 'video/webm',
+      byteSize: 8,
+      digest: `sha256:${'ab'.repeat(32)}`,
+    })
+    await commitObjectEvidence(handle.db, {
+      id: reserved.id,
+      contentType: 'video/webm',
+      byteSize: 8,
+      digest: `sha256:${'ab'.repeat(32)}`,
+      payload,
+    })
+  }
+
+  const videoTiming = {
+    contractVersion: 1 as const,
+    captureStartedAt: '2026-09-19T02:00:00.000Z',
+    sealedAt: '2026-09-19T02:00:23.000Z',
+    capturedSpanMs: 23_000,
+    decodedDurationMs: 22_800,
+    decodedFrames: 14,
+    framesWritten: 14,
+    framesDropped: { rateLimited: 0, budget: 0, maskFailed: 0 },
+    finalFrame: 'captured' as const,
+  }
+
+  it('运行级录像 coverage.partial / none 判 INCOMPLETE；无 coverage 的历史行不改写', async () => {
+    const { runId: partialRun } = await finishBrowserAttempt({
+      evidencePolicy: { screenshot: 'off', video: 'always' },
+    })
+    await commitAvailableRunVideo(
+      partialRun,
+      writeRunVideoPayload({
+        truncated: true,
+        truncateReason: 'max_bytes',
+        passwordMask: 'applied',
+        timing: videoTiming,
+        coverage: { status: 'partial', gaps: [{ fromMs: 10_000, toMs: 23_000, reason: 'budget' }] },
+      }),
+    )
+    expect(
+      (await settleRunEvidence(handle.db, partialRun, { pendingTtlSeconds: 3600, maxUploadAttempts: 3 }))
+        .evidenceStatus,
+    ).toBe('INCOMPLETE')
+
+    const { runId: noneRun } = await finishBrowserAttempt({
+      evidencePolicy: { screenshot: 'off', video: 'always' },
+    })
+    await commitAvailableRunVideo(
+      noneRun,
+      writeRunVideoPayload({
+        truncated: false,
+        passwordMask: 'applied',
+        timing: { ...videoTiming, framesWritten: 0, decodedFrames: 0 },
+        coverage: { status: 'none', gaps: [{ fromMs: 0, toMs: 23_000, reason: 'capture_failed' }] },
+      }),
+    )
+    expect(
+      (await settleRunEvidence(handle.db, noneRun, { pendingTtlSeconds: 3600, maxUploadAttempts: 3 }))
+        .evidenceStatus,
+    ).toBe('INCOMPLETE')
+
+    const { runId: historicalRun } = await finishBrowserAttempt({
+      evidencePolicy: { screenshot: 'off', video: 'always' },
+    })
+    await commitAvailableRunVideo(historicalRun, {
+      truncated: true,
+      passwordMask: 'applied',
+    })
+    expect(
+      (await settleRunEvidence(handle.db, historicalRun, { pendingTtlSeconds: 3600, maxUploadAttempts: 3 }))
+        .evidenceStatus,
+    ).toBe('COMPLETE')
   })
 
   it('进程换代后 pending 录像立刻记 worker_lost，不等 pending TTL', async () => {

@@ -19,6 +19,7 @@ describe('AccountFormDialog', () => {
     await expect.element(getByLabelText('登录名')).toBeInTheDocument()
     await expect.element(getByLabelText('期望身份')).toBeInTheDocument()
     await expect.element(getByLabelText('密码', { exact: true })).toBeInTheDocument()
+    await expect.element(getByLabelText('用途')).toBeInTheDocument()
     expect(document.body.textContent).not.toMatch(/选择器|会话|插件|录制/)
   })
 })

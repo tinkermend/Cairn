@@ -21,6 +21,7 @@ import {
 import type { RequestAccount } from '../common/request-account'
 import { AuthService } from '../auth/auth.service'
 import { classifyAccountRecheck } from '../common/domain-error'
+import { trackSseConnection } from '../common/process-gauges'
 import { config } from '../config/env'
 import { DB_HANDLE } from '../db/db.module'
 import { CHANGE_HINT } from '../observe/change-hint.module'
@@ -102,6 +103,7 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
     res.flushHeaders()
+    const releaseSse = trackSseConnection()
 
     const expiresAt = this.tokenExpiresAt(input.authorization)
     let closed = false
@@ -114,6 +116,7 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     const close = () => {
       if (closed) return
       closed = true
+      releaseSse()
       if (heartbeat) clearInterval(heartbeat)
       if (authTick) clearInterval(authTick)
       this.unwatch(input.runId, onHint)

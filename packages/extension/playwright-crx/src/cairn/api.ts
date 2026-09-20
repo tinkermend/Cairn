@@ -1,5 +1,8 @@
 import {
   apiErrorSchema,
+  createDemonstrationBodySchema,
+  demonstrationDetailSchema,
+  type CreateDemonstrationBody,
   claimRecordingBindingBodySchema,
   createRecordingBodySchema,
   loginBodySchema,
@@ -145,6 +148,13 @@ export function uploadRecording(body: CreateRecordingBody): Promise<RecordingDra
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(createRecordingBodySchema.parse(body)),
+  })
+}
+
+export function uploadDemonstration(body: CreateDemonstrationBody) {
+  return cairnFetch('/api/recordings/demonstrations', demonstrationDetailSchema, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(createDemonstrationBodySchema.parse(body)),
   })
 }
 

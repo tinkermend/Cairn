@@ -62,6 +62,9 @@ export class BrowserStepExecutor implements StepExecutor {
       trace: evidencePolicy.trace,
       screenshotRetainUntil: retainUntilFor('screenshot', evidencePolicy).toISOString(),
       traceRetainUntil: retainUntilFor('trace', evidencePolicy).toISOString(),
+      commandType: commandOutcome.command.type,
+      screenshotViewport: evidencePolicy.screenshotViewport,
+      sensitiveSelectors: ctx.snapshot.targetAuth?.sensitiveSelectors ?? [],
     })
 
     const followUp = await this.consumption.afterBaseline(ctx, step, result, commandOutcome.command)

@@ -30,6 +30,9 @@ export const LOGGING_REDACT_PATHS: readonly string[] = [
   // 目标账号设密走请求体。默认序列化器不写 body，但一旦有人打开 body
   // 日志或把 req 整份倒进 customProps，这条路径必须已经在清单里。
   'req.body.password',
+  // Service Webhook 签名密钥同样只允许在写入时经过 API；为未来请求体
+  // 序列化器预留脱敏路径，不能让重置密钥进入日志。
+  'req.body.secret',
   'res.body.token',
   'res.body.secretDigest',
   'token',

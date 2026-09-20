@@ -5,6 +5,7 @@ vi.mock("@cairn/db", async (original) => ({
   getSessionById: vi.fn(async (db, id) => id === "00000000-0000-4000-8000-000000000011" ? { id, status: "OPEN" } : null),
   getWorkerById: vi.fn(async () => ({ id: "worker" })),
   getRun: vi.fn(async () => ({ status: "RUNNING", placement: {} })),
+  touchSessionUsed: vi.fn(async () => true),
   findSessionByAuthWaitRun: vi.fn(async () => null),
   findAuthWaitLeaseForRun: vi.fn(async () => null),
   findAuthWaitLeaseForOperation: vi.fn(async () => null),
@@ -112,6 +113,8 @@ describe('画面订阅生命周期', () => {
     expect(stop).toHaveBeenCalledTimes(20)
     expect(live.screencasts.size).toBe(0)
     expect(manager.countScreencastObservers(sessionId)).toBe(0)
+    const db = await import('@cairn/db')
+    expect(vi.mocked(db.touchSessionUsed)).toHaveBeenCalled()
   })
 
   it('会话实例订阅在 getRun 找不到运行时仍持续出帧', async () => {

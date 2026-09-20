@@ -118,6 +118,11 @@ export const DEFAULT_SESSION_KEEP_ALIVE_SECONDS = 3600
 export const DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS = 900
 export const DEFAULT_SESSION_EVICTION_PRIORITY = 0
 
+export const SESSION_LOST_DISPOSITIONS = ['MANUAL', 'AUTO'] as const
+export type SessionLostDisposition = (typeof SESSION_LOST_DISPOSITIONS)[number]
+export const sessionLostDispositionSchema = z.enum(SESSION_LOST_DISPOSITIONS)
+export const DEFAULT_SESSION_LOST_DISPOSITION: SessionLostDisposition = 'MANUAL'
+
 /**
  * 落进快照的会话策略。历史 Run 必须能解释当时怎么执行。
  * 不进 executionPolicySchema：Step 不决定会话所有权。
@@ -138,6 +143,7 @@ export const sessionPolicySchema = z
       .positive()
       .default(DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS),
     evictionPriority: z.number().int().default(DEFAULT_SESSION_EVICTION_PRIORITY),
+    lostDisposition: sessionLostDispositionSchema.default(DEFAULT_SESSION_LOST_DISPOSITION),
   })
   .superRefine((policy, ctx) => {
     if (policy.maxLifetimeSeconds <= policy.idleTtlSeconds) {
@@ -176,6 +182,7 @@ export const DEFAULT_SESSION_POLICY: SessionPolicy = {
   keepAliveSeconds: DEFAULT_SESSION_KEEP_ALIVE_SECONDS,
   authProbeIntervalSeconds: DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
   evictionPriority: DEFAULT_SESSION_EVICTION_PRIORITY,
+  lostDisposition: DEFAULT_SESSION_LOST_DISPOSITION,
 }
 
 /** POST /runs 可只覆盖部分字段；解析后写完整值进快照。 */
@@ -192,8 +199,10 @@ export const sessionPolicyOverrideSchema = z.strictObject({
 })
 export type SessionPolicyOverride = z.infer<typeof sessionPolicyOverrideSchema>
 
-export const targetSessionPolicyOverrideSchema = sessionPolicyOverrideSchema
-export type TargetSessionPolicyOverride = SessionPolicyOverride
+export const targetSessionPolicyOverrideSchema = sessionPolicyOverrideSchema.extend({
+  lostDisposition: sessionLostDispositionSchema.optional(),
+})
+export type TargetSessionPolicyOverride = z.infer<typeof targetSessionPolicyOverrideSchema>
 
 /** 写 Target 覆盖：显式 null 表示清除该项。 */
 export const targetSessionPolicyPatchSchema = z.strictObject({
@@ -206,6 +215,7 @@ export const targetSessionPolicyPatchSchema = z.strictObject({
   keepAliveSeconds: z.number().int().positive().nullable().optional(),
   authProbeIntervalSeconds: z.number().int().positive().nullable().optional(),
   evictionPriority: z.number().int().nullable().optional(),
+  lostDisposition: sessionLostDispositionSchema.nullable().optional(),
 })
 export type TargetSessionPolicyPatch = z.infer<typeof targetSessionPolicyPatchSchema>
 
@@ -218,7 +228,7 @@ export function resolveSessionPolicy(
 
 export function resolveSessionPolicyLayers(input: {
   platformDefault?: SessionPolicy
-  targetOverride?: SessionPolicyOverride | null
+  targetOverride?: SessionPolicyOverride | TargetSessionPolicyOverride | null
   runOverride?: SessionPolicyOverride | null
 }): SessionPolicy {
   return sessionPolicySchema.parse({
@@ -229,9 +239,9 @@ export function resolveSessionPolicyLayers(input: {
 }
 
 export function applyTargetSessionPolicyPatch(
-  current: SessionPolicyOverride | null | undefined,
+  current: TargetSessionPolicyOverride | null | undefined,
   patch: TargetSessionPolicyPatch,
-): SessionPolicyOverride | null {
+): TargetSessionPolicyOverride | null {
   const next: Record<string, unknown> = { ...(current ?? {}) }
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue
@@ -240,7 +250,7 @@ export function applyTargetSessionPolicyPatch(
   }
   const cleaned = stripUndefined(next)
   if (Object.keys(cleaned).length === 0) return null
-  return sessionPolicyOverrideSchema.parse(cleaned)
+  return targetSessionPolicyOverrideSchema.parse(cleaned)
 }
 
 function stripUndefined<T extends Record<string, unknown>>(

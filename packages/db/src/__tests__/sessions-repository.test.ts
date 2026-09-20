@@ -457,7 +457,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       .update(schemaFor(handle.db).sessionLeases)
       .set({ waitDeadlineAt: afterSeconds(handle.db, -1) })
       .where(eq(schemaFor(handle.db).sessionLeases.id, waitGrant.leaseId))
-    expect(await reapSessionLeases(handle.db, { limit: 20 })).toBeGreaterThanOrEqual(1)
+    expect((await reapSessionLeases(handle.db, { limit: 20 })).settled).toBeGreaterThanOrEqual(1)
     const afterHold = (await getSessionById(handle.db, claimed.session.id))!
     expect(afterHold.authState).toBe('UNKNOWN')
     expect(afterHold.status).toBe('OPEN')
@@ -479,9 +479,9 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     const got = await claimExecution()
     await forceLeaseExpiresAt(handle.db, got.grant.leaseId, new Date(Date.now() - 5000))
     const n1 = await reapSessionLeases(handle.db)
-    expect(n1).toBeGreaterThanOrEqual(1)
+    expect(n1.settled).toBeGreaterThanOrEqual(1)
     const n2 = await reapSessionLeases(handle.db)
-    expect(n2).toBe(0)
+    expect(n2.settled).toBe(0)
     const lease = await getLeaseById(handle.db, got.grant.leaseId)
     expect(lease?.status).toBe('EXPIRED')
 
@@ -493,7 +493,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
     })
     await forceLeaseExpiresAt(handle.db, got2.grant.leaseId, new Date(Date.now() - 5000)).catch(() => {})
     const n3 = await reapSessionLeases(handle.db)
-    expect(n3).toBe(0)
+    expect(n3.settled).toBe(0)
     expect((await getLeaseById(handle.db, got2.grant.leaseId))?.status).toBe('RELEASED')
 
     await setSessionStatus(handle.db, {

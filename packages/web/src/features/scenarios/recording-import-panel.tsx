@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { fetchRecording } from '@/lib/recordings-api'
+import { DemonstrationImportPanel } from './demonstration-import-panel'
 import {
   RECORDING_NORMALIZER_VERSION,
   targetDescriptorSchema,
@@ -44,7 +47,7 @@ type LocalDisposition =
   | { disposition: 'discard'; reason: string }
   | { disposition: 'replace'; step: Step }
 
-type Props = {
+export type RecordingImportPanelProps = {
   open: boolean
   scenarioId: string
   recordingDraftId: string | null
@@ -52,14 +55,23 @@ type Props = {
   insertAnchor: RecordingInsertAnchor
   stepCount: number
   inputs: readonly ScenarioInputDecl[]
+  independentSteps?: { id: string; name: string }[]
   canApply: boolean
+  hasLocalChanges?: boolean
   onOpenChange: (open: boolean) => void
   onSelectDraft: (recordingDraftId: string) => void
   onConflict: () => void
   onApplied: (scenario: ScenarioDetailDto, insertedIds: string[]) => void
 }
 
-export function RecordingImportPanel({
+export function RecordingImportPanel(props: RecordingImportPanelProps) {
+  const source = useQuery({ queryKey: ['recordings', props.recordingDraftId], queryFn: () => fetchRecording(props.recordingDraftId!), enabled: props.open && Boolean(props.recordingDraftId) })
+  if (props.open && props.recordingDraftId && !source.data) return <Sheet open onOpenChange={props.onOpenChange}><SheetContent><SheetHeader><SheetTitle>录制回填预览</SheetTitle><SheetDescription>{source.isError ? '无法读取来源，请重试。' : '正在读取来源…'}</SheetDescription></SheetHeader>{source.isError && <Button onClick={() => void source.refetch()}>重试</Button>}</SheetContent></Sheet>
+  if (source.data?.sourceProtocol === 'demonstration@1') return <DemonstrationImportPanel key={props.recordingDraftId} {...props} />
+  return <LegacyRecordingImportPanel {...props} />
+}
+
+function LegacyRecordingImportPanel({
   open,
   scenarioId,
   recordingDraftId,
@@ -72,7 +84,7 @@ export function RecordingImportPanel({
   onSelectDraft,
   onConflict,
   onApplied,
-}: Props) {
+}: RecordingImportPanelProps) {
   const [preview, setPreview] = useState<RecordingImportPreview | null>(null)
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)

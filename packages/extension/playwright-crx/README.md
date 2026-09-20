@@ -8,6 +8,8 @@
 
 方案：[工作台收敛与设计语言对齐](../../../docs/spec/2026-09-13-extension-workbench-ui.md)。
 
+示教一期增加 `cairn-crx-capture@1`：在固定的 `playwright-crx@0.15.0` 录制接缝采集合并前事实，上传到现有录制草稿与 Studio。原生输入发生后取到的观察只标最近缓存或缺失，不能冒充原始前态；页面、Frame、导航代次与缺口随事实保存。构建插件验证接缝形状，升级录制内核时必须重新验证。旧 JSONL 仍可导入；任意 Playwright JS/TS 文件不在支持范围。
+
 ## 开发
 
 产物在 `dist/`。Chrome 只认这个目录，不认 `src/`。

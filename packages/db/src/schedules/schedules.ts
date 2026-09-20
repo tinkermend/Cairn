@@ -34,6 +34,7 @@ import {
   type ScheduleWriteResponse,
   type Step,
 } from '@cairn/shared'
+import { requireMapCapableAccount } from '../console/account-usage.js'
 import type { Db } from '../client.js'
 import { recordAudit } from '../audit/record.js'
 import { decodeAuditCursor, encodeAuditCursor } from '../audit/cursor.js'
@@ -216,7 +217,7 @@ export async function getSchedule(db: Db, scheduleId: string): Promise<ScheduleD
   return scheduleToDto(db, scheduleId)
 }
 
-export async function listSchedules(db: Db, query: ScheduleListQuery): Promise<{ items: ScheduleDto[]; nextCursor?: string }> {
+export async function listSchedules(db: Db, query: ScheduleListQuery, actorId?: string): Promise<{ items: ScheduleDto[]; nextCursor?: string }> {
   const { schedules } = schemaFor(db)
   const decoded = query.cursor ? decodeAuditCursor(query.cursor) : null
   const rows = await db
@@ -225,6 +226,7 @@ export async function listSchedules(db: Db, query: ScheduleListQuery): Promise<{
     .where(
       and(
         query.targetId ? eq(schedules.targetId, query.targetId) : undefined,
+        await (await import('../console/target-authorization.js')).scopedTargetFilter(db, actorId, schedules.targetId, 'schedule:read'),
         query.enabled === undefined ? undefined : eq(schedules.enabled, query.enabled ? 1 : 0),
         decoded
           ? or(
@@ -274,6 +276,7 @@ export async function writeSchedule(
     if (!account || account.targetId !== parsed.definition.consumer.targetId || account.status !== 'active') {
       throw notFound('TARGET_ACCOUNT_NOT_FOUND', '目标账号不存在或已停用')
     }
+    await requireMapCapableAccount(tx, parsed.definition.consumer.targetId, parsed.definition.consumer.targetAccountId)
     const now = await clockNow(tx)
     const digest = sha256Hex(parsed.definition)
     let scheduleId = existingId
@@ -326,6 +329,7 @@ export async function writeSchedule(
           targetAccountId: parsed.definition.consumer.targetAccountId,
           consumerKey: SCHEDULE_CONSUMER_MAP_REFRESH,
           enabled: 0,
+          enabledGuard: null,
           revision: 1,
           currentVersionId: versionId,
           nextDueAt: nextDueFromWindows(
@@ -385,20 +389,29 @@ export async function setScheduleEnabled(
     const [current] = await locked(tx, tx.select().from(schedules).where(eq(schedules.id, scheduleId)))
     if (!current) throw notFound('SCHEDULE_NOT_FOUND', '调度计划不存在')
     if (current.revision !== parsed.expectedRevision) throw conflict('SCHEDULE_REVISION_CONFLICT', '调度修订已变更')
+    if (parsed.enabled) {
+      await requireMapCapableAccount(tx, current.targetId, current.targetAccountId)
+    }
     const now = await clockNow(tx)
     const dto = await scheduleToDto(tx, scheduleId)
     const nextDue = parsed.enabled
       ? nextDueFromWindows(previewScheduleWindows({ scheduleId, definition: dto.definition, asOf: now, limit: 1 }), now)
       : current.nextDueAt
-    await tx
-      .update(schedules)
-      .set({
-        enabled: parsed.enabled ? 1 : 0,
-        revision: current.revision + 1,
-        nextDueAt: nextDue,
-        updatedAt: now,
-      })
-      .where(eq(schedules.id, scheduleId))
+    try {
+      await tx
+        .update(schedules)
+        .set({
+          enabled: parsed.enabled ? 1 : 0,
+          enabledGuard: parsed.enabled ? 'Y' : null,
+          revision: current.revision + 1,
+          nextDueAt: nextDue,
+          updatedAt: now,
+        })
+        .where(eq(schedules.id, scheduleId))
+    } catch (error) {
+      if (isUniqueViolation(error)) throw conflict('SCHEDULE_ACCOUNT_CONFLICT', '该账号已有启用中的自动复查计划')
+      throw error
+    }
     if (parsed.cancelAdmittedJobs && current.enabled === 1 && !parsed.enabled) {
       const { scheduleOccurrences } = schemaFor(tx)
       const admitted = await tx
@@ -755,6 +768,9 @@ export async function admitScheduleOccurrence(
       if (error instanceof DomainError && error.code === 'AUTH_PREPARATION_REQUIRED') return skip('AUTH_PREPARATION_REQUIRED')
       if (error instanceof DomainError && error.message.includes('手工地图作业尚未对该目标开放')) return skip('MANUAL_JOBS_DISABLED')
       if (error instanceof DomainError && error.code === 'MAP_CONSUMER_UNAVAILABLE') return skip('WORKER_UNAVAILABLE')
+      if (error instanceof DomainError && error.code === 'MAP_ACCOUNT_USAGE_REQUIRED') {
+        return skip('MAP_ACCOUNT_USAGE_REQUIRED')
+      }
       throw error
     }
   })

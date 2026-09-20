@@ -3,6 +3,7 @@ import {
   type AiOutputSchema,
   type OutputFieldType,
   type Step,
+  type OutputShape,
 } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,6 +17,8 @@ import {
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { fieldElementId } from '../document'
+import type { BindingOption } from '../document'
+import { BindingFields } from './binding'
 
 const TYPE_LABELS: Record<OutputFieldType, string> = {
   string: '文本',
@@ -27,11 +30,62 @@ export function AiStepFields({
   step,
   disabled,
   onChange,
+  bindings = [],
+  shapes = new Map(),
 }: {
   step: Extract<Step, { type: 'ai_action' | 'ai_extract' | 'ai_assert' }>
   disabled?: boolean
   onChange: (step: Step) => void
+  bindings?: BindingOption[]
+  shapes?: Map<string, OutputShape>
 }) {
+  if (step.type === 'ai_action') return (
+    <div className='space-y-3'>
+      <Label>操作方式</Label>
+      <Select value={'operation' in step.input ? step.input.operation : 'intent'} disabled={disabled} onValueChange={(operation) => {
+        const input = operation === 'intent' ? { instruction: '完成指定的页面操作' }
+          : operation === 'tap' ? { operation: 'tap' as const, targetDescription: '' }
+          : operation === 'input' ? { operation: 'input' as const, mode: 'replace' as const, targetDescription: '', value: '' }
+          : operation === 'keyboard' ? { operation: 'keyboard' as const, key: 'Enter' }
+          : { operation: 'scroll' as const, direction: 'down' as const, distance: 300 }
+        onChange({ ...step, input, policy: { ...step.policy, retryLimit: 0 } })
+      }}>
+        <SelectTrigger className='w-full' aria-label='AI 操作方式'><SelectValue /></SelectTrigger>
+        <SelectContent><SelectItem value='intent'>业务意图</SelectItem><SelectItem value='tap'>点击目标</SelectItem><SelectItem value='input'>输入文字</SelectItem><SelectItem value='keyboard'>按键</SelectItem><SelectItem value='scroll'>相对滚动</SelectItem></SelectContent>
+      </Select>
+      {'operation' in step.input ? <AtomicActionFields step={step} disabled={disabled} bindings={bindings} shapes={shapes} onChange={onChange} /> : <InstructionFields step={step} disabled={disabled} onChange={onChange} />}
+    </div>
+  )
+  return <InstructionFields step={step} disabled={disabled} onChange={onChange} />
+}
+
+function AtomicActionFields({ step, disabled, bindings, shapes, onChange }: { step: Extract<Step, { type: 'ai_action' }>; disabled?: boolean; bindings: BindingOption[]; shapes: Map<string, OutputShape>; onChange: (step: Step) => void }) {
+  const input = step.input
+  if (!('operation' in input)) return null
+  const update = (patch: Record<string, unknown>) => onChange({ ...step, input: { ...input, ...patch } } as Step)
+  return <div className='space-y-3'>
+    <div className='space-y-2'><Label htmlFor={`atom-target-${step.id}`}>目标描述{input.operation === 'keyboard' || input.operation === 'scroll' ? '（可选）' : ''}</Label>
+      <Textarea id={`atom-target-${step.id}`} value={input.targetDescription ?? ''} disabled={disabled} onChange={(e) => update({ targetDescription: e.target.value || undefined })} />
+      {input.operation === 'keyboard' && <p className='text-label text-muted-foreground'>不填写目标时，在当前焦点上发送按键。</p>}
+    </div>
+    {input.operation === 'input' && <>
+      <Label>输入模式</Label><Select value={input.mode} disabled={disabled} onValueChange={(mode) => onChange({ ...step, input: mode === 'clear' ? { operation: 'input', mode, targetDescription: input.targetDescription } : { ...input, mode: mode as 'replace' | 'type_only', ...(input.from ? {} : { value: input.value ?? '' }) } })}>
+        <SelectTrigger className='w-full' aria-label='输入模式'><SelectValue /></SelectTrigger><SelectContent><SelectItem value='replace'>替换内容</SelectItem><SelectItem value='type_only'>仅输入（保留原内容）</SelectItem><SelectItem value='clear'>清空</SelectItem></SelectContent>
+      </Select>
+      {input.mode !== 'clear' && <BindingFields id={step.id} from={input.from ?? ''} fromField={input.fromField} value={input.value ?? ''} bindings={bindings} shape={shapes.get(input.from ?? '')} disabled={disabled} onBinding={(from, value, fromField) => {
+        const { value: _v, from: _f, fromField: _ff, ...base } = input
+        onChange({ ...step, input: { ...base, ...(from ? { from, fromField } : { value }) } })
+      }} />}
+      {input.mode !== 'clear' && !input.from && !input.value && <p role='alert' className='text-label text-destructive'>输入不能为空；如需删除内容，请选择清空。</p>}
+    </>}
+    {input.operation === 'keyboard' && <div className='space-y-2'><Label htmlFor={`atom-key-${step.id}`}>按键组合</Label><Input id={`atom-key-${step.id}`} disabled={disabled} value={input.key} placeholder='Control+a / Enter' onChange={(e) => update({ key: e.target.value })} /></div>}
+    {input.operation === 'scroll' && <div className='grid gap-3 sm:grid-cols-2'><div className='space-y-2'><Label>滚动方向</Label><Select disabled={disabled} value={input.direction} onValueChange={(direction) => update({ direction })}><SelectTrigger aria-label='滚动方向'><SelectValue /></SelectTrigger><SelectContent>{([['up', '向上'], ['down', '向下'], ['left', '向左'], ['right', '向右']] as const).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select></div><div className='space-y-2'><Label htmlFor={`atom-distance-${step.id}`}>距离（CSS 像素）</Label><Input id={`atom-distance-${step.id}`} type='number' min={1} max={10000} value={input.distance} disabled={disabled} onChange={(e) => update({ distance: Number(e.target.value) })} /></div></div>}
+    <p className='text-label text-muted-foreground'>每次执行一个明确动作。存在副作用，不会自动重试。</p>
+  </div>
+}
+
+function InstructionFields({ step, disabled, onChange }: { step: Extract<Step, { type: 'ai_action' | 'ai_extract' | 'ai_assert' }>; disabled?: boolean; onChange: (step: Step) => void }) {
+  if (!('instruction' in step.input)) return null
   return (
     <div className='space-y-3'>
       <div className='space-y-2'>

@@ -21,7 +21,7 @@ import {
   targets,
   type DbHandle,
 } from '@cairn/db/testing'
-import { OBJECT_MISSING_REASONS, type Step } from '@cairn/shared'
+import { OBJECT_MISSING_REASONS, writeRunVideoPayload, type Step } from '@cairn/shared'
 import { LocalObjectStore } from '@cairn/storage'
 import { ObjectService } from './object.service.js'
 
@@ -44,6 +44,7 @@ describe('对象存储托管协议（集成）', { timeout: 30_000 }, () => {
   let targetId: string
   let runId: string
   let otherRunId: string
+  let scenarioId: string
 
   beforeAll(async () => {
     handle = await openIsolatedDb(SCHEMA)
@@ -74,6 +75,7 @@ describe('对象存储托管协议（集成）', { timeout: 30_000 }, () => {
       steps: [echoStep],
       actor: { id: actorId },
     })
+    scenarioId = scenario.id
     runId = (await createRunWithSnapshot(handle.db, { scenarioId: scenario.id, actor: { id: actorId } }))
       .detail.id
     otherRunId = (
@@ -512,5 +514,49 @@ describe('对象存储托管协议（集成）', { timeout: 30_000 }, () => {
     expect(again.status).toBe('available')
     expect(again.payload).toMatchObject({ passwordMask: 'applied' })
     expect(again.byteSize).toBe(16)
+  })
+
+  it('运行级录像可用后，更长采集区间的提交会替换对象', async () => {
+    const replaceRunId = (await createRunWithSnapshot(handle.db, { scenarioId, actor: { id: actorId } }))
+      .detail.id
+    const stubTiming = {
+      contractVersion: 1 as const,
+      captureStartedAt: '2026-09-19T12:00:00.000Z',
+      sealedAt: '2026-09-19T12:00:02.000Z',
+      capturedSpanMs: 1874,
+      decodedDurationMs: 1000,
+      decodedFrames: 3,
+      framesWritten: 2,
+      framesDropped: { rateLimited: 1, budget: 0, maskFailed: 0 },
+      finalFrame: 'page_closed' as const,
+    }
+    const fullTiming = { ...stubTiming, capturedSpanMs: 43_820, decodedDurationMs: 43_600, decodedFrames: 40, framesWritten: 40 }
+    const stub = await objects.putObjectEvidence({
+      runId: replaceRunId,
+      type: 'video',
+      body: new Uint8Array(12).fill(1),
+      contentType: 'video/webm',
+      payload: writeRunVideoPayload({ truncated: false, passwordMask: 'applied', timing: stubTiming }),
+    })
+    const full = await objects.putObjectEvidence({
+      runId: replaceRunId,
+      type: 'video',
+      body: new Uint8Array(20).fill(2),
+      contentType: 'video/webm',
+      payload: writeRunVideoPayload({ truncated: false, passwordMask: 'applied', timing: fullTiming }),
+    })
+    expect(full.id).toBe(stub.id)
+    expect(full.status).toBe('available')
+    expect(full.byteSize).toBe(20)
+    expect(full.payload).toMatchObject({ timing: { capturedSpanMs: 43_820 } })
+    const shorter = await objects.putObjectEvidence({
+      runId: replaceRunId,
+      type: 'video',
+      body: new Uint8Array(24).fill(3),
+      contentType: 'video/webm',
+      payload: writeRunVideoPayload({ truncated: false, passwordMask: 'applied', timing: stubTiming }),
+    })
+    expect(shorter.byteSize).toBe(20)
+    expect(shorter.payload).toMatchObject({ timing: { capturedSpanMs: 43_820 } })
   })
 })

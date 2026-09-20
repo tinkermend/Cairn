@@ -2,6 +2,8 @@ import { Inject, Injectable, Optional } from '@nestjs/common'
 import {
   acceptKnowledgeProposal,
   applyRecordingImport,
+  applyDemonstrationImport,
+  previewDemonstrationImport,
   createRecordingBinding,
   createScenarioWithVersion,
   createTrialRunFromDraft,
@@ -9,6 +11,7 @@ import {
   getKnowledgeProposal,
   getPlatformConfig,
   getScenario,
+  getScenarioValidation,
   rejectKnowledgeProposal,
   listScenarioRecordingImports,
   listScenarioVersions,
@@ -33,6 +36,8 @@ import {
   FACTORY_PLATFORM_CONFIG,
   type AcceptKnowledgeProposalBody,
   type ApplyRecordingImportBody,
+  type ApplyDemonstrationBody,
+  type PreviewDemonstrationBody,
   type CreateKnowledgeProposalBody,
   type CreateRecordingBindingBody,
   type CreateScenarioBody,
@@ -58,7 +63,6 @@ import { composeScenarioKnowledge } from './knowledge-operations'
 import { requireProposalAccess } from '../map/knowledge-access'
 import { publicApiOrigin } from '../recordings/recordings.service'
 import {
-  assertAiExecutePermission,
   browserAiCapabilitiesFrom,
   executableTypesFrom,
 } from '../config/browser-ai'
@@ -67,6 +71,7 @@ import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
 import { rethrowDomain } from '../common/domain-error'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
+import { assertDemonstrationEnabled } from '../recordings/demonstration-feature'
 
 @Injectable()
 export class ScenariosService {
@@ -93,8 +98,8 @@ export class ScenariosService {
     )
   }
 
-  list(query?: ScenarioListQuery) {
-    return listScenarios(this.db, query).catch(rethrowDomain)
+  list(query?: ScenarioListQuery, actorId?: string) {
+    return listScenarios(this.db, query, actorId).catch(rethrowDomain)
   }
 
   previewDelete(id: string) {
@@ -103,7 +108,7 @@ export class ScenariosService {
 
   async capabilities() {
     const current = await this.currentConfig()
-    return browserAiCapabilitiesFrom(current.document, current.revision)
+    return { ...browserAiCapabilitiesFrom(current.document, current.revision), demonstrationImport: config.CAIRN_DEMONSTRATION_ENABLED }
   }
 
   private async runtimeTypes() {
@@ -175,13 +180,7 @@ export class ScenariosService {
     try {
       const current = await this.currentConfig()
       const types = executableTypesFrom(current.document)
-      const detail = await getScenario(this.db, id, { executableTypes: types })
-      const draftDocument = detail.draft?.document
-      const steps =
-        (draftDocument && 'steps' in draftDocument ? draftDocument.steps : undefined) ??
-        detail.published?.definition.steps ??
-        []
-      assertAiExecutePermission(actor, steps)
+      // The DB validates permissions against this revision's expanded definition in the creation transaction.
       return await createTrialRunFromDraft(this.db, id, {
         revision: body.revision,
         targetAccountId: body.targetAccountId,
@@ -199,6 +198,10 @@ export class ScenariosService {
     } catch (error) {
       rethrowDomain(error)
     }
+  }
+
+  validation(id: string, actor: RequestAccount) {
+    return getScenarioValidation(this.db, id, actor.id).catch(rethrowDomain)
   }
 
   async remove(id: string, actor: RequestAccount, body?: DeleteResourceBody) {
@@ -226,8 +229,10 @@ export class ScenariosService {
     return listScenarioRecordingImports(this.db, id, actor.id).catch(rethrowDomain)
   }
 
-  async previewRecordingImport(id: string, body: PreviewRecordingImportBody, actor: RequestAccount) {
+  async previewRecordingImport(id: string, body: PreviewRecordingImportBody | PreviewDemonstrationBody, actor: RequestAccount) {
     try {
+      if ('protocolVersion' in body) assertDemonstrationEnabled()
+      if ('protocolVersion' in body) return await previewDemonstrationImport(this.db, id, body, actor.id)
       return await previewRecordingImport(this.db, id, body, actor.id)
     } catch (error) {
       rethrowDomain(error)
@@ -258,8 +263,10 @@ export class ScenariosService {
     return rejectKnowledgeProposal(this.db, id, proposalId, this.actor(account)).catch(rethrowDomain)
   }
 
-  async applyRecordingImport(id: string, body: ApplyRecordingImportBody, actor: RequestAccount) {
+  async applyRecordingImport(id: string, body: ApplyRecordingImportBody | ApplyDemonstrationBody, actor: RequestAccount) {
     try {
+      if ('protocolVersion' in body) assertDemonstrationEnabled()
+      if ('protocolVersion' in body) return await applyDemonstrationImport(this.db, id, body, actor, { executableTypes: await this.runtimeTypes() })
       return await applyRecordingImport(this.db, id, body, { id: actor.id }, {
         executableTypes: await this.runtimeTypes(),
       })

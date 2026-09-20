@@ -114,6 +114,8 @@ describe.each(DRIVERS)('%s 有界探索账本', { timeout: 60_000 }, (driver) =>
       displayName: '探索账号',
       username: `ops-${accountId}`,
       status: 'active',
+      usage: 'both',
+      mapUsageGuard: 'Y',
     })
     return { targetId, accountId }
   }

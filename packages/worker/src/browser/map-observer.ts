@@ -6,6 +6,13 @@ import {
   type MapObservation,
 } from '@cairn/shared'
 import type { PassiveMapCaptureInput, PassiveMapObservationPort } from '../engine/ports.js'
+import {
+  applyCollectedSurface,
+  collectAuthorizedSurface,
+  capturePolicyNodeLimit,
+  isHardSurfaceGap,
+  type CollectedSurface,
+} from '../map/surface-collect.js'
 import { classifySurface, originOf, type SurfaceInspect } from '../map/surface-state.js'
 import type { BrowserSessionManager } from './session-manager.js'
 
@@ -21,24 +28,37 @@ function topUrlPattern(url: string): string {
   }
 }
 
-function toObservation(input: PassiveMapCaptureInput, inspect: SurfaceInspect): MapObservation {
-  const classified = classifySurface(inspect)
-  const key = mapRunFactKey({
+function sourceRef(input: PassiveMapCaptureInput) {
+  return {
+    sourceType: input.sourceType,
+    runId: input.runId,
+    stepRunId: input.stepRunId,
+    attemptId: input.attemptId,
+  } as const
+}
+
+function factKey(input: PassiveMapCaptureInput) {
+  return mapRunFactKey({
     runId: input.runId,
     attemptId: input.attemptId,
     phase: input.phase,
   })
-  if (classified.reason) {
+}
+
+function toObservation(
+  input: PassiveMapCaptureInput,
+  inspect: SurfaceInspect,
+  extras?: { collected?: CollectedSurface; collectFailed?: boolean },
+): MapObservation {
+  const classified = classifySurface(inspect)
+  const key = factKey(input)
+  const framesBlocked = inspect.frames.some((frame) => !frame.authorized)
+  if (isHardSurfaceGap(classified.reason)) {
     return mapGapObservation({
       id: randomUUID(),
       targetId: input.targetId,
       sourceType: input.sourceType,
-      sourceRef: {
-        sourceType: input.sourceType,
-        runId: input.runId,
-        stepRunId: input.stepRunId,
-        attemptId: input.attemptId,
-      },
+      sourceRef: sourceRef(input),
       phase: input.phase,
       dedupeKey: key,
       collectorVersion: input.policy.collectorVersion,
@@ -48,28 +68,36 @@ function toObservation(input: PassiveMapCaptureInput, inspect: SurfaceInspect): 
       topUrlPattern: topUrlPattern(inspect.url),
     })
   }
+  const fields = applyCollectedSurface({
+    collected: extras?.collected,
+    condition: input.condition,
+    capability: classified.capability,
+    stateSummary: classified.stateSummary,
+    collectFailed: extras?.collectFailed,
+    framesBlocked,
+    maxBytes: input.policy.maxBytes,
+  })
   return mapObservationShell({
     id: randomUUID(),
     targetId: input.targetId,
     sourceType: input.sourceType,
-    sourceRef: {
-      sourceType: input.sourceType,
-      runId: input.runId,
-      stepRunId: input.stepRunId,
-      attemptId: input.attemptId,
-    },
+    sourceRef: sourceRef(input),
     phase: input.phase,
     dedupeKey: key,
     collectorVersion: input.policy.collectorVersion,
-    conditionSnapshot: input.condition,
+    conditionSnapshot: fields.conditionSnapshot,
     captureStatus: 'observed',
-    completeness: 'partial',
-    truncated: true,
+    completeness: fields.completeness,
+    truncated: fields.truncated,
+    missingReasons: fields.missingReasons,
     topUrlPattern: topUrlPattern(inspect.url),
     originChain: classified.originChain,
-    surfaceCapability: classified.capability,
-    stateSummary: classified.stateSummary,
-    structuralSummary: { nodeCount: 0, truncated: true },
+    surfaceCapability: fields.surfaceCapability,
+    regionRefs: fields.regionRefs,
+    nodeSetKind: fields.nodeSetKind,
+    stateSummary: fields.stateSummary,
+    semanticSummary: fields.semanticSummary,
+    structuralSummary: fields.structuralSummary,
   })
 }
 
@@ -82,18 +110,9 @@ export function createPassiveMapObservationPort(manager: BrowserSessionManager):
             id: randomUUID(),
             targetId: input.targetId,
             sourceType: input.sourceType,
-            sourceRef: {
-              sourceType: input.sourceType,
-              runId: input.runId,
-              stepRunId: input.stepRunId,
-              attemptId: input.attemptId,
-            },
+            sourceRef: sourceRef(input),
             phase: input.phase,
-            dedupeKey: mapRunFactKey({
-              runId: input.runId,
-              attemptId: input.attemptId,
-              phase: input.phase,
-            }),
+            dedupeKey: factKey(input),
             collectorVersion: input.policy.collectorVersion,
             conditionSnapshot: input.condition,
             reason: 'CAPABILITY_MISSING',
@@ -106,18 +125,9 @@ export function createPassiveMapObservationPort(manager: BrowserSessionManager):
             id: randomUUID(),
             targetId: input.targetId,
             sourceType: input.sourceType,
-            sourceRef: {
-              sourceType: input.sourceType,
-              runId: input.runId,
-              stepRunId: input.stepRunId,
-              attemptId: input.attemptId,
-            },
+            sourceRef: sourceRef(input),
             phase: input.phase,
-            dedupeKey: mapRunFactKey({
-              runId: input.runId,
-              attemptId: input.attemptId,
-              phase: input.phase,
-            }),
+            dedupeKey: factKey(input),
             collectorVersion: input.policy.collectorVersion,
             conditionSnapshot: input.condition,
             reason: 'NOT_APPLICABLE',
@@ -131,18 +141,9 @@ export function createPassiveMapObservationPort(manager: BrowserSessionManager):
             id: randomUUID(),
             targetId: input.targetId,
             sourceType: input.sourceType,
-            sourceRef: {
-              sourceType: input.sourceType,
-              runId: input.runId,
-              stepRunId: input.stepRunId,
-              attemptId: input.attemptId,
-            },
+            sourceRef: sourceRef(input),
             phase: input.phase,
-            dedupeKey: mapRunFactKey({
-              runId: input.runId,
-              attemptId: input.attemptId,
-              phase: input.phase,
-            }),
+            dedupeKey: factKey(input),
             collectorVersion: input.policy.collectorVersion,
             conditionSnapshot: input.condition,
             reason: 'CAPABILITY_MISSING',
@@ -162,14 +163,37 @@ export function createPassiveMapObservationPort(manager: BrowserSessionManager):
           authorized: allowed.size === 0 || allowed.has(frameOrigin) || frameOrigin === origin,
         })
       }
+
+      const inspect: SurfaceInspect = { url, origin, frames }
+      if (isHardSurfaceGap(classifySurface(inspect).reason)) {
+        return { observation: toObservation(input, inspect) }
+      }
+
+      let collected: CollectedSurface | undefined
+      let collectFailed = false
+      if (typeof page.evaluate === 'function') {
+        try {
+          collected = (await page.evaluate(collectAuthorizedSurface, capturePolicyNodeLimit(input.policy))) as CollectedSurface
+        } catch {
+          collectFailed = true
+        }
+      } else {
+        collectFailed = true
+      }
+
       return {
-        observation: toObservation(input, {
-          url,
-          origin,
-          frames,
-          empty: false,
-          ready: true,
-        }),
+        observation: toObservation(
+          input,
+          {
+            ...inspect,
+            empty: collected?.empty,
+            ready: collected?.ready ?? true,
+            loading: collected?.loading,
+            canvas: collected?.canvas,
+            closedShadow: collected?.closedShadow,
+          },
+          { collected, collectFailed },
+        ),
       }
     },
   }

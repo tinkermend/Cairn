@@ -5,16 +5,31 @@ import {
   type ManagedBrowserFrame,
   type PageRef,
 } from '@cairn/shared'
+import type { CapturedFrame } from './captured-frame.js'
 
 export type ScreencastHandle = {
   latest: ManagedBrowserFrame | null
+  captureEpoch: number
   stop: () => Promise<void>
   subscribe: (listener: (frame: ManagedBrowserFrame) => void) => () => void
+  subscribeCaptured: (listener: (frame: CapturedFrame) => void) => () => void
 }
 
-function emit(state: ScreencastHandle & { listeners: Set<(frame: ManagedBrowserFrame) => void> }, frame: ManagedBrowserFrame) {
+let nextCaptureEpoch = 1
+
+function emitLive(
+  state: ScreencastHandle & { liveListeners: Set<(frame: ManagedBrowserFrame) => void> },
+  frame: ManagedBrowserFrame,
+) {
   state.latest = frame
-  for (const listener of state.listeners) listener(frame)
+  for (const listener of state.liveListeners) listener(frame)
+}
+
+function emitCaptured(
+  capturedListeners: Set<(frame: CapturedFrame) => void>,
+  frame: CapturedFrame,
+) {
+  for (const listener of capturedListeners) listener(frame)
 }
 
 /** CDP 投屏在静止登录页上可能十几秒不推新帧；过期后鼠标会被拒。用截图补新鲜度。 */
@@ -38,10 +53,13 @@ export async function refreshScreencastIfStale(
       capturedAt: new Date().toISOString(),
       image: `data:image/jpeg;base64,${buffer.toString('base64')}`,
     }
-    const listeners = 'listeners' in state ? (state as typeof state & { listeners: Set<(frame: ManagedBrowserFrame) => void> }).listeners : undefined
+    const liveListeners =
+      'liveListeners' in state
+        ? (state as typeof state & { liveListeners: Set<(frame: ManagedBrowserFrame) => void> }).liveListeners
+        : undefined
     state.latest = frame
-    if (listeners) {
-      for (const listener of listeners) listener(frame)
+    if (liveListeners) {
+      for (const listener of liveListeners) listener(frame)
     }
   } catch {
     return
@@ -50,23 +68,65 @@ export async function refreshScreencastIfStale(
 
 export async function startScreencast(page: Page, pageRef: PageRef): Promise<ScreencastHandle> {
   const cdp: CDPSession = await page.context().newCDPSession(page)
-  const listeners = new Set<(frame: ManagedBrowserFrame) => void>()
-  const state: ScreencastHandle & { listeners: typeof listeners } = {
+  const liveListeners = new Set<(frame: ManagedBrowserFrame) => void>()
+  const capturedListeners = new Set<(frame: CapturedFrame) => void>()
+  const captureEpoch = nextCaptureEpoch
+  nextCaptureEpoch += 1
+  let sourceSeq = 0
+  const state: ScreencastHandle & {
+    liveListeners: typeof liveListeners
+    capturedListeners: typeof capturedListeners
+  } = {
     latest: null,
-    listeners,
+    captureEpoch,
+    liveListeners,
+    capturedListeners,
     subscribe: (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
+      liveListeners.add(listener)
+      return () => liveListeners.delete(listener)
+    },
+    subscribeCaptured: (listener) => {
+      capturedListeners.add(listener)
+      return () => capturedListeners.delete(listener)
     },
     stop: async () => undefined,
   }
-  const onFrame = (event: { data: string; sessionId: number; metadata?: { deviceWidth?: number; deviceHeight?: number } }) => {
+  const onFrame = (event: {
+    data: string
+    sessionId: number
+    metadata?: { deviceWidth?: number; deviceHeight?: number; timestamp?: number }
+  }) => {
     void cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => undefined)
-    emit(state, {
+    sourceSeq += 1
+    let jpeg: Buffer
+    try {
+      jpeg = Buffer.from(event.data, 'base64')
+    } catch {
+      return
+    }
+    const width = event.metadata?.deviceWidth ?? BROWSER_FRAME_MAX_EDGE
+    const height = event.metadata?.deviceHeight ?? BROWSER_FRAME_MAX_EDGE
+    const sourceTimestampMs =
+      event.metadata?.timestamp != null && Number.isFinite(event.metadata.timestamp)
+        ? event.metadata.timestamp * 1000
+        : undefined
+    const captured: CapturedFrame = {
+      pageId: pageRef.pageId,
+      captureEpoch,
+      sourceSeq,
+      origin: 'cdp',
+      ...(sourceTimestampMs != null ? { sourceTimestampMs } : {}),
+      receivedMonoMs: performance.now(),
+      jpeg,
+      width,
+      height,
+    }
+    emitCaptured(capturedListeners, captured)
+    emitLive(state, {
       pageRef,
-      frameId: `f-${event.sessionId}`,
-      width: event.metadata?.deviceWidth ?? BROWSER_FRAME_MAX_EDGE,
-      height: event.metadata?.deviceHeight ?? BROWSER_FRAME_MAX_EDGE,
+      frameId: `f-${captureEpoch}-${sourceSeq}`,
+      width,
+      height,
       capturedAt: new Date().toISOString(),
       image: `data:image/jpeg;base64,${event.data}`,
     })
@@ -80,7 +140,8 @@ export async function startScreencast(page: Page, pageRef: PageRef): Promise<Scr
   })
   state.stop = async () => {
     cdp.off('Page.screencastFrame', onFrame)
-    listeners.clear()
+    liveListeners.clear()
+    capturedListeners.clear()
     await cdp.send('Page.stopScreencast').catch(() => undefined)
     await cdp.detach().catch(() => undefined)
   }

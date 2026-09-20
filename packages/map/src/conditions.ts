@@ -41,13 +41,16 @@ const FIELDS: MapConditionUnknownField[] = [
   'featureVersion',
 ]
 
+/** 账号只作 provenance，不参与条件匹配。permissionProfile 来源仍待定，本轮不发明。 */
+const MATCH_FIELDS = FIELDS.filter((field) => field !== 'targetAccount')
+
 export function evaluateCondition(
   required: MapConditionSnapshot,
   observed: MapConditionSnapshot,
 ): MapConditionTri {
   if (required.targetId !== observed.targetId) return 'unsatisfied'
   let unknown = false
-  for (const field of FIELDS) {
+  for (const field of MATCH_FIELDS) {
     const expected = fieldValue(required, field)
     const actual = fieldValue(observed, field)
     if (!expected.known) continue
@@ -61,7 +64,7 @@ export function evaluateCondition(
 }
 
 export function knownConditionFields(condition: MapConditionSnapshot): MapConditionUnknownField[] {
-  return FIELDS.filter((field) => fieldValue(condition, field).known)
+  return MATCH_FIELDS.filter((field) => fieldValue(condition, field).known)
 }
 
 export function isMoreSpecific(left: MapConditionSnapshot, right: MapConditionSnapshot): boolean {

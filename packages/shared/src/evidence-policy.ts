@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { EVIDENCE_TYPES, evidenceTypeSchema, type EvidenceType } from './evidence.js'
+import { screenshotViewportSchema, type ScreenshotViewport } from './evidence-slots.js'
 
 export const EVIDENCE_CAPTURE_MODES = ['off', 'on_failure', 'always'] as const
 export type EvidenceCaptureMode = (typeof EVIDENCE_CAPTURE_MODES)[number]
@@ -30,6 +31,10 @@ export const evidencePolicySchema = z.strictObject({
       trace: z.number().int().positive().max(3650).optional(),
     })
     .optional(),
+  /** 快照只冻结合同版本；阈值见 shared `CAPTURE_CONTRACT_V1`。 */
+  captureContractVersion: z.literal(1).optional(),
+  /** 缺省按历史整页解释；新组装快照冻结 viewport。 */
+  screenshotViewport: screenshotViewportSchema.optional(),
 })
 export type EvidencePolicy = z.infer<typeof evidencePolicySchema>
 
@@ -39,6 +44,7 @@ export type ResolvedEvidencePolicy = {
   trace: EvidenceCaptureMode
   required: EvidenceType[]
   retainDays: { screenshot: number; video: number; trace: number }
+  screenshotViewport: ScreenshotViewport
 }
 
 /** 历史 Snapshot / 无字段时的解释。新产品出厂默认在 FACTORY_PLATFORM_CONFIG.evidence。 */
@@ -52,6 +58,7 @@ export const DEFAULT_EVIDENCE_POLICY: ResolvedEvidencePolicy = {
     video: DEFAULT_VIDEO_RETAIN_DAYS,
     trace: DEFAULT_TRACE_RETAIN_DAYS,
   },
+  screenshotViewport: 'full_page',
 }
 
 export function resolveEvidencePolicy(
@@ -75,6 +82,7 @@ export function resolveEvidencePolicy(
       video: policy?.retainDays?.video ?? platformDefault.retainDays.video,
       trace: traceRetain,
     },
+    screenshotViewport: policy?.screenshotViewport ?? platformDefault.screenshotViewport ?? 'full_page',
   }
 }
 

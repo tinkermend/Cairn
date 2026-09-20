@@ -23,3 +23,5 @@ export {
   previewRecordingImport,
   applyRecordingImport,
 } from './imports.js'
+export { createDemonstration, getDemonstration, previewDemonstrationImport, applyDemonstrationImport } from './demonstrations.js'
+export { reserveRecordingArtifactUpload, commitRecordingArtifactUpload, abandonRecordingArtifactUpload, readRecordingArtifact, claimRecordingArtifactCleanup, settleRecordingArtifactCleanup, RECORDING_UPLOAD_DEADLINE_MS } from './artifacts.js'

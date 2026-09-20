@@ -15,6 +15,7 @@ import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
 import { RecordingBindingsController, RecordingsController } from './recordings.controller'
 import { RecordingsService } from './recordings.service'
+import { RecordingArtifactsService } from './artifacts.service'
 import { listenForSupertest } from '../__tests__/http-app'
 
 const now = '2026-09-13T00:00:00.000Z'
@@ -93,6 +94,7 @@ async function buildApp(account: RequestAccount | null, service: ReturnType<type
     providers: [
       Reflector,
       { provide: RecordingsService, useValue: service },
+      { provide: RecordingArtifactsService, useValue: {} },
       { provide: APP_GUARD, useValue: new StaticAuthGuard(account) },
       { provide: APP_GUARD, useClass: PermissionsGuard },
       { provide: APP_FILTER, useClass: AllExceptionsFilter },

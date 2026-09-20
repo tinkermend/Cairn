@@ -161,6 +161,16 @@ describe.each(DRIVERS)('%s 登录核验与身份', { timeout: 60_000 }, (driver)
     expect(second).toMatchObject({ ok: false, code: 'AUTH_AUTO_LOGIN_PAUSED' })
   })
 
+  it('账号配置修订升高后自动登录窗口重置', async () => {
+    const accountId = await makeAccount('rev')
+    const first = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
+    expect(first).toMatchObject({ ok: true })
+    const { targetAccounts } = schemaFor(handle.db)
+    await handle.db.update(targetAccounts).set({ configRevision: 2 }).where(eq(targetAccounts.id, accountId))
+    const second = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
+    expect(second).toMatchObject({ ok: true })
+  })
+
   it('SM35 验收观察必须来自核验端口，三项通过后升 IDENTITY_VERIFIED', async () => {
     const accountId = await makeAccount('sm35')
     const existing = await getTargetAuthProfileView(handle.db, targetId)

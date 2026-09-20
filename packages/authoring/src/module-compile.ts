@@ -183,6 +183,7 @@ export function compileModuleContent(
 
 /** 从步骤中提取 from 引用。 */
 function stepFrom(step: Step): string | undefined {
+  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') return step.input.from
   if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') {
     return step.input.from
   }

@@ -7,13 +7,16 @@ import {
   DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
   DEFAULT_SESSION_POLICY,
   DEFAULT_SESSION_REUSE_POLICY,
+  applyTargetSessionPolicyPatch,
   isPlacementYieldCode,
   isSessionConfigErrorCode,
   resolveSessionPolicy,
   resolveSessionPolicyLayers,
   sessionErrorCodeSchema,
   sessionGrantSchema,
+  sessionPolicyOverrideSchema,
   sessionPolicySchema,
+  targetSessionPolicyOverrideSchema,
   sessionReusePolicySchema,
   sessionStatusSchema,
   SESSION_ERROR_CODES,
@@ -91,6 +94,7 @@ describe('sessionPolicySchema', () => {
     expect(parsed.keepAliveSeconds).toBe(3600)
     expect(parsed.authProbeIntervalSeconds).toBe(900)
     expect(parsed.evictionPriority).toBe(0)
+    expect(parsed.lostDisposition).toBe('MANUAL')
     expect(resolveSessionPolicy(legacy)).toEqual(parsed)
     expect(
       resolveSessionPolicy(legacy, { ...DEFAULT_SESSION_POLICY, reclaim: 'AUTH_DRIVEN' }).reclaim,
@@ -146,6 +150,7 @@ describe('resolveSessionPolicy', () => {
       keepAliveSeconds: 3600,
       authProbeIntervalSeconds: 900,
       evictionPriority: 0,
+      lostDisposition: 'MANUAL',
     })
   })
 
@@ -159,6 +164,26 @@ describe('resolveSessionPolicy', () => {
     expect(resolved.keepAliveSeconds).toBe(1800)
     expect(resolved.leaseTtlSeconds).toBe(20)
     expect(resolved.idleTtlSeconds).toBe(DEFAULT_SESSION_POLICY.idleTtlSeconds)
+  })
+
+  it('目标可覆盖 lostDisposition，Run 覆盖拒绝该字段', () => {
+    expect(targetSessionPolicyOverrideSchema.parse({ lostDisposition: 'AUTO' })).toEqual({
+      lostDisposition: 'AUTO',
+    })
+    expect(() => sessionPolicyOverrideSchema.parse({ lostDisposition: 'AUTO' })).toThrow()
+    expect(
+      resolveSessionPolicyLayers({
+        platformDefault: DEFAULT_SESSION_POLICY,
+        targetOverride: { lostDisposition: 'AUTO' },
+        runOverride: { leaseTtlSeconds: 20 },
+      }).lostDisposition,
+    ).toBe('AUTO')
+    expect(
+      applyTargetSessionPolicyPatch({ lostDisposition: 'AUTO' }, { lostDisposition: null }),
+    ).toBeNull()
+    expect(applyTargetSessionPolicyPatch(null, { lostDisposition: 'AUTO' })).toEqual({
+      lostDisposition: 'AUTO',
+    })
   })
 })
 

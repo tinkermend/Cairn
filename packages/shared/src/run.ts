@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { frozenNotificationPolicySchema } from './notifications.js'
 import { aiExecutionConfigSchema } from './ai-runtime.js'
 import { evidencePolicySchema } from './evidence-policy.js'
 import { pageRefSchema } from './managed-browser.js'
@@ -9,12 +10,14 @@ import { frozenMapJobSchema, frozenTargetAccessPolicySchema } from './map-jobs.j
 import { frozenAuthVerificationSchema } from './session-auth.js'
 import { platformRunAuthRecoverySchema } from './session-auth-recovery.js'
 import { candidateGroupsSchema, moduleManifestSchema, type ModuleManifest } from './authoring-document.js'
-import { outcomeManifestSchema, type OutcomeManifest } from './outcome.js'
+import { IMPORTED_OUTCOME_PROTOCOL, outcomeManifestSchema, type OutcomeManifest } from './outcome.js'
 import { runtimeInvariantManifestSchema, type RuntimeInvariantManifest } from './runtime-invariant.js'
+import { frozenCredentialBindingSchema } from './credentials.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
 import {
   contextKeySchema,
+  AI_ATOMIC_ACTIONS_PROTOCOL,
   executionPolicySchema,
   FORBIDDEN_CONTEXT_KEYS,
   hasAiSteps,
@@ -192,6 +195,11 @@ export const runSnapshotSchema = z
     targetId: entityIdSchema,
     targetAccountId: entityIdSchema.optional(),
     secretRef: secretRefSchema.optional(),
+    /**
+     * 冻结的凭据版本与登录名配对。可选：旧快照无此字段仍可解析，
+     * 不能证明配对时不得用当前用户名猜配。
+     */
+    credentialBinding: frozenCredentialBindingSchema.optional(),
     scenarioId: entityIdSchema,
     scenarioVersionId: entityIdSchema,
     steps: z.array(stepSchema),
@@ -220,8 +228,11 @@ export const runSnapshotSchema = z
      * 冻结的浏览器 AI 执行配置。含 AI Step 时必须存在；确定性历史快照可缺省。
      */
     aiExecution: aiExecutionConfigSchema.optional(),
+    aiAtomicActionsProtocol: z.literal(AI_ATOMIC_ACTIONS_PROTOCOL).optional(),
+    importedOutcomeProtocol: z.literal(IMPORTED_OUTCOME_PROTOCOL).optional(),
     /** 创建时读取的平台配置修订。旧快照可缺省。 */
     platformConfigRevision: z.number().int().positive().optional(),
+    notificationPolicy: frozenNotificationPolicySchema.optional(),
     /**
      * 冻结的 Target 认证解释。新 Run 必写；旧快照缺字段时 Worker 仍读当前行。
      */
@@ -251,6 +262,16 @@ export const runSnapshotSchema = z
      */
     mapJob: frozenMapJobSchema.optional(),
     /**
+     * 集合成员准入协议。旧快照和无字段表示独立 Run。
+     */
+    suiteAdmission: z
+      .strictObject({
+        protocol: z.literal('suite-admission@1'),
+        suiteRunId: entityIdSchema,
+        memberId: z.string().trim().min(1).max(64),
+      })
+      .optional(),
+    /**
      * 冻结的动作模块引用清册。可选：旧快照没有此字段表示无动作模块。
      */
     moduleManifest: moduleManifestSchema.optional(),
@@ -272,6 +293,12 @@ export const runSnapshotSchema = z
     digest: z.string().min(1).max(128).optional(),
   })
   .superRefine((snapshot, ctx) => {
+    if (snapshot.steps.some((step) => step.type === 'ai_action' && 'operation' in step.input) && !snapshot.aiAtomicActionsProtocol) {
+      ctx.addIssue({ code: 'custom', path: ['aiAtomicActionsProtocol'], message: '原子 AI 操作必须声明执行协议能力' })
+    }
+    if (snapshot.outcomeManifest?.entries.some((entry) => entry.provenance === 'imported') && !snapshot.importedOutcomeProtocol) {
+      ctx.addIssue({ code: 'custom', path: ['importedOutcomeProtocol'], message: '导入成功条件必须声明执行协议能力' })
+    }
     if (snapshot.secretRef && !snapshot.targetAccountId) {
       ctx.addIssue({
         code: 'custom',

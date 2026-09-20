@@ -20,6 +20,7 @@ export const PERMISSION_RESOURCES = [
   'run',
   'session',
   'target',
+  'credential',
   'service',
   'settings',
   'audit',
@@ -28,10 +29,14 @@ export const PERMISSION_RESOURCES = [
   'map',
   'module',
   'schedule',
+  'monitor',
+  'notification',
+  'suite',
+  'report',
 ] as const
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number]
 
-export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review', 'assist', 'publish', 'maintain', 'explore'] as const
+export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review', 'assist', 'publish', 'maintain', 'explore', 'operate', 'import'] as const
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number]
 
 export const PERMISSIONS = [
@@ -57,6 +62,10 @@ export const PERMISSIONS = [
   'target:read',
   'target:write',
   'target:delete',
+  'credential:read',
+  'credential:write',
+  'credential:delete',
+  'credential:import',
   'service:read',
   'service:write',
   'settings:read',
@@ -77,6 +86,16 @@ export const PERMISSIONS = [
   'module:publish',
   'schedule:read',
   'schedule:write',
+  'monitor:read',
+  'monitor:operate',
+  'notification:read',
+  'notification:operate',
+  'suite:read',
+  'suite:write',
+  'suite:delete',
+  'report:read',
+  'report:export',
+  'report:delete',
 ] as const
 export type PermissionCode = (typeof PERMISSIONS)[number]
 
@@ -96,6 +115,7 @@ export const RESOURCE_LABELS: Record<PermissionResource, string> = {
   run: '运行',
   session: '浏览器会话',
   target: '目标系统',
+  credential: '凭据管理',
   service: '开放服务',
   settings: '设置',
   audit: '审计',
@@ -104,6 +124,10 @@ export const RESOURCE_LABELS: Record<PermissionResource, string> = {
   map: '运营地图',
   module: '动作模块',
   schedule: '平台调度',
+  monitor: '运行监控',
+  notification: '通知',
+  suite: '场景集',
+  report: '运行报告',
 }
 
 export const PERMISSION_LABELS: Record<PermissionCode, string> = {
@@ -129,6 +153,10 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'target:read': '查看目标系统',
   'target:write': '登记和维护目标系统',
   'target:delete': '删除目标系统',
+  'credential:read': '查看目标账号凭据',
+  'credential:write': '维护账号密码及有效期',
+  'credential:delete': '删除凭据登记',
+  'credential:import': '导入更新账号密码',
   'service:read': '查看开放服务',
   'service:write': '管理服务凭据与证据发布',
   'settings:read': '查看设置',
@@ -149,6 +177,16 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'module:publish': '发布动作模块版本',
   'schedule:read': '查看平台调度计划',
   'schedule:write': '创建和修订调度计划',
+  'monitor:read': '查看运行监控',
+  'monitor:operate': '触发探测与静默告警',
+  'notification:read': '查看通知',
+  'notification:operate': '处理通知投递',
+  'suite:read': '查看场景集',
+  'suite:write': '创建和编辑场景集',
+  'suite:delete': '删除场景集',
+  'report:read': '查看运行报告',
+  'report:export': '生成并下载运行报告',
+  'report:delete': '删除运行报告',
 }
 
 export interface PermissionDef {
@@ -177,6 +215,11 @@ export const ACCOUNT_STATUS = ['active', 'disabled'] as const
 export type AccountStatus = (typeof ACCOUNT_STATUS)[number]
 
 const AUTHOR_PERMISSIONS: readonly PermissionCode[] = [
+  'notification:read',
+  'credential:read',
+  'credential:write',
+  'credential:delete',
+  'credential:import',
   'target:read',
   'target:write',
   'target:delete',
@@ -198,9 +241,17 @@ const AUTHOR_PERMISSIONS: readonly PermissionCode[] = [
   'module:read',
   'module:write',
   'module:publish',
+  'suite:read',
+  'suite:write',
+  'suite:delete',
+  'report:read',
+  'report:export',
 ]
 
 const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
+  'notification:read',
+  'notification:operate',
+  'credential:read',
   'target:read',
   'workflow:read',
   'run:read',
@@ -221,15 +272,24 @@ const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
   'module:read',
   'schedule:read',
   'schedule:write',
+  'monitor:read',
+  'monitor:operate',
+  'suite:read',
+  'report:read',
+  'report:export',
 ]
 
 const VIEWER_PERMISSIONS: readonly PermissionCode[] = [
+  'notification:read',
+  'credential:read',
   'target:read',
   'workflow:read',
   'run:read',
   'settings:read',
   'ai:assist',
   'map:read',
+  'suite:read',
+  'report:read',
 ]
 
 export const SYSTEM_ROLE_DEFINITIONS: Readonly<
@@ -290,11 +350,12 @@ export function uniquePermissions(codes: readonly string[]): string[] {
 export const CAPABILITY_KINDS = ['menu', 'action'] as const
 export type CapabilityKind = (typeof CAPABILITY_KINDS)[number]
 
-export const CAPABILITY_GROUPS = ['workbench', 'governance', 'other'] as const
+export const CAPABILITY_GROUPS = ['workbench', 'execution-observation', 'governance', 'other'] as const
 export type CapabilityGroup = (typeof CAPABILITY_GROUPS)[number]
 
 export const CAPABILITY_GROUP_LABELS: Record<CapabilityGroup, string> = {
   workbench: '工作台',
+  'execution-observation': '执行与观测',
   governance: '治理',
   other: '其他',
 }
@@ -314,16 +375,27 @@ export type ConsoleCapability = {
 export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'menu.home', kind: 'menu', group: 'workbench', label: '首页', allOf: [] },
   { id: 'menu.targets', kind: 'menu', group: 'workbench', label: '目标系统', allOf: ['target:read'] },
-  { id: 'menu.sessions', kind: 'menu', group: 'workbench', label: '浏览器会话', allOf: ['session:read'] },
   { id: 'menu.scenarios', kind: 'menu', group: 'workbench', label: '场景', allOf: ['workflow:read'] },
+  { id: 'menu.suites', kind: 'menu', group: 'workbench', label: '场景集', allOf: ['suite:read'] },
   { id: 'menu.action-modules', kind: 'menu', group: 'workbench', label: '动作库', allOf: ['module:read'] },
   { id: 'menu.recordings', kind: 'menu', group: 'workbench', label: '录制草稿', allOf: ['workflow:write'] },
-  { id: 'menu.runs', kind: 'menu', group: 'workbench', label: '运行', allOf: ['run:read'] },
-  { id: 'menu.schedules', kind: 'menu', group: 'workbench', label: '自动复查', allOf: ['schedule:read'] },
+  { id: 'menu.runs', kind: 'menu', group: 'execution-observation', label: '运行', allOf: ['run:read'] },
+  { id: 'menu.schedules', kind: 'menu', group: 'execution-observation', label: '自动复查', allOf: ['schedule:read'] },
+  { id: 'menu.sessions', kind: 'menu', group: 'execution-observation', label: '浏览器会话', allOf: ['session:read'] },
+  { id: 'menu.evidence', kind: 'menu', group: 'execution-observation', label: '证据与报告', allOf: ['run:read'] },
+  { id: 'menu.monitoring', kind: 'menu', group: 'execution-observation', label: '运行监控', allOf: ['monitor:read'] },
+  { id: 'menu.notifications', kind: 'menu', group: 'execution-observation', label: '通知', allOf: ['notification:read'] },
   { id: 'menu.users', kind: 'menu', group: 'governance', label: '用户', allOf: ['account:read'] },
   { id: 'menu.roles', kind: 'menu', group: 'governance', label: '角色', allOf: ['role:read'] },
   { id: 'menu.services', kind: 'menu', group: 'governance', label: '开放服务', allOf: ['service:read'] },
   { id: 'action.service.write', kind: 'action', label: '管理开放服务', allOf: ['service:write'] },
+  {
+    id: 'menu.credentials',
+    kind: 'menu',
+    group: 'governance',
+    label: '凭据管理',
+    allOf: ['credential:read', 'target:read'],
+  },
   { id: 'menu.platform-config', kind: 'menu', group: 'governance', label: '平台配置', allOf: ['platform-config:read'] },
   { id: 'menu.workers', kind: 'menu', group: 'governance', label: '执行节点', allOf: ['session:read'] },
   { id: 'action.platform-config.write', kind: 'action', label: '修改平台配置', allOf: ['platform-config:write'] },
@@ -378,6 +450,17 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'action.schedule.write', kind: 'action', label: '设置自动复查计划', allOf: ['schedule:write', 'map:maintain'] },
   { id: 'action.module.write', kind: 'action', label: '创建和编辑动作模块', allOf: ['module:write'] },
   { id: 'action.module.publish', kind: 'action', label: '发布动作模块版本', allOf: ['module:publish'] },
+  { id: 'action.suite.write', kind: 'action', label: '创建和编辑场景集', allOf: ['suite:write'] },
+  { id: 'action.suite.delete', kind: 'action', label: '删除场景集', allOf: ['suite:delete'] },
+  {
+    id: 'action.suite.execute',
+    kind: 'action',
+    label: '执行场景集',
+    allOf: ['suite:read', 'run:execute', 'target:read', 'workflow:read'],
+  },
+  { id: 'action.report.read', kind: 'action', label: '查看运行报告', allOf: ['report:read'] },
+  { id: 'action.report.export', kind: 'action', label: '生成并下载运行报告', allOf: ['report:export', 'report:read'] },
+  { id: 'action.report.delete', kind: 'action', label: '删除运行报告', allOf: ['report:delete'] },
 ]
 
 export type CapabilityPreview = {
@@ -394,6 +477,7 @@ function capabilityGranted(granted: readonly string[], capability: ConsoleCapabi
 export function previewCapabilities(granted: readonly string[]): CapabilityPreview {
   const menus: Record<CapabilityGroup, string[]> = {
     workbench: [],
+    'execution-observation': [],
     governance: [],
     other: [],
   }
@@ -472,6 +556,44 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
         ],
       },
       {
+        key: 'suite',
+        label: '场景集',
+        description: '同一目标下已发布场景的编排与巡检',
+        items: [
+          { code: 'suite:read', isPageAccess: true },
+          { code: 'suite:write' },
+          { code: 'suite:delete' },
+        ],
+      },
+      {
+        key: 'module',
+        label: '动作模块',
+        description: '可复用的标准化步骤组件',
+        items: [
+          { code: 'module:read', isPageAccess: true },
+          { code: 'module:write' },
+          { code: 'module:publish' },
+        ],
+      },
+      {
+        key: 'map',
+        label: '运营地图',
+        description: '目标系统可操作世界模型与知识',
+        items: [
+          { code: 'map:read' },
+          { code: 'map:review' },
+          { code: 'map:publish' },
+          { code: 'map:maintain' },
+          { code: 'map:explore', dependencies: ['map:maintain'] },
+        ],
+      },
+    ],
+  },
+  {
+    key: 'execution-observation',
+    label: '执行与观测',
+    modules: [
+      {
         key: 'run',
         label: '运行',
         description: '场景仿真执行与证据',
@@ -484,13 +606,13 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
         ],
       },
       {
-        key: 'module',
-        label: '动作模块',
-        description: '可复用的标准化步骤组件',
+        key: 'report',
+        label: '运行报告',
+        description: '单场景与场景集的导出报告',
         items: [
-          { code: 'module:read', isPageAccess: true },
-          { code: 'module:write' },
-          { code: 'module:publish' },
+          { code: 'report:read', isPageAccess: true },
+          { code: 'report:export', dependencies: ['report:read'] },
+          { code: 'report:delete' },
         ],
       },
       {
@@ -515,23 +637,32 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
         ],
       },
       {
-        key: 'map',
-        label: '运营地图',
-        description: '目标系统可操作世界模型与知识',
+        key: 'monitor',
+        label: '运行监控',
+        description: '平台自身健康、容量、积压与异常',
         items: [
-          { code: 'map:read' },
-          { code: 'map:review' },
-          { code: 'map:publish' },
-          { code: 'map:maintain' },
-          { code: 'map:explore', dependencies: ['map:maintain'] },
+          { code: 'monitor:read', isPageAccess: true },
+          { code: 'monitor:operate' },
         ],
       },
+      { key: 'notification', label: '通知', description: '运行结果与告警通知', items: [
+        { code: 'notification:read', isPageAccess: true }, { code: 'notification:operate' },
+      ] },
     ],
   },
   {
     key: 'governance',
     label: '治理与运维',
     modules: [
+      {
+        key: 'credential', label: '凭据管理', description: '授权目标账号的密码与维护期限',
+        items: [
+          { code: 'credential:read', isPageAccess: true, dependencies: ['target:read'] },
+          { code: 'credential:write', dependencies: ['credential:read'] },
+          { code: 'credential:delete', dependencies: ['credential:read', 'credential:write'] },
+          { code: 'credential:import', dependencies: ['credential:read', 'credential:write'] },
+        ],
+      },
       {
         key: 'account',
         label: '控制台账号',
@@ -570,17 +701,17 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
           { code: 'service:write' },
         ],
       },
-      {
-        key: 'platform-config',
-        label: '平台配置',
-        description: '运行时策略与超时参数中心',
-        items: [
-          { code: 'platform-config:read', isPageAccess: true },
-          { code: 'platform-config:write' },
-        ],
-      },
-    ],
-  },
+        {
+          key: 'platform-config',
+          label: '平台配置',
+          description: '运行时策略与超时参数中心',
+          items: [
+            { code: 'platform-config:read', isPageAccess: true },
+            { code: 'platform-config:write' },
+          ],
+        },
+      ],
+    },
   {
     key: 'other',
     label: '通用设置与 AI',
@@ -665,6 +796,15 @@ export const roleSchema = roleRefSchema.extend({
 })
 export type RoleDto = z.infer<typeof roleSchema>
 
+export const roleTargetScopeSchema = z.object({
+  roleId: z.string().min(1),
+  mode: z.enum(['none', 'selected', 'all']),
+  targetIds: z.array(z.string().uuid()).max(1000).default([]),
+}).refine((value) => value.mode === 'selected' ? value.targetIds.length > 0 : value.targetIds.length === 0, {
+  message: '指定范围需要至少一个目标；全部或无范围不能包含目标 ID',
+})
+export type RoleTargetScope = z.infer<typeof roleTargetScopeSchema>
+
 export const accountSchema = z.object({
   id: z.string().min(1),
   displayName: z.string().min(1),
@@ -672,6 +812,8 @@ export const accountSchema = z.object({
   status: accountStatusSchema,
   roles: z.array(roleRefSchema),
   permissions: z.array(z.string().min(1)),
+  targetScopes: z.array(roleTargetScopeSchema).optional(),
+  targetScopePermissions: z.array(z.object({ roleId: z.string(), permissions: z.array(z.string()) })).optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 })
@@ -749,6 +891,7 @@ export const createAccountBodySchema = z.object({
   password: passwordSchema,
   status: accountStatusSchema.optional(),
   roleIds: z.array(z.string().min(1)).optional(),
+  targetScopes: z.array(roleTargetScopeSchema).max(100).optional(),
 })
 export type CreateAccountBody = z.infer<typeof createAccountBodySchema>
 
@@ -783,11 +926,23 @@ export const updateMeBodySchema = z.object({
 export type UpdateMeBody = z.infer<typeof updateMeBodySchema>
 
 export const OPERATION_AUDIT_ACTIONS = [
+  'notification.policy',
+  'notification.test',
+  'notification.retry',
+  'notification.close',
   'service.create',
   'service.update',
+  'service.status',
+  'service.archive',
+  'service.ip_whitelist',
+  'service.webhook.create',
+  'service.webhook.update',
+  'service.webhook.retry',
   'credential.issue',
   'credential.update',
   'credential.revoke',
+  'credential.suspend',
+  'credential.reactivate',
   'evidence.release',
   'account.create',
   'account.update',
@@ -804,6 +959,14 @@ export const OPERATION_AUDIT_ACTIONS = [
   'target_account.update',
   'target_account.delete',
   'target_account.password',
+  'credential.register',
+  'credential.metadata',
+  'credential.replace',
+  'credential.disable',
+  'credential.enable',
+  'credential.version_revoke',
+  'credential.batch',
+  'credential.verify',
   'scenario.create',
   'scenario.update',
   'scenario.delete',
@@ -858,6 +1021,26 @@ export const OPERATION_AUDIT_ACTIONS = [
   'knowledge.term',
   'knowledge.propose',
   'knowledge.accept',
+  'monitor.probe',
+  'monitor.silence',
+  'suite.create',
+  'suite.update',
+  'suite.publish',
+  'suite.delete',
+  'suite.run',
+  'suite.cancel',
+  'suite_run.create',
+  'suite_run.cancel',
+  'report.create',
+  'report.profile.save',
+  'report.asset.upload',
+  'report.bundle',
+  'report.export.cancel',
+  'report.export.retry',
+  'report.download',
+  'report.auto.skipped',
+  'report.export',
+  'report.delete',
 ] as const
 export type OperationAuditAction = (typeof OPERATION_AUDIT_ACTIONS)[number]
 
@@ -885,11 +1068,23 @@ export type AuditClient = {
 }
 
 export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
+  'notification.policy': '更新通知设置',
+  'notification.test': '测试通知',
+  'notification.retry': '重试通知',
+  'notification.close': '结案通知',
   'service.create': '创建服务调用方',
   'service.update': '更新服务调用方',
+  'service.status': '调整服务调用方状态',
+  'service.archive': '归档服务调用方',
+  'service.ip_whitelist': '更新服务来源 IP 白名单',
+  'service.webhook.create': '登记服务 Webhook',
+  'service.webhook.update': '更新服务 Webhook',
+  'service.webhook.retry': '重新推送服务 Webhook',
   'credential.issue': '签发服务凭据',
   'credential.update': '更新服务凭据范围',
   'credential.revoke': '吊销服务凭据',
+  'credential.suspend': '冻结服务凭据',
+  'credential.reactivate': '恢复服务凭据',
   'evidence.release': '调整证据对外可见性',
   'account.create': '创建账号',
   'account.update': '更新账号',
@@ -906,6 +1101,14 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   'target_account.update': '更新目标账号',
   'target_account.delete': '删除目标账号',
   'target_account.password': '修改目标账号密码',
+  'credential.register': '登记凭据',
+  'credential.metadata': '修改凭据维护信息',
+  'credential.replace': '替换凭据材料',
+  'credential.disable': '暂停凭据取用',
+  'credential.enable': '恢复凭据取用',
+  'credential.version_revoke': '撤销凭据版本',
+  'credential.batch': '批量维护凭据',
+  'credential.verify': '记录凭据核验',
   'scenario.create': '创建场景',
   'scenario.update': '更新场景',
   'scenario.delete': '删除场景',
@@ -960,6 +1163,26 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   'knowledge.term': '维护目标术语',
   'knowledge.propose': '生成知识编写建议',
   'knowledge.accept': '接受知识编写建议',
+  'monitor.probe': '触发监控探测',
+  'monitor.silence': '静默监控告警',
+  'suite.create': '创建场景集',
+  'suite.update': '更新场景集',
+  'suite.publish': '发布场景集',
+  'suite.delete': '删除场景集',
+  'suite.run': '启动场景集运行',
+  'suite.cancel': '取消场景集运行',
+  'suite_run.create': '启动场景集运行',
+  'suite_run.cancel': '取消场景集运行',
+  'report.create': '创建运行报告',
+  'report.profile.save': '保存报告配置档',
+  'report.asset.upload': '上传报告 Logo',
+  'report.bundle': '创建报告包',
+  'report.export.cancel': '取消报告导出',
+  'report.export.retry': '重试报告导出',
+  'report.download': '下载报告文件',
+  'report.auto.skipped': '自动报告未生成',
+  'report.export': '导出运行报告',
+  'report.delete': '删除运行报告',
   'auth.login': '登录',
 }
 
@@ -1085,6 +1308,7 @@ export type UpdateAccountBody = z.infer<typeof updateAccountBodySchema>
 
 export const assignAccountRolesBodySchema = z.object({
   roleIds: z.array(z.string().min(1)).min(1, '账号至少保留一个角色'),
+  targetScopes: z.array(roleTargetScopeSchema).max(100).optional(),
 })
 export type AssignAccountRolesBody = z.infer<typeof assignAccountRolesBodySchema>
 
@@ -1124,4 +1348,3 @@ export const removeRoleAccountsBodySchema = z.object({
   accountIds: z.array(z.string().min(1)).min(1, '至少选择一个账号').max(100),
 })
 export type RemoveRoleAccountsBody = z.infer<typeof removeRoleAccountsBodySchema>
-

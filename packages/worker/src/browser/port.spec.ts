@@ -66,6 +66,12 @@ describe('createBrowserPort 失败截图', () => {
     if (result.ok) throw new Error('ok')
     expect(result.screenshot?.objectKey).toBe('runs/a/screenshot.png')
     expect(result.screenshot?.missingReason).toBeUndefined()
+    expect(objects.putObjectEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifactKey: `screenshot:${grant.sessionId}:on_error:0`,
+        payload: expect.objectContaining({ role: 'on_error', viewport: 'full_page' }),
+      }),
+    )
   })
 
   it('on_failure 成功不上传截图和 Trace，并删除临时文件', async () => {

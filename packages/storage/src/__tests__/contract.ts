@@ -88,4 +88,9 @@ export async function runObjectStoreContract(
   if (options.exists) {
     expect(await options.exists(CONTRACT_OTHER_KEY)).toBe(false)
   }
+
+  const probed = await store.probe()
+  expect(probed.ok).toBe(true)
+  expect(probed.latencyMs).toBeGreaterThanOrEqual(0)
+  expect(probed.errorClass).toBeNull()
 }

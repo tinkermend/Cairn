@@ -21,6 +21,8 @@ import {
   resolveMapView,
   loadRunMapClues,
   getMapConsumptionPolicy,
+  grantMapConsumptionEligibility,
+  requireMapCapableAccount,
   updateMapConsumptionPolicy,
   getMapJobPolicy,
   updateMapJobPolicy,
@@ -78,6 +80,7 @@ import {
   type MapPublicationBody,
   type MapScenarioBindingBody,
   type MapSealPublishBody,
+  type MapConsumptionEligibilityGrantBody,
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyUpdateBody,
   type MapSafeEntryCreateBody,
@@ -359,6 +362,25 @@ export class MapService {
     return updateMapConsumptionPolicy(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
   }
 
+  async grantConsumptionEligibility(
+    targetId: string,
+    body: MapConsumptionEligibilityGrantBody,
+    account: RequestAccount,
+  ) {
+    try {
+      await grantMapConsumptionEligibility(this.database, {
+        targetId,
+        reportId: body.reportId,
+        eligibleStepTypes: body.eligibleStepTypes,
+        reason: body.reason,
+        actor: this.actor(account),
+      })
+      return await getMapConsumptionPolicy(this.database, targetId)
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
   jobPolicy(targetId: string) {
     return getMapJobPolicy(this.database, targetId).catch(rethrowDomain)
   }
@@ -385,6 +407,7 @@ export class MapService {
 
   async previewJob(targetId: string, body: MapJobPreviewRequest) {
     try {
+      await requireMapCapableAccount(this.database, targetId, body.targetAccountId)
       const policy = await getMapJobPolicy(this.database, targetId)
       const entry = await getMapSafeEntry(this.database, targetId, body.entryId)
       const assets = toMapJobCompileAssets(await listMapJobCandidateAssets(this.database, targetId))

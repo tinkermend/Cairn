@@ -256,6 +256,7 @@ export async function listScenarioRecordingImports(
           name: row.draft.name,
           recordingId: row.draft.recordingId,
           sourceVersion: row.draft.sourceVersion,
+          sourceProtocol: row.draft.sourceProtocol,
           eventCount: row.draft.eventCount,
           itemCount: row.draft.itemCount,
           unresolvedCount: row.draft.unresolvedCount,
@@ -303,12 +304,12 @@ export async function applyRecordingImport(
   options: { executableTypes?: readonly string[] } = {},
 ): Promise<{ receipt: RecordingImportReceipt; scenario: ScenarioDetailDto }> {
   applyRecordingImportBodySchema.parse(input)
-  const requestDigest = sha256Hex(canonicalJson(input))
+  const requestDigest = sha256Hex(canonicalJson({ scenarioId, ...input }))
   const { recordingImportReceipts, scenarioDrafts, scenarios } = schemaFor(db)
 
   const existing = await findIdempotentReceipt(db, actor.id, input.idempotencyKey)
   if (existing) {
-    if (existing.requestDigest !== requestDigest) {
+    if (existing.scenarioId !== scenarioId || (existing.requestDigest !== requestDigest && existing.requestDigest !== sha256Hex(canonicalJson(input)))) {
       throw conflict('RECORDING_IMPORT_CONFLICT', '相同幂等键对应不同的导入请求')
     }
     return { receipt: toReceiptDto(existing), scenario: await getScenario(db, scenarioId, options) }
@@ -761,6 +762,7 @@ function toReceiptDto(row: {
   baseRevision: number
   newRevision: number
   sourceMap: RecordingImportReceipt['sourceMap']
+  demonstration?: RecordingImportReceipt['demonstration'] | null
   createdAt: Date
 }): RecordingImportReceipt {
   return recordingImportReceiptSchema.parse({
@@ -773,6 +775,7 @@ function toReceiptDto(row: {
     newRevision: row.newRevision,
     insertedStepIds: row.sourceMap.flatMap((item) => (item.stepId ? [item.stepId] : [])),
     sourceMap: row.sourceMap,
+    ...(row.demonstration ? { demonstration: row.demonstration } : {}),
     createdAt: iso(row.createdAt),
   })
 }

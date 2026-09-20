@@ -2,6 +2,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vite'
+import { demonstrationCapturePlugin } from './capture-plugin'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
 
@@ -25,7 +26,7 @@ function stubPlaywrightCrxHoles(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [stubPlaywrightCrxHoles()],
+  plugins: [stubPlaywrightCrxHoles(), demonstrationCapturePlugin()],
   resolve: {
     alias: {
       '@isomorphic': path.resolve(root, 'vendor/playwright-isomorphic'),

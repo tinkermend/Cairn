@@ -35,6 +35,7 @@ import {
 import { lockOperationRow, lockSession, lockWorkerRow, toGrant } from './occupancy-tx.js'
 import { findActiveLeaseRow, readSessionScheduling } from './occupancy-read.js'
 import { getSessionProfile, transferProfileLocation, upsertSessionProfile } from './occupancy-profile.js'
+import { applyPendingRetentionIntent } from './session-retention-intent.js'
 
 export type OccupancyOwner =
   { kind: 'RUN'; runId: string; runFencingToken: number } | { kind: 'SESSION_OPERATION'; operationId: string }
@@ -235,6 +236,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
               existing.holderWorkerId === input.holderWorkerId) ||
             (input.owner.kind === 'SESSION_OPERATION' && existing.operationId === input.owner.operationId)
           if (sameOwner && existing.purpose === input.purpose) {
+            await applyPendingRetentionIntent(tx, session.id)
             return {
               ok: true as const,
               grant: toGrant(existing),
@@ -258,6 +260,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
           holderWorkerId: input.holderWorkerId,
           leaseTtlSeconds: input.leaseTtlSeconds,
         })
+        await applyPendingRetentionIntent(tx, bumped.id)
         return {
           ok: true as const,
           grant: toGrant(lease),
@@ -327,6 +330,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         })
       }
       void scheduling
+      await applyPendingRetentionIntent(tx, bumped.id)
       const liveAfter = (await findLiveSession(tx, input.key))!
       return {
         ok: true as const,

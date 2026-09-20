@@ -4,6 +4,8 @@ import { AiStepExecutor } from './ai-executor.js'
 import type { AiPort } from './ports.js'
 import { testAiExecution, testRunGrant, testRunSnapshot } from '../__tests__/harness.js'
 import { systemClock } from './clock.js'
+import { resolveStepInput } from './engine-step-plan.js'
+import type { Step } from '@cairn/shared'
 
 const extractStep = {
   id: '00000000-0000-4000-8000-000000000071',
@@ -53,6 +55,17 @@ function context(step: typeof extractStep | typeof assertStep) {
 }
 
 describe('AiStepExecutor', () => {
+  it('resolves a structured context field before sending an atomic action to the AI port', async () => {
+    const step: Step = { id: extractStep.id, name: '输入订单号', type: 'ai_action', effectType: 'SIDE_EFFECT', input: { operation: 'input', mode: 'replace', targetDescription: '订单号', from: 'order', fromField: 'no' } }
+    const resolved = resolveStepInput(step, { order: { no: 'SO-2' } })
+    expect(resolved.ok).toBe(true)
+    const execute = vi.fn<AiPort['execute']>(async () => ({ ok: true, output: { done: true } }))
+    await new AiStepExecutor({ execute }).execute({ ...context(extractStep), step, input: resolved.input })
+    expect(execute.mock.calls[0]?.[1]).toMatchObject({ action: { operation: 'input', mode: 'replace', targetDescription: '订单号', value: 'SO-2' } })
+    expect(execute.mock.calls[0]?.[1]).not.toHaveProperty('instruction')
+    expect(resolveStepInput(step, { order: { no: '' } })).toMatchObject({ ok: false, error: { code: 'AI_INPUT_EMPTY', retryable: false } })
+    expect(resolveStepInput(step, {})).toMatchObject({ ok: false, error: { category: 'VALIDATION', retryable: false } })
+  })
   it('断言不成立走 ASSERT_FAILED / VALIDATION，不把失败写成成功输出', async () => {
     const ai: AiPort = {
       execute: vi.fn(async () => ({

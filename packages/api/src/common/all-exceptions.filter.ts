@@ -5,9 +5,14 @@ import {
   Logger,
   type ArgumentsHost,
   type ExceptionFilter,
-} from '@nestjs/common'
-import type { Request, Response } from 'express'
-import { apiErrorSchema, errorCodeForStatus, type ApiError } from '@cairn/shared'
+} from "@nestjs/common";
+import type { Request, Response } from "express";
+import {
+  apiErrorSchema,
+  errorCodeForStatus,
+  type ApiError,
+} from "@cairn/shared";
+import { setServiceRequestFailure } from "../services/service-request-log";
 
 /**
  * 把任何抛出物收敛为 @cairn/shared 的 apiErrorSchema 形状。
@@ -20,51 +25,55 @@ import { apiErrorSchema, errorCodeForStatus, type ApiError } from '@cairn/shared
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
-  private readonly logger = new Logger(AllExceptionsFilter.name)
+  private readonly logger = new Logger(AllExceptionsFilter.name);
 
   catch(exception: unknown, host: ArgumentsHost): void {
-    const ctx = host.switchToHttp()
-    const req = ctx.getRequest<Request>()
-    const res = ctx.getResponse<Response>()
-    const requestId = req.requestId ?? 'unknown'
+    const ctx = host.switchToHttp();
+    const req = ctx.getRequest<Request>();
+    const res = ctx.getResponse<Response>();
+    const requestId = req.requestId ?? "unknown";
 
-    if (req.aborted || res.destroyed || res.writableEnded) return
+    if (req.aborted || res.destroyed || res.writableEnded) return;
     if (res.headersSent) {
-      this.logger.warn({ requestId, path: req.originalUrl, err: exception }, '流式响应中断')
-      res.end()
-      return
+      this.logger.warn(
+        { requestId, path: req.originalUrl, err: exception },
+        "流式响应中断",
+      );
+      res.end();
+      return;
     }
 
     const status =
       exception instanceof HttpException
         ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR
+        : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    let message = '服务器内部错误'
-    let issues: ApiError['issues']
+    let message = "服务器内部错误";
+    let issues: ApiError["issues"];
     /** handler 显式给出的领域码；没有才回落状态码映射 */
-    let explicitCode: string | undefined
-    let details: unknown | undefined
+    let explicitCode: string | undefined;
+    let details: unknown | undefined;
 
     if (exception instanceof HttpException) {
-      const body = exception.getResponse()
-      if (typeof body === 'string') {
-        message = body
-      } else if (body && typeof body === 'object') {
+      const body = exception.getResponse();
+      if (typeof body === "string") {
+        message = body;
+      } else if (body && typeof body === "object") {
         const b = body as {
-          message?: unknown
-          issues?: ApiError['issues']
-          code?: unknown
-          details?: unknown
-        }
+          message?: unknown;
+          issues?: ApiError["issues"];
+          code?: unknown;
+          details?: unknown;
+        };
         message = Array.isArray(b.message)
-          ? b.message.join('; ')
-          : typeof b.message === 'string'
+          ? b.message.join("; ")
+          : typeof b.message === "string"
             ? b.message
-            : exception.message
-        issues = b.issues
-        if (typeof b.code === 'string' && b.code.length > 0) explicitCode = b.code
-        if (b.details !== undefined) details = b.details
+            : exception.message;
+        issues = b.issues;
+        if (typeof b.code === "string" && b.code.length > 0)
+          explicitCode = b.code;
+        if (b.details !== undefined) details = b.details;
       }
     }
 
@@ -73,12 +82,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       // 否则它就成了绕过「5xx 不泄露细节」的新通道。
       this.logger.error(
         { requestId, path: req.originalUrl, err: exception },
-        '未处理的异常',
-      )
-      message = '服务器内部错误'
-      issues = undefined
-      explicitCode = undefined
-      details = undefined
+        "未处理的异常",
+      );
+      message = "服务器内部错误";
+      issues = undefined;
+      explicitCode = undefined;
+      details = undefined;
     }
 
     const payload = apiErrorSchema.parse({
@@ -87,12 +96,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
       requestId,
       ...(issues ? { issues } : {}),
       ...(details !== undefined ? { details } : {}),
-    })
+    });
 
-    if (status === 429 && details && typeof details === 'object' && 'retryAfter' in details) {
-      const retry = Number(details.retryAfter)
-      if (Number.isFinite(retry) && retry > 0) res.setHeader('Retry-After', String(Math.ceil(retry)))
+    if (
+      status === 429 &&
+      details &&
+      typeof details === "object" &&
+      "retryAfter" in details
+    ) {
+      const retry = Number(details.retryAfter);
+      if (Number.isFinite(retry) && retry > 0)
+        res.setHeader("Retry-After", String(Math.ceil(retry)));
     }
-    res.status(status).json(payload)
+    setServiceRequestFailure(req, payload.code, status, details);
+    res.status(status).json(payload);
   }
 }

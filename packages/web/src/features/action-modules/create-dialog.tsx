@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { CreateModuleBody } from '@cairn/shared'
+import { moduleKeySchema, type CreateModuleBody } from '@cairn/shared'
 import { toast } from 'sonner'
 import { createActionModule } from '@/lib/action-modules-api'
 import { ApiRequestError } from '@/lib/api-client'
@@ -88,6 +88,10 @@ export function ActionModuleCreateDialog({
       toast.error('请输入模块 key')
       return
     }
+    if (!moduleKeySchema.safeParse(key.trim()).success) {
+      toast.error('模块 key 格式不符：须为小写点分标识符，如 order.query')
+      return
+    }
     if (!name.trim()) {
       toast.error('请输入模块名称')
       return
@@ -138,13 +142,13 @@ export function ActionModuleCreateDialog({
 
           <div className='grid gap-4 py-4'>
             <div className='grid gap-2'>
+              <Label htmlFor='target'>目标系统</Label>
               <Input
                 aria-label='搜索目标系统'
                 placeholder='搜索目标系统'
                 value={targetSearch}
                 onChange={(e) => setTargetSearch(e.target.value)}
               />
-              <Label htmlFor='target'>目标系统</Label>
               <Select
                 value={selectedTargetId}
                 onValueChange={setTargetId}
@@ -171,9 +175,15 @@ export function ActionModuleCreateDialog({
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
               />
-              <p className='text-bodyall text-muted-foreground'>
-                小写点分标识符，最长 64 字符，在目标系统内唯一。
-              </p>
+              {key && !moduleKeySchema.safeParse(key.trim()).success ? (
+                <p className='text-small text-destructive'>
+                  格式不符：须为小写字母开头的点分标识符（如 order.query），仅限小写字母、数字与点，最长 64 字符。
+                </p>
+              ) : (
+                <p className='text-small text-muted-foreground'>
+                  小写点分标识符，最长 64 字符，在目标系统内唯一。
+                </p>
+              )}
             </div>
 
             <div className='grid gap-2'>

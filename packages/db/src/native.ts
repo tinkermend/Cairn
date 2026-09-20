@@ -43,6 +43,13 @@ export function driverOf(db: object): Driver {
 export function schemaFor(db: object): Tables {
   return contexts.get(db)?.tables ?? schema
 }
+
+/** Compare a stored timestamp with a variable day interval, in the native dialect. */
+export function timestampMinusDays(db: Db, timestamp: SQLWrapper, days: SQLWrapper): SQL {
+  return driverOf(db) === 'mysql'
+    ? sql`timestampadd(DAY, -(${days}), ${timestamp})`
+    : sql`${timestamp} - (${days}) * interval '1 day'`
+}
 export function bindNative(
   db: Db,
   driver: Driver,
@@ -98,18 +105,72 @@ const sqliteBytes = sqlite.customType<{ data: Buffer; driverData: Uint8Array }>(
 // Indexed text has a complete-value index, never a lossy prefix. Limits are
 // checked on import and by each backend's physical constraints.
 export const indexedTextLimits: Record<string, number> = {
+  'notification_controls.key': 180,
+  'notification_events.source_key': 200,
+  'notification_events.state': 24,
+  'notification_deliveries.recipient_key': 64,
+  'notification_deliveries.status': 24,
+  'notification_commands.command_key': 180,
+  'notification_commands.action': 24,
+  'service_webhooks.url': 2048,
+  'service_webhooks.status': 16,
+  'service_webhook_deliveries.event_type': 32,
+  'service_webhook_deliveries.status': 16,
+  'service_webhook_deliveries.last_error': 256,
+  'service_webhook_deliveries.claim_owner': 256,
+  'recording_artifacts.client_asset_id': 128,
+  'recording_artifact_uploads.object_key': 512,
+  'recording_artifacts.status': 16,
+  'recording_artifact_uploads.status': 16,
+  'scenario_validation_subjects.subject_digest': 64,
+  'run_validation_contexts.subject_digest': 64,
   'console_accounts.email': 320,
   'console_identities.provider': 64,
   'console_identities.subject': 512,
   'console_roles.key': 64,
   'scenario_versions.source_digest': 64,
+  'step_runs.name': 128,
   'console_role_permissions.permission': 128,
   'console_audit_events.login_identifier': 64,
   'targets.code': 256,
   'target_accounts.username': 256,
   'target_accounts.expected_identity': 256,
+  'target_accounts.usage': 16,
+  'target_accounts.map_usage_guard': 1,
   'target_auth_profiles.digest': 64,
   'target_account_auth_budget.paused_reason': 128,
+  'credentials.type': 32,
+  'credentials.source': 32,
+  'credentials.name': 128,
+  'credentials.purpose': 256,
+  'credentials.management_status': 16,
+  'credential_bindings.kind': 32,
+  'credential_bindings.model_origin': 512,
+  'credential_bindings.model_slot': 32,
+  'credential_bindings.alert_channel_id': 64,
+  'credential_bindings.identity_username': 256,
+  'credential_bindings.identity_confirm_status': 32,
+  'credential_versions.secret_provider': 64,
+  'credential_versions.material_status': 32,
+  'credential_versions.identity_username': 256,
+  'credential_versions.revoke_reason': 128,
+  'credential_maintenance_policies.mode': 16,
+  'credential_maintenance_policies.time_zone': 64,
+  'credential_maintenance_policies.issuer_expiry_source': 32,
+  'credential_verifications.source': 32,
+  'credential_verifications.source_id': 64,
+  'credential_verifications.outcome': 32,
+  'credential_verifications.session_id': 64,
+  'credential_batches.kind': 32,
+  'credential_batches.idempotency_key': 128,
+  'credential_batch_items.item_idempotency_key': 128,
+  'credential_batch_items.status': 32,
+  'credential_batch_items.error_code': 64,
+  'credential_batch_items.error_message': 256,
+  'credential_reminders.stage': 16,
+  'credential_reminders.status': 16,
+  'credential_reminders.delivery_status': 16,
+  'credential_reminders.last_error': 64,
   'browser_sessions.auth_expiry_source': 64,
   'browser_sessions.last_auth_error': 128,
   'browser_sessions.identity_state': 16,
@@ -135,6 +196,39 @@ export const indexedTextLimits: Record<string, number> = {
   'assistant_turns.processing_token': 64,
   'assistant_turns.request_digest': 64,
   'stored_objects.object_key': 512,
+  'evidences.artifact_key': 160,
+  'run_video_media_jobs.status': 16,
+  'run_video_media_jobs.claim_owner': 256,
+  'run_video_media_jobs.last_error': 256,
+  'stored_objects.owner_kind': 16,
+  'runs.execution_origin': 16,
+  'runs.suite_member_id': 64,
+  'scenario_suite_publish_receipts.idempotency_key': 128,
+  'suite_runs.verdict': 32,
+  'suite_runs.failure_policy': 16,
+  'suite_runs.idempotency_key': 128,
+  'suite_run_items.member_id': 64,
+  'suite_run_items.group_id': 64,
+  'report_profiles.name': 128,
+  'report_revision_outputs.format': 8,
+  'report_revision_outputs.render_version': 64,
+  'suite_report_triggers.status': 16,
+  'artifacts.kind': 32,
+  'artifacts.content_type': 128,
+  'reports.subject_kind': 16,
+  'reports.idempotency_key': 128,
+  'reports.request_digest': 64,
+  'report_revisions.idempotency_key': 128,
+  'report_revisions.request_digest': 64,
+  'report_revisions.stage': 16,
+  'report_revisions.scope': 24,
+  'report_revisions.template_version': 64,
+  'report_revisions.render_version': 64,
+  'report_revisions.content_completeness': 16,
+  'export_jobs.kind': 32,
+  'export_jobs.content_completeness': 16,
+  'export_jobs.request_digest': 64,
+  'export_jobs.idempotency_key': 128,
   'workers.id': 256,
   'session_operations.idempotency_key': 256,
   'session_operations.content_digest': 64,
@@ -268,6 +362,14 @@ export const indexedTextLimits: Record<string, number> = {
   'map_exploration_policies.explore_mode': 16,
   'map_exploration_policy_commands.command_key': 128,
   'schedules.consumer_key': 32,
+  'schedules.enabled_guard': 1,
+  'runtime_watermarks.name': 64,
+  'periodic_slots.name': 64,
+  'periodic_slots.mode': 16,
+  'periodic_slots.lease_owner': 256,
+  'periodic_slots.last_outcome': 16,
+  'periodic_slots.last_error_class': 64,
+  'periodic_slots.last_owner': 256,
   'schedule_versions.timezone': 64,
   'schedule_versions.window_start': 8,
   'schedule_versions.window_end': 8,
@@ -281,6 +383,22 @@ export const indexedTextLimits: Record<string, number> = {
   'schedule_occurrences.reason': 64,
   'schedule_events.event_type': 64,
   'schedule_commands.command_key': 128,
+  'api_instances.id': 256,
+  'api_instances.id_source': 16,
+  'api_instances.status': 16,
+  'api_instances.version': 128,
+  'api_instances.schema_logical_version': 32,
+  'object_store_probes.store_kind': 32,
+  'object_store_probes.status': 16,
+  'object_store_probes.error_class': 64,
+  'object_store_probes.probed_by': 288,
+  'monitor_samples.metric_key': 128,
+  'monitor_samples.scope': 16,
+  'monitor_samples.scope_id': 256,
+  'scenario_ai_calls.purpose': 32,
+  'scenario_ai_calls.model': 256,
+  'scenario_ai_calls.phase': 16,
+  'scenario_ai_calls.error_code': 64,
 }
 export function nativeTables(driver: Driver, schemaName = 'cairn'): Tables {
   if (driver === 'postgres' && schemaName === 'cairn') return schema
@@ -299,6 +417,13 @@ export function nativeTables(driver: Driver, schemaName = 'cairn'): Tables {
             : driver === 'mysql'
               ? mysql.varchar(c.name, { length: 36 })
               : sqlite.text(c.name)
+      else if (c.columnType === 'PgBoolean')
+        b =
+          driver === 'postgres'
+            ? pg.boolean(c.name)
+            : driver === 'mysql'
+              ? mysql.boolean(c.name)
+              : sqlite.integer(c.name, { mode: 'boolean' })
       else if (c.columnType === 'PgInteger')
         b =
           driver === 'postgres'
@@ -306,6 +431,20 @@ export function nativeTables(driver: Driver, schemaName = 'cairn'): Tables {
             : driver === 'mysql'
               ? mysql.int(c.name)
               : sqlite.integer(c.name)
+      else if (c.columnType === 'PgBigInt64' || c.columnType === 'PgBigInt53')
+        b =
+          driver === 'postgres'
+            ? pg.bigint(c.name, { mode: 'number' })
+            : driver === 'mysql'
+              ? mysql.bigint(c.name, { mode: 'number' })
+              : sqlite.integer(c.name)
+      else if (c.columnType === 'PgDoublePrecision')
+        b =
+          driver === 'postgres'
+            ? pg.doublePrecision(c.name)
+            : driver === 'mysql'
+              ? mysql.double(c.name)
+              : sqlite.real(c.name)
       else if (c.columnType === 'PgTimestamp')
         b =
           driver === 'postgres'
@@ -435,6 +574,33 @@ export async function updateRows<T extends PgTable, S extends SelectedFields = T
       .where(keys)) as SelectResultFields<S>[]
   })
 }
+export async function insertIgnoreRows<T extends PgTable>(
+  db: Db,
+  table: T,
+  values: PgInsertValue<T> | Array<PgInsertValue<T>>,
+): Promise<number> {
+  const rows = Array.isArray(values) ? values : [values]
+  if (rows.length === 0) return 0
+  if (driverOf(db) === 'mysql') {
+    const result = (await (db as any).insert(table).ignore().values(rows)) as [{ affectedRows?: number } | undefined]
+    return Number(result[0]?.affectedRows ?? 0)
+  }
+  const inserted = (await db.insert(table).values(rows).onConflictDoNothing().returning()) as InferSelectModel<T>[]
+  return inserted.length
+}
+
+export function sampleBucketAt(db: object, intervalMs: number, base: SQLWrapper = databaseNow(db)): SQL {
+  const seconds = Math.max(intervalMs, 1) / 1000
+  switch (driverOf(db)) {
+    case 'postgres':
+      return sql`to_timestamp(floor(extract(epoch from ${base}) / ${seconds}) * ${seconds})`
+    case 'mysql':
+      return sql`FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(${base}) / ${seconds}) * ${seconds})`
+    case 'sqlite':
+      return sql`strftime('%Y-%m-%dT%H:%M:%fZ', datetime((cast(strftime('%s', ${base}) as integer) / ${seconds}) * ${seconds}, 'unixepoch'))`
+  }
+}
+
 export async function insertRows<T extends PgTable>(
   db: Db,
   table: T,
@@ -479,9 +645,33 @@ export async function deleteRows<T extends PgTable, S extends SelectedFields = T
   })
 }
 
+export function jsonText(db: object, column: SQLWrapper, path: string[]): SQL {
+  const driver = driverOf(db)
+  if (driver === 'postgres') return sql`${column} #>> ${'{' + path.join(',') + '}'}`
+  const jsonPath = '$.' + path.join('.')
+  if (driver === 'mysql') return sql`JSON_UNQUOTE(JSON_EXTRACT(${column}, ${jsonPath}))`
+  return sql`json_extract(${column}, ${jsonPath})`
+}
+
 export function jsonHasKey(db: object, column: SQLWrapper, key: string): SQL {
   const driver = driverOf(db)
   if (driver === 'postgres') return sql`${column}->${key} IS NOT NULL`
   if (driver === 'mysql') return sql`JSON_EXTRACT(${column}, ${'$.' + key}) IS NOT NULL`
   return sql`json_extract(${column}, ${'$.' + key}) IS NOT NULL`
+}
+
+export function jsonArrayIncludes(db: object, column: SQLWrapper, value: string): SQL {
+  const driver = driverOf(db)
+  if (driver === 'postgres') {
+    return sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(${column}) AS cap(value) WHERE cap.value = ${value})`
+  }
+  if (driver === 'mysql') return sql`JSON_CONTAINS(${column}, JSON_QUOTE(${value}))`
+  return sql`EXISTS (SELECT 1 FROM json_each(${column}) WHERE value = ${value})`
+}
+
+export function jsonArrayLength(db: object, column: SQLWrapper): SQL {
+  const driver = driverOf(db)
+  if (driver === 'postgres') return sql`COALESCE(jsonb_array_length(${column}), 0)`
+  if (driver === 'mysql') return sql`COALESCE(JSON_LENGTH(${column}), 0)`
+  return sql`COALESCE(json_array_length(${column}), 0)`
 }

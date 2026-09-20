@@ -2,6 +2,7 @@
  * 本机进程探活的判定，不含网络 IO。
  * 探活只回答「api / worker / web 现在能不能被连上」，不代替功能或生命周期验收。
  */
+import { createHash, createHmac } from 'node:crypto'
 
 export const DEFAULT_PORTS = {
   api: 3030,
@@ -88,6 +89,63 @@ export function parseHealthBody(text) {
   }
 }
 
+export const WORKER_NODE_HEALTH_PATH = '/internal/node/health'
+
+export function decodeInternalSecret(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') return null
+  try {
+    const bytes = Buffer.from(raw, 'base64')
+    return bytes.length === 32 ? bytes : null
+  } catch {
+    return null
+  }
+}
+
+export function signWorkerNodeHealthHeaders(secret, workerId, expiresUnix) {
+  const bodyHash = createHash('sha256').update('').digest('hex')
+  const canonical = ['NODE_HEALTH', 'GET', WORKER_NODE_HEALTH_PATH, bodyHash, String(expiresUnix), workerId].join('\n')
+  const signature = createHmac('sha256', secret).update(canonical).digest('hex')
+  return {
+    'x-cairn-node-expires': String(expiresUnix),
+    'x-cairn-node-signature': signature,
+    'x-cairn-node-worker': workerId,
+  }
+}
+
+/**
+ * @param {unknown} text
+ * @returns {{ ok: true, value: {
+ *   status: 'ok' | 'degraded',
+ *   service: 'cairn-worker',
+ *   loopAlive: boolean,
+ * } } | { ok: false, error: string }}
+ */
+export function parseWorkerNodeHealth(text) {
+  const parsed = parseHealthBody(text)
+  if (!parsed.ok) return parsed
+  if (parsed.value.service !== 'cairn-worker') {
+    return { ok: false, error: 'service 不是 cairn-worker' }
+  }
+  let json
+  try {
+    json = JSON.parse(text)
+  } catch {
+    return { ok: false, error: '不是 JSON' }
+  }
+  const node = json?.node
+  if (node === null || typeof node !== 'object' || typeof node.loopAlive !== 'boolean') {
+    return { ok: false, error: 'node.loopAlive 缺失' }
+  }
+  return {
+    ok: true,
+    value: {
+      status: parsed.value.status,
+      service: parsed.value.service,
+      loopAlive: node.loopAlive,
+    },
+  }
+}
+
 export function looksLikeHtml(text, status) {
   if (status !== 200) return false
   if (typeof text !== 'string') return false
@@ -104,6 +162,7 @@ export function looksLikeHtml(text, status) {
  *   workerListen: boolean,
  *   webListen: boolean,
  *   apiHealth?: { ok: boolean, value?: { status: string, checks: { database: string, changeHint: string } }, error?: string },
+ *   workerHealth?: { ok: boolean, value?: { service?: string, loopAlive?: boolean }, error?: string },
  *   webPage?: { ok: boolean, error?: string },
  *   webHealth?: { ok: boolean, error?: string },
  * }} input
@@ -124,6 +183,17 @@ export function decideVerdict(input) {
     }
     if (input.apiHealth.value.checks.database !== 'up') {
       return { result: 'STACK_UNHEALTHY', fail: '数据库不可用' }
+    }
+  }
+  if (input.requireWorker) {
+    if (!input.workerHealth?.ok) {
+      return { result: 'STACK_UNHEALTHY', fail: `worker 节点健康 ${input.workerHealth?.error ?? '不可达'}` }
+    }
+    if (input.workerHealth.value.service !== 'cairn-worker') {
+      return { result: 'STACK_UNHEALTHY', fail: 'worker 节点健康 service 非法' }
+    }
+    if (input.workerHealth.value.loopAlive !== true) {
+      return { result: 'STACK_UNHEALTHY', fail: 'worker loopAlive=false' }
     }
   }
   if (input.requireWeb) {

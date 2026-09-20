@@ -122,6 +122,7 @@ describe('领域码常量', () => {
       'RUN_ACCOUNT_MISMATCH',
       'RUN_ACCOUNT_DISABLED',
       'RUN_ACCOUNT_REQUIRED',
+      'RUN_ACCOUNT_MAP_ONLY',
       'RUN_NOT_REVIEWABLE',
       'RUN_NOT_TERMINAL',
       'RUN_BUSY',

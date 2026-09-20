@@ -1,5 +1,5 @@
 import { relations, sql } from 'drizzle-orm'
-import { index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import type {
   ServiceAdmission,
   AttemptStatus,
@@ -137,6 +137,7 @@ export const runs = cairnSchema.table(
     outcomeStatus: text('outcome_status').notNull().default('NOT_EVALUATED').$type<OutcomeStatus>(),
     evidenceStatus: text('evidence_status').notNull().default('PENDING').$type<RunEvidenceStatus>(),
     debugMode: text('debug_mode').notNull().default('runThrough').$type<DebugMode>(),
+    notificationExpected: boolean('notification_expected').notNull().default(false),
     checkpoint: jsonb('checkpoint').$type<DebugCheckpoint>(),
     debugOverlay: jsonb('debug_overlay').$type<DebugOverlay>(),
     authCheckpoint: jsonb('auth_checkpoint').$type<AuthCheckpoint>(),
@@ -153,6 +154,9 @@ export const runs = cairnSchema.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     eventSeq: integer('event_seq').notNull().default(0),
+    executionOrigin: text('execution_origin').notNull().default('standalone').$type<'standalone' | 'suite_member'>(),
+    suiteRunId: uuid('suite_run_id'),
+    suiteMemberId: text('suite_member_id'),
   },
   (t) => [
     uniqueIndex('runs_idempotency_idx').on(t.createdByConsoleAccountId, t.idempotencyKey),
@@ -161,6 +165,11 @@ export const runs = cairnSchema.table(
     index('runs_deadline_idx').on(t.deadlineAt, t.status),
     index('runs_claim_idx').on(t.status, t.createdAt, t.id),
     index('runs_deleted_at_idx').on(t.deletedAt),
+    index('runs_notification_repair_idx').on(t.notificationExpected, t.status, t.finishedAt, t.id),
+    index('runs_target_created_idx').on(t.targetId, t.createdAt),
+    index('runs_scenario_created_idx').on(t.scenarioId, t.createdAt),
+    index('runs_suite_run_id_idx').on(t.suiteRunId),
+    index('runs_execution_origin_idx').on(t.executionOrigin, t.createdAt),
   ],
 )
 
@@ -172,6 +181,8 @@ export const stepRuns = cairnSchema.table(
       .notNull()
       .references(() => runs.id, { onDelete: 'restrict' }),
     stepId: uuid('step_id').notNull(),
+    /** 创建时从 snapshot.steps[].name 冻结的展示名；列表不再回读整份 snapshot。 */
+    name: text('name'),
     ordinal: integer('ordinal').notNull(),
     status: text('status').notNull().$type<StepRunStatus>(),
     outcomeStatus: text('outcome_status').notNull().default('NOT_EVALUATED').$type<OutcomeStatus>(),
@@ -211,6 +222,7 @@ export const evidences = cairnSchema.table(
     stepRunId: uuid('step_run_id').references(() => stepRuns.id, { onDelete: 'restrict' }),
     attemptId: uuid('attempt_id').references(() => attempts.id, { onDelete: 'restrict' }),
     type: text('type').notNull().$type<EvidenceType>(),
+    artifactKey: text('artifact_key').notNull().$defaultFn(() => `legacy:${newId()}`),
     status: text('status').notNull().default('available').$type<EvidenceStatus>(),
     schemaVersion: integer('schema_version').notNull().default(1),
     payload: jsonb('payload').$type<JsonValue>(),
@@ -225,9 +237,12 @@ export const evidences = cairnSchema.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    uniqueIndex('evidences_run_artifact_key_idx').on(t.runId, t.artifactKey),
     index('evidences_run_created_idx').on(t.runId, t.createdAt),
     index('evidences_attempt_id_idx').on(t.attemptId),
     index('evidences_status_idx').on(t.status, t.createdAt),
+    index('evidences_created_id_idx').on(t.createdAt, t.id),
+    index('evidences_type_created_id_idx').on(t.type, t.createdAt, t.id),
   ],
 )
 

@@ -20,6 +20,7 @@ import {
   mapScenarioBindingSchema,
   mapSealPublishBodySchema,
   mapConsumptionPolicyDtoSchema,
+  mapConsumptionEligibilityGrantBodySchema,
   mapConsumptionPolicyUpdateBodySchema,
   mapJobPolicyDtoSchema,
   mapJobPolicyUpdateBodySchema,
@@ -64,6 +65,7 @@ import {
   type MapScenarioBindingDto,
   type MapSealPublishBody,
   type MapConsumptionPolicyDto,
+  type MapConsumptionEligibilityGrantBody,
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyDto,
   type MapJobPolicyUpdateBody,
@@ -328,6 +330,17 @@ export function updateMapConsumptionPolicy(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(mapConsumptionPolicyUpdateBodySchema.parse(body)),
+  })
+}
+
+export function grantMapConsumptionEligibility(
+  targetId: string,
+  body: MapConsumptionEligibilityGrantBody,
+): Promise<MapConsumptionPolicyDto> {
+  return apiFetch(`/api/targets/${targetId}/map/consumption-eligibility`, mapConsumptionPolicyDtoSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapConsumptionEligibilityGrantBodySchema.parse(body)),
   })
 }
 

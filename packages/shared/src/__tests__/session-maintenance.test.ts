@@ -108,10 +108,31 @@ describe('会话维护契约 C0', () => {
     expect(retentionQuota(1, 1)).toBe(0)
   })
 
-  it('账号选择不再被口令门禁', () => {
-    expect(accountPickerHint({ hasLiveSession: true, hasPassword: false, capability: 'LOGIN_VERIFIED' })).toEqual({
+  it('账号选择按口令与登录方式预告手工登录，不看能力档', () => {
+    expect(accountPickerHint({ liveStatus: 'OPEN', hasPassword: false, authMethod: 'password' })).toEqual({
       reuse: true,
+      lost: false,
       manualLikely: true,
+    })
+    expect(accountPickerHint({ liveStatus: 'OPEN', hasPassword: true, authMethod: 'password', captchaMode: 'none' })).toEqual({
+      reuse: true,
+      lost: false,
+      manualLikely: false,
+    })
+    expect(accountPickerHint({ liveStatus: 'OPEN', hasPassword: true, authMethod: 'manual' })).toEqual({
+      reuse: true,
+      lost: false,
+      manualLikely: true,
+    })
+    expect(accountPickerHint({ liveStatus: 'OPEN', hasPassword: true, captchaMode: 'sms' })).toEqual({
+      reuse: true,
+      lost: false,
+      manualLikely: true,
+    })
+    expect(accountPickerHint({ liveStatus: 'LOST', hasPassword: true, authMethod: 'password' })).toEqual({
+      reuse: false,
+      lost: true,
+      manualLikely: false,
     })
   })
 
@@ -124,7 +145,7 @@ describe('会话维护契约 C0', () => {
   it('维护错误码与事件含保活收口', () => {
     expect(SESSION_MAINTENANCE_ERROR_CODES).toContain('AUTH_PROFILE_REQUIRED')
     expect(SESSION_MAINTENANCE_ERROR_CODES).toContain('SESSION_KEEPALIVE_ABANDONED')
-    expect(SESSION_MAINTENANCE_ERROR_MESSAGES.AUTH_PROFILE_REQUIRED).toMatch(/认证画像/)
+    expect(SESSION_MAINTENANCE_ERROR_MESSAGES.AUTH_PROFILE_REQUIRED).toMatch(/主动检测/)
     expect(SESSION_MAINTENANCE_ERROR_MESSAGES.SESSION_KEEPALIVE_ABANDONED).toMatch(/保活/)
     expect(SESSION_EVENT_TYPES).toContain('auth.signal_observed')
     expect(SESSION_EVENT_TYPES).toContain('session.keepalive_extended')

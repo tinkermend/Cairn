@@ -82,7 +82,7 @@ function mockService() {
     listVersions: vi.fn(async () => ({ items: [] })),
     getVersion: vi.fn(async () => ({ id: 'v1', versionNo: 1 })),
     delete: vi.fn(async () => ({ ok: true })),
-    trial: vi.fn(async () => ({ id: 'run-trial-1', status: 'QUEUED' })),
+    trial: vi.fn(async () => ({ detail: { id: 'run-trial-1', status: 'QUEUED' }, created: false })),
     listReferences: vi.fn(async () => ({ items: [], total: 0, page: 1, pageSize: 20 })),
     batchUpgrade: vi.fn(async () => ({ toVersionId: 'v2', results: [] })),
     updatePublication: vi.fn(async () => ({ id: 'v1', publicationStatus: 'deprecated' })),

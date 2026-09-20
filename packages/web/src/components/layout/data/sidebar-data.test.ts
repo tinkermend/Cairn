@@ -12,6 +12,9 @@ import { sidebarData } from './sidebar-data'
 const workbench = sidebarData.navGroups.find(
   (group) => group.title === '工作台'
 )!
+const observation = sidebarData.navGroups.find(
+  (group) => group.title === '执行与观测'
+)!
 const governance = sidebarData.navGroups.find(
   (group) => group.title === '治理'
 )!
@@ -35,12 +38,18 @@ describe('侧栏导航', () => {
     expect(workbench.items.map((item) => item.title)).toEqual([
       '首页',
       '目标系统',
-      '浏览器会话',
       '场景',
+      '场景集',
       '动作库',
       '录制草稿',
+    ])
+    expect(observation.items.map((item) => item.title)).toEqual([
       '运行',
       '自动复查',
+      '浏览器会话',
+      '证据与报告',
+      '运行监控',
+      '通知',
     ])
     expect(
       workbench.items.find((item) => item.title === '录制草稿')?.permission
@@ -53,6 +62,7 @@ describe('侧栏导航', () => {
       '用户',
       '角色',
       '开放服务',
+      '凭据管理',
       '平台配置',
       '执行节点',
       '审计',
@@ -70,29 +80,56 @@ describe('侧栏导航', () => {
         user(['target:read', 'workflow:read', 'run:read'])
       )
     ).toEqual([])
+    expect(
+      visibleTitles(governance, user(['target:read', 'credential:read']))
+    ).toEqual(['凭据管理'])
     expect(visibleTitles(governance, user(['account:read']))).toEqual(['用户'])
     expect(visibleTitles(governance, user(['audit:read']))).toEqual(['审计'])
     expect(visibleTitles(governance, user(['audit:login']))).toEqual(['审计'])
   })
 
-  it('执行者只见业务与设置，不见录制；治理仅见执行节点', () => {
+  it('执行者只见业务与设置，不见录制；运行监控在执行与观测', () => {
     const operator = user([...SYSTEM_ROLE_DEFINITIONS.operator.permissions])
     expect(visibleTitles(workbench, operator)).toEqual([
       '首页',
       '目标系统',
-      '浏览器会话',
       '场景',
+      '场景集',
       '动作库',
+    ])
+    expect(visibleTitles(observation, operator)).toEqual([
       '运行',
       '自动复查',
+      '浏览器会话',
+      '证据与报告',
+      '运行监控',
+      '通知',
     ])
-    expect(visibleTitles(governance, operator)).toEqual(['执行节点'])
+    expect(visibleTitles(governance, operator)).toEqual([
+      '凭据管理',
+      '执行节点',
+    ])
+  })
+
+  it('运行监控需要 monitor:read，不按角色名', () => {
+    expect(visibleTitles(governance, user(['session:read']))).toEqual([
+      '执行节点',
+    ])
+    expect(visibleTitles(observation, user(['monitor:read']))).toEqual([
+      '运行监控',
+    ])
+    expect(
+      visibleTitles(
+        observation,
+        user(['target:read', 'workflow:read', 'run:read'])
+      )
+    ).toEqual(['运行', '证据与报告'])
   })
 
   it('编写者能看见录制草稿', () => {
     const author = user([...SYSTEM_ROLE_DEFINITIONS.author.permissions])
     expect(visibleTitles(workbench, author)).toContain('录制草稿')
-    expect(visibleTitles(governance, author)).toEqual(['执行节点'])
+    expect(visibleTitles(governance, author)).toEqual(['凭据管理', '执行节点'])
   })
 
   it('动作库需要模块读取权限', () => {
@@ -118,9 +155,15 @@ describe('侧栏导航', () => {
           )
           expect(match, `${item.title} 缺少 anyOf 能力地图`).toBeTruthy()
         } else if (item.permission) {
+          const permission = item.permission
           const match = menus.find(
             (menu) =>
-              menu.allOf.length === 1 && menu.allOf[0] === item.permission
+              menu.allOf.includes(permission) &&
+              menu.allOf.every(
+                (p) =>
+                  p === permission ||
+                  (permission === 'credential:read' && p === 'target:read')
+              )
           )
           expect(match, `${item.title} 缺少能力地图`).toBeTruthy()
         } else if (!item.items) {
@@ -149,10 +192,12 @@ describe('侧栏导航', () => {
         ...visibleTitles(workbench, subject).filter(
           (title) => title !== '首页'
         ),
+        ...visibleTitles(observation, subject),
         ...visibleTitles(governance, subject),
       ]
       const previewMenus = [
         ...preview.menus.workbench.filter((title) => title !== '首页'),
+        ...preview.menus['execution-observation'],
         ...preview.menus.governance,
       ]
       expect(previewMenus).toEqual(sidebarMenus)
@@ -164,12 +209,16 @@ describe('侧栏导航', () => {
     }
   })
 
-  it('工作台在目标系统之后出现浏览器会话', () => {
-    const titles = workbench.items.map((item) => item.title)
-    expect(titles.indexOf('浏览器会话')).toBe(titles.indexOf('目标系统') + 1)
-    const sessions = workbench.items.find((item) => item.title === '浏览器会话')
-    expect(sessions && 'url' in sessions ? sessions.url : null).toBe(
-      '/sessions'
+  it('执行与观测在自动复查之后出现浏览器会话，并包含证据与报告', () => {
+    const titles = observation.items.map((item) => item.title)
+    expect(titles.indexOf('浏览器会话')).toBe(titles.indexOf('自动复查') + 1)
+    expect(titles).toContain('证据与报告')
+    const evidence = observation.items.find((item) => item.title === '证据与报告')
+    expect(evidence && 'url' in evidence ? evidence.url : null).toBe(
+      '/evidence'
     )
+    expect(
+      evidence && 'permission' in evidence ? evidence.permission : null
+    ).toBe('run:read')
   })
 })

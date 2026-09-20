@@ -39,10 +39,10 @@ export function queryMap(view: MapQueryView, request: MapQueryRequest): MapQuery
     pool = pool.filter((asset) => !asset.features?.regionKey || asset.features.regionKey === request.clues?.region)
   }
   if (request.clues?.role) {
-    pool = pool.filter((asset) => !asset.features?.role || asset.features.role === request.clues?.role)
+    pool = pool.filter((asset) => asset.features?.role === request.clues?.role)
   }
   if (request.clues?.name) {
-    pool = pool.filter((asset) => !asset.features?.semanticName || asset.features.semanticName === request.clues?.name)
+    pool = pool.filter((asset) => asset.features?.semanticName === request.clues?.name)
   }
   if (view.candidateOverflow || pool.length > MAP_QUERY_PAGE_CANDIDATE_MAX) {
     return mapQueryResultSchema.parse({
@@ -58,9 +58,7 @@ export function queryMap(view: MapQueryView, request: MapQueryRequest): MapQuery
       ? asset.condition
         ? evaluateCondition(asset.condition, request.condition)
         : 'unknown'
-      : asset.condition
-        ? 'unknown'
-        : 'satisfied'
+      : 'satisfied'
     const fresh = overlayMapFreshness({
       lifecycle: asset.lifecycle,
       lastVerifiedAt: asset.lastVerifiedAt,

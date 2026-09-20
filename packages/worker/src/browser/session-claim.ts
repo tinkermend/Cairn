@@ -13,19 +13,24 @@ import {
   getRun,
   getSessionById,
   loadSecretCiphertext,
+  recordCredentialVerification,
+  resolveSnapshotCredential,
   releaseSessionUse,
   setSessionProbe,
   setSessionStatus,
-  loadAccountForExecution,
   loadTargetForExecution,
+  appendRunEvents,
+  recordCaptchaLoginAttempt,
   type SessionRecord
 } from '@cairn/db'
+import { randomUUID } from 'node:crypto'
 import {
   LOCAL_SECRET_PROVIDER,
   resolveSessionPolicy,
   type AuthObservation,
   type AuthRecoveryOutcome,
   type FrozenAuthVerification,
+  type ChallengeAuditRecord,
   compileAccessScopeFromSnapshot,
   deriveRecoveryRule,
   inRunAuthVerifyAllowed,
@@ -44,8 +49,10 @@ import { pageStrategyForReuse, shouldRecreateSession } from './reuse'
 import {
   BrowserRuntimeError,
   OccupancyRequiredError,
+  applySessionAuthToTarget,
   gotoPage,
   launchSession,
+  attemptLoginWithCredentials,
   loginWithCredentials,
   openRunPage,
   probeAuth,
@@ -58,10 +65,12 @@ import {
 import { hasTargetScope, installTargetScope } from './target-scope'
 import { originAllowed } from './page-identity'
 import { emptyLive, type LiveHandle, type SessionAcquireResult, type SessionManagerContext } from './session-live.js'
+import { shouldContinueCaptchaRetry } from './captcha/login-outcome.js'
 
 async function recordAuthAttemptStarted(
   db: SessionManagerContext['dbHandle'],
   session: Pick<SessionRecord, 'id' | 'targetId' | 'targetAccountId' | 'generation'>,
+  detail?: { runId?: string; attempt?: number; maxAttempts?: number; challengeType?: ChallengeAuditRecord['challengeType'] },
 ): Promise<void> {
   try {
     await appendSessionEvent(db, {
@@ -69,10 +78,13 @@ async function recordAuthAttemptStarted(
       type: 'auth.attempt_started',
       sessionId: session.id,
       generation: session.generation,
-      payload: {},
+      runId: detail?.runId,
+      payload: detail?.attempt
+        ? { attempt: detail.attempt, maxAttempts: detail.maxAttempts, challengeType: detail.challengeType }
+        : {},
     })
   } catch {
-    /* 事件失败不得阻断登录 */
+    /* 事件失败不得阻断登录，但持久化后可用于崩溃后复盘已尝试次数 */
   }
 }
 
@@ -91,7 +103,7 @@ export function unbindOccupancy(this: SessionManagerContext, leaseId: string) {
   }
 
 export async function abandonOccupancy(this: SessionManagerContext, leaseId: string, reason: string) {
-    await this.stopVideoForLease(leaseId)
+    const sealed = await this.sealVideoForLease(leaseId)
     this.unbindOccupancy(leaseId)
     try {
       await releaseSessionUse(this.dbHandle, {
@@ -102,6 +114,7 @@ export async function abandonOccupancy(this: SessionManagerContext, leaseId: str
     } catch {
       // 释放占用不得挡住维护终态；句柄已失效时租约由收割收敛。
     }
+    await this.finalizeSealedVideo(sealed)
   }
 
 export function withHeldOccupancy<T>(this: SessionManagerContext, 
@@ -540,7 +553,7 @@ export async function launchAndOpen(this: SessionManagerContext,
         headless: this.options.headless,
         executablePath: this.options.executablePath,
       })
-      this.lives.set(created.id, emptyLive(handle, created.id))
+      this.lives.set(created.id, emptyLive(handle, created.id, created.generation))
       await this.attachSessionAuthObserver(created.id)
       const health = await probeHealth(handle)
       await setSessionProbe(db, {
@@ -820,27 +833,24 @@ export async function ensureAuth(this: SessionManagerContext,
     }
 
     signal?.throwIfAborted()
-    if (verification?.capability === 'LOGIN_VERIFIED') {
-      return this.enterWaitingForAuth(
-        session,
-        runGrant,
-        policy,
-        occupancy,
-        'SESSION_AUTH_UNSUPPORTED',
-        'LOGIN_VERIFIED 不能自动提交凭据',
-        targetInfo,
-      )
-    }
     const missingFields =
       !targetInfo.loginFields?.username ||
       !targetInfo.loginFields?.password ||
       !targetInfo.loginFields?.submit
 
+    const isSupportedCaptcha =
+      targetInfo.captchaMode === 'image' ||
+      targetInfo.captchaMode === 'graphic' ||
+      targetInfo.captchaMode === 'slider' ||
+      Boolean(targetInfo.captcha)
+
     const needsManual =
-      targetInfo.authMethod === 'manual' || targetInfo.captchaMode !== 'none' || missingFields
+      targetInfo.authMethod === 'manual' ||
+      (targetInfo.captchaMode !== 'none' && !isSupportedCaptcha) ||
+      missingFields
 
     if (needsManual) {
-      // 表 D7：manual / captcha / 缺 loginFields 均记 SESSION_AUTH_UNSUPPORTED 并等待人工
+      // 表 D7：manual / unsupported captcha / 缺 loginFields 均记 SESSION_AUTH_UNSUPPORTED 并等待人工
       const message =
         missingFields && targetInfo.authMethod === 'password' && targetInfo.captchaMode === 'none'
           ? '登录框定位不完整，无法自动登录'
@@ -874,15 +884,103 @@ export async function ensureAuth(this: SessionManagerContext,
       )
     }
 
-    const account = await loadAccountForExecution(db, run.targetAccountId!)
-    const username = account?.username ?? credential.username
+    const username = credential.username
+    const liveAuth = await readLiveSessionAuth(db).catch(() => null)
+    const loginTarget = applySessionAuthToTarget(targetInfo, liveAuth?.sessionAuth)
+    const maxAttempts = isSupportedCaptcha ? Math.max(1, loginTarget.captchaMaxAttempts ?? 2) : 1
+    // 这层 for 循环才是验证码重试预算的唯一持有者；submitLoginCredentials 内部还会按
+    // target.captchaMaxAttempts 再循环一次，两层都读同一个配置值会让实际提交次数变成
+    // maxAttempts²（默认 2×2=4 次），直接违反"最多重试 captchaMaxAttempts 次"的预算承诺。
+    // 这里把内层预算显式收紧到 1，确保外层每迭代一次只真实提交一次表单。
+    const singleAttemptTarget = isSupportedCaptcha ? { ...loginTarget, captchaMaxAttempts: 1 } : loginTarget
+    let ok = false
+    const challengeAudit: ChallengeAuditRecord = {
+      challengeId: randomUUID(),
+      sessionId: session.id,
+      runId: run.runId,
+      challengeType: targetInfo.captchaMode === 'slider' ? 'SLIDER_CAPTCHA' : 'IMAGE_CAPTCHA',
+      handledBy: 'MACHINE',
+      attemptsUsed: 0,
+      success: false,
+      durationMs: 0,
+      timestamp: new Date().toISOString(),
+    }
+    const startTime = Date.now()
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      signal?.throwIfAborted()
+      await recordAuthAttemptStarted(db, session, {
+        runId: run.runId,
+        attempt,
+        maxAttempts,
+        challengeType: isSupportedCaptcha ? challengeAudit.challengeType : undefined,
+      })
+      if (isSupportedCaptcha) {
+        challengeAudit.attemptsUsed = attempt
+        challengeAudit.timestamp = new Date().toISOString()
+        await appendRunEvents(db, run.runId, [
+          { type: 'run.captcha_attempted', payload: challengeAudit },
+        ]).catch(() => undefined)
+      }
+      const loginResult = await attemptLoginWithCredentials(live.handle, singleAttemptTarget, {
+        username,
+        password: credential.password,
+      })
+      ok = loginResult.authenticated
+      if (isSupportedCaptcha) {
+        const outcome =
+          ok
+            ? 'success'
+            : loginResult.submit === 'ambiguous'
+              ? 'ambiguous'
+              : loginResult.submit === 'credential_failed'
+                ? 'credential_failed'
+                : 'captcha_failed'
+        challengeAudit.success = ok
+        challengeAudit.durationMs = Date.now() - startTime
+        await recordCaptchaLoginAttempt(db, {
+          key: { targetId: session.targetId, targetAccountId: session.targetAccountId },
+          sessionId: session.id,
+          generation: session.generation,
+          runId: run.runId,
+          attempt,
+          maxAttempts,
+          challengeType: challengeAudit.challengeType,
+          outcome,
+          audit: challengeAudit,
+        }).catch(() => undefined)
+      }
+      if (credential.secretId) {
+        await recordCredentialVerification(db, {
+          secretId: credential.secretId,
+          sessionId: session.id,
+          sessionGeneration: session.generation,
+          source: 'run',
+          sourceId: run.runId,
+          outcome: ok ? 'verified' : 'failed',
+          submittedPassword: true,
+        }).catch(() => undefined)
+      }
+      if (ok) {
+        if (isSupportedCaptcha) {
+          challengeAudit.success = true
+          challengeAudit.durationMs = Date.now() - startTime
+          await appendRunEvents(db, run.runId, [
+            { type: 'run.captcha_solved', payload: challengeAudit },
+          ]).catch(() => undefined)
+        }
+        break
+      }
+      if (isSupportedCaptcha && !shouldContinueCaptchaRetry(loginResult)) break
+    }
     signal?.throwIfAborted()
-    await recordAuthAttemptStarted(db, session)
-    const ok = await loginWithCredentials(live.handle, targetInfo, {
-      username,
-      password: credential.password,
-    })
-    signal?.throwIfAborted()
+    if (!ok && isSupportedCaptcha) {
+      challengeAudit.success = false
+      challengeAudit.durationMs = Date.now() - startTime
+      await appendRunEvents(db, run.runId, [
+        { type: 'run.captcha_escalated', payload: challengeAudit },
+      ]).catch(() => undefined)
+    }
     const authState = ok ? 'AUTHENTICATED' : 'EXPIRED'
     await setSessionProbe(db, {
       sessionId: session.id,
@@ -902,7 +1000,9 @@ export async function ensureAuth(this: SessionManagerContext,
         occupancy,
         'SESSION_AUTH_UNSUPPORTED',
         '自动登录失败',
-        targetInfo,
+        isSupportedCaptcha
+          ? { ...targetInfo, captchaHumanWaitSeconds: loginTarget.captchaHumanWaitSeconds }
+          : targetInfo,
       )
     }
     return { ok: true, session: (await getSessionById(db, session.id))! }
@@ -994,7 +1094,7 @@ export async function enterWaitingForAuth(this: SessionManagerContext,
     occupancy: SessionGrant,
     code: SessionErrorCode,
     message: string,
-    target?: { entryUrl: string; loginUrl?: string | null },
+    target?: { entryUrl: string; loginUrl?: string | null; captchaHumanWaitSeconds?: number },
   ): Promise<{ ok: false; code: SessionErrorCode; message: string; waitingForAuth: boolean }> {
     const db = this.dbHandle
     const live = this.lives.get(session.id)
@@ -1006,7 +1106,7 @@ export async function enterWaitingForAuth(this: SessionManagerContext,
       sessionId: session.id,
       workerId: this.options.workerId,
       workerInstanceId: this.workerInstanceId,
-      holdSeconds: policy.authWaitSeconds,
+      holdSeconds: target?.captchaHumanWaitSeconds ?? policy.authWaitSeconds,
       leaseTtlSeconds: policy.leaseTtlSeconds,
     })
     if (!waitGrant) {
@@ -1051,18 +1151,21 @@ export async function enterWaitingForAuth(this: SessionManagerContext,
 
 export async function resolveLoginCredential(this: SessionManagerContext, 
     run: RunSnapshot,
-  ): Promise<{ username: string; password: string } | null> {
+  ): Promise<{ username: string; password: string; secretId?: string } | null> {
     if (this.resolveCredential) {
       return this.resolveCredential(run)
     }
-    if (!run.secretRef || !this.secrets) return null
-    if (run.secretRef.provider !== LOCAL_SECRET_PROVIDER) return null
-    const row = await loadSecretCiphertext(this.dbHandle, run.secretRef.secretId)
+    if (!this.secrets) return null
+    const grant = await resolveSnapshotCredential(this.dbHandle, run)
+    if (!grant || grant.provider !== LOCAL_SECRET_PROVIDER) return null
+    const row = await loadSecretCiphertext(this.dbHandle, grant.secretId)
     if (!row) return null
     try {
-      const password = this.secrets.decrypt(row.id, row.ciphertext)
-      const account = await loadAccountForExecution(this.dbHandle, run.targetAccountId!)
-      return { username: account?.username ?? '', password }
+      return {
+        username: grant.username,
+        password: this.secrets.decrypt(row.id, row.ciphertext),
+        secretId: grant.secretId,
+      }
     } catch {
       return null
     }
@@ -1084,6 +1187,7 @@ export async function loadTargetAuth(this: SessionManagerContext, run: RunSnapsh
         loginFields: run.targetAuth.loginFields,
         authMethod: run.targetAuth.authMethod,
         captchaMode: run.targetAuth.captchaMode,
+        captcha: run.targetAuth.captcha ?? null,
       }
     }
     return {
@@ -1092,6 +1196,7 @@ export async function loadTargetAuth(this: SessionManagerContext, run: RunSnapsh
       loginFields: row.loginFields,
       authMethod: row.authMethod,
       captchaMode: row.captchaMode,
+      captcha: row.captcha ?? null,
     }
   }
 

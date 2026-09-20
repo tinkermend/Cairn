@@ -222,6 +222,15 @@ export const mapConsumptionPolicyDtoSchema = z.strictObject({
 })
 export type MapConsumptionPolicyDto = z.infer<typeof mapConsumptionPolicyDtoSchema>
 
+export const mapConsumptionEligibilityGrantBodySchema = z.strictObject({
+  reportId: z
+    .string()
+    .regex(/^[A-Za-z0-9:._-]{8,128}$/, 'reportId 须为 8–128 位 [A-Za-z0-9:._-]'),
+  eligibleStepTypes: z.array(mapConsumptionAllowedStepTypeSchema).min(1).max(2).optional(),
+  reason: z.string().trim().min(1).max(512),
+})
+export type MapConsumptionEligibilityGrantBody = z.infer<typeof mapConsumptionEligibilityGrantBodySchema>
+
 export const mapConsumptionPolicyUpdateBodySchema = z.strictObject({
   expectedRevision: z.number().int().min(0),
   idempotencyKey: z

@@ -21,6 +21,7 @@ import { sha256Hex } from '../runs/digest.js'
 import { lockRunRow } from '../leases/leases.js'
 import type { SessionOperationRow } from '../records.js'
 import { createSession, findLiveSession, type SessionKey, type SessionRecord } from './sessions.js'
+import { applyPendingRetentionIntent } from './session-retention-intent.js'
 import { lockOperationRow, lockSession, lockWorkerRow, toGrant } from './occupancy-tx.js'
 import {
   findActiveLeaseRow,
@@ -705,8 +706,10 @@ export async function recreateSessionForOperation(
       authProbeIntervalSeconds: previous.authProbeIntervalSeconds,
       evictionPriority: previous.evictionPriority,
     })
-    if (created.ok) await bindOperationSession(tx, op.id, created.session.id, created.session.generation)
+    if (created.ok) {
+      await applyPendingRetentionIntent(tx, created.session.id)
+      await bindOperationSession(tx, op.id, created.session.id, created.session.generation)
+    }
     return created
   })
 }
-

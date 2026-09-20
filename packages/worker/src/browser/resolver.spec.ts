@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { candidateTries, decideResolverOutcome, errorForOutcome } from './resolver'
+import { candidateTries, decideResolverOutcome, errorForOutcome, pickResolvedCandidate } from './resolver'
 
 describe('TargetResolver 判定', () => {
   it('全 0 → NOT_FOUND', () => {
@@ -8,6 +8,14 @@ describe('TargetResolver 判定', () => {
 
   it('出现过 >1 → AMBIGUOUS，即使后面有 0', () => {
     expect(decideResolverOutcome([{ matches: 3 }, { matches: 0 }])).toBe('AMBIGUOUS')
+  })
+
+  it('先命中唯一候选，即使后面有多个匹配', () => {
+    expect(pickResolvedCandidate([0, 1, 2])).toEqual({ kind: 'found', index: 1 })
+  })
+
+  it('没有唯一命中且存在多匹配 → AMBIGUOUS', () => {
+    expect(pickResolvedCandidate([0, 2])).toEqual({ kind: 'miss', outcome: 'AMBIGUOUS' })
   })
 
   it('AMBIGUOUS 证据带出每个候选的匹配数', () => {

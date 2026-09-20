@@ -103,7 +103,7 @@ export async function apiFetch<T>(
 /** 授权下载对象正文。Bearer 不会跟 `<img src>`，必须先拿 blob 再建 Object URL。 */
 export async function apiFetchBlob(
   path: string
-): Promise<{ blob: Blob; contentType: string }> {
+): Promise<{ blob: Blob; contentType: string; fileName?: string }> {
   const token = useAuthStore.getState().auth.accessToken
   const res = await fetch(path, {
     headers: {
@@ -135,8 +135,21 @@ export async function apiFetchBlob(
     )
   }
 
+  const disposition = res.headers.get('content-disposition') ?? ''
+  const encodedName = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1]
+  let fileName = /filename="([^"]+)"/i.exec(disposition)?.[1]
+  if (encodedName) {
+    try {
+      fileName = decodeURIComponent(encodedName)
+    } catch {
+      /* use ASCII fallback */
+    }
+  }
   return {
     blob: await res.blob(),
+    ...(fileName
+      ? { fileName: fileName.replace(/[\\/\u0000-\u001F]/g, '_') }
+      : {}),
     contentType: res.headers.get('content-type') ?? 'application/octet-stream',
   }
 }

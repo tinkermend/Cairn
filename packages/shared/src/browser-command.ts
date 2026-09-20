@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { evidenceCaptureModeSchema } from './evidence-policy.js'
+import { screenshotViewportSchema, sensitiveSelectorsSchema } from './evidence-slots.js'
 import { executionErrorSchema } from './runtime-error.js'
 import { objectContentTypeSchema, objectKeySchema } from './object-store.js'
 import { pageAfterSchema } from './managed-browser.js'
@@ -171,5 +172,8 @@ export const BROWSER_COMMAND_EVIDENCE = z.strictObject({
   trace: evidenceCaptureModeSchema.optional(),
   screenshotRetainUntil: utcInstantSchema.optional(),
   traceRetainUntil: utcInstantSchema.optional(),
+  commandType: z.string().min(1).max(32).optional(),
+  screenshotViewport: screenshotViewportSchema.optional(),
+  sensitiveSelectors: sensitiveSelectorsSchema.optional(),
 })
 export type BrowserCommandEvidence = z.infer<typeof BROWSER_COMMAND_EVIDENCE>

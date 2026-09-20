@@ -1,4 +1,4 @@
-import type { MapMissingReason, MapStateSummary, MapSurfaceCapability } from '@cairn/shared'
+import { isNoiseMapRoute, type MapMissingReason, type MapStateSummary, type MapSurfaceCapability } from '@cairn/shared'
 
 export type SurfaceFrame = {
   origin: string
@@ -18,6 +18,8 @@ export type SurfaceInspect = {
   loading?: boolean
   virtualUnmounted?: boolean
   occluded?: boolean
+  canvas?: boolean
+  closedShadow?: boolean
 }
 
 export function originOf(url: string): string {
@@ -36,15 +38,16 @@ export function classifySurface(input: SurfaceInspect): {
   truncated: boolean
 } {
   const framesBlocked = input.frames.some((frame) => !frame.authorized)
-  const closedShadow = input.frames.some((frame) => frame.closedShadow)
-  const canvas = input.frames.some((frame) => frame.canvas)
+  const closedShadow = input.closedShadow === true || input.frames.some((frame) => frame.closedShadow)
+  const canvas = input.canvas === true || input.frames.some((frame) => frame.canvas)
   const epochChanged =
     input.expectedEpoch !== undefined &&
     input.navigationEpoch !== undefined &&
     input.expectedEpoch !== input.navigationEpoch
 
   let reason: MapMissingReason | undefined
-  if (epochChanged) reason = 'SURFACE_CHANGED'
+  if (isNoiseMapRoute(input.url) || isNoiseMapRoute(input.origin)) reason = 'NOT_APPLICABLE'
+  else if (epochChanged) reason = 'SURFACE_CHANGED'
   else if (framesBlocked || closedShadow || canvas) reason = 'CAPABILITY_MISSING'
 
   const capability: MapSurfaceCapability = {

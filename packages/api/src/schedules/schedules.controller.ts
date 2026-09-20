@@ -25,8 +25,8 @@ export class SchedulesController {
 
   @Get()
   @RequirePermissions('schedule:read')
-  list(@Query(new ZodValidationPipe(scheduleListQuerySchema)) query: ScheduleListQuery) {
-    return this.schedules.list(query)
+  list(@Query(new ZodValidationPipe(scheduleListQuerySchema)) query: ScheduleListQuery, @CurrentAccount() account: RequestAccount) {
+    return this.schedules.list(query, account.id)
   }
 
   @Post()

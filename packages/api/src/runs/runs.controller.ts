@@ -23,6 +23,7 @@ import {
   type ResumeAuthBody,
   type ReviewRunBody,
   type RunListQuery,
+  contentRangeHeader,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
@@ -44,8 +45,8 @@ export class RunsController {
 
   @Get()
   @RequirePermissions('run:read')
-  list(@Query(new ZodValidationPipe(runListQuerySchema)) query: RunListQuery) {
-    return this.runs.list(query)
+  list(@Query(new ZodValidationPipe(runListQuerySchema)) query: RunListQuery, @CurrentAccount() account: RequestAccount) {
+    return this.runs.list(query, account.id)
   }
 
   @Post()
@@ -115,13 +116,21 @@ export class RunsController {
   async evidenceContent(
     @Param('runId') runId: string,
     @Param('evidenceId') evidenceId: string,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
-    const file = await this.runs.evidenceContent(runId, evidenceId)
+    const header = headerValue(req.headers.range)
+    const file = await this.runs.evidenceContent(runId, evidenceId, header)
     res.setHeader('Content-Type', file.contentType)
     res.setHeader('Content-Length', String(file.byteSize))
     res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`)
     res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('Accept-Ranges', 'bytes')
+    if (file.range) {
+      res.setHeader('Content-Range', contentRangeHeader(file.range, file.totalSize))
+      res.status(HttpStatus.PARTIAL_CONTENT).send(Buffer.from(file.body))
+      return
+    }
     res.status(HttpStatus.OK).send(Buffer.from(file.body))
   }
 
@@ -287,4 +296,3 @@ function queryValue(value: unknown): string | undefined {
   if (Array.isArray(value) && typeof value[0] === 'string') return value[0]
   return undefined
 }
-

@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react'
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Plus, Search, Trash2 } from 'lucide-react'
-import { toast } from 'sonner'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   RUN_EXECUTE_ALL_OF,
   RUN_STATUSES,
@@ -12,23 +15,19 @@ import {
   type RunStatus,
   type RunSummaryDto,
 } from '@cairn/shared'
+import { Plus, Search, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { cancelRun, deleteRun, fetchRuns, previewDeleteRun } from '@/lib/runs-api'
+import {
+  cancelRun,
+  deleteRun,
+  fetchRuns,
+  previewDeleteRun,
+} from '@/lib/runs-api'
 import { fetchScenarios } from '@/lib/scenarios-api'
 import { fetchTargets } from '@/lib/targets-api'
-import { CatalogName } from './catalog-name'
-import { RUN_OUTCOME_STATUS_LABELS, runOutcomeStatusTone } from './outcome-labels'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { useCan } from '@/hooks/use-permissions'
-import { CursorPagination } from '@/components/data-table'
-import { EmptyState } from '@/components/empty-state'
-import { Main } from '@/components/layout/main'
-import { PageHeader } from '@/components/layout/page-header'
-import { PageSkeleton } from '@/components/page-skeleton'
-import { QueryErrorState } from '@/components/query-error-state'
-import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
-import { Can } from '@/components/rbac/can'
-import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -46,8 +45,18 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { CursorPagination } from '@/components/data-table'
 import { DateRangePicker, type DateRange } from '@/components/date-range-picker'
+import { EmptyState } from '@/components/empty-state'
+import { Main } from '@/components/layout/main'
+import { PageHeader } from '@/components/layout/page-header'
+import { PageSkeleton } from '@/components/page-skeleton'
+import { QueryErrorState } from '@/components/query-error-state'
+import { Can } from '@/components/rbac/can'
+import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
+import { StatusBadge } from '@/components/status-badge'
 import { dateRange, rangeToDayKeys } from '@/features/audit/range'
+import { CatalogName } from './catalog-name'
 import { RunCreateDialog } from './create-dialog'
 import {
   RUN_EVIDENCE_STATUS_LABELS,
@@ -55,6 +64,10 @@ import {
   runEvidenceStatusTone,
   runStatusTone,
 } from './labels'
+import {
+  RUN_OUTCOME_STATUS_LABELS,
+  runOutcomeStatusTone,
+} from './outcome-labels'
 
 export function RunsPage() {
   const page = useCursorPage()
@@ -62,6 +75,8 @@ export function RunsPage() {
   const navigate = useNavigate()
   const canReadTargets = useCan('target:read')
   const canReadScenarios = useCan('workflow:read')
+  const canDelete = useCan('run:delete')
+  const canCancel = useCan('run:cancel')
 
   const targets = useQuery({
     queryKey: ['targets', { limit: 100 }],
@@ -70,8 +85,15 @@ export function RunsPage() {
   })
   const [scenarioSearch, setScenarioSearch] = useState('')
   const scenarios = useQuery({
-    queryKey: ['scenarios', { limit: 100, search: scenarioSearch.trim() || undefined }],
-    queryFn: () => fetchScenarios({ limit: 100, search: scenarioSearch.trim() || undefined }),
+    queryKey: [
+      'scenarios',
+      { limit: 100, search: scenarioSearch.trim() || undefined },
+    ],
+    queryFn: () =>
+      fetchScenarios({
+        limit: 100,
+        search: scenarioSearch.trim() || undefined,
+      }),
     enabled: canReadScenarios,
   })
 
@@ -82,13 +104,16 @@ export function RunsPage() {
   const [targetId, setTargetId] = useState<string>('all')
   const [scenarioId, setScenarioId] = useState<string>('all')
   const [isTrial, setIsTrial] = useState<'all' | 'true'>('all')
-  const [evidenceStatus, setEvidenceStatus] = useState<'all' | 'PENDING' | 'COMPLETE' | 'INCOMPLETE'>(
-    'all',
-  )
+  const [isMapJob, setIsMapJob] = useState<'all' | 'true'>('all')
+  const [evidenceStatus, setEvidenceStatus] = useState<
+    'all' | 'PENDING' | 'COMPLETE' | 'INCOMPLETE'
+  >('all')
   const [outcomeStatus, setOutcomeStatus] = useState<
     'all' | 'PASS' | 'WARN' | 'FAIL' | 'UNKNOWN' | 'NOT_EVALUATED'
   >('all')
-  const [sourceKind, setSourceKind] = useState<'all' | 'console' | 'service'>('all')
+  const [sourceKind, setSourceKind] = useState<'all' | 'console' | 'service'>(
+    'all'
+  )
   const [range, setRange] = useState<DateRange | undefined>()
 
   const filters = useMemo(() => {
@@ -100,6 +125,7 @@ export function RunsPage() {
       scenarioId: scenarioId === 'all' ? undefined : scenarioId,
       status: status === 'all' ? undefined : (status as RunStatus),
       isTrial: isTrial === 'all' ? undefined : true,
+      isMapJob: isMapJob === 'all' ? undefined : true,
       evidenceStatus: evidenceStatus === 'all' ? undefined : evidenceStatus,
       outcomeStatus: outcomeStatus === 'all' ? undefined : outcomeStatus,
       sourceKind: sourceKind === 'all' ? undefined : sourceKind,
@@ -108,7 +134,20 @@ export function RunsPage() {
       limit: page.pageSize,
       cursor: page.cursor,
     }
-  }, [search, targetId, scenarioId, status, isTrial, evidenceStatus, outcomeStatus, sourceKind, range, page.pageSize, page.cursor])
+  }, [
+    search,
+    targetId,
+    scenarioId,
+    status,
+    isTrial,
+    isMapJob,
+    evidenceStatus,
+    outcomeStatus,
+    sourceKind,
+    range,
+    page.pageSize,
+    page.cursor,
+  ])
 
   const query = useQuery({
     queryKey: ['runs', filters],
@@ -141,7 +180,14 @@ export function RunsPage() {
     page.reset()
   }
 
-  const handleEvidenceChange = (val: 'all' | 'PENDING' | 'COMPLETE' | 'INCOMPLETE') => {
+  const handleMapJobChange = (val: 'all' | 'true') => {
+    setIsMapJob(val)
+    page.reset()
+  }
+
+  const handleEvidenceChange = (
+    val: 'all' | 'PENDING' | 'COMPLETE' | 'INCOMPLETE'
+  ) => {
     setEvidenceStatus(val)
     page.reset()
   }
@@ -163,7 +209,7 @@ export function RunsPage() {
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title='运行'
-          description='对目标系统执行场景的一次记录。进度以手动刷新的 GET 为准。'
+          description='对目标系统执行场景的一次记录。进度以手动刷新的 GET 为准。集合运行见旁侧页签。'
           actions={
             <Can allOf={RUN_EXECUTE_ALL_OF}>
               <Button onClick={() => setCreateOpen(true)}>
@@ -172,10 +218,21 @@ export function RunsPage() {
             </Can>
           }
         />
+        <Tabs value='runs'>
+          <TabsList>
+            <TabsTrigger value='runs'>独立运行</TabsTrigger>
+            <TabsTrigger value='suites' asChild>
+              <Link to='/suite-runs'>场景集运行</Link>
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
         {query.isPending ? (
           <PageSkeleton />
         ) : query.isError ? (
-          <QueryErrorState title='无法加载运行' onRetry={() => void query.refetch()} />
+          <QueryErrorState
+            title='无法加载运行'
+            onRetry={() => void query.refetch()}
+          />
         ) : (
           <div className='overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>
             <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-divider p-4'>
@@ -184,7 +241,9 @@ export function RunsPage() {
                   {(
                     [
                       ['all', '全部状态'],
-                      ...RUN_STATUSES.map((value) => [value, RUN_STATUS_LABELS[value]] as const),
+                      ...RUN_STATUSES.map(
+                        (value) => [value, RUN_STATUS_LABELS[value]] as const
+                      ),
                     ] as const
                   ).map(([val, label]) => (
                     <Button
@@ -203,14 +262,32 @@ export function RunsPage() {
                   variant={isTrial === 'true' ? 'secondary' : 'ghost'}
                   size='sm'
                   aria-pressed={isTrial === 'true'}
-                  onClick={() => handleTrialChange(isTrial === 'true' ? 'all' : 'true')}
+                  onClick={() =>
+                    handleTrialChange(isTrial === 'true' ? 'all' : 'true')
+                  }
                 >
                   试跑记录
                 </Button>
 
-                {canReadTargets && targets.data?.items && targets.data.items.length > 0 ? (
+                <Button
+                  variant={isMapJob === 'true' ? 'secondary' : 'ghost'}
+                  size='sm'
+                  aria-pressed={isMapJob === 'true'}
+                  onClick={() =>
+                    handleMapJobChange(isMapJob === 'true' ? 'all' : 'true')
+                  }
+                >
+                  地图作业
+                </Button>
+
+                {canReadTargets &&
+                targets.data?.items &&
+                targets.data.items.length > 0 ? (
                   <Select value={targetId} onValueChange={handleTargetChange}>
-                    <SelectTrigger className='h-8 w-44' aria-label='目标系统筛选'>
+                    <SelectTrigger
+                      className='h-8 w-44'
+                      aria-label='目标系统筛选'
+                    >
                       <SelectValue placeholder='全部目标系统' />
                     </SelectTrigger>
                     <SelectContent>
@@ -224,8 +301,13 @@ export function RunsPage() {
                   </Select>
                 ) : null}
 
-                {canReadScenarios && scenarios.data?.items && scenarios.data.items.length > 0 ? (
-                  <Select value={scenarioId} onValueChange={handleScenarioChange}>
+                {canReadScenarios &&
+                scenarios.data?.items &&
+                scenarios.data.items.length > 0 ? (
+                  <Select
+                    value={scenarioId}
+                    onValueChange={handleScenarioChange}
+                  >
                     <SelectTrigger className='h-8 w-44' aria-label='场景筛选'>
                       <SelectValue placeholder='全部场景' />
                     </SelectTrigger>
@@ -235,7 +317,9 @@ export function RunsPage() {
                           aria-label='搜索场景'
                           placeholder='搜索场景'
                           value={scenarioSearch}
-                          onChange={(event) => setScenarioSearch(event.target.value)}
+                          onChange={(event) =>
+                            setScenarioSearch(event.target.value)
+                          }
                         />
                       </div>
                       <SelectItem value='all'>全部场景</SelectItem>
@@ -248,7 +332,10 @@ export function RunsPage() {
                   </Select>
                 ) : null}
 
-                <Select value={evidenceStatus} onValueChange={handleEvidenceChange}>
+                <Select
+                  value={evidenceStatus}
+                  onValueChange={handleEvidenceChange}
+                >
                   <SelectTrigger className='h-8 w-36' aria-label='证据状态筛选'>
                     <SelectValue placeholder='证据状态' />
                   </SelectTrigger>
@@ -260,7 +347,12 @@ export function RunsPage() {
                   </SelectContent>
                 </Select>
 
-                <Select value={outcomeStatus} onValueChange={(val) => handleOutcomeChange(val as typeof outcomeStatus)}>
+                <Select
+                  value={outcomeStatus}
+                  onValueChange={(val) =>
+                    handleOutcomeChange(val as typeof outcomeStatus)
+                  }
+                >
                   <SelectTrigger className='h-8 w-36' aria-label='业务结果筛选'>
                     <SelectValue placeholder='业务结果' />
                   </SelectTrigger>
@@ -319,6 +411,7 @@ export function RunsPage() {
                   targetId !== 'all' ||
                   scenarioId !== 'all' ||
                   isTrial !== 'all' ||
+                  isMapJob !== 'all' ||
                   evidenceStatus !== 'all' ||
                   outcomeStatus !== 'all' ||
                   sourceKind !== 'all' ||
@@ -331,6 +424,7 @@ export function RunsPage() {
                         setTargetId('all')
                         setScenarioId('all')
                         setIsTrial('all')
+                        setIsMapJob('all')
                         setEvidenceStatus('all')
                         setOutcomeStatus('all')
                         setSourceKind('all')
@@ -358,9 +452,14 @@ export function RunsPage() {
                 </TableHeader>
                 <TableBody>
                   {items.map((item) => {
-                    const isTerminal = (TERMINAL_RUN_STATUSES as readonly string[]).includes(
-                      item.status,
-                    )
+                    const isTerminal = (
+                      TERMINAL_RUN_STATUSES as readonly string[]
+                    ).includes(item.status)
+                    const canCancelRun =
+                      canCancel &&
+                      !isFinishedRunStatus(item.status) &&
+                      item.status !== 'NEEDS_REVIEW'
+                    const canDeleteRun = isTerminal && canDelete
                     return (
                       <TableRow key={item.id}>
                         <TableCell>
@@ -370,8 +469,14 @@ export function RunsPage() {
                         </TableCell>
                         <TableCell>
                           {item.outcomeStatus !== 'NOT_EVALUATED' ? (
-                            <StatusBadge tone={runOutcomeStatusTone(item.outcomeStatus)}>
-                              {RUN_OUTCOME_STATUS_LABELS[item.outcomeStatus as OutcomeStatus]}
+                            <StatusBadge
+                              tone={runOutcomeStatusTone(item.outcomeStatus)}
+                            >
+                              {
+                                RUN_OUTCOME_STATUS_LABELS[
+                                  item.outcomeStatus as OutcomeStatus
+                                ]
+                              }
                             </StatusBadge>
                           ) : null}
                         </TableCell>
@@ -380,14 +485,20 @@ export function RunsPage() {
                           (item.evidenceStatus === 'PENDING' &&
                             isFinishedRunStatus(item.status)) ? (
                             <StatusBadge
-                              tone={runEvidenceStatusTone(item.evidenceStatus, item.status)}
+                              tone={runEvidenceStatusTone(
+                                item.evidenceStatus,
+                                item.status
+                              )}
                             >
                               {RUN_EVIDENCE_STATUS_LABELS[item.evidenceStatus]}
                             </StatusBadge>
                           ) : null}
                         </TableCell>
                         <TableCell>
-                          <CatalogName name={item.scenarioName} deleted={item.scenarioDeleted}>
+                          <CatalogName
+                            name={item.scenarioName}
+                            deleted={item.scenarioDeleted}
+                          >
                             <Link
                               to='/scenarios/$scenarioId'
                               params={{ scenarioId: item.scenarioId }}
@@ -398,7 +509,10 @@ export function RunsPage() {
                           </CatalogName>
                         </TableCell>
                         <TableCell>
-                          <CatalogName name={item.targetName} deleted={item.targetDeleted}>
+                          <CatalogName
+                            name={item.targetName}
+                            deleted={item.targetDeleted}
+                          >
                             <Link
                               to='/targets/$targetId'
                               params={{ targetId: item.targetId }}
@@ -408,7 +522,7 @@ export function RunsPage() {
                             </Link>
                           </CatalogName>
                         </TableCell>
-                        <TableCell className='whitespace-nowrap text-label'>
+                        <TableCell className='text-label whitespace-nowrap'>
                           {new Date(item.createdAt).toLocaleString()}
                         </TableCell>
                         <TableCell className='text-end'>
@@ -425,46 +539,49 @@ export function RunsPage() {
                             >
                               查看
                             </Button>
-                            {!isFinishedRunStatus(item.status) &&
-                            item.status !== 'NEEDS_REVIEW' ? (
-                              <Can permission='run:cancel'>
-                                <Button
-                                  variant='ghost'
-                                  size='sm'
-                                  className='text-destructive'
-                                  onClick={() => {
-                                    void cancelRun(item.id)
-                                      .then((detail) => {
-                                        toast.success(
-                                          detail.status === 'CANCELLED' ? '已取消' : '已请求取消',
-                                        )
-                                        void query.refetch()
-                                      })
-                                      .catch((error) => {
-                                        toast.error(
-                                          error instanceof ApiRequestError
-                                            ? error.message
-                                            : '取消失败',
-                                        )
-                                      })
-                                  }}
-                                >
-                                  取消
-                                </Button>
-                              </Can>
+                            {canCancelRun ? (
+                              <Button
+                                variant='ghost'
+                                size='sm'
+                                className='text-destructive'
+                                onClick={() => {
+                                  void cancelRun(item.id)
+                                    .then((detail) => {
+                                      toast.success(
+                                        detail.status === 'CANCELLED'
+                                          ? '已取消'
+                                          : '已请求取消'
+                                      )
+                                      void query.refetch()
+                                    })
+                                    .catch((error) => {
+                                      toast.error(
+                                        error instanceof ApiRequestError
+                                          ? error.message
+                                          : '取消失败'
+                                      )
+                                    })
+                                }}
+                              >
+                                取消
+                              </Button>
                             ) : null}
-                            {isTerminal ? (
-                              <Can permission='run:delete'>
-                                <Button
-                                  variant='ghost'
-                                  size='icon'
-                                  className='text-destructive'
-                                  aria-label={`删除运行${item.id}`}
-                                  onClick={() => setRemoving(item)}
-                                >
-                                  <Trash2 className='size-4' />
-                                </Button>
-                              </Can>
+                            {canDeleteRun ? (
+                              <Button
+                                variant='ghost'
+                                size='icon'
+                                className='text-destructive'
+                                aria-label={`删除运行${item.id}`}
+                                onClick={() => setRemoving(item)}
+                              >
+                                <Trash2 className='size-4' />
+                              </Button>
+                            ) : null}
+                            {canDelete && !canDeleteRun && !canCancelRun ? (
+                              <div
+                                className='size-9 shrink-0'
+                                aria-hidden='true'
+                              />
                             ) : null}
                           </div>
                         </TableCell>
@@ -475,7 +592,7 @@ export function RunsPage() {
               </Table>
             )}
 
-            <div className='flex flex-wrap items-center justify-between border-t border-border-divider px-4 py-3 gap-3'>
+            <div className='flex flex-wrap items-center justify-between gap-3 border-t border-border-divider px-4 py-3'>
               <p role='status' className='text-label text-muted-foreground'>
                 本页 {items.length} 条
               </p>
@@ -504,10 +621,16 @@ export function RunsPage() {
           if (!open) setRemoving(null)
         }}
         resourceId={removing?.id ?? ''}
-        resourceName={removing ? `${removing.scenarioName} (${removing.id.slice(0, 8)})` : ''}
+        resourceName={
+          removing
+            ? `${removing.scenarioName} (${removing.id.slice(0, 8)})`
+            : ''
+        }
         resourceType='run'
         previewFn={removing ? () => previewDeleteRun(removing.id) : undefined}
-        deleteFn={(body) => (removing ? deleteRun(removing.id, body) : Promise.resolve())}
+        deleteFn={(body) =>
+          removing ? deleteRun(removing.id, body) : Promise.resolve()
+        }
         onSuccess={() => {
           setRemoving(null)
           if (items.length <= 1 && page.pageIndex > 0) page.goPrev()

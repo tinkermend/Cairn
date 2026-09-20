@@ -61,3 +61,38 @@ export const targetDescriptorSchema = z
     }
   })
 export type TargetDescriptor = z.infer<typeof targetDescriptorSchema>
+
+const ARRIVAL_ROLE_FALLBACKS = ['heading', 'menuitem', 'link', 'button'] as const
+
+function candidateKey(candidate: LocatorCandidate): string {
+  return `${candidate.by}:${candidate.value}:${candidate.name ?? ''}`
+}
+
+/** 到达名按标题 → 菜单项 → 链接 → 按钮补齐，避免业务页只有侧栏项时断言空转。 */
+export function expandArrivalTarget(target: TargetDescriptor, arrivalName: string): TargetDescriptor {
+  const name = arrivalName.trim()
+  if (!name) return target
+  const seen = new Set(target.candidates.map(candidateKey))
+  const extras: LocatorCandidate[] = []
+  for (const role of ARRIVAL_ROLE_FALLBACKS) {
+    const candidate: LocatorCandidate = { by: 'role', value: role, name }
+    const key = candidateKey(candidate)
+    if (seen.has(key)) continue
+    extras.push(candidate)
+    seen.add(key)
+  }
+  const text: LocatorCandidate = { by: 'text', value: name }
+  if (!seen.has(candidateKey(text))) extras.push(text)
+  return {
+    ...target,
+    candidates: [...target.candidates, ...extras].slice(0, MAX_LOCATOR_CANDIDATES),
+  }
+}
+
+export function arrivalTargetForName(name: string): TargetDescriptor {
+  const trimmed = name.trim()
+  return expandArrivalTarget(
+    { framePath: [], candidates: [{ by: 'role', value: 'heading', name: trimmed }] },
+    trimmed,
+  )
+}

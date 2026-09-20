@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, lt, notInArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm'
+import { and, eq, gte, inArray, isNull, lt, notInArray, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm'
 import {
   deleteResourceResultSchema,
   resourceDeletedBySchema,
@@ -200,7 +200,7 @@ export async function exclusiveSecretIds(
   excludeAccountIds: string[],
 ): Promise<string[]> {
   if (secretIds.length === 0) return []
-  const { platformAiSecretBindings, targetAccounts } = schemaFor(tx)
+  const { platformAiSecretBindings, targetAccounts, credentialVersions } = schemaFor(tx)
   const others = await tx
     .select({ secretId: targetAccounts.secretId })
     .from(targetAccounts)
@@ -217,8 +217,16 @@ export async function exclusiveSecretIds(
     .select({ secretId: platformAiSecretBindings.secretId })
     .from(platformAiSecretBindings)
     .where(inArray(platformAiSecretBindings.secretId, secretIds))
+  const versions = await tx
+    .select({ secretId: credentialVersions.secretId, status: credentialVersions.materialStatus })
+    .from(credentialVersions)
+    .where(inArray(credentialVersions.secretId, secretIds))
   const used = new Set(
-    [...others, ...bindings]
+    [
+      ...others,
+      ...bindings,
+      ...versions.filter((row) => row.status !== 'cleared' && row.status !== 'revoked' && row.status !== 'unavailable'),
+    ]
       .map((row) => row.secretId)
       .filter((id): id is string => id !== null),
   )
@@ -262,8 +270,12 @@ export async function closeOpenBindings(
 
 export async function revokeExternalEvidence(tx: Db, runIds: string[]): Promise<void> {
   if (runIds.length === 0) return
-  const { evidences } = schemaFor(tx)
+  const { evidences, reports, suiteRunItems } = schemaFor(tx)
   await tx.update(evidences).set({ externalAccess: 0 }).where(inArray(evidences.runId, runIds))
+  const parents = await tx.select({ id: suiteRunItems.suiteRunId }).from(suiteRunItems).where(inArray(suiteRunItems.childRunId, runIds))
+  const related = await tx.select({ id: reports.id }).from(reports).where(or(inArray(reports.runId, runIds), parents.length ? inArray(reports.suiteRunId, parents.map((row) => row.id)) : undefined))
+  const { revokeReportTrees } = await import('./reports/cleanup.js')
+  await revokeReportTrees(tx, related.map((row) => row.id), false)
 }
 
 export async function requestSessionClose(

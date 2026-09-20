@@ -22,6 +22,8 @@ export function toRequestAccount(account: AccountDto): RequestAccount {
     status: account.status,
     roles: account.roles,
     permissions: account.permissions,
+    targetScopes: account.targetScopes,
+    targetScopePermissions: account.targetScopePermissions,
   }
 }
 

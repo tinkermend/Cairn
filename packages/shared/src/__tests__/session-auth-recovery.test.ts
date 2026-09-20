@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   authGateClosedError,
   authGateDoesNotConsumeRetry,
+  authRoutePath,
   classifyInterruptedAttempt,
   computeContextVersion,
   decideAuthRecovery,
@@ -10,6 +11,7 @@ import {
   inRunAuthVerifyAllowed,
   isContextRecoverable,
   NO_RUN_AUTH_RECOVERY,
+  pageLooksLikeLogin,
   resolveRunAuthRecovery,
   shouldCloseAuthGate,
 } from '../session-auth-recovery.js'
@@ -148,6 +150,29 @@ describe('运行中认证恢复契约', () => {
         contextRecoverable: true,
       }),
     ).toEqual({ kind: 'fail', code: 'AUTH_RECOVERY_LIMIT' })
+  })
+
+  it('hash 登录页与后台页不能只靠 pathname 判断', () => {
+    expect(
+      pageLooksLikeLogin({
+        pageUrl: 'http://demo.gin-vue-admin.com/#/login',
+        loginUrl: 'http://demo.gin-vue-admin.com/#/login',
+      }),
+    ).toBe(true)
+    expect(
+      pageLooksLikeLogin({
+        pageUrl: 'http://demo.gin-vue-admin.com/#/layout/dashboard',
+        loginUrl: 'http://demo.gin-vue-admin.com/#/login',
+      }),
+    ).toBe(false)
+    expect(
+      pageLooksLikeLogin({
+        pageUrl: 'http://demo.gin-vue-admin.com/',
+        loginUrl: 'http://demo.gin-vue-admin.com/#/login',
+      }),
+    ).toBe(false)
+    expect(authRoutePath('http://demo.gin-vue-admin.com/#/login')).toBe('/login')
+    expect(authRoutePath('http://127.0.0.1:4177/login')).toBe('/login')
   })
 
   it('页面不可重建则无法安全续跑（SM13/SM16）', () => {

@@ -9,9 +9,9 @@ export {
   teardownTestTemplateDatabase,
   type PgTestHandle as DbHandle,
 } from './testing.js'
-export { migrate, loadMigrations } from './migrate.js'
+export { migrate, loadMigrations, latestLogicalVersion, latestLogicalVersionForDriver } from './migrate.js'
 export { migrateDatabase, assertSchemaReady } from './migrate-native.js'
-export { schemaFor, databaseNow, afterSeconds, updateRows, insertRows, clockNow, onCommit, atomic } from './native.js'
+export { schemaFor, databaseNow, afterSeconds, updateRows, insertRows, insertIgnoreRows, sampleBucketAt, clockNow, onCommit, atomic } from './native.js'
 export { expose, registerFixture } from './database.js'
 export { recordAudit } from './audit/record.js'
 export { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
@@ -28,6 +28,29 @@ export * from './observe/index.js'
 export * from './recordings/index.js'
 export * from './map/index.js'
 export * from './schedules/index.js'
+export * from './monitoring/index.js'
+export * from './evidence/index.js'
+export * from './suites/index.js'
+export * from './reports/index.js'
+export * from './services/webhooks.js'
+export * from './objects/artifacts.js'
+export {
+  GLOBAL_RECLAIM_WATERMARK,
+  touchRuntimeWatermark,
+  readRuntimeWatermark,
+} from './runtime/watermarks.js'
+export {
+  claimDuePeriodicSlots,
+  finishPeriodicSlot,
+  readPeriodicSlots,
+} from './runtime/periodic-slots.js'
+export type {
+  PeriodicSlotClaim,
+  PeriodicSlotRecord,
+  PeriodicSlotRequest,
+  PeriodicSlotSkip,
+} from './runtime/periodic-slots.js'
+export { requireMapCapableAccount, requireTargetHasMapCapableAccount } from './console/account-usage.js'
 export * from './knowledge/index.js'
 export * from './action-modules/index.js'
 import { createDb as openNative } from './client.js'

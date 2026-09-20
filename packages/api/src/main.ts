@@ -33,7 +33,7 @@ async function bootstrap(): Promise<void> {
     allowedHeaders: ['Authorization', 'Content-Type', 'Last-Event-ID', REQUEST_ID_HEADER],
     // 跨源时浏览器默认读不到自定义响应头；不放行的话 apiFetch 的兜底分支
     // （错误体解析失败时从响应头取 requestId）恰好会在最需要它时拿到 unknown
-    exposedHeaders: [REQUEST_ID_HEADER, 'Last-Event-ID'],
+    exposedHeaders: [REQUEST_ID_HEADER, 'Last-Event-ID', 'Content-Disposition'],
   })
 
   // 业务路由统一挂 /api；/health 留在根路径，供负载均衡与容器探活直接访问

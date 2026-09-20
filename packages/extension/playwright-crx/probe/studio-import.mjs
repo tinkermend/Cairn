@@ -93,11 +93,7 @@ const session = await api('/api/auth/login', null, {
 })
 const token = session.accessToken
 
-while (true) {
-  const open = await api('/api/recording-bindings/open', token)
-  if (!open?.binding) break
-  await api(`/api/recording-bindings/${open.binding.id}/close`, token, { method: 'POST' })
-}
+if ((await api('/api/recording-bindings/open', token))?.binding) throw new Error('该探针账号已有录制绑定，请先完成它或使用独立探针账号')
 
 const target = await api('/api/targets', token, {
   method: 'POST',
@@ -208,7 +204,9 @@ try {
   await targetPage.fill('#orderNo', 'SO-D2')
   // 录制器会接管点击；不要用 check() 再断言 DOM 状态，否则探针自己先失败。
   await targetPage.click('#urgent', { force: true })
+  await targetPage.waitForFunction(() => document.querySelector('#urgent').checked)
   await targetPage.click('#search')
+  await targetPage.locator('#result').getByText('已查询', { exact: true }).waitFor()
   await panel.bringToFront()
   await panel.waitForFunction(() => document.querySelectorAll('.cairn-step').length >= 2, undefined, {
     timeout: 20_000,
@@ -248,37 +246,39 @@ try {
   const preview = await api(`/api/scenarios/${scenario.id}/recording-imports/preview`, token, {
     method: 'POST',
     body: JSON.stringify({
+      protocolVersion: 'demonstration@1',
       recordingDraftId: draftId,
       baseRevision: scenario.draft.revision,
-      insertAnchor: { kind: 'after', stepId },
+      placement: { kind: 'after', nodeId: stepId },
     }),
   })
-  const checkItem = (preview.items ?? []).find((item) => item.sourceAction === 'check' || item.name?.includes('勾选'))
+  const checkItem = preview.suggestions.find((item) => item.action === 'check')
   check(
     'check 没有被错误降级成可接受步骤',
-    Boolean(checkItem && checkItem.ready === false),
-    checkItem ? `ready=${checkItem.ready} action=${checkItem.sourceAction}` : `items=${(preview.items ?? []).map((item) => item.sourceAction).join(',')}`,
+    checkItem?.status === 'unresolved',
+    checkItem?.status,
   )
 
   await web.goto(href || `${webOrigin}/scenarios/${scenario.id}?import=${draftId}`)
-  await web.getByRole('heading', { name: '录制回填预览' }).waitFor({ timeout: 20_000 })
-  await web.getByText(/将插入 \d+ 步/).waitFor({ timeout: 20_000 })
+  await web.getByRole('heading', { name: '示教回填预览' }).waitFor({ timeout: 20_000 })
+  await web.getByText(/项来源 · 已处理/).waitFor({ timeout: 20_000 })
   check('Studio 用 import 打开预览', true)
 
-  const pendingCard = web.locator('li').filter({ hasText: '待处理' }).first()
+  const pendingCard = web.locator('[data-slot="sheet-content"] li').filter({ hasText: '无法自动转换，需要处理' }).first()
   await pendingCard.waitFor({ timeout: 10_000 })
   const discardInCard = pendingCard.getByRole('button', { name: '舍弃' })
   if (await discardInCard.count()) await discardInCard.click()
-  const reason = pendingCard.getByPlaceholder('说明舍弃原因')
+  const reason = pendingCard.getByLabel('舍弃原因')
   await reason.waitFor({ timeout: 10_000 })
   await reason.fill('探针：本期不回填勾选')
-  const apply = web.getByRole('button', { name: /回填 \d+ 步/ })
+  for (const button of await web.getByRole('button', { name: '接受', exact: true }).all()) if (await button.isEnabled()) await button.click()
+  const apply = web.getByRole('button', { name: /确认回填 \d+ 项/ })
   await apply.waitFor({ state: 'visible', timeout: 10_000 })
   const applyReady = await web
     .waitForFunction(
       () =>
         [...document.querySelectorAll('button')].some(
-          (button) => /回填 \d+ 步/.test(button.textContent ?? '') && !button.disabled,
+          (button) => /确认回填 \d+ 项/.test(button.textContent ?? '') && !button.disabled,
         ),
       undefined,
       { timeout: 10_000 },
@@ -293,7 +293,7 @@ try {
   if (applyReady) await apply.click()
   const appliedToast = applyReady
     ? await web
-        .getByText(/已插入 \d+ 个步骤/)
+        .getByText('已回填到当前草稿', { exact: true })
         .waitFor({ timeout: 20_000 })
         .then(() => true)
         .catch(() => false)
@@ -316,7 +316,7 @@ try {
   check('回填后高亮新步骤', highlighted, highlightError)
 
   const latest = await api(`/api/scenarios/${scenario.id}`, token)
-  const types = (latest.draft?.document.steps ?? []).map((step) => step.type)
+  const types = (latest.draft?.document.nodes?.filter((node) => node.kind === 'step').map((node) => node.step) ?? latest.draft?.document.steps ?? []).map((step) => step.type)
   check('回填后仍保留原 navigate', types[0] === 'navigate', types.join(','))
   check(
     '回填插入了可执行确定性步骤',
@@ -327,6 +327,7 @@ try {
 } catch (error) {
   check('探针未抛未捕获异常', false, error instanceof Error ? error.message : String(error))
 } finally {
+  await api(`/api/recording-bindings/${created.binding.id}/close`, token, { method: 'POST' }).catch(() => {})
   await context.close().catch(() => {})
   fixture.close()
   rmSync(profile, { recursive: true, force: true })

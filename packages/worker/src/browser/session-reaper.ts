@@ -25,11 +25,17 @@ export function ownerScope(this: SessionManagerContext) {
     }
   }
 
-export async function dropLocalHandle(this: SessionManagerContext, sessionId: string): Promise<'stopped' | 'unconfirmed'> {
+export async function dropLocalHandle(
+    this: SessionManagerContext,
+    sessionId: string,
+    options?: { commitVideo?: boolean },
+  ): Promise<'stopped' | 'unconfirmed'> {
     const live = this.lives.get(sessionId)
     if (!live) return 'unconfirmed'
+    const commitVideo = options?.commitVideo !== false
+    const sealedVideos: Array<Awaited<ReturnType<typeof this.sealVideoForLease>>> = []
     for (const [leaseId, recorder] of [...(this.videoRecorders?.entries() ?? [])]) {
-      if (recorder.sessionId === sessionId) await this.stopVideoForLease(leaseId)
+      if (recorder.sessionId === sessionId) sealedVideos.push(await this.sealVideoForLease(leaseId))
     }
     live.authObserver?.dispose()
     live.authObserver = undefined
@@ -51,6 +57,10 @@ export async function dropLocalHandle(this: SessionManagerContext, sessionId: st
         this.leaseToRun.delete(leaseId)
         this.leaseTtls.delete(leaseId)
       }
+    }
+    for (const sealed of sealedVideos) {
+      if (commitVideo) await this.finalizeSealedVideo(sealed)
+      else await this.discardSealedVideo(sealed)
     }
     return stopResult
   }
@@ -93,7 +103,7 @@ export async function renew(this: SessionManagerContext, leaseId: string, leaseT
 
 export async function release(this: SessionManagerContext, leaseId: string, reason: string): Promise<void> {
     const sessionId = this.leaseToSession.get(leaseId)
-    await this.stopVideoForLease(leaseId)
+    const sealed = await this.sealVideoForLease(leaseId)
     await this.stopTracingForLease(leaseId, sessionId)
     await this.closeRunPage(leaseId)
     const result = await releaseSessionUse(this.dbHandle, {
@@ -105,6 +115,7 @@ export async function release(this: SessionManagerContext, leaseId: string, reas
     this.leaseToSession.delete(leaseId)
     this.leaseToRun.delete(leaseId)
     this.leaseTtls.delete(leaseId)
+    await this.finalizeSealedVideo(sealed)
     if (result === 'unknown') {
       throw new SessionLeaseError('SESSION_LEASE_UNKNOWN', `租约不存在: ${leaseId}`)
     }
@@ -118,11 +129,12 @@ export async function close(this: SessionManagerContext, sessionId: string, reas
     const db = this.dbHandle
     const session = await getSessionById(db, sessionId)
     if (!session) return 'unconfirmed'
+    const dropOptions = { commitVideo: reason !== 'acquire_aborted' }
     if (session.ownerWorkerId !== this.options.workerId) {
-      return this.dropLocalHandle(sessionId)
+      return this.dropLocalHandle(sessionId, dropOptions)
     }
     if (!session.ownerWorkerInstanceId || session.ownerWorkerInstanceId !== this.workerInstanceId) {
-      return this.dropLocalHandle(sessionId)
+      return this.dropLocalHandle(sessionId, dropOptions)
     }
 
     this.logger.log(
@@ -140,7 +152,7 @@ export async function close(this: SessionManagerContext, sessionId: string, reas
     const live = this.lives.get(sessionId)
     let stopResult: 'stopped' | 'unconfirmed' = 'stopped'
     if (live) {
-      stopResult = await this.dropLocalHandle(sessionId)
+      stopResult = await this.dropLocalHandle(sessionId, dropOptions)
     } else {
       // 无本进程句柄：无法确认浏览器是否仍在 → LOST（阻塞键）
       stopResult = 'unconfirmed'
@@ -183,15 +195,22 @@ export async function close(this: SessionManagerContext, sessionId: string, reas
     return stopResult
   }
 
-export async function reap(this: SessionManagerContext): Promise<{
+export async function reap(
+    this: SessionManagerContext,
+    options?: { includeGlobalLeases?: boolean },
+  ): Promise<{
     leasesExpired: number
     sessionsClosed: number
   }> {
     this.browserUnavailable = false
     const db = this.dbHandle
-    const leasesExpired = await reapSessionLeases(db)
-    if (leasesExpired > 0) {
-      this.logger.log({ leasesExpired, workerId: this.options.workerId }, 'lease.expired')
+    let leasesExpired = 0
+    if (options?.includeGlobalLeases !== false) {
+      const reaped = await reapSessionLeases(db)
+      leasesExpired = reaped.settled
+      if (leasesExpired > 0) {
+        this.logger.log({ leasesExpired, workerId: this.options.workerId }, 'lease.expired')
+      }
     }
 
     // 控制面可能已处置掉本进程的卡死会话（例如 LOST 后人工放行）。句柄若还在，

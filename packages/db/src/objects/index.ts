@@ -3,6 +3,7 @@ export {
   commitObjectEvidence,
   commitStoredObject,
   findObjectEvidenceByAttemptType,
+  findObjectEvidenceByArtifactKey,
   findObjectEvidenceByRunType,
   findPendingObjectEvidence,
   getStoredObjectById,
@@ -14,6 +15,7 @@ export {
   recordMissingObjectEvidence,
   recordObjectEvidence,
   reserveObjectEvidence,
+  reopenAvailableRunVideo,
   reserveStoredObject,
   type PurgeCandidate,
   type StoredObjectRecord,
@@ -30,3 +32,13 @@ export {
   type SettleEvidenceOptions,
 } from './evidence.js'
 export { toEvidenceMetadata } from './evidence-map.js'
+export { attachArtifactBytes, createArtifact, getArtifact, getArtifactObject } from './artifacts.js'
+export {
+  enqueueRunVideoMediaJob,
+  claimRunVideoMediaJobs,
+  finishRunVideoMediaJob,
+  getRunVideoMediaJob,
+  listDueRunVideoMediaJobIds,
+  type RunVideoMediaJob,
+  type RunVideoMediaClaim,
+} from './run-video-media.js'

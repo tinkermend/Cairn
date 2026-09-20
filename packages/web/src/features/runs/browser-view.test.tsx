@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -182,5 +183,143 @@ describe('BrowserView', () => {
     expect(mocks.subscribeBrowserFrames).not.toHaveBeenCalled()
     await screen.getByRole('button', { name: '展开画面' }).click()
     await expect.element(screen.getByText('运行已结束，实时画面已关闭。本次录像与步骤截图在结果里。')).toBeInTheDocument()
+  })
+
+  it('会话模式展开后先显示连接中而不是没有页面', async () => {
+    mocks.fetchManagedBrowser.mockImplementation(() => new Promise(() => {}))
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView runId={meta.runId} runStatus="RUNNING" sessionMode />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '展开画面' }).click()
+    await expect.element(screen.getByRole('status')).toHaveTextContent('正在连接受管浏览器画面…')
+    expect(screen.getByText('还没有可观察的受管页面').elements()).toHaveLength(0)
+  })
+
+  it('会话模式未就绪会继续拉取', async () => {
+    const pageId = '66666666-6666-4666-8666-666666666666'
+    const empty: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: false,
+      currentPage: null,
+      pages: [],
+      authHold: null,
+    }
+    const live: ManagedBrowserMeta = {
+      ...empty,
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId,
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [
+        {
+          pageRef: {
+            sessionId: meta.sessionId!,
+            sessionGeneration: 1,
+            pageId,
+            documentEpoch: 0,
+          },
+          kind: 'run',
+          viewing: true,
+          currentExecution: true,
+        },
+      ],
+    }
+    let calls = 0
+    mocks.fetchManagedBrowser.mockImplementation(async () => {
+      calls += 1
+      if (calls < 3) return empty
+      return live
+    })
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-session',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-18T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>(resolve => input.signal.addEventListener('abort', () => resolve(), { once: true }))
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView runId={meta.runId} runStatus="RUNNING" sessionMode />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '展开画面' }).click()
+    await expect.element(screen.getByRole('img', { name: '受管浏览器当前画面' })).toBeInTheDocument()
+    expect(calls).toBeGreaterThan(2)
+  })
+
+  it('会话事件连发时不会打断第一次拉取', async () => {
+    const pageId = '66666666-6666-4666-8666-666666666666'
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId,
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [],
+      authHold: null,
+    }
+    let completed = 0
+    mocks.fetchManagedBrowser.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      completed += 1
+      return live
+    })
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-storm',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-18T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>(resolve => input.signal.addEventListener('abort', () => resolve(), { once: true }))
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    function Storm() {
+      const [eventSeq, setEventSeq] = useState(0)
+      useEffect(() => {
+        const timer = window.setInterval(() => setEventSeq((value) => value + 1), 20)
+        return () => window.clearInterval(timer)
+      }, [])
+      return <BrowserView runId={meta.runId} runStatus="RUNNING" sessionMode eventSeq={eventSeq} />
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <Storm />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '展开画面' }).click()
+    await expect.element(screen.getByRole('img', { name: '受管浏览器当前画面' })).toBeInTheDocument()
+    expect(completed).toBeGreaterThan(0)
   })
 })

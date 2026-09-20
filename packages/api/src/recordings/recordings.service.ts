@@ -4,6 +4,8 @@ import {
   closeRecordingBinding,
   createRecordingBinding,
   createRecordingDraft,
+  createDemonstration,
+  getDemonstration,
   deleteRecordingDraft,
   getOpenRecordingBinding,
   getRecordingDraft,
@@ -15,6 +17,7 @@ import type {
   ClaimRecordingBindingBody,
   CreateRecordingBindingBody,
   CreateRecordingBody,
+  CreateDemonstrationBody,
   RecordingDraftListQuery,
 } from '@cairn/shared'
 import { hasPermission } from '@cairn/shared'
@@ -23,6 +26,7 @@ import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
 import { rethrowDomain } from '../common/domain-error'
 import { config } from '../config/env'
+import { assertDemonstrationEnabled } from './demonstration-feature'
 
 @Injectable()
 export class RecordingsService {
@@ -34,6 +38,15 @@ export class RecordingsService {
 
   list(actor: RequestAccount, query?: RecordingDraftListQuery) {
     return listRecordingDrafts(this.db, actor.id, query).catch(rethrowDomain)
+  }
+
+  createDemonstration(body: CreateDemonstrationBody, actor: RequestAccount) {
+    assertDemonstrationEnabled()
+    return createDemonstration(this.db, body, actor).catch(rethrowDomain)
+  }
+
+  demonstration(id: string, actor: RequestAccount) {
+    return getDemonstration(this.db, id, actor.id).catch(rethrowDomain)
   }
 
   get(id: string, actor: RequestAccount) {

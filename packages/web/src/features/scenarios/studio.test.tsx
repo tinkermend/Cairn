@@ -69,8 +69,17 @@ vi.mock('@/lib/extension-bridge', () => ({
   notifyExtensionStart: vi.fn(async () => null),
   configuredExtensionId: () => '',
 }))
-vi.mock('@/lib/recordings-api', () => ({
+vi.mock('@/lib/recordings-api', async (original) => ({
+  ...(await original<typeof import('@/lib/recordings-api')>()),
+  fetchRecording: vi.fn(async () => ({ sourceProtocol: 'recording@1' })),
   closeRecordingBinding: vi.fn(async () => ({ id: 'bind-1' })),
+}))
+vi.mock('@/lib/demonstrations-api', async (original) => ({
+  ...(await original<typeof import('@/lib/demonstrations-api')>()),
+  fetchScenarioValidation: vi.fn(async () => ({ scenarioId: SCENARIO_ID, revision: 1, subjectDigest: null, publishedSubjectDigest: null, state: 'not_run', samples: [], sampleLimit: 50, diagnostics: [] })),
+}))
+vi.mock('@/lib/platform-config-api', () => ({
+  fetchPlatformConfig: vi.fn(async () => { throw new Error('Platform config is outside this fixture') }),
 }))
 vi.mock('@/lib/targets-api', () => ({
   fetchTarget: mocks.fetchTarget,
@@ -168,6 +177,7 @@ const openAiCapabilities: ScenarioCapabilities = scenarioCapabilitiesFor({
 
 function trialRun(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
   return {
+    executionOrigin: 'standalone',
     id: RUN_ID,
     status: 'QUEUED',
     cancelRequested: false,

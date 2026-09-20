@@ -288,7 +288,12 @@ describe('Targets HTTP', () => {
         name: '演示',
         entryUrl: 'https://example.com',
         loginFields: { username: { by: 'id', value: 'username' } },
-        account: { displayName: '演示', username: 'demo', password: 'hunter2' },
+        account: {
+          displayName: '演示',
+          username: 'demo',
+          password: 'hunter2',
+          validity: { mode: 'days', amount: 90, timeZone: 'Asia/Shanghai' },
+        },
       })
       .expect(201)
     expect(() => targetSchema.parse(res.body)).not.toThrow()
@@ -379,10 +384,22 @@ describe('Targets HTTP', () => {
     expect(res.body.code).toBe('TARGET_NOT_FOUND')
   })
 
+  it('创建账号带密码但没有维护期限 400', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/accounts`)
+      .send({ displayName: '运维', username: 'ops', password: 'hunter2' })
+      .expect(400)
+  })
+
   it('创建账号响应无 password 字段', async () => {
     const res = await request(adminApp.getHttpServer())
       .post(`/targets/${target.id}/accounts`)
-      .send({ displayName: '运维', username: 'ops', password: 'hunter2' })
+      .send({
+        displayName: '运维',
+        username: 'ops',
+        password: 'hunter2',
+        validity: { mode: 'days', amount: 90, timeZone: 'Asia/Shanghai' },
+      })
       .expect(201)
     expect(() => targetAccountSchema.parse(res.body)).not.toThrow()
     expect(res.body).not.toHaveProperty('password')

@@ -36,6 +36,9 @@ export const RUN_EVENT_TYPES = [
   'attempt.finished',
   'evidence.recorded',
   'evidence.missing',
+  'run.captcha_attempted',
+  'run.captcha_solved',
+  'run.captcha_escalated',
 ] as const
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number]
 export const runEventTypeSchema = z.enum(RUN_EVENT_TYPES)

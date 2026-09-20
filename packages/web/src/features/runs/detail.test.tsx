@@ -35,6 +35,15 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/runs-api', async (original) => ({ ...await original<typeof import('@/lib/runs-api')>(), ...mocks }))
+vi.mock('@/lib/reports-api', () => ({
+  fetchReports: vi.fn(async () => ({ items: [], nextCursor: undefined })),
+  previewReport: vi.fn(),
+  createReport: vi.fn(),
+  createReportRevision: vi.fn(),
+  exportReport: vi.fn(),
+  fetchExportJob: vi.fn(),
+  downloadArtifact: vi.fn(),
+}))
 
 // Link / useParams 需要路由上下文，本用例只关心页面本身：给最小替身。
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -44,12 +53,13 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     useParams: () => ({ runId: RUN_ID }),
     useSearch: () => mocks.search,
     useNavigate: () => vi.fn(),
-    Link: ({ children }: { children: ReactNode }) => <a href='#'>{children}</a>,
+    Link: ({ children, to }: { children: ReactNode; to?: string }) => <a href={to ?? '#'}>{children}</a>,
   }
 })
 
 function runDetail(overrides: Partial<RunDetailDto> = {}): RunDetailDto {
   return {
+    executionOrigin: 'standalone',
     id: RUN_ID,
     status: 'NEEDS_REVIEW',
     cancelRequested: false,
@@ -267,6 +277,8 @@ describe('RunDetailPage', () => {
     await expect.element(screen.getByRole('button', { name: '判定取消' })).toBeInTheDocument()
     // 注意 exact：'判定取消' 也含'取消'，不加就永远命中
     expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
+
+    await expect.element(screen.getByRole('link', { name: '在证据与报告中查看' })).toHaveAttribute('href', '/evidence')
 
     // 步骤、Attempt、错误、证据、context 一个都不许省
     await expect.element(screen.getByText('1. 提交订单')).toBeInTheDocument()
@@ -496,7 +508,7 @@ describe('RunDetailPage', () => {
     await expect.element(screen.getByText(/代次 3/)).toBeInTheDocument()
     await expect.element(screen.getByText(/复用会话/)).toBeInTheDocument()
     await expect.element(screen.getByText(/占用运行/)).toBeInTheDocument()
-    await expect.element(screen.getByText(/历史运行未冻结核验规则，按旧模式解释/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/历史运行未冻结主动检测规则，开跑时按登录页判断/)).toBeInTheDocument()
   })
 
   it('快照含 authVerification 时显示等级与修订，不用可用绿', async () => {
@@ -532,9 +544,9 @@ describe('RunDetailPage', () => {
     )
     signIn(['run:read'])
     const screen = await renderPage()
-    await expect.element(screen.getByText(/登录已核验/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/已启用主动检测/)).toBeInTheDocument()
     await expect.element(screen.getByText(/规则修订 2/)).toBeInTheDocument()
-    expect(screen.getByText(/登录已核验/).element().className).toContain('text-muted-foreground')
+    expect(screen.getByText(/已启用主动检测/).element().className).toContain('text-muted-foreground')
   })
 
   it('两根轴并列：成功且证据不完整是橙色；终态收集中是灰色', async () => {
@@ -707,9 +719,114 @@ describe('RunDetailPage', () => {
     signIn(['run:read'])
     const screen = await renderPage()
     await expect.element(screen.getByRole('heading', { name: '本次录像' })).toBeInTheDocument()
+    await expect.element(screen.getByText('历史录像，覆盖范围未验证')).toBeInTheDocument()
     await expect.element(screen.getByText('录像已截断')).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '下载录像' })).toBeInTheDocument()
     await expect.element(screen.getByAltText('该步骤最后一次尝试的截图')).toBeInTheDocument()
+  })
+
+  it('新录像展示解码时长与采集区间，不改证据轴文案', async () => {
+    mocks.fetchEvidenceContent.mockResolvedValue({
+      blob: new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'video/webm' }),
+      contentType: 'video/webm',
+    })
+    const base = runDetail()
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'SUCCEEDED',
+          evidenceStatus: 'COMPLETE',
+          snapshot: {
+            ...base.snapshot,
+            evidencePolicy: { screenshot: 'always', video: 'always', trace: 'off' },
+          },
+        }),
+        [
+          {
+            schemaVersion: 1,
+            id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            runId: RUN_ID,
+            type: 'video',
+            status: 'available',
+            createdAt: '2026-09-11T02:00:09.000Z',
+            contentType: 'video/webm',
+            byteSize: 2048,
+            payload: {
+              truncated: false,
+              passwordMask: 'applied',
+              timing: {
+                contractVersion: 1,
+                captureStartedAt: '2026-09-19T02:00:00.000Z',
+                sealedAt: '2026-09-19T02:00:23.000Z',
+                capturedSpanMs: 23_000,
+                decodedDurationMs: 22_800,
+                decodedFrames: 14,
+                framesWritten: 14,
+                framesDropped: { rateLimited: 0, budget: 0, maskFailed: 0 },
+                finalFrame: 'captured',
+              },
+            },
+          },
+        ],
+      ),
+    )
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('录像 22.8 秒 / 采集区间 23 秒')).toBeInTheDocument()
+  })
+
+  it('部分覆盖展示缺口原因，不把可播截断说成完整', async () => {
+    mocks.fetchEvidenceContent.mockResolvedValue({
+      blob: new Blob([new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])], { type: 'video/webm' }),
+      contentType: 'video/webm',
+    })
+    const base = runDetail()
+    mocks.fetchRunObservation.mockResolvedValue(
+      observationOf(
+        runDetail({
+          status: 'SUCCEEDED',
+          evidenceStatus: 'INCOMPLETE',
+          snapshot: {
+            ...base.snapshot,
+            evidencePolicy: { screenshot: 'always', video: 'always', trace: 'off' },
+          },
+        }),
+        [
+          {
+            schemaVersion: 1,
+            id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            runId: RUN_ID,
+            type: 'video',
+            status: 'available',
+            createdAt: '2026-09-11T02:00:09.000Z',
+            contentType: 'video/webm',
+            byteSize: 2048,
+            payload: {
+              truncated: true,
+              truncateReason: 'max_bytes',
+              passwordMask: 'applied',
+              timing: {
+                contractVersion: 1,
+                captureStartedAt: '2026-09-19T02:00:00.000Z',
+                sealedAt: '2026-09-19T02:00:23.000Z',
+                capturedSpanMs: 23_000,
+                decodedDurationMs: 10_000,
+                decodedFrames: 8,
+                framesWritten: 8,
+                framesDropped: { rateLimited: 0, budget: 1, maskFailed: 0 },
+                finalFrame: 'captured',
+              },
+              coverage: { status: 'partial', gaps: [{ fromMs: 10_000, toMs: 23_000, reason: 'budget' }] },
+            },
+          },
+        ],
+      ),
+    )
+    signIn(['run:read'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('部分覆盖')).toBeInTheDocument()
+    await expect.element(screen.getByText('体积截断 10–23 秒')).toBeInTheDocument()
+    await expect.element(screen.getByText('录像已截断')).toBeInTheDocument()
   })
 
   it('录像对象清理后写明已过期，不假装还能播', async () => {

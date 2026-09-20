@@ -43,6 +43,7 @@ async function fixture(driver: (typeof DRIVERS)[number]) {
       email: `cfg-${driver}`,
       displayName: '管理员',
       password: 'test-password',
+      roleIds: [(await rbac.listRoles()).items.find(role => role.key === 'admin')!.id],
     }),
     null,
   )
@@ -52,7 +53,7 @@ async function fixture(driver: (typeof DRIVERS)[number]) {
       code: `cfg-${driver}`,
       name: '目标',
       entryUrl: 'https://example.com',
-      account: { username: 'tester', displayName: '测试账号', password: 'hidden' },
+      account: { username: 'tester', displayName: '测试账号', password: 'hidden', validity: { mode: 'permanent' } },
     }),
     actor,
   )

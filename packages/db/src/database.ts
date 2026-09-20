@@ -1,18 +1,37 @@
 import type { DbEnv } from '@cairn/shared'
 import { createDb as openNative, type Db, type DbHandle as NativeHandle } from './client.js'
 
+export type PoolStats = {
+  totalCount: number
+  idleCount: number
+  waitingCount: number
+}
+
 /** Business code owns lifecycle and passes this opaque handle to operations. */
 export interface Database {
   readonly driver: 'postgres' | 'mysql' | 'sqlite'
   ping(): Promise<boolean>
   close(): Promise<void>
+  /** PG 返回进程内池水位；MySQL 没有公开计数 API，如实 null。测试夹具可不实现。 */
+  poolStats?(): PoolStats | null
 }
 const handles = new WeakMap<object, NativeHandle>()
+
+function readPoolStats(handle: NativeHandle): PoolStats | null {
+  if (handle.driver !== 'postgres' || !handle.pool) return null
+  return {
+    totalCount: handle.pool.totalCount,
+    idleCount: handle.pool.idleCount,
+    waitingCount: handle.pool.waitingCount,
+  }
+}
+
 export function expose(handle: NativeHandle): Database {
   const database: Database = {
     driver: handle.driver,
     ping: () => handle.ping(),
     close: () => handle.close(),
+    poolStats: () => readPoolStats(handle),
   }
   handles.set(database, handle)
   return database

@@ -5,9 +5,14 @@ import { updateRows } from '../native.js'
 import { and, asc, eq, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm'
 import {
   DEFAULT_BROWSER_MAX_SESSIONS,
+  AI_ATOMIC_ACTIONS_PROTOCOL,
+  IMPORTED_OUTCOME_PROTOCOL,
   MAP_JOBS_PROTOCOL,
   OUTCOME_MANIFEST_PROTOCOL,
+  SUITE_ADMISSION_PROTOCOL,
   RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
+  SESSION_OCCUPANCY_PROTOCOL,
+  registrationRequiresOccupancy,
   isFinishedRunStatus,
   isMapJobRun,
   nextHandleMismatchStreak,
@@ -23,9 +28,8 @@ import { conflict, isUniqueViolation } from '../runs/errors.js'
 import type { Db, DbHandle } from '../client.js'
 import { newId } from '../id.js'
 import { runs } from '../schema/execution.js'
-import { browserSessions } from '../schema/session.js'
-import { locked, databaseNow, afterSeconds, clockNow, insertRows, jsonHasKey } from '../native.js'
-import { mapJobs } from '../schema/map-jobs.js'
+import { locked, databaseNow, afterSeconds, clockNow, driverOf, insertRows, jsonHasKey, jsonText } from '../native.js'
+import type { IsolatedLostRow } from '../sessions/lost-disposition.js'
 import { evaluateRunSessionEligibility } from '../sessions/occupancy-placement.js'
 import { readSessionScheduling } from '../sessions/occupancy-read.js'
 import { runLeases, workers } from '../schema/worker.js'
@@ -100,6 +104,16 @@ function registrationValues(input: {
     sampledSlotCount: null,
     handleMismatchStreak: 0,
     protocolCapabilities: input.protocolCapabilities ?? [],
+    sampledRssBytes: null,
+    sampledEventLoopDelayMs: null,
+    sampledCpuPercent: null,
+    sampledProfileBytes: null,
+    sampledProfileCount: null,
+    sampledProfileDiskFreeBytes: null,
+    sampledMidsceneBytes: null,
+    sampledBrowserProcessCount: null,
+    processClockSkewMs: null,
+    sampledDiskAt: null,
   }
 }
 
@@ -113,13 +127,13 @@ async function isolateOrphanedSessionsTx(
   tx: Db,
   workerId: string,
   currentInstanceId: string,
-): Promise<number> {
+): Promise<IsolatedLostRow[]> {
   const { browserSessions, sessionLeases, workers } = schemaFor(tx)
   const [current] = await locked(
     tx,
     tx.select({ instanceId: workers.instanceId }).from(workers).where(eq(workers.id, workerId)),
   )
-  if (!current || current.instanceId !== currentInstanceId) return 0
+  if (!current || current.instanceId !== currentInstanceId) return []
   const now = await clockNow(tx)
   const rows = await updateRows(
     tx,
@@ -143,7 +157,13 @@ async function isolateOrphanedSessionsTx(
         sql`${browserSessions.ownerWorkerInstanceId} <> ${currentInstanceId}`,
       ),
     ),
-    { id: browserSessions.id },
+    {
+      id: browserSessions.id,
+      targetId: browserSessions.targetId,
+      targetAccountId: browserSessions.targetAccountId,
+      generation: browserSessions.generation,
+      closeReason: browserSessions.closeReason,
+    },
   )
   if (rows.length > 0) {
     const sessionIds = rows.map((row) => row.id)
@@ -174,7 +194,22 @@ async function isolateOrphanedSessionsTx(
       ),
     )
   }
-  return rows.length
+  return rows.map((row) => ({
+    id: row.id,
+    targetId: row.targetId,
+    targetAccountId: row.targetAccountId,
+    generation: row.generation,
+    closeReason: row.closeReason,
+  }))
+}
+
+async function finishIsolatedSessions(tx: Db, rows: IsolatedLostRow[]): Promise<void> {
+  if (rows.length === 0) return
+  const { recordIsolatedSessionLoss, applyAutoLostDisposition } = await import(
+    '../sessions/lost-disposition.js'
+  )
+  await recordIsolatedSessionLoss(tx, rows)
+  await applyAutoLostDisposition(tx, rows)
 }
 
 function toGrant(
@@ -211,7 +246,10 @@ export async function registerWorker(
       const now = await clockNow(tx as unknown as Db)
       const values = registrationValues({ ...input, now })
 
-      if (!input.protocolCapabilities?.includes('session-occupancy@2')) {
+      if (
+        registrationRequiresOccupancy(input.protocolCapabilities) &&
+        !input.protocolCapabilities?.includes(SESSION_OCCUPANCY_PROTOCOL)
+      ) {
         throw conflict('WORKER_PROTOCOL_UNSUPPORTED', 'Worker 未声明 session-occupancy@2')
       }
 
@@ -231,7 +269,10 @@ export async function registerWorker(
         })
       } else {
         await tx.update(workers).set(values).where(eq(workers.id, input.workerId))
-        await isolateOrphanedSessionsTx(tx as unknown as Db, input.workerId, input.instanceId)
+        await finishIsolatedSessions(
+          tx as unknown as Db,
+          await isolateOrphanedSessionsTx(tx as unknown as Db, input.workerId, input.instanceId),
+        )
       }
 
       const revoked = await updateRows(
@@ -267,11 +308,26 @@ export async function registerWorker(
  */
 export type WorkerHeartbeatOutcome = 'ok' | 'lost' | 'instance_taken'
 
+export type WorkerHeartbeatTelemetry = {
+  internalBaseUrl?: string | null
+  liveHandleCount?: number | null
+  rssBytes?: number | null
+  eventLoopDelayMs?: number | null
+  cpuPercent?: number | null
+  profileBytes?: number | null
+  profileCount?: number | null
+  profileDiskFreeBytes?: number | null
+  midsceneBytes?: number | null
+  browserProcessCount?: number | null
+  clockSkewMs?: number | null
+  diskSampledAt?: Date | null
+}
+
 export async function heartbeatWorker(
   db: Db,
   workerId: string,
   instanceId: string,
-  telemetry?: { internalBaseUrl?: string | null; liveHandleCount?: number | null },
+  telemetry?: WorkerHeartbeatTelemetry,
 ): Promise<WorkerHeartbeatOutcome> {
   const { workers, browserSessions } = schemaFor(db)
   return db.transaction(async (tx) => {
@@ -304,6 +360,7 @@ export async function heartbeatWorker(
       previous: current.handleMismatchStreak,
       liveHandleCount,
       sampledSlotCount,
+      browserProcessCount: telemetry?.browserProcessCount ?? null,
     })
 
     const [row] = await updateRows(
@@ -317,6 +374,16 @@ export async function heartbeatWorker(
         liveHandleCount,
         sampledSlotCount,
         handleMismatchStreak: streak,
+        sampledRssBytes: telemetry?.rssBytes ?? null,
+        sampledEventLoopDelayMs: telemetry?.eventLoopDelayMs ?? null,
+        sampledCpuPercent: telemetry?.cpuPercent ?? null,
+        sampledProfileBytes: telemetry?.profileBytes ?? null,
+        sampledProfileCount: telemetry?.profileCount ?? null,
+        sampledProfileDiskFreeBytes: telemetry?.profileDiskFreeBytes ?? null,
+        sampledMidsceneBytes: telemetry?.midsceneBytes ?? null,
+        sampledBrowserProcessCount: telemetry?.browserProcessCount ?? null,
+        processClockSkewMs: Date.now() - now.getTime(),
+        sampledDiskAt: telemetry?.diskSampledAt ?? null,
       },
       and(
         eq(workers.id, workerId),
@@ -394,9 +461,15 @@ export async function isolateOrphanedSessions(
   workerId: string,
   currentInstanceId: string,
 ): Promise<number> {
-  return db.transaction((tx) =>
-    isolateOrphanedSessionsTx(tx as unknown as Db, workerId, currentInstanceId),
-  )
+  return db.transaction(async (tx) => {
+    const isolated = await isolateOrphanedSessionsTx(
+      tx as unknown as Db,
+      workerId,
+      currentInstanceId,
+    )
+    await finishIsolatedSessions(tx as unknown as Db, isolated)
+    return isolated.length
+  })
 }
 
 export async function lockRunRow(tx: Db, runId: string) {
@@ -439,7 +512,127 @@ export async function verifyRunLeaseForWrite(tx: Db, grant: RunGrant): Promise<b
   return row !== undefined
 }
 
+export const CLAIM_SCAN_LIMIT = 32
+export const CLAIM_EXCLUDE_LIMIT = 64
+
+export type ClaimRunDiagnostics = {
+  scanned: number
+  excluded: number
+  selected: boolean
+  recorded: boolean
+}
+
+let lastClaimDiagnostics: ClaimRunDiagnostics = { scanned: 0, excluded: 0, selected: false, recorded: false }
+
+export function takeLastClaimDiagnostics(): ClaimRunDiagnostics {
+  return { ...lastClaimDiagnostics }
+}
+
+function mapJobStartBefore(tx: Db) {
+  const { runs } = schemaFor(tx)
+  return jsonText(tx, runs.snapshot, ['mapJob', 'startBefore'])
+}
+
+function jsonTextCompare(tx: Db, left: ReturnType<typeof jsonText>, op: '<=' | '>', right: string) {
+  if (driverOf(tx) === 'mysql') {
+    return op === '<='
+      ? sql`(${left} COLLATE utf8mb4_bin) <= (${right} COLLATE utf8mb4_bin)`
+      : sql`(${left} COLLATE utf8mb4_bin) > (${right} COLLATE utf8mb4_bin)`
+  }
+  return op === '<=' ? sql`${left} <= ${right}` : sql`${left} > ${right}`
+}
+
+function suiteAdmissionPredicate(tx: Db) {
+  const { runs, suiteRunItems, suiteRuns } = schemaFor(tx)
+  return sql`(
+    ${runs.executionOrigin} <> 'suite_member'
+    OR EXISTS (
+      SELECT 1 FROM ${suiteRunItems} admitted
+      INNER JOIN ${suiteRuns} parent ON parent.id = admitted.suite_run_id
+      WHERE admitted.child_run_id = ${runs.id}
+        AND admitted.admission_status = 'ACTIVE'
+        AND parent.cancel_requested_at IS NULL
+        AND parent.status IN ('QUEUED', 'RUNNING', 'WAITING')
+        AND parent.deadline_at > ${new Date()}
+    )
+  )`
+}
+
+function mapJobYieldPredicate(tx: Db) {
+  const { runLeases, runs, suiteRunItems } = schemaFor(tx)
+  return sql`NOT (
+    ${jsonHasKey(tx, runs.snapshot, 'mapJob')}
+    AND ${runs.targetAccountId} IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM ${runs} AS yield_user_runs
+      WHERE yield_user_runs.target_id = ${runs.targetId}
+        AND yield_user_runs.target_account_id = ${runs.targetAccountId}
+        AND yield_user_runs.status IN ('QUEUED', 'RECOVERING')
+        AND yield_user_runs.deleted_at IS NULL AND yield_user_runs.cancel_requested_at IS NULL
+        AND yield_user_runs.id <> ${runs.id}
+        AND NOT ${jsonHasKey(tx, sql`yield_user_runs.snapshot`, 'mapJob')}
+        AND (
+          yield_user_runs.execution_origin <> 'suite_member'
+          OR EXISTS (
+            SELECT 1 FROM ${suiteRunItems} yield_suite_items
+            WHERE yield_suite_items.child_run_id = yield_user_runs.id
+              AND yield_suite_items.admission_status = 'ACTIVE'
+          )
+        )
+        AND NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = yield_user_runs.id AND l.status = 'ACTIVE')
+    )
+  )`
+}
+
+function targetInFlightCount(tx: Db) {
+  const { runs } = schemaFor(tx)
+  return sql`(
+    SELECT COUNT(*) FROM ${runs} AS claim_inflight
+     WHERE claim_inflight.target_id = ${runs.targetId}
+       AND claim_inflight.status = 'RUNNING'
+       AND claim_inflight.deleted_at IS NULL
+  )`
+}
+
+async function closeExpiredMapJobWindows(tx: Db, limit: number): Promise<number> {
+  const { runs } = schemaFor(tx)
+  const nowIso = (await clockNow(tx)).toISOString()
+  const startBefore = mapJobStartBefore(tx)
+  const rows = await locked(
+    tx,
+    tx
+      .select({ id: runs.id, snapshot: runs.snapshot })
+      .from(runs)
+      .where(
+        and(
+          inArray(runs.status, ['QUEUED', 'RECOVERING']),
+          isNull(runs.deletedAt),
+          jsonHasKey(tx, runs.snapshot, 'mapJob'),
+          sql`${startBefore} IS NOT NULL`,
+          jsonTextCompare(tx, startBefore, '<=', nowIso),
+        ),
+      )
+      .orderBy(asc(runs.createdAt), asc(runs.id))
+      .limit(limit),
+  )
+  for (const row of rows) {
+    const snapshot = row.snapshot as RunSnapshot
+    if (isMapJobRun(snapshot)) await markMapJobWindowClosed(tx, snapshot.mapJob.jobId)
+  }
+  return rows.length
+}
+
+async function markMapJobRunning(tx: Db, jobId: string): Promise<void> {
+  const { mapJobs } = schemaFor(tx)
+  const now = await clockNow(tx)
+  await tx
+    .update(mapJobs)
+    .set({ jobStatus: 'running', updatedAt: now })
+    .where(and(eq(mapJobs.id, jobId), inArray(mapJobs.jobStatus, ['queued', 'running'])))
+}
+
 async function markMapJobWindowClosed(tx: Db, jobId: string): Promise<void> {
+  const { mapJobs } = schemaFor(tx)
   const [job] = await locked(tx, tx.select().from(mapJobs).where(eq(mapJobs.id, jobId)))
   if (!job || job.jobStatus === 'cancelled' || job.jobStatus === 'completed' || job.jobStatus === 'failed') return
   const now = await clockNow(tx)
@@ -447,37 +640,6 @@ async function markMapJobWindowClosed(tx: Db, jobId: string): Promise<void> {
     .update(mapJobs)
     .set({ jobStatus: 'cancelled', stopReason: 'window_closed', activeGuard: null, updatedAt: now })
     .where(eq(mapJobs.id, jobId))
-}
-
-async function hasClaimableUserRunOnKey(
-  tx: Db,
-  run: { id: string; targetId: string; targetAccountId: string | null; snapshot: RunSnapshot },
-): Promise<boolean> {
-  if (!run.targetAccountId || !isMapJobRun(run.snapshot)) return false
-  const { runs, runLeases } = schemaFor(tx)
-  const rows = await tx
-    .select({ id: runs.id, snapshot: runs.snapshot })
-    .from(runs)
-    .where(
-      and(
-        eq(runs.targetId, run.targetId),
-        eq(runs.targetAccountId, run.targetAccountId),
-        inArray(runs.status, ['QUEUED', 'RECOVERING']),
-        isNull(runs.deletedAt),
-        isNull(runs.cancelRequestedAt),
-        ne(runs.id, run.id),
-      ),
-    )
-  for (const row of rows) {
-    if (isMapJobRun(row.snapshot as RunSnapshot)) continue
-    const [lease] = await tx
-      .select({ id: runLeases.id })
-      .from(runLeases)
-      .where(and(eq(runLeases.runId, row.id), eq(runLeases.status, 'ACTIVE')))
-      .limit(1)
-    if (!lease) return true
-  }
-  return false
 }
 
 export async function claimRun(
@@ -491,9 +653,10 @@ export async function claimRun(
 ): Promise<RunGrant | null> {
   const db = handle.db
   await expireRunDeadlines(db)
-  const { runs, browserSessions, runLeases, workers } = schemaFor(db)
+  lastClaimDiagnostics = { scanned: 0, excluded: 0, selected: false, recorded: true }
   return db.transaction(async (transaction) => {
     const tx = transaction as unknown as Db
+    const { browserSessions, runLeases, runs, workers } = schemaFor(tx)
     const [worker] = await locked(
       tx,
       tx
@@ -525,9 +688,16 @@ export async function claimRun(
         ),
       )
     if (held.length >= worker.capacity) return null
-    const skipped = new Set(input.excludeRunIds ?? [])
+    await closeExpiredMapJobWindows(tx, CLAIM_SCAN_LIMIT)
+    const nowIso = (await clockNow(tx)).toISOString()
+    const startBefore = mapJobStartBefore(tx)
+    const skipped = new Set((input.excludeRunIds ?? []).slice(0, CLAIM_EXCLUDE_LIMIT))
+    lastClaimDiagnostics.excluded = skipped.size
     for (const status of ['RECOVERING', 'QUEUED'] as const) {
       for (;;) {
+        if (lastClaimDiagnostics.scanned >= CLAIM_SCAN_LIMIT || skipped.size >= CLAIM_EXCLUDE_LIMIT) {
+          return null
+        }
         const exclude = [...skipped]
         // Lock only Run rows; correlated predicates avoid outer-join lock differences.
         const [run] = await locked(
@@ -560,9 +730,19 @@ export async function claimRun(
                 worker.protocolCapabilities?.includes(OUTCOME_MANIFEST_PROTOCOL)
                   ? undefined
                   : not(jsonHasKey(tx, runs.snapshot, 'outcomeManifest')),
+                worker.protocolCapabilities?.includes(AI_ATOMIC_ACTIONS_PROTOCOL)
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'aiAtomicActionsProtocol')),
+                worker.protocolCapabilities?.includes(IMPORTED_OUTCOME_PROTOCOL)
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'importedOutcomeProtocol')),
                 worker.protocolCapabilities?.includes(RUNTIME_INVARIANT_MANIFEST_PROTOCOL)
                   ? undefined
                   : not(jsonHasKey(tx, runs.snapshot, 'runtimeInvariantManifest')),
+                worker.protocolCapabilities?.includes(SUITE_ADMISSION_PROTOCOL)
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'suiteAdmission')),
+                suiteAdmissionPredicate(tx),
                 sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
                 or(
                   isNull(runs.targetAccountId),
@@ -573,25 +753,28 @@ export async function claimRun(
              AND NOT (s.status = 'OPEN' AND s.owner_worker_id = ${input.workerId})
         )`,
                 ),
+                sql`(
+                  NOT ${jsonHasKey(tx, runs.snapshot, 'mapJob')}
+                  OR ${startBefore} IS NULL
+                  OR ${jsonTextCompare(tx, startBefore, '>', nowIso)}
+                )`,
+                mapJobYieldPredicate(tx),
               ),
             )
-            .orderBy(asc(runs.createdAt), asc(runs.id))
+            .orderBy(targetInFlightCount(tx), asc(runs.createdAt), asc(runs.id))
             .limit(1),
           true,
         )
         if (!run) break
+        lastClaimDiagnostics.scanned += 1
         skipped.add(run.id)
         const snapshot = run.snapshot as RunSnapshot
         if (isMapJobRun(snapshot)) {
-          const startBefore = snapshot.mapJob.startBefore
-          if (startBefore) {
-            const now = await clockNow(tx)
-            if (Date.parse(startBefore) <= now.getTime()) {
-              await markMapJobWindowClosed(tx, snapshot.mapJob.jobId)
-              continue
-            }
+          const windowEnd = snapshot.mapJob.startBefore
+          if (windowEnd && Date.parse(windowEnd) <= Date.parse(nowIso)) {
+            await markMapJobWindowClosed(tx, snapshot.mapJob.jobId)
+            continue
           }
-          if (await hasClaimableUserRunOnKey(tx, { ...run, snapshot })) continue
         }
         const eligibility = await evaluateRunSessionEligibility(tx, {
           run: {
@@ -617,6 +800,7 @@ export async function claimRun(
         await appendRunEvents(tx, run.id, [
           { type: 'run.status_changed', payload: { status: 'RUNNING' } },
         ])
+        if (isMapJobRun(snapshot)) await markMapJobRunning(tx, snapshot.mapJob.jobId)
         const [max] = await tx
           .select({ token: sql<number>`COALESCE(MAX(${runLeases.fencingToken}), 0) + 1` })
           .from(runLeases)
@@ -629,9 +813,12 @@ export async function claimRun(
           status: 'ACTIVE',
           expiresAt: afterSeconds(tx, input.leaseTtlSeconds),
         })
+        lastClaimDiagnostics.selected = true
+        lastClaimDiagnostics.excluded = skipped.size
         return toGrant(lease!)
       }
     }
+    lastClaimDiagnostics.excluded = skipped.size
     return null
   })
 }

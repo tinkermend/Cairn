@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import { Outlet } from '@tanstack/react-router'
 import { getCookie } from '@/lib/cookies'
 import { cn } from '@/lib/utils'
@@ -7,6 +8,8 @@ import { AppHeader } from '@/components/layout/app-header'
 import { AppSidebar } from '@/components/layout/app-sidebar'
 import { SkipToMain } from '@/components/skip-to-main'
 import { AssistantHost } from '@/features/assistant/host'
+import { useAuthStore } from '@/stores/auth-store'
+import { AuthScopeObserver } from './auth-scope-observer'
 
 type AuthenticatedLayoutProps = {
   children?: React.ReactNode
@@ -14,8 +17,11 @@ type AuthenticatedLayoutProps = {
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const defaultOpen = getCookie('sidebar_state') !== 'false'
+  const auth = useAuthStore(s => s.auth.user)
+  const scopeKey = JSON.stringify([auth?.id, auth?.permissions, auth?.targetScopes, auth?.targetScopePermissions])
   return (
     <SearchProvider>
+      <AuthScopeObserver />
       <SidebarProvider defaultOpen={defaultOpen}>
         <SkipToMain />
         <AppSidebar />
@@ -34,7 +40,7 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
           )}
         >
           <AppHeader />
-          {children ?? <Outlet />}
+          <Fragment key={scopeKey}>{children ?? <Outlet />}</Fragment>
         </SidebarInset>
         <AssistantHost />
       </SidebarProvider>

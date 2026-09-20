@@ -39,10 +39,27 @@ describe('apiEnvSchema', () => {
     const env = apiEnvSchema.parse({})
     expect(env.CAIRN_CHANGE_HINT).toBe('auto')
     expect(env.CAIRN_RUN_EVENT_RETAIN_DAYS).toBe(7)
+    expect(env.CAIRN_MONITOR_SSE_INTERVAL_MS).toBe(5_000)
+    expect(env.CAIRN_MONITOR_SSE_MIN_INTERVAL_MS).toBe(5_000)
+    expect(env.CAIRN_API_HEARTBEAT_MS).toBe(5_000)
+    expect(env.CAIRN_API_LOST_AFTER_SECONDS).toBe(45)
+    expect(env.CAIRN_MONITOR_SAMPLE_INTERVAL_MS).toBe(60_000)
+    expect(env.CAIRN_BUILD_VERSION).toBeUndefined()
     expect(() => apiEnvSchema.parse({ CAIRN_CHANGE_HINT: 'redis' })).toThrow()
     expect(apiEnvSchema.parse({ CAIRN_CHANGE_HINT: 'redis', CAIRN_REDIS_URL: 'redis://127.0.0.1:6379' }).CAIRN_REDIS_URL).toBe(
       'redis://127.0.0.1:6379',
     )
+    expect(() =>
+      apiEnvSchema.parse({ CAIRN_MONITOR_SSE_INTERVAL_MS: '2000', CAIRN_MONITOR_SSE_MIN_INTERVAL_MS: '5000' }),
+    ).toThrow()
+    expect(
+      apiEnvSchema.parse({ CAIRN_MONITOR_SSE_MIN_INTERVAL_MS: '2000', CAIRN_MONITOR_OVERVIEW_CACHE_MS: '2000' })
+        .CAIRN_MONITOR_SSE_MIN_INTERVAL_MS,
+    ).toBe(2_000)
+    expect(env.CAIRN_MONITOR_OVERVIEW_CACHE_MS).toBe(3_000)
+    expect(() =>
+      apiEnvSchema.parse({ CAIRN_MONITOR_OVERVIEW_CACHE_MS: '6000', CAIRN_MONITOR_SSE_MIN_INTERVAL_MS: '5000' }),
+    ).toThrow()
   })
 
   it('JWT 与 bootstrap 有本地默认值', () => {
@@ -199,6 +216,9 @@ describe('workerEnvSchema', () => {
     expect(env.CAIRN_WORKER_ID).toBe('local-worker')
     expect(env.CAIRN_ENV).toBe('development')
     expect(env.CAIRN_LOG_LEVEL).toBe('info')
+    expect(env.CAIRN_MONITOR_SAMPLE_INTERVAL_MS).toBe(60_000)
+    expect(env.CAIRN_MONITOR_OBJECT_STORE_PROBE_MS).toBe(60_000)
+    expect(() => workerEnvSchema.parse({ CAIRN_MONITOR_SAMPLE_INTERVAL_MS: '10000' })).toThrow()
   })
 
   it('空 workerId 回落默认值而非启动失败', () => {
@@ -296,6 +316,20 @@ describe('workerEnvSchema', () => {
     expect(env.CAIRN_SESSION_REAPER_INTERVAL_MS).toBe(15_000)
     expect(env.CAIRN_SESSION_AUTH_WAIT_SECONDS).toBe(300)
     expect(env.CAIRN_CREDENTIAL_KEY).toBe(DEV_CREDENTIAL_KEY)
+    expect(env.CAIRN_PERIODIC_SLOT_LEASE_TTL_MS).toBe(60_000)
+    expect(env.CAIRN_PERIODIC_SLOT_FAILURE_RETRY_MS).toBe(5_000)
+    expect(env.CAIRN_REAPER_DRAIN_BUDGET_MS).toBe(5_000)
+    expect(env.CAIRN_MONITOR_PURGE_INTERVAL_MS).toBe(600_000)
+    expect(env.CAIRN_CREDENTIAL_REMINDER_SCAN_INTERVAL_MS).toBe(60_000)
+  })
+
+  it('排空预算必须小于 reaper 周期', () => {
+    expect(() =>
+      workerEnvSchema.parse({
+        CAIRN_REAPER_DRAIN_BUDGET_MS: '15000',
+        CAIRN_SESSION_REAPER_INTERVAL_MS: '15000',
+      }),
+    ).toThrow()
   })
 
   it('非 development 不得沿用开发凭据密钥', () => {
@@ -386,6 +420,8 @@ describe('workerEnvSchema', () => {
   it('RunLease 相关默认值', () => {
     const env = workerEnvSchema.parse({})
     expect(env.CAIRN_WORKER_CAPACITY).toBe(1)
+    expect(env.CAIRN_WORKER_ROLES).toBe('all')
+    expect(() => workerEnvSchema.parse({ CAIRN_WORKER_ROLES: 'all,executor' })).toThrow()
     expect(env.CAIRN_WORKER_HEARTBEAT_MS).toBe(5_000)
     expect(env.CAIRN_RUN_LEASE_TTL_SECONDS).toBe(30)
     expect(env.CAIRN_WORKER_LOST_AFTER_SECONDS).toBe(45)

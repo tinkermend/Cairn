@@ -10,6 +10,8 @@ export interface AuthUser {
   /** 角色 key，仅展示；鉴权看 permissions */
   roles: string[]
   permissions: string[]
+  targetScopes?: import('@cairn/shared').RoleTargetScope[]
+  targetScopePermissions?: { roleId: string; permissions: string[] }[]
 }
 
 interface AuthState {

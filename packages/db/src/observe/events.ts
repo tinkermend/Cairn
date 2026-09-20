@@ -68,6 +68,8 @@ export async function appendRunEvents(
   })
   await tx.insert(runEvents).values(rows)
   await tx.update(runs).set({ eventSeq: sequence }).where(eq(runs.id, runId))
+  const { enqueueRunNotificationIntentTx } = await import('../notifications/core.js')
+  await enqueueRunNotificationIntentTx(tx, runId)
   onCommit(tx, () => publishChangeHint({ runId, eventSeq: sequence }))
   return sequence
 }

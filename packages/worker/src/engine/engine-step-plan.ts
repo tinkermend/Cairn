@@ -65,6 +65,19 @@ export function resolveStepInput(
     }
     return { ok: true, input: { target, value: resolved.text } }
   }
+  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') {
+    const { from, fromField, ...action } = step.input
+    if (action.mode === 'clear') return { ok: true, input: action }
+    const resolved = from ? fillTextFromContext(context, from, fromField) : { ok: true as const, text: action.value ?? '' }
+    if (!resolved.ok || !resolved.text) {
+      return { ok: false, input: step.input, error: {
+        code: resolved.ok ? 'AI_INPUT_EMPTY' : resolved.code,
+        category: 'VALIDATION', retryable: false,
+        safeMessage: resolved.ok ? 'AI 输入值为空；清空请使用 clear 操作' : resolved.message,
+      } }
+    }
+    return { ok: true, input: { ...action, value: resolved.text } }
+  }
   if (step.type === 'select') {
     const target = overlayTarget ?? step.input.target
     if (step.input.by === 'index' || step.input.value !== undefined) {

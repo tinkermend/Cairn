@@ -16,6 +16,8 @@ export const deletePreviewCountsSchema = z.object({
   recordings: z.number().int().nonnegative().optional(),
   runs: z.number().int().nonnegative().optional(),
   storedObjects: z.number().int().nonnegative().optional(),
+  reports: z.number().int().nonnegative().optional(),
+  unknownByteObjects: z.number().int().nonnegative().optional(),
   totalBytes: z.number().int().nonnegative().optional(),
 })
 export type DeletePreviewCounts = z.infer<typeof deletePreviewCountsSchema>
@@ -61,6 +63,7 @@ export const cleanupStatusResponseSchema = z.object({
   purgedBytes: z.number().int().nonnegative(),
   lastError: z.string().nullable().optional(),
   completedAt: z.string().nullable().optional(),
+  unknownByteObjects: z.number().int().nonnegative().default(0),
 })
 export type CleanupStatusResponse = z.infer<typeof cleanupStatusResponseSchema>
 

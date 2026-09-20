@@ -3,6 +3,7 @@ import {
   joinOutcomeEvaluations,
   joinRuntimeInvariantEvaluations,
   type JoinedOutcomeEvaluation,
+  faceScreenshot,
   type OutcomeStatus,
   type RunDetailDto,
 } from '@cairn/shared'
@@ -32,9 +33,8 @@ function evidenceForOutcomeResult(
     const matched = evidenceItems.filter((item) => item.id === result.evidenceId)
     if (matched.length > 0) return matched
   }
-  return evidenceItems.filter(
-    (item) => item.attemptId === result.attemptId && item.type === 'screenshot',
-  )
+  const face = result.attemptId ? faceScreenshot(evidenceItems, result.attemptId) : undefined
+  return face ? [face] : []
 }
 
 function formatValue(value: unknown): string {

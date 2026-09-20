@@ -13,6 +13,7 @@ import {
   loadRunDetail,
   getSessionById,
   getWorkerById,
+  touchSessionUsed,
   updateRunDebugOverlay,
   type SessionRecord
 } from '@cairn/db'
@@ -248,6 +249,23 @@ export function subscribeRunFrames(this: SessionManagerContext, input: {
     return this.pipeFrames(input)
   }
 
+const VIEW_TOUCH_INTERVAL_MS = 60_000
+const viewTouchedAt = new Map<string, number>()
+
+async function touchViewedSession(
+  db: SessionManagerContext['dbHandle'],
+  session: { id: string; ownerWorkerId: string },
+  force = false,
+) {
+  const previous = viewTouchedAt.get(session.id) ?? 0
+  if (!force && Date.now() - previous < VIEW_TOUCH_INTERVAL_MS) return
+  viewTouchedAt.set(session.id, Date.now())
+  await touchSessionUsed(db, {
+    sessionId: session.id,
+    ownerWorkerId: session.ownerWorkerId,
+  }).catch(() => undefined)
+}
+
 export async function pipeFrames(this: SessionManagerContext, input: {
     runId: string
     actorId: string
@@ -266,6 +284,7 @@ export async function pipeFrames(this: SessionManagerContext, input: {
     ) {
       throw conflict('AUTH_CONTROL_INVALID', '认证阶段仅当前控制者可看画面')
     }
+    await touchViewedSession(this.dbHandle, session, true)
     const entry = this.pageForView(live, input.runId, input.pageId)
     if (!entry) throw conflict('PAGE_STALE', '没有可观察的页面')
     const pageRef = pageRefFor(session.id, session.generation, entry)
@@ -333,6 +352,7 @@ export async function pipeFrames(this: SessionManagerContext, input: {
               }
               if (closed || input.signal.aborted) return
               if (cast?.latest) input.onFrame(cast.latest)
+              await touchViewedSession(this.dbHandle, session)
               if (closed || input.signal.aborted) return
               timer = setTimeout(tick, interval)
             })
@@ -356,7 +376,7 @@ export async function dropScreencastObserver(this: SessionManagerContext, live: 
     if (current <= 1) {
       live.screencastObservers.delete(pageId)
       const recording = [...(this.videoRecorders?.values() ?? [])].some(
-        (recorder) => recorder.pageId === pageId && !recorder.stopped,
+        (recorder) => recorder.pageId === pageId && recorder.accepting,
       )
       if (recording) return
       const cast = live.screencasts.get(pageId)
@@ -521,6 +541,7 @@ export async function lookupRunSession(this: SessionManagerContext, runId: strin
 export async function buildMeta(this: SessionManagerContext, runId: string, actorId: string, viewPageId?: string): Promise<ManagedBrowserMeta> {
     const { run, session, live } = await this.lookupRunSession(runId)
     const liveOk = Boolean(live && session && this.sessionOwnedHere(session))
+    if (liveOk && session) await touchViewedSession(this.dbHandle, session)
     const waiting = run.status === 'WAITING_FOR_AUTH'
     const controlLive =
       Boolean(

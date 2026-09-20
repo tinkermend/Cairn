@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { arrivalTargetForName } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -12,6 +13,7 @@ import {
 } from '@/lib/map-api'
 import { fetchPlatformConfig } from '@/lib/platform-config-api'
 import { fetchTargetAccounts } from '@/lib/targets-api'
+import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -83,7 +85,7 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
         name: entryName.trim(),
         url: entryUrl.trim(),
         arrivalName: arrivalName.trim(),
-        arrivalTarget: { framePath: [], candidates: [{ by: 'role', value: 'heading', name: arrivalName.trim() }] },
+        arrivalTarget: arrivalTargetForName(arrivalName),
         safetyBasisKind: 'confirmed_path',
         summary: summary.trim(),
         jobKinds: ['map_explore'],
@@ -128,7 +130,7 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
   const factoryOn = configQuery.data?.document.mapExplorationEnabled === true
   const enabled = policyQuery.data?.policy.exploreEnabled === true
   const entries = (entriesQuery.data?.items ?? []).filter((entry) => entry.jobKinds.includes('map_explore'))
-  const accounts = accountsQuery.data?.items ?? []
+  const accounts = mapCapableAccounts(accountsQuery.data?.items ?? [])
 
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
@@ -238,6 +240,9 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
                     </option>
                   ))}
                 </select>
+                {accounts.length === 0 ? (
+                  <p className='text-label text-muted-foreground'>{MAP_ACCOUNT_REQUIRED}</p>
+                ) : null}
                 <Label htmlFor='explore-entry'>进入路径</Label>
                 <select
                   id='explore-entry'

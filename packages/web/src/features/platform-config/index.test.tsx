@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => ({
   updatePlatformConfig: vi.fn(),
   restorePlatformConfig: vi.fn(),
   registerPlatformConfigSecret: vi.fn(),
+  registerMonitorAlertChannel: vi.fn(),
+}))
+
+vi.mock('@/lib/monitoring-api', () => ({
+  registerMonitorAlertChannel: mocks.registerMonitorAlertChannel,
 }))
 
 vi.mock('@/lib/platform-config-api', () => ({
@@ -112,6 +117,7 @@ describe('PlatformConfigPage', () => {
     expect(document.body.innerText).not.toMatch(/sk-|apiKey/)
     expect(JSON.stringify(current)).not.toMatch(/sk-|apiKey/)
     await screen.getByRole('tab', { name: '会话策略' }).click()
+    await expect.element(screen.getByLabelText('失联处置')).toBeInTheDocument()
     await expect
       .element(screen.getByText('Profile 亲和等待（秒）'))
       .toBeInTheDocument()
@@ -123,6 +129,12 @@ describe('PlatformConfigPage', () => {
       .toBeInTheDocument()
     await expect
       .element(screen.getByText('窗口内自动登录次数（实时）'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('验证码机器尝试次数（实时）'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('验证码人工接管等待（秒，实时）'))
       .toBeInTheDocument()
     await expect
       .element(screen.getByText('单次人工保留上限（秒，实时）'))
@@ -166,6 +178,15 @@ describe('PlatformConfigPage', () => {
     await expect
       .element(screen.getByRole('switch', { name: '开放动作模块冻结回退' }))
       .not.toBeChecked()
+  })
+
+  it('告警节出厂关闭，Webhook 地址不回填到表单', async () => {
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: '告警' }).click()
+    await expect.element(screen.getByText('出厂建议规则全部关闭。Webhook 地址只在登记时提交，不会写入配置文档或变更记录。')).toBeInTheDocument()
+    await expect.element(screen.getByRole('switch', { name: '执行节点失联' })).not.toBeChecked()
+    await expect.element(screen.getByLabelText('Webhook 地址')).toHaveValue('')
   })
 
   it('只有读权限时不能保存', async () => {

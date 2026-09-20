@@ -2,6 +2,7 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { hasPermission, isSessionIdleOnlyKind } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { schemaFor } from '../native.js'
+import { assertTargetPermission } from '../console/target-authorization.js'
 import { conflict } from '../runs/errors.js'
 import type { SessionOperationRow } from '../records.js'
 import type { SessionKey } from './sessions.js'
@@ -71,5 +72,9 @@ export async function assertMaintenanceAuthorized(
   const actorId = operation.kindParams?.requestedBy
   if (typeof actorId !== 'string') throw conflict('AUTH_CONFIGURATION_REVOKED', '会话操作缺少可验证的发起人')
   await assertSessionActorPermission(db, actorId, 'session:control')
-  if (isSessionIdleOnlyKind(operation.kind)) await assertSessionActorPermission(db, actorId, 'session:manage')
+  await assertTargetPermission(db, actorId, operation.targetId, 'session:control')
+  if (isSessionIdleOnlyKind(operation.kind)) {
+    await assertSessionActorPermission(db, actorId, 'session:manage')
+    await assertTargetPermission(db, actorId, operation.targetId, 'session:manage')
+  }
 }

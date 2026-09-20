@@ -1,5 +1,14 @@
 import { z } from 'zod'
 import { logLevelSchema } from './logging.js'
+import {
+  DEFAULT_API_HEARTBEAT_MS,
+  DEFAULT_API_LOST_AFTER_SECONDS,
+  DEFAULT_MONITOR_DISK_SAMPLE_MS,
+  DEFAULT_MONITOR_OBJECT_STORE_PROBE_MS,
+  DEFAULT_MONITOR_SAMPLE_INTERVAL_MS,
+  DEFAULT_MONITOR_SAMPLE_RETENTION_DAYS,
+  MIN_MONITOR_SAMPLE_INTERVAL_MS,
+} from './monitoring.js'
 import { isAbsoluteFsPath, objectStoreDriverSchema } from './object-store.js'
 import {
   DEFAULT_RUN_LEASE_TTL_SECONDS,
@@ -14,6 +23,15 @@ import {
   resolveWorkerAdvertiseUrl,
   workerNetworkModeSchema,
 } from './worker-registry.js'
+import {
+  DEFAULT_CREDENTIAL_REMINDER_SCAN_INTERVAL_MS,
+  DEFAULT_MONITOR_OVERVIEW_CACHE_MS,
+  DEFAULT_MONITOR_PURGE_INTERVAL_MS,
+  DEFAULT_PERIODIC_SLOT_FAILURE_RETRY_MS,
+  DEFAULT_PERIODIC_SLOT_LEASE_TTL_MS,
+  DEFAULT_REAPER_DRAIN_BUDGET_MS,
+} from './periodic-slots.js'
+import { DEFAULT_WORKER_ROLES, parseWorkerRoles } from './worker-roles.js'
 
 /**
  * `.env` 里留空的项与未设置等价。
@@ -130,6 +148,31 @@ const ORIGIN_PATTERN = /^(?:\*|[a-z][a-z0-9+.-]*:\/\/[^\s/]+)$/i
 const runtimeEnvShape = {
   CAIRN_ENV: z.enum(CAIRN_ENVS).default('development'),
   CAIRN_LOG_LEVEL: logLevelSchema.default('info'),
+  CAIRN_BUILD_VERSION: z.string().min(1).max(128).optional(),
+}
+
+const monitorTelemetryEnvShape = {
+  CAIRN_MONITOR_SAMPLE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(MIN_MONITOR_SAMPLE_INTERVAL_MS)
+    .default(DEFAULT_MONITOR_SAMPLE_INTERVAL_MS),
+  CAIRN_MONITOR_SAMPLE_RETENTION_DAYS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(365)
+    .default(DEFAULT_MONITOR_SAMPLE_RETENTION_DAYS),
+  CAIRN_MONITOR_DISK_SAMPLE_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_MONITOR_DISK_SAMPLE_MS),
+  CAIRN_MONITOR_OBJECT_STORE_PROBE_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_MONITOR_OBJECT_STORE_PROBE_MS),
 }
 
 export const DEFAULT_OBJECT_STORE_DIR = '.data/object-store'
@@ -334,6 +377,9 @@ export const DEFAULT_SSE_BACKLOG = 256
 export const DEFAULT_SSE_HEARTBEAT_MS = 15_000
 export const DEFAULT_OBSERVE_RECONCILE_MS = 15_000
 export const DEFAULT_SSE_AUTH_REFRESH_MS = 15_000
+export const DEFAULT_MONITOR_SSE_INTERVAL_MS = 5_000
+export const DEFAULT_MONITOR_SSE_MIN_INTERVAL_MS = 5_000
+export const MONITOR_SSE_INTERVAL_MAX_MS = 60_000
 
 export function resolveChangeHintDriver(
   hint: ChangeHintDriver,
@@ -369,10 +415,27 @@ const changeHintEnvShape = {
     .positive()
     .default(DEFAULT_OBSERVE_RECONCILE_MS),
   CAIRN_SSE_AUTH_REFRESH_MS: z.coerce.number().int().positive().default(DEFAULT_SSE_AUTH_REFRESH_MS),
+  CAIRN_MONITOR_SSE_MIN_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(MONITOR_SSE_INTERVAL_MAX_MS)
+    .default(DEFAULT_MONITOR_SSE_MIN_INTERVAL_MS),
+  CAIRN_MONITOR_SSE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(MONITOR_SSE_INTERVAL_MAX_MS)
+    .default(DEFAULT_MONITOR_SSE_INTERVAL_MS),
 }
 
 function refineChangeHintEnv(
-  env: { CAIRN_CHANGE_HINT: ChangeHintDriver; CAIRN_REDIS_URL?: string },
+  env: {
+    CAIRN_CHANGE_HINT: ChangeHintDriver
+    CAIRN_REDIS_URL?: string
+    CAIRN_MONITOR_SSE_INTERVAL_MS: number
+    CAIRN_MONITOR_SSE_MIN_INTERVAL_MS: number
+  },
   ctx: z.RefinementCtx,
 ): void {
   if (env.CAIRN_CHANGE_HINT === 'redis' && !env.CAIRN_REDIS_URL) {
@@ -380,6 +443,13 @@ function refineChangeHintEnv(
       code: 'custom',
       path: ['CAIRN_REDIS_URL'],
       message: 'CAIRN_CHANGE_HINT=redis 必须配置 CAIRN_REDIS_URL',
+    })
+  }
+  if (env.CAIRN_MONITOR_SSE_INTERVAL_MS < env.CAIRN_MONITOR_SSE_MIN_INTERVAL_MS) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['CAIRN_MONITOR_SSE_INTERVAL_MS'],
+      message: '须大于或等于 CAIRN_MONITOR_SSE_MIN_INTERVAL_MS',
     })
   }
 }
@@ -444,6 +514,7 @@ export const apiEnvSchema = z.preprocess(
   z
     .object({
       CAIRN_API_PORT: z.coerce.number().int().min(1).max(65535).default(3030),
+      CAIRN_DEMONSTRATION_ENABLED: boolFromEnv(true),
       /**
        * 逗号分隔的 origin 白名单，schema 直接拆成数组交给 enableCors。
        *
@@ -494,7 +565,20 @@ export const apiEnvSchema = z.preprocess(
       CAIRN_INTERNAL_AUTH_SECRET: internalAuthSecretSchema,
       CAIRN_WORKER_NETWORK_MODE: workerNetworkModeSchema.default('local'),
       CAIRN_WORKER_ENDPOINTS: z.string().optional(),
+      CAIRN_API_ID: z.string().min(1).max(256).optional(),
+      CAIRN_API_HEARTBEAT_MS: z.coerce.number().int().positive().default(DEFAULT_API_HEARTBEAT_MS),
+      CAIRN_API_LOST_AFTER_SECONDS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_API_LOST_AFTER_SECONDS),
+      CAIRN_MONITOR_OVERVIEW_CACHE_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_MONITOR_OVERVIEW_CACHE_MS),
       ...runtimeEnvShape,
+      ...monitorTelemetryEnvShape,
       ...objectStoreEnvShape,
       ...browserAiEnvShape,
       ...changeHintEnvShape,
@@ -534,6 +618,13 @@ export const apiEnvSchema = z.preprocess(
       refineObjectStoreEnv(env, ctx)
       refineBrowserAiEnv(env, ctx)
       refineChangeHintEnv(env, ctx)
+      if (env.CAIRN_MONITOR_OVERVIEW_CACHE_MS > env.CAIRN_MONITOR_SSE_MIN_INTERVAL_MS) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_MONITOR_OVERVIEW_CACHE_MS'],
+          message: '须小于或等于 CAIRN_MONITOR_SSE_MIN_INTERVAL_MS',
+        })
+      }
     })
     .transform((env) => ({
       ...env,
@@ -558,6 +649,24 @@ export const workerEnvSchema = z.preprocess(
   z
     .object({
       CAIRN_WORKER_ID: z.string().min(1).default('local-worker'),
+      CAIRN_NOTIFICATION_SMTP_DESTINATIONS: z.string().default('').superRefine((value, ctx) => {
+        if (value.split(',').map(v => v.trim()).filter(Boolean).some(v => !/^[a-zA-Z0-9.-]+:[0-9]{1,5}$/.test(v))) {
+          ctx.addIssue({ code: 'custom', message: '使用逗号分隔的 SMTP 主机:端口列表' })
+        }
+      }),
+      CAIRN_WORKER_ROLES: z
+        .string()
+        .default(DEFAULT_WORKER_ROLES)
+        .superRefine((value, ctx) => {
+          try {
+            parseWorkerRoles(value)
+          } catch (error) {
+            ctx.addIssue({
+              code: 'custom',
+              message: error instanceof Error ? error.message : 'CAIRN_WORKER_ROLES 不合法',
+            })
+          }
+        }),
       CAIRN_WORKER_CAPACITY: z.coerce.number().int().positive().default(DEFAULT_WORKER_CAPACITY),
       CAIRN_WORKER_HEARTBEAT_MS: z.coerce
         .number()
@@ -607,7 +716,33 @@ export const workerEnvSchema = z.preprocess(
         .max(65535)
         .default(DEFAULT_WORKER_INTERNAL_PORT),
       CAIRN_DEBUG_HOLD_TIMEOUT_MS: z.coerce.number().int().positive().max(3_600_000).default(900_000),
+      CAIRN_PERIODIC_SLOT_LEASE_TTL_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_PERIODIC_SLOT_LEASE_TTL_MS),
+      CAIRN_PERIODIC_SLOT_FAILURE_RETRY_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_PERIODIC_SLOT_FAILURE_RETRY_MS),
+      CAIRN_REAPER_DRAIN_BUDGET_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_REAPER_DRAIN_BUDGET_MS),
+      CAIRN_MONITOR_PURGE_INTERVAL_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_MONITOR_PURGE_INTERVAL_MS),
+      CAIRN_CREDENTIAL_REMINDER_SCAN_INTERVAL_MS: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(DEFAULT_CREDENTIAL_REMINDER_SCAN_INTERVAL_MS),
       ...runtimeEnvShape,
+      ...monitorTelemetryEnvShape,
       ...objectStoreEnvShape,
       ...browserSessionEnvShape,
       ...browserAiEnvShape,
@@ -696,6 +831,13 @@ export const workerEnvSchema = z.preprocess(
       }
       refineBrowserAiEnv(env, ctx)
       refineChangeHintEnv(env, ctx)
+      if (env.CAIRN_REAPER_DRAIN_BUDGET_MS >= env.CAIRN_SESSION_REAPER_INTERVAL_MS) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['CAIRN_REAPER_DRAIN_BUDGET_MS'],
+          message: '须小于 CAIRN_SESSION_REAPER_INTERVAL_MS',
+        })
+      }
     })
     .transform((env) => ({
       ...env,

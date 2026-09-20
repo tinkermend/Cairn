@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm'
-import { index, primaryKey, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import { index, jsonb, primaryKey, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
 
@@ -43,6 +43,8 @@ export const consoleAccountRoles = cairnSchema.table(
       .notNull()
       .references(() => consoleRoles.id, { onDelete: 'restrict' }),
     assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
+    targetScopeMode: text('target_scope_mode', { enum: ['none', 'selected', 'all'] }).notNull().default('none'),
+    targetScopeIds: jsonb('target_scope_ids').$type<string[]>().notNull().default([]),
     /** 同表多外键用角色前缀区分 */
     assignedByConsoleAccountId: uuid('assigned_by_console_account_id').references(
       () => consoleAccounts.id,

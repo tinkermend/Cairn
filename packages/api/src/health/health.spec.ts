@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Test } from '@nestjs/testing'
 import type { INestApplication } from '@nestjs/common'
 import request from 'supertest'
@@ -11,7 +13,7 @@ import { HealthService } from './health.service'
 import { listenForSupertest, unusedChangeHint } from '../__tests__/http-app'
 
 function stubDb(ping: () => Promise<boolean>): DbHandle {
-  return { ping, close: async () => {}, driver: 'postgres' }
+  return { ping, close: async () => {}, driver: 'postgres', poolStats: () => null }
 }
 
 async function buildApp(
@@ -76,6 +78,13 @@ describe('GET /health', () => {
     expect(res.body.checks.database).toBe('up')
     expect(res.body.checks.changeHint).toBe('down')
     await app.close()
+  })
+
+  it('RMC01 /health 不依赖 API 实例登记', async () => {
+    const src = readFileSync(join(__dirname, 'health.service.ts'), 'utf8')
+    expect(src).not.toMatch(/heartbeatApiInstance|ApiInstanceHeartbeat/)
+    const res = await request(healthy.getHttpServer()).get('/health').expect(200)
+    expect(res.body.status).toBe('ok')
   })
 
   it('uptime 随时间单调不减', async () => {

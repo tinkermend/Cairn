@@ -9,6 +9,7 @@ import {
   mapPublicationBodySchema,
   mapScenarioBindingBodySchema,
   mapSealPublishBodySchema,
+  mapConsumptionEligibilityGrantBodySchema,
   mapConsumptionPolicyUpdateBodySchema,
   mapJobPolicyUpdateBodySchema,
   mapSafeEntryCreateBodySchema,
@@ -17,6 +18,7 @@ import {
   explorationPolicyUpdateBodySchema,
   explorationPreviewRequestSchema,
   explorationCreateBodySchema,
+  type MapConsumptionEligibilityGrantBody,
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyUpdateBody,
   type MapSafeEntryCreateBody,
@@ -241,6 +243,17 @@ export class MapController {
   @RequirePermissions('target:read', 'map:read')
   consumptionPolicy(@Param('targetId') targetId: string) {
     return this.maps.consumptionPolicy(targetId)
+  }
+
+  @Post('consumption-eligibility')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:read', 'map:read', 'map:publish')
+  grantConsumptionEligibility(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(mapConsumptionEligibilityGrantBodySchema)) body: MapConsumptionEligibilityGrantBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.grantConsumptionEligibility(targetId, body, account)
   }
 
   @Post('consumption-policy')

@@ -2,11 +2,15 @@ import { appendRunEvents, recordInlineLogEvidence, setSessionProbe } from '@cair
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
+  isSideEffectBrowserCommand,
+  requiredScreenshotRole,
   resolveEvidencePolicy,
   shouldCaptureEvidence,
   type BrowserCommand,
   type BrowserCommandEvidence,
   type BrowserCommandResult,
+  type PageRef,
+  type ScreenshotRole,
   authGateClosedError,
   type RunSnapshot,
   type SessionGrant
@@ -22,7 +26,7 @@ import {
 import { assertPageTargetScope, TargetScopeError } from './target-scope'
 import { executeOnPage } from './surface'
 import { handoffMessage } from './managed-helpers'
-import { createManagedPage, pickPopupHandoff, type ManagedPageEntry } from './page-identity'
+import { createManagedPage, pageRefFor, pickPopupHandoff, type ManagedPageEntry } from './page-identity'
 import { type LiveHandle, type SessionManagerContext } from './session-live.js'
 
 export function assertCommand(this: SessionManagerContext, leaseId: string): SessionGrant {
@@ -35,11 +39,20 @@ export async function withManagedPage<T>(this: SessionManagerContext,
     fn: (page: import('playwright').Page) => Promise<T>,
     failed: (value: T) => boolean = () => false,
   ): Promise<
-    | { ok: true; value: T; screenshotBytes?: Buffer; tracePath?: string }
+    | {
+        ok: true
+        value: T
+        screenshotBytes?: Buffer
+        extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+        faceRole?: ScreenshotRole
+        tracePath?: string
+      }
     | {
         ok: false
         error: Extract<BrowserCommandResult, { ok: false }>['error']
         screenshotBytes?: Buffer
+        extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+        faceRole?: ScreenshotRole
         tracePath?: string
       }
   > {
@@ -70,11 +83,22 @@ export async function runManagedPage<T>(this: SessionManagerContext,
     fn: (page: import('playwright').Page) => Promise<T>,
     failed: (value: T) => boolean,
   ): Promise<
-    | { ok: true; value: T; screenshotBytes?: Buffer; tracePath?: string }
+    | {
+        ok: true
+        value: T
+        screenshotBytes?: Buffer
+        extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+        faceRole?: ScreenshotRole
+        pageRef?: PageRef
+        tracePath?: string
+      }
     | {
         ok: false
         error: Extract<BrowserCommandResult, { ok: false }>['error']
         screenshotBytes?: Buffer
+        extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+        faceRole?: ScreenshotRole
+        pageRef?: PageRef
         tracePath?: string
       }
   > {
@@ -109,15 +133,45 @@ export async function runManagedPage<T>(this: SessionManagerContext,
     if (tracePath && evidence) {
       await contextTracing.startChunk({ title: evidence.attemptId })
     }
+    const shotOpts = {
+      fullPage: (evidence?.screenshotViewport ?? 'full_page') === 'full_page',
+      selectors: evidence?.sensitiveSelectors ?? [],
+    }
+    const extraShots: { role: ScreenshotRole; bytes: Buffer }[] = []
+    const startPageId = live?.currentPageIdByLease.get(grant.leaseId)
+    if (
+      evidence &&
+      evidence.commandType &&
+      isSideEffectBrowserCommand(evidence.commandType) &&
+      shouldCaptureEvidence(evidence.screenshot ?? 'on_failure', false)
+    ) {
+      const before = await screenshotPage(page, shotOpts).catch(() => undefined)
+      if (before) extraShots.push({ role: 'before_action', bytes: before })
+    }
     try {
       assertPageTargetScope(page)
       const value = await fn(page)
       assertPageTargetScope(page)
+      const current = this.pageForGrant(grant) ?? page
+      const currentId = live?.currentPageIdByLease.get(grant.leaseId)
+      const currentEntry = currentId ? live?.pages.get(currentId) : undefined
+      if (currentEntry?.retarget) await currentEntry.retarget.catch(() => undefined)
+      const pageRef =
+        live && currentEntry ? pageRefFor(live.sessionId, live.generation, currentEntry) : undefined
+      const failedNow = failed(value)
       const wantShot = evidence
-        ? shouldCaptureEvidence(evidence.screenshot ?? 'on_failure', failed(value))
-        : failed(value)
-      const screenshotBytes = wantShot ? await screenshotPage(page).catch(() => undefined) : undefined
-      return { ok: true, value, screenshotBytes, tracePath }
+        ? shouldCaptureEvidence(evidence.screenshot ?? 'on_failure', failedNow)
+        : failedNow
+      const faceRole = requiredScreenshotRole({
+        failed: failedNow,
+        commandType: evidence?.commandType,
+      })
+      if (wantShot && startPageId && currentId && startPageId !== currentId) {
+        const handoff = await screenshotPage(current, shotOpts).catch(() => undefined)
+        if (handoff) extraShots.push({ role: 'handoff', bytes: handoff })
+      }
+      const screenshotBytes = wantShot ? await screenshotPage(current, shotOpts).catch(() => undefined) : undefined
+      return { ok: true, value, screenshotBytes, extraShots, faceRole, pageRef, tracePath }
     } catch (error) {
       if (error instanceof TargetScopeError) return { ok: false, error: { code: error.code, category: 'VALIDATION', retryable: false, safeMessage: error.message } }
       if (error instanceof OccupancyRequiredError) {
@@ -131,8 +185,11 @@ export async function runManagedPage<T>(this: SessionManagerContext,
           },
         }
       }
+      const current = this.pageForGrant(grant) ?? page
+      const errorPageId = live?.currentPageIdByLease.get(grant.leaseId)
+      const errorEntry = errorPageId ? live?.pages.get(errorPageId) : undefined
       const screenshotBytes = evidence
-        ? await screenshotPage(page).catch(() => undefined)
+        ? await screenshotPage(current, shotOpts).catch(() => undefined)
         : undefined
       if (error instanceof GuardError) {
         return {
@@ -144,6 +201,10 @@ export async function runManagedPage<T>(this: SessionManagerContext,
             safeMessage: error.message,
           },
           screenshotBytes,
+          extraShots,
+          faceRole: 'on_error',
+          pageRef:
+            live && errorEntry ? pageRefFor(live.sessionId, live.generation, errorEntry) : undefined,
           tracePath,
         }
       }
@@ -160,13 +221,21 @@ export async function execute(this: SessionManagerContext,
     command: BrowserCommand,
     signal?: AbortSignal,
     evidence?: BrowserCommandEvidence,
-  ): Promise<BrowserCommandResult & { screenshotBytes?: Buffer; tracePath?: string }> {
+  ): Promise<
+    BrowserCommandResult & {
+      screenshotBytes?: Buffer
+      extraShots?: { role: ScreenshotRole; bytes: Buffer }[]
+      faceRole?: ScreenshotRole
+      pageRef?: PageRef
+      tracePath?: string
+    }
+  > {
     if (this.authGateClosed.has(grant.leaseId)) {
       return { ok: false, error: authGateClosedError('not_dispatched') }
     }
     const scoped = await this.withManagedPage(
       grant,
-      evidence,
+      evidence ? { ...evidence, commandType: evidence.commandType ?? command.type } : undefined,
       (page) => this.runSurfaceCommand(grant, page, command, signal, evidence),
       (result) => !result.ok,
     )
@@ -175,16 +244,32 @@ export async function execute(this: SessionManagerContext,
       return {
         ok: false,
         error: authClosed,
-        screenshotBytes: scoped.ok ? scoped.screenshotBytes : scoped.screenshotBytes,
-        tracePath: scoped.ok ? scoped.tracePath : scoped.tracePath,
+        screenshotBytes: scoped.screenshotBytes,
+        extraShots: scoped.extraShots,
+        faceRole: scoped.faceRole,
+        pageRef: scoped.pageRef,
+        tracePath: scoped.tracePath,
       }
     }
     if (!scoped.ok) {
-      return { ok: false, error: scoped.error, screenshotBytes: scoped.screenshotBytes, tracePath: scoped.tracePath }
+      return {
+        ok: false,
+        error: scoped.error,
+        screenshotBytes: scoped.screenshotBytes,
+        extraShots: scoped.extraShots,
+        faceRole: scoped.faceRole,
+        pageRef: scoped.pageRef,
+        tracePath: scoped.tracePath,
+      }
     }
-    return scoped.screenshotBytes || scoped.tracePath
-      ? { ...scoped.value, screenshotBytes: scoped.screenshotBytes, tracePath: scoped.tracePath }
-      : scoped.value
+    return {
+      ...scoped.value,
+      screenshotBytes: scoped.screenshotBytes,
+      extraShots: scoped.extraShots,
+      faceRole: scoped.faceRole,
+      pageRef: scoped.pageRef,
+      tracePath: scoped.tracePath,
+    }
   }
 
 export async function invalidate(this: SessionManagerContext, grant: SessionGrant, reason: string): Promise<void> {
@@ -297,6 +382,7 @@ export async function runSurfaceCommand(this: SessionManagerContext,
     }
     const fromId = live.currentPageIdByLease.get(grant.leaseId) ?? live.currentPageIdByRun.get(runId)
     const entry = this.adoptPage(live, runId, decided.page, 'popup', grant.leaseId)
+    if (entry.retarget) await entry.retarget.catch(() => undefined)
     await appendRunEvents(this.dbHandle, runId, [
       {
         type: 'run.page_handoff',
@@ -327,7 +413,7 @@ export function adoptPage(this: SessionManagerContext,
     if (leaseId) {
       live.currentPageIdByLease.set(leaseId, entry.pageId)
       if (typeof this.retargetVideoForLease === 'function') {
-        void this.retargetVideoForLease(live, leaseId)
+        entry.retarget = this.retargetVideoForLease(live, leaseId)
       }
     }
     return entry

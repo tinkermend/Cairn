@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, RefreshCw } from 'lucide-react'
-import { hasPermission } from '@cairn/shared'
+import { faceScreenshot, hasPermission } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { connectionLabel, connectionTone, useRunObservation } from '@/features/runs/use-run-observation'
 import { AttemptEvidenceList } from '@/features/runs/evidence-viewer'
@@ -73,7 +73,7 @@ export function TrialPanel({
   const stepRun = historic ? run?.stepRuns.find((item) => item.stepId === historic.id) : undefined
   const latestAttempt = stepRun?.attempts[stepRun.attempts.length - 1]
   const attemptEvidence = (evidence?.items ?? []).filter((item) => item.attemptId === latestAttempt?.id)
-  const screenshot = attemptEvidence.find((item) => item.type === 'screenshot')
+  const screenshot = latestAttempt ? faceScreenshot(attemptEvidence, latestAttempt.id) : undefined
   const runLevel = (evidence?.items ?? []).filter((item) => !item.attemptId)
   const draftMissing = Boolean(
     selectedDraftStepId &&

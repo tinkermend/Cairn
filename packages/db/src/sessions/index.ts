@@ -91,6 +91,7 @@ export {
   requestMaintenanceOperation,
   cancelSessionOperation,
   setSessionRetention,
+  applyPendingRetentionIntent,
   adoptSessionRetention,
   scheduleNextAuthCheck,
   abandonSessionKeepAlive,
@@ -131,6 +132,7 @@ export {
 export { assertSessionAccountActive, assertSessionActorPermission, assertMaintenanceAuthorized } from './access.js'
 
 export { recoverSessionOperations, markMaintenanceLoginSubmitted } from './occupancy.js'
+export { recordCaptchaLoginAttempt } from './captcha-audit.js'
 
 export { bindOperationSession } from './occupancy.js'
 

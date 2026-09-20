@@ -11,6 +11,14 @@ export function decideResolverOutcome(tried: { matches: number }[]): Exclude<Res
   return 'NOT_FOUND'
 }
 
+export function pickResolvedCandidate(
+  counts: number[],
+): { kind: 'found'; index: number } | { kind: 'miss'; outcome: 'NOT_FOUND' | 'AMBIGUOUS' } {
+  const index = counts.findIndex((count) => count === 1)
+  if (index >= 0) return { kind: 'found', index }
+  return { kind: 'miss', outcome: decideResolverOutcome(counts.map((matches) => ({ matches }))) }
+}
+
 export function candidateTries(candidates: LocatorCandidate[], matches: number[]): CandidateTry[] {
   return candidates.map((candidate, index) => ({
     index,

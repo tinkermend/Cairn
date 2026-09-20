@@ -4,6 +4,7 @@ import {
   WORKER_FORWARD_CONNECT_TIMEOUT_MS,
   WORKER_FORWARD_HEADER_TIMEOUT_MS,
 } from '@cairn/shared'
+import { currentInternalForwards } from '../common/process-gauges'
 import { WorkerForwardError, WorkerInternalClient } from './worker-internal.client'
 
 const call = {
@@ -107,11 +108,34 @@ describe('WorkerInternalClient', () => {
     vi.stubGlobal('fetch', fetchMock)
     const client = new WorkerInternalClient()
     const caller = new AbortController()
-    await client.requestStream({ ...call, method: 'GET', timeout: 'stream', path: '/internal/managed-browser/frames' }, caller.signal)
+    const streamed = await client.requestStream({ ...call, method: 'GET', timeout: 'stream', path: '/internal/managed-browser/frames' }, caller.signal)
+    await streamed.text()
     const init = fetchMock.mock.calls[0]![1] as RequestInit & { headersTimeout?: number; bodyTimeout?: number }
     expect(init.signal).toBe(caller.signal)
     expect(init.redirect).toBe('error')
     expect(init.headersTimeout).toBe(10_000)
     expect(init.bodyTimeout).toBe(0)
+  })
+
+  it('转发计数持续到响应体读完', async () => {
+    let resolveText!: (value: string) => void
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        text: () => new Promise<string>((resolve) => {
+          resolveText = resolve
+        }),
+      })),
+    )
+    const client = new WorkerInternalClient()
+    const pending = client.requestJson({ ...call, method: 'GET', timeout: 'headers' })
+    await vi.waitFor(() => {
+      expect(typeof resolveText).toBe('function')
+      expect(currentInternalForwards()).toBe(1)
+    })
+    resolveText('{}')
+    await expect(pending).resolves.toEqual({})
+    expect(currentInternalForwards()).toBe(0)
   })
 })

@@ -109,6 +109,8 @@ async function writeRevision(
     actor: AuditActor
     auditAction: 'platform_config.update' | 'platform_config.restore'
     summary: string
+    afterWrite?: (tx: Db) => Promise<void>
+    notificationMutation?: boolean
   },
 ): Promise<PlatformConfigCurrent> {
   const document = platformConfigDocumentSchema.parse(input.document)
@@ -121,6 +123,11 @@ async function writeRevision(
   }
   return atomic(db, async (tx) => {
     const { platformConfig, platformConfigRevisions } = schemaFor(tx)
+    const [previous] = await tx.select().from(platformConfig).where(eq(platformConfig.id, PLATFORM_CONFIG_SINGLETON_ID)).for('update')
+    if (previous) {
+      const { validateNotificationConfigChangeTx } = await import('../notifications/config.js')
+      await validateNotificationConfigChangeTx(tx, upgradePlatformConfigDocument(previous.document), document, input.actor.id, input.notificationMutation, input.source === 'restore')
+    }
     const now = new Date()
     const nextRevision = input.expectedRevision + 1
     const updated = await updateRows(
@@ -160,6 +167,7 @@ async function writeRevision(
       PLATFORM_CONFIG_SINGLETON_ID,
       input.summary,
     )
+    if (input.afterWrite) await input.afterWrite(tx)
     const current = await getPlatformConfig(tx)
     if (!current) throw new Error('平台配置写入后丢失')
     return current
@@ -173,6 +181,8 @@ export async function updatePlatformConfig(
     document: PlatformConfigDocument
     reason: string
     actor: AuditActor
+    afterWrite?: (tx: Db) => Promise<void>
+    notificationMutation?: boolean
   },
 ): Promise<PlatformConfigCurrent> {
   return writeRevision(db, {
@@ -267,6 +277,8 @@ export async function registerPlatformAiSecret(
       registered.id,
       '登记浏览器 AI 模型密钥',
     )
+    const { syncModelKeyCredential } = await import('../credentials/index.js')
+    await syncModelKeyCredential(tx, { secretId: input.id, modelOrigin, actor: input.actor })
     return registered
   })
 }

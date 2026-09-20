@@ -33,6 +33,15 @@ describe.skipIf(!parsed.success)('RBAC 模型约束（集成）', () => {
       password: env.CAIRN_DB_PASSWORD,
     })
     await migrate(pool, S)
+    for (const key of SYSTEM_ROLE_KEYS) {
+      const id = await roleIdOf(key)
+      for (const permission of SYSTEM_ROLE_DEFINITIONS[key].permissions) {
+        await q(
+          `INSERT INTO "${S}".console_role_permissions (console_role_id, permission) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [id, permission],
+        )
+      }
+    }
   })
 
   afterAll(async () => {

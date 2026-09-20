@@ -39,13 +39,21 @@ import {
   toDeleteResult,
 } from '../lifecycle.js'
 import { cursorFilter, paginateResults } from '../cursor.js'
+import { assertTargetPermission, lockConsoleAuthorization, targetScopeFor, targetScopeFilter } from './target-authorization.js'
+import { updateCredentialMetadata } from '../credentials/catalog.js'
+import { targetCleanupObjectFilter } from '../reports/cleanup.js'
 import {
   ACTIVE_RUN_STATUSES,
   LOCAL_SECRET_PROVIDER,
+  activeDetectionReady,
   deriveAuthCapability,
   cleanupStatusResponseSchema,
+  isCleanupFailed,
+  tallyKnownBytes,
   compactLoginFields,
+  DEFAULT_ACCOUNT_USAGE,
   deletePreviewResponseSchema,
+  mapUsageGuardFor,
   targetAccountListQuerySchema,
   targetAccountListResponseSchema,
   targetAccountSchema,
@@ -77,7 +85,15 @@ import {
   type UpdateTargetBody,
 } from '@cairn/shared'
 import type { PersistenceActor as RequestAccount } from './actor.js'
-import { loadAccountAuthDisplay, loadCurrentAuthProfile, resetAuthBudgetAfterCredentialChange } from '../sessions/auth-profile.js'
+import { loadAccountAuthDisplay, loadCurrentAuthProfile } from '../sessions/auth-profile.js'
+import {
+  clearTargetAccountSecrets,
+  confirmIdentityMaterial,
+  ensureTargetAccountCredential,
+  loadAccountCredentialView,
+  markIdentityReconfirm,
+  replaceTargetAccountSecret,
+} from '../credentials/index.js'
 import { getPlatformConfig } from '../platform-config/store.js'
 import { parseTargetSessionPolicyOverride } from '../sessions/session-policy.js'
 
@@ -94,6 +110,12 @@ async function rethrowUnique(
   if (isUniqueViolation(error)) {
     const name = constraintName(error)
     const accountConflict = name?.includes('target_accounts') || kind === 'account'
+    if (name?.includes('map_usage')) {
+      throw failure('conflict', {
+        code: 'TARGET_ACCOUNT_MAP_USAGE_CONFLICT',
+        message: '该目标系统已有采集账号，每个目标只能有一个',
+      })
+    }
     if (!accountConflict || name?.includes('targets_code')) {
       const occupied = await deletedOccupancyMessage(db, 'target_code', { code: lookup.code })
       throw failure('conflict', {
@@ -131,12 +153,16 @@ export class TargetsStore {
     return sessionPolicyFromPlatform(document.session)
   }
 
-  async listTargets(query: TargetListQuery = {}): Promise<TargetListResponse> {
+  async listTargets(query: TargetListQuery = {}, actor?: RequestAccount): Promise<TargetListResponse> {
     const parsed = targetListQuerySchema.parse(query)
     const { targets } = schemaFor(this.db)
     const limit = parsed.limit
     const filters: (SQL | undefined)[] = [
       isNull(targets.deletedAt),
+      actor ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'target:read')) : undefined,
+      actor && parsed.credentialAction ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'credential:read')) : undefined,
+      actor && parsed.credentialAction && parsed.credentialAction !== 'read' ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'credential:write')) : undefined,
+      actor && parsed.credentialAction === 'import' ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'credential:import')) : undefined,
       parsed.status ? eq(targets.status, parsed.status) : undefined,
       parsed.authMethod ? eq(targets.authMethod, parsed.authMethod) : undefined,
       parsed.search
@@ -186,8 +212,9 @@ export class TargetsStore {
       parseTargetSessionPolicyOverride(current.sessionPolicy),
       patch,
     )
+    let resolved
     try {
-      resolveSessionPolicyLayers({
+      resolved = resolveSessionPolicyLayers({
         platformDefault: await this.platformSessionDefaults(),
         targetOverride: nextOverride,
       })
@@ -196,6 +223,20 @@ export class TargetsStore {
         code: 'SESSION_POLICY_INVALID',
         message: error instanceof Error ? error.message : '目标会话策略非法',
       })
+    }
+    if (resolved.reclaim === 'AUTH_DRIVEN') {
+      const profile = await loadCurrentAuthProfile(this.db, id)
+      if (
+        !activeDetectionReady({
+          definition: profile?.definition ?? null,
+          validation: profile?.validation ?? null,
+        })
+      ) {
+        throw failure('conflict', {
+          code: 'AUTH_PROFILE_REQUIRED',
+          message: '认证保活需要已发布并通过验收的主动检测规则',
+        })
+      }
     }
     const now = new Date()
     await this.db.transaction(async (tx) => {
@@ -214,6 +255,8 @@ export class TargetsStore {
     const now = new Date()
     try {
       await this.db.transaction(async (tx) => {
+        await lockConsoleAuthorization(tx, actor.id)
+        if (!(await targetScopeFor(tx, actor.id, 'target:write')).all || !(await targetScopeFor(tx, actor.id, 'target:read')).all) throw failure('forbidden', '创建目标系统需要全部目标的管理范围')
         await tx.insert(targets).values({
           id,
           code: body.code,
@@ -224,6 +267,8 @@ export class TargetsStore {
           captchaMode: body.captchaMode,
           status: body.status,
           loginFields: body.loginFields,
+          captcha: body.captcha ?? null,
+          sensitiveSelectors: body.sensitiveSelectors ?? [],
           createdAt: now,
           updatedAt: now,
         })
@@ -260,9 +305,19 @@ export class TargetsStore {
       body.loginUrl === undefined &&
       body.authMethod === undefined &&
       body.captchaMode === undefined &&
-      body.status === undefined
+      body.status === undefined &&
+      body.sensitiveSelectors === undefined
+    const authSurfaceTouched =
+      body.loginFields !== undefined ||
+      body.loginUrl !== undefined ||
+      body.entryUrl !== undefined ||
+      body.authMethod !== undefined ||
+      body.captchaMode !== undefined ||
+      body.captcha !== undefined
     try {
       await this.db.transaction(async (tx) => {
+        await lockConsoleAuthorization(tx, actor.id)
+        await assertTargetPermission(tx, actor.id, id, 'target:write')
         await tx
           .update(targets)
           .set({
@@ -273,9 +328,23 @@ export class TargetsStore {
             captchaMode: body.captchaMode ?? current.captchaMode,
             status: body.status ?? current.status,
             loginFields: body.loginFields === undefined ? current.loginFields : body.loginFields,
+            captcha: body.captcha === undefined ? current.captcha : body.captcha,
+            sensitiveSelectors:
+              body.sensitiveSelectors === undefined
+                ? current.sensitiveSelectors
+                : body.sensitiveSelectors,
             updatedAt: now,
           })
           .where(eq(targets.id, id))
+        if (authSurfaceTouched) {
+          await tx
+            .update(targetAccounts)
+            .set({
+              configRevision: sql`${targetAccounts.configRevision} + 1`,
+              updatedAt: now,
+            })
+            .where(and(eq(targetAccounts.targetId, id), isNull(targetAccounts.deletedAt)))
+        }
         await this.writeAudit(
           tx,
           actor,
@@ -302,6 +371,7 @@ export class TargetsStore {
       runLeases,
       sessionLeases,
       browserSessions,
+      reports,
     } = schemaFor(this.db)
     const [target] = await this.db
       .select()
@@ -374,14 +444,13 @@ export class TargetsStore {
       .from(recordingDrafts)
       .where(and(eq(recordingDrafts.targetId, id), isNull(recordingDrafts.deletedAt)))
 
-    const objects =
-      runIds.length > 0
-        ? await this.db
-            .select({ id: storedObjects.id, byteSize: storedObjects.byteSize })
-            .from(storedObjects)
-            .where(and(inArray(storedObjects.runId, runIds), isNull(storedObjects.purgedAt)))
-        : []
+    const objects = await this.db
+      .select({ id: storedObjects.id, byteSize: storedObjects.byteSize })
+      .from(storedObjects)
+      .where(and(targetCleanupObjectFilter(this.db, id), isNull(storedObjects.purgedAt)))
     const totalBytes = objects.reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+    const [reportCount] = await this.db.select({ count: sql<number>`count(*)` }).from(reports)
+      .where(and(eq(reports.targetId, id), isNull(reports.deletedAt)))
 
     return deletePreviewResponseSchema.parse({
       previewToken: newId(),
@@ -390,8 +459,10 @@ export class TargetsStore {
         scenarios: scenarioRows.length,
         recordings: recordingRows.length,
         runs: targetRunRows.length,
+        reports: Number(reportCount?.count ?? 0),
         storedObjects: objects.length,
         totalBytes,
+        unknownByteObjects: objects.filter((object) => object.byteSize === null).length,
       },
       blockers: activeBlockers,
     })
@@ -408,6 +479,8 @@ export class TargetsStore {
 
     try {
       await this.db.transaction(async (tx) => {
+        await lockConsoleAuthorization(tx, actor.id)
+        await assertTargetPermission(tx, actor.id, id, 'target:delete')
         const [current] = await locked(tx, tx.select().from(targets).where(eq(targets.id, id)))
         if (!current) {
           throw failure('not_found', { code: 'TARGET_NOT_FOUND', message: '目标系统不存在' })
@@ -488,7 +561,14 @@ export class TargetsStore {
 
           await tx
             .update(targetAccounts)
-            .set({ deletedAt: now, deletedBy, secretId: null, secretProvider: null, updatedAt: now })
+            .set({
+              deletedAt: now,
+              deletedBy,
+              secretId: null,
+              secretProvider: null,
+              mapUsageGuard: null,
+              updatedAt: now,
+            })
             .where(and(eq(targetAccounts.targetId, id), isNull(targetAccounts.deletedAt)))
 
           if (exclusive.length > 0) {
@@ -523,27 +603,19 @@ export class TargetsStore {
 
         if (runIds.length > 0) {
           await revokeExternalEvidence(tx as unknown as Db, runIds)
-          await tx
-            .update(storedObjects)
-            .set({ deleteRequestedAt: now })
-            .where(
-              and(
-                inArray(storedObjects.runId, runIds),
-                isNull(storedObjects.deleteRequestedAt),
-                isNull(storedObjects.purgedAt),
-              ),
-            )
         }
+        await tx.update(storedObjects).set({ deleteRequestedAt: now }).where(and(
+          targetCleanupObjectFilter(tx as unknown as Db, id),
+          isNull(storedObjects.deleteRequestedAt), isNull(storedObjects.purgedAt),
+        ))
 
-        const [objectRow] = runIds.length
-          ? await tx
+        const [objectRow] = await tx
               .select({
                 n: sql<number>`count(*)`,
                 bytes: sql<number>`coalesce(sum(${storedObjects.byteSize}), 0)`,
               })
               .from(storedObjects)
-              .where(inArray(storedObjects.runId, runIds))
-          : [{ n: 0, bytes: 0 }]
+              .where(targetCleanupObjectFilter(tx as unknown as Db, id))
         await this.writeAudit(
           tx,
           actor,
@@ -561,18 +633,16 @@ export class TargetsStore {
   }
 
   async getTargetCleanupStatus(id: string): Promise<CleanupStatusResponse> {
-    const { runs, storedObjects, targets } = schemaFor(this.db)
-    const [target] = await this.db.select({ id: targets.id }).from(targets).where(eq(targets.id, id)).limit(1)
+    const { storedObjects, targets } = schemaFor(this.db)
+    const [target] = await this.db
+      .select({ id: targets.id, deletedAt: targets.deletedAt })
+      .from(targets)
+      .where(eq(targets.id, id))
+      .limit(1)
     if (!target) {
       throw failure('not_found', { code: 'TARGET_NOT_FOUND', message: '目标系统不存在' })
     }
-    const targetRunRows = await this.db
-      .select({ id: runs.id })
-      .from(runs)
-      .where(eq(runs.targetId, id))
-    const targetRunIds = targetRunRows.map((r) => r.id)
-
-    if (targetRunIds.length === 0) {
+    if (!target.deletedAt) {
       return cleanupStatusResponseSchema.parse({
         resourceId: id,
         resourceType: 'target',
@@ -586,7 +656,6 @@ export class TargetsStore {
         completedAt: new Date().toISOString(),
       })
     }
-
     const objects = await this.db
       .select({
         status: storedObjects.status,
@@ -595,17 +664,16 @@ export class TargetsStore {
         lastPurgeErrorAt: storedObjects.lastPurgeErrorAt,
       })
       .from(storedObjects)
-      .where(inArray(storedObjects.runId, targetRunIds))
+      .where(targetCleanupObjectFilter(this.db, id))
 
     const total = objects.length
     const purged = objects.filter((o) => o.status === 'purged').length
-    const failed = objects.filter(
-      (o) => o.status !== 'purged' && (o.purgeAttempts >= 5 || o.lastPurgeErrorAt !== null),
-    ).length
-    const totalBytes = objects.reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
-    const purgedBytes = objects
-      .filter((o) => o.status === 'purged')
-      .reduce((sum, o) => sum + (o.byteSize ?? 0), 0)
+    const failed = objects.filter((o) => isCleanupFailed(o)).length
+    const byteTally = tallyKnownBytes(objects.map((o) => o.byteSize))
+    const totalBytes = byteTally.knownBytes
+    const purgedBytes = tallyKnownBytes(
+      objects.filter((o) => o.status === 'purged').map((o) => o.byteSize),
+    ).knownBytes
 
     const status: CleanupStatus =
       failed > 0
@@ -627,26 +695,16 @@ export class TargetsStore {
       purgedBytes,
       lastError: failed > 0 ? '部分对象文件清理失败，请重试' : null,
       completedAt: status === 'completed' ? new Date().toISOString() : null,
+      unknownByteObjects: byteTally.unknownCount,
     })
   }
 
   async retryTargetCleanup(id: string, actor: RequestAccount): Promise<CleanupStatusResponse> {
     await this.getTargetCleanupStatus(id)
-    const { runs, storedObjects } = schemaFor(this.db)
-    const targetRunRows = await this.db
-      .select({ id: runs.id })
-      .from(runs)
-      .where(eq(runs.targetId, id))
-    const targetRunIds = targetRunRows.map((r) => r.id)
-    if (targetRunIds.length > 0) {
-      await this.db
-        .update(storedObjects)
-        .set({ purgeAttempts: 0, lastPurgeErrorAt: null })
-        .where(
-          and(inArray(storedObjects.runId, targetRunIds), ne(storedObjects.status, 'purged')),
-        )
-      await this.writeAudit(this.db, actor, 'target.cleanup_retry', 'target', id, '重试对象清理')
-    }
+    const { storedObjects } = schemaFor(this.db)
+    await this.db.update(storedObjects).set({ purgeAttempts: 0, lastPurgeErrorAt: null })
+      .where(and(targetCleanupObjectFilter(this.db, id), ne(storedObjects.status, 'purged')))
+    await this.writeAudit(this.db, actor, 'target.cleanup_retry', 'target', id, '重试对象清理')
     return this.getTargetCleanupStatus(id)
   }
 
@@ -682,8 +740,13 @@ export class TargetsStore {
       this.db,
       paginated.items.map((row) => row.id),
     )
+    const credentialViews = new Map(
+      await Promise.all(
+        paginated.items.map(async (row) => [row.id, await loadAccountCredentialView(this.db, row.id)] as const),
+      ),
+    )
     return targetAccountListResponseSchema.parse({
-      items: paginated.items.map((row) => this.toAccount(row, profile, extras.get(row.id))),
+      items: paginated.items.map((row) => this.toAccount(row, profile, extras.get(row.id), credentialViews.get(row.id))),
       nextCursor: paginated.nextCursor,
       hasMore: paginated.hasMore,
     })
@@ -699,6 +762,12 @@ export class TargetsStore {
     let id = ''
     try {
       await this.db.transaction(async (tx) => {
+        await lockConsoleAuthorization(tx, actor.id)
+        await assertTargetPermission(tx, actor.id, targetId, 'target:write')
+        if (body.password || body.validity || body.ownerConsoleAccountId) {
+          await assertTargetPermission(tx, actor.id, targetId, 'credential:read')
+          await assertTargetPermission(tx, actor.id, targetId, 'credential:write')
+        }
         id = await this.insertAccount(tx, targetId, body, actor, now)
       })
     } catch (error) {
@@ -716,12 +785,37 @@ export class TargetsStore {
     body: UpdateTargetAccountBody,
     actor: RequestAccount,
   ): Promise<TargetAccountDto> {
-    const { secrets, targetAccounts } = schemaFor(this.db)
-    const current = await this.loadAccount(targetId, accountId)
+    const { secrets, targetAccounts, targets, runs } = schemaFor(this.db)
+    let current = await this.loadAccount(targetId, accountId)
     const now = new Date()
+    let nextUsage = body.usage ?? current.usage ?? DEFAULT_ACCOUNT_USAGE
     const nextSecret = body.password ? this.seal(body.password) : undefined
+    let usernameChanged = body.username !== undefined && body.username !== current.username
     try {
       await this.db.transaction(async (tx) => {
+        await lockConsoleAuthorization(tx, actor.id)
+        await assertTargetPermission(tx, actor.id, targetId)
+        const [liveTarget] = await tx.select({ id: targets.id }).from(targets).where(and(eq(targets.id, targetId), isNull(targets.deletedAt))).for('share')
+        if (!liveTarget) throw failure('not_found', '目标系统不存在')
+        const [lockedAccount] = await tx.select().from(targetAccounts).where(and(eq(targetAccounts.id, accountId), eq(targetAccounts.targetId, targetId), isNull(targetAccounts.deletedAt))).for('update')
+        if (!lockedAccount) throw failure('not_found', '目标账号不存在')
+        current = lockedAccount
+        nextUsage = body.usage ?? current.usage ?? DEFAULT_ACCOUNT_USAGE
+        usernameChanged = body.username !== undefined && body.username !== current.username
+        const editsIdentity = body.displayName !== undefined || body.username !== undefined || body.status !== undefined || body.usage !== undefined
+        if (editsIdentity) await assertTargetPermission(tx, actor.id, targetId, 'target:write')
+        if (nextSecret || body.clearPassword || body.validity || body.ownerConsoleAccountId !== undefined || body.confirmIdentityMaterial) {
+          await assertTargetPermission(tx, actor.id, targetId, 'credential:write')
+          await assertTargetPermission(tx, actor.id, targetId, 'credential:read')
+        }
+        const { credentials } = schemaFor(tx)
+        const [catalog] = await tx.select().from(credentials).where(eq(credentials.id, accountId)).for('update')
+        if (body.expectedRevision !== undefined && catalog?.revision !== body.expectedRevision) throw failure('conflict', { code: 'CREDENTIAL_REVISION_CONFLICT', message: '账号已被他人更新，请重新核对' })
+        if (body.clearPassword || usernameChanged) await assertResourceIdle(tx as unknown as Db, { targetAccountId: accountId })
+        if (body.clearPassword) {
+          const [activeRun] = await tx.select({ id: runs.id }).from(runs).where(and(eq(runs.targetAccountId, accountId), inArray(runs.status, ACTIVE_RUN_STATUSES), isNull(runs.deletedAt))).limit(1)
+          if (activeRun) throw failure('conflict', '账号仍有未完成运行，请先处理后再清除密码')
+        }
         if (nextSecret) {
           await tx.insert(secrets).values({
             id: nextSecret.id,
@@ -743,15 +837,64 @@ export class TargetsStore {
                 ? LOCAL_SECRET_PROVIDER
                 : current.secretProvider,
             secretId: body.clearPassword ? null : nextSecret ? nextSecret.id : current.secretId,
+            usage: nextUsage,
+            mapUsageGuard: mapUsageGuardFor(nextUsage),
+            configRevision: usernameChanged ? current.configRevision + 1 : current.configRevision,
             updatedAt: now,
           })
           .where(eq(targetAccounts.id, accountId))
-        if ((nextSecret || body.clearPassword) && current.secretId) {
-          await tx.delete(secrets).where(eq(secrets.id, current.secretId))
+        if (nextSecret) {
+          await replaceTargetAccountSecret(tx, {
+            account: {
+              id: accountId,
+              targetId,
+              displayName: body.displayName ?? current.displayName,
+              username: body.username ?? current.username,
+              configRevision: usernameChanged ? current.configRevision + 1 : current.configRevision,
+              secretId: nextSecret.id,
+              secretProvider: LOCAL_SECRET_PROVIDER,
+            },
+            sealed: { id: nextSecret.id, provider: LOCAL_SECRET_PROVIDER },
+            validity: body.validity,
+            expectedRevision: body.expectedRevision,
+            actor,
+          })
+        } else if (body.clearPassword) {
+          await clearTargetAccountSecrets(tx, { accountId, actor })
+        } else if (usernameChanged && !body.confirmIdentityMaterial) {
+          await markIdentityReconfirm(tx, {
+            accountId,
+            username: body.username ?? current.username,
+            identityRevision: current.configRevision + 1,
+          })
+        } else if (body.confirmIdentityMaterial) {
+          await confirmIdentityMaterial(tx, {
+            account: {
+              id: accountId,
+              targetId,
+              displayName: body.displayName ?? current.displayName,
+              username: body.username ?? current.username,
+              configRevision: usernameChanged ? current.configRevision + 1 : current.configRevision,
+              secretId: current.secretId,
+              secretProvider: current.secretProvider,
+            },
+            actor,
+          })
+        }
+        if ((!nextSecret && body.validity) || body.ownerConsoleAccountId !== undefined) {
+          const [latest] = await tx.select().from(credentials).where(eq(credentials.id, accountId))
+          if (!latest || latest.deletedAt) throw failure('conflict', '凭据登记已删除，请先保存新的密码重新登记')
+          await updateCredentialMetadata(tx, accountId, { expectedRevision: latest.revision,
+            validity: !nextSecret ? body.validity : undefined, startedAt: !nextSecret ? body.validity?.startedAt : undefined,
+            ownerConsoleAccountId: body.ownerConsoleAccountId }, actor)
         }
         const changedMeta =
-          body.displayName !== undefined || body.username !== undefined || body.status !== undefined
+          body.displayName !== undefined ||
+          body.username !== undefined ||
+          body.status !== undefined ||
+          body.usage !== undefined
         if (changedMeta) {
+          await tx.update(credentials).set({ name: body.displayName ?? current.displayName, revision: sql`${credentials.revision} + 1`, updatedAt: now }).where(eq(credentials.id, accountId))
           await this.writeAudit(
             tx,
             actor,
@@ -762,7 +905,6 @@ export class TargetsStore {
           )
         }
         if (nextSecret || body.clearPassword) {
-          await resetAuthBudgetAfterCredentialChange(tx, accountId)
           await this.writeAudit(
             tx,
             actor,
@@ -790,6 +932,8 @@ export class TargetsStore {
     const { secrets, targetAccounts, runs } = schemaFor(this.db)
     try {
       return await this.db.transaction(async (tx) => {
+        await lockConsoleAuthorization(tx, actor.id)
+        await assertTargetPermission(tx, actor.id, targetId, 'target:delete')
         const [current] = await locked(
           tx,
           tx
@@ -831,9 +975,17 @@ export class TargetsStore {
         await requestSessionClose(tx as unknown as Db, { targetAccountId: accountId }, now)
         await tx
           .update(targetAccounts)
-          .set({ deletedAt: now, deletedBy, secretId: null, secretProvider: null, updatedAt: now })
+          .set({
+            deletedAt: now,
+            deletedBy,
+            secretId: null,
+            secretProvider: null,
+            mapUsageGuard: null,
+            updatedAt: now,
+          })
           .where(eq(targetAccounts.id, accountId))
 
+        await clearTargetAccountSecrets(tx, { accountId, actor })
         if (current.secretId) {
           const exclusive = await exclusiveSecretIds(tx as unknown as Db, [current.secretId], [
             accountId,
@@ -867,7 +1019,7 @@ export class TargetsStore {
     const row = await this.loadAccount(targetId, accountId)
     const profile = await loadCurrentAuthProfile(this.db, targetId)
     const extras = await loadAccountAuthDisplay(this.db, [accountId])
-    return this.toAccount(row, profile, extras.get(accountId))
+    return this.toAccount(row, profile, extras.get(accountId), await loadAccountCredentialView(this.db, accountId))
   }
 
   private async loadTarget(id: string) {
@@ -935,7 +1087,13 @@ export class TargetsStore {
     actor: RequestAccount,
     now: Date,
   ): Promise<string> {
-    const { secrets, targetAccounts } = schemaFor(tx)
+    const { secrets, targetAccounts, targets } = schemaFor(tx)
+    const [liveTarget] = await tx.select({ id: targets.id }).from(targets).where(and(eq(targets.id, targetId), isNull(targets.deletedAt))).for('share')
+    if (!liveTarget) throw failure('not_found', '目标系统不存在')
+    if (body.password || body.validity || body.ownerConsoleAccountId) {
+      await assertTargetPermission(tx, actor.id, targetId, 'credential:read')
+      await assertTargetPermission(tx, actor.id, targetId, 'credential:write')
+    }
     const id = newId()
     const secret = body.password ? this.seal(body.password) : undefined
     if (secret) {
@@ -955,6 +1113,8 @@ export class TargetsStore {
       secretProvider: secret ? LOCAL_SECRET_PROVIDER : null,
       secretId: secret?.id ?? null,
       status: body.status,
+      usage: body.usage ?? DEFAULT_ACCOUNT_USAGE,
+      mapUsageGuard: mapUsageGuardFor(body.usage ?? DEFAULT_ACCOUNT_USAGE),
       createdAt: now,
       updatedAt: now,
     })
@@ -976,6 +1136,22 @@ export class TargetsStore {
         body.username,
       )
     }
+    await ensureTargetAccountCredential(tx, {
+      account: {
+        id,
+        targetId,
+        displayName: body.displayName,
+        username: body.username,
+        configRevision: 1,
+        secretId: secret?.id ?? null,
+        secretProvider: secret ? LOCAL_SECRET_PROVIDER : null,
+      },
+      sealed: secret ? { id: secret.id, provider: LOCAL_SECRET_PROVIDER } : null,
+      validity: body.validity,
+      ownerConsoleAccountId: body.ownerConsoleAccountId,
+      actor,
+      now,
+    })
     return id
   }
 
@@ -997,6 +1173,8 @@ export class TargetsStore {
       captchaMode: row.captchaMode,
       status: row.status,
       loginFields: compactLoginFields((row.loginFields as TargetLoginFields | null) ?? null),
+      captcha: row.captcha ?? null,
+      sensitiveSelectors: row.sensitiveSelectors ?? [],
       accountCount,
       currentAuthProfileRevision: row.currentAuthProfileRevision,
       ...(extras?.sessionPolicy !== undefined ? { sessionPolicy: extras.sessionPolicy } : {}),
@@ -1017,6 +1195,7 @@ export class TargetsStore {
       lastAuthError: string | null
       autoLoginPausedReason: string | null
     },
+    credential?: Awaited<ReturnType<typeof loadAccountCredentialView>>,
   ): TargetAccountDto {
     return targetAccountSchema.parse({
       id: row.id,
@@ -1026,6 +1205,7 @@ export class TargetsStore {
       hasPassword: Boolean(row.secretId),
       status: row.status,
       expectedIdentity: row.expectedIdentity,
+      usage: row.usage ?? DEFAULT_ACCOUNT_USAGE,
       configRevision: row.configRevision,
       authCapability: deriveAuthCapability({
         definition: profile?.definition ?? null,
@@ -1036,6 +1216,22 @@ export class TargetsStore {
       lastAuthSuccessAt: extras?.lastAuthSuccessAt ?? null,
       lastAuthError: extras?.lastAuthError ?? null,
       autoLoginPausedReason: extras?.autoLoginPausedReason ?? null,
+      ...(credential
+        ? {
+            credentialId: credential.credentialId,
+            credentialRevision: credential.credentialRevision,
+            validityPolicy: credential.validityPolicy,
+            validityStartedAt: credential.validityStartedAt,
+            maintenanceDueAt: credential.maintenanceDueAt,
+            maintenanceStatus: credential.maintenanceStatus,
+            ownerConsoleAccountId: credential.ownerConsoleAccountId,
+            ownerStatus: credential.ownerStatus,
+            verificationStatus: credential.verificationStatus,
+            identityBindingStatus: credential.identityBindingStatus,
+            issuerExpiresAt: credential.issuerExpiresAt,
+            issuerExpirySource: credential.issuerExpirySource,
+          }
+        : {}),
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
     })

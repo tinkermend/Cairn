@@ -92,7 +92,7 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
         code: 'titan-demo',
         name: '泰坦',
         entryUrl: 'https://example.com',
-        account: { username: 'tester', displayName: '测试账号', password: 'hidden' },
+        account: { username: 'tester', displayName: '测试账号', password: 'hidden', validity: { mode: 'permanent' } },
       }),
       owner,
     )

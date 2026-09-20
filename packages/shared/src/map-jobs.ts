@@ -34,6 +34,7 @@ export const MAP_JOB_STOP_REASONS = [
   'completed',
   'cancelled',
   'budget_exhausted',
+  'slice_failed',
   'auth_preparation_required',
   'safety_basis_required',
   'entry_precondition_unknown',
@@ -335,6 +336,13 @@ export function originsForAccessPurposes(
 export function isMapJobRun(snapshot: { mapJob?: FrozenMapJob | null }): snapshot is { mapJob: FrozenMapJob } {
   return Boolean(snapshot.mapJob?.jobId)
 }
+
+/** 地图作业只积累观察事实，不采运行级截图、录像或 Trace。 */
+export const MAP_JOB_EVIDENCE_POLICY = {
+  screenshot: 'off',
+  video: 'off',
+  trace: 'off',
+} as const
 
 export function mapJobIdempotencyKey(input: {
   targetId: string

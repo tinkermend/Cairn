@@ -27,6 +27,7 @@ export {
   cancelPendingStepRuns,
   countRunsForAccount,
   createRunWithSnapshot,
+  writeRunWithSnapshot,
   createTrialRunFromDraft,
   deleteRun,
   failRunValidation,
@@ -72,6 +73,7 @@ export {
   type YieldClaimReason,
   type YieldClaimResult,
 } from './recover.js'
+export type { ScanBatchResult } from '../runtime/scan-batch.js'
 export {
   backfillOutcomeResults,
   recalculateRunOutcomeTx,
@@ -79,3 +81,4 @@ export {
   settleRunOutcome,
   type OutcomeResultInsertItem,
 } from './outcome-results.js'
+export { readOverviewAnalytics } from './analytics.js'

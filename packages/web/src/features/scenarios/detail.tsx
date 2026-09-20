@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { ScenarioReportSettings } from '@/features/reports/profiles'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
@@ -107,6 +108,7 @@ import { SCENARIO_STATUS_LABELS, stepTypeLabel } from './labels'
 import { MapStepBinding } from '@/features/map/step-binding'
 import { KnowledgeProposal } from '@/features/scenarios/knowledge-proposal'
 import { RecordingImportPanel } from './recording-import-panel'
+import { ScenarioValidationSummary } from './validation-summary'
 import { useStudioDraft } from './use-studio-draft'
 import {
   authoringNodes,
@@ -614,6 +616,7 @@ export function ScenarioDetailPage() {
           actions={
             scenario && !query.isError ? (
               <div className='flex flex-wrap items-center gap-2'>
+                <Button variant='outline' asChild><Link to='/notifications' search={{ tab: 'results', scenarioId: scenario.id }}>结果通知</Link></Button>
                 {canWrite ? (
                   <Button
                     variant={draft.dirty ? 'default' : 'outline'}
@@ -835,6 +838,7 @@ export function ScenarioDetailPage() {
                 </AlertDescription>
               </Alert>
             ) : null}
+            <ScenarioValidationSummary scenarioId={scenarioId} revision={scenario.draft?.revision ?? 1} runUpdate={trialRun ? `${trialRun.id}:${trialRun.status}:${trialRun.outcomeStatus}:${trialRun.evidenceStatus}` : undefined} dirty={draft.dirty} />
             {scenario.status === 'disabled' || target?.status === 'disabled' ? (
               <Alert variant='warning'>
                 <AlertDescription>
@@ -1328,7 +1332,7 @@ export function ScenarioDetailPage() {
                           draft.selectedNode?.kind === 'step' ? draft.selectedNode.outcomes ?? [] : []
                         }
                         onChange={draft.updateStep}
-                        onOutcomesChange={(outcomes) => draft.updateOutcomes(draft.selected.id, outcomes)}
+                        onOutcomesChange={(outcomes) => { if (draft.selected) draft.updateOutcomes(draft.selected.id, outcomes) }}
                         onRequestTypeChange={setTypeChange}
                       />
                       <MapStepBinding
@@ -1461,6 +1465,7 @@ export function ScenarioDetailPage() {
             </AuthoringObserveProvider>
           </>
         )}
+        {scenario && <ScenarioReportSettings scenarioId={scenario.id} targetId={scenario.targetId}/>}
       </Main>
       <AlertDialog open={Boolean(deleteId)} onOpenChange={(open) => !open && setDeleteId(null)}>
         <AlertDialogContent>
@@ -1543,7 +1548,9 @@ export function ScenarioDetailPage() {
           insertAnchor={currentInsertAnchor}
           stepCount={nodeCount}
           inputs={document?.inputs ?? []}
-          canApply={canWrite}
+          independentSteps={document ? isAuthoringDocumentV2(document) ? document.nodes.flatMap((node) => node.kind === 'step' ? [{ id: node.step.id, name: node.step.name }] : []) : document.steps.map((step) => ({ id: step.id, name: step.name })) : []}
+          canApply={canWrite && !draft.dirty}
+          hasLocalChanges={draft.dirty}
           onOpenChange={(open) => {
             setImportOpen(open)
             if (!open) setImportSearch(undefined)

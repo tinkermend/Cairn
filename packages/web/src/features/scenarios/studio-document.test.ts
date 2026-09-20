@@ -188,8 +188,10 @@ describe('studio-document', () => {
         },
       ],
     }
+    const original = v2.nodes[0]!
+    if (original.kind !== 'step') throw new Error('fixture must contain a step')
     const replaced = tryReplaceNode(v2, {
-      ...v2.nodes[0]!,
+      ...original,
       step: { ...navigate, name: '打开首页' },
     })
     expect(replaced.ok).toBe(true)

@@ -41,8 +41,8 @@ export class TargetsController {
 
   @Get()
   @RequirePermissions('target:read')
-  listTargets(@Query(new ZodValidationPipe(targetListQuerySchema)) query: TargetListQuery) {
-    return this.targets.listTargets(query)
+  listTargets(@Query(new ZodValidationPipe(targetListQuerySchema)) query: TargetListQuery, @CurrentAccount() actor: RequestAccount) {
+    return this.targets.listTargets(query, actor)
   }
 
   @Post()
@@ -226,7 +226,7 @@ export class TargetsController {
 
   @Post(':targetId/accounts/:accountId')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('target:write')
+  @RequirePermissions('target:read')
   updateAccount(
     @Param('targetId') targetId: string,
     @Param('accountId') accountId: string,

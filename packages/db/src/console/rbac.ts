@@ -65,6 +65,7 @@ import {
 import type { PersistenceActor as RequestAccount } from './actor.js'
 import { recordLoginAudit } from '../audit/record.js'
 import { listLoginAuditEvents, listOperationAuditEvents } from '../audit/list.js'
+import { assertScopeAdministrator, lockConsoleAuthorization } from './target-authorization.js'
 
 function iso(value: Date): string {
   return value.toISOString()
@@ -146,6 +147,7 @@ export class RbacStore {
   }
 
   async createRole(body: CreateRoleBody, actor: RequestAccount | null): Promise<RoleDto> {
+    if (actor) await assertScopeAdministrator(this.db, actor.id)
     const { consoleRolePermissions, consoleRoles } = schemaFor(this.db)
     this.assertCanGrant(actor, body.permissions)
     if (isSystemRoleKey(body.key)) {
@@ -191,6 +193,7 @@ export class RbacStore {
     actor: RequestAccount | null,
   ): Promise<RoleDto> {
     const { consoleRolePermissions, consoleRoles } = schemaFor(this.db)
+    if (body.permissions && actor) await assertScopeAdministrator(this.db, actor.id)
     const role = await this.requireRole(id)
     if (role.kind === 'system') {
       throw failure('bad_request', '系统角色不可修改')
@@ -207,6 +210,11 @@ export class RbacStore {
           })
           .where(eq(consoleRoles.id, id))
         if (body.permissions) {
+          const { consoleAccountRoles } = schemaFor(tx)
+          const members = await tx.select({ id: consoleAccountRoles.consoleAccountId }).from(consoleAccountRoles)
+            .where(eq(consoleAccountRoles.consoleRoleId, id))
+          for (const memberId of [...new Set(members.map((member) => member.id))].sort()) await lockConsoleAuthorization(tx, memberId)
+          if (actor) await assertScopeAdministrator(tx, actor.id)
           await tx
             .delete(consoleRolePermissions)
             .where(eq(consoleRolePermissions.consoleRoleId, id))
@@ -316,6 +324,7 @@ export class RbacStore {
     body: AddRoleAccountsBody,
     actor: RequestAccount | null,
   ): Promise<{ addedCount: number }> {
+    if (actor) await assertScopeAdministrator(this.db, actor.id)
     const role = await this.requireRole(roleId)
     const { consoleAccountRoles, consoleAccounts } = schemaFor(this.db)
     await this.assertCanGrantRoles(actor, [roleId])
@@ -348,12 +357,15 @@ export class RbacStore {
 
     const now = new Date()
     await this.db.transaction(async (tx) => {
+      for (const accountId of [...toInsert].sort()) await lockConsoleAuthorization(tx, accountId)
+      if (actor) await assertScopeAdministrator(tx, actor.id)
       await tx.insert(consoleAccountRoles).values(
         toInsert.map((consoleAccountId) => ({
           consoleAccountId,
           consoleRoleId: roleId,
           assignedAt: now,
           assignedByConsoleAccountId: actor?.id ?? null,
+          targetScopeMode: role.kind === 'system' && role.key === ADMIN_ROLE_KEY ? 'all' as const : 'none' as const,
         })),
       )
       await this.insertAudit(
@@ -386,6 +398,7 @@ export class RbacStore {
     }
 
     await this.db.transaction(async (tx) => {
+      for (const accountId of [...accountIds].sort()) await lockConsoleAuthorization(tx, accountId)
       await tx
         .delete(consoleAccountRoles)
         .where(
@@ -457,9 +470,19 @@ export class RbacStore {
       : [await this.roleIdByKey(DEFAULT_ACCOUNT_ROLE_KEY)]
     await this.requireRolesExist(roleIds)
     await this.assertCanGrantRoles(actor, roleIds)
+    const adminRoleId = await this.roleIdByKey(ADMIN_ROLE_KEY)
+    const scopes = body.targetScopes ?? []
+    if (new Set(scopes.map(s => s.roleId)).size !== scopes.length || scopes.some(s => !roleIds.includes(s.roleId) || s.roleId === adminRoleId && s.mode !== 'all')) throw failure('bad_request', '目标范围与角色不匹配')
+    const targetIds = [...new Set(scopes.flatMap(s => s.targetIds))]
+    if (targetIds.length) {
+      const { targets } = schemaFor(this.db)
+      const found = await this.db.select({ id: targets.id }).from(targets).where(and(inArray(targets.id, targetIds), sql`${targets.deletedAt} IS NULL`))
+      if (found.length !== targetIds.length) throw failure('bad_request', '包含不存在的目标系统')
+    }
     const secret = await this.passwords.hash(body.password)
     try {
       await this.db.transaction(async (tx) => {
+        if (actor) { await lockConsoleAuthorization(tx, actor.id); await assertScopeAdministrator(tx, actor.id) }
         await tx.insert(consoleAccounts).values({
           id,
           displayName: body.displayName,
@@ -482,6 +505,8 @@ export class RbacStore {
             consoleRoleId,
             assignedAt: now,
             assignedByConsoleAccountId: actor?.id ?? null,
+            targetScopeMode: consoleRoleId === adminRoleId ? 'all' as const : scopes.find(s => s.roleId === consoleRoleId)?.mode ?? 'none',
+            targetScopeIds: consoleRoleId === adminRoleId ? [] : scopes.find(s => s.roleId === consoleRoleId)?.targetIds ?? [],
           })),
         )
         await this.insertAudit(
@@ -600,8 +625,24 @@ export class RbacStore {
     await this.requireRolesExist(body.roleIds)
     await this.assertCanGrantRoles(actor, body.roleIds)
     await this.assertNotLastActiveAdmin(id, current.status, body.roleIds)
+    if (actor) await assertScopeAdministrator(this.db, actor.id)
+    const adminRoleId = await this.roleIdByKey(ADMIN_ROLE_KEY)
+    const scopes = body.targetScopes ?? current.targetScopes ?? []
+    if (new Set(scopes.map((scope) => scope.roleId)).size !== scopes.length ||
+      (body.targetScopes && scopes.some((scope) => !body.roleIds.includes(scope.roleId)))) {
+      throw failure('bad_request', '目标范围必须对应唯一的已选角色')
+    }
+    const targetIds = [...new Set(scopes.flatMap((scope) => scope.targetIds))]
+    if (targetIds.length) {
+      const { targets } = schemaFor(this.db)
+      const found = await this.db.select({ id: targets.id }).from(targets).where(and(inArray(targets.id, targetIds), sql`${targets.deletedAt} IS NULL`))
+      if (found.length !== targetIds.length) throw failure('bad_request', '包含不存在的目标系统')
+    }
+    if (scopes.some((scope) => scope.roleId === adminRoleId && scope.mode !== 'all')) throw failure('bad_request', '系统管理员角色须保持全部目标范围')
     const now = new Date()
     await this.db.transaction(async (tx) => {
+      await lockConsoleAuthorization(tx, id, false)
+      if (actor) await assertScopeAdministrator(tx, actor.id)
       await tx.delete(consoleAccountRoles).where(eq(consoleAccountRoles.consoleAccountId, id))
       await tx.insert(consoleAccountRoles).values(
         body.roleIds.map((consoleRoleId) => ({
@@ -609,6 +650,8 @@ export class RbacStore {
           consoleRoleId,
           assignedAt: now,
           assignedByConsoleAccountId: actor?.id ?? null,
+          targetScopeMode: consoleRoleId === adminRoleId ? 'all' : scopes.find((scope) => scope.roleId === consoleRoleId)?.mode ?? 'none',
+          targetScopeIds: consoleRoleId === adminRoleId ? [] : scopes.find((scope) => scope.roleId === consoleRoleId)?.targetIds ?? [],
         })),
       )
       await tx.update(consoleAccounts).set({ updatedAt: now }).where(eq(consoleAccounts.id, id))
@@ -620,6 +663,8 @@ export class RbacStore {
         id,
         `调整账号 ${current.displayName} 的角色`,
       )
+      if (body.targetScopes) await this.insertAudit(tx, actor?.id ?? null, 'account.roles', 'account', id,
+        `调整目标范围 ${current.displayName}：${JSON.stringify(scopes)}`)
     })
     return this.getAccount(id)
   }
@@ -809,6 +854,8 @@ export class RbacStore {
         name: consoleRoles.name,
         kind: consoleRoles.kind,
         permission: consoleRolePermissions.permission,
+        scopeMode: consoleAccountRoles.targetScopeMode,
+        scopeIds: consoleAccountRoles.targetScopeIds,
       })
       .from(consoleAccountRoles)
       .innerJoin(consoleRoles, eq(consoleRoles.id, consoleAccountRoles.consoleRoleId))
@@ -836,6 +883,10 @@ export class RbacStore {
         status: row.status,
         roles: [...(rolesByAccount.get(row.id)?.values() ?? [])],
         permissions: uniquePermissions(permsByAccount.get(row.id) ?? []),
+        targetScopes: [...new Map(bindRows.filter((binding) => binding.accountId === row.id).map((binding) => [binding.roleId, {
+          roleId: binding.roleId, mode: binding.scopeMode, targetIds: binding.scopeIds,
+        }])).values()],
+        targetScopePermissions: [...(rolesByAccount.get(row.id)?.keys() ?? [])].map(roleId => ({ roleId, permissions: bindRows.filter(b => b.accountId === row.id && b.roleId === roleId && b.permission).map(b => b.permission!) })),
         createdAt: iso(row.createdAt),
         updatedAt: iso(row.updatedAt),
       }),
@@ -898,6 +949,7 @@ export class RbacStore {
   ): Promise<void> {
     const { consoleRolePermissions } = schemaFor(this.db)
     if (!actor) return
+    await assertScopeAdministrator(this.db, actor.id)
     const unique = [...new Set(roleIds)]
     const rows = await this.db
       .select({ permission: consoleRolePermissions.permission })

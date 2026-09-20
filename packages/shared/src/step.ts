@@ -333,9 +333,46 @@ export const waitStepSchema = z.strictObject({
 
 export const aiInstructionSchema = z.string().trim().min(1).max(4096)
 
-export const aiActionInputSchema = z.strictObject({
-  instruction: aiInstructionSchema,
+export const AI_ATOMIC_ACTIONS_PROTOCOL = 'ai.atomic-actions@1' as const
+
+export const aiAtomicInputSchema = z.strictObject({
+  operation: z.literal('input'),
+  targetDescription: aiInstructionSchema,
+  mode: z.enum(['replace', 'type_only', 'clear']),
+  value: z.string().max(16_384).optional(),
+  from: contextKeySchema.optional(),
+  fromField: outputFieldNameSchema.optional(),
+}).superRefine((input, ctx) => {
+  if (input.mode === 'clear') {
+    if (input.value !== undefined || input.from !== undefined || input.fromField !== undefined) {
+      ctx.addIssue({ code: 'custom', message: 'clear 不允许提供 value/from/fromField' })
+    }
+  } else if ((input.value !== undefined) === (input.from !== undefined) || input.value === '') {
+    ctx.addIssue({ code: 'custom', message: 'AI 输入必须提供非空 value 或 from 之一；清空请使用 clear' })
+  }
+  if (input.fromField !== undefined && input.from === undefined) {
+    ctx.addIssue({ code: 'custom', message: 'fromField 仅在提供 from 时合法' })
+  }
 })
+
+export const aiAtomicActionInputSchema = z.union([
+  z.strictObject({ operation: z.literal('tap'), targetDescription: aiInstructionSchema }),
+  aiAtomicInputSchema,
+  z.strictObject({ operation: z.literal('keyboard'), key: keyComboSchema, targetDescription: aiInstructionSchema.optional() }),
+  z.strictObject({
+    operation: z.literal('scroll'),
+    direction: z.enum(['up', 'down', 'left', 'right']),
+    distance: z.number().int().min(1).max(10_000),
+    targetDescription: aiInstructionSchema.optional(),
+  }),
+])
+export type AiAtomicActionInput = z.infer<typeof aiAtomicActionInputSchema>
+
+// Legacy instruction objects retain their exact shape (no new defaults).
+export const aiActionInputSchema = z.union([
+  z.strictObject({ instruction: aiInstructionSchema }),
+  aiAtomicActionInputSchema,
+])
 export type AiActionInput = z.infer<typeof aiActionInputSchema>
 
 export const aiExtractInputSchema = z.strictObject({

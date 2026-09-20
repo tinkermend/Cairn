@@ -39,7 +39,7 @@ export function StepFields({
     step.type === 'ai_extract' ||
     step.type === 'ai_assert'
   ) {
-    return <AiStepFields step={step} disabled={disabled} onChange={onChange} />
+    return <AiStepFields step={step} disabled={disabled} bindings={bindings} shapes={shapes} onChange={onChange} />
   }
   if (step.type === 'navigate') {
     return (

@@ -1,6 +1,8 @@
 import { and, asc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm'
+import { readableSessionTargets } from '../console/target-authorization.js'
 import {
   accountSessionBucket,
+  activeDetectionReady,
   deriveAccountSessionStatus,
   matchesOverviewFilter,
   matchesSystemOverviewFilter,
@@ -19,6 +21,7 @@ import type { Db } from '../client.js'
 import { clockNow, databaseNow, schemaFor } from '../native.js'
 import { notFound } from '../runs/errors.js'
 import { readRetentionConfig } from './session-retention.js'
+import { loadCurrentAuthProfile } from './auth-profile.js'
 import type { SessionOperationRow } from '../records.js'
 import type { SessionLeaseRow } from '../schema/session.js'
 import type { SessionKey, SessionRecord } from './sessions.js'
@@ -563,7 +566,9 @@ export async function listAccountSessionOverview(
     cursor?: string
     limit?: number
   },
+  actorId?: string,
 ): Promise<SessionOverviewResponse> {
+  const targetIds = actorId ? await readableSessionTargets(db, actorId) : undefined
   sessionOverviewReadStats.reset()
   const limit = input.limit ?? 20
   const offset = parseOffsetCursor(input.cursor)
@@ -572,6 +577,7 @@ export async function listAccountSessionOverview(
 
   if (input.filter) {
     const accounts = await loadOverviewAccounts(db, {
+      targetIds,
       targetId: input.targetId,
       search: scoped ? undefined : input.search,
     })
@@ -600,6 +606,7 @@ export async function listAccountSessionOverview(
   }
 
   const summaryAccounts = await loadOverviewAccounts(db, {
+    targetIds,
     targetId: input.targetId,
     search: scoped ? undefined : input.search,
   })
@@ -609,6 +616,7 @@ export async function listAccountSessionOverview(
   )
   const summary = loadAccountSummary(summaryAccounts, factsByAccount, now)
   const itemRows = await loadOverviewAccounts(db, {
+    targetIds,
     targetId: input.targetId,
     search: input.search,
     accountNameOnly: scoped,
@@ -645,11 +653,23 @@ function accountNameMatches(
 export async function listSessionSystemOverview(
   db: Db,
   input: { search?: string; filter?: SessionSystemOverviewFilter; cursor?: string; limit?: number },
+  actorId?: string,
 ): Promise<SessionSystemOverviewResponse> {
   sessionOverviewReadStats.reset()
   const limit = input.limit ?? 20
   const offset = parseOffsetCursor(input.cursor)
   const now = await clockNow(db)
+  const targetIds = actorId ? await readableSessionTargets(db, actorId) : undefined
+  if (targetIds) {
+    const accounts = await loadOverviewAccounts(db, { targetIds })
+    const facts = await loadOccupancyFactsForAccounts(db, accounts)
+    const systems = new Map<string, SessionSystemOverviewItem>()
+    for (const account of accounts) addAccountToSystem(systems, account, facts.get(accountFactKey(account.targetId, account.targetAccountId)) ?? emptyOccupancy(), now)
+    const needle = input.search?.trim().toLowerCase()
+    const filtered = [...systems.values()].filter((item) => (!needle || item.targetName.toLowerCase().includes(needle) || item.targetCode.toLowerCase().includes(needle)) && matchesSystemOverviewFilter(item, input.filter)).sort(compareSystemRow)
+    return { items: filtered.slice(offset, offset + limit), nextCursor: nextOffsetCursor(offset, limit, offset + limit < filtered.length),
+      summary: summarizeFromActiveFacts({ systems: systems.size, accounts: accounts.length }, facts), asOf: now.toISOString() }
+  }
   const totals = await countVisibleAccounts(db, {})
   const activeFacts = await loadOccupancyFactsForActiveAccounts(db)
   const summary = summarizeFromActiveFacts(totals, activeFacts)
@@ -707,19 +727,29 @@ export async function listSessionSystemOverview(
   }
 }
 
-function actionsFor(status: AccountSessionStatus, retained: boolean) {
+function actionsFor(status: AccountSessionStatus, retained: boolean, detectionReady: boolean) {
   const idle =
     status === 'ready' ||
     status === 'needs_check' ||
     status === 'needs_login' ||
     status === 'identity_mismatch'
+  const verifyReason = !detectionReady
+    ? '未配置主动检测，将在下次使用时按登录页判断'
+    : idle
+      ? null
+      : '当前不能检查登录'
+  const renewReason = !detectionReady
+    ? '未配置主动检测，无法续登'
+    : status === 'ready'
+      ? null
+      : '仅就绪会话可续登'
   return [
     {
       kind: 'PREPARE',
       enabled: status === 'unprepared',
       disabledReason: status !== 'unprepared' ? '已有会话或不适用' : null,
     },
-    { kind: 'VERIFY_AUTH', enabled: idle, disabledReason: idle ? null : '当前不能检查登录' },
+    { kind: 'VERIFY_AUTH', enabled: idle && detectionReady, disabledReason: verifyReason },
     {
       kind: 'LOGIN',
       enabled: idle || status === 'unprepared',
@@ -727,8 +757,8 @@ function actionsFor(status: AccountSessionStatus, retained: boolean) {
     },
     {
       kind: 'RENEW_AUTH',
-      enabled: status === 'ready',
-      disabledReason: status === 'ready' ? null : '仅就绪会话可续登',
+      enabled: status === 'ready' && detectionReady,
+      disabledReason: renewReason,
     },
     {
       kind: 'retention',
@@ -739,8 +769,9 @@ function actionsFor(status: AccountSessionStatus, retained: boolean) {
     { kind: 'RESTART', enabled: idle, disabledReason: idle ? null : '仅空闲实例可重启' },
     {
       kind: 'RESET_PROFILE',
-      enabled: idle || status === 'unprepared' || status === 'lost',
-      disabledReason: null,
+      enabled: idle || status === 'unprepared',
+      disabledReason:
+        status === 'lost' ? '失联实例须先处置' : idle || status === 'unprepared' ? null : '当前不能清除登录数据',
     },
   ]
 }
@@ -764,6 +795,7 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
     .where(and(eq(targetAccounts.id, key.targetAccountId), eq(targetAccounts.targetId, key.targetId)))
     .limit(1)
   if (!account) throw notFound('TARGET_ACCOUNT_NOT_FOUND', '目标账号不存在')
+  const profile = await loadCurrentAuthProfile(db, key.targetId)
   const facts = await loadOccupancyFacts(db, key)
   const now = await clockNow(db)
   const retained = Boolean(facts.live?.retainUntil && facts.live.retainUntil.getTime() > now.getTime())
@@ -856,8 +888,14 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
               : null,
         }
       : null,
-    actions: actionsFor(status, retained),
+    actions: actionsFor(
+      status,
+      retained,
+      activeDetectionReady({
+        definition: profile?.definition ?? null,
+        validation: profile?.validation ?? null,
+      }),
+    ),
     asOf: now.toISOString(),
   }
 }
-

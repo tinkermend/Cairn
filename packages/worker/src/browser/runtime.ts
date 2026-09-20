@@ -5,13 +5,27 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { installedScopeAllows, targetScopeReady } from './target-scope'
 import type { BrowserContext, Frame, Locator, Page, Request } from 'playwright'
-import type {
-  LocatorCandidate,
-  RelativeAnchor,
-  TargetDescriptor,
-  FrameStep,
-  SessionGrant,
+import {
+  authRoutePath,
+  DEFAULT_CAPTCHA_MAX_ATTEMPTS,
+  DEFAULT_CAPTCHA_SOLVE_TIMEOUT_MS,
+  DEFAULT_SLIDER_DRAG_MAX_DURATION_MS,
+  DEFAULT_SLIDER_DRAG_MIN_DURATION_MS,
+  type LocatorCandidate,
+  type PlatformSessionAuth,
+  type RelativeAnchor,
+  type TargetDescriptor,
+  type FrameStep,
+  type SessionGrant,
+  type TargetCaptchaDefinition,
 } from '@cairn/shared'
+import {
+  classifyLoginSubmitText,
+  detectChallenge,
+  shouldRetryLoginSubmit,
+  solveChallenge,
+  type LoginAttemptResult,
+} from './captcha/index.js'
 
 const occupancy = new AsyncLocalStorage<SessionGrant>()
 
@@ -42,11 +56,14 @@ const restartAuthority = new AsyncLocalStorage<{ sessionId: string; expiresAt: n
 export function runWithSessionRestart<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   return restartAuthority.run({ sessionId, expiresAt: Date.now() + 60_000 }, fn)
 }
-const occupancyRejects: Array<{ action: string; at: string }> = []
+const occupancyRejects: Array<{ action: string; at: string; expiresAt?: string }> = []
 
 export class OccupancyRequiredError extends Error {
   readonly code = 'SESSION_OCCUPANCY_REQUIRED' as const
-  constructor(readonly action: string) {
+  constructor(
+    readonly action: string,
+    readonly detail?: { expiresAt?: string; now: string },
+  ) {
     super(`浏览器调用 ${action} 缺少合法占用 grant`)
     this.name = 'OccupancyRequiredError'
   }
@@ -66,9 +83,10 @@ export function takeOccupancyRejects(): Array<{ action: string; at: string }> {
 
 function requireOccupancy(action: string): SessionGrant {
   const grant = occupancy.getStore()
+  const now = new Date().toISOString()
   if (!grant || Date.parse(grant.expiresAt) <= Date.now()) {
-    occupancyRejects.push({ action, at: new Date().toISOString() })
-    throw new OccupancyRequiredError(action)
+    occupancyRejects.push({ action, at: now, expiresAt: grant?.expiresAt })
+    throw new OccupancyRequiredError(action, { expiresAt: grant?.expiresAt, now })
   }
   return grant
 }
@@ -92,6 +110,35 @@ export type TargetAuthInfo = {
     password?: { by: 'id' | 'name' | 'css'; value: string }
     submit?: { by: 'id' | 'name' | 'css'; value: string }
   } | null
+  captchaMode?: string
+  captcha?: TargetCaptchaDefinition | null
+  captchaMaxAttempts?: number
+  captchaSolveTimeoutMs?: number
+  captchaHumanWaitSeconds?: number
+  sliderDragMinDurationMs?: number
+  sliderDragMaxDurationMs?: number
+}
+
+export function applySessionAuthToTarget(
+  target: TargetAuthInfo,
+  sessionAuth?: Pick<
+    PlatformSessionAuth,
+    | 'captchaMaxAttempts'
+    | 'captchaSolveTimeoutMs'
+    | 'captchaHumanWaitSeconds'
+    | 'sliderDragMinDurationMs'
+    | 'sliderDragMaxDurationMs'
+  > | null,
+): TargetAuthInfo {
+  if (!sessionAuth) return target
+  return {
+    ...target,
+    captchaMaxAttempts: sessionAuth.captchaMaxAttempts,
+    captchaSolveTimeoutMs: sessionAuth.captchaSolveTimeoutMs,
+    captchaHumanWaitSeconds: sessionAuth.captchaHumanWaitSeconds,
+    sliderDragMinDurationMs: sessionAuth.sliderDragMinDurationMs,
+    sliderDragMaxDurationMs: sessionAuth.sliderDragMaxDurationMs,
+  }
 }
 
 function locatorFor(
@@ -168,18 +215,69 @@ function pageUrlUnusable(url: string): boolean {
   return !url || url === 'about:blank' || url.startsWith('chrome-error://') || url.startsWith('chrome://')
 }
 
+function expectsLoginChallenge(target: TargetAuthInfo): boolean {
+  return (
+    target.captchaMode === 'image' ||
+    target.captchaMode === 'slider' ||
+    target.captchaMode === 'graphic' ||
+    Boolean(target.captcha)
+  )
+}
+
+async function waitForLoginChallenge(
+  page: Page,
+  target: TargetAuthInfo,
+  timeoutMs: number,
+): Promise<Awaited<ReturnType<typeof detectChallenge>>> {
+  if (!expectsLoginChallenge(target)) return detectChallenge(page, target.captcha)
+  await page
+    .locator('input[placeholder*="验证码"], img[src^="data:image/"]')
+    .first()
+    .waitFor({ state: 'visible', timeout: timeoutMs })
+    .catch(() => undefined)
+  let challenge = await detectChallenge(page, target.captcha)
+  const deadline = Date.now() + Math.min(2_000, timeoutMs)
+  while (!challenge && Date.now() < deadline) {
+    await page.waitForTimeout(200)
+    challenge = await detectChallenge(page, target.captcha)
+  }
+  return challenge
+}
+
+async function waitUntilLeftLogin(page: Page, loginUrl: string, entryUrl: string, timeoutMs: number): Promise<boolean> {
+  const loginPath = authRoutePath(new URL(loginUrl, entryUrl))
+  return page
+    .waitForFunction(
+      `(() => {
+        const hashPath = (location.hash.replace(/^#/, '').split('?')[0] || '').trim()
+        const path = (hashPath.startsWith('/') ? hashPath : location.pathname).replace(/\\/+$/, '') || '/'
+        const expected = ${JSON.stringify(loginPath)}
+        return path !== expected && !path.startsWith(expected + '/')
+      })()`,
+      undefined,
+      { timeout: timeoutMs },
+    )
+    .then(() => true)
+    .catch(() => false)
+}
+
+function looksLikeLoginPath(path: string): boolean {
+  return path === '/login' || path.endsWith('/login')
+}
+
 /** 当前 URL 是否仍像登录页。入口与登录同路径时不能单靠 URL 判过期。 */
 export function loginUrlLooksPending(url: string, target: TargetAuthInfo): boolean {
   if (pageUrlUnusable(url)) return true
   try {
     const current = new URL(url)
-    if (!target.loginUrl) {
-      return current.pathname === '/login' || current.pathname.endsWith('/login')
-    }
+    if (!target.loginUrl) return looksLikeLoginPath(authRoutePath(current))
     const login = new URL(target.loginUrl, target.entryUrl)
     const entry = new URL(target.entryUrl)
-    if (login.pathname === entry.pathname) return false
-    return current.pathname === login.pathname || current.pathname.startsWith(`${login.pathname}/`)
+    const loginPath = authRoutePath(login)
+    const entryPath = authRoutePath(entry)
+    if (loginPath === entryPath) return false
+    const currentPath = authRoutePath(current)
+    return currentPath === loginPath || currentPath.startsWith(`${loginPath}/`)
   } catch {
     return true
   }
@@ -209,9 +307,51 @@ export async function inspectAuthOnPage(
   }
 }
 
+const AUTH_REDIRECT_SETTLE_MS = 5_000
+
+/** 未登录 SPA 常先落到入口再跳登录；只在入口路径上等这次跳转。 */
+function shouldWaitForLoginBounce(url: string, target: TargetAuthInfo): boolean {
+  if (pageUrlUnusable(url)) return false
+  try {
+    const current = new URL(url)
+    const entry = new URL(target.entryUrl)
+    return current.origin === entry.origin && current.pathname === entry.pathname
+  } catch {
+    return false
+  }
+}
+
+async function settleLegacyAuthObservation(
+  page: Page,
+  target: TargetAuthInfo,
+  timeoutMs = AUTH_REDIRECT_SETTLE_MS,
+): Promise<void> {
+  if ((await inspectAuthOnPage(page, target)) === 'EXPIRED') return
+  if (!shouldWaitForLoginBounce(page.url(), target)) return
+  const waiters: Array<Promise<unknown>> = []
+  if (typeof page.waitForURL === 'function' && target.loginUrl) {
+    const login = new URL(target.loginUrl, target.entryUrl)
+    const entry = new URL(target.entryUrl)
+    if (login.pathname !== entry.pathname) {
+      waiters.push(
+        page.waitForURL((url) => loginUrlLooksPending(url.toString(), target), { timeout: timeoutMs }),
+      )
+    }
+  }
+  if (target.loginFields?.password) {
+    const first = locatorFor(page, target.loginFields.password).first()
+    if (typeof first.waitFor === 'function') {
+      waiters.push(first.waitFor({ state: 'visible', timeout: timeoutMs }))
+    }
+  }
+  if (waiters.length === 0) return
+  await Promise.any(waiters).catch(() => undefined)
+}
+
 /**
  * 先看当前页，仍像未登录再打开入口核验 cookie。
  * 人工刚登完时常还停在 /login，只看当前 URL 会误判 EXPIRED。
+ * 入口页在 domcontentloaded 时可能还没跳登录，必须等跳转或登录框出现再判。
  */
 export async function verifyAuthOnPage(
   page: Page,
@@ -219,8 +359,10 @@ export async function verifyAuthOnPage(
 ): Promise<'AUTHENTICATED' | 'EXPIRED'> {
   if ((restartAuthority.getStore()?.expiresAt ?? 0) <= Date.now()) requireOccupancy('verifyAuthOnPage')
   try {
+    await settleLegacyAuthObservation(page, target)
     if ((await inspectAuthOnPage(page, target)) === 'AUTHENTICATED') return 'AUTHENTICATED'
     await page.goto(target.entryUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    await settleLegacyAuthObservation(page, target)
     return inspectAuthOnPage(page, target)
   } catch {
     return 'EXPIRED'
@@ -242,6 +384,102 @@ export async function probeAuth(
  * `acquire` 会把一个可解释的认证失败变成调用方的未捕获异常，Run 也就得不到
  * WAITING_FOR_AUTH 这条正确的处置路径。
  */
+export async function attemptLoginCredentials(
+  handle: BrowserHandle,
+  target: TargetAuthInfo,
+  credential: { username: string; password: string },
+  timeoutMs = 30_000,
+  beforeAction?: () => void | Promise<void>,
+): Promise<LoginAttemptResult> {
+  requireOccupancy('submitLoginCredentials')
+  const fields = target.loginFields
+  if (!fields?.username || !fields.password || !fields.submit) {
+    return { authenticated: false, submit: 'not_attempted' }
+  }
+  let authorityRejected = false
+  const authorize = async () => {
+    try { await beforeAction?.() }
+    catch (error) { authorityRejected = true; throw error }
+  }
+  let lastSubmit: LoginAttemptResult['submit'] = 'unsolved'
+  try {
+    const loginUrl = target.loginUrl ?? target.entryUrl
+    await authorize()
+    // 持久化 Profile 上同 hash 再 goto 常常不重载，验证码接口也不会再打。
+    if (!pageUrlUnusable(handle.basePage.url())) {
+      await handle.basePage.goto('about:blank', { timeout: Math.min(5_000, timeoutMs) }).catch(() => undefined)
+    }
+    await handle.basePage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
+    const user = locatorFor(handle.basePage, fields.username)
+    await user.waitFor({ state: 'visible', timeout: Math.min(15_000, timeoutMs) })
+
+    const captchaTries = expectsLoginChallenge(target)
+      ? Math.max(1, target.captchaMaxAttempts ?? DEFAULT_CAPTCHA_MAX_ATTEMPTS)
+      : 1
+    const solveTimeoutMs = Math.min(target.captchaSolveTimeoutMs ?? DEFAULT_CAPTCHA_SOLVE_TIMEOUT_MS, timeoutMs)
+    const leaveLoginMs = Math.min(3_000, timeoutMs)
+    const solveOptions = {
+      timeoutMs: solveTimeoutMs,
+      minDurationMs: target.sliderDragMinDurationMs ?? DEFAULT_SLIDER_DRAG_MIN_DURATION_MS,
+      maxDurationMs: target.sliderDragMaxDurationMs ?? DEFAULT_SLIDER_DRAG_MAX_DURATION_MS,
+    }
+    for (let tryNo = 1; tryNo <= captchaTries; tryNo += 1) {
+      await authorize()
+      await user.fill(credential.username)
+      await authorize()
+      await locatorFor(handle.basePage, fields.password).fill(credential.password)
+      const preChallenge = await waitForLoginChallenge(handle.basePage, target, Math.min(8_000, timeoutMs))
+      if (preChallenge) {
+        const outcome = await solveChallenge(handle.basePage, preChallenge, solveOptions)
+        if (!outcome.solved) {
+          lastSubmit = 'unsolved'
+          await preChallenge.locators.image?.click().catch(() => undefined)
+          await handle.basePage.waitForTimeout(400)
+          continue
+        }
+      } else if (expectsLoginChallenge(target)) {
+        lastSubmit = 'unsolved'
+        continue
+      }
+
+      await locatorFor(handle.basePage, fields.submit).click()
+      await handle.basePage.waitForTimeout(400)
+      const postChallenge = await detectChallenge(handle.basePage, target.captcha)
+      if (postChallenge) {
+        const outcome = await solveChallenge(handle.basePage, postChallenge, solveOptions)
+        if (!outcome.solved) {
+          lastSubmit = 'unsolved'
+          continue
+        }
+      }
+
+      await handle.basePage.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => {})
+      const leftLogin = await waitUntilLeftLogin(handle.basePage, loginUrl, target.entryUrl, leaveLoginMs)
+      if (leftLogin || (await inspectAuthOnPage(handle.basePage, target)) === 'AUTHENTICATED') {
+        return { authenticated: true, submit: 'authenticated' }
+      }
+      const pageText = await handle.basePage.locator('body').innerText().catch(() => '')
+      const submitOutcome = classifyLoginSubmitText(pageText) ?? 'ambiguous'
+      lastSubmit = submitOutcome
+      if (submitOutcome === 'credential_failed' || submitOutcome === 'ambiguous') {
+        return { authenticated: false, submit: submitOutcome }
+      }
+      const refresh = await detectChallenge(handle.basePage, target.captcha)
+      if (shouldRetryLoginSubmit(submitOutcome, Boolean(refresh))) {
+        await refresh?.locators.image?.click().catch(() => undefined)
+        await handle.basePage.waitForTimeout(400)
+        continue
+      }
+      return { authenticated: false, submit: submitOutcome }
+    }
+    return { authenticated: false, submit: lastSubmit }
+  } catch (error) {
+    // Authorization failure is terminal; it is not a wrong-password result.
+    if (authorityRejected) throw error
+    return { authenticated: false, submit: lastSubmit === 'unsolved' ? 'ambiguous' : lastSubmit }
+  }
+}
+
 export async function submitLoginCredentials(
   handle: BrowserHandle,
   target: TargetAuthInfo,
@@ -249,35 +487,31 @@ export async function submitLoginCredentials(
   timeoutMs = 30_000,
   beforeAction?: () => void | Promise<void>,
 ): Promise<boolean> {
-  requireOccupancy('submitLoginCredentials')
-  const fields = target.loginFields
-  if (!fields?.username || !fields.password || !fields.submit) return false
-  let authorityRejected = false
-  const authorize = async () => {
-    try { await beforeAction?.() }
-    catch (error) { authorityRejected = true; throw error }
-  }
+  return (await attemptLoginCredentials(handle, target, credential, timeoutMs, beforeAction)).authenticated
+}
+
+export async function attemptLoginWithCredentials(
+  handle: BrowserHandle,
+  target: TargetAuthInfo,
+  credential: { username: string; password: string },
+  beforeAction?: () => void | Promise<void>,
+): Promise<LoginAttemptResult> {
+  requireOccupancy('loginWithCredentials')
+  const submitted = await attemptLoginCredentials(handle, target, credential, undefined, beforeAction)
   try {
-    const loginUrl = target.loginUrl ?? target.entryUrl
-    await authorize()
-    await handle.basePage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
-    const user = locatorFor(handle.basePage, fields.username)
-    await user.waitFor({ state: 'visible', timeout: Math.min(15_000, timeoutMs) })
-    await authorize()
-    await user.fill(credential.username)
-    await authorize()
-    await locatorFor(handle.basePage, fields.password).fill(credential.password)
-    await authorize()
-    await locatorFor(handle.basePage, fields.submit).click()
-    await handle.basePage.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => {})
-    await handle.basePage
-      .waitForFunction('!location.pathname.includes("/login")', undefined, { timeout: timeoutMs })
-      .catch(() => {})
-    return true
-  } catch (error) {
-    // Authorization failure is terminal; it is not a wrong-password result.
-    if (authorityRejected) throw error
-    return false
+    // 提交失败仍可能已有 cookie；只看当前页，避免再打开入口把验证码刷新掉、拖慢重试。
+    if (!submitted.authenticated) {
+      if ((await inspectAuthOnPage(handle.basePage, target)) === 'AUTHENTICATED') {
+        return { authenticated: true, submit: 'authenticated' }
+      }
+      return submitted
+    }
+    if ((await probeAuth(handle, target)) === 'AUTHENTICATED') {
+      return { authenticated: true, submit: 'authenticated' }
+    }
+    return { authenticated: false, submit: submitted.submit }
+  } catch {
+    return { authenticated: false, submit: submitted.submit === 'authenticated' ? 'ambiguous' : submitted.submit }
   }
 }
 
@@ -288,13 +522,7 @@ export async function loginWithCredentials(
   beforeAction?: () => void | Promise<void>,
 ): Promise<boolean> {
   requireOccupancy('loginWithCredentials')
-  await submitLoginCredentials(handle, target, credential, undefined, beforeAction)
-  try {
-    // 表单没填上也不等于没登录：已有 cookie 的站点常直接跳出 /login。
-    return (await probeAuth(handle, target)) === 'AUTHENTICATED'
-  } catch {
-    return false
-  }
+  return (await attemptLoginWithCredentials(handle, target, credential, beforeAction)).authenticated
 }
 
 export async function stopSession(
@@ -446,23 +674,30 @@ export function scopeForAnchor(scope: Page | Frame, anchor?: RelativeAnchor): Pa
   return scope.getByText(anchor.withinText, { exact: false }).locator('xpath=ancestor::*[1]')
 }
 
+export async function countCandidateNow(
+  scope: Page | Frame | Locator,
+  candidate: LocatorCandidate,
+  signal?: AbortSignal,
+): Promise<number> {
+  signal?.throwIfAborted()
+  try {
+    return await locatorForCandidate(scope, candidate).count()
+  } catch (error) {
+    if (isSurfaceLost(error)) throw new SurfaceLostError(error instanceof Error ? error.message : '页面上下文失效')
+    throw error
+  }
+}
+
 export async function countCandidate(
   scope: Page | Frame | Locator,
   candidate: LocatorCandidate,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<number> {
-  const locator = locatorForCandidate(scope, candidate)
   const deadline = Date.now() + timeoutMs
   let last = 0
   while (Date.now() <= deadline) {
-    signal?.throwIfAborted()
-    try {
-      last = await locator.count()
-    } catch (error) {
-      if (isSurfaceLost(error)) throw new SurfaceLostError(error instanceof Error ? error.message : '页面上下文失效')
-      throw error
-    }
+    last = await countCandidateNow(scope, candidate, signal)
     if (last === 1) return 1
     if (last > 1) return last
     await new Promise((resolve) => setTimeout(resolve, 50))
@@ -714,16 +949,26 @@ export async function probeAuthOnPage(
   return inspectAuthOnPage(page, target)
 }
 
-export async function screenshotPage(page: Page): Promise<Buffer> {
-  await page
-    .evaluate(`(() => {
-      for (const el of document.querySelectorAll('input[type="password"]')) {
-        el.style.webkitTextSecurity = 'disc'
-        el.value = '••••'
-      }
-    })()`)
-    .catch(() => undefined)
-  return page.screenshot({ type: 'png', fullPage: true })
+export type ScreenshotPageOptions = {
+  fullPage?: boolean
+  selectors?: readonly string[]
+}
+
+export function screenshotMaskLocators(page: Page, selectors: readonly string[] = []) {
+  const locators = [page.locator('input[type="password"]')]
+  for (const selector of selectors) {
+    locators.push(page.locator(selector))
+    locators.push(page.locator('iframe').contentFrame().locator(selector))
+  }
+  return locators
+}
+
+export async function screenshotPage(page: Page, options?: ScreenshotPageOptions): Promise<Buffer> {
+  return page.screenshot({
+    type: 'png',
+    fullPage: options?.fullPage ?? false,
+    mask: screenshotMaskLocators(page, options?.selectors ?? []),
+  })
 }
 
 export function pageClosed(page: Page): boolean {

@@ -12,11 +12,15 @@ import { fileURLToPath } from 'node:url'
 import {
   DEFAULT_HOST,
   DEFAULT_PORTS,
+  WORKER_NODE_HEALTH_PATH,
   decideVerdict,
+  decodeInternalSecret,
   isFailure,
   looksLikeHtml,
   parseHealthBody,
+  parseWorkerNodeHealth,
   resolveScope,
+  signWorkerNodeHealthHeaders,
 } from './lib/stack-health.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -76,9 +80,13 @@ function probeListen(host, port, timeoutMs) {
   })
 }
 
-async function fetchText(url, timeoutMs) {
+async function fetchText(url, timeoutMs, headers) {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'manual' })
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'manual',
+      headers,
+    })
     const text = await res.text()
     return { status: res.status, text }
   } catch (error) {
@@ -131,6 +139,27 @@ if (scope.api && apiListen) {
   apiHealth = { ok: false, error: '未监听' }
 }
 
+let workerHealth
+if (scope.worker && workerListen) {
+  const secret = decodeInternalSecret(process.env.CAIRN_INTERNAL_AUTH_SECRET ?? '')
+  const workerId = (process.env.CAIRN_WORKER_ID ?? '').trim() || 'local-worker'
+  if (!secret) {
+    workerHealth = { ok: false, error: '缺少可用的 CAIRN_INTERNAL_AUTH_SECRET，禁止回退 TCP' }
+  } else {
+    const headers = signWorkerNodeHealthHeaders(secret, workerId, Math.floor(Date.now() / 1000) + 20)
+    const res = await fetchText(`http://${host}:${ports.worker}${WORKER_NODE_HEALTH_PATH}`, timeoutMs, headers)
+    if (res.error) {
+      workerHealth = { ok: false, error: res.error }
+    } else if (res.status !== 200) {
+      workerHealth = { ok: false, error: `HTTP ${res.status}` }
+    } else {
+      workerHealth = parseWorkerNodeHealth(res.text)
+    }
+  }
+} else if (scope.worker) {
+  workerHealth = { ok: false, error: '未监听' }
+}
+
 let webPage
 let webHealth
 if (scope.web && webListen) {
@@ -164,6 +193,7 @@ const verdict = decideVerdict({
   workerListen,
   webListen,
   apiHealth,
+  workerHealth,
   webPage,
   webHealth,
 })
@@ -178,7 +208,13 @@ const healthDetail = apiHealth?.ok
   ? `status=${apiHealth.value.status} database=${apiHealth.value.checks.database} changeHint=${apiHealth.value.checks.changeHint}`
   : apiHealth?.error ?? 'skip'
 
-const s2 = scope.api ? `api:${mark(Boolean(apiHealth?.ok && apiHealth.value?.checks.database === 'up'))} ${healthDetail}` : 'api:skip'
+const workerDetail = workerHealth?.ok
+  ? `service=${workerHealth.value.service} loopAlive=${workerHealth.value.loopAlive}`
+  : workerHealth?.error ?? 'skip'
+const s2 = [
+  scope.api ? `api:${mark(Boolean(apiHealth?.ok && apiHealth.value?.checks.database === 'up'))} ${healthDetail}` : 'api:skip',
+  scope.worker ? `worker:${mark(Boolean(workerHealth?.ok && workerHealth.value?.loopAlive === true))} ${workerDetail}` : 'worker:skip',
+].join('  ')
 const s3 = scope.web
   ? `page:${mark(Boolean(webPage?.ok))}  proxy:${mark(Boolean(webHealth?.ok))}`
   : 'web:skip'

@@ -119,7 +119,13 @@ export async function getMapConsumptionPolicy(db: Db, targetId: string): Promise
 
 export async function grantMapConsumptionEligibility(
   db: Db,
-  input: { targetId: string; reportId: string; eligibleStepTypes?: MapConsumptionPolicy['allowedStepTypes'] },
+  input: {
+    targetId: string
+    reportId: string
+    eligibleStepTypes?: MapConsumptionPolicy['allowedStepTypes']
+    reason?: string
+    actor?: ExecutionActor
+  },
 ) {
   await atomic(db, async (tx) => {
     await requireLiveTarget(tx, input.targetId)
@@ -144,6 +150,16 @@ export async function grantMapConsumptionEligibility(
     // Replaying the same report must not silently erase a confirmed counterexample.
     if (created) {
       await tx.delete(mapConsumptionEligibilitySuspensions).where(eq(mapConsumptionEligibilitySuspensions.targetId, input.targetId))
+      if (input.actor) {
+        await recordAudit(
+          tx,
+          input.actor,
+          'map.consumption_policy.update',
+          'target',
+          input.targetId,
+          input.reason ?? `授予对照资格 ${input.reportId}`,
+        )
+      }
     }
   })
 }

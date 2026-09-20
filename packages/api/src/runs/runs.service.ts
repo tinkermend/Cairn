@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException, Optional } from '@nestjs/common'
+import { HttpException, HttpStatus, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common'
 import {
   createRunWithSnapshot,
   deleteRun,
@@ -15,6 +15,7 @@ import {
   reviewRun,
   type DbHandle,
 } from '@cairn/db'
+import { parseHttpRange } from '@cairn/shared'
 import { assertAiExecutePermission } from '../config/browser-ai'
 import { config } from '../config/env'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
@@ -30,6 +31,8 @@ export type EvidenceContent = {
   contentType: string
   byteSize: number
   filename: string
+  totalSize: number
+  range?: { start: number; end: number }
 }
 
 @Injectable()
@@ -44,8 +47,8 @@ export class RunsService {
     return this.dbHandle
   }
 
-  list(query?: RunListQuery) {
-    return listRuns(this.db, query).catch(rethrowDomain)
+  list(query?: RunListQuery, actorId?: string) {
+    return listRuns(this.db, query, actorId).catch(rethrowDomain)
   }
 
   get(id: string) {
@@ -76,7 +79,7 @@ export class RunsService {
     return listRunEvidence(this.db, id).catch(rethrowDomain)
   }
 
-  async evidenceContent(runId: string, evidenceId: string): Promise<EvidenceContent> {
+  async evidenceContent(runId: string, evidenceId: string, rangeHeader?: string): Promise<EvidenceContent> {
     const row = await getEvidenceForRun(this.db, { runId, evidenceId }).catch(rethrowDomain)
     if (!row) {
       throw new NotFoundException({ code: 'EVIDENCE_NOT_FOUND', message: '证据不存在' })
@@ -93,13 +96,27 @@ export class RunsService {
         message: '证据不可用：object_store_unavailable',
       })
     }
+    const totalSize = row.byteSize
+    const parsed = totalSize != null ? parseHttpRange(rangeHeader, totalSize) : rangeHeader ? 'unsatisfiable' : null
+    if (parsed === 'unsatisfiable') {
+      throw new HttpException(
+        { code: 'RANGE_NOT_SATISFIABLE', message: '范围无效' },
+        HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+      )
+    }
     try {
-      const got = await this.store.get(row.objectKey)
+      const got = await this.store.get(
+        row.objectKey,
+        parsed ? { start: parsed.start, end: parsed.end } : undefined,
+      )
+      const size = got.range?.size ?? got.head.byteSize
       return {
         body: got.body,
         contentType: row.contentType ?? 'application/octet-stream',
-        byteSize: row.byteSize ?? got.body.byteLength,
+        byteSize: got.body.byteLength,
         filename: filenameFor(row.type, runId),
+        totalSize: size,
+        range: got.range ? { start: got.range.start, end: got.range.end } : parsed ?? undefined,
       }
     } catch {
       throw new NotFoundException({

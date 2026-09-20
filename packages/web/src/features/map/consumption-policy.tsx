@@ -3,7 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { MapConsumptionMode } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { fetchMapConsumptionPolicy, updateMapConsumptionPolicy } from '@/lib/map-api'
+import {
+  fetchMapConsumptionPolicy,
+  grantMapConsumptionEligibility,
+  updateMapConsumptionPolicy,
+} from '@/lib/map-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -33,6 +37,8 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
   const queryClient = useQueryClient()
   const [mode, setMode] = useState<MapConsumptionMode | ''>('')
   const [reason, setReason] = useState('')
+  const [grantReportId, setGrantReportId] = useState('')
+  const [grantReason, setGrantReason] = useState('')
   const query = useQuery({
     queryKey: ['map', targetId, 'consumption-policy'],
     queryFn: () => fetchMapConsumptionPolicy(targetId),
@@ -55,6 +61,22 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
     },
     onError: (error) => {
       toast.error(error instanceof ApiRequestError ? error.message : '更新消费政策失败')
+    },
+  })
+  const grantMutation = useMutation({
+    mutationFn: () =>
+      grantMapConsumptionEligibility(targetId, {
+        reportId: grantReportId.trim(),
+        reason: grantReason.trim(),
+      }),
+    onSuccess: () => {
+      toast.success('已授予只读对照资格')
+      setGrantReportId('')
+      setGrantReason('')
+      void queryClient.invalidateQueries({ queryKey: ['map', targetId, 'consumption-policy'] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof ApiRequestError ? error.message : '授予资格失败')
     },
   })
 
@@ -97,6 +119,33 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
           )}
           {canPublish ? (
             <div className='space-y-3'>
+              <div className='space-y-2 border-b border-border-divider pb-3'>
+                <h3 className='text-body font-medium'>对照资格</h3>
+                <Label htmlFor='grant-report'>资格报告</Label>
+                <Input
+                  disabled={grantMutation.isPending}
+                  id='grant-report'
+                  maxLength={128}
+                  value={grantReportId}
+                  onChange={(event) => setGrantReportId(event.target.value)}
+                  placeholder='独立对照报告编号'
+                />
+                <Label htmlFor='grant-reason'>授予理由</Label>
+                <Input
+                  disabled={grantMutation.isPending}
+                  id='grant-reason'
+                  maxLength={512}
+                  value={grantReason}
+                  onChange={(event) => setGrantReason(event.target.value)}
+                  placeholder='说明对照依据'
+                />
+                <Button
+                  disabled={grantMutation.isPending || grantReportId.trim().length < 8 || !grantReason.trim()}
+                  onClick={() => grantMutation.mutate()}
+                >
+                  授予资格
+                </Button>
+              </div>
               <div className='space-y-2'>
                 <Label htmlFor='consumption-mode'>模式</Label>
                 <select
@@ -112,7 +161,7 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
                 </select>
               </div>
               <div className='space-y-2'>
-                <Label htmlFor='consumption-reason'>理由</Label>
+                <Label htmlFor='consumption-reason'>调整理由</Label>
                 <Input
                   disabled={mutation.isPending}
                   maxLength={512}

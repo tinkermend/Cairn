@@ -1,11 +1,24 @@
 import { z } from 'zod'
 import { loginFieldsInputSchema, targetLoginFieldsDtoSchema } from './login-fields.js'
+import { targetCaptchaDefinitionSchema } from './session-auth.js'
 import {
-  sessionPolicyOverrideSchema,
+  targetSessionPolicyOverrideSchema,
   sessionPolicySchema,
 } from './session.js'
 import { nextCursorSchema } from './rbac.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
+import { accountUsageSchema, DEFAULT_ACCOUNT_USAGE } from './account-usage.js'
+import {
+  credentialIdentityBindingStatusSchema,
+  credentialMaintenanceStatusSchema,
+  credentialOwnerStatusSchema,
+  credentialValidityPolicySchema,
+  credentialValidityWriteSchema,
+  credentialVerificationStatusSchema,
+  issuerExpirySourceSchema,
+} from './credentials.js'
+import { entityIdSchema, utcInstantSchema } from './wire.js'
+import { sensitiveSelectorsSchema } from './evidence-slots.js'
 
 export {
   LOGIN_FIELD_HEURISTICS,
@@ -49,6 +62,8 @@ export const TARGET_ERROR_CODES = [
   'AUTH_VALIDATION_INCOMPLETE',
   'AUTH_PROFILE_REQUIRED',
   'AUTH_SCOPE_INVALID',
+  'TARGET_ACCOUNT_MAP_USAGE_CONFLICT',
+  'MAP_ACCOUNT_USAGE_REQUIRED',
 ] as const
 export type TargetErrorCode = (typeof TARGET_ERROR_CODES)[number]
 
@@ -108,11 +123,13 @@ export const targetSchema = z.object({
   captchaMode: captchaModeSchema,
   status: targetStatusSchema,
   loginFields: targetLoginFieldsDtoSchema,
+  captcha: targetCaptchaDefinitionSchema.nullable().optional(),
   accountCount: z.number().int().nonnegative(),
   deletedAt: z.string().nullable().optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
   currentAuthProfileRevision: z.number().int().positive().nullable().optional(),
-  sessionPolicy: sessionPolicyOverrideSchema.nullable().optional(),
+  sensitiveSelectors: sensitiveSelectorsSchema.optional(),
+  sessionPolicy: targetSessionPolicyOverrideSchema.nullable().optional(),
   effectiveSessionPolicy: sessionPolicySchema.optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
@@ -120,6 +137,7 @@ export const targetSchema = z.object({
 export type TargetDto = z.infer<typeof targetSchema>
 
 export const targetListQuerySchema = z.object({
+  credentialAction: z.enum(['read', 'write', 'import']).optional(),
   search: z.string().trim().optional(),
   status: targetStatusSchema.optional(),
   authMethod: authMethodSchema.optional(),
@@ -142,12 +160,25 @@ export const targetAccountSchema = z.object({
   hasPassword: z.boolean(),
   status: targetStatusSchema,
   expectedIdentity: z.string().trim().min(1).max(256).nullable().optional(),
+  usage: accountUsageSchema.default(DEFAULT_ACCOUNT_USAGE),
   configRevision: z.number().int().positive().optional(),
   authCapability: z.enum(['IDENTITY_VERIFIED', 'LOGIN_VERIFIED', 'LEGACY']).optional(),
   lastAuthCheckedAt: z.string().nullable().optional(),
   lastAuthSuccessAt: z.string().nullable().optional(),
   lastAuthError: z.string().nullable().optional(),
   autoLoginPausedReason: z.string().nullable().optional(),
+  credentialId: z.string().min(1).optional(),
+  credentialRevision: z.number().int().positive().optional(),
+  validityPolicy: credentialValidityPolicySchema.optional(),
+  validityStartedAt: utcInstantSchema.nullable().optional(),
+  maintenanceDueAt: utcInstantSchema.nullable().optional(),
+  maintenanceStatus: credentialMaintenanceStatusSchema.optional(),
+  ownerConsoleAccountId: z.string().min(1).nullable().optional(),
+  ownerStatus: credentialOwnerStatusSchema.optional(),
+  verificationStatus: credentialVerificationStatusSchema.optional(),
+  identityBindingStatus: credentialIdentityBindingStatusSchema.optional(),
+  issuerExpiresAt: utcInstantSchema.nullable().optional(),
+  issuerExpirySource: issuerExpirySourceSchema.optional(),
   deletedAt: z.string().nullable().optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
   createdAt: z.string().min(1),
@@ -169,12 +200,25 @@ export const targetAccountListResponseSchema = z.object({
 })
 export type TargetAccountListResponse = z.infer<typeof targetAccountListResponseSchema>
 
-export const createTargetAccountBodySchema = z.strictObject({
-  displayName: z.string().trim().min(1).max(128),
-  username: z.string().trim().min(1).max(256),
-  password: targetPasswordSchema.optional(),
-  status: targetStatusSchema.default('active'),
-})
+export const createTargetAccountBodySchema = z
+  .strictObject({
+    displayName: z.string().trim().min(1).max(128),
+    username: z.string().trim().min(1).max(256),
+    password: targetPasswordSchema.optional(),
+    status: targetStatusSchema.default('active'),
+    usage: accountUsageSchema.default(DEFAULT_ACCOUNT_USAGE),
+    validity: credentialValidityWriteSchema.optional(),
+    ownerConsoleAccountId: entityIdSchema.nullable().optional(),
+  })
+  .superRefine((body, ctx) => {
+    if (body.password && !body.validity) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['validity'],
+        message: '登记或替换秘密必须选择维护有效期，不能默认 90 天或永久',
+      })
+    }
+  })
 export type CreateTargetAccountBody = z.infer<typeof createTargetAccountBodySchema>
 
 export const createTargetBodySchema = z
@@ -187,6 +231,8 @@ export const createTargetBodySchema = z
     captchaMode: captchaModeSchema.default('none'),
     status: targetStatusSchema.default('active'),
     loginFields: loginFieldsInputSchema,
+    captcha: targetCaptchaDefinitionSchema.nullable().optional(),
+    sensitiveSelectors: sensitiveSelectorsSchema.optional(),
     account: createTargetAccountBodySchema.optional(),
   })
   .transform((body) => ({
@@ -204,6 +250,8 @@ export const updateTargetBodySchema = z
     captchaMode: captchaModeSchema.optional(),
     status: targetStatusSchema.optional(),
     loginFields: loginFieldsInputSchema,
+    captcha: targetCaptchaDefinitionSchema.nullable().optional(),
+    sensitiveSelectors: sensitiveSelectorsSchema.optional(),
   })
   .refine(
     (body) =>
@@ -213,7 +261,9 @@ export const updateTargetBodySchema = z
       body.authMethod !== undefined ||
       body.captchaMode !== undefined ||
       body.status !== undefined ||
-      body.loginFields !== undefined,
+      body.loginFields !== undefined ||
+      body.captcha !== undefined ||
+      body.sensitiveSelectors !== undefined,
     { message: '至少提供一个要修改的字段' },
   )
 export type UpdateTargetBody = z.infer<typeof updateTargetBodySchema>
@@ -225,6 +275,11 @@ export const updateTargetAccountBodySchema = z
     password: targetPasswordSchema.optional(),
     clearPassword: z.literal(true).optional(),
     status: targetStatusSchema.optional(),
+    usage: accountUsageSchema.optional(),
+    validity: credentialValidityWriteSchema.optional(),
+    ownerConsoleAccountId: entityIdSchema.nullable().optional(),
+    expectedRevision: z.number().int().positive().optional(),
+    confirmIdentityMaterial: z.literal(true).optional(),
   })
   .refine(
     (body) =>
@@ -232,10 +287,23 @@ export const updateTargetAccountBodySchema = z
       body.username !== undefined ||
       body.password !== undefined ||
       body.clearPassword !== undefined ||
-      body.status !== undefined,
+      body.status !== undefined ||
+      body.usage !== undefined ||
+      body.validity !== undefined ||
+      body.ownerConsoleAccountId !== undefined ||
+      body.confirmIdentityMaterial !== undefined,
     { message: '至少提供一个要修改的字段' },
   )
   .refine((body) => !(body.password !== undefined && body.clearPassword === true), {
     message: 'password 与 clearPassword 不能同时给出',
+  })
+  .superRefine((body, ctx) => {
+    if (body.password && !body.validity) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['validity'],
+        message: '登记或替换秘密必须选择维护有效期，不能默认 90 天或永久',
+      })
+    }
   })
 export type UpdateTargetAccountBody = z.infer<typeof updateTargetAccountBodySchema>

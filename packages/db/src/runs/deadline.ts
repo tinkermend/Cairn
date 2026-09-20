@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, isNull, lte } from 'drizzle-orm'
 import type { Db } from '../client.js'
 import { atomic, clockNow, locked, schemaFor } from '../native.js'
 import { appendRunEvents } from '../observe/events.js'
+import type { ScanBatchResult } from '../runtime/scan-batch.js'
 import { settleRunCancellationTx } from './recover.js'
 import { lockRunAccountScope } from './lock-scope.js'
 
@@ -9,7 +10,7 @@ import { lockRunAccountScope } from './lock-scope.js'
 export async function expireRunDeadlines(
   db: Db,
   runId?: string,
-): Promise<number> {
+): Promise<ScanBatchResult> {
   const { runs } = schemaFor(db)
   const due = (now: Date, id?: string) =>
     and(
@@ -60,5 +61,5 @@ export async function expireRunDeadlines(
     })
     if (settled) expired += 1
   }
-  return expired
+  return { settled: expired, scanned: rows.length }
 }

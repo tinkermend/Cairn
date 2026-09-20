@@ -1,16 +1,26 @@
+import { inArray } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { isMapJobRun, MAP_JOBS_PROTOCOL, SESSION_OCCUPANCY_PROTOCOL, type Step } from '@cairn/shared'
+import {
+  isMapJobRun,
+  MAP_JOBS_PROTOCOL,
+  OUTCOME_MANIFEST_PROTOCOL,
+  SESSION_OCCUPANCY_PROTOCOL,
+  type Step,
+} from '@cairn/shared'
 import { newId } from '../id.js'
 import { schemaFor } from '../native.js'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import {
   claimRun,
   cancelMapJob,
+  completeMapJobSlice,
   createMapJob,
   createMapSafeEntry,
   createRunWithSnapshot,
   createScenarioWithVersion,
+  getMapJob,
   getMapJobPolicy,
+  listRuns,
   getTargetAccessPolicy,
   updateTargetAccessPolicy,
   requestRunCancel,
@@ -68,6 +78,14 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     return { kind: 'console' as const, id: actorId }
   }
 
+  async function cancelClaimable() {
+    const { runs } = schemaFor(handle.db)
+    await handle.db
+      .update(runs)
+      .set({ status: 'CANCELLED', cancelRequestedAt: new Date() })
+      .where(inArray(runs.status, ['QUEUED', 'RECOVERING']))
+  }
+
   async function freshTarget(loginUrl?: string) {
     const { targets, targetAccounts } = schemaFor(handle.db)
     const targetId = newId()
@@ -85,6 +103,8 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
       displayName: '作业账号',
       username: `ops-${accountId}`,
       status: 'active',
+      usage: 'both',
+      mapUsageGuard: 'Y',
     })
     return { targetId, accountId }
   }
@@ -184,6 +204,8 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     ])
     expect(created.detail.snapshot.allowedOrigins).toEqual(expect.arrayContaining(['https://shop.example', 'https://idp.example']))
     expect(created.detail.snapshot.mapJob).toBeUndefined()
+    expect(created.detail.snapshot.evidencePolicy?.screenshot).toBe('always')
+    expect(created.detail.snapshot.evidencePolicy?.video).toBe('always')
   })
 
   it('冻结 pathPrefix，路径级 deny 不掏空 allowedOrigins', async () => {
@@ -258,7 +280,39 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     ).rejects.toMatchObject({ code: 'AUTH_PREPARATION_REQUIRED' })
   })
 
-  it('OMG01 同键同摘要返回原作业，换摘要冲突，换账号独立', async () => {
+  it('失联但仍记 AUTHENTICATED 的会话不能建作业', async () => {
+    const { targetId, accountId } = await freshTarget()
+    const { workerId, instanceId } = await readyWorker('lost', [MAP_JOBS_PROTOCOL])
+    await enableJobs(targetId)
+    const entry = await addEntry(targetId)
+    const session = await prepareSession(targetId, accountId, workerId, instanceId)
+    const { browserSessions } = schemaFor(handle.db)
+    const { eq } = await import('drizzle-orm')
+    const [current] = await handle.db.select().from(browserSessions).where(eq(browserSessions.id, session.id))
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: current!.version,
+      status: 'LOST',
+      closeReason: 'owner_instance_replaced',
+    })
+    await expect(
+      createMapJob(
+        handle.db,
+        targetId,
+        {
+          manualId: `lost-${targetId}`.slice(0, 32),
+          expectedPolicyRevision: 1,
+          jobKind: 'map_probe',
+          targetAccountId: accountId,
+          entryId: entry.entryId,
+        },
+        actor(),
+        { steps: probeSteps() },
+      ),
+    ).rejects.toMatchObject({ code: 'AUTH_PREPARATION_REQUIRED' })
+  })
+
+  it('OMG01 同键同摘要返回原作业，换摘要冲突，第二账号未标地图用途被拒', async () => {
     const { targetId, accountId } = await freshTarget()
     const otherAccount = newId()
     const { targetAccounts } = schemaFor(handle.db)
@@ -269,7 +323,7 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
       username: `ops-${otherAccount}`,
       status: 'active',
     })
-    const worker = await readyWorker(targetId.slice(0, 8), [MAP_JOBS_PROTOCOL])
+    const worker = await readyWorker(targetId.slice(0, 8), [MAP_JOBS_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL])
     await prepareSession(targetId, accountId, worker.workerId, worker.instanceId)
     await prepareSession(targetId, otherAccount, worker.workerId, worker.instanceId)
     await enableJobs(targetId)
@@ -295,14 +349,15 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
       ),
     ).rejects.toMatchObject({ code: 'MAP_IDEMPOTENCY_CONFLICT' })
     await cancelMapJob(handle.db, first.job.jobId, actor())
-    const other = await createMapJob(
-      handle.db,
-      targetId,
-      { ...body, targetAccountId: otherAccount, manualId: `other-${targetId}`.slice(0, 32) },
-      actor(),
-      { steps: probeSteps() },
-    )
-    expect(other.job.jobId).not.toBe(first.job.jobId)
+    await expect(
+      createMapJob(
+        handle.db,
+        targetId,
+        { ...body, targetAccountId: otherAccount, manualId: `other-${targetId}`.slice(0, 32) },
+        actor(),
+        { steps: probeSteps() },
+      ),
+    ).rejects.toMatchObject({ code: 'MAP_ACCOUNT_USAGE_REQUIRED' })
     const listed = await listScenarios(handle.db, { targetId, limit: 50 })
     expect(listed.items.every((item) => !item.name.startsWith('[地图作业]'))).toBe(true)
     expect(first.job.firstRunId).toBeTruthy()
@@ -314,12 +369,32 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     expect(run?.snapshot.mapConsumption).toEqual({ mode: 'off' })
     expect(run?.snapshot.mapCapturePolicy?.enabled).toBe(true)
     expect(run?.snapshot.accessPolicy).toBeTruthy()
-    await cancelMapJob(handle.db, other.job.jobId, actor())
+    expect(run?.snapshot.evidencePolicy).toMatchObject({
+      screenshot: 'off',
+      video: 'off',
+      trace: 'off',
+    })
+    const userRun = await createRunWithSnapshot(handle.db, {
+      scenarioId: (await createScenarioWithVersion(handle.db, {
+        targetId,
+        name: `列表-${newId().slice(0, 8)}`,
+        actor: actor(),
+        steps: probeSteps(),
+      })).id,
+      actor: actor(),
+    })
+    const defaultList = await listRuns(handle.db, { targetId, limit: 50 })
+    expect(defaultList.items.some((item) => item.id === userRun.detail.id)).toBe(true)
+    expect(defaultList.items.some((item) => item.id === first.job.firstRunId)).toBe(false)
+    const mapList = await listRuns(handle.db, { targetId, isMapJob: true, limit: 50 })
+    expect(mapList.items.some((item) => item.id === first.job.firstRunId)).toBe(true)
+    expect(mapList.items.some((item) => item.id === userRun.detail.id)).toBe(false)
   })
 
   it('OMG05 同键用户 Run 可领取时跳过地图片；无作业协议的 Worker 也不领', async () => {
+    await cancelClaimable()
     const { targetId, accountId } = await freshTarget()
-    const capable = await readyWorker(`c${targetId.slice(0, 6)}`, [MAP_JOBS_PROTOCOL])
+    const capable = await readyWorker(`c${targetId.slice(0, 6)}`, [MAP_JOBS_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL])
     const legacy = await readyWorker(`l${targetId.slice(0, 6)}`, [])
     const session = await prepareSession(targetId, accountId, capable.workerId, capable.instanceId)
     await enableJobs(targetId)
@@ -386,9 +461,41 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     expect(yielded?.runId).not.toBe(job.job.firstRunId)
   })
 
-  it('OMH08 startBefore 到期后 claim 跳过地图片', async () => {
+  it('RJ-09 领取地图作业后 jobStatus 为 running', async () => {
+    await cancelClaimable()
     const { targetId, accountId } = await freshTarget()
-    const capable = await readyWorker(`s${targetId.slice(0, 6)}`, [MAP_JOBS_PROTOCOL])
+    const capable = await readyWorker(`r${targetId.slice(0, 6)}`, [MAP_JOBS_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL])
+    await prepareSession(targetId, accountId, capable.workerId, capable.instanceId)
+    await enableJobs(targetId)
+    const entry = await addEntry(targetId)
+    const job = await createMapJob(
+      handle.db,
+      targetId,
+      {
+        manualId: `run-${targetId}`.slice(0, 32),
+        expectedPolicyRevision: 1,
+        jobKind: 'map_probe',
+        targetAccountId: accountId,
+        entryId: entry.entryId,
+      },
+      actor(),
+      { steps: probeSteps() },
+    )
+    expect(job.job.jobStatus).toBe('queued')
+    const grant = await claimRun(handle, {
+      workerId: capable.workerId,
+      instanceId: capable.instanceId,
+      leaseTtlSeconds: 60,
+    })
+    expect(grant?.runId).toBe(job.job.firstRunId)
+    const running = await getMapJob(handle.db, job.job.jobId)
+    expect(running.jobStatus).toBe('running')
+  })
+
+  it('OMH08 startBefore 到期后 claim 跳过地图片', async () => {
+    await cancelClaimable()
+    const { targetId, accountId } = await freshTarget()
+    const capable = await readyWorker(`s${targetId.slice(0, 6)}`, [MAP_JOBS_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL])
     await prepareSession(targetId, accountId, capable.workerId, capable.instanceId)
     await enableJobs(targetId)
     const entry = await addEntry(targetId)
@@ -413,5 +520,40 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
       leaseTtlSeconds: 60,
     })
     expect(grant?.runId ?? null).not.toBe(job.job.firstRunId)
+  })
+
+  it('分片失败记 slice_failed，不把剩余预算写成耗尽', async () => {
+    await cancelClaimable()
+    const { targetId, accountId } = await freshTarget()
+    const capable = await readyWorker(`f${targetId.slice(0, 6)}`, [MAP_JOBS_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL])
+    await prepareSession(targetId, accountId, capable.workerId, capable.instanceId)
+    await enableJobs(targetId)
+    const entry = await addEntry(targetId)
+    const created = await createMapJob(
+      handle.db,
+      targetId,
+      {
+        source: 'manual',
+        manualId: `fail-${targetId}`,
+        expectedPolicyRevision: 1,
+        jobKind: 'map_probe',
+        targetAccountId: accountId,
+        entryId: entry.entryId,
+      },
+      actor(),
+      { steps: probeSteps() },
+    )
+    const grant = await claimRun(handle, {
+      workerId: capable.workerId,
+      instanceId: capable.instanceId,
+      leaseTtlSeconds: 60,
+    })
+    expect(grant?.runId).toBe(created.job.firstRunId)
+    const result = await completeMapJobSlice(handle.db, grant!.runId, 'failed')
+    expect(result.continue).toBe(false)
+    const finished = await getMapJob(handle.db, created.job.jobId)
+    expect(finished.jobStatus).toBe('failed')
+    expect(finished.stopReason).toBe('slice_failed')
+    expect(finished.remainingBudgetSeconds).toBeGreaterThan(0)
   })
 })

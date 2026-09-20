@@ -11,19 +11,28 @@ const mocks = vi.hoisted(() => ({
   trialScenario: vi.fn(),
   fetchScenarioCapabilities: vi.fn(),
   fetchTargetAccounts: vi.fn(),
+  fetchTarget: vi.fn(),
 }))
 
 vi.mock('@/lib/scenarios-api', () => ({
   trialScenario: mocks.trialScenario,
   fetchScenarioCapabilities: mocks.fetchScenarioCapabilities,
 }))
-vi.mock('@/lib/targets-api', () => ({ fetchTargetAccounts: mocks.fetchTargetAccounts }))
+vi.mock('@/lib/targets-api', () => ({
+  fetchTargetAccounts: mocks.fetchTargetAccounts,
+  fetchTarget: mocks.fetchTarget,
+}))
 
 describe('TrialDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.fetchScenarioCapabilities.mockResolvedValue(scenarioCapabilitiesFor({ browserAiEnabled: false }))
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
+    mocks.fetchTarget.mockResolvedValue({
+      id: TARGET_ID,
+      authMethod: 'form',
+      captchaMode: 'none',
+    })
     mocks.trialScenario.mockResolvedValue({ id: 'run-1' })
   })
 

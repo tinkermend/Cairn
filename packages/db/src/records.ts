@@ -34,6 +34,7 @@ import type {
   RecordingEvent,
   RecordingItem,
   ResourceDeletedBy,
+  TargetCaptchaDefinition,
 } from '@cairn/shared'
 
 export type ConsoleAccount = {
@@ -139,8 +140,10 @@ export type Target = {
     password?: { by: 'id' | 'name' | 'css'; value: string }
     submit?: { by: 'id' | 'name' | 'css'; value: string }
   } | null
+  captcha: TargetCaptchaDefinition | null
   currentAuthProfileRevision: number | null
   sessionPolicy: Record<string, unknown> | null
+  sensitiveSelectors: string[]
   deletedAt: Date | null
   deletedBy: ResourceDeletedBy | null
 }
@@ -164,6 +167,8 @@ export type NewTarget = {
       }
     | null
     | undefined
+  captcha?: TargetCaptchaDefinition | null | undefined
+  sensitiveSelectors?: string[] | undefined
   currentAuthProfileRevision?: number | null | undefined
   deletedAt?: Date | null | undefined
   deletedBy?: ResourceDeletedBy | null | undefined
@@ -180,6 +185,8 @@ export type TargetAccount = {
   secretProvider: string | null
   secretId: string | null
   expectedIdentity: string | null
+  usage: 'business' | 'map' | 'both'
+  mapUsageGuard: string | null
   configRevision: number
   deletedAt: Date | null
   deletedBy: ResourceDeletedBy | null
@@ -196,6 +203,8 @@ export type NewTargetAccount = {
   secretProvider?: string | null | undefined
   secretId?: string | null | undefined
   expectedIdentity?: string | null | undefined
+  usage?: 'business' | 'map' | 'both' | undefined
+  mapUsageGuard?: string | null | undefined
   configRevision?: number | undefined
   deletedAt?: Date | null | undefined
   deletedBy?: ResourceDeletedBy | null | undefined
@@ -507,6 +516,7 @@ export type EvidenceRow = {
   digest: string | null
   stepRunId: string | null
   attemptId: string | null
+  artifactKey: string
   payload: JsonValue
   objectId: string | null
   objectKey: string | null
@@ -520,7 +530,9 @@ export type StoredObjectRow = {
   id: string
   status: 'available' | 'pending' | 'purged'
   createdAt: Date
-  runId: string
+  runId: string | null
+  ownerKind: 'run' | 'artifact'
+  artifactId: string | null
   digest: string | null
   objectKey: string
   contentType: string | null
@@ -676,6 +688,16 @@ export type WorkerRow = {
   sampledSlotCount: number | null
   handleMismatchStreak: number
   protocolCapabilities: string[]
+  sampledRssBytes: number | null
+  sampledEventLoopDelayMs: number | null
+  sampledCpuPercent: number | null
+  sampledProfileBytes: number | null
+  sampledProfileCount: number | null
+  sampledProfileDiskFreeBytes: number | null
+  sampledMidsceneBytes: number | null
+  sampledBrowserProcessCount: number | null
+  processClockSkewMs: number | null
+  sampledDiskAt: Date | null
 }
 
 export type SessionOperationRow = {

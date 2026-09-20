@@ -108,15 +108,19 @@ function laterReferences(
 }
 
 function stepFrom(step: Step): { key: string; field?: string } | undefined {
-  if (step.type !== 'echo' && step.type !== 'fill' && step.type !== 'select') return undefined
-  if (!step.input.from) return undefined
-  return { key: step.input.from, field: step.input.fromField }
+  const binding = stepBinding(step)
+  return binding?.from ? { key: binding.from, field: binding.fromField } : undefined
 }
 
 function stepLiteralValue(step: Step): JsonValue | undefined {
-  if (step.type !== 'echo' && step.type !== 'fill' && step.type !== 'select') return undefined
-  if (step.input.from !== undefined) return undefined
-  return step.input.value
+  const binding = stepBinding(step)
+  return binding?.from === undefined ? binding?.value : undefined
+}
+
+function stepBinding(step: Step): { from?: string; fromField?: string; value?: JsonValue } | undefined {
+  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') return step.input
+  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') return step.input
+  return undefined
 }
 
 function outputShapeHasField(shape: ModuleOutputDecl['shape'] | OutputShape, field: string): boolean | 'unknown' {
