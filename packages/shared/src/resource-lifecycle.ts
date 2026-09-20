@@ -13,8 +13,10 @@ export type ResourceDeletedBy = z.infer<typeof resourceDeletedBySchema>
 export const deletePreviewCountsSchema = z.object({
   targetAccounts: z.number().int().nonnegative().optional(),
   scenarios: z.number().int().nonnegative().optional(),
+  suites: z.number().int().nonnegative().optional(),
   recordings: z.number().int().nonnegative().optional(),
   runs: z.number().int().nonnegative().optional(),
+  schedules: z.number().int().nonnegative().optional(),
   storedObjects: z.number().int().nonnegative().optional(),
   reports: z.number().int().nonnegative().optional(),
   unknownByteObjects: z.number().int().nonnegative().optional(),
@@ -41,8 +43,10 @@ export const deleteResourceBodySchema = z.strictObject({
     .object({
       targetAccounts: z.number().int().nonnegative().optional(),
       scenarios: z.number().int().nonnegative().optional(),
+      suites: z.number().int().nonnegative().optional(),
       recordings: z.number().int().nonnegative().optional(),
       runs: z.number().int().nonnegative().optional(),
+      schedules: z.number().int().nonnegative().optional(),
     })
     .optional(),
 })

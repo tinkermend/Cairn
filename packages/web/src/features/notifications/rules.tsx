@@ -372,7 +372,7 @@ function AlertRulesForm({
     <FormProvider {...form}>
       <form onSubmit={(e) => void save(e)} className='space-y-4'>
         <p className='text-body text-muted-foreground'>
-          复用运行监控的告警规则；触发、依据中断和恢复各自留下通知记录。
+          复用平台监控的告警规则；触发、依据中断和恢复各自留下通知记录。
         </p>
         <AlertingFields
           hideChannels

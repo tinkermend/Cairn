@@ -96,6 +96,8 @@ import {
 } from '../credentials/index.js'
 import { getPlatformConfig } from '../platform-config/store.js'
 import { parseTargetSessionPolicyOverride } from '../sessions/session-policy.js'
+import { retireSchedulesForOwner } from '../schedules/schedules.js'
+import { softDeleteSuitesForTarget } from '../suites/suites.js'
 
 function iso(value: Date): string {
   return value.toISOString()
@@ -372,6 +374,8 @@ export class TargetsStore {
       sessionLeases,
       browserSessions,
       reports,
+      scenarioSuites,
+      schedules,
     } = schemaFor(this.db)
     const [target] = await this.db
       .select()
@@ -444,6 +448,16 @@ export class TargetsStore {
       .from(recordingDrafts)
       .where(and(eq(recordingDrafts.targetId, id), isNull(recordingDrafts.deletedAt)))
 
+    const suiteRows = await this.db
+      .select({ id: scenarioSuites.id })
+      .from(scenarioSuites)
+      .where(and(eq(scenarioSuites.targetId, id), isNull(scenarioSuites.deletedAt)))
+
+    const scheduleRows = await this.db
+      .select({ id: schedules.id })
+      .from(schedules)
+      .where(eq(schedules.targetId, id))
+
     const objects = await this.db
       .select({ id: storedObjects.id, byteSize: storedObjects.byteSize })
       .from(storedObjects)
@@ -457,8 +471,10 @@ export class TargetsStore {
       counts: {
         targetAccounts: accounts.length,
         scenarios: scenarioRows.length,
+        suites: suiteRows.length,
         recordings: recordingRows.length,
         runs: targetRunRows.length,
+        schedules: scheduleRows.length,
         reports: Number(reportCount?.count ?? 0),
         storedObjects: objects.length,
         totalBytes,
@@ -473,7 +489,7 @@ export class TargetsStore {
     actor: RequestAccount,
     body?: DeleteResourceBody,
   ): Promise<CleanupStatusResponse> {
-    const { targets, targetAccounts, actionModules, scenarios, recordingDrafts, runs, storedObjects } = schemaFor(
+    const { targets, targetAccounts, actionModules, scenarios, recordingDrafts, runs, storedObjects, scenarioSuites, schedules } = schemaFor(
       this.db,
     )
 
@@ -524,12 +540,24 @@ export class TargetsStore {
           .from(recordingDrafts)
           .where(and(eq(recordingDrafts.targetId, id), isNull(recordingDrafts.deletedAt)))
 
+        const suiteRows = await tx
+          .select({ id: scenarioSuites.id })
+          .from(scenarioSuites)
+          .where(and(eq(scenarioSuites.targetId, id), isNull(scenarioSuites.deletedAt)))
+
+        const scheduleRows = await tx
+          .select({ id: schedules.id })
+          .from(schedules)
+          .where(eq(schedules.targetId, id))
+
         assertExpectedCounts(
           {
             targetAccounts: accounts.length,
             scenarios: scenarioRows.length,
+            suites: suiteRows.length,
             recordings: recordingRows.length,
             runs: targetRunRows.length,
+            schedules: scheduleRows.length,
           },
           body?.expectedCounts,
         )
@@ -587,6 +615,14 @@ export class TargetsStore {
             .where(and(eq(scenarios.targetId, id), isNull(scenarios.deletedAt)))
         }
 
+        await softDeleteSuitesForTarget(tx as unknown as Db, id, deletedBy, now)
+        await retireSchedulesForOwner(
+          tx as unknown as Db,
+          { targetId: id },
+          now,
+          { kind: 'console', id: actor.id },
+        )
+
         if (recordingRows.length > 0) {
           await tx
             .update(recordingDrafts)
@@ -622,7 +658,7 @@ export class TargetsStore {
           'target.delete',
           'target',
           id,
-          `删除目标 ${current.name}（${current.code}）：账号 ${accounts.length}、场景 ${scenarioRows.length}、录制 ${recordingRows.length}、运行 ${targetRunRows.length}、对象 ${Number(objectRow?.n ?? 0)}、${Number(objectRow?.bytes ?? 0)} 字节`,
+          `删除目标 ${current.name}（${current.code}）：账号 ${accounts.length}、场景 ${scenarioRows.length}、场景集 ${suiteRows.length}、录制 ${recordingRows.length}、运行 ${targetRunRows.length}、调度 ${scheduleRows.length}、对象 ${Number(objectRow?.n ?? 0)}、${Number(objectRow?.bytes ?? 0)} 字节`,
         )
       })
     } catch (error) {
@@ -995,6 +1031,12 @@ export class TargetsStore {
           }
         }
         await revokeAccountGrants(tx as unknown as Db, accountId)
+        await retireSchedulesForOwner(
+          tx as unknown as Db,
+          { targetAccountId: accountId },
+          now,
+          { kind: 'console', id: actor.id },
+        )
 
         await this.writeAudit(
           tx,

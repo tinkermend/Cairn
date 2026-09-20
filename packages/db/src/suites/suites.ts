@@ -18,6 +18,7 @@ import {
   type SuiteStatus,
   type DeletePreviewResponse,
   type DeleteResourceBody,
+  type ResourceDeletedBy,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { recordAudit, type AuditActor } from '../audit/record.js'
@@ -27,7 +28,7 @@ import { atomic, schemaFor } from '../native.js'
 import { sha256Hex } from '../runs/digest.js'
 import { badRequest, conflict, isUniqueViolation, mapRestriction, notFound } from '../runs/errors.js'
 import { assertTargetPermission, scopedTargetFilter } from '../console/target-authorization.js'
-import { snapshotDeletedBy, toDeleteResult } from '../lifecycle.js'
+import { liveTargetExists, snapshotDeletedBy, toDeleteResult } from '../lifecycle.js'
 import { validateSuiteDocument } from './validate.js'
 
 function rethrow(error: unknown): never {
@@ -71,9 +72,15 @@ function toDetail(
 }
 
 async function loadSuiteRow(db: Db, suiteId: string) {
-  const { scenarioSuites, scenarioSuiteDrafts, scenarioSuiteVersions } = schemaFor(db)
+  const { scenarioSuites, scenarioSuiteDrafts, scenarioSuiteVersions, targets } = schemaFor(db)
   const [suite] = await db.select().from(scenarioSuites).where(eq(scenarioSuites.id, suiteId)).limit(1)
   if (!suite || suite.deletedAt) throw notFound('SUITE_NOT_FOUND', '场景集不存在')
+  const [target] = await db
+    .select({ deletedAt: targets.deletedAt })
+    .from(targets)
+    .where(eq(targets.id, suite.targetId))
+    .limit(1)
+  if (!target || target.deletedAt) throw notFound('SUITE_NOT_FOUND', '场景集不存在')
   const [draft] = await db.select().from(scenarioSuiteDrafts).where(eq(scenarioSuiteDrafts.suiteId, suiteId)).limit(1)
   if (!draft) throw notFound('SUITE_NOT_FOUND', '场景集草稿不存在')
   const [published] = await db
@@ -110,6 +117,7 @@ export async function listSuites(db: Db, query: Partial<SuiteListQuery> = {}, ac
   const filters: (SQL | undefined)[] = [
     await scopedTargetFilter(db, actorId, scenarioSuites.targetId, 'suite:read'),
     isNull(scenarioSuites.deletedAt),
+    liveTargetExists(db, scenarioSuites.targetId),
     parsed.targetId ? eq(scenarioSuites.targetId, parsed.targetId) : undefined,
     parsed.status ? eq(scenarioSuites.status, parsed.status) : undefined,
     parsed.q
@@ -318,6 +326,31 @@ export async function updateSuiteEnabled(
     await recordAudit(tx, actor, 'suite.update', 'suite', suiteId, status === 'active' ? '启用场景集' : '停用场景集')
   })
   return getSuite(db, suiteId)
+}
+
+export async function softDeleteSuitesForTarget(
+  tx: Db,
+  targetId: string,
+  deletedBy: ResourceDeletedBy,
+  now: Date,
+): Promise<number> {
+  const { scenarioSuites } = schemaFor(tx)
+  const rows = await tx
+    .select({ id: scenarioSuites.id, name: scenarioSuites.name })
+    .from(scenarioSuites)
+    .where(and(eq(scenarioSuites.targetId, targetId), isNull(scenarioSuites.deletedAt)))
+  for (const row of rows) {
+    await tx
+      .update(scenarioSuites)
+      .set({
+        deletedAt: now,
+        deletedBy,
+        name: `${row.name}#${row.id.slice(0, 8)}`,
+        updatedAt: now,
+      })
+      .where(eq(scenarioSuites.id, row.id))
+  }
+  return rows.length
 }
 
 export async function previewDeleteSuite(db: Db, suiteId: string): Promise<DeletePreviewResponse> {

@@ -125,18 +125,87 @@ describe.each(DRIVERS)('%s 资源生命周期', { timeout: 30_000 }, (driver) =>
     const preview = await f.targets.previewDeleteTarget(f.target.id)
     expect(preview.counts.targetAccounts).toBe(1)
     expect(preview.counts.scenarios).toBe(1)
+    expect(preview.counts.suites).toBe(0)
+    expect(preview.counts.schedules).toBe(0)
     await f.targets.deleteTarget(f.target.id, f.actor, {
       expectedCounts: {
         targetAccounts: preview.counts.targetAccounts,
         scenarios: preview.counts.scenarios,
+        suites: preview.counts.suites,
         recordings: preview.counts.recordings ?? 0,
         runs: preview.counts.runs ?? 0,
+        schedules: preview.counts.schedules,
       },
     })
     await expect(f.targets.getTarget(f.target.id)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
     await expect(api.getScenario(f.db, scenario.id)).rejects.toMatchObject({
       code: 'SCENARIO_NOT_FOUND',
     })
+  })
+
+  it('LM10 Target 删除级联场景集与调度，独立列表不再露出', async () => {
+    const f = await fixture(driver)
+    const account = await f.targets.createAccount(
+      f.target.id,
+      { displayName: '账号', username: 'ops', status: 'active' },
+      f.actor,
+    )
+    const scenario = await api.createScenarioWithVersion(f.db, {
+      targetId: f.target.id,
+      name: '集合成员',
+      steps: [echo],
+      actor: f.actor,
+    })
+    const suite = await api.createSuite(
+      f.db,
+      { targetId: f.target.id, name: '级联场景集' },
+      { id: f.actor.id },
+    )
+    const { schedules } = schemaFor(f.handle.db)
+    const scheduleId = newId()
+    await f.handle.db.insert(schedules).values({
+      id: scheduleId,
+      targetId: f.target.id,
+      targetAccountId: account.id,
+      consumerKey: 'map_refresh',
+      enabled: 1,
+      enabledGuard: 'Y',
+      revision: 1,
+      currentVersionId: newId(),
+      nextDueAt: new Date(),
+      createdBy: f.actor.id,
+    })
+    await expect(
+      f.targets.deleteTarget(f.target.id, f.actor, { expectedCounts: { suites: 0 } }),
+    ).rejects.toMatchObject({ code: 'DELETE_SCOPE_EXPANDED' })
+    const preview = await f.targets.previewDeleteTarget(f.target.id)
+    expect(preview.counts.scenarios).toBe(1)
+    expect(preview.counts.suites).toBe(1)
+    expect(preview.counts.schedules).toBe(1)
+    await f.targets.deleteTarget(f.target.id, f.actor, {
+      expectedCounts: {
+        targetAccounts: preview.counts.targetAccounts,
+        scenarios: preview.counts.scenarios,
+        suites: preview.counts.suites,
+        recordings: preview.counts.recordings ?? 0,
+        runs: preview.counts.runs ?? 0,
+        schedules: preview.counts.schedules,
+      },
+    })
+    await expect(api.getScenario(f.db, scenario.id)).rejects.toMatchObject({
+      code: 'SCENARIO_NOT_FOUND',
+    })
+    await expect(api.getSuite(f.db, suite.id)).rejects.toMatchObject({ code: 'SUITE_NOT_FOUND' })
+    expect((await api.listSuites(f.db, {}, f.actor.id)).items.map((item) => item.id)).not.toContain(suite.id)
+    expect((await api.listSchedules(f.db, { limit: 50 }, f.actor.id)).items.map((item) => item.scheduleId)).not.toContain(
+      scheduleId,
+    )
+    const [scheduleRow] = await f.handle.db.select().from(schedules).where(eq(schedules.id, scheduleId))
+    expect(scheduleRow?.enabled).toBe(0)
+    expect(scheduleRow?.nextDueAt).toBeNull()
+    const { scenarioSuites } = schemaFor(f.handle.db)
+    const [suiteRow] = await f.handle.db.select().from(scenarioSuites).where(eq(scenarioSuites.id, suite.id))
+    expect(suiteRow?.deletedAt).toBeTruthy()
   })
 
   it('LM03 活跃运行阻止删除；终态后可删场景并保留历史 Run', async () => {

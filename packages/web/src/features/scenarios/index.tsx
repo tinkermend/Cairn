@@ -113,7 +113,7 @@ export function ScenariosPage() {
     <>
       <Main className='flex min-w-0 flex-1 flex-col gap-6'>
         <PageHeader
-          title='场景'
+          title='自动化场景'
           description='把业务任务组织成有序步骤，在同一场景中管理定义、版本与执行入口。'
           actions={
             <Can permission='workflow:write'>

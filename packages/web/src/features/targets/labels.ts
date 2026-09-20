@@ -39,9 +39,9 @@ export const LOGIN_LOCATOR_BY_LABELS: Record<LoginLocatorBy, string> = {
 }
 
 export const AUTH_CAPABILITY_LABELS: Record<AuthCapabilityTier, string> = {
-  IDENTITY_VERIFIED: '已启用主动检测 · 可核验身份',
-  LOGIN_VERIFIED: '已启用主动检测',
-  LEGACY: '未配置主动检测',
+  IDENTITY_VERIFIED: '已启用登录态检测 · 可核验身份',
+  LOGIN_VERIFIED: '已启用登录态检测',
+  LEGACY: '未配置登录态检测',
 }
 
 export const LOGIN_FIELD_ROLE_LABELS = {

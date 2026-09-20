@@ -350,14 +350,17 @@ export function uniquePermissions(codes: readonly string[]): string[] {
 export const CAPABILITY_KINDS = ['menu', 'action'] as const
 export type CapabilityKind = (typeof CAPABILITY_KINDS)[number]
 
-export const CAPABILITY_GROUPS = ['workbench', 'execution-observation', 'governance', 'other'] as const
+export const CAPABILITY_GROUPS = ['overview', 'workbench', 'execution-observation', 'resources', 'operations', 'governance', 'other'] as const
 export type CapabilityGroup = (typeof CAPABILITY_GROUPS)[number]
 
 export const CAPABILITY_GROUP_LABELS: Record<CapabilityGroup, string> = {
-  workbench: '工作台',
-  'execution-observation': '执行与观测',
-  governance: '治理',
-  other: '其他',
+  overview: '总览',
+  workbench: '场景编排',
+  'execution-observation': '执行与结果',
+  resources: '目标资源',
+  operations: '平台运维',
+  governance: '平台管理',
+  other: '个人设置',
 }
 
 export type ConsoleCapability = {
@@ -366,48 +369,48 @@ export type ConsoleCapability = {
   label: string
   /** 菜单所属分组；动作为空。 */
   group?: CapabilityGroup
-  /** 空数组表示登录即可（仅首页）。与 anyOf 同时存在时以 anyOf 为准。 */
+  /** 空数组表示登录即可（仅总览）。与 anyOf 同时存在时以 anyOf 为准。 */
   allOf: readonly PermissionCode[]
   /** 有其中任一权限即授予；用于侧栏单入口对应多权限的菜单。 */
   anyOf?: readonly PermissionCode[]
 }
 
 export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
-  { id: 'menu.home', kind: 'menu', group: 'workbench', label: '首页', allOf: [] },
-  { id: 'menu.targets', kind: 'menu', group: 'workbench', label: '目标系统', allOf: ['target:read'] },
-  { id: 'menu.scenarios', kind: 'menu', group: 'workbench', label: '场景', allOf: ['workflow:read'] },
+  { id: 'menu.home', kind: 'menu', group: 'overview', label: '总览', allOf: [] },
+  { id: 'menu.scenarios', kind: 'menu', group: 'workbench', label: '自动化场景', allOf: ['workflow:read'] },
   { id: 'menu.suites', kind: 'menu', group: 'workbench', label: '场景集', allOf: ['suite:read'] },
   { id: 'menu.action-modules', kind: 'menu', group: 'workbench', label: '动作库', allOf: ['module:read'] },
   { id: 'menu.recordings', kind: 'menu', group: 'workbench', label: '录制草稿', allOf: ['workflow:write'] },
-  { id: 'menu.runs', kind: 'menu', group: 'execution-observation', label: '运行', allOf: ['run:read'] },
-  { id: 'menu.schedules', kind: 'menu', group: 'execution-observation', label: '自动复查', allOf: ['schedule:read'] },
-  { id: 'menu.sessions', kind: 'menu', group: 'execution-observation', label: '浏览器会话', allOf: ['session:read'] },
+  { id: 'menu.schedules', kind: 'menu', group: 'execution-observation', label: '定时调度', allOf: ['schedule:read'] },
+  { id: 'menu.runs', kind: 'menu', group: 'execution-observation', label: '运行记录', allOf: ['run:read'] },
   { id: 'menu.evidence', kind: 'menu', group: 'execution-observation', label: '证据与报告', allOf: ['run:read'] },
-  { id: 'menu.monitoring', kind: 'menu', group: 'execution-observation', label: '运行监控', allOf: ['monitor:read'] },
-  { id: 'menu.notifications', kind: 'menu', group: 'execution-observation', label: '通知', allOf: ['notification:read'] },
-  { id: 'menu.users', kind: 'menu', group: 'governance', label: '用户', allOf: ['account:read'] },
-  { id: 'menu.roles', kind: 'menu', group: 'governance', label: '角色', allOf: ['role:read'] },
-  { id: 'menu.services', kind: 'menu', group: 'governance', label: '开放服务', allOf: ['service:read'] },
-  { id: 'action.service.write', kind: 'action', label: '管理开放服务', allOf: ['service:write'] },
+  { id: 'menu.targets', kind: 'menu', group: 'resources', label: '目标系统', allOf: ['target:read'] },
   {
     id: 'menu.credentials',
     kind: 'menu',
-    group: 'governance',
-    label: '凭据管理',
+    group: 'resources',
+    label: '目标账号凭据',
     allOf: ['credential:read', 'target:read'],
   },
+  { id: 'menu.sessions', kind: 'menu', group: 'resources', label: '浏览器会话', allOf: ['session:read'] },
+  { id: 'menu.monitoring', kind: 'menu', group: 'operations', label: '平台监控', allOf: ['monitor:read'] },
+  { id: 'menu.workers', kind: 'menu', group: 'operations', label: '执行节点', allOf: ['session:read'] },
+  { id: 'menu.notifications', kind: 'menu', group: 'operations', label: '通知管理', allOf: ['notification:read'] },
+  { id: 'menu.users', kind: 'menu', group: 'governance', label: '控制台用户', allOf: ['account:read'] },
+  { id: 'menu.roles', kind: 'menu', group: 'governance', label: '角色权限', allOf: ['role:read'] },
+  { id: 'menu.services', kind: 'menu', group: 'governance', label: 'API 接入', allOf: ['service:read'] },
+  { id: 'action.service.write', kind: 'action', label: '管理 API 接入', allOf: ['service:write'] },
   { id: 'menu.platform-config', kind: 'menu', group: 'governance', label: '平台配置', allOf: ['platform-config:read'] },
-  { id: 'menu.workers', kind: 'menu', group: 'governance', label: '执行节点', allOf: ['session:read'] },
   { id: 'action.platform-config.write', kind: 'action', label: '修改平台配置', allOf: ['platform-config:write'] },
   {
     id: 'menu.audit',
     kind: 'menu',
     group: 'governance',
-    label: '审计',
+    label: '审计日志',
     allOf: [],
     anyOf: ['audit:read', 'audit:login'],
   },
-  { id: 'menu.settings', kind: 'menu', group: 'other', label: '设置', allOf: ['settings:read'] },
+  { id: 'menu.settings', kind: 'menu', group: 'other', label: '个人设置', allOf: ['settings:read'] },
   { id: 'action.target.write', kind: 'action', label: '登记和维护目标系统', allOf: ['target:write'] },
   { id: 'action.target.delete', kind: 'action', label: '删除目标系统', allOf: ['target:delete'] },
   { id: 'action.scenario.write', kind: 'action', label: '创建和编辑场景', allOf: ['workflow:write'] },
@@ -447,7 +450,7 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'action.map.publish', kind: 'action', label: '发布和撤回地图版本', allOf: ['map:publish'] },
   { id: 'action.map.maintain', kind: 'action', label: '维护并触发手工地图作业', allOf: ['map:maintain'] },
   { id: 'action.map.explore', kind: 'action', label: '配置并触发有界地图探索', allOf: ['map:explore', 'map:maintain'] },
-  { id: 'action.schedule.write', kind: 'action', label: '设置自动复查计划', allOf: ['schedule:write', 'map:maintain'] },
+  { id: 'action.schedule.write', kind: 'action', label: '设置地图复查调度', allOf: ['schedule:write', 'map:maintain'] },
   { id: 'action.module.write', kind: 'action', label: '创建和编辑动作模块', allOf: ['module:write'] },
   { id: 'action.module.publish', kind: 'action', label: '发布动作模块版本', allOf: ['module:publish'] },
   { id: 'action.suite.write', kind: 'action', label: '创建和编辑场景集', allOf: ['suite:write'] },
@@ -476,8 +479,11 @@ function capabilityGranted(granted: readonly string[], capability: ConsoleCapabi
 
 export function previewCapabilities(granted: readonly string[]): CapabilityPreview {
   const menus: Record<CapabilityGroup, string[]> = {
+    overview: [],
     workbench: [],
     'execution-observation': [],
+    resources: [],
+    operations: [],
     governance: [],
     other: [],
   }
@@ -533,21 +539,11 @@ export type CapabilityTreeCategory = {
 export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
   {
     key: 'workbench',
-    label: '工作台',
+    label: CAPABILITY_GROUP_LABELS.workbench,
     modules: [
       {
-        key: 'target',
-        label: '目标系统',
-        description: '目标系统身份与凭据接入',
-        items: [
-          { code: 'target:read', isPageAccess: true },
-          { code: 'target:write' },
-          { code: 'target:delete' },
-        ],
-      },
-      {
         key: 'workflow',
-        label: '场景',
+        label: '自动化场景',
         description: '业务场景编排与步骤定义',
         items: [
           { code: 'workflow:read', isPageAccess: true },
@@ -567,7 +563,7 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
       },
       {
         key: 'module',
-        label: '动作模块',
+        label: '动作库',
         description: '可复用的标准化步骤组件',
         items: [
           { code: 'module:read', isPageAccess: true },
@@ -575,27 +571,15 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
           { code: 'module:publish' },
         ],
       },
-      {
-        key: 'map',
-        label: '运营地图',
-        description: '目标系统可操作世界模型与知识',
-        items: [
-          { code: 'map:read' },
-          { code: 'map:review' },
-          { code: 'map:publish' },
-          { code: 'map:maintain' },
-          { code: 'map:explore', dependencies: ['map:maintain'] },
-        ],
-      },
     ],
   },
   {
     key: 'execution-observation',
-    label: '执行与观测',
+    label: CAPABILITY_GROUP_LABELS['execution-observation'],
     modules: [
       {
         key: 'run',
-        label: '运行',
+        label: '运行记录',
         description: '场景仿真执行与证据',
         items: [
           { code: 'run:read', isPageAccess: true },
@@ -616,6 +600,40 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
         ],
       },
       {
+        key: 'schedule',
+        label: '定时调度',
+        description: '管理定时任务，当前支持地图复查',
+        items: [
+          { code: 'schedule:read', isPageAccess: true },
+          { code: 'schedule:write', dependencies: ['map:maintain'] },
+        ],
+      },
+    ],
+  },
+  {
+    key: 'resources',
+    label: CAPABILITY_GROUP_LABELS.resources,
+    modules: [
+      {
+        key: 'target',
+        label: '目标系统',
+        description: '目标系统身份与凭据接入',
+        items: [
+          { code: 'target:read', isPageAccess: true },
+          { code: 'target:write' },
+          { code: 'target:delete' },
+        ],
+      },
+      {
+        key: 'credential', label: '目标账号凭据', description: '授权目标账号的密码与维护期限',
+        items: [
+          { code: 'credential:read', isPageAccess: true, dependencies: ['target:read'] },
+          { code: 'credential:write', dependencies: ['credential:read'] },
+          { code: 'credential:delete', dependencies: ['credential:read', 'credential:write'] },
+          { code: 'credential:import', dependencies: ['credential:read', 'credential:write'] },
+        ],
+      },
+      {
         key: 'session',
         label: '浏览器会话',
         description: '受管浏览器实例与登录态',
@@ -628,44 +646,44 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
         ],
       },
       {
-        key: 'schedule',
-        label: '平台调度',
-        description: '定时与自动复查计划',
+        key: 'map',
+        label: '运营地图',
+        description: '目标系统可操作世界模型与知识',
         items: [
-          { code: 'schedule:read', isPageAccess: true },
-          { code: 'schedule:write', dependencies: ['map:maintain'] },
+          { code: 'map:read' },
+          { code: 'map:review' },
+          { code: 'map:publish' },
+          { code: 'map:maintain' },
+          { code: 'map:explore', dependencies: ['map:maintain'] },
         ],
       },
+    ],
+  },
+  {
+    key: 'operations',
+    label: CAPABILITY_GROUP_LABELS.operations,
+    modules: [
       {
         key: 'monitor',
-        label: '运行监控',
+        label: '平台监控',
         description: '平台自身健康、容量、积压与异常',
         items: [
           { code: 'monitor:read', isPageAccess: true },
           { code: 'monitor:operate' },
         ],
       },
-      { key: 'notification', label: '通知', description: '运行结果与告警通知', items: [
+      { key: 'notification', label: '通知管理', description: '运行结果与告警通知', items: [
         { code: 'notification:read', isPageAccess: true }, { code: 'notification:operate' },
       ] },
     ],
   },
   {
     key: 'governance',
-    label: '治理与运维',
+    label: CAPABILITY_GROUP_LABELS.governance,
     modules: [
       {
-        key: 'credential', label: '凭据管理', description: '授权目标账号的密码与维护期限',
-        items: [
-          { code: 'credential:read', isPageAccess: true, dependencies: ['target:read'] },
-          { code: 'credential:write', dependencies: ['credential:read'] },
-          { code: 'credential:delete', dependencies: ['credential:read', 'credential:write'] },
-          { code: 'credential:import', dependencies: ['credential:read', 'credential:write'] },
-        ],
-      },
-      {
         key: 'account',
-        label: '控制台账号',
+        label: '控制台用户',
         description: '平台用户与密码身份管理',
         items: [
           { code: 'account:read', isPageAccess: true },
@@ -685,7 +703,7 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
       },
       {
         key: 'audit',
-        label: '审计记录',
+        label: '审计日志',
         description: '操作审计与登录审计',
         items: [
           { code: 'audit:read', isPageAccess: true },
@@ -694,7 +712,7 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
       },
       {
         key: 'service',
-        label: '开放服务',
+        label: 'API 接入',
         description: '受控执行 API 与服务凭据',
         items: [
           { code: 'service:read', isPageAccess: true },
@@ -714,12 +732,12 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
     },
   {
     key: 'other',
-    label: '通用设置与 AI',
+    label: '个人设置与 AI 能力',
     modules: [
       {
         key: 'settings',
-        label: '系统设置',
-        description: '个人偏好与全局环境设置',
+        label: '个人设置',
+        description: '个人资料与登录密码',
         items: [
           { code: 'settings:read', isPageAccess: true },
           { code: 'settings:write' },

@@ -67,7 +67,7 @@ export function MonitoringPage() {
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
       <PageHeader
-        title='运行监控'
+        title='平台监控'
         description='查看平台自有服务是否健康、容量还剩多少、队列堵在哪里，以及异常落在哪个节点。本页不下发调度或处置。'
         actions={
           <div className='flex flex-wrap items-center gap-3'>
@@ -108,7 +108,7 @@ export function MonitoringPage() {
 
 function overviewError(error: unknown, onRetry: () => void) {
   if (error instanceof ApiRequestError && error.status === 403) {
-    return <FailureAlert kind='permission' description='当前账号没有运行监控读取权限。' />
+    return <FailureAlert kind='permission' description='当前账号没有平台监控读取权限。' />
   }
   return (
     <QueryErrorState

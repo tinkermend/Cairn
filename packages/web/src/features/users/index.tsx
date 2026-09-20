@@ -22,7 +22,7 @@ export function Users() {
     <UsersProvider>
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
-          title='用户'
+          title='控制台用户'
           description='管理控制台账号，并分配角色。'
           actions={<UsersPrimaryButtons />}
         />

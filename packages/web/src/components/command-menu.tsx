@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/command'
 import { useAuthStore } from '@/stores/auth-store'
 import { filterNavItems } from '@/lib/rbac'
-import { sidebarData } from './layout/data/sidebar-data'
+import { personalSettingsGroup, sidebarData } from './layout/data/sidebar-data'
 import { ScrollArea } from './ui/scroll-area'
 
 export function CommandMenu() {
@@ -34,7 +34,7 @@ export function CommandMenu() {
       <CommandList>
         <ScrollArea type='hover' className='h-72 pe-1'>
           <CommandEmpty>没有匹配的结果</CommandEmpty>
-          {sidebarData.navGroups.map((group) => {
+          {[...sidebarData.navGroups, personalSettingsGroup].map((group) => {
             const items = filterNavItems(group.items, user)
             if (items.length === 0) return null
             return (
@@ -59,7 +59,7 @@ export function CommandMenu() {
                   return navItem.items?.map((subItem, i) => (
                     <CommandItem
                       key={`${navItem.title}-${subItem.url}-${i}`}
-                      value={`${navItem.title}-${subItem.url}`}
+                      value={`${navItem.title} ${subItem.title}`}
                       onSelect={() => {
                         runCommand(() => navigate({ to: subItem.url }))
                       }}

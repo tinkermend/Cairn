@@ -36,6 +36,7 @@ import { sha256Hex } from '../runs/digest.js'
 import { badRequest, conflict, DomainError, mapRestriction, notFound } from '../runs/errors.js'
 import { resolveRunTargetAccountId, writeRunWithSnapshot } from '../runs/runs.js'
 import { requestRunCancel } from '../runs/runs.js'
+import { liveTargetExists } from '../lifecycle.js'
 import { validateSuiteDocument } from './validate.js'
 import { lockReportDefaults, resolveReportProfile } from '../reports/profiles.js'
 import { assertReportDeploymentReady } from '../reports/protocol.js'
@@ -96,7 +97,7 @@ export async function appendSuiteEvents(
 }
 
 async function loadObservationTx(db: Db, suiteRunId: string): Promise<SuiteRunObservation> {
-  const { suiteRuns, suiteRunItems, runs, scenarioSuites, suiteReportTriggers } = schemaFor(db)
+  const { suiteRuns, suiteRunItems, runs, scenarioSuites, suiteReportTriggers, targets } = schemaFor(db)
   const [parent] = await db
     .select({ run: suiteRuns, suiteName: scenarioSuites.name })
     .from(suiteRuns)
@@ -104,6 +105,12 @@ async function loadObservationTx(db: Db, suiteRunId: string): Promise<SuiteRunOb
     .where(eq(suiteRuns.id, suiteRunId))
     .limit(1)
   if (!parent) throw notFound('SUITE_RUN_NOT_FOUND', '集合运行不存在')
+  const [target] = await db
+    .select({ deletedAt: targets.deletedAt })
+    .from(targets)
+    .where(eq(targets.id, parent.run.targetId))
+    .limit(1)
+  if (!target || target.deletedAt) throw notFound('SUITE_RUN_NOT_FOUND', '集合运行不存在')
   const [trigger] = await db.select().from(suiteReportTriggers).where(eq(suiteReportTriggers.suiteRunId, suiteRunId)).limit(1)
   const rows = await db
     .select({ item: suiteRunItems, child: runs })
@@ -175,6 +182,7 @@ export async function listSuiteRuns(db: Db, query: Partial<SuiteRunListQuery> = 
   const filters: (SQL | undefined)[] = [
     await scopedTargetFilter(db, actorId, suiteRuns.targetId, 'suite:read'),
     await scopedTargetFilter(db, actorId, suiteRuns.targetId, 'run:read'),
+    liveTargetExists(db, suiteRuns.targetId),
     parsed.targetId ? eq(suiteRuns.targetId, parsed.targetId) : undefined,
     parsed.suiteId ? eq(suiteRuns.suiteId, parsed.suiteId) : undefined,
     parsed.status ? eq(suiteRuns.status, parsed.status) : undefined,

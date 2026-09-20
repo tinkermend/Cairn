@@ -9,6 +9,7 @@ export {
   listSchedules,
   materializeDueSchedules,
   previewScheduleDefinition,
+  retireSchedulesForOwner,
   setScheduleEnabled,
   writeSchedule,
   type PendingScheduleAdmit,

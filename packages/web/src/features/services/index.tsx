@@ -1179,7 +1179,7 @@ export function ServicesPage() {
     <>
       <Main className='flex min-w-0 flex-1 flex-col gap-6'>
         <PageHeader
-          title='开放服务'
+          title='API 接入'
           description='让外部应用在指定目标范围内执行场景。服务凭据不具有控制台管理权限。'
           actions={
             canWrite ? (

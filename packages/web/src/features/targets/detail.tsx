@@ -290,11 +290,11 @@ export function TargetDetailPage() {
                 </TabsTrigger>
                 <TabsTrigger value='auth-profile'>
                   <ShieldCheck className='size-4' />
-                  主动检测
+                  登录态检测
                 </TabsTrigger>
                 <TabsTrigger value='access-policy'>
                   <Shield className='size-4' />
-                  目标授权
+                  访问范围
                 </TabsTrigger>
               </TabsList>
 

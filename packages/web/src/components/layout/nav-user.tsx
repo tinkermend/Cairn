@@ -27,7 +27,7 @@ type NavUserProps = {
 }
 
 export function NavUser({ user }: NavUserProps) {
-  const { isMobile } = useSidebar()
+  const { isMobile, setOpenMobile } = useSidebar()
   const [open, setOpen] = useDialogState()
 
   return (
@@ -74,7 +74,7 @@ export function NavUser({ user }: NavUserProps) {
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <AccountMenuItems onSignOut={() => setOpen(true)} />
+              <AccountMenuItems onSignOut={() => setOpen(true)} onNavigate={() => setOpenMobile(false)} />
             </DropdownMenuContent>
           </DropdownMenu>
         </SidebarMenuItem>

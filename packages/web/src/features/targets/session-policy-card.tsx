@@ -85,7 +85,7 @@ export function SessionPolicyCard({ target }: { target: TargetDto }) {
       <CardHeader>
         <CardTitle className='text-section font-semibold'>会话策略</CardTitle>
         <p className='mt-1 text-label text-muted-foreground'>
-          控制空闲回收还是按认证保活。认证保活依赖已验收的主动检测规则。只影响之后新建的会话与运行。
+          控制空闲回收还是按认证保活。认证保活依赖已验收的登录态检测规则。只影响之后新建的会话与运行。
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
@@ -125,7 +125,7 @@ export function SessionPolicyCard({ target }: { target: TargetDto }) {
             </Select>
             {!detectionReady ? (
               <p className='text-label text-muted-foreground'>
-                未配置主动检测时不能选用认证保活。过期后将在下次使用时按登录页重登。
+                未配置登录态检测时不能选用认证保活。过期后将在下次使用时按登录页重登。
               </p>
             ) : null}
             {override?.reclaim != null ? (

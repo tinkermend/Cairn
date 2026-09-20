@@ -4,6 +4,7 @@ export {
   getSuite,
   listSuites,
   previewDeleteSuite,
+  softDeleteSuitesForTarget,
   publishSuite,
   saveSuiteDraft,
   updateSuiteEnabled,

@@ -67,7 +67,7 @@ export function SuiteRunsPage() {
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
       <PageHeader
-        title='运行'
+        title='运行记录'
         description='独立运行与场景集运行分开查看。集合编排结束不等于全部通过。'
       />
       <Tabs value='suites' className='space-y-4'>

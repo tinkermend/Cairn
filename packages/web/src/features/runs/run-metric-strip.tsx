@@ -124,17 +124,17 @@ export function RunMetricStrip({ run }: Props) {
             <p className='text-label text-muted-foreground truncate'>
               登录核验{' '}
               {run.snapshot.authVerification.capability === 'IDENTITY_VERIFIED'
-                ? '已启用主动检测 · 可核验身份'
+                ? '已启用登录态检测 · 可核验身份'
                 : run.snapshot.authVerification.capability === 'LOGIN_VERIFIED'
-                  ? '已启用主动检测'
-                  : '未配置主动检测'}
+                  ? '已启用登录态检测'
+                  : '未配置登录态检测'}
               {run.snapshot.authVerification.profileRevision
                 ? ` · 规则修订 ${run.snapshot.authVerification.profileRevision}`
                 : ''}
               {` · 新鲜度 ${run.snapshot.authVerification.freshnessSeconds} 秒`}
             </p>
           ) : (
-            <p className='text-label text-muted-foreground truncate'>历史运行未冻结主动检测规则，开跑时按登录页判断。</p>
+            <p className='text-label text-muted-foreground truncate'>历史运行未冻结登录态检测规则，开跑时按登录页判断。</p>
           )}
         </div>
       </div>

@@ -41,17 +41,17 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
         expectedRevision: query.data?.revision ?? 0,
         idempotencyKey: `access:${Date.now()}`,
         rules,
-        reason: reason.trim() || '更新目标授权',
+        reason: reason.trim() || '更新访问范围',
       }),
     onSuccess: () => {
-      toast.success('已更新目标授权')
+      toast.success('已更新访问范围')
       setReason('')
       setOrigin('')
       setPathPrefix('')
       void queryClient.invalidateQueries({ queryKey: ['target', targetId, 'access-policy'] })
     },
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '更新目标授权失败')
+      toast.error(error instanceof ApiRequestError ? error.message : '更新访问范围失败')
     },
   })
 
@@ -63,7 +63,7 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
     <Card className='min-w-0'>
       <CardHeader className='flex flex-row items-start justify-between gap-3'>
         <div>
-          <CardTitle className='text-section font-semibold'>目标授权</CardTitle>
+          <CardTitle className='text-section font-semibold'>访问范围</CardTitle>
           <p className='mt-1 text-label text-muted-foreground'>
             正式运行与地图作业共用这份 origin 用途上限。资源域单独标明，不授予点击或填写。
           </p>
@@ -78,7 +78,7 @@ export function AccessPolicyCard({ targetId }: { targetId: string }) {
         {query.isPending ? (
           <p className='text-label text-muted-foreground'>授权加载中…</p>
         ) : query.isError ? (
-          <p className='text-label text-muted-foreground'>暂时无法读取目标授权。</p>
+          <p className='text-label text-muted-foreground'>暂时无法读取访问范围。</p>
         ) : current ? (
           <>
             <p className='text-body'>

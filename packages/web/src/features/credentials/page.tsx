@@ -79,7 +79,7 @@ export function CredentialsPage() {
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-5'>
       <PageHeader
-        title='凭据管理'
+        title='目标账号凭据'
         description='集中维护目标系统的账号密码、有效期和登录状态，与目标系统页面使用同一份账号数据。'
         actions={
           <div className='flex flex-wrap gap-2'>

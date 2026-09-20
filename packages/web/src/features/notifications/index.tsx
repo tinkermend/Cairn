@@ -93,7 +93,7 @@ export function NotificationsPage() {
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
       <PageHeader
-        title='通知'
+        title='通知管理'
         description='集中管理场景运行结果、告警与发送渠道。每个目的地的投递结果独立记录。'
       />
       <Tabs

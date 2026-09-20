@@ -608,7 +608,7 @@ export function ScenarioDetailPage() {
               }}
             >
               <ArrowLeft className='size-4' />
-              返回场景
+              返回自动化场景
             </Link>
           }
           title={scenario?.name ?? '场景'}

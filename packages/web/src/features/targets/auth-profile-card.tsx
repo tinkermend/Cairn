@@ -143,7 +143,7 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
   const detectionLabel = !current
     ? AUTH_CAPABILITY_LABELS.LEGACY
     : derivedCapability === 'LEGACY'
-      ? '规则已发布、验收未齐（主动检测未开放）'
+      ? '规则已发布、验收未齐（登录态检测未开放）'
       : AUTH_CAPABILITY_LABELS[derivedCapability]
 
   const openEditor = () => {
@@ -163,7 +163,7 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
       <Card className='min-w-0'>
         <CardHeader className='flex flex-row items-start justify-between gap-3'>
           <div>
-            <CardTitle className='text-section font-semibold'>主动检测（可选）</CardTitle>
+            <CardTitle className='text-section font-semibold'>登录态检测（可选）</CardTitle>
             <p className='mt-1 text-label text-muted-foreground'>
               当前修订 {current?.revision ?? '未发布'} · 用于非登录页探活、身份比对、保活与运行中恢复，不是会话是否就绪。
             </p>
@@ -231,13 +231,13 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
           ) : (
             <div className='rounded-lg border border-dashed border-border-card p-4 text-center'>
               <ShieldAlert className='mx-auto size-8 text-muted-foreground' />
-              <p className='mt-2 text-small text-text-secondary'>未配置主动检测</p>
+              <p className='mt-2 text-small text-text-secondary'>未配置登录态检测</p>
               <p className='mt-1 text-label text-muted-foreground'>
                 会话过期后若回到登录页，将按已录入的登录框和口令自动重登。需要在非登录页探活或后台保活时再配置规则。
               </p>
               <Can permission='target:write'>
                 <Button size='sm' className='mt-3' onClick={openEditor}>
-                  配置主动检测
+                  配置登录态检测
                 </Button>
               </Can>
             </div>

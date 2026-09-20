@@ -80,16 +80,16 @@ export function SchedulesPage() {
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
         <PageHeader
-          title='自动复查'
-          description='查看平台调度计划、下次窗口和最近准入。已准入只表示创建了地图作业，不表示复查成功。'
+          title='定时调度'
+          description='查看定时任务、下次触发窗口和最近触发结果。当前支持地图复查，场景定时执行尚未开放。'
         />
         {query.isPending ? (
           <PageSkeleton />
         ) : query.isError ? (
-          <QueryErrorState title='无法加载自动复查计划' onRetry={() => void query.refetch()} />
+          <QueryErrorState title='无法加载调度计划' onRetry={() => void query.refetch()} />
         ) : items.length === 0 ? (
           <EmptyState
-            title='还没有自动复查计划'
+            title='还没有调度计划'
             description='在目标知识页设置时区、窗口和账号。出厂关闭时即使保存也不会触发。'
           />
         ) : (
@@ -105,18 +105,19 @@ export function SchedulesPage() {
                 {
                   label: '已启用',
                   value: items.filter((item) => item.enabled).length,
-                  description: '会参与到期物化',
+                  description: '按计划等待触发',
                   icon: <CalendarClock className='size-4' />,
                 },
               ]}
             />
             <section
-              aria-label='自动复查计划'
+              aria-label='调度计划'
               className='min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card'
             >
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead>任务类型</TableHead>
                     <TableHead>目标 / 账号</TableHead>
                     <TableHead>时区与窗口</TableHead>
                     <TableHead>下次窗口</TableHead>
@@ -127,6 +128,7 @@ export function SchedulesPage() {
                 <TableBody>
                   {items.map((item) => (
                     <TableRow key={item.scheduleId}>
+                      <TableCell>地图复查</TableCell>
                       <TableCell>
                         <p className='text-body'>{names.get(item.targetId) ?? item.targetId.slice(0, 8)}</p>
                         <p className='text-label text-muted-foreground'>

@@ -79,8 +79,8 @@ export function OverviewPage() {
   return (
     <Main className="flex min-w-0 flex-1 flex-col gap-6">
       <PageHeader
-        title={greeting}
-        description="识途是面向真实 Web 系统的智能仿真与执行平台。以下是当前执行态势、业务成果断言与算力底座全景总览。"
+        title="总览"
+        description={`${greeting}。查看场景执行、业务结果和平台运行状态。`}
         actions={
           <div className="flex flex-wrap items-center gap-3">
             {/* 时间跨度切换 */}

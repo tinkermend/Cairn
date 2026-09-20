@@ -44,6 +44,7 @@ import { DomainError, conflict, forbidden, isUniqueViolation, notFound } from '.
 import { sha256Hex } from '../runs/digest.js'
 import { cancelMapJob, createMapJob, getMapJob, getMapJobPolicy } from '../map/jobs.js'
 import { getOrCreatePlatformConfig } from '../platform-config/store.js'
+import { liveTargetExists } from '../lifecycle.js'
 import { requireLiveTarget } from '../map/view.js'
 
 function definitionFromVersion(row: {
@@ -217,6 +218,45 @@ export async function getSchedule(db: Db, scheduleId: string): Promise<ScheduleD
   return scheduleToDto(db, scheduleId)
 }
 
+export async function retireSchedulesForOwner(
+  tx: Db,
+  input: { targetId?: string; targetAccountId?: string },
+  now: Date,
+  actor: ExecutionActor,
+): Promise<number> {
+  const { schedules, scheduleOccurrences } = schemaFor(tx)
+  const ownerFilter = [
+    input.targetId ? eq(schedules.targetId, input.targetId) : undefined,
+    input.targetAccountId ? eq(schedules.targetAccountId, input.targetAccountId) : undefined,
+  ].filter((item): item is NonNullable<typeof item> => item !== undefined)
+  if (ownerFilter.length === 0) return 0
+  const rows = await tx
+    .select({ id: schedules.id, enabled: schedules.enabled })
+    .from(schedules)
+    .where(and(...ownerFilter))
+  for (const row of rows) {
+    if (row.enabled === 1) {
+      const admitted = await tx
+        .select()
+        .from(scheduleOccurrences)
+        .where(and(eq(scheduleOccurrences.scheduleId, row.id), eq(scheduleOccurrences.admissionStatus, 'ADMITTED')))
+      for (const occurrence of admitted) {
+        if (occurrence.jobId) await cancelMapJob(tx, occurrence.jobId, actor).catch(() => undefined)
+      }
+    }
+    await tx
+      .update(schedules)
+      .set({
+        enabled: 0,
+        enabledGuard: null,
+        nextDueAt: null,
+        updatedAt: now,
+      })
+      .where(eq(schedules.id, row.id))
+  }
+  return rows.length
+}
+
 export async function listSchedules(db: Db, query: ScheduleListQuery, actorId?: string): Promise<{ items: ScheduleDto[]; nextCursor?: string }> {
   const { schedules } = schemaFor(db)
   const decoded = query.cursor ? decodeAuditCursor(query.cursor) : null
@@ -226,6 +266,7 @@ export async function listSchedules(db: Db, query: ScheduleListQuery, actorId?: 
     .where(
       and(
         query.targetId ? eq(schedules.targetId, query.targetId) : undefined,
+        liveTargetExists(db, schedules.targetId),
         await (await import('../console/target-authorization.js')).scopedTargetFilter(db, actorId, schedules.targetId, 'schedule:read'),
         query.enabled === undefined ? undefined : eq(schedules.enabled, query.enabled ? 1 : 0),
         decoded
@@ -638,10 +679,24 @@ export async function materializeDueSchedules(db: Db, limit = SCHEDULE_TICK_BATC
       const { schedules: scheduleTable, scheduleVersions } = schemaFor(tx)
       const [schedule] = await locked(tx, tx.select().from(scheduleTable).where(eq(scheduleTable.id, item.id)))
       if (!schedule || schedule.enabled !== 1 || !schedule.nextDueAt) return
+      const { targets, targetAccounts } = schemaFor(tx)
+      const [target] = await tx.select({ deletedAt: targets.deletedAt }).from(targets).where(eq(targets.id, schedule.targetId)).limit(1)
+      const [account] = await tx
+        .select({ deletedAt: targetAccounts.deletedAt })
+        .from(targetAccounts)
+        .where(eq(targetAccounts.id, schedule.targetAccountId))
+        .limit(1)
+      const now = await clockNow(tx)
+      if (!target || target.deletedAt || !account || account.deletedAt) {
+        await tx
+          .update(scheduleTable)
+          .set({ enabled: 0, enabledGuard: null, nextDueAt: null, updatedAt: now })
+          .where(eq(scheduleTable.id, schedule.id))
+        return
+      }
       const [version] = await tx.select().from(scheduleVersions).where(eq(scheduleVersions.id, schedule.currentVersionId)).limit(1)
       if (!version) return
       const definition = definitionFromVersion(version)
-      const now = await clockNow(tx)
       if (schedule.nextDueAt.getTime() > now.getTime()) return
       const startDate = localDateInTimeZone(schedule.nextDueAt, definition.timezone)
       const weekdays = new Set(definition.weekdays)

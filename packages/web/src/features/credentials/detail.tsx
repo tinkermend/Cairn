@@ -71,7 +71,7 @@ export function CredentialDetailPage({
       <PageHeader
         parent={
           <Link to='/credentials' className='text-link'>
-            返回凭据管理
+            返回目标账号凭据
           </Link>
         }
         title={item.name}

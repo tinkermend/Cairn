@@ -43,7 +43,7 @@ import { SessionFields } from './session-fields'
 
 const TABS = [
   { id: 'ai', title: '浏览器 AI' },
-  { id: 'platform-ai', title: '平台 AI' },
+  { id: 'platform-ai', title: '控制台助手' },
   { id: 'execution', title: '执行默认值' },
   { id: 'session', title: '会话策略' },
   { id: 'evidence', title: '证据策略' },

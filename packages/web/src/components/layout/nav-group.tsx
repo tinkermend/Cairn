@@ -43,7 +43,7 @@ export function NavGroup({ title, items }: NavGroupProps) {
   if (visibleItems.length === 0) return null
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>{title}</SidebarGroupLabel>
+      {title && <SidebarGroupLabel>{title}</SidebarGroupLabel>}
       <SidebarMenu>
         {visibleItems.map((item) => {
           const key = `${item.title}-${item.url}`

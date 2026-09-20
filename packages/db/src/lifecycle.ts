@@ -58,11 +58,18 @@ export function assertExpectedCounts(
     (expected.targetAccounts !== undefined &&
       (actual.targetAccounts ?? 0) > expected.targetAccounts) ||
     (expected.scenarios !== undefined && (actual.scenarios ?? 0) > expected.scenarios) ||
+    (expected.suites !== undefined && (actual.suites ?? 0) > expected.suites) ||
     (expected.recordings !== undefined && (actual.recordings ?? 0) > expected.recordings) ||
-    (expected.runs !== undefined && (actual.runs ?? 0) > expected.runs)
+    (expected.runs !== undefined && (actual.runs ?? 0) > expected.runs) ||
+    (expected.schedules !== undefined && (actual.schedules ?? 0) > expected.schedules)
   ) {
     throw conflict('DELETE_SCOPE_EXPANDED', '级联删除影响范围已发生变化，请刷新预览后重新确认')
   }
+}
+
+export function liveTargetExists(db: Db, targetIdColumn: SQLWrapper): SQL {
+  const { targets } = schemaFor(db)
+  return sql`EXISTS (SELECT 1 FROM ${targets} live_targets WHERE live_targets.id = ${targetIdColumn} AND live_targets.deleted_at IS NULL)`
 }
 
 export function resourceDeletedConflict(): never {

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { AlertCircle, CheckCircle2, FileText, History, Layers, Loader2, PlaySquare, ShieldAlert, Trash2, Users } from 'lucide-react'
+import { AlertCircle, CalendarClock, CheckCircle2, FileText, FolderKanban, History, Layers, Loader2, PlaySquare, ShieldAlert, Trash2, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import type {
   CleanupStatusResponse,
@@ -85,8 +85,10 @@ export function ResourceDeleteDialog({
             expectedCounts: {
               targetAccounts: counts.targetAccounts,
               scenarios: counts.scenarios,
+              suites: counts.suites,
               recordings: counts.recordings,
               runs: counts.runs,
+              schedules: counts.schedules,
             },
           }
         : undefined
@@ -186,12 +188,20 @@ export function ResourceDeleteDialog({
                           <span>业务场景：{counts.scenarios ?? 0} 个</span>
                         </div>
                         <div className='flex items-center gap-2'>
+                          <FolderKanban className='size-3.5 text-muted-foreground' />
+                          <span>场景集：{counts.suites ?? 0} 个</span>
+                        </div>
+                        <div className='flex items-center gap-2'>
                           <FileText className='size-3.5 text-muted-foreground' />
                           <span>录制草稿：{counts.recordings ?? 0} 个</span>
                         </div>
                         <div className='flex items-center gap-2'>
                           <PlaySquare className='size-3.5 text-muted-foreground' />
                           <span>历史运行：{counts.runs ?? 0} 个</span>
+                        </div>
+                        <div className='flex items-center gap-2'>
+                          <CalendarClock className='size-3.5 text-muted-foreground' />
+                          <span>调度计划：{counts.schedules ?? 0} 个</span>
                         </div>
                         <div className='col-span-2 flex items-center gap-2 text-muted-foreground pt-1 border-t border-border-divider'>
                           <History className='size-3.5' />

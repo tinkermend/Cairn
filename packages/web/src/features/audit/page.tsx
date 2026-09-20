@@ -37,7 +37,7 @@ export function AuditPage({ pane }: { pane: AuditPane }) {
       fixed
       className='flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden sm:gap-6'
     >
-        <PageHeader className='shrink-0' title='审计' description={copy.description} />
+        <PageHeader className='shrink-0' title='审计日志' description={copy.description} />
         {pane === 'operations' ? (
           <OperationsAuditPanel header={tabs} />
         ) : (

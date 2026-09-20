@@ -17,7 +17,7 @@ export function RolesPage() {
     <RolesProvider>
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
-          title='角色'
+          title='角色权限'
           description='系统角色由代码固定。自定义角色是权限目录中的命名组合。'
           actions={<RolesPrimaryButtons />}
         />

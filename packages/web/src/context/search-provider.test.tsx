@@ -77,7 +77,7 @@ describe('SearchProvider and CommandMenu', () => {
     await expect
       .element(getByPlaceholder(COMMAND_MENU_PLACEHOLDER))
       .toBeInTheDocument()
-    await expect.element(getByText('首页')).toBeInTheDocument()
+    await expect.element(getByText('总览')).toBeInTheDocument()
   })
 
   it('does not show the dialog content when search is closed', async () => {
@@ -114,7 +114,7 @@ describe('SearchProvider and CommandMenu', () => {
 
     await openCommandPalette(screen)
 
-    await userEvent.click(screen.getByRole('option', { name: '用户' }))
+    await userEvent.click(screen.getByRole('option', { name: '控制台用户' }))
 
     expect(mocks.navigate).toHaveBeenCalledWith({ to: '/users' })
     await expect
@@ -129,7 +129,8 @@ describe('SearchProvider and CommandMenu', () => {
 
     await openCommandPalette(screen)
 
-    await userEvent.click(getByRole('option', { name: '设置 账号' }))
+    await userEvent.fill(getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '修改密码')
+    await userEvent.click(getByRole('option', { name: '个人设置 修改密码' }))
 
     expect(mocks.navigate).toHaveBeenCalledWith({ to: '/settings/account' })
     await expect
@@ -143,10 +144,29 @@ describe('SearchProvider and CommandMenu', () => {
 
     await openCommandPalette(screen)
 
-    await expect.element(screen.getByRole('option', { name: '运行', exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByRole('option', { name: '运行记录', exact: true })).toBeInTheDocument()
     await expect.element(screen.getByRole('option', { name: '证据与报告', exact: true })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: '用户' }).elements()).toHaveLength(0)
+    expect(screen.getByRole('option', { name: '控制台用户' }).elements()).toHaveLength(0)
     expect(screen.getByRole('option', { name: '录制草稿' }).elements()).toHaveLength(0)
+  })
+
+  it('按中文名称搜索个人资料，移到账户菜单后仍可直接进入', async () => {
+    signIn(['settings:read'])
+    const screen = await renderWithSearchProvider()
+    await openCommandPalette(screen)
+    await userEvent.fill(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER), '个人资料')
+    await userEvent.click(screen.getByRole('option', { name: '个人设置 个人资料' }))
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: '/settings' })
+  })
+
+  it('个人入口保留权限过滤，并移除没有可设置项的外观入口', async () => {
+    signIn([])
+    const screen = await renderWithSearchProvider()
+    await openCommandPalette(screen)
+    expect(screen.getByRole('option', { name: /个人设置|外观/ }).elements()).toHaveLength(0)
+    signIn(['settings:read'])
+    await expect.element(screen.getByRole('option', { name: '个人设置 个人资料' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /外观/ }).elements()).toHaveLength(0)
   })
 
   it('shows empty state when the filter matches nothing', async () => {

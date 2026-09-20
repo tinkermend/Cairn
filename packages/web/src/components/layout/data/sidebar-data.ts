@@ -9,9 +9,8 @@ import {
   Layers,
   ListChecks,
   Monitor,
-  Palette,
   Play,
-  RefreshCw,
+  CalendarClock,
   ScrollText,
   Server,
   Settings,
@@ -19,10 +18,27 @@ import {
   SlidersHorizontal,
   UserCog,
   Users,
-  Wrench,
   Boxes,
 } from 'lucide-react'
-import { type SidebarData } from '../types'
+import { CAPABILITY_GROUP_LABELS, capabilityById } from '@cairn/shared'
+import { type NavCollapsible, type NavGroup, type SidebarData } from '../types'
+
+const menuTitle = (id: string) => capabilityById(`menu.${id}`).label
+
+export const personalSettingsNav: NavCollapsible = {
+  title: menuTitle('settings'),
+  icon: Settings,
+  permission: 'settings:read',
+  items: [
+    { title: '个人资料', url: '/settings', icon: UserCog },
+    { title: '修改密码', url: '/settings/account', icon: KeyRound },
+  ],
+}
+
+export const personalSettingsGroup: NavGroup = {
+  title: CAPABILITY_GROUP_LABELS.other,
+  items: [personalSettingsNav],
+}
 
 export const sidebarData: SidebarData = {
   user: {
@@ -32,39 +48,38 @@ export const sidebarData: SidebarData = {
   },
   navGroups: [
     {
-      title: '工作台',
+      title: '',
       items: [
         {
-          title: '首页',
+          title: menuTitle('home'),
           url: '/',
           icon: Home,
         },
+      ],
+    },
+    {
+      title: CAPABILITY_GROUP_LABELS.workbench,
+      items: [
         {
-          title: '目标系统',
-          url: '/targets',
-          icon: Monitor,
-          permission: 'target:read',
-        },
-        {
-          title: '场景',
+          title: menuTitle('scenarios'),
           url: '/scenarios',
           icon: ListChecks,
           permission: 'workflow:read',
         },
         {
-          title: '场景集',
+          title: menuTitle('suites'),
           url: '/suites',
           icon: Layers,
           permission: 'suite:read',
         },
         {
-          title: '动作库',
+          title: menuTitle('action-modules'),
           url: '/action-modules',
           icon: Boxes,
           permission: 'module:read',
         },
         {
-          title: '录制草稿',
+          title: menuTitle('recordings'),
           url: '/recordings',
           icon: CircleDot,
           permission: 'workflow:write',
@@ -72,112 +87,96 @@ export const sidebarData: SidebarData = {
       ],
     },
     {
-      title: '执行与观测',
+      title: CAPABILITY_GROUP_LABELS['execution-observation'],
       items: [
         {
-          title: '运行',
+          title: menuTitle('schedules'),
+          url: '/schedules',
+          icon: CalendarClock,
+          permission: 'schedule:read',
+        },
+        {
+          title: menuTitle('runs'),
           url: '/runs',
           icon: Play,
           permission: 'run:read',
         },
         {
-          title: '自动复查',
-          url: '/schedules',
-          icon: RefreshCw,
-          permission: 'schedule:read',
-        },
-        {
-          title: '浏览器会话',
-          url: '/sessions',
-          icon: Laptop,
-          permission: 'session:read',
-        },
-        {
-          title: '证据与报告',
+          title: menuTitle('evidence'),
           url: '/evidence',
           icon: FileSearch,
           permission: 'run:read',
         },
-        {
-          title: '运行监控',
-          url: '/monitoring',
-          icon: Activity,
-          permission: 'monitor:read',
-        },
-        { title: '通知', url: '/notifications', icon: Bell, permission: 'notification:read' },
       ],
     },
     {
-      title: '治理',
+      title: CAPABILITY_GROUP_LABELS.resources,
       items: [
         {
-          title: '用户',
-          url: '/users',
-          icon: Users,
-          permission: 'account:read',
+          title: menuTitle('targets'),
+          url: '/targets',
+          icon: Monitor,
+          permission: 'target:read',
         },
         {
-          title: '角色',
-          url: '/roles',
-          icon: Shield,
-          permission: 'role:read',
-        },
-        {
-          title: '开放服务',
-          url: '/services',
-          icon: KeyRound,
-          permission: 'service:read',
-        },
-        {
-          title: '凭据管理',
+          title: menuTitle('credentials'),
           url: '/credentials',
           icon: KeyRound,
           permission: 'credential:read',
         },
         {
-          title: '平台配置',
+          title: menuTitle('sessions'),
+          url: '/sessions',
+          icon: Laptop,
+          permission: 'session:read',
+        },
+      ],
+    },
+    {
+      title: CAPABILITY_GROUP_LABELS.operations,
+      items: [
+        {
+          title: menuTitle('monitoring'),
+          url: '/monitoring',
+          icon: Activity,
+          permission: 'monitor:read',
+        },
+        { title: menuTitle('workers'), url: '/workers', icon: Server, permission: 'session:read' },
+        { title: menuTitle('notifications'), url: '/notifications', icon: Bell, permission: 'notification:read' },
+      ],
+    },
+    {
+      title: CAPABILITY_GROUP_LABELS.governance,
+      items: [
+        {
+          title: menuTitle('users'),
+          url: '/users',
+          icon: Users,
+          permission: 'account:read',
+        },
+        {
+          title: menuTitle('roles'),
+          url: '/roles',
+          icon: Shield,
+          permission: 'role:read',
+        },
+        {
+          title: menuTitle('services'),
+          url: '/services',
+          icon: KeyRound,
+          permission: 'service:read',
+        },
+        {
+          title: menuTitle('platform-config'),
           url: '/platform-config',
           icon: SlidersHorizontal,
           permission: 'platform-config:read',
         },
         {
-          title: '执行节点',
-          url: '/workers',
-          icon: Server,
-          permission: 'session:read',
-        },
-        {
-          title: '审计',
+          title: menuTitle('audit'),
           url: '/audit',
           icon: ScrollText,
           anyOf: ['audit:read', 'audit:login'],
-        },
-      ],
-    },
-    {
-      title: '其他',
-      items: [
-        {
-          title: '设置',
-          icon: Settings,
-          permission: 'settings:read',
-          items: [
-            {
-              title: '个人资料',
-              url: '/settings',
-              icon: UserCog,
-            },
-            {
-              title: '账号',
-              url: '/settings/account',
-              icon: Wrench,
-            },
-            {
-              title: '外观',
-              url: '/settings/appearance',
-              icon: Palette,
-            },
-          ],
         },
       ],
     },

@@ -142,7 +142,7 @@ export function FleetResilience({
             to="/monitoring"
             className="text-label font-medium text-primary-600 hover:text-primary-700"
           >
-            打开完整运行监控 →
+            打开平台监控 →
           </Link>
         </div>
       </div>

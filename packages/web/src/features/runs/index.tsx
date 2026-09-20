@@ -208,7 +208,7 @@ export function RunsPage() {
     <>
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
-          title='运行'
+          title='运行记录'
           description='对目标系统执行场景的一次记录。进度以手动刷新的 GET 为准。集合运行见旁侧页签。'
           actions={
             <Can allOf={RUN_EXECUTE_ALL_OF}>

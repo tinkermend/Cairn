@@ -291,7 +291,7 @@ export function AssistantPanel({
       >
         {capabilities && !capabilities.modelEnabled ? (
           <p className='text-label text-muted-foreground'>
-            平台 AI 未启用，仍可使用功能导览与运行事实诊断。
+            控制台助手未启用，仍可使用功能导览与运行事实诊断。
           </p>
         ) : null}
         {error ? (
