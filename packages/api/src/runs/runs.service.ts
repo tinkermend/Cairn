@@ -6,8 +6,10 @@ import {
   getRun,
   getRunCleanupStatus,
   listMapSelectionDecisions,
+  listResolutionDecisions,
   listRunEvidence,
   listRuns,
+  loadResolutionLayers,
   loadScenarioVersion,
   previewDeleteRun,
   requestRunCancel,
@@ -19,7 +21,14 @@ import { parseHttpRange } from '@cairn/shared'
 import { assertAiExecutePermission } from '../config/browser-ai'
 import { config } from '../config/env'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
-import type { CreateRunBody, DeleteResourceBody, MapDecisionListQuery, ReviewRunBody, RunListQuery } from '@cairn/shared'
+import type {
+  CreateRunBody,
+  DeleteResourceBody,
+  MapDecisionListQuery,
+  ResolutionDecisionListQuery,
+  ReviewRunBody,
+  RunListQuery,
+} from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
 import type { RequestAccount } from '../common/request-account'
@@ -57,6 +66,10 @@ export class RunsService {
 
   mapDecisions(id: string, query: MapDecisionListQuery) {
     return listMapSelectionDecisions(this.db, id, query).catch(rethrowDomain)
+  }
+
+  resolutionDecisions(id: string, query: ResolutionDecisionListQuery) {
+    return listResolutionDecisions(this.db, id, query).catch(rethrowDomain)
   }
 
   previewDelete(id: string) {
@@ -129,8 +142,14 @@ export class RunsService {
   async create(body: CreateRunBody, actor: RequestAccount) {
     try {
       await this.platformConfig?.ensure()
-      const { version } = await loadScenarioVersion(this.db, body.scenarioId, body.scenarioVersionId)
-      assertAiExecutePermission(actor, version.definition.steps)
+      const { scenario, version } = await loadScenarioVersion(this.db, body.scenarioId, body.scenarioVersionId)
+      const layers = await loadResolutionLayers(this.db, scenario.targetId)
+      assertAiExecutePermission(actor, version.definition.steps, {
+        document: layers.document,
+        documentResolution: version.definition.resolution,
+        targetCeiling: layers.targetCeiling,
+        targetPreference: layers.targetPreference,
+      })
       return await createRunWithSnapshot(this.db, {
         ...body,
         actor: { id: actor.id },

@@ -8,7 +8,7 @@ import {
   type WorkerStatus,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
-import { clockNow, databaseNow, schemaFor, updateRows } from '../native.js'
+import { clockNow, databaseNow, schemaFor, updateRows, updateRowsCount } from '../native.js'
 
 export type ApiInstanceHeartbeatInput = {
   id: string
@@ -57,7 +57,8 @@ export async function heartbeatApiInstance(db: Db, input: ApiInstanceHeartbeatIn
       const expired = !current.heartbeatExpiresAt || current.heartbeatExpiresAt.getTime() <= now.getTime()
       if (current.status !== 'STOPPED' && current.status !== 'LOST' && !expired) return 'lost'
     }
-    const [row] = await updateRows(
+    // 只判是否命中 CAS，不读回实体：MySQL 下省掉 SELECT FOR UPDATE + 回读两次往返。
+    const updated = await updateRowsCount(
       tx,
       apiInstances,
       {
@@ -83,23 +84,22 @@ export async function heartbeatApiInstance(db: Db, input: ApiInstanceHeartbeatIn
           OR ${apiInstances.heartbeatExpiresAt} <= ${databaseNow(tx as unknown as Db)}
         )`,
       ),
-      { id: apiInstances.id },
     )
-    return row ? 'ok' : 'lost'
+    return updated > 0 ? 'ok' : 'lost'
   })
 }
 
 export async function markApiInstanceStopped(db: Db, id: string, instanceId: string): Promise<boolean> {
   const { apiInstances } = schemaFor(db)
   const now = await clockNow(db)
-  const [row] = await updateRows(
-    db,
-    apiInstances,
-    { status: 'STOPPED', stoppedAt: now, updatedAt: now },
-    and(eq(apiInstances.id, id), eq(apiInstances.instanceId, instanceId), inArray(apiInstances.status, ['READY', 'DRAINING'])),
-    { id: apiInstances.id },
+  return (
+    (await updateRowsCount(
+      db,
+      apiInstances,
+      { status: 'STOPPED', stoppedAt: now, updatedAt: now },
+      and(eq(apiInstances.id, id), eq(apiInstances.instanceId, instanceId), inArray(apiInstances.status, ['READY', 'DRAINING'])),
+    )) > 0
   )
-  return row !== undefined
 }
 
 export async function markLostApiInstances(db: Db): Promise<string[]> {

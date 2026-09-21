@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import { frozenNotificationPolicySchema } from './notifications.js'
 import { aiExecutionConfigSchema } from './ai-runtime.js'
+import { snapshotNeedsBrowserAi } from './resolution.js'
+import { frozenResolutionSchema } from './resolution-policy.js'
 import { evidencePolicySchema } from './evidence-policy.js'
 import { pageRefSchema } from './managed-browser.js'
 import { frozenTargetAuthSchema } from './platform-config.js'
@@ -20,7 +22,6 @@ import {
   AI_ATOMIC_ACTIONS_PROTOCOL,
   executionPolicySchema,
   FORBIDDEN_CONTEXT_KEYS,
-  hasAiSteps,
   stepSchema,
 } from './step.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
@@ -289,6 +290,11 @@ export const runSnapshotSchema = z
      * 严禁增加 .default()，避免存量快照重算 digest 漂移。
      */
     runtimeInvariantManifest: runtimeInvariantManifestSchema.optional(),
+    /**
+     * 冻结的有效解析策略。可选：旧快照无字段按 deterministic_only 解释。
+     * 严禁增加 .default()，避免存量快照重算 digest 漂移。
+     */
+    resolution: frozenResolutionSchema.optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),
   })
@@ -306,11 +312,11 @@ export const runSnapshotSchema = z
         message: '有 secretRef 时必须同时给出 targetAccountId',
       })
     }
-    if (hasAiSteps(snapshot.steps) && !snapshot.aiExecution) {
+    if (snapshotNeedsBrowserAi(snapshot.steps, snapshot.resolution?.steps) && !snapshot.aiExecution) {
       ctx.addIssue({
         code: 'custom',
         path: ['aiExecution'],
-        message: '含 AI 步骤的运行必须冻结 AI 执行配置',
+        message: '含 AI 步骤或 AI 解析档位的运行必须冻结 AI 执行配置',
       })
     }
 

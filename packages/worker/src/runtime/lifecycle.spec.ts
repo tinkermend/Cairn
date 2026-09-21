@@ -46,6 +46,9 @@ vi.mock("@cairn/db", async (importOriginal) => {
       },
       pending: [],
     })),
+    listPendingScheduleAdmits: vi.fn(async () => []),
+    claimAnalysisJob: vi.fn(async () => []),
+    executeAnalysisJob: vi.fn(async () => undefined),
     admitScheduleOccurrence: vi.fn(async () => undefined),
     expireClosedScheduleWindows: vi.fn(async () => 0),
     expireScheduledMapJobs: vi.fn(async () => 0),
@@ -1117,6 +1120,7 @@ describe("LifecycleService", () => {
       executor: false,
       scheduler: true,
       maintenance: false,
+      analyst: false,
     };
     svc.exitProcess = vi.fn();
     await svc.onApplicationBootstrap();
@@ -1130,6 +1134,7 @@ describe("LifecycleService", () => {
           executor: false,
           scheduler: true,
           maintenance: false,
+          analyst: false,
         }),
       }),
     );
@@ -1173,6 +1178,7 @@ describe("LifecycleService", () => {
       executor: false,
       scheduler: true,
       maintenance: false,
+      analyst: false,
     };
     svc.exitProcess = vi.fn();
     await svc.onApplicationBootstrap();
@@ -1225,6 +1231,7 @@ describe("LifecycleService", () => {
       executor: false,
       scheduler: false,
       maintenance: true,
+      analyst: false,
     };
     svc.exitProcess = vi.fn();
     await svc.onApplicationBootstrap();
@@ -1294,6 +1301,7 @@ describe("LifecycleService", () => {
       executor: true,
       scheduler: false,
       maintenance: false,
+      analyst: false,
     };
     svc.exitProcess = vi.fn();
     await svc.onApplicationBootstrap();
@@ -1356,6 +1364,7 @@ describe("LifecycleService", () => {
       executor: false,
       scheduler: false,
       maintenance: true,
+      analyst: false,
     };
     svc.exitProcess = vi.fn();
     await svc.onApplicationBootstrap();
@@ -1416,6 +1425,7 @@ describe("LifecycleService", () => {
       executor: false,
       scheduler: false,
       maintenance: true,
+      analyst: false,
     };
     svc.exitProcess = vi.fn();
     await svc.onApplicationBootstrap();
@@ -1478,6 +1488,7 @@ describe("LifecycleService", () => {
       executor: false,
       scheduler: false,
       maintenance: true,
+      analyst: false,
     };
     svc.exitProcess = vi.fn();
     await svc.onApplicationBootstrap();
@@ -1545,6 +1556,7 @@ describe("LifecycleService", () => {
       executor: false,
       scheduler: false,
       maintenance: true,
+      analyst: false,
     };
     svc.exitProcess = vi.fn();
     await svc.onApplicationBootstrap();
@@ -1578,6 +1590,62 @@ describe("LifecycleService", () => {
       ]),
     );
     await svc.onApplicationShutdown();
+  });
+
+  async function reaperOnce(overrides?: () => void): Promise<LifecycleService> {
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        LifecycleService,
+        { provide: DB_HANDLE, useValue: stubDb() },
+        { provide: ExecutionEngine, useValue: { execute: vi.fn(async () => {}) } },
+        { provide: ObjectService, useValue: { purgeExpiredObjects: vi.fn(async () => ({ purged: 0 })), probeStore: vi.fn(async () => ({ ok: true, latencyMs: 1, errorClass: null })) } },
+        { provide: EvidenceSettleService, useValue: { settleExpired: vi.fn(async () => ({ marked: 0 })) } },
+        { provide: BrowserSessionManager, useValue: stubSessions() },
+      ],
+    }).compile();
+    app = moduleRef.createNestApplication();
+    const svc = moduleRef.get(LifecycleService);
+    svc.rolesForAssembly = { executor: false, scheduler: false, maintenance: true };
+    svc.exitProcess = vi.fn();
+    await svc.onApplicationBootstrap();
+    overrides?.();
+    await (
+      svc as unknown as { runReaper: () => Promise<unknown> }
+    ).runReaper();
+    return svc;
+  }
+
+  it("业务成功而收尾写库失败，不被记成业务失败", async () => {
+    const { finishPeriodicSlot } = await import("@cairn/db");
+    vi.mocked(finishPeriodicSlot).mockReset();
+    vi.mocked(finishPeriodicSlot).mockRejectedValueOnce(new Error("finish write failed"));
+    vi.mocked(finishPeriodicSlot).mockResolvedValue(true);
+    const svc = await reaperOnce();
+    const failed = vi
+      .mocked(finishPeriodicSlot)
+      .mock.calls.filter((call) => (call[1] as { outcome: string }).outcome === "failed");
+    expect(failed).toEqual([]);
+    await svc.onApplicationShutdown();
+  });
+
+  it("回收预算耗尽而积压仍在时不刷新全局回收水位", async () => {
+    const { expireRunDeadlines, touchRuntimeWatermark } = await import("@cairn/db");
+    // 只伪造 Date：每批都打满且把时钟推过预算，drainWhileFull 立即判定预算耗尽。
+    vi.mocked(expireRunDeadlines).mockImplementation(async () => {
+      vi.setSystemTime(Date.now() + 60_000);
+      return { settled: 200, scanned: 200 };
+    });
+    try {
+      const svc = await reaperOnce(() => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.mocked(touchRuntimeWatermark).mockClear();
+      });
+      expect(touchRuntimeWatermark).not.toHaveBeenCalledWith(expect.anything(), "global_reclaim");
+      await svc.onApplicationShutdown();
+    } finally {
+      vi.useRealTimers();
+      vi.mocked(expireRunDeadlines).mockImplementation(async () => ({ settled: 0, scanned: 0 }));
+    }
   });
 
   async function buildLifecycle(): Promise<LifecycleService> {

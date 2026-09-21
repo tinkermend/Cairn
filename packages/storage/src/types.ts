@@ -29,8 +29,8 @@ export type ObjectGetResult = {
 
 export interface ObjectStore {
   put(input: PutObjectInput): Promise<ObjectHead>
-  /** Bounded file upload for managed derived artifacts; avoids buffering large ZIPs. */
-  putFile?(input: { key: string; path: string; contentType: string; maxBytes: number; signal?: AbortSignal }): Promise<ObjectHead>
+  /** Bounded file upload for managed derived artifacts; avoids buffering large ZIPs or videos. */
+  putFile(input: { key: string; path: string; contentType: string; maxBytes: number; signal?: AbortSignal }): Promise<ObjectHead>
   get(key: string, options?: ObjectGetOptions): Promise<ObjectGetResult>
   delete(key: string): Promise<void>
   probe(): Promise<ObjectStoreProbeResult>

@@ -31,11 +31,13 @@ const mocks = vi.hoisted(() => ({
   debugRun: vi.fn(),
   createRun: vi.fn(),
   fetchRunMapDecisions: vi.fn(),
+  fetchRunResolutionDecisions: vi.fn(),
   search: {} as { invocation?: string },
 }))
 
 vi.mock('@/lib/runs-api', async (original) => ({ ...await original<typeof import('@/lib/runs-api')>(), ...mocks }))
-vi.mock('@/lib/reports-api', () => ({
+vi.mock('@/lib/reports-api', async (original) => ({
+  ...await original<typeof import('@/lib/reports-api')>(),
   fetchReports: vi.fn(async () => ({ items: [], nextCursor: undefined })),
   previewReport: vi.fn(),
   createReport: vi.fn(),
@@ -202,6 +204,7 @@ describe('RunDetailPage', () => {
     mocks.search = {}
     mocks.fetchRunObservation.mockResolvedValue(observationOf(runDetail()))
     mocks.fetchRunMapDecisions.mockResolvedValue({ items: [] })
+    mocks.fetchRunResolutionDecisions.mockResolvedValue({ items: [] })
     hangSubscribe()
     mocks.cancelRun.mockResolvedValue({ status: 'CANCELLED' })
     mocks.reviewRun.mockResolvedValue(undefined)
@@ -278,7 +281,7 @@ describe('RunDetailPage', () => {
     // 注意 exact：'判定取消' 也含'取消'，不加就永远命中
     expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
 
-    await expect.element(screen.getByRole('link', { name: '在证据与报告中查看' })).toHaveAttribute('href', '/evidence')
+    await expect.element(screen.getByRole('link', { name: '在结果与报告中查看' })).toHaveAttribute('href', '/evidence')
 
     // 步骤、Attempt、错误、证据、context 一个都不许省
     await expect.element(screen.getByText('1. 提交订单')).toBeInTheDocument()
@@ -508,7 +511,7 @@ describe('RunDetailPage', () => {
     await expect.element(screen.getByText(/代次 3/)).toBeInTheDocument()
     await expect.element(screen.getByText(/复用会话/)).toBeInTheDocument()
     await expect.element(screen.getByText(/占用运行/)).toBeInTheDocument()
-    await expect.element(screen.getByText(/历史运行未冻结主动检测规则，开跑时按登录页判断/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/历史运行未冻结登录态检测规则，开跑时按登录页判断/)).toBeInTheDocument()
   })
 
   it('快照含 authVerification 时显示等级与修订，不用可用绿', async () => {
@@ -544,9 +547,9 @@ describe('RunDetailPage', () => {
     )
     signIn(['run:read'])
     const screen = await renderPage()
-    await expect.element(screen.getByText(/已启用主动检测/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/已启用登录态检测/)).toBeInTheDocument()
     await expect.element(screen.getByText(/规则修订 2/)).toBeInTheDocument()
-    expect(screen.getByText(/已启用主动检测/).element().className).toContain('text-muted-foreground')
+    expect(screen.getByText(/已启用登录态检测/).element().className).toContain('text-muted-foreground')
   })
 
   it('两根轴并列：成功且证据不完整是橙色；终态收集中是灰色', async () => {

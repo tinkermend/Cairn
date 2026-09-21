@@ -120,6 +120,7 @@ function mockService() {
       completedAt: '2026-09-10T00:00:00.000Z',
     })),
     mapDecisions: vi.fn(async () => ({ items: [] })),
+    resolutionDecisions: vi.fn(async () => ({ items: [] })),
   }
 }
 
@@ -473,6 +474,13 @@ describe('Runs HTTP', () => {
     expect(service.mapDecisions).toHaveBeenCalledWith(detail.id, { limit: 50 })
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/map-decisions?cursor=invalid`).expect(400)
     await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/map-decisions`).expect(403)
+  })
+
+  it('可读运行解析决策，缺 target:read 拒绝', async () => {
+    await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/resolution-decisions`).expect(200)
+    expect(service.resolutionDecisions).toHaveBeenCalledWith(detail.id, { limit: 50 })
+    await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/resolution-decisions?cursor=invalid`).expect(400)
+    await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/resolution-decisions`).expect(403)
   })
 
   it('删除无对象返回 200，有待清理对象返回 202', async () => {

@@ -31,9 +31,12 @@ import { recordAudit } from '../audit/record.js'
 import { assertTargetPermission, lockConsoleAuthorization, scopedTargetFilter } from '../console/target-authorization.js'
 import { cursorFilter, paginateResults } from '../cursor.js'
 import { newId } from '../id.js'
-import { atomic, inTransaction, locked, schemaFor } from '../native.js'
+import { atomic, inTransaction, locked, onCommit, schemaFor } from '../native.js'
+import { publishChangeHint } from '../observe/hint.js'
 import { sha256Hex } from '../runs/digest.js'
 import { badRequest, conflict, DomainError, mapRestriction, notFound } from '../runs/errors.js'
+import { loadResolutionLayers, stepsNeedAiExecute } from '../runs/resolution-layers.js'
+import { loadScenarioVersion } from '../runs/scenarios.js'
 import { resolveRunTargetAccountId, writeRunWithSnapshot } from '../runs/runs.js'
 import { requestRunCancel } from '../runs/runs.js'
 import { liveTargetExists } from '../lifecycle.js'
@@ -94,6 +97,7 @@ export async function appendSuiteEvents(
     .update(suiteRuns)
     .set({ eventSeq: seq, revision: sql`${suiteRuns.revision} + 1`, updatedAt: now })
     .where(eq(suiteRuns.id, suiteRunId))
+  onCommit(tx, () => publishChangeHint({ objectType: 'suite_run', objectId: suiteRunId, eventSeq: seq }))
 }
 
 async function loadObservationTx(db: Db, suiteRunId: string): Promise<SuiteRunObservation> {
@@ -224,7 +228,7 @@ export async function listSuiteRunEventsAfter(
     .from(suiteRunEvents)
     .where(and(eq(suiteRunEvents.suiteRunId, suiteRunId), sql`${suiteRunEvents.seq} > ${afterSeq}`))
     .orderBy(asc(suiteRunEvents.seq))
-    .limit(200)
+    .limit(100)
   return rows.map((row) => ({
     seq: row.seq,
     type: row.type,
@@ -254,6 +258,7 @@ export async function previewSuiteRun(
   db: Db,
   body: CreateSuiteRunBody,
   actorId?: string,
+  frozenAccounts?: Record<string, string | null>,
 ): Promise<SuiteRunPreviewResponse> {
   const input = createSuiteRunBodySchema.parse(body)
   const { suite, version, document } = await resolvePublishedVersion(db, input.suiteId, input.suiteVersionId)
@@ -285,7 +290,7 @@ export async function previewSuiteRun(
     })
     let targetAccountId: string | null = null
     try {
-      targetAccountId = await resolveRunTargetAccountId(db, { targetId: suite.targetId, requestedAccountId: resolveSuiteMemberAccountId({
+      targetAccountId = frozenAccounts?.[member.memberId] === null ? null : await resolveRunTargetAccountId(db, { targetId: suite.targetId, requestedAccountId: frozenAccounts?.[member.memberId] ?? resolveSuiteMemberAccountId({
         runMemberAccountId: override?.targetAccountId,
         memberAccountId: member.targetAccountId,
         runDefaultAccountId: input.defaultTargetAccountId,
@@ -323,13 +328,13 @@ export async function previewSuiteRun(
   }
 }
 
-export async function createSuiteRun(db: Db, body: CreateSuiteRunBody, actor: ExecutionActor) {
+export async function createSuiteRun(db: Db, body: CreateSuiteRunBody, actor: ExecutionActor, frozenAccounts?: Record<string, string | null>) {
   const input = createSuiteRunBodySchema.parse(body)
   if (actor.kind === 'service') throw badRequest('SUITE_SERVICE_FORBIDDEN', '开放服务不能创建集合运行')
   return atomic(db, async (tx) => {
     await lockConsoleAuthorization(tx, actor.id)
     const { suiteRuns } = schemaFor(tx)
-    const digest = sha256Hex(input)
+    const digest = sha256Hex(frozenAccounts ? { input, frozenAccounts } : input)
     const [existing] = await tx.select().from(suiteRuns)
       .where(and(eq(suiteRuns.createdByConsoleAccountId, actor.id), eq(suiteRuns.idempotencyKey, input.idempotencyKey))).limit(1)
     if (existing) {
@@ -337,13 +342,13 @@ export async function createSuiteRun(db: Db, body: CreateSuiteRunBody, actor: Ex
       if (existing.idempotencyDigest !== digest) throw conflict('SUITE_RUN_IDEMPOTENCY_CONFLICT', '相同幂等键对应不同的集合运行输入')
       return { observation: await getSuiteRunObservation(tx, existing.id), created: false }
     }
-    return createSuiteRunTx(tx, input, actor, digest)
+    return createSuiteRunTx(tx, input, actor, digest, frozenAccounts)
   })
 }
 
-async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: ExecutionActor, digest: string) {
+async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: ExecutionActor, digest: string, frozenAccounts?: Record<string, string | null>) {
   await assertReportDeploymentReady(db, true)
-  const preview = await previewSuiteRun(db, input, actor.id)
+  const preview = await previewSuiteRun(db, input, actor.id, frozenAccounts)
   if (preview.issues.some((item) => item.severity === 'error')) {
     throw badRequest('SUITE_VALIDATION_FAILED', '场景集运行预览未通过', preview.issues)
   }
@@ -353,6 +358,14 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
   const { suite, version, document } = await resolvePublishedVersion(db, input.suiteId, preview.suiteVersionId)
   await lockReportDefaults(db, document.members.map((member) => member.scenarioId), [document.reportProfileId, ...document.members.map((member) => member.reportProfileId)].filter((id): id is string => !!id))
   await assertTargetPermission(db, actor.id, suite.targetId, 'run:execute')
+  const layers = await loadResolutionLayers(db, suite.targetId)
+  for (const member of preview.members) {
+    const loaded = await loadScenarioVersion(db, member.scenarioId, member.scenarioVersionId)
+    if (stepsNeedAiExecute(loaded.version.definition.steps, layers, loaded.version.definition.resolution)) {
+      await assertTargetPermission(db, actor.id, suite.targetId, 'ai:execute')
+      break
+    }
+  }
   const now = new Date()
   const deadlineAt = new Date(now.getTime() + (input.deadlineMs ?? DEFAULT_SUITE_DEADLINE_MS))
   const reportDefaults = await resolveReportProfile(db, suite.targetId, document.reportProfileId)
@@ -411,6 +424,7 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
           scenarioId: member.scenarioId,
           scenarioVersionId: member.scenarioVersionId,
           targetAccountId: member.targetAccountId ?? undefined,
+          resolvedTargetAccountId: member.targetAccountId,
           input: member.effectiveInput,
           actor,
           deadlineAt,

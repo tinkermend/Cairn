@@ -8,16 +8,18 @@ import {
   listSuiteRuns,
   previewSuiteRun,
   type DbHandle,
+  type ChangeHintBus,
 } from '@cairn/db'
 import type { CreateSuiteRunBody, SuiteRunListQuery } from '@cairn/shared'
 import { rethrowDomain } from '../common/domain-error.js'
-import { abortWhenSseClientDrops } from '../common/sse-abort.js'
+import { observeObject } from '../common/observe-object.js'
+import { CHANGE_HINT } from '../observe/change-hint.module.js'
 import type { RequestAccount } from '../common/request-account'
 import { DB_HANDLE } from '../db/db.module'
 
 @Injectable()
 export class SuiteRunsService {
-  constructor(@Inject(DB_HANDLE) private readonly database: DbHandle) {}
+  constructor(@Inject(DB_HANDLE) private readonly database: DbHandle, @Inject(CHANGE_HINT) private readonly hints: ChangeHintBus) {}
 
   private actor(account: RequestAccount) {
     return { kind: 'console' as const, id: account.id }
@@ -44,33 +46,11 @@ export class SuiteRunsService {
   }
 
   async stream(suiteRunId: string, actorId: string, req: Request, res: Response) {
-    const first = await this.observation(suiteRunId, actorId)
-    const signal = abortWhenSseClientDrops(req, res)
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache')
-    res.flushHeaders?.()
-    let after = 0
-    const write = (event: string, data: unknown) => {
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-    }
-    try {
-      write('observation', first)
-      after = first.eventSeq
-      if (['COMPLETED', 'CANCELLED', 'FAILED'].includes(first.status) && first.evidenceStatus !== 'PENDING' && first.automaticReport?.status !== 'pending') return
-      while (!signal.aborted) {
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-        if (signal.aborted) break
-        const observation = await getSuiteRunObservation(this.database, suiteRunId, actorId)
-        const events = await listSuiteRunEventsAfter(this.database, suiteRunId, after)
-        for (const event of events) write('event', event)
-        after = events.at(-1)?.seq ?? after
-        write('observation', observation)
-        if (['COMPLETED', 'CANCELLED', 'FAILED'].includes(observation.status) && observation.evidenceStatus !== 'PENDING' && observation.automaticReport?.status !== 'pending') break
-      }
-    } catch (error) {
-      if (!signal.aborted) write('error', { message: '集合运行进度不可访问，请刷新检查当前权限' })
-    } finally {
-      if (!res.writableEnded) res.end()
-    }
+    return observeObject({ req, res, after: 0, hints: this.hints, objectId: suiteRunId, event: 'observation',
+      matches: hint => hint.objectType === 'suite_run' && hint.objectId === suiteRunId,
+      snapshot: () => this.observation(suiteRunId, actorId),
+      events: cursor => listSuiteRunEventsAfter(this.database, suiteRunId, cursor),
+      finished: observation => ['COMPLETED', 'CANCELLED', 'FAILED'].includes(observation.status) && observation.evidenceStatus !== 'PENDING' && observation.automaticReport?.status !== 'pending',
+    })
   }
 }

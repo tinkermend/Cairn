@@ -169,4 +169,110 @@ describe('assembleRunSnapshot', () => {
     })
     expect(snapshot.secretRef?.secretId).toBe('00000000-0000-4000-8000-000000000032')
   })
+
+  it('目标系统上限能压住平台已开放的 AI 档，不冻结 resolution', () => {
+    const clickId = '00000000-0000-4000-8000-000000000041'
+    const click: Step = {
+      id: clickId,
+      name: '点击',
+      type: 'click',
+      effectType: 'SIDE_EFFECT',
+      input: { target: { candidates: [{ by: 'text', value: '查询' }] } },
+    }
+    const platformDocument = {
+      ...FACTORY_PLATFORM_CONFIG,
+      browserAi: {
+        ...FACTORY_PLATFORM_CONFIG.browserAi,
+        enabled: true,
+        baseUrl: 'https://model.example/v1',
+        model: 'demo',
+        modelFamily: 'doubao-seed',
+        secretRef: { provider: 'local' as const, secretId: '00000000-0000-4000-8000-000000000033' },
+        resolutionCeiling: 'prefer_deterministic' as const,
+      },
+    }
+    const closed = assembleRunSnapshot({
+      runId: ids.run,
+      createdAt: new Date('2026-09-20T00:00:00.000Z'),
+      targetId: ids.target,
+      scenarioId: ids.scenario,
+      scenarioVersionId: ids.version,
+      steps: [click],
+      input: {},
+      target: {
+        entryUrl: 'https://erp.example/app',
+        loginUrl: 'https://erp.example/login',
+        authMethod: 'password',
+        captchaMode: 'none',
+        loginFields: null,
+        sessionPolicy: null,
+        resolutionPolicy: { ceiling: 'deterministic_only' },
+      },
+      platformDocument,
+      platformRevision: 2,
+      authVerification,
+      allowedOrigins: ['https://erp.example'],
+      accessPolicy,
+      mapConsumption: { mode: 'off' },
+    })
+    expect(closed.resolution).toBeUndefined()
+    expect(closed.aiExecution).toBeUndefined()
+
+    const open = assembleRunSnapshot({
+      runId: ids.run,
+      createdAt: new Date('2026-09-20T00:00:00.000Z'),
+      targetId: ids.target,
+      scenarioId: ids.scenario,
+      scenarioVersionId: ids.version,
+      steps: [click],
+      input: {},
+      target: {
+        entryUrl: 'https://erp.example/app',
+        loginUrl: 'https://erp.example/login',
+        authMethod: 'password',
+        captchaMode: 'none',
+        loginFields: null,
+        sessionPolicy: null,
+        resolutionPolicy: { preference: 'prefer_deterministic' },
+      },
+      platformDocument,
+      platformRevision: 2,
+      authVerification,
+      allowedOrigins: ['https://erp.example'],
+      accessPolicy,
+      mapConsumption: { mode: 'off' },
+    })
+    expect(open.resolution?.ceiling).toBe('prefer_deterministic')
+    expect(open.resolution?.targetPreference).toBe('prefer_deterministic')
+    expect(open.resolution?.steps[clickId]).toBe('prefer_deterministic')
+    expect(open.aiExecution?.modelName).toBe('demo')
+
+    const leftover = assembleRunSnapshot({
+      runId: ids.run,
+      createdAt: new Date('2026-09-20T00:00:00.000Z'),
+      targetId: ids.target,
+      scenarioId: ids.scenario,
+      scenarioVersionId: ids.version,
+      steps: [click],
+      input: {},
+      target: {
+        entryUrl: 'https://erp.example/app',
+        loginUrl: 'https://erp.example/login',
+        authMethod: 'password',
+        captchaMode: 'none',
+        loginFields: null,
+        sessionPolicy: null,
+        resolutionPolicy: { ceiling: 'deterministic_only' },
+      },
+      platformDocument,
+      platformRevision: 2,
+      aiExecution: open.aiExecution,
+      authVerification,
+      allowedOrigins: ['https://erp.example'],
+      accessPolicy,
+      mapConsumption: { mode: 'off' },
+    })
+    expect(leftover.resolution).toBeUndefined()
+    expect(leftover.aiExecution).toBeUndefined()
+  })
 })

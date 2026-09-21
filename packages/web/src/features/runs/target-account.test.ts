@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { passwordAccounts, preferredPasswordAccountId } from './target-account'
+import {
+  passwordAccounts,
+  preferredPasswordAccountId,
+  unusableAccountCopy,
+  unusableAccountReason,
+} from './target-account'
 
 describe('preferredPasswordAccountId', () => {
   it('优先选择已启用且已保存口令的账号', () => {
@@ -18,5 +23,31 @@ describe('preferredPasswordAccountId', () => {
     expect(passwordAccounts([{ id: 'empty', status: 'active', hasPassword: false }])).toEqual([
       { id: 'empty', status: 'active', hasPassword: false },
     ])
+  })
+})
+
+describe('unusableAccountReason', () => {
+  it('有可用账号时不给原因', () => {
+    expect(unusableAccountReason([{ id: 'a', status: 'active', hasPassword: true }])).toBeUndefined()
+  })
+
+  it('区分没有账号、全停用、全仅采集与混合', () => {
+    expect(unusableAccountReason([])).toBe('none')
+    expect(unusableAccountReason([{ id: 'a', status: 'disabled', hasPassword: true }])).toBe('disabled')
+    expect(
+      unusableAccountReason([{ id: 'a', status: 'active', hasPassword: true, usage: 'map' }]),
+    ).toBe('map_only')
+    expect(
+      unusableAccountReason([
+        { id: 'a', status: 'disabled', hasPassword: true },
+        { id: 'b', status: 'active', hasPassword: true, usage: 'map' },
+      ]),
+    ).toBe('mixed')
+  })
+
+  it('停用与仅采集的说明不是同一句话', () => {
+    expect(unusableAccountCopy('disabled')).not.toBe(unusableAccountCopy('map_only'))
+    expect(unusableAccountCopy('map_only')).toContain('仅知识采集')
+    expect(unusableAccountCopy('disabled')).toContain('已停用')
   })
 })

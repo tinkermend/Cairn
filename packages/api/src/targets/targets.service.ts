@@ -64,6 +64,10 @@ export class TargetsService {
     return this.store.updateSessionPolicy(...args).catch(rethrowDomain)
   }
 
+  updateResolutionPolicy(...args: Parameters<TargetsStore['updateResolutionPolicy']>) {
+    return this.store.updateResolutionPolicy(...args).catch(rethrowDomain)
+  }
+
   deleteTarget(...args: Parameters<TargetsStore['deleteTarget']>) {
     return this.store.deleteTarget(...args).catch(rethrowDomain)
   }
@@ -218,9 +222,7 @@ export class TargetsService {
     const lease = await findAuthWaitLeaseForOperation(this.database, operationId)
     const session = lease ? await getSessionById(this.database, lease.sessionId) : null
     const worker = session ? await getWorkerById(this.database, session.ownerWorkerId) : null
-    const endpoints = parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS, {
-      networkMode: config.CAIRN_WORKER_NETWORK_MODE,
-    })
+    const endpoints = parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS)
     const evaluation = worker
       ? evaluateWorkerRoute({
           workerStatus: worker.status,
@@ -230,7 +232,6 @@ export class TargetsService {
           heartbeatExpiresAt: worker.heartbeatExpiresAt,
           internalBaseUrl: worker.internalBaseUrl,
           asOf: new Date(),
-          networkMode: config.CAIRN_WORKER_NETWORK_MODE,
           envEndpoint: endpoints[worker.id],
         })
       : null

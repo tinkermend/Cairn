@@ -17,7 +17,7 @@ export type ChangeHintBus = {
   readonly realtime: boolean
   readonly namespace: string
   publish(hint: ChangeHint): Promise<void>
-  subscribe(onHint: ChangeHintListener, onReconnect?: () => void): Promise<void>
+  subscribe(onHint: ChangeHintListener, onReconnect?: () => void): Promise<void | (() => void)>
   ping(): Promise<boolean>
   close(): Promise<void>
 }
@@ -35,15 +35,37 @@ export function createChangeHint(input: {
   if (driver === 'redis' && !input.redisUrl) {
     throw new Error('redis 变化提示必须配置 CAIRN_REDIS_URL')
   }
-  const bus =
+  const transport =
     driver === 'postgres'
       ? createPostgresHint(input.dbEnv, input.namespace)
       : driver === 'redis'
         ? createRedisHint(input.redisUrl!, input.namespace)
         : createNoneHint(input.namespace)
+  const subscribers = new Set<{ hint: ChangeHintListener; reconnect?: () => void }>()
+  let subscription: Promise<unknown> | undefined
+  const bus: ChangeHintBus = {
+    ...transport,
+    async subscribe(hint, reconnect) {
+      const entry = { hint, reconnect }
+      subscribers.add(entry)
+      subscription ??= transport.subscribe(
+        (value) => { for (const listener of subscribers) { try { listener.hint(value) } catch (error) { console.error('[db] change-hint listener failed', error) } } },
+        () => { for (const listener of subscribers) listener.reconnect?.() },
+      ).catch((error) => { subscription = undefined; throw error })
+      try { await subscription } catch (error) { subscribers.delete(entry); throw error }
+      return () => { subscribers.delete(entry) }
+    },
+    async close() { subscribers.clear(); await transport.close() },
+  }
   setChangeHintPublisher((draft) => {
     void bus
-      .publish({ namespace: input.namespace, runId: draft.runId, eventSeq: draft.eventSeq })
+      .publish({
+        namespace: input.namespace,
+        runId: draft.runId,
+        eventSeq: draft.eventSeq,
+        objectType: draft.objectType,
+        objectId: draft.objectId ?? draft.runId,
+      })
       .catch((error) => {
         console.error('[db] change-hint publish failed', error)
       })

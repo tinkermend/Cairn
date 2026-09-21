@@ -86,7 +86,7 @@ describe('审计页', () => {
   it('同时有两项权限时用页签切换，点击登录记录会改路由', async () => {
     setUser(['audit:read', 'audit:login'])
     const screen = await renderPage('operations')
-    await expect.element(screen.getByRole('heading', { name: '审计' })).toBeVisible()
+    await expect.element(screen.getByRole('heading', { name: '审计日志' })).toBeVisible()
     await expect.element(screen.getByRole('tab', { name: '操作记录' })).toBeVisible()
     await expect.element(screen.getByRole('tab', { name: '登录记录' })).toBeVisible()
     await expect.element(screen.getByText('创建账号 审计员')).toBeVisible()
@@ -98,7 +98,7 @@ describe('审计页', () => {
   it('只有操作权限时不画孤单页签，也不出现登录记录', async () => {
     setUser(['audit:read'])
     const screen = await renderPage('operations')
-    await expect.element(screen.getByRole('heading', { name: '审计' })).toBeVisible()
+    await expect.element(screen.getByRole('heading', { name: '审计日志' })).toBeVisible()
     await expect.element(screen.getByText('谁在控制台改了账号、权限、目标系统、场景或运行。')).toBeVisible()
     expect(screen.getByRole('tablist').query()).toBeNull()
     expect(screen.getByRole('tab', { name: '登录记录' }).query()).toBeNull()
@@ -108,7 +108,7 @@ describe('审计页', () => {
   it('只有登录权限时同样不画孤单页签', async () => {
     setUser(['audit:login'])
     const screen = await renderPage('logins')
-    await expect.element(screen.getByRole('heading', { name: '审计' })).toBeVisible()
+    await expect.element(screen.getByRole('heading', { name: '审计日志' })).toBeVisible()
     expect(screen.getByRole('tablist').query()).toBeNull()
     expect(screen.getByRole('tab', { name: '操作记录' }).query()).toBeNull()
     await expect.element(screen.getByText('127.0.0.1')).toBeVisible()

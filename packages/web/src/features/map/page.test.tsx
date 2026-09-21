@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   retireMapTerm: vi.fn(),
   fetchMapConsumptionPolicy: vi.fn(),
   updateMapConsumptionPolicy: vi.fn(),
+  grantMapConsumptionEligibility: vi.fn(),
   fetchMapJobPolicy: vi.fn(),
   updateMapJobPolicy: vi.fn(),
   fetchMapSafeEntries: vi.fn(),

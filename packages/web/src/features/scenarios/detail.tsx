@@ -7,12 +7,15 @@ import {
   entityIdSchema,
   canExecuteRun,
   canTrialRun,
+  FACTORY_COMPILE_RESOLUTION,
   hasPermission,
   isAiStepType,
+  isFixtureStepType,
   isAuthoringDocumentV2,
   MAX_AUTHORING_NODES,
   MAX_SCENARIO_STEPS,
   type CompileDiagnostic,
+  type CompileResolutionContext,
   type ExecutableStepType,
   type RecordingInsertAnchor,
   type RunDetailDto,
@@ -97,7 +100,10 @@ import {
   unavailableStudioTypes,
 } from './step-registry'
 import { AuthoringObserveProvider } from './authoring-observe'
+import { ResolutionSourceProvider } from '@/features/authoring/resolution-source'
 import { InputsEditor, StepEditor } from './step-editor'
+import { withPickedSemantic } from '@/features/authoring/fields/target'
+import { ScenarioResolutionStats } from './resolution-stats'
 import { OutcomeListEditor } from '@/features/authoring/outcome-editor'
 import { RuntimeInvariantEditor } from '@/features/authoring/invariant-editor'
 import { resolveOutcomeWriteback } from '@cairn/authoring'
@@ -107,6 +113,7 @@ import { TrialPanel } from './trial-panel'
 import { SCENARIO_STATUS_LABELS, stepTypeLabel } from './labels'
 import { MapStepBinding } from '@/features/map/step-binding'
 import { KnowledgeProposal } from '@/features/scenarios/knowledge-proposal'
+import { ObjectSchedules } from '@/features/schedules/object-schedules'
 import { RecordingImportPanel } from './recording-import-panel'
 import { ScenarioValidationSummary } from './validation-summary'
 import { useStudioDraft } from './use-studio-draft'
@@ -176,6 +183,19 @@ export function ScenarioDetailPage() {
     enabled: !!scenario && canReadTarget,
   })
   const target = canReadTarget ? targetQuery.data : undefined
+  const compileResolution = useMemo((): CompileResolutionContext | undefined => {
+    const caps = capabilitiesQuery.data?.resolution
+    const policy = target?.resolutionPolicy
+    if (!caps && !policy) return undefined
+    return {
+      ceiling: caps?.ceiling ?? FACTORY_COMPILE_RESOLUTION.ceiling,
+      default: caps?.default ?? FACTORY_COMPILE_RESOLUTION.default,
+      targetCeiling: policy?.ceiling,
+      targetPreference: policy?.preference,
+      aiRungAvailable: caps?.aiRungAvailable,
+      waitKindsAvailable: caps?.waitKindsAvailable,
+    }
+  }, [capabilitiesQuery.data?.resolution, target?.resolutionPolicy])
   const draft = useStudioDraft(
     scenarioId,
     scenario?.draft
@@ -187,6 +207,7 @@ export function ScenarioDetailPage() {
         ? { exists: true, status: 'active' }
         : undefined,
     capabilitiesQuery.data?.executableStepTypes ?? DETERMINISTIC_STUDIO_TYPES,
+    compileResolution,
   )
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
@@ -258,6 +279,8 @@ export function ScenarioDetailPage() {
   const disabled = !canWrite || saving || publishing
   const compile = draft.compile ?? (draft.hasFieldDrafts ? null : scenario?.compile)
   const editableTypes = selectableScenarioStudioTypes(capabilitiesQuery.data)
+  // 夹具类型由平台闸门决定是否出现在能力清单里，这里不再按字面量兜底。
+  const fixtureTypes = editableTypes.filter((type) => isFixtureStepType(type))
   const supportsAuthoringV2 = Boolean(
     capabilitiesQuery.data?.authoringSchemaVersions?.includes(2),
   )
@@ -608,7 +631,7 @@ export function ScenarioDetailPage() {
               }}
             >
               <ArrowLeft className='size-4' />
-              返回自动化场景
+              返回场景
             </Link>
           }
           title={scenario?.name ?? '场景'}
@@ -616,6 +639,7 @@ export function ScenarioDetailPage() {
           actions={
             scenario && !query.isError ? (
               <div className='flex flex-wrap items-center gap-2'>
+                <ObjectSchedules context={{ type: 'scenario_run', targetId: scenario.targetId, objectId: scenario.id, name: scenario.name, versionId: scenario.latestVersionId }} />
                 <Button variant='outline' asChild><Link to='/notifications' search={{ tab: 'results', scenarioId: scenario.id }}>结果通知</Link></Button>
                 {canWrite ? (
                   <Button
@@ -792,7 +816,7 @@ export function ScenarioDetailPage() {
             ) : null}
             {canStartFormalRun && !canTrial && draftHasAi && !canAi && !draft.dirty && compile?.ok ? (
               <Alert>
-                <AlertDescription>缺少 AI 执行权限。仍可保存和发布，但不能试跑或创建含 AI 步骤的正式 Run。</AlertDescription>
+                <AlertDescription>缺少 AI 执行权限。仍可保存和发布，但不能试跑或创建含 AI 步骤的正式运行。</AlertDescription>
               </Alert>
             ) : null}
             {!canTrial && !draft.dirty && compile && !compile.ok ? (
@@ -916,6 +940,7 @@ export function ScenarioDetailPage() {
               authoring={capabilitiesQuery.data?.authoring}
               onWriteBack={async () => Boolean(await save())}
               onApplyTarget={(target) => {
+                const picked = withPickedSemantic(target)
                 const writeback = resolveOutcomeWriteback(
                   trialRun?.snapshot.outcomeManifest,
                   trialRun?.checkpoint?.stepId,
@@ -924,14 +949,14 @@ export function ScenarioDetailPage() {
                   draft.updateOutcomeTarget({
                     stepId: writeback.sourceStepId,
                     contractId: writeback.contractId,
-                    target,
+                    target: picked,
                   })
                   return
                 }
                 if (writeback?.scope === 'scenario') {
                   draft.updateOutcomeTarget({
                     contractId: writeback.contractId,
-                    target,
+                    target: picked,
                     scenario: true,
                   })
                   return
@@ -940,9 +965,18 @@ export function ScenarioDetailPage() {
                 if (!current || !current.input || typeof current.input !== 'object' || !('target' in current.input)) {
                   return
                 }
-                draft.updateStep({ ...current, input: { ...current.input, target } } as typeof current)
+                draft.updateStep({
+                  ...current,
+                  input: {
+                    ...current.input,
+                    target: current.input.target?.semantic
+                      ? { ...picked, semantic: current.input.target.semantic }
+                      : picked,
+                  },
+                } as typeof current)
               }}
             >
+            <ResolutionSourceProvider targetId={scenario.targetId}>
             {runId ? <StudioHoldBar runId={runId} /> : null}
             <div className='grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.85fr)]'>
               <section
@@ -1015,20 +1049,22 @@ export function ScenarioDetailPage() {
                               {stepTypeLabel(item.type)}（{item.message}）
                             </DropdownMenuItem>
                           ))}
-                        <DropdownMenuSeparator />
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger>调试夹具</DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent>
-                            {editableTypes
-                              .filter((type) => ['echo', 'delay', 'fail'].includes(type))
-                              .map((type) => (
-                                <DropdownMenuItem key={type} onClick={() => addStep(type)}>
-                                  {stepTypeLabel(type)}
-                                  <span className='text-label text-muted-foreground'> · {STEP_TYPE_HINTS[type]}</span>
-                                </DropdownMenuItem>
-                              ))}
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
+                        {fixtureTypes.length > 0 && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuSub>
+                              <DropdownMenuSubTrigger>调试夹具</DropdownMenuSubTrigger>
+                              <DropdownMenuSubContent>
+                                {fixtureTypes.map((type) => (
+                                  <DropdownMenuItem key={type} onClick={() => addStep(type)}>
+                                    {stepTypeLabel(type)}
+                                    <span className='text-label text-muted-foreground'> · {STEP_TYPE_HINTS[type]}</span>
+                                  </DropdownMenuItem>
+                                ))}
+                              </DropdownMenuSubContent>
+                            </DropdownMenuSub>
+                          </>
+                        )}
                         {actionModulesEnabled && supportsAuthoringV2 && (
                           <>
                             <DropdownMenuSeparator />
@@ -1433,13 +1469,16 @@ export function ScenarioDetailPage() {
                     </>
                   )}
                   {!draft.selected ? (
-                    <DiagnosticList
-                      diagnostics={compile?.diagnostics ?? []}
-                      onSelect={(item) => {
-                        if (item.stepId) draft.setSelectedId(item.stepId)
-                        queueMicrotask(() => focusStudioField(item))
-                      }}
-                    />
+                    <>
+                      <ScenarioResolutionStats scenarioId={scenarioId} />
+                      <DiagnosticList
+                        diagnostics={compile?.diagnostics ?? []}
+                        onSelect={(item) => {
+                          if (item.stepId) draft.setSelectedId(item.stepId)
+                          queueMicrotask(() => focusStudioField(item))
+                        }}
+                      />
+                    </>
                   ) : (
                     <button
                       type='button'
@@ -1462,6 +1501,7 @@ export function ScenarioDetailPage() {
               </div>
             ) : null}
             </div>
+            </ResolutionSourceProvider>
             </AuthoringObserveProvider>
           </>
         )}

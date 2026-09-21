@@ -170,6 +170,7 @@ export const runs = cairnSchema.table(
     index('runs_scenario_created_idx').on(t.scenarioId, t.createdAt),
     index('runs_suite_run_id_idx').on(t.suiteRunId),
     index('runs_execution_origin_idx').on(t.executionOrigin, t.createdAt),
+    index('runs_target_status_deleted_idx').on(t.targetId, t.status, t.deletedAt),
   ],
 )
 
@@ -243,6 +244,7 @@ export const evidences = cairnSchema.table(
     index('evidences_status_idx').on(t.status, t.createdAt),
     index('evidences_created_id_idx').on(t.createdAt, t.id),
     index('evidences_type_created_id_idx').on(t.type, t.createdAt, t.id),
+    index('evidences_step_run_id_idx').on(t.stepRunId),
   ],
 )
 
@@ -266,6 +268,7 @@ export const runEvents = cairnSchema.table(
   (t) => [
     uniqueIndex('run_events_run_seq_idx').on(t.runId, t.sequence),
     index('run_events_run_occurred_idx').on(t.runId, t.occurredAt),
+    index('run_events_occurred_idx').on(t.occurredAt),
   ],
 )
 

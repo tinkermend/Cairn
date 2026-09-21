@@ -1,8 +1,19 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { getPlatformConfig } from '@cairn/db'
-import { consoleAccounts, newId, openIsolatedDb, type DbHandle } from '@cairn/db/testing'
-import { authoringSteps, DEV_CREDENTIAL_KEY, type Step } from '@cairn/shared'
+import {
+  getOrCreatePlatformConfig,
+  getPlatformConfig,
+  registerPlatformAiSecret,
+  updatePlatformConfig,
+} from '@cairn/db'
+import {
+  consoleAccounts,
+  newId,
+  openIsolatedDb,
+  type DbHandle,
+  grantScopedPermissions,
+} from '@cairn/db/testing'
+import { authoringSteps, DEV_CREDENTIAL_KEY, FACTORY_PLATFORM_CONFIG, type Step } from '@cairn/shared'
 import type { RequestAccount } from '../common/request-account'
 import { ScenariosService } from './scenarios.service'
 import { TargetsService } from '../targets/targets.service'
@@ -49,7 +60,8 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
   let actor: RequestAccount
 
   beforeAll(async () => {
-    handle = await openIsolatedDb(SCHEMA)
+    // 纯净库：这份 spec 断言「能力查询不写配置」，库里不能预先有 platform_config 行。
+    handle = await openIsolatedDb(SCHEMA, { pristine: true })
     const actorId = newId()
     await handle.db.insert(consoleAccounts).values({
       id: actorId,
@@ -57,6 +69,15 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
       email: `studio-${actorId}@example.com`,
       status: 'active',
     })
+    // 库里的授权要和下面 actor.permissions 对齐，且刻意不含 ai:execute：
+    // 「含 AI 步骤缺 ai:execute 时试跑被拒」那条用例要靠它成立。用 admin 会把它抹掉。
+    await grantScopedPermissions(handle.db, actorId, [
+      'target:read',
+      'target:write',
+      'workflow:read',
+      'workflow:write',
+      'run:execute',
+    ])
     actor = {
       id: actorId,
       displayName: 'studio-tester',
@@ -113,11 +134,15 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
         'select',
         'keyboard',
         'wait',
-        'echo',
-        'delay',
-        'fail',
       ]),
     )
+    // 调试夹具（echo / delay / fail）出厂关闭：不进可编写清单，且逐类型说明原因。
+    for (const fixture of ['echo', 'delay', 'fail']) {
+      expect(capabilities.executableStepTypes).not.toContain(fixture)
+      expect(capabilities.unavailableReasons).toContainEqual(
+        expect.objectContaining({ type: fixture, code: 'FIXTURE_STEPS_DISABLED' }),
+      )
+    }
     expect(capabilities.authoring).toMatchObject({
       indicate: 'open',
       highlight: 'open',
@@ -221,6 +246,37 @@ describe('Studio 控制面（真实库）', { timeout: 30_000 }, () => {
   })
 
   it('含 AI 步骤但没有 ai:execute 时试跑被拒，草稿仍在', async () => {
+    // 前置：浏览器 AI 必须已启用。AI 未启用时 ai_action 在编译阶段就是「类型尚未开放」(400)，
+    // 根本走不到权限校验——那是另一种拒绝，不是这条用例要守护的 ai:execute 闸门。
+    const secretId = newId()
+    await registerPlatformAiSecret(handle, {
+      id: secretId,
+      baseUrl: 'https://model.example/v1',
+      ciphertext: Buffer.from('encrypted'),
+      actor: { id: actor.id },
+    })
+    const enabledDocument = {
+      ...FACTORY_PLATFORM_CONFIG,
+      browserAi: {
+        ...FACTORY_PLATFORM_CONFIG.browserAi,
+        enabled: true,
+        baseUrl: 'https://model.example/v1',
+        model: 'demo',
+        modelFamily: 'openai',
+        secretRef: { provider: 'local', secretId },
+      },
+    }
+    const existing = await getPlatformConfig(handle)
+    if (existing) {
+      await updatePlatformConfig(handle, {
+        expectedRevision: existing.revision,
+        document: enabledDocument,
+        reason: '试跑权限用例：启用浏览器 AI',
+        actor: { id: actor.id },
+      })
+    } else {
+      await getOrCreatePlatformConfig(handle, { document: enabledDocument, reason: '试跑权限用例：启用浏览器 AI' })
+    }
     const { created } = await seed()
     const saved = await scenarios.saveDraft(
       created.id,

@@ -49,53 +49,36 @@ function route(overrides: Partial<Parameters<typeof evaluateWorkerRoute>[0]> = {
 }
 
 describe('Worker 地址校验', () => {
-  it('拒绝 userinfo、path、query、fragment、unix、通配、调试端口与非 loopback HTTP', () => {
-    const local = { networkMode: 'local' as const }
-    expect(() => normalizeWorkerEndpoint('http://user:pass@127.0.0.1:8091', local)).toThrow(/userinfo/)
-    expect(() => normalizeWorkerEndpoint('http://127.0.0.1:8091/internal', local)).toThrow(/origin/)
-    expect(() => normalizeWorkerEndpoint('http://127.0.0.1:8091?x=1', local)).toThrow(/query/)
-    expect(() => normalizeWorkerEndpoint('http://127.0.0.1:8091#frag', local)).toThrow(/fragment/)
-    expect(() => normalizeWorkerEndpoint('http://unix/', local)).toThrow(/unix/)
-    expect(() => normalizeWorkerEndpoint('http://0.0.0.0:8091', local)).toThrow(/通配/)
-    expect(() => normalizeWorkerEndpoint('http://127.0.0.1:9222', local)).toThrow(/9222/)
-    expect(() => normalizeWorkerEndpoint('http://worker.example:8091', local)).toThrow(/https/)
-    expect(normalizeWorkerEndpoint('http://127.0.0.1:8091/', local).origin).toBe('http://127.0.0.1:8091')
-    expect(normalizeWorkerEndpoint('http://[::1]:8091', local).host).toBe('[::1]')
+  it('拒绝 userinfo、path、query、fragment、unix、通配与调试端口', () => {
+    expect(() => normalizeWorkerEndpoint('http://user:pass@127.0.0.1:8091')).toThrow(/userinfo/)
+    expect(() => normalizeWorkerEndpoint('http://127.0.0.1:8091/internal')).toThrow(/origin/)
+    expect(() => normalizeWorkerEndpoint('http://127.0.0.1:8091?x=1')).toThrow(/query/)
+    expect(() => normalizeWorkerEndpoint('http://127.0.0.1:8091#frag')).toThrow(/fragment/)
+    expect(() => normalizeWorkerEndpoint('http://unix/')).toThrow(/unix/)
+    expect(() => normalizeWorkerEndpoint('http://0.0.0.0:8091')).toThrow(/通配/)
+    expect(() => normalizeWorkerEndpoint('http://127.0.0.1:9222')).toThrow(/9222/)
+    expect(normalizeWorkerEndpoint('http://worker.example:8091').origin).toBe('http://worker.example:8091')
+    expect(normalizeWorkerEndpoint('http://127.0.0.1:8091/').origin).toBe('http://127.0.0.1:8091')
+    expect(normalizeWorkerEndpoint('http://[::1]:8091').host).toBe('[::1]')
   })
 
-  it('distributed 只接受非 loopback HTTPS；无广告 URL 不自动拼 loopback', () => {
-    expect(() =>
-      normalizeWorkerEndpoint('https://127.0.0.1:8443', { networkMode: 'distributed' }),
-    ).toThrow(/loopback/)
-    expect(() =>
-      normalizeWorkerEndpoint('http://worker-a.internal:8443', { networkMode: 'distributed' }),
-    ).toThrow(/https/)
-    expect(
-      normalizeWorkerEndpoint('https://worker-a.internal:8443', { networkMode: 'distributed' }).origin,
-    ).toBe('https://worker-a.internal:8443')
-    expect(
-      resolveWorkerAdvertiseUrl({ networkMode: 'local', internalPort: 8091 }),
-    ).toBeNull()
-    expect(
-      resolveWorkerAdvertiseUrl({ networkMode: 'local', internalPort: 0 }),
-    ).toBeNull()
+  it('支持 HTTP 与 HTTPS 终结点；无广告 URL 不自动拼 loopback', () => {
+    expect(normalizeWorkerEndpoint('https://127.0.0.1:8443').origin).toBe('https://127.0.0.1:8443')
+    expect(normalizeWorkerEndpoint('http://worker-a.internal:8443').origin).toBe('http://worker-a.internal:8443')
+    expect(normalizeWorkerEndpoint('https://worker-a.internal:8443').origin).toBe('https://worker-a.internal:8443')
+    expect(resolveWorkerAdvertiseUrl({ internalPort: 8091 })).toBeNull()
+    expect(resolveWorkerAdvertiseUrl({ internalPort: 0 })).toBeNull()
     expect(() =>
       resolveWorkerAdvertiseUrl({
-        networkMode: 'local',
         internalPort: 0,
         advertiseUrl: 'http://127.0.0.1:8091',
       }),
     ).toThrow(/广告 URL/)
-    expect(() =>
-      resolveWorkerAdvertiseUrl({ networkMode: 'distributed', internalPort: 8091 }),
-    ).toThrow(/HTTPS/)
   })
 
-  it('distributed 未配置映射时得到空表，不注入本机默认值', () => {
-    expect(parseWorkerEndpoints(undefined, { networkMode: 'distributed' })).toEqual({})
-    expect(parseWorkerEndpoints(undefined, { networkMode: 'local' })['local-worker']).toBe(
-      'http://127.0.0.1:8091',
-    )
+  it('未配置映射时使用默认 local-worker，显式配置时解析映射', () => {
+    expect(parseWorkerEndpoints(undefined)['local-worker']).toBe('http://127.0.0.1:8091')
+    expect(parseWorkerEndpoints('w1=http://10.0.0.1:8091')['w1']).toBe('http://10.0.0.1:8091')
   })
 })
 
@@ -128,7 +111,7 @@ describe('Worker 路由回退', () => {
       reason: 'worker_not_ready',
       endpoint: null,
     })
-    expect(registration({ internalBaseUrl: 'http://worker.example:8091' })).toMatchObject({
+    expect(registration({ internalBaseUrl: 'http://0.0.0.0:8091' })).toMatchObject({
       reason: 'endpoint_invalid',
       endpoint: null,
     })
@@ -185,11 +168,11 @@ describe('句柄采样连续差异', () => {
   })
 })
 
-describe('四值状态与入口投影', () => {
-  it('同一列表响应接受 READY/DRAINING/STOPPED/LOST', () => {
-    expect(WORKER_STATUSES).toEqual(['READY', 'DRAINING', 'STOPPED', 'LOST'])
+describe('节点状态生命周期与入口投影', () => {
+  it('同一列表响应接受 READY/DRAINING/STOPPED/LOST/DISABLED', () => {
+    expect(WORKER_STATUSES).toEqual(['READY', 'DRAINING', 'STOPPED', 'LOST', 'DISABLED'])
     const asOfIso = asOf.toISOString()
-    const item = (status: 'READY' | 'DRAINING' | 'STOPPED' | 'LOST') => ({
+    const item = (status: 'READY' | 'DRAINING' | 'STOPPED' | 'LOST' | 'DISABLED') => ({
       workerId: `w-${status.toLowerCase()}`,
       instanceId: instance,
       status,
@@ -224,10 +207,10 @@ describe('四值状态与入口投影', () => {
     })
     expect(
       workerListResponseSchema.parse({
-        items: [item('READY'), item('DRAINING'), item('STOPPED'), item('LOST')],
+        items: [item('READY'), item('DRAINING'), item('STOPPED'), item('LOST'), item('DISABLED')],
         asOf: asOfIso,
       }).items.map((row) => row.status),
-    ).toEqual(['READY', 'DRAINING', 'STOPPED', 'LOST'])
+    ).toEqual(['READY', 'DRAINING', 'STOPPED', 'LOST', 'DISABLED'])
   })
 
   it('只有 read+dispose 才投影 host/port/protocol', () => {

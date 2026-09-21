@@ -83,6 +83,32 @@ function mockService() {
     })),
     occurrences: vi.fn(async () => ({ items: [] })),
     events: vi.fn(async () => ({ items: [] })),
+    trigger: vi.fn(async () => ({
+      occurrence: {
+        occurrenceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        scheduleId,
+        scheduleVersionId: schedule.currentVersionId,
+        source: 'manual',
+        localSlotKey: 'manual',
+        occurrenceKey: 'manual:key',
+        localStartDate: '2026-09-20',
+        windowStartUtc: '2026-09-20T00:00:00.000Z',
+        windowEndUtc: '2026-09-20T01:00:00.000Z',
+        startOffsetMinutes: 0,
+        endOffsetMinutes: 0,
+        timeRuleVersion: 'schedule-time@1',
+        admissionStatus: 'PENDING',
+        reason: null,
+        jobId: null,
+        createdAt: '2026-09-20T00:00:00.000Z',
+        admittedAt: null,
+      },
+    })),
+    previewQuery: vi.fn(async () => ({
+      asOf: '2026-09-16T00:00:00.000Z',
+      windows: [],
+      gaps: [],
+    })),
   }
 }
 
@@ -121,7 +147,7 @@ describe('Schedules HTTP', () => {
     await viewerApp.close()
   })
 
-  it('列表需要 schedule:read，写需要 schedule:write 与 map:maintain', async () => {
+  it('列表需要 schedule:read，写只要求 schedule:write', async () => {
     const noRead: RequestAccount = { ...viewer, permissions: ['map:read'] }
     const readApp = await buildApp(noRead, service)
     await request(readApp.getHttpServer()).get('/schedules').expect(403)
@@ -135,11 +161,26 @@ describe('Schedules HTTP', () => {
       .send({ expectedRevision: 0, idempotencyKey: 'create-01', definition })
       .expect(403)
     expect(service.create).not.toHaveBeenCalled()
+
+    const writer: RequestAccount = { ...viewer, permissions: ['schedule:read', 'schedule:write'] }
+    const writeApp = await buildApp(writer, service)
+    await request(writeApp.getHttpServer())
+      .post('/schedules')
+      .send({ expectedRevision: 0, idempotencyKey: 'create-01', definition })
+      .expect(200)
+    expect(service.create).toHaveBeenCalled()
+    await writeApp.close()
   })
 
   it('预览只读且不访问目标；事件是 cursor GET 不是 SSE', async () => {
     await request(viewerApp.getHttpServer()).post('/schedules/preview').send({ definition }).expect(200)
     expect(service.preview).toHaveBeenCalled()
+
+    await request(viewerApp.getHttpServer())
+      .get('/schedules/preview')
+      .query({ kind: 'calendar', timezone: 'Asia/Shanghai', windowStart: '02:00', windowEnd: '03:00' })
+      .expect(200)
+    expect(service.previewQuery).toHaveBeenCalled()
 
     const events = await request(viewerApp.getHttpServer()).get(`/schedules/${scheduleId}/events`).expect(200)
     expect(events.headers['content-type']).toMatch(/application\/json/)
@@ -183,5 +224,11 @@ describe('Schedules HTTP', () => {
 
     await request(adminApp.getHttpServer()).get(`/schedules/${scheduleId}/occurrences`).expect(200)
     expect(service.occurrences).toHaveBeenCalled()
+
+    await request(adminApp.getHttpServer())
+      .post(`/schedules/${scheduleId}/trigger`)
+      .send({ idempotencyKey: 'manual-01' })
+      .expect(200)
+    expect(service.trigger).toHaveBeenCalledWith(scheduleId, expect.objectContaining({ idempotencyKey: 'manual-01' }), admin)
   })
 })

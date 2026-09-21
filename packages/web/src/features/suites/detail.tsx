@@ -24,6 +24,7 @@ import {
 import { fetchScenarios } from '@/lib/scenarios-api'
 import { fetchTarget } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
+import { ObjectSchedules } from '@/features/schedules/object-schedules'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -49,7 +50,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
-import { SUITE_STATUS_LABELS, suiteStatusTone } from './labels'
+import { SUITE_STATUS_LABELS, suiteIssueMessage, suiteStatusTone } from './labels'
 import { ReportProfileEditor, ReportProfileSelect } from '@/features/reports/profiles'
 
 function nextMemberId(members: SuiteMember[]) {
@@ -130,7 +131,8 @@ export function SuiteDetailPage() {
       })
       const checked = await validateSuite(suiteId)
       if (!checked.ok) {
-        toast.error(checked.issues.find((item) => item.severity === 'error')?.message ?? '校验未通过')
+        const blockingIssue = checked.issues.find((item) => item.severity === 'error')
+        toast.error(blockingIssue ? suiteIssueMessage(blockingIssue) : '校验未通过')
         await queryClient.setQueryData(['suite', suiteId], saved)
         return
       }
@@ -160,7 +162,7 @@ export function SuiteDetailPage() {
       })
       const blocking = preview.issues.filter((item) => item.severity === 'error')
       if (blocking.length) {
-        toast.error(blocking[0]!.message)
+        toast.error(suiteIssueMessage(blocking[0]!))
         return
       }
       const created = await createSuiteRun({
@@ -229,6 +231,7 @@ export function SuiteDetailPage() {
         description={target.data?.name ?? '同一目标系统下的已发布场景编排。'}
         actions={
           <div className='flex flex-wrap items-center gap-2'>
+            <ObjectSchedules context={{ type: 'suite_run', targetId: suite.targetId, targetName: target.data?.name, objectId: suite.id, name: suite.name, versionId: suite.published?.id }} />
             <StatusBadge tone={suiteStatusTone(suite.status)}>{SUITE_STATUS_LABELS[suite.status]}</StatusBadge>
             {suite.published ? <StatusBadge tone='info'>已发布 v{suite.published.versionNo}</StatusBadge> : null}
             <Can permission='suite:write'>
@@ -297,7 +300,7 @@ export function SuiteDetailPage() {
             </Select>
           </div>
           <p className='self-end text-label text-muted-foreground'>
-            成员之间不传递页面或输出。成员间隙允许同账号独立运行插入，可能拉长墙钟时间。
+            成员之间不传递页面或输出。成员间隙允许同账号独立运行插入，中间可能被别的运行插入，整次会更久。
           </p>
         </div>
       </section>

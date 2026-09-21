@@ -28,6 +28,7 @@ import { useCursorPage } from '@/hooks/use-cursor-page'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
 import {
   Sheet,
   SheetContent,
@@ -766,23 +767,22 @@ export function ServicesPage() {
       >
         <label className='space-y-1 text-small'>
           <span>状态</span>
-          <select
+          <SelectField
             aria-label='日志状态筛选'
-            className='h-10 w-full rounded-md border bg-background px-3'
+            className='w-full'
             value={logFilters.statusCategory}
-            onChange={(event) =>
+            onValueChange={(value) =>
               setLogFilters((current) => ({
                 ...current,
-                statusCategory: event.target
-                  .value as typeof current.statusCategory,
+                statusCategory: value as typeof current.statusCategory,
               }))
             }
           >
-            <option value='all'>全部状态</option>
-            <option value='2xx'>成功 2xx</option>
-            <option value='4xx'>客户端错误 4xx</option>
-            <option value='5xx'>服务端错误 5xx</option>
-          </select>
+            <SelectFieldOption value='all'>全部状态</SelectFieldOption>
+            <SelectFieldOption value='2xx'>成功 2xx</SelectFieldOption>
+            <SelectFieldOption value='4xx'>客户端错误 4xx</SelectFieldOption>
+            <SelectFieldOption value='5xx'>服务端错误 5xx</SelectFieldOption>
+          </SelectField>
         </label>
         <label className='space-y-1 text-small'>
           <span>Request ID</span>
@@ -1202,55 +1202,54 @@ export function ServicesPage() {
           </label>
           <label className='space-y-1 text-small'>
             <span>状态</span>
-            <select
+            <SelectField
               aria-label='状态筛选'
               value={statusFilter}
-              className='h-10 rounded-md border bg-background px-3'
-              onChange={(event) => {
-                setStatusFilter(
-                  event.target.value as 'all' | 'active' | 'disabled'
-                )
+
+              onValueChange={(value) => {
+                setStatusFilter(value as 'all' | 'active' | 'disabled')
                 callerPage.reset()
               }}
             >
-              <option value='all'>全部状态</option>
-              <option value='active'>已启用</option>
-              <option value='disabled'>已停用</option>
-            </select>
+              <SelectFieldOption value='all'>全部状态</SelectFieldOption>
+              <SelectFieldOption value='active'>已启用</SelectFieldOption>
+              <SelectFieldOption value='disabled'>已停用</SelectFieldOption>
+            </SelectField>
           </label>
           <label className='space-y-1 text-small'>
             <span>排序字段</span>
-            <select
+            <SelectField
               aria-label='排序字段'
               value={sortBy}
-              className='h-10 rounded-md border bg-background px-3'
-              onChange={(event) => {
+
+              onValueChange={(value) => {
                 setSortBy(
-                  event.target.value as
-                    'createdAt' | 'updatedAt' | 'outstandingRuns'
+                  value as 'createdAt' | 'updatedAt' | 'outstandingRuns'
                 )
                 callerPage.reset()
               }}
             >
-              <option value='createdAt'>创建时间</option>
-              <option value='updatedAt'>更新时间</option>
-              <option value='outstandingRuns'>未结束运行数</option>
-            </select>
+              <SelectFieldOption value='createdAt'>创建时间</SelectFieldOption>
+              <SelectFieldOption value='updatedAt'>更新时间</SelectFieldOption>
+              <SelectFieldOption value='outstandingRuns'>
+                未结束运行数
+              </SelectFieldOption>
+            </SelectField>
           </label>
           <label className='space-y-1 text-small'>
             <span>排序方向</span>
-            <select
+            <SelectField
               aria-label='排序方向'
               value={sortOrder}
-              className='h-10 rounded-md border bg-background px-3'
-              onChange={(event) => {
-                setSortOrder(event.target.value as 'asc' | 'desc')
+
+              onValueChange={(value) => {
+                setSortOrder(value as 'asc' | 'desc')
                 callerPage.reset()
               }}
             >
-              <option value='desc'>降序</option>
-              <option value='asc'>升序</option>
-            </select>
+              <SelectFieldOption value='desc'>降序</SelectFieldOption>
+              <SelectFieldOption value='asc'>升序</SelectFieldOption>
+            </SelectField>
           </label>
           <label className='flex min-h-10 items-center gap-2 text-small'>
             <Switch

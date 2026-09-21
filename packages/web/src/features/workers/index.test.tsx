@@ -23,6 +23,10 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 }))
 vi.mock('@/lib/workers-api', () => ({
   fetchWorkers: (...args: unknown[]) => fetchWorkers(...args),
+  disableWorker: vi.fn().mockResolvedValue({}),
+  enableWorker: vi.fn().mockResolvedValue({}),
+  removeWorker: vi.fn().mockResolvedValue({ ok: true }),
+  purgeStaleWorkers: vi.fn().mockResolvedValue({ purgedCount: 0, purgedWorkerIds: [] }),
 }))
 
 const INSTANCE = '11111111-1111-4111-8111-111111111111'
@@ -61,6 +65,9 @@ function summary(workerId: string, status: WorkerStatus, heartbeatFresh: boolean
     routeReason: status === 'READY' && heartbeatFresh ? null : 'worker_not_ready',
     endpointSource: 'none',
     internalEndpoint: null,
+    listenHost: '192.168.1.100',
+    listenPort: 8091,
+    hostname: 'worker-host-1',
   }
 }
 

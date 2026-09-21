@@ -140,7 +140,8 @@ describe('BrowserSessions HTTP', () => {
     await app.close()
 
     await request(viewerApp.getHttpServer()).get('/browser-sessions').expect(200)
-    expect(service.list).toHaveBeenCalledWith({})
+    // list 带上当前账号：服务据此按目标范围过滤，只返回该账号能看到的目标下的会话。
+    expect(service.list).toHaveBeenCalledWith({}, expect.objectContaining({ id: 'acc-viewer' }))
   })
 
   it('非法会话、操作及账号 ID 在访问存储前返回 400', async () => {
@@ -156,7 +157,10 @@ describe('BrowserSessions HTTP', () => {
       .get('/browser-sessions')
       .query({ ownerWorkerId: 'local-worker' })
       .expect(200)
-    expect(service.list).toHaveBeenCalledWith({ ownerWorkerId: 'local-worker' })
+    expect(service.list).toHaveBeenCalledWith(
+      { ownerWorkerId: 'local-worker' },
+      expect.objectContaining({ id: 'acc-viewer' }),
+    )
   })
 
   it('处置需要 session:dispose，viewer 只有 read 时被拒', async () => {

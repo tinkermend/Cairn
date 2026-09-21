@@ -1,20 +1,21 @@
 import type { RunLeaseRow, WorkerRow } from '../records.js'
-import { expireRunDeadlines } from '../runs/deadline.js'
+import { expireRunDeadlines, scheduledStartDeadlineExpired } from '../runs/deadline.js'
 import { schemaFor } from '../native.js'
-import { updateRows } from '../native.js'
-import { and, asc, eq, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm'
+import { updateRows, updateRowsCount } from '../native.js'
+import { and, asc, eq, gt, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm'
 import {
   DEFAULT_BROWSER_MAX_SESSIONS,
   AI_ATOMIC_ACTIONS_PROTOCOL,
   IMPORTED_OUTCOME_PROTOCOL,
+  MAP_CONSUMPTION_PROTOCOL,
   MAP_JOBS_PROTOCOL,
   OUTCOME_MANIFEST_PROTOCOL,
   SUITE_ADMISSION_PROTOCOL,
   RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
+  RESOLUTION_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
   registrationRequiresOccupancy,
   isFinishedRunStatus,
-  isMapJobRun,
   nextHandleMismatchStreak,
   runGrantSchema,
   type RunGrant,
@@ -24,11 +25,11 @@ import {
   type WorkerStatus,
 } from '@cairn/shared'
 import { appendRunEvents } from '../observe/events.js'
-import { conflict, isUniqueViolation } from '../runs/errors.js'
+import { conflict, isUniqueViolation, notFound } from '../runs/errors.js'
 import type { Db, DbHandle } from '../client.js'
 import { newId } from '../id.js'
 import { runs } from '../schema/execution.js'
-import { locked, databaseNow, afterSeconds, clockNow, driverOf, insertRows, jsonHasKey, jsonText } from '../native.js'
+import { locked, databaseNow, afterSeconds, clockNow, driverOf, insertRows, jsonHasKey, jsonText, jsonTextEquals } from '../native.js'
 import type { IsolatedLostRow } from '../sessions/lost-disposition.js'
 import { evaluateRunSessionEligibility } from '../sessions/occupancy-placement.js'
 import { readSessionScheduling } from '../sessions/occupancy-read.js'
@@ -52,6 +53,9 @@ export type WorkerRecord = {
   handleMismatchStreak: number
   handleSampledAt: Date | null
   protocolCapabilities: string[]
+  listenHost: string | null
+  listenPort: number | null
+  hostname: string | null
 }
 
 export type RegisterWorkerResult = {
@@ -75,6 +79,9 @@ function toWorker(row: WorkerRow): WorkerRecord {
     handleMismatchStreak: row.handleMismatchStreak,
     handleSampledAt: row.liveHandleCount === null && row.sampledSlotCount === null ? null : row.heartbeatAt,
     protocolCapabilities: row.protocolCapabilities ?? [],
+    listenHost: row.listenHost ?? null,
+    listenPort: row.listenPort ?? null,
+    hostname: row.hostname ?? null,
   }
 }
 
@@ -85,6 +92,9 @@ function registrationValues(input: {
   lostAfterSeconds: number
   protocolCapabilities?: string[]
   internalBaseUrl?: string | null
+  listenHost?: string | null
+  listenPort?: number | null
+  hostname?: string | null
   now: Date
 }) {
   const expires = new Date(input.now.getTime() + input.lostAfterSeconds * 1000)
@@ -114,6 +124,9 @@ function registrationValues(input: {
     sampledBrowserProcessCount: null,
     processClockSkewMs: null,
     sampledDiskAt: null,
+    listenHost: input.listenHost ?? null,
+    listenPort: input.listenPort ?? null,
+    hostname: input.hostname ?? null,
   }
 }
 
@@ -234,6 +247,9 @@ export async function registerWorker(
     lostAfterSeconds: number
     protocolCapabilities?: string[]
     internalBaseUrl?: string | null
+    listenHost?: string | null
+    listenPort?: number | null
+    hostname?: string | null
   },
 ): Promise<RegisterWorkerResult> {
   const { runLeases, workers } = schemaFor(db)
@@ -321,6 +337,9 @@ export type WorkerHeartbeatTelemetry = {
   browserProcessCount?: number | null
   clockSkewMs?: number | null
   diskSampledAt?: Date | null
+  listenHost?: string | null
+  listenPort?: number | null
+  hostname?: string | null
 }
 
 export async function heartbeatWorker(
@@ -338,7 +357,7 @@ export async function heartbeatWorker(
     const now = await clockNow(tx as unknown as Db)
     if (!current) return 'lost'
     if (current.instanceId !== instanceId) return 'instance_taken'
-    if (current.status !== 'READY') return 'lost'
+    if (current.status !== 'READY' && current.status !== 'DISABLED') return 'lost'
     if (!current.heartbeatExpiresAt || current.heartbeatExpiresAt.getTime() <= now.getTime()) {
       return 'lost'
     }
@@ -363,7 +382,8 @@ export async function heartbeatWorker(
       browserProcessCount: telemetry?.browserProcessCount ?? null,
     })
 
-    const [row] = await updateRows(
+    // 只判是否命中 CAS，不读回实体：MySQL 下省掉 SELECT FOR UPDATE + 回读两次往返。
+    const updated = await updateRowsCount(
       tx,
       workers,
       {
@@ -384,16 +404,18 @@ export async function heartbeatWorker(
         sampledBrowserProcessCount: telemetry?.browserProcessCount ?? null,
         processClockSkewMs: Date.now() - now.getTime(),
         sampledDiskAt: telemetry?.diskSampledAt ?? null,
+        ...(telemetry?.listenHost !== undefined ? { listenHost: telemetry.listenHost } : {}),
+        ...(telemetry?.listenPort !== undefined ? { listenPort: telemetry.listenPort } : {}),
+        ...(telemetry?.hostname !== undefined ? { hostname: telemetry.hostname } : {}),
       },
       and(
         eq(workers.id, workerId),
         eq(workers.instanceId, instanceId),
-        eq(workers.status, 'READY'),
+        inArray(workers.status, ['READY', 'DISABLED']),
         sql`${workers.heartbeatExpiresAt} > ${databaseNow(tx as unknown as Db)}`,
       ),
-      { id: workers.id },
     )
-    return row ? 'ok' : 'lost'
+    return updated > 0 ? 'ok' : 'lost'
   })
 }
 
@@ -410,14 +432,14 @@ export async function markWorkerDraining(
 ): Promise<boolean> {
   const { workers } = schemaFor(db)
   const now = await clockNow(db)
-  const [row] = await updateRows(
-    db,
-    workers,
-    { status: 'DRAINING', updatedAt: now },
-    and(eq(workers.id, workerId), eq(workers.instanceId, instanceId), eq(workers.status, 'READY')),
-    { id: workers.id },
+  return (
+    (await updateRowsCount(
+      db,
+      workers,
+      { status: 'DRAINING', updatedAt: now },
+      and(eq(workers.id, workerId), eq(workers.instanceId, instanceId), eq(workers.status, 'READY')),
+    )) > 0
   )
-  return row !== undefined
 }
 
 export async function markWorkerStopped(
@@ -427,18 +449,18 @@ export async function markWorkerStopped(
 ): Promise<boolean> {
   const { workers } = schemaFor(db)
   const now = await clockNow(db)
-  const [row] = await updateRows(
-    db,
-    workers,
-    { status: 'STOPPED', stoppedAt: now, updatedAt: now },
-    and(
-      eq(workers.id, workerId),
-      eq(workers.instanceId, instanceId),
-      inArray(workers.status, ['READY', 'DRAINING']),
-    ),
-    { id: workers.id },
+  return (
+    (await updateRowsCount(
+      db,
+      workers,
+      { status: 'STOPPED', stoppedAt: now, updatedAt: now },
+      and(
+        eq(workers.id, workerId),
+        eq(workers.instanceId, instanceId),
+        inArray(workers.status, ['READY', 'DRAINING', 'DISABLED']),
+      ),
+    )) > 0
   )
-  return row !== undefined
 }
 
 export async function markLostWorkers(db: Db, _lostAfterSeconds?: number): Promise<string[]> {
@@ -448,12 +470,115 @@ export async function markLostWorkers(db: Db, _lostAfterSeconds?: number): Promi
     db,
     workers,
     { status: 'LOST', updatedAt: now, stoppedAt: now },
-    sql`${workers.status} IN ('READY', 'DRAINING')
+    sql`${workers.status} IN ('READY', 'DRAINING', 'DISABLED')
         AND ${workers.heartbeatExpiresAt} IS NOT NULL
         AND ${workers.heartbeatExpiresAt} <= ${databaseNow(db)}`,
     { id: workers.id },
   )
   return rows.map((row) => row.id)
+}
+
+export async function disableWorker(db: Db, workerId: string): Promise<WorkerRecord> {
+  const { workers } = schemaFor(db)
+  const now = await clockNow(db)
+  return db.transaction(async (tx) => {
+    const [worker] = await tx.select().from(workers).where(eq(workers.id, workerId)).limit(1)
+    if (!worker) throw notFound('WORKER_NOT_FOUND', '执行节点不存在')
+    if (worker.status !== 'READY') {
+      throw conflict('INVALID_WORKER_STATUS', `节点当前状态为 ${worker.status}，仅就绪节点允许禁用`)
+    }
+    await tx.update(workers).set({ status: 'DISABLED', updatedAt: now }).where(eq(workers.id, workerId))
+    const [updated] = await tx.select().from(workers).where(eq(workers.id, workerId)).limit(1)
+    return toWorker(updated!)
+  })
+}
+
+export async function enableWorker(db: Db, workerId: string): Promise<WorkerRecord> {
+  const { workers } = schemaFor(db)
+  const now = await clockNow(db)
+  return db.transaction(async (tx) => {
+    const [worker] = await tx.select().from(workers).where(eq(workers.id, workerId)).limit(1)
+    if (!worker) throw notFound('WORKER_NOT_FOUND', '执行节点不存在')
+    if (worker.status !== 'DISABLED') {
+      throw conflict('INVALID_WORKER_STATUS', `节点当前状态为 ${worker.status}，仅已禁用节点允许启用`)
+    }
+    const fresh = Boolean(worker.heartbeatExpiresAt && worker.heartbeatExpiresAt.getTime() > now.getTime())
+    if (!fresh) {
+      throw conflict('HEARTBEAT_EXPIRED', '节点心跳已过期，请先在服务器启动该 Worker 进程')
+    }
+    await tx.update(workers).set({ status: 'READY', updatedAt: now }).where(eq(workers.id, workerId))
+    const [updated] = await tx.select().from(workers).where(eq(workers.id, workerId)).limit(1)
+    return toWorker(updated!)
+  })
+}
+
+export async function deregisterWorker(db: Db, workerId: string): Promise<void> {
+  const { workers, browserSessions, runLeases } = schemaFor(db)
+  const now = await clockNow(db)
+  await db.transaction(async (tx) => {
+    const [worker] = await tx.select().from(workers).where(eq(workers.id, workerId)).limit(1)
+    if (!worker) throw notFound('WORKER_NOT_FOUND', '执行节点不存在')
+
+    const activeLeases = await tx
+      .select({ id: runLeases.id })
+      .from(runLeases)
+      .where(and(eq(runLeases.holderWorkerId, workerId), eq(runLeases.status, 'ACTIVE'), gt(runLeases.expiresAt, now)))
+    if (activeLeases.length > 0) {
+      throw conflict('WORKER_HAS_ACTIVE_TASKS', `当前节点有正在运行的任务（${activeLeases.length} 个在跑），不允许删除`)
+    }
+
+    const activeSessions = await tx
+      .select({ id: browserSessions.id })
+      .from(browserSessions)
+      .where(and(eq(browserSessions.ownerWorkerId, workerId), inArray(browserSessions.status, ['CREATING', 'OPEN', 'CLOSING'])))
+    if (activeSessions.length > 0) {
+      throw conflict('WORKER_HAS_ACTIVE_TASKS', `当前节点有活跃的浏览器会话（${activeSessions.length} 个），不允许删除`)
+    }
+
+    const fresh = Boolean(worker.heartbeatExpiresAt && worker.heartbeatExpiresAt.getTime() > now.getTime())
+    if (worker.status === 'READY' && fresh) {
+      throw conflict('WORKER_IS_ACTIVE', '当前节点正在正常运行中，若要删除请先将节点【禁用】或停止 Worker 进程')
+    }
+
+    await tx.delete(workers).where(eq(workers.id, workerId))
+  })
+}
+
+export async function purgeStaleWorkers(db: Db): Promise<{ purgedCount: number; purgedWorkerIds: string[] }> {
+  const { workers, browserSessions, runLeases } = schemaFor(db)
+  const now = await clockNow(db)
+  return db.transaction(async (tx) => {
+    const candidates = await tx
+      .select()
+      .from(workers)
+      .where(inArray(workers.status, ['STOPPED', 'LOST']))
+
+    const toDelete: string[] = []
+    for (const w of candidates) {
+      const activeLeases = await tx
+        .select({ id: runLeases.id })
+        .from(runLeases)
+        .where(and(eq(runLeases.holderWorkerId, w.id), eq(runLeases.status, 'ACTIVE'), gt(runLeases.expiresAt, now)))
+      if (activeLeases.length > 0) continue
+
+      const activeSessions = await tx
+        .select({ id: browserSessions.id })
+        .from(browserSessions)
+        .where(and(eq(browserSessions.ownerWorkerId, w.id), inArray(browserSessions.status, ['CREATING', 'OPEN', 'CLOSING'])))
+      if (activeSessions.length > 0) continue
+
+      const fresh = Boolean(w.heartbeatExpiresAt && w.heartbeatExpiresAt.getTime() > now.getTime())
+      if (w.status === 'DISABLED' && fresh) continue
+
+      toDelete.push(w.id)
+    }
+
+    if (toDelete.length > 0) {
+      await tx.delete(workers).where(inArray(workers.id, toDelete))
+    }
+
+    return { purgedCount: toDelete.length, purgedWorkerIds: toDelete }
+  })
 }
 
 export async function isolateOrphanedSessions(
@@ -533,6 +658,11 @@ function mapJobStartBefore(tx: Db) {
   return jsonText(tx, runs.snapshot, ['mapJob', 'startBefore'])
 }
 
+function mapJobJobId(tx: Db) {
+  const { runs } = schemaFor(tx)
+  return jsonText(tx, runs.snapshot, ['mapJob', 'jobId'])
+}
+
 function jsonTextCompare(tx: Db, left: ReturnType<typeof jsonText>, op: '<=' | '>', right: string) {
   if (driverOf(tx) === 'mysql') {
     return op === '<='
@@ -598,10 +728,11 @@ async function closeExpiredMapJobWindows(tx: Db, limit: number): Promise<number>
   const { runs } = schemaFor(tx)
   const nowIso = (await clockNow(tx)).toISOString()
   const startBefore = mapJobStartBefore(tx)
+  const jobId = mapJobJobId(tx)
   const rows = await locked(
     tx,
     tx
-      .select({ id: runs.id, snapshot: runs.snapshot })
+      .select({ id: runs.id, jobId })
       .from(runs)
       .where(
         and(
@@ -616,8 +747,7 @@ async function closeExpiredMapJobWindows(tx: Db, limit: number): Promise<number>
       .limit(limit),
   )
   for (const row of rows) {
-    const snapshot = row.snapshot as RunSnapshot
-    if (isMapJobRun(snapshot)) await markMapJobWindowClosed(tx, snapshot.mapJob.jobId)
+    if (row.jobId) await markMapJobWindowClosed(tx, row.jobId as string)
   }
   return rows.length
 }
@@ -699,6 +829,7 @@ export async function claimRun(
           return null
         }
         const exclude = [...skipped]
+        const jobId = mapJobJobId(tx)
         // Lock only Run rows; correlated predicates avoid outer-join lock differences.
         const [run] = await locked(
           tx,
@@ -708,7 +839,8 @@ export async function claimRun(
               createdAt: runs.createdAt,
               targetId: runs.targetId,
               targetAccountId: runs.targetAccountId,
-              snapshot: runs.snapshot,
+              mapJobId: jobId,
+              mapJobStartBefore: startBefore,
             })
             .from(runs)
             .where(
@@ -727,6 +859,17 @@ export async function claimRun(
                 worker.protocolCapabilities?.includes(MAP_JOBS_PROTOCOL)
                   ? undefined
                   : not(jsonHasKey(tx, runs.snapshot, 'mapJob')),
+                // 冻结了「启用」的地图消费的 Run，只能交给声明 map-consumption@1 的 Worker：
+                // 不认识该协议的旧 Worker 会按「无地图」悄悄执行，违背快照里的承诺。
+                // 不能像上面那些协议一样只判键存在：freezeMapConsumptionTx 在消费关闭时
+                // 也会写 { mode: 'off' }，键几乎总是存在，按键拦会把旧 Worker 挡在所有 Run 之外。
+                // 所以看值：缺键（旧快照）或 mode = 'off' 都不需要该协议。
+                worker.protocolCapabilities?.includes(MAP_CONSUMPTION_PROTOCOL)
+                  ? undefined
+                  : or(
+                      isNull(jsonText(tx, runs.snapshot, ['mapConsumption', 'mode'])),
+                      jsonTextEquals(tx, runs.snapshot, ['mapConsumption', 'mode'], 'off'),
+                    ),
                 worker.protocolCapabilities?.includes(OUTCOME_MANIFEST_PROTOCOL)
                   ? undefined
                   : not(jsonHasKey(tx, runs.snapshot, 'outcomeManifest')),
@@ -742,7 +885,11 @@ export async function claimRun(
                 worker.protocolCapabilities?.includes(SUITE_ADMISSION_PROTOCOL)
                   ? undefined
                   : not(jsonHasKey(tx, runs.snapshot, 'suiteAdmission')),
+                worker.protocolCapabilities?.includes(RESOLUTION_PROTOCOL)
+                  ? undefined
+                  : not(jsonHasKey(tx, runs.snapshot, 'resolution')),
                 suiteAdmissionPredicate(tx),
+                not(scheduledStartDeadlineExpired(tx, new Date(nowIso))!),
                 sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
                 or(
                   isNull(runs.targetAccountId),
@@ -768,11 +915,11 @@ export async function claimRun(
         if (!run) break
         lastClaimDiagnostics.scanned += 1
         skipped.add(run.id)
-        const snapshot = run.snapshot as RunSnapshot
-        if (isMapJobRun(snapshot)) {
-          const windowEnd = snapshot.mapJob.startBefore
+        const mapJobId = run.mapJobId as string | null
+        if (mapJobId) {
+          const windowEnd = run.mapJobStartBefore as string | null
           if (windowEnd && Date.parse(windowEnd) <= Date.parse(nowIso)) {
-            await markMapJobWindowClosed(tx, snapshot.mapJob.jobId)
+            await markMapJobWindowClosed(tx, mapJobId)
             continue
           }
         }
@@ -800,7 +947,7 @@ export async function claimRun(
         await appendRunEvents(tx, run.id, [
           { type: 'run.status_changed', payload: { status: 'RUNNING' } },
         ])
-        if (isMapJobRun(snapshot)) await markMapJobRunning(tx, snapshot.mapJob.jobId)
+        if (mapJobId) await markMapJobRunning(tx, mapJobId)
         const [max] = await tx
           .select({ token: sql<number>`COALESCE(MAX(${runLeases.fencingToken}), 0) + 1` })
           .from(runLeases)

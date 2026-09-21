@@ -31,6 +31,7 @@ import { sha256Hex } from '../runs/digest.js'
 import { badRequest, conflict } from '../runs/errors.js'
 import { reconcileMapDraftBindingsTx } from '../map/references.js'
 import { validateKnowledgeSources } from './sources.js'
+import { assertTargetPermission, lockConsoleAuthorization } from '../console/target-authorization.js'
 import { requireLiveTarget, requireMapAsset } from '../map/view.js'
 import {
   authoringProposalStale,
@@ -98,7 +99,7 @@ function toProposal(row: {
 
 function flattenKnowledgeDocument(value: unknown): ScenarioDocument {
   if (isAuthoringDocumentV2(value)) {
-    if (value.nodes.some((node) => node.kind === 'module')) authoringSchemaUnsupported()
+    if (value.nodes.some((node) => node.kind === 'module' || (node.outcomes?.length ?? 0) > 0)) authoringSchemaUnsupported()
     return parseScenarioDocument({
       schemaVersion: value.schemaVersion,
       inputs: value.inputs,
@@ -229,7 +230,7 @@ export async function completeKnowledgeProposal(
       return getKnowledgeProposal(tx, scenarioId, proposalId)
     }
     toProposal({ ...row, proposalStatus: result.status, ...result, document: result.document ?? null })
-    await validateKnowledgeSources(tx, row.targetId, result.sources, { runRead: true, workflowRead: true, moduleRead: true, scenarioId })
+    await validateKnowledgeSources(tx, row.targetId, result.sources, { runRead: true, workflowRead: true, moduleRead: true, mapAnalyze: true, mapRead: true, scenarioId })
     if (result.status === 'proposed') {
       if (!result.document) throw badRequest('KNOWLEDGE_INVALID_PROPOSAL', '可接受建议必须包含文档')
       const compiled = compileScenarioDocument(result.document, { mode: 'save' })
@@ -332,12 +333,14 @@ export async function acceptKnowledgeProposal(
 ) {
   const parsed = acceptKnowledgeProposalBodySchema.parse(body)
   const result = await atomic(db, async (tx) => {
+    await lockConsoleAuthorization(tx, actor.id)
     const { mapAuthoringProposals, scenarioDrafts, scenarios } = schemaFor(tx)
     const [row] = await locked(
       tx,
       tx.select().from(mapAuthoringProposals).where(and(eq(mapAuthoringProposals.id, proposalId), eq(mapAuthoringProposals.scenarioId, scenarioId))),
     )
     if (!row) knowledgeNotFound('知识建议不存在')
+    await assertAnalysisProposalAccess(tx, row.targetId, row.sources, actor)
     if (row.proposalStatus === 'accepted') {
       if (row.acceptKey !== parsed.idempotencyKey || parsed.expectedDraftRevision !== row.baseline.draftRevision || parsed.documentDigest !== row.baseline.documentDigest) knowledgeIdempotencyConflict()
       return {
@@ -417,12 +420,14 @@ export async function rejectKnowledgeProposal(
   actor: ExecutionActor,
 ) {
   return atomic(db, async (tx) => {
+    await lockConsoleAuthorization(tx, actor.id)
     const { mapAuthoringProposals } = schemaFor(tx)
     const [row] = await locked(
       tx,
       tx.select().from(mapAuthoringProposals).where(and(eq(mapAuthoringProposals.id, proposalId), eq(mapAuthoringProposals.scenarioId, scenarioId))),
     )
     if (!row) knowledgeNotFound('知识建议不存在')
+    await assertAnalysisProposalAccess(tx, row.targetId, row.sources, actor)
     if (row.proposalStatus === 'accepted') throw badRequest('KNOWLEDGE_REVISION_CONFLICT', '已接受的建议不能拒绝')
     if (row.proposalStatus === 'rejected') return toProposal(row)
     await tx
@@ -432,6 +437,13 @@ export async function rejectKnowledgeProposal(
     await recordAudit(tx, actor, 'knowledge.propose', 'knowledge_proposal', proposalId, '拒绝知识建议')
     return getKnowledgeProposal(tx, scenarioId, proposalId)
   })
+}
+
+async function assertAnalysisProposalAccess(tx: Db, targetId: string, sources: KnowledgeSourceRef[], actor: ExecutionActor) {
+  if (!sources.some(source => source.kind === 'analysis_candidate')) return
+  await assertTargetPermission(tx, actor.id, targetId, 'workflow:write')
+  await assertTargetPermission(tx, actor.id, targetId, 'map:read')
+  await validateKnowledgeSources(tx, targetId, sources, { actorId: actor.id, mapAnalyze: true, mapRead: true, runRead: true, workflowRead: true, moduleRead: true })
 }
 
 export async function findKnowledgeProposalRequest(db: Db, scenarioId: string, body: CreateKnowledgeProposalBody) {

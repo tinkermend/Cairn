@@ -21,6 +21,7 @@ import {
   updateTargetAccountBodySchema,
   updateTargetBodySchema,
   targetSessionPolicyPatchSchema,
+  targetResolutionPolicyPatchSchema,
   type CleanupStatusResponse,
   type CreateTargetAccountBody,
   type CreateTargetBody,
@@ -44,6 +45,7 @@ import {
   type UpdateTargetAccountBody,
   type UpdateTargetBody,
   type TargetSessionPolicyPatch,
+  type TargetResolutionPolicyPatch,
 } from '@cairn/shared'
 import { apiFetch, toQueryString } from '@/lib/api-client'
 
@@ -94,6 +96,17 @@ export function updateTargetSessionPolicy(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(targetSessionPolicyPatchSchema.parse(body)),
+  })
+}
+
+export function updateTargetResolutionPolicy(
+  id: string,
+  body: TargetResolutionPolicyPatch,
+): Promise<TargetDto> {
+  return apiFetch(`/api/targets/${id}/resolution-policy`, targetSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(targetResolutionPolicyPatchSchema.parse(body)),
   })
 }
 

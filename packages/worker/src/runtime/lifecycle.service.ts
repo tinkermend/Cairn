@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import {
   Inject,
   Injectable,
@@ -36,6 +37,9 @@ import {
   registerWorker,
   renewRunLease,
   materializeDueSchedules,
+  listPendingScheduleAdmits,
+  claimAnalysisJob,
+  heartbeatAnalysisJob,
   scanCredentialReminders,
   admitScheduleOccurrence,
   expireClosedScheduleWindows,
@@ -51,6 +55,8 @@ import {
   getMapSummary,
   listMapJobCandidateAssets,
   settleRevokedRuns,
+  settleTargetCleanups,
+  settleRunCleanups,
   sweepDriftedRuns,
   yieldUnfinishedRun,
   loadRunRow,
@@ -68,6 +74,7 @@ import {
   maintenanceWindowSlot,
   deriveAuthCapability,
   platformConfigDocumentSchema,
+  isMapRefreshConsumer,
   parseWorkerRoles,
   protocolCapabilitiesForRoles,
   isHaltedRunStatus,
@@ -81,6 +88,7 @@ import {
   type WorkerRoleSet,
 } from "@cairn/shared";
 import type { LocalSecretProvider } from "@cairn/secret";
+import { executeAnalysisJob } from './analysis-executor.js';
 import {
   BrowserSessionManager,
   SECRET_PROVIDER,
@@ -123,6 +131,10 @@ import { sampleProcessResources } from "./process-sample";
 
 const TICK_INTERVAL_MS = 1_000;
 
+function timerJitter(baseMs: number, maxJitterMs = 200): number {
+  return baseMs + Math.floor(Math.random() * maxJitterMs);
+}
+
 type InFlight = {
   grant: RunGrant;
   controller: AbortController;
@@ -148,6 +160,8 @@ export class LifecycleService
   private readonly exportHeartbeats = new Set<() => Promise<void>>();
   private tick: NodeJS.Timeout | undefined;
   private scheduleTick: NodeJS.Timeout | undefined;
+  private analysisTick: NodeJS.Timeout | undefined;
+  private analysisTask: Promise<void> | undefined;
   private heartbeatTick: NodeJS.Timeout | undefined;
   private cleanupTick: NodeJS.Timeout | undefined;
   private reaperTick: NodeJS.Timeout | undefined;
@@ -233,6 +247,7 @@ export class LifecycleService
         this.sessions.startHeartbeat();
       }
       if (roles.scheduler) this.startScheduling();
+      if (roles.analyst) this.startAnalysis();
       // 先确认本代心跳写得进去，再领取。启动后立刻 claim 会撞上：
       // 心跳被堵住 → 判 lost → 换代，在途 PREPARE 的占用 ALS/grant 作废，操作被写成永久失败。
       await this.beat();
@@ -243,32 +258,32 @@ export class LifecycleService
         void this.pumpOperation();
         this.videoMediaTick = setInterval(
           () => this.startVideoMediaDispatch(),
-          5_000,
+          timerJitter(5_000),
         );
         this.startVideoMediaDispatch();
       }
       if (roles.maintenance) void this.enqueueBackgroundMaintenance();
       this.heartbeatTick = setInterval(() => {
         void this.beat();
-      }, config.CAIRN_WORKER_HEARTBEAT_MS);
+      }, timerJitter(config.CAIRN_WORKER_HEARTBEAT_MS));
       if (roles.maintenance) {
         this.startMaintenance();
         this.notificationTick = setInterval(
           () => this.startNotificationDispatch(),
-          5_000,
+          timerJitter(5_000),
         );
         this.startNotificationDispatch();
         this.serviceWebhookTick = setInterval(
           () => this.startServiceWebhookDispatch(),
-          5_000,
+          timerJitter(5_000),
         );
         this.startServiceWebhookDispatch();
         this.cleanupTick = setInterval(() => {
           void this.runCleanup();
-        }, config.CAIRN_OBJECT_CLEANUP_INTERVAL_MS);
+        }, timerJitter(config.CAIRN_OBJECT_CLEANUP_INTERVAL_MS));
         this.reaperTick = setInterval(() => {
           void this.runReaper();
-        }, config.CAIRN_SESSION_REAPER_INTERVAL_MS);
+        }, timerJitter(config.CAIRN_SESSION_REAPER_INTERVAL_MS));
       }
       this.startTelemetry();
     } catch (error) {
@@ -289,11 +304,59 @@ export class LifecycleService
     return this.tick !== undefined;
   }
 
+  private detectNetwork(): { listenHost: string | null; listenPort: number | null; hostname: string } {
+    const hostname = os.hostname();
+    const listenPort = config.CAIRN_WORKER_INTERNAL_PORT > 0 ? config.CAIRN_WORKER_INTERNAL_PORT : null;
+    let listenHost: string | null = null;
+
+    if (config.CAIRN_WORKER_ADVERTISE_URL) {
+      try {
+        listenHost = new URL(config.CAIRN_WORKER_ADVERTISE_URL).hostname;
+      } catch {
+        listenHost = null;
+      }
+    }
+
+    const explicitHost =
+      process.env.CAIRN_WORKER_HOST ||
+      (config.CAIRN_WORKER_INTERNAL_HOST &&
+      config.CAIRN_WORKER_INTERNAL_HOST !== '127.0.0.1' &&
+      config.CAIRN_WORKER_INTERNAL_HOST !== 'localhost' &&
+      config.CAIRN_WORKER_INTERNAL_HOST !== '0.0.0.0'
+        ? config.CAIRN_WORKER_INTERNAL_HOST
+        : null);
+
+    if (!listenHost && explicitHost) {
+      listenHost = explicitHost;
+    }
+
+    if (!listenHost) {
+      const nets = os.networkInterfaces();
+      for (const [name, addrs] of Object.entries(nets)) {
+        if (!addrs) continue;
+        for (const addr of addrs) {
+          if (addr.family === 'IPv4' && !addr.internal) {
+            listenHost = addr.address;
+            break;
+          }
+        }
+        if (listenHost) break;
+      }
+    }
+
+    if (!listenHost) {
+      listenHost = '127.0.0.1';
+    }
+
+    return { listenHost, listenPort, hostname };
+  }
+
   /**
    * 注册（或以新代重新注册）本实例：撤销自己名下残留的 ACTIVE 租约，
    * 对应 Run 交回恢复扫描。启动与失联自愈走同一条路径。
    */
   private async register(): Promise<void> {
+    const net = this.detectNetwork();
     const registered = await registerWorker(this.handle, {
       workerId: config.CAIRN_WORKER_ID,
       instanceId: this.instanceId,
@@ -302,6 +365,9 @@ export class LifecycleService
       lostAfterSeconds: config.CAIRN_WORKER_LOST_AFTER_SECONDS,
       internalBaseUrl: this.advertiseUrl(),
       protocolCapabilities: protocolCapabilitiesForRoles(this.roles()),
+      listenHost: net.listenHost,
+      listenPort: net.listenPort,
+      hostname: net.hostname,
     });
     await settleRevokedRuns(
       this.handle,
@@ -320,22 +386,58 @@ export class LifecycleService
     this.tick = setInterval(() => {
       this.claimTask = this.pump();
       void this.pumpOperation();
-    }, TICK_INTERVAL_MS);
+    }, timerJitter(TICK_INTERVAL_MS));
   }
 
   private startMaintenance(): void {
     if (this.maintenanceTick || this.shutdownCalled) return;
     this.maintenanceTick = setInterval(() => {
       void this.enqueueBackgroundMaintenance();
-    }, TICK_INTERVAL_MS);
+    }, timerJitter(TICK_INTERVAL_MS));
   }
 
   private startScheduling(): void {
     if (this.scheduleTick || this.shutdownCalled) return;
     this.scheduleTick = setInterval(() => {
-      this.scheduleTask = this.runScheduleTick();
-    }, SCHEDULE_TICK_INTERVAL_MS);
-    this.scheduleTask = this.runScheduleTick();
+      if (!this.scheduleTask) this.scheduleTask = this.runScheduleTick().finally(() => { this.scheduleTask = undefined });
+    }, timerJitter(SCHEDULE_TICK_INTERVAL_MS));
+    this.scheduleTask = this.runScheduleTick().finally(() => { this.scheduleTask = undefined });
+  }
+
+  private startAnalysis(): void {
+    if (this.analysisTick || this.shutdownCalled) return;
+    this.analysisTick = setInterval(() => {
+      if (!this.analysisTask) this.analysisTask = this.runAnalysisTick().finally(() => { this.analysisTask = undefined });
+    }, timerJitter(5_000));
+    this.analysisTask = this.runAnalysisTick().finally(() => { this.analysisTask = undefined });
+  }
+
+  private async runAnalysisTick(): Promise<void> {
+    if (this.stopped) return;
+    try {
+      const owner = `${config.CAIRN_WORKER_ID}:${this.instanceId}`;
+      const claimed = await claimAnalysisJob(this.handle, owner, 1);
+      for (const job of claimed) {
+        if (this.stopped) break;
+        const leaseAbort = new AbortController();
+        let heartbeat = Promise.resolve();
+        const leaseTimer = setInterval(() => {
+          heartbeat = heartbeat.then(() => heartbeatAnalysisJob(this.handle, job.analysisJobId, owner, job.fencingToken))
+            .catch(error => { leaseAbort.abort(error); });
+        }, 15_000);
+        await executeAnalysisJob(this.handle, job, owner, this.secrets, leaseAbort.signal).catch((error) => {
+          this.logger.warn(
+            error instanceof Error ? error.message : error,
+            "知识分析作业执行失败",
+          );
+        }).finally(async () => { clearInterval(leaseTimer); await heartbeat; });
+      }
+    } catch (error) {
+      this.logger.error(
+        error instanceof Error ? error.message : error,
+        "知识分析领取失败",
+      );
+    }
   }
 
   private async runScheduleTick(): Promise<void> {
@@ -345,10 +447,26 @@ export class LifecycleService
       await expireScheduledMapJobs(this.handle);
       await advanceDueSuiteRuns(this.handle);
       await generateDueSuiteReports(this.handle);
-      const { pending } = await materializeDueSchedules(this.handle);
+      const materialized = await materializeDueSchedules(this.handle);
+      const recovered = await listPendingScheduleAdmits(this.handle);
+      const seen = new Set<string>();
+      const pending = [...recovered, ...materialized.pending].filter((item) => {
+        if (seen.has(item.occurrence.occurrenceId)) return false;
+        seen.add(item.occurrence.occurrenceId);
+        return true;
+      });
       for (const item of pending) {
         if (this.stopped) break;
         try {
+          if (!isMapRefreshConsumer(item.definition.consumer)) {
+            await admitScheduleOccurrence(
+              this.handle,
+              item.occurrence.occurrenceId,
+              { steps: [], includedCount: 1 },
+              { kind: "console", id: item.authorizedActorId },
+            );
+            continue;
+          }
           const policy = await getMapJobPolicy(
             this.handle,
             item.definition.consumer.targetId,
@@ -458,6 +576,11 @@ export class LifecycleService
       this.scheduleTick = undefined;
     }
     await this.scheduleTask?.catch(() => undefined);
+    if (this.analysisTick) {
+      clearInterval(this.analysisTick);
+      this.analysisTick = undefined;
+    }
+    await this.analysisTask?.catch(() => undefined);
     if (this.notificationTick) {
       clearInterval(this.notificationTick);
       this.notificationTick = undefined;
@@ -582,7 +705,20 @@ export class LifecycleService
         "结果轴补算失败",
       );
     });
-    return this.objects.purgeExpiredObjects({ limit: 100 });
+    const result = await this.objects.purgeExpiredObjects({ limit: 100 });
+    await settleTargetCleanups(this.handle).catch((error) => {
+      this.logger.error(
+        error instanceof Error ? error.message : error,
+        "目标系统清理结算失败",
+      );
+    });
+    await settleRunCleanups(this.handle).catch((error) => {
+      this.logger.error(
+        error instanceof Error ? error.message : error,
+        "运行清理结算失败",
+      );
+    });
+    return result;
   }
 
   async runReaper(): Promise<{
@@ -612,11 +748,7 @@ export class LifecycleService
     this.markTick();
     const { claimed, skipped } = await claimWorkerPeriodicSlots(
       this.handle,
-      this.reaperSlotRequests().filter(
-        (request) =>
-          request.name !== "monitor.alerts.deliver" &&
-          request.name !== "service.webhooks.deliver",
-      ),
+      this.reaperSlotRequests(),
     );
     this.logSlotMismatches(skipped);
     const claimedByName = new Map(
@@ -673,7 +805,8 @@ export class LifecycleService
         },
       );
     }
-    // Network delivery owns a separate single-flight task. A slow peer must not delay the next reaper tick.
+    // 投递是逐条 CAS 领取的工作队列，所有权由条目领取保证，不进周期槽位：
+    // 槽位只会把每实例 5 秒 tick 压成全舰队约 15 秒一批。网络等待另起单飞任务，不拖回收 tick。
     this.startNotificationDispatch();
     this.startServiceWebhookDispatch();
     return session;
@@ -682,28 +815,38 @@ export class LifecycleService
   private async runRecoverySlot(): Promise<void> {
     const deadline = Date.now() + config.CAIRN_REAPER_DRAIN_BUDGET_MS;
     const remaining = () => Math.max(0, deadline - Date.now());
-    await drainWhileFull(remaining(), REAPER_DEADLINE_BATCH, () =>
-      expireRunDeadlines(this.handle),
-    );
-    await drainWhileFull(remaining(), REAPER_STALE_LEASE_BATCH, async () => {
-      const result = await expireStaleRunLeases(this.handle, {
-        limit: REAPER_STALE_LEASE_BATCH,
-        maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
-      });
-      return { scanned: result.outcomes.length };
-    });
-    await drainWhileFull(remaining(), REAPER_DRIFT_BATCH, () =>
-      sweepDriftedRuns(this.handle, {
-        limit: REAPER_DRIFT_BATCH,
-        leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
-        maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
+    const drained = [
+      await drainWhileFull(remaining(), REAPER_DEADLINE_BATCH, () =>
+        expireRunDeadlines(this.handle),
+      ),
+      await drainWhileFull(remaining(), REAPER_STALE_LEASE_BATCH, async () => {
+        const result = await expireStaleRunLeases(this.handle, {
+          limit: REAPER_STALE_LEASE_BATCH,
+          maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
+        });
+        return { scanned: result.outcomes.length };
       }),
-    );
-    await touchRuntimeWatermark(this.handle, "global_reclaim");
+      await drainWhileFull(remaining(), REAPER_DRIFT_BATCH, () =>
+        sweepDriftedRuns(this.handle, {
+          limit: REAPER_DRIFT_BATCH,
+          leaseTtlSeconds: config.CAIRN_RUN_LEASE_TTL_SECONDS,
+          maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
+        }),
+      ),
+    ];
+    // 水位表示“最近一次完整回收”：预算耗尽而积压仍在时不刷新，让新鲜度指标如实变老。
+    if (drained.every(Boolean)) {
+      await touchRuntimeWatermark(this.handle, "global_reclaim");
+    } else {
+      this.logger.warn(
+        { budgetMs: config.CAIRN_REAPER_DRAIN_BUDGET_MS },
+        "运行回收预算耗尽而积压仍在，本轮不刷新全局回收水位",
+      );
+    }
   }
 
   private async runSessionLeaseSlot(): Promise<void> {
-    await drainWhileFull(
+    const drained = await drainWhileFull(
       config.CAIRN_REAPER_DRAIN_BUDGET_MS,
       REAPER_SESSION_LEASE_BATCH,
       () =>
@@ -712,6 +855,12 @@ export class LifecycleService
           maxRecoveries: config.CAIRN_RUN_MAX_RECOVERIES,
         }),
     );
+    if (!drained) {
+      this.logger.warn(
+        { budgetMs: config.CAIRN_REAPER_DRAIN_BUDGET_MS },
+        "会话租约回收预算耗尽而积压仍在，留待下一周期",
+      );
+    }
   }
 
   private async runLivenessSlot(): Promise<void> {
@@ -741,9 +890,6 @@ export class LifecycleService
       instanceId: this.instanceId,
       signal: this.notificationAbort.signal,
       blockedHosts: webhookControlPlaneHosts(),
-      smtpDestinations: config.CAIRN_NOTIFICATION_SMTP_DESTINATIONS.split(",")
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean),
     });
     await dispatchExportJobs(
       this.handle,
@@ -780,7 +926,7 @@ export class LifecycleService
 
   private startNotificationDispatch(): void {
     if (this.stopped || this.notificationTask) return;
-    this.notificationTask = this.claimAndDispatchNotifications()
+    this.notificationTask = this.dispatchNotifications()
       .catch((error) => {
         this.logger.error(
           error instanceof Error ? error.message : error,
@@ -805,7 +951,7 @@ export class LifecycleService
 
   private startServiceWebhookDispatch(): void {
     if (this.stopped || this.serviceWebhookTask) return;
-    this.serviceWebhookTask = this.claimAndDispatchServiceWebhooks()
+    this.serviceWebhookTask = this.dispatchServiceWebhooks()
       .catch((error) => {
         this.logger.error(
           error instanceof Error ? error.message : error,
@@ -817,34 +963,6 @@ export class LifecycleService
       });
   }
 
-  private async claimAndDispatchNotifications(): Promise<void> {
-    const deliver = this.reaperSlotRequests().filter(
-      (request) => request.name === "monitor.alerts.deliver",
-    );
-    const { claimed, skipped } = await claimWorkerPeriodicSlots(
-      this.handle,
-      deliver,
-    );
-    this.logSlotMismatches(skipped);
-    const claim = claimed[0];
-    if (!claim) return;
-    await this.runClaimedSlot(claim, () => this.dispatchNotifications());
-  }
-
-  private async claimAndDispatchServiceWebhooks(): Promise<void> {
-    const deliver = this.reaperSlotRequests().filter(
-      (request) => request.name === "service.webhooks.deliver",
-    );
-    const { claimed, skipped } = await claimWorkerPeriodicSlots(
-      this.handle,
-      deliver,
-    );
-    this.logSlotMismatches(skipped);
-    const claim = claimed[0];
-    if (!claim) return;
-    await this.runClaimedSlot(claim, () => this.dispatchServiceWebhooks());
-  }
-
   private async beat(): Promise<void> {
     if (this.stopped || this.healing || this.beating) return;
     this.beating = true;
@@ -852,6 +970,7 @@ export class LifecycleService
       this.markTick();
       this.refreshBrowserProcessCount();
       const process = sampleProcessResources();
+      const net = this.detectNetwork();
       const outcome = await heartbeatWorker(
         this.handle,
         config.CAIRN_WORKER_ID,
@@ -868,6 +987,9 @@ export class LifecycleService
           midsceneBytes: this.diskSample?.midsceneBytes ?? null,
           browserProcessCount: this.browserProcessCount,
           diskSampledAt: this.diskSample?.sampledAt ?? null,
+          listenHost: net.listenHost,
+          listenPort: net.listenPort,
+          hostname: net.hostname,
         },
       );
       if (outcome !== "ok") {
@@ -1007,7 +1129,6 @@ export class LifecycleService
 
   private advertiseUrl(): string | null {
     return resolveWorkerAdvertiseUrl({
-      networkMode: config.CAIRN_WORKER_NETWORK_MODE,
       advertiseUrl: config.CAIRN_WORKER_ADVERTISE_URL,
       internalPort: config.CAIRN_WORKER_INTERNAL_PORT,
     });
@@ -1060,15 +1181,15 @@ export class LifecycleService
     void this.sampleSeries();
     this.diskTick = setInterval(() => {
       void this.sampleDisk();
-    }, config.CAIRN_MONITOR_DISK_SAMPLE_MS);
+    }, timerJitter(config.CAIRN_MONITOR_DISK_SAMPLE_MS));
     this.sampleTick = setInterval(() => {
       void this.sampleSeries();
-    }, config.CAIRN_MONITOR_SAMPLE_INTERVAL_MS);
+    }, timerJitter(config.CAIRN_MONITOR_SAMPLE_INTERVAL_MS));
     if (this.roles().maintenance) {
       void this.probeObjectStore();
       this.probeTick = setInterval(() => {
         void this.probeObjectStore();
-      }, config.CAIRN_MONITOR_OBJECT_STORE_PROBE_MS);
+      }, timerJitter(config.CAIRN_MONITOR_OBJECT_STORE_PROBE_MS));
     }
   }
 
@@ -1223,27 +1344,30 @@ export class LifecycleService
     claim: PeriodicSlotClaim,
     fn: () => Promise<void>,
   ): Promise<void> {
+    let failed = false;
+    let errorClass: string | undefined;
     try {
       await fn();
-      await finishWorkerPeriodicSlot(this.handle, claim, {
-        outcome: "ok",
-        failureRetryMs: config.CAIRN_PERIODIC_SLOT_FAILURE_RETRY_MS,
-      });
     } catch (error) {
+      failed = true;
+      errorClass = periodicSlotErrorClass(error);
       this.logger.error(
         error instanceof Error ? error.message : error,
         `周期槽位 ${claim.name} 失败`,
       );
+    }
+    // 收尾单独兜底：业务已成功时，收尾写库失败不能被记成业务失败。
+    try {
       await finishWorkerPeriodicSlot(this.handle, claim, {
-        outcome: "failed",
-        errorClass: periodicSlotErrorClass(error),
+        outcome: failed ? "failed" : "ok",
+        errorClass,
         failureRetryMs: config.CAIRN_PERIODIC_SLOT_FAILURE_RETRY_MS,
-      }).catch((finishError) => {
-        this.logger.error(
-          finishError instanceof Error ? finishError.message : finishError,
-          `周期槽位 ${claim.name} 收尾失败`,
-        );
       });
+    } catch (finishError) {
+      this.logger.error(
+        finishError instanceof Error ? finishError.message : finishError,
+        `周期槽位 ${claim.name} 收尾失败`,
+      );
     }
   }
 

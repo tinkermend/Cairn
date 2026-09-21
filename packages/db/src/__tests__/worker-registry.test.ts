@@ -9,6 +9,9 @@ import {
   claimSessionUse,
   createRunWithSnapshot,
   createScenarioWithVersion,
+  deregisterWorker,
+  disableWorker,
+  enableWorker,
   eq,
   forceLeaseExpiresAt,
   getSessionById,
@@ -21,6 +24,7 @@ import {
   markLostWorkers,
   markWorkerDraining,
   markWorkerStopped,
+  purgeStaleWorkers,
   registerWorker as registerWorkerRaw,
   releaseSessionUse,
   requireCreatedSession,
@@ -48,7 +52,6 @@ const echoStep: Step = {
 }
 
 const fleetOptions = {
-  networkMode: 'local' as const,
   envEndpoints: { 'local-worker': 'http://127.0.0.1:8091' },
   canSeeEndpoint: true,
 }
@@ -461,7 +464,7 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
       instanceId: newId(),
       capacity: 1,
       lostAfterSeconds: 60,
-      internalBaseUrl: 'http://worker.example:8091',
+      internalBaseUrl: 'http://0.0.0.0:8091',
     })
     const invalidList = await listWorkers(
       handle.db,
@@ -589,5 +592,75 @@ describe.each(DRIVERS)('%s Worker 登记与舰队', { timeout: 60_000 }, (driver
     expect(route.session?.id).toBe(session.id)
     expect(route.associationLive).toBe(true)
     expect(route.runStatus).toBe('RECOVERING')
+  })
+
+  it('网络上报与生命周期治理：禁用维护、心跳保持、启用恢复、安全删除守卫与孤儿清理', async () => {
+    const workerId = `gov-${newId().slice(0, 8)}`
+    const instanceId = newId()
+    const { worker } = await registerWorker(handle.db, {
+      workerId,
+      instanceId,
+      capacity: 2,
+      lostAfterSeconds: 60,
+      listenHost: '192.168.1.50',
+      listenPort: 8091,
+      hostname: 'pod-worker-gov-1',
+    })
+    expect(worker.listenHost).toBe('192.168.1.50')
+    expect(worker.listenPort).toBe(8091)
+    expect(worker.hostname).toBe('pod-worker-gov-1')
+    expect(worker.status).toBe('READY')
+
+    // 1. 禁用节点（下线维护）
+    const disabled = await disableWorker(handle.db, workerId)
+    expect(disabled.status).toBe('DISABLED')
+
+    // 2. 禁用状态下心跳返回 ok，且不会将状态洗回 READY
+    const beat = await heartbeatWorker(handle.db, workerId, instanceId)
+    expect(beat).toBe('ok')
+    const beatWorker = await getWorkerById(handle.db, workerId)
+    expect(beatWorker?.status).toBe('DISABLED')
+
+    // 3. 启用恢复
+    const enabled = await enableWorker(handle.db, workerId)
+    expect(enabled.status).toBe('READY')
+
+    // 4. 活跃节点（READY 且心跳新鲜且无任务）直接尝试删除 -> 强阻断抛出 WORKER_IS_ACTIVE
+    await expect(deregisterWorker(handle.db, workerId)).rejects.toMatchObject({
+      code: 'WORKER_IS_ACTIVE',
+    })
+
+    // 5. 拥有在跑活跃 Session 时尝试删除 -> 强阻断抛出 WORKER_HAS_ACTIVE_TASKS
+    const account = await makeAccount(`gov-acc-${newId().slice(0, 6)}`)
+    const session = await openOwnedSession({ workerId, account, instanceId })
+    // 先禁用节点
+    await disableWorker(handle.db, workerId)
+    // 依然有占用槽位，即使处于 DISABLED 也严禁删除
+    await expect(deregisterWorker(handle.db, workerId)).rejects.toMatchObject({
+      code: 'WORKER_HAS_ACTIVE_TASKS',
+    })
+
+    // 6. 关闭清理会话后，再删除 -> 成功
+    await setSessionStatus(handle.db, { sessionId: session.id, expectedVersion: session.version, status: 'CLOSED' })
+    await deregisterWorker(handle.db, workerId)
+    const afterDelete = await getWorkerById(handle.db, workerId)
+    expect(afterDelete).toBeNull()
+
+    // 7. purgeStaleWorkers 清理离线节点
+    const orphanId = `stale-${newId().slice(0, 8)}`
+    await registerWorker(handle.db, {
+      workerId: orphanId,
+      instanceId: newId(),
+      capacity: 1,
+      lostAfterSeconds: 60,
+    })
+    await markWorkerStopped(handle.db, { workerId: orphanId, instanceId: newId() }).catch(() => {})
+    const { workers } = schemaFor(handle.db)
+    await handle.db.update(workers).set({ status: 'STOPPED' }).where(eq(workers.id, orphanId))
+
+    const purgeResult = await purgeStaleWorkers(handle.db)
+    expect(purgeResult.purgedWorkerIds).toContain(orphanId)
+    const afterPurge = await getWorkerById(handle.db, orphanId)
+    expect(afterPurge).toBeNull()
   })
 })

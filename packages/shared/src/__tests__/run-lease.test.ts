@@ -13,6 +13,7 @@ import {
   runGrantSchema,
   workerEnvSchema,
 } from '../index.js'
+import { DEV_CREDENTIAL_KEY, DEV_INTERNAL_AUTH_SECRET } from '../env.js'
 
 const grant = {
   runId: '00000000-0000-4000-8000-000000000031',
@@ -20,6 +21,12 @@ const grant = {
   fencingToken: 1,
   holderWorkerId: 'worker-a',
   expiresAt: '2026-09-11T03:00:00.000Z',
+}
+
+/** 密钥必填、无默认值，parse 时必须带上。 */
+const WORKER_SECRETS = {
+  CAIRN_CREDENTIAL_KEY: DEV_CREDENTIAL_KEY,
+  CAIRN_INTERNAL_AUTH_SECRET: DEV_INTERNAL_AUTH_SECRET,
 }
 
 describe('HALTED / FINISHED', () => {
@@ -62,14 +69,20 @@ describe('RUN_LEASE_ERROR_CODES', () => {
   it('只保留有产生者的码', () => {
     // WORKER_ID_CONFLICT 由 registerWorker 抛出，RUN_RECOVERY_EXHAUSTED 写进 Evidence。
     // WORKER_PROTOCOL_UNSUPPORTED 用于 Worker 协议能力闸门。
-    // 容量满、丢租、租约不明都没有产生者，不得留在枚举里。
-    expect(RUN_LEASE_ERROR_CODES).toEqual(['WORKER_ID_CONFLICT', 'WORKER_PROTOCOL_UNSUPPORTED', 'RUN_RECOVERY_EXHAUSTED'])
+    // WORKER_HAS_ACTIVE_TASKS、WORKER_IS_ACTIVE 用于节点删除安全守卫。
+    expect(RUN_LEASE_ERROR_CODES).toEqual([
+      'WORKER_ID_CONFLICT',
+      'WORKER_PROTOCOL_UNSUPPORTED',
+      'RUN_RECOVERY_EXHAUSTED',
+      'WORKER_HAS_ACTIVE_TASKS',
+      'WORKER_IS_ACTIVE',
+    ])
   })
 })
 
 describe('workerEnvSchema run lease', () => {
   it('默认值对齐方案', () => {
-    const env = workerEnvSchema.parse({})
+    const env = workerEnvSchema.parse({ ...WORKER_SECRETS })
     expect(env.CAIRN_WORKER_CAPACITY).toBe(1)
     expect(env.CAIRN_WORKER_HEARTBEAT_MS).toBe(5_000)
     expect(env.CAIRN_RUN_LEASE_TTL_SECONDS).toBe(DEFAULT_RUN_LEASE_TTL_SECONDS)
@@ -78,14 +91,14 @@ describe('workerEnvSchema run lease', () => {
   })
 
   it('LOST_AFTER ≤ TTL 与 TTL < 3×HEARTBEAT 拒绝启动', () => {
-    const lost = workerEnvSchema.safeParse({
+    const lost = workerEnvSchema.safeParse({ ...WORKER_SECRETS, 
       CAIRN_WORKER_LOST_AFTER_SECONDS: '30',
       CAIRN_RUN_LEASE_TTL_SECONDS: '30',
     })
     expect(lost.success).toBe(false)
     expect(lost.error?.issues.map((i) => i.path.join('.'))).toContain('CAIRN_WORKER_LOST_AFTER_SECONDS')
 
-    const ttl = workerEnvSchema.safeParse({
+    const ttl = workerEnvSchema.safeParse({ ...WORKER_SECRETS, 
       CAIRN_RUN_LEASE_TTL_SECONDS: '10',
       CAIRN_WORKER_HEARTBEAT_MS: '5000',
     })

@@ -58,6 +58,7 @@ export class AiStepExecutor implements StepExecutor {
       maxCalls: snapshot.aiExecution.maxCalls,
       model: snapshot.aiExecution.modelName,
       config: snapshot.aiExecution,
+      sensitiveSelectors: snapshot.targetAuth?.sensitiveSelectors ?? [],
     })
 
     if (result.hung) {

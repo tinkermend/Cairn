@@ -176,7 +176,8 @@ describe('OverviewPage', () => {
       </QueryClientProvider>
     )
 
-    await expect.element(screen.getByRole('heading', { name: /你好，测试管理员/ })).toBeInTheDocument()
+    await expect.element(screen.getByRole('heading', { name: '总览', exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByText(/你好，测试管理员/)).toBeInTheDocument()
     await expect.element(screen.getByText('累计执行总数')).toBeInTheDocument()
     await expect.element(screen.getByText('综合执行成功率')).toBeInTheDocument()
     await expect.element(screen.getByText('AI 智能调用')).toBeInTheDocument()

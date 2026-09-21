@@ -1,6 +1,8 @@
 # 识途前端设计规范
 
-版本：v1.3 · 更新：2026-09-13 · 状态：当前设计基线，已接入 Web 全局主题。
+版本：v1.4 · 更新：2026-09-20 · 状态：当前设计基线，已接入 Web 全局主题。
+
+2026-09-20 输入控件更新：用户选择 [B · 清透蓝](../../front_design/2026-09-20-form-control-lab/index.html)，默认冷蓝细边与平整白底、聚焦 3px 低透明度外光。Select 展开面板与选项同步定义在组件规范中。
 
 2026-09-13 设计方向更新：用户已认可 [UI 底座交互原型](../../front_design/2026-09-13-foundation-lab/index.html)。认可色彩、表面与圆角已接入 v1.3 Token，目标系统和场景的列表 / 详情已迁成真实 React 样板。[查看迁移效果与验收](../../front_design/2026-09-13-react-migration/README.md)。AI 开始前端任务先读 [AI 前端开发工作流](ai-workflow.md)。
 
@@ -20,6 +22,7 @@
 | [前端落地约定](implementation.md)  | 脚手架复用、Token 映射、实现约束与验收           | 开始接入设计体系时     |
 | [Design Token](tokens.css)         | 可直接读取和迁移的 CSS 变量                      | 获取精确设计值时       |
 | [组件视觉样本](preview.html)       | 色板、排版、按钮、表单、导航、数据展示及反馈状态 | 直观对照和视觉评审时   |
+| [输入控件对比原型（B 已选）](../../front_design/2026-09-20-form-control-lab/index.html) | 保留原灰蓝对照，展示清透蓝边框、下拉面板与选项状态 | 输入控件视觉参考 |
 | [品牌与 Logo](brand.md)            | 正式品牌图标、候选记录与使用约束                 | 使用品牌资产时         |
 | [助手图标：亲和观测员（已选）](assistant-friendly-observer-v1.md) | 正式透明图标、使用尺寸与生成记录 | 引用助手入口与面板头像时 |
 | [助手图标使用样本](assistant-icon-preview.html) | 同一正式图标的小尺寸与入口展示 | 检查图标在界面中的效果时 |

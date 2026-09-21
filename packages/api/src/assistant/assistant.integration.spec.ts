@@ -72,11 +72,15 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
       hash: async (value) => value,
       verify: async (value, hash) => value === hash,
     })
+    // 创建目标系统需要「全部目标」范围：走产品授权路径，给 admin 角色 + 全范围。
+    const adminRoleId = (await rbac.listRoles()).items.find((role) => role.key === 'admin')!.id
     const created = await rbac.createAccount(
       createAccountBodySchema.parse({
         email: 'assist-owner',
         displayName: '助手主人',
         password: 'test-password',
+        roleIds: [adminRoleId],
+        targetScopes: [{ roleId: adminRoleId, mode: 'all' }],
       }),
       null,
     )

@@ -1,4 +1,4 @@
-import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { DRIVERS, openContractDb, grantAdminScope } from './contract-fixture.js'
 import { schemaFor, databaseNow, afterSeconds } from '../native.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Step } from '@cairn/shared'
@@ -81,6 +81,7 @@ describe.each(DRIVERS)('%s BrowserSession / SessionLease Repository（集成）'
       email: `sess-${actorId}@example.com`,
       status: 'active',
     })
+    await grantAdminScope(handle.db, actorId)
     await handle.db.insert(targets).values({
       id: targetId,
       code: `sess-${SCHEMA.slice(-6)}`,

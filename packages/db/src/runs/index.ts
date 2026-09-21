@@ -1,5 +1,6 @@
 export { DomainError, badRequest, conflict, forbidden, mapRestriction, notFound, pgCode, constraintName, unavailable } from './errors.js'
 export { assembleRunSnapshot, AssembleRunSnapshotError } from './assemble-snapshot.js'
+export { loadResolutionLayers, stepsNeedAiExecute } from './resolution-layers.js'
 export { computeIdempotencyDigest, computeSnapshotDigest, sha256Hex } from './digest.js'
 export {
   appendScenarioVersion,
@@ -42,6 +43,8 @@ export {
   loadRunDetail,
   computeRunPlacement,
   loadRunRow,
+  loadRunLoopState,
+  loadRunStepStates,
   markRunCancelled,
   markRunWaitingForAuth,
   openPreStepAuthValidityWindow,
@@ -58,6 +61,8 @@ export {
   type FinishAttemptInput,
   type FinishAttemptResult,
   type RunWriteAuthority,
+  type RunLoopState,
+  type RunStepState,
 } from './runs.js'
 export {
   expireStaleRunLeases,

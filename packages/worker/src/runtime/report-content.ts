@@ -71,7 +71,7 @@ export function reportLines(document: ReportDocument): ReportLine[] {
     add('成员结果汇总', 'heading')
     const counts = record(source.counts)
     add(`计划 ${text(counts.planned)}；执行成功 ${text(counts.succeeded)}；执行失败 ${text(counts.failed)}；取消 ${text(counts.cancelled)}；跳过 ${text(counts.skipped)}`)
-    if ('wallClockMs' in source) add(`集合墙钟耗时：${source.wallClockMs === null ? '尚未结算' : `${Number(source.wallClockMs) / 1000} 秒`}；子运行耗时合计：${source.childDurationMs === null ? '尚未结算' : `${Number(source.childDurationMs) / 1000} 秒`}`)
+    if ('wallClockMs' in source) add(`集合整次耗时：${source.wallClockMs === null ? '尚未结算' : `${Number(source.wallClockMs) / 1000} 秒`}；子运行耗时合计：${source.childDurationMs === null ? '尚未结算' : `${Number(source.childDurationMs) / 1000} 秒`}`)
     if (source.suiteVersionId) add(`场景集版本：${text(source.suiteVersionId)}`)
     const members = records(source.items), groups = records(source.groups)
     const groupKeys = [...new Set([...groups.map((group) => String(group.id)), ...members.map((member) => String(member.groupId ?? ''))])]

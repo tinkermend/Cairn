@@ -124,7 +124,7 @@ export function TargetScenariosTab({ targetId, targetName }: TargetScenariosTabP
 
       {filteredItems.length === 0 ? (
         <EmptyState
-          title={isFiltered ? '没有匹配的关联场景' : '该系统暂未关联自动化场景'}
+          title={isFiltered ? '没有匹配的关联场景' : '该系统暂未关联场景'}
           description={
             isFiltered
               ? '试试其他关键词，或清除筛选条件。'

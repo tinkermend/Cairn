@@ -56,11 +56,14 @@ describe('助手接入平台 AI（模拟供应商）', { timeout: 30_000 }, () =
       hash: async (value) => value,
       verify: async (value, hash) => value === hash,
     })
+    const adminRole = (await rbac.listRoles()).items.find((role) => role.key === 'admin')
+    if (!adminRole) throw new Error('缺少 admin 角色')
     const created = await rbac.createAccount(
       createAccountBodySchema.parse({
         email: 'assist-model',
         displayName: '模型测试',
         password: 'test-password',
+        roleIds: [adminRole.id],
       }),
       null,
     )
@@ -109,6 +112,7 @@ describe('助手接入平台 AI（模拟供应商）', { timeout: 30_000 }, () =
           platformAi: {
             ...FACTORY_PLATFORM_CONFIG.platformAi,
             enabled: true,
+            provider: 'deepseek',
             baseUrl: 'https://llm.example/v1',
             model: 'mock-text',
             secretRef,

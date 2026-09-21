@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { mapAssetRefSchema, mapConditionSnapshotSchema } from './map-c0.js'
 import { nextCursorSchema } from './rbac.js'
-import { scenarioDocumentSchema } from './scenario.js'
+import { scenarioDocumentSchema, type ScenarioDocument } from './scenario.js'
+import { canonicalJson } from './canonical.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 
 export const KNOWLEDGE_LIST_LIMIT_DEFAULT = 20
@@ -47,6 +48,7 @@ const aliasSchema = z.string().trim().min(1).max(128)
 const meaningSchema = z.string().trim().min(1).max(2048)
 
 export const knowledgeSourceRefSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('analysis_candidate'), jobId: entityIdSchema, candidateId: entityIdSchema }),
   z.strictObject({
     kind: z.literal('map_asset'),
     assetRef: mapAssetRefSchema,
@@ -157,6 +159,25 @@ export const knowledgeDiffSchema = z.strictObject({
   to: z.unknown().optional(),
 })
 export type KnowledgeDiff = z.infer<typeof knowledgeDiffSchema>
+
+/** Bounded, reviewable leaf changes; large structural edits fall back to a section diff. */
+export function diffKnowledgeDocuments(before: ScenarioDocument, after: ScenarioDocument): KnowledgeDiff[] {
+  const diffs: KnowledgeDiff[] = []
+  function visit(from: unknown, to: unknown, fieldPath: string[]) {
+    if (from === undefined && to === undefined) return
+    if (from !== undefined && to !== undefined && canonicalJson(from) === canonicalJson(to)) return
+    if (diffs.length > 64) return
+    if (fieldPath.length < 8 && from && to && typeof from === 'object' && typeof to === 'object' &&
+      Array.isArray(from) === Array.isArray(to) && (!Array.isArray(from) || from.length === (to as unknown[]).length)) {
+      const left = from as Record<string, unknown>, right = to as Record<string, unknown>
+      for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) visit(left[key], right[key], [...fieldPath, key])
+    } else diffs.push({ fieldPath, from, to })
+  }
+  for (const key of ['inputs', 'steps'] as const) visit(before[key], after[key], [key])
+  return diffs.length <= 64 ? diffs : (['inputs', 'steps'] as const)
+    .filter(key => canonicalJson(before[key] ?? null) !== canonicalJson(after[key] ?? null))
+    .map(key => ({ fieldPath: [key], from: before[key], to: after[key] }))
+}
 
 export const knowledgeTermCandidateSchema = z.strictObject({
   termId: entityIdSchema,

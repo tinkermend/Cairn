@@ -8,9 +8,15 @@ import {
   assertAiRequestTimeoutFitsSteps,
   freezeExecutorVersions,
   frozenTargetAuthSchema,
-  hasAiSteps,
+  effectivePoliciesForSteps,
+  FACTORY_COMPILE_RESOLUTION,
+  freezeResolutionSnapshot,
+  mergeResolutionCeiling,
+  parseTargetResolutionPolicy,
   loginScopeFromTargetUrl,
   resolveAiExecutionFromPlatform,
+  resolutionCapabilitiesFromPlatform,
+  snapshotNeedsBrowserAi,
   resolveMapCapturePolicy,
   resolvePlatformEvidencePolicy,
   resolvePlatformExecutionPolicy,
@@ -30,6 +36,7 @@ import {
   type OutcomeManifest,
   type RuntimeInvariantManifest,
   type PlatformConfigDocument,
+  type ResolutionPolicy,
   type RunSnapshot,
   type SessionPolicyOverride,
   type Step,
@@ -59,16 +66,42 @@ export function resolveAssembledAiExecution(input: {
   aiExecution?: AiExecutionConfig
   hangWaitMs?: number
   executionPolicyOverride?: ExecutionPolicy
+  documentResolution?: ResolutionPolicy
+  targetCeiling?: ResolutionPolicy
+  targetPreference?: ResolutionPolicy
+  effectiveSteps?: Readonly<Record<string, ResolutionPolicy>>
 }): AiExecutionConfig | undefined {
   const document = input.platformDocument ?? FACTORY_PLATFORM_CONFIG
   const policy = resolvePlatformExecutionPolicy(input.executionPolicyOverride, document.execution)
+  const resolution = resolutionCapabilitiesFromPlatform(document)
+  const effective =
+    input.effectiveSteps ??
+    effectivePoliciesForSteps(
+      input.steps,
+      {
+        ...FACTORY_COMPILE_RESOLUTION,
+        ceiling: resolution.ceiling,
+        default: resolution.default,
+        targetCeiling: input.targetCeiling,
+        targetPreference: input.targetPreference,
+        documentResolution: input.documentResolution,
+        aiRungAvailable: resolution.aiRungAvailable,
+      },
+      document.browserAi.enabled,
+    )
+  const needsAi = snapshotNeedsBrowserAi(input.steps, effective)
+  if (!needsAi) return undefined
   let aiExecution = input.aiExecution
-  if (hasAiSteps(input.steps) && !aiExecution) {
+  if (!aiExecution) {
     try {
       aiExecution = resolveAiExecutionFromPlatform(input.steps, document, {
         revision: input.platformRevision ?? 1,
         hangWaitMs: input.hangWaitMs ?? DEFAULT_BROWSER_AI_HANG_WAIT_MS,
         policy,
+        documentResolution: input.documentResolution,
+        targetCeiling: input.targetCeiling,
+        targetPreference: input.targetPreference,
+        effectiveSteps: effective,
       })
     } catch (error) {
       const code =
@@ -76,18 +109,16 @@ export function resolveAssembledAiExecution(input: {
       throw new AssembleRunSnapshotError(code, error instanceof Error ? error.message : '浏览器仿真 AI 配置无效')
     }
   }
-  if (hasAiSteps(input.steps) && !aiExecution) {
-    throw new AssembleRunSnapshotError('AI_CONFIG_INVALID', '含 AI 步骤的运行必须冻结 AI 执行配置')
+  if (!aiExecution) {
+    throw new AssembleRunSnapshotError('AI_CONFIG_INVALID', '含 AI 步骤或 AI 解析档位的运行必须冻结 AI 执行配置')
   }
-  if (aiExecution) {
-    try {
-      assertAiRequestTimeoutFitsSteps(input.steps, policy, aiExecution.requestTimeoutMs)
-    } catch (error) {
-      throw new AssembleRunSnapshotError(
-        'AI_CONFIG_INVALID',
-        error instanceof Error ? error.message : 'AI 请求超时配置无效',
-      )
-    }
+  try {
+    assertAiRequestTimeoutFitsSteps(input.steps, policy, aiExecution.requestTimeoutMs)
+  } catch (error) {
+    throw new AssembleRunSnapshotError(
+      'AI_CONFIG_INVALID',
+      error instanceof Error ? error.message : 'AI 请求超时配置无效',
+    )
   }
   return aiExecution
 }
@@ -120,6 +151,7 @@ export type AssembleRunSnapshotInput = {
     loginFields: unknown
     captcha?: unknown
     sessionPolicy: unknown
+    resolutionPolicy?: unknown
     sensitiveSelectors?: string[] | null
   }
   platformDocument: PlatformConfigDocument
@@ -131,6 +163,7 @@ export type AssembleRunSnapshotInput = {
   accessPolicy: FrozenTargetAccessPolicy
   mapConsumption: FrozenMapConsumption
   suiteAdmission?: SuiteAdmissionSnapshot
+  documentResolution?: ResolutionPolicy
 }
 
 export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapshot & { digest: string } {
@@ -145,6 +178,21 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     document.evidence,
   )
   const policy = resolvePlatformExecutionPolicy(input.executionPolicyOverride, document.execution)
+  const resolutionCaps = resolutionCapabilitiesFromPlatform(document)
+  const targetResolution = parseTargetResolutionPolicy(input.target.resolutionPolicy)
+  const effectiveSteps = effectivePoliciesForSteps(
+    input.steps,
+    {
+      ...FACTORY_COMPILE_RESOLUTION,
+      ceiling: resolutionCaps.ceiling,
+      default: resolutionCaps.default,
+      targetCeiling: targetResolution?.ceiling,
+      targetPreference: targetResolution?.preference,
+      documentResolution: input.documentResolution,
+      aiRungAvailable: resolutionCaps.aiRungAvailable,
+    },
+    document.browserAi.enabled,
+  )
   const snapshotBase = {
     schemaVersion: RUNTIME_SCHEMA_VERSION,
     runId: input.runId,
@@ -200,12 +248,27 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
       aiExecution: input.aiExecution,
       hangWaitMs: input.hangWaitMs,
       executionPolicyOverride: input.executionPolicyOverride,
+      documentResolution: input.documentResolution,
+      targetCeiling: targetResolution?.ceiling,
+      targetPreference: targetResolution?.preference,
+      effectiveSteps,
     }),
     mapCapturePolicy: resolveMapCapturePolicy(
       input.mapJob ? { ...input.mapCapturePolicyOverride, enabled: true } : input.mapCapturePolicyOverride,
       document.mapCapture,
     ),
   }
+  const frozenResolution = freezeResolutionSnapshot({
+    ceiling: mergeResolutionCeiling({
+      ceiling: resolutionCaps.ceiling,
+      targetCeiling: targetResolution?.ceiling,
+      browserAiEnabled: document.browserAi.enabled,
+    }),
+    scenarioDefault: targetResolution?.preference ?? resolutionCaps.default,
+    targetCeiling: targetResolution?.ceiling,
+    targetPreference: targetResolution?.preference,
+    steps: effectiveSteps,
+  })
   const parsed = runSnapshotSchema.parse({
     ...snapshotBase,
     allowedOrigins: input.allowedOrigins,
@@ -213,6 +276,7 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     mapConsumption: input.mapConsumption,
     ...(input.mapJob ? { mapJob: input.mapJob } : {}),
     ...(input.suiteAdmission ? { suiteAdmission: input.suiteAdmission } : {}),
+    ...(frozenResolution ? { resolution: frozenResolution } : {}),
   })
   const digest = computeSnapshotDigest(parsed)
   return runSnapshotSchema.parse({ ...parsed, digest }) as RunSnapshot & { digest: string }

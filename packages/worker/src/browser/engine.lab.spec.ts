@@ -24,6 +24,7 @@ import {
   targetAccounts,
   targets,
   type DbHandle,
+  grantAdminScope,
 } from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY, LOCAL_SECRET_PROVIDER, PROCESS_LOG_EVENTS, type Step } from '@cairn/shared'
 import { WORKER_TEST_PROTOCOLS } from '../__tests__/worker-protocols.js'
@@ -161,6 +162,8 @@ describe('ExecutionEngine × 真浏览器（垂直切片）', { timeout: 180_000
       email: `elab-${actorId}@example.com`,
       status: 'active',
     })
+    // 服务调用方的管理（saveServiceCaller）与建目标都需要全部目标范围。
+    await grantAdminScope(handle.db, actorId)
     await handle.db.insert(targets).values({
       id: targetId,
       code: `elab-${SCHEMA.slice(-8)}`,

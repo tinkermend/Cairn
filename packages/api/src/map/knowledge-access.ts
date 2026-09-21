@@ -1,9 +1,9 @@
 import { DomainError, validateKnowledgeSources, type DbHandle } from '@cairn/db'
-import { hasPermission, type KnowledgeSourceRef, type AuthoringProposal } from '@cairn/shared'
+import { hasPermission, type KnowledgeSourceRef, type AuthoringProposal, type TerminologyEntry } from '@cairn/shared'
 import type { RequestAccount } from '../common/request-account'
 
 export function knowledgeAccess(account: RequestAccount, scenarioId?: string) {
-  return { runRead: hasPermission(account.permissions, 'run:read'), workflowRead: hasPermission(account.permissions, 'workflow:read'), moduleRead: hasPermission(account.permissions, 'module:read'), scenarioId }
+  return { runRead: hasPermission(account.permissions, 'run:read'), workflowRead: hasPermission(account.permissions, 'workflow:read'), moduleRead: hasPermission(account.permissions, 'module:read'), mapAnalyze: hasPermission(account.permissions, 'map:analyze'), mapRead: hasPermission(account.permissions, 'map:read'), actorId: account.id, scenarioId }
 }
 
 export async function visibleKnowledgeSources(db: DbHandle, targetId: string, sources: KnowledgeSourceRef[], account: RequestAccount) {
@@ -25,4 +25,16 @@ export async function requireProposalAccess(db: DbHandle, proposal: AuthoringPro
     await validateKnowledgeSources(db, proposal.targetId, [{ kind: 'term', ...term }], knowledgeAccess(account))
   }
   return proposal
+}
+
+export async function visibleTerms(db: DbHandle, targetId: string, items: TerminologyEntry[], account: RequestAccount) {
+  const visible: TerminologyEntry[] = []
+  for (const item of items) {
+    try {
+      // The meaning itself copies analysis content. Hiding only IDs would leak it.
+      await validateKnowledgeSources(db, targetId, item.sources.filter(source => source.kind === 'analysis_candidate'), knowledgeAccess(account))
+      visible.push({ ...item, sources: await visibleKnowledgeSources(db, targetId, item.sources, account) })
+    } catch (error) { if (!(error instanceof DomainError) || !['not_found', 'bad_request'].includes(error.kind)) throw error }
+  }
+  return visible
 }

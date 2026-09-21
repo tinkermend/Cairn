@@ -105,7 +105,7 @@ export function summarizeWorker(input: {
   worker: WorkerRecord
   asOf: Date
   counts: WorkerSlotCounts
-  networkMode: WorkerNetworkMode
+  networkMode?: WorkerNetworkMode
   envEndpoint?: string
   canSeeEndpoint: boolean
 }): WorkerSummary {
@@ -159,6 +159,9 @@ export function summarizeWorker(input: {
             protocol: new URL(route.endpoint).protocol === 'https:' ? 'https' : 'http',
           }
         : null,
+    listenHost: input.worker.listenHost ?? null,
+    listenPort: input.worker.listenPort ?? null,
+    hostname: input.worker.hostname ?? null,
   }
 }
 
@@ -269,7 +272,7 @@ async function countForWorkers(
 export async function listWorkers(
   db: Db,
   query: WorkerListQueryInput,
-  options: { networkMode: WorkerNetworkMode; envEndpoints: Record<string, string>; canSeeEndpoint: boolean },
+  options: { envEndpoints?: Record<string, string>; canSeeEndpoint: boolean; networkMode?: WorkerNetworkMode },
 ): Promise<WorkerListResponse> {
   const parsed = workerListQuerySchema.parse(query)
   const { workers } = schemaFor(db)
@@ -315,11 +318,14 @@ export async function listWorkers(
         handleMismatchStreak: row.handleMismatchStreak,
         handleSampledAt: row.liveHandleCount === null && row.sampledSlotCount === null ? null : row.heartbeatAt,
         protocolCapabilities: row.protocolCapabilities ?? [],
+        listenHost: row.listenHost ?? null,
+        listenPort: row.listenPort ?? null,
+        hostname: row.hostname ?? null,
       },
       asOf,
       counts: counts.get(row.id) ?? emptyCounts(),
       networkMode: options.networkMode,
-      envEndpoint: options.envEndpoints[row.id],
+      envEndpoint: options.envEndpoints?.[row.id],
       canSeeEndpoint: options.canSeeEndpoint,
     }),
   )
@@ -334,7 +340,7 @@ export async function getWorkerDetail(
   db: Db,
   workerId: string,
   query: WorkerSessionListQuery,
-  options: { networkMode: WorkerNetworkMode; envEndpoints: Record<string, string>; canSeeEndpoint: boolean },
+  options: { envEndpoints?: Record<string, string>; canSeeEndpoint: boolean; networkMode?: WorkerNetworkMode },
 ): Promise<WorkerDetailResponse> {
   const parsed = workerSessionListQuerySchema.parse(query)
   const worker = await getWorkerById(db, workerId)
@@ -384,7 +390,7 @@ export async function getWorkerDetail(
       asOf,
       counts: counts.get(workerId) ?? emptyCounts(),
       networkMode: options.networkMode,
-      envEndpoint: options.envEndpoints[workerId],
+      envEndpoint: options.envEndpoints?.[workerId],
       canSeeEndpoint: options.canSeeEndpoint,
     }),
     sessions: {

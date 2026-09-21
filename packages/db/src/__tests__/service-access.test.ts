@@ -1072,7 +1072,9 @@ describe.each(DRIVERS)('%s controlled service execution', (driver) => {
     }
     const bundle = await exportDatabase(f.db, f.h.env, options)
     const target = await openContractDb(
-      DRIVERS[(DRIVERS.indexOf(driver) + 1) % DRIVERS.length]!
+      DRIVERS[(DRIVERS.indexOf(driver) + 1) % DRIVERS.length]!,
+      undefined,
+      { pristine: true },
     )
     handles.push(target)
     const targetDb = expose(target)

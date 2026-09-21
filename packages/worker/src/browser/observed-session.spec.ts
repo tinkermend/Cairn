@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getRun: vi.fn(),
   getSessionById: vi.fn(),
   findSessionByAuthWaitRun: vi.fn(),
+  touchSessionUsed: vi.fn(async () => undefined),
 }))
 
 vi.mock('@cairn/db', async (original) => {
@@ -16,6 +17,8 @@ vi.mock('@cairn/db', async (original) => {
     getSessionOperation: vi.fn(async () => null),
     findActiveLeaseRow: vi.fn(async () => null),
     findSessionByAuthWaitRun: mocks.findSessionByAuthWaitRun,
+    // 观察画面会顺带刷新会话的最后使用时间；真实实现要真句柄，本用例的 dbHandle 是空对象。
+    touchSessionUsed: mocks.touchSessionUsed,
     findAuthWaitLeaseForRun: vi.fn(async () => null),
     findAuthWaitLeaseForOperation: vi.fn(async () => null),
   }
@@ -90,6 +93,11 @@ describe('续跑后观察会话', () => {
     expect(meta.framesAvailable).toBe(true)
     expect(meta.sessionId).toBe(sessionId)
     expect(meta.currentPage?.currentExecution).toBe(true)
+    // 被观察的会话要刷新最后使用时间，否则正在被人看着的会话会被空闲回收。
+    expect(mocks.touchSessionUsed).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ sessionId }),
+    )
   })
 
   it('续跑空隙没有租约映射时仍能靠页面归属找到会话', async () => {

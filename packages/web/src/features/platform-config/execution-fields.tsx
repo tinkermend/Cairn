@@ -34,6 +34,66 @@ export function ExecutionFields({ canWrite }: { canWrite: boolean }) {
         )}
       />
       <FormField
+        name='scenarioScheduledRunEnabled'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
+            <div>
+              <FormLabel>开放场景定时执行</FormLabel>
+              <FormDescription>
+                出厂关闭。与地图复查独立；关闭时已保存的场景计划可以查看和手动校验配置，但不会自动触发。
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='suiteScheduledRunEnabled'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
+            <div>
+              <FormLabel>开放场景集定时执行</FormLabel>
+              <FormDescription>
+                出厂关闭。一次触发只创建一个集合运行，子运行仍遵守集合失败策略和截止时间。
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='knowledgeAnalysisEnabled'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
+            <div>
+              <FormLabel>开放知识分析</FormLabel>
+              <FormDescription>
+                出厂关闭。只沉淀候选知识，不会发布术语或改已发布地图；关闭时不影响确定性地图投影。
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
         name='moduleFallback.enabled'
         render={({ field }) => (
           <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
@@ -81,6 +141,26 @@ export function ExecutionFields({ canWrite }: { canWrite: boolean }) {
               <FormLabel>开放有界地图探索</FormLabel>
               <FormDescription>
                 出厂关闭。打开后仍需每个目标单独开启探索政策，且不会自动升可信。
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                checked={field.value}
+                disabled={!canWrite}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='fixtureStepsEnabled'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
+            <div>
+              <FormLabel>开放调试夹具步骤</FormLabel>
+              <FormDescription>
+                出厂关闭。echo / delay / fail 不访问目标系统，跑出来的成败不构成业务事实，会和真实运行一起进总览口径。仅在排查编排本身时打开。
               </FormDescription>
             </div>
             <FormControl>

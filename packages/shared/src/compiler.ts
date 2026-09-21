@@ -1,5 +1,6 @@
 import { type OutcomeManifest } from './outcome.js'
 import { type OutputShape } from './output-schema.js'
+import { type CompileResolutionContext } from './resolution.js'
 import { type Step } from './step.js'
 import {
   scenarioDocumentSchema,
@@ -22,6 +23,13 @@ export const COMPILE_DIAGNOSTIC_CODES = [
   'SCENARIO_TARGET_MISSING',
   'SCENARIO_TARGET_DISABLED',
   'SCENARIO_WEAK_LOCATOR',
+  'SCENARIO_TARGET_EMPTY',
+  'SCENARIO_TARGET_SEMANTIC_ONLY',
+  'SCENARIO_RESOLUTION_EXCEEDS_CEILING',
+  'SCENARIO_RESOLUTION_DEGRADED',
+  'SCENARIO_SIDE_EFFECT_SEMANTIC_ONLY',
+  'SCENARIO_WAIT_KIND_UNAVAILABLE',
+  'SCENARIO_ASSERT_TEMPLATE_INVALID',
   'SCENARIO_EXTRACT_NO_OUTPUT_KEY',
   'SCENARIO_INPUT_UNUSED',
   'SCENARIO_NO_ASSERT',
@@ -61,6 +69,8 @@ export type CompileContext = {
   executableTypes?: readonly string[]
   /** 传入后按成功条件语义诊断；缺省时从扁平 assert / ai_assert 步合成 */
   outcomeManifest?: OutcomeManifest | null
+  /** 平台上限、目标系统优先顺序与场景/步骤档位；缺省按出厂 deterministic_only 上限解释 */
+  resolution?: CompileResolutionContext
 }
 
 export type CompileResult = {

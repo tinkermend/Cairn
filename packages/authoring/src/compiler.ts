@@ -1,10 +1,14 @@
 import {
   COMPILER_VERSION,
   EXECUTABLE_STEP_TYPES,
+  FACTORY_COMPILE_RESOLUTION,
   FORBIDDEN_CONTEXT_KEYS,
   ScenarioValidationError,
+  WAIT_KINDS_AVAILABLE_NOW,
   assertNoForwardFrom,
+  mergeEffectiveResolution,
   outputShapeForStep,
+  policyAllowsAiRung,
   stepUsesBrowser,
   type CompileContext,
   type CompileDiagnostic,
@@ -14,7 +18,27 @@ import {
   type OutcomeManifestEntry,
   type ScenarioDocument,
   type Step,
+  type TargetDescriptor,
 } from '@cairn/shared'
+import { parse as parseYaml } from 'yaml'
+
+export function validateAriaSnapshotTemplate(template: string): { valid: boolean; error?: string } {
+  if (!template || template.trim().length === 0) {
+    return { valid: false, error: '模板内容不能为空' }
+  }
+  try {
+    const parsed = parseYaml(template)
+    if (!Array.isArray(parsed)) {
+      return { valid: false, error: 'aria_snapshot 模板根节点必须是列表（以 - 开头）' }
+    }
+    return { valid: true }
+  } catch (err) {
+    return {
+      valid: false,
+      error: `YAML 语法错误：${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+}
 
 function stepFrom(step: Step): { from?: string; fromField?: string } {
   if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') return step.input
@@ -53,6 +77,12 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
   const diagnostics: CompileDiagnostic[] = []
   const executable = ctx.executableTypes ?? EXECUTABLE_STEP_TYPES
   const release = ctx.mode === 'release'
+  const resolution = {
+    ...FACTORY_COMPILE_RESOLUTION,
+    ...ctx.resolution,
+    documentResolution: ctx.resolution?.documentResolution ?? document.resolution,
+    waitKindsAvailable: ctx.resolution?.waitKindsAvailable ?? WAIT_KINDS_AVAILABLE_NOW,
+  }
 
   if (document.steps.length === 0) {
     add(diagnostics, 'SCENARIO_EMPTY', 'error', '场景至少需要一步')
@@ -163,19 +193,35 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
       })
     }
 
-    for (const located of locatorSteps(step)) {
-      const target = 'target' in located.input ? located.input.target : undefined
-      if (!target) continue
-      const semantic = target.candidates.some((candidate) => candidate.by !== 'css')
-      if (!semantic) {
+    if (step.type === 'wait' && step.input.kind === 'semantic') {
+      const available = resolution.waitKindsAvailable ?? WAIT_KINDS_AVAILABLE_NOW
+      if (!available.includes('semantic')) {
         add(
           diagnostics,
-          'SCENARIO_WEAK_LOCATOR',
-          'warning',
-          `步骤「${located.name}」只用 CSS 定位，缺少 role / label / text 等语义候选`,
-          { stepId: located.id },
+          'SCENARIO_WAIT_KIND_UNAVAILABLE',
+          release ? 'error' : 'warning',
+          `步骤「${step.name}」的语义等待尚未开放运行时`,
+          { stepId: step.id, fieldPath: ['input', 'kind'] },
         )
       }
+    }
+
+    if (step.type === 'assert' && step.input.expect.kind === 'aria_snapshot') {
+      const res = validateAriaSnapshotTemplate(step.input.expect.template)
+      if (!res.valid) {
+        add(
+          diagnostics,
+          'SCENARIO_ASSERT_TEMPLATE_INVALID',
+          'error',
+          `步骤「${step.name}」的 ${res.error}`,
+          { stepId: step.id, fieldPath: ['input', 'expect', 'template'] },
+        )
+      }
+    }
+
+    for (const located of locatorSteps(step)) {
+      const target = 'target' in located.input ? located.input.target : undefined
+      addTargetResolutionDiagnostics(diagnostics, located, target, resolution, release)
     }
   }
 
@@ -279,5 +325,103 @@ function addOutcomeCoverageDiagnostics(
         { stepId: step.id },
       )
     }
+  }
+}
+
+function addTargetResolutionDiagnostics(
+  diagnostics: CompileDiagnostic[],
+  step: Step,
+  target: TargetDescriptor | undefined,
+  resolution: NonNullable<CompileContext['resolution']> & {
+    ceiling: string
+    default: string
+    waitKindsAvailable?: readonly string[]
+  },
+  release: boolean,
+): void {
+  const explicit = step.policy?.resolution ?? resolution.documentResolution
+  const effective = mergeEffectiveResolution({
+    ceiling: resolution.ceiling,
+    defaultResolution: resolution.default,
+    targetCeiling: resolution.targetCeiling,
+    targetPreference: resolution.targetPreference,
+    document: resolution.documentResolution,
+    step: step.policy?.resolution,
+  })
+
+  if (explicit === 'ai_only' && effective !== 'ai_only') {
+    add(
+      diagnostics,
+      'SCENARIO_RESOLUTION_EXCEEDS_CEILING',
+      release ? 'error' : 'warning',
+      `步骤「${step.name}」要求仅用 AI 解析，但当前平台或目标系统上限不允许`,
+      { stepId: step.id, fieldPath: ['policy', 'resolution'] },
+    )
+  } else if (
+    (explicit === 'prefer_deterministic' || explicit === 'prefer_ai') &&
+    effective === 'deterministic_only'
+  ) {
+    add(
+      diagnostics,
+      'SCENARIO_RESOLUTION_DEGRADED',
+      'warning',
+      `步骤「${step.name}」的解析策略已被平台或目标系统上限降为仅规则`,
+      { stepId: step.id, fieldPath: ['policy', 'resolution'] },
+    )
+  }
+
+  if (!target) return
+  const candidateCount = target.candidates?.length ?? 0
+  if (candidateCount === 0 && !target.semantic) {
+    add(
+      diagnostics,
+      'SCENARIO_TARGET_EMPTY',
+      'error',
+      `步骤「${step.name}」缺少定位候选和语义描述`,
+      { stepId: step.id, fieldPath: ['input', 'target'] },
+    )
+    return
+  }
+  if (candidateCount === 0 && target.semantic) {
+    const allowAi = policyAllowsAiRung(effective)
+    add(
+      diagnostics,
+      'SCENARIO_TARGET_SEMANTIC_ONLY',
+      release && !allowAi ? 'error' : 'warning',
+      allowAi
+        ? `步骤「${step.name}」只有语义描述，没有确定性候选`
+        : `步骤「${step.name}」只有语义描述，当前部署无法解析该目标`,
+      { stepId: step.id, fieldPath: ['input', 'target', 'semantic'] },
+    )
+    if (step.effectType === 'SIDE_EFFECT' || step.effectType === 'IDEMPOTENT') {
+      if (effective === 'prefer_deterministic') {
+        add(
+          diagnostics,
+          'SCENARIO_SIDE_EFFECT_SEMANTIC_ONLY',
+          release ? 'error' : 'warning',
+          `步骤「${step.name}」是写步骤且只有语义描述，规则优先下 AI 定位会被交叉确认拒绝`,
+          { stepId: step.id, fieldPath: ['input', 'target', 'semantic'] },
+        )
+      } else if (effective === 'prefer_ai' || effective === 'ai_only') {
+        add(
+          diagnostics,
+          'SCENARIO_SIDE_EFFECT_SEMANTIC_ONLY',
+          'warning',
+          `步骤「${step.name}」是写步骤且仅有语义描述，AI 定位没有交叉确认`,
+          { stepId: step.id, fieldPath: ['input', 'target', 'semantic'] },
+        )
+      }
+    }
+  }
+  const candidates = target.candidates ?? []
+  const hasSemanticLocator = candidates.some((candidate) => candidate.by !== 'css')
+  if (candidates.length > 0 && !hasSemanticLocator) {
+    add(
+      diagnostics,
+      'SCENARIO_WEAK_LOCATOR',
+      'warning',
+      `步骤「${step.name}」只用 CSS 定位，缺少 role / label / text 等语义候选`,
+      { stepId: step.id },
+    )
   }
 }

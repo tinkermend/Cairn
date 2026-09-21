@@ -21,6 +21,7 @@ export const KIND_LABELS: Record<AssertExpect['kind'], string> = {
   text_equals: '文本等于',
   text_contains: '文本包含',
   number_compare: '数值比较',
+  aria_snapshot: '快照匹配 (Aria)',
 }
 
 export const OP_LABELS: Record<NumberCompareOp, string> = {

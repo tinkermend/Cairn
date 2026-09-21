@@ -6,7 +6,7 @@ import {
   FACTORY_PLATFORM_CONFIG,
   hasPermission,
   platformConfigCurrentSchema,
-  platformConfigDocumentSchema,
+  platformConfigWriteDocumentSchema,
   platformModelUrlSchema,
   type PlatformConfigCurrent,
   type PlatformConfigDocument,
@@ -43,7 +43,7 @@ import { SessionFields } from './session-fields'
 
 const TABS = [
   { id: 'ai', title: '浏览器 AI' },
-  { id: 'platform-ai', title: '控制台助手' },
+  { id: 'platform-ai', title: '平台 AI' },
   { id: 'execution', title: '执行默认值' },
   { id: 'session', title: '会话策略' },
   { id: 'evidence', title: '证据策略' },
@@ -63,11 +63,13 @@ export function PlatformConfigPage() {
     queryKey: ['platform-config'],
     queryFn: fetchPlatformConfig,
   })
-  const [tab, setTab] = useState<TabId>(() =>
-    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('tab') === 'alerting'
-      ? 'alerting'
-      : 'ai',
-  )
+  const [tab, setTab] = useState<TabId>(() => {
+    if (typeof window === 'undefined') return 'ai'
+    const param = new URLSearchParams(window.location.search).get('tab')
+    if (param === 'alerting') return 'alerting'
+    if (param === 'analysis-ai' || param === 'platform-ai') return 'platform-ai'
+    return 'ai'
+  })
   const [reason, setReason] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [platformApiKey, setPlatformApiKey] = useState('')
@@ -75,9 +77,10 @@ export function PlatformConfigPage() {
   const [editingRevision, setEditingRevision] = useState<number>()
   const form = useForm<PlatformConfigDocument>({
     resolver: zodResolver(
-      platformConfigDocumentSchema
+      platformConfigWriteDocumentSchema
     ) as Resolver<PlatformConfigDocument>,
     defaultValues: FACTORY_PLATFORM_CONFIG,
+    shouldUnregister: false,
   })
   const isDirty = form.formState.isDirty
 
@@ -145,10 +148,25 @@ export function PlatformConfigPage() {
     }
   }
 
+  function showWriteErrors(issues: { path: PropertyKey[]; message: string }[]) {
+    for (const issue of issues) {
+      const name = issue.path.join('.')
+      if (name) form.setError(name as never, { type: 'manual', message: issue.message })
+    }
+    if (issues.some((issue) => issue.path[0] === 'browserAi')) {
+      setTab('ai')
+    } else if (
+      issues.some((issue) => issue.path[0] === 'platformAi' || issue.path[0] === 'analysisAi')
+    ) {
+      setTab('platform-ai')
+    }
+    toast.error(issues[0]?.message ?? '配置不合法')
+  }
+
   async function onSave() {
-    const parsed = platformConfigDocumentSchema.safeParse(form.getValues())
+    const parsed = platformConfigWriteDocumentSchema.safeParse(cloneDocument(form.getValues()))
     if (!parsed.success) {
-      toast.error(parsed.error.issues[0]?.message ?? '配置不合法')
+      showWriteErrors(parsed.error.issues)
       return
     }
     const persistReason = reason.trim()
@@ -160,9 +178,9 @@ export function PlatformConfigPage() {
   }
 
   async function onValidate() {
-    const parsed = platformConfigDocumentSchema.safeParse(form.getValues())
+    const parsed = platformConfigWriteDocumentSchema.safeParse(cloneDocument(form.getValues()))
     if (!parsed.success) {
-      toast.error(parsed.error.issues[0]?.message ?? '配置不合法')
+      showWriteErrors(parsed.error.issues)
       return
     }
     try {
@@ -222,6 +240,31 @@ export function PlatformConfigPage() {
         model: values.browserAi.model,
         modelFamily: values.browserAi.modelFamily,
         secretRef: values.browserAi.secretRef,
+      })
+      if (result.ok) toast.success(result.message)
+      else toast.error(result.message)
+    } catch (error) {
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '连接测试失败'
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onTestPlatformAiConnection() {
+    const values = form.getValues()
+    if (!values.platformAi.provider || !values.platformAi.baseUrl || !values.platformAi.model) {
+      toast.error('请先选择模型提供商并填写服务地址和模型名')
+      return
+    }
+    setBusy(true)
+    try {
+      const result = await testPlatformConfigConnection({
+        baseUrl: values.platformAi.baseUrl,
+        model: values.platformAi.model,
+        provider: values.platformAi.provider,
+        secretRef: values.platformAi.secretRef,
       })
       if (result.ok) toast.success(result.message)
       else toast.error(result.message)
@@ -322,6 +365,9 @@ export function PlatformConfigPage() {
                       onApiKeyChange={setPlatformApiKey}
                       onRegisterSecret={() =>
                         void onRegisterSecret('platformAi')
+                      }
+                      onTestConnection={() =>
+                        void onTestPlatformAiConnection()
                       }
                       busy={busy}
                     />

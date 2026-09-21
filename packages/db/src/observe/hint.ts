@@ -1,8 +1,10 @@
-import type { ChangeHint } from '@cairn/shared'
+import type { ChangeHint, ChangeHintObjectType } from '@cairn/shared'
 
 export type ChangeHintDraft = {
-  runId: string
+  runId?: string
   eventSeq: number
+  objectType?: ChangeHintObjectType
+  objectId?: string
 }
 
 export type ChangeHintPublisher = (hint: ChangeHintDraft) => void

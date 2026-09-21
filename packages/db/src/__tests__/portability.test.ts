@@ -67,11 +67,15 @@ async function fixture(driver: (typeof DRIVERS)[number]) {
   handles.push(h)
   const db = expose(h)
   const rbac = new api.RbacStore(db, passwordAdapter)
+  // 创建目标系统需要「全部目标」范围：账号必须带 admin 角色 + 全范围，而不是零角色。
+  const adminRole = (await rbac.listRoles()).items.find((role) => role.key === 'admin')!
   const actor = await rbac.createAccount(
     createAccountBodySchema.parse({
       email: 'portable-admin',
       displayName: '管理员',
       password: 'secret-password',
+      roleIds: [adminRole.id],
+      targetScopes: [{ roleId: adminRole.id, mode: 'all' }],
     }),
     null,
   )
@@ -199,7 +203,9 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
 
   it('CRUD, Unicode, case-sensitive keys, encrypted bytes, constraint errors and RBAC', async () => {
     const f = await fixture(driver)
-    expect(Object.keys(f.db).sort()).toEqual(['close', 'driver', 'ping'])
+    // 公开句柄只暴露这几样，不泄露驱动细节。poolStats 是监控用的连接池指标（database.pool.*），
+    // 在 HEAD 就已是句柄的合法成员，不是驱动泄漏。
+    expect(Object.keys(f.db).sort()).toEqual(['close', 'driver', 'ping', 'poolStats'])
     const { secrets } = schemaFor(f.h.db)
     expect((await f.h.db.select().from(secrets))[0]!.ciphertext).toEqual(bytes)
     await expect(
@@ -242,7 +248,18 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
     const identity = (await api.findLocalIdentity(f.db, 'PORTABLE-ADMIN'))!
     expect(await passwordAdapter.verify('updated-password', identity.secret!)).toBe(true)
     await f.targets.updateAccount(f.target.id, f.account.id, { clearPassword: true }, f.actor)
-    expect(await f.h.db.select().from(secrets)).toHaveLength(0)
+    // 清除密码是「撤销取用」，不物理删 secrets：历史 Run 快照经 credentialBinding.versionId
+    // 引用凭据版本，要能复盘，密文行保留到生命周期清理。真正的不变量是：
+    // 账号不再指向任何 secret，且没有任何版本仍可被取用。
+    const { targetAccounts, credentialVersions, credentials } = schemaFor(f.h.db)
+    const [account] = await f.h.db.select().from(targetAccounts).where(eq(targetAccounts.id, f.account.id))
+    expect(account!.secretId).toBeNull()
+    expect(account!.secretProvider).toBeNull()
+    const [credential] = await f.h.db.select().from(credentials).where(eq(credentials.id, f.account.id))
+    expect(credential!.currentVersionId).toBeNull()
+    const versions = await f.h.db.select().from(credentialVersions).where(eq(credentialVersions.credentialId, f.account.id))
+    expect(versions.length).toBeGreaterThan(0)
+    expect(versions.every((v) => v.materialStatus === 'cleared' && v.revokedAt !== null)).toBe(true)
   })
 
   it('target referenced only by a recording cascades soft delete to recordings', async () => {
@@ -402,7 +419,7 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
       'not empty',
     )
     expect((await f.targets.listTargets()).items).toHaveLength(1)
-    const empty = await openContractDb(driver)
+    const empty = await openContractDb(driver, undefined, { pristine: true })
     handles.push(empty)
     const invalid = structuredClone(archive)
     invalid.tables.scenarios![0]!.targetId = api.newId()
@@ -411,25 +428,64 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
     await expect(
       importDatabase(expose(empty), empty.env, invalid, transferOptions),
     ).rejects.toThrow()
-    expect(await empty.db.select().from(schemaFor(empty.db).consoleAccounts)).toHaveLength(0)
+    // 失败的导入整体回滚：种子管理员（0091）在事务里被清掉又被回滚带回，不能丢也不能留半截。
+    const accounts = await empty.db.select().from(schemaFor(empty.db).consoleAccounts)
+    expect(accounts.map((row) => row.email)).toEqual(['admin'])
+    expect(await empty.db.select().from(schemaFor(empty.db).consoleIdentities)).toHaveLength(1)
     expect(await empty.db.select().from(schemaFor(empty.db).consoleRoles)).toHaveLength(4)
+  })
+
+  it('未被动过的种子管理员由归档里的账号取代；登录过就视为在用库而拒绝', async () => {
+    const f = await fixture(driver)
+    const archive = await exportDatabase(f.db, f.h.env, transferOptions)
+
+    const pristine = await openContractDb(driver, undefined, { pristine: true })
+    handles.push(pristine)
+    await importDatabase(expose(pristine), pristine.env, archive, transferOptions)
+    const { consoleAccounts, consoleIdentities } = schemaFor(pristine.db)
+    const logins = (await pristine.db.select().from(consoleIdentities)).map((row) => row.subject)
+    // 归档里的账号取代了种子 admin，没有出现「两个 admin」。
+    expect(new Set(logins).size).toBe(logins.length)
+    expect((await pristine.db.select().from(consoleAccounts)).length).toBe(
+      archive.tables.consoleAccounts!.length,
+    )
+
+    const used = await openContractDb(driver, undefined, { pristine: true })
+    handles.push(used)
+    await used.db
+      .update(schemaFor(used.db).consoleIdentities)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(schemaFor(used.db).consoleIdentities.subject, 'admin'))
+    await expect(importDatabase(expose(used), used.env, archive, transferOptions)).rejects.toThrow(
+      'not empty',
+    )
   })
 
   it.runIf(DRIVERS.length > 1)('completed history, secrets and evidence migrate in both supported directions', async () => {
     const source = await fixture(driver)
     const legacyId = api.newId()
     await api.registerStandaloneSecret(source.db, { id: legacyId, ciphertext: bytes })
-    const initialConfig = await api.getOrCreatePlatformConfig(source.db, { document: {
+    // 这份用例整份写入平台配置，会把基座种的夹具开关抹回出厂的 false；
+    // 而它随后要用 echo 场景建 Run（包括迁移后在目标库上）。配置随库迁走，开关也跟着走。
+    const legacyDocument = {
       ...FACTORY_PLATFORM_CONFIG,
+      fixtureStepsEnabled: true,
       browserAi: { ...FACTORY_PLATFORM_CONFIG.browserAi, baseUrl: 'https://legacy.example/v1',
-        secretRef: { provider: 'local', secretId: legacyId } },
-    }, reason: '迁移前的旧密钥引用' })
+        secretRef: { provider: 'local' as const, secretId: legacyId } },
+    }
+    // 基座已经种过一行配置，getOrCreate 会变成空操作，「旧密钥的首个引用修订」就不存在了
+    // （loadPlatformAiSecret 靠它推 modelOrigin）。所以已有配置时走「改配置」，让这一版成为首个引用。
+    const seeded = await api.getPlatformConfig(source.db)
+    const initialConfig = seeded
+      ? await api.updatePlatformConfig(source.db, { expectedRevision: seeded.revision,
+          actor: source.actor, reason: '迁移前的旧密钥引用', document: legacyDocument })
+      : await api.getOrCreatePlatformConfig(source.db, { document: legacyDocument, reason: '迁移前的旧密钥引用' })
     const boundId = api.newId()
     await api.registerPlatformAiSecret(source.db, { id: boundId,
       baseUrl: 'https://MODEL.example:443/v1', ciphertext: bytes, actor: source.actor })
     const platform = await api.updatePlatformConfig(source.db, { expectedRevision: initialConfig.revision,
       actor: source.actor, reason: '登记新密钥', document: {
-        ...FACTORY_PLATFORM_CONFIG, browserAi: { ...FACTORY_PLATFORM_CONFIG.browserAi,
+        ...FACTORY_PLATFORM_CONFIG, fixtureStepsEnabled: true, browserAi: { ...FACTORY_PLATFORM_CONFIG.browserAi,
           baseUrl: 'https://model.example/v1', secretRef: { provider: 'local', secretId: boundId } },
       } })
     const { runId } = await finish(source)
@@ -442,14 +498,16 @@ describe.each(DRIVERS)('%s public persistence contract', (driver) => {
     expect(archive.logicalVersion).toBe(latestLogicalVersion())
     expect(archive.tables.scenarioDrafts).toHaveLength(1)
     for (const targetDriver of DRIVERS.filter((d) => d !== driver)) {
-      const target = await openContractDb(targetDriver)
+      const target = await openContractDb(targetDriver, undefined, { pristine: true })
       handles.push(target)
       const targetDb = expose(target)
       const result = await importDatabase(targetDb, target.env, archive, transferOptions)
       expect(result.counts.runs).toBe(1)
       expect(result.counts.scenarioDrafts).toBe(1)
       expect(result.counts.platformAiSecretBindings).toBe(1)
-      expect(result.counts.platformConfigRevisions).toBe(2)
+      // 修订号从 1 连续递增，最新修订号就是总条数：要守护的是「一条不少地迁过去」，
+      // 而不是某个写死的常数（基座会先种一行配置，用例自己再写几次都会改变它）。
+      expect(result.counts.platformConfigRevisions).toBe(platform.revision)
       expect(await api.getPlatformConfig(targetDb)).toEqual(platform)
       expect(await api.loadPlatformAiSecret(targetDb, boundId)).toMatchObject({
         modelOrigin: 'https://model.example', ciphertext: bytes,

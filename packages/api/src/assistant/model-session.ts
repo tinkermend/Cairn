@@ -7,6 +7,8 @@ import {
   type AssistantCapabilityId,
   type AssistantHypothesis,
   type AssistantStepChange,
+  type PlatformAiProvider,
+  type PlatformAiThinkingMode,
 } from '@cairn/shared'
 import { recordPlatformAiCall } from '@cairn/db'
 import type { DbHandle } from '@cairn/db'
@@ -29,6 +31,8 @@ export type PlatformAiAccess = {
   revision: number
   baseUrl: string
   model: string
+  provider: PlatformAiProvider
+  thinkingMode: PlatformAiThinkingMode
   apiKey: string
   requestTimeoutMs: number
   maxCallsPerTurn: number
@@ -105,6 +109,8 @@ export class AssistantModelSession {
         baseUrl: this.access.baseUrl,
         apiKey: this.access.apiKey,
         model: this.access.model,
+        provider: this.access.provider,
+        thinkingMode: this.access.thinkingMode,
         messages,
         maxTokens: this.access.maxOutputTokens,
         timeoutMs: this.remainingMs(),

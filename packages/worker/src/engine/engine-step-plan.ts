@@ -112,7 +112,10 @@ export function jsonContext(value: Record<string, unknown>): Record<string, Json
   )
 }
 
-export function isRunnableStepRun(stepRun: RunDetailDto['stepRuns'][number]): boolean {
+export function isRunnableStepRun(stepRun: {
+  status: string
+  attempts: Array<{ status: string }>
+}): boolean {
   if (stepRun.status === 'PENDING' || stepRun.status === 'FAILED') return true
   if (stepRun.status !== 'RUNNING') return false
   return !stepRun.attempts.some((attempt) => attempt.status === 'RUNNING')
@@ -122,7 +125,10 @@ export function isRunnableStepRun(stepRun: RunDetailDto['stepRuns'][number]): bo
  * 当前步骤是否为「最后一个未完成步骤」。
  * RUNNING 与 PENDING 都算未完成——接管后不得把后面的步骤当成最后一步写 SUCCEEDED。
  */
-export function isLastOpenStep(detail: RunDetailDto, stepId: string): boolean {
+export function isLastOpenStep(
+  detail: { stepRuns: Array<{ stepId: string; ordinal: number; status: string }> },
+  stepId: string,
+): boolean {
   const current = detail.stepRuns.find((item) => item.stepId === stepId)
   if (!current) return false
   return detail.stepRuns.every(
@@ -175,8 +181,11 @@ export function evidencePayloadForStep(step: Step, input: JsonValue, targetOverr
   return targetOverride ? { value: input, targetOverride: true } : input
 }
 
-export function chargedAttemptCount(detail: RunDetailDto, stepRunId: string): number {
+export function chargedAttemptCount(
+  detail: { stepRuns: Array<{ id: string; attempts: Array<{ error?: ExecutionError | null }> }> },
+  stepRunId: string,
+): number {
   return detail.stepRuns.find((step) => step.id === stepRunId)?.attempts.filter((attempt) =>
-    !(attempt.error?.code === 'AUTH_GATE_CLOSED' && attempt.error.cause?.code === 'not_dispatched'),
+    !(attempt.error?.code === 'AUTH_GATE_CLOSED' && (attempt.error.cause as any)?.code === 'not_dispatched'),
   ).length ?? 1
 }

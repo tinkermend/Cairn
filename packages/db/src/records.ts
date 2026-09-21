@@ -143,6 +143,7 @@ export type Target = {
   captcha: TargetCaptchaDefinition | null
   currentAuthProfileRevision: number | null
   sessionPolicy: Record<string, unknown> | null
+  resolutionPolicy: Record<string, unknown> | null
   sensitiveSelectors: string[]
   deletedAt: Date | null
   deletedBy: ResourceDeletedBy | null
@@ -673,7 +674,7 @@ export type NewSessionLease = {
 
 export type WorkerRow = {
   id: string
-  status: 'LOST' | 'READY' | 'DRAINING' | 'STOPPED'
+  status: WorkerStatus
   updatedAt: Date
   startedAt: Date
   heartbeatAt: Date
@@ -688,6 +689,9 @@ export type WorkerRow = {
   sampledSlotCount: number | null
   handleMismatchStreak: number
   protocolCapabilities: string[]
+  listenHost: string | null
+  listenPort: number | null
+  hostname: string | null
   sampledRssBytes: number | null
   sampledEventLoopDelayMs: number | null
   sampledCpuPercent: number | null

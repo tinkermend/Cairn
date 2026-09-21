@@ -71,7 +71,6 @@ const echoStep: Step = {
 }
 
 const fleetOptions = {
-  networkMode: 'local' as const,
   envEndpoints: {} as Record<string, string>,
   canSeeEndpoint: false,
 }

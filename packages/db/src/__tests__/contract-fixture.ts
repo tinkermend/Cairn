@@ -4,7 +4,10 @@ import type { DbEnv } from '@cairn/shared'
 import { createDb, type DbHandle } from '../client.js'
 import { expose } from '../database.js'
 import { migrateDatabase } from '../migrate-native.js'
-import { openIsolatedDb, requireReachableDb } from '../testing.js'
+import { grantAdminScope, openIsolatedDb, requireReachableDb, seedFixtureStepsEnabled } from '../testing.js'
+
+// 现有用例都从 contract-fixture 取它；实现只此一份，在 testing.ts。
+export { grantAdminScope }
 import { newId } from '../id.js'
 
 export const SUPPORTED_CONTRACT_DRIVERS = ['postgres', 'mysql'] as const
@@ -30,10 +33,12 @@ export const DRIVERS: readonly ContractDriver[] = configuredContractDrivers()
 export async function openContractDb(
   driver: ContractDriver,
   _label?: string,
+  options: { pristine?: boolean } = {},
 ): Promise<DbHandle & { env: DbEnv }> {
   const name = `cairn_port_${newId().replaceAll('-', '')}`
   if (driver === 'postgres') {
-    const handle = await openIsolatedDb(name)
+    const handle = await openIsolatedDb(name, options)
+    // openIsolatedDb 已经种过夹具开关。
     return Object.assign(handle, { env: { ...(await requireReachableDb()), CAIRN_DB_NAME: name } })
   }
   let password = process.env.CAIRN_TEST_MYSQL_PASSWORD
@@ -70,5 +75,6 @@ export async function openContractDb(
     await close()
     throw error
   }
+  if (!options.pristine) await seedFixtureStepsEnabled(handle)
   return { ...handle, env: targetEnv, close }
 }

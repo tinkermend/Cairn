@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises'
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import {
   bumpEvidenceUploadAttempts,
@@ -59,6 +60,15 @@ export type ObjectServiceOptions = {
 export type PutObjectInput = {
   runId: string
   body: Uint8Array
+  contentType: string
+  retainUntil?: Date
+  objectId?: string
+  maxBytes?: number
+}
+
+export type PutFileObjectInput = {
+  runId: string
+  path: string
   contentType: string
   retainUntil?: Date
   objectId?: string
@@ -134,6 +144,51 @@ export class ObjectService {
     }
   }
 
+  async putFileObject(input: PutFileObjectInput): Promise<{
+    objectId: string
+    objectKey: string
+    contentType: string
+    byteSize: number
+    digest: string
+  }> {
+    const contentType = objectContentTypeSchema.parse(input.contentType)
+    const limit = input.maxBytes ?? this.options.maxBytes
+    const fileStat = await stat(input.path)
+    if (fileStat.size > limit) {
+      throw new ObjectStoreError('OBJECT_TOO_LARGE', `对象超过 ${limit} 字节上限`)
+    }
+
+    const retainUntil =
+      input.retainUntil ??
+      new Date(this.now().getTime() + this.options.retainDays * 86_400_000)
+
+    const reserved = input.objectId
+      ? await this.requirePending(input.objectId, input.runId)
+      : await reserveStoredObject(this.handle, { runId: input.runId, retainUntil })
+
+    const head = await this.store.putFile({
+      key: reserved.objectKey,
+      path: input.path,
+      contentType,
+      maxBytes: limit,
+    })
+    const committed = await commitStoredObject(this.handle, {
+      id: reserved.id,
+      contentType,
+      byteSize: head.byteSize,
+      digest: head.digest,
+      now: this.now(),
+      pendingTtlSeconds: this.options.pendingTtlSeconds,
+    })
+    return {
+      objectId: committed.id,
+      objectKey: committed.objectKey,
+      contentType,
+      byteSize: committed.byteSize ?? head.byteSize,
+      digest: committed.digest ?? head.digest,
+    }
+  }
+
   async getObject(objectKey: string): Promise<{
     head: { key: string; byteSize: number; digest: string }
     contentType: string
@@ -181,16 +236,31 @@ export class ObjectService {
     })
   }
 
-  async putObjectEvidence(input: PutObjectInput & {
-    type: EvidenceType
-    stepRunId?: string
-    attemptId?: string
-    artifactKey?: string
-    payload?: JsonValue
-  }): Promise<EvidenceMetadata> {
+  async putObjectEvidence(
+    input: (
+      | (PutObjectInput & { filePath?: string })
+      | (Omit<PutObjectInput, 'body'> & { filePath: string; body?: Uint8Array })
+    ) & {
+      type: EvidenceType
+      stepRunId?: string
+      attemptId?: string
+      artifactKey?: string
+      payload?: JsonValue
+    },
+  ): Promise<EvidenceMetadata> {
     const contentType = objectContentTypeSchema.parse(input.contentType)
     const limit = evidenceByteLimit(input.type, this.options)
     const maxAttempts = this.options.uploadMaxAttempts ?? 3
+
+    let byteLength: number
+    if (input.filePath) {
+      const fileStat = await stat(input.filePath)
+      byteLength = fileStat.size
+    } else if (input.body) {
+      byteLength = input.body.byteLength
+    } else {
+      throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', 'putObjectEvidence 缺少 body 或 filePath')
+    }
 
     let existing = input.artifactKey
       ? await findObjectEvidenceByArtifactKey(this.handle, {
@@ -225,7 +295,7 @@ export class ObjectService {
     }
 
     const tooLargeReason = evidenceTooLargeReason(input.type)
-    if (input.body.byteLength > limit) {
+    if (byteLength > limit) {
       if (existing?.status === 'pending') {
         await markEvidenceMissing(this.handle, { id: existing.id, reason: tooLargeReason })
       } else {
@@ -281,14 +351,23 @@ export class ObjectService {
           throw new ObjectStoreError('OBJECT_NOT_AVAILABLE', '待上传对象不可用')
         }
 
-        const put = await this.putObject({
-          runId: input.runId,
-          body: input.body,
-          contentType,
-          objectId: object.id,
-          retainUntil: input.retainUntil,
-          maxBytes: limit,
-        })
+        const put = input.filePath
+          ? await this.putFileObject({
+              runId: input.runId,
+              path: input.filePath,
+              contentType,
+              objectId: object.id,
+              retainUntil: input.retainUntil,
+              maxBytes: limit,
+            })
+          : await this.putObject({
+              runId: input.runId,
+              body: input.body!,
+              contentType,
+              objectId: object.id,
+              retainUntil: input.retainUntil,
+              maxBytes: limit,
+            })
         if (this.options.afterObjectPut) await this.options.afterObjectPut()
         const committed = await commitObjectEvidence(this.handle, {
           id: existing.id,

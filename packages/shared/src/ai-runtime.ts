@@ -11,13 +11,29 @@ import {
 import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
 import { authoringCapabilitiesSchema, type AuthoringCapabilities } from './authoring-observation.js'
 import {
+  effectivePoliciesForSteps,
+  FACTORY_COMPILE_RESOLUTION,
+  resolutionCapabilitiesSchema,
+  snapshotNeedsBrowserAi,
+  WAIT_KINDS_AVAILABLE_NOW,
+  type ResolutionCapabilities,
+} from './resolution.js'
+export type { ResolutionCapabilities }
+import {
+  FACTORY_RESOLUTION_CEILING,
+  FACTORY_RESOLUTION_DEFAULT,
+  type ResolutionPolicy,
+} from './resolution-policy.js'
+import {
   AI_STEP_TYPES,
   aiAtomicActionInputSchema,
   EXECUTABLE_STEP_TYPES,
-  hasAiSteps,
+  FIXTURE_STEP_TYPES,
   isAiStepType,
+  isFixtureStepType,
   isMapExploreStepType,
   type ExecutionPolicy,
+  type Step,
 } from './step.js'
 import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstantSchema } from './wire.js'
 
@@ -31,6 +47,11 @@ export const BROWSER_AI_POLICY_VERSION = '1' as const
 
 export const AI_UNAVAILABLE_CODES = ['AI_DISABLED', 'AI_CONFIG_INVALID'] as const
 export type AiUnavailableCode = (typeof AI_UNAVAILABLE_CODES)[number]
+
+/** 夹具步骤未开放时，编写闸门与创建运行闸门共用同一组文案，不各写一份。 */
+export const FIXTURE_STEPS_DISABLED_CODE = 'FIXTURE_STEPS_DISABLED' as const
+export const FIXTURE_STEPS_DISABLED_MESSAGE =
+  '调试夹具步骤未开放：echo / delay / fail 不访问目标系统，结果不构成业务事实'
 
 export const scenarioCapabilitiesSchema = z.strictObject({
   executableStepTypes: z.array(z.string().min(1)).min(1),
@@ -46,6 +67,7 @@ export const scenarioCapabilitiesSchema = z.strictObject({
   authoringSchemaVersions: z.array(z.union([z.literal(1), z.literal(2)])).min(1).max(2).default([1, 2]),
   actionModules: z.boolean().default(true),
   demonstrationImport: z.boolean().optional(),
+  resolution: resolutionCapabilitiesSchema.optional(),
 })
 export type ScenarioCapabilities = z.infer<typeof scenarioCapabilitiesSchema>
 
@@ -65,6 +87,7 @@ export const aiExecutionConfigSchema = z.strictObject({
   maxOutputTokens: z.number().int().positive().max(32_768),
   requestTimeoutMs: z.number().int().positive().max(300_000),
   hangWaitMs: z.number().int().positive().max(60_000),
+  preferAriaTree: z.boolean().optional(),
 })
 export type AiExecutionConfig = z.infer<typeof aiExecutionConfigSchema>
 
@@ -135,8 +158,20 @@ export function isAiCallEvidence(payload: unknown): payload is AiCallEvidence {
   return aiCallEvidenceSchema.safeParse(payload).success
 }
 
-export function executableStepTypesFor(browserAiEnabled: boolean): string[] {
-  const authoring = EXECUTABLE_STEP_TYPES.filter((type) => !isMapExploreStepType(type))
+/**
+ * 可编写的步骤类型。两道闸门都在这里收口：
+ * 浏览器 AI 未启用则去掉三类 AI 步，调试夹具未开放则去掉 echo/delay/fail。
+ * 夹具步不产生真实业务事实，出厂关闭；打开只应发生在排查编排的环境。
+ * 第二个参数刻意不给默认值：漏传就会悄悄按「关闭」处理，等于在没人察觉时把
+ * 已开放的能力拦掉，所以每个调用点都得自己读平台配置并显式传入。
+ */
+export function executableStepTypesFor(
+  browserAiEnabled: boolean,
+  fixtureStepsEnabled: boolean,
+): string[] {
+  const authoring = EXECUTABLE_STEP_TYPES.filter(
+    (type) => !isMapExploreStepType(type) && (fixtureStepsEnabled || !isFixtureStepType(type)),
+  )
   if (browserAiEnabled) return [...authoring]
   return authoring.filter((type) => !isAiStepType(type))
 }
@@ -151,34 +186,121 @@ export function defaultAuthoringCapabilities(): AuthoringCapabilities {
   }
 }
 
+export function resolutionCapabilitiesFromPlatform(document: PlatformConfigDocument): ResolutionCapabilities {
+  const ceiling = document.browserAi.enabled
+    ? (document.browserAi.resolutionCeiling ?? FACTORY_RESOLUTION_CEILING)
+    : 'deterministic_only'
+  const reasons: ResolutionCapabilities['reasons'] = []
+  if (!document.browserAi.enabled) {
+    reasons.push({ code: 'AI_DISABLED', message: '浏览器仿真 AI 未启用' })
+  } else if (!document.browserAi.baseUrl || !document.browserAi.model || !document.browserAi.modelFamily || !document.browserAi.secretRef) {
+    reasons.push({ code: 'AI_CONFIG_INVALID', message: '浏览器仿真 AI 配置不完整' })
+  }
+  if (document.browserAi.enabled && ceiling === 'deterministic_only') {
+    reasons.push({ code: 'CEILING_CLOSED', message: 'AI 定位能力上限未开放 AI 级' })
+  }
+  return {
+    ceiling,
+    default: document.browserAi.defaultResolution ?? FACTORY_RESOLUTION_DEFAULT,
+    aiRungAvailable:
+      document.browserAi.enabled &&
+      ceiling !== 'deterministic_only' &&
+      !reasons.some((item) => item.code === 'AI_DISABLED' || item.code === 'AI_CONFIG_INVALID'),
+    reasons,
+    waitKindsAvailable: [...WAIT_KINDS_AVAILABLE_NOW],
+  }
+}
+
 export function scenarioCapabilitiesFor(input: {
   browserAiEnabled: boolean
+  fixtureStepsEnabled?: boolean
   unavailableMessage?: string
   defaults?: ScenarioCapabilities['defaults']
   authoring?: AuthoringCapabilities
+  resolution?: ResolutionCapabilities
 }): ScenarioCapabilities {
+  const fixtureStepsEnabled = input.fixtureStepsEnabled ?? false
   return {
-    executableStepTypes: executableStepTypesFor(input.browserAiEnabled),
-    unavailableReasons: input.browserAiEnabled
-      ? []
-      : AI_STEP_TYPES.map((type) => ({
-          type,
-          code: 'AI_DISABLED',
-          message: input.unavailableMessage ?? '浏览器仿真 AI 未启用',
-        })),
+    executableStepTypes: executableStepTypesFor(input.browserAiEnabled, fixtureStepsEnabled),
+    unavailableReasons: [
+      ...(input.browserAiEnabled
+        ? []
+        : AI_STEP_TYPES.map((type) => ({
+            type: type as string,
+            code: 'AI_DISABLED',
+            message: input.unavailableMessage ?? '浏览器仿真 AI 未启用',
+          }))),
+      ...(fixtureStepsEnabled
+        ? []
+        : FIXTURE_STEP_TYPES.map((type) => ({
+            type: type as string,
+            code: FIXTURE_STEPS_DISABLED_CODE,
+            message: FIXTURE_STEPS_DISABLED_MESSAGE,
+          }))),
+    ],
     defaults: input.defaults ?? platformRuntimeDefaultsFrom(FACTORY_PLATFORM_CONFIG, 1),
     authoring: input.authoring ?? defaultAuthoringCapabilities(),
     authoringSchemaVersions: [1, 2],
     actionModules: true,
+    resolution:
+      input.resolution ??
+      resolutionCapabilitiesFromPlatform({
+        ...FACTORY_PLATFORM_CONFIG,
+        browserAi: { ...FACTORY_PLATFORM_CONFIG.browserAi, enabled: input.browserAiEnabled },
+      }),
   }
 }
 
+export function runNeedsAiExecute(input: {
+  steps: readonly { id?: string; type: string; policy?: { resolution?: ResolutionPolicy } }[]
+  document: PlatformConfigDocument
+  documentResolution?: ResolutionPolicy
+  targetCeiling?: ResolutionPolicy
+  targetPreference?: ResolutionPolicy
+  effectiveSteps?: Readonly<Record<string, ResolutionPolicy>>
+}): boolean {
+  const resolution = resolutionCapabilitiesFromPlatform(input.document)
+  const effective =
+    input.effectiveSteps ??
+    (input.steps.every((step) => typeof step.id === 'string')
+      ? effectivePoliciesForSteps(
+          input.steps as unknown as { id: string; policy?: { resolution?: ResolutionPolicy } }[],
+          {
+            ...FACTORY_COMPILE_RESOLUTION,
+            ceiling: resolution.ceiling,
+            default: resolution.default,
+            targetCeiling: input.targetCeiling,
+            targetPreference: input.targetPreference,
+            documentResolution: input.documentResolution,
+            aiRungAvailable: resolution.aiRungAvailable,
+          },
+          input.document.browserAi.enabled,
+        )
+      : undefined)
+  return snapshotNeedsBrowserAi(input.steps as Step[], effective)
+}
+
 export function resolveAiExecutionFromPlatform(
-  steps: readonly { type: string; policy?: { timeoutMs?: number; retryLimit?: number } }[],
+  steps: readonly { id?: string; type: string; policy?: { timeoutMs?: number; retryLimit?: number; resolution?: ResolutionPolicy } }[],
   document: PlatformConfigDocument,
-  extras: { revision: number; hangWaitMs: number; policy?: ExecutionPolicy },
+  extras: {
+    revision: number
+    hangWaitMs: number
+    policy?: ExecutionPolicy
+    documentResolution?: ResolutionPolicy
+    targetCeiling?: ResolutionPolicy
+    targetPreference?: ResolutionPolicy
+    effectiveSteps?: Readonly<Record<string, ResolutionPolicy>>
+  },
 ) {
-  if (!hasAiSteps(steps)) return undefined
+  if (!runNeedsAiExecute({
+    steps,
+    document,
+    documentResolution: extras.documentResolution,
+    targetCeiling: extras.targetCeiling,
+    targetPreference: extras.targetPreference,
+    effectiveSteps: extras.effectiveSteps,
+  })) return undefined
   if (!document.browserAi.enabled) {
     throw Object.assign(new Error('浏览器仿真 AI 未启用'), { code: 'AI_DISABLED' })
   }
@@ -204,6 +326,7 @@ export function resolveAiExecutionFromPlatform(
     maxOutputTokens: ai.maxOutputTokens,
     requestTimeoutMs: ai.requestTimeoutMs,
     hangWaitMs: extras.hangWaitMs,
+    preferAriaTree: ai.preferAriaTree ?? false,
   })
 }
 

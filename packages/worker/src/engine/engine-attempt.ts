@@ -1,7 +1,9 @@
 import {
   finishAttempt,
   loadRunDetail,
+  loadRunLoopState,
   loadRunRow,
+  loadRunStepStates,
   markRunCancelled,
   startAttempt,
   type FinishAttemptInput,
@@ -25,7 +27,9 @@ import { isAbortError, type EngineClock } from './clock.js'
 import { persistBeforeObservation, buildAfterMapFacts, type CapturePhaseBudget } from '../map/passive-capture.js'
 import { planCandidateFailure, planCandidateHalt, planCandidateSuccess } from './engine-candidate-plan.js'
 import { chargedAttemptCount, contextValue, evidencePayloadForStep, sessionLeaseFor } from './engine-step-plan.js'
-import { shouldNeedsReview, shouldRetry } from './engine-decisions.js'
+import { isTrialOrDebugRun, shouldNeedsReview, shouldRetry, shouldAttemptSelfHeal } from './engine-decisions.js'
+import { applyPatchToStep, verifyPageContext } from './engine-healer.js'
+import type { HealerPolicy } from '@cairn/shared'
 import { collectAttemptOutcomeResults } from './outcome-collector.js'
 import {
   collectErrorSurfaceResults,
@@ -70,6 +74,8 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
   let attemptId = input.attemptId
   let attemptNo = input.attemptNo
   let context = input.context
+  let currentStep = input.step
+  let currentInput = input.input
 
   while (true) {
     // 重试之间也要看取消（D6 的「步骤间隙」），否则取消之后还会再开一次 Attempt。
@@ -162,8 +168,8 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       if (!skipExecutor) {
         const stepStarted = input.clock.now()
         outcome = await this.runExecutor({
-          step: input.step,
-          input: input.input,
+          step: currentStep,
+          input: currentInput,
           context,
           timeoutMs: input.policy.timeoutMs,
           stop: input.stop,
@@ -256,7 +262,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         stepId: input.step.id,
         context,
         last: input.last,
-        detail: await loadRunDetail(db, input.runId),
+        detail: { stepRuns: await loadRunStepStates(db, input.runId) },
       })
       if (groupPlan?.context) context = groupPlan.context
       const pause = this.holds.consumePause(input.runId)
@@ -331,7 +337,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         stepId: input.step.id,
         error,
         runStatus: 'NEEDS_REVIEW',
-        detail: await loadRunDetail(db, input.runId),
+        detail: { stepRuns: await loadRunStepStates(db, input.runId) },
       })
       await this.close({
         runId: input.runId,
@@ -378,17 +384,46 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       return 'cancelled'
     }
 
-    const retryDetail = await loadRunDetail(db, input.runId)
-    const retry = shouldRetry(input.step, error, retryDetail ? chargedAttemptCount(retryDetail, input.stepRunId) : attemptNo, input.policy.retryLimit)
+    const stepStates = await loadRunStepStates(db, input.runId)
+    const currentAttemptCount = stepStates.length ? chargedAttemptCount({ stepRuns: stepStates }, input.stepRunId) : attemptNo
+    const retry = shouldRetry(
+      input.step,
+      error,
+      currentAttemptCount,
+      input.policy.retryLimit,
+    )
+    const isTrialOrDebug = isTrialOrDebugRun({
+      debugMode: input.debugMode,
+      mapSourceType: input.mapSourceType,
+    })
+    const selfHeal =
+      !retry &&
+      shouldAttemptSelfHeal({
+        policy: ((input.snapshot as Record<string, unknown>).healerPolicy as HealerPolicy) ?? 'authoring_only',
+        isTrialOrDebug,
+        step: input.step,
+        error,
+        attemptNo: currentAttemptCount,
+        maxHealAttempts: 1,
+        hasModelBudget: Boolean(input.snapshot.aiExecution),
+        pageContextMatch: verifyPageContext({
+          currentUrl:
+            outcome.output && typeof outcome.output === 'object' && 'url' in outcome.output
+              ? String((outcome.output as Record<string, unknown>).url)
+              : undefined,
+        }),
+      })
+
+    const shouldKeepRunning = retry || selfHeal
     const hold =
-      !retry && (input.debugMode === 'holdOnFailure' || input.debugMode === 'holdAfterEach')
-    const failPlan = !retry
+      !shouldKeepRunning && (input.debugMode === 'holdOnFailure' || input.debugMode === 'holdAfterEach')
+    const failPlan = !shouldKeepRunning
       ? planCandidateFailure({
           snapshot: input.snapshot,
           stepId: input.step.id,
           error,
           debugHold: hold,
-          detail: retryDetail,
+          detail: { stepRuns: stepStates },
         })
       : undefined
     const closed = await this.close({
@@ -400,9 +435,9 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       diagnostics: outcome.diagnostics,
       screenshot: outcome.screenshot,
       trace: outcome.trace,
-      stepRunStatus: retry ? 'RUNNING' : 'FAILED',
-      runStatus: retry || failPlan?.keepRunOpen ? undefined : hold ? 'HOLDING' : 'FAILED',
-      skipRemaining: !retry && !hold && !failPlan?.keepRunOpen,
+      stepRunStatus: shouldKeepRunning ? 'RUNNING' : 'FAILED',
+      runStatus: shouldKeepRunning || failPlan?.keepRunOpen ? undefined : hold ? 'HOLDING' : 'FAILED',
+      skipRemaining: !shouldKeepRunning && !hold && !failPlan?.keepRunOpen,
       skipStepIds: failPlan?.keepRunOpen ? failPlan.skipStepIds : undefined,
       selectionDecision: failPlan?.selectionDecision,
       checkpoint: hold
@@ -427,12 +462,16 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
     if (!closed) return input.stop.aborted && !input.yielding() ? 'cancelled' : input.yielding() ? 'yielded' : 'stopped'
     if (hold) return 'await_hold'
     if (failPlan?.keepRunOpen) return 'next'
-    if (!retry) return 'failed'
+    if (!shouldKeepRunning) return 'failed'
+
+    if (selfHeal && outcome.diagnostics && typeof outcome.diagnostics === 'object' && 'suggestedPatch' in outcome.diagnostics) {
+      currentStep = applyPatchToStep(currentStep, (outcome.diagnostics as Record<string, unknown>).suggestedPatch as import('@cairn/shared').HealingPatch)
+    }
 
     const next = await startAttempt(db, {
       runId: input.runId,
       stepRunId: input.stepRunId,
-      inputPayload: evidencePayloadForStep(input.step, input.input),
+      inputPayload: evidencePayloadForStep(currentStep, currentInput),
       grant: input.grant,
       secrets: input.secrets,
     })
@@ -443,8 +482,8 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
     this.rememberAttempt(next.attemptId, {
       startedAt: input.clock.now(),
       clock: input.clock,
-      stepId: input.step.id,
-      stepType: input.step.type,
+      stepId: currentStep.id,
+      stepType: currentStep.type,
       attemptNo: next.attemptNo,
       runId: input.runId,
       stepRunId: input.stepRunId,
@@ -584,7 +623,7 @@ export async function finishAfterZeroRow(
   stop: AbortSignal,
   yielding: () => boolean,
 ): Promise<void> {
-  const row = await loadRunRow(this.handle, runId)
+  const row = await loadRunLoopState(this.handle, runId)
   if (!row || row.status !== 'RUNNING') return
   if (row.cancelRequestedAt) {
     await markRunCancelled(this.handle, runId, { grant })
@@ -662,8 +701,8 @@ export async function close(this: ExecutionEngine, input: FinishAttemptInput): P
 }
 
 export async function alreadyClosedContinues(this: ExecutionEngine, input: FinishAttemptInput): Promise<boolean> {
-  const detail = await loadRunDetail(this.handle, input.runId)
-  const attempt = detail?.stepRuns
+  const stepStates = await loadRunStepStates(this.handle, input.runId)
+  const attempt = stepStates
     .flatMap((step) => step.attempts)
     .find((item) => item.id === input.attemptId)
   return attempt?.status === 'SUCCEEDED'

@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Button } from '@/components/ui/button'
 import { useQuery } from '@tanstack/react-query'
-import type { FrozenMapConsumption, MapSelectionDecision, RunDetailDto } from '@cairn/shared'
+import type {
+  FrozenMapConsumption,
+  MapSelectionDecision,
+  RunDetailDto,
+} from '@cairn/shared'
 import { fetchRunMapDecisions } from '@/lib/runs-api'
 import { useCan } from '@/hooks/use-permissions'
+import { Button } from '@/components/ui/button'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
 
 const MODE_LABELS: Record<string, string> = {
   off: '关闭',
@@ -53,16 +58,22 @@ type RunMapConsumptionProps = {
 export function RunMapConsumption({ frozen }: RunMapConsumptionProps) {
   if (!frozen) {
     return (
-      <p className='mt-2 text-label text-muted-foreground'>历史运行未冻结地图消费，按关闭解释。</p>
+      <p className='mt-2 text-label text-muted-foreground'>
+        历史运行未冻结地图消费，按关闭解释。
+      </p>
     )
   }
   if (frozen.mode === 'off') {
-    return <p className='mt-2 text-label text-muted-foreground'>本次运行未启用地图消费。</p>
+    return (
+      <p className='mt-2 text-label text-muted-foreground'>
+        本次运行未启用地图消费。
+      </p>
+    )
   }
   return (
     <p className='mt-2 text-label text-muted-foreground'>
-      地图消费 {MODE_LABELS[frozen.mode] ?? frozen.mode} · 版本 {frozen.releaseId.slice(0, 8)} · 摘要{' '}
-      {frozen.manifestDigest.slice(0, 8)}
+      地图消费 {MODE_LABELS[frozen.mode] ?? frozen.mode} · 版本{' '}
+      {frozen.releaseId.slice(0, 8)} · 摘要 {frozen.manifestDigest.slice(0, 8)}
     </p>
   )
 }
@@ -81,27 +92,62 @@ export function RunMapDecisions(props: RunMapDecisionsProps) {
   const canReadRun = useCan('run:read')
   const canReadTarget = useCan('target:read')
   if (!canReadRun || !canReadTarget) return null
-  const attempts = props.steps?.find(step => step.id === selectedStep)?.attempts ?? []
-  return <div className='space-y-3'>
-    {props.steps ? <div className='flex flex-wrap gap-3'>
-      <label className='flex min-w-0 flex-1 flex-col gap-1 text-label'>地图选择的步骤
-        <select className='h-10 rounded-md border border-input bg-background px-3' value={selectedStep} onChange={event => { setSelectedStep(event.target.value); setSelectedAttempt('') }}>
-          <option value=''>全部步骤</option>
-          {props.steps.map(step => <option key={step.id} value={step.id}>{step.name}</option>)}
-        </select>
-      </label>
-      <label className='flex min-w-0 flex-1 flex-col gap-1 text-label'>地图选择的尝试
-        <select className='h-10 rounded-md border border-input bg-background px-3' disabled={!selectedStep} value={selectedAttempt} onChange={event => setSelectedAttempt(event.target.value)}>
-          <option value=''>全部尝试</option>
-          {attempts.map(attempt => <option key={attempt.id} value={attempt.id}>第 {attempt.attemptNo} 次 · {attempt.status}</option>)}
-        </select>
-      </label>
-    </div> : null}
-    <DecisionPage key={`${props.runId}:${selectedStep}:${selectedAttempt}`} {...props} stepRunId={selectedStep || undefined} attemptId={selectedAttempt || undefined} />
-  </div>
+  const attempts =
+    props.steps?.find((step) => step.id === selectedStep)?.attempts ?? []
+  return (
+    <div className='space-y-3'>
+      {props.steps ? (
+        <div className='flex flex-wrap gap-3'>
+          <label className='flex min-w-0 flex-1 flex-col gap-1 text-label'>
+            地图选择的步骤
+            <SelectField
+              value={selectedStep}
+              onValueChange={(value) => {
+                setSelectedStep(value)
+                setSelectedAttempt('')
+              }}
+            >
+              <SelectFieldOption value=''>全部步骤</SelectFieldOption>
+              {props.steps.map((step) => (
+                <SelectFieldOption key={step.id} value={step.id}>
+                  {step.name}
+                </SelectFieldOption>
+              ))}
+            </SelectField>
+          </label>
+          <label className='flex min-w-0 flex-1 flex-col gap-1 text-label'>
+            地图选择的尝试
+            <SelectField
+              disabled={!selectedStep}
+              value={selectedAttempt}
+              onValueChange={(value) => setSelectedAttempt(value)}
+            >
+              <SelectFieldOption value=''>全部尝试</SelectFieldOption>
+              {attempts.map((attempt) => (
+                <SelectFieldOption key={attempt.id} value={attempt.id}>
+                  第 {attempt.attemptNo} 次 · {attempt.status}
+                </SelectFieldOption>
+              ))}
+            </SelectField>
+          </label>
+        </div>
+      ) : null}
+      <DecisionPage
+        key={`${props.runId}:${selectedStep}:${selectedAttempt}`}
+        {...props}
+        stepRunId={selectedStep || undefined}
+        attemptId={selectedAttempt || undefined}
+      />
+    </div>
+  )
 }
 
-function DecisionPage({ runId, stepRunId, attemptId, eventSeq }: RunMapDecisionsProps) {
+function DecisionPage({
+  runId,
+  stepRunId,
+  attemptId,
+  eventSeq,
+}: RunMapDecisionsProps) {
   const canReadRun = useCan('run:read')
   const canReadTarget = useCan('target:read')
   const canRead = canReadRun && canReadTarget
@@ -109,12 +155,15 @@ function DecisionPage({ runId, stepRunId, attemptId, eventSeq }: RunMapDecisions
   const cursor = cursors[cursors.length - 1]
   const query = useQuery({
     queryKey: ['runs', runId, 'map-decisions', stepRunId, attemptId, cursor],
-    queryFn: () => fetchRunMapDecisions(runId, { stepRunId, attemptId, cursor, limit: 50 }),
+    queryFn: () =>
+      fetchRunMapDecisions(runId, { stepRunId, attemptId, cursor, limit: 50 }),
     enabled: canRead,
   })
 
   const { refetch } = query
-  useEffect(() => { if (canRead && eventSeq !== undefined) void refetch() }, [canRead, eventSeq, refetch])
+  useEffect(() => {
+    if (canRead && eventSeq !== undefined) void refetch()
+  }, [canRead, eventSeq, refetch])
 
   if (!canRead) return null
 
@@ -127,42 +176,103 @@ function DecisionPage({ runId, stepRunId, attemptId, eventSeq }: RunMapDecisions
       {query.isPending ? (
         <p className='text-label text-muted-foreground'>选择记录加载中…</p>
       ) : query.isError ? (
-        <div><p className='text-label text-muted-foreground'>暂时无法读取地图选择。本次运行证据仍以时间线为准。</p><Button variant='outline' onClick={() => void query.refetch()}>重试</Button></div>
+        <div>
+          <p className='text-label text-muted-foreground'>
+            暂时无法读取地图选择。本次运行证据仍以时间线为准。
+          </p>
+          <Button variant='outline' onClick={() => void query.refetch()}>
+            重试
+          </Button>
+        </div>
       ) : query.data.items.length === 0 ? (
         <p className='text-label text-muted-foreground'>
-          {stepRunId ? '该步骤没有地图选择记录。' : '本次运行没有地图选择记录。'}
+          {stepRunId
+            ? '该步骤没有地图选择记录。'
+            : '本次运行没有地图选择记录。'}
         </p>
       ) : (
         <ul className='space-y-2'>
           {query.data.items.map((item) => (
-            <li key={item.decisionId} className='space-y-2 rounded-md border p-3 text-body break-words'><p>
-              {DECISION_LABELS[item.decision]}
-              {` · ${REASON_LABELS[item.reasonCode] ?? item.reasonCode}`}
-              {` · ${item.spentMs} ms`}
-              {item.selectedDescriptorVersion != null
-                ? ` · 描述版本 ${item.selectedDescriptorVersion}`
-                : ''}</p>
-              <p className='text-label text-muted-foreground'>步骤 {item.stepRunId.slice(0, 8)} · 尝试 {item.attemptId.slice(0, 8)} · 原结果 {item.baselineOutcome} · 额外 AI 调用 {item.extraAiCalls}</p>
+            <li
+              key={item.decisionId}
+              className='space-y-2 rounded-md border p-3 text-body break-words'
+            >
+              <p>
+                {DECISION_LABELS[item.decision]}
+                {` · ${REASON_LABELS[item.reasonCode] ?? item.reasonCode}`}
+                {` · ${item.spentMs} ms`}
+                {item.selectedDescriptorVersion != null
+                  ? ` · 描述版本 ${item.selectedDescriptorVersion}`
+                  : ''}
+              </p>
+              <p className='text-label text-muted-foreground'>
+                步骤 {item.stepRunId.slice(0, 8)} · 尝试{' '}
+                {item.attemptId.slice(0, 8)} · 原结果 {item.baselineOutcome} ·
+                额外 AI 调用 {item.extraAiCalls}
+              </p>
               <details>
-                <summary className='cursor-pointer text-label'>查看候选、条件与证据</summary>
+                <summary className='cursor-pointer text-label'>
+                  查看候选、条件与证据
+                </summary>
                 <div className='mt-2 space-y-2 text-label'>
-                  {item.candidatesEvaluated.length ? item.candidatesEvaluated.map((candidate, index) => (
-                    <p key={index}>候选 {index + 1} · 对象 {candidate.objectId ?? '未指定'} · {candidate.outcome} · 命中 {candidate.matches}{candidate.reasonCode ? ` · ${REASON_LABELS[candidate.reasonCode] ?? candidate.reasonCode}` : ''}</p>
-                  )) : <p>没有查询候选。</p>}
-                  <p>冻结版本：{item.releaseId ?? '未记录'} · 描述摘要：{item.selectedDescriptorDigest ?? '未采用候选'}</p>
-                  <p>条件：{item.conditionSnapshot ? `账号 ${item.conditionSnapshot.accountBinding.presence}；未知 ${item.conditionSnapshot.unknownFields.join('、') || '无'}` : '未记录'}</p>
-                  <p>关联证据：{item.evidenceRefs.length ? item.evidenceRefs.map(ref => JSON.stringify(ref)).join('；') : '请按上述尝试在步骤时间线查看执行证据。'}</p>
+                  {item.candidatesEvaluated.length ? (
+                    item.candidatesEvaluated.map((candidate, index) => (
+                      <p key={index}>
+                        候选 {index + 1} · 对象 {candidate.objectId ?? '未指定'}{' '}
+                        · {candidate.outcome} · 命中 {candidate.matches}
+                        {candidate.reasonCode
+                          ? ` · ${REASON_LABELS[candidate.reasonCode] ?? candidate.reasonCode}`
+                          : ''}
+                      </p>
+                    ))
+                  ) : (
+                    <p>没有查询候选。</p>
+                  )}
+                  <p>
+                    冻结版本：{item.releaseId ?? '未记录'} · 描述摘要：
+                    {item.selectedDescriptorDigest ?? '未采用候选'}
+                  </p>
+                  <p>
+                    条件：
+                    {item.conditionSnapshot
+                      ? `账号 ${item.conditionSnapshot.accountBinding.presence}；未知 ${item.conditionSnapshot.unknownFields.join('、') || '无'}`
+                      : '未记录'}
+                  </p>
+                  <p>
+                    关联证据：
+                    {item.evidenceRefs.length
+                      ? item.evidenceRefs
+                          .map((ref) => JSON.stringify(ref))
+                          .join('；')
+                      : '请按上述尝试在步骤时间线查看执行证据。'}
+                  </p>
                 </div>
               </details>
             </li>
           ))}
         </ul>
       )}
-      {cursors.length > 1 || query.data?.nextCursor ? <nav aria-label='地图选择分页' className='flex items-center gap-2'>
-        <Button variant='outline' disabled={cursors.length === 1 || query.isFetching} onClick={() => setCursors(items => items.slice(0, -1))}>上一页</Button>
-        <span className='text-label'>第 {cursors.length} 页</span>
-        <Button variant='outline' disabled={!query.data?.nextCursor || query.isFetching} onClick={() => setCursors(items => [...items, query.data?.nextCursor])}>下一页</Button>
-      </nav> : null}
+      {cursors.length > 1 || query.data?.nextCursor ? (
+        <nav aria-label='地图选择分页' className='flex items-center gap-2'>
+          <Button
+            variant='outline'
+            disabled={cursors.length === 1 || query.isFetching}
+            onClick={() => setCursors((items) => items.slice(0, -1))}
+          >
+            上一页
+          </Button>
+          <span className='text-label'>第 {cursors.length} 页</span>
+          <Button
+            variant='outline'
+            disabled={!query.data?.nextCursor || query.isFetching}
+            onClick={() =>
+              setCursors((items) => [...items, query.data?.nextCursor])
+            }
+          >
+            下一页
+          </Button>
+        </nav>
+      ) : null}
     </section>
   )
 }

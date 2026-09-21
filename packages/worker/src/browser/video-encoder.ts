@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { TimedJpegFrame } from './video-timeline.js'
@@ -21,7 +21,9 @@ export type EncodeJpegDirectoryToWebmInput = {
 }
 
 export type EncodeJpegFilesToWebmResult = {
-  bytes: Uint8Array
+  path: string
+  byteSize: number
+  bytes?: Uint8Array
   truncated: boolean
   truncateReason?: 'max_bytes'
   decodedDurationMs: number
@@ -80,6 +82,17 @@ export function isPlayableWebm(bytes: Uint8Array): boolean {
   return bytes.byteLength >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3
 }
 
+export async function isPlayableWebmFile(filePath: string): Promise<boolean> {
+  const fd = await open(filePath, 'r')
+  try {
+    const buffer = Buffer.alloc(4)
+    const { bytesRead } = await fd.read(buffer, 0, 4, 0)
+    return bytesRead >= 4 && isPlayableWebm(buffer)
+  } finally {
+    await fd.close()
+  }
+}
+
 async function encodeDirectoryOnce(
   input: EncodeJpegDirectoryToWebmInput,
 ): Promise<EncodeJpegFilesToWebmResult> {
@@ -89,13 +102,14 @@ async function encodeDirectoryOnce(
   }
   const outPath = join(input.dir, 'out.webm')
   const meta = await spawnEncoder(input.dir, outPath, fps, input.maxBytes)
-  const bytes = await readFile(outPath)
-  if (!isPlayableWebm(bytes)) {
+  if (!(await isPlayableWebmFile(outPath))) {
     throw new Error('编码结果不是可播 WebM')
   }
-  const truncated = bytes.byteLength >= input.maxBytes
+  const fileStat = await stat(outPath)
+  const truncated = fileStat.size >= input.maxBytes
   return {
-    bytes,
+    path: outPath,
+    byteSize: fileStat.size,
     truncated,
     truncateReason: truncated ? 'max_bytes' : undefined,
     decodedDurationMs: meta.decodedDurationMs,
@@ -130,11 +144,13 @@ export async function encodeJpegFilesToWebm(
     for (const [index, frame] of input.frames.entries()) {
       await writeFile(join(dir, `frame_${String(index).padStart(5, '0')}.jpg`), frame)
     }
-    return await encodeJpegDirectoryToWebm({
+    const result = await encodeJpegDirectoryToWebm({
       dir,
       fps: input.fps,
       maxBytes: input.maxBytes,
     })
+    const bytes = await readFile(result.path)
+    return { ...result, bytes }
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined)
   }

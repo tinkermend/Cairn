@@ -3,12 +3,21 @@ import {
   authoringProposalSchema,
   createKnowledgeProposalBodySchema,
   knowledgeProposalAcceptedSchema,
+  analysisJobDtoSchema,
+  reviewAnalysisCandidateBodySchema,
+  type ReviewAnalysisCandidateBody,
   type AcceptKnowledgeProposalBody,
   type AuthoringProposal,
   type CreateKnowledgeProposalBody,
   type KnowledgeProposalAccepted,
 } from '@cairn/shared'
 import { apiFetch } from '@/lib/api-client'
+
+export function reviewAnalysisCandidate(candidateId: string, body: ReviewAnalysisCandidateBody) {
+  return apiFetch(`/api/knowledge-candidates/${candidateId}/review`, analysisJobDtoSchema, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reviewAnalysisCandidateBodySchema.parse(body)),
+  })
+}
 
 export function createKnowledgeProposal(
   scenarioId: string,

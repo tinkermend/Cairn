@@ -2,19 +2,22 @@ import {
   DomainError,
   forbidden,
   getPlatformConfig,
+  loadResolutionLayers,
   loadScenarioVersion,
   type DbHandle,
 } from '@cairn/db'
 import {
   FACTORY_PLATFORM_CONFIG,
   executableStepTypesFor,
-  hasAiSteps,
   hasPermission,
   platformRuntimeDefaultsFrom,
+  resolutionCapabilitiesFromPlatform,
   resolveAiExecutionFromPlatform,
+  runNeedsAiExecute,
   scenarioCapabilitiesFor,
   type AiExecutionConfig,
   type PlatformConfigDocument,
+  type ResolutionPolicy,
   type ScenarioCapabilities,
 } from '@cairn/shared'
 import { config } from './env'
@@ -30,12 +33,14 @@ export function browserAiCapabilitiesFrom(
 ): ScenarioCapabilities {
   return scenarioCapabilitiesFor({
     browserAiEnabled: document.browserAi.enabled,
+    fixtureStepsEnabled: document.fixtureStepsEnabled,
     defaults: platformRuntimeDefaultsFrom(document, revision),
+    resolution: resolutionCapabilitiesFromPlatform(document),
   })
 }
 
 export function executableTypesFrom(document: PlatformConfigDocument = FACTORY_PLATFORM_CONFIG) {
-  return executableStepTypesFor(document.browserAi.enabled)
+  return executableStepTypesFor(document.browserAi.enabled, document.fixtureStepsEnabled)
 }
 
 export function resolveAiExecution(
@@ -61,11 +66,24 @@ export function resolveAiExecution(
 
 export function assertAiExecutePermission(
   actor: RequestAccount,
-  steps: readonly { type: string }[],
+  steps: readonly { id?: string; type: string; policy?: { resolution?: ResolutionPolicy } }[],
+  extras?: {
+    document?: PlatformConfigDocument
+    documentResolution?: ResolutionPolicy
+    targetCeiling?: ResolutionPolicy
+    targetPreference?: ResolutionPolicy
+  },
 ): void {
-  if (!hasAiSteps(steps)) return
+  const document = extras?.document ?? FACTORY_PLATFORM_CONFIG
+  if (!runNeedsAiExecute({
+    steps,
+    document,
+    documentResolution: extras?.documentResolution,
+    targetCeiling: extras?.targetCeiling,
+    targetPreference: extras?.targetPreference,
+  })) return
   if (!hasPermission(actor.permissions, 'ai:execute')) {
-    throw forbidden('AI_EXECUTE_FORBIDDEN', '缺少 ai:execute，不能运行含 AI 步骤的场景')
+    throw forbidden('AI_EXECUTE_FORBIDDEN', '缺少 ai:execute，不能运行含 AI 步骤或 AI 解析档位的场景')
   }
 }
 
@@ -84,10 +102,15 @@ export async function resolveRunAiExecution(
   db: DbHandle,
   input: { scenarioId: string; scenarioVersionId?: string; actor: RequestAccount },
 ): Promise<AiExecutionConfig | undefined> {
-  const { version } = await loadScenarioVersion(db, input.scenarioId, input.scenarioVersionId)
-  assertAiExecutePermission(input.actor, version.definition.steps)
-  const platform = await loadPlatformForRuntime(db)
-  return resolveAiExecution(version.definition.steps, platform.document, {
-    revision: platform.revision,
+  const { scenario, version } = await loadScenarioVersion(db, input.scenarioId, input.scenarioVersionId)
+  const layers = await loadResolutionLayers(db, scenario.targetId)
+  assertAiExecutePermission(input.actor, version.definition.steps, {
+    document: layers.document,
+    documentResolution: version.definition.resolution,
+    targetCeiling: layers.targetCeiling,
+    targetPreference: layers.targetPreference,
+  })
+  return resolveAiExecution(version.definition.steps, layers.document, {
+    revision: layers.revision,
   })
 }

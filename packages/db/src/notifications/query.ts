@@ -7,17 +7,23 @@ import {
   notificationListQuerySchema,
   type NotificationEventDto,
   type NotificationPayload,
+  type PlatformConfigDocument,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { atomic, clockNow, locked, schemaFor } from '../native.js'
 import { newId } from '../id.js'
 import {
+  hasPermissionFromGrants,
+  loadAccountGrants,
   lockConsoleAuthorization,
+  scopeFromGrants,
   scopedTargetFilter,
+  targetScopeFilter,
   targetScopeFor,
+  type ScopeGrantRow,
 } from '../console/target-authorization.js'
 import { recordAudit } from '../audit/record.js'
-import { badRequest, conflict, notFound } from '../runs/errors.js'
+import { badRequest, conflict, forbidden, notFound } from '../runs/errors.js'
 import { getOrCreatePlatformConfig } from '../platform-config/store.js'
 import { requireNotificationPermission } from './config.js'
 import {
@@ -39,25 +45,43 @@ const has = async (db: Db, actor: string, permission: string) => {
   }
 }
 async function visible(db: Db, actorId: string) {
-  await requireNotificationPermission(db, actorId, 'notification:read')
+  return visibleFromGrants(db, await loadAccountGrants(db, actorId))
+}
+
+/**
+ * 可见性过滤器。授予行只取一次，五项权限判定全在内存里派生——
+ * `loadAccountGrants` 的查询与 permission 无关，按权限逐次查库是纯浪费。
+ */
+function visibleFromGrants(db: Db, rows: ScopeGrantRow[]) {
+  if (!hasPermissionFromGrants(rows, 'notification:read')) {
+    throw forbidden('FORBIDDEN', '没有所需权限')
+  }
   const { notificationEvents: e } = schemaFor(db)
-  return or(
+  const scoped = (permission: string) =>
     and(
-      eq(e.type, 'run.finished'),
-      await scopedTargetFilter(db, actorId, e.targetId, 'run:read'),
-      await scopedTargetFilter(db, actorId, e.targetId, 'notification:read'),
-    ),
-    (await has(db, actorId, 'monitor:read')) ? like(e.type, 'alert.%') : sql`1 = 0`,
-    (await has(db, actorId, 'platform-config:read')) ? eq(e.type, 'channel.test') : sql`1 = 0`,
+      targetScopeFilter(e.targetId, scopeFromGrants(rows, 'target:read')),
+      targetScopeFilter(e.targetId, scopeFromGrants(rows, permission)),
+    )
+  return or(
+    and(eq(e.type, 'run.finished'), scoped('run:read'), scoped('notification:read')),
+    hasPermissionFromGrants(rows, 'monitor:read') ? like(e.type, 'alert.%') : sql`1 = 0`,
+    hasPermissionFromGrants(rows, 'platform-config:read') ? eq(e.type, 'channel.test') : sql`1 = 0`,
   )
 }
 async function toEvent(
   db: Db,
   row: typeof import('../schema/notifications.js').notificationEvents.$inferSelect,
-  detailed = false,
+  options: {
+    detailed?: boolean
+    deliveries?: (typeof import('../schema/notifications.js').notificationDeliveries.$inferSelect)[]
+    document?: PlatformConfigDocument
+    controlsMap?: Map<string, typeof import('../schema/notifications.js').notificationControls.$inferSelect>
+  } = {},
 ): Promise<NotificationEventDto> {
+  const { detailed = false, deliveries: preloadedDeliveries, document, controlsMap } = options
   const { notificationDeliveries: d, notificationDeliveryAttempts: a } = schemaFor(db)
-  const rows = await db.select().from(d).where(eq(d.eventId, row.id)).orderBy(asc(d.id))
+  const rows =
+    preloadedDeliveries ?? (await db.select().from(d).where(eq(d.eventId, row.id)).orderBy(asc(d.id)))
   const decisions = new Map<string, string | null>()
   const deliveries = []
   for (const delivery of rows) {
@@ -65,7 +89,10 @@ async function toEvent(
       reason = delivery.reason
     if (['pending', 'retry_wait'].includes(status)) {
       if (!decisions.has(delivery.channelId))
-        decisions.set(delivery.channelId, await bindingSuppression(db, delivery.binding, row))
+        decisions.set(
+          delivery.channelId,
+          await bindingSuppression(db, delivery.binding, row, document, controlsMap),
+        )
       const suppressed = decisions.get(delivery.channelId)
       if (suppressed) {
         status = 'suppressed'
@@ -101,7 +128,9 @@ async function toEvent(
   let state = row.state,
     reason = row.reason
   if (state === 'waiting_result' && row.bindings.length) {
-    const checks = await Promise.all(row.bindings.map((b) => bindingSuppression(db, b, row)))
+    const checks = await Promise.all(
+      row.bindings.map((b) => bindingSuppression(db, b, row, document, controlsMap)),
+    )
     if (checks.every(Boolean)) {
       state = 'suppressed'
       reason = checks[0] ?? 'authorization_revoked'
@@ -118,13 +147,17 @@ async function toEvent(
 }
 export async function listNotificationEvents(db: Db, actorId: string, raw: unknown = {}) {
   const input = notificationListQuerySchema.parse(raw)
-  const { notificationEvents: e, notificationDeliveries: d } = schemaFor(db)
-  const filter = await visible(db, actorId)
-  const scopes = await Promise.all(
-    ['target:read', 'run:read', 'notification:read', 'monitor:read', 'platform-config:read'].map(
-      (p) => targetScopeFor(db, actorId, p),
-    ),
-  )
+  const { notificationEvents: e, notificationDeliveries: d, notificationControls: c } = schemaFor(db)
+  // 整页只取一次授予行；可见性过滤与游标指纹的五项范围都从它内存派生。
+  const grants = await loadAccountGrants(db, actorId)
+  const filter = visibleFromGrants(db, grants)
+  const scopes = [
+    'target:read',
+    'run:read',
+    'notification:read',
+    'monitor:read',
+    'platform-config:read',
+  ].map((p) => scopeFromGrants(grants, p))
   const fingerprint = hash({ ...input, cursor: undefined, actorId, scopes })
   let before: { at: string; id: string } | undefined
   if (input.cursor) {
@@ -168,7 +201,62 @@ export async function listNotificationEvents(db: Db, actorId: string, raw: unkno
     )
     .orderBy(desc(e.occurredAt), desc(e.id))
     .limit(input.status ? 100 : input.limit + 1)
-  const projected = await Promise.all(rows.map((r) => toEvent(db, r)))
+  const eventIds = rows.map((r) => r.id)
+  const allDeliveries = eventIds.length
+    ? await db
+        .select()
+        .from(d)
+        .where(inArray(d.eventId, eventIds))
+        .orderBy(asc(d.id))
+    : []
+  const deliveriesByEvent = new Map<string, typeof allDeliveries>()
+  for (const delivery of allDeliveries) {
+    let list = deliveriesByEvent.get(delivery.eventId)
+    if (!list) {
+      list = []
+      deliveriesByEvent.set(delivery.eventId, list)
+    }
+    list.push(delivery)
+  }
+
+  const platformConfig = rows.length ? await getOrCreatePlatformConfig(db) : null
+  const controlKeySet = new Set<string>()
+  for (const delivery of allDeliveries) {
+    if (['pending', 'retry_wait'].includes(delivery.status)) {
+      for (const k of Object.keys(delivery.binding.controls ?? {})) {
+        controlKeySet.add(k)
+      }
+    }
+  }
+  for (const row of rows) {
+    if (row.state === 'waiting_result') {
+      for (const b of row.bindings ?? []) {
+        for (const k of Object.keys(b.controls ?? {})) {
+          controlKeySet.add(k)
+        }
+      }
+    }
+  }
+  const controlRows = controlKeySet.size
+    ? await db
+        .select()
+        .from(c)
+        .where(inArray(c.key, [...controlKeySet]))
+    : []
+  const controlsMap = new Map<string, (typeof controlRows)[number]>()
+  for (const row of controlRows) {
+    controlsMap.set(row.key, row)
+  }
+
+  const projected = await Promise.all(
+    rows.map((r) =>
+      toEvent(db, r, {
+        deliveries: deliveriesByEvent.get(r.id) ?? [],
+        document: platformConfig?.document,
+        controlsMap,
+      }),
+    ),
+  )
   const matches = input.status
     ? projected.filter((event) => event.deliveries.some((d) => d.status === input.status))
     : projected
@@ -193,7 +281,7 @@ export async function getNotificationEvent(db: Db, actorId: string, eventId: str
     .from(e)
     .where(and(eq(e.id, eventId), await visible(db, actorId)))
   if (!row) throw notFound('NOTIFICATION_NOT_FOUND', '通知不存在或无权访问')
-  return toEvent(db, row, true)
+  return toEvent(db, row, { detailed: true })
 }
 export async function getNotificationChannels(db: Db, actorId: string, targetId?: string) {
   const current = await getOrCreatePlatformConfig(db),

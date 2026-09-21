@@ -581,6 +581,7 @@
       .control:hover:not(:disabled) {
         border-color: var(--border-control-hover);
       }
+      .control:focus,
       .control:focus-visible,
       .control.sample-focus {
         border-color: var(--focus-ring);
@@ -599,6 +600,13 @@
       .control[aria-invalid="true"] {
         border-color: var(--status-error-accent);
         box-shadow: var(--control-error-shadow);
+      }
+      .control:active:not(:disabled):not([aria-invalid="true"]) {
+        border-color: var(--action-primary-active);
+        box-shadow: var(--control-active-shadow);
+      }
+      .control[aria-invalid="true"]:is(:focus, :focus-visible, .sample-focus) {
+        box-shadow: var(--control-error-focus-shadow);
       }
       .control:disabled {
         background: var(--surface-subtle);

@@ -43,9 +43,12 @@
   /* 阴影一律指向 tokens.css，不在这里并行维护第二份数值。 */
   --shadow-card: var(--card-shadow);
   --shadow-popover: var(--popover-shadow);
+  --shadow-menu: var(--menu-shadow);
   --shadow-control: var(--control-shadow);
+  --shadow-control-active: var(--control-active-shadow);
   --shadow-control-focus: var(--control-focus-shadow);
   --shadow-control-error: var(--control-error-shadow);
+  --shadow-control-error-focus: var(--control-error-focus-shadow);
   --shadow-tech-panel: var(--tech-panel-shadow);
   --shadow-action: var(--action-shadow);
 
@@ -114,7 +117,9 @@
   --color-border-divider: var(--border-divider);
   --color-border-control: var(--border-control);
   --color-border-control-hover: var(--border-control-hover);
+  --color-border-menu: var(--border-menu);
   --color-focus-halo: var(--focus-halo);
+  --color-active-halo: var(--active-halo);
   --color-error-halo: var(--error-halo);
   --color-technical-grid: var(--technical-grid);
   --color-technical-line: var(--technical-line);

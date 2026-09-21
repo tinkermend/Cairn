@@ -90,6 +90,13 @@ const echoField: Step = {
   input: { from: 'extracted', fromField: 'orderNo' },
 }
 
+function withQuery(ui: ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return <QueryClientProvider client={client}>{ui}</QueryClientProvider>
+}
+
 function editor(
   step: Step,
   onChange = vi.fn(),
@@ -98,7 +105,7 @@ function editor(
     shapes?: Map<string, never> | ReturnType<typeof priorOutputShapes>
   }
 ) {
-  return (
+  return withQuery(
     <StepEditor
       step={step}
       index={0}
@@ -108,20 +115,15 @@ function editor(
       diagnostics={[]}
       onChange={onChange}
       onRequestTypeChange={vi.fn()}
-    />
+    />,
   )
 }
 
 function withObserve(ui: ReactNode) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-  return (
-    <QueryClientProvider client={client}>
-      <AuthoringObserveProvider enabled={false} onApplyTarget={() => undefined}>
-        {ui}
-      </AuthoringObserveProvider>
-    </QueryClientProvider>
+  return withQuery(
+    <AuthoringObserveProvider enabled={false} onApplyTarget={() => undefined}>
+      {ui}
+    </AuthoringObserveProvider>,
   )
 }
 
@@ -235,7 +237,7 @@ describe('StepEditor', () => {
     )
     await expect.element(screen.getByRole('heading', { name: '成功条件' })).toBeInTheDocument()
     await expect.element(screen.getByLabelText('超时（毫秒，可选）')).not.toBeInTheDocument()
-    await screen.getByRole('button', { name: '高级' }).click()
+    await screen.getByRole('button', { name: '高级', exact: true }).click()
     await expect.element(screen.getByLabelText('超时（毫秒，可选）')).toBeInTheDocument()
   })
 })

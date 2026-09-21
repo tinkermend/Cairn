@@ -53,6 +53,7 @@ import { QueryErrorState } from '@/components/query-error-state'
 import { Can } from '@/components/rbac/can'
 import { StatusBadge } from '@/components/status-badge'
 import { AccessPolicyCard } from './access-policy-card'
+import { ResolutionPolicyCard } from './resolution-policy-card'
 import { AuthProfileCard } from './auth-profile-card'
 import { SessionPolicyCard } from './session-policy-card'
 import { AccountFormDialog } from './account-form-dialog'
@@ -102,6 +103,10 @@ export function TargetDetailPage() {
     queryKey: ['targets', targetId, 'cleanup'],
     queryFn: () => fetchTargetCleanup(targetId),
     enabled: targetQuery.isError,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status === 'pending' || status === 'in_progress' ? 3000 : false
+    },
   })
 
   const deletedView = targetQuery.isError && !targetQuery.data && cleanupQuery.isSuccess
@@ -523,7 +528,8 @@ export function TargetDetailPage() {
               </TabsContent>
 
               {/* Tab 4: 目标安全授权 */}
-              <TabsContent value='access-policy'>
+              <TabsContent value='access-policy' className='space-y-5'>
+                <ResolutionPolicyCard target={target} />
                 <AccessPolicyCard targetId={targetId} />
               </TabsContent>
             </Tabs>
@@ -564,13 +570,9 @@ export function TargetDetailPage() {
         resourceType='target'
         previewFn={() => previewDeleteTarget(targetId)}
         deleteFn={(body) => deleteTarget(targetId, body)}
-        onSuccess={async (result) => {
+        onSuccess={async () => {
           await queryClient.invalidateQueries({ queryKey: ['targets'] })
           await queryClient.invalidateQueries({ queryKey: ['target', targetId] })
-          if (result && typeof result === 'object' && 'totalObjects' in result && result.totalObjects > 0) {
-            await queryClient.invalidateQueries({ queryKey: ['targets', targetId, 'cleanup'] })
-            return
-          }
           await navigate({ to: '/targets' })
         }}
       />

@@ -13,6 +13,7 @@ import {
   getScenario,
   getScenarioValidation,
   rejectKnowledgeProposal,
+  listResolutionStats,
   listScenarioRecordingImports,
   listScenarioVersions,
   listScenarios,
@@ -44,6 +45,7 @@ import {
   type PlatformConfigCurrent,
   type PreviewRecordingImportBody,
   type PublishScenarioBody,
+  type ResolutionStatsQuery,
   type SaveScenarioDraftBody,
   type ScenarioListQuery,
   type DeleteResourceBody,
@@ -118,6 +120,10 @@ export class ScenariosService {
 
   get(id: string) {
     return getScenario(this.db, id).catch(rethrowDomain)
+  }
+
+  resolutionStats(id: string, query: ResolutionStatsQuery) {
+    return listResolutionStats(this.db, id, query).catch(rethrowDomain)
   }
 
   versions(id: string) {

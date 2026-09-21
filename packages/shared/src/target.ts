@@ -17,6 +17,7 @@ import {
   credentialVerificationStatusSchema,
   issuerExpirySourceSchema,
 } from './credentials.js'
+import { resolutionPolicySchema } from './resolution-policy.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 import { sensitiveSelectorsSchema } from './evidence-slots.js'
 
@@ -131,6 +132,19 @@ export const targetSchema = z.object({
   sensitiveSelectors: sensitiveSelectorsSchema.optional(),
   sessionPolicy: targetSessionPolicyOverrideSchema.nullable().optional(),
   effectiveSessionPolicy: sessionPolicySchema.optional(),
+  resolutionPolicy: z
+    .strictObject({
+      preference: resolutionPolicySchema.optional(),
+      ceiling: resolutionPolicySchema.optional(),
+    })
+    .nullable()
+    .optional(),
+  effectiveResolution: z
+    .strictObject({
+      ceiling: resolutionPolicySchema,
+      preference: resolutionPolicySchema,
+    })
+    .optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 })

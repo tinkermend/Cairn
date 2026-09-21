@@ -13,7 +13,7 @@ export const CHANGE_HINT = Symbol('CHANGE_HINT')
         createChangeHint({
           hint: config.CAIRN_CHANGE_HINT,
           redisUrl: config.CAIRN_REDIS_URL,
-          namespace: config.CAIRN_CHANGE_HINT_NAMESPACE ?? config.CAIRN_ENV,
+          namespace: config.CAIRN_CHANGE_HINT_NAMESPACE,
           dbEnv: resolveDbEnv(),
         }),
     },

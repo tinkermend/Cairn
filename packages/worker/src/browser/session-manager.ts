@@ -97,7 +97,6 @@ export class BrowserSessionManager {
   readonly videoRecorders = new Map<string, RunVideoRecorder>()
   readonly observeGrants = new Map<string, ObserveGrantEntry>()
   readonly authGateClosed = new Set<string>()
-  readonly inRunVerifyCounts = new Map<string, number>()
   readonly runAuth = new Map<string, RunAuthState>()
   heartbeat: NodeJS.Timeout | undefined
   reconciled = false
@@ -144,7 +143,7 @@ export class BrowserSessionManager {
           'lease.renew_cycle_failed',
         )
       })
-    }, this.options.heartbeatMs)
+    }, this.options.heartbeatMs + Math.floor(Math.random() * 200))
   }
 
   stopHeartbeat(): void {
@@ -217,10 +216,6 @@ export class BrowserSessionManager {
 
   liveSessionIdForOwner(ownerId: string): string | undefined {
     return liveSessionIdForOwner.call(this, ownerId)
-  }
-
-  countInRunVerify(phase: string): number {
-    return this.inRunVerifyCounts.get(phase) ?? 0
   }
 
   assertAuthGate(leaseId: string): void {

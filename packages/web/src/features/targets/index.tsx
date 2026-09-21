@@ -3,9 +3,9 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { Link, useNavigate } from '@tanstack/react-router'
 import type { TargetDto } from '@cairn/shared'
 import {
-  ArrowUpRight,
   CheckCircle2,
   ChevronRight,
+  ExternalLink,
   Globe2,
   Plus,
   Search,
@@ -13,7 +13,9 @@ import {
   Users,
 } from 'lucide-react'
 import { fetchTargets, previewDeleteTarget, deleteTarget } from '@/lib/targets-api'
+import { fetchSessionSystemOverview } from '@/lib/sessions-api'
 import { useCursorPage } from '@/hooks/use-cursor-page'
+import { useCan } from '@/hooks/use-permissions'
 import { CursorPagination } from '@/components/data-table'
 import { ResourceDeleteDialog } from '@/components/resource-delete-dialog'
 import { Button } from '@/components/ui/button'
@@ -36,21 +38,40 @@ import { Can } from '@/components/rbac/can'
 import { StatusBadge } from '@/components/status-badge'
 import {
   AUTH_METHOD_LABELS,
-  CAPTCHA_MODE_LABELS,
   TARGET_STATUS_LABELS,
 } from './labels'
 import { TargetFormDialog } from './target-form-dialog'
+import { TargetOverviewPanel } from './target-overview-panel'
 
 export function TargetsPage() {
   const page = useCursorPage()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const canReadSession = useCan('session:read')
   const [createOpen, setCreateOpen] = useState(false)
   const [removing, setRemoving] = useState<TargetDto | null>(null)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<'all' | 'active' | 'disabled'>('all')
   const [authMethod, setAuthMethod] = useState<'all' | 'password' | 'manual'>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  const sessionSystemsQuery = useQuery({
+    queryKey: ['sessions-systems-overview'],
+    queryFn: () => fetchSessionSystemOverview(),
+    enabled: canReadSession,
+    staleTime: 10_000,
+  })
+
+  const sessionSystemMap = useMemo(
+    () =>
+      new Map(
+        (sessionSystemsQuery.data?.items ?? []).map((item) => [
+          item.targetId,
+          item,
+        ]),
+      ),
+    [sessionSystemsQuery.data],
+  )
 
   const filters = useMemo(
     () => ({
@@ -148,7 +169,7 @@ export function TargetsPage() {
                 },
               ]}
             />
-            <div className='grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_300px]'>
+            <div className='grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]'>
               <section
                 aria-label='目标系统列表'
                 className='min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card'
@@ -244,9 +265,9 @@ export function TargetsPage() {
                         <TableHead>系统 / 入口</TableHead>
                         <TableHead>状态</TableHead>
                         <TableHead>认证</TableHead>
-                        <TableHead>账号</TableHead>
+                        <TableHead>账号 / 会话</TableHead>
                         <TableHead>
-                          <span className='sr-only'>概览</span>
+                          <span className='sr-only'>详情</span>
                         </TableHead>
                       </TableRow>
                     </TableHeader>
@@ -278,12 +299,25 @@ export function TargetsPage() {
                                 >
                                   {item.name}
                                 </button>
-                                <p
-                                  className='mt-1 max-w-64 truncate text-label text-muted-foreground'
-                                  title={item.entryUrl}
-                                >
-                                  {item.entryUrl}
-                                </p>
+                                <div className='mt-1 flex items-center gap-1.5'>
+                                  <p
+                                    className='max-w-56 truncate text-label text-muted-foreground'
+                                    title={item.entryUrl}
+                                  >
+                                    {item.entryUrl}
+                                  </p>
+                                  <a
+                                    href={item.entryUrl}
+                                    target='_blank'
+                                    rel='noopener noreferrer'
+                                    className='text-muted-foreground hover:text-text-primary p-0.5 rounded focus-visible:outline-2 focus-visible:outline-ring'
+                                    onClick={(e) => e.stopPropagation()}
+                                    title={`新标签页打开${item.name}入口`}
+                                    aria-label={`新标签页打开${item.name}入口`}
+                                  >
+                                    <ExternalLink className='size-3 shrink-0' />
+                                  </a>
+                                </div>
                               </div>
                             </div>
                           </TableCell>
@@ -299,19 +333,60 @@ export function TargetsPage() {
                           <TableCell>
                             {AUTH_METHOD_LABELS[item.authMethod]}
                           </TableCell>
-                          <TableCell className='tabular-nums'>
-                            {item.accountCount}
+                          <TableCell>
+                            {(() => {
+                              const sessionInfo = sessionSystemMap.get(item.id)
+                              if (item.accountCount === 0) {
+                                return (
+                                  <span className='text-muted-foreground'>
+                                    0 个
+                                  </span>
+                                )
+                              }
+                              if (sessionInfo) {
+                                if (sessionInfo.problemCount > 0) {
+                                  return (
+                                    <span className='inline-flex items-center gap-1.5 tabular-nums text-status-warning-foreground font-medium'>
+                                      <span className='size-2 rounded-full bg-status-warning-foreground shrink-0' />
+                                      <span>
+                                        {item.accountCount} 个 ({sessionInfo.problemCount} 待处理)
+                                      </span>
+                                    </span>
+                                  )
+                                }
+                                if (
+                                  sessionInfo.readyCount === item.accountCount
+                                ) {
+                                  return (
+                                    <span className='inline-flex items-center gap-1.5 tabular-nums text-status-success-foreground font-medium'>
+                                      <span className='size-2 rounded-full bg-status-success-foreground shrink-0' />
+                                      <span>{item.accountCount} 个 (全就绪)</span>
+                                    </span>
+                                  )
+                                }
+                              }
+                              return (
+                                <span className='tabular-nums'>
+                                  {item.accountCount} 个
+                                </span>
+                              )
+                            })()}
                           </TableCell>
                           <TableCell>
                             <Button
                               variant='ghost'
                               size='icon'
-                              aria-label={`查看${item.name}概览`}
-                              aria-pressed={selected?.id === item.id}
-                              aria-controls='target-overview'
-                              onClick={() => setSelectedId(item.id)}
+                              asChild
                             >
-                              <ChevronRight />
+                              <Link
+                                to='/targets/$targetId'
+                                params={{ targetId: item.id }}
+                                aria-label={`查看${item.name}详情`}
+                                title={`查看${item.name}详情`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <ChevronRight />
+                              </Link>
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -341,101 +416,10 @@ export function TargetsPage() {
                 </div>
               </section>
               {selected ? (
-                <aside
-                  id='target-overview'
-                  aria-label='系统概览'
-                  className='min-w-0 rounded-lg border border-border-card bg-card shadow-card'
-                >
-                  <div className='space-y-4 border-b border-border-divider p-5'>
-                    <p className='text-label text-muted-foreground'>当前系统</p>
-                    <div className='flex items-start gap-3'>
-                      <span
-                        aria-hidden='true'
-                        className='flex size-11 shrink-0 items-center justify-center rounded-lg bg-selection-background text-primary'
-                      >
-                        <Globe2 className='size-5' />
-                      </span>
-                      <div className='min-w-0'>
-                        <h2 className='text-section font-semibold break-words'>
-                          {selected.name}
-                        </h2>
-                        <p className='mt-1 font-mono text-label break-all text-muted-foreground'>
-                          {selected.code}
-                        </p>
-                      </div>
-                    </div>
-                    <StatusBadge
-                      tone={
-                        selected.status === 'active' ? 'success' : 'neutral'
-                      }
-                    >
-                      {TARGET_STATUS_LABELS[selected.status]}
-                    </StatusBadge>
-                  </div>
-                  <dl className='space-y-4 p-5 text-small'>
-                    <div>
-                      <dt className='text-label text-muted-foreground'>
-                        系统入口
-                      </dt>
-                      <dd className='mt-1 break-all'>{selected.entryUrl}</dd>
-                    </div>
-                    <div className='flex justify-between gap-3'>
-                      <dt className='text-muted-foreground'>认证方式</dt>
-                      <dd>{AUTH_METHOD_LABELS[selected.authMethod]}</dd>
-                    </div>
-                    <div className='flex justify-between gap-3'>
-                      <dt className='text-muted-foreground'>验证码</dt>
-                      <dd>
-                        <StatusBadge
-                          tone={
-                            selected.captchaMode === 'none'
-                              ? 'neutral'
-                              : 'warning'
-                          }
-                        >
-                          {CAPTCHA_MODE_LABELS[selected.captchaMode]}
-                        </StatusBadge>
-                      </dd>
-                    </div>
-                    <div className='flex justify-between gap-3'>
-                      <dt className='text-muted-foreground'>目标账号</dt>
-                      <dd className='font-medium'>
-                        {selected.accountCount} 个
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className='text-label text-muted-foreground'>
-                        最近更新
-                      </dt>
-                      <dd className='mt-1'>
-                        {new Date(selected.updatedAt).toLocaleString('zh-CN', {
-                          hour12: false,
-                        })}
-                      </dd>
-                    </div>
-                  </dl>
-                  <div className='flex flex-wrap items-center justify-between gap-2 border-t border-border-divider p-4'>
-                    <Button variant='outline' asChild>
-                      <Link
-                        to='/targets/$targetId'
-                        params={{ targetId: selected.id }}
-                      >
-                        管理系统与账号
-                        <ArrowUpRight />
-                      </Link>
-                    </Button>
-                    <Can allOf={['target:delete', 'run:delete']}>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        className='text-destructive'
-                        onClick={() => setRemoving(selected)}
-                      >
-                        删除
-                      </Button>
-                    </Can>
-                  </div>
-                </aside>
+                <TargetOverviewPanel
+                  target={selected}
+                  onDelete={(target) => setRemoving(target)}
+                />
               ) : null}
             </div>
           </>
@@ -461,14 +445,9 @@ export function TargetsPage() {
         resourceType='target'
         previewFn={removing ? () => previewDeleteTarget(removing.id) : undefined}
         deleteFn={(body) => (removing ? deleteTarget(removing.id, body) : Promise.resolve())}
-        onSuccess={async (result) => {
-          const id = removing?.id
+        onSuccess={async () => {
           setRemoving(null)
           await queryClient.invalidateQueries({ queryKey: ['targets'] })
-          if (result && typeof result === 'object' && 'totalObjects' in result && result.totalObjects > 0 && id) {
-            await navigate({ to: '/targets/$targetId', params: { targetId: id } })
-            return
-          }
           if (items.length <= 1 && page.pageIndex > 0) page.goPrev()
         }}
       />

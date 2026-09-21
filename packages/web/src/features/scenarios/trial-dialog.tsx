@@ -7,7 +7,12 @@ import { fetchScenarioCapabilities, trialScenario } from '@/lib/scenarios-api'
 import { inheritCaptureLabel } from '@/features/platform-config/labels'
 import { fetchTargetAccounts } from '@/lib/targets-api'
 import { AccountSessionHint } from '@/features/runs/account-session-hint'
-import { passwordAccounts, preferredPasswordAccountId } from '@/features/runs/target-account'
+import {
+  passwordAccounts,
+  preferredPasswordAccountId,
+  unusableAccountCopy,
+  unusableAccountReason,
+} from '@/features/runs/target-account'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -69,7 +74,9 @@ export function TrialDialog({
     const inheritVideo = capabilities.data?.defaults?.evidence.video
     const inheritTrace = capabilities.data?.defaults?.evidence.trace
   const [targetAccountId, setTargetAccountId] = useState('')
-  const usableAccounts = passwordAccounts(accounts.data?.items ?? [])
+  const accountItems = accounts.data?.items ?? []
+  const usableAccounts = passwordAccounts(accountItems)
+  const emptyAccountReason = accounts.isPending ? undefined : unusableAccountReason(accountItems)
   const [values, setValues] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const fingerprint = JSON.stringify({ revision, targetAccountId, values })
@@ -113,6 +120,9 @@ export function TrialDialog({
               </SelectContent>
             </Select>
             <AccountSessionHint targetId={targetId} account={accounts.data?.items.find(item => item.id === targetAccountId)} />
+            {usableAccounts.length === 0 && emptyAccountReason ? (
+              <p className='text-label text-muted-foreground'>{unusableAccountCopy(emptyAccountReason)}</p>
+            ) : null}
           </div>
           <p className='text-label text-muted-foreground'>
             试跑继承平台默认证据策略

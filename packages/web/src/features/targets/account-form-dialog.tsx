@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import {
   ACCOUNT_USAGES,
   TARGET_STATUSES,
+  accountAllowsBusiness,
   type TargetAccountDto,
 } from '@cairn/shared'
 import { toast } from 'sonner'
@@ -82,6 +83,8 @@ export function AccountFormDialog({
   const queryClient = useQueryClient()
   const [saving, setSaving] = useState(false)
   const [clearOpen, setClearOpen] = useState(false)
+  /** 改成仅知识采集会让这个号从创建运行和试跑里消失，先说后果再保存。 */
+  const [pendingMapOnly, setPendingMapOnly] = useState<FormValues | null>(null)
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     values: current
@@ -119,6 +122,14 @@ export function AccountFormDialog({
   }
 
   const onSubmit = async (values: FormValues) => {
+    if (isEdit && current && accountAllowsBusiness(current.usage) && values.usage === 'map') {
+      setPendingMapOnly(values)
+      return
+    }
+    await saveValues(values)
+  }
+
+  const saveValues = async (values: FormValues) => {
     setSaving(true)
     try {
       if (isEdit && current) {
@@ -353,7 +364,7 @@ export function AccountFormDialog({
                       </SelectContent>
                     </Select>
                     <p className='text-label text-muted-foreground'>
-                      每个目标系统只能有一个含地图采集用途的账号。
+                      每个目标系统只能有一个含知识采集用途的账号。选「仅知识采集」后，这个号不会出现在创建运行和试跑里。
                     </p>
                     <FormMessage />
                   </FormItem>
@@ -414,6 +425,21 @@ export function AccountFormDialog({
           </Form>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={pendingMapOnly !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingMapOnly(null)
+        }}
+        title='改成仅知识采集？'
+        desc='之后不能用这个号跑场景，它不会再出现在创建运行和试跑里。确定改成仅知识采集吗？'
+        confirmText='改成仅知识采集'
+        isLoading={saving}
+        handleConfirm={() => {
+          const values = pendingMapOnly
+          setPendingMapOnly(null)
+          if (values) void saveValues(values)
+        }}
+      />
       <ConfirmDialog
         open={clearOpen}
         onOpenChange={setClearOpen}

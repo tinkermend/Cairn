@@ -102,7 +102,7 @@ export function TargetReadiness({
           to="/sessions"
           className="inline-flex items-center gap-1 text-label font-medium text-primary-600 hover:text-primary-700"
         >
-          查看浏览器会话管理 <ArrowRight size={13} />
+          查看浏览器 <ArrowRight size={13} />
         </Link>
         <Link
           to="/targets"

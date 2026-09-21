@@ -11,6 +11,7 @@ import {
   projectEvidenceDisplay,
   sortKeyForEvidenceView,
   tallyKnownBytes,
+  formatByteSize,
   evidenceErrorSummary,
 } from '../evidence-center.js'
 
@@ -40,6 +41,15 @@ describe('isCleanupFailed / tallyKnownBytes', () => {
   it('未知字节单独计数，不按 0 汇总', () => {
     expect(tallyKnownBytes([10, null, undefined, 5])).toEqual({ knownBytes: 15, unknownCount: 2 })
     expect(tallyKnownBytes([null, null])).toEqual({ knownBytes: 0, unknownCount: 2 })
+  })
+
+  it('formatByteSize 格式化字节', () => {
+    expect(formatByteSize(0)).toBe('0 B')
+    expect(formatByteSize(null)).toBe('0 B')
+    expect(formatByteSize(undefined)).toBe('0 B')
+    expect(formatByteSize(500)).toBe('500 B')
+    expect(formatByteSize(1024)).toBe('1.00 KB')
+    expect(formatByteSize(1024 * 1024 * 2.5)).toBe('2.50 MB')
   })
 })
 

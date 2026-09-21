@@ -140,6 +140,63 @@ describe('调度时间规则', () => {
     )
   })
 
+  it('多窗口日历预览按 ruleId 区分身份，间隔按锚点推进', () => {
+    const multi = scheduleDefinitionSchema.parse({
+      timeRule: {
+        kind: 'calendar',
+        timezone: 'Asia/Shanghai',
+        weekdays: [1],
+        windows: [
+          { ruleId: 'morning', windowStart: '09:00', windowEnd: '10:00' },
+          { ruleId: 'evening', windowStart: '21:00', windowEnd: '22:00' },
+        ],
+        misfire: 'skip',
+      },
+      consumer: {
+        type: 'map_refresh',
+        targetId: '00000000-0000-4000-8000-000000000001',
+        targetAccountId: '00000000-0000-4000-8000-000000000002',
+        entryId: '00000000-0000-4000-8000-000000000003',
+      },
+    })
+    const windows = previewScheduleWindows({
+      scheduleId: SCHEDULE_ID,
+      definition: multi,
+      asOf: new Date('2026-06-15T00:00:00.000Z'),
+      limit: 4,
+    })
+    expect(windows.filter((item) => item.kind === 'ok').map((item) => item.ruleId)).toEqual([
+      'morning',
+      'evening',
+      'morning',
+      'evening',
+    ])
+    const interval = scheduleDefinitionSchema.parse({
+      timeRule: {
+        kind: 'interval',
+        intervalMs: 5 * 60 * 1000,
+        anchorUtc: '2026-06-15T00:00:00.000Z',
+        misfire: 'coalesce',
+      },
+      consumer: {
+        type: 'knowledge_analysis',
+        targetId: '00000000-0000-4000-8000-000000000001',
+        mode: 'run_incremental',
+      },
+    })
+    const ticks = previewScheduleWindows({
+      scheduleId: SCHEDULE_ID,
+      definition: interval,
+      asOf: new Date('2026-06-15T00:07:00.000Z'),
+      limit: 3,
+    })
+    expect(ticks.map((item) => (item.kind === 'ok' ? item.windowStartUtc : ''))).toEqual([
+      '2026-06-15T00:10:00.000Z',
+      '2026-06-15T00:15:00.000Z',
+      '2026-06-15T00:20:00.000Z',
+    ])
+  })
+
   it('拒绝全天零长窗口和未知时区', () => {
     expect(() =>
       scheduleDefinitionSchema.parse({

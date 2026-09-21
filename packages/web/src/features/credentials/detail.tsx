@@ -71,7 +71,7 @@ export function CredentialDetailPage({
       <PageHeader
         parent={
           <Link to='/credentials' className='text-link'>
-            返回目标账号凭据
+            返回目标账号
           </Link>
         }
         title={item.name}
@@ -121,7 +121,7 @@ export function CredentialDetailPage({
           )}
           {item.sessionHref && (
             <a className='text-link' href={item.sessionHref}>
-              查看浏览器会话
+              查看浏览器
             </a>
           )}
           <p className='text-label text-muted-foreground'>

@@ -6,6 +6,7 @@ import {
   listRunEventWatermarks,
   listRunEventsAfter,
   loadRunObservation,
+  loadRunObservationProgress,
   type ChangeHintBus,
   type DbHandle,
 } from '@cairn/db'
@@ -46,12 +47,15 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     if (!this.bus.realtime) return
     try {
       await this.bus.subscribe(
-        (hint) => this.notify(hint.runId, hint.eventSeq),
+        (hint) => {
+          const runId = hint.runId ?? (hint.objectType === 'run' || !hint.objectType ? hint.objectId : undefined)
+          if (runId) this.notify(runId, hint.eventSeq)
+        },
         () => {
           for (const runId of this.listeners.keys()) {
-            void loadRunObservation(this.db, runId)
-              .then((observation) => {
-                if (observation) this.notify(runId, observation.eventSeq)
+            void loadRunObservationProgress(this.db, runId)
+              .then((progress) => {
+                if (progress) this.notify(runId, progress.eventSeq)
               })
               .catch((error) => this.logger.error(error, 'change-hint reconnect catch-up failed'))
           }
@@ -110,7 +114,9 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     let applied = 0
     let acceptHints = false
     let readySent = false
-    let catchingUp = Promise.resolve()
+    let inFlightCatchUp: Promise<void> | null = null
+    let dirtyCatchUp = false
+    let pendingWaiters: Array<() => void> = []
     let heartbeat: NodeJS.Timeout | undefined
     let authTick: NodeJS.Timeout | undefined
     const close = () => {
@@ -137,7 +143,7 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
     }
 
     const catchUp = async () => {
-      const watermark = await loadRunObservation(this.db, input.runId)
+      const watermark = await loadRunObservationProgress(this.db, input.runId)
       if (!watermark) {
         sendControl({
           kind: 'error',
@@ -164,17 +170,47 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
           if (page.length < config.CAIRN_RUN_EVENT_PAGE_SIZE) break
         }
       }
-      const latest = await loadRunObservation(this.db, input.runId)
-      if (readySent && latest && isRunObservationComplete(latest.run)) {
+      const latest = await loadRunObservationProgress(this.db, input.runId)
+      if (readySent && latest && isRunObservationComplete(latest)) {
         sendControl({ kind: 'complete', runId: input.runId, eventSeq: latest.eventSeq })
         close()
       }
     }
-    const enqueueCatchUp = () => {
-      catchingUp = catchingUp
-        .then(() => (closed ? undefined : catchUp()))
-        .catch((error) => this.logger.error(error, 'run event catch-up failed'))
-      return catchingUp
+    const enqueueCatchUp = (): Promise<void> => {
+      if (closed) return Promise.resolve()
+      if (inFlightCatchUp) {
+        dirtyCatchUp = true
+        return new Promise<void>((resolve) => {
+          pendingWaiters.push(resolve)
+        })
+      }
+
+      const runLoop = async (): Promise<void> => {
+        try {
+          while (!closed) {
+            dirtyCatchUp = false
+            const currentWaiters = pendingWaiters
+            pendingWaiters = []
+            try {
+              await catchUp()
+            } catch (error) {
+              this.logger.error(error, 'run event catch-up failed')
+            }
+            // 等待者只放行不拒绝：catch-up 失败已记日志，拒绝会变成调用方 void 掉的未处理拒绝。
+            for (const waiter of currentWaiters) waiter()
+            if (!dirtyCatchUp || closed) break
+          }
+        } finally {
+          const remaining = pendingWaiters
+          pendingWaiters = []
+          for (const waiter of remaining) waiter()
+        }
+      }
+
+      inFlightCatchUp = runLoop().finally(() => {
+        inFlightCatchUp = null
+      })
+      return inFlightCatchUp
     }
 
     const onHint: StreamListener = () => {
@@ -231,8 +267,8 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
       realtime: this.subscribed,
     })
     readySent = true
-    const afterReady = await loadRunObservation(this.db, input.runId)
-    if (afterReady && isRunObservationComplete(afterReady.run)) {
+    const afterReady = await loadRunObservationProgress(this.db, input.runId)
+    if (afterReady && isRunObservationComplete(afterReady)) {
       sendControl({ kind: 'complete', runId: input.runId, eventSeq: afterReady.eventSeq })
       close()
       return

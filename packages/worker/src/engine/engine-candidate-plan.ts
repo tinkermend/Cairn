@@ -16,9 +16,17 @@ import {
 } from '@cairn/shared'
 import { jsonContext } from './engine-step-plan.js'
 
+export type CandidatePlanDetail = {
+  stepRuns: Array<{
+    stepId: string
+    status: string
+    attempts?: Array<{ status: string; error?: ExecutionError | null }>
+  }>
+}
+
 export function attemptedFromDetail(
   group: CandidateGroup,
-  detail: RunDetailDto | null | undefined,
+  detail: CandidatePlanDetail | null | undefined,
   current: { implementationKey: string; outcome: 'succeeded' | 'failed'; attribution?: 'MODULE' | 'EXTERNAL_INFRA' | 'UNKNOWN'; failedStepId?: string },
 ) {
   const byId = new Map(detail?.stepRuns.map((item) => [item.stepId, item]) ?? [])
@@ -26,7 +34,7 @@ export function attemptedFromDetail(
     if (alternative.implementationKey === current.implementationKey) return current
     const failed = alternative.stepIds.find((stepId) => byId.get(stepId)?.status === 'FAILED')
     if (failed) {
-      const error = byId.get(failed)?.attempts.find((item) => item.status === 'FAILED')?.error
+      const error = byId.get(failed)?.attempts?.find((item) => item.status === 'FAILED')?.error
       return {
         implementationKey: alternative.implementationKey,
         outcome: 'failed' as const,
@@ -50,7 +58,7 @@ export function planCandidateSuccess(input: {
   stepId: string
   context: Record<string, JsonValue>
   last: boolean
-  detail: RunDetailDto | null
+  detail: CandidatePlanDetail | null
 }): { context?: Record<string, JsonValue>; skipStepIds?: string[]; selectionDecision?: SelectionDecision; last: boolean } | undefined {
   const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
   if (!found) return undefined
@@ -88,7 +96,7 @@ export function planCandidateFailure(input: {
   stepId: string
   error: ExecutionError
   debugHold: boolean
-  detail: RunDetailDto | null
+  detail: CandidatePlanDetail | null
 }): { keepRunOpen?: boolean; skipStepIds?: string[]; selectionDecision?: SelectionDecision } | undefined {
   const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
   if (!found) return undefined
@@ -126,7 +134,7 @@ export function planCandidateHalt(input: {
   stepId: string
   error: ExecutionError
   runStatus: 'NEEDS_REVIEW'
-  detail: RunDetailDto | null
+  detail: CandidatePlanDetail | null
 }): { skipStepIds?: string[]; selectionDecision?: SelectionDecision } | undefined {
   const found = findCandidateGroup(candidateGroupsOf(input.snapshot), input.stepId)
   if (!found) return undefined

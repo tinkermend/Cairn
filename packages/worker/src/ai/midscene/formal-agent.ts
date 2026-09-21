@@ -12,6 +12,7 @@ export type FormalAgentHandle = {
   aiAtomic(action: AiAtomicActionInput): Promise<void>
   aiQuery(instruction: string, schema?: AiOutputSchema): Promise<unknown>
   aiAssert(instruction: string): Promise<{ pass: boolean; thought?: string; message?: string }>
+  aiLocate(prompt: string, options?: { deepLocate?: boolean }): Promise<{ center: [number, number]; dpr?: number }>
   destroy(): Promise<void>
 }
 
@@ -72,6 +73,10 @@ export async function createFormalMidsceneAgent(input: {
       value?: unknown,
       options?: { keepRawResponse?: boolean },
     ): Promise<unknown>
+    aiLocate(
+      prompt: string,
+      options?: { deepLocate?: boolean; cacheable?: boolean },
+    ): Promise<{ center?: [number, number]; dpr?: number }>
     destroy?: () => Promise<void>
   }
 
@@ -128,6 +133,19 @@ export async function createFormalMidsceneAgent(input: {
         thought: record.thought,
         message: record.message,
       }
+    },
+    aiLocate: async (prompt, options) => {
+      if (typeof agent.aiLocate !== 'function') throw new Error('CAIRN_MIDSCENE_EXPORT: 找不到 aiLocate')
+      const located = await agent.aiLocate(prompt, {
+        deepLocate: options?.deepLocate,
+        cacheable: false,
+      })
+      // 1.12.6：center 是截图像素，dpr 来自 deprecatedDpr；换算见 cssViewportPoint。升级须复测 dpr=2。
+      const center = located?.center
+      if (!Array.isArray(center) || center.length < 2 || !Number.isFinite(center[0]) || !Number.isFinite(center[1])) {
+        throw Object.assign(new Error('AI 未返回有效定位点'), { code: 'AI_NOT_FOUND' })
+      }
+      return { center: [center[0], center[1]], dpr: typeof located.dpr === 'number' ? located.dpr : undefined }
     },
     async destroy() {
       try {

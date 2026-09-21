@@ -56,18 +56,6 @@ export function reaperPeriodicSlotRequests(input: {
       intervalMs: input.serviceRequestLogPurgeIntervalMs,
       owner: input.owner,
     },
-    {
-      name: "monitor.alerts.deliver",
-      mode: "throttle",
-      intervalMs: input.reaperIntervalMs,
-      owner: input.owner,
-    },
-    {
-      name: "service.webhooks.deliver",
-      mode: "throttle",
-      intervalMs: input.reaperIntervalMs,
-      owner: input.owner,
-    },
   ];
 }
 

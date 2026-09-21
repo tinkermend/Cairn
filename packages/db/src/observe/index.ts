@@ -8,7 +8,11 @@ export {
   purgeExpiredRunEvents,
   type RunEventDraft,
 } from './events.js'
-export { loadRunObservation } from './observation.js'
+export {
+  loadRunObservation,
+  loadRunObservationProgress,
+  type RunObservationProgress,
+} from './observation.js'
 export {
   publishChangeHint,
   resetChangeHintPublisher,

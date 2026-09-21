@@ -401,6 +401,18 @@ function SuggestionEditor({
                 : '无法自动转换，需要处理'}
         </p>
       </div>
+      {item.step?.type === 'assert' &&
+      item.step.input.expect.kind === 'aria_snapshot' ? (
+        <div className='rounded border border-border/40 bg-muted/20 p-2 font-mono text-label'>
+          <div className='mb-1 flex items-center justify-between text-muted-foreground'>
+            <span>Aria 快照模板预览</span>
+            <span className='rounded bg-primary/10 px-1.5 py-0.5 text-label text-primary'>已脱敏</span>
+          </div>
+          <pre className='max-h-36 overflow-auto whitespace-pre leading-relaxed text-foreground'>
+            {item.step.input.expect.template}
+          </pre>
+        </div>
+      ) : null}
       {item.diagnostics.map((message) => (
         <p key={message} className='text-label text-status-warning-foreground'>
           {message}

@@ -10,6 +10,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Select,
   SelectContent,
@@ -28,6 +29,7 @@ const EXPECT_OPTIONS: { kind: AssertExpect['kind']; label: string }[] = [
   { kind: 'visible', label: '对象可见' },
   { kind: 'text_equals', label: '文本相符' },
   { kind: 'text_contains', label: '文本包含' },
+  { kind: 'aria_snapshot', label: '快照匹配' },
 ]
 
 function newContractId(): string {
@@ -178,6 +180,15 @@ function OutcomeCard({
                 })
                 return
               }
+              if (nextKind === 'aria_snapshot') {
+                patchRule({
+                  expect: {
+                    kind: 'aria_snapshot',
+                    template: expect.kind === 'aria_snapshot' ? expect.template : '',
+                  },
+                })
+                return
+              }
               if (nextKind === 'number_compare') {
                 patchRule({ expect: { kind: 'number_compare', op: 'eq', value: 0 } })
                 return
@@ -200,6 +211,29 @@ function OutcomeCard({
             </SelectContent>
           </Select>
         </div>
+        {expect.kind === 'aria_snapshot' ? (
+          <div className='col-span-full space-y-2'>
+            <div className='flex items-center justify-between'>
+              <Label htmlFor={`outcome-aria-${contract.id}`}>Aria 快照模板 (YAML)</Label>
+              <span className='text-label text-muted-foreground'>
+                {expect.template.length} / 16384 字符
+              </span>
+            </div>
+            <Textarea
+              id={`outcome-aria-${contract.id}`}
+              value={expect.template}
+              disabled={disabled}
+              placeholder={'- heading "标题"\n- button "确认"'}
+              rows={4}
+              className='font-mono text-label leading-relaxed'
+              onChange={(event) =>
+                patchRule({
+                  expect: { kind: 'aria_snapshot', template: event.target.value.slice(0, 16384) },
+                })
+              }
+            />
+          </div>
+        ) : null}
         {expect.kind === 'text_equals' || expect.kind === 'text_contains' ? (
           <div className='space-y-2'>
             <Label htmlFor={`outcome-text-${contract.id}`}>

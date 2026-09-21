@@ -33,9 +33,14 @@ export function useRunObservation(runId: string, enabled = true) {
   }
   applyRef.current = apply
 
+  const lastPumpAt = useRef(0)
+  const throttleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const THROTTLE_INTERVAL_MS = 300
+
   const pumpRefresh = () => {
     if (pumping.current) return
     pumping.current = true
+    lastPumpAt.current = Date.now()
     void (async () => {
       try {
         while (dirty.current) {
@@ -49,20 +54,43 @@ export function useRunObservation(runId: string, enabled = true) {
         }
       } finally {
         pumping.current = false
-        if (dirty.current) pumpRefresh()
+        if (dirty.current) {
+          scheduleRefresh(false)
+        }
       }
     })()
   }
 
-  const scheduleRefresh = () => {
+  const scheduleRefresh = (immediate = false) => {
     dirty.current = true
-    pumpRefresh()
+    if (immediate) {
+      if (throttleTimer.current) {
+        clearTimeout(throttleTimer.current)
+        throttleTimer.current = null
+      }
+      pumpRefresh()
+      return
+    }
+    if (pumping.current || throttleTimer.current) return
+    const elapsed = Date.now() - lastPumpAt.current
+    if (elapsed >= THROTTLE_INTERVAL_MS) {
+      pumpRefresh()
+    } else {
+      throttleTimer.current = setTimeout(() => {
+        throttleTimer.current = null
+        pumpRefresh()
+      }, THROTTLE_INTERVAL_MS - elapsed)
+    }
   }
 
   useEffect(() => {
     appliedSeq.current = 0
     setView(null)
     setConnection('idle')
+    if (throttleTimer.current) {
+      clearTimeout(throttleTimer.current)
+      throttleTimer.current = null
+    }
   }, [runId])
 
   useEffect(() => {
@@ -84,19 +112,19 @@ export function useRunObservation(runId: string, enabled = true) {
             signal: controller.signal,
             handlers: {
               onEvent: () => {
-                scheduleRefresh()
+                scheduleRefresh(false)
               },
               onControl: (control) => {
                 if (control.kind === 'ready') {
                   setConnection(control.realtime ? 'live' : 'unavailable')
                 }
                 if (control.kind === 'reset') {
-                  scheduleRefresh()
+                  scheduleRefresh(true)
                 }
                 if (control.kind === 'complete') {
                   stopped = true
                   setConnection('live')
-                  scheduleRefresh()
+                  scheduleRefresh(true)
                 }
                 if (control.kind === 'error') {
                   if (control.code === 'FORBIDDEN') {
@@ -140,6 +168,10 @@ export function useRunObservation(runId: string, enabled = true) {
     return () => {
       stopped = true
       controller.abort()
+      if (throttleTimer.current) {
+        clearTimeout(throttleTimer.current)
+        throttleTimer.current = null
+      }
     }
   }, [enabled, observation.isSuccess, runId])
 

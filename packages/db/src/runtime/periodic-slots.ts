@@ -10,7 +10,7 @@ import {
   type PeriodicSlotOutcome,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
-import { clockNow, databaseNow, driverOf, insertIgnoreRows, schemaFor, updateRows } from '../native.js'
+import { clockNow, databaseNow, driverOf, insertIgnoreRows, schemaFor, updateRows, updateRowsCount } from '../native.js'
 import { badRequest } from '../runs/errors.js'
 
 export type PeriodicSlotRequest = {
@@ -103,16 +103,11 @@ function toRecord(row: {
   }
 }
 
-async function ensureSlotRows(db: Db, requests: PeriodicSlotRequest[], now: Date): Promise<void> {
+/** 与迁移中 lease_owner / last_owner 的 VARCHAR(256) 对齐；owner 来自不限长的 Worker ID。 */
+const OWNER_MAX_LENGTH = 256
+
+async function insertMissingSlotRows(db: Db, missing: PeriodicSlotRequest[], now: Date): Promise<void> {
   const { periodicSlots } = schemaFor(db)
-  const names = requests.map((request) => request.name)
-  const existing = await db
-    .select({ name: periodicSlots.name })
-    .from(periodicSlots)
-    .where(inArray(periodicSlots.name, names))
-  const present = new Set(existing.map((row) => row.name))
-  const missing = requests.filter((request) => !present.has(request.name))
-  if (missing.length === 0) return
   await insertIgnoreRows(
     db,
     periodicSlots,
@@ -142,27 +137,26 @@ export async function claimDuePeriodicSlots(
   if (requests.length === 0) return { claimed: [], skipped: [] }
   assertRequests(requests)
   const now = await clockNow(db)
-  await ensureSlotRows(db, requests, now)
   const { periodicSlots } = schemaFor(db)
-  const rows = await db
-    .select()
-    .from(periodicSlots)
-    .where(
-      inArray(
-        periodicSlots.name,
-        requests.map((request) => request.name),
-      ),
-    )
-  const byName = new Map(rows.map((row) => [row.name, row]))
+  const names = requests.map((request) => request.name)
+  const byName = new Map<string, typeof periodicSlots.$inferSelect>()
+  for (const row of await db.select().from(periodicSlots).where(inArray(periodicSlots.name, names))) {
+    byName.set(row.name, row)
+  }
+  // 稳态只有上面这一次读；缺行（首次或被清理）才补建并回读。
+  const missing = requests.filter((request) => !byName.has(request.name))
+  if (missing.length > 0) {
+    await insertMissingSlotRows(db, missing, now)
+    const created = await db
+      .select()
+      .from(periodicSlots)
+      .where(inArray(periodicSlots.name, missing.map((request) => request.name)))
+    for (const row of created) byName.set(row.name, row)
+  }
   const skipped: PeriodicSlotSkip[] = []
   const due: PeriodicSlotRequest[] = []
   for (const request of requests) {
-    let row = byName.get(request.name)
-    if (!row) {
-      await ensureSlotRows(db, [request], now)
-      const [created] = await db.select().from(periodicSlots).where(eq(periodicSlots.name, request.name)).limit(1)
-      row = created
-    }
+    const row = byName.get(request.name)
     if (!row) {
       skipped.push({ name: request.name, reason: 'not_due' })
       continue
@@ -189,7 +183,7 @@ export async function claimDuePeriodicSlots(
   const claimed: PeriodicSlotClaim[] = []
   for (const request of due) {
     const nextDueAt = nextPeriodicSlotDueAt(now, request.intervalMs)
-    const owner = request.owner ?? null
+    const owner = request.owner == null ? null : request.owner.slice(0, OWNER_MAX_LENGTH)
     const leaseTtlMs = request.leaseTtlMs ?? DEFAULT_PERIODIC_SLOT_LEASE_TTL_MS
     const duePredicate = and(eq(periodicSlots.name, request.name), eq(periodicSlots.mode, request.mode), sql`${periodicSlots.nextDueAt} <= ${now}`)
     const predicate =
@@ -248,7 +242,8 @@ export async function finishPeriodicSlot(
     input.outcome === 'failed'
       ? sql`CASE WHEN ${periodicSlots.nextDueAt} > ${retryAt} THEN ${retryAt} ELSE ${periodicSlots.nextDueAt} END`
       : undefined
-  const [updated] = await updateRows(
+  // claimSeq 相等即本次领取仍然有效；只判命中，不读回实体。
+  const updated = await updateRowsCount(
     db,
     periodicSlots,
     {
@@ -261,9 +256,8 @@ export async function finishPeriodicSlot(
       ...(nextDueAt ? { nextDueAt } : {}),
     },
     and(eq(periodicSlots.name, input.name), eq(periodicSlots.claimSeq, input.claimSeq)),
-    { claimSeq: periodicSlots.claimSeq },
   )
-  return Boolean(updated)
+  return updated > 0
 }
 
 export async function readPeriodicSlots(db: Db, names?: PeriodicSlotName[]): Promise<PeriodicSlotRecord[]> {

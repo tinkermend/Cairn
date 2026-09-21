@@ -13,7 +13,7 @@
 | Default | 可正常阅读或交互 | 语义底色、可读文字、稳定尺寸；标签先于输入 |
 | Hover | 指针位于可操作区域 | 使用 action-hover / 变体 hover；不改变布局；不作为唯一信息入口 |
 | Active | 正在按下 / 激活瞬间 | 深一级颜色或内侧阴影，不与持久选中混淆 |
-| Focus | 键盘或辅助技术焦点 | 按钮、开关、导航项使用 2px focus-ring + 3px 间隔；输入类控件在指针激活和键盘焦点时都使用 1px 主蓝边界 + 紧贴的 2px 半透明外光，不用外扩实线环；聚焦后不自动提交或导航 |
+| Focus | 键盘或辅助技术焦点 | 按钮、开关、导航项使用 2px focus-ring + 3px 间隔；输入类控件在指针激活和键盘焦点时都使用 1px 主蓝边界 + 紧贴的 3px 低透明度外光，不用外扩实线环；聚焦后不自动提交或导航 |
 | Disabled | 当前不可操作 | 中性底、禁用文字；禁用真实交互；必要原因以可读文本提供 |
 | Loading | 等待操作或数据 | 稳定尺寸、动作文字改为“保存中…”等；设置 aria-busy，防重复提交 |
 | Error | 校验失败或请求失败 | 深红文字 + 图标 + 明确原因；给可执行恢复动作；保留用户输入 |
@@ -70,7 +70,9 @@ Loading 保留按钮宽度和主语，不显示模糊的“处理中”替代所
 
 ### 3.1 基本布局与校验
 
-标签默认位于控件上方，与控件间隔 8px。必填用文字或星号并提供说明；占位文字用于例子，不能代替标签。辅助文案与错误文案通过 `aria-describedby` 关联。
+标签默认位于控件上方，与控件间隔 8px。占位文字用于例子，不能代替标签。辅助文案与错误文案通过 `aria-describedby` 关联。
+
+开发提示：字段是否必填及其条件由页面功能与业务校验确定。AI 开发表单时，注意为必填的输入框、下拉框等在标签旁加上清晰标识，建议使用红色星号（`*`），并按需要说明其含义。
 
 输入框默认 36px 高、9px 圆角、左右 12px 内边距；认证等高聚焦表单使用 48px。表单首屏以一列为主，仅强关联的短字段并排。避免对齐造成长中文标签挤压输入区。
 
@@ -78,11 +80,29 @@ Loading 保留按钮宽度和主语，不显示模糊的“处理中”替代所
 
 ### 3.2 高聚焦表单与输入质感
 
-输入使用与卡片相同的白底（`surface-card` / `surface-control`），再配 1px `border-control` 与 `control-shadow` 内阴影。输入靠边界识别，不另铺浅灰或冷白底；禁用态才使用 `surface-subtle`。边界负责满足 3:1 的识别对比度，不得为了“看起来轻”去削弱边界或重新加一层脏底。
+输入采用已选定的 [B · 清透蓝](../../front_design/2026-09-20-form-control-lab/index.html)：与卡片相同的白底（`surface-card` / `surface-control`）、1px 冷蓝色 `border-control`，默认平整无内阴影。输入靠边界识别，不另铺浅灰或冷白底；禁用态才使用 `surface-subtle`。必要边界对白底保持至少 3:1 的识别对比度。
 
-不使用 `inset 0 1px 0 #fff` 之类的外凸高光，那是拟物时代的做法；内凹用 `control-shadow`。Hover 加深为 `border-control-hover`；Focus 使用 1px 主蓝边界和紧贴的 2px `focus-halo`（`control-focus-shadow`），不用 `ring-offset` 外扩实线环；Error 使用红色边界与 `error-halo`。这些状态由共用 Input / Textarea / Select / PasswordInput 提供，页面只选择高度，不另写边框、光晕或阴影。
+Hover 加深为 `border-control-hover`；按下使用 `action-primary-active` 与 `control-active-shadow`；Focus 使用 1px 主蓝边界和紧贴的 3px、约 10% 透明度 `focus-halo`（`control-focus-shadow`），不用 `ring-offset` 外扩实线环。Error 使用红色边界和字段说明，错误字段聚焦时再加 `control-error-focus-shadow`。Select 展开后，触发器保留聚焦边界与光晕。这些状态由共用 Input / Textarea / Select / PasswordInput 提供，页面只选择高度，不另写边框、光晕或阴影。
 
 科技感来自精确边界和克制的状态光，不在输入框外再套一道高饱和实线环，也不在框内添加无语义图标、渐变描边或持续动画。前后缀图标必须帮助识别输入含义或触发明确动作；密码显隐属于有效动作，并保留可访问名称。
+
+### 3.3 Select 展开面板与选项
+
+触发器与展开面板共同构成 Select。面板使用白色 `popover`、冷蓝色 `border-menu`、控件圆角和 `menu-shadow`，与触发器间隔 4px，宽度至少与触发器一致；长列表在面板内滚动，并由 Radix 处理视口避让。
+
+| 选项状态 | 呈现与行为 |
+| --- | --- |
+| 默认 | 正文色、白底，单行至少 36px 高 |
+| 悬停 / 键盘高亮 | `action-hover` 浅蓝底，加 `border-control-hover` 1px 内侧轮廓；当前高亮项与已选项分别表达 |
+| 已选 | `selection-background` 浅蓝底、`selection-foreground` 深蓝文字和右侧勾选标识 |
+| 已选且高亮 | 保留已选底色与勾选，同时叠加高亮轮廓 |
+| 禁用 | 弱化文字，不能点击或由方向键选中；需要说明原因时使用可读的辅助文字 |
+
+方向键移动高亮，Enter 确认，Escape 关闭并返回触发器；打开菜单本身不改变已选值。正式页面沿用公共 `Select` 的 Radix 交互。原生 `<select>` 的系统弹出菜单不能通过触发器的 CSS 获得同样外观，需要完整一致的选项样式时复用公共 `Select`。
+
+普通受控单选可使用 `SelectField` / `SelectFieldOption`，它们组合上述公共组件，并保留“全部”“未指定”等空字符串业务选项；`onValueChange` 返回原始业务值。需要通过 `name` 参与原生 `FormData` 的字段直接组合 `Select`。多选使用 `MultiSelectField`，与单选共用触发器、面板和选项样式；勾选后保留面板以便连续操作，再次点击取消选中，Escape 关闭并返回字段。权限、加载和业务联动仍由调用页面决定。
+
+### 3.4 输入组件清单
 
 | 组件 | 状态族 | 结构 / 规范 | 八态中的特例与键盘行为 |
 | --- | --- | --- | --- |

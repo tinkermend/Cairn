@@ -5,6 +5,7 @@ import {
   createAiPort,
   evidenceFailed,
   leaseLostError,
+  locateResultFromFailure,
   settleAiCommand,
   waitWithHang,
   type AiExecuteEvidence,
@@ -55,6 +56,22 @@ describe('AI 端口边界', () => {
         rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow', pathPrefix: '/orders' }],
       }),
     ).toThrow(/不在允许范围/)
+  })
+
+  it('定位失败映射保留 hung 与可重试的模型错误', () => {
+    expect(locateResultFromFailure({ hung: true, callNs: [] })).toMatchObject({
+      ok: false,
+      hung: true,
+      error: { code: 'AI_HUNG', retryable: false },
+    })
+    expect(locateResultFromFailure({ error: new Error('fetch failed: ECONNRESET'), callNs: [1] })).toMatchObject({
+      ok: false,
+      error: { code: 'AI_EXECUTION_FAILED', retryable: true },
+    })
+    expect(locateResultFromFailure({ error: Object.assign(new Error('未找到'), { code: 'AI_NOT_FOUND' }) })).toMatchObject({
+      ok: false,
+      error: { code: 'AI_NOT_FOUND', retryable: true },
+    })
   })
 
   it('取消后有界等待，未落定则标 hung', async () => {

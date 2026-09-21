@@ -8,9 +8,11 @@
 
 用户于 2026-09-13 认可 [UI 底座交互原型](../../front_design/2026-09-13-foundation-lab/index.html) 的设计效果。后续页面以这套视觉层次、控件反馈和业务布局为设计参考。
 
+2026-09-20 进一步选定[输入控件 B · 清透蓝](../../front_design/2026-09-20-form-control-lab/index.html)。输入边界、聚焦光晕与 Select 展开样式以当前 Token 和组件规范为准；旧原型的局部样式不覆盖这次选择。
+
 | 资料 | 当前身份 | 使用方式 |
 | --- | --- | --- |
-| [Design Token](tokens.css) | 已接入生产的数值事实源 | v1.3 已迁入认可外观，生产页面直接消费语义 Token |
+| [Design Token](tokens.css) | 已接入生产的数值事实源 | 当前 Token 已迁入认可外观，生产页面直接消费语义 Token |
 | [组件规范](components.md)与现有 `components/ui/` | 状态契约与正式基础控件 | 复用公开 API、Radix 交互与现有 variant |
 | [交互原型](../../front_design/2026-09-13-foundation-lab/index.html) | 已认可的视觉方向和布局参考 | 观察比例、层次、动作和状态；其原生 JS、模拟数据及截图不是生产实现 |
 | [正式接入方案](../../spec/2026-09-13-ui-foundation-review.md#正式接入方案) | 后续迁移范围 | Target 与 Scenario 真实样板已迁移，功能边界与验收记录在方案中 |

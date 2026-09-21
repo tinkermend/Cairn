@@ -157,6 +157,24 @@ describe('变化提示发布与重连', () => {
     await bus.close()
   })
 
+  it('运行、调度和分析观察共享连接，取消一个订阅不影响其他观察', async () => {
+    const bus = createChangeHint({ hint: 'postgres', namespace: 'shared', dbEnv: pgEnv })
+    const run = vi.fn()
+    const schedule = vi.fn()
+    const off = await bus.subscribe(schedule)
+    await bus.subscribe(run)
+    expect(pg.FakeClient.instances).toHaveLength(1)
+    const message = { channel: 'cairn_run_observe', payload: JSON.stringify({ namespace: 'shared', runId, eventSeq: 1 }) }
+    pg.FakeClient.instances[0]!.emit('notification', message)
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(schedule).toHaveBeenCalledTimes(1)
+    off?.()
+    pg.FakeClient.instances[0]!.emit('notification', message)
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(schedule).toHaveBeenCalledTimes(1)
+    await bus.close()
+  })
+
   it('连接失败后可以换新 Client 再发布', async () => {
     const bus = createChangeHint({ hint: 'postgres', namespace: 'retry', dbEnv: pgEnv })
     pg.FakeClient.connectErrors = [new Error('ECONNREFUSED')]

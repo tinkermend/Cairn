@@ -1,12 +1,24 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
-import type { RoleDto } from '@cairn/shared'
+import { PERMISSIONS, type RoleDto } from '@cairn/shared'
+import { useAuthStore } from '@/stores/auth-store'
 import { type User } from '../data/schema'
 import { UsersActionDialog } from './users-action-dialog'
 
 const MOCK_ROLES: RoleDto[] = [
+  {
+    id: 'admin',
+    key: 'admin',
+    name: '管理员',
+    kind: 'system',
+    description: null,
+    permissions: [...PERMISSIONS],
+    accountCount: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
   {
     id: 'author',
     key: 'author',
@@ -64,10 +76,24 @@ function renderDialog(ui: React.ReactNode) {
 describe('UsersActionDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // 开账号与分配角色只有「持有 admin 且在 admin 角色上拥有全部目标范围」的账号才能做，
+    // 表单据此决定保存按钮与角色复选框是否可用。没有操作者登录时整个表单是只读的。
+    useAuthStore.getState().auth.setUser({
+      id: 'acc-admin',
+      displayName: '管理员',
+      email: null,
+      roles: ['admin'],
+      permissions: [...PERMISSIONS],
+      targetScopes: [{ roleId: 'admin', mode: 'all', targetIds: [] }],
+    })
     createAccount.mockResolvedValue(MOCK_USER)
     updateAccount.mockResolvedValue(MOCK_USER)
     assignAccountRoles.mockResolvedValue(MOCK_USER)
     setAccountPassword.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    useAuthStore.getState().auth.setUser(null)
   })
 
   describe('add user', () => {
@@ -110,6 +136,8 @@ describe('UsersActionDialog', () => {
         password: 'password1',
         status: 'active',
         roleIds: ['author'],
+        // 新账号默认不带任何目标访问：角色的目标范围是「无」，要管理员显式授予。
+        targetScopes: [{ roleId: 'author', mode: 'none', targetIds: [] }],
       })
       expect(onOpenChange).toHaveBeenCalledWith(false)
     })
@@ -157,6 +185,7 @@ describe('UsersActionDialog', () => {
       )
       expect(assignAccountRoles).toHaveBeenCalledWith(MOCK_USER.id, {
         roleIds: ['operator'],
+        targetScopes: [{ roleId: 'operator', mode: 'none', targetIds: [] }],
       })
       expect(setAccountPassword).not.toHaveBeenCalled()
     })

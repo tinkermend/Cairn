@@ -5,10 +5,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import jpeg from 'jpeg-js'
+import sharp from 'sharp'
 import {
   acceptCapturedFrame,
   enqueueRecorderWrite,
   flushRecorderWrites,
+  maskPasswordBoxes,
   rebindVideoForLease,
   writeCapturedFrame,
   type RunVideoRecorder,
@@ -191,5 +193,52 @@ describe('run-video', () => {
     expect(item.framesDropped.rateLimited).toBe(1)
     expect(item.frames).toHaveLength(2)
     expect(item.frames.map((row) => row.file)).toEqual(['frame_00000.jpg', 'frame_00001.jpg'])
+  })
+})
+
+describe('密码框遮罩', () => {
+  async function pixelAt(buf: Buffer, x: number, y: number): Promise<number> {
+    const { data, info } = await sharp(buf).raw().toBuffer({ resolveWithObject: true })
+    return data[(y * info.width + x) * info.channels]!
+  }
+
+  it('VM01：位图与视口同尺寸时框内涂黑、框外保留原画面', async () => {
+    const source = solidJpeg(320, 200, 255, 255, 255)
+    const masked = await maskPasswordBoxes(source, [{ x: 40, y: 30, width: 80, height: 20 }], 320, 200)
+    expect(await pixelAt(masked, 80, 40)).toBeLessThan(40)
+    expect(await pixelAt(masked, 250, 150)).toBeGreaterThan(200)
+  })
+
+  it('VM02：视口小于位图时按比例缩放遮罩区域', async () => {
+    const source = solidJpeg(320, 200, 255, 255, 255)
+    // 视口 160x100、位图 320x200，等价 devicePixelRatio=2
+    const masked = await maskPasswordBoxes(source, [{ x: 20, y: 15, width: 40, height: 10 }], 160, 100)
+    expect(await pixelAt(masked, 80, 40)).toBeLessThan(40)
+    expect(await pixelAt(masked, 250, 150)).toBeGreaterThan(200)
+  })
+
+  it('VM03：越界框不抛错且不改变帧尺寸', async () => {
+    const source = solidJpeg(320, 200, 255, 255, 255)
+    const masked = await maskPasswordBoxes(source, [{ x: 310, y: 195, width: 200, height: 200 }], 320, 200)
+    const meta = await sharp(masked).metadata()
+    expect([meta.width, meta.height]).toEqual([320, 200])
+  })
+
+  it('VM04：无框时原样返回，不做重编码', async () => {
+    const source = solidJpeg(320, 200, 255, 255, 255)
+    expect(await maskPasswordBoxes(source, [], 320, 200)).toBe(source)
+  })
+
+  it('VM05：遮罩失败的帧不落盘并计入丢帧', async () => {
+    const item = await recorder('mask-fail')
+    const broken = solidJpeg(320, 200, 255, 255, 255).subarray(0, 40)
+    await writeCapturedFrame(
+      item,
+      { ...frame({ origin: 'cdp', sourceSeq: 1, receivedMonoMs: 0 }), jpeg: broken },
+      [{ x: 10, y: 10, width: 40, height: 10 }],
+    )
+    expect(item.passwordMask).toBe('failed')
+    expect(item.framesDropped.maskFailed).toBe(1)
+    expect(item.frames).toHaveLength(0)
   })
 })

@@ -33,7 +33,7 @@ describe.skipIf(!DRIVERS.includes('mysql'))('通知跨库转储与恢复', () =>
     { timeout: 90_000 },
     async (from, to) => {
       const source = await openContractDb(from),
-        destination = await openContractDb(to)
+        destination = await openContractDb(to, undefined, { pristine: true })
       try {
         const t = schemaFor(source.db),
           actor = newId(),

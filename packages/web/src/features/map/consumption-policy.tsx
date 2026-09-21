@@ -13,6 +13,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
 
 const MODE_LABELS: Record<MapConsumptionMode, string> = {
   off: '关闭',
@@ -24,7 +25,9 @@ type ConsumptionPolicyCardProps = {
   targetId: string
 }
 
-export function ConsumptionPolicyCard({ targetId }: ConsumptionPolicyCardProps) {
+export function ConsumptionPolicyCard({
+  targetId,
+}: ConsumptionPolicyCardProps) {
   return <PolicyForm key={targetId} targetId={targetId} />
 }
 
@@ -46,21 +49,32 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
   })
   const mutation = useMutation({
     mutationFn: () => {
-      const body = { expectedRevision: query.data!.revision,
-        mode: (mode || query.data!.policy.mode) as MapConsumptionMode, reason: reason.trim() }
+      const body = {
+        expectedRevision: query.data!.revision,
+        mode: (mode || query.data!.policy.mode) as MapConsumptionMode,
+        reason: reason.trim(),
+      }
       const payload = JSON.stringify(body)
-      if (requestKey.current?.payload !== payload) requestKey.current = { payload, key: `policy:${crypto.randomUUID()}` }
-      return updateMapConsumptionPolicy(targetId, { ...body, idempotencyKey: requestKey.current.key })
+      if (requestKey.current?.payload !== payload)
+        requestKey.current = { payload, key: `policy:${crypto.randomUUID()}` }
+      return updateMapConsumptionPolicy(targetId, {
+        ...body,
+        idempotencyKey: requestKey.current.key,
+      })
     },
     onSuccess: () => {
       toast.success('已更新运行消费政策')
       setReason('')
       setMode('')
       requestKey.current = null
-      void queryClient.invalidateQueries({ queryKey: ['map', targetId, 'consumption-policy'] })
+      void queryClient.invalidateQueries({
+        queryKey: ['map', targetId, 'consumption-policy'],
+      })
     },
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '更新消费政策失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '更新消费政策失败'
+      )
     },
   })
   const grantMutation = useMutation({
@@ -73,10 +87,14 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
       toast.success('已授予只读对照资格')
       setGrantReportId('')
       setGrantReason('')
-      void queryClient.invalidateQueries({ queryKey: ['map', targetId, 'consumption-policy'] })
+      void queryClient.invalidateQueries({
+        queryKey: ['map', targetId, 'consumption-policy'],
+      })
     },
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '授予资格失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '授予资格失败'
+      )
     },
   })
 
@@ -84,7 +102,13 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
 
   const current = query.data
   const selected = mode || current?.policy.mode || 'off'
-  const fallbackClosed = selected === 'read_only_fallback' && (!current?.eligibility || Boolean(current.eligibility.suspendedAt) || current.policy.allowedStepTypes.some(type => !current.eligibility!.eligibleStepTypes.includes(type)))
+  const fallbackClosed =
+    selected === 'read_only_fallback' &&
+    (!current?.eligibility ||
+      Boolean(current.eligibility.suspendedAt) ||
+      current.policy.allowedStepTypes.some(
+        (type) => !current.eligibility!.eligibleStepTypes.includes(type)
+      ))
 
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
@@ -95,7 +119,9 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
       {query.isPending ? (
         <p className='text-label text-muted-foreground'>政策加载中…</p>
       ) : query.isError ? (
-        <p className='text-label text-muted-foreground'>暂时无法读取消费政策。</p>
+        <p className='text-label text-muted-foreground'>
+          暂时无法读取消费政策。
+        </p>
       ) : current ? (
         <>
           <p className='text-body'>
@@ -105,16 +131,21 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
           {current.eligibility ? (
             current.eligibility.suspendedAt ? (
               <Alert>
-                <AlertDescription>只读替换已因确认错配冻结；需新的独立对照资格后才能重新开放。</AlertDescription>
+                <AlertDescription>
+                  只读替换已因确认错配冻结；需新的独立对照资格后才能重新开放。
+                </AlertDescription>
               </Alert>
             ) : (
               <p className='text-label text-muted-foreground'>
-                资格 {current.eligibility.reportId} · {current.eligibility.eligibleStepTypes.join('、')}
+                资格 {current.eligibility.reportId} ·{' '}
+                {current.eligibility.eligibleStepTypes.join('、')}
               </p>
             )
           ) : (
             <Alert>
-              <AlertDescription>尚缺只读对照资格，产品只读替换保持关闭。</AlertDescription>
+              <AlertDescription>
+                尚缺只读对照资格，产品只读替换保持关闭。
+              </AlertDescription>
             </Alert>
           )}
           {canPublish ? (
@@ -140,7 +171,11 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
                   placeholder='说明对照依据'
                 />
                 <Button
-                  disabled={grantMutation.isPending || grantReportId.trim().length < 8 || !grantReason.trim()}
+                  disabled={
+                    grantMutation.isPending ||
+                    grantReportId.trim().length < 8 ||
+                    !grantReason.trim()
+                  }
                   onClick={() => grantMutation.mutate()}
                 >
                   授予资格
@@ -148,17 +183,21 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
               </div>
               <div className='space-y-2'>
                 <Label htmlFor='consumption-mode'>模式</Label>
-                <select
+                <SelectField
                   disabled={mutation.isPending}
                   id='consumption-mode'
-                  className='flex h-10 w-full rounded-md border border-input bg-background px-3 text-body'
+                  className='w-full'
                   value={selected}
-                  onChange={(event) => setMode(event.target.value as MapConsumptionMode)}
+                  onValueChange={(value) =>
+                    setMode(value as MapConsumptionMode)
+                  }
                 >
-                  <option value='off'>关闭</option>
-                  <option value='shadow'>仅比较</option>
-                  <option value='read_only_fallback'>只读步骤候选</option>
-                </select>
+                  <SelectFieldOption value='off'>关闭</SelectFieldOption>
+                  <SelectFieldOption value='shadow'>仅比较</SelectFieldOption>
+                  <SelectFieldOption value='read_only_fallback'>
+                    只读步骤候选
+                  </SelectFieldOption>
+                </SelectField>
               </div>
               <div className='space-y-2'>
                 <Label htmlFor='consumption-reason'>调整理由</Label>
@@ -172,17 +211,23 @@ function PolicyForm({ targetId }: ConsumptionPolicyCardProps) {
                 />
               </div>
               <Button
-                disabled={mutation.isPending || fallbackClosed || !reason.trim()}
+                disabled={
+                  mutation.isPending || fallbackClosed || !reason.trim()
+                }
                 onClick={() => mutation.mutate()}
               >
                 保存政策
               </Button>
               {fallbackClosed ? (
-                <p className='text-label text-muted-foreground'>没有资格记录，不能打开只读步骤候选。</p>
+                <p className='text-label text-muted-foreground'>
+                  没有资格记录，不能打开只读步骤候选。
+                </p>
               ) : null}
             </div>
           ) : (
-            <p className='text-label text-muted-foreground'>需要发布权限才能改消费政策。</p>
+            <p className='text-label text-muted-foreground'>
+              需要发布权限才能改消费政策。
+            </p>
           )}
         </>
       ) : null}

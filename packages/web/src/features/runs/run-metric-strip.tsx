@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import {
+  isFinishedRunStatus,
   resolveEvidencePolicy,
   type RunDetailDto,
 } from '@cairn/shared'
@@ -105,18 +106,26 @@ export function RunMetricStrip({ run }: Props) {
         </div>
       </div>
 
-      {/* 3. 浏览器会话与租约 */}
+      {/* 3. 执行占用与登录核验：这里是 Run 执行租约，不是 Session 占用，两者分别表达。 */}
       <div className='flex flex-col justify-between rounded-lg border border-border-card bg-card p-4 shadow-card'>
         <div className='flex items-center justify-between text-muted-foreground'>
-          <span className='text-label font-medium'>浏览器会话与租约</span>
+          <span className='text-label font-medium'>执行占用与登录核验</span>
           <ShieldCheck className='size-4 text-primary' />
         </div>
         <div className='mt-2 min-w-0'>
           <div className='text-body font-semibold text-foreground truncate'>
-            {run.lease ? `Worker ${run.lease.holderWorkerId}` : '当前没有执行租约'}
+            {run.lease
+              ? `执行节点 ${run.lease.holderWorkerId}`
+              : isFinishedRunStatus(run.status)
+                ? '执行已结束'
+                : '还没有分配执行节点'}
           </div>
           <p className='mt-1 text-label text-muted-foreground truncate'>
-            {run.lease ? `fencing ${run.lease.fencingToken}` : 'Session 与本次 Run 独立'}
+            {run.lease
+              ? '正在占用执行节点'
+              : isFinishedRunStatus(run.status)
+                ? '执行节点已释放'
+                : '等待执行节点领取'}
           </p>
         </div>
         <div className='mt-3 border-t border-border-card/60 pt-2'>

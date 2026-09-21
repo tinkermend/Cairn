@@ -282,4 +282,138 @@ describe('compileScenarioDocument', () => {
       ]),
     )
   })
+
+  it('仅语义目标在默认上限下阻断发布，显式 ai_only 超上限报错', () => {
+    const semanticOnly = document([
+      {
+        id: ids.a,
+        name: '点',
+        type: 'click',
+        effectType: 'SIDE_EFFECT',
+        input: { target: { semantic: '查询按钮' } },
+      },
+    ])
+    const saved = compileScenarioDocument(semanticOnly, { mode: 'save' })
+    expect(saved.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_TARGET_SEMANTIC_ONLY', severity: 'warning' })]),
+    )
+    const released = compileScenarioDocument(semanticOnly, { mode: 'release' })
+    expect(released.ok).toBe(false)
+    expect(released.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_TARGET_SEMANTIC_ONLY', severity: 'error' })]),
+    )
+
+    const aiOnly = document([
+      {
+        id: ids.b,
+        name: '点',
+        type: 'click',
+        effectType: 'SIDE_EFFECT',
+        policy: { resolution: 'ai_only' },
+        input: { target: { candidates: [{ by: 'text', value: '查询' }] } },
+      },
+    ])
+    expect(
+      compileScenarioDocument(aiOnly, { mode: 'release' }).diagnostics,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SCENARIO_RESOLUTION_EXCEEDS_CEILING', severity: 'error' }),
+      ]),
+    )
+  })
+
+  it('作者显式 prefer_* 被上限压低时给降级警告', () => {
+    const source = document([
+      {
+        id: ids.a,
+        name: '点',
+        type: 'click',
+        effectType: 'SIDE_EFFECT',
+        policy: { resolution: 'prefer_deterministic' },
+        input: { target: { candidates: [{ by: 'text', value: '查询' }] } },
+      },
+    ])
+    expect(
+      compileScenarioDocument(source, {
+        mode: 'release',
+        resolution: {
+          ceiling: 'deterministic_only',
+          default: 'prefer_deterministic',
+        },
+      }).diagnostics,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SCENARIO_RESOLUTION_DEGRADED', severity: 'warning' }),
+      ]),
+    )
+  })
+
+  it('目标系统上限也能压低作者显式档位', () => {
+    const source = document([
+      {
+        id: ids.a,
+        name: '点',
+        type: 'click',
+        effectType: 'SIDE_EFFECT',
+        policy: { resolution: 'prefer_ai' },
+        input: { target: { candidates: [{ by: 'text', value: '查询' }] } },
+      },
+    ])
+    expect(
+      compileScenarioDocument(source, {
+        mode: 'release',
+        resolution: {
+          ceiling: 'prefer_ai',
+          default: 'prefer_deterministic',
+          targetCeiling: 'deterministic_only',
+        },
+      }).diagnostics,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SCENARIO_RESOLUTION_DEGRADED', severity: 'warning' }),
+      ]),
+    )
+  })
+
+  it('写步骤仅语义且规则优先时发布阻断', () => {
+    const source = document([
+      {
+        id: ids.a,
+        name: '点',
+        type: 'click',
+        effectType: 'SIDE_EFFECT',
+        input: { target: { semantic: '查询按钮' } },
+      },
+    ])
+    const result = compileScenarioDocument(source, {
+      mode: 'release',
+      resolution: {
+        ceiling: 'prefer_deterministic',
+        default: 'prefer_deterministic',
+      },
+    })
+    expect(result.ok).toBe(false)
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SCENARIO_SIDE_EFFECT_SEMANTIC_ONLY', severity: 'error' }),
+      ]),
+    )
+  })
+
+  it('语义等待在 MS-5 前发布报不可用', () => {
+    const source = document([
+      {
+        id: ids.a,
+        name: '等',
+        type: 'wait',
+        effectType: 'READ_ONLY',
+        input: { kind: 'semantic', text: '列表已刷出' },
+      },
+    ])
+    const result = compileScenarioDocument(source, { mode: 'release' })
+    expect(result.ok).toBe(false)
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_WAIT_KIND_UNAVAILABLE' })]),
+    )
+  })
 })

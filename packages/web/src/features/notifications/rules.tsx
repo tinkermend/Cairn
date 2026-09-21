@@ -9,6 +9,14 @@ import {
   type NotificationPolicy,
   type PlatformConfigDocument,
 } from '@cairn/shared'
+import {
+  AlertTriangle,
+  ExternalLink,
+  Mail,
+  Search,
+  Webhook,
+  Workflow,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import {
   fetchMonitorAlertRules,
@@ -22,7 +30,17 @@ import {
 import { fetchScenarios, fetchScenario } from '@/lib/scenarios-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { StatusBadge } from '@/components/status-badge'
+import { Switch } from '@/components/ui/switch'
 import { AlertingFields } from '@/features/platform-config/alerting-fields'
 import { validationMessage } from './channels'
 import { Field, Failure } from './index'
@@ -49,46 +67,67 @@ export function NotificationRulesPanel({
     enabled: Boolean(selected),
   })
   const canWrite = useCan('workflow:write') && useCan('run:read')
+
   return (
-    <div className='space-y-4'>
-      <div className='max-w-xl space-y-3'>
-        <h2 className='text-section font-semibold'>场景结果通知</h2>
-        <p className='text-body text-muted-foreground'>
-          为场景选择通知条件和渠道。修改后对新运行生效，试跑和调试不会发送。
-        </p>
-        <Field label='搜索场景'>
-          <Input
-            placeholder='场景名称'
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </Field>
-        <Field label='选择场景'>
-          <select
-            className='h-9 rounded-md border border-input bg-background px-3'
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-          >
-            <option value=''>请选择</option>
-            {selected &&
-              !scenarios.data?.items.some((s) => s.id === selected) && (
-                <option value={selected}>
-                  {scenario.data?.name ?? '当前场景'}
-                </option>
-              )}
-            {scenarios.data?.items.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+    <div className='space-y-5'>
+      <div className='rounded-lg border border-border-card bg-card p-5 shadow-card space-y-4'>
+        <div className='flex items-center gap-2 border-b border-border-divider pb-3'>
+          <Workflow className='size-4 text-primary' />
+          <div>
+            <h2 className='font-semibold text-text-primary text-section'>
+              场景结果通知
+            </h2>
+            <p className='text-label text-muted-foreground'>
+              为场景配置执行结束后的通知条件与投递渠道。修改后对新运行生效，试跑与调试不会发送。
+            </p>
+          </div>
+        </div>
+
+        <div className='grid gap-4 sm:grid-cols-2'>
+          <Field label='搜索场景' hint='输入关键词缩小场景列表'>
+            <div className='relative'>
+              <Search className='pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground' />
+              <Input
+                placeholder='输入场景名称或标识'
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className='pl-9'
+              />
+            </div>
+          </Field>
+          <Field label='选择要配置的场景'>
+            <Select
+              value={selected || 'none'}
+              onValueChange={(value) => setSelected(value === 'none' ? '' : value)}
+            >
+              <SelectTrigger className='w-full' aria-label='选择场景'>
+                <SelectValue placeholder='请选择场景' />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='none'>请选择场景</SelectItem>
+                {selected &&
+                  !scenarios.data?.items.some((s) => s.id === selected) && (
+                    <SelectItem value={selected}>
+                      {scenario.data?.name ?? '当前场景'}
+                    </SelectItem>
+                  )}
+                {scenarios.data?.items.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>
+                    {s.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+
         {scenarios.data?.nextCursor && (
           <p className='text-label text-muted-foreground'>
-            仅显示前 100 项，可搜索其他场景。
+            仅显示前 100 项，可使用搜索框精确定位场景。
           </p>
         )}
       </div>
+
       <Failure
         message={
           scenarios.error?.message ||
@@ -96,13 +135,18 @@ export function NotificationRulesPanel({
           policy.error?.message
         }
       />
+
       {selected && (policy.isPending || scenario.isPending) && (
-        <p role='status'>正在加载场景通知设置…</p>
+        <div className='p-8 text-center text-body text-muted-foreground'>
+          正在加载场景通知设置…
+        </div>
       )}
+
       {policy.data && scenario.data && (
         <PolicyForm
           key={`${selected}:${policy.data.revision}`}
           scenarioId={selected}
+          scenarioName={scenario.data.name}
           targetId={scenario.data.targetId}
           initial={policy.data.policy}
           revision={policy.data.revision}
@@ -113,8 +157,10 @@ export function NotificationRulesPanel({
     </div>
   )
 }
+
 function PolicyForm({
   scenarioId,
+  scenarioName,
   targetId,
   initial,
   revision,
@@ -122,6 +168,7 @@ function PolicyForm({
   onSaved,
 }: {
   scenarioId: string
+  scenarioName: string
   targetId: string
   initial: NotificationPolicy
   revision: number
@@ -137,6 +184,7 @@ function PolicyForm({
     queryKey: ['notification-channels', targetId],
     queryFn: () => fetchNotificationChannels(targetId),
   })
+
   async function save(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -161,152 +209,230 @@ function PolicyForm({
       setBusy(false)
     }
   }
+
   return (
     <form
       onSubmit={(e) => void save(e)}
-      className='max-w-2xl space-y-4 rounded-lg border border-border p-4'
+      className='space-y-5 rounded-lg border border-border-card bg-card p-6 shadow-card'
     >
-      <fieldset disabled={!canWrite || busy} className='space-y-4'>
-        <label className='flex items-center gap-2 text-body'>
-          <input
-            type='checkbox'
+      <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-divider pb-4'>
+        <div>
+          <h3 className='font-semibold text-text-primary text-section'>
+            {scenarioName}
+          </h3>
+          <p className='text-label text-muted-foreground'>
+            所属目标 ID：{targetId} · 当前版本修订：#{revision}
+          </p>
+        </div>
+        <StatusBadge tone={policy.enabled ? 'success' : 'neutral'}>
+          {policy.enabled ? '通知已启用' : '通知未开启'}
+        </StatusBadge>
+      </div>
+
+      <fieldset disabled={!canWrite || busy} className='space-y-5'>
+        <div className='flex items-center justify-between rounded-lg bg-surface-subtle p-3.5'>
+          <div>
+            <p className='font-medium text-text-primary text-body'>
+              启用结果通知
+            </p>
+            <p className='text-label text-muted-foreground'>
+              关闭时，新运行结束不会外发结果消息。
+            </p>
+          </div>
+          <Switch
             checked={policy.enabled}
-            onChange={(e) =>
-              setPolicy({ ...policy, enabled: e.target.checked })
+            onCheckedChange={(checked) =>
+              setPolicy({ ...policy, enabled: checked })
             }
           />
-          启用结果通知
-        </label>
-        <Field label='通知条件'>
-          <select
-            className='h-9 rounded-md border border-input bg-background px-3'
-            value={policy.mode}
-            onChange={(e) =>
-              setPolicy({
-                ...policy,
-                mode: e.target.value as NotificationPolicy['mode'],
-              })
-            }
+        </div>
+
+        <div className='space-y-3'>
+          <Field
+            label='通知触发条件'
+            hint='异常包括执行失败、业务结果为 WARN / FAIL / UNKNOWN、证据待收齐或不完整。'
           >
-            <option value='exceptions'>仅异常结果</option>
-            <option value='all_finished'>每次运行结束</option>
-          </select>
-        </Field>
-        <p className='text-label text-muted-foreground'>
-          异常包括执行失败、业务结果为 WARN / FAIL / UNKNOWN、证据待齐或不完整。
-        </p>
-        {policy.mode === 'exceptions' && (
-          <label className='flex items-center gap-2 text-body'>
-            <input
-              type='checkbox'
-              checked={policy.includeCancelled}
-              onChange={(e) =>
-                setPolicy({ ...policy, includeCancelled: e.target.checked })
+            <Select
+              value={policy.mode}
+              onValueChange={(value) =>
+                setPolicy({
+                  ...policy,
+                  mode: value as NotificationPolicy['mode'],
+                })
               }
-            />
-            取消运行也通知
-          </label>
-        )}
-        <fieldset className='space-y-2'>
-          <legend className='mb-2 text-label font-medium'>运行来源</legend>
-          {(['console', 'service'] as const).map((source) => (
-            <label key={source} className='mr-4 inline-flex gap-2 text-body'>
-              <input
-                type='checkbox'
-                checked={policy.sourceKinds.includes(source)}
-                onChange={(e) =>
-                  setPolicy({
-                    ...policy,
-                    sourceKinds: e.target.checked
-                      ? [...policy.sourceKinds, source]
-                      : policy.sourceKinds.filter((v) => v !== source),
-                  })
+            >
+              <SelectTrigger className='w-full sm:w-64' aria-label='通知触发条件'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='exceptions'>仅异常结果（推荐）</SelectItem>
+                <SelectItem value='all_finished'>每次运行结束（含成功）</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+
+          {policy.mode === 'exceptions' && (
+            <label className='flex items-center gap-2 text-body'>
+              <Checkbox
+                checked={policy.includeCancelled}
+                onCheckedChange={(checked) =>
+                  setPolicy({ ...policy, includeCancelled: Boolean(checked) })
                 }
               />
-              {source === 'console' ? '控制台运行' : '开放服务运行'}
+              <span>用户或系统取消运行也发送通知</span>
             </label>
-          ))}
-        </fieldset>
-        <fieldset className='space-y-2'>
-          <legend className='mb-2 text-label font-medium'>发送渠道</legend>
-          {channels.data?.channels
-            .filter((c) => c.format === 'cairn.notification@1')
-            .map((c) => (
-              <label key={c.id} className='flex items-center gap-2 text-body'>
-                <input
-                  type='checkbox'
-                  checked={policy.channelIds.includes(c.id)}
-                  disabled={
-                    (!c.enabled || c.revoked) &&
-                    !policy.channelIds.includes(c.id)
-                  }
-                  onChange={(e) =>
+          )}
+        </div>
+
+        <div className='space-y-2 border-t border-border-divider pt-4'>
+          <p className='text-label font-medium text-text-primary'>运行来源范围</p>
+          <div className='flex flex-wrap gap-6'>
+            {(['console', 'service'] as const).map((source) => (
+              <label key={source} className='flex items-center gap-2 text-body'>
+                <Checkbox
+                  checked={policy.sourceKinds.includes(source)}
+                  onCheckedChange={(checked) =>
                     setPolicy({
                       ...policy,
-                      channelIds: e.target.checked
-                        ? [...policy.channelIds, c.id]
-                        : policy.channelIds.filter((id) => id !== c.id),
+                      sourceKinds: checked
+                        ? [...policy.sourceKinds, source]
+                        : policy.sourceKinds.filter((v) => v !== source),
                     })
                   }
                 />
-                {c.name} · {c.kind === 'email' ? '邮件' : 'Webhook'}
-                {c.revoked ? '（版本已撤销）' : !c.enabled ? '（已停用）' : ''}
+                <span>
+                  {source === 'console' ? '控制台运行' : '开放服务运行'}
+                </span>
               </label>
             ))}
-          {!channels.data?.channels.length && (
+          </div>
+        </div>
+
+        <div className='space-y-3 border-t border-border-divider pt-4'>
+          <div>
+            <p className='text-label font-medium text-text-primary'>
+              已授权发送渠道
+            </p>
             <p className='text-label text-muted-foreground'>
-              此目标暂无授权渠道，请管理员在“通知渠道”中配置。
+              仅展示已获准用于此目标系统的标准通知渠道。
+            </p>
+          </div>
+
+          <div className='grid gap-3 sm:grid-cols-2'>
+            {channels.data?.channels
+              .filter((c) => c.format === 'cairn.notification@1')
+              .map((c) => (
+                <label
+                  key={c.id}
+                  className='flex cursor-pointer items-start gap-3 rounded-lg border border-border-card bg-surface-subtle p-3 hover:bg-card transition-colors'
+                >
+                  <Checkbox
+                    checked={policy.channelIds.includes(c.id)}
+                    disabled={
+                      (!c.enabled || c.revoked) &&
+                      !policy.channelIds.includes(c.id)
+                    }
+                    onCheckedChange={(checked) =>
+                      setPolicy({
+                        ...policy,
+                        channelIds: checked
+                          ? [...policy.channelIds, c.id]
+                          : policy.channelIds.filter((id) => id !== c.id),
+                      })
+                    }
+                  />
+                  <div className='min-w-0 flex-1'>
+                    <div className='flex items-center gap-1.5'>
+                      {c.kind === 'email' ? (
+                        <Mail className='size-3.5 text-primary shrink-0' />
+                      ) : (
+                        <Webhook className='size-3.5 text-primary shrink-0' />
+                      )}
+                      <span className='truncate font-medium text-text-primary text-body'>
+                        {c.name}
+                      </span>
+                    </div>
+                    <p className='mt-0.5 text-label text-muted-foreground'>
+                      {c.kind === 'email'
+                        ? `${c.recipientCount} 位收件人`
+                        : c.host}
+                      {c.revoked
+                        ? ' · 版本已撤销'
+                        : !c.enabled
+                          ? ' · 已停用'
+                          : ''}
+                    </p>
+                  </div>
+                </label>
+              ))}
+          </div>
+
+          {!channels.data?.channels.length && (
+            <p className='rounded-md bg-surface-subtle p-3 text-label text-muted-foreground'>
+              此目标系统暂无已授权渠道，请联系管理员在“通知渠道”中配置并授予该目标的发送权限。
             </p>
           )}
+
           {policy.channelIds
             .filter((id) => !channels.data?.channels.some((c) => c.id === id))
             .map((id) => (
-              <label key={id} className='flex gap-2 text-label'>
-                <input
-                  type='checkbox'
+              <label key={id} className='flex items-center gap-2 text-label text-destructive'>
+                <Checkbox
                   checked
-                  onChange={() =>
+                  onCheckedChange={() =>
                     setPolicy({
                       ...policy,
                       channelIds: policy.channelIds.filter((v) => v !== id),
                     })
                   }
                 />
-                已不可用的原渠道（取消选择以移除）
+                <span>已不可用的原渠道（取消勾选以移除）</span>
               </label>
             ))}
-        </fieldset>
-        <label className='flex items-start gap-2 text-body'>
-          <input
-            type='checkbox'
-            checked={cancelPrevious}
-            onChange={(e) => setCancelPrevious(e.target.checked)}
-          />
-          同时停止历史运行尚未提交的通知（包括正在执行的运行）
-        </label>
-        <Field label='变更原因'>
-          <Input
-            required
-            value={reason}
-            maxLength={512}
-            onChange={(e) => setReason(e.target.value)}
-          />
-        </Field>
+        </div>
+
+        <div className='border-t border-border-divider pt-4 space-y-3'>
+          <label className='flex items-start gap-2 text-body'>
+            <Checkbox
+              checked={cancelPrevious}
+              onCheckedChange={(checked) => setCancelPrevious(Boolean(checked))}
+            />
+            <span>
+              同时停止此前运行尚未提交的通知（包括正在执行中的运行）
+            </span>
+          </label>
+
+          <Field label='变更原因'>
+            <Input
+              required
+              value={reason}
+              maxLength={512}
+              placeholder='填写修改原因以供审计'
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </Field>
+        </div>
       </fieldset>
+
       <Failure message={error || channels.error?.message} />
-      {canWrite && (
-        <Button type='submit' disabled={busy}>
-          保存结果通知
+
+      <div className='flex flex-wrap items-center gap-3 pt-2'>
+        {canWrite && (
+          <Button type='submit' disabled={busy}>
+            保存场景通知策略
+          </Button>
+        )}
+        <Button variant='outline' asChild>
+          <Link to='/scenarios/$scenarioId' params={{ scenarioId }}>
+            <ExternalLink className='size-3.5' />
+            前往场景详情
+          </Link>
         </Button>
-      )}
-      <Button className='ml-2' variant='outline' asChild>
-        <Link to='/scenarios/$scenarioId' params={{ scenarioId }}>
-          查看场景
-        </Link>
-      </Button>
+      </div>
     </form>
   )
 }
+
 export function NotificationAlertRules() {
   const rules = useQuery({
     queryKey: ['notification-alert-rules'],
@@ -319,8 +445,15 @@ export function NotificationAlertRules() {
     queryFn: () => fetchNotificationChannels(),
     enabled: canConfig,
   })
+
   if (rules.error) return <Failure message={rules.error.message} />
-  if (!rules.data) return <p role='status'>正在加载告警规则…</p>
+  if (!rules.data)
+    return (
+      <div className='p-8 text-center text-body text-muted-foreground'>
+        正在加载告警规则…
+      </div>
+    )
+
   return (
     <AlertRulesForm
       key={`${rules.data.revision}:${channels.data?.revision}`}
@@ -331,6 +464,7 @@ export function NotificationAlertRules() {
     />
   )
 }
+
 function AlertRulesForm({
   rules,
   channels,
@@ -349,6 +483,7 @@ function AlertRulesForm({
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     client = useQueryClient()
+
   async function save(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -368,12 +503,25 @@ function AlertRulesForm({
       setBusy(false)
     }
   }
+
   return (
     <FormProvider {...form}>
-      <form onSubmit={(e) => void save(e)} className='space-y-4'>
-        <p className='text-body text-muted-foreground'>
-          复用平台监控的告警规则；触发、依据中断和恢复各自留下通知记录。
-        </p>
+      <form
+        onSubmit={(e) => void save(e)}
+        className='space-y-5 rounded-lg border border-border-card bg-card p-6 shadow-card'
+      >
+        <div className='flex items-center gap-2 border-b border-border-divider pb-3'>
+          <AlertTriangle className='size-4 text-status-warning-foreground' />
+          <div>
+            <h2 className='font-semibold text-text-primary text-section'>
+              监控告警规则通知
+            </h2>
+            <p className='text-label text-muted-foreground'>
+              复用监控的告警规则；触发、依据中断和恢复各自留下通知记录。
+            </p>
+          </div>
+        </div>
+
         <AlertingFields
           hideChannels
           canWrite={canWrite}
@@ -382,13 +530,16 @@ function AlertRulesForm({
           busy={busy}
           onRegistered={async () => undefined}
         />
+
         <Failure message={error} />
+
         {canWrite && (
-          <>
+          <div className='border-t border-border-divider pt-4 space-y-3'>
             <Field label='变更原因'>
               <Input
                 required
                 maxLength={512}
+                placeholder='填写修改原因以供审计'
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
               />
@@ -396,7 +547,7 @@ function AlertRulesForm({
             <Button disabled={busy} type='submit'>
               保存告警规则
             </Button>
-          </>
+          </div>
         )}
       </form>
     </FormProvider>

@@ -326,7 +326,7 @@ export function ServiceWebhookPanel({
                         <div className='font-medium'>
                           {EVENT_LABELS[delivery.eventType]}
                         </div>
-                        <code className='mt-1 block max-w-56 truncate text-xs text-muted-foreground'>
+                        <code className='mt-1 block max-w-56 truncate text-label text-muted-foreground'>
                           {delivery.runId}
                         </code>
                       </TableCell>
@@ -353,7 +353,7 @@ export function ServiceWebhookPanel({
                             <summary className='cursor-pointer text-small text-muted-foreground'>
                               查看响应摘要
                             </summary>
-                            <pre className='mt-1 max-h-28 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap'>
+                            <pre className='mt-1 max-h-28 overflow-auto rounded bg-muted p-2 text-label whitespace-pre-wrap'>
                               {delivery.lastResponseBody}
                             </pre>
                           </details>

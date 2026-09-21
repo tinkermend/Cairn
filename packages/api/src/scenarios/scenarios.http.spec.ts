@@ -86,6 +86,7 @@ function mockService() {
       executableStepTypes: ['echo', 'navigate'],
       unavailableReasons: [{ type: 'ai_action', code: 'AI_DISABLED', message: 'off' }],
     })),
+    resolutionStats: vi.fn(async () => ({ items: [] })),
     createRecordingBinding: vi.fn(async () => ({ binding: { id: 'bind-1' }, ticket: 't'.repeat(64) })),
     listRecordingImports: vi.fn(async () => ({ bindings: [], drafts: [], receipts: [] })),
     previewRecordingImport: vi.fn(async () => ({ items: [] })),
@@ -150,6 +151,12 @@ describe('Scenarios HTTP', () => {
     await request(viewerApp.getHttpServer()).get('/scenarios/capabilities').expect(200)
     expect(service.capabilities).toHaveBeenCalled()
     expect(service.get).not.toHaveBeenCalled()
+  })
+
+  it('解析统计需要 workflow/run/target 读权限', async () => {
+    await request(adminApp.getHttpServer()).get(`/scenarios/${scenario.id}/resolution-stats`).expect(200)
+    expect(service.resolutionStats).toHaveBeenCalledWith(scenario.id, {})
+    await request(viewerApp.getHttpServer()).get(`/scenarios/${scenario.id}/resolution-stats`).expect(403)
   })
 
   it('无 workflow:write 不能新建', async () => {

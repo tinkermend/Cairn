@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   runPlacement,
   scenarioCapabilitiesFor,
+  WAIT_KINDS_AVAILABLE_NOW,
   type RunDetailDto,
   type RunObservation,
   type ScenarioCapabilities,
@@ -116,6 +117,27 @@ const document = {
       type: 'navigate' as const,
       effectType: 'SIDE_EFFECT' as const,
       input: { url: 'https://shop.example.com' },
+    },
+  ],
+}
+
+const preferDetClick = {
+  schemaVersion: 1 as const,
+  inputs: [] as { key: string; label: string }[],
+  steps: [
+    {
+      id: STEP_ID,
+      name: '点击提交查询',
+      type: 'click' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      input: {
+        target: {
+          framePath: [],
+          semantic: '蓝色按钮提交查询',
+          candidates: [{ by: 'css' as const, value: '#gone-蓝色按钮提交查询' }],
+        },
+      },
+      policy: { resolution: 'prefer_deterministic' as const },
     },
   ],
 }
@@ -493,6 +515,31 @@ describe('Scenario Studio', () => {
     await expect
       .element(screen.getByRole('button', { name: '保存草稿' }))
       .toBeInTheDocument()
+  })
+
+  it('显式规则优先在平台上限关闭时提示降为仅规则', async () => {
+    mocks.fetchScenario.mockResolvedValue(detail({ draft: { revision: 1, document: preferDetClick, updatedAt: '2026-09-13T00:00:00.000Z', updatedBy: { id: 'acc-1', displayName: '测试' } }, steps: preferDetClick.steps }))
+    const { screen } = await renderPage()
+    await expect.element(screen.getByText(/解析策略已被平台或目标系统上限降为仅规则/)).toBeInTheDocument()
+  })
+
+  it('平台开放 AI 定位时不把规则优先误报成仅规则', async () => {
+    mocks.fetchScenarioCapabilities.mockResolvedValue(
+      scenarioCapabilitiesFor({
+        browserAiEnabled: true,
+        resolution: {
+          ceiling: 'prefer_deterministic',
+          default: 'prefer_deterministic',
+          aiRungAvailable: true,
+          reasons: [],
+          waitKindsAvailable: [...WAIT_KINDS_AVAILABLE_NOW],
+        },
+      }),
+    )
+    mocks.fetchScenario.mockResolvedValue(detail({ draft: { revision: 1, document: preferDetClick, updatedAt: '2026-09-13T00:00:00.000Z', updatedBy: { id: 'acc-1', displayName: '测试' } }, steps: preferDetClick.steps }))
+    const { screen } = await renderPage()
+    await expect.element(screen.getByRole('heading', { name: '点击提交查询' })).toBeInTheDocument()
+    await expect.element(screen.getByText(/解析策略已被平台或目标系统上限降为仅规则/)).not.toBeInTheDocument()
   })
 
   it('上移下移会改顺序', async () => {

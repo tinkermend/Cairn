@@ -1,16 +1,21 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req, Res } from '@nestjs/common'
+import type { Request, Response } from 'express'
 import {
   scheduleEnabledBodySchema,
   scheduleEventListQuerySchema,
   scheduleListQuerySchema,
   scheduleOccurrenceListQuerySchema,
+  schedulePreviewQuerySchema,
   schedulePreviewRequestSchema,
+  scheduleTriggerBodySchema,
   scheduleWriteBodySchema,
   type ScheduleEnabledBody,
   type ScheduleEventListQuery,
   type ScheduleListQuery,
   type ScheduleOccurrenceListQuery,
+  type SchedulePreviewQuery,
   type SchedulePreviewRequest,
+  type ScheduleTriggerBody,
   type ScheduleWriteBody,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
@@ -29,9 +34,15 @@ export class SchedulesController {
     return this.schedules.list(query, account.id)
   }
 
+  @Get('preview')
+  @RequirePermissions('schedule:read')
+  previewGet(@Query(new ZodValidationPipe(schedulePreviewQuerySchema)) query: SchedulePreviewQuery) {
+    return this.schedules.previewQuery(query)
+  }
+
   @Post()
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('schedule:write', 'map:maintain')
+  @RequirePermissions('schedule:write')
   create(
     @Body(new ZodValidationPipe(scheduleWriteBodySchema)) body: ScheduleWriteBody,
     @CurrentAccount() account: RequestAccount,
@@ -54,7 +65,7 @@ export class SchedulesController {
 
   @Post(':scheduleId')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('schedule:write', 'map:maintain')
+  @RequirePermissions('schedule:write')
   update(
     @Param('scheduleId') scheduleId: string,
     @Body(new ZodValidationPipe(scheduleWriteBodySchema)) body: ScheduleWriteBody,
@@ -65,13 +76,24 @@ export class SchedulesController {
 
   @Post(':scheduleId/enabled')
   @HttpCode(HttpStatus.OK)
-  @RequirePermissions('schedule:write', 'map:maintain')
+  @RequirePermissions('schedule:write')
   enabled(
     @Param('scheduleId') scheduleId: string,
     @Body(new ZodValidationPipe(scheduleEnabledBodySchema)) body: ScheduleEnabledBody,
     @CurrentAccount() account: RequestAccount,
   ) {
     return this.schedules.enabled(scheduleId, body, account)
+  }
+
+  @Post(':scheduleId/trigger')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('schedule:write')
+  trigger(
+    @Param('scheduleId') scheduleId: string,
+    @Body(new ZodValidationPipe(scheduleTriggerBodySchema)) body: ScheduleTriggerBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.schedules.trigger(scheduleId, body, account)
   }
 
   @Get(':scheduleId/occurrences')
@@ -90,5 +112,17 @@ export class SchedulesController {
     @Query(new ZodValidationPipe(scheduleEventListQuerySchema)) query: ScheduleEventListQuery,
   ) {
     return this.schedules.events(scheduleId, query)
+  }
+
+  @Get(':scheduleId/observe')
+  @RequirePermissions('schedule:read')
+  observe(
+    @Param('scheduleId') scheduleId: string,
+    @CurrentAccount() account: RequestAccount,
+    @Req() req: Request,
+    @Res() res: Response,
+    @Query('after') after?: string,
+  ) {
+    return this.schedules.observe(scheduleId, account.id, req, res, Number(after ?? 0) || 0)
   }
 }

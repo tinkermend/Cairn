@@ -246,7 +246,7 @@ export function createBlankStep(
         name,
         type,
         effectType: 'READ_ONLY' as const,
-        input: { kind: 'time', durationMs: 1000 },
+        input: { kind: 'visible', target: defaultTarget('结果') },
       }
   }
 }

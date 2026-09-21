@@ -79,6 +79,7 @@ function mockService() {
     createTarget: vi.fn(async () => target),
     updateTarget: vi.fn(async () => target),
     updateSessionPolicy: vi.fn(async () => target),
+    updateResolutionPolicy: vi.fn(async () => target),
     previewDeleteTarget: vi.fn(async () => ({
       resourceId: target.id,
       resourceType: 'target' as const,
@@ -512,6 +513,22 @@ describe('Targets HTTP', () => {
     await request(viewerApp.getHttpServer())
       .post(`/targets/${target.id}/session-policy`)
       .send({ reclaim: 'IDLE' })
+      .expect(403)
+  })
+
+  it('POST /targets/:id/resolution-policy 写入目标解析策略', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/resolution-policy`)
+      .send({ preference: 'prefer_deterministic' })
+      .expect(200)
+    expect(service.updateResolutionPolicy).toHaveBeenCalledWith(
+      target.id,
+      { preference: 'prefer_deterministic' },
+      expect.anything(),
+    )
+    await request(viewerApp.getHttpServer())
+      .post(`/targets/${target.id}/resolution-policy`)
+      .send({ ceiling: 'deterministic_only' })
       .expect(403)
   })
 })

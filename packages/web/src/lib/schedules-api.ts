@@ -1,26 +1,32 @@
 import {
+  analysisJobDtoSchema,
   scheduleDtoSchema,
   scheduleEventListResponseSchema,
   scheduleListResponseSchema,
   scheduleOccurrenceListResponseSchema,
   schedulePreviewResponseSchema,
+  scheduleTriggerResponseSchema,
   scheduleWriteResponseSchema,
   type ScheduleEnabledBody,
   type ScheduleEventListQuery,
+  type ScheduleListQuery,
   type ScheduleOccurrenceListQuery,
+  type SchedulePreviewQuery,
   type SchedulePreviewRequest,
+  type ScheduleTriggerBody,
   type ScheduleWriteBody,
 } from '@cairn/shared'
 import { apiFetch, toQueryString } from '@/lib/api-client'
 
-export function fetchSchedules(
-  query: {
-    targetId?: string
-    enabled?: boolean
-    cursor?: string
-    limit?: number
-  } = {},
-) {
+export function fetchAnalysisJob(jobId: string) {
+  return apiFetch(`/api/analysis-jobs/${jobId}`, analysisJobDtoSchema)
+}
+
+export function cancelAnalysisJob(jobId: string) {
+  return apiFetch(`/api/analysis-jobs/${jobId}/cancel`, analysisJobDtoSchema, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idempotencyKey: `cancel-analysis-${jobId}-${Date.now()}` }) })
+}
+
+export function fetchSchedules(query: Partial<ScheduleListQuery> = {}) {
   return apiFetch(`/api/schedules${toQueryString(query)}`, scheduleListResponseSchema)
 }
 
@@ -52,12 +58,24 @@ export function setScheduleEnabled(scheduleId: string, body: ScheduleEnabledBody
   })
 }
 
+export function triggerSchedule(scheduleId: string, body: ScheduleTriggerBody) {
+  return apiFetch(`/api/schedules/${scheduleId}/trigger`, scheduleTriggerResponseSchema, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
 export function previewSchedule(body: SchedulePreviewRequest) {
   return apiFetch('/api/schedules/preview', schedulePreviewResponseSchema, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
+}
+
+export function previewScheduleWindows(query: SchedulePreviewQuery) {
+  return apiFetch(`/api/schedules/preview${toQueryString(query)}`, schedulePreviewResponseSchema)
 }
 
 export function fetchScheduleOccurrences(scheduleId: string, query: Partial<ScheduleOccurrenceListQuery> = {}) {

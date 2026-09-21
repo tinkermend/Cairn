@@ -52,7 +52,7 @@ pnpm infra:down          # 停容器，保留 .data
 API ──HTTPS + HMAC──► 每 Worker 专用 TLS 入口 ──同机 loopback HTTP──► Worker
 ```
 
-本机默认 `CAIRN_WORKER_NETWORK_MODE=local`，可不设 `CAIRN_WORKER_ADVERTISE_URL`，API 可用 `CAIRN_WORKER_ENDPOINTS` 回退到 `127.0.0.1`。跨机或跨容器网络必须 `distributed`：每个 Worker 设唯一 `CAIRN_WORKER_ID` 与非 loopback 的 `CAIRN_WORKER_ADVERTISE_URL=https://...`，Worker 进程仍只监听 `127.0.0.1:$CAIRN_WORKER_INTERNAL_PORT`。同机或同网络命名空间的 TLS 代理把该 HTTPS 转到 loopback；不要在 TLS 终止后再跨网络明文转发。
+Worker 启动后向数据库自注册其内部通信地址（`internalBaseUrl`）。跨机、跨容器网络或经由反向代理时，可显式设置 `CAIRN_WORKER_ADVERTISE_URL`（支持 HTTP 与 HTTPS，由具体部署架构与用户需求自主决定），API 将始终以数据库自注册记录作为动态路由与反向寻址的事实源。Worker 进程默认监听 `127.0.0.1:$CAIRN_WORKER_INTERNAL_PORT`。
 
 代理须保留内部签名头和原始请求体，关闭 SSE 缓冲，超时不短于连接 3s / 响应头 10s / 认证 POST 30s。不要把多个 Worker 随机负载均衡到同一个广告 origin，也不要关闭证书校验。HMAC 密钥继续走 `CAIRN_INTERNAL_AUTH_SECRET`，不要写进广告 URL。
 

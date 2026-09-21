@@ -51,26 +51,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
        WHERE table_schema = $1 AND table_name = 'recording_drafts' ORDER BY column_name`,
       [TEST_SCHEMA],
     )
-    expect(rows).toEqual([
-      { column_name: 'created_at', is_nullable: 'NO' },
-      { column_name: 'created_by_console_account_id', is_nullable: 'NO' },
-      { column_name: 'deleted_at', is_nullable: 'YES' },
-      { column_name: 'deleted_by', is_nullable: 'YES' },
-      { column_name: 'diagnostics', is_nullable: 'NO' },
-      { column_name: 'event_count', is_nullable: 'NO' },
-      { column_name: 'events', is_nullable: 'NO' },
-      { column_name: 'id', is_nullable: 'NO' },
-      { column_name: 'idempotency_key', is_nullable: 'NO' },
-      { column_name: 'item_count', is_nullable: 'NO' },
-      { column_name: 'items', is_nullable: 'NO' },
-      { column_name: 'name', is_nullable: 'NO' },
-      { column_name: 'payload_digest', is_nullable: 'NO' },
-      { column_name: 'recording_id', is_nullable: 'NO' },
-      { column_name: 'source_version', is_nullable: 'NO' },
-      { column_name: 'target_id', is_nullable: 'NO' },
-      { column_name: 'unresolved_count', is_nullable: 'NO' },
-      { column_name: 'updated_at', is_nullable: 'NO' },
-    ])
+    expect(rows).toEqual(Object.values(getTableColumns(logicalSchema.recordingDrafts)).map(c => ({ column_name: c.name, is_nullable: c.notNull ? 'NO' : 'YES' })).sort((a, b) => a.column_name.localeCompare(b.column_name)))
   })
 
   it('map_projections 的列与 Drizzle 定义一致', async () => {
@@ -239,24 +220,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
        WHERE table_schema = $1 AND table_name = 'targets' ORDER BY column_name`,
       [TEST_SCHEMA],
     )
-    expect(rows).toEqual([
-      { column_name: 'auth_method', is_nullable: 'NO' },
-      { column_name: 'captcha', is_nullable: 'YES' },
-      { column_name: 'captcha_mode', is_nullable: 'NO' },
-      { column_name: 'code', is_nullable: 'NO' },
-      { column_name: 'created_at', is_nullable: 'NO' },
-      { column_name: 'current_auth_profile_revision', is_nullable: 'YES' },
-      { column_name: 'deleted_at', is_nullable: 'YES' },
-      { column_name: 'deleted_by', is_nullable: 'YES' },
-      { column_name: 'entry_url', is_nullable: 'NO' },
-      { column_name: 'id', is_nullable: 'NO' },
-      { column_name: 'login_fields', is_nullable: 'YES' },
-      { column_name: 'login_url', is_nullable: 'YES' },
-      { column_name: 'name', is_nullable: 'NO' },
-      { column_name: 'session_policy', is_nullable: 'YES' },
-      { column_name: 'status', is_nullable: 'NO' },
-      { column_name: 'updated_at', is_nullable: 'NO' },
-    ])
+    expect(rows).toEqual(Object.values(getTableColumns(logicalSchema.targets)).map(c => ({ column_name: c.name, is_nullable: c.notNull ? 'NO' : 'YES' })).sort((a, b) => a.column_name.localeCompare(b.column_name)))
   })
 
   it('secrets 的列与 Drizzle 定义一致', async () => {
@@ -280,21 +244,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
        WHERE table_schema = $1 AND table_name = 'target_accounts' ORDER BY column_name`,
       [TEST_SCHEMA],
     )
-    expect(rows).toEqual([
-      { column_name: 'config_revision', is_nullable: 'NO' },
-      { column_name: 'created_at', is_nullable: 'NO' },
-      { column_name: 'deleted_at', is_nullable: 'YES' },
-      { column_name: 'deleted_by', is_nullable: 'YES' },
-      { column_name: 'display_name', is_nullable: 'NO' },
-      { column_name: 'expected_identity', is_nullable: 'YES' },
-      { column_name: 'id', is_nullable: 'NO' },
-      { column_name: 'secret_id', is_nullable: 'YES' },
-      { column_name: 'secret_provider', is_nullable: 'YES' },
-      { column_name: 'status', is_nullable: 'NO' },
-      { column_name: 'target_id', is_nullable: 'NO' },
-      { column_name: 'updated_at', is_nullable: 'NO' },
-      { column_name: 'username', is_nullable: 'NO' },
-    ])
+    expect(rows).toEqual(Object.values(getTableColumns(logicalSchema.targetAccounts)).map(c => ({ column_name: c.name, is_nullable: c.notNull ? 'NO' : 'YES' })).sort((a, b) => a.column_name.localeCompare(b.column_name)))
   })
 
   it('scenarios 的列与 Drizzle 定义一致', async () => {
@@ -558,24 +508,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
        WHERE table_schema = $1 AND table_name = 'workers' ORDER BY column_name`,
       [TEST_SCHEMA],
     )
-    expect(workerCols).toEqual([
-      { column_name: 'capacity', is_nullable: 'NO' },
-      { column_name: 'handle_mismatch_streak', is_nullable: 'NO' },
-      { column_name: 'heartbeat_at', is_nullable: 'NO' },
-      { column_name: 'heartbeat_expires_at', is_nullable: 'YES' },
-      { column_name: 'id', is_nullable: 'NO' },
-      { column_name: 'instance_id', is_nullable: 'NO' },
-      { column_name: 'internal_base_url', is_nullable: 'YES' },
-      { column_name: 'live_handle_count', is_nullable: 'YES' },
-      { column_name: 'lost_after_seconds', is_nullable: 'YES' },
-      { column_name: 'max_sessions', is_nullable: 'NO' },
-      { column_name: 'protocol_capabilities', is_nullable: 'NO' },
-      { column_name: 'sampled_slot_count', is_nullable: 'YES' },
-      { column_name: 'started_at', is_nullable: 'NO' },
-      { column_name: 'status', is_nullable: 'NO' },
-      { column_name: 'stopped_at', is_nullable: 'YES' },
-      { column_name: 'updated_at', is_nullable: 'NO' },
-    ])
+    expect(workerCols).toEqual(Object.values(getTableColumns(logicalSchema.workers)).map(c => ({ column_name: c.name, is_nullable: c.notNull ? 'NO' : 'YES' })).sort((a, b) => a.column_name.localeCompare(b.column_name)))
 
     const { rows: workerChecks } = await pool.query<{ conname: string }>(
       `SELECT c.conname
@@ -665,6 +598,15 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'runs.suite_member_id',
       'suite_run_items.member_id',
       'suite_run_items.group_id',
+      // 运行监控：标识是稳定字面量或外部给定的字符串，不是库内生成的 UUID。
+      'api_instances.id', // CAIRN_API_ID 可自定义，且 id_source 记录来源（0062）
+      'monitor_samples.scope_id', // 平台级取 PLATFORM_SCOPE_ID 字面量，Worker 级取 worker id（文本）
+      'monitoring_alerts.scope_id', // 同上
+      'monitoring_alerts.rule_id', // 告警规则 id 是稳定字面量，如 factory.worker.lost
+      'schedule_occurrences.rule_id', // 同上，来自告警/调度规则的稳定标识（0084）
+      // 客户端与外部请求给定的标识。
+      'recording_artifacts.client_asset_id', // 浏览器扩展端自生成的素材标识，varchar(128)（0067）
+      'service_request_logs.request_id', // HTTP 请求 id，与 console_audit_events / run_events 同类（0080）
     ])
     const { rows } = await pool.query<{ table_name: string; column_name: string; data_type: string }>(
       `SELECT table_name, column_name, data_type FROM information_schema.columns
@@ -688,7 +630,9 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
           (r) =>
             workerIdColumns.has(r.column_name) || textIdExceptions.has(`${r.table_name}.${r.column_name}`),
         )
-        .every((r) => r.data_type === 'text'),
+        // 例外只能是文本类（text / varchar），防止把 uuid 列悄悄登记成例外。
+        // varchar 用于需要长度上限的客户端给定标识（如 recording_artifacts.client_asset_id）。
+        .every((r) => r.data_type === 'text' || r.data_type === 'character varying'),
     ).toBe(true)
   })
 
@@ -706,7 +650,17 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     expect(rows.length).toBeGreaterThan(0)
     // session_id → browser_sessions：领域名用 session 而非 browser_session
     // target_id → target_accounts：复合外键 (target_account_id, target_id) 的第二列
+    // 单数形：deliveries→delivery（ies→y），其余去掉一个尾部 s。
+    // 不规则复数在规则里处理，不进例外表——否则每张 *_ies 表都要单独登记。
+    const singularOf = (table: string) => (table.endsWith('ies') ? `${table.slice(0, -3)}y` : table.replace(/s$/, ''))
     const allowed = new Set([
+      // 领域内的短名指向带域前缀的长表名：
+      'webhook_id→service_webhooks', // service 域内的 webhook（0082）
+      'profile_id→report_profiles', // 报告域内的 profile（0081）
+      'artifact_id→recording_artifacts', // 录制域内的 artifact（0067）
+      'job_id→analysis_jobs', // 分析域内的 job（0084）
+      'occurrence_id→schedule_occurrences', // 调度域内的 occurrence（0084）
+      'source_object_id→stored_objects', // 「来源对象」，限定词在前（0081），同 object_id→stored_objects
       'session_id→browser_sessions',
       'target_id→target_accounts',
       'object_id→stored_objects',
@@ -758,7 +712,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     const violations = rows.filter((r) => {
       if (!r.column_name.endsWith('_id')) return false
       if (allowed.has(`${r.column_name}→${r.referenced}`)) return false
-      return !r.column_name.endsWith(`${r.referenced.replace(/s$/, '')}_id`)
+      return !r.column_name.endsWith(`${singularOf(r.referenced)}_id`)
     })
     expect(violations).toEqual([])
   })

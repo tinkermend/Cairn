@@ -32,7 +32,14 @@ import {
   type FormalAgentHandle,
 } from './midscene/formal-agent.js'
 import type { OpenAiLike } from './midscene/model-client.js'
-import { AI_PORT, type AiPort } from '../engine/ports.js'
+import { AI_PORT, type AiLocateResult, type AiPort } from '../engine/ports.js'
+import {
+  createDirectOpenAiClient,
+  isAriaBranchAdmitted,
+  tryAriaAssertBranch,
+  tryAriaExtractBranch,
+  type AriaBranchExecutionResult,
+} from './aria-tree-branch.js'
 
 export { AI_PORT }
 
@@ -58,6 +65,62 @@ export function createAiPort(input: {
           const pagesBefore = new Set(page.context().pages())
           const apiKey = await input.resolveApiKey(evidence.config)
           await validateBrowserAiModelFamily(evidence.config.modelFamily)
+
+          // 阶段 B 语义树优先分支（PAS-3）：全部准入条件满足时优先尝试无图文本分析
+          const admission = isAriaBranchAdmitted({
+            command,
+            preferAriaTree: evidence.config.preferAriaTree,
+            hasSensitiveSelectors: (evidence.sensitiveSelectors?.length ?? 0) > 0,
+          })
+
+          if (admission.admitted) {
+            const budgetClient = createBudgetClient({
+              handle: input.handle,
+              grant: evidence.grant,
+              sessionGrant: grant,
+              evidence,
+              command,
+              signal,
+              gate,
+              inner: createDirectOpenAiClient({
+                baseUrl: evidence.config.modelBaseUrl,
+                apiKey,
+              }),
+              route: 'aria_text',
+            })
+
+            let ariaBranchResult: AriaBranchExecutionResult | undefined
+            if (command.type === 'ai_assert') {
+              ariaBranchResult = await tryAriaAssertBranch({
+                page,
+                command,
+                client: budgetClient,
+                modelName: evidence.config.modelName,
+                modelFamily: evidence.config.modelFamily,
+                timeoutMs: evidence.config.requestTimeoutMs,
+                signal,
+              })
+            } else if (command.type === 'ai_extract') {
+              ariaBranchResult = await tryAriaExtractBranch({
+                page,
+                command,
+                client: budgetClient,
+                modelName: evidence.config.modelName,
+                modelFamily: evidence.config.modelFamily,
+                timeoutMs: evidence.config.requestTimeoutMs,
+                signal,
+              })
+            }
+
+            if (ariaBranchResult?.handled && ariaBranchResult.result) {
+              return await settleAiCommand(page, pagesBefore, command, ariaBranchResult.result)
+            }
+
+            aiLogger.log(
+              `[AriaTreeBranch] 回退到视觉路径: ${ariaBranchResult?.fallbackReason ?? '未知原因'} (runId=${evidence.runId}, stepRunId=${evidence.stepRunId})`,
+            )
+          }
+
           const agent = await createFormalMidsceneAgent({
             page,
             gate,
@@ -71,6 +134,7 @@ export function createAiPort(input: {
                 signal,
                 gate,
                 inner,
+                route: 'vision',
               }),
             modelConfig: midsceneModelConfig({ config: evidence.config, apiKey }),
             readonly: command.type !== 'ai_action',
@@ -147,6 +211,167 @@ export function createAiPort(input: {
       }
       return { ...scoped.value, screenshot, trace }
     },
+    async locate(grant, locateInput, signal, evidence) {
+      const gate = createStepGate(input.manager, grant, signal)
+      const callNs: number[] = []
+      const command = {
+        type: 'ai_extract',
+        instruction: locateInput.prompt,
+        allowedOrigins: locateInput.allowedOrigins,
+        loginOrigin: locateInput.loginOrigin,
+        loginPath: locateInput.loginPath,
+        maxCalls: evidence.maxCalls,
+        maxOutputTokens: evidence.config.maxOutputTokens,
+        requestTimeoutMs: evidence.config.requestTimeoutMs,
+        hangWaitMs: evidence.config.hangWaitMs,
+      } as AiCommand
+      const scoped = await input.manager.withManagedPage(grant, evidence, async (page) => {
+        assertPageScope(page.url(), command, installedCompiledScope(page.context()))
+        const apiKey = await input.resolveApiKey(evidence.config)
+        await validateBrowserAiModelFamily(evidence.config.modelFamily)
+        const agent = await createFormalMidsceneAgent({
+          page,
+          gate,
+          wrapClient: (inner) =>
+            createBudgetClient({
+              handle: input.handle,
+              grant: evidence.grant,
+              sessionGrant: grant,
+              evidence,
+              command,
+              signal,
+              gate,
+              inner,
+              onReserved: (n) => {
+                callNs.push(n)
+              },
+            }),
+          modelConfig: midsceneModelConfig({ config: evidence.config, apiKey }),
+          readonly: true,
+        })
+        try {
+          const settled = await waitWithHang(
+            agent.aiLocate(locateInput.prompt, { deepLocate: locateInput.deepLocate }),
+            evidence.config.hangWaitMs,
+            signal,
+          )
+          if (!settled.done) {
+            gate.markLeaseLost()
+            return locateResultFromFailure({ hung: true, callNs })
+          }
+          if (!settled.ok) {
+            if (gate.leaseLost) {
+              return locateResultFromFailure({ error: leaseLostError(gate), callNs })
+            }
+            return locateResultFromFailure({ error: settled.error, callNs })
+          }
+          if (gate.leaseLost) {
+            return locateResultFromFailure({ error: leaseLostError(gate), callNs })
+          }
+          return { ok: true as const, center: settled.value.center, dpr: settled.value.dpr, callNs }
+        } finally {
+          await agent.destroy().catch(() => undefined)
+        }
+      })
+      if (!scoped.ok) {
+        return {
+          ok: false,
+          callNs,
+          summary: scoped.error.safeMessage,
+          error: scoped.error.code === 'SESSION_LEASE_LOST' ? leaseLostError(gate) : scoped.error,
+        }
+      }
+      return scoped.value
+    },
+  }
+}
+
+function budgetError() {
+  return {
+    code: 'AI_BUDGET_EXCEEDED',
+    category: 'VALIDATION' as const,
+    retryable: false,
+    safeMessage: '已超过本步骤模型调用预算',
+  }
+}
+
+export function locateResultFromFailure(input: {
+  hung?: boolean
+  error?: unknown
+  summary?: string
+  callNs?: number[]
+}): AiLocateResult {
+  const callNs = input.callNs ?? []
+  if (input.hung) {
+    return {
+      ok: false,
+      hung: true,
+      callNs,
+      summary: '模型调用在超时后仍未落定',
+      error: {
+        code: 'AI_HUNG',
+        category: 'UNKNOWN',
+        retryable: false,
+        safeMessage: 'AI 调用未落定，会话不可复用',
+      },
+    }
+  }
+  const raw = input.error
+  const code = raw && typeof raw === 'object' && 'code' in raw ? String(raw.code) : ''
+  if (code === 'AI_BUDGET_EXCEEDED' || code === 'BUDGET_EXHAUSTED') {
+    return { ok: false, callNs, summary: '已超过本步骤模型调用预算', error: budgetError() }
+  }
+  if (code === 'SESSION_LEASE_LOST' || code === 'LEASE_LOST') {
+    const error =
+      raw && typeof raw === 'object' && 'safeMessage' in raw
+        ? (raw as ExecutionError)
+        : ({
+            code: 'SESSION_LEASE_LOST',
+            category: 'INFRASTRUCTURE',
+            retryable: false,
+            safeMessage: '会话租约已失效',
+          } satisfies ExecutionError)
+    return { ok: false, callNs, summary: error.safeMessage, error }
+  }
+  if (raw instanceof Error && raw.message.startsWith('CAIRN_READONLY')) {
+    return {
+      ok: false,
+      callNs,
+      summary: '只读 AI 步骤拒绝动作通道',
+      error: {
+        code: 'AI_EXECUTION_FAILED',
+        category: 'VALIDATION',
+        retryable: false,
+        safeMessage: '只读 AI 步骤拒绝动作通道',
+      },
+    }
+  }
+  const summary =
+    input.summary ??
+    (raw instanceof Error ? raw.message : typeof raw === 'string' ? raw : 'AI 定位失败')
+  if (code === 'AI_NOT_FOUND') {
+    return {
+      ok: false,
+      callNs,
+      summary,
+      error: {
+        code: 'AI_NOT_FOUND',
+        category: 'EXECUTOR',
+        retryable: true,
+        safeMessage: summary.slice(0, 512),
+      },
+    }
+  }
+  return {
+    ok: false,
+    callNs,
+    summary,
+    error: {
+      code: 'AI_EXECUTION_FAILED',
+      category: 'EXECUTOR',
+      retryable: true,
+      safeMessage: summary.slice(0, 512),
+    },
   }
 }
 
@@ -190,6 +415,8 @@ function createBudgetClient(input: {
   signal: AbortSignal
   gate: ActionGate
   inner: OpenAiLike
+  onReserved?: (n: number) => void
+  route?: string
 }): OpenAiLike {
   return {
     chat: {
@@ -213,6 +440,7 @@ function createBudgetClient(input: {
             ;(error as { code?: string }).code = reserved.code
             throw error
           }
+          input.onReserved?.(reserved.n)
           const started = Date.now()
           try {
             const patched =
@@ -233,12 +461,14 @@ function createBudgetClient(input: {
               inputTokens,
               outputTokens,
               cost: null,
+              summary: input.route === 'aria_text' ? 'aria_text' : undefined,
             })
             emitAiModelCallLog(aiLogger, {
               runId: input.evidence.runId,
               stepRunId: input.evidence.stepRunId,
               attemptId: input.evidence.attemptId,
               model: input.evidence.model,
+              route: input.route ?? 'vision',
               durationMs,
               phase: 'completed',
               inputTokens,
@@ -255,12 +485,14 @@ function createBudgetClient(input: {
               model: input.evidence.model,
               durationMs,
               errorCode,
+              summary: input.route === 'aria_text' ? 'aria_text' : undefined,
             })
             emitAiModelCallLog(aiLogger, {
               runId: input.evidence.runId,
               stepRunId: input.evidence.stepRunId,
               attemptId: input.evidence.attemptId,
               model: input.evidence.model,
+              route: input.route ?? 'vision',
               durationMs,
               phase: 'failed',
               errorCode,

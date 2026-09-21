@@ -61,6 +61,33 @@ export type BrowserPort = {
     input: { kind: 'auto' | 'manual'; runGrant: RunGrant; snapshot: RunSnapshot; resuming?: boolean; signal?: AbortSignal },
   ): Promise<AuthRecoveryOutcome>
   probeErrorSurface?(grant: SessionGrant, signal?: AbortSignal): Promise<ErrorSurfaceNode[]>
+  bindResolvedFromPoint?(
+    grant: SessionGrant,
+    input: { center: [number, number]; dpr: number; token: string },
+    signal?: AbortSignal,
+  ): Promise<
+    | { ok: true; texts: string[]; tagName: string; suggestedCandidate?: import('@cairn/shared').LocatorCandidate }
+    | { ok: false; reason: 'AI_NOT_FOUND' | 'FRAME_UNSUPPORTED' | 'AI_AMBIGUOUS_POINT' | 'SURFACE_LOST'; message: string }
+  >
+  clearResolved?(grant: SessionGrant, token: string): Promise<void>
+}
+
+export type AiLocateInput = {
+  prompt: string
+  deepLocate?: boolean
+  allowedOrigins: string[]
+  loginOrigin?: string
+  loginPath?: string
+}
+
+export type AiLocateResult = {
+  ok: boolean
+  center?: [number, number]
+  dpr?: number
+  callNs?: number[]
+  summary?: string
+  hung?: boolean
+  error?: ExecutionError
 }
 
 export type AiPort = {
@@ -82,6 +109,17 @@ export type AiPort = {
       error?: ExecutionError
     }
   >
+  locate?(
+    grant: SessionGrant,
+    input: AiLocateInput,
+    signal: AbortSignal,
+    evidence: BrowserCommandEvidence & {
+      grant: RunGrant
+      maxCalls: number
+      model?: string
+      config: AiExecutionConfig
+    },
+  ): Promise<AiLocateResult>
 }
 
 export const AI_PORT = Symbol('AI_PORT')

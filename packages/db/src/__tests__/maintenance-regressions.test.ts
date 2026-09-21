@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { SESSION_MAINTENANCE_PROTOCOL, SESSION_OCCUPANCY_PROTOCOL } from '@cairn/shared'
-import { openContractDb } from './contract-fixture.js'
+import { openContractDb, grantAdminScope } from './contract-fixture.js'
 import { schemaFor } from '../native.js'
 import { newId } from '../id.js'
 import { forceGrantForRun } from './lease-harness.js'
@@ -29,15 +29,13 @@ let key: { targetId: string; targetAccountId: string }
 let actorId: string, workerId: string, instanceId: string
 beforeEach(async () => {
   h = await openContractDb('postgres')
-  const { consoleAccounts, targets, targetAccounts, consoleRoles, consoleAccountRoles } = schemaFor(h.db)
+  const { consoleAccounts, targets, targetAccounts } = schemaFor(h.db)
   actorId = newId()
   workerId = 'review-worker'
   instanceId = newId()
   key = { targetId: newId(), targetAccountId: newId() }
   await h.db.insert(consoleAccounts).values({ id: actorId, displayName: 'review', status: 'active' })
-  const [admin] = await h.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
-  if (!admin) throw new Error('missing admin role fixture')
-  await h.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin.id })
+  await grantAdminScope(h.db, actorId)
   await h.db
     .insert(targets)
     .values({

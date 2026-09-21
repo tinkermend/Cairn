@@ -72,7 +72,7 @@ export function SessionsPage() {
   return (
     <Main className="flex min-w-0 flex-1 flex-col gap-6">
         <PageHeader
-          title="浏览器会话"
+          title="浏览器"
           description="按目标系统查看会话健康度。进入系统后再维护各个账号。"
         />
         {!observation.connected && query.data ? (

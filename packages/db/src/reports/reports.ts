@@ -144,7 +144,7 @@ export async function assertReportSourceReadable(db: Db, subject: ReportSubject,
 
 export async function listReports(db: Db, query: Partial<ReportListQuery> = {}, actorId?: string) {
   const parsed = reportListQuerySchema.parse(query)
-  const { reports, reportRevisions, runs, suiteRunItems, suiteRuns, targets } = schemaFor(db)
+  const { exportJobs, reports, reportRevisions, runs, suiteRunItems, suiteRuns, targets } = schemaFor(db)
   const suiteScope = await scopedTargetFilter(db, actorId, reports.targetId, 'suite:read')
   const filters: (SQL | undefined)[] = [
     await scopedTargetFilter(db, actorId, reports.targetId, 'report:read'),
@@ -167,11 +167,92 @@ export async function listReports(db: Db, query: Partial<ReportListQuery> = {}, 
     .where(and(...filters.filter((item): item is SQL => item !== undefined)))
     .orderBy(desc(reports.createdAt), desc(reports.id))
     .limit(parsed.limit + 1)
-  const page = paginateResults(
-    rows.map((row) => ({ id: row.id, createdAt: row.createdAt })),
-    parsed.limit,
-  )
-  const items = await Promise.all(page.items.map((row) => loadReportDto(db, row.id)))
+  const page = paginateResults(rows, parsed.limit)
+  if (page.items.length === 0) {
+    return reportListResponseSchema.parse({
+      items: [],
+      nextCursor: undefined,
+    })
+  }
+
+  const reportIds = page.items.map((r) => r.id)
+  const rankedRevisions = db
+    .select({
+      id: reportRevisions.id,
+      reportId: reportRevisions.reportId,
+      rn: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${reportRevisions.reportId} ORDER BY ${reportRevisions.revisionNo} DESC)`.as('rn'),
+    })
+    .from(reportRevisions)
+    .where(inArray(reportRevisions.reportId, reportIds))
+    .as('ranked_revisions')
+
+  const latestRevisionRows = await db
+    .select({
+      revision: reportRevisions,
+    })
+    .from(reportRevisions)
+    .innerJoin(
+      rankedRevisions,
+      and(
+        eq(reportRevisions.id, rankedRevisions.id),
+        eq(rankedRevisions.rn, 1),
+      ),
+    )
+
+  const revisionIds = latestRevisionRows.map((r) => r.revision.id)
+  const rankedJobs = db
+    .select({
+      id: exportJobs.id,
+      reportRevisionId: exportJobs.reportRevisionId,
+      rn: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${exportJobs.reportRevisionId} ORDER BY ${exportJobs.createdAt} DESC)`.as('rn'),
+    })
+    .from(exportJobs)
+    .where(
+      and(
+        inArray(exportJobs.reportRevisionId, revisionIds),
+        eq(exportJobs.kind, 'report_materialize'),
+      ),
+    )
+    .as('ranked_jobs')
+
+  const latestJobRows = revisionIds.length === 0 ? [] : await db
+    .select({
+      id: exportJobs.id,
+      reportRevisionId: exportJobs.reportRevisionId,
+    })
+    .from(exportJobs)
+    .innerJoin(
+      rankedJobs,
+      and(
+        eq(exportJobs.id, rankedJobs.id),
+        eq(rankedJobs.rn, 1),
+      ),
+    )
+
+  const materialJobIdByRevisionId = new Map<string, string>()
+  for (const job of latestJobRows) {
+    if (job.reportRevisionId) {
+      materialJobIdByRevisionId.set(job.reportRevisionId, job.id)
+    }
+  }
+
+  const revisionByReportId = new Map<string, typeof latestRevisionRows[number]['revision']>()
+  for (const row of latestRevisionRows) {
+    revisionByReportId.set(row.revision.reportId, row.revision)
+  }
+
+  const items = page.items.map((report) => {
+    const revision = revisionByReportId.get(report.id)
+    const materialJobId = revision ? materialJobIdByRevisionId.get(revision.id) ?? null : null
+    return reportDtoSchema.parse({
+      id: report.id,
+      targetId: report.targetId,
+      subject: subjectOf(report),
+      currentRevision: revision ? { ...toRevision(revision), materialJobId } : null,
+      createdAt: report.createdAt.toISOString(),
+    })
+  })
+
   return reportListResponseSchema.parse({
     items,
     nextCursor: page.nextCursor,

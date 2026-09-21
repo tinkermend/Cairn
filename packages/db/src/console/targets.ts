@@ -61,12 +61,17 @@ import {
   targetListResponseSchema,
   targetSchema,
   applyTargetSessionPolicyPatch,
+  applyTargetResolutionPolicyPatch,
+  parseTargetResolutionPolicy,
+  mergeResolutionCeiling,
+  resolutionCapabilitiesFromPlatform,
   FACTORY_PLATFORM_CONFIG,
   platformConfigDocumentSchema,
   resolveSessionPolicyLayers,
   sessionPolicyFromPlatform,
   type AuditAction,
   type TargetSessionPolicyPatch,
+  type TargetResolutionPolicyPatch,
   type CleanupStatus,
   type CleanupStatusResponse,
   type CreateTargetAccountBody,
@@ -155,6 +160,13 @@ export class TargetsStore {
     return sessionPolicyFromPlatform(document.session)
   }
 
+  private async platformDocument() {
+    const platform = await getPlatformConfig(this.db)
+    return platform
+      ? platformConfigDocumentSchema.parse(platform.document)
+      : FACTORY_PLATFORM_CONFIG
+  }
+
   async listTargets(query: TargetListQuery = {}, actor?: RequestAccount): Promise<TargetListResponse> {
     const parsed = targetListQuerySchema.parse(query)
     const { targets } = schemaFor(this.db)
@@ -194,13 +206,45 @@ export class TargetsStore {
     const row = await this.loadTarget(id)
     const counts = await this.accountCounts(id)
     const sessionPolicy = parseTargetSessionPolicyOverride(row.sessionPolicy)
+    const resolutionPolicy = parseTargetResolutionPolicy(row.resolutionPolicy)
+    const resolutionCaps = resolutionCapabilitiesFromPlatform(await this.platformDocument())
     return this.toTarget(row, counts.get(id) ?? 0, {
       sessionPolicy,
       effectiveSessionPolicy: resolveSessionPolicyLayers({
         platformDefault: await this.platformSessionDefaults(),
         targetOverride: sessionPolicy,
       }),
+      resolutionPolicy,
+      effectiveResolution: {
+        ceiling: mergeResolutionCeiling({
+          ceiling: resolutionCaps.ceiling,
+          targetCeiling: resolutionPolicy?.ceiling,
+        }),
+        preference: resolutionPolicy?.preference ?? resolutionCaps.default,
+      },
     })
+  }
+
+  async updateResolutionPolicy(
+    id: string,
+    patch: TargetResolutionPolicyPatch,
+    actor: RequestAccount,
+  ): Promise<TargetDto> {
+    const { targets } = schemaFor(this.db)
+    const current = await this.loadTarget(id)
+    const nextOverride = applyTargetResolutionPolicyPatch(
+      parseTargetResolutionPolicy(current.resolutionPolicy),
+      patch,
+    )
+    const now = new Date()
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(targets)
+        .set({ resolutionPolicy: nextOverride, updatedAt: now })
+        .where(eq(targets.id, id))
+      await this.writeAudit(tx, actor, 'target.update', 'target', id, '更新了目标解析策略')
+    })
+    return this.getTarget(id)
   }
 
   async updateSessionPolicy(
@@ -660,6 +704,16 @@ export class TargetsStore {
           id,
           `删除目标 ${current.name}（${current.code}）：账号 ${accounts.length}、场景 ${scenarioRows.length}、场景集 ${suiteRows.length}、录制 ${recordingRows.length}、运行 ${targetRunRows.length}、调度 ${scheduleRows.length}、对象 ${Number(objectRow?.n ?? 0)}、${Number(objectRow?.bytes ?? 0)} 字节`,
         )
+        if (Number(objectRow?.n ?? 0) === 0) {
+          await this.writeAudit(
+            tx,
+            actor,
+            'target.cleanup',
+            'target',
+            id,
+            `目标附件清理完成 ${current.name}（${current.code}）：无关联附件需清理`,
+          )
+        }
       })
     } catch (error) {
       throw mapRestriction(error) ?? error
@@ -1203,6 +1257,8 @@ export class TargetsStore {
     extras?: {
       sessionPolicy?: TargetDto['sessionPolicy']
       effectiveSessionPolicy?: TargetDto['effectiveSessionPolicy']
+      resolutionPolicy?: TargetDto['resolutionPolicy']
+      effectiveResolution?: TargetDto['effectiveResolution']
     },
   ): TargetDto {
     return targetSchema.parse({
@@ -1223,6 +1279,8 @@ export class TargetsStore {
       ...(extras?.effectiveSessionPolicy
         ? { effectiveSessionPolicy: extras.effectiveSessionPolicy }
         : {}),
+      resolutionPolicy: extras?.resolutionPolicy ?? parseTargetResolutionPolicy(row.resolutionPolicy),
+      ...(extras?.effectiveResolution ? { effectiveResolution: extras.effectiveResolution } : {}),
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
     })

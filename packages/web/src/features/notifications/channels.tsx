@@ -6,6 +6,13 @@ import {
   notificationSettingsWriteSchema,
   notificationSmtpWriteSchema,
 } from '@cairn/shared'
+import {
+  Mail,
+  Plus,
+  Radio,
+  Server,
+  Webhook,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import {
   fetchNotificationChannels,
@@ -17,6 +24,7 @@ import {
 import { fetchTargets } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -24,11 +32,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { EmptyState } from '@/components/empty-state'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectField,
+  SelectFieldOption,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { StatusBadge } from '@/components/status-badge'
+import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Field, Failure } from './index'
 
 type Channel = NotificationChannels['channels'][number]
-const selectClass = 'h-9 rounded-md border border-input bg-background px-3'
+
 export function NotificationChannelsPanel() {
   const data = useQuery({
       queryKey: ['notification-channels'],
@@ -46,10 +67,12 @@ export function NotificationChannelsPanel() {
     key: string
   }>()
   const [reason, setReason] = useState('')
+
   async function changed() {
     await client.invalidateQueries({ queryKey: ['notification-channels'] })
     await client.invalidateQueries({ queryKey: ['notifications'] })
   }
+
   async function act() {
     if (!pending || !data.data) return
     setBusy(true)
@@ -87,25 +110,42 @@ export function NotificationChannelsPanel() {
       setBusy(false)
     }
   }
+
   const current = data.data
   return (
     <div className='space-y-6'>
       <Failure message={data.error?.message || error} />
-      {data.isPending && <p role='status'>正在加载通知渠道…</p>}
+      {data.isPending && (
+        <p className='text-body text-muted-foreground' role='status'>
+          正在加载通知渠道…
+        </p>
+      )}
       {current && (
         <>
-          <Settings
-            key={current.revision}
-            current={current}
-            canWrite={canWrite}
-            onSaved={changed}
-          />
-          <section className='space-y-3'>
+          <div className='grid gap-5 lg:grid-cols-2'>
+            <Settings
+              key={current.revision}
+              current={current}
+              canWrite={canWrite}
+              onSaved={changed}
+            />
+            <SmtpCard
+              current={current}
+              canWrite={canWrite}
+              onConfigure={() => setSmtpOpen(true)}
+              onSaved={changed}
+            />
+          </div>
+
+          <section className='space-y-4'>
             <div className='flex flex-wrap items-center justify-between gap-3'>
               <div>
-                <h2 className='text-section font-semibold'>发送渠道</h2>
+                <h2 className='font-semibold text-text-primary text-section'>
+                  发送渠道
+                </h2>
                 <p className='text-label text-muted-foreground'>
-                  授权到具体目标后，渠道才可用于该目标的场景。
+                  授权到具体目标后，渠道才可用于该目标的场景。最多登记 16
+                  个渠道。
                 </p>
               </div>
               {canWrite && (
@@ -113,141 +153,152 @@ export function NotificationChannelsPanel() {
                   disabled={current.channels.length >= 16}
                   onClick={() => setEditing('new')}
                 >
+                  <Plus className='size-4' />
                   添加渠道
                 </Button>
               )}
             </div>
-            {!current.channels.length && (
-              <div className='rounded-lg border border-dashed p-6 text-body text-muted-foreground'>
-                还没有通知渠道。添加 Webhook
-                或邮件收件人后，可发送合成消息验证配置。
-              </div>
-            )}
-            <div className='grid gap-3 lg:grid-cols-2'>
-              {current.channels.map((channel) => (
-                <article
-                  key={channel.id}
-                  className='space-y-3 rounded-lg border border-border p-4'
-                >
-                  <div className='flex flex-wrap justify-between gap-2'>
-                    <h3 className='text-body font-semibold'>{channel.name}</h3>
-                    <span className='text-label text-muted-foreground'>
-                      {channel.kind === 'email' ? '邮件' : 'Webhook'} ·{' '}
-                      {channel.revoked
-                        ? '版本已撤销'
-                        : channel.enabled
-                          ? '启用'
-                          : '停用'}
-                    </span>
-                  </div>
-                  <p className='text-label break-all text-muted-foreground'>
-                    {channel.kind === 'email'
-                      ? `${channel.recipientCount} 位收件人`
-                      : channel.host}
-                  </p>
-                  <p className='text-label'>
-                    {channel.allowAlerts ? '可用于告警' : '不用于告警'} · 已授权{' '}
-                    {channel.targetIds.length} 个目标
-                    {channel.format === 'legacy_alert@1'
-                      ? ' · 旧版告警格式'
-                      : ''}
-                  </p>
-                  {canWrite && (
-                    <div className='flex flex-wrap gap-2'>
-                      <Button
-                        size='sm'
-                        variant='outline'
-                        onClick={() => setEditing(channel)}
-                      >
-                        编辑
-                      </Button>
-                      {(
-                        [
-                          'test',
-                          channel.enabled ? 'disable' : 'enable',
-                          'revoke',
-                        ] as const
-                      ).map((action) => (
+
+            {!current.channels.length ? (
+              <EmptyState
+                title='还没有通知渠道'
+                description='添加 Webhook 或邮件收件人后，可发送合成消息验证配置。'
+                action={
+                  canWrite ? (
+                    <Button onClick={() => setEditing('new')}>
+                      <Plus className='size-4' />
+                      添加第一个渠道
+                    </Button>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <div className='grid gap-4 md:grid-cols-2'>
+                {current.channels.map((channel) => (
+                  <article
+                    key={channel.id}
+                    className='flex flex-col justify-between space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'
+                  >
+                    <div className='space-y-2.5'>
+                      <div className='flex items-start justify-between gap-2'>
+                        <div className='flex items-center gap-2.5'>
+                          <span
+                            aria-hidden='true'
+                            className='flex size-9 shrink-0 items-center justify-center rounded-md border border-border-default bg-surface-subtle text-primary'
+                          >
+                            {channel.kind === 'email' ? (
+                              <Mail className='size-4' />
+                            ) : (
+                              <Webhook className='size-4' />
+                            )}
+                          </span>
+                          <div className='min-w-0'>
+                            <h3 className='truncate font-semibold text-text-primary text-body'>
+                              {channel.name}
+                            </h3>
+                            <p className='text-label text-muted-foreground'>
+                              {channel.kind === 'email' ? '邮件' : 'Webhook'}
+                            </p>
+                          </div>
+                        </div>
+                        <StatusBadge
+                          tone={
+                            channel.revoked
+                              ? 'warning'
+                              : channel.enabled
+                                ? 'success'
+                                : 'neutral'
+                          }
+                        >
+                          {channel.revoked
+                            ? '版本已撤销'
+                            : channel.enabled
+                              ? '已启用'
+                              : '已停用'}
+                        </StatusBadge>
+                      </div>
+
+                      <p className='text-label text-muted-foreground break-all'>
+                        {channel.kind === 'email'
+                          ? `收件人：${channel.recipientCount} 位`
+                          : `地址：${channel.host}`}
+                      </p>
+
+                      <div className='flex flex-wrap gap-1.5 pt-1'>
+                        <StatusBadge
+                          tone={channel.allowAlerts ? 'info' : 'neutral'}
+                        >
+                          {channel.allowAlerts ? '可用于告警' : '不用于告警'}
+                        </StatusBadge>
+                        <StatusBadge tone='neutral'>
+                          已授权 {channel.targetIds.length} 个目标
+                        </StatusBadge>
+                        {channel.format === 'legacy_alert@1' && (
+                          <StatusBadge tone='warning'>
+                            旧版告警格式
+                          </StatusBadge>
+                        )}
+                      </div>
+                    </div>
+
+                    {canWrite && (
+                      <div className='flex flex-wrap gap-2 border-t border-border-divider pt-3'>
                         <Button
-                          key={action}
                           size='sm'
                           variant='outline'
-                          disabled={
-                            (channel.revoked && action !== 'disable') ||
-                            (action === 'test' &&
-                              (!current.enabled ||
-                                !channel.enabled ||
-                                (channel.kind === 'email' &&
-                                  (!current.smtp?.enabled ||
-                                    current.smtp.revoked))))
-                          }
-                          onClick={() => {
-                            setPending({
-                              channel,
-                              action,
-                              key: notificationCommandKey(),
-                            })
-                            setReason('')
-                            setError('')
-                          }}
+                          onClick={() => setEditing(channel)}
                         >
-                          {action === 'test'
-                            ? '测试发送'
-                            : action === 'disable'
-                              ? '停用'
-                              : action === 'enable'
-                                ? '启用'
-                                : '撤销当前版本'}
+                          编辑
                         </Button>
-                      ))}
-                    </div>
-                  )}
-                </article>
-              ))}
-            </div>
-          </section>
-          {current.smtp && canWrite && (
-            <SmtpStateActions current={current} onSaved={changed} />
-          )}
-          <details className='rounded-lg border border-border p-4'>
-            <summary className='cursor-pointer text-body font-medium'>
-              固定消息模板示例
-            </summary>
-            <div className='mt-3 space-y-2 text-body text-muted-foreground'>
-              <p>运行结果：订单检查</p>
-              <p>场景：订单检查 · 目标：订单系统</p>
-              <p>
-                执行状态：执行完成 · 业务结果：未评价业务结果 ·
-                证据状态：证据收集中
-              </p>
-              <p>
-                结束时间、通知编号和详情链接随消息附上。证据尚未收齐会明确说明，后续补齐不会再次发送。
-              </p>
-              <p>
-                告警消息包含规则名称、严重程度、触发／依据中断／恢复状态和监控详情链接。
-              </p>
-              <p>
-                Webhook 使用结构化字段表达相同事实；邮件提供纯文本与 HTML
-                两种正文。
-              </p>
-            </div>
-          </details>
-          <section className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4'>
-            <div>
-              <h2 className='font-semibold'>邮件发送配置</h2>
-              <p className='mt-1 text-label text-muted-foreground'>
-                {current.smtp
-                  ? `${current.smtp.host} · ${current.smtp.enabled ? '启用' : '停用'}`
-                  : '尚未配置 SMTP 中继'}
-                。中继地址须由部署配置许可。
-              </p>
-            </div>
-            {canWrite && (
-              <Button variant='outline' onClick={() => setSmtpOpen(true)}>
-                配置邮件发送
-              </Button>
+                        {(
+                          [
+                            'test',
+                            channel.enabled ? 'disable' : 'enable',
+                            'revoke',
+                          ] as const
+                        ).map((action) => (
+                          <Button
+                            key={action}
+                            size='sm'
+                            variant='outline'
+                            disabled={
+                              (channel.revoked && action !== 'disable') ||
+                              (action === 'test' &&
+                                (!current.enabled ||
+                                  !channel.enabled ||
+                                  (channel.kind === 'email' &&
+                                    (!current.smtp?.enabled ||
+                                      current.smtp.revoked))))
+                            }
+                            onClick={() => {
+                              setPending({
+                                channel,
+                                action,
+                                key: notificationCommandKey(),
+                              })
+                              setReason('')
+                              setError('')
+                            }}
+                          >
+                            {action === 'test'
+                              ? '测试发送'
+                              : action === 'disable'
+                                ? '停用'
+                                : action === 'enable'
+                                  ? '启用'
+                                  : '撤销版本'}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                  </article>
+                ))}
+              </div>
             )}
           </section>
+
+          <TemplatePreviewCard />
+
           <Dialog
             open={Boolean(editing)}
             onOpenChange={(open) => {
@@ -275,6 +326,7 @@ export function NotificationChannelsPanel() {
               )}
             </DialogContent>
           </Dialog>
+
           <Dialog open={smtpOpen} onOpenChange={setSmtpOpen}>
             <DialogContent className='max-h-[85vh] overflow-y-auto sm:max-w-xl'>
               <DialogHeader>
@@ -293,6 +345,7 @@ export function NotificationChannelsPanel() {
               />
             </DialogContent>
           </Dialog>
+
           <Dialog
             open={Boolean(pending)}
             onOpenChange={(open) => {
@@ -321,6 +374,7 @@ export function NotificationChannelsPanel() {
               <Field label='操作原因'>
                 <Input
                   value={reason}
+                  placeholder='填写操作原因以供审计'
                   onChange={(e) => setReason(e.target.value)}
                   maxLength={512}
                 />
@@ -339,6 +393,7 @@ export function NotificationChannelsPanel() {
     </div>
   )
 }
+
 function Settings({
   current,
   canWrite,
@@ -353,6 +408,7 @@ function Settings({
     [reason, setReason] = useState(''),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('')
+
   async function submit(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -377,26 +433,41 @@ function Settings({
       setBusy(false)
     }
   }
+
   return (
     <form
       onSubmit={(e) => void submit(e)}
-      className='space-y-3 rounded-lg border border-border p-4'
+      className='flex flex-col justify-between space-y-4 rounded-lg border border-border-card bg-card p-5 shadow-card'
     >
-      <h2 className='text-section font-semibold'>通知总开关</h2>
-      <label className='flex items-center gap-2 text-body'>
-        <input
-          type='checkbox'
-          disabled={!canWrite}
-          checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
-        />
-        启用通知
-      </label>
-      <p className='text-label text-muted-foreground'>
-        暂停后，尚未提交的通知不再发送；恢复后仅处理新通知。
-      </p>
-      <div className='grid gap-3 sm:grid-cols-2'>
-        <Field label='控制台地址' hint='通知中的详情链接使用此 HTTPS 地址。'>
+      <div className='space-y-4'>
+        <div className='flex items-center justify-between gap-3 border-b border-border-divider pb-3'>
+          <div className='flex items-center gap-2'>
+            <Radio className='size-4 text-primary' />
+            <h3 className='font-semibold text-text-primary text-section'>
+              通知总开关
+            </h3>
+          </div>
+          <div className='flex items-center gap-2'>
+            <span className='text-label text-muted-foreground'>
+              {enabled ? '已启用' : '已暂停'}
+            </span>
+            <Switch
+              disabled={!canWrite}
+              checked={enabled}
+              onCheckedChange={setEnabled}
+              aria-label='启用通知'
+            />
+          </div>
+        </div>
+
+        <p className='text-label text-muted-foreground'>
+          暂停后，尚未提交的通知不再发送；恢复后仅处理新通知。
+        </p>
+
+        <Field
+          label='控制台可信 HTTPS 地址'
+          hint='通知正文中的运行详情及告警链接使用此地址拼接。'
+        >
           <Input
             type='url'
             disabled={!canWrite}
@@ -405,26 +476,153 @@ function Settings({
             onChange={(e) => setUrl(e.target.value)}
           />
         </Field>
+
         {canWrite && (
           <Field label='变更原因'>
             <Input
               required
               maxLength={512}
+              placeholder='填写修改原因以供审计'
               value={reason}
               onChange={(e) => setReason(e.target.value)}
             />
           </Field>
         )}
       </div>
+
       <Failure message={error} />
+
       {canWrite && (
-        <Button disabled={busy || !reason.trim()} type='submit'>
-          保存通知设置
-        </Button>
+        <div className='pt-2'>
+          <Button disabled={busy || !reason.trim()} type='submit'>
+            保存全局设置
+          </Button>
+        </div>
       )}
     </form>
   )
 }
+
+function SmtpCard({
+  current,
+  canWrite,
+  onConfigure,
+  onSaved,
+}: {
+  current: NotificationChannels
+  canWrite: boolean
+  onConfigure: () => void
+  onSaved: () => Promise<void>
+}) {
+  return (
+    <div className='flex flex-col justify-between space-y-4 rounded-lg border border-border-card bg-card p-5 shadow-card'>
+      <div className='space-y-4'>
+        <div className='flex items-center justify-between gap-3 border-b border-border-divider pb-3'>
+          <div className='flex items-center gap-2'>
+            <Server className='size-4 text-primary' />
+            <h3 className='font-semibold text-text-primary text-section'>
+              邮件发送中继 (SMTP)
+            </h3>
+          </div>
+          {current.smtp && (
+            <StatusBadge
+              tone={
+                current.smtp.revoked
+                  ? 'warning'
+                  : current.smtp.enabled
+                    ? 'success'
+                    : 'neutral'
+              }
+            >
+              {current.smtp.revoked
+                ? '版本已撤销'
+                : current.smtp.enabled
+                  ? '已启用'
+                  : '已停用'}
+            </StatusBadge>
+          )}
+        </div>
+
+        {current.smtp ? (
+          <div className='space-y-2 text-label text-muted-foreground'>
+            <p>
+              <span className='text-text-primary font-medium'>中继主机：</span>
+              {current.smtp.host}（版本 #{current.smtp.version}）
+            </p>
+            <p>
+              <span className='text-text-primary font-medium'>中继状态：</span>
+              {current.smtp.revoked
+                ? '版本已撤销，需重新配置'
+                : current.smtp.enabled
+                  ? '服务已启用'
+                  : '服务已停用'}
+            </p>
+            <p>中继地址须由部署配置许可；认证凭据加密保存不回显。</p>
+          </div>
+        ) : (
+          <div className='rounded-md bg-surface-subtle p-3 text-label text-muted-foreground'>
+            尚未配置 SMTP 中继服务。配置后，邮件渠道方可正式发送通知。
+          </div>
+        )}
+      </div>
+
+      <div className='flex flex-wrap items-center gap-2 border-t border-border-divider pt-3'>
+        {canWrite && (
+          <Button variant='outline' size='sm' onClick={onConfigure}>
+            {current.smtp ? '重新配置 SMTP' : '配置邮件发送'}
+          </Button>
+        )}
+        {current.smtp && canWrite && (
+          <SmtpStateActions current={current} onSaved={onSaved} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TemplatePreviewCard() {
+  return (
+    <div className='rounded-lg border border-border-card bg-card p-5 shadow-card space-y-3'>
+      <div>
+        <h3 className='font-semibold text-text-primary text-section'>
+          固定消息模板预览
+        </h3>
+        <p className='text-label text-muted-foreground'>
+          不同事件类型的通知格式参考。Webhook 使用结构化 JSON 载荷，邮件提供纯文本与 HTML 两种格式。
+        </p>
+      </div>
+      <Tabs defaultValue='run'>
+        <TabsList className='border-b-0'>
+          <TabsTrigger value='run'>运行结果通知</TabsTrigger>
+          <TabsTrigger value='alert'>监控告警通知</TabsTrigger>
+        </TabsList>
+        <TabsContent value='run' className='mt-3'>
+          <div className='rounded-md bg-surface-subtle p-4 font-mono text-label text-muted-foreground space-y-1'>
+            <p className='font-semibold text-text-primary'>
+              [识途 · 运行结果] 订单业务巡检：未通过
+            </p>
+            <p>目标系统：生产订单系统</p>
+            <p>执行状态：执行完成 · 业务结果：未通过 · 证据状态：证据完整</p>
+            <p>耗时：2 分 18 秒 · 采样时间：2026-09-21 10:00:00 +08:00</p>
+            <p>查看运行详情：https://cairn.example.com/runs/run-12345678</p>
+          </div>
+        </TabsContent>
+        <TabsContent value='alert' className='mt-3'>
+          <div className='rounded-md bg-surface-subtle p-4 font-mono text-label text-muted-foreground space-y-1'>
+            <p className='font-semibold text-text-primary'>
+              [识途 · 告警触发] 步骤失败率过高：P1 紧急
+            </p>
+            <p>规则名称：连续失败率告警</p>
+            <p>当前状态：触发中 · 当前读数：85%（阈值：50%）</p>
+            <p>发生时间：2026-09-21 10:05:00 +08:00</p>
+            <p>查看监控详情：https://cairn.example.com/monitoring</p>
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
 function ChannelForm({
   current,
   channel,
@@ -455,6 +653,7 @@ function ChannelForm({
     queryKey: ['notification-targets', search],
     queryFn: () => fetchTargets({ search, limit: 100 }),
   })
+
   async function submit(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -496,26 +695,27 @@ function ChannelForm({
       setBusy(false)
     }
   }
+
   return (
     <form onSubmit={(e) => void submit(e)} className='space-y-4'>
       <Field label='渠道名称'>
         <Input
           required
           maxLength={80}
+          placeholder='如：运维告警群 Webhook / 业务通知邮件'
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
       </Field>
       <Field label='发送方式'>
-        <select
-          className={selectClass}
+        <SelectField
           value={kind}
           disabled={Boolean(channel)}
-          onChange={(e) => setKind(e.target.value as typeof kind)}
+          onValueChange={(value) => setKind(value as typeof kind)}
         >
-          <option value='webhook'>Webhook</option>
-          <option value='email'>邮件</option>
-        </select>
+          <SelectFieldOption value='webhook'>Webhook</SelectFieldOption>
+          <SelectFieldOption value='email'>邮件</SelectFieldOption>
+        </SelectField>
       </Field>
       {kind === 'webhook' ? (
         <>
@@ -526,6 +726,7 @@ function ChannelForm({
             <Input
               type='url'
               required={!channel}
+              placeholder='https://api.example.com/webhook'
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               autoComplete='off'
@@ -548,48 +749,48 @@ function ChannelForm({
             />
           </Field>
           {channel && (
-            <div className='flex flex-wrap gap-3 text-label'>
-              <label>
-                <input
-                  type='checkbox'
+            <div className='flex flex-wrap gap-4 text-label'>
+              <label className='flex items-center gap-2'>
+                <Checkbox
                   checked={clearToken}
-                  onChange={(e) => setClearToken(e.target.checked)}
-                />{' '}
-                清除原 Token
+                  onCheckedChange={(checked) => setClearToken(Boolean(checked))}
+                />
+                <span>清除原 Token</span>
               </label>
-              <label>
-                <input
-                  type='checkbox'
+              <label className='flex items-center gap-2'>
+                <Checkbox
                   checked={clearKey}
-                  onChange={(e) => setClearKey(e.target.checked)}
-                />{' '}
-                清除原签名密钥
+                  onCheckedChange={(checked) => setClearKey(Boolean(checked))}
+                />
+                <span>清除原签名密钥</span>
               </label>
             </div>
           )}
           <Field label='消息格式'>
-            <select
-              className={selectClass}
+            <SelectField
               value={format}
-              onChange={(e) => setFormat(e.target.value as typeof format)}
+              onValueChange={(value) => setFormat(value as typeof format)}
             >
-              <option value='cairn.notification@1'>标准通知（推荐）</option>
-              <option value='legacy_alert@1'>兼容旧版告警</option>
-            </select>
+              <SelectFieldOption value='cairn.notification@1'>
+                标准通知（推荐）
+              </SelectFieldOption>
+              <SelectFieldOption value='legacy_alert@1'>
+                兼容旧版告警
+              </SelectFieldOption>
+            </SelectField>
           </Field>
           <label className='flex items-start gap-2 text-label'>
-            <input
-              type='checkbox'
+            <Checkbox
               checked={replay === 'receiver_deduplicates'}
-              onChange={(e) =>
+              onCheckedChange={(checked) =>
                 setReplay(
-                  e.target.checked
-                    ? 'receiver_deduplicates'
-                    : 'manual_on_unknown'
+                  checked ? 'receiver_deduplicates' : 'manual_on_unknown'
                 )
               }
             />
-            接收方已按通知编号去重，允许接收结果不明时自动重试
+            <span>
+              接收方已按通知编号去重，允许接收结果不明时自动重试
+            </span>
           </label>
         </>
       ) : (
@@ -603,55 +804,49 @@ function ChannelForm({
         >
           <Input
             required={!channel}
+            placeholder='ops@example.com, alert@example.com'
             value={emails}
             onChange={(e) => setEmails(e.target.value)}
             autoComplete='off'
           />
         </Field>
       )}
-      <div className='flex gap-4 text-body'>
-        <label>
-          <input
-            type='checkbox'
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />{' '}
-          启用渠道
+
+      <div className='grid grid-cols-2 gap-4 border-y border-border-divider py-3'>
+        <label className='flex items-center justify-between text-body'>
+          <span>启用渠道</span>
+          <Switch checked={enabled} onCheckedChange={setEnabled} />
         </label>
-        <label>
-          <input
-            type='checkbox'
-            checked={allowAlerts}
-            onChange={(e) => setAllowAlerts(e.target.checked)}
-          />{' '}
-          用于告警
+        <label className='flex items-center justify-between text-body'>
+          <span>用于告警</span>
+          <Switch checked={allowAlerts} onCheckedChange={setAllowAlerts} />
         </label>
       </div>
+
       <fieldset className='space-y-2'>
         <legend className='text-label font-medium'>
-          允许结果通知的目标（已选 {targets.length} 个）
+          允许结果通知的目标系统（已选 {targets.length} 个）
         </legend>
         <Input
           aria-label='搜索授权目标'
-          placeholder='搜索目标名称'
+          placeholder='搜索目标系统名称'
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className='max-h-40 space-y-2 overflow-y-auto rounded-md border border-border p-3'>
+        <div className='max-h-40 space-y-2 overflow-y-auto rounded-md border border-border-card bg-surface-subtle p-3'>
           {options.data?.items.map((t) => (
-            <label className='flex gap-2 text-body' key={t.id}>
-              <input
-                type='checkbox'
+            <label className='flex items-center gap-2 text-body' key={t.id}>
+              <Checkbox
                 checked={targets.includes(t.id)}
-                onChange={(e) =>
+                onCheckedChange={(checked) =>
                   setTargets(
-                    e.target.checked
+                    checked
                       ? [...targets, t.id]
                       : targets.filter((id) => id !== t.id)
                   )
                 }
               />
-              {t.name}
+              <span>{t.name}</span>
             </label>
           ))}
           {options.data?.nextCursor && (
@@ -660,15 +855,17 @@ function ChannelForm({
             </p>
           )}
           {!options.isPending && !options.data?.items.length && (
-            <p className='text-label text-muted-foreground'>没有匹配的目标</p>
+            <p className='text-label text-muted-foreground'>没有匹配的目标系统</p>
           )}
         </div>
         <Failure message={options.error?.message} />
       </fieldset>
+
       <Field label='变更原因'>
         <Input
           required
           maxLength={512}
+          placeholder='填写变更原因以供审计'
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
@@ -680,6 +877,7 @@ function ChannelForm({
     </form>
   )
 }
+
 function SmtpForm({
   current,
   onSaved,
@@ -688,7 +886,9 @@ function SmtpForm({
   onSaved: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState('')
+    [error, setError] = useState(''),
+    [enabled, setEnabled] = useState(current.smtp?.enabled ?? true)
+
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     const f = new FormData(e.currentTarget)
@@ -698,7 +898,7 @@ function SmtpForm({
       const input = notificationSmtpWriteSchema.parse({
         expectedRevision: current.revision,
         reason: f.get('reason'),
-        enabled: f.get('enabled') === 'on',
+        enabled,
         host: f.get('host'),
         port: Number(f.get('port')),
         tls: f.get('tls'),
@@ -715,11 +915,17 @@ function SmtpForm({
       setBusy(false)
     }
   }
+
   return (
     <form onSubmit={(e) => void submit(e)} className='space-y-3'>
       <div className='grid gap-3 sm:grid-cols-2'>
         <Field label='SMTP 主机'>
-          <Input name='host' required defaultValue={current.smtp?.host ?? ''} />
+          <Input
+            name='host'
+            required
+            placeholder='smtp.example.com'
+            defaultValue={current.smtp?.host ?? ''}
+          />
         </Field>
         <Field label='端口'>
           <Input
@@ -733,15 +939,23 @@ function SmtpForm({
         </Field>
       </div>
       <Field label='传输加密'>
-        <select className={selectClass} name='tls' defaultValue='starttls'>
-          <option value='starttls'>STARTTLS</option>
-          <option value='tls'>TLS</option>
-        </select>
+        <Select name='tls' defaultValue='starttls'>
+          <SelectTrigger className='w-full' aria-label='传输加密'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='starttls'>STARTTLS</SelectItem>
+            <SelectItem value='tls'>TLS</SelectItem>
+          </SelectContent>
+        </Select>
       </Field>
-      <Field label='用户名'>
+      <Field label='发件用户名'>
         <Input name='username' required autoComplete='off' />
       </Field>
-      <Field label='密码'>
+      <Field
+        label='发件密码 / 授权码'
+        hint={current.smtp ? '留空保留原密码。' : undefined}
+      >
         <Input
           name='password'
           type='password'
@@ -750,18 +964,26 @@ function SmtpForm({
         />
       </Field>
       <Field label='发件人邮箱'>
-        <Input name='from' type='email' required />
-      </Field>
-      <label className='flex items-center gap-2 text-body'>
-        <input
-          name='enabled'
-          type='checkbox'
-          defaultChecked={current.smtp?.enabled ?? true}
+        <Input
+          name='from'
+          type='email'
+          placeholder='noreply@example.com'
+          required
         />
-        启用邮件发送
-      </label>
+      </Field>
+
+      <div className='flex items-center justify-between border-y border-border-divider py-3'>
+        <span className='text-body'>启用邮件发送</span>
+        <Switch checked={enabled} onCheckedChange={setEnabled} />
+      </div>
+
       <Field label='变更原因'>
-        <Input name='reason' maxLength={512} required />
+        <Input
+          name='reason'
+          maxLength={512}
+          placeholder='填写修改原因以供审计'
+          required
+        />
       </Field>
       <Failure message={error} />
       <Button disabled={busy} type='submit'>
@@ -770,6 +992,7 @@ function SmtpForm({
     </form>
   )
 }
+
 function SmtpStateActions({
   current,
   onSaved,
@@ -782,6 +1005,7 @@ function SmtpStateActions({
     [busy, setBusy] = useState(false),
     [error, setError] = useState('')
   const smtp = current.smtp!
+
   async function save() {
     setBusy(true)
     setError('')
@@ -805,32 +1029,30 @@ function SmtpStateActions({
       setBusy(false)
     }
   }
+
   return (
-    <div className='flex flex-wrap items-center gap-2'>
-      <span className='text-label text-muted-foreground'>
-        {smtp.revoked
-          ? '当前邮件版本已撤销，请保存新配置后使用。'
-          : '邮件发送控制'}
-      </span>
+    <>
       <Button
         variant='outline'
+        size='sm'
         disabled={smtp.revoked && !smtp.enabled}
         onClick={() => {
           setAction('toggle')
           setReason('')
         }}
       >
-        {smtp.enabled ? '停用邮件发送' : '启用邮件发送'}
+        {smtp.enabled ? '停用邮件' : '启用邮件'}
       </Button>
       <Button
         variant='outline'
+        size='sm'
         disabled={smtp.revoked}
         onClick={() => {
           setAction('revoke')
           setReason('')
         }}
       >
-        撤销邮件当前版本
+        撤销版本
       </Button>
       <Dialog
         open={Boolean(action)}
@@ -852,6 +1074,7 @@ function SmtpStateActions({
           <Field label='操作原因'>
             <Input
               value={reason}
+              placeholder='填写操作原因以供审计'
               onChange={(e) => setReason(e.target.value)}
               maxLength={512}
             />
@@ -862,9 +1085,10 @@ function SmtpStateActions({
           </Button>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   )
 }
+
 export function validationMessage(error: unknown) {
   if (error && typeof error === 'object' && 'issues' in error)
     return (error as { issues: { message: string }[] }).issues

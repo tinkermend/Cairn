@@ -208,6 +208,84 @@ describe.each(DRIVERS)('%s 资源生命周期', { timeout: 30_000 }, (driver) =>
     expect(suiteRow?.deletedAt).toBeTruthy()
   })
 
+  it('LM11 场景仍被场景集引用时不能删除，移除引用后可删', async () => {
+    const f = await fixture(driver)
+    const scenario = await api.createScenarioWithVersion(f.db, {
+      targetId: f.target.id,
+      name: '集合成员场景',
+      steps: [echo],
+      actor: f.actor,
+    })
+    const suite = await api.createSuite(
+      f.db,
+      {
+        targetId: f.target.id,
+        name: '引用中的集合',
+        document: {
+          schemaVersion: 1,
+          groups: [],
+          members: [
+            {
+              memberId: 'm1',
+              ordinal: 0,
+              scenarioId: scenario.id,
+              scenarioVersionId: scenario.published!.versionId,
+              input: {},
+            },
+          ],
+          sharedInput: {},
+          failurePolicy: 'continue',
+          autoGenerateFinalReport: false,
+        },
+      },
+      { id: f.actor.id },
+    )
+    const preview = await api.previewDeleteScenario(f.db, scenario.id)
+    expect(preview.counts.suites).toBe(1)
+    expect(preview.blockers).toEqual([
+      expect.objectContaining({
+        id: suite.id,
+        code: 'SCENARIO_IN_SUITE',
+        message: expect.stringContaining('引用中的集合'),
+      }),
+    ])
+    await expect(api.deleteScenario(f.db, scenario.id, f.actor)).rejects.toMatchObject({
+      code: 'SCENARIO_IN_SUITE',
+    })
+    await api.publishSuite(
+      f.db,
+      suite.id,
+      { expectedRevision: suite.draft.revision, idempotencyKey: `pub-${suite.id}` },
+      { id: f.actor.id },
+    )
+    const cleared = await api.saveSuiteDraft(
+      f.db,
+      suite.id,
+      {
+        expectedRevision: suite.draft.revision,
+        document: {
+          schemaVersion: 1,
+          groups: [],
+          members: [],
+          sharedInput: {},
+          failurePolicy: 'continue',
+          autoGenerateFinalReport: false,
+        },
+      },
+      { id: f.actor.id },
+    )
+    const afterDraftClear = await api.previewDeleteScenario(f.db, scenario.id)
+    expect(afterDraftClear.blockers.some((item) => item.code === 'SCENARIO_IN_SUITE')).toBe(true)
+    await expect(api.deleteScenario(f.db, scenario.id, f.actor)).rejects.toMatchObject({
+      code: 'SCENARIO_IN_SUITE',
+    })
+    await api.deleteSuite(f.db, suite.id, {}, { id: f.actor.id })
+    expect((await api.previewDeleteScenario(f.db, scenario.id)).blockers).toEqual([])
+    const deleted = await api.deleteScenario(f.db, scenario.id, f.actor)
+    expect(deleted.accepted).toBe(true)
+    expect(cleared.draft.document.members).toEqual([])
+  })
+
   it('LM03 活跃运行阻止删除；终态后可删场景并保留历史 Run', async () => {
     const f = await fixture(driver)
     const scenario = await api.createScenarioWithVersion(f.db, {

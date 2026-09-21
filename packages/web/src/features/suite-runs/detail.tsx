@@ -99,7 +99,7 @@ export function SuiteRunDetailPage() {
             ) : null}
             <Button variant='outline' asChild>
               <Link to='/evidence' search={{ suiteRunId, tab: 'search' }}>
-                在证据与报告中查看
+                在结果与报告中查看
               </Link>
             </Button>
             {run &&
@@ -169,7 +169,7 @@ export function SuiteRunDetailPage() {
             </div>
           </section>
           <p className='text-label text-muted-foreground'>
-            成员间隙不预留账号，独立运行可能插入并延长墙钟时间。读取时间{' '}
+            成员间隙不预留账号，中间可能被别的运行插入，整次会更久。读取时间{' '}
             {new Date(run.readAt).toLocaleString()}。
           </p>
           <section className='overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>

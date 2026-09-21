@@ -22,28 +22,56 @@ afterEach(async () => {
   for (const handle of handles.splice(0).reverse()) await handle.close()
 })
 
-const echo: Step = {
+/**
+ * 用确定性浏览器步骤造场景，不用 echo：这份用例测的是平台配置，而 echo 属于调试夹具，
+ * 平台出厂关闭，建 Run 时会被闸门拒绝。用生产上合法的步骤类型，既不依赖夹具开关，
+ * 也不需要预先种一行配置——后者会破坏「库里一开始没有配置」的前提。
+ */
+const navigate: Step = {
   id: api.newId(),
-  name: '回显',
-  type: 'echo',
+  name: '打开首页',
+  type: 'navigate',
   effectType: 'READ_ONLY',
-  input: { value: 'hello' },
+  input: { url: 'https://example.com' },
+}
+
+/**
+ * fixture() 保存场景时会惰性初始化出厂配置，所以用例里再 getOrCreate(自己的文档) 是空操作。
+ * 要把配置换成用例需要的样子，走产品真实的「改配置」路径。
+ */
+async function adoptPlatformConfig(
+  db: ReturnType<typeof expose>,
+  actor: Awaited<ReturnType<typeof fixture>>['actor'],
+  document: typeof FACTORY_PLATFORM_CONFIG,
+  reason: string,
+) {
+  const current = await api.getPlatformConfig(db)
+  if (!current) return api.getOrCreatePlatformConfig(db, { document, reason })
+  return api.updatePlatformConfig(db, {
+    expectedRevision: current.revision,
+    document,
+    reason,
+    actor,
+  })
 }
 
 async function fixture(driver: (typeof DRIVERS)[number]) {
-  const handle = await openContractDb(driver)
+  // 纯净库：这份用例测「平台配置从无到有」，库里不能预先有 platform_config 行。
+  const handle = await openContractDb(driver, undefined, { pristine: true })
   handles.push(handle)
   const db = expose(handle)
   const rbac = new api.RbacStore(db, {
     hash: async (value: string) => value,
     verify: async (value: string, hash: string) => value === hash,
   })
+  const adminRoleId = (await rbac.listRoles()).items.find(role => role.key === 'admin')!.id
   const actor = await rbac.createAccount(
     createAccountBodySchema.parse({
       email: `cfg-${driver}`,
       displayName: '管理员',
       password: 'test-password',
-      roleIds: [(await rbac.listRoles()).items.find(role => role.key === 'admin')!.id],
+      roleIds: [adminRoleId],
+      targetScopes: [{ roleId: adminRoleId, mode: 'all' }],
     }),
     null,
   )
@@ -60,7 +88,7 @@ async function fixture(driver: (typeof DRIVERS)[number]) {
   const scenario = await api.createScenarioWithVersion(db, {
     targetId: target.id,
     name: '场景',
-    steps: [{ ...echo, id: api.newId() }],
+    steps: [{ ...navigate, id: api.newId() }],
     actor,
   })
   return { db, actor, scenario, target }
@@ -108,9 +136,10 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
         secretRef: { provider: 'local', secretId: id },
       },
     }
-    await api.getOrCreatePlatformConfig(db, { document, reason: '旧配置初始化' })
+    // 首次引用该 secret 的修订是这里的 original；之后再改地址，绑定仍取首次那一版。
+    const first = await adoptPlatformConfig(db, actor, document, '旧配置初始化')
     await api.updatePlatformConfig(db, {
-      expectedRevision: 1,
+      expectedRevision: first.revision,
       actor,
       reason: '停用中修改地址',
       document: {
@@ -143,7 +172,7 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
         secretRef: { provider: 'local', secretId },
       },
     }
-    await api.getOrCreatePlatformConfig(db, { document, reason: '启用 AI' })
+    await adoptPlatformConfig(db, actor, document, '启用 AI')
     const step: Step = {
       id: api.newId(),
       name: '查询',
@@ -245,17 +274,23 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
 
   it('Run 创建只读配置，不会抢先写入出厂值', async () => {
     const { db, actor, scenario } = await fixture(driver)
-    expect(await api.getPlatformConfig(db)).toBeNull()
+    // 保存场景需要一份确定的平台配置来编译，会惰性初始化出厂值（getOrCreatePlatformConfig）。
+    // 这条用例守护的是「Run 创建」这一步只读：建 Run 前后配置行不得有任何变化。
+    const before = await api.getPlatformConfig(db)
+    expect(before).not.toBeNull()
     const created = await api.createRunWithSnapshot(db, {
       scenarioId: scenario.id,
       actor,
     })
     expect(created.created).toBe(true)
-    expect(await api.getPlatformConfig(db)).toBeNull()
+    const after = await api.getPlatformConfig(db)
+    expect(after?.revision).toBe(before!.revision)
+    expect(after?.document).toEqual(before!.document)
     expect(created.detail.snapshot.policy?.timeoutMs).toBe(
       FACTORY_PLATFORM_CONFIG.execution.defaultTimeoutMs,
     )
-    expect(created.detail.snapshot.platformConfigRevision).toBeUndefined()
+    // 配置行已存在（保存场景时惰性初始化），快照冻结的就是建 Run 时的当前修订，不多不少。
+    expect(created.detail.snapshot.platformConfigRevision).toBe(before!.revision)
     expect(created.detail.snapshot.targetAuth?.entryUrl).toBe('https://example.com')
   })
 
@@ -443,5 +478,39 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
     expect(next.created).toBe(true)
     expect(next.detail.snapshot.platformConfigRevision).toBe(2)
     expect(next.detail.snapshot.policy?.timeoutMs).toBe(45_000)
+  })
+
+  it('知识分析 useAi 在入队口拒绝缺提供商，不只在执行器失败', async () => {
+    const { db, actor, target } = await fixture(driver)
+    await api.getOrCreatePlatformConfig(db, {
+      document: FACTORY_PLATFORM_CONFIG,
+      reason: '初始化',
+    })
+    const current = (await api.getPlatformConfig(db))!
+    await api.updatePlatformConfig(db, {
+      expectedRevision: current.revision,
+      reason: '启用分析但未选提供商',
+      document: {
+        ...FACTORY_PLATFORM_CONFIG,
+        analysisAi: { ...FACTORY_PLATFORM_CONFIG.analysisAi, enabled: true },
+        platformAi: {
+          ...FACTORY_PLATFORM_CONFIG.platformAi,
+          baseUrl: 'https://api.deepseek.com',
+          model: 'deepseek-chat',
+          secretRef: { provider: 'local', secretId: api.newId() },
+        },
+      },
+      actor,
+    })
+    await expect(
+      api.createAnalysisJob(db, {
+        targetId: target.id,
+        mode: 'map_quality',
+        source: { includeFailures: true },
+        strategyVersion: 'analysis-strategy@1',
+        budget: { maxItems: 1, useAi: true },
+        actor: { kind: 'console', id: actor.id },
+      }),
+    ).rejects.toMatchObject({ code: 'ANALYSIS_CONFIG_INVALID' })
   })
 })

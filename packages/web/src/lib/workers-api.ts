@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import {
   sessionDtoSchema,
   workerDetailResponseSchema,
@@ -29,3 +30,32 @@ export function disposeWorkerSession(sessionId: string, body: DisposeSessionBody
     body: JSON.stringify(body),
   })
 }
+
+export function disableWorker(workerId: string): Promise<unknown> {
+  return apiFetch(`/api/workers/${encodeURIComponent(workerId)}/disable`, z.unknown(), {
+    method: 'POST',
+  })
+}
+
+export function enableWorker(workerId: string): Promise<unknown> {
+  return apiFetch(`/api/workers/${encodeURIComponent(workerId)}/enable`, z.unknown(), {
+    method: 'POST',
+  })
+}
+
+export function removeWorker(workerId: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/workers/${encodeURIComponent(workerId)}/remove`, z.object({ ok: z.boolean() }), {
+    method: 'POST',
+  })
+}
+
+export function purgeStaleWorkers(): Promise<{ purgedCount: number; purgedWorkerIds: string[] }> {
+  return apiFetch(
+    '/api/workers/purge-stale',
+    z.object({ purgedCount: z.number(), purgedWorkerIds: z.array(z.string()) }),
+    {
+      method: 'POST',
+    },
+  )
+}
+

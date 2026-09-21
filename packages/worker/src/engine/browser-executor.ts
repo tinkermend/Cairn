@@ -11,7 +11,8 @@ import {
   type TargetDescriptor,
 } from '@cairn/shared'
 import { MapConsumptionService } from '../map/consumption.service.js'
-import type { BrowserPort } from './ports.js'
+import type { AiPort, BrowserPort } from './ports.js'
+import { persistResolutionDecision, resolutionError, runResolutionLadder } from './resolution-ladder.js'
 import type {
   StepExecutionContext,
   StepExecutionOutcome,
@@ -24,6 +25,7 @@ export class BrowserStepExecutor implements StepExecutor {
   constructor(
     private readonly handle: DbHandle,
     private readonly browser?: BrowserPort,
+    private readonly ai?: AiPort,
     private readonly consumption = new MapConsumptionService(handle, browser),
   ) {}
 
@@ -44,6 +46,24 @@ export class BrowserStepExecutor implements StepExecutor {
       }
     }
 
+    if (step.type === 'wait' && step.input.kind === 'semantic') {
+      const persisted = await persistResolutionDecision(this.handle, ctx, {
+        effectivePolicy: ctx.snapshot.resolution?.steps[step.id] ?? 'deterministic_only',
+        rungs: [],
+        decision: 'failed',
+        reasonCode: 'WAIT_KIND_UNAVAILABLE',
+        evidenceRefs: [],
+      })
+      return {
+        kind: 'failed',
+        error: persisted.ok
+          ? resolutionError('WAIT_KIND_UNAVAILABLE', '语义等待尚未交付，当前部署不能执行')
+          : persisted.error,
+        timedOut: false,
+        aborted: false,
+      }
+    }
+
     const commandOutcome = await this.toBrowserCommand(step, input, targetId, ctx.snapshot)
     if (!commandOutcome.ok) {
       return {
@@ -54,7 +74,7 @@ export class BrowserStepExecutor implements StepExecutor {
       }
     }
 
-    const result = await this.browser.execute(sessionGrant, commandOutcome.command, signal, {
+    const evidence = {
       runId,
       stepRunId,
       attemptId,
@@ -65,38 +85,17 @@ export class BrowserStepExecutor implements StepExecutor {
       commandType: commandOutcome.command.type,
       screenshotViewport: evidencePolicy.screenshotViewport,
       sensitiveSelectors: ctx.snapshot.targetAuth?.sensitiveSelectors ?? [],
+    }
+    return runResolutionLadder({
+      handle: this.handle,
+      ctx,
+      step,
+      command: commandOutcome.command,
+      browser: this.browser,
+      ai: this.ai,
+      consumption: this.consumption,
+      execute: (command) => this.browser!.execute(sessionGrant, command, signal, { ...evidence, commandType: command.type }),
     })
-
-    const followUp = await this.consumption.afterBaseline(ctx, step, result, commandOutcome.command)
-    const finalResult = followUp.kind === 'replaced' ? followUp.result : result
-    if (followUp.kind === 'blocked') {
-      return {
-        kind: 'failed',
-        error: followUp.error,
-        timedOut: false,
-        aborted: false,
-      }
-    }
-
-    if (finalResult.ok) {
-      return {
-        kind: 'success',
-        output: finalResult.output,
-        screenshot: finalResult.screenshot,
-        trace: finalResult.trace,
-      }
-    }
-
-    return {
-      kind: 'failed',
-      error: finalResult.error,
-      output: finalResult.output,
-      diagnostics: finalResult.diagnostics,
-      screenshot: finalResult.screenshot,
-      trace: finalResult.trace,
-      timedOut: false,
-      aborted: false,
-    }
   }
 
   private async toBrowserCommand(
@@ -212,6 +211,12 @@ export class BrowserStepExecutor implements StepExecutor {
     }
 
     if (step.type === 'wait') {
+      if (step.input.kind === 'semantic') {
+        return {
+          ok: false,
+          error: resolutionError('WAIT_KIND_UNAVAILABLE', '语义等待尚未交付，当前部署不能执行'),
+        }
+      }
       const target = descriptorFrom(input) ?? step.input.target
       return {
         ok: true,

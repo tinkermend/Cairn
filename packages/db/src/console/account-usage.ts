@@ -12,7 +12,7 @@ export function assertAccountAllowsMap(usage: string | null | undefined): void {
 
 export function assertAccountAllowsBusiness(usage: string | null | undefined): void {
   if (usage === 'map') {
-    throw conflict('RUN_ACCOUNT_MAP_ONLY', '该账号仅用于地图采集，不能创建场景运行')
+    throw conflict('RUN_ACCOUNT_MAP_ONLY', '该账号只用于知识采集，不能创建场景运行')
   }
 }
 

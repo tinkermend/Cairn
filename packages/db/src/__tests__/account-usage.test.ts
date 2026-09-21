@@ -11,7 +11,7 @@ import {
   writeSchedule,
   type NativeHandle as DbHandle,
 } from '../test-entry.js'
-import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { DRIVERS, openContractDb, grantAdminScope } from './contract-fixture.js'
 
 const echo: Step = {
   id: '00000000-0000-4000-8000-000000000061',
@@ -35,6 +35,7 @@ describe.each(DRIVERS)('%s 账号用途准入', { timeout: 60_000 }, (driver) =>
       email: `usage-${actorId}@example.com`,
       status: 'active',
     })
+    await grantAdminScope(handle.db, actorId)
   })
 
   afterAll(async () => {

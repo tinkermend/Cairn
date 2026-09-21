@@ -159,6 +159,8 @@ export function expectKindLabel(kind: AssertExpect['kind']): string {
       return '文本包含'
     case 'number_compare':
       return '数值比较'
+    case 'aria_snapshot':
+      return '快照匹配'
   }
 }
 

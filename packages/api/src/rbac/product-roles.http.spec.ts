@@ -17,6 +17,7 @@ import { AuditController } from './audit.controller'
 import { RbacService } from './rbac.service'
 import { RecordingsController } from '../recordings/recordings.controller'
 import { RecordingsService } from '../recordings/recordings.service'
+import { RecordingArtifactsService } from '../recordings/artifacts.service'
 import { RunsController } from '../runs/runs.controller'
 import { RunsService } from '../runs/runs.service'
 import { ObserveService } from '../runs/observe.service'
@@ -103,6 +104,8 @@ async function buildApp(account: RequestAccount, services: ReturnType<typeof moc
       Reflector,
       { provide: RbacService, useValue: services.rbac },
       { provide: RecordingsService, useValue: services.recordings },
+      // RecordingsController 的第二个依赖；本 spec 只验证角色能力闸门，不会走到 artifacts 实现。
+      { provide: RecordingArtifactsService, useValue: {} },
       { provide: RunsService, useValue: services.runs },
       { provide: ScenariosService, useValue: services.scenarios },
       { provide: ObserveService, useValue: {} },

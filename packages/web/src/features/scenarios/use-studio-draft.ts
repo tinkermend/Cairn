@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   isAuthoringDocumentV2,
   toAuthoringDocumentV2,
+  type CompileResolutionContext,
   type OutcomeContract,
   type RuntimeInvariant,
   type ScenarioAuthoringDocumentV2,
@@ -34,6 +35,7 @@ export function useStudioDraft(
   server: Baseline | undefined,
   compileTarget?: { exists: boolean; status: 'active' | 'disabled' },
   executableTypes?: readonly string[],
+  compileResolution?: CompileResolutionContext,
 ) {
   const [baseline, setBaseline] = useState<Baseline | null>(null)
   const [candidate, setCandidate] = useState<AuthoringDoc | null>(null)
@@ -131,6 +133,7 @@ export function useStudioDraft(
           mode: 'release',
           target: compileTarget,
           executableTypes,
+          resolution: compileResolution,
           outcomeManifest: deriveOutcomeManifest({ authoringDocument: candidate }) ?? { entries: [] },
         },
       )
@@ -139,10 +142,11 @@ export function useStudioDraft(
       mode: 'release',
       target: compileTarget,
       executableTypes,
+      resolution: compileResolution,
       outcomeManifest:
         deriveOutcomeManifest({ authoringDocument: toAuthoringDocumentV2(candidate) }) ?? { entries: [] },
     })
-  }, [candidate, compileTarget, executableTypes, hasFieldDrafts])
+  }, [candidate, compileResolution, compileTarget, executableTypes, hasFieldDrafts])
 
   const applyStructure = useCallback(
     (next: AuthoringDoc, nextSelected: string | null) => {

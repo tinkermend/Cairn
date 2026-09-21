@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { mapFactViewSchema, type KnowledgeSourceRef } from '@cairn/shared'
 import { apiFetch } from '@/lib/api-client'
 import { Button } from '@/components/ui/button'
+const AnalysisDetailDialog = lazy(() => import('@/features/schedules/analysis-detail').then(module => ({ default: module.AnalysisDetailDialog })))
 
 const LABELS: Record<KnowledgeSourceRef['kind'], string> = {
+  analysis_candidate: '分析候选',
   map_asset: '地图资产',
   map_observation: '页面观察',
   map_verification: '验证事实',
@@ -22,6 +24,7 @@ function SourceItem({
   source: KnowledgeSourceRef
 }) {
   const [opened, setOpened] = useState(false)
+  const [analysisOpen, setAnalysisOpen] = useState(false)
   const fact = useMutation({
     mutationFn: async () => {
       if (
@@ -84,6 +87,7 @@ function SourceItem({
             查看目标知识
           </a>
         ) : null}
+        {source.kind === 'analysis_candidate' ? <Button variant='outline' size='sm' onClick={() => setAnalysisOpen(true)}>查看分析报告与原始来源</Button> : null}
         {source.kind === 'module_version' ? (
           <a
             className='text-link underline'
@@ -98,6 +102,7 @@ function SourceItem({
           </a>
         ) : null}
       </details>
+      {analysisOpen && source.kind === 'analysis_candidate' ? <Suspense fallback={<p role='status'>正在打开分析报告…</p>}><AnalysisDetailDialog jobId={source.jobId} onClose={() => setAnalysisOpen(false)} /></Suspense> : null}
     </li>
   )
 }

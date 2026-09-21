@@ -2,6 +2,7 @@ import {
   EXECUTION_ERROR_CATEGORIES,
   type ExecutionErrorCategory,
   type OutputShape,
+  type ResolutionPolicy,
   type Step,
 } from '@cairn/shared'
 import { Input } from '@/components/ui/input'
@@ -20,6 +21,14 @@ import { AssertFields } from './assert'
 import { BindingFields } from './binding'
 import { CATEGORY_LABELS } from './labels'
 import { TargetFields } from './target'
+
+function policyHandlers(step: Step, onChange: (step: Step) => void) {
+  return {
+    policy: step.policy,
+    onPolicyChange: (policy: { resolution?: ResolutionPolicy; deepLocate?: boolean }) =>
+      onChange({ ...step, policy: { ...step.policy, ...policy } }),
+  }
+}
 
 export function StepFields({
   step,
@@ -173,6 +182,7 @@ export function StepFields({
       <div className='space-y-3'>
         {step.type === 'fill' ? (
           <TargetFields
+            {...policyHandlers(step, onChange)}
             target={step.input.target}
             disabled={disabled}
             onChange={(target) =>
@@ -247,6 +257,7 @@ export function StepFields({
     return (
       <div className='space-y-3'>
         <TargetFields
+          {...policyHandlers(step, onChange)}
           target={step.input.target}
           disabled={disabled}
           onChange={(target) =>
@@ -341,6 +352,7 @@ export function StepFields({
     return (
       <div className='space-y-3'>
         <TargetFields
+          {...policyHandlers(step, onChange)}
           target={step.input.target}
           disabled={disabled}
           onChange={(target) =>
@@ -439,6 +451,7 @@ export function StepFields({
     return (
       <div className='space-y-3'>
         <TargetFields
+          {...policyHandlers(step, onChange)}
           target={step.input.target ?? defaultTarget('焦点元素')}
           optional
           disabled={disabled}
@@ -515,6 +528,13 @@ export function StepFields({
                 })
                 return
               }
+              if (kind === 'semantic') {
+                onChange({
+                  ...step,
+                  input: { kind, text: step.input.text ?? '' },
+                })
+                return
+              }
               onChange({
                 ...step,
                 input: {
@@ -534,6 +554,7 @@ export function StepFields({
               <SelectItem value='hidden'>元素消失</SelectItem>
               <SelectItem value='url'>地址匹配</SelectItem>
               <SelectItem value='text'>包含文本</SelectItem>
+              <SelectItem value='semantic'>语义等待（尚未交付）</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -581,12 +602,33 @@ export function StepFields({
         step.input.kind === 'hidden' ||
         step.input.kind === 'text' ? (
           <TargetFields
+            {...policyHandlers(step, onChange)}
             target={step.input.target ?? defaultTarget('等待元素')}
             disabled={disabled}
             onChange={(target) =>
               onChange({ ...step, input: { ...step.input, target } })
             }
           />
+        ) : null}
+        {step.input.kind === 'semantic' ? (
+          <div className='space-y-2'>
+            <Label htmlFor={`step-wait-semantic-${step.id}`}>等待描述</Label>
+            <Input
+              id={`step-wait-semantic-${step.id}`}
+              disabled={disabled}
+              placeholder='例如：列表出现第一笔订单'
+              value={step.input.text ?? ''}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  input: { kind: 'semantic', text: event.target.value },
+                })
+              }
+            />
+            <p className='text-label text-muted-foreground'>
+              契约已预留，发布前会提示当前部署尚未开放语义等待。
+            </p>
+          </div>
         ) : null}
         {step.input.kind === 'text' ? (
           <div className='space-y-2'>
@@ -616,6 +658,7 @@ export function StepFields({
     return (
       <div className='space-y-3'>
         <TargetFields
+          {...policyHandlers(step, onChange)}
           target={step.input.target}
           disabled={disabled}
           onChange={(target) =>
@@ -673,22 +716,69 @@ export function StepFields({
     )
   }
   if (step.type === 'assert') {
+    const isAriaSnapshot = step.input.expect.kind === 'aria_snapshot'
     return (
       <div className='space-y-3'>
-        <TargetFields
-          target={step.input.target ?? defaultTarget('结果')}
-          disabled={disabled}
-          onChange={(target) =>
-            onChange({ ...step, input: { ...step.input, target } })
-          }
-        />
         <AssertFields
           expect={step.input.expect}
           disabled={disabled}
           onChange={(next) =>
-            onChange({ ...step, input: { ...step.input, expect: next } })
+            onChange({
+              ...step,
+              input: {
+                ...step.input,
+                expect: next,
+                target:
+                  next.kind === 'aria_snapshot'
+                    ? step.input.target
+                    : (step.input.target ?? defaultTarget('结果')),
+              },
+            })
           }
         />
+        {isAriaSnapshot ? (
+          <div className='space-y-2 pt-1 border-t border-border/40'>
+            <label className='flex items-center gap-2 text-small'>
+              <input
+                type='checkbox'
+                checked={Boolean(step.input.target)}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange({
+                    ...step,
+                    input: {
+                      ...step.input,
+                      target: event.target.checked
+                        ? (step.input.target ?? defaultTarget('断言作用域'))
+                        : undefined,
+                    },
+                  })
+                }
+              />
+              限定目标作用域（缺省匹配整页 body）
+            </label>
+            {step.input.target ? (
+              <TargetFields
+                {...policyHandlers(step, onChange)}
+                target={step.input.target}
+                optional
+                disabled={disabled}
+                onChange={(target) =>
+                  onChange({ ...step, input: { ...step.input, target } })
+                }
+              />
+            ) : null}
+          </div>
+        ) : (
+          <TargetFields
+            {...policyHandlers(step, onChange)}
+            target={step.input.target ?? defaultTarget('结果')}
+            disabled={disabled}
+            onChange={(target) =>
+              onChange({ ...step, input: { ...step.input, target } })
+            }
+          />
+        )}
       </div>
     )
   }

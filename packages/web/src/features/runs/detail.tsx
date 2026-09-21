@@ -32,6 +32,7 @@ import { BrowserView } from './browser-view'
 import { RunVideoSection } from './run-video'
 import { RunMapClues } from '@/features/map/run-clues'
 import { RunMapConsumption, RunMapDecisions } from './map-decisions'
+import { RunResolutionDecisions } from './resolution-decisions'
 import { PlacementHint } from './placement-hint'
 import { DebugHoldBar } from './debug-hold-bar'
 import { StepTimeline } from './step-timeline'
@@ -84,7 +85,7 @@ export function RunDetailPage() {
               </Button>
               <Button variant='outline' asChild>
                 <Link to='/evidence' search={{ runId, tab: 'search' }}>
-                  在证据与报告中查看
+                  在结果与报告中查看
                 </Link>
               </Button>
               {run?.suiteRunId ? (
@@ -370,6 +371,7 @@ export function RunDetailPage() {
                 {/* 地图决策与线索 */}
                 <RunMapClues targetId={run.targetId} runId={run.id} />
                 <RunMapDecisions key={run.id} runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} />
+                <RunResolutionDecisions key={run.id} runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} />
 
                 {/* Context 卡片 */}
                 <section className='rounded-lg border border-border-card bg-card p-5 shadow-card'>

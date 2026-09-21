@@ -2,27 +2,58 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { type NotificationStatus } from '@cairn/shared'
+import {
+  AlertTriangle,
+  Bell,
+  CheckCircle2,
+  ExternalLink,
+  Radio,
+  RefreshCw,
+  Send,
+  Workflow,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import {
+  fetchNotificationChannels,
   fetchNotificationEvent,
   fetchNotificationEvents,
-  notificationReceipt,
   notificationCommandKey,
+  notificationReceipt,
   postNotification,
   subscribeNotifications,
 } from '@/lib/notifications-api'
 import { fetchTargets } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
+import { useCursorPage } from '@/hooks/use-cursor-page'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { CollectionSummary } from '@/components/collection-summary'
+import { CursorPagination } from '@/components/data-table'
+import { EmptyState } from '@/components/empty-state'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { StatusBadge } from '@/components/status-badge'
@@ -30,6 +61,7 @@ import {
   RUN_EXECUTION_AXIS_LABELS,
   RUN_OUTCOME_STATUS_LABELS,
 } from '@/features/runs/outcome-labels'
+import { cn } from '@/lib/utils'
 import { NotificationChannelsPanel } from './channels'
 import { NotificationRulesPanel, NotificationAlertRules } from './rules'
 
@@ -42,12 +74,14 @@ export const statusLabels: Record<NotificationStatus, string> = {
   unknown: '结果不明',
   suppressed: '已停止发送',
 }
+
 export const stateLabels = {
   waiting_result: '等待结果汇总',
   filtered: '未满足通知条件',
   suppressed: '已停止发送',
   ready: '已生成摘要',
 }
+
 export function Field({
   label,
   children,
@@ -65,6 +99,7 @@ export function Field({
     </label>
   )
 }
+
 export function Failure({ message }: { message?: string }) {
   const ref = useRef<HTMLParagraphElement>(null)
   useEffect(() => {
@@ -81,6 +116,7 @@ export function Failure({ message }: { message?: string }) {
     </p>
   ) : null
 }
+
 export function NotificationsPage() {
   const search = useSearch({ from: '/_authenticated/notifications/' }),
     navigate = useNavigate()
@@ -90,11 +126,69 @@ export function NotificationsPage() {
     canMonitor = useCan('monitor:read')
   const tab =
     search.tab ?? (canRead ? 'records' : canConfig ? 'channels' : 'results')
+
+  const channelsQuery = useQuery({
+    queryKey: ['notification-channels'],
+    queryFn: () => fetchNotificationChannels(),
+    enabled: canConfig,
+  })
+
+  const recordsQuery = useQuery({
+    queryKey: ['notifications', { limit: 20 }],
+    queryFn: () => fetchNotificationEvents({ limit: 20 }),
+    enabled: canRead,
+  })
+
+  const recordsItems = recordsQuery.data?.items ?? []
+  const channelsItems = channelsQuery.data?.channels ?? []
+
+  const acceptedCount = recordsItems.filter((e) =>
+    e.deliveries.some((d) => d.status === 'accepted')
+  ).length
+  const issueCount = recordsItems.filter((e) =>
+    e.deliveries.some((d) => ['failed', 'unknown'].includes(d.status))
+  ).length
+  const activeChannelsCount = channelsItems.filter(
+    (c) => c.enabled && !c.revoked
+  ).length
+
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
       <PageHeader
-        title='通知管理'
+        title='通知'
         description='集中管理场景运行结果、告警与发送渠道。每个目的地的投递结果独立记录。'
+      />
+      <CollectionSummary
+        items={[
+          {
+            label: '本页记录',
+            value: recordsItems.length,
+            description: '当前已加载的通知事件',
+            icon: <Bell className='size-4 text-primary' />,
+          },
+          {
+            label: '对方已接受',
+            value: acceptedCount,
+            description: '服务器成功接收的通知',
+            icon: (
+              <CheckCircle2 className='size-4 text-status-success-foreground' />
+            ),
+          },
+          {
+            label: '待处理异常',
+            value: issueCount,
+            description: '发送失败或结果不明的项',
+            icon: (
+              <AlertTriangle className='size-4 text-status-warning-foreground' />
+            ),
+          },
+          {
+            label: '可用渠道',
+            value: activeChannelsCount,
+            description: '已启用且未撤销的渠道',
+            icon: <Radio className='size-4 text-primary' />,
+          },
+        ]}
       />
       <Tabs
         value={tab}
@@ -105,7 +199,7 @@ export function NotificationsPage() {
           })
         }
       >
-        <TabsList className='mb-5 flex h-auto w-full flex-wrap justify-start gap-1 sm:w-fit'>
+        <TabsList className='border-b-0'>
           {canRead && <TabsTrigger value='records'>通知记录</TabsTrigger>}
           {canWorkflow && <TabsTrigger value='results'>结果通知</TabsTrigger>}
           {canMonitor && <TabsTrigger value='alerts'>告警通知</TabsTrigger>}
@@ -134,6 +228,7 @@ export function NotificationsPage() {
     </Main>
   )
 }
+
 function NotificationRecords({
   runId,
   alertId,
@@ -141,23 +236,24 @@ function NotificationRecords({
   runId?: string
   alertId?: string
 }) {
+  const page = useCursorPage()
   const [type, setType] = useState(''),
     [status, setStatus] = useState(''),
     [targetId, setTargetId] = useState('')
   const [from, setFrom] = useState(''),
-    [to, setTo] = useState(''),
-    [cursor, setCursor] = useState<string>()
+    [to, setTo] = useState('')
   const [detailId, setDetailId] = useState<string>(),
     [streamError, setStreamError] = useState(''),
     [refresh, setRefresh] = useState(0)
   const client = useQueryClient()
-  const [targetSearch, setTargetSearch] = useState('')
   const canTargets = useCan('target:read')
+
   const targets = useQuery({
-    queryKey: ['notification-targets', targetSearch],
-    queryFn: () => fetchTargets({ search: targetSearch, limit: 100 }),
+    queryKey: ['notification-targets'],
+    queryFn: () => fetchTargets({ limit: 100 }),
     enabled: canTargets,
   })
+
   const filter = useMemo(
     () => ({
       type: type || undefined,
@@ -167,22 +263,22 @@ function NotificationRecords({
       alertId,
       from: from ? new Date(from).toISOString() : undefined,
       to: to ? new Date(to).toISOString() : undefined,
+      limit: page.pageSize,
+      cursor: page.cursor,
     }),
-    [type, status, targetId, runId, alertId, from, to]
+    [type, status, targetId, runId, alertId, from, to, page.pageSize, page.cursor]
   )
-  const query = useMemo(() => ({ ...filter, cursor }), [filter, cursor])
+
   const list = useQuery({
-    queryKey: ['notifications', query],
-    queryFn: () => fetchNotificationEvents(query),
+    queryKey: ['notifications', filter],
+    queryFn: () => fetchNotificationEvents(filter),
   })
-  useEffect(() => {
-    setCursor(undefined)
-  }, [filter])
+
   useEffect(() => {
     const abort = new AbortController()
     setStreamError('')
-    void subscribeNotifications(query, abort.signal, (value) => {
-      client.setQueryData(['notifications', query], value)
+    void subscribeNotifications(filter, abort.signal, (value) => {
+      client.setQueryData(['notifications', filter], value)
     })
       .then(() => {
         if (!abort.signal.aborted)
@@ -193,187 +289,290 @@ function NotificationRecords({
           setStreamError('实时连接暂不可用，已保留最近记录。')
       })
     return () => abort.abort()
-  }, [query, client, refresh])
+  }, [filter, client, refresh])
+
+  const handleStatusChange = (val: string) => {
+    setStatus(val)
+    page.reset()
+  }
+
+  const handleTypeChange = (val: string) => {
+    setType(val === 'all' ? '' : val)
+    page.reset()
+  }
+
+  const handleTargetChange = (val: string) => {
+    setTargetId(val === 'all' ? '' : val)
+    page.reset()
+  }
+
+  const items = list.data?.items ?? []
+
   return (
     <div className='space-y-4'>
-      <div className='flex flex-wrap items-end gap-3'>
-        <Field label='通知类型'>
-          <select
-            className='h-9 rounded-md border border-input bg-background px-3'
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-          >
-            <option value=''>全部</option>
-            <option value='run'>运行结果</option>
-            <option value='alert'>告警</option>
-            <option value='test'>渠道测试</option>
-          </select>
-        </Field>
-        <Field label='投递状态'>
-          <select
-            className='h-9 rounded-md border border-input bg-background px-3'
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-          >
-            <option value=''>全部</option>
-            {Object.entries(statusLabels).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {canTargets && (
-          <Field label='目标'>
-            <Input
-              aria-label='搜索通知目标'
-              value={targetSearch}
-              onChange={(e) => setTargetSearch(e.target.value)}
-              placeholder='搜索目标名称'
-            />
-            <select
-              className='h-9 max-w-56 rounded-md border border-input bg-background px-3'
-              aria-label='筛选通知目标'
-              value={targetId}
-              onChange={(e) => setTargetId(e.target.value)}
-            >
-              <option value=''>全部目标</option>
-              {targets.data?.items.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-        <Field label='开始时间'>
-          <Input
-            type='datetime-local'
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-          />
-        </Field>
-        <Field label='结束时间'>
-          <Input
-            type='datetime-local'
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-          />
-        </Field>
-        <Button
-          variant='outline'
-          onClick={() => {
-            setRefresh((v) => v + 1)
-            void list.refetch()
-          }}
-        >
-          刷新
-        </Button>
-      </div>
-      {(runId || alertId) && (
-        <p className='text-label text-muted-foreground'>
-          当前仅显示此{runId ? '运行' : '告警'}的通知。
-          <Link
-            to='/notifications'
-            search={{ tab: 'records' }}
-            className='ml-2 underline'
-          >
-            查看全部
-          </Link>
-        </p>
-      )}
-      <Failure message={list.error?.message || streamError} />
-      {list.isPending ? (
-        <p role='status'>正在加载通知…</p>
-      ) : list.data?.items.length === 0 ? (
-        <div className='rounded-lg border border-dashed p-8 text-center text-muted-foreground'>
-          暂无符合条件的通知。启用结果通知或告警规则后，记录会显示在这里。
-        </div>
-      ) : null}
-      <div className='space-y-3'>
-        {list.data?.items.map((event) => (
-          <article
-            key={event.id}
-            className='rounded-lg border border-border p-4'
-          >
-            <div className='flex flex-wrap items-start justify-between gap-2'>
-              <div className='min-w-0'>
-                <h2 className='text-body font-semibold break-words'>
-                  {event.payload?.title ??
-                    (event.type === 'run.finished' ? '运行结果通知' : '通知')}
-                </h2>
-                <p className='mt-1 text-label text-muted-foreground'>
-                  {new Date(event.occurredAt).toLocaleString()} ·{' '}
-                  {stateLabels[event.state]}
-                </p>
-              </div>
+      <div className='min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>
+        <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-divider p-4'>
+          <div className='flex flex-wrap gap-1' aria-label='投递状态筛选'>
+            {[
+              ['', '全部状态'],
+              ['accepted', '对方已接受'],
+              ['failed', '发送失败'],
+              ['unknown', '结果不明'],
+              ['retry_wait', '等待重试'],
+            ].map(([val, label]) => (
               <Button
-                variant='outline'
+                key={val}
+                variant={status === val ? 'secondary' : 'ghost'}
                 size='sm'
-                onClick={() => setDetailId(event.id)}
+                onClick={() => handleStatusChange(val)}
               >
-                查看详情
+                {label}
               </Button>
-            </div>
-            <div className='mt-3 flex flex-wrap gap-2'>
-              {event.deliveries.map((d) => (
-                <StatusBadge
-                  key={d.id}
-                  tone={
-                    d.status === 'accepted'
-                      ? 'success'
-                      : ['failed', 'unknown'].includes(d.status)
-                        ? 'warning'
-                        : 'neutral'
-                  }
-                >
-                  {d.channelName} · {statusLabels[d.status]}
-                </StatusBadge>
-              ))}
-            </div>
-            {event.reason && (
-              <p className='mt-2 text-label text-muted-foreground'>
-                {reasonLabel(event.reason)}
-              </p>
+            ))}
+          </div>
+          <div className='flex flex-wrap items-center gap-2'>
+            <Select value={type || 'all'} onValueChange={handleTypeChange}>
+              <SelectTrigger className='h-8 w-32' aria-label='通知类型'>
+                <SelectValue placeholder='全部类型' />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='all'>全部类型</SelectItem>
+                <SelectItem value='run'>运行结果</SelectItem>
+                <SelectItem value='alert'>告警通知</SelectItem>
+                <SelectItem value='test'>渠道测试</SelectItem>
+              </SelectContent>
+            </Select>
+            {canTargets && (
+              <Select
+                value={targetId || 'all'}
+                onValueChange={handleTargetChange}
+              >
+                <SelectTrigger className='h-8 w-36' aria-label='目标系统'>
+                  <SelectValue placeholder='全部目标' />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='all'>全部目标</SelectItem>
+                  {targets.data?.items.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
-          </article>
-        ))}
+            <Button
+              variant='outline'
+              size='sm'
+              className='h-8'
+              onClick={() => {
+                setRefresh((v) => v + 1)
+                void list.refetch()
+              }}
+            >
+              <RefreshCw
+                className={cn('size-3.5', list.isFetching && 'animate-spin')}
+              />
+              刷新
+            </Button>
+          </div>
+        </div>
+
+        {(runId || alertId) && (
+          <div className='border-b border-border-divider bg-surface-subtle px-4 py-2 text-label text-muted-foreground'>
+            当前仅显示此{runId ? '运行' : '告警'}的通知。
+            <Link
+              to='/notifications'
+              search={{ tab: 'records' }}
+              className='ml-2 font-medium text-primary hover:underline'
+            >
+              查看全部记录
+            </Link>
+          </div>
+        )}
+
+        <Failure message={list.error?.message || streamError} />
+
+        {list.isPending ? (
+          <div className='p-8 text-center text-body text-muted-foreground'>
+            正在加载通知…
+          </div>
+        ) : items.length === 0 ? (
+          <EmptyState
+            title={
+              status || type || targetId
+                ? '没有匹配的通知记录'
+                : '暂无符合条件的通知'
+            }
+            description={
+              status || type || targetId
+                ? '试试清除或调整筛选条件。'
+                : '启用结果通知或告警规则后，记录会显示在这里。'
+            }
+            action={
+              status || type || targetId ? (
+                <Button
+                  variant='outline'
+                  onClick={() => {
+                    setStatus('')
+                    setType('')
+                    setTargetId('')
+                    setFrom('')
+                    setTo('')
+                    page.reset()
+                  }}
+                >
+                  清除筛选
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className='w-[36%]'>事件 / 标题</TableHead>
+                <TableHead className='w-[18%]'>触发时间</TableHead>
+                <TableHead className='w-[14%]'>汇总状态</TableHead>
+                <TableHead className='w-[22%]'>投递渠道与回执</TableHead>
+                <TableHead className='w-[10%] text-right'>操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((event) => (
+                <TableRow
+                  key={event.id}
+                  className='cursor-pointer'
+                  onClick={() => setDetailId(event.id)}
+                >
+                  <TableCell className='py-3'>
+                    <div className='flex items-center gap-3'>
+                      <span
+                        aria-hidden='true'
+                        className='flex size-8 shrink-0 items-center justify-center rounded-md border border-border-default bg-card text-primary'
+                      >
+                        {event.type === 'run.finished' ? (
+                          <Workflow className='size-4' />
+                        ) : event.type.startsWith('alert') ? (
+                          <AlertTriangle className='size-4 text-status-warning-foreground' />
+                        ) : event.type === 'channel.test' ? (
+                          <Send className='size-4 text-muted-foreground' />
+                        ) : (
+                          <Bell className='size-4' />
+                        )}
+                      </span>
+                      <div className='min-w-0'>
+                        <p className='truncate font-medium text-text-primary text-body'>
+                          {event.payload?.title ??
+                            (event.type === 'run.finished'
+                              ? '运行结果通知'
+                              : '通知')}
+                        </p>
+                        <div className='mt-0.5 flex flex-wrap items-center gap-1.5 text-label text-muted-foreground'>
+                          {event.runId && (
+                            <span>运行 #{event.runId.slice(0, 8)}</span>
+                          )}
+                          {event.alertId && (
+                            <span>告警 #{event.alertId.slice(0, 8)}</span>
+                          )}
+                          {event.reason && (
+                            <span>· {reasonLabel(event.reason)}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell className='text-label text-muted-foreground'>
+                    {new Date(event.occurredAt).toLocaleString()}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge
+                      tone={
+                        event.state === 'ready'
+                          ? 'success'
+                          : event.state === 'waiting_result'
+                            ? 'info'
+                            : event.state === 'suppressed'
+                              ? 'warning'
+                              : 'neutral'
+                      }
+                    >
+                      {stateLabels[event.state]}
+                    </StatusBadge>
+                  </TableCell>
+                  <TableCell>
+                    <div className='flex flex-wrap gap-1.5'>
+                      {event.deliveries.map((d) => (
+                        <StatusBadge
+                          key={d.id}
+                          tone={
+                            d.status === 'accepted'
+                              ? 'success'
+                              : d.status === 'failed'
+                                ? 'error'
+                                : ['unknown', 'retry_wait'].includes(d.status)
+                                  ? 'warning'
+                                  : 'neutral'
+                          }
+                        >
+                          {d.channelName} · {statusLabels[d.status]}
+                        </StatusBadge>
+                      ))}
+                    </div>
+                  </TableCell>
+                  <TableCell className='text-right'>
+                    <Button
+                      variant='ghost'
+                      size='sm'
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setDetailId(event.id)
+                      }}
+                    >
+                      详情
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+
+        <div className='border-t border-border-divider p-4'>
+          <CursorPagination
+            pageIndex={page.pageIndex}
+            pageSize={page.pageSize}
+            hasPreviousPage={page.pageIndex > 0}
+            hasNextPage={Boolean(list.data?.nextCursor)}
+            updating={list.isFetching}
+            onPageSizeChange={page.setPageSize}
+            onPreviousPage={page.goPrev}
+            onNextPage={() => {
+              if (list.data?.nextCursor) page.goNext(list.data.nextCursor)
+            }}
+          />
+        </div>
       </div>
-      <div className='flex justify-end gap-2'>
-        <Button
-          variant='outline'
-          disabled={!cursor}
-          onClick={() => setCursor(undefined)}
-        >
-          返回首页
-        </Button>
-        <Button
-          variant='outline'
-          disabled={!list.data?.nextCursor}
-          onClick={() => setCursor(list.data?.nextCursor ?? undefined)}
-        >
-          下一页
-        </Button>
-      </div>
-      <Dialog
+
+      <Sheet
         open={Boolean(detailId)}
         onOpenChange={(open) => {
           if (!open) setDetailId(undefined)
         }}
       >
-        <DialogContent className='max-h-[85vh] overflow-y-auto sm:max-w-2xl'>
-          <DialogHeader>
-            <DialogTitle>通知详情</DialogTitle>
-            <DialogDescription>
+        <SheetContent className='w-full overflow-y-auto sm:max-w-xl'>
+          <SheetHeader>
+            <SheetTitle>通知详情</SheetTitle>
+            <SheetDescription>
               “对方已接受”表示服务器接收成功，不代表邮件已读。
-            </DialogDescription>
-          </DialogHeader>
+            </SheetDescription>
+          </SheetHeader>
           {detailId && <NotificationDetail id={detailId} />}
-        </DialogContent>
-      </Dialog>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
+
 function NotificationDetail({ id }: { id: string }) {
   const detail = useQuery({
     queryKey: ['notification-detail', id],
@@ -392,6 +591,7 @@ function NotificationDetail({ id }: { id: string }) {
     [confirmed, setConfirmed] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('')
+
   async function act() {
     if (!operation) return
     setBusy(true)
@@ -412,159 +612,226 @@ function NotificationDetail({ id }: { id: string }) {
       setBusy(false)
     }
   }
+
   const event = detail.data
   return (
-    <div className='space-y-4'>
+    <div className='space-y-5 px-6 pb-6'>
       <Failure message={detail.error?.message || error} />
       {event && (
         <>
-          <p className='text-body font-medium'>
-            {event.payload?.title ?? stateLabels[event.state]}
-          </p>
-          {event.payload?.status && (
-            <dl className='grid grid-cols-2 gap-2 text-body'>
-              <dt>执行状态</dt>
-              <dd>{RUN_EXECUTION_AXIS_LABELS[event.payload.status]}</dd>
-              <dt>业务结果</dt>
-              <dd>
-                {event.payload.outcomeStatus &&
-                  RUN_OUTCOME_STATUS_LABELS[event.payload.outcomeStatus]}
-              </dd>
-              <dt>证据状态</dt>
-              <dd>
-                {event.payload.evidenceStatus &&
-                  {
-                    PENDING: '证据收集中',
-                    COMPLETE: '证据完整',
-                    INCOMPLETE: '证据不完整',
-                  }[event.payload.evidenceStatus]}
-              </dd>
-            </dl>
-          )}
-          {event.payload?.summaryStage === 'evidence_pending' && (
-            <p className='text-label text-muted-foreground'>
-              汇总时证据仍在收集，后续补齐不会再次通知。
-            </p>
-          )}
-          {event.runId && (
-            <Button variant='outline' asChild>
-              <Link to='/runs/$runId' params={{ runId: event.runId }}>
-                查看运行
-              </Link>
-            </Button>
-          )}
-          {event.alertId && (
-            <Button variant='outline' asChild>
-              <Link to='/monitoring'>查看告警</Link>
-            </Button>
-          )}
-          {event.deliveries.map((d) => (
-            <section
-              key={d.id}
-              className='space-y-2 rounded-md border border-border p-3'
-            >
-              <div className='flex flex-wrap justify-between gap-2'>
-                <strong className='text-body'>{d.channelName}</strong>
-                <StatusBadge
-                  tone={
-                    d.status === 'accepted'
-                      ? 'success'
-                      : d.status === 'failed'
-                        ? 'error'
-                        : d.status === 'unknown'
-                          ? 'warning'
-                          : 'neutral'
-                  }
-                >
-                  {statusLabels[d.status]}
-                  {d.closedAt ? ' · 已结案' : ''}
-                </StatusBadge>
+          <div className='rounded-lg border border-border-card bg-card p-4 shadow-card'>
+            <div className='flex items-start justify-between gap-2'>
+              <div>
+                <h3 className='font-semibold text-text-primary text-body'>
+                  {event.payload?.title ?? stateLabels[event.state]}
+                </h3>
+                <p className='mt-1 text-label text-muted-foreground'>
+                  触发时间：{new Date(event.occurredAt).toLocaleString()} ·{' '}
+                  {stateLabels[event.state]}
+                </p>
               </div>
-              <p className='text-label break-all text-muted-foreground'>
-                {d.recipientLabel} · 自动尝试 {d.automaticAttemptCount}/5
+              <StatusBadge
+                tone={
+                  event.state === 'ready'
+                    ? 'success'
+                    : event.state === 'waiting_result'
+                      ? 'info'
+                      : event.state === 'suppressed'
+                        ? 'warning'
+                        : 'neutral'
+                }
+              >
+                {stateLabels[event.state]}
+              </StatusBadge>
+            </div>
+
+            {event.payload?.status && (
+              <div className='mt-4 grid grid-cols-3 gap-2 border-t border-border-divider pt-3 text-center'>
+                <div className='rounded-md bg-surface-subtle p-2'>
+                  <p className='text-label text-muted-foreground'>执行状态</p>
+                  <p className='mt-0.5 font-medium text-text-primary text-body'>
+                    {RUN_EXECUTION_AXIS_LABELS[event.payload.status]}
+                  </p>
+                </div>
+                <div className='rounded-md bg-surface-subtle p-2'>
+                  <p className='text-label text-muted-foreground'>业务结果</p>
+                  <p className='mt-0.5 font-medium text-text-primary text-body'>
+                    {event.payload.outcomeStatus
+                      ? RUN_OUTCOME_STATUS_LABELS[event.payload.outcomeStatus]
+                      : '—'}
+                  </p>
+                </div>
+                <div className='rounded-md bg-surface-subtle p-2'>
+                  <p className='text-label text-muted-foreground'>证据状态</p>
+                  <p className='mt-0.5 font-medium text-text-primary text-body'>
+                    {event.payload.evidenceStatus
+                      ? {
+                          PENDING: '收集中',
+                          COMPLETE: '完整',
+                          INCOMPLETE: '不完整',
+                        }[event.payload.evidenceStatus]
+                      : '—'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {event.payload?.summaryStage === 'evidence_pending' && (
+              <p className='mt-3 text-label text-status-warning-foreground'>
+                汇总时证据仍在收集，后续补齐不会再次通知。
               </p>
-              {d.reason && (
-                <p className='text-label'>{reasonLabel(d.reason)}</p>
+            )}
+
+            <div className='mt-4 flex flex-wrap gap-2'>
+              {event.runId && (
+                <Button size='sm' variant='outline' asChild>
+                  <Link to='/runs/$runId' params={{ runId: event.runId }}>
+                    <ExternalLink className='size-3.5' />
+                    查看对应运行
+                  </Link>
+                </Button>
               )}
-              {d.nextAttemptAt && (
-                <p className='text-label'>
-                  计划重试：{new Date(d.nextAttemptAt).toLocaleString()}
-                </p>
+              {event.alertId && (
+                <Button size='sm' variant='outline' asChild>
+                  <Link to='/monitoring'>
+                    <ExternalLink className='size-3.5' />
+                    查看对应告警
+                  </Link>
+                </Button>
               )}
-              {d.attempts?.map((a) => (
-                <p key={a.id} className='text-label text-muted-foreground'>
-                  第 {a.attemptNo} 次 ·{' '}
-                  {a.origin === 'manual' ? '人工' : '自动'} ·{' '}
-                  {a.result ? statusLabels[a.result] : '进行中'}
-                  {a.errorCode ? ` · ${reasonLabel(a.errorCode)}` : ''}
+            </div>
+          </div>
+
+          <div className='space-y-3'>
+            <h4 className='font-semibold text-text-primary text-section'>
+              投递渠道与尝试记录
+            </h4>
+            {event.deliveries.map((d) => (
+              <section
+                key={d.id}
+                className='space-y-2.5 rounded-lg border border-border-card bg-card p-4 shadow-card'
+              >
+                <div className='flex flex-wrap items-center justify-between gap-2'>
+                  <strong className='font-semibold text-text-primary text-body'>
+                    {d.channelName}
+                  </strong>
+                  <StatusBadge
+                    tone={
+                      d.status === 'accepted'
+                        ? 'success'
+                        : d.status === 'failed'
+                          ? 'error'
+                          : ['unknown', 'retry_wait'].includes(d.status)
+                            ? 'warning'
+                            : 'neutral'
+                    }
+                  >
+                    {statusLabels[d.status]}
+                    {d.closedAt ? ' · 已结案' : ''}
+                  </StatusBadge>
+                </div>
+                <p className='text-label text-muted-foreground break-all'>
+                  接收方：{d.recipientLabel} · 自动尝试{' '}
+                  {d.automaticAttemptCount}/5 次
                 </p>
-              ))}
-              {canOperate &&
-                (!event.alertId || canMonitor) &&
-                !d.closedAt &&
-                ['failed', 'unknown'].includes(d.status) && (
-                  <div className='flex gap-2'>
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      onClick={() => {
-                        setOperation({
-                          deliveryId: d.id,
-                          action: 'retry',
-                          unknown: d.status === 'unknown',
-                          key: notificationCommandKey(),
-                        })
-                        setReason('')
-                        setConfirmed(false)
-                      }}
-                    >
-                      再次发送
-                    </Button>
-                    {d.status === 'unknown' && (
+                {d.reason && (
+                  <p className='text-label text-destructive'>
+                    原因：{reasonLabel(d.reason)}
+                  </p>
+                )}
+                {d.nextAttemptAt && (
+                  <p className='text-label text-muted-foreground'>
+                    计划重试时间：{new Date(d.nextAttemptAt).toLocaleString()}
+                  </p>
+                )}
+                {d.attempts && d.attempts.length > 0 && (
+                  <div className='mt-2 space-y-1 rounded-md bg-surface-subtle p-2.5'>
+                    <p className='text-label font-medium text-muted-foreground'>
+                      尝试记录：
+                    </p>
+                    {d.attempts.map((a) => (
+                      <p
+                        key={a.id}
+                        className='text-label text-muted-foreground'
+                      >
+                        第 {a.attemptNo} 次 ·{' '}
+                        {a.origin === 'manual' ? '人工重试' : '自动尝试'} ·{' '}
+                        {a.result ? statusLabels[a.result] : '进行中'}
+                        {a.errorCode ? ` · ${reasonLabel(a.errorCode)}` : ''}
+                      </p>
+                    ))}
+                  </div>
+                )}
+                {canOperate &&
+                  (!event.alertId || canMonitor) &&
+                  !d.closedAt &&
+                  ['failed', 'unknown'].includes(d.status) && (
+                    <div className='mt-3 flex gap-2 border-t border-border-divider pt-3'>
                       <Button
                         size='sm'
                         variant='outline'
                         onClick={() => {
                           setOperation({
                             deliveryId: d.id,
-                            action: 'close',
-                            unknown: true,
+                            action: 'retry',
+                            unknown: d.status === 'unknown',
                             key: notificationCommandKey(),
                           })
                           setReason('')
                           setConfirmed(false)
                         }}
                       >
-                        结案
+                        再次发送
                       </Button>
-                    )}
-                  </div>
-                )}
-            </section>
-          ))}
+                      {d.status === 'unknown' && (
+                        <Button
+                          size='sm'
+                          variant='outline'
+                          onClick={() => {
+                            setOperation({
+                              deliveryId: d.id,
+                              action: 'close',
+                              unknown: true,
+                              key: notificationCommandKey(),
+                            })
+                            setReason('')
+                            setConfirmed(false)
+                          }}
+                        >
+                          结案
+                        </Button>
+                      )}
+                    </div>
+                  )}
+              </section>
+            ))}
+          </div>
+
           {operation && (
-            <section className='space-y-3 rounded-md border border-border p-3'>
-              <h3 className='font-semibold'>
+            <section className='space-y-3 rounded-lg border border-border-card bg-surface-subtle p-4 shadow-card'>
+              <h3 className='font-semibold text-text-primary text-body'>
                 {operation.action === 'retry' ? '确认再次发送' : '确认结案'}
               </h3>
               <Field label='处理原因'>
                 <Input
                   value={reason}
+                  placeholder='填写操作原因以供审计'
                   onChange={(e) => setReason(e.target.value)}
                   maxLength={512}
                 />
               </Field>
               {operation.unknown && operation.action === 'retry' && (
                 <label className='flex items-start gap-2 text-body'>
-                  <input
-                    type='checkbox'
+                  <Checkbox
                     checked={confirmed}
-                    onChange={(e) => setConfirmed(e.target.checked)}
+                    onCheckedChange={(checked) => setConfirmed(Boolean(checked))}
                   />
-                  原发送可能已被接受，我确认再次发送可能产生重复通知。
+                  <span>
+                    原发送可能已被接受，我确认再次发送可能产生重复通知。
+                  </span>
                 </label>
               )}
-              <div className='flex gap-2'>
+              <div className='flex gap-2 pt-2'>
                 <Button
                   disabled={
                     busy ||
@@ -592,6 +859,7 @@ function NotificationDetail({ id }: { id: string }) {
     </div>
   )
 }
+
 export function reasonLabel(reason: string) {
   const labels: Record<string, string> = {
     authorization_revoked: '原发送授权已撤销',

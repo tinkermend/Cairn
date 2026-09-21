@@ -247,4 +247,43 @@ describe('useRunObservation', () => {
     await expect.element(screen.getByText('实时未配置')).toBeInTheDocument()
     await expect.element(screen.getByText('RUNNING')).toBeInTheDocument()
   })
+
+  it('持续稀疏事件按最小间隔节流，不再逐事件拉全量', async () => {
+    let calls = 0
+    mocks.fetchRunObservation.mockImplementation(async () => {
+      calls += 1
+      return observationOf(runDetail({ status: 'RUNNING' }), 5)
+    })
+    const stream = captureSubscribe()
+    const { screen } = await renderHook()
+    await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
+    const afterReady = calls
+    // 每 50ms 一条事件、持续 600ms：无节流时每条都会各自触发一次全量拉取
+    for (let i = 0; i < 12; i += 1) {
+      stream.emitEvent()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    const issued = calls - afterReady
+    expect(issued).toBeGreaterThanOrEqual(1)
+    expect(issued).toBeLessThanOrEqual(4)
+  })
+
+  it('reset 控制帧绕过节流窗口立即校准', async () => {
+    let calls = 0
+    mocks.fetchRunObservation.mockImplementation(async () => {
+      calls += 1
+      return observationOf(runDetail({ status: 'RUNNING' }), 5)
+    })
+    const stream = captureSubscribe()
+    const { screen } = await renderHook()
+    await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
+    const afterReady = calls
+    stream.emitEvent()
+    await vi.waitFor(() => expect(calls).toBeGreaterThan(afterReady))
+    const afterEvent = calls
+    // 紧跟其后的 reset 仍处在节流窗口内，但必须立刻重新拉取
+    stream.emitControl({ kind: 'reset' })
+    await vi.waitFor(() => expect(calls).toBeGreaterThan(afterEvent), { timeout: 200 })
+  })
 })

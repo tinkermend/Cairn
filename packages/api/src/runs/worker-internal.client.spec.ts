@@ -71,7 +71,14 @@ describe('WorkerInternalClient', () => {
     expect(String(error)).not.toMatch(/127\.0\.0\.1|8091|internal/)
   })
 
-  it('不合格入口直接拒绝，不发请求', async () => {
+  // 「网络模式」已废除：非 loopback 的 http:// 现在是合法入口，由部署架构自行决定用不用 TLS。
+  // 入口校验只剩基本合法性，所以这里用现在真正不合格的入口来守住「拒绝且不发请求」：
+  // 请求带着 HMAC 签名头，发给不该发的地方比发不出去更糟。
+  it.each([
+    ['调试端口 9222', 'http://worker.example:9222'],
+    ['地址里带凭据', 'http://user:pass@worker.example:8091'],
+    ['通配主机', 'http://0.0.0.0:8091'],
+  ])('不合格入口（%s）直接拒绝，不发请求', async (_label, endpoint) => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     const client = new WorkerInternalClient()
@@ -80,7 +87,7 @@ describe('WorkerInternalClient', () => {
         ...call,
         method: 'GET',
         timeout: 'headers',
-        endpoint: 'http://worker.example:8091',
+        endpoint,
       }),
     ).rejects.toMatchObject({ code: 'WORKER_UNREACHABLE' })
     expect(fetchMock).not.toHaveBeenCalled()

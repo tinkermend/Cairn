@@ -8,6 +8,8 @@ import {
   DEFAULT_OBJECT_MAX_BYTES,
   ObjectStoreError,
   objectKeyFor,
+  DEV_CREDENTIAL_KEY,
+  DEV_INTERNAL_AUTH_SECRET,
   workerEnvSchema,
 } from '@cairn/shared'
 import { createObjectStore } from '../create-store.js'
@@ -176,9 +178,16 @@ describe('仓根解析', () => {
   })
 })
 
+/** 凭据主密钥与内部 HMAC 必填、无默认值；这里只测对象存储，给两把固定夹具值即可。 */
+const WORKER_SECRETS = {
+  CAIRN_CREDENTIAL_KEY: DEV_CREDENTIAL_KEY,
+  CAIRN_INTERNAL_AUTH_SECRET: DEV_INTERNAL_AUTH_SECRET,
+}
+
 describe('createObjectStore', () => {
   it('local 驱动构造 LocalObjectStore，即使配了 S3 变量', () => {
     const env = workerEnvSchema.parse({
+      ...WORKER_SECRETS,
       CAIRN_OBJECT_STORE: 'local',
       CAIRN_S3_BUCKET: 'ignored',
       CAIRN_S3_ACCESS_KEY: 'ignored',
@@ -191,6 +200,7 @@ describe('createObjectStore', () => {
 
   it('s3 驱动不求值仓根：容器里跑 dist 也能起来', () => {
     const env = workerEnvSchema.parse({
+      ...WORKER_SECRETS,
       CAIRN_OBJECT_STORE: 's3',
       CAIRN_S3_BUCKET: 'cairn-evidence',
       CAIRN_S3_ACCESS_KEY: 'key',
@@ -206,6 +216,7 @@ describe('createObjectStore', () => {
 
   it('local + 绝对路径同样不求值仓根', () => {
     const env = workerEnvSchema.parse({
+      ...WORKER_SECRETS,
       CAIRN_OBJECT_STORE: 'local',
       CAIRN_OBJECT_STORE_DIR: '/var/cairn/objects',
     })
@@ -225,6 +236,7 @@ function loadConfiguredS3Env() {
     return null
   }
   const parsed = workerEnvSchema.safeParse({
+    ...WORKER_SECRETS,
     ...process.env,
     CAIRN_OBJECT_STORE: 's3',
   })

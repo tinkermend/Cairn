@@ -95,7 +95,7 @@ export function ResourceDeleteDialog({
 
       const result = await deleteFn(body)
       if (result && typeof result === 'object' && 'totalObjects' in result && result.totalObjects > 0) {
-        toast.success('业务资源已删除，附件异步清理中')
+        toast.success('业务资源已删除，附件异步清理中，清理结果可前往审计日志查看')
       } else {
         toast.success('已删除')
       }
@@ -159,6 +159,16 @@ export function ResourceDeleteDialog({
                                 <Link
                                   to='/runs/$runId'
                                   params={{ runId: b.id }}
+                                  className='text-primary underline-offset-2 hover:underline'
+                                >
+                                  {b.message}
+                                </Link>
+                              </Can>
+                            ) : b.code === 'SCENARIO_IN_SUITE' && RUN_ID.test(b.id) ? (
+                              <Can permission='suite:read' fallback={b.message}>
+                                <Link
+                                  to='/suites/$suiteId'
+                                  params={{ suiteId: b.id }}
                                   className='text-primary underline-offset-2 hover:underline'
                                 >
                                   {b.message}

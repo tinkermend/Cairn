@@ -1,6 +1,12 @@
 import { ConflictException, NotFoundException } from '@nestjs/common'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { consoleAccounts, newId, openIsolatedDb, type DbHandle } from '@cairn/db/testing'
+import {
+  consoleAccounts,
+  newId,
+  openIsolatedDb,
+  type DbHandle,
+  grantAdminScope,
+} from '@cairn/db/testing'
 import {
   authoringSteps,
   DEV_CREDENTIAL_KEY,
@@ -42,6 +48,8 @@ describe('录制绑定与回填（真实库）', { timeout: 30_000 }, () => {
       { id: actorId, displayName: 'rec-tester', email: `rec-${actorId}@example.com`, status: 'active' },
       { id: otherId, displayName: 'other', email: `rec-${otherId}@example.com`, status: 'active' },
     ])
+    // 只给主 actor 全范围；other 是越权用例里的「另一个用户」，必须保持无范围。
+    await grantAdminScope(handle.db, actorId)
     actor = {
       id: actorId,
       displayName: 'rec-tester',

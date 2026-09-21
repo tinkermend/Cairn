@@ -36,12 +36,46 @@ export class WorkersService {
     }
   }
 
+  async disable(workerId: string) {
+    try {
+      const { disableWorker } = await import('@cairn/db')
+      return await disableWorker(this.handle, workerId)
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async enable(workerId: string) {
+    try {
+      const { enableWorker } = await import('@cairn/db')
+      return await enableWorker(this.handle, workerId)
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async remove(workerId: string) {
+    try {
+      const { deregisterWorker } = await import('@cairn/db')
+      await deregisterWorker(this.handle, workerId)
+      return { ok: true }
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async purgeStale() {
+    try {
+      const { purgeStaleWorkers } = await import('@cairn/db')
+      return await purgeStaleWorkers(this.handle)
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
   private options(permissions: readonly string[]) {
     return {
-      networkMode: config.CAIRN_WORKER_NETWORK_MODE,
-      envEndpoints: parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS, {
-        networkMode: config.CAIRN_WORKER_NETWORK_MODE,
-      }),
+      envEndpoints: parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS),
       canSeeEndpoint: canSeeWorkerInternalEndpoint(permissions),
     }
   }

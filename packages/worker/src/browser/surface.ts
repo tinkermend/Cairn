@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { ElementHandle } from 'playwright'
 import type {
+  AssertExpect,
   BrowserCommand,
+  BrowserCommandEvidence,
   BrowserCommandResult,
   JsonValue,
   ResolverDiagnostics,
@@ -29,6 +31,8 @@ import {
   waitOnPage,
 } from './runtime'
 import { candidateTries, errorForOutcome, pickResolvedCandidate } from './resolver'
+import { sanitizeAriaSnapshot } from '@cairn/shared'
+import { matchAriaSnapshot } from './aria-match.js'
 
 export type SurfacePage = Page
 
@@ -93,6 +97,9 @@ async function readRememberedTarget(page: Page, locator: Locator,
       }
       if (typeof sample.text !== 'string' && command.expect.kind !== 'exists' && command.expect.kind !== 'visible') throw new Error('目标元素不支持文本断言')
       const expected = command.expect
+      if (expected.kind === 'aria_snapshot') {
+        throw new Error('aria_snapshot 断言不支持通过 remembered target token 执行')
+      }
       const actual = expected.kind === 'exists' ? 1 : expected.kind === 'visible' ? sample.visible :
         expected.kind === 'number_compare' ? Number(sample.text.replace(/[^\d.-]/g, '')) : sample.text
       const passed = expected.kind === 'exists' ? true : expected.kind === 'visible' ? sample.visible :
@@ -111,6 +118,7 @@ export async function executeOnPage(
   page: Page,
   command: BrowserCommand,
   signal?: AbortSignal,
+  evidence?: BrowserCommandEvidence,
 ): Promise<BrowserCommandResult & { screenshotBytes?: Buffer }> {
   if (signal?.aborted) {
     return {
@@ -157,7 +165,7 @@ export async function executeOnPage(
       return { ok: true, output: {} }
     }
 
-    if (command.type === 'assert' && !command.target) {
+    if (command.type === 'assert' && !command.target && command.expect.kind !== 'aria_snapshot') {
       return {
         ok: false,
         error: {
@@ -170,38 +178,47 @@ export async function executeOnPage(
     }
 
     const target = 'target' in command ? command.target : undefined
-    if (!target) {
-      return {
-        ok: false,
-        error: {
-          code: 'TARGET_NOT_FOUND',
-          category: 'VALIDATION',
-          retryable: false,
-          safeMessage: '步骤缺少 target',
-        },
-      }
-    }
+    let locatedLocator: Locator
+    let diagnostics: ResolverDiagnostics = { outcome: 'FOUND', candidatesTried: [] }
 
-    const located = await locate(page, target, command.type === 'locate' ? command.timeoutMs : undefined, signal)
-    signal?.throwIfAborted()
-    if (located.kind !== 'found') {
-      return failOutcome(located.outcome, located.diagnostics)
+    if (!target) {
+      if (command.type === 'assert' && command.expect.kind === 'aria_snapshot') {
+        locatedLocator = page.locator('body')
+      } else {
+        return {
+          ok: false,
+          error: {
+            code: 'TARGET_NOT_FOUND',
+            category: 'VALIDATION',
+            retryable: false,
+            safeMessage: '步骤缺少 target',
+          },
+        }
+      }
+    } else {
+      const located = await locate(page, target, command.type === 'locate' ? command.timeoutMs : undefined, signal)
+      signal?.throwIfAborted()
+      if (located.kind !== 'found') {
+        return failOutcome(located.outcome, located.diagnostics)
+      }
+      locatedLocator = located.locator
+      diagnostics = located.diagnostics
     }
 
     if (command.type === 'locate') {
-      const resolvedTargetToken = await rememberTarget(page, located.locator)
+      const resolvedTargetToken = await rememberTarget(page, locatedLocator)
       signal?.throwIfAborted()
-      if (!resolvedTargetToken) return failOutcome('SURFACE_LOST', located.diagnostics)
-      return { ok: true, output: {}, diagnostics: located.diagnostics, resolvedTargetToken }
+      if (!resolvedTargetToken) return failOutcome('SURFACE_LOST', diagnostics)
+      return { ok: true, output: {}, diagnostics, resolvedTargetToken }
     }
 
     if ((command.type === 'extract' || command.type === 'assert') && command.expectedTargetToken) {
-      return { ...await readRememberedTarget(page, located.locator, command, signal), diagnostics: located.diagnostics }
+      return { ...await readRememberedTarget(page, locatedLocator, command, signal), diagnostics }
     }
 
     if (command.type === 'click') {
       const popup = await waitForPopup(page, () =>
-        clickLocator(located.locator, {
+        clickLocator(locatedLocator, {
           button: command.button,
           clickCount: command.clickCount,
           modifiers: command.modifiers,
@@ -211,27 +228,27 @@ export async function executeOnPage(
         // P5：点击可以打开 popup，但不把新窗收成后续步骤的当前 Surface。
         await popup.waitForLoadState('domcontentloaded').catch(() => undefined)
       }
-      return { ok: true, output: {}, diagnostics: located.diagnostics }
+      return { ok: true, output: {}, diagnostics }
     }
 
     if (command.type === 'fill') {
-      await fillLocator(located.locator, command.value)
-      return { ok: true, output: {}, diagnostics: located.diagnostics }
+      await fillLocator(locatedLocator, command.value)
+      return { ok: true, output: {}, diagnostics }
     }
 
     if (command.type === 'extract') {
-      const value = await readLocator(located.locator, command.as, command.attribute)
-      return { ok: true, output: { value }, diagnostics: located.diagnostics }
+      const value = await readLocator(locatedLocator, command.as, command.attribute)
+      return { ok: true, output: { value }, diagnostics }
     }
 
     if (command.type === 'select') {
-      await selectLocator(located.locator, { by: command.by, value: command.value, index: command.index })
-      return { ok: true, output: {}, diagnostics: located.diagnostics }
+      await selectLocator(locatedLocator, { by: command.by, value: command.value, index: command.index })
+      return { ok: true, output: {}, diagnostics }
     }
 
     if (command.type === 'keyboard') {
-      await pressKeys(page, command.keys, located.locator)
-      return { ok: true, output: {}, diagnostics: located.diagnostics }
+      await pressKeys(page, command.keys, locatedLocator)
+      return { ok: true, output: {}, diagnostics }
     }
 
     if (command.type === 'wait') {
@@ -239,17 +256,36 @@ export async function executeOnPage(
         page,
         {
           kind: command.kind,
-          locator: located.locator,
+          locator: locatedLocator,
           text: command.text,
           timeoutMs: command.timeoutMs,
         },
         signal,
       )
-      return { ok: true, output: {}, diagnostics: located.diagnostics }
+      return { ok: true, output: {}, diagnostics }
     }
 
-    const assertion = await evaluateAssert(located.locator, command.expect)
+    const assertion = await evaluateAssert(
+      locatedLocator,
+      command.expect,
+      command.timeoutMs,
+      signal,
+      (evidence?.sensitiveSelectors?.length ?? 0) > 0,
+    )
     if (!assertion.passed) {
+      if (assertion.error?.code === 'ASSERT_TEMPLATE_INVALID') {
+        return {
+          ok: false,
+          error: {
+            code: 'ASSERT_TEMPLATE_INVALID',
+            category: 'EXECUTOR',
+            retryable: false,
+            safeMessage: assertion.error.message || 'Aria 模板非法',
+          },
+          output: assertion,
+          diagnostics,
+        }
+      }
       return {
         ok: false,
         error: {
@@ -259,14 +295,23 @@ export async function executeOnPage(
           safeMessage: '断言不成立',
         },
         output: assertion,
-        diagnostics: located.diagnostics,
+        diagnostics,
       }
     }
-    return { ok: true, output: assertion, diagnostics: located.diagnostics }
+    return { ok: true, output: assertion, diagnostics }
   } catch (error) {
     if (signal?.aborted) return { ok: false, error: { code: 'CANCELLED', category: 'CANCELLED', retryable: false, safeMessage: '步骤已取消' } }
     if (error instanceof BrowserCapabilityMissingError) {
-      return failOutcome('CAPABILITY_MISSING', { outcome: 'CAPABILITY_MISSING', candidatesTried: [] })
+      return {
+        ok: false,
+        error: {
+          code: 'BROWSER_CAPABILITY_MISSING',
+          category: 'EXECUTOR',
+          retryable: false,
+          safeMessage: error.message || '浏览器能力缺失',
+        },
+        diagnostics: { outcome: 'CAPABILITY_MISSING', candidatesTried: [] },
+      }
     }
     if (error instanceof SurfaceLostError || isClosedMessage(error)) {
       return failOutcome('SURFACE_LOST', { outcome: 'SURFACE_LOST', candidatesTried: [] })
@@ -366,8 +411,50 @@ export async function locate(page: Page, target: TargetDescriptor, timeoutMs?: n
 
 async function evaluateAssert(
   locator: Locator,
-  expect: Extract<BrowserCommand, { type: 'assert' }>['expect'],
-): Promise<{ passed: boolean; expected: JsonValue; actual: JsonValue }> {
+  expect: AssertExpect,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+  hasSensitiveSelectors?: boolean,
+): Promise<{
+  passed: boolean
+  expected: JsonValue
+  actual: JsonValue
+  diff?: string
+  error?: { code: 'ASSERT_TEMPLATE_INVALID'; message: string }
+}> {
+  if (expect.kind === 'aria_snapshot') {
+    const matchRes = await matchAriaSnapshot(locator, expect.template, timeoutMs ?? 5_000, signal)
+    if (matchRes.kind === 'matched') {
+      return {
+        passed: true,
+        expected: sanitizeAriaSnapshot(expect.template),
+        actual: 'matched',
+      }
+    }
+    if (matchRes.kind === 'template_invalid') {
+      return {
+        passed: false,
+        expected: sanitizeAriaSnapshot(expect.template),
+        actual: 'template_invalid',
+        error: { code: 'ASSERT_TEMPLATE_INVALID', message: matchRes.message },
+      }
+    }
+    if (matchRes.kind === 'mismatch') {
+      const sanitizedActual = sanitizeAriaSnapshot(matchRes.received)
+      const sanitizedExpected = sanitizeAriaSnapshot(expect.template)
+      let diff = generateLineDiff(sanitizedExpected, sanitizedActual)
+      if (hasSensitiveSelectors) {
+        diff = '# 已含敏感区，仅存脱敏结果\n' + diff
+      }
+      return {
+        passed: false,
+        expected: sanitizedExpected,
+        actual: sanitizedActual,
+        diff,
+      }
+    }
+    throw matchRes.error
+  }
   if (expect.kind === 'exists') {
     const n = await locator.count()
     return { passed: n === 1, expected: 1, actual: n }
@@ -389,6 +476,24 @@ async function evaluateAssert(
   }
   const passed = compareNumber(actual, expect.op, expect.value)
   return { passed, expected: { op: expect.op, value: expect.value }, actual }
+}
+
+function generateLineDiff(expected: string, actual: string): string {
+  const expLines = expected.split('\n')
+  const actLines = actual.split('\n')
+  const lines: string[] = ['--- 预期模板', '+++ 实际快照']
+  const max = Math.max(expLines.length, actLines.length)
+  for (let i = 0; i < max; i++) {
+    const exp = expLines[i]
+    const act = actLines[i]
+    if (exp === act) {
+      if (exp !== undefined) lines.push(`  ${exp}`)
+    } else {
+      if (exp !== undefined) lines.push(`- ${exp}`)
+      if (act !== undefined) lines.push(`+ ${act}`)
+    }
+  }
+  return lines.join('\n')
 }
 
 function compareNumber(actual: number, op: 'eq' | 'gt' | 'gte' | 'lt' | 'lte', expected: number): boolean {

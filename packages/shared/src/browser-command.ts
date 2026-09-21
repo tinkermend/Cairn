@@ -4,7 +4,8 @@ import { screenshotViewportSchema, sensitiveSelectorsSchema } from './evidence-s
 import { executionErrorSchema } from './runtime-error.js'
 import { objectContentTypeSchema, objectKeySchema } from './object-store.js'
 import { pageAfterSchema } from './managed-browser.js'
-import { targetDescriptorSchema } from './target-descriptor.js'
+import { locatorCandidateSchema, targetDescriptorSchema } from './target-descriptor.js'
+import { healingPatchSchema } from './healer.js'
 import { jsonValueSchema, utcInstantSchema } from './wire.js'
 
 export const RESOLVER_OUTCOMES = [
@@ -22,6 +23,7 @@ export const BROWSER_STEP_ERROR_CODES = [
   'TARGET_AMBIGUOUS',
   'SURFACE_LOST',
   'ASSERT_FAILED',
+  'ASSERT_TEMPLATE_INVALID',
   'BROWSER_CAPABILITY_MISSING',
   'NAVIGATE_OUT_OF_SCOPE',
   'SESSION_LEASE_LOST',
@@ -35,7 +37,7 @@ export type BrowserStepErrorCode = (typeof BROWSER_STEP_ERROR_CODES)[number]
 export const EXTRACT_AS = ['text', 'value', 'attribute'] as const
 export type ExtractAs = (typeof EXTRACT_AS)[number]
 
-export const ASSERT_KINDS = ['exists', 'visible', 'text_equals', 'text_contains', 'number_compare'] as const
+export const ASSERT_KINDS = ['exists', 'visible', 'text_equals', 'text_contains', 'number_compare', 'aria_snapshot'] as const
 export type AssertKind = (typeof ASSERT_KINDS)[number]
 
 export const NUMBER_COMPARE_OPS = ['eq', 'gt', 'gte', 'lt', 'lte'] as const
@@ -51,8 +53,26 @@ export const assertExpectSchema = z.discriminatedUnion('kind', [
     op: z.enum(NUMBER_COMPARE_OPS),
     value: z.number().finite(),
   }),
+  z.strictObject({
+    kind: z.literal('aria_snapshot'),
+    template: z.string().min(1).max(16384),
+  }),
 ])
 export type AssertExpect = z.infer<typeof assertExpectSchema>
+
+/**
+ * 纯文本脱敏处理：离开 Worker 内存的快照文本一律脱敏
+ * 1. textbox / searchbox / spinbutton / combobox 的值替换为 ***
+ * 2. 连续 >= 13 位的数字替换为 ***
+ */
+export function sanitizeAriaSnapshot(yaml: string): string {
+  let sanitized = yaml.replace(
+    /^(\s*-\s*(?:textbox|searchbox|spinbutton|combobox)(?:\s+["'][^"']*["'])?:\s*)(.+)$/gm,
+    '$1***',
+  )
+  sanitized = sanitized.replace(/\b\d{13,}\b/g, '***')
+  return sanitized
+}
 
 export const candidateTrySchema = z.strictObject({
   index: z.number().int().nonnegative(),
@@ -66,6 +86,9 @@ export const resolverDiagnosticsSchema = z.strictObject({
   outcome: resolverOutcomeSchema,
   candidatesTried: z.array(candidateTrySchema),
   framePathResolved: z.array(z.string()).optional(),
+  resolvedVia: z.enum(['deterministic', 'map', 'ai']).optional(),
+  suggestedCandidate: locatorCandidateSchema.optional(),
+  suggestedPatch: healingPatchSchema.optional(),
 })
 export type ResolverDiagnostics = z.infer<typeof resolverDiagnosticsSchema>
 
@@ -107,6 +130,7 @@ export const browserCommandSchema = z.discriminatedUnion('type', [
     expectedTargetToken: z.string().uuid().optional(),
     target: targetDescriptorSchema.optional(),
     expect: assertExpectSchema,
+    timeoutMs: z.number().int().positive().optional(),
   }),
   z.strictObject({
     type: z.literal('select'),

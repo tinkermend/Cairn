@@ -158,6 +158,14 @@ export function tallyKnownBytes(sizes: readonly (number | null | undefined)[]): 
   return { knownBytes, unknownCount }
 }
 
+export function formatByteSize(bytes?: number | null): string {
+  if (bytes === undefined || bytes === null || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  const unitIndex = Math.min(Math.max(i, 0), units.length - 1)
+  return `${(bytes / Math.pow(1024, unitIndex)).toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`
+}
+
 export type EvidenceDisplayInput = {
   evidenceStatus: 'pending' | 'available' | 'missing'
   missingReason?: string | null

@@ -260,6 +260,9 @@ function worker(workerId: string, status: WorkerStatus, heartbeatFresh: boolean)
     routeReason: status === 'READY' && heartbeatFresh ? null : 'worker_not_ready',
     endpointSource: 'none',
     internalEndpoint: null,
+    listenHost: '192.168.1.100',
+    listenPort: 8091,
+    hostname: 'worker-host-1',
   }
 }
 
@@ -331,7 +334,7 @@ describe('运行监控页', () => {
 
   it('分区降级只影响该区，三类失败可区分，unknown 不显示 0', async () => {
     const screen = await renderPage()
-    await expect.element(screen.getByRole('heading', { name: '运行监控', exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByRole('heading', { name: '监控', exact: true })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
     await expect.element(screen.getByText('自动刷新')).toBeInTheDocument()
     await expect.element(screen.getByText('监控数据读取失败', { exact: true })).toBeInTheDocument()

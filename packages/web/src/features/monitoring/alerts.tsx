@@ -1,18 +1,23 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ArrowUpRight } from 'lucide-react'
 import {
   MAX_ALERT_SILENCE_SECONDS,
   MIN_ALERT_SILENCE_SECONDS,
   type MonitorAlertItem,
 } from '@cairn/shared'
+import { ArrowUpRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { fetchMonitorAlerts, silenceMonitorAlert } from '@/lib/monitoring-api'
-import { useCan } from '@/hooks/use-permissions'
 import { useCursorPage } from '@/hooks/use-cursor-page'
-import { CursorPagination } from '@/components/data-table'
+import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -21,6 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { CursorPagination } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { StatusBadge } from '@/components/status-badge'
@@ -45,7 +51,13 @@ export function AlertsSection() {
   const historyPage = useCursorPage(20, 'monitoring-alert-history')
   const activePage = useCursorPage(20, 'monitoring-alert-active')
   const active = useQuery({
-    queryKey: ['monitoring', 'alerts', 'active', activePage.pageSize, activePage.cursor],
+    queryKey: [
+      'monitoring',
+      'alerts',
+      'active',
+      activePage.pageSize,
+      activePage.cursor,
+    ],
     queryFn: () =>
       fetchMonitorAlerts({
         view: 'active',
@@ -55,7 +67,13 @@ export function AlertsSection() {
     placeholderData: keepPreviousData,
   })
   const history = useQuery({
-    queryKey: ['monitoring', 'alerts', 'history', historyPage.pageSize, historyPage.cursor],
+    queryKey: [
+      'monitoring',
+      'alerts',
+      'history',
+      historyPage.pageSize,
+      historyPage.cursor,
+    ],
     queryFn: () =>
       fetchMonitorAlerts({
         view: 'history',
@@ -79,25 +97,35 @@ export function AlertsSection() {
             </Link>
           </Button>
         ) : (
-          <p className='text-label text-muted-foreground'>规则入口在平台配置，当前账号不能打开。</p>
+          <p className='text-label text-muted-foreground'>
+            规则入口在平台配置，当前账号不能打开。
+          </p>
         )}
       </div>
       {active.isPending ? (
         <PageSkeleton rows={3} />
       ) : active.isError ? (
-        active.error instanceof ApiRequestError && active.error.status === 403 ? (
+        active.error instanceof ApiRequestError &&
+        active.error.status === 403 ? (
           <FailureAlert {...permissionFailure('当前账号不能读取告警。')} />
         ) : (
           <FailureAlert {...partitionFailure('AGGREGATE_FAILED')} />
         )
-      ) : active.data && active.data.items.length === 0 && activePage.pageIndex === 0 ? (
-        <EmptyState title='当前没有未恢复告警' description='开启规则并满足迟滞后才会出现在这里。pending 不展示。' />
+      ) : active.data &&
+        active.data.items.length === 0 &&
+        activePage.pageIndex === 0 ? (
+        <EmptyState
+          title='当前没有未恢复告警'
+          description='开启规则并满足迟滞后才会出现在这里。pending 不展示。'
+        />
       ) : active.data ? (
         <>
           <AlertTable items={active.data.items} canSilence={canSilence} />
           {active.data.items.length > 0 || activePage.pageIndex > 0 ? (
-            <div className='flex flex-wrap items-center justify-between border-t border-border-divider px-1 py-3 gap-3'>
-              <p className='text-label text-muted-foreground'>显示 {active.data.items.length} 条</p>
+            <div className='flex flex-wrap items-center justify-between gap-3 border-t border-border-divider px-1 py-3'>
+              <p className='text-label text-muted-foreground'>
+                显示 {active.data.items.length} 条
+              </p>
               <CursorPagination
                 pageIndex={activePage.pageIndex}
                 pageSize={activePage.pageSize}
@@ -107,7 +135,8 @@ export function AlertsSection() {
                 onPageSizeChange={activePage.setPageSize}
                 onPreviousPage={activePage.goPrev}
                 onNextPage={() => {
-                  if (active.data?.nextCursor) activePage.goNext(active.data.nextCursor)
+                  if (active.data?.nextCursor)
+                    activePage.goNext(active.data.nextCursor)
                 }}
               />
             </div>
@@ -121,12 +150,16 @@ export function AlertsSection() {
         ) : history.isError ? (
           <FailureAlert {...partitionFailure('AGGREGATE_FAILED')} />
         ) : (history.data?.items.length ?? 0) === 0 ? (
-          <p className='text-label text-muted-foreground'>还没有已恢复的告警。</p>
+          <p className='text-label text-muted-foreground'>
+            还没有已恢复的告警。
+          </p>
         ) : (
           <>
             <AlertTable items={history.data!.items} canSilence={false} />
-            <div className='flex flex-wrap items-center justify-between border-t border-border-divider px-1 py-3 gap-3'>
-              <p className='text-label text-muted-foreground'>显示 {history.data!.items.length} 条</p>
+            <div className='flex flex-wrap items-center justify-between gap-3 border-t border-border-divider px-1 py-3'>
+              <p className='text-label text-muted-foreground'>
+                显示 {history.data!.items.length} 条
+              </p>
               <CursorPagination
                 pageIndex={historyPage.pageIndex}
                 pageSize={historyPage.pageSize}
@@ -136,7 +169,8 @@ export function AlertsSection() {
                 onPageSizeChange={historyPage.setPageSize}
                 onPreviousPage={historyPage.goPrev}
                 onNextPage={() => {
-                  if (history.data?.nextCursor) historyPage.goNext(history.data.nextCursor)
+                  if (history.data?.nextCursor)
+                    historyPage.goNext(history.data.nextCursor)
                 }}
               />
             </div>
@@ -170,14 +204,17 @@ function AlertTable({
         <TableBody>
           {items.map((item) => {
             const state = alertStateTone(item.state)
-            const opened = new Date(item.firedAt ?? item.conditionOpenedAt).getTime()
+            const opened = new Date(
+              item.firedAt ?? item.conditionOpenedAt
+            ).getTime()
             const lasted = Math.max(0, Math.round((Date.now() - opened) / 1000))
             return (
               <TableRow key={item.id}>
                 <TableCell>
                   <p className='text-body font-semibold'>{item.ruleName}</p>
                   <p className='text-label text-muted-foreground'>
-                    {item.metricKey ?? item.staleSource} · {item.scope}/{item.scopeId}
+                    {item.metricKey ?? item.staleSource} · {item.scope}/
+                    {item.scopeId}
                   </p>
                 </TableCell>
                 <TableCell>
@@ -185,16 +222,30 @@ function AlertTable({
                 </TableCell>
                 <TableCell className='tabular-nums'>
                   {item.triggerValue == null ? '—' : item.triggerValue}
-                  {item.threshold == null ? '' : ` / ${item.comparator ?? ''} ${item.threshold}`}
+                  {item.threshold == null
+                    ? ''
+                    : ` / ${item.comparator ?? ''} ${item.threshold}`}
                 </TableCell>
-                <TableCell className='tabular-nums'>{formatDuration(lasted)}</TableCell>
+                <TableCell className='tabular-nums'>
+                  {formatDuration(lasted)}
+                </TableCell>
                 <TableCell>
-                  <p className='text-body'>{noticeKindLabel(item.noticeKind)}</p>
-                  <Link to='/notifications' search={{ tab: 'records', alertId: item.id }} className='text-label underline'>查看逐渠道投递结果</Link>
+                  <p className='text-body'>
+                    {noticeKindLabel(item.noticeKind)}
+                  </p>
+                  <Link
+                    to='/notifications'
+                    search={{ tab: 'records', alertId: item.id }}
+                    className='text-label underline'
+                  >
+                    查看逐渠道投递结果
+                  </Link>
                 </TableCell>
                 <TableCell>
                   {item.silenceRemainingSeconds ? (
-                    <p className='text-label'>剩余 {formatDuration(item.silenceRemainingSeconds)}</p>
+                    <p className='text-label'>
+                      剩余 {formatDuration(item.silenceRemainingSeconds)}
+                    </p>
                   ) : canSilence && item.state !== 'resolved' ? (
                     <SilenceControls alertId={item.id} />
                   ) : (
@@ -213,7 +264,8 @@ function AlertTable({
 function SilenceControls({ alertId }: { alertId: string }) {
   const client = useQueryClient()
   const mutation = useMutation({
-    mutationFn: (durationSeconds: number) => silenceMonitorAlert(alertId, { durationSeconds }),
+    mutationFn: (durationSeconds: number) =>
+      silenceMonitorAlert(alertId, { durationSeconds }),
     onSuccess: async () => {
       toast.success('已静默通知')
       await client.invalidateQueries({ queryKey: ['monitoring'] })
@@ -225,24 +277,23 @@ function SilenceControls({ alertId }: { alertId: string }) {
   return (
     <label className='flex items-center gap-2'>
       <span className='sr-only'>静默时长</span>
-      <select
-        className='h-9 rounded-md border border-input bg-background px-2 text-label'
-        defaultValue=''
+      <SelectField
+        className='w-auto'
+        value=''
         disabled={mutation.isPending}
-        onChange={(event) => {
-          const value = Number(event.target.value)
+        onValueChange={(selection) => {
+          const value = Number(selection)
           if (!value) return
           mutation.mutate(value)
-          event.target.value = ''
         }}
       >
-        <option value=''>静默…</option>
+        <SelectFieldOption value=''>静默…</SelectFieldOption>
         {SILENCE_OPTIONS.map((option) => (
-          <option key={option.seconds} value={option.seconds}>
+          <SelectFieldOption key={option.seconds} value={option.seconds}>
             {option.label}
-          </option>
+          </SelectFieldOption>
         ))}
-      </select>
+      </SelectField>
     </label>
   )
 }

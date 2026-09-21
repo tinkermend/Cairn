@@ -9,7 +9,7 @@ import {
   DEFAULT_MONITOR_SAMPLE_RETENTION_DAYS,
   MIN_MONITOR_SAMPLE_INTERVAL_MS,
 } from './monitoring.js'
-import { isAbsoluteFsPath, objectStoreDriverSchema } from './object-store.js'
+import { objectStoreDriverSchema } from './object-store.js'
 import {
   DEFAULT_RUN_LEASE_TTL_SECONDS,
   DEFAULT_RUN_MAX_RECOVERIES,
@@ -21,7 +21,6 @@ import {
   assertWorkerListenHostAllowed,
   parseWorkerEndpoints,
   resolveWorkerAdvertiseUrl,
-  workerNetworkModeSchema,
 } from './worker-registry.js'
 import {
   DEFAULT_CREDENTIAL_REMINDER_SCAN_INTERVAL_MS,
@@ -91,21 +90,21 @@ export type DbEnv = z.infer<typeof dbEnvSchema>
 export type PostgresDbEnv = Extract<DbEnv, { CAIRN_DB_DRIVER: 'postgres' }>
 
 /**
- * 开发默认值。它们让本地与测试不必先配一屏环境变量，代价是
- * 「私有化交付漏配」的后果不是少个功能，而是签名密钥与管理员口令双双已知。
- * 因此默认串在此声明一次，schema 默认值与非 development 环境下的拒绝
- * 共用同一个常量——改默认值的人必然看到检查。
+ * 签名密钥、凭据主密钥与内部 HMAC 一律必填、没有默认值。
+ *
+ * 曾经它们带「开发默认串」，再靠 `CAIRN_ENV !== 'development'` 在生产拒绝。
+ * 那条链有个漏点：`CAIRN_ENV` 自己是有默认值的，漏配环境等于三把钥匙一起
+ * 退回公开常量，且没有任何告警。现在没有环境档位，规则只剩一条——
+ * 每套部署自己生成，漏配就起不来。
  */
-export const DEV_JWT_SECRET = 'dev-only-change-me-jwt-secret'
-export const DEV_ADMIN_ACCOUNT = 'admin'
-export const DEV_ADMIN_PASSWORD = 'cairn-admin'
 
 /**
- * 开发默认凭据主密钥：`cairn-dev-only-credential-key-01` 的 32 字节 ASCII，再 base64。
- * 字面量只存在这里，schema 默认值与非 development 拒绝共用。
+ * 测试与本机夹具用的固定密钥。它们**不再是任何 schema 的默认值**——
+ * 危险的从来不是「存在一个公开常量」，而是「漏配时进程悄悄用上它」。
+ * 生产环境配不出这两个值：必填校验会先拦住空值，填成这里的字面量则是
+ * 部署方自己的选择，不是平台替它做的决定。
  */
 export const DEV_CREDENTIAL_KEY = 'Y2Fpcm4tZGV2LW9ubHktY3JlZGVudGlhbC1rZXktMDE='
-/** 开发默认内部 HMAC：ASCII `cairn-dev-only-internal-auth-k01` 的 32 字节再 base64。 */
 export const DEV_INTERNAL_AUTH_SECRET = 'Y2Fpcm4tZGV2LW9ubHktaW50ZXJuYWwtYXV0aC1rMDE='
 export const DEFAULT_WORKER_INTERNAL_HOST = '127.0.0.1'
 export const DEFAULT_WORKER_INTERNAL_PORT = 8091
@@ -134,8 +133,6 @@ export function decodeCredentialKey(raw: string): Uint8Array | undefined {
   }
 }
 
-const CAIRN_ENVS = ['development', 'staging', 'production'] as const
-
 /**
  * 合法的 CORS origin：`scheme://host[:port]`，或单独的 `*`。
  *
@@ -146,7 +143,6 @@ const ORIGIN_PATTERN = /^(?:\*|[a-z][a-z0-9+.-]*:\/\/[^\s/]+)$/i
 
 /** api 与 worker 共用：环境语义与日志级别，不各写一份。 */
 const runtimeEnvShape = {
-  CAIRN_ENV: z.enum(CAIRN_ENVS).default('development'),
   CAIRN_LOG_LEVEL: logLevelSchema.default('info'),
   CAIRN_BUILD_VERSION: z.string().min(1).max(128).optional(),
 }
@@ -198,8 +194,7 @@ export {
 } from './run-lease.js'
 
 const internalAuthSecretSchema = z
-  .string()
-  .default(DEV_INTERNAL_AUTH_SECRET)
+  .string({ error: '必填，无默认值；须为 base64 编码的 32 字节密钥（openssl rand -base64 32）' })
   .superRefine((value, ctx) => {
     if (!decodeCredentialKey(value)) {
       ctx.addIssue({
@@ -209,26 +204,12 @@ const internalAuthSecretSchema = z
     }
   })
 
-function refineInternalAuthSecret(
-  env: { CAIRN_ENV: (typeof CAIRN_ENVS)[number]; CAIRN_INTERNAL_AUTH_SECRET: string },
-  ctx: z.RefinementCtx,
-): void {
-  if (env.CAIRN_ENV !== 'development' && env.CAIRN_INTERNAL_AUTH_SECRET === DEV_INTERNAL_AUTH_SECRET) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['CAIRN_INTERNAL_AUTH_SECRET'],
-      message: '非 development 环境不得沿用开发默认内部密钥，必须在环境中覆盖',
-    })
-  }
-}
-
 function refineWorkerEndpoints(
   raw: string,
-  networkMode: 'local' | 'distributed',
   ctx: z.RefinementCtx,
 ): void {
   try {
-    parseWorkerEndpoints(raw, { networkMode })
+    parseWorkerEndpoints(raw)
   } catch (error) {
     ctx.addIssue({
       code: 'custom',
@@ -249,6 +230,70 @@ const boolFromEnv = (fallback: boolean) =>
     .default(fallback ? 'true' : 'false')
     .transform((value) => value === 'true')
 
+const BYTE_UNITS: Record<string, number> = {
+  b: 1,
+  k: 1024,
+  kb: 1024,
+  m: 1024 * 1024,
+  mb: 1024 * 1024,
+  g: 1024 * 1024 * 1024,
+  gb: 1024 * 1024 * 1024,
+  t: 1024 * 1024 * 1024 * 1024,
+  tb: 1024 * 1024 * 1024 * 1024,
+}
+
+export function parseBytes(value: unknown): number {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0 || !Number.isInteger(value)) {
+      throw new Error(`字节大小必须为正整数，收到: ${value}`)
+    }
+    return value
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`字节大小必须为数字或带单位的字符串，收到: ${typeof value}`)
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    throw new Error('字节大小不能为空')
+  }
+  if (/^\d+$/.test(trimmed)) {
+    const num = Number.parseInt(trimmed, 10)
+    if (num <= 0) throw new Error(`字节大小必须为正整数: ${trimmed}`)
+    return num
+  }
+  const match = /^(\d+(?:\.\d+)?)\s*([a-zA-Z]+)$/.exec(trimmed)
+  const rawNum = match?.[1]
+  const rawUnit = match?.[2]
+  if (!match || rawNum === undefined || rawUnit === undefined) {
+    throw new Error(`无法解析字节大小格式: "${trimmed}"，支持如 "32MB", "128M", "1GB", "1024"`)
+  }
+  const num = Number.parseFloat(rawNum)
+  const unit = rawUnit.toLowerCase()
+  const multiplier = BYTE_UNITS[unit]
+  if (!multiplier) {
+    throw new Error(`未知字节单位: "${rawUnit}"，支持 B, KB, MB, GB, TB`)
+  }
+  const result = Math.round(num * multiplier)
+  if (result <= 0) {
+    throw new Error(`字节大小计算结果必须大于 0: "${trimmed}"`)
+  }
+  return result
+}
+
+const bytesSchema = z
+  .union([z.number(), z.string()])
+  .transform((val, ctx) => {
+    try {
+      return parseBytes(val)
+    } catch (err) {
+      ctx.addIssue({
+        code: 'custom',
+        message: err instanceof Error ? err.message : '字节大小格式非法',
+      })
+      return z.NEVER
+    }
+  })
+
 /**
  * 对象存储。api 与 worker 共用同一份片段。
  * `CAIRN_S3_FORCE_PATH_STYLE` 未写时：有 endpoint 则 true，否则 false。
@@ -256,8 +301,8 @@ const boolFromEnv = (fallback: boolean) =>
 const objectStoreEnvShape = {
   CAIRN_OBJECT_STORE: objectStoreDriverSchema.default('local'),
   CAIRN_OBJECT_STORE_DIR: z.string().min(1).default(DEFAULT_OBJECT_STORE_DIR),
-  CAIRN_OBJECT_MAX_BYTES: z.coerce.number().int().positive().default(DEFAULT_OBJECT_MAX_BYTES),
-  CAIRN_VIDEO_MAX_BYTES: z.coerce.number().int().positive().default(DEFAULT_VIDEO_MAX_BYTES),
+  CAIRN_OBJECT_MAX_BYTES: bytesSchema.default(DEFAULT_OBJECT_MAX_BYTES),
+  CAIRN_VIDEO_MAX_BYTES: bytesSchema.default(DEFAULT_VIDEO_MAX_BYTES),
   CAIRN_OBJECT_RETAIN_DAYS: z.coerce.number().int().positive().default(DEFAULT_OBJECT_RETAIN_DAYS),
   CAIRN_OBJECT_PENDING_TTL_SECONDS: z.coerce
     .number()
@@ -279,7 +324,6 @@ const objectStoreEnvShape = {
 
 function refineObjectStoreEnv(
   env: {
-    CAIRN_ENV: (typeof CAIRN_ENVS)[number]
     CAIRN_OBJECT_STORE: 'local' | 's3'
     CAIRN_OBJECT_STORE_DIR: string
     CAIRN_S3_BUCKET?: string
@@ -311,17 +355,7 @@ function refineObjectStoreEnv(
       })
     }
   }
-  if (
-    env.CAIRN_OBJECT_STORE === 'local' &&
-    env.CAIRN_ENV !== 'development' &&
-    !isAbsoluteFsPath(env.CAIRN_OBJECT_STORE_DIR)
-  ) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['CAIRN_OBJECT_STORE_DIR'],
-      message: '非 development 环境的本地目录必须是绝对路径',
-    })
-  }
+  // 相对路径按仓库根解析（resolveLocalObjectStoreDir），绝对路径直用，两种都受支持。
 }
 
 /**
@@ -394,7 +428,11 @@ export function resolveChangeHintDriver(
 const changeHintEnvShape = {
   CAIRN_CHANGE_HINT: z.enum(CHANGE_HINT_DRIVERS).default('auto'),
   CAIRN_REDIS_URL: z.string().min(1).optional(),
-  CAIRN_CHANGE_HINT_NAMESPACE: z.string().min(1).max(64).optional(),
+  /**
+   * 变更提示总线的频道隔离键。多套识途共用同一个库或同一个 Redis 时，
+   * 靠它区分彼此的提示，不串台。曾经缺省借 `CAIRN_ENV` 顶，现在有自己的默认值。
+   */
+  CAIRN_CHANGE_HINT_NAMESPACE: z.string().min(1).max(64).default('cairn'),
   CAIRN_RUN_EVENT_RETAIN_DAYS: z.coerce
     .number()
     .int()
@@ -487,27 +525,11 @@ const browserAiEnvShape = {
     .default(DEFAULT_BROWSER_AI_MAX_OUTPUT_TOKENS),
 }
 
-function refineBrowserAiEnv(
-  env: {
-    CAIRN_ENV: (typeof CAIRN_ENVS)[number]
-    CAIRN_BROWSER_AI_API_KEY?: string
-  },
-  ctx: z.RefinementCtx,
-): void {
-  if (env.CAIRN_ENV !== 'development' && env.CAIRN_BROWSER_AI_API_KEY) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['CAIRN_BROWSER_AI_API_KEY'],
-      message: '非 development 环境不得直填模型密钥，必须使用 Secret 引用',
-    })
-  }
-}
-
 /**
  * 控制面进程配置。
  *
- * `CAIRN_ENV` 只承担「环境相关的强度差异」，不承担业务分支；业务判断仍看
- * 显式的功能配置。`NODE_ENV` 留给工具链，不参与平台判断，避免两套环境概念。
+ * 没有环境档位这个概念：规则对所有部署一视同仁，强度差异一律由显式的功能配置
+ * 承担。`NODE_ENV` 留给工具链，不参与平台判断。
  */
 export const apiEnvSchema = z.preprocess(
   blankAsUnset,
@@ -537,23 +559,21 @@ export const apiEnvSchema = z.preprocess(
             .array(z.string().regex(ORIGIN_PATTERN, 'origin 须形如 https://host[:port]，或单独的 *'))
             .min(1, '至少要配置一个 origin'),
         ),
-      CAIRN_JWT_SECRET: z.string().min(16).default(DEV_JWT_SECRET),
+      CAIRN_JWT_SECRET: z
+        .string({ error: '必填，无默认值；至少 16 字符（openssl rand -base64 48）' })
+        .min(16, '至少 16 字符'),
       CAIRN_JWT_EXPIRES_IN: z.string().min(1).default('12h'),
       /**
        * 信任的反向代理跳数。0（默认）只用套接字对端地址，忽略
        * X-Forwarded-For。反代后的部署按可信跳数填写。
        */
       CAIRN_TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(9).default(0),
-      CAIRN_BOOTSTRAP_ADMIN_EMAIL: z.string().trim().min(1).max(64).default(DEV_ADMIN_ACCOUNT),
-      CAIRN_BOOTSTRAP_ADMIN_PASSWORD: z.string().min(8).default(DEV_ADMIN_PASSWORD),
-      CAIRN_BOOTSTRAP_ADMIN_NAME: z.string().min(1).default('Administrator'),
       /**
        * 本地 SecretProvider 的 AES-256-GCM 主密钥：base64 编码的恰好 32 字节。
        * 不做 hex 兼容。解码失败或长度不对则进程拒绝启动。
        */
       CAIRN_CREDENTIAL_KEY: z
-        .string()
-        .default(DEV_CREDENTIAL_KEY)
+        .string({ error: '必填，无默认值；须为 base64 编码的 32 字节密钥（openssl rand -base64 32）' })
         .superRefine((value, ctx) => {
           if (!decodeCredentialKey(value)) {
             ctx.addIssue({
@@ -563,7 +583,6 @@ export const apiEnvSchema = z.preprocess(
           }
         }),
       CAIRN_INTERNAL_AUTH_SECRET: internalAuthSecretSchema,
-      CAIRN_WORKER_NETWORK_MODE: workerNetworkModeSchema.default('local'),
       CAIRN_WORKER_ENDPOINTS: z.string().optional(),
       CAIRN_API_ID: z.string().min(1).max(256).optional(),
       CAIRN_API_HEARTBEAT_MS: z.coerce.number().int().positive().default(DEFAULT_API_HEARTBEAT_MS),
@@ -586,37 +605,8 @@ export const apiEnvSchema = z.preprocess(
     .superRefine((env, ctx) => {
       // 「默认值方便本地」与「生产不得裸奔」由同一个 schema 同时成立，
       // 不依赖部署清单上的一行提醒。
-      refineInternalAuthSecret(env, ctx)
-      refineWorkerEndpoints(
-        env.CAIRN_WORKER_ENDPOINTS ?? (env.CAIRN_WORKER_NETWORK_MODE === 'distributed' ? '' : DEFAULT_WORKER_ENDPOINTS),
-        env.CAIRN_WORKER_NETWORK_MODE,
-        ctx,
-      )
-      if (env.CAIRN_ENV !== 'development') {
-        if (env.CAIRN_JWT_SECRET === DEV_JWT_SECRET) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['CAIRN_JWT_SECRET'],
-            message: '非 development 环境不得沿用开发默认密钥，必须在环境中覆盖',
-          })
-        }
-        if (env.CAIRN_BOOTSTRAP_ADMIN_PASSWORD === DEV_ADMIN_PASSWORD) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['CAIRN_BOOTSTRAP_ADMIN_PASSWORD'],
-            message: '非 development 环境不得沿用默认管理员口令，必须在环境中覆盖',
-          })
-        }
-        if (env.CAIRN_CREDENTIAL_KEY === DEV_CREDENTIAL_KEY) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['CAIRN_CREDENTIAL_KEY'],
-            message: '非 development 环境不得沿用开发默认凭据主密钥，必须在环境中覆盖',
-          })
-        }
-      }
+      refineWorkerEndpoints(env.CAIRN_WORKER_ENDPOINTS ?? DEFAULT_WORKER_ENDPOINTS, ctx)
       refineObjectStoreEnv(env, ctx)
-      refineBrowserAiEnv(env, ctx)
       refineChangeHintEnv(env, ctx)
       if (env.CAIRN_MONITOR_OVERVIEW_CACHE_MS > env.CAIRN_MONITOR_SSE_MIN_INTERVAL_MS) {
         ctx.addIssue({
@@ -628,14 +618,32 @@ export const apiEnvSchema = z.preprocess(
     })
     .transform((env) => ({
       ...env,
-      CAIRN_WORKER_ENDPOINTS:
-        env.CAIRN_WORKER_ENDPOINTS ??
-        (env.CAIRN_WORKER_NETWORK_MODE === 'distributed' ? '' : DEFAULT_WORKER_ENDPOINTS),
+      CAIRN_WORKER_ENDPOINTS: env.CAIRN_WORKER_ENDPOINTS ?? DEFAULT_WORKER_ENDPOINTS,
       CAIRN_S3_FORCE_PATH_STYLE: env.CAIRN_S3_FORCE_PATH_STYLE ?? Boolean(env.CAIRN_S3_ENDPOINT),
     })),
 )
 
 export type ApiEnv = z.infer<typeof apiEnvSchema>
+
+/**
+ * 对象存储配置的独立入口：只解析对象存储自己的变量，不牵连别的必填项。
+ *
+ * 库迁移这类不启动 API / Worker 的运维工具要访问对象存储校验证据，却用不到 JWT、
+ * 凭据主密钥、内部 HMAC。此前它拿整个 apiEnvSchema 去解析，靠那三把钥匙有默认值才能跑；
+ * 钥匙改成必填后，灾备 / 搬迁窗口里只带库与存储连接信息就会被无关的必填项挡住。
+ * 行为与 api / worker 里的对象存储部分一致（同一片段、同一条校验、同一个 path-style 默认）。
+ */
+export const objectStoreEnvSchema = z.preprocess(
+  blankAsUnset,
+  z
+    .object(objectStoreEnvShape)
+    .superRefine((env, ctx) => refineObjectStoreEnv(env, ctx))
+    .transform((env) => ({
+      ...env,
+      CAIRN_S3_FORCE_PATH_STYLE: env.CAIRN_S3_FORCE_PATH_STYLE ?? Boolean(env.CAIRN_S3_ENDPOINT),
+    })),
+)
+export type ObjectStoreEnv = z.infer<typeof objectStoreEnvSchema>
 
 /**
  * 执行面进程配置。
@@ -649,11 +657,6 @@ export const workerEnvSchema = z.preprocess(
   z
     .object({
       CAIRN_WORKER_ID: z.string().min(1).default('local-worker'),
-      CAIRN_NOTIFICATION_SMTP_DESTINATIONS: z.string().default('').superRefine((value, ctx) => {
-        if (value.split(',').map(v => v.trim()).filter(Boolean).some(v => !/^[a-zA-Z0-9.-]+:[0-9]{1,5}$/.test(v))) {
-          ctx.addIssue({ code: 'custom', message: '使用逗号分隔的 SMTP 主机:端口列表' })
-        }
-      }),
       CAIRN_WORKER_ROLES: z
         .string()
         .default(DEFAULT_WORKER_ROLES)
@@ -684,19 +687,18 @@ export const workerEnvSchema = z.preprocess(
         .positive()
         .default(DEFAULT_WORKER_LOST_AFTER_SECONDS),
       CAIRN_RUN_MAX_RECOVERIES: z.coerce.number().int().positive().default(DEFAULT_RUN_MAX_RECOVERIES),
-      CAIRN_TRACE_MAX_BYTES: z.coerce.number().int().positive().default(DEFAULT_TRACE_MAX_BYTES),
+      CAIRN_TRACE_MAX_BYTES: bytesSchema.default(DEFAULT_TRACE_MAX_BYTES),
       CAIRN_EVIDENCE_UPLOAD_MAX_ATTEMPTS: z.coerce
         .number()
         .int()
         .positive()
         .default(DEFAULT_EVIDENCE_UPLOAD_MAX_ATTEMPTS),
       /**
-       * 自动登录解密 TargetAccount 凭据。与 api 同源约定；
-       * 非 development 不得沿用开发默认密钥。
+       * 自动登录解密 TargetAccount 凭据。与 api 同源约定：必填，无默认值，
+       * 且两个进程必须配同一把，否则 Worker 解不开控制面写进去的密文。
        */
       CAIRN_CREDENTIAL_KEY: z
-        .string()
-        .default(DEV_CREDENTIAL_KEY)
+        .string({ error: '必填，无默认值；须为 base64 编码的 32 字节密钥（openssl rand -base64 32）' })
         .superRefine((value, ctx) => {
           if (!decodeCredentialKey(value)) {
             ctx.addIssue({
@@ -706,7 +708,6 @@ export const workerEnvSchema = z.preprocess(
           }
         }),
       CAIRN_INTERNAL_AUTH_SECRET: internalAuthSecretSchema,
-      CAIRN_WORKER_NETWORK_MODE: workerNetworkModeSchema.default('local'),
       CAIRN_WORKER_ADVERTISE_URL: z.string().optional(),
       CAIRN_WORKER_INTERNAL_HOST: z.string().min(1).default(DEFAULT_WORKER_INTERNAL_HOST),
       CAIRN_WORKER_INTERNAL_PORT: z.coerce
@@ -749,7 +750,6 @@ export const workerEnvSchema = z.preprocess(
       ...changeHintEnvShape,
     })
     .superRefine((env, ctx) => {
-      refineInternalAuthSecret(env, ctx)
       if (env.CAIRN_WORKER_INTERNAL_PORT > 0) {
         try {
           assertWorkerListenHostAllowed(env.CAIRN_WORKER_INTERNAL_HOST)
@@ -763,7 +763,6 @@ export const workerEnvSchema = z.preprocess(
       }
       try {
         resolveWorkerAdvertiseUrl({
-          networkMode: env.CAIRN_WORKER_NETWORK_MODE,
           advertiseUrl: env.CAIRN_WORKER_ADVERTISE_URL,
           internalPort: env.CAIRN_WORKER_INTERNAL_PORT,
         })
@@ -774,24 +773,7 @@ export const workerEnvSchema = z.preprocess(
           message: error instanceof Error ? error.message : '广告 URL 不合法',
         })
       }
-      if (env.CAIRN_ENV !== 'development' && env.CAIRN_CREDENTIAL_KEY === DEV_CREDENTIAL_KEY) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['CAIRN_CREDENTIAL_KEY'],
-          message: '非 development 环境不得沿用开发默认凭据主密钥，必须在环境中覆盖',
-        })
-      }
       refineObjectStoreEnv(env, ctx)
-      if (
-        env.CAIRN_ENV !== 'development' &&
-        !isAbsoluteFsPath(env.CAIRN_BROWSER_PROFILE_DIR)
-      ) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['CAIRN_BROWSER_PROFILE_DIR'],
-          message: '非 development 环境的浏览器 profile 目录必须是绝对路径',
-        })
-      }
       if (env.CAIRN_BROWSER_MAX_SESSIONS < 1) {
         ctx.addIssue({
           code: 'custom',
@@ -811,7 +793,7 @@ export const workerEnvSchema = z.preprocess(
         ctx.addIssue({
           code: 'custom',
           path: ['CAIRN_SESSION_LEASE_TTL_SECONDS'],
-          message: 'CAIRN_SESSION_LEASE_TTL_SECONDS 须 ≥ 3 × CAIRN_SESSION_HEARTBEAT_MS/1000',
+          message: `CAIRN_SESSION_LEASE_TTL_SECONDS (当前 ${env.CAIRN_SESSION_LEASE_TTL_SECONDS}s) 须 ≥ 3 × 会话心跳 (${3 * heartbeatSeconds}s)`,
         })
       }
       const workerHeartbeatSeconds = env.CAIRN_WORKER_HEARTBEAT_MS / 1000
@@ -819,17 +801,16 @@ export const workerEnvSchema = z.preprocess(
         ctx.addIssue({
           code: 'custom',
           path: ['CAIRN_RUN_LEASE_TTL_SECONDS'],
-          message: 'CAIRN_RUN_LEASE_TTL_SECONDS 须 ≥ 3 × CAIRN_WORKER_HEARTBEAT_MS/1000',
+          message: `CAIRN_RUN_LEASE_TTL_SECONDS (当前 ${env.CAIRN_RUN_LEASE_TTL_SECONDS}s) 须 ≥ 3 × Worker心跳 (${3 * workerHeartbeatSeconds}s)`,
         })
       }
       if (env.CAIRN_WORKER_LOST_AFTER_SECONDS <= env.CAIRN_RUN_LEASE_TTL_SECONDS) {
         ctx.addIssue({
           code: 'custom',
           path: ['CAIRN_WORKER_LOST_AFTER_SECONDS'],
-          message: 'CAIRN_WORKER_LOST_AFTER_SECONDS 必须大于 CAIRN_RUN_LEASE_TTL_SECONDS',
+          message: `CAIRN_WORKER_LOST_AFTER_SECONDS (当前 ${env.CAIRN_WORKER_LOST_AFTER_SECONDS}s) 必须严格大于 CAIRN_RUN_LEASE_TTL_SECONDS (${env.CAIRN_RUN_LEASE_TTL_SECONDS}s)`,
         })
       }
-      refineBrowserAiEnv(env, ctx)
       refineChangeHintEnv(env, ctx)
       if (env.CAIRN_REAPER_DRAIN_BUDGET_MS >= env.CAIRN_SESSION_REAPER_INTERVAL_MS) {
         ctx.addIssue({

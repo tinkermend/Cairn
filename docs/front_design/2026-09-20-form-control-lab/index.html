@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>识途 · 输入控件视觉对比</title>
+    <link rel="icon" href="../../../packages/web/src/assets/brand/logo-observe.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="../../design/front/tokens.css?v=1.4-control">
+    <link rel="stylesheet" href="prototype.css?v=1.4-menu">
+    <script src="prototype.js?v=1.4-menu" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#comparison">跳到控件对比</a>
+    <header class="site-header">
+      <div class="brand">
+        <img src="../../../packages/web/src/assets/brand/logo-observe.svg" width="28" height="28" alt="">
+        <strong>识途</strong><span class="brand-divider"></span><span>设计实验室</span>
+      </div>
+      <span class="prototype-tag">交互原型 <span aria-hidden="true">/</span> 2026.09.20</span>
+    </header>
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">FORM CONTROLS / 01</p>
+          <h1 id="page-title">输入控件，三种视觉方向。</h1>
+          <p class="intro-copy">已选择 B · 清透蓝。输入边界与下拉菜单一起统一，保留原灰蓝和冷青蓝供对照。</p>
+        </div>
+        <a class="jump-link" href="#playground">体验完整表单 <span aria-hidden="true">↓</span></a>
+      </section>
+
+      <section id="comparison" aria-labelledby="comparison-title">
+        <div class="section-bar">
+          <div><h2 id="comparison-title">并排看状态</h2><p>以下为固定状态样本，便于直接比较。</p></div>
+          <div class="toolbar">
+            <div class="segmented" role="group" aria-label="比较控件类型">
+              <button type="button" data-control="input" aria-pressed="true">输入框</button>
+              <button type="button" data-control="select" aria-pressed="false">下拉框</button>
+              <button type="button" data-control="textarea" aria-pressed="false">文本域</button>
+            </div>
+            <label class="toggle"><input id="show-placeholder" type="checkbox">看占位文字</label>
+          </div>
+        </div>
+        <div id="comparison-grid" class="comparison-grid"></div>
+        <p class="matrix-caption">“按下”是鼠标按住的瞬间；“聚焦”是点击进入或 Tab 到达后持续显示的状态。</p>
+      </section>
+
+      <section id="dropdown-review" class="menu-review" aria-labelledby="menu-review-title" data-theme="blue">
+        <div class="section-bar"><div><p class="eyebrow">SELECT OPTIONS / 02</p><h2 id="menu-review-title">下拉选项，也有清楚的层次</h2><p>B · 清透蓝的面板与选项状态。下方表单可实际展开操作。</p></div></div>
+        <div class="menu-review-layout">
+          <div class="menu-preview">
+            <div class="control-display preview-open"><span>预发布环境</span><span class="chevron" aria-hidden="true"></span></div>
+            <div class="dropdown-panel preview-panel" aria-label="下拉选项固定状态样本">
+              <div class="dropdown-option"><span>测试环境</span><small>默认</small></div>
+              <div class="dropdown-option" data-selected="true"><span>预发布环境</span><span class="option-check" aria-hidden="true"></span></div>
+              <div class="dropdown-option" data-highlighted="true"><span>生产环境</span><small>悬停 / 键盘高亮</small></div>
+              <div class="dropdown-option" aria-disabled="true"><span>归档环境</span><small>不可选</small></div>
+            </div>
+          </div>
+          <dl class="menu-notes"><div><dt>面板</dt><dd>白色底、冷蓝细边与柔和阴影，宽度与触发器对齐。</dd></div><div><dt>已选</dt><dd>浅蓝底、深蓝文字与右侧勾选，移动鼠标后仍保留。</dd></div><div><dt>当前高亮</dt><dd>轻蓝背景与细轮廓，清楚标出即将选择的选项。</dd></div><div><dt>展开与收起</dt><dd>展开时触发器保留聚焦光晕，箭头转向；Escape 可关闭。</dd></div></dl>
+        </div>
+      </section>
+
+      <section id="playground" class="playground" aria-labelledby="playground-title">
+        <div class="section-bar">
+          <div><p class="eyebrow">TRY IT / 03</p><h2 id="playground-title">放进表单，感受一下</h2><p>移入、点击、Tab 切换或打开下拉框，观察真实的状态变化。</p></div>
+          <div class="segmented theme-switch" role="group" aria-label="体验表单配色">
+            <button type="button" data-theme-choice="current" aria-pressed="false">A 原灰蓝</button>
+            <button type="button" data-theme-choice="blue" aria-pressed="true">B 清透蓝</button>
+            <button type="button" data-theme-choice="cyan" aria-pressed="false">C 冷青蓝</button>
+          </div>
+        </div>
+        <div id="live-surface" class="live-layout" data-theme="blue">
+          <div class="form-panel">
+            <div class="panel-heading"><div><h3>目标系统</h3><p>填写一些示例信息，试试控件的手感。</p></div><span class="small-tag">示例表单</span></div>
+            <form id="demo-form" novalidate>
+              <p class="required-note">带 <span class="required" aria-hidden="true">*</span> 的字段为必填。</p>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="demo-name">名称 <span class="required" aria-hidden="true">*</span></label>
+                  <input class="live-control" id="demo-name" name="name" required placeholder="例如：铁塔视联" autocomplete="off" aria-describedby="name-message">
+                  <p class="field-message" id="name-message"></p>
+                </div>
+                <div class="field">
+                  <label id="environment-label" for="demo-environment">环境 <span class="required" aria-hidden="true">*</span></label>
+                  <div class="select-wrap" id="environment-widget">
+                    <button type="button" class="live-control select-trigger is-placeholder" id="demo-environment" role="combobox" aria-haspopup="listbox" aria-controls="environment-options" aria-expanded="false" aria-required="true" aria-labelledby="environment-label environment-text" aria-describedby="environment-message" value=""><span id="environment-text">请选择环境</span><span class="chevron" aria-hidden="true"></span></button>
+                    <input type="hidden" id="environment-value" name="environment" value="">
+                    <div id="environment-options" class="dropdown-panel select-menu" role="listbox" aria-labelledby="environment-label" hidden>
+                      <div id="environment-option-test" class="dropdown-option" role="option" aria-selected="false" data-value="test"><span>测试环境</span><span class="option-check" aria-hidden="true"></span></div>
+                      <div id="environment-option-staging" class="dropdown-option" role="option" aria-selected="false" data-value="staging"><span>预发布环境</span><span class="option-check" aria-hidden="true"></span></div>
+                      <div id="environment-option-production" class="dropdown-option" role="option" aria-selected="false" data-value="production"><span>生产环境</span><span class="option-check" aria-hidden="true"></span></div>
+                      <div id="environment-option-archived" class="dropdown-option" role="option" aria-selected="false" aria-disabled="true" data-value="archived"><span>归档环境</span><small>不可选</small></div>
+                    </div>
+                  </div>
+                  <p class="field-message" id="environment-message"></p>
+                </div>
+                <div class="field full-width">
+                  <label for="demo-url">入口地址 <span class="optional">（选填）</span></label>
+                  <input class="live-control" id="demo-url" name="url" type="url" placeholder="https://example.com" autocomplete="off" spellcheck="false" aria-describedby="url-message">
+                  <p class="field-message" id="url-message"></p>
+                </div>
+                <div class="field full-width">
+                  <label for="demo-description">说明 <span class="optional">（选填）</span></label>
+                  <textarea class="live-control" id="demo-description" name="description" rows="3" placeholder="补充这个系统的用途或注意事项。"></textarea>
+                </div>
+              </div>
+              <div class="form-actions"><button class="primary-button" type="submit">试一下校验 <span aria-hidden="true">→</span></button><button class="text-button" type="reset">重置示例</button></div>
+              <p id="form-result" class="form-result" role="status" aria-live="polite"></p>
+            </form>
+          </div>
+          <aside class="inspector" aria-labelledby="inspector-title">
+            <p class="eyebrow">LIVE FEEDBACK</p>
+            <h3 id="inspector-title">正在体验 <span id="live-theme-name">B · 清透蓝</span></h3>
+            <div class="state-readout"><span id="live-state-dot" class="state-dot" aria-hidden="true"></span><strong id="live-state">默认</strong><span id="live-field">等待操作</span></div>
+            <p id="live-explanation" class="state-explanation">边框安静地勾勒输入区域，点击后才出现聚焦光晕。</p>
+            <div class="inspector-divider"></div>
+            <h4>可以这样比较</h4>
+            <ol class="try-list"><li>鼠标移过名称，看边框怎样回应。</li><li>点击输入，再按 Tab，比较聚焦光晕。</li><li>打开下拉框，观察激活时的边界。</li><li>留空点“试一下校验”，看错误与聚焦叠加。</li></ol>
+            <p class="inspector-footnote">切换配色会保留已经输入的内容。</p>
+          </aside>
+        </div>
+      </section>
+      <footer class="page-footer"><p>B · 清透蓝已选定，并接入公共输入与 Select 样式。A 为原灰蓝快照，C 保留作对照。</p><p>本页下拉交互用于视觉评审；正式页面复用 Radix Select。必填标识用于演示，实际字段要求由页面功能决定。</p></footer>
+    </main>
+  </body>
+</html>

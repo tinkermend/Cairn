@@ -9,10 +9,8 @@ export const PERIODIC_SLOT_NAMES = [
   'reaper.recovery',
   'reaper.session_leases',
   'reaper.liveness',
-  'monitor.alerts.deliver',
   'credential.reminders',
   'service.request_logs.purge',
-  'service.webhooks.deliver',
 ] as const
 export type PeriodicSlotName = (typeof PERIODIC_SLOT_NAMES)[number]
 
@@ -40,8 +38,6 @@ export const REAPER_PERIODIC_SLOT_ORDER = [
   'monitor.alerts.evaluate',
   'credential.reminders',
   'service.request_logs.purge',
-  'service.webhooks.deliver',
-  'monitor.alerts.deliver',
 ] as const satisfies readonly PeriodicSlotName[]
 
 export function isPeriodicSlotName(value: string): value is PeriodicSlotName {

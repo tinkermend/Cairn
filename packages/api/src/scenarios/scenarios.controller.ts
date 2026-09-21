@@ -11,6 +11,7 @@ import {
   createScenarioBodySchema,
   previewRecordingImportBodySchema,
   publishScenarioBodySchema,
+  resolutionStatsQuerySchema,
   saveScenarioDraftBodySchema,
   scenarioListQuerySchema,
   acceptKnowledgeProposalBodySchema,
@@ -37,6 +38,7 @@ import {
   type CreateScenarioBody,
   type PreviewRecordingImportBody,
   type PublishScenarioBody,
+  type ResolutionStatsQuery,
   type SaveScenarioDraftBody,
   type ScenarioListQuery,
   type TrialRunBody,
@@ -86,6 +88,15 @@ export class ScenariosController {
   @RequirePermissions('workflow:read')
   get(@Param('scenarioId') scenarioId: string) {
     return this.scenarios.get(scenarioId)
+  }
+
+  @Get(':scenarioId/resolution-stats')
+  @RequirePermissions('workflow:read', 'run:read', 'target:read')
+  resolutionStats(
+    @Param('scenarioId') scenarioId: string,
+    @Query(new ZodValidationPipe(resolutionStatsQuerySchema)) query: ResolutionStatsQuery,
+  ) {
+    return this.scenarios.resolutionStats(scenarioId, query)
   }
 
   @Get(':scenarioId/validation')

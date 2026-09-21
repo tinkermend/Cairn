@@ -110,7 +110,7 @@ describe('证据中心页', () => {
         <EvidencePage />
       </QueryClientProvider>,
     )
-    await expect.element(screen.getByRole('heading', { name: '证据与报告', exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByRole('heading', { name: '结果与报告', exact: true })).toBeInTheDocument()
     await expect.element(screen.getByText('最近失败')).toBeInTheDocument()
     await expect.element(screen.getByText('目标甲')).toBeInTheDocument()
     await expect.element(screen.getByText('账号被锁')).toBeInTheDocument()

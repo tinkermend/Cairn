@@ -24,6 +24,7 @@ export function buildPlatformBootstrapDocument(
   )
   if (complete) {
     document.browserAi = {
+      ...FACTORY_PLATFORM_CONFIG.browserAi,
       enabled: true,
       baseUrl: env.CAIRN_BROWSER_AI_BASE_URL,
       model: env.CAIRN_BROWSER_AI_MODEL,

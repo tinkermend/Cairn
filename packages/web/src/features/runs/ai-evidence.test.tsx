@@ -33,4 +33,23 @@ describe('AiAttemptSummary', () => {
     await expect.element(screen.getByText('判断 不成立 · 列表为空')).toBeInTheDocument()
     await expect.element(screen.getByText(/模型调用 #1 · mock-model · 120 ms · tokens 10\/4/)).toBeInTheDocument()
   })
+
+  it('展示语义树引用行与回退说明', async () => {
+    const screen = await render(
+      <AiAttemptSummary
+        output={{
+          passed: true,
+          reason: '标题与按钮均存在',
+          citations: ['- heading "采购工单" [level=1]', '- button "提交"'],
+          fallbackReason: '视觉关键词回退',
+        }}
+        evidence={[]}
+      />,
+    )
+    await expect.element(screen.getByText('判断 成立 · 标题与按钮均存在')).toBeInTheDocument()
+    await expect.element(screen.getByText('语义树引用行 (Citations):')).toBeInTheDocument()
+    await expect.element(screen.getByText('- heading "采购工单" [level=1]')).toBeInTheDocument()
+    await expect.element(screen.getByText('- button "提交"')).toBeInTheDocument()
+    await expect.element(screen.getByText('回退说明: 视觉关键词回退')).toBeInTheDocument()
+  })
 })

@@ -26,6 +26,13 @@ describe('角色成员关联 (RbacStore role accounts)', { timeout: 30_000 }, ()
     expect(adminRole).toBeDefined()
     expect(operatorRole).toBeDefined()
 
+    // 空库迁完就带一个种子管理员（0091_bootstrap_admin_seed）。
+    // 本用例要验的是「最后一个管理员不能移除」，先把种子那位移开，
+    // 否则末尾断言里 admin1 并不是最后一个。
+    const seeded = await rbac.listRoleAccounts(adminRole!.id, { limit: 100 })
+    const seededIds = seeded.items.map((item) => item.id)
+    expect(seededIds).toHaveLength(1)
+
     // 创建测试账号
     const admin1 = await rbac.createAccount({
       displayName: 'Admin One',
@@ -97,7 +104,10 @@ describe('角色成员关联 (RbacStore role accounts)', { timeout: 30_000 }, ()
     )
     expect(removeAdmin2.removedCount).toBe(1)
 
-    // 6. 尝试移出最后一个活跃管理员 admin1，必须阻止并抛出 conflict
+    // 6. 种子管理员先移出，admin1 才真的是最后一个
+    await rbac.removeRoleAccounts(adminRole!.id, { accountIds: seededIds }, actor)
+
+    // 尝试移出最后一个活跃管理员 admin1，必须阻止并抛出 conflict
     await expect(
       rbac.removeRoleAccounts(adminRole!.id, { accountIds: [admin1.id] }, actor),
     ).rejects.toThrow(/不能移除最后一个管理员/)

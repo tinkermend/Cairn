@@ -1,4 +1,4 @@
-import { knowledgeAccess, visibleKnowledgeSources } from './knowledge-access'
+import { knowledgeAccess, visibleTerms } from './knowledge-access'
 import { redactKnowledgeQuestion } from '@cairn/map'
 import { createHash } from 'node:crypto'
 import { Inject, Injectable } from '@nestjs/common'
@@ -316,19 +316,24 @@ export class MapService {
   async listTerms(targetId: string, query: TerminologyListQuery, account: RequestAccount) {
     try {
       const result = await listTerminology(this.database, targetId, query)
-      return { ...result, items: await Promise.all(result.items.map(async item => ({ ...item, sources: await visibleKnowledgeSources(this.database, targetId, item.sources, account) }))) }
+      return { ...result, items: await visibleTerms(this.database, targetId, result.items, account) }
     } catch (error) { rethrowDomain(error) }
   }
 
   async matchTerms(targetId: string, alias: string, account: RequestAccount) {
     try {
       const result = await matchTerminology(this.database, targetId, { alias })
-      return { ...result, items: await Promise.all(result.items.map(async item => ({ ...item, sources: await visibleKnowledgeSources(this.database, targetId, item.sources, account) }))) }
+      return { ...result, items: await visibleTerms(this.database, targetId, result.items, account) }
     } catch (error) { rethrowDomain(error) }
   }
 
   async getTerm(targetId: string, termId: string, account: RequestAccount) {
-    try { const item = await getTerminology(this.database, targetId, termId); return { ...item, sources: await visibleKnowledgeSources(this.database, targetId, item.sources, account) } }
+    try {
+      const item = await getTerminology(this.database, targetId, termId)
+      const [visible] = await visibleTerms(this.database, targetId, [item], account)
+      if (!visible) throw notFound('KNOWLEDGE_NOT_FOUND', '术语不存在')
+      return visible
+    }
     catch (error) { rethrowDomain(error) }
   }
 
@@ -342,6 +347,7 @@ export class MapService {
   async updateTerm(targetId: string, termId: string, body: UpdateTerminologyBody, account: RequestAccount) {
     try {
       const prior = await getTerminology(this.database, targetId, termId)
+      await validateKnowledgeSources(this.database, targetId, prior.sources.filter(source => source.kind === 'analysis_candidate'), knowledgeAccess(account))
       await validateKnowledgeSources(this.database, targetId, body.sources ?? prior.sources, knowledgeAccess(account))
       return await updateTerminology(this.database, targetId, termId, { ...body, canonicalName: body.canonicalName ? redactKnowledgeQuestion(body.canonicalName) : undefined, aliases: body.aliases?.map(redactKnowledgeQuestion), meaning: body.meaning ? redactKnowledgeQuestion(body.meaning) : undefined }, this.actor(account))
     } catch (error) { rethrowDomain(error) }
@@ -349,6 +355,8 @@ export class MapService {
 
   async retireTerm(targetId: string, termId: string, body: RetireTerminologyBody, account: RequestAccount) {
     try {
+      const prior = await getTerminology(this.database, targetId, termId)
+      await validateKnowledgeSources(this.database, targetId, prior.sources.filter(source => source.kind === 'analysis_candidate'), knowledgeAccess(account))
       await retireTerminology(this.database, targetId, termId, { ...body, reason: redactKnowledgeQuestion(body.reason) }, this.actor(account))
       return await this.getTerm(targetId, termId, account)
     } catch (error) { rethrowDomain(error) }

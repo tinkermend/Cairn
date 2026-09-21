@@ -1,3 +1,11 @@
+import {
+  buildPlatformAiChatBody,
+  postPlatformAiChatCompletion,
+  readPlatformAiChatResult,
+  type PlatformAiProvider,
+  type PlatformAiThinkingMode,
+} from '@cairn/shared'
+
 export type PlatformModelMessage = { role: 'system' | 'user'; content: string }
 
 export type PlatformModelResult = {
@@ -11,6 +19,8 @@ export type PlatformModelClient = {
     baseUrl: string
     apiKey: string
     model: string
+    provider: PlatformAiProvider
+    thinkingMode: PlatformAiThinkingMode
     messages: PlatformModelMessage[]
     maxTokens: number
     timeoutMs: number
@@ -22,42 +32,25 @@ export type PlatformModelClient = {
 export function createOpenAiCompatibleClient(): PlatformModelClient {
   return {
     async complete(input) {
-      const base = input.baseUrl.endsWith('/') ? input.baseUrl : `${input.baseUrl}/`
-      const response = await fetch(new URL('chat/completions', base), {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${input.apiKey}`,
-        },
-        body: JSON.stringify({
+      const raw = await postPlatformAiChatCompletion({
+        baseUrl: input.baseUrl,
+        apiKey: input.apiKey,
+        body: buildPlatformAiChatBody({
+          provider: input.provider,
+          thinkingMode: input.thinkingMode,
           model: input.model,
           messages: input.messages,
-          max_tokens: input.maxTokens,
-          temperature: 0,
-          ...(input.json ? { response_format: { type: 'json_object' } } : {}),
+          maxTokens: input.maxTokens,
+          json: input.json,
         }),
-        signal: AbortSignal.any(
-          [AbortSignal.timeout(input.timeoutMs), input.signal].filter(Boolean) as AbortSignal[],
-        ),
+        timeoutMs: input.timeoutMs,
+        signal: input.signal,
       })
-      if (!response.ok) {
-        throw new Error(`模型服务返回 HTTP ${response.status}`)
-      }
-      const body = (await response.json()) as {
-        model?: string
-        choices?: { message?: { content?: string } }[]
-        usage?: { prompt_tokens?: number; completion_tokens?: number }
-      }
-      const text = body.choices?.[0]?.message?.content?.trim()
-      if (!text) throw new Error('模型没有返回可用文本')
+      const result = readPlatformAiChatResult(raw, 'business')
       return {
-        text,
-        model: body.model ?? input.model,
-        usage: {
-          promptTokens: body.usage?.prompt_tokens,
-          completionTokens: body.usage?.completion_tokens,
-        },
+        text: result.text,
+        model: result.model ?? input.model,
+        usage: result.usage,
       }
     },
   }

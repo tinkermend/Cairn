@@ -56,10 +56,7 @@ async function uploadFile(handle: DbHandle, store: ObjectStore, grant: Grant, pa
   const maxBytes = input.kind === 'report_bundle' ? REPORT_LIMITS.bundleBytes : input.kind === 'report_material' ? REPORT_LIMITS.imageBytes : REPORT_LIMITS.fileBytes
   const reserved = await reserveExportArtifact(handle, grant, input)
   signal.throwIfAborted()
-  const head = store.putFile ? await store.putFile({ key: reserved.objectKey, path, contentType: input.contentType, maxBytes, signal }) : await (async () => {
-    if ((await stat(path)).size > Math.min(maxBytes, 32 * 1024 * 1024)) throw new Error('当前对象适配器不支持有界大文件上传')
-    return store.put({ key: reserved.objectKey, body: await readFile(path), contentType: input.contentType })
-  })()
+  const head = await store.putFile({ key: reserved.objectKey, path, contentType: input.contentType, maxBytes, signal })
   signal.throwIfAborted()
   if (!await renewExportJob(handle, grant)) throw new Error('导出执行权失效')
   await attachArtifactBytes(handle, { artifactId: reserved.id, byteSize: head.byteSize, digest: head.digest })

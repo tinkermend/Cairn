@@ -8,6 +8,7 @@ import {
   type DebugMode,
   type DebugOverlay,
   type ExecutionError,
+  type MapRunSourceType,
   type PageRef,
   type RunGrant,
   type SessionGrant,
@@ -108,3 +109,47 @@ export function shouldRetry(step: Step, error: ExecutionError, attemptNo: number
   if (error.category === 'VALIDATION' || error.category === 'CANCELLED') return false
   return error.category === 'TIMEOUT' || error.category === 'EXECUTOR' || error.category === 'INFRASTRUCTURE'
 }
+
+export function isTrialOrDebugRun(input: { debugMode: DebugMode; mapSourceType: MapRunSourceType }): boolean {
+  return input.debugMode !== 'runThrough' || input.mapSourceType === 'trial'
+}
+
+export interface ShouldAttemptSelfHealInput {
+  policy: import('@cairn/shared').HealerPolicy
+  isTrialOrDebug: boolean
+  step: Step
+  error: ExecutionError
+  attemptNo: number
+  maxHealAttempts: number
+  hasModelBudget: boolean
+  pageContextMatch: boolean
+}
+
+/**
+ * 判定当前失败是否符合自愈条件：
+ * 1. 策略门禁（off 全关，authoring_only 仅限试跑/调试，safe_runtime 允许受控自愈）
+ * 2. 页面上下文守卫（URL/Title 发生未预期跳转时绝对禁止自愈）
+ * 3. 次数与模型预算熔断
+ * 4. 排除丢租、断言失败、验证失败等确定性错误
+ * 5. 副作用断流：有副作用步骤仅在动作未发出（TARGET_NOT_FOUND / RESOLVER_EXHAUSTED）时允许自愈
+ */
+export function shouldAttemptSelfHeal(input: ShouldAttemptSelfHealInput): boolean {
+  if (input.policy === 'off') return false
+  if (input.policy === 'authoring_only' && !input.isTrialOrDebug) return false
+  if (!input.pageContextMatch) return false
+  if (input.attemptNo > input.maxHealAttempts || !input.hasModelBudget) return false
+
+  if (input.error.code === 'SESSION_LEASE_LOST' || input.error.code === ASSERT_FAILED_CODE) return false
+  if (input.error.category === 'VALIDATION' || input.error.category === 'CANCELLED') return false
+
+  if (input.step.effectType === 'SIDE_EFFECT') {
+    return input.error.code === 'TARGET_NOT_FOUND' || input.error.code === 'RESOLVER_EXHAUSTED'
+  }
+
+  return (
+    input.error.code === 'TARGET_NOT_FOUND' ||
+    input.error.code === 'RESOLVER_EXHAUSTED' ||
+    input.error.category === 'TIMEOUT'
+  )
+}
+

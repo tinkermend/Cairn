@@ -1,18 +1,24 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
+import type { ScheduleConsumerType, ScheduleDto } from '@cairn/shared'
 import { CalendarClock } from 'lucide-react'
-import type { ScheduleAdmissionStatus, ScheduleSkipReason } from '@cairn/shared'
-import { fetchSchedules } from '@/lib/schedules-api'
+import { toast } from 'sonner'
+import { ApiRequestError } from '@/lib/api-client'
+import {
+  fetchSchedules,
+  setScheduleEnabled,
+  triggerSchedule,
+} from '@/lib/schedules-api'
 import { fetchTargetAccounts, fetchTargets } from '@/lib/targets-api'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { useCan } from '@/hooks/use-permissions'
-import { CursorPagination } from '@/components/data-table'
-import { CollectionSummary } from '@/components/collection-summary'
-import { EmptyState } from '@/components/empty-state'
-import { Main } from '@/components/layout/main'
-import { PageHeader } from '@/components/layout/page-header'
-import { PageSkeleton } from '@/components/page-skeleton'
-import { QueryErrorState } from '@/components/query-error-state'
 import { Button } from '@/components/ui/button'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
 import {
   Table,
   TableBody,
@@ -21,42 +27,47 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-
-const ADMISSION_LABELS: Record<ScheduleAdmissionStatus, string> = {
-  PENDING: '待准入',
-  ADMITTED: '已准入',
-  SKIPPED: '已跳过',
-  FAILED: '准入失败',
-}
-
-const SKIP_LABELS: Partial<Record<ScheduleSkipReason, string>> = {
-  WINDOW_CLOSED: '错过窗口',
-  DST_NONEXISTENT: '夏令时不存在',
-  FACTORY_DISABLED: '工厂关闭',
-  AUTH_PREPARATION_REQUIRED: '认证未准备',
-  MAP_ACCOUNT_USAGE_REQUIRED: '账号已收回地图用途',
-  NO_ELIGIBLE_ASSETS: '无可用资产',
-  ACTIVE_SLICE_EXISTS: '会话或作业占用',
-}
+import { CollectionSummary } from '@/components/collection-summary'
+import { CursorPagination } from '@/components/data-table'
+import { EmptyState } from '@/components/empty-state'
+import { Main } from '@/components/layout/main'
+import { PageHeader } from '@/components/layout/page-header'
+import { PageSkeleton } from '@/components/page-skeleton'
+import { QueryErrorState } from '@/components/query-error-state'
+import { ScheduleDetailDialog } from './detail'
+import { ScheduleEditorDialog } from './editor'
+import { CONSUMER_LABELS, SKIP_LABELS, lastResult } from './labels'
 
 function formatInstant(value: string | null, timeZone: string) {
   if (!value) return '—'
   return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone })
 }
 
-function lastResult(status: ScheduleAdmissionStatus | undefined, reason: ScheduleSkipReason | null | undefined) {
-  if (!status) return '还没有窗口'
-  if (status === 'ADMITTED') return '已准入（作业已创建，不等于复查成功）'
-  if (status === 'SKIPPED' && reason) return `已跳过 · ${SKIP_LABELS[reason] ?? reason}`
-  return ADMISSION_LABELS[status]
+function timeSummary(item: ScheduleDto) {
+  if (item.definition.timeRule.kind === 'interval') {
+    return `间隔 ${Math.round(item.definition.timeRule.intervalMs / 60000)} 分钟`
+  }
+  const windows = item.definition.timeRule.windows
+  return `${item.definition.timezone} ${windows.length > 1 ? `${windows.length} 个时间窗口` : `${windows[0].windowStart}–${windows[0].windowEnd}`}`
 }
 
 export function SchedulesPage() {
   const page = useCursorPage()
   const canReadTargets = useCan('target:read')
+  const canWrite = useCan('schedule:write')
+  const queryClient = useQueryClient()
+  const [consumerKey, setConsumerKey] = useState<ScheduleConsumerType | ''>('')
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editing, setEditing] = useState<ScheduleDto | null>(null)
+  const [detail, setDetail] = useState<ScheduleDto | null>(null)
   const query = useQuery({
-    queryKey: ['schedules', 'list', page.cursor, page.pageSize],
-    queryFn: () => fetchSchedules({ cursor: page.cursor, limit: page.pageSize }),
+    queryKey: ['schedules', 'list', page.cursor, page.pageSize, consumerKey],
+    queryFn: () =>
+      fetchSchedules({
+        cursor: page.cursor,
+        limit: page.pageSize,
+        consumerKey: consumerKey || undefined,
+      }),
     placeholderData: keepPreviousData,
   })
   const targetsQuery = useQuery({
@@ -69,104 +80,264 @@ export function SchedulesPage() {
   const accountsQuery = useQuery({
     queryKey: ['targets', 'schedule-account-names', targetIds],
     queryFn: async () => {
-      const lists = await Promise.all(targetIds.map((targetId) => fetchTargetAccounts(targetId, { limit: 50 })))
+      const lists = await Promise.all(
+        targetIds.map((targetId) =>
+          fetchTargetAccounts(targetId, { limit: 50 })
+        )
+      )
       return lists.flatMap((list) => list.items)
     },
     enabled: canReadTargets && targetIds.length > 0,
   })
-  const names = new Map((targetsQuery.data?.items ?? []).map((item) => [item.id, item.name]))
-  const accountNames = new Map((accountsQuery.data ?? []).map((item) => [item.id, item.displayName]))
+  const names = new Map(
+    (targetsQuery.data?.items ?? []).map((item) => [item.id, item.name])
+  )
+  const accountNames = new Map(
+    (accountsQuery.data ?? []).map((item) => [item.id, item.displayName])
+  )
+  const enabledMutation = useMutation({
+    mutationFn: ({ item, enabled }: { item: ScheduleDto; enabled: boolean }) =>
+      setScheduleEnabled(item.scheduleId, {
+        expectedRevision: item.revision,
+        idempotencyKey: `list-${enabled ? 'on' : 'off'}-${Date.now()}`,
+        enabled,
+        cancelAdmittedJobs: false,
+      }),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+    onError: (error) =>
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '启停失败'
+      ),
+  })
+  const triggerMutation = useMutation({
+    mutationFn: (item: ScheduleDto) =>
+      triggerSchedule(item.scheduleId, {
+        idempotencyKey: `manual-${Date.now()}`,
+      }),
+    onSuccess: () => {
+      toast.success('已写入手动触发，等待准入')
+      void queryClient.invalidateQueries({ queryKey: ['schedules'] })
+    },
+    onError: (error) =>
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '触发失败'
+      ),
+  })
 
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
-        <PageHeader
-          title='定时调度'
-          description='查看定时任务、下次触发窗口和最近触发结果。当前支持地图复查，场景定时执行尚未开放。'
-        />
-        {query.isPending ? (
-          <PageSkeleton />
-        ) : query.isError ? (
-          <QueryErrorState title='无法加载调度计划' onRetry={() => void query.refetch()} />
-        ) : items.length === 0 ? (
-          <EmptyState
-            title='还没有调度计划'
-            description='在目标知识页设置时区、窗口和账号。出厂关闭时即使保存也不会触发。'
-          />
-        ) : (
-          <>
-            <CollectionSummary
-              items={[
-                {
-                  label: '本页计划',
-                  value: items.length,
-                  description: '当前页调度',
-                  icon: <CalendarClock className='size-4' />,
-                },
-                {
-                  label: '已启用',
-                  value: items.filter((item) => item.enabled).length,
-                  description: '按计划等待触发',
-                  icon: <CalendarClock className='size-4' />,
-                },
-              ]}
-            />
-            <section
-              aria-label='调度计划'
-              className='min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card'
+      <PageHeader
+        title='定时任务'
+        description='统一管理场景、场景集、地图复查和知识分析的定时计划。保存默认停用；工厂开关关闭时不会触发。'
+        actions={
+          canWrite ? (
+            <Button
+              onClick={() => {
+                setEditing(null)
+                setEditorOpen(true)
+              }}
             >
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>任务类型</TableHead>
-                    <TableHead>目标 / 账号</TableHead>
-                    <TableHead>时区与窗口</TableHead>
-                    <TableHead>下次窗口</TableHead>
-                    <TableHead>最近准入</TableHead>
-                    <TableHead>状态</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((item) => (
-                    <TableRow key={item.scheduleId}>
-                      <TableCell>地图复查</TableCell>
-                      <TableCell>
-                        <p className='text-body'>{names.get(item.targetId) ?? item.targetId.slice(0, 8)}</p>
-                        <p className='text-label text-muted-foreground'>
-                          {accountNames.get(item.targetAccountId) ?? item.targetAccountId.slice(0, 8)}
-                        </p>
-                      </TableCell>
-                      <TableCell>
-                        {item.definition.timezone} {item.definition.windowStart}–{item.definition.windowEnd}
-                      </TableCell>
-                      <TableCell>{formatInstant(item.nextDueAt, item.definition.timezone)}</TableCell>
-                      <TableCell>
-                        {lastResult(item.lastOccurrence?.admissionStatus, item.lastOccurrence?.reason)}
-                      </TableCell>
-                      <TableCell>{item.enabled ? '已启用' : '已停用'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <div className='border-t border-border-divider p-3'>
-                <CursorPagination
-                  pageIndex={page.pageIndex}
-                  pageSize={page.pageSize}
-                  hasPreviousPage={page.pageIndex > 0}
-                  hasNextPage={Boolean(query.data?.nextCursor)}
-                  updating={query.isFetching}
-                  onPageSizeChange={page.setPageSize}
-                  onPreviousPage={page.goPrev}
-                  onNextPage={() => {
-                    if (query.data?.nextCursor) page.goNext(query.data.nextCursor)
-                  }}
-                />
-              </div>
-            </section>
-            <Button variant='outline' className='self-start' onClick={() => void query.refetch()}>
-              刷新
+              新建调度
             </Button>
-          </>
-        )}
+          ) : null
+        }
+      />
+      <div className='flex flex-wrap items-center gap-2'>
+        <label
+          className='text-label text-muted-foreground'
+          htmlFor='schedule-filter'
+        >
+          任务类型
+        </label>
+        <SelectField
+          id='schedule-filter'
+          className='w-auto'
+          value={consumerKey}
+          onValueChange={(value) =>
+            setConsumerKey(value as ScheduleConsumerType | '')
+          }
+        >
+          <SelectFieldOption value=''>全部</SelectFieldOption>
+          {Object.entries(CONSUMER_LABELS).map(([value, label]) => (
+            <SelectFieldOption key={value} value={value}>
+              {label}
+            </SelectFieldOption>
+          ))}
+        </SelectField>
+      </div>
+      {query.isPending ? (
+        <PageSkeleton />
+      ) : query.isError ? (
+        <QueryErrorState
+          title='无法加载调度计划'
+          onRetry={() => void query.refetch()}
+        />
+      ) : items.length === 0 ? (
+        <EmptyState
+          title='还没有调度计划'
+          description='先选任务类型再固定版本和排期。出厂关闭时即使保存也不会触发。'
+        />
+      ) : (
+        <>
+          <CollectionSummary
+            items={[
+              {
+                label: '本页计划',
+                value: items.length,
+                description: '当前页调度',
+                icon: <CalendarClock className='size-4' />,
+              },
+              {
+                label: '已启用',
+                value: items.filter((item) => item.enabled).length,
+                description: '按计划等待触发',
+                icon: <CalendarClock className='size-4' />,
+              },
+            ]}
+          />
+          <section
+            aria-label='调度计划'
+            className='min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card'
+          >
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>任务</TableHead>
+                  <TableHead>目标 / 对象</TableHead>
+                  <TableHead>排期</TableHead>
+                  <TableHead>下次窗口</TableHead>
+                  <TableHead>最近准入</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map((item) => (
+                  <TableRow key={item.scheduleId}>
+                    <TableCell>
+                      <p className='text-body'>
+                        {CONSUMER_LABELS[item.consumerKey]}
+                      </p>
+                      <p className='text-label text-muted-foreground'>
+                        {item.name ?? item.objectLabel ?? '—'}
+                      </p>
+                    </TableCell>
+                    <TableCell>
+                      <p className='text-body'>
+                        {names.get(item.targetId) ?? item.targetId.slice(0, 8)}
+                      </p>
+                      <p className='text-label text-muted-foreground'>
+                        {item.targetAccountId
+                          ? (accountNames.get(item.targetAccountId) ??
+                            item.targetAccountId.slice(0, 8))
+                          : (item.objectLabel ?? '无浏览器账号')}
+                      </p>
+                    </TableCell>
+                    <TableCell>{timeSummary(item)}</TableCell>
+                    <TableCell>
+                      {formatInstant(item.nextDueAt, item.definition.timezone)}
+                    </TableCell>
+                    <TableCell>
+                      {lastResult(
+                        item.lastOccurrence?.admissionStatus,
+                        item.lastOccurrence?.reason
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {item.enabled ? '已启用' : '已停用'}
+                      {item.blockReasons?.length ? (
+                        <p className='text-label text-status-warning-foreground'>
+                          {item.blockReasons
+                            .map(
+                              (reason) =>
+                                SKIP_LABELS[
+                                  reason as keyof typeof SKIP_LABELS
+                                ] ?? reason
+                            )
+                            .join(' · ')}
+                        </p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <div className='flex flex-wrap gap-2'>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='sm'
+                          onClick={() => setDetail(item)}
+                        >
+                          详情
+                        </Button>
+                        {canWrite ? (
+                          <>
+                            <Button
+                              type='button'
+                              variant='ghost'
+                              size='sm'
+                              onClick={() => {
+                                setEditing(item)
+                                setEditorOpen(true)
+                              }}
+                            >
+                              编辑
+                            </Button>
+                            <Button
+                              type='button'
+                              variant='ghost'
+                              size='sm'
+                              onClick={() =>
+                                enabledMutation.mutate({
+                                  item,
+                                  enabled: !item.enabled,
+                                })
+                              }
+                            >
+                              {item.enabled ? '停用' : '启用'}
+                            </Button>
+                            <Button
+                              type='button'
+                              variant='ghost'
+                              size='sm'
+                              onClick={() => triggerMutation.mutate(item)}
+                            >
+                              立即执行
+                            </Button>
+                          </>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div className='border-t border-border-divider p-3'>
+              <CursorPagination
+                pageIndex={page.pageIndex}
+                pageSize={page.pageSize}
+                hasPreviousPage={page.pageIndex > 0}
+                hasNextPage={Boolean(query.data?.nextCursor)}
+                updating={query.isFetching && query.isPlaceholderData}
+                onPageSizeChange={page.setPageSize}
+                onPreviousPage={page.goPrev}
+                onNextPage={() => {
+                  if (query.data?.nextCursor) page.goNext(query.data.nextCursor)
+                }}
+              />
+            </div>
+          </section>
+        </>
+      )}
+      <ScheduleEditorDialog
+        key={editing?.scheduleId ?? (editorOpen ? 'new' : 'closed')}
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        existing={editing}
+      />
+      <ScheduleDetailDialog
+        schedule={detail}
+        onOpenChange={(open) => !open && setDetail(null)}
+      />
     </Main>
   )
 }

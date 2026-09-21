@@ -17,6 +17,8 @@ import {
   reviewRunBodySchema,
   mapDecisionListQuerySchema,
   mapDecisionListResponseSchema,
+  resolutionDecisionListQuerySchema,
+  resolutionDecisionListResponseSchema,
   runDetailSchema,
   runEvidenceListResponseSchema,
   runListResponseSchema,
@@ -37,6 +39,8 @@ import {
   type ReviewRunBody,
   type MapDecisionListQuery,
   type MapDecisionListResponse,
+  type ResolutionDecisionListQuery,
+  type ResolutionDecisionListResponse,
   type RunDetailDto,
   type RunEvidenceListResponse,
   type RunListQuery,
@@ -84,6 +88,14 @@ export function retryRunCleanup(id: string): Promise<CleanupStatusResponse> {
 
 export function fetchRun(id: string): Promise<RunDetailDto> {
   return apiFetch(`/api/runs/${id}`, runDetailSchema)
+}
+
+export function fetchRunResolutionDecisions(
+  runId: string,
+  query?: ResolutionDecisionListQuery,
+): Promise<ResolutionDecisionListResponse> {
+  const parsed = query ? resolutionDecisionListQuerySchema.parse(query) : undefined
+  return apiFetch(`/api/runs/${runId}/resolution-decisions${toQueryString(parsed)}`, resolutionDecisionListResponseSchema)
 }
 
 export function fetchRunMapDecisions(

@@ -300,7 +300,7 @@ export type NotificationDeliveryDeps = {
   secrets?: LocalSecretProvider
   signal?: AbortSignal
   blockedHosts?: string[]
-  smtpDestinations: string[]
+  smtpDestinations?: string[]
   /** Transport fixture injection; runtime assembly always uses the pinned public resolver. */
   resolveDestination?: typeof resolveNotificationDestination
 }
@@ -357,8 +357,6 @@ export async function deliverNotifications(input: NotificationDeliveryDeps): Pro
           const smtpRef = job.delivery.binding.smtp?.secretRef
           if (!smtpRef) throw fail('smtp_missing')
           const smtp = notificationSmtpSecretSchema.parse(await decrypt(smtpRef))
-          if (!input.smtpDestinations.includes(`${smtp.host.toLowerCase()}:${smtp.port}`))
-            throw fail('smtp_destination_not_approved')
           const recipient = channel.recipients.find((r) => r.id === job.delivery.recipientKey)
           if (!recipient) throw fail('recipient_missing')
           if (signal.aborted) throw fail('send_aborted')

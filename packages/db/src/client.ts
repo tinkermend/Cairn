@@ -144,14 +144,14 @@ function createSqlite(file: string): DbHandle {
   function connect(): DatabaseSync {
     if (closed) throw new Error('Database is closed')
     const connection = new DatabaseSync(path)
-    connection.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 0;')
+    connection.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     if (connection.prepare('PRAGMA foreign_keys').get()!.foreign_keys !== 1)
       throw new Error('SQLite foreign keys unavailable')
     connections.add(connection)
     return connection
   }
   const root = connect()
-  root.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
+  root.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;')
   function orm(
     connection: DatabaseSync,
     inTx = false,

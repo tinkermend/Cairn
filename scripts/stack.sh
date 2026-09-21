@@ -11,6 +11,7 @@ LOGS_DIR="$ROOT/logs"
 mkdir -p "$RUN_DIR" "$LOGS_DIR"
 
 pid_file() { echo "$RUN_DIR/$1.pid"; }
+mode_file() { echo "$RUN_DIR/$1.mode"; }
 log_file() { echo "$LOGS_DIR/$1.log"; }
 
 get_env_val() {
@@ -139,16 +140,18 @@ start_one() {
       ;;
   esac
 
+  echo "stable" > "$(mode_file "$svc")"
+
   local pid
   pid="$(cat "$(pid_file "$svc")")"
 
   # 稍等 0.5s 确认启动未立即失败
   sleep 0.5
   if kill -0 "$pid" 2>/dev/null; then
-    echo "  ✅ 已启动  cairn-$svc (pid $pid, port $port)  日志 logs/$svc.log"
+    echo "  ✅ 已启动 (stable 模式)  cairn-$svc (pid $pid, port $port)  日志 logs/$svc.log"
   else
     echo "  ✗ cairn-$svc 启动后立即退出，请检查日志: tail -n 30 logs/$svc.log" >&2
-    rm -f "$(pid_file "$svc")"
+    rm -f "$(pid_file "$svc")" "$(mode_file "$svc")"
     return 1
   fi
 }
@@ -156,6 +159,7 @@ start_one() {
 stop_one() {
   local svc="$1"
   local pid_path; pid_path="$(pid_file "$svc")"
+  local m_file; m_file="$(mode_file "$svc")"
   local port; port="$(port_of "$svc")"
   local rec_pid=""
   local stopped_something=false
@@ -173,7 +177,7 @@ stop_one() {
     fi
     stopped_something=true
   fi
-  rm -f "$pid_path"
+  rm -f "$pid_path" "$m_file"
 
   # 清理端口上残留的孤儿进程或子进程
   local port_pids; port_pids="$(pids_on_port "$port")"
@@ -202,9 +206,13 @@ status_one() {
   local port_desc=""
   [[ -n "$port" ]] && port_desc="(port $port)"
   local rec_pid=""
+  local mode_desc=""
+  if [[ -f "$(mode_file "$svc")" ]]; then
+    mode_desc=" [$(cat "$(mode_file "$svc")")]"
+  fi
 
   if rec_pid="$(recorded_pid "$svc")"; then
-    printf "  %-14s running        pid %-7s %s\n" "cairn-$svc" "$rec_pid" "$port_desc"
+    printf "  %-14s running%-9s pid %-7s %s\n" "cairn-$svc" "$mode_desc" "$rec_pid" "$port_desc"
   else
     local port_pids; port_pids="$(pids_on_port "$port")"
     if [[ -n "$port_pids" ]]; then
@@ -219,9 +227,10 @@ status_one() {
 clean_one() {
   local svc="$1"
   local pid_path; pid_path="$(pid_file "$svc")"
+  local m_file; m_file="$(mode_file "$svc")"
   local port; port="$(port_of "$svc")"
 
-  rm -f "$pid_path"
+  rm -f "$pid_path" "$m_file"
 
   local port_pids; port_pids="$(pids_on_port "$port")"
   if [[ -n "$port_pids" ]]; then

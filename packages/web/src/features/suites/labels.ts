@@ -45,3 +45,15 @@ export function suiteVerdictTone(verdict: SuiteVerdict | null): StatusTone {
   if (verdict === 'incomplete') return 'warning'
   return 'neutral'
 }
+
+/**
+ * 成员输入是已知死路：validateSuiteDocument 会用 assertRunFromResolved 在保存与发布期拦住，
+ * 但成员 input 在界面上写死 {}，人没有地方能填。本轮先把拦截信息说成人话，
+ * 逐成员输入编辑另案。
+ */
+export function suiteIssueMessage(issue: { code: string; message: string }): string {
+  if (issue.code === 'SCENARIO_UNRESOLVED_REF') {
+    return '成员场景需要运行输入，场景集暂不支持逐成员填写；请改用定时任务或手工创建运行。'
+  }
+  return issue.message
+}

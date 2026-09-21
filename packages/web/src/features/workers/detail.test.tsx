@@ -16,6 +16,11 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 vi.mock('@/lib/workers-api', () => ({
   fetchWorker: (...args: unknown[]) => fetchWorker(...args),
   disposeWorkerSession: vi.fn(),
+  // 详情页引入的其余节点管理接口：本用例只看展示，不触发它们，但 mock 必须列全，
+  // 否则整个测试文件会在加载阶段就因「模块没有提供这个导出」而失败。
+  disableWorker: vi.fn(),
+  enableWorker: vi.fn(),
+  removeWorker: vi.fn(),
 }))
 
 it('详情展示内部入口与可处置占用，页头不用会话', async () => {

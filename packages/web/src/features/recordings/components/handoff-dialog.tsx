@@ -112,7 +112,7 @@ export function RecordingHandoffDialog({
           <DialogTitle>回填录制草稿到场景</DialogTitle>
           <DialogDescription>
             将操作序列导入至目标系统「{targetName}
-            」下的自动化场景，进行结构化编排与调试。
+            」下的场景，进行结构化编排与调试。
           </DialogDescription>
         </DialogHeader>
 

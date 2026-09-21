@@ -26,15 +26,17 @@ function signIn(permissions = ['target:read', 'target:write', 'map:read']) {
 }
 
 async function renderCard() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   return render(
     <QueryClientProvider client={client}>
       <AccessPolicyCard targetId={TARGET_ID} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
 }
 
-describe('目标授权卡片', () => {
+describe('访问范围卡片', () => {
   beforeEach(async () => {
     await page.viewport(1440, 900)
     vi.clearAllMocks()
@@ -45,7 +47,13 @@ describe('目标授权卡片', () => {
       policy: {
         schemaVersion: 1,
         policyVersion: 1,
-        rules: [{ origin: 'https://shop.example', purpose: 'business_surface', effect: 'allow' }],
+        rules: [
+          {
+            origin: 'https://shop.example',
+            purpose: 'business_surface',
+            effect: 'allow',
+          },
+        ],
       },
       seeded: true,
       resourceLoadsUnrestricted: true,
@@ -55,15 +63,18 @@ describe('目标授权卡片', () => {
 
   it('展示派生授权并标明资源域不授予操作', async () => {
     await renderCard()
-    await expect.element(page.getByText('目标授权')).toBeVisible()
+    await expect.element(page.getByText('访问范围')).toBeVisible()
     await expect.element(page.getByText(/资源加载仍按现网不拦/)).toBeVisible()
-    await expect.element(page.getByText(/允许 业务表面 https:\/\/shop.example/)).toBeVisible()
+    await expect
+      .element(page.getByText(/允许 业务表面 https:\/\/shop.example/))
+      .toBeVisible()
   })
 
   it('可追加规则并保存授权', async () => {
     const screen = await renderCard()
     await screen.getByLabelText('Origin').fill('https://idp.example')
-    await screen.getByLabelText('用途').selectOptions('authentication')
+    await screen.getByLabelText('用途').click()
+    await page.getByRole('option', { name: '认证', exact: true }).click()
     await screen.getByLabelText('理由').fill('补认证域')
     await screen.getByRole('button', { name: '保存授权' }).click()
     expect(mocks.updateTargetAccessPolicy).toHaveBeenCalledWith(
@@ -71,16 +82,23 @@ describe('目标授权卡片', () => {
       expect.objectContaining({
         expectedRevision: 0,
         rules: expect.arrayContaining([
-          expect.objectContaining({ origin: 'https://idp.example', purpose: 'authentication' }),
+          expect.objectContaining({
+            origin: 'https://idp.example',
+            purpose: 'authentication',
+          }),
         ]),
-      }),
+      })
     )
-    expect(mocks.updateTargetAccessPolicy.mock.calls[0]?.[1].rules.at(-1)?.pathPrefix).toBeUndefined()
+    expect(
+      mocks.updateTargetAccessPolicy.mock.calls[0]?.[1].rules.at(-1)?.pathPrefix
+    ).toBeUndefined()
   })
 
   it('保存带 pathPrefix 的规则，空前缀不写回斜杠', async () => {
     const screen = await renderCard()
-    await expect.element(page.getByText('整个 origin', { exact: true })).toBeVisible()
+    await expect
+      .element(page.getByText('整个 origin', { exact: true }))
+      .toBeVisible()
     await screen.getByLabelText('Origin').fill('https://shop.example')
     await screen.getByLabelText('可选 pathPrefix').fill('/app')
     await screen.getByLabelText('理由').fill('收窄业务表面')
@@ -89,9 +107,12 @@ describe('目标授权卡片', () => {
       TARGET_ID,
       expect.objectContaining({
         rules: expect.arrayContaining([
-          expect.objectContaining({ origin: 'https://shop.example', pathPrefix: '/app' }),
+          expect.objectContaining({
+            origin: 'https://shop.example',
+            pathPrefix: '/app',
+          }),
         ]),
-      }),
+      })
     )
   })
 })

@@ -11,8 +11,10 @@ import {
   reviewRunBodySchema,
   deleteResourceBodySchema,
   mapDecisionListQuerySchema,
+  resolutionDecisionListQuerySchema,
   runListQuerySchema,
   type MapDecisionListQuery,
+  type ResolutionDecisionListQuery,
   type AcquireAuthControlBody,
   type DeleteResourceBody,
   type AuthControlInputBody,
@@ -97,6 +99,15 @@ export class RunsController {
     @Query(new ZodValidationPipe(mapDecisionListQuerySchema)) query: MapDecisionListQuery,
   ) {
     return this.runs.mapDecisions(runId, query)
+  }
+
+  @Get(':runId/resolution-decisions')
+  @RequirePermissions('run:read', 'target:read')
+  resolutionDecisions(
+    @Param('runId') runId: string,
+    @Query(new ZodValidationPipe(resolutionDecisionListQuerySchema)) query: ResolutionDecisionListQuery,
+  ) {
+    return this.runs.resolutionDecisions(runId, query)
   }
 
   @Get(':runId')

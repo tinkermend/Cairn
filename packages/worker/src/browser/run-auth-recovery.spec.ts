@@ -114,7 +114,6 @@ it('没有被动信号时不主动核验（SM41）', async () => {
   manager.runAuth.set('lease', { snapshot, confirmed: false, observer: { inspect: vi.fn(async () => {}) } })
   for (let i = 0; i < 5; i++) expect(await manager.observeInRunAuth(grant, 'not_dispatched')).toBeNull()
   expect(manager.verifyInRunAuth).not.toHaveBeenCalled()
-  expect(manager.countInRunVerify('step_boundary')).toBe(0)
 })
 it('重启发现检查点只关门，不凭身份 MATCH 跳过恢复规则', async () => {
   expect(await manager.restoreAuthGateFromCheckpoint('run', grant)).toBe(true)

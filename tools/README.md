@@ -23,7 +23,7 @@
 | S2 | `GET /health` 契约与数据库；Worker 节点健康 `loopAlive` | 控制面在听但库不可用，或 Worker 只在听但事件循环已停 |
 | S3 | Web 页面 + 经 Web 代理的 `/health` | 页面在，前后端没接通 |
 
-范围：`all`（默认）、`backend`、`api`、`worker`、`web`。`web` 仍会探 api。`--strict` 把控制面降级也判失败。不启动进程；开发热重载用 `pnpm dev`，构建产物用 `pnpm start`。
+范围：`all`（默认）、`backend`、`api`、`worker`、`web`。`web` 仍会探 api。`--strict` 把控制面降级也判失败。不启动进程；开发热重载用 `./scripts/dev.sh` 或 `pnpm dev`，稳定构建产物用 `./scripts/stack.sh` 或 `pnpm start`。
 
 `STACK_OK` 不是功能验收，更不是核心生命周期验收。判定细节见 `.cursor/skills/shitu-stack-acceptance/SKILL.md`。
 
@@ -39,7 +39,7 @@ PostgreSQL / MySQL 的前缀必须连续且唯一。不要先扫目录再手写 
 
 ## 开发连接画像
 
-本机 Postgres 和远程开发机是两套连接，不是 `CAIRN_ENV` 的业务分支。约定：
+本机 Postgres 和远程开发机是两套连接，不是环境档位的业务分支。约定：
 
 | 文件 | 角色 |
 | --- | --- |

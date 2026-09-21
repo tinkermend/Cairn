@@ -19,6 +19,7 @@ import {
   locked,
   schemaFor,
   updateRows,
+  updateRowsCount,
 } from '../native.js'
 import { appendRunEvents } from '../observe/events.js'
 import { conflict, isUniqueViolation } from '../runs/errors.js'
@@ -527,7 +528,7 @@ export async function releaseSessionUse(
   input: { leaseId: string; holderWorkerId: string; reason: string },
 ): Promise<'released' | 'already' | 'unknown'> {
   const { sessionLeases } = schemaFor(db)
-  const [updated] = await updateRows(
+  const updated = await updateRowsCount(
     db,
     sessionLeases,
     { status: 'RELEASED', releasedAt: new Date(), releaseReason: input.reason },
@@ -536,9 +537,8 @@ export async function releaseSessionUse(
       eq(sessionLeases.holderWorkerId, input.holderWorkerId),
       eq(sessionLeases.status, 'ACTIVE'),
     ),
-    { id: sessionLeases.id },
   )
-  if (updated) return 'released'
+  if (updated > 0) return 'released'
   const [row] = await db.select().from(sessionLeases).where(eq(sessionLeases.id, input.leaseId)).limit(1)
   if (!row) return 'unknown'
   if (row.status !== 'ACTIVE') return 'already'

@@ -1,6 +1,7 @@
 import {
   canonicalJson,
   deriveExecutionMode,
+  FACTORY_COMPILE_RESOLUTION,
   findModuleImplementation,
   isAuthoringDocumentV2,
   MAX_SCENARIO_STEPS,
@@ -957,6 +958,7 @@ export function expandAuthoringDocument(
       schemaVersion: document.schemaVersion,
       inputs: document.inputs,
       steps: expandedSteps,
+      ...(document.resolution ? { resolution: document.resolution } : {}),
     }
     const parsedDef = scenarioDocumentSchema.safeParse(defCandidate)
     if (parsedDef.success) {
@@ -966,6 +968,11 @@ export function expandAuthoringDocument(
       const compileRes = compileScenarioDocument(definition, {
         mode: compileMode,
         ...ctx.compilerCtx,
+        resolution: {
+          ...FACTORY_COMPILE_RESOLUTION,
+          ...ctx.compilerCtx?.resolution,
+          documentResolution: document.resolution ?? ctx.compilerCtx?.resolution?.documentResolution,
+        },
         outcomeManifest: outcomeManifest ?? { entries: [] },
       })
       diagnostics.push(...compileRes.diagnostics)

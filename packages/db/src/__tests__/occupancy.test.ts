@@ -7,7 +7,7 @@ import {
   SESSION_OCCUPANCY_PROTOCOL,
   type Step,
 } from '@cairn/shared'
-import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { DRIVERS, openContractDb, grantAdminScope } from './contract-fixture.js'
 import { afterSeconds, schemaFor } from '../native.js'
 import { newId } from '../id.js'
 import { claimExecutionForRun, enterAuthWaitForRun, forceGrantForRun, seedWorker } from './lease-harness.js'
@@ -66,6 +66,7 @@ describe.each(DRIVERS)('%s 会话占用与调度', { timeout: 60_000 }, (driver)
       email: `occ-${actorId}@example.com`,
       status: 'active',
     })
+    await grantAdminScope(handle.db, actorId)
     await handle.db.insert(targets).values({
       id: targetId,
       code: `occ-${targetId.slice(0, 8)}`,

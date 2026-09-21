@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { NOTIFICATION_WORKER_PROTOCOL } from '../notifications.js'
 import { EXPORT_ARTIFACTS_PROTOCOL } from '../reports.js'
-import { MAP_SCHEDULER_PROTOCOL } from '../schedules.js'
+import { KNOWLEDGE_ANALYSIS_PROTOCOL } from '../analysis-jobs.js'
+import { MAP_SCHEDULER_PROTOCOL, UNIFIED_SCHEDULER_PROTOCOL } from '../schedules.js'
 import { SERVICE_WEBHOOK_DELIVERY_PROTOCOL } from '../service-webhooks.js'
 import { SUITE_SCHEDULER_PROTOCOL } from '../suites.js'
 import { parseWorkerRoles, protocolCapabilitiesForRoles, registrationRequiresOccupancy } from '../worker-roles.js'
@@ -9,7 +10,7 @@ import { parseWorkerRoles, protocolCapabilitiesForRoles, registrationRequiresOcc
 describe('Worker 角色', () => {
   it('缺省 all，协议按角色三分，导出与集合推进不要求占用', () => {
     const all = parseWorkerRoles(undefined)
-    expect(all).toEqual({ executor: true, scheduler: true, maintenance: true })
+    expect(all).toEqual({ executor: true, scheduler: true, maintenance: true, analyst: true })
     const caps = protocolCapabilitiesForRoles(all)
     expect(caps.indexOf(MAP_SCHEDULER_PROTOCOL)).toBeLessThan(caps.indexOf('snapshot.outcomeManifest@1'))
     expect(() => parseWorkerRoles('all,executor')).toThrow(/不能再组合/)
@@ -17,9 +18,11 @@ describe('Worker 角色', () => {
       executor: false,
       scheduler: true,
       maintenance: false,
+      analyst: false,
     })
     expect(protocolCapabilitiesForRoles(parseWorkerRoles('scheduler'))).toEqual([
       MAP_SCHEDULER_PROTOCOL,
+      UNIFIED_SCHEDULER_PROTOCOL,
       SUITE_SCHEDULER_PROTOCOL,
     ])
     expect(protocolCapabilitiesForRoles(parseWorkerRoles('maintenance'))).toEqual([
@@ -32,6 +35,8 @@ describe('Worker 角色', () => {
     expect(registrationRequiresOccupancy([SUITE_SCHEDULER_PROTOCOL])).toBe(false)
     expect(registrationRequiresOccupancy([SERVICE_WEBHOOK_DELIVERY_PROTOCOL])).toBe(false)
     expect(registrationRequiresOccupancy([EXPORT_ARTIFACTS_PROTOCOL])).toBe(false)
+    expect(protocolCapabilitiesForRoles(parseWorkerRoles('analyst'))).toEqual([KNOWLEDGE_ANALYSIS_PROTOCOL])
+    expect(registrationRequiresOccupancy([KNOWLEDGE_ANALYSIS_PROTOCOL])).toBe(false)
     expect(registrationRequiresOccupancy(['map-jobs@1'])).toBe(true)
   })
 })

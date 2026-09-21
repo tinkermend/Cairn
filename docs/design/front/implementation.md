@@ -101,6 +101,8 @@ Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用
 - 状态以原生属性、Radix 的 `data-state`、`aria-*` 和已有 variant 表达；Hover/Active 不依赖 JS 监听模拟。
 - 表单复用 React Hook Form + Zod；服务端校验仍是信任边界，前端校验只改善体验。
 - Select、Dialog、Tooltip 等继续使用 Radix 的键盘与焦点管理；不复制视觉样本的简化行为到生产。
+- 输入配色与光晕由 `tokens.css` 和公共 `control-focus` 状态样式统一提供；Select 的面板与选项由 `components/ui/select.tsx` 统一提供。复用公共组件的页面随底座更新，无需逐页重写样式。原生 `<select>`、自制控件或局部覆盖只会部分继承 Token，完整统一时应将对应调用迁入公共组件；不能以修改全局颜色代替这些迁移。
+- 业务单选复用 `Select` 或受控简写 `SelectField`，多选复用 `MultiSelectField`；保留标签关联、空值含义、禁用条件、联动清空和提交值。页面只配置布局，不携带原生控件的边框、底色或焦点覆盖。
 - 数据查询沿用 TanStack Query，表格沿用 TanStack Table；只为界面交互使用局部状态，不把 API 数据复制到新的全局 Store。
 - 优先原生输入与已安装的日期组件，不为数字、时间、简单 JSON 文本额外安装依赖。
 - 日志、示例、Toast 与 Tooltip 不携带目标账号明文凭证。无障碍名称不能意外包含隐藏敏感值。

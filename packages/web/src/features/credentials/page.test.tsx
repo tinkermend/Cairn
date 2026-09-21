@@ -86,7 +86,7 @@ describe('凭据列表页', () => {
       </QueryClientProvider>
     )
     await expect
-      .element(getByRole('heading', { name: '凭据管理' }))
+      .element(getByRole('heading', { name: '目标账号' }))
       .toBeInTheDocument()
     await expect.element(getByText('演示账号')).toBeInTheDocument()
     await expect

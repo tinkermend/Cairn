@@ -10,6 +10,8 @@ import {
   recordingImportReceiptSchema,
   runDetailSchema,
   saveScenarioDraftBodySchema,
+  resolutionStatsQuerySchema,
+  resolutionStatsResponseSchema,
   scenarioCapabilitiesSchema,
   scenarioDetailSchema,
   scenarioListResponseSchema,
@@ -20,6 +22,8 @@ import {
   type CreateScenarioBody,
   type PreviewRecordingImportBody,
   type PublishScenarioBody,
+  type ResolutionStatsQuery,
+  type ResolutionStatsResponse,
   type RecordingBindingCreated,
   type RecordingImportListResponse,
   type RecordingImportPreview,
@@ -99,6 +103,14 @@ export function deleteScenario(id: string, body?: DeleteResourceBody): Promise<D
 
 export function fetchScenarioCapabilities(): Promise<ScenarioCapabilities> {
   return apiFetch('/api/scenarios/capabilities', scenarioCapabilitiesSchema)
+}
+
+export function fetchScenarioResolutionStats(
+  scenarioId: string,
+  query?: ResolutionStatsQuery,
+): Promise<ResolutionStatsResponse> {
+  const parsed = query ? resolutionStatsQuerySchema.parse(query) : undefined
+  return apiFetch(`/api/scenarios/${scenarioId}/resolution-stats${toQueryString(parsed)}`, resolutionStatsResponseSchema)
 }
 
 export function createScenario(body: CreateScenarioBody): Promise<ScenarioDetailDto> {

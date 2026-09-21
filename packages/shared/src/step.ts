@@ -9,6 +9,7 @@ import {
 } from './map-exploration.js'
 import { aiOutputSchemaSchema, outputFieldNameSchema } from './output-schema.js'
 import { executionErrorCategorySchema } from './runtime-error.js'
+import { resolutionPolicySchema } from './resolution-policy.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
 import { durationMsSchema, entityIdSchema, jsonValueSchema, timeoutMsSchema } from './wire.js'
 
@@ -51,6 +52,11 @@ export const executableStepTypeSchema = z.enum(EXECUTABLE_STEP_TYPES)
 
 export function isExecutableStepType(type: string): type is ExecutableStepType {
   return (EXECUTABLE_STEP_TYPES as readonly string[]).includes(type)
+}
+
+/** 调试夹具步骤：不碰浏览器，结果由入参直接决定，只用于排查编排本身。 */
+export function isFixtureStepType(type: string): type is FixtureStepType {
+  return (FIXTURE_STEP_TYPES as readonly string[]).includes(type)
 }
 
 export function isBrowserStepType(type: string): type is BrowserStepType {
@@ -100,6 +106,8 @@ export const FORBIDDEN_CONTEXT_KEYS = [
 export const executionPolicySchema = z.strictObject({
   timeoutMs: timeoutMsSchema.optional(),
   retryLimit: z.number().int().min(0).max(10).optional(),
+  resolution: resolutionPolicySchema.optional(),
+  deepLocate: z.boolean().optional(),
 })
 export type ExecutionPolicy = z.infer<typeof executionPolicySchema>
 
@@ -287,8 +295,9 @@ export const keyboardInputSchema = z.strictObject({
 })
 export type KeyboardInput = z.infer<typeof keyboardInputSchema>
 
-export const waitKindSchema = z.enum(['time', 'visible', 'hidden', 'url', 'text'])
-export type WaitKind = z.infer<typeof waitKindSchema>
+export const WAIT_KINDS = ['time', 'visible', 'hidden', 'url', 'text', 'semantic'] as const
+export const waitKindSchema = z.enum(WAIT_KINDS)
+export type WaitKind = (typeof WAIT_KINDS)[number]
 
 export const waitInputSchema = z
   .strictObject({
@@ -305,11 +314,12 @@ export const waitInputSchema = z
       if (input.kind === 'url') return Boolean(input.urlPattern)
       if (input.kind === 'text') return Boolean(input.target && input.text)
       if (input.kind === 'visible' || input.kind === 'hidden') return Boolean(input.target)
+      if (input.kind === 'semantic') return Boolean(input.text)
       return true
     },
     {
       message:
-        'wait 步骤必须根据 kind 提供对应条件（time 提供 durationMs ≤ 60s；visible/hidden 提供 target；url 提供 urlPattern；text 提供 target 和 text）',
+        'wait 步骤必须根据 kind 提供对应条件（time 提供 durationMs ≤ 60s；visible/hidden 提供 target；url 提供 urlPattern；text 提供 target 和 text；semantic 提供 text）',
     },
   )
 export type WaitInput = z.infer<typeof waitInputSchema>

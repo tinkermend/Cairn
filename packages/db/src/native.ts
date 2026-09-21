@@ -346,6 +346,10 @@ export const indexedTextLimits: Record<string, number> = {
   'map_selection_decisions.consumption_mode': 32,
   'map_selection_decisions.decision_kind': 16,
   'map_selection_decisions.reason_code': 64,
+  'resolution_decisions.effective_policy': 32,
+  'resolution_decisions.decision_kind': 16,
+  'resolution_decisions.reason_code': 64,
+  'resolution_decisions.semantic_digest': 64,
   'target_access_policies.policy_digest': 64,
   'target_access_policy_commands.command_key': 128,
   'map_job_policies.default_depth': 16,
@@ -574,6 +578,20 @@ export async function updateRows<T extends PgTable, S extends SelectedFields = T
       .where(keys)) as SelectResultFields<S>[]
   })
 }
+
+export async function updateRowsCount<T extends PgTable>(
+  db: Db,
+  table: T,
+  values: PgUpdateSetSource<T>,
+  where: SQL | undefined,
+): Promise<number> {
+  if (driverOf(db) === 'mysql') {
+    const result = (await (db as any).update(table).set(values).where(where)) as [{ affectedRows?: number } | undefined]
+    return Number(result[0]?.affectedRows ?? 0)
+  }
+  const updated = (await db.update(table).set(values).where(where).returning({ id: sql`1` })) as unknown[]
+  return updated.length
+}
 export async function insertIgnoreRows<T extends PgTable>(
   db: Db,
   table: T,
@@ -645,12 +663,33 @@ export async function deleteRows<T extends PgTable, S extends SelectedFields = T
   })
 }
 
+export async function deleteRowsCount<T extends PgTable>(
+  db: Db,
+  table: T,
+  where: SQL | undefined,
+): Promise<number> {
+  if (driverOf(db) === 'mysql') {
+    const result = (await (db as any).delete(table).where(where)) as [{ affectedRows?: number } | undefined]
+    return Number(result[0]?.affectedRows ?? 0)
+  }
+  const deleted = (await db.delete(table).where(where).returning({ id: sql`1` })) as unknown[]
+  return deleted.length
+}
+
 export function jsonText(db: object, column: SQLWrapper, path: string[]): SQL {
   const driver = driverOf(db)
   if (driver === 'postgres') return sql`${column} #>> ${'{' + path.join(',') + '}'}`
   const jsonPath = '$.' + path.join('.')
   if (driver === 'mysql') return sql`JSON_UNQUOTE(JSON_EXTRACT(${column}, ${jsonPath}))`
   return sql`json_extract(${column}, ${jsonPath})`
+}
+
+/** MySQL JSON extraction and bound strings can have different binary collations. */
+export function jsonTextEquals(db: object, column: SQLWrapper, path: string[], value: string): SQL {
+  const extracted = jsonText(db, column, path)
+  return driverOf(db) === 'mysql'
+    ? sql`${extracted} COLLATE utf8mb4_bin = ${value}`
+    : sql`${extracted} = ${value}`
 }
 
 export function jsonHasKey(db: object, column: SQLWrapper, key: string): SQL {

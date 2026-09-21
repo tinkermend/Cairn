@@ -126,7 +126,7 @@ export function SessionFields({ canWrite }: { canWrite: boolean }) {
               />
             </FormControl>
             <FormDescription>
-              认证核验通过后，AUTH_DRIVEN 会话从当下重新计算保活截止。
+              认证核验通过后，选择「认证有效即保活」的会话从当下重新计算保活截止。
             </FormDescription>
             <FormMessage />
           </FormItem>
@@ -146,7 +146,7 @@ export function SessionFields({ canWrite }: { canWrite: boolean }) {
               />
             </FormControl>
             <FormDescription>
-              AUTH_DRIVEN 会话用该间隔排后台核验；须小于保活续期。
+              选择「认证有效即保活」的会话用该间隔排后台核验；须小于保活续期。
             </FormDescription>
             <FormMessage />
           </FormItem>
@@ -369,7 +369,7 @@ export function SessionFields({ canWrite }: { canWrite: boolean }) {
               />
             </FormControl>
             <FormDescription>
-              人工保留会话的缺省排程间隔。AUTH_DRIVEN 会话用自己冻结的巡检间隔。
+              人工保留会话的缺省排程间隔。选择「认证有效即保活」的会话用自己冻结的巡检间隔。
             </FormDescription>
             <FormMessage />
           </FormItem>

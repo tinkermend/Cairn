@@ -13,6 +13,7 @@ import { entityIdSchema, jsonValueSchema, utcInstantSchema, type JsonValue } fro
 import { idempotencyKeySchema } from './run-api.js'
 import { scenarioNameSchema } from './scenario.js'
 import { SENSITIVE_AUTOCOMPLETE, SENSITIVE_LOCATOR } from './sensitive-fill.js'
+import { sanitizeAriaSnapshot } from './browser-command.js'
 
 /** 当前识途录制器壳对应的来源版本。导入路径只接受这一版。 */
 export const RECORDER_SOURCE_VERSION = 'playwright-crx@0.15.0'
@@ -489,9 +490,10 @@ function sanitizeEvent(event: RecordingEvent): RecordingEvent {
     inputType: event.inputType,
     autocomplete: event.autocomplete,
     markedSensitive: event.markedSensitive,
+    snapshot: typeof event.snapshot === 'string' ? sanitizeAriaSnapshot(event.snapshot) : undefined,
   }
   if (isSensitiveFill(picked) || isSensitiveAssert(picked)) {
-    return { ...picked, text: undefined, value: undefined }
+    return { ...picked, text: undefined, value: undefined, snapshot: undefined }
   }
   return picked
 }
@@ -545,6 +547,9 @@ export function isSensitiveFill(event: RecordingEvent): boolean {
 }
 
 function isSensitiveAssert(event: RecordingEvent): boolean {
+  if (event.name === 'assertSnapshot') {
+    return Boolean(event.markedSensitive)
+  }
   if (event.name !== 'assertText' && event.name !== 'assertValue') return false
   return SENSITIVE_LOCATOR.test(`${event.text ?? ''} ${event.value ?? ''}`)
 }
@@ -609,7 +614,7 @@ function mapEvent(event: RecordingEvent, sourceIndexes: number[], index: number)
   if (event.name === 'select') {
     return selectItem(event, sourceIndexes, index)
   }
-  if (event.name === 'assertVisible' || event.name === 'assertText') {
+  if (event.name === 'assertVisible' || event.name === 'assertText' || event.name === 'assertSnapshot') {
     return assertItem(event, sourceIndexes, index)
   }
   return unresolved(event, sourceIndexes, index, unresolvedName(event.name), [capabilityMessage(event.name)])
@@ -802,8 +807,31 @@ function fillItem(event: RecordingEvent, sourceIndexes: number[], index: number)
 function assertItem(event: RecordingEvent, sourceIndexes: number[], index: number): RecordingItem {
   const target = targetFromEvent(event)
   const diagnostics = [...signalDiagnostics(event)]
+  const assertLabel = event.name === 'assertSnapshot' ? '断言快照' : '断言文本'
   if (isSensitiveAssert(event)) {
-    return unresolved(event, sourceIndexes, index, '断言文本', ['断言文本含敏感值，已排除，需人工重建'])
+    return unresolved(event, sourceIndexes, index, assertLabel, ['断言含敏感值，已排除，需人工重建'])
+  }
+  if (event.name === 'assertSnapshot') {
+    const rawSnapshot = typeof event.snapshot === 'string' ? event.snapshot.trim() : ''
+    if (!rawSnapshot) {
+      return unresolved(event, sourceIndexes, index, '断言快照', ['断言快照缺少期望模板'])
+    }
+    const template = sanitizeAriaSnapshot(rawSnapshot)
+    return {
+      index,
+      sourceIndexes,
+      status: 'mapped',
+      sourceAction: event.name,
+      name: '断言快照',
+      candidateStepType: 'assert',
+      input: asJson({
+        target: target ?? undefined,
+        expect: { kind: 'aria_snapshot', template },
+      }),
+      pageAlias: event.pageAlias,
+      framePath: event.framePath,
+      diagnostics,
+    }
   }
   if (!target) diagnostics.push(...targetDiagnostics(event))
   if (event.name === 'assertVisible') {
@@ -995,7 +1023,6 @@ function capabilityMessage(action: string): string {
       return '关闭页面不生成步骤，页面交接需在编辑器确认'
     case 'assertValue':
     case 'assertChecked':
-    case 'assertSnapshot':
       return `${unresolvedName(action)}尚不能映射到现有断言种类`
     default:
       return `操作 ${action} 不能映射为平台步骤`

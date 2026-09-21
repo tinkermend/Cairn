@@ -21,7 +21,7 @@ import type { StepExecutionContext } from '../engine/step-executor.js'
 
 export type MapConsumptionFollowUp =
   | { kind: 'passthrough' }
-  | { kind: 'replaced'; result: BrowserCommandResult }
+  | { kind: 'replaced'; result: BrowserCommandResult; mapDecisionId?: string }
   | { kind: 'blocked'; error: ExecutionError }
 
 /** The race only wraps reads. A late query/locate cannot dispatch a business command. */
@@ -169,7 +169,7 @@ export class MapConsumptionService {
         return { kind: 'blocked', error: { code: 'MAP_DECISION_PERSISTENCE_FAILED',
           category: 'INFRASTRUCTURE', retryable: true, safeMessage: '地图消费评价写入失败' } }
       }
-      return { kind: 'replaced', result }
+      return { kind: 'replaced', result, mapDecisionId: written.decision.decisionId }
     } finally { clearTimeout(timer) }
   }
 

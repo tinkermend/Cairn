@@ -13,6 +13,7 @@ import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { deleteRows, locked, onCommit, schemaFor } from '../native.js'
 import { publishChangeHint } from './hint.js'
+import { indexRunForAnalysis } from '../analysis/sources.js'
 
 export type RunEventDraft = {
   type: RunEventType
@@ -31,7 +32,7 @@ export async function appendRunEvents(
   const { runEvents, runs } = schemaFor(tx)
   const [current] = await locked(
     tx,
-    tx.select({ eventSeq: runs.eventSeq }).from(runs).where(eq(runs.id, runId)),
+    tx.select({ eventSeq: runs.eventSeq, targetId: runs.targetId, status: runs.status }).from(runs).where(eq(runs.id, runId)),
   )
   if (!current) return 0
   if (drafts.length === 0) return current.eventSeq
@@ -68,6 +69,9 @@ export async function appendRunEvents(
   })
   await tx.insert(runEvents).values(rows)
   await tx.update(runs).set({ eventSeq: sequence }).where(eq(runs.id, runId))
+  if (FINISHED_RUN_STATUSES.includes(current.status as typeof FINISHED_RUN_STATUSES[number])) {
+    await indexRunForAnalysis(tx, { targetId: current.targetId, runId })
+  }
   const { enqueueRunNotificationIntentTx } = await import('../notifications/core.js')
   await enqueueRunNotificationIntentTx(tx, runId)
   onCommit(tx, () => publishChangeHint({ runId, eventSeq: sequence }))

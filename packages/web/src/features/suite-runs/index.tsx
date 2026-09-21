@@ -68,7 +68,7 @@ export function SuiteRunsPage() {
     <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
       <PageHeader
         title='运行记录'
-        description='独立运行与场景集运行分开查看。集合编排结束不等于全部通过。'
+        description='独立运行与场景集运行分开查看。进度不会自动更新，点筛选条右侧的「刷新」取最新；集合编排结束不等于全部通过。'
       />
       <Tabs value='suites' className='space-y-4'>
         <TabsList>
@@ -125,7 +125,11 @@ export function SuiteRunsPage() {
                 </SelectContent>
               </Select>
             ) : null}
-            <Button variant='outline' onClick={() => void query.refetch()}>
+            <Button
+              variant='outline'
+              loading={query.isFetching}
+              onClick={() => void query.refetch()}
+            >
               刷新
             </Button>
           </div>

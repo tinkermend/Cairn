@@ -5,6 +5,7 @@ import { sessionDtoSchema, sessionStatusSchema } from './session.js'
 import { utcInstantSchema } from './wire.js'
 
 export const WORKER_NETWORK_MODES = ['local', 'distributed'] as const
+/** @deprecated 已废除网络模式；安全强度不分环境，一律由必填密钥与显式配置把关 */
 export type WorkerNetworkMode = (typeof WORKER_NETWORK_MODES)[number]
 export const workerNetworkModeSchema = z.enum(WORKER_NETWORK_MODES)
 
@@ -43,7 +44,8 @@ export const workerEndpointMapSchema = z.record(z.string().min(1).max(128), z.st
 export type WorkerEndpointMap = z.infer<typeof workerEndpointMapSchema>
 
 export type WorkerEndpointOptions = {
-  networkMode: WorkerNetworkMode
+  /** @deprecated 已废除 */
+  networkMode?: WorkerNetworkMode
 }
 
 export type NormalizedWorkerEndpoint = {
@@ -78,7 +80,7 @@ export function assertWorkerListenHostAllowed(host: string): void {
 
 export function normalizeWorkerEndpoint(
   url: string,
-  options: WorkerEndpointOptions,
+  _options: WorkerEndpointOptions = {},
 ): NormalizedWorkerEndpoint {
   let parsed: URL
   try {
@@ -96,7 +98,7 @@ export function normalizeWorkerEndpoint(
     throw new Error('Worker 内部地址只能是 origin')
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('Worker 内部地址只允许 http(loopback) 或 https')
+    throw new Error('Worker 内部地址只允许 http 或 https')
   }
   const host = hostnameOf(parsed)
   if (isWildcardHost(host) || host === 'unix') {
@@ -110,18 +112,6 @@ export function normalizeWorkerEndpoint(
   if (port === WORKER_DEBUG_PORT) {
     throw new Error('不得用调试端口 9222 登记平台内部服务')
   }
-  const loopback = isLoopbackHost(host)
-  if (parsed.protocol === 'http:' && !loopback) {
-    throw new Error('非 loopback 的 Worker 内部地址必须使用 https')
-  }
-  if (options.networkMode === 'distributed') {
-    if (loopback) {
-      throw new Error('distributed 模式不接受 loopback 内部入口')
-    }
-    if (parsed.protocol !== 'https:') {
-      throw new Error('distributed 模式的 Worker 内部入口必须是 https')
-    }
-  }
   const protocol = parsed.protocol === 'https:' ? 'https' : 'http'
   return {
     origin: parsed.origin,
@@ -131,16 +121,15 @@ export function normalizeWorkerEndpoint(
   }
 }
 
-export function assertWorkerEndpointAllowed(url: string, options: WorkerEndpointOptions): void {
+export function assertWorkerEndpointAllowed(url: string, options: WorkerEndpointOptions = {}): void {
   normalizeWorkerEndpoint(url, options)
 }
 
 export function parseWorkerEndpoints(
   raw: string | undefined,
-  options: WorkerEndpointOptions = { networkMode: 'local' },
+  options: WorkerEndpointOptions = {},
 ): WorkerEndpointMap {
   if (!raw || raw.trim() === '') {
-    if (options.networkMode === 'distributed') return {}
     return { 'local-worker': 'http://127.0.0.1:8091' }
   }
   const entries: Record<string, string> = {}
@@ -158,26 +147,21 @@ export function parseWorkerEndpoints(
 }
 
 export function resolveWorkerAdvertiseUrl(input: {
-  networkMode: WorkerNetworkMode
   advertiseUrl?: string
   internalPort: number
+  /** @deprecated 已废除 */
+  networkMode?: WorkerNetworkMode
 }): string | null {
   if (input.internalPort <= 0) {
     if (input.advertiseUrl) {
       throw new Error('CAIRN_WORKER_INTERNAL_PORT=0 时不得配置广告 URL')
     }
-    if (input.networkMode === 'distributed') {
-      throw new Error('distributed 模式必须监听内部服务')
-    }
     return null
   }
   if (!input.advertiseUrl) {
-    if (input.networkMode === 'distributed') {
-      throw new Error('distributed 模式必须配置非 loopback 的 HTTPS 广告 URL')
-    }
     return null
   }
-  return normalizeWorkerEndpoint(input.advertiseUrl, { networkMode: input.networkMode }).origin
+  return normalizeWorkerEndpoint(input.advertiseUrl, input).origin
 }
 
 export const workerSlotCountsSchema = z.object({
@@ -226,8 +210,26 @@ export const workerSummarySchema = z.object({
   routeReason: workerRouteReasonSchema.nullable(),
   endpointSource: workerEndpointSourceSchema,
   internalEndpoint: workerInternalEndpointSchema.nullable(),
+  listenHost: z.string().nullable().default(null),
+  listenPort: z.number().int().min(1).max(65535).nullable().default(null),
+  hostname: z.string().nullable().default(null),
 })
 export type WorkerSummary = z.infer<typeof workerSummarySchema>
+
+export function resolveWorkerIdentity(input: {
+  configuredWorkerId?: string
+  hostname?: string
+}): string {
+  const configured = input.configuredWorkerId?.trim()
+  if (configured && configured !== 'local-worker') {
+    return configured
+  }
+  const host = input.hostname?.trim()
+  if (host && host !== 'localhost') {
+    return `worker-${host}`
+  }
+  return configured || 'local-worker'
+}
 
 export const workerListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -315,10 +317,11 @@ export function handleMismatchState(input: {
 export function evaluateWorkerRegistration(input: {
   workerStatus: string | null
   heartbeatExpiresAt: Date | string | null
-  lostAfterSeconds: number | null
+  lostAfterSeconds?: number | null
   internalBaseUrl: string | null
   asOf: Date
-  networkMode: WorkerNetworkMode
+  /** @deprecated 已废除 */
+  networkMode?: WorkerNetworkMode
   envEndpoint?: string
 }): {
   availability: WorkerRouteAvailability
@@ -352,9 +355,7 @@ export function evaluateWorkerRegistration(input: {
   }
   if (input.internalBaseUrl) {
     try {
-      const normalized = normalizeWorkerEndpoint(input.internalBaseUrl, {
-        networkMode: input.networkMode,
-      })
+      const normalized = normalizeWorkerEndpoint(input.internalBaseUrl, input)
       return {
         availability: 'eligible',
         reason: null,
@@ -372,7 +373,7 @@ export function evaluateWorkerRegistration(input: {
   }
   if (input.envEndpoint) {
     try {
-      const normalized = normalizeWorkerEndpoint(input.envEndpoint, { networkMode: input.networkMode })
+      const normalized = normalizeWorkerEndpoint(input.envEndpoint, input)
       return {
         availability: 'eligible',
         reason: null,
@@ -404,7 +405,8 @@ export function evaluateWorkerRoute(input: {
   heartbeatExpiresAt: Date | string | null
   internalBaseUrl: string | null
   asOf: Date
-  networkMode: WorkerNetworkMode
+  /** @deprecated 已废除 */
+  networkMode?: WorkerNetworkMode
   envEndpoint?: string
 }): {
   availability: WorkerRouteAvailability
@@ -420,15 +422,7 @@ export function evaluateWorkerRoute(input: {
       endpoint: null,
     }
   }
-  return evaluateWorkerRegistration({
-    workerStatus: input.workerStatus,
-    heartbeatExpiresAt: input.heartbeatExpiresAt,
-    lostAfterSeconds: input.lostAfterSeconds ?? null,
-    internalBaseUrl: input.internalBaseUrl,
-    asOf: input.asOf,
-    networkMode: input.networkMode,
-    envEndpoint: input.envEndpoint,
-  })
+  return evaluateWorkerRegistration(input)
 }
 
 export function projectWorkerInternalEndpoint(input: {

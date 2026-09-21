@@ -35,6 +35,9 @@ export const workers = cairnSchema.table('workers', {
   sampledBrowserProcessCount: integer('sampled_browser_process_count'),
   processClockSkewMs: integer('process_clock_skew_ms'),
   sampledDiskAt: timestamp('sampled_disk_at', { withTimezone: true }),
+  listenHost: text('listen_host'),
+  listenPort: integer('listen_port'),
+  hostname: text('hostname'),
 })
 
 export const runLeases = cairnSchema.table(

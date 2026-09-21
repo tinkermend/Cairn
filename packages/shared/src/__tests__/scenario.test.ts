@@ -7,6 +7,8 @@ import {
   TARGET_ERROR_CODES,
   assertRunFromResolved,
   createScenarioBodySchema,
+  requiredRunInputKeys,
+  unresolvedRunInputs,
   updateScenarioBodySchema,
   validateScenarioDefinition,
   type EchoStep,
@@ -101,6 +103,66 @@ describe('assertRunFromResolved', () => {
   })
 })
 
+describe('unresolvedRunInputs', () => {
+  it('列出解析不到的键与提要求的步骤', () => {
+    const steps = [echo(ids.a, '回显单号', { input: { from: 'orderId' } })]
+    expect(unresolvedRunInputs(steps, {})).toEqual([{ key: 'orderId', stepName: '回显单号' }])
+    expect(unresolvedRunInputs(steps, { orderId: 'A-1' })).toEqual([])
+  })
+
+  it('前序 outputKey 供给的键不算缺失，同一键只列一次', () => {
+    const supplied = [
+      echo(ids.a, '取号', { input: { value: 1 }, outputKey: 'orderId' }),
+      echo(ids.b, '回显', { input: { from: 'orderId' } }),
+    ]
+    expect(unresolvedRunInputs(supplied, {})).toEqual([])
+    const twice = [
+      echo(ids.a, '回显一', { input: { from: 'orderId' } }),
+      echo(ids.b, '回显二', { input: { from: 'orderId' } }),
+    ]
+    expect(unresolvedRunInputs(twice, {})).toEqual([{ key: 'orderId', stepName: '回显一' }])
+  })
+
+  it('声明了但没有步骤引用的 input 不算缺失——引擎跑得起来就不拒', () => {
+    const steps = [echo(ids.a, '回显', { input: { value: 1 } })]
+    expect(unresolvedRunInputs(steps, {})).toEqual([])
+  })
+})
+
+describe('requiredRunInputKeys', () => {
+  it('保留声明顺序与标签', () => {
+    const steps = [echo(ids.a, '回显单号', { input: { from: 'orderId' } })]
+    expect(
+      requiredRunInputKeys({ inputs: [{ key: 'orderId', label: '订单号' }], steps }),
+    ).toEqual([{ key: 'orderId', label: '订单号' }])
+  })
+
+  it('补出被步骤引用但未声明的键，标签回落键名', () => {
+    const steps = [echo(ids.a, '回显单号', { input: { from: 'orderId' } })]
+    expect(requiredRunInputKeys({ inputs: [], steps })).toEqual([
+      { key: 'orderId', label: 'orderId' },
+    ])
+  })
+
+  it('前序 outputKey 供给的键不算运行输入', () => {
+    const steps = [
+      echo(ids.a, '取号', { input: { value: 1 }, outputKey: 'orderId' }),
+      echo(ids.b, '回显单号', { input: { from: 'orderId' } }),
+    ]
+    expect(requiredRunInputKeys({ inputs: [], steps })).toEqual([])
+  })
+
+  it('同一未声明键只出现一次', () => {
+    const steps = [
+      echo(ids.a, '回显一', { input: { from: 'orderId' } }),
+      echo(ids.b, '回显二', { input: { from: 'orderId' } }),
+    ]
+    expect(requiredRunInputKeys({ inputs: [], steps })).toEqual([
+      { key: 'orderId', label: 'orderId' },
+    ])
+  })
+})
+
 describe('领域码常量', () => {
   it('覆盖方案表中的场景 / Run / Target 增量码', () => {
     expect(SCENARIO_ERROR_CODES).toEqual([
@@ -123,6 +185,7 @@ describe('领域码常量', () => {
       'RUN_ACCOUNT_DISABLED',
       'RUN_ACCOUNT_REQUIRED',
       'RUN_ACCOUNT_MAP_ONLY',
+      'SCENARIO_UNRESOLVED_REF',
       'RUN_NOT_REVIEWABLE',
       'RUN_NOT_TERMINAL',
       'RUN_BUSY',

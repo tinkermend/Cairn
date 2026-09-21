@@ -71,7 +71,7 @@ import { createAiPort } from './ai/port'
       useFactory: (handle: DbHandle, browser?: BrowserPort, ai?: AiPort) => {
         const executors = [
           new FixtureStepExecutor(),
-          new BrowserStepExecutor(handle, browser),
+          new BrowserStepExecutor(handle, browser, ai),
           new MapExploreExecutor(browser),
         ]
         if (ai) executors.push(new AiStepExecutor(ai))

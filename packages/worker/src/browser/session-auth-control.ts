@@ -376,7 +376,6 @@ export async function verifyInRunAuth(this: SessionManagerContext,
     phase?: string,
     snapshot?: RunSnapshot,
   ): Promise<Pick<AuthObservation, 'authState' | 'identityState'>> {
-    if (phase) this.inRunVerifyCounts.set(phase, (this.inRunVerifyCounts.get(phase) ?? 0) + 1)
     const snap = snapshot ?? this.runAuth.get(grant.leaseId)?.snapshot
     const sessionId = this.leaseToSession.get(grant.leaseId) ?? grant.sessionId
     const live = this.lives.get(sessionId)

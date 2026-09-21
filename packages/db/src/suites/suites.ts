@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, sql, type SQL } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm'
 import {
   EMPTY_SUITE_DOCUMENT,
   assertPublishedSuiteDocument,
@@ -326,6 +326,52 @@ export async function updateSuiteEnabled(
     await recordAudit(tx, actor, 'suite.update', 'suite', suiteId, status === 'active' ? '启用场景集' : '停用场景集')
   })
   return getSuite(db, suiteId)
+}
+
+export type SuiteScenarioReference = {
+  id: string
+  name: string
+}
+
+function documentHasScenario(document: SuiteDocument | null | undefined, scenarioId: string): boolean {
+  return Boolean(document?.members.some((member) => member.scenarioId === scenarioId))
+}
+
+export async function suitesReferencingScenario(
+  db: Db,
+  input: { targetId: string; scenarioId: string },
+): Promise<SuiteScenarioReference[]> {
+  const { scenarioSuites, scenarioSuiteDrafts, scenarioSuiteVersions } = schemaFor(db)
+  const suites = await db
+    .select({ id: scenarioSuites.id, name: scenarioSuites.name })
+    .from(scenarioSuites)
+    .where(and(eq(scenarioSuites.targetId, input.targetId), isNull(scenarioSuites.deletedAt)))
+  if (suites.length === 0) return []
+  const ids = suites.map((row) => row.id)
+  const drafts = await db
+    .select({ suiteId: scenarioSuiteDrafts.suiteId, document: scenarioSuiteDrafts.document })
+    .from(scenarioSuiteDrafts)
+    .where(inArray(scenarioSuiteDrafts.suiteId, ids))
+  const versions = await db
+    .select({ suiteId: scenarioSuiteVersions.suiteId, document: scenarioSuiteVersions.document })
+    .from(scenarioSuiteVersions)
+    .where(inArray(scenarioSuiteVersions.suiteId, ids))
+  const referenced = new Set<string>()
+  for (const row of drafts) {
+    if (documentHasScenario(row.document, input.scenarioId)) referenced.add(row.suiteId)
+  }
+  for (const row of versions) {
+    if (documentHasScenario(row.document, input.scenarioId)) referenced.add(row.suiteId)
+  }
+  return suites.filter((row) => referenced.has(row.id))
+}
+
+export function suiteReferenceBlockers(suites: SuiteScenarioReference[]) {
+  return suites.map((suite) => ({
+    id: suite.id,
+    code: 'SCENARIO_IN_SUITE' as const,
+    message: `场景集「${suite.name}」仍引用该场景，请先从集合中移除后再删除`,
+  }))
 }
 
 export async function softDeleteSuitesForTarget(

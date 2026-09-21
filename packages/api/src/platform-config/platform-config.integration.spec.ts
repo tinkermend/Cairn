@@ -60,11 +60,13 @@ describe('平台配置凭据绑定（真实仓储与 HTTP）', () => {
   }
   beforeAll(async () => {
     db = await openIsolatedDb(`cairn_cfg_binding_${newId().replaceAll('-', '')}`)
-    actor = await new RbacStore(db, {
+    const rbac = new RbacStore(db, {
       hash: async (v) => v,
       verify: async (v, h) => v === h,
-    }).createAccount(
-      { email: 'binding-admin', displayName: '绑定测试', password: 'test-password' },
+    })
+    const role = (await rbac.listRoles()).items.find((r) => r.key === 'admin')!
+    actor = await rbac.createAccount(
+      { email: 'binding-admin', displayName: '绑定测试', password: 'test-password', roleIds: [role.id] },
       null,
     )
     await getOrCreatePlatformConfig(db)
@@ -204,5 +206,76 @@ describe('平台配置凭据绑定（真实仓储与 HTTP）', () => {
         .expect(400)
     }
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('平台 AI 连通测试走 chat/completions，空正文仍成功', async () => {
+    const secretRef = await register()
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: '', reasoning_content: 'think' } }] }),
+        { status: 200 },
+      ),
+    )
+    const result = await request(app.getHttpServer())
+      .post('/platform-config/test-connection')
+      .send({ baseUrl: originalUrl, model: 'deepseek-chat', provider: 'deepseek', secretRef })
+      .expect(200)
+    expect(result.body.ok).toBe(true)
+    expect(String(fetchMock.mock.calls[0]![0])).toBe('https://original.example/v1/chat/completions')
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ redirect: 'error', method: 'POST' })
+    const sent = JSON.parse(String(fetchMock.mock.calls[0]![1].body)) as Record<string, unknown>
+    expect(sent.max_tokens).toBe(1)
+    expect(sent).not.toHaveProperty('response_format')
+    expect(sent).not.toHaveProperty('thinking')
+    expect(sent).not.toHaveProperty('modelFamily')
+  })
+
+  it('启用助手缺提供商时 validate/update 拒绝；GET 与 restore 不因提供商失败', async () => {
+    const secretRef = await register()
+    const legacy = {
+      ...FACTORY_PLATFORM_CONFIG,
+      platformAi: {
+        ...FACTORY_PLATFORM_CONFIG.platformAi,
+        enabled: true,
+        baseUrl: originalUrl,
+        model: 'deepseek-chat',
+        secretRef,
+      },
+    }
+    const seeded = await updatePlatformConfig(db, {
+      expectedRevision: (await getPlatformConfig(db))!.revision,
+      actor,
+      reason: '模拟缺提供商的存量启用文档',
+      document: legacy,
+    })
+    const current = await request(app.getHttpServer()).get('/platform-config').expect(200)
+    expect(current.body.document.platformAi.enabled).toBe(true)
+    expect(current.body.document.platformAi.provider).toBeUndefined()
+    expect(current.body.document.platformAi.thinkingMode).toBe('off')
+
+    const rejected = await request(app.getHttpServer())
+      .post('/platform-config/validate')
+      .send({ document: legacy })
+      .expect(400)
+    expect(rejected.body.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: 'document.platformAi.provider' })]),
+    )
+    await request(app.getHttpServer())
+      .post('/platform-config/update')
+      .send({ expectedRevision: seeded.revision, reason: '补超时', document: {
+        ...legacy,
+        execution: { ...legacy.execution, defaultTimeoutMs: 45_000 },
+      } })
+      .expect(400)
+    await expect(service.resolvePlatformAiAccess()).resolves.toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const factory = await save(FACTORY_PLATFORM_CONFIG)
+    const restored = await service.restore(
+      { revision: seeded.revision, expectedRevision: factory.revision, reason: '恢复缺提供商修订' },
+      actor,
+    )
+    expect(restored.document.platformAi.enabled).toBe(true)
+    expect(restored.document.platformAi.provider).toBeUndefined()
   })
 })

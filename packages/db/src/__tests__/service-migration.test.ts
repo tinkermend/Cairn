@@ -83,7 +83,10 @@ it('repairs a historically recorded 0082 when its Webhook tables are absent', as
     )
 
     const result = await migrate(h.pool, schema)
-    expect(result.applied).toEqual(['0083_service_webhooks_repair.sql'])
+    // 修复迁移必须是 0082 之后执行的第一个，且已把缺失的表补出来（见下方断言）。
+    // 不能写成 toEqual(['0083…'])：那等于要求仓库永远停在 0083，每新增一个迁移就会失效。
+    expect(result.applied[0]).toBe('0083_service_webhooks_repair.sql')
+    expect(result.applied).not.toContain('0082_service_webhooks.sql')
     expect(result.skipped).toContain('0082_service_webhooks.sql')
 
     const tables = await h.pool.query<{ tablename: string }>(

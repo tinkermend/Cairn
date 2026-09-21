@@ -5,6 +5,8 @@ export type { DbHandle as NativeHandle } from './client.js'
 export {
   requireReachableDb,
   openIsolatedDb,
+  grantAdminScope,
+  grantScopedPermissions,
   setupTestTemplateDatabase,
   teardownTestTemplateDatabase,
   type PgTestHandle as DbHandle,
@@ -27,7 +29,9 @@ export * from './objects/index.js'
 export * from './observe/index.js'
 export * from './recordings/index.js'
 export * from './map/index.js'
+export * from './resolution/index.js'
 export * from './schedules/index.js'
+export * from './analysis/index.js'
 export * from './monitoring/index.js'
 export * from './evidence/index.js'
 export * from './suites/index.js'

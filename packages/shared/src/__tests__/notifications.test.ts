@@ -17,6 +17,7 @@ describe('通知边界契约', () => {
     const capabilities = protocolCapabilitiesForRoles({
       executor: false,
       scheduler: false,
+      analyst: false,
       maintenance: true,
     })
     expect(capabilities).toContain('notification-delivery@1')

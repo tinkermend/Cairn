@@ -196,7 +196,8 @@ export async function listActionModules(db: Db, query: ModuleListQuery, actorId?
 }
 
 async function runtimeTypes(db: Db) {
-  return executableStepTypesFor(((await getPlatformConfig(db))?.document ?? FACTORY_PLATFORM_CONFIG).browserAi.enabled)
+  const document = (await getPlatformConfig(db))?.document ?? FACTORY_PLATFORM_CONFIG
+  return executableStepTypesFor(document.browserAi.enabled, document.fixtureStepsEnabled)
 }
 
 /** 与 Target 删除保持同一锁顺序：账号授权 → Target → Module。 */

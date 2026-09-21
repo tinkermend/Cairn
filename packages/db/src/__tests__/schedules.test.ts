@@ -63,7 +63,7 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
       status: 'active',
     })
     const [admin] = await handle.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
-    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin.id })
+    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin!.id, targetScopeMode: 'all' })
   })
 
   afterAll(async () => {
@@ -294,9 +294,9 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
         admitScheduleOccurrence(handle.db, occurrenceId, { steps: probeSteps(), includedCount: 2 }, actor()),
       ]),
     )
-    expect(first.admissionStatus).toBe('ADMITTED')
-    expect(second.admissionStatus).toBe('ADMITTED')
-    expect(second.jobId).toBe(first.jobId)
+    expect(first?.admissionStatus).toBe('ADMITTED')
+    expect(second?.admissionStatus).toBe('ADMITTED')
+    expect(second?.jobId).toBe(first?.jobId)
     const { mapJobs, mapJobSlices, runs } = schemaFor(handle.db)
     const jobs = await handle.db.select().from(mapJobs).where(eq(mapJobs.targetId, targetId))
     expect(jobs).toHaveLength(1)
@@ -487,7 +487,7 @@ describe.each(DRIVERS)('%s 调度账本', { timeout: 60_000 }, (driver) => {
     expect(skipped.admissionStatus).toBe('SKIPPED')
     expect(skipped.reason).toBe('PERMISSION_REVOKED')
     const [admin] = await handle.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
-    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin.id })
+    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin!.id, targetScopeMode: 'all' })
     const { scheduleOccurrences } = schemaFor(handle.db)
     await handle.db
       .update(scheduleOccurrences)

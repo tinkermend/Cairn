@@ -9,8 +9,12 @@ export async function subscribeObservation<T>(input: {
   signal: AbortSignal
   onObservation: (value: T) => void
   isFinished: (value: T) => boolean
+  event?: string
+  onEvent?: () => void
+  onRealtime?: (available: boolean) => void
 }) {
   let retryMs = 1000
+  let lastEventId: string | undefined
   while (!input.signal.aborted) {
     const connection = new AbortController()
     const signal = AbortSignal.any([input.signal, connection.signal])
@@ -23,6 +27,7 @@ export async function subscribeObservation<T>(input: {
         headers: {
           Accept: 'text/event-stream',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
         },
       })
       if ([400, 401, 403, 404].includes(response.status)) {
@@ -33,11 +38,16 @@ export async function subscribeObservation<T>(input: {
       await readSseStream(
         response.body,
         (frame) => {
+          if (frame.event === 'ready') input.onRealtime?.(JSON.parse(frame.data).realtime === true)
           if (frame.event === 'error') {
             fatal = new Error('实时进度不可访问，请刷新重连')
             throw fatal
           }
-          if (frame.event !== 'observation') return
+          if (frame.event === 'event') {
+            input.onEvent?.()
+            if (frame.id) lastEventId = frame.id
+          }
+          if (frame.event !== (input.event ?? 'observation')) return
           const parsed = input.schema.safeParse(JSON.parse(frame.data))
           if (!parsed.success) {
             fatal = new Error('实时进度格式无效，请刷新重连')

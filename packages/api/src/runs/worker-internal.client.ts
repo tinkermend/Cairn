@@ -81,7 +81,7 @@ export class WorkerInternalClient {
 
   private async send(call: WorkerCall, signal?: AbortSignal): Promise<Response> {
     try {
-      assertWorkerEndpointAllowed(call.endpoint, { networkMode: config.CAIRN_WORKER_NETWORK_MODE })
+      assertWorkerEndpointAllowed(call.endpoint)
     } catch {
       throw new WorkerForwardError(503, 'WORKER_UNREACHABLE', '执行面暂时不可达')
     }

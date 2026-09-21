@@ -13,6 +13,7 @@ export function workerLifecycle(worker: Pick<WorkerSummary, 'status' | 'heartbea
 } {
   if (worker.status === 'READY' && worker.heartbeatFresh) return { tone: 'success', label: '就绪' }
   if (worker.status === 'READY') return { tone: 'warning', label: '就绪登记已过期' }
+  if (worker.status === 'DISABLED') return { tone: 'warning', label: '已禁用 (维护中)' }
   if (worker.status === 'DRAINING') return { tone: 'warning', label: '收尾中' }
   if (worker.status === 'STOPPED') return { tone: 'neutral', label: '已停止' }
   return { tone: 'error', label: '失联' }
@@ -20,6 +21,7 @@ export function workerLifecycle(worker: Pick<WorkerSummary, 'status' | 'heartbea
 
 export const WORKER_STATUS_FILTER_LABELS: Record<WorkerStatus, string> = {
   READY: '就绪',
+  DISABLED: '已禁用',
   DRAINING: '收尾中',
   STOPPED: '已停止',
   LOST: '失联',

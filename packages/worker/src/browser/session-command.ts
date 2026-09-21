@@ -335,11 +335,11 @@ export async function runSurfaceCommand(this: SessionManagerContext,
     evidence?: BrowserCommandEvidence,
   ): Promise<BrowserCommandResult> {
     if (command.type !== 'click' || command.pageAfter !== 'popup') {
-      return executeOnPage(page, command, signal)
+      return executeOnPage(page, command, signal, evidence)
     }
     let clickResult: BrowserCommandResult = { ok: false, error: { code: 'PAGE_HANDOFF_NO_POPUP', category: 'EXECUTOR', retryable: false, safeMessage: '点击未完成' } }
     const popped = await waitForPopupsFrom(page, async () => {
-      clickResult = await executeOnPage(page, { ...command, pageAfter: 'same' }, signal)
+      clickResult = await executeOnPage(page, { ...command, pageAfter: 'same' }, signal, evidence)
     })
     if (!clickResult.ok) return clickResult
     const sessionId = this.leaseToSession.get(grant.leaseId) ?? grant.sessionId

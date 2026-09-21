@@ -6,6 +6,7 @@ import { z } from 'zod'
 
 export const MAX_FRAME_DEPTH = 4
 export const MAX_LOCATOR_CANDIDATES = 5
+export const MAX_SEMANTIC_LENGTH = 512
 
 export const LOCATOR_BY = ['role', 'label', 'text', 'title', 'testId', 'css'] as const
 export type LocatorBy = (typeof LOCATOR_BY)[number]
@@ -43,10 +44,19 @@ export type RelativeAnchor = z.infer<typeof relativeAnchorSchema>
 export const targetDescriptorSchema = z
   .strictObject({
     framePath: z.array(frameStepSchema).max(MAX_FRAME_DEPTH).default([]),
-    candidates: z.array(locatorCandidateSchema).min(1).max(MAX_LOCATOR_CANDIDATES),
+    candidates: z.array(locatorCandidateSchema).max(MAX_LOCATOR_CANDIDATES).default([]),
     anchor: relativeAnchorSchema.optional(),
+    /** 自然语言目标描述，供 AI 语义定位与人阅读；不是候选的一档。 */
+    semantic: z.string().trim().min(1).max(MAX_SEMANTIC_LENGTH).optional(),
   })
   .superRefine((descriptor, ctx) => {
+    if (descriptor.candidates.length === 0 && !descriptor.semantic) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['candidates'],
+        message: '候选与语义描述至少提供一项',
+      })
+    }
     const cssIndexes = descriptor.candidates
       .map((candidate, index) => (candidate.by === 'css' ? index : -1))
       .filter((index) => index >= 0)
@@ -96,3 +106,14 @@ export function arrivalTargetForName(name: string): TargetDescriptor {
     trimmed,
   )
 }
+
+export const RESOLVED_ATTRIBUTE = 'data-cairn-resolved'
+
+export function cssAttrEscape(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+export function resolvedSelector(token: string): string {
+  return `[${RESOLVED_ATTRIBUTE}="${cssAttrEscape(token)}"]`
+}
+

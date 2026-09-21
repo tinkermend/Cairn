@@ -1,10 +1,23 @@
-import { and, asc, eq, inArray, isNull, lte } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm'
 import type { Db } from '../client.js'
 import { atomic, clockNow, locked, schemaFor } from '../native.js'
 import { appendRunEvents } from '../observe/events.js'
 import type { ScanBatchResult } from '../runtime/scan-batch.js'
 import { settleRunCancellationTx } from './recover.js'
 import { lockRunAccountScope } from './lock-scope.js'
+
+export function scheduledStartDeadlineExpired(db: Db, now: Date) {
+  const { runs, scheduleOccurrences } = schemaFor(db)
+  return and(isNull(runs.startedAt), sql`EXISTS (
+    SELECT 1 FROM ${scheduleOccurrences} scheduled
+    WHERE scheduled.admission_status = 'ADMITTED' AND scheduled.window_end_utc <= ${now}
+      AND (scheduled.run_id = ${runs.id} OR (
+        scheduled.suite_run_id = ${runs.suiteRunId}
+        AND NOT EXISTS (SELECT 1 FROM ${runs} started_child
+          WHERE started_child.suite_run_id = ${runs.suiteRunId} AND started_child.started_at IS NOT NULL)
+      ))
+  )`)
+}
 
 /** Same cancellation path for queued, waiting and recovering work; unknown effects stay reviewable. */
 export async function expireRunDeadlines(
@@ -14,7 +27,7 @@ export async function expireRunDeadlines(
   const { runs } = schemaFor(db)
   const due = (now: Date, id?: string) =>
     and(
-      lte(runs.deadlineAt, now),
+      or(lte(runs.deadlineAt, now), scheduledStartDeadlineExpired(db, now)),
       isNull(runs.cancelRequestedAt),
       inArray(runs.status, [
         'QUEUED',
@@ -39,21 +52,22 @@ export async function expireRunDeadlines(
       const now = await clockNow(tx)
       const [current] = await locked(
         tx,
-        tx.select({ id: runs.id }).from(runs).where(due(now, row.id)),
+        tx.select({ id: runs.id, deadlineAt: runs.deadlineAt }).from(runs).where(due(now, row.id)),
       )
       if (!current) return false
+      const reason = current.deadlineAt && current.deadlineAt <= now ? 'RUN_DEADLINE_EXCEEDED' : 'SCHEDULE_START_DEADLINE_ELAPSED'
       await tx
         .update(runs)
         .set({
           cancelRequestedAt: now,
-          cancelReason: 'RUN_DEADLINE_EXCEEDED',
+          cancelReason: reason,
           updatedAt: now,
         })
         .where(eq(runs.id, row.id))
       await appendRunEvents(tx, row.id, [
         {
           type: 'run.cancel_requested',
-          payload: { reason: 'RUN_DEADLINE_EXCEEDED' },
+          payload: { reason },
         },
       ])
       await settleRunCancellationTx(tx, row.id, now)

@@ -8,6 +8,7 @@ export function emitAiModelCallLog(
     stepRunId?: string
     attemptId?: string
     model?: string
+    route?: string
     durationMs: number
     phase: 'completed' | 'failed'
     inputTokens?: number | null
@@ -21,6 +22,7 @@ export function emitAiModelCallLog(
     stepRunId: input.stepRunId,
     attemptId: input.attemptId,
     model: input.model,
+    route: input.route,
     durationMs: input.durationMs,
     phase: input.phase,
     inputTokens: input.inputTokens ?? undefined,

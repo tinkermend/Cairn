@@ -5,15 +5,24 @@ import { schemaFor } from '../native.js'
 import { getMapFact } from '../map/facts.js'
 import { requireMapAsset } from '../map/view.js'
 import { knowledgeNotFound } from './errors.js'
+import { assertTargetPermission } from '../console/target-authorization.js'
 
 /** Ownership is checked even for trusted internal callers; access is supplied by the API. */
 export async function validateKnowledgeSources(db: Db, targetId: string, sources: readonly KnowledgeSourceRef[], access?: {
-  runRead: boolean; workflowRead: boolean; moduleRead: boolean; scenarioId?: string
+  runRead: boolean; workflowRead: boolean; moduleRead: boolean; scenarioId?: string; mapAnalyze?: boolean; mapRead?: boolean; actorId?: string
 }) {
   const tables = schemaFor(db)
   for (const value of sources) {
     const source = knowledgeSourceRefSchema.parse(value)
-    if (source.kind === 'map_asset') {
+    if (source.kind === 'analysis_candidate') {
+      const [candidate] = await db.select().from(tables.analysisCandidates).where(and(eq(tables.analysisCandidates.id, source.candidateId), eq(tables.analysisCandidates.jobId, source.jobId), eq(tables.analysisCandidates.targetId, targetId))).limit(1)
+      const [job] = await db.select().from(tables.analysisJobs).where(and(eq(tables.analysisJobs.id, source.jobId), eq(tables.analysisJobs.targetId, targetId))).limit(1)
+      if (!candidate || !job || job.status !== 'SUCCEEDED' || (access && (!access.mapAnalyze || !(job.mode === 'run_incremental' ? access.runRead : access.mapRead)))) knowledgeNotFound()
+      if (access?.actorId) {
+        await assertTargetPermission(db, access.actorId, targetId, 'map:analyze')
+        await assertTargetPermission(db, access.actorId, targetId, job.mode === 'run_incremental' ? 'run:read' : 'map:read')
+      }
+    } else if (source.kind === 'map_asset') {
       await requireMapAsset(db, targetId, source.assetRef)
       if (source.mapReleaseId) {
         const [release] = await db.select().from(tables.mapReleases).where(eq(tables.mapReleases.id, source.mapReleaseId)).limit(1)

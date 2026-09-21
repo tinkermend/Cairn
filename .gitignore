@@ -94,8 +94,6 @@ tests/*
 !tests/target-surface-lab/**
 !tests/target-snc-dpm/
 !tests/target-snc-dpm/**
-!tests/harness/
-!tests/harness/**
 !tests/target-module-lab/
 !tests/target-module-lab/**
 !tests/session-management-e2e/

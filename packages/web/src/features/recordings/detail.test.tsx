@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   deleteRecording: vi.fn(),
   fetchScenarios: vi.fn(),
   createScenario: vi.fn(),
+  // 详情页里的目标定位字段（authoring/fields/target.tsx）会查能力清单；
+  // 这里返回 undefined，页面按「能力未知」渲染，与真实的加载中状态一致。
+  fetchScenarioCapabilities: vi.fn(async () => undefined),
 }))
 
 vi.mock('@/lib/recordings-api', () => ({
@@ -22,6 +25,7 @@ vi.mock('@/lib/recordings-api', () => ({
 vi.mock('@/lib/scenarios-api', () => ({
   fetchScenarios: mocks.fetchScenarios,
   createScenario: mocks.createScenario,
+  fetchScenarioCapabilities: mocks.fetchScenarioCapabilities,
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {

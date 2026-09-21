@@ -1,7 +1,7 @@
 /*
- * 识途 · 前端设计基线 v1.3 · Foundation
+ * 识途 · 前端设计基线 v1.4 · 清透蓝输入控件
  * 浅色主题。供规范、视觉样本与 packages/web 共用。
- * packages/web/styles/theme.css 直接导入本文件，不并行维护第二套主题。
+ * packages/web/src/styles/theme.css 直接导入本文件，不并行维护第二套主题。
  */
 :root {
   color-scheme: light;
@@ -38,11 +38,13 @@
   --border-default: #dfe6f0;
   --border-divider: #eaf0f6;
   --border-card: #e3e9f2;
-  --border-control: #8693a9;
-  --border-control-hover: #5b6b84;
+  --border-control: #7693cc;
+  --border-control-hover: #4878cf;
+  --border-menu: #cfdbf0;
   /* 聚焦光晕保持低透明度，不叠成第二道实线。 */
-  --focus-halo: #245ce526;
-  --error-halo: #f0445229;
+  --focus-halo: #245ce51a;
+  --active-halo: #245ce514;
+  --error-halo: #f0445221;
   --technical-grid: #3563e90a;
   --technical-line: #3563e91f;
   --technical-glow: #4f7cff1a;
@@ -133,14 +135,15 @@
   --card-shadow:
     0 2px 4px var(--shadow-tint), 0 10px 28px var(--shadow-ambient-tint);
   --popover-shadow: 0 8px 28px var(--shadow-overlay-tint);
-  --control-shadow: inset 0 1px 2px var(--shadow-tint);
-  --control-focus-shadow:
-    inset 0 1px 2px var(--shadow-tint), 0 0 0 2px var(--focus-halo);
-  --control-error-shadow:
-    inset 0 1px 2px var(--shadow-tint), 0 0 0 2px var(--error-halo);
+  --menu-shadow: 0 6px 18px #23427814, 0 16px 40px #23427814;
+  --control-shadow: 0 0 0 0 transparent;
+  --control-active-shadow: 0 0 0 2px var(--active-halo);
+  --control-focus-shadow: 0 0 0 3px var(--focus-halo);
+  --control-error-shadow: 0 0 0 0 transparent;
+  --control-error-focus-shadow: 0 0 0 3px var(--error-halo);
   --tech-panel-shadow: 0 24px 64px var(--shadow-overlay-tint);
   --action-shadow: 0 3px 8px var(--action-shadow-tint);
-  --sidebar-width: 224px;
+  --sidebar-width: 208px;
   --sidebar-collapsed: 72px;
   --motion-fast: 150ms;
   --motion-panel: 220ms;

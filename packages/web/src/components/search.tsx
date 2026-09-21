@@ -5,7 +5,7 @@ import { Button } from './ui/button'
 
 export function Search({
   className = '',
-  placeholder = '搜索',
+  placeholder = '搜索场景、运行、目标或页面',
   ...props
 }: React.ComponentProps<'button'> & { placeholder?: string }) {
   const { setOpen } = useSearch()

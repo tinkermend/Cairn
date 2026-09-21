@@ -22,6 +22,8 @@ import {
   externalRunBodySchema,
   externalRunSchema,
   hasAiSteps,
+  requiredRunInputKeys,
+  snapshotNeedsBrowserAi,
   isAiCallEvidence,
   issueServiceCredentialSchema,
   isIpAllowedByAllowlist,
@@ -78,6 +80,7 @@ import {
   getRun,
   requestRunCancel,
 } from "../runs/runs.js";
+import { loadResolutionLayers, stepsNeedAiExecute } from "../runs/resolution-layers.js";
 import { sha256Hex } from "../runs/digest.js";
 import { actorPermissions } from "../credentials/access.js";
 import {
@@ -1352,7 +1355,9 @@ export async function getServiceCredentialCatalog(
             name: scenario.name,
             versionId: scenario.versionId,
             versionNo: scenario.versionNo,
-            inputs: scenario.definition.inputs ?? [],
+            // 目录要与建 Run 的校验同口径：只列声明的 inputs，
+            // 会漏掉"步骤引用了但作者没声明"的键，调用方照目录填仍会被拒。
+            inputs: requiredRunInputKeys(scenario.definition),
             hasAi: hasAiSteps(scenario.definition.steps),
           })),
         };
@@ -1622,7 +1627,7 @@ export async function createServiceRun(
           "相同幂等键对应不同的运行输入",
         );
       if (
-        hasAiSteps(existing.snapshot.steps) &&
+        snapshotNeedsBrowserAi(existing.snapshot.steps, existing.snapshot.resolution?.steps) &&
         !credential.scopes.includes("ai:execute")
       )
         throw forbidden("SERVICE_SCOPE_DENIED", "服务凭据没有 AI 执行权限");
@@ -1654,8 +1659,9 @@ export async function createServiceRun(
     );
     if (resolved.kind !== "published")
       throw badRequest("SCENARIO_VERSION_NOT_PUBLISHED", "只能执行已发布版本");
+    const layers = await loadResolutionLayers(tx as unknown as Db, resolved.targetId);
     if (
-      hasAiSteps(resolved.definition.steps) &&
+      stepsNeedAiExecute(resolved.definition.steps, layers, resolved.definition.resolution) &&
       !credential.scopes.includes("ai:execute")
     )
       throw forbidden("SERVICE_SCOPE_DENIED", "服务凭据没有 AI 执行权限");
@@ -1822,7 +1828,7 @@ export async function serviceCatalog(
         ...result,
         items: result.items.map(({ definition, ...row }) => ({
           ...row,
-          inputs: definition.inputs ?? [],
+          inputs: requiredRunInputKeys(definition),
           hasAi: hasAiSteps(definition.steps),
         })),
       };

@@ -157,8 +157,8 @@ try {
   }
   token = (
     await api('/auth/login', {
-      email: config.CAIRN_BOOTSTRAP_ADMIN_EMAIL,
-      password: config.CAIRN_BOOTSTRAP_ADMIN_PASSWORD,
+      email: config.CAIRN_BOOTSTRAP_ADMIN_EMAIL ?? 'admin',
+      password: config.CAIRN_BOOTSTRAP_ADMIN_PASSWORD ?? 'cairn-admin',
     })
   ).accessToken
   const target = await api('/targets', {
@@ -236,8 +236,8 @@ try {
   const jsErrors = []
   page.on('pageerror', (error) => jsErrors.push(error.message))
   await page.goto(`${webOrigin}/sign-in`)
-  await page.getByRole('textbox', { name: /^账号$/ }).fill(config.CAIRN_BOOTSTRAP_ADMIN_EMAIL)
-  await page.getByLabel(/^密码$/).fill(config.CAIRN_BOOTSTRAP_ADMIN_PASSWORD)
+  await page.getByRole('textbox', { name: /^账号$/ }).fill(config.CAIRN_BOOTSTRAP_ADMIN_EMAIL ?? 'admin')
+  await page.getByLabel(/^密码$/).fill(config.CAIRN_BOOTSTRAP_ADMIN_PASSWORD ?? 'cairn-admin')
   await page.getByRole('button', { name: /^登录$/ }).click()
   await page.waitForURL((url) => !url.pathname.includes('sign-in'))
   await page.goto(`${webOrigin}/notifications?tab=channels`)

@@ -7,6 +7,7 @@ import {
 import { outcomeContractSchema, type OutcomeContract } from './outcome.js'
 import { runtimeInvariantSchema } from './runtime-invariant.js'
 import { outputFieldNameSchema } from './output-schema.js'
+import { resolutionPolicySchema } from './resolution-policy.js'
 import type { ScenarioDocument } from './scenario.js'
 import {
   contextKeySchema,
@@ -161,6 +162,7 @@ export const scenarioAuthoringDocumentV2Schema = z
     nodes: z.array(authoringNodeSchema).min(1).max(MAX_AUTHORING_NODES),
     scenarioOutcomes: z.array(outcomeContractSchema).optional(),
     runtimeInvariants: z.array(runtimeInvariantSchema).optional(),
+    resolution: resolutionPolicySchema.optional(),
   })
   .superRefine((document, ctx) => {
     const inputKeys = new Set<string>()

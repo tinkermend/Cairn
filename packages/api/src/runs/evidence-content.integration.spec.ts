@@ -13,6 +13,7 @@ import {
   recordObjectEvidence,
   reserveStoredObject,
   type DbHandle,
+  grantAdminScope,
 } from '@cairn/db/testing'
 import { OBJECT_MISSING_REASONS, type Step } from '@cairn/shared'
 import { LocalObjectStore } from '@cairn/storage'
@@ -53,6 +54,7 @@ describe('证据正文下载（集成）', { timeout: 30_000 }, () => {
       email: `evc-${actorId}@example.com`,
       status: 'active',
     })
+    await grantAdminScope(handle.db, actorId)
     actor = {
       id: actorId,
       displayName: 'evc-tester',

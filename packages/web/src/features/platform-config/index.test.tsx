@@ -1,6 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/styles/index.css'
-import { FACTORY_PLATFORM_CONFIG, PERMISSIONS } from '@cairn/shared'
+import {
+  FACTORY_PLATFORM_CONFIG,
+  PERMISSIONS,
+  PLATFORM_AI_PROVIDER_PRESETS,
+  PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE,
+  PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE,
+} from '@cairn/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
@@ -85,6 +91,7 @@ describe('PlatformConfigPage', () => {
   afterEach(() => {
     client?.clear()
     useAuthStore.getState().auth.setUser(null)
+    window.history.replaceState({}, '', '/')
   })
 
   it('管理员能看见五组策略，主操作是保存并生效，页面不回显密钥', async () => {
@@ -114,6 +121,13 @@ describe('PlatformConfigPage', () => {
     await expect
       .element(screen.getByRole('button', { name: '保存并生效' }))
       .toBeInTheDocument()
+    await expect
+      .element(screen.getByLabelText('AI 定位能力上限'))
+      .toHaveTextContent('仅规则')
+    await expect
+      .element(screen.getByLabelText('平台默认优先顺序'))
+      .toHaveTextContent('规则优先，AI 兜底')
+    expect(screen.getByText('请选择').elements()).toHaveLength(0)
     expect(document.body.innerText).not.toMatch(/sk-|apiKey/)
     expect(JSON.stringify(current)).not.toMatch(/sk-|apiKey/)
     await screen.getByRole('tab', { name: '会话策略' }).click()
@@ -150,6 +164,31 @@ describe('PlatformConfigPage', () => {
       .toBeInTheDocument()
   })
 
+  it('存量文档缺解析上限时仍显示出厂仅规则', async () => {
+    const { resolutionCeiling: _ceiling, defaultResolution: _default, ...browserAi } =
+      FACTORY_PLATFORM_CONFIG.browserAi
+    mocks.fetchPlatformConfig.mockResolvedValue({
+      ...current,
+      document: {
+        ...FACTORY_PLATFORM_CONFIG,
+        browserAi: {
+          ...browserAi,
+          resolutionCeiling: '',
+          defaultResolution: '',
+        },
+      },
+    })
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await expect
+      .element(screen.getByLabelText('AI 定位能力上限'))
+      .toHaveTextContent('仅规则')
+    await expect
+      .element(screen.getByLabelText('平台默认优先顺序'))
+      .toHaveTextContent('规则优先，AI 兜底')
+    expect(screen.getByText('请选择').elements()).toHaveLength(0)
+  })
+
   it('执行默认值展示模块映射三项配置', async () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
@@ -178,15 +217,24 @@ describe('PlatformConfigPage', () => {
     await expect
       .element(screen.getByRole('switch', { name: '开放动作模块冻结回退' }))
       .not.toBeChecked()
+    await expect
+      .element(screen.getByRole('switch', { name: '开放场景定时执行' }))
+      .not.toBeChecked()
+    await expect
+      .element(screen.getByRole('switch', { name: '开放场景集定时执行' }))
+      .not.toBeChecked()
+    await expect
+      .element(screen.getByRole('switch', { name: '开放知识分析' }))
+      .not.toBeChecked()
   })
 
-  it('告警节出厂关闭，Webhook 地址不回填到表单', async () => {
+  it('告警标签页引导至统一的通知入口', async () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '告警' }).click()
-    await expect.element(screen.getByText('出厂建议规则全部关闭。Webhook 地址只在登记时提交，不会写入配置文档或变更记录。')).toBeInTheDocument()
-    await expect.element(screen.getByRole('switch', { name: '执行节点失联' })).not.toBeChecked()
-    await expect.element(screen.getByLabelText('Webhook 地址')).toHaveValue('')
+    await expect.element(screen.getByText('告警规则和发送渠道已统一到通知。')).toBeInTheDocument()
+    await expect.element(screen.getByRole('link', { name: '管理告警通知' })).toHaveAttribute('href', '/notifications?tab=alerts')
+    expect(screen.getByLabelText('Webhook 地址').elements()).toHaveLength(0)
   })
 
   it('只有读权限时不能保存', async () => {
@@ -227,8 +275,10 @@ describe('PlatformConfigPage', () => {
     await timeout.fill('10000')
     await screen.getByLabelText('变更原因').fill('故意不合法')
     await screen.getByRole('button', { name: '保存并生效' }).click()
-    await expect.element(timeout).toHaveValue(10000)
+    await expect.element(screen.getByText(/须小于默认步骤超时/)).toBeInTheDocument()
     expect(mocks.updatePlatformConfig).not.toHaveBeenCalled()
+    await screen.getByRole('tab', { name: '执行默认值' }).click()
+    await expect.element(screen.getByLabelText('默认步骤超时（ms）')).toHaveValue(10000)
   })
 
   it('409 冲突时保留输入与基准修订，明确重新加载后才可编辑保存', async () => {
@@ -428,5 +478,119 @@ describe('PlatformConfigPage', () => {
         }),
       })
     )
+  })
+
+  it('平台 AI 提供商下拉预填官方地址，自定义地址保留，千问思考开关禁用', async () => {
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: '平台 AI' }).click()
+    await expect.element(screen.getByText(/提供商方言/)).toBeInTheDocument()
+    await screen.getByLabelText('模型提供商').click()
+    await screen.getByRole('option', { name: 'DeepSeek' }).click()
+    await expect
+      .element(screen.getByLabelText('模型服务地址'))
+      .toHaveValue(PLATFORM_AI_PROVIDER_PRESETS.deepseek.defaultBaseUrl)
+    await screen.getByLabelText('模型提供商').click()
+    await screen.getByRole('option', { name: '通义千问' }).click()
+    await expect
+      .element(screen.getByLabelText('模型服务地址'))
+      .toHaveValue(PLATFORM_AI_PROVIDER_PRESETS.qwen.defaultBaseUrl)
+    await expect
+      .element(screen.getByText(PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('switch', { name: '思考模式' }))
+      .toBeDisabled()
+    await screen.getByLabelText('模型服务地址').fill('https://proxy.example/v1')
+    await screen.getByLabelText('模型提供商').click()
+    await screen.getByRole('option', { name: '智谱 GLM' }).click()
+    await expect
+      .element(screen.getByLabelText('模型服务地址'))
+      .toHaveValue('https://proxy.example/v1')
+  })
+
+  it('已启用但缺提供商时，任意页签保存都被同一字段错误拦住', async () => {
+    const secretRef = {
+      provider: 'local' as const,
+      secretId: '00000000-0000-4000-8000-000000000099',
+    }
+    mocks.fetchPlatformConfig.mockResolvedValue({
+      ...current,
+      document: {
+        ...FACTORY_PLATFORM_CONFIG,
+        platformAi: {
+          ...FACTORY_PLATFORM_CONFIG.platformAi,
+          enabled: true,
+          baseUrl: 'https://api.deepseek.com',
+          model: 'deepseek-chat',
+          secretRef,
+        },
+      },
+    })
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: '执行默认值' }).click()
+    await screen.getByLabelText('默认步骤超时（ms）').fill('45000')
+    await screen.getByLabelText('变更原因').fill('只改超时')
+    await screen.getByRole('button', { name: '保存并生效' }).click()
+    await expect
+      .element(screen.getByText(PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE))
+      .toBeInTheDocument()
+    expect(mocks.updatePlatformConfig).not.toHaveBeenCalled()
+    await expect
+      .element(screen.getByRole('tab', { name: '平台 AI' }))
+      .toHaveAttribute('data-state', 'active')
+  })
+
+  it('平台 AI 页保存时，未挂载的浏览器 AI 解析空串按出厂补齐', async () => {
+    const secretRef = {
+      provider: 'local' as const,
+      secretId: '00000000-0000-4000-8000-000000000099',
+    }
+    mocks.fetchPlatformConfig.mockResolvedValue({
+      ...current,
+      document: {
+        ...FACTORY_PLATFORM_CONFIG,
+        browserAi: {
+          ...FACTORY_PLATFORM_CONFIG.browserAi,
+          resolutionCeiling: '',
+          defaultResolution: '',
+        },
+        platformAi: {
+          ...FACTORY_PLATFORM_CONFIG.platformAi,
+          enabled: true,
+          provider: 'deepseek',
+          baseUrl: 'https://api.deepseek.com',
+          model: 'deepseek-chat',
+          secretRef,
+        },
+      },
+    })
+    window.history.replaceState({}, '', '/platform-config?tab=platform-ai')
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await screen.getByLabelText('变更原因').fill('补选提供商')
+    await screen.getByRole('button', { name: '保存并生效' }).click()
+    await vi.waitFor(() => expect(mocks.updatePlatformConfig).toHaveBeenCalledTimes(1))
+    expect(mocks.updatePlatformConfig.mock.calls[0]![0]).toMatchObject({
+      document: {
+        browserAi: {
+          resolutionCeiling: 'deterministic_only',
+          defaultResolution: 'prefer_deterministic',
+        },
+        platformAi: { provider: 'deepseek' },
+      },
+    })
+  })
+
+  it('未选提供商时不能启用识途助手', async () => {
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: '平台 AI' }).click()
+    await screen.getByRole('switch', { name: '启用识途助手' }).click()
+    await expect
+      .element(screen.getByText(PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE))
+      .toBeInTheDocument()
+    expect(mocks.updatePlatformConfig).not.toHaveBeenCalled()
   })
 })

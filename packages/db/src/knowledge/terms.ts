@@ -59,8 +59,8 @@ function toEntry(row: {
 
 function assertTermSources(sources: CreateTerminologyBody['sources'] = []) {
   for (const source of sources ?? []) {
-    if (source.kind !== 'map_asset' && source.kind !== 'map_observation' && source.kind !== 'map_verification') {
-      knowledgeNotFound('术语来源只能引用地图资产或观察/评价')
+    if (source.kind !== 'map_asset' && source.kind !== 'map_observation' && source.kind !== 'map_verification' && source.kind !== 'analysis_candidate') {
+      knowledgeNotFound('术语来源只能引用地图资产、观察/评价或分析候选')
     }
   }
 }

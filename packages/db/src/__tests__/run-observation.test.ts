@@ -12,6 +12,7 @@ import {
   failRunValidation,
   listRunEventsAfter,
   loadRunObservation,
+  loadRunObservationProgress,
   purgeExpiredRunEvents,
   requestRunCancel,
   resetChangeHintPublisher,
@@ -86,6 +87,13 @@ describe.each(DRIVERS)('%s 运行观察账本', { timeout: 30_000 }, (driver) =>
     expect(observation?.earliestEventSeq).toBe(1)
     expect(observation?.run.status).toBe('QUEUED')
     expect(observation?.run.id).toBe(created.detail.id)
+    const progress = await loadRunObservationProgress(handle.db, created.detail.id)
+    expect(progress).toEqual({
+      status: 'QUEUED',
+      evidenceStatus: 'PENDING',
+      eventSeq: 1,
+      earliestEventSeq: 1,
+    })
   })
 
   it('幂等命中不追加事件', async () => {

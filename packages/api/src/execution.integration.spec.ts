@@ -11,6 +11,7 @@ import {
   reserveStoredObject,
   setSessionStatus,
   type DbHandle,
+  grantAdminScope,
 } from '@cairn/db/testing'
 import { DEV_CREDENTIAL_KEY, type Step } from '@cairn/shared'
 import type { RequestAccount } from './common/request-account'
@@ -46,6 +47,7 @@ describe('执行内核控制面（集成）', { timeout: 30_000 }, () => {
       email: `api-${actorId}@example.com`,
       status: 'active',
     })
+    await grantAdminScope(handle.db, actorId)
     actor = {
       id: actorId,
       displayName: 'api-tester',

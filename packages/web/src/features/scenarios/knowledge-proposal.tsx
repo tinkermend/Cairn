@@ -49,7 +49,7 @@ function KnowledgeProposalContent(props: KnowledgeProposalProps) {
   const flatDocument: ScenarioDocument | undefined = isAuthoringDocumentV2(
     props.document
   )
-    ? props.document.nodes.some((node) => node.kind === 'module')
+    ? props.document.nodes.some((node) => node.kind === 'module' || (node.outcomes?.length ?? 0) > 0)
       ? undefined
       : {
           schemaVersion: 1,
@@ -152,7 +152,7 @@ function KnowledgeProposalContent(props: KnowledgeProposalProps) {
   if (!flatDocument)
     return (
       <p className='text-small text-muted-foreground'>
-        知识建议目前只支持独立步骤草稿；此草稿含模块调用，请在模块编写流程中维护。
+        知识建议目前只支持独立步骤草稿；此草稿含模块调用或业务结果规则，请在场景编排器中维护。
       </p>
     )
   const busy =

@@ -24,7 +24,7 @@ export function ReportDetailPage() {
             search={{ tab: 'reports' }}
             className='text-link'
           >
-            返回证据与报告
+            返回结果与报告
           </Link>
         }
       />

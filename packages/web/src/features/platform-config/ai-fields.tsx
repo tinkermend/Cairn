@@ -1,3 +1,10 @@
+import {
+  FACTORY_RESOLUTION_CEILING,
+  FACTORY_RESOLUTION_DEFAULT,
+  RESOLUTION_CEILING_LABELS,
+  RESOLUTION_POLICIES,
+  RESOLUTION_PREFERENCE_LABELS,
+} from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import {
   FormControl,
@@ -9,6 +16,13 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Can } from '@/components/rbac/can'
 
@@ -148,6 +162,70 @@ export function AiFields({
                   }
                 />
               </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          name='browserAi.resolutionCeiling'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>AI 定位能力上限</FormLabel>
+              <Select
+                value={field.value || FACTORY_RESOLUTION_CEILING}
+                disabled={!canWrite}
+                onValueChange={(next) =>
+                  field.onChange(next || FACTORY_RESOLUTION_CEILING)
+                }
+              >
+                <FormControl>
+                  <SelectTrigger className='w-full' aria-label='AI 定位能力上限'>
+                    <SelectValue />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  {RESOLUTION_POLICIES.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {RESOLUTION_CEILING_LABELS[value]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FormDescription>
+                这台平台最多允许走到哪一档。出厂为仅规则。目标系统只能再收紧，不能突破这里。
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          name='browserAi.defaultResolution'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>平台默认优先顺序</FormLabel>
+              <Select
+                value={field.value || FACTORY_RESOLUTION_DEFAULT}
+                disabled={!canWrite}
+                onValueChange={(next) =>
+                  field.onChange(next || FACTORY_RESOLUTION_DEFAULT)
+                }
+              >
+                <FormControl>
+                  <SelectTrigger className='w-full' aria-label='平台默认优先顺序'>
+                    <SelectValue />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  {RESOLUTION_POLICIES.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {RESOLUTION_PREFERENCE_LABELS[value]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FormDescription>
+                目标系统、场景和步骤都未指定时使用。实际有效档位不会超过能力上限。
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}

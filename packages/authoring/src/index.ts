@@ -1,4 +1,4 @@
-export { compileScenarioDocument } from './compiler.js'
+export { compileScenarioDocument, validateAriaSnapshotTemplate } from './compiler.js'
 export { compileForAssistant } from './assistant-compile.js'
 export { compileModuleContent } from './module-compile.js'
 export {

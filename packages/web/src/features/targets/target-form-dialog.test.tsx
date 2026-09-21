@@ -50,4 +50,29 @@ describe('TargetFormDialog', () => {
     await expect.element(getByText('滑块背景或轨道', { exact: true })).toBeInTheDocument()
     await expect.element(getByText(/进程内自动识别/)).toBeInTheDocument()
   })
+
+  it('敏感区域选择器抽屉默认收起，点击展开后展示文本域', async () => {
+    const { getByRole, getByText, getByPlaceholder } = await renderDialog()
+    await expect.element(getByText('高级防护设置：敏感区域选择器')).toBeInTheDocument()
+    await getByRole('button', { name: /高级防护设置/ }).click()
+    await expect.element(getByPlaceholder('每行一个 CSS 选择器，例如 input[name=idCard]')).toBeInTheDocument()
+    await expect.element(getByText(/截图与录像在这些元素可见时遮罩像素/)).toBeInTheDocument()
+  })
+
+  it('第一个目标账号展示状态徽章，填入登录名后联动显示已填信息', async () => {
+    const { getByLabelText, getByText } = await renderDialog()
+    await expect.element(getByText('未设置')).toBeInTheDocument()
+    const usernameInput = getByLabelText('登录名')
+    await usernameInput.fill('admin-test')
+    await expect.element(getByText('已填：admin-test')).toBeInTheDocument()
+  })
+
+  it('双列并行架构清晰区分必填与选填，呈现整洁的模块化标题', async () => {
+    const { getByText } = await renderDialog()
+    await expect.element(getByText('系统准入')).toBeInTheDocument()
+    await expect.element(getByText('运行时装配')).toBeInTheDocument()
+    await expect.element(getByText('可选', { exact: true })).toBeInTheDocument()
+  })
 })
+
+

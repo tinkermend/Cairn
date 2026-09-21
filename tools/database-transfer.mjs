@@ -4,7 +4,7 @@ import { parseArgs, parseEnv } from 'node:util'
 import { createHash } from 'node:crypto'
 import { createDb } from '../packages/db/dist/index.js'
 import { exportDatabase, importDatabase } from '../packages/db/dist/admin.js'
-import { dbEnvSchema, apiEnvSchema } from '../packages/shared/dist/index.js'
+import { dbEnvSchema, objectStoreEnvSchema } from '../packages/shared/dist/index.js'
 import { createObjectStore } from '../packages/storage/dist/index.js'
 
 const { values, positionals } = parseArgs({
@@ -31,7 +31,9 @@ if (
 // parsing does not evaluate shell expressions and values are never printed.
 const configuration = { ...process.env, ...parseEnv(await readFile(resolve(values.env), 'utf8')) }
 const env = dbEnvSchema.parse(configuration)
-const store = createObjectStore(apiEnvSchema.parse(configuration), {
+// 只解析对象存储自己的变量：迁移窗口里通常只带库与存储连接信息，
+// 不该被 JWT / 凭据主密钥 / 内部 HMAC 这类与迁移无关的必填项挡住。
+const store = createObjectStore(objectStoreEnvSchema.parse(configuration), {
   repoRoot: () => resolve(import.meta.dirname, '..'),
 })
 const database = createDb(env)

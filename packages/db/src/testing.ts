@@ -5,10 +5,13 @@ import { drizzle } from 'drizzle-orm/node-postgres'
 import { Pool } from 'pg'
 import { dbEnvSchema, formatEnvIssues, type PostgresDbEnv } from '@cairn/shared'
 import { bindTransactions, type DbHandle } from './client.js'
-import { nativeTables } from './native.js'
+import { eq } from 'drizzle-orm'
+import { nativeTables, schemaFor } from './native.js'
 import { registerFixture } from './database.js'
 export type PgTestHandle = DbHandle & { pool: Pool }
 import { migrate } from './migrate.js'
+import { FACTORY_PLATFORM_CONFIG } from '@cairn/shared'
+import { getOrCreatePlatformConfig } from './platform-config/store.js'
 
 /** 仓库根 `.env`。与 api / worker 的读取路径同源：本地读它，CI 由环境变量提供。 */
 const ENV_FILE = resolve(import.meta.dirname, '../../../.env')
@@ -134,7 +137,10 @@ export async function teardownTestTemplateDatabase(): Promise<void> {
  * 优先采用 TEMPLATE 克隆已迁移的模板库（耗时从 1.5s 降至 20ms）；若模板库不存在则平滑降级为新建+迁移。
  * `close()` 会 `DROP DATABASE`。
  */
-export async function openIsolatedDb(name: string): Promise<PgTestHandle> {
+export async function openIsolatedDb(
+  name: string,
+  options: { pristine?: boolean } = {},
+): Promise<PgTestHandle> {
   const env = await requireReachableDb()
   if (!/^[a-z_][a-z0-9_]*$/.test(name) || name.length > 63) {
     throw new Error(`隔离库名不合法：${name}`)
@@ -204,7 +210,7 @@ export async function openIsolatedDb(name: string): Promise<PgTestHandle> {
   }
 
   const db = bindTransactions(drizzle(pool), 'postgres', nativeTables('postgres', 'cairn'))
-  return registerFixture({
+  const handle = registerFixture({
     db,
     pool,
     driver: 'postgres',
@@ -215,6 +221,71 @@ export async function openIsolatedDb(name: string): Promise<PgTestHandle> {
       await pool.end()
       await dropIsolatedDatabase(env, name)
     },
+  })
+  if (!options.pristine) await seedFixtureStepsEnabled(handle)
+  return handle
+}
+
+/**
+ * 给夹具账号一条「admin 角色 + 全部目标范围」的绑定。
+ *
+ * 只绑角色不够：`console_account_roles.target_scope_mode` 默认是 'none'（0066），
+ * 绑了 admin 但没写范围的账号，目标范围仍是空——创建目标、处置会话这类需要
+ * 「全部目标」的操作都会被拒。这是产品有意的语义，夹具要显式给足范围。
+ * 放在 @cairn/db/testing，api / worker 的集成测试也要用。
+ */
+export async function grantAdminScope(db: DbHandle['db'], accountId: string): Promise<void> {
+  const { consoleRoles, consoleAccountRoles } = schemaFor(db)
+  const [admin] = await db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
+  if (!admin) throw new Error('missing admin role fixture')
+  await db
+    .insert(consoleAccountRoles)
+    .values({ consoleAccountId: accountId, consoleRoleId: admin.id, targetScopeMode: 'all' })
+}
+
+/**
+ * 给夹具账号一个「只含指定权限、范围为全部目标」的自定义角色。
+ *
+ * grantAdminScope 给的是 admin，权限是全集，包括 ai:execute。要测「缺某项权限被拒」
+ * （如含 AI 步骤的试跑须有 ai:execute）就不能用它：账号得有足够权限走到那一步，
+ * 又恰好缺被测的那一项。这里直接写库，因为夹具账号本来就是直接 insert 的，
+ * 且产品路径 createRole 要求操作者是范围管理员，在夹具里得不偿失。
+ */
+export async function grantScopedPermissions(
+  db: DbHandle['db'],
+  accountId: string,
+  permissions: readonly string[],
+): Promise<string> {
+  const { consoleRoles, consoleRolePermissions, consoleAccountRoles } = schemaFor(db)
+  const roleId = randomUUID()
+  await db.insert(consoleRoles).values({
+    id: roleId,
+    key: `fixture-${roleId.slice(0, 8)}`,
+    name: '测试夹具角色',
+    kind: 'custom',
+  })
+  await db
+    .insert(consoleRolePermissions)
+    .values(permissions.map((permission) => ({ consoleRoleId: roleId, permission })))
+  await db
+    .insert(consoleAccountRoles)
+    .values({ consoleAccountId: accountId, consoleRoleId: roleId, targetScopeMode: 'all' })
+  return roleId
+}
+
+/**
+ * 夹具步骤（echo / delay / fail）是集成测试构造确定性运行的基座，而平台出厂把它关着。
+ * 隔离库在这里统一开放一次，用例走的就是「已开放」这条真实路径；要验闸门本身的
+ * 用例自己把它改回 false。放在这一层，是因为直接调 openIsolatedDb 的用例与
+ * 经 openContractDb 的用例共用同一个入口，不必各自记得种一遍。
+ *
+ * 需要「刚迁移完的纯净库」的用例（如数据库迁移的导入目标）传 `{ pristine: true }`：
+ * 那里 platform_config 必须为空，预先种进去会让判空失败。
+ */
+export async function seedFixtureStepsEnabled(handle: DbHandle): Promise<void> {
+  await getOrCreatePlatformConfig(handle.db, {
+    document: { ...FACTORY_PLATFORM_CONFIG, fixtureStepsEnabled: true },
+    reason: '测试库：开放调试夹具步骤',
   })
 }
 

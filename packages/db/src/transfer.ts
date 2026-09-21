@@ -148,6 +148,7 @@ const ORDER = [
   "mapConsumptionPolicyCommands",
   "mapRunReleaseRefs",
   "mapSelectionDecisions",
+  "resolutionDecisions",
   "targetAccessPolicies",
   "targetAccessPolicyCommands",
   "mapJobPolicies",
@@ -165,6 +166,14 @@ const ORDER = [
   "scheduleOccurrences",
   "scheduleEvents",
   "scheduleCommands",
+  "analysisJobs",
+  "analysisJobAttempts",
+  "analysisJobEvents",
+  "analysisCheckpoints",
+  "analysisCommitSeq",
+  "analysisSourceIndex",
+  "analysisCandidates",
+  "analysisCommands",
   "reportRevisionMaterials",
   "exportJobEvents",
   "exportJobArtifacts",
@@ -452,6 +461,44 @@ export async function exportDatabase(
   return bundleSchema.parse({ ...body, digest: hash(body) });
 }
 
+const ACCOUNT_SEED_TABLES = [
+  "consoleAccounts",
+  "consoleIdentities",
+  "consoleAccountRoles",
+] as const;
+
+/**
+ * True when the account tables hold nothing but the untouched seed admin:
+ * exactly one account (login `admin`), one local identity that has never been used
+ * to sign in, and one grant for it. Anything else — a second account, a sign-in,
+ * a hand-added grant — means the target has been lived in and is not eligible.
+ * Empty account tables are also fine and report `pristine: false` (nothing to clear).
+ */
+async function pristineSeedAdmin(
+  tx: { select: () => any },
+  native: ReturnType<typeof schemaFor>,
+): Promise<{ pristine: boolean }> {
+  const accounts = await tx.select().from(native.consoleAccounts).limit(2);
+  const identities = await tx.select().from(native.consoleIdentities).limit(2);
+  const grants = await tx.select().from(native.consoleAccountRoles).limit(2);
+  if (!accounts.length && !identities.length && !grants.length)
+    return { pristine: false };
+  const [account] = accounts;
+  const [identity] = identities;
+  const [grant] = grants;
+  const untouched =
+    accounts.length === 1 &&
+    identities.length === 1 &&
+    grants.length === 1 &&
+    account.email === "admin" &&
+    identity.consoleAccountId === account.id &&
+    identity.provider === "local" &&
+    identity.subject === "admin" &&
+    identity.lastUsedAt === null &&
+    grant.consoleAccountId === account.id;
+  return { pristine: untouched };
+}
+
 export async function importDatabase(
   database: Database,
   env: DbEnv,
@@ -477,12 +524,16 @@ export async function importDatabase(
   const native = schemaFor(handle.db);
   await handle.db.transaction(async (tx) => {
     // Only a freshly migrated target is eligible. Never merge into a live database.
+    // The migration-seeded admin (0091_bootstrap_admin_seed) is a seed fact like the
+    // system roles: it is replaced by the archive's accounts, but only while untouched.
+    const seedAdmin = await pristineSeedAdmin(tx, native);
     for (const key of ORDER.filter(
       (k) =>
         ![
           "consoleRoles",
           "consoleRolePermissions",
           "notificationControls",
+          ...(seedAdmin.pristine ? ACCOUNT_SEED_TABLES : []),
         ].includes(k),
     )) {
       if ((await tx.select().from(native[key]).limit(1)).length)
@@ -499,6 +550,13 @@ export async function importDatabase(
     )
       throw new Error("Import target has notification authorization history");
     await tx.delete(native.notificationControls);
+    if (seedAdmin.pristine) {
+      // Must precede the role delete: the seed grant references console_roles
+      // (ON DELETE RESTRICT). Children first: grants and identities reference the account.
+      await tx.delete(native.consoleAccountRoles);
+      await tx.delete(native.consoleIdentities);
+      await tx.delete(native.consoleAccounts);
+    }
     await tx.delete(native.consoleRolePermissions);
     await tx.delete(native.consoleRoles);
     for (const key of ORDER) {

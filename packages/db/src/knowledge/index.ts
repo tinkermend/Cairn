@@ -30,3 +30,4 @@ export {
 } from './errors.js'
 
 export { validateKnowledgeSources } from './sources.js'
+export { reviewAnalysisCandidate } from './candidates.js'

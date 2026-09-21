@@ -87,12 +87,12 @@ describe('RolesActionDialog', () => {
       <RolesActionDialog open onOpenChange={vi.fn()} currentRow={operator} />,
     )
     await expect.element(getByText('能力预览')).toBeInTheDocument()
-    await expect.element(getByText(/场景编排：自动化场景、场景集/)).toBeInTheDocument()
+    await expect.element(getByText(/编写：场景、场景集/)).toBeInTheDocument()
     await expect.element(getByText(/动作库/)).toBeInTheDocument()
-    await expect.element(getByText(/平台运维：执行节点/)).toBeInTheDocument()
+    await expect.element(getByText(/运维：监控、执行节点/)).toBeInTheDocument()
     await expect.element(getByText('对目标系统发起运行')).toBeInTheDocument()
     expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('account:read')
-    await expect.element(getByText('控制台用户', { exact: true })).not.toBeInTheDocument()
+    await expect.element(getByText('用户管理', { exact: true })).not.toBeInTheDocument()
   })
 
   it('勾选权限后预览即时更新', async () => {
@@ -100,9 +100,9 @@ describe('RolesActionDialog', () => {
       <RolesActionDialog open onOpenChange={vi.fn()} />,
     )
     await expect.element(getByText('总览：总览')).toBeInTheDocument()
-    await expect.element(getByText('场景编排：录制草稿')).not.toBeInTheDocument()
+    await expect.element(getByText('编写：录制草稿')).not.toBeInTheDocument()
     await userEvent.click(getByLabelText('workflow:write'))
-    await expect.element(getByText('场景编排：录制草稿')).toBeInTheDocument()
+    await expect.element(getByText('编写：录制草稿')).toBeInTheDocument()
     await expect.element(getByText('上传录制草稿')).toBeInTheDocument()
   })
 

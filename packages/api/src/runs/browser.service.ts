@@ -228,9 +228,7 @@ export class BrowserService {
   }> {
     try {
       const route = await resolveWorkerRoute(this.db, runId)
-      const endpoints = parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS, {
-        networkMode: config.CAIRN_WORKER_NETWORK_MODE,
-      })
+      const endpoints = parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS)
       const evaluation = evaluateWorkerRoute({
         workerStatus: route.worker?.status ?? null,
         workerInstanceId: route.worker?.instanceId ?? null,
@@ -239,7 +237,6 @@ export class BrowserService {
         heartbeatExpiresAt: route.worker?.heartbeatExpiresAt ?? null,
         internalBaseUrl: route.worker?.internalBaseUrl ?? null,
         asOf: route.asOf,
-        networkMode: config.CAIRN_WORKER_NETWORK_MODE,
         envEndpoint: route.worker ? endpoints[route.worker.id] : undefined,
       })
       const live =

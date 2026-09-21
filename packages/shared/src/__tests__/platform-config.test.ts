@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { resolveStepPolicy } from '../policy.js'
 import {
   FACTORY_PLATFORM_CONFIG,
+  PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE,
+  PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE,
   PLATFORM_CONFIG_SCHEMA_UNSUPPORTED,
   PLATFORM_CONFIG_SCHEMA_VERSION,
   assertAiRequestTimeoutFitsSteps,
   idempotentRequestMatches,
   platformConfigDiff,
   platformConfigDocumentSchema,
+  platformConfigWriteDocumentSchema,
   modelServiceOrigin,
   overridesCompatible,
   resolvePlatformEvidencePolicy,
@@ -125,6 +128,160 @@ describe('平台配置文档版本升级', () => {
         execution: { defaultTimeoutMs: -1, defaultRetryLimit: 0 },
       }),
     ).toThrowError()
+  })
+
+  it('schemaVersion 2 升到当前版本：知识分析模型配置迁移至共用平台模型，并补思考关、不猜提供商', () => {
+    const v2Document = {
+      ...FACTORY_PLATFORM_CONFIG,
+      schemaVersion: 2,
+      platformAi: {
+        ...FACTORY_PLATFORM_CONFIG.platformAi,
+        baseUrl: undefined,
+        model: undefined,
+        secretRef: undefined,
+      },
+      analysisAi: {
+        enabled: true,
+        baseUrl: 'https://analysis.example.com/v1',
+        model: 'deepseek-v3',
+        secretRef: { provider: 'cairn_local', secretId: '00000000-0000-4000-8000-000000000001' },
+        requestTimeoutMs: 45_000,
+        maxOutputTokens: 4096,
+        maxConcurrentJobs: 3,
+      },
+    }
+    const upgraded = upgradePlatformConfigDocument(v2Document)
+    expect(upgraded.schemaVersion).toBe(PLATFORM_CONFIG_SCHEMA_VERSION)
+    expect(upgraded.platformAi.baseUrl).toBe('https://analysis.example.com/v1')
+    expect(upgraded.platformAi.model).toBe('deepseek-v3')
+    expect(upgraded.platformAi.secretRef).toEqual({
+      provider: 'cairn_local',
+      secretId: '00000000-0000-4000-8000-000000000001',
+    })
+    expect(upgraded.platformAi.thinkingMode).toBe('off')
+    expect(upgraded.platformAi.provider).toBeUndefined()
+    expect('provider' in upgraded.platformAi).toBe(false)
+    expect(upgraded.analysisAi).toEqual({
+      enabled: true,
+      requestTimeoutMs: 45_000,
+      maxOutputTokens: 4096,
+      maxConcurrentJobs: 3,
+    })
+    expect('baseUrl' in upgraded.analysisAi).toBe(false)
+  })
+
+  it('schemaVersion 3 升到 4：补思考关，不发明提供商，启用状态保持', () => {
+    const secretRef = { provider: 'cairn_local' as const, secretId: '00000000-0000-4000-8000-000000000001' }
+    const upgraded = upgradePlatformConfigDocument({
+      ...FACTORY_PLATFORM_CONFIG,
+      schemaVersion: 3,
+      platformAi: {
+        enabled: true,
+        routeId: 'platform-default',
+        baseUrl: 'https://api.deepseek.com',
+        model: 'deepseek-chat',
+        secretRef,
+        requestTimeoutMs: 20_000,
+        turnTimeoutMs: 60_000,
+        maxCallsPerTurn: 3,
+        maxOutputTokens: 2048,
+        userInflightLimit: 1,
+        platformInflightLimit: 4,
+      },
+    })
+    expect(upgraded.schemaVersion).toBe(4)
+    expect(upgraded.platformAi.enabled).toBe(true)
+    expect(upgraded.platformAi.thinkingMode).toBe('off')
+    expect(upgraded.platformAi.provider).toBeUndefined()
+    expect(platformConfigDocumentSchema.parse(upgraded).platformAi.enabled).toBe(true)
+    expect(() => platformConfigWriteDocumentSchema.parse(upgraded)).toThrowError(
+      PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE,
+    )
+  })
+
+  it('写入契约：启用助手或分析必须有提供商；千问不能开思考', () => {
+    const secretRef = { provider: 'local' as const, secretId: '00000000-0000-4000-8000-000000000099' }
+    const ready = {
+      ...FACTORY_PLATFORM_CONFIG,
+      platformAi: {
+        ...FACTORY_PLATFORM_CONFIG.platformAi,
+        enabled: true,
+        provider: 'deepseek' as const,
+        baseUrl: 'https://api.deepseek.com',
+        model: 'deepseek-chat',
+        secretRef,
+      },
+    }
+    expect(platformConfigWriteDocumentSchema.parse(ready).platformAi.provider).toBe('deepseek')
+    expect(() =>
+      platformConfigWriteDocumentSchema.parse({
+        ...ready,
+        platformAi: { ...ready.platformAi, provider: undefined },
+      }),
+    ).toThrowError(PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE)
+    expect(() =>
+      platformConfigWriteDocumentSchema.parse({
+        ...FACTORY_PLATFORM_CONFIG,
+        analysisAi: { ...FACTORY_PLATFORM_CONFIG.analysisAi, enabled: true },
+        platformAi: {
+          ...FACTORY_PLATFORM_CONFIG.platformAi,
+          baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+          model: 'qwen-plus',
+          secretRef,
+        },
+      }),
+    ).toThrowError(PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE)
+    expect(() =>
+      platformConfigWriteDocumentSchema.parse({
+        ...ready,
+        platformAi: { ...ready.platformAi, provider: 'qwen', thinkingMode: 'on' },
+      }),
+    ).toThrowError(PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE)
+  })
+
+  it('出厂平台 AI 没有 provider 键，思考默认关', () => {
+    expect(FACTORY_PLATFORM_CONFIG.platformAi.thinkingMode).toBe('off')
+    expect('provider' in FACTORY_PLATFORM_CONFIG.platformAi).toBe(false)
+  })
+
+  it('浏览器 AI 解析档位空串按出厂补齐，不把英文枚举错误抛给保存', () => {
+    const parsed = platformConfigWriteDocumentSchema.parse({
+      ...FACTORY_PLATFORM_CONFIG,
+      browserAi: {
+        ...FACTORY_PLATFORM_CONFIG.browserAi,
+        resolutionCeiling: '',
+        defaultResolution: '',
+      },
+      platformAi: {
+        ...FACTORY_PLATFORM_CONFIG.platformAi,
+        provider: '',
+      },
+    })
+    expect(parsed.browserAi.resolutionCeiling).toBe(
+      FACTORY_PLATFORM_CONFIG.browserAi.resolutionCeiling,
+    )
+    expect(parsed.browserAi.defaultResolution).toBe(
+      FACTORY_PLATFORM_CONFIG.browserAi.defaultResolution,
+    )
+    expect(parsed.platformAi.provider).toBeUndefined()
+  })
+
+  it('启用知识分析但未配置平台模型时报错', () => {
+    expect(() =>
+      platformConfigDocumentSchema.parse({
+        ...FACTORY_PLATFORM_CONFIG,
+        analysisAi: {
+          ...FACTORY_PLATFORM_CONFIG.analysisAi,
+          enabled: true,
+        },
+        platformAi: {
+          ...FACTORY_PLATFORM_CONFIG.platformAi,
+          baseUrl: undefined,
+          model: undefined,
+          secretRef: undefined,
+        },
+      }),
+    ).toThrowError(/启用知识分析须配置平台模型/)
   })
 })
 

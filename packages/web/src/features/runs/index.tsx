@@ -209,7 +209,7 @@ export function RunsPage() {
       <Main className='flex min-w-0 flex-1 flex-col gap-4 sm:gap-6'>
         <PageHeader
           title='运行记录'
-          description='对目标系统执行场景的一次记录。进度以手动刷新的 GET 为准。集合运行见旁侧页签。'
+          description='对目标系统执行场景的一次记录。进度不会自动更新，点筛选条右侧的「刷新」取最新。场景集的运行在旁边页签。'
           actions={
             <Can allOf={RUN_EXECUTE_ALL_OF}>
               <Button onClick={() => setCreateOpen(true)}>
@@ -386,18 +386,27 @@ export function RunsPage() {
                 />
               </div>
 
-              <div className='relative w-full sm:w-72'>
-                <Search
-                  aria-hidden='true'
-                  className='pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground'
-                />
-                <Input
-                  aria-label='搜索运行'
-                  placeholder='搜索场景或目标系统'
-                  value={search}
-                  onChange={(event) => handleSearchChange(event.target.value)}
-                  className='pl-9'
-                />
+              <div className='flex w-full items-center gap-2 sm:w-auto'>
+                <div className='relative w-full sm:w-72'>
+                  <Search
+                    aria-hidden='true'
+                    className='pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground'
+                  />
+                  <Input
+                    aria-label='搜索运行'
+                    placeholder='搜索场景或目标系统'
+                    value={search}
+                    onChange={(event) => handleSearchChange(event.target.value)}
+                    className='pl-9'
+                  />
+                </div>
+                <Button
+                  variant='outline'
+                  loading={query.isFetching}
+                  onClick={() => void query.refetch()}
+                >
+                  刷新
+                </Button>
               </div>
             </div>
 

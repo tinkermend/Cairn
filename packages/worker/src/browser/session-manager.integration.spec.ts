@@ -39,6 +39,7 @@ import {
   targetAccounts,
   targets,
   type DbHandle,
+  grantAdminScope,
 } from '@cairn/db/testing'
 import {
   DEFAULT_SESSION_POLICY,
@@ -117,6 +118,12 @@ function stubBrowserHandle(
   } as unknown as BrowserHandle
 }
 
+/** 把完整的解析后策略收窄成「单次运行允许覆盖」的形状。 */
+function withoutLostDisposition<T extends { lostDisposition?: unknown }>(policy: T): Omit<T, 'lostDisposition'> {
+  const { lostDisposition: _notOverridable, ...overridable } = policy
+  return overridable
+}
+
 describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
   let handle: DbHandle
   let manager: BrowserSessionManager
@@ -184,13 +191,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       email: `bsm-${actorId}@example.com`,
       status: 'active',
     })
-    const { consoleRoles, consoleAccountRoles } = schemaFor(handle.db)
-    const [admin] = await handle.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
-    if (!admin) throw new Error('missing admin role fixture')
-    await handle.db.insert(consoleAccountRoles).values({
-      consoleAccountId: actorId,
-      consoleRoleId: admin.id,
-    })
+    await grantAdminScope(handle.db, actorId)
     await handle.db.insert(targets).values([
       {
         id: targetId,
@@ -299,7 +300,9 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       scenarioId: scenario.id,
       targetAccountId: input.accountId,
       actor: { id: actorId },
-      sessionPolicy: input.sessionPolicy ?? { ...DEFAULT_SESSION_POLICY, reuse: 'NEW_PAGE' },
+      // 单次运行的会话策略覆盖不含 lostDisposition：失联处置只能在平台默认或目标系统层面配置，
+      // 不允许调用方在单次运行里绕过（sessionPolicyOverrideSchema 是 strict，会拒绝这个键）。
+      sessionPolicy: withoutLostDisposition(input.sessionPolicy ?? { ...DEFAULT_SESSION_POLICY, reuse: 'NEW_PAGE' as const }),
     })
     await handle.pool.query(
       `UPDATE runs
@@ -1127,7 +1130,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
       scenarioId: otherScenario.id,
       targetAccountId: account,
       actor: { id: actorId },
-      sessionPolicy: { ...DEFAULT_SESSION_POLICY, reuse: 'NEW_PAGE' },
+      sessionPolicy: withoutLostDisposition({ ...DEFAULT_SESSION_POLICY, reuse: 'NEW_PAGE' as const }),
     })
     const secondGrant: RunGrant = {
       runId: otherRun.detail.id,
@@ -1402,7 +1405,7 @@ describe('BrowserSessionManager（集成）', { timeout: 120_000 }, () => {
         scenarioId: scenario.id,
         targetAccountId: account,
         actor: { id: actorId },
-        sessionPolicy: policy,
+        sessionPolicy: withoutLostDisposition(policy),
       })
       await handle.pool.query(
         `UPDATE runs

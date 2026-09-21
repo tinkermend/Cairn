@@ -11,6 +11,10 @@ import {
   saveActionModuleDraft,
   saveScenarioDraft,
   consoleAccounts,
+  consoleRoles,
+  consoleAccountRoles,
+  schemaFor,
+  eq,
   createRunWithSnapshot,
   createScenarioWithVersion,
   expireStaleRunLeases,
@@ -69,6 +73,14 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       email: `eng-${actorId}@example.com`,
       status: 'active',
     })
+    const [admin] = await handle.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
+    if (admin) {
+      await handle.db.insert(consoleAccountRoles).values({
+        consoleAccountId: actorId,
+        consoleRoleId: admin.id,
+        targetScopeMode: 'all',
+      })
+    }
     await handle.db.insert(targets).values({
       id: targetId,
       code: `eng-${SCHEMA.slice(-8)}`,

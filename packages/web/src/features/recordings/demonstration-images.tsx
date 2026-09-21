@@ -9,6 +9,7 @@ import { newDemonstrationId } from '@/lib/demonstrations-api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
 
 export type ReviewedImage = {
   factId: string
@@ -230,28 +231,28 @@ export function DemonstrationImages({
         <div className='grid gap-3 sm:grid-cols-2'>
           <label className='space-y-1 text-label'>
             关联操作
-            <select
-              className='h-10 w-full rounded border bg-background px-2'
+            <SelectField
+              className='w-full'
               value={factId}
-              onChange={(e) => setFactId(e.target.value)}
+              onValueChange={(value) => setFactId(value)}
             >
               {source.facts.map((f, i) => (
-                <option key={f.id} value={f.id}>
+                <SelectFieldOption key={f.id} value={f.id}>
                   {i + 1}. {f.action}
-                </option>
+                </SelectFieldOption>
               ))}
-            </select>
+            </SelectField>
           </label>
           <label className='space-y-1 text-label'>
             截图时点
-            <select
-              className='h-10 w-full rounded border bg-background px-2'
+            <SelectField
+              className='w-full'
               value={phase}
-              onChange={(e) => setPhase(e.target.value as typeof phase)}
+              onValueChange={(value) => setPhase(value as typeof phase)}
             >
-              <option value='before'>动作前</option>
-              <option value='after'>动作后</option>
-            </select>
+              <SelectFieldOption value='before'>动作前</SelectFieldOption>
+              <SelectFieldOption value='after'>动作后</SelectFieldOption>
+            </SelectField>
           </label>
         </div>
         <Label htmlFor='demonstration-image-file'>本地截图</Label>

@@ -14,7 +14,7 @@ export function AppTitle() {
       <SidebarMenuItem>
         <SidebarMenuButton
           size='lg'
-          className='h-auto min-h-12 items-center gap-2 px-1.5 py-1.5 hover:bg-transparent active:bg-transparent [&>span:last-child]:overflow-visible [&>span:last-child]:whitespace-normal'
+          className='h-auto min-h-10 items-center gap-2 px-1 py-1 hover:bg-transparent active:bg-transparent [&>span:last-child]:overflow-visible [&>span:last-child]:whitespace-normal'
           asChild
         >
           <Link
@@ -22,7 +22,7 @@ export function AppTitle() {
             onClick={() => setOpenMobile(false)}
             className='text-start'
           >
-            <Logo className='size-10' alt='' />
+            <Logo className='size-8' alt='' />
             <span className='grid min-w-0'>
               <span className='truncate text-section leading-5 font-semibold'>
                 识途

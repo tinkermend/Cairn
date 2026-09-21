@@ -12,7 +12,10 @@ import {
 import {
   ACTIVE_RUN_STATUSES,
   COMPILER_VERSION,
-  hasAiSteps,
+  effectivePoliciesForSteps,
+  FACTORY_COMPILE_RESOLUTION,
+  resolutionCapabilitiesFromPlatform,
+  snapshotNeedsBrowserAi,
   canonicalJson,
   syncSha256,
   ScenarioValidationError,
@@ -56,6 +59,7 @@ import {
   type Step,
   type ModuleContent,
   type CompileContext,
+  type CompileResolutionContext,
 } from '@cairn/shared'
 import { recordAudit, type AuditActor } from '../audit/record.js'
 import { freezeMapDraftBindingsTx, reconcileMapDraftBindingsTx } from '../map/references.js'
@@ -70,6 +74,7 @@ import {
 import { badRequest, conflict, forbidden, isUniqueViolation, mapRestriction, notFound } from './errors.js'
 import { assertTargetPermission, lockConsoleAuthorization, targetScopeFor } from '../console/target-authorization.js'
 import { draftValidationSubject, saveValidationSubjectTx } from './validation.js'
+import { suiteReferenceBlockers, suitesReferencingScenario } from '../suites/suites.js'
 import { cursorFilter, paginateResults } from '../cursor.js'
 import {
   activeRunBlockers,
@@ -147,6 +152,24 @@ async function loadTargetContext(db: Db, targetId: string) {
 
 export type ScenarioCompileOptions = {
   executableTypes?: readonly string[]
+  resolution?: CompileResolutionContext
+}
+
+async function compileResolutionFromPlatform(db: Db, targetId?: string): Promise<CompileResolutionContext> {
+  const { minResolutionPolicy } = await import('@cairn/shared')
+  const { loadResolutionLayers } = await import('./resolution-layers.js')
+  const layers = await loadResolutionLayers(db, targetId)
+  const caps = resolutionCapabilitiesFromPlatform(layers.document)
+  const effectiveCeiling = minResolutionPolicy(caps.ceiling, layers.targetCeiling ?? 'ai_only')
+  return {
+    ...FACTORY_COMPILE_RESOLUTION,
+    ceiling: caps.ceiling,
+    default: caps.default,
+    targetCeiling: layers.targetCeiling,
+    targetPreference: layers.targetPreference,
+    aiRungAvailable: caps.aiRungAvailable && effectiveCeiling !== 'deterministic_only',
+    waitKindsAvailable: caps.waitKindsAvailable,
+  }
 }
 
 function compileDocument(
@@ -160,6 +183,11 @@ function compileDocument(
     mode,
     target,
     executableTypes: mode === 'save' ? undefined : options?.executableTypes,
+    resolution: {
+      ...FACTORY_COMPILE_RESOLUTION,
+      ...options?.resolution,
+      documentResolution: options?.resolution?.documentResolution ?? document.resolution,
+    },
     ...(outcomeManifest !== undefined ? { outcomeManifest } : {}),
   })
 }
@@ -180,6 +208,7 @@ function parseDocument(input: unknown): ScenarioDocument {
         schemaVersion: input.schemaVersion,
         inputs: input.inputs,
         steps: input.nodes.filter((node) => node.kind === 'step').map((node) => node.step),
+        ...(input.resolution ? { resolution: input.resolution } : {}),
       })
     }
     return parseScenarioDocument(input)
@@ -295,11 +324,19 @@ export async function expandWithLoader(
   }
   const { getOrCreatePlatformConfig } = await import('../platform-config/store.js')
   const platform = await getOrCreatePlatformConfig(db)
+  const resolution = await compileResolutionFromPlatform(db, targetId)
   return expandAuthoringDocument(doc, {
     targetId,
     mode,
     loadedModules,
-    compilerCtx,
+    compilerCtx: {
+      ...compilerCtx,
+      resolution: {
+        ...resolution,
+        ...compilerCtx?.resolution,
+        documentResolution: compilerCtx?.resolution?.documentResolution ?? doc.resolution,
+      },
+    },
     fallbackEnabled: platform.document.moduleFallback.enabled,
   })
 }
@@ -396,8 +433,12 @@ async function toDetailDto(
   )
   let compiled: CompileResult
   const hasModuleInvocations = authoringDoc.nodes.some((s) => s.kind === 'module')
+  const resolution = options?.resolution ?? (await compileResolutionFromPlatform(db, row.targetId))
+  const compileOptions = { ...options, resolution }
   if (hasModuleInvocations) {
-    const expansion = await expandWithLoader(db, row.targetId, authoringDoc, 'preview', true)
+    const expansion = await expandWithLoader(db, row.targetId, authoringDoc, 'preview', true, {
+      resolution,
+    })
     compiled = {
       ok: expansion.ok,
       definition: expansion.definition!,
@@ -411,12 +452,13 @@ async function toDetailDto(
       steps: authoringDoc.nodes
         .filter((s): s is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => s.kind === 'step')
         .map((s) => s.step),
+      ...(authoringDoc.resolution ? { resolution: authoringDoc.resolution } : {}),
     }
     compiled = compileDocument(
       legacyDoc,
       target,
       'release',
-      options,
+      compileOptions,
       deriveOutcomeManifest({ authoringDocument: authoringDoc }) ?? { entries: [] },
     )
   }
@@ -471,7 +513,7 @@ export async function listScenarios(
   actorId?: string,
 ): Promise<ScenarioListResponse> {
   const parsed = scenarioListQuerySchema.parse(query)
-  const { scenarioDrafts, scenarios } = schemaFor(db)
+  const { scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
   const limit = parsed.limit
   const filters: (SQL | undefined)[] = [
     await (await import('../console/target-authorization.js')).scopedTargetFilter(db, actorId, scenarios.targetId, 'workflow:read'),
@@ -504,20 +546,52 @@ export async function listScenarios(
     .orderBy(desc(scenarios.createdAt), desc(scenarios.id))
     .limit(limit + 1)
 
-  const scenarioIds = rows.map((r) => r.id)
+  const paginated = paginateResults(rows, limit)
+  const pageScenarioIds = paginated.items.map((r) => r.id)
+
+  let latestByScenario = new Map<string, typeof scenarioVersions.$inferSelect>()
+  if (pageScenarioIds.length > 0) {
+    const rankedVersions = db
+      .select({
+        id: scenarioVersions.id,
+        scenarioId: scenarioVersions.scenarioId,
+        rn: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${scenarioVersions.scenarioId} ORDER BY ${scenarioVersions.versionNo} DESC)`.as(
+          'rn',
+        ),
+      })
+      .from(scenarioVersions)
+      .where(
+        and(
+          inArray(scenarioVersions.scenarioId, pageScenarioIds),
+          eq(scenarioVersions.kind, 'published'),
+        ),
+      )
+      .as('ranked_versions')
+
+    const latestVersionRows = await db
+      .select({ version: scenarioVersions })
+      .from(scenarioVersions)
+      .innerJoin(
+        rankedVersions,
+        and(eq(scenarioVersions.id, rankedVersions.id), eq(rankedVersions.rn, 1)),
+      )
+
+    latestByScenario = new Map(latestVersionRows.map((r) => [r.version.scenarioId, r.version]))
+  }
+
   const drafts =
-    scenarioIds.length > 0
+    pageScenarioIds.length > 0
       ? await db
           .select()
           .from(scenarioDrafts)
-          .where(inArray(scenarioDrafts.scenarioId, scenarioIds))
+          .where(inArray(scenarioDrafts.scenarioId, pageScenarioIds))
       : []
   const draftById = new Map(drafts.map((draft) => [draft.scenarioId, draft]))
 
-  const paginated = paginateResults(rows, limit)
   const items: ScenarioDto[] = []
   for (const row of paginated.items) {
-    const latest = await latestPublishedVersion(db, row.id)
+    const latest = latestByScenario.get(row.id)
+    if (!latest) throw notFound('SCENARIO_VERSION_NOT_FOUND', '场景版本不存在')
     const draft = draftById.get(row.id)
     items.push(
       toScenarioDto(row, latest, draft ? isDraftDirty(draft.document, latest.definition) : false),
@@ -570,7 +644,10 @@ export async function createScenarioWithVersion(
   if (!target.exists) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
   if (target.status === 'disabled')
     throw conflict('TARGET_DISABLED', '目标系统已停用，不能新建场景')
-  const compiled = compileDocument(document, target, input.compileMode ?? 'release', input)
+  const compiled = compileDocument(document, target, input.compileMode ?? 'release', {
+    executableTypes: input.executableTypes,
+    resolution: await compileResolutionFromPlatform(db, input.targetId),
+  })
   if ((input.compileMode ?? 'release') === 'release') throwIfBlocked(compiled)
 
   const id = newId()
@@ -704,7 +781,12 @@ export async function appendScenarioVersion(
       )
       if (!current) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
       const target = await loadTargetContext(tx as unknown as Db, current.targetId)
-      throwIfBlocked(compileDocument(document, target, 'release', input))
+      throwIfBlocked(
+        compileDocument(document, target, 'release', {
+          executableTypes: input.executableTypes,
+          resolution: await compileResolutionFromPlatform(tx as unknown as Db, current.targetId),
+        }),
+      )
       const latest = await latestPublishedVersion(tx as unknown as Db, scenarioId)
       const versionNo = publishedVersionNo(latest) + 1
       const versionId = newId()
@@ -793,7 +875,9 @@ export async function saveScenarioDraft(
             .filter((s): s is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => s.kind === 'step')
             .map((s) => s.step),
         }
-        compileDocument(legacyDoc, target, 'save')
+        compileDocument(legacyDoc, target, 'save', {
+          resolution: await compileResolutionFromPlatform(tx as unknown as Db, current.targetId),
+        })
         savedDoc = legacyDoc
       }
       await reconcileMapDraftBindingsTx(tx as unknown as Db, {
@@ -869,7 +953,13 @@ export async function publishScenarioDraft(
           expandResult.definition!,
           target,
           'release',
-          input,
+          {
+            executableTypes: input.executableTypes,
+            resolution: {
+              ...(await compileResolutionFromPlatform(tx as unknown as Db, current.targetId)),
+              documentResolution: expandResult.definition?.resolution,
+            },
+          },
           expandResult.outcomeManifest ?? { entries: [] },
         ),
       )
@@ -975,12 +1065,19 @@ export async function prepareTrialVersion(
           diagnostics: expandResult.diagnostics,
         })
       }
+      const trialResolution = await compileResolutionFromPlatform(tx as unknown as Db, current.targetId)
       const compiled = throwIfBlocked(
         compileDocument(
           expandResult.definition!,
           target,
           'release',
-          input,
+          {
+            executableTypes: input.executableTypes,
+            resolution: {
+              ...trialResolution,
+              documentResolution: expandResult.definition?.resolution,
+            },
+          },
           expandResult.outcomeManifest ?? { entries: [] },
         ),
       )
@@ -990,9 +1087,19 @@ export async function prepareTrialVersion(
         if (error instanceof ScenarioValidationError) throw badRequest(error.code, error.message)
         throw error
       }
-      if (hasAiSteps(compiled.definition.steps)) {
+      const { getOrCreatePlatformConfig } = await import('../platform-config/store.js')
+      const platform = await getOrCreatePlatformConfig(tx as unknown as Db)
+      const effective = effectivePoliciesForSteps(
+        compiled.definition.steps,
+        {
+          ...trialResolution,
+          documentResolution: compiled.definition.resolution,
+        },
+        platform.document.browserAi.enabled,
+      )
+      if (snapshotNeedsBrowserAi(compiled.definition.steps, effective)) {
         const scope = await targetScopeFor(tx as unknown as Db, input.actor.id, 'ai:execute')
-        if (!scope.all && !scope.ids.includes(current.targetId)) throw forbidden('AI_EXECUTE_FORBIDDEN', '缺少 ai:execute，不能运行含 AI 步骤的场景')
+        if (!scope.all && !scope.ids.includes(current.targetId)) throw forbidden('AI_EXECUTE_FORBIDDEN', '缺少 ai:execute，不能运行含 AI 步骤或 AI 解析档位的场景')
       }
       const validationDigest = await draftValidationSubject(tx as unknown as Db, current.targetId, scenarioId, authoringDoc, expandResult)
       const digest = syncSha256(canonicalJson({ protocolVersion: 'trialSourceDigest@2', sourceDigest: expandResult.sourceDigest, validationSubjectDigest: validationDigest }))
@@ -1084,14 +1191,18 @@ export async function previewDeleteScenario(
     .where(and(eq(runs.scenarioId, scenarioId), isNull(runs.deletedAt)))
 
   const activeRuns = scenarioRuns.filter((r) => ACTIVE_RUN_STATUSES.includes(r.status as any))
-  const activeBlockers = activeRunBlockers(activeRuns)
+  const referenced = await suitesReferencingScenario(db, {
+    targetId: current.targetId,
+    scenarioId,
+  })
 
   return deletePreviewResponseSchema.parse({
     previewToken: newId(),
     counts: {
       runs: scenarioRuns.length,
+      suites: referenced.length,
     },
-    blockers: activeBlockers,
+    blockers: [...activeRunBlockers(activeRuns), ...suiteReferenceBlockers(referenced)],
   })
 }
 
@@ -1126,6 +1237,13 @@ export async function deleteScenario(
         .limit(1)
       if (activeRuns.length > 0) {
         throw conflict('RUN_NOT_TERMINAL', '该场景存在运行中的任务，请先等待完成或取消')
+      }
+      const referenced = await suitesReferencingScenario(tx as unknown as Db, {
+        targetId: current.targetId,
+        scenarioId,
+      })
+      if (referenced.length > 0) {
+        throw conflict('SCENARIO_IN_SUITE', suiteReferenceBlockers(referenced)[0]!.message)
       }
       await assertResourceIdle(tx as unknown as Db, { scenarioId })
       const [runCount] = await tx

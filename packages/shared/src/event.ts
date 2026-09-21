@@ -65,11 +65,27 @@ export const persistedRunEventSchema = eventEnvelopeSchema.extend({
 })
 export type PersistedRunEvent = z.infer<typeof persistedRunEventSchema>
 
-export const changeHintSchema = z.strictObject({
-  namespace: z.string().min(1).max(64),
-  runId: entityIdSchema,
-  eventSeq: z.number().int().nonnegative(),
-})
+export const CHANGE_HINT_OBJECT_TYPES = ['run', 'suite_run', 'analysis_job', 'schedule'] as const
+export type ChangeHintObjectType = (typeof CHANGE_HINT_OBJECT_TYPES)[number]
+export const changeHintObjectTypeSchema = z.enum(CHANGE_HINT_OBJECT_TYPES)
+
+export const changeHintSchema = z
+  .strictObject({
+    namespace: z.string().min(1).max(64),
+    eventSeq: z.number().int().nonnegative(),
+    runId: entityIdSchema.optional(),
+    objectType: changeHintObjectTypeSchema.optional(),
+    objectId: entityIdSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const objectType = value.objectType ?? 'run'
+    if (objectType === 'run' && !value.runId && !value.objectId) {
+      ctx.addIssue({ code: 'custom', path: ['runId'], message: '运行提示须有 runId' })
+    }
+    if (objectType !== 'run' && !value.objectId) {
+      ctx.addIssue({ code: 'custom', path: ['objectId'], message: '非运行提示须有 objectId' })
+    }
+  })
 export type ChangeHint = z.infer<typeof changeHintSchema>
 
 const RUN_EVENT_CURSOR = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(\d+)$/i

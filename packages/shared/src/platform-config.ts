@@ -13,6 +13,11 @@ import {
 } from './evidence-policy.js'
 import { nextCursorSchema } from './rbac.js'
 import { DEFAULT_RETRY_LIMIT, DEFAULT_STEP_TIMEOUT_MS, resolveStepPolicy } from './policy.js'
+import {
+  FACTORY_RESOLUTION_CEILING,
+  FACTORY_RESOLUTION_DEFAULT,
+  resolutionPolicySchema,
+} from './resolution-policy.js'
 import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
 import {
   DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
@@ -56,7 +61,7 @@ import {
 import { FACTORY_ALERTING, alertRuleSchema, credentialMaintenanceAlertingSchema } from './alerting.js'
 import { FACTORY_NOTIFICATIONS, platformNotificationsSchema } from './notifications.js'
 
-export const PLATFORM_CONFIG_SCHEMA_VERSION = 2 as const
+export const PLATFORM_CONFIG_SCHEMA_VERSION = 4 as const
 /** 仍能被本版本读取的最早文档版本。低于它的存量文档必须先跑数据迁移。 */
 export const PLATFORM_CONFIG_MIN_SCHEMA_VERSION = 1 as const
 export const PLATFORM_CONFIG_SCHEMA_UNSUPPORTED = 'PLATFORM_CONFIG_SCHEMA_UNSUPPORTED' as const
@@ -173,6 +178,18 @@ export const platformEvidenceDefaultsSchema = z.strictObject({
 })
 export type PlatformEvidenceDefaults = z.infer<typeof platformEvidenceDefaultsSchema>
 
+const emptyToUndefined = (value: unknown) =>
+  value === '' || value === null ? undefined : value
+
+const resolutionCeilingSchema = z.preprocess(
+  emptyToUndefined,
+  resolutionPolicySchema.default(FACTORY_RESOLUTION_CEILING),
+)
+const resolutionDefaultSchema = z.preprocess(
+  emptyToUndefined,
+  resolutionPolicySchema.default(FACTORY_RESOLUTION_DEFAULT),
+)
+
 const platformBrowserAiShape = {
   enabled: z.boolean(),
   baseUrl: platformModelUrlSchema.optional(),
@@ -182,16 +199,34 @@ const platformBrowserAiShape = {
   requestTimeoutMs: z.number().int().positive().max(300_000),
   stepMaxCalls: z.number().int().positive().max(200),
   maxOutputTokens: z.number().int().positive().max(32_768),
+  resolutionCeiling: resolutionCeilingSchema,
+  defaultResolution: resolutionDefaultSchema,
+  preferAriaTree: z.boolean().default(false).optional(),
 }
 
 export const platformBrowserAiConfigSchema = z.strictObject(platformBrowserAiShape)
 export type PlatformBrowserAiConfig = z.infer<typeof platformBrowserAiConfigSchema>
 
 export const PLATFORM_AI_ROUTE_ID = 'platform-default' as const
+export const PLATFORM_AI_PROVIDERS = ['glm', 'deepseek', 'qwen', 'minimax'] as const
+export type PlatformAiProvider = (typeof PLATFORM_AI_PROVIDERS)[number]
+export const platformAiProviderSchema = z.enum(PLATFORM_AI_PROVIDERS)
+
+export const PLATFORM_AI_THINKING_MODES = ['off', 'on'] as const
+export type PlatformAiThinkingMode = (typeof PLATFORM_AI_THINKING_MODES)[number]
+export const platformAiThinkingModeSchema = z.enum(PLATFORM_AI_THINKING_MODES)
+
+export const PLATFORM_AI_THINKING_UNSUPPORTED_PROVIDERS = ['qwen', 'minimax'] as const
+export type PlatformAiThinkingUnsupportedProvider =
+  (typeof PLATFORM_AI_THINKING_UNSUPPORTED_PROVIDERS)[number]
+
+export const PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE = '启用识途助手或知识分析时必须选择模型提供商'
+export const PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE = '该提供商本期未开放思考模式'
 
 export const FACTORY_PLATFORM_AI = {
   enabled: false,
   routeId: PLATFORM_AI_ROUTE_ID,
+  thinkingMode: 'off',
   requestTimeoutMs: 20_000,
   turnTimeoutMs: 60_000,
   maxCallsPerTurn: 3,
@@ -204,9 +239,14 @@ export const platformAiConfigSchema = z
   .strictObject({
     enabled: z.boolean(),
     routeId: z.literal(PLATFORM_AI_ROUTE_ID).default(PLATFORM_AI_ROUTE_ID),
+    provider: z.preprocess(emptyToUndefined, platformAiProviderSchema.optional()),
     baseUrl: platformModelUrlSchema.optional(),
     model: z.string().trim().min(1).max(256).optional(),
     secretRef: secretRefSchema.optional(),
+    thinkingMode: z.preprocess(
+      emptyToUndefined,
+      platformAiThinkingModeSchema.default(FACTORY_PLATFORM_AI.thinkingMode),
+    ),
     requestTimeoutMs: z.number().int().positive().max(120_000),
     turnTimeoutMs: z.number().int().positive().max(180_000),
     maxCallsPerTurn: z.number().int().positive().max(8),
@@ -241,6 +281,15 @@ export const platformAiConfigSchema = z
     }
   })
 export type PlatformAiConfig = z.infer<typeof platformAiConfigSchema>
+
+export const analysisAiSchema = z.strictObject({
+  enabled: z.boolean().default(false),
+  requestTimeoutMs: z.number().int().min(1000).max(120_000).default(60_000),
+  maxOutputTokens: z.number().int().min(256).max(8192).default(2048),
+  maxConcurrentJobs: z.number().int().min(1).max(8).default(2),
+})
+export type AnalysisAiConfig = z.infer<typeof analysisAiSchema>
+const FACTORY_ANALYSIS_AI = analysisAiSchema.parse({ enabled: false })
 
 export const FACTORY_MODULE_RESOLVER = {
   maxCandidates: 10,
@@ -287,13 +336,18 @@ export const platformConfigDocumentSchema = z
     evidence: platformEvidenceDefaultsSchema,
     browserAi: platformBrowserAiConfigSchema,
     platformAi: platformAiConfigSchema.default(FACTORY_PLATFORM_AI),
+    analysisAi: analysisAiSchema.default(FACTORY_ANALYSIS_AI),
     sessionScheduling: platformSessionSchedulingSchema.default(FACTORY_SESSION_SCHEDULING),
     sessionAuth: platformSessionAuthSchema.default(FACTORY_SESSION_AUTH),
     sessionRetention: platformSessionRetentionSchema.default(FACTORY_SESSION_RETENTION),
     runAuthRecovery: platformRunAuthRecoverySchema.default(FACTORY_RUN_AUTH_RECOVERY),
     mapCapture: mapCapturePolicySchema.default(FACTORY_MAP_CAPTURE_POLICY),
     mapScheduledRefreshEnabled: z.boolean().default(false),
+    scenarioScheduledRunEnabled: z.boolean().default(false),
+    suiteScheduledRunEnabled: z.boolean().default(false),
+    knowledgeAnalysisEnabled: z.boolean().default(false),
     mapExplorationEnabled: z.boolean().default(false),
+    fixtureStepsEnabled: z.boolean().default(false),
     moduleResolver: platformModuleResolverSchema.default(FACTORY_MODULE_RESOLVER),
     moduleQuality: platformModuleQualitySchema.default(FACTORY_MODULE_QUALITY),
     moduleFallback: platformModuleFallbackSchema.default(FACTORY_MODULE_FALLBACK),
@@ -324,39 +378,52 @@ export const platformConfigDocumentSchema = z
         message: `须小于默认步骤超时 ${document.execution.defaultTimeoutMs}ms`,
       })
     }
-    if (!ai.enabled) return
-    if (!ai.baseUrl) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['browserAi', 'baseUrl'],
-        message: '启用浏览器仿真 AI 时必须配置服务地址',
-      })
+    if (ai.enabled) {
+      if (!ai.baseUrl) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['browserAi', 'baseUrl'],
+          message: '启用浏览器仿真 AI 时必须配置服务地址',
+        })
+      }
+      if (!ai.model) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['browserAi', 'model'],
+          message: '启用浏览器仿真 AI 时必须配置模型名',
+        })
+      }
+      if (!ai.modelFamily) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['browserAi', 'modelFamily'],
+          message: '启用浏览器仿真 AI 时必须配置模型族',
+        })
+      }
+      if (!ai.secretRef) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['browserAi', 'secretRef'],
+          message: '启用浏览器仿真 AI 时必须配置 Secret 引用',
+        })
+      }
     }
-    if (!ai.model) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['browserAi', 'model'],
-        message: '启用浏览器仿真 AI 时必须配置模型名',
-      })
-    }
-    if (!ai.modelFamily) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['browserAi', 'modelFamily'],
-        message: '启用浏览器仿真 AI 时必须配置模型族',
-      })
-    }
-    if (!ai.secretRef) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['browserAi', 'secretRef'],
-        message: '启用浏览器仿真 AI 时必须配置 Secret 引用',
-      })
+    if (document.analysisAi.enabled) {
+      if (!document.platformAi.baseUrl) {
+        ctx.addIssue({ code: 'custom', path: ['platformAi', 'baseUrl'], message: '启用知识分析须配置平台模型服务地址' })
+      }
+      if (!document.platformAi.model) {
+        ctx.addIssue({ code: 'custom', path: ['platformAi', 'model'], message: '启用知识分析须配置平台模型名' })
+      }
+      if (!document.platformAi.secretRef) {
+        ctx.addIssue({ code: 'custom', path: ['platformAi', 'secretRef'], message: '启用知识分析须配置平台模型密钥' })
+      }
     }
   })
 export type PlatformConfigDocument = z.infer<typeof platformConfigDocumentSchema>
 
 export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
+  analysisAi: FACTORY_ANALYSIS_AI,
   schemaVersion: PLATFORM_CONFIG_SCHEMA_VERSION,
   execution: {
     defaultTimeoutMs: DEFAULT_STEP_TIMEOUT_MS,
@@ -392,6 +459,9 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     requestTimeoutMs: 15_000,
     stepMaxCalls: 20,
     maxOutputTokens: 2048,
+    resolutionCeiling: FACTORY_RESOLUTION_CEILING,
+    defaultResolution: FACTORY_RESOLUTION_DEFAULT,
+    preferAriaTree: false,
   },
   platformAi: FACTORY_PLATFORM_AI,
   sessionScheduling: FACTORY_SESSION_SCHEDULING,
@@ -400,7 +470,11 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   runAuthRecovery: FACTORY_RUN_AUTH_RECOVERY,
   mapCapture: FACTORY_MAP_CAPTURE_POLICY,
   mapScheduledRefreshEnabled: false,
+  scenarioScheduledRunEnabled: false,
+  suiteScheduledRunEnabled: false,
+  knowledgeAnalysisEnabled: false,
   mapExplorationEnabled: false,
+  fixtureStepsEnabled: false,
   moduleResolver: FACTORY_MODULE_RESOLVER,
   moduleQuality: FACTORY_MODULE_QUALITY,
   moduleFallback: FACTORY_MODULE_FALLBACK,
@@ -417,19 +491,53 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
  */
 export type PlatformConfigUpgrade = (raw: Record<string, unknown>) => Record<string, unknown>
 
-const PLATFORM_CONFIG_UPGRADES = new Map<number, PlatformConfigUpgrade>([[1, raw => {
-  const alerting = (raw.alerting ?? FACTORY_ALERTING) as typeof FACTORY_ALERTING
-  const channels = (alerting.channels ?? []).map(c => ({
-    id: c.id, name: c.name, kind: 'webhook', enabled: c.enabled, allowAlerts: true, targetIds: [],
-    version: 1, secretRef: c.secretRef, host: c.urlHost, recipients: [],
-    format: 'legacy_alert@1', replay: 'manual_on_unknown',
-  }))
-  return {
-    ...raw, schemaVersion: 2,
-    alerting: { rules: alerting.rules, credentialMaintenance: alerting.credentialMaintenance ?? { enabled: false, channelIds: [] } },
-    notifications: { enabled: channels.some(c => c.enabled), consoleBaseUrl: '', smtp: null, channels },
-  }
-}]])
+const PLATFORM_CONFIG_UPGRADES = new Map<number, PlatformConfigUpgrade>([
+  [1, raw => {
+    const alerting = (raw.alerting ?? FACTORY_ALERTING) as typeof FACTORY_ALERTING
+    const channels = (alerting.channels ?? []).map(c => ({
+      id: c.id, name: c.name, kind: 'webhook', enabled: c.enabled, allowAlerts: true, targetIds: [],
+      version: 1, secretRef: c.secretRef, host: c.urlHost, recipients: [],
+      format: 'legacy_alert@1', replay: 'manual_on_unknown',
+    }))
+    return {
+      ...raw, schemaVersion: 2,
+      alerting: { rules: alerting.rules, credentialMaintenance: alerting.credentialMaintenance ?? { enabled: false, channelIds: [] } },
+      notifications: { enabled: channels.some(c => c.enabled), consoleBaseUrl: '', smtp: null, channels },
+    }
+  }],
+  [2, raw => {
+    const analysisAi = (raw.analysisAi ?? {}) as Record<string, unknown>
+    const { baseUrl: _b, model: _m, secretRef: _s, ...restAnalysis } = analysisAi
+    const platformAi = (raw.platformAi ?? {}) as Record<string, unknown>
+    return {
+      ...raw,
+      schemaVersion: 3,
+      platformAi: {
+        ...platformAi,
+        baseUrl: platformAi.baseUrl ?? _b,
+        model: platformAi.model ?? _m,
+        secretRef: platformAi.secretRef ?? _s,
+      },
+      analysisAi: {
+        enabled: restAnalysis.enabled ?? false,
+        requestTimeoutMs: restAnalysis.requestTimeoutMs ?? 60_000,
+        maxOutputTokens: restAnalysis.maxOutputTokens ?? 2048,
+        maxConcurrentJobs: restAnalysis.maxConcurrentJobs ?? 2,
+      },
+    }
+  }],
+  [3, raw => {
+    const platformAi = (raw.platformAi ?? {}) as Record<string, unknown>
+    return {
+      ...raw,
+      schemaVersion: 4,
+      platformAi: {
+        ...platformAi,
+        thinkingMode: platformAi.thinkingMode ?? FACTORY_PLATFORM_AI.thinkingMode,
+      },
+    }
+  }],
+])
 
 function schemaUnsupported(message: string): Error {
   return Object.assign(new Error(message), { code: PLATFORM_CONFIG_SCHEMA_UNSUPPORTED })
@@ -495,15 +603,41 @@ export type PlatformConfigCurrent = z.infer<typeof platformConfigCurrentSchema>
 
 export const platformConfigReasonSchema = z.string().trim().min(1, '请填写变更原因').max(512)
 
+export const platformConfigWriteDocumentSchema = platformConfigDocumentSchema.superRefine(
+  (document, ctx) => {
+    if ((document.platformAi.enabled || document.analysisAi.enabled) && !document.platformAi.provider) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['platformAi', 'provider'],
+        message: PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE,
+      })
+    }
+    if (
+      document.platformAi.thinkingMode === 'on' &&
+      document.platformAi.provider &&
+      (PLATFORM_AI_THINKING_UNSUPPORTED_PROVIDERS as readonly string[]).includes(
+        document.platformAi.provider,
+      )
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['platformAi', 'thinkingMode'],
+        message: PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE,
+      })
+    }
+  },
+)
+export type PlatformConfigWriteDocument = z.infer<typeof platformConfigWriteDocumentSchema>
+
 export const platformConfigUpdateBodySchema = z.strictObject({
   expectedRevision: z.number().int().positive(),
   reason: platformConfigReasonSchema,
-  document: platformConfigDocumentSchema,
+  document: platformConfigWriteDocumentSchema,
 })
 export type PlatformConfigUpdateBody = z.infer<typeof platformConfigUpdateBodySchema>
 
 export const platformConfigValidateBodySchema = z.strictObject({
-  document: platformConfigDocumentSchema,
+  document: platformConfigWriteDocumentSchema,
 })
 export type PlatformConfigValidateBody = z.infer<typeof platformConfigValidateBodySchema>
 
@@ -528,7 +662,8 @@ export type PlatformConfigSecretResponse = z.infer<typeof platformConfigSecretRe
 export const platformConfigTestConnectionBodySchema = z.strictObject({
   baseUrl: platformModelUrlSchema,
   model: z.string().trim().min(1).max(256),
-  modelFamily: z.string().trim().min(1).max(64),
+  modelFamily: z.string().trim().min(1).max(64).optional(),
+  provider: platformAiProviderSchema.optional(),
   secretRef: secretRefSchema.optional(),
 })
 export type PlatformConfigTestConnectionBody = z.infer<

@@ -220,7 +220,7 @@ describe.each(DRIVERS)('%s 报告完整交付', { timeout: 60_000 }, (driver) =>
     await completeExportJob(handle.db, { ...grant, artifactIds: [file.id], status: 'complete' })
     await handle.db.update(t.workers).set({ status: 'STOPPED' })
     await handle.db.update(t.runs).set({ status: 'CANCELLED', finishedAt: new Date(), evidenceStatus: 'COMPLETE' }).where(inArray(t.runs.status, ['QUEUED', 'RUNNING']))
-    const target = await openContractDb(driver === 'postgres' ? 'mysql' : 'postgres')
+    const target = await openContractDb(driver === 'postgres' ? 'mysql' : 'postgres', undefined, { pristine: true })
     try {
       const options = { writersStopped: true as const, allowMillisecondPrecisionLoss: true, verifyObject: async (object: { objectKey: string; byteSize: number; digest: string }) => { expect(object.objectKey).toBe(file.objectKey); expect(object.byteSize).toBe(bytes.length); expect(object.digest).toBe(digest) } }
       const archive = await exportDatabase(expose(handle), (handle as Awaited<ReturnType<typeof openContractDb>>).env, options)

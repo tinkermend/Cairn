@@ -49,6 +49,7 @@ export const targets = cairnSchema.table(
     captcha: jsonb('captcha').$type<TargetCaptchaDefinition>(),
     currentAuthProfileRevision: integer('current_auth_profile_revision'),
     sessionPolicy: jsonb('session_policy').$type<Record<string, unknown>>(),
+    resolutionPolicy: jsonb('resolution_policy').$type<Record<string, unknown>>(),
     sensitiveSelectors: jsonb('sensitive_selectors').$type<string[]>().notNull().default([]),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),

@@ -249,13 +249,21 @@ describe('地图消费服务', () => {
       notFound,
       { type: 'extract', target: extractStep.input.target, as: 'text' },
     )
-    expect(result).toEqual({ kind: 'replaced', result: { ok: true, output: { value: '单据' } } })
+    // 返回体带上 mapDecisionId：把这次替换执行关联到决策账本里的那条 selected 决策，可追溯。
+    expect(result).toEqual({
+      kind: 'replaced',
+      mapDecisionId: expect.any(String),
+      result: { ok: true, output: { value: '单据' } },
+    })
     expect(mocks.appendMapSelectionDecision).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         decision: expect.objectContaining({ decision: 'selected', reasonCode: 'FALLBACK_USED' }),
       }),
     )
+    // 返回的决策 id 就是写进账本的那一条，而不是另外生成的。
+    const written = mocks.appendMapSelectionDecision.mock.calls.at(-1)![1].decision.decisionId
+    expect((result as { mapDecisionId: string }).mapDecisionId).toBe(written)
     expect(browser.execute).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.objectContaining({ type: 'extract', target: descriptor, as: 'text', expectedTargetToken: found.ok ? found.resolvedTargetToken : undefined }),
@@ -368,7 +376,7 @@ describe('地图消费服务', () => {
       notFound,
       { type: 'extract', target: extractStep.input.target, as: 'text' },
     )
-    expect(result).toEqual({ kind: 'replaced', result: lost })
+    expect(result).toEqual({ kind: 'replaced', mapDecisionId: expect.any(String), result: lost })
     expect(browser.execute).toHaveBeenCalledTimes(2)
   })
 

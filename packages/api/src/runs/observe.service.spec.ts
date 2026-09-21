@@ -14,6 +14,7 @@ const otherRun = '77777777-7777-4777-8777-777777777777'
 
 const mocks = vi.hoisted(() => ({
   loadRunObservation: vi.fn(),
+  loadRunObservationProgress: vi.fn(),
   listRunEventsAfter: vi.fn(),
   listRunEventWatermarks: vi.fn(),
 }))
@@ -23,6 +24,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
   return {
     ...actual,
     loadRunObservation: mocks.loadRunObservation,
+    loadRunObservationProgress: mocks.loadRunObservationProgress,
     listRunEventsAfter: mocks.listRunEventsAfter,
     listRunEventWatermarks: mocks.listRunEventWatermarks,
   }
@@ -35,6 +37,15 @@ function observation(input: { status?: string; evidenceStatus?: string; eventSeq
       evidenceStatus: input.evidenceStatus ?? 'PENDING',
     },
     evidence: { items: [] },
+    eventSeq: input.eventSeq ?? 1,
+    earliestEventSeq: input.eventSeq && input.eventSeq > 0 ? 1 : 0,
+  }
+}
+
+function progress(input: { status?: string; evidenceStatus?: string; eventSeq?: number } = {}) {
+  return {
+    status: (input.status ?? 'QUEUED') as any,
+    evidenceStatus: (input.evidenceStatus ?? 'PENDING') as any,
     eventSeq: input.eventSeq ?? 1,
     earliestEventSeq: input.eventSeq && input.eventSeq > 0 ? 1 : 0,
   }
@@ -71,7 +82,12 @@ describe('ObserveService.stream', () => {
   let service: ObserveService
 
   beforeEach(async () => {
-    vi.clearAllMocks()
+    mocks.loadRunObservation.mockReset()
+    mocks.loadRunObservationProgress.mockReset()
+    mocks.listRunEventsAfter.mockReset()
+    mocks.listRunEventWatermarks.mockReset()
+    mocks.loadRunObservation.mockResolvedValue(observation())
+    mocks.loadRunObservationProgress.mockResolvedValue(progress())
     const moduleRef = await Test.createTestingModule({
       providers: [
         ObserveService,
@@ -279,6 +295,9 @@ describe('ObserveService.stream', () => {
     mocks.loadRunObservation.mockResolvedValue(
       observation({ status: 'SUCCEEDED', evidenceStatus: 'COMPLETE', eventSeq: 0 }),
     )
+    mocks.loadRunObservationProgress.mockResolvedValue(
+      progress({ status: 'SUCCEEDED', evidenceStatus: 'COMPLETE', eventSeq: 0 }),
+    )
     mocks.listRunEventsAfter.mockResolvedValue([])
     const res = mockResponse()
     await service.stream({
@@ -311,6 +330,7 @@ describe('ObserveService.stream', () => {
 
   it('运行已删除或不存在时结束流并说明运行不存在', async () => {
     mocks.loadRunObservation.mockResolvedValue(null)
+    mocks.loadRunObservationProgress.mockResolvedValue(null)
     const res = mockResponse()
     const controller = new AbortController()
     await service.stream({
@@ -329,6 +349,7 @@ describe('ObserveService.stream', () => {
 
   it('积压过大时 skip 到高水位并 reset', async () => {
     mocks.loadRunObservation.mockResolvedValue(observation({ eventSeq: 400 }))
+    mocks.loadRunObservationProgress.mockResolvedValue(progress({ eventSeq: 400 }))
     mocks.listRunEventsAfter.mockResolvedValue([])
     const res = mockResponse()
     const controller = new AbortController()
@@ -344,6 +365,71 @@ describe('ObserveService.stream', () => {
     expect(mocks.listRunEventsAfter).not.toHaveBeenCalled()
     controller.abort()
   })
+
+  it('全量观测只在初始化调用 1 次，随后 catch-up 走轻量 progress 并折叠并发 hint', async () => {
+    mocks.loadRunObservation.mockResolvedValue(observation({ eventSeq: 1 }))
+    mocks.listRunEventsAfter.mockResolvedValue([])
+    const res = mockResponse()
+    const controller = new AbortController()
+    const streamPromise = service.stream({
+      runId,
+      lastEventId: `${runId}:0`,
+      account: { id: 'acc', displayName: 't', email: null, status: 'active', roles: [], permissions: ['run:read'] },
+      response: res as never,
+      signal: controller.signal,
+    })
+    await streamPromise
+
+    // 初始化时仅调用 1 次全量 loadRunObservation
+    expect(mocks.loadRunObservation).toHaveBeenCalledTimes(1)
+    // catchUp 水位及终态判断调用轻量 loadRunObservationProgress
+    expect(mocks.loadRunObservationProgress).toHaveBeenCalled()
+    const initialProgressCalls = mocks.loadRunObservationProgress.mock.calls.length
+
+    // 模拟连续 5 个变化提示瞬时到达（在途合并）
+    ;(service as any).notify(runId, 2)
+    ;(service as any).notify(runId, 3)
+    ;(service as any).notify(runId, 4)
+    ;(service as any).notify(runId, 5)
+    ;(service as any).notify(runId, 6)
+
+    // 等待 microtasks/event loop 轮转
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // 全量 loadRunObservation 仍然保持 1 次，没有多余的全量查询
+    expect(mocks.loadRunObservation).toHaveBeenCalledTimes(1)
+    // 轻量 progress 被调用，5 次提示在途折叠为至多 2 轮 catchUp（4 次读），远少于未折叠时的 10 次
+    expect(mocks.loadRunObservationProgress.mock.calls.length).toBeLessThanOrEqual(initialProgressCalls + 4)
+    controller.abort()
+  })
+
+  it('catch-up 失败不产生未处理拒绝，在途提示的等待者被放行', async () => {
+    mocks.loadRunObservation.mockResolvedValue(observation({ eventSeq: 1 }))
+    mocks.listRunEventsAfter.mockResolvedValue([])
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    const res = mockResponse()
+    const controller = new AbortController()
+    await service.stream({
+      runId,
+      lastEventId: `${runId}:0`,
+      account: { id: 'acc', displayName: 't', email: null, status: 'active', roles: [], permissions: ['run:read'] },
+      response: res as never,
+      signal: controller.signal,
+    })
+
+    // 此后每轮 catch-up 都失败：第一条提示启动循环，第二条在途生成等待者
+    mocks.listRunEventsAfter.mockRejectedValue(new Error('db connection reset'))
+    ;(service as any).notify(runId, 2)
+    ;(service as any).notify(runId, 3)
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    process.off('unhandledRejection', onUnhandled)
+    expect(unhandled).toEqual([])
+    controller.abort()
+  })
+
 })
 
 describe('diagnoseRunEventCursor', () => {

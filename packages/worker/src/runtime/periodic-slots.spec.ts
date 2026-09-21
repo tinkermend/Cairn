@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { isPeriodicSlotName } from "@cairn/shared";
 import {
   drainWhileFull,
   periodicSlotErrorClass,
@@ -28,14 +29,14 @@ describe("周期槽位辅助", () => {
     expect(drain300).toHaveBeenCalledTimes(7);
   });
 
-  it("同 tick 回收先于告警投递", () => {
+  it("同 tick 回收先于告警评估与凭据提醒", () => {
     expect(
       sortReaperClaims([
         {
-          name: "monitor.alerts.deliver",
+          name: "credential.reminders",
           mode: "throttle",
           claimSeq: 1,
-          intervalMs: 15_000,
+          intervalMs: 60_000,
         },
         {
           name: "reaper.recovery",
@@ -44,28 +45,16 @@ describe("周期槽位辅助", () => {
           intervalMs: 15_000,
         },
         {
-          name: "credential.reminders",
-          mode: "throttle",
-          claimSeq: 3,
-          intervalMs: 15_000,
-        },
-        {
           name: "monitor.alerts.evaluate",
           mode: "single_flight",
-          claimSeq: 4,
+          claimSeq: 3,
           intervalMs: 15_000,
         },
         {
           name: "service.request_logs.purge",
           mode: "throttle",
-          claimSeq: 5,
+          claimSeq: 4,
           intervalMs: 86_400_000,
-        },
-        {
-          name: "service.webhooks.deliver",
-          mode: "throttle",
-          claimSeq: 6,
-          intervalMs: 15_000,
         },
       ]).map((item) => item.name),
     ).toEqual([
@@ -73,8 +62,6 @@ describe("周期槽位辅助", () => {
       "monitor.alerts.evaluate",
       "credential.reminders",
       "service.request_logs.purge",
-      "service.webhooks.deliver",
-      "monitor.alerts.deliver",
     ]);
   });
 
@@ -95,21 +82,18 @@ describe("周期槽位辅助", () => {
     });
   });
 
-  it("uses an independent persisted throttle slot for service Webhook delivery", () => {
-    expect(
-      reaperPeriodicSlotRequests({
-        owner: "worker:test",
-        reaperIntervalMs: 15_000,
-        reminderIntervalMs: 60_000,
-        serviceRequestLogPurgeIntervalMs: 86_400_000,
-        leaseTtlMs: 30_000,
-      }).find((request) => request.name === "service.webhooks.deliver"),
-    ).toEqual({
-      name: "service.webhooks.deliver",
-      mode: "throttle",
-      intervalMs: 15_000,
+  it("投递是逐条 CAS 领取的工作队列，不进周期槽位", () => {
+    const names = reaperPeriodicSlotRequests({
       owner: "worker:test",
-    });
+      reaperIntervalMs: 15_000,
+      reminderIntervalMs: 60_000,
+      serviceRequestLogPurgeIntervalMs: 86_400_000,
+      leaseTtlMs: 30_000,
+    }).map((request) => request.name) as string[];
+    expect(names).not.toContain("monitor.alerts.deliver");
+    expect(names).not.toContain("service.webhooks.deliver");
+    expect(isPeriodicSlotName("monitor.alerts.deliver")).toBe(false);
+    expect(isPeriodicSlotName("service.webhooks.deliver")).toBe(false);
   });
 
   it("错误类别不带消息", () => {

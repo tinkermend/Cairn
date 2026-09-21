@@ -111,14 +111,18 @@ export async function encodeAndPutRunVideo(
       finalFrame: recorder.finalFrame,
     }),
   })
-  await objects.putObjectEvidence({
-    runId: recorder.runId,
-    type: 'video',
-    artifactKey: writeEvidenceArtifactKey({ type: 'video' }),
-    body: encoded.bytes,
-    contentType: 'video/webm',
-    payload,
-  })
+  try {
+    await objects.putObjectEvidence({
+      runId: recorder.runId,
+      type: 'video',
+      artifactKey: writeEvidenceArtifactKey({ type: 'video' }),
+      filePath: encoded.path,
+      contentType: 'video/webm',
+      payload,
+    })
+  } finally {
+    await rm(encoded.path, { force: true }).catch(() => undefined)
+  }
 }
 
 export async function processRunVideoMediaClaim(

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { entityIdSchema, leaseExpiresAtSchema } from './wire.js'
 
-export const WORKER_STATUSES = ['READY', 'DRAINING', 'STOPPED', 'LOST'] as const
+export const WORKER_STATUSES = ['READY', 'DRAINING', 'STOPPED', 'LOST', 'DISABLED'] as const
 export type WorkerStatus = (typeof WORKER_STATUSES)[number]
 export const workerStatusSchema = z.enum(WORKER_STATUSES)
 
@@ -21,6 +21,8 @@ export const RUN_LEASE_ERROR_CODES = [
   'WORKER_ID_CONFLICT',
   'WORKER_PROTOCOL_UNSUPPORTED',
   'RUN_RECOVERY_EXHAUSTED',
+  'WORKER_HAS_ACTIVE_TASKS',
+  'WORKER_IS_ACTIVE',
 ] as const
 export type RunLeaseErrorCode = (typeof RUN_LEASE_ERROR_CODES)[number]
 export const runLeaseErrorCodeSchema = z.enum(RUN_LEASE_ERROR_CODES)

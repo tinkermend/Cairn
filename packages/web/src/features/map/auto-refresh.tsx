@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ScheduleDefinition, ScheduleSkipReason, ScheduleWeekday } from '@cairn/shared'
+import type {
+  ScheduleDefinition,
+  ScheduleSkipReason,
+  ScheduleWeekday,
+} from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { fetchMapJobPolicy, fetchMapSafeEntries } from '@/lib/map-api'
@@ -13,12 +17,14 @@ import {
   updateSchedule,
 } from '@/lib/schedules-api'
 import { fetchTargetAccounts } from '@/lib/targets-api'
-import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
+import { SKIP_LABELS } from '../schedules/labels'
+import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 
 const WEEKDAYS: { value: ScheduleWeekday; label: string }[] = [
   { value: 1, label: '周一' },
@@ -30,24 +36,6 @@ const WEEKDAYS: { value: ScheduleWeekday; label: string }[] = [
   { value: 7, label: '周日' },
 ]
 
-const SKIP_LABELS: Record<ScheduleSkipReason, string> = {
-  WINDOW_CLOSED: '错过窗口，不补跑',
-  DST_NONEXISTENT: '夏令时不存在该本地时间',
-  INVALID_RESOLVED_WINDOW: '解析后的窗口无效',
-  FACTORY_DISABLED: '平台尚未开放自动复查',
-  SCHEDULE_DISABLED: '计划已停用',
-  MANUAL_JOBS_DISABLED: '该目标尚未开放手工作业',
-  AUTH_PREPARATION_REQUIRED: '认证尚未准备',
-  SAFETY_BASIS_REQUIRED: '缺少安全进入依据',
-  NO_ELIGIBLE_ASSETS: '没有可纳入的资产',
-  COVERED_BY_RUN: '已被正式运行覆盖',
-  PERMISSION_REVOKED: '授权已被收回',
-  MAP_ACCOUNT_USAGE_REQUIRED: '账号已收回地图用途',
-  WORKER_UNAVAILABLE: '没有可执行的节点',
-  TARGET_PAUSED: '目标已停用',
-  ACTIVE_SLICE_EXISTS: '同目标已有进行中的地图作业',
-}
-
 function defaultDefinition(targetId: string): ScheduleDefinition {
   return {
     timezone: 'Asia/Shanghai',
@@ -55,6 +43,15 @@ function defaultDefinition(targetId: string): ScheduleDefinition {
     windowStart: '02:00',
     windowEnd: '03:00',
     misfire: 'skip',
+    timeRule: {
+      kind: 'calendar',
+      timezone: 'Asia/Shanghai',
+      weekdays: [1, 2, 3, 4, 5],
+      windows: [
+        { ruleId: 'default', windowStart: '02:00', windowEnd: '03:00' },
+      ],
+      misfire: 'skip',
+    },
     consumer: {
       type: 'map_refresh',
       targetId,
@@ -90,8 +87,9 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
   const [hydrated, setHydrated] = useState(false)
 
   const schedulesQuery = useQuery({
-    queryKey: ['schedules', targetId],
-    queryFn: () => fetchSchedules({ targetId, limit: 20 }),
+    queryKey: ['schedules', targetId, 'map_refresh'],
+    queryFn: () =>
+      fetchSchedules({ targetId, consumerKey: 'map_refresh', limit: 20 }),
     enabled: canRead,
   })
   const configQuery = useQuery({
@@ -111,13 +109,21 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
   })
   const accountsQuery = useQuery({
     queryKey: ['target', targetId, 'accounts', 'schedule'],
-    queryFn: () => fetchTargetAccounts(targetId, { status: 'active', limit: 50 }),
+    queryFn: () =>
+      fetchTargetAccounts(targetId, { status: 'active', limit: 50 }),
     enabled: canWrite,
   })
 
-  const schedule = schedulesQuery.data?.items[0]
+  const schedule = schedulesQuery.data?.items.find(
+    (item) => item.consumerKey === 'map_refresh'
+  )
   useEffect(() => {
-    if (!schedule || hydrated) return
+    if (
+      !schedule ||
+      hydrated ||
+      schedule.definition.consumer.type !== 'map_refresh'
+    )
+      return
     setTimezone(schedule.definition.timezone)
     setWeekdays(schedule.definition.weekdays)
     setWindowStart(schedule.definition.windowStart)
@@ -139,16 +145,30 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
         targetId,
         targetAccountId: accountId,
         entryId,
-        selectedAssetRefs: schedule?.definition.consumer.selectedAssetRefs ?? [],
+        selectedAssetRefs:
+          schedule?.definition.consumer.type === 'map_refresh'
+            ? schedule.definition.consumer.selectedAssetRefs
+            : [],
       },
     }),
-    [accountId, entryId, schedule, targetId, timezone, weekdays, windowEnd, windowStart],
+    [
+      accountId,
+      entryId,
+      schedule,
+      targetId,
+      timezone,
+      weekdays,
+      windowEnd,
+      windowStart,
+    ]
   )
 
   const previewMutation = useMutation({
     mutationFn: () => previewSchedule({ definition }),
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '预览窗口失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '预览窗口失败'
+      )
     },
   })
   const saveMutation = useMutation({
@@ -158,14 +178,20 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
         idempotencyKey: `refresh-${Date.now()}`,
         definition,
       }
-      return schedule ? updateSchedule(schedule.scheduleId, body) : createSchedule(body)
+      return schedule
+        ? updateSchedule(schedule.scheduleId, body)
+        : createSchedule(body)
     },
     onSuccess: (result) => {
-      toast.success(result.created ? '已保存自动复查计划' : '已更新自动复查计划')
+      toast.success(
+        result.created ? '已保存自动复查计划' : '已更新自动复查计划'
+      )
       void queryClient.invalidateQueries({ queryKey: ['schedules', targetId] })
     },
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '保存计划失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '保存计划失败'
+      )
     },
   })
   const enabledMutation = useMutation({
@@ -181,18 +207,23 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
       void queryClient.invalidateQueries({ queryKey: ['schedules', targetId] })
     },
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '更新启停失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '更新启停失败'
+      )
     },
   })
 
   if (!canRead) return null
 
-  const factoryOn = configQuery.data?.document.mapScheduledRefreshEnabled === true
+  const factoryOn =
+    configQuery.data?.document.mapScheduledRefreshEnabled === true
   const jobsOn = policyQuery.data?.policy.manualJobsEnabled === true
   const entries = entriesQuery.data?.items ?? []
   const accounts = mapCapableAccounts(accountsQuery.data?.items ?? [])
   const last = schedule?.lastOccurrence
-  const readyToSave = Boolean(accountId && entryId && weekdays.length && timezone.trim())
+  const readyToSave = Boolean(
+    accountId && entryId && weekdays.length && timezone.trim()
+  )
 
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
@@ -203,21 +234,29 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
       {schedulesQuery.isPending || configQuery.isPending ? (
         <p className='text-label text-muted-foreground'>自动复查计划加载中…</p>
       ) : schedulesQuery.isError ? (
-        <p className='text-label text-muted-foreground'>暂时无法读取自动复查计划。</p>
+        <p className='text-label text-muted-foreground'>
+          暂时无法读取自动复查计划。
+        </p>
       ) : (
         <>
           {!factoryOn ? (
             <Alert>
-              <AlertDescription>出厂关闭。即使保存或启用计划，也不会物化新窗口。</AlertDescription>
+              <AlertDescription>
+                出厂关闭。即使保存或启用计划，也不会物化新窗口。
+              </AlertDescription>
             </Alert>
           ) : null}
           {!jobsOn ? (
             <Alert>
-              <AlertDescription>该目标尚未开放手工地图作业，到期准入会被跳过。</AlertDescription>
+              <AlertDescription>
+                该目标尚未开放手工地图作业，到期准入会被跳过。
+              </AlertDescription>
             </Alert>
           ) : null}
           {entries.length === 0 ? (
-            <p className='text-label text-muted-foreground'>还没有安全进入路径，不能设置自动复查。</p>
+            <p className='text-label text-muted-foreground'>
+              还没有安全进入路径，不能设置自动复查。
+            </p>
           ) : null}
           {!schedule ? (
             <p className='text-body'>当前没有自动复查计划，默认关闭。</p>
@@ -225,13 +264,19 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
             <div className='space-y-1 text-body'>
               <p>当前：{schedule.enabled ? '计划已启用' : '计划已停用'}</p>
               <p className='text-label text-muted-foreground'>
-                下次窗口 {formatInstant(schedule.nextDueAt, schedule.definition.timezone)}
+                下次窗口{' '}
+                {formatInstant(
+                  schedule.nextDueAt,
+                  schedule.definition.timezone
+                )}
               </p>
               <p className='text-label text-muted-foreground'>
                 最近一次{' '}
                 {last
                   ? `${admissionLabel(last.admissionStatus, last.reason)}${
-                      last.firstRunId ? ` · 运行 ${last.firstRunId.slice(0, 8)}` : ''
+                      last.firstRunId
+                        ? ` · 运行 ${last.firstRunId.slice(0, 8)}`
+                        : ''
                     }`
                   : '还没有窗口'}
               </p>
@@ -252,7 +297,10 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
                 <legend className='text-label'>星期</legend>
                 <div className='flex flex-wrap gap-2'>
                   {WEEKDAYS.map((day) => (
-                    <label key={day.value} className='flex items-center gap-1 text-body'>
+                    <label
+                      key={day.value}
+                      className='flex items-center gap-1 text-body'
+                    >
                       <input
                         type='checkbox'
                         checked={weekdays.includes(day.value)}
@@ -260,7 +308,9 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
                           setWeekdays((current) =>
                             current.includes(day.value)
                               ? current.filter((item) => item !== day.value)
-                              : [...current, day.value].sort((left, right) => left - right),
+                              : [...current, day.value].sort(
+                                  (left, right) => left - right
+                                )
                           )
                         }
                       />
@@ -291,38 +341,43 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
               </div>
               <div className='space-y-2'>
                 <Label htmlFor='refresh-account'>目标账号</Label>
-                <select
+                <SelectField
                   id='refresh-account'
-                  className='flex h-10 w-full rounded-md border border-input bg-background px-3 text-body'
+                  className='w-full'
                   value={accountId}
-                  onChange={(event) => setAccountId(event.target.value)}
+                  onValueChange={(value) => setAccountId(value)}
                 >
-                  <option value=''>选择账号</option>
+                  <SelectFieldOption value=''>选择账号</SelectFieldOption>
                   {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
+                    <SelectFieldOption key={account.id} value={account.id}>
                       {account.displayName}
-                    </option>
+                    </SelectFieldOption>
                   ))}
-                </select>
+                </SelectField>
                 {accounts.length === 0 ? (
-                  <p className='text-label text-muted-foreground'>{MAP_ACCOUNT_REQUIRED}</p>
+                  <p className='text-label text-muted-foreground'>
+                    {MAP_ACCOUNT_REQUIRED}
+                  </p>
                 ) : null}
               </div>
               <div className='space-y-2'>
                 <Label htmlFor='refresh-entry'>进入路径</Label>
-                <select
+                <SelectField
                   id='refresh-entry'
-                  className='flex h-10 w-full rounded-md border border-input bg-background px-3 text-body'
+                  className='w-full'
                   value={entryId}
-                  onChange={(event) => setEntryId(event.target.value)}
+                  onValueChange={(value) => setEntryId(value)}
                 >
-                  <option value=''>选择路径</option>
+                  <SelectFieldOption value=''>选择路径</SelectFieldOption>
                   {entries.map((entry) => (
-                    <option key={entry.entryId} value={entry.entryId}>
+                    <SelectFieldOption
+                      key={entry.entryId}
+                      value={entry.entryId}
+                    >
                       {entry.name}
-                    </option>
+                    </SelectFieldOption>
                   ))}
-                </select>
+                </SelectField>
               </div>
               <div className='flex flex-wrap gap-2'>
                 <Button
@@ -332,7 +387,10 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
                 >
                   预览窗口
                 </Button>
-                <Button disabled={saveMutation.isPending || !readyToSave} onClick={() => saveMutation.mutate()}>
+                <Button
+                  disabled={saveMutation.isPending || !readyToSave}
+                  onClick={() => saveMutation.mutate()}
+                >
                   保存计划
                 </Button>
                 {schedule ? (
@@ -361,7 +419,9 @@ export function AutoRefreshCard({ targetId }: { targetId: string }) {
               ) : null}
             </div>
           ) : (
-            <p className='text-label text-muted-foreground'>需要调度写入和地图维护权限才能设置自动复查。</p>
+            <p className='text-label text-muted-foreground'>
+              需要调度写入和地图维护权限才能设置自动复查。
+            </p>
           )}
         </>
       )}

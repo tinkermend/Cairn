@@ -15,6 +15,7 @@ import {
   updateTargetAccountBodySchema,
   updateTargetBodySchema,
   targetSessionPolicyPatchSchema,
+  targetResolutionPolicyPatchSchema,
   type CreateTargetAccountBody,
   type CreateTargetBody,
   type ObserveAuthProfileValidationBody,
@@ -28,6 +29,7 @@ import {
   type UpdateTargetAccountBody,
   type UpdateTargetBody,
   type TargetSessionPolicyPatch,
+  type TargetResolutionPolicyPatch,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
@@ -132,6 +134,17 @@ export class TargetsController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.targets.updateSessionPolicy(targetId, body, actor)
+  }
+
+  @Post(':targetId/resolution-policy')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  updateResolutionPolicy(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(targetResolutionPolicyPatchSchema)) body: TargetResolutionPolicyPatch,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.updateResolutionPolicy(targetId, body, actor)
   }
 
   @Get(':targetId/auth-profile')

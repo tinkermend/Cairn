@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { and, eq, isNull } from 'drizzle-orm'
 import {
   MODULE_MANIFEST_PROTOCOL,
+  OUTCOME_MANIFEST_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
   type ModuleContent,
   type ScenarioAuthoringDocumentV2,
@@ -61,6 +62,15 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       name: 'V2引用夹具',
       entryUrl: 'https://example.com',
     })
+    const { consoleRoles, consoleAccountRoles } = schemaFor(handle.db)
+    const [admin] = await handle.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin')).limit(1)
+    if (admin) {
+      await handle.db.insert(consoleAccountRoles).values({
+        consoleAccountId: actorId,
+        consoleRoleId: admin.id,
+        targetScopeMode: 'all',
+      })
+    }
   })
 
   afterAll(async () => {
@@ -354,7 +364,7 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       capacity: 2,
       maxSessions: 2,
       lostAfterSeconds: 60,
-      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL],
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL],
     })
 
     // 注册 Worker B：具备 MODULE_MANIFEST_PROTOCOL
@@ -366,7 +376,7 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       capacity: 2,
       maxSessions: 2,
       lostAfterSeconds: 60,
-      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, MODULE_MANIFEST_PROTOCOL],
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, MODULE_MANIFEST_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL],
     })
 
     // Worker A 领不到带有 moduleManifest 的 Run

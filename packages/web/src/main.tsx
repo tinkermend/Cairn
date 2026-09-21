@@ -27,7 +27,8 @@ const queryClient = new QueryClient({
         if (failureCount > 3 && import.meta.env.PROD) return false
 
         return !(
-          error instanceof ApiRequestError && [401, 403].includes(error.status)
+          error instanceof ApiRequestError &&
+          [401, 403, 404].includes(error.status)
         )
       },
       refetchOnWindowFocus: import.meta.env.PROD,

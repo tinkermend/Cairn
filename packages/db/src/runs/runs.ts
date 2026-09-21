@@ -19,13 +19,17 @@ import {
   deletePreviewResponseSchema,
   executionActorSchema,
   serviceAdmissionSchema,
-  ScenarioValidationError,
-  assertRunFromResolved,
+  unresolvedRunInputs,
+  unresolvedRunInputMessage,
   isFinishedRunStatus,
   redactJson,
   resolverDiagnosticsSchema,
   isHaltedRunStatus,
   FACTORY_PLATFORM_CONFIG,
+  FIXTURE_STEPS_DISABLED_CODE,
+  FIXTURE_STEPS_DISABLED_MESSAGE,
+  isFixtureStepType,
+  parseTargetResolutionPolicy,
   sessionPolicyOverrideSchema,
   idempotentRequestMatches,
   runDetailSchema,
@@ -36,6 +40,7 @@ import {
   authGateClosedError,
   computeContextVersion,
   type AiExecutionConfig,
+  type AttemptDto,
   type CleanupStatus,
   type CleanupStatusResponse,
   type CreateRunBody,
@@ -181,7 +186,24 @@ export async function listRuns(
 
   const rows = await db
     .select({
-      run: runs,
+      id: runs.id,
+      targetId: runs.targetId,
+      scenarioId: runs.scenarioId,
+      scenarioVersionId: runs.scenarioVersionId,
+      targetAccountId: runs.targetAccountId,
+      serviceCallerId: runs.serviceCallerId,
+      serviceCredentialId: runs.serviceCredentialId,
+      status: runs.status,
+      outcomeStatus: runs.outcomeStatus,
+      evidenceStatus: runs.evidenceStatus,
+      debugMode: runs.debugMode,
+      executionOrigin: runs.executionOrigin,
+      suiteRunId: runs.suiteRunId,
+      suiteMemberId: runs.suiteMemberId,
+      cancelRequestedAt: runs.cancelRequestedAt,
+      startedAt: runs.startedAt,
+      finishedAt: runs.finishedAt,
+      createdAt: runs.createdAt,
       scenarioName: scenarios.name,
       targetName: targets.name,
       targetAccountName: targetAccounts.displayName,
@@ -201,63 +223,45 @@ export async function listRuns(
 
   const leases = await listActiveLeasesByRunIds(
     db,
-    rows.map((row) => row.run.id),
+    rows.map((row) => row.id),
   )
 
-  const paginated = paginateResults(
-    rows.map((r) => ({
-      ...r,
-      id: r.run.id,
-      createdAt: r.run.createdAt,
-    })),
-    limit,
-  )
+  const paginated = paginateResults(rows, limit)
 
   return runListResponseSchema.parse({
-    items: paginated.items.map(
-      ({
-        run: row,
-        scenarioName,
-        targetName,
-        targetAccountName,
-        scenarioVersionKind,
-        scenarioDeletedAt,
-        targetDeletedAt,
-        targetAccountDeletedAt,
-      }) => ({
-        source: row.serviceCallerId
-          ? {
-              kind: 'service',
-              callerId: row.serviceCallerId,
-              credentialId: row.serviceCredentialId,
-            }
-          : { kind: 'console' },
-        id: row.id,
-        status: row.status,
-        outcomeStatus: row.outcomeStatus,
-        cancelRequested: row.cancelRequestedAt !== null,
-        targetId: row.targetId,
-        targetName,
-        targetDeleted: Boolean(targetDeletedAt),
-        targetAccountId: row.targetAccountId,
-        targetAccountName,
-        targetAccountDeleted: Boolean(targetAccountDeletedAt),
-        scenarioId: row.scenarioId,
-        scenarioName,
-        scenarioDeleted: Boolean(scenarioDeletedAt),
-        scenarioVersionId: row.scenarioVersionId,
-        scenarioVersionKind,
-        createdAt: row.createdAt.toISOString(),
-        startedAt: iso(row.startedAt),
-        finishedAt: iso(row.finishedAt),
-        evidenceStatus: row.evidenceStatus,
-        debugMode: row.debugMode ?? 'runThrough',
-        executionOrigin: row.executionOrigin ?? 'standalone',
-        suiteRunId: row.suiteRunId ?? null,
-        suiteMemberId: row.suiteMemberId ?? null,
-        lease: leases.get(row.id) ? { holderWorkerId: leases.get(row.id)!.holderWorkerId } : null,
-      }),
-    ),
+    items: paginated.items.map((row) => ({
+      source: row.serviceCallerId
+        ? {
+            kind: 'service',
+            callerId: row.serviceCallerId,
+            credentialId: row.serviceCredentialId,
+          }
+        : { kind: 'console' },
+      id: row.id,
+      status: row.status,
+      outcomeStatus: row.outcomeStatus,
+      cancelRequested: row.cancelRequestedAt !== null,
+      targetId: row.targetId,
+      targetName: row.targetName,
+      targetDeleted: Boolean(row.targetDeletedAt),
+      targetAccountId: row.targetAccountId,
+      targetAccountName: row.targetAccountName,
+      targetAccountDeleted: Boolean(row.targetAccountDeletedAt),
+      scenarioId: row.scenarioId,
+      scenarioName: row.scenarioName,
+      scenarioDeleted: Boolean(row.scenarioDeletedAt),
+      scenarioVersionId: row.scenarioVersionId,
+      scenarioVersionKind: row.scenarioVersionKind,
+      createdAt: row.createdAt.toISOString(),
+      startedAt: iso(row.startedAt),
+      finishedAt: iso(row.finishedAt),
+      evidenceStatus: row.evidenceStatus,
+      debugMode: row.debugMode ?? 'runThrough',
+      executionOrigin: row.executionOrigin ?? 'standalone',
+      suiteRunId: row.suiteRunId ?? null,
+      suiteMemberId: row.suiteMemberId ?? null,
+      lease: leases.get(row.id) ? { holderWorkerId: leases.get(row.id)!.holderWorkerId } : null,
+    })),
     nextCursor: paginated.nextCursor,
     hasMore: paginated.hasMore,
   })
@@ -367,6 +371,16 @@ export async function deleteRun(
         runId,
         `删除运行 ${runId.slice(0, 8)}：对象 ${Number(objectRow?.n ?? 0)}、${Number(objectRow?.bytes ?? 0)} 字节`,
       )
+      if (Number(objectRow?.n ?? 0) === 0) {
+        await recordAudit(
+          tx as unknown as Db,
+          actor,
+          'run.cleanup',
+          'run',
+          runId,
+          `运行附件清理完成 ${runId.slice(0, 8)}：无关联附件需清理`,
+        )
+      }
     })
   } catch (error) {
     throw mapRestriction(error) ?? error
@@ -669,6 +683,7 @@ export type CreateRunWithSnapshotInput = CreateRunBody & {
   suiteRunId?: string
   suiteMemberId?: string
   reportDefaults?: { profileId?: string; displayName?: string }
+  resolvedTargetAccountId?: string | null
 }
 
 export async function writeRunWithSnapshot(
@@ -701,16 +716,16 @@ export async function writeRunWithSnapshot(
     throw conflict('TARGET_DISABLED', '目标系统已停用，不能创建新运行')
 
   const runInput = input.input ?? {}
-  try {
-    assertRunFromResolved(version.definition.steps, runInput)
-  } catch (error) {
-    if (error instanceof ScenarioValidationError) {
-      throw badRequest(error.code, error.message)
-    }
-    throw error
+  // 缺键的 Run 建出来也只能跑到那一步才失败，白占一次会话和登录。
+  // 键列表随错误一起回给调用方：开放接口那侧没有控制台可看。
+  const unresolved = unresolvedRunInputs(version.definition.steps, runInput)
+  if (unresolved.length > 0) {
+    throw badRequest('SCENARIO_UNRESOLVED_REF', unresolvedRunInputMessage(unresolved[0]!), {
+      missingKeys: unresolved.map((item) => item.key),
+    })
   }
 
-  const targetAccountId = await resolveRunTargetAccountId(db, {
+  const targetAccountId = input.resolvedTargetAccountId !== undefined ? input.resolvedTargetAccountId ?? undefined : await resolveRunTargetAccountId(db, {
     targetId: scenario.targetId,
     requestedAccountId: input.targetAccountId,
   })
@@ -754,6 +769,17 @@ export async function writeRunWithSnapshot(
 
   const platform = await getPlatformConfig(db)
   const document = platform?.document ?? FACTORY_PLATFORM_CONFIG
+  // 夹具步不访问目标系统，跑出来的成败不是业务事实。闸门放在这里：
+  // 控制台、调度、场景集、开放服务与地图作业都经由本函数建 Run，不各拦一次。
+  if (!document.fixtureStepsEnabled) {
+    const fixture = version.definition.steps.find((step) => isFixtureStepType(step.type))
+    if (fixture) {
+      throw badRequest(FIXTURE_STEPS_DISABLED_CODE, FIXTURE_STEPS_DISABLED_MESSAGE, {
+        stepId: fixture.id,
+        stepType: fixture.type,
+      })
+    }
+  }
   const authVerification = await freezeAuthVerificationForRun(db, {
     targetId: scenario.targetId,
     targetAccountId,
@@ -812,6 +838,7 @@ export async function writeRunWithSnapshot(
   const now = new Date()
   let aiExecution = input.aiExecution
   try {
+    const targetResolution = parseTargetResolutionPolicy(target.resolutionPolicy)
     aiExecution = resolveAssembledAiExecution({
       steps: version.definition.steps,
       platformDocument: document,
@@ -819,6 +846,9 @@ export async function writeRunWithSnapshot(
       aiExecution: input.aiExecution,
       hangWaitMs: input.hangWaitMs,
       executionPolicyOverride: input.policy,
+      documentResolution: version.definition.resolution,
+      targetCeiling: targetResolution?.ceiling,
+      targetPreference: targetResolution?.preference,
     })
   } catch (error) {
     if (error instanceof AssembleRunSnapshotError) throw badRequest(error.code, error.message)
@@ -866,6 +896,7 @@ export async function writeRunWithSnapshot(
           executionPolicyOverride: input.policy,
           mapCapturePolicyOverride: input.mapCapturePolicy,
           mapJob: input.mapJob,
+          documentResolution: version.definition.resolution,
           target,
           platformDocument: document,
           platformRevision: platform?.revision,
@@ -1964,6 +1995,101 @@ export async function loadRunRow(db: Db, runId: string) {
   const { runs } = schemaFor(db)
   const [row] = await db.select().from(runs).where(eq(runs.id, runId)).limit(1)
   return row ?? null
+}
+
+export type RunLoopState = {
+  id: string
+  status: RunStatus
+  cancelRequestedAt: Date | null
+  debugMode: string | null
+  context: Record<string, JsonValue>
+  debugOverlay: DebugOverlay | null
+}
+
+export async function loadRunLoopState(db: Db, runId: string): Promise<RunLoopState | null> {
+  const { runs } = schemaFor(db)
+  const [row] = await db
+    .select({
+      id: runs.id,
+      status: runs.status,
+      cancelRequestedAt: runs.cancelRequestedAt,
+      debugMode: runs.debugMode,
+      context: runs.context,
+      debugOverlay: runs.debugOverlay,
+    })
+    .from(runs)
+    .where(eq(runs.id, runId))
+    .limit(1)
+  return (row as RunLoopState) ?? null
+}
+
+export type RunStepState = {
+  id: string
+  stepId: string
+  ordinal: number
+  status: StepRunStatus
+  attempts: Array<{
+    id: string
+    attemptNo: number
+    status: AttemptDto['status']
+    error: ExecutionError | null
+  }>
+}
+
+export async function loadRunStepStates(db: Db, runId: string): Promise<RunStepState[]> {
+  const { stepRuns, attempts } = schemaFor(db)
+  const stepRows = await db
+    .select({
+      id: stepRuns.id,
+      stepId: stepRuns.stepId,
+      ordinal: stepRuns.ordinal,
+      status: stepRuns.status,
+    })
+    .from(stepRuns)
+    .where(eq(stepRuns.runId, runId))
+    .orderBy(asc(stepRuns.ordinal))
+
+  if (stepRows.length === 0) return []
+
+  const attemptRows = await db
+    .select({
+      id: attempts.id,
+      stepRunId: attempts.stepRunId,
+      attemptNo: attempts.attemptNo,
+      status: attempts.status,
+      error: attempts.error,
+    })
+    .from(attempts)
+    .where(
+      inArray(
+        attempts.stepRunId,
+        stepRows.map((s) => s.id),
+      ),
+    )
+    .orderBy(asc(attempts.attemptNo))
+
+  const attemptsByStepRunId = new Map<string, typeof attemptRows>()
+  for (const attempt of attemptRows) {
+    let list = attemptsByStepRunId.get(attempt.stepRunId)
+    if (!list) {
+      list = []
+      attemptsByStepRunId.set(attempt.stepRunId, list)
+    }
+    list.push(attempt)
+  }
+
+  return stepRows.map((step) => ({
+    id: step.id,
+    stepId: step.stepId,
+    ordinal: step.ordinal,
+    status: step.status as StepRunStatus,
+    attempts: (attemptsByStepRunId.get(step.id) ?? []).map((a) => ({
+      id: a.id,
+      attemptNo: a.attemptNo,
+      status: a.status as AttemptDto['status'],
+      error: (a.error as ExecutionError | null) ?? null,
+    })),
+  }))
 }
 
 export type { ExecutionPolicy }

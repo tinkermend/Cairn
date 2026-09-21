@@ -4,8 +4,10 @@ import {
   type AssertExpect,
   type NumberCompareOp,
 } from '@cairn/shared'
+import { validateAriaSnapshotTemplate } from '@cairn/authoring'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Select,
   SelectContent,
@@ -24,6 +26,11 @@ export function AssertFields({
   disabled?: boolean
   onChange: (expect: AssertExpect) => void
 }) {
+  const validation =
+    expect.kind === 'aria_snapshot'
+      ? validateAriaSnapshotTemplate(expect.template)
+      : null
+
   return (
     <div className='space-y-3'>
       <div className='space-y-2'>
@@ -36,6 +43,8 @@ export function AssertFields({
             if (kind === 'exists' || kind === 'visible') onChange({ kind })
             else if (kind === 'text_equals' || kind === 'text_contains')
               onChange({ kind, value: '' })
+            else if (kind === 'aria_snapshot')
+              onChange({ kind, template: '' })
             else onChange({ kind: 'number_compare', op: 'eq', value: 0 })
           }}
         >
@@ -51,6 +60,34 @@ export function AssertFields({
           </SelectContent>
         </Select>
       </div>
+      {expect.kind === 'aria_snapshot' ? (
+        <div className='space-y-2'>
+          <div className='flex items-center justify-between'>
+            <Label htmlFor='assert-aria-template'>Aria 快照模板 (YAML)</Label>
+            <span className='text-label text-muted-foreground'>
+              {expect.template.length} / 16384 字符
+            </span>
+          </div>
+          <Textarea
+            id='assert-aria-template'
+            value={expect.template}
+            disabled={disabled}
+            placeholder={'- heading "标题" [level=1]\n- button "确认"'}
+            rows={6}
+            className='font-mono text-label leading-relaxed'
+            onChange={(event) =>
+              onChange({ ...expect, template: event.target.value.slice(0, 16384) })
+            }
+          />
+          {validation && !validation.valid && expect.template.trim().length > 0 ? (
+            <p className='text-label text-destructive'>{validation.error}</p>
+          ) : (
+            <p className='text-label text-muted-foreground'>
+              支持角色、无障碍名称与正则匹配（如 <code>- button /确认/</code>）。顶层必须以 <code>-</code> 开头。
+            </p>
+          )}
+        </div>
+      ) : null}
       {expect.kind === 'text_equals' || expect.kind === 'text_contains' ? (
         <div className='space-y-2'>
           <Label htmlFor='assert-value'>期望文本</Label>

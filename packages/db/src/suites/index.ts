@@ -7,6 +7,8 @@ export {
   softDeleteSuitesForTarget,
   publishSuite,
   saveSuiteDraft,
+  suiteReferenceBlockers,
+  suitesReferencingScenario,
   updateSuiteEnabled,
   validateSuite,
 } from './suites.js'

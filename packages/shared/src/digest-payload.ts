@@ -42,6 +42,7 @@ export function snapshotDigestPayload(snapshot: RunSnapshot): Record<string, unk
     ...(snapshot.runtimeInvariantManifest
       ? { runtimeInvariantManifest: snapshot.runtimeInvariantManifest }
       : {}),
+    ...(snapshot.resolution ? { resolution: snapshot.resolution } : {}),
   }
 }
 

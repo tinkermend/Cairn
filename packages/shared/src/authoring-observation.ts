@@ -129,12 +129,16 @@ export function normalizeAuthoringObservation(input: AuthoringObservationSubmit)
   const css = sanitized.filter((candidate) => candidate.by === 'css')
   const rest = sanitized.filter((candidate) => candidate.by !== 'css')
   const ordered = [...rest, ...css.slice(0, 1)].slice(0, 5)
+  const rawSemantic = input.target?.semantic?.trim()
+  const semantic =
+    rawSemantic && !isSensitiveLocatorHay(rawSemantic) ? rawSemantic.slice(0, 512) : undefined
   const target =
-    ordered.length > 0
+    ordered.length > 0 || semantic
       ? {
           framePath: (input.target?.framePath ?? []).slice(0, 4),
           candidates: ordered,
           ...(input.target?.anchor ? { anchor: input.target.anchor } : {}),
+          ...(semantic ? { semantic } : {}),
         }
       : undefined
   const outcome = target ? 'FOUND' : 'NOT_FOUND'

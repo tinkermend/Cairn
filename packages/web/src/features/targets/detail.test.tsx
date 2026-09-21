@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   deleteTarget: vi.fn(),
   deleteTargetAccount: vi.fn(),
   updateTargetSessionPolicy: vi.fn(),
+  updateTargetResolutionPolicy: vi.fn(),
   fetchSessionOverview: vi.fn(),
   fetchScenarios: vi.fn(),
 }))
@@ -153,7 +154,7 @@ describe('TargetDetailPage 账号列表', () => {
   it('账号表保留筛选入口，并把关键词交给服务端', async () => {
     const screen = await renderPage()
     await expect.element(screen.getByText('值班账号')).toBeInTheDocument()
-    await expect.element(screen.getByText('主动检测')).toBeInTheDocument()
+    await expect.element(screen.getByText('登录态检测')).toBeInTheDocument()
     await expect.element(screen.getByText('会话', { exact: true })).toBeInTheDocument()
     await expect.element(screen.getByText('未准备')).toBeInTheDocument()
     expect(document.body.innerText).not.toContain('旧模式')
@@ -195,16 +196,18 @@ describe('TargetDetailPage 账号列表', () => {
     await expect.element(screen.getByText(/清理失败/)).toBeInTheDocument()
   })
 
-  it('支持切换到关联场景与目标授权标签页', async () => {
+  it('支持切换到关联场景与访问范围标签页', async () => {
     const screen = await renderPage()
     await screen.getByRole('tab', { name: /关联场景/ }).click()
     await expect.element(screen.getByText('商城冒烟巡检')).toBeInTheDocument()
 
-    await screen.getByRole('tab', { name: /目标授权/ }).click()
+    await screen.getByRole('tab', { name: /访问范围/ }).click()
+    await expect.element(screen.getByText('目标解析')).toBeInTheDocument()
+    await expect.element(screen.getByLabelText('解析优先顺序')).toBeInTheDocument()
     await expect.element(screen.getByText(/已配置授权边界/)).toBeInTheDocument()
   })
 
-  it('无主动检测时不能选用认证保活', async () => {
+  it('无登录态检测时不能选用认证保活', async () => {
     const baseTarget = {
       id: TARGET_ID,
       name: '演示商城',
@@ -225,15 +228,15 @@ describe('TargetDetailPage 账号列表', () => {
       effectiveSessionPolicy: { ...DEFAULT_SESSION_POLICY, reclaim: body.reclaim },
     }))
     const screen = await renderPage()
-    await screen.getByRole('tab', { name: /主动检测/ }).click()
+    await screen.getByRole('tab', { name: /登录态检测/ }).click()
     await expect.element(screen.getByText('会话策略')).toBeInTheDocument()
-    await expect.element(screen.getByText(/未配置主动检测时不能选用认证保活/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/未配置登录态检测时不能选用认证保活/)).toBeInTheDocument()
     await screen.getByLabelText('回收模式').click()
     await expect.element(screen.getByRole('option', { name: '认证有效即保活' })).toBeDisabled()
     expect(mocks.updateTargetSessionPolicy).not.toHaveBeenCalled()
   })
 
-  it('已验收主动检测后可覆盖会话回收模式为认证保活', async () => {
+  it('已验收登录态检测后可覆盖会话回收模式为认证保活', async () => {
     const baseTarget = {
       id: TARGET_ID,
       name: '演示商城',
@@ -294,7 +297,7 @@ describe('TargetDetailPage 账号列表', () => {
       effectiveSessionPolicy: { ...DEFAULT_SESSION_POLICY, reclaim: body.reclaim },
     }))
     const screen = await renderPage()
-    await screen.getByRole('tab', { name: /主动检测/ }).click()
+    await screen.getByRole('tab', { name: /登录态检测/ }).click()
     await expect.element(screen.getByLabelText('回收模式')).toBeInTheDocument()
     await screen.getByLabelText('回收模式').click()
     await screen.getByRole('option', { name: '认证有效即保活' }).click()
@@ -330,7 +333,7 @@ describe('TargetDetailPage 账号列表', () => {
       }),
     )
     const screen = await renderPage()
-    await screen.getByRole('tab', { name: /主动检测/ }).click()
+    await screen.getByRole('tab', { name: /登录态检测/ }).click()
     await expect.element(screen.getByLabelText('失联处置')).toBeInTheDocument()
     await screen.getByLabelText('失联处置').click()
     await screen.getByRole('option', { name: '失联后自动让路' }).click()

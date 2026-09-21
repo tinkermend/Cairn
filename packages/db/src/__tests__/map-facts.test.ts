@@ -410,7 +410,7 @@ describe.each(DRIVERS)('%s 地图事实账本', { timeout: 60_000 }, (driver) =>
     expect(
       archive.tables.mapVerificationRefs?.some((row) => row.observationId === observed.id),
     ).toBe(true)
-    const replica = await openContractDb(driver, `map_imp_${Date.now().toString(36)}`)
+    const replica = await openContractDb(driver, `map_imp_${Date.now().toString(36)}`, { pristine: true })
     try {
       const imported = await importDatabase(expose(replica), replica.env, archive, transferOptions)
       expect(imported.counts.mapObservations).toBeGreaterThanOrEqual(1)

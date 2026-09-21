@@ -1,11 +1,13 @@
 import { CANDIDATE_GROUPS_PROTOCOL, MODULE_MANIFEST_PROTOCOL } from './authoring-document.js'
+import { RESOLUTION_PROTOCOL } from './resolution-policy.js'
 import { MAP_CONSUMPTION_PROTOCOL } from './map-consumption.js'
 import { MAP_EXPLORE_PROTOCOL } from './map-exploration.js'
 import { MAP_JOBS_PROTOCOL } from './map-jobs.js'
 import { IMPORTED_OUTCOME_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL } from './outcome.js'
 import { AI_ATOMIC_ACTIONS_PROTOCOL } from './step.js'
 import { RUNTIME_INVARIANT_MANIFEST_PROTOCOL } from './runtime-invariant.js'
-import { MAP_SCHEDULER_PROTOCOL } from './schedules.js'
+import { KNOWLEDGE_ANALYSIS_PROTOCOL } from './analysis-jobs.js'
+import { MAP_SCHEDULER_PROTOCOL, UNIFIED_SCHEDULER_PROTOCOL } from './schedules.js'
 import { SESSION_AUTH_RECOVERY_PROTOCOL } from './session-auth-recovery.js'
 import { SESSION_MAINTENANCE_PROTOCOL } from './session-maintenance.js'
 import { SESSION_OCCUPANCY_PROTOCOL } from './session-occupancy.js'
@@ -14,7 +16,7 @@ import { EXPORT_ARTIFACTS_PROTOCOL } from './reports.js'
 import { SERVICE_WEBHOOK_DELIVERY_PROTOCOL } from './service-webhooks.js'
 import { SUITE_ADMISSION_PROTOCOL, SUITE_SCHEDULER_PROTOCOL } from './suites.js'
 
-export const WORKER_ROLES = ['executor', 'scheduler', 'maintenance', 'all'] as const
+export const WORKER_ROLES = ['executor', 'scheduler', 'maintenance', 'analyst', 'all'] as const
 export type WorkerRole = (typeof WORKER_ROLES)[number]
 
 export const DEFAULT_WORKER_ROLES = 'all'
@@ -33,24 +35,29 @@ const PROTOCOL_ORDER = [
   MAP_EXPLORE_PROTOCOL,
   SUITE_ADMISSION_PROTOCOL,
   MAP_SCHEDULER_PROTOCOL,
+  UNIFIED_SCHEDULER_PROTOCOL,
   SUITE_SCHEDULER_PROTOCOL,
+  KNOWLEDGE_ANALYSIS_PROTOCOL,
   EXPORT_ARTIFACTS_PROTOCOL,
   OUTCOME_MANIFEST_PROTOCOL,
   AI_ATOMIC_ACTIONS_PROTOCOL,
   IMPORTED_OUTCOME_PROTOCOL,
   RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
+  RESOLUTION_PROTOCOL,
 ] as const
 
 export type WorkerRoleSet = {
   executor: boolean
   scheduler: boolean
   maintenance: boolean
+  analyst: boolean
 }
 
 export const ALL_WORKER_ROLES: WorkerRoleSet = {
   executor: true,
   scheduler: true,
   maintenance: true,
+  analyst: true,
 }
 
 export function parseWorkerRoles(raw: string | undefined): WorkerRoleSet {
@@ -65,20 +72,22 @@ export function parseWorkerRoles(raw: string | undefined): WorkerRoleSet {
     }
     return { ...ALL_WORKER_ROLES }
   }
-  const allowed = new Set(['executor', 'scheduler', 'maintenance'])
+  const allowed = new Set(['executor', 'scheduler', 'maintenance', 'analyst'])
   for (const token of tokens) {
     if (!allowed.has(token)) {
-      throw new Error(`CAIRN_WORKER_ROLES 只能是 all 或 executor,scheduler,maintenance 的组合，收到 ${raw}`)
+      throw new Error(`CAIRN_WORKER_ROLES 只能是 all 或 executor,scheduler,maintenance,analyst 的组合，收到 ${raw}`)
     }
   }
   return {
     executor: tokens.includes('executor'),
     scheduler: tokens.includes('scheduler'),
     maintenance: tokens.includes('maintenance'),
+    analyst: tokens.includes('analyst'),
   }
 }
 
-const SCHEDULER_PROTOCOLS = new Set<string>([MAP_SCHEDULER_PROTOCOL, SUITE_SCHEDULER_PROTOCOL])
+const SCHEDULER_PROTOCOLS = new Set<string>([MAP_SCHEDULER_PROTOCOL, UNIFIED_SCHEDULER_PROTOCOL, SUITE_SCHEDULER_PROTOCOL])
+const ANALYST_PROTOCOLS = new Set<string>([KNOWLEDGE_ANALYSIS_PROTOCOL])
 const MAINTENANCE_PROTOCOLS = new Set<string>([
   NOTIFICATION_WORKER_PROTOCOL,
   SERVICE_WEBHOOK_DELIVERY_PROTOCOL,
@@ -88,7 +97,9 @@ const OCCUPANCY_EXEMPT_PROTOCOLS = new Set<string>([
   NOTIFICATION_WORKER_PROTOCOL,
   SERVICE_WEBHOOK_DELIVERY_PROTOCOL,
   MAP_SCHEDULER_PROTOCOL,
+  UNIFIED_SCHEDULER_PROTOCOL,
   SUITE_SCHEDULER_PROTOCOL,
+  KNOWLEDGE_ANALYSIS_PROTOCOL,
   EXPORT_ARTIFACTS_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
 ])
@@ -99,7 +110,9 @@ export function protocolCapabilitiesForRoles(roles: WorkerRoleSet): string[] {
       ? roles.maintenance
       : SCHEDULER_PROTOCOLS.has(protocol)
         ? roles.scheduler
-        : roles.executor,
+        : ANALYST_PROTOCOLS.has(protocol)
+          ? roles.analyst
+          : roles.executor,
   )
 }
 

@@ -13,12 +13,13 @@ import {
 } from '@/lib/map-api'
 import { fetchPlatformConfig } from '@/lib/platform-config-api'
 import { fetchTargetAccounts } from '@/lib/targets-api'
-import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
+import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 
 export function ExplorationCard({ targetId }: { targetId: string }) {
   const canRead = useCan('map:read')
@@ -52,7 +53,8 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
   })
   const accountsQuery = useQuery({
     queryKey: ['target', targetId, 'accounts', 'explore'],
-    queryFn: () => fetchTargetAccounts(targetId, { status: 'active', limit: 50 }),
+    queryFn: () =>
+      fetchTargetAccounts(targetId, { status: 'active', limit: 50 }),
     enabled: canWrite,
   })
   const policyMutation = useMutation({
@@ -64,18 +66,28 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
         mode: policyQuery.data?.policy.mode ?? 'allowlist',
         modelEnabled: false,
         allowlist: origin.trim()
-          ? [{ origin: origin.trim(), ...(pathPrefix.trim() ? { pathPrefix: pathPrefix.trim() } : {}) }]
+          ? [
+              {
+                origin: origin.trim(),
+                ...(pathPrefix.trim() ? { pathPrefix: pathPrefix.trim() } : {}),
+              },
+            ]
           : (policyQuery.data?.policy.allowlist ?? []),
         seedRefs: policyQuery.data?.policy.seedRefs ?? [],
-        reason: reason.trim() || (exploreEnabled ? '开放有界探索' : '关闭有界探索'),
+        reason:
+          reason.trim() || (exploreEnabled ? '开放有界探索' : '关闭有界探索'),
       }),
     onSuccess: () => {
       toast.success('已更新探索政策')
       setReason('')
-      void queryClient.invalidateQueries({ queryKey: ['map', targetId, 'exploration-policy'] })
+      void queryClient.invalidateQueries({
+        queryKey: ['map', targetId, 'exploration-policy'],
+      })
     },
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '更新探索政策失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '更新探索政策失败'
+      )
     },
   })
   const entryMutation = useMutation({
@@ -96,16 +108,27 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
       setEntryUrl('')
       setArrivalName('')
       setSummary('')
-      void queryClient.invalidateQueries({ queryKey: ['map', targetId, 'safe-entries'] })
+      void queryClient.invalidateQueries({
+        queryKey: ['map', targetId, 'safe-entries'],
+      })
     },
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '登记进入路径失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '登记进入路径失败'
+      )
     },
   })
   const previewMutation = useMutation({
-    mutationFn: () => previewExploration(targetId, { targetAccountId: accountId, entryId, selectedAssetRefs: [] }),
+    mutationFn: () =>
+      previewExploration(targetId, {
+        targetAccountId: accountId,
+        entryId,
+        selectedAssetRefs: [],
+      }),
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '预览探索失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '预览探索失败'
+      )
     },
   })
   const createMutation = useMutation({
@@ -122,14 +145,18 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
       void queryClient.invalidateQueries({ queryKey: ['map', targetId] })
     },
     onError: (error) => {
-      toast.error(error instanceof ApiRequestError ? error.message : '创建探索作业失败')
+      toast.error(
+        error instanceof ApiRequestError ? error.message : '创建探索作业失败'
+      )
     },
   })
 
   if (!canRead) return null
   const factoryOn = configQuery.data?.document.mapExplorationEnabled === true
   const enabled = policyQuery.data?.policy.exploreEnabled === true
-  const entries = (entriesQuery.data?.items ?? []).filter((entry) => entry.jobKinds.includes('map_explore'))
+  const entries = (entriesQuery.data?.items ?? []).filter((entry) =>
+    entry.jobKinds.includes('map_explore')
+  )
   const accounts = mapCapableAccounts(accountsQuery.data?.items ?? [])
 
   return (
@@ -141,16 +168,20 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
       {policyQuery.isPending ? (
         <p className='text-label text-muted-foreground'>探索政策加载中…</p>
       ) : policyQuery.isError ? (
-        <p className='text-label text-muted-foreground'>暂时无法读取探索政策。</p>
+        <p className='text-label text-muted-foreground'>
+          暂时无法读取探索政策。
+        </p>
       ) : (
         <>
           <p className='text-body'>
-            当前：{factoryOn ? '平台已开放' : '平台关闭'} · {enabled ? '该目标已开放' : '该目标关闭'}
+            当前：{factoryOn ? '平台已开放' : '平台关闭'} ·{' '}
+            {enabled ? '该目标已开放' : '该目标关闭'}
           </p>
           {!factoryOn || !enabled ? (
             <Alert>
               <AlertDescription>
-                需要同时打开平台探索开关和本目标探索政策，并登记含 map_explore 的安全进入路径。
+                需要同时打开平台探索开关和本目标探索政策，并登记含 map_explore
+                的安全进入路径。
               </AlertDescription>
             </Alert>
           ) : null}
@@ -179,7 +210,9 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
                 onChange={(event) => setPathPrefix(event.target.value)}
                 placeholder='/orders'
               />
-              <p className='text-label text-muted-foreground'>`/orders` 含 `/orders/1`，不含 `/orders-admin`。</p>
+              <p className='text-label text-muted-foreground'>
+                `/orders` 含 `/orders/1`，不含 `/orders-admin`。
+              </p>
               <Button
                 disabled={policyMutation.isPending || !reason.trim()}
                 onClick={() => policyMutation.mutate(!enabled)}
@@ -189,7 +222,9 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
               <div className='space-y-2 border-t border-border-divider pt-3'>
                 <h3 className='text-body font-medium'>探索进入路径</h3>
                 {entries.length === 0 ? (
-                  <p className='text-label text-muted-foreground'>还没有适用于探索的安全进入路径。</p>
+                  <p className='text-label text-muted-foreground'>
+                    还没有适用于探索的安全进入路径。
+                  </p>
                 ) : (
                   <ul className='space-y-1 text-body'>
                     {entries.map((entry) => (
@@ -200,9 +235,17 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
                   </ul>
                 )}
                 <Label htmlFor='explore-entry-name'>路径名称</Label>
-                <Input id='explore-entry-name' value={entryName} onChange={(event) => setEntryName(event.target.value)} />
+                <Input
+                  id='explore-entry-name'
+                  value={entryName}
+                  onChange={(event) => setEntryName(event.target.value)}
+                />
                 <Label htmlFor='explore-entry-url'>进入 URL</Label>
-                <Input id='explore-entry-url' value={entryUrl} onChange={(event) => setEntryUrl(event.target.value)} />
+                <Input
+                  id='explore-entry-url'
+                  value={entryUrl}
+                  onChange={(event) => setEntryUrl(event.target.value)}
+                />
                 <Label htmlFor='explore-arrival-name'>到达断言</Label>
                 <Input
                   id='explore-arrival-name'
@@ -210,7 +253,11 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
                   onChange={(event) => setArrivalName(event.target.value)}
                 />
                 <Label htmlFor='explore-entry-summary'>安全依据</Label>
-                <Input id='explore-entry-summary' value={summary} onChange={(event) => setSummary(event.target.value)} />
+                <Input
+                  id='explore-entry-summary'
+                  value={summary}
+                  onChange={(event) => setSummary(event.target.value)}
+                />
                 <Button
                   disabled={
                     entryMutation.isPending ||
@@ -227,46 +274,59 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
               <div className='space-y-2 border-t border-border-divider pt-3'>
                 <h3 className='text-body font-medium'>手工触发</h3>
                 <Label htmlFor='explore-account'>目标账号</Label>
-                <select
+                <SelectField
                   id='explore-account'
-                  className='flex h-10 w-full rounded-md border border-input bg-background px-3 text-body'
+                  className='w-full'
                   value={accountId}
-                  onChange={(event) => setAccountId(event.target.value)}
+                  onValueChange={(value) => setAccountId(value)}
                 >
-                  <option value=''>选择账号</option>
+                  <SelectFieldOption value=''>选择账号</SelectFieldOption>
                   {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
+                    <SelectFieldOption key={account.id} value={account.id}>
                       {account.displayName}
-                    </option>
+                    </SelectFieldOption>
                   ))}
-                </select>
+                </SelectField>
                 {accounts.length === 0 ? (
-                  <p className='text-label text-muted-foreground'>{MAP_ACCOUNT_REQUIRED}</p>
+                  <p className='text-label text-muted-foreground'>
+                    {MAP_ACCOUNT_REQUIRED}
+                  </p>
                 ) : null}
                 <Label htmlFor='explore-entry'>进入路径</Label>
-                <select
+                <SelectField
                   id='explore-entry'
-                  className='flex h-10 w-full rounded-md border border-input bg-background px-3 text-body'
+                  className='w-full'
                   value={entryId}
-                  onChange={(event) => setEntryId(event.target.value)}
+                  onValueChange={(value) => setEntryId(value)}
                 >
-                  <option value=''>选择路径</option>
+                  <SelectFieldOption value=''>选择路径</SelectFieldOption>
                   {entries.map((entry) => (
-                    <option key={entry.entryId} value={entry.entryId}>
+                    <SelectFieldOption
+                      key={entry.entryId}
+                      value={entry.entryId}
+                    >
                       {entry.name}
-                    </option>
+                    </SelectFieldOption>
                   ))}
-                </select>
+                </SelectField>
                 <div className='flex flex-wrap gap-2'>
                   <Button
                     variant='outline'
-                    disabled={previewMutation.isPending || !accountId || !entryId}
+                    disabled={
+                      previewMutation.isPending || !accountId || !entryId
+                    }
                     onClick={() => previewMutation.mutate()}
                   >
                     预览探索范围
                   </Button>
                   <Button
-                    disabled={createMutation.isPending || !factoryOn || !enabled || !accountId || !entryId}
+                    disabled={
+                      createMutation.isPending ||
+                      !factoryOn ||
+                      !enabled ||
+                      !accountId ||
+                      !entryId
+                    }
                     onClick={() => createMutation.mutate()}
                   >
                     开始探索
@@ -276,7 +336,8 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
                   <ul className='space-y-1 text-label text-muted-foreground'>
                     {previewMutation.data.items.map((item) => (
                       <li key={`${item.name}:${item.reason}`}>
-                        {item.included ? '纳入' : '未纳入'} {item.name} · {item.reason}
+                        {item.included ? '纳入' : '未纳入'} {item.name} ·{' '}
+                        {item.reason}
                       </li>
                     ))}
                   </ul>
@@ -292,7 +353,9 @@ export function ExplorationCard({ targetId }: { targetId: string }) {
               </div>
             </div>
           ) : (
-            <p className='text-label text-muted-foreground'>需要探索和维护权限才能触发探索。</p>
+            <p className='text-label text-muted-foreground'>
+              需要探索和维护权限才能触发探索。
+            </p>
           )}
         </>
       )}

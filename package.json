@@ -46,6 +46,12 @@
     "clean": "./scripts/stack.sh clean",
     "ports:clean": "./scripts/stack.sh clean",
     "logs": "./scripts/stack.sh logs",
+    "dev:stack": "./scripts/dev.sh start",
+    "dev:stop": "./scripts/dev.sh stop",
+    "dev:restart": "./scripts/dev.sh restart",
+    "dev:status": "./scripts/dev.sh status",
+    "dev:clean": "./scripts/dev.sh clean",
+    "dev:logs": "./scripts/dev.sh logs",
     "test:sessions:e2e": "pnpm --filter @cairn/api... --filter @cairn/worker... build && node tests/session-management-e2e/run.mjs",
     "test:sessions:adversarial": "pnpm --filter @cairn/api... --filter @cairn/worker... build && node tests/session-management-e2e/adversarial.mjs"
   },

@@ -326,4 +326,14 @@ describe.each(DRIVERS)('%s 周期槽位原语', { timeout: 60_000 }, (driver) =>
     expect(executed).toBeLessThanOrEqual(cycles + 1)
     expect(executed).toBeGreaterThanOrEqual(cycles)
   })
+  it('超长 owner 截断到列宽，不让领取因 Data too long 失败', async () => {
+    const owner = `worker:${'x'.repeat(400)}`
+    const result = await claimDuePeriodicSlots(handle.db, [
+      { name: 'service.request_logs.purge', mode: 'throttle', intervalMs: 60_000, owner },
+    ])
+    expect(result.claimed).toHaveLength(1)
+    const [row] = await readPeriodicSlots(handle.db, ['service.request_logs.purge'])
+    expect(row?.lastOwner).toBe(owner.slice(0, 256))
+  })
+
 })

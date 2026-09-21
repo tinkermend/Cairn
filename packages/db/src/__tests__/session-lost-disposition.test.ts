@@ -4,7 +4,7 @@ import {
   SESSION_OCCUPANCY_PROTOCOL,
   type Step,
 } from '@cairn/shared'
-import { DRIVERS, openContractDb } from './contract-fixture.js'
+import { DRIVERS, openContractDb, grantAdminScope } from './contract-fixture.js'
 import { schemaFor } from '../native.js'
 import { newId } from '../id.js'
 import { enterAuthWaitForRun, forceGrantForRun, seedWorker } from './lease-harness.js'
@@ -42,7 +42,7 @@ describe.each(DRIVERS)('%s 失联处置策略', { timeout: 60_000 }, (driver) =>
 
   beforeAll(async () => {
     handle = await openContractDb(driver, `ld_${Date.now().toString(36)}`)
-    const { consoleAccounts, consoleRoles, consoleAccountRoles } = schemaFor(handle.db)
+    const { consoleAccounts } = schemaFor(handle.db)
     actorId = newId()
     await handle.db.insert(consoleAccounts).values({
       id: actorId,
@@ -50,9 +50,7 @@ describe.each(DRIVERS)('%s 失联处置策略', { timeout: 60_000 }, (driver) =>
       email: `ld-${actorId}@example.com`,
       status: 'active',
     })
-    const [admin] = await handle.db.select().from(consoleRoles).where(eq(consoleRoles.key, 'admin'))
-    if (!admin) throw new Error('missing admin role fixture')
-    await handle.db.insert(consoleAccountRoles).values({ consoleAccountId: actorId, consoleRoleId: admin.id })
+    await grantAdminScope(handle.db, actorId)
   })
 
   afterAll(async () => {

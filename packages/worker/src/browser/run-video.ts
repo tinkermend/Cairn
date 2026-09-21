@@ -1,7 +1,7 @@
 import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import jpeg from 'jpeg-js'
+import sharp from 'sharp'
 import {
   markEvidenceMissing,
   reserveObjectEvidence,
@@ -105,32 +105,39 @@ async function persistTimeline(recorder: RunVideoRecorder): Promise<void> {
   )
 }
 
-async function maskPasswordBoxes(
+export async function maskPasswordBoxes(
   jpegBytes: Buffer,
   boxes: { x: number; y: number; width: number; height: number }[],
   frameWidth: number,
   frameHeight: number,
 ): Promise<Buffer> {
   if (boxes.length === 0) return jpegBytes
-  const decoded = jpeg.decode(jpegBytes, { useTArray: true })
-  const scaleX = decoded.width / Math.max(1, frameWidth)
-  const scaleY = decoded.height / Math.max(1, frameHeight)
-  const data = decoded.data
-  for (const box of boxes) {
-    const left = Math.max(0, Math.floor(box.x * scaleX))
-    const top = Math.max(0, Math.floor(box.y * scaleY))
-    const right = Math.min(decoded.width, Math.ceil((box.x + box.width) * scaleX))
-    const bottom = Math.min(decoded.height, Math.ceil((box.y + box.height) * scaleY))
-    for (let y = top; y < bottom; y += 1) {
-      for (let x = left; x < right; x += 1) {
-        const offset = (y * decoded.width + x) * 4
-        data[offset] = 0
-        data[offset + 1] = 0
-        data[offset + 2] = 0
-      }
-    }
-  }
-  return Buffer.from(jpeg.encode({ data, width: decoded.width, height: decoded.height }, BROWSER_FRAME_QUALITY).data)
+  const image = sharp(jpegBytes)
+  const metadata = await image.metadata()
+  const width = metadata.width ?? frameWidth
+  const height = metadata.height ?? frameHeight
+  const scaleX = width / Math.max(1, frameWidth)
+  const scaleY = height / Math.max(1, frameHeight)
+
+  const rects = boxes
+    .map((box) => {
+      const left = Math.max(0, Math.floor(box.x * scaleX))
+      const top = Math.max(0, Math.floor(box.y * scaleY))
+      const rectWidth = Math.min(width - left, Math.max(0, Math.ceil((box.x + box.width) * scaleX) - left))
+      const rectHeight = Math.min(height - top, Math.max(0, Math.ceil((box.y + box.height) * scaleY) - top))
+      if (rectWidth <= 0 || rectHeight <= 0) return ''
+      return `<rect x="${left}" y="${top}" width="${rectWidth}" height="${rectHeight}" fill="#000000" />`
+    })
+    .filter(Boolean)
+    .join('')
+
+  if (!rects) return jpegBytes
+
+  const svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${rects}</svg>`
+  return image
+    .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+    .jpeg({ quality: BROWSER_FRAME_QUALITY })
+    .toBuffer()
 }
 
 export async function passwordBoxes(
@@ -297,7 +304,7 @@ function startHeartbeat(
         return
       }
     })
-  }, VIDEO_HEARTBEAT_INTERVAL_MS)
+  }, VIDEO_HEARTBEAT_INTERVAL_MS + Math.floor(Math.random() * 200))
 }
 
 function stopHeartbeat(recorder: RunVideoRecorder): void {

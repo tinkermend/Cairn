@@ -188,7 +188,7 @@ export function EvidencePage() {
     <Main className='flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden sm:gap-6'>
       <PageHeader
         className='shrink-0'
-        title='证据与报告'
+        title='结果与报告'
         description='跨运行查找截图、录像、Trace 与结构化证据，并查看报告与留存清理事实。此处只接受结构化筛选，不提供关键词检索。'
         actions={
           <Button

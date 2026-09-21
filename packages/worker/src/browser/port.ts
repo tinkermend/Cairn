@@ -130,6 +130,112 @@ export function createBrowserPort(manager: BrowserSessionManager, objects?: Obje
 
       return { ...result, screenshot, trace }
     },
+    async bindResolvedFromPoint(grant, input, signal) {
+      const { collectCrossCheckTexts, cssViewportPoint, inspectPointElement, RESOLVED_ATTRIBUTE, resolvedSelector } =
+        await import('./resolved-handle.js')
+      const scoped = await manager.withManagedPage(grant, undefined, async (page) => {
+        signal?.throwIfAborted()
+        const point = cssViewportPoint(input.center, input.dpr)
+        const inspected = await page.evaluate(
+          ({ x, y, token, attr }) => {
+            const doc = (globalThis as unknown as { document: any }).document
+            const el = doc?.elementFromPoint(x, y)
+            if (!el) return { ok: false as const, reason: 'AI_NOT_FOUND' as const }
+            if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+              return { ok: false as const, reason: 'FRAME_UNSUPPORTED' as const }
+            }
+            let ownText = ''
+            for (const node of el.childNodes) {
+              if (node.nodeType === 3) ownText += node.textContent ?? ''
+            }
+            const labelledBy = el.getAttribute('aria-labelledby')
+            const accessibleName = labelledBy
+              ? labelledBy
+                  .split(/\s+/)
+                  .map((id: string) => doc.getElementById(id)?.textContent?.trim())
+                  .filter((item: unknown): item is string => Boolean(item))
+                  .join(' ')
+              : ''
+            el.setAttribute(attr, token)
+            return {
+              ok: true as const,
+              tagName: el.tagName,
+              accessibleName,
+              ariaLabel: el.getAttribute('aria-label'),
+              title: el.getAttribute('title'),
+              placeholder: el.getAttribute('placeholder'),
+              ownText,
+              innerText: el.innerText ?? '',
+            }
+          },
+          { ...point, token: input.token, attr: RESOLVED_ATTRIBUTE },
+        )
+        if (!inspected.ok) return inspected
+        const checked = inspectPointElement({ element: { tagName: inspected.tagName } })
+        if (!checked.ok) return checked
+        const texts = collectCrossCheckTexts({
+          accessibleName: inspected.accessibleName,
+          ariaLabel: inspected.ariaLabel,
+          title: inspected.title,
+          placeholder: inspected.placeholder,
+          ownText: inspected.ownText,
+          innerText: inspected.innerText,
+          container: checked.container,
+        })
+        const count = await page.locator(resolvedSelector(input.token)).count()
+        if (count !== 1) {
+          await page
+            .evaluate(
+              ({ attr, token }) => {
+                const doc = (globalThis as unknown as { document: any }).document
+                doc?.querySelectorAll(`[${attr}="${token}"]`).forEach((node: any) => node.removeAttribute(attr))
+              },
+              { attr: RESOLVED_ATTRIBUTE, token: input.token },
+            )
+            .catch(() => undefined)
+          return { ok: false as const, reason: 'AI_AMBIGUOUS_POINT' as const }
+        }
+        const { generateCandidateFromElement } = await import('./reverse-locator.js')
+        const reverse = await generateCandidateFromElement(page, input.token).catch(() => undefined)
+        return {
+          ok: true as const,
+          tagName: checked.tagName,
+          texts,
+          suggestedCandidate: reverse?.candidate,
+        }
+      })
+      if (!scoped.ok) {
+        return { ok: false, reason: 'SURFACE_LOST', message: scoped.error.safeMessage }
+      }
+      if (!scoped.value.ok) {
+        const messages = {
+          AI_NOT_FOUND: 'AI 定位点没有对应到页面元素',
+          FRAME_UNSUPPORTED: 'AI 定位点落在 iframe，首期不支持',
+          AI_AMBIGUOUS_POINT: 'AI 定位点对应了多个元素',
+        }
+        return { ok: false, reason: scoped.value.reason, message: messages[scoped.value.reason] }
+      }
+      return {
+        ok: true,
+        texts: scoped.value.texts,
+        tagName: scoped.value.tagName,
+        suggestedCandidate: scoped.value.suggestedCandidate,
+      }
+    },
+    async clearResolved(grant, token) {
+      const { RESOLVED_ATTRIBUTE } = await import('./resolved-handle.js')
+      await manager.withManagedPage(grant, undefined, async (page) => {
+        await page
+          .evaluate(
+            ({ attr, value }) => {
+              const doc = (globalThis as unknown as { document: any }).document
+              doc?.querySelectorAll(`[${attr}="${value}"]`).forEach((node: any) => node.removeAttribute(attr))
+            },
+            { attr: RESOLVED_ATTRIBUTE, value: token },
+          )
+          .catch(() => undefined)
+      })
+    },
   }
 }
 

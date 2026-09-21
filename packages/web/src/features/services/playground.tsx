@@ -15,6 +15,7 @@ import {
   fetchServiceCredentialCatalog,
 } from '@/lib/services-api'
 import { Button } from '@/components/ui/button'
+import { SelectField, SelectFieldOption } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { EmptyState } from '@/components/empty-state'
@@ -335,73 +336,75 @@ export function ServicePlaygroundPanel({
       <section className='grid gap-4 rounded-lg border border-border-card bg-card p-4 sm:p-5 lg:grid-cols-3'>
         <label className='block space-y-2 text-small'>
           <span>服务凭据</span>
-          <select
-            className='h-10 w-full rounded-md border border-input bg-surface-control px-3 text-sm'
+          <SelectField
+            className='w-full'
             value={credentialId}
-            onChange={(event) => setCredentialId(event.target.value)}
+            onValueChange={(value) => setCredentialId(value)}
             disabled={catalog.isFetching}
           >
             {credentials.map((credential) => (
-              <option key={credential.id} value={credential.id}>
+              <SelectFieldOption key={credential.id} value={credential.id}>
                 {credential.name}
-              </option>
+              </SelectFieldOption>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label className='block space-y-2 text-small'>
           <span>目标系统</span>
-          <select
-            className='h-10 w-full rounded-md border border-input bg-surface-control px-3 text-sm'
+          <SelectField
+            className='w-full'
             value={targetId}
-            onChange={(event) => setTargetId(event.target.value)}
+            onValueChange={(value) => setTargetId(value)}
             disabled={!catalog.data?.items.length}
           >
             {catalog.data?.items.map((item) => (
-              <option key={item.targetId} value={item.targetId}>
+              <SelectFieldOption key={item.targetId} value={item.targetId}>
                 {item.targetName}
-              </option>
+              </SelectFieldOption>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label className='block space-y-2 text-small'>
           <span>已发布场景版本</span>
-          <select
-            className='h-10 w-full rounded-md border border-input bg-surface-control px-3 text-sm'
+          <SelectField
+            className='w-full'
             value={scenarioVersionId}
-            onChange={(event) => setScenarioVersionId(event.target.value)}
+            onValueChange={(value) => setScenarioVersionId(value)}
             disabled={!target?.scenarios.length}
           >
             {target?.scenarios.map((item) => (
-              <option key={item.versionId} value={item.versionId}>
+              <SelectFieldOption key={item.versionId} value={item.versionId}>
                 {item.name} · v{item.versionNo}
-              </option>
+              </SelectFieldOption>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label className='block space-y-2 text-small'>
           <span>目标账号</span>
-          <select
-            className='h-10 w-full rounded-md border border-input bg-surface-control px-3 text-sm'
-            value={accountId || '__anonymous__'}
-            onChange={(event) =>
-              setAccountId(
-                event.target.value === '__anonymous__' ? '' : event.target.value
-              )
+          <SelectField
+            className='w-full'
+            value={accountId || (target?.allowAnonymous ? '__anonymous__' : '')}
+            onValueChange={(value) =>
+              setAccountId(value === '__anonymous__' ? '' : value)
             }
-            disabled={!target}
+            disabled={
+              !target || (!target.accounts.length && !target.allowAnonymous)
+            }
           >
             {target?.accounts.map((account) => (
-              <option key={account.id} value={account.id}>
+              <SelectFieldOption key={account.id} value={account.id}>
                 {account.name}
-              </option>
+              </SelectFieldOption>
             ))}
             {target?.allowAnonymous ? (
-              <option value='__anonymous__'>不指定账号</option>
+              <SelectFieldOption value='__anonymous__'>
+                不指定账号
+              </SelectFieldOption>
             ) : null}
             {!target?.accounts.length && !target?.allowAnonymous ? (
-              <option value=''>没有可用账号</option>
+              <SelectFieldOption value=''>没有可用账号</SelectFieldOption>
             ) : null}
-          </select>
+          </SelectField>
         </label>
         {scenario ? (
           <div className='self-end text-small text-muted-foreground lg:col-span-2'>
@@ -437,7 +440,7 @@ export function ServicePlaygroundPanel({
             </div>
             <Textarea
               aria-label='请求参数 JSON'
-              className='min-h-88 font-mono text-xs leading-5'
+              className='min-h-88 font-mono text-label leading-5'
               value={requestBody}
               onChange={(event) => setRequestBody(event.target.value)}
               spellCheck={false}
@@ -505,7 +508,7 @@ export function ServicePlaygroundPanel({
                 (language) => (
                   <TabsContent key={language} value={language}>
                     <div className='space-y-2'>
-                      <pre className='max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs leading-5 whitespace-pre-wrap'>
+                      <pre className='max-h-80 overflow-auto rounded-md bg-muted p-3 text-label leading-5 whitespace-pre-wrap'>
                         {buildServiceCodeSnippet({
                           language,
                           credentialId,
@@ -583,7 +586,7 @@ export function ServicePlaygroundPanel({
                   <summary className='cursor-pointer text-small font-medium'>
                     响应报文
                   </summary>
-                  <pre className='mt-2 max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs leading-5 whitespace-pre-wrap'>
+                  <pre className='mt-2 max-h-96 overflow-auto rounded-md bg-muted p-3 text-label leading-5 whitespace-pre-wrap'>
                     {JSON.stringify(response, null, 2)}
                   </pre>
                 </details>

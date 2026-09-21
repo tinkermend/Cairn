@@ -610,7 +610,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
     expect(archive.tables.actionModules).toHaveLength(1)
     expect(archive.tables.actionModuleVersions).toHaveLength(1)
     expect(archive.tables.actionModuleReceipts).toHaveLength(2)
-    const destination = await openContractDb('mysql'); handles.push(destination)
+    const destination = await openContractDb('mysql', undefined, { pristine: true }); handles.push(destination)
     const imported = expose(destination)
     await importDatabase(imported, destination.env, archive, options)
     expect(await api.publishActionModule(imported, created.id, pubBody)).toEqual(published)

@@ -1,29 +1,69 @@
-import { asc, eq } from 'drizzle-orm'
-import { runObservationSchema, type RunObservation } from '@cairn/shared'
+import { and, asc, eq, isNull } from 'drizzle-orm'
+import {
+  runObservationSchema,
+  type RunEvidenceStatus,
+  type RunObservation,
+  type RunStatus,
+} from '@cairn/shared'
 import type { Db } from '../client.js'
-import { lockRunRow } from '../leases/leases.js'
-import { atomic, schemaFor } from '../native.js'
+import { schemaFor } from '../native.js'
 import { toEvidenceMetadata } from '../objects/evidence-map.js'
 import { loadRunDetail } from '../runs/runs.js'
 import { earliestEventSeq } from './events.js'
 
-export async function loadRunObservation(db: Db, runId: string): Promise<RunObservation | null> {
-  return atomic(db, async (tx) => {
-    const locked = await lockRunRow(tx, runId)
-    if (!locked) return null
-    const run = await loadRunDetail(tx, runId)
-    if (!run) return null
-    const { evidences } = schemaFor(tx)
-    const rows = await tx
-      .select()
-      .from(evidences)
-      .where(eq(evidences.runId, runId))
-      .orderBy(asc(evidences.createdAt), asc(evidences.id))
-    return runObservationSchema.parse({
-      run,
-      evidence: { items: rows.map((row) => toEvidenceMetadata(row)) },
-      eventSeq: locked.eventSeq,
-      earliestEventSeq: await earliestEventSeq(tx, runId),
+export type RunObservationProgress = {
+  status: RunStatus
+  evidenceStatus: RunEvidenceStatus
+  eventSeq: number
+  earliestEventSeq: number
+}
+
+export async function loadRunObservationProgress(
+  db: Db,
+  runId: string,
+): Promise<RunObservationProgress | null> {
+  const { runs } = schemaFor(db)
+  const [row] = await db
+    .select({
+      status: runs.status,
+      evidenceStatus: runs.evidenceStatus,
+      eventSeq: runs.eventSeq,
     })
+    .from(runs)
+    .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+    .limit(1)
+  if (!row) return null
+  return {
+    status: row.status,
+    evidenceStatus: row.evidenceStatus,
+    eventSeq: row.eventSeq,
+    earliestEventSeq: await earliestEventSeq(db, runId),
+  }
+}
+
+export async function loadRunObservation(db: Db, runId: string): Promise<RunObservation | null> {
+  const { runs, evidences } = schemaFor(db)
+  const [runRow] = await db
+    .select({
+      id: runs.id,
+      eventSeq: runs.eventSeq,
+    })
+    .from(runs)
+    .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+    .limit(1)
+  if (!runRow) return null
+  const run = await loadRunDetail(db, runId)
+  if (!run) return null
+  const rows = await db
+    .select()
+    .from(evidences)
+    .where(eq(evidences.runId, runId))
+    .orderBy(asc(evidences.createdAt), asc(evidences.id))
+  return runObservationSchema.parse({
+    run,
+    evidence: { items: rows.map((row) => toEvidenceMetadata(row)) },
+    eventSeq: runRow.eventSeq,
+    earliestEventSeq: await earliestEventSeq(db, runId),
   })
 }
+

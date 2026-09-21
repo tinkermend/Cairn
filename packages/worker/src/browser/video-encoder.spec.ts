@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { spawn } from 'node:child_process'
 import jpeg from 'jpeg-js'
 import { computeRunVideoCoverage } from '@cairn/shared'
-import { encodeJpegDirectoryToWebm, encodeJpegFilesToWebm, isPlayableWebm } from './video-encoder.js'
+import { encodeJpegDirectoryToWebm, encodeJpegFilesToWebm, isPlayableWebm, isPlayableWebmFile } from './video-encoder.js'
 import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -86,7 +86,7 @@ describe('encodeJpegFilesToWebm', () => {
     })
     expect(encoded.decodedFrames).toBeGreaterThan(1)
     expect(Math.abs(encoded.decodedDurationMs - 43_200)).toBeLessThanOrEqual(1_000)
-    expect(encoded.bytes.byteLength).toBeGreaterThan(1_000)
+    expect(encoded.byteSize).toBeGreaterThan(1_000)
     const segments = (await readdir(dir)).filter((name) => name.startsWith('segment_') && name.endsWith('.webm'))
     expect(segments.length).toBeGreaterThan(1)
   }, 90_000)
@@ -144,7 +144,7 @@ describe('encodeJpegFilesToWebm', () => {
       expect(afterRecover).toContain(name)
     }
     expect(afterRecover).toContain('segment_000.webm')
-    expect(isPlayableWebm(encoded.bytes)).toBe(true)
+    expect(await isPlayableWebmFile(encoded.path)).toBe(true)
     expect(encoded.decodedFrames).toBeGreaterThanOrEqual(1)
 
     const coverage = computeRunVideoCoverage({

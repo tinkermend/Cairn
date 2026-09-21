@@ -39,6 +39,12 @@ describe('browser AI 控制面', () => {
     expect(capabilities.defaults.browserAiEnabled).toBe(false)
     expect(capabilities.defaults.execution.defaultTimeoutMs).toBe(30_000)
     expect(JSON.stringify(capabilities)).not.toMatch(/secretRef|model.example/)
+    expect(capabilities.resolution).toMatchObject({
+      ceiling: 'deterministic_only',
+      default: 'prefer_deterministic',
+      aiRungAvailable: false,
+    })
+    expect(capabilities.resolution?.waitKindsAvailable).not.toContain('semantic')
   })
 
   it('确定性步骤不要求 ai:execute', () => {
@@ -70,6 +76,23 @@ describe('browser AI 控制面', () => {
     expect(capabilities.executableStepTypes).toEqual(
       expect.arrayContaining(['ai_action', 'ai_extract', 'ai_assert']),
     )
+    // 夹具闸门与 AI 闸门相互独立：AI 开着不代表夹具步也开放。
+    expect(capabilities.executableStepTypes).not.toEqual(
+      expect.arrayContaining(['echo', 'delay', 'fail']),
+    )
+    expect(capabilities.unavailableReasons.map((item) => item.code)).toEqual([
+      'FIXTURE_STEPS_DISABLED',
+      'FIXTURE_STEPS_DISABLED',
+      'FIXTURE_STEPS_DISABLED',
+    ])
+  })
+
+  it('开放夹具后编写清单才出现 echo / delay / fail', () => {
+    const withFixtures = { ...enabled, fixtureStepsEnabled: true }
+    const capabilities = browserAiCapabilitiesFrom(withFixtures, 4)
+    expect(capabilities.executableStepTypes).toEqual(
+      expect.arrayContaining(['echo', 'delay', 'fail']),
+    )
     expect(capabilities.unavailableReasons).toEqual([])
     expect(resolveAiExecution([{ type: 'ai_extract' }], enabled, { revision: 4 })).toMatchObject({
       modelName: 'demo-model',
@@ -95,5 +118,68 @@ describe('browser AI 控制面', () => {
 
   it('不含 AI 步骤时不冻结 AI 配置', () => {
     expect(resolveAiExecution([{ type: 'navigate' }], enabled, { revision: 1 })).toBeUndefined()
+  })
+
+  it('有效档位含 A 级时要求 ai:execute', () => {
+    const step = {
+      id: '00000000-0000-4000-8000-0000000000c1',
+      type: 'click',
+      policy: { resolution: 'prefer_deterministic' as const },
+    }
+    const openCeiling = {
+      ...enabled,
+      browserAi: {
+        ...enabled.browserAi,
+        resolutionCeiling: 'prefer_deterministic' as const,
+        defaultResolution: 'prefer_deterministic' as const,
+      },
+    }
+    expect(() => assertAiExecutePermission(actor(['run:execute']), [step], { document: openCeiling })).toThrow(
+      DomainError,
+    )
+    expect(() =>
+      assertAiExecutePermission(actor(['run:execute', 'ai:execute']), [step], { document: openCeiling }),
+    ).not.toThrow()
+    expect(() =>
+      assertAiExecutePermission(actor(['run:execute']), [step], { document: FACTORY_PLATFORM_CONFIG }),
+    ).not.toThrow()
+  })
+
+  it('目标优先顺序抬高时要求 ai:execute，目标上限压低时不要求', () => {
+    const step = {
+      id: '00000000-0000-4000-8000-0000000000c1',
+      type: 'click',
+      policy: {},
+    }
+    const platformDefaultClosed = {
+      ...enabled,
+      browserAi: {
+        ...enabled.browserAi,
+        resolutionCeiling: 'prefer_deterministic' as const,
+        defaultResolution: 'deterministic_only' as const,
+      },
+    }
+    expect(() =>
+      assertAiExecutePermission(actor(['run:execute']), [step], { document: platformDefaultClosed }),
+    ).not.toThrow()
+    expect(() =>
+      assertAiExecutePermission(actor(['run:execute']), [step], {
+        document: platformDefaultClosed,
+        targetPreference: 'prefer_deterministic',
+      }),
+    ).toThrow(DomainError)
+    expect(() =>
+      assertAiExecutePermission(actor(['run:execute']), [step], {
+        document: {
+          ...enabled,
+          browserAi: {
+            ...enabled.browserAi,
+            resolutionCeiling: 'prefer_deterministic' as const,
+            defaultResolution: 'prefer_deterministic' as const,
+          },
+        },
+        targetCeiling: 'deterministic_only',
+      }),
+    ).not.toThrow()
   })
 })

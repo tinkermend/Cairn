@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
+import { resolutionPolicySchema } from './resolution-policy.js'
 import {
   contextKeySchema,
   FORBIDDEN_CONTEXT_KEYS,
@@ -49,6 +50,7 @@ export const scenarioDocumentSchema = z
     schemaVersion: runtimeSchemaVersionSchema,
     inputs: z.array(scenarioInputDeclSchema).max(64).default([]),
     steps: z.array(stepSchema).min(1).max(MAX_SCENARIO_STEPS),
+    resolution: resolutionPolicySchema.optional(),
   })
   .superRefine((document, ctx) => {
     const inputKeys = new Set<string>()
@@ -122,22 +124,68 @@ export function assertNoForwardFrom(steps: readonly Step[]): void {
   }
 }
 
+/**
+ * 创建 Run 时解析不到的引用：既不在 input 里，也没有更早步骤的 outputKey 供给。
+ * 返回键与提出要求的步骤名——调用方要么据此报错，要么把键列给外部调用方。
+ */
+export function unresolvedRunInputs(
+  steps: readonly Step[],
+  input: Readonly<Record<string, unknown>>,
+): { key: string; stepName: string }[] {
+  const available = new Set(Object.keys(input))
+  const unresolved: { key: string; stepName: string }[] = []
+  for (const step of steps) {
+    const from = contextFrom(step)
+    if (from && !available.has(from) && !unresolved.some((item) => item.key === from)) {
+      unresolved.push({ key: from, stepName: step.name })
+    }
+    if (step.outputKey) available.add(step.outputKey)
+  }
+  return unresolved
+}
+
 /** 创建 Run：`from` 必须是 input 键或更早步骤的 outputKey。 */
 export function assertRunFromResolved(
   steps: readonly Step[],
   input: Readonly<Record<string, unknown>>,
 ): void {
-  const available = new Set(Object.keys(input))
-  for (const step of steps) {
+  const [first] = unresolvedRunInputs(steps, input)
+  if (first) {
+    throw new ScenarioValidationError('SCENARIO_UNRESOLVED_REF', unresolvedRunInputMessage(first))
+  }
+}
+
+/** 建 Run 被拒时人看见的那句话。三条路径共用，改词只改这里。 */
+export function unresolvedRunInputMessage(first: { key: string; stepName: string }): string {
+  return `步骤「${first.stepName}」的 from=${first.key} 解析不到 input 或更早步骤的 outputKey`
+}
+
+/**
+ * 正式运行必须提供的 input 键。
+ *
+ * 声明的 `inputs` 未必覆盖全部 `from`——保存期把「指向未声明 key」当参数化放过，
+ * 发布期也不强制声明。只按 `inputs` 渲染表单会让这类场景在控制台里无处填值，
+ * 跑到该步才失败。这里与 `assertRunFromResolved` 同源：声明的键，加上被步骤引用
+ * 却没有前序 outputKey 供给的键（标签回落为键名）。
+ */
+export function requiredRunInputKeys(
+  definition: Pick<ScenarioDefinition, 'inputs' | 'steps'>,
+): ScenarioInputDecl[] {
+  const declared = new Map<string, ScenarioInputDecl>()
+  for (const input of definition.inputs ?? []) {
+    if (!declared.has(input.key)) declared.set(input.key, input)
+  }
+  const available = new Set(declared.keys())
+  const derived: ScenarioInputDecl[] = []
+  for (const step of definition.steps) {
     const from = contextFrom(step)
     if (from && !available.has(from)) {
-      throw new ScenarioValidationError(
-        'SCENARIO_UNRESOLVED_REF',
-        `步骤「${step.name}」的 from=${from} 解析不到 input 或更早步骤的 outputKey`,
-      )
+      available.add(from)
+      derived.push({ key: from, label: from })
     }
     if (step.outputKey) available.add(step.outputKey)
   }
+  return [...declared.values(), ...derived]
 }
 
 export function validateScenarioDefinition(definition: unknown): ScenarioDefinition {

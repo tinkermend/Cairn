@@ -5,7 +5,9 @@ import {
   failRunValidation,
   finishRunIfDrained,
   loadRunDetail,
+  loadRunLoopState,
   loadRunRow,
+  loadRunStepStates,
   markRunCancelled,
   reconcileOrphanAttempts,
   resolveMapRunSourceType,
@@ -244,7 +246,7 @@ export class ExecutionEngine {
 
       for (let index = 0; index < snapshot.steps.length; ) {
         const step = snapshot.steps[index]!
-        const current = await loadRunRow(db, runId)
+        const current = await loadRunLoopState(db, runId)
         if (!current) {
           exit = 'stopped'
           return
@@ -265,12 +267,8 @@ export class ExecutionEngine {
         }
 
         const debugMode = (current.debugMode ?? 'runThrough') as DebugMode
-        const detail = await loadRunDetail(db, runId)
-        if (!detail) {
-          exit = 'stopped'
-          return
-        }
-        const stepRun = detail.stepRuns.find((item) => item.stepId === step.id)
+        const stepRuns = await loadRunStepStates(db, runId)
+        const stepRun = stepRuns.find((item) => item.stepId === step.id)
         // PENDING：尚未执行。RUNNING 且无在途 Attempt：接管后孤儿已收，或失败重试间隙——必须续跑，不得跳过。
         if (!stepRun || !isRunnableStepRun(stepRun)) {
           index += 1
@@ -278,7 +276,7 @@ export class ExecutionEngine {
         }
 
         if (this.holds.consumePause(runId) && debugMode !== 'runThrough') {
-          const previous = [...detail.stepRuns].reverse().find((item) => item.status === 'SUCCEEDED')
+          const previous = [...stepRuns].reverse().find((item) => item.status === 'SUCCEEDED')
           const heldStep = previous ?? stepRun
           const entered = await this.holdRun({
             runId,
@@ -287,9 +285,9 @@ export class ExecutionEngine {
             reason: 'author_pause',
             stepId: heldStep.stepId,
             stepOrdinal: heldStep.ordinal,
-            contextKeys: Object.keys(detail.context),
+            contextKeys: Object.keys(current.context),
             sessionGrant,
-            overlay: detail.debugOverlay,
+            overlay: current.debugOverlay,
           })
           if (!entered) {
             exit = 'stopped'
@@ -316,8 +314,8 @@ export class ExecutionEngine {
           return
         }
 
-        const overlayTarget = detail.debugOverlay?.stepOverrides[step.id]?.target
-        const resolved = resolveStepInput(step, detail.context, overlayTarget)
+        const overlayTarget = current.debugOverlay?.stepOverrides[step.id]?.target
+        const resolved = resolveStepInput(step, current.context, overlayTarget)
         const started = await startAttempt(db, {
           runId,
           stepRunId: stepRun.id,
@@ -360,10 +358,10 @@ export class ExecutionEngine {
                     reason: 'step_failed',
                     stepId: step.id,
                     stepOrdinal: stepRun.ordinal,
-                    contextKeys: Object.keys(detail.context),
+                    contextKeys: Object.keys(current.context),
                     sessionGrant,
                     grant,
-                    overlay: detail.debugOverlay,
+                    overlay: current.debugOverlay,
                   }),
             grant,
             sessionLease: sessionLeaseFor({ step, sessionGrant, grant }),
@@ -395,7 +393,7 @@ export class ExecutionEngine {
         }
 
         const policy = resolveStepPolicy(snapshot.policy, step.policy, step.type)
-        const last = isLastOpenStep(detail, step.id)
+        const last = isLastOpenStep({ stepRuns }, step.id)
         const taint = { hung: false }
         const finished = await this.completeAttempt({
           runId,
@@ -408,7 +406,7 @@ export class ExecutionEngine {
           input: resolved.input,
           policy,
           last,
-          context: { ...detail.context },
+          context: { ...current.context },
           sessionGrant,
           targetId: snapshot.targetId,
           snapshot,
@@ -419,7 +417,7 @@ export class ExecutionEngine {
           evidencePolicy,
           taint,
           debugMode,
-          overlay: detail.debugOverlay,
+          overlay: current.debugOverlay,
           mapSourceType,
           mapBudget,
           authGate,

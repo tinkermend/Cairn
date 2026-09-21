@@ -223,6 +223,9 @@ describe('AM-C HTTP → 真实库', { timeout: 30_000 }, () => {
     })
     const enabled = {
       ...FACTORY_PLATFORM_CONFIG,
+      // 整份替换配置会把库里种的夹具开关抹回出厂的 false。这份 spec 用 echo 步骤造模块，
+      // 且各用例共用一个库，这里一旦抹掉，排在后面的用例发布模块就会被编译闸门拦下。
+      fixtureStepsEnabled: true,
       browserAi: {
         ...FACTORY_PLATFORM_CONFIG.browserAi,
         enabled: true,

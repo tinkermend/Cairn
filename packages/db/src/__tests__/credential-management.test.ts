@@ -16,7 +16,8 @@ describe.each(DRIVERS)('%s 账号凭据管理闭环', (driver: ContractDriver) =
     const db = expose(handle); const native = connection(db); const tables = schemaFor(native)
     const rbac = new api.RbacStore(db, { hash: async s => s, verify: async (s, h) => s === h })
     const roles = (await rbac.listRoles()).items; const adminRole = roles.find(r => r.key === 'admin')!
-    const admin = await rbac.createAccount({ email: 'admin', displayName: '管理员', password: 'test-password', roleIds: [adminRole.id] }, null)
+    // 登录名 admin 已被种子数据占用（0091_bootstrap_admin_seed），夹具另起一个。
+    const admin = await rbac.createAccount({ email: 'admin-fixture', displayName: '管理员', password: 'test-password', roleIds: [adminRole.id] }, null)
     const targets = new api.TargetsStore(db, (_id, value) => Buffer.from(value))
     const makeTarget = (code: string) => targets.createTarget({ code, name: code, entryUrl: 'https://example.com', loginFields: null, authMethod: 'password', captchaMode: 'none', status: 'active' }, admin)
     const target = await makeTarget('T1')

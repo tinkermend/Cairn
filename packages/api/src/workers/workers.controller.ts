@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common'
+import { Controller, Get, Param, Post, Query } from '@nestjs/common'
 import {
   workerListQuerySchema,
   workerSessionListQuerySchema,
@@ -24,6 +24,12 @@ export class WorkersController {
     return this.workers.list(query, actor.permissions)
   }
 
+  @Post('purge-stale')
+  @RequirePermissions('session:manage')
+  purgeStale() {
+    return this.workers.purgeStale()
+  }
+
   @Get(':workerId')
   @RequirePermissions('session:read')
   get(
@@ -32,5 +38,23 @@ export class WorkersController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.workers.get(workerId, query, actor.permissions)
+  }
+
+  @Post(':workerId/disable')
+  @RequirePermissions('session:manage')
+  disable(@Param('workerId') workerId: string) {
+    return this.workers.disable(workerId)
+  }
+
+  @Post(':workerId/enable')
+  @RequirePermissions('session:manage')
+  enable(@Param('workerId') workerId: string) {
+    return this.workers.enable(workerId)
+  }
+
+  @Post(':workerId/remove')
+  @RequirePermissions('session:manage')
+  remove(@Param('workerId') workerId: string) {
+    return this.workers.remove(workerId)
   }
 }

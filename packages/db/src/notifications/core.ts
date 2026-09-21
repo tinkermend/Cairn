@@ -155,14 +155,20 @@ export async function bindingSuppression(
     alertId: string | null
   },
   document?: PlatformConfigDocument,
+  controlsMap?: Map<string, { key: string; revoked: boolean; generation: number }>,
 ): Promise<string | null> {
   const { notificationControls: c, runs, targets, scenarios, monitoringAlerts } = schemaFor(db)
-  const controls = await db
-    .select()
-    .from(c)
-    .where(inArray(c.key, Object.keys(binding.controls)))
-  if (controls.some((row) => row.revoked || row.generation !== binding.controls[row.key]))
-    return 'authorization_revoked'
+  const keys = Object.keys(binding.controls)
+  if (keys.length > 0) {
+    const controls = controlsMap
+      ? (keys.map((k) => controlsMap.get(k)).filter(Boolean) as { key: string; revoked: boolean; generation: number }[])
+      : await db
+          .select()
+          .from(c)
+          .where(inArray(c.key, keys))
+    if (controls.some((row) => row.revoked || row.generation !== binding.controls[row.key]))
+      return 'authorization_revoked'
+  }
   const doc = document ?? (await getOrCreatePlatformConfig(db)).document
   const channel = doc.notifications.channels.find((v) => v.id === binding.channel.id)
   if (!doc.notifications.enabled) return 'notifications_paused'

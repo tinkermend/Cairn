@@ -491,9 +491,7 @@ export class BrowserSessionsService {
     ownerId: string,
   ) {
     const worker = session ? await getWorkerById(this.handle, session.ownerWorkerId) : null
-    const endpoints = parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS, {
-      networkMode: config.CAIRN_WORKER_NETWORK_MODE,
-    })
+    const endpoints = parseWorkerEndpoints(config.CAIRN_WORKER_ENDPOINTS)
     const evaluation = worker
       ? evaluateWorkerRoute({
           workerStatus: worker.status,
@@ -503,7 +501,6 @@ export class BrowserSessionsService {
           heartbeatExpiresAt: worker.heartbeatExpiresAt,
           internalBaseUrl: worker.internalBaseUrl,
           asOf: new Date(),
-          networkMode: config.CAIRN_WORKER_NETWORK_MODE,
           envEndpoint: endpoints[worker.id],
         })
       : null

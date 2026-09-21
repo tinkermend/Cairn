@@ -101,6 +101,8 @@ export const getScenario = operation(impl0.getScenario);
 export const listScenarioVersions = operation(impl0.listScenarioVersions);
 export const listScenarios = operation(impl0.listScenarios);
 export const loadScenarioVersion = operation(impl0.loadScenarioVersion);
+export const loadResolutionLayers = operation(impl0.loadResolutionLayers);
+export { stepsNeedAiExecute } from "./runs/index.js";
 export const prepareTrialVersion = operation(impl0.prepareTrialVersion);
 export const publishScenarioDraft = operation(impl0.publishScenarioDraft);
 export const saveScenarioDraft = operation(impl0.saveScenarioDraft);
@@ -138,6 +140,8 @@ export const listRuns = operation(impl0.listRuns);
 export const loadRunDetail = operation(impl0.loadRunDetail);
 export const computeRunPlacement = operation(impl0.computeRunPlacement);
 export const loadRunRow = operation(impl0.loadRunRow);
+export const loadRunLoopState = operation(impl0.loadRunLoopState);
+export const loadRunStepStates = operation(impl0.loadRunStepStates);
 export const readOverviewAnalytics = operation(impl0.readOverviewAnalytics);
 export const markRunCancelled = operation(impl0.markRunCancelled);
 export const markRunWaitingForAuth = operation(impl0.markRunWaitingForAuth);
@@ -152,6 +156,7 @@ export const continueRunDebug = operation(impl0.continueRunDebug);
 export type { FinishAttemptInput } from "./runs/index.js";
 export type { FinishAttemptResult } from "./runs/index.js";
 export type { RunWriteAuthority } from "./runs/index.js";
+export type { RunLoopState, RunStepState } from "./runs/index.js";
 export const expireStaleRunLeases = operation(impl0.expireStaleRunLeases);
 export const reconcileOrphanAttempts = operation(impl0.reconcileOrphanAttempts);
 export const resumeRunAfterAuth = operation(impl0.resumeRunAfterAuth);
@@ -177,6 +182,10 @@ export const getWorkerById = operation(impl1.getWorkerById);
 export const markWorkerDraining = operation(impl1.markWorkerDraining);
 export const markWorkerStopped = operation(impl1.markWorkerStopped);
 export const markLostWorkers = operation(impl1.markLostWorkers);
+export const disableWorker = operation(impl1.disableWorker);
+export const enableWorker = operation(impl1.enableWorker);
+export const deregisterWorker = operation(impl1.deregisterWorker);
+export const purgeStaleWorkers = operation(impl1.purgeStaleWorkers);
 export type { WorkerHeartbeatTelemetry } from "./leases/index.js";
 export const isolateOrphanedSessions = operation(impl1.isolateOrphanedSessions);
 export const resolveWorkerRoute = operation(impl1.resolveWorkerRoute);
@@ -448,6 +457,8 @@ export const settleFinishedPendingRuns = operation(
   impl3.settleFinishedPendingRuns,
 );
 export const settleRunEvidence = operation(impl3.settleRunEvidence);
+export const settleTargetCleanups = operation(impl3.settleTargetCleanups);
+export const settleRunCleanups = operation(impl3.settleRunCleanups);
 export const recordInlineLogEvidence = operation(impl3.recordInlineLogEvidence);
 export type { PendingEvidenceRow } from "./objects/index.js";
 export type { SettleEvidenceOptions } from "./objects/index.js";
@@ -603,6 +614,7 @@ export const expireRunDeadlines = operation(expireDeadlines);
 import * as observe from "./observe/index.js";
 export const appendRunEvents = operation(observe.appendRunEvents);
 export const loadRunObservation = operation(observe.loadRunObservation);
+export const loadRunObservationProgress = operation(observe.loadRunObservationProgress);
 export const listRunEventsAfter = operation(observe.listRunEventsAfter);
 export const loadRunEventWatermark = operation(observe.loadRunEventWatermark);
 export const listRunEventWatermarks = operation(observe.listRunEventWatermarks);
@@ -612,7 +624,7 @@ export const createChangeHint = observe.createChangeHint;
 export const setChangeHintPublisher = observe.setChangeHintPublisher;
 export const resetChangeHintPublisher = observe.resetChangeHintPublisher;
 export type { ChangeHintBus } from "./observe/index.js";
-export type { RunEventDraft } from "./observe/index.js";
+export type { RunEventDraft, RunObservationProgress } from "./observe/index.js";
 
 import * as platformConfig from "./platform-config/index.js";
 export const getPlatformConfig = operation(platformConfig.getPlatformConfig);
@@ -786,6 +798,16 @@ export const appendMapSelectionDecision = operation(
 export const listMapSelectionDecisions = operation(
   mapFacts.listMapSelectionDecisions,
 );
+import * as resolutionFacts from "./resolution/index.js";
+export const appendResolutionDecision = operation(
+  resolutionFacts.appendResolutionDecision,
+);
+export const listResolutionDecisions = operation(
+  resolutionFacts.listResolutionDecisions,
+);
+export const listResolutionStats = operation(
+  resolutionFacts.listResolutionStats,
+);
 export const loadFrozenMapCandidates = operation(
   mapFacts.loadFrozenMapCandidates,
 );
@@ -916,6 +938,7 @@ export {
 } from "./action-modules/index.js";
 
 import * as knowledgeImpl from "./knowledge/index.js";
+export const reviewAnalysisCandidate = operation(knowledgeImpl.reviewAnalysisCandidate);
 export const validateKnowledgeSources = operation(
   knowledgeImpl.validateKnowledgeSources,
 );
@@ -984,6 +1007,7 @@ export const listScheduleOccurrences = operation(
   scheduleImpl.listScheduleOccurrences,
 );
 export const listScheduleEvents = operation(scheduleImpl.listScheduleEvents);
+export const listScheduleEventsAfter = operation(scheduleImpl.listScheduleEventsAfter);
 export const previewScheduleDefinition = operation(
   scheduleImpl.previewScheduleDefinition,
 );
@@ -1002,7 +1026,36 @@ export const expireScheduledMapJobs = operation(
 export const actorCanAdmitSchedules = operation(
   scheduleImpl.actorCanAdmitSchedules,
 );
+export const actorCanAdmitConsumer = operation(
+  scheduleImpl.actorCanAdmitConsumer,
+);
+export const triggerScheduleOnce = operation(scheduleImpl.triggerScheduleOnce);
+export const previewScheduleQuery = operation(
+  scheduleImpl.previewScheduleQuery,
+);
+export const listPendingScheduleAdmits = operation(
+  scheduleImpl.listPendingScheduleAdmits,
+);
 export type { PendingScheduleAdmit } from "./schedules/index.js";
+
+import * as analysisImpl from "./analysis/index.js";
+export const getAnalysisJob = operation(analysisImpl.getAnalysisJob);
+export const listAnalysisJobs = operation(analysisImpl.listAnalysisJobs);
+export const listAnalysisJobEvents = operation(
+  analysisImpl.listAnalysisJobEvents,
+);
+export const createAnalysisJob = operation(analysisImpl.createAnalysisJob);
+export const claimAnalysisJob = operation(analysisImpl.claimAnalysisJob);
+export const heartbeatAnalysisJob = operation(
+  analysisImpl.heartbeatAnalysisJob,
+);
+export const submitAnalysisJob = operation(analysisImpl.submitAnalysisJob);
+export const recordAnalysisModelUsage = operation(analysisImpl.recordAnalysisModelUsage);
+export const failAnalysisJob = operation(analysisImpl.failAnalysisJob);
+export const cancelAnalysisJob = operation(analysisImpl.cancelAnalysisJob);
+export const prepareAnalysisJob = operation(analysisImpl.prepareAnalysisJob);
+export type { PreparedAnalysis } from './analysis/index.js';
+export const indexRunForAnalysis = operation(analysisImpl.indexRunForAnalysis);
 
 export const recreateSessionForOperation = operation(
   impl2.recreateSessionForOperation,

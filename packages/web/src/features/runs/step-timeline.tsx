@@ -400,7 +400,25 @@ function StepRunItem({
           {attempt.error ? (
             <p className='mt-1 text-destructive'>
               {attempt.error.code}: {attempt.error.safeMessage}
+              {attempt.error.code === 'ASSERT_TEMPLATE_INVALID' ? (
+                <span className='ml-1 text-label text-muted-foreground'>
+                  （快照模板语法非法或根节点非序列，不可重试）
+                </span>
+              ) : null}
             </p>
+          ) : null}
+          {typeof attempt.output === 'object' &&
+          attempt.output !== null &&
+          'diff' in attempt.output &&
+          typeof (attempt.output as { diff?: unknown }).diff === 'string' ? (
+            <div className='mt-2 rounded border border-border/50 bg-background/80 p-2 font-mono text-label'>
+              <p className='mb-1 font-sans text-label font-medium text-muted-foreground'>
+                Aria 快照比对差异 (Diff):
+              </p>
+              <pre className='overflow-x-auto whitespace-pre leading-relaxed text-foreground'>
+                {(attempt.output as { diff: string }).diff}
+              </pre>
+            </div>
           ) : null}
           {isAiStepType(step.type) ? (
             <AiAttemptSummary

@@ -14,14 +14,45 @@ export async function lockConsoleAuthorization(db: Db, accountId: string, requir
   if (!account || (requireActive && account.status !== 'active')) throw forbidden('FORBIDDEN', '账号不可用')
 }
 
-export async function targetScopeFor(db: Db, accountId: string, permission: string): Promise<TargetScope> {
+/**
+ * 一个活跃账号的全部授予行（角色范围 × 该角色的每条权限）。
+ *
+ * 这条查询只按 accountId 过滤，与具体 permission 无关——权限筛选在内存里做。
+ * 因此同一请求内要判多个权限时，**取一次行、在内存里派生多次**，不要按权限重复查库。
+ */
+export type ScopeGrantRow = { mode: string; ids: string[]; permission: string }
+
+export async function loadAccountGrants(db: Db, accountId: string): Promise<ScopeGrantRow[]> {
   const { consoleAccountRoles: grants, consoleRolePermissions: permissions, consoleAccounts } = schemaFor(db)
-  const rows = await db.select({ mode: grants.targetScopeMode, ids: grants.targetScopeIds, permission: permissions.permission })
+  return (await db.select({ mode: grants.targetScopeMode, ids: grants.targetScopeIds, permission: permissions.permission })
     .from(grants).innerJoin(consoleAccounts, and(eq(consoleAccounts.id, grants.consoleAccountId), eq(consoleAccounts.status, 'active')))
     .innerJoin(permissions, eq(permissions.consoleRoleId, grants.consoleRoleId))
-    .where(eq(grants.consoleAccountId, accountId))
+    .where(eq(grants.consoleAccountId, accountId))) as ScopeGrantRow[]
+}
+
+/** 从已取到的授予行派生某个权限的目标范围；纯内存，不查库。 */
+export function scopeFromGrants(rows: ScopeGrantRow[], permission: string): TargetScope {
   const relevant = rows.filter((row) => hasPermission([row.permission], permission))
   return { all: relevant.some((row) => row.mode === 'all'), ids: [...new Set(relevant.flatMap((row) => row.mode === 'selected' ? row.ids : []))] }
+}
+
+/** 从已取到的授予行判断是否具备某权限；纯内存，不查库。 */
+export function hasPermissionFromGrants(rows: ScopeGrantRow[], permission: string): boolean {
+  return hasPermission(rows.map((row) => row.permission), permission)
+}
+
+export async function targetScopeFor(db: Db, accountId: string, permission: string): Promise<TargetScope> {
+  return scopeFromGrants(await loadAccountGrants(db, accountId), permission)
+}
+
+/** 一次取行、派生多个权限的范围，供同一请求内需要多项判定的调用方使用。 */
+export async function targetScopesFor(
+  db: Db,
+  accountId: string,
+  permissions: readonly string[],
+): Promise<Map<string, TargetScope>> {
+  const rows = await loadAccountGrants(db, accountId)
+  return new Map(permissions.map((permission) => [permission, scopeFromGrants(rows, permission)]))
 }
 
 export function targetScopeFilter(column: AnyColumn, scope: TargetScope) {
@@ -30,12 +61,17 @@ export function targetScopeFilter(column: AnyColumn, scope: TargetScope) {
 
 export async function scopedTargetFilter(db: Db, actorId: string | undefined, column: AnyColumn, permission: string) {
   if (!actorId) return undefined
-  return and(targetScopeFilter(column, await targetScopeFor(db, actorId, 'target:read')), targetScopeFilter(column, await targetScopeFor(db, actorId, permission)))
+  const rows = await loadAccountGrants(db, actorId)
+  return and(
+    targetScopeFilter(column, scopeFromGrants(rows, 'target:read')),
+    targetScopeFilter(column, scopeFromGrants(rows, permission)),
+  )
 }
 
 export async function readableSessionTargets(db: Db, actorId: string): Promise<string[] | undefined> {
-  const read = await targetScopeFor(db, actorId, 'target:read')
-  const session = await targetScopeFor(db, actorId, 'session:read')
+  const rows = await loadAccountGrants(db, actorId)
+  const read = scopeFromGrants(rows, 'target:read')
+  const session = scopeFromGrants(rows, 'session:read')
   if (read.all && session.all) return undefined
   if (read.all) return session.ids
   if (session.all) return read.ids
@@ -43,8 +79,9 @@ export async function readableSessionTargets(db: Db, actorId: string): Promise<s
 }
 
 export async function assertTargetPermission(db: Db, accountId: string, targetId: string, permission = 'target:read') {
-  const read = await targetScopeFor(db, accountId, 'target:read')
-  const action = permission === 'target:read' ? read : await targetScopeFor(db, accountId, permission)
+  const rows = await loadAccountGrants(db, accountId)
+  const read = scopeFromGrants(rows, 'target:read')
+  const action = permission === 'target:read' ? read : scopeFromGrants(rows, permission)
   if (!(read.all || read.ids.includes(targetId)) || !(action.all || action.ids.includes(targetId))) {
     throw notFound('TARGET_NOT_FOUND', '目标不存在或无权访问')
   }

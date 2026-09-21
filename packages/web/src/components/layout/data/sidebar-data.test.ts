@@ -3,12 +3,13 @@ import {
   CONSOLE_CAPABILITIES,
   SYSTEM_ROLE_DEFINITIONS,
   previewCapabilities,
-  type CapabilityGroup,
 } from '@cairn/shared'
 import { describe, expect, it } from 'vitest'
 import type { AuthUser } from '@/stores/auth-store'
 import { filterNavItems } from '@/lib/rbac'
 import { personalSettingsGroup, personalSettingsNav, sidebarData } from './sidebar-data'
+
+type CapabilityGroup = keyof typeof CAPABILITY_GROUP_LABELS
 
 function user(permissions: readonly string[]): AuthUser {
   return { id: 'u1', displayName: '测试', email: null, roles: [], permissions: [...permissions] }
@@ -22,9 +23,9 @@ function visibleTitles(group: CapabilityGroup, subject: AuthUser) {
 }
 
 describe('侧栏导航', () => {
-  it('编写、执行、目标资源与平台管理分别组织，个人设置移到账户菜单', () => {
+  it('编写、运行、目标与管理分别组织，个人设置移到账户菜单', () => {
     expect(sidebarData.navGroups.map((group) => group.title)).toEqual([
-      '', '场景编排', '执行与结果', '目标资源', '平台运维', '平台管理',
+      '', '编写', '运行', '目标', '运维', '管理',
     ])
     expect(sidebarData.navGroups.flatMap((group) => group.items).some((item) => item.title === '个人设置')).toBe(false)
     expect(personalSettingsNav.items.map((item) => item.title)).toEqual(['个人资料', '修改密码'])
@@ -35,16 +36,16 @@ describe('侧栏导航', () => {
       const subject = user(role.permissions)
       const preview = previewCapabilities(subject.permissions)
       for (const group of Object.keys(preview.menus) as CapabilityGroup[]) {
-        expect(visibleTitles(group, subject), `${role.key} / ${group}`).toEqual(preview.menus[group])
+        expect(visibleTitles(group, subject), `${role.name} / ${group}`).toEqual(preview.menus[group])
       }
     }
   })
 
   it('移动入口不扩大权限：凭据仍需目标读取权限，运维不等于管理权限', () => {
     expect(visibleTitles('resources', user(['credential:read']))).toEqual([])
-    expect(visibleTitles('resources', user(['credential:read', 'target:read']))).toEqual(['目标系统', '目标账号凭据'])
+    expect(visibleTitles('resources', user(['credential:read', 'target:read']))).toEqual(['目标系统', '目标账号'])
     expect(visibleTitles('operations', user(['session:read']))).toEqual(['执行节点'])
-    expect(visibleTitles('operations', user(['monitor:read']))).toEqual(['平台监控'])
+    expect(visibleTitles('operations', user(['monitor:read']))).toEqual(['监控'])
     expect(visibleTitles('governance', user(SYSTEM_ROLE_DEFINITIONS.operator.permissions))).toEqual([])
     expect(visibleTitles('other', user([]))).toEqual([])
     expect(visibleTitles('other', user(['settings:read']))).toEqual(['个人设置'])
@@ -53,7 +54,7 @@ describe('侧栏导航', () => {
   it('审计入口允许操作审计或登录审计中的任一权限', () => {
     expect(visibleTitles('governance', user(['audit:read']))).toEqual(['审计日志'])
     expect(visibleTitles('governance', user(['audit:login']))).toEqual(['审计日志'])
-    expect(visibleTitles('governance', user(['account:read']))).toEqual(['控制台用户'])
+    expect(visibleTitles('governance', user(['account:read']))).toEqual(['用户管理'])
   })
 
   it('录制草稿和动作库各自保留写入与模块读取条件', () => {

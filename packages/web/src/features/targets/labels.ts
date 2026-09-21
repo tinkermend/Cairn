@@ -28,8 +28,8 @@ export const TARGET_STATUS_LABELS: Record<TargetStatus, string> = {
 
 export const ACCOUNT_USAGE_LABELS: Record<AccountUsage, string> = {
   business: '业务运行',
-  map: '仅地图采集',
-  both: '业务与地图采集',
+  map: '仅知识采集（不能跑业务）',
+  both: '业务运行，并采集知识',
 }
 
 export const LOGIN_LOCATOR_BY_LABELS: Record<LoginLocatorBy, string> = {

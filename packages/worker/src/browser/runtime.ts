@@ -589,14 +589,14 @@ export type FrameResolve = { frame: Frame; trail: string[] }
 
 export async function resolveFramePath(
   page: Page,
-  framePath: FrameStep[],
+  framePath: FrameStep[] = [],
   timeoutMs = 8_000,
 ): Promise<FrameResolve> {
   // 整条 FramePath 共用一个截止时间：四层路径不该把预算乘以四。
   const deadline = Date.now() + timeoutMs
   let current: Frame = page.mainFrame()
   const trail: string[] = ['main']
-  for (const step of framePath) {
+  for (const step of framePath ?? []) {
     current = await waitForChildFrame(current, step, deadline)
     trail.push(frameLabel(current, step))
   }

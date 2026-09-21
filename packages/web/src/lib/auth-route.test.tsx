@@ -69,6 +69,19 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+/**
+ * 「已进入平台首页」的判定。首页是总览页（标题固定为「总览」），问候语在描述里。
+ * 两条都要断言：标题证明进了首页，问候语里的名字证明它是恢复出来的那个会话用户，
+ * 而不是别的账号——这正是「会话恢复」这组用例守护的事。
+ */
+async function expectOverviewFor(
+  screen: { getByRole: (...a: any[]) => any; getByText: (...a: any[]) => any },
+  displayName: string,
+) {
+  await expect.element(screen.getByRole('heading', { name: '总览' })).toBeInTheDocument()
+  await expect.element(screen.getByText(new RegExp(`你好，${displayName}`))).toBeInTheDocument()
+}
+
 describe('控制台会话恢复', () => {
   it('返回地址保留本站路径、查询与锚点，拒绝站外或无效地址', () => {
     expect(getLoginRedirect('/targets?view=all#recent')).toBe(
@@ -106,11 +119,12 @@ describe('控制台会话恢复', () => {
     await screen.getByLabelText('密码', { exact: true }).fill('test-password')
     await screen.getByRole('button', { name: '登录', exact: true }).click()
 
-    await expect
-      .element(screen.getByRole('heading', { name: '你好，会话测试' }))
-      .toBeInTheDocument()
+    await expectOverviewFor(screen, '会话测试')
     expect(router.state.location.pathname).toBe('/')
-    expect(fetchMock).toHaveBeenCalledOnce()
+    // 这条用例守护的是「登录只提交一次」（防重复提交 / 重复跳转的回归），
+    // 不是「整个页面生命周期只发一次请求」：进了首页（总览页）后它自己会拉几路数据。
+    const loginCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes('/api/auth/login'))
+    expect(loginCalls).toHaveLength(1)
   })
 
   it.each([500, 502, 503, 'offline'] as const)(
@@ -140,9 +154,7 @@ describe('控制台会话恢复', () => {
 
       fetchMock.mockImplementation(async () => response({ account }))
       await screen.getByRole('button', { name: '返回首页' }).click()
-      await expect
-        .element(screen.getByRole('heading', { name: '你好，会话测试' }))
-        .toBeInTheDocument()
+      await expectOverviewFor(screen, '会话测试')
       expect(useAuthStore.getState().auth.accessToken).toBe(token)
     }
   )

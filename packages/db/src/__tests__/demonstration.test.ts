@@ -554,7 +554,7 @@ describe.each(DRIVERS)(
       const bundle = await exportDatabase(expose(original), original.env, options)
       expect(bundle.tables.runValidationContexts).toHaveLength(1)
       const targetDriver = DRIVERS.find((candidate) => candidate !== driver) ?? driver
-      const restored = await openContractDb(targetDriver)
+      const restored = await openContractDb(targetDriver, undefined, { pristine: true })
       try {
         await importDatabase(expose(restored), restored.env, bundle, options)
         expect(await getDemonstration(restored.db, created.recordingDraftId, actorId)).toEqual(

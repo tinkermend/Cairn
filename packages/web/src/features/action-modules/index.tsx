@@ -30,6 +30,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   Select,
+  SelectField,
+  SelectFieldOption,
   SelectContent,
   SelectItem,
   SelectTrigger,
@@ -51,13 +53,13 @@ import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
 import { Can } from '@/components/rbac/can'
 import { ActionModuleCreateDialog } from './create-dialog'
+import { ModuleHealthBadge } from './health-badge'
 import {
   MODULE_EFFECT_CEILING_LABELS,
   MODULE_EXECUTION_MODE_LABELS,
   MODULE_EXECUTION_MODE_VARIANTS,
   MODULE_PUBLICATION_STATUS_LABELS,
 } from './labels'
-import { ModuleHealthBadge } from './health-badge'
 
 export function ActionModulesPage() {
   const queryClient = useQueryClient()
@@ -246,20 +248,20 @@ export function ActionModulesPage() {
               setPage(1)
             }}
           />
-          <select
-            className='h-9 rounded-md border bg-background px-2 text-body'
+          <SelectField
+            className='w-auto'
             aria-label='发布状态'
             value={publication}
-            onChange={(e) => {
-              setPublication(e.target.value)
+            onValueChange={(value) => {
+              setPublication(value)
               setPage(1)
             }}
           >
-            <option value='all'>所有发布状态</option>
-            <option value='published'>已发布</option>
-            <option value='deprecated'>已弃用</option>
-            <option value='withdrawn'>已撤回</option>
-          </select>
+            <SelectFieldOption value='all'>所有发布状态</SelectFieldOption>
+            <SelectFieldOption value='published'>已发布</SelectFieldOption>
+            <SelectFieldOption value='deprecated'>已弃用</SelectFieldOption>
+            <SelectFieldOption value='withdrawn'>已撤回</SelectFieldOption>
+          </SelectField>
         </div>
         {/* 列表主体 */}
         {modulesQuery.isLoading ? (
@@ -399,7 +401,9 @@ export function ActionModulesPage() {
                       {mod.health ? (
                         <ModuleHealthBadge health={mod.health} />
                       ) : (
-                        <span className='text-bodyall text-muted-foreground'>样本不足</span>
+                        <span className='text-bodyall text-muted-foreground'>
+                          样本不足
+                        </span>
                       )}
                     </TableCell>
                     <TableCell>

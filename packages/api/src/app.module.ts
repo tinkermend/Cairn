@@ -28,6 +28,7 @@ import { ActionModulesModule } from "./action-modules/action-modules.module";
 import { TargetsModule } from "./targets/targets.module";
 import { MapModule } from "./map/map.module";
 import { SchedulesModule } from "./schedules/schedules.module";
+import { AnalysisJobsModule } from "./analysis-jobs/analysis-jobs.module";
 import { MonitoringModule } from "./monitoring/monitoring.module";
 import { CredentialsModule } from "./credentials/credentials.module";
 import { EvidenceModule } from "./evidence/evidence.module";
@@ -54,6 +55,7 @@ import { OverviewModule } from "./overview/overview.module";
     TargetsModule,
     MapModule,
     SchedulesModule,
+    AnalysisJobsModule,
     ScenariosModule,
     ActionModulesModule,
     AuthoringModule,

@@ -24,6 +24,7 @@ import {
   yieldClaimedRun,
   type DbHandle,
 } from '../test-entry.js'
+import { grantAdminScope } from './contract-fixture.js'
 import { consoleAccounts } from '../schema/console.js'
 import { targetAccounts, targets } from '../schema/targets.js'
 import { enterAuthWaitForRun, forceGrantForRun, seedWorker, type SeededWorker } from './lease-harness.js'
@@ -54,6 +55,7 @@ describe('P4 后半 Affinity / 容量 / 失联隔离（集成）', { timeout: 12
       email: `aff-${actorId}@example.com`,
       status: 'active',
     })
+    await grantAdminScope(handle.db, actorId)
     await handle.db.insert(targets).values({
       id: targetId,
       code: `aff-${SCHEMA.slice(-6)}`,

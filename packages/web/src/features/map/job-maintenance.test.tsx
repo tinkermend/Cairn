@@ -1,6 +1,6 @@
-import { arrivalTargetForName } from '@cairn/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '@/styles/index.css'
+import { arrivalTargetForName } from '@cairn/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
@@ -37,11 +37,13 @@ function signIn(permissions = ['target:read', 'map:read', 'map:maintain']) {
 }
 
 async function renderCard() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   return render(
     <QueryClientProvider client={client}>
       <JobMaintenanceCard targetId={TARGET_ID} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
 }
 
@@ -73,7 +75,16 @@ describe('知识页地图维护', () => {
     })
     mocks.fetchMapSafeEntries.mockResolvedValue({ items: [] })
     targetMocks.fetchTargetAccounts.mockResolvedValue({
-      items: [{ id: ACCOUNT_ID, targetId: TARGET_ID, displayName: '值班账号', username: 'ops', status: 'active', usage: 'both' }],
+      items: [
+        {
+          id: ACCOUNT_ID,
+          targetId: TARGET_ID,
+          displayName: '值班账号',
+          username: 'ops',
+          status: 'active',
+          usage: 'both',
+        },
+      ],
     })
   })
 
@@ -81,7 +92,9 @@ describe('知识页地图维护', () => {
     const screen = await renderCard()
     await expect.element(page.getByText('地图维护')).toBeVisible()
     await expect.element(page.getByText('手工作业关闭')).toBeVisible()
-    await expect.element(screen.getByRole('button', { name: '探查入口' })).toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: '探查入口' }))
+      .toBeDisabled()
   })
 
   it('可开放政策并登记进入路径', async () => {
@@ -90,7 +103,7 @@ describe('知识页地图维护', () => {
     await screen.getByRole('button', { name: '开放手工作业' }).click()
     expect(mocks.updateMapJobPolicy).toHaveBeenCalledWith(
       TARGET_ID,
-      expect.objectContaining({ manualJobsEnabled: true, expectedRevision: 0 }),
+      expect.objectContaining({ manualJobsEnabled: true, expectedRevision: 0 })
     )
     await screen.getByLabelText('路径名称').fill('订单入口')
     await screen.getByLabelText('进入 URL').fill('https://shop.example/orders')
@@ -103,7 +116,7 @@ describe('知识页地图维护', () => {
         name: '订单入口',
         url: 'https://shop.example/orders',
         arrivalTarget: arrivalTargetForName('订单标题'),
-      }),
+      })
     )
   })
 
@@ -168,22 +181,33 @@ describe('知识页地图维护', () => {
       ],
     })
     await renderCard()
-    await expect.element(page.getByRole('option', { name: '总览探查' })).toBeInTheDocument()
-    await expect.element(page.getByRole('option', { name: '仅探索入口' })).not.toBeInTheDocument()
+    await page.getByLabelText('进入路径', { exact: true }).click()
+    await expect
+      .element(page.getByRole('option', { name: '总览探查' }))
+      .toBeInTheDocument()
+    await expect
+      .element(page.getByRole('option', { name: '仅探索入口' }))
+      .not.toBeInTheDocument()
   })
 
   it('没有地图用途账号时不能开放手工作业', async () => {
     targetMocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
     const screen = await renderCard()
     await screen.getByLabelText('政策理由').fill('想打开')
-    await expect.element(screen.getByRole('button', { name: '开放手工作业' })).toBeDisabled()
+    await expect
+      .element(screen.getByRole('button', { name: '开放手工作业' }))
+      .toBeDisabled()
     expect(mocks.updateMapJobPolicy).not.toHaveBeenCalled()
   })
 
   it('无维护权限只读政策', async () => {
     signIn(['target:read', 'map:read'])
     await renderCard()
-    await expect.element(page.getByText(/需要地图维护权限才能触发作业/)).toBeVisible()
-    await expect.element(page.getByRole('button', { name: '开放手工作业' })).not.toBeInTheDocument()
+    await expect
+      .element(page.getByText(/需要地图维护权限才能触发作业/))
+      .toBeVisible()
+    await expect
+      .element(page.getByRole('button', { name: '开放手工作业' }))
+      .not.toBeInTheDocument()
   })
 })

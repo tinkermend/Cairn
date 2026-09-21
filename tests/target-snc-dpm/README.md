@@ -22,8 +22,6 @@
 ```bash
 # 控制台已启动，且已准备 catalog.local.json 或 CAIRN_L3_DPM_* 环境变量
 CAIRN_API_BASE=http://127.0.0.1:3030 \
-CAIRN_BOOTSTRAP_ADMIN_EMAIL=admin \
-CAIRN_BOOTSTRAP_ADMIN_PASSWORD=cairn-admin \
 node tests/target-snc-dpm/register.mjs
 ```
 

@@ -19,7 +19,11 @@ import {
   LOCAL_SECRET_PROVIDER,
   entityIdSchema,
   modelServiceOrigin,
-  platformConfigDocumentSchema,
+  platformAiConnectionReady,
+  platformConfigWriteDocumentSchema,
+  buildPlatformAiChatBody,
+  postPlatformAiChatCompletion,
+  readPlatformAiChatResult,
   type SecretRef,
   type PlatformConfigDocument,
   type PlatformConfigRestoreBody,
@@ -45,7 +49,7 @@ export class PlatformConfigService {
       const existing = await getPlatformConfig(this.db)
       if (existing) return existing
       let secretId = config.CAIRN_BROWSER_AI_API_KEY_SECRET_ID
-      if (!secretId && config.CAIRN_BROWSER_AI_API_KEY && config.CAIRN_ENV === 'development') {
+      if (!secretId && config.CAIRN_BROWSER_AI_API_KEY) {
         secretId = newId()
         await registerStandaloneSecret(this.db, {
           id: secretId,
@@ -66,7 +70,7 @@ export class PlatformConfigService {
   }
 
   validate(document: PlatformConfigDocument) {
-    return { document: platformConfigDocumentSchema.parse(document) }
+    return { document: platformConfigWriteDocumentSchema.parse(document) }
   }
 
   async update(body: PlatformConfigUpdateBody, actor: AuditActor) {
@@ -125,6 +129,8 @@ export class PlatformConfigService {
     revision: number
     baseUrl: string
     model: string
+    provider: NonNullable<PlatformConfigDocument['platformAi']['provider']>
+    thinkingMode: PlatformConfigDocument['platformAi']['thinkingMode']
     apiKey: string
     requestTimeoutMs: number
     maxCallsPerTurn: number
@@ -132,7 +138,9 @@ export class PlatformConfigService {
   } | null> {
     const current = await this.get()
     const ai = current.document.platformAi
-    if (!ai.enabled || !ai.baseUrl || !ai.model || !ai.secretRef) return null
+    if (!ai.enabled || !platformAiConnectionReady(ai) || !ai.baseUrl || !ai.model || !ai.secretRef || !ai.provider) {
+      return null
+    }
     try {
       const row = await this.loadBoundSecret(ai.secretRef, ai.baseUrl)
       const apiKey = this.secrets.decrypt(row.id, row.ciphertext)
@@ -141,6 +149,8 @@ export class PlatformConfigService {
         revision: current.revision,
         baseUrl: ai.baseUrl,
         model: ai.model,
+        provider: ai.provider,
+        thinkingMode: ai.thinkingMode,
         apiKey,
         requestTimeoutMs: ai.requestTimeoutMs,
         maxCallsPerTurn: ai.maxCallsPerTurn,
@@ -159,6 +169,35 @@ export class PlatformConfigService {
         apiKey = this.secrets.decrypt(row.id, row.ciphertext)
       } catch {
         rethrowDomain(new DomainError('bad_request', 'AI_CONFIG_INVALID', '凭据引用不可用'))
+      }
+    }
+    if (body.provider) {
+      if (!apiKey?.trim()) {
+        return { ok: false, message: '请先登记密钥后再测试连接' }
+      }
+      try {
+        const raw = await postPlatformAiChatCompletion({
+          baseUrl: body.baseUrl,
+          apiKey,
+          body: buildPlatformAiChatBody({
+            provider: body.provider,
+            thinkingMode: 'off',
+            model: body.model,
+            messages: [{ role: 'user', content: 'ping' }],
+            maxTokens: 1,
+          }),
+          timeoutMs: 8_000,
+        })
+        readPlatformAiChatResult(raw, 'probe')
+        return {
+          ok: true,
+          message: '已连通模型服务。这只证明当时可访问，不代表助手或分析效果。',
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          message: error instanceof Error ? error.message.slice(0, 512) : '无法访问模型服务',
+        }
       }
     }
     const base = body.baseUrl.endsWith('/') ? body.baseUrl : `${body.baseUrl}/`

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { workerEnvSchema } from '../env.js'
+import { DEV_CREDENTIAL_KEY, DEV_INTERNAL_AUTH_SECRET, workerEnvSchema } from '../env.js'
 import {
   DEFAULT_SESSION_AUTH_WAIT_SECONDS,
   DEFAULT_SESSION_IDLE_TTL_SECONDS,
@@ -23,6 +23,12 @@ import {
   SESSION_REUSE_POLICIES,
   SESSION_STATUSES,
 } from '../session.js'
+
+/** 密钥必填、无默认值，parse 时必须带上。 */
+const WORKER_SECRETS = {
+  CAIRN_CREDENTIAL_KEY: DEV_CREDENTIAL_KEY,
+  CAIRN_INTERNAL_AUTH_SECRET: DEV_INTERNAL_AUTH_SECRET,
+}
 
 describe('session 词表', () => {
   it('生命周期状态闭枚举', () => {
@@ -134,7 +140,7 @@ describe('resolveSessionPolicy', () => {
   })
 
   it('平台默认与 workerEnvSchema 空配置默认逐字对齐', () => {
-    const env = workerEnvSchema.parse({})
+    const env = workerEnvSchema.parse({ ...WORKER_SECRETS })
     expect(DEFAULT_SESSION_IDLE_TTL_SECONDS).toBe(env.CAIRN_SESSION_IDLE_TTL_SECONDS)
     expect(DEFAULT_SESSION_MAX_LIFETIME_SECONDS).toBe(env.CAIRN_SESSION_MAX_LIFETIME_SECONDS)
     expect(DEFAULT_SESSION_LEASE_TTL_SECONDS).toBe(env.CAIRN_SESSION_LEASE_TTL_SECONDS)

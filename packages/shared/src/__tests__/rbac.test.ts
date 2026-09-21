@@ -105,6 +105,10 @@ describe('catalog', () => {
     expect(SYSTEM_ROLE_DEFINITIONS.author.permissions).not.toContain('monitor:read')
     expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).toContain('monitor:read')
     expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).toContain('monitor:operate')
+    expect(SYSTEM_ROLE_DEFINITIONS.admin.permissions).toContain('map:analyze')
+    expect(SYSTEM_ROLE_DEFINITIONS.operator.permissions).not.toContain('map:analyze')
+    expect(SYSTEM_ROLE_DEFINITIONS.author.permissions).not.toContain('map:analyze')
+    expect(getPermissionDependencies('schedule:write')).toEqual([])
     expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions).not.toContain('monitor:read')
     expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions).not.toContain('audit:login')
     expect(SYSTEM_ROLE_DEFINITIONS.viewer.permissions).not.toContain('ai:execute')
@@ -193,14 +197,14 @@ describe('能力地图', () => {
   it('执行者预览只有业务菜单，没有治理；编写者能看见录制', () => {
     const operator = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.operator.permissions)
     expect(operator.menus.overview).toEqual(['总览'])
-    expect(operator.menus.workbench).toEqual(['自动化场景', '场景集', '动作库'])
+    expect(operator.menus.workbench).toEqual(['场景', '场景集', '动作库'])
     expect(operator.menus['execution-observation']).toEqual([
-      '定时调度',
+      '定时任务',
       '运行记录',
-      '证据与报告',
+      '结果与报告',
     ])
-    expect(operator.menus.resources).toEqual(['目标系统', '目标账号凭据', '浏览器会话'])
-    expect(operator.menus.operations).toEqual(['平台监控', '执行节点', '通知管理'])
+    expect(operator.menus.resources).toEqual(['目标系统', '目标账号', '浏览器'])
+    expect(operator.menus.operations).toEqual(['监控', '执行节点', '通知'])
     expect(operator.menus.governance).toEqual([])
     expect(operator.menus.other).toEqual(['个人设置'])
     expect(operator.actions).toContain('对目标系统发起运行')
@@ -208,29 +212,29 @@ describe('能力地图', () => {
     expect(operator.actions).toContain('执行含 AI 步骤的运行')
 
     const author = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.author.permissions)
-    expect(author.menus.workbench).toEqual(['自动化场景', '场景集', '动作库', '录制草稿'])
-    expect(author.menus['execution-observation']).toEqual(['运行记录', '证据与报告'])
-    expect(author.menus.resources).toEqual(['目标系统', '目标账号凭据', '浏览器会话'])
-    expect(author.menus.operations).toEqual(['执行节点', '通知管理'])
+    expect(author.menus.workbench).toEqual(['场景', '场景集', '动作库', '录制草稿'])
+    expect(author.menus['execution-observation']).toEqual(['运行记录', '结果与报告'])
+    expect(author.menus.resources).toEqual(['目标系统', '目标账号', '浏览器'])
+    expect(author.menus.operations).toEqual(['执行节点', '通知'])
     expect(author.menus.governance).toEqual([])
     expect(author.actions).toContain('在工作区试跑')
     expect(author.actions).toContain('对目标系统发起运行')
     expect(author.actions).not.toContain('处置卡死的浏览器会话')
 
     const viewer = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.viewer.permissions)
-    expect(viewer.menus.workbench).toEqual(['自动化场景', '场景集'])
-    expect(viewer.menus['execution-observation']).toEqual(['运行记录', '证据与报告'])
-    expect(viewer.menus.resources).toEqual(['目标系统'])
-    expect(viewer.menus.operations).toEqual(['通知管理'])
+    expect(viewer.menus.workbench).toEqual(['场景', '场景集'])
+    expect(viewer.menus['execution-observation']).toEqual(['运行记录', '结果与报告'])
+    expect(viewer.menus.resources).toEqual(['目标系统', '目标账号'])
+    expect(viewer.menus.operations).toEqual(['通知'])
     expect(viewer.actions).toEqual(['使用平台助手', '查看运行报告'])
 
     const admin = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.admin.permissions)
     expect(admin.menus['execution-observation']).toEqual([
-      '定时调度',
+      '定时任务',
       '运行记录',
-      '证据与报告',
+      '结果与报告',
     ])
-    expect(admin.menus.governance).toEqual(['控制台用户', '角色权限', 'API 接入', '平台配置', '审计日志'])
+    expect(admin.menus.governance).toEqual(['用户管理', '角色权限', 'API 接入', '平台配置', '审计日志'])
   })
 
   it('能力 id 不重复，菜单 besides 首页都有 allOf', () => {

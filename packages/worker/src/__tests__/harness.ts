@@ -13,6 +13,7 @@ import {
   targetAccounts,
   targets,
   type DbHandle,
+  grantAdminScope,
 } from '@cairn/db/testing'
 import {
   DEV_CREDENTIAL_KEY,
@@ -219,6 +220,8 @@ export class CairnTestHarness {
       email: `harness-${actorId}@cairn.local`,
       status: 'active',
     })
+    // 绑了角色还不够，目标范围默认是 none：harness 的 actor 要能建目标、跑运行、处置会话。
+    await grantAdminScope(handle.db, actorId)
 
     const workerId = options?.workerId ?? `harness-worker-${Date.now().toString(36)}`
     const workerInstanceId = newId()

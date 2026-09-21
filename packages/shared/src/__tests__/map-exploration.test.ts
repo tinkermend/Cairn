@@ -20,8 +20,8 @@ describe('OM-I 探索契约', () => {
     expect(FACTORY_EXPLORATION_POLICY.modelEnabled).toBe(false)
     expect(FACTORY_EXPLORATION_POLICY.mode).toBe('allowlist')
     expect(FACTORY_PLATFORM_CONFIG.mapExplorationEnabled).toBe(false)
-    expect(executableStepTypesFor(true)).not.toContain('map_observe')
-    expect(executableStepTypesFor(false)).not.toContain('map_propose')
+    expect(executableStepTypesFor(true, false)).not.toContain('map_observe')
+    expect(executableStepTypesFor(false, false)).not.toContain('map_propose')
   })
 
   it('OMI01 Schema 拒绝 open_in_target / 写入字段', () => {
