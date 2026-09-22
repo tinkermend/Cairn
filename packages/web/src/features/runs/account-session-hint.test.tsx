@@ -39,6 +39,7 @@ const account = {
   hasPassword: true,
   expectedIdentity: null,
   authCapability: 'IDENTITY_VERIFIED' as const,
+  maxConcurrentSessions: 1,
 }
 
 async function renderHint() {
@@ -107,5 +108,24 @@ describe('AccountSessionHint', () => {
     const screen = await renderHint()
     await expect.element(screen.getByText(/将准备新会话/)).toBeInTheDocument()
     expect(document.body.innerText).not.toContain('运行可能等待手工登录')
+  })
+
+  it('达 cap 且全忙时不得写将准备新会话', async () => {
+    mocks.fetchAccountSession.mockResolvedValue({
+      status: 'executing',
+      occupancy: { purpose: 'EXECUTION', occupyingRunId: 'run-1', occupyingOperationId: null },
+      retained: false,
+      session: null,
+      liveCount: 3,
+      effectiveCap: 3,
+      instances: [
+        { status: 'OPEN', occupancy: { purpose: 'EXECUTION' } },
+        { status: 'OPEN', occupancy: { purpose: 'EXECUTION' } },
+        { status: 'OPEN', occupancy: { purpose: 'EXECUTION' } },
+      ],
+    })
+    const screen = await renderHint()
+    await expect.element(screen.getByText(/账号会话已达上限，运行将等待/)).toBeInTheDocument()
+    expect(document.body.innerText).not.toContain('将准备新会话')
   })
 })

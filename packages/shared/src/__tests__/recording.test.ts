@@ -525,3 +525,65 @@ describe('createRecordingBodySchema', () => {
     ).toThrow()
   })
 })
+
+describe('高保真手势与特殊动作规整', () => {
+  it('右键、双击、修饰符点击精准生成对应 candidateStep', () => {
+    const result = normalizeRecording([
+      {
+        ...jsonlActions.clickQuery,
+        button: 'right',
+        clickCount: 1,
+        modifiers: 0,
+      },
+      {
+        ...jsonlActions.clickQuery,
+        button: 'left',
+        clickCount: 2,
+        modifiers: 0,
+      },
+      {
+        ...jsonlActions.clickQuery,
+        button: 'left',
+        clickCount: 1,
+        modifiers: 2, // Control
+      },
+      {
+        name: 'setInputFiles',
+        selector: '#fileInput',
+        files: ['test.pdf'],
+        pageAlias: 'page',
+        framePath: [],
+      },
+    ], { sourceVersion: RECORDER_SOURCE_VERSION })
+
+    expect(result.items).toHaveLength(4)
+
+    // 1. 右键点击
+    const rightClick = result.items[0]!
+    expect(rightClick.name).toBe('右键点击')
+    expect(rightClick.status).toBe('mapped')
+    expect(rightClick.input).toMatchObject({ button: 'right' })
+    expect(recordingItemReady(rightClick)).toBe(true)
+
+    // 2. 双击
+    const dblClick = result.items[1]!
+    expect(dblClick.name).toBe('双击')
+    expect(dblClick.status).toBe('mapped')
+    expect(dblClick.input).toMatchObject({ clickCount: 2 })
+    expect(recordingItemReady(dblClick)).toBe(true)
+
+    // 3. 修饰符点击
+    const modClick = result.items[2]!
+    expect(modClick.name).toBe('Control+点击')
+    expect(modClick.status).toBe('mapped')
+    expect(modClick.input).toMatchObject({ modifiers: ['Control'] })
+    expect(recordingItemReady(modClick)).toBe(true)
+
+    // 4. setInputFiles 待处理
+    const fileUpload = result.items[3]!
+    expect(fileUpload.name).toBe('文件上传')
+    expect(fileUpload.status).toBe('unresolved')
+    expect(fileUpload.diagnostics).toContain('当前版本文件上传需在工作台手动配置')
+    expect(recordingItemReady(fileUpload)).toBe(false)
+  })
+})

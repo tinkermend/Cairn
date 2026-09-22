@@ -1,6 +1,7 @@
 /// <reference types="chrome" />
 import {
   ApiOutlined,
+  CloudUploadOutlined,
   MenuOutlined,
   SendOutlined,
   VideoCameraOutlined,
@@ -14,9 +15,11 @@ import {
   globalThemeConfig,
   useEnvConfig,
 } from '@midscene/visualizer';
-import { App as AntdApp, ConfigProvider, Dropdown, theme } from 'antd';
+import { App as AntdApp, Badge, Button, ConfigProvider, Dropdown, Segmented, Tag, Tooltip, theme } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BrowserExtensionPlayground } from '../../components/playground';
+import { CairnConnectModal } from '../../components/CairnConnectModal';
+import { useCairnStore } from '../../store';
 import Bridge from '../bridge';
 import Recorder from '../recorder';
 import './index.less';
@@ -120,6 +123,20 @@ export function PlaygroundPopup() {
     return (savedMode as 'playground' | 'bridge' | 'recorder') || 'playground';
   });
 
+  const [isCairnModalOpen, setIsCairnModalOpen] = useState(false);
+  const cairnAccount = useCairnStore((state) => state.account);
+  const cairnToken = useCairnStore((state) => state.token);
+  const cairnTargetId = useCairnStore((state) => state.targetId);
+  const cairnTargets = useCairnStore((state) => state.targets);
+
+  const cairnBinding = useCairnStore((state) => state.binding);
+  const currentTarget = cairnTargets.find((t) => t.id === cairnTargetId);
+
+  // 初始化识途平台 Store
+  useEffect(() => {
+    void useCairnStore.getState().initialize();
+  }, []);
+
   // The extension has no user-selectable theme yet, so follow the system
   // preference for both Ant Design portals and shared visualizer styles.
   useEffect(() => {
@@ -212,6 +229,17 @@ export function PlaygroundPopup() {
         localStorage.setItem(STORAGE_KEY, 'bridge');
       },
     },
+    {
+      type: 'divider' as const,
+    },
+    {
+      key: 'cairn-platform',
+      icon: <CloudUploadOutlined style={{ color: cairnToken ? '#52c41a' : undefined }} />,
+      label: cairnAccount ? `识途平台 (${cairnAccount.displayName || cairnAccount.email})` : '连接识途平台...',
+      onClick: () => {
+        setIsCairnModalOpen(true);
+      },
+    },
   ];
 
   const renderContent = () => {
@@ -262,7 +290,7 @@ export function PlaygroundPopup() {
         <div className="popup-wrapper">
           {/* top navigation bar */}
           <div className="popup-nav">
-            <div className="nav-left">
+            <div className="nav-left" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Dropdown
                 menu={{ items: menuItems }}
                 trigger={['click']}
@@ -271,15 +299,23 @@ export function PlaygroundPopup() {
               >
                 <MenuOutlined className="nav-icon menu-trigger" />
               </Dropdown>
-              <span className="nav-title">
-                {currentMode === 'playground'
-                  ? 'Playground'
-                  : currentMode === 'recorder'
-                    ? 'Recorder'
-                    : 'Bridge Mode'}
-              </span>
+              <Segmented
+                size="small"
+                value={currentMode}
+                onChange={(val) => {
+                  const mode = val as 'playground' | 'recorder' | 'bridge';
+                  setCurrentMode(mode);
+                  setPopupTab(mode);
+                  localStorage.setItem(STORAGE_KEY, mode);
+                }}
+                options={[
+                  { label: 'Playground', value: 'playground', icon: <SendOutlined /> },
+                  { label: '录制器', value: 'recorder', icon: <VideoCameraOutlined /> },
+                ]}
+                style={{ fontSize: 11 }}
+              />
             </div>
-            <div className="nav-right">
+            <div className="nav-right" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <NavActions
                 showTooltipWhenEmpty={false}
                 showModelName={false}
@@ -295,8 +331,104 @@ export function PlaygroundPopup() {
             </div>
           </div>
 
+          {/* 常驻识途平台协同横幅 (Cairn Status Bar) */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '5px 12px',
+              backgroundColor: cairnToken ? '#f6f8fb' : '#fffbe6',
+              borderBottom: cairnToken ? '1px solid #eaedf1' : '1px solid #ffe58f',
+              fontSize: 12,
+              lineHeight: '1.4',
+            }}
+          >
+            {cairnToken && cairnAccount ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+                <Badge status="success" />
+                <span style={{ color: '#666', flexShrink: 0 }}>识途:</span>
+                <span
+                  style={{
+                    fontWeight: 600,
+                    color: '#1f2329',
+                    maxWidth: 70,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={cairnAccount.displayName || cairnAccount.email}
+                >
+                  {cairnAccount.displayName || cairnAccount.email}
+                </span>
+                <span style={{ color: '#d9d9d9' }}>|</span>
+                <span style={{ color: '#666', flexShrink: 0 }}>目标:</span>
+                <Tag
+                  color={currentTarget ? 'blue' : 'default'}
+                  style={{
+                    cursor: 'pointer',
+                    margin: 0,
+                    maxWidth: 100,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    fontSize: 11,
+                    lineHeight: '18px',
+                    height: 20,
+                  }}
+                  onClick={() => setIsCairnModalOpen(true)}
+                  title={currentTarget ? currentTarget.name : '点击选择目标系统'}
+                >
+                  {currentTarget ? currentTarget.name : '未选Target'}
+                </Tag>
+                {cairnBinding && (
+                  <Tag color="orange" style={{ margin: 0, fontSize: 10, lineHeight: '18px', height: 20 }}>
+                    协同中
+                  </Tag>
+                )}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+                <Badge status="warning" />
+                <span
+                  style={{
+                    color: '#d48806',
+                    fontSize: 11,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  识途未连接 · 登录后打通目标系统与草稿
+                </span>
+              </div>
+            )}
+
+            <Button
+              size="small"
+              type={cairnToken ? 'link' : 'primary'}
+              onClick={() => setIsCairnModalOpen(true)}
+              style={{
+                fontSize: 11,
+                height: 22,
+                padding: cairnToken ? '0 4px' : '0 8px',
+                backgroundColor: cairnToken ? undefined : '#2B83FF',
+                flexShrink: 0,
+                marginLeft: 4,
+              }}
+            >
+              {cairnToken ? '设置' : '登录识途'}
+            </Button>
+          </div>
+
           {/* main content area */}
           {renderContent()}
+
+          {/* Cairn platform connect modal */}
+          <CairnConnectModal
+            open={isCairnModalOpen}
+            onClose={() => setIsCairnModalOpen(false)}
+          />
         </div>
       </AntdApp>
     </ConfigProvider>

@@ -13,6 +13,7 @@ import {
   SUITE_ADMISSION_PROTOCOL,
   RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
   RESOLUTION_PROTOCOL,
+  SESSION_ACCOUNT_CONCURRENCY_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
   registrationRequiresOccupancy,
   isFinishedRunStatus,
@@ -893,12 +894,28 @@ export async function claimRun(
                 sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
                 or(
                   isNull(runs.targetAccountId),
-                  sql`NOT EXISTS (
+                  sql`EXISTS (
+          SELECT 1 FROM ${browserSessions} s
+           WHERE s.target_id = ${runs.targetId} AND s.target_account_id = ${runs.targetAccountId}
+             AND s.status = 'OPEN' AND s.health <> 'UNHEALTHY'
+             AND s.owner_worker_id = ${input.workerId}
+             AND s.owner_worker_instance_id = ${input.instanceId}
+        )`,
+                  and(
+                    sql`(
+          SELECT COUNT(*) FROM ${browserSessions} s
+           WHERE s.owner_worker_id = ${input.workerId}
+             AND s.status IN ('CREATING', 'OPEN', 'CLOSING')
+        ) < ${worker.maxSessions}`,
+                    worker.protocolCapabilities?.includes(SESSION_ACCOUNT_CONCURRENCY_PROTOCOL)
+                      ? undefined
+                      : sql`NOT EXISTS (
           SELECT 1 FROM ${browserSessions} s
            WHERE s.target_id = ${runs.targetId} AND s.target_account_id = ${runs.targetAccountId}
              AND s.status IN ('CREATING', 'OPEN', 'CLOSING', 'LOST')
              AND NOT (s.status = 'OPEN' AND s.owner_worker_id = ${input.workerId})
         )`,
+                  ),
                 ),
                 sql`(
                   NOT ${jsonHasKey(tx, runs.snapshot, 'mapJob')}
@@ -934,6 +951,7 @@ export async function claimRun(
           instanceId: input.instanceId,
           maxSessions: worker.maxSessions,
           scheduling,
+          protocolCapabilities: worker.protocolCapabilities,
         })
         if (!eligibility.eligible) continue
         await tx

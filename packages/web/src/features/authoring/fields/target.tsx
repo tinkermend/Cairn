@@ -3,6 +3,7 @@ import { useState } from 'react'
 import {
   deriveStepResolutionBadge,
   describeLocatorCandidates,
+  sanitizeLocatorLabel,
   FACTORY_COMPILE_RESOLUTION,
   LOCATOR_BY,
   MAX_FRAME_DEPTH,
@@ -16,9 +17,12 @@ import {
   type RelativeAnchorScope,
   type ResolutionPolicy,
   type TargetDescriptor,
+  type TargetObservation,
 } from '@cairn/shared'
+import { toast } from 'sonner'
 import { fetchScenarioCapabilities } from '@/lib/scenarios-api'
 import { Button } from '@/components/ui/button'
+import { StatusBadge } from '@/components/status-badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -31,6 +35,16 @@ import {
 } from '@/components/ui/select'
 import { fetchTarget } from '@/lib/targets-api'
 import { useAuthoringObserve } from '../observe'
+import {
+  alternativeLabels,
+  candidateCompareText,
+  locatorCandidateSummary,
+  normalizePickLabel,
+  observationPreviewText,
+  pickLabelMismatch,
+  resolvedCandidate,
+  targetFromPickedLabel,
+} from '../pick-apply'
 import { useResolutionTargetId } from '../resolution-source'
 import { ANCHOR_LABELS, BY_LABELS } from './labels'
 
@@ -67,7 +81,7 @@ export function TargetFields({
       ? target.candidates
       : [{ by: 'label' as const, value: '' }]
   const frames = target.framePath ?? []
-  const observeDisabled = disabled && !observe.holding
+  const observeDisabled = disabled && !observe.livePage
   const effective = mergeEffectiveResolution({
     ceiling: capabilities?.ceiling ?? FACTORY_COMPILE_RESOLUTION.ceiling,
     defaultResolution: capabilities?.default ?? FACTORY_COMPILE_RESOLUTION.default,
@@ -89,19 +103,55 @@ export function TargetFields({
       <div className='space-y-2'>
         <div className='flex flex-wrap items-center justify-between gap-2'>
           <Label htmlFor='target-semantic'>目标</Label>
-          <span className='text-label text-muted-foreground'>
-            {RESOLUTION_MODE_LABELS[badge.kind]}
-            {badge.unavailable ? ` · ${badge.unavailable}` : ''}
-          </span>
         </div>
+        {(target.semantic || target.candidates.some((c) => c.value.trim())) ? (
+          <div className='flex items-center justify-between gap-2 rounded-md border border-border-default bg-muted/20 p-2.5'>
+            <div className='min-w-0 flex-1 space-y-0.5'>
+              <div className='flex items-center gap-1.5'>
+                <span className='truncate text-small font-medium text-foreground'>
+                  {target.candidates.find((c) => c.value.trim())
+                    ? `${BY_LABELS[target.candidates.find((c) => c.value.trim())!.by]}: "${target.candidates.find((c) => c.value.trim())!.value}"${target.candidates.find((c) => c.value.trim())!.name ? ` (${sanitizeLocatorLabel(target.candidates.find((c) => c.value.trim())!.name!)})` : ''}`
+                    : sanitizeLocatorLabel(target.semantic ?? '')}
+                </span>
+                <StatusBadge tone='neutral'>{RESOLUTION_MODE_LABELS[badge.kind]}</StatusBadge>
+              </div>
+              {target.semantic && target.candidates.some((c) => c.value.trim()) ? (
+                <p className='truncate text-label text-muted-foreground'>
+                  {sanitizeLocatorLabel(target.semantic)}
+                </p>
+              ) : null}
+              {/* 解析方式只在这里出现一次；AI 兜底不可用的原因跟着它走，否则「规则 · AI 兜底」会误导。 */}
+              {badge.unavailable ? (
+                <p className='truncate text-label text-muted-foreground'>{badge.unavailable}</p>
+              ) : null}
+            </div>
+            {observe.canIndicate ? (
+              <Button
+                type='button'
+                size='sm'
+                variant='ghost'
+                className='h-7 shrink-0 px-2 text-label'
+                onClick={() => {
+                  if (!observe.livePage) {
+                    observe.highlightTarget(target)
+                    return
+                  }
+                  observe.setPickMode(true)
+                }}
+              >
+                重新点选
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         <Input
           id='target-semantic'
-          value={target.semantic ?? ''}
+          value={sanitizeLocatorLabel(target.semantic ?? '')}
           disabled={disabled}
           placeholder='例如：订单列表第一行的删除按钮'
           aria-describedby='target-semantic-hint'
           onChange={(event) => {
-            const semantic = event.target.value.trim() || undefined
+            const semantic = sanitizeLocatorLabel(event.target.value) || undefined
             onChange({
               ...target,
               semantic,
@@ -119,7 +169,7 @@ export function TargetFields({
               size='sm'
               disabled={observeDisabled}
               onClick={() => {
-                if (!observe.holding) {
+                if (!observe.livePage) {
                   observe.highlightTarget(target)
                   return
                 }
@@ -180,15 +230,20 @@ export function TargetFields({
           正在使用临时覆盖目标，只影响本次再试。
         </p>
       ) : null}
-      {observe.highlight?.outcome === 'AMBIGUOUS' && observe.highlight.alternatives?.length ? (
-        <ul
-          className='list-disc space-y-1 ps-5 text-small text-status-warning-foreground'
-          aria-label='多个匹配'
-        >
-          {observe.highlight.alternatives.map((item) => (
-            <li key={`${item.index}-${item.reason}`}>{item.reason}</li>
-          ))}
-        </ul>
+      {observe.highlight && resolvedCandidate(observe.highlight) ? (
+        <PickReconciliationCard
+          observation={observe.highlight}
+          target={target}
+          disabled={observeDisabled}
+          onChange={onChange}
+        />
+      ) : null}
+      {observe.highlight ? (
+        <PickObservationActions
+          observation={observe.highlight}
+          disabled={observeDisabled}
+          hidePreview={Boolean(resolvedCandidate(observe.highlight))}
+        />
       ) : null}
       {observe.highlight && observationShowsFragileCss(observe.highlight) ? (
         <p className='text-small text-status-warning-foreground'>
@@ -301,14 +356,14 @@ export function TargetFields({
               </div>
               {candidate.by === 'role' ? (
                 <Input
-                  value={candidate.name ?? ''}
+                  value={sanitizeLocatorLabel(candidate.name ?? '')}
                   disabled={disabled}
                   aria-label={`角色名称 ${index + 1}`}
                   placeholder='无障碍名称（可选）'
                   onChange={(event) => {
                     const next = candidates.map((item, itemIndex) =>
                       itemIndex === index
-                        ? { ...item, name: event.target.value.trim() || undefined }
+                        ? { ...item, name: sanitizeLocatorLabel(event.target.value) || undefined }
                         : item,
                     )
                     onChange({ ...target, candidates: next })
@@ -463,8 +518,122 @@ export function TargetFields({
   )
 }
 
+function PickReconciliationCard({
+  observation,
+  target,
+  disabled,
+  onChange,
+}: {
+  observation: TargetObservation
+  target: TargetDescriptor
+  disabled?: boolean
+  onChange: (target: TargetDescriptor) => void
+}) {
+  const observe = useAuthoringObserve()
+  const seen = normalizePickLabel(observationPreviewText(observation))
+  const candidate = resolvedCandidate(observation)
+  if (!candidate) return null
+  const willClick = locatorCandidateSummary(candidate)
+  const mismatch = pickLabelMismatch(seen, candidateCompareText(candidate))
+  return (
+    <div
+      className='space-y-1.5 rounded-md border border-border-default bg-muted/20 p-2.5'
+      aria-label='点选对账'
+    >
+      <p className='text-small text-foreground'>将要点：{willClick}</p>
+      {mismatch ? (
+        <div className='space-y-2'>
+          <p className='text-small text-muted-foreground'>画面上读到：「{seen}」</p>
+          <p className='text-small text-status-warning-foreground'>
+            和画面上的字不一样，执行时可能点到旁边的菜单。
+          </p>
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            disabled={disabled || !observe.canHighlight}
+            onClick={() => {
+              const previous = target
+              const next = targetFromPickedLabel(seen, target)
+              onChange(next)
+              void observe.highlightTarget(next, { silent: true }).then((result) => {
+                if (result?.outcome === 'FOUND') return
+                onChange(previous)
+                toast.message(`画面上有多个「${seen}」，保留原来的定位`)
+              })
+            }}
+          >
+            改用画面上的字
+          </Button>
+        </div>
+      ) : !seen ? (
+        <p className='text-small text-muted-foreground'>
+          这个对象在画面上没有文字，只能靠定位识别
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function PickObservationActions({
+  observation,
+  disabled,
+  hidePreview,
+}: {
+  observation: TargetObservation
+  disabled?: boolean
+  hidePreview?: boolean
+}) {
+  const observe = useAuthoringObserve()
+  const preview = observationPreviewText(observation)
+  const labels = alternativeLabels(observation)
+  return (
+    <div className='space-y-2'>
+      {preview && !hidePreview ? (
+        <p className='text-small text-foreground'>
+          画面上读到「<span className='font-medium'>{preview}</span>」。
+          {observation.outcome === 'FOUND'
+            ? '提取步骤会取这段文本；要判断对错请写成成功条件。'
+            : '定位还不唯一，可先用这段内容做判断，或选下面更具体的一条。'}
+        </p>
+      ) : null}
+      {observation.outcome === 'AMBIGUOUS' && labels.length > 0 ? (
+        <div className='space-y-1.5' aria-label='多个匹配'>
+          <p className='text-small text-status-warning-foreground'>
+            点到多处。选一条写入当前步骤的定位和判断：
+          </p>
+          <div className='flex flex-wrap gap-1.5'>
+            {labels.map((label) => (
+              <Button
+                key={label}
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={disabled}
+                onClick={() => observe.adoptAlternative(label)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {preview || observe.lastPicked || observation.target ? (
+        <Button
+          type='button'
+          size='sm'
+          variant='outline'
+          disabled={disabled}
+          onClick={() => observe.applyAsOutcome()}
+        >
+          {preview ? `用「${preview}」添加成功条件` : '用点到的对象添加成功条件'}
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
 export function withPickedSemantic(target: TargetDescriptor): TargetDescriptor {
-  if (target.semantic?.trim()) return target
-  const semantic = describeLocatorCandidates(target.candidates)
+  const semantic = sanitizeLocatorLabel(target.semantic ?? '') || describeLocatorCandidates(target.candidates)
   return semantic ? { ...target, semantic } : target
 }

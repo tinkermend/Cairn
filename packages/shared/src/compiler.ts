@@ -36,6 +36,7 @@ export const COMPILE_DIAGNOSTIC_CODES = [
   'SCENARIO_NO_OUTCOME',
   'SCENARIO_OUTCOME_INFO_ONLY',
   'SCENARIO_SIDE_EFFECT_WITHOUT_OUTCOME',
+  'OUTCOME_RULE_TARGET_MISSING',
   'OUTCOME_CONTRACT_INVALID',
   'RUNTIME_INVARIANT_INVALID',
   'SCENARIO_FROM_FIELD_MISSING',
@@ -102,7 +103,19 @@ export function outputShapeForStep(step: Step): OutputShape {
       ],
     }
   }
-  if (step.type === 'extract' || step.type === 'echo') return { kind: 'scalar', type: 'json' }
+  if (step.type === 'upload') {
+    return {
+      kind: 'object',
+      fields: [
+        { name: 'files', type: 'json', required: true },
+        { name: 'method', type: 'string', required: true },
+        { name: 'uploadedAt', type: 'string', required: true },
+      ],
+    }
+  }
+  if (step.type === 'download' || step.type === 'extract' || step.type === 'echo') {
+    return { kind: 'scalar', type: 'json' }
+  }
   return { kind: 'unknown' }
 }
 

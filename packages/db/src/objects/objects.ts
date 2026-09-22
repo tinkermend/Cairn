@@ -32,8 +32,9 @@ export type StoredObjectRecord = {
   id: string
   objectKey: string
   runId: string | null
-  ownerKind: 'run' | 'artifact'
+  ownerKind: 'run' | 'artifact' | 'fixture'
   artifactId: string | null
+  fixtureId?: string | null
   status: StoredObjectStatus
   contentType: string | null
   byteSize: number | null
@@ -627,6 +628,7 @@ function toRecord(row: StoredObjectRow): StoredObjectRecord {
     runId: row.runId,
     ownerKind: row.ownerKind ?? 'run',
     artifactId: row.artifactId ?? null,
+    fixtureId: row.fixtureId ?? null,
     status: row.status,
     contentType: row.contentType,
     byteSize: row.byteSize,

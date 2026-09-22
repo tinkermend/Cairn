@@ -39,7 +39,7 @@ export function PlacementHint({
       ) : (
         ''
       )}
-      {placement.generation ? ` · 代次 ${placement.generation}` : ''}
+      {placement.generation ? ` · 实例 #${placement.generation}` : ''}
       {placement.ownerWorkerId ? ` · Worker ${placement.ownerWorkerId}` : ''}
       {placement.acquireReason === 'created' ? ' · 新建会话' : null}
       {placement.acquireReason === 'reused' ? ' · 复用会话' : null}

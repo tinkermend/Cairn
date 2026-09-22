@@ -1351,6 +1351,8 @@ export {
   changePasswordBodySchema,
   setPasswordBodySchema,
   updateMeBodySchema,
+  DEFAULT_AVATAR_STYLE,
+  PRESET_AVATAR_SEEDS,
   AUDIT_ACTIONS,
   OPERATION_AUDIT_ACTIONS,
   AUDIT_CATEGORIES,
@@ -1514,6 +1516,15 @@ export {
   selectStepSchema,
   keyboardStepSchema,
   waitStepSchema,
+  downloadStepSchema,
+  downloadInputSchema,
+  downloadStepOutputSchema,
+  uploadStepSchema,
+  uploadInputSchema,
+  uploadStepOutputSchema,
+  uploadFileItemSchema,
+  uploadAssetSourceSchema,
+  uploadContextSourceSchema,
   aiActionStepSchema,
   aiExtractStepSchema,
   aiAssertStepSchema,
@@ -1557,6 +1568,14 @@ export {
   type SelectStep,
   type KeyboardStep,
   type WaitStep,
+  type DownloadStep,
+  type DownloadInput,
+  type UploadStep,
+  type UploadInput,
+  type UploadStepOutput,
+  type UploadFileItem,
+  type UploadAssetSource,
+  type UploadContextSource,
   type AiActionStep,
   type AiExtractStep,
   type AiAssertStep,
@@ -1565,6 +1584,9 @@ export {
   type MapGuardedActionStep,
   type MapVerifyStep,
   type Step,
+  SCENARIO_INPUT_TYPES,
+  scenarioInputTypeSchema,
+  type ScenarioInputType,
 } from './step.js'
 export {
   FORBIDDEN_OUTPUT_FIELD_NAMES,
@@ -1677,6 +1699,7 @@ export {
   candidateTrySchema,
   resolverDiagnosticsSchema,
   browserCommandSchema,
+  resolvedUploadFileSchema,
   browserCommandResultSchema,
   screenshotPointerSchema,
   evidenceObjectPointerSchema,
@@ -1690,6 +1713,7 @@ export {
   type CandidateTry,
   type ResolverDiagnostics,
   type BrowserCommand,
+  type ResolvedUploadFile,
   type BrowserCommandResult,
   type ScreenshotPointer,
   type EvidenceObjectPointer,
@@ -1800,6 +1824,7 @@ export {
   frozenResolutionSchema,
   freezeResolutionSnapshot,
   describeLocatorCandidates,
+  sanitizeLocatorLabel,
   normalizeCrossCheckText,
   CROSS_CHECK_CONTAINER_TAGS,
   isCrossCheckContainerTag,
@@ -1965,10 +1990,14 @@ export {
   platformAiBaseUrlsEquivalent,
   isPlatformAiPresetBaseUrl,
   nextPlatformAiBaseUrl,
+  nextPlatformAiModel,
+  platformAiDefaultModel,
+  isPlatformAiPresetModel,
   buildPlatformAiChatBody,
   readPlatformAiChatResult,
   postPlatformAiChatCompletion,
   type PlatformAiConnectionFields,
+  type PlatformAiModelPreset,
   type PlatformAiChatMessage,
   type PlatformAiChatRead,
 } from './platform-ai-provider.js'
@@ -2168,6 +2197,20 @@ export {
   type RunVideoManifest,
   type RunVideoSegmentManifest,
 } from './run-video.js'
+export {
+  buildRunVideoChapters,
+  captureMsToMediaSeconds,
+  mediaSecondsToCaptureMs,
+  chapterAtPlayhead,
+  gapAtPlayhead,
+  type RunVideoGapKind,
+  type RunVideoAlignment,
+  type RunVideoChapter,
+  type RunVideoPin,
+  type RunVideoGap,
+  type RunVideoChapterModel,
+  type BuildRunVideoChaptersInput,
+} from './run-video-chapters.js'
 export { parseHttpRange, contentRangeHeader, type HttpByteRange } from './http-range.js'
 export {
   CLEANUP_FAILURE_MIN_ATTEMPTS,
@@ -2257,6 +2300,7 @@ export {
   objectKeySchema,
   objectKeyFor,
   artifactObjectKeyFor,
+  fixtureObjectKeyFor,
   isAbsoluteFsPath,
   ObjectStoreError,
   isObjectStoreError,
@@ -2268,6 +2312,15 @@ export {
   type ObjectDigest,
   type ObjectKey,
 } from './object-store.js'
+export {
+  RUN_FILE_HANDLE_KIND,
+  runFileHandleSchema,
+  asRunFileHandle,
+  safeDownloadFileName,
+  targetFixtureDtoSchema,
+  type RunFileHandle,
+  type TargetFixtureDto,
+} from './run-file.js'
 export {
   RUN_EVENT_TYPES,
   runEventTypeSchema,
@@ -2545,6 +2598,7 @@ export {
   recordingDispositionSchema,
   recordingImportPreviewItemSchema,
   previewRecordingImportBodySchema,
+  recordingReadinessMetricsSchema,
   recordingImportPreviewSchema,
   applyRecordingImportBodySchema,
   recordingImportReceiptSchema,
@@ -2566,6 +2620,7 @@ export {
   type OpenRecordingBindingResponse,
   type RecordingDisposition,
   type RecordingImportPreviewItem,
+  type RecordingReadinessMetrics,
   type PreviewRecordingImportBody,
   type RecordingImportPreview,
   type ApplyRecordingImportBody,
@@ -3248,3 +3303,7 @@ export * from './notifications.js'
 export * from './suites.js'
 export * from './reports.js'
 export * from './overview-analytics.js'
+export * from './data-generator.js'
+export * from './dataset.js'
+export * from './batch.js'
+export * from './dataset-parser.js'

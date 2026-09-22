@@ -16,6 +16,7 @@ import {
   entityIdSchema,
   hasPermission,
   isSessionIdleOnlyKind,
+  observeOperationSchema,
   acquireAuthControlBodySchema,
   authControlInputBodySchema,
   authControlTokenBodySchema,
@@ -31,6 +32,7 @@ import {
   type AuthControlTokenBody,
   type BrowserSessionListQuery,
   type DisposeSessionBody,
+  type ObserveOperation,
   type RequestSessionOperationBody,
   type SessionObserveQuery,
   type SessionOverviewQuery,
@@ -121,6 +123,17 @@ export class BrowserSessionsController {
       response: res,
       signal: abortWhenSseClientDrops(req, res),
     })
+  }
+
+  @Post(':sessionId/observe')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:read', 'session:view', 'workflow:write')
+  observeSession(
+    @Param('sessionId', new ZodValidationPipe(entityIdSchema)) sessionId: string,
+    @Body(new ZodValidationPipe(observeOperationSchema)) body: ObserveOperation,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.sessions.observe(sessionId, body, actor)
   }
 
   @Post(':sessionId/dispose')
@@ -252,8 +265,9 @@ export class AccountSessionController {
     @Param('targetId', new ZodValidationPipe(entityIdSchema)) targetId: string,
     @Param('accountId', new ZodValidationPipe(entityIdSchema)) accountId: string,
     @Query('cursor') cursor?: string,
+    @Query('sessionId') sessionId?: string,
   ) {
-    return this.sessions.accountEvents(targetId, accountId, cursor)
+    return this.sessions.accountEvents(targetId, accountId, cursor, sessionId)
   }
 
   @Post('operations')

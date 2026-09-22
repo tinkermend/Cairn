@@ -93,6 +93,8 @@ describe('续跑后观察会话', () => {
     expect(meta.framesAvailable).toBe(true)
     expect(meta.sessionId).toBe(sessionId)
     expect(meta.currentPage?.currentExecution).toBe(true)
+    expect(meta.currentPage?.url).toBe('https://shop.example.com/app')
+    expect(meta.lastAuthError).toBeNull()
     // 被观察的会话要刷新最后使用时间，否则正在被人看着的会话会被空闲回收。
     expect(mocks.touchSessionUsed).toHaveBeenCalledWith(
       expect.anything(),

@@ -43,7 +43,9 @@ type RunResolutionDecisionsProps = {
 
 export function RunResolutionDecisions(props: RunResolutionDecisionsProps) {
   const [selectedStep, setSelectedStep] = useState('')
-  const canRead = useCan('run:read') && useCan('target:read')
+  const canReadRun = useCan('run:read')
+  const canReadTarget = useCan('target:read')
+  const canRead = canReadRun && canReadTarget
   if (!canRead) return null
   return (
     <div className='space-y-3'>
@@ -82,7 +84,9 @@ function DecisionPage({
   stepRunId?: string
   steps?: RunDetailDto['stepRuns']
 }) {
-  const canRead = useCan('run:read') && useCan('target:read')
+  const canReadRun = useCan('run:read')
+  const canReadTarget = useCan('target:read')
+  const canRead = canReadRun && canReadTarget
   const [cursors, setCursors] = useState<(string | undefined)[]>([undefined])
   const cursor = cursors[cursors.length - 1]
   const query = useQuery({

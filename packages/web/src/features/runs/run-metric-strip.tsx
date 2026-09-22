@@ -164,6 +164,7 @@ export function RunMetricStrip({ run }: Props) {
           <OutcomeAxisSummary
             executionLabel={RUN_EXECUTION_AXIS_LABELS[run.status]}
             outcomeStatus={run.outcomeStatus}
+            hasContracts={Boolean(run.snapshot.outcomeManifest?.entries.length)}
           />
         </div>
         <div className='mt-2 border-t border-border-card/60 pt-2 text-label text-muted-foreground truncate'>

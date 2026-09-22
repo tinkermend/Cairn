@@ -51,6 +51,28 @@ describe('browser runtime + HMI 夹具', { timeout: 120_000 }, () => {
     // 内嵌最小登录页，避免依赖外部 HMI 进程
     server = createServer((req, res) => {
       const url = req.url ?? '/'
+      if (url.startsWith('/login-generic') && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end(`<!doctype html><html><body>
+          <form method="POST" action="/login">
+            <input type="text" />
+            <input type="password" />
+            <button type="submit">登录</button>
+          </form>
+        </body></html>`)
+        return
+      }
+      if (url.startsWith('/login-dpm') && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end(`<!doctype html><html><body>
+          <div class="login-card">
+            <input class="input-account" type="text" />
+            <input class="input-account" type="password" />
+            <button class="el-button--primary" type="submit" onclick="document.cookie='hmi=ok; Path=/'; location.href='/'">登录</button>
+          </div>
+        </body></html>`)
+        return
+      }
       if (url.startsWith('/login') && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'text/html' })
         res.end(`<!doctype html><html><body>
@@ -148,5 +170,77 @@ describe('browser runtime + HMI 夹具', { timeout: 120_000 }, () => {
     const stop = await stopSession(handle)
     expect(stop).toBe('stopped')
     handle = undefined
+  })
+
+  it('未指定登录框时按启发式试填常见 id/name', async ({ skip }) => {
+    if (!hasBrowser) {
+      skip()
+      return
+    }
+    const key = {
+      targetId: '00000000-0000-4000-8000-0000000000cc',
+      targetAccountId: '00000000-0000-4000-8000-0000000000dd',
+    }
+    const { profileDir } = ensureProfileDir(profileRoot, key)
+    await withTestOccupancy(async () => {
+      handle = await launchSession(profileDir, { headless: true })
+      const target = {
+        entryUrl: `${baseUrl}/`,
+        loginUrl: `${baseUrl}/login`,
+        loginFields: null,
+      }
+      expect(
+        await loginWithCredentials(handle, target, { username: 'demo', password: 'x' }),
+      ).toBe(true)
+      expect(await probeAuth(handle, target)).toBe('AUTHENTICATED')
+    })
+    if (handle) {
+      await stopSession(handle)
+      handle = undefined
+    }
+  })
+
+  it('常见字段清单未覆盖的登录页仍可用同表单/相邻输入推断', async ({ skip }) => {
+    if (!hasBrowser) {
+      skip()
+      return
+    }
+    const key = {
+      targetId: '00000000-0000-4000-8000-0000000000ee',
+      targetAccountId: '00000000-0000-4000-8000-0000000000ff',
+    }
+    const { profileDir } = ensureProfileDir(profileRoot, key)
+    await withTestOccupancy(async () => {
+      handle = await launchSession(profileDir, { headless: true })
+      expect(
+        await loginWithCredentials(
+          handle,
+          { entryUrl: `${baseUrl}/`, loginUrl: `${baseUrl}/login-generic`, loginFields: null },
+          { username: 'demo', password: 'x' },
+        ),
+      ).toBe(true)
+    })
+    if (handle) {
+      await stopSession(handle)
+      handle = undefined
+    }
+    const { profileDir: dpmDir } = ensureProfileDir(profileRoot, {
+      targetId: '00000000-0000-4000-8000-000000000011',
+      targetAccountId: '00000000-0000-4000-8000-000000000012',
+    })
+    await withTestOccupancy(async () => {
+      handle = await launchSession(dpmDir, { headless: true })
+      expect(
+        await loginWithCredentials(
+          handle,
+          { entryUrl: `${baseUrl}/`, loginUrl: `${baseUrl}/login-dpm`, loginFields: null },
+          { username: 'demo', password: 'x' },
+        ),
+      ).toBe(true)
+    })
+    if (handle) {
+      await stopSession(handle)
+      handle = undefined
+    }
   })
 })

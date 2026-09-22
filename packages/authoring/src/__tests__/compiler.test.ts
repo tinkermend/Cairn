@@ -235,7 +235,11 @@ describe('compileScenarioDocument', () => {
             onViolation: 'continue',
             provenance: 'manual',
             stepId: ids.c,
-            rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+            rule: {
+              kind: 'deterministic',
+              target: { framePath: [], candidates: [{ by: 'label', value: '提示' }] },
+              expect: { kind: 'exists' },
+            },
           },
         ],
       },
@@ -270,7 +274,11 @@ describe('compileScenarioDocument', () => {
             provenance: 'manual',
             stepId: ids.d,
             sourceStepId: ids.a,
-            rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+            rule: {
+              kind: 'deterministic',
+              target: { framePath: [], candidates: [{ by: 'label', value: '结果' }] },
+              expect: { kind: 'visible' },
+            },
           },
         ],
       },
@@ -415,5 +423,62 @@ describe('compileScenarioDocument', () => {
     expect(result.diagnostics).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_WAIT_KIND_UNAVAILABLE' })]),
     )
+  })
+
+  it('确定性成功条件缺 target 时草稿警告、发布阻断', () => {
+    const source = document([navigate(ids.a)])
+    const outcomeManifest = {
+      entries: [
+        {
+          contractId: ids.b,
+          scope: 'step' as const,
+          meaning: '尚未从页面选择要检查的内容',
+          severity: 'MUST' as const,
+          onViolation: 'halt' as const,
+          provenance: 'manual' as const,
+          stepId: ids.a,
+          rule: { kind: 'deterministic' as const, expect: { kind: 'exists' as const } },
+        },
+      ],
+    }
+    const saved = compileScenarioDocument(source, { mode: 'save', outcomeManifest })
+    expect(saved.ok).toBe(true)
+    expect(saved.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'OUTCOME_RULE_TARGET_MISSING', severity: 'warning' }),
+      ]),
+    )
+    const released = compileScenarioDocument(source, { mode: 'release', outcomeManifest })
+    expect(released.ok).toBe(false)
+    expect(released.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'OUTCOME_RULE_TARGET_MISSING', severity: 'error' }),
+      ]),
+    )
+  })
+
+  it('aria_snapshot 成功条件允许省略 target', () => {
+    const source = document([navigate(ids.a)])
+    const result = compileScenarioDocument(source, {
+      mode: 'release',
+      outcomeManifest: {
+        entries: [
+          {
+            contractId: ids.b,
+            scope: 'scenario',
+            meaning: '页面结构仍在',
+            severity: 'MUST',
+            onViolation: 'halt',
+            provenance: 'manual',
+            stepId: ids.a,
+            rule: {
+              kind: 'deterministic',
+              expect: { kind: 'aria_snapshot', template: '- heading "首页"' },
+            },
+          },
+        ],
+      },
+    })
+    expect(result.diagnostics.some((item) => item.code === 'OUTCOME_RULE_TARGET_MISSING')).toBe(false)
   })
 })

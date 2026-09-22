@@ -9,6 +9,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { fieldElementId, type BindingOption } from '../document'
+import { useAuthoringObserve } from '../observe'
+import { ContextBindingPopover } from './context-binding-popover'
 
 export function BindingFields({
   id,
@@ -29,6 +31,7 @@ export function BindingFields({
   disabled?: boolean
   onBinding: (from: string, value: string, fromField?: string) => void
 }) {
+  const observe = useAuthoringObserve()
   const known = bindings.some((item) => item.key === from)
   const custom = Boolean(from) && !known
   const objectFields = shape?.kind === 'object' ? shape.fields : []
@@ -37,7 +40,20 @@ export function BindingFields({
     <div className='space-y-3'>
       <div className='grid gap-3 sm:grid-cols-2'>
         <div className='space-y-2'>
-          <Label>引用上下文</Label>
+          <div className='flex items-center justify-between gap-1'>
+            <Label>引用上下文</Label>
+            <ContextBindingPopover
+              bindings={bindings}
+              run={observe.run}
+              disabled={disabled}
+              onBind={(b) => {
+                if (b.sourceStepId && !bindings.some((item) => item.key === b.from)) {
+                  observe.ensureStepOutputKey?.(b.sourceStepId, b.from)
+                }
+                onBinding(b.from, '', b.fromField)
+              }}
+            />
+          </div>
           <Select
             value={custom ? '__custom__' : from || '__literal__'}
             disabled={disabled}

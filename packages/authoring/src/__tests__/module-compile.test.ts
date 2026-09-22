@@ -20,6 +20,7 @@ describe('AM-A: 模块编译', () => {
           kind: 'text_contains',
           value: '订单详情',
         },
+        target: { framePath: [], candidates: [{ by: 'text', value: '订单详情' }] },
       },
     }
 
@@ -177,7 +178,10 @@ describe('AM-A: 模块编译', () => {
                   name: '初始断言',
                   type: 'assert',
                   effectType: 'READ_ONLY',
-                  input: { expect: { kind: 'text_contains', value: '首页' } },
+                  input: {
+                    expect: { kind: 'text_contains', value: '首页' },
+                    target: { framePath: [], candidates: [{ by: 'text', value: '首页' }] },
+                  },
                 },
                 {
                   id: step1Id,
@@ -422,7 +426,16 @@ describe('AM-A: 模块编译', () => {
 
 describe('AM-A review regressions', () => {
   const id = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`
-  const assertion = (n: number): Step => ({ id: id(n), type: 'assert', name: '页面容器存在', effectType: 'READ_ONLY', input: { expect: { kind: 'text_contains', value: '条' } } })
+  const assertion = (n: number): Step => ({
+    id: id(n),
+    type: 'assert',
+    name: '页面容器存在',
+    effectType: 'READ_ONLY',
+    input: {
+      expect: { kind: 'text_contains', value: '条' },
+      target: { framePath: [], candidates: [{ by: 'text', value: '条' }] },
+    },
+  })
   const click: Step = { id: id(2), type: 'click', name: '查询', effectType: 'SIDE_EFFECT', input: { target: { framePath: [], candidates: [{ by: 'role', value: 'button', name: '查询' }] } } }
   const content = (): ModuleContent => ({ contract: { inputs: [], outputs: [], effectCeiling: 'SIDE_EFFECT', preconditions: [{ meaning: '允许查询', verification: { kind: 'step', stepId: id(1) } }], postconditions: [{ meaning: '结果存在', verification: { kind: 'step', stepId: id(3) } }] }, implementations: [{ implementationKey: 'default', kind: 'structured_steps', steps: [assertion(1), click, assertion(3)], outputMapping: {} }] })
   it('交互之后的静态容器断言仍阻断发布；加载消失判据后允许发布', () => {

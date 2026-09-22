@@ -1,23 +1,68 @@
-import { loadTargetForExecution, type DbHandle } from '@cairn/db'
+import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import { readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
+import { loadTargetForExecution, resolveFixtureForRun, type DbHandle } from '@cairn/db'
 import {
+  asRunFileHandle,
   BROWSER_STEP_TYPES,
   originsFromTargetUrls,
+  readContextValue,
   retainUntilFor,
+  RUN_FILE_HANDLE_KIND,
   type BrowserCommand,
+  type BrowserCommandResult,
+  type DownloadStep,
   type ExecutionError,
   type JsonValue,
+  type ResolvedUploadFile,
+  type RunFileHandle,
   type RunSnapshot,
   type Step,
   type TargetDescriptor,
+  type UploadStep,
+  type EvidenceMetadata,
+  safeDownloadFileName,
 } from '@cairn/shared'
 import { MapConsumptionService } from '../map/consumption.service.js'
+import type { ObjectService } from '../objects/object.service.js'
 import type { AiPort, BrowserPort } from './ports.js'
 import { persistResolutionDecision, resolutionError, runResolutionLadder } from './resolution-ladder.js'
+import {
+  ensureWorkspaceDirs,
+  runFileWorkspaceDir,
+  runFileWorkspaceDownloadDir,
+} from './run-file-workspace.js'
 import type {
   StepExecutionContext,
   StepExecutionOutcome,
   StepExecutor,
 } from './step-executor.js'
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.json': 'application/json',
+  '.csv': 'text/csv',
+  '.txt': 'text/plain',
+  '.html': 'text/html',
+  '.zip': 'application/zip',
+  '.tar': 'application/x-tar',
+  '.gz': 'application/gzip',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+}
+
+function guessMimeType(fileName: string): string {
+  const ext = fileName.toLowerCase().slice(fileName.lastIndexOf('.'))
+  return MIME_BY_EXT[ext] ?? 'application/octet-stream'
+}
 
 export class BrowserStepExecutor implements StepExecutor {
   readonly supportedTypes: readonly string[] = [...BROWSER_STEP_TYPES]
@@ -27,6 +72,7 @@ export class BrowserStepExecutor implements StepExecutor {
     private readonly browser?: BrowserPort,
     private readonly ai?: AiPort,
     private readonly consumption = new MapConsumptionService(handle, browser),
+    private readonly objects?: ObjectService,
   ) {}
 
   async execute(ctx: StepExecutionContext): Promise<StepExecutionOutcome> {
@@ -64,7 +110,7 @@ export class BrowserStepExecutor implements StepExecutor {
       }
     }
 
-    const commandOutcome = await this.toBrowserCommand(step, input, targetId, ctx.snapshot)
+    const commandOutcome = await this.toBrowserCommand(step, input, targetId, ctx.snapshot, ctx)
     if (!commandOutcome.ok) {
       return {
         kind: 'failed',
@@ -86,6 +132,30 @@ export class BrowserStepExecutor implements StepExecutor {
       screenshotViewport: evidencePolicy.screenshotViewport,
       sensitiveSelectors: ctx.snapshot.targetAuth?.sensitiveSelectors ?? [],
     }
+
+    if (step.type === 'download') {
+      const rawResult = await this.browser.execute(
+        sessionGrant,
+        commandOutcome.command,
+        signal,
+        { ...evidence, commandType: 'download' },
+      )
+
+      if (!rawResult.ok) {
+        return {
+          kind: 'failed',
+          error: rawResult.error,
+          timedOut: rawResult.error.category === 'TIMEOUT',
+          aborted: rawResult.error.code === 'CANCELLED',
+          diagnostics: rawResult.diagnostics,
+          screenshot: rawResult.screenshot,
+          trace: rawResult.trace,
+        }
+      }
+
+      return this.handleDownloadOutcome(ctx, step, rawResult)
+    }
+
     return runResolutionLadder({
       handle: this.handle,
       ctx,
@@ -98,11 +168,171 @@ export class BrowserStepExecutor implements StepExecutor {
     })
   }
 
+  private async handleDownloadOutcome(
+    ctx: StepExecutionContext,
+    step: DownloadStep,
+    rawResult: BrowserCommandResult & { downloadPath?: string },
+  ): Promise<StepExecutionOutcome> {
+    const downloadPath = rawResult.downloadPath ?? (rawResult.output as any)?.downloadPath
+    if (!downloadPath) {
+      return {
+        kind: 'failed',
+        error: {
+          code: 'DOWNLOAD_FAILED',
+          category: 'EXECUTOR',
+          retryable: true,
+          safeMessage: '下载完成但未获取到本地落盘路径',
+        },
+        diagnostics: rawResult.diagnostics,
+        screenshot: rawResult.screenshot,
+        trace: rawResult.trace,
+        timedOut: false,
+        aborted: false,
+      }
+    }
+
+    try {
+      const fileStat = await stat(downloadPath)
+      const rawFileName = basename(downloadPath).replace(/^[a-f0-9-]+-/, '')
+      const fileName = safeDownloadFileName(rawFileName)
+
+      // 1. expect 校验
+      if (step.input.expect) {
+        const { fileNamePattern, minBytes } = step.input.expect
+        if (minBytes !== undefined && fileStat.size < minBytes) {
+          await rm(downloadPath, { force: true }).catch(() => undefined)
+          return {
+            kind: 'failed',
+            error: {
+              code: 'DOWNLOAD_REJECTED',
+              category: 'VALIDATION',
+              retryable: false,
+              safeMessage: `下载文件大小 ${fileStat.size} 字节低于期望的 ${minBytes} 字节`,
+            },
+            diagnostics: rawResult.diagnostics,
+            screenshot: rawResult.screenshot,
+            trace: rawResult.trace,
+            timedOut: false,
+            aborted: false,
+          }
+        }
+        if (fileNamePattern) {
+          const regex = new RegExp(fileNamePattern)
+          if (!regex.test(fileName)) {
+            await rm(downloadPath, { force: true }).catch(() => undefined)
+            return {
+              kind: 'failed',
+              error: {
+                code: 'DOWNLOAD_REJECTED',
+                category: 'VALIDATION',
+                retryable: false,
+                safeMessage: `下载文件名「${fileName}」不匹配模式「${fileNamePattern}」`,
+              },
+              diagnostics: rawResult.diagnostics,
+              screenshot: rawResult.screenshot,
+              trace: rawResult.trace,
+              timedOut: false,
+              aborted: false,
+            }
+          }
+        }
+      }
+
+      // 2. 超过 CAIRN_OBJECT_MAX_BYTES（默认 32MB）限制校验
+      if (fileStat.size > 32 * 1024 * 1024) {
+        await rm(downloadPath, { force: true }).catch(() => undefined)
+        return {
+          kind: 'failed',
+          error: {
+            code: 'DOWNLOAD_TOO_LARGE',
+            category: 'VALIDATION',
+            retryable: false,
+            safeMessage: `下载文件大小 ${fileStat.size} 超过单对象大小上限`,
+          },
+          diagnostics: rawResult.diagnostics,
+          screenshot: rawResult.screenshot,
+          trace: rawResult.trace,
+          timedOut: false,
+          aborted: false,
+        }
+      }
+
+      // 3. 落证据与存储
+      const contentType = guessMimeType(fileName)
+      let meta: EvidenceMetadata | undefined
+      if (this.objects) {
+        meta = await this.objects.putObjectEvidence({
+          type: 'file',
+          runId: ctx.runId,
+          stepRunId: ctx.stepRunId,
+          attemptId: ctx.attemptId,
+          artifactKey: `download:${ctx.attemptId}`,
+          filePath: downloadPath,
+          contentType,
+        })
+        if (meta.status === 'missing') {
+          await rm(downloadPath, { force: true }).catch(() => undefined)
+          return {
+            kind: 'failed',
+            error: {
+              code: meta.missingReason === 'file_too_large' ? 'DOWNLOAD_TOO_LARGE' : 'FILE_OBJECT_UNAVAILABLE',
+              category: meta.missingReason === 'file_too_large' ? 'VALIDATION' : 'INFRASTRUCTURE',
+              retryable: meta.missingReason !== 'file_too_large',
+              safeMessage: `保存下载文件失败: ${meta.missingReason}`,
+            },
+            diagnostics: rawResult.diagnostics,
+            screenshot: rawResult.screenshot,
+            trace: rawResult.trace,
+            timedOut: false,
+            aborted: false,
+          }
+        }
+      }
+
+      const fileBytes = await readFile(downloadPath)
+      const digest = `sha256:${createHash('sha256').update(fileBytes).digest('hex')}`
+      const handle: RunFileHandle = {
+        kind: RUN_FILE_HANDLE_KIND,
+        scope: 'run',
+        runId: ctx.runId,
+        objectKey: meta?.objectKey ?? `v1/runs/${ctx.runId}/${ctx.attemptId}`,
+        name: fileName,
+        mimeType: contentType,
+        byteSize: fileStat.size,
+        digest: meta?.digest ?? digest,
+        createdAt: typeof meta?.createdAt === 'string' ? meta.createdAt : meta?.createdAt ? (meta.createdAt as any).toISOString() : new Date().toISOString(),
+      }
+
+      return {
+        kind: 'success',
+        output: handle,
+        screenshot: rawResult.screenshot,
+        trace: rawResult.trace,
+      }
+    } catch (err) {
+      return {
+        kind: 'failed',
+        error: {
+          code: 'DOWNLOAD_FAILED',
+          category: 'EXECUTOR',
+          retryable: true,
+          safeMessage: `处理下载文件失败: ${err instanceof Error ? err.message : String(err)}`,
+        },
+        diagnostics: rawResult.diagnostics,
+        screenshot: rawResult.screenshot,
+        trace: rawResult.trace,
+        timedOut: false,
+        aborted: false,
+      }
+    }
+  }
+
   private async toBrowserCommand(
     step: Step,
     input: JsonValue,
     targetId: string,
     snapshot: RunSnapshot,
+    ctx?: StepExecutionContext,
   ): Promise<{ ok: true; command: BrowserCommand } | { ok: false; error: ExecutionError }> {
     if (step.type === 'navigate') {
       const url =
@@ -141,7 +371,7 @@ export class BrowserStepExecutor implements StepExecutor {
           ...('button' in extras && extras.button ? { button: extras.button as 'left' | 'right' | 'middle' } : {}),
           ...('clickCount' in extras && extras.clickCount ? { clickCount: extras.clickCount as 1 | 2 } : {}),
           ...('modifiers' in extras && Array.isArray(extras.modifiers) && extras.modifiers.length
-            ? { modifiers: extras.modifiers as ('Alt' | 'Control' | 'Meta' | 'Shift')[] }
+            ? { modifiers: extras.modifiers as Array<'Alt' | 'Control' | 'Meta' | 'Shift'> }
             : {}),
         },
       }
@@ -152,28 +382,30 @@ export class BrowserStepExecutor implements StepExecutor {
       const value =
         input && typeof input === 'object' && !Array.isArray(input) && typeof input.value === 'string'
           ? input.value
-          : ''
+          : step.input.value!
       return { ok: true, command: { type: 'fill', target, value } }
     }
 
     if (step.type === 'extract') {
+      const target = descriptorFrom(input) ?? step.input.target
       return {
         ok: true,
         command: {
           type: 'extract',
-          target: descriptorFrom(input) ?? step.input.target,
+          target,
           as: step.input.as,
-          attribute: step.input.attribute,
+          ...(step.input.attribute ? { attribute: step.input.attribute } : {}),
         },
       }
     }
 
     if (step.type === 'assert') {
+      const target = descriptorFrom(input) ?? step.input.target
       return {
         ok: true,
         command: {
           type: 'assert',
-          target: descriptorFrom(input) ?? step.input.target,
+          ...(target ? { target } : {}),
           expect: step.input.expect,
         },
       }
@@ -232,6 +464,316 @@ export class BrowserStepExecutor implements StepExecutor {
       }
     }
 
+    if (step.type === 'download') {
+      const saveDir = runFileWorkspaceDownloadDir(ctx?.runId ?? 'test-run')
+      return {
+        ok: true,
+        command: {
+          type: 'download',
+          ...(step.input.target || descriptorFrom(input)
+            ? { target: descriptorFrom(input) ?? step.input.target }
+            : {}),
+          waitMs: step.input.waitMs ?? 30_000,
+          saveDir,
+          ...(step.input.expect ? { expect: step.input.expect } : {}),
+        },
+      }
+    }
+
+    if (step.type === 'upload') {
+      const target = descriptorFrom(input) ?? step.input.target
+      const filesConfig =
+        input && typeof input === 'object' && !Array.isArray(input) && 'files' in input && Array.isArray((input as any).files)
+          ? (input as any).files
+          : step.input.files
+      const resolvedFiles: ResolvedUploadFile[] = []
+      let totalBytes = 0
+
+      const runId = ctx?.runId ?? 'test-run'
+      const { fixtureDir, contextDir } = await ensureWorkspaceDirs(runId)
+
+      for (const item of filesConfig) {
+        if (item.source === 'asset') {
+          const fixtureId = item.fixtureId ?? item.assetId
+          if (!fixtureId) {
+            return {
+              ok: false,
+              error: {
+                code: 'FIXTURE_NOT_FOUND',
+                category: 'VALIDATION',
+                retryable: false,
+                safeMessage: '未指定 fixtureId',
+              },
+            }
+          }
+
+          let fixtureHandle: RunFileHandle
+          try {
+            fixtureHandle = await resolveFixtureForRun(this.handle, {
+              fixtureId,
+              targetId,
+              digest: item.digest,
+            })
+          } catch (err: any) {
+            const code = err?.code ?? 'FIXTURE_NOT_FOUND'
+            if (code === 'FIXTURE_DIGEST_MISMATCH') {
+              return {
+                ok: false,
+                error: {
+                  code: 'FIXTURE_DIGEST_MISMATCH',
+                  category: 'VALIDATION',
+                  retryable: false,
+                  safeMessage: err.message || '测试夹具摘要校验失败',
+                },
+              }
+            }
+            if (code === 'FIXTURE_NOT_AVAILABLE') {
+              return {
+                ok: false,
+                error: {
+                  code: 'FILE_OBJECT_UNAVAILABLE',
+                  category: 'INFRASTRUCTURE',
+                  retryable: true,
+                  safeMessage: err.message || '测试夹具文件不可用',
+                },
+              }
+            }
+            return {
+              ok: false,
+              error: {
+                code: 'FIXTURE_NOT_FOUND',
+                category: 'VALIDATION',
+                retryable: false,
+                safeMessage: err.message || `测试夹具不存在或不属于当前 Target：${fixtureId}`,
+              },
+            }
+          }
+
+          const cleanName = safeDownloadFileName(item.name ?? fixtureHandle.name)
+          const localPath = join(fixtureDir, `${fixtureId}-${cleanName}`)
+
+          if (!existsSync(localPath)) {
+            if (this.objects) {
+              try {
+                const res = await this.objects.objectStore().get(fixtureHandle.objectKey)
+                await writeFile(localPath, res.body)
+              } catch (err) {
+                return {
+                  ok: false,
+                  error: {
+                    code: 'FILE_OBJECT_UNAVAILABLE',
+                    category: 'INFRASTRUCTURE',
+                    retryable: true,
+                    safeMessage: `获取夹具存储对象失败：${err instanceof Error ? err.message : String(err)}`,
+                  },
+                }
+              }
+            } else {
+              await writeFile(localPath, Buffer.alloc(0))
+            }
+          }
+
+          const byteSize = fixtureHandle.byteSize
+          totalBytes += byteSize
+          resolvedFiles.push({
+            localPath,
+            name: cleanName,
+            mimeType: fixtureHandle.mimeType,
+            digest: fixtureHandle.digest,
+            byteSize,
+          })
+        } else if (item.source === 'context') {
+          let handle: RunFileHandle | undefined = item.handle
+          const fromKey = item.from ?? item.contextKey
+          if (!handle) {
+            if (!fromKey) {
+              return {
+                ok: false,
+                error: {
+                  code: 'FILE_HANDLE_INVALID',
+                  category: 'VALIDATION',
+                  retryable: false,
+                  safeMessage: '未指定 context 变量名',
+                },
+              }
+            }
+            const resolved = ctx
+              ? readContextValue(ctx.context as Record<string, JsonValue>, fromKey, item.fromField)
+              : undefined
+            if (!resolved || !resolved.ok) {
+              return {
+                ok: false,
+                error: {
+                  code: resolved ? resolved.code : 'UNRESOLVED_REF',
+                  category: 'VALIDATION',
+                  retryable: false,
+                  safeMessage: resolved ? resolved.message : `context 中未找到 ${fromKey}`,
+                },
+              }
+            }
+            handle = asRunFileHandle(resolved.value)
+            if (!handle) {
+              let remoteUrl: string | undefined
+              if (typeof resolved.value === 'string' && (resolved.value.startsWith('http://') || resolved.value.startsWith('https://'))) {
+                remoteUrl = resolved.value
+              } else if (resolved.value && typeof resolved.value === 'object' && !Array.isArray(resolved.value)) {
+                const obj = resolved.value as Record<string, unknown>
+                if (typeof obj.url === 'string' && (obj.url.startsWith('http://') || obj.url.startsWith('https://'))) {
+                  remoteUrl = obj.url
+                } else if (typeof obj.downloadUrl === 'string' && (obj.downloadUrl.startsWith('http://') || obj.downloadUrl.startsWith('https://'))) {
+                  remoteUrl = obj.downloadUrl
+                }
+              }
+
+              if (remoteUrl) {
+                try {
+                  const fetchRes = await fetch(remoteUrl, { signal: AbortSignal.timeout(15000) })
+                  if (!fetchRes.ok) {
+                    return {
+                      ok: false,
+                      error: {
+                        code: 'DOWNLOAD_FAILED',
+                        category: 'INFRASTRUCTURE',
+                        retryable: true,
+                        safeMessage: `下载动态文件 URL 失败：HTTP ${fetchRes.status} ${fetchRes.statusText}`,
+                      },
+                    }
+                  }
+                  const arrayBuf = await fetchRes.arrayBuffer()
+                  const buf = Buffer.from(arrayBuf)
+                  const digest = createHash('sha256').update(buf).digest('hex')
+                  let fileName = item.name
+                  if (!fileName) {
+                    try {
+                      const parsedUrl = new URL(remoteUrl)
+                      fileName = parsedUrl.pathname.split('/').filter(Boolean).pop()
+                    } catch {}
+                  }
+                  const cleanName = safeDownloadFileName(fileName || `${fromKey}.dat`)
+                  let mimeType = 'application/octet-stream'
+                  const headerType = fetchRes.headers.get('content-type')
+                  if (headerType) {
+                    const parsed = headerType.split(';')[0]?.trim()
+                    if (parsed) mimeType = parsed
+                  }
+
+                  const localPath = join(contextDir, `${digest.slice(0, 8)}-${cleanName}`)
+                  await writeFile(localPath, buf)
+
+                  handle = {
+                    kind: 'cairn.file/v1',
+                    scope: 'fixture',
+                    objectKey: `ephemeral/${digest}`,
+                    digest,
+                    name: cleanName,
+                    mimeType,
+                    byteSize: buf.byteLength,
+                    createdAt: new Date().toISOString(),
+                  }
+                } catch (err: unknown) {
+                  return {
+                    ok: false,
+                    error: {
+                      code: 'DOWNLOAD_FAILED',
+                      category: 'INFRASTRUCTURE',
+                      retryable: true,
+                      safeMessage: `下载动态文件 URL 异常：${err instanceof Error ? err.message : String(err)}`,
+                    },
+                  }
+                }
+              }
+            }
+          }
+
+          if (!handle) {
+            return {
+              ok: false,
+              error: {
+                code: 'FILE_HANDLE_INVALID',
+                category: 'VALIDATION',
+                retryable: false,
+                safeMessage: `从上下文「${fromKey}」解析的文件句柄无效`,
+              },
+            }
+          }
+
+          if (handle.scope === 'run' && ctx?.runId && handle.runId !== ctx.runId) {
+            return {
+              ok: false,
+              error: {
+                code: 'FILE_HANDLE_FOREIGN_RUN',
+                category: 'VALIDATION',
+                retryable: false,
+                safeMessage: `文件句柄所属 Run「${handle.runId}」与当前 Run「${ctx.runId}」不一致`,
+              },
+            }
+          }
+
+          const cleanName = safeDownloadFileName(item.name ?? handle.name)
+          let localPath = ''
+          const downloadDir = runFileWorkspaceDownloadDir(runId)
+          const downloadFiles = await readdir(downloadDir).catch(() => [])
+          const matchedDownload = downloadFiles.find((f) => f.endsWith(`-${cleanName}`) || f === cleanName)
+          if (matchedDownload) {
+            localPath = join(downloadDir, matchedDownload)
+          } else {
+            localPath = join(contextDir, `${handle.digest.slice(0, 8)}-${cleanName}`)
+            if (!existsSync(localPath)) {
+              if (this.objects) {
+                try {
+                  const res = await this.objects.objectStore().get(handle.objectKey)
+                  await writeFile(localPath, res.body)
+                } catch (err) {
+                  return {
+                    ok: false,
+                    error: {
+                      code: 'FILE_OBJECT_UNAVAILABLE',
+                      category: 'INFRASTRUCTURE',
+                      retryable: true,
+                      safeMessage: `获取上下文引用的文件对象失败：${err instanceof Error ? err.message : String(err)}`,
+                    },
+                  }
+                }
+              } else {
+                await writeFile(localPath, Buffer.alloc(0))
+              }
+            }
+          }
+
+          const byteSize = handle.byteSize
+          totalBytes += byteSize
+          resolvedFiles.push({
+            localPath,
+            name: cleanName,
+            mimeType: handle.mimeType,
+            digest: handle.digest,
+            byteSize,
+          })
+        }
+      }
+
+      if (totalBytes > 64 * 1024 * 1024) {
+        return {
+          ok: false,
+          error: {
+            code: 'UPLOAD_PAYLOAD_TOO_LARGE',
+            category: 'VALIDATION',
+            retryable: false,
+            safeMessage: `上传文件总大小 ${totalBytes} 超过 64MB 限制`,
+          },
+        }
+      }
+
+      return {
+        ok: true,
+        command: {
+          type: 'upload',
+          target,
+          files: resolvedFiles,
+        },
+      }
+    }
+
     return {
       ok: false,
       error: {
@@ -255,4 +797,3 @@ function descriptorFrom(input: JsonValue): TargetDescriptor | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input) || !('target' in input)) return undefined
   return input.target as TargetDescriptor
 }
-

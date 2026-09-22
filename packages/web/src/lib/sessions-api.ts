@@ -13,6 +13,10 @@ import {
   type SessionEventDto,
 } from '@cairn/shared'
 import {
+  observeOperationSchema,
+  targetObservationSchema,
+  type ObserveOperation,
+  type TargetObservation,
   accountSessionDetailSchema,
   requestSessionOperationBodySchema,
   sessionEventListResponseSchema,
@@ -53,6 +57,14 @@ export function fetchSessionSystemOverview(
 
 export function fetchAccountSession(targetId: string, accountId: string): Promise<AccountSessionDetail> {
   return apiFetch(`/api/targets/${targetId}/accounts/${accountId}/session`, accountSessionDetailSchema)
+}
+
+export function observeSession(sessionId: string, body: ObserveOperation): Promise<TargetObservation> {
+  return apiFetch(`/api/browser-sessions/${sessionId}/observe`, targetObservationSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(observeOperationSchema.parse(body)),
+  })
 }
 
 export function requestAccountSessionOperation(
@@ -100,9 +112,14 @@ export function newSessionIdempotencyKey(kind: string): string {
   return `session-${kind}-${id}`
 }
 
-export function fetchAccountSessionEvents(targetId: string, accountId: string, cursor?: string) {
+export function fetchAccountSessionEvents(
+  targetId: string,
+  accountId: string,
+  cursor?: string,
+  sessionId?: string,
+) {
   return apiFetch(
-    `/api/targets/${targetId}/accounts/${accountId}/session/events${toQueryString({ cursor })}`,
+    `/api/targets/${targetId}/accounts/${accountId}/session/events${toQueryString({ cursor, sessionId })}`,
     sessionEventListResponseSchema,
   )
 }

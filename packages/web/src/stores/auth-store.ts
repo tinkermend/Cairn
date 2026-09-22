@@ -7,6 +7,7 @@ export interface AuthUser {
   id: string
   displayName: string
   email: string | null
+  avatar?: string | null
   /** 角色 key，仅展示；鉴权看 permissions */
   roles: string[]
   permissions: string[]

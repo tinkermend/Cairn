@@ -197,7 +197,7 @@ describe('能力地图', () => {
   it('执行者预览只有业务菜单，没有治理；编写者能看见录制', () => {
     const operator = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.operator.permissions)
     expect(operator.menus.overview).toEqual(['总览'])
-    expect(operator.menus.workbench).toEqual(['场景', '场景集', '动作库'])
+    expect(operator.menus.workbench).toEqual(['场景编排', '场景集', '批量任务', '动作库'])
     expect(operator.menus['execution-observation']).toEqual([
       '定时任务',
       '运行记录',
@@ -212,9 +212,9 @@ describe('能力地图', () => {
     expect(operator.actions).toContain('执行含 AI 步骤的运行')
 
     const author = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.author.permissions)
-    expect(author.menus.workbench).toEqual(['场景', '场景集', '动作库', '录制草稿'])
+    expect(author.menus.workbench).toEqual(['场景编排', '场景集', '批量任务', '动作库', '录制草稿'])
     expect(author.menus['execution-observation']).toEqual(['运行记录', '结果与报告'])
-    expect(author.menus.resources).toEqual(['目标系统', '目标账号', '浏览器'])
+    expect(author.menus.resources).toEqual(['数据集', '目标系统', '目标账号', '浏览器'])
     expect(author.menus.operations).toEqual(['执行节点', '通知'])
     expect(author.menus.governance).toEqual([])
     expect(author.actions).toContain('在工作区试跑')
@@ -222,9 +222,9 @@ describe('能力地图', () => {
     expect(author.actions).not.toContain('处置卡死的浏览器会话')
 
     const viewer = previewCapabilities(SYSTEM_ROLE_DEFINITIONS.viewer.permissions)
-    expect(viewer.menus.workbench).toEqual(['场景', '场景集'])
+    expect(viewer.menus.workbench).toEqual(['场景编排', '场景集', '批量任务'])
     expect(viewer.menus['execution-observation']).toEqual(['运行记录', '结果与报告'])
-    expect(viewer.menus.resources).toEqual(['目标系统', '目标账号'])
+    expect(viewer.menus.resources).toEqual(['数据集', '目标系统', '目标账号'])
     expect(viewer.menus.operations).toEqual(['通知'])
     expect(viewer.actions).toEqual(['使用平台助手', '查看运行报告'])
 

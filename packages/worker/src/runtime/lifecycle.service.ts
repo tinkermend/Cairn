@@ -96,6 +96,7 @@ import {
 import { deliverNotifications } from "./notification-delivery";
 import { deliverServiceWebhooks } from "./service-webhook-delivery";
 import { dispatchExportJobs } from "./report-render";
+import { cleanupRunFileWorkspaces } from "../engine/run-file-workspace.js";
 import {
   claimWorkerPeriodicSlots,
   drainWhileFull,
@@ -1428,6 +1429,7 @@ export class LifecycleService
     const controller = new AbortController();
     this.pendingClaim = controller;
     try {
+      await cleanupRunFileWorkspaces().catch(() => undefined);
       const grant = await claimRun(this.handle, {
         workerId: config.CAIRN_WORKER_ID,
         instanceId: this.instanceId,

@@ -39,6 +39,7 @@ import {
   authCheckpointSchema,
   authGateClosedError,
   computeContextVersion,
+  evaluateGenerator,
   type AiExecutionConfig,
   type AttemptDto,
   type CleanupStatus,
@@ -715,7 +716,17 @@ export async function writeRunWithSnapshot(
   if (target.status === 'disabled')
     throw conflict('TARGET_DISABLED', '目标系统已停用，不能创建新运行')
 
-  const runInput = input.input ?? {}
+  const runInput: Record<string, any> = { ...(input.input ?? {}) }
+  if (version.authoringDocument?.inputs) {
+    for (const decl of version.authoringDocument.inputs) {
+      if (
+        (runInput[decl.key] === undefined || runInput[decl.key] === null || runInput[decl.key] === '') &&
+        decl.defaultGenerator
+      ) {
+        runInput[decl.key] = evaluateGenerator(decl.defaultGenerator)
+      }
+    }
+  }
   // 缺键的 Run 建出来也只能跑到那一步才失败，白占一次会话和登录。
   // 键列表随错误一起回给调用方：开放接口那侧没有控制台可看。
   const unresolved = unresolvedRunInputs(version.definition.steps, runInput)
@@ -732,6 +743,7 @@ export async function writeRunWithSnapshot(
 
   let secretRef: RunSnapshot['secretRef']
   let credentialBinding: RunSnapshot['credentialBinding']
+  let maxConcurrentSessions = 1
   if (targetAccountId) {
     const [account] = await db
       .select()
@@ -742,6 +754,7 @@ export async function writeRunWithSnapshot(
       throw badRequest('RUN_ACCOUNT_MISMATCH', '目标账号不属于该场景绑定的目标系统')
     }
     if (account.status === 'disabled') throw conflict('RUN_ACCOUNT_DISABLED', '目标账号已停用')
+    maxConcurrentSessions = account.maxConcurrentSessions ?? 1
     if (!input.mapJob) assertAccountAllowsBusiness(account.usage)
     if (account.secretId && account.secretProvider) {
       const current = await resolveAccountCurrentCredential(db, account.id)
@@ -898,6 +911,7 @@ export async function writeRunWithSnapshot(
           mapJob: input.mapJob,
           documentResolution: version.definition.resolution,
           target,
+          maxConcurrentSessions,
           platformDocument: document,
           platformRevision: platform?.revision,
           aiExecution,

@@ -2,6 +2,7 @@ import {
   ArrowLeftOutlined,
   ClearOutlined,
   CloseOutlined,
+  CloudUploadOutlined,
   CodeOutlined,
   ControlOutlined,
   LoadingOutlined,
@@ -9,10 +10,12 @@ import {
   RightOutlined,
 } from '@ant-design/icons';
 import { RecordTimeline } from '@midscene/recorder-ui';
-import { Alert, Button, Empty, Spin } from 'antd';
+import { Alert, Button, Empty, Spin, Tag, Tooltip } from 'antd';
 import type React from 'react';
 import { useEffect, useState } from 'react';
-import { useRecordStore, useRecordingSessionStore } from '../../../store';
+import { useCairnStore, useRecordStore, useRecordingSessionStore } from '../../../store';
+import { CairnConnectModal } from '../../../components/CairnConnectModal';
+import { promptUploadToCairn } from '../../../utils/cairn-uploader';
 
 import { ProgressModal } from './ProgressModal';
 
@@ -44,7 +47,13 @@ export const RecordDetail: React.FC<RecordDetailProps> = ({
   // useState must be called at the top level of the component, not after conditional statements
   const [tab, setTab] = useState<'timeline' | 'code'>('timeline');
   const [isFromStopRecording, setIsFromStopRecording] = useState(false);
+  const [isCairnModalOpen, setIsCairnModalOpen] = useState(false);
   const { events } = useRecordStore();
+
+  const cairnToken = useCairnStore((state) => state.token);
+  const cairnTargetId = useCairnStore((state) => state.targetId);
+  const cairnTargets = useCairnStore((state) => state.targets);
+  const currentTarget = cairnTargets.find((t) => t.id === cairnTargetId);
 
   // Get the session directly from the store to ensure we always have the latest data
   const { sessions } = useRecordingSessionStore();
@@ -167,13 +176,43 @@ export const RecordDetail: React.FC<RecordDetailProps> = ({
         </div>
         {/* Title */}
         <span
-          className="text-[12px] font-medium text-[rgba(0,0,0,0.9)] leading-[1.67em] truncate flex-1"
+          className="text-[12px] font-medium text-[rgba(0,0,0,0.9)] leading-[1.67em] truncate flex-1 flex items-center gap-1.5"
           style={{ fontFamily: 'PingFang SC, -apple-system, sans-serif' }}
         >
-          {session.name}
+          <span className="truncate">{session.name}</span>
+          {cairnToken && (
+            <Tooltip title={`当前归属识途目标：${currentTarget ? currentTarget.name : '未选择目标（点击设置）'}`}>
+              <Tag
+                color={currentTarget ? 'blue' : 'default'}
+                className="cursor-pointer text-[10px] px-1 py-0 leading-none h-[18px] inline-flex items-center max-w-[120px] truncate"
+                onClick={() => setIsCairnModalOpen(true)}
+              >
+                {currentTarget ? currentTarget.name : '未选Target'}
+              </Tag>
+            </Tooltip>
+          )}
         </span>
         {/* Action buttons */}
         <div className="flex items-center gap-2 ml-2">
+          {events.length > 0 && !isRecording && (
+            <Tooltip title={cairnToken ? '将本次录制一键脱敏上传至识途平台生成草稿' : '连接识途平台账号并上传草稿'}>
+              <Button
+                icon={<CloudUploadOutlined />}
+                onClick={() => {
+                  promptUploadToCairn({
+                    events,
+                    sessionName: session.name,
+                    onOpenConnectModal: () => setIsCairnModalOpen(true),
+                  });
+                }}
+                size="small"
+                type="primary"
+                className="!bg-[#2B83FF] flex items-center justify-center text-[11px] h-[24px] px-2"
+              >
+                上传草稿
+              </Button>
+            </Tooltip>
+          )}
           <Button
             icon={<ClearOutlined />}
             onClick={() => {
@@ -383,6 +422,12 @@ export const RecordDetail: React.FC<RecordDetailProps> = ({
           )}
         </div>
       )}
+
+      {/* Cairn platform connect modal */}
+      <CairnConnectModal
+        open={isCairnModalOpen}
+        onClose={() => setIsCairnModalOpen(false)}
+      />
     </div>
   );
 };

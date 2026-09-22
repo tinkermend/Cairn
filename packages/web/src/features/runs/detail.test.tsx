@@ -508,7 +508,7 @@ describe('RunDetailPage', () => {
     signIn(['run:read'])
     const screen = await renderPage()
     await expect.element(screen.getByText(/同一账号会话正在被另一条运行占用/)).toBeInTheDocument()
-    await expect.element(screen.getByText(/代次 3/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/实例 #3/)).toBeInTheDocument()
     await expect.element(screen.getByText(/复用会话/)).toBeInTheDocument()
     await expect.element(screen.getByText(/占用运行/)).toBeInTheDocument()
     await expect.element(screen.getByText(/历史运行未冻结登录态检测规则，开跑时按登录页判断/)).toBeInTheDocument()

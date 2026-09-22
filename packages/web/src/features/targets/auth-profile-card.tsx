@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { AuthValidationStep, TargetAuthProfileDefinition, TargetDto } from '@cairn/shared'
+
+type AuthVerifyMode = TargetAuthProfileDefinition['verify']['mode']
 import { CheckCircle2, Circle, Clock, Edit, ShieldAlert, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
@@ -24,21 +26,28 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { StatusBadge } from '@/components/status-badge'
-import { AUTH_CAPABILITY_LABELS } from './labels'
+import { AUTH_CAPABILITY_LABELS, formatLoginLocator } from './labels'
 
 const STEP_LABELS: Record<AuthValidationStep, { title: string; desc: string }> = {
   valid_pass: {
     title: '有效凭据登录验证',
-    desc: '正向探针返回成功状态码且账号身份一致',
+    desc: '已登录时探针应判定为已认证',
   },
   server_revoked: {
     title: '服务端注销失效验证',
-    desc: '登录凭据被服务端注销或过期后探针能准确识别失效',
+    desc: '注销或过期后探针应判定为已失效',
   },
   other_account: {
     title: '异号身份匹配核验',
-    desc: '登录账号身份与目标账号期望身份完全匹配，防串号',
+    desc: '登录账号身份与目标账号期望身份不一致时应能识别串号',
   },
 }
 
@@ -68,8 +77,11 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
   const definition = current?.definition
 
   const [editOpen, setEditOpen] = useState(false)
+  const [verifyMode, setVerifyMode] = useState<AuthVerifyMode>('http')
   const [successStatus, setSuccessStatus] = useState(200)
   const [failureStatus, setFailureStatus] = useState(401)
+  const [successLocator, setSuccessLocator] = useState('.el-menu')
+  const [failureLocator, setFailureLocator] = useState('input[type=password]')
   const [pathPrefix, setPathPrefix] = useState('/')
   const [freshness, setFreshness] = useState('')
   const [operationId, setOperationId] = useState<string | null>(null)
@@ -83,14 +95,24 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
   const publish = useMutation({
     mutationFn: () => {
       const origin = new URL(target.entryUrl).origin
-      const nextDefinition = {
+      const path = pathPrefix.trim() || '/'
+      const nextDefinition: TargetAuthProfileDefinition = {
         ...defaultDefinition(target),
-        verify: {
-          mode: 'http' as const,
-          success: { status: successStatus },
-          failure: { status: failureStatus },
-        },
-        scope: { origins: [origin], pathPrefixes: [pathPrefix || '/'] },
+        verify:
+          verifyMode === 'page'
+            ? {
+                mode: 'page',
+                path,
+                success: { locator: { by: 'css', value: successLocator.trim() } },
+                failure: { locator: { by: 'css', value: failureLocator.trim() } },
+              }
+            : {
+                mode: 'http',
+                path,
+                success: { status: successStatus },
+                failure: { status: failureStatus },
+              },
+        scope: { origins: [origin], pathPrefixes: [path] },
         ...(freshness ? { freshnessSeconds: Number(freshness) } : {}),
       }
       return publishTargetAuthProfile(target.id, {
@@ -147,16 +169,39 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
       : AUTH_CAPABILITY_LABELS[derivedCapability]
 
   const openEditor = () => {
-    if (definition?.verify.mode === 'http') {
-      const succ = 'status' in definition.verify.success ? definition.verify.success.status : 200
-      const fail = 'status' in definition.verify.failure ? definition.verify.failure.status : 401
+    const path = definition?.verify.path ?? definition?.scope.pathPrefixes[0] ?? '/'
+    setPathPrefix(path)
+    setFreshness(definition?.freshnessSeconds ? String(definition.freshnessSeconds) : '')
+    if (definition?.verify.mode === 'page') {
+      setVerifyMode('page')
+      const success = definition.verify.success
+      const failure = definition.verify.failure
+      setSuccessLocator('locator' in success && success.locator ? success.locator.value : '.el-menu')
+      setFailureLocator(
+        'locator' in failure && failure.locator ? failure.locator.value : 'input[type=password]',
+      )
+    } else {
+      setVerifyMode('http')
+      const succ = definition && 'status' in definition.verify.success ? definition.verify.success.status : 200
+      const fail = definition && 'status' in definition.verify.failure ? definition.verify.failure.status : 401
       setSuccessStatus(succ ?? 200)
       setFailureStatus(fail ?? 401)
-      setPathPrefix(definition.scope.pathPrefixes[0] ?? '/')
-      setFreshness(definition.freshnessSeconds ? String(definition.freshnessSeconds) : '')
     }
     setEditOpen(true)
   }
+
+  const verifyPath = definition?.verify.path ?? definition?.scope.pathPrefixes[0] ?? '/'
+  const pageSuccess =
+    definition?.verify.mode === 'page' && 'locator' in definition.verify.success
+      ? definition.verify.success.locator
+      : null
+  const pageFailure =
+    definition?.verify.mode === 'page' && 'locator' in definition.verify.failure
+      ? definition.verify.failure.locator
+      : null
+  const publishDisabled =
+    publish.isPending ||
+    (verifyMode === 'page' && (!successLocator.trim() || !failureLocator.trim()))
 
   return (
     <>
@@ -198,27 +243,44 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
                 </span>
               </div>
               <div className='grid grid-cols-2 gap-4 text-small sm:grid-cols-4'>
-                <div>
-                  <span className='block text-label text-muted-foreground'>成功状态码</span>
-                  <span className='font-mono font-medium text-text-primary'>
-                    {definition.verify.mode === 'http' && 'status' in definition.verify.success
-                      ? definition.verify.success.status ?? 200
-                      : '—'}
-                  </span>
-                </div>
-                <div>
-                  <span className='block text-label text-muted-foreground'>失效状态码</span>
-                  <span className='font-mono font-medium text-text-primary'>
-                    {definition.verify.mode === 'http' && 'status' in definition.verify.failure
-                      ? definition.verify.failure.status ?? 401
-                      : '—'}
-                  </span>
-                </div>
+                {definition.verify.mode === 'page' ? (
+                  <>
+                    <div>
+                      <span className='block text-label text-muted-foreground'>已登录定位</span>
+                      <span className='font-mono font-medium text-text-primary'>
+                        {pageSuccess ? formatLoginLocator(pageSuccess) : '—'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className='block text-label text-muted-foreground'>已失效定位</span>
+                      <span className='font-mono font-medium text-text-primary'>
+                        {pageFailure ? formatLoginLocator(pageFailure) : '—'}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <span className='block text-label text-muted-foreground'>成功状态码</span>
+                      <span className='font-mono font-medium text-text-primary'>
+                        {'status' in definition.verify.success
+                          ? definition.verify.success.status ?? 200
+                          : '—'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className='block text-label text-muted-foreground'>失效状态码</span>
+                      <span className='font-mono font-medium text-text-primary'>
+                        {'status' in definition.verify.failure
+                          ? definition.verify.failure.status ?? 401
+                          : '—'}
+                      </span>
+                    </div>
+                  </>
+                )}
                 <div>
                   <span className='block text-label text-muted-foreground'>核验路径</span>
-                  <span className='font-mono font-medium text-text-primary'>
-                    {definition.scope.pathPrefixes[0] || '/'}
-                  </span>
+                  <span className='font-mono font-medium text-text-primary'>{verifyPath}</span>
                 </div>
                 <div>
                   <span className='block text-label text-muted-foreground'>新鲜度阈值</span>
@@ -338,30 +400,65 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
           <DialogHeader>
             <DialogTitle className='text-section font-semibold'>配置登录核验规则</DialogTitle>
             <DialogDescription className='text-small text-muted-foreground'>
-              设定目标系统的正向成功判定与失效判定条件。发布后将产生新的规则修订版本。
+              设定已登录与已失效的判定条件。接口始终返回 200、只在页面或 JSON 里区分登录态时，请用页面元素。发布后产生新修订。
             </DialogDescription>
           </DialogHeader>
           <div className='grid gap-4 py-2 text-body'>
-            <div className='grid grid-cols-2 gap-3'>
-              <div className='space-y-1'>
-                <Label htmlFor='auth-success-status'>成功状态码</Label>
-                <Input
-                  id='auth-success-status'
-                  type='number'
-                  value={successStatus}
-                  onChange={(event) => setSuccessStatus(Number(event.target.value))}
-                />
-              </div>
-              <div className='space-y-1'>
-                <Label htmlFor='auth-failure-status'>失效状态码</Label>
-                <Input
-                  id='auth-failure-status'
-                  type='number'
-                  value={failureStatus}
-                  onChange={(event) => setFailureStatus(Number(event.target.value))}
-                />
-              </div>
+            <div className='space-y-1'>
+              <Label htmlFor='auth-verify-mode'>探测方式</Label>
+              <Select value={verifyMode} onValueChange={(value) => setVerifyMode(value as AuthVerifyMode)}>
+                <SelectTrigger id='auth-verify-mode' className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='http'>HTTP 响应比对</SelectItem>
+                  <SelectItem value='page'>页面元素定位</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+            {verifyMode === 'page' ? (
+              <div className='grid gap-3'>
+                <div className='space-y-1'>
+                  <Label htmlFor='auth-success-locator'>已登录定位（CSS）</Label>
+                  <Input
+                    id='auth-success-locator'
+                    value={successLocator}
+                    onChange={(event) => setSuccessLocator(event.target.value)}
+                    placeholder='.el-menu'
+                  />
+                </div>
+                <div className='space-y-1'>
+                  <Label htmlFor='auth-failure-locator'>已失效定位（CSS）</Label>
+                  <Input
+                    id='auth-failure-locator'
+                    value={failureLocator}
+                    onChange={(event) => setFailureLocator(event.target.value)}
+                    placeholder='input[type=password]'
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className='grid grid-cols-2 gap-3'>
+                <div className='space-y-1'>
+                  <Label htmlFor='auth-success-status'>成功状态码</Label>
+                  <Input
+                    id='auth-success-status'
+                    type='number'
+                    value={successStatus}
+                    onChange={(event) => setSuccessStatus(Number(event.target.value))}
+                  />
+                </div>
+                <div className='space-y-1'>
+                  <Label htmlFor='auth-failure-status'>失效状态码</Label>
+                  <Input
+                    id='auth-failure-status'
+                    type='number'
+                    value={failureStatus}
+                    onChange={(event) => setFailureStatus(Number(event.target.value))}
+                  />
+                </div>
+              </div>
+            )}
             <div className='space-y-1'>
               <Label htmlFor='auth-path'>核验路径 (相对入口 Origin)</Label>
               <Input
@@ -386,7 +483,7 @@ export function AuthProfileCard({ target }: { target: TargetDto }) {
             <Button variant='outline' onClick={() => setEditOpen(false)}>
               取消
             </Button>
-            <Button disabled={publish.isPending} onClick={() => publish.mutate()}>
+            <Button disabled={publishDisabled} onClick={() => publish.mutate()}>
               {publish.isPending ? '发布中…' : '发布规则'}
             </Button>
           </DialogFooter>

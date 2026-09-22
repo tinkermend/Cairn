@@ -2,6 +2,7 @@ import type { CDPSession, Page } from 'playwright'
 import {
   BROWSER_FRAME_MAX_EDGE,
   BROWSER_FRAME_QUALITY,
+  DEFAULT_MANAGED_VIEWPORT,
   type ManagedBrowserFrame,
   type PageRef,
 } from '@cairn/shared'
@@ -44,7 +45,7 @@ export async function refreshScreencastIfStale(
   if (page.isClosed()) return
   try {
     const buffer = await page.screenshot({ type: 'jpeg', quality: BROWSER_FRAME_QUALITY })
-    const viewport = page.viewportSize() ?? { width: BROWSER_FRAME_MAX_EDGE, height: 720 }
+    const viewport = page.viewportSize() ?? DEFAULT_MANAGED_VIEWPORT
     const frame: ManagedBrowserFrame = {
       pageRef,
       frameId: `s-${Date.now().toString(36)}`,

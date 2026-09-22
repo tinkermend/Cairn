@@ -72,7 +72,7 @@ export const EVIDENCE_HIT_KINDS = ['attempt_failed', 'run_failed'] as const
 export type EvidenceHitKind = (typeof EVIDENCE_HIT_KINDS)[number]
 export const evidenceHitKindSchema = z.enum(EVIDENCE_HIT_KINDS)
 
-export const EVIDENCE_CENTER_TABS = ['search', 'reports', 'retention'] as const
+export const EVIDENCE_CENTER_TABS = ['results', 'reports', 'search', 'retention'] as const
 export type EvidenceCenterTab = (typeof EVIDENCE_CENTER_TABS)[number]
 export const evidenceCenterTabSchema = z.enum(EVIDENCE_CENTER_TABS)
 
@@ -130,6 +130,7 @@ export const EVIDENCE_TYPE_LABELS = {
   log: '诊断',
   trace: 'Trace',
   video: '录像',
+  file: '文件',
 } as const
 
 export function isCaptureUploadMissingReason(reason: string | null | undefined): boolean {

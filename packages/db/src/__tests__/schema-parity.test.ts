@@ -380,6 +380,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       { column_name: 'created_at', is_nullable: 'NO' },
       { column_name: 'delete_requested_at', is_nullable: 'YES' },
       { column_name: 'digest', is_nullable: 'YES' },
+      { column_name: 'fixture_id', is_nullable: 'YES' },
       { column_name: 'id', is_nullable: 'NO' },
       { column_name: 'last_purge_error_at', is_nullable: 'YES' },
       { column_name: 'object_key', is_nullable: 'NO' },
@@ -654,7 +655,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
     // target_id → target_accounts：复合外键 (target_account_id, target_id) 的第二列
     // 单数形：deliveries→delivery（ies→y），其余去掉一个尾部 s。
     // 不规则复数在规则里处理，不进例外表——否则每张 *_ies 表都要单独登记。
-    const singularOf = (table: string) => (table.endsWith('ies') ? `${table.slice(0, -3)}y` : table.replace(/s$/, ''))
+    const singularOf = (table: string) =>
+      table.endsWith('ies')
+        ? `${table.slice(0, -3)}y`
+        : table.endsWith('ches')
+          ? table.slice(0, -2)
+          : table.replace(/s$/, '')
     const allowed = new Set([
       // 领域内的短名指向带域前缀的长表名：
       'webhook_id→service_webhooks', // service 域内的 webhook（0082）
@@ -663,6 +669,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'job_id→analysis_jobs', // 分析域内的 job（0084）
       'occurrence_id→schedule_occurrences', // 调度域内的 occurrence（0084）
       'source_object_id→stored_objects', // 「来源对象」，限定词在前（0081），同 object_id→stored_objects
+      'fixture_id→target_fixtures',
       'session_id→browser_sessions',
       'target_id→target_accounts',
       'object_id→stored_objects',
@@ -675,6 +682,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'target_id→credential_target_grants',
       'auth_control_actor_id→console_accounts',
       'owner_account_id→console_accounts',
+      'created_by_account_id→console_accounts',
       'turn_id→assistant_turns',
       'conversation_id→assistant_conversations',
       'operation_id→session_operations',

@@ -3,7 +3,10 @@ import { describe, expect, it, vi, afterEach } from 'vitest'
 import {
   buildPlatformAiChatBody,
   isPlatformAiPresetBaseUrl,
+  isPlatformAiPresetModel,
   nextPlatformAiBaseUrl,
+  nextPlatformAiModel,
+  platformAiDefaultModel,
   platformAiBaseUrlsEquivalent,
   platformAiChatCompletionsUrl,
   platformAiConnectionReady,
@@ -14,6 +17,7 @@ import {
   postPlatformAiChatCompletion,
   readPlatformAiChatResult,
 } from '../platform-ai-provider.js'
+import { FACTORY_PLATFORM_AI, PLATFORM_AI_PROVIDERS, platformAiConfigSchema } from '../platform-config.js'
 
 const messages = [{ role: 'user' as const, content: 'ping' }]
 
@@ -87,7 +91,7 @@ describe('平台 AI 提供商拼装与读回', () => {
     const probeBody = buildPlatformAiChatBody({
       provider: 'deepseek',
       thinkingMode: 'off',
-      model: 'deepseek-chat',
+      model: 'deepseek-flash',
       messages,
       maxTokens: 1,
     })
@@ -134,7 +138,7 @@ describe('平台 AI 提供商拼装与读回', () => {
     expect(
       platformAiConnectionReady({
         baseUrl: 'https://api.deepseek.com',
-        model: 'deepseek-chat',
+        model: 'deepseek-flash',
         secretRef: { secretId: '00000000-0000-4000-8000-000000000001' },
         provider: 'deepseek',
       }),
@@ -142,7 +146,7 @@ describe('平台 AI 提供商拼装与读回', () => {
     expect(
       platformAiConnectionReady({
         baseUrl: 'https://api.deepseek.com',
-        model: 'deepseek-chat',
+        model: 'deepseek-flash',
         secretRef: { secretId: '00000000-0000-4000-8000-000000000001' },
       }),
     ).toBe(false)
@@ -219,5 +223,54 @@ describe('平台 AI 传输', () => {
     ).rejects.toMatchObject({ code: PLATFORM_AI_OUTPUT_LIMIT_CODE })
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ redirect: 'error', method: 'POST' })
     expect(cancel).toHaveBeenCalled()
+  })
+})
+
+describe('平台 AI 提供商模型候选', () => {
+  it('每家都有官方地址与至少一个候选模型，模型名不重复', () => {
+    for (const provider of PLATFORM_AI_PROVIDERS) {
+      const preset = PLATFORM_AI_PROVIDER_PRESETS[provider]
+      expect(preset.defaultBaseUrl).toMatch(/^https:\/\//)
+      expect(preset.models.length).toBeGreaterThan(0)
+      const ids = preset.models.map((item) => item.id)
+      expect(new Set(ids).size).toBe(ids.length)
+      expect(platformAiDefaultModel(provider)).toBe(ids[0])
+    }
+  })
+
+  it('切换提供商：空值与上一家的候选换成新默认，手填的自定义模型名保留', () => {
+    expect(nextPlatformAiModel({ nextProvider: 'qwen' })).toBe('qwen3.8-flash')
+    expect(
+      nextPlatformAiModel({ previousProvider: 'deepseek', currentModel: 'deepseek-v4-pro', nextProvider: 'qwen' }),
+    ).toBe('qwen3.8-flash')
+    expect(
+      nextPlatformAiModel({ previousProvider: 'deepseek', currentModel: 'my-relay-alias', nextProvider: 'qwen' }),
+    ).toBe('my-relay-alias')
+    // 没有上一家（旧配置无 provider）时不敢替用户改模型名
+    expect(nextPlatformAiModel({ currentModel: 'deepseek-chat', nextProvider: 'glm' })).toBe('deepseek-chat')
+    expect(isPlatformAiPresetModel('qwen', 'qwen3.7-plus')).toBe(true)
+    expect(isPlatformAiPresetModel('qwen', 'deepseek-flash')).toBe(false)
+    expect(isPlatformAiPresetModel('qwen', undefined)).toBe(false)
+  })
+
+  it('出厂预填与该提供商预设一致，且只缺密钥：不含 secretRef、默认未启用', () => {
+    const preset = PLATFORM_AI_PROVIDER_PRESETS[FACTORY_PLATFORM_AI.provider]
+    expect(FACTORY_PLATFORM_AI.baseUrl).toBe(preset.defaultBaseUrl)
+    expect(isPlatformAiPresetModel(FACTORY_PLATFORM_AI.provider, FACTORY_PLATFORM_AI.model)).toBe(true)
+    expect(FACTORY_PLATFORM_AI.enabled).toBe(false)
+    expect('secretRef' in FACTORY_PLATFORM_AI).toBe(false)
+
+    const withoutKey = platformAiConfigSchema.safeParse({ ...FACTORY_PLATFORM_AI, enabled: true })
+    expect(withoutKey.success).toBe(false)
+    if (!withoutKey.success) {
+      expect(withoutKey.error.issues.map((issue) => issue.path.join('.'))).toEqual(['secretRef'])
+    }
+    expect(
+      platformAiConfigSchema.safeParse({
+        ...FACTORY_PLATFORM_AI,
+        enabled: true,
+        secretRef: { provider: 'local', secretId: '00000000-0000-4000-8000-000000000001' },
+      }).success,
+    ).toBe(true)
   })
 })

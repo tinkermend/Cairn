@@ -22,7 +22,9 @@ import { Route as AuthenticatedActionModulesIndexRouteImport } from './routes/_a
 import { Route as AuthenticatedAuditIndexRouteImport } from './routes/_authenticated/audit/index'
 import { Route as AuthenticatedAuditLoginsRouteImport } from './routes/_authenticated/audit/logins'
 import { Route as AuthenticatedAuditOperationsRouteImport } from './routes/_authenticated/audit/operations'
+import { Route as AuthenticatedBatchesIndexRouteImport } from './routes/_authenticated/batches/index'
 import { Route as AuthenticatedCredentialsIndexRouteImport } from './routes/_authenticated/credentials/index'
+import { Route as AuthenticatedDatasetsIndexRouteImport } from './routes/_authenticated/datasets/index'
 import { Route as AuthenticatedEvidenceIndexRouteImport } from './routes/_authenticated/evidence/index'
 import { Route as AuthenticatedMonitoringIndexRouteImport } from './routes/_authenticated/monitoring/index'
 import { Route as AuthenticatedNotificationsIndexRouteImport } from './routes/_authenticated/notifications/index'
@@ -43,6 +45,7 @@ import { Route as AuthenticatedTargetsIndexRouteImport } from './routes/_authent
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
 import { Route as AuthenticatedWorkersIndexRouteImport } from './routes/_authenticated/workers/index'
 import { Route as AuthenticatedActionModulesModuleIdIndexRouteImport } from './routes/_authenticated/action-modules/$moduleId/index'
+import { Route as AuthenticatedBatchesBatchIdIndexRouteImport } from './routes/_authenticated/batches/$batchId/index'
 import { Route as AuthenticatedCredentialsCredentialIdIndexRouteImport } from './routes/_authenticated/credentials/$credentialId/index'
 import { Route as AuthenticatedEvidenceEvidenceIdIndexRouteImport } from './routes/_authenticated/evidence/$evidenceId/index'
 import { Route as AuthenticatedRecordingsRecordingIdIndexRouteImport } from './routes/_authenticated/recordings/$recordingId/index'
@@ -125,10 +128,22 @@ const AuthenticatedAuditOperationsRoute =
     path: '/audit/operations',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedBatchesIndexRoute =
+  AuthenticatedBatchesIndexRouteImport.update({
+    id: '/batches/',
+    path: '/batches/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedCredentialsIndexRoute =
   AuthenticatedCredentialsIndexRouteImport.update({
     id: '/credentials/',
     path: '/credentials/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedDatasetsIndexRoute =
+  AuthenticatedDatasetsIndexRouteImport.update({
+    id: '/datasets/',
+    path: '/datasets/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedEvidenceIndexRoute =
@@ -248,6 +263,12 @@ const AuthenticatedActionModulesModuleIdIndexRoute =
     path: '/action-modules/$moduleId/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedBatchesBatchIdIndexRoute =
+  AuthenticatedBatchesBatchIdIndexRouteImport.update({
+    id: '/batches/$batchId/',
+    path: '/batches/$batchId/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedCredentialsCredentialIdIndexRoute =
   AuthenticatedCredentialsCredentialIdIndexRouteImport.update({
     id: '/credentials/$credentialId/',
@@ -342,7 +363,9 @@ export interface FileRoutesByFullPath {
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/action-modules/': typeof AuthenticatedActionModulesIndexRoute
   '/audit/': typeof AuthenticatedAuditIndexRoute
+  '/batches/': typeof AuthenticatedBatchesIndexRoute
   '/credentials/': typeof AuthenticatedCredentialsIndexRoute
+  '/datasets/': typeof AuthenticatedDatasetsIndexRoute
   '/evidence/': typeof AuthenticatedEvidenceIndexRoute
   '/monitoring/': typeof AuthenticatedMonitoringIndexRoute
   '/notifications/': typeof AuthenticatedNotificationsIndexRoute
@@ -361,6 +384,7 @@ export interface FileRoutesByFullPath {
   '/users/': typeof AuthenticatedUsersIndexRoute
   '/workers/': typeof AuthenticatedWorkersIndexRoute
   '/action-modules/$moduleId/': typeof AuthenticatedActionModulesModuleIdIndexRoute
+  '/batches/$batchId/': typeof AuthenticatedBatchesBatchIdIndexRoute
   '/credentials/$credentialId/': typeof AuthenticatedCredentialsCredentialIdIndexRoute
   '/evidence/$evidenceId/': typeof AuthenticatedEvidenceEvidenceIdIndexRoute
   '/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
@@ -389,7 +413,9 @@ export interface FileRoutesByTo {
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/action-modules': typeof AuthenticatedActionModulesIndexRoute
   '/audit': typeof AuthenticatedAuditIndexRoute
+  '/batches': typeof AuthenticatedBatchesIndexRoute
   '/credentials': typeof AuthenticatedCredentialsIndexRoute
+  '/datasets': typeof AuthenticatedDatasetsIndexRoute
   '/evidence': typeof AuthenticatedEvidenceIndexRoute
   '/monitoring': typeof AuthenticatedMonitoringIndexRoute
   '/notifications': typeof AuthenticatedNotificationsIndexRoute
@@ -408,6 +434,7 @@ export interface FileRoutesByTo {
   '/users': typeof AuthenticatedUsersIndexRoute
   '/workers': typeof AuthenticatedWorkersIndexRoute
   '/action-modules/$moduleId': typeof AuthenticatedActionModulesModuleIdIndexRoute
+  '/batches/$batchId': typeof AuthenticatedBatchesBatchIdIndexRoute
   '/credentials/$credentialId': typeof AuthenticatedCredentialsCredentialIdIndexRoute
   '/evidence/$evidenceId': typeof AuthenticatedEvidenceEvidenceIdIndexRoute
   '/recordings/$recordingId': typeof AuthenticatedRecordingsRecordingIdIndexRoute
@@ -439,7 +466,9 @@ export interface FileRoutesById {
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/action-modules/': typeof AuthenticatedActionModulesIndexRoute
   '/_authenticated/audit/': typeof AuthenticatedAuditIndexRoute
+  '/_authenticated/batches/': typeof AuthenticatedBatchesIndexRoute
   '/_authenticated/credentials/': typeof AuthenticatedCredentialsIndexRoute
+  '/_authenticated/datasets/': typeof AuthenticatedDatasetsIndexRoute
   '/_authenticated/evidence/': typeof AuthenticatedEvidenceIndexRoute
   '/_authenticated/monitoring/': typeof AuthenticatedMonitoringIndexRoute
   '/_authenticated/notifications/': typeof AuthenticatedNotificationsIndexRoute
@@ -458,6 +487,7 @@ export interface FileRoutesById {
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
   '/_authenticated/workers/': typeof AuthenticatedWorkersIndexRoute
   '/_authenticated/action-modules/$moduleId/': typeof AuthenticatedActionModulesModuleIdIndexRoute
+  '/_authenticated/batches/$batchId/': typeof AuthenticatedBatchesBatchIdIndexRoute
   '/_authenticated/credentials/$credentialId/': typeof AuthenticatedCredentialsCredentialIdIndexRoute
   '/_authenticated/evidence/$evidenceId/': typeof AuthenticatedEvidenceEvidenceIdIndexRoute
   '/_authenticated/recordings/$recordingId/': typeof AuthenticatedRecordingsRecordingIdIndexRoute
@@ -489,7 +519,9 @@ export interface FileRouteTypes {
     | '/settings/appearance'
     | '/action-modules/'
     | '/audit/'
+    | '/batches/'
     | '/credentials/'
+    | '/datasets/'
     | '/evidence/'
     | '/monitoring/'
     | '/notifications/'
@@ -508,6 +540,7 @@ export interface FileRouteTypes {
     | '/users/'
     | '/workers/'
     | '/action-modules/$moduleId/'
+    | '/batches/$batchId/'
     | '/credentials/$credentialId/'
     | '/evidence/$evidenceId/'
     | '/recordings/$recordingId/'
@@ -536,7 +569,9 @@ export interface FileRouteTypes {
     | '/settings/appearance'
     | '/action-modules'
     | '/audit'
+    | '/batches'
     | '/credentials'
+    | '/datasets'
     | '/evidence'
     | '/monitoring'
     | '/notifications'
@@ -555,6 +590,7 @@ export interface FileRouteTypes {
     | '/users'
     | '/workers'
     | '/action-modules/$moduleId'
+    | '/batches/$batchId'
     | '/credentials/$credentialId'
     | '/evidence/$evidenceId'
     | '/recordings/$recordingId'
@@ -585,7 +621,9 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/appearance'
     | '/_authenticated/action-modules/'
     | '/_authenticated/audit/'
+    | '/_authenticated/batches/'
     | '/_authenticated/credentials/'
+    | '/_authenticated/datasets/'
     | '/_authenticated/evidence/'
     | '/_authenticated/monitoring/'
     | '/_authenticated/notifications/'
@@ -604,6 +642,7 @@ export interface FileRouteTypes {
     | '/_authenticated/users/'
     | '/_authenticated/workers/'
     | '/_authenticated/action-modules/$moduleId/'
+    | '/_authenticated/batches/$batchId/'
     | '/_authenticated/credentials/$credentialId/'
     | '/_authenticated/evidence/$evidenceId/'
     | '/_authenticated/recordings/$recordingId/'
@@ -722,11 +761,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAuditOperationsRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/batches/': {
+      id: '/_authenticated/batches/'
+      path: '/batches'
+      fullPath: '/batches/'
+      preLoaderRoute: typeof AuthenticatedBatchesIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/credentials/': {
       id: '/_authenticated/credentials/'
       path: '/credentials'
       fullPath: '/credentials/'
       preLoaderRoute: typeof AuthenticatedCredentialsIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/datasets/': {
+      id: '/_authenticated/datasets/'
+      path: '/datasets'
+      fullPath: '/datasets/'
+      preLoaderRoute: typeof AuthenticatedDatasetsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/evidence/': {
@@ -869,6 +922,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedActionModulesModuleIdIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/batches/$batchId/': {
+      id: '/_authenticated/batches/$batchId/'
+      path: '/batches/$batchId'
+      fullPath: '/batches/$batchId/'
+      preLoaderRoute: typeof AuthenticatedBatchesBatchIdIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/credentials/$credentialId/': {
       id: '/_authenticated/credentials/$credentialId/'
       path: '/credentials/$credentialId'
@@ -988,7 +1048,9 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedAuditOperationsRoute: typeof AuthenticatedAuditOperationsRoute
   AuthenticatedActionModulesIndexRoute: typeof AuthenticatedActionModulesIndexRoute
   AuthenticatedAuditIndexRoute: typeof AuthenticatedAuditIndexRoute
+  AuthenticatedBatchesIndexRoute: typeof AuthenticatedBatchesIndexRoute
   AuthenticatedCredentialsIndexRoute: typeof AuthenticatedCredentialsIndexRoute
+  AuthenticatedDatasetsIndexRoute: typeof AuthenticatedDatasetsIndexRoute
   AuthenticatedEvidenceIndexRoute: typeof AuthenticatedEvidenceIndexRoute
   AuthenticatedMonitoringIndexRoute: typeof AuthenticatedMonitoringIndexRoute
   AuthenticatedNotificationsIndexRoute: typeof AuthenticatedNotificationsIndexRoute
@@ -1006,6 +1068,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
   AuthenticatedWorkersIndexRoute: typeof AuthenticatedWorkersIndexRoute
   AuthenticatedActionModulesModuleIdIndexRoute: typeof AuthenticatedActionModulesModuleIdIndexRoute
+  AuthenticatedBatchesBatchIdIndexRoute: typeof AuthenticatedBatchesBatchIdIndexRoute
   AuthenticatedCredentialsCredentialIdIndexRoute: typeof AuthenticatedCredentialsCredentialIdIndexRoute
   AuthenticatedEvidenceEvidenceIdIndexRoute: typeof AuthenticatedEvidenceEvidenceIdIndexRoute
   AuthenticatedRecordingsRecordingIdIndexRoute: typeof AuthenticatedRecordingsRecordingIdIndexRoute
@@ -1028,7 +1091,9 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAuditOperationsRoute: AuthenticatedAuditOperationsRoute,
   AuthenticatedActionModulesIndexRoute: AuthenticatedActionModulesIndexRoute,
   AuthenticatedAuditIndexRoute: AuthenticatedAuditIndexRoute,
+  AuthenticatedBatchesIndexRoute: AuthenticatedBatchesIndexRoute,
   AuthenticatedCredentialsIndexRoute: AuthenticatedCredentialsIndexRoute,
+  AuthenticatedDatasetsIndexRoute: AuthenticatedDatasetsIndexRoute,
   AuthenticatedEvidenceIndexRoute: AuthenticatedEvidenceIndexRoute,
   AuthenticatedMonitoringIndexRoute: AuthenticatedMonitoringIndexRoute,
   AuthenticatedNotificationsIndexRoute: AuthenticatedNotificationsIndexRoute,
@@ -1047,6 +1112,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedWorkersIndexRoute: AuthenticatedWorkersIndexRoute,
   AuthenticatedActionModulesModuleIdIndexRoute:
     AuthenticatedActionModulesModuleIdIndexRoute,
+  AuthenticatedBatchesBatchIdIndexRoute: AuthenticatedBatchesBatchIdIndexRoute,
   AuthenticatedCredentialsCredentialIdIndexRoute:
     AuthenticatedCredentialsCredentialIdIndexRoute,
   AuthenticatedEvidenceEvidenceIdIndexRoute:

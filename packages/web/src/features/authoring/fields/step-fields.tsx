@@ -782,5 +782,145 @@ export function StepFields({
       </div>
     )
   }
+  if (step.type === 'download') {
+    return (
+      <div className='space-y-3'>
+        <div className='space-y-2'>
+          <Label className='text-small font-medium'>
+            触发下载目标（可选；留空则等待前序步骤触发的下载）
+          </Label>
+          <TargetFields
+            {...policyHandlers(step, onChange)}
+            target={step.input.target ?? defaultTarget('下载目标')}
+            optional
+            disabled={disabled}
+            onChange={(target) =>
+              onChange({ ...step, input: { ...step.input, target } })
+            }
+          />
+        </div>
+        <div className='grid gap-3 sm:grid-cols-2'>
+          <div className='space-y-1.5'>
+            <Label htmlFor={`step-wait-${step.id}`}>等待下载超时（毫秒）</Label>
+            <Input
+              id={`step-wait-${step.id}`}
+              type='number'
+              min={1000}
+              max={120000}
+              disabled={disabled}
+              value={step.input.waitMs ?? 30000}
+              onChange={(e) =>
+                onChange({
+                  ...step,
+                  input: { ...step.input, waitMs: Number(e.target.value) },
+                })
+              }
+            />
+          </div>
+          <div className='space-y-1.5'>
+            <Label htmlFor={`step-expect-name-${step.id}`}>期望文件名正则（可选）</Label>
+            <Input
+              id={`step-expect-name-${step.id}`}
+              placeholder='如 \.csv$'
+              disabled={disabled}
+              value={step.input.expect?.fileNamePattern ?? ''}
+              onChange={(e) =>
+                onChange({
+                  ...step,
+                  input: {
+                    ...step.input,
+                    expect: {
+                      ...step.input.expect,
+                      fileNamePattern: e.target.value.trim() || undefined,
+                    },
+                  },
+                })
+              }
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+  if (step.type === 'upload') {
+    const file = step.input.files[0]
+    return (
+      <div className='space-y-3'>
+        <div className='space-y-2'>
+          <Label className='text-small font-medium'>上传目标入口 / 文件选择框</Label>
+          <TargetFields
+            {...policyHandlers(step, onChange)}
+            target={step.input.target}
+            disabled={disabled}
+            onChange={(target) =>
+              onChange({ ...step, input: { ...step.input, target } })
+            }
+          />
+        </div>
+        <div className='space-y-2 pt-2 border-t border-border-divider'>
+          <Label className='text-small font-medium'>上传文件附件来源</Label>
+          <div className='grid gap-3 sm:grid-cols-2'>
+            <div className='space-y-1.5'>
+              <Label>来源类型</Label>
+              <Select
+                value={file?.source ?? 'context'}
+                disabled={disabled}
+                onValueChange={(val) => {
+                  if (val === 'context') {
+                    onChange({
+                      ...step,
+                      input: {
+                        ...step.input,
+                        files: [
+                          {
+                            source: 'context',
+                            from: file && file.source === 'context' ? file.from : (bindings[0]?.key ?? 'downloadedTemplate'),
+                          },
+                        ],
+                      },
+                    })
+                  }
+                }}
+              >
+                <SelectTrigger className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='context'>前序步骤输出句柄 (context)</SelectItem>
+                  <SelectItem value='asset' disabled>夹具资产 (asset)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {file && file.source === 'context' ? (
+              <div className='space-y-1.5'>
+                <Label htmlFor={`step-upload-from-${step.id}`}>引用前序变量 (from)</Label>
+                <Input
+                  id={`step-upload-from-${step.id}`}
+                  placeholder='例如: downloadedTemplate'
+                  value={file.from}
+                  disabled={disabled}
+                  onChange={(e) => {
+                    const nextFrom = e.target.value.trim()
+                    onChange({
+                      ...step,
+                      input: {
+                        ...step.input,
+                        files: [
+                          {
+                            ...file,
+                            from: nextFrom,
+                          },
+                        ],
+                      },
+                    })
+                  }}
+                />
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    )
+  }
   return null
 }

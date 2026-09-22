@@ -10,6 +10,7 @@ import {
   BROWSER_FRAME_MAX_EDGE,
   BROWSER_FRAME_MAX_FPS,
   BROWSER_FRAME_QUALITY,
+  DEFAULT_MANAGED_VIEWPORT,
   OBJECT_MISSING_REASONS,
   retainUntilFor,
   resolveEvidencePolicy,
@@ -55,6 +56,8 @@ export type RunVideoRecorder = {
   accepting: boolean
   sealed: boolean
   writeChain: Promise<void>
+  /** writeCapturedFrame 内部的 FIFO 锁，见该函数注释。不能与 writeChain 合并：调用方有的已经在 writeChain 里，嵌套入队会自己等自己。 */
+  frameWriteLock?: Promise<void>
   retargetChain: Promise<void>
   frames: TimedJpegFrame[]
   framesDropped: {
@@ -172,7 +175,34 @@ function visibleBoxes(boxes: { width: number; height: number }[]): boolean {
   return boxes.some((box) => box.width > 1 && box.height > 1)
 }
 
+/**
+ * 帧文件名、时间轴与限频判定都读写 recorder 上的共享状态，而中间隔着遮罩与写文件的 await。
+ * attach（开录首帧）、心跳、CDP 帧、终帧会并发进来：两帧读到同一个 frameIndex，
+ * 就写同一个文件名，时间轴多出一条指向同一文件、时间相同的记录，磁盘上还少一个编号。
+ * 编码器的定帧率回退按 frame_%05d.jpg 顺序读，遇到断号就停，只解出 1 帧，
+ * 于是几秒的录像被判「覆盖不完整」，运行证据随之 INCOMPLETE。
+ *
+ * 所以在这里自己串行，而不是指望每个调用方都记得走 writeChain。
+ */
 export async function writeCapturedFrame(
+  recorder: RunVideoRecorder,
+  frame: CapturedFrame,
+  boxes: { x: number; y: number; width: number; height: number }[] | null,
+): Promise<void> {
+  const previous = recorder.frameWriteLock ?? Promise.resolve()
+  let release!: () => void
+  recorder.frameWriteLock = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await previous
+  try {
+    await writeCapturedFrameSerialized(recorder, frame, boxes)
+  } finally {
+    release()
+  }
+}
+
+async function writeCapturedFrameSerialized(
   recorder: RunVideoRecorder,
   frame: CapturedFrame,
   boxes: { x: number; y: number; width: number; height: number }[] | null,
@@ -274,7 +304,7 @@ async function capturePageJpeg(page: {
 }): Promise<{ jpeg: Buffer; width: number; height: number } | undefined> {
   if (page.isClosed?.() || typeof page.screenshot !== 'function') return undefined
   const shot = await page.screenshot({ type: 'jpeg', quality: BROWSER_FRAME_QUALITY })
-  const viewport = page.viewportSize?.() ?? { width: BROWSER_FRAME_MAX_EDGE, height: 720 }
+  const viewport = page.viewportSize?.() ?? DEFAULT_MANAGED_VIEWPORT
   return { jpeg: shot, width: viewport.width, height: viewport.height }
 }
 
@@ -344,7 +374,7 @@ async function attachRecorder(
           quality: BROWSER_FRAME_QUALITY,
           mask: screenshotMaskLocators(entry.page, recorder.sensitiveSelectors),
         })
-        const viewport = entry.page.viewportSize?.() ?? { width: BROWSER_FRAME_MAX_EDGE, height: 720 }
+        const viewport = entry.page.viewportSize?.() ?? DEFAULT_MANAGED_VIEWPORT
         await writeCapturedFrame(
           recorder,
           nextLocalFrame(recorder, 'keyframe', jpegBytes, viewport.width, viewport.height),

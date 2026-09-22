@@ -10,7 +10,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { parseDemonstrationFile } from '@cairn/authoring'
 import {
   ensureTargetAccountCredential,
-  getOrCreatePlatformConfig,
   getScenarioValidation,
 } from '@cairn/db'
 import {
@@ -29,12 +28,12 @@ import {
   requestRunCancel,
   schemaFor,
   type DbHandle,
+  adjustPlatformConfig,
 } from '@cairn/db/testing'
 import {
   AI_ATOMIC_ACTIONS_PROTOCOL,
   DEMONSTRATION_PROTOCOL,
   DEV_CREDENTIAL_KEY,
-  FACTORY_PLATFORM_CONFIG,
   IMPORTED_OUTCOME_PROTOCOL,
   targetAuthProfileDefinitionSchema,
   type DemonstrationProfile,
@@ -266,14 +265,16 @@ describe('demonstration sources × real Engine / Chromium', { timeout: 240_000 }
         },
       })
       .where(eq(t.targetAuthProfiles.targetId, targetId))
-    await getOrCreatePlatformConfig(handle, {
-      document: {
-        ...FACTORY_PLATFORM_CONFIG,
-        sessionAuth: { ...FACTORY_PLATFORM_CONFIG.sessionAuth, autoLoginMaxPerWindow: 20 },
+    await adjustPlatformConfig(
+      handle,
+      { id: actorId },
+      (document) => ({
+        ...document,
+        sessionAuth: { ...document.sessionAuth, autoLoginMaxPerWindow: 20 },
         runAuthRecovery: { maxAutoRecoveriesPerRun: 0, maxManualRecoveriesPerRun: 0 },
-      },
-      reason: 'isolated demonstration business fixture',
-    })
+      }),
+      'isolated demonstration business fixture',
+    )
     await registerWorker(handle.db, {
       workerId,
       instanceId,

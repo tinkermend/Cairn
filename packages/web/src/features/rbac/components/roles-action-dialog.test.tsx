@@ -87,7 +87,7 @@ describe('RolesActionDialog', () => {
       <RolesActionDialog open onOpenChange={vi.fn()} currentRow={operator} />,
     )
     await expect.element(getByText('能力预览')).toBeInTheDocument()
-    await expect.element(getByText(/编写：场景、场景集/)).toBeInTheDocument()
+    await expect.element(getByText(/编写：场景.*场景集/)).toBeInTheDocument()
     await expect.element(getByText(/动作库/)).toBeInTheDocument()
     await expect.element(getByText(/运维：监控、执行节点/)).toBeInTheDocument()
     await expect.element(getByText('对目标系统发起运行')).toBeInTheDocument()

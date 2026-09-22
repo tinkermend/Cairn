@@ -23,6 +23,7 @@ import { ChevronDown } from 'lucide-react'
 import { defaultTarget } from './step-registry'
 import { TargetFields } from './fields/target'
 import { useAuthoringObserve } from './observe'
+import { expectFromPreviewText, observationPreviewText } from './pick-apply'
 
 const EXPECT_OPTIONS: { kind: AssertExpect['kind']; label: string }[] = [
   { kind: 'exists', label: '对象存在' },
@@ -40,13 +41,12 @@ function blankContract(scope: OutcomeContract['scope']): OutcomeContract {
   return {
     id: newContractId(),
     scope,
-    meaning: '结果符合预期',
+    meaning: '尚未从页面选择要检查的内容',
     severity: 'MUST',
     onViolation: 'halt',
     provenance: 'manual',
     rule: {
       kind: 'deterministic',
-      target: defaultTarget('结果'),
       expect: { kind: 'exists' },
     },
   }
@@ -148,7 +148,11 @@ function OutcomeCard({
   function applyPickedTarget() {
     const picked = observe.lastPicked ?? observe.highlight?.target
     if (!picked) return
-    patchRule({ target: picked })
+    const previewText = observationPreviewText(observe.highlight)
+    patchRule({
+      target: picked,
+      ...(previewText ? { expect: expectFromPreviewText(previewText) } : {}),
+    })
   }
 
   return (

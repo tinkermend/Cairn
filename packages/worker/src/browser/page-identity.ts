@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { Frame, Page, Request } from 'playwright'
+import type { Dialog, Frame, Page, Request } from 'playwright'
 import { urlAllowedByCompiledScope, type CompiledAccessScope, type PageRef } from '@cairn/shared'
 
 export type ManagedPageKind = 'base' | 'run' | 'popup'
@@ -41,10 +41,17 @@ export function createManagedPage(input: {
     const onNavigation = (frame: Frame) => {
       if (typeof input.page.mainFrame === 'function' && frame === input.page.mainFrame()) entry.documentEpoch += 1
     }
+    const onDialog = (dialog: Dialog) => {
+      dialog.accept().catch(() => {})
+    }
     input.page.on('request', onRequest)
     input.page.on('framenavigated', onNavigation)
-    entry.dispose = () => { input.page.off?.('request', onRequest); input.page.off?.('framenavigated', onNavigation) }
-
+    input.page.on('dialog', onDialog)
+    entry.dispose = () => {
+      input.page.off?.('request', onRequest)
+      input.page.off?.('framenavigated', onNavigation)
+      input.page.off?.('dialog', onDialog)
+    }
   }
   return entry
 }

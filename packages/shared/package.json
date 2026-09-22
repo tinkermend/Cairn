@@ -20,6 +20,8 @@
     "dev": "tsc -w --preserveWatchOutput -p tsconfig.build.json"
   },
   "dependencies": {
+    "fast-xml-parser": "^5.11.1",
+    "fflate": "^0.8.2",
     "zod": "^4.5.4"
   },
   "devDependencies": {

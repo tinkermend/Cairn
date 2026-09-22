@@ -53,6 +53,7 @@ export const targetObservationSchema = z.strictObject({
       z.strictObject({
         index: z.number().int().nonnegative(),
         reason: z.string(),
+        label: z.string().max(80).optional(),
       }),
     )
     .optional(),
@@ -113,7 +114,16 @@ export function pageIdentityChanged(
   return false
 }
 
-export function observationShowsFragileCss(observation: { diagnostics?: { framePathResolved?: string[] } }): boolean {
+export function observationShowsFragileCss(observation: {
+  diagnostics?: {
+    framePathResolved?: string[]
+    candidatesTried?: Array<{ by: string; matches: number }>
+  }
+}): boolean {
+  const tried = observation.diagnostics?.candidatesTried ?? []
+  const unique = tried.find((item) => item.matches === 1)
+  if (unique) return unique.by === 'css'
+  if (tried.some((item) => item.by !== 'css' && item.matches > 0)) return false
   return observation.diagnostics?.framePathResolved?.includes('fragile-css') === true
 }
 

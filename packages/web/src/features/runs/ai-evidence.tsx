@@ -36,7 +36,7 @@ export function AiAttemptSummary({
       {judgement?.citations && judgement.citations.length > 0 ? (
         <div className='rounded bg-muted/60 p-2'>
           <p className='font-medium text-muted-foreground'>语义树引用行 (Citations):</p>
-          <ul className='mt-1 list-inside list-disc space-y-0.5 font-mono text-xs text-foreground'>
+          <ul className='mt-1 list-inside list-disc space-y-0.5 font-mono text-label text-foreground'>
             {judgement.citations.map((c, i) => (
               <li key={i}>{c}</li>
             ))}

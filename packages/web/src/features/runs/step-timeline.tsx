@@ -36,6 +36,8 @@ type StepTimelineProps = {
   focusStepRunId?: string
   focusAttemptId?: string
   focusEvidenceId?: string
+  currentStepRunId?: string | null
+  onSelectStep?: (stepRunId: string, attemptId?: string) => void
 }
 
 type TimelineGroup =
@@ -67,6 +69,8 @@ export function StepTimeline({
   focusStepRunId,
   focusAttemptId,
   focusEvidenceId,
+  currentStepRunId,
+  onSelectStep,
 }: StepTimelineProps) {
   const manifest = run.snapshot?.moduleManifest
   const entries = manifest?.entries ?? []
@@ -190,6 +194,8 @@ export function StepTimeline({
                 focusStepRunId={focusStepRunId}
                 focusAttemptId={focusAttemptId}
                 focusEvidenceId={focusEvidenceId}
+                currentStepRunId={currentStepRunId}
+                onSelectStep={onSelectStep}
               />
             )
           }
@@ -248,6 +254,8 @@ export function StepTimeline({
                     focusStepRunId,
                     focusAttemptId,
                     focusEvidenceId,
+                    currentStepRunId,
+                    onSelectStep,
                   })}
                 </ol>
               )}
@@ -267,6 +275,8 @@ function renderModuleSteps({
   focusStepRunId,
   focusAttemptId,
   focusEvidenceId,
+  currentStepRunId,
+  onSelectStep,
 }: {
   entry: ModuleManifestEntry
   stepRuns: StepRunDto[]
@@ -275,6 +285,8 @@ function renderModuleSteps({
   focusStepRunId?: string
   focusAttemptId?: string
   focusEvidenceId?: string
+  currentStepRunId?: string | null
+  onSelectStep?: (stepRunId: string, attemptId?: string) => void
 }) {
   const group = candidateGroupsOf(run.snapshot).find((item) => item.invocationId === entry.invocationId)
   const decision = evidenceItems.map((item) => item.payload).find(isSelectionDecision)
@@ -293,6 +305,8 @@ function renderModuleSteps({
         focusStepRunId={focusStepRunId}
         focusAttemptId={focusAttemptId}
         focusEvidenceId={focusEvidenceId}
+        currentStepRunId={currentStepRunId}
+        onSelectStep={onSelectStep}
       />
     ))
   }
@@ -315,6 +329,8 @@ function renderModuleSteps({
               focusStepRunId={focusStepRunId}
               focusAttemptId={focusAttemptId}
               focusEvidenceId={focusEvidenceId}
+              currentStepRunId={currentStepRunId}
+              onSelectStep={onSelectStep}
               skipReason={skipReasonForStep({
                 stepId: step.stepId,
                 group,
@@ -338,6 +354,8 @@ function StepRunItem({
   focusStepRunId,
   focusAttemptId,
   focusEvidenceId,
+  currentStepRunId,
+  onSelectStep,
 }: {
   step: StepRunDto
   runId: string
@@ -346,12 +364,21 @@ function StepRunItem({
   focusStepRunId?: string
   focusAttemptId?: string
   focusEvidenceId?: string
+  currentStepRunId?: string | null
+  onSelectStep?: (stepRunId: string, attemptId?: string) => void
 }) {
+  const isCurrent = currentStepRunId === step.id
   return (
     <li
       id={`step-run-${step.id}`}
       data-focused={focusStepRunId === step.id ? 'true' : undefined}
-      className='rounded-md border border-border-card bg-background p-3'
+      data-current={isCurrent ? 'true' : undefined}
+      onClick={() => onSelectStep?.(step.id)}
+      className={`rounded-md border p-3 transition-colors ${
+        isCurrent
+          ? 'border-primary ring-2 ring-primary/30 bg-card'
+          : 'border-border-card bg-background'
+      } ${onSelectStep ? 'cursor-pointer' : ''}`}
     >
       <div className='flex flex-wrap items-center gap-2'>
         <span className='font-medium'>
@@ -389,7 +416,15 @@ function StepRunItem({
           key={attempt.id}
           id={`attempt-${attempt.id}`}
           data-focused={focusAttemptId === attempt.id ? 'true' : undefined}
-          className='mt-2 rounded-sm bg-muted/40 p-2 text-label'
+          onClick={(e) => {
+            if (onSelectStep) {
+              e.stopPropagation()
+              onSelectStep(step.id, attempt.id)
+            }
+          }}
+          className={`mt-2 rounded-sm bg-muted/40 p-2 text-label ${
+            onSelectStep ? 'cursor-pointer hover:bg-muted/60' : ''
+          }`}
         >
           <p>
             Attempt #{attempt.attemptNo} · {ATTEMPT_STATUS_LABELS[attempt.status]}

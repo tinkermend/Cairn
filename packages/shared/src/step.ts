@@ -11,7 +11,10 @@ import { aiOutputSchemaSchema, outputFieldNameSchema } from './output-schema.js'
 import { executionErrorCategorySchema } from './runtime-error.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
-import { durationMsSchema, entityIdSchema, jsonValueSchema, timeoutMsSchema } from './wire.js'
+import { durationMsSchema, entityIdSchema, jsonValueSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
+import { runFileHandleSchema } from './run-file.js'
+import { objectDigestSchema } from './object-store.js'
+import { dataGeneratorSpecSchema, type DataGeneratorSpec } from './data-generator.js'
 
 /**
  * 可执行 Step。枚举即注册表：没写进这里的 type 过不了 `stepSchema`。
@@ -28,6 +31,8 @@ export const BROWSER_STEP_TYPES = [
   'select',
   'keyboard',
   'wait',
+  'download',
+  'upload',
 ] as const
 export const AI_STEP_TYPES = ['ai_action', 'ai_extract', 'ai_assert'] as const
 export const MAP_EXPLORE_STEP_TYPES = [
@@ -341,6 +346,83 @@ export const waitStepSchema = z.strictObject({
   input: waitInputSchema,
 })
 
+export const downloadInputSchema = z.strictObject({
+  /** 给定则点击它触发下载；省略则等待前序步骤已触发、尚未落地的下载。 */
+  target: targetDescriptorSchema.optional(),
+  /** 等待 download 事件的预算，缺省 30s，上限 120s。 */
+  waitMs: z.number().int().min(1_000).max(120_000).optional(),
+  /** 可选校验：不满足即失败，避免把错误页存成"成功下载"。 */
+  expect: z
+    .strictObject({
+      /** 受限正则（无回溯构造），编译期校验可编译。 */
+      fileNamePattern: z.string().min(1).max(256).optional(),
+      minBytes: z.number().int().positive().optional(),
+    })
+    .optional(),
+})
+export type DownloadInput = z.infer<typeof downloadInputSchema>
+
+export const downloadStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('download'),
+  input: downloadInputSchema,
+})
+export type DownloadStep = z.infer<typeof downloadStepSchema>
+
+export const downloadStepOutputSchema = runFileHandleSchema
+
+export const uploadAssetSourceSchema = z.strictObject({
+  source: z.literal('asset'),
+  fixtureId: entityIdSchema,
+  /** 编写期写入的夹具摘要。运行期比对不一致即失败，保证历史版本可复盘。 */
+  digest: objectDigestSchema,
+  /** 可选重命名注入的文件名；省略时用夹具登记名。 */
+  name: z.string().min(1).max(255).optional(),
+})
+export type UploadAssetSource = z.infer<typeof uploadAssetSourceSchema>
+
+export const uploadContextSourceSchema = z.strictObject({
+  source: z.literal('context'),
+  from: contextKeySchema,
+  /** 前序步骤输出为对象时，取其中的句柄字段。 */
+  fromField: outputFieldNameSchema.optional(),
+  name: z.string().min(1).max(255).optional(),
+})
+export type UploadContextSource = z.infer<typeof uploadContextSourceSchema>
+
+export const uploadFileItemSchema = z.discriminatedUnion('source', [
+  uploadAssetSourceSchema,
+  uploadContextSourceSchema,
+])
+export type UploadFileItem = z.infer<typeof uploadFileItemSchema>
+
+export const uploadInputSchema = z.strictObject({
+  target: targetDescriptorSchema,
+  files: z.array(uploadFileItemSchema).min(1).max(10),
+})
+export type UploadInput = z.infer<typeof uploadInputSchema>
+
+export const uploadStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('upload'),
+  input: uploadInputSchema,
+})
+export type UploadStep = z.infer<typeof uploadStepSchema>
+
+export const uploadStepOutputSchema = z.strictObject({
+  files: z.array(
+    z.strictObject({
+      name: z.string(),
+      byteSize: z.number().int().nonnegative(),
+      mimeType: z.string(),
+      digest: objectDigestSchema,
+    }),
+  ),
+  method: z.enum(['dom_direct', 'file_chooser']),
+  uploadedAt: utcInstantSchema,
+})
+export type UploadStepOutput = z.infer<typeof uploadStepOutputSchema>
+
 export const aiInstructionSchema = z.string().trim().min(1).max(4096)
 
 export const AI_ATOMIC_ACTIONS_PROTOCOL = 'ai.atomic-actions@1' as const
@@ -464,6 +546,8 @@ export const stepSchema = z
     selectStepSchema,
     keyboardStepSchema,
     waitStepSchema,
+    downloadStepSchema,
+    uploadStepSchema,
     aiActionStepBase,
     aiExtractStepSchema,
     aiAssertStepSchema,
@@ -501,11 +585,26 @@ export type MapGuardedActionStep = z.infer<typeof mapGuardedActionStepSchema>
 export type MapVerifyStep = z.infer<typeof mapVerifyStepSchema>
 export type Step = z.infer<typeof stepSchema>
 
+export const SCENARIO_INPUT_TYPES = [
+  'string',
+  'number',
+  'boolean',
+  'url',
+  'file',
+  'json',
+] as const
+export type ScenarioInputType = (typeof SCENARIO_INPUT_TYPES)[number]
+export const scenarioInputTypeSchema = z.enum(SCENARIO_INPUT_TYPES)
+
 export const scenarioInputDeclSchema = z.strictObject({
   key: contextKeySchema.refine(
     (key) => !(FORBIDDEN_CONTEXT_KEYS as readonly string[]).includes(key),
     'input 键不得使用对象保留名',
   ),
   label: z.string().trim().min(1).max(128),
+  type: scenarioInputTypeSchema.optional(),
+  required: z.boolean().optional(),
+  description: z.string().max(256).optional(),
+  defaultGenerator: dataGeneratorSpecSchema.optional(),
 })
 export type ScenarioInputDecl = z.infer<typeof scenarioInputDeclSchema>

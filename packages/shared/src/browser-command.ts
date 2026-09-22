@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { evidenceCaptureModeSchema } from './evidence-policy.js'
 import { screenshotViewportSchema, sensitiveSelectorsSchema } from './evidence-slots.js'
 import { executionErrorSchema } from './runtime-error.js'
-import { objectContentTypeSchema, objectKeySchema } from './object-store.js'
+import { objectContentTypeSchema, objectDigestSchema, objectKeySchema } from './object-store.js'
 import { pageAfterSchema } from './managed-browser.js'
 import { locatorCandidateSchema, targetDescriptorSchema } from './target-descriptor.js'
 import { healingPatchSchema } from './healer.js'
@@ -31,6 +31,22 @@ export const BROWSER_STEP_ERROR_CODES = [
   'PAGE_HANDOFF_AMBIGUOUS',
   'PAGE_HANDOFF_OUT_OF_SCOPE',
   'PAGE_HANDOFF_CLOSED',
+  'DOWNLOAD_TIMEOUT',
+  'DOWNLOAD_FAILED',
+  'DOWNLOAD_REJECTED',
+  'DOWNLOAD_TOO_LARGE',
+  'FIXTURE_NOT_FOUND',
+  'FIXTURE_DIGEST_MISMATCH',
+  'FILE_HANDLE_INVALID',
+  'FILE_HANDLE_FOREIGN_RUN',
+  'FILE_OBJECT_UNAVAILABLE',
+  'UPLOAD_PAYLOAD_TOO_LARGE',
+  'UPLOAD_NO_FILE_INPUT',
+  'UPLOAD_TARGET_NOT_FILE_INPUT',
+  'UPLOAD_TARGET_SINGLE_ONLY',
+  'UPLOAD_PRECONDITION_FAILED',
+  'UPLOAD_FILE_CHOOSER_TIMEOUT',
+  'FIXTURE_SIZE_EXCEEDED',
 ] as const
 export type BrowserStepErrorCode = (typeof BROWSER_STEP_ERROR_CODES)[number]
 
@@ -92,6 +108,16 @@ export const resolverDiagnosticsSchema = z.strictObject({
 })
 export type ResolverDiagnostics = z.infer<typeof resolverDiagnosticsSchema>
 
+export const resolvedUploadFileSchema = z.strictObject({
+  /** Worker 本地绝对路径，磁盘文件名与 name 一致。 */
+  localPath: z.string().min(1).max(4096),
+  name: z.string().min(1).max(255),
+  mimeType: objectContentTypeSchema,
+  digest: objectDigestSchema,
+  byteSize: z.number().int().nonnegative(),
+})
+export type ResolvedUploadFile = z.infer<typeof resolvedUploadFileSchema>
+
 const originSchema = z.string().trim().min(1).max(256)
 
 export const browserCommandSchema = z.discriminatedUnion('type', [
@@ -152,6 +178,25 @@ export const browserCommandSchema = z.discriminatedUnion('type', [
     text: z.string().min(1).max(1024).optional(),
     durationMs: z.number().int().positive().max(60_000).optional(),
     timeoutMs: z.number().int().positive().optional(),
+  }),
+  z.strictObject({
+    type: z.literal('upload'),
+    expectedTargetToken: z.string().uuid().optional(),
+    target: targetDescriptorSchema,
+    files: z.array(resolvedUploadFileSchema).min(1).max(10),
+  }),
+  z.strictObject({
+    type: z.literal('download'),
+    expectedTargetToken: z.string().uuid().optional(),
+    target: targetDescriptorSchema.optional(),
+    waitMs: z.number().int().min(1_000).max(120_000),
+    saveDir: z.string().min(1).max(4096),
+    expect: z
+      .strictObject({
+        fileNamePattern: z.string().optional(),
+        minBytes: z.number().int().optional(),
+      })
+      .optional(),
   }),
 ])
 export type BrowserCommand = z.infer<typeof browserCommandSchema>

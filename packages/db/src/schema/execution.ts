@@ -154,7 +154,7 @@ export const runs = cairnSchema.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     eventSeq: integer('event_seq').notNull().default(0),
-    executionOrigin: text('execution_origin').notNull().default('standalone').$type<'standalone' | 'suite_member'>(),
+    executionOrigin: text('execution_origin').notNull().default('standalone').$type<'standalone' | 'suite_member' | 'batch_item'>(),
     suiteRunId: uuid('suite_run_id'),
     suiteMemberId: text('suite_member_id'),
   },

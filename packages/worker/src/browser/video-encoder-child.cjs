@@ -167,7 +167,7 @@ async function encodeSegment(seg, index) {
   const hostPath = join(dir, hostName)
   if (existsSync(hostPath)) {
     const existing = readFileSync(hostPath)
-    if (isWebm(existing)) return { name: hostName, bytes: existing }
+    if (isWebm(existing)) return { name: hostName, bytes: existing, timingMode: 'concat' }
   }
   const remapped = seg.frames.map((frame, index) => ({
     file: `frame_${String(index).padStart(5, '0')}.jpg`,
@@ -176,6 +176,7 @@ async function encodeSegment(seg, index) {
   const jpegFiles = remapped.map((frame, index) => [frame.file, readFileSync(join(dir, seg.frames[index].file))])
   const sealedRel = Math.max(1, seg.toMs - seg.fromMs)
   let bytes
+  let timingMode = 'concat'
   try {
     bytes = await encodeConcat(jpegFiles, buildConcat(remapped, sealedRel))
     if (!isWebm(bytes)) throw new Error('concat 结果不是 WebM')
@@ -184,10 +185,11 @@ async function encodeSegment(seg, index) {
   } catch {
     const rate = Math.max(1, seg.frames.length / Math.max(0.001, sealedRel / 1000))
     bytes = await encodeCfr(jpegFiles, rate)
+    timingMode = 'cfr'
   }
   if (!isWebm(bytes)) throw new Error('分段编码结果不是可播 WebM')
   writeFileSync(hostPath, bytes)
-  return { name: hostName, bytes }
+  return { name: hostName, bytes, timingMode }
 }
 
 async function decodeWebm(bytes) {
@@ -215,12 +217,15 @@ async function main() {
     const windows = partitionSegments(frames, sealedTMs)
     try {
       const segments = []
+      let anyCfr = false
       for (let i = 0; i < windows.length; i += 1) {
-        segments.push(await encodeSegment(windows[i], i))
+        const seg = await encodeSegment(windows[i], i)
+        segments.push(seg)
+        if (seg.timingMode === 'cfr') anyCfr = true
       }
       if (segments.length === 1) {
         bytes = segments[0].bytes
-        timingMode = 'concat'
+        timingMode = anyCfr ? 'cfr' : 'concat'
       } else {
         const list = ['ffconcat version 1.0', ...segments.map((seg) => `file '${seg.name}'`)].join('\n') + '\n'
         const webmFiles = segments.map((seg) => [seg.name, seg.bytes])
@@ -228,7 +233,7 @@ async function main() {
         if (!isWebm(bytes) || !honorsTimeline(await decodeWebm(bytes), sealedTMs)) {
           throw new Error('分段拼接未保住采集区间')
         }
-        timingMode = 'concat'
+        timingMode = anyCfr ? 'cfr' : 'concat'
       }
     } catch {
       const jpegFiles = names.map((name) => [name, readFileSync(join(dir, name))])

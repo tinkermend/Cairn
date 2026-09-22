@@ -446,16 +446,29 @@ export class RbacStore {
   async updateMe(accountId: string, body: UpdateMeBody): Promise<MeResponse> {
     const { consoleAccounts } = schemaFor(this.db)
     const current = await this.getAccount(accountId)
+    const updates: Partial<typeof consoleAccounts.$inferInsert> = {
+      updatedAt: new Date(),
+    }
+    if (body.displayName !== undefined) updates.displayName = body.displayName
+    if (body.avatar !== undefined) updates.avatar = body.avatar
     await this.db
       .update(consoleAccounts)
-      .set({ displayName: body.displayName, updatedAt: new Date() })
+      .set(updates)
       .where(eq(consoleAccounts.id, accountId))
+    const details = [
+      body.displayName !== undefined && current.displayName !== body.displayName
+        ? `显示名（${current.displayName} → ${body.displayName}）`
+        : null,
+      body.avatar !== undefined && current.avatar !== body.avatar
+        ? `头像（${current.avatar ?? '未设置'} → ${body.avatar ?? '清除'}）`
+        : null,
+    ].filter(Boolean).join('、')
     await this.recordAudit(
       accountId,
       'account.update',
       'account',
       accountId,
-      `修改了自己的显示名（${current.displayName} → ${body.displayName}）`,
+      `修改了自己的个人资料${details ? '：' + details : ''}`,
     )
     return this.getMe(accountId)
   }
@@ -487,6 +500,7 @@ export class RbacStore {
           id,
           displayName: body.displayName,
           email,
+          avatar: body.avatar ?? null,
           status: body.status ?? 'active',
           createdAt: now,
           updatedAt: now,
@@ -556,6 +570,7 @@ export class RbacStore {
           {
             ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
             ...(nextEmail !== undefined ? { email: nextEmail } : {}),
+            ...(body.avatar !== undefined ? { avatar: body.avatar } : {}),
             ...(body.status !== undefined ? { status: body.status } : {}),
             updatedAt: new Date(),
           },
@@ -880,6 +895,7 @@ export class RbacStore {
         id: row.id,
         displayName: row.displayName,
         email: row.email,
+        avatar: row.avatar ?? null,
         status: row.status,
         roles: [...(rolesByAccount.get(row.id)?.values() ?? [])],
         permissions: uniquePermissions(permsByAccount.get(row.id) ?? []),

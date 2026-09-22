@@ -37,6 +37,7 @@ export const OBJECT_MISSING_REASONS = {
   traceTooLarge: 'trace_too_large',
   videoTooLarge: 'video_too_large',
   captureFailed: 'capture_failed',
+  fileTooLarge: 'file_too_large',
 } as const
 export type ObjectMissingReason = (typeof OBJECT_MISSING_REASONS)[keyof typeof OBJECT_MISSING_REASONS]
 
@@ -89,6 +90,11 @@ export function artifactObjectKeyFor(artifactId: string, objectId: string): stri
   const artifact = entityIdSchema.parse(artifactId)
   const id = entityIdSchema.parse(objectId)
   return objectKeySchema.parse(`v1/artifacts/${artifact}/${id}`)
+}
+
+export function fixtureObjectKeyFor(fixtureId: string): string {
+  const fixture = entityIdSchema.parse(fixtureId)
+  return objectKeySchema.parse(`v1/fixtures/${fixture}`)
 }
 
 export function isAbsoluteFsPath(value: string): boolean {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  confirmSubmittedLogin,
   inspectAuthOnPage,
   loginUrlLooksPending,
   verifyAuthOnPage,
@@ -165,5 +166,62 @@ describe('登录探针', () => {
       waitUntil: 'domcontentloaded',
       timeout: 30_000,
     })
+  })
+})
+
+describe('提交后确认登录', () => {
+  it('无验证码且结果不明时打开入口核验 cookie', async () => {
+    const page = fakePage('https://modelapi.im/login', {
+      gotoUrl: 'https://modelapi.im/dashboard',
+    })
+    expect(
+      await withTestOccupancy(() =>
+        confirmSubmittedLogin(
+          { basePage: page } as never,
+          { entryUrl: 'https://modelapi.im/dashboard', loginUrl: 'https://modelapi.im/login' },
+          { authenticated: false, submit: 'ambiguous' },
+        ),
+      ),
+    ).toEqual({ authenticated: true, submit: 'authenticated' })
+    expect(page.goto).toHaveBeenCalledWith('https://modelapi.im/dashboard', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    })
+  })
+
+  it('有验证码时不打开入口，避免刷新挑战', async () => {
+    const page = fakePage('https://demo.example/#/login', {
+      gotoUrl: 'https://demo.example/#/dashboard',
+    })
+    expect(
+      await withTestOccupancy(() =>
+        confirmSubmittedLogin(
+          { basePage: page } as never,
+          {
+            entryUrl: 'https://demo.example/',
+            loginUrl: 'https://demo.example/#/login',
+            captchaMode: 'image',
+          },
+          { authenticated: false, submit: 'ambiguous' },
+        ),
+      ),
+    ).toEqual({ authenticated: false, submit: 'ambiguous' })
+    expect(page.goto).not.toHaveBeenCalled()
+  })
+
+  it('未提交时不把公开入口页当成登录成功', async () => {
+    const page = fakePage('https://modelapi.im/login', {
+      gotoUrl: 'https://modelapi.im/dashboard',
+    })
+    expect(
+      await withTestOccupancy(() =>
+        confirmSubmittedLogin(
+          { basePage: page } as never,
+          { entryUrl: 'https://modelapi.im/dashboard', loginUrl: 'https://modelapi.im/login' },
+          { authenticated: false, submit: 'not_attempted' },
+        ),
+      ),
+    ).toEqual({ authenticated: false, submit: 'not_attempted' })
+    expect(page.goto).not.toHaveBeenCalled()
   })
 })

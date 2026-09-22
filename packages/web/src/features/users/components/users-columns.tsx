@@ -5,6 +5,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/data-table'
 import { LongText } from '@/components/long-text'
+import { UserAvatar } from '@/components/user-avatar'
 import { callTypes, roles } from '../data/data'
 import { type User } from '../data/schema'
 import { DataTableRowActions } from './data-table-row-actions'
@@ -43,7 +44,16 @@ export const usersColumns: ColumnDef<User>[] = [
       <DataTableColumnHeader column={column} title='姓名' />
     ),
     cell: ({ row }) => (
-      <LongText className='max-w-36 ps-3'>{row.getValue('displayName')}</LongText>
+      <div className='flex items-center gap-2.5 ps-2'>
+        <UserAvatar
+          user={{
+            displayName: row.original.displayName,
+            avatar: row.original.avatar,
+          }}
+          className='size-7 rounded-md shrink-0'
+        />
+        <LongText className='max-w-36'>{row.getValue('displayName')}</LongText>
+      </div>
     ),
     meta: {
       className: cn(

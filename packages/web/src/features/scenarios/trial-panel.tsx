@@ -1,6 +1,12 @@
+import { useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, RefreshCw } from 'lucide-react'
-import { faceScreenshot, hasPermission } from '@cairn/shared'
+import {
+  buildRunVideoChapters,
+  faceScreenshot,
+  hasPermission,
+  readRunVideoPayload,
+} from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
 import { connectionLabel, connectionTone, useRunObservation } from '@/features/runs/use-run-observation'
 import { AttemptEvidenceList } from '@/features/runs/evidence-viewer'
@@ -18,8 +24,7 @@ import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { StatusBadge } from '@/components/status-badge'
 import { stepTypeLabel } from './labels'
-import { BrowserView } from '@/features/runs/browser-view'
-import { RunVideoSection, StepFaceScreenshot, stepFaceScreenshot } from '@/features/runs/run-video'
+import { findRunVideo, RunVideoSection, StepFaceScreenshot, stepFaceScreenshot } from '@/features/runs/run-video'
 import { PlacementHint } from '@/features/runs/placement-hint'
 import { StepTimeline } from '@/features/runs/step-timeline'
 import { OutcomeAxisSummary, OutcomeConditionList, RUN_EXECUTION_AXIS_LABELS } from '@/features/runs/outcome-axis'
@@ -48,7 +53,33 @@ export function TrialPanel({
 }) {
   const user = useAuthStore((state) => state.auth.user)
   const canRead = Boolean(user && hasPermission(user.permissions, 'run:read'))
-  const { run, evidence, connection, query: runQuery, refresh, eventSeq } = useRunObservation(runId, canRead)
+  const { run, evidence, connection, query: runQuery, refresh } = useRunObservation(runId, canRead)
+  const [seekRequest, setSeekRequest] = useState<{
+    token: number
+    ms: number
+    source: 'chapter' | 'list' | 'deeplink' | 'pin'
+  } | null>(null)
+  const seekTokenRef = useRef(1)
+  const video = findRunVideo(evidence?.items ?? [])
+  const videoPayload = readRunVideoPayload(video?.payload)
+
+  useEffect(() => {
+    if (!canRead || !run || !selectedDraftStepId || !video) return
+    const chapterModel = buildRunVideoChapters({
+      run,
+      payload: videoPayload,
+      evidenceItems: evidence?.items ?? [],
+    })
+    if (!chapterModel.clock) return
+    const step = run.snapshot.steps.find((s) => s.id === selectedDraftStepId)
+    const stepRun = step ? run.stepRuns.find((sr) => sr.stepId === step.id) : undefined
+    if (stepRun) {
+      const chapter = chapterModel.chapters.find((c) => c.stepRunId === stepRun.id)
+      if (chapter) {
+        setSeekRequest({ token: seekTokenRef.current++, ms: chapter.fromMs, source: 'list' })
+      }
+    }
+  }, [canRead, run, selectedDraftStepId, video, videoPayload, evidence?.items])
 
   if (!canRead) {
     return (
@@ -135,6 +166,7 @@ export function TrialPanel({
             <OutcomeAxisSummary
               executionLabel={RUN_EXECUTION_AXIS_LABELS[run.status]}
               outcomeStatus={run.outcomeStatus}
+              hasContracts={Boolean(run.snapshot.outcomeManifest?.entries.length)}
             />
             <OutcomeConditionList
               runId={run.id}
@@ -154,7 +186,7 @@ export function TrialPanel({
                 <p className='text-body'>
                   {run.status === 'NEEDS_REVIEW' ? '操作结果待核查，请先确认业务结果' : run.authCheckpoint.status === 'recovering'
                     ? run.authCheckpoint.recoveryKind === 'manual'
-                      ? '正在等待人工认证恢复'
+                      ? '正在等待登录恢复'
                       : '正在恢复登录'
                     : run.authCheckpoint.status === 'recovered'
                       ? '登录已恢复，已通过续跑校验'
@@ -178,13 +210,22 @@ export function TrialPanel({
                 ) : null}
               </div>
             ) : null}
-            <BrowserView
-              runId={run.id}
-              runStatus={run.status}
-              eventSeq={eventSeq}
-              onRunChanged={refresh}
-            />
-            <RunVideoSection run={run} items={evidence?.items ?? []} />
+
+            {/* 试跑录像：当且仅当录像存在（即租约已 seal 并落库）时渲染，RUNNING 无录像时不渲染空壳 */}
+            {video ? (
+              <RunVideoSection
+                run={run}
+                items={evidence?.items ?? []}
+                seekRequest={seekRequest}
+                onSelectStep={(stepRunId) => {
+                  const sr = run.stepRuns.find((s) => s.id === stepRunId)
+                  if (sr) {
+                    onSelectDraftStep(sr.stepId)
+                  }
+                }}
+              />
+            ) : null}
+
             <p className='text-small text-muted-foreground'>
               冻结版本 {run.scenarioVersionId}
               {run.startedAt ? ` · 开始 ${new Date(run.startedAt).toLocaleString()}` : ''}
@@ -197,7 +238,16 @@ export function TrialPanel({
               </div>
             ) : null}
             {hasModuleGroups && run ? (
-              <StepTimeline run={run} evidenceItems={evidence?.items ?? []} />
+              <StepTimeline
+                run={run}
+                evidenceItems={evidence?.items ?? []}
+                onSelectStep={(stepRunId) => {
+                  const sr = run.stepRuns.find((s) => s.id === stepRunId)
+                  if (sr) {
+                    onSelectDraftStep(sr.stepId)
+                  }
+                }}
+              />
             ) : null}
             {historic ? (
               <div className='space-y-2 rounded-md border border-border-default p-4'>

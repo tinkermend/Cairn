@@ -27,11 +27,12 @@ import {
   scopeForAnchor,
   screenshotPage,
   selectLocator,
+  uploadToLocator,
   waitForPopup,
   waitOnPage,
 } from './runtime'
 import { candidateTries, errorForOutcome, pickResolvedCandidate } from './resolver'
-import { sanitizeAriaSnapshot } from '@cairn/shared'
+import { safeDownloadFileName, sanitizeAriaSnapshot } from '@cairn/shared'
 import { matchAriaSnapshot } from './aria-match.js'
 
 export type SurfacePage = Page
@@ -114,12 +115,14 @@ async function readRememberedTarget(page: Page, locator: Locator,
   } finally { await receipt.handle.dispose().catch(() => undefined) }
 }
 
+export { safeDownloadFileName }
+
 export async function executeOnPage(
   page: Page,
   command: BrowserCommand,
   signal?: AbortSignal,
   evidence?: BrowserCommandEvidence,
-): Promise<BrowserCommandResult & { screenshotBytes?: Buffer }> {
+): Promise<BrowserCommandResult & { screenshotBytes?: Buffer; downloadPath?: string }> {
   if (signal?.aborted) {
     return {
       ok: false,
@@ -135,6 +138,7 @@ export async function executeOnPage(
     return failOutcome('SURFACE_LOST', { outcome: 'SURFACE_LOST', candidatesTried: [] })
   }
 
+  let diagnostics: ResolverDiagnostics = { outcome: 'FOUND', candidatesTried: [] }
   try {
     if (command.type === 'navigate') {
       const result = await navigateInScope(page, command.url, command.allowedOrigins)
@@ -179,7 +183,6 @@ export async function executeOnPage(
 
     const target = 'target' in command ? command.target : undefined
     let locatedLocator: Locator
-    let diagnostics: ResolverDiagnostics = { outcome: 'FOUND', candidatesTried: [] }
 
     if (!target) {
       if (command.type === 'assert' && command.expect.kind === 'aria_snapshot') {
@@ -265,6 +268,86 @@ export async function executeOnPage(
       return { ok: true, output: {}, diagnostics }
     }
 
+    if (command.type === 'upload') {
+      const filesForUpload = command.files.map((f) => ({
+        ...f,
+        sha256: (f as any).sha256 ?? (f as any).digest ?? '',
+      }))
+      const uploadRes = await uploadToLocator(page, locatedLocator, filesForUpload)
+      const output = {
+        files: command.files.map((f) => ({
+          name: f.name,
+          byteSize: f.byteSize,
+          mimeType: f.mimeType,
+          digest: (f as any).digest ?? (f as any).sha256 ?? '',
+        })),
+        method: uploadRes.method,
+        uploadedAt: new Date().toISOString(),
+      }
+      return { ok: true, output, diagnostics }
+    }
+
+    if (command.type === 'download') {
+      if (page) {
+        ;(page as any).__cairnDownloadPending = true
+      }
+      try {
+        const waiter = page.waitForEvent('download', { timeout: command.waitMs })
+        if (locatedLocator) {
+          await locatedLocator.click({ timeout: 5_000 })
+        }
+        let download: any
+        try {
+          download = await waiter
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: 'DOWNLOAD_TIMEOUT',
+              category: 'TIMEOUT',
+              retryable: true,
+              safeMessage: `等待下载事件超时（${command.waitMs}ms）`,
+            },
+            diagnostics,
+          }
+        }
+
+        const failure = await download.failure()
+        if (failure) {
+          return {
+            ok: false,
+            error: {
+              code: 'DOWNLOAD_FAILED',
+              category: 'EXECUTOR',
+              retryable: true,
+              safeMessage: `浏览器下载失败: ${failure}`,
+            },
+            diagnostics,
+          }
+        }
+
+        const rawName = download.suggestedFilename()
+        const safeName = safeDownloadFileName(rawName)
+        const targetDir = command.saveDir
+        const { mkdir } = await import('node:fs/promises')
+        const { join } = await import('node:path')
+        await mkdir(targetDir, { recursive: true })
+        const localPath = join(targetDir, `${randomUUID().slice(0, 8)}-${safeName}`)
+        await download.saveAs(localPath)
+
+        return {
+          ok: true,
+          output: {},
+          diagnostics,
+          downloadPath: localPath,
+        }
+      } finally {
+        if (page) {
+          ;(page as any).__cairnDownloadPending = false
+        }
+      }
+    }
+
     const assertion = await evaluateAssert(
       locatedLocator,
       command.expect,
@@ -315,6 +398,27 @@ export async function executeOnPage(
     }
     if (error instanceof SurfaceLostError || isClosedMessage(error)) {
       return failOutcome('SURFACE_LOST', { outcome: 'SURFACE_LOST', candidatesTried: [] })
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    for (const code of [
+      'UPLOAD_NO_FILE_INPUT',
+      'UPLOAD_TARGET_SINGLE_ONLY',
+      'UPLOAD_PRECONDITION_FAILED',
+      'UPLOAD_FILE_CHOOSER_TIMEOUT',
+      'UPLOAD_TARGET_NOT_FILE_INPUT',
+    ] as const) {
+      if (message.includes(code)) {
+        return {
+          ok: false,
+          error: {
+            code,
+            category: 'EXECUTOR',
+            retryable: true,
+            safeMessage: message.replace(`${code}: `, ''),
+          },
+          diagnostics,
+        }
+      }
     }
     return {
       ok: false,

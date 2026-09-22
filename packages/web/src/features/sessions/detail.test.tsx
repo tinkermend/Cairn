@@ -243,6 +243,8 @@ describe('SessionDetailPage', () => {
     )
     await expect.element(screen.getByText('演示系统 / 值班')).toBeInTheDocument()
     await expect.element(screen.getByText('就绪')).toBeInTheDocument()
+    await expect.element(screen.getByText('节点 / 实例版本')).toBeInTheDocument()
+    await expect.element(screen.getByText('worker-a · 实例 #1', { exact: true })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '检查登录' })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '设置保留' })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '更多' })).toBeInTheDocument()

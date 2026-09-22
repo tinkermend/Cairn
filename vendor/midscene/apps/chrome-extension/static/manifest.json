@@ -1,7 +1,7 @@
 {
-  "name": "Midscene.js",
-  "description": "Open-source SDK for automating web pages using natural language through AI.",
-  "version": "1.96",
+  "name": "Midscene.js · 识途协同录制",
+  "description": "识途平台 AI+视觉自动化与操作录制浏览器扩展 (基于 Midscene.js)",
+  "version": "1.12.6",
   "manifest_version": 3,
   "permissions": [
     "activeTab",

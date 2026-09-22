@@ -133,21 +133,7 @@ export function NotificationsPage() {
     enabled: canConfig,
   })
 
-  const recordsQuery = useQuery({
-    queryKey: ['notifications', { limit: 20 }],
-    queryFn: () => fetchNotificationEvents({ limit: 20 }),
-    enabled: canRead,
-  })
-
-  const recordsItems = recordsQuery.data?.items ?? []
   const channelsItems = channelsQuery.data?.channels ?? []
-
-  const acceptedCount = recordsItems.filter((e) =>
-    e.deliveries.some((d) => d.status === 'accepted')
-  ).length
-  const issueCount = recordsItems.filter((e) =>
-    e.deliveries.some((d) => ['failed', 'unknown'].includes(d.status))
-  ).length
   const activeChannelsCount = channelsItems.filter(
     (c) => c.enabled && !c.revoked
   ).length
@@ -157,38 +143,6 @@ export function NotificationsPage() {
       <PageHeader
         title='通知'
         description='集中管理场景运行结果、告警与发送渠道。每个目的地的投递结果独立记录。'
-      />
-      <CollectionSummary
-        items={[
-          {
-            label: '本页记录',
-            value: recordsItems.length,
-            description: '当前已加载的通知事件',
-            icon: <Bell className='size-4 text-primary' />,
-          },
-          {
-            label: '对方已接受',
-            value: acceptedCount,
-            description: '服务器成功接收的通知',
-            icon: (
-              <CheckCircle2 className='size-4 text-status-success-foreground' />
-            ),
-          },
-          {
-            label: '待处理异常',
-            value: issueCount,
-            description: '发送失败或结果不明的项',
-            icon: (
-              <AlertTriangle className='size-4 text-status-warning-foreground' />
-            ),
-          },
-          {
-            label: '可用渠道',
-            value: activeChannelsCount,
-            description: '已启用且未撤销的渠道',
-            icon: <Radio className='size-4 text-primary' />,
-          },
-        ]}
       />
       <Tabs
         value={tab}
@@ -210,6 +164,7 @@ export function NotificationsPage() {
             <NotificationRecords
               runId={search.runId}
               alertId={search.alertId}
+              activeChannelsCount={activeChannelsCount}
             />
           )}
         </TabsContent>
@@ -232,9 +187,11 @@ export function NotificationsPage() {
 function NotificationRecords({
   runId,
   alertId,
+  activeChannelsCount,
 }: {
   runId?: string
   alertId?: string
+  activeChannelsCount: number
 }) {
   const page = useCursorPage()
   const [type, setType] = useState(''),
@@ -307,9 +264,47 @@ function NotificationRecords({
   }
 
   const items = list.data?.items ?? []
+  const acceptedCount = items.filter((e) =>
+    e.deliveries.some((d) => d.status === 'accepted')
+  ).length
+  const issueCount = items.filter((e) =>
+    e.deliveries.some((d) => ['failed', 'unknown'].includes(d.status))
+  ).length
 
   return (
     <div className='space-y-4'>
+      <CollectionSummary
+        items={[
+          {
+            label: '本页记录',
+            value: items.length,
+            description: '当前已加载的通知事件',
+            icon: <Bell className='size-4 text-primary' />,
+          },
+          {
+            label: '对方已接受',
+            value: acceptedCount,
+            description: '服务器成功接收的通知',
+            icon: (
+              <CheckCircle2 className='size-4 text-status-success-foreground' />
+            ),
+          },
+          {
+            label: '待处理异常',
+            value: issueCount,
+            description: '发送失败或结果不明的项',
+            icon: (
+              <AlertTriangle className='size-4 text-status-warning-foreground' />
+            ),
+          },
+          {
+            label: '可用渠道',
+            value: activeChannelsCount,
+            description: '已启用且未撤销的渠道',
+            icon: <Radio className='size-4 text-primary' />,
+          },
+        ]}
+      />
       <div className='min-w-0 overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>
         <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-divider p-4'>
           <div className='flex flex-wrap gap-1' aria-label='投递状态筛选'>

@@ -246,10 +246,12 @@ export function SessionSystemPage() {
                 </TableHeader>
                 <TableBody>
                   {items.map((item) => {
-                    const closable = canCloseAccountSession({
-                      status: item.status,
-                      sessionId: item.sessionId,
-                    })
+                    const closable =
+                      (item.liveCount ?? 0) <= 1 &&
+                      canCloseAccountSession({
+                        status: item.status,
+                        sessionId: item.sessionId,
+                      })
                     return (
                       <TableRow
                         key={item.targetAccountId}
@@ -261,9 +263,16 @@ export function SessionSystemPage() {
                           <code className="text-label text-muted-foreground">{item.accountUsername}</code>
                         </TableCell>
                         <TableCell>
-                          <StatusBadge tone={ACCOUNT_SESSION_STATUS_TONE[item.status]}>
-                            {ACCOUNT_SESSION_STATUS_LABELS[item.status]}
-                          </StatusBadge>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <StatusBadge tone={ACCOUNT_SESSION_STATUS_TONE[item.status]}>
+                              {ACCOUNT_SESSION_STATUS_LABELS[item.status]}
+                            </StatusBadge>
+                            {item.effectiveCap > 1 ? (
+                              <span className="tabular-nums text-label text-muted-foreground">
+                                {item.liveCount}/{item.effectiveCap}
+                              </span>
+                            ) : null}
+                          </div>
                           {item.retained ? (
                             <p className="mt-1 text-label text-muted-foreground">保留中</p>
                           ) : null}

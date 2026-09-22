@@ -1,12 +1,21 @@
 import {
+  advanceBatch,
   completeMapJobSlice,
+  loadRunDetail,
   loadRunRow,
+  onRunSettledForBatch,
   projectModuleInvocationResults,
   settleRunEvidence,
   settleRunOutcome,
   type DbHandle,
 } from '@cairn/db'
-import { isHaltedRunStatus, isMapJobRun, type RunGrant, type RunStatus } from '@cairn/shared'
+import {
+  isHaltedRunStatus,
+  isMapJobRun,
+  type BatchFailureDomain,
+  type RunGrant,
+  type RunStatus,
+} from '@cairn/shared'
 import { config } from '../config/env.js'
 import type { ExecutionEngine } from './engine.js'
 
@@ -24,6 +33,7 @@ const SETTLER_WARN: Record<string, string> = {
   mapJob: '地图作业分片收尾失败',
   moduleResults: '模块调用结果投影失败',
   outcomeResults: '结果轴收尾聚合失败',
+  batchItem: '批量任务项状态收尾失败',
 }
 
 function mapJobOutcome(status: RunStatus): 'completed' | 'cancelled' | 'failed' | null {
@@ -76,6 +86,70 @@ export const RUN_SETTLERS: readonly RunSettler[] = [
     },
     async settle(db, runId, row) {
       await settleRunOutcome(db, runId, row)
+    },
+  },
+  {
+    name: 'batchItem',
+    applies(row) {
+      return Boolean(row && isHaltedRunStatus(row.status) && row.executionOrigin === 'batch_item')
+    },
+    async settle(db, runId, row) {
+      if (!row) return
+      let status: 'passed' | 'failed' | 'review' | 'cancelled' = 'passed'
+      if (row.status === 'SUCCEEDED') status = 'passed'
+      else if (row.status === 'FAILED') status = 'failed'
+      else if (row.status === 'NEEDS_REVIEW') status = 'review'
+      else if (row.status === 'CANCELLED') status = 'cancelled'
+
+      let failureDomain: BatchFailureDomain | undefined = undefined
+      let errorMessage: string | undefined = undefined
+
+      if (row.status === 'FAILED' || row.status === 'NEEDS_REVIEW') {
+        const detail = await loadRunDetail(db, runId).catch(() => null)
+        if (detail) {
+          const failedAttempt = detail.stepRuns
+            .flatMap((s) => s.attempts)
+            .reverse()
+            .find((a) => a.status === 'FAILED')
+          if (failedAttempt?.error) {
+            errorMessage = failedAttempt.error.safeMessage || failedAttempt.error.cause?.message || failedAttempt.error.code
+            const code = failedAttempt.error.code ?? ''
+            const msg = failedAttempt.error.safeMessage ?? failedAttempt.error.cause?.message ?? ''
+            if (
+              code.includes('SESSION') ||
+              code.includes('LEASE') ||
+              code.includes('BROWSER')
+            ) {
+              failureDomain = 'SESSION'
+            } else if (
+              code.includes('TARGET') ||
+              code.includes('GATEWAY') ||
+              code.includes('HTTP_5') ||
+              code.includes('LOCATOR_TIMEOUT') ||
+              msg.includes('500') ||
+              msg.includes('502') ||
+              msg.includes('503') ||
+              msg.includes('504') ||
+              msg.includes('熔断')
+            ) {
+              failureDomain = 'TARGET'
+            } else {
+              failureDomain = 'ITEM'
+            }
+          }
+        }
+      }
+
+      const settled = await onRunSettledForBatch(db, runId, {
+        status,
+        outcomeVerdict: row.outcomeStatus,
+        failureDomain,
+        errorMessage,
+      })
+
+      if (settled?.batchStatus === 'RUNNING') {
+        await advanceBatch(db, settled.batchId).catch(() => {})
+      }
     },
   },
 ]

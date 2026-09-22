@@ -155,6 +155,7 @@ export const runPlacementSchema = z.strictObject({
       'WORKER_SESSION_CAPACITY',
       'PROFILE_AFFINITY_WAIT',
       'NO_ELIGIBLE_WORKER',
+      'SESSION_ACCOUNT_AT_CAPACITY',
     ])
     .nullable()
     .default(null),

@@ -341,10 +341,10 @@ export const ASSISTANT_GUIDE_CATALOG: readonly AssistantGuideEntry[] = [
   {
     topic: 'scenarios',
     capabilityId: 'menu.scenarios',
-    title: '场景',
+    title: '场景编排',
     href: '/scenarios',
     requiredPermissions: ['workflow:read'],
-    steps: '打开工作台「场景」，选择已绑定目标的场景。',
+    steps: '打开「编写」分组下的「场景编排」，选择已绑定目标的场景。',
   },
   {
     topic: 'studio',

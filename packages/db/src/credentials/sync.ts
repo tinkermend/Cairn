@@ -12,6 +12,7 @@ import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { atomic, clockNow, schemaFor } from '../native.js'
 import { badRequest, conflict } from '../runs/errors.js'
+import { resetAuthBudgetAfterCredentialChange } from '../sessions/auth-profile.js'
 
 export type SealedSecret = { id: string; provider: string; ciphertext?: Buffer }
 
@@ -255,6 +256,7 @@ export async function replaceTargetAccountSecret(
       .set({ revision, updatedAt: now, name: input.account.displayName, deletedAt: null })
       .where(eq(credentials.id, input.account.id))
     await recordAudit(tx, consoleActor(input.actor), 'credential.replace', 'credential', input.account.id, input.account.username)
+    await resetAuthBudgetAfterCredentialChange(tx, input.account.id)
     return { credentialId: input.account.id, revision }
   })
 }

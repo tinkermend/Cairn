@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { FormProvider, useForm } from 'react-hook-form'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -42,6 +42,7 @@ import {
 import { StatusBadge } from '@/components/status-badge'
 import { Switch } from '@/components/ui/switch'
 import { AlertingFields } from '@/features/platform-config/alerting-fields'
+import { cn } from '@/lib/utils'
 import { validationMessage } from './channels'
 import { Field, Failure } from './index'
 
@@ -68,92 +69,124 @@ export function NotificationRulesPanel({
   })
   const canWrite = useCan('workflow:write') && useCan('run:read')
 
+  useEffect(() => {
+    if (!selected && scenarios.data?.items?.length) {
+      setSelected(scenarios.data.items[0].id)
+    }
+  }, [selected, scenarios.data?.items])
+
+  const scenarioItems = useMemo(() => {
+    const list = scenarios.data?.items ? [...scenarios.data.items] : []
+    if (selected && scenario.data && !list.some((s) => s.id === selected)) {
+      list.unshift({
+        id: selected,
+        name: scenario.data.name,
+        targetId: scenario.data.targetId,
+      } as any)
+    }
+    return list
+  }, [scenarios.data?.items, selected, scenario.data])
+
   return (
-    <div className='space-y-5'>
-      <div className='rounded-lg border border-border-card bg-card p-5 shadow-card space-y-4'>
+    <div className='grid gap-5 lg:grid-cols-[320px_1fr] items-start'>
+      {/* 左侧 Master：场景筛选与列表 */}
+      <div className='flex flex-col rounded-lg border border-border-card bg-card p-4 shadow-card space-y-3'>
         <div className='flex items-center gap-2 border-b border-border-divider pb-3'>
           <Workflow className='size-4 text-primary' />
           <div>
-            <h2 className='font-semibold text-text-primary text-section'>
-              场景结果通知
+            <h2 className='font-semibold text-text-primary text-body'>
+              选择场景
             </h2>
             <p className='text-label text-muted-foreground'>
-              为场景配置执行结束后的通知条件与投递渠道。修改后对新运行生效，试跑与调试不会发送。
+              共 {scenarioItems.length} 个场景
             </p>
           </div>
         </div>
 
-        <div className='grid gap-4 sm:grid-cols-2'>
-          <Field label='搜索场景' hint='输入关键词缩小场景列表'>
-            <div className='relative'>
-              <Search className='pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground' />
-              <Input
-                placeholder='输入场景名称或标识'
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className='pl-9'
-              />
-            </div>
-          </Field>
-          <Field label='选择要配置的场景'>
-            <Select
-              value={selected || 'none'}
-              onValueChange={(value) => setSelected(value === 'none' ? '' : value)}
-            >
-              <SelectTrigger className='w-full' aria-label='选择场景'>
-                <SelectValue placeholder='请选择场景' />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value='none'>请选择场景</SelectItem>
-                {selected &&
-                  !scenarios.data?.items.some((s) => s.id === selected) && (
-                    <SelectItem value={selected}>
-                      {scenario.data?.name ?? '当前场景'}
-                    </SelectItem>
-                  )}
-                {scenarios.data?.items.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+        <div className='relative'>
+          <Search className='pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground' />
+          <Input
+            placeholder='输入场景名称搜索…'
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className='pl-9 h-9'
+          />
+        </div>
+
+        <div className='max-h-[600px] overflow-y-auto space-y-1.5 pr-1'>
+          {scenarios.isPending && (
+            <p className='py-6 text-center text-label text-muted-foreground'>
+              正在加载场景…
+            </p>
+          )}
+          {!scenarios.isPending && scenarioItems.length === 0 && (
+            <p className='py-6 text-center text-label text-muted-foreground'>
+              未找到匹配的场景
+            </p>
+          )}
+          {scenarioItems.map((s) => {
+            const isCurrent = s.id === selected
+            return (
+              <button
+                key={s.id}
+                type='button'
+                onClick={() => setSelected(s.id)}
+                className={cn(
+                  'w-full text-left rounded-md px-3 py-2.5 text-body transition-colors flex flex-col gap-1 border',
+                  isCurrent
+                    ? 'border-primary bg-primary/5 text-text-primary font-medium'
+                    : 'border-transparent hover:bg-surface-subtle text-text-primary'
+                )}
+              >
+                <span className='truncate font-medium'>{s.name}</span>
+                <span className='truncate text-label text-muted-foreground'>
+                  目标：{s.targetId}
+                </span>
+              </button>
+            )
+          })}
         </div>
 
         {scenarios.data?.nextCursor && (
-          <p className='text-label text-muted-foreground'>
-            仅显示前 100 项，可使用搜索框精确定位场景。
+          <p className='text-label text-muted-foreground border-t border-border-divider pt-2'>
+            仅显示前 100 项，可搜索精确定位。
           </p>
         )}
       </div>
 
-      <Failure
-        message={
-          scenarios.error?.message ||
-          scenario.error?.message ||
-          policy.error?.message
-        }
-      />
-
-      {selected && (policy.isPending || scenario.isPending) && (
-        <div className='p-8 text-center text-body text-muted-foreground'>
-          正在加载场景通知设置…
-        </div>
-      )}
-
-      {policy.data && scenario.data && (
-        <PolicyForm
-          key={`${selected}:${policy.data.revision}`}
-          scenarioId={selected}
-          scenarioName={scenario.data.name}
-          targetId={scenario.data.targetId}
-          initial={policy.data.policy}
-          revision={policy.data.revision}
-          canWrite={canWrite}
-          onSaved={() => policy.refetch()}
+      {/* 右侧 Detail：场景通知策略表单 */}
+      <div className='min-w-0 space-y-4'>
+        <Failure
+          message={
+            scenarios.error?.message ||
+            scenario.error?.message ||
+            policy.error?.message
+          }
         />
-      )}
+
+        {selected && (policy.isPending || scenario.isPending) && (
+          <div className='rounded-lg border border-border-card bg-card p-12 text-center text-body text-muted-foreground shadow-card'>
+            正在加载场景通知设置…
+          </div>
+        )}
+
+        {policy.data && scenario.data ? (
+          <PolicyForm
+            key={`${selected}:${policy.data.revision}`}
+            scenarioId={selected}
+            scenarioName={scenario.data.name}
+            targetId={scenario.data.targetId}
+            initial={policy.data.policy}
+            revision={policy.data.revision}
+            canWrite={canWrite}
+            onSaved={() => policy.refetch()}
+          />
+        ) : !selected ? (
+          <div className='rounded-lg border border-border-card bg-card p-12 text-center text-body text-muted-foreground shadow-card'>
+            请从左侧选择一个场景以配置通知策略
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }

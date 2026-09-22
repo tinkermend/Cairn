@@ -1,10 +1,12 @@
 import {
   CheckCircleOutlined,
   CheckOutlined,
+  CloudUploadOutlined,
   CodeOutlined,
   CopyOutlined,
   DownOutlined,
   DownloadOutlined,
+  ExportOutlined,
   FileTextOutlined,
   LoadingOutlined,
   PushpinFilled,
@@ -17,14 +19,17 @@ import { globalModelConfigManager } from '@midscene/shared/env';
 import {
   AutoComplete,
   Button,
+  Input,
+  Modal,
   Select,
   Tooltip,
   Typography,
   message,
 } from 'antd';
-import type React from 'react';
+import { useCairnStore, useRecordingSessionStore } from '../../../store';
+import { promptUploadToCairn } from '../../../utils/cairn-uploader';
+import { CairnConnectModal } from '../../../components/CairnConnectModal';
 import { useEffect, useState } from 'react';
-import { useRecordingSessionStore } from '../../../store';
 import { generateAIDescription } from '../../../utils/eventOptimizer';
 import {
   generatePlaywrightTestStream,
@@ -148,6 +153,18 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
       return getLatestEvents(sessionId);
     }
     return events;
+  };
+
+  // ==================== 识途平台草稿上传逻辑 ====================
+  const [isCairnModalOpen, setIsCairnModalOpen] = useState(false);
+  const cairnToken = useCairnStore((state) => state.token);
+
+  const handleUploadToCairn = () => {
+    promptUploadToCairn({
+      events: getCurrentEvents(),
+      sessionName,
+      onOpenConnectModal: () => setIsCairnModalOpen(true),
+    });
   };
 
   // Merge: load persisted code and handle auto-generation/display logic
@@ -903,61 +920,80 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
                 placeholder="Language"
               />
             )}
-            {(selectedType === 'playwright' || selectedType === 'yaml') &&
-              (showGeneratedCode || isStreaming) && (
-                <div className="flex gap-0.2 ml-auto">
-                  <Button
-                    size="small"
-                    icon={<CopyOutlined />}
-                    onClick={
-                      selectedType === 'playwright'
-                        ? handleCopyTest
-                        : handleCopyYaml
-                    }
-                    className="!border-none !bg-none !shadow-none"
-                    disabled={
-                      isStreaming ||
-                      (selectedType === 'playwright'
-                        ? !generatedTest
-                        : !generatedYaml)
-                    }
-                    title="Copy to clipboard"
-                  />
-                  <Button
-                    size="small"
-                    icon={<ReloadOutlined />}
-                    onClick={
-                      selectedType === 'playwright'
-                        ? handleRegenerateTest
-                        : handleRegenerateYaml
-                    }
-                    disabled={isGenerating || isStreaming}
-                    className="!border-none !bg-none !shadow-none"
-                    title="Regenerate code"
-                  />
-                  <Button
-                    size="small"
-                    icon={<DownloadOutlined />}
-                    className="!border-none !bg-none !shadow-none"
-                    onClick={
-                      selectedType === 'playwright'
-                        ? handleDownloadTest
-                        : handleDownloadYaml
-                    }
-                    disabled={
-                      isStreaming ||
-                      (selectedType === 'playwright'
-                        ? !generatedTest
-                        : !generatedYaml)
-                    }
-                    title={
-                      selectedType === 'playwright'
-                        ? 'Download as .ts file'
-                        : 'Download as .yaml file'
-                    }
-                  />
-                </div>
-              )}
+            {/* 上传到识途草稿按钮 */}
+            <div className="flex items-center gap-1 ml-auto">
+              <Tooltip title={cairnToken ? '将本次录制整批脱敏上传至识途平台，生成录制草稿' : '点击连接识途平台账号并上传草稿'}>
+                <Button
+                  size="middle"
+                  type="primary"
+                  icon={<CloudUploadOutlined />}
+                  onClick={handleUploadToCairn}
+                  style={{
+                    backgroundColor: '#2B83FF',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  上传到识途草稿
+                </Button>
+              </Tooltip>
+
+              {(selectedType === 'playwright' || selectedType === 'yaml') &&
+                (showGeneratedCode || isStreaming) && (
+                  <div className="flex gap-0.2">
+                    <Button
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={
+                        selectedType === 'playwright'
+                          ? handleCopyTest
+                          : handleCopyYaml
+                      }
+                      className="!border-none !bg-none !shadow-none"
+                      disabled={
+                        isStreaming ||
+                        (selectedType === 'playwright'
+                          ? !generatedTest
+                          : !generatedYaml)
+                      }
+                      title="Copy to clipboard"
+                    />
+                    <Button
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      onClick={
+                        selectedType === 'playwright'
+                          ? handleRegenerateTest
+                          : handleRegenerateYaml
+                      }
+                      disabled={isGenerating || isStreaming}
+                      className="!border-none !bg-none !shadow-none"
+                      title="Regenerate code"
+                    />
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      className="!border-none !bg-none !shadow-none"
+                      onClick={
+                        selectedType === 'playwright'
+                          ? handleDownloadTest
+                          : handleDownloadYaml
+                      }
+                      disabled={
+                        isStreaming ||
+                        (selectedType === 'playwright'
+                          ? !generatedTest
+                          : !generatedYaml)
+                      }
+                      title={
+                        selectedType === 'playwright'
+                          ? 'Download as .ts file'
+                          : 'Download as .yaml file'
+                      }
+                    />
+                  </div>
+                )}
+            </div>
           </div>
           {selectedType === 'none' && (
             <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded text-yellow-800 text-sm">
@@ -1036,6 +1072,12 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
             )}
         </>
       )}
+
+      {/* Cairn platform connect modal */}
+      <CairnConnectModal
+        open={isCairnModalOpen}
+        onClose={() => setIsCairnModalOpen(false)}
+      />
     </>
   );
 };

@@ -46,6 +46,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { PasswordInput } from '@/components/password-input'
+import { AvatarPicker } from '@/components/avatar-picker'
 import { type User } from '../data/schema'
 import { TargetScopeFields } from './target-scope-fields'
 
@@ -53,6 +54,7 @@ const formSchema = z.object({
   displayName: z.string().min(1, '请填写显示名称。'),
   email: z.string().trim().min(1, '请输入账号。').max(64),
   password: z.string().optional(),
+  avatar: z.string().optional(),
   status: z.enum(ACCOUNT_STATUS),
   roleIds: z.array(z.string()).min(1, '请至少选择一个角色。'),
 })
@@ -101,6 +103,7 @@ export function UsersActionDialog({
           displayName: currentRow.displayName,
           email: currentRow.email ?? '',
           password: '',
+          avatar: currentRow.avatar ?? '',
           status: currentRow.status,
           roleIds: currentRow.roles.map((r) => r.id),
         }
@@ -108,6 +111,7 @@ export function UsersActionDialog({
           displayName: '',
           email: '',
           password: '',
+          avatar: '',
           status: 'active',
           roleIds: defaultAuthor ? [defaultAuthor] : [],
         },
@@ -132,6 +136,7 @@ export function UsersActionDialog({
         await updateAccount(currentRow.id, {
           displayName: values.displayName,
           email: values.email,
+          avatar: values.avatar || null,
           status: values.status,
         })
         if (canDelegate)
@@ -152,6 +157,7 @@ export function UsersActionDialog({
           displayName: values.displayName,
           email: values.email,
           password: values.password,
+          avatar: values.avatar || undefined,
           status: values.status,
           roleIds: values.roleIds,
           targetScopes,
@@ -194,6 +200,25 @@ export function UsersActionDialog({
             onSubmit={form.handleSubmit(onSubmit)}
             className='space-y-4 px-0.5'
           >
+            <FormField
+              control={form.control}
+              name='avatar'
+              render={({ field }) => (
+                <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
+                  <FormLabel className='col-span-2 text-end'>
+                    头像
+                  </FormLabel>
+                  <div className='col-span-4'>
+                    <AvatarPicker
+                      value={field.value}
+                      onChange={field.onChange}
+                      displayName={form.watch('displayName')}
+                    />
+                  </div>
+                  <FormMessage className='col-span-4 col-start-3' />
+                </FormItem>
+              )}
+            />
             <FormField
               control={form.control}
               name='displayName'

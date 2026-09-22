@@ -7,6 +7,7 @@ import {
   ACCOUNT_USAGES,
   TARGET_STATUSES,
   accountAllowsBusiness,
+  type AccountSessionMode,
   type TargetAccountDto,
 } from '@cairn/shared'
 import { toast } from 'sonner'
@@ -63,6 +64,7 @@ const formSchema = z.object({
   validityAmount: z.string(),
   validityTimeZone: z.string(),
   validityStartedAt: z.string(),
+  maxConcurrentSessions: z.number().int().min(1).max(16),
 })
 type FormValues = z.infer<typeof formSchema>
 
@@ -71,6 +73,9 @@ type AccountFormDialogProps = {
   onOpenChange: (open: boolean) => void
   targetId: string
   current?: TargetAccountDto
+  accountSessionMode?: AccountSessionMode
+  liveCount?: number
+  effectiveCap?: number
 }
 
 export function AccountFormDialog({
@@ -78,6 +83,9 @@ export function AccountFormDialog({
   onOpenChange,
   targetId,
   current,
+  accountSessionMode = 'exclusive',
+  liveCount,
+  effectiveCap,
 }: AccountFormDialogProps) {
   const isEdit = !!current
   const queryClient = useQueryClient()
@@ -98,6 +106,7 @@ export function AccountFormDialog({
           confirmIdentityMaterial: false,
           ...defaultValidityFields(current.validityPolicy),
           validityStartedAt: localDateTime(current.validityStartedAt),
+          maxConcurrentSessions: current.maxConcurrentSessions ?? 1,
         }
       : {
           displayName: '',
@@ -109,6 +118,7 @@ export function AccountFormDialog({
           confirmIdentityMaterial: false,
           ...defaultValidityFields(),
           validityStartedAt: '',
+          maxConcurrentSessions: 1,
         },
   })
 
@@ -168,6 +178,9 @@ export function AccountFormDialog({
                   values.confirmIdentityMaterial || undefined,
               }
             : {}),
+          ...(accountSessionMode === 'concurrent'
+            ? { maxConcurrentSessions: values.maxConcurrentSessions }
+            : {}),
         })
         const nextIdentity = values.expectedIdentity.trim() || null
         if (nextIdentity !== (current.expectedIdentity ?? null)) {
@@ -186,6 +199,9 @@ export function AccountFormDialog({
           ...(values.password === ''
             ? {}
             : { password: values.password, validity: toValidityWrite(values) }),
+          ...(accountSessionMode === 'concurrent'
+            ? { maxConcurrentSessions: values.maxConcurrentSessions }
+            : {}),
         })
         toast.success('目标账号已添加')
       }
@@ -394,6 +410,41 @@ export function AccountFormDialog({
                   </FormItem>
                 )}
               />
+              {accountSessionMode === 'concurrent' ? (
+                <FormField
+                  control={form.control}
+                  name='maxConcurrentSessions'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>最大并发会话</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='number'
+                          min={1}
+                          max={16}
+                          onChange={(event) => field.onChange(Number(event.target.value))}
+                        />
+                      </FormControl>
+                      <p className='text-label text-muted-foreground'>
+                        同一套凭据最多同时开几台独立浏览器。每台各自登录，不共享登录状态。
+                      </p>
+                      {isEdit ? (
+                        <p className='text-label text-muted-foreground'>
+                          当前活会话 {liveCount ?? current?.liveCount ?? 0} / 上限{' '}
+                          {effectiveCap ?? current?.effectiveMaxConcurrentSessions ?? field.value}
+                        </p>
+                      ) : null}
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              ) : null}
+              {isEdit && current?.autoLoginPausedReason ? (
+                <p className='text-label text-muted-foreground'>
+                  自动登录暂停：{current.autoLoginPausedReason}
+                </p>
+              ) : null}
               <DialogFooter className='flex-col gap-2 sm:flex-row sm:justify-between'>
                 {isEdit && current?.hasPassword ? (
                   <Button

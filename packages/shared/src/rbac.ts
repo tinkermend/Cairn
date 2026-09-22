@@ -33,6 +33,8 @@ export const PERMISSION_RESOURCES = [
   'notification',
   'suite',
   'report',
+  'dataset',
+  'batch',
 ] as const
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number]
 
@@ -97,6 +99,12 @@ export const PERMISSIONS = [
   'report:read',
   'report:export',
   'report:delete',
+  'dataset:read',
+  'dataset:write',
+  'dataset:delete',
+  'batch:read',
+  'batch:write',
+  'batch:execute',
 ] as const
 export type PermissionCode = (typeof PERMISSIONS)[number]
 
@@ -129,6 +137,8 @@ export const RESOURCE_LABELS: Record<PermissionResource, string> = {
   notification: '通知',
   suite: '场景集',
   report: '运行报告',
+  dataset: '数据集',
+  batch: '批量任务',
 }
 
 export const PERMISSION_LABELS: Record<PermissionCode, string> = {
@@ -189,6 +199,12 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'report:read': '查看运行报告',
   'report:export': '生成并下载运行报告',
   'report:delete': '删除运行报告',
+  'dataset:read': '查看数据集',
+  'dataset:write': '创建和导入数据集',
+  'dataset:delete': '删除数据集',
+  'batch:read': '查看批量任务',
+  'batch:write': '创建批量任务',
+  'batch:execute': '执行与控制批量任务',
 }
 
 export interface PermissionDef {
@@ -248,6 +264,12 @@ const AUTHOR_PERMISSIONS: readonly PermissionCode[] = [
   'suite:delete',
   'report:read',
   'report:export',
+  'dataset:read',
+  'dataset:write',
+  'dataset:delete',
+  'batch:read',
+  'batch:write',
+  'batch:execute',
 ]
 
 const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
@@ -279,6 +301,8 @@ const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
   'suite:read',
   'report:read',
   'report:export',
+  'batch:read',
+  'batch:execute',
 ]
 
 const VIEWER_PERMISSIONS: readonly PermissionCode[] = [
@@ -292,6 +316,8 @@ const VIEWER_PERMISSIONS: readonly PermissionCode[] = [
   'map:read',
   'suite:read',
   'report:read',
+  'dataset:read',
+  'batch:read',
 ]
 
 export const SYSTEM_ROLE_DEFINITIONS: Readonly<
@@ -379,13 +405,15 @@ export type ConsoleCapability = {
 
 export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'menu.home', kind: 'menu', group: 'overview', label: '总览', allOf: [] },
-  { id: 'menu.scenarios', kind: 'menu', group: 'workbench', label: '场景', allOf: ['workflow:read'] },
+  { id: 'menu.scenarios', kind: 'menu', group: 'workbench', label: '场景编排', allOf: ['workflow:read'] },
   { id: 'menu.suites', kind: 'menu', group: 'workbench', label: '场景集', allOf: ['suite:read'] },
+  { id: 'menu.batches', kind: 'menu', group: 'workbench', label: '批量任务', allOf: ['batch:read'] },
   { id: 'menu.action-modules', kind: 'menu', group: 'workbench', label: '动作库', allOf: ['module:read'] },
   { id: 'menu.recordings', kind: 'menu', group: 'workbench', label: '录制草稿', allOf: ['workflow:write'] },
   { id: 'menu.schedules', kind: 'menu', group: 'execution-observation', label: '定时任务', allOf: ['schedule:read'] },
   { id: 'menu.runs', kind: 'menu', group: 'execution-observation', label: '运行记录', allOf: ['run:read'] },
   { id: 'menu.evidence', kind: 'menu', group: 'execution-observation', label: '结果与报告', allOf: ['run:read'] },
+  { id: 'menu.datasets', kind: 'menu', group: 'resources', label: '数据集', allOf: ['dataset:read'] },
   { id: 'menu.targets', kind: 'menu', group: 'resources', label: '目标系统', allOf: ['target:read'] },
   {
     id: 'menu.credentials',
@@ -574,6 +602,16 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
           { code: 'module:publish' },
         ],
       },
+      {
+        key: 'dataset',
+        label: '数据集',
+        description: '业务测试数据源与结构化参数',
+        items: [
+          { code: 'dataset:read', isPageAccess: true },
+          { code: 'dataset:write' },
+          { code: 'dataset:delete' },
+        ],
+      },
     ],
   },
   {
@@ -609,6 +647,16 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
         items: [
           { code: 'schedule:read', isPageAccess: true },
           { code: 'schedule:write' },
+        ],
+      },
+      {
+        key: 'batch',
+        label: '批量任务',
+        description: '基于数据集的参数化批量执行',
+        items: [
+          { code: 'batch:read', isPageAccess: true },
+          { code: 'batch:write' },
+          { code: 'batch:execute' },
         ],
       },
     ],
@@ -831,6 +879,7 @@ export const accountSchema = z.object({
   id: z.string().min(1),
   displayName: z.string().min(1),
   email: z.string().nullable(),
+  avatar: z.string().nullable().optional(),
   status: accountStatusSchema,
   roles: z.array(roleRefSchema),
   permissions: z.array(z.string().min(1)),
@@ -911,6 +960,7 @@ export const createAccountBodySchema = z.object({
   displayName: z.string().trim().min(1).max(64),
   email: accountLoginSchema,
   password: passwordSchema,
+  avatar: z.string().max(128).optional(),
   status: accountStatusSchema.optional(),
   roleIds: z.array(z.string().min(1)).optional(),
   targetScopes: z.array(roleTargetScopeSchema).max(100).optional(),
@@ -942,9 +992,14 @@ export const setPasswordBodySchema = z.object({
 })
 export type SetPasswordBody = z.infer<typeof setPasswordBodySchema>
 
-export const updateMeBodySchema = z.object({
-  displayName: z.string().trim().min(1).max(64),
-})
+export const updateMeBodySchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(64).optional(),
+    avatar: z.string().max(128).nullable().optional(),
+  })
+  .refine((body) => body.displayName !== undefined || body.avatar !== undefined, {
+    message: '至少提供一个要修改的字段',
+  })
 export type UpdateMeBody = z.infer<typeof updateMeBodySchema>
 
 export const OPERATION_AUDIT_ACTIONS = [
@@ -1067,6 +1122,8 @@ export const OPERATION_AUDIT_ACTIONS = [
   'report.auto.skipped',
   'report.export',
   'report.delete',
+  'fixture.create',
+  'fixture.delete',
 ] as const
 export type OperationAuditAction = (typeof OPERATION_AUDIT_ACTIONS)[number]
 
@@ -1213,6 +1270,8 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   'report.auto.skipped': '自动报告未生成',
   'report.export': '导出运行报告',
   'report.delete': '删除运行报告',
+  'fixture.create': '创建测试夹具',
+  'fixture.delete': '删除测试夹具',
   'auth.login': '登录',
 }
 
@@ -1329,12 +1388,40 @@ export const updateAccountBodySchema = z
   .object({
     displayName: z.string().trim().min(1).max(64).optional(),
     email: z.union([accountLoginSchema, z.null()]).optional(),
+    avatar: z.string().max(128).nullable().optional(),
     status: accountStatusSchema.optional(),
   })
-  .refine((body) => body.displayName !== undefined || body.email !== undefined || body.status !== undefined, {
-    message: '至少提供一个要修改的字段',
-  })
+  .refine(
+    (body) =>
+      body.displayName !== undefined ||
+      body.email !== undefined ||
+      body.avatar !== undefined ||
+      body.status !== undefined,
+    {
+      message: '至少提供一个要修改的字段',
+    },
+  )
 export type UpdateAccountBody = z.infer<typeof updateAccountBodySchema>
+
+export const DEFAULT_AVATAR_STYLE = 'bottts' as const
+export const PRESET_AVATAR_SEEDS = [
+  'cairn-bot-1',
+  'cairn-bot-2',
+  'cairn-bot-3',
+  'cairn-bot-4',
+  'cairn-bot-5',
+  'cairn-bot-6',
+  'cairn-bot-7',
+  'cairn-bot-8',
+  'cairn-bot-9',
+  'cairn-bot-10',
+  'cairn-bot-11',
+  'cairn-bot-12',
+  'cairn-bot-13',
+  'cairn-bot-14',
+  'cairn-bot-15',
+  'cairn-bot-16',
+] as const
 
 export const assignAccountRolesBodySchema = z.object({
   roleIds: z.array(z.string().min(1)).min(1, '账号至少保留一个角色'),

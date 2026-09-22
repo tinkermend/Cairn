@@ -1347,3 +1347,39 @@ import * as validationImpl from "./runs/validation.js";
 export const getScenarioValidation = operation(
   validationImpl.getScenarioValidation,
 );
+
+import * as fixturesImpl from "./fixtures/fixtures.js";
+export const reserveTargetFixtureUpload = operation(fixturesImpl.reserveTargetFixtureUpload);
+export const commitTargetFixtureUpload = operation(fixturesImpl.commitTargetFixtureUpload);
+export const abandonTargetFixtureUpload = operation(fixturesImpl.abandonTargetFixtureUpload);
+export const listTargetFixtures = operation(fixturesImpl.listTargetFixtures);
+export const getTargetFixtureObject = operation(fixturesImpl.getTargetFixtureObject);
+export const softDeleteTargetFixture = operation(fixturesImpl.softDeleteTargetFixture);
+export const resolveFixtureForRun = operation(fixturesImpl.resolveFixtureForRun);
+
+import * as datasetsImpl from "./datasets/datasets.js";
+export const createDataset = operation(datasetsImpl.createDataset);
+export const getDataset = operation(datasetsImpl.getDataset);
+export const listDatasets = operation(datasetsImpl.listDatasets);
+export const getDatasetRows = operation(datasetsImpl.getDatasetRows);
+export const softDeleteDataset = operation(datasetsImpl.softDeleteDataset);
+export const autoMapDataset = datasetsImpl.autoMapDataset;
+export const preflightDataset = datasetsImpl.preflightDataset;
+
+import * as batchesImpl from "./batches/batches.js";
+export const createBatch = operation(batchesImpl.createBatch);
+export const advanceBatch = operation(batchesImpl.advanceBatch);
+export const onRunSettledForBatch = operation(batchesImpl.onRunSettledForBatch);
+export const pauseBatch = operation(batchesImpl.pauseBatch);
+export const resumeBatch = operation(batchesImpl.resumeBatch);
+export const cancelBatch = operation(batchesImpl.cancelBatch);
+export const retryFailedBatch = operation(batchesImpl.retryFailedBatch);
+export const getBatch = operation(batchesImpl.getBatch);
+export const listBatches = operation(batchesImpl.listBatches);
+export const getBatchItems = operation(batchesImpl.getBatchItems);
+export const exportBatchResults = operation(batchesImpl.exportBatchResults);
+export * from "./datasets/datasets.js";
+export * from "./batches/batches.js";
+
+
+

@@ -10,6 +10,7 @@ import { toAuthUser } from '@/lib/auth'
 import { ApiRequestError } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth-store'
 import { Button } from '@/components/ui/button'
+import { AvatarPicker } from '@/components/avatar-picker'
 import {
   Form,
   FormControl,
@@ -29,16 +30,25 @@ export function ProfileForm() {
   const queryClient = useQueryClient()
   const form = useForm<ProfileFormValues>({
     resolver: zodResolver(updateMeBodySchema),
-    defaultValues: { displayName: user?.displayName ?? '' },
+    defaultValues: {
+      displayName: user?.displayName ?? '',
+      avatar: user?.avatar ?? '',
+    },
   })
 
   useEffect(() => {
-    form.reset({ displayName: user?.displayName ?? '' })
-  }, [form, user?.displayName])
+    form.reset({
+      displayName: user?.displayName ?? '',
+      avatar: user?.avatar ?? '',
+    })
+  }, [form, user?.displayName, user?.avatar])
 
   async function onSubmit(data: ProfileFormValues) {
     try {
-      const me = await updateMe(data)
+      const me = await updateMe({
+        displayName: data.displayName,
+        avatar: data.avatar || null,
+      })
       setUser(toAuthUser(me.account))
       queryClient.setQueryData(['me'], me)
       toast.success('个人资料已更新')
@@ -50,6 +60,26 @@ export function ProfileForm() {
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className='space-y-8'>
+        <FormField
+          control={form.control}
+          name='avatar'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>用户头像</FormLabel>
+              <FormControl>
+                <AvatarPicker
+                  value={field.value}
+                  onChange={field.onChange}
+                  displayName={form.watch('displayName')}
+                />
+              </FormControl>
+              <FormDescription>
+                个性化机器人头像，将显示在侧边栏、用户列表及操作记录中。
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
         <FormField
           control={form.control}
           name='displayName'

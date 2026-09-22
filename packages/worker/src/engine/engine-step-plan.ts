@@ -1,4 +1,5 @@
 import {
+  asRunFileHandle,
   fillTextFromContext,
   jsonValueSchema,
   readContextValue,
@@ -18,6 +19,7 @@ export function resolveStepInput(
   step: Step,
   context: Record<string, JsonValue>,
   overlayTarget?: TargetDescriptor,
+  currentRunId?: string,
 ): { ok: true; input: JsonValue } | { ok: false; input: JsonValue; error: ExecutionError } {
   if (step.type === 'echo') {
     if (step.input.value !== undefined) return { ok: true, input: step.input.value }
@@ -98,6 +100,75 @@ export function resolveStepInput(
       }
     }
     return { ok: true, input: { ...step.input, target, value: resolved.text } }
+  }
+  if (step.type === 'upload') {
+    const target = overlayTarget ?? step.input.target
+    const resolvedFiles: Array<JsonValue> = []
+
+    for (const fileItem of step.input.files) {
+      if (fileItem.source === 'asset') {
+        resolvedFiles.push({
+          source: 'asset',
+          fixtureId: fileItem.fixtureId,
+          digest: fileItem.digest,
+          ...(fileItem.name ? { name: fileItem.name } : {}),
+        })
+      } else if (fileItem.source === 'context') {
+        const from = fileItem.from
+        const resolved = readContextValue(context, from, fileItem.fromField)
+        if (!resolved.ok) {
+          return {
+            ok: false,
+            input: { target, files: step.input.files as unknown as JsonValue },
+            error: {
+              code: resolved.code,
+              category: 'VALIDATION',
+              retryable: false,
+              safeMessage: resolved.message,
+            },
+          }
+        }
+        const handle = asRunFileHandle(resolved.value)
+        if (!handle) {
+          return {
+            ok: false,
+            input: { target, files: step.input.files as unknown as JsonValue },
+            error: {
+              code: 'FILE_HANDLE_INVALID',
+              category: 'VALIDATION',
+              retryable: false,
+              safeMessage: `上下文「${from}」的值不是合法的文件句柄`,
+            },
+          }
+        }
+        if (handle.scope === 'run' && currentRunId && handle.runId !== currentRunId) {
+          return {
+            ok: false,
+            input: { target, files: step.input.files as unknown as JsonValue },
+            error: {
+              code: 'FILE_HANDLE_FOREIGN_RUN',
+              category: 'VALIDATION',
+              retryable: false,
+              safeMessage: `文件句柄所属 Run「${handle.runId}」与当前 Run「${currentRunId}」不一致`,
+            },
+          }
+        }
+        resolvedFiles.push({
+          source: 'context',
+          from: fileItem.from,
+          ...(fileItem.fromField ? { fromField: fileItem.fromField } : {}),
+          ...(fileItem.name ? { name: fileItem.name } : {}),
+          handle: handle as unknown as JsonValue,
+        })
+      }
+    }
+    return {
+      ok: true,
+      input: {
+        target,
+        files: resolvedFiles,
+      },
+    }
   }
   if (overlayTarget && step.input && typeof step.input === 'object' && 'target' in step.input) {
     return { ok: true, input: { ...step.input, target: overlayTarget } }

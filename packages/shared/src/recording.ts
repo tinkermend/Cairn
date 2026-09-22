@@ -18,7 +18,7 @@ import { sanitizeAriaSnapshot } from './browser-command.js'
 /** 当前识途录制器壳对应的来源版本。导入路径只接受这一版。 */
 export const RECORDER_SOURCE_VERSION = 'playwright-crx@0.15.0'
 /** 可执行转换规则版本。预览/回填必须带上并重跑。 */
-export const RECORDING_NORMALIZER_VERSION = 'recording-normalizer@3'
+export const RECORDING_NORMALIZER_VERSION = 'recording-normalizer@4'
 
 /** 录制草稿的产品来源，不是引擎版本号。 */
 export const RECORDING_SOURCES = ['script', 'ai'] as const
@@ -614,6 +614,9 @@ function mapEvent(event: RecordingEvent, sourceIndexes: number[], index: number)
   if (event.name === 'select') {
     return selectItem(event, sourceIndexes, index)
   }
+  if (event.name === 'setInputFiles') {
+    return unresolved(event, sourceIndexes, index, '文件上传', ['当前版本文件上传需在工作台手动配置'])
+  }
   if (event.name === 'assertVisible' || event.name === 'assertText' || event.name === 'assertSnapshot') {
     return assertItem(event, sourceIndexes, index)
   }
@@ -678,11 +681,11 @@ function clickItem(event: RecordingEvent, sourceIndexes: number[], index: number
   if (popups === 1) input.pageAfter = 'popup'
   if (button) input.button = button
   if (clickCount) input.clickCount = clickCount
-  if (modifiers) input.modifiers = modifiers
+  if (modifiers && modifiers.length > 0) input.modifiers = modifiers
 
   let name = '点击'
-  if (button === 'right') name = '右键点击'
-  else if (button === 'middle') name = '中键点击'
+  if (button === 'right') name = clickCount === 2 ? '右键双击' : '右键点击'
+  else if (button === 'middle') name = clickCount === 2 ? '中键双击' : '中键点击'
   else if (clickCount === 2) name = '双击'
   else if (modifiers && modifiers.length > 0) name = `${modifiers.join('+')}+点击`
 

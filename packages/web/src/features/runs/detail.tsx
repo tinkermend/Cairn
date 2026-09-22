@@ -1,8 +1,13 @@
 import { RunCreateDialog } from './create-dialog'
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { isFinishedRunStatus, RUN_EXECUTE_ALL_OF } from '@cairn/shared'
+import {
+  buildRunVideoChapters,
+  isFinishedRunStatus,
+  readRunVideoPayload,
+  RUN_EXECUTE_ALL_OF,
+} from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -29,7 +34,7 @@ import { Label } from '@/components/ui/label'
 import { AttemptEvidenceList } from './evidence-viewer'
 import { OutcomeConditionList } from './outcome-axis'
 import { BrowserView } from './browser-view'
-import { RunVideoSection } from './run-video'
+import { findRunVideo, RunVideoSection } from './run-video'
 import { RunMapClues } from '@/features/map/run-clues'
 import { RunMapConsumption, RunMapDecisions } from './map-decisions'
 import { RunResolutionDecisions } from './resolution-decisions'
@@ -55,6 +60,81 @@ export function RunDetailPage() {
   const evidenceItems = evidence?.items ?? []
   const openAssistant = useAssistantStore((state) => state.openPanel)
   const finished = Boolean(run && isFinishedRunStatus(run.status))
+
+  // 录像章节与步骤时间线联动状态
+  const [currentStepRunId, setCurrentStepRunId] = useState<string | null>(null)
+  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null)
+  const [seekRequest, setSeekRequest] = useState<{
+    token: number
+    ms: number
+    source: 'chapter' | 'list' | 'deeplink' | 'pin'
+  } | null>(null)
+  const [offAxisSelectedStep, setOffAxisSelectedStep] = useState<{ ordinal: number; name: string } | null>(null)
+  const seekTokenRef = useRef(1)
+
+  const handleSelectStep = useCallback(
+    (stepRunId: string, attemptId?: string) => {
+      setSelectedAttemptId(attemptId ?? null)
+      if (!run) return
+      const video = findRunVideo(evidenceItems)
+      const videoPayload = readRunVideoPayload(video?.payload)
+      const chapterModel = buildRunVideoChapters({ run, payload: videoPayload, evidenceItems })
+      const chapter = chapterModel.chapters.find((c) => c.stepRunId === stepRunId)
+      if (chapter) {
+        setOffAxisSelectedStep(null)
+        if (attemptId) {
+          const stepRun = run.stepRuns.find((s) => s.id === stepRunId)
+          const att = stepRun?.attempts.find((a) => a.id === attemptId)
+          const attStartMs =
+            att && chapterModel.clock
+              ? Date.parse(att.startedAt) - chapterModel.clock.originMs
+              : chapter.fromMs
+          setSeekRequest({ token: seekTokenRef.current++, ms: attStartMs, source: 'list' })
+        } else {
+          setSeekRequest({ token: seekTokenRef.current++, ms: chapter.fromMs, source: 'list' })
+        }
+      } else {
+        const stepRun = run.stepRuns.find((s) => s.id === stepRunId)
+        if (stepRun) {
+          setOffAxisSelectedStep({ ordinal: stepRun.ordinal, name: stepRun.name })
+          setCurrentStepRunId(stepRunId)
+        }
+      }
+    },
+    [run, evidenceItems],
+  )
+
+  // 深链定位 seek 一次（mismatch 不 seek）
+  const deepLinkSeekDoneRef = useRef(false)
+  useEffect(() => {
+    if (deepLinkSeekDoneRef.current || !run) return
+    const video = findRunVideo(evidenceItems)
+    const videoPayload = readRunVideoPayload(video?.payload)
+    const chapterModel = buildRunVideoChapters({ run, payload: videoPayload, evidenceItems })
+    if (!chapterModel.clock) return
+
+    const focus = resolveRunEvidenceFocus(run, evidenceItems, search)
+    if (focus.mismatch) {
+      deepLinkSeekDoneRef.current = true
+      return
+    }
+    if (focus.stepRunId) {
+      const chapter = chapterModel.chapters.find((c) => c.stepRunId === focus.stepRunId)
+      if (chapter) {
+        let seekMs = chapter.fromMs
+        if (focus.attemptId) {
+          const stepRun = run.stepRuns.find((s) => s.id === focus.stepRunId)
+          const att = stepRun?.attempts.find((a) => a.id === focus.attemptId)
+          if (att) {
+            seekMs = Date.parse(att.startedAt) - chapterModel.clock.originMs
+          }
+        }
+        setSeekRequest({ token: seekTokenRef.current++, ms: seekMs, source: 'deeplink' })
+      }
+    }
+    deepLinkSeekDoneRef.current = true
+  }, [run, evidenceItems, search])
+
   const cleanupQuery = useQuery({
     queryKey: ['runs', runId, 'cleanup'],
     queryFn: () => fetchRunCleanup(runId),
@@ -179,7 +259,7 @@ export function RunDetailPage() {
                     ? '操作结果待核查，请先确认业务结果'
                     : run.authCheckpoint.status === 'recovering'
                       ? run.authCheckpoint.recoveryKind === 'manual'
-                        ? '正在等待人工认证恢复'
+                        ? '正在等待登录恢复'
                         : '正在恢复登录'
                       : run.authCheckpoint.status === 'recovered'
                         ? '登录已恢复，已通过续跑校验'
@@ -286,7 +366,15 @@ export function RunDetailPage() {
               eventSeq={eventSeq}
               onRunChanged={refresh}
             />
-            <RunVideoSection run={run} items={evidenceItems} />
+            <RunVideoSection
+              run={run}
+              items={evidenceItems}
+              currentStepRunId={currentStepRunId}
+              onChapterChange={setCurrentStepRunId}
+              seekRequest={seekRequest}
+              offAxisSelectedStep={offAxisSelectedStep}
+              onSelectStep={handleSelectStep}
+            />
             {run.scenarioVersionKind === 'trial' && run.debugMode !== 'runThrough' ? (
               <DebugHoldBar run={run} onChanged={refresh} />
             ) : null}
@@ -345,8 +433,10 @@ export function RunDetailPage() {
                             evidenceItems={evidenceItems}
                             focusInvocationId={search.invocation}
                             focusStepRunId={focus.mismatch ? undefined : focus.stepRunId}
-                            focusAttemptId={focus.mismatch ? undefined : focus.attemptId}
+                            focusAttemptId={focus.mismatch ? undefined : focus.attemptId ?? selectedAttemptId ?? undefined}
                             focusEvidenceId={focus.mismatch ? undefined : focus.evidenceId}
+                            currentStepRunId={currentStepRunId}
+                            onSelectStep={handleSelectStep}
                           />
                         </>
                       )

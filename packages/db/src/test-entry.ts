@@ -7,6 +7,7 @@ export {
   openIsolatedDb,
   grantAdminScope,
   grantScopedPermissions,
+  adjustPlatformConfig,
   setupTestTemplateDatabase,
   teardownTestTemplateDatabase,
   type PgTestHandle as DbHandle,
@@ -57,6 +58,7 @@ export type {
 export { requireMapCapableAccount, requireTargetHasMapCapableAccount } from './console/account-usage.js'
 export * from './knowledge/index.js'
 export * from './action-modules/index.js'
+export * from './fixtures/index.js'
 import { createDb as openNative } from './client.js'
 import { registerFixture } from './database.js'
 import type { DbEnv } from '@cairn/shared'

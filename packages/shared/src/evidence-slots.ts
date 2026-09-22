@@ -76,7 +76,15 @@ export function requiredScreenshotRole(input: {
 }
 
 export function isSideEffectBrowserCommand(type: string): boolean {
-  return type === 'click' || type === 'fill' || type === 'select' || type === 'keyboard' || type === 'navigate'
+  return (
+    type === 'click' ||
+    type === 'fill' ||
+    type === 'select' ||
+    type === 'keyboard' ||
+    type === 'navigate' ||
+    type === 'upload' ||
+    type === 'download'
+  )
 }
 
 export function faceScreenshot<T extends { attemptId?: string; type: string; payload?: unknown }>(

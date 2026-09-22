@@ -48,4 +48,22 @@ describe('step-registry', () => {
     expect(first.outputKey).toBe('extracted')
     expect(second.outputKey).toBe('extracted2')
   })
+
+  it('支持创建合法的 download 与 upload 步骤', () => {
+    const down1 = createBlankStep('download')
+    const down2 = createBlankStep('download', down1.outputKey ? [down1.outputKey] : [])
+    expect(down1.type).toBe('download')
+    expect(down1.outputKey).toBe('downloaded')
+    expect(down2.outputKey).toBe('downloaded2')
+
+    const up = createBlankStep('upload')
+    expect(up.type).toBe('upload')
+    if (up.type === 'upload') {
+      const file0 = up.input.files[0]
+      expect(file0?.source).toBe('context')
+      if (file0?.source === 'context') {
+        expect(file0.from).toBe('downloaded')
+      }
+    }
+  })
 })

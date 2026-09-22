@@ -21,6 +21,7 @@ import {
   DEFAULT_MANAGED_BROWSER_CAPABILITIES,
   BROWSER_FRAME_MAX_FPS,
   canObserveManagedFrames,
+  sanitizeManagedPageUrl,
   type AuthObservation,
   type AuthSignal,
   deriveRecoveryRule,
@@ -165,13 +166,14 @@ export async function describeHoldPage(this: SessionManagerContext, runId: strin
 
 export async function observeRun(this: SessionManagerContext, input: { runId: string; actorId: string; op: ObserveOperation }): Promise<TargetObservation> {
     const { session, live, run } = await this.requireLiveAuthSession(input.runId)
+    const detail = await loadRunDetail(this.dbHandle, input.runId)
+    const sessionAuthoring = !detail && session?.status === 'OPEN'
     if (run.status === 'WAITING_FOR_AUTH') {
       throw conflict('AUTH_CONTROL_HELD', '登录等待时不能指认或校验，请先完成认证')
     }
-    if (run.status !== 'HOLDING') {
+    if (!sessionAuthoring && run.status !== 'HOLDING') {
       throw conflict('RUN_NOT_HOLDING', '只有调试挂起中的运行允许观察页面')
     }
-    const detail = await loadRunDetail(this.dbHandle, input.runId)
     if (detail?.stepRuns.some((step) => step.attempts.some((attempt) => attempt.status === 'RUNNING'))) {
       throw conflict('WAITING_FOR_STABLE_HOLD', '在途业务动作尚未停稳，不能签发观察授权')
     }
@@ -211,14 +213,14 @@ export async function observeRun(this: SessionManagerContext, input: { runId: st
               source: 'managed' as const,
             }
     const withPage = { ...observation, page: { ...observation.page, pageRef } }
-    if (!grantOnly) {
+    if (!grantOnly && detail) {
       await appendRunEvents(this.dbHandle, input.runId, [
         {
           type: input.op.op === 'pick' ? 'observation.picked' : 'observation.highlighted',
           payload: { outcome: observation.outcome, source: observation.source },
         },
       ])
-      const stepId = input.op.clearOverlayStepId ?? detail?.checkpoint?.stepId
+      const stepId = input.op.clearOverlayStepId ?? detail.checkpoint?.stepId
       if (input.op.clearOverlayStepId && detail) {
         const next = { ...(detail.debugOverlay?.stepOverrides ?? {}) }
         delete next[input.op.clearOverlayStepId]
@@ -563,6 +565,13 @@ export async function buildMeta(this: SessionManagerContext, runId: string, acto
               kind: entry.kind,
               viewing: viewPageId ? entry.pageId === viewPageId : entry.pageId === current?.pageId,
               currentExecution: entry.pageId === current?.pageId,
+              url: sanitizeManagedPageUrl((() => {
+                try {
+                  return typeof entry.page.url === 'function' ? entry.page.url() : null
+                } catch {
+                  return null
+                }
+              })()),
             }))
         : []
     return {
@@ -593,6 +602,7 @@ export async function buildMeta(this: SessionManagerContext, runId: string, acto
           }
         : null,
       capabilities,
+      lastAuthError: session?.lastAuthError ?? null,
       degradedReason: liveOk
         ? null
         : session && !this.sessionOwnedHere(session)

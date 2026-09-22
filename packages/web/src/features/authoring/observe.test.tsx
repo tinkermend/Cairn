@@ -8,6 +8,7 @@ const RUN_ID = '77777777-7777-4777-8777-777777777777'
 const STEP_ID = '55555555-5555-4555-8555-555555555555'
 
 const observeRun = vi.fn()
+const observeSession = vi.fn()
 const refresh = vi.fn()
 const onApplyTarget = vi.fn()
 const onWriteBack = vi.fn(async () => true)
@@ -16,18 +17,24 @@ vi.mock('@/lib/runs-api', () => ({
   observeRun: (...args: unknown[]) => observeRun(...args),
 }))
 
+vi.mock('@/lib/sessions-api', () => ({
+  observeSession: (...args: unknown[]) => observeSession(...args),
+}))
+
 vi.mock('@/features/runs/use-run-observation', () => ({
-  useRunObservation: () => ({
-    run: {
-      id: RUN_ID,
-      status: 'HOLDING',
-      debugMode: 'holdOnFailure',
-      checkpoint: { stepId: STEP_ID, fencingToken: '1' },
-      debugOverlay: null,
-    } as Pick<
-      RunDetailDto,
-      'id' | 'status' | 'debugMode' | 'checkpoint' | 'debugOverlay'
-    >,
+  useRunObservation: (id: string) => ({
+    run: id
+      ? ({
+          id: RUN_ID,
+          status: 'HOLDING',
+          debugMode: 'holdOnFailure',
+          checkpoint: { stepId: STEP_ID, fencingToken: '1' },
+          debugOverlay: null,
+        } as Pick<
+          RunDetailDto,
+          'id' | 'status' | 'debugMode' | 'checkpoint' | 'debugOverlay'
+        >)
+      : null,
     refresh,
   }),
 }))
@@ -64,6 +71,7 @@ function Probe() {
 describe('AuthoringObserveProvider', () => {
   beforeEach(() => {
     observeRun.mockReset()
+    observeSession.mockReset()
     refresh.mockReset()
     onApplyTarget.mockReset()
     onWriteBack.mockReset()
@@ -111,8 +119,51 @@ describe('AuthoringObserveProvider', () => {
 
     await screen.getByRole('button', { name: '写回草稿' }).click()
     await vi.waitFor(() =>
-      expect(onApplyTarget).toHaveBeenCalledWith(found.target)
+      expect(onApplyTarget).toHaveBeenCalledWith(found.target, { previewText: '' })
     )
     expect(onWriteBack).toHaveBeenCalled()
+  })
+
+  it('会话实时画面可指认，不走试跑 observe', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    observeSession.mockResolvedValue(found)
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <AuthoringObserveProvider
+          sessionId={RUN_ID}
+          selectedStepId={STEP_ID}
+          enabled
+          authoring={{
+            indicate: 'open',
+            highlight: 'open',
+            debugHold: 'open',
+            assist: 'closed',
+            stepTypesExtra: [],
+          }}
+          onApplyTarget={onApplyTarget}
+          onWriteBack={onWriteBack}
+        >
+          <Probe />
+        </AuthoringObserveProvider>
+      </QueryClientProvider>
+    )
+    await screen.getByRole('button', { name: '点选' }).click()
+    await vi.waitFor(() =>
+      expect(observeSession).toHaveBeenCalledWith(RUN_ID, {
+        op: 'pick',
+        x: 12,
+        y: 34,
+      })
+    )
+    expect(observeRun).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(onApplyTarget).toHaveBeenCalledWith(found.target, { previewText: '' }))
+    await vi.waitFor(() =>
+      expect(observeSession).toHaveBeenCalledWith(RUN_ID, {
+        op: 'highlight',
+        target: found.target,
+      }),
+    )
   })
 })

@@ -1,14 +1,18 @@
+import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
   EVIDENCE_TYPE_LABELS,
   type EvidenceDetailResponse,
   type EvidenceSearchItem,
 } from '@cairn/shared'
+import { ExternalLink, ListOrdered, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
 import { TruncatedText } from '@/components/truncated-text'
 import { AttemptEvidenceList } from '@/features/runs/evidence-viewer'
 import { RUN_STATUS_LABELS, ATTEMPT_STATUS_LABELS } from '@/features/runs/labels'
+import { StepTimeline } from '@/features/runs/step-timeline'
+import { useRunObservation } from '@/features/runs/use-run-observation'
 import { EvidenceThumb } from './thumb'
 import { formatKnownBytes, formatWhen, OUTCOME_STATUS_LABELS } from './labels'
 
@@ -59,6 +63,83 @@ export function EvidenceContext({ item }: { item: EvidenceSearchItem }) {
   )
 }
 
+function EvidenceRunTimeline({
+  runId,
+  currentStepRunId,
+  currentAttemptId,
+  currentEvidenceId,
+}: {
+  runId: string
+  currentStepRunId?: string | null
+  currentAttemptId?: string | null
+  currentEvidenceId?: string
+}) {
+  const [selectedStepRunId, setSelectedStepRunId] = useState<string | null>(
+    currentStepRunId ?? null
+  )
+  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(
+    currentAttemptId ?? null
+  )
+
+  const { run, evidence, query } = useRunObservation(runId)
+
+  return (
+    <section className='mt-6 space-y-3 border-t border-border-card pt-5'>
+      <div className='flex items-center justify-between'>
+        <div className='flex items-center gap-2'>
+          <ListOrdered className='size-4 text-primary' />
+          <h3 className='font-semibold text-body'>全景执行流水线</h3>
+          {run ? (
+            <span className='rounded-full bg-surface-subtle px-2 py-0.5 text-label text-muted-foreground'>
+              共 {run.stepRuns.length} 步 · {RUN_STATUS_LABELS[run.status]}
+            </span>
+          ) : null}
+        </div>
+        <Button asChild variant='ghost' size='sm' className='h-7 gap-1 text-label'>
+          <Link
+            to='/runs/$runId'
+            params={{ runId }}
+            search={{
+              stepRunId: selectedStepRunId ?? undefined,
+              attemptId: selectedAttemptId ?? undefined,
+              evidenceId: currentEvidenceId,
+            }}
+          >
+            <span>完整运行页</span>
+            <ExternalLink className='size-3' />
+          </Link>
+        </Button>
+      </div>
+
+      {query.isPending ? (
+        <div className='flex items-center justify-center gap-2 rounded-lg border border-border-card bg-surface-subtle/50 p-6 text-label text-muted-foreground'>
+          <Loader2 className='size-4 animate-spin text-primary' />
+          <span>正在加载完整步骤流水线...</span>
+        </div>
+      ) : query.isError || !run ? (
+        <p className='rounded-lg border border-border-card bg-surface-subtle/50 p-3 text-label text-muted-foreground'>
+          无法加载本次运行的完整步骤。你可以点击上方按钮直接前往运行详情页。
+        </p>
+      ) : (
+        <div className='rounded-lg border border-border-card bg-surface-subtle/30 p-3'>
+          <StepTimeline
+            run={run}
+            evidenceItems={evidence?.items ?? []}
+            focusStepRunId={selectedStepRunId ?? undefined}
+            focusAttemptId={selectedAttemptId ?? undefined}
+            focusEvidenceId={currentEvidenceId}
+            currentStepRunId={selectedStepRunId}
+            onSelectStep={(stepRunId, attemptId) => {
+              setSelectedStepRunId(stepRunId)
+              setSelectedAttemptId(attemptId ?? null)
+            }}
+          />
+        </div>
+      )}
+    </section>
+  )
+}
+
 export function EvidenceDetailBody({
   detail,
 }: {
@@ -103,19 +184,29 @@ export function EvidenceDetailBody({
           </Link>
         </p>
       ) : null}
-      <Button asChild variant='outline'>
-        <Link
-          to='/runs/$runId'
-          params={{ runId: item.evidence.runId }}
-          search={{
-            stepRunId: item.evidence.stepRunId ?? undefined,
-            attemptId: item.evidence.attemptId ?? undefined,
-            evidenceId: item.evidence.id,
-          }}
-        >
-          回到运行
-        </Link>
-      </Button>
+      <div className='pt-1'>
+        <Button asChild variant='outline' size='sm'>
+          <Link
+            to='/runs/$runId'
+            params={{ runId: item.evidence.runId }}
+            search={{
+              stepRunId: item.evidence.stepRunId ?? undefined,
+              attemptId: item.evidence.attemptId ?? undefined,
+              evidenceId: item.evidence.id,
+            }}
+          >
+            回到运行详情
+          </Link>
+        </Button>
+      </div>
+
+      <EvidenceRunTimeline
+        key={item.evidence.id}
+        runId={item.evidence.runId}
+        currentStepRunId={item.evidence.stepRunId}
+        currentAttemptId={item.evidence.attemptId}
+        currentEvidenceId={item.evidence.id}
+      />
     </div>
   )
 }

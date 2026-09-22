@@ -28,6 +28,7 @@ export const WAIT_REASON_COPY: Record<RunWaitReason, string> = {
   SESSION_IN_MAINTENANCE: '同一账号会话正在维护，排队等待。',
   SESSION_WAITING_FOR_AUTH: '同一账号会话正在等待目标系统登录。',
   SESSION_LOST: '会话失联，处置并确认旧浏览器停止后才会继续。',
+  SESSION_ACCOUNT_AT_CAPACITY: '该账号会话已达上限，排队等待空闲浏览器。',
   WORKER_SESSION_CAPACITY: '目标 Worker 会话位已满，排队中。',
   PROFILE_AFFINITY_WAIT: '等待原节点领取，以复用已保存的登录数据。',
   NO_ELIGIBLE_WORKER: '当前没有可领取的执行节点。',

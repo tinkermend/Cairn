@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   fetchTarget: vi.fn(),
   fetchTargets: vi.fn(),
   fetchTargetAccounts: vi.fn(),
+  fetchScenarioResolutionStats: vi.fn(),
 }))
 
 const runMocks = vi.hoisted(() => ({
@@ -313,6 +314,7 @@ describe('Scenario Studio', () => {
     signIn()
     mocks.fetchScenario.mockResolvedValue(detail())
     mocks.fetchScenarioCapabilities.mockResolvedValue(defaultCapabilities)
+    mocks.fetchScenarioResolutionStats.mockResolvedValue({ items: [] })
     mocks.fetchRecordingImports.mockResolvedValue({
       bindings: [],
       drafts: [],
@@ -459,6 +461,9 @@ describe('Scenario Studio', () => {
     await expect
       .element(screen.getByRole('button', { name: '保存草稿' }))
       .toBeEnabled()
+    await expect
+      .element(screen.getByText(/试跑不可用：先保存草稿/))
+      .toBeInTheDocument()
   })
 
   it('空地址只留在字段草稿，保存不会发出请求', async () => {
@@ -1063,6 +1068,181 @@ describe('Scenario Studio', () => {
       .toBeInTheDocument()
   })
 
+  it('HOLDING 时自动选中失败步，runThrough 不改选中', async () => {
+    signIn([
+      'workflow:read',
+      'workflow:write',
+      'run:execute',
+      'run:read',
+      'target:read',
+    ])
+    router.search = { runId: RUN_ID, import: undefined }
+    const first = {
+      id: STEP_ID,
+      name: '打开页面',
+      type: 'navigate' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      input: { url: 'https://shop.example.com' },
+    }
+    const second = {
+      id: EXTRACT_ID,
+      name: '点击配置管理',
+      type: 'click' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      input: {
+        target: {
+          framePath: [],
+          candidates: [{ by: 'text' as const, value: '配置管理' }],
+        },
+      },
+    }
+    const twoSteps = { ...document, steps: [first, second] }
+    mocks.fetchScenario.mockResolvedValue(
+      detail({
+        steps: [first, second],
+        draft: {
+          revision: 1,
+          document: twoSteps,
+          updatedAt: '2026-09-13T00:00:00.000Z',
+          updatedBy: { id: 'acc-1', displayName: '测试' },
+        },
+        published: {
+          versionId: '44444444-4444-4444-8444-444444444444',
+          versionNo: 1,
+          definition: twoSteps,
+          compilerVersion: 1,
+          createdAt: '2026-09-13T00:00:00.000Z',
+        },
+      }),
+    )
+    runMocks.fetchRunObservation.mockResolvedValue(
+      trialObservation(
+        trialRun({
+          status: 'HOLDING',
+          debugMode: 'holdOnFailure',
+          checkpoint: {
+            mode: 'holdOnFailure',
+            reason: 'step_failed',
+            stepId: second.id,
+            stepOrdinal: 1,
+            contextKeys: [],
+            sessionGeneration: 1,
+            fencingToken: '1',
+            overlayRevision: 0,
+          },
+          snapshot: {
+            schemaVersion: 1,
+            runId: RUN_ID,
+            targetId: TARGET_ID,
+            scenarioId: SCENARIO_ID,
+            scenarioVersionId: '44444444-4444-4444-8444-444444444444',
+            steps: [first, second],
+            input: {},
+            createdAt: '2026-09-13T02:00:00.000Z',
+          },
+          stepRuns: [
+            {
+              id: '00000000-0000-4000-8000-0000000000b1',
+              stepId: second.id,
+              name: second.name,
+              type: 'click',
+              ordinal: 1,
+              status: 'FAILED',
+              outcomeStatus: 'NOT_EVALUATED',
+              startedAt: '2026-09-13T02:00:01.000Z',
+              finishedAt: '2026-09-13T02:00:02.000Z',
+              attempts: [
+                {
+                  id: '00000000-0000-4000-8000-0000000000b2',
+                  attemptNo: 1,
+                  status: 'FAILED',
+                  startedAt: '2026-09-13T02:00:01.000Z',
+                  finishedAt: '2026-09-13T02:00:02.000Z',
+                  output: null,
+                  error: {
+                    code: 'TARGET_NOT_FOUND',
+                    category: 'EXECUTOR',
+                    retryable: false,
+                    safeMessage: '未找到',
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    )
+    const { screen } = await renderPage()
+    await expect.element(screen.getByRole('heading', { name: '点击配置管理' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: /点击配置管理/, pressed: true }))
+      .toBeInTheDocument()
+    await expect.element(screen.getByText('这一页上找不到要点的对象')).toBeInTheDocument()
+  })
+
+  it('runThrough 挂起时不自动改选中步', async () => {
+    signIn([
+      'workflow:read',
+      'workflow:write',
+      'run:execute',
+      'run:read',
+      'target:read',
+    ])
+    router.search = { runId: RUN_ID, import: undefined }
+    const first = {
+      id: STEP_ID,
+      name: '打开页面',
+      type: 'navigate' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      input: { url: 'https://shop.example.com' },
+    }
+    const second = {
+      id: EXTRACT_ID,
+      name: '点击配置管理',
+      type: 'click' as const,
+      effectType: 'SIDE_EFFECT' as const,
+      input: {
+        target: {
+          framePath: [],
+          candidates: [{ by: 'text' as const, value: '配置管理' }],
+        },
+      },
+    }
+    const twoSteps = { ...document, steps: [first, second] }
+    mocks.fetchScenario.mockResolvedValue(
+      detail({
+        steps: [first, second],
+        draft: {
+          revision: 1,
+          document: twoSteps,
+          updatedAt: '2026-09-13T00:00:00.000Z',
+          updatedBy: { id: 'acc-1', displayName: '测试' },
+        },
+      }),
+    )
+    runMocks.fetchRunObservation.mockResolvedValue(
+      trialObservation(
+        trialRun({
+          status: 'HOLDING',
+          debugMode: 'runThrough',
+          checkpoint: {
+            mode: 'holdOnFailure',
+            reason: 'step_failed',
+            stepId: second.id,
+            stepOrdinal: 1,
+            contextKeys: [],
+            sessionGeneration: 1,
+            fencingToken: '1',
+            overlayRevision: 0,
+          },
+        }),
+      ),
+    )
+    const { screen } = await renderPage()
+    await expect.element(screen.getByRole('heading', { name: '打开页面' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '再试这一步' })).not.toBeInTheDocument()
+  })
+
   it('HOLDING 写回草稿后丢掉该步临时覆盖', async () => {
     signIn([
       'workflow:read',
@@ -1260,12 +1440,10 @@ describe('Scenario Studio', () => {
       .toHaveValue('https://shop.example.com')
   })
 
-  it('未保存时不能开始录制', async () => {
+  it('步骤区不提供从 Studio 发起录制的入口', async () => {
     const { screen } = await renderPage()
-    await screen
-      .getByLabelText('页面地址')
-      .fill('https://shop.example.com/search')
-    await screen.getByRole('button', { name: '录制步骤' }).click()
+    await expect.element(screen.getByRole('button', { name: '添加步骤' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '录制步骤' })).not.toBeInTheDocument()
     expect(mocks.createRecordingBinding).not.toHaveBeenCalled()
   })
 
@@ -1460,4 +1638,26 @@ describe('Scenario Studio', () => {
       { sourceIndexes: [1], disposition: 'discard', reason: '未确认为成功条件' },
     ])
   })
+
+  it('右侧面板可通过Tab直接切换到输入参数并添加参数', async () => {
+    const { screen } = await renderPage()
+    // 默认在步骤配置
+    await expect.element(screen.getByRole('tab', { name: /步骤配置/ })).toHaveAttribute('aria-selected', 'true')
+    await expect.element(screen.getByLabelText('页面地址')).toBeInTheDocument()
+
+    // 点击输入参数 Tab
+    await screen.getByRole('tab', { name: /输入参数/ }).click()
+    await expect.element(screen.getByRole('tab', { name: /输入参数/ })).toHaveAttribute('aria-selected', 'true')
+    await expect.element(screen.getByRole('heading', { name: '场景输入' })).toBeInTheDocument()
+    await expect.element(screen.getByText('定义场景运行时接收的输入参数及 Mock 数据生成规则')).toBeInTheDocument()
+
+    // 添加输入参数
+    await screen.getByRole('button', { name: '添加输入' }).click()
+    await expect.element(screen.getByLabelText('输入键 1')).toBeInTheDocument()
+
+    // 切回步骤配置
+    await screen.getByRole('tab', { name: /步骤配置/ }).click()
+    await expect.element(screen.getByLabelText('页面地址')).toBeInTheDocument()
+  })
 })
+

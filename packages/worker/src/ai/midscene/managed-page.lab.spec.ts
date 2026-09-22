@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { extname, join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Page } from 'playwright'
-import { ensureTargetAccountCredential, getOrCreatePlatformConfig } from '@cairn/db'
+import { ensureTargetAccountCredential } from '@cairn/db'
 import {
   claimRun,
   consoleAccounts,
@@ -24,10 +24,10 @@ import {
   targetAuthProfiles,
   targets,
   type DbHandle,
+  adjustPlatformConfig,
 } from '@cairn/db/testing'
 import {
   DEV_CREDENTIAL_KEY,
-  FACTORY_PLATFORM_CONFIG,
   targetAuthProfileDefinitionSchema,
   type AiCommand,
   type SessionGrant,
@@ -207,7 +207,12 @@ describe('S06 适配层 × 受管 Page（离线）', { timeout: 180_000 }, () =>
     })
 
     // This suite intentionally destroys and re-creates sessions many times.
-    await getOrCreatePlatformConfig(handle, { document: { ...FACTORY_PLATFORM_CONFIG, sessionAuth: { ...FACTORY_PLATFORM_CONFIG.sessionAuth, autoLoginMaxPerWindow: 20 } }, reason: 'isolated SDK lifecycle fixture' })
+    await adjustPlatformConfig(
+      handle,
+      { id: actorId },
+      (document) => ({ ...document, sessionAuth: { ...document.sessionAuth, autoLoginMaxPerWindow: 20 } }),
+      'isolated SDK lifecycle fixture',
+    )
     workerId = `s06-${SCHEMA.slice(-8)}`
     workerInstanceId = newId()
     await registerWorker(handle.db, {

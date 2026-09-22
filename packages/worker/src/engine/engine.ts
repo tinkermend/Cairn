@@ -42,6 +42,7 @@ import { MapExploreExecutor } from './explore-executor.js'
 import { STEP_EXECUTOR_REGISTRY, StepExecutorRegistry } from './step-executor.js'
 import { DebugHoldRegistry } from './debug-hold.js'
 import { emitProcessLog } from '../process-log.js'
+import type { ObjectService } from '../objects/object.service.js'
 import { type CapturePhaseBudget } from '../map/passive-capture.js'
 import {
   alreadyClosedContinues,
@@ -64,6 +65,7 @@ import {
 import { acquireSession, resolveRedactionSecrets, watchCancellation } from './engine-preflight.js'
 import { settleRun } from './engine-settle.js'
 import { evidencePayloadForStep, isLastOpenStep, isRunnableStepRun, resolveStepInput, sessionLeaseFor } from './engine-step-plan.js'
+import { cleanupRunFileWorkspace } from './run-file-workspace.js'
 import {
   DEFAULT_CANCEL_POLL_MS,
   type AttemptLogState,
@@ -90,13 +92,14 @@ export class ExecutionEngine {
     @Optional() @Inject(STEP_EXECUTOR_REGISTRY) registry?: StepExecutorRegistry,
     @Optional() holds?: DebugHoldRegistry,
     @Optional() @Inject(MAP_OBSERVATION_PORT) mapObservation?: PassiveMapObservationPort,
+    @Optional() readonly objects?: ObjectService,
   ) {
     this.mapObservation = mapObservation
     this.registry =
       registry ??
       new StepExecutorRegistry([
         new FixtureStepExecutor(),
-        new BrowserStepExecutor(this.handle, this.browser),
+        new BrowserStepExecutor(this.handle, this.browser, undefined, undefined, objects),
         new MapExploreExecutor(this.browser),
       ])
     this.holds = holds ?? new DebugHoldRegistry()
@@ -315,7 +318,7 @@ export class ExecutionEngine {
         }
 
         const overlayTarget = current.debugOverlay?.stepOverrides[step.id]?.target
-        const resolved = resolveStepInput(step, current.context, overlayTarget)
+        const resolved = resolveStepInput(step, current.context, overlayTarget, runId)
         const started = await startAttempt(db, {
           runId,
           stepRunId: stepRun.id,
@@ -482,6 +485,7 @@ export class ExecutionEngine {
           )
         })
       }
+      await cleanupRunFileWorkspace(runId).catch(() => undefined)
       await settleRun.call(this, db, runId, grant)
       stop.stop()
     }

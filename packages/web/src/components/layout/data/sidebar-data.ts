@@ -19,6 +19,8 @@ import {
   UserCog,
   Users,
   Boxes,
+  Database,
+  Rows3,
 } from 'lucide-react'
 import { CAPABILITY_GROUP_LABELS, capabilityById } from '@cairn/shared'
 import { type NavCollapsible, type NavGroup, type SidebarData } from '../types'
@@ -73,6 +75,12 @@ export const sidebarData: SidebarData = {
           permission: 'suite:read',
         },
         {
+          title: menuTitle('batches'),
+          url: '/batches',
+          icon: Rows3,
+          permission: 'batch:read',
+        },
+        {
           title: menuTitle('action-modules'),
           url: '/action-modules',
           icon: Boxes,
@@ -112,6 +120,12 @@ export const sidebarData: SidebarData = {
     {
       title: CAPABILITY_GROUP_LABELS.resources,
       items: [
+        {
+          title: menuTitle('datasets'),
+          url: '/datasets',
+          icon: Database,
+          permission: 'dataset:read',
+        },
         {
           title: menuTitle('targets'),
           url: '/targets',

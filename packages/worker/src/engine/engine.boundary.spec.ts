@@ -179,10 +179,33 @@ describe('Engine 收尾登记表', () => {
       expect.objectContaining({
         runId: 'run-1',
         workerId: 'worker-1',
-        leaseId: 'lease-1',
         settler: 'evidence',
         message: 'upload',
       }),
     )
   })
+
+  it('ES-C7 batchItem 收尾：executionOrigin 为 batch_item 时触发 onRunSettledForBatch', async () => {
+    vi.spyOn(dbApi, 'settleRunEvidence').mockResolvedValue(undefined as never)
+    const onSettled = vi.spyOn(dbApi, 'onRunSettledForBatch').mockResolvedValue({ batchId: 'batch-1', batchStatus: 'RUNNING' } as never)
+    const advBatch = vi.spyOn(dbApi, 'advanceBatch').mockResolvedValue({ dispatchedRunIds: [], completed: false, paused: false } as never)
+    vi.spyOn(dbApi, 'loadRunRow').mockResolvedValue(haltedRow({
+      status: 'SUCCEEDED',
+      executionOrigin: 'batch_item',
+      outcomeStatus: 'PASS',
+    }) as never)
+
+    await settleRun.call(host() as never, {} as never, 'run-batch-1', grant as never)
+
+    expect(onSettled).toHaveBeenCalledWith(
+      expect.anything(),
+      'run-batch-1',
+      expect.objectContaining({
+        status: 'passed',
+        outcomeVerdict: 'PASS',
+      }),
+    )
+    expect(advBatch).toHaveBeenCalledWith(expect.anything(), 'batch-1')
+  })
 })
+

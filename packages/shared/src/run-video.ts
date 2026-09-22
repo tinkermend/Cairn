@@ -131,6 +131,7 @@ export const runVideoPayloadSchema = z.strictObject({
         maskFailed: z.number().int().nonnegative(),
       }),
       finalFrame: z.enum(['captured', 'failed', 'page_closed']),
+      timingMode: z.enum(['concat', 'grid', 'cfr']).optional(),
     })
     .optional(),
   coverage: runVideoCoverageSchema.optional(),

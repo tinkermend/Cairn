@@ -1128,9 +1128,15 @@ export async function uploadToLocator(
     if ((await nested.count().catch(() => 0)) > 0) {
       inputLocator = nested
     } else {
-      const parentCandidate = locator.locator('xpath=..').locator('input[type="file"]').first()
-      if ((await parentCandidate.count().catch(() => 0)) > 0) {
-        inputLocator = parentCandidate
+      const parentCandidate = locator.locator('xpath=..')
+      const isTopContainer = await parentCandidate
+        .evaluate((el: any) => el.tagName === 'FORM' || el.tagName === 'BODY' || el.tagName === 'HTML')
+        .catch(() => false)
+      if (!isTopContainer) {
+        const candidateInput = parentCandidate.locator('input[type="file"]').first()
+        if ((await candidateInput.count().catch(() => 0)) > 0) {
+          inputLocator = candidateInput
+        }
       }
     }
   }

@@ -309,7 +309,7 @@ describe('OC-A: 编写展开与契约派生 (expand-outcome)', () => {
               severity: 'MUST',
               onViolation: 'halt',
               provenance: 'manual',
-              rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+              rule: { kind: 'deterministic', target: { framePath: [], candidates: [{ by: 'css', value: '#ok' }] }, expect: { kind: 'visible' } },
             },
           ],
         },
@@ -344,7 +344,7 @@ describe('OC-A: 编写展开与契约派生 (expand-outcome)', () => {
       severity: 'MUST',
       onViolation: 'halt',
       provenance: 'manual',
-      rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+      rule: { kind: 'deterministic', target: { framePath: [], candidates: [{ by: 'css', value: '#ok' }] }, expect: { kind: 'visible' } },
     }
     const doc: ScenarioAuthoringDocumentV2 = {
       authoringSchemaVersion: 2,

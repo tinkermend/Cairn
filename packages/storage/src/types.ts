@@ -35,3 +35,8 @@ export interface ObjectStore {
   delete(key: string): Promise<void>
   probe(): Promise<ObjectStoreProbeResult>
 }
+
+export function fixtureStorageKey(targetId: string, fixtureId: string, filename: string): string {
+  const sanitized = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 128) || 'file'
+  return `fixtures/${targetId}/${fixtureId}/${sanitized}`
+}

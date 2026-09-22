@@ -105,6 +105,9 @@ const sqliteBytes = sqlite.customType<{ data: Buffer; driverData: Uint8Array }>(
 // Indexed text has a complete-value index, never a lossy prefix. Limits are
 // checked on import and by each backend's physical constraints.
 export const indexedTextLimits: Record<string, number> = {
+  'dataset_rows.valid_status': 16,
+  'batches.status': 24,
+  'batch_items.item_status': 24,
   'notification_controls.key': 180,
   'notification_events.source_key': 200,
   'notification_events.state': 24,

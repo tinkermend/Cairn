@@ -6,6 +6,7 @@ export function toAuthUser(account: AccountDto): AuthUser {
     id: account.id,
     displayName: account.displayName,
     email: account.email,
+    avatar: account.avatar ?? null,
     roles: account.roles.map((role) => role.key),
     permissions: account.permissions,
     targetScopes: account.targetScopes,

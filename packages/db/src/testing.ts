@@ -10,8 +10,9 @@ import { nativeTables, schemaFor } from './native.js'
 import { registerFixture } from './database.js'
 export type PgTestHandle = DbHandle & { pool: Pool }
 import { migrate } from './migrate.js'
-import { FACTORY_PLATFORM_CONFIG } from '@cairn/shared'
-import { getOrCreatePlatformConfig } from './platform-config/store.js'
+import { FACTORY_PLATFORM_CONFIG, type PlatformConfigDocument } from '@cairn/shared'
+import { getOrCreatePlatformConfig, updatePlatformConfig } from './platform-config/store.js'
+import type { AuditActor } from './audit/record.js'
 
 /** 仓库根 `.env`。与 api / worker 的读取路径同源：本地读它，CI 由环境变量提供。 */
 const ENV_FILE = resolve(import.meta.dirname, '../../../.env')
@@ -281,11 +282,38 @@ export async function grantScopedPermissions(
  *
  * 需要「刚迁移完的纯净库」的用例（如数据库迁移的导入目标）传 `{ pristine: true }`：
  * 那里 platform_config 必须为空，预先种进去会让判空失败。
+ *
+ * 注意：库里已经有配置行，所以用例里 `getOrCreatePlatformConfig(db, { document })` 会是
+ * 空操作。要改配置项用 `adjustPlatformConfig`（只改差异，走真实的更新路径）。
  */
 export async function seedFixtureStepsEnabled(handle: DbHandle): Promise<void> {
   await getOrCreatePlatformConfig(handle.db, {
     document: { ...FACTORY_PLATFORM_CONFIG, fixtureStepsEnabled: true },
     reason: '测试库：开放调试夹具步骤',
+  })
+}
+
+/**
+ * 在已有配置上改用例需要的那几项，而不是整份替换。
+ *
+ * 隔离库默认已经种了一行配置（见 seedFixtureStepsEnabled），所以用例里再
+ * `getOrCreatePlatformConfig(db, { document })` 是空操作——「已存在就直接返回」，
+ * 传进去的文档被静默丢掉。managed-page.lab 因此没能把 autoLoginMaxPerWindow 调到 20，
+ * 几次自动登录后账号被暂停。这里改走产品真实的「改配置」路径，并且只改 mutate 返回
+ * 的差异：整份替换会把种下的夹具开关一并抹回出厂的 false。
+ */
+export async function adjustPlatformConfig(
+  handle: DbHandle,
+  actor: AuditActor,
+  mutate: (document: PlatformConfigDocument) => PlatformConfigDocument,
+  reason: string,
+): Promise<void> {
+  const current = await getOrCreatePlatformConfig(handle.db)
+  await updatePlatformConfig(handle.db, {
+    expectedRevision: current.revision,
+    document: mutate(current.document),
+    reason,
+    actor,
   })
 }
 

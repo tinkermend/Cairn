@@ -28,3 +28,7 @@ export * from './suites.js'
 export * from './reports.js'
 export * from './resolution.js'
 export * from './run-video-media.js'
+export * from './fixtures.js'
+export * from './datasets.js'
+export * from './batches.js'
+

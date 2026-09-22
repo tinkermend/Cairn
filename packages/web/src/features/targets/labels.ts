@@ -54,7 +54,7 @@ export const LOGIN_FIELD_ROLE_LABELS = {
   captchaBg: '滑块背景或轨道',
 } as const
 
-function formatLoginLocator(locator: LoginLocator): string {
+export function formatLoginLocator(locator: LoginLocator): string {
   return `${LOGIN_LOCATOR_BY_LABELS[locator.by]}：${locator.value}`
 }
 

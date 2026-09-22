@@ -31,6 +31,7 @@ const TYPE_LABELS: Record<EvidenceMetadata['type'], string> = {
   log: '诊断',
   trace: 'Trace',
   video: '录像',
+  file: '文件',
 }
 
 export function AttemptEvidenceList({
@@ -102,6 +103,9 @@ function EvidenceItem({
         ) : null}
         {item.type === 'trace' && item.status === 'available' ? (
           <EvidenceTraceDownload runId={runId} evidenceId={item.id} />
+        ) : null}
+        {item.type === 'file' && item.status === 'available' ? (
+          <EvidenceFileDownload runId={runId} evidenceId={item.id} />
         ) : null}
         {item.status === 'available' &&
           (item.type === 'screenshot' ||
@@ -176,6 +180,47 @@ function EvidenceTraceDownload({
       <p className='text-label text-muted-foreground'>
         用 Playwright Trace Viewer 打开
       </p>
+    </div>
+  )
+}
+
+function EvidenceFileDownload({
+  runId,
+  evidenceId,
+}: {
+  runId: string
+  evidenceId: string
+}) {
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className='space-y-1'>
+      <Button
+        size='sm'
+        variant='outline'
+        disabled={busy}
+        onClick={() => {
+          setBusy(true)
+          void fetchEvidenceContent(runId, evidenceId)
+            .then(({ blob }) => {
+              const url = URL.createObjectURL(blob)
+              const link = document.createElement('a')
+              link.href = url
+              link.download = `file-${evidenceId.slice(0, 8)}`
+              link.click()
+              URL.revokeObjectURL(url)
+            })
+            .catch((error) => {
+              toast.error(
+                error instanceof ApiRequestError
+                  ? error.message
+                  : '文件下载失败'
+              )
+            })
+            .finally(() => setBusy(false))
+        }}
+      >
+        {busy ? '下载中…' : '下载文件'}
+      </Button>
     </div>
   )
 }

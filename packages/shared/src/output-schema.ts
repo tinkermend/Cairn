@@ -53,7 +53,7 @@ export type AiOutputSchema = z.infer<typeof aiOutputSchemaSchema>
 export type OutputShape =
   | { kind: 'unknown' }
   | { kind: 'scalar'; type: OutputFieldType | 'json' }
-  | { kind: 'object'; fields: readonly { name: string; type: OutputFieldType; required: boolean }[] }
+  | { kind: 'object'; fields: readonly { name: string; type: OutputFieldType | 'json'; required: boolean }[] }
 
 export function fieldsOfOutputSchema(schema: AiOutputSchema): readonly AiOutputField[] {
   return schema.kind === 'object' ? schema.fields : []

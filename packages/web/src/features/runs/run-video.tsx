@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
+  buildRunVideoChapters,
   faceScreenshot,
   isFinishedRunStatus,
   readRunVideoPayload,
@@ -15,6 +16,7 @@ import { ApiRequestError } from '@/lib/api-client'
 import { fetchEvidenceContent } from '@/lib/runs-api'
 import { Button } from '@/components/ui/button'
 import { missingReasonLabel } from './labels'
+import { RunVideoPlayer } from './run-video-player'
 
 function canPlayVp8Webm(): boolean {
   if (typeof document === 'undefined') return true
@@ -49,13 +51,36 @@ function payloadFlag(item: EvidenceMetadata | undefined, key: string): unknown {
 export function RunVideoSection({
   run,
   items,
+  currentStepRunId,
+  onChapterChange,
+  seekRequest,
+  onSeek,
+  offAxisSelectedStep,
+  onSelectStep,
 }: {
   run: RunDetailDto
   items: EvidenceMetadata[]
+  currentStepRunId?: string | null
+  onChapterChange?: (stepRunId: string | null) => void
+  seekRequest?: {
+    token: number
+    ms: number
+    source: 'chapter' | 'list' | 'deeplink' | 'pin'
+  } | null
+  onSeek?: (ms: number) => void
+  offAxisSelectedStep?: { ordinal: number; name: string } | null
+  onSelectStep?: (stepRunId: string, attemptId?: string) => void
 }) {
-  if (!shouldShowRunVideo(run, items)) return null
+  const showVideo = shouldShowRunVideo(run, items)
   const video = findRunVideo(items)
   const videoPayload = readRunVideoPayload(video?.payload)
+  const chapterModel = useMemo(
+    () => (showVideo ? buildRunVideoChapters({ run, payload: videoPayload, evidenceItems: items }) : null),
+    [showVideo, run, videoPayload, items],
+  )
+
+  if (!showVideo || !chapterModel) return null
+
   const truncated = videoPayload?.truncated === true || payloadFlag(video, 'truncated') === true
   const passwordMask = videoPayload?.passwordMask ?? payloadFlag(video, 'passwordMask')
   const coverageLines = video?.status === 'available' ? videoCoverageLines(videoPayload) : []
@@ -63,6 +88,8 @@ export function RunVideoSection({
     video,
     policyVideo: resolveEvidencePolicy(run.snapshot.evidencePolicy).video,
   })
+  const playable = canPlayVp8Webm()
+
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
       <h2 className='text-section font-semibold'>本次录像</h2>
@@ -79,14 +106,36 @@ export function RunVideoSection({
           {absence ??
             `录像不可用${video.missingReason ? `：${missingReasonLabel(video.missingReason)}` : ''}`}
         </p>
+      ) : !playable ? (
+        <Vp8FallbackPlayer runId={run.id} evidence={video} />
       ) : (
-        <RunVideoPlayer runId={run.id} evidence={video} />
+        <RunVideoPlayer
+          runId={run.id}
+          evidence={video}
+          chapterModel={chapterModel}
+          currentStepRunId={currentStepRunId}
+          onChapterChange={onChapterChange}
+          seekRequest={seekRequest}
+          onSeek={onSeek}
+          offAxisSelectedStep={offAxisSelectedStep}
+          onSelectStep={onSelectStep}
+        />
       )}
       {coverageLines.map((line) => (
         <p key={line} className='text-label text-muted-foreground'>
           {line}
         </p>
       ))}
+      {chapterModel.offAxisStepRunIds.length > 0 ? (
+        <p className='text-label text-muted-foreground'>
+          录像只覆盖本次运行的一段，{chapterModel.offAxisStepRunIds.length} 个步骤不在录像里
+        </p>
+      ) : null}
+      {chapterModel.clock?.alignment === 'approximate' ? (
+        <p className='text-label text-muted-foreground'>
+          录像时间为近似对齐，跳转可能偏移数秒
+        </p>
+      ) : null}
       {video?.status === 'available' && video.byteSize != null ? (
         <p className='text-label text-muted-foreground'>体积 {(video.byteSize / 1024).toFixed(1)} KiB</p>
       ) : null}
@@ -98,7 +147,7 @@ export function RunVideoSection({
   )
 }
 
-function RunVideoPlayer({
+function Vp8FallbackPlayer({
   runId,
   evidence,
 }: {
@@ -107,7 +156,6 @@ function RunVideoPlayer({
 }) {
   const [url, setUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
-  const playable = canPlayVp8Webm()
 
   useEffect(() => {
     let revoked: string | undefined
@@ -127,23 +175,13 @@ function RunVideoPlayer({
     }
   }, [runId, evidence.id])
 
-  if (failed) {
-    return <p className='text-label text-status-warning-foreground'>录像无法加载</p>
-  }
-  if (!url) {
-    return <p className='text-label text-muted-foreground'>录像加载中…</p>
-  }
+  if (failed) return <p className='text-label text-status-warning-foreground'>录像无法加载</p>
+  if (!url) return <p className='text-label text-muted-foreground'>录像加载中…</p>
   return (
     <div className='space-y-2'>
-      {playable ? (
-        <video controls src={url} className='max-h-96 w-full rounded-sm border border-border-card bg-black'>
-          当前浏览器不能播放这段录像。
-        </video>
-      ) : (
-        <p className='text-label text-muted-foreground'>
-          当前浏览器不能直接播放 WebM。请下载录像，或查看下方步骤截图。
-        </p>
-      )}
+      <p className='text-label text-muted-foreground'>
+        当前浏览器不能直接播放 WebM。请下载录像，或查看下方步骤截图。
+      </p>
       <Button
         size='sm'
         variant='outline'

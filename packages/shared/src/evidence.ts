@@ -13,7 +13,7 @@ import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstant
  * `status` 是采集状态，与 Run 的执行结论无关（见 `RUN_EVIDENCE_STATUSES`）。
  */
 
-export const EVIDENCE_TYPES = ['input', 'output', 'error', 'screenshot', 'log', 'trace', 'video'] as const
+export const EVIDENCE_TYPES = ['input', 'output', 'error', 'screenshot', 'log', 'trace', 'video', 'file'] as const
 export type EvidenceType = (typeof EVIDENCE_TYPES)[number]
 export const evidenceTypeSchema = z.enum(EVIDENCE_TYPES)
 

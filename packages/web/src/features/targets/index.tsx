@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { fetchTargets, previewDeleteTarget, deleteTarget } from '@/lib/targets-api'
 import { fetchSessionSystemOverview } from '@/lib/sessions-api'
+import { systemSessionOccupancyHint } from '@/features/sessions/occupancy-label'
 import { useCursorPage } from '@/hooks/use-cursor-page'
 import { useCan } from '@/hooks/use-permissions'
 import { CursorPagination } from '@/components/data-table'
@@ -344,12 +345,18 @@ export function TargetsPage() {
                                 )
                               }
                               if (sessionInfo) {
+                                const occupancy = systemSessionOccupancyHint({
+                                  accountCount: item.accountCount,
+                                  liveSessionCount: sessionInfo.liveSessionCount,
+                                  sessionCapTotal: sessionInfo.sessionCapTotal,
+                                })
                                 if (sessionInfo.problemCount > 0) {
                                   return (
                                     <span className='inline-flex items-center gap-1.5 tabular-nums text-status-warning-foreground font-medium'>
                                       <span className='size-2 rounded-full bg-status-warning-foreground shrink-0' />
                                       <span>
                                         {item.accountCount} 个 ({sessionInfo.problemCount} 待处理)
+                                        {occupancy ? ` · ${occupancy}` : ''}
                                       </span>
                                     </span>
                                   )
@@ -360,10 +367,19 @@ export function TargetsPage() {
                                   return (
                                     <span className='inline-flex items-center gap-1.5 tabular-nums text-status-success-foreground font-medium'>
                                       <span className='size-2 rounded-full bg-status-success-foreground shrink-0' />
-                                      <span>{item.accountCount} 个 (全就绪)</span>
+                                      <span>
+                                        {item.accountCount} 个 (全就绪)
+                                        {occupancy ? ` · ${occupancy}` : ''}
+                                      </span>
                                     </span>
                                   )
                                 }
+                                return (
+                                  <span className='tabular-nums'>
+                                    {item.accountCount} 个
+                                    {occupancy ? ` · ${occupancy}` : ''}
+                                  </span>
+                                )
                               }
                               return (
                                 <span className='tabular-nums'>

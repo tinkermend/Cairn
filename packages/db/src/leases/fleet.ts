@@ -20,7 +20,7 @@ import { clockNow, schemaFor } from '../native.js'
 import { failure } from '../runs/errors.js'
 import { findSessionByAuthWaitRun } from '../sessions/auth-control.js'
 import { authWaitLeaseLive } from '../sessions/occupancy-read.js'
-import { findLiveSession, getSessionById, toSessionDto, type SessionRecord } from '../sessions/sessions.js'
+import { findLiveSessions, getSessionById, toSessionDto, type SessionRecord } from '../sessions/sessions.js'
 import { notFound } from '../runs/errors.js'
 import { getWorkerById, type WorkerRecord } from './leases.js'
 
@@ -55,11 +55,11 @@ export async function resolveWorkerRoute(db: Db, runId: string): Promise<WorkerR
     let session = (holdLive ? held?.session : null) ?? leased ?? held?.session ?? null
     // 续跑后占用已清、新租约尚未领取：仍要把画面转到这个账号上的活会话。
     if (!session && run.status === 'RECOVERING' && run.targetAccountId) {
-      const recovering = await findLiveSession(tx as unknown as Db, {
+      const recovering = (await findLiveSessions(tx as unknown as Db, {
         targetId: run.targetId,
         targetAccountId: run.targetAccountId,
-      })
-      if (recovering?.status === 'OPEN') session = recovering
+      })).find((row) => row.status === 'OPEN' && row.health !== 'UNHEALTHY' && !lease)
+      if (recovering) session = recovering
     }
     const worker = session ? await getWorkerById(tx as unknown as Db, session.ownerWorkerId) : null
     return {

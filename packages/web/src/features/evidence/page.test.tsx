@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
-import type { EvidenceSearchResponse } from '@cairn/shared'
+import type { EvidenceSearchResponse, RunSummaryDto } from '@cairn/shared'
 import { EvidencePage } from './page'
 
 const search = vi.hoisted(() => ({
@@ -10,6 +10,7 @@ const search = vi.hoisted(() => ({
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
+  fetchRuns: vi.fn(async () => ({ items: [] as RunSummaryDto[], nextCursor: undefined as string | undefined })),
   fetchEvidenceSearch: vi.fn(),
   fetchEvidenceDetail: vi.fn(),
   fetchEvidenceRetentionSummary: vi.fn(),
@@ -26,6 +27,14 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     useSearch: () => search.value,
     useNavigate: () => mocks.navigate,
     Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={String(to)}>{children}</a>,
+  }
+})
+
+vi.mock('@/lib/runs-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/runs-api')>()
+  return {
+    ...actual,
+    fetchRuns: mocks.fetchRuns,
   }
 })
 
@@ -100,10 +109,60 @@ const listed: EvidenceSearchResponse = {
   summary: { evidenceCount: 1, objectCount: 1, knownBytes: 12, unknownByteObjects: 0 },
 }
 
+function summary(overrides: Partial<RunSummaryDto>): RunSummaryDto {
+  return {
+    executionOrigin: 'standalone',
+    id: 'run-1',
+    status: 'QUEUED',
+    cancelRequested: false,
+    targetId: 'target-1',
+    targetName: '目标甲',
+    targetAccountId: null,
+    targetAccountName: null,
+    scenarioId: 'sc-1',
+    scenarioName: '场景甲',
+    scenarioVersionId: '55555555-5555-4555-8555-555555555555',
+    createdAt: '2026-09-19T00:00:00.000Z',
+    startedAt: null,
+    finishedAt: null,
+    evidenceStatus: 'PENDING',
+    outcomeStatus: 'NOT_EVALUATED',
+    lease: null,
+    debugMode: 'runThrough',
+    ...overrides,
+  }
+}
+
 describe('证据中心页', () => {
+  it('默认进入运行结果页签', async () => {
+    mocks.fetchRuns.mockResolvedValue({
+      items: [
+        summary({
+          status: 'FAILED',
+          outcomeStatus: 'FAIL',
+          evidenceStatus: 'COMPLETE',
+          startedAt: '2026-09-19T00:00:01.000Z',
+          finishedAt: '2026-09-19T00:00:05.000Z',
+        }),
+      ],
+      nextCursor: undefined,
+    })
+    search.value = {}
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <EvidencePage />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByRole('heading', { name: '结果与报告', exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByRole('tab', { name: '运行结果', selected: true })).toBeInTheDocument()
+    await expect.element(screen.getByText('目标甲')).toBeInTheDocument()
+    await expect.element(screen.getByText('查看流水线')).toBeInTheDocument()
+  })
+
   it('展示结构化检索而不是关键词框', async () => {
     mocks.fetchEvidenceSearch.mockResolvedValue(listed)
-    search.value = {}
+    search.value = { tab: 'search' }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const screen = await render(
       <QueryClientProvider client={client}>
@@ -170,7 +229,7 @@ describe('证据中心页', () => {
   it('已生效筛选逐项可清除，清除一项只去掉那一项', async () => {
     mocks.fetchEvidenceSearch.mockResolvedValue(listed)
     mocks.navigate.mockClear()
-    search.value = { asOf: listed.asOf, types: 'screenshot,trace', view: 'recent_failures', cursor: 'abc' }
+    search.value = { tab: 'search', asOf: listed.asOf, types: 'screenshot,trace', view: 'recent_failures', cursor: 'abc' }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const screen = await render(
       <QueryClientProvider client={client}>
@@ -194,7 +253,7 @@ describe('证据中心页', () => {
 
   it('没有筛选时不出现已生效筛选清单', async () => {
     mocks.fetchEvidenceSearch.mockResolvedValue(listed)
-    search.value = {}
+    search.value = { tab: 'search' }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const screen = await render(
       <QueryClientProvider client={client}>
@@ -207,7 +266,7 @@ describe('证据中心页', () => {
 
   it('可选列默认不显示', async () => {
     mocks.fetchEvidenceSearch.mockResolvedValue(listed)
-    search.value = { asOf: listed.asOf }
+    search.value = { tab: 'search', asOf: listed.asOf }
     const screen = await render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <EvidencePage />
@@ -225,7 +284,7 @@ describe('证据中心页', () => {
       ...listed,
       items: [{ ...listed.items[0]!, evidence: { ...listed.items[0]!.evidence, externalAccess: true } }],
     })
-    search.value = { asOf: listed.asOf, columns: 'released,size,version,expires' }
+    search.value = { tab: 'search', asOf: listed.asOf, columns: 'released,size,version,expires' }
     const screen = await render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <EvidencePage />
@@ -233,8 +292,8 @@ describe('证据中心页', () => {
     )
     await expect.element(screen.getByText('目标甲')).toBeInTheDocument()
     const headers = [...screen.container.querySelectorAll('th')].map((th) => th.textContent)
-    // 顺序固定，不随地址里的书写顺序变化
-    expect(headers.slice(-4)).toEqual(['体积', '到期时间', '场景版本', '对外发布'])
+    // 顺序固定，不随地址里的书写顺序变化；末尾为操作列
+    expect(headers.slice(-5)).toEqual(['体积', '到期时间', '场景版本', '对外发布', '操作'])
     const cells = [...screen.container.querySelectorAll('tbody td')].map((td) => td.textContent)
     expect(cells).toContain('12 B')
     expect(cells).toContain('v1')
@@ -244,7 +303,7 @@ describe('证据中心页', () => {
   it('切换可选列只改 columns，不重置翻页位置', async () => {
     mocks.fetchEvidenceSearch.mockResolvedValue(listed)
     mocks.navigate.mockClear()
-    search.value = { asOf: listed.asOf, cursor: 'abc' }
+    search.value = { tab: 'search', asOf: listed.asOf, cursor: 'abc' }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const screen = await render(
       <QueryClientProvider client={client}>
@@ -256,5 +315,19 @@ describe('证据中心页', () => {
     const call = mocks.navigate.mock.calls[mocks.navigate.mock.calls.length - 1]?.[0] as { search: Record<string, unknown> }
     expect(call.search.columns).toBe('size')
     expect(call.search.cursor).toBe('abc')
+  })
+
+  it('支持展开高级筛选与操作列详情交互', async () => {
+    mocks.fetchEvidenceSearch.mockResolvedValue(listed)
+    search.value = { tab: 'search', asOf: listed.asOf }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <EvidencePage />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByRole('button', { name: '高级筛选' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '详情' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('link', { name: '去运行' })).toBeInTheDocument()
   })
 })

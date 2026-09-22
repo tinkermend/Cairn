@@ -44,7 +44,7 @@ export const SUITE_VERDICT_LABELS: Record<SuiteVerdict, string> = {
   incomplete: '无法完整判断',
 }
 
-export const EXECUTION_ORIGINS = ['standalone', 'suite_member'] as const
+export const EXECUTION_ORIGINS = ['standalone', 'suite_member', 'batch_item'] as const
 export type ExecutionOrigin = (typeof EXECUTION_ORIGINS)[number]
 export const executionOriginSchema = z.enum(EXECUTION_ORIGINS)
 

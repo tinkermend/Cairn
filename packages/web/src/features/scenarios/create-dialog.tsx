@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { CreateScenarioBody } from '@cairn/shared'
 import { toast } from 'sonner'
@@ -39,10 +39,9 @@ export function ScenarioCreateDialog({
   defaultTargetId,
 }: ScenarioCreateDialogProps) {
   const queryClient = useQueryClient()
-  const [targetSearch, setTargetSearch] = useState('')
   const targets = useQuery({
-    queryKey: ['targets', { limit: 100, search: targetSearch.trim() || undefined }],
-    queryFn: () => fetchTargets({ limit: 100, search: targetSearch.trim() || undefined }),
+    queryKey: ['targets', { limit: 100 }],
+    queryFn: () => fetchTargets({ limit: 100 }),
     enabled: open,
   })
   const fallbackTarget = useQuery({
@@ -61,8 +60,29 @@ export function ScenarioCreateDialog({
   const [name, setName] = useState('')
   const [targetId, setTargetId] = useState(defaultTargetId ?? '')
   const [url, setUrl] = useState('')
+  const [userEditedUrl, setUserEditedUrl] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+
+  // 若传入 defaultTargetId 且用户未主动编辑过 URL，在目标系统数据就绪后自动填入其 entryUrl
+  const selectedTarget = useMemo(
+    () => items.find((t) => t.id === targetId),
+    [items, targetId],
+  )
+
+  useEffect(() => {
+    if (!userEditedUrl && selectedTarget?.entryUrl) {
+      setUrl(selectedTarget.entryUrl)
+    }
+  }, [selectedTarget, userEditedUrl])
+
+  function handleTargetChange(nextTargetId: string) {
+    setTargetId(nextTargetId)
+    const nextTarget = items.find((t) => t.id === nextTargetId)
+    if (nextTarget?.entryUrl && !userEditedUrl) {
+      setUrl(nextTarget.entryUrl)
+    }
+  }
 
   const canSubmit =
     name.trim().length > 0 &&
@@ -74,6 +94,7 @@ export function ScenarioCreateDialog({
     setName('')
     setTargetId('')
     setUrl('')
+    setUserEditedUrl(false)
     setError('')
   }
 
@@ -125,26 +146,23 @@ export function ScenarioCreateDialog({
             选择目标系统并填写首步要打开的地址。创建后进入顺序编辑，再补充填写、点击、提取和成功条件。
           </DialogDescription>
         </DialogHeader>
-        <fieldset disabled={saving} className='min-w-0 space-y-5'>
+        <fieldset disabled={saving} className='min-w-0 space-y-4'>
           <div className='space-y-2'>
             <Label htmlFor='scenario-name'>名称</Label>
             <Input
               id='scenario-name'
+              autoFocus
+              placeholder='例如：订单查询与金额核验'
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
           </div>
           <div className='space-y-2'>
             <Label htmlFor='scenario-target'>目标系统</Label>
-            <Input
-              aria-label='搜索目标系统'
-              placeholder='搜索名称或编码'
-              value={targetSearch}
-              onChange={(event) => setTargetSearch(event.target.value)}
-            />
-            <Select value={targetId} onValueChange={setTargetId}>
+            <Select value={targetId} onValueChange={handleTargetChange}>
               <SelectTrigger
                 id='scenario-target'
+                aria-label='目标系统'
                 className='w-full'
                 disabled={saving || !targets.isSuccess}
               >
@@ -191,8 +209,14 @@ export function ScenarioCreateDialog({
               id='scenario-url'
               value={url}
               placeholder='https://'
-              onChange={(event) => setUrl(event.target.value)}
+              onChange={(event) => {
+                setUserEditedUrl(true)
+                setUrl(event.target.value)
+              }}
             />
+            <p className='text-small text-muted-foreground'>
+              将作为场景第 1 步（打开页面）的导航地址，可按需修改为具体业务路由。
+            </p>
           </div>
         </fieldset>
         {error ? (

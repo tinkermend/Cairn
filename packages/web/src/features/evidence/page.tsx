@@ -21,7 +21,16 @@ import {
   type RunStatus,
   type StepRunStatus,
 } from '@cairn/shared'
-import { Columns3, FileSearch, RefreshCw, X } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronUp,
+  Columns3,
+  FileSearch,
+  Info,
+  RefreshCw,
+  SlidersHorizontal,
+  X,
+} from 'lucide-react'
 import {
   fetchEvidenceDetail,
   fetchEvidenceRetentionObjects,
@@ -32,7 +41,12 @@ import { fetchReports } from '@/lib/reports-api'
 import { fetchScenarios } from '@/lib/scenarios-api'
 import { fetchTargets, fetchTargetAccounts } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+} from '@/components/ui/collapsible'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -40,6 +54,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import {
   Select,
   SelectContent,
@@ -87,6 +106,7 @@ import {
   type OptionalColumn,
 } from './columns'
 import { EvidenceDetailBody } from './detail-panel'
+import { ResultsCenterPanel } from './results-panel'
 import {
   CANDIDATE_REASON_LABELS,
   formatKnownBytes,
@@ -95,7 +115,7 @@ import {
   RETENTION_VIEW_LABELS,
 } from './labels'
 import { csvList, toggleCsv, type EvidencePageSearch } from './search-state'
-import { EvidenceThumb } from './thumb'
+import { EvidenceResultCell } from './evidence-result-cell'
 
 const EVIDENCE_PAGE_SIZES = [20, 50, 100] as const
 const RETENTION_PAGE_SIZES = [20] as const
@@ -163,7 +183,9 @@ export function EvidencePage() {
       ? 'retention'
       : search.tab === 'reports'
         ? 'reports'
-        : 'search'
+        : search.tab === 'search'
+          ? 'search'
+          : 'results'
   const patch = (
     next: Partial<EvidencePageSearch>,
     options?: { replace?: boolean }
@@ -185,14 +207,15 @@ export function EvidencePage() {
   }
 
   return (
-    <Main className='flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden sm:gap-6'>
+    <Main className='flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden pb-16 sm:gap-6'>
       <PageHeader
         className='shrink-0'
         title='结果与报告'
-        description='跨运行查找截图、录像、Trace 与结构化证据，并查看报告与留存清理事实。此处只接受结构化筛选，不提供关键词检索。'
+        description='跨运行检索现场截图、录像、Trace 与执行结果，快速定位失败现场与复盘报告。'
         actions={
           <Button
             variant='outline'
+            size='sm'
             onClick={() => {
               patch({
                 asOf: undefined,
@@ -218,16 +241,21 @@ export function EvidencePage() {
                 ? 'retention'
                 : value === 'reports'
                   ? 'reports'
-                  : 'search',
+                  : value === 'search'
+                    ? 'search'
+                    : 'results',
           })
         }}
       >
         <TabsList className='shrink-0'>
-          <TabsTrigger value='search'>证据检索</TabsTrigger>
+          <TabsTrigger value='results'>运行结果</TabsTrigger>
           <TabsTrigger value='reports'>报告</TabsTrigger>
+          <TabsTrigger value='search'>材料检索</TabsTrigger>
           <TabsTrigger value='retention'>留存与清理</TabsTrigger>
         </TabsList>
-        {tab === 'retention' ? (
+        {tab === 'results' ? (
+          <ResultsCenterPanel search={search} patch={patch} />
+        ) : tab === 'retention' ? (
           <RetentionPanel search={search} patch={patch} />
         ) : tab === 'reports' ? (
           <ReportsCenterPanel
@@ -387,6 +415,31 @@ function SearchPanel({
   )
   const hasStructuredFilters = activeFilters.length > 0
   const optionalColumns = parseOptionalColumns(search.columns)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const currentIndex = items.findIndex((it) => it.evidence.id === selected)
+
+  const advancedFilterCount = useMemo(() => {
+    let count = 0
+    if (search.runId) count++
+    if (search.suiteId) count++
+    if (search.suiteRunId) count++
+    if (search.evidenceId) count++
+    if (search.stepRunId) count++
+    if (search.attemptId) count++
+    if (search.isTrial != null) count++
+    if (search.runStatuses) count += csvList(search.runStatuses)?.length ?? 0
+    if (search.stepRunStatuses)
+      count += csvList(search.stepRunStatuses)?.length ?? 0
+    if (search.attemptStatuses)
+      count += csvList(search.attemptStatuses)?.length ?? 0
+    if (search.outcomeStatuses)
+      count += csvList(search.outcomeStatuses)?.length ?? 0
+    if (search.runEvidenceStatuses)
+      count += csvList(search.runEvidenceStatuses)?.length ?? 0
+    if (search.availability) count += csvList(search.availability)?.length ?? 0
+    return count
+  }, [search])
+
   const resetFilters = () =>
     patch({
       view: undefined,
@@ -428,28 +481,62 @@ function SearchPanel({
   }
 
   return (
-    <div className='flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden'>
-      <div className='flex shrink-0 flex-wrap gap-2'>
-        <Button
-          size='sm'
-          variant={!search.view ? 'secondary' : 'outline'}
-          onClick={() => patch({ view: undefined })}
-        >
-          全部
-        </Button>
-        {EVIDENCE_SEARCH_VIEWS.map((view) => (
+    <div className='flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden'>
+      {/* 顶部分段与元数据栏 */}
+      <div className='flex shrink-0 items-center justify-between gap-2 overflow-x-auto pb-0.5'>
+        <div className='inline-flex items-center gap-1 rounded-lg border border-border-card bg-surface-subtle p-1'>
           <Button
-            key={view}
             size='sm'
-            variant={search.view === view ? 'secondary' : 'outline'}
-            onClick={() =>
-              patch({ view: search.view === view ? undefined : view })
-            }
+            variant={!search.view ? 'secondary' : 'ghost'}
+            className='h-7 px-3 text-label'
+            onClick={() => patch({ view: undefined })}
           >
-            {EVIDENCE_SEARCH_VIEW_LABELS[view]}
+            全部
           </Button>
-        ))}
+          {EVIDENCE_SEARCH_VIEWS.map((view) => (
+            <Button
+              key={view}
+              size='sm'
+              variant={search.view === view ? 'secondary' : 'ghost'}
+              className='h-7 px-3 text-label'
+              onClick={() =>
+                patch({ view: search.view === view ? undefined : view })
+              }
+            >
+              {EVIDENCE_SEARCH_VIEW_LABELS[view]}
+            </Button>
+          ))}
+        </div>
+
+        {listed.data ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className='hidden cursor-default items-center gap-1.5 rounded-md border border-border-card bg-surface-card px-2.5 py-1 text-label text-muted-foreground shadow-xs sm:inline-flex'>
+                <Info className='size-3.5 text-primary' />
+                <span>共 {listed.data.summary.evidenceCount} 项证据</span>
+                <span className='text-border-divider'>·</span>
+                <span>{formatKnownBytes(listed.data.summary.knownBytes)}</span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent
+              side='bottom'
+              align='end'
+              className='space-y-1 text-label'
+            >
+              <div>读取时刻：{formatWhen(listed.data.readAt)}</div>
+              <div>时区：{timeZone}</div>
+              <div>物理对象：{listed.data.summary.objectCount} 个</div>
+              {listed.data.summary.unknownByteObjects > 0 ? (
+                <div className='font-medium text-status-warning-foreground'>
+                  {listed.data.summary.unknownByteObjects} 个对象字节未知
+                </div>
+              ) : null}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
       </div>
+
+      {/* 主工具栏（单行紧凑布局） */}
       <div className='flex shrink-0 flex-wrap items-center gap-2'>
         <Select
           value={
@@ -464,14 +551,14 @@ function SearchPanel({
             })
           }}
         >
-          <SelectTrigger className='h-8 w-36' aria-label='时间范围'>
+          <SelectTrigger className='h-8 w-32' aria-label='时间范围'>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value='24h'>最近 24 小时</SelectItem>
             <SelectItem value='7d'>最近 7 天</SelectItem>
             <SelectItem value='30d'>最近 30 天</SelectItem>
-            <SelectItem value='custom'>自定义</SelectItem>
+            <SelectItem value='custom'>自定义区间</SelectItem>
           </SelectContent>
         </Select>
         {search.timePreset === 'custom' ||
@@ -493,6 +580,7 @@ function SearchPanel({
             }}
           />
         ) : null}
+
         <Select
           value={search.targetId ?? 'all'}
           onValueChange={(value) =>
@@ -502,7 +590,7 @@ function SearchPanel({
             })
           }
         >
-          <SelectTrigger className='h-8 w-44' aria-label='目标系统'>
+          <SelectTrigger className='h-8 w-36' aria-label='目标系统'>
             <SelectValue placeholder='全部目标' />
           </SelectTrigger>
           <SelectContent>
@@ -514,13 +602,15 @@ function SearchPanel({
             ))}
           </SelectContent>
         </Select>
+
         <Select
           value={search.targetAccountId ?? 'all'}
+          disabled={!search.targetId || search.targetId === 'all'}
           onValueChange={(value) =>
             patch({ targetAccountId: value === 'all' ? undefined : value })
           }
         >
-          <SelectTrigger className='h-8 w-44' aria-label='目标账号'>
+          <SelectTrigger className='h-8 w-36' aria-label='目标账号'>
             <SelectValue placeholder='全部账号' />
           </SelectTrigger>
           <SelectContent>
@@ -532,6 +622,7 @@ function SearchPanel({
             ))}
           </SelectContent>
         </Select>
+
         <Select
           value={search.scenarioId ?? 'all'}
           onValueChange={(value) =>
@@ -541,7 +632,7 @@ function SearchPanel({
             })
           }
         >
-          <SelectTrigger className='h-8 w-44' aria-label='场景'>
+          <SelectTrigger className='h-8 w-40' aria-label='场景'>
             <SelectValue placeholder='全部场景' />
           </SelectTrigger>
           <SelectContent>
@@ -553,178 +644,58 @@ function SearchPanel({
             ))}
           </SelectContent>
         </Select>
-        <Select
-          value={
-            search.isTrial == null
-              ? 'all'
-              : search.isTrial
-                ? 'trial'
-                : 'published'
+
+        {/* 证据类型常用快捷过滤 */}
+        <div className='hidden items-center gap-1 border-s border-border-divider ps-2 lg:flex'>
+          {EVIDENCE_TYPES.map((type) => (
+            <Button
+              key={type}
+              size='sm'
+              variant={types.includes(type) ? 'secondary' : 'ghost'}
+              aria-pressed={types.includes(type)}
+              className='h-8 px-2.5 text-label'
+              onClick={() => patch({ types: toggleCsv(search.types, type) })}
+            >
+              {EVIDENCE_TYPE_LABELS[type]}
+            </Button>
+          ))}
+        </div>
+
+        {/* 高级筛选折叠按钮 */}
+        <Button
+          size='sm'
+          variant={
+            advancedFilterCount > 0 || advancedOpen ? 'secondary' : 'outline'
           }
-          onValueChange={(value) =>
-            patch({ isTrial: value === 'all' ? undefined : value === 'trial' })
-          }
+          onClick={() => setAdvancedOpen((v) => !v)}
+          className='h-8 gap-1.5'
         >
-          <SelectTrigger className='h-8 w-32' aria-label='运行种类'>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value='all'>正式与试跑</SelectItem>
-            <SelectItem value='published'>正式运行</SelectItem>
-            <SelectItem value='trial'>试跑</SelectItem>
-          </SelectContent>
-        </Select>
-        <Input
-          aria-label='场景集 ID'
-          className='h-8 w-44'
-          placeholder='场景集 ID'
-          value={search.suiteId ?? ''}
-          onChange={(event) =>
-            patch({ suiteId: event.target.value || undefined })
-          }
-        />
-        <Input
-          aria-label='集合运行 ID'
-          className='h-8 w-44'
-          placeholder='集合运行 ID'
-          value={search.suiteRunId ?? ''}
-          onChange={(event) =>
-            patch({
-              suiteRunId: event.target.value || undefined,
-              memberId: event.target.value ? search.memberId : undefined,
-            })
-          }
-        />
-        <Input
-          aria-label='运行 ID'
-          placeholder='运行 ID'
-          className='h-8 w-56'
-          value={search.runId ?? ''}
-          onChange={(event) =>
-            patch({ runId: event.target.value.trim() || undefined })
-          }
-        />
-        <Input
-          aria-label='证据 ID'
-          placeholder='证据 ID'
-          className='h-8 w-56'
-          value={search.evidenceId ?? ''}
-          onChange={(event) =>
-            patch({ evidenceId: event.target.value.trim() || undefined })
-          }
-        />
-        <Input
-          aria-label='步骤运行 ID'
-          placeholder='步骤运行 ID'
-          className='h-8 w-56'
-          value={search.stepRunId ?? ''}
-          onChange={(event) =>
-            patch({ stepRunId: event.target.value.trim() || undefined })
-          }
-        />
-        <Input
-          aria-label='尝试 ID'
-          placeholder='尝试 ID'
-          className='h-8 w-56'
-          value={search.attemptId ?? ''}
-          onChange={(event) =>
-            patch({ attemptId: event.target.value.trim() || undefined })
-          }
-        />
-        {hasStructuredFilters ? (
-          <Button size='sm' variant='ghost' onClick={resetFilters}>
-            重置筛选
-          </Button>
-        ) : null}
-      </div>
-      <div className='flex shrink-0 flex-wrap gap-2'>
-        {EVIDENCE_TYPES.map((type) => (
-          <Button
-            key={type}
-            size='sm'
-            variant={types.includes(type) ? 'secondary' : 'outline'}
-            aria-pressed={types.includes(type)}
-            onClick={() => patch({ types: toggleCsv(search.types, type) })}
-          >
-            {EVIDENCE_TYPE_LABELS[type]}
-          </Button>
-        ))}
-        {(
-          [
-            'available',
-            'collecting',
-            'capture_upload_anomaly',
-            'purged',
-            'expiring_soon',
-            'due_for_purge',
-            'purge_failed',
-            'released',
-          ] as const
-        ).map((item) => (
-          <Button
-            key={item}
-            size='sm'
-            variant={availability.includes(item) ? 'secondary' : 'outline'}
-            aria-pressed={availability.includes(item)}
-            onClick={() =>
-              patch({ availability: toggleCsv(search.availability, item) })
-            }
-          >
-            {EVIDENCE_AVAILABILITY_FILTER_LABELS[item]}
-          </Button>
-        ))}
-        <StatusFilterMenu
-          label='运行状态'
-          values={runStatuses}
-          options={RUN_STATUSES}
-          labels={RUN_STATUS_LABELS}
-          onToggle={(value) =>
-            patch({ runStatuses: toggleCsv(search.runStatuses, value) })
-          }
-        />
-        <StatusFilterMenu
-          label='步骤状态'
-          values={stepRunStatuses}
-          options={STEP_RUN_STATUSES}
-          labels={STEP_RUN_STATUS_LABELS}
-          onToggle={(value) =>
-            patch({ stepRunStatuses: toggleCsv(search.stepRunStatuses, value) })
-          }
-        />
-        <StatusFilterMenu
-          label='尝试状态'
-          values={attemptStatuses}
-          options={ATTEMPT_STATUSES}
-          labels={ATTEMPT_STATUS_LABELS}
-          onToggle={(value) =>
-            patch({ attemptStatuses: toggleCsv(search.attemptStatuses, value) })
-          }
-        />
-        <StatusFilterMenu
-          label='业务结果'
-          values={outcomeStatuses}
-          options={OUTCOME_STATUSES}
-          labels={OUTCOME_STATUS_LABELS}
-          onToggle={(value) =>
-            patch({ outcomeStatuses: toggleCsv(search.outcomeStatuses, value) })
-          }
-        />
-        <StatusFilterMenu
-          label='运行证据完整性'
-          values={runEvidenceStatuses}
-          options={RUN_EVIDENCE_STATUSES}
-          labels={RUN_EVIDENCE_STATUS_LABELS}
-          onToggle={(value) =>
-            patch({
-              runEvidenceStatuses: toggleCsv(search.runEvidenceStatuses, value),
-            })
-          }
-        />
+          <SlidersHorizontal className='size-3.5' />
+          <span>高级筛选</span>
+          {advancedFilterCount > 0 ? (
+            <span className='inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-label font-semibold text-primary-foreground'>
+              {advancedFilterCount}
+            </span>
+          ) : null}
+          <ChevronDown
+            className={cn(
+              'size-3.5 transition-transform duration-200',
+              advancedOpen && 'rotate-180'
+            )}
+          />
+        </Button>
+
+        {/* 显示列控制 */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button size='sm' variant='outline' aria-label='显示列'>
-              <Columns3 className='size-4' aria-hidden />
-              显示列
+            <Button
+              size='sm'
+              variant='outline'
+              className='h-8'
+              aria-label='显示列'
+            >
+              <Columns3 className='size-3.5' aria-hidden />
+              <span>列</span>
               {optionalColumns.length > 0 ? ` · ${optionalColumns.length}` : ''}
             </Button>
           </DropdownMenuTrigger>
@@ -733,7 +704,6 @@ function SearchPanel({
               <DropdownMenuCheckboxItem
                 key={column}
                 checked={optionalColumns.includes(column)}
-                // 只改显示，不动翻页位置。
                 onCheckedChange={() =>
                   patch({
                     columns: toggleCsv(search.columns, column),
@@ -746,7 +716,245 @@ function SearchPanel({
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {hasStructuredFilters ? (
+          <Button
+            size='sm'
+            variant='ghost'
+            className='h-8 text-label text-muted-foreground hover:text-foreground'
+            onClick={resetFilters}
+          >
+            重置筛选
+          </Button>
+        ) : null}
       </div>
+
+      {/* 高级筛选折叠面板 */}
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleContent
+          forceMount
+          className={cn(
+            'overflow-hidden transition-opacity duration-200',
+            !advancedOpen && 'hidden'
+          )}
+        >
+          <div className='mt-1 space-y-3 rounded-lg border border-border-card bg-surface-subtle/50 p-3.5 text-label shadow-xs'>
+            {/* 1. 精确标识检索网格 */}
+            <div>
+              <p className='mb-2 text-label font-medium text-muted-foreground'>
+                精确标识检索（支持完整 UUID 或业务 ID）
+              </p>
+              <div className='grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6'>
+                <Input
+                  aria-label='运行 ID'
+                  placeholder='运行 ID'
+                  className='h-8 bg-surface-card'
+                  value={search.runId ?? ''}
+                  onChange={(event) =>
+                    patch({ runId: event.target.value.trim() || undefined })
+                  }
+                />
+                <Input
+                  aria-label='场景集 ID'
+                  className='h-8 bg-surface-card'
+                  placeholder='场景集 ID'
+                  value={search.suiteId ?? ''}
+                  onChange={(event) =>
+                    patch({ suiteId: event.target.value.trim() || undefined })
+                  }
+                />
+                <Input
+                  aria-label='集合运行 ID'
+                  className='h-8 bg-surface-card'
+                  placeholder='集合运行 ID'
+                  value={search.suiteRunId ?? ''}
+                  onChange={(event) =>
+                    patch({
+                      suiteRunId: event.target.value.trim() || undefined,
+                      memberId: event.target.value
+                        ? search.memberId
+                        : undefined,
+                    })
+                  }
+                />
+                <Input
+                  aria-label='步骤运行 ID'
+                  placeholder='步骤运行 ID'
+                  className='h-8 bg-surface-card'
+                  value={search.stepRunId ?? ''}
+                  onChange={(event) =>
+                    patch({
+                      stepRunId: event.target.value.trim() || undefined,
+                    })
+                  }
+                />
+                <Input
+                  aria-label='尝试 ID'
+                  placeholder='尝试 ID'
+                  className='h-8 bg-surface-card'
+                  value={search.attemptId ?? ''}
+                  onChange={(event) =>
+                    patch({ attemptId: event.target.value.trim() || undefined })
+                  }
+                />
+                <Input
+                  aria-label='证据 ID'
+                  placeholder='证据 ID'
+                  className='h-8 bg-surface-card'
+                  value={search.evidenceId ?? ''}
+                  onChange={(event) =>
+                    patch({
+                      evidenceId: event.target.value.trim() || undefined,
+                    })
+                  }
+                />
+              </div>
+            </div>
+
+            {/* 2. 状态维度过滤 */}
+            <div>
+              <p className='mb-2 text-label font-medium text-muted-foreground'>
+                执行状态与业务结果
+              </p>
+              <div className='flex flex-wrap items-center gap-2'>
+                <Select
+                  value={
+                    search.isTrial == null
+                      ? 'all'
+                      : search.isTrial
+                        ? 'trial'
+                        : 'published'
+                  }
+                  onValueChange={(value) =>
+                    patch({
+                      isTrial:
+                        value === 'all' ? undefined : value === 'trial',
+                    })
+                  }
+                >
+                  <SelectTrigger
+                    className='h-8 w-32 bg-surface-card'
+                    aria-label='运行种类'
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value='all'>正式与试跑</SelectItem>
+                    <SelectItem value='published'>正式运行</SelectItem>
+                    <SelectItem value='trial'>试跑</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <StatusFilterMenu
+                  label='运行状态'
+                  values={runStatuses}
+                  options={RUN_STATUSES}
+                  labels={RUN_STATUS_LABELS}
+                  onToggle={(value) =>
+                    patch({ runStatuses: toggleCsv(search.runStatuses, value) })
+                  }
+                />
+                <StatusFilterMenu
+                  label='步骤状态'
+                  values={stepRunStatuses}
+                  options={STEP_RUN_STATUSES}
+                  labels={STEP_RUN_STATUS_LABELS}
+                  onToggle={(value) =>
+                    patch({
+                      stepRunStatuses: toggleCsv(
+                        search.stepRunStatuses,
+                        value
+                      ),
+                    })
+                  }
+                />
+                <StatusFilterMenu
+                  label='尝试状态'
+                  values={attemptStatuses}
+                  options={ATTEMPT_STATUSES}
+                  labels={ATTEMPT_STATUS_LABELS}
+                  onToggle={(value) =>
+                    patch({
+                      attemptStatuses: toggleCsv(
+                        search.attemptStatuses,
+                        value
+                      ),
+                    })
+                  }
+                />
+                <StatusFilterMenu
+                  label='业务结果'
+                  values={outcomeStatuses}
+                  options={OUTCOME_STATUSES}
+                  labels={OUTCOME_STATUS_LABELS}
+                  onToggle={(value) =>
+                    patch({
+                      outcomeStatuses: toggleCsv(
+                        search.outcomeStatuses,
+                        value
+                      ),
+                    })
+                  }
+                />
+                <StatusFilterMenu
+                  label='运行证据完整性'
+                  values={runEvidenceStatuses}
+                  options={RUN_EVIDENCE_STATUSES}
+                  labels={RUN_EVIDENCE_STATUS_LABELS}
+                  onToggle={(value) =>
+                    patch({
+                      runEvidenceStatuses: toggleCsv(
+                        search.runEvidenceStatuses,
+                        value
+                      ),
+                    })
+                  }
+                />
+              </div>
+            </div>
+
+            {/* 3. 可用性与生命周期 */}
+            <div>
+              <p className='mb-2 text-label font-medium text-muted-foreground'>
+                证据可用性与治理状态
+              </p>
+              <div className='flex flex-wrap items-center gap-1.5'>
+                {(
+                  [
+                    'available',
+                    'collecting',
+                    'capture_upload_anomaly',
+                    'purged',
+                    'expiring_soon',
+                    'due_for_purge',
+                    'purge_failed',
+                    'released',
+                  ] as const
+                ).map((item) => (
+                  <Button
+                    key={item}
+                    size='sm'
+                    variant={
+                      availability.includes(item) ? 'secondary' : 'outline'
+                    }
+                    aria-pressed={availability.includes(item)}
+                    className='h-7 bg-surface-card px-2.5 text-label'
+                    onClick={() =>
+                      patch({
+                        availability: toggleCsv(search.availability, item),
+                      })
+                    }
+                  >
+                    {EVIDENCE_AVAILABILITY_FILTER_LABELS[item]}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      {/* 已生效筛选胶囊列表 */}
       {activeFilters.length > 0 ? (
         <ul
           aria-label='已生效筛选'
@@ -755,7 +963,7 @@ function SearchPanel({
           {activeFilters.map((filter) => (
             <li
               key={filter.id}
-              className='inline-flex max-w-full items-center gap-1 rounded-sm border border-border-card bg-card py-0.5 ps-2 pe-0.5 text-label'
+              className='inline-flex max-w-full items-center gap-1 rounded-sm border border-border-card bg-surface-card py-0.5 ps-2 pe-0.5 text-label'
             >
               <span className='truncate'>{filter.label}</span>
               <Button
@@ -772,22 +980,13 @@ function SearchPanel({
           ))}
         </ul>
       ) : null}
+
       {listed.data?.timeWindowLifted ? (
         <p className='shrink-0 text-label text-muted-foreground'>
           已按完整 ID 或预置视图解除默认时间窗。
         </p>
       ) : null}
-      {listed.data ? (
-        <p className='shrink-0 text-label text-muted-foreground'>
-          读取于 {formatWhen(listed.data.readAt)} · 时区 {timeZone} · 范围内{' '}
-          {listed.data.summary.evidenceCount} 条证据 ·{' '}
-          {listed.data.summary.objectCount} 个对象 · 已知{' '}
-          {formatKnownBytes(listed.data.summary.knownBytes)}
-          {listed.data.summary.unknownByteObjects > 0
-            ? ` · ${listed.data.summary.unknownByteObjects} 个对象字节未知`
-            : ''}
-        </p>
-      ) : null}
+
       {listed.data?.relatedRunGaps && listed.data.relatedRunGaps.count > 0 ? (
         <p className='shrink-0 text-label text-muted-foreground'>
           另有 {listed.data.relatedRunGaps.count}{' '}
@@ -824,10 +1023,10 @@ function SearchPanel({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>类型</TableHead>
+                <TableHead className='w-24'>材料类别</TableHead>
                 <TableHead>目标与场景</TableHead>
                 <TableHead>步骤 / 尝试</TableHead>
-                <TableHead>采集时间</TableHead>
+                <TableHead className='whitespace-nowrap'>采集时间</TableHead>
                 <TableHead>结果</TableHead>
                 <TableHead>可用性</TableHead>
                 {optionalColumns.map((column) => (
@@ -835,6 +1034,7 @@ function SearchPanel({
                     {OPTIONAL_COLUMN_LABELS[column]}
                   </TableHead>
                 ))}
+                <TableHead className='w-24 text-right'>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -857,23 +1057,13 @@ function SearchPanel({
                     }
                   }}
                 >
-                  <TableCell className='min-w-28'>
-                    <div className='flex items-center gap-2'>
-                      {item.evidence.type === 'screenshot' &&
-                      item.evidence.status === 'available' ? (
-                        <EvidenceThumb
-                          runId={item.evidence.runId}
-                          evidenceId={item.evidence.id}
-                          compact
-                        />
-                      ) : null}
-                      <span className='whitespace-nowrap'>
-                        {EVIDENCE_TYPE_LABELS[item.evidence.type]}
-                      </span>
-                    </div>
+                  <TableCell className='w-24'>
+                    <StatusBadge tone='neutral'>
+                      {EVIDENCE_TYPE_LABELS[item.evidence.type]}
+                    </StatusBadge>
                   </TableCell>
                   <TableCell>
-                    <p>{item.targetName}</p>
+                    <p className='font-medium text-label'>{item.targetName}</p>
                     <p className='text-label text-muted-foreground'>
                       {item.scenarioName}
                     </p>
@@ -883,23 +1073,11 @@ function SearchPanel({
                       ? `${item.stepOrdinal + 1}${item.stepName ? ` · ${item.stepName}` : ''}${item.attemptNo != null ? ` · #${item.attemptNo}` : ''}`
                       : '运行级'}
                   </TableCell>
-                  <TableCell className='whitespace-nowrap'>
+                  <TableCell className='whitespace-nowrap text-label'>
                     {formatWhen(item.evidence.createdAt)}
                   </TableCell>
                   <TableCell>
-                    <p>{RUN_STATUS_LABELS[item.runStatus]}</p>
-                    <p className='text-label text-muted-foreground'>
-                      {item.attemptStatus
-                        ? ATTEMPT_STATUS_LABELS[item.attemptStatus]
-                        : '—'}
-                    </p>
-                    {item.hitKind ? (
-                      <StatusBadge tone='error' className='mt-1'>
-                        {item.hitKind === 'attempt_failed'
-                          ? '尝试失败'
-                          : '运行失败'}
-                      </StatusBadge>
-                    ) : null}
+                    <EvidenceResultCell item={item} />
                   </TableCell>
                   <TableCell>
                     <StatusBadge
@@ -915,20 +1093,58 @@ function SearchPanel({
                       {item.displayStatusLabel}
                     </StatusBadge>
                     {item.errorSummary ? (
-                      // 限宽：摘要再长也只省略显示，不能把表撑宽而把可选列挤出视口。
-                      <div className='mt-1 max-w-64'>
-                        <TruncatedText
-                          className='text-label text-muted-foreground'
-                          text={item.errorSummary}
-                        />
-                      </div>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className='mt-1 max-w-64 cursor-pointer'>
+                            <TruncatedText
+                              className='text-label text-status-error-foreground hover:underline'
+                              text={item.errorSummary}
+                            />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side='bottom'
+                          align='start'
+                          className='max-w-md space-y-1 text-label'
+                        >
+                          <div className='font-semibold text-status-error-foreground'>
+                            异常诊断摘要
+                          </div>
+                          <div className='whitespace-pre-wrap font-mono text-label'>
+                            {item.errorSummary}
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
                     ) : null}
                   </TableCell>
                   {optionalColumns.map((column) => (
-                    <TableCell key={column} className='whitespace-nowrap'>
+                    <TableCell key={column} className='whitespace-nowrap text-label'>
                       {optionalCell(column, item)}
                     </TableCell>
                   ))}
+                  <TableCell className='whitespace-nowrap text-right'>
+                    <div
+                      className='inline-flex items-center justify-end gap-1'
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Button
+                        variant='ghost'
+                        size='sm'
+                        className='h-7 px-2 text-label text-primary hover:text-primary-700'
+                        onClick={() => openItem(item.evidence.id)}
+                      >
+                        详情
+                      </Button>
+                      <Link
+                        to='/runs/$runId'
+                        params={{ runId: item.evidence.runId }}
+                        className='inline-flex h-7 items-center px-1 text-label text-muted-foreground hover:text-primary hover:underline'
+                        title='查看完整运行'
+                      >
+                        去运行
+                      </Link>
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -963,12 +1179,55 @@ function SearchPanel({
           if (!open) patch({ selected: undefined })
         }}
       >
-        <SheetContent className='sm:max-w-xl' side='right'>
+        <SheetContent className='w-full sm:max-w-2xl' side='right'>
           <SheetHeader>
-            <SheetTitle>证据详情</SheetTitle>
-            <SheetDescription>
-              查看来源、可用性与仍可访问的内容。
-            </SheetDescription>
+            <div className='flex items-center justify-between pe-6'>
+              <div>
+                <SheetTitle>证据详情</SheetTitle>
+                <SheetDescription>
+                  查看现场材料、可用性与全景执行流水线。
+                </SheetDescription>
+              </div>
+              {items.length > 1 && currentIndex >= 0 ? (
+                <div className='flex items-center gap-1.5 rounded-md border border-border-card bg-surface-subtle px-2 py-1 text-label text-muted-foreground'>
+                  <span>
+                    {currentIndex + 1} / {items.length}
+                  </span>
+                  <div className='ms-1 inline-flex items-center gap-0.5'>
+                    <Button
+                      variant='ghost'
+                      size='icon'
+                      className='size-6'
+                      disabled={currentIndex <= 0}
+                      onClick={() =>
+                        patch({
+                          selected: items[currentIndex - 1].evidence.id,
+                        })
+                      }
+                      aria-label='上一项证据'
+                      title='上一项证据'
+                    >
+                      <ChevronUp className='size-3.5' />
+                    </Button>
+                    <Button
+                      variant='ghost'
+                      size='icon'
+                      className='size-6'
+                      disabled={currentIndex >= items.length - 1}
+                      onClick={() =>
+                        patch({
+                          selected: items[currentIndex + 1].evidence.id,
+                        })
+                      }
+                      aria-label='下一项证据'
+                      title='下一项证据'
+                    >
+                      <ChevronDown className='size-3.5' />
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </SheetHeader>
           <div className='min-h-0 flex-1 overflow-auto px-6 pb-6'>
             {detail.isPending ? (
@@ -1222,6 +1481,7 @@ function ReportsCenterPanel({ search }: { search: EvidencePageSearch }) {
       search.runId,
       search.targetId,
       search.suiteId,
+      cursors.length,
       cursors[cursors.length - 1],
       pageSize,
     ],

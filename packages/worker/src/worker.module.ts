@@ -68,16 +68,21 @@ import { createAiPort } from './ai/port'
     },
     {
       provide: STEP_EXECUTOR_REGISTRY,
-      useFactory: (handle: DbHandle, browser?: BrowserPort, ai?: AiPort) => {
+      useFactory: (handle: DbHandle, browser?: BrowserPort, ai?: AiPort, objects?: ObjectService) => {
         const executors = [
           new FixtureStepExecutor(),
-          new BrowserStepExecutor(handle, browser, ai),
+          new BrowserStepExecutor(handle, browser, ai, undefined, objects),
           new MapExploreExecutor(browser),
         ]
         if (ai) executors.push(new AiStepExecutor(ai))
         return new StepExecutorRegistry(executors)
       },
-      inject: [DB_HANDLE, { token: BROWSER_PORT, optional: true }, { token: AI_PORT, optional: true }],
+      inject: [
+        DB_HANDLE,
+        { token: BROWSER_PORT, optional: true },
+        { token: AI_PORT, optional: true },
+        { token: ObjectService, optional: true },
+      ],
     },
     ExecutionEngine,
   ],

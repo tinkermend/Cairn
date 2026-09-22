@@ -1,5 +1,4 @@
-import type { OutcomeStatus } from '@cairn/shared'
-import { EVIDENCE_RETENTION_OBJECT_VIEWS } from '@cairn/shared'
+import type { EVIDENCE_RETENTION_OBJECT_VIEWS, OutcomeStatus } from '@cairn/shared'
 
 export const OUTCOME_STATUS_LABELS: Record<OutcomeStatus, string> = {
   PASS: '通过',

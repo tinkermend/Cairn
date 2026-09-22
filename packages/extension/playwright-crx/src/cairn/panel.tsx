@@ -46,6 +46,7 @@ type Props = {
 
 const RECORDING_MODES: Mode[] = ['recording', 'recording-inspecting', 'assertingText', 'assertingVisibility']
 const INSPECT_MODES: Mode[] = ['inspecting', 'recording-inspecting']
+const ASSERT_MODES: Mode[] = ['assertingVisibility', 'assertingText']
 
 /** 引擎只认「高亮这个定位」，没有「取消高亮」；用一个必然匹配不到的定位收掉上一次高亮。 */
 const NO_HIGHLIGHT = 'css=cairn-no-such-element'
@@ -342,6 +343,19 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     await dispatchMode(next)
   }
 
+  const onAssert = async () => {
+    if (ASSERT_MODES.includes(mode)) {
+      await dispatchMode('recording')
+      return
+    }
+    const attached = await requestAttach('assertingVisibility')
+    if (!attached.ok) {
+      setMessage({ tone: 'error', text: attached.error ?? '无法挂到当前标签页' })
+      return
+    }
+    await dispatchMode('assertingVisibility')
+  }
+
   const onSubmitObservation = async () => {
     if (!targetId) {
       setMessage({ tone: 'error', text: '请先选择目标系统' })
@@ -442,6 +456,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   const items = ready?.items ?? []
   const recording = RECORDING_MODES.includes(mode)
   const inspecting = INSPECT_MODES.includes(mode)
+  const asserting = ASSERT_MODES.includes(mode)
   const uploadMeta = resolveRecordingUploadMeta({
     name: draftName,
     targetId,
@@ -571,6 +586,15 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
           onClick={() => void onRecord()}
         >
           {recording ? '停止录制' : items.length ? '继续录制' : '开始录制'}
+        </button>
+        <button
+          type='button'
+          className='cairn-btn cairn-btn-ghost'
+          aria-pressed={asserting}
+          disabled={busy}
+          onClick={() => void onAssert()}
+        >
+          {asserting ? '退出断言' : '拾取断言'}
         </button>
         <button
           type='button'

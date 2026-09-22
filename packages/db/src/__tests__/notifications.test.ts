@@ -368,7 +368,8 @@ describe.each(DRIVERS)('%s 通知持久化与故障恢复', { timeout: 60_000 },
       })
       await h.db
         .update(t.notificationDeliveries)
-        .set({ nextAttemptAt: new Date(Date.now() - 1) })
+        // 领取按数据库时钟判定到期；测试进程与库的时钟可能差十几毫秒，留 1 秒余量而不是 1ms。
+        .set({ nextAttemptAt: new Date(Date.now() - 1000) })
         .where(eq(t.notificationDeliveries.id, job.deliveryId))
     }
     const delivery = (await getNotificationEvent(h.db, actor, eventId)).deliveries[0]!

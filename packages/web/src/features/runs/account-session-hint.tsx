@@ -21,6 +21,9 @@ export function AccountSessionHint({ targetId, account }: { targetId: string; ac
   if (!account) return null
   const hint = accountPickerHint({
     liveStatus: sessionStatusSchema.safeParse(session.data?.session?.status).data,
+    instances: session.data?.instances,
+    liveCount: session.data?.liveCount,
+    effectiveCap: session.data?.effectiveCap,
     hasPassword: account.hasPassword,
     authMethod: targetQuery.data?.authMethod,
     captchaMode: targetQuery.data?.captchaMode,
@@ -29,7 +32,9 @@ export function AccountSessionHint({ targetId, account }: { targetId: string; ac
     ? '会话失联，处置并确认旧浏览器停止后才会继续'
     : hint.reuse
       ? '将复用现有会话'
-      : '将准备新会话'
+      : hint.atCapacity
+        ? '账号会话已达上限，运行将等待'
+        : '将准备新会话'
   return (
     <p className="text-label text-muted-foreground">
       {session.data

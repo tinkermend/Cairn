@@ -18,6 +18,8 @@ export const DETERMINISTIC_STUDIO_TYPES = [
   'select',
   'keyboard',
   'wait',
+  'download',
+  'upload',
   'echo',
   'delay',
   'fail',
@@ -38,6 +40,8 @@ export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
   select: '下拉选择',
   keyboard: '按键',
   wait: '等待条件',
+  download: '下载文件',
+  upload: '文件上传',
   ai_action: 'AI 操作',
   ai_extract: 'AI 提取',
   ai_assert: 'AI 判断',
@@ -56,6 +60,8 @@ export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
   select: '选择下拉选项',
   keyboard: '按键操作',
   wait: '等待条件满足',
+  download: '等待或触发下载并保留为轻量句柄',
+  upload: '向页面上传 Target 夹具或上下文文件',
   echo: '回显上下文',
   delay: '等待一段时间',
   fail: '主动失败',
@@ -80,6 +86,8 @@ export const DEFAULT_EFFECT: Record<DeterministicStudioType, EffectType> = {
   fail: 'SIDE_EFFECT',
   select: 'SIDE_EFFECT',
   keyboard: 'SIDE_EFFECT',
+  download: 'SIDE_EFFECT',
+  upload: 'SIDE_EFFECT',
 }
 
 export function stepTypeLabel(type: string): string {
@@ -247,6 +255,33 @@ export function createBlankStep(
         type,
         effectType: 'READ_ONLY' as const,
         input: { kind: 'visible', target: defaultTarget('结果') },
+      }
+    case 'download':
+      return {
+        id,
+        name,
+        type,
+        effectType,
+        outputKey: uniqueOutputKey('downloaded', taken),
+        input: {
+          waitMs: 30_000,
+        },
+      }
+    case 'upload':
+      return {
+        id,
+        name,
+        type,
+        effectType,
+        input: {
+          target: defaultTarget('上传入口'),
+          files: [
+            {
+              source: 'context',
+              from: 'downloaded',
+            },
+          ],
+        },
       }
   }
 }

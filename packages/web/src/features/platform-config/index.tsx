@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   FACTORY_PLATFORM_CONFIG,
   hasPermission,
+  modelServiceOrigin,
   platformConfigCurrentSchema,
   platformConfigWriteDocumentSchema,
   platformModelUrlSchema,
@@ -47,7 +48,6 @@ const TABS = [
   { id: 'execution', title: '执行默认值' },
   { id: 'session', title: '会话策略' },
   { id: 'evidence', title: '证据策略' },
-  { id: 'alerting', title: '告警' },
   { id: 'revisions', title: '变更记录' },
 ] as const
 
@@ -66,13 +66,14 @@ export function PlatformConfigPage() {
   const [tab, setTab] = useState<TabId>(() => {
     if (typeof window === 'undefined') return 'ai'
     const param = new URLSearchParams(window.location.search).get('tab')
-    if (param === 'alerting') return 'alerting'
     if (param === 'analysis-ai' || param === 'platform-ai') return 'platform-ai'
     return 'ai'
   })
   const [reason, setReason] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [platformApiKey, setPlatformApiKey] = useState('')
+  const [registeredBrowserAiUrl, setRegisteredBrowserAiUrl] = useState<string | undefined>()
+  const [registeredPlatformAiUrl, setRegisteredPlatformAiUrl] = useState<string | undefined>()
   const [busy, setBusy] = useState(false)
   const [editingRevision, setEditingRevision] = useState<number>()
   const form = useForm<PlatformConfigDocument>({
@@ -94,6 +95,8 @@ export function PlatformConfigPage() {
       return
     form.reset(cloneDocument(current.data.document))
     setEditingRevision(current.data.revision)
+    setRegisteredBrowserAiUrl(current.data.document.browserAi.baseUrl)
+    setRegisteredPlatformAiUrl(current.data.document.platformAi.baseUrl)
   }, [current.data, form, isDirty, busy, editingRevision])
 
   const document = form.watch()
@@ -110,6 +113,8 @@ export function PlatformConfigPage() {
     client.setQueryData(['platform-config'], saved)
     form.reset(cloneDocument(saved.document))
     setEditingRevision(saved.revision)
+    setRegisteredBrowserAiUrl(saved.document.browserAi.baseUrl)
+    setRegisteredPlatformAiUrl(saved.document.platformAi.baseUrl)
     setReason('')
     setApiKey('')
     setPlatformApiKey('')
@@ -192,8 +197,9 @@ export function PlatformConfigPage() {
   }
 
   async function onRegisterSecret(group: 'browserAi' | 'platformAi') {
-    const key = group === 'browserAi' ? apiKey : platformApiKey
-    if (!key.trim()) {
+    const rawKey = group === 'browserAi' ? apiKey : platformApiKey
+    const key = rawKey.trim()
+    if (!key) {
       toast.error('请输入模型密钥')
       return
     }
@@ -212,15 +218,36 @@ export function PlatformConfigPage() {
       })
       form.setValue(`${group}.secretRef`, registered.secretRef, {
         shouldDirty: true,
+        shouldValidate: true,
       })
-      if (group === 'browserAi') setApiKey('')
-      else setPlatformApiKey('')
-      toast.success('密钥已登记，尚未保存到当前配置')
+      if (group === 'browserAi') {
+        setApiKey('')
+        setRegisteredBrowserAiUrl(address.data)
+      } else {
+        setPlatformApiKey('')
+        setRegisteredPlatformAiUrl(address.data)
+      }
+      toast.success('密钥已登记，保存配置后正式生效')
     } catch (error) {
       toast.error(error instanceof ApiRequestError ? error.message : '登记失败')
     } finally {
       setBusy(false)
     }
+  }
+
+  function onUnbindSecret(group: 'browserAi' | 'platformAi') {
+    form.setValue(`${group}.secretRef`, undefined, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    if (group === 'browserAi') {
+      setApiKey('')
+      setRegisteredBrowserAiUrl(undefined)
+    } else {
+      setPlatformApiKey('')
+      setRegisteredPlatformAiUrl(undefined)
+    }
+    toast.success('已解除密钥绑定，保存配置后正式生效')
   }
 
   async function onTestConnection() {
@@ -232,6 +259,27 @@ export function PlatformConfigPage() {
     ) {
       toast.error('请先填写模型地址、模型名和模型族')
       return
+    }
+    if (!values.browserAi.secretRef && !apiKey.trim()) {
+      toast.error('请先登记密钥后再测试连接')
+      return
+    }
+    if (
+      values.browserAi.secretRef &&
+      registeredBrowserAiUrl &&
+      values.browserAi.baseUrl
+    ) {
+      try {
+        if (
+          modelServiceOrigin(values.browserAi.baseUrl) !==
+          modelServiceOrigin(registeredBrowserAiUrl)
+        ) {
+          toast.error('服务地址已变动，请重新登记密钥后再测试连接')
+          return
+        }
+      } catch {
+        // ignore parsing error
+      }
     }
     setBusy(true)
     try {
@@ -257,6 +305,27 @@ export function PlatformConfigPage() {
     if (!values.platformAi.provider || !values.platformAi.baseUrl || !values.platformAi.model) {
       toast.error('请先选择模型提供商并填写服务地址和模型名')
       return
+    }
+    if (!values.platformAi.secretRef && !platformApiKey.trim()) {
+      toast.error('请先登记密钥后再测试连接')
+      return
+    }
+    if (
+      values.platformAi.secretRef &&
+      registeredPlatformAiUrl &&
+      values.platformAi.baseUrl
+    ) {
+      try {
+        if (
+          modelServiceOrigin(values.platformAi.baseUrl) !==
+          modelServiceOrigin(registeredPlatformAiUrl)
+        ) {
+          toast.error('服务地址已变动，请重新登记密钥后再测试连接')
+          return
+        }
+      } catch {
+        // ignore parsing error
+      }
     }
     setBusy(true)
     try {
@@ -349,10 +418,12 @@ export function PlatformConfigPage() {
                       canWrite={canWrite && !busy}
                       apiKey={apiKey}
                       secretRef={document.browserAi.secretRef}
+                      boundBaseUrl={registeredBrowserAiUrl}
                       onApiKeyChange={setApiKey}
                       onRegisterSecret={() =>
                         void onRegisterSecret('browserAi')
                       }
+                      onUnbindSecret={() => onUnbindSecret('browserAi')}
                       onTestConnection={() => void onTestConnection()}
                       busy={busy}
                     />
@@ -362,10 +433,12 @@ export function PlatformConfigPage() {
                       canWrite={canWrite && !busy}
                       apiKey={platformApiKey}
                       secretRef={document.platformAi?.secretRef}
+                      boundBaseUrl={registeredPlatformAiUrl}
                       onApiKeyChange={setPlatformApiKey}
                       onRegisterSecret={() =>
                         void onRegisterSecret('platformAi')
                       }
+                      onUnbindSecret={() => onUnbindSecret('platformAi')}
                       onTestConnection={() =>
                         void onTestPlatformAiConnection()
                       }
@@ -380,10 +453,6 @@ export function PlatformConfigPage() {
                   </TabsContent>
                   <TabsContent value='evidence'>
                     <EvidenceFields canWrite={canWrite && !busy} />
-                  </TabsContent>
-                  <TabsContent value='alerting'>
-                    <p className='text-body text-muted-foreground'>告警规则和发送渠道已统一到通知。</p>
-                    <Button variant='outline' asChild><a href='/notifications?tab=alerts'>管理告警通知</a></Button>
                   </TabsContent>
                   {tab !== 'revisions' ? (
                     <div className='space-y-3 border-t border-border pt-4'>

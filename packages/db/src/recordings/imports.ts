@@ -489,6 +489,13 @@ function compileImportPreview(
         : {}),
     }
   })
+  const metrics = {
+    totalCount: items.length,
+    mappedCount: items.filter((i) => i.status === 'mapped' && i.ready).length,
+    parameterizedCount: items.filter((i) => i.status === 'parameterized').length,
+    unresolvedCount: items.filter((i) => i.status === 'unresolved' || (!i.ready && i.status === 'mapped')).length,
+    hasAssertions: items.some((i) => i.candidateStepType === 'assert' || i.candidateStep?.type === 'assert'),
+  }
   return {
     recordingName,
     normalizerVersion: RECORDING_NORMALIZER_VERSION,
@@ -497,6 +504,7 @@ function compileImportPreview(
     eventCount: normalized.eventCount,
     items,
     diagnostics: normalized.diagnostics,
+    metrics,
   }
 }
 

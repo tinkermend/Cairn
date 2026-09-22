@@ -6,7 +6,7 @@ import {
   type OutcomeResultDto,
   type RunSnapshot,
 } from '@cairn/shared'
-import { OutcomeConditionList } from './outcome-axis'
+import { OutcomeAxisSummary, OutcomeConditionList } from './outcome-axis'
 
 const invariant = createRuntimeInvariant('auth_validity', '00000000-0000-4000-8000-000000000001')
 
@@ -41,6 +41,7 @@ describe('OutcomeConditionList 运行期约束', () => {
     expect(screen.container.textContent).toMatch(/期望/)
     expect(screen.container.textContent).toMatch(/实际/)
     expect(screen.container.textContent).toMatch(/recovered/)
+    expect(screen.container.textContent).not.toMatch(/"kind":"auth_validity"/)
   })
 
   it('结果行无 evidenceId 时回退 Attempt 截图', async () => {
@@ -63,5 +64,56 @@ describe('OutcomeConditionList 运行期约束', () => {
       />,
     )
     expect(screen.container.textContent).toMatch(/截图/)
+  })
+})
+
+describe('OutcomeConditionList 成功条件', () => {
+  it('期望展示对象存在而不是 JSON', async () => {
+    const contractId = '00000000-0000-4000-8000-000000000021'
+    const screen = await render(
+      <OutcomeConditionList
+        runId='00000000-0000-4000-8000-000000000022'
+        run={{
+          snapshot: {
+            outcomeManifest: {
+              entries: [
+                {
+                  contractId,
+                  scope: 'step',
+                  meaning: '内存使用率有数据',
+                  severity: 'MUST',
+                  onViolation: 'halt',
+                  provenance: 'manual',
+                  stepId: '00000000-0000-4000-8000-000000000023',
+                  rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+                },
+              ],
+            },
+          } as RunSnapshot,
+          outcomeResults: [],
+        }}
+      />,
+    )
+    expect(screen.container.textContent).toMatch(/内存使用率有数据/)
+    expect(screen.container.textContent).toMatch(/对象存在/)
+    expect(screen.container.textContent).not.toMatch(/"kind":"exists"/)
+  })
+})
+
+describe('OutcomeAxisSummary', () => {
+  it('有成功条件且未评价时说还没评完，而不是没有条件', async () => {
+    const screen = await render(
+      <OutcomeAxisSummary executionLabel='执行挂起' outcomeStatus='NOT_EVALUATED' hasContracts />,
+    )
+    expect(screen.container.textContent).toMatch(/业务条件还没评完/)
+    expect(screen.container.textContent).not.toMatch(/这次运行没有成功条件/)
+  })
+
+  it('确实没有成功条件时仍说这次没有成功条件', async () => {
+    const screen = await render(
+      <OutcomeAxisSummary executionLabel='执行完成' outcomeStatus='NOT_EVALUATED' hasContracts={false} />,
+    )
+    expect(screen.container.textContent).toMatch(/这次运行没有成功条件/)
+    expect(screen.container.textContent).not.toMatch(/还没评完/)
   })
 })

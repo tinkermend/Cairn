@@ -102,6 +102,7 @@ export async function encodeAndPutRunVideo(
       framesWritten: recorder.frames.length,
       framesDropped: recorder.framesDropped,
       finalFrame: recorder.finalFrame,
+      timingMode: encoded.timingMode,
     },
     coverage: computeRunVideoCoverage({
       frames: recorder.frames,

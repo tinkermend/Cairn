@@ -89,6 +89,13 @@ function mockService() {
       reusedRunId: null,
       created: true,
     })),
+    observe: vi.fn(async () => ({
+      outcome: 'FOUND',
+      target: { framePath: [], candidates: [{ by: 'testId', value: 'go' }] },
+      page: { url: 'https://shop.example/orders' },
+      diagnostics: { outcome: 'FOUND', candidatesTried: [] },
+      source: 'managed',
+    })),
     dispose: vi.fn(async () => ({ ...session, status: 'CLOSED', closeReason: 'operator_disposed', disposable: false })),
     systemOverview: vi.fn(async () => ({
       items: [],
@@ -239,6 +246,33 @@ describe('BrowserSessions HTTP', () => {
     expect(service.requestAccountOperation).toHaveBeenCalled()
     await opApp.close()
     await authorApp.close()
+  })
+
+  it('会话指认需要 session:view + workflow:write', async () => {
+    const body = { op: 'highlight' }
+    await request(viewerApp.getHttpServer())
+      .post(`/browser-sessions/${SESSION_ID}/observe`)
+      .send(body)
+      .expect(403)
+    expect(service.observe).not.toHaveBeenCalled()
+
+    const author: RequestAccount = {
+      ...admin,
+      id: 'acc-author',
+      permissions: ['session:read', 'session:view', 'workflow:write'],
+    }
+    const app = await buildApp(author, service)
+    const res = await request(app.getHttpServer())
+      .post(`/browser-sessions/${SESSION_ID}/observe`)
+      .send(body)
+      .expect(200)
+    expect(res.body.outcome).toBe('FOUND')
+    expect(service.observe).toHaveBeenCalledWith(
+      SESSION_ID,
+      body,
+      expect.objectContaining({ id: 'acc-author' }),
+    )
+    await app.close()
   })
 
   it('未认证被拒', async () => {

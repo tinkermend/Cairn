@@ -106,6 +106,15 @@ export const previewRecordingImportBodySchema = z.strictObject({
 })
 export type PreviewRecordingImportBody = z.infer<typeof previewRecordingImportBodySchema>
 
+export const recordingReadinessMetricsSchema = z.strictObject({
+  totalCount: z.number().int().nonnegative(),
+  mappedCount: z.number().int().nonnegative(),
+  parameterizedCount: z.number().int().nonnegative(),
+  unresolvedCount: z.number().int().nonnegative(),
+  hasAssertions: z.boolean(),
+})
+export type RecordingReadinessMetrics = z.infer<typeof recordingReadinessMetricsSchema>
+
 export const recordingImportPreviewSchema = z.strictObject({
   recordingDraftId: entityIdSchema,
   recordingName: scenarioNameSchema,
@@ -118,6 +127,7 @@ export const recordingImportPreviewSchema = z.strictObject({
   insertAnchor: recordingInsertAnchorSchema,
   items: z.array(recordingImportPreviewItemSchema),
   diagnostics: z.array(z.string()),
+  metrics: recordingReadinessMetricsSchema.optional(),
 })
 export type RecordingImportPreview = z.infer<typeof recordingImportPreviewSchema>
 

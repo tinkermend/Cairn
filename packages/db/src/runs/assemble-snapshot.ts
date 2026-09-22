@@ -8,6 +8,7 @@ import {
   assertAiRequestTimeoutFitsSteps,
   freezeExecutorVersions,
   frozenTargetAuthSchema,
+  effectiveAccountSessionCap,
   effectivePoliciesForSteps,
   FACTORY_COMPILE_RESOLUTION,
   freezeResolutionSnapshot,
@@ -154,6 +155,7 @@ export type AssembleRunSnapshotInput = {
     resolutionPolicy?: unknown
     sensitiveSelectors?: string[] | null
   }
+  maxConcurrentSessions?: number
   platformDocument: PlatformConfigDocument
   platformRevision?: number
   aiExecution?: AiExecutionConfig
@@ -220,6 +222,10 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),
     policy,
     sessionPolicy,
+    accountSessionEffectiveCap: effectiveAccountSessionCap({
+      accountSessionMode: sessionPolicy.accountSessionMode,
+      maxConcurrentSessions: input.maxConcurrentSessions,
+    }),
     evidencePolicy: {
       ...evidencePolicy,
       captureContractVersion: 1 as const,

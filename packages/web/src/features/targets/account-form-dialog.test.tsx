@@ -22,4 +22,34 @@ describe('AccountFormDialog', () => {
     await expect.element(getByLabelText('用途')).toBeInTheDocument()
     expect(document.body.textContent).not.toMatch(/选择器|会话|插件|录制/)
   })
+
+  it('目标允许多开时显示并发上限，编辑时展示当前占用', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <AccountFormDialog
+          open
+          onOpenChange={vi.fn()}
+          targetId='target-1'
+          accountSessionMode='concurrent'
+          liveCount={2}
+          effectiveCap={3}
+          current={{
+            id: 'acc-1',
+            targetId: 'target-1',
+            displayName: '值班',
+            username: 'ops',
+            hasPassword: true,
+            status: 'active',
+            usage: 'business',
+            maxConcurrentSessions: 3,
+            createdAt: '2026-09-21T00:00:00.000Z',
+            updatedAt: '2026-09-21T00:00:00.000Z',
+          }}
+        />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByLabelText('最大并发会话')).toBeInTheDocument()
+    await expect.element(screen.getByText(/当前活会话 2 \/ 上限 3/)).toBeInTheDocument()
+  })
 })

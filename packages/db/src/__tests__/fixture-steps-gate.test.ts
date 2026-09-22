@@ -3,9 +3,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { FACTORY_PLATFORM_CONFIG } from '@cairn/shared'
 import { newId } from '../id.js'
 import { schemaFor } from '../native.js'
-import { getPlatformConfig, updatePlatformConfig } from '../platform-config/store.js'
+import { getOrCreatePlatformConfig, getPlatformConfig, updatePlatformConfig } from '../platform-config/store.js'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import {
+  adjustPlatformConfig,
   createRunWithSnapshot,
   createScenarioWithVersion,
   type NativeHandle as DbHandle,
@@ -99,6 +100,25 @@ describe.each(DRIVERS)('%s 调试夹具闸门', { timeout: 60_000 }, (driver) =>
     await expect(
       createRunWithSnapshot(handle.db, { scenarioId, actor: { id: actorId } }),
     ).rejects.toMatchObject({ code: 'FIXTURE_STEPS_DISABLED' })
+  })
+
+  it('adjustPlatformConfig 只改差异并真正生效：预写的夹具开关保留，传入的改动不被吞掉', async () => {
+    await setFixtureSteps(true)
+    await adjustPlatformConfig(
+      handle,
+      { id: actorId },
+      (document) => ({ ...document, sessionAuth: { ...document.sessionAuth, autoLoginMaxPerWindow: 20 } }),
+      '测试：调高自动登录额度',
+    )
+    const after = await getPlatformConfig(handle.db)
+    // 对照：getOrCreate 传文档在已有配置的库上是空操作，这正是 adjustPlatformConfig 存在的原因。
+    expect(after!.document.sessionAuth.autoLoginMaxPerWindow).toBe(20)
+    expect(after!.document.fixtureStepsEnabled).toBe(true)
+    const ignored = await getOrCreatePlatformConfig(handle.db, {
+      document: { ...FACTORY_PLATFORM_CONFIG, sessionAuth: { ...FACTORY_PLATFORM_CONFIG.sessionAuth, autoLoginMaxPerWindow: 5 } },
+      reason: '应被忽略',
+    })
+    expect(ignored.document.sessionAuth.autoLoginMaxPerWindow).toBe(20)
   })
 
   it('闸门只拦夹具步骤，确定性浏览器步骤照常建运行', async () => {

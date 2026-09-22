@@ -3,10 +3,11 @@ import type { Db } from '../client.js'
 import { schemaFor } from '../native.js'
 
 export function targetCleanupObjectFilter(db: Db, targetId: string) {
-  const { storedObjects, runs, artifacts } = schemaFor(db)
+  const { storedObjects, runs, artifacts, targetFixtures } = schemaFor(db)
   return or(
     sql`${storedObjects.runId} IN (SELECT ${runs.id} FROM ${runs} WHERE ${runs.targetId} = ${targetId})`,
     sql`${storedObjects.artifactId} IN (SELECT ${artifacts.id} FROM ${artifacts} WHERE ${artifacts.targetId} = ${targetId})`,
+    sql`${storedObjects.fixtureId} IN (SELECT ${targetFixtures.id} FROM ${targetFixtures} WHERE ${targetFixtures.targetId} = ${targetId})`,
   )!
 }
 

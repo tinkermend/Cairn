@@ -44,4 +44,30 @@ describe('OutcomeListEditor', () => {
       .element(screen.getByText('应当成立或仅记录的条件不能停止整次运行。'))
       .toBeInTheDocument()
   })
+
+  it('新条件不带假目标，摘要是尚未选择页面对象', async () => {
+    const screen = await render(withObserve(<EditorHarness />))
+    await screen.getByRole('button', { name: '添加条件' }).click()
+    await expect
+      .element(screen.getByLabelText('成功条件 1 含义'))
+      .toHaveValue('尚未从页面选择要检查的内容')
+    expect(screen.container.textContent).toMatch(/尚未选择页面对象/)
+    expect(screen.container.textContent).not.toMatch(/已选择「结果」/)
+    await expect
+      .element(screen.getByRole('combobox', { name: '成功条件 1 期望' }))
+      .toHaveTextContent('对象存在')
+  })
+
+  it('已有条件改过含义后添加第二条，第一条保持不变', async () => {
+    const screen = await render(withObserve(<EditorHarness />))
+    await screen.getByRole('button', { name: '添加条件' }).click()
+    await screen.getByLabelText('成功条件 1 含义').fill('内存使用率有数据')
+    await screen.getByRole('button', { name: '添加条件' }).click()
+    await expect
+      .element(screen.getByLabelText('成功条件 1 含义'))
+      .toHaveValue('内存使用率有数据')
+    await expect
+      .element(screen.getByLabelText('成功条件 2 含义'))
+      .toHaveValue('尚未从页面选择要检查的内容')
+  })
 })

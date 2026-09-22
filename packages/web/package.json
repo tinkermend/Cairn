@@ -22,6 +22,8 @@
   "dependencies": {
     "@cairn/authoring": "workspace:*",
     "@cairn/shared": "workspace:*",
+    "@dicebear/collection": "^9.4.2",
+    "@dicebear/core": "^9.4.3",
     "@flowgram.ai/fixed-layout-editor": "1.0.15",
     "@hookform/resolvers": "^5.9.1",
     "@radix-ui/react-alert-dialog": "^1.1.23",

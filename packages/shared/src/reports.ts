@@ -51,7 +51,7 @@ export const ARTIFACT_KINDS = ['brand_logo', 'report_material', 'report_docx', '
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number]
 export const artifactKindSchema = z.enum(ARTIFACT_KINDS)
 
-export const OBJECT_OWNER_KINDS = ['run', 'artifact'] as const
+export const OBJECT_OWNER_KINDS = ['run', 'artifact', 'fixture'] as const
 export type ObjectOwnerKind = (typeof OBJECT_OWNER_KINDS)[number]
 export const objectOwnerKindSchema = z.enum(OBJECT_OWNER_KINDS)
 

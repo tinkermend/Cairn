@@ -11,7 +11,10 @@ export type CairnAttachStatus = {
   url: string
 }
 
-export type CairnAttachMode = Extract<Mode, 'recording' | 'inspecting' | 'recording-inspecting' | 'standby'>
+export type CairnAttachMode = Extract<
+  Mode,
+  'recording' | 'inspecting' | 'recording-inspecting' | 'standby' | 'assertingVisibility' | 'assertingText'
+>
 
 export function requestAttach(mode: CairnAttachMode): Promise<{ ok: boolean; error?: string }> {
   return chrome.runtime.sendMessage({ event: CAIRN_ATTACH, mode })

@@ -101,25 +101,37 @@ export class ScenarioValidationError extends Error {
   }
 }
 
-function contextFrom(step: Step): string | undefined {
-  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') return step.input.from
-  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') return step.input.from
-  return undefined
+function contextFrom(step: Step): string[] {
+  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') {
+    return step.input.from ? [step.input.from] : []
+  }
+  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') {
+    return step.input.from ? [step.input.from] : []
+  }
+  if (step.type === 'upload') {
+    return step.input.files
+      .filter((f): f is Extract<typeof f, { source: 'context' }> => f.source === 'context')
+      .map((f) => f.from)
+      .filter(Boolean)
+  }
+  return []
 }
 
 /** 保存期：`from` 不得指向本步或更晚步骤的 outputKey。指向未声明的 key 是参数化，放过。 */
 export function assertNoForwardFrom(steps: readonly Step[]): void {
   for (const [index, step] of steps.entries()) {
-    const from = contextFrom(step)
-    if (!from) continue
+    const froms = contextFrom(step)
+    if (froms.length === 0) continue
     const laterOrSelf = new Set(
       steps.slice(index).flatMap((item) => (item.outputKey ? [item.outputKey] : [])),
     )
-    if (laterOrSelf.has(from)) {
-      throw new ScenarioValidationError(
-        'SCENARIO_UNRESOLVED_REF',
-        `步骤「${step.name}」的 from=${from} 不得指向本步或更晚步骤的 outputKey`,
-      )
+    for (const from of froms) {
+      if (laterOrSelf.has(from)) {
+        throw new ScenarioValidationError(
+          'SCENARIO_UNRESOLVED_REF',
+          `步骤「${step.name}」的 from=${from} 不得指向本步或更晚步骤的 outputKey`,
+        )
+      }
     }
   }
 }
@@ -135,9 +147,11 @@ export function unresolvedRunInputs(
   const available = new Set(Object.keys(input))
   const unresolved: { key: string; stepName: string }[] = []
   for (const step of steps) {
-    const from = contextFrom(step)
-    if (from && !available.has(from) && !unresolved.some((item) => item.key === from)) {
-      unresolved.push({ key: from, stepName: step.name })
+    const froms = contextFrom(step)
+    for (const from of froms) {
+      if (!available.has(from) && !unresolved.some((item) => item.key === from)) {
+        unresolved.push({ key: from, stepName: step.name })
+      }
     }
     if (step.outputKey) available.add(step.outputKey)
   }
@@ -178,10 +192,12 @@ export function requiredRunInputKeys(
   const available = new Set(declared.keys())
   const derived: ScenarioInputDecl[] = []
   for (const step of definition.steps) {
-    const from = contextFrom(step)
-    if (from && !available.has(from)) {
-      available.add(from)
-      derived.push({ key: from, label: from })
+    const froms = contextFrom(step)
+    for (const from of froms) {
+      if (!available.has(from)) {
+        available.add(from)
+        derived.push({ key: from, label: from })
+      }
     }
     if (step.outputKey) available.add(step.outputKey)
   }

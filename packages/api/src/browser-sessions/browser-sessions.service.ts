@@ -40,7 +40,9 @@ import {
   hasPermission,
   isSessionIdleOnlyKind,
   managedBrowserMetaSchema,
+  observeOperationSchema,
   parseWorkerEndpoints,
+  targetObservationSchema,
   platformConfigDocumentSchema,
   sessionEventListResponseSchema,
   sessionObserveQuerySchema,
@@ -100,10 +102,14 @@ export class BrowserSessionsService {
     return sessionEventListResponseSchema.parse(await listSessionEvents(this.handle, { sessionId, cursor }))
   }
 
-  async accountEvents(targetId: string, accountId: string, cursor?: string) {
+  async accountEvents(targetId: string, accountId: string, cursor?: string, sessionId?: string) {
     await this.accountDetail(targetId, accountId)
     return sessionEventListResponseSchema.parse(
-      await listSessionEvents(this.handle, { key: { targetId, targetAccountId: accountId }, cursor }),
+      await listSessionEvents(this.handle, {
+        key: { targetId, targetAccountId: accountId },
+        cursor,
+        sessionId,
+      }),
     )
   }
 
@@ -230,6 +236,16 @@ export class BrowserSessionsService {
       workerInternalPath('/auth-control/release'),
       JSON.stringify(body),
     )
+  }
+
+  async observe(sessionId: string, body: unknown, actor: RequestAccount) {
+    const raw = await this.forwardJson(
+      sessionId,
+      actor,
+      workerInternalPath('/observe'),
+      JSON.stringify(observeOperationSchema.parse(body)),
+    )
+    return targetObservationSchema.parse(raw)
   }
 
   async browserMeta(ownerId: string, actor: RequestAccount, pageId?: string) {

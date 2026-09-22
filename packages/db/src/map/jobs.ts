@@ -45,7 +45,7 @@ import { newId } from '../id.js'
 import { atomic, clockNow, insertRows, locked, schemaFor } from '../native.js'
 import { createRunWithSnapshot, requestRunCancel } from '../runs/runs.js'
 import { isUniqueViolation } from '../runs/errors.js'
-import { findLiveSession } from '../sessions/sessions.js'
+import { findLiveSessions } from '../sessions/sessions.js'
 import {
   mapActiveSliceExists,
   mapAuthPreparationRequired,
@@ -478,8 +478,9 @@ export async function createMapJob(
     if (!entry || entry.targetId !== targetId) mapNotFound('安全进入路径不存在')
     if (!entry.jobKinds.includes(parsed.jobKind)) mapForbidden('该进入路径不适用于此作业类型')
     await requireMapCapableAccount(tx, targetId, parsed.targetAccountId)
-    const session = await findLiveSession(tx, { targetId, targetAccountId: parsed.targetAccountId })
-    if (!session || session.status !== 'OPEN' || session.authState !== 'AUTHENTICATED') {
+    const sessions = await findLiveSessions(tx, { targetId, targetAccountId: parsed.targetAccountId })
+    const session = sessions.find((row) => row.status === 'OPEN' && row.authState === 'AUTHENTICATED')
+    if (!session) {
       mapAuthPreparationRequired()
     }
     if (parsed.jobKind === 'map_explore') {

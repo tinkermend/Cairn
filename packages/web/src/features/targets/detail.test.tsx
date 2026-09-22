@@ -169,6 +169,55 @@ describe('TargetDetailPage 账号列表', () => {
     expect(mocks.fetchSessionOverview).toHaveBeenCalledWith({ targetId: TARGET_ID })
   })
 
+  it('cap>1 时会话列带最坏状态和占用分数', async () => {
+    mocks.fetchSessionOverview.mockResolvedValue({
+      items: [
+        {
+          targetId: TARGET_ID,
+          targetName: '演示商城',
+          targetAccountId: '22222222-2222-4222-8222-222222222222',
+          accountDisplayName: '值班账号',
+          accountUsername: 'ops',
+          accountStatus: 'active',
+          status: 'executing',
+          retained: false,
+          sessionId: 's1',
+          generation: 1,
+          instanceStatus: 'OPEN',
+          authState: 'AUTHENTICATED',
+          identityState: null,
+          observedTier: null,
+          occupyingRunId: 'run-1',
+          occupyingOperationId: null,
+          retainUntil: null,
+          lastAuthCheckedAt: null,
+          lastAuthSuccessAt: null,
+          ownerWorkerId: 'worker-a',
+          primaryAction: 'view',
+          liveCount: 2,
+          effectiveCap: 3,
+        },
+      ],
+      nextCursor: null,
+      summary: {
+        total: 1,
+        available: 0,
+        needsCheck: 0,
+        needsLogin: 0,
+        identityMismatch: 0,
+        maintenance: 0,
+        executing: 1,
+        lost: 0,
+        unprepared: 0,
+        retained: 0,
+      },
+      asOf: '2026-09-21T00:00:00.000Z',
+    })
+    const screen = await renderPage()
+    await expect.element(screen.getByText('执行中', { exact: true })).toBeInTheDocument()
+    await expect.element(screen.getByText('2/3', { exact: true })).toBeInTheDocument()
+  })
+
   it('筛选无结果时仍保留搜索框和清除筛选', async () => {
     mocks.fetchTargetAccounts.mockResolvedValue({ items: [] })
     const screen = await renderPage()
@@ -234,6 +283,43 @@ describe('TargetDetailPage 账号列表', () => {
     await screen.getByLabelText('回收模式').click()
     await expect.element(screen.getByRole('option', { name: '认证有效即保活' })).toBeDisabled()
     expect(mocks.updateTargetSessionPolicy).not.toHaveBeenCalled()
+  })
+
+  it('页面探测规则展示已登录与已失效定位', async () => {
+    mocks.fetchTargetAuthProfile.mockResolvedValue({
+      current: {
+        revision: 1,
+        digest: 'd'.repeat(64),
+        createdAt: '2026-09-21T00:00:00.000Z',
+        createdBy: null,
+        definition: {
+          verify: {
+            mode: 'page',
+            path: '/',
+            success: { locator: { by: 'css', value: '.el-menu' } },
+            failure: { locator: { by: 'css', value: 'input.input-account[type=password]' } },
+          },
+          renew: 'none',
+          scope: { origins: ['https://shop.example.test'], pathPrefixes: ['/'] },
+        },
+        validation: null,
+      },
+      history: [],
+      accounts: [
+        {
+          accountId: '22222222-2222-4222-8222-222222222222',
+          expectedIdentity: null,
+          configRevision: 1,
+          capability: 'LEGACY',
+        },
+      ],
+    })
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: /登录态检测/ }).click()
+    await expect.element(screen.getByText('页面 DOM 定位')).toBeInTheDocument()
+    await expect.element(screen.getByText('CSS 选择器：.el-menu')).toBeInTheDocument()
+    await expect.element(screen.getByText('CSS 选择器：input.input-account[type=password]')).toBeInTheDocument()
+    await expect.element(screen.getByText('规则已发布、验收未齐（登录态检测未开放）')).toBeInTheDocument()
   })
 
   it('已验收登录态检测后可覆盖会话回收模式为认证保活', async () => {

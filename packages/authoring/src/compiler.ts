@@ -40,12 +40,29 @@ export function validateAriaSnapshotTemplate(template: string): { valid: boolean
   }
 }
 
-function stepFrom(step: Step): { from?: string; fromField?: string } {
-  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') return step.input
-  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') {
-    return { from: step.input.from, fromField: step.input.fromField }
+type StepFromRef = {
+  from: string
+  fromField?: string
+  fieldPath: string[]
+}
+
+function stepFromRefs(step: Step): StepFromRef[] {
+  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') {
+    return step.input.from ? [{ from: step.input.from, fromField: step.input.fromField, fieldPath: ['input', 'from'] }] : []
   }
-  return {}
+  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') {
+    return step.input.from ? [{ from: step.input.from, fromField: step.input.fromField, fieldPath: ['input', 'from'] }] : []
+  }
+  if (step.type === 'upload') {
+    return step.input.files.flatMap((f, idx) => {
+      if (f.source === 'context') {
+        const from = (f as any).from ?? (f as any).contextKey
+        return from ? [{ from, fromField: f.fromField, fieldPath: ['input', 'files', String(idx), 'from'] }] : []
+      }
+      return []
+    })
+  }
+  return []
 }
 
 function add(
@@ -66,9 +83,13 @@ function locatorSteps(step: Step): Extract<Step, { input: { target?: unknown } }
     step.type === 'assert' ||
     step.type === 'select' ||
     step.type === 'keyboard' ||
-    step.type === 'wait'
+    step.type === 'wait' ||
+    step.type === 'upload'
   ) {
     return [step]
+  }
+  if (step.type === 'download' && step.input.target) {
+    return [step as Extract<Step, { input: { target?: unknown } }>]
   }
   return []
 }
@@ -131,8 +152,8 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
       })
     }
 
-    const { from, fromField } = stepFrom(step)
-    if (from) {
+    const refs = stepFromRefs(step)
+    for (const { from, fromField, fieldPath } of refs) {
       if (declared.has(from)) usedInputs.add(from)
       if (!available.has(from)) {
         add(
@@ -140,7 +161,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
           'SCENARIO_UNRESOLVED_REF',
           release ? 'error' : 'warning',
           `步骤「${step.name}」的 from=${from} 不是已声明输入或更早步骤的 outputKey`,
-          { stepId: step.id, inputKey: from, fieldPath: ['input', 'from'] },
+          { stepId: step.id, inputKey: from, fieldPath },
         )
       } else {
         const shape = outputShapes.get(from)
@@ -150,7 +171,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
             'SCENARIO_FROM_FIELD_MISSING',
             'error',
             `步骤「${step.name}」的 from=${from} 是对象输出，必须指定 fromField`,
-            { stepId: step.id, inputKey: from, fieldPath: ['input', 'fromField'] },
+            { stepId: step.id, inputKey: from, fieldPath: [...fieldPath.slice(0, -1), 'fromField'] },
           )
         }
         if (fromField) {
@@ -161,7 +182,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
                 'SCENARIO_FROM_FIELD_UNKNOWN',
                 'error',
                 `步骤「${step.name}」的 fromField=${fromField} 不在 ${from} 的输出字段中`,
-                { stepId: step.id, inputKey: from, fieldPath: ['input', 'fromField'] },
+                { stepId: step.id, inputKey: from, fieldPath: [...fieldPath.slice(0, -1), 'fromField'] },
               )
             }
           } else if (shape && shape.kind !== 'unknown') {
@@ -170,7 +191,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
               'SCENARIO_FROM_FIELD_UNKNOWN',
               'error',
               `步骤「${step.name}」的 from=${from} 不是对象，不能使用 fromField`,
-              { stepId: step.id, inputKey: from, fieldPath: ['input', 'fromField'] },
+              { stepId: step.id, inputKey: from, fieldPath: [...fieldPath.slice(0, -1), 'fromField'] },
             )
           }
         }
@@ -246,7 +267,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
     }
   }
 
-  addOutcomeCoverageDiagnostics(diagnostics, document, ctx.outcomeManifest)
+  addOutcomeCoverageDiagnostics(diagnostics, document, ctx.outcomeManifest, release)
 
   if (ctx.target) {
     if (!ctx.target.exists) {
@@ -277,19 +298,46 @@ function synthesizedOutcomeEntries(document: ScenarioDocument): OutcomeManifestE
       stepId: step.id,
       rule:
         step.type === 'assert'
-          ? { kind: 'deterministic' as const, expect: step.input.expect }
+          ? {
+              kind: 'deterministic' as const,
+              ...(step.input.target ? { target: step.input.target } : {}),
+              expect: step.input.expect,
+            }
           : { kind: 'ai' as const, instruction: step.input.instruction },
     }))
+}
+
+function addOutcomeTargetMissingDiagnostics(
+  diagnostics: CompileDiagnostic[],
+  entries: OutcomeManifestEntry[],
+  release: boolean,
+): void {
+  for (const entry of entries) {
+    if (entry.rule.kind !== 'deterministic') continue
+    if (entry.rule.expect.kind === 'aria_snapshot') continue
+    if (entry.rule.target) continue
+    add(
+      diagnostics,
+      'OUTCOME_RULE_TARGET_MISSING',
+      release ? 'error' : 'warning',
+      `成功条件「${entry.meaning}」还没有从页面选择要检查的对象`,
+      { stepId: entry.sourceStepId ?? entry.stepId },
+    )
+  }
 }
 
 function addOutcomeCoverageDiagnostics(
   diagnostics: CompileDiagnostic[],
   document: ScenarioDocument,
-  manifest?: OutcomeManifest | null,
+  manifest: OutcomeManifest | null | undefined,
+  release: boolean,
 ): void {
   const hasBrowser = document.steps.some((step) => stepUsesBrowser(step.type))
   if (!hasBrowser) return
 
+  if (manifest?.entries) {
+    addOutcomeTargetMissingDiagnostics(diagnostics, manifest.entries, release)
+  }
   const entries = manifest?.entries ?? synthesizedOutcomeEntries(document)
   if (entries.length === 0) {
     add(diagnostics, 'SCENARIO_NO_OUTCOME', 'warning', '含浏览器步骤的场景没有成功条件')

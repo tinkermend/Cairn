@@ -17,7 +17,6 @@ import { registerMonitorAlertChannel } from '@/lib/monitoring-api'
 import { Button } from '@/components/ui/button'
 import {
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -115,12 +114,6 @@ export function AlertingFields({
                 <FormItem className='flex items-center justify-between gap-4'>
                   <div>
                     <FormLabel>{rule.name}</FormLabel>
-                    <FormDescription>
-                      {rule.kind === 'threshold'
-                        ? `${rule.metricKey} ${rule.comparator} ${rule.threshold}`
-                        : `采集中断 · ${rule.source}`}
-                      {` · ${rule.scope} · ${rule.severity}`}
-                    </FormDescription>
                   </div>
                   <FormControl>
                     <Switch

@@ -232,10 +232,13 @@ describe('平台配置凭据绑定（真实仓储与 HTTP）', () => {
 
   it('启用助手缺提供商时 validate/update 拒绝；GET 与 restore 不因提供商失败', async () => {
     const secretRef = await register()
+    // 出厂已预填提供商；缺提供商是存量启用文档的形态，须显式去掉这个键。
+    const { provider: _factoryProvider, ...platformAiWithoutProvider } =
+      FACTORY_PLATFORM_CONFIG.platformAi
     const legacy = {
       ...FACTORY_PLATFORM_CONFIG,
       platformAi: {
-        ...FACTORY_PLATFORM_CONFIG.platformAi,
+        ...platformAiWithoutProvider,
         enabled: true,
         baseUrl: originalUrl,
         model: 'deepseek-chat',

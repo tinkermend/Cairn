@@ -39,6 +39,9 @@ vi.mock('@/lib/platform-config-api', () => ({
   validatePlatformConfig: vi.fn(),
 }))
 
+// 存量文档形态：出厂预填提供商之前落库的平台 AI 没有 provider 键，用来构造「尚未选提供商」的场景。
+const { provider: _factoryProvider, ...LEGACY_PLATFORM_AI } = FACTORY_PLATFORM_CONFIG.platformAi
+
 const current = {
   revision: 1,
   document: FACTORY_PLATFORM_CONFIG,
@@ -160,6 +163,9 @@ describe('PlatformConfigPage', () => {
       .element(screen.getByText('每 Run 人工认证恢复次数'))
       .toBeInTheDocument()
     await expect
+      .element(screen.getByText('提交后等待离开登录页（秒，实时）'))
+      .toBeInTheDocument()
+    await expect
       .element(screen.getByText('每节点预留空闲位'))
       .toBeInTheDocument()
   })
@@ -228,13 +234,10 @@ describe('PlatformConfigPage', () => {
       .not.toBeChecked()
   })
 
-  it('告警标签页引导至统一的通知入口', async () => {
+  it('告警已彻底收敛至统一的通知模块，平台配置不再呈现告警标签页', async () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
-    await screen.getByRole('tab', { name: '告警' }).click()
-    await expect.element(screen.getByText('告警规则和发送渠道已统一到通知。')).toBeInTheDocument()
-    await expect.element(screen.getByRole('link', { name: '管理告警通知' })).toHaveAttribute('href', '/notifications?tab=alerts')
-    expect(screen.getByLabelText('Webhook 地址').elements()).toHaveLength(0)
+    expect(screen.getByRole('tab', { name: '告警' }).elements()).toHaveLength(0)
   })
 
   it('只有读权限时不能保存', async () => {
@@ -265,6 +268,32 @@ describe('PlatformConfigPage', () => {
       baseUrl: 'https://model.example/v1',
       apiKey: 'review-only-fake-key',
     })
+    await expect.element(screen.getByText(/已绑定 Secret/)).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '解除绑定' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '解除绑定' }).click()
+    await expect.element(screen.getByText('未绑定密钥')).toBeInTheDocument()
+  })
+
+  it('已绑定密钥在修改服务地址后显示地址已变更警告', async () => {
+    mocks.fetchPlatformConfig.mockResolvedValueOnce({
+      ...current,
+      document: {
+        ...current.document,
+        browserAi: {
+          ...current.document.browserAi,
+          baseUrl: 'https://model.example/v1',
+          secretRef: {
+            provider: 'local',
+            secretId: '00000000-0000-4000-8000-000000000010',
+          },
+        },
+      },
+    })
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await expect.element(screen.getByText(/已绑定 Secret/)).toBeInTheDocument()
+    await screen.getByLabelText('模型服务地址').fill('https://other-model.example/v1')
+    await expect.element(screen.getByText(/地址已变更/)).toBeInTheDocument()
   })
 
   it('校验失败时保留输入', async () => {
@@ -509,6 +538,37 @@ describe('PlatformConfigPage', () => {
       .toHaveValue('https://proxy.example/v1')
   })
 
+  it('平台 AI 模型是随提供商变化的下拉：出厂预填、切换联动、自定义模型名原样保留', async () => {
+    signIn(PERMISSIONS)
+    const screen = await renderPage()
+    await screen.getByRole('tab', { name: '平台 AI' }).click()
+    // 出厂已预填 DeepSeek 与其默认模型，用户只需补密钥
+    await expect.element(screen.getByLabelText('模型名')).toHaveTextContent('deepseek-flash')
+    await expect
+      .element(screen.getByLabelText('模型服务地址'))
+      .toHaveValue(PLATFORM_AI_PROVIDER_PRESETS.deepseek.defaultBaseUrl)
+
+    await screen.getByLabelText('模型名').click()
+    await screen.getByRole('option', { name: 'deepseek-v4-pro' }).click()
+    await expect.element(screen.getByLabelText('模型名')).toHaveTextContent('deepseek-v4-pro')
+
+    // 切到千问：模型跟着换成千问默认，而不是残留 DeepSeek 的名字
+    await screen.getByLabelText('模型提供商').click()
+    await screen.getByRole('option', { name: '通义千问' }).click()
+    await expect.element(screen.getByLabelText('模型名')).toHaveTextContent('qwen3.8-flash')
+    await screen.getByLabelText('模型名').click()
+    for (const id of ['qwen3.8-flash', 'qwen3.8-max', 'qwen3.7-plus', 'qwen3.7-flash']) {
+      await expect.element(screen.getByRole('option', { name: id })).toBeInTheDocument()
+    }
+
+    // 自定义：出现手填框，切换提供商不覆盖手填值
+    await screen.getByRole('option', { name: '自定义…' }).click()
+    await screen.getByLabelText('自定义模型名').fill('my-relay-alias')
+    await screen.getByLabelText('模型提供商').click()
+    await screen.getByRole('option', { name: '智谱 GLM' }).click()
+    await expect.element(screen.getByLabelText('自定义模型名')).toHaveValue('my-relay-alias')
+  })
+
   it('已启用但缺提供商时，任意页签保存都被同一字段错误拦住', async () => {
     const secretRef = {
       provider: 'local' as const,
@@ -519,7 +579,7 @@ describe('PlatformConfigPage', () => {
       document: {
         ...FACTORY_PLATFORM_CONFIG,
         platformAi: {
-          ...FACTORY_PLATFORM_CONFIG.platformAi,
+          ...LEGACY_PLATFORM_AI,
           enabled: true,
           baseUrl: 'https://api.deepseek.com',
           model: 'deepseek-chat',
@@ -584,6 +644,10 @@ describe('PlatformConfigPage', () => {
   })
 
   it('未选提供商时不能启用识途助手', async () => {
+    mocks.fetchPlatformConfig.mockResolvedValue({
+      ...current,
+      document: { ...FACTORY_PLATFORM_CONFIG, platformAi: LEGACY_PLATFORM_AI },
+    })
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '平台 AI' }).click()

@@ -14,8 +14,10 @@ import {
   Copy,
   Cpu,
   ExternalLink,
+  Info,
   ShieldCheck,
 } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { toast } from 'sonner'
 import { canCloseAccountSession, describeAuthIssue, describeAuthWaitStage, hasPermission } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
@@ -441,8 +443,24 @@ export function SessionDetailPage() {
                     </Select>
                   ) : null}
                   <span className="hidden h-4 w-px bg-border sm:inline-block" />
-                  <span className="text-label text-muted-foreground">
-                    节点: {selected ? `${selected.ownerWorkerId} · 代次 ${selected.generation}` : '—'}
+                  <span className="inline-flex items-center gap-1 text-label text-muted-foreground">
+                    <span>节点: {selected ? `${selected.ownerWorkerId} · 实例 #${selected.generation}` : '—'}</span>
+                    {selected ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex text-muted-foreground hover:text-foreground focus-visible:outline-none"
+                            aria-label="实例版本说明"
+                          >
+                            <Info className="size-3" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs text-xs">
+                          实例创建序号。会话每次重启或重建时递增，用于保障操作安全与并发防冲突。
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : null}
                   </span>
                   <span className="hidden h-4 w-px bg-border sm:inline-block" />
                   <span className="text-label text-muted-foreground">
@@ -1105,9 +1123,25 @@ export function SessionDetailPage() {
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-label text-muted-foreground">节点 / 代次</dt>
+                      <dt className="inline-flex items-center gap-1 text-label text-muted-foreground">
+                        <span>节点 / 实例版本</span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              className="inline-flex text-muted-foreground hover:text-foreground focus-visible:outline-none"
+                              aria-label="实例版本说明"
+                            >
+                              <Info className="size-3.5" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs text-xs">
+                            实例创建序号。会话每次重启或重建时递增，用于保障操作安全与并发防冲突。
+                          </TooltipContent>
+                        </Tooltip>
+                      </dt>
                       <dd className="mt-0.5 text-foreground">
-                        {selected ? `${selected.ownerWorkerId} · 代次 ${selected.generation}` : '—'}
+                        {selected ? `${selected.ownerWorkerId} · 实例 #${selected.generation}` : '—'}
                       </dd>
                     </div>
                     <div>

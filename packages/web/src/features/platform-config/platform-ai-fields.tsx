@@ -1,6 +1,11 @@
+import { useMemo, useState } from 'react'
 import { useFormContext } from 'react-hook-form'
+import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 import {
+  isPlatformAiPresetModel,
+  modelServiceOrigin,
   nextPlatformAiBaseUrl,
+  nextPlatformAiModel,
   PLATFORM_AI_PROVIDER_PRESETS,
   PLATFORM_AI_PROVIDERS,
   PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE,
@@ -9,6 +14,7 @@ import {
   type PlatformAiProvider,
   type PlatformConfigDocument,
 } from '@cairn/shared'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   FormControl,
@@ -20,6 +26,7 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { PasswordInput } from '@/components/password-input'
 import {
   Select,
   SelectContent,
@@ -31,27 +38,48 @@ import { Switch } from '@/components/ui/switch'
 import { Can } from '@/components/rbac/can'
 import { AnalysisAiFields } from './analysis-ai-fields'
 
+const CUSTOM_MODEL = '__custom__'
+
 export function PlatformAiFields({
   canWrite,
   apiKey,
   secretRef,
+  boundBaseUrl,
   onApiKeyChange,
   onRegisterSecret,
+  onUnbindSecret,
   onTestConnection,
   busy,
 }: {
   canWrite: boolean
   apiKey: string
   secretRef?: { provider: string; secretId: string }
+  boundBaseUrl?: string
   onApiKeyChange: (value: string) => void
   onRegisterSecret: () => void
+  onUnbindSecret?: () => void
   onTestConnection?: () => void
   busy: boolean
 }) {
   const form = useFormContext<PlatformConfigDocument>()
   const provider = form.watch('platformAi.provider')
   const thinkingLocked = platformAiThinkingUnsupported(provider)
-  const suggested = provider ? PLATFORM_AI_PROVIDER_PRESETS[provider].suggestedModels.join('、') : undefined
+  const model = form.watch('platformAi.model')
+  const currentUrl = form.watch('platformAi.baseUrl')
+  const isOriginMismatched = useMemo(() => {
+    if (!secretRef || !boundBaseUrl || !currentUrl) return false
+    try {
+      return modelServiceOrigin(currentUrl) !== modelServiceOrigin(boundBaseUrl)
+    } catch {
+      return false
+    }
+  }, [secretRef, boundBaseUrl, currentUrl])
+
+  const catalog = provider ? PLATFORM_AI_PROVIDER_PRESETS[provider].models : []
+  // 「自定义…」是显式选择；库里已有的非候选模型名（中转站别名、旧配置）也按自定义呈现，不会被下拉吞掉。
+  const [pickedCustom, setPickedCustom] = useState(false)
+  const customModel = !provider || pickedCustom || Boolean(model && !isPlatformAiPresetModel(provider, model))
+  const modelHint = catalog.find((item) => item.id === model)?.hint
 
   function requireProvider(checked: boolean, onChange: (value: boolean) => void) {
     if (checked && !provider) {
@@ -85,6 +113,16 @@ export function PlatformAiFields({
                       const nextProvider = next as PlatformAiProvider
                       const currentUrl = form.getValues('platformAi.baseUrl')
                       field.onChange(nextProvider)
+                      const nextModel = nextPlatformAiModel({
+                        previousProvider: field.value,
+                        currentModel: form.getValues('platformAi.model'),
+                        nextProvider,
+                      })
+                      form.setValue('platformAi.model', nextModel || undefined, {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      })
+                      if (isPlatformAiPresetModel(nextProvider, nextModel)) setPickedCustom(false)
                       form.setValue(
                         'platformAi.baseUrl',
                         nextPlatformAiBaseUrl({
@@ -150,16 +188,53 @@ export function PlatformAiFields({
             render={({ field }) => (
               <FormItem>
                 <FormLabel>模型名</FormLabel>
-                <FormControl>
-                  <Input
-                    disabled={!canWrite}
-                    placeholder={suggested ? `例如 ${suggested}` : '例如 deepseek-chat'}
-                    value={field.value ?? ''}
-                    onChange={(event) =>
-                      field.onChange(event.target.value || undefined)
-                    }
-                  />
-                </FormControl>
+                {provider ? (
+                  <FormControl>
+                    <Select
+                      value={customModel ? CUSTOM_MODEL : field.value}
+                      disabled={!canWrite}
+                      onValueChange={(next) => {
+                        // Radix 受控值变化（含切换提供商换掉整份候选）时，内部原生 select 会用尚未挂载的选项
+                        // 同步出一次空串回调；真实选择不会是空值，收下它会把模型名清掉。
+                        if (!next) return
+                        if (next === CUSTOM_MODEL) {
+                          setPickedCustom(true)
+                          return
+                        }
+                        setPickedCustom(false)
+                        field.onChange(next)
+                      }}
+                    >
+                      <SelectTrigger className='w-full' aria-label='模型名'>
+                        <SelectValue placeholder='请选择模型' />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {catalog.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>
+                            {item.id}
+                          </SelectItem>
+                        ))}
+                        <SelectItem value={CUSTOM_MODEL}>自定义…</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </FormControl>
+                ) : null}
+                {customModel ? (
+                  <FormControl>
+                    <Input
+                      aria-label={provider ? '自定义模型名' : '模型名'}
+                      disabled={!canWrite}
+                      placeholder={provider ? '填写中转站或灰度模型名' : '请先选择模型提供商'}
+                      value={field.value ?? ''}
+                      onChange={(event) => field.onChange(event.target.value || undefined)}
+                    />
+                  </FormControl>
+                ) : null}
+                <FormDescription>
+                  {modelHint && !customModel
+                    ? `${modelHint}。候选按各提供商官方文档整理，模型更新快，以官方为准。`
+                    : '候选之外的模型（中转站别名等）选「自定义…」手填。'}
+                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -188,44 +263,105 @@ export function PlatformAiFields({
             )}
           />
         </div>
-        <div className='space-y-2 rounded-md border border-border px-3 py-3'>
-          <Label htmlFor='platform-ai-model-key'>模型密钥</Label>
-          <p className='text-label text-muted-foreground'>
-            密钥只写不回显。与浏览器 AI 的 Secret 分开绑定。
-            {secretRef
-              ? ` 已绑定 Secret ${secretRef.secretId.slice(0, 8)}…`
-              : ' 尚未绑定 Secret。'}
-          </p>
-          <div className='flex flex-col gap-2 sm:flex-row'>
-            <Input
-              id='platform-ai-model-key'
-              type='password'
-              autoComplete='new-password'
-              disabled={!canWrite}
-              placeholder='粘贴新密钥'
-              value={apiKey}
-              onChange={(event) => onApiKeyChange(event.target.value)}
-            />
-            <Can permission='platform-config:write'>
-              <Button
-                type='button'
-                variant='outline'
-                loading={busy}
-                onClick={onRegisterSecret}
-              >
-                登记密钥
-              </Button>
-            </Can>
-            {onTestConnection ? (
-              <Button
-                type='button'
-                variant='outline'
-                disabled={!canWrite || busy || !provider}
-                onClick={onTestConnection}
-              >
-                测试连接
-              </Button>
+        <div className='space-y-3 rounded-lg border border-border bg-card/50 p-4 shadow-xs'>
+          <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+            <div className='space-y-1'>
+              <div className='flex flex-wrap items-center gap-2'>
+                <Label htmlFor='platform-ai-model-key' className='font-semibold'>
+                  模型密钥
+                </Label>
+                {secretRef ? (
+                  isOriginMismatched ? (
+                    <Badge
+                      variant='outline'
+                      className='gap-1 border-status-warning-border bg-status-warning-surface text-status-warning-foreground'
+                    >
+                      <AlertTriangle className='size-3 text-status-warning-foreground' />
+                      地址已变更，原密钥不适用
+                    </Badge>
+                  ) : (
+                    <Badge
+                      variant='secondary'
+                      className='gap-1 border-status-success-border bg-status-success-surface text-status-success-foreground'
+                    >
+                      <CheckCircle2 className='size-3 text-status-success-foreground' />
+                      已绑定 Secret ({secretRef.secretId.slice(0, 8)}…)
+                    </Badge>
+                  )
+                ) : (
+                  <Badge variant='outline' className='text-muted-foreground'>
+                    未绑定密钥
+                  </Badge>
+                )}
+              </div>
+              <p className='text-label text-muted-foreground'>
+                {secretRef
+                  ? isOriginMismatched
+                    ? '当前服务地址与已登记密钥绑定的地址不一致。变更提供商或服务地址后必须重新登记密钥，避免把原凭据发往新地址。'
+                    : '密钥只写不回显。与浏览器 AI 分开绑定；再次登记新密钥将直接覆盖当前绑定，保存配置后正式生效。'
+                  : '密钥只写不回显。与浏览器 AI 分开绑定；启用前须先登记有效密钥，保存配置后正式生效。'}
+              </p>
+            </div>
+            {secretRef && onUnbindSecret && canWrite ? (
+              <Can permission='platform-config:write'>
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='sm'
+                  className='self-start text-muted-foreground hover:bg-destructive/10 hover:text-destructive sm:self-auto'
+                  disabled={busy}
+                  onClick={onUnbindSecret}
+                >
+                  解除绑定
+                </Button>
+              </Can>
             ) : null}
+          </div>
+
+          <div className='flex flex-col gap-2.5 sm:flex-row sm:items-center'>
+            <div className='w-full sm:max-w-md'>
+              <PasswordInput
+                id='platform-ai-model-key'
+                aria-label='平台模型密钥'
+                autoComplete='new-password'
+                disabled={!canWrite}
+                placeholder={
+                  secretRef
+                    ? '粘贴新密钥以覆盖当前绑定'
+                    : provider
+                      ? `粘贴 ${PLATFORM_AI_PROVIDER_PRESETS[provider].label} 密钥`
+                      : '粘贴新密钥'
+                }
+                value={apiKey}
+                onChange={(event) => onApiKeyChange(event.target.value)}
+              />
+            </div>
+            <div className='flex flex-wrap items-center gap-2'>
+              <Can permission='platform-config:write'>
+                <Button
+                  type='button'
+                  variant='default'
+                  loading={busy}
+                  disabled={!canWrite || !apiKey.trim()}
+                  onClick={onRegisterSecret}
+                >
+                  登记密钥
+                </Button>
+              </Can>
+              {onTestConnection ? (
+                <Can permission='platform-config:write'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    loading={busy}
+                    disabled={!canWrite || busy || !provider || (!secretRef && !apiKey.trim())}
+                    onClick={onTestConnection}
+                  >
+                    测试连接
+                  </Button>
+                </Can>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>

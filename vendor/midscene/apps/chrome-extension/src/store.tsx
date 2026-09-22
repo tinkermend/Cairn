@@ -3,6 +3,15 @@ import type { ChromeRecordedEvent } from '@midscene/recorder-ui';
 import * as Z from 'zustand';
 import { recordLogger } from './extension/recorder/logger';
 import { dbManager, initializeDB } from './utils/indexedDB';
+import {
+  type CairnAccount,
+  type CairnTarget,
+  type CairnBinding,
+  cairnStorage,
+  fetchCairnMe,
+  fetchCairnTargets,
+  fetchCairnOpenBinding,
+} from './utils/cairn';
 
 const { create } = Z;
 export const useBlackboardPreference = create<{
@@ -468,3 +477,170 @@ const CONFIG_KEY = 'midscene-env-config';
  * - In-Browser-Extension: use browser's fetch API to run the code, but the page is running in the extension context
  */
 export type ServiceModeType = 'Server' | 'In-Browser' | 'In-Browser-Extension'; // | 'Extension';
+
+// ==================== 识途平台协同 Store ====================
+
+const CAIRN_STORAGE_ORIGIN = 'cairn-api-origin';
+const CAIRN_STORAGE_TOKEN = 'cairn-auth-token';
+const CAIRN_STORAGE_ACCOUNT = 'cairn-auth-account';
+const CAIRN_STORAGE_TARGET_ID = 'cairn-target-id';
+
+export interface CairnState {
+  apiOrigin: string;
+  token: string | null;
+  account: CairnAccount | null;
+  targetId: string | null;
+  targets: CairnTarget[];
+  binding: CairnBinding | null;
+  isLoading: boolean;
+  error: string | null;
+  setApiOrigin: (origin: string) => void;
+  setAuth: (token: string | null, account: CairnAccount | null) => void;
+  setTargetId: (targetId: string | null) => void;
+  setBinding: (binding: CairnBinding | null) => void;
+  initialize: () => Promise<void>;
+  refreshTargets: () => Promise<void>;
+  refreshBinding: () => Promise<void>;
+  logout: () => void;
+}
+
+export const useCairnStore = create<CairnState>((set, get) => ({
+  apiOrigin: 'http://localhost:3030',
+  token: null,
+  account: null,
+  targetId: null,
+  targets: [],
+  binding: null,
+  isLoading: false,
+  error: null,
+
+  setApiOrigin: (origin: string) => {
+    const cleanOrigin = origin.trim().replace(/\/+$/, '');
+    void cairnStorage.setItem(CAIRN_STORAGE_ORIGIN, cleanOrigin);
+    set({ apiOrigin: cleanOrigin });
+  },
+
+  setAuth: (token: string | null, account: CairnAccount | null) => {
+    if (token) {
+      void cairnStorage.setItem(CAIRN_STORAGE_TOKEN, token);
+    } else {
+      void cairnStorage.removeItem(CAIRN_STORAGE_TOKEN);
+    }
+    if (account) {
+      void cairnStorage.setItem(CAIRN_STORAGE_ACCOUNT, JSON.stringify(account));
+    } else {
+      void cairnStorage.removeItem(CAIRN_STORAGE_ACCOUNT);
+    }
+    set({ token, account, error: null });
+    if (token) {
+      void get().refreshTargets();
+      void get().refreshBinding();
+    }
+  },
+
+  setTargetId: (targetId: string | null) => {
+    if (targetId) {
+      void cairnStorage.setItem(CAIRN_STORAGE_TARGET_ID, targetId);
+    } else {
+      void cairnStorage.removeItem(CAIRN_STORAGE_TARGET_ID);
+    }
+    set({ targetId });
+  },
+
+  setBinding: (binding: CairnBinding | null) => {
+    set({ binding });
+  },
+
+  initialize: async () => {
+    try {
+      const [savedOrigin, savedToken, savedAccountStr, savedTargetId] = await Promise.all([
+        cairnStorage.getItem(CAIRN_STORAGE_ORIGIN),
+        cairnStorage.getItem(CAIRN_STORAGE_TOKEN),
+        cairnStorage.getItem(CAIRN_STORAGE_ACCOUNT),
+        cairnStorage.getItem(CAIRN_STORAGE_TARGET_ID),
+      ]);
+
+      const apiOrigin = savedOrigin || 'http://localhost:3030';
+      let account: CairnAccount | null = null;
+      if (savedAccountStr) {
+        try {
+          account = JSON.parse(savedAccountStr);
+        } catch {
+          account = null;
+        }
+      }
+
+      set({
+        apiOrigin,
+        token: savedToken || null,
+        account,
+        targetId: savedTargetId || null,
+      });
+
+      // 如果有 Token，则调用 /api/me 校验
+      if (savedToken) {
+        try {
+          const meRes = await fetchCairnMe(apiOrigin, savedToken);
+          set({ account: meRes.account, error: null });
+          await get().refreshTargets();
+          await get().refreshBinding();
+        } catch (err: any) {
+          // Token 失效，自动清除
+          if (err?.status === 401) {
+            get().logout();
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn('Failed to initialize Cairn store:', e);
+    }
+  },
+
+  refreshTargets: async () => {
+    const { apiOrigin, token } = get();
+    if (!token) return;
+    try {
+      set({ isLoading: true });
+      const targets = await fetchCairnTargets(apiOrigin, token);
+      set({ targets, isLoading: false });
+
+      // 如果当前选中的 targetId 不在列表中且列表非空，或者尚未选择 targetId，自动选择第一个
+      const currentTargetId = get().targetId;
+      if (!currentTargetId && targets.length > 0) {
+        get().setTargetId(targets[0].id);
+      }
+    } catch (err: any) {
+      set({ isLoading: false, error: err?.message || '获取目标系统列表失败' });
+    }
+  },
+
+  refreshBinding: async () => {
+    const { apiOrigin, token } = get();
+    if (!token) return;
+    try {
+      const binding = await fetchCairnOpenBinding(apiOrigin, token);
+      set({ binding });
+      // 如果当前控制台有 binding 且指定了 targetId，优先绑定
+      if (binding?.targetId) {
+        get().setTargetId(binding.targetId);
+      }
+    } catch {
+      // 忽略静默探测错误
+    }
+  },
+
+  logout: () => {
+    void cairnStorage.removeItem(CAIRN_STORAGE_TOKEN);
+    void cairnStorage.removeItem(CAIRN_STORAGE_ACCOUNT);
+    void cairnStorage.removeItem(CAIRN_STORAGE_TARGET_ID);
+    set({
+      token: null,
+      account: null,
+      targetId: null,
+      targets: [],
+      binding: null,
+      error: null,
+    });
+  },
+}));
+

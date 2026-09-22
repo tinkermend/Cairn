@@ -29,7 +29,7 @@ export function AppSidebar() {
           user={{
             name: user?.displayName ?? sidebarData.user.name,
             email: user?.email ?? sidebarData.user.email,
-            avatar: sidebarData.user.avatar,
+            avatar: user?.avatar ?? sidebarData.user.avatar,
           }}
         />
       </SidebarFooter>

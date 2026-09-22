@@ -69,6 +69,7 @@ describe('OBJECT_STORE_ERROR_CODES / missing reasons', () => {
       traceTooLarge: 'trace_too_large',
       videoTooLarge: 'video_too_large',
       captureFailed: 'capture_failed',
+      fileTooLarge: 'file_too_large',
     })
   })
 

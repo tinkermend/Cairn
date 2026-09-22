@@ -319,6 +319,28 @@ describe('Browser Surface × target-surface-lab（L2）', { timeout: 180_000 }, 
     expect(picked.outcome).toBe('FOUND')
     expect(picked.target?.candidates[0]).toMatchObject({ by: 'testId', value: 'go' })
     expect(picked.diagnostics.candidatesTried.some((item) => item.matches === 1)).toBe(true)
+    expect(picked.diagnostics.framePathResolved?.includes('fragile-css')).toBeFalsy()
+
+    const wrapped = page.locator('.text-nowrap', { hasText: '查询实例' })
+    const wrappedBox = await wrapped.boundingBox()
+    expect(wrappedBox).toBeTruthy()
+    const fromSpan = await pickOnPage(
+      page,
+      wrappedBox!.x + wrappedBox!.width / 2,
+      wrappedBox!.y + wrappedBox!.height / 2,
+    )
+    expect(fromSpan.outcome).toBe('FOUND')
+    expect(fromSpan.target?.candidates[0]).toMatchObject({ by: 'role', value: 'button', name: '查询实例' })
+    expect(fromSpan.diagnostics.framePathResolved?.includes('fragile-css')).toBeFalsy()
+
+    const cssOnly = page.locator('span.unique-fragile-only')
+    const cssBox = await cssOnly.boundingBox()
+    expect(cssBox).toBeTruthy()
+    const fromCss = await pickOnPage(page, cssBox!.x + cssBox!.width / 2, cssBox!.y + cssBox!.height / 2)
+    expect(fromCss.outcome).toBe('FOUND')
+    expect(fromCss.target?.candidates.some((item) => item.by === 'css')).toBe(true)
+    expect(fromCss.diagnostics.candidatesTried.find((item) => item.matches === 1)?.by).toBe('css')
+    expect(fromCss.diagnostics.framePathResolved).toContain('fragile-css')
 
     const highlighted = await highlightOnPage(page, {
       framePath: [],

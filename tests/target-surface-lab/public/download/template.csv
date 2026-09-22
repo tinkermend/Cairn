@@ -1,0 +1,4 @@
+item_name,amount,currency,tax_rate,remarks
+办公耗材及打印纸,450.00,CNY,0.13,常规采购
+开发测试服务器机架租赁,3600.00,CNY,0.06,Q3机房费用
+电子发票认证服务费,120.00,CNY,0.06,API税控盘年费

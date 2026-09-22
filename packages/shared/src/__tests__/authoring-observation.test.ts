@@ -287,6 +287,36 @@ describe('Authoring & Observation Contracts', () => {
         diagnostics: { framePathResolved: ['main', 'fragile-css'] },
       }),
     ).toBe(true)
+    expect(
+      observationShowsFragileCss({
+        diagnostics: {
+          framePathResolved: ['main', 'fragile-css'],
+          candidatesTried: [{ by: 'testId', value: 'go', matches: 1 }],
+        },
+      }),
+    ).toBe(false)
+    expect(
+      observationShowsFragileCss({
+        diagnostics: {
+          framePathResolved: ['main'],
+          candidatesTried: [
+            { by: 'role', value: 'button:查询', matches: 0 },
+            { by: 'css', value: 'span.text-nowrap', matches: 1 },
+          ],
+        },
+      }),
+    ).toBe(true)
+    expect(
+      observationShowsFragileCss({
+        diagnostics: {
+          framePathResolved: ['main', 'fragile-css'],
+          candidatesTried: [
+            { by: 'role', value: 'button:查询', matches: 2 },
+            { by: 'css', value: 'span.text-nowrap', matches: 2 },
+          ],
+        },
+      }),
+    ).toBe(false)
     expect(targetDescriptorFromInspectSelector('internal:role=button[name="查询"i]')?.candidates[0]).toEqual({
       by: 'role',
       value: 'button',

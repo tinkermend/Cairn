@@ -163,16 +163,28 @@ const ROLE_LABELS: Record<string, string> = {
   option: '选项',
 }
 
+/** 图标字体、私用区和零宽字符不能当给人看的定位名，也会干扰角色名匹配。 */
+export function sanitizeLocatorLabel(value: string): string {
+  return value
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\uE000-\uF8FF]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/([「『])\s+/g, '$1')
+    .replace(/\s+([」』])/g, '$1')
+    .trim()
+}
+
 export function describeLocatorCandidates(candidates: readonly LocatorCandidate[]): string {
   const preferred = candidates.find((candidate) => candidate.by !== 'css') ?? candidates[0]
   if (!preferred) return ''
   if (preferred.by === 'role') {
     const role = ROLE_LABELS[preferred.value] ?? preferred.value
-    return preferred.name ? `名为「${preferred.name}」的${role}` : role
+    const name = preferred.name ? sanitizeLocatorLabel(preferred.name) : ''
+    return name ? `名为「${name}」的${role}` : role
   }
-  if (preferred.by === 'label') return `标签为「${preferred.value}」的元素`
-  if (preferred.by === 'text') return `文本为「${preferred.value}」的元素`
-  if (preferred.by === 'title') return `标题为「${preferred.value}」的元素`
+  if (preferred.by === 'label') return `标签为「${sanitizeLocatorLabel(preferred.value)}」的元素`
+  if (preferred.by === 'text') return `文本为「${sanitizeLocatorLabel(preferred.value)}」的元素`
+  if (preferred.by === 'title') return `标题为「${sanitizeLocatorLabel(preferred.value)}」的元素`
   if (preferred.by === 'testId') return `测试标识为「${preferred.value}」的元素`
   return `选择器为「${preferred.value}」的元素`
 }

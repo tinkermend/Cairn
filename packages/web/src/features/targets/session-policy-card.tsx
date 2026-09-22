@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   activeDetectionReady,
   DEFAULT_SESSION_POLICY,
+  type AccountSessionMode,
   type SessionLostDisposition,
   type SessionPolicy,
   type SessionReclaimMode,
@@ -34,6 +35,11 @@ const RECLAIM_LABELS: Record<SessionReclaimMode, string> = {
 const LOST_DISPOSITION_LABELS: Record<SessionLostDisposition, string> = {
   MANUAL: '失联后需人工处置',
   AUTO: '失联后自动让路',
+}
+
+const ACCOUNT_SESSION_MODE_LABELS: Record<AccountSessionMode, string> = {
+  exclusive: '一账号一台浏览器',
+  concurrent: '允许同账号多开',
 }
 
 function inheritLabel(overridden: boolean) {
@@ -251,6 +257,51 @@ export function SessionPolicyCard({ target }: { target: TargetDto }) {
                 size='sm'
                 disabled={!canWrite}
                 onClick={() => saveField('lostDisposition', null)}
+              >
+                清除本项目标覆盖
+              </Button>
+            ) : null}
+          </div>
+          <div className='space-y-2 sm:col-span-2'>
+            <div className='flex items-center justify-between gap-2'>
+              <Label htmlFor='session-account-mode'>账号会话</Label>
+              <span className='text-label text-muted-foreground'>
+                {inheritLabel(override?.accountSessionMode != null)}
+              </span>
+            </div>
+            <Select
+              disabled={!canWrite || mutation.isPending}
+              value={draft.accountSessionMode}
+              onValueChange={(value) => {
+                const accountSessionMode = value as AccountSessionMode
+                setDraft((current) => ({ ...current, accountSessionMode }))
+                saveField('accountSessionMode', accountSessionMode)
+              }}
+            >
+              <SelectTrigger id='session-account-mode' className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(ACCOUNT_SESSION_MODE_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {draft.accountSessionMode === 'concurrent' ? (
+              <Alert>
+                <AlertDescription>
+                  每个浏览器各自登录，不共享登录状态。外系统若会踢同号，不要开。账号上的「最大并发会话」只有在此模式下才会大于 1。
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {override?.accountSessionMode != null ? (
+              <Button
+                variant='ghost'
+                size='sm'
+                disabled={!canWrite}
+                onClick={() => saveField('accountSessionMode', null)}
               >
                 清除本项目标覆盖
               </Button>

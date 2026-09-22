@@ -37,6 +37,8 @@ import { SuitesModule } from "./suites/suites.module";
 import { SuiteRunsModule } from "./suite-runs/suite-runs.module";
 import { ReportsModule } from "./reports/reports.module";
 import { OverviewModule } from "./overview/overview.module";
+import { DatasetsModule } from "./datasets/datasets.module";
+import { BatchesModule } from "./batches/batches.module";
 
 @Module({
   imports: [
@@ -73,6 +75,8 @@ import { OverviewModule } from "./overview/overview.module";
     SuitesModule,
     SuiteRunsModule,
     ReportsModule,
+    DatasetsModule,
+    BatchesModule,
     // 必须放在最后：兜底路由要在所有业务路由之后注册
     NotFoundModule,
   ],

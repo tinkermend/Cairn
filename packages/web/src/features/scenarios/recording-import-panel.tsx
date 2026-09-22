@@ -235,6 +235,30 @@ function LegacyRecordingImportPanel({
               {preview.recordingName} · 将插入 {insertCount} 步，保留原 {stepCount} 步，还可再加{' '}
               {preview.remainingStepCapacity} 步
             </p>
+            {preview.metrics && (
+              <div className='flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 p-2 text-label'>
+                <span>总计 <strong>{preview.metrics.totalCount}</strong> 步</span>
+                <span className='text-muted-foreground'>·</span>
+                <span className='text-status-success-foreground'>已就绪 <strong>{preview.metrics.mappedCount}</strong></span>
+                {preview.metrics.parameterizedCount > 0 && (
+                  <>
+                    <span className='text-muted-foreground'>·</span>
+                    <span className='text-status-warning-foreground'>待补参 <strong>{preview.metrics.parameterizedCount}</strong></span>
+                  </>
+                )}
+                {preview.metrics.unresolvedCount > 0 && (
+                  <>
+                    <span className='text-muted-foreground'>·</span>
+                    <span className='text-status-error-foreground'>待处理 <strong>{preview.metrics.unresolvedCount}</strong></span>
+                  </>
+                )}
+              </div>
+            )}
+            {preview.metrics && !preview.metrics.hasAssertions && (
+              <div className='rounded-md border border-status-warning-foreground/30 bg-status-warning-background p-2.5 text-label text-status-warning-foreground'>
+                ⚠️ <strong>流程缺少业务检查点</strong>：当前录制仅包含操作动作，未捕获断言。建议回填后在流程末尾补充检查点（如校验“提交成功”提示）。
+              </div>
+            )}
             <ol className='min-h-0 flex-1 space-y-3 overflow-y-auto pr-1'>
               {preview.items.map((item) => (
                 <PreviewItem

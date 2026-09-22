@@ -28,6 +28,7 @@ import {
   ACCOUNT_SESSION_STATUS_LABELS,
   ACCOUNT_SESSION_STATUS_TONE,
 } from '@/features/sessions/labels'
+import { accountSessionOccupancyText } from '@/features/sessions/occupancy-label'
 
 interface TargetOverviewPanelProps {
   target: TargetDto
@@ -201,12 +202,19 @@ export function TargetOverviewPanel({ target, onDelete }: TargetOverviewPanelPro
                     {account.accountUsername}
                   </div>
                 </div>
-                <StatusBadge
-                  tone={ACCOUNT_SESSION_STATUS_TONE[account.status]}
-                  className='shrink-0 text-label px-1.5 py-0.5'
-                >
-                  {ACCOUNT_SESSION_STATUS_LABELS[account.status]}
-                </StatusBadge>
+                <div className='flex shrink-0 items-center gap-1.5'>
+                  <StatusBadge
+                    tone={ACCOUNT_SESSION_STATUS_TONE[account.status]}
+                    className='text-label px-1.5 py-0.5'
+                  >
+                    {ACCOUNT_SESSION_STATUS_LABELS[account.status]}
+                  </StatusBadge>
+                  {accountSessionOccupancyText(account) ? (
+                    <span className='tabular-nums text-label text-muted-foreground'>
+                      {accountSessionOccupancyText(account)}
+                    </span>
+                  ) : null}
+                </div>
               </div>
             ))}
             {sessionAccounts.length > 3 ? (

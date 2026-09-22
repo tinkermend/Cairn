@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { canonicalJson } from '../canonical.js'
-import { describeLocatorCandidates, mergeEffectiveResolution, crossCheckMatches, isCrossCheckContainerTag } from '../resolution-policy.js'
+import { describeLocatorCandidates, sanitizeLocatorLabel, mergeEffectiveResolution, crossCheckMatches, isCrossCheckContainerTag } from '../resolution-policy.js'
 import { snapshotDigestPayload } from '../digest-payload.js'
 import { deriveAuthoringResolutionMode, snapshotNeedsBrowserAi } from '../resolution.js'
 import { runNeedsAiExecute } from '../ai-runtime.js'
@@ -161,6 +161,11 @@ describe('统一目标解析契约', () => {
     expect(isCrossCheckContainerTag('button')).toBe(false)
     expect(describeLocatorCandidates([{ by: 'role', value: 'button', name: '提交' }])).toBe(
       '名为「提交」的按钮',
+    )
+    expect(sanitizeLocatorLabel(' 配置管理 ')).toBe('配置管理')
+    expect(sanitizeLocatorLabel('名为「 配置管理 」的菜单项')).toBe('名为「配置管理」的菜单项')
+    expect(describeLocatorCandidates([{ by: 'role', value: 'menuitem', name: ' 配置管理 ' }])).toBe(
+      '名为「配置管理」的菜单项',
     )
   })
 

@@ -9,12 +9,34 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ScheduleEditorDialog, type ScheduleObjectContext } from './editor'
 import { ScheduleDetailDialog } from './detail'
 
-export function ObjectSchedules({ context }: { context: ScheduleObjectContext }) {
+export function ObjectSchedules({
+  context,
+  size = 'default',
+  className,
+  trigger,
+}: {
+  context: ScheduleObjectContext
+  size?: 'default' | 'sm'
+  className?: string
+  trigger?: (props: { onClick: () => void }) => React.ReactNode
+}) {
   const canRead = useCan('schedule:read')
   const [open, setOpen] = useState(false)
   if (!canRead) return null
   return <>
-    <Button variant='outline' onClick={() => setOpen(true)}><CalendarClock />定时任务</Button>
+    {trigger ? (
+      trigger({ onClick: () => setOpen(true) })
+    ) : (
+      <Button
+        variant='outline'
+        size={size}
+        className={className}
+        onClick={() => setOpen(true)}
+      >
+        <CalendarClock className='size-3.5' />
+        定时任务
+      </Button>
+    )}
     {open ? <ObjectSchedulesDialog context={context} onClose={() => setOpen(false)} /> : null}
   </>
 }

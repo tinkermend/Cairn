@@ -237,7 +237,7 @@ describe('StepEditor', () => {
     )
     await expect.element(screen.getByRole('heading', { name: '成功条件' })).toBeInTheDocument()
     await expect.element(screen.getByLabelText('超时（毫秒，可选）')).not.toBeInTheDocument()
-    await screen.getByRole('button', { name: '高级', exact: true }).click()
+    await screen.getByRole('button', { name: '高级选项', exact: true }).click()
     await expect.element(screen.getByLabelText('超时（毫秒，可选）')).toBeInTheDocument()
   })
 })

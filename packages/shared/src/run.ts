@@ -213,6 +213,7 @@ export const runSnapshotSchema = z
      * 新 Run 创建时必须写入完整值（历史 Run 可解释当时怎么执行）。
      */
     sessionPolicy: sessionPolicySchema.optional(),
+    accountSessionEffectiveCap: z.number().int().min(1).max(16).optional(),
     /**
      * 冻结的证据策略。可选：存量快照没有它仍可解析，缺省走平台默认。
      * 新 Run 创建时写入解析后的完整值。

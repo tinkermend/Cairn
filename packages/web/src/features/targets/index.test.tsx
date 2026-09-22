@@ -147,6 +147,8 @@ vi.mock('@/lib/sessions-api', () => ({
         busyCount: 0,
         retainedCount: 0,
         worstStatus: 'needs_login',
+        liveSessionCount: 5,
+        sessionCapTotal: 8,
       },
       {
         targetId: 'target-b',
@@ -287,7 +289,7 @@ it('表格展示账号与会话综合状态，右侧概览窗提供免下钻即�
 
   // 1. 表格表头为「账号 / 会话」，单元格展示综合就绪态
   await expect.element(screen.getByText('账号 / 会话')).toBeInTheDocument()
-  await expect.element(screen.getByText('2 个 (1 待处理)')).toBeInTheDocument()
+  await expect.element(screen.getByText('2 个 (1 待处理) · 会话 5/8')).toBeInTheDocument()
   await expect.element(screen.getByText('4 个 (全就绪)')).toBeInTheDocument()
 
   // 2. 右侧概览侧栏展示系统入口及快捷操作

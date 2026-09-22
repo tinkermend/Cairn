@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
-import type { AccountSessionStatus, TargetAccountDto } from '@cairn/shared'
+import type { AccountSessionOverviewItem, TargetAccountDto } from '@cairn/shared'
 import {
   ArrowLeft,
   Compass,
@@ -71,6 +71,7 @@ import {
   ACCOUNT_SESSION_STATUS_LABELS,
   ACCOUNT_SESSION_STATUS_TONE,
 } from '@/features/sessions/labels'
+import { accountSessionOccupancyText } from '@/features/sessions/occupancy-label'
 
 const route = getRouteApi('/_authenticated/targets/$targetId/')
 
@@ -121,10 +122,14 @@ export function TargetDetailPage() {
     queryFn: () => fetchSessionOverview({ targetId, limit: 100 }),
     staleTime: 10_000,
   })
-  const sessionStatusByAccount = useMemo(() => {
-    const map = new Map<string, AccountSessionStatus>()
+  const sessionByAccount = useMemo(() => {
+    const map = new Map<string, Pick<AccountSessionOverviewItem, 'status' | 'liveCount' | 'effectiveCap'>>()
     for (const item of sessionOverviewQuery.data?.items ?? []) {
-      map.set(item.targetAccountId, item.status)
+      map.set(item.targetAccountId, {
+        status: item.status,
+        liveCount: item.liveCount,
+        effectiveCap: item.effectiveCap,
+      })
     }
     return map
   }, [sessionOverviewQuery.data])
@@ -426,16 +431,35 @@ export function TargetDetailPage() {
                                 </StatusBadge>
                               </TableCell>
                               <TableCell>
-                                <StatusBadge
-                                  tone={ACCOUNT_SESSION_STATUS_TONE[sessionStatusByAccount.get(item.id) ?? 'unprepared']}
-                                >
-                                  {ACCOUNT_SESSION_STATUS_LABELS[sessionStatusByAccount.get(item.id) ?? 'unprepared']}
-                                </StatusBadge>
-                                {item.autoLoginPausedReason ? (
-                                  <p className='mt-1 text-label text-muted-foreground'>
-                                    自动登录暂停：{item.autoLoginPausedReason}
-                                  </p>
-                                ) : null}
+                                {(() => {
+                                  const session = sessionByAccount.get(item.id)
+                                  const status = session?.status ?? 'unprepared'
+                                  const occupancy = accountSessionOccupancyText(session ?? item)
+                                  return (
+                                    <>
+                                      <div className='flex flex-wrap items-center gap-1.5'>
+                                        <StatusBadge tone={ACCOUNT_SESSION_STATUS_TONE[status]}>
+                                          {ACCOUNT_SESSION_STATUS_LABELS[status]}
+                                        </StatusBadge>
+                                        {occupancy ? (
+                                          <span className='tabular-nums text-label text-muted-foreground'>
+                                            {occupancy}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      {session && occupancy && (session.liveCount ?? 0) > (session.effectiveCap ?? 1) ? (
+                                        <p className='mt-1 text-label text-muted-foreground'>
+                                          已超过新上限，不再新建
+                                        </p>
+                                      ) : null}
+                                      {item.autoLoginPausedReason ? (
+                                        <p className='mt-1 text-label text-muted-foreground'>
+                                          自动登录暂停：{item.autoLoginPausedReason}
+                                        </p>
+                                      ) : null}
+                                    </>
+                                  )
+                                })()}
                               </TableCell>
                               <TableCell className='text-label text-muted-foreground'>
                                 {item.expectedIdentity ?? '未设置'}
@@ -557,6 +581,18 @@ export function TargetDetailPage() {
               }}
               targetId={targetId}
               current={editingAccount}
+              accountSessionMode={target.effectiveSessionPolicy?.accountSessionMode ?? 'exclusive'}
+              liveCount={
+                editingAccount
+                  ? sessionByAccount.get(editingAccount.id)?.liveCount ?? editingAccount.liveCount
+                  : undefined
+              }
+              effectiveCap={
+                editingAccount
+                  ? sessionByAccount.get(editingAccount.id)?.effectiveCap ??
+                    editingAccount.effectiveMaxConcurrentSessions
+                  : undefined
+              }
             />
           </>
         )}

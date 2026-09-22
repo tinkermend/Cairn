@@ -7,6 +7,7 @@ import {
   notificationSmtpWriteSchema,
 } from '@cairn/shared'
 import {
+  FileText,
   Mail,
   Plus,
   Radio,
@@ -58,7 +59,8 @@ export function NotificationChannelsPanel() {
     client = useQueryClient()
   const canWrite = useCan('platform-config:write')
   const [editing, setEditing] = useState<Channel | 'new'>(),
-    [smtpOpen, setSmtpOpen] = useState(false)
+    [smtpOpen, setSmtpOpen] = useState(false),
+    [previewOpen, setPreviewOpen] = useState(false)
   const [error, setError] = useState(''),
     [busy, setBusy] = useState(false)
   const [pending, setPending] = useState<{
@@ -122,7 +124,7 @@ export function NotificationChannelsPanel() {
       )}
       {current && (
         <>
-          <div className='grid gap-5 lg:grid-cols-2'>
+          <div className='grid gap-5 lg:grid-cols-2 items-stretch'>
             <Settings
               key={current.revision}
               current={current}
@@ -148,15 +150,25 @@ export function NotificationChannelsPanel() {
                   个渠道。
                 </p>
               </div>
-              {canWrite && (
+              <div className='flex items-center gap-2'>
                 <Button
-                  disabled={current.channels.length >= 16}
-                  onClick={() => setEditing('new')}
+                  variant='outline'
+                  size='sm'
+                  onClick={() => setPreviewOpen(true)}
                 >
-                  <Plus className='size-4' />
-                  添加渠道
+                  <FileText className='size-4' />
+                  查看消息格式示例
                 </Button>
-              )}
+                {canWrite && current.channels.length > 0 && (
+                  <Button
+                    disabled={current.channels.length >= 16}
+                    onClick={() => setEditing('new')}
+                  >
+                    <Plus className='size-4' />
+                    添加渠道
+                  </Button>
+                )}
+              </div>
             </div>
 
             {!current.channels.length ? (
@@ -297,7 +309,17 @@ export function NotificationChannelsPanel() {
             )}
           </section>
 
-          <TemplatePreviewCard />
+          <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+            <DialogContent className='max-h-[85vh] overflow-y-auto sm:max-w-2xl'>
+              <DialogHeader>
+                <DialogTitle>固定消息模板预览</DialogTitle>
+                <DialogDescription>
+                  不同事件类型的通知格式参考。Webhook 使用结构化 JSON 载荷，邮件提供纯文本与 HTML 两种格式。
+                </DialogDescription>
+              </DialogHeader>
+              <TemplatePreviewContent />
+            </DialogContent>
+          </Dialog>
 
           <Dialog
             open={Boolean(editing)}
@@ -493,7 +515,7 @@ function Settings({
       <Failure message={error} />
 
       {canWrite && (
-        <div className='pt-2'>
+        <div className='border-t border-border-divider pt-3'>
           <Button disabled={busy || !reason.trim()} type='submit'>
             保存全局设置
           </Button>
@@ -580,17 +602,9 @@ function SmtpCard({
   )
 }
 
-function TemplatePreviewCard() {
+function TemplatePreviewContent() {
   return (
-    <div className='rounded-lg border border-border-card bg-card p-5 shadow-card space-y-3'>
-      <div>
-        <h3 className='font-semibold text-text-primary text-section'>
-          固定消息模板预览
-        </h3>
-        <p className='text-label text-muted-foreground'>
-          不同事件类型的通知格式参考。Webhook 使用结构化 JSON 载荷，邮件提供纯文本与 HTML 两种格式。
-        </p>
-      </div>
+    <div className='space-y-3 pt-1'>
       <Tabs defaultValue='run'>
         <TabsList className='border-b-0'>
           <TabsTrigger value='run'>运行结果通知</TabsTrigger>

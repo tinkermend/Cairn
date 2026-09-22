@@ -48,12 +48,29 @@ function formatValue(value: unknown): string {
   }
 }
 
+function formatExpected(value: unknown, kindLabel: string): string {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return kindLabel
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  return kindLabel
+}
+
+function outcomeStatusHint(status: OutcomeStatus, hasContracts?: boolean): string {
+  if (status !== 'NOT_EVALUATED') return RUN_OUTCOME_STATUS_HINTS[status]
+  return hasContracts
+    ? '业务条件还没评完（还没跑到，或历史运行未纳入结果轴）。'
+    : RUN_OUTCOME_STATUS_HINTS.NOT_EVALUATED
+}
+
 export function OutcomeAxisSummary({
   executionLabel,
   outcomeStatus,
+  hasContracts,
 }: {
   executionLabel: string
   outcomeStatus: OutcomeStatus
+  hasContracts?: boolean
 }) {
   return (
     <div className='grid gap-3 sm:grid-cols-2'>
@@ -68,7 +85,9 @@ export function OutcomeAxisSummary({
             {RUN_OUTCOME_STATUS_LABELS[outcomeStatus]}
           </StatusBadge>
         </div>
-        <p className='mt-1 text-label text-muted-foreground'>{RUN_OUTCOME_STATUS_HINTS[outcomeStatus]}</p>
+        <p className='mt-1 text-label text-muted-foreground'>
+          {outcomeStatusHint(outcomeStatus, hasContracts)}
+        </p>
       </div>
     </div>
   )
@@ -121,7 +140,7 @@ export function OutcomeConditionList({
             <p className='text-label text-muted-foreground'>
               {expectLabel}
               {' · '}
-              期望 {formatValue(row.result?.expected ?? (row.entry.rule.kind === 'deterministic' ? row.entry.rule.expect : row.entry.rule.instruction))}
+              期望 {formatExpected(row.result?.expected ?? (row.entry.rule.kind === 'deterministic' ? row.entry.rule.expect : undefined), expectLabel)}
               {' · '}
               实际 {formatValue(row.result?.actual)}
             </p>
@@ -169,7 +188,7 @@ export function OutcomeConditionList({
               <p className='text-label text-muted-foreground'>
                 {RUNTIME_INVARIANT_KIND_LABELS[row.entry.kind]}
                 {' · '}
-                期望 {formatValue(row.result?.expected ?? { kind: row.entry.kind })}
+                期望 {formatExpected(row.result?.expected, RUNTIME_INVARIANT_KIND_LABELS[row.entry.kind])}
                 {' · '}
                 实际 {formatValue(row.result?.actual)}
               </p>

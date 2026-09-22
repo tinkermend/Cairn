@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>企业费用报销与材料提报系统</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1f5f9; padding: 24px; color: #1e293b; }
+    .card { background: #ffffff; border-radius: 10px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); max-width: 680px; margin: 0 auto; padding: 28px; }
+    h1 { font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    .form-group { margin-bottom: 18px; }
+    label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; color: #334155; }
+    .label-desc { font-size: 12px; font-weight: normal; color: #64748b; margin-left: 6px; }
+    input[type="text"], select, textarea { width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; background: #f8fafc; }
+    input[type="text"]:focus, select:focus, textarea:focus { outline: none; border-color: #3b82f6; background: #fff; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+    .checkbox-label { display: flex; align-items: center; gap: 8px; font-weight: normal; cursor: pointer; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; border: 1px solid transparent; transition: all 0.2s; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-outline { background: #fff; border-color: #cbd5e1; color: #334155; }
+    .btn-outline:hover { background: #f1f5f9; border-color: #94a3b8; }
+    .file-box { border: 2px dashed #cbd5e1; border-radius: 8px; padding: 16px; text-align: center; background: #f8fafc; }
+    .file-badge { display: inline-block; padding: 4px 8px; background: #e0f2fe; color: #0369a1; border-radius: 4px; font-size: 12px; font-weight: 500; margin-top: 8px; }
+    #file-list { margin-top: 10px; text-align: left; font-size: 13px; color: #475569; }
+    .file-item { display: flex; justify-content: space-between; padding: 4px 8px; background: #f1f5f9; border-radius: 4px; margin-bottom: 4px; }
+    .alert { padding: 12px 16px; border-radius: 6px; font-size: 14px; margin-bottom: 16px; display: none; }
+    .alert-error { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+    .alert-success { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
+    .result-section { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 20px; margin-top: 24px; display: none; }
+    .result-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed #cbd5e1; font-size: 14px; }
+    .result-row:last-child { border-bottom: none; }
+    .download-bar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+    .download-link { font-size: 13px; color: #2563eb; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+    .download-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>企业费用报销与材料提报系统</h1>
+
+    <div class="download-bar">
+      <a id="download-template-btn" href="/download/template.csv" download="template.csv" class="download-link">
+        📥 下载报销标准模板 (CSV)
+      </a>
+    </div>
+
+    <div id="error-banner" class="alert alert-error"></div>
+
+    <form id="submission-form" onsubmit="handleSubmit(event)">
+      <!-- 必填字段 1 -->
+      <div class="form-group">
+        <label for="applicant-name">申请人姓名 / 工号 <span style="color:#ef4444">*</span></label>
+        <input type="text" id="applicant-name" name="applicantName" placeholder="例如：张三 (EMP-1002)" required />
+      </div>
+
+      <!-- 必填字段 2 -->
+      <div class="form-group">
+        <label for="category-select">提报业务类别 <span style="color:#ef4444">*</span></label>
+        <select id="category-select" name="category" required>
+          <option value="">-- 请选择报销或归档类型 --</option>
+          <option value="INVOICE">差旅发票与餐费报销</option>
+          <option value="CONTRACT">业务合同与采购附件归档</option>
+          <option value="PROCUREMENT">办公设备与机房采购结算</option>
+        </select>
+      </div>
+
+      <!-- 选填字段 1：紧急联系电话 -->
+      <div class="form-group">
+        <label for="emergency-phone">紧急联系电话 <span class="label-desc">（选填，用于财务紧急核实）</span></label>
+        <input type="text" id="emergency-phone" name="emergencyPhone" placeholder="例如：13800000000" />
+      </div>
+
+      <!-- 选填字段 2：补充备注 -->
+      <div class="form-group">
+        <label for="remarks">补充业务说明 <span class="label-desc">（选填）</span></label>
+        <textarea id="remarks" name="remarks" rows="2" placeholder="请填写报销明细说明或项目归属..."></textarea>
+      </div>
+
+      <!-- 选填字段 3：加急复选框 -->
+      <div class="form-group">
+        <label class="checkbox-label" for="urgent-check">
+          <input type="checkbox" id="urgent-check" name="isUrgent" />
+          <span>标记为加急审批（24小时内优先打款）</span>
+        </label>
+      </div>
+
+      <!-- 文件上传区域 1：发票凭证（隐藏 input + 显式按钮触发，现代前端常见结构） -->
+      <div class="form-group">
+        <label>核心发票凭证 <span style="color:#ef4444">*</span> <span class="label-desc">（支持 PDF / 图片 / 电子凭证）</span></label>
+        <div class="file-box">
+          <button type="button" id="btn-select-invoice" class="btn btn-outline" onclick="triggerInvoiceSelect()">
+            📎 点击选择发票文件
+          </button>
+          <input type="file" id="invoice-file" name="invoiceFile" style="display:none;" onchange="handleFileChange(this, 'invoice')" />
+          <div id="invoice-status" class="file-badge">待选择凭证</div>
+        </div>
+      </div>
+
+      <!-- 文件上传区域 2：选填补充材料（常规显式 input） -->
+      <div class="form-group">
+        <label for="extra-file">补充证明材料 <span class="label-desc">（选填，如明细表格、对账单等）</span></label>
+        <input type="file" id="extra-file" name="extraFile" class="regular-file-input" onchange="handleFileChange(this, 'extra')" />
+      </div>
+
+      <!-- 已选文件实时清单 -->
+      <div id="file-summary" class="form-group" style="display:none;">
+        <label>已选择待上传文件：</label>
+        <div id="file-list"></div>
+      </div>
+
+      <!-- 无文件输入框测试桩按钮（用于边界测试） -->
+      <button type="button" id="btn-dummy-no-upload" style="display:none;">常规按钮无上传</button>
+
+      <!-- 提交按钮 -->
+      <div style="margin-top: 24px;">
+        <button type="submit" id="submit-btn" class="btn btn-primary" style="width: 100%; height: 42px;">
+          确认提交提报申请
+        </button>
+      </div>
+    </form>
+
+    <!-- 结果反馈卡片 -->
+    <div id="result-box" class="result-section">
+      <h3 style="margin-top:0; color:#15803d; font-size: 16px;">🎉 提报申请已成功接收并归档！</h3>
+      <div class="result-row">
+        <span>提报申请单号：</span>
+        <strong id="ticket-id"></strong>
+      </div>
+      <div class="result-row">
+        <span>申请人：</span>
+        <span id="submitted-applicant"></span>
+      </div>
+      <div class="result-row">
+        <span>业务类别：</span>
+        <span id="submitted-category"></span>
+      </div>
+      <div class="result-row">
+        <span>审批时效：</span>
+        <span id="submitted-urgent"></span>
+      </div>
+      <div class="result-row">
+        <span>已接收归档文件：</span>
+        <span id="archived-files" style="font-family: monospace;"></span>
+      </div>
+      <div class="result-row">
+        <span>提报状态：</span>
+        <span id="submission-status" style="color: #16a34a; font-weight: bold;">SUBMITTED</span>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const selectedFiles = { invoice: null, extra: null };
+
+    function triggerInvoiceSelect() {
+      const input = document.getElementById('invoice-file');
+      if (input) input.click();
+    }
+
+    function handleFileChange(input, type) {
+      if (input.files && input.files.length > 0) {
+        selectedFiles[type] = input.files[0];
+        if (type === 'invoice') {
+          const badge = document.getElementById('invoice-status');
+          badge.innerText = '已选择: ' + input.files[0].name;
+          badge.style.background = '#dcfce7';
+          badge.style.color = '#15803d';
+        }
+      } else {
+        selectedFiles[type] = null;
+      }
+      renderFileList();
+    }
+
+    function renderFileList() {
+      const container = document.getElementById('file-list');
+      const box = document.getElementById('file-summary');
+      container.innerHTML = '';
+      const list = Object.entries(selectedFiles).filter(([_, f]) => f != null);
+      if (list.length === 0) {
+        box.style.display = 'none';
+        return;
+      }
+      box.style.display = 'block';
+      list.forEach(([type, f]) => {
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        item.innerHTML = `<span><strong>${type === 'invoice' ? '核心发票' : '补充材料'}:</strong> ${f.name}</span><span>${(f.size / 1024).toFixed(1)} KB</span>`;
+        container.appendChild(item);
+      });
+    }
+
+    function handleSubmit(e) {
+      e.preventDefault();
+      const errBanner = document.getElementById('error-banner');
+      errBanner.style.display = 'none';
+
+      const applicant = document.getElementById('applicant-name').value.trim();
+      const category = document.getElementById('category-select').value;
+      const isUrgent = document.getElementById('urgent-check').checked;
+
+      if (!applicant) {
+        showError('请填写申请人姓名 / 工号');
+        return;
+      }
+      if (!category) {
+        showError('请选择提报业务类别');
+        return;
+      }
+      if (!selectedFiles.invoice && !selectedFiles.extra) {
+        showError('请至少上传一份核心发票凭证或补充材料');
+        return;
+      }
+
+      // 生成单号
+      const randNum = Math.floor(1000 + Math.random() * 9000);
+      const ticketId = 'CLAIM-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + randNum;
+
+      const fileNames = Object.values(selectedFiles)
+        .filter(Boolean)
+        .map(f => f.name)
+        .join(', ');
+
+      document.getElementById('ticket-id').innerText = ticketId;
+      document.getElementById('submitted-applicant').innerText = applicant;
+      document.getElementById('submitted-category').innerText = category;
+      document.getElementById('submitted-urgent').innerText = isUrgent ? '加急优先 (24h)' : '常规流转 (3~5工作日)';
+      document.getElementById('archived-files').innerText = fileNames;
+      document.getElementById('result-box').style.display = 'block';
+
+      // 隐藏表单
+      document.getElementById('submission-form').style.display = 'none';
+    }
+
+    function showError(msg) {
+      const errBanner = document.getElementById('error-banner');
+      errBanner.innerText = '⚠️ ' + msg;
+      errBanner.style.display = 'block';
+    }
+  </script>
+</body>
+</html>

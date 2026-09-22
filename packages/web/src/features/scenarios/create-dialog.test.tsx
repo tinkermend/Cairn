@@ -75,12 +75,30 @@ describe('ScenarioCreateDialog', () => {
     })
   })
 
-  it('没选目标系统或没填地址时创建按钮不可用', async () => {
+  it('选中目标系统自动预填 entryUrl 且可直接创建', async () => {
+    const screen = await renderDialog()
+    await screen.getByLabelText('名称', { exact: true }).fill('自动填地址')
+    await screen.getByRole('combobox', { name: '目标系统' }).click()
+    await screen.getByRole('option', { name: '演示商城' }).click()
+    await expect.element(screen.getByLabelText('首步页面地址')).toHaveValue('https://shop.example.com')
+    await expect.element(screen.getByRole('button', { name: '创建' })).toBeEnabled()
+    await screen.getByRole('button', { name: '创建' }).click()
+    await vi.waitFor(() => expect(mocks.createScenario).toHaveBeenCalledTimes(1))
+    const body = mocks.createScenario.mock.calls[0]![0] as CreateScenarioBody
+    expect(body.steps[0]).toMatchObject({
+      type: 'navigate',
+      input: { url: 'https://shop.example.com' },
+    })
+  })
+
+  it('没选目标系统或清空地址时创建按钮不可用', async () => {
     const screen = await renderDialog()
     await screen.getByLabelText('名称', { exact: true }).fill('缺字段')
     await expect.element(screen.getByRole('button', { name: '创建' })).toBeDisabled()
     await screen.getByRole('combobox', { name: '目标系统' }).click()
     await screen.getByRole('option', { name: '演示商城' }).click()
+    await expect.element(screen.getByRole('button', { name: '创建' })).toBeEnabled()
+    await screen.getByLabelText('首步页面地址').fill('')
     await expect.element(screen.getByRole('button', { name: '创建' })).toBeDisabled()
     expect(mocks.createScenario).not.toHaveBeenCalled()
   })

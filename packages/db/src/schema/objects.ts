@@ -4,6 +4,7 @@ import { newId } from '../id.js'
 import { cairnSchema } from './console.js'
 import { runs } from './execution.js'
 import { artifacts } from './reports.js'
+import { targetFixtures } from './fixtures.js'
 
 export const storedObjects = cairnSchema.table(
   'stored_objects',
@@ -13,6 +14,7 @@ export const storedObjects = cairnSchema.table(
     runId: uuid('run_id').references(() => runs.id, { onDelete: 'restrict' }),
     ownerKind: text('owner_kind').notNull().default('run').$type<ObjectOwnerKind>(),
     artifactId: uuid('artifact_id').references(() => artifacts.id, { onDelete: 'restrict' }),
+    fixtureId: uuid('fixture_id').references(() => targetFixtures.id, { onDelete: 'restrict' }),
     status: text('status').notNull().$type<StoredObjectStatus>(),
     contentType: text('content_type'),
     byteSize: integer('byte_size'),
@@ -34,6 +36,7 @@ export const storedObjects = cairnSchema.table(
     index('stored_objects_run_id_idx').on(t.runId),
     index('stored_objects_delete_requested_idx').on(t.deleteRequestedAt),
     index('stored_objects_artifact_id_idx').on(t.artifactId),
+    index('stored_objects_fixture_id_idx').on(t.fixtureId),
     index('stored_objects_owner_kind_idx').on(t.ownerKind, t.retainUntil),
   ],
 )
