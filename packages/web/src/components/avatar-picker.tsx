@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Check, Dices, RotateCcw } from 'lucide-react'
+import { Camera, Check, Dices, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -11,7 +11,12 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { UserAvatar } from '@/components/user-avatar'
-import { PRESET_AVATARS, getAvatarDataUri, parseAvatarKey } from '@/lib/avatar'
+import {
+  DEFAULT_PREVIEW_AVATAR,
+  PRESET_AVATARS,
+  getAvatarDataUri,
+  parseAvatarKey,
+} from '@/lib/avatar'
 import { DEFAULT_AVATAR_STYLE } from '@cairn/shared'
 import { cn } from '@/lib/utils'
 
@@ -31,8 +36,8 @@ export function AvatarPicker({
   const [open, setOpen] = React.useState(false)
   const [seeds, setSeeds] = React.useState<string[]>(PRESET_AVATARS)
   const [selected, setSelected] = React.useState<string>(value || '')
+  const previewAvatar = value || DEFAULT_PREVIEW_AVATAR
 
-  // 同步外部 value 变化
   React.useEffect(() => {
     setSelected(value || '')
   }, [value])
@@ -62,41 +67,31 @@ export function AvatarPicker({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <div className='flex items-center gap-3'>
-        <UserAvatar
-          user={{ avatar: value, displayName }}
-          className='size-12 rounded-xl border border-border shadow-xs'
-        />
-        <div className='flex flex-col gap-1'>
-          <div className='flex items-center gap-2'>
-            <DialogTrigger asChild>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                disabled={disabled}
-              >
-                选择头像
-              </Button>
-            </DialogTrigger>
-            {value ? (
-              <Button
-                type='button'
-                variant='ghost'
-                size='sm'
-                className='text-muted-foreground hover:text-foreground text-xs'
-                onClick={() => onChange('')}
-                disabled={disabled}
-              >
-                清除
-              </Button>
-            ) : null}
-          </div>
-          <span className='text-xs text-muted-foreground'>
-            支持选择专属科技机器人头像
+      <DialogTrigger asChild>
+        <button
+          type='button'
+          disabled={disabled}
+          aria-label='选择头像'
+          title='选择头像'
+          className={cn(
+            'relative size-20 shrink-0 overflow-hidden rounded-xl border border-border bg-surface-subtle shadow-xs outline-none',
+            'hover:border-primary/60',
+            'focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-[3px]',
+            'disabled:pointer-events-none disabled:opacity-50'
+          )}
+        >
+          <UserAvatar
+            user={{ avatar: previewAvatar, displayName }}
+            className='size-full rounded-none border-0 bg-transparent shadow-none'
+          />
+          <span
+            aria-hidden='true'
+            className='absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-xs'
+          >
+            <Camera className='size-3.5' />
           </span>
-        </div>
-      </div>
+        </button>
+      </DialogTrigger>
 
       <DialogContent className='sm:max-w-md'>
         <DialogHeader>
@@ -106,7 +101,7 @@ export function AvatarPicker({
           </DialogDescription>
         </DialogHeader>
 
-        <div className='grid grid-cols-4 gap-3 py-4 max-h-[360px] overflow-y-auto px-1'>
+        <div className='grid max-h-[360px] grid-cols-4 gap-3 overflow-y-auto px-1 py-4'>
           {seeds.map((avatarKey) => {
             const isSelected = selected === avatarKey
             const dataUri = getAvatarDataUri(avatarKey)
@@ -118,14 +113,14 @@ export function AvatarPicker({
                 type='button'
                 onClick={() => setSelected(avatarKey)}
                 className={cn(
-                  'relative group flex flex-col items-center justify-center p-2 rounded-xl border transition-colors duration-150',
+                  'group relative flex flex-col items-center justify-center rounded-xl border p-2',
                   'hover:border-primary/60 hover:bg-accent/40 focus:outline-hidden',
                   isSelected
-                    ? 'border-primary ring-2 ring-primary/20 bg-primary/5 shadow-xs'
+                    ? 'border-primary bg-primary/5 shadow-xs ring-2 ring-primary/20'
                     : 'border-border/80 bg-card'
                 )}
               >
-                <div className='size-14 rounded-lg overflow-hidden bg-muted/40 p-1 flex items-center justify-center'>
+                <div className='flex size-14 items-center justify-center overflow-hidden rounded-lg bg-muted/40 p-1'>
                   {dataUri ? (
                     <img
                       src={dataUri}
@@ -135,7 +130,7 @@ export function AvatarPicker({
                   ) : null}
                 </div>
                 {isSelected ? (
-                  <div className='absolute top-1.5 right-1.5 size-4 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-xs'>
+                  <div className='absolute top-1.5 right-1.5 flex size-4 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xs'>
                     <Check className='size-2.5 stroke-[3]' />
                   </div>
                 ) : null}
@@ -144,7 +139,7 @@ export function AvatarPicker({
           })}
         </div>
 
-        <DialogFooter className='flex-row items-center justify-between sm:justify-between border-t border-border pt-3'>
+        <DialogFooter className='flex-row items-center justify-between border-t border-border pt-3 sm:justify-between'>
           <div className='flex items-center gap-1.5'>
             <Button
               type='button'
@@ -161,7 +156,7 @@ export function AvatarPicker({
               variant='ghost'
               size='sm'
               onClick={handleResetPresets}
-              className='text-muted-foreground text-xs gap-1'
+              className='gap-1 text-xs text-muted-foreground'
               title='重置回预设'
             >
               <RotateCcw className='size-3' />

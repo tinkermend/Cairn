@@ -124,9 +124,9 @@ describe('UsersActionDialog', () => {
         <UsersActionDialog open onOpenChange={onOpenChange} roles={MOCK_ROLES} />
       )
 
-      await userEvent.fill(getByLabelText(/显示名称/), 'New Operator')
-      await userEvent.fill(getByLabelText(/^账号$/), 'ops@cairn.dev')
-      await userEvent.fill(getByLabelText(/^密码$/), 'password1')
+      await userEvent.fill(getByLabelText('显示名称'), 'New Operator')
+      await userEvent.fill(getByLabelText('账号'), 'ops@cairn.dev')
+      await userEvent.fill(getByLabelText('密码'), 'password1')
       await userEvent.click(getByRole('button', { name: /保存/ }))
 
       await vi.waitFor(() => expect(createAccount).toHaveBeenCalledOnce())

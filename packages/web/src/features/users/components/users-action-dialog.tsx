@@ -47,6 +47,7 @@ import {
 } from '@/components/ui/select'
 import { PasswordInput } from '@/components/password-input'
 import { AvatarPicker } from '@/components/avatar-picker'
+import { cn } from '@/lib/utils'
 import { type User } from '../data/schema'
 import { TargetScopeFields } from './target-scope-fields'
 
@@ -65,6 +66,14 @@ type UserActionDialogProps = {
   roles: RoleDto[]
   open: boolean
   onOpenChange: (open: boolean) => void
+}
+
+function RequiredMark() {
+  return (
+    <span className='text-destructive font-bold' aria-hidden='true'>
+      {' *'}
+    </span>
+  )
 }
 
 export function UsersActionDialog({
@@ -116,6 +125,12 @@ export function UsersActionDialog({
           roleIds: defaultAuthor ? [defaultAuthor] : [],
         },
   })
+
+  const closeDialog = () => {
+    if (saving) return
+    form.reset()
+    onOpenChange(false)
+  }
 
   const onSubmit = async (values: UserForm) => {
     setSaving(true)
@@ -185,8 +200,8 @@ export function UsersActionDialog({
         onOpenChange(state)
       }}
     >
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-xl'>
-        <DialogHeader className='text-start'>
+      <DialogContent className='flex max-h-[90vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-xl'>
+        <DialogHeader className='shrink-0 border-b border-border px-6 py-4 text-start'>
           <DialogTitle>{isEdit ? '编辑用户' : '新增用户'}</DialogTitle>
           <DialogDescription>
             {isEdit
@@ -198,170 +213,197 @@ export function UsersActionDialog({
           <form
             id='user-form'
             onSubmit={form.handleSubmit(onSubmit)}
-            className='space-y-4 px-0.5'
+            className='flex min-h-0 flex-1 flex-col'
           >
-            <FormField
-              control={form.control}
-              name='avatar'
-              render={({ field }) => (
-                <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>
-                    头像
-                  </FormLabel>
-                  <div className='col-span-4'>
+            <div className='min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5'>
+              <FormField
+                control={form.control}
+                name='avatar'
+                render={({ field }) => (
+                  <FormItem className='flex flex-col items-center gap-0 space-y-0'>
                     <AvatarPicker
                       value={field.value}
                       onChange={field.onChange}
                       displayName={form.watch('displayName')}
                     />
-                  </div>
-                  <FormMessage className='col-span-4 col-start-3' />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='displayName'
-              render={({ field }) => (
-                <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>
-                    显示名称
-                  </FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder='Ada Admin'
-                      className='col-span-4'
-                      autoComplete='off'
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage className='col-span-4 col-start-3' />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='email'
-              render={({ field }) => (
-                <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>账号</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder='admin'
-                      className='col-span-4'
-                      autoComplete='off'
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage className='col-span-4 col-start-3' />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='password'
-              render={({ field }) => (
-                <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>
-                    {isEdit ? '新密码' : '密码'}
-                  </FormLabel>
-                  <FormControl>
-                    <PasswordInput
-                      className='col-span-4'
-                      placeholder={isEdit ? '留空则不修改' : '至少 8 位'}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage className='col-span-4 col-start-3' />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='status'
-              render={({ field }) => (
-                <FormItem className='grid grid-cols-6 items-center space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 text-end'>状态</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger className='col-span-4'>
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      <SelectItem value='active'>启用</SelectItem>
-                      <SelectItem value='disabled'>停用</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <FormMessage className='col-span-4 col-start-3' />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='roleIds'
-              render={() => (
-                <FormItem className='grid grid-cols-6 items-start space-y-0 gap-x-4 gap-y-1'>
-                  <FormLabel className='col-span-2 pt-1 text-end'>
-                    角色
-                  </FormLabel>
-                  <div className='col-span-4 space-y-2'>
-                    {roles.map((role) => (
-                      <FormField
-                        key={role.id}
-                        control={form.control}
-                        name='roleIds'
-                        render={({ field }) => {
-                          const checked = field.value.includes(role.id)
-                          return (
-                            <label className='flex items-center gap-2 text-body'>
-                              <Checkbox
-                                checked={checked}
-                                disabled={!canAssign(role)}
-                                onCheckedChange={(next) => {
-                                  const on = next === true
-                                  field.onChange(
-                                    on
-                                      ? [...field.value, role.id]
-                                      : field.value.filter(
-                                          (id) => id !== role.id
-                                        )
-                                  )
-                                }}
-                              />
-                              {role.name}
-                            </label>
-                          )
-                        }}
-                      />
-                    ))}
                     <FormMessage />
-                  </div>
-                </FormItem>
+                  </FormItem>
+                )}
+              />
+
+              <div className='grid grid-cols-1 gap-4 sm:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='displayName'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        显示名称
+                        <RequiredMark />
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='Ada Admin'
+                          autoComplete='off'
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='email'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        账号
+                        <RequiredMark />
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='admin'
+                          autoComplete='off'
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='password'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        {isEdit ? '新密码' : '密码'}
+                        {isEdit ? null : <RequiredMark />}
+                      </FormLabel>
+                      <FormControl>
+                        <PasswordInput
+                          placeholder={isEdit ? '留空则不修改' : '至少 8 位'}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='status'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>状态</FormLabel>
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                      >
+                        <FormControl>
+                          <SelectTrigger className='w-full'>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value='active'>启用</SelectItem>
+                          <SelectItem value='disabled'>停用</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <FormField
+                control={form.control}
+                name='roleIds'
+                render={() => (
+                  <FormItem className='gap-3'>
+                    <FormLabel>
+                      角色
+                      <RequiredMark />
+                    </FormLabel>
+                    <div className='grid grid-cols-1 gap-2 sm:grid-cols-2'>
+                      {roles.map((role) => (
+                        <FormField
+                          key={role.id}
+                          control={form.control}
+                          name='roleIds'
+                          render={({ field }) => {
+                            const checked = field.value.includes(role.id)
+                            const assignable = canAssign(role)
+                            return (
+                              <label
+                                className={cn(
+                                  'flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-body',
+                                  assignable
+                                    ? 'hover:bg-action-hover'
+                                    : 'cursor-not-allowed opacity-60'
+                                )}
+                              >
+                                <Checkbox
+                                  checked={checked}
+                                  disabled={!assignable}
+                                  onCheckedChange={(next) => {
+                                    const on = next === true
+                                    field.onChange(
+                                      on
+                                        ? [...field.value, role.id]
+                                        : field.value.filter(
+                                            (id) => id !== role.id
+                                          )
+                                    )
+                                  }}
+                                />
+                                {role.name}
+                              </label>
+                            )
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <TargetScopeFields
+                disabled={!canDelegate}
+                roles={roles.filter((r) =>
+                  form.watch('roleIds').includes(r.id)
+                )}
+                value={scopes}
+                onChange={setScopes}
+              />
+              {!canDelegate && (
+                <p className='text-label text-muted-foreground'>
+                  角色与目标范围由全范围管理员配置。
+                </p>
               )}
-            />
-            <TargetScopeFields
-              disabled={!canDelegate}
-              roles={roles.filter((r) => form.watch('roleIds').includes(r.id))}
-              value={scopes}
-              onChange={setScopes}
-            />
-            {!canDelegate && (
-              <p className='text-label text-muted-foreground'>
-                角色与目标范围由全范围管理员配置。
-              </p>
-            )}
+            </div>
+
+            <DialogFooter className='shrink-0 border-t border-border bg-surface-header/90 px-6 py-3.5 sm:justify-end'>
+              <Button
+                type='button'
+                variant='outline'
+                disabled={saving}
+                onClick={closeDialog}
+              >
+                取消
+              </Button>
+              <Button
+                type='submit'
+                loading={saving}
+                disabled={!isEdit && !canDelegate}
+              >
+                保存
+              </Button>
+            </DialogFooter>
           </form>
         </Form>
-        <DialogFooter>
-          <Button
-            type='submit'
-            form='user-form'
-            disabled={saving || (!isEdit && !canDelegate)}
-          >
-            保存
-          </Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

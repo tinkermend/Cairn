@@ -54,3 +54,6 @@ export function getAvatarDataUri(avatarKey?: string | null): string | null {
 export const PRESET_AVATARS: string[] = PRESET_AVATAR_SEEDS.map(
   (seed: string) => `${DEFAULT_AVATAR_STYLE}:${seed}`,
 )
+
+/** 未选择头像时的预览造型，避免空态只剩问号。 */
+export const DEFAULT_PREVIEW_AVATAR = PRESET_AVATARS[0] ?? `${DEFAULT_AVATAR_STYLE}:cairn-bot-1`
