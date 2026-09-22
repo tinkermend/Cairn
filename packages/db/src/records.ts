@@ -41,6 +41,7 @@ export type ConsoleAccount = {
   id: string
   displayName: string
   email: string | null
+  avatar?: string | null
   status: 'active' | 'disabled'
   createdAt: Date
   updatedAt: Date
@@ -50,6 +51,7 @@ export type NewConsoleAccount = {
   displayName: string
   id?: string | undefined
   email?: string | null | undefined
+  avatar?: string | null | undefined
   status?: 'active' | 'disabled' | undefined
   createdAt?: Date | undefined
   updatedAt?: Date | undefined
@@ -140,6 +142,9 @@ export type Target = {
     password?: { by: 'id' | 'name' | 'css'; value: string }
     submit?: { by: 'id' | 'name' | 'css'; value: string }
   } | null
+  loginLeaveTimeoutMs: number | null
+  landingSettleMode: 'default' | 'off'
+  landingSettleTimeoutMs: number | null
   captcha: TargetCaptchaDefinition | null
   currentAuthProfileRevision: number | null
   sessionPolicy: Record<string, unknown> | null
@@ -166,8 +171,11 @@ export type NewTarget = {
         password?: { by: 'id' | 'name' | 'css'; value: string }
         submit?: { by: 'id' | 'name' | 'css'; value: string }
       }
-    | null
+      | null
     | undefined
+  loginLeaveTimeoutMs?: number | null | undefined
+  landingSettleMode?: 'default' | 'off' | undefined
+  landingSettleTimeoutMs?: number | null | undefined
   captcha?: TargetCaptchaDefinition | null | undefined
   sensitiveSelectors?: string[] | undefined
   currentAuthProfileRevision?: number | null | undefined
@@ -189,6 +197,7 @@ export type TargetAccount = {
   usage: 'business' | 'map' | 'both'
   mapUsageGuard: string | null
   configRevision: number
+  maxConcurrentSessions: number
   deletedAt: Date | null
   deletedBy: ResourceDeletedBy | null
 }
@@ -207,6 +216,7 @@ export type NewTargetAccount = {
   usage?: 'business' | 'map' | 'both' | undefined
   mapUsageGuard?: string | null | undefined
   configRevision?: number | undefined
+  maxConcurrentSessions?: number | undefined
   deletedAt?: Date | null | undefined
   deletedBy?: ResourceDeletedBy | null | undefined
 }
@@ -512,7 +522,7 @@ export type EvidenceRow = {
   status: 'available' | 'pending' | 'missing'
   createdAt: Date
   schemaVersion: number
-  type: 'output' | 'input' | 'screenshot' | 'trace' | 'error' | 'log' | 'video'
+  type: EvidenceType
   runId: string
   digest: string | null
   stepRunId: string | null
@@ -532,8 +542,9 @@ export type StoredObjectRow = {
   status: 'available' | 'pending' | 'purged'
   createdAt: Date
   runId: string | null
-  ownerKind: 'run' | 'artifact'
+  ownerKind: 'run' | 'artifact' | 'fixture'
   artifactId: string | null
+  fixtureId: string | null
   digest: string | null
   objectKey: string
   contentType: string | null
@@ -565,6 +576,7 @@ export type BrowserSessionRow = {
   fencingToken: number
   version: number
   profileKey: string
+  accountSlot: number
   reusePolicy: 'REUSE_PAGE' | 'NEW_PAGE' | 'RECREATE_SESSION'
   expiresAt: Date
   authControlEpoch: number
@@ -605,6 +617,7 @@ export type NewBrowserSession = {
   ownerWorkerInstanceId?: string | null | undefined
   generation: number
   profileKey: string
+  accountSlot?: number | undefined
   reusePolicy: 'REUSE_PAGE' | 'NEW_PAGE' | 'RECREATE_SESSION'
   expiresAt: Date
   id?: string | undefined
@@ -735,6 +748,7 @@ export type SessionOperationRow = {
 export type SessionProfileRow = {
   targetId: string
   targetAccountId: string
+  accountSlot: number
   revision: number
   locationWorkerId: string | null
   state: SessionProfileState
@@ -866,3 +880,37 @@ export type NewRecordingDraftRow = {
 }
 
 export type { ActionModuleRow, ActionModuleVersionRow } from './schema/action-modules.js'
+
+export type TargetFixtureRow = {
+  id: string
+  targetId: string
+  scenarioId: string | null
+  name: string
+  contentType: string
+  byteSize: number | null
+  digest: string | null
+  uploadGenerationId: string | null
+  uploadDeadlineAt: Date | null
+  deletedAt: Date | null
+  deletedBy: ResourceDeletedBy | null
+  createdByConsoleAccountId: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type NewTargetFixtureRow = {
+  id?: string | undefined
+  targetId: string
+  scenarioId?: string | null | undefined
+  name: string
+  contentType: string
+  byteSize?: number | null | undefined
+  digest?: string | null | undefined
+  uploadGenerationId?: string | null | undefined
+  uploadDeadlineAt?: Date | null | undefined
+  deletedAt?: Date | null | undefined
+  deletedBy?: ResourceDeletedBy | null | undefined
+  createdByConsoleAccountId?: string | null | undefined
+  createdAt?: Date | undefined
+  updatedAt?: Date | undefined
+}

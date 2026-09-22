@@ -145,6 +145,39 @@ export async function listSessionEventsAfter(
   }))
 }
 
+const LANDING_SETTLE_EVENT_TYPES: SessionEventType[] = [
+  'auth.attempt_started',
+  'auth.landing_settled',
+]
+
+export async function listRecentAuthEvents(
+  db: Db,
+  input: { sessionId: string; limit?: number },
+): Promise<Array<{ type: SessionEventType; sessionId: string | null; seq: number }>> {
+  const { sessionEvents } = schemaFor(db)
+  const limit = Math.min(Math.max(input.limit ?? 80, 1), 200)
+  const rows = await db
+    .select({
+      type: sessionEvents.type,
+      sessionId: sessionEvents.sessionId,
+      seq: sessionEvents.seq,
+    })
+    .from(sessionEvents)
+    .where(
+      and(
+        eq(sessionEvents.sessionId, input.sessionId),
+        inArray(sessionEvents.type, LANDING_SETTLE_EVENT_TYPES),
+      ),
+    )
+    .orderBy(desc(sessionEvents.seq))
+    .limit(limit)
+  return rows.map((row) => ({
+    type: row.type as SessionEventType,
+    sessionId: row.sessionId,
+    seq: row.seq,
+  }))
+}
+
 export async function countSessionEventWatermark(db: Db, key?: SessionKey): Promise<number> {
   const { sessionEvents } = schemaFor(db)
   const [row] = await db

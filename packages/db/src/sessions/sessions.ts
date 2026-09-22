@@ -4,6 +4,7 @@ import { readableSessionTargets } from '../console/target-authorization.js'
 import { insertRows } from '../native.js'
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import {
+  profileKeyForAccountSlot,
   sessionDtoSchema,
   type AuthCapabilityTier,
   type IdentityState,
@@ -40,6 +41,7 @@ export type SessionRecord = {
   fencingToken: number
   version: number
   profileKey: string
+  accountSlot: number
   reusePolicy: SessionReusePolicy
   idleTtlSeconds: number
   maxLifetimeSeconds: number
@@ -133,6 +135,7 @@ function toSession(row: BrowserSessionRow): SessionRecord {
     fencingToken: row.fencingToken,
     version: row.version,
     profileKey: row.profileKey,
+    accountSlot: row.accountSlot ?? 1,
     reusePolicy: row.reusePolicy,
     idleTtlSeconds: row.idleTtlSeconds,
     maxLifetimeSeconds: row.maxLifetimeSeconds,
@@ -207,13 +210,13 @@ export function isClaimable(session: Pick<SessionRecord, 'status' | 'health'>): 
   return session.status === 'OPEN' && session.health !== 'UNHEALTHY'
 }
 
-export function profileKeyFor(key: SessionKey): string {
-  return `${key.targetId}/${key.targetAccountId}`
+export function profileKeyFor(key: SessionKey, accountSlot = 1): string {
+  return profileKeyForAccountSlot(key.targetId, key.targetAccountId, accountSlot)
 }
 
-export async function findLiveSession(db: Db, key: SessionKey): Promise<SessionRecord | null> {
+export async function findLiveSessions(db: Db, key: SessionKey): Promise<SessionRecord[]> {
   const { browserSessions } = schemaFor(db)
-  const [row] = await db
+  const rows = await db
     .select()
     .from(browserSessions)
     .where(
@@ -223,8 +226,14 @@ export async function findLiveSession(db: Db, key: SessionKey): Promise<SessionR
         inArray(browserSessions.status, LIVE_STATUSES),
       ),
     )
-    .limit(1)
-  return row ? toSession(row) : null
+    .orderBy(asc(browserSessions.accountSlot), asc(browserSessions.createdAt), asc(browserSessions.id))
+  return rows.map(toSession)
+}
+
+/** 仅独占 / 恰好一条活会话时使用。并发路径必须走 findLiveSessions。 */
+export async function findLiveSession(db: Db, key: SessionKey): Promise<SessionRecord | null> {
+  const lives = await findLiveSessions(db, key)
+  return lives[0] ?? null
 }
 
 export async function getSessionById(db: Db, sessionId: string): Promise<SessionRecord | null> {
@@ -284,6 +293,9 @@ export type CreateSessionInput = {
   keepAliveSeconds?: number | null
   authProbeIntervalSeconds?: number | null
   evictionPriority?: number
+  accountSlot?: number
+  profileKey?: string
+  predecessorSessionId?: string
   id?: string
 }
 
@@ -356,7 +368,9 @@ export async function createSession(
       generation,
       fencingToken: 0,
       version: 0,
-      profileKey: profileKeyFor(input.key),
+      profileKey: input.profileKey ?? profileKeyFor(input.key, input.accountSlot ?? 1),
+      accountSlot: input.accountSlot ?? 1,
+      predecessorSessionId: input.predecessorSessionId ?? null,
       reusePolicy: input.reusePolicy,
       idleTtlSeconds: input.idleTtlSeconds,
       maxLifetimeSeconds: input.maxLifetimeSeconds,
@@ -374,7 +388,7 @@ export async function createSession(
     if (isUniqueViolation(error)) {
       const name = constraintName(error) ?? ''
       if (name.includes('browser_sessions_key_live')) {
-        throw new SessionDomainError('SESSION_BUSY', '同键已有活会话')
+        throw new SessionDomainError('SESSION_BUSY', '同槽已有活会话')
       }
     }
     throw error
@@ -901,6 +915,7 @@ export function toSessionDto(row: BrowserSessionRow, lease: SessionLeaseRow | nu
     generation: row.generation,
     reusePolicy: row.reusePolicy,
     profileKey: row.profileKey,
+    accountSlot: row.accountSlot ?? 1,
     idleTtlSeconds: row.idleTtlSeconds,
     lastUsedAt: row.lastUsedAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),

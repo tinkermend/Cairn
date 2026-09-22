@@ -87,3 +87,14 @@ export const LOGIN_FIELD_HEURISTICS = {
     { by: 'name', value: 'login' },
   ],
 } as const satisfies Record<'username' | 'password' | 'submit', readonly LoginLocator[]>
+
+export const LOGIN_FIELD_ROLES = ['username', 'password', 'submit'] as const
+export type LoginFieldRole = (typeof LOGIN_FIELD_ROLES)[number]
+
+/** 手填定位只试用户写下的那一条；未指定才按平台常见字段顺序试。 */
+export function loginLocatorCandidates(
+  role: LoginFieldRole,
+  specified?: LoginLocator | null,
+): LoginLocator[] {
+  return specified ? [specified] : [...LOGIN_FIELD_HEURISTICS[role]]
+}

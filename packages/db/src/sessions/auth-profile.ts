@@ -9,8 +9,8 @@ import {
   deriveAuthCapability,
   digestAuthPayload,
   originsFromTargetUrls,
-  platformConfigDocumentSchema,
   requiredValidationSteps,
+  upgradePlatformConfigDocument,
   resolveFreshnessSeconds,
   targetAuthProfileDefinitionSchema,
   targetAuthProfileViewSchema,
@@ -40,7 +40,7 @@ type AuthKindParams = {
 export async function readLiveSessionAuth(db: Db): Promise<{ sessionAuth: PlatformSessionAuth; revision: number }> {
   const { platformConfig } = schemaFor(db)
   const [row] = await db.select().from(platformConfig).limit(1)
-  const document = platformConfigDocumentSchema.parse(row?.document ?? FACTORY_PLATFORM_CONFIG)
+  const document = upgradePlatformConfigDocument(row?.document ?? FACTORY_PLATFORM_CONFIG)
   return { sessionAuth: document.sessionAuth, revision: row?.revision ?? 1 }
 }
 
@@ -324,17 +324,17 @@ export async function updateTargetAccountIdentity(
 }
 
 export async function resetAuthBudgetAfterCredentialChange(db: Db, accountId: string): Promise<void> {
-  const { targetAccounts, targetAccountAuthBudget } = schemaFor(db)
+  const { targetAccounts } = schemaFor(db)
   const now = new Date()
-  const [account] = await updateRows(
-    db,
-    targetAccounts,
-    { configRevision: sql`${targetAccounts.configRevision} + 1`, updatedAt: now },
-    eq(targetAccounts.id, accountId),
-    { id: targetAccounts.id, configRevision: targetAccounts.configRevision },
-  )
+  const [account] = await db
+    .select({ id: targetAccounts.id, configRevision: targetAccounts.configRevision })
+    .from(targetAccounts)
+    .where(eq(targetAccounts.id, accountId))
+    .limit(1)
   if (!account) return
   await txUpdateBudget(db, accountId, {
+    windowStartedAt: now,
+    autoLoginCount: 0,
     consecutiveFailures: 0,
     pausedReason: null,
     nextAllowedAt: null,
@@ -347,6 +347,8 @@ async function txUpdateBudget(
   db: Db,
   accountId: string,
   patch: {
+    windowStartedAt?: Date
+    autoLoginCount?: number
     consecutiveFailures: number
     pausedReason: string | null
     nextAllowedAt: Date | null
@@ -360,16 +362,26 @@ async function txUpdateBudget(
     .from(targetAccountAuthBudget)
     .where(eq(targetAccountAuthBudget.targetAccountId, accountId))
     .limit(1)
+  const { windowStartedAt, autoLoginCount, ...rest } = patch
   if (existing) {
-    await updateRows(db, targetAccountAuthBudget, patch, eq(targetAccountAuthBudget.targetAccountId, accountId))
+    await updateRows(
+      db,
+      targetAccountAuthBudget,
+      {
+        ...rest,
+        ...(windowStartedAt ? { windowStartedAt } : {}),
+        ...(autoLoginCount != null ? { autoLoginCount } : {}),
+      },
+      eq(targetAccountAuthBudget.targetAccountId, accountId),
+    )
     return
   }
   await insertRows(db, targetAccountAuthBudget, {
     id: newId(),
     targetAccountId: accountId,
-    windowStartedAt: patch.updatedAt,
-    autoLoginCount: 0,
-    ...patch,
+    windowStartedAt: windowStartedAt ?? rest.updatedAt,
+    autoLoginCount: autoLoginCount ?? 0,
+    ...rest,
   })
 }
 
@@ -401,6 +413,9 @@ export async function occupyAutoLoginBudget(
     if (paused) {
       return { ok: false as const, code: 'AUTH_AUTO_LOGIN_PAUSED', message: budget!.pausedReason ?? '自动登录已暂停' }
     }
+    if (budget?.loginInFlight && now.getTime() - budget.updatedAt.getTime() < 120_000) {
+      return { ok: false as const, code: 'SESSION_BUSY', message: '同账号正在自动登录' }
+    }
     const count = resetWindow ? 0 : budget!.autoLoginCount
     if (count >= sessionAuth.autoLoginMaxPerWindow) {
       return { ok: false as const, code: 'AUTH_AUTO_LOGIN_PAUSED', message: '本窗口自动登录次数已用尽' }
@@ -412,6 +427,7 @@ export async function occupyAutoLoginBudget(
       pausedReason: configChanged ? null : (budget?.pausedReason ?? null),
       nextAllowedAt: configChanged ? null : (budget?.nextAllowedAt ?? null),
       lastConfigRevision: account.configRevision,
+      loginInFlight: true,
       updatedAt: now,
     }
     if (budget) {
@@ -447,7 +463,15 @@ export async function recordAutoLoginOutcome(
     await updateRows(
       db,
       targetAccountAuthBudget,
-      { consecutiveFailures: 0, pausedReason: null, nextAllowedAt: null, updatedAt: now },
+      {
+        autoLoginCount: 0,
+        windowStartedAt: now,
+        consecutiveFailures: 0,
+        pausedReason: null,
+        nextAllowedAt: null,
+        loginInFlight: false,
+        updatedAt: now,
+      },
       eq(targetAccountAuthBudget.id, budget.id),
     )
     return
@@ -456,7 +480,7 @@ export async function recordAutoLoginOutcome(
     await updateRows(
       db,
       targetAccountAuthBudget,
-      { pausedReason: 'credential_or_challenge', nextAllowedAt: now, updatedAt: now },
+      { pausedReason: 'credential_or_challenge', nextAllowedAt: now, loginInFlight: false, updatedAt: now },
       eq(targetAccountAuthBudget.id, budget.id),
     )
     return
@@ -470,6 +494,7 @@ export async function recordAutoLoginOutcome(
       consecutiveFailures: failures,
       pausedReason: paused ? 'consecutive_verify_failures' : budget.pausedReason,
       nextAllowedAt: paused ? now : budget.nextAllowedAt,
+      loginInFlight: false,
       updatedAt: now,
     },
     eq(targetAccountAuthBudget.id, budget.id),

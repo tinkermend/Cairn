@@ -1,4 +1,22 @@
-import type { AccountSessionStatus, SessionOverviewFilter, SessionSystemOverviewFilter } from '@cairn/shared'
+import {
+  describeAuthIssue,
+  describeAuthWaitStage,
+  SESSION_MAINTENANCE_ERROR_MESSAGES,
+  type AccountSessionStatus,
+  type SessionMaintenanceErrorCode,
+  type SessionOverviewFilter,
+  type SessionSystemOverviewFilter,
+} from '@cairn/shared'
+
+export function describeSessionOperationError(code: string | null | undefined): string | null {
+  const value = code?.trim()
+  if (!value) return null
+  return (
+    describeAuthIssue(value) ??
+    SESSION_MAINTENANCE_ERROR_MESSAGES[value as SessionMaintenanceErrorCode] ??
+    null
+  )
+}
 
 export const ACCOUNT_SESSION_STATUS_LABELS: Record<AccountSessionStatus, string> = {
   unprepared: '未准备',
@@ -63,6 +81,7 @@ export const OPERATION_KIND_LABELS: Record<string, string> = {
   LOGIN: '登录',
   RENEW_AUTH: '续登',
   REFRESH_LOGIN_PAGE: '刷新登录页',
+  SETTLE_LANDING: '整理页面',
   CLOSE: '关闭会话',
   RESTART: '重启会话',
   RESET_PROFILE: '清除登录数据',
@@ -95,16 +114,22 @@ export function sessionOccupancyLabel(item: {
 export function sessionEventLabel(type: string, payload: Record<string, unknown>) {
   const labels: Record<string, string> = {
     'operation.requested': '已提交', 'operation.claimed': '开始执行',
-    'operation.waiting_for_auth': '等待人工认证', 'operation.finished': '已结束', 'operation.cancelled': '已取消',
+    'operation.waiting_for_auth': '等待登录', 'operation.finished': '已结束', 'operation.cancelled': '已取消',
     'retention.set': '已设置保留', 'retention.extended': '已延长保留', 'retention.cleared': '已取消保留',
     'session.closed': '会话已关闭', 'session.restarted': '会话已重启', 'session.lost': '会话已失联',
     'profile.reset': '登录数据已清除', 'auth.control_changed': '认证控制权已变更',
     'auth.attempt_started': '开始登录', 'auth.verified': '登录核验完成', 'auth.unknown': '登录状态待确认',
-    'auth.signal_observed': '观察到登出信号', 'session.keepalive_extended': '已续期保活',
+    'auth.landing_settled': '已整理落地页',
+    'auth.signal_observed': authSignalTitle(payload.kind), 'session.keepalive_extended': '已续期保活',
     'session.evicted': '因容量被驱逐',
   }
   const status: Record<string, string> = { SUCCEEDED: '已完成', FAILED: '失败', CANCELLED: '已取消' }
-  const label = type === 'operation.finished' ? status[String(payload.status)] ?? labels[type] : labels[type]
+  const label =
+    type === 'operation.finished'
+      ? status[String(payload.status)] ?? labels[type]
+      : type === 'operation.waiting_for_auth'
+        ? describeAuthWaitStage(typeof payload.reason === 'string' ? payload.reason : null)
+        : labels[type]
   const kind = OPERATION_KIND_LABELS[String(payload.kind)]
   return [kind, label ?? '会话状态已更新'].filter(Boolean).join(' · ')
 }
@@ -124,11 +149,24 @@ export interface ResolvedSessionEvent {
   payload: Record<string, unknown>
 }
 
+const AUTH_SIGNAL_LABELS: Record<string, { title: string; tone: ResolvedSessionEvent['tone'] }> = {
+  navigated_to_login: { title: '到达登录页', tone: 'info' },
+  login_form_visible: { title: '看到登录表单', tone: 'info' },
+  auth_endpoint_expired: { title: '认证接口已过期', tone: 'warning' },
+}
+
+function authSignalTitle(kind: unknown): string {
+  return typeof kind === 'string' && AUTH_SIGNAL_LABELS[kind]
+    ? AUTH_SIGNAL_LABELS[kind]!.title
+    : '检测到认证信号'
+}
+
 const EVENT_TYPE_TITLES: Record<string, string> = {
   'auth.signal_observed': '检测到认证信号',
   'auth.attempt_started': '尝试自动登录',
   'auth.verified': '登录核验通过',
   'auth.unknown': '登录状态待确认',
+  'auth.landing_settled': '已整理落地页',
   'auth.control_changed': '控制权变更',
   'retention.set': '设置会话保留',
   'retention.extended': '延长会话保留',
@@ -160,8 +198,12 @@ export function resolveSessionEvent(
   }
 
   if (type === 'auth.signal_observed') {
-    title = '观察到登出信号'
-    tone = 'warning'
+    const signal =
+      typeof payload.kind === 'string' && AUTH_SIGNAL_LABELS[payload.kind]
+        ? AUTH_SIGNAL_LABELS[payload.kind]!
+        : { title: '检测到认证信号', tone: 'warning' as const }
+    title = signal.title
+    tone = signal.tone
     if (!summary && typeof payload.kind === 'string') {
       summary = `信号类型: ${payload.kind}`
     }
@@ -171,9 +213,25 @@ export function resolveSessionEvent(
   } else if (type === 'auth.verified') {
     stage = '登录核验完成'
     tone = 'success'
+  } else if (type === 'auth.landing_settled') {
+    const residual = payload.residualOverlay === true
+    const skippedReason = typeof payload.skippedReason === 'string' ? payload.skippedReason : ''
+    stage = residual ? '仍有未关掉的层' : '落地页已整理'
+    tone = residual ? 'warning' : 'success'
+    if (!summary && skippedReason) {
+      summary =
+        skippedReason === 'mode_off'
+          ? '目标已关闭自动整理'
+          : skippedReason === 'interstitial'
+            ? '当前像居间验证页，已跳过整理'
+            : `整理已跳过：${skippedReason}`
+    }
   } else if (type === 'auth.unknown') {
     stage = '登录状态待确认'
     tone = 'warning'
+    if (!summary && typeof payload.errorCode === 'string' && payload.errorCode) {
+      summary = describeAuthIssue(payload.errorCode) ?? payload.errorCode
+    }
   } else if (type === 'operation.requested') {
     stage = '已提交'
     tone = 'info'
@@ -181,8 +239,10 @@ export function resolveSessionEvent(
     stage = '开始执行'
     tone = 'info'
   } else if (type === 'operation.waiting_for_auth') {
-    stage = '等待人工认证'
+    const reason = typeof payload.reason === 'string' ? payload.reason : null
+    stage = describeAuthWaitStage(reason)
     tone = 'warning'
+    if (!summary) summary = describeAuthIssue(reason) ?? undefined
   } else if (type === 'operation.finished') {
     if (status === 'SUCCEEDED') {
       stage = '已完成'
@@ -192,7 +252,7 @@ export function resolveSessionEvent(
       tone = 'destructive'
       const err = typeof payload.errorCode === 'string' ? payload.errorCode : undefined
       if (err) {
-        summary = err
+        summary = describeSessionOperationError(err) ?? err
       }
     } else if (status === 'CANCELLED') {
       stage = '已取消'
@@ -360,9 +420,13 @@ export function groupSessionEventsByActivity<
     const prevFinished =
       prev &&
       (prev.type === 'operation.finished' ||
+        prev.type === 'operation.cancelled' ||
         prev.type === 'auth.verified' ||
+        prev.type === 'auth.unknown' ||
         prev.type === 'session.closed') &&
-      event.type !== 'auth.verified'
+      event.type !== 'auth.verified' &&
+      event.type !== 'auth.unknown' &&
+      event.type !== 'operation.finished'
 
     if (currentGroup.length > 0 && (isNewOpRequest || opChanged || (prevFinished && isTimeGap))) {
       rawGroups.push(currentGroup)
@@ -424,7 +488,9 @@ export function groupSessionEventsByActivity<
 
     const reqEvt = groupEvents.find((e) => e.type === 'operation.requested')
     const finishEvt = groupEvents.find((e) => e.type === 'operation.finished')
+    const cancelledEvt = groupEvents.find((e) => e.type === 'operation.cancelled')
     const verifiedEvt = groupEvents.find((e) => e.type === 'auth.verified')
+    const unknownEvt = groupEvents.find((e) => e.type === 'auth.unknown')
     const waitingEvt = groupEvents.find((e) => e.type === 'operation.waiting_for_auth')
 
     let title = '会话活动'
@@ -462,14 +528,35 @@ export function groupSessionEventsByActivity<
         statusLabel = '已取消'
         tone = 'neutral'
       }
+    } else if (cancelledEvt) {
+      status = 'CANCELLED'
+      statusLabel = '已取消'
+      tone = 'neutral'
     } else if (waitingEvt) {
       status = 'WAITING_FOR_AUTH'
-      statusLabel = '等待人工认证'
+      statusLabel = describeAuthWaitStage(
+        typeof waitingEvt.payload.reason === 'string' ? waitingEvt.payload.reason : null,
+      )
       tone = 'warning'
     } else if (verifiedEvt) {
       status = 'SUCCEEDED'
       statusLabel = '核验完成'
       tone = 'success'
+    } else if (unknownEvt) {
+      const s = String(unknownEvt.payload.status ?? '')
+      if (s === 'SUCCEEDED') {
+        status = 'SUCCEEDED'
+        statusLabel = '核验完成'
+        tone = 'success'
+      } else if (s === 'CANCELLED') {
+        status = 'CANCELLED'
+        statusLabel = '已取消'
+        tone = 'neutral'
+      } else {
+        status = 'FAILED'
+        statusLabel = '失败'
+        tone = 'destructive'
+      }
     } else if (groupEvents.some((e) => e.type === 'operation.claimed' || e.type === 'operation.requested')) {
       status = 'RUNNING'
       statusLabel = '执行中'

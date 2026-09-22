@@ -226,6 +226,7 @@ export { isReusable } from "./sessions/index.js";
 export { isClaimable } from "./sessions/index.js";
 export { profileKeyFor } from "./sessions/index.js";
 export const findLiveSession = operation(impl2.findLiveSession);
+export const findLiveSessions = operation(impl2.findLiveSessions);
 export const getSessionById = operation(impl2.getSessionById);
 export const getLeaseById = operation(impl2.getLeaseById);
 export const countOpenSessionsForWorker = operation(
@@ -333,6 +334,7 @@ export const listSessionSystemOverview = operation(
 export const getAccountSessionDetail = operation(impl2.getAccountSessionDetail);
 export const listSessionEvents = operation(impl2.listSessionEvents);
 export const listSessionEventsAfter = operation(impl2.listSessionEventsAfter);
+export const listRecentAuthEvents = operation(impl2.listRecentAuthEvents);
 export const appendSessionEvent = operation(impl2.appendSessionEvent);
 export const countSessionEventWatermark = operation(
   impl2.countSessionEventWatermark,

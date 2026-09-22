@@ -10,13 +10,19 @@ export function resolveProfileRoot(dir: string, repoRoot: () => string): string 
   return resolve(repoRoot(), dir)
 }
 
-export function profileDirFor(root: string, key: SessionKey): string {
-  return join(root, key.targetId, key.targetAccountId)
+export function profileDirFor(root: string, key: SessionKey, accountSlot = 1): string {
+  return accountSlot <= 1
+    ? join(root, key.targetId, key.targetAccountId)
+    : join(root, key.targetId, key.targetAccountId, String(accountSlot))
 }
 
-export function ensureProfileDir(root: string, key: SessionKey): { profileKey: string; profileDir: string } {
-  const profileKey = profileKeyFor(key)
-  const profileDir = profileDirFor(root, key)
+export function ensureProfileDir(
+  root: string,
+  key: SessionKey,
+  accountSlot = 1,
+): { profileKey: string; profileDir: string } {
+  const profileKey = profileKeyFor(key, accountSlot)
+  const profileDir = profileDirFor(root, key, accountSlot)
   mkdirSync(profileDir, { recursive: true, mode: 0o700 })
   if (existsSync(profileDir)) {
     try {
@@ -49,8 +55,9 @@ export function prepareProfileDir(
   key: SessionKey,
   expectedRevision: number,
   fallback = false,
+  accountSlot = 1,
 ): { profileKey: string; profileDir: string; wiped: boolean } {
-  const ensured = ensureProfileDir(root, key)
+  const ensured = ensureProfileDir(root, key, accountSlot)
   const stored = readProfileRevision(ensured.profileDir)
   const wipe = fallback || stored === null || stored !== expectedRevision
   if (wipe && existsSync(ensured.profileDir)) {

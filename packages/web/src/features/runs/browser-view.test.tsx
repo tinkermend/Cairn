@@ -94,6 +94,40 @@ describe('BrowserView', () => {
     expect(screen.getByRole('region', { name: '受管浏览器' }).elements()).toHaveLength(0)
   })
 
+  it('父页面带来的登录问题也会写进等待说明', async () => {
+    signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView runId={meta.runId} runStatus="WAITING_FOR_AUTH" waitReason="LOGIN_PAGE_UNREACHABLE" />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByText('目标登录页打不开。画面只发给当前处理登录的人。')).toBeInTheDocument()
+  })
+
+  it('等待认证时说明登录页打不开并展示当前页地址', async () => {
+    mocks.fetchManagedBrowser.mockResolvedValue({
+      ...meta,
+      lastAuthError: 'LOGIN_PAGE_UNREACHABLE',
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId: '66666666-6666-4666-8666-666666666666',
+          documentEpoch: 0,
+        },
+        kind: 'base',
+        viewing: true,
+        currentExecution: true,
+        url: 'about:blank',
+      },
+    })
+    signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
+    const screen = await renderView()
+    await expect.element(screen.getByText('目标登录页打不开。画面只发给当前处理登录的人。')).toBeInTheDocument()
+    await expect.element(screen.getByText(/当前页 空白页/)).toBeInTheDocument()
+  })
+
   it('等待认证时折叠态主操作就是处理登录', async () => {
     signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
     const screen = await renderView()
@@ -103,6 +137,39 @@ describe('BrowserView', () => {
     expect(mocks.acquireAuthControl).toHaveBeenCalledWith(meta.runId)
     await expect.element(screen.getByRole('button', { name: '登录完成，继续运行' })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '放弃控制' })).toBeInTheDocument()
+  })
+
+  it('等待认证且未持权时不订阅画面', async () => {
+    mocks.fetchManagedBrowser.mockResolvedValue({
+      ...meta,
+      framesAvailable: true,
+    })
+    signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
+    const screen = await renderView()
+    await expect
+      .element(screen.getByText('取得登录权后才会显示认证画面，避免把验证码广播给其他观察者。'))
+      .toBeInTheDocument()
+    expect(mocks.subscribeBrowserFrames).not.toHaveBeenCalled()
+  })
+
+  it('画面流失败不交还登录控制权', async () => {
+    mocks.fetchManagedBrowser.mockResolvedValue({
+      ...meta,
+      framesAvailable: true,
+      authControl: {
+        epoch: 1,
+        actorId: 'u1',
+        expiresAt: '2026-09-13T00:00:30.000Z',
+        heldByViewer: true,
+      },
+    })
+    mocks.subscribeBrowserFrames.mockRejectedValue(new Error('stream down'))
+    signIn(['run:read', 'session:view', 'session:control', 'run:execute'])
+    const screen = await renderView()
+    await screen.getByRole('button', { name: '处理登录' }).click()
+    await expect.element(screen.getByRole('button', { name: '登录完成，继续运行' })).toBeInTheDocument()
+    await expect.element(screen.getByText('无法订阅受管浏览器画面')).toBeInTheDocument()
+    expect(mocks.releaseAuthControl).not.toHaveBeenCalled()
   })
 
   it('他人持权时不能再申请输入', async () => {
@@ -321,5 +388,46 @@ describe('BrowserView', () => {
     await screen.getByRole('button', { name: '展开画面' }).click()
     await expect.element(screen.getByRole('img', { name: '受管浏览器当前画面' })).toBeInTheDocument()
     expect(completed).toBeGreaterThan(0)
+  })
+
+  it('会话空闲时可整理页面', async () => {
+    const settle = vi.fn(async () => undefined)
+    mocks.fetchManagedBrowser.mockResolvedValue({
+      ...meta,
+      runStatus: 'RUNNING',
+      authHold: null,
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView
+          runId={meta.runId}
+          runStatus="RUNNING"
+          sessionMode
+          onSettleLanding={settle}
+        />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByRole('button', { name: '整理页面' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '整理页面' }).click()
+    expect(settle).toHaveBeenCalled()
+  })
+
+  it('等待认证时没有整理页面', async () => {
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView
+          runId={meta.runId}
+          runStatus="WAITING_FOR_AUTH"
+          sessionMode
+          onSettleLanding={async () => undefined}
+        />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByRole('button', { name: '处理登录' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '整理页面' }).elements()).toHaveLength(0)
   })
 })

@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import {
   AUTH_CONTROL_HEARTBEAT_SECONDS,
+  describeManagedAuthWait,
   hasAllPermissions,
+  managedPageCaption,
   type BrowserAuthInputCommand,
   type ManagedBrowserFrame,
   type ManagedBrowserMeta,
@@ -22,6 +24,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
 import { useAuthoringObserve } from '@/features/authoring'
+import { cn } from '@/lib/utils'
 
 const LIVE_VIEW_STATUSES = new Set([
   'QUEUED',
@@ -115,8 +118,12 @@ type Props = {
   onRunChanged?: () => void
   transport?: BrowserTransport
   sessionMode?: boolean
+  defaultOpen?: boolean
   observationConnected?: boolean
   onRefreshLogin?: (pageRef: PageRef) => Promise<unknown>
+  onSettleLanding?: () => Promise<unknown>
+  embedded?: boolean
+  waitReason?: string | null
 }
 
 export function BrowserView({
@@ -126,8 +133,11 @@ export function BrowserView({
   onRunChanged,
   transport = runTransport,
   sessionMode = false,
-  observationConnected = true,
+  defaultOpen = false,
   onRefreshLogin,
+  onSettleLanding,
+  embedded = false,
+  waitReason = null,
 }: Props) {
   const {
     fetchManagedBrowser,
@@ -154,7 +164,7 @@ export function BrowserView({
       sessionMode ? ['session:control'] : ['session:control', 'run:execute']
     )
   )
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const [meta, setMeta] = useState<ManagedBrowserMeta | null>(null)
   const [frame, setFrame] = useState<ManagedBrowserFrame | null>(null)
   const [busy, setBusy] = useState(false)
@@ -244,8 +254,18 @@ export function BrowserView({
     }
   }, [runId, releaseAuthControl])
 
+  const streamFailToastAt = useRef(0)
+
   useEffect(() => {
+    const waitingForAuth = runStatus === 'WAITING_FOR_AUTH'
+    const holdingAuth =
+      Boolean(tokenRef.current) || Boolean(meta?.authControl?.heldByViewer)
     if (!open || !canView || !meta?.framesAvailable) {
+      setFrame(null)
+      setStreamError(null)
+      return
+    }
+    if (waitingForAuth && !holdingAuth) {
       setFrame(null)
       setStreamError(null)
       return
@@ -268,13 +288,6 @@ export function BrowserView({
         .then(() => {
           if (cancelled || controller?.signal.aborted) return
           if (!isLiveViewRun(runStatus)) return
-          const held = tokenRef.current
-          if (held)
-            void releaseAuthControl(runId, { token: held }).catch(
-              () => undefined
-            )
-          setToken(null)
-          setFrame(null)
           setStreamError('画面流已中断，正在重连…')
           retryTimer = window.setTimeout(connect, 800)
         })
@@ -284,15 +297,12 @@ export function BrowserView({
             error instanceof ApiRequestError
               ? error.message
               : '无法订阅受管浏览器画面'
-          const held = tokenRef.current
-          if (held)
-            void releaseAuthControl(runId, { token: held }).catch(
-              () => undefined
-            )
-          setToken(null)
-          setFrame(null)
           setStreamError(message)
-          toast.error(message)
+          const now = Date.now()
+          if (now - streamFailToastAt.current > 8000) {
+            streamFailToastAt.current = now
+            toast.error(message)
+          }
           if (isLiveViewRun(runStatus))
             retryTimer = window.setTimeout(connect, 1600)
         })
@@ -308,11 +318,12 @@ export function BrowserView({
     canView,
     runId,
     runStatus,
+    token,
     viewPageId,
     meta?.framesAvailable,
     meta?.authControl?.epoch,
+    meta?.authControl?.heldByViewer,
     subscribeBrowserFrames,
-    releaseAuthControl,
   ])
 
   useEffect(() => {
@@ -347,34 +358,22 @@ export function BrowserView({
   }, [token, canControl, runId, heartbeatAuthControl])
 
   useEffect(() => {
-    if (
-      !observationConnected ||
-      !canControl ||
-      !open ||
-      runStatus !== 'WAITING_FOR_AUTH'
-    ) {
+    if (!canControl || !open || runStatus !== 'WAITING_FOR_AUTH') {
       const held = tokenRef.current
       tokenRef.current = null
       setToken(null)
       if (held)
         void releaseAuthControl(runId, { token: held }).catch(() => undefined)
     }
-  }, [
-    observationConnected,
-    canControl,
-    open,
-    runStatus,
-    runId,
-    releaseAuthControl,
-  ])
+  }, [canControl, open, runStatus, runId, releaseAuthControl])
 
   if (!canView) return null
 
   const waiting = runStatus === 'WAITING_FOR_AUTH'
   const holding = runStatus === 'HOLDING'
-  const picking = holding && observe.pickMode
+  const picking = observe.pickMode && (holding || (sessionMode && observe.livePage))
   const highlightBox = observe.highlight?.preview?.box
-  const controlling = Boolean(token && observationConnected && canControl)
+  const controlling = Boolean(token && canControl)
   const connecting = isBrowserViewConnecting({
     open,
     hasFrame: Boolean(frame),
@@ -395,8 +394,7 @@ export function BrowserView({
   >
 
   const sendCommand = (partial: BrowserAuthInputPayload) => {
-    if (!token || !pageRef || !frame || !observationConnected || !canControl)
-      return
+    if (!token || !pageRef || !frame || !canControl) return
     seq.current += 1
     const command = {
       ...partial,
@@ -423,42 +421,122 @@ export function BrowserView({
   return (
     <section
       aria-label='受管浏览器'
-      className='rounded-lg border border-border-card bg-card p-5 shadow-card'
+      className={cn(
+        'min-w-0 overflow-hidden',
+        embedded
+          ? 'flex flex-1 flex-col border-0 p-0 shadow-none bg-transparent'
+          : 'rounded-lg border border-border-card bg-card p-5 shadow-card',
+      )}
     >
-      <div className='flex flex-wrap items-center justify-between gap-3'>
-        <div>
-          <h2 className='text-section font-semibold'>受管浏览器</h2>
-          <p className='mt-1 text-label text-muted-foreground'>
-            {waiting
-              ? '需要目标系统登录。画面只发给当前控制者。'
-              : holding
-                ? '调试挂起中。指认在画面上点选，校验框画在叠加层，不会改目标页。'
-                : sessionMode
-                  ? '按需查看会话画面，离开或收起后停止采集。'
-                  : isLiveViewRun(runStatus)
-                    ? '只读跟随当前执行页。在途运行会自动展开画面。'
-                    : '只读跟随当前执行页。运行结束后不再抓取实时画面。'}
-          </p>
+      {embedded ? (
+        <div className='flex items-center justify-between gap-2 px-3 pt-2 pb-1 text-label text-muted-foreground'>
+          <span className='truncate'>
+            {meta?.currentPage ? (
+              <>
+                当前页 {managedPageCaption(meta.currentPage)}
+                {frame ? ` · ${frame.width}×${frame.height}` : ''}
+              </>
+            ) : (
+              '受管浏览器画面'
+            )}
+          </span>
+          <div className='flex items-center gap-2 shrink-0'>
+            {meta?.degradedReason ? (
+              <StatusBadge tone='warning'>画面不可用</StatusBadge>
+            ) : null}
+            {controlling ? (
+              <StatusBadge tone='warning'>正在输入</StatusBadge>
+            ) : null}
+            {sessionMode && canControl && !waiting && !controlling && onSettleLanding ? (
+              <Button
+                size='sm'
+                variant='outline'
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true)
+                  void onSettleLanding()
+                    .then(() => toast.success('已提交整理页面'))
+                    .catch((error) =>
+                      toast.error(
+                        error instanceof ApiRequestError ? error.message : '无法整理页面',
+                      ),
+                    )
+                    .finally(() => setBusy(false))
+                }}
+              >
+                整理页面
+              </Button>
+            ) : null}
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() => setOpen((value) => !value)}
+            >
+              {open ? '收起画面' : '展开画面'}
+            </Button>
+          </div>
         </div>
-        <div className='flex items-center gap-2'>
-          {meta?.degradedReason ? (
-            <StatusBadge tone='warning'>画面不可用</StatusBadge>
-          ) : null}
-          {frame ? <StatusBadge tone='success'>画面已连接</StatusBadge> : null}
-          {controlling ? (
-            <StatusBadge tone='warning'>正在输入</StatusBadge>
-          ) : null}
-          <Button variant='outline' onClick={() => setOpen((value) => !value)}>
-            {open ? '收起画面' : '展开画面'}
-          </Button>
+      ) : (
+        <div className='flex flex-wrap items-center justify-between gap-3'>
+          <div>
+            <h2 className='text-section font-semibold'>受管浏览器</h2>
+            <p className='mt-1 text-label text-muted-foreground'>
+              {waiting
+                ? describeManagedAuthWait(meta?.lastAuthError ?? waitReason)
+                : picking
+                  ? '指认中。在画面上点选元素，校验框画在叠加层，不会改目标页。'
+                  : holding
+                    ? '调试挂起中。指认在画面上点选，校验框画在叠加层，不会改目标页。'
+                    : sessionMode
+                      ? '实时画面默认只读。登录后的一次性层由整理收口处理，也可再点「整理页面」。'
+                      : isLiveViewRun(runStatus)
+                        ? '只读跟随当前页。在途运行会自动展开画面。'
+                        : '只读跟随当前页。运行结束后不再抓取实时画面。'}
+            </p>
+          </div>
+          <div className='flex items-center gap-2'>
+            {meta?.degradedReason ? (
+              <StatusBadge tone='warning'>画面不可用</StatusBadge>
+            ) : null}
+            {frame ? (
+              <StatusBadge tone='success'>画面已连接</StatusBadge>
+            ) : null}
+            {controlling ? (
+              <StatusBadge tone='warning'>正在输入</StatusBadge>
+            ) : null}
+            {sessionMode && canControl && !waiting && !controlling && onSettleLanding ? (
+              <Button
+                variant='outline'
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true)
+                  void onSettleLanding()
+                    .then(() => toast.success('已提交整理页面'))
+                    .catch((error) =>
+                      toast.error(
+                        error instanceof ApiRequestError ? error.message : '无法整理页面',
+                      ),
+                    )
+                    .finally(() => setBusy(false))
+                }}
+              >
+                整理页面
+              </Button>
+            ) : null}
+            <Button
+              variant='outline'
+              onClick={() => setOpen((value) => !value)}
+            >
+              {open ? '收起画面' : '展开画面'}
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
       {waiting && canControl && !controlling ? (
         <div className='mt-4 flex flex-wrap gap-2'>
           <Button
             disabled={
               busy ||
-              !observationConnected ||
               Boolean(
                 meta?.authControl?.actorId && !meta.authControl.heldByViewer
               )
@@ -564,7 +642,7 @@ export function BrowserView({
         </div>
       ) : null}
       {open ? (
-        <div className='mt-4 space-y-4'>
+        <div className={cn(embedded ? 'mt-1.5 space-y-2.5' : 'mt-4 space-y-4')}>
           {meta && meta.pages.length > 1 ? (
             <div className='space-y-2'>
               <p className='text-label text-muted-foreground'>
@@ -582,8 +660,8 @@ export function BrowserView({
                       variant={selected ? 'secondary' : 'outline'}
                       onClick={() => setViewPageId(page.pageRef.pageId)}
                     >
-                      {page.kind}
-                      {page.currentExecution ? ' · 执行页' : ''}
+                      {managedPageCaption(page)}
+                      {page.currentExecution ? ' · 当前页' : ''}
                     </Button>
                   )
                 })}
@@ -595,74 +673,87 @@ export function BrowserView({
               正在查看其他页面，不会改变执行当前页。
             </p>
           ) : null}
-          {meta?.currentPage ? (
-            <p className='text-label text-muted-foreground'>
-              当前执行页 {meta.currentPage.kind}
-              {frame ? ` · ${frame.width}×${frame.height}` : ''}
-            </p>
-          ) : (
-            <p className='text-small text-muted-foreground'>
-              {meta?.degradedReason === 'worker_unreachable'
-                ? '执行面暂时不可达，仍显示会话所有权。'
-                : connecting
-                  ? '正在连接受管浏览器画面…'
-                  : '还没有可观察的受管页面。'}
-            </p>
-          )}
+          {!embedded &&
+            (meta?.currentPage ? (
+              <p className='text-label text-muted-foreground'>
+                当前页 {managedPageCaption(meta.currentPage)}
+                {frame ? ` · ${frame.width}×${frame.height}` : ''}
+              </p>
+            ) : (
+              <p className='text-small text-muted-foreground'>
+                {meta?.degradedReason === 'worker_unreachable'
+                  ? '执行面暂时不可达，仍显示会话所有权。'
+                  : connecting
+                    ? '正在连接受管浏览器画面…'
+                    : '还没有可观察的受管页面。'}
+              </p>
+            ))}
           {frame && meta?.capabilities.screencast !== 'closed' ? (
-            <button
-              type='button'
-              className='relative block w-full overflow-hidden rounded-md border border-border-default bg-muted'
-              disabled={!controlling && !picking}
-              onClick={(event) => {
-                if (picking) {
-                  const point = framePointFromClick(event, frame)
-                  observe.pickAt(point.x, point.y)
-                  return
-                }
-                if (!controlling) return
-                sendCommand({
-                  type: 'mouse_click',
-                  ...framePointFromClick(event, frame),
-                  button: 'left',
-                })
-              }}
-              onWheel={(event) => {
-                if (!controlling) return
-                event.preventDefault()
-                sendCommand({
-                  type: 'mouse_wheel',
-                  x: 0,
-                  y: 0,
-                  deltaX: event.deltaX,
-                  deltaY: event.deltaY,
-                })
-              }}
-            >
-              <img
-                src={frame.image}
-                alt='受管浏览器当前画面'
-                className='max-h-[28rem] w-full object-contain'
-              />
-              {highlightBox ? (
-                <svg
-                  className='pointer-events-none absolute inset-0 h-full w-full'
-                  viewBox={`0 0 ${frame.width} ${frame.height}`}
-                  preserveAspectRatio='xMidYMid meet'
-                  aria-hidden
-                >
-                  <rect
-                    x={highlightBox.x}
-                    y={highlightBox.y}
-                    width={highlightBox.width}
-                    height={highlightBox.height}
-                    fill='none'
-                    stroke='var(--action-primary)'
-                    strokeWidth={2}
-                  />
-                </svg>
-              ) : null}
-            </button>
+            <div className='w-full'>
+              <button
+                type='button'
+                className={cn(
+                  'relative block w-full overflow-hidden bg-card',
+                  embedded
+                    ? 'border-y border-border-default'
+                    : 'rounded-md border border-border-default shadow-sm',
+                  (controlling || picking) && 'cursor-crosshair',
+                )}
+                disabled={!controlling && !picking}
+                onClick={(event) => {
+                  if (picking) {
+                    const point = framePointFromClick(event, frame)
+                    observe.pickAt(point.x, point.y)
+                    return
+                  }
+                  if (!controlling) return
+                  sendCommand({
+                    type: 'mouse_click',
+                    ...framePointFromClick(event, frame),
+                    button: 'left',
+                  })
+                }}
+                onWheel={(event) => {
+                  if (!controlling) return
+                  event.preventDefault()
+                  sendCommand({
+                    type: 'mouse_wheel',
+                    x: 0,
+                    y: 0,
+                    deltaX: event.deltaX,
+                    deltaY: event.deltaY,
+                  })
+                }}
+              >
+                <img
+                  src={frame.image}
+                  alt='受管浏览器当前画面'
+                  className='block h-auto w-full object-contain'
+                  style={{
+                    aspectRatio: `${frame.width} / ${frame.height}`,
+                    imageRendering: '-webkit-optimize-contrast',
+                  }}
+                />
+                {highlightBox ? (
+                  <svg
+                    className='pointer-events-none absolute inset-0 h-full w-full'
+                    viewBox={`0 0 ${frame.width} ${frame.height}`}
+                    preserveAspectRatio='none'
+                    aria-hidden
+                  >
+                    <rect
+                      x={highlightBox.x}
+                      y={highlightBox.y}
+                      width={highlightBox.width}
+                      height={highlightBox.height}
+                      fill='none'
+                      stroke='var(--action-primary)'
+                      strokeWidth={2}
+                    />
+                  </svg>
+                ) : null}
+              </button>
+            </div>
           ) : (
             <div
               role='status'

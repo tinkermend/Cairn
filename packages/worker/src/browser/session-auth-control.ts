@@ -44,6 +44,7 @@ import {
   rememberReceipt,
   viewportMatches
 } from './managed-helpers'
+import { openedEntryDuringVerify } from './landing-settle.js'
 import { originAllowed, pageRefFor } from './page-identity'
 import { type LiveHandle, type SessionManagerContext } from './session-live.js'
 
@@ -241,6 +242,7 @@ export async function resumeRunAuth(this: SessionManagerContext, input: {
         const target = await this.loadTargetAuth(run.snapshot)
         if (!target) throw conflict('SESSION_TARGET_MISSING', '目标系统不存在')
         const page = this.ensureRunPage(live, input.runId).page
+        const urlBefore = typeof page.url === 'function' ? page.url() : ''
         const waitLease = await findAuthWaitLeaseForRun(this.dbHandle, input.runId)
         if (!waitLease) throw conflict('AUTH_HOLD_UNBOUND', '缺少认证等待租约')
         const checkpoint = run.authCheckpoint
@@ -279,6 +281,14 @@ export async function resumeRunAuth(this: SessionManagerContext, input: {
             throw conflict('AUTH_NOT_VERIFIED', '目标系统仍未登录')
           }
         }
+        const urlAfter = typeof page.url === 'function' ? page.url() : ''
+        await this.settleOccupiedLanding({
+          session: latestSession,
+          page,
+          trigger: 'after_login',
+          alreadyOpenedEntry: openedEntryDuringVerify(urlBefore, urlAfter, target.entryUrl),
+          runId: input.runId,
+        })
         await resumeRunAfterAuth(this.dbHandle, {
           runId: input.runId,
           actor: input.actor,

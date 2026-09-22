@@ -13,6 +13,7 @@ import {
   TARGET_STATUS_LABELS,
   formatLoginFieldState,
 } from './labels'
+import { formatLoginLeaveTimeout } from './target-form-schema'
 
 function Field({
   label,
@@ -107,6 +108,26 @@ export function SystemInfoCard({
             ) : (
               '与入口相同'
             )
+          }
+        />
+        <Field
+          label='提交后等待离开登录页'
+          value={
+            target.loginLeaveTimeoutMs != null
+              ? formatLoginLeaveTimeout(target.loginLeaveTimeoutMs)
+              : '平台默认'
+          }
+        />
+        <Field
+          label='登录后整理'
+          value={target.landingSettleMode === 'off' ? '不自动整理' : '按平台整理'}
+        />
+        <Field
+          label='整理预算'
+          value={
+            target.landingSettleTimeoutMs != null
+              ? formatLoginLeaveTimeout(target.landingSettleTimeoutMs)
+              : '平台默认'
           }
         />
         <Field label='认证方式' value={AUTH_METHOD_LABELS[target.authMethod]} />

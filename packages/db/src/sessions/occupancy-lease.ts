@@ -26,9 +26,16 @@ import { conflict, isUniqueViolation } from '../runs/errors.js'
 import { lockRunRow, releaseRunLeaseTx, verifyRunLeaseForWrite } from '../leases/leases.js'
 import type { BrowserSessionRow, SessionLeaseRow } from '../records.js'
 import {
+  decideAccountSessionClaim,
+  findDestructiveReservation,
+  loadLiveAccountSessions,
+  profileKeyFrom,
+  reservationBlocksSession,
+} from './account-session-concurrency.js'
+import {
   SessionDomainError,
   createSession,
-  findLiveSession,
+  getSessionById,
   isClaimable,
   type SessionKey,
   type SessionRecord,
@@ -56,6 +63,8 @@ export type ClaimSessionUseInput = {
   authProbeIntervalSeconds?: number | null
   evictionPriority?: number
   touchLastUsed?: boolean
+  sessionId?: string | null
+  pickIdle?: 'oldest' | 'worst'
 }
 
 export type ClaimSessionUseResult =
@@ -76,6 +85,7 @@ export type ClaimSessionUseResult =
         | 'SESSION_CAPACITY_EXCEEDED'
         | 'SESSION_TARGET_MISSING'
         | 'SESSION_POLICY_INVALID'
+        | 'SESSION_ACCOUNT_CAP_EXCEEDED'
       message?: string
     }
 
@@ -176,7 +186,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
           message: 'Worker 未声明占用协议',
         }
       }
-      const { targetAccounts, sessionOperations: operations } = schemaFor(tx)
+      const { targetAccounts } = schemaFor(tx)
       await locked(
         tx,
         tx
@@ -184,21 +194,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
           .from(targetAccounts)
           .where(eq(targetAccounts.id, input.key.targetAccountId)),
       )
-      const [reserved] = await tx
-        .select({ id: operations.id })
-        .from(operations)
-        .where(
-          and(
-            eq(operations.targetId, input.key.targetId),
-            eq(operations.targetAccountId, input.key.targetAccountId),
-            eq(operations.status, 'RUNNING'),
-            inArray(operations.kind, ['CLOSE', 'RESTART', 'RESET_PROFILE']),
-          ),
-        )
-        .limit(1)
-      if (reserved && (input.owner.kind !== 'SESSION_OPERATION' || input.owner.operationId !== reserved.id)) {
-        return { ok: false as const, code: 'SESSION_BUSY' as const, message: '会话正在关闭或重建' }
-      }
+      const reserved = await findDestructiveReservation(tx, input.key)
       if (input.owner.kind === 'RUN') {
         const run = await lockRunRow(tx, input.owner.runId)
         if (!run) return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
@@ -209,10 +205,63 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         }
       }
 
-      const { scheduling, revision } = await readSessionScheduling(tx)
-      const live = await findLiveSession(tx, input.key)
-      if (live) {
-        const session = await lockSession(tx, live.id)
+      const { revision } = await readSessionScheduling(tx)
+      const { lives, leases } = await loadLiveAccountSessions(tx, input.key)
+      for (const existing of lives) {
+        const lease = leases.get(existing.id)
+        if (!lease) continue
+        const sameOwner =
+          (input.owner.kind === 'RUN' &&
+            lease.runId === input.owner.runId &&
+            lease.holderWorkerId === input.holderWorkerId) ||
+          (input.owner.kind === 'SESSION_OPERATION' && lease.operationId === input.owner.operationId)
+        if (sameOwner && lease.purpose === input.purpose) {
+          await applyPendingRetentionIntent(tx, existing.id)
+          if (!(await lockSession(tx, existing.id))) {
+            return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
+          }
+          return {
+            ok: true as const,
+            grant: toGrant(lease),
+            session: existing,
+            created: false,
+            acquireReason: 'reused' as const,
+            profileFallback: false,
+            schedulingRevision: revision,
+          }
+        }
+      }
+
+      const occupied = await countUnclosedForWorker(tx, input.holderWorkerId)
+      const decision = await decideAccountSessionClaim(tx, {
+        key: input.key,
+        lives,
+        leases,
+        holderWorkerId: input.holderWorkerId,
+        holderInstanceId: input.holderInstanceId,
+        holderMaxSessions: worker.maxSessions,
+        holderOccupied: occupied,
+        holderProtocols: worker.protocolCapabilities,
+        purpose: input.purpose,
+        expectedSessionId: input.sessionId,
+        pickIdle: input.pickIdle ?? (input.purpose === 'MAINTENANCE' ? 'worst' : 'oldest'),
+      })
+      if (decision.action === 'reject') {
+        return { ok: false as const, code: decision.code, message: decision.message }
+      }
+
+      const targetSessionId = decision.action === 'reuse' ? decision.session.id : null
+      if (
+        reservationBlocksSession(reserved, targetSessionId, lives, {
+          kind: input.owner.kind,
+          operationId: input.owner.kind === 'SESSION_OPERATION' ? input.owner.operationId : undefined,
+        })
+      ) {
+        return { ok: false as const, code: 'SESSION_BUSY' as const, message: '会话正在关闭或重建' }
+      }
+
+      if (decision.action === 'reuse') {
+        const session = await lockSession(tx, decision.session.id)
         if (!session) return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
         if (session.status === 'CLOSING' || session.status === 'LOST') {
           return { ok: false as const, code: 'SESSION_BUSY' as const, message: '会话正在关闭或已失联' }
@@ -220,36 +269,11 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         if (session.status !== 'OPEN' && session.status !== 'CREATING') {
           return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
         }
-        if (
-          session.ownerWorkerId !== input.holderWorkerId ||
-          session.ownerWorkerInstanceId !== input.holderInstanceId
-        ) {
-          return { ok: false as const, code: 'SESSION_BUSY' as const, message: '会话属于其他 Worker' }
-        }
         if (session.status === 'OPEN' && !isClaimable(session)) {
           return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
         }
         const existing = await findActiveLeaseRow(tx, session.id)
-        if (existing) {
-          const sameOwner =
-            (input.owner.kind === 'RUN' &&
-              existing.runId === input.owner.runId &&
-              existing.holderWorkerId === input.holderWorkerId) ||
-            (input.owner.kind === 'SESSION_OPERATION' && existing.operationId === input.owner.operationId)
-          if (sameOwner && existing.purpose === input.purpose) {
-            await applyPendingRetentionIntent(tx, session.id)
-            return {
-              ok: true as const,
-              grant: toGrant(existing),
-              session: (await findLiveSession(tx, input.key))!,
-              created: false,
-              acquireReason: 'reused' as const,
-              profileFallback: false,
-              schedulingRevision: revision,
-            }
-          }
-          return { ok: false as const, code: 'SESSION_BUSY' as const }
-        }
+        if (existing) return { ok: false as const, code: 'SESSION_BUSY' as const }
         const bumped = await bumpSessionFence(tx, session.id, input.touchLastUsed !== false)
         if (!bumped) return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
         const lease = await insertLease(tx, {
@@ -265,7 +289,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         return {
           ok: true as const,
           grant: toGrant(lease),
-          session: (await findLiveSession(tx, input.key))!,
+          session: (await getSessionById(tx, bumped.id))!,
           created: false,
           acquireReason: 'reused' as const,
           profileFallback: false,
@@ -273,14 +297,6 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         }
       }
 
-      const occupied = await countUnclosedForWorker(tx, input.holderWorkerId)
-      if (occupied >= worker.maxSessions) {
-        return {
-          ok: false as const,
-          code: 'SESSION_CAPACITY_EXCEEDED' as const,
-          message: '本 Worker 会话数已达上限',
-        }
-      }
       const created = await createSession(tx, {
         key: input.key,
         ownerWorkerId: input.holderWorkerId,
@@ -292,6 +308,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         keepAliveSeconds: input.keepAliveSeconds,
         authProbeIntervalSeconds: input.authProbeIntervalSeconds,
         evictionPriority: input.evictionPriority,
+        accountSlot: decision.accountSlot,
       })
       if (!created.ok) return { ok: false as const, code: created.code, message: created.message }
       const session = await lockSession(tx, created.session.id)
@@ -307,7 +324,8 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         holderWorkerId: input.holderWorkerId,
         leaseTtlSeconds: input.leaseTtlSeconds,
       })
-      const profile = await getSessionProfile(tx, input.key)
+      const profileKey = profileKeyFrom(input.key, decision.accountSlot)
+      const profile = await getSessionProfile(tx, profileKey)
       let profileFallback = false
       if (
         profile?.state === 'PRESENT' &&
@@ -316,7 +334,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
       ) {
         await transferProfileLocation(
           tx,
-          input.key,
+          profileKey,
           profile.locationWorkerId,
           input.holderWorkerId,
           profile.revision,
@@ -324,19 +342,17 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         profileFallback = true
       } else if (!profile) {
         await upsertSessionProfile(tx, {
-          key: input.key,
+          key: profileKey,
           workerId: input.holderWorkerId,
           revision: 1,
           state: 'PRESENT',
         })
       }
-      void scheduling
       await applyPendingRetentionIntent(tx, bumped.id)
-      const liveAfter = (await findLiveSession(tx, input.key))!
       return {
         ok: true as const,
         grant: toGrant(lease),
-        session: liveAfter,
+        session: (await getSessionById(tx, bumped.id))!,
         created: true,
         acquireReason: 'created' as const,
         profileFallback,

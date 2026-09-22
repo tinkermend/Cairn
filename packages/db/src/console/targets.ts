@@ -69,6 +69,7 @@ import {
   platformConfigDocumentSchema,
   resolveSessionPolicyLayers,
   sessionPolicyFromPlatform,
+  effectiveAccountSessionCap,
   type AuditAction,
   type TargetSessionPolicyPatch,
   type TargetResolutionPolicyPatch,
@@ -313,6 +314,9 @@ export class TargetsStore {
           captchaMode: body.captchaMode,
           status: body.status,
           loginFields: body.loginFields,
+          loginLeaveTimeoutMs: body.loginLeaveTimeoutMs ?? null,
+          landingSettleMode: body.landingSettleMode ?? 'default',
+          landingSettleTimeoutMs: body.landingSettleTimeoutMs ?? null,
           captcha: body.captcha ?? null,
           sensitiveSelectors: body.sensitiveSelectors ?? [],
           createdAt: now,
@@ -352,6 +356,9 @@ export class TargetsStore {
       body.authMethod === undefined &&
       body.captchaMode === undefined &&
       body.status === undefined &&
+      body.loginLeaveTimeoutMs === undefined &&
+      body.landingSettleMode === undefined &&
+      body.landingSettleTimeoutMs === undefined &&
       body.sensitiveSelectors === undefined
     const authSurfaceTouched =
       body.loginFields !== undefined ||
@@ -374,6 +381,18 @@ export class TargetsStore {
             captchaMode: body.captchaMode ?? current.captchaMode,
             status: body.status ?? current.status,
             loginFields: body.loginFields === undefined ? current.loginFields : body.loginFields,
+            loginLeaveTimeoutMs:
+              body.loginLeaveTimeoutMs === undefined
+                ? current.loginLeaveTimeoutMs
+                : body.loginLeaveTimeoutMs,
+            landingSettleMode:
+              body.landingSettleMode === undefined
+                ? current.landingSettleMode
+                : body.landingSettleMode,
+            landingSettleTimeoutMs:
+              body.landingSettleTimeoutMs === undefined
+                ? current.landingSettleTimeoutMs
+                : body.landingSettleTimeoutMs,
             captcha: body.captcha === undefined ? current.captcha : body.captcha,
             sensitiveSelectors:
               body.sensitiveSelectors === undefined
@@ -533,7 +552,7 @@ export class TargetsStore {
     actor: RequestAccount,
     body?: DeleteResourceBody,
   ): Promise<CleanupStatusResponse> {
-    const { targets, targetAccounts, actionModules, scenarios, recordingDrafts, runs, storedObjects, scenarioSuites, schedules } = schemaFor(
+    const { targets, targetAccounts, actionModules, scenarios, recordingDrafts, runs, storedObjects, scenarioSuites, schedules, targetFixtures } = schemaFor(
       this.db,
     )
 
@@ -616,6 +635,9 @@ export class TargetsStore {
 
         await tx.update(actionModules).set({ deletedAt: now, deletedBy, updatedAt: now })
           .where(and(eq(actionModules.targetId, id), isNull(actionModules.deletedAt)))
+
+        await tx.update(targetFixtures).set({ deletedAt: now, deletedBy, updatedAt: now })
+          .where(and(eq(targetFixtures.targetId, id), isNull(targetFixtures.deletedAt)))
 
         if (accounts.length > 0) {
           const accountsWithSecrets = await tx
@@ -802,7 +824,11 @@ export class TargetsStore {
     targetId: string,
     query: TargetAccountListQuery = {},
   ): Promise<TargetAccountListResponse> {
-    await this.loadTarget(targetId)
+    const target = await this.loadTarget(targetId)
+    const accountSessionMode = resolveSessionPolicyLayers({
+      platformDefault: sessionPolicyFromPlatform(FACTORY_PLATFORM_CONFIG.session),
+      targetOverride: target.sessionPolicy as never,
+    }).accountSessionMode
     const parsed = targetAccountListQuerySchema.parse(query)
     const { targetAccounts } = schemaFor(this.db)
     const limit = parsed.limit
@@ -836,7 +862,9 @@ export class TargetsStore {
       ),
     )
     return targetAccountListResponseSchema.parse({
-      items: paginated.items.map((row) => this.toAccount(row, profile, extras.get(row.id), credentialViews.get(row.id))),
+      items: paginated.items.map((row) =>
+        this.toAccount(row, profile, { ...extras.get(row.id), accountSessionMode }, credentialViews.get(row.id)),
+      ),
       nextCursor: paginated.nextCursor,
       hasMore: paginated.hasMore,
     })
@@ -901,6 +929,19 @@ export class TargetsStore {
         const { credentials } = schemaFor(tx)
         const [catalog] = await tx.select().from(credentials).where(eq(credentials.id, accountId)).for('update')
         if (body.expectedRevision !== undefined && catalog?.revision !== body.expectedRevision) throw failure('conflict', { code: 'CREDENTIAL_REVISION_CONFLICT', message: '账号已被他人更新，请重新核对' })
+        if (body.maxConcurrentSessions != null && body.maxConcurrentSessions > 1) {
+          const [targetRow] = await tx.select({ sessionPolicy: targets.sessionPolicy }).from(targets).where(eq(targets.id, targetId)).limit(1)
+          const mode = resolveSessionPolicyLayers({
+            platformDefault: sessionPolicyFromPlatform(FACTORY_PLATFORM_CONFIG.session),
+            targetOverride: targetRow?.sessionPolicy as never,
+          }).accountSessionMode
+          if (mode !== 'concurrent') {
+            throw failure('conflict', {
+              code: 'SESSION_CONCURRENCY_UNSUPPORTED',
+              message: '目标未开启同账号多会话，不能把并发上限设为大于 1',
+            })
+          }
+        }
         if (body.clearPassword || usernameChanged) await assertResourceIdle(tx as unknown as Db, { targetAccountId: accountId })
         if (body.clearPassword) {
           const [activeRun] = await tx.select({ id: runs.id }).from(runs).where(and(eq(runs.targetAccountId, accountId), inArray(runs.status, ACTIVE_RUN_STATUSES), isNull(runs.deletedAt))).limit(1)
@@ -929,6 +970,7 @@ export class TargetsStore {
             secretId: body.clearPassword ? null : nextSecret ? nextSecret.id : current.secretId,
             usage: nextUsage,
             mapUsageGuard: mapUsageGuardFor(nextUsage),
+            maxConcurrentSessions: body.maxConcurrentSessions ?? current.maxConcurrentSessions,
             configRevision: usernameChanged ? current.configRevision + 1 : current.configRevision,
             updatedAt: now,
           })
@@ -1115,7 +1157,17 @@ export class TargetsStore {
     const row = await this.loadAccount(targetId, accountId)
     const profile = await loadCurrentAuthProfile(this.db, targetId)
     const extras = await loadAccountAuthDisplay(this.db, [accountId])
-    return this.toAccount(row, profile, extras.get(accountId), await loadAccountCredentialView(this.db, accountId))
+    const target = await this.loadTarget(targetId)
+    const accountSessionMode = resolveSessionPolicyLayers({
+      platformDefault: sessionPolicyFromPlatform(FACTORY_PLATFORM_CONFIG.session),
+      targetOverride: target.sessionPolicy as never,
+    }).accountSessionMode
+    return this.toAccount(
+      row,
+      profile,
+      { ...extras.get(accountId), accountSessionMode },
+      await loadAccountCredentialView(this.db, accountId),
+    )
   }
 
   private async loadTarget(id: string) {
@@ -1201,6 +1253,19 @@ export class TargetsStore {
         updatedAt: now,
       })
     }
+    if (body.maxConcurrentSessions != null && body.maxConcurrentSessions > 1) {
+      const [targetRow] = await tx.select({ sessionPolicy: targets.sessionPolicy }).from(targets).where(eq(targets.id, targetId)).limit(1)
+      const mode = resolveSessionPolicyLayers({
+        platformDefault: sessionPolicyFromPlatform(FACTORY_PLATFORM_CONFIG.session),
+        targetOverride: targetRow?.sessionPolicy as never,
+      }).accountSessionMode
+      if (mode !== 'concurrent') {
+        throw failure('conflict', {
+          code: 'SESSION_CONCURRENCY_UNSUPPORTED',
+          message: '目标未开启同账号多会话，不能把并发上限设为大于 1',
+        })
+      }
+    }
     await tx.insert(targetAccounts).values({
       id,
       targetId,
@@ -1211,6 +1276,7 @@ export class TargetsStore {
       status: body.status,
       usage: body.usage ?? DEFAULT_ACCOUNT_USAGE,
       mapUsageGuard: mapUsageGuardFor(body.usage ?? DEFAULT_ACCOUNT_USAGE),
+      maxConcurrentSessions: body.maxConcurrentSessions ?? 1,
       createdAt: now,
       updatedAt: now,
     })
@@ -1271,6 +1337,9 @@ export class TargetsStore {
       captchaMode: row.captchaMode,
       status: row.status,
       loginFields: compactLoginFields((row.loginFields as TargetLoginFields | null) ?? null),
+      loginLeaveTimeoutMs: row.loginLeaveTimeoutMs ?? null,
+      landingSettleMode: row.landingSettleMode ?? 'default',
+      landingSettleTimeoutMs: row.landingSettleTimeoutMs ?? null,
       captcha: row.captcha ?? null,
       sensitiveSelectors: row.sensitiveSelectors ?? [],
       accountCount,
@@ -1290,10 +1359,11 @@ export class TargetsStore {
     row: TargetAccount,
     profile: Awaited<ReturnType<typeof loadCurrentAuthProfile>>,
     extras?: {
-      lastAuthCheckedAt: string | null
-      lastAuthSuccessAt: string | null
-      lastAuthError: string | null
-      autoLoginPausedReason: string | null
+      lastAuthCheckedAt?: string | null
+      lastAuthSuccessAt?: string | null
+      lastAuthError?: string | null
+      autoLoginPausedReason?: string | null
+      accountSessionMode?: 'exclusive' | 'concurrent'
     },
     credential?: Awaited<ReturnType<typeof loadAccountCredentialView>>,
   ): TargetAccountDto {
@@ -1332,6 +1402,12 @@ export class TargetsStore {
             issuerExpirySource: credential.issuerExpirySource,
           }
         : {}),
+      maxConcurrentSessions: row.maxConcurrentSessions ?? 1,
+      effectiveAccountSessionMode: extras?.accountSessionMode,
+      effectiveMaxConcurrentSessions: effectiveAccountSessionCap({
+        accountSessionMode: extras?.accountSessionMode,
+        maxConcurrentSessions: row.maxConcurrentSessions ?? 1,
+      }),
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
     })

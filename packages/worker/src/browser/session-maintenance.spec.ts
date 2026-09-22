@@ -15,7 +15,7 @@ import {
 } from '@cairn/db'
 import { BrowserSessionManager } from './session-manager'
 import { createBrowserPort } from './port'
-import { currentOccupancyGrant, attemptLoginWithCredentials, loginWithCredentials, probeAuth, submitLoginCredentials } from './runtime'
+import { currentOccupancyGrant, attemptLoginCredentials, attemptLoginWithCredentials, loginWithCredentials, probeAuth } from './runtime'
 import { verifyAuthProfile } from './session-auth'
 vi.mock('@cairn/db', async (load) => ({
   ...(await load<typeof import('@cairn/db')>()),
@@ -48,10 +48,13 @@ vi.mock('./runtime', async (load) => {
   const actual = await load<typeof import('./runtime')>()
   return {
     ...actual,
-    submitLoginCredentials: vi.fn(async () => true),
+    attemptLoginCredentials: vi.fn(async () => ({ authenticated: true, submit: 'authenticated' as const })),
     loginWithCredentials: vi.fn(async () => true),
     attemptLoginWithCredentials: vi.fn(async () => ({ authenticated: true, submit: 'authenticated' as const })),
     probeAuth: vi.fn(async () => 'AUTHENTICATED'),
+    gotoPage: vi.fn(async (page: { goto?: (url: string, options?: unknown) => Promise<void> }, url: string) => {
+      await page.goto?.(url, { waitUntil: 'domcontentloaded' })
+    }),
   }
 })
 let manager: any
@@ -62,6 +65,7 @@ beforeEach(() => {
   vi.mocked(probeAuth).mockResolvedValue('AUTHENTICATED')
   vi.mocked(loginWithCredentials).mockResolvedValue(true)
   vi.mocked(attemptLoginWithCredentials).mockResolvedValue({ authenticated: true, submit: 'authenticated' })
+  vi.mocked(attemptLoginCredentials).mockResolvedValue({ authenticated: true, submit: 'authenticated' })
   manager = new BrowserSessionManager(
     {} as any,
     { workerId: 'w', workerInstanceId: 'i', defaultLeaseTtlSeconds: 60, defaultAuthWaitSeconds: 600 } as any,
@@ -153,6 +157,33 @@ it('非登录的同源业务页面不应允许刷新', () => {
   ).toBe(false)
 })
 
+it('空白或非 http 页允许刷新到登录页', () => {
+  expect(manager.isSafeLoginRefresh('about:blank', 'https://example.com/login', null)).toBe(true)
+  expect(manager.isSafeLoginRefresh('', 'https://example.com/login', null)).toBe(true)
+  expect(manager.isSafeLoginRefresh('chrome://new-tab-page/', 'https://example.com/login', null)).toBe(
+    true,
+  )
+})
+
+it('认证等待中刷新登录页允许同站跳转', () => {
+  expect(
+    manager.isSafeLoginRefresh(
+      'https://example.com/orders',
+      'https://example.com/login',
+      'https://example.com/',
+      { allowSameOrigin: true },
+    ),
+  ).toBe(true)
+  expect(
+    manager.isSafeLoginRefresh(
+      'https://other.example/login',
+      'https://example.com/login',
+      null,
+      { allowSameOrigin: true },
+    ),
+  ).toBe(false)
+})
+
 it('登录页路径与 query 发生变化也拒绝安全刷新', () => {
   expect(
     manager.isSafeLoginRefresh('https://example.com/login?result=posted', 'https://example.com/login', null),
@@ -161,6 +192,111 @@ it('登录页路径与 query 发生变化也拒绝安全刷新', () => {
     true,
   )
 })
+it('LOGIN_VERIFIED 探测未唯一匹配时仍先自动登录', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({
+    capability: 'LOGIN_VERIFIED',
+    profileRevision: 1,
+    verifyRetryBackoffSeconds: [],
+  } as any)
+  vi.mocked(verifyAuthProfile)
+    .mockResolvedValueOnce({
+      observation: { authState: 'UNKNOWN', unknownClass: 'unmatched', identityState: 'UNVERIFIED' },
+    } as any)
+    .mockResolvedValueOnce({
+      observation: { authState: 'AUTHENTICATED', identityState: 'UNVERIFIED' },
+    } as any)
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true, platformRevision: 1 } as any)
+  vi.mocked(attemptLoginCredentials).mockResolvedValue({ authenticated: true, submit: 'authenticated' })
+  const result = await manager.runMaintenanceAuth(
+    { id: 's', targetId: 't', targetAccountId: 'a', generation: 1 },
+    { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' },
+    null,
+    'ensure',
+  )
+  expect(result).toEqual({ ok: true })
+  expect(manager.resolveAccountCredential).toHaveBeenCalled()
+  expect(occupyAutoLoginBudget).toHaveBeenCalled()
+  expect(attemptLoginCredentials).toHaveBeenCalled()
+  expect(appendSessionEvent).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ type: 'auth.attempt_started', sessionId: 's' }),
+  )
+})
+
+it('LOGIN_VERIFIED 准备/登录时核验基础设施未知仍去登录页提交已存密码', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({
+    capability: 'LOGIN_VERIFIED',
+    profileRevision: 1,
+    verifyRetryBackoffSeconds: [30],
+    loginTimeoutMs: 30_000,
+  } as any)
+  vi.mocked(verifyAuthProfile)
+    .mockResolvedValueOnce({
+      observation: { authState: 'UNKNOWN', unknownClass: 'infra', identityState: 'UNVERIFIED' },
+    } as any)
+    .mockResolvedValueOnce({
+      observation: { authState: 'AUTHENTICATED', identityState: 'UNVERIFIED' },
+    } as any)
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true, platformRevision: 1 } as any)
+  vi.mocked(attemptLoginCredentials).mockResolvedValue({ authenticated: true, submit: 'authenticated' })
+  const result = await manager.runMaintenanceAuth(
+    { id: 's', targetId: 't', targetAccountId: 'a', generation: 1 },
+    { id: 'op', kind: 'PREPARE', targetId: 't', targetAccountId: 'a' },
+    null,
+    'ensure',
+  )
+  expect(result).toEqual({ ok: true })
+  expect(manager.resolveAccountCredential).toHaveBeenCalled()
+  expect(occupyAutoLoginBudget).toHaveBeenCalled()
+  expect(attemptLoginCredentials).toHaveBeenCalled()
+  expect(appendSessionEvent).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ type: 'auth.attempt_started', sessionId: 's' }),
+  )
+})
+
+it('IDENTITY_VERIFIED 核验未知时准备会话仍不提交密码', async () => {
+  vi.mocked(verifyAuthProfile).mockResolvedValue({
+    observation: { authState: 'UNKNOWN', unknownClass: 'infra', identityState: 'UNVERIFIED' },
+  } as any)
+  expect(
+    await manager.runMaintenanceAuth(
+      { id: 's', targetId: 't', targetAccountId: 'a', generation: 1 },
+      { id: 'op', kind: 'PREPARE', targetId: 't', targetAccountId: 'a' },
+      null,
+      'ensure',
+    ),
+  ).toMatchObject({ ok: false })
+  expect(manager.resolveAccountCredential).not.toHaveBeenCalled()
+  expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+})
+
+it('维护收尾同时写下认证结论和 operation.finished', async () => {
+  await manager.finishMaintenance(
+    'op',
+    { targetId: 't', targetAccountId: 'a' },
+    'FAILED',
+    { type: 'auth.unknown', sessionId: 's', generation: 1 },
+    'SESSION_AUTH_UNSUPPORTED',
+  )
+  expect(appendSessionEvent).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      type: 'auth.unknown',
+      operationId: 'op',
+      payload: { status: 'FAILED', errorCode: 'SESSION_AUTH_UNSUPPORTED' },
+    }),
+  )
+  expect(appendSessionEvent).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      type: 'operation.finished',
+      operationId: 'op',
+      payload: { status: 'FAILED', errorCode: 'SESSION_AUTH_UNSUPPORTED' },
+    }),
+  )
+})
+
 it('VERIFY_AUTH 只读核验不通过时返回失败', async () => {
   vi.mocked(verifyAuthProfile).mockResolvedValue({
     observation: { authState: 'AUTHENTICATED', identityState: 'MISMATCH' },
@@ -219,6 +355,29 @@ it('后台 AUTH_DRIVEN VERIFY 自动重登成功', async () => {
     expect.anything(),
     expect.objectContaining({ type: 'auth.attempt_started', sessionId: 's' }),
   )
+})
+
+it('LEGACY 未指定登录框时仍按启发式尝试自动登录', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({ capability: 'LEGACY' } as any)
+  vi.mocked(probeAuth).mockResolvedValue('EXPIRED')
+  vi.mocked(attemptLoginWithCredentials).mockResolvedValue({ authenticated: true, submit: 'authenticated' })
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true, platformRevision: 1 } as any)
+  vi.mocked(loadTargetForExecution).mockResolvedValue({
+    id: 't',
+    entryUrl: 'https://example.com',
+    loginUrl: 'https://example.com/login',
+    authMethod: 'password',
+    captchaMode: 'none',
+    loginFields: null,
+  } as any)
+  const result = await manager.runMaintenanceAuth(
+    { id: 's', targetId: 't', targetAccountId: 'a', generation: 1, authState: 'UNKNOWN' },
+    { id: 'op', kind: 'PREPARE', targetId: 't', targetAccountId: 'a' },
+    null,
+    'ensure',
+  )
+  expect(result).toEqual({ ok: true })
+  expect(attemptLoginWithCredentials).toHaveBeenCalled()
 })
 
 it('LEGACY 无画像时 LOGIN 先 probe 再自动登录', async () => {
@@ -318,7 +477,7 @@ it('LEGACY 验证码提交结果不明时不再二次提交', async () => {
     null,
     'ensure',
   )
-  expect(result).toEqual({ ok: false, code: 'SESSION_AUTH_UNSUPPORTED' })
+  expect(result).toMatchObject({ ok: false, code: 'SESSION_AUTH_UNSUPPORTED' })
   expect(attemptLoginWithCredentials).toHaveBeenCalledTimes(1)
 })
 
@@ -485,10 +644,192 @@ it('LOGIN 加 grant 时验证码路径转入 AUTH_WAIT，不取凭据', async ()
   )
   expect(appendSessionEvent).toHaveBeenCalledWith(
     expect.anything(),
-    expect.objectContaining({ type: 'operation.waiting_for_auth' }),
+    expect.objectContaining({
+      type: 'operation.waiting_for_auth',
+      payload: expect.objectContaining({ kind: 'LOGIN', reason: 'SESSION_AUTH_UNSUPPORTED' }),
+    }),
+  )
+  expect(setSessionAuthSummary).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ lastAuthError: 'SESSION_AUTH_UNSUPPORTED' }),
   )
   expect(manager.resolveAccountCredential).not.toHaveBeenCalled()
   expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
+})
+
+it('登录页打不开时准备会话立刻失败，不进入等待登录', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({ capability: 'LOGIN_VERIFIED', profileRevision: 1 } as any)
+  vi.mocked(loadTargetForExecution).mockResolvedValue({
+    id: 't',
+    entryUrl: 'https://example.com',
+    loginUrl: 'https://example.com/login',
+    authMethod: 'password',
+    captchaMode: 'none',
+  } as any)
+  vi.mocked(verifyAuthProfile).mockResolvedValue({
+    observation: { authState: 'UNKNOWN', identityState: 'UNVERIFIED', unknownClass: 'infra' },
+  } as any)
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true } as any)
+  vi.mocked(attemptLoginCredentials).mockResolvedValue({ authenticated: false, submit: 'not_attempted' })
+  vi.mocked(transitionSessionUse).mockResolvedValue({ ...maintenanceGrant, leaseId: 'wait' } as any)
+  manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'about:blank', goto: vi.fn() } }))
+  expect(
+    await manager.runMaintenanceAuth(
+      { id: 's', generation: 1, authState: 'UNKNOWN', identityState: 'UNVERIFIED' },
+      { id: 'op', kind: 'PREPARE', targetId: 't', targetAccountId: 'a' },
+      maintenanceGrant,
+      'ensure',
+    ),
+  ).toEqual({ ok: false, code: 'LOGIN_PAGE_UNREACHABLE' })
+  expect(transitionSessionUse).not.toHaveBeenCalled()
+  expect(appendSessionEvent).not.toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ type: 'operation.waiting_for_auth' }),
+  )
+  expect(setSessionAuthSummary).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ lastAuthError: 'LOGIN_PAGE_UNREACHABLE' }),
+  )
+})
+
+it('错密提交后进入等待时说明账号或密码不正确，不误报看不到表单', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({
+    capability: 'LOGIN_VERIFIED',
+    profileRevision: 1,
+    verifyRetryBackoffSeconds: [],
+  } as any)
+  vi.mocked(verifyAuthProfile).mockResolvedValue({
+    observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' },
+  } as any)
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true } as any)
+  vi.mocked(attemptLoginCredentials).mockReset()
+  vi.mocked(attemptLoginCredentials).mockResolvedValue({ authenticated: false, submit: 'credential_failed' })
+  vi.mocked(transitionSessionUse).mockResolvedValue({ ...maintenanceGrant, leaseId: 'wait' } as any)
+  manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'https://example.com/login', goto: vi.fn() } }))
+  expect(
+    await manager.runMaintenanceAuth(
+      { id: 's', generation: 1, authState: 'UNKNOWN', identityState: 'UNVERIFIED' },
+      { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' },
+      maintenanceGrant,
+      'ensure',
+    ),
+  ).toBe('waiting')
+  expect(setSessionAuthSummary).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ lastAuthError: 'credential' }),
+  )
+  expect(appendSessionEvent).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      type: 'operation.waiting_for_auth',
+      payload: expect.objectContaining({ kind: 'LOGIN', reason: 'credential' }),
+    }),
+  )
+})
+
+it('LEGACY 已提交但未确认登录时说明状态无法确认，不说需要手工登录', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({ capability: 'LEGACY' } as any)
+  vi.mocked(probeAuth).mockResolvedValue('EXPIRED')
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true, platformRevision: 1 } as any)
+  vi.mocked(attemptLoginWithCredentials).mockResolvedValue({ authenticated: false, submit: 'ambiguous' })
+  vi.mocked(transitionSessionUse).mockResolvedValue({ ...maintenanceGrant, leaseId: 'wait' } as any)
+  manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'https://example.com/login', goto: vi.fn() } }))
+  expect(
+    await manager.runMaintenanceAuth(
+      { id: 's', generation: 1, authState: 'UNKNOWN', identityState: 'UNVERIFIED' },
+      { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' },
+      maintenanceGrant,
+      'ensure',
+    ),
+  ).toBe('waiting')
+  expect(setSessionAuthSummary).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ lastAuthError: 'AUTH_PROBE_UNKNOWN' }),
+  )
+  expect(appendSessionEvent).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      type: 'operation.waiting_for_auth',
+      payload: expect.objectContaining({ kind: 'LOGIN', reason: 'AUTH_PROBE_UNKNOWN' }),
+    }),
+  )
+})
+
+it('LEGACY 错密提交后进入等待时说明账号或密码不正确', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({ capability: 'LEGACY' } as any)
+  vi.mocked(probeAuth).mockResolvedValue('EXPIRED')
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({ ok: true, platformRevision: 1 } as any)
+  vi.mocked(attemptLoginWithCredentials).mockResolvedValue({ authenticated: false, submit: 'credential_failed' })
+  vi.mocked(transitionSessionUse).mockResolvedValue({ ...maintenanceGrant, leaseId: 'wait' } as any)
+  manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'https://example.com/login', goto: vi.fn() } }))
+  expect(
+    await manager.runMaintenanceAuth(
+      { id: 's', generation: 1, authState: 'UNKNOWN', identityState: 'UNVERIFIED' },
+      { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' },
+      maintenanceGrant,
+      'ensure',
+    ),
+  ).toBe('waiting')
+  expect(setSessionAuthSummary).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ lastAuthError: 'credential' }),
+  )
+})
+
+it('LEGACY 自动登录额度用尽时说明已暂停，不误报看不到表单', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({ capability: 'LEGACY' } as any)
+  vi.mocked(probeAuth).mockResolvedValue('EXPIRED')
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({
+    ok: false,
+    code: 'AUTH_AUTO_LOGIN_PAUSED',
+    message: '本窗口自动登录次数已用尽',
+  } as any)
+  vi.mocked(transitionSessionUse).mockResolvedValue({ ...maintenanceGrant, leaseId: 'wait' } as any)
+  manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'https://example.com/login', goto: vi.fn() } }))
+  expect(
+    await manager.runMaintenanceAuth(
+      { id: 's', generation: 1, authState: 'UNKNOWN', identityState: 'UNVERIFIED' },
+      { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' },
+      maintenanceGrant,
+      'ensure',
+    ),
+  ).toBe('waiting')
+  expect(attemptLoginWithCredentials).not.toHaveBeenCalled()
+  expect(setSessionAuthSummary).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ lastAuthError: 'AUTH_AUTO_LOGIN_PAUSED' }),
+  )
+})
+
+it('自动登录额度用尽时说明已暂停，不误报看不到表单', async () => {
+  vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({
+    capability: 'LOGIN_VERIFIED',
+    profileRevision: 1,
+    verifyRetryBackoffSeconds: [],
+  } as any)
+  vi.mocked(verifyAuthProfile).mockResolvedValue({
+    observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' },
+  } as any)
+  vi.mocked(occupyAutoLoginBudget).mockResolvedValue({
+    ok: false,
+    code: 'AUTH_AUTO_LOGIN_PAUSED',
+    message: '本窗口自动登录次数已用尽',
+  } as any)
+  vi.mocked(transitionSessionUse).mockResolvedValue({ ...maintenanceGrant, leaseId: 'wait' } as any)
+  manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'https://example.com/login', goto: vi.fn() } }))
+  expect(
+    await manager.runMaintenanceAuth(
+      { id: 's', generation: 1, authState: 'UNKNOWN', identityState: 'UNVERIFIED' },
+      { id: 'op', kind: 'LOGIN', targetId: 't', targetAccountId: 'a' },
+      maintenanceGrant,
+      'ensure',
+    ),
+  ).toBe('waiting')
+  expect(attemptLoginCredentials).not.toHaveBeenCalled()
+  expect(setSessionAuthSummary).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ lastAuthError: 'AUTH_AUTO_LOGIN_PAUSED' }),
+  )
 })
 
 it('F404 维护切 AUTH_WAIT 失败不得写等待态', async () => {
@@ -532,7 +873,7 @@ it('提交登录前抛错不得记 OUTCOME_UNKNOWN', async () => {
   vi.mocked(verifyAuthProfile).mockResolvedValue({
     observation: { authState: 'EXPIRED', identityState: 'UNVERIFIED' },
   } as any)
-  vi.mocked(submitLoginCredentials).mockRejectedValueOnce(new Error('page closed'))
+  vi.mocked(attemptLoginCredentials).mockRejectedValueOnce(new Error('page closed'))
   manager.finishMaintenance = vi.fn(async () => undefined)
   manager.abandonOccupancy = vi.fn(async () => undefined)
   manager.bindOccupancy = vi.fn()
@@ -570,7 +911,7 @@ it('登录已提交后核验抛错记 OUTCOME_UNKNOWN，并写未知失败 outco
     reusedRunId: null,
   })
   expect(occupyAutoLoginBudget).toHaveBeenCalled()
-  expect(submitLoginCredentials).toHaveBeenCalled()
+  expect(attemptLoginCredentials).toHaveBeenCalled()
   expect(recordAutoLoginOutcome).toHaveBeenCalled()
   expect(setSessionAuthSummary).toHaveBeenCalledWith(
     expect.anything(),
@@ -600,7 +941,7 @@ it('verify_slides 核验失败不改走提交密码（CD12）', async () => {
       'ensure',
     ),
   ).toMatchObject({ ok: false })
-  expect(submitLoginCredentials).not.toHaveBeenCalled()
+  expect(attemptLoginCredentials).not.toHaveBeenCalled()
   expect(occupyAutoLoginBudget).not.toHaveBeenCalled()
 })
 
@@ -754,7 +1095,142 @@ it('登录已提交后再次领取不得自动再提交', async () => {
     grant: maintenanceGrant,
     reusedRunId: null,
   })
-  expect(submitLoginCredentials).toHaveBeenCalledTimes(1)
+  expect(attemptLoginCredentials).toHaveBeenCalledTimes(1)
+})
+
+it('PREPARE 复用登录态时空白页会打开目标入口', async () => {
+  const goto = vi.fn(async () => undefined)
+  const live = manager.lives.get('s')
+  live.handle.basePage = {
+    isClosed: () => false,
+    url: () => 'about:blank',
+    goto,
+    on: vi.fn(),
+    off: vi.fn(),
+  }
+  manager.finishMaintenance = vi.fn(async () => undefined)
+  manager.bindOccupancy = vi.fn()
+  manager.abandonOccupancy = vi.fn(async () => undefined)
+  vi.mocked(verifyAuthProfile).mockResolvedValue({
+    observation: { authState: 'AUTHENTICATED', identityState: 'MATCH' },
+  } as any)
+  await manager.attachMaintenanceOperation({
+    operation: { id: 'op', kind: 'PREPARE', targetId: 't', targetAccountId: 'a' },
+    session: { id: 's', status: 'OPEN', generation: 1 },
+    grant: maintenanceGrant,
+    reusedRunId: null,
+  })
+  expect(goto).toHaveBeenCalledWith('https://example.com', { waitUntil: 'domcontentloaded' })
+})
+
+it('刷新登录页复用 AUTH_WAIT 占用时不得释放等待租约', async () => {
+  const goto = vi.fn(async () => undefined)
+  const live = manager.lives.get('s')
+  live.handle.basePage = {
+    isClosed: () => false,
+    url: () => 'about:blank',
+    goto,
+    on: vi.fn(),
+    off: vi.fn(),
+  }
+  vi.mocked(loadTargetForExecution).mockResolvedValue({
+    id: 't',
+    entryUrl: 'https://example.com',
+    loginUrl: 'https://example.com/login',
+    authMethod: 'password',
+    captchaMode: 'none',
+  } as any)
+  manager.finishMaintenance = vi.fn(async () => undefined)
+  manager.bindOccupancy = vi.fn()
+  manager.abandonOccupancy = vi.fn(async () => undefined)
+  await manager.attachMaintenanceOperation({
+    operation: {
+      id: 'refresh',
+      kind: 'REFRESH_LOGIN_PAGE',
+      targetId: 't',
+      targetAccountId: 'a',
+      kindParams: { reusedOperationId: 'prepare-op' },
+    },
+    session: { id: 's', status: 'OPEN', generation: 1 },
+    grant: maintenanceGrant,
+    reusedRunId: null,
+  })
+  expect(goto).toHaveBeenCalledWith('https://example.com/login', { waitUntil: 'domcontentloaded' })
+  expect(manager.abandonOccupancy).not.toHaveBeenCalled()
+  expect(manager.bindOccupancy).not.toHaveBeenCalled()
+  expect(manager.finishMaintenance).toHaveBeenCalledWith(
+    'refresh',
+    { targetId: 't', targetAccountId: 'a' },
+    'SUCCEEDED',
+    expect.objectContaining({ type: 'operation.finished' }),
+  )
+})
+
+it('刷新登录页复用 Run AUTH_WAIT 时仍打开登录页且不释放占用', async () => {
+  const goto = vi.fn(async () => undefined)
+  const live = manager.lives.get('s')
+  live.handle.basePage = {
+    isClosed: () => false,
+    url: () => 'https://example.com/app',
+    goto,
+    on: vi.fn(),
+    off: vi.fn(),
+  }
+  vi.mocked(loadTargetForExecution).mockResolvedValue({
+    id: 't',
+    entryUrl: 'https://example.com',
+    loginUrl: 'https://example.com/login',
+    authMethod: 'password',
+    captchaMode: 'none',
+  } as any)
+  manager.finishMaintenance = vi.fn(async () => undefined)
+  manager.bindOccupancy = vi.fn()
+  manager.abandonOccupancy = vi.fn(async () => undefined)
+  await manager.attachMaintenanceOperation({
+    operation: { id: 'refresh', kind: 'REFRESH_LOGIN_PAGE', targetId: 't', targetAccountId: 'a' },
+    session: { id: 's', status: 'OPEN', generation: 1 },
+    grant: maintenanceGrant,
+    reusedRunId: 'run-1',
+  })
+  expect(goto).toHaveBeenCalledWith('https://example.com/login', { waitUntil: 'domcontentloaded' })
+  expect(manager.abandonOccupancy).not.toHaveBeenCalled()
+  expect(manager.finishMaintenance).toHaveBeenCalledWith(
+    'refresh',
+    { targetId: 't', targetAccountId: 'a' },
+    'SUCCEEDED',
+    expect.objectContaining({ type: 'operation.finished' }),
+  )
+})
+
+it('整理页面走同一整理函数且不写 lastUsed 路径的刷新登录 kind', async () => {
+  const settle = vi.fn(async () => ({
+    didNavigate: false,
+    didReload: true,
+    overlaysSeen: 1,
+    overlaysDismissed: 1,
+    residualOverlay: false,
+    catchUp: false,
+  }))
+  manager.settleOccupiedLanding = settle
+  manager.finishMaintenance = vi.fn(async () => undefined)
+  manager.bindOccupancy = vi.fn()
+  manager.abandonOccupancy = vi.fn(async () => undefined)
+  manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'https://example.com/app' } }))
+  await manager.attachMaintenanceOperation({
+    operation: { id: 'settle', kind: 'SETTLE_LANDING', targetId: 't', targetAccountId: 'a' },
+    session: { id: 's', status: 'OPEN', generation: 1 },
+    grant: maintenanceGrant,
+    reusedRunId: null,
+  })
+  expect(settle).toHaveBeenCalledWith(
+    expect.objectContaining({ trigger: 'manual', operationId: 'settle' }),
+  )
+  expect(manager.finishMaintenance).toHaveBeenCalledWith(
+    'settle',
+    { targetId: 't', targetAccountId: 'a' },
+    'SUCCEEDED',
+    expect.objectContaining({ type: 'operation.finished' }),
+  )
 })
 
 it('生产方法与端口面都在', () => {

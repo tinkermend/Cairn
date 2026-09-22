@@ -9,7 +9,7 @@ import {
   occupyAutoLoginBudget,
   readLiveSessionAuth,
   recordAutoLoginOutcome,
-  findLiveSession,
+  findLiveSessions,
   getRun,
   getSessionById,
   loadSecretCiphertext,
@@ -37,6 +37,7 @@ import {
   isAuthEvidenceFresh,
   pageLooksLikeLogin,
   planAuthEnsure,
+  shouldSubmitStoredCredentials,
   type RunGrant,
   type RunSnapshot,
   type SessionErrorCode,
@@ -159,7 +160,16 @@ export async function acquireExclusive(this: SessionManagerContext, run: RunSnap
     const key = { targetId: run.targetId, targetAccountId: run.targetAccountId }
     const db = this.dbHandle
 
-    let live = await findLiveSession(db, key)
+    const lives = await findLiveSessions(db, key)
+    let live =
+      lives.find(
+        (row) =>
+          row.ownerWorkerId === this.options.workerId &&
+          row.ownerWorkerInstanceId === this.workerInstanceId &&
+          row.status === 'OPEN',
+      ) ??
+      lives.find((row) => row.ownerWorkerId === this.options.workerId) ??
+      null
     if (live && (live.status === 'CLOSING' || live.status === 'LOST')) {
       return {
         ok: false,
@@ -535,6 +545,16 @@ export async function recoverAuthHeld(this: SessionManagerContext,
     }
     this.authGateClosed.delete(grant.leaseId)
     if (live) await this.retargetVideoForLease(live, grant.leaseId)
+    if (session) {
+      await this.settleOccupiedLanding({
+        session,
+        grant,
+        page,
+        trigger: 'after_login',
+        alreadyOpenedEntry: Boolean(checkpoint?.recoveryRule?.entryUrl),
+        runId: input.runGrant.runId,
+      })
+    }
     return { ok: true }
   }
 
@@ -546,7 +566,7 @@ export async function launchAndOpen(this: SessionManagerContext,
     | { ok: false; code: SessionErrorCode; message: string }
   > {
     const db = this.dbHandle
-    const { profileDir } = ensureProfileDir(this.options.profileRoot, key)
+    const { profileDir } = ensureProfileDir(this.options.profileRoot, key, created.accountSlot ?? 1)
     const launch = this.launchOverride ?? launchSession
     try {
       const handle = await launch(profileDir, {
@@ -673,17 +693,33 @@ export async function ensureProfileAuth(this: SessionManagerContext,
         expectedIdentity: verification.expectedIdentity,
         frozenExpectedIdentity: verification.expectedIdentity,
       })
-    let plan = planAuthEnsure({
-      capability: verification.capability,
-      fresh,
-      infraAttempts: 0,
-      backoffSeconds: verification.verifyRetryBackoffSeconds,
-    })
+    const coerceLoginPlan = (next: ReturnType<typeof planAuthEnsure>) =>
+      shouldSubmitStoredCredentials({
+        plan: next,
+        capability: verification.capability,
+        skipBackoffWait: false,
+      })
+        ? ({ action: 'auto_login' } as const)
+        : next
+    let plan = coerceLoginPlan(
+      planAuthEnsure({
+        capability: verification.capability,
+        fresh,
+        infraAttempts: 0,
+        backoffSeconds: verification.verifyRetryBackoffSeconds,
+      }),
+    )
     let observation: AuthObservation | null = null
     let infraAttempts = 0
     while (true) {
       signal?.throwIfAborted()
       if (plan.action === 'reuse') {
+        await this.settleOccupiedLanding({
+          session,
+          grant: occupancy,
+          trigger: 'catch_up',
+          runId: run.runId,
+        })
         return { ok: true, session: (await getSessionById(db, session.id))! }
       }
       if (plan.action === 'fail' || plan.action === 'yield') {
@@ -710,13 +746,15 @@ export async function ensureProfileAuth(this: SessionManagerContext,
         const verified = await verifyAuthProfile(live.handle, { definition: profile.definition, verification })
         observation = verified.observation
         await this.persistProfileObservation(session, verification, verified)
-        plan = planAuthEnsure({
-          capability: verification.capability,
-          fresh: false,
-          observation,
-          infraAttempts,
-          backoffSeconds: verification.verifyRetryBackoffSeconds,
-        })
+        plan = coerceLoginPlan(
+          planAuthEnsure({
+            capability: verification.capability,
+            fresh: false,
+            observation,
+            infraAttempts,
+            backoffSeconds: verification.verifyRetryBackoffSeconds,
+          }),
+        )
         continue
       }
       const occupied = await occupyAutoLoginBudget(db, {
@@ -766,6 +804,12 @@ export async function ensureProfileAuth(this: SessionManagerContext,
         sessionAuth: liveAfter.sessionAuth,
       })
       if (submitted && passed) {
+        await this.settleOccupiedLanding({
+          session,
+          grant: occupancy,
+          trigger: 'after_login',
+          runId: run.runId,
+        })
         return { ok: true, session: (await getSessionById(db, session.id))! }
       }
       plan = planAuthEnsure({
@@ -829,15 +873,16 @@ export async function ensureAuth(this: SessionManagerContext,
     })
     const established = session.authState === 'AUTHENTICATED' || session.authState === 'EXPIRED'
     if (probed === 'AUTHENTICATED' && established) {
+      await this.settleOccupiedLanding({
+        session,
+        grant: occupancy,
+        trigger: 'catch_up',
+        runId: run.runId,
+      })
       return { ok: true, session: (await getSessionById(db, session.id))! }
     }
 
     signal?.throwIfAborted()
-    const missingFields =
-      !targetInfo.loginFields?.username ||
-      !targetInfo.loginFields?.password ||
-      !targetInfo.loginFields?.submit
-
     const isSupportedCaptcha =
       targetInfo.captchaMode === 'image' ||
       targetInfo.captchaMode === 'graphic' ||
@@ -846,19 +891,16 @@ export async function ensureAuth(this: SessionManagerContext,
 
     const needsManual =
       targetInfo.authMethod === 'manual' ||
-      (targetInfo.captchaMode !== 'none' && !isSupportedCaptcha) ||
-      missingFields
+      (targetInfo.captchaMode !== 'none' && !isSupportedCaptcha)
 
     if (needsManual) {
-      // 表 D7：manual / unsupported captcha / 缺 loginFields 均记 SESSION_AUTH_UNSUPPORTED 并等待人工
+      // 未指定 loginFields 先按平台启发式试填；只有手工认证或当前验证码不能自动处理才直接等人。
       const message =
-        missingFields && targetInfo.authMethod === 'password' && targetInfo.captchaMode === 'none'
-          ? '登录框定位不完整，无法自动登录'
-          : targetInfo.authMethod === 'manual'
-            ? '目标系统要求手工认证'
-            : targetInfo.captchaMode !== 'none'
-              ? '目标系统启用验证码，自动登录降级'
-              : '需要人工认证'
+        targetInfo.authMethod === 'manual'
+          ? '目标系统要求手工认证'
+          : targetInfo.captchaMode !== 'none'
+            ? '目标系统启用验证码，自动登录降级'
+            : '需要人工认证'
       return this.enterWaitingForAuth(
         session,
         runGrant,
@@ -870,7 +912,7 @@ export async function ensureAuth(this: SessionManagerContext,
       )
     }
 
-    // password + none + 字段齐全 → 自动登录
+    // password + 可自动处理的验证码 → 先按手填或平台常见字段试填，失败再等人
     const credential = await this.resolveLoginCredential(run)
     if (!credential) {
       return this.enterWaitingForAuth(
@@ -1005,6 +1047,12 @@ export async function ensureAuth(this: SessionManagerContext,
           : targetInfo,
       )
     }
+    await this.settleOccupiedLanding({
+      session,
+      grant: occupancy,
+      trigger: 'after_login',
+      runId: run.runId,
+    })
     return { ok: true, session: (await getSessionById(db, session.id))! }
   }
 
@@ -1185,6 +1233,9 @@ export async function loadTargetAuth(this: SessionManagerContext, run: RunSnapsh
         entryUrl: run.targetAuth.entryUrl,
         loginUrl: run.targetAuth.loginUrl,
         loginFields: run.targetAuth.loginFields,
+        loginLeaveTimeoutMs: row.loginLeaveTimeoutMs,
+        landingSettleMode: row.landingSettleMode,
+        landingSettleTimeoutMs: row.landingSettleTimeoutMs,
         authMethod: run.targetAuth.authMethod,
         captchaMode: run.targetAuth.captchaMode,
         captcha: run.targetAuth.captcha ?? null,
@@ -1194,6 +1245,9 @@ export async function loadTargetAuth(this: SessionManagerContext, run: RunSnapsh
       entryUrl: row.entryUrl,
       loginUrl: row.loginUrl,
       loginFields: row.loginFields,
+      loginLeaveTimeoutMs: row.loginLeaveTimeoutMs,
+      landingSettleMode: row.landingSettleMode,
+      landingSettleTimeoutMs: row.landingSettleTimeoutMs,
       authMethod: row.authMethod,
       captchaMode: row.captchaMode,
       captcha: row.captcha ?? null,

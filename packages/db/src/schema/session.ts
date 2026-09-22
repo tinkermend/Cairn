@@ -42,6 +42,7 @@ export const browserSessions = cairnSchema.table(
     fencingToken: integer('fencing_token').notNull().default(0),
     version: integer('version').notNull().default(0),
     profileKey: text('profile_key').notNull(),
+    accountSlot: integer('account_slot').notNull().default(1),
     reusePolicy: text('reuse_policy').notNull().$type<SessionReusePolicy>(),
     idleTtlSeconds: integer('idle_ttl_seconds').notNull(),
     maxLifetimeSeconds: integer('max_lifetime_seconds').notNull(),
@@ -156,13 +157,14 @@ export const sessionProfiles = cairnSchema.table(
   {
     targetId: uuid('target_id').notNull(),
     targetAccountId: uuid('target_account_id').notNull(),
+    accountSlot: integer('account_slot').notNull().default(1),
     revision: integer('revision').notNull(),
     locationWorkerId: text('location_worker_id'),
     state: text('state').notNull().$type<SessionProfileState>(),
     pendingCleanups: jsonb('pending_cleanups').$type<SessionProfileCleanup[]>().notNull().default([]),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.targetId, t.targetAccountId] })],
+  (t) => [primaryKey({ columns: [t.targetId, t.targetAccountId, t.accountSlot] })],
 )
 
 export type BrowserSessionRow = typeof browserSessions.$inferSelect
@@ -177,6 +179,7 @@ export const sessionRetentionIntents = cairnSchema.table(
     id: uuid('id').primaryKey().$defaultFn(newId),
     targetId: uuid('target_id').notNull(),
     targetAccountId: uuid('target_account_id').notNull(),
+    sessionId: uuid('session_id'),
     retainUntil: timestamp('retain_until', { withTimezone: true }).notNull(),
     reason: text('reason'),
     createdBy: uuid('created_by'),
@@ -184,7 +187,7 @@ export const sessionRetentionIntents = cairnSchema.table(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('session_retention_intents_key_idx').on(t.targetId, t.targetAccountId)],
+  (t) => [index('session_retention_intents_session_idx').on(t.sessionId)],
 )
 
 export const sessionEvents = cairnSchema.table(

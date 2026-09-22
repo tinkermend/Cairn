@@ -487,6 +487,9 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
       reason: '初始化',
     })
     const current = (await api.getPlatformConfig(db))!
+    // 出厂已预填提供商；「缺提供商」是存量文档形态，须显式去掉这个键才构造得出来。
+    const { provider: _factoryProvider, ...platformAiWithoutProvider } =
+      FACTORY_PLATFORM_CONFIG.platformAi
     await api.updatePlatformConfig(db, {
       expectedRevision: current.revision,
       reason: '启用分析但未选提供商',
@@ -494,7 +497,7 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
         ...FACTORY_PLATFORM_CONFIG,
         analysisAi: { ...FACTORY_PLATFORM_CONFIG.analysisAi, enabled: true },
         platformAi: {
-          ...FACTORY_PLATFORM_CONFIG.platformAi,
+          ...platformAiWithoutProvider,
           baseUrl: 'https://api.deepseek.com',
           model: 'deepseek-chat',
           secretRef: { provider: 'local', secretId: api.newId() },
@@ -512,5 +515,31 @@ describe.each(DRIVERS)('%s 平台配置仓储', (driver) => {
         actor: { kind: 'console', id: actor.id },
       }),
     ).rejects.toMatchObject({ code: 'ANALYSIS_CONFIG_INVALID' })
+  })
+
+  it('readLiveSessionAuth 升级存量文档，旧 schemaVersion 不阻断会话登录', async () => {
+    const { db } = await fixture(driver)
+    await api.getOrCreatePlatformConfig(db)
+    const native = connection(db)
+    const { platformConfig } = schemaFor(native)
+    const [row] = await native.select().from(platformConfig)
+    expect(row).toBeTruthy()
+    const stored = { ...(row!.document as Record<string, unknown>) }
+    const sessionAuth = { ...((stored.sessionAuth as Record<string, unknown>) ?? {}) }
+    delete sessionAuth.loginLeaveTimeoutMs
+    await native
+      .update(platformConfig)
+      .set({
+        document: {
+          ...stored,
+          schemaVersion: 4,
+          sessionAuth,
+        },
+      })
+      .where(eq(platformConfig.id, PLATFORM_CONFIG_SINGLETON_ID))
+    const live = await api.readLiveSessionAuth(db)
+    expect(live.sessionAuth.loginLeaveTimeoutMs).toBe(
+      FACTORY_PLATFORM_CONFIG.sessionAuth.loginLeaveTimeoutMs,
+    )
   })
 })

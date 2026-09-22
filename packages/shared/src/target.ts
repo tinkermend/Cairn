@@ -1,7 +1,10 @@
 import { z } from 'zod'
+import { landingSettleModeSchema } from './landing-settle.js'
 import { loginFieldsInputSchema, targetLoginFieldsDtoSchema } from './login-fields.js'
 import { targetCaptchaDefinitionSchema } from './session-auth.js'
 import {
+  accountSessionModeSchema,
+  maxConcurrentSessionsSchema,
   targetSessionPolicyOverrideSchema,
   sessionPolicySchema,
 } from './session.js'
@@ -18,18 +21,21 @@ import {
   issuerExpirySourceSchema,
 } from './credentials.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
-import { entityIdSchema, utcInstantSchema } from './wire.js'
+import { entityIdSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
 import { sensitiveSelectorsSchema } from './evidence-slots.js'
 
 export {
   LOGIN_FIELD_HEURISTICS,
+  LOGIN_FIELD_ROLES,
   LOGIN_HEURISTIC_VERSION,
   LOGIN_LOCATOR_BY,
   compactLoginFields,
   loginFieldsInputSchema,
+  loginLocatorCandidates,
   loginLocatorSchema,
   targetLoginFieldsDtoSchema,
   targetLoginFieldsObjectSchema,
+  type LoginFieldRole,
   type LoginLocator,
   type LoginLocatorBy,
   type TargetLoginFields,
@@ -124,6 +130,9 @@ export const targetSchema = z.object({
   captchaMode: captchaModeSchema,
   status: targetStatusSchema,
   loginFields: targetLoginFieldsDtoSchema,
+  loginLeaveTimeoutMs: timeoutMsSchema.nullable().optional(),
+  landingSettleMode: landingSettleModeSchema.optional(),
+  landingSettleTimeoutMs: timeoutMsSchema.nullable().optional(),
   captcha: targetCaptchaDefinitionSchema.nullable().optional(),
   accountCount: z.number().int().nonnegative(),
   deletedAt: z.string().nullable().optional(),
@@ -193,6 +202,10 @@ export const targetAccountSchema = z.object({
   identityBindingStatus: credentialIdentityBindingStatusSchema.optional(),
   issuerExpiresAt: utcInstantSchema.nullable().optional(),
   issuerExpirySource: issuerExpirySourceSchema.optional(),
+  maxConcurrentSessions: maxConcurrentSessionsSchema.default(1),
+  effectiveMaxConcurrentSessions: maxConcurrentSessionsSchema.optional(),
+  effectiveAccountSessionMode: accountSessionModeSchema.optional(),
+  liveCount: z.number().int().nonnegative().optional(),
   deletedAt: z.string().nullable().optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
   createdAt: z.string().min(1),
@@ -223,6 +236,7 @@ export const createTargetAccountBodySchema = z
     usage: accountUsageSchema.default(DEFAULT_ACCOUNT_USAGE),
     validity: credentialValidityWriteSchema.optional(),
     ownerConsoleAccountId: entityIdSchema.nullable().optional(),
+    maxConcurrentSessions: maxConcurrentSessionsSchema.optional(),
   })
   .superRefine((body, ctx) => {
     if (body.password && !body.validity) {
@@ -245,6 +259,9 @@ export const createTargetBodySchema = z
     captchaMode: captchaModeSchema.default('none'),
     status: targetStatusSchema.default('active'),
     loginFields: loginFieldsInputSchema,
+    loginLeaveTimeoutMs: timeoutMsSchema.nullable().optional(),
+    landingSettleMode: landingSettleModeSchema.optional(),
+    landingSettleTimeoutMs: timeoutMsSchema.nullable().optional(),
     captcha: targetCaptchaDefinitionSchema.nullable().optional(),
     sensitiveSelectors: sensitiveSelectorsSchema.optional(),
     account: createTargetAccountBodySchema.optional(),
@@ -252,6 +269,9 @@ export const createTargetBodySchema = z
   .transform((body) => ({
     ...body,
     loginFields: body.loginFields === undefined ? null : body.loginFields,
+    loginLeaveTimeoutMs: body.loginLeaveTimeoutMs ?? null,
+    landingSettleMode: body.landingSettleMode ?? 'default',
+    landingSettleTimeoutMs: body.landingSettleTimeoutMs ?? null,
   }))
 export type CreateTargetBody = z.infer<typeof createTargetBodySchema>
 
@@ -264,6 +284,9 @@ export const updateTargetBodySchema = z
     captchaMode: captchaModeSchema.optional(),
     status: targetStatusSchema.optional(),
     loginFields: loginFieldsInputSchema,
+    loginLeaveTimeoutMs: timeoutMsSchema.nullable().optional(),
+    landingSettleMode: landingSettleModeSchema.optional(),
+    landingSettleTimeoutMs: timeoutMsSchema.nullable().optional(),
     captcha: targetCaptchaDefinitionSchema.nullable().optional(),
     sensitiveSelectors: sensitiveSelectorsSchema.optional(),
   })
@@ -276,6 +299,9 @@ export const updateTargetBodySchema = z
       body.captchaMode !== undefined ||
       body.status !== undefined ||
       body.loginFields !== undefined ||
+      body.loginLeaveTimeoutMs !== undefined ||
+      body.landingSettleMode !== undefined ||
+      body.landingSettleTimeoutMs !== undefined ||
       body.captcha !== undefined ||
       body.sensitiveSelectors !== undefined,
     { message: '至少提供一个要修改的字段' },
@@ -294,6 +320,7 @@ export const updateTargetAccountBodySchema = z
     ownerConsoleAccountId: entityIdSchema.nullable().optional(),
     expectedRevision: z.number().int().positive().optional(),
     confirmIdentityMaterial: z.literal(true).optional(),
+    maxConcurrentSessions: maxConcurrentSessionsSchema.optional(),
   })
   .refine(
     (body) =>
@@ -305,7 +332,8 @@ export const updateTargetAccountBodySchema = z
       body.usage !== undefined ||
       body.validity !== undefined ||
       body.ownerConsoleAccountId !== undefined ||
-      body.confirmIdentityMaterial !== undefined,
+      body.confirmIdentityMaterial !== undefined ||
+      body.maxConcurrentSessions !== undefined,
     { message: '至少提供一个要修改的字段' },
   )
   .refine((body) => !(body.password !== undefined && body.clearPassword === true), {

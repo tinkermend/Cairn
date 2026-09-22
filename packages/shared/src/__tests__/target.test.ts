@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   LOGIN_FIELD_HEURISTICS,
   LOGIN_HEURISTIC_VERSION,
+  loginLocatorCandidates,
   createTargetAccountBodySchema,
   createTargetBodySchema,
   targetCodeSchema,
@@ -47,6 +48,7 @@ describe('createTargetBodySchema', () => {
       entryUrl: 'http://127.0.0.1:4177/login',
     })
     expect(parsed.authMethod).toBe('password')
+    expect(parsed.loginLeaveTimeoutMs).toBeNull()
     expect(parsed.captchaMode).toBe('none')
     expect(parsed.status).toBe('active')
     expect(parsed.loginUrl).toBeUndefined()
@@ -185,6 +187,19 @@ describe('updateTargetBodySchema', () => {
     ).toThrow()
   })
 
+  it('只改提交后离开登录页超时合法', () => {
+    expect(updateTargetBodySchema.parse({ loginLeaveTimeoutMs: 20_000 }).loginLeaveTimeoutMs).toBe(20_000)
+    expect(updateTargetBodySchema.parse({ loginLeaveTimeoutMs: null }).loginLeaveTimeoutMs).toBeNull()
+  })
+
+  it('只改落地整理开关与预算合法', () => {
+    expect(updateTargetBodySchema.parse({ landingSettleMode: 'off' }).landingSettleMode).toBe('off')
+    expect(updateTargetBodySchema.parse({ landingSettleTimeoutMs: 6_000 }).landingSettleTimeoutMs).toBe(
+      6_000,
+    )
+    expect(updateTargetBodySchema.parse({ landingSettleTimeoutMs: null }).landingSettleTimeoutMs).toBeNull()
+  })
+
   it('只改 loginFields 合法，空对象归一为 null', () => {
     expect(updateTargetBodySchema.parse({ loginFields: {} }).loginFields).toBeNull()
     expect(
@@ -253,6 +268,13 @@ describe('LOGIN_FIELD_HEURISTICS', () => {
       { by: 'id', value: 'login' },
       { by: 'id', value: 'submit' },
       { by: 'name', value: 'login' },
+    ])
+  })
+
+  it('未指定时整表作为候选；已指定时只试手填', () => {
+    expect(loginLocatorCandidates('password')).toEqual([...LOGIN_FIELD_HEURISTICS.password])
+    expect(loginLocatorCandidates('username', { by: 'css', value: 'input.input-account[type=text]' })).toEqual([
+      { by: 'css', value: 'input.input-account[type=text]' },
     ])
   })
 })

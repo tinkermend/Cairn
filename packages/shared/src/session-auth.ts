@@ -1,5 +1,10 @@
 import { z } from 'zod'
 import { canonicalJson, sha256Hex } from './canonical.js'
+import {
+  DEFAULT_LANDING_SETTLE_BUDGET_MS,
+  DEFAULT_LANDING_SETTLE_MAX_DISMISSALS,
+  DEFAULT_LANDING_SETTLE_WATCH_MS,
+} from './landing-settle.js'
 import { loginLocatorSchema } from './login-fields.js'
 import { entityIdSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
 
@@ -67,6 +72,12 @@ export const DEFAULT_FRESHNESS_SECONDS_MIN = 60
 export const DEFAULT_FRESHNESS_SECONDS_MAX = 1_800
 export const DEFAULT_VERIFY_TIMEOUT_MS = 15_000
 export const DEFAULT_LOGIN_TIMEOUT_MS = 60_000
+export const DEFAULT_LOGIN_LEAVE_TIMEOUT_MS = 10_000
+export {
+  DEFAULT_LANDING_SETTLE_BUDGET_MS,
+  DEFAULT_LANDING_SETTLE_WATCH_MS,
+  DEFAULT_LANDING_SETTLE_MAX_DISMISSALS,
+} from './landing-settle.js'
 export const DEFAULT_VERIFY_RETRY_BACKOFF_SECONDS = [30, 120] as const
 export const DEFAULT_AUTO_LOGIN_WINDOW_SECONDS = 600
 export const DEFAULT_AUTO_LOGIN_MAX_PER_WINDOW = 1
@@ -84,6 +95,15 @@ export const platformSessionAuthSchema = z
     freshnessSecondsMax: z.number().int().min(DEFAULT_FRESHNESS_SECONDS_MIN).max(7_200),
     verifyTimeoutMs: timeoutMsSchema,
     loginTimeoutMs: timeoutMsSchema,
+    loginLeaveTimeoutMs: timeoutMsSchema.default(DEFAULT_LOGIN_LEAVE_TIMEOUT_MS),
+    landingSettleBudgetMs: timeoutMsSchema.default(DEFAULT_LANDING_SETTLE_BUDGET_MS),
+    landingSettleWatchMs: timeoutMsSchema.default(DEFAULT_LANDING_SETTLE_WATCH_MS),
+    landingSettleMaxDismissals: z
+      .number()
+      .int()
+      .min(1)
+      .max(8)
+      .default(DEFAULT_LANDING_SETTLE_MAX_DISMISSALS),
     verifyRetryBackoffSeconds: z.array(z.number().int().min(1).max(3_600)).min(1).max(8),
     autoLoginWindowSeconds: z.number().int().min(60).max(86_400),
     autoLoginMaxPerWindow: z.number().int().min(1).max(20),
@@ -125,6 +145,27 @@ export const platformSessionAuthSchema = z
         message: '滑块拖拽最小耗时不得大于最大耗时',
       })
     }
+    if (value.loginLeaveTimeoutMs > value.loginTimeoutMs) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['loginLeaveTimeoutMs'],
+        message: '不得大于自动登录超时',
+      })
+    }
+    if (value.landingSettleBudgetMs > value.loginTimeoutMs) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['landingSettleBudgetMs'],
+        message: '不得大于自动登录超时',
+      })
+    }
+    if (value.landingSettleWatchMs >= value.landingSettleBudgetMs) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['landingSettleWatchMs'],
+        message: '必须小于落地整理预算',
+      })
+    }
   })
 export type PlatformSessionAuth = z.infer<typeof platformSessionAuthSchema>
 
@@ -134,6 +175,10 @@ export const FACTORY_SESSION_AUTH: PlatformSessionAuth = {
   freshnessSecondsMax: DEFAULT_FRESHNESS_SECONDS_MAX,
   verifyTimeoutMs: DEFAULT_VERIFY_TIMEOUT_MS,
   loginTimeoutMs: DEFAULT_LOGIN_TIMEOUT_MS,
+  loginLeaveTimeoutMs: DEFAULT_LOGIN_LEAVE_TIMEOUT_MS,
+  landingSettleBudgetMs: DEFAULT_LANDING_SETTLE_BUDGET_MS,
+  landingSettleWatchMs: DEFAULT_LANDING_SETTLE_WATCH_MS,
+  landingSettleMaxDismissals: DEFAULT_LANDING_SETTLE_MAX_DISMISSALS,
   verifyRetryBackoffSeconds: [...DEFAULT_VERIFY_RETRY_BACKOFF_SECONDS],
   autoLoginWindowSeconds: DEFAULT_AUTO_LOGIN_WINDOW_SECONDS,
   autoLoginMaxPerWindow: DEFAULT_AUTO_LOGIN_MAX_PER_WINDOW,
@@ -348,6 +393,17 @@ export function resolveFreshnessSeconds(
   sessionAuth: PlatformSessionAuth,
 ): number {
   return definition?.freshnessSeconds ?? sessionAuth.freshnessSecondsDefault
+}
+
+/** 提交后等离开登录页：目标覆盖优先，否则平台默认，且不超过本轮自动登录超时。 */
+export function resolveLoginLeaveTimeoutMs(input: {
+  targetTimeoutMs?: number | null
+  platformTimeoutMs?: number | null
+  loginTimeoutMs: number
+}): number {
+  const preferred = input.targetTimeoutMs ?? input.platformTimeoutMs
+  if (preferred == null || preferred <= 0) return input.loginTimeoutMs
+  return Math.min(preferred, input.loginTimeoutMs)
 }
 
 export function assertFreshnessInRange(
@@ -712,7 +768,155 @@ export function planAuthEnsure(input: {
     if (delay != null) return { action: 'backoff_verify', delaySeconds: delay }
     return { action: 'manual', code: 'AUTH_PROBE_UNKNOWN', message: '核验失败，进入人工认证' }
   }
-  return { action: 'manual', code: 'AUTH_PROBE_UNKNOWN', message: '登录状态未确认，进入人工认证' }
+  // 页面条件未唯一匹配仍先走配置／启发式登录；提交失败或核验仍不通过再降级人工。
+  return { action: 'auto_login' }
+}
+
+/**
+ * 准备／登录是「把会话变成已登录」，不是「把核验页的未知结果当成禁止填密」。
+ * 自动登录始终打开配置的登录 URL，不会把密码打到核验失败的那张未知页上。
+ * IDENTITY_VERIFIED 仍只在明确过期时提交，避免把可能仍有效的身份会话打回登录页。
+ */
+export function shouldSubmitStoredCredentials(input: {
+  plan: AuthEnsurePlan
+  capability: AuthCapabilityTier
+  /** 用户点了准备／登录时不必空等核验退避；运行领取仍先按退避重探。 */
+  skipBackoffWait?: boolean
+}): boolean {
+  if (input.plan.action === 'auto_login') return true
+  if (input.capability === 'IDENTITY_VERIFIED') return false
+  if (input.plan.action === 'yield') return true
+  if (input.plan.action === 'manual' && input.plan.code === 'AUTH_PROBE_UNKNOWN') return true
+  if (input.plan.action === 'backoff_verify') return Boolean(input.skipBackoffWait)
+  return false
+}
+
+export function classifyManagedPageUrl(url: string | null | undefined): 'http' | 'blank' | 'error' | 'other' {
+  const value = url?.trim() ?? ''
+  if (!value || value === 'about:blank' || value === 'about:newtab') return 'blank'
+  if (
+    value.startsWith('chrome-error://') ||
+    value.startsWith('chrome://') ||
+    value.startsWith('devtools://') ||
+    value.startsWith('data:')
+  ) {
+    return 'error'
+  }
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return 'http'
+  } catch {
+    return 'other'
+  }
+  return 'other'
+}
+
+export function sanitizeManagedPageUrl(url: string | null | undefined): string | null {
+  const value = url?.trim()
+  if (!value) return null
+  try {
+    const parsed = new URL(value)
+    parsed.username = ''
+    parsed.password = ''
+    return parsed.toString().slice(0, 2048)
+  } catch {
+    return value.slice(0, 2048)
+  }
+}
+
+export function formatManagedPageLocation(url: string | null | undefined): string | null {
+  if (url == null || !url.trim()) return null
+  const kind = classifyManagedPageUrl(url)
+  if (kind === 'blank') return '空白页'
+  if (kind === 'error') return '打不开的页面'
+  const sanitized = sanitizeManagedPageUrl(url)
+  if (!sanitized) return null
+  try {
+    const parsed = new URL(sanitized)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return kind === 'other' ? '未知页' : null
+    return `${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`
+  } catch {
+    return sanitized
+  }
+}
+
+export function managedPageCaption(page: { kind: string; url?: string | null }): string {
+  return formatManagedPageLocation(page.url) ?? (page.kind === 'popup' ? '弹出页' : page.kind === 'run' ? '运行页' : '会话页')
+}
+
+export const LOGIN_WAIT_SUBMIT_STATES = [
+  'not_attempted',
+  'credential_failed',
+  'captcha_failed',
+  'ambiguous',
+  'unsolved',
+  'authenticated',
+] as const
+export type LoginWaitSubmitState = (typeof LOGIN_WAIT_SUBMIT_STATES)[number]
+
+export function classifyLoginWaitReason(input: {
+  pageUrl?: string | null
+  submitted?: boolean
+  submit?: LoginWaitSubmitState
+  fallback?: string | null
+}): string {
+  const kind = classifyManagedPageUrl(input.pageUrl)
+  if (kind === 'blank' || kind === 'error') return 'LOGIN_PAGE_UNREACHABLE'
+  const fallback = input.fallback?.trim()
+  if (fallback) return fallback
+  if (input.submit === 'credential_failed') return 'credential'
+  if (input.submit === 'not_attempted' || input.submitted === false) return 'LOGIN_FORM_NOT_FOUND'
+  return 'AUTH_PROBE_UNKNOWN'
+}
+
+export function isUnrecoverableLoginWait(reason: string | null | undefined): boolean {
+  return reason === 'LOGIN_PAGE_UNREACHABLE'
+}
+
+const AUTH_ISSUE_LABELS: Record<string, string> = {
+  LOGIN_PAGE_UNREACHABLE: '目标登录页打不开',
+  LOGIN_FORM_NOT_FOUND: '登录页上看不到登录表单',
+  AUTH_PROBE_UNKNOWN: '登录状态无法确认',
+  SESSION_AUTH_TIMEOUT: '登录等待超时',
+  AUTH_IDENTITY_MISMATCH: '当前登录账号与配置不符',
+  SESSION_AUTH_UNSUPPORTED: '无法自动完成登录',
+  PAGE_REFRESH_UNSAFE: '当前页不适合刷新到登录页',
+  OPERATION_INTERRUPTED: '操作被中断',
+  PLATFORM_CONFIG_UNREADABLE: '平台配置读不出来，会话维护没开始',
+  AUTH_AUTO_LOGIN_PAUSED: '自动登录已暂停',
+  AUTH_PROFILE_REQUIRED: '还没有可用的登录态检测规则',
+  OUTCOME_UNKNOWN: '登录结果无法确认',
+  BROWSER_UNAVAILABLE: '受管浏览器暂时不可用',
+  BROWSER_LAUNCH_FAILED: '受管浏览器没能启动',
+  SESSION_KEEPALIVE_ABANDONED: '认证已失效且无法自动登录',
+  infra: '登录核验暂时失败',
+  unmatched: '当前页对不上登录规则',
+  verify_failed: '登录后仍未通过核验',
+  credential: '账号或密码未通过核验',
+  legacy_unauthenticated: '尚未确认登录',
+}
+
+export function describeAuthIssue(code: string | null | undefined): string | null {
+  const value = code?.trim()
+  if (!value) return null
+  return AUTH_ISSUE_LABELS[value] ?? null
+}
+
+export function describeAuthWaitStage(code: string | null | undefined): string {
+  if (code === 'LOGIN_PAGE_UNREACHABLE') return '登录页打不开'
+  if (code === 'LOGIN_FORM_NOT_FOUND') return '看不到登录表单'
+  if (code === 'AUTH_IDENTITY_MISMATCH') return '账号不符'
+  if (code === 'credential') return '账号或密码不正确'
+  if (code === 'AUTH_AUTO_LOGIN_PAUSED') return '自动登录已暂停'
+  if (code === 'SESSION_AUTH_UNSUPPORTED') return '需要手工登录'
+  if (code === 'SESSION_AUTH_TIMEOUT') return '登录等待超时'
+  return '等待登录'
+}
+
+export function describeManagedAuthWait(code: string | null | undefined): string {
+  const issue = describeAuthIssue(code)
+  if (issue) return `${issue}。画面只发给当前处理登录的人。`
+  return '目标系统还没登录成功。画面只发给当前处理登录的人。'
 }
 
 export const targetAuthProfileRevisionSchema = z.strictObject({

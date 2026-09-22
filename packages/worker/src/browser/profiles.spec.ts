@@ -49,4 +49,16 @@ describe('profiles', () => {
     })
     expect(a.profileDir).not.toBe(b.profileDir)
   })
+
+  it('slot 1 用存量目录，slot ≥ 2 拆到子目录', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cairn-prof-'))
+    const key = { targetId: 't', targetAccountId: 'a1' }
+    const slot1 = ensureProfileDir(root, key, 1)
+    const slot2 = ensureProfileDir(root, key, 2)
+    expect(slot1.profileKey).toBe('t/a1')
+    expect(slot2.profileKey).toBe('t/a1/2')
+    expect(slot1.profileDir).toBe(join(root, 't', 'a1'))
+    expect(slot2.profileDir).toBe(join(root, 't', 'a1', '2'))
+    expect(slot1.profileDir).not.toBe(slot2.profileDir)
+  })
 })

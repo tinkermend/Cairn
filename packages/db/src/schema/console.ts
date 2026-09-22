@@ -19,6 +19,7 @@ export const consoleAccounts = cairnSchema.table(
     id: uuid('id').primaryKey().$defaultFn(newId),
     displayName: text('display_name').notNull(),
     email: text('email'),
+    avatar: text('avatar'),
     status: text('status', { enum: ['active', 'disabled'] })
       .notNull()
       .default('active'),

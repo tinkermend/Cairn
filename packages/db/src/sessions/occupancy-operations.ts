@@ -20,8 +20,15 @@ import { conflict } from '../runs/errors.js'
 import { sha256Hex } from '../runs/digest.js'
 import { lockRunRow } from '../leases/leases.js'
 import type { SessionOperationRow } from '../records.js'
-import { createSession, findLiveSession, type SessionKey, type SessionRecord } from './sessions.js'
-import { applyPendingRetentionIntent } from './session-retention-intent.js'
+import {
+  concurrencyProtocolRequired,
+  loadLiveAccountSessions,
+  profileKeyFrom,
+  readAccountSessionCap,
+  workerHasConcurrencyProtocol,
+} from './account-session-concurrency.js'
+import { createSession, findLiveSessions, getSessionById, type SessionKey, type SessionRecord } from './sessions.js'
+import { adoptSessionRetention, applyPendingRetentionIntent } from './session-retention-intent.js'
 import { lockOperationRow, lockSession, lockWorkerRow, toGrant } from './occupancy-tx.js'
 import {
   findActiveLeaseRow,
@@ -306,34 +313,26 @@ export async function claimSessionOperation(
         }
       }
 
+      const keyPreview = { targetId: candidate.targetId, targetAccountId: candidate.targetAccountId }
+      const livePreview = await findLiveSessions(tx, keyPreview)
+      const capPreview = await readAccountSessionCap(tx, keyPreview)
+      if (
+        concurrencyProtocolRequired(capPreview.effectiveCap, livePreview.length) &&
+        !workerHasConcurrencyProtocol(worker.protocolCapabilities)
+      ) {
+        continue
+      }
       if (candidate.origin === 'BACKGROUND') {
-        const [queuedRun] = await tx
-          .select({ id: runs.id })
-          .from(runs)
-          .where(
-            and(
-              inArray(runs.status, ['QUEUED', 'RECOVERING']),
-              eq(runs.targetId, candidate.targetId),
-              eq(runs.targetAccountId, candidate.targetAccountId),
-              isNull(runs.deletedAt),
-            ),
-          )
-          .limit(1)
-        if (queuedRun) continue
-        const liveBusy = await findLiveSession(tx, {
-          targetId: candidate.targetId,
-          targetAccountId: candidate.targetAccountId,
-        })
-        if (liveBusy && (await findActiveLeaseRow(tx, liveBusy.id))) continue
+        const targetSessionId = candidate.expectedSessionId ?? (livePreview.length === 1 ? livePreview[0]?.id : null)
+        if (targetSessionId && (await findActiveLeaseRow(tx, targetSessionId))) continue
       }
       if (candidate.expectedSessionId) {
-        const live = await findLiveSession(tx, {
-          targetId: candidate.targetId,
-          targetAccountId: candidate.targetAccountId,
-        })
+        const live = await getSessionById(tx, candidate.expectedSessionId)
         if (
           !live ||
-          live.id !== candidate.expectedSessionId ||
+          live.targetId !== candidate.targetId ||
+          live.targetAccountId !== candidate.targetAccountId ||
+          !['CREATING', 'OPEN', 'CLOSING', 'LOST'].includes(live.status) ||
           (candidate.expectedGeneration != null && live.generation !== candidate.expectedGeneration)
         ) {
           await updateRows(
@@ -368,8 +367,12 @@ export async function claimSessionOperation(
 
       const key = { targetId: candidate.targetId, targetAccountId: candidate.targetAccountId }
       if (candidate.kind === 'LOGIN' || candidate.kind === 'REFRESH_LOGIN_PAGE') {
-        const live = await findLiveSession(tx, key)
-        const existing = live ? await findActiveLeaseRow(tx, live.id) : null
+        const { lives, leases } = await loadLiveAccountSessions(tx, key)
+        const live =
+          (candidate.expectedSessionId
+            ? lives.find((row) => row.id === candidate.expectedSessionId)
+            : lives.find((row) => leases.get(row.id)?.purpose === 'AUTH_WAIT')) ?? null
+        const existing = live ? leases.get(live.id) ?? null : null
         if (existing?.purpose === 'AUTH_WAIT' && live) {
           if (live.ownerWorkerId !== input.workerId || live.ownerWorkerInstanceId !== input.instanceId) {
             await rollbackClaim(tx, candidate, now)
@@ -403,7 +406,13 @@ export async function claimSessionOperation(
       }
 
       if (isSessionIdleOnlyKind(candidate.kind)) {
-        const live = await findLiveSession(tx, key)
+        const lives = await findLiveSessions(tx, key)
+        const live =
+          (candidate.expectedSessionId
+            ? lives.find((row) => row.id === candidate.expectedSessionId)
+            : lives.length === 1
+              ? lives[0]
+              : null) ?? null
         if (candidate.kind !== 'RESET_PROFILE' && (!live || live.status !== 'OPEN')) {
           await updateRows(
             tx,
@@ -466,7 +475,7 @@ export async function claimSessionOperation(
       }
 
       if (
-        ['VERIFY_AUTH', 'RENEW_AUTH', 'REFRESH_LOGIN_PAGE'].includes(candidate.kind) &&
+        ['VERIFY_AUTH', 'RENEW_AUTH', 'REFRESH_LOGIN_PAGE', 'SETTLE_LANDING'].includes(candidate.kind) &&
         !candidate.expectedSessionId
       ) {
         await updateRows(
@@ -484,6 +493,8 @@ export async function claimSessionOperation(
           key,
           owner: { kind: 'SESSION_OPERATION', operationId: candidate.id },
           purpose: 'MAINTENANCE',
+          sessionId: candidate.expectedSessionId,
+          pickIdle: 'worst',
           holderWorkerId: input.workerId,
           holderInstanceId: input.instanceId,
           leaseTtlSeconds: input.leaseTtlSeconds,
@@ -494,7 +505,7 @@ export async function claimSessionOperation(
           keepAliveSeconds: lifecycle.keepAliveSeconds,
           authProbeIntervalSeconds: lifecycle.authProbeIntervalSeconds,
           evictionPriority: lifecycle.evictionPriority,
-          touchLastUsed: !['VERIFY_AUTH', 'RENEW_AUTH'].includes(candidate.kind),
+          touchLastUsed: !['VERIFY_AUTH', 'RENEW_AUTH', 'SETTLE_LANDING'].includes(candidate.kind),
         })
         if (!claimed.ok) {
           await rollbackClaim(tx, candidate, now)
@@ -705,8 +716,12 @@ export async function recreateSessionForOperation(
       keepAliveSeconds: previous.keepAliveSeconds,
       authProbeIntervalSeconds: previous.authProbeIntervalSeconds,
       evictionPriority: previous.evictionPriority,
+      accountSlot: previous.accountSlot,
+      profileKey: previous.profileKey,
+      predecessorSessionId: previous.id,
     })
     if (created.ok) {
+      await adoptSessionRetention(tx, { fromSessionId: previous.id, toSessionId: created.session.id })
       await applyPendingRetentionIntent(tx, created.session.id)
       await bindOperationSession(tx, op.id, created.session.id, created.session.generation)
     }

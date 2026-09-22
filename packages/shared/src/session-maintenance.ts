@@ -19,6 +19,7 @@ export const SESSION_LEASE_CLAIM_KINDS = [
   'LOGIN',
   'RENEW_AUTH',
   'REFRESH_LOGIN_PAGE',
+  'SETTLE_LANDING',
 ] as const
 export type SessionLeaseClaimKind = (typeof SESSION_LEASE_CLAIM_KINDS)[number]
 
@@ -82,6 +83,7 @@ export const SESSION_MAINTENANCE_ERROR_CODES = [
   'RETENTION_QUOTA_EXCEEDED',
   'PAGE_REFRESH_UNSAFE',
   'OPERATION_INTERRUPTED',
+  'PLATFORM_CONFIG_UNREADABLE',
   'OUTCOME_UNKNOWN',
   'OPERATION_QUEUE_EXPIRED',
   'AUTH_PROFILE_REQUIRED',
@@ -96,6 +98,7 @@ export const SESSION_MAINTENANCE_ERROR_MESSAGES: Record<SessionMaintenanceErrorC
   RETENTION_QUOTA_EXCEEDED: '该执行节点保留配额已满',
   PAGE_REFRESH_UNSAFE: '当前页不能安全刷新到登录页',
   OPERATION_INTERRUPTED: '操作被中断',
+  PLATFORM_CONFIG_UNREADABLE: '平台配置读不出来，会话维护没开始',
   OUTCOME_UNKNOWN: '登录结果无法确认',
   OPERATION_QUEUE_EXPIRED: '维护操作排队已过期',
   AUTH_PROFILE_REQUIRED: '尚未发布并通过验收的主动检测规则，无法做主动核验、续登或认证保活',
@@ -118,6 +121,7 @@ export const SESSION_EVENT_TYPES = [
   'auth.control_changed',
   'auth.attempt_started',
   'auth.verified',
+  'auth.landing_settled',
   'auth.unknown',
   'auth.signal_observed',
   'session.keepalive_extended',
@@ -300,6 +304,12 @@ export const requestSessionOperationBodySchema = z
       pageRef: pageRefSchema,
     }),
     z.strictObject({
+      kind: z.literal('SETTLE_LANDING'),
+      idempotencyKey: z.string().trim().min(8).max(256),
+      expectedSessionId: entityIdSchema,
+      expectedGeneration: z.number().int().positive(),
+    }),
+    z.strictObject({
       kind: z.literal('RESET_PROFILE'),
       idempotencyKey: z.string().trim().min(8).max(256),
       confirmAccountId: entityIdSchema,
@@ -317,10 +327,12 @@ export const sessionRetentionBodySchema = z.discriminatedUnion('action', [
     action: z.enum(['set', 'extend']),
     retainSeconds: z.number().int().min(60).max(604_800),
     reason: z.string().trim().min(1).max(256).optional(),
+    sessionId: entityIdSchema.optional(),
   }),
   z.strictObject({
     action: z.literal('clear'),
     reason: z.string().trim().min(1).max(256).optional(),
+    sessionId: entityIdSchema.optional(),
   }),
 ])
 export type SessionRetentionBody = z.infer<typeof sessionRetentionBodySchema>
@@ -354,6 +366,8 @@ export const accountSessionOverviewItemSchema = z.strictObject({
   lastAuthSuccessAt: utcInstantSchema.nullable(),
   ownerWorkerId: z.string().min(1).nullable(),
   primaryAction: z.string().min(1),
+  liveCount: z.number().int().nonnegative().default(0),
+  effectiveCap: z.number().int().positive().default(1),
 })
 export type AccountSessionOverviewItem = z.infer<typeof accountSessionOverviewItemSchema>
 
@@ -386,6 +400,8 @@ export const sessionSystemOverviewItemSchema = z.strictObject({
   busyCount: z.number().int().nonnegative(),
   retainedCount: z.number().int().nonnegative(),
   worstStatus: accountSessionStatusSchema,
+  liveSessionCount: z.number().int().nonnegative().default(0),
+  sessionCapTotal: z.number().int().nonnegative().default(0),
 })
 export type SessionSystemOverviewItem = z.infer<typeof sessionSystemOverviewItemSchema>
 
@@ -431,6 +447,7 @@ export const accountSessionDetailSchema = z.strictObject({
   hasPassword: z.boolean(),
   expectedIdentity: z.string().nullable(),
   authCapability: z.string(),
+  lastAuthError: z.string().min(1).max(128).nullable(),
   status: accountSessionStatusSchema,
   retained: z.boolean(),
   session: z
@@ -450,8 +467,40 @@ export const accountSessionDetailSchema = z.strictObject({
       reclaimMode: z.enum(['IDLE', 'AUTH_DRIVEN']).nullable().optional(),
       keepAliveUntil: utcInstantSchema.nullable().optional(),
       nextAuthCheckAt: utcInstantSchema.nullable().optional(),
+      accountSlot: z.number().int().min(1).max(16).optional(),
     })
     .nullable(),
+  instances: z
+    .array(
+      z.strictObject({
+        id: entityIdSchema,
+        status: z.string(),
+        generation: z.number().int().positive(),
+        ownerWorkerId: z.string().min(1),
+        authState: z.string(),
+        identityState: z.string().nullable(),
+        observedTier: z.string().nullable(),
+        lastAuthCheckedAt: utcInstantSchema.nullable(),
+        lastAuthSuccessAt: utcInstantSchema.nullable(),
+        authValidUntil: utcInstantSchema.nullable(),
+        lastExpectedIdentity: z.string().nullable(),
+        retainUntil: utcInstantSchema.nullable(),
+        reclaimMode: z.enum(['IDLE', 'AUTH_DRIVEN']).nullable().optional(),
+        keepAliveUntil: utcInstantSchema.nullable().optional(),
+        nextAuthCheckAt: utcInstantSchema.nullable().optional(),
+        accountSlot: z.number().int().min(1).max(16).optional(),
+        occupancy: z
+          .strictObject({
+            purpose: z.string(),
+            occupyingRunId: entityIdSchema.nullable(),
+            occupyingOperationId: entityIdSchema.nullable(),
+          })
+          .nullable(),
+      }),
+    )
+    .default([]),
+  liveCount: z.number().int().nonnegative().default(0),
+  effectiveCap: z.number().int().positive().default(1),
   occupancy: z
     .strictObject({
       purpose: z.string(),
@@ -527,13 +576,28 @@ export function captchaModeBlocksAutoLogin(mode?: string | null): boolean {
 
 export function accountPickerHint(input: {
   liveStatus?: 'CREATING' | 'OPEN' | 'CLOSING' | 'CLOSED' | 'LOST' | null
+  instances?: Array<{ status: string; occupancy?: unknown | null }>
+  liveCount?: number
+  effectiveCap?: number
   hasPassword: boolean
   authMethod?: string | null
   captchaMode?: string | null
-}): { reuse: boolean; lost: boolean; manualLikely: boolean } {
+}): { reuse: boolean; lost: boolean; atCapacity: boolean; manualLikely: boolean } {
+  const cap = input.effectiveCap ?? 1
+  const liveCount =
+    input.liveCount ??
+    input.instances?.length ??
+    (input.liveStatus && input.liveStatus !== 'CLOSED' ? 1 : 0)
+  const reuse = input.instances?.length
+    ? input.instances.some((item) => item.status === 'OPEN' && !item.occupancy)
+    : input.liveStatus === 'OPEN'
+  const lost =
+    cap === 1 &&
+    (input.instances?.some((item) => item.status === 'LOST') || input.liveStatus === 'LOST')
   return {
-    reuse: input.liveStatus === 'OPEN',
-    lost: input.liveStatus === 'LOST',
+    reuse,
+    lost,
+    atCapacity: !reuse && !lost && liveCount >= cap && cap > 1,
     manualLikely:
       !input.hasPassword ||
       input.authMethod === 'manual' ||

@@ -7,8 +7,16 @@ import {
   deriveAuthCapability,
   isAuthEvidenceFresh,
   platformSessionAuthSchema,
+  resolveLoginLeaveTimeoutMs,
   evaluateAuthVerify,
   planAuthEnsure,
+  shouldSubmitStoredCredentials,
+  classifyLoginWaitReason,
+  isUnrecoverableLoginWait,
+  describeAuthIssue,
+  describeAuthWaitStage,
+  formatManagedPageLocation,
+  managedPageCaption,
   classifyAuthSignals,
   readJsonPath,
   resolveVerifyUrl,
@@ -224,6 +232,58 @@ describe('sessionAuth 出厂', () => {
     ).toThrow()
   })
 
+  it('提交后离开登录页不得长于自动登录超时', () => {
+    expect(() =>
+      platformSessionAuthSchema.parse({
+        ...FACTORY_SESSION_AUTH,
+        loginTimeoutMs: 8_000,
+        loginLeaveTimeoutMs: 10_000,
+      }),
+    ).toThrow()
+  })
+
+  it('落地整理预算不得长于自动登录超时，观察窗须更短', () => {
+    expect(() =>
+      platformSessionAuthSchema.parse({
+        ...FACTORY_SESSION_AUTH,
+        loginTimeoutMs: 5_000,
+        landingSettleBudgetMs: 8_000,
+      }),
+    ).toThrow()
+    expect(() =>
+      platformSessionAuthSchema.parse({
+        ...FACTORY_SESSION_AUTH,
+        landingSettleBudgetMs: 2_000,
+        landingSettleWatchMs: 2_000,
+      }),
+    ).toThrow()
+  })
+
+  it('离开登录页超时：目标覆盖优先，不超过本轮自动登录超时', () => {
+    expect(
+      resolveLoginLeaveTimeoutMs({
+        targetTimeoutMs: 20_000,
+        platformTimeoutMs: 10_000,
+        loginTimeoutMs: 60_000,
+      }),
+    ).toBe(20_000)
+    expect(
+      resolveLoginLeaveTimeoutMs({
+        targetTimeoutMs: null,
+        platformTimeoutMs: 10_000,
+        loginTimeoutMs: 60_000,
+      }),
+    ).toBe(10_000)
+    expect(
+      resolveLoginLeaveTimeoutMs({
+        targetTimeoutMs: 90_000,
+        platformTimeoutMs: 10_000,
+        loginTimeoutMs: 60_000,
+      }),
+    ).toBe(60_000)
+    expect(resolveLoginLeaveTimeoutMs({ loginTimeoutMs: 60_000 })).toBe(60_000)
+  })
+
   it('验收步形状', () => {
     expect(validationStepComplete('valid_pass', observation({ authState: 'AUTHENTICATED' }))).toBe(true)
     expect(validationStepComplete('server_revoked', observation({ authState: 'EXPIRED' }))).toBe(true)
@@ -313,7 +373,7 @@ describe('planAuthEnsure', () => {
     ).toMatchObject({ action: 'manual', code: 'AUTH_IDENTITY_MISMATCH' })
   })
 
-  it('LOGIN_VERIFIED 失效后自动登录，不因该档改走人工；infra 先退避再回交', () => {
+  it('LOGIN_VERIFIED 失效或条件未唯一匹配都先自动登录；infra 先退避再回交', () => {
     expect(
       planAuthEnsure({
         capability: 'LOGIN_VERIFIED',
@@ -331,7 +391,16 @@ describe('planAuthEnsure', () => {
         infraAttempts: 0,
         backoffSeconds: [30],
       }).action,
-    ).toBe('manual')
+    ).toBe('auto_login')
+    expect(
+      planAuthEnsure({
+        capability: 'IDENTITY_VERIFIED',
+        fresh: false,
+        observation: observation({ authState: 'UNKNOWN', unknownClass: 'unmatched' }),
+        infraAttempts: 0,
+        backoffSeconds: [30],
+      }),
+    ).toMatchObject({ action: 'manual', code: 'AUTH_PROBE_UNKNOWN' })
     expect(
       planAuthEnsure({
         capability: 'IDENTITY_VERIFIED',
@@ -350,6 +419,110 @@ describe('planAuthEnsure', () => {
         backoffSeconds: [30, 120],
       }).action,
     ).toBe('yield')
+  })
+})
+
+describe('shouldSubmitStoredCredentials', () => {
+  const unmatched = planAuthEnsure({
+    capability: 'IDENTITY_VERIFIED',
+    fresh: false,
+    observation: observation({ authState: 'UNKNOWN', unknownClass: 'unmatched' }),
+    infraAttempts: 0,
+    backoffSeconds: [30],
+  })
+  const loginInfra = planAuthEnsure({
+    capability: 'LOGIN_VERIFIED',
+    fresh: false,
+    observation: observation({ authState: 'UNKNOWN', unknownClass: 'infra' }),
+    infraAttempts: 0,
+    backoffSeconds: [30],
+  })
+  const loginInfraExhausted = planAuthEnsure({
+    capability: 'LOGIN_VERIFIED',
+    fresh: false,
+    observation: observation({ authState: 'UNKNOWN', unknownClass: 'infra' }),
+    infraAttempts: 1,
+    backoffSeconds: [30],
+  })
+
+  it('IDENTITY_VERIFIED 核验未知仍不提交密码', () => {
+    expect(shouldSubmitStoredCredentials({ plan: unmatched, capability: 'IDENTITY_VERIFIED', skipBackoffWait: true })).toBe(
+      false,
+    )
+  })
+
+  it('LOGIN_VERIFIED 准备会话时核验基础设施未知仍去登录页填已存密码', () => {
+    expect(loginInfra.action).toBe('backoff_verify')
+    expect(
+      shouldSubmitStoredCredentials({ plan: loginInfra, capability: 'LOGIN_VERIFIED', skipBackoffWait: true }),
+    ).toBe(true)
+    expect(
+      shouldSubmitStoredCredentials({ plan: loginInfra, capability: 'LOGIN_VERIFIED', skipBackoffWait: false }),
+    ).toBe(false)
+    expect(
+      shouldSubmitStoredCredentials({
+        plan: loginInfraExhausted,
+        capability: 'LOGIN_VERIFIED',
+        skipBackoffWait: false,
+      }),
+    ).toBe(true)
+  })
+})
+
+describe('登录等待原因与页面位置', () => {
+  it('空白页或浏览器错误页判定为登录页打不开', () => {
+    expect(classifyLoginWaitReason({ pageUrl: 'about:blank' })).toBe('LOGIN_PAGE_UNREACHABLE')
+    expect(classifyLoginWaitReason({ pageUrl: 'chrome-error://chromewebdata/' })).toBe('LOGIN_PAGE_UNREACHABLE')
+    expect(describeAuthIssue('LOGIN_PAGE_UNREACHABLE')).toBe('目标登录页打不开')
+    expect(describeAuthWaitStage('LOGIN_PAGE_UNREACHABLE')).toBe('登录页打不开')
+    expect(isUnrecoverableLoginWait('LOGIN_PAGE_UNREACHABLE')).toBe(true)
+    expect(isUnrecoverableLoginWait('LOGIN_FORM_NOT_FOUND')).toBe(false)
+  })
+
+  it('已打开目标页但没提交时说明看不到表单', () => {
+    expect(
+      classifyLoginWaitReason({ pageUrl: 'https://shop.example.com/login', submitted: false }),
+    ).toBe('LOGIN_FORM_NOT_FOUND')
+    expect(describeAuthIssue('LOGIN_FORM_NOT_FOUND')).toBe('登录页上看不到登录表单')
+  })
+
+  it('表单已提交但账号密码未通过时不误报看不到表单', () => {
+    expect(
+      classifyLoginWaitReason({
+        pageUrl: 'https://shop.example.com/login',
+        submitted: true,
+        submit: 'credential_failed',
+      }),
+    ).toBe('credential')
+    expect(describeAuthWaitStage('credential')).toBe('账号或密码不正确')
+    expect(describeAuthIssue('credential')).toBe('账号或密码未通过核验')
+  })
+
+  it('明确原因优先于没提交，额度用尽不是看不到表单', () => {
+    expect(
+      classifyLoginWaitReason({
+        pageUrl: 'https://shop.example.com/login',
+        submitted: false,
+        fallback: 'AUTH_AUTO_LOGIN_PAUSED',
+      }),
+    ).toBe('AUTH_AUTO_LOGIN_PAUSED')
+    expect(
+      classifyLoginWaitReason({
+        pageUrl: 'https://shop.example.com/login',
+        submitted: false,
+        fallback: 'SESSION_AUTH_UNSUPPORTED',
+      }),
+    ).toBe('SESSION_AUTH_UNSUPPORTED')
+    expect(describeAuthWaitStage('AUTH_AUTO_LOGIN_PAUSED')).toBe('自动登录已暂停')
+  })
+
+  it('当前页展示真实地址而不是内部页类型', () => {
+    expect(formatManagedPageLocation('about:blank')).toBe('空白页')
+    expect(formatManagedPageLocation('https://user:secret@shop.example.com/front/login#/form')).toBe(
+      'shop.example.com/front/login#/form',
+    )
+    expect(managedPageCaption({ kind: 'base', url: 'https://shop.example.com/app' })).toBe('shop.example.com/app')
+    expect(managedPageCaption({ kind: 'base' })).toBe('会话页')
   })
 })
 

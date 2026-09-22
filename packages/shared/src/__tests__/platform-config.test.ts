@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { resolveStepPolicy } from '../policy.js'
 import {
+  FACTORY_BROWSER_AI_ENDPOINT,
   FACTORY_PLATFORM_CONFIG,
   PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE,
   PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE,
@@ -66,6 +67,9 @@ describe('平台配置默认值单源', () => {
 })
 
 describe('平台配置文档版本升级', () => {
+  // 存量文档形态：出厂预填提供商之前落库的平台 AI 没有 provider 键，迁移与写入契约都不得替它猜一个。
+  const { provider: _factoryProvider, ...LEGACY_PLATFORM_AI } = FACTORY_PLATFORM_CONFIG.platformAi
+
   it('当前版本文档原样通过并补齐缺省节', () => {
     const { moduleResolver: _dropped, ...legacy } = FACTORY_PLATFORM_CONFIG
     expect(upgradePlatformConfigDocument(legacy)).toEqual(FACTORY_PLATFORM_CONFIG)
@@ -135,7 +139,7 @@ describe('平台配置文档版本升级', () => {
       ...FACTORY_PLATFORM_CONFIG,
       schemaVersion: 2,
       platformAi: {
-        ...FACTORY_PLATFORM_CONFIG.platformAi,
+        ...LEGACY_PLATFORM_AI,
         baseUrl: undefined,
         model: undefined,
         secretRef: undefined,
@@ -189,13 +193,53 @@ describe('平台配置文档版本升级', () => {
         platformInflightLimit: 4,
       },
     })
-    expect(upgraded.schemaVersion).toBe(4)
+    expect(upgraded.schemaVersion).toBe(PLATFORM_CONFIG_SCHEMA_VERSION)
     expect(upgraded.platformAi.enabled).toBe(true)
     expect(upgraded.platformAi.thinkingMode).toBe('off')
     expect(upgraded.platformAi.provider).toBeUndefined()
     expect(platformConfigDocumentSchema.parse(upgraded).platformAi.enabled).toBe(true)
     expect(() => platformConfigWriteDocumentSchema.parse(upgraded)).toThrowError(
       PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE,
+    )
+  })
+
+  it('schemaVersion 4 升到当前：补离开登录页超时与落地整理', () => {
+    const { loginLeaveTimeoutMs: _ignored, ...sessionAuth } = FACTORY_PLATFORM_CONFIG.sessionAuth
+    const upgraded = upgradePlatformConfigDocument({
+      ...FACTORY_PLATFORM_CONFIG,
+      schemaVersion: 4,
+      sessionAuth,
+    })
+    expect(upgraded.schemaVersion).toBe(PLATFORM_CONFIG_SCHEMA_VERSION)
+    expect(upgraded.sessionAuth.loginLeaveTimeoutMs).toBe(
+      FACTORY_PLATFORM_CONFIG.sessionAuth.loginLeaveTimeoutMs,
+    )
+    expect(upgraded.sessionAuth.landingSettleBudgetMs).toBe(
+      FACTORY_PLATFORM_CONFIG.sessionAuth.landingSettleBudgetMs,
+    )
+  })
+
+  it('schemaVersion 5 升到 6：补落地整理三项', () => {
+    const {
+      landingSettleBudgetMs: _budget,
+      landingSettleWatchMs: _watch,
+      landingSettleMaxDismissals: _max,
+      ...sessionAuth
+    } = FACTORY_PLATFORM_CONFIG.sessionAuth
+    const upgraded = upgradePlatformConfigDocument({
+      ...FACTORY_PLATFORM_CONFIG,
+      schemaVersion: 5,
+      sessionAuth,
+    })
+    expect(upgraded.schemaVersion).toBe(6)
+    expect(upgraded.sessionAuth.landingSettleBudgetMs).toBe(
+      FACTORY_PLATFORM_CONFIG.sessionAuth.landingSettleBudgetMs,
+    )
+    expect(upgraded.sessionAuth.landingSettleWatchMs).toBe(
+      FACTORY_PLATFORM_CONFIG.sessionAuth.landingSettleWatchMs,
+    )
+    expect(upgraded.sessionAuth.landingSettleMaxDismissals).toBe(
+      FACTORY_PLATFORM_CONFIG.sessionAuth.landingSettleMaxDismissals,
     )
   })
 
@@ -224,7 +268,7 @@ describe('平台配置文档版本升级', () => {
         ...FACTORY_PLATFORM_CONFIG,
         analysisAi: { ...FACTORY_PLATFORM_CONFIG.analysisAi, enabled: true },
         platformAi: {
-          ...FACTORY_PLATFORM_CONFIG.platformAi,
+          ...LEGACY_PLATFORM_AI,
           baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
           model: 'qwen-plus',
           secretRef,
@@ -239,9 +283,17 @@ describe('平台配置文档版本升级', () => {
     ).toThrowError(PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE)
   })
 
-  it('出厂平台 AI 没有 provider 键，思考默认关', () => {
-    expect(FACTORY_PLATFORM_CONFIG.platformAi.thinkingMode).toBe('off')
-    expect('provider' in FACTORY_PLATFORM_CONFIG.platformAi).toBe(false)
+  it('出厂平台 AI 预填 DeepSeek 地址与模型（只缺密钥），思考默认关、未启用', () => {
+    expect(FACTORY_PLATFORM_CONFIG.platformAi).toMatchObject({
+      enabled: false,
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-flash',
+      thinkingMode: 'off',
+    })
+    expect('secretRef' in FACTORY_PLATFORM_CONFIG.platformAi).toBe(false)
+    // 预填后的出厂文档仍是合法写入文档：不启用就不要求密钥
+    expect(() => platformConfigWriteDocumentSchema.parse(FACTORY_PLATFORM_CONFIG)).not.toThrow()
   })
 
   it('浏览器 AI 解析档位空串按出厂补齐，不把英文枚举错误抛给保存', () => {
@@ -577,4 +629,32 @@ describe('平台配置契约', () => {
       )
     },
   )
+
+  it('浏览器 AI 出厂只预填「连哪个模型」：补一把密钥就能启用，不预填密钥也不默认启用', () => {
+    const ai = FACTORY_PLATFORM_CONFIG.browserAi
+    expect(ai.enabled).toBe(false)
+    expect(ai.baseUrl).toBe(FACTORY_BROWSER_AI_ENDPOINT.baseUrl)
+    expect(ai.model).toBe(FACTORY_BROWSER_AI_ENDPOINT.model)
+    expect(ai.modelFamily).toBe(FACTORY_BROWSER_AI_ENDPOINT.modelFamily)
+    expect(ai.secretRef).toBeUndefined()
+
+    // 没有密钥就启用：被校验拦下，且缺的只有 Secret 引用，地址 / 模型 / 模型族不再需要手填。
+    const noKey = platformConfigDocumentSchema.safeParse({
+      ...FACTORY_PLATFORM_CONFIG,
+      browserAi: { ...ai, enabled: true },
+    })
+    expect(noKey.success).toBe(false)
+    expect(noKey.error?.issues.map((issue) => issue.path.join('.'))).toEqual(['browserAi.secretRef'])
+
+    // 登记密钥后（多出 secretRef）即可启用。
+    const withKey = platformConfigDocumentSchema.safeParse({
+      ...FACTORY_PLATFORM_CONFIG,
+      browserAi: {
+        ...ai,
+        enabled: true,
+        secretRef: { provider: 'local', secretId: '00000000-0000-4000-8000-000000000001' },
+      },
+    })
+    expect(withKey.success).toBe(true)
+  })
 })

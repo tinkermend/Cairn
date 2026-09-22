@@ -14,8 +14,9 @@ export type PageRef = z.infer<typeof pageRefSchema>
 
 export const AUTH_CONTROL_TTL_SECONDS = 30
 export const AUTH_CONTROL_HEARTBEAT_SECONDS = 5
-export const BROWSER_FRAME_MAX_EDGE = 1280
-export const BROWSER_FRAME_QUALITY = 60
+export const DEFAULT_MANAGED_VIEWPORT = { width: 1920, height: 1080 } as const
+export const BROWSER_FRAME_MAX_EDGE = 1920
+export const BROWSER_FRAME_QUALITY = 85
 export const BROWSER_FRAME_MAX_FPS = 2
 
 export const BROWSER_CAPABILITY_STATES = ['open', 'limited', 'closed'] as const
@@ -102,6 +103,7 @@ export const managedPageSummarySchema = z.strictObject({
   kind: z.enum(['base', 'run', 'popup']),
   viewing: z.boolean(),
   currentExecution: z.boolean(),
+  url: z.string().max(2048).nullable().optional(),
 })
 export type ManagedPageSummary = z.infer<typeof managedPageSummarySchema>
 
@@ -131,6 +133,7 @@ export const managedBrowserMetaSchema = z.strictObject({
   authControl: managedBrowserAuthControlSchema.nullable(),
   capabilities: managedBrowserCapabilitiesSchema,
   degradedReason: z.enum(['worker_unreachable', 'worker_generation_mismatch']).nullable(),
+  lastAuthError: z.string().min(1).max(128).nullable().optional(),
 })
 export type ManagedBrowserMeta = z.infer<typeof managedBrowserMetaSchema>
 

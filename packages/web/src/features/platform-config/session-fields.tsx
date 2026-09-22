@@ -153,6 +153,33 @@ export function SessionFields({ canWrite }: { canWrite: boolean }) {
         )}
       />
       <FormField
+        name='session.accountSessionMode'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>账号会话</FormLabel>
+            <Select
+              disabled={!canWrite}
+              value={field.value ?? 'exclusive'}
+              onValueChange={field.onChange}
+            >
+              <FormControl>
+                <SelectTrigger className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+              </FormControl>
+              <SelectContent>
+                <SelectItem value='exclusive'>一账号一台浏览器</SelectItem>
+                <SelectItem value='concurrent'>允许同账号多开</SelectItem>
+              </SelectContent>
+            </Select>
+            <FormDescription>
+              出厂为一账号一台。允许多开后，仍要在各个账号上单独提高并发上限。每个浏览器各自登录，不共享登录状态。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
         name='session.lostDisposition'
         render={({ field }) => (
           <FormItem>
@@ -427,6 +454,121 @@ export function SessionFields({ canWrite }: { canWrite: boolean }) {
             </FormControl>
             <FormDescription>
               创建 Run 时冻结；改值不回溯在途运行。0 表示不进入人工恢复。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.loginLeaveTimeoutMs'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>提交后等待离开登录页（秒，实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                min={1}
+                step={1}
+                disabled={!canWrite}
+                value={
+                  typeof field.value === 'number' && field.value > 0
+                    ? Math.round(field.value / 1000)
+                    : ''
+                }
+                onChange={(event) => {
+                  const seconds = Number(event.target.value)
+                  field.onChange(
+                    Number.isFinite(seconds) ? Math.round(seconds) * 1000 : field.value,
+                  )
+                }}
+              />
+            </FormControl>
+            <FormDescription>
+              未在目标系统单独填写时用此默认值。不得大于自动登录超时。跳转慢的系统请在目标上加大。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.landingSettleBudgetMs'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>登录后整理预算（秒，实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                min={1}
+                step={1}
+                disabled={!canWrite}
+                value={
+                  typeof field.value === 'number' && field.value > 0
+                    ? Math.round(field.value / 1000)
+                    : ''
+                }
+                onChange={(event) => {
+                  const seconds = Number(event.target.value)
+                  field.onChange(
+                    Number.isFinite(seconds) ? Math.round(seconds) * 1000 : field.value,
+                  )
+                }}
+              />
+            </FormControl>
+            <FormDescription>
+              登录成功后整理一次性层的总预算，失败不挡登录。不得大于自动登录超时。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.landingSettleWatchMs'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>整理观察窗（秒，实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                min={0}
+                step={0.1}
+                disabled={!canWrite}
+                value={
+                  typeof field.value === 'number' && field.value >= 0
+                    ? String(field.value / 1000)
+                    : ''
+                }
+                onChange={(event) => {
+                  const seconds = Number(event.target.value)
+                  field.onChange(
+                    Number.isFinite(seconds) ? Math.round(seconds * 1000) : field.value,
+                  )
+                }}
+              />
+            </FormControl>
+            <FormDescription>
+              落地后再等这一段时间看延迟插入的欢迎层。必须小于整理预算。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+      <FormField
+        name='sessionAuth.landingSettleMaxDismissals'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>单次最多关几层（实时）</FormLabel>
+            <FormControl>
+              <Input
+                type='number'
+                min={1}
+                max={8}
+                disabled={!canWrite}
+                value={field.value}
+                onChange={(event) => field.onChange(Number(event.target.value))}
+              />
+            </FormControl>
+            <FormDescription>
+              只关关闭／跳过一类按钮，不会代点同意或开始体验。
             </FormDescription>
             <FormMessage />
           </FormItem>

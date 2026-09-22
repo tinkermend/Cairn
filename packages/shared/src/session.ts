@@ -40,6 +40,7 @@ export const SESSION_ERROR_CODES = [
   'SESSION_LEASE_UNKNOWN',
   'SESSION_AUTH_UNSUPPORTED',
   'SESSION_AUTH_TIMEOUT',
+  'LOGIN_PAGE_UNREACHABLE',
   'AUTH_PROBE_UNKNOWN',
   'AUTH_IDENTITY_MISMATCH',
   'AUTH_PROFILE_REQUIRED',
@@ -53,14 +54,18 @@ export const SESSION_ERROR_CODES = [
   'RETENTION_QUOTA_EXCEEDED',
   'PAGE_REFRESH_UNSAFE',
   'OPERATION_INTERRUPTED',
+  'PLATFORM_CONFIG_UNREADABLE',
   'OUTCOME_UNKNOWN',
   'SESSION_STOP_UNCONFIRMED',
   'AUTH_CONTEXT_NOT_RECOVERABLE',
   'AUTH_RECOVERY_LIMIT',
   'AUTH_GATE_CLOSED',
   'AUTH_NOT_VERIFIED',
-  'SESSION_KEEPALIVE_ABANDONED',
-] as const
+    'SESSION_KEEPALIVE_ABANDONED',
+    'SESSION_INSTANCE_REQUIRED',
+    'SESSION_ACCOUNT_CAP_EXCEEDED',
+    'SESSION_CONCURRENCY_UNSUPPORTED',
+  ] as const
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number]
 export const sessionErrorCodeSchema = z.enum(SESSION_ERROR_CODES)
 
@@ -123,6 +128,35 @@ export type SessionLostDisposition = (typeof SESSION_LOST_DISPOSITIONS)[number]
 export const sessionLostDispositionSchema = z.enum(SESSION_LOST_DISPOSITIONS)
 export const DEFAULT_SESSION_LOST_DISPOSITION: SessionLostDisposition = 'MANUAL'
 
+export const ACCOUNT_SESSION_MODES = ['exclusive', 'concurrent'] as const
+export type AccountSessionMode = (typeof ACCOUNT_SESSION_MODES)[number]
+export const accountSessionModeSchema = z.enum(ACCOUNT_SESSION_MODES)
+export const DEFAULT_ACCOUNT_SESSION_MODE: AccountSessionMode = 'exclusive'
+export const DEFAULT_MAX_CONCURRENT_SESSIONS = 1
+export const MAX_CONCURRENT_SESSIONS_LIMIT = 16
+export const maxConcurrentSessionsSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_CONCURRENT_SESSIONS_LIMIT)
+
+export function effectiveAccountSessionCap(input: {
+  accountSessionMode?: AccountSessionMode | null
+  maxConcurrentSessions?: number | null
+}): number {
+  if (input.accountSessionMode !== 'concurrent') return 1
+  const raw = input.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS
+  return Math.min(MAX_CONCURRENT_SESSIONS_LIMIT, Math.max(1, Math.trunc(raw)))
+}
+
+export function profileKeyForAccountSlot(
+  targetId: string,
+  targetAccountId: string,
+  accountSlot = 1,
+): string {
+  return accountSlot <= 1 ? `${targetId}/${targetAccountId}` : `${targetId}/${targetAccountId}/${accountSlot}`
+}
+
 /**
  * 落进快照的会话策略。历史 Run 必须能解释当时怎么执行。
  * 不进 executionPolicySchema：Step 不决定会话所有权。
@@ -144,6 +178,7 @@ export const sessionPolicySchema = z
       .default(DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS),
     evictionPriority: z.number().int().default(DEFAULT_SESSION_EVICTION_PRIORITY),
     lostDisposition: sessionLostDispositionSchema.default(DEFAULT_SESSION_LOST_DISPOSITION),
+    accountSessionMode: accountSessionModeSchema.default(DEFAULT_ACCOUNT_SESSION_MODE),
   })
   .superRefine((policy, ctx) => {
     if (policy.maxLifetimeSeconds <= policy.idleTtlSeconds) {
@@ -183,6 +218,7 @@ export const DEFAULT_SESSION_POLICY: SessionPolicy = {
   authProbeIntervalSeconds: DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
   evictionPriority: DEFAULT_SESSION_EVICTION_PRIORITY,
   lostDisposition: DEFAULT_SESSION_LOST_DISPOSITION,
+  accountSessionMode: DEFAULT_ACCOUNT_SESSION_MODE,
 }
 
 /** POST /runs 可只覆盖部分字段；解析后写完整值进快照。 */
@@ -201,6 +237,7 @@ export type SessionPolicyOverride = z.infer<typeof sessionPolicyOverrideSchema>
 
 export const targetSessionPolicyOverrideSchema = sessionPolicyOverrideSchema.extend({
   lostDisposition: sessionLostDispositionSchema.optional(),
+  accountSessionMode: accountSessionModeSchema.optional(),
 })
 export type TargetSessionPolicyOverride = z.infer<typeof targetSessionPolicyOverrideSchema>
 
@@ -216,6 +253,7 @@ export const targetSessionPolicyPatchSchema = z.strictObject({
   authProbeIntervalSeconds: z.number().int().positive().nullable().optional(),
   evictionPriority: z.number().int().nullable().optional(),
   lostDisposition: sessionLostDispositionSchema.nullable().optional(),
+  accountSessionMode: accountSessionModeSchema.nullable().optional(),
 })
 export type TargetSessionPolicyPatch = z.infer<typeof targetSessionPolicyPatchSchema>
 
@@ -295,6 +333,7 @@ export const sessionDtoSchema = z.object({
   generation: z.number().int().positive(),
   reusePolicy: sessionReusePolicySchema,
   profileKey: z.string().min(1),
+  accountSlot: z.number().int().min(1).max(16).default(1),
   idleTtlSeconds: z.number().int().positive(),
   /** 空闲回收的判定基准。 */
   lastUsedAt: utcInstantSchema,

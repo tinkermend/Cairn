@@ -22,6 +22,8 @@ import {
   SESSION_ERROR_CODES,
   SESSION_REUSE_POLICIES,
   SESSION_STATUSES,
+  effectiveAccountSessionCap,
+  profileKeyForAccountSlot,
 } from '../session.js'
 
 /** 密钥必填、无默认值，parse 时必须带上。 */
@@ -51,6 +53,11 @@ describe('session 词表', () => {
     expect(SESSION_ERROR_CODES).toContain('SESSION_POLICY_INVALID')
     expect(SESSION_ERROR_CODES).toContain('SESSION_STOP_UNCONFIRMED')
     expect(SESSION_ERROR_CODES).toContain('SESSION_KEEPALIVE_ABANDONED')
+    expect(SESSION_ERROR_CODES).toContain('SESSION_INSTANCE_REQUIRED')
+    expect(SESSION_ERROR_CODES).toContain('SESSION_ACCOUNT_CAP_EXCEEDED')
+    expect(SESSION_ERROR_CODES).toContain('SESSION_CONCURRENCY_UNSUPPORTED')
+    expect(SESSION_ERROR_CODES).toContain('LOGIN_PAGE_UNREACHABLE')
+    expect(SESSION_ERROR_CODES).toContain('PLATFORM_CONFIG_UNREADABLE')
     expect(sessionErrorCodeSchema.parse('SESSION_BUSY')).toBe('SESSION_BUSY')
     expect(() => sessionErrorCodeSchema.parse('UNKNOWN')).toThrow()
   })
@@ -157,6 +164,7 @@ describe('resolveSessionPolicy', () => {
       authProbeIntervalSeconds: 900,
       evictionPriority: 0,
       lostDisposition: 'MANUAL',
+      accountSessionMode: 'exclusive',
     })
   })
 
@@ -190,6 +198,32 @@ describe('resolveSessionPolicy', () => {
     expect(applyTargetSessionPolicyPatch(null, { lostDisposition: 'AUTO' })).toEqual({
       lostDisposition: 'AUTO',
     })
+  })
+
+  it('目标可覆盖 accountSessionMode，Run 覆盖拒绝该字段', () => {
+    expect(targetSessionPolicyOverrideSchema.parse({ accountSessionMode: 'concurrent' })).toEqual({
+      accountSessionMode: 'concurrent',
+    })
+    expect(() => sessionPolicyOverrideSchema.parse({ accountSessionMode: 'concurrent' })).toThrow()
+    expect(
+      resolveSessionPolicyLayers({
+        platformDefault: DEFAULT_SESSION_POLICY,
+        targetOverride: { accountSessionMode: 'concurrent' },
+      }).accountSessionMode,
+    ).toBe('concurrent')
+  })
+})
+
+describe('账号会话上限与 Profile 键', () => {
+  it('exclusive 一律 1；concurrent 夹紧账号上限', () => {
+    expect(effectiveAccountSessionCap({ accountSessionMode: 'exclusive', maxConcurrentSessions: 8 })).toBe(1)
+    expect(effectiveAccountSessionCap({ accountSessionMode: 'concurrent', maxConcurrentSessions: 3 })).toBe(3)
+    expect(effectiveAccountSessionCap({ accountSessionMode: 'concurrent' })).toBe(1)
+  })
+
+  it('slot 1 保持存量路径，slot ≥ 2 追加编号', () => {
+    expect(profileKeyForAccountSlot('t', 'a', 1)).toBe('t/a')
+    expect(profileKeyForAccountSlot('t', 'a', 2)).toBe('t/a/2')
   })
 })
 

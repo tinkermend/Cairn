@@ -112,26 +112,48 @@ describe('会话维护契约 C0', () => {
     expect(accountPickerHint({ liveStatus: 'OPEN', hasPassword: false, authMethod: 'password' })).toEqual({
       reuse: true,
       lost: false,
+      atCapacity: false,
       manualLikely: true,
     })
     expect(accountPickerHint({ liveStatus: 'OPEN', hasPassword: true, authMethod: 'password', captchaMode: 'none' })).toEqual({
       reuse: true,
       lost: false,
+      atCapacity: false,
       manualLikely: false,
     })
     expect(accountPickerHint({ liveStatus: 'OPEN', hasPassword: true, authMethod: 'manual' })).toEqual({
       reuse: true,
       lost: false,
+      atCapacity: false,
       manualLikely: true,
     })
     expect(accountPickerHint({ liveStatus: 'OPEN', hasPassword: true, captchaMode: 'sms' })).toEqual({
       reuse: true,
       lost: false,
+      atCapacity: false,
       manualLikely: true,
     })
     expect(accountPickerHint({ liveStatus: 'LOST', hasPassword: true, authMethod: 'password' })).toEqual({
       reuse: false,
       lost: true,
+      atCapacity: false,
+      manualLikely: false,
+    })
+    expect(
+      accountPickerHint({
+        hasPassword: true,
+        liveCount: 3,
+        effectiveCap: 3,
+        instances: [
+          { status: 'OPEN', occupancy: { purpose: 'EXECUTION' } },
+          { status: 'OPEN', occupancy: { purpose: 'EXECUTION' } },
+          { status: 'OPEN', occupancy: { purpose: 'EXECUTION' } },
+        ],
+      }),
+    ).toEqual({
+      reuse: false,
+      lost: false,
+      atCapacity: true,
       manualLikely: false,
     })
   })
@@ -145,11 +167,38 @@ describe('会话维护契约 C0', () => {
   it('维护错误码与事件含保活收口', () => {
     expect(SESSION_MAINTENANCE_ERROR_CODES).toContain('AUTH_PROFILE_REQUIRED')
     expect(SESSION_MAINTENANCE_ERROR_CODES).toContain('SESSION_KEEPALIVE_ABANDONED')
+    expect(SESSION_MAINTENANCE_ERROR_CODES).toContain('PLATFORM_CONFIG_UNREADABLE')
     expect(SESSION_MAINTENANCE_ERROR_MESSAGES.AUTH_PROFILE_REQUIRED).toMatch(/主动检测/)
     expect(SESSION_MAINTENANCE_ERROR_MESSAGES.SESSION_KEEPALIVE_ABANDONED).toMatch(/保活/)
     expect(SESSION_EVENT_TYPES).toContain('auth.signal_observed')
     expect(SESSION_EVENT_TYPES).toContain('session.keepalive_extended')
     expect(SESSION_EVENT_TYPES).toContain('session.evicted')
+  })
+
+  it('SETTLE_LANDING 必须带实例代次，拒绝 pageRef', () => {
+    expect(() =>
+      requestSessionOperationBodySchema.parse({
+        kind: 'SETTLE_LANDING',
+        idempotencyKey: '12345678',
+        expectedSessionId: '11111111-1111-4111-8111-111111111111',
+        expectedGeneration: 1,
+      }),
+    ).not.toThrow()
+    expect(() =>
+      requestSessionOperationBodySchema.parse({
+        kind: 'SETTLE_LANDING',
+        idempotencyKey: '12345678',
+        expectedSessionId: '11111111-1111-4111-8111-111111111111',
+        expectedGeneration: 1,
+        pageRef: {
+          sessionId: '11111111-1111-4111-8111-111111111111',
+          sessionGeneration: 1,
+          pageId: '11111111-1111-4111-8111-111111111112',
+          documentEpoch: 0,
+        },
+      }),
+    ).toThrow()
+    expect(SESSION_EVENT_TYPES).toContain('auth.landing_settled')
   })
 
   it('RESET 必须确认账号；保留秒数受上限', () => {

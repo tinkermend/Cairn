@@ -8,10 +8,10 @@ import { recordAudit, type AuditActor } from '../audit/record.js'
 import { assertSessionAccountActive, assertSessionActorPermission } from './access.js'
 import { appendSessionEvent } from './session-events.js'
 import { lockConsoleAuthorization, assertTargetPermission } from '../console/target-authorization.js'
-import { findLiveSession, getSessionById, type SessionKey } from './sessions.js'
+import { findLiveSessions, getSessionById, type SessionKey } from './sessions.js'
 import { readRetentionConfig } from './session-retention-intent.js'
 
-export { applyPendingRetentionIntent, readRetentionConfig } from './session-retention-intent.js'
+export { adoptSessionRetention, applyPendingRetentionIntent, readRetentionConfig } from './session-retention-intent.js'
 
 export async function setSessionRetention(
   db: Db,
@@ -24,7 +24,13 @@ export async function setSessionRetention(
     await assertSessionActorPermission(tx, input.actor.id, 'session:control')
     const { retention, revision } = await readRetentionConfig(tx)
     const { sessionRetentionIntents, browserSessions, workers, targetAccounts } = schemaFor(tx)
-    const initial = await findLiveSession(tx, input.key)
+    const lives = await findLiveSessions(tx, input.key)
+    if (lives.length > 1 && !input.body.sessionId) {
+      throw conflict('SESSION_INSTANCE_REQUIRED', '多个会话时必须指定要保留的会话')
+    }
+    const initial =
+      (input.body.sessionId ? lives.find((row) => row.id === input.body.sessionId) : lives[0]) ?? null
+    if (input.body.sessionId && !initial) throw conflict('SESSION_NOT_CLAIMABLE', '指定会话不存在或已关闭')
     if (initial)
       await locked(
         tx,
@@ -38,17 +44,17 @@ export async function setSessionRetention(
         .where(eq(targetAccounts.id, input.key.targetAccountId)),
     )
     const now = await clockNow(tx)
-    const live = await findLiveSession(tx, input.key)
-    if (live && (live.id !== initial?.id || live.ownerWorkerId !== initial.ownerWorkerId))
-      throw conflict('SESSION_GENERATION_CHANGED', '会话已重建')
+    const live = initial
     const [existing] = await tx
       .select()
       .from(sessionRetentionIntents)
       .where(
-        and(
-          eq(sessionRetentionIntents.targetId, input.key.targetId),
-          eq(sessionRetentionIntents.targetAccountId, input.key.targetAccountId),
-        ),
+        live
+          ? eq(sessionRetentionIntents.sessionId, live.id)
+          : and(
+              eq(sessionRetentionIntents.targetId, input.key.targetId),
+              eq(sessionRetentionIntents.targetAccountId, input.key.targetAccountId),
+            ),
       )
       .limit(1)
 
@@ -138,6 +144,7 @@ export async function setSessionRetention(
         id: newId(),
         targetId: input.key.targetId,
         targetAccountId: input.key.targetAccountId,
+        sessionId: live.id,
         retainUntil: nextUntil,
         reason: input.body.reason ?? null,
         createdBy: input.actor.id,
@@ -175,63 +182,31 @@ export async function setSessionRetention(
   })
 }
 
-export async function adoptSessionRetention(
-  db: Db,
-  input: { fromSessionId: string; toSessionId: string },
-): Promise<void> {
-  await atomic(db, async (tx) => {
-    const { browserSessions, sessionRetentionIntents, targetAccounts } = schemaFor(tx)
-    const from = await getSessionById(tx, input.fromSessionId)
-    if (!from?.retainUntil || from.retainUntil.getTime() <= Date.now()) return
-    await locked(
-      tx,
-      tx
-        .select({ id: targetAccounts.id })
-        .from(targetAccounts)
-        .where(eq(targetAccounts.id, from.targetAccountId)),
-    )
-    const [intent] = await locked(
-      tx,
-      tx
-        .select()
-        .from(sessionRetentionIntents)
-        .where(
-          and(
-            eq(sessionRetentionIntents.targetId, from.targetId),
-            eq(sessionRetentionIntents.targetAccountId, from.targetAccountId),
-          ),
-        ),
-    )
-    if (!intent || intent.retainUntil.getTime() <= Date.now()) return
-    await updateRows(
-      tx,
-      browserSessions,
-      {
-        retainUntil: intent.retainUntil,
-        predecessorSessionId: from.id,
-        nextAuthCheckAt: new Date(),
-        updatedAt: new Date(),
-      },
-      and(
-        eq(browserSessions.id, input.toSessionId),
-        eq(browserSessions.targetId, from.targetId),
-        eq(browserSessions.targetAccountId, from.targetAccountId),
-      ),
-    )
-  })
-}
-
 export async function scheduleNextAuthCheck(db: Db, sessionId: string): Promise<void> {
   const { retention } = await readRetentionConfig(db)
   const session = await getSessionById(db, sessionId)
   const intervalSeconds = session?.authProbeIntervalSeconds ?? retention.maintenanceIntervalSeconds
   const { browserSessions } = schemaFor(db)
   const now = await clockNow(db)
+  let next = new Date(now.getTime() + intervalSeconds * 1000)
+  if (session) {
+    const siblings = await findLiveSessions(db, {
+      targetId: session.targetId,
+      targetAccountId: session.targetAccountId,
+    })
+    const near = siblings.some(
+      (row) =>
+        row.id !== sessionId &&
+        row.nextAuthCheckAt &&
+        Math.abs(row.nextAuthCheckAt.getTime() - next.getTime()) < 60_000,
+    )
+    if (near) next = new Date(next.getTime() + 60_000)
+  }
   await updateRows(
     db,
     browserSessions,
     {
-      nextAuthCheckAt: new Date(now.getTime() + intervalSeconds * 1000),
+      nextAuthCheckAt: next,
       updatedAt: now,
     },
     eq(browserSessions.id, sessionId),

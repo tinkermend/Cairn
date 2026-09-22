@@ -18,6 +18,9 @@ export const targetFormSchema = z
     name: z.string().min(1, '请填写名称。'),
     entryUrl: z.string().min(1, '请填写入口 URL。'),
     loginUrl: z.string(),
+    loginLeaveTimeoutSeconds: z.string(),
+    landingSettleMode: z.enum(['default', 'off']),
+    landingSettleTimeoutSeconds: z.string(),
     authMethod: z.enum(AUTH_METHODS),
     captchaMode: z.enum(CAPTCHA_MODES),
     status: z.enum(TARGET_STATUSES),
@@ -44,6 +47,28 @@ export const targetFormSchema = z
     sensitiveSelectors: z.string(),
   })
   .superRefine((values, ctx) => {
+    const leave = values.loginLeaveTimeoutSeconds.trim()
+    if (leave !== '') {
+      const parsed = Number(leave)
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['loginLeaveTimeoutSeconds'],
+          message: '须为正整数秒，或留空用平台默认。',
+        })
+      }
+    }
+    const settle = values.landingSettleTimeoutSeconds.trim()
+    if (settle !== '') {
+      const parsed = Number(settle)
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['landingSettleTimeoutSeconds'],
+          message: '须为正整数秒，或留空用平台默认。',
+        })
+      }
+    }
     const hasAny =
       values.accountDisplayName.trim() !== '' ||
       values.accountUsername.trim() !== '' ||
@@ -72,6 +97,9 @@ export const EMPTY_TARGET_FORM_VALUES: TargetFormValues = {
   name: '',
   entryUrl: '',
   loginUrl: '',
+  loginLeaveTimeoutSeconds: '',
+  landingSettleMode: 'default',
+  landingSettleTimeoutSeconds: '',
   authMethod: 'password',
   captchaMode: 'none',
   status: 'active',
@@ -101,6 +129,22 @@ export const EMPTY_TARGET_FORM_VALUES: TargetFormValues = {
 export function locatorFromForm(by: LoginLocatorBy, value: string) {
   const trimmed = value.trim()
   return trimmed === '' ? undefined : { by, value: trimmed }
+}
+
+export function loginLeaveTimeoutFromForm(value: string): number | null {
+  const trimmed = value.trim()
+  if (trimmed === '') return null
+  const parsed = Number(trimmed)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed * 1000 : null
+}
+
+export function loginLeaveTimeoutToForm(ms: number | null | undefined): string {
+  if (ms == null || ms <= 0) return ''
+  return String(Math.round(ms / 1000))
+}
+
+export function formatLoginLeaveTimeout(ms: number): string {
+  return `${Math.round(ms / 1000)} 秒`
 }
 
 export function loginFieldsFromForm(values: TargetFormValues): TargetLoginFields | null {
@@ -172,6 +216,9 @@ export function valuesFromTarget(current: TargetDto): TargetFormValues {
     name: current.name,
     entryUrl: current.entryUrl,
     loginUrl: current.loginUrl ?? '',
+    loginLeaveTimeoutSeconds: loginLeaveTimeoutToForm(current.loginLeaveTimeoutMs),
+    landingSettleMode: current.landingSettleMode ?? 'default',
+    landingSettleTimeoutSeconds: loginLeaveTimeoutToForm(current.landingSettleTimeoutMs),
     authMethod: current.authMethod,
     captchaMode: current.captchaMode,
     status: current.status,

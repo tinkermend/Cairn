@@ -1,9 +1,11 @@
-import { and, asc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm'
 import { readableSessionTargets } from '../console/target-authorization.js'
 import {
   accountSessionBucket,
   activeDetectionReady,
+  deriveAuthCapability,
   deriveAccountSessionStatus,
+  effectiveAccountSessionCap,
   matchesOverviewFilter,
   matchesSystemOverviewFilter,
   worstAccountSessionStatus,
@@ -21,6 +23,8 @@ import type { Db } from '../client.js'
 import { clockNow, databaseNow, schemaFor } from '../native.js'
 import { notFound } from '../runs/errors.js'
 import { readRetentionConfig } from './session-retention.js'
+import { parseTargetSessionPolicyOverride } from './session-policy.js'
+import { readAccountSessionCap } from './account-session-concurrency.js'
 import { loadCurrentAuthProfile } from './auth-profile.js'
 import type { SessionOperationRow } from '../records.js'
 import type { SessionLeaseRow } from '../schema/session.js'
@@ -37,6 +41,7 @@ type OccupancyLive = Pick<
   | 'authState'
   | 'identityState'
   | 'observedTier'
+  | 'lastAuthError'
   | 'retainUntil'
   | 'reclaimMode'
   | 'keepAliveUntil'
@@ -48,9 +53,18 @@ type OccupancyLive = Pick<
   | 'ownerWorkerId'
   | 'authControlActorId'
   | 'authControlExpiresAt'
+  | 'accountSlot'
 >
 
+export type OccupancyInstance = {
+  session: OccupancyLive
+  lease: SessionLeaseRow | null
+  holding: boolean
+}
+
 export type OccupancyFacts = {
+  instances: OccupancyInstance[]
+  activeOps: SessionOperationRow[]
   live: OccupancyLive | null
   lease: SessionLeaseRow | null
   holding: boolean
@@ -66,6 +80,8 @@ type OverviewAccountRow = {
   accountDisplayName: string
   accountUsername: string
   accountStatus: 'active' | 'disabled'
+  maxConcurrentSessions: number
+  targetSessionPolicy: Record<string, unknown> | null
 }
 
 type SystemTargetRow = {
@@ -84,7 +100,51 @@ export const sessionOverviewReadStats = {
 }
 
 function emptyOccupancy(): OccupancyFacts {
-  return { live: null, lease: null, holding: false, activeOp: null }
+  return { instances: [], activeOps: [], live: null, lease: null, holding: false, activeOp: null }
+}
+
+function toOccupancyLive(row: {
+  id: string
+  status: OccupancyLive['status']
+  generation: number
+  authState: OccupancyLive['authState']
+  identityState: OccupancyLive['identityState']
+  observedTier: OccupancyLive['observedTier']
+  lastAuthError: OccupancyLive['lastAuthError']
+  retainUntil: OccupancyLive['retainUntil']
+  reclaimMode: OccupancyLive['reclaimMode']
+  keepAliveUntil: OccupancyLive['keepAliveUntil']
+  nextAuthCheckAt: OccupancyLive['nextAuthCheckAt']
+  lastAuthCheckedAt: OccupancyLive['lastAuthCheckedAt']
+  lastAuthSuccessAt: OccupancyLive['lastAuthSuccessAt']
+  lastExpectedIdentity: OccupancyLive['lastExpectedIdentity']
+  authValidUntil: OccupancyLive['authValidUntil']
+  ownerWorkerId: OccupancyLive['ownerWorkerId']
+  authControlActorId: OccupancyLive['authControlActorId']
+  authControlExpiresAt: OccupancyLive['authControlExpiresAt']
+  accountSlot?: number | null
+}): OccupancyLive {
+  return {
+    id: row.id,
+    status: row.status,
+    generation: row.generation,
+    authState: row.authState,
+    identityState: row.identityState,
+    observedTier: row.observedTier,
+    lastAuthError: row.lastAuthError,
+    retainUntil: row.retainUntil ?? null,
+    reclaimMode: row.reclaimMode,
+    keepAliveUntil: row.keepAliveUntil ?? null,
+    nextAuthCheckAt: row.nextAuthCheckAt ?? null,
+    lastAuthCheckedAt: row.lastAuthCheckedAt,
+    lastAuthSuccessAt: row.lastAuthSuccessAt,
+    lastExpectedIdentity: row.lastExpectedIdentity,
+    authValidUntil: row.authValidUntil,
+    ownerWorkerId: row.ownerWorkerId,
+    authControlActorId: row.authControlActorId,
+    authControlExpiresAt: row.authControlExpiresAt,
+    accountSlot: row.accountSlot ?? 1,
+  }
 }
 
 export function accountFactKey(targetId: string, targetAccountId: string) {
@@ -143,14 +203,17 @@ async function loadOccupancyFactsForAccountKeys(
         inArray(browserSessions.status, LIVE_SESSION_STATUSES),
       ),
     )
-  const liveByAccount = new Map<string, (typeof liveRows)[number]>()
+  const livesByAccount = new Map<string, (typeof liveRows)[number][]>()
   for (const row of liveRows) {
     const key = accountFactKey(row.targetId, row.targetAccountId)
-    if (facts.has(key) && !liveByAccount.has(key)) liveByAccount.set(key, row)
+    if (!facts.has(key)) continue
+    const list = livesByAccount.get(key) ?? []
+    list.push(row)
+    livesByAccount.set(key, list)
   }
 
-  const liveIds = [...liveByAccount.values()].map((row) => row.id)
-  const liveAccountIds = [...new Set([...liveByAccount.values()].map((row) => row.targetAccountId))]
+  const liveIds = [...livesByAccount.values()].flat().map((row) => row.id)
+  const liveAccountIds = [...new Set([...livesByAccount.values()].flat().map((row) => row.targetAccountId))]
   const leaseRows = liveIds.length
     ? await db
         .select()
@@ -178,7 +241,7 @@ async function loadOccupancyFactsForAccountKeys(
     holdingRows.flatMap((row) => {
       if (!row.targetId || !row.targetAccountId) return []
       const key = accountFactKey(row.targetId, row.targetAccountId)
-      return liveByAccount.has(key) ? [key] : []
+      return livesByAccount.has(key) ? [key] : []
     }),
   )
 
@@ -191,41 +254,39 @@ async function loadOccupancyFactsForAccountKeys(
         inArray(sessionOperations.status, ACTIVE_OPERATION_STATUSES),
       ),
     )
-  const opByAccount = new Map<string, SessionOperationRow>()
+  const opsByAccount = new Map<string, SessionOperationRow[]>()
   for (const row of opRows) {
     const key = accountFactKey(row.targetId, row.targetAccountId)
     if (!facts.has(key)) continue
-    opByAccount.set(key, preferActiveOperation(opByAccount.get(key) ?? null, row))
+    const list = opsByAccount.get(key) ?? []
+    list.push(row)
+    opsByAccount.set(key, list)
   }
 
-  for (const [key, live] of liveByAccount) {
+  for (const [key, rows] of livesByAccount) {
     const current = facts.get(key)
     if (!current) continue
-    current.live = {
-      id: live.id,
-      status: live.status,
-      generation: live.generation,
-      authState: live.authState,
-      identityState: live.identityState,
-      observedTier: live.observedTier,
-      retainUntil: live.retainUntil ?? null,
-      reclaimMode: live.reclaimMode,
-      keepAliveUntil: live.keepAliveUntil ?? null,
-      nextAuthCheckAt: live.nextAuthCheckAt ?? null,
-      lastAuthCheckedAt: live.lastAuthCheckedAt,
-      lastAuthSuccessAt: live.lastAuthSuccessAt,
-      lastExpectedIdentity: live.lastExpectedIdentity,
-      authValidUntil: live.authValidUntil,
-      ownerWorkerId: live.ownerWorkerId,
-      authControlActorId: live.authControlActorId,
-      authControlExpiresAt: live.authControlExpiresAt,
-    }
-    current.lease = leaseBySession.get(live.id) ?? null
-    current.holding = holdingKeys.has(key)
+    current.instances = rows.map((row) => ({
+      session: toOccupancyLive(row),
+      lease: leaseBySession.get(row.id) ?? null,
+      holding: holdingKeys.has(key),
+    }))
+    const primary =
+      current.instances.find((item) => item.session.status === 'LOST') ??
+      current.instances.find((item) => item.lease) ??
+      current.instances[0]
+    current.live = primary?.session ?? null
+    current.lease = primary?.lease ?? null
+    current.holding = current.instances.some((item) => item.holding)
   }
-  for (const [key, activeOp] of opByAccount) {
+  for (const [key, ops] of opsByAccount) {
     const current = facts.get(key)
-    if (current) current.activeOp = activeOp
+    if (!current) continue
+    current.activeOps = ops
+    current.activeOp = ops.reduce<SessionOperationRow | null>(
+      (best, row) => preferActiveOperation(best, row),
+      null,
+    )
   }
   return facts
 }
@@ -244,15 +305,34 @@ export async function loadOccupancyFacts(db: Db, key: SessionKey): Promise<Occup
 }
 
 export function statusFromFacts(input: OccupancyFacts): AccountSessionStatus {
-  return deriveAccountSessionStatus({
-    liveStatus: input.live?.status ?? null,
-    authState: input.live?.authState ?? null,
-    identityState: input.live?.identityState ?? null,
-    leasePurpose: input.lease?.purpose ?? null,
-    occupyingRunId: input.lease?.runId ?? null,
-    occupyingOperationId: input.lease?.operationId ?? input.activeOp?.id ?? null,
-    holding: input.holding,
-  })
+  if (!input.instances.length) {
+    return deriveAccountSessionStatus({
+      liveStatus: input.live?.status ?? null,
+      authState: input.live?.authState ?? null,
+      identityState: input.live?.identityState ?? null,
+      leasePurpose: input.lease?.purpose ?? null,
+      occupyingRunId: input.lease?.runId ?? null,
+      occupyingOperationId: input.lease?.operationId ?? input.activeOp?.id ?? null,
+      holding: input.holding,
+    })
+  }
+  let worst: AccountSessionStatus | null = null
+  for (const item of input.instances) {
+    const next = deriveAccountSessionStatus({
+      liveStatus: item.session.status,
+      authState: item.session.authState,
+      identityState: item.session.identityState,
+      leasePurpose: item.lease?.purpose ?? null,
+      occupyingRunId: item.lease?.runId ?? null,
+      occupyingOperationId: item.lease?.operationId ?? null,
+      holding: item.holding,
+    })
+    worst = worstAccountSessionStatus(worst, next)
+  }
+  if (input.activeOps.length && worst && worst !== 'lost' && worst !== 'executing') {
+    worst = worstAccountSessionStatus(worst, 'maintenance')
+  }
+  return worst ?? 'unprepared'
 }
 
 async function loadOccupancyFactsForActiveAccounts(db: Db): Promise<Map<string, OccupancyFacts>> {
@@ -341,6 +421,8 @@ async function loadOverviewAccounts(
       accountDisplayName: targetAccounts.displayName,
       accountUsername: targetAccounts.username,
       accountStatus: targetAccounts.status,
+      maxConcurrentSessions: targetAccounts.maxConcurrentSessions,
+      targetSessionPolicy: targets.sessionPolicy,
     })
     .from(targetAccounts)
     .innerJoin(targets, eq(targets.id, targetAccounts.targetId))
@@ -447,7 +529,17 @@ function bumpAccountSummary(
 }
 
 function isRetained(facts: OccupancyFacts, now: Date) {
-  return Boolean(facts.live?.retainUntil && facts.live.retainUntil.getTime() > now.getTime())
+  return (facts.instances.length ? facts.instances : facts.live ? [{ session: facts.live }] : []).some(
+    (item) => item.session.retainUntil && item.session.retainUntil.getTime() > now.getTime(),
+  )
+}
+
+function capFromAccount(account: Pick<OverviewAccountRow, 'maxConcurrentSessions' | 'targetSessionPolicy'>) {
+  const override = parseTargetSessionPolicyOverride(account.targetSessionPolicy)
+  return effectiveAccountSessionCap({
+    accountSessionMode: override?.accountSessionMode,
+    maxConcurrentSessions: account.maxConcurrentSessions,
+  })
 }
 
 function primaryAction(status: AccountSessionStatus): string {
@@ -483,12 +575,14 @@ function toAccountOverviewItem(account: OverviewAccountRow, facts: OccupancyFact
     lastAuthSuccessAt: facts.live?.lastAuthSuccessAt?.toISOString() ?? null,
     ownerWorkerId: facts.live?.ownerWorkerId ?? null,
     primaryAction: primaryAction(status),
+    liveCount: facts.instances.length,
+    effectiveCap: capFromAccount(account),
   }
 }
 
 function addAccountToSystem(
   systems: Map<string, SessionSystemOverviewItem>,
-  account: Pick<OverviewAccountRow, 'targetId' | 'targetName' | 'targetCode' | 'targetStatus'>,
+  account: OverviewAccountRow,
   facts: OccupancyFacts,
   now: Date,
 ) {
@@ -509,10 +603,14 @@ function addAccountToSystem(
       busyCount: bucket === 'busy' ? 1 : 0,
       retainedCount: retained ? 1 : 0,
       worstStatus: status,
+      liveSessionCount: facts.instances.length,
+      sessionCapTotal: capFromAccount(account as OverviewAccountRow),
     })
     return
   }
   current.accountTotal += 1
+  current.liveSessionCount += facts.instances.length
+  current.sessionCapTotal += capFromAccount(account as OverviewAccountRow)
   if (bucket === 'ready') current.readyCount += 1
   if (bucket === 'problem') current.problemCount += 1
   if (bucket === 'unprepared') current.unpreparedCount += 1
@@ -727,12 +825,19 @@ export async function listSessionSystemOverview(
   }
 }
 
-function actionsFor(status: AccountSessionStatus, retained: boolean, detectionReady: boolean) {
+function actionsFor(
+  status: AccountSessionStatus,
+  retained: boolean,
+  detectionReady: boolean,
+  liveCount = 0,
+  effectiveCap = 1,
+) {
   const idle =
     status === 'ready' ||
     status === 'needs_check' ||
     status === 'needs_login' ||
     status === 'identity_mismatch'
+  const canPrepare = liveCount < effectiveCap
   const verifyReason = !detectionReady
     ? '未配置主动检测，将在下次使用时按登录页判断'
     : idle
@@ -746,8 +851,8 @@ function actionsFor(status: AccountSessionStatus, retained: boolean, detectionRe
   return [
     {
       kind: 'PREPARE',
-      enabled: status === 'unprepared',
-      disabledReason: status !== 'unprepared' ? '已有会话或不适用' : null,
+      enabled: canPrepare,
+      disabledReason: canPrepare ? null : effectiveCap === 1 ? '已有会话或不适用' : '会话已达上限',
     },
     { kind: 'VERIFY_AUTH', enabled: idle && detectionReady, disabledReason: verifyReason },
     {
@@ -759,6 +864,14 @@ function actionsFor(status: AccountSessionStatus, retained: boolean, detectionRe
       kind: 'RENEW_AUTH',
       enabled: status === 'ready' && detectionReady,
       disabledReason: renewReason,
+    },
+    {
+      kind: 'SETTLE_LANDING',
+      enabled: status === 'ready' || status === 'needs_check',
+      disabledReason:
+        status === 'ready' || status === 'needs_check'
+          ? null
+          : '仅已登录的空闲会话可整理页面',
     },
     {
       kind: 'retention',
@@ -797,6 +910,7 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
   if (!account) throw notFound('TARGET_ACCOUNT_NOT_FOUND', '目标账号不存在')
   const profile = await loadCurrentAuthProfile(db, key.targetId)
   const facts = await loadOccupancyFacts(db, key)
+  const cap = await readAccountSessionCap(db, key)
   const now = await clockNow(db)
   const retained = Boolean(facts.live?.retainUntil && facts.live.retainUntil.getTime() > now.getTime())
   const status = statusFromFacts(facts)
@@ -829,6 +943,22 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
       )
     quotaUsed = rows.length
   }
+  let lastAuthError = facts.live?.lastAuthError ?? null
+  if (!lastAuthError) {
+    const { browserSessions } = schemaFor(db)
+    const [recent] = await db
+      .select({ lastAuthError: browserSessions.lastAuthError })
+      .from(browserSessions)
+      .where(
+        and(
+          eq(browserSessions.targetId, key.targetId),
+          eq(browserSessions.targetAccountId, key.targetAccountId),
+        ),
+      )
+      .orderBy(desc(browserSessions.lastAuthCheckedAt), desc(browserSessions.updatedAt))
+      .limit(1)
+    lastAuthError = recent?.lastAuthError ?? null
+  }
   return {
     targetId: account.targetId,
     targetName: account.targetName,
@@ -838,28 +968,64 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
     accountStatus: account.accountStatus,
     hasPassword: Boolean(account.hasPassword),
     expectedIdentity: account.expectedIdentity,
-    authCapability: facts.live?.observedTier ?? 'LEGACY',
+    authCapability:
+      facts.live?.observedTier ??
+      deriveAuthCapability({
+        definition: profile?.definition ?? null,
+        validation: profile?.validation ?? null,
+        expectedIdentity: account.expectedIdentity,
+      }),
+    lastAuthError,
     status,
     retained,
-    session: facts.live
-      ? {
-          id: facts.live.id,
-          status: facts.live.status,
-          generation: facts.live.generation,
-          ownerWorkerId: facts.live.ownerWorkerId,
-          authState: facts.live.authState,
-          identityState: facts.live.identityState,
-          observedTier: facts.live.observedTier,
-          lastAuthCheckedAt: facts.live.lastAuthCheckedAt?.toISOString() ?? null,
-          lastAuthSuccessAt: facts.live.lastAuthSuccessAt?.toISOString() ?? null,
-          authValidUntil: facts.live.authValidUntil?.toISOString() ?? null,
-          lastExpectedIdentity: facts.live.lastExpectedIdentity,
-          retainUntil: facts.live.retainUntil?.toISOString() ?? null,
-          reclaimMode: facts.live.reclaimMode,
-          keepAliveUntil: facts.live.keepAliveUntil?.toISOString() ?? null,
-          nextAuthCheckAt: facts.live.nextAuthCheckAt?.toISOString() ?? null,
-        }
-      : null,
+    session:
+      facts.instances.length === 1 && facts.live
+        ? {
+            id: facts.live.id,
+            status: facts.live.status,
+            generation: facts.live.generation,
+            ownerWorkerId: facts.live.ownerWorkerId,
+            authState: facts.live.authState,
+            identityState: facts.live.identityState,
+            observedTier: facts.live.observedTier,
+            lastAuthCheckedAt: facts.live.lastAuthCheckedAt?.toISOString() ?? null,
+            lastAuthSuccessAt: facts.live.lastAuthSuccessAt?.toISOString() ?? null,
+            authValidUntil: facts.live.authValidUntil?.toISOString() ?? null,
+            lastExpectedIdentity: facts.live.lastExpectedIdentity,
+            retainUntil: facts.live.retainUntil?.toISOString() ?? null,
+            reclaimMode: facts.live.reclaimMode,
+            keepAliveUntil: facts.live.keepAliveUntil?.toISOString() ?? null,
+            nextAuthCheckAt: facts.live.nextAuthCheckAt?.toISOString() ?? null,
+            accountSlot: facts.live.accountSlot ?? 1,
+          }
+        : null,
+    instances: facts.instances.map((item) => ({
+      id: item.session.id,
+      status: item.session.status,
+      generation: item.session.generation,
+      ownerWorkerId: item.session.ownerWorkerId,
+      authState: item.session.authState,
+      identityState: item.session.identityState,
+      observedTier: item.session.observedTier,
+      lastAuthCheckedAt: item.session.lastAuthCheckedAt?.toISOString() ?? null,
+      lastAuthSuccessAt: item.session.lastAuthSuccessAt?.toISOString() ?? null,
+      authValidUntil: item.session.authValidUntil?.toISOString() ?? null,
+      lastExpectedIdentity: item.session.lastExpectedIdentity,
+      retainUntil: item.session.retainUntil?.toISOString() ?? null,
+      reclaimMode: item.session.reclaimMode,
+      keepAliveUntil: item.session.keepAliveUntil?.toISOString() ?? null,
+      nextAuthCheckAt: item.session.nextAuthCheckAt?.toISOString() ?? null,
+      accountSlot: item.session.accountSlot ?? 1,
+      occupancy: item.lease
+        ? {
+            purpose: item.lease.purpose,
+            occupyingRunId: item.lease.runId,
+            occupyingOperationId: item.lease.operationId,
+          }
+        : null,
+    })),
+    liveCount: facts.instances.length,
+    effectiveCap: cap.effectiveCap,
     occupancy: facts.lease
       ? {
           purpose: facts.lease.purpose,
@@ -895,6 +1061,8 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
         definition: profile?.definition ?? null,
         validation: profile?.validation ?? null,
       }),
+      facts.instances.length,
+      cap.effectiveCap,
     ),
     asOf: now.toISOString(),
   }

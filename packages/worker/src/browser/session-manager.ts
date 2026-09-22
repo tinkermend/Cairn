@@ -63,6 +63,7 @@ import {
 import { abandonOccupancy, acquireExclusive, applyReuse, bindOccupancy, ensureAuth, ensureProfileAuth, enterWaitingForAuth, evictIfAtCapacity, finishClaimedAcquire, launchAndOpen, liveSessionIdForOwner, loadTargetAuth, recoverAuth, recoverAuthHeld, resolveLoginCredential, unbindOccupancy, waitInterruptible, withHeldOccupancy } from './session-claim.js'
 import { attachSessionAuthObserver } from './session-idle-observer.js'
 import { attachMaintenanceOperation, attachValidationOperation, completeOccupiedAuth, finishMaintenance, markMaintenanceOutcomeUnknown, markSessionLost, persistProfileObservation, resolveAccountCredential, runMaintenanceAuth, verifyOccupiedOwner } from './session-maintenance-runtime.js'
+import { settleOccupiedLanding, type SettleOccupiedLandingInput } from './landing-settle.js'
 import { acquireRunAuthControl, applyRecoveryRule, executeAuthInput, expiredAuthObservation, failInRunAuthRecovery, heartbeatRunAuthControl, inputRunAuthControl, observeInRunAuth, observeInRunAuthHeld, releaseRunAuthControl, restoreAuthGateFromCheckpoint, resumeRunAuth, verifyInRunAuth } from './session-auth-control.js'
 import { adoptPage, assertCommand, closeRunPage, ensureRunPage, execute, invalidate, pageForGrant, runManagedPage, runSurfaceCommand, startTracingForLease, stopTracingForLease, withManagedPage } from './session-command.js'
 import {
@@ -83,6 +84,17 @@ export const BROWSER_SESSION_OPTIONS = Symbol('BROWSER_SESSION_OPTIONS')
 import { SECRET_PROVIDER } from '../tokens.js'
 export { SECRET_PROVIDER }
 export { SessionLeaseError, type BrowserSessionManagerOptions, type SessionAcquireResult } from './session-live.js'
+
+function isUnusablePageUrl(url: string): boolean {
+  const trimmed = url.trim()
+  if (!trimmed) return true
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol !== 'http:' && parsed.protocol !== 'https:'
+  } catch {
+    return true
+  }
+}
 
 @Injectable()
 export class BrowserSessionManager {
@@ -343,19 +355,24 @@ export class BrowserSessionManager {
     return markMaintenanceOutcomeUnknown.call(this, session, operation)
   }
 
-  isSafeLoginRefresh(currentUrl: string, loginUrl: string, entryUrl: string | null): boolean {
+  isSafeLoginRefresh(
+    currentUrl: string,
+    loginUrl: string,
+    entryUrl: string | null,
+    opts?: { allowSameOrigin?: boolean },
+  ): boolean {
+    if (isUnusablePageUrl(currentUrl)) return true
     try {
       const current = new URL(currentUrl)
-      return [loginUrl, entryUrl].filter((value): value is string => Boolean(value)).some((value) => {
-        const allowed = new URL(value)
-        return (
-          allowed.origin === current.origin &&
-          allowed.pathname === current.pathname &&
-          allowed.search === current.search
-        )
+      const allowed = [loginUrl, entryUrl].filter((value): value is string => Boolean(value))
+      return allowed.some((value) => {
+        const dest = new URL(value)
+        if (dest.origin !== current.origin) return false
+        if (opts?.allowSameOrigin) return true
+        return dest.pathname === current.pathname && dest.search === current.search
       })
     } catch {
-      return false
+      return true
     }
   }
 
@@ -371,6 +388,10 @@ export class BrowserSessionManager {
     errorCode?: string,
   ): Promise<void> {
     return finishMaintenance.call(this, operationId, key, status, event, errorCode)
+  }
+
+  async settleOccupiedLanding(input: SettleOccupiedLandingInput) {
+    return settleOccupiedLanding.call(this, input)
   }
 
   async runMaintenanceAuth(

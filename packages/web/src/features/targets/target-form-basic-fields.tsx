@@ -120,6 +120,72 @@ export function TargetFormBasicFields({
         )}
       />
 
+      <FormField
+        control={form.control}
+        name='loginLeaveTimeoutSeconds'
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>
+              提交后等待离开登录页
+              <span className='text-label font-normal text-muted-foreground'>（秒，可选）</span>
+            </FormLabel>
+            <FormControl>
+              <Input {...field} type='number' min={1} step={1} placeholder='留空则用平台默认' />
+            </FormControl>
+            <FormDescription>
+              自动填写提交后，等多久仍停在登录页才判未完成。跳转慢的系统加大；不填用平台配置。
+            </FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <div className='grid gap-3 sm:grid-cols-2'>
+        <FormField
+          control={form.control}
+          name='landingSettleMode'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>登录后整理</FormLabel>
+              <Select value={field.value} onValueChange={field.onChange}>
+                <FormControl>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  <SelectItem value='default'>按平台整理</SelectItem>
+                  <SelectItem value='off'>不自动整理</SelectItem>
+                </SelectContent>
+              </Select>
+              <FormDescription>
+                关掉后，换节点自动登录也不会关欢迎层。
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name='landingSettleTimeoutSeconds'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>
+                整理预算
+                <span className='text-label font-normal text-muted-foreground'>（秒，可选）</span>
+              </FormLabel>
+              <FormControl>
+                <Input {...field} type='number' min={1} step={1} placeholder='留空则用平台默认' />
+              </FormControl>
+              <FormDescription>
+                覆盖平台整理预算。不填用平台配置。
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      </div>
+
       <div className='grid gap-3 sm:grid-cols-2'>
         <FormField
           control={form.control}

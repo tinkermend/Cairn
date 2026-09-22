@@ -17,7 +17,7 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { canCloseAccountSession, hasPermission } from '@cairn/shared'
+import { canCloseAccountSession, describeAuthIssue, describeAuthWaitStage, hasPermission } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   fetchAccountSession,
@@ -42,36 +42,84 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { AUTH_CAPABILITY_LABELS } from '@/features/targets/labels'
-import { SESSION_MAINTENANCE_ERROR_MESSAGES } from '@cairn/shared'
 import {
   ACCOUNT_SESSION_STATUS_LABELS,
   ACCOUNT_SESSION_STATUS_TONE,
   OPERATION_KIND_LABELS,
   PRIMARY_ACTION_LABELS,
+  describeSessionOperationError,
   groupSessionEventsByActivity,
   resolveSessionEvent,
   sessionAuthLabel,
   sessionEventLabel,
 } from './labels'
+import { accountSessionOccupancyText } from './occupancy-label'
 
 const operationTransport = sessionBrowserTransport('operation')
 const instanceTransport = sessionBrowserTransport('session')
 const operationStatusLabels: Record<string, string> = {
   QUEUED: '排队中',
   RUNNING: '执行中',
-  WAITING_FOR_AUTH: '等待人工认证',
+  WAITING_FOR_AUTH: '等待登录',
   SUCCEEDED: '已完成',
   FAILED: '失败',
   CANCELLED: '已取消',
   SUBMITTING: '已提交',
 }
 const IN_FLIGHT_OPERATION = new Set(['QUEUED', 'RUNNING', 'WAITING_FOR_AUTH'])
+
+const CLAIM_KINDS = ['PREPARE', 'VERIFY_AUTH', 'LOGIN', 'RENEW_AUTH'] as const
+
+export type SessionPrimaryAction =
+  | 'PREPARE'
+  | 'VERIFY_AUTH'
+  | 'LOGIN'
+  | 'RENEW_AUTH'
+  | 'CLOSE'
+  | 'RESTART'
+  | 'RESET_PROFILE'
+  | 'dispose'
+
+export function resolveSessionPrimaryAction(input: {
+  status?: string | null
+  actions?: Array<{ kind: string; enabled: boolean }> | null
+}): SessionPrimaryAction {
+  const status = input.status ?? null
+  const actions = input.actions ?? []
+  const statusPrimary: SessionPrimaryAction =
+    status === 'unprepared'
+      ? 'PREPARE'
+      : status === 'needs_check'
+        ? 'VERIFY_AUTH'
+        : status === 'needs_login' || status === 'identity_mismatch'
+          ? 'LOGIN'
+          : status === 'lost'
+            ? 'dispose'
+            : 'VERIFY_AUTH'
+  if (statusPrimary === 'dispose') return 'dispose'
+  const statusClaim = actions.find((action) => action.kind === statusPrimary)
+  if (statusClaim?.enabled) return statusPrimary
+  if (status === 'needs_check' || status === 'unprepared') {
+    const enabledClaim = actions.find(
+      (action) => CLAIM_KINDS.includes(action.kind as (typeof CLAIM_KINDS)[number]) && action.enabled,
+    )
+    if (enabledClaim) return enabledClaim.kind as (typeof CLAIM_KINDS)[number]
+  }
+  return statusPrimary
+}
 
 export function sessionOperationProgress(input: {
   submittingKind?: string | null
@@ -120,14 +168,15 @@ export function SessionDetailPage() {
   const [copiedId, setCopiedId] = useState(false)
   const [expandedActivities, setExpandedActivities] = useState<Record<string, boolean>>({})
   const [expandedSubSignals, setExpandedSubSignals] = useState<Record<string, boolean>>({})
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
 
   const detail = useQuery({
     queryKey: ['account-session', targetId, accountId],
     queryFn: () => fetchAccountSession(targetId, accountId),
   })
   const events = useQuery({
-    queryKey: ['account-session-events', targetId, accountId, eventCursor],
-    queryFn: () => fetchAccountSessionEvents(targetId, accountId, eventCursor),
+    queryKey: ['account-session-events', targetId, accountId, eventCursor, selectedSessionId],
+    queryFn: () => fetchAccountSessionEvents(targetId, accountId, eventCursor, selectedSessionId ?? undefined),
   })
   const operationId = detail.data?.currentOperation?.id ?? requestedId
   const operation = useQuery({
@@ -147,6 +196,26 @@ export function SessionDetailPage() {
       setRequestedId(null)
     }
   }, [operation.data, requestedId])
+
+  const instances = useMemo(() => {
+    if (detail.data?.instances?.length) return detail.data.instances
+    if (detail.data?.session) {
+      return [{ ...detail.data.session, occupancy: detail.data.occupancy }]
+    }
+    return []
+  }, [detail.data])
+
+  useEffect(() => {
+    if (!instances.length) {
+      if (selectedSessionId) setSelectedSessionId(null)
+      return
+    }
+    if (!selectedSessionId || !instances.some((item) => item.id === selectedSessionId)) {
+      setSelectedSessionId(instances[0]!.id)
+    }
+  }, [instances, selectedSessionId])
+
+  const selected = instances.find((item) => item.id === selectedSessionId) ?? instances[0] ?? null
 
   const cancel = useMutation({
     mutationFn: () => cancelSessionOperation(operationId!),
@@ -169,20 +238,20 @@ export function SessionDetailPage() {
               kind,
               idempotencyKey: newSessionIdempotencyKey(kind),
               confirmAccountId: accountId,
-              ...(detail.data?.session
+              ...(selected
                 ? {
-                    expectedSessionId: detail.data.session.id,
-                    expectedGeneration: detail.data.session.generation,
+                    expectedSessionId: selected.id,
+                    expectedGeneration: selected.generation,
                   }
                 : {}),
             }
           : {
               kind,
               idempotencyKey: newSessionIdempotencyKey(kind),
-              ...(detail.data?.session
+              ...(selected
                 ? {
-                    expectedSessionId: detail.data.session.id,
-                    expectedGeneration: detail.data.session.generation,
+                    expectedSessionId: selected.id,
+                    expectedGeneration: selected.generation,
                   }
                 : {}),
             },
@@ -204,7 +273,9 @@ export function SessionDetailPage() {
       setAccountSessionRetention(
         targetId,
         accountId,
-        action === 'clear' ? { action } : { action, retainSeconds },
+        action === 'clear'
+          ? { action, ...(selected?.id ? { sessionId: selected.id } : {}) }
+          : { action, retainSeconds, ...(selected?.id ? { sessionId: selected.id } : {}) },
       ),
     onSuccess: async () => {
       toast.success('已更新保留')
@@ -214,7 +285,7 @@ export function SessionDetailPage() {
   })
 
   const dispose = useMutation({
-    mutationFn: () => disposeWorkerSession(detail.data!.session!.id, { note: '会话页处置失联实例' }),
+    mutationFn: () => disposeWorkerSession(selected!.id, { note: '会话页处置失联实例' }),
     onSuccess: async () => {
       toast.success('已提交处置')
       await queryClient.invalidateQueries({ queryKey: ['account-session', targetId, accountId] })
@@ -229,27 +300,10 @@ export function SessionDetailPage() {
     currentStatus: data?.currentOperation?.status ?? operation.data?.status,
   })
 
-  const statusPrimary =
-    data?.status === 'unprepared'
-      ? 'PREPARE'
-      : data?.status === 'needs_check'
-        ? 'VERIFY_AUTH'
-        : data?.status === 'needs_login' || data?.status === 'identity_mismatch'
-          ? 'LOGIN'
-          : data?.status === 'lost'
-            ? 'dispose'
-            : 'VERIFY_AUTH'
-  const claimKinds = ['PREPARE', 'VERIFY_AUTH', 'LOGIN', 'RENEW_AUTH'] as const
-  const statusClaim = data?.actions.find((action) => action.kind === statusPrimary)
-  const enabledClaim = data?.actions.find(
-    (action) => claimKinds.includes(action.kind as (typeof claimKinds)[number]) && action.enabled,
-  )
-  const primary =
-    statusPrimary === 'dispose'
-      ? 'dispose'
-      : statusClaim?.enabled
-        ? statusPrimary
-        : (enabledClaim?.kind as typeof statusPrimary | undefined) ?? statusPrimary
+  const primary = resolveSessionPrimaryAction({
+    status: data?.status,
+    actions: data?.actions,
+  })
   const primaryAction = data?.actions.find((action) => action.kind === primary)
   const primaryDisabled =
     operate.isPending ||
@@ -323,7 +377,13 @@ export function SessionDetailPage() {
             </Link>
           }
           title={data ? `${data.targetName} / ${data.accountDisplayName}` : '账号会话'}
-          description={data ? `登录名 ${data.accountUsername}` : '查看该账号当前实例、核验与保留。'}
+          description={
+            data
+              ? `登录名 ${data.accountUsername}${
+                  accountSessionOccupancyText(data) ? ` · 会话 ${accountSessionOccupancyText(data)}` : ''
+                }`
+              : '查看该账号当前实例、核验与保留。'
+          }
         />
 
         {detail.isPending ? (
@@ -337,6 +397,11 @@ export function SessionDetailPage() {
             {!observation.connected ? (
               <p role="status" className="text-small text-muted-foreground">
                 连接已断开，正在恢复。最后状态：{new Date(data.asOf).toLocaleString()}；输入已暂停。
+              </p>
+            ) : null}
+            {data.liveCount > data.effectiveCap ? (
+              <p role="status" className="text-small text-status-warning-foreground">
+                当前活会话已超过新上限，不再新建。空闲会话仍可复用。
               </p>
             ) : null}
 
@@ -355,26 +420,43 @@ export function SessionDetailPage() {
                     }
                   </StatusBadge>
                   {data.retained ? <StatusBadge tone="info">保留中</StatusBadge> : null}
-                  {data.session?.reclaimMode === 'AUTH_DRIVEN' ? (
+                  {selected?.reclaimMode === 'AUTH_DRIVEN' ? (
                     <StatusBadge tone="info">认证保活</StatusBadge>
+                  ) : null}
+                  {accountSessionOccupancyText(data) ? (
+                    <StatusBadge tone="neutral">会话 {accountSessionOccupancyText(data)}</StatusBadge>
+                  ) : null}
+                  {instances.length > 1 ? (
+                    <Select value={selected?.id} onValueChange={setSelectedSessionId}>
+                      <SelectTrigger aria-label="选择会话" className="h-8 w-40">
+                        <SelectValue placeholder="选择会话" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {instances.map((item, index) => (
+                          <SelectItem key={item.id} value={item.id}>
+                            第 {index + 1} 台 · {item.status === 'OPEN' ? '已打开' : item.status === 'LOST' ? '失联' : item.status}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   ) : null}
                   <span className="hidden h-4 w-px bg-border sm:inline-block" />
                   <span className="text-label text-muted-foreground">
-                    节点: {data.session ? `${data.session.ownerWorkerId} · 代次 ${data.session.generation}` : '—'}
+                    节点: {selected ? `${selected.ownerWorkerId} · 代次 ${selected.generation}` : '—'}
                   </span>
                   <span className="hidden h-4 w-px bg-border sm:inline-block" />
                   <span className="text-label text-muted-foreground">
                     占用:{' '}
-                    {data.occupancy?.occupyingRunId ? (
+                    {selected?.occupancy?.occupyingRunId ?? data.occupancy?.occupyingRunId ? (
                       <Link
                         className="font-medium text-foreground underline hover:text-link"
                         to="/runs/$runId"
-                        params={{ runId: data.occupancy.occupyingRunId }}
+                        params={{ runId: (selected?.occupancy?.occupyingRunId ?? data.occupancy?.occupyingRunId)! }}
                       >
-                        运行 {data.occupancy.occupyingRunId.slice(0, 8)}
+                        运行 {(selected?.occupancy?.occupyingRunId ?? data.occupancy?.occupyingRunId)!.slice(0, 8)}
                       </Link>
-                    ) : data.occupancy?.occupyingOperationId ? (
-                      `操作 ${data.occupancy.occupyingOperationId.slice(0, 8)}`
+                    ) : selected?.occupancy?.occupyingOperationId ?? data.occupancy?.occupyingOperationId ? (
+                      `操作 ${(selected?.occupancy?.occupyingOperationId ?? data.occupancy?.occupyingOperationId)!.slice(0, 8)}`
                     ) : (
                       '空闲'
                     )}
@@ -384,7 +466,7 @@ export function SessionDetailPage() {
                 <div className="flex items-center gap-2">
                   {primary === 'dispose' ? (
                     <Can permission="session:dispose">
-                      <Button disabled={!data.session || dispose.isPending} onClick={() => dispose.mutate()}>
+                      <Button disabled={!selected || dispose.isPending} onClick={() => dispose.mutate()}>
                         处置失联
                       </Button>
                     </Can>
@@ -407,8 +489,8 @@ export function SessionDetailPage() {
                       <DropdownMenuContent align="end">
                         {canCloseAccountSession({
                           status: data.status,
-                          sessionId: data.session?.id ?? null,
-                        }) ? (
+                          sessionId: selected?.id ?? null,
+                        }) && (instances.length <= 1 || selected) ? (
                           <DropdownMenuItem
                             disabled={
                               operate.isPending ||
@@ -462,13 +544,14 @@ export function SessionDetailPage() {
                         </div>
                         <p role="status" className="mt-1 text-body">
                           {OPERATION_KIND_LABELS[progress.kind] ?? '会话操作'} ·{' '}
-                          {operationStatusLabels[progress.status] ?? progress.status}
+                          {progress.status === 'WAITING_FOR_AUTH'
+                            ? describeAuthWaitStage(data.lastAuthError)
+                            : (operationStatusLabels[progress.status] ?? progress.status)}
                         </p>
                         {operation.data?.errorCode ? (
                           <p className="mt-1 text-small text-status-warning-foreground">
-                            {SESSION_MAINTENANCE_ERROR_MESSAGES[
-                              operation.data.errorCode as keyof typeof SESSION_MAINTENANCE_ERROR_MESSAGES
-                            ] ?? operation.data.errorCode}
+                            {describeSessionOperationError(operation.data.errorCode) ??
+                              operation.data.errorCode}
                           </p>
                         ) : null}
                       </div>
@@ -502,10 +585,10 @@ export function SessionDetailPage() {
                 ) : null}
 
                 {/* 受管浏览器画面控制台 */}
-                {data.session?.status === 'OPEN' && !data.occupancy?.occupyingRunId ? (
+                {selected?.status === 'OPEN' && !selected.occupancy?.occupyingRunId && !data.occupancy?.occupyingRunId ? (
                   <BrowserView
-                    key={data.session.id}
-                    runId={data.currentOperation?.id ?? data.session.id}
+                    key={selected.id}
+                    runId={data.currentOperation?.id ?? selected.id}
                     runStatus={data.currentOperation?.status ?? 'RUNNING'}
                     sessionMode
                     transport={data.currentOperation ? operationTransport : instanceTransport}
@@ -518,7 +601,20 @@ export function SessionDetailPage() {
                         pageRef,
                       })
                     }
+                    onSettleLanding={
+                      data.session &&
+                      (data.status === 'ready' || data.status === 'needs_check')
+                        ? () =>
+                            requestAccountSessionOperation(targetId, accountId, {
+                              kind: 'SETTLE_LANDING',
+                              idempotencyKey: newSessionIdempotencyKey('SETTLE_LANDING'),
+                              expectedSessionId: data.session!.id,
+                              expectedGeneration: data.session!.generation,
+                            })
+                        : undefined
+                    }
                     eventSeq={observation.eventSeq}
+                    waitReason={data.lastAuthError}
                     observationConnected={observation.connected}
                     onRunChanged={() => {
                       void detail.refetch()
@@ -854,6 +950,14 @@ export function SessionDetailPage() {
                         {sessionAuthLabel(data.session?.authState, data.session?.identityState)}
                       </dd>
                     </div>
+                    {data.lastAuthError ? (
+                      <div className="flex justify-between gap-2 border-b border-border-card/40 pb-2">
+                        <dt className="text-label text-muted-foreground">最近问题</dt>
+                        <dd className="text-right text-foreground">
+                          {describeAuthIssue(data.lastAuthError) ?? data.lastAuthError}
+                        </dd>
+                      </div>
+                    ) : null}
                     <div className="flex justify-between gap-2 border-b border-border-card/40 pb-2">
                       <dt className="text-label text-muted-foreground">期望身份</dt>
                       <dd className="text-right text-foreground">
@@ -947,8 +1051,8 @@ export function SessionDetailPage() {
                           variant="outline"
                           disabled={
                             retain.isPending ||
-                            data.session?.status !== 'OPEN' ||
-                            Boolean(data.occupancy) ||
+                            selected?.status !== 'OPEN' ||
+                            Boolean(selected?.occupancy ?? data.occupancy) ||
                             !Number.isFinite(retainSeconds) ||
                             retainSeconds < 60
                           }
@@ -982,12 +1086,12 @@ export function SessionDetailPage() {
                       <dt className="text-label text-muted-foreground">实例 ID</dt>
                       <dd className="mt-0.5 flex items-center justify-between gap-2">
                         <span className="font-mono text-small text-foreground">
-                          {data.session?.id ? `${data.session.id.slice(0, 18)}...` : '尚未准备'}
+                          {selected?.id ? `${selected.id.slice(0, 18)}...` : '尚未准备'}
                         </span>
-                        {data.session?.id ? (
+                        {selected?.id ? (
                           <button
                             type="button"
-                            onClick={() => handleCopySessionId(data.session!.id)}
+                            onClick={() => handleCopySessionId(selected.id)}
                             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-small text-muted-foreground hover:bg-muted hover:text-foreground"
                             title="复制完整实例 ID"
                           >
@@ -1003,22 +1107,22 @@ export function SessionDetailPage() {
                     <div>
                       <dt className="text-label text-muted-foreground">节点 / 代次</dt>
                       <dd className="mt-0.5 text-foreground">
-                        {data.session ? `${data.session.ownerWorkerId} · 代次 ${data.session.generation}` : '—'}
+                        {selected ? `${selected.ownerWorkerId} · 代次 ${selected.generation}` : '—'}
                       </dd>
                     </div>
                     <div>
                       <dt className="text-label text-muted-foreground">当前占用</dt>
                       <dd className="mt-0.5 text-foreground">
-                        {data.occupancy?.occupyingRunId ? (
+                        {(selected?.occupancy ?? data.occupancy)?.occupyingRunId ? (
                           <Link
                             className="font-medium text-link underline"
                             to="/runs/$runId"
-                            params={{ runId: data.occupancy.occupyingRunId }}
+                            params={{ runId: (selected?.occupancy ?? data.occupancy)!.occupyingRunId! }}
                           >
-                            运行 {data.occupancy.occupyingRunId}
+                            运行 {(selected?.occupancy ?? data.occupancy)!.occupyingRunId}
                           </Link>
-                        ) : data.occupancy?.occupyingOperationId ? (
-                          `操作 ${data.occupancy.occupyingOperationId}`
+                        ) : (selected?.occupancy ?? data.occupancy)?.occupyingOperationId ? (
+                          `操作 ${(selected?.occupancy ?? data.occupancy)!.occupyingOperationId}`
                         ) : (
                           '空闲'
                         )}
@@ -1029,7 +1133,7 @@ export function SessionDetailPage() {
               </div>
             </div>
 
-            {hasPermission(permissions, 'session:view') && data.session?.status === 'OPEN' ? (
+            {hasPermission(permissions, 'session:view') && selected?.status === 'OPEN' ? (
               <p className="text-label text-muted-foreground">
                 画面按需从会话详情打开，离开页面即停止采集。
               </p>
@@ -1046,8 +1150,8 @@ export function SessionDetailPage() {
         title={confirmKind ? OPERATION_KIND_LABELS[confirmKind] : '确认'}
         desc={
           confirmKind === 'RESET_PROFILE'
-            ? `将对 ${data?.targetName ?? ''} / ${data?.accountDisplayName ?? ''} 清除登录数据，并删除本机 Profile。`
-            : `将对 ${data?.targetName ?? ''} / ${data?.accountDisplayName ?? ''} 执行该操作。`
+            ? `将对 ${data?.targetName ?? ''} / ${data?.accountDisplayName ?? ''} 的当前这台浏览器清除登录数据。`
+            : `将对 ${data?.targetName ?? ''} / ${data?.accountDisplayName ?? ''} 的当前这台浏览器执行该操作。`
         }
         confirmText="确认执行"
         destructive={confirmKind === 'RESET_PROFILE' || confirmKind === 'CLOSE'}

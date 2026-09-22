@@ -13,9 +13,12 @@ import {
   createRunWithSnapshot,
   createScenarioWithVersion,
   DomainError,
+  getAccountSessionDetail,
   getTargetAuthProfileView,
   observeAuthProfileValidation,
   occupyAutoLoginBudget,
+  recordAutoLoginOutcome,
+  resetAuthBudgetAfterCredentialChange,
   publishTargetAuthProfile,
   startAuthProfileValidation,
   updateTargetAccountIdentity,
@@ -161,6 +164,28 @@ describe.each(DRIVERS)('%s 登录核验与身份', { timeout: 60_000 }, (driver)
     expect(second).toMatchObject({ ok: false, code: 'AUTH_AUTO_LOGIN_PAUSED' })
   })
 
+  it('自动登录成功后归还窗口次数，会话关掉再准备仍可自动登录', async () => {
+    const accountId = await makeAccount('sm09-success')
+    const first = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
+    expect(first).toMatchObject({ ok: true })
+    await recordAutoLoginOutcome(handle.db, {
+      targetAccountId: accountId,
+      result: 'success',
+      sessionAuth: FACTORY_SESSION_AUTH,
+    })
+    const second = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
+    expect(second).toMatchObject({ ok: true })
+  })
+
+  it('更换密码后自动登录窗口重置，可再试一次', async () => {
+    const accountId = await makeAccount('secret')
+    const first = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
+    expect(first).toMatchObject({ ok: true })
+    await resetAuthBudgetAfterCredentialChange(handle.db, accountId)
+    const second = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
+    expect(second).toMatchObject({ ok: true })
+  })
+
   it('账号配置修订升高后自动登录窗口重置', async () => {
     const accountId = await makeAccount('rev')
     const first = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
@@ -266,6 +291,10 @@ describe.each(DRIVERS)('%s 登录核验与身份', { timeout: 60_000 }, (driver)
     const after = await getTargetAuthProfileView(handle.db, targetId)
     const row = after.accounts.find((item) => item.accountId === accountId)
     expect(row?.capability).toBe('IDENTITY_VERIFIED')
+    const detail = await getAccountSessionDetail(handle.db, { targetId, targetAccountId: accountId })
+    expect(detail.authCapability).toBe('IDENTITY_VERIFIED')
+    expect(detail.lastAuthError).toBeNull()
+    expect(detail.status).toBe('unprepared')
   })
 
   it('SM44B 收窄新鲜度范围使已发布 Target 越界时保存被拒绝', async () => {

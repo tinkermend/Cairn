@@ -33,6 +33,11 @@ import {
   type AuthObservation,
   type FrozenAuthVerification,
   isSessionMaintenanceKind,
+  classifyLoginWaitReason,
+  isUnrecoverableLoginWait,
+  planAuthEnsure,
+  shouldSubmitStoredCredentials,
+  type LoginWaitSubmitState,
   type SessionErrorCode,
   type SessionEventType,
   type SessionGrant
@@ -43,16 +48,50 @@ import {
   BrowserRuntimeError,
   gotoPage,
   applySessionAuthToTarget,
+  attemptLoginCredentials,
   attemptLoginWithCredentials,
   loginWithCredentials,
   probeAuth,
   runWithOccupancy,
   runWithSessionRestart,
-  submitLoginCredentials,
   type TargetAuthInfo
 } from './runtime'
+import { openedEntryDuringVerify } from './landing-settle.js'
 import { SessionLeaseError, type LiveHandle, type SessionManagerContext } from './session-live.js'
 import { shouldContinueCaptchaRetry } from './captcha/login-outcome.js'
+
+async function settleAfterMaintenanceLogin(
+  ctx: SessionManagerContext,
+  session: SessionRecord,
+  operation: { id: string },
+  grant: SessionGrant | null,
+  alreadyOpenedEntry?: boolean,
+): Promise<void> {
+  await ctx.settleOccupiedLanding({
+    session,
+    grant,
+    trigger: 'after_login',
+    alreadyOpenedEntry,
+    operationId: operation.id,
+  })
+}
+
+function maintenanceCaughtErrorCode(error: unknown, loginSubmitted: boolean): string {
+  if (loginSubmitted) return 'OUTCOME_UNKNOWN'
+  if (error instanceof SessionLeaseError || error instanceof BrowserRuntimeError) return error.code
+  const code =
+    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : ''
+  if (
+    code === 'PLATFORM_CONFIG_SCHEMA_UNSUPPORTED' ||
+    code === 'PLATFORM_CONFIG_UNREADABLE' ||
+    (error instanceof Error && error.message.includes('schemaVersion'))
+  ) {
+    return 'PLATFORM_CONFIG_UNREADABLE'
+  }
+  return 'OPERATION_INTERRUPTED'
+}
 
 export async function attachValidationOperation(this: SessionManagerContext, input: {
     operation: { id: string; targetId: string; targetAccountId: string }
@@ -170,11 +209,34 @@ export async function completeOccupiedAuth(this: SessionManagerContext,
     ownerId: string,
     _input?: { actorId: string; token?: string },
   ): Promise<AuthObservation> {
+    const sessionId = this.liveSessionIdForOwner(ownerId)
+    const liveBefore = sessionId ? this.lives.get(sessionId) : undefined
+    const page = liveBefore
+      ? this.ensureRunPage(liveBefore, ownerId).page
+      : undefined
+    const urlBefore = page && typeof page.url === 'function' ? page.url() : ''
     const observation = await this.verifyOccupiedOwner(ownerId)
     const operation = await getSessionOperation(this.dbHandle, ownerId)
     if (operation && isSessionMaintenanceKind(operation.kind) && observation.authState === 'AUTHENTICATED') {
-      const sessionId = this.liveSessionIdForOwner(ownerId)
       const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
+      const live = sessionId ? this.lives.get(sessionId) : undefined
+      if (live) {
+        live.autoInputClosed = false
+        live.inputAccepting = false
+      }
+      if (session && observation.identityState !== 'MISMATCH') {
+        const urlAfter = page && typeof page.url === 'function' ? page.url() : ''
+        const target = await loadTargetForExecution(this.dbHandle, operation.targetId).catch(() => null)
+        await this.settleOccupiedLanding({
+          session,
+          page,
+          trigger: 'after_login',
+          alreadyOpenedEntry: target
+            ? openedEntryDuringVerify(urlBefore, urlAfter, target.entryUrl)
+            : false,
+          operationId: operation.id,
+        })
+      }
       await this.finishMaintenance(
         operation.id,
         { targetId: operation.targetId, targetAccountId: operation.targetAccountId },
@@ -183,14 +245,18 @@ export async function completeOccupiedAuth(this: SessionManagerContext,
       )
       const leaseId = [...this.leaseToRun.entries()].find(([, mapped]) => mapped === ownerId)?.[0]
       if (leaseId) await this.release(leaseId, 'auth_completed').catch(() => undefined)
-      const live = sessionId ? this.lives.get(sessionId) : undefined
-      if (live) {
-        live.autoInputClosed = false
-        live.inputAccepting = false
-      }
     }
     return observation
   }
+
+function borrowedAuthWaitOwner(input: {
+  reusedRunId: string | null
+  operation: { kindParams?: Record<string, unknown> | null }
+}): string | null {
+  if (input.reusedRunId) return input.reusedRunId
+  const reusedOperationId = input.operation.kindParams?.reusedOperationId
+  return typeof reusedOperationId === 'string' && reusedOperationId.length > 0 ? reusedOperationId : null
+}
 
 export async function attachMaintenanceOperation(this: SessionManagerContext, input: {
     operation: { id: string; kind: string; targetId: string; targetAccountId: string; origin?: string; kindParams?: Record<string, unknown> | null }
@@ -200,6 +266,7 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
   }): Promise<void> {
     const db = this.dbHandle
     const key = { targetId: input.operation.targetId, targetAccountId: input.operation.targetAccountId }
+    const borrowedOwner = borrowedAuthWaitOwner(input)
     if (input.reusedRunId) {
       await appendSessionEvent(db, {
         key,
@@ -208,16 +275,18 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
         runId: input.reusedRunId,
         payload: { kind: input.operation.kind, reusedRunId: input.reusedRunId },
       })
-      return
+      // LOGIN 加入 Run 的 AUTH_WAIT 只挂接；刷新登录页必须真的打开登录页，且不得拆掉等待占用。
+      if (input.operation.kind !== 'REFRESH_LOGIN_PAGE') return
+    } else {
+      await appendSessionEvent(db, {
+        key,
+        type: 'operation.claimed',
+        sessionId: input.session?.id ?? input.grant?.sessionId ?? null,
+        generation: input.session?.generation ?? input.grant?.generation ?? null,
+        operationId: input.operation.id,
+        payload: { kind: input.operation.kind },
+      })
     }
-    await appendSessionEvent(db, {
-      key,
-      type: 'operation.claimed',
-      sessionId: input.session?.id ?? input.grant?.sessionId ?? null,
-      generation: input.session?.generation ?? input.grant?.generation ?? null,
-      operationId: input.operation.id,
-      payload: { kind: input.operation.kind },
-    })
     const attempt = { loginSubmitted: false }
     let occupiedGrant = input.grant
     try {
@@ -245,8 +314,11 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
             return
           }
         }
-        await invalidateSessionProfile(db, key)
-        const dir = profileDirFor(this.options.profileRoot, key)
+        await invalidateSessionProfile(db, {
+          ...key,
+          accountSlot: input.session?.accountSlot ?? 1,
+        })
+        const dir = profileDirFor(this.options.profileRoot, key, input.session?.accountSlot ?? 1)
         if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
         await this.finishMaintenance(input.operation.id, key, 'SUCCEEDED', {
           type: 'profile.reset',
@@ -341,7 +413,9 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
         await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'SESSION_NOT_CLAIMABLE')
         return
       }
-      this.bindOccupancy(input.grant, input.operation.id, this.options.defaultLeaseTtlSeconds)
+      if (!borrowedOwner) {
+        this.bindOccupancy(input.grant, input.operation.id, this.options.defaultLeaseTtlSeconds)
+      }
       await runWithOccupancy(input.grant, async () => {
         let session = input.session!
         if (!this.lives.has(session.id)) {
@@ -359,26 +433,54 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
             launched = await runWithOccupancy(input.grant!, () => this.launchAndOpen(session, key))
           }
           if (!launched.ok) {
-            await this.abandonOccupancy(input.grant!.leaseId, 'launch_failed')
+            if (!borrowedOwner) await this.abandonOccupancy(input.grant!.leaseId, 'launch_failed')
             throw new SessionLeaseError(launched.code, launched.message)
           }
           session = launched.session
         }
         const live = this.lives.get(session.id)
-        if (live) this.ensureRunPage(live, input.operation.id, input.grant!.leaseId)
+        if (live) this.ensureRunPage(live, borrowedOwner ?? input.operation.id, input.grant!.leaseId)
+
+        if (input.operation.kind === 'SETTLE_LANDING') {
+          const page = live
+            ? this.ensureRunPage(live, input.operation.id, input.grant!.leaseId).page
+            : undefined
+          await this.settleOccupiedLanding({
+            session,
+            grant: input.grant,
+            page,
+            trigger: 'manual',
+            operationId: input.operation.id,
+          })
+          if (!borrowedOwner) await this.abandonOccupancy(input.grant!.leaseId, 'settle_done')
+          await this.finishMaintenance(input.operation.id, key, 'SUCCEEDED', {
+            type: 'operation.finished',
+            sessionId: session.id,
+            generation: session.generation,
+          })
+          return
+        }
 
         if (input.operation.kind === 'REFRESH_LOGIN_PAGE') {
           const target = await loadTargetForExecution(db, key.targetId)
           const loginUrl = target?.loginUrl ?? target?.entryUrl
-          const page = live ? this.ensureRunPage(live, input.operation.id, input.grant!.leaseId).page : undefined
+          const page = live
+            ? this.ensureRunPage(live, borrowedOwner ?? input.operation.id, input.grant!.leaseId).page
+            : undefined
           const current = page && typeof page.url === 'function' ? page.url() : ''
-          if (!loginUrl || !page || !this.isSafeLoginRefresh(current, loginUrl, target?.entryUrl ?? null)) {
-            await this.abandonOccupancy(input.grant!.leaseId, 'refresh_unsafe')
+          if (
+            !loginUrl ||
+            !page ||
+            !this.isSafeLoginRefresh(current, loginUrl, target?.entryUrl ?? null, {
+              allowSameOrigin: Boolean(borrowedOwner),
+            })
+          ) {
+            if (!borrowedOwner) await this.abandonOccupancy(input.grant!.leaseId, 'refresh_unsafe')
             await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, 'PAGE_REFRESH_UNSAFE')
             return
           }
           await gotoPage(page, loginUrl).catch(() => undefined)
-          await this.abandonOccupancy(input.grant!.leaseId, 'refresh_done')
+          if (!borrowedOwner) await this.abandonOccupancy(input.grant!.leaseId, 'refresh_done')
           await this.finishMaintenance(input.operation.id, key, 'SUCCEEDED', {
             type: 'operation.finished',
             sessionId: session.id,
@@ -393,6 +495,7 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
             : 'verify'
         const auth = await this.runMaintenanceAuth(session, input.operation, input.grant, mode, attempt)
         if (auth === 'waiting') return
+        if (auth.ok) await revealPreparedPage(this, session, input.operation)
         await this.abandonOccupancy(input.grant!.leaseId, auth.ok ? 'maintenance_done' : 'maintenance_failed')
         if (auth.ok && session.retainUntil && session.retainUntil.getTime() > Date.now()) {
           await scheduleNextAuthCheck(db, session.id)
@@ -418,15 +521,13 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
         },
         '会话维护失败',
       )
-      const code = attempt.loginSubmitted
-        ? 'OUTCOME_UNKNOWN'
-        : error instanceof SessionLeaseError || error instanceof BrowserRuntimeError
-          ? error.code
-          : 'OPERATION_INTERRUPTED'
+      const code = maintenanceCaughtErrorCode(error, attempt.loginSubmitted)
       if (attempt.loginSubmitted && input.session) {
         await this.markMaintenanceOutcomeUnknown(input.session, input.operation)
       }
-      if (occupiedGrant) await this.abandonOccupancy(occupiedGrant.leaseId, code).catch(() => undefined)
+      if (occupiedGrant && !borrowedOwner) {
+        await this.abandonOccupancy(occupiedGrant.leaseId, code).catch(() => undefined)
+      }
       await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, code)
     }
   }
@@ -487,13 +588,25 @@ export async function finishMaintenance(this: SessionManagerContext,
     })
     // 终态已被别人写过（迟到结果）：状态不覆盖，账本也不能追加一条自相矛盾的收尾事件。
     if (!written) return
+    const payload = { status, errorCode: errorCode ?? null }
+    // 认证结论可以单独入账，但操作生命周期必须落 operation.finished，否则使用记录会停在「执行中」。
+    if (event?.type && event.type !== 'operation.finished') {
+      await appendSessionEvent(this.dbHandle, {
+        key,
+        type: event.type,
+        sessionId: event.sessionId,
+        generation: event.generation,
+        operationId,
+        payload,
+      })
+    }
     await appendSessionEvent(this.dbHandle, {
       key,
-      type: event?.type ?? 'operation.finished',
+      type: 'operation.finished',
       sessionId: event?.sessionId,
       generation: event?.generation,
       operationId,
-      payload: { status, errorCode: errorCode ?? null },
+      payload,
     })
   }
 
@@ -565,18 +678,23 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
         generation: session.generation,
         payload: { origin: 'BACKGROUND', kind: operation.kind },
       }).catch(() => undefined)
-      const submitted = await submitLoginCredentials(
+      const loginResult = await attemptLoginCredentials(
         live.handle,
-        {
-          entryUrl: target.entryUrl,
-          loginUrl: target.loginUrl,
-          loginFields: target.loginFields,
-        },
+        applySessionAuthToTarget(
+          {
+            entryUrl: target.entryUrl,
+            loginUrl: target.loginUrl,
+            loginFields: target.loginFields,
+            loginLeaveTimeoutMs: target.loginLeaveTimeoutMs,
+          },
+          liveAuth.sessionAuth,
+        ),
         credential,
         verification.loginTimeoutMs,
       )
+      const submitted = loginResult.submit !== 'not_attempted'
       if (attempt && submitted) attempt.loginSubmitted = true
-      if (submitted) {
+      if (loginResult.authenticated) {
         try {
           const after = await verifyOnce()
           const liveAfter = await readLiveSessionAuth(db)
@@ -604,7 +722,10 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
               submittedPassword: true,
             }).catch(() => undefined)
           }
-          if (after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') return { ok: true }
+          if (after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') {
+            await settleAfterMaintenanceLogin(this, session, operation, grant)
+            return { ok: true }
+          }
         } catch {
           await this.markMaintenanceOutcomeUnknown(session, operation)
           return { ok: false, code: 'OUTCOME_UNKNOWN' }
@@ -617,28 +738,58 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
       target.captchaMode === 'slider' ||
       String(target.captchaMode) === 'graphic' ||
       Boolean(target.captcha)
-    const needsManual =
+    const requiresHumanAuth =
       target.authMethod === 'manual' ||
-      (target.captchaMode !== 'none' && !isSupportedCaptcha) ||
-      observation.authState === 'UNKNOWN' ||
-      observation.identityState === 'MISMATCH'
-    if (needsManual) {
-      if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
-    } else if (passed) {
-      return { ok: true }
-    } else {
+      (target.captchaMode !== 'none' && !isSupportedCaptcha)
+    if (passed) return { ok: true }
+    if (requiresHumanAuth || observation.identityState === 'MISMATCH') {
+      if (!grant) {
+        return {
+          ok: false,
+          code: observation.identityState === 'MISMATCH' ? 'AUTH_IDENTITY_MISMATCH' : 'SESSION_AUTH_UNSUPPORTED',
+        }
+      }
+      return enterMaintenanceAuthWait(this, session, operation, grant, target, live, {
+        reason: observation.identityState === 'MISMATCH' ? 'AUTH_IDENTITY_MISMATCH' : 'SESSION_AUTH_UNSUPPORTED',
+      })
+    }
     const shouldLogin =
       operation.kind === 'LOGIN' ||
       operation.kind === 'PREPARE' ||
       (operation.kind === 'RENEW_AUTH' && profile.definition.renew === 'relogin')
-    if (shouldLogin) {
+    const planned = planAuthEnsure({
+      capability: verification.capability,
+      fresh: false,
+      observation,
+      infraAttempts: 0,
+      backoffSeconds: verification.verifyRetryBackoffSeconds ?? [],
+    })
+    const plan = shouldSubmitStoredCredentials({
+      plan: planned,
+      capability: verification.capability,
+      skipBackoffWait: true,
+    })
+      ? { action: 'auto_login' as const }
+      : planned
+    if (plan.action === 'reuse') return { ok: true }
+    let submitted: boolean | undefined
+    let submit: LoginWaitSubmitState | undefined
+    let waitReason: SessionErrorCode | undefined
+    if (shouldLogin && plan.action === 'auto_login') {
       const credential = await this.resolveAccountCredential(operation.targetAccountId)
-      if (!credential) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+      if (!credential) {
+        if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+        return enterMaintenanceAuthWait(this, session, operation, grant, target, live, {
+          reason: 'SESSION_AUTH_UNSUPPORTED',
+        })
+      }
       const occupied = await occupyAutoLoginBudget(db, {
         targetId: operation.targetId,
         targetAccountId: operation.targetAccountId,
       })
-      if (occupied.ok) {
+      if (!occupied.ok) {
+        waitReason = (occupied.code as SessionErrorCode) ?? 'AUTH_AUTO_LOGIN_PAUSED'
+      } else {
         await appendSessionEvent(db, {
           key: { targetId: session.targetId, targetAccountId: session.targetAccountId },
           type: 'auth.attempt_started',
@@ -646,18 +797,24 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
           generation: session.generation,
           payload: { kind: operation.kind },
         }).catch(() => undefined)
-        const submitted = await submitLoginCredentials(
+        const loginResult = await attemptLoginCredentials(
           live.handle,
-          {
-            entryUrl: target.entryUrl,
-            loginUrl: target.loginUrl,
-            loginFields: target.loginFields,
-          },
+          applySessionAuthToTarget(
+            {
+              entryUrl: target.entryUrl,
+              loginUrl: target.loginUrl,
+              loginFields: target.loginFields,
+              loginLeaveTimeoutMs: target.loginLeaveTimeoutMs,
+            },
+            liveAuth.sessionAuth,
+          ),
           credential,
           verification.loginTimeoutMs,
         )
+        submitted = loginResult.submit !== 'not_attempted'
+        submit = loginResult.submit
         if (attempt && submitted) attempt.loginSubmitted = true
-        if (submitted) {
+        if (loginResult.authenticated) {
           try {
             const after = await verifyOnce()
             const liveAfter = await readLiveSessionAuth(db)
@@ -685,18 +842,36 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
                 submittedPassword: true,
               }).catch(() => undefined)
             }
-            if (after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') return { ok: true }
+            if (after.authState === 'AUTHENTICATED' && after.identityState !== 'MISMATCH') {
+              await settleAfterMaintenanceLogin(this, session, operation, grant)
+              return { ok: true }
+            }
           } catch {
             await this.markMaintenanceOutcomeUnknown(session, operation)
             return { ok: false, code: 'OUTCOME_UNKNOWN' }
           }
+        } else if (submitted) {
+          const liveAfter = await readLiveSessionAuth(db)
+          await recordAutoLoginOutcome(db, {
+            targetAccountId: operation.targetAccountId,
+            result: loginResult.submit === 'credential_failed' ? 'credential' : 'verify_failed',
+            sessionAuth: liveAfter.sessionAuth,
+          }).catch(() => undefined)
         }
       }
     }
-    }
 
-    if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
-    return enterMaintenanceAuthWait(this, session, operation, grant, target, live)
+    if (!grant) {
+      return {
+        ok: false,
+        code: waitReason ?? (plan.action === 'manual' ? plan.code : 'SESSION_AUTH_UNSUPPORTED'),
+      }
+    }
+    return enterMaintenanceAuthWait(this, session, operation, grant, target, live, {
+      submitted,
+      submit,
+      reason: waitReason ?? (submit === 'credential_failed' ? 'credential' : undefined),
+    })
   }
 
 async function persistLegacyObservation(
@@ -732,6 +907,33 @@ async function persistLegacyObservation(
   return observation
 }
 
+function isVisibleHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/** 复用已登录态时页面可能仍是 about:blank，受管画面要对着目标入口才有东西可指认。 */
+export async function revealPreparedPage(
+  ctx: SessionManagerContext,
+  session: { id: string },
+  operation: { id: string; kind: string; targetId: string },
+): Promise<void> {
+  if (operation.kind !== 'PREPARE' && operation.kind !== 'LOGIN') return
+  const live = ctx.lives.get(session.id)
+  if (!live) return
+  const target = await loadTargetForExecution(ctx.dbHandle, operation.targetId)
+  const dest = target?.entryUrl?.trim()
+  if (!dest || !isVisibleHttpUrl(dest)) return
+  const page = ctx.ensureRunPage(live, operation.id).page
+  const current = typeof page.url === 'function' ? page.url() : ''
+  if (isVisibleHttpUrl(current)) return
+  await gotoPage(page, dest).catch(() => undefined)
+}
+
 async function enterMaintenanceAuthWait(
   ctx: SessionManagerContext,
   session: SessionRecord,
@@ -739,12 +941,32 @@ async function enterMaintenanceAuthWait(
   grant: SessionGrant,
   target: { entryUrl: string; loginUrl?: string | null },
   live: LiveHandle,
-  waitSeconds?: number,
+  options?: { waitSeconds?: number; submitted?: boolean; submit?: LoginWaitSubmitState; reason?: string },
 ): Promise<'waiting' | { ok: false; code: SessionErrorCode }> {
   const loginUrl = target.loginUrl ?? target.entryUrl
-  if (loginUrl) {
-    const page = ctx.ensureRunPage(live, operation.id, grant.leaseId).page
+  const page = loginUrl ? ctx.ensureRunPage(live, operation.id, grant.leaseId).page : undefined
+  if (loginUrl && page) {
     await gotoPage(page, loginUrl).catch(() => undefined)
+  }
+  const pageUrl = typeof page?.url === 'function' ? page.url() : ''
+  const waitReason = classifyLoginWaitReason({
+    pageUrl,
+    submitted: options?.submitted,
+    submit: options?.submit,
+    fallback: options?.reason,
+  })
+  await setSessionAuthSummary(ctx.dbHandle, {
+    sessionId: session.id,
+    ...ctx.ownerScope(),
+    authState: session.authState ?? 'UNKNOWN',
+    identityState: session.identityState ?? 'UNVERIFIED',
+    lastAuthError: waitReason,
+    authProfileRevision: session.authProfileRevision ?? null,
+    observedTier: session.observedTier ?? null,
+    recordSuccess: false,
+  }).catch(() => undefined)
+  if (isUnrecoverableLoginWait(waitReason)) {
+    return { ok: false, code: 'LOGIN_PAGE_UNREACHABLE' }
   }
   const waitGrant = await transitionSessionUse(ctx.dbHandle, {
     sessionId: session.id,
@@ -754,7 +976,7 @@ async function enterMaintenanceAuthWait(
     holderWorkerId: ctx.options.workerId,
     holderInstanceId: ctx.workerInstanceId,
     leaseTtlSeconds: ctx.options.defaultLeaseTtlSeconds,
-    waitSeconds: waitSeconds ?? ctx.options.defaultAuthWaitSeconds,
+    waitSeconds: options?.waitSeconds ?? ctx.options.defaultAuthWaitSeconds,
     reason: 'maintenance_auth',
   })
   if (!waitGrant) return { ok: false, code: 'SESSION_NOT_CLAIMABLE' }
@@ -772,7 +994,7 @@ async function enterMaintenanceAuthWait(
     sessionId: session.id,
     generation: session.generation,
     operationId: operation.id,
-    payload: { kind: operation.kind },
+    payload: { kind: operation.kind, reason: waitReason },
   })
   return 'waiting'
 }
@@ -784,7 +1006,10 @@ async function loginLegacyMaintenance(
   attempt: { loginSubmitted: boolean } | undefined,
   target: TargetAuthInfo,
   live: LiveHandle,
-): Promise<{ ok: true } | { ok: false; code?: SessionErrorCode }> {
+): Promise<
+  | { ok: true }
+  | { ok: false; code?: SessionErrorCode; submitted?: boolean; submit?: LoginWaitSubmitState }
+> {
   const credential = await ctx.resolveAccountCredential(operation.targetAccountId)
   if (!credential) {
     if (operation.origin === 'BACKGROUND') {
@@ -802,7 +1027,7 @@ async function loginLegacyMaintenance(
       await abandonSessionKeepAlive(ctx.dbHandle, session.id)
       return { ok: false, code: 'SESSION_KEEPALIVE_ABANDONED' }
     }
-    return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+    return { ok: false, code: (occupied.code as SessionErrorCode) ?? 'AUTH_AUTO_LOGIN_PAUSED' }
   }
   await appendSessionEvent(ctx.dbHandle, {
     key: { targetId: session.targetId, targetAccountId: session.targetAccountId },
@@ -822,6 +1047,7 @@ async function loginLegacyMaintenance(
       entryUrl: target.entryUrl,
       loginUrl: target.loginUrl,
       loginFields: target.loginFields,
+      loginLeaveTimeoutMs: target.loginLeaveTimeoutMs,
       captchaMode: target.captchaMode,
       captcha: target.captcha,
     },
@@ -832,8 +1058,10 @@ async function loginLegacyMaintenance(
   // 会按同一个 captchaMaxAttempts 再循环一次，不收紧到 1 会让实际提交次数变成 maxAttempts²。
   const singleAttemptTarget = captchaRetries ? { ...loginTarget, captchaMaxAttempts: 1 } : loginTarget
   let ok = false
+  let lastSubmit: LoginWaitSubmitState = 'not_attempted'
   for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
     const loginResult = await attemptLoginWithCredentials(live.handle, singleAttemptTarget, credential)
+    lastSubmit = loginResult.submit
     ok = loginResult.authenticated
     if (captchaRetries) {
       const outcome =
@@ -868,15 +1096,24 @@ async function loginLegacyMaintenance(
     if (ok) break
     if (captchaRetries && !shouldContinueCaptchaRetry(loginResult)) break
   }
-  if (attempt) attempt.loginSubmitted = true
+  if (attempt) attempt.loginSubmitted = lastSubmit !== 'not_attempted'
   await persistLegacyObservation(ctx, session, ok ? 'AUTHENTICATED' : 'EXPIRED')
   const liveAfter = await readLiveSessionAuth(ctx.dbHandle)
   await recordAutoLoginOutcome(ctx.dbHandle, {
     targetAccountId: operation.targetAccountId,
-    result: ok ? 'success' : 'verify_failed',
+    result: ok ? 'success' : lastSubmit === 'credential_failed' ? 'credential' : 'verify_failed',
     sessionAuth: liveAfter.sessionAuth,
   })
-  return ok ? { ok: true } : { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+  if (ok) {
+    await settleAfterMaintenanceLogin(ctx, session, operation, null)
+    return { ok: true }
+  }
+  return {
+        ok: false,
+        code: 'SESSION_AUTH_UNSUPPORTED',
+        submitted: lastSubmit !== 'not_attempted',
+        submit: lastSubmit,
+      }
 }
 
 async function runLegacyMaintenanceAuth(
@@ -912,8 +1149,6 @@ async function runLegacyMaintenanceAuth(
     return loginLegacyMaintenance(this, session, operation, attempt, target, live)
   }
 
-  const missingFields =
-    !target.loginFields?.username || !target.loginFields?.password || !target.loginFields?.submit
   const isSupportedCaptcha =
     target.captchaMode === 'image' ||
     target.captchaMode === 'slider' ||
@@ -921,11 +1156,12 @@ async function runLegacyMaintenanceAuth(
     Boolean(target.captcha)
   const needsManual =
     target.authMethod === 'manual' ||
-    (target.captchaMode !== 'none' && !isSupportedCaptcha) ||
-    missingFields
+    (target.captchaMode !== 'none' && !isSupportedCaptcha)
   if (needsManual) {
     if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
-    return enterMaintenanceAuthWait(this, session, operation, grant, target, live)
+    return enterMaintenanceAuthWait(this, session, operation, grant, target, live, {
+      reason: 'SESSION_AUTH_UNSUPPORTED',
+    })
   }
 
   const shouldLogin =
@@ -935,15 +1171,18 @@ async function runLegacyMaintenanceAuth(
     if (logged.ok) return logged
     if (!grant) return logged
     const liveAuth = await readLiveSessionAuth(this.dbHandle).catch(() => null)
-    return enterMaintenanceAuthWait(
-      this,
-      session,
-      operation,
-      grant,
-      target,
-      live,
-      isSupportedCaptcha ? liveAuth?.sessionAuth.captchaHumanWaitSeconds : undefined,
-    )
+    const submit = 'submit' in logged ? logged.submit : undefined
+    return enterMaintenanceAuthWait(this, session, operation, grant, target, live, {
+      waitSeconds: isSupportedCaptcha ? liveAuth?.sessionAuth.captchaHumanWaitSeconds : undefined,
+      submitted: logged.submitted ?? attempt?.loginSubmitted,
+      submit,
+      reason:
+        submit === 'credential_failed'
+          ? 'credential'
+          : submit && submit !== 'not_attempted'
+            ? 'AUTH_PROBE_UNKNOWN'
+            : logged.code,
+    })
   }
   if (!grant) return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
   return enterMaintenanceAuthWait(this, session, operation, grant, target, live)

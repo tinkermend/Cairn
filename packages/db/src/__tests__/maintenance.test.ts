@@ -554,6 +554,57 @@ describe.each(DRIVERS)('%s 会话维护账本', { timeout: 60_000 }, (driver) =>
     if (reset.operation) await cancelSessionOperation(handle.db, { operationId: reset.operation.id })
   })
 
+  it('已登录空闲会话可提交整理页面，未准备时不可', async () => {
+    const accountId = await makeAccount('settle-landing')
+    const worker = await seedWorker(handle)
+    const unprepared = await getAccountSessionDetail(handle.db, { targetId, targetAccountId: accountId })
+    expect(unprepared.actions.find((action) => action.kind === 'SETTLE_LANDING')).toMatchObject({
+      enabled: false,
+      disabledReason: '仅已登录的空闲会话可整理页面',
+    })
+    const session = await requireCreatedSession(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      ownerWorkerId: worker.workerId,
+      ownerWorkerInstanceId: worker.instanceId,
+      reusePolicy: 'NEW_PAGE',
+      idleTtlSeconds: 600,
+      maxLifetimeSeconds: 3600,
+    })
+    await setSessionStatus(handle.db, {
+      sessionId: session.id,
+      expectedVersion: session.version,
+      status: 'OPEN',
+      ownerWorkerId: worker.workerId,
+      ownerWorkerInstanceId: worker.instanceId,
+    })
+    await setSessionProbe(handle.db, {
+      sessionId: session.id,
+      ownerWorkerId: worker.workerId,
+      ownerWorkerInstanceId: worker.instanceId,
+      health: 'HEALTHY',
+      authState: 'AUTHENTICATED',
+    })
+    const ready = await getAccountSessionDetail(handle.db, { targetId, targetAccountId: accountId })
+    expect(ready.status === 'ready' || ready.status === 'needs_check').toBe(true)
+    expect(ready.actions.find((action) => action.kind === 'SETTLE_LANDING')).toMatchObject({
+      enabled: true,
+      disabledReason: null,
+    })
+    const requested = await requestMaintenanceOperation(handle.db, {
+      key: { targetId, targetAccountId: accountId },
+      body: {
+        kind: 'SETTLE_LANDING',
+        idempotencyKey: `settle-${accountId}-xxxxxxxx`,
+        expectedSessionId: session.id,
+        expectedGeneration: session.generation,
+      },
+      actor: { id: actorId },
+    })
+    expect(requested.created).toBe(true)
+    expect(requested.operation?.kind).toBe('SETTLE_LANDING')
+    if (requested.operation) await cancelSessionOperation(handle.db, { operationId: requested.operation.id })
+  })
+
   it('节点保留配额为 0 时拒绝设置保留', async () => {
     const accountId = await makeAccount('quota')
     const workerId = `worker-${newId()}`

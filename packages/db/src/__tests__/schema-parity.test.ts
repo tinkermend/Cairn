@@ -124,6 +124,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       [TEST_SCHEMA],
     )
     expect(rows).toEqual([
+      { column_name: 'avatar', is_nullable: 'YES' },
       { column_name: 'created_at', is_nullable: 'NO' },
       { column_name: 'display_name', is_nullable: 'NO' },
       { column_name: 'email', is_nullable: 'YES' },
@@ -399,6 +400,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       [TEST_SCHEMA],
     )
     expect(rows).toEqual([
+      { column_name: 'account_slot', is_nullable: 'NO' },
       { column_name: 'auth_control_actor_id', is_nullable: 'YES' },
       { column_name: 'auth_control_epoch', is_nullable: 'NO' },
       { column_name: 'auth_control_expires_at', is_nullable: 'YES' },

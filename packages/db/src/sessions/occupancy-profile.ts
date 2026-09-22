@@ -4,17 +4,27 @@ import type { Db } from '../client.js'
 import { atomic, clockNow } from '../native.js'
 import type { SessionProfileRow } from '../records.js'
 import { schemaFor } from '../native.js'
+import { profileKeyFrom, type SessionProfileKey } from './account-session-concurrency.js'
 import type { SessionKey } from './sessions.js'
 
-export async function getSessionProfile(db: Db, key: SessionKey): Promise<SessionProfileRow | null> {
+function resolveProfileKey(key: SessionKey | SessionProfileKey): SessionProfileKey {
+  return 'accountSlot' in key && key.accountSlot != null ? key : profileKeyFrom(key, 1)
+}
+
+export async function getSessionProfile(
+  db: Db,
+  key: SessionKey | SessionProfileKey,
+): Promise<SessionProfileRow | null> {
+  const profileKey = resolveProfileKey(key)
   const { sessionProfiles } = schemaFor(db)
   const [row] = await db
     .select()
     .from(sessionProfiles)
     .where(
       and(
-        eq(sessionProfiles.targetId, key.targetId),
-        eq(sessionProfiles.targetAccountId, key.targetAccountId),
+        eq(sessionProfiles.targetId, profileKey.targetId),
+        eq(sessionProfiles.targetAccountId, profileKey.targetAccountId),
+        eq(sessionProfiles.accountSlot, profileKey.accountSlot),
       ),
     )
     .limit(1)
@@ -23,7 +33,7 @@ export async function getSessionProfile(db: Db, key: SessionKey): Promise<Sessio
 
 export async function writeSessionProfile(
   db: Db,
-  key: SessionKey,
+  key: SessionKey | SessionProfileKey,
   values: {
     revision: number
     locationWorkerId: string | null
@@ -33,20 +43,23 @@ export async function writeSessionProfile(
   },
   options?: { create?: boolean; expectedRevision?: number },
 ): Promise<SessionProfileRow | null> {
+  const profileKey = resolveProfileKey(key)
   const { sessionProfiles } = schemaFor(db)
-  const existing = await getSessionProfile(db, key)
+  const existing = await getSessionProfile(db, profileKey)
   if (!existing) {
     if (!options?.create) return null
     await db.insert(sessionProfiles).values({
-      targetId: key.targetId,
-      targetAccountId: key.targetAccountId,
+      targetId: profileKey.targetId,
+      targetAccountId: profileKey.targetAccountId,
+      accountSlot: profileKey.accountSlot,
       ...values,
     })
-    return getSessionProfile(db, key)
+    return getSessionProfile(db, profileKey)
   }
   const conditions = [
-    eq(sessionProfiles.targetId, key.targetId),
-    eq(sessionProfiles.targetAccountId, key.targetAccountId),
+    eq(sessionProfiles.targetId, profileKey.targetId),
+    eq(sessionProfiles.targetAccountId, profileKey.targetAccountId),
+    eq(sessionProfiles.accountSlot, profileKey.accountSlot),
   ]
   if (options?.expectedRevision !== undefined) {
     conditions.push(eq(sessionProfiles.revision, options.expectedRevision))
@@ -55,7 +68,7 @@ export async function writeSessionProfile(
     .update(sessionProfiles)
     .set(values)
     .where(and(...conditions))
-  const row = await getSessionProfile(db, key)
+  const row = await getSessionProfile(db, profileKey)
   if (options?.expectedRevision !== undefined && row?.revision === options.expectedRevision) {
     return null
   }
@@ -65,7 +78,7 @@ export async function writeSessionProfile(
 export async function upsertSessionProfile(
   db: Db,
   input: {
-    key: SessionKey
+    key: SessionKey | SessionProfileKey
     workerId: string
     state?: 'ABSENT' | 'PRESENT'
     revision?: number
@@ -88,7 +101,10 @@ export async function upsertSessionProfile(
   return row ?? existing!
 }
 
-export async function invalidateSessionProfile(db: Db, key: SessionKey): Promise<SessionProfileRow | null> {
+export async function invalidateSessionProfile(
+  db: Db,
+  key: SessionKey | SessionProfileKey,
+): Promise<SessionProfileRow | null> {
   return atomic(db, async (tx) => {
     const current = await getSessionProfile(tx, key)
     if (!current) return null
@@ -114,7 +130,7 @@ export async function invalidateSessionProfile(db: Db, key: SessionKey): Promise
 
 export async function transferProfileLocation(
   tx: Db,
-  key: SessionKey,
+  key: SessionKey | SessionProfileKey,
   fromWorkerId: string | null,
   toWorkerId: string,
   previousRevision: number,

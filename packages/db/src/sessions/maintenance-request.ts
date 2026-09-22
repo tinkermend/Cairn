@@ -13,6 +13,7 @@ import { requestSessionOperation, contentDigestFor } from './occupancy.js'
 import { appendSessionEvent } from './session-events.js'
 import type { SessionKey } from './sessions.js'
 import { loadOccupancyFacts } from './session-overview.js'
+import { readAccountSessionCap } from './account-session-concurrency.js'
 import { lockConsoleAuthorization, assertTargetPermission } from '../console/target-authorization.js'
 
 export async function requestMaintenanceOperation(
@@ -67,88 +68,94 @@ export async function requestMaintenanceOperation(
       throw conflict('SESSION_POLICY_INVALID', '清除登录数据必须确认当前账号')
     }
     const facts = await loadOccupancyFacts(tx, input.key)
-    if (origin === 'BACKGROUND') {
-      const { runs } = schemaFor(tx)
-      const [queued] = await tx
-        .select({ id: runs.id })
-        .from(runs)
-        .where(
-          and(
-            eq(runs.targetId, input.key.targetId),
-            eq(runs.targetAccountId, input.key.targetAccountId),
-            inArray(runs.status, ['QUEUED', 'RECOVERING']),
-            isNull(runs.deletedAt),
-          ),
-        )
-        .limit(1)
-      if (queued || facts.lease || facts.holding)
-        return { operation: facts.activeOp, created: false, reusedRunId: null }
+    const instances = facts.instances ?? []
+    const destructive = input.body.kind === 'CLOSE' || input.body.kind === 'RESTART' || input.body.kind === 'RESET_PROFILE'
+    if (destructive && instances.length > 1 && !input.body.expectedSessionId) {
+      throw conflict('SESSION_INSTANCE_REQUIRED', '多个会话时必须指定要操作的会话')
     }
-    if (origin === 'BACKGROUND' && facts.activeOp)
-      return { operation: facts.activeOp, created: false, reusedRunId: null }
-    if (facts.activeOp && input.body.kind !== 'REFRESH_LOGIN_PAGE')
+    const selected =
+      instances.find((item) => item.session.id === input.body.expectedSessionId) ??
+      (instances.length === 1 ? instances[0] : null)
+    const selectedLease = selected?.lease ?? null
+    const selectedLive = selected?.session ?? null
+    const selectedOp =
+      facts.activeOps?.find((op) => op.expectedSessionId && op.expectedSessionId === selectedLive?.id) ??
+      (instances.length <= 1 ? facts.activeOp : null)
+    if (origin === 'BACKGROUND') {
+      if (selectedLease || selected?.holding)
+        return { operation: selectedOp ?? facts.activeOp, created: false, reusedRunId: null }
+    }
+    if (origin === 'BACKGROUND' && selectedOp)
+      return { operation: selectedOp, created: false, reusedRunId: null }
+    if (selectedOp && input.body.kind !== 'REFRESH_LOGIN_PAGE')
       throw conflict('SESSION_OPERATION_CONFLICT', '已有会话操作尚未完成', {
-        occupyingOperationId: facts.activeOp.id,
+        occupyingOperationId: selectedOp.id,
       })
-    if (facts.live && (!input.body.expectedSessionId || input.body.expectedGeneration == null)) {
+    if (selectedLive && instances.length === 1 && (!input.body.expectedSessionId || input.body.expectedGeneration == null)) {
       throw conflict('SESSION_GENERATION_CHANGED', '操作已有实例必须提供实例与代次，请刷新后重试')
     }
     if (input.body.expectedSessionId) {
       if (
-        !facts.live ||
-        facts.live.id !== input.body.expectedSessionId ||
-        (input.body.expectedGeneration != null && facts.live.generation !== input.body.expectedGeneration)
+        !selectedLive ||
+        selectedLive.id !== input.body.expectedSessionId ||
+        (input.body.expectedGeneration != null && selectedLive.generation !== input.body.expectedGeneration)
       ) {
         throw conflict('SESSION_GENERATION_CHANGED', '会话实例已重建，请刷新后重试')
       }
     }
-    if (facts.holding || facts.lease?.purpose === 'EXECUTION') {
-      throw conflict('SESSION_OPERATION_CONFLICT', '该账号正在执行运行', {
-        occupyingRunId: facts.lease?.runId ?? null,
+    if (selected?.holding || selectedLease?.purpose === 'EXECUTION') {
+      throw conflict('SESSION_OPERATION_CONFLICT', '该会话正在执行运行', {
+        occupyingRunId: selectedLease?.runId ?? null,
       })
     }
-    if (facts.lease?.purpose === 'AUTH_WAIT' && facts.lease.ownerKind === 'RUN' && facts.lease.runId) {
+    if (selectedLease?.purpose === 'AUTH_WAIT' && selectedLease.ownerKind === 'RUN' && selectedLease.runId) {
       if (input.body.kind === 'LOGIN') {
         // 下方入账；领取时复用 Run 的 AUTH_WAIT。
       }
       if (input.body.kind !== 'LOGIN' && input.body.kind !== 'REFRESH_LOGIN_PAGE')
-        throw conflict('SESSION_OPERATION_CONFLICT', '该账号正在等待运行认证', {
-          occupyingRunId: facts.lease.runId,
+        throw conflict('SESSION_OPERATION_CONFLICT', '该会话正在等待运行认证', {
+          occupyingRunId: selectedLease.runId,
         })
     }
     if (
-      facts.lease?.purpose === 'AUTH_WAIT' &&
-      facts.lease.operationId &&
+      selectedLease?.purpose === 'AUTH_WAIT' &&
+      selectedLease.operationId &&
       input.body.kind !== 'REFRESH_LOGIN_PAGE'
     ) {
-      throw conflict('SESSION_OPERATION_CONFLICT', '该账号已有认证等待', {
-        occupyingOperationId: facts.lease.operationId,
+      throw conflict('SESSION_OPERATION_CONFLICT', '该会话已有认证等待', {
+        occupyingOperationId: selectedLease.operationId,
       })
     }
     if (
       input.body.kind === 'REFRESH_LOGIN_PAGE' &&
-      facts.lease?.purpose === 'AUTH_WAIT' &&
-      (facts.live?.authControlActorId !== input.actor?.id ||
-        !facts.live?.authControlExpiresAt ||
-        facts.live.authControlExpiresAt.getTime() <= Date.now())
+      selectedLease?.purpose === 'AUTH_WAIT' &&
+      (selectedLive?.authControlActorId !== input.actor?.id ||
+        !selectedLive?.authControlExpiresAt ||
+        selectedLive.authControlExpiresAt.getTime() <= Date.now())
     )
       throw conflict('AUTH_CONTROL_INVALID', '刷新认证页须持有当前输入权')
-    if (facts.lease?.purpose === 'MAINTENANCE' && facts.lease.operationId) {
-      throw conflict('SESSION_OPERATION_CONFLICT', '该账号正在维护', {
-        occupyingOperationId: facts.lease.operationId,
+    if (selectedLease?.purpose === 'MAINTENANCE' && selectedLease.operationId) {
+      throw conflict('SESSION_OPERATION_CONFLICT', '该会话正在维护', {
+        occupyingOperationId: selectedLease.operationId,
       })
     }
     if (input.body.kind === 'CLOSE' || input.body.kind === 'RESTART') {
-      if (!facts.live || facts.live.status !== 'OPEN' || facts.lease) {
+      if (!selectedLive || selectedLive.status !== 'OPEN' || selectedLease) {
         throw conflict('SESSION_NOT_CLAIMABLE', '关闭或重启只能在空闲活实例上执行')
       }
     }
     if (input.body.kind === 'RESET_PROFILE') {
-      if (facts.lease) {
-        throw conflict('SESSION_OPERATION_CONFLICT', '该账号正在被占用，不能清除登录数据')
+      if (selectedLease) {
+        throw conflict('SESSION_OPERATION_CONFLICT', '该会话正在被占用，不能清除登录数据')
       }
-      if (facts.live?.status === 'LOST') {
+      if (selectedLive?.status === 'LOST') {
         throw conflict('SESSION_NOT_CLAIMABLE', '失联实例须先处置，不能直接清除登录数据')
+      }
+    }
+    if (input.body.kind === 'PREPARE') {
+      const cap = await readAccountSessionCap(tx, input.key)
+      if (instances.length >= cap.effectiveCap && !selectedLive) {
+        throw conflict('SESSION_ACCOUNT_CAP_EXCEEDED', '账号并发会话已达上限')
       }
     }
     const requested = await requestSessionOperation(tx, {
@@ -159,21 +166,21 @@ export async function requestMaintenanceOperation(
         requestDigest,
         ...(input.body.kind === 'REFRESH_LOGIN_PAGE' ? { pageRef: input.body.pageRef } : {}),
         ...(input.body.kind === 'RESET_PROFILE' ? { confirmAccountId: input.body.confirmAccountId } : {}),
-        ...(facts.lease?.purpose === 'AUTH_WAIT'
-          ? { reusedRunId: facts.lease.runId, reusedOperationId: facts.lease.operationId }
+        ...(selectedLease?.purpose === 'AUTH_WAIT'
+          ? { reusedRunId: selectedLease.runId, reusedOperationId: selectedLease.operationId }
           : {}),
       },
       origin,
       idempotencyKey: input.body.idempotencyKey,
-      expectedSessionId: input.body.expectedSessionId ?? facts.live?.id ?? null,
-      expectedGeneration: input.body.expectedGeneration ?? facts.live?.generation ?? null,
+      expectedSessionId: input.body.expectedSessionId ?? selectedLive?.id ?? null,
+      expectedGeneration: input.body.expectedGeneration ?? selectedLive?.generation ?? null,
     })
     if (requested.created) {
       await appendSessionEvent(tx, {
         key: input.key,
         type: 'operation.requested',
-        sessionId: facts.live?.id ?? null,
-        generation: facts.live?.generation ?? null,
+        sessionId: selectedLive?.id ?? null,
+        generation: selectedLive?.generation ?? null,
         operationId: requested.operation.id,
         payload: { kind: input.body.kind, origin },
       })
@@ -191,7 +198,7 @@ export async function requestMaintenanceOperation(
     return {
       operation: requested.operation,
       created: requested.created,
-      reusedRunId: facts.lease?.purpose === 'AUTH_WAIT' ? facts.lease.runId : null,
+      reusedRunId: selectedLease?.purpose === 'AUTH_WAIT' ? selectedLease.runId : null,
     }
   })
 }

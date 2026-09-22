@@ -2,6 +2,7 @@ export {
   appendSessionEvent,
   listSessionEvents,
   listSessionEventsAfter,
+  listRecentAuthEvents,
   countSessionEventWatermark,
 } from './session-events.js'
 export {

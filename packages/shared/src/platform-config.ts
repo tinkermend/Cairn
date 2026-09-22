@@ -30,6 +30,8 @@ import {
   DEFAULT_SESSION_RECLAIM_MODE,
   DEFAULT_SESSION_REUSE_POLICY,
   DEFAULT_SESSION_LOST_DISPOSITION,
+  DEFAULT_ACCOUNT_SESSION_MODE,
+  accountSessionModeSchema,
   resolveSessionPolicyLayers,
   sessionPolicySchema,
   sessionReclaimModeSchema,
@@ -61,7 +63,7 @@ import {
 import { FACTORY_ALERTING, alertRuleSchema, credentialMaintenanceAlertingSchema } from './alerting.js'
 import { FACTORY_NOTIFICATIONS, platformNotificationsSchema } from './notifications.js'
 
-export const PLATFORM_CONFIG_SCHEMA_VERSION = 4 as const
+export const PLATFORM_CONFIG_SCHEMA_VERSION = 6 as const
 /** 仍能被本版本读取的最早文档版本。低于它的存量文档必须先跑数据迁移。 */
 export const PLATFORM_CONFIG_MIN_SCHEMA_VERSION = 1 as const
 export const PLATFORM_CONFIG_SCHEMA_UNSUPPORTED = 'PLATFORM_CONFIG_SCHEMA_UNSUPPORTED' as const
@@ -128,6 +130,7 @@ export const platformSessionDefaultsSchema = z
       .default(DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS),
     evictionPriority: z.number().int().min(-1000).max(1000).default(DEFAULT_SESSION_EVICTION_PRIORITY),
     lostDisposition: sessionLostDispositionSchema.default(DEFAULT_SESSION_LOST_DISPOSITION),
+    accountSessionMode: accountSessionModeSchema.default(DEFAULT_ACCOUNT_SESSION_MODE),
   })
   .superRefine((session, ctx) => {
     if (session.maxLifetimeSeconds <= session.idleTtlSeconds) {
@@ -223,8 +226,19 @@ export type PlatformAiThinkingUnsupportedProvider =
 export const PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE = '启用识途助手或知识分析时必须选择模型提供商'
 export const PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE = '该提供商本期未开放思考模式'
 
+/**
+ * 平台 AI 出厂预填「连哪个模型」，只缺 API Key；与浏览器 AI 同理，不含任何凭据，enabled 仍为 false。
+ * 取值须与 platform-ai-provider 里该提供商的预设一致（单测守住）。
+ */
+export const FACTORY_PLATFORM_AI_ENDPOINT = {
+  provider: 'deepseek',
+  baseUrl: 'https://api.deepseek.com',
+  model: 'deepseek-flash',
+} as const
+
 export const FACTORY_PLATFORM_AI = {
   enabled: false,
+  ...FACTORY_PLATFORM_AI_ENDPOINT,
   routeId: PLATFORM_AI_ROUTE_ID,
   thinkingMode: 'off',
   requestTimeoutMs: 20_000,
@@ -422,6 +436,20 @@ export const platformConfigDocumentSchema = z
   })
 export type PlatformConfigDocument = z.infer<typeof platformConfigDocumentSchema>
 
+/**
+ * 浏览器 AI 出厂预填的「连哪个模型」。
+ *
+ * 新部署里只有 API Key 必须由使用者自己填，其余都该有可用的默认值，
+ * 不然每套环境都要手敲一遍地址、模型名和模型族。只预填这三项，不预填密钥、
+ * 也不默认启用：没有密钥时启用会被校验拦下（缺 Secret 引用），所以流程是
+ * 粘贴并登记密钥 → 打开启用。要换服务商，在平台配置页改这三项即可。
+ */
+export const FACTORY_BROWSER_AI_ENDPOINT = {
+  baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+  model: 'doubao-seed-2-1-turbo-260628',
+  modelFamily: 'doubao-seed',
+} as const
+
 export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   analysisAi: FACTORY_ANALYSIS_AI,
   schemaVersion: PLATFORM_CONFIG_SCHEMA_VERSION,
@@ -442,6 +470,7 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
     authProbeIntervalSeconds: DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
     evictionPriority: DEFAULT_SESSION_EVICTION_PRIORITY,
     lostDisposition: DEFAULT_SESSION_LOST_DISPOSITION,
+    accountSessionMode: DEFAULT_ACCOUNT_SESSION_MODE,
   },
   evidence: {
     screenshot: 'always',
@@ -456,6 +485,7 @@ export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   },
   browserAi: {
     enabled: false,
+    ...FACTORY_BROWSER_AI_ENDPOINT,
     requestTimeoutMs: 15_000,
     stepMaxCalls: 20,
     maxOutputTokens: 2048,
@@ -534,6 +564,33 @@ const PLATFORM_CONFIG_UPGRADES = new Map<number, PlatformConfigUpgrade>([
       platformAi: {
         ...platformAi,
         thinkingMode: platformAi.thinkingMode ?? FACTORY_PLATFORM_AI.thinkingMode,
+      },
+    }
+  }],
+  [4, raw => {
+    const sessionAuth = (raw.sessionAuth ?? {}) as Record<string, unknown>
+    return {
+      ...raw,
+      schemaVersion: 5,
+      sessionAuth: {
+        ...sessionAuth,
+        loginLeaveTimeoutMs: sessionAuth.loginLeaveTimeoutMs ?? FACTORY_SESSION_AUTH.loginLeaveTimeoutMs,
+      },
+    }
+  }],
+  [5, raw => {
+    const sessionAuth = (raw.sessionAuth ?? {}) as Record<string, unknown>
+    return {
+      ...raw,
+      schemaVersion: 6,
+      sessionAuth: {
+        ...sessionAuth,
+        landingSettleBudgetMs:
+          sessionAuth.landingSettleBudgetMs ?? FACTORY_SESSION_AUTH.landingSettleBudgetMs,
+        landingSettleWatchMs:
+          sessionAuth.landingSettleWatchMs ?? FACTORY_SESSION_AUTH.landingSettleWatchMs,
+        landingSettleMaxDismissals:
+          sessionAuth.landingSettleMaxDismissals ?? FACTORY_SESSION_AUTH.landingSettleMaxDismissals,
       },
     }
   }],
@@ -738,6 +795,7 @@ export function sessionPolicyFromPlatform(session: PlatformSessionDefaults): Ses
     authProbeIntervalSeconds: session.authProbeIntervalSeconds,
     evictionPriority: session.evictionPriority,
     lostDisposition: session.lostDisposition,
+    accountSessionMode: session.accountSessionMode,
   })
 }
 

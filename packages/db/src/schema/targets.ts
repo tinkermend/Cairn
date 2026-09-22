@@ -6,6 +6,7 @@ import type {
   TargetCaptchaDefinition,
 } from '@cairn/shared'
 import {
+  boolean,
   customType,
   index,
   integer,
@@ -46,6 +47,11 @@ export const targets = cairnSchema.table(
       password?: { by: 'id' | 'name' | 'css'; value: string }
       submit?: { by: 'id' | 'name' | 'css'; value: string }
     }>(),
+    loginLeaveTimeoutMs: integer('login_leave_timeout_ms'),
+    landingSettleMode: text('landing_settle_mode', { enum: ['default', 'off'] })
+      .notNull()
+      .default('default'),
+    landingSettleTimeoutMs: integer('landing_settle_timeout_ms'),
     captcha: jsonb('captcha').$type<TargetCaptchaDefinition>(),
     currentAuthProfileRevision: integer('current_auth_profile_revision'),
     sessionPolicy: jsonb('session_policy').$type<Record<string, unknown>>(),
@@ -88,6 +94,7 @@ export const targetAccounts = cairnSchema.table(
     usage: text('usage').notNull().default('business').$type<'map' | 'business' | 'both'>(),
     mapUsageGuard: text('map_usage_guard'),
     configRevision: integer('config_revision').notNull().default(1),
+    maxConcurrentSessions: integer('max_concurrent_sessions').notNull().default(1),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -150,6 +157,7 @@ export const targetAccountAuthBudget = cairnSchema.table(
     pausedReason: text('paused_reason'),
     nextAllowedAt: timestamp('next_allowed_at', { withTimezone: true }),
     lastConfigRevision: integer('last_config_revision').notNull(),
+    loginInFlight: boolean('login_in_flight').notNull().default(false),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('target_account_auth_budget_account_key').on(t.targetAccountId)],

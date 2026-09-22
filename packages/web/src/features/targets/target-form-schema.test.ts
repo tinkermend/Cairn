@@ -5,6 +5,9 @@ import {
   captchaFromForm,
   countConfiguredLocators,
   loginFieldsFromForm,
+  formatLoginLeaveTimeout,
+  loginLeaveTimeoutFromForm,
+  loginLeaveTimeoutToForm,
   selectorsFromForm,
   targetFormSchema,
   valuesFromTarget,
@@ -140,6 +143,34 @@ describe('targetFormSchema', () => {
     expect(formVals.name).toBe('铁塔视联')
     expect(formVals.usernameValue).toBe('u-input')
     expect(formVals.sensitiveSelectors).toBe('#id-card')
+    expect(formVals.loginLeaveTimeoutSeconds).toBe('')
+    expect(loginLeaveTimeoutFromForm('')).toBeNull()
+    expect(loginLeaveTimeoutFromForm('20')).toBe(20_000)
+    expect(loginLeaveTimeoutToForm(20_000)).toBe('20')
+    expect(formatLoginLeaveTimeout(20_000)).toBe('20 秒')
+    expect(
+      valuesFromTarget({ ...targetDto, loginLeaveTimeoutMs: 20_000 }).loginLeaveTimeoutSeconds,
+    ).toBe('20')
+    expect(valuesFromTarget(targetDto).landingSettleMode).toBe('default')
+    expect(
+      valuesFromTarget({
+        ...targetDto,
+        landingSettleMode: 'off',
+        landingSettleTimeoutMs: 6_000,
+      }).landingSettleTimeoutSeconds,
+    ).toBe('6')
+    const invalidLeave = targetFormSchema.safeParse({
+      ...EMPTY_TARGET_FORM_VALUES,
+      name: '系统A',
+      entryUrl: 'https://a.com',
+      loginLeaveTimeoutSeconds: '1.5',
+    })
+    expect(invalidLeave.success).toBe(false)
+    if (!invalidLeave.success) {
+      expect(
+        invalidLeave.error.issues.some((issue) => issue.path.includes('loginLeaveTimeoutSeconds')),
+      ).toBe(true)
+    }
   })
 
   it('countConfiguredLocators 正确统计配置数量', () => {

@@ -7,7 +7,12 @@ import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
 import { useAuthStore } from '@/stores/auth-store'
 import { ThemeProvider } from '@/context/theme-provider'
-import { SessionDetailPage, sessionOperationProgress, sessionRetentionHint } from './detail'
+import {
+  SessionDetailPage,
+  resolveSessionPrimaryAction,
+  sessionOperationProgress,
+  sessionRetentionHint,
+} from './detail'
 
 const TARGET_ID = '11111111-1111-4111-8111-111111111111'
 const ACCOUNT_ID = '22222222-2222-4222-8222-222222222222'
@@ -41,6 +46,7 @@ vi.mock('@/lib/sessions-api', () => ({
   requestAccountSessionOperation: mocks.requestAccountSessionOperation,
   setAccountSessionRetention: mocks.setAccountSessionRetention,
   newSessionIdempotencyKey: () => 'session-VERIFY-test-key',
+  observeSession: vi.fn(),
 }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
@@ -81,6 +87,7 @@ describe('SessionDetailPage', () => {
       retained: false,
       authCapability: 'LOGIN_VERIFIED',
       expectedIdentity: null,
+      lastAuthError: null,
       session: {
         id: '33333333-3333-4333-8333-333333333333',
         generation: 1,
@@ -156,6 +163,33 @@ describe('SessionDetailPage', () => {
     ).toMatch(/^截止 /)
   })
 
+  it('就绪但未配置检测时主操作仍是检查登录，不改成再登录', () => {
+    expect(
+      resolveSessionPrimaryAction({
+        status: 'ready',
+        actions: [
+          { kind: 'PREPARE', enabled: false },
+          { kind: 'VERIFY_AUTH', enabled: false },
+          { kind: 'LOGIN', enabled: true },
+          { kind: 'RENEW_AUTH', enabled: false },
+        ],
+      }),
+    ).toBe('VERIFY_AUTH')
+  })
+
+  it('待检查且未配置检测时主操作落到登录', () => {
+    expect(
+      resolveSessionPrimaryAction({
+        status: 'needs_check',
+        actions: [
+          { kind: 'PREPARE', enabled: false },
+          { kind: 'VERIFY_AUTH', enabled: false },
+          { kind: 'LOGIN', enabled: true },
+        ],
+      }),
+    ).toBe('LOGIN')
+  })
+
   it('只在进行中的会话操作显示进度', () => {
     expect(sessionOperationProgress({ currentKind: 'PREPARE', currentStatus: 'SUCCEEDED' })).toBeNull()
     expect(sessionOperationProgress({ currentKind: 'PREPARE', currentStatus: 'RUNNING' })).toEqual({
@@ -229,7 +263,7 @@ describe('SessionDetailPage', () => {
         </QueryClientProvider>
       </ThemeProvider>,
     )
-    await expect.element(screen.getByText('准备会话 · 等待人工认证')).toBeInTheDocument()
+    await expect.element(screen.getByText('准备会话 · 等待登录')).toBeInTheDocument()
     await screen.getByRole('button', { name: '处理登录' }).click()
     await expect.element(screen.getByRole('button', { name: '完成认证' })).toBeInTheDocument()
     for (const width of [1440, 1024, 390]) {
@@ -294,6 +328,73 @@ describe('SessionDetailPage', () => {
     await expect.element(screen.getByRole('menuitem', { name: '清除登录数据' })).toBeInTheDocument()
   })
 
+  it('等待登录时展示最近问题而不是只说等待人工认证', async () => {
+    const base = await mocks.fetchAccountSession()
+    mocks.fetchAccountSession.mockResolvedValue({
+      ...base,
+      status: 'maintenance',
+      lastAuthError: 'LOGIN_PAGE_UNREACHABLE',
+      currentOperation: { id: 'op', kind: 'PREPARE', status: 'WAITING_FOR_AUTH', reusedRunId: null },
+      occupancy: { purpose: 'AUTH_WAIT', occupyingRunId: null, occupyingOperationId: 'op' },
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionDetailPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+    await expect.element(screen.getByText('准备会话 · 登录页打不开')).toBeInTheDocument()
+    await expect.element(screen.getByText('目标登录页打不开', { exact: true })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('目标登录页打不开。画面只发给当前处理登录的人。'))
+      .toBeInTheDocument()
+  })
+
+  it('检查登录失败的使用记录显示失败而不是执行中', async () => {
+    mocks.fetchSessionEvents.mockResolvedValue({
+      items: [
+        {
+          id: 'e3',
+          seq: 3,
+          type: 'auth.unknown',
+          operationId: 'op-verify',
+          payload: { status: 'FAILED', errorCode: 'SESSION_AUTH_UNSUPPORTED', kind: 'VERIFY_AUTH' },
+          createdAt: '2026-09-21T04:00:02.000Z',
+        },
+        {
+          id: 'e2',
+          seq: 2,
+          type: 'operation.claimed',
+          operationId: 'op-verify',
+          payload: { kind: 'VERIFY_AUTH' },
+          createdAt: '2026-09-21T04:00:01.000Z',
+        },
+        {
+          id: 'e1',
+          seq: 1,
+          type: 'operation.requested',
+          operationId: 'op-verify',
+          payload: { kind: 'VERIFY_AUTH', origin: 'USER' },
+          createdAt: '2026-09-21T04:00:00.000Z',
+        },
+      ],
+      nextCursor: null,
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionDetailPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+    await expect.element(screen.getByText('检查登录 · 登录状态待确认')).toBeInTheDocument()
+    await expect.element(screen.getByText('失败')).toBeInTheDocument()
+    expect(screen.getByText('执行中')).not.toBeInTheDocument()
+  })
+
   it('高频连续登出信号自动聚合折叠并展示摘要', async () => {
     mocks.fetchSessionEvents.mockResolvedValue({
       items: [
@@ -335,6 +436,69 @@ describe('SessionDetailPage', () => {
     await expect.element(screen.getByText('使用记录')).toBeInTheDocument()
     await expect.element(screen.getByText('× 3')).toBeInTheDocument()
     await expect.element(screen.getByText('匹配登出URL: /login')).toBeInTheDocument()
+  })
+
+  it('多会话时必须先选一台再关闭', async () => {
+    const base = await mocks.fetchAccountSession()
+    mocks.fetchAccountSession.mockResolvedValue({
+      ...base,
+      session: null,
+      liveCount: 2,
+      effectiveCap: 3,
+      instances: [
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          generation: 1,
+          status: 'OPEN',
+          ownerWorkerId: 'worker-a',
+          authState: 'AUTHENTICATED',
+          identityState: 'UNVERIFIED',
+          observedTier: 'LOGIN_VERIFIED',
+          lastAuthCheckedAt: '2026-09-16T00:00:00.000Z',
+          lastAuthSuccessAt: '2026-09-16T00:00:00.000Z',
+          authValidUntil: null,
+          lastExpectedIdentity: null,
+          retainUntil: null,
+          occupancy: null,
+        },
+        {
+          id: '44444444-4444-4444-8444-444444444444',
+          generation: 2,
+          status: 'OPEN',
+          ownerWorkerId: 'worker-b',
+          authState: 'AUTHENTICATED',
+          identityState: 'UNVERIFIED',
+          observedTier: 'LOGIN_VERIFIED',
+          lastAuthCheckedAt: '2026-09-16T00:00:00.000Z',
+          lastAuthSuccessAt: '2026-09-16T00:00:00.000Z',
+          authValidUntil: null,
+          lastExpectedIdentity: null,
+          retainUntil: null,
+          occupancy: null,
+        },
+      ],
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionDetailPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+    await expect.element(screen.getByLabelText('选择会话')).toBeInTheDocument()
+    await expect.element(screen.getByText('会话 2/3', { exact: true })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '更多' }).click()
+    await screen.getByRole('menuitem', { name: '关闭会话' }).click()
+    await screen.getByRole('button', { name: '确认执行' }).click()
+    expect(mocks.requestAccountSessionOperation).toHaveBeenCalledWith(
+      TARGET_ID,
+      ACCOUNT_ID,
+      expect.objectContaining({
+        kind: 'CLOSE',
+        expectedSessionId: '33333333-3333-4333-8333-333333333333',
+      }),
+    )
   })
 })
 

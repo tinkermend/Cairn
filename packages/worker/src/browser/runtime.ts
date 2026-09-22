@@ -11,13 +11,19 @@ import {
   DEFAULT_CAPTCHA_SOLVE_TIMEOUT_MS,
   DEFAULT_SLIDER_DRAG_MAX_DURATION_MS,
   DEFAULT_SLIDER_DRAG_MIN_DURATION_MS,
+  resolveLoginLeaveTimeoutMs,
+  LOGIN_FIELD_HEURISTICS,
+  loginLocatorCandidates,
   type LocatorCandidate,
+  type LoginLocator,
   type PlatformSessionAuth,
   type RelativeAnchor,
   type TargetDescriptor,
   type FrameStep,
   type SessionGrant,
   type TargetCaptchaDefinition,
+  type TargetLoginFields,
+  DEFAULT_MANAGED_VIEWPORT,
 } from '@cairn/shared'
 import {
   classifyLoginSubmitText,
@@ -94,6 +100,7 @@ function requireOccupancy(action: string): SessionGrant {
 export type LaunchSessionOpts = {
   headless: boolean
   executablePath?: string
+  viewport?: { width: number; height: number } | null
 }
 
 export type BrowserHandle = {
@@ -117,6 +124,9 @@ export type TargetAuthInfo = {
   captchaHumanWaitSeconds?: number
   sliderDragMinDurationMs?: number
   sliderDragMaxDurationMs?: number
+  loginLeaveTimeoutMs?: number | null
+  landingSettleMode?: 'default' | 'off' | null
+  landingSettleTimeoutMs?: number | null
 }
 
 export function applySessionAuthToTarget(
@@ -128,6 +138,8 @@ export function applySessionAuthToTarget(
     | 'captchaHumanWaitSeconds'
     | 'sliderDragMinDurationMs'
     | 'sliderDragMaxDurationMs'
+    | 'loginLeaveTimeoutMs'
+    | 'loginTimeoutMs'
   > | null,
 ): TargetAuthInfo {
   if (!sessionAuth) return target
@@ -138,6 +150,11 @@ export function applySessionAuthToTarget(
     captchaHumanWaitSeconds: sessionAuth.captchaHumanWaitSeconds,
     sliderDragMinDurationMs: sessionAuth.sliderDragMinDurationMs,
     sliderDragMaxDurationMs: sessionAuth.sliderDragMaxDurationMs,
+    loginLeaveTimeoutMs: resolveLoginLeaveTimeoutMs({
+      targetTimeoutMs: target.loginLeaveTimeoutMs,
+      platformTimeoutMs: sessionAuth.loginLeaveTimeoutMs,
+      loginTimeoutMs: sessionAuth.loginTimeoutMs,
+    }),
   }
 }
 
@@ -148,6 +165,93 @@ function locatorFor(
   if (field.by === 'id') return page.locator(`#${cssEscape(field.value)}`)
   if (field.by === 'name') return page.locator(`[name="${cssEscapeAttr(field.value)}"]`)
   return page.locator(field.value)
+}
+
+async function firstVisibleLoginLocator(
+  page: Page,
+  candidates: readonly LoginLocator[],
+): Promise<Locator | null> {
+  for (const candidate of candidates) {
+    const loc = locatorFor(page, candidate).first()
+    if (await loc.isVisible().catch(() => false)) return loc
+  }
+  return null
+}
+
+async function inferUsernameNearPassword(page: Page, password: Locator): Promise<Locator | null> {
+  const scoped = [
+    'form:has(input[type="password"]) input[type="text"]',
+    'form:has(input[type="password"]) input[type="email"]',
+    'form:has(input[type="password"]) input[type="tel"]',
+    'form:has(input[type="password"]) input:not([type])',
+  ]
+  for (const css of scoped) {
+    const loc = page.locator(css).first()
+    if (await loc.isVisible().catch(() => false)) return loc
+  }
+  const sameForm = password.locator(
+    'xpath=ancestor::form[1]//input[(not(@type) or @type="text" or @type="email" or @type="tel")]',
+  )
+  const formCount = await sameForm.count().catch(() => 0)
+  for (let i = 0; i < formCount; i += 1) {
+    const el = sameForm.nth(i)
+    if (await el.isVisible().catch(() => false)) return el
+  }
+  const preceding = password.locator(
+    'xpath=preceding::input[(not(@type) or @type="text" or @type="email" or @type="tel")][1]',
+  )
+  if ((await preceding.count().catch(() => 0)) > 0 && (await preceding.isVisible().catch(() => false))) {
+    return preceding
+  }
+  return null
+}
+
+async function inferSubmitNearPassword(page: Page, password: Locator): Promise<Locator | null> {
+  const scoped = [
+    'form:has(input[type="password"]) button[type="submit"]',
+    'form:has(input[type="password"]) input[type="submit"]',
+    'form:has(input[type="password"]) button:not([type="button"]):not([type="reset"])',
+  ]
+  for (const css of scoped) {
+    const loc = page.locator(css).first()
+    if (await loc.isVisible().catch(() => false)) return loc
+  }
+  const following = password.locator(
+    'xpath=following::*[self::button or self::input[@type="submit"]][not(@type) or @type="submit"][1]',
+  )
+  if ((await following.count().catch(() => 0)) > 0 && (await following.isVisible().catch(() => false))) {
+    return following
+  }
+  return null
+}
+
+export async function resolveLoginFieldsOnPage(
+  page: Page,
+  fields?: TargetLoginFields | null,
+): Promise<{ username: Locator; password: Locator; submit: Locator } | null> {
+  const password = await firstVisibleLoginLocator(page, loginLocatorCandidates('password', fields?.password))
+  if (!password) return null
+  const username =
+    (await firstVisibleLoginLocator(page, loginLocatorCandidates('username', fields?.username))) ??
+    (fields?.username ? null : await inferUsernameNearPassword(page, password))
+  const submit =
+    (await firstVisibleLoginLocator(page, loginLocatorCandidates('submit', fields?.submit))) ??
+    (fields?.submit ? null : await inferSubmitNearPassword(page, password))
+  if (!username || !submit) return null
+  return { username, password, submit }
+}
+
+async function waitForLoginForm(
+  page: Page,
+  fields: TargetLoginFields | null | undefined,
+  timeoutMs: number,
+): Promise<void> {
+  const candidates = loginLocatorCandidates('password', fields?.password)
+  await Promise.any(
+    candidates.map((candidate) =>
+      locatorFor(page, candidate).first().waitFor({ state: 'visible', timeout: timeoutMs }),
+    ),
+  ).catch(() => undefined)
 }
 
 function cssEscape(value: string): string {
@@ -179,6 +283,7 @@ export async function launchSession(
       executablePath: opts.executablePath,
       args: ['--disable-dev-shm-usage'],
       serviceWorkers: 'block',
+      viewport: opts.viewport !== undefined ? (opts.viewport ?? undefined) : DEFAULT_MANAGED_VIEWPORT,
     })
     const basePage = context.pages()[0] ?? (await context.newPage())
     return { context, basePage, profileDir }
@@ -287,10 +392,9 @@ async function passwordFieldVisible(
   page: Page,
   target: TargetAuthInfo,
 ): Promise<boolean> {
-  if (!target.loginFields?.password) return false
-  const pwd = locatorFor(page, target.loginFields.password)
-  if (!(await pwd.count().then((n) => n > 0).catch(() => false))) return false
-  return pwd.first().isVisible().catch(() => false)
+  const specified = target.loginFields?.password
+  const candidates = specified ? [specified] : [...LOGIN_FIELD_HEURISTICS.password]
+  return (await firstVisibleLoginLocator(page, candidates)) != null
 }
 
 export async function inspectAuthOnPage(
@@ -338,8 +442,11 @@ async function settleLegacyAuthObservation(
       )
     }
   }
-  if (target.loginFields?.password) {
-    const first = locatorFor(page, target.loginFields.password).first()
+  const passwordCandidates = target.loginFields?.password
+    ? [target.loginFields.password]
+    : [...LOGIN_FIELD_HEURISTICS.password]
+  for (const candidate of passwordCandidates) {
+    const first = locatorFor(page, candidate).first()
     if (typeof first.waitFor === 'function') {
       waiters.push(first.waitFor({ state: 'visible', timeout: timeoutMs }))
     }
@@ -393,9 +500,6 @@ export async function attemptLoginCredentials(
 ): Promise<LoginAttemptResult> {
   requireOccupancy('submitLoginCredentials')
   const fields = target.loginFields
-  if (!fields?.username || !fields.password || !fields.submit) {
-    return { authenticated: false, submit: 'not_attempted' }
-  }
   let authorityRejected = false
   const authorize = async () => {
     try { await beforeAction?.() }
@@ -410,14 +514,22 @@ export async function attemptLoginCredentials(
       await handle.basePage.goto('about:blank', { timeout: Math.min(5_000, timeoutMs) }).catch(() => undefined)
     }
     await handle.basePage.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs })
-    const user = locatorFor(handle.basePage, fields.username)
+    await waitForLoginForm(handle.basePage, fields, Math.min(15_000, timeoutMs))
+    const resolved = await resolveLoginFieldsOnPage(handle.basePage, fields)
+    if (!resolved) {
+      return { authenticated: false, submit: 'not_attempted' }
+    }
+    const user = resolved.username
     await user.waitFor({ state: 'visible', timeout: Math.min(15_000, timeoutMs) })
 
     const captchaTries = expectsLoginChallenge(target)
       ? Math.max(1, target.captchaMaxAttempts ?? DEFAULT_CAPTCHA_MAX_ATTEMPTS)
       : 1
     const solveTimeoutMs = Math.min(target.captchaSolveTimeoutMs ?? DEFAULT_CAPTCHA_SOLVE_TIMEOUT_MS, timeoutMs)
-    const leaveLoginMs = Math.min(3_000, timeoutMs)
+    const leaveLoginMs = resolveLoginLeaveTimeoutMs({
+      targetTimeoutMs: target.loginLeaveTimeoutMs,
+      loginTimeoutMs: timeoutMs,
+    })
     const solveOptions = {
       timeoutMs: solveTimeoutMs,
       minDurationMs: target.sliderDragMinDurationMs ?? DEFAULT_SLIDER_DRAG_MIN_DURATION_MS,
@@ -427,7 +539,7 @@ export async function attemptLoginCredentials(
       await authorize()
       await user.fill(credential.username)
       await authorize()
-      await locatorFor(handle.basePage, fields.password).fill(credential.password)
+      await resolved.password.fill(credential.password)
       const preChallenge = await waitForLoginChallenge(handle.basePage, target, Math.min(8_000, timeoutMs))
       if (preChallenge) {
         const outcome = await solveChallenge(handle.basePage, preChallenge, solveOptions)
@@ -442,7 +554,7 @@ export async function attemptLoginCredentials(
         continue
       }
 
-      await locatorFor(handle.basePage, fields.submit).click()
+      await resolved.submit.click()
       await handle.basePage.waitForTimeout(400)
       const postChallenge = await detectChallenge(handle.basePage, target.captcha)
       if (postChallenge) {
@@ -490,6 +602,34 @@ export async function submitLoginCredentials(
   return (await attemptLoginCredentials(handle, target, credential, timeoutMs, beforeAction)).authenticated
 }
 
+/**
+ * 提交后核验证件。刚登完常还停在 /login，无验证码时打开入口看 cookie，
+ * 避免把已成功登录误判成失败。有验证码时只看当前页，避免刷新挑战。
+ */
+export async function confirmSubmittedLogin(
+  handle: BrowserHandle,
+  target: TargetAuthInfo,
+  submitted: LoginAttemptResult,
+): Promise<LoginAttemptResult> {
+  if (submitted.authenticated) {
+    if ((await probeAuth(handle, target)) === 'AUTHENTICATED') {
+      return { authenticated: true, submit: 'authenticated' }
+    }
+    return { authenticated: false, submit: submitted.submit }
+  }
+  if ((await inspectAuthOnPage(handle.basePage, target)) === 'AUTHENTICATED') {
+    return { authenticated: true, submit: 'authenticated' }
+  }
+  if (
+    submitted.submit === 'ambiguous' &&
+    !expectsLoginChallenge(target) &&
+    (await probeAuth(handle, target)) === 'AUTHENTICATED'
+  ) {
+    return { authenticated: true, submit: 'authenticated' }
+  }
+  return submitted
+}
+
 export async function attemptLoginWithCredentials(
   handle: BrowserHandle,
   target: TargetAuthInfo,
@@ -499,17 +639,7 @@ export async function attemptLoginWithCredentials(
   requireOccupancy('loginWithCredentials')
   const submitted = await attemptLoginCredentials(handle, target, credential, undefined, beforeAction)
   try {
-    // 提交失败仍可能已有 cookie；只看当前页，避免再打开入口把验证码刷新掉、拖慢重试。
-    if (!submitted.authenticated) {
-      if ((await inspectAuthOnPage(handle.basePage, target)) === 'AUTHENTICATED') {
-        return { authenticated: true, submit: 'authenticated' }
-      }
-      return submitted
-    }
-    if ((await probeAuth(handle, target)) === 'AUTHENTICATED') {
-      return { authenticated: true, submit: 'authenticated' }
-    }
-    return { authenticated: false, submit: submitted.submit }
+    return await confirmSubmittedLogin(handle, target, submitted)
   } catch {
     return { authenticated: false, submit: submitted.submit === 'authenticated' ? 'ambiguous' : submitted.submit }
   }
@@ -975,4 +1105,98 @@ export function pageClosed(page: Page): boolean {
   return page.isClosed()
 }
 
+export async function uploadToLocator(
+  page: Page,
+  locator: Locator,
+  files: Array<{
+    name: string
+    mimeType: string
+    bufferBase64?: string
+    localPath?: string
+    byteSize: number
+    sha256: string
+  }>,
+): Promise<{ method: 'dom_direct' | 'file_chooser'; count: number }> {
+  requireOccupancy('uploadToLocator')
+
+  const isDirect = await locator
+    .evaluate((el: any) => el.tagName === 'INPUT' && el.type === 'file')
+    .catch(() => false)
+  let inputLocator = locator
+  if (!isDirect) {
+    const nested = locator.locator('input[type="file"]').first()
+    if ((await nested.count().catch(() => 0)) > 0) {
+      inputLocator = nested
+    } else {
+      const parentCandidate = locator.locator('xpath=..').locator('input[type="file"]').first()
+      if ((await parentCandidate.count().catch(() => 0)) > 0) {
+        inputLocator = parentCandidate
+      }
+    }
+  }
+
+  const hasFileInput = isDirect || inputLocator !== locator
+
+  if (hasFileInput) {
+    const isMultiple = await inputLocator
+      .evaluate((el: any) => el.hasAttribute('multiple'))
+      .catch(() => false)
+    if (!isMultiple && files.length > 1) {
+      throw new Error('UPLOAD_TARGET_SINGLE_ONLY: 目标输入框不支持多文件同时上传，但步骤配置了多个文件')
+    }
+  }
+
+  const allPaths = files.every((f) => Boolean(f.localPath))
+  const payloads = allPaths
+    ? files.map((f) => f.localPath!)
+    : files.map((f) => ({
+        name: f.name,
+        mimeType: f.mimeType,
+        buffer: Buffer.from(f.bufferBase64 ?? '', 'base64'),
+      }))
+
+  if (hasFileInput) {
+    await inputLocator.setInputFiles(payloads as any, { timeout: 5_000 })
+    return { method: 'dom_direct', count: files.length }
+  }
+
+  const isDisabled = await locator
+    .evaluate(
+      (el: any) =>
+        Boolean(el.disabled) ||
+        el.getAttribute?.('aria-disabled') === 'true',
+    )
+    .catch(() => false)
+  if (isDisabled) {
+    throw new Error('UPLOAD_PRECONDITION_FAILED: 上传触发按钮当前处于禁用状态，无法打开文件选择框')
+  }
+
+  if (page) {
+    ;(page as any).__cairnFileChooserOpen = true
+  }
+  try {
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent('filechooser', { timeout: 3_000 }),
+      locator.click({ timeout: 2_000 }),
+    ])
+    if (!fileChooser.isMultiple() && files.length > 1) {
+      throw new Error('UPLOAD_TARGET_SINGLE_ONLY: 唤起的文件选择框不支持多文件同时上传，但步骤配置了多个文件')
+    }
+    await fileChooser.setFiles(payloads as any)
+    return { method: 'file_chooser', count: files.length }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('UPLOAD_TARGET_SINGLE_ONLY')) throw err
+    if (msg.includes('Timeout') || msg.includes('timeout')) {
+      throw new Error('UPLOAD_NO_FILE_INPUT: 未找到文件输入元素，点击目标也没有唤起文件选择')
+    }
+    throw err
+  } finally {
+    if (page) {
+      ;(page as any).__cairnFileChooserOpen = false
+    }
+  }
+}
+
 export type { Locator, Frame, Page }
+
