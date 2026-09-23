@@ -6,6 +6,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
     ...actual,
     resolveSnapshotCredential: vi.fn(),
     resolveAccountCurrentCredential: vi.fn(),
+    resolveAccountAuthMaterials: vi.fn(),
     loadSecretCiphertext: vi.fn(),
     recordCredentialVerification: vi.fn(),
     loadAccountForExecution: vi.fn(),
@@ -14,7 +15,7 @@ vi.mock('@cairn/db', async (importOriginal) => {
 
 import {
   loadSecretCiphertext,
-  resolveAccountCurrentCredential,
+  resolveAccountAuthMaterials,
   resolveSnapshotCredential,
 } from '@cairn/db'
 import { resolveLoginCredential } from './session-claim.js'
@@ -52,7 +53,10 @@ describe('凭据取用配对', () => {
   })
 
   it('待确认身份时当前账号凭据不可取用', async () => {
-    vi.mocked(resolveAccountCurrentCredential).mockResolvedValue(null)
+    // resolveAccountCredential 现在走 resolveAccountAuthMaterials 取素材（含 TOTP／
+    // storageState），不再经旧的 resolveAccountCurrentCredential；素材查不到即视为
+    // 身份未确认，凭据不可取用。
+    vi.mocked(resolveAccountAuthMaterials).mockResolvedValue(null)
     const ctx = { secrets: { decrypt: () => 'pw' }, dbHandle: {} }
     await expect(resolveAccountCredential.call(ctx as never, 'account-1')).resolves.toBeNull()
   })

@@ -45,7 +45,28 @@ export class AiStepExecutor implements StepExecutor {
         safeMessage: '运行快照没有冻结页面范围',
       })
     }
-    const command = commandFor(step, snapshot, ctx.input)
+
+    // Resolve explicit contextBindings (B2)
+    const contextValues: Record<string, JsonValue> = {}
+    if ('contextBindings' in step && Array.isArray((step as any).contextBindings)) {
+      const bindings = (step as any).contextBindings as import('@cairn/shared').ContextBinding[]
+      for (const binding of bindings) {
+        const value = resolveBindingValue(ctx.context, binding)
+        if ((value === undefined || value === null) && binding.required !== false) {
+          return fail({
+            code: 'AI_REQUIRED_CONTEXT_MISSING',
+            category: 'VALIDATION',
+            retryable: false,
+            safeMessage: `AI 步骤「${step.name}」必需的上下文绑定「${binding.name}」缺失 (source: ${binding.source})`,
+          })
+        }
+        if (value !== undefined) {
+          contextValues[binding.name] = value
+        }
+      }
+    }
+
+    const command = commandFor(step, snapshot, ctx.input, contextValues)
     const result = await this.ai.execute(sessionGrant, command, signal, {
       runId,
       stepRunId,
@@ -129,7 +150,12 @@ export class AiStepExecutor implements StepExecutor {
   }
 }
 
-function commandFor(step: Step, snapshot: RunSnapshot, resolvedInput: JsonValue): AiCommand {
+function commandFor(
+  step: Step,
+  snapshot: RunSnapshot,
+  resolvedInput: JsonValue,
+  contextValues?: Record<string, JsonValue>,
+): AiCommand {
   const config = snapshot.aiExecution!
   const instruction =
     step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert'
@@ -141,6 +167,7 @@ function commandFor(step: Step, snapshot: RunSnapshot, resolvedInput: JsonValue)
       ? { action: aiAtomicActionInputSchema.parse(resolvedInput) }
       : { instruction }),
     outputSchema: step.type === 'ai_extract' ? step.input.outputSchema : undefined,
+    contextValues: contextValues && Object.keys(contextValues).length > 0 ? contextValues : undefined,
     maxCalls: config.maxCalls,
     maxOutputTokens: config.maxOutputTokens,
     requestTimeoutMs: config.requestTimeoutMs,
@@ -149,6 +176,81 @@ function commandFor(step: Step, snapshot: RunSnapshot, resolvedInput: JsonValue)
     loginOrigin: snapshot.loginOrigin,
     loginPath: snapshot.loginPath,
   })
+}
+
+export function resolveBindingValue(
+  context: Readonly<Record<string, JsonValue>>,
+  binding: import('@cairn/shared').ContextBinding,
+): JsonValue | undefined {
+  const { source, path, projection } = binding
+
+  // Guard against prototype pollution
+  if (
+    source.includes('__proto__') ||
+    source.includes('constructor') ||
+    source.includes('prototype') ||
+    (path && (path.includes('__proto__') || path.includes('constructor') || path.includes('prototype')))
+  ) {
+    return undefined
+  }
+
+  let base: any = context[source]
+
+  if (base === undefined) {
+    if (source.startsWith('input.')) {
+      const key = source.slice('input.'.length)
+      base = context[key] ?? (context.input as any)?.[key]
+    } else if (source.startsWith('steps.')) {
+      const parts = source.slice('steps.'.length).split('.')
+      const stepId = parts[0]
+      const field = parts[1]
+      if (stepId) {
+        base = field
+          ? (context.steps as any)?.[stepId]?.[field] ?? context[`${stepId}.${field}`]
+          : context[stepId] ?? (context.steps as any)?.[stepId]
+      }
+    }
+  }
+
+  let resolved: any = base
+  if (path && resolved !== undefined && resolved !== null && typeof resolved === 'object') {
+    const segments = path.split('.')
+    for (const segment of segments) {
+      if (segment === '__proto__' || segment === 'constructor' || segment === 'prototype') {
+        return undefined
+      }
+      if (resolved && typeof resolved === 'object') {
+        resolved = resolved[segment]
+      } else {
+        resolved = undefined
+        break
+      }
+    }
+  }
+
+  if (resolved === undefined || resolved === null) {
+    return resolved
+  }
+
+  // Apply projection if specified
+  if (projection === 'summary') {
+    if (Array.isArray(resolved)) {
+      return { length: resolved.length, sample: resolved.slice(0, 3) } as JsonValue
+    }
+    if (typeof resolved === 'object') {
+      const keys = Object.keys(resolved)
+      return { keys, count: keys.length } as JsonValue
+    }
+    if (typeof resolved === 'string') {
+      return (resolved.length > 200 ? `${resolved.slice(0, 200)}...` : resolved) as JsonValue
+    }
+  } else if (projection === 'list_sample') {
+    if (Array.isArray(resolved)) {
+      return resolved.slice(0, 5) as JsonValue
+    }
+  }
+
+  return resolved as JsonValue
 }
 
 function fail(

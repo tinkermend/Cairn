@@ -331,7 +331,6 @@ export async function finishClaimedAcquire(this: SessionManagerContext,
     await this.applyReuse(live, policy, grant.leaseId)
     if (managed) this.ensureRunPage(managed, run.runId, grant.leaseId)
     this.runAuth.set(grant.leaseId, { ...this.runAuth.get(grant.leaseId), snapshot: run })
-    await this.startVideoForLease(grant.leaseId, live.id, run)
 
     signal?.throwIfAborted()
     const authSessionId = live.id

@@ -74,6 +74,12 @@ describe('会话维护契约 C0', () => {
         sessionId: '11111111-1111-4111-8111-111111111111',
       }),
     ).toBe(true)
+    expect(
+      canCloseAccountSession({
+        status: 'maintenance',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+      }),
+    ).toBe(true)
     expect(canCloseAccountSession({ status: 'unprepared', sessionId: null })).toBe(false)
     expect(canCloseAccountSession({ status: 'lost', sessionId: '11111111-1111-4111-8111-111111111111' })).toBe(
       false,

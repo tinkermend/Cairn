@@ -161,7 +161,9 @@ describe.each(DRIVERS)('%s 登录核验与身份', { timeout: 60_000 }, (driver)
     const first = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
     const second = await occupyAutoLoginBudget(handle.db, { targetId, targetAccountId: accountId })
     expect(first).toMatchObject({ ok: true })
-    expect(second).toMatchObject({ ok: false, code: 'AUTH_AUTO_LOGIN_PAUSED' })
+    // 窗口未重置时，第一次占用未提交结果（未调 recordAutoLoginOutcome）前，第二次调用命中
+    // loginInFlight 并发占用守卫，得到更精确的 SESSION_BUSY，而不是笼统的预算耗尽
+    expect(second).toMatchObject({ ok: false, code: 'SESSION_BUSY' })
   })
 
   it('自动登录成功后归还窗口次数，会话关掉再准备仍可自动登录', async () => {

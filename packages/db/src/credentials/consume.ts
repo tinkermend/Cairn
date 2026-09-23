@@ -133,10 +133,27 @@ export async function secretIdsStillReferenced(
     used.add(row.secretId)
   }
   const accounts = await db
-    .select({ secretId: targetAccounts.secretId })
+    .select({
+      secretId: targetAccounts.secretId,
+      totpSecretId: targetAccounts.totpSecretId,
+      storageStateSecretId: targetAccounts.storageStateSecretId,
+    })
     .from(targetAccounts)
-    .where(and(inArray(targetAccounts.secretId, secretIds), isNull(targetAccounts.deletedAt)))
-  for (const row of accounts) if (row.secretId) used.add(row.secretId)
+    .where(
+      and(
+        or(
+          inArray(targetAccounts.secretId, secretIds),
+          inArray(targetAccounts.totpSecretId, secretIds),
+          inArray(targetAccounts.storageStateSecretId, secretIds),
+        ),
+        isNull(targetAccounts.deletedAt),
+      ),
+    )
+  for (const row of accounts) {
+    if (row.secretId && secretIds.includes(row.secretId)) used.add(row.secretId)
+    if (row.totpSecretId && secretIds.includes(row.totpSecretId)) used.add(row.totpSecretId)
+    if (row.storageStateSecretId && secretIds.includes(row.storageStateSecretId)) used.add(row.storageStateSecretId)
+  }
   const bindings = await db
     .select({ secretId: platformAiSecretBindings.secretId })
     .from(platformAiSecretBindings)
@@ -195,3 +212,36 @@ export async function recordCredentialVerification(
     createdAt: now,
   })
 }
+
+export type AccountAuthMaterials = {
+  username: string
+  passwordSecretId?: string
+  totpSecretId?: string
+  storageStateSecretId?: string
+}
+
+export async function resolveAccountAuthMaterials(
+  db: Db,
+  accountId: string,
+): Promise<AccountAuthMaterials | null> {
+  const { targetAccounts } = schemaFor(db)
+  const [account] = await db
+    .select({
+      username: targetAccounts.username,
+      secretId: targetAccounts.secretId,
+      totpSecretId: targetAccounts.totpSecretId,
+      storageStateSecretId: targetAccounts.storageStateSecretId,
+      deletedAt: targetAccounts.deletedAt,
+    })
+    .from(targetAccounts)
+    .where(and(eq(targetAccounts.id, accountId), isNull(targetAccounts.deletedAt)))
+    .limit(1)
+  if (!account) return null
+  return {
+    username: account.username,
+    passwordSecretId: account.secretId ?? undefined,
+    totpSecretId: account.totpSecretId ?? undefined,
+    storageStateSecretId: account.storageStateSecretId ?? undefined,
+  }
+}
+

@@ -54,8 +54,12 @@ export async function acquireRunAuthControl(this: SessionManagerContext, input: 
     pageId?: string
   }): Promise<AcquireAuthControlResponse> {
     const { session, live, run } = await this.requireLiveAuthSession(input.runId)
-    if (!live.autoInputClosed || run.status !== 'WAITING_FOR_AUTH') {
+    const isDirectSession = input.runId === session.id
+    if (!isDirectSession && (!live.autoInputClosed || run.status !== 'WAITING_FOR_AUTH')) {
       throw conflict('RUN_NOT_WAITING_FOR_AUTH', '自动执行尚未停止，不能授予输入权')
+    }
+    if (isDirectSession && session.status !== 'OPEN') {
+      throw conflict('SESSION_NOT_OPEN', '会话未处于就绪状态，不能授予控制权')
     }
     const page = this.ensureRunPage(live, input.runId)
     const granted = await acquireAuthControl(this.dbHandle, {
@@ -105,8 +109,9 @@ export async function inputRunAuthControl(this: SessionManagerContext, input: {
     command: BrowserAuthInputCommand
   }): Promise<AuthControlInputReceipt> {
     const { session, live, run } = await this.requireLiveAuthSession(input.runId)
-    if (!live.inputAccepting || run.status !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
-      throw conflict('AUTH_INPUT_REJECTED', '当前不是认证输入窗口')
+    const isDirectSession = input.runId === session.id
+    if (!live.inputAccepting || (!isDirectSession && (run.status !== 'WAITING_FOR_AUTH' || !live.autoInputClosed))) {
+      throw conflict('AUTH_INPUT_REJECTED', '当前不是可输入窗口')
     }
     await heartbeatAuthControl(this.dbHandle, {
       sessionId: session.id,
@@ -144,18 +149,19 @@ export async function executeAuthInput(this: SessionManagerContext, params: {
     if (input.command.seq <= live.lastSeq) {
       throw conflict('AUTH_INPUT_REJECTED', '输入序号乱序')
     }
-    // 这里只要认证输入窗口的状态。调用方已经给了 sessionId / live，不必再走一遍
-    // lookupRunSession 的会话解析——那会给每次按键多压两三次查询。
-    const latestStatus = await this.authWindowStatus(input.runId)
-    if (latestStatus !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
-      throw conflict('AUTH_INPUT_REJECTED', '当前不是认证输入窗口')
+    const isDirectSession = input.runId === sessionId
+    if (!isDirectSession) {
+      const latestStatus = await this.authWindowStatus(input.runId)
+      if (latestStatus !== 'WAITING_FOR_AUTH' || !live.autoInputClosed) {
+        throw conflict('AUTH_INPUT_REJECTED', '当前不是认证输入窗口')
+      }
     }
     const latest = await getSessionById(this.dbHandle, sessionId)
     if (!latest?.authControlExpiresAt || latest.authControlExpiresAt.getTime() <= Date.now()) {
       throw conflict('AUTH_CONTROL_INVALID', '认证输入权已过期')
     }
     if (latest.authControlActorId !== input.actorId) {
-      throw conflict('AUTH_CONTROL_HELD', '由其他用户处理登录')
+      throw conflict('AUTH_CONTROL_HELD', '由其他用户处理中')
     }
     if (latest.authControlEpoch !== boundEpoch) {
       throw conflict('AUTH_CONTROL_INVALID', '认证输入权已更换')

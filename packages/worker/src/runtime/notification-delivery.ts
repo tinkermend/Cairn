@@ -22,6 +22,9 @@ import {
   NOTIFICATION_PROTOCOL,
   alertNoticeSchema,
   alertWebhookSecretPayloadSchema,
+  buildDingTalkCard,
+  buildFeishuCard,
+  buildWechatWorkCard,
   isBlockedAlertWebhookHost,
   isBlockedAlertWebhookUrl,
   notificationChannelSecretSchema,
@@ -81,9 +84,27 @@ export async function resolveNotificationDestination(
 
 export function notificationWebhookBody(job: NotificationJob): string {
   const payload = job.event.payload!
+  const p = payload as Record<string, any>
   if (job.delivery.binding.channel.format === 'legacy_alert@1' && payload.alert) {
     const { occurredAt, ...alert } = payload.alert
     return JSON.stringify(alertNoticeSchema.parse({ ...alert, at: occurredAt }))
+  }
+  if (p.suiteCard && typeof p.suiteCard === 'object') {
+    const card = p.suiteCard as {
+      provider?: 'wechat_work' | 'feishu' | 'dingtalk' | 'generic'
+      summary: any
+      suiteName: string
+      viewUrl?: string
+    }
+    if (card.provider === 'wechat_work') {
+      return JSON.stringify(buildWechatWorkCard(card))
+    }
+    if (card.provider === 'feishu') {
+      return JSON.stringify(buildFeishuCard(card))
+    }
+    if (card.provider === 'dingtalk') {
+      return JSON.stringify(buildDingTalkCard(card))
+    }
   }
   const body = JSON.stringify({
     protocol: NOTIFICATION_PROTOCOL,
@@ -120,6 +141,10 @@ export function notificationEmailText(job: NotificationJob): string {
     p.durationMs != null && `执行耗时：${(p.durationMs / 1000).toFixed(1)} 秒`,
     p.alert &&
       `告警：${p.alert.ruleName}（${{ firing: '触发', resolved: '恢复', interrupted: '判断依据中断' }[p.alert.kind]} / ${p.alert.severity === 'critical' ? '严重' : '警告'}）`,
+    p.takeover && `人工接管请求：${p.takeover.targetName}（${p.takeover.accountDisplayName}）`,
+    p.takeover && `接管原因：${p.takeover.reason}`,
+    p.takeover && `接管链接：${p.takeover.takeoverUrl}`,
+    p.takeover && `有效至：${p.takeover.expiresAt}`,
     job.event.runId && `运行编号：${job.event.runId}`,
     job.event.consoleUrl,
     `通知编号：${job.deliveryId}`,

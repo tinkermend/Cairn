@@ -35,10 +35,11 @@ export const PERMISSION_RESOURCES = [
   'report',
   'dataset',
   'batch',
+  'reliability',
 ] as const
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number]
 
-export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review', 'assist', 'publish', 'maintain', 'explore', 'analyze', 'operate', 'import'] as const
+export const PERMISSION_ACTIONS = ['read', 'write', 'delete', 'execute', 'cancel', 'review', 'assist', 'publish', 'maintain', 'explore', 'analyze', 'operate', 'import', 'triage', 'configure'] as const
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number]
 
 export const PERMISSIONS = [
@@ -105,6 +106,9 @@ export const PERMISSIONS = [
   'batch:read',
   'batch:write',
   'batch:execute',
+  'reliability:read',
+  'reliability:triage',
+  'reliability:configure',
 ] as const
 export type PermissionCode = (typeof PERMISSIONS)[number]
 
@@ -139,6 +143,7 @@ export const RESOURCE_LABELS: Record<PermissionResource, string> = {
   report: '运行报告',
   dataset: '数据集',
   batch: '批量任务',
+  reliability: '自动化可靠性',
 }
 
 export const PERMISSION_LABELS: Record<PermissionCode, string> = {
@@ -205,6 +210,9 @@ export const PERMISSION_LABELS: Record<PermissionCode, string> = {
   'batch:read': '查看批量任务',
   'batch:write': '创建批量任务',
   'batch:execute': '执行与控制批量任务',
+  'reliability:read': '查看可靠性与退化问题',
+  'reliability:triage': '处理、归并与关闭可靠性问题',
+  'reliability:configure': '配置可靠性检测规则与基线政策',
 }
 
 export interface PermissionDef {
@@ -270,6 +278,8 @@ const AUTHOR_PERMISSIONS: readonly PermissionCode[] = [
   'batch:read',
   'batch:write',
   'batch:execute',
+  'reliability:read',
+  'reliability:triage',
 ]
 
 const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
@@ -303,6 +313,8 @@ const OPERATOR_PERMISSIONS: readonly PermissionCode[] = [
   'report:export',
   'batch:read',
   'batch:execute',
+  'reliability:read',
+  'reliability:triage',
 ]
 
 const VIEWER_PERMISSIONS: readonly PermissionCode[] = [
@@ -318,6 +330,7 @@ const VIEWER_PERMISSIONS: readonly PermissionCode[] = [
   'report:read',
   'dataset:read',
   'batch:read',
+  'reliability:read',
 ]
 
 export const SYSTEM_ROLE_DEFINITIONS: Readonly<
@@ -413,15 +426,9 @@ export const CONSOLE_CAPABILITIES: readonly ConsoleCapability[] = [
   { id: 'menu.schedules', kind: 'menu', group: 'execution-observation', label: '定时任务', allOf: ['schedule:read'] },
   { id: 'menu.runs', kind: 'menu', group: 'execution-observation', label: '运行记录', allOf: ['run:read'] },
   { id: 'menu.evidence', kind: 'menu', group: 'execution-observation', label: '结果与报告', allOf: ['run:read'] },
+  { id: 'menu.maintenance', kind: 'menu', group: 'execution-observation', label: '自动化维护', allOf: ['reliability:read'] },
   { id: 'menu.datasets', kind: 'menu', group: 'resources', label: '数据集', allOf: ['dataset:read'] },
   { id: 'menu.targets', kind: 'menu', group: 'resources', label: '目标系统', allOf: ['target:read'] },
-  {
-    id: 'menu.credentials',
-    kind: 'menu',
-    group: 'resources',
-    label: '目标账号',
-    allOf: ['credential:read', 'target:read'],
-  },
   { id: 'menu.sessions', kind: 'menu', group: 'resources', label: '浏览器', allOf: ['session:read'] },
   { id: 'menu.monitoring', kind: 'menu', group: 'operations', label: '监控', allOf: ['monitor:read'] },
   { id: 'menu.workers', kind: 'menu', group: 'operations', label: '执行节点', allOf: ['session:read'] },
@@ -643,7 +650,7 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
       {
         key: 'schedule',
         label: '定时任务',
-        description: '管理场景、场景集、地图复查与知识分析定时任务',
+        description: '管理场景、场景集、知识地图采集与知识分析定时任务',
         items: [
           { code: 'schedule:read', isPageAccess: true },
           { code: 'schedule:write' },
@@ -657,6 +664,16 @@ export const CAPABILITY_TREE_GROUPS: readonly CapabilityTreeCategory[] = [
           { code: 'batch:read', isPageAccess: true },
           { code: 'batch:write' },
           { code: 'batch:execute' },
+        ],
+      },
+      {
+        key: 'reliability',
+        label: '自动化维护',
+        description: '自动化资产退化信号检测、问题归并与维护治理',
+        items: [
+          { code: 'reliability:read', isPageAccess: true },
+          { code: 'reliability:triage' },
+          { code: 'reliability:configure' },
         ],
       },
     ],
@@ -1079,6 +1096,10 @@ export const OPERATION_AUDIT_ACTIONS = [
   'module.replace',
   'module.resolve',
   'module.resolve_accept',
+  'module_case.create',
+  'module_case.update',
+  'module_case.delete',
+  'module_test_batch.create',
   'map.governance',
   'map.publish',
   'map.withdraw',
@@ -1112,6 +1133,7 @@ export const OPERATION_AUDIT_ACTIONS = [
   'suite.cancel',
   'suite_run.create',
   'suite_run.cancel',
+  'suite_run.rerun_item',
   'report.create',
   'report.profile.save',
   'report.asset.upload',
@@ -1227,6 +1249,10 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   'module.replace': '用模块替换原步骤',
   'module.resolve': '解析动作模块说法',
   'module.resolve_accept': '接受模块映射写入草稿',
+  'module_case.create': '创建动作模块测试用例',
+  'module_case.update': '更新动作模块测试用例',
+  'module_case.delete': '删除动作模块测试用例',
+  'module_test_batch.create': '创建动作模块批量回归',
   'map.governance': '提交地图治理命令',
   'map.publish': '发布地图版本',
   'map.withdraw': '撤回地图版本',
@@ -1260,6 +1286,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   'suite.cancel': '取消场景集运行',
   'suite_run.create': '启动场景集运行',
   'suite_run.cancel': '取消场景集运行',
+  'suite_run.rerun_item': '重跑场景集成员',
   'report.create': '创建运行报告',
   'report.profile.save': '保存报告配置档',
   'report.asset.upload': '上传报告 Logo',

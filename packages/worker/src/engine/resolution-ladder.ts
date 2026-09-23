@@ -7,6 +7,7 @@ import {
   policyStartsAtAiRung,
   resolvedSelector,
   syncSha256,
+  policyAllowsVisionAi,
   type BrowserCommand,
   type BrowserCommandResult,
   type ExecutionError,
@@ -316,6 +317,7 @@ async function tryAiRung(input: {
       allowedOrigins: ctx.snapshot.allowedOrigins ?? [],
       loginOrigin: ctx.snapshot.loginOrigin,
       loginPath: ctx.snapshot.loginPath,
+      allowVision: policyAllowsVisionAi(effective),
     },
     ctx.signal,
     {

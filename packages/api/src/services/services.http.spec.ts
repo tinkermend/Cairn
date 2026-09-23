@@ -3,7 +3,8 @@ import { Test } from "@nestjs/testing";
 import { JwtService } from "@nestjs/jwt";
 import request from "supertest";
 import { chromium } from "playwright";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { ServicesService } from "./services.service";
 import { openIsolatedDb, type DbHandle } from "@cairn/db/testing";
 import {
   RbacStore,
@@ -751,6 +752,156 @@ it("rate limits include failed validation; Retry-After is returned; revocation p
     .get("/api/open/v1/targets")
     .auth(key, { type: "bearer" })
     .expect(401);
+});
+
+it("exposes authorized scenario tools catalog, tool descriptors, and handles sync/async/timeout tool executions", async () => {
+  const caller = await request(app.getHttpServer())
+    .post("/api/services")
+    .auth(jwt, { type: "bearer" })
+    .send({
+      name: "Agent Tools Caller",
+      owner: "测试",
+      maxOutstandingRuns: 10,
+      requestsPerMinute: 60,
+    })
+    .expect(201);
+  const toolCallerId = caller.body.caller.id as string;
+
+  const issued = await request(app.getHttpServer())
+    .post(`/api/services/${toolCallerId}/credentials`)
+    .auth(jwt, { type: "bearer" })
+    .send({
+      name: "Agent Tools Key",
+      scopes: ["run:execute", "run:read", "run:cancel"],
+      grants: [{ targetId, accountIds: [body.targetAccountId] }],
+    })
+    .expect(201);
+  const toolToken = issued.body.token as string;
+
+  // 1. GET /api/open/v1/tools catalog
+  const toolsRes = await request(app.getHttpServer())
+    .get("/api/open/v1/tools")
+    .auth(toolToken, { type: "bearer" })
+    .expect(200);
+
+  expect(toolsRes.body).toHaveProperty("items");
+  expect(toolsRes.body.items.length).toBeGreaterThan(0);
+  const toolItem = toolsRes.body.items.find(
+    (item: any) => item.scenarioId === body.scenarioId,
+  );
+  expect(toolItem).toBeDefined();
+  expect(toolItem).toMatchObject({
+    key: `scenario.${body.scenarioId}`,
+    scenarioId: body.scenarioId,
+    scenarioVersionId: body.scenarioVersionId,
+    targetId,
+    descriptorVersion: "v1",
+    scenarioVersionRef: `${body.scenarioId}@v1`,
+  });
+  expect(toolItem.inputSchema).toMatchObject({
+    type: "object",
+    properties: {},
+  });
+  expect(toolItem.outputSchema).toHaveProperty("type", "object");
+
+  // 2. GET /api/open/v1/tools/:toolKey descriptor
+  const singleRes = await request(app.getHttpServer())
+    .get(`/api/open/v1/tools/scenario.${body.scenarioId}`)
+    .auth(toolToken, { type: "bearer" })
+    .expect(200);
+  expect(singleRes.body.scenarioId).toBe(body.scenarioId);
+
+  // 3. GET nonexistent tool -> 404
+  await request(app.getHttpServer())
+    .get("/api/open/v1/tools/scenario.non-existent")
+    .auth(toolToken, { type: "bearer" })
+    .expect(404);
+
+  // 4. POST /api/open/v1/tools/:toolKey/call with async: true -> 202 ACCEPTED
+  const asyncCallRes = await request(app.getHttpServer())
+    .post(`/api/open/v1/tools/scenario.${body.scenarioId}/call`)
+    .auth(toolToken, { type: "bearer" })
+    .send({
+      targetAccountId: body.targetAccountId,
+      arguments: {},
+      requestKey: "agent-tool-call-async-01",
+      async: true,
+    })
+    .expect(202);
+
+  expect(asyncCallRes.body).toMatchObject({
+    status: "ACCEPTED",
+    callId: expect.any(String),
+    runId: expect.any(String),
+    pollUrl: expect.stringContaining("/open/v1/runs/"),
+    sseStreamUrl: expect.stringContaining("/open/v1/runs/"),
+  });
+
+  // 5. POST /api/open/v1/tools/:toolKey/call with timeout -> 202 RUNNING
+  const prevTimeout = process.env.CAIRN_TOOL_CALL_TIMEOUT_MS;
+  process.env.CAIRN_TOOL_CALL_TIMEOUT_MS = "50";
+  try {
+    const timeoutCallRes = await request(app.getHttpServer())
+      .post(`/api/open/v1/tools/scenario.${body.scenarioId}/call`)
+      .auth(toolToken, { type: "bearer" })
+      .send({
+        targetAccountId: body.targetAccountId,
+        arguments: {},
+        requestKey: "agent-tool-call-timeout-01",
+      })
+      .expect(202);
+
+    expect(timeoutCallRes.body).toMatchObject({
+      status: "RUNNING",
+      callId: expect.any(String),
+      runId: expect.any(String),
+      pollUrl: expect.stringContaining("/open/v1/runs/"),
+      sseStreamUrl: expect.stringContaining("/open/v1/runs/"),
+    });
+  } finally {
+    if (prevTimeout !== undefined) {
+      process.env.CAIRN_TOOL_CALL_TIMEOUT_MS = prevTimeout;
+    } else {
+      delete process.env.CAIRN_TOOL_CALL_TIMEOUT_MS;
+    }
+  }
+
+  // 6. POST /api/open/v1/tools/:toolKey/call sync completion -> 200
+  const servicesService = app.get(ServicesService);
+  const origRun = servicesService.run.bind(servicesService);
+  const spy = vi
+    .spyOn(servicesService, "run")
+    .mockImplementation(async (actor, runId, cancel) => {
+      const realRun = await origRun(actor, runId, cancel);
+      return {
+        ...realRun,
+        status: "SUCCEEDED" as any,
+        outcomeStatus: "PASSED",
+        evidenceStatus: "VERIFIED",
+        output: { resultData: "inspection ok" },
+      };
+    });
+
+  try {
+    const syncCallRes = await request(app.getHttpServer())
+      .post(`/api/open/v1/tools/scenario.${body.scenarioId}/call`)
+      .auth(toolToken, { type: "bearer" })
+      .send({
+        targetAccountId: body.targetAccountId,
+        arguments: {},
+        requestKey: "agent-tool-call-sync-01",
+      })
+      .expect(200);
+
+    expect(syncCallRes.body).toMatchObject({
+      executionStatus: "SUCCEEDED",
+      outcomeStatus: "PASSED",
+      evidenceStatus: "VERIFIED",
+      output: { resultData: "inspection ok" },
+    });
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 it(

@@ -15,7 +15,7 @@ import { assertMaintenanceAuthorized, assertSessionActorPermission } from './acc
 import { appendSessionEvent } from './session-events.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
-import { atomic, clockNow, insertRows, locked, schemaFor, updateRows } from '../native.js'
+import { atomic, clockNow, deleteRows, insertRows, locked, schemaFor, updateRows } from '../native.js'
 import { conflict } from '../runs/errors.js'
 import { sha256Hex } from '../runs/digest.js'
 import { lockRunRow } from '../leases/leases.js'
@@ -205,6 +205,18 @@ export async function requestSessionOperation(
         throw conflict('OPERATION_IDEMPOTENCY_CONFLICT', '同幂等键内容不一致')
       }
       return { operation: existing, created: false }
+    }
+    if (input.kindParams?.force) {
+      await updateRows(
+        tx,
+        sessionOperations,
+        { status: 'CANCELLED', errorCode: 'OPERATION_INTERRUPTED', finishedAt: now, updatedAt: now },
+        and(
+          eq(sessionOperations.targetId, input.key.targetId),
+          eq(sessionOperations.targetAccountId, input.key.targetAccountId),
+          eq(sessionOperations.status, 'QUEUED'),
+        ),
+      )
     }
     const [row] = await insertRows(tx, sessionOperations, {
       id: newId(),
@@ -438,23 +450,44 @@ export async function claimSessionOperation(
           await lockSession(tx, live.id)
           const existing = await findActiveLeaseRow(tx, live.id)
           if (existing) {
-            await updateRows(
-              tx,
-              sessionOperations,
-              { status: 'FAILED', errorCode: 'SESSION_OPERATION_CONFLICT', finishedAt: now, updatedAt: now },
-              eq(sessionOperations.id, candidate.id),
-            )
-            await appendSessionEvent(tx, {
-              key: candidate,
-              type: 'operation.finished',
-              operationId: candidate.id,
-              payload: {
-                status: 'FAILED',
-                errorCode: 'SESSION_OPERATION_CONFLICT',
-                occupyingRunId: existing.runId,
-              },
-            })
-            continue
+            const isNonExecution = !existing.runId && (existing.purpose === 'MAINTENANCE' || existing.purpose === 'AUTH_WAIT')
+            // 本操作首次尝试（attemptNo 还未被本次领取自增）时，不可能存在自己留下的残留占用；
+            // 若此时已挂着指向本操作 id 的非执行占用，只能是异常状态（例如绕过 claimSessionUse
+            // 的非法直插），必须判失败，不能当作"上次尝试的残留"直接清掉继续关闭。
+            const isIllegalSelfOccupancy = existing.operationId === candidate.id && candidate.attemptNo === 0
+            if (isNonExecution && !isIllegalSelfOccupancy && (candidate.kind === 'CLOSE' || candidate.kind === 'RESTART')) {
+              const { sessionLeases } = schemaFor(tx)
+              await deleteRows(tx, sessionLeases, eq(sessionLeases.sessionId, live.id))
+              if (existing.operationId) {
+                await updateRows(
+                  tx,
+                  sessionOperations,
+                  { status: 'CANCELLED', errorCode: 'OPERATION_INTERRUPTED', finishedAt: now, updatedAt: now },
+                  and(
+                    eq(sessionOperations.id, existing.operationId),
+                    inArray(sessionOperations.status, ['QUEUED', 'RUNNING', 'WAITING_FOR_AUTH']),
+                  ),
+                )
+              }
+            } else {
+              await updateRows(
+                tx,
+                sessionOperations,
+                { status: 'FAILED', errorCode: 'SESSION_OPERATION_CONFLICT', finishedAt: now, updatedAt: now },
+                eq(sessionOperations.id, candidate.id),
+              )
+              await appendSessionEvent(tx, {
+                key: candidate,
+                type: 'operation.finished',
+                operationId: candidate.id,
+                payload: {
+                  status: 'FAILED',
+                  errorCode: 'SESSION_OPERATION_CONFLICT',
+                  occupyingRunId: existing.runId,
+                },
+              })
+              continue
+            }
           }
           if (live.status === 'OPEN') {
             const { browserSessions } = schemaFor(tx)

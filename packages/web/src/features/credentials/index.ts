@@ -1,2 +1,2 @@
-export { CredentialsPage } from './page'
-export { CredentialDetailPage } from './detail'
+export * from './validity-fields'
+export * from './labels'

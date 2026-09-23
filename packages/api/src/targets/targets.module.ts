@@ -4,9 +4,11 @@ import { credentialKeyFromEnv, LocalSecretProvider } from '../secrets/local-secr
 import { WorkerInternalClient } from '../runs/worker-internal.client'
 import { TargetsController } from './targets.controller'
 import { TargetsService } from './targets.service'
+import { BusinessSourcesController } from './business-sources.controller'
+import { BusinessSourcesService } from './business-sources.service'
 
 @Module({
-  controllers: [TargetsController],
+  controllers: [TargetsController, BusinessSourcesController],
   providers: [
     {
       provide: LocalSecretProvider,
@@ -14,7 +16,9 @@ import { TargetsService } from './targets.service'
     },
     WorkerInternalClient,
     TargetsService,
+    BusinessSourcesService,
   ],
-  exports: [TargetsService],
+  exports: [TargetsService, BusinessSourcesService],
 })
 export class TargetsModule {}
+

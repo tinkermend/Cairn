@@ -87,6 +87,9 @@ export const targetAccounts = cairnSchema.table(
     username: text('username').notNull(),
     secretProvider: text('secret_provider'),
     secretId: uuid('secret_id').references(() => secrets.id, { onDelete: 'restrict' }),
+    totpSecretId: uuid('totp_secret_id').references(() => secrets.id, { onDelete: 'set null' }),
+    storageStateSecretId: uuid('storage_state_secret_id').references(() => secrets.id, { onDelete: 'set null' }),
+    storageStateUpdatedAt: timestamp('storage_state_updated_at', { withTimezone: true }),
     status: text('status', { enum: ['active', 'disabled'] })
       .notNull()
       .default('active'),
@@ -119,6 +122,14 @@ export const targetAccountsRelations = relations(targetAccounts, ({ one }) => ({
   }),
   secret: one(secrets, {
     fields: [targetAccounts.secretId],
+    references: [secrets.id],
+  }),
+  totpSecret: one(secrets, {
+    fields: [targetAccounts.totpSecretId],
+    references: [secrets.id],
+  }),
+  storageStateSecret: one(secrets, {
+    fields: [targetAccounts.storageStateSecretId],
     references: [secrets.id],
   }),
 }))

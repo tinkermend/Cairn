@@ -181,6 +181,9 @@ export const targetAccountSchema = z.object({
   displayName: z.string().min(1),
   username: z.string().min(1),
   hasPassword: z.boolean(),
+  hasTotp: z.boolean().default(false),
+  hasStorageState: z.boolean().default(false),
+  storageStateUpdatedAt: utcInstantSchema.nullable().optional(),
   status: targetStatusSchema,
   expectedIdentity: z.string().trim().min(1).max(256).nullable().optional(),
   usage: accountUsageSchema.default(DEFAULT_ACCOUNT_USAGE),
@@ -232,6 +235,7 @@ export const createTargetAccountBodySchema = z
     displayName: z.string().trim().min(1).max(128),
     username: z.string().trim().min(1).max(256),
     password: targetPasswordSchema.optional(),
+    totpSecret: z.string().trim().min(8).max(128).optional(),
     status: targetStatusSchema.default('active'),
     usage: accountUsageSchema.default(DEFAULT_ACCOUNT_USAGE),
     validity: credentialValidityWriteSchema.optional(),
@@ -314,6 +318,8 @@ export const updateTargetAccountBodySchema = z
     username: z.string().trim().min(1).max(256).optional(),
     password: targetPasswordSchema.optional(),
     clearPassword: z.literal(true).optional(),
+    totpSecret: z.string().trim().min(8).max(128).optional(),
+    clearTotp: z.literal(true).optional(),
     status: targetStatusSchema.optional(),
     usage: accountUsageSchema.optional(),
     validity: credentialValidityWriteSchema.optional(),
@@ -328,6 +334,8 @@ export const updateTargetAccountBodySchema = z
       body.username !== undefined ||
       body.password !== undefined ||
       body.clearPassword !== undefined ||
+      body.totpSecret !== undefined ||
+      body.clearTotp !== undefined ||
       body.status !== undefined ||
       body.usage !== undefined ||
       body.validity !== undefined ||
@@ -339,6 +347,9 @@ export const updateTargetAccountBodySchema = z
   .refine((body) => !(body.password !== undefined && body.clearPassword === true), {
     message: 'password 与 clearPassword 不能同时给出',
   })
+  .refine((body) => !(body.totpSecret !== undefined && body.clearTotp === true), {
+    message: 'totpSecret 与 clearTotp 不能同时给出',
+  })
   .superRefine((body, ctx) => {
     if (body.password && !body.validity) {
       ctx.addIssue({
@@ -349,3 +360,50 @@ export const updateTargetAccountBodySchema = z
     }
   })
 export type UpdateTargetAccountBody = z.infer<typeof updateTargetAccountBodySchema>
+
+export const playwrightCookieSchema = z
+  .object({
+    name: z.string(),
+    value: z.string(),
+    domain: z.string(),
+    path: z.string(),
+    expires: z.number().optional(),
+    httpOnly: z.boolean().optional(),
+    secure: z.boolean().optional(),
+    sameSite: z.enum(['Strict', 'Lax', 'None']).optional(),
+  })
+  .passthrough()
+
+export const playwrightOriginStorageSchema = z
+  .object({
+    origin: z.string(),
+    localStorage: z.array(
+      z.object({
+        name: z.string(),
+        value: z.string(),
+      }),
+    ),
+  })
+  .passthrough()
+
+export const playwrightStorageStateSchema = z
+  .object({
+    cookies: z.array(playwrightCookieSchema).default([]),
+    origins: z.array(playwrightOriginStorageSchema).default([]),
+  })
+  .passthrough()
+export type PlaywrightStorageState = z.infer<typeof playwrightStorageStateSchema>
+
+export const importStorageStateBodySchema = z
+  .object({
+    storageState: playwrightStorageStateSchema.optional(),
+    state: playwrightStorageStateSchema.optional(),
+  })
+  .refine((v) => v.storageState != null || v.state != null, {
+    message: '请提供 storageState 或 state',
+  })
+  .transform((v) => ({
+    storageState: (v.storageState ?? v.state)!,
+  }))
+export type ImportStorageStateBody = z.infer<typeof importStorageStateBodySchema>
+

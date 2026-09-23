@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DEV_CREDENTIAL_KEY, DEV_INTERNAL_AUTH_SECRET, workerEnvSchema } from '../env.js'
 import {
   DEFAULT_SESSION_AUTH_WAIT_SECONDS,
+  DEFAULT_UNATTENDED_AUTH_TIMEOUT_SECONDS,
   DEFAULT_SESSION_IDLE_TTL_SECONDS,
   DEFAULT_SESSION_LEASE_TTL_SECONDS,
   DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
@@ -152,6 +153,7 @@ describe('resolveSessionPolicy', () => {
     expect(DEFAULT_SESSION_MAX_LIFETIME_SECONDS).toBe(env.CAIRN_SESSION_MAX_LIFETIME_SECONDS)
     expect(DEFAULT_SESSION_LEASE_TTL_SECONDS).toBe(env.CAIRN_SESSION_LEASE_TTL_SECONDS)
     expect(DEFAULT_SESSION_AUTH_WAIT_SECONDS).toBe(env.CAIRN_SESSION_AUTH_WAIT_SECONDS)
+    expect(DEFAULT_UNATTENDED_AUTH_TIMEOUT_SECONDS).toBe(env.CAIRN_SESSION_UNATTENDED_AUTH_TIMEOUT_SECONDS)
     expect(DEFAULT_SESSION_REUSE_POLICY).toBe('NEW_PAGE')
     expect(DEFAULT_SESSION_POLICY).toEqual({
       reuse: 'NEW_PAGE',
@@ -159,12 +161,16 @@ describe('resolveSessionPolicy', () => {
       maxLifetimeSeconds: env.CAIRN_SESSION_MAX_LIFETIME_SECONDS,
       leaseTtlSeconds: env.CAIRN_SESSION_LEASE_TTL_SECONDS,
       authWaitSeconds: env.CAIRN_SESSION_AUTH_WAIT_SECONDS,
+      unattendedAuthTimeoutSeconds: env.CAIRN_SESSION_UNATTENDED_AUTH_TIMEOUT_SECONDS,
+      notifyOnAuthWait: true,
       reclaim: 'IDLE',
       keepAliveSeconds: 3600,
       authProbeIntervalSeconds: 900,
       evictionPriority: 0,
       lostDisposition: 'MANUAL',
       accountSessionMode: 'exclusive',
+      notifyOnAuthWait: true,
+      unattendedAuthTimeoutSeconds: 120,
     })
   })
 

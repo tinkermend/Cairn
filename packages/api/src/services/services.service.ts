@@ -22,6 +22,7 @@ import type {
   ServiceWebhookDeliveryQuery,
   ServiceWebhookWrite,
   ServicePlaygroundRunBody,
+  ExternalToolCall,
 } from "@cairn/shared";
 import type { ObjectStore } from "@cairn/storage";
 import { DB_HANDLE } from "../db/db.module";
@@ -289,4 +290,105 @@ export class ServicesService {
       .catch(rethrowDomain);
     return { body: file.body, contentType: object.contentType! };
   }
+
+  async tools(actor: ServicePrincipal, q: ServicePageQuery) {
+    const catalog = await repository
+      .serviceToolsCatalog(this.db, actor, q)
+      .catch(rethrowDomain);
+    return {
+      revision: 1,
+      principalScopeDigest: actor.id,
+      items: catalog.items,
+      nextCursor: catalog.nextCursor,
+    };
+  }
+
+  async tool(actor: ServicePrincipal, toolKey: string) {
+    const catalog = await repository
+      .serviceToolsCatalog(this.db, actor, { limit: 1 }, toolKey)
+      .catch(rethrowDomain);
+    const item = catalog.items[0];
+    if (!item) {
+      throw new NotFoundException(`工具「${toolKey}」不存在或未授权`);
+    }
+    return item;
+  }
+
+  async callTool(
+    actor: ServicePrincipal,
+    toolKey: string,
+    body: ExternalToolCall,
+    requestId: string,
+  ): Promise<{ sync: boolean; data: any }> {
+    const descriptor = await this.tool(actor, toolKey);
+    const scenarioId = (descriptor as any).scenarioId;
+    const scenarioVersionId = (descriptor as any).scenarioVersionId;
+
+    const runBody: ExternalRunBody = {
+      scenarioId,
+      scenarioVersionId,
+      targetAccountId: body.targetAccountId,
+      input: body.arguments as any,
+      idempotencyKey: body.requestKey,
+    };
+
+    const createResult = await this.create(actor, runBody, requestId);
+    const run = createResult.detail;
+
+    // 显式指定 async 或异步模式
+    if (body.async) {
+      return {
+        sync: false,
+        data: {
+          callId: run.id,
+          runId: run.id,
+          status: 'ACCEPTED',
+          pollUrl: `/open/v1/runs/${run.id}`,
+          sseStreamUrl: `/open/v1/runs/${run.id}/events`,
+          createdAt: run.createdAt,
+        },
+      };
+    }
+
+    // 同步等待：最多轮询 30 秒 (以防 HTTP 网关 504 超时)
+    const start = Date.now();
+    const timeoutMs = Number(process.env.CAIRN_TOOL_CALL_TIMEOUT_MS || 30_000);
+    const pollIntervalMs = Math.min(500, Math.max(10, Math.floor(timeoutMs / 10)));
+    let currentRun = run;
+
+    while (Date.now() - start < timeoutMs) {
+      if (['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(currentRun.status)) {
+        return {
+          sync: true,
+          data: {
+            callId: currentRun.id,
+            runId: currentRun.id,
+            statusRefs: { runId: currentRun.id },
+            executionStatus: currentRun.status,
+            outcomeStatus: (currentRun as any).outcomeStatus ?? 'UNKNOWN',
+            evidenceStatus: currentRun.evidenceStatus ?? 'PENDING',
+            output: (currentRun as any).output ?? {},
+            unknowns: [],
+          },
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      currentRun = await this.run(actor, run.id);
+    }
+
+    // 超时 30s 自动转为异步持久化句柄 202
+    return {
+      sync: false,
+      data: {
+        callId: currentRun.id,
+        runId: currentRun.id,
+        status: 'RUNNING',
+        pollUrl: `/open/v1/runs/${currentRun.id}`,
+        sseStreamUrl: `/open/v1/runs/${currentRun.id}/events`,
+        createdAt: currentRun.createdAt,
+      },
+    };
+  }
 }
+

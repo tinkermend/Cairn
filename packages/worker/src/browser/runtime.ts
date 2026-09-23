@@ -32,6 +32,7 @@ import {
   solveChallenge,
   type LoginAttemptResult,
 } from './captcha/index.js'
+import { generateTotp } from './totp.js'
 
 const occupancy = new AsyncLocalStorage<SessionGrant>()
 
@@ -101,6 +102,7 @@ export type LaunchSessionOpts = {
   headless: boolean
   executablePath?: string
   viewport?: { width: number; height: number } | null
+  storageState?: unknown
 }
 
 export type BrowserHandle = {
@@ -115,6 +117,7 @@ export type TargetAuthInfo = {
   loginFields?: {
     username?: { by: 'id' | 'name' | 'css'; value: string }
     password?: { by: 'id' | 'name' | 'css'; value: string }
+    totp?: { by: 'id' | 'name' | 'css'; value: string }
     submit?: { by: 'id' | 'name' | 'css'; value: string }
   } | null
   captchaMode?: string
@@ -228,7 +231,7 @@ async function inferSubmitNearPassword(page: Page, password: Locator): Promise<L
 export async function resolveLoginFieldsOnPage(
   page: Page,
   fields?: TargetLoginFields | null,
-): Promise<{ username: Locator; password: Locator; submit: Locator } | null> {
+): Promise<{ username: Locator; password: Locator; submit: Locator; totp?: Locator } | null> {
   const password = await firstVisibleLoginLocator(page, loginLocatorCandidates('password', fields?.password))
   if (!password) return null
   const username =
@@ -238,7 +241,8 @@ export async function resolveLoginFieldsOnPage(
     (await firstVisibleLoginLocator(page, loginLocatorCandidates('submit', fields?.submit))) ??
     (fields?.submit ? null : await inferSubmitNearPassword(page, password))
   if (!username || !submit) return null
-  return { username, password, submit }
+  const totp = (await firstVisibleLoginLocator(page, loginLocatorCandidates('totp', fields?.totp))) ?? undefined
+  return { username, password, submit, totp }
 }
 
 async function waitForLoginForm(
@@ -260,6 +264,37 @@ function cssEscape(value: string): string {
 
 function cssEscapeAttr(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+export async function injectStorageState(
+  context: BrowserContext,
+  storageState?: unknown,
+): Promise<void> {
+  if (!storageState || typeof storageState !== 'object') return
+  const raw = storageState as {
+    cookies?: Array<{ name: string; value: string; domain?: string; path?: string; [key: string]: unknown }>
+    origins?: Array<{ origin: string; localStorage: Array<{ name: string; value: string }> }>
+  }
+  if (Array.isArray(raw.cookies) && raw.cookies.length > 0) {
+    await context.addCookies(raw.cookies as any).catch(() => {})
+  }
+  if (Array.isArray(raw.origins) && raw.origins.length > 0) {
+    for (const originEntry of raw.origins) {
+      if (!originEntry.origin || !Array.isArray(originEntry.localStorage)) continue
+      const origin = originEntry.origin
+      const entries = originEntry.localStorage
+      await context
+        .addInitScript(
+          `if (window.location.origin === ${JSON.stringify(origin)}) {
+            const items = ${JSON.stringify(entries)};
+            for (const item of items) {
+              try { window.localStorage.setItem(item.name, item.value); } catch (_) {}
+            }
+          }`,
+        )
+        .catch(() => {})
+    }
+  }
 }
 
 export async function launchSession(
@@ -285,6 +320,9 @@ export async function launchSession(
       serviceWorkers: 'block',
       viewport: opts.viewport !== undefined ? (opts.viewport ?? undefined) : DEFAULT_MANAGED_VIEWPORT,
     })
+    if (opts.storageState) {
+      await injectStorageState(context, opts.storageState)
+    }
     const basePage = context.pages()[0] ?? (await context.newPage())
     return { context, basePage, profileDir }
   } catch (error) {
@@ -494,7 +532,7 @@ export async function probeAuth(
 export async function attemptLoginCredentials(
   handle: BrowserHandle,
   target: TargetAuthInfo,
-  credential: { username: string; password: string },
+  credential: { username: string; password: string; totpSecret?: string },
   timeoutMs = 30_000,
   beforeAction?: () => void | Promise<void>,
 ): Promise<LoginAttemptResult> {
@@ -540,6 +578,11 @@ export async function attemptLoginCredentials(
       await user.fill(credential.username)
       await authorize()
       await resolved.password.fill(credential.password)
+      if (resolved.totp && credential.totpSecret) {
+        await authorize()
+        const code = generateTotp(credential.totpSecret)
+        await resolved.totp.fill(code)
+      }
       const preChallenge = await waitForLoginChallenge(handle.basePage, target, Math.min(8_000, timeoutMs))
       if (preChallenge) {
         const outcome = await solveChallenge(handle.basePage, preChallenge, solveOptions)
@@ -566,6 +609,23 @@ export async function attemptLoginCredentials(
       }
 
       await handle.basePage.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => {})
+
+      if (credential.totpSecret) {
+        const postTotp = await firstVisibleLoginLocator(handle.basePage, loginLocatorCandidates('totp', fields?.totp))
+        if (postTotp && (await postTotp.isVisible().catch(() => false))) {
+          await authorize()
+          const code = generateTotp(credential.totpSecret)
+          await postTotp.fill(code)
+          const postSubmit = await firstVisibleLoginLocator(handle.basePage, loginLocatorCandidates('submit', fields?.submit))
+          if (postSubmit && (await postSubmit.isVisible().catch(() => false))) {
+            await postSubmit.click().catch(() => postTotp.press('Enter'))
+          } else {
+            await postTotp.press('Enter').catch(() => {})
+          }
+          await handle.basePage.waitForTimeout(400)
+          await handle.basePage.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => {})
+        }
+      }
       const leftLogin = await waitUntilLeftLogin(handle.basePage, loginUrl, target.entryUrl, leaveLoginMs)
       if (leftLogin || (await inspectAuthOnPage(handle.basePage, target)) === 'AUTHENTICATED') {
         return { authenticated: true, submit: 'authenticated' }
@@ -595,7 +655,7 @@ export async function attemptLoginCredentials(
 export async function submitLoginCredentials(
   handle: BrowserHandle,
   target: TargetAuthInfo,
-  credential: { username: string; password: string },
+  credential: { username: string; password: string; totpSecret?: string },
   timeoutMs = 30_000,
   beforeAction?: () => void | Promise<void>,
 ): Promise<boolean> {
@@ -633,7 +693,7 @@ export async function confirmSubmittedLogin(
 export async function attemptLoginWithCredentials(
   handle: BrowserHandle,
   target: TargetAuthInfo,
-  credential: { username: string; password: string },
+  credential: { username: string; password: string; totpSecret?: string },
   beforeAction?: () => void | Promise<void>,
 ): Promise<LoginAttemptResult> {
   requireOccupancy('loginWithCredentials')
@@ -648,7 +708,7 @@ export async function attemptLoginWithCredentials(
 export async function loginWithCredentials(
   handle: BrowserHandle,
   target: TargetAuthInfo,
-  credential: { username: string; password: string },
+  credential: { username: string; password: string; totpSecret?: string },
   beforeAction?: () => void | Promise<void>,
 ): Promise<boolean> {
   requireOccupancy('loginWithCredentials')

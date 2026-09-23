@@ -1,12 +1,14 @@
 import {
-  advanceBatch,
+  dispatchBatch,
   completeMapJobSlice,
   loadRunDetail,
   loadRunRow,
   onRunSettledForBatch,
   projectModuleInvocationResults,
+  settleModuleCaseResult,
   settleRunEvidence,
   settleRunOutcome,
+  settleRunOutput,
   type DbHandle,
 } from '@cairn/db'
 import {
@@ -33,6 +35,8 @@ const SETTLER_WARN: Record<string, string> = {
   mapJob: '地图作业分片收尾失败',
   moduleResults: '模块调用结果投影失败',
   outcomeResults: '结果轴收尾聚合失败',
+  output: '业务输出收尾聚合失败',
+  moduleCaseResult: '模块用例结果结算失败',
   batchItem: '批量任务项状态收尾失败',
 }
 
@@ -86,6 +90,24 @@ export const RUN_SETTLERS: readonly RunSettler[] = [
     },
     async settle(db, runId, row) {
       await settleRunOutcome(db, runId, row)
+    },
+  },
+  {
+    name: 'output',
+    applies(row) {
+      return Boolean(row && isHaltedRunStatus(row.status))
+    },
+    async settle(db, runId, row) {
+      await settleRunOutput(db, runId, row)
+    },
+  },
+  {
+    name: 'moduleCaseResult',
+    applies(row) {
+      return Boolean(row && isHaltedRunStatus(row.status))
+    },
+    async settle(db, runId) {
+      await settleModuleCaseResult(db, runId)
     },
   },
   {
@@ -148,7 +170,7 @@ export const RUN_SETTLERS: readonly RunSettler[] = [
       })
 
       if (settled?.batchStatus === 'RUNNING') {
-        await advanceBatch(db, settled.batchId).catch(() => {})
+        await dispatchBatch(db, settled.batchId)
       }
     },
   },

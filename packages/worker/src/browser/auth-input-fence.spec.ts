@@ -47,12 +47,13 @@ const token = 'review-token-old'
 function rig(options?: { holdSerial?: boolean }) {
   let release!: () => void
   const insertText = vi.fn(async () => undefined)
+  const press = vi.fn(async () => undefined)
   const page = {
     isClosed: () => false,
     viewportSize: () => ({ width: 1280, height: 720 }),
     url: () => 'https://shop.example.com/login',
     locator: () => ({ count: async () => 0 }),
-    keyboard: { insertText },
+    keyboard: { insertText, press },
   }
   const session = {
     id: sessionId,
@@ -107,7 +108,7 @@ function rig(options?: { holdSerial?: boolean }) {
     frameId: 'test-frame',
     viewport: { width: 1280, height: 720 },
   }
-  return { manager, live, command, release, insertText }
+  return { manager, live, command, release, insertText, press }
 }
 
 describe('认证输入 fencing', () => {
@@ -156,5 +157,36 @@ describe('认证输入 fencing', () => {
     await expect(resume).rejects.toMatchObject({ code: 'AUTH_NOT_VERIFIED' })
     expect(r.live.inputAccepting).toBe(true)
     expect(r.insertText).not.toHaveBeenCalled()
+  })
+
+  it('支持无 Run 的直接会话受控输入', async () => {
+    const r = rig()
+    state.run = { status: 'RUNNING', snapshot: {} }
+    state.session.status = 'OPEN'
+    const input = { runId: sessionId, actorId, token, command: r.command }
+    const res = await r.manager.inputRunAuthControl(input)
+    expect(res.status).toBe('accepted')
+    expect(r.insertText).toHaveBeenCalledTimes(1)
+  })
+
+  it('支持 PageUp/PageDown 等翻页导航按键输入', async () => {
+    const r = rig()
+    const pageDownCommand = {
+      type: 'key' as const,
+      key: 'PageDown' as const,
+      commandId: '00000000-0000-4000-8000-000000000006',
+      seq: 2,
+      pageRef: { sessionId, sessionGeneration: 1, pageId, documentEpoch: 1 },
+      frameId: 'test-frame',
+      viewport: { width: 1280, height: 720 },
+    }
+    const res = await r.manager.inputRunAuthControl({
+      runId,
+      actorId,
+      token,
+      command: pageDownCommand,
+    })
+    expect(res.status).toBe('accepted')
+    expect(r.press).toHaveBeenCalledWith('PageDown')
   })
 })

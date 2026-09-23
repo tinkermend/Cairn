@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { loadTargetForExecution, resolveFixtureForRun, type DbHandle } from '@cairn/db'
 import {
@@ -33,6 +32,14 @@ import {
   runFileWorkspaceDir,
   runFileWorkspaceDownloadDir,
 } from './run-file-workspace.js'
+import {
+  UPLOAD_MAX_BYTES,
+  authorizeFixtureHandle,
+  authorizeRunHandle,
+  mapFixtureResolveError,
+  materializeAuthorizedObject,
+  uploadFailure,
+} from './upload-object.js'
 import type {
   StepExecutionContext,
   StepExecutionOutcome,
@@ -197,8 +204,13 @@ export class BrowserStepExecutor implements StepExecutor {
       const fileName = safeDownloadFileName(rawFileName)
 
       // 1. expect 校验
-      if (step.input.expect) {
-        const { fileNamePattern, minBytes } = step.input.expect
+      const input = ctx.input
+      const expect =
+        input && typeof input === 'object' && !Array.isArray(input) && 'expect' in input && (input as any).expect !== undefined
+          ? (input as any).expect
+          : step.input.expect
+      if (expect) {
+        const { fileNamePattern, minBytes } = expect
         if (minBytes !== undefined && fileStat.size < minBytes) {
           await rm(downloadPath, { force: true }).catch(() => undefined)
           return {
@@ -401,12 +413,16 @@ export class BrowserStepExecutor implements StepExecutor {
 
     if (step.type === 'assert') {
       const target = descriptorFrom(input) ?? step.input.target
+      const expect =
+        input && typeof input === 'object' && !Array.isArray(input) && 'expect' in input && (input as any).expect !== undefined
+          ? (input as any).expect
+          : step.input.expect
       return {
         ok: true,
         command: {
           type: 'assert',
           ...(target ? { target } : {}),
-          expect: step.input.expect,
+          expect,
         },
       }
     }
@@ -514,73 +530,34 @@ export class BrowserStepExecutor implements StepExecutor {
               targetId,
               digest: item.digest,
             })
-          } catch (err: any) {
-            const code = err?.code ?? 'FIXTURE_NOT_FOUND'
-            if (code === 'FIXTURE_DIGEST_MISMATCH') {
-              return {
-                ok: false,
-                error: {
-                  code: 'FIXTURE_DIGEST_MISMATCH',
-                  category: 'VALIDATION',
-                  retryable: false,
-                  safeMessage: err.message || '测试夹具摘要校验失败',
-                },
-              }
-            }
-            if (code === 'FIXTURE_NOT_AVAILABLE') {
-              return {
-                ok: false,
-                error: {
-                  code: 'FILE_OBJECT_UNAVAILABLE',
-                  category: 'INFRASTRUCTURE',
-                  retryable: true,
-                  safeMessage: err.message || '测试夹具文件不可用',
-                },
-              }
-            }
-            return {
-              ok: false,
-              error: {
-                code: 'FIXTURE_NOT_FOUND',
-                category: 'VALIDATION',
-                retryable: false,
-                safeMessage: err.message || `测试夹具不存在或不属于当前 Target：${fixtureId}`,
-              },
-            }
+          } catch (err) {
+            return mapFixtureResolveError(err, fixtureId)
           }
 
           const cleanName = safeDownloadFileName(item.name ?? fixtureHandle.name)
           const localPath = join(fixtureDir, `${fixtureId}-${cleanName}`)
-
-          if (!existsSync(localPath)) {
-            if (this.objects) {
-              try {
-                const res = await this.objects.objectStore().get(fixtureHandle.objectKey)
-                await writeFile(localPath, res.body)
-              } catch (err) {
-                return {
-                  ok: false,
-                  error: {
-                    code: 'FILE_OBJECT_UNAVAILABLE',
-                    category: 'INFRASTRUCTURE',
-                    retryable: true,
-                    safeMessage: `获取夹具存储对象失败：${err instanceof Error ? err.message : String(err)}`,
-                  },
-                }
-              }
-            } else {
-              await writeFile(localPath, Buffer.alloc(0))
-            }
-          }
-
-          const byteSize = fixtureHandle.byteSize
-          totalBytes += byteSize
-          resolvedFiles.push({
+          const materialized = await materializeAuthorizedObject({
+            objects: this.objects,
+            blob: {
+              objectKey: fixtureHandle.objectKey,
+              byteSize: fixtureHandle.byteSize,
+              digest: fixtureHandle.digest,
+              mimeType: fixtureHandle.mimeType,
+              name: cleanName,
+            },
             localPath,
+            downloadDir: runFileWorkspaceDownloadDir(runId),
+            cleanName,
+            maxBytes: UPLOAD_MAX_BYTES - totalBytes,
+          })
+          if (!materialized.ok) return materialized
+          totalBytes += fixtureHandle.byteSize
+          resolvedFiles.push({
+            localPath: materialized.localPath,
             name: cleanName,
             mimeType: fixtureHandle.mimeType,
             digest: fixtureHandle.digest,
-            byteSize,
+            byteSize: fixtureHandle.byteSize,
           })
         } else if (item.source === 'context') {
           let handle: RunFileHandle | undefined = item.handle
@@ -658,18 +635,24 @@ export class BrowserStepExecutor implements StepExecutor {
                   }
 
                   const localPath = join(contextDir, `${digest.slice(0, 8)}-${cleanName}`)
+                  if (buf.byteLength > UPLOAD_MAX_BYTES - totalBytes) {
+                    return uploadFailure(
+                      'UPLOAD_PAYLOAD_TOO_LARGE',
+                      'VALIDATION',
+                      false,
+                      `上传文件总大小 ${totalBytes + buf.byteLength} 超过 64MB 限制`,
+                    )
+                  }
                   await writeFile(localPath, buf)
-
-                  handle = {
-                    kind: 'cairn.file/v1',
-                    scope: 'fixture',
-                    objectKey: `ephemeral/${digest}`,
-                    digest,
+                  totalBytes += buf.byteLength
+                  resolvedFiles.push({
+                    localPath,
                     name: cleanName,
                     mimeType,
+                    digest,
                     byteSize: buf.byteLength,
-                    createdAt: new Date().toISOString(),
-                  }
+                  })
+                  continue
                 } catch (err: unknown) {
                   return {
                     ok: false,
@@ -697,62 +680,39 @@ export class BrowserStepExecutor implements StepExecutor {
             }
           }
 
-          if (handle.scope === 'run' && ctx?.runId && handle.runId !== ctx.runId) {
-            return {
-              ok: false,
-              error: {
-                code: 'FILE_HANDLE_FOREIGN_RUN',
-                category: 'VALIDATION',
-                retryable: false,
-                safeMessage: `文件句柄所属 Run「${handle.runId}」与当前 Run「${ctx.runId}」不一致`,
-              },
-            }
-          }
+          const runScoped = Boolean(ctx?.runId)
+          const authorized = handle.scope === 'fixture'
+            ? await authorizeFixtureHandle(this.handle, { targetId, file: handle })
+            : runScoped
+              ? await authorizeRunHandle(this.handle, { runId: ctx!.runId, file: handle })
+              : uploadFailure('FILE_HANDLE_INVALID', 'VALIDATION', false, '当前步骤没有 Run，不能解析文件句柄')
+          if (!authorized.ok) return authorized
 
-          const cleanName = safeDownloadFileName(item.name ?? handle.name)
-          let localPath = ''
-          const downloadDir = runFileWorkspaceDownloadDir(runId)
-          const downloadFiles = await readdir(downloadDir).catch(() => [])
-          const matchedDownload = downloadFiles.find((f) => f.endsWith(`-${cleanName}`) || f === cleanName)
-          if (matchedDownload) {
-            localPath = join(downloadDir, matchedDownload)
-          } else {
-            localPath = join(contextDir, `${handle.digest.slice(0, 8)}-${cleanName}`)
-            if (!existsSync(localPath)) {
-              if (this.objects) {
-                try {
-                  const res = await this.objects.objectStore().get(handle.objectKey)
-                  await writeFile(localPath, res.body)
-                } catch (err) {
-                  return {
-                    ok: false,
-                    error: {
-                      code: 'FILE_OBJECT_UNAVAILABLE',
-                      category: 'INFRASTRUCTURE',
-                      retryable: true,
-                      safeMessage: `获取上下文引用的文件对象失败：${err instanceof Error ? err.message : String(err)}`,
-                    },
-                  }
-                }
-              } else {
-                await writeFile(localPath, Buffer.alloc(0))
-              }
-            }
-          }
-
-          const byteSize = handle.byteSize
-          totalBytes += byteSize
-          resolvedFiles.push({
+          const cleanName = safeDownloadFileName(item.name ?? authorized.blob.name)
+          const localPath = handle.scope === 'fixture' && handle.fixtureId
+            ? join(fixtureDir, `${handle.fixtureId}-${cleanName}`)
+            : join(contextDir, `${authorized.blob.digest.slice(0, 8)}-${cleanName}`)
+          const materialized = await materializeAuthorizedObject({
+            objects: this.objects,
+            blob: authorized.blob,
             localPath,
+            downloadDir: runFileWorkspaceDownloadDir(runId),
+            cleanName,
+            maxBytes: UPLOAD_MAX_BYTES - totalBytes,
+          })
+          if (!materialized.ok) return materialized
+          totalBytes += authorized.blob.byteSize
+          resolvedFiles.push({
+            localPath: materialized.localPath,
             name: cleanName,
-            mimeType: handle.mimeType,
-            digest: handle.digest,
-            byteSize,
+            mimeType: authorized.blob.mimeType,
+            digest: authorized.blob.digest,
+            byteSize: authorized.blob.byteSize,
           })
         }
       }
 
-      if (totalBytes > 64 * 1024 * 1024) {
+      if (totalBytes > UPLOAD_MAX_BYTES) {
         return {
           ok: false,
           error: {

@@ -837,6 +837,8 @@ function actionsFor(
     status === 'needs_check' ||
     status === 'needs_login' ||
     status === 'identity_mismatch'
+  const canClose = idle || status === 'maintenance'
+  const canRestart = idle || status === 'maintenance'
   const canPrepare = liveCount < effectiveCap
   const verifyReason = !detectionReady
     ? '未配置主动检测，将在下次使用时按登录页判断'
@@ -878,8 +880,8 @@ function actionsFor(
       enabled: idle && !retained,
       disabledReason: idle ? (retained ? '已在保留中' : null) : '需要空闲实例',
     },
-    { kind: 'CLOSE', enabled: idle, disabledReason: idle ? null : '仅空闲实例可关闭' },
-    { kind: 'RESTART', enabled: idle, disabledReason: idle ? null : '仅空闲实例可重启' },
+    { kind: 'CLOSE', enabled: canClose, disabledReason: canClose ? null : '仅空闲或维护中实例可关闭' },
+    { kind: 'RESTART', enabled: canRestart, disabledReason: canRestart ? null : '仅空闲或维护中实例可重启' },
     {
       kind: 'RESET_PROFILE',
       enabled: idle || status === 'unprepared',

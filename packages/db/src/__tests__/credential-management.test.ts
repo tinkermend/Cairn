@@ -47,6 +47,7 @@ describe.each(DRIVERS)('%s 账号凭据管理闭环', (driver: ContractDriver) =
     expect((await api.getCredential(db, account.id, operator)).capabilities.canReplace).toBe(true)
     expect((await api.getCredential(db, b.id, operator)).capabilities.canReplace).toBe(false)
     expect((await targets.listTargets({}, operator)).items).toHaveLength(2)
+    expect((await targets.listTargets({ search: '001alice' }, operator)).items).toHaveLength(2)
     expect((await targets.listTargets({ credentialAction: 'write' }, operator)).items.map(i => i.id)).toEqual([target.id])
     await expect(targets.updateAccount(other.id, b.id, { password: 'nope', validity: { mode: 'permanent' } }, operator)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
     await expect(targets.updateAccount(target.id, account.id, { displayName: '不允许修改身份' }, operator)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })

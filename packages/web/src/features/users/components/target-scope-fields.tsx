@@ -61,8 +61,6 @@ export function TargetScopeFields({
   const credentialRead = scopeFor('credential:read')
   const effective = (permission: string) => {
     const scopes = [read, credentialRead, scopeFor(permission)]
-    if (permission === 'credential:import')
-      scopes.push(scopeFor('credential:write'))
     const constrained = scopes.filter((scope) => !scope.all)
     if (!constrained.length) return '全部目标系统'
     const ids = [...constrained[0]!.ids].filter((id) =>
@@ -190,7 +188,6 @@ export function TargetScopeFields({
         <p>查看：{effective('credential:read')}</p>
         <p>维护：{effective('credential:write')}</p>
         <p>删除：{effective('credential:delete')}</p>
-        <p>Excel 导入：{effective('credential:import')}</p>
       </div>
     </section>
   )

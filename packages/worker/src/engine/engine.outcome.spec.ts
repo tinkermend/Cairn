@@ -454,6 +454,7 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
       provenance: 'manual',
       rule: {
         kind: 'deterministic',
+        target: { framePath: [], candidates: [{ by: 'css', value: 'body' }] },
         expect: { kind: 'text_equals', value: '告警' },
       },
     }
@@ -531,6 +532,7 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
       provenance: 'manual',
       rule: {
         kind: 'deterministic',
+        target: { framePath: [], candidates: [{ by: 'css', value: 'body' }] },
         expect: { kind: 'text_equals', value: 'ok' },
       },
     }
@@ -589,6 +591,7 @@ describe('ExecutionEngine 结果轴与巡检集成', { timeout: 30_000 }, () => 
       provenance: 'manual',
       rule: {
         kind: 'deterministic',
+        target: { framePath: [], candidates: [{ by: 'css', value: 'body' }] },
         expect: { kind: 'text_equals', value: 'connected' },
       },
     }

@@ -72,9 +72,9 @@ function frame(overrides: Partial<CapturedFrame> & Pick<CapturedFrame, 'sourceSe
 }
 
 describe('run-video', () => {
-  it('领取后先起录像再 ensureAuth，认证等待也能录', () => {
+  it('会话就绪或转入认证等待时按需起录像，避免前置空白', () => {
     const claim = readFileSync(resolve(import.meta.dirname, 'session-claim.ts'), 'utf8')
-    expect(claim.indexOf('await this.startVideoForLease')).toBeLessThan(claim.indexOf('const auth = await this.ensureAuth'))
+    expect(claim.indexOf('await this.startVideoForLease')).toBeGreaterThan(claim.indexOf('const auth = await this.ensureAuth'))
     expect(claim).toContain('this.rebindVideoForLease(occupancy.leaseId, waitGrant.leaseId)')
     expect(claim).toContain('await this.startVideoForLease(waitGrant.leaseId, session.id, snapshot)')
   })

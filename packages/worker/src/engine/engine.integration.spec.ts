@@ -885,6 +885,7 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       idempotencyKey: newId(),
       expectedRevision: 1,
       actor: { id: actorId },
+      skipReleaseGate: true,
     })
     const moduleVersionId = (await listActionModuleVersions(handle.db, createdModule.id)).items[0]!.id
 
@@ -934,8 +935,9 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
       actor: { id: actorId },
     })
     expect(created.detail.snapshot.moduleManifest?.entries).toHaveLength(1)
-    expect(created.detail.snapshot.steps).toHaveLength(1)
+    expect(created.detail.snapshot.steps).toHaveLength(2)
     expect(created.detail.snapshot.steps[0]?.effectType).toBe('READ_ONLY')
+    expect(created.detail.snapshot.steps[1]?.type).toBe('verify_context')
 
     const oldWorkerId = `eng-old-${SCHEMA.slice(-8)}`
     const oldInstanceId = newId()
@@ -960,11 +962,13 @@ describe('ExecutionEngine（集成）', { timeout: 30_000 }, () => {
     const detail = await getRun(handle.db, created.detail.id)
     expect(detail.status).toBe('SUCCEEDED')
     expect(detail.context.mod_out).toBe('hello-mod')
-    expect(detail.stepRuns).toHaveLength(1)
+    expect(detail.stepRuns).toHaveLength(2)
     expect(detail.stepRuns[0]?.status).toBe('SUCCEEDED')
+    expect(detail.stepRuns[1]?.status).toBe('SUCCEEDED')
     expect(detail.snapshot.moduleManifest?.entries[0]?.moduleKey).toBe('worker.echo')
     expect(detail.snapshot.moduleManifest?.entries[0]?.expandedStepIds).toEqual([
       detail.stepRuns[0]?.stepId,
+      detail.stepRuns[1]?.stepId,
     ])
   })
 

@@ -181,7 +181,7 @@ describe('SessionSystemPage', () => {
     await expect.element(screen.getByText('尚未准备')).toBeInTheDocument()
     const closeButtons = document.querySelectorAll('button')
     const closeLabels = [...closeButtons].map((button) => button.textContent)
-    expect(closeLabels.filter((label) => label === '关闭会话')).toHaveLength(1)
+    expect(closeLabels.filter((label) => label === '关闭会话')).toHaveLength(2)
     await expect.element(screen.getByRole('button', { name: '处置失联' })).toBeEnabled()
     await screen.getByRole('button', { name: '处置失联' }).click()
     expect(mocks.disposeWorkerSession).toHaveBeenCalledWith(LOST_SESSION_ID, {

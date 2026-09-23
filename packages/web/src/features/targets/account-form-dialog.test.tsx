@@ -40,6 +40,8 @@ describe('AccountFormDialog', () => {
             displayName: '值班',
             username: 'ops',
             hasPassword: true,
+            hasTotp: false,
+            hasStorageState: false,
             status: 'active',
             usage: 'business',
             maxConcurrentSessions: 3,
@@ -52,4 +54,21 @@ describe('AccountFormDialog', () => {
     await expect.element(screen.getByLabelText('最大并发会话')).toBeInTheDocument()
     await expect.element(screen.getByText(/当前活会话 2 \/ 上限 3/)).toBeInTheDocument()
   })
+
+  it('支持 defaultUsername 预填登录名与显示名', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <AccountFormDialog
+          open
+          onOpenChange={vi.fn()}
+          targetId='target-1'
+          defaultUsername='assistant_bot'
+        />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByLabelText('登录名')).toHaveValue('assistant_bot')
+    await expect.element(screen.getByLabelText('显示名')).toHaveValue('assistant_bot')
+  })
 })
+

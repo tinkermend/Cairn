@@ -58,6 +58,7 @@ import {
   settleTargetCleanups,
   settleRunCleanups,
   sweepDriftedRuns,
+  sweepStrandedBatches,
   yieldUnfinishedRun,
   loadRunRow,
   DomainError,
@@ -89,6 +90,7 @@ import {
 } from "@cairn/shared";
 import type { LocalSecretProvider } from "@cairn/secret";
 import { executeAnalysisJob } from './analysis-executor.js';
+import { processReliabilityIncrement } from '../reliability/index.js';
 import {
   BrowserSessionManager,
   SECRET_PROVIDER,
@@ -163,6 +165,8 @@ export class LifecycleService
   private scheduleTick: NodeJS.Timeout | undefined;
   private analysisTick: NodeJS.Timeout | undefined;
   private analysisTask: Promise<void> | undefined;
+  private reliabilityTick: NodeJS.Timeout | undefined;
+  private reliabilityTask: Promise<void> | undefined;
   private heartbeatTick: NodeJS.Timeout | undefined;
   private cleanupTick: NodeJS.Timeout | undefined;
   private reaperTick: NodeJS.Timeout | undefined;
@@ -248,7 +252,10 @@ export class LifecycleService
         this.sessions.startHeartbeat();
       }
       if (roles.scheduler) this.startScheduling();
-      if (roles.analyst) this.startAnalysis();
+      if (roles.analyst) {
+        this.startAnalysis();
+        this.startReliability();
+      }
       // 先确认本代心跳写得进去，再领取。启动后立刻 claim 会撞上：
       // 心跳被堵住 → 判 lost → 换代，在途 PREPARE 的占用 ALS/grant 作废，操作被写成永久失败。
       await this.beat();
@@ -441,6 +448,35 @@ export class LifecycleService
     }
   }
 
+  private startReliability(): void {
+    if (this.reliabilityTick || this.shutdownCalled) return;
+    this.reliabilityTick = setInterval(() => {
+      if (!this.reliabilityTask) {
+        this.reliabilityTask = this.runReliabilityTick().finally(() => {
+          this.reliabilityTask = undefined;
+        });
+      }
+    }, timerJitter(10_000));
+    this.reliabilityTask = this.runReliabilityTick().finally(() => {
+      this.reliabilityTask = undefined;
+    });
+  }
+
+  private async runReliabilityTick(): Promise<void> {
+    if (this.stopped) return;
+    try {
+      const owner = `${config.CAIRN_WORKER_ID}:${this.instanceId}`;
+      await processReliabilityIncrement(this.handle, {
+        workerId: owner,
+      });
+    } catch (error) {
+      this.logger.warn(
+        error instanceof Error ? error.message : String(error),
+        "稳定性评估增量执行异常",
+      );
+    }
+  }
+
   private async runScheduleTick(): Promise<void> {
     if (this.stopped) return;
     try {
@@ -582,6 +618,11 @@ export class LifecycleService
       this.analysisTick = undefined;
     }
     await this.analysisTask?.catch(() => undefined);
+    if (this.reliabilityTick) {
+      clearInterval(this.reliabilityTick);
+      this.reliabilityTick = undefined;
+    }
+    await this.reliabilityTask?.catch(() => undefined);
     if (this.notificationTick) {
       clearInterval(this.notificationTick);
       this.notificationTick = undefined;
@@ -842,6 +883,17 @@ export class LifecycleService
       this.logger.warn(
         { budgetMs: config.CAIRN_REAPER_DRAIN_BUDGET_MS },
         "运行回收预算耗尽而积压仍在，本轮不刷新全局回收水位",
+      );
+    }
+    try {
+      const swept = await sweepStrandedBatches(this.handle, 10);
+      if (swept.failed > 0) {
+        this.logger.warn(swept, "有批次无法派发，已标为失败");
+      }
+    } catch (error) {
+      this.logger.error(
+        error instanceof Error ? error.message : error,
+        "批次派发维护扫描失败",
       );
     }
   }

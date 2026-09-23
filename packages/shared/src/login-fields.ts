@@ -23,11 +23,13 @@ const locatorInputSchema = z.preprocess((value) => {
 export const targetLoginFieldsObjectSchema = z.strictObject({
   username: locatorInputSchema,
   password: locatorInputSchema,
+  totp: locatorInputSchema,
   submit: locatorInputSchema,
 })
 export type TargetLoginFields = {
   username?: LoginLocator
   password?: LoginLocator
+  totp?: LoginLocator
   submit?: LoginLocator
 }
 
@@ -38,8 +40,9 @@ export function compactLoginFields(
   const next: TargetLoginFields = {}
   if (fields.username) next.username = fields.username
   if (fields.password) next.password = fields.password
+  if (fields.totp) next.totp = fields.totp
   if (fields.submit) next.submit = fields.submit
-  return next.username || next.password || next.submit ? next : null
+  return next.username || next.password || next.totp || next.submit ? next : null
 }
 
 /** GET / 持久化：始终是对象或 null。 */
@@ -47,6 +50,7 @@ export const targetLoginFieldsDtoSchema = z
   .object({
     username: loginLocatorSchema.optional(),
     password: loginLocatorSchema.optional(),
+    totp: loginLocatorSchema.optional(),
     submit: loginLocatorSchema.optional(),
   })
   .nullable()
@@ -79,6 +83,17 @@ export const LOGIN_FIELD_HEURISTICS = {
     { by: 'css', value: 'input[autocomplete="current-password"]' },
     { by: 'css', value: 'input[type="password"]' },
   ],
+  totp: [
+    { by: 'css', value: 'input[autocomplete="one-time-code"]' },
+    { by: 'css', value: 'input[name*="otp" i]' },
+    { by: 'css', value: 'input[name*="totp" i]' },
+    { by: 'css', value: 'input[name*="code" i]' },
+    { by: 'css', value: 'input[placeholder*="验证码"]' },
+    { by: 'css', value: 'input[placeholder*="动态码"]' },
+    { by: 'id', value: 'totp' },
+    { by: 'id', value: 'otp' },
+    { by: 'id', value: '2fa' },
+  ],
   submit: [
     { by: 'css', value: 'button[type="submit"]' },
     { by: 'css', value: 'input[type="submit"]' },
@@ -86,9 +101,9 @@ export const LOGIN_FIELD_HEURISTICS = {
     { by: 'id', value: 'submit' },
     { by: 'name', value: 'login' },
   ],
-} as const satisfies Record<'username' | 'password' | 'submit', readonly LoginLocator[]>
+} as const satisfies Record<'username' | 'password' | 'totp' | 'submit', readonly LoginLocator[]>
 
-export const LOGIN_FIELD_ROLES = ['username', 'password', 'submit'] as const
+export const LOGIN_FIELD_ROLES = ['username', 'password', 'totp', 'submit'] as const
 export type LoginFieldRole = (typeof LOGIN_FIELD_ROLES)[number]
 
 /** 手填定位只试用户写下的那一条；未指定才按平台常见字段顺序试。 */

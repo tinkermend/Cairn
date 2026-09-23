@@ -250,6 +250,7 @@ export function SessionDetailPage() {
           : {
               kind,
               idempotencyKey: newSessionIdempotencyKey(kind),
+              force: kind === 'CLOSE' || kind === 'RESTART',
               ...(selected
                 ? {
                     expectedSessionId: selected.id,

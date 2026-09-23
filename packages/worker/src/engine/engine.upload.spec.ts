@@ -1,14 +1,23 @@
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
+  commitStoredObject,
   commitTargetFixtureUpload,
   consoleAccounts,
+  createRunWithSnapshot,
+  createScenarioWithVersion,
   grantAdminScope,
+  newId,
   openIsolatedDb,
+  reserveStoredObject,
   reserveTargetFixtureUpload,
   targets,
   type DbHandle,
 } from '@cairn/db/testing'
 import {
+  fixtureObjectKeyFor,
+  objectKeyFor,
   resolveEvidencePolicy,
   RUN_FILE_HANDLE_KIND,
   type BrowserCommand,
@@ -17,11 +26,14 @@ import {
   type RunGrant,
   type RunSnapshot,
   type SessionGrant,
+  type Step,
   type UploadStep,
 } from '@cairn/shared'
 import { BrowserStepExecutor } from './browser-executor.js'
 import type { BrowserPort } from './ports.js'
 import type { StepExecutionContext } from './step-executor.js'
+import type { ObjectService } from '../objects/object.service.js'
+import { runFileWorkspaceDownloadDir } from './run-file-workspace.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_engup`
 
@@ -87,7 +99,62 @@ describe('BrowserStepExecutor - Upload Step', () => {
     return { id: reserved.fixtureId, ...input, digest: validDigest }
   }
 
-  function makeContext(step: UploadStep, context: Record<string, any> = {}): {
+  async function seedRunObject(input: { byteSize: number; digest: string; contentType?: string }) {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `upload-obj-${newId()}`,
+      steps: [
+        {
+          id: newId(),
+          name: '回显',
+          type: 'echo',
+          effectType: 'READ_ONLY',
+          input: { value: 'ok' },
+        } satisfies Step,
+      ],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const reserved = await reserveStoredObject(handle.db, {
+      runId: created.detail.id,
+      retainUntil: new Date(Date.now() + 86_400_000),
+    })
+    await commitStoredObject(handle.db, {
+      id: reserved.id,
+      contentType: input.contentType ?? 'application/pdf',
+      byteSize: input.byteSize,
+      digest: input.digest,
+    })
+    return { runId: created.detail.id, objectKey: reserved.objectKey, ...input }
+  }
+
+  function fakeObjects(input: {
+    probeSize: number
+    body?: Uint8Array
+    onGet?: (key: string, ranged: boolean) => void
+  }): ObjectService {
+    return {
+      objectStore: () => ({
+        get: async (key: string, options?: { start?: number; end?: number }) => {
+          input.onGet?.(key, options?.start != null || options?.end != null)
+          if (options?.start != null || options?.end != null) {
+            return {
+              head: { key, byteSize: input.probeSize, digest: '' },
+              body: new Uint8Array([0]),
+              range: { start: 0, end: 0, size: input.probeSize },
+            }
+          }
+          const body = input.body ?? new Uint8Array()
+          return { head: { key, byteSize: body.byteLength, digest: '' }, body }
+        },
+      }),
+    } as unknown as ObjectService
+  }
+
+  function makeContext(step: UploadStep, context: Record<string, any> = {}, runId = '00000000-0000-4000-8000-000000000003'): {
     ctx: StepExecutionContext
     commandsSent: BrowserCommand[]
   } {
@@ -114,7 +181,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
     }
 
     const sessionGrant: SessionGrant = {
-      runId: '00000000-0000-4000-8000-000000000003',
+      runId,
       sessionId: '00000000-0000-4000-8000-000000000004',
       leaseId: '00000000-0000-4000-8000-000000000005',
       generation: 1,
@@ -122,7 +189,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
     }
 
     const grant: RunGrant = {
-      runId: '00000000-0000-4000-8000-000000000003',
+      runId,
       leaseId: '00000000-0000-4000-8000-000000000005',
       workerId: 'worker-1',
       leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -134,7 +201,7 @@ describe('BrowserStepExecutor - Upload Step', () => {
     } as any
 
     const ctx: StepExecutionContext = {
-      runId: '00000000-0000-4000-8000-000000000003',
+      runId,
       stepRunId: '00000000-0000-4000-8000-000000000006',
       attemptId: '00000000-0000-4000-8000-000000000007',
       targetId,
@@ -275,6 +342,8 @@ describe('BrowserStepExecutor - Upload Step', () => {
   })
 
   it('resolves context file upload command from context variable handle', async () => {
+    const digest = `sha256:${'c'.repeat(64)}`
+    const seeded = await seedRunObject({ byteSize: 2048, digest })
     const step: UploadStep = {
       id: '00000000-0000-4000-8000-000000000014',
       name: '上传上下文生成的文件',
@@ -294,18 +363,18 @@ describe('BrowserStepExecutor - Upload Step', () => {
     const sampleHandle: RunFileHandle = {
       kind: RUN_FILE_HANDLE_KIND,
       scope: 'run',
-      runId: '00000000-0000-4000-8000-000000000003',
-      objectKey: 'v1/runs/00000000-0000-4000-8000-000000000003/sample-obj',
+      runId: seeded.runId,
+      objectKey: seeded.objectKey,
       name: 'invoice_123.pdf',
       mimeType: 'application/pdf',
       byteSize: 2048,
-      digest: `sha256:${'c'.repeat(64)}`,
+      digest,
       createdAt: new Date().toISOString(),
     }
 
     const { ctx, commandsSent } = makeContext(step, {
       generatedReport: sampleHandle,
-    })
+    }, seeded.runId)
 
     const executor = new BrowserStepExecutor(handle, {
       acquire: async () => ({ ok: true, grant: ctx.sessionGrant! }),
@@ -403,6 +472,268 @@ describe('BrowserStepExecutor - Upload Step', () => {
     expect(outcome.kind).toBe('failed')
     if (outcome.kind === 'failed') {
       expect(outcome.error.code).toBe('FILE_HANDLE_FOREIGN_RUN')
+    }
+  })
+
+  it('rejects a handle that rewrites runId but keeps a foreign object key', async () => {
+    const digest = `sha256:${'d'.repeat(64)}`
+    const seeded = await seedRunObject({ byteSize: 32, digest })
+    const gets: string[] = []
+    const step: UploadStep = {
+      id: '00000000-0000-4000-8000-000000000016',
+      name: '改写 runId 的句柄',
+      type: 'upload',
+      effectType: 'SIDE_EFFECT',
+      input: {
+        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        files: [{ source: 'context', from: 'stolen' }],
+      },
+    }
+    const forged: RunFileHandle = {
+      kind: RUN_FILE_HANDLE_KIND,
+      scope: 'run',
+      runId: seeded.runId,
+      objectKey: objectKeyFor('00000000-0000-4000-8000-888888888888', '00000000-0000-4000-8000-888888888889'),
+      name: 'secret.pdf',
+      mimeType: 'application/pdf',
+      byteSize: 1,
+      digest,
+      createdAt: new Date().toISOString(),
+    }
+    const { ctx } = makeContext(step, { stolen: forged }, seeded.runId)
+    const executor = new BrowserStepExecutor(
+      handle,
+      { acquire: async () => ({ ok: true, grant: ctx.sessionGrant! }), release: async () => undefined, execute: async () => ({ ok: true, output: {} }) },
+      undefined,
+      undefined,
+      fakeObjects({ probeSize: 32, onGet: (key) => gets.push(key) }),
+    )
+    const outcome = await executor.execute(ctx)
+    expect(outcome.kind).toBe('failed')
+    if (outcome.kind === 'failed') expect(outcome.error.code).toBe('FILE_HANDLE_FOREIGN_RUN')
+    expect(gets).toEqual([])
+  })
+
+  it('rejects a fixture handle from another target and ignores its object key', async () => {
+    const otherTarget = '00000000-0000-4000-8000-0000000000aa'
+    await handle.db.insert(targets).values({
+      id: otherTarget,
+      code: 'upload-other-target',
+      name: 'Other Target',
+      entryUrl: 'https://other.example',
+      loginUrl: 'https://other.example/login',
+      state: 'ACTIVE',
+      createdByConsoleAccountId: actorId,
+    })
+    const foreign = await createTestFixture({
+      targetId: otherTarget,
+      name: 'foreign.pdf',
+      digest: `sha256:${'b'.repeat(64)}`,
+    })
+    const gets: string[] = []
+    const step: UploadStep = {
+      id: '00000000-0000-4000-8000-000000000021',
+      name: '跨目标夹具',
+      type: 'upload',
+      effectType: 'SIDE_EFFECT',
+      input: {
+        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        files: [{ source: 'context', from: 'fixtureFile' }],
+      },
+    }
+    const forged: RunFileHandle = {
+      kind: RUN_FILE_HANDLE_KIND,
+      scope: 'fixture',
+      fixtureId: foreign.id,
+      objectKey: objectKeyFor('00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000099'),
+      name: 'foreign.pdf',
+      mimeType: 'application/pdf',
+      byteSize: 1,
+      digest: `sha256:${'b'.repeat(64)}`,
+      createdAt: new Date().toISOString(),
+    }
+    const { ctx } = makeContext(step, { fixtureFile: forged })
+    const executor = new BrowserStepExecutor(
+      handle,
+      { acquire: async () => ({ ok: true, grant: ctx.sessionGrant! }), release: async () => undefined, execute: async () => ({ ok: true, output: {} }) },
+      undefined,
+      undefined,
+      fakeObjects({ probeSize: 1024, onGet: (key) => gets.push(key) }),
+    )
+    const outcome = await executor.execute(ctx)
+    expect(outcome.kind).toBe('failed')
+    if (outcome.kind === 'failed') expect(outcome.error.code).toBe('FIXTURE_NOT_FOUND')
+    expect(gets).toEqual([])
+  })
+
+  it('uses the ledger key when a fixture handle supplies a different object key', async () => {
+    const digest = `sha256:${'a'.repeat(64)}`
+    const fixture = await createTestFixture({ targetId, name: 'owned.pdf', digest, byteSize: 4 })
+    const gets: Array<{ key: string; ranged: boolean }> = []
+    const step: UploadStep = {
+      id: '00000000-0000-4000-8000-000000000022',
+      name: '夹具键被替换',
+      type: 'upload',
+      effectType: 'SIDE_EFFECT',
+      input: {
+        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        files: [{ source: 'context', from: 'fixtureFile' }],
+      },
+    }
+    const swapped: RunFileHandle = {
+      kind: RUN_FILE_HANDLE_KIND,
+      scope: 'fixture',
+      fixtureId: fixture.id,
+      objectKey: objectKeyFor('00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000098'),
+      name: 'owned.pdf',
+      mimeType: 'application/pdf',
+      byteSize: 1,
+      digest,
+      createdAt: new Date().toISOString(),
+    }
+    const { ctx } = makeContext(step, { fixtureFile: swapped })
+    const executor = new BrowserStepExecutor(
+      handle,
+      { acquire: async () => ({ ok: true, grant: ctx.sessionGrant! }), release: async () => undefined, execute: async () => ({ ok: true, output: {} }) },
+      undefined,
+      undefined,
+      fakeObjects({
+        probeSize: 4,
+        body: new Uint8Array([1, 2, 3, 4]),
+        onGet: (key, ranged) => gets.push({ key, ranged }),
+      }),
+    )
+    await executor.execute(ctx)
+    expect(gets.length).toBeGreaterThan(0)
+    expect(gets.every((call) => call.key === fixtureObjectKeyFor(fixture.id))).toBe(true)
+    expect(gets.some((call) => call.key === swapped.objectKey)).toBe(false)
+  })
+
+  it('rejects an under-reported byteSize before reading the object', async () => {
+    const digest = `sha256:${'e'.repeat(64)}`
+    const seeded = await seedRunObject({ byteSize: 65 * 1024 * 1024, digest })
+    const gets: string[] = []
+    const step: UploadStep = {
+      id: '00000000-0000-4000-8000-000000000023',
+      name: '虚报体积',
+      type: 'upload',
+      effectType: 'SIDE_EFFECT',
+      input: {
+        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        files: [{ source: 'context', from: 'big' }],
+      },
+    }
+    const lying: RunFileHandle = {
+      kind: RUN_FILE_HANDLE_KIND,
+      scope: 'run',
+      runId: seeded.runId,
+      objectKey: seeded.objectKey,
+      name: 'huge.bin',
+      mimeType: 'application/octet-stream',
+      byteSize: 1,
+      digest,
+      createdAt: new Date().toISOString(),
+    }
+    const { ctx } = makeContext(step, { big: lying }, seeded.runId)
+    const executor = new BrowserStepExecutor(
+      handle,
+      { acquire: async () => ({ ok: true, grant: ctx.sessionGrant! }), release: async () => undefined, execute: async () => ({ ok: true, output: {} }) },
+      undefined,
+      undefined,
+      fakeObjects({ probeSize: 65 * 1024 * 1024, onGet: (key) => gets.push(key) }),
+    )
+    const outcome = await executor.execute(ctx)
+    expect(outcome.kind).toBe('failed')
+    if (outcome.kind === 'failed') expect(outcome.error.code).toBe('UPLOAD_PAYLOAD_TOO_LARGE')
+    expect(gets).toEqual([])
+  })
+
+  it('rejects a store object larger than the ledger before a full read', async () => {
+    const digest = `sha256:${'f'.repeat(64)}`
+    const seeded = await seedRunObject({ byteSize: 8, digest })
+    const gets: Array<{ ranged: boolean }> = []
+    const step: UploadStep = {
+      id: '00000000-0000-4000-8000-000000000024',
+      name: '存储体积大于账本',
+      type: 'upload',
+      effectType: 'SIDE_EFFECT',
+      input: {
+        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        files: [{ source: 'context', from: 'big' }],
+      },
+    }
+    const handleValue: RunFileHandle = {
+      kind: RUN_FILE_HANDLE_KIND,
+      scope: 'run',
+      runId: seeded.runId,
+      objectKey: seeded.objectKey,
+      name: 'video.bin',
+      mimeType: 'application/octet-stream',
+      byteSize: 8,
+      digest,
+      createdAt: new Date().toISOString(),
+    }
+    const { ctx } = makeContext(step, { big: handleValue }, seeded.runId)
+    const executor = new BrowserStepExecutor(
+      handle,
+      { acquire: async () => ({ ok: true, grant: ctx.sessionGrant! }), release: async () => undefined, execute: async () => ({ ok: true, output: {} }) },
+      undefined,
+      undefined,
+      fakeObjects({
+        probeSize: 80 * 1024 * 1024,
+        onGet: (_key, ranged) => gets.push({ ranged }),
+      }),
+    )
+    const outcome = await executor.execute(ctx)
+    expect(outcome.kind).toBe('failed')
+    if (outcome.kind === 'failed') expect(outcome.error.code).toBe('UPLOAD_PAYLOAD_TOO_LARGE')
+    expect(gets).toEqual([{ ranged: true }])
+  })
+
+  it('does not reuse a same-named download whose digest does not match', async () => {
+    const digest = `sha256:${'1'.repeat(64)}`
+    const seeded = await seedRunObject({ byteSize: 4, digest })
+    const downloadDir = runFileWorkspaceDownloadDir(seeded.runId)
+    await mkdir(downloadDir, { recursive: true })
+    await writeFile(join(downloadDir, 'invoice_123.pdf'), Buffer.from('nope'))
+    const step: UploadStep = {
+      id: '00000000-0000-4000-8000-000000000025',
+      name: '同名短路',
+      type: 'upload',
+      effectType: 'SIDE_EFFECT',
+      input: {
+        target: { candidates: [{ by: 'css', value: '#file-input' }] },
+        files: [{ source: 'context', from: 'generatedReport' }],
+      },
+    }
+    const sampleHandle: RunFileHandle = {
+      kind: RUN_FILE_HANDLE_KIND,
+      scope: 'run',
+      runId: seeded.runId,
+      objectKey: seeded.objectKey,
+      name: 'invoice_123.pdf',
+      mimeType: 'application/pdf',
+      byteSize: 4,
+      digest,
+      createdAt: new Date().toISOString(),
+    }
+    const { ctx, commandsSent } = makeContext(step, { generatedReport: sampleHandle }, seeded.runId)
+    const executor = new BrowserStepExecutor(handle, {
+      acquire: async () => ({ ok: true, grant: ctx.sessionGrant! }),
+      release: async () => undefined,
+      execute: async (_grant, command) => {
+        commandsSent.push(command)
+        return { ok: true, output: {} }
+      },
+    })
+    const outcome = await executor.execute(ctx)
+    expect(outcome.kind).toBe('success')
+    const cmd = commandsSent[0]
+    expect(cmd?.type).toBe('upload')
+    if (cmd?.type === 'upload') {
+      expect(cmd.files[0]!.localPath).not.toBe(join(downloadDir, 'invoice_123.pdf'))
+      expect(cmd.files[0]!.digest).toBe(digest)
+      expect(cmd.files[0]!.byteSize).toBe(4)
     }
   })
 

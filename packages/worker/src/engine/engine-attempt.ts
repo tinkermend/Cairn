@@ -396,8 +396,17 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
       debugMode: input.debugMode,
       mapSourceType: input.mapSourceType,
     })
+    const suggestedPatch =
+      outcome.diagnostics &&
+      typeof outcome.diagnostics === 'object' &&
+      'suggestedPatch' in outcome.diagnostics &&
+      (outcome.diagnostics as Record<string, unknown>).suggestedPatch
+        ? ((outcome.diagnostics as Record<string, unknown>).suggestedPatch as import('@cairn/shared').HealingPatch)
+        : undefined
+
     const selfHeal =
       !retry &&
+      Boolean(suggestedPatch) &&
       shouldAttemptSelfHeal({
         policy: ((input.snapshot as Record<string, unknown>).healerPolicy as HealerPolicy) ?? 'authoring_only',
         isTrialOrDebug,
@@ -406,6 +415,7 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
         attemptNo: currentAttemptCount,
         maxHealAttempts: 1,
         hasModelBudget: Boolean(input.snapshot.aiExecution),
+        hasSuggestedPatch: Boolean(suggestedPatch),
         pageContextMatch: verifyPageContext({
           currentUrl:
             outcome.output && typeof outcome.output === 'object' && 'url' in outcome.output
@@ -464,8 +474,8 @@ export async function completeAttempt(this: ExecutionEngine, input: CompleteAtte
     if (failPlan?.keepRunOpen) return 'next'
     if (!shouldKeepRunning) return 'failed'
 
-    if (selfHeal && outcome.diagnostics && typeof outcome.diagnostics === 'object' && 'suggestedPatch' in outcome.diagnostics) {
-      currentStep = applyPatchToStep(currentStep, (outcome.diagnostics as Record<string, unknown>).suggestedPatch as import('@cairn/shared').HealingPatch)
+    if (selfHeal && suggestedPatch) {
+      currentStep = applyPatchToStep(currentStep, suggestedPatch)
     }
 
     const next = await startAttempt(db, {

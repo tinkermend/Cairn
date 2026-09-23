@@ -61,11 +61,12 @@ export const SESSION_ERROR_CODES = [
   'AUTH_RECOVERY_LIMIT',
   'AUTH_GATE_CLOSED',
   'AUTH_NOT_VERIFIED',
-    'SESSION_KEEPALIVE_ABANDONED',
-    'SESSION_INSTANCE_REQUIRED',
-    'SESSION_ACCOUNT_CAP_EXCEEDED',
-    'SESSION_CONCURRENCY_UNSUPPORTED',
-  ] as const
+  'SESSION_KEEPALIVE_ABANDONED',
+  'SESSION_INSTANCE_REQUIRED',
+  'SESSION_ACCOUNT_CAP_EXCEEDED',
+  'SESSION_CONCURRENCY_UNSUPPORTED',
+  'UNATTENDED_AUTH_TIMEOUT',
+] as const
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number]
 export const sessionErrorCodeSchema = z.enum(SESSION_ERROR_CODES)
 
@@ -162,6 +163,8 @@ export function profileKeyForAccountSlot(
  * 不进 executionPolicySchema：Step 不决定会话所有权。
  * 创建 Run 时 `resolveSessionPolicy` 的 platformDefault 即 `DEFAULT_SESSION_POLICY`。
  */
+export const DEFAULT_UNATTENDED_AUTH_TIMEOUT_SECONDS = 120
+
 export const sessionPolicySchema = z
   .strictObject({
     reuse: sessionReusePolicySchema,
@@ -169,6 +172,13 @@ export const sessionPolicySchema = z
     maxLifetimeSeconds: z.number().int().positive(),
     leaseTtlSeconds: z.number().int().positive(),
     authWaitSeconds: z.number().int().positive(),
+    unattendedAuthTimeoutSeconds: z
+      .number()
+      .int()
+      .min(30)
+      .max(600)
+      .default(DEFAULT_UNATTENDED_AUTH_TIMEOUT_SECONDS),
+    notifyOnAuthWait: z.boolean().default(true),
     reclaim: sessionReclaimModeSchema.default(DEFAULT_SESSION_RECLAIM_MODE),
     keepAliveSeconds: z.number().int().positive().default(DEFAULT_SESSION_KEEP_ALIVE_SECONDS),
     authProbeIntervalSeconds: z
@@ -213,6 +223,8 @@ export const DEFAULT_SESSION_POLICY: SessionPolicy = {
   maxLifetimeSeconds: DEFAULT_SESSION_MAX_LIFETIME_SECONDS,
   leaseTtlSeconds: DEFAULT_SESSION_LEASE_TTL_SECONDS,
   authWaitSeconds: DEFAULT_SESSION_AUTH_WAIT_SECONDS,
+  unattendedAuthTimeoutSeconds: DEFAULT_UNATTENDED_AUTH_TIMEOUT_SECONDS,
+  notifyOnAuthWait: true,
   reclaim: DEFAULT_SESSION_RECLAIM_MODE,
   keepAliveSeconds: DEFAULT_SESSION_KEEP_ALIVE_SECONDS,
   authProbeIntervalSeconds: DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
@@ -228,6 +240,8 @@ export const sessionPolicyOverrideSchema = z.strictObject({
   maxLifetimeSeconds: z.number().int().positive().optional(),
   leaseTtlSeconds: z.number().int().positive().optional(),
   authWaitSeconds: z.number().int().positive().optional(),
+  unattendedAuthTimeoutSeconds: z.number().int().min(30).max(600).optional(),
+  notifyOnAuthWait: z.boolean().optional(),
   reclaim: sessionReclaimModeSchema.optional(),
   keepAliveSeconds: z.number().int().positive().optional(),
   authProbeIntervalSeconds: z.number().int().positive().optional(),
@@ -248,6 +262,8 @@ export const targetSessionPolicyPatchSchema = z.strictObject({
   maxLifetimeSeconds: z.number().int().positive().nullable().optional(),
   leaseTtlSeconds: z.number().int().positive().nullable().optional(),
   authWaitSeconds: z.number().int().positive().nullable().optional(),
+  unattendedAuthTimeoutSeconds: z.number().int().min(30).max(600).nullable().optional(),
+  notifyOnAuthWait: z.boolean().nullable().optional(),
   reclaim: sessionReclaimModeSchema.nullable().optional(),
   keepAliveSeconds: z.number().int().positive().nullable().optional(),
   authProbeIntervalSeconds: z.number().int().positive().nullable().optional(),

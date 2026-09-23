@@ -100,6 +100,14 @@ export class TargetsService {
     return this.store.deleteAccount(...args).catch(rethrowDomain)
   }
 
+  setAccountStorageState(...args: Parameters<TargetsStore['setAccountStorageState']>) {
+    return this.store.setAccountStorageState(...args).catch(rethrowDomain)
+  }
+
+  clearAccountStorageState(...args: Parameters<TargetsStore['clearAccountStorageState']>) {
+    return this.store.clearAccountStorageState(...args).catch(rethrowDomain)
+  }
+
   getAccessPolicy(targetId: string) {
     return getTargetAccessPolicy(this.database, targetId).catch(rethrowDomain)
   }

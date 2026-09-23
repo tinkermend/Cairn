@@ -3,6 +3,7 @@ import {
   fillTextFromContext,
   jsonValueSchema,
   readContextValue,
+  runObjectIdFromKey,
   REDACTED,
   stepUsesBrowser,
   type ExecutionError,
@@ -21,16 +22,72 @@ export function resolveStepInput(
   overlayTarget?: TargetDescriptor,
   currentRunId?: string,
 ): { ok: true; input: JsonValue } | { ok: false; input: JsonValue; error: ExecutionError } {
+  let baseInput: any = step.input
+  if (step.fieldRefs && Object.keys(step.fieldRefs).length > 0) {
+    baseInput = JSON.parse(JSON.stringify(step.input))
+    for (const [field, ref] of Object.entries(step.fieldRefs)) {
+      const resolved = readContextValue(context, ref.from, ref.fromField)
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          input: baseInput,
+          error: {
+            code: resolved.code,
+            category: 'VALIDATION',
+            retryable: false,
+            safeMessage: resolved.message,
+          },
+        }
+      }
+      if (field === 'navigate.url') {
+        baseInput.url = String(resolved.value)
+      } else if (field === 'target.anchor.withinText') {
+        if (baseInput.target?.anchor) {
+          baseInput.target.anchor.withinText = String(resolved.value)
+        }
+      } else if (field === 'target.candidate.name') {
+        if (baseInput.target?.candidates?.[0]) {
+          baseInput.target.candidates[0].name = String(resolved.value)
+        }
+      } else if (field === 'target.candidate.value') {
+        if (baseInput.target?.candidates?.[0]) {
+          baseInput.target.candidates[0].value = String(resolved.value)
+        }
+      } else if (field === 'assert.expect.value') {
+        if (baseInput.expect) {
+          if (baseInput.expect.kind === 'number_compare') {
+            const num = typeof resolved.value === 'number' ? resolved.value : Number(resolved.value)
+            if (Number.isNaN(num)) {
+              return {
+                ok: false,
+                input: baseInput,
+                error: {
+                  code: 'ASSERT_VALUE_INVALID',
+                  category: 'VALIDATION',
+                  retryable: false,
+                  safeMessage: `断言值「${resolved.value}」不是有效的数字`,
+                },
+              }
+            }
+            baseInput.expect.value = num
+          } else {
+            baseInput.expect.value = String(resolved.value)
+          }
+        }
+      }
+    }
+  }
+
   if (step.type === 'echo') {
-    if (step.input.value !== undefined) return { ok: true, input: step.input.value }
-    const from = step.input.from!
-    const resolved = readContextValue(context, from, step.input.fromField)
+    if (baseInput.value !== undefined) return { ok: true, input: baseInput.value }
+    const from = baseInput.from!
+    const resolved = readContextValue(context, from, baseInput.fromField)
     if (!resolved.ok) {
       return {
         ok: false,
         input: {
           from,
-          ...(step.input.fromField ? { fromField: step.input.fromField } : {}),
+          ...(baseInput.fromField ? { fromField: baseInput.fromField } : {}),
         },
         error: {
           code: resolved.code,
@@ -43,19 +100,19 @@ export function resolveStepInput(
     return { ok: true, input: resolved.value }
   }
   if (step.type === 'fill') {
-    const target = overlayTarget ?? step.input.target
-    if (step.input.value !== undefined) {
-      return { ok: true, input: { target, value: step.input.value } }
+    const target = overlayTarget ?? baseInput.target
+    if (baseInput.value !== undefined) {
+      return { ok: true, input: { target, value: baseInput.value } }
     }
-    const from = step.input.from!
-    const resolved = fillTextFromContext(context, from, step.input.fromField)
+    const from = baseInput.from!
+    const resolved = fillTextFromContext(context, from, baseInput.fromField)
     if (!resolved.ok) {
       return {
         ok: false,
         input: {
           target,
           from,
-          ...(step.input.fromField ? { fromField: step.input.fromField } : {}),
+          ...(baseInput.fromField ? { fromField: baseInput.fromField } : {}),
         },
         error: {
           code: resolved.code,
@@ -67,12 +124,12 @@ export function resolveStepInput(
     }
     return { ok: true, input: { target, value: resolved.text } }
   }
-  if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') {
-    const { from, fromField, ...action } = step.input
+  if (step.type === 'ai_action' && 'operation' in baseInput && baseInput.operation === 'input') {
+    const { from, fromField, ...action } = baseInput
     if (action.mode === 'clear') return { ok: true, input: action }
     const resolved = from ? fillTextFromContext(context, from, fromField) : { ok: true as const, text: action.value ?? '' }
     if (!resolved.ok || !resolved.text) {
-      return { ok: false, input: step.input, error: {
+      return { ok: false, input: baseInput, error: {
         code: resolved.ok ? 'AI_INPUT_EMPTY' : resolved.code,
         category: 'VALIDATION', retryable: false,
         safeMessage: resolved.ok ? 'AI 输入值为空；清空请使用 clear 操作' : resolved.message,
@@ -81,16 +138,16 @@ export function resolveStepInput(
     return { ok: true, input: { ...action, value: resolved.text } }
   }
   if (step.type === 'select') {
-    const target = overlayTarget ?? step.input.target
-    if (step.input.by === 'index' || step.input.value !== undefined) {
-      return { ok: true, input: { ...step.input, target } }
+    const target = overlayTarget ?? baseInput.target
+    if (baseInput.by === 'index' || baseInput.value !== undefined) {
+      return { ok: true, input: { ...baseInput, target } }
     }
-    const from = step.input.from!
-    const resolved = fillTextFromContext(context, from, step.input.fromField)
+    const from = baseInput.from!
+    const resolved = fillTextFromContext(context, from, baseInput.fromField)
     if (!resolved.ok) {
       return {
         ok: false,
-        input: { ...step.input, target },
+        input: { ...baseInput, target },
         error: {
           code: resolved.code,
           category: 'VALIDATION',
@@ -99,7 +156,7 @@ export function resolveStepInput(
         },
       }
     }
-    return { ok: true, input: { ...step.input, target, value: resolved.text } }
+    return { ok: true, input: { ...baseInput, target, value: resolved.text } }
   }
   if (step.type === 'upload') {
     const target = overlayTarget ?? step.input.target
@@ -141,7 +198,11 @@ export function resolveStepInput(
             },
           }
         }
-        if (handle.scope === 'run' && currentRunId && handle.runId !== currentRunId) {
+        if (
+          handle.scope === 'run' &&
+          currentRunId &&
+          (handle.runId !== currentRunId || !runObjectIdFromKey(handle.objectKey, currentRunId))
+        ) {
           return {
             ok: false,
             input: { target, files: step.input.files as unknown as JsonValue },
@@ -149,7 +210,10 @@ export function resolveStepInput(
               code: 'FILE_HANDLE_FOREIGN_RUN',
               category: 'VALIDATION',
               retryable: false,
-              safeMessage: `文件句柄所属 Run「${handle.runId}」与当前 Run「${currentRunId}」不一致`,
+              safeMessage:
+                handle.runId !== currentRunId
+                  ? `文件句柄所属 Run「${handle.runId}」与当前 Run「${currentRunId}」不一致`
+                  : '文件句柄的对象键不属于当前 Run',
             },
           }
         }
@@ -170,10 +234,10 @@ export function resolveStepInput(
       },
     }
   }
-  if (overlayTarget && step.input && typeof step.input === 'object' && 'target' in step.input) {
-    return { ok: true, input: { ...step.input, target: overlayTarget } }
+  if (overlayTarget && baseInput && typeof baseInput === 'object' && 'target' in baseInput) {
+    return { ok: true, input: { ...baseInput, target: overlayTarget } }
   }
-  return { ok: true, input: step.input }
+  return { ok: true, input: baseInput }
 }
 
 /** 可被 Engine 推进：未开始，或已在跑但没有未关闭的 Attempt（接管收孤儿后）。 */

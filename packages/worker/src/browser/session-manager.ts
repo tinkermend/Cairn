@@ -414,7 +414,13 @@ export class BrowserSessionManager {
 
   async resolveAccountCredential(
     accountId: string,
-  ): Promise<{ username: string; password: string; secretId?: string } | null> {
+  ): Promise<{
+    username: string
+    password: string
+    totpSecret?: string
+    storageState?: unknown
+    secretId?: string
+  } | null> {
     return resolveAccountCredential.call(this, accountId)
   }
 

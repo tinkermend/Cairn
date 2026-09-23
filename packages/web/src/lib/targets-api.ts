@@ -243,3 +243,24 @@ export function observeAuthProfileValidation(
     },
   )
 }
+
+export function importStorageState(
+  targetId: string,
+  accountId: string,
+  storageState: unknown,
+): Promise<TargetAccountDto> {
+  return apiFetch(`/api/targets/${targetId}/accounts/${accountId}/storage-state`, targetAccountSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ storageState }),
+  })
+}
+
+export function clearStorageState(
+  targetId: string,
+  accountId: string,
+): Promise<TargetAccountDto> {
+  return apiFetch(`/api/targets/${targetId}/accounts/${accountId}/clear-storage-state`, targetAccountSchema, {
+    method: 'POST',
+  })
+}

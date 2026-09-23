@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   previewDeleteTarget: vi.fn(),
   deleteTarget: vi.fn(),
   deleteTargetAccount: vi.fn(),
+  updateTargetAccount: vi.fn(),
   updateTargetSessionPolicy: vi.fn(),
   updateTargetResolutionPolicy: vi.fn(),
   fetchSessionOverview: vi.fn(),
@@ -36,7 +37,20 @@ vi.mock('@/lib/sessions-api', () => ({
 vi.mock('@/lib/scenarios-api', () => ({
   fetchScenarios: mocks.fetchScenarios,
 }))
-vi.mock('./account-form-dialog', () => ({ AccountFormDialog: () => null }))
+let routerSearch: { action?: string; prefill_username?: string } = {}
+const navigateMock = vi.fn()
+const accountDialogMock = vi.fn()
+
+vi.mock('./account-form-dialog', () => ({
+  AccountFormDialog: (props: any) => {
+    accountDialogMock(props)
+    return props.open ? (
+      <div data-testid='account-form-dialog' data-username={props.defaultUsername}>
+        Account Dialog
+      </div>
+    ) : null
+  },
+}))
 vi.mock('./target-form-dialog', () => ({ TargetFormDialog: () => null }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
@@ -44,8 +58,9 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     ...actual,
     getRouteApi: () => ({
       useParams: () => ({ targetId: TARGET_ID }),
+      useSearch: () => routerSearch,
     }),
-    useNavigate: () => vi.fn(),
+    useNavigate: () => navigateMock,
     Link: ({ children }: { children: ReactNode }) => <a href='#'>{children}</a>,
   }
 })
@@ -71,6 +86,9 @@ async function renderPage() {
 
 describe('TargetDetailPage 账号列表', () => {
   beforeEach(() => {
+    routerSearch = {}
+    navigateMock.mockReset()
+    accountDialogMock.mockReset()
     signIn()
     mocks.fetchTarget.mockResolvedValue({
       id: TARGET_ID,
@@ -438,4 +456,75 @@ describe('TargetDetailPage 账号列表', () => {
     await expect.element(screen.getByText('系统完整资料')).toBeInTheDocument()
     await expect.element(screen.getByText('登录框定位')).toBeInTheDocument()
   })
+
+  it('深链包含 create-account 与 prefill_username 时自动打开弹窗并静默清理 URL', async () => {
+    routerSearch = { action: 'create-account', prefill_username: 'auto_admin' }
+    const screen = await renderPage()
+    await expect.element(screen.getByTestId('account-form-dialog')).toBeInTheDocument()
+    expect(accountDialogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        open: true,
+        defaultUsername: 'auto_admin',
+      }),
+    )
+    expect(navigateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: '/targets/$targetId',
+        params: { targetId: TARGET_ID },
+        search: {},
+        replace: true,
+      }),
+    )
+  })
+
+  it('账号行正确展示凭据状态、到期倒计时，点击换密可唤起快捷改密弹窗并提交更新', async () => {
+    signIn(['target:read', 'target:write', 'credential:write'])
+    const futureDue = new Date(Date.now() + 15 * 86400 * 1000).toISOString()
+    mocks.fetchTargetAccounts.mockResolvedValue({
+      items: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          targetId: TARGET_ID,
+          displayName: '值班账号',
+          username: 'ops',
+          status: 'active',
+          hasPassword: true,
+          maintenanceDueAt: futureDue,
+          validityPolicy: { mode: 'days', amount: 90, timeZone: 'Asia/Shanghai' },
+          configRevision: 1,
+          maxConcurrentSessions: 1,
+        },
+      ],
+    })
+    mocks.updateTargetAccount.mockResolvedValue({ success: true })
+    const screen = await renderPage()
+    await expect.element(screen.getByText('剩 15 天')).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: /换密/ })).toBeInTheDocument()
+
+    // 点击换密唤起快捷弹窗
+    await screen.getByRole('button', { name: /换密/ }).click()
+    await expect.element(screen.getByText('更新目标账号密码')).toBeInTheDocument()
+    await expect.element(screen.getByText('值班账号 (ops)')).toBeInTheDocument()
+
+    // 输入新密码并保存
+    await screen.getByLabelText('新密码').fill('NewSecret2026!')
+    await screen.getByRole('button', { name: '保存新密码' }).click()
+
+    await expect.poll(() => mocks.updateTargetAccount).toHaveBeenCalledWith(
+      TARGET_ID,
+      '22222222-2222-4222-8222-222222222222',
+      expect.objectContaining({
+        password: 'NewSecret2026!',
+        expectedRevision: 1,
+      }),
+    )
+  })
+
+  it('无 credential:write 权限时不展示换密操作按钮', async () => {
+    signIn(['target:read', 'target:write'])
+    const screen = await renderPage()
+    await expect.element(screen.getByText('值班账号')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /换密/ }).query()).toBeNull()
+  })
 })
+

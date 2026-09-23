@@ -78,6 +78,7 @@ export type AiLocateInput = {
   allowedOrigins: string[]
   loginOrigin?: string
   loginPath?: string
+  allowVision?: boolean
 }
 
 export type AiLocateResult = {

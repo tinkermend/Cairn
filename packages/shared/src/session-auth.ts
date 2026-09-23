@@ -142,7 +142,7 @@ export const platformSessionAuthSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['sliderDragMinDurationMs'],
-        message: '滑块拖拽最小耗时不得大于最大耗时',
+        message: '滑块拖动最短时间不得大于最长时间',
       })
     }
     if (value.loginLeaveTimeoutMs > value.loginTimeoutMs) {
@@ -163,7 +163,7 @@ export const platformSessionAuthSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['landingSettleWatchMs'],
-        message: '必须小于落地整理预算',
+        message: '必须短于登录后关闭引导的时间',
       })
     }
   })
@@ -889,6 +889,29 @@ const AUTH_ISSUE_LABELS: Record<string, string> = {
   BROWSER_UNAVAILABLE: '受管浏览器暂时不可用',
   BROWSER_LAUNCH_FAILED: '受管浏览器没能启动',
   SESSION_KEEPALIVE_ABANDONED: '认证已失效且无法自动登录',
+  SESSION_NOT_CLAIMABLE: '执行节点会话资源不可用或未声明合法占用',
+  SESSION_BUSY: '目标会话正忙或正在执行其他操作',
+  SESSION_CAPACITY_EXCEEDED: '执行节点已达会话承载上限',
+  SESSION_OPERATION_CONFLICT: '会话已被其他任务占用，存在操作冲突',
+  OPERATION_QUEUE_EXPIRED: '排队调度超时，未能分配到可用执行节点',
+  AUTH_CONFIGURATION_REVOKED: '目标系统认证配置已失效或撤回',
+  PROFILE_LOCKED: '浏览器用户数据目录已被锁定',
+  SESSION_GENERATION_CHANGED: '会话已重启或代次发生变更',
+  SESSION_ACCOUNT_REQUIRED: '缺少目标账号信息',
+  SESSION_TARGET_MISSING: '目标系统不存在',
+  SESSION_POLICY_INVALID: '会话策略配置无效',
+  SESSION_LEASE_LOST: '会话占用租约已丢失',
+  OPERATION_IDEMPOTENCY_CONFLICT: '同幂等键内容不一致',
+  SESSION_INSTANCE_REQUIRED: '多个会话时必须指定要操作的会话',
+  SESSION_OCCUPIED: '会话正在被运行占用',
+  AUTH_PROFILE_CONFLICT: '认证规则已被更新',
+  AUTH_IDENTITY_CONFLICT: '账号身份配置已被更新',
+  AUTH_INPUT_REJECTED: '操作不在认证等待阶段',
+  AUTH_HOLD_UNBOUND: '认证占用已失效',
+  AUTH_CONTROL_HELD: '当前控制权由其他用户持有',
+  AUTH_CONTROL_INVALID: '认证控制令牌已失效',
+  RUN_NOT_WAITING_FOR_AUTH: '运行不在等待认证状态',
+  WORKER_GENERATION_MISMATCH: '执行节点实例已发生变化',
   infra: '登录核验暂时失败',
   unmatched: '当前页对不上登录规则',
   verify_failed: '登录后仍未通过核验',

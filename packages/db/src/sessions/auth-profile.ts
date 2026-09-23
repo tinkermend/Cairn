@@ -340,6 +340,7 @@ export async function resetAuthBudgetAfterCredentialChange(db: Db, accountId: st
     nextAllowedAt: null,
     lastConfigRevision: account.configRevision,
     updatedAt: now,
+    loginInFlight: false,
   })
 }
 
@@ -354,6 +355,7 @@ async function txUpdateBudget(
     nextAllowedAt: Date | null
     lastConfigRevision: number
     updatedAt: Date
+    loginInFlight?: boolean
   },
 ): Promise<void> {
   const { targetAccountAuthBudget } = schemaFor(db)
@@ -413,7 +415,7 @@ export async function occupyAutoLoginBudget(
     if (paused) {
       return { ok: false as const, code: 'AUTH_AUTO_LOGIN_PAUSED', message: budget!.pausedReason ?? '自动登录已暂停' }
     }
-    if (budget?.loginInFlight && now.getTime() - budget.updatedAt.getTime() < 120_000) {
+    if (!resetWindow && budget?.loginInFlight && now.getTime() - budget.updatedAt.getTime() < 120_000) {
       return { ok: false as const, code: 'SESSION_BUSY', message: '同账号正在自动登录' }
     }
     const count = resetWindow ? 0 : budget!.autoLoginCount

@@ -115,6 +115,7 @@ vi.mock("@cairn/db", async (importOriginal) => {
     markLostApiInstances: vi.fn(async () => []),
     expireStaleRunLeases: vi.fn(async () => ({ expired: 0, outcomes: [] })),
     sweepDriftedRuns: vi.fn(async () => ({ settled: 0, scanned: 0 })),
+    sweepStrandedBatches: vi.fn(async () => ({ scanned: 0, dispatched: 0, failed: 0, deferred: 0 })),
     markLostWorkers: vi.fn(async () => []),
     evaluateAlerts: vi.fn(async () => ({
       evaluated: 0,

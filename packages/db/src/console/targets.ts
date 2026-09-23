@@ -41,6 +41,7 @@ import {
 import { cursorFilter, paginateResults } from '../cursor.js'
 import { assertTargetPermission, lockConsoleAuthorization, targetScopeFor, targetScopeFilter } from './target-authorization.js'
 import { updateCredentialMetadata } from '../credentials/catalog.js'
+import { secretIdsStillReferenced } from '../credentials/consume.js'
 import { targetCleanupObjectFilter } from '../reports/cleanup.js'
 import {
   ACTIVE_RUN_STATUSES,
@@ -170,8 +171,9 @@ export class TargetsStore {
 
   async listTargets(query: TargetListQuery = {}, actor?: RequestAccount): Promise<TargetListResponse> {
     const parsed = targetListQuerySchema.parse(query)
-    const { targets } = schemaFor(this.db)
+    const { targets, targetAccounts } = schemaFor(this.db)
     const limit = parsed.limit
+    const searchPattern = parsed.search ? '%' + parsed.search.toLowerCase() + '%' : ''
     const filters: (SQL | undefined)[] = [
       isNull(targets.deletedAt),
       actor ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'target:read')) : undefined,
@@ -182,8 +184,9 @@ export class TargetsStore {
       parsed.authMethod ? eq(targets.authMethod, parsed.authMethod) : undefined,
       parsed.search
         ? or(
-            sql`lower(${targets.name}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
-            sql`lower(${targets.code}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+            sql`lower(${targets.name}) like ${searchPattern}`,
+            sql`lower(${targets.code}) like ${searchPattern}`,
+            sql`exists (select 1 from ${targetAccounts} where ${targetAccounts.targetId} = ${targets.id} and ${isNull(targetAccounts.deletedAt)} and (lower(${targetAccounts.username}) like ${searchPattern} or lower(${targetAccounts.displayName}) like ${searchPattern}))`,
           )
         : undefined,
       cursorFilter(targets.createdAt, targets.id, parsed.cursor),
@@ -956,6 +959,16 @@ export class TargetsStore {
             updatedAt: now,
           })
         }
+        const nextTotpSecret = body.totpSecret ? this.seal(body.totpSecret) : undefined
+        if (nextTotpSecret) {
+          await tx.insert(secrets).values({
+            id: nextTotpSecret.id,
+            provider: LOCAL_SECRET_PROVIDER,
+            ciphertext: nextTotpSecret.ciphertext,
+            createdAt: now,
+            updatedAt: now,
+          })
+        }
         await tx
           .update(targetAccounts)
           .set({
@@ -968,6 +981,11 @@ export class TargetsStore {
                 ? LOCAL_SECRET_PROVIDER
                 : current.secretProvider,
             secretId: body.clearPassword ? null : nextSecret ? nextSecret.id : current.secretId,
+            totpSecretId: body.clearTotp
+              ? null
+              : nextTotpSecret
+                ? nextTotpSecret.id
+                : current.totpSecretId,
             usage: nextUsage,
             mapUsageGuard: mapUsageGuardFor(nextUsage),
             maxConcurrentSessions: body.maxConcurrentSessions ?? current.maxConcurrentSessions,
@@ -1253,6 +1271,16 @@ export class TargetsStore {
         updatedAt: now,
       })
     }
+    const totpSecret = body.totpSecret ? this.seal(body.totpSecret) : undefined
+    if (totpSecret) {
+      await tx.insert(secrets).values({
+        id: totpSecret.id,
+        provider: LOCAL_SECRET_PROVIDER,
+        ciphertext: totpSecret.ciphertext,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
     if (body.maxConcurrentSessions != null && body.maxConcurrentSessions > 1) {
       const [targetRow] = await tx.select({ sessionPolicy: targets.sessionPolicy }).from(targets).where(eq(targets.id, targetId)).limit(1)
       const mode = resolveSessionPolicyLayers({
@@ -1273,6 +1301,7 @@ export class TargetsStore {
       username: body.username,
       secretProvider: secret ? LOCAL_SECRET_PROVIDER : null,
       secretId: secret?.id ?? null,
+      totpSecretId: totpSecret?.id ?? null,
       status: body.status,
       usage: body.usage ?? DEFAULT_ACCOUNT_USAGE,
       mapUsageGuard: mapUsageGuardFor(body.usage ?? DEFAULT_ACCOUNT_USAGE),
@@ -1373,6 +1402,9 @@ export class TargetsStore {
       displayName: row.displayName,
       username: row.username,
       hasPassword: Boolean(row.secretId),
+      hasTotp: Boolean(row.totpSecretId),
+      hasStorageState: Boolean(row.storageStateSecretId),
+      storageStateUpdatedAt: row.storageStateUpdatedAt ? iso(row.storageStateUpdatedAt) : null,
       status: row.status,
       expectedIdentity: row.expectedIdentity,
       usage: row.usage ?? DEFAULT_ACCOUNT_USAGE,
@@ -1410,6 +1442,121 @@ export class TargetsStore {
       }),
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
+    })
+  }
+
+  async setAccountStorageState(
+    targetId: string,
+    accountId: string,
+    storageState: unknown,
+    actor: RequestAccount,
+  ): Promise<TargetAccountDto> {
+    const { secrets, targetAccounts } = schemaFor(this.db)
+    const now = new Date()
+    const serialized = JSON.stringify(storageState)
+    const sealed = this.seal(serialized)
+    return await this.db.transaction(async (tx) => {
+      await lockConsoleAuthorization(tx, actor.id)
+      await assertTargetPermission(tx, actor.id, targetId, 'credential:write')
+      const [account] = await tx
+        .select()
+        .from(targetAccounts)
+        .where(
+          and(
+            eq(targetAccounts.id, accountId),
+            eq(targetAccounts.targetId, targetId),
+            isNull(targetAccounts.deletedAt),
+          ),
+        )
+        .for('update')
+      if (!account) throw failure('not_found', '目标账号不存在')
+
+      await tx.insert(secrets).values({
+        id: sealed.id,
+        provider: LOCAL_SECRET_PROVIDER,
+        ciphertext: sealed.ciphertext,
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      const oldStorageSecretId = account.storageStateSecretId
+      await tx
+        .update(targetAccounts)
+        .set({
+          storageStateSecretId: sealed.id,
+          storageStateUpdatedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(targetAccounts.id, accountId))
+
+      if (oldStorageSecretId) {
+        const stillUsed = await secretIdsStillReferenced(tx as unknown as Db, [oldStorageSecretId])
+        if (!stillUsed.has(oldStorageSecretId)) {
+          await tx.delete(secrets).where(eq(secrets.id, oldStorageSecretId))
+        }
+      }
+
+      await this.writeAudit(
+        tx,
+        actor,
+        'target_account.create',
+        'target_account',
+        accountId,
+        `导入免登 StorageState：${account.displayName}（${account.username}）`,
+      )
+      return this.getAccount(targetId, accountId)
+    })
+  }
+
+  async clearAccountStorageState(
+    targetId: string,
+    accountId: string,
+    actor: RequestAccount,
+  ): Promise<TargetAccountDto> {
+    const { secrets, targetAccounts } = schemaFor(this.db)
+    const now = new Date()
+    return await this.db.transaction(async (tx) => {
+      await lockConsoleAuthorization(tx, actor.id)
+      await assertTargetPermission(tx, actor.id, targetId, 'credential:write')
+      const [account] = await tx
+        .select()
+        .from(targetAccounts)
+        .where(
+          and(
+            eq(targetAccounts.id, accountId),
+            eq(targetAccounts.targetId, targetId),
+            isNull(targetAccounts.deletedAt),
+          ),
+        )
+        .for('update')
+      if (!account) throw failure('not_found', '目标账号不存在')
+
+      const oldStorageSecretId = account.storageStateSecretId
+      await tx
+        .update(targetAccounts)
+        .set({
+          storageStateSecretId: null,
+          storageStateUpdatedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(targetAccounts.id, accountId))
+
+      if (oldStorageSecretId) {
+        const stillUsed = await secretIdsStillReferenced(tx as unknown as Db, [oldStorageSecretId])
+        if (!stillUsed.has(oldStorageSecretId)) {
+          await tx.delete(secrets).where(eq(secrets.id, oldStorageSecretId))
+        }
+      }
+
+      await this.writeAudit(
+        tx,
+        actor,
+        'target_account.password',
+        'target_account',
+        accountId,
+        `清除免登 StorageState：${account.displayName}（${account.username}）`,
+      )
+      return this.getAccount(targetId, accountId)
     })
   }
 

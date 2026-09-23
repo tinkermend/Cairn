@@ -316,4 +316,29 @@ it('表格展示账号与会话综合状态，右侧概览窗提供免下钻即�
   await expect.element(screen.getByRole('link', { name: '查看拓扑与元素' })).toHaveAttribute('href', '/targets/target-a/map')
 })
 
+it('搜索框支持按照系统、编码或账号名称检索', async () => {
+  useAuthStore.getState().auth.setUser({
+    id: 'u1',
+    displayName: '测试',
+    email: null,
+    roles: [],
+    permissions: ['target:read'],
+  })
+
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <TargetsPage />
+    </QueryClientProvider>
+  )
+
+  const searchInput = screen.getByLabelText('搜索目标系统')
+  await expect.element(searchInput).toBeInTheDocument()
+  await expect.element(searchInput).toHaveAttribute('placeholder', '搜索系统、编码或账号')
+  await searchInput.fill('admin')
+  await expect.element(searchInput).toHaveValue('admin')
+})
+
 

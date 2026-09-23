@@ -41,7 +41,7 @@ describe.each(DRIVERS)('%s AuthHold / AuthControl 原子性', { timeout: 60_000 
 
   beforeAll(async () => {
     handle = await openContractDb(driver, SCHEMA)
-    const { consoleAccounts, targets, targetAccounts } = schemaFor(handle.db)
+    const { consoleAccounts, targets, targetAccounts, consoleRoles, consoleAccountRoles } = schemaFor(handle.db)
     actorId = newId()
     otherActorId = newId()
     targetId = newId()
@@ -50,6 +50,13 @@ describe.each(DRIVERS)('%s AuthHold / AuthControl 原子性', { timeout: 60_000 
       { id: actorId, displayName: 'auth-a', email: `a-${actorId}@example.com`, status: 'active' },
       { id: otherActorId, displayName: 'auth-b', email: `b-${otherActorId}@example.com`, status: 'active' },
     ])
+    const [admin] = await handle.db.select().from(consoleRoles)
+    if (admin) {
+      await handle.db.insert(consoleAccountRoles).values([
+        { consoleAccountId: actorId, consoleRoleId: admin.id, targetScopeMode: 'all' },
+        { consoleAccountId: otherActorId, consoleRoleId: admin.id, targetScopeMode: 'all' },
+      ])
+    }
     await handle.db.insert(targets).values({
       id: targetId,
       code: `auth-${SCHEMA.slice(-6)}`,
@@ -291,6 +298,58 @@ describe.each(DRIVERS)('%s AuthHold / AuthControl 原子性', { timeout: 60_000 
     ).rejects.toMatchObject({ code: 'AUTH_HOLD_UNBOUND' })
     expect((await getRun(handle.db, created.detail.id)).status).toBe('WAITING_FOR_AUTH')
     await closeSession(claimed.session.id, worker.workerId)
+  })
+
+  it('无 Run 占用的开放会话可直接授予控制权并心跳续期与安全释放', async () => {
+    const worker = await seedWorker(handle, `direct-${newId().slice(0, 8)}`)
+    const session = await openSession(worker.workerId, worker.instanceId)
+    const control = await acquireAuthControl(handle.db, {
+      sessionId: session.id,
+      runId: session.id,
+      actor: { id: actorId },
+      workerId: worker.workerId,
+      workerInstanceId: worker.instanceId,
+      sessionGeneration: session.generation,
+    })
+    expect(control.token).toBeDefined()
+    expect(control.epoch).toBe(1)
+    const afterAcquire = await getSessionById(handle.db, session.id)
+    expect(afterAcquire?.authControlActorId).toBe(actorId)
+
+    // 他人冲突申请被拒
+    await expect(
+      acquireAuthControl(handle.db, {
+        sessionId: session.id,
+        runId: session.id,
+        actor: { id: otherActorId },
+        workerId: worker.workerId,
+        workerInstanceId: worker.instanceId,
+        sessionGeneration: session.generation,
+      }),
+    ).rejects.toMatchObject({ code: 'AUTH_CONTROL_HELD' })
+
+    // 心跳续期
+    const beat = await heartbeatAuthControl(handle.db, {
+      sessionId: session.id,
+      runId: session.id,
+      actorId,
+      token: control.token,
+      workerInstanceId: worker.instanceId,
+      ttlSeconds: 60,
+    })
+    expect(beat.epoch).toBe(1)
+
+    // 释放控制
+    const released = await releaseAuthControl(handle.db, {
+      sessionId: session.id,
+      runId: session.id,
+      actor: { id: actorId },
+      token: control.token,
+    })
+    expect(released).toBe(true)
+    const afterRelease = await getSessionById(handle.db, session.id)
+    expect(afterRelease?.authControlActorId).toBeNull()
+    await closeSession(session.id, worker.workerId)
   })
 })
 

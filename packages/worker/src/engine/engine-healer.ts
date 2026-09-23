@@ -19,7 +19,7 @@ export function verifyPageContext(input: {
   pageTitle?: string
   pathPrefix?: string
 }): boolean {
-  if (!input.currentUrl) return true
+  if (!input.currentUrl) return false
 
   const trimmedUrl = input.currentUrl.trim().toLowerCase()
   if (trimmedUrl === '' || trimmedUrl === 'about:blank') {
@@ -76,8 +76,14 @@ export function applyPatchToTarget(
   originalTarget: TargetDescriptor | undefined,
   patch: HealingPatch,
 ): TargetDescriptor | undefined {
-  if (patch.kind === 'REPLACE_LOCATOR' && patch.targetDescriptor) {
-    return patch.targetDescriptor
+  if (patch.kind === 'REPLACE_LOCATOR') {
+    if (patch.targetDescriptor) return patch.targetDescriptor
+    if (patch.suggestedCandidate) {
+      return {
+        framePath: [],
+        candidates: [patch.suggestedCandidate],
+      }
+    }
   }
 
   if (patch.kind === 'ADD_CANDIDATE' && patch.suggestedCandidate && originalTarget) {
@@ -107,6 +113,16 @@ export function applyPatchToStep(step: Step, patch: HealingPatch): Step {
     return upgraded
   }
 
+  if (patch.kind === 'PREPEND_WAIT' && step.type === 'wait' && patch.suggestedWaitMs) {
+    return {
+      ...step,
+      input: {
+        ...step.input,
+        timeoutMs: patch.suggestedWaitMs,
+      },
+    }
+  }
+
   if (step.input && typeof step.input === 'object' && 'target' in step.input) {
     const patchedTarget = applyPatchToTarget(
       step.input.target as TargetDescriptor | undefined,
@@ -132,11 +148,16 @@ export function buildHealingAttemptEvidence(input: {
   diagnosis: HealingDiagnosis
   patchApplied?: HealingPatch
   outcome: 'HEALED_SUCCESS' | 'HEAL_FAILED' | 'ESCALATED' | 'REJECTED_BY_GUARD'
+  candidateId?: string
+  postPatchDigest?: string
 }): HealingAttemptEvidence {
   return {
     sourceAttemptId: input.sourceAttemptId,
     diagnosis: input.diagnosis,
     ...(input.patchApplied ? { patchApplied: input.patchApplied } : {}),
     outcome: input.outcome,
+    ...(input.candidateId ? { candidateId: input.candidateId } : {}),
+    ...(input.postPatchDigest ? { postPatchDigest: input.postPatchDigest } : {}),
   }
 }
+

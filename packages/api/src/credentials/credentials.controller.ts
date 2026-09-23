@@ -58,6 +58,9 @@ export class CredentialsController {
     return this.credentials.createBatch(body, account)
   }
 
+  /**
+   * @deprecated 仅用于兼容旧版 Excel 导入回执对账，凭据库交互瘦身后已废弃
+   */
   @Post('import/resolve')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('credential:read', 'credential:write', 'credential:import', 'target:read')

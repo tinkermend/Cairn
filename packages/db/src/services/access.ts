@@ -23,6 +23,7 @@ import {
   externalRunSchema,
   hasAiSteps,
   requiredRunInputKeys,
+  scenarioInputsToJsonSchema,
   snapshotNeedsBrowserAi,
   isAiCallEvidence,
   issueServiceCredentialSchema,
@@ -1974,3 +1975,83 @@ export async function serviceEvidence(
     };
   });
 }
+
+export async function serviceToolsCatalog(
+  db: Db,
+  principal: ServicePrincipal,
+  query: ServicePageQuery,
+  toolKey?: string,
+) {
+  const q = servicePageQuerySchema.parse(query);
+  return atomic(db, async (tx) => {
+    const { actor } = await access(tx, principal, ["run:execute"]);
+    const {
+      targets: t,
+      credentialTargetGrants: tg,
+      scenarios: s,
+      scenarioVersions: v,
+    } = schemaFor(tx);
+
+    const conditions = [
+      eq(tg.credentialId, actor.credentialId),
+      eq(t.status, "active"),
+      eq(s.status, "active"),
+      eq(v.kind, "published"),
+    ];
+
+    if (toolKey) {
+      const rawId = toolKey.startsWith("scenario.") ? toolKey.slice(9) : toolKey;
+      if (isUuid(rawId)) {
+        conditions.push(or(eq(s.id, rawId), eq(s.name, toolKey))!);
+      } else {
+        conditions.push(or(eq(s.name, rawId), eq(s.name, toolKey))!);
+      }
+    }
+
+    if (q.cursor) {
+      conditions.push(gt(v.id, q.cursor));
+    }
+
+    const rows = await tx
+      .select({
+        id: v.id,
+        scenarioId: s.id,
+        targetId: s.targetId,
+        scenarioName: s.name,
+        versionNo: v.versionNo,
+        definition: v.definition,
+      })
+      .from(v)
+      .innerJoin(s, eq(s.id, v.scenarioId))
+      .innerJoin(t, eq(t.id, s.targetId))
+      .innerJoin(tg, eq(tg.targetId, s.targetId))
+      .where(and(...conditions))
+      .orderBy(asc(v.id))
+      .limit(q.limit + 1);
+
+    const result = page(rows, q.limit);
+    return {
+      ...result,
+      items: result.items.map((row) => {
+        const def = row.definition as any;
+        const key = `scenario.${row.scenarioId}`;
+        const inputSchema = scenarioInputsToJsonSchema(def.inputs ?? []);
+        const outputSchema = def.outputs
+          ? { type: "object", description: "业务巡检指标与发现项" }
+          : { type: "object" };
+        return {
+          key,
+          descriptorVersion: `v${row.versionNo}`,
+          scenarioId: row.scenarioId,
+          scenarioVersionId: row.id,
+          targetId: row.targetId,
+          scenarioVersionRef: `${row.scenarioId}@v${row.versionNo}`,
+          description: `执行场景「${row.scenarioName}」`,
+          inputSchema,
+          outputSchema,
+        };
+      }),
+    };
+  });
+}
+

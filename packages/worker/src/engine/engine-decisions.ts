@@ -123,6 +123,7 @@ export interface ShouldAttemptSelfHealInput {
   maxHealAttempts: number
   hasModelBudget: boolean
   pageContextMatch: boolean
+  hasSuggestedPatch?: boolean
 }
 
 /**
@@ -132,10 +133,12 @@ export interface ShouldAttemptSelfHealInput {
  * 3. 次数与模型预算熔断
  * 4. 排除丢租、断言失败、验证失败等确定性错误
  * 5. 副作用断流：有副作用步骤仅在动作未发出（TARGET_NOT_FOUND / RESOLVER_EXHAUSTED）时允许自愈
+ * 6. 补丁存在门禁：严禁在缺少有效建议补丁时伪自愈
  */
 export function shouldAttemptSelfHeal(input: ShouldAttemptSelfHealInput): boolean {
   if (input.policy === 'off') return false
   if (input.policy === 'authoring_only' && !input.isTrialOrDebug) return false
+  if (input.hasSuggestedPatch === false) return false
   if (!input.pageContextMatch) return false
   if (input.attemptNo > input.maxHealAttempts || !input.hasModelBudget) return false
 

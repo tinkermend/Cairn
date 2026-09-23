@@ -146,6 +146,50 @@ export class BrowserSessionsController {
   ) {
     return this.sessions.dispose(sessionId, body, actor)
   }
+
+  @Post(':sessionId/auth-control/acquire')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control')
+  acquire(
+    @Param('sessionId', new ZodValidationPipe(entityIdSchema)) sessionId: string,
+    @Body(new ZodValidationPipe(acquireAuthControlBodySchema)) body: AcquireAuthControlBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.sessions.acquireAuth(sessionId, body, actor)
+  }
+
+  @Post(':sessionId/auth-control/heartbeat')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control')
+  heartbeat(
+    @Param('sessionId', new ZodValidationPipe(entityIdSchema)) sessionId: string,
+    @Body(new ZodValidationPipe(authControlTokenBodySchema)) body: AuthControlTokenBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.sessions.heartbeatAuth(sessionId, body, actor)
+  }
+
+  @Post(':sessionId/auth-control/input')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control')
+  input(
+    @Param('sessionId', new ZodValidationPipe(entityIdSchema)) sessionId: string,
+    @Body(new ZodValidationPipe(authControlInputBodySchema)) body: AuthControlInputBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.sessions.inputAuth(sessionId, body, actor)
+  }
+
+  @Post(':sessionId/auth-control/release')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control')
+  release(
+    @Param('sessionId', new ZodValidationPipe(entityIdSchema)) sessionId: string,
+    @Body(new ZodValidationPipe(authControlTokenBodySchema)) body: AuthControlTokenBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.sessions.releaseAuth(sessionId, body, actor)
+  }
 }
 
 @Controller('session-operations')

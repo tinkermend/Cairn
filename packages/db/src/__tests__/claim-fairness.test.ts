@@ -179,7 +179,7 @@ describe.each(DRIVERS)('%s 领取公平性与扫描上界', { timeout: 90_000 },
     expect(next?.runId).not.toBe(later.detail.id)
   })
 
-  it('JS 仍不合格时单次领取扫描不超过上界', async () => {
+  it('Worker 自身会话容量已满时，排队目标不进扫描直接判空', async () => {
     await cancelClaimable()
     const claimant = await readyWorker(`cap-${newId().slice(0, 6)}`, 1)
     const held = await freshSlot('占满会话')
@@ -209,7 +209,11 @@ describe.each(DRIVERS)('%s 领取公平性与扫描上界', { timeout: 90_000 },
     })
     const diag = takeLastClaimDiagnostics()
     expect(grant).toBeNull()
-    expect(diag.scanned).toBe(CLAIM_SCAN_LIMIT)
-    expect(diag.excluded).toBeLessThanOrEqual(CLAIM_EXCLUDE_LIMIT)
+    // Worker 自身 maxSessions 已被 held 占满：claimRun 的候选 SQL 直接带上
+    // COUNT(该 Worker 存活会话) < maxSessions 判断，容量已满时任何目标账号的排队
+    // Run 都不会被选出，扫描在第一次取行就落空，不再逐行判定到 CLAIM_SCAN_LIMIT
+    // 才止损。这比逐行扫描更高效，不再是扫描上界这条安全网覆盖的路径。
+    expect(diag.scanned).toBe(0)
+    expect(diag.excluded).toBe(0)
   })
 })

@@ -12,6 +12,8 @@ import {
   transitionSessionUse,
   markSessionOperationWaitingForAuth,
   appendSessionEvent,
+  getSessionOperation,
+  getSessionById,
 } from '@cairn/db'
 import { BrowserSessionManager } from './session-manager'
 import { createBrowserPort } from './port'
@@ -1243,4 +1245,71 @@ it('生产方法与端口面都在', () => {
   expect(typeof port.restoreAuthGate).toBe('function')
   expect(typeof port.recoverAuth).toBe('function')
   expect(typeof port.sampleMapConditions).toBe('function')
+})
+
+it('completeOccupiedAuth 核验未通过时抛出 AUTH_STILL_REQUIRED 且不收尾', async () => {
+  vi.useFakeTimers()
+  try {
+    manager.liveSessionIdForOwner = vi.fn(() => 's')
+    manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'https://example.com/login' } }))
+    manager.verifyOccupiedOwner = vi.fn(async () => ({
+      authState: 'EXPIRED',
+      identityState: 'UNVERIFIED',
+      observedIdentity: null,
+      unknownClass: null,
+      evidenceSummary: null,
+      authProfileRevision: null,
+    }))
+    manager.finishMaintenance = vi.fn(async () => undefined)
+    vi.mocked(getSessionOperation).mockResolvedValue({
+      id: 'op-wait',
+      kind: 'LOGIN',
+      targetId: 't',
+      targetAccountId: 'a',
+      status: 'WAITING_FOR_AUTH',
+    } as any)
+
+    const promise = expect(manager.completeOccupiedAuth('op-wait')).rejects.toMatchObject({
+      code: 'AUTH_STILL_REQUIRED',
+    })
+    await vi.advanceTimersByTimeAsync(6000)
+    await promise
+    expect(manager.finishMaintenance).not.toHaveBeenCalled()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('completeOccupiedAuth 核验通过时收尾维护并释放租约', async () => {
+  manager.liveSessionIdForOwner = vi.fn(() => 's')
+  manager.ensureRunPage = vi.fn(() => ({ page: { url: () => 'https://example.com/dashboard' } }))
+  manager.verifyOccupiedOwner = vi.fn(async () => ({
+    authState: 'AUTHENTICATED',
+    identityState: 'VERIFIED',
+    observedIdentity: 'user',
+    unknownClass: null,
+    evidenceSummary: null,
+    authProfileRevision: 1,
+  }))
+  manager.settleOccupiedLanding = vi.fn(async () => undefined)
+  manager.finishMaintenance = vi.fn(async () => undefined)
+  manager.release = vi.fn(async () => undefined)
+  vi.mocked(getSessionOperation).mockResolvedValue({
+    id: 'op-pass',
+    kind: 'LOGIN',
+    targetId: 't',
+    targetAccountId: 'a',
+    status: 'WAITING_FOR_AUTH',
+  } as any)
+  vi.mocked(getSessionById).mockResolvedValue({ id: 's', generation: 1 } as any)
+  manager.leaseToRun.set('lease-1', 'op-pass')
+
+  const res = await manager.completeOccupiedAuth('op-pass')
+  expect(res.authState).toBe('AUTHENTICATED')
+  expect(manager.finishMaintenance).toHaveBeenCalledWith(
+    'op-pass',
+    { targetId: 't', targetAccountId: 'a' },
+    'SUCCEEDED',
+    expect.objectContaining({ type: 'auth.verified' }),
+  )
 })

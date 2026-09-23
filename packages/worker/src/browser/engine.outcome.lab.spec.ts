@@ -378,6 +378,7 @@ describe('ExecutionEngine × 真浏览器 Outcome 结果轴联调', { timeout: 1
               provenance: 'manual',
               rule: {
                 kind: 'deterministic',
+                target: { framePath: [], candidates: [{ by: 'css', value: '#status-badge' }] },
                 expect: { kind: 'text_equals', value: 'MAINTENANCE' },
               },
             },
@@ -397,6 +398,7 @@ describe('ExecutionEngine × 真浏览器 Outcome 结果轴联调', { timeout: 1
               provenance: 'manual',
               rule: {
                 kind: 'deterministic',
+                target: { framePath: [], candidates: [{ by: 'css', value: '#action-result' }] },
                 expect: { kind: 'text_equals', value: 'DONE' },
               },
             },

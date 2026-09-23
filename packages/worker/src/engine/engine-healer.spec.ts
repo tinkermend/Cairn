@@ -85,13 +85,29 @@ describe('SH-1 & SH-2: Step Healer Decisions and Guardrails', () => {
       ).toBe(false)
     })
 
-    it('SH04-E: 页面为空白页 about:blank 或空字符串时熔断拒绝', () => {
+    it('SH04-E: 页面为空白页 about:blank、空字符串或缺少 URL 时熔断拒绝', () => {
       expect(verifyPageContext({ currentUrl: 'about:blank' })).toBe(false)
       expect(verifyPageContext({ currentUrl: '   ' })).toBe(false)
+      expect(verifyPageContext({})).toBe(false)
+      expect(verifyPageContext({ currentUrl: undefined })).toBe(false)
     })
   })
 
   describe('shouldAttemptSelfHeal (Healer Admission Decisions)', () => {
+    it('B4 门禁: 缺少有效 suggestedPatch 时严禁伪自愈', () => {
+      const healable = shouldAttemptSelfHeal({
+        policy: 'safe_runtime',
+        isTrialOrDebug: false,
+        step: readStep,
+        error: targetNotFoundError,
+        attemptNo: 1,
+        maxHealAttempts: 1,
+        hasModelBudget: true,
+        pageContextMatch: true,
+        hasSuggestedPatch: false,
+      })
+      expect(healable).toBe(false)
+    })
     it('SH01: 只读步骤定位失败在 safe_runtime 下允许自愈', () => {
       const healable = shouldAttemptSelfHeal({
         policy: 'safe_runtime',

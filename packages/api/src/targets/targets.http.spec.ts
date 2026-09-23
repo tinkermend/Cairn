@@ -133,6 +133,8 @@ function mockService() {
     createAccount: vi.fn(async () => account),
     updateAccount: vi.fn(async () => ({ ...account, hasPassword: false })),
     deleteAccount: vi.fn(async () => undefined),
+    setAccountStorageState: vi.fn(async () => account),
+    clearAccountStorageState: vi.fn(async () => account),
     getAuthProfile: vi.fn(async () => ({ current: null, history: [], accounts: [] })),
     publishAuthProfile: vi.fn(async () => ({ current: null, history: [], accounts: [] })),
     updateAccountIdentity: vi.fn(async () => account),
@@ -438,6 +440,26 @@ describe('Targets HTTP', () => {
       .expect(200)
     expect(res.body.items[0]).not.toHaveProperty('password')
     expect(res.body.items[0]).toHaveProperty('hasPassword')
+  })
+
+  it('导入 StorageState 返回 200，清除 StorageState 返回 200', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/accounts/${account.id}/storage-state`)
+      .send({ storageState: { cookies: [], origins: [] } })
+      .expect(200)
+    expect(service.setAccountStorageState).toHaveBeenCalled()
+
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/accounts/${account.id}/clear-storage-state`)
+      .expect(200)
+    expect(service.clearAccountStorageState).toHaveBeenCalled()
+  })
+
+  it('非法 StorageState 返回 400', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/accounts/${account.id}/storage-state`)
+      .send({ storageState: 'not-an-object' })
+      .expect(400)
   })
 
   it('认证规则读用 target:read，写与验收用 target:write', async () => {

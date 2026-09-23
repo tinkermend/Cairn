@@ -29,7 +29,9 @@ import {
   serviceWebhookDeliveryQuerySchema,
   serviceWebhookWriteSchema,
   servicePlaygroundRunBodySchema,
+  externalToolCallSchema,
   type ExternalRunBody,
+  type ExternalToolCall,
   type IssueServiceCredential,
   type ServiceCallerBody,
   type ServiceCallerQuery,
@@ -325,6 +327,37 @@ export class ServicesController {
 @SetMetadata(IS_SERVICE_API, true)
 export class OpenExecutionController {
   constructor(private readonly services: ServicesService) {}
+  @Get("tools")
+  @Scope("run:execute")
+  tools(@Req() req: Request, @Query(page) q: ServicePageQuery) {
+    return this.services.tools(req.servicePrincipal!, q);
+  }
+  @Get("tools/:toolKey")
+  @Scope("run:execute")
+  tool(@Req() req: Request, @Param("toolKey") toolKey: string) {
+    return this.services.tool(req.servicePrincipal!, toolKey);
+  }
+  @Post("tools/:toolKey/call")
+  @Scope("run:execute")
+  async callTool(
+    @Req() req: Request,
+    @Param("toolKey") toolKey: string,
+    @Body(new ZodValidationPipe(externalToolCallSchema)) body: ExternalToolCall,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.services.callTool(
+      req.servicePrincipal!,
+      toolKey,
+      body,
+      req.requestId!,
+    );
+    if (!result.sync) {
+      res.status(202);
+      return result.data;
+    }
+    res.status(200);
+    return result.data;
+  }
   @Get("targets")
   @Scope("run:execute")
   targets(@Req() req: Request, @Query(page) q: ServicePageQuery) {

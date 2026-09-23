@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router'
 import type { AccountSessionOverviewItem, TargetAccountDto } from '@cairn/shared'
@@ -14,6 +14,8 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Users,
+  Database,
+  KeyRound,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
@@ -57,10 +59,12 @@ import { ResolutionPolicyCard } from './resolution-policy-card'
 import { AuthProfileCard } from './auth-profile-card'
 import { SessionPolicyCard } from './session-policy-card'
 import { AccountFormDialog } from './account-form-dialog'
+import { TargetAccountPasswordDialog } from './account-password-dialog'
 import { TargetFormDialog } from './target-form-dialog'
 import { SystemInfoSheet } from './system-info-sheet'
 import { TargetOverviewMetrics } from './target-overview-metrics'
 import { TargetScenariosTab } from './target-scenarios-tab'
+import { TargetBusinessSourcesTab } from './target-business-sources-tab'
 import {
   ACCOUNT_USAGE_LABELS,
   AUTH_METHOD_LABELS,
@@ -77,12 +81,30 @@ const route = getRouteApi('/_authenticated/targets/$targetId/')
 
 export function TargetDetailPage() {
   const { targetId } = route.useParams()
+  const search = route.useSearch()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const page = useCursorPage()
   const [activeTab, setActiveTab] = useState('accounts')
   const [accountSearch, setAccountSearch] = useState('')
   const [accountStatus, setAccountStatus] = useState<'all' | 'active' | 'disabled'>('all')
+  const [prefillUsername, setPrefillUsername] = useState<string | undefined>(search?.prefill_username)
+
+  useEffect(() => {
+    if (search?.action === 'create-account') {
+      setActiveTab('accounts')
+      setAddAccountOpen(true)
+      if (search.prefill_username) {
+        setPrefillUsername(search.prefill_username)
+      }
+      void navigate({
+        to: '/targets/$targetId',
+        params: { targetId },
+        search: {},
+        replace: true,
+      })
+    }
+  }, [search?.action, search?.prefill_username, targetId, navigate])
 
   const accountFilters = useMemo(
     () => ({
@@ -138,6 +160,7 @@ export function TargetDetailPage() {
   const [infoOpen, setInfoOpen] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [editingAccount, setEditingAccount] = useState<TargetAccountDto | undefined>()
+  const [passwordAccount, setPasswordAccount] = useState<TargetAccountDto | null>(null)
   const [removingTarget, setRemovingTarget] = useState(false)
   const [removingAccount, setRemovingAccount] = useState<TargetAccountDto | null>(null)
   const [saving, setSaving] = useState(false)
@@ -306,6 +329,10 @@ export function TargetDetailPage() {
                   <Shield className='size-4' />
                   访问范围
                 </TabsTrigger>
+                <TabsTrigger value='ai-sources'>
+                  <Database className='size-4' />
+                  AI 业务数据来源
+                </TabsTrigger>
               </TabsList>
 
               {/* Tab 1: 目标账号 */}
@@ -424,11 +451,53 @@ export function TargetDetailPage() {
                                 </code>
                               </TableCell>
                               <TableCell>
-                                <StatusBadge
-                                  tone={item.hasPassword ? 'success' : 'neutral'}
-                                >
-                                  {item.hasPassword ? '已保存' : '未设置'}
-                                </StatusBadge>
+                                {(() => {
+                                  if (!item.hasPassword) {
+                                    return (
+                                      <StatusBadge tone='neutral'>
+                                        未设置
+                                      </StatusBadge>
+                                    )
+                                  }
+                                  if (item.validityPolicy?.mode === 'permanent') {
+                                    return (
+                                      <div className='flex flex-wrap items-center gap-1.5'>
+                                        <StatusBadge tone='success'>已保存</StatusBadge>
+                                        <span className='text-label text-muted-foreground'>永久</span>
+                                      </div>
+                                    )
+                                  }
+                                  if (item.maintenanceDueAt) {
+                                    const days = Math.ceil(
+                                      (new Date(item.maintenanceDueAt).getTime() - Date.now()) / (86400 * 1000)
+                                    )
+                                    if (days <= 0) {
+                                      return (
+                                        <div className='flex flex-wrap items-center gap-1.5'>
+                                          <StatusBadge tone='warning'>已到期</StatusBadge>
+                                        </div>
+                                      )
+                                    }
+                                    if (days <= 7) {
+                                      return (
+                                        <div className='flex flex-wrap items-center gap-1.5'>
+                                          <StatusBadge tone='warning'>剩 {days} 天</StatusBadge>
+                                        </div>
+                                      )
+                                    }
+                                    return (
+                                      <div className='flex flex-wrap items-center gap-1.5'>
+                                        <StatusBadge tone='success'>已保存</StatusBadge>
+                                        <span className='text-label text-muted-foreground'>剩 {days} 天</span>
+                                      </div>
+                                    )
+                                  }
+                                  return (
+                                    <StatusBadge tone='success'>
+                                      已保存
+                                    </StatusBadge>
+                                  )
+                                })()}
                               </TableCell>
                               <TableCell>
                                 {(() => {
@@ -491,6 +560,16 @@ export function TargetDetailPage() {
                                       >
                                         管理会话
                                       </Link>
+                                    </Button>
+                                  </Can>
+                                  <Can permission='credential:write'>
+                                    <Button
+                                      variant='ghost'
+                                      size='sm'
+                                      onClick={() => setPasswordAccount(item)}
+                                    >
+                                      <KeyRound className='mr-1 size-3.5' />
+                                      换密
                                     </Button>
                                   </Can>
                                   <Can permission='target:write'>
@@ -556,6 +635,11 @@ export function TargetDetailPage() {
                 <ResolutionPolicyCard target={target} />
                 <AccessPolicyCard targetId={targetId} />
               </TabsContent>
+
+              {/* Tab 5: AI 业务数据来源 */}
+              <TabsContent value='ai-sources' className='space-y-5'>
+                <TargetBusinessSourcesTab targetId={targetId} targetName={target.name} />
+              </TabsContent>
             </Tabs>
 
             {/* 对话框与表单弹窗 */}
@@ -577,10 +661,12 @@ export function TargetDetailPage() {
                 if (!next) {
                   setAddAccountOpen(false)
                   setEditingAccount(undefined)
+                  setPrefillUsername(undefined)
                 }
               }}
               targetId={targetId}
               current={editingAccount}
+              defaultUsername={prefillUsername}
               accountSessionMode={target.effectiveSessionPolicy?.accountSessionMode ?? 'exclusive'}
               liveCount={
                 editingAccount
@@ -649,6 +735,16 @@ export function TargetDetailPage() {
               )
             })
             .finally(() => setSaving(false))
+        }}
+      />
+
+      <TargetAccountPasswordDialog
+        targetId={targetId}
+        targetName={target?.name}
+        account={passwordAccount}
+        open={Boolean(passwordAccount)}
+        onOpenChange={(open) => {
+          if (!open) setPasswordAccount(null)
         }}
       />
     </>

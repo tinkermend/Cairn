@@ -14,6 +14,7 @@ export {
   authorizeSecretConsume,
   resolveSnapshotCredential,
   resolveAccountCurrentCredential,
+  resolveAccountAuthMaterials,
   secretIdsStillReferenced,
   recordCredentialVerification,
   CredentialConsumeDenied,

@@ -80,7 +80,13 @@ export function SessionPolicyCard({ target }: { target: TargetDto }) {
     mutation.mutate({ [key]: value })
   }
 
-  const saveNumber = (key: 'keepAliveSeconds' | 'authProbeIntervalSeconds' | 'evictionPriority') => {
+  const saveNumber = (
+    key:
+      | 'keepAliveSeconds'
+      | 'authProbeIntervalSeconds'
+      | 'evictionPriority'
+      | 'unattendedAuthTimeoutSeconds',
+  ) => {
     if (draft[key] === effective[key] && override?.[key] == null) return
     if (draft[key] === override?.[key]) return
     saveField(key, draft[key])
@@ -257,6 +263,78 @@ export function SessionPolicyCard({ target }: { target: TargetDto }) {
                 size='sm'
                 disabled={!canWrite}
                 onClick={() => saveField('lostDisposition', null)}
+              >
+                清除本项目标覆盖
+              </Button>
+            ) : null}
+          </div>
+          <div className='space-y-2'>
+            <div className='flex items-center justify-between gap-2'>
+              <Label htmlFor='session-unattended-timeout'>无人值守认证超时（秒）</Label>
+              <span className='text-label text-muted-foreground'>
+                {inheritLabel(override?.unattendedAuthTimeoutSeconds != null)}
+              </span>
+            </div>
+            <Input
+              id='session-unattended-timeout'
+              type='number'
+              disabled={!canWrite || mutation.isPending}
+              value={draft.unattendedAuthTimeoutSeconds ?? 120}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  unattendedAuthTimeoutSeconds: Number(event.target.value),
+                }))
+              }
+              onBlur={() => saveNumber('unattendedAuthTimeoutSeconds')}
+            />
+            <p className='text-label text-muted-foreground'>
+              无人值守/定时调度运行遇到需人工认证时的快速熔断时间（默认 120 秒）。
+            </p>
+            {override?.unattendedAuthTimeoutSeconds != null ? (
+              <Button
+                variant='ghost'
+                size='sm'
+                disabled={!canWrite}
+                onClick={() => saveField('unattendedAuthTimeoutSeconds', null)}
+              >
+                清除本项目标覆盖
+              </Button>
+            ) : null}
+          </div>
+          <div className='space-y-2'>
+            <div className='flex items-center justify-between gap-2'>
+              <Label htmlFor='session-notify-wait'>认证等待接管通知</Label>
+              <span className='text-label text-muted-foreground'>
+                {inheritLabel(override?.notifyOnAuthWait != null)}
+              </span>
+            </div>
+            <Select
+              disabled={!canWrite || mutation.isPending}
+              value={draft.notifyOnAuthWait ? 'true' : 'false'}
+              onValueChange={(value) => {
+                const notifyOnAuthWait = value === 'true'
+                setDraft((current) => ({ ...current, notifyOnAuthWait }))
+                saveField('notifyOnAuthWait', notifyOnAuthWait)
+              }}
+            >
+              <SelectTrigger id='session-notify-wait' className='w-full'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='false'>不发送接管通知</SelectItem>
+                <SelectItem value='true'>推送接管卡片至通知通道</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className='text-label text-muted-foreground'>
+              遇到需人工认证等待时，自动向已启用的通知渠道（Webhook/邮件等）发送提醒。
+            </p>
+            {override?.notifyOnAuthWait != null ? (
+              <Button
+                variant='ghost'
+                size='sm'
+                disabled={!canWrite}
+                onClick={() => saveField('notifyOnAuthWait', null)}
               >
                 清除本项目标覆盖
               </Button>

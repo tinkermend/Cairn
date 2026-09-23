@@ -88,6 +88,8 @@ export const SESSION_MAINTENANCE_ERROR_CODES = [
   'OPERATION_QUEUE_EXPIRED',
   'AUTH_PROFILE_REQUIRED',
   'SESSION_KEEPALIVE_ABANDONED',
+  'AUTH_STILL_REQUIRED',
+  'UNATTENDED_AUTH_TIMEOUT',
 ] as const
 export type SessionMaintenanceErrorCode = (typeof SESSION_MAINTENANCE_ERROR_CODES)[number]
 export const sessionMaintenanceErrorCodeSchema = z.enum(SESSION_MAINTENANCE_ERROR_CODES)
@@ -103,6 +105,8 @@ export const SESSION_MAINTENANCE_ERROR_MESSAGES: Record<SessionMaintenanceErrorC
   OPERATION_QUEUE_EXPIRED: '维护操作排队已过期',
   AUTH_PROFILE_REQUIRED: '尚未发布并通过验收的主动检测规则，无法做主动核验、续登或认证保活',
   SESSION_KEEPALIVE_ABANDONED: '认证已失效且自动登录不可用，已停止保活巡检',
+  AUTH_STILL_REQUIRED: '尚未检测到登录成功，请在页面中确认并提交',
+  UNATTENDED_AUTH_TIMEOUT: '生产无人值守认证等待超时，已快速熔断释放会话',
 }
 
 export const SESSION_EVENT_TYPES = [
@@ -257,7 +261,8 @@ export function canCloseAccountSession(input: {
     input.status === 'ready' ||
     input.status === 'needs_check' ||
     input.status === 'needs_login' ||
-    input.status === 'identity_mismatch'
+    input.status === 'identity_mismatch' ||
+    input.status === 'maintenance'
   )
 }
 
@@ -295,6 +300,8 @@ export const requestSessionOperationBodySchema = z
       idempotencyKey: z.string().trim().min(8).max(256),
       expectedSessionId: optionalId,
       expectedGeneration: z.number().int().positive().optional(),
+      force: z.boolean().optional(),
+      originContext: z.enum(['INTERACTIVE', 'UNATTENDED']).optional(),
     }),
     z.strictObject({
       kind: z.literal('REFRESH_LOGIN_PAGE'),
@@ -302,12 +309,16 @@ export const requestSessionOperationBodySchema = z
       expectedSessionId: entityIdSchema,
       expectedGeneration: z.number().int().positive(),
       pageRef: pageRefSchema,
+      force: z.boolean().optional(),
+      originContext: z.enum(['INTERACTIVE', 'UNATTENDED']).optional(),
     }),
     z.strictObject({
       kind: z.literal('SETTLE_LANDING'),
       idempotencyKey: z.string().trim().min(8).max(256),
       expectedSessionId: entityIdSchema,
       expectedGeneration: z.number().int().positive(),
+      force: z.boolean().optional(),
+      originContext: z.enum(['INTERACTIVE', 'UNATTENDED']).optional(),
     }),
     z.strictObject({
       kind: z.literal('RESET_PROFILE'),
@@ -315,6 +326,8 @@ export const requestSessionOperationBodySchema = z
       confirmAccountId: entityIdSchema,
       expectedSessionId: optionalId,
       expectedGeneration: z.number().int().positive().optional(),
+      force: z.boolean().optional(),
+      originContext: z.enum(['INTERACTIVE', 'UNATTENDED']).optional(),
     }),
   ])
   .refine((value) => (value.expectedSessionId === undefined) === (value.expectedGeneration === undefined), {

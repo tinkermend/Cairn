@@ -16,6 +16,7 @@ import {
   updateTargetBodySchema,
   targetSessionPolicyPatchSchema,
   targetResolutionPolicyPatchSchema,
+  importStorageStateBodySchema,
   type CreateTargetAccountBody,
   type CreateTargetBody,
   type ObserveAuthProfileValidationBody,
@@ -30,6 +31,7 @@ import {
   type UpdateTargetBody,
   type TargetSessionPolicyPatch,
   type TargetResolutionPolicyPatch,
+  type ImportStorageStateBody,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
@@ -258,5 +260,28 @@ export class TargetsController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.targets.deleteAccount(targetId, accountId, actor)
+  }
+
+  @Post(':targetId/accounts/:accountId/storage-state')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  importStorageState(
+    @Param('targetId') targetId: string,
+    @Param('accountId') accountId: string,
+    @Body(new ZodValidationPipe(importStorageStateBodySchema)) body: ImportStorageStateBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.setAccountStorageState(targetId, accountId, body.storageState, actor)
+  }
+
+  @Post(':targetId/accounts/:accountId/clear-storage-state')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  clearStorageState(
+    @Param('targetId') targetId: string,
+    @Param('accountId') accountId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.clearAccountStorageState(targetId, accountId, actor)
   }
 }

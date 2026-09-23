@@ -22,7 +22,6 @@ import { Can } from '@/components/rbac/can'
 import {
   AUTH_METHOD_LABELS,
   CAPTCHA_MODE_LABELS,
-  TARGET_STATUS_LABELS,
 } from './labels'
 import {
   ACCOUNT_SESSION_STATUS_LABELS,
@@ -76,36 +75,30 @@ export function TargetOverviewPanel({ target, onDelete }: TargetOverviewPanelPro
       aria-label='系统概览'
       className='min-w-0 rounded-lg border border-border-card bg-card shadow-card'
     >
-      {/* 头部：系统信息与状态 */}
-      <div className='space-y-4 border-b border-border-divider p-5'>
-        <p className='text-label text-muted-foreground'>当前系统</p>
-        <div className='flex items-start gap-3'>
+      {/* 头部：系统信息 */}
+      <div className='border-b border-border-divider p-4'>
+        <div className='flex items-center gap-3'>
           <span
             aria-hidden='true'
-            className='flex size-11 shrink-0 items-center justify-center rounded-lg bg-selection-background text-primary'
+            className='flex size-10 shrink-0 items-center justify-center rounded-lg bg-selection-background text-primary'
           >
             <Globe2 className='size-5' />
           </span>
-          <div className='min-w-0'>
-            <h2 className='text-section font-semibold break-words'>
+          <div className='min-w-0 flex-1'>
+            <h2 className='text-section font-semibold break-words leading-tight'>
               {target.name}
             </h2>
-            <p className='mt-1 font-mono text-label break-all text-muted-foreground'>
+            <p className='mt-0.5 font-mono text-label break-all text-muted-foreground'>
               {target.code}
             </p>
           </div>
         </div>
-        <StatusBadge
-          tone={target.status === 'active' ? 'success' : 'neutral'}
-        >
-          {TARGET_STATUS_LABELS[target.status]}
-        </StatusBadge>
       </div>
 
       {/* 入口 URL 与快捷操作 */}
-      <div className='border-b border-border-divider p-5 space-y-2'>
+      <div className='border-b border-border-divider p-4 space-y-1.5'>
         <span className='text-label font-medium text-text-primary'>系统入口</span>
-        <div className='flex items-center justify-between gap-2 rounded-md border border-border-divider bg-surface-subtle px-3 py-2'>
+        <div className='flex items-center justify-between gap-2 rounded-md border border-border-divider bg-surface-subtle px-2.5 py-1.5'>
           <span
             className='truncate font-mono text-small text-text-primary'
             title={target.entryUrl}
@@ -148,7 +141,7 @@ export function TargetOverviewPanel({ target, onDelete }: TargetOverviewPanelPro
       </div>
 
       {/* 目标账号与会话健康度 */}
-      <div className='border-b border-border-divider p-5 space-y-3'>
+      <div className='border-b border-border-divider p-4 space-y-2.5'>
         <div className='flex items-center justify-between'>
           <div className='flex items-center gap-1.5'>
             <Users className='size-4 text-muted-foreground' />
@@ -236,7 +229,7 @@ export function TargetOverviewPanel({ target, onDelete }: TargetOverviewPanelPro
       </div>
 
       {/* 关联业务场景 */}
-      <div className='border-b border-border-divider p-5 space-y-3'>
+      <div className='border-b border-border-divider p-4 space-y-2.5'>
         <div className='flex items-center justify-between'>
           <div className='flex items-center gap-1.5'>
             <Layers className='size-4 text-muted-foreground' />
@@ -284,14 +277,14 @@ export function TargetOverviewPanel({ target, onDelete }: TargetOverviewPanelPro
       </div>
 
       {/* 知识地图与元数据 */}
-      <div className='space-y-3 p-5 text-small'>
+      <div className='space-y-2 p-4 text-label text-muted-foreground'>
         {canReadMap ? (
           <div className='flex items-center justify-between'>
-            <span className='text-muted-foreground'>知识地图</span>
+            <span>知识地图</span>
             <Link
               to='/targets/$targetId/map'
               params={{ targetId: target.id }}
-              className='inline-flex items-center gap-1 text-label text-link hover:underline'
+              className='inline-flex items-center gap-1 text-link hover:underline'
             >
               <Compass className='size-3.5' />
               查看拓扑与元素
@@ -300,7 +293,7 @@ export function TargetOverviewPanel({ target, onDelete }: TargetOverviewPanelPro
           </div>
         ) : null}
 
-        <div className='flex items-center justify-between text-label text-muted-foreground'>
+        <div className='flex items-center justify-between'>
           <span>最近更新</span>
           <span>
             {new Date(target.updatedAt).toLocaleString('zh-CN', {
@@ -311,14 +304,14 @@ export function TargetOverviewPanel({ target, onDelete }: TargetOverviewPanelPro
       </div>
 
       {/* 底部操作 */}
-      <div className='flex flex-wrap items-center justify-between gap-2 border-t border-border-divider p-4'>
-        <Button variant='outline' asChild>
+      <div className='flex flex-wrap items-center justify-between gap-2 border-t border-border-divider p-3.5'>
+        <Button variant='outline' size='sm' asChild>
           <Link
             to='/targets/$targetId'
             params={{ targetId: target.id }}
           >
             管理系统与账号
-            <ArrowUpRight className='size-4' />
+            <ArrowUpRight className='size-3.5' />
           </Link>
         </Button>
         <Can allOf={['target:delete', 'run:delete']}>

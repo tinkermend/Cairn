@@ -568,7 +568,7 @@ describe('captcha schemas and fingerprints', () => {
         sliderDragMinDurationMs: 2000,
         sliderDragMaxDurationMs: 1000,
       }),
-    ).toThrow('滑块拖拽最小耗时不得大于最大耗时')
+    ).toThrow('滑块拖动最短时间不得大于最长时间')
   })
 
   it('内置指纹库包含 Gin-Vue-Admin 与 Vben Admin 探针', () => {

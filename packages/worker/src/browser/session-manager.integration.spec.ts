@@ -118,9 +118,15 @@ function stubBrowserHandle(
   } as unknown as BrowserHandle
 }
 
-/** 把完整的解析后策略收窄成「单次运行允许覆盖」的形状。 */
-function withoutLostDisposition<T extends { lostDisposition?: unknown }>(policy: T): Omit<T, 'lostDisposition'> {
-  const { lostDisposition: _notOverridable, ...overridable } = policy
+/**
+ * 把完整的解析后策略收窄成「单次运行允许覆盖」的形状：sessionPolicyOverrideSchema 是
+ * strict，lostDisposition（失联处置）与 accountSessionMode（独占/并发）都只能在平台
+ * 默认或目标系统层面配置，不允许调用方在单次运行里绕过。
+ */
+function withoutLostDisposition<T extends { lostDisposition?: unknown; accountSessionMode?: unknown }>(
+  policy: T,
+): Omit<T, 'lostDisposition' | 'accountSessionMode'> {
+  const { lostDisposition: _notOverridable, accountSessionMode: _alsoNotOverridable, ...overridable } = policy
   return overridable
 }
 

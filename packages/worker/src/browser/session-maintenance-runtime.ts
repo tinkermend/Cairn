@@ -19,6 +19,7 @@ import {
   loadSecretCiphertext,
   recordCredentialVerification,
   resolveAccountCurrentCredential,
+  resolveAccountAuthMaterials,
   scheduleNextAuthCheck,
   setSessionAuthSummary,
   setSessionProbe,
@@ -27,6 +28,7 @@ import {
   loadAccountForExecution,
   loadTargetForExecution,
   recordCaptchaLoginAttempt,
+  enqueueTakeoverNotification,
   type SessionRecord
 } from '@cairn/db'
 import {
@@ -50,6 +52,7 @@ import {
   applySessionAuthToTarget,
   attemptLoginCredentials,
   attemptLoginWithCredentials,
+  injectStorageState,
   loginWithCredentials,
   probeAuth,
   runWithOccupancy,
@@ -205,48 +208,71 @@ export async function verifyOccupiedOwner(this: SessionManagerContext, ownerId: 
     return result.observation
   }
 
+const inFlightCompleteAuth = new Set<string>()
+
 export async function completeOccupiedAuth(this: SessionManagerContext, 
     ownerId: string,
     _input?: { actorId: string; token?: string },
   ): Promise<AuthObservation> {
-    const sessionId = this.liveSessionIdForOwner(ownerId)
-    const liveBefore = sessionId ? this.lives.get(sessionId) : undefined
-    const page = liveBefore
-      ? this.ensureRunPage(liveBefore, ownerId).page
-      : undefined
-    const urlBefore = page && typeof page.url === 'function' ? page.url() : ''
-    const observation = await this.verifyOccupiedOwner(ownerId)
-    const operation = await getSessionOperation(this.dbHandle, ownerId)
-    if (operation && isSessionMaintenanceKind(operation.kind) && observation.authState === 'AUTHENTICATED') {
-      const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
-      const live = sessionId ? this.lives.get(sessionId) : undefined
-      if (live) {
-        live.autoInputClosed = false
-        live.inputAccepting = false
-      }
-      if (session && observation.identityState !== 'MISMATCH') {
-        const urlAfter = page && typeof page.url === 'function' ? page.url() : ''
-        const target = await loadTargetForExecution(this.dbHandle, operation.targetId).catch(() => null)
-        await this.settleOccupiedLanding({
-          session,
-          page,
-          trigger: 'after_login',
-          alreadyOpenedEntry: target
-            ? openedEntryDuringVerify(urlBefore, urlAfter, target.entryUrl)
-            : false,
-          operationId: operation.id,
-        })
-      }
-      await this.finishMaintenance(
-        operation.id,
-        { targetId: operation.targetId, targetAccountId: operation.targetAccountId },
-        'SUCCEEDED',
-        { type: 'auth.verified', sessionId: session?.id, generation: session?.generation },
-      )
-      const leaseId = [...this.leaseToRun.entries()].find(([, mapped]) => mapped === ownerId)?.[0]
-      if (leaseId) await this.release(leaseId, 'auth_completed').catch(() => undefined)
+    if (inFlightCompleteAuth.has(ownerId)) {
+      throw conflict('VERIFICATION_IN_FLIGHT', '登录核验正在进行中，请稍候')
     }
-    return observation
+    inFlightCompleteAuth.add(ownerId)
+    try {
+      const sessionId = this.liveSessionIdForOwner(ownerId)
+      const liveBefore = sessionId ? this.lives.get(sessionId) : undefined
+      const page = liveBefore
+        ? this.ensureRunPage(liveBefore, ownerId).page
+        : undefined
+      const urlBefore = page && typeof page.url === 'function' ? page.url() : ''
+      let observation = await this.verifyOccupiedOwner(ownerId)
+
+      // 5~8s 宽限期轮询：若首轮未就绪，最多等待重试 3 次，适应 SPA 登录跳转网络延迟
+      if (observation.authState !== 'AUTHENTICATED') {
+        for (let i = 0; i < 3; i++) {
+          await new Promise((r) => setTimeout(r, 1500))
+          observation = await this.verifyOccupiedOwner(ownerId)
+          if (observation.authState === 'AUTHENTICATED') break
+        }
+      }
+
+      const operation = await getSessionOperation(this.dbHandle, ownerId)
+      if (operation && isSessionMaintenanceKind(operation.kind)) {
+        if (observation.authState !== 'AUTHENTICATED') {
+          throw conflict('AUTH_STILL_REQUIRED', '尚未检测到登录成功，请在页面中确认并提交')
+        }
+        const session = sessionId ? await getSessionById(this.dbHandle, sessionId) : null
+        const live = sessionId ? this.lives.get(sessionId) : undefined
+        if (live) {
+          live.autoInputClosed = false
+          live.inputAccepting = false
+        }
+        if (session && observation.identityState !== 'MISMATCH') {
+          const urlAfter = page && typeof page.url === 'function' ? page.url() : ''
+          const target = await loadTargetForExecution(this.dbHandle, operation.targetId).catch(() => null)
+          await this.settleOccupiedLanding({
+            session,
+            page,
+            trigger: 'after_login',
+            alreadyOpenedEntry: target
+              ? openedEntryDuringVerify(urlBefore, urlAfter, target.entryUrl)
+              : false,
+            operationId: operation.id,
+          })
+        }
+        await this.finishMaintenance(
+          operation.id,
+          { targetId: operation.targetId, targetAccountId: operation.targetAccountId },
+          'SUCCEEDED',
+          { type: 'auth.verified', sessionId: session?.id, generation: session?.generation },
+        )
+        const leaseId = [...this.leaseToRun.entries()].find(([, mapped]) => mapped === ownerId)?.[0]
+        if (leaseId) await this.release(leaseId, 'auth_completed').catch(() => undefined)
+      }
+      return observation
+    } finally {
+      inFlightCompleteAuth.delete(ownerId)
+    }
   }
 
 function borrowedAuthWaitOwner(input: {
@@ -968,6 +994,12 @@ async function enterMaintenanceAuthWait(
   if (isUnrecoverableLoginWait(waitReason)) {
     return { ok: false, code: 'LOGIN_PAGE_UNREACHABLE' }
   }
+  const targetPolicy = (target as { sessionPolicy?: { unattendedAuthTimeoutSeconds?: number; notifyOnAuthWait?: boolean } })?.sessionPolicy
+  const waitSeconds =
+    options?.waitSeconds ??
+    ((operation as { originContext?: string }).originContext === 'UNATTENDED'
+      ? (targetPolicy?.unattendedAuthTimeoutSeconds ?? (target as { unattendedAuthTimeoutSeconds?: number })?.unattendedAuthTimeoutSeconds ?? 120)
+      : ctx.options.defaultAuthWaitSeconds)
   const waitGrant = await transitionSessionUse(ctx.dbHandle, {
     sessionId: session.id,
     fromPurpose: 'MAINTENANCE',
@@ -976,7 +1008,7 @@ async function enterMaintenanceAuthWait(
     holderWorkerId: ctx.options.workerId,
     holderInstanceId: ctx.workerInstanceId,
     leaseTtlSeconds: ctx.options.defaultLeaseTtlSeconds,
-    waitSeconds: options?.waitSeconds ?? ctx.options.defaultAuthWaitSeconds,
+    waitSeconds,
     reason: 'maintenance_auth',
   })
   if (!waitGrant) return { ok: false, code: 'SESSION_NOT_CLAIMABLE' }
@@ -996,6 +1028,19 @@ async function enterMaintenanceAuthWait(
     operationId: operation.id,
     payload: { kind: operation.kind, reason: waitReason },
   })
+  if (targetPolicy?.notifyOnAuthWait || (target as { notifyOnAuthWait?: boolean })?.notifyOnAuthWait) {
+    const expiresAt = new Date(Date.now() + waitSeconds * 1000)
+    await enqueueTakeoverNotification(ctx.dbHandle, {
+      targetId: operation.targetId,
+      targetAccountId: operation.targetAccountId,
+      targetName: (target as { name?: string })?.name ?? operation.targetId,
+      accountDisplayName: (target as { accountDisplayName?: string })?.accountDisplayName ?? operation.targetAccountId,
+      operationId: operation.id,
+      sessionId: session.id,
+      expiresAt,
+      reason: waitReason,
+    }).catch(() => undefined)
+  }
   return 'waiting'
 }
 
@@ -1017,6 +1062,18 @@ async function loginLegacyMaintenance(
       return { ok: false, code: 'SESSION_KEEPALIVE_ABANDONED' }
     }
     return { ok: false, code: 'SESSION_AUTH_UNSUPPORTED' }
+  }
+  if (credential.storageState) {
+    await injectStorageState(live.handle.context, credential.storageState)
+    try {
+      await live.handle.basePage.goto(target.entryUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 })
+      const probed = await probeAuth(live.handle, target)
+      if (probed === 'AUTHENTICATED') {
+        return { ok: true }
+      }
+    } catch {
+      // 探活未通过，平滑降级至常规登录
+    }
   }
   const occupied = await occupyAutoLoginBudget(ctx.dbHandle, {
     targetId: operation.targetId,
@@ -1218,22 +1275,57 @@ export async function persistProfileObservation(this: SessionManagerContext,
     })
   }
 
-export async function resolveAccountCredential(this: SessionManagerContext, 
-    accountId: string,
-  ): Promise<{ username: string; password: string; secretId?: string } | null> {
-    if (!this.secrets) return null
-    const grant = await resolveAccountCurrentCredential(this.dbHandle, accountId)
-    if (!grant || grant.provider !== 'local') return null
-    const row = await loadSecretCiphertext(this.dbHandle, grant.secretId)
-    if (!row) return null
-    try {
-      return {
-        username: grant.username,
-        password: this.secrets.decrypt(row.id, row.ciphertext),
-        secretId: grant.secretId,
-      }
-    } catch {
-      return null
+export async function resolveAccountCredential(
+  this: SessionManagerContext, 
+  accountId: string,
+): Promise<{
+  username: string
+  password: string
+  totpSecret?: string
+  storageState?: unknown
+  secretId?: string
+} | null> {
+  if (!this.secrets) return null
+  const materials = await resolveAccountAuthMaterials(this.dbHandle, accountId)
+  if (!materials) return null
+
+  let password = ''
+  if (materials.passwordSecretId) {
+    const row = await loadSecretCiphertext(this.dbHandle, materials.passwordSecretId)
+    if (row && row.provider === 'local') {
+      try {
+        password = this.secrets.decrypt(row.id, row.ciphertext)
+      } catch {}
     }
   }
+
+  let totpSecret: string | undefined
+  if (materials.totpSecretId) {
+    const row = await loadSecretCiphertext(this.dbHandle, materials.totpSecretId)
+    if (row && row.provider === 'local') {
+      try {
+        totpSecret = this.secrets.decrypt(row.id, row.ciphertext)
+      } catch {}
+    }
+  }
+
+  let storageState: unknown
+  if (materials.storageStateSecretId) {
+    const row = await loadSecretCiphertext(this.dbHandle, materials.storageStateSecretId)
+    if (row && row.provider === 'local') {
+      try {
+        const decrypted = this.secrets.decrypt(row.id, row.ciphertext)
+        storageState = JSON.parse(decrypted)
+      } catch {}
+    }
+  }
+
+  return {
+    username: materials.username,
+    password,
+    totpSecret,
+    storageState,
+    secretId: materials.passwordSecretId,
+  }
+}
 

@@ -51,7 +51,7 @@ describe('Engine 依赖边界', () => {
     expect(auth).not.toMatch(/engine-attempt/)
     expect(debug).not.toMatch(/engine-attempt|engine-auth-gate|engine-settle/)
     expect(settle).not.toMatch(/engine-attempt|engine-auth-gate|engine-debug|engine-preflight/)
-    expect(engine).not.toMatch(/completeMapJobSlice|projectModuleInvocationResults|settleRunEvidence|settleRunOutcome/)
+    expect(engine).not.toMatch(/completeMapJobSlice|projectModuleInvocationResults|settleRunEvidence|settleRunOutcome|settleRunOutput/)
     expect(engine).not.toMatch(/^function /m)
     expect(Object.keys(PROCESS_LOG_EVENTS)).toEqual([
       'runStarted',
@@ -98,16 +98,19 @@ describe('Engine 收尾登记表', () => {
       ['completeMapJobSlice', 'mapJob'] as const,
       ['projectModuleInvocationResults', 'moduleResults'] as const,
       ['settleRunOutcome', 'outcomeResults'] as const,
+      ['settleRunOutput', 'output'] as const,
     ]
     for (const [fn, failed] of cases) {
       const evidence = vi.spyOn(dbApi, 'settleRunEvidence').mockReset()
       const map = vi.spyOn(dbApi, 'completeMapJobSlice').mockReset()
       const modules = vi.spyOn(dbApi, 'projectModuleInvocationResults').mockReset()
       const outcomes = vi.spyOn(dbApi, 'settleRunOutcome').mockReset()
+      const outputs = vi.spyOn(dbApi, 'settleRunOutput').mockReset()
       evidence.mockResolvedValue(undefined as never)
       map.mockResolvedValue({ continue: false, jobId: 'j' } as never)
       modules.mockResolvedValue(undefined as never)
       outcomes.mockResolvedValue(undefined as never)
+      outputs.mockResolvedValue(null as never)
       vi.spyOn(dbApi, fn).mockRejectedValue(new Error(`${failed} boom`))
       const engine = host()
       await settleRun.call(engine as never, {} as never, 'run-1', grant as never)
@@ -115,6 +118,7 @@ describe('Engine 收尾登记表', () => {
       expect(map).toHaveBeenCalled()
       expect(modules).toHaveBeenCalled()
       expect(outcomes).toHaveBeenCalled()
+      expect(outputs).toHaveBeenCalled()
       expect(engine.emitProcess).toHaveBeenCalledWith(
         'warn',
         expect.any(String),
@@ -133,6 +137,7 @@ describe('Engine 收尾登记表', () => {
     vi.spyOn(dbApi, 'settleRunEvidence').mockResolvedValue(undefined as never)
     vi.spyOn(dbApi, 'projectModuleInvocationResults').mockResolvedValue(undefined as never)
     vi.spyOn(dbApi, 'settleRunOutcome').mockResolvedValue(undefined as never)
+    vi.spyOn(dbApi, 'settleRunOutput').mockResolvedValue(null as never)
     vi.spyOn(dbApi, 'loadRunRow').mockResolvedValue(haltedRow() as never)
     await settleRun.call(host() as never, {} as never, 'run-map', grant as never)
     expect(map).toHaveBeenCalledTimes(1)
@@ -151,6 +156,7 @@ describe('Engine 收尾登记表', () => {
     vi.spyOn(dbApi, 'completeMapJobSlice').mockResolvedValue({ continue: false, jobId: 'j' } as never)
     vi.spyOn(dbApi, 'projectModuleInvocationResults').mockResolvedValue(undefined as never)
     vi.spyOn(dbApi, 'settleRunOutcome').mockResolvedValue(undefined as never)
+    vi.spyOn(dbApi, 'settleRunOutput').mockResolvedValue(null as never)
     await settleRun.call(host() as never, {} as never, 'run-1', grant as never)
     expect(load).toHaveBeenCalledTimes(1)
   })
@@ -161,16 +167,19 @@ describe('Engine 收尾登记表', () => {
     const map = vi.spyOn(dbApi, 'completeMapJobSlice').mockResolvedValue({ continue: false, jobId: 'j' } as never)
     const modules = vi.spyOn(dbApi, 'projectModuleInvocationResults').mockResolvedValue(undefined as never)
     const outcomes = vi.spyOn(dbApi, 'settleRunOutcome').mockResolvedValue(undefined as never)
+    const outputs = vi.spyOn(dbApi, 'settleRunOutput').mockResolvedValue(null as never)
     await settleRun.call(host() as never, {} as never, 'run-1', grant as never)
     expect(evidence).toHaveBeenCalledTimes(1)
     expect(map).not.toHaveBeenCalled()
     expect(modules).not.toHaveBeenCalled()
     expect(outcomes).not.toHaveBeenCalled()
+    expect(outputs).not.toHaveBeenCalled()
   })
 
   it('ES-C6 收尾失败 warn 带齐 ID 且不新增事件名表', async () => {
     vi.spyOn(dbApi, 'loadRunRow').mockResolvedValue(haltedRow({ snapshot: {} }) as never)
     vi.spyOn(dbApi, 'settleRunEvidence').mockRejectedValue(new Error('upload'))
+    vi.spyOn(dbApi, 'settleRunOutput').mockResolvedValue(null as never)
     const engine = host()
     await settleRun.call(engine as never, {} as never, 'run-1', grant as never)
     expect(engine.emitProcess).toHaveBeenCalledWith(
@@ -187,8 +196,9 @@ describe('Engine 收尾登记表', () => {
 
   it('ES-C7 batchItem 收尾：executionOrigin 为 batch_item 时触发 onRunSettledForBatch', async () => {
     vi.spyOn(dbApi, 'settleRunEvidence').mockResolvedValue(undefined as never)
+    vi.spyOn(dbApi, 'settleRunOutput').mockResolvedValue(null as never)
     const onSettled = vi.spyOn(dbApi, 'onRunSettledForBatch').mockResolvedValue({ batchId: 'batch-1', batchStatus: 'RUNNING' } as never)
-    const advBatch = vi.spyOn(dbApi, 'advanceBatch').mockResolvedValue({ dispatchedRunIds: [], completed: false, paused: false } as never)
+    const advBatch = vi.spyOn(dbApi, 'dispatchBatch').mockResolvedValue({ ok: true, dispatchedRunIds: [], completed: false, paused: false } as never)
     vi.spyOn(dbApi, 'loadRunRow').mockResolvedValue(haltedRow({
       status: 'SUCCEEDED',
       executionOrigin: 'batch_item',

@@ -224,7 +224,7 @@ export function TargetsPage() {
                     />
                     <Input
                       aria-label='搜索目标系统'
-                      placeholder='搜索名称、编码或入口'
+                      placeholder='搜索系统、编码或账号'
                       value={search}
                       onChange={(event) => handleSearchChange(event.target.value)}
                       className='pl-9'

@@ -19,6 +19,7 @@ import { ObjectsModule } from './objects/objects.module'
 import { ObjectService } from './objects/object.service'
 import { MapProjectionService } from './map/projection.service'
 import { MapReferenceScanService } from './map/reference-scan.service'
+import { BusinessSourceBuildService } from './business-sources/build.service'
 import { LifecycleService } from './runtime/lifecycle.service'
 import { createAiPort } from './ai/port'
 
@@ -39,6 +40,7 @@ import { createAiPort } from './ai/port'
     LifecycleService,
     MapProjectionService,
     MapReferenceScanService,
+    BusinessSourceBuildService,
     {
       provide: AI_PORT,
       useFactory: (
@@ -86,6 +88,6 @@ import { createAiPort } from './ai/port'
     },
     ExecutionEngine,
   ],
-  exports: [ExecutionEngine, STEP_EXECUTOR_REGISTRY],
+  exports: [ExecutionEngine, STEP_EXECUTOR_REGISTRY, BusinessSourceBuildService],
 })
 export class WorkerModule {}

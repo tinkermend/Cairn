@@ -26,7 +26,6 @@ export function can(
       'target:read',
       'credential:read',
       permission,
-      ...(permission === 'credential:import' ? ['credential:write'] : []),
     ]
     const sets = required
       .map((code) => {

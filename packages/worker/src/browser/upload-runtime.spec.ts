@@ -93,6 +93,10 @@ describe('uploadToLocator Runtime Behavior', () => {
       evaluate: async () => false,
       locator: () => ({
         first: () => ({ count: async () => 0 }),
+        // uploadToLocator 新增了「父级是否已是 FORM/BODY/HTML 顶层容器」判定，
+        // 会对 parentCandidate 调 evaluate；mock 补上，默认答「不是顶层容器」，
+        // 与实现里 .catch(() => false) 的兜底值一致，走到下面按 0 个候选处理。
+        evaluate: async () => false,
         locator: () => ({ first: () => ({ count: async () => 0 }) }),
         count: async () => 0,
       }),
@@ -116,6 +120,10 @@ describe('uploadToLocator Runtime Behavior', () => {
       },
       locator: () => ({
         first: () => ({ count: async () => 0 }),
+        // uploadToLocator 新增了「父级是否已是 FORM/BODY/HTML 顶层容器」判定，
+        // 会对 parentCandidate 调 evaluate；mock 补上，默认答「不是顶层容器」，
+        // 与实现里 .catch(() => false) 的兜底值一致，走到下面按 0 个候选处理。
+        evaluate: async () => false,
         locator: () => ({ first: () => ({ count: async () => 0 }) }),
         count: async () => 0,
       }),
@@ -127,7 +135,7 @@ describe('uploadToLocator Runtime Behavior', () => {
     )
   })
 
-  it('throws UPLOAD_FILE_CHOOSER_TIMEOUT if filechooser does not open', async () => {
+  it('throws UPLOAD_NO_FILE_INPUT if filechooser does not open', async () => {
     const mockPage: any = {
       waitForEvent: async () => {
         throw new Error('Timeout 3000ms exceeded while waiting for event "filechooser"')
@@ -138,6 +146,10 @@ describe('uploadToLocator Runtime Behavior', () => {
       evaluate: async () => false,
       locator: () => ({
         first: () => ({ count: async () => 0 }),
+        // uploadToLocator 新增了「父级是否已是 FORM/BODY/HTML 顶层容器」判定，
+        // 会对 parentCandidate 调 evaluate；mock 补上，默认答「不是顶层容器」，
+        // 与实现里 .catch(() => false) 的兜底值一致，走到下面按 0 个候选处理。
+        evaluate: async () => false,
         locator: () => ({ first: () => ({ count: async () => 0 }) }),
         count: async () => 0,
       }),
@@ -145,8 +157,10 @@ describe('uploadToLocator Runtime Behavior', () => {
     }
 
     const files = [{ name: 'a.txt', mimeType: 'text/plain', byteSize: 5, sha256: 'sha1' }]
+    // 等 filechooser 超时后，实现把这类失败统一归并进 UPLOAD_NO_FILE_INPUT
+    // （没找到文件输入元素、点击目标也没能唤起文件选择），不再单独区分超时错码。
     await expect(withTestOccupancy(() => uploadToLocator(mockPage, mockLocator, files))).rejects.toThrow(
-      'UPLOAD_FILE_CHOOSER_TIMEOUT',
+      'UPLOAD_NO_FILE_INPUT',
     )
   })
 })
