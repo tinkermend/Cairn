@@ -1,6 +1,11 @@
 export {
   beginAssistantTurn,
   completeAssistantTurn,
+  cancelAssistantTurn,
+  updateAssistantTurnStage,
+  recordAssistantTurnEvent,
+  listAssistantTurnEvents,
+  nextQueuedAssistantTurn,
   createAssistantConversation,
   getAssistantConversation,
   getAssistantTurn,
@@ -11,5 +16,7 @@ export {
   listAssistantTurns,
   purgeExpiredAssistantBodies,
   recordPlatformAiCall,
+  listPlatformAiCalls,
+  renewAssistantTurnLease,
 } from './store.js'
-export type { AssistantTurnRecord } from './store.js'
+export type { AssistantTurnRecord, PromotedAssistantTurn } from './store.js'

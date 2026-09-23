@@ -22,6 +22,15 @@ const agentBehavior = vi.hoisted(() => ({
   aiAct: undefined as undefined | ((gate: GateLike) => Promise<string | undefined>),
 }))
 
+vi.mock('@cairn/db', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return {
+    ...actual,
+    reserveAiModelCall: vi.fn().mockResolvedValue({ ok: true, callN: 1 }),
+    completeAiModelCall: vi.fn().mockResolvedValue({ ok: true }),
+  }
+})
+
 vi.mock('./midscene/formal-agent.js', () => ({
   validateBrowserAiModelFamily: async () => undefined,
   midsceneModelConfig: () => ({}),
@@ -285,5 +294,170 @@ describe('AI 端口边界', () => {
       quietEvidence,
     )
     expect(result.error).toMatchObject({ code: 'SESSION_LEASE_LOST', category: 'INFRASTRUCTURE' })
+  })
+
+  it('locate 优先使用 platformAi 文本模型通道，成功定位无需调用 MidScene', async () => {
+    const pages = [{ close: async () => undefined }]
+    const mockPage = {
+      url: () => 'https://shop.example/orders',
+      context: () => ({ pages: () => pages }),
+      ariaSnapshot: async () => `
+- heading "订单详情"
+- button "立即支付"
+`,
+      getByRole: (role: string, opts?: { name?: string }) => ({
+        count: async () => (role === 'button' && opts?.name === '立即支付' ? 1 : 0),
+        boundingBox: async () => ({ x: 100, y: 150, width: 80, height: 30 }),
+      }),
+      getByText: () => ({ count: async () => 0, boundingBox: async () => null }),
+      getByLabel: () => ({ count: async () => 0, boundingBox: async () => null }),
+      locator: () => ({ count: async () => 0, boundingBox: async () => null }),
+    }
+    const manager = {
+      guard: { assertHeld: () => undefined },
+      withManagedPage: async (_grant: unknown, _evidence: unknown, fn: (page: unknown) => Promise<unknown>) => ({
+        ok: true,
+        value: await fn(mockPage),
+      }),
+    } as unknown as BrowserSessionManager
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                verdict: 'found',
+                candidate: { by: 'role', value: 'button', name: '立即支付' },
+                reason: '匹配立即支付按钮',
+              }),
+            },
+          },
+        ],
+      }),
+    }) as any
+
+    try {
+      const port = createAiPort({
+        manager,
+        handle: {} as DbHandle,
+        resolveApiKey: async () => 'platform-key',
+      })
+      const locateEvidence: any = {
+        runId: 'r1',
+        stepRunId: 'sr1',
+        attemptId: 'a1',
+        grant: { runId: 'r1', holderWorkerId: 'w1' },
+        maxCalls: 2,
+        config: {
+          modelBaseUrl: 'https://vision.example.com/v1',
+          modelName: 'vision-model',
+          modelFamily: 'doubao-seed',
+          requestTimeoutMs: 5000,
+          hangWaitMs: 1000,
+          platformAi: {
+            baseUrl: 'https://platform-text.example.com/v1',
+            model: 'deepseek-chat',
+            provider: 'deepseek',
+          },
+        },
+      }
+
+      const result = await port.locate!(
+        leaseGrant,
+        { prompt: '立即支付按钮', allowedOrigins: ['https://shop.example'] },
+        new AbortController().signal,
+        locateEvidence,
+      )
+
+      expect(result.ok).toBe(true)
+      expect(result.center).toEqual([140, 165])
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://platform-text.example.com/v1/chat/completions',
+        expect.objectContaining({
+          method: 'POST',
+        }),
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('当 allowVision 为 false 时，文本未命中直接截断并拒绝调用视觉多模态', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                verdict: 'not_found',
+                reason: '页面无匹配元素',
+              }),
+            },
+          },
+        ],
+      }),
+    }) as any
+
+    const mockPage = {
+      url: () => 'https://shop.example/checkout',
+      context: () => ({}),
+      ariaSnapshot: async () => '- button "提交订单"',
+      getByRole: () => ({ count: async () => 0, boundingBox: async () => null }),
+      getByText: () => ({ count: async () => 0, boundingBox: async () => null }),
+      getByLabel: () => ({ count: async () => 0, boundingBox: async () => null }),
+      locator: () => ({ count: async () => 0, boundingBox: async () => null }),
+    }
+    const manager = {
+      guard: { assertHeld: () => undefined },
+      withManagedPage: async (_grant: unknown, _evidence: unknown, fn: (page: unknown) => Promise<unknown>) => ({
+        ok: true,
+        value: await fn(mockPage),
+      }),
+    } as unknown as BrowserSessionManager
+
+    try {
+      const port = createAiPort({
+        manager,
+        handle: {} as DbHandle,
+        resolveApiKey: async () => 'platform-key',
+      })
+      const locateEvidence: any = {
+        runId: 'r1',
+        stepRunId: 'sr1',
+        attemptId: 'a1',
+        grant: { runId: 'r1', holderWorkerId: 'w1' },
+        maxCalls: 2,
+        config: {
+          modelBaseUrl: 'https://vision.example.com/v1',
+          modelName: 'vision-model',
+          modelFamily: 'doubao-seed',
+          requestTimeoutMs: 5000,
+          hangWaitMs: 1000,
+          platformAi: {
+            baseUrl: 'https://platform-text.example.com/v1',
+            model: 'deepseek-chat',
+            provider: 'deepseek',
+          },
+        },
+      }
+
+      const result = await port.locate!(
+        leaseGrant,
+        { prompt: '不存在的按钮', allowedOrigins: ['https://shop.example'], allowVision: false },
+        new AbortController().signal,
+        locateEvidence,
+      )
+
+      expect(result.ok).toBe(false)
+      expect(result.summary).toContain('不允许视觉多模态定位')
+      expect(result.error?.code).toBe('AI_NOT_FOUND')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })

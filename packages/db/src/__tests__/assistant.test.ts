@@ -143,6 +143,91 @@ describe.each(DRIVERS)('%s 助手会话与额度', { timeout: 30_000 }, (driver)
     expect(late.result).toBeNull()
   })
 
+  it('直接开跑的 epoch 与续租一致，错代或错主不能续租', async () => {
+    const { db, owner } = await fixture(driver)
+    const conversation = await api.createAssistantConversation(db, {
+      ownerAccountId: owner.id,
+      title: '续租',
+    })
+    const ownerInstanceId = 'instance-a'
+    const started = await api.beginAssistantTurn(
+      db,
+      beginInput(conversation.id, owner.id, {
+        ownerInstanceId,
+        leaseUntil: new Date(Date.now() + 15_000),
+      }),
+    )
+    expect(started.replay).toBe(false)
+    expect(started.turn.status).toBe('RUNNING')
+    expect(started.epoch).toBe(1)
+
+    expect(
+      await api.renewAssistantTurnLease(db, {
+        turnId: started.turn.id,
+        ownerInstanceId,
+        epoch: started.epoch,
+      }),
+    ).toBe(true)
+    expect(
+      await api.renewAssistantTurnLease(db, {
+        turnId: started.turn.id,
+        ownerInstanceId,
+        epoch: started.epoch + 1,
+      }),
+    ).toBe(false)
+    expect(
+      await api.renewAssistantTurnLease(db, {
+        turnId: started.turn.id,
+        ownerInstanceId: 'instance-b',
+        epoch: started.epoch,
+      }),
+    ).toBe(false)
+
+    const current = await api.getAssistantTurn(db, started.turn.id, owner.id)
+    expect(current.status).toBe('RUNNING')
+  })
+
+  it('排队领取后用领取到的 epoch 续租，领取前的 epoch 不能续租', async () => {
+    const { db, owner } = await fixture(driver)
+    const conversation = await api.createAssistantConversation(db, {
+      ownerAccountId: owner.id,
+      title: '排队续租',
+    })
+    const queued = await api.beginAssistantTurn(
+      db,
+      beginInput(conversation.id, owner.id, { userLimit: 0, allowQueue: true }),
+    )
+    expect(queued.turn.status).toBe('QUEUED')
+    expect(queued.epoch).toBe(0)
+
+    const ownerInstanceId = 'instance-a'
+    const promoted = await api.nextQueuedAssistantTurn(
+      db,
+      { userLimit: 1, platformLimit: 4 },
+      60_000,
+      { ownerInstanceId, leaseDurationMs: 15_000 },
+    )
+    expect(promoted?.turn.id).toBe(queued.turn.id)
+    expect(promoted?.epoch).toBe(1)
+    expect(
+      await api.renewAssistantTurnLease(db, {
+        turnId: promoted!.turn.id,
+        ownerInstanceId,
+        epoch: promoted!.epoch,
+      }),
+    ).toBe(true)
+    expect(
+      await api.renewAssistantTurnLease(db, {
+        turnId: promoted!.turn.id,
+        ownerInstanceId,
+        epoch: queued.epoch,
+      }),
+    ).toBe(false)
+
+    const current = await api.getAssistantTurn(db, queued.turn.id, owner.id)
+    expect(current.status).toBe('RUNNING')
+  })
+
   it('不能引用其他用户或其他对话的父轮次', async () => {
     const { db, owner, other } = await fixture(driver)
     const mine = await api.createAssistantConversation(db, {

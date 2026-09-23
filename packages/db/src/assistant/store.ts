@@ -1,10 +1,13 @@
-import { and, desc, eq, lt, sql } from 'drizzle-orm'
+import crypto from 'node:crypto'
+import { and, asc, desc, eq, gt, isNotNull, lt, or, sql } from 'drizzle-orm'
 import {
   assistantConversationListSchema,
   assistantConversationSchema,
   assistantTurnListSchema,
   assistantTurnSchema,
   assistantResultSchema,
+  packAssistantResultEnvelope,
+  unpackAssistantResultEnvelope,
   type AssistantConversation,
   type AssistantConversationList,
   type AssistantResult,
@@ -15,7 +18,7 @@ import {
 import type { Db } from '../client.js'
 import { cursorFilter, encodeCursor, paginateResults } from '../cursor.js'
 import { newId } from '../id.js'
-import { atomic, schemaFor } from '../native.js'
+import { atomic, schemaFor, updateRowsCount } from '../native.js'
 import {
   DomainError,
   conflict,
@@ -57,6 +60,10 @@ function toTurn(row: {
   status: string
   deadlineAt: Date | string
   result: unknown
+  stage?: string | null
+  eventSeq?: number | null
+  queuePosition?: number | null
+  stopReason?: string | null
   createdAt: Date | string
   updatedAt: Date | string
 }): AssistantTurn {
@@ -69,7 +76,11 @@ function toTurn(row: {
     capabilityId: row.capabilityId,
     status: row.status,
     deadlineAt: iso(row.deadlineAt),
-    result: row.result ?? null,
+    result: row.result ? unpackAssistantResultEnvelope(row.result) : null,
+    stage: (row.stage as any) ?? undefined,
+    eventSeq: row.eventSeq ?? undefined,
+    queuePosition: row.queuePosition ?? undefined,
+    stopReason: row.stopReason ?? undefined,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   })
@@ -169,10 +180,20 @@ export async function getAssistantConversation(
 
 export async function interruptExpiredAssistantTurns(db: Db, now = new Date()): Promise<number> {
   const { assistantTurns } = schemaFor(db)
+  const gracePeriodMs = 5000
+  const leaseExpiredCutoff = new Date(now.getTime() - gracePeriodMs)
   const updated = await db
     .update(assistantTurns)
-    .set({ status: 'INTERRUPTED', updatedAt: now })
-    .where(and(eq(assistantTurns.status, 'RUNNING'), lt(assistantTurns.deadlineAt, now)))
+    .set({ status: 'INTERRUPTED', stopReason: 'guardrail_wall_clock', updatedAt: now })
+    .where(
+      and(
+        eq(assistantTurns.status, 'RUNNING'),
+        or(
+          lt(assistantTurns.deadlineAt, now),
+          and(isNotNull(assistantTurns.leaseUntil), lt(assistantTurns.leaseUntil, leaseExpiredCutoff)),
+        ),
+      ),
+    )
   return Array.isArray(updated) ? updated.length : 0
 }
 
@@ -189,8 +210,11 @@ export async function beginAssistantTurn(
     processingToken: string
     userLimit: number
     platformLimit: number
+    allowQueue?: boolean
+    ownerInstanceId?: string
+    leaseUntil?: Date
   },
-): Promise<{ turn: AssistantTurn; replay: boolean }> {
+): Promise<{ turn: AssistantTurn; replay: boolean; epoch: number }> {
   return atomic(db, async (tx) => {
     await interruptExpiredAssistantTurns(tx)
     const { assistantTurns, assistantConversations } = schemaFor(tx)
@@ -220,22 +244,45 @@ export async function beginAssistantTurn(
       if (existing.requestDigest !== input.requestDigest) {
         throw conflict('ASSISTANT_TURN_CONFLICT', '同一轮次标识对应了不同的问题')
       }
-      return { turn: toTurn(existing), replay: true }
+      return { turn: toTurn(existing), replay: true, epoch: existing.epoch }
     }
 
     const [userRunning] = await tx
       .select({ n: sql<number>`count(*)` })
       .from(assistantTurns)
       .where(and(eq(assistantTurns.ownerAccountId, input.ownerAccountId), eq(assistantTurns.status, 'RUNNING')))
-    if (Number(userRunning?.n ?? 0) >= input.userLimit) {
-      throw conflict('ASSISTANT_INFLIGHT', '你已有一轮助手任务在处理')
-    }
+
     const [platformRunning] = await tx
       .select({ n: sql<number>`count(*)` })
       .from(assistantTurns)
       .where(eq(assistantTurns.status, 'RUNNING'))
-    if (Number(platformRunning?.n ?? 0) >= input.platformLimit) {
-      throw new DomainError('rate_limited', 'ASSISTANT_CAPACITY', '平台助手繁忙，请稍后重试')
+
+    const userLimitReached = Number(userRunning?.n ?? 0) >= input.userLimit
+    const platformLimitReached = Number(platformRunning?.n ?? 0) >= input.platformLimit
+
+    if (!input.allowQueue) {
+      if (userLimitReached) {
+        throw conflict('ASSISTANT_INFLIGHT', '你已有一轮助手任务在处理')
+      }
+      if (platformLimitReached) {
+        throw new DomainError('rate_limited', 'ASSISTANT_CAPACITY', '平台助手繁忙，请稍后重试')
+      }
+    }
+
+    const shouldQueue = Boolean(input.allowQueue && (userLimitReached || platformLimitReached))
+
+    let queuePosition: number | null = null
+    let status: 'QUEUED' | 'RUNNING' = 'RUNNING'
+    let stage: 'queued' | 'accepted' = 'accepted'
+
+    if (shouldQueue) {
+      status = 'QUEUED'
+      stage = 'queued'
+      const [queuedCount] = await tx
+        .select({ n: sql<number>`count(*)` })
+        .from(assistantTurns)
+        .where(eq(assistantTurns.status, 'QUEUED'))
+      queuePosition = Number(queuedCount?.n ?? 0) + 1
     }
 
     if (input.parentTurnId) {
@@ -262,9 +309,15 @@ export async function beginAssistantTurn(
         parentTurnId: input.parentTurnId,
         requestDigest: input.requestDigest,
         question: input.question,
-        status: 'RUNNING',
+        status,
+        stage,
+        eventSeq: 0,
+        queuePosition,
         deadlineAt: input.deadlineAt,
         processingToken: input.processingToken,
+        ownerInstanceId: status === 'RUNNING' ? (input.ownerInstanceId ?? null) : null,
+        leaseUntil: status === 'RUNNING' ? (input.leaseUntil ?? null) : null,
+        epoch: status === 'RUNNING' ? 1 : 0,
         createdAt: now,
         updatedAt: now,
       })
@@ -272,42 +325,70 @@ export async function beginAssistantTurn(
       if (!isUniqueViolation(error)) throw error
       const name = constraintName(error) ?? ''
       if (name.includes('assistant_turns_owner_running')) {
-        throw conflict('ASSISTANT_INFLIGHT', '你已有一轮助手任务在处理')
+        // 并发争抢活跃槽位失败，转入 QUEUED 排队
+        const [queuedCount] = await tx
+          .select({ n: sql<number>`count(*)` })
+          .from(assistantTurns)
+          .where(eq(assistantTurns.status, 'QUEUED'))
+        const fallbackQueuePosition = Number(queuedCount?.n ?? 0) + 1
+        await tx.insert(assistantTurns).values({
+          id,
+          conversationId: input.conversationId,
+          ownerAccountId: input.ownerAccountId,
+          clientTurnId: input.clientTurnId,
+          parentTurnId: input.parentTurnId,
+          requestDigest: input.requestDigest,
+          question: input.question,
+          status: 'QUEUED',
+          stage: 'queued',
+          eventSeq: 0,
+          queuePosition: fallbackQueuePosition,
+          deadlineAt: input.deadlineAt,
+          processingToken: input.processingToken,
+          ownerInstanceId: null,
+          leaseUntil: null,
+          epoch: 0,
+          createdAt: now,
+          updatedAt: now,
+        })
+      } else {
+        const [replay] = await tx
+          .select()
+          .from(assistantTurns)
+          .where(
+            and(
+              eq(assistantTurns.conversationId, input.conversationId),
+              eq(assistantTurns.clientTurnId, input.clientTurnId),
+            ),
+          )
+          .limit(1)
+        if (replay && replay.requestDigest === input.requestDigest) {
+          return { turn: toTurn(replay), replay: true, epoch: replay.epoch }
+        }
+        if (replay) throw conflict('ASSISTANT_TURN_CONFLICT', '同一轮次标识对应了不同的问题')
+        throw error
       }
-      const [replay] = await tx
-        .select()
-        .from(assistantTurns)
-        .where(
-          and(
-            eq(assistantTurns.conversationId, input.conversationId),
-            eq(assistantTurns.clientTurnId, input.clientTurnId),
-          ),
-        )
-        .limit(1)
-      if (replay && replay.requestDigest === input.requestDigest) {
-        return { turn: toTurn(replay), replay: true }
-      }
-      if (replay) throw conflict('ASSISTANT_TURN_CONFLICT', '同一轮次标识对应了不同的问题')
-      throw error
     }
     await tx
       .update(assistantConversations)
       .set({ lastActiveAt: now, updatedAt: now })
       .where(eq(assistantConversations.id, input.conversationId))
     const [row] = await tx.select().from(assistantTurns).where(eq(assistantTurns.id, id)).limit(1)
-    return { turn: toTurn(row!), replay: false }
+    return { turn: toTurn(row!), replay: false, epoch: row!.epoch }
   })
 }
 
 export type AssistantTurnRecord = {
   turn: AssistantTurn
   slots: Record<string, unknown> | null
+  epoch: number
 }
 
-function toRecord(row: Parameters<typeof toTurn>[0] & { slots?: unknown }): AssistantTurnRecord {
+function toRecord(row: Parameters<typeof toTurn>[0] & { slots?: unknown; epoch: number }): AssistantTurnRecord {
   return {
     turn: toTurn(row),
     slots: row.slots && typeof row.slots === 'object' ? (row.slots as Record<string, unknown>) : null,
+    epoch: row.epoch,
   }
 }
 
@@ -317,10 +398,11 @@ export async function completeAssistantTurn(
     turnId: string
     ownerAccountId: string
     processingToken: string
-    status: Exclude<AssistantTurnStatus, 'RUNNING'>
+    status: Exclude<AssistantTurnStatus, 'RUNNING' | 'QUEUED'>
     capabilityId?: string | null
     slots?: Record<string, unknown> | null
     result?: AssistantResult | null
+    stopReason?: string | null
   },
 ): Promise<AssistantTurn> {
   return atomic(db, async (tx) => {
@@ -329,9 +411,14 @@ export async function completeAssistantTurn(
     if (!current || current.ownerAccountId !== input.ownerAccountId) {
       throw notFound('ASSISTANT_TURN_NOT_FOUND', '轮次不存在')
     }
-    if (current.status !== 'RUNNING') return toTurn(current)
+    if (current.status !== 'RUNNING' && current.status !== 'QUEUED') return toTurn(current)
     if (current.processingToken !== input.processingToken) {
       throw conflict('ASSISTANT_TOKEN_MISMATCH', '处理令牌已失效')
+    }
+    let finalResult = current.result
+    if (input.result !== undefined && input.result !== null) {
+      const validated = assistantResultSchema.parse(input.result)
+      finalResult = packAssistantResultEnvelope(validated, 2)
     }
     const now = new Date()
     await tx
@@ -340,13 +427,212 @@ export async function completeAssistantTurn(
         status: input.status,
         capabilityId: input.capabilityId ?? current.capabilityId,
         slots: input.slots ?? current.slots,
-        result: input.result ? assistantResultSchema.parse(input.result) : current.result,
+        result: finalResult,
+        stopReason: input.stopReason ?? current.stopReason ?? (input.status === 'COMPLETED' ? 'completed' : null),
         updatedAt: now,
       })
-      .where(and(eq(assistantTurns.id, input.turnId), eq(assistantTurns.status, 'RUNNING')))
+      .where(eq(assistantTurns.id, input.turnId))
     const [row] = await tx.select().from(assistantTurns).where(eq(assistantTurns.id, input.turnId)).limit(1)
     return toTurn(row!)
   })
+}
+
+export async function cancelAssistantTurn(
+  db: Db,
+  input: {
+    turnId: string
+    ownerAccountId: string
+    stopReason?: string
+  },
+): Promise<AssistantTurn> {
+  return atomic(db, async (tx) => {
+    const { assistantTurns } = schemaFor(tx)
+    const [current] = await tx.select().from(assistantTurns).where(eq(assistantTurns.id, input.turnId)).limit(1)
+    if (!current || current.ownerAccountId !== input.ownerAccountId) {
+      throw notFound('ASSISTANT_TURN_NOT_FOUND', '轮次不存在')
+    }
+    if (current.status === 'COMPLETED' || current.status === 'FAILED' || current.status === 'CANCELLED') {
+      return toTurn(current)
+    }
+    const now = new Date()
+    await tx
+      .update(assistantTurns)
+      .set({
+        status: 'CANCELLED',
+        stopReason: input.stopReason ?? 'cancelled',
+        updatedAt: now,
+      })
+      .where(eq(assistantTurns.id, input.turnId))
+    const [row] = await tx.select().from(assistantTurns).where(eq(assistantTurns.id, input.turnId)).limit(1)
+    return toTurn(row!)
+  })
+}
+
+export async function updateAssistantTurnStage(
+  db: Db,
+  input: {
+    turnId: string
+    stage: string
+    eventSeq: number
+  },
+) {
+  const { assistantTurns } = schemaFor(db)
+  await db
+    .update(assistantTurns)
+    .set({
+      stage: input.stage,
+      eventSeq: input.eventSeq,
+      updatedAt: new Date(),
+    })
+    .where(eq(assistantTurns.id, input.turnId))
+}
+
+export async function recordAssistantTurnEvent(
+  db: Db,
+  input: {
+    turnId: string
+    seq: number
+    channel: string
+    payload: Record<string, unknown>
+    retainUntil?: Date | string | null
+  },
+) {
+  const { assistantTurnEvents, assistantTurns } = schemaFor(db)
+  return atomic(db, async (tx) => {
+    await tx.insert(assistantTurnEvents).values({
+      id: newId(),
+      turnId: input.turnId,
+      seq: input.seq,
+      channel: input.channel,
+      payload: input.payload,
+      retainUntil: input.retainUntil ? asDate(input.retainUntil) : null,
+      createdAt: new Date(),
+    })
+    await tx
+      .update(assistantTurns)
+      .set({
+        eventSeq: input.seq,
+        stage: input.channel === 'stage' && typeof input.payload.stage === 'string' ? input.payload.stage : undefined,
+        updatedAt: new Date(),
+      })
+      .where(eq(assistantTurns.id, input.turnId))
+  })
+}
+
+export async function listAssistantTurnEvents(
+  db: Db,
+  turnId: string,
+  after = 0,
+): Promise<Array<{ seq: number; channel: string; payload: Record<string, unknown>; createdAt: string }>> {
+  const { assistantTurnEvents } = schemaFor(db)
+  const rows = await db
+    .select()
+    .from(assistantTurnEvents)
+    .where(and(eq(assistantTurnEvents.turnId, turnId), gt(assistantTurnEvents.seq, after)))
+    .orderBy(asc(assistantTurnEvents.seq))
+    .limit(100)
+  return rows.map((r) => ({
+    seq: r.seq,
+    channel: r.channel,
+    payload: r.payload as Record<string, unknown>,
+    createdAt: iso(r.createdAt),
+  }))
+}
+
+export interface PromotedAssistantTurn {
+  turn: AssistantTurn
+  processingToken: string
+  ownerAccountId: string
+  epoch: number
+}
+
+export async function nextQueuedAssistantTurn(
+  db: Db,
+  limits: { userLimit: number; platformLimit: number },
+  timeoutMs = 60_000,
+  options?: { ownerInstanceId?: string; leaseDurationMs?: number },
+): Promise<PromotedAssistantTurn | null> {
+  return atomic(db, async (tx) => {
+    const { assistantTurns } = schemaFor(tx)
+    const [platformRunning] = await tx
+      .select({ n: sql<number>`count(*)` })
+      .from(assistantTurns)
+      .where(eq(assistantTurns.status, 'RUNNING'))
+    if (Number(platformRunning?.n ?? 0) >= limits.platformLimit) return null
+
+    const queuedRows = await tx
+      .select()
+      .from(assistantTurns)
+      .where(eq(assistantTurns.status, 'QUEUED'))
+      .orderBy(asc(assistantTurns.createdAt))
+      .limit(10)
+
+    for (const candidate of queuedRows) {
+      const [userRunning] = await tx
+        .select({ n: sql<number>`count(*)` })
+        .from(assistantTurns)
+        .where(and(eq(assistantTurns.ownerAccountId, candidate.ownerAccountId), eq(assistantTurns.status, 'RUNNING')))
+      if (Number(userRunning?.n ?? 0) < limits.userLimit) {
+        const now = new Date()
+        const deadlineAt = new Date(now.getTime() + timeoutMs)
+        const newProcessingToken = crypto.randomUUID()
+        const leaseUntil = new Date(now.getTime() + (options?.leaseDurationMs ?? 15_000))
+        await tx
+          .update(assistantTurns)
+          .set({
+            status: 'RUNNING',
+            stage: 'accepted',
+            queuePosition: null,
+            deadlineAt,
+            processingToken: newProcessingToken,
+            ownerInstanceId: options?.ownerInstanceId ?? null,
+            leaseUntil,
+            epoch: sql`${assistantTurns.epoch} + 1`,
+            updatedAt: now,
+          })
+          .where(and(eq(assistantTurns.id, candidate.id), eq(assistantTurns.status, 'QUEUED')))
+        const [promoted] = await tx.select().from(assistantTurns).where(eq(assistantTurns.id, candidate.id)).limit(1)
+        return promoted
+          ? {
+              turn: toTurn(promoted),
+              processingToken: promoted.processingToken,
+              ownerAccountId: promoted.ownerAccountId,
+              epoch: promoted.epoch,
+            }
+          : null
+      }
+    }
+    return null
+  })
+}
+
+export async function renewAssistantTurnLease(
+  db: Db,
+  input: {
+    turnId: string
+    ownerInstanceId: string
+    epoch: number
+    leaseDurationMs?: number
+  },
+): Promise<boolean> {
+  const { assistantTurns } = schemaFor(db)
+  const now = new Date()
+  const leaseUntil = new Date(now.getTime() + (input.leaseDurationMs ?? 15_000))
+  const count = await updateRowsCount(
+    db,
+    assistantTurns,
+    {
+      leaseUntil,
+      updatedAt: now,
+    },
+    and(
+      eq(assistantTurns.id, input.turnId),
+      eq(assistantTurns.ownerInstanceId, input.ownerInstanceId),
+      eq(assistantTurns.epoch, input.epoch),
+      eq(assistantTurns.status, 'RUNNING'),
+    ),
+  )
+  return count > 0
 }
 
 export async function getAssistantTurn(db: Db, turnId: string, ownerAccountId: string): Promise<AssistantTurn> {
@@ -418,7 +704,7 @@ export async function listAssistantTurnRecords(
   return {
     items: list.items.map((turn) => {
       const row = byId.get(turn.id)
-      return row ? toRecord(row) : { turn, slots: null }
+      return row ? toRecord(row) : { turn, slots: null, epoch: 0 }
     }),
     nextCursor: list.nextCursor,
   }
@@ -428,6 +714,7 @@ export async function recordPlatformAiCall(
   db: Db,
   input: {
     turnId: string
+    ownerAccountId?: string | null
     seq: number
     purpose: string
     configRevision?: number
@@ -437,12 +724,20 @@ export async function recordPlatformAiCall(
     usage?: Record<string, unknown> | null
     error?: string | null
     durationMs?: number
+    capabilityVersion?: string | null
+    contextManifestId?: string | null
+    requestedModel?: string | null
+    route?: string | null
+    cost?: Record<string, unknown> | null
+    errorClass?: string | null
+    validation?: Record<string, unknown> | null
   },
 ) {
   const { platformAiCalls } = schemaFor(db)
   await db.insert(platformAiCalls).values({
     id: newId(),
     turnId: input.turnId,
+    ownerAccountId: input.ownerAccountId ?? null,
     seq: input.seq,
     purpose: input.purpose,
     configRevision: input.configRevision,
@@ -452,14 +747,61 @@ export async function recordPlatformAiCall(
     usage: input.usage ?? null,
     error: input.error ?? null,
     durationMs: input.durationMs,
+    capabilityVersion: input.capabilityVersion ?? null,
+    contextManifestId: input.contextManifestId ?? null,
+    requestedModel: input.requestedModel ?? null,
+    route: input.route ?? null,
+    cost: input.cost ?? null,
+    errorClass: input.errorClass ?? null,
+    validation: input.validation ?? null,
     createdAt: new Date(),
   })
+}
+
+export async function listPlatformAiCalls(
+  db: Db,
+  filter?: { turnId?: string; ownerAccountId?: string; limit?: number },
+) {
+  const { platformAiCalls } = schemaFor(db)
+  const conditions = []
+  if (filter?.turnId) conditions.push(eq(platformAiCalls.turnId, filter.turnId))
+  if (filter?.ownerAccountId) conditions.push(eq(platformAiCalls.ownerAccountId, filter.ownerAccountId))
+  const where = conditions.length ? and(...conditions) : undefined
+  const rows = await db
+    .select()
+    .from(platformAiCalls)
+    .where(where)
+    .orderBy(desc(platformAiCalls.createdAt))
+    .limit(filter?.limit ?? 50)
+
+  return rows.map((r) => ({
+    id: r.id,
+    turnId: r.turnId,
+    seq: r.seq,
+    purpose: r.purpose,
+    configRevision: r.configRevision,
+    model: r.model,
+    promptVersion: r.promptVersion,
+    reservedTokens: r.reservedTokens,
+    usage: r.usage,
+    error: r.error,
+    durationMs: r.durationMs,
+    capabilityVersion: r.capabilityVersion,
+    contextManifestId: r.contextManifestId,
+    requestedModel: r.requestedModel,
+    route: r.route,
+    cost: r.cost,
+    errorClass: r.errorClass,
+    validation: r.validation,
+    createdAt: iso(r.createdAt),
+  }))
 }
 
 export async function purgeExpiredAssistantBodies(db: Db, now = new Date()) {
   const turnCutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
   const callCutoff = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
-  const { assistantTurns, assistantConversations, platformAiCalls } = schemaFor(db)
+  const { assistantTurns, assistantConversations, platformAiCalls, assistantTurnEvents } = schemaFor(db)
+  await db.delete(assistantTurnEvents).where(lt(assistantTurnEvents.retainUntil, now))
   await db.delete(platformAiCalls).where(lt(platformAiCalls.createdAt, callCutoff))
   await db
     .update(assistantTurns)

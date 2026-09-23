@@ -26,9 +26,11 @@ import { openIsolatedDb } from '@cairn/db/testing'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
-import { listenForSupertest } from '../__tests__/http-app'
+import { listenForSupertest, unusedChangeHint } from '../__tests__/http-app'
 import { AssistantController } from './assistant.controller'
+import { AssistantAsyncRunner } from './async-runner'
 import { AssistantService } from './assistant.service'
+import { AssistantCapabilityRegistry } from './registry'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import { TargetsService } from '../targets/targets.service'
 import { LocalSecretProvider } from '../secrets/local-secret-provider'
@@ -144,7 +146,21 @@ describe('助手接入平台 AI（模拟供应商）', { timeout: 30_000 }, () =
         throw new Error(`未预期的模型请求：${system}`)
       },
     }
-    const service = new AssistantService(db, platformConfig, new TargetsService(db, secrets), models)
+    const targetsService = new TargetsService(db, secrets)
+    const service = new AssistantService(
+      db,
+      platformConfig,
+      targetsService,
+      new AssistantAsyncRunner(
+        db,
+        unusedChangeHint,
+        platformConfig,
+        targetsService,
+        new AssistantCapabilityRegistry(),
+        models,
+      ),
+      unusedChangeHint,
+    )
     const guard: CanActivate = {
       canActivate(context: ExecutionContext) {
         context.switchToHttp().getRequest().account = current
@@ -172,22 +188,36 @@ describe('助手接入平台 AI（模拟供应商）', { timeout: 30_000 }, () =
     await db?.close()
   })
 
+  async function waitForTurn(conversationId: string, turnId: string) {
+    for (let i = 0; i < 50; i++) {
+      const res = await request(app.getHttpServer())
+        .get(`/assistant/conversations/${conversationId}/turns/${turnId}`)
+        .expect(200)
+      if (res.body.status !== 'RUNNING' && res.body.status !== 'QUEUED') {
+        return res.body
+      }
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    throw new Error(`Timeout waiting for turn ${turnId}`)
+  }
+
   it('启用平台 AI 后能力接口报告模型可用', async () => {
     const caps = await request(app.getHttpServer()).get('/assistant/capabilities').expect(200)
     expect(caps.body.modelEnabled).toBe(true)
   })
 
   it('自由问句先分类再诊断，假设只能引用事实包', async () => {
-    const turn = await request(app.getHttpServer())
+    const sub = await request(app.getHttpServer())
       .post(`/assistant/conversations/${conversationId}/turns`)
       .send({
         clientTurnId: `model-diagnose-${crypto.randomUUID()}`,
         question: '帮我看看这个',
         pageContext: { page: 'run', runId },
       })
-      .expect(200)
-    expect(turn.body.result.kind).toBe('diagnosis')
-    expect(turn.body.result.hypotheses[0]?.text).toContain('可能仍在调度')
+      .expect(202)
+    const turn = await waitForTurn(conversationId, sub.body.turnId)
+    expect(turn.result.kind).toBe('diagnosis')
+    expect(turn.result.hypotheses[0]?.text).toContain('可能仍在调度')
     expect(JSON.stringify(prompts)).not.toContain('hidden')
     expect(JSON.stringify(prompts)).not.toContain('泰坦')
   })

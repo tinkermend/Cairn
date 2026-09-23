@@ -7,6 +7,7 @@ import {
   parseAiOutput,
   aiCommandSchema,
   urlAllowedByCompiledScope,
+  redactErrorSurfaceText,
   type AiCommand,
   type AiExecutionConfig,
   type AiResult,
@@ -38,6 +39,7 @@ import {
   isAriaBranchAdmitted,
   tryAriaAssertBranch,
   tryAriaExtractBranch,
+  tryAriaLocateBranch,
   type AriaBranchExecutionResult,
 } from './aria-tree-branch.js'
 
@@ -74,6 +76,13 @@ export function createAiPort(input: {
           })
 
           if (admission.admitted) {
+            const textConfig = evidence.config.platformAi
+            const textBaseUrl = textConfig?.baseUrl ?? evidence.config.modelBaseUrl
+            const textModel = textConfig?.model ?? evidence.config.modelName
+            const textApiKey = textConfig?.secretRef
+              ? await input.resolveApiKey({ secretRef: textConfig.secretRef } as any).catch(() => '') || apiKey
+              : apiKey
+
             const budgetClient = createBudgetClient({
               handle: input.handle,
               grant: evidence.grant,
@@ -83,8 +92,8 @@ export function createAiPort(input: {
               signal,
               gate,
               inner: createDirectOpenAiClient({
-                baseUrl: evidence.config.modelBaseUrl,
-                apiKey,
+                baseUrl: textBaseUrl,
+                apiKey: textApiKey,
               }),
               route: 'aria_text',
             })
@@ -95,9 +104,9 @@ export function createAiPort(input: {
                 page,
                 command,
                 client: budgetClient,
-                modelName: evidence.config.modelName,
-                modelFamily: evidence.config.modelFamily,
-                timeoutMs: evidence.config.requestTimeoutMs,
+                modelName: textModel,
+                modelFamily: textConfig?.provider ?? evidence.config.modelFamily,
+                timeoutMs: textConfig?.requestTimeoutMs ?? evidence.config.requestTimeoutMs,
                 signal,
               })
             } else if (command.type === 'ai_extract') {
@@ -105,9 +114,9 @@ export function createAiPort(input: {
                 page,
                 command,
                 client: budgetClient,
-                modelName: evidence.config.modelName,
-                modelFamily: evidence.config.modelFamily,
-                timeoutMs: evidence.config.requestTimeoutMs,
+                modelName: textModel,
+                modelFamily: textConfig?.provider ?? evidence.config.modelFamily,
+                timeoutMs: textConfig?.requestTimeoutMs ?? evidence.config.requestTimeoutMs,
                 signal,
               })
             }
@@ -117,7 +126,7 @@ export function createAiPort(input: {
             }
 
             aiLogger.log(
-              `[AriaTreeBranch] 回退到视觉路径: ${ariaBranchResult?.fallbackReason ?? '未知原因'} (runId=${evidence.runId}, stepRunId=${evidence.stepRunId})`,
+              `[AriaTreeBranch] 回退到视觉路径: ${redactErrorSurfaceText(ariaBranchResult?.fallbackReason ?? '未知原因')} (runId=${evidence.runId}, stepRunId=${evidence.stepRunId})`,
             )
           }
 
@@ -227,6 +236,72 @@ export function createAiPort(input: {
       } as AiCommand
       const scoped = await input.manager.withManagedPage(grant, evidence, async (page) => {
         assertPageScope(page.url(), command, installedCompiledScope(page.context()))
+
+        // 阶段 1：优先尝试基于 Playwright AI (Aria 树文本模型，走平台 AI 通道) 查找目标元素，避免调用昂贵视觉模型
+        const textConfig = evidence.config.platformAi
+        if (textConfig?.baseUrl && textConfig.model) {
+          const textApiKey = textConfig.secretRef
+            ? await input.resolveApiKey({ secretRef: textConfig.secretRef } as any).catch(() => '')
+            : await input.resolveApiKey(evidence.config).catch(() => '')
+          if (textApiKey) {
+            const budgetClient = createBudgetClient({
+              handle: input.handle,
+              grant: evidence.grant,
+              sessionGrant: grant,
+              evidence,
+              command,
+              signal,
+              gate,
+              inner: createDirectOpenAiClient({
+                baseUrl: textConfig.baseUrl,
+                apiKey: textApiKey,
+              }),
+              route: 'aria_text',
+              onReserved: (n) => {
+                callNs.push(n)
+              },
+            })
+
+            const textLocateRes = await tryAriaLocateBranch({
+              page,
+              prompt: locateInput.prompt,
+              client: budgetClient,
+              modelName: textConfig.model,
+              modelFamily: textConfig.provider,
+              timeoutMs: textConfig.requestTimeoutMs ?? evidence.config.requestTimeoutMs,
+              signal,
+            })
+
+            if (textLocateRes.handled && textLocateRes.center) {
+              return {
+                ok: true as const,
+                center: textLocateRes.center,
+                dpr: textLocateRes.dpr ?? 1,
+                callNs,
+              }
+            }
+
+            aiLogger.log(
+              `[AriaLocateBranch] 文本定位未命中，回退到 Midscene 视觉路径: ${redactErrorSurfaceText(textLocateRes.fallbackReason ?? '未知')} (runId=${evidence.runId})`,
+            )
+          }
+        }
+
+        // 若当前策略或能力上限禁止视觉模型，在此截断拦截，严防调用高成本 MidScene 视觉模型
+        if (locateInput.allowVision === false) {
+          return locateResultFromFailure({
+            error: {
+              code: 'AI_NOT_FOUND',
+              category: 'EXECUTOR',
+              retryable: false,
+              safeMessage: '文本模型未命中，且当前解析上限或策略不允许视觉多模态定位',
+            },
+            summary: '文本模型未命中，且当前解析上限或策略不允许视觉多模态定位',
+            callNs,
+          })
+        }
+
+        // 阶段 2：视觉多模态模型兜底 (MidScene 视觉空间定位，走浏览器 AI 视觉通道)
         const apiKey = await input.resolveApiKey(evidence.config)
         await validateBrowserAiModelFamily(evidence.config.modelFamily)
         const agent = await createFormalMidsceneAgent({

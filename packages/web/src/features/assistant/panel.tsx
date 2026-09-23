@@ -1,25 +1,33 @@
 import { useEffect, useRef, useState, type HTMLAttributes } from 'react'
 import type {
-  AssistantCapabilityStatus,
+  AssistantCapabilityId,
   AssistantPageContext,
 } from '@cairn/shared'
 import {
-  ArrowRight,
+  AlertTriangle,
   ArrowUp,
-  Compass,
-  FileText,
+  FileCode,
   GripHorizontal,
+  History,
   Loader2,
-  ScanSearch,
+  PanelRightClose,
+  PanelRightOpen,
   ShieldCheck,
+  Sparkles,
+  SquarePen,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { useAssistantStore } from '@/stores/assistant-store'
+import { useNavigate } from '@tanstack/react-router'
+import { useAssistantStore, type AssistantBoundContext } from '@/stores/assistant-store'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
 import { assistantIcon } from './icon'
 import { AssistantResultView } from './result'
+import { MiniRunTracker } from './mini-run-tracker'
+import { PromptCards } from './prompt-cards'
+import { HistoryDrawer } from './history-drawer'
 
 function contextLabel(context: AssistantPageContext | null): string {
   if (!context) return '帮你理解场景、分析运行、找到功能入口'
@@ -35,65 +43,135 @@ function contextLabel(context: AssistantPageContext | null): string {
   return '结合当前页面，为你提供帮助'
 }
 
-function shortcuts(
-  items: AssistantCapabilityStatus[] | undefined,
-  page: AssistantPageContext | null
-) {
-  const available = new Set(
-    (items ?? []).filter((item) => item.available).map((item) => item.id)
+function stageLabel(stage: string | null, queuePos?: number | null): string {
+  if (stage === 'queued') return `排队中${queuePos ? `（第 ${queuePos} 位）` : ''}...`
+  if (stage === 'routing') return '正在理解意图与准入检查...'
+  if (stage === 'loading_facts') return '正在检索上下文事实与证据...'
+  if (stage === 'generating') return '大模型正在深度思考分析...'
+  if (stage === 'validating') return '正在进行事实引用与编译验证...'
+  if (stage === 'persisting') return '正在保存处理结果...'
+  return '正在分析，请稍候…'
+}
+
+function ContextCapsule({
+  boundContext,
+  pageContext,
+  onChipClick,
+}: {
+  boundContext: AssistantBoundContext | null
+  pageContext: AssistantPageContext | null
+  onChipClick: (question: string, capabilityHint?: AssistantCapabilityId) => void
+}) {
+  const isGlobal = !boundContext && !pageContext
+  const toneDot =
+    boundContext?.statusTone === 'error'
+      ? 'bg-status-error-foreground'
+      : boundContext?.statusTone === 'success'
+        ? 'bg-status-success-foreground'
+        : boundContext?.statusTone === 'warning'
+          ? 'bg-status-warning-foreground'
+          : 'bg-status-info-foreground'
+
+  const statusLabel =
+    boundContext?.statusLabel ?? (pageContext ? contextLabel(pageContext) : '全局上下文 · 识途通用助理')
+  const summaryText =
+    boundContext?.summaryText ??
+    (isGlobal ? '可以诊断运行、解释场景，或查找功能入口' : null)
+  const chips = boundContext?.chips ?? []
+
+  return (
+    <div
+      role='region'
+      aria-label='上下文感知状态'
+      data-testid='context-capsule'
+      className='shrink-0 border-b border-border-default bg-surface-subtle px-4 py-2.5 space-y-2'
+    >
+      <div className='flex items-center gap-2'>
+        <span className={cn('size-2 rounded-full shrink-0', toneDot)} aria-hidden='true' />
+        <span className='text-label font-medium text-text-primary truncate'>
+          {statusLabel}
+        </span>
+        {boundContext?.isDirty ? (
+          <span
+            data-testid='dirty-draft-badge'
+            className='inline-flex items-center gap-1 rounded bg-status-warning-subtle text-status-warning-foreground border border-status-warning-border px-1.5 py-0.5 text-small font-medium shrink-0'
+          >
+            <AlertTriangle className='size-3 shrink-0' aria-hidden='true' />
+            存在未保存草稿
+          </span>
+        ) : null}
+        {boundContext?.entityId ? (
+          <span className='text-label text-text-muted ms-auto font-mono'>
+            {boundContext.entityId.slice(0, 8)}
+          </span>
+        ) : null}
+      </div>
+      {summaryText ? (
+        <p className='text-label text-text-secondary line-clamp-2 leading-relaxed'>
+          {summaryText}
+        </p>
+      ) : null}
+      {chips.length > 0 ? (
+        <div className='flex flex-wrap gap-1.5 pt-0.5'>
+          {chips.map((chip) => (
+            <button
+              key={chip.label}
+              type='button'
+              onClick={() => onChipClick(chip.question, chip.capabilityHint)}
+              className='inline-flex items-center gap-1.5 rounded-md border border-border-default bg-surface-card px-2.5 py-1 text-label text-text-secondary shadow-2xs transition-colors hover:border-primary-400 hover:text-text-primary'
+            >
+              <Sparkles className='size-3 text-primary-600' aria-hidden='true' />
+              <span>{chip.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
-  const options: {
-    question: string
-    description: string
-    icon: typeof Compass
-    hint: AssistantCapabilityStatus['id']
-  }[] = []
-  if (page?.page === 'run' && available.has('run.diagnose')) {
-    options.push({
-      question: '这次为什么失败？',
-      description: '结合运行事实，查看原因和下一步建议',
-      icon: ScanSearch,
-      hint: 'run.diagnose',
-    })
-  }
-  if (page?.page === 'studio' && available.has('scenario.explain')) {
-    options.push({
-      question: '这个场景在做什么？',
-      description: '梳理步骤意图，理解当前场景的执行逻辑',
-      icon: FileText,
-      hint: 'scenario.explain',
-    })
-  }
-  if (available.has('platform.guide')) {
-    options.push({
-      question: '在哪里配置目标账号？',
-      description: '找到目标系统与账号的管理入口',
-      icon: Compass,
-      hint: 'platform.guide',
-    })
-  }
-  return options
 }
 
 export function AssistantPanel({
   onClose,
   dragHandleProps,
+  isDocked = false,
 }: {
   onClose: () => void
   dragHandleProps: HTMLAttributes<HTMLElement>
+  isDocked?: boolean
 }) {
   const question = useAssistantStore((state) => state.question)
   const turns = useAssistantStore((state) => state.turns)
   const busy = useAssistantStore((state) => state.busy)
   const error = useAssistantStore((state) => state.error)
+  const navigate = useNavigate()
+  const activeStage = useAssistantStore((state) => state.activeStage)
+  const activeQueuePosition = useAssistantStore((state) => state.activeQueuePosition)
+  const thinkingText = useAssistantStore((state) => state.thinkingText)
   const pageContext = useAssistantStore((state) => state.pageContext)
   const capabilities = useAssistantStore((state) => state.capabilities)
   const adoptHandler = useAssistantStore((state) => state.adoptHandler)
+  const rollbackHandler = useAssistantStore((state) => state.rollbackHandler)
+  const lastAdoptedProposalId = useAssistantStore(
+    (state) => state.lastAdoptedProposalId,
+  )
+  const setLastAdopted = useAssistantStore((state) => state.setLastAdopted)
+  const setPreviewStepId = useAssistantStore((state) => state.setPreviewStepId)
+  const mode = useAssistantStore((state) => state.mode)
+  const activeQuote = useAssistantStore((state) => state.activeQuote)
+  const boundContext = useAssistantStore((state) => state.boundContext)
+  const newConversation = useAssistantStore((state) => state.newConversation)
+  const historyOpen = useAssistantStore((state) => state.historyOpen)
+  const setHistoryOpen = useAssistantStore((state) => state.setHistoryOpen)
+
   const setQuestion = useAssistantStore((state) => state.setQuestion)
   const openPanel = useAssistantStore((state) => state.openPanel)
   const submit = useAssistantStore((state) => state.submit)
   const cancel = useAssistantStore((state) => state.cancel)
+  const cancelCurrentTask = useAssistantStore((state) => state.cancelCurrentTask)
+  const toggleMode = useAssistantStore((state) => state.toggleMode)
+  const clearQuote = useAssistantStore((state) => state.clearQuote)
   const loadCapabilities = useAssistantStore((state) => state.loadCapabilities)
+
   const [adopting, setAdopting] = useState(false)
   const conversationRef = useRef<HTMLDivElement>(null)
 
@@ -106,13 +184,26 @@ export function AssistantPanel({
     if (conversation) conversation.scrollTop = conversation.scrollHeight
   }, [turns, busy])
 
-  const hints = shortcuts(capabilities?.items, pageContext)
+  const handleChipClick = (q: string, capabilityHint?: AssistantCapabilityId) => {
+    openPanel({
+      question: q,
+      capabilityHint,
+      pageContext: pageContext ?? undefined,
+    })
+    void submit()
+  }
 
   return (
-    <section className='flex h-full min-h-0 w-full flex-col bg-card text-body'>
+    <section className='relative flex h-full min-h-0 w-full flex-col bg-surface-card text-body'>
+      {historyOpen ? <HistoryDrawer onClose={() => setHistoryOpen(false)} /> : null}
+
       <header
-        {...dragHandleProps}
-        className='flex shrink-0 cursor-grab touch-none items-center gap-3 border-b border-border px-4 py-3 select-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset active:cursor-grabbing'
+        {...(isDocked ? {} : dragHandleProps)}
+        className={cn(
+          'flex shrink-0 items-center gap-3 border-b border-border-default px-4 py-3 select-none',
+          !isDocked &&
+            'cursor-grab touch-none active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset',
+        )}
       >
         <img
           {...assistantIcon}
@@ -122,100 +213,122 @@ export function AssistantPanel({
           width={36}
           height={36}
         />
-        <div className='min-w-0 flex-1 space-y-1'>
+        <div className='min-w-0 flex-1 space-y-0.5'>
           <h2
             id='assistant-window-title'
-            className='flex items-center gap-2 text-body font-semibold'
+            className='flex items-center gap-2 text-body font-semibold text-text-primary'
           >
             识途助手
-            <GripHorizontal
-              className='size-4 text-muted-foreground'
-              aria-hidden='true'
-            />
+            {!isDocked ? (
+              <GripHorizontal
+                className='size-4 text-text-muted'
+                aria-hidden='true'
+              />
+            ) : null}
           </h2>
           <p
             id='assistant-window-description'
-            className='text-label text-muted-foreground'
+            className='text-label text-text-muted truncate'
           >
             {contextLabel(pageContext)}
           </p>
         </div>
-        <Button
-          type='button'
-          variant='ghost'
-          size='icon'
-          className='size-11'
-          aria-label='关闭识途助手'
-          onClick={onClose}
-        >
-          <X aria-hidden='true' />
-        </Button>
+        <div className='flex items-center gap-1'>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='size-8 text-text-muted hover:text-text-primary'
+            aria-label='新建会话'
+            title='新建会话'
+            onClick={newConversation}
+            data-testid='assistant-new-chat-btn'
+          >
+            <SquarePen className='size-4' aria-hidden='true' />
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className={cn(
+              'size-8 text-text-muted hover:text-text-primary',
+              historyOpen && 'bg-surface-subtle text-primary-600'
+            )}
+            aria-label='会话历史'
+            title='会话历史 (保留最近 5 天)'
+            onClick={() => setHistoryOpen(!historyOpen)}
+            data-testid='assistant-history-btn'
+          >
+            <History className='size-4' aria-hidden='true' />
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='size-8 text-text-muted hover:text-text-primary'
+            aria-label={mode === 'docked' ? '恢复悬浮窗' : '停靠到右侧边栏'}
+            title={mode === 'docked' ? '恢复悬浮窗' : '停靠到右侧边栏'}
+            onClick={toggleMode}
+            data-testid='assistant-dock-toggle'
+          >
+            {mode === 'docked' ? (
+              <PanelRightClose className='size-4' aria-hidden='true' />
+            ) : (
+              <PanelRightOpen className='size-4' aria-hidden='true' />
+            )}
+          </Button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='size-8 text-text-muted hover:text-text-primary'
+            aria-label='关闭识途助手'
+            onClick={onClose}
+          >
+            <X aria-hidden='true' className='size-4' />
+          </Button>
+        </div>
       </header>
+
+      {/* 深度上下文感知状态胶囊 */}
+      <ContextCapsule
+        boundContext={boundContext}
+        pageContext={pageContext}
+        onChipClick={handleChipClick}
+      />
+
       <div
         ref={conversationRef}
-        className='flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-5 py-5'
+        className='flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-5 py-4'
         aria-label='助手对话'
       >
         {turns.length === 0 && !busy ? (
-          <div className='my-auto py-3'>
-            <h3 className='text-section font-semibold'>有什么可以帮你？</h3>
-            <p className='mt-2 text-body text-muted-foreground'>
-              {hints.length > 0
-                ? '直接描述你的问题，或从下面开始。'
-                : '描述你遇到的问题，我会根据当前页面提供帮助。'}
-            </p>
-            {hints.length > 0 ? (
-              <div className='mt-5 space-y-2'>
-                {hints.map((item) => (
-                  <Button
-                    key={item.question}
-                    type='button'
-                    variant='outline'
-                    className='h-auto min-h-16 w-full justify-start gap-3 rounded-lg px-4 py-3 text-start whitespace-normal shadow-none'
-                    onClick={() => {
-                      openPanel({
-                        question: item.question,
-                        capabilityHint: item.hint,
-                        pageContext: pageContext ?? undefined,
-                      })
-                      void submit()
-                    }}
-                  >
-                    <span className='flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary text-primary'>
-                      <item.icon className='size-4' aria-hidden='true' />
-                    </span>
-                    <span className='min-w-0 flex-1'>
-                      <span className='block text-body font-medium'>
-                        {item.question}
-                      </span>
-                      <span className='mt-1 block text-label font-normal text-muted-foreground'>
-                        {item.description}
-                      </span>
-                    </span>
-                    <ArrowRight
-                      className='size-4 text-muted-foreground'
-                      aria-hidden='true'
-                    />
-                  </Button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+          <PromptCards
+            pageContext={pageContext}
+            onSelectPrompt={(q, capabilityHint) => {
+              openPanel({
+                question: q,
+                capabilityHint,
+                pageContext: pageContext ?? undefined,
+              })
+              void submit()
+            }}
+          />
         ) : null}
-        <div className='space-y-6 [overflow-wrap:anywhere]'>
+        <div className='space-y-5 [overflow-wrap:anywhere]'>
           {turns
             .slice()
             .reverse()
             .map((turn) => (
-              <article key={turn.id} className='space-y-4'>
+              <article key={turn.id} className='space-y-3.5'>
                 <div className='flex justify-end'>
-                  <p className='max-w-[90%] rounded-lg bg-secondary px-4 py-3 whitespace-pre-wrap'>
+                  <p className='max-w-[85%] rounded-2xl rounded-tr-xs bg-primary-100 px-3.5 py-2.5 text-body text-text-primary shadow-2xs whitespace-pre-wrap leading-relaxed'>
                     <span className='sr-only'>你：</span>
                     {turn.question}
                   </p>
                 </div>
                 <div className='space-y-2'>
-                  <p className='text-label font-medium text-muted-foreground'>
+                  <p className='text-label font-medium text-text-muted'>
                     识途助手
                   </p>
                   {turn.result ? (
@@ -223,11 +336,40 @@ export function AssistantPanel({
                       result={turn.result}
                       adopting={adopting}
                       onNavigate={onClose}
+                      onPreviewStep={(stepId) => {
+                        const targetScenarioId =
+                          (turn.result?.kind === 'proposal' ? (turn.result as any).scenarioId : undefined) ??
+                          pageContext?.scenarioId
+                        if (targetScenarioId && pageContext?.page !== 'studio') {
+                          navigate({
+                            to: '/scenarios/$scenarioId',
+                            params: { scenarioId: targetScenarioId },
+                            search: { action: 'inspect-step', step_id: stepId },
+                          } as any)
+                        } else {
+                          setPreviewStepId(stepId)
+                        }
+                      }}
+                      isAdopted={
+                        turn.result.kind === 'proposal' &&
+                        lastAdoptedProposalId === turn.result.stepId
+                      }
                       onClarify={(optionId) => {
                         openPanel({
                           question: turn.question,
                           capabilityHint:
-                            optionId as AssistantCapabilityStatus['id'],
+                            optionId as AssistantCapabilityId,
+                          pageContext: pageContext ?? undefined,
+                        })
+                        void submit()
+                      }}
+                      onCancelTask={() => {
+                        void cancelCurrentTask(turn.id)
+                      }}
+                      onNextPage={() => {
+                        openPanel({
+                          question: '下一页',
+                          capabilityHint: 'scenario.discover',
                           pageContext: pageContext ?? undefined,
                         })
                         void submit()
@@ -243,72 +385,151 @@ export function AssistantPanel({
                               try {
                                 const adopted = await adoptHandler(proposal)
                                 if (adopted.ok) {
+                                  setLastAdopted({ proposalId: proposal.stepId, digest: adopted.digest })
                                   toast.success('已放入本地草稿，尚未保存')
-                                  onClose()
-                                } else toast.error(adopted.reason)
+                                } else {
+                                  toast.error(adopted.reason || '采纳失败')
+                                }
                               } finally {
                                 setAdopting(false)
                               }
                             }
                           : undefined
                       }
+                      onRollback={
+                        turn.result.kind === 'proposal' && rollbackHandler
+                          ? async (proposal) => {
+                              const res = await rollbackHandler(proposal)
+                              if (res.ok) {
+                                setLastAdopted(null)
+                                toast.success('已撤销本次采纳')
+                              } else {
+                                toast.error(res.reason || '撤销失败')
+                              }
+                            }
+                          : undefined
+                      }
                     />
-                  ) : (
-                    <p className='text-label text-muted-foreground'>
-                      {turn.status === 'RUNNING' ? '正在处理' : turn.status}
-                    </p>
-                  )}
+                  ) : null}
                 </div>
               </article>
             ))}
           {busy ? (
-            <div className='space-y-4'>
-              <div className='flex justify-end'>
-                <p className='max-w-[90%] rounded-lg bg-secondary px-4 py-3 whitespace-pre-wrap'>
-                  {question}
-                </p>
-              </div>
-              <p
-                role='status'
-                className='flex items-center gap-2 text-label text-muted-foreground'
-              >
-                <Loader2
-                  className='size-4 animate-spin motion-reduce:animate-none'
-                  aria-hidden='true'
-                />
-                正在分析，请稍候…
+            <div className='space-y-2'>
+              <p className='text-label font-medium text-text-muted'>
+                识途助手
               </p>
+              <div className='space-y-2 rounded-xl border border-border-default bg-surface-subtle p-3.5 shadow-2xs'>
+                <div className='flex items-center justify-between gap-2'>
+                  <div role='status' className='flex items-center gap-2 text-label text-text-secondary'>
+                    <Loader2 className='size-3.5 animate-spin text-primary-600' />
+                    <span>{stageLabel(activeStage, activeQueuePosition)}</span>
+                  </div>
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='sm'
+                    className='h-6 px-2 text-label text-text-muted hover:text-status-error-foreground'
+                    onClick={() => void cancel()}
+                  >
+                    取消
+                  </Button>
+                </div>
+                {thinkingText ? (
+                  <details className='group text-label text-text-muted'>
+                    <summary className='cursor-pointer py-0.5 font-medium select-none hover:text-text-primary'>
+                      思考过程 (点击展开)
+                    </summary>
+                    <div className='mt-1 max-h-40 overflow-y-auto rounded border border-border-default bg-surface-card p-2 font-mono text-label leading-relaxed whitespace-pre-wrap text-text-primary'>
+                      {thinkingText}
+                    </div>
+                  </details>
+                ) : null}
+              </div>
             </div>
           ) : null}
         </div>
       </div>
+
+      {/* 微型运行监控坞 */}
+      <MiniRunTracker />
+
       <form
-        className='shrink-0 space-y-3 border-t border-border px-4 py-3'
+        className='shrink-0 space-y-2.5 border-t border-border-default px-4 py-3'
         onSubmit={(event) => {
           event.preventDefault()
           void submit()
         }}
       >
         {capabilities && !capabilities.modelEnabled ? (
-          <p className='text-label text-muted-foreground'>
-            识途助手未启用，仍可使用功能导览与运行事实诊断。
-          </p>
+          <div
+            data-testid='model-disabled-banner'
+            className='flex items-center gap-1.5 rounded-md border border-status-warning-border/40 bg-status-warning-background/20 px-2.5 py-1.5 text-label text-status-warning-foreground'
+          >
+            <AlertTriangle className='size-3.5 shrink-0 text-status-warning-foreground' aria-hidden='true' />
+            <span>平台 AI 尚未启用或未配置模型。请在平台配置中接入模型提供商后使用助手。</span>
+          </div>
         ) : null}
         {error ? (
-          <p role='alert' className='text-label text-destructive'>
+          <p role='alert' className='text-label text-status-error-foreground'>
             {error}
           </p>
         ) : null}
+
+        {/* 选区与对象 Quote 药丸标签 */}
+        {activeQuote ? (
+          <div
+            role='group'
+            aria-label={`引用目标: ${activeQuote.title}`}
+            data-testid='quote-pill'
+            className='flex items-center justify-between gap-2 rounded-lg border border-primary-100 bg-primary-50 px-3 py-1.5 text-label'
+          >
+            <div className='flex items-center gap-2 min-w-0'>
+              {activeQuote.type === 'step_failure' ? (
+                <AlertTriangle className='size-3.5 shrink-0 text-status-error-foreground' aria-hidden='true' />
+              ) : (
+                <FileCode className='size-3.5 shrink-0 text-primary-600' aria-hidden='true' />
+              )}
+              <span className='font-medium text-text-primary truncate'>
+                {activeQuote.title}
+              </span>
+              {activeQuote.summary ? (
+                <span className='hidden sm:inline text-text-muted truncate max-w-[220px]'>
+                  — {activeQuote.summary}
+                </span>
+              ) : null}
+            </div>
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon'
+              className='size-5 text-text-muted hover:text-text-primary'
+              onClick={clearQuote}
+              aria-label='移除引用'
+            >
+              <X className='size-3' aria-hidden='true' />
+            </Button>
+          </div>
+        ) : null}
+
         <label className='sr-only' htmlFor='assistant-question'>
           向助手提问
         </label>
         <Textarea
           id='assistant-question'
-          className='max-h-32 min-h-20 resize-none'
+          className='max-h-28 min-h-11 resize-none py-2 text-body leading-relaxed'
           value={question}
-          disabled={busy}
+          disabled={busy || (capabilities !== null && !capabilities.modelEnabled)}
           onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={(event) => {
+            if (
+              event.key === 'Backspace' &&
+              !question &&
+              activeQuote
+            ) {
+              clearQuote()
+              return
+            }
             if (
               event.key === 'Enter' &&
               !event.shiftKey &&
@@ -320,18 +541,24 @@ export function AssistantPanel({
             }
           }}
           aria-describedby='assistant-input-help'
-          placeholder='问问识途，或描述你遇到的问题…'
+          placeholder={
+            capabilities !== null && !capabilities.modelEnabled
+              ? '平台 AI 未启用，暂不支持提问…'
+              : activeQuote
+                ? '针对选中的对象提问（按 Backspace 可取消引用）…'
+                : '问问识途，或描述你遇到的问题…'
+          }
         />
-        <div className='flex items-center justify-between gap-3'>
+        <div className='flex items-center justify-between gap-3 pt-0.5'>
           <p
             id='assistant-input-help'
-            className='text-label text-muted-foreground'
+            className='text-label text-text-muted'
           >
             <span className='flex items-center gap-1.5'>
               <ShieldCheck className='size-3.5 shrink-0' aria-hidden='true' />
               仅使用你已有的访问权限
             </span>
-            <span className='mt-1 hidden sm:block'>
+            <span className='mt-0.5 hidden sm:block'>
               Enter 发送 · Shift + Enter 换行
             </span>
           </p>
@@ -340,7 +567,8 @@ export function AssistantPanel({
               <Button
                 type='button'
                 variant='outline'
-                className='h-11'
+                size='sm'
+                className='h-8 text-label px-3'
                 onClick={cancel}
               >
                 停止
@@ -348,12 +576,13 @@ export function AssistantPanel({
             ) : null}
             <Button
               type='submit'
-              className='h-11'
-              disabled={busy || question.trim().length === 0}
+              size='sm'
+              className='h-8 text-label px-3.5 gap-1.5'
+              disabled={busy || (capabilities !== null && !capabilities.modelEnabled) || question.trim().length === 0}
               loading={busy}
             >
               发送
-              <ArrowUp aria-hidden='true' />
+              <ArrowUp className='size-3.5' aria-hidden='true' />
             </Button>
           </div>
         </div>

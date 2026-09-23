@@ -5,7 +5,7 @@ import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { useAuthStore } from '@/stores/auth-store'
-import { createAssistantConversation } from '@/lib/assistant-api'
+import { createAssistantConversation, fetchAssistantCapabilities } from '@/lib/assistant-api'
 import { AssistantHost } from './host'
 
 const { navigate } = vi.hoisted(() => ({
@@ -23,16 +23,27 @@ vi.mock('@/lib/assistant-api', () => ({
         requiredContext: [],
       },
     ],
-    modelEnabled: false,
+    modelEnabled: true,
   })),
   createAssistantConversation: vi.fn(),
   createAssistantTurn: vi.fn(),
+  fetchAssistantConversations: vi.fn(async () => ({
+    items: [],
+    nextCursor: null,
+  })),
   fetchAssistantTurns: vi.fn(),
+  fetchAssistantTurn: vi.fn(),
+  cancelAssistantTurn: vi.fn(async () => ({ canceled: true })),
+  observeAssistantTurn: vi.fn(() => () => {}),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
-  return { ...actual, useNavigate: () => navigate }
+  return {
+    ...actual,
+    useNavigate: () => navigate,
+    useRouterState: () => ({ location: { pathname: '/runs/r-1' } }),
+  }
 })
 
 function turn(
@@ -312,11 +323,20 @@ describe('AssistantHost', () => {
         turn({
           kind: 'guide',
           items: [
+            ...(
+              ['browser', 'scenarios', 'runs', 'evidence', 'studio'] as const
+            ).map((topic, idx) => ({
+              topic,
+              availability: 'available' as const,
+              title: `导览条目 ${idx + 1}`,
+              steps: '这是导览测试条目说明文本。',
+              href: null,
+            })),
             {
               topic: 'accounts',
               availability: 'available',
               title: '目标账号',
-              steps: '先打开目标系统，选择目标后管理账号。'.repeat(160),
+              steps: '先打开目标系统，选择目标后管理账号。',
               href: '/targets',
             },
           ],
@@ -363,5 +383,93 @@ describe('AssistantHost', () => {
     expect(useAssistantStore.getState().busy).toBe(false)
     await page.getByRole('button', { name: '功能导览', exact: true }).click()
     expect(useAssistantStore.getState().capabilityHint).toBe('platform.guide')
+  })
+
+  it('支持切换至右侧伴随侧栏停靠模式，并保持偏好', async () => {
+    await openAssistant()
+    // 点击停靠按钮
+    const dockBtn = page.getByRole('button', { name: '停靠到右侧边栏' })
+    await dockBtn.click()
+
+    expect(useAssistantStore.getState().mode).toBe('docked')
+    expect(localStorage.getItem('cairn:assistant:window_mode')).toBe('docked')
+
+    // 验证侧栏区域呈现
+    await expect
+      .element(page.getByRole('region', { name: '识途助手伴随侧栏' }))
+      .toBeVisible()
+
+    // 点击恢复悬浮
+    const floatBtn = page.getByRole('button', { name: '恢复悬浮窗' })
+    await floatBtn.click()
+
+    expect(useAssistantStore.getState().mode).toBe('floating')
+    expect(localStorage.getItem('cairn:assistant:window_mode')).toBe('floating')
+  })
+
+  it('展示深度上下文状态胶囊并支持点击推荐 Chip', async () => {
+    useAssistantStore.setState({
+      boundContext: {
+        page: 'run',
+        entityId: '8a2f1111-2222-3333-4444-555566667777',
+        statusLabel: '运行失败 · 第 4 步网络超时',
+        statusTone: 'error',
+        summaryText: '由于目标系统未在限定时间内响应，执行中断。',
+        chips: [
+          {
+            label: '为什么第 4 步会超时？',
+            question: '请诊断第 4 步超时的根本原因',
+            capabilityHint: 'run.diagnose',
+          },
+        ],
+      },
+    })
+
+    await openAssistant()
+    await expect
+      .element(page.getByText('运行失败 · 第 4 步网络超时'))
+      .toBeVisible()
+    await expect
+      .element(page.getByText('由于目标系统未在限定时间内响应，执行中断。'))
+      .toBeVisible()
+
+    const chipBtn = page.getByRole('button', { name: '为什么第 4 步会超时？' })
+    await expect.element(chipBtn).toBeVisible()
+  })
+
+  it('展示 Quote Pill 并支持 Backspace 移除', async () => {
+    useAssistantStore.setState({
+      activeQuote: {
+        type: 'step_failure',
+        targetId: 'step-4',
+        title: '步骤 #4: 点击提交订单',
+        summary: 'locator.click: Timeout 5000ms',
+      },
+    })
+
+    await openAssistant()
+    await expect.element(page.getByText('步骤 #4: 点击提交订单')).toBeVisible()
+
+    const input = page.getByRole('textbox', { name: '向助手提问' })
+    await input.click()
+    await userEvent.keyboard('{Backspace}')
+
+    expect(useAssistantStore.getState().activeQuote).toBeNull()
+  })
+
+  it('当平台 AI 未启用时呈现警示胶囊并禁用输入区', async () => {
+    vi.mocked(fetchAssistantCapabilities).mockResolvedValueOnce({
+      items: [],
+      modelEnabled: false,
+    })
+    await render(<AssistantHost />)
+    await page.getByRole('button', { name: '打开识途助手' }).click()
+    await expect.element(page.getByTestId('model-disabled-banner')).toBeVisible()
+    await expect
+      .element(page.getByRole('textbox', { name: '向助手提问' }))
+      .toBeDisabled()
+    await expect
+      .element(page.getByRole('button', { name: '发送', exact: true }))
+      .toBeDisabled()
   })
 })

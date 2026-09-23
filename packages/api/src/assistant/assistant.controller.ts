@@ -1,5 +1,16 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req } from '@nestjs/common'
-import type { Request } from 'express'
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common'
+import type { Request, Response } from 'express'
 import {
   assistantCapabilitiesResponseSchema,
   assistantConversationListQuerySchema,
@@ -8,8 +19,10 @@ import {
   assistantTurnListQuerySchema,
   assistantTurnListSchema,
   assistantTurnSchema,
+  cancelResultSchema,
   createAssistantConversationBodySchema,
   createAssistantTurnBodySchema,
+  submitAcceptedSchema,
   type CreateAssistantConversationBody,
   type CreateAssistantTurnBody,
 } from '@cairn/shared'
@@ -35,7 +48,9 @@ export class AssistantController {
     @Body(new ZodValidationPipe(createAssistantConversationBodySchema)) body: CreateAssistantConversationBody,
     @CurrentAccount() actor: RequestAccount,
   ) {
-    return assistantConversationSchema.parse(await this.assistant.createConversation(actor, body))
+    return assistantConversationSchema.parse(
+      await this.assistant.createConversation(actor, body, body.question ?? body.title),
+    )
   }
 
   @Get('conversations')
@@ -68,22 +83,49 @@ export class AssistantController {
   }
 
   @Post('conversations/:id/turns')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
   @RequirePermissions('ai:assist')
   async createTurn(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(createAssistantTurnBodySchema)) body: CreateAssistantTurnBody,
     @CurrentAccount() actor: RequestAccount,
-    @Req() req: Request,
   ) {
-    return assistantTurnSchema.parse(await this.assistant.createTurn(actor, id, body, abortFrom(req)))
+    return submitAcceptedSchema.parse(await this.assistant.createTurn(actor, id, body))
   }
-}
 
-function abortFrom(req: Request): AbortSignal {
-  const controller = new AbortController()
-  req.on('close', () => {
-    if (!req.complete) controller.abort()
-  })
-  return controller.signal
+  @Get('conversations/:id/turns/:turnId/observe')
+  @RequirePermissions('ai:assist')
+  async observeTurn(
+    @Param('id') id: string,
+    @Param('turnId') turnId: string,
+    @CurrentAccount() actor: RequestAccount,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    await this.assistant.observeTurn(actor, id, turnId, req, res)
+  }
+
+  @Post('conversations/:id/turns/:turnId/cancel')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('ai:assist')
+  async cancelTurn(
+    @Param('id') id: string,
+    @Param('turnId') turnId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return cancelResultSchema.parse(await this.assistant.cancelTurn(actor, id, turnId))
+  }
+
+  @Get('model-invocations')
+  @RequirePermissions('ai:assist')
+  async listModelInvocations(
+    @Query('turnId') turnId: string | undefined,
+    @Query('limit') limit: string | undefined,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return await this.assistant.listModelInvocations(actor, {
+      turnId,
+      limit: limit ? Number(limit) : undefined,
+    })
+  }
 }

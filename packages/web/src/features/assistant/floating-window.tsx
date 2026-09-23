@@ -223,7 +223,7 @@ export function AssistantFloatingWindow({
       aria-describedby='assistant-window-description'
       tabIndex={-1}
       data-dragging={dragging || undefined}
-      className='fixed z-40 flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-popover outline-none'
+      className='fixed z-40 flex flex-col overflow-hidden rounded-xl border border-border-default bg-surface-card shadow-popover outline-none'
       style={{
         left: bounds.left,
         top: bounds.top,

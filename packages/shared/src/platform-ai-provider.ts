@@ -278,4 +278,114 @@ export async function postPlatformAiChatCompletion(input: {
   }
 }
 
+export type PlatformAiProviderCapabilities = {
+  supportsStreaming: boolean
+  supportsReasoningDelta: boolean
+  supportsToolCalling: boolean
+}
+
+export function getPlatformAiProviderCapabilities(provider: PlatformAiProvider): PlatformAiProviderCapabilities {
+  switch (provider) {
+    case 'deepseek':
+      return { supportsStreaming: true, supportsReasoningDelta: true, supportsToolCalling: true }
+    case 'glm':
+      return { supportsStreaming: true, supportsReasoningDelta: true, supportsToolCalling: true }
+    case 'qwen':
+      return { supportsStreaming: true, supportsReasoningDelta: false, supportsToolCalling: true }
+    case 'minimax':
+      return { supportsStreaming: true, supportsReasoningDelta: false, supportsToolCalling: true }
+    default:
+      return { supportsStreaming: false, supportsReasoningDelta: false, supportsToolCalling: false }
+  }
+}
+
+export async function streamPlatformAiChatCompletion(input: {
+  baseUrl: string
+  apiKey: string
+  body: Record<string, unknown>
+  timeoutMs: number
+  signal?: AbortSignal
+  onChunk?: (chunk: { textDelta?: string; reasoningDelta?: string }) => void
+}): Promise<PlatformAiChatRead> {
+  const signals = [AbortSignal.timeout(input.timeoutMs), input.signal].filter(
+    (value): value is AbortSignal => Boolean(value),
+  )
+  const response = await fetch(platformAiChatCompletionsUrl(input.baseUrl), {
+    method: 'POST',
+    redirect: 'error',
+    headers: {
+      Accept: 'text/event-stream',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${input.apiKey}`,
+    },
+    body: JSON.stringify({ ...input.body, stream: true }),
+    signal: AbortSignal.any(signals),
+  })
+  if (!response.ok) {
+    throw new Error(`模型服务返回 HTTP ${response.status}`)
+  }
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('模型没有返回可用结果')
+  const decoder = new TextDecoder()
+  let fullText = ''
+  let fullReasoning = ''
+  let model: string | undefined
+  let usage: { promptTokens?: number; completionTokens?: number } | undefined
+  let buffer = ''
+  let totalBytes = 0
+
+  try {
+    for (;;) {
+      const item = await reader.read()
+      if (item.done) break
+      totalBytes += item.value.byteLength
+      if (totalBytes > PLATFORM_AI_OUTPUT_LIMIT) {
+        throw Object.assign(new Error('模型输出超过 256KB 上限'), {
+          code: PLATFORM_AI_OUTPUT_LIMIT_CODE,
+        })
+      }
+      buffer += decoder.decode(item.value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed || !trimmed.startsWith('data:')) continue
+        const dataStr = trimmed.slice(5).trim()
+        if (dataStr === '[DONE]') continue
+        try {
+          const parsed = JSON.parse(dataStr) as Record<string, unknown>
+          if (typeof parsed.model === 'string') model = parsed.model
+          if (parsed.usage && typeof parsed.usage === 'object') {
+            const u = parsed.usage as Record<string, unknown>
+            usage = {
+              promptTokens: typeof u.prompt_tokens === 'number' ? u.prompt_tokens : undefined,
+              completionTokens: typeof u.completion_tokens === 'number' ? u.completion_tokens : undefined,
+            }
+          }
+          const choice = Array.isArray(parsed.choices) ? (parsed.choices[0] as Record<string, unknown> | undefined) : undefined
+          const delta = choice?.delta && typeof choice.delta === 'object' ? (choice.delta as Record<string, unknown>) : undefined
+          const textDelta = typeof delta?.content === 'string' ? delta.content : undefined
+          const reasoningDelta = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : undefined
+          if (textDelta) fullText += textDelta
+          if (reasoningDelta) fullReasoning += reasoningDelta
+          if (textDelta || reasoningDelta) {
+            input.onChunk?.({ textDelta, reasoningDelta })
+          }
+        } catch {
+          // ignore non-json chunk lines
+        }
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+
+  return {
+    text: fullText.trim(),
+    reasoningText: fullReasoning.trim() || undefined,
+    model,
+    usage,
+  }
+}
+
 export { PLATFORM_AI_PROVIDERS }

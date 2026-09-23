@@ -15,17 +15,43 @@ import {
 } from './step.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 
-export const ASSISTANT_CAPABILITY_IDS = [
+export const ASSISTANT_HISTORICAL_CAPABILITY_IDS = [
   'run.diagnose',
+  'run.compare',
   'scenario.explain',
   'scenario.propose-step',
   'scenario.compose_with_knowledge',
   'platform.guide',
+  'scenario.discover',
+  'target.business-records.list',
+  'operations.diagnose',
+  'schedules.propose',
+  'operations.action',
+  'in-page.guidance',
 ] as const
+export type AssistantHistoricalCapabilityId = (typeof ASSISTANT_HISTORICAL_CAPABILITY_IDS)[number]
+export const assistantHistoricalCapabilityIdSchema = z.enum(ASSISTANT_HISTORICAL_CAPABILITY_IDS)
+
+export const ASSISTANT_PUBLISHED_CAPABILITY_IDS = [
+  'run.diagnose',
+  'run.compare',
+  'scenario.explain',
+  'scenario.propose-step',
+  'scenario.compose_with_knowledge',
+  'platform.guide',
+  'scenario.discover',
+  'target.business-records.list',
+  'in-page.guidance',
+] as const
+export type AssistantPublishedCapabilityId = (typeof ASSISTANT_PUBLISHED_CAPABILITY_IDS)[number]
+export const assistantPublishedCapabilityIdSchema = z.enum(ASSISTANT_PUBLISHED_CAPABILITY_IDS)
+
+export const ASSISTANT_CAPABILITY_IDS = ASSISTANT_PUBLISHED_CAPABILITY_IDS
 export type AssistantCapabilityId = (typeof ASSISTANT_CAPABILITY_IDS)[number]
 export const assistantCapabilityIdSchema = z.enum(ASSISTANT_CAPABILITY_IDS)
 
 export const ASSISTANT_TURN_STATUSES = [
+  'QUEUED',
   'RUNNING',
   'CLARIFY',
   'COMPLETED',
@@ -75,6 +101,68 @@ export type AssistantFocus = (typeof ASSISTANT_FOCUS)[number]
 export const assistantFocusSchema = z.enum(ASSISTANT_FOCUS)
 
 export const ASSISTANT_PAGE_KINDS = ['run', 'studio', 'target', 'home', 'other'] as const
+
+export const ASSISTANT_QUOTE_TYPES = [
+  'step_failure',
+  'scenario_step',
+  'compile_diagnostic',
+  'custom',
+] as const
+export type AssistantQuoteType = (typeof ASSISTANT_QUOTE_TYPES)[number]
+export const assistantQuoteTypeSchema = z.enum(ASSISTANT_QUOTE_TYPES)
+
+export const assistantQuoteObjectRefSchema = z.strictObject({
+  kind: z.enum(['step', 'run', 'scenario', 'target']),
+  id: entityIdSchema,
+})
+export type AssistantQuoteObjectRef = z.infer<typeof assistantQuoteObjectRefSchema>
+
+export const assistantQuoteContextSchema = z
+  .strictObject({
+    type: assistantQuoteTypeSchema,
+    targetId: z.string().min(1).max(128).optional(),
+    objectRef: assistantQuoteObjectRefSchema.optional(),
+    title: z.string().min(1).max(200),
+    summary: z.string().max(2000),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((data) => data.objectRef !== undefined || data.targetId !== undefined, {
+    message: 'Quote 须提供 objectRef 或 targetId',
+  })
+export type AssistantQuoteContext = z.infer<typeof assistantQuoteContextSchema>
+
+const STEP_QUOTE_TYPES = new Set<AssistantQuoteContext['type']>(['step_failure', 'scenario_step'])
+
+/** 只有明确指向目标系统的引用才拿去作目标鉴权。步骤引用的 targetId 是步骤 ID。 */
+export function quoteTargetSystemId(
+  quote: Pick<AssistantQuoteContext, 'type' | 'targetId' | 'objectRef'>,
+): string | undefined {
+  if (quote.objectRef?.kind === 'target') return quote.objectRef.id
+  if (quote.objectRef || STEP_QUOTE_TYPES.has(quote.type) || quote.type === 'compile_diagnostic') {
+    return undefined
+  }
+  return quote.targetId
+}
+
+/** 步骤引用要聚焦的 ID。运行页可能传来步骤定义 ID，也可能仍是 StepRun ID。 */
+export function quoteStepFocusId(
+  quote: Pick<AssistantQuoteContext, 'type' | 'targetId' | 'objectRef'>,
+): string | undefined {
+  if (quote.objectRef?.kind === 'step') return quote.objectRef.id
+  if (STEP_QUOTE_TYPES.has(quote.type)) return quote.targetId
+  return undefined
+}
+
+/** 引用落在这次运行的某一步时，返回该步的步骤定义 ID。 */
+export function quotedStepIdOnRun(
+  quote: Pick<AssistantQuoteContext, 'type' | 'targetId' | 'objectRef'>,
+  stepRuns: readonly { id: string; stepId: string }[],
+): string | undefined {
+  const focusId = quoteStepFocusId(quote)
+  if (!focusId) return undefined
+  return stepRuns.find((step) => step.stepId === focusId || step.id === focusId)?.stepId
+}
+
 export const assistantPageContextSchema = z.strictObject({
   page: z.enum(ASSISTANT_PAGE_KINDS),
   runId: entityIdSchema.optional(),
@@ -83,6 +171,7 @@ export const assistantPageContextSchema = z.strictObject({
   targetId: entityIdSchema.optional(),
   versionId: entityIdSchema.optional(),
   draftRevision: z.number().int().min(1).optional(),
+  quote: assistantQuoteContextSchema.optional(),
 })
 export type AssistantPageContext = z.infer<typeof assistantPageContextSchema>
 
@@ -104,6 +193,12 @@ export const ASSISTANT_CAPABILITIES: readonly AssistantCapabilityDef[] = [
     label: '运行诊断',
     requiredPermissions: ['ai:assist', 'run:read', 'target:read'],
     description: '解释指定 Run 的状态、等待原因、失败 Attempt 与耗时',
+  },
+  {
+    id: 'run.compare',
+    label: '运行对比',
+    requiredPermissions: ['ai:assist', 'run:read', 'target:read'],
+    description: '对比两次 Run 的步骤、耗时与失败差异',
   },
   {
     id: 'scenario.explain',
@@ -129,9 +224,27 @@ export const ASSISTANT_CAPABILITIES: readonly AssistantCapabilityDef[] = [
     requiredPermissions: ['ai:assist'],
     description: '返回当前权限可达的控制台入口',
   },
+  {
+    id: 'scenario.discover',
+    label: '场景发现',
+    requiredPermissions: ['ai:assist', 'target:read', 'workflow:read'],
+    description: '按权限发现并分页列出可见场景列表与候选',
+  },
+  {
+    id: 'target.business-records.list',
+    label: '业务数据列表',
+    requiredPermissions: ['ai:assist', 'target:read', 'dataset:read'],
+    description: '查询已授权的目标系统业务数据快照与字典',
+  },
+  {
+    id: 'in-page.guidance',
+    label: '页面操作指引',
+    requiredPermissions: ['ai:assist'],
+    description: '结合当前页面结构指引关键按钮、操作入口与交互动线',
+  },
 ]
 
-export function assistantCapability(id: AssistantCapabilityId): AssistantCapabilityDef {
+export function assistantCapability(id: string): AssistantCapabilityDef {
   const found = ASSISTANT_CAPABILITIES.find((item) => item.id === id)
   if (!found) throw new Error(`未知助手能力：${id}`)
   return found
@@ -155,10 +268,35 @@ export function citationKey(kind: AssistantCitationKind, id: string): AssistantC
   return assistantCitationKeySchema.parse(`${kind}:${id}`)
 }
 
+export const contextItemScopeSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('platform') }),
+  z.strictObject({
+    kind: z.literal('target'),
+    targetId: z.string(),
+    runId: z.string().optional(),
+    scenarioId: z.string().optional(),
+  }),
+])
+export type ContextItemScope = z.infer<typeof contextItemScopeSchema>
+
+export const assistantFactScopeSchema = z.union([
+  z.enum(['platform', 'target']),
+  contextItemScopeSchema,
+])
+export type AssistantFactScope = z.infer<typeof assistantFactScopeSchema>
+
 export const assistantFactSchema = z.strictObject({
   id: z.string().min(1).max(64),
   text: z.string().min(1).max(1024),
   citations: z.array(assistantCitationKeySchema).max(16),
+  factKey: z.string().optional(),
+  label: z.string().optional(),
+  value: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  unit: z.string().optional(),
+  observedAt: z.string().nullable().optional(),
+  collectedAt: z.string().optional(),
+  validUntil: z.string().nullable().optional(),
+  scope: assistantFactScopeSchema.optional(),
 })
 export type AssistantFact = z.infer<typeof assistantFactSchema>
 
@@ -168,21 +306,70 @@ export const assistantHypothesisSchema = z.strictObject({
 })
 export type AssistantHypothesis = z.infer<typeof assistantHypothesisSchema>
 
+export const assistantDeepLinkActionSchema = z.discriminatedUnion('action', [
+  z.strictObject({
+    action: z.literal('create-account'),
+    targetId: entityIdSchema,
+    prefillUsername: z.string().max(128).optional(),
+  }),
+  z.strictObject({
+    action: z.literal('inspect-step'),
+    scenarioId: entityIdSchema,
+    stepId: entityIdSchema,
+  }),
+  z.strictObject({
+    action: z.literal('focus-section'),
+    section: z.string().min(1).max(64),
+  }),
+])
+export type AssistantDeepLinkAction = z.infer<typeof assistantDeepLinkActionSchema>
+
 export const assistantNextActionSchema = z.strictObject({
   kind: assistantNextActionKindSchema,
   label: z.string().min(1).max(64),
   href: z.string().min(1).max(512),
   citations: z.array(assistantCitationKeySchema).max(8),
+  deepLink: assistantDeepLinkActionSchema.optional(),
 })
 export type AssistantNextAction = z.infer<typeof assistantNextActionSchema>
+
+export const DIAGNOSTIC_FOCUSES = [
+  'overview',
+  'failure',
+  'wait',
+  'duration',
+  'outcome',
+  'evidence_missing',
+] as const
+export type DiagnosticFocus = (typeof DIAGNOSTIC_FOCUSES)[number]
+export const diagnosticFocusSchema = z.enum(DIAGNOSTIC_FOCUSES)
+
+export const missingInfoReasonSchema = z.enum([
+  'missing',
+  'expired',
+  'incomplete',
+  'forbidden',
+  'truncated',
+])
+export type MissingInfoReason = z.infer<typeof missingInfoReasonSchema>
 
 export const assistantDiagnosisSchema = z.strictObject({
   kind: z.literal('diagnosis'),
   observedAt: utcInstantSchema,
   eventSeq: z.number().int().min(0),
+  focus: diagnosticFocusSchema.optional(),
   facts: z.array(assistantFactSchema).max(24),
   hypotheses: z.array(assistantHypothesisSchema).max(8),
   missingInformation: z.array(z.string().min(1).max(256)).max(12),
+  missingReasons: z
+    .array(
+      z.strictObject({
+        reason: missingInfoReasonSchema,
+        detail: z.string().min(1).max(256),
+      }),
+    )
+    .max(12)
+    .optional(),
   nextActions: z.array(assistantNextActionSchema).max(8),
 })
 export type AssistantDiagnosis = z.infer<typeof assistantDiagnosisSchema>
@@ -267,6 +454,14 @@ export const assistantKnowledgeProposalSchema = z.strictObject({
 })
 export type AssistantKnowledgeProposal = z.infer<typeof assistantKnowledgeProposalSchema>
 
+export const assistantProposalStepDiffSchema = z.strictObject({
+  fieldPath: z.array(z.string().min(1)).max(8),
+  from: z.unknown().optional(),
+  to: z.unknown().optional(),
+  changeType: z.enum(['add', 'modify', 'remove']).optional(),
+})
+export type AssistantProposalStepDiff = z.infer<typeof assistantProposalStepDiffSchema>
+
 export const assistantProposalSchema = z.strictObject({
   kind: z.literal('proposal'),
   change: assistantStepChangeSchema,
@@ -275,15 +470,7 @@ export const assistantProposalSchema = z.strictObject({
   draftRevision: z.number().int().min(1),
   documentDigest: z.string().regex(/^[a-f0-9]{64}$/),
   reason: z.string().min(1).max(1024),
-  diffs: z
-    .array(
-      z.strictObject({
-        fieldPath: z.array(z.string().min(1)).max(8),
-        from: z.unknown().optional(),
-        to: z.unknown().optional(),
-      }),
-    )
-    .max(16),
+  diffs: z.array(assistantProposalStepDiffSchema).max(16),
   diagnostics: z
     .array(
       z.strictObject({
@@ -364,11 +551,11 @@ export const ASSISTANT_GUIDE_CATALOG: readonly AssistantGuideEntry[] = [
   },
   {
     topic: 'evidence',
-    capabilityId: 'menu.runs',
+    capabilityId: 'menu.evidence',
     title: '失败证据',
-    href: '/runs',
+    href: '/evidence',
     requiredPermissions: ['run:read'],
-    steps: '打开运行详情，在当前 Attempt 下查看截图、结构化证据和授权下载入口。',
+    steps: '打开运行详情或结果与报告列表，在当前 Attempt 下查看截图、结构化证据和授权下载入口。',
   },
   {
     topic: 'browser',
@@ -431,17 +618,205 @@ export const assistantInaccessibleSchema = z.strictObject({
   message: z.string().min(1).max(256),
 })
 
+export const assistantCompareSchema = z.strictObject({
+  kind: z.literal('compare'),
+  baseRunId: entityIdSchema,
+  targetRunId: entityIdSchema,
+  summary: z.string().min(1).max(2048),
+  comparability: z
+    .strictObject({
+      comparable: z.boolean(),
+      incomparableFactors: z.array(z.string()).default([]),
+      alignmentBasis: z.string().optional(),
+    })
+    .optional(),
+  differences: z
+    .array(
+      z.strictObject({
+        dimension: z.enum(['definition', 'input', 'environment', 'execution']).optional(),
+        stepId: z.string().optional(),
+        stepName: z.string(),
+        baseStatus: z.string().optional(),
+        targetStatus: z.string().optional(),
+        durationDiffMs: z.number().optional(),
+        errorDiff: z.string().optional(),
+        detail: z.string().optional(),
+      }),
+    )
+    .max(64),
+  hypotheses: z.array(assistantHypothesisSchema).max(8).optional(),
+  missingInformation: z.array(z.string().min(1).max(256)).max(12).optional(),
+  facts: z.array(assistantFactSchema).max(24),
+  nextActions: z.array(assistantNextActionSchema).max(8),
+})
+export type AssistantCompare = z.infer<typeof assistantCompareSchema>
+
+export const assistantDiscoveryCandidateSchema = z.strictObject({
+  id: entityIdSchema,
+  name: z.string().min(1).max(200),
+  targetId: entityIdSchema,
+  targetName: z.string().min(1).max(200),
+  kind: z.string().min(1).max(64),
+  versionOrRevision: z.union([z.string(), z.number()]).optional(),
+  status: z.string().optional(),
+  updatedAt: utcInstantSchema.optional(),
+})
+export type AssistantDiscoveryCandidate = z.infer<typeof assistantDiscoveryCandidateSchema>
+
+export const assistantDiscoveryResultSchema = z.strictObject({
+  kind: z.literal('discovery'),
+  candidates: z.array(assistantDiscoveryCandidateSchema).max(100),
+  scope: z.strictObject({
+    targetId: entityIdSchema.optional(),
+    targetName: z.string().optional(),
+    entityType: z.string().optional(),
+    filter: z.string().optional(),
+  }),
+  coverage: z.strictObject({
+    totalVisible: z.number().int().nonnegative().optional(),
+    hasMore: z.boolean(),
+    nextCursor: nextCursorSchema,
+    observedAt: utcInstantSchema,
+  }),
+  message: z.string().max(2000),
+})
+export type AssistantDiscoveryResult = z.infer<typeof assistantDiscoveryResultSchema>
+
+export const assistantInPageGuidanceSchema = z.strictObject({
+  kind: z.literal('in_page_guidance'),
+  directAnswer: z.string().min(1).max(1024),
+  visualPath: z.array(z.string().min(1).max(256)).max(8),
+  shortcutHint: z.string().max(64).optional(),
+  actionChip: z
+    .strictObject({
+      label: z.string().min(1).max(64),
+      actionKey: z.string().min(1).max(64),
+      params: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+})
+export type AssistantInPageGuidance = z.infer<typeof assistantInPageGuidanceSchema>
+
+export interface PageLandmarkAction {
+  name: string
+  trigger: string
+  description: string
+  shortcut?: string
+  actionKey?: string
+}
+
+export interface PageLandmarkRegion {
+  regionName: string
+  actions: PageLandmarkAction[]
+}
+
+export interface PageLandmarkDefinition {
+  page: 'studio' | 'run' | 'target' | 'platform-config'
+  pageTitle: string
+  regions: PageLandmarkRegion[]
+}
+
+export const PAGE_LANDMARK_MANIFESTS: Record<string, PageLandmarkDefinition> = {
+  studio: {
+    page: 'studio',
+    pageTitle: '场景工作区 (Studio)',
+    regions: [
+      {
+        regionName: '左侧步骤编排列表',
+        actions: [
+          {
+            name: '添加步骤',
+            trigger: '点击左侧步骤列表最下方的【+ 添加步骤】按钮',
+            description: '弹出步骤类型菜单，可向当前编排追加新操作（如打开页面、点击、填写、等待、断言等）',
+            actionKey: 'open-add-step-menu',
+          },
+          {
+            name: '步骤排序',
+            trigger: '按住步骤卡片左侧手柄上下拖动',
+            description: '调整步骤执行的先后顺序',
+          },
+        ],
+      },
+      {
+        regionName: '顶部操作栏',
+        actions: [
+          {
+            name: '保存草稿',
+            trigger: '点击顶栏右侧「保存」按钮，或使用快捷键',
+            shortcut: 'Cmd/Ctrl + S',
+            description: '保存当前正在编辑的本地草稿',
+          },
+          {
+            name: '试跑验证',
+            trigger: '点击顶栏右侧「试跑」按钮',
+            description: '立即以无头/受管浏览器执行当前草稿并实时观测结果',
+          },
+        ],
+      },
+    ],
+  },
+  run: {
+    page: 'run',
+    pageTitle: '运行详情 (Run)',
+    regions: [
+      {
+        regionName: '执行时间线与步骤列表',
+        actions: [
+          {
+            name: '查看步骤证据',
+            trigger: '点击具体步骤卡片，在展开详情中查看 Attempt 与截图',
+            description: '定位单步执行的输入输出与失败截图证据',
+          },
+        ],
+      },
+    ],
+  },
+}
+
 export const assistantResultSchema = z.discriminatedUnion('kind', [
   assistantDiagnosisSchema,
+  assistantCompareSchema,
   assistantExplanationSchema,
   assistantProposalSchema,
   assistantKnowledgeProposalSchema,
   assistantGuideSchema,
+  assistantDiscoveryResultSchema,
   assistantClarifySchema,
   assistantUnsupportedSchema,
   assistantInaccessibleSchema,
+  assistantInPageGuidanceSchema,
 ])
 export type AssistantResult = z.infer<typeof assistantResultSchema>
+
+export const assistantResultEnvelopeSchema = z.strictObject({
+  version: z.union([z.literal(1), z.literal(2)]),
+  result: assistantResultSchema,
+  sourceDigest: z.string().optional(),
+})
+export type AssistantResultEnvelope = z.infer<typeof assistantResultEnvelopeSchema>
+
+export function unpackAssistantResultEnvelope(raw: unknown): AssistantResult | null {
+  if (!raw || typeof raw !== 'object') return null
+  if ('version' in raw && 'result' in raw) {
+    const parsed = assistantResultEnvelopeSchema.safeParse(raw)
+    if (parsed.success) return parsed.data.result
+  }
+  const direct = assistantResultSchema.safeParse(raw)
+  if (direct.success) return direct.data
+  return null
+}
+
+export function packAssistantResultEnvelope(
+  result: AssistantResult,
+  version: 1 | 2 = 2,
+  sourceDigest?: string,
+): AssistantResultEnvelope {
+  return {
+    version,
+    result,
+    ...(sourceDigest ? { sourceDigest } : {}),
+  }
+}
 
 export const assistantCapabilityStatusSchema = z.strictObject({
   id: assistantCapabilityIdSchema,
@@ -453,7 +828,7 @@ export const assistantCapabilityStatusSchema = z.strictObject({
 export type AssistantCapabilityStatus = z.infer<typeof assistantCapabilityStatusSchema>
 
 export const assistantCapabilitiesResponseSchema = z.strictObject({
-  items: z.array(assistantCapabilityStatusSchema).max(8),
+  items: z.array(assistantCapabilityStatusSchema).max(32),
   modelEnabled: z.boolean(),
 })
 export type AssistantCapabilitiesResponse = z.infer<typeof assistantCapabilitiesResponseSchema>
@@ -463,6 +838,8 @@ export const createAssistantConversationBodySchema = z.strictObject({
     .string()
     .regex(/^[A-Za-z0-9._:-]{8,128}$/, 'idempotencyKey 须为 8–128 位 [A-Za-z0-9._:-]')
     .optional(),
+  title: z.string().min(1).max(80).optional(),
+  question: z.string().min(1).max(500).optional(),
 })
 export type CreateAssistantConversationBody = z.infer<typeof createAssistantConversationBodySchema>
 
@@ -493,6 +870,9 @@ export const createAssistantTurnBodySchema = z.strictObject({
   question: z.string().trim().min(1).max(ASSISTANT_MAX_QUESTION_CHARS),
   pageContext: assistantPageContextSchema.optional(),
   replyToTurnId: entityIdSchema.optional(),
+  taskId: entityIdSchema.optional(),
+  expectedRevision: z.number().int().nonnegative().optional(),
+  cancelCurrentTask: z.boolean().optional(),
   capabilityHint: assistantCapabilityIdSchema.optional(),
 })
 export type CreateAssistantTurnBody = z.infer<typeof createAssistantTurnBodySchema>
@@ -503,10 +883,14 @@ export const assistantTurnSchema = z.strictObject({
   clientTurnId: z.string().min(8).max(128),
   parentTurnId: entityIdSchema.nullable(),
   question: z.string().min(1).max(ASSISTANT_MAX_QUESTION_CHARS),
-  capabilityId: assistantCapabilityIdSchema.nullable(),
+  capabilityId: assistantHistoricalCapabilityIdSchema.nullable(),
   status: assistantTurnStatusSchema,
   deadlineAt: utcInstantSchema,
   result: assistantResultSchema.nullable(),
+  stage: z.union([assistantStageSchema, z.literal('queued'), z.literal('waiting')]).optional(),
+  eventSeq: z.number().int().optional(),
+  queuePosition: z.number().int().nullable().optional(),
+  stopReason: z.string().nullable().optional(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
 })
@@ -567,6 +951,8 @@ export function availableAssistantCapabilities(granted: readonly string[]): Assi
       requiredContext:
         capability.id === 'run.diagnose'
           ? ['runId']
+          : capability.id === 'run.compare'
+            ? ['baseRunId', 'targetRunId']
           : capability.id === 'scenario.compose_with_knowledge'
             ? ['scenarioId', 'draftRevision']
           : capability.id.startsWith('scenario.')
@@ -576,11 +962,34 @@ export function availableAssistantCapabilities(granted: readonly string[]): Assi
   })
 }
 
-const GUIDE_QUESTION = /在哪|哪里|怎么看|如何配置|入口|菜单|怎样查看/
-const DIAGNOSE_QUESTION = /为什么失败|失败原因|一直等|慢在|诊断这次|分析本次|这次运行/
+const IN_PAGE_GUIDANCE_QUESTION =
+  /添加步骤|怎么添加|加步骤|在页面哪里|页面上哪里|按钮在哪|怎么保存|保存草稿|快捷键|怎么拖拽|怎么排序|怎么修改参数|页面怎么/
+const GUIDE_QUESTION = /功能入口|怎么看|如何配置|菜单|怎样查看|在哪配置|哪里配置/
+const DIAGNOSE_QUESTION = /为什么失败|失败原因|一直等|慢在|诊断这次|分析本次|这次运行|最近失败|最近一次失败/
+const COMPARE_QUESTION = /对比|比较|差异|两.?次运行|较上一次/
+const DISCOVER_QUESTION = /有哪些场景|查找场景|搜索场景|列出场景|看下场景|所有场景|场景列表|(找|搜索|查找|列出|查看|看下).*(场景|工作流)|找对账/
+const BUSINESS_RECORDS_QUESTION = /有哪些(厂家|制造商|供应商)|查询(厂家|制造商|供应商)|(厂家|制造商|供应商)列表/
 const EXPLAIN_QUESTION = /这个场景|这一步|在做什么|解释步骤|引用不到/
 const PROPOSE_QUESTION = /改成|写清楚|修改建议|改用前一步|把.{1,16}改/
 const KNOWLEDGE_QUESTION = /按知识|根据术语|用做法|根据地图|知识建议|补全场景|按订单号|根据已有知识/
+
+export function cleanAssistantQuestion(question: string): string {
+  return question.replace(/^⚠️[^\n]*\n+/g, '').trim()
+}
+
+export function extractScenarioSearchKeyword(question: string): string | undefined {
+  const cleaned = cleanAssistantQuestion(question)
+  const trimmed = cleaned.trim().replace(/[？?！!。.\s]+$/, '')
+  if (/^(现在都有哪些场景|有哪些场景|所有场景|列出场景|场景列表|看下场景|查看场景)$/i.test(trimmed)) {
+    return undefined
+  }
+  const match = /(?:找|搜索|查找|筛选)\s*(?:名字含|包含|名称含|有关)?\s*([^\s,，。？?]+?)\s*(?:相关的?|的)?(?:场景|工作流)?$/i.exec(trimmed)
+  if (match && match[1]) {
+    const kw = match[1].replace(/^(名字含|包含|名称含)/, '').replace(/(场景|工作流|的)$/, '').trim()
+    if (kw && kw.length > 0 && kw.length < 30) return kw
+  }
+  return undefined
+}
 
 const GUIDE_TOPIC_MATCHES: readonly { topic: AssistantGuideTopic; pattern: RegExp }[] = [
   { topic: 'accounts', pattern: /目标账号|账号表|登录账号/ },
@@ -604,14 +1013,52 @@ export function inferAssistantFocus(question: string): AssistantFocus | undefine
   return undefined
 }
 
-export function inferAssistantCapability(question: string): AssistantCapabilityId | null {
+export function matchAssistantCapabilities(question: string): AssistantCapabilityId[] {
   const hits: AssistantCapabilityId[] = []
-  if (GUIDE_QUESTION.test(question)) hits.push('platform.guide')
+  if (IN_PAGE_GUIDANCE_QUESTION.test(question)) hits.push('in-page.guidance')
+  if (COMPARE_QUESTION.test(question)) hits.push('run.compare')
   if (DIAGNOSE_QUESTION.test(question)) hits.push('run.diagnose')
+  if (!IN_PAGE_GUIDANCE_QUESTION.test(question) && (GUIDE_QUESTION.test(question) || /在哪|哪里/.test(question))) hits.push('platform.guide')
+  if (DISCOVER_QUESTION.test(question)) hits.push('scenario.discover')
+  if (BUSINESS_RECORDS_QUESTION.test(question)) hits.push('target.business-records.list')
   if (EXPLAIN_QUESTION.test(question)) hits.push('scenario.explain')
   if (PROPOSE_QUESTION.test(question)) hits.push('scenario.propose-step')
   if (KNOWLEDGE_QUESTION.test(question)) hits.push('scenario.compose_with_knowledge')
+  return hits
+}
+
+export function inferAssistantCapability(question: string): AssistantCapabilityId | null {
+  const hits = matchAssistantCapabilities(question)
   return hits.length === 1 ? hits[0]! : null
+}
+
+/**
+ * 把「路由不出能力」从硬拒答降级成带候选的澄清。
+ *
+ * 平台 AI 是可选项。未启用时走纯正则路径，判不出来就只能回 TASK_UNSUPPORTED，
+ * 用户被挡回且拿不到任何可操作线索——只能自己猜平台听得懂什么措辞。
+ * 给出当前权限可用的能力候选，用户点一下即可继续。
+ * `clarify.options` 上限 8 项，能力总数 6，容得下。
+ */
+export function clarifyAvailableCapabilities(
+  available: readonly AssistantCapabilityId[],
+): AssistantRouteDecision {
+  return {
+    type: 'clarify',
+    missingFields: ['capabilityId'],
+    question: '没有识别出你想做的事，请选择一项继续。',
+    options: available.slice(0, 8).map((id) => ({ id, label: assistantCapability(id).label })),
+  }
+}
+
+const PAGE_DEICTIC_QUESTION = /这里|这个|这一页|本页|为什么不行|怎么回事|什么问题|咋回事/
+
+function pageRoutingPrior(
+  page: AssistantPageContext['page'] | undefined,
+): AssistantCapabilityId | null {
+  if (page === 'run') return 'run.diagnose'
+  if (page === 'studio') return 'scenario.explain'
+  return null
 }
 
 export function routeAssistantTurn(input: {
@@ -620,7 +1067,9 @@ export function routeAssistantTurn(input: {
   pageContext?: AssistantPageContext
   available: readonly AssistantCapabilityId[]
 }): AssistantRouteDecision {
-  const inferred = inferAssistantCapability(input.question)
+  const cleanQuestion = cleanAssistantQuestion(input.question)
+  const matchingHits = matchAssistantCapabilities(cleanQuestion).filter((id) => input.available.includes(id))
+  const inferred = matchingHits.length === 1 ? matchingHits[0]! : null
   const hint = input.capabilityHint
   if (hint && !input.available.includes(hint)) {
     return {
@@ -629,23 +1078,38 @@ export function routeAssistantTurn(input: {
       message: '当前权限不能使用该助手能力',
     }
   }
-  if (hint && inferred && hint !== inferred && input.available.includes(inferred)) {
+  if (!hint && matchingHits.length > 1) {
+    return {
+      type: 'clarify',
+      missingFields: ['capabilityId'],
+      question: '识别到多个可能的操作，请选择一项继续。',
+      options: matchingHits.slice(0, 8).map((id) => ({ id, label: assistantCapability(id).label })),
+    }
+  }
+  if (hint && matchingHits.length > 0 && !matchingHits.includes(hint)) {
+    const competing = matchingHits[0]!
     return {
       type: 'clarify',
       missingFields: ['capabilityId'],
       question: '本次要做运行诊断，还是查找功能入口？请选一项后继续。',
       options: [
         { id: hint, label: assistantCapability(hint).label },
-        { id: inferred, label: assistantCapability(inferred).label },
+        { id: competing, label: assistantCapability(competing).label },
       ],
     }
   }
-  const chosen = hint && (!inferred || inferred === hint) ? hint : inferred
+  let chosen = hint && (!inferred || inferred === hint) ? hint : inferred
+  if (!chosen) {
+    const prior = pageRoutingPrior(input.pageContext?.page)
+    if (prior && input.available.includes(prior) && PAGE_DEICTIC_QUESTION.test(cleanQuestion)) {
+      chosen = prior
+    }
+  }
   if (!chosen) {
     return {
       type: 'unsupported',
       reasonCode: 'TASK_UNSUPPORTED',
-      message: '当前支持运行诊断、场景解释、单步修改建议、知识辅助编写和功能导览。请选择其中一项。',
+      message: '当前支持运行诊断、运行对比、场景解释、场景发现、业务数据列表、单步修改建议、知识辅助编写和功能导览。请选择其中一项。',
     }
   }
   if (!input.available.includes(chosen)) {
@@ -660,12 +1124,30 @@ export function routeAssistantTurn(input: {
   if (chosen === 'run.diagnose') {
     if (ctx?.runId) slots.runId = ctx.runId
     if (ctx?.stepId) slots.stepId = ctx.stepId
+    if (!slots.runId && /最近失败|最近一次失败/.test(input.question)) {
+      slots.findRecentFailed = true
+    }
+  }
+  if (chosen === 'run.compare') {
+    if (ctx?.runId) slots.baseRunId = ctx.runId
   }
   if (chosen.startsWith('scenario.') && ctx?.scenarioId) {
     slots.scenarioId = ctx.scenarioId
     if (ctx.stepId) slots.stepId = ctx.stepId
     if (ctx.draftRevision) slots.draftRevision = ctx.draftRevision
     if (ctx.versionId) slots.versionId = ctx.versionId
+  }
+  if (chosen === 'scenario.discover') {
+    if (ctx?.targetId) slots.targetId = ctx.targetId
+    const kw = extractScenarioSearchKeyword(input.question)
+    if (kw) slots.filter = kw
+  }
+  if (chosen === 'target.business-records.list') {
+    if (ctx?.targetId) slots.targetId = ctx.targetId
+    slots.entityType = 'manufacturer'
+    if (!slots.targetId) {
+      return { type: 'clarify', missingFields: ['targetId'], question: '请选择要查询的目标系统。' }
+    }
   }
   if (chosen === 'run.diagnose') {
     const focus = inferAssistantFocus(input.question)
@@ -679,11 +1161,31 @@ export function routeAssistantTurn(input: {
     const topic = inferGuideTopic(input.question)
     if (topic) slots.topic = topic
   }
-  if (chosen === 'run.diagnose' && !slots.runId) {
+  if (chosen === 'in-page.guidance') {
+    slots.question = input.question
+    if (ctx?.page) slots.page = ctx.page
+    if (ctx?.stepId) slots.stepId = ctx.stepId
+    if (ctx?.scenarioId) slots.scenarioId = ctx.scenarioId
+  }
+  if (chosen === 'run.diagnose' && !slots.runId && !slots.findRecentFailed) {
     return { type: 'clarify', missingFields: ['runId'], question: '请选择要分析的一次运行。' }
   }
-  if (chosen !== 'platform.guide' && chosen.startsWith('scenario.') && !slots.scenarioId) {
-    return { type: 'clarify', missingFields: ['scenarioId'], question: '请选择要解释或修改的场景。' }
+  if (chosen === 'run.compare' && (!slots.baseRunId || !slots.targetRunId)) {
+    return {
+      type: 'clarify',
+      missingFields: [!slots.baseRunId ? 'baseRunId' : 'targetRunId'],
+      question: '请指定要对比的两个运行。',
+    }
+  }
+  if (chosen !== 'platform.guide' && chosen !== 'in-page.guidance' && chosen !== 'scenario.discover' && chosen !== 'target.business-records.list' && chosen.startsWith('scenario.') && !slots.scenarioId) {
+    return {
+      type: 'clarify',
+      missingFields: ['scenarioId'],
+      question: '请选择要解释或修改的场景。',
+      options: input.available.includes('scenario.discover')
+        ? [{ id: 'scenario.discover', label: '查看可用场景列表' }]
+        : undefined,
+    }
   }
   if (chosen === 'scenario.propose-step') {
     slots.changeRequest = input.question
@@ -789,11 +1291,18 @@ function replaceStep(
   return {
     ok: true,
     document: updated,
-    diffs: fields.map((fieldPath) => ({
-      fieldPath,
-      from: readPath(current, fieldPath),
-      to: readPath(next, fieldPath),
-    })),
+    diffs: fields.map((fieldPath) => {
+      const from = readPath(current, fieldPath)
+      const to = readPath(next, fieldPath)
+      const changeType: 'add' | 'modify' | 'remove' =
+        from === undefined ? 'add' : to === undefined ? 'remove' : 'modify'
+      return {
+        fieldPath,
+        from,
+        to,
+        changeType,
+      }
+    }),
   }
 }
 

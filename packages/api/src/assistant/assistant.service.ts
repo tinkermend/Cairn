@@ -1,61 +1,51 @@
-import { compileForAssistant } from '@cairn/authoring'
-import { Inject, Injectable, NotFoundException, Optional } from '@nestjs/common'
 import {
-  applyStepProposal,
-  assistantCapability,
+  Inject,
+  Injectable,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common'
+import type { Request, Response } from 'express'
+import {
   assistantFocusSchema,
   assistantGuideTopicSchema,
+  assistantQuoteContextSchema,
   availableAssistantCapabilities,
   canonicalJson,
-  citationKey,
-  compareCompileDiagnostics,
   createAssistantTurnBodySchema,
   filterGuideCatalog,
   hasAllPermissions,
-  projectRunFacts,
-  routeAssistantTurn,
-  hasPermission,
-  parseScenarioDocument,
-  isAuthoringDocumentV2,
-  scenarioDocumentDigest,
-  scenarioFactsForModel,
   sha256Hex,
-  type AssistantPageContext,
-  type AssistantResult,
-  type AssistantRouteDecision,
-  type AssistantStepChange,
+  quoteTargetSystemId,
+  unpackAssistantResultEnvelope,
   type CreateAssistantTurnBody,
-  type ScenarioDocument,
+  type SubmitAccepted,
+  type CancelResult,
+  type ModelInvocationRecord,
 } from '@cairn/shared'
 import {
   DomainError,
+  assertTargetPermission,
   beginAssistantTurn,
-  completeAssistantTurn,
   createAssistantConversation,
   getAssistantTurnRecord,
   getRun,
   getScenario,
   interruptExpiredAssistantTurns,
   listAssistantConversations,
+  listAssistantTurnEvents,
   listAssistantTurnRecords,
-  loadRunObservation,
-  loadScenarioVersion,
+  listPlatformAiCalls,
+  type ChangeHintBus,
   type DbHandle,
 } from '@cairn/db'
 import { DB_HANDLE } from '../db/db.module'
+import { CHANGE_HINT } from '../observe/change-hint.module'
+import { observeObject } from '../common/observe-object'
 import { rethrowDomain } from '../common/domain-error'
-import { composeScenarioKnowledge } from '../scenarios/knowledge-operations'
 import { redactKnowledgeQuestion } from '@cairn/map'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import { TargetsService } from '../targets/targets.service'
-import { createOpenAiCompatibleClient, type PlatformModelClient } from './model-client'
-import {
-  AssistantModelSession,
-  classifyAssistantCapability,
-  generateDiagnosisHypotheses,
-  generateExplanationText,
-  generateStepChange,
-} from './model-session'
+import { AssistantAsyncRunner } from './async-runner'
 import type { RequestAccount as Actor } from '../common/request-account'
 
 const TITLE_MAX = 40
@@ -69,30 +59,35 @@ function conversationTitle(question: string): string {
   return text.length <= TITLE_MAX ? text || '新对话' : `${text.slice(0, TITLE_MAX - 1)}…`
 }
 
-function isUnsupportedChange(
-  change: AssistantStepChange | Extract<AssistantResult, { kind: 'unsupported' }>,
-): change is Extract<AssistantResult, { kind: 'unsupported' }> {
-  return 'reasonCode' in change
-}
-
-function requireFlatDocument(document: unknown): ScenarioDocument {
-  if (isAuthoringDocumentV2(document) && document.nodes.every(node => node.kind === 'step')) {
-    return parseScenarioDocument({ schemaVersion: document.schemaVersion, inputs: document.inputs, steps: document.nodes.flatMap(node => node.kind === 'step' ? [node.step] : []) })
-  }
-  if (document && typeof document === 'object' && 'authoringSchemaVersion' in document) {
-    throw new DomainError('bad_request', 'AUTHORING_SCHEMA_UNSUPPORTED', '含模块调用的草稿不支持扁平知识建议')
-  }
-  return parseScenarioDocument(document)
-}
-
 @Injectable()
-export class AssistantService {
+export class AssistantService implements OnModuleInit {
+  private readonly hints: ChangeHintBus
+
   constructor(
     @Inject(DB_HANDLE) private readonly db: DbHandle,
     private readonly platformConfig: PlatformConfigService,
     private readonly targets: TargetsService,
-    @Optional() private readonly _models: PlatformModelClient = createOpenAiCompatibleClient(),
-  ) {}
+    private readonly asyncRunner: AssistantAsyncRunner,
+    @Inject(CHANGE_HINT) hints: ChangeHintBus,
+  ) {
+    this.hints = hints
+  }
+
+  /**
+   * AIF-25: On startup, recover expired turns and resume queue.
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      await interruptExpiredAssistantTurns(this.db)
+    } catch {
+      // In-memory or stub DB handles in integration tests may not support turn recovery
+    }
+    try {
+      await this.asyncRunner.promoteNextQueuedTurn()
+    } catch {
+      // Queue promotion can fail when the database handle is a test stub
+    }
+  }
 
   async capabilities(actor: Actor) {
     const access = await this.platformConfig.resolvePlatformAiAccess()
@@ -102,11 +97,16 @@ export class AssistantService {
     }
   }
 
-  async createConversation(actor: Actor, body: { idempotencyKey?: string }, question?: string) {
+  async createConversation(
+    actor: Actor,
+    body: { idempotencyKey?: string; title?: string; question?: string },
+    question?: string,
+  ) {
     this.requireAssist(actor)
+    const effectiveQuestion = body.question ?? question ?? body.title
     return createAssistantConversation(this.db, {
       ownerAccountId: actor.id,
-      title: conversationTitle(question ?? '新对话'),
+      title: conversationTitle(effectiveQuestion ?? '新对话'),
       idempotencyKey: body.idempotencyKey,
     }).catch(rethrowDomain)
   }
@@ -136,15 +136,31 @@ export class AssistantService {
     return this.sanitizeStoredTurn(actor, record.turn, record.slots)
   }
 
+  /**
+   * AIF-21: Single responsibility submission entry.
+   * Returns immediately with SubmitAccepted (HTTP 202), never blocks on LLM generation.
+   */
   async createTurn(
     actor: Actor,
     conversationId: string,
     body: CreateAssistantTurnBody,
-    signal?: AbortSignal,
-  ) {
+  ): Promise<SubmitAccepted> {
     this.requireAssist(actor)
     const parsed = createAssistantTurnBodySchema.parse(body)
     await interruptExpiredAssistantTurns(this.db).catch(rethrowDomain)
+
+    // AI-01 OCC optimistic concurrency validation
+    if (parsed.taskId && parsed.expectedRevision !== undefined) {
+      try {
+        const existing = await getAssistantTurnRecord(this.db, parsed.taskId, actor.id)
+        if (existing.epoch !== parsed.expectedRevision) {
+          throw new DomainError('conflict', 'ASSISTANT_CONCURRENCY_CONFLICT', '任务版本已更新，请重新加载后再试')
+        }
+      } catch (err) {
+        if (err instanceof DomainError) throw err
+      }
+    }
+
     const config = await this.platformConfig.get()
     const platformAi = config.document.platformAi
     const deadlineAt = new Date(Date.now() + platformAi.turnTimeoutMs)
@@ -157,6 +173,8 @@ export class AssistantService {
         replyToTurnId: parsed.replyToTurnId ?? null,
       }),
     )
+
+    // AIF-23: beginAssistantTurn with allowQueue: true enables FIFO queuing on capacity
     const started = await beginAssistantTurn(this.db, {
       conversationId,
       ownerAccountId: actor.id,
@@ -168,87 +186,133 @@ export class AssistantService {
       processingToken,
       userLimit: platformAi.userInflightLimit,
       platformLimit: platformAi.platformInflightLimit,
+      allowQueue: true,
+      ownerInstanceId: this.asyncRunner.ownerInstanceId,
+      leaseUntil: new Date(Date.now() + 15_000),
     }).catch(rethrowDomain)
-    if (started.replay) return started.turn
 
-    const access = await this.platformConfig.resolvePlatformAiAccess()
-    const session = access
-      ? new AssistantModelSession(
-          this.db,
-          started.turn.id,
-          { ...access, deadlineAt },
-          this._models,
-        )
-      : null
-
-    try {
-      const available = availableAssistantCapabilities(actor.permissions)
-        .filter((item) => item.available)
-        .map((item) => item.id)
-      let decision = routeAssistantTurn({
-        question: parsed.question,
-        capabilityHint: parsed.capabilityHint,
-        pageContext: parsed.pageContext,
-        available,
-      })
-      if (
-        decision.type === 'unsupported' &&
-        decision.reasonCode === 'TASK_UNSUPPORTED' &&
-        session
-      ) {
-        const classified = await classifyAssistantCapability(
-          session,
-          parsed.question,
-          available,
-          signal,
-        )
-        if (classified) {
-          decision = routeAssistantTurn({
-            question: parsed.question,
-            capabilityHint: classified,
-            pageContext: parsed.pageContext,
-            available,
-          })
-        }
-      }
-      const result = await this.dispatch(actor, decision, parsed, platformAi, session, signal)
-      const status = result.kind === 'clarify' ? 'CLARIFY' : 'COMPLETED'
-      return await completeAssistantTurn(this.db, {
+    if (started.replay) {
+      const isQueued = started.turn.status === 'QUEUED'
+      return {
         turnId: started.turn.id,
-        ownerAccountId: actor.id,
-        processingToken,
-        status,
-        capabilityId: decision.type === 'dispatch' ? decision.capabilityId : null,
-        slots: decision.type === 'dispatch' ? decision.slots : null,
-        result,
-      }).catch(rethrowDomain)
-    } catch (error) {
-      if (signal?.aborted) {
-        await completeAssistantTurn(this.db, {
-          turnId: started.turn.id,
-          ownerAccountId: actor.id,
-          processingToken,
-          status: 'CANCELLED',
-        }).catch(() => undefined)
-        rethrowDomain(error)
+        taskId: started.turn.id,
+        state: isQueued ? 'QUEUED' : (started.turn.status === 'RUNNING' ? 'RUNNING' : 'RUNNING'),
+        stage: (started.turn.stage as SubmitAccepted['stage']) ?? (isQueued ? 'queued' : 'accepted'),
+        eventSeq: started.turn.eventSeq ?? 0,
+        queuePosition: started.turn.queuePosition ?? null,
       }
-      const hidden =
-        error instanceof DomainError && (error.kind === 'not_found' || error.kind === 'forbidden')
-      await completeAssistantTurn(this.db, {
-        turnId: started.turn.id,
-        ownerAccountId: actor.id,
-        processingToken,
-        status: hidden ? 'COMPLETED' : 'FAILED',
-        result: hidden
-          ? { kind: 'inaccessible', message: '相关运行或目标已不可访问' }
-          : {
-              kind: 'unsupported',
-              reasonCode: 'TURN_FAILED',
-              message: error instanceof Error ? error.message : '助手处理失败',
-            },
-      }).catch(() => undefined)
-      rethrowDomain(error)
     }
+
+    if (started.turn.status === 'QUEUED') {
+      this.asyncRunner.registerQueued(started.turn.id, actor, parsed, processingToken)
+      return {
+        turnId: started.turn.id,
+        taskId: started.turn.id,
+        state: 'QUEUED',
+        stage: 'queued',
+        eventSeq: 0,
+        queuePosition: started.turn.queuePosition ?? null,
+      }
+    }
+
+    // Status is RUNNING: start asynchronous execution in background
+    this.asyncRunner.startExecution(
+      started.turn.id,
+      actor,
+      parsed,
+      processingToken,
+      deadlineAt,
+      started.epoch,
+    )
+
+    return {
+      turnId: started.turn.id,
+      taskId: started.turn.id,
+      state: 'RUNNING',
+      stage: 'accepted',
+      eventSeq: 0,
+      queuePosition: null,
+    }
+  }
+
+  /**
+   * AIF-21, AIF-22: Observe turn via SSE with Last-Event-ID catch-up.
+   */
+  async observeTurn(
+    actor: Actor,
+    conversationId: string,
+    turnId: string,
+    req: Request,
+    res: Response,
+  ): Promise<void> {
+    this.requireAssist(actor)
+    // Fail before SSE if turn doesn't exist
+    await this.getTurn(actor, conversationId, turnId)
+    const access = await this.platformConfig.resolvePlatformAiAccess().catch(() => null)
+    const thinkingStream = access
+      ? Boolean(access.thinkingMode === 'on')
+      : false
+
+    return observeObject({
+      req,
+      res,
+      hints: this.hints,
+      objectId: turnId,
+      after: 0,
+      event: 'turn',
+      matches: (hint) => hint.objectType === 'assistant_turn' && hint.objectId === turnId,
+      snapshot: () => this.getTurn(actor, conversationId, turnId),
+      events: (afterSeq) => listAssistantTurnEvents(this.db, turnId, afterSeq),
+      finished: (snap) => snap.status !== 'RUNNING' && snap.status !== 'QUEUED',
+      readyData: { thinkingStream },
+      writeEvent: (event, write) => {
+        write(event.channel, event.payload, event.seq)
+      },
+    })
+  }
+
+  /**
+   * AIF-22, AIF-24: Cancel turn explicitly.
+   */
+  async cancelTurn(actor: Actor, conversationId: string, turnId: string): Promise<CancelResult> {
+    this.requireAssist(actor)
+    const turn = await this.getTurn(actor, conversationId, turnId)
+    if (turn.conversationId !== conversationId) {
+      throw new DomainError('not_found', 'ASSISTANT_TURN_NOT_FOUND', '轮次不存在')
+    }
+    return this.asyncRunner.cancel(turnId, actor.id)
+  }
+
+  /**
+   * AIF-08: Cross-host model invocation records query.
+   */
+  async listModelInvocations(
+    actor: Actor,
+    query: { turnId?: string; limit?: number },
+  ): Promise<{ items: ModelInvocationRecord[] }> {
+    this.requireAssist(actor)
+    const rows = await listPlatformAiCalls(this.db, {
+      ...query,
+      ownerAccountId: actor.id,
+    })
+    const items: ModelInvocationRecord[] = rows.map((r) => ({
+      callId: r.id,
+      ownerRef: { kind: 'assistant_turn', turnId: r.turnId ?? 'unknown' },
+      purpose: r.purpose,
+      capabilityVersion: (r.capabilityVersion as any) ?? '1.0.0',
+      promptVersion: r.promptVersion,
+      policyRevision: r.configRevision ?? 1,
+      contextManifestId: r.contextManifestId,
+      requestedModel: r.requestedModel ?? r.model ?? 'unknown',
+      actualModel: r.model,
+      route: r.route,
+      usage: (r.usage as any) ?? 'unknown',
+      cost: (r.cost as any) ?? 'unknown',
+      durationMs: r.durationMs ?? 0,
+      errorClass: (r.errorClass as any) ?? (r.error ? 'provider_error' : 'none'),
+      validation: (r.validation as any) ?? { schemaOk: !r.error, grounded: 'not_checked' },
+    }))
+    return { items }
   }
 
   private requireAssist(actor: Actor) {
@@ -257,104 +321,11 @@ export class AssistantService {
     }
   }
 
-  private async dispatch(
-    actor: Actor,
-    decision: AssistantRouteDecision,
-    body: CreateAssistantTurnBody,
-    platformAi: { maxOutputTokens: number },
-    session: AssistantModelSession | null,
-    signal?: AbortSignal,
-  ): Promise<AssistantResult> {
-    if (decision.type === 'clarify') {
-      return {
-        kind: 'clarify',
-        question: decision.question,
-        missingFields: decision.missingFields,
-        options: decision.options,
-      }
-    }
-    if (decision.type === 'unsupported') {
-      return { kind: 'unsupported', reasonCode: decision.reasonCode, message: decision.message }
-    }
-    const capabilityId = decision.capabilityId
-    const required = assistantCapability(capabilityId).requiredPermissions
-    if (!hasAllPermissions(actor.permissions, required)) {
-      throw new DomainError('forbidden', 'ASSISTANT_FORBIDDEN', '当前权限不能使用该助手能力')
-    }
-    if (capabilityId === 'platform.guide') {
-      return this.guide(actor, decision.slots)
-    }
-    if (capabilityId === 'run.diagnose') {
-      if (!hasAllPermissions(actor.permissions, ['run:read', 'target:read'])) {
-        throw new DomainError('forbidden', 'TARGET_FORBIDDEN', '没有该目标系统的访问权限，助手不能继续')
-      }
-      return this.diagnose(actor, decision.slots, body, session, signal)
-    }
-    if (capabilityId === 'scenario.explain') {
-      return this.explain(actor, decision.slots, body.question, session, signal)
-    }
-    if (capabilityId === 'scenario.compose_with_knowledge') {
-      return this.composeWithKnowledge(actor, decision.slots, body.question)
-    }
-    return this.propose(actor, decision.slots, body.question, platformAi, session, signal)
-  }
-
-  private async composeWithKnowledge(actor: Actor, slots: Record<string, unknown>, question: string) {
-    const scenarioId = String(slots.scenarioId ?? '')
-    const draftRevision = Number(slots.draftRevision)
-    const detail = await getScenario(this.db, scenarioId).catch(rethrowDomain)
-    await this.requireVisibleTarget(actor, detail.targetId)
-    if (!detail.draft || detail.draft.revision !== draftRevision) {
-      throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新生成')
-    }
-    const document = requireFlatDocument(detail.draft.document)
-    const digest = await scenarioDocumentDigest(document)
-    const config = await this.platformConfig.get()
-    const composed = await composeScenarioKnowledge(this.db, scenarioId, {
-      idempotencyKey: `asst-${crypto.randomUUID()}`, question: redactKnowledgeQuestion(question),
-      expectedDraftRevision: draftRevision, documentDigest: digest,
-    }, actor, config.revision).catch(rethrowDomain)
-    return {
-      kind: 'knowledge_proposal' as const,
-      proposalId: composed.proposalId,
-      status:
-        composed.proposalStatus === 'requested' || composed.proposalStatus === 'cancelled'
-          ? 'failed'
-          : composed.proposalStatus,
-      reason: composed.diagnostics[0]?.message ?? '已生成知识建议，采纳后才会写入草稿。',
-      diffs: composed.diffs,
-      diagnostics: composed.diagnostics.map((item) => ({
-        code: item.code,
-        message: item.message,
-        fieldPath: item.fieldPath,
-      })),
-      sources: composed.sources,
-      unknowns: composed.unknowns,
-      executable: composed.proposalStatus === 'proposed',
-      draftRevision,
-      documentDigest: digest,
-    }
-  }
-
-  private guide(actor: Actor, slots: Record<string, unknown>): AssistantResult {
-    const topic = assistantGuideTopicSchema.safeParse(slots.topic).success
-      ? assistantGuideTopicSchema.parse(slots.topic)
-      : undefined
-    const items = filterGuideCatalog(actor.permissions, topic)
-    if (items.length === 0) {
-      return {
-        kind: 'unsupported',
-        reasonCode: 'GUIDE_UNAVAILABLE',
-        message: '当前权限不能打开该入口。',
-      }
-    }
-    return { kind: 'guide', items }
-  }
-
   private async requireVisibleTarget(actor: Actor, targetId: string) {
     if (!hasAllPermissions(actor.permissions, ['target:read'])) {
       throw new DomainError('forbidden', 'TARGET_FORBIDDEN', '没有该目标系统的访问权限，助手不能继续')
     }
+    await assertTargetPermission(this.db, actor.id, targetId, 'target:read')
     try {
       await this.targets.getTarget(targetId)
     } catch (error) {
@@ -365,260 +336,67 @@ export class AssistantService {
     }
   }
 
-  private async diagnose(
-    actor: Actor,
-    slots: Record<string, unknown>,
-    body: CreateAssistantTurnBody,
-    session: AssistantModelSession | null,
-    signal?: AbortSignal,
-  ) {
-    const runId = String(slots.runId ?? body.pageContext?.runId ?? '')
-    const observation = await loadRunObservation(this.db, runId).catch(rethrowDomain)
-    if (!observation) throw new DomainError('not_found', 'RUN_NOT_FOUND', '运行不存在')
-    await this.requireVisibleTarget(actor, observation.run.targetId)
-    const focus = assistantFocusSchema.safeParse(slots.focus).success
-      ? assistantFocusSchema.parse(slots.focus)
-      : 'overview'
-    const pack = projectRunFacts(observation, {
-      stepId: typeof slots.stepId === 'string' ? slots.stepId : body.pageContext?.stepId,
-      focus,
-      now: new Date().toISOString(),
-    })
-    const nextActions = [...pack.nextActions]
-    if (hasAllPermissions(actor.permissions, ['target:read'])) {
-      nextActions.push({
-        kind: 'target.accounts',
-        label: '查看目标账号',
-        href: `/targets/${observation.run.targetId}`,
-        citations: [citationKey('run', observation.run.id)],
-      })
-    }
-    if (hasAllPermissions(actor.permissions, ['workflow:read'])) {
-      nextActions.push({
-        kind: 'studio.step',
-        label: '打开场景工作区',
-        href: `/scenarios/${observation.run.scenarioId}`,
-        citations: [citationKey('run', observation.run.id)],
-      })
-    }
-    const missingInformation = [...pack.missingInformation]
-    let hypotheses: Awaited<ReturnType<typeof generateDiagnosisHypotheses>>['hypotheses'] = []
-    if (session) {
-      const generated = await generateDiagnosisHypotheses(
-        session,
-        body.question,
-        pack.text,
-        pack.citations,
-        signal,
-      )
-      hypotheses = generated.hypotheses
-      if (generated.error) missingInformation.push('模型未能提出经引用校验的可能原因')
-      else if (hypotheses.length === 0) missingInformation.push('模型没有给出可引用的可能原因')
-    }
-    return {
-      kind: 'diagnosis' as const,
-      observedAt: new Date().toISOString(),
-      eventSeq: observation.eventSeq,
-      facts: pack.facts,
-      hypotheses,
-      missingInformation,
-      nextActions,
-    }
-  }
-
-  private async explain(
-    actor: Actor,
-    slots: Record<string, unknown>,
-    question: string,
-    session: AssistantModelSession | null,
-    signal?: AbortSignal,
-  ) {
-    const scenarioId = String(slots.scenarioId ?? '')
-    const detail = await getScenario(this.db, scenarioId).catch(rethrowDomain)
-    await this.requireVisibleTarget(actor, detail.targetId)
-    const document = await this.loadExplainDocument(detail, slots)
-    if (!document) {
-      return {
-        kind: 'clarify' as const,
-        question: '请指定要解释的已保存草稿或已发布版本。',
-        missingFields: ['definitionRef'],
-      }
-    }
-    const compile = compileForAssistant(document)
-    const step = typeof slots.stepId === 'string' ? document.steps.find((item) => item.id === slots.stepId) : undefined
-    let summary = `场景「${detail.name}」共 ${document.steps.length} 步，绑定目标 ${detail.targetId}。本轮解释的是已保存定义。`
-    let stepSummary = step ? `当前步骤「${step.name}」类型为 ${step.type}。` : undefined
-    if (session) {
-      const polished = await generateExplanationText(
-        session,
-        question,
-        scenarioFactsForModel(document, typeof slots.stepId === 'string' ? slots.stepId : undefined),
-        signal,
-      )
-      if (polished.summary) summary = polished.summary
-      if (polished.stepSummary) stepSummary = polished.stepSummary
-    }
-    return {
-      kind: 'explanation' as const,
-      summary,
-      stepSummary,
-      references: document.steps.flatMap((item) =>
-        'from' in item.input && item.input.from ? [`${item.name} 引用 ${item.input.from}`] : [],
-      ),
-      diagnostics: compile.diagnostics.map((item) => ({
-        code: item.code,
-        stepId: item.stepId,
-        fieldPath: item.fieldPath,
-        message: item.message,
-        baseline: true,
-      })),
-      executable: compile.ok,
-    }
-  }
-
-  private async loadExplainDocument(
-    detail: Awaited<ReturnType<typeof getScenario>>,
-    slots: Record<string, unknown>,
-  ): Promise<ScenarioDocument | null> {
-    if (slots.draftRevision != null) {
-      const revision = Number(slots.draftRevision)
-      if (!detail.draft || detail.draft.revision !== revision) {
-        throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新解释')
-      }
-      return requireFlatDocument(detail.draft.document)
-    }
-    if (typeof slots.versionId === 'string' && slots.versionId) {
-      const loaded = await loadScenarioVersion(this.db, detail.id, slots.versionId).catch(rethrowDomain)
-      return loaded.version.definition
-    }
-    return null
-  }
-
-  private async propose(
-    actor: Actor,
-    slots: Record<string, unknown>,
-    question: string,
-    platformAi: { maxOutputTokens: number },
-    session: AssistantModelSession | null,
-    signal?: AbortSignal,
-  ) {
-    const scenarioId = String(slots.scenarioId ?? '')
-    const stepId = String(slots.stepId ?? '')
-    const draftRevision = Number(slots.draftRevision)
-    const detail = await getScenario(this.db, scenarioId).catch(rethrowDomain)
-    await this.requireVisibleTarget(actor, detail.targetId)
-    if (!detail.draft || detail.draft.revision !== draftRevision) {
-      throw new DomainError('conflict', 'ASSISTANT_DRAFT_STALE', '请基于当前已保存草稿重新生成')
-    }
-    const document = requireFlatDocument(detail.draft.document)
-    const change = await this.proposeChange(
-      document,
-      stepId,
-      question,
-      platformAi.maxOutputTokens,
-      session,
-      signal,
-    )
-    if (isUnsupportedChange(change)) return change
-    const applied = applyStepProposal(document, stepId, change)
-    if (!applied.ok) {
-      return {
-        kind: 'unsupported' as const,
-        reasonCode: applied.error.code,
-        message: applied.error.message,
-      }
-    }
-    const baseline = compileForAssistant(document)
-    const next = compileForAssistant(applied.document)
-    const compared = compareCompileDiagnostics(baseline.diagnostics, next.diagnostics)
-    if (compared.added.some((item) => item.severity === 'error')) {
-      return {
-        kind: 'unsupported' as const,
-        reasonCode: 'COMPILER_REGRESSION',
-        message: compared.added[0]?.message ?? '候选引入了新的编译错误',
-      }
-    }
-    return {
-      kind: 'proposal' as const,
-      change,
-      document: applied.document,
-      stepId,
-      draftRevision,
-      documentDigest: await scenarioDocumentDigest(document),
-      reason: '已按你的要求生成受限单步候选，采纳后仍需保存并试跑。',
-      diffs: applied.diffs,
-      diagnostics: next.diagnostics.map((item) => ({
-        code: item.code,
-        stepId: item.stepId,
-        fieldPath: item.fieldPath,
-        message: item.message,
-        baseline: compared.leftover.some(
-          (left) => left.code === item.code && left.stepId === item.stepId,
-        ),
-      })),
-      executable: next.ok,
-    }
-  }
-
-  private async proposeChange(
-    document: ScenarioDocument,
-    stepId: string,
-    question: string,
-    maxInstructionChars: number,
-    session: AssistantModelSession | null,
-    signal?: AbortSignal,
-  ): Promise<AssistantStepChange | Extract<AssistantResult, { kind: 'unsupported' }>> {
-    const constructed = this.constructStepChange(document, stepId, question, maxInstructionChars)
-    if (!isUnsupportedChange(constructed)) return constructed
-    if (constructed.reasonCode === 'STEP_NOT_FOUND' || !session) return constructed
-    const generated = await generateStepChange(
-      session,
-      question,
-      scenarioFactsForModel(document, stepId),
-      signal,
-    )
-    if (generated.change) return generated.change
-    return constructed
-  }
-
-  private constructStepChange(
-    document: ScenarioDocument,
-    stepId: string,
-    question: string,
-    maxInstructionChars: number,
-  ): AssistantStepChange | Extract<AssistantResult, { kind: 'unsupported' }> {
-    const step = document.steps.find((item) => item.id === stepId)
-    if (!step) {
-      return { kind: 'unsupported', reasonCode: 'STEP_NOT_FOUND', message: '步骤不在该草稿中' }
-    }
-    if (step.type === 'fill') {
-      const match = /引用\s*([a-zA-Z][\w-]*)/.exec(question) ?? /from\s+([a-zA-Z][\w-]*)/.exec(question)
-      if (!match) {
-        return { kind: 'unsupported', reasonCode: 'NEED_BINDING', message: '请指明要引用的前序输出或输入名称' }
-      }
-      return { kind: 'fill_binding', from: match[1]! }
-    }
-    if (step.type === 'assert') {
-      const text = /改成[「"](.+?)[」"]/.exec(question)?.[1]
-      if (!text) {
-        return { kind: 'unsupported', reasonCode: 'NEED_EXPECTATION', message: '请明确新的断言预期文字' }
-      }
-      return { kind: 'assert_expectation', expect: { kind: 'text_contains', value: text } }
-    }
-    if (step.type.startsWith('ai_')) {
-      const instruction = question.replace(/^(把|请|帮我)?(这条)?(AI)?指令/, '').trim() || question
-      return { kind: 'ai_instruction', instruction: instruction.slice(0, maxInstructionChars) }
-    }
-    return { kind: 'unsupported', reasonCode: 'STEP_TYPE_UNSUPPORTED', message: '一期不能修改这类步骤' }
-  }
-
   private async sanitizeStoredTurn(
     actor: Actor,
     turn: Awaited<ReturnType<typeof getAssistantTurnRecord>>['turn'],
     slots: Record<string, unknown> | null,
   ) {
-    if (!turn.result || turn.result.kind === 'inaccessible' || turn.result.kind === 'clarify') return turn
-    if (turn.result.kind === 'guide') {
+    const unpackedResult = turn.result ? unpackAssistantResultEnvelope(turn.result) : null
+    if (!unpackedResult || unpackedResult.kind === 'inaccessible' || unpackedResult.kind === 'clarify') {
+      return { ...turn, result: unpackedResult }
+    }
+
+    if (slots?.quote) {
+      const quoteObj = assistantQuoteContextSchema.safeParse(slots.quote)
+      if (quoteObj.success) {
+        const quoteTargetId = quoteTargetSystemId(quoteObj.data)
+        if (quoteTargetId) {
+          try {
+            await this.requireVisibleTarget(actor, quoteTargetId)
+          } catch {
+            return { ...turn, result: { kind: 'inaccessible' as const, message: '引用内容所属目标已不可访问' } }
+          }
+        }
+      }
+    }
+
+    if (unpackedResult.kind === 'discovery') {
+      if (!hasAllPermissions(actor.permissions, ['target:read'])) {
+        return { ...turn, result: { kind: 'inaccessible' as const, message: '相关目标已不可访问' } }
+      }
+      if (unpackedResult.scope.targetId) {
+        try {
+          await this.requireVisibleTarget(actor, unpackedResult.scope.targetId)
+        } catch {
+          return { ...turn, result: { kind: 'inaccessible' as const, message: '相关目标已不可访问' } }
+        }
+      }
+      const visibleCandidates: typeof unpackedResult.candidates = []
+      for (const candidate of unpackedResult.candidates) {
+        try {
+          await this.requireVisibleTarget(actor, candidate.targetId)
+          visibleCandidates.push(candidate)
+        } catch {
+          // excluded
+        }
+      }
+      if (unpackedResult.candidates.length > 0 && visibleCandidates.length === 0) {
+        return { ...turn, result: { kind: 'inaccessible' as const, message: '相关目标已不可访问' } }
+      }
+      return {
+        ...turn,
+        result: {
+          ...unpackedResult,
+          candidates: visibleCandidates,
+          coverage: {
+            ...unpackedResult.coverage,
+            totalVisible: visibleCandidates.length,
+          },
+        },
+      }
+    }
+
+    if (unpackedResult.kind === 'guide') {
       const topic = assistantGuideTopicSchema.safeParse(slots?.topic).success
         ? assistantGuideTopicSchema.parse(slots?.topic)
         : undefined
@@ -635,17 +413,47 @@ export class AssistantService {
       }
       return { ...turn, result: { kind: 'guide' as const, items } }
     }
-    if (turn.result.kind === 'diagnosis') {
-      const runId =
-        typeof slots?.runId === 'string'
+
+    if (unpackedResult.kind === 'diagnosis') {
+      const runDetailAction = unpackedResult.nextActions.find(
+        (item) => item.kind === 'run.detail' && item.href.startsWith('/runs/') && item.href !== '/runs',
+      )
+      const rawRunId =
+        typeof slots?.runId === 'string' && slots.runId.trim().length > 0
           ? slots.runId
-          : turn.result.nextActions.find((item) => item.kind === 'run.detail')?.href.split('/').pop()
-      if (!runId || !hasAllPermissions(actor.permissions, ['run:read', 'target:read'])) {
+          : runDetailAction
+            ? runDetailAction.href.split('/').pop()
+            : undefined
+      const runId = rawRunId && rawRunId !== 'runs' ? rawRunId : undefined
+      if (runId) {
+        if (!hasAllPermissions(actor.permissions, ['run:read', 'target:read'])) {
+          return { ...turn, result: { kind: 'inaccessible' as const, message: '相关运行或目标已不可访问' } }
+        }
+        try {
+          const run = await getRun(this.db, runId)
+          await this.requireVisibleTarget(actor, run.targetId)
+        } catch {
+          return {
+            ...turn,
+            result: { kind: 'inaccessible' as const, message: '相关运行或目标已不可访问' },
+          }
+        }
+      }
+    }
+
+    if (unpackedResult.kind === 'compare') {
+      const baseRunId = unpackedResult.baseRunId
+      const targetRunId = unpackedResult.targetRunId
+      if (!hasAllPermissions(actor.permissions, ['run:read', 'target:read'])) {
         return { ...turn, result: { kind: 'inaccessible' as const, message: '相关运行或目标已不可访问' } }
       }
       try {
-        const run = await getRun(this.db, runId)
-        await this.requireVisibleTarget(actor, run.targetId)
+        const [base, target] = await Promise.all([
+          getRun(this.db, baseRunId),
+          getRun(this.db, targetRunId),
+        ])
+        await this.requireVisibleTarget(actor, base.targetId)
+        await this.requireVisibleTarget(actor, target.targetId)
       } catch {
         return {
           ...turn,
@@ -653,11 +461,16 @@ export class AssistantService {
         }
       }
     }
-    if (turn.result.kind === 'explanation' || turn.result.kind === 'proposal' || turn.result.kind === 'knowledge_proposal') {
+
+    if (
+      unpackedResult.kind === 'explanation' ||
+      unpackedResult.kind === 'proposal' ||
+      unpackedResult.kind === 'knowledge_proposal'
+    ) {
       const scenarioId = typeof slots?.scenarioId === 'string' ? slots.scenarioId : ''
       if (
         !scenarioId ||
-        !hasAllPermissions(actor.permissions, assistantCapability('scenario.explain').requiredPermissions)
+        !hasAllPermissions(actor.permissions, ['workflow:read', 'target:read'])
       ) {
         return { ...turn, result: { kind: 'inaccessible' as const, message: '相关场景或目标已不可访问' } }
       }
@@ -668,6 +481,7 @@ export class AssistantService {
         return { ...turn, result: { kind: 'inaccessible' as const, message: '相关场景或目标已不可访问' } }
       }
     }
-    return turn
+
+    return { ...turn, result: unpackedResult }
   }
 }

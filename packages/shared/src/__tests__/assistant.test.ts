@@ -12,8 +12,14 @@ import {
   isSensitiveFillInput,
   scenarioFactsForModel,
   projectRunFacts,
+  quoteStepFocusId,
+  quoteTargetSystemId,
+  quotedStepIdOnRun,
   routeAssistantTurn,
   scenarioDocumentDigest,
+  createAssistantTurnBodySchema,
+  assistantQuoteContextSchema,
+  assistantPageContextSchema,
   type FillInput,
   type RunObservation,
   type ScenarioDocument,
@@ -162,6 +168,49 @@ describe('助手权限先行', () => {
   })
 })
 
+describe('步骤引用', () => {
+  const stepRuns = [
+    { id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', stepId: '11111111-1111-4111-8111-111111111111' },
+  ]
+
+  it('步骤引用不把 StepRun ID 当成目标系统 ID', () => {
+    const quote = {
+      type: 'step_failure' as const,
+      targetId: stepRuns[0]!.id,
+      title: '步骤 #1',
+      summary: 'TIMEOUT',
+    }
+    expect(quoteTargetSystemId(quote)).toBeUndefined()
+    expect(quoteStepFocusId(quote)).toBe(stepRuns[0]!.id)
+    expect(quotedStepIdOnRun(quote, stepRuns)).toBe(stepRuns[0]!.stepId)
+  })
+
+  it('objectRef 指向步骤定义时直接对上该步', () => {
+    const quote = {
+      type: 'step_failure' as const,
+      targetId: stepRuns[0]!.stepId,
+      objectRef: { kind: 'step' as const, id: stepRuns[0]!.stepId },
+      title: '步骤 #1',
+      summary: 'TIMEOUT',
+    }
+    expect(quotedStepIdOnRun(quote, stepRuns)).toBe(stepRuns[0]!.stepId)
+    expect(quoteTargetSystemId({ ...quote, objectRef: { kind: 'target' as const, id: observation.run.targetId } })).toBe(
+      observation.run.targetId,
+    )
+  })
+
+  it('不属于这次运行的步骤引用对不上', () => {
+    const quote = {
+      type: 'step_failure' as const,
+      targetId: '99999999-9999-4999-8999-999999999999',
+      objectRef: { kind: 'step' as const, id: '99999999-9999-4999-8999-999999999999' },
+      title: '别的步骤',
+      summary: '不属于这次运行',
+    }
+    expect(quotedStepIdOnRun(quote, stepRuns)).toBeUndefined()
+  })
+})
+
 describe('助手路由', () => {
   it('运行页快捷入口问导览问题时澄清，不按 hint 诊断', () => {
     const decision = routeAssistantTurn({
@@ -206,6 +255,67 @@ describe('助手路由', () => {
       available: ['scenario.compose_with_knowledge'],
     })
     expect(decision).toMatchObject({ type: 'clarify', missingFields: ['draftRevision'] })
+  })
+
+  it('指代当前页面时，运行页做诊断、场景页做解释', () => {
+    const run = routeAssistantTurn({
+      question: '这里为什么不行',
+      pageContext: { page: 'run', runId: observation.run.id },
+      available: ['run.diagnose', 'scenario.explain', 'platform.guide'],
+    })
+    expect(run).toMatchObject({
+      type: 'dispatch',
+      capabilityId: 'run.diagnose',
+      slots: { runId: observation.run.id },
+    })
+
+    const studio = routeAssistantTurn({
+      question: '这里为什么不行',
+      pageContext: {
+        page: 'studio',
+        scenarioId: observation.run.scenarioId,
+        draftRevision: 2,
+        stepId: '11111111-1111-4111-8111-111111111111',
+      },
+      available: ['run.diagnose', 'scenario.explain', 'scenario.propose-step'],
+    })
+    expect(studio).toMatchObject({
+      type: 'dispatch',
+      capabilityId: 'scenario.explain',
+      slots: { scenarioId: observation.run.scenarioId, draftRevision: 2 },
+    })
+  })
+
+  it('只有没有 runId 时，最近失败才会去找运行', () => {
+    const stale = routeAssistantTurn({
+      question: '分析最近失败的运行',
+      pageContext: { page: 'run', runId: observation.run.id },
+      available: ['run.diagnose'],
+    })
+    expect(stale).toMatchObject({
+      type: 'dispatch',
+      capabilityId: 'run.diagnose',
+      slots: { runId: observation.run.id },
+    })
+    if (stale.type === 'dispatch') expect(stale.slots.findRecentFailed).toBeUndefined()
+
+    const fresh = routeAssistantTurn({
+      question: '分析最近失败的运行',
+      available: ['run.diagnose'],
+    })
+    expect(fresh).toMatchObject({
+      type: 'dispatch',
+      slots: { findRecentFailed: true },
+    })
+  })
+
+  it('运行页上的闲聊不会被页面先验改成诊断', () => {
+    const decision = routeAssistantTurn({
+      question: '今天天气怎么样',
+      pageContext: { page: 'run', runId: observation.run.id },
+      available: ['run.diagnose', 'scenario.explain'],
+    })
+    expect(decision).toMatchObject({ type: 'unsupported', reasonCode: 'TASK_UNSUPPORTED' })
   })
 
   it('诊断问句带上 focus，解释优先用草稿 revision', () => {
@@ -336,4 +446,52 @@ describe('单步候选构造', () => {
       })).ok,
     ).toBe(false)
   })
+
+  it('validates assistantPageContext with structured quote and createAssistantTurnBodySchema', () => {
+    const validBody = {
+      clientTurnId: 'turn-12345678',
+      question: '请分析这一步报错',
+      pageContext: {
+        page: 'run' as const,
+        runId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        stepId: '11111111-1111-4111-8111-111111111111',
+        quote: {
+          type: 'step_failure' as const,
+          targetId: '11111111-1111-4111-8111-111111111111',
+          title: '步骤 #1: 填写金额',
+          summary: 'locator.fill: Timeout waiting for element',
+          metadata: { stepType: 'fill' },
+        },
+      },
+    }
+    const parsed = createAssistantTurnBodySchema.safeParse(validBody)
+    expect(parsed.success).toBe(true)
+
+    // Rejects invalid quote type
+    const invalidQuote = {
+      ...validBody,
+      pageContext: {
+        ...validBody.pageContext,
+        quote: {
+          ...validBody.pageContext.quote,
+          type: 'unknown_type',
+        },
+      },
+    }
+    expect(createAssistantTurnBodySchema.safeParse(invalidQuote).success).toBe(false)
+  })
+
+  it('正确将“添加步骤在页面哪里”路由至 in-page.guidance 而非 platform.guide', () => {
+    const decision = routeAssistantTurn({
+      question: '添加步骤在页面哪里？',
+      pageContext: { page: 'studio', scenarioId: '11111111-1111-4111-8111-111111111111' },
+      available: ['in-page.guidance', 'platform.guide', 'scenario.explain'],
+    })
+    expect(decision.type).toBe('dispatch')
+    if (decision.type === 'dispatch') {
+      expect(decision.capabilityId).toBe('in-page.guidance')
+      expect(decision.slots.page).toBe('studio')
+    }
+  })
 })
+

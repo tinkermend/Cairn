@@ -26,9 +26,11 @@ import { openIsolatedDb } from '@cairn/db/testing'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
-import { listenForSupertest } from '../__tests__/http-app'
+import { listenForSupertest, unusedChangeHint } from '../__tests__/http-app'
 import { AssistantController } from './assistant.controller'
+import { AssistantAsyncRunner } from './async-runner'
 import { AssistantService } from './assistant.service'
+import { AssistantCapabilityRegistry } from './registry'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import { TargetsService } from '../targets/targets.service'
 import { LocalSecretProvider } from '../secrets/local-secret-provider'
@@ -111,10 +113,20 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
     runId = run.detail.id
     await getOrCreatePlatformConfig(db)
     const secrets = new LocalSecretProvider(Buffer.alloc(32, 7))
+    const platformConfig = new PlatformConfigService(db, secrets)
+    const targetsService = new TargetsService(db, secrets)
     const service = new AssistantService(
       db,
-      new PlatformConfigService(db, secrets),
-      new TargetsService(db, secrets),
+      platformConfig,
+      targetsService,
+      new AssistantAsyncRunner(
+        db,
+        unusedChangeHint,
+        platformConfig,
+        targetsService,
+        new AssistantCapabilityRegistry(),
+      ),
+      unusedChangeHint,
     )
     const guard: CanActivate = {
       canActivate(context: ExecutionContext) {
@@ -147,6 +159,19 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
     current = owner
   })
 
+  async function waitForTurn(conversationId: string, turnId: string) {
+    for (let i = 0; i < 50; i++) {
+      const res = await request(app.getHttpServer())
+        .get(`/assistant/conversations/${conversationId}/turns/${turnId}`)
+        .expect(200)
+      if (res.body.status !== 'RUNNING' && res.body.status !== 'QUEUED') {
+        return res.body
+      }
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    throw new Error(`Timeout waiting for turn ${turnId}`)
+  }
+
   it('没有 ai:assist 不能进入助手', async () => {
     current = account(owner.id, ['run:read', 'target:read'])
     await request(app.getHttpServer()).get('/assistant/capabilities').expect(403)
@@ -160,7 +185,7 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
     expect(caps.body.items.find((item: { id: string }) => item.id === 'scenario.propose-step')?.available).toBe(
       false,
     )
-    const turn = await request(app.getHttpServer())
+    const sub = await request(app.getHttpServer())
       .post(`/assistant/conversations/${conversationId}/turns`)
       .send({
         clientTurnId: 'viewer-propose-1',
@@ -168,8 +193,9 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
         capabilityHint: 'scenario.propose-step',
         pageContext: { page: 'studio', scenarioId, stepId: echo.id, draftRevision: 1 },
       })
-      .expect(200)
-    expect(turn.body.result).toMatchObject({ kind: 'unsupported', reasonCode: 'CAPABILITY_FORBIDDEN' })
+      .expect(202)
+    const turn = await waitForTurn(conversationId, sub.body.turnId)
+    expect(turn.result).toMatchObject({ kind: 'unsupported', reasonCode: 'CAPABILITY_FORBIDDEN' })
     current = owner
   })
 
@@ -177,7 +203,7 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
     current = account(owner.id, ['ai:assist', 'run:read', 'workflow:read'])
     const caps = await request(app.getHttpServer()).get('/assistant/capabilities').expect(200)
     expect(caps.body.items.find((item: { id: string }) => item.id === 'run.diagnose')?.available).toBe(false)
-    const turn = await request(app.getHttpServer())
+    const sub = await request(app.getHttpServer())
       .post(`/assistant/conversations/${conversationId}/turns`)
       .send({
         clientTurnId: 'no-target-diagnose-1',
@@ -185,14 +211,15 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
         capabilityHint: 'run.diagnose',
         pageContext: { page: 'run', runId },
       })
-      .expect(200)
-    expect(turn.body.result).toMatchObject({ kind: 'unsupported', reasonCode: 'CAPABILITY_FORBIDDEN' })
-    expect(JSON.stringify(turn.body)).not.toContain('泰坦')
+      .expect(202)
+    const turn = await waitForTurn(conversationId, sub.body.turnId)
+    expect(turn.result).toMatchObject({ kind: 'unsupported', reasonCode: 'CAPABILITY_FORBIDDEN' })
+    expect(JSON.stringify(turn)).not.toContain('泰坦')
     current = owner
   })
 
   it('有目标权限时可以诊断；导览问句与诊断 hint 冲突则澄清', async () => {
-    const diagnosed = await request(app.getHttpServer())
+    const subDiag = await request(app.getHttpServer())
       .post(`/assistant/conversations/${conversationId}/turns`)
       .send({
         clientTurnId: 'owner-diagnose-1',
@@ -200,12 +227,13 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
         capabilityHint: 'run.diagnose',
         pageContext: { page: 'run', runId },
       })
-      .expect(200)
-    expect(diagnosed.body.result.kind).toBe('diagnosis')
-    expect(diagnosed.body.result.facts.length).toBeGreaterThan(0)
-    expect(JSON.stringify(diagnosed.body.result.facts)).not.toContain('hidden')
+      .expect(202)
+    const diagnosed = await waitForTurn(conversationId, subDiag.body.turnId)
+    expect(diagnosed.result.kind).toBe('diagnosis')
+    expect(diagnosed.result.facts.length).toBeGreaterThan(0)
+    expect(JSON.stringify(diagnosed.result.facts)).not.toContain('hidden')
 
-    const clarify = await request(app.getHttpServer())
+    const subClarify = await request(app.getHttpServer())
       .post(`/assistant/conversations/${conversationId}/turns`)
       .send({
         clientTurnId: 'owner-clarify-1',
@@ -213,8 +241,9 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
         capabilityHint: 'run.diagnose',
         pageContext: { page: 'run', runId },
       })
-      .expect(200)
-    expect(clarify.body.result.kind).toBe('clarify')
+      .expect(202)
+    const clarify = await waitForTurn(conversationId, subClarify.body.turnId)
+    expect(clarify.result.kind).toBe('clarify')
   })
 
   it('撤销目标权限后历史诊断只保留不可访问提示', async () => {
@@ -232,25 +261,26 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
 
   it('没有目标权限时导览不给出目标入口', async () => {
     current = account(owner.id, ['ai:assist', 'run:read'])
-    const turn = await request(app.getHttpServer())
+    const sub = await request(app.getHttpServer())
       .post(`/assistant/conversations/${conversationId}/turns`)
       .send({
         clientTurnId: 'guide-no-target-1',
         question: '在哪里配置目标账号？',
       })
-      .expect(200)
-    expect(turn.body.result).toMatchObject({
+      .expect(202)
+    const turn = await waitForTurn(conversationId, sub.body.turnId)
+    expect(turn.result).toMatchObject({
       kind: 'unsupported',
       reasonCode: 'GUIDE_UNAVAILABLE',
     })
-    expect(turn.body.result).not.toHaveProperty('items')
-    expect(JSON.stringify(turn.body.result)).not.toContain('泰坦')
+    expect(turn.result).not.toHaveProperty('items')
+    expect(JSON.stringify(turn.result)).not.toContain('泰坦')
     current = owner
   })
 
   it('解释已保存草稿时不混入已发布版本', async () => {
     current = owner
-    const turn = await request(app.getHttpServer())
+    const sub = await request(app.getHttpServer())
       .post(`/assistant/conversations/${conversationId}/turns`)
       .send({
         clientTurnId: `owner-explain-${crypto.randomUUID()}`,
@@ -263,9 +293,32 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
           versionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         },
       })
-      .expect(200)
-    expect(turn.body.result.kind).toBe('explanation')
-    expect(turn.body.result.summary).toContain('巡检')
+      .expect(202)
+    const turn = await waitForTurn(conversationId, sub.body.turnId)
+    expect(turn.result.kind).toBe('explanation')
+    expect(turn.result.summary).toContain('巡检')
     current = owner
+  })
+
+  it('提问“添加步骤在页面哪里”时精准返回 in_page_guidance 而非全量目标菜单', async () => {
+    current = owner
+    const sub = await request(app.getHttpServer())
+      .post(`/assistant/conversations/${conversationId}/turns`)
+      .send({
+        clientTurnId: `guidance-${crypto.randomUUID()}`,
+        question: '添加步骤在页面哪里？',
+        pageContext: {
+          page: 'studio',
+          scenarioId,
+          draftRevision: 1,
+        },
+      })
+      .expect(202)
+    const turn = await waitForTurn(conversationId, sub.body.turnId)
+    expect(turn.result.kind).toBe('in_page_guidance')
+    expect(turn.result.directAnswer).toContain('左侧步骤编排列表')
+    expect(turn.result.directAnswer).toContain('【+ 添加步骤】')
+    expect(turn.result).not.toHaveProperty('items')
+    expect(JSON.stringify(turn.result)).not.toContain('目标系统')
   })
 })

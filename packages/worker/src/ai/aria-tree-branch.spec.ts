@@ -6,6 +6,7 @@ import {
   verifyExtractionProvenance,
   tryAriaAssertBranch,
   tryAriaExtractBranch,
+  tryAriaLocateBranch,
   DEFAULT_VISUAL_KEYWORDS,
 } from './aria-tree-branch.js'
 import { createFakeChatClient } from './midscene/model-client.js'
@@ -271,4 +272,76 @@ describe('AriaTreeBranch Unit Tests', () => {
       expect(result.fallbackReason).toBe('citations_verification_failed')
     })
   })
+
+  describe('tryAriaLocateBranch 文本语义定位与回退', () => {
+    const mockPage = {
+      ariaSnapshot: async () => `
+- heading "系统设置"
+- button "保存配置"
+- link "帮助中心"
+`,
+      getByRole: (role: string, opts?: { name?: string }) => ({
+        count: async () => (role === 'button' && opts?.name === '保存配置' ? 1 : 0),
+        boundingBox: async () => ({ x: 100, y: 200, width: 80, height: 40 }),
+      }),
+      getByText: () => ({ count: async () => 0, boundingBox: async () => null }),
+      getByLabel: () => ({ count: async () => 0, boundingBox: async () => null }),
+      locator: () => ({ count: async () => 0, boundingBox: async () => null }),
+    } as any
+
+    it('模型返回匹配候选且页面唯一定位成功时返回中心坐标', async () => {
+      const client = createFakeChatClient(async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                verdict: 'found',
+                candidate: { by: 'role', value: 'button', name: '保存配置' },
+                reason: '匹配保存配置按钮',
+              }),
+            },
+          },
+        ],
+      }))
+
+      const result = await tryAriaLocateBranch({
+        page: mockPage,
+        prompt: '保存配置按钮',
+        client,
+        modelName: 'test-text-model',
+        timeoutMs: 3000,
+      })
+
+      expect(result.handled).toBe(true)
+      expect(result.center).toEqual([140, 220])
+      expect(result.dpr).toBe(1)
+    })
+
+    it('模型返回 not_found 时触发回退到视觉路径', async () => {
+      const client = createFakeChatClient(async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                verdict: 'not_found',
+                reason: '无障碍树中未找到该元素',
+              }),
+            },
+          },
+        ],
+      }))
+
+      const result = await tryAriaLocateBranch({
+        page: mockPage,
+        prompt: '不存在的图标',
+        client,
+        modelName: 'test-text-model',
+        timeoutMs: 3000,
+      })
+
+      expect(result.handled).toBe(false)
+      expect(result.fallbackReason).toContain('aria_locate_not_found')
+    })
+  })
 })
+

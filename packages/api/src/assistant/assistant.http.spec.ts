@@ -89,21 +89,12 @@ async function buildApp(account: RequestAccount) {
       updatedAt: '2026-09-14T00:00:00.000Z',
     })),
     createTurn: vi.fn(async () => ({
-      id: '22222222-2222-4222-8222-222222222222',
-      conversationId: conversation.id,
-      clientTurnId: 'client-turn-1',
-      parentTurnId: null,
-      question: '这次为什么失败',
-      capabilityId: 'run.diagnose',
-      status: 'CLARIFY',
-      deadlineAt: '2026-09-14T00:01:00.000Z',
-      result: {
-        kind: 'clarify',
-        question: '本次要做运行诊断，还是查找功能入口？请选一项后继续。',
-        missingFields: ['capabilityId'],
-      },
-      createdAt: '2026-09-14T00:00:00.000Z',
-      updatedAt: '2026-09-14T00:00:00.000Z',
+      turnId: '22222222-2222-4222-8222-222222222222',
+      taskId: null,
+      state: 'RUNNING',
+      stage: 'accepted',
+      eventSeq: 0,
+      queuePosition: null,
     })),
   }
   const moduleRef = await Test.createTestingModule({
@@ -155,6 +146,6 @@ describe('助手 HTTP 权限', () => {
         capabilityHint: 'run.diagnose',
         pageContext: { page: 'run', runId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
       })
-      .expect(200)
+      .expect(202)
   })
 })

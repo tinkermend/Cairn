@@ -5,6 +5,7 @@ import {
   type AiResult,
 } from '@cairn/shared'
 import { getAriaSnapshot } from '../browser/aria-snapshot.js'
+import { locatorForCandidate } from '../browser/runtime.js'
 import type { OpenAiLike } from './midscene/model-client.js'
 
 /**
@@ -467,6 +468,163 @@ export async function tryAriaExtractBranch(input: {
       summary: '数据提取成功',
     },
     snapshot: snapshotRes.text,
+  }
+}
+
+export interface AriaLocateBranchResult {
+  handled: boolean
+  fallbackReason?: string
+  center?: [number, number]
+  dpr?: number
+}
+
+export function buildAriaLocatePrompt(instruction: string, snapshotText: string): {
+  system: string
+  user: string
+} {
+  const system = `你是一个严格的无障碍语义树（Aria Snapshot）定位分析引擎。
+你的职责是依据用户提供的页面无障碍树结构，寻找与目标描述最匹配的一个页面元素。
+无障碍树中：
+- button "文本" -> role: "button", name: "文本"
+- link "文本" -> role: "link", name: "文本"
+- heading "文本" -> role: "heading", name: "文本"
+- textbox "文本/占位" -> role: "textbox", name: "文本"
+- combobox "文本" -> role: "combobox", name: "文本"
+- tab "文本" -> role: "tab", name: "文本"
+- checkbox "文本" -> role: "checkbox", name: "文本"
+
+【判定规则】
+1. 只依据所提供的无障碍树内容寻找，绝对不要主观臆测。
+2. 找到确切元素时，输出 candidate。candidate 的 by 可以为 "role"（必须提供 value 为角色英文小写，name 为名称）、或 "text"（文本）、或 "label"（标签）。
+3. 如果无障碍树中缺失对应元素、或无法确定是哪一个（存在歧义），或者属于无文本图标/纯视觉空间元素，必须输出 {"verdict": "not_found", "reason": "无法在无障碍树中唯一定位"}。
+
+【输出格式】
+必须严格输出合法的 JSON 对象：
+{
+  "verdict": "found",
+  "candidate": {
+    "by": "role" | "text" | "label",
+    "value": "button" | "文本",
+    "name": "元素名称(仅role时可选)"
+  },
+  "reason": "定位依据"
+}
+或
+{
+  "verdict": "not_found",
+  "reason": "未找到理由"
+}`
+
+  const user = `【无障碍树快照】
+${snapshotText}
+
+【目标描述】
+${instruction}`
+
+  return { system, user }
+}
+
+/**
+ * 尝试通过页面无障碍树（Playwright AI 文本能力）唯一定位目标元素并换算中心坐标。
+ * 成功直接返回中心点坐标，无需截图或调用 MidScene 视觉模型；未命中或不唯一定位时回退。
+ */
+export async function tryAriaLocateBranch(input: {
+  page: Page
+  prompt: string
+  client: OpenAiLike
+  modelName: string
+  modelFamily?: string
+  timeoutMs: number
+  signal?: AbortSignal
+}): Promise<AriaLocateBranchResult> {
+  const snapshotRes = await getAriaSnapshot(input.page, {
+    timeoutMs: Math.min(input.timeoutMs, 5000),
+    mode: 'default',
+    signal: input.signal,
+  })
+
+  if (snapshotRes.truncated || !snapshotRes.text.trim()) {
+    return { handled: false, fallbackReason: 'snapshot_truncated_or_empty' }
+  }
+
+  const prompt = buildAriaLocatePrompt(input.prompt, snapshotRes.text)
+
+  const isReasoningFamily =
+    input.modelFamily?.includes('doubao') ||
+    input.modelFamily?.includes('deepseek') ||
+    input.modelName.includes('seed') ||
+    input.modelName.includes('r1')
+
+  let completion: unknown
+  try {
+    completion = await input.client.chat.completions.create(
+      {
+        model: input.modelName,
+        messages: [
+          { role: 'system', content: prompt.system },
+          { role: 'user', content: prompt.user },
+        ],
+        temperature: 0.1,
+        ...(isReasoningFamily ? { thinking: { type: 'disabled' } } : {}),
+      },
+      { signal: input.signal ?? AbortSignal.timeout(input.timeoutMs) },
+    )
+  } catch (error) {
+    return {
+      handled: false,
+      fallbackReason: `model_call_error: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+
+  const content = extractCompletionContent(completion)
+  if (!content) {
+    return { handled: false, fallbackReason: 'empty_model_response' }
+  }
+
+  const parsed = parseJsonSafe<{
+    verdict?: string
+    candidate?: { by?: string; value?: string; name?: string }
+    reason?: string
+  }>(content)
+  const cand = parsed?.candidate
+  if (!parsed || parsed.verdict !== 'found' || !cand || typeof cand.value !== 'string' || !cand.value) {
+    return {
+      handled: false,
+      fallbackReason: `aria_locate_not_found: ${parsed?.reason ?? '未找到匹配元素'}`,
+    }
+  }
+
+  const by = cand.by === 'role' || cand.by === 'text' || cand.by === 'label' ? cand.by : 'text'
+  const candidate: { by: 'role' | 'text' | 'label'; value: string; name?: string } = {
+    by,
+    value: cand.value,
+    ...(cand.name ? { name: cand.name } : {}),
+  }
+
+  // 在页面上验证该候选是否唯一匹配 (count === 1)
+  try {
+    const loc = locatorForCandidate(input.page, candidate)
+    const count = await loc.count()
+    if (count !== 1) {
+      return {
+        handled: false,
+        fallbackReason: `candidate_match_count_${count}`,
+      }
+    }
+    const box = await loc.boundingBox()
+    if (!box || box.width <= 0 || box.height <= 0) {
+      return { handled: false, fallbackReason: 'element_has_no_box' }
+    }
+    return {
+      handled: true,
+      center: [box.x + box.width / 2, box.y + box.height / 2],
+      dpr: 1,
+    }
+  } catch (err) {
+    return {
+      handled: false,
+      fallbackReason: `locator_error: ${err instanceof Error ? err.message : String(err)}`,
+    }
   }
 }
 

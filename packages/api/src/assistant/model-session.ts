@@ -6,6 +6,7 @@ import {
   assistantStepChangeSchema,
   type AssistantCapabilityId,
   type AssistantHypothesis,
+  type AssistantPageContext,
   type AssistantStepChange,
   type PlatformAiProvider,
   type PlatformAiThinkingMode,
@@ -14,8 +15,12 @@ import { recordPlatformAiCall } from '@cairn/db'
 import type { DbHandle } from '@cairn/db'
 import type { PlatformModelClient } from './model-client'
 
+/**
+ * 'none' 是显式逃生选项。不给模型这个出口，它会被迫在五个能力里硬选一个，
+ * 越界提问（闲聊、通用问答、平台做不到的事）必然被误派发到某个能力上。
+ */
 export const modelClassifySchema = z.strictObject({
-  capabilityId: assistantCapabilityIdSchema,
+  capabilityId: z.union([assistantCapabilityIdSchema, z.literal('none')]),
 })
 
 export const modelHypothesesSchema = z.strictObject({
@@ -55,6 +60,7 @@ export class AssistantModelSession {
     private readonly turnId: string,
     private readonly access: PlatformAiAccess,
     private readonly client: PlatformModelClient,
+    private readonly ownerAccountId?: string,
   ) {}
 
   remainingMs() {
@@ -119,6 +125,7 @@ export class AssistantModelSession {
       })
       await recordPlatformAiCall(this.db, {
         turnId: this.turnId,
+        ownerAccountId: this.ownerAccountId,
         seq: this.used,
         purpose,
         configRevision: this.access.revision,
@@ -132,6 +139,7 @@ export class AssistantModelSession {
     } catch (error) {
       await recordPlatformAiCall(this.db, {
         turnId: this.turnId,
+        ownerAccountId: this.ownerAccountId,
         seq: this.used,
         purpose,
         configRevision: this.access.revision,
@@ -151,6 +159,7 @@ export async function classifyAssistantCapability(
   question: string,
   available: readonly AssistantCapabilityId[],
   signal?: AbortSignal,
+  pageContext?: AssistantPageContext,
 ): Promise<AssistantCapabilityId | null> {
   const result = await session.completeJson(
     'classify',
@@ -159,16 +168,21 @@ export async function classifyAssistantCapability(
       {
         role: 'system',
         content:
-          '你是识途助手路由器。只能从给定能力中选一个。输出 JSON {"capabilityId":"..."}。不要编造能力。',
+          '你是识途助手路由器。只能从给定能力中选一个；都不合适时必须选 "none"，不要勉强归类。输出 JSON {"capabilityId":"..."}。不要编造能力。若问句指向当前页面但没有点名能力，run 页优先 run.diagnose，studio 页优先 scenario.explain。目标页、首页或其他页面不要仅因所在页面就选择能力。',
       },
       {
         role: 'user',
-        content: JSON.stringify({ question, available }),
+        content: JSON.stringify({
+          question,
+          available: [...available, 'none'],
+          page: pageContext?.page ?? null,
+        }),
       },
     ],
     signal,
   )
-  if (!result.ok || !available.includes(result.value.capabilityId)) return null
+  if (!result.ok || result.value.capabilityId === 'none') return null
+  if (!available.includes(result.value.capabilityId)) return null
   return result.value.capabilityId
 }
 

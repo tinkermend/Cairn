@@ -18,10 +18,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
-  FormLabel,
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
@@ -34,9 +32,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { Can } from '@/components/rbac/can'
 import { AnalysisAiFields } from './analysis-ai-fields'
+import {
+  FieldGrid,
+  FieldHelp,
+  NumberSetting,
+  SettingLabel,
+  SettingSection,
+  SwitchGrid,
+  SwitchRow,
+} from './setting-layout'
 
 const CUSTOM_MODEL = '__custom__'
 
@@ -90,20 +96,21 @@ export function PlatformAiFields({
   }
 
   return (
-    <div className='grid gap-6'>
-      <div className='space-y-4 rounded-lg border border-border p-4'>
-        <div>
-          <h3 className='text-section font-semibold'>平台通用模型</h3>
-          <p className='text-label text-muted-foreground'>
-            供识途助手与知识分析共用。下拉选择的是提供商方言，不是主机名；地址仍可改成代理或中转。
-          </p>
-        </div>
-        <div className='grid gap-4 md:grid-cols-2'>
+    <div className='space-y-6'>
+      <SettingSection
+        title='平台通用模型'
+        hint='选择本企业实际调用的模型厂商。服务地址可以改成企业网关或代理。'
+      >
+        <div className='space-y-4'>
+        <FieldGrid>
           <FormField
             name='platformAi.provider'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>模型提供商</FormLabel>
+                <SettingLabel
+                  label='模型提供商'
+                  help='按实际调用的厂商选择。平台会使用该厂商的接口；思考模式能否打开，也由这里决定。'
+                />
                 <FormControl>
                   <Select
                     value={field.value || undefined}
@@ -150,9 +157,6 @@ export function PlatformAiFields({
                     </SelectContent>
                   </Select>
                 </FormControl>
-                <FormDescription>
-                  中转站上跑哪一家，就选哪一家，这样思考字段才会按该方言发送。
-                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -161,7 +165,10 @@ export function PlatformAiFields({
             name='platformAi.baseUrl'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>模型服务地址</FormLabel>
+                <SettingLabel
+                  label='模型服务地址'
+                  help='填写厂商或企业网关的接口地址，不要把密钥写在地址里。更换地址后需要重新登记密钥。'
+                />
                 <FormControl>
                   <Input
                     disabled={!canWrite}
@@ -176,9 +183,6 @@ export function PlatformAiFields({
                     }
                   />
                 </FormControl>
-                <FormDescription>
-                  不得在 URL 内嵌凭据。更换地址后必须重新登记密钥。
-                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -187,7 +191,14 @@ export function PlatformAiFields({
             name='platformAi.model'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>模型名</FormLabel>
+                <SettingLabel
+                  label='模型名'
+                  help={
+                    modelHint && !customModel
+                      ? `${modelHint}。列表会随厂商更新，以当前可调用的型号为准。`
+                      : '列表中没有的型号，选「自定义…」填写名称。'
+                  }
+                />
                 {provider ? (
                   <FormControl>
                     <Select
@@ -224,44 +235,32 @@ export function PlatformAiFields({
                     <Input
                       aria-label={provider ? '自定义模型名' : '模型名'}
                       disabled={!canWrite}
-                      placeholder={provider ? '填写中转站或灰度模型名' : '请先选择模型提供商'}
+                      placeholder={provider ? '填写网关或未列出的模型名称' : '请先选择模型提供商'}
                       value={field.value ?? ''}
                       onChange={(event) => field.onChange(event.target.value || undefined)}
                     />
                   </FormControl>
                 ) : null}
-                <FormDescription>
-                  {modelHint && !customModel
-                    ? `${modelHint}。候选按各提供商官方文档整理，模型更新快，以官方为准。`
-                    : '候选之外的模型（中转站别名等）选「自定义…」手填。'}
-                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
           />
+        </FieldGrid>
+        <SwitchGrid>
           <FormField
             name='platformAi.thinkingMode'
             render={({ field }) => (
-              <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2'>
-                <div>
-                  <FormLabel>思考模式</FormLabel>
-                  <FormDescription>
-                    {thinkingLocked
-                      ? PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE
-                      : '助手与知识分析要结构化 JSON，默认关闭更稳。'}
-                  </FormDescription>
-                </div>
-                <FormControl>
-                  <Switch
-                    aria-label='思考模式'
-                    checked={field.value === 'on'}
-                    disabled={!canWrite || thinkingLocked}
-                    onCheckedChange={(checked) => field.onChange(checked ? 'on' : 'off')}
-                  />
-                </FormControl>
-              </FormItem>
+              <SwitchRow
+                label='思考模式'
+                help='建议关闭。开启后模型会先做额外推理，更慢也更贵，助手和知识分析的结果也可能不稳定。'
+                note={thinkingLocked ? PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE : undefined}
+                checked={field.value === 'on'}
+                disabled={!canWrite || thinkingLocked}
+                onCheckedChange={(checked) => field.onChange(checked ? 'on' : 'off')}
+              />
             )}
           />
+        </SwitchGrid>
         </div>
         <div className='space-y-3 rounded-lg border border-border bg-card/50 p-4 shadow-xs'>
           <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
@@ -270,6 +269,11 @@ export function PlatformAiFields({
                 <Label htmlFor='platform-ai-model-key' className='font-semibold'>
                   模型密钥
                 </Label>
+                <FieldHelp label='平台模型密钥'>
+                  {isOriginMismatched
+                    ? '当前服务地址和已登记密钥不是同一处。请重新登记后再保存，避免把原密钥发到新地址。'
+                    : '与浏览器视觉模型分开登记。密钥只写入、不回显。更换地址后需要重新登记，保存后生效。'}
+                </FieldHelp>
                 {secretRef ? (
                   isOriginMismatched ? (
                     <Badge
@@ -294,13 +298,6 @@ export function PlatformAiFields({
                   </Badge>
                 )}
               </div>
-              <p className='text-label text-muted-foreground'>
-                {secretRef
-                  ? isOriginMismatched
-                    ? '当前服务地址与已登记密钥绑定的地址不一致。变更提供商或服务地址后必须重新登记密钥，避免把原凭据发往新地址。'
-                    : '密钥只写不回显。与浏览器 AI 分开绑定；再次登记新密钥将直接覆盖当前绑定，保存配置后正式生效。'
-                  : '密钥只写不回显。与浏览器 AI 分开绑定；启用前须先登记有效密钥，保存配置后正式生效。'}
-              </p>
             </div>
             {secretRef && onUnbindSecret && canWrite ? (
               <Can permission='platform-config:write'>
@@ -364,163 +361,71 @@ export function PlatformAiFields({
             </div>
           </div>
         </div>
-      </div>
+      </SettingSection>
 
-      <div className='space-y-4 rounded-lg border border-border p-4'>
-        <div>
-          <h3 className='text-section font-semibold'>识途助手</h3>
-          <p className='text-label text-muted-foreground'>
-            为控制台提供自然语言问答、功能导览与运行/场景诊断能力。
-          </p>
-        </div>
-        <FormField
-          name='platformAi.enabled'
-          render={({ field }) => (
-            <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2'>
-              <div>
-                <FormLabel>启用识途助手</FormLabel>
-                <FormDescription>
-                  开启后可在页面右下角唤起助手。关闭后不影响知识分析，也不会启动浏览器。
-                </FormDescription>
-              </div>
-              <FormControl>
-                <Switch
-                  aria-label='启用识途助手'
+      <SettingSection title='识途助手' hint='控制台里的问答、导览和诊断。'>
+        <div className='space-y-4'>
+          <SwitchGrid>
+            <FormField
+              name='platformAi.enabled'
+              render={({ field }) => (
+                <SwitchRow
+                  label='启用识途助手'
+                  help='开启后可在页面右下角提问。关闭后，知识分析和浏览器操作不受影响。'
                   checked={field.value}
                   disabled={!canWrite}
                   onCheckedChange={(checked) => requireProvider(checked, field.onChange)}
                 />
-              </FormControl>
-            </FormItem>
-          )}
-        />
-        <div className='grid gap-4 md:grid-cols-2'>
-          <FormField
-            name='platformAi.requestTimeoutMs'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>单次请求超时（ms）</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    disabled={!canWrite}
-                    value={field.value}
-                    onChange={(event) =>
-                      field.onChange(Number(event.target.value))
-                    }
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            name='platformAi.turnTimeoutMs'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>整轮超时（ms）</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    disabled={!canWrite}
-                    value={field.value}
-                    onChange={(event) =>
-                      field.onChange(Number(event.target.value))
-                    }
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            name='platformAi.maxCallsPerTurn'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>每轮调用上限</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    disabled={!canWrite}
-                    value={field.value}
-                    onChange={(event) =>
-                      field.onChange(Number(event.target.value))
-                    }
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            name='platformAi.maxOutputTokens'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>单次输出 token 上限</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    disabled={!canWrite}
-                    value={field.value}
-                    onChange={(event) =>
-                      field.onChange(Number(event.target.value))
-                    }
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            name='platformAi.userInflightLimit'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>用户在途上限</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    disabled={!canWrite}
-                    value={field.value}
-                    onChange={(event) =>
-                      field.onChange(Number(event.target.value))
-                    }
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            name='platformAi.platformInflightLimit'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>平台在途上限</FormLabel>
-                <FormControl>
-                  <Input
-                    type='number'
-                    disabled={!canWrite}
-                    value={field.value}
-                    onChange={(event) =>
-                      field.onChange(Number(event.target.value))
-                    }
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+              )}
+            />
+          </SwitchGrid>
+          <FieldGrid>
+            <NumberSetting
+              name='platformAi.requestTimeoutMs'
+              label='单次请求超时'
+              unit='ms'
+              canWrite={canWrite}
+            />
+            <NumberSetting
+              name='platformAi.turnTimeoutMs'
+              label='一轮问答超时'
+              unit='ms'
+              canWrite={canWrite}
+              help='一次提问从发出到结束的最长时间，须不短于单次请求超时。'
+            />
+            <NumberSetting
+              name='platformAi.maxCallsPerTurn'
+              label='一轮最多调用次数'
+              canWrite={canWrite}
+              help='一次提问里，助手最多向模型请求这么多次。'
+            />
+            <NumberSetting
+              name='platformAi.maxOutputTokens'
+              label='单次输出 token 上限'
+              canWrite={canWrite}
+            />
+            <NumberSetting
+              name='platformAi.userInflightLimit'
+              label='每人同时提问上限'
+              canWrite={canWrite}
+              help='同一人同时进行的提问不能超过这个数，也不能超过全平台同时提问上限。'
+            />
+            <NumberSetting
+              name='platformAi.platformInflightLimit'
+              label='全平台同时提问上限'
+              canWrite={canWrite}
+              help='所有人加起来，同时进行的提问不能超过这个数。超出后，新的提问会排队。'
+            />
+          </FieldGrid>
         </div>
-      </div>
+      </SettingSection>
 
-      <div className='space-y-4 rounded-lg border border-border p-4'>
-        <div>
-          <h3 className='text-section font-semibold'>知识分析</h3>
-          <p className='text-label text-muted-foreground'>
-            供 Worker 分析运行事实与地图，生成候选知识。调度工厂开关仍独立控制是否接收作业。
-          </p>
-        </div>
+      <SettingSection
+        title='知识分析'
+        hint='从运行记录和知识地图整理待确认的知识。要不要按计划执行，在「执行默认值」里单独开关。'
+      >
         <AnalysisAiFields canWrite={canWrite} />
-      </div>
+      </SettingSection>
     </div>
   )
 }

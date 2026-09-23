@@ -14,10 +14,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
-  FormLabel,
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
@@ -30,8 +28,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { Can } from '@/components/rbac/can'
+import {
+  FieldGrid,
+  FieldHelp,
+  NumberSetting,
+  SettingLabel,
+  SettingSection,
+  SwitchGrid,
+  SwitchRow,
+} from './setting-layout'
 
 export function AiFields({
   canWrite,
@@ -66,212 +72,172 @@ export function AiFields({
   }, [secretRef, boundBaseUrl, currentUrl])
 
   return (
-    <div className='grid gap-5'>
-      <FormField
-        name='browserAi.enabled'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2'>
-            <div>
-              <FormLabel>启用浏览器仿真 AI</FormLabel>
-              <FormDescription>
-                关闭后不能新发布或创建含 AI 步骤的运行；已有运行继续按快照执行。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
-                checked={field.value}
-                disabled={!canWrite}
-                onCheckedChange={field.onChange}
-              />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <div className='grid gap-4 md:grid-cols-2'>
-        <FormField
-          name='browserAi.baseUrl'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>模型服务地址</FormLabel>
-              <FormControl>
-                <Input
+    <div className='space-y-6'>
+      <SettingSection
+        title='视觉定位'
+        hint='用于看屏幕、定位按钮和图标。文字理解和判断使用「平台 AI」。'
+      >
+        <div className='space-y-4'>
+          <SwitchGrid>
+            <FormField
+              name='browserAi.enabled'
+              render={({ field }) => (
+                <SwitchRow
+                  label='启用视觉定位'
+                  help='关闭后，不能再发布或新建包含 AI 步骤的运行。已经开始的运行不受影响。'
+                  checked={field.value}
                   disabled={!canWrite}
-                  placeholder='https://api.example.com/v1'
-                  value={field.value ?? ''}
-                  onChange={(event) =>
-                    field.onChange(event.target.value || undefined)
-                  }
+                  onCheckedChange={field.onChange}
                 />
-              </FormControl>
-              <FormDescription>
-                不得在 URL 内嵌凭据。更换服务主机或端口后必须重新登记密钥。
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <FormField
-          name='browserAi.model'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>模型名</FormLabel>
-              <FormControl>
-                <Input
-                  disabled={!canWrite}
-                  value={field.value ?? ''}
-                  onChange={(event) =>
-                    field.onChange(event.target.value || undefined)
-                  }
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <FormField
-          name='browserAi.modelFamily'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>模型族</FormLabel>
-              <FormControl>
-                <Input
-                  disabled={!canWrite}
-                  placeholder='doubao-seed'
-                  value={field.value ?? ''}
-                  onChange={(event) =>
-                    field.onChange(event.target.value || undefined)
-                  }
-                />
-              </FormControl>
-              <FormDescription>
-                须是 Worker 适配层支持的视觉模型族。
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <FormField
-          name='browserAi.requestTimeoutMs'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>单次请求超时（ms）</FormLabel>
-              <FormControl>
-                <Input
-                  type='number'
-                  disabled={!canWrite}
-                  value={field.value}
-                  onChange={(event) =>
-                    field.onChange(Number(event.target.value))
-                  }
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <FormField
-          name='browserAi.stepMaxCalls'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>每步骤调用上限</FormLabel>
-              <FormControl>
-                <Input
-                  type='number'
-                  disabled={!canWrite}
-                  value={field.value}
-                  onChange={(event) =>
-                    field.onChange(Number(event.target.value))
-                  }
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <FormField
-          name='browserAi.resolutionCeiling'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>AI 定位能力上限</FormLabel>
-              <Select
-                value={field.value || FACTORY_RESOLUTION_CEILING}
-                disabled={!canWrite}
-                onValueChange={(next) =>
-                  field.onChange(next || FACTORY_RESOLUTION_CEILING)
-                }
-              >
-                <FormControl>
-                  <SelectTrigger className='w-full' aria-label='AI 定位能力上限'>
-                    <SelectValue />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent>
-                  {RESOLUTION_POLICIES.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {RESOLUTION_CEILING_LABELS[value]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FormDescription>
-                这台平台最多允许走到哪一档。出厂为仅规则。目标系统只能再收紧，不能突破这里。
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <FormField
-          name='browserAi.defaultResolution'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>平台默认优先顺序</FormLabel>
-              <Select
-                value={field.value || FACTORY_RESOLUTION_DEFAULT}
-                disabled={!canWrite}
-                onValueChange={(next) =>
-                  field.onChange(next || FACTORY_RESOLUTION_DEFAULT)
-                }
-              >
-                <FormControl>
-                  <SelectTrigger className='w-full' aria-label='平台默认优先顺序'>
-                    <SelectValue />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent>
-                  {RESOLUTION_POLICIES.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {RESOLUTION_PREFERENCE_LABELS[value]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FormDescription>
-                目标系统、场景和步骤都未指定时使用。实际有效档位不会超过能力上限。
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <FormField
-          name='browserAi.maxOutputTokens'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>单次输出 token 上限</FormLabel>
-              <FormControl>
-                <Input
-                  type='number'
-                  disabled={!canWrite}
-                  value={field.value}
-                  onChange={(event) =>
-                    field.onChange(Number(event.target.value))
-                  }
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-      </div>
+              )}
+            />
+          </SwitchGrid>
+          <FieldGrid>
+            <FormField
+              name='browserAi.baseUrl'
+              render={({ field }) => (
+                <FormItem>
+                  <SettingLabel
+                    label='模型服务地址'
+                    help='填写视觉模型的接口地址，不要把密钥写在地址里。更换地址后需要重新登记密钥。'
+                  />
+                  <FormControl>
+                    <Input
+                      disabled={!canWrite}
+                      placeholder='https://api.example.com/v1'
+                      value={field.value ?? ''}
+                      onChange={(event) =>
+                        field.onChange(event.target.value || undefined)
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              name='browserAi.model'
+              render={({ field }) => (
+                <FormItem>
+                  <SettingLabel label='模型名' />
+                  <FormControl>
+                    <Input
+                      disabled={!canWrite}
+                      value={field.value ?? ''}
+                      onChange={(event) =>
+                        field.onChange(event.target.value || undefined)
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              name='browserAi.modelFamily'
+              render={({ field }) => (
+                <FormItem>
+                  <SettingLabel
+                    label='视觉模型系列'
+                    help='填写与所选模型对应的系列名称，须是平台已支持的系列。'
+                  />
+                  <FormControl>
+                    <Input
+                      disabled={!canWrite}
+                      placeholder='doubao-seed'
+                      value={field.value ?? ''}
+                      onChange={(event) =>
+                        field.onChange(event.target.value || undefined)
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <NumberSetting
+              name='browserAi.requestTimeoutMs'
+              label='单次请求超时'
+              unit='ms'
+              canWrite={canWrite}
+            />
+            <NumberSetting
+              name='browserAi.stepMaxCalls'
+              label='每步骤调用上限'
+              canWrite={canWrite}
+            />
+            <FormField
+              name='browserAi.resolutionCeiling'
+              render={({ field }) => (
+                <FormItem>
+                  <SettingLabel
+                    label='AI 定位能力上限'
+                    help='本平台允许使用的最高定位方式。限制为规则或纯文本时，不会调用视觉模型。'
+                  />
+                  <Select
+                    value={field.value || FACTORY_RESOLUTION_CEILING}
+                    disabled={!canWrite}
+                    onValueChange={(next) =>
+                      field.onChange(next || FACTORY_RESOLUTION_CEILING)
+                    }
+                  >
+                    <FormControl>
+                      <SelectTrigger className='w-full' aria-label='AI 定位能力上限'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {RESOLUTION_POLICIES.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {RESOLUTION_CEILING_LABELS[value]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              name='browserAi.defaultResolution'
+              render={({ field }) => (
+                <FormItem>
+                  <SettingLabel
+                    label='平台默认优先顺序'
+                    help='目标、场景和步骤都没有单独指定时使用。实际采用的方式不会超过上面的能力上限。'
+                  />
+                  <Select
+                    value={field.value || FACTORY_RESOLUTION_DEFAULT}
+                    disabled={!canWrite}
+                    onValueChange={(next) =>
+                      field.onChange(next || FACTORY_RESOLUTION_DEFAULT)
+                    }
+                  >
+                    <FormControl>
+                      <SelectTrigger className='w-full' aria-label='平台默认优先顺序'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {RESOLUTION_POLICIES.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {RESOLUTION_PREFERENCE_LABELS[value]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <NumberSetting
+              name='browserAi.maxOutputTokens'
+              label='单次输出 token 上限'
+              canWrite={canWrite}
+            />
+          </FieldGrid>
+        </div>
+      </SettingSection>
       <div className='space-y-3 rounded-lg border border-border bg-card/50 p-4 shadow-xs'>
         <div className='flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
           <div className='space-y-1'>
@@ -279,6 +245,11 @@ export function AiFields({
               <Label htmlFor='platform-model-key' className='font-semibold'>
                 模型密钥
               </Label>
+              <FieldHelp label='模型密钥'>
+                {isOriginMismatched
+                  ? '当前服务地址和已登记密钥不是同一处。请重新登记后再保存，避免把原密钥发到新地址。'
+                  : '密钥只写入、不回显。更换服务地址后需要重新登记，保存后生效。'}
+              </FieldHelp>
               {secretRef ? (
                 isOriginMismatched ? (
                   <Badge
@@ -303,13 +274,6 @@ export function AiFields({
                 </Badge>
               )}
             </div>
-            <p className='text-label text-muted-foreground'>
-              {secretRef
-                ? isOriginMismatched
-                  ? '当前服务地址与已登记密钥绑定的地址不一致。变更地址后必须重新登记密钥，避免把原凭据发往新地址。'
-                  : '密钥只写不回显。再次登记新密钥将直接覆盖当前绑定；保存配置后正式生效。'
-                : '密钥只写不回显。启用前须先登记有效密钥；保存配置后正式生效。'}
-            </p>
           </div>
           {secretRef && onUnbindSecret && canWrite ? (
             <Can permission='platform-config:write'>

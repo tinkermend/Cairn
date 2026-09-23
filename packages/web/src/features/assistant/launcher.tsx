@@ -79,7 +79,7 @@ function pixels(position: Point | null, view: Viewport): Point {
         x: b.left + position.x * (b.right - b.left),
         y: b.top + position.y * (b.bottom - b.top),
       }
-    : { x: Math.max(b.left, b.right - 16), y: Math.max(b.top, b.bottom - 16) }
+    : { x: Math.max(b.left, b.right - 16), y: Math.max(b.top, b.bottom - 88) }
 }
 
 function relative(point: Point): Point {
