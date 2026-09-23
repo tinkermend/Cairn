@@ -1,6 +1,8 @@
 # 识途前端设计规范
 
-版本：v1.4 · 更新：2026-09-20 · 状态：当前设计基线，已接入 Web 全局主题。
+版本：v1.5 · 更新：2026-09-23 · 状态：当前设计基线，已接入 Web 全局主题。
+
+2026-09-23 集合摘要更新：用户选定 **B1 · 冰川蓝（柔和立体）**。统计卡采用瓷白到冰蓝的浅渐变、20px 圆角、深蓝数值与层叠图标底座；由 [CollectionSummary](../../../packages/web/src/components/collection-summary.tsx)、[公共样式](../../../packages/web/src/styles/collection-summary.css)和 `summary-*` Token 统一提供，所有调用页面自动继承。[查看组件样本](preview.html#collection-summary)。
 
 2026-09-20 输入控件更新：用户选择 [B · 清透蓝](../../front_design/2026-09-20-form-control-lab/index.html)，默认冷蓝细边与平整白底、聚焦 3px 低透明度外光。Select 展开面板与选项同步定义在组件规范中。
 

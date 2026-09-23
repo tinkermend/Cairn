@@ -1,5 +1,5 @@
 /*
- * 识途 · 前端设计基线 v1.4 · 清透蓝输入控件
+ * 识途 · 前端设计基线 v1.5 · 冰川蓝集合摘要
  * 浅色主题。供规范、视觉样本与 packages/web 共用。
  * packages/web/src/styles/theme.css 直接导入本文件，不并行维护第二套主题。
  */
@@ -53,6 +53,32 @@
   --shadow-ambient-tint: #263a6005;
   --shadow-overlay-tint: #23427824;
   --action-shadow-tint: #245ce52b;
+
+  /* 冰川蓝统计卡：仅由 CollectionSummary 消费，不改变表格 / 表单容器底色。 */
+  --summary-card-border: #dce7fa;
+  --summary-card-hover-border: #7693cc;
+  --summary-card-tint: #f3f8ff;
+  --summary-card-glow: #3e70e924;
+  --summary-card-background:
+    radial-gradient(ellipse at 100% 0%, var(--summary-card-glow), transparent 65%),
+    linear-gradient(135deg, var(--surface-card) 32%, var(--summary-card-tint));
+  --summary-card-radius: 20px;
+  --summary-card-shadow:
+    0 8px 17px #3e70e913, 0 2px 3px #213b6003, inset 0 1px 0 var(--surface-card);
+  --summary-label-foreground: #496180;
+  --summary-value-foreground: #203a67;
+  --summary-description-foreground: #526580;
+  --summary-value-size: 36px;
+  --summary-value-line-height: 44px;
+  --summary-value-wide-size: 40px;
+  --summary-value-wide-line-height: 48px;
+  --summary-icon-tint: #dbeaff;
+  --summary-icon-background: linear-gradient(145deg, var(--surface-card), var(--summary-icon-tint));
+  --summary-icon-border: #d2e2ff;
+  --summary-icon-foreground: #2d62d9;
+  --summary-icon-rim: #a9c8ff;
+  --summary-icon-layer: #3e70e909;
+  --summary-icon-shadow: 0 5px 9px #3e70e933, inset 0 1px 1px #ffffffc9;
 
   /* 交互语义：按钮小字使用 600/700 配白色，不能用 400/500 配白字。 */
   --action-primary: var(--primary-600);

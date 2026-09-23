@@ -22,7 +22,8 @@ Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用
 | `packages/web/src/components/confirm-dialog.tsx` | 已有确认入口 | 统一标题、后果、焦点和按钮优先级 |
 | `packages/web/src/components/password-input.tsx` | 密码显隐 | 复用可访问名称与原有行为 |
 | `packages/web/src/features/auth/` | 认证布局与登录表单 | 作为品牌区、低密度背景和 48px 高聚焦表单的接入参考 |
-| `packages/web/src/components/collection-summary.tsx` | 两类管理页共用的集合摘要 | 只统计已加载的集合；不伪造健康、趋势或运行成功率 |
+| `packages/web/src/components/collection-summary.tsx` | 管理页共用的冰川蓝集合摘要 | 页面只传数据与行为；统计口径明确，不伪造健康、趋势或运行成功率 |
+| `packages/web/src/styles/collection-summary.css` | 集合摘要唯一外观实现 | 直接读取 `summary-*` Token，生产与 `preview.html` 共用；不逐页覆盖 |
 | `packages/web/src/features/targets/` | 管理页真实样板 | 表格、筛选、对象概览、详情与账号管理 |
 | `packages/web/src/features/scenarios/` | 顺序工作区真实样板 | 场景列表、目标绑定、步骤属性与原有运行入口；不代表完整编辑器 |
 | `packages/web/src/components/date-picker.tsx` | 单日选择 | 仅用于只要一天的表单字段 |
@@ -87,7 +88,7 @@ Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用
 阴影数值只在 tokens.css 声明一次（`--card-shadow`、`--control-shadow`、`--action-shadow` …），
 `@theme` 里的 `--shadow-*` 一律 `var()` 指过去，不在两个文件里各写一份数值。
 
-现有 `--radius-sm/md/lg/xl` 与每种控件的实际类名一起检查。按钮与输入的 `rounded-md` 映射到 9px，Card 的 `rounded-lg` 映射到 14px，Dialog 的 `rounded-xl` 映射到 18px。统计卡沿用 Card 圆角。
+现有 `--radius-sm/md/lg/xl` 与每种控件的实际类名一起检查。按钮与输入的 `rounded-md` 映射到 9px，Card 的 `rounded-lg` 映射到 14px，Dialog 的 `rounded-xl` 映射到 18px。冰川蓝集合摘要由公共 CSS 直接读取 `summary-card-radius`（20px）及其余 `summary-*` Token，无需通过页面的 Tailwind 覆盖；普通 Card 不改用统计卡外观。
 
 现有主按钮已有 32/36/40px 高度，优先保留。新增 Loading 时在相同位置替换图标与文案，不改变尺寸。不应因设计更新重做 Button、Dialog、Tabs 的行为层。
 

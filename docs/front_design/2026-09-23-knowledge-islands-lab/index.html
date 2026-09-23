@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>目标知识 · 知识资产全景（群岛视图）原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="./enterprise-fixture.js"></script>
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳转到知识资产全景</a>
+    <div class="shell">
+      <aside class="app-sidebar" aria-label="识途工作台导航示意">
+        <div class="app-brand" aria-label="识途">
+          <span class="brand-symbol" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="brand-text"><strong>识途</strong><small>可观测场景执行平台</small></span>
+        </div>
+        <nav class="app-nav" aria-label="工作台功能示意">
+          <div class="app-nav-group">
+            <div class="app-nav-heading">总览</div>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">⌂</span><span class="app-nav-label">首页</span></span>
+          </div>
+          <div class="app-nav-group">
+            <div class="app-nav-heading">编写</div>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">▤</span><span class="app-nav-label">场景编排</span></span>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">▦</span><span class="app-nav-label">场景集</span></span>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">▥</span><span class="app-nav-label">动作库</span></span>
+          </div>
+          <div class="app-nav-group">
+            <div class="app-nav-heading">运行</div>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">◷</span><span class="app-nav-label">定时任务</span></span>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">≡</span><span class="app-nav-label">运行记录</span></span>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">▧</span><span class="app-nav-label">结果与报告</span></span>
+          </div>
+          <div class="app-nav-group">
+            <div class="app-nav-heading">目标</div>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">⊞</span><span class="app-nav-label">数据集</span></span>
+            <span class="app-nav-item is-active" aria-current="page"><span class="app-nav-icon" aria-hidden="true">◎</span><span class="app-nav-label">目标系统</span></span>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">♙</span><span class="app-nav-label">目标账号</span></span>
+            <span class="app-nav-item"><span class="app-nav-icon" aria-hidden="true">▣</span><span class="app-nav-label">浏览器</span></span>
+          </div>
+        </nav>
+        <div class="app-sidebar-foot"><span class="avatar-mark" aria-hidden="true">原</span><span>布局融合示意<small>独立原型</small></span></div>
+      </aside>
+
+      <div class="app-stage">
+        <header class="app-topbar">
+          <span class="mobile-brand">识途</span>
+          <span class="app-topbar-title"><span class="global-search-icon" aria-hidden="true"></span>搜索场景、运行、目标或页面 <kbd>⌘ K</kbd></span>
+          <span class="app-topbar-meta">独立原型 · 演示数据</span>
+        </header>
+
+      <main class="main" id="main-content">
+        <section class="intro" aria-labelledby="page-title">
+          <div class="intro-copy">
+            <div class="eyebrow"><span class="eyebrow-rule"></span>目标系统 <span class="eyebrow-separator">/</span> 目标知识 <span class="eyebrow-separator">/</span> 知识资产全景</div>
+            <h1 id="page-title">知识资产全景 <span class="page-view-tag">群岛视图</span></h1>
+            <p>按页面归属浏览已认识的对象与验证状态；进入岛屿后查看功能、证据和场景引用。</p>
+          </div>
+          <div class="intro-summary" id="intro-summary" aria-label="当前已加载知识概览"></div>
+        </section>
+
+        <section class="toolbar" aria-label="群岛探索工具">
+          <label class="target-control"><span>目标系统</span><select id="target-select" aria-label="选择目标系统"><option value="enterprise">综合业务系统 · 16 菜单演示</option><option value="customer">客户中心</option><option value="supply">供应链系统</option></select></label>
+          <div class="search-wrap"><label class="search-control"><span class="search-glyph" aria-hidden="true"></span><input id="atlas-search" type="search" placeholder="搜索页面、路径或对象" autocomplete="off" aria-label="搜索页面、路径或对象" /><kbd>/</kbd></label><div class="search-results" id="search-results" hidden></div></div>
+          <div class="filter-set" role="group" aria-label="按对象状态筛选">
+            <button type="button" data-filter="all" aria-pressed="true">全部</button>
+            <button type="button" data-filter="review" aria-pressed="false"><span class="filter-dot review"></span>待复核</button>
+            <button type="button" data-filter="trusted" aria-pressed="false"><span class="filter-dot trusted"></span>已确认</button>
+            <button type="button" data-filter="discovered" aria-pressed="false"><span class="filter-dot discovered"></span>已发现</button>
+          </div>
+          <div class="view-switch" role="group" aria-label="视图模式">
+            <button type="button" data-view="map" aria-pressed="true">海图</button>
+            <button type="button" data-view="list" aria-pressed="false">列表</button>
+          </div>
+        </section>
+
+        <div class="workspace">
+          <section class="map-panel" aria-labelledby="map-title">
+            <div class="map-topline">
+              <div class="map-identity"><span class="signal" aria-hidden="true"></span><div><h2 id="map-title">客户中心海域</h2><p id="map-subtitle">已加载 3 座页面岛屿 · 10 个对象地标</p></div></div>
+              <div class="map-crumbs" id="map-crumbs" aria-label="地图层级"></div>
+              <nav class="sea-nav" id="sea-nav" aria-label="海域航标" hidden></nav>
+            </div>
+            <div class="map-canvas" id="map-canvas">
+              <svg class="ocean-lines" viewBox="0 0 1200 690" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+                <path d="M-95 92 C92 19 224 21 352 85 S634 160 754 90 1034 22 1290 112" />
+                <path d="M-135 132 C45 57 199 60 338 125 S613 205 756 127 1049 60 1288 150" />
+                <path d="M-172 176 C18 101 190 102 330 163 S603 247 763 166 1062 106 1301 195" />
+                <path d="M-130 549 C76 464 248 455 372 515 S639 592 784 508 1049 469 1290 548" />
+                <path d="M-121 587 C72 511 244 491 380 550 S645 632 785 549 1057 505 1275 580" />
+                <path d="M-98 628 C97 551 237 530 384 590 S653 673 796 592 1065 552 1290 624" />
+              </svg>
+              <span class="chart-crosshair crosshair-a" aria-hidden="true"></span>
+              <span class="chart-crosshair crosshair-b" aria-hidden="true"></span>
+              <span class="chart-coordinate coordinate-a" aria-hidden="true">PAGE / OBJECT</span>
+              <span class="chart-coordinate coordinate-b" aria-hidden="true">KNOWLEDGE / ATLAS</span>
+              <div class="map-view" id="map-view"></div>
+            </div>
+            <div class="map-bottomline"><div class="legend"><span><i class="legend-dot review"></i>待复核</span><span><i class="legend-dot trusted"></i>已确认</span><span><i class="legend-dot discovered"></i>已发现</span></div><span id="map-help">空间位置仅用于分组 · 不是网页坐标</span></div>
+          </section>
+          <aside class="detail-pane" id="detail-pane" aria-label="知识详情"></aside>
+        </div>
+        <p class="prototype-note">此页演示“目标知识 → 知识资产全景”的群岛视图；系统、分区、菜单名称与关系均为演示数据。当前 Map 尚无目标系统菜单树，正式接入需导航元数据或人工配置；对象变化提示也不表示场景执行失败。</p>
+        <div class="sr-only" id="live-status" role="status" aria-live="polite"></div>
+      </main>
+      </div>
+    </div>
+  </body>
+</html>

@@ -58,11 +58,11 @@ Run 进度通过 SSE 推送，断线后补读持久化事实；不以高频轮�
 ### 开发与交付
 
 - 大功能先在 `docs/spec/` 完成方案并停下，用户明确审查通过后再开发；写完方案不是批准，同轮不接着改业务代码。只要求方案时只交方案。
-- 已获准实施的开发任务，默认包含当前项目开发／验证环境中使改动生效所需的构建、数据库迁移、配置更新与相关服务启动／重启。AI 必须主动完成，无需用户另行要求或重复确认，不得仅以“请先迁移”“重启后生效”等提醒代替执行。
-- 执行前自行核实实际数据库、环境及进程归属，遵循仓库已有迁移与启停流程；执行后确认运行中的服务已加载本次变更，运行 `pnpm check:stack` 并完成受影响功能的验证，说明实际通过范围与未验证项。代码存在、局部测试或探活不等于完整验收。
-- 本机进程启停区分为两种模式，按场景选用：
-  - **稳定构建模式**（`./scripts/stack.sh` 或 `pnpm start` / `pnpm restart` / `pnpm stop` / `pnpm status`）：运行预先编译好的各包产物（`node dist/main.js` 与 Web `preview`），用于验收、停机行为验证、探活与测试栈；修改代码后需重新 build 并重启才能生效。
-  - **开发热重载模式**（`./scripts/dev.sh` 或 `pnpm dev`）：运行各包的开发模式（API 与 Worker 启动 `tsc -w` + `node --watch`，Web 启动 Vite HMR），支持源码改动后自动重新编译与热重启。
+- 已获准实施的开发任务，默认包含当前项目开发／验证环境中使改动生效所需的依赖构建、数据库迁移、配置更新与相关服务启动／重启。AI 必须主动完成，无需用户另行要求或重复确认，不得仅以“请先迁移”“重启后生效”等提醒代替执行。
+- 执行前核实当前数据库、环境与进程归属。执行后确认运行中的服务已加载本次变更，运行 `pnpm check:stack`，并完成受影响功能的验证，说明实际通过范围与未验证项。代码存在、局部测试或探活不等于完整验收。
+- 本机进程启停分两种模式，同一套端口不得混开：
+  - **功能开发默认热重载**（`./scripts/dev.sh` 或 `pnpm dev` / `pnpm dev:restart`）：前后端功能开发、让改动在本机生效、联调与页面验收走这一套。已有 dev 进程则复用 Watch / HMR；需要重启时仍用 `dev.sh`，不得为了「更确定已加载」改切稳定构建栈。
+  - **稳定构建模式**（`./scripts/stack.sh` 或 `pnpm start` / `pnpm restart` / `pnpm stop` / `pnpm status`）：只用于验证已编译产物、停机行为或明确要求跑 `dist` / Web `preview`。不是功能开发的默认启停。
 - 遇到可自行解决的问题应继续排查修复；确实无法继续时，说明已尝试的操作、具体阻塞和未完成的验证，不得宣称交付完成。
 - 上述默认授权不包含生产发布、清库重建或会造成不可恢复数据丢失的操作；这些操作按已有明确授权执行，缺少授权时再确认。
 
@@ -92,6 +92,6 @@ Run 进度通过 SSE 推送，断线后补读持久化事实；不以高频轮�
 | 前端任务 | [前端工作流](docs/design/front/ai-workflow.md)、[设计规范索引](docs/design/front/README.md) |
 | 技术版本、启动与部署 | 各包 `package.json`、`pnpm-lock.yaml`、[部署说明](deploy/README.md)、[数据库支持范围](deploy/database-backends.md) |
 | 工程检查 | [仓库命令](package.json)、[依赖边界](tools/check-deps.mjs)、[架构检查](tools/check-invariants.mjs) |
-| 本机服务启停与探活 | 稳定构建栈 [scripts/stack.sh](scripts/stack.sh)、开发热重载栈 [scripts/dev.sh](scripts/dev.sh)、[进程探活](tools/README.md#本机进程探活)（`pnpm check:stack`） |
+| 本机服务启停与探活 | 开发默认 [scripts/dev.sh](scripts/dev.sh)；产物验收 [scripts/stack.sh](scripts/stack.sh)；[进程探活](tools/README.md#本机进程探活)（`pnpm check:stack`） |
 | 新增 db 迁移 | [领取迁移号](tools/README.md#领取迁移号)；先跑 `pnpm db:new-migration <name>`，不要手写后端序号或 `logicalVersion` |
 | 外部目标联调 | [目标清单](docs/targets/README.md) |

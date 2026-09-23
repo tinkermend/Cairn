@@ -54,6 +54,32 @@ for (const [fg, bg] of pairs) {
   const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
   assert.ok(ratio >= 4.5, `${fg}/${bg}: ${ratio.toFixed(2)}:1 < 4.5`);
 }
+// 冰川蓝卡面按最深的色晕叠加计算，不能只对白底验收文字对比度。
+{
+  const glow = value("--summary-card-glow");
+  const alpha = parseInt(glow.slice(7, 9), 16) / 255;
+  const tint = value("--summary-card-tint");
+  const background =
+    "#" +
+    [1, 3, 5]
+      .map((offset) =>
+        Math.round(
+          parseInt(glow.slice(offset, offset + 2), 16) * alpha +
+            parseInt(tint.slice(offset, offset + 2), 16) * (1 - alpha),
+        ).toString(16).padStart(2, "0"),
+      )
+      .join("");
+  for (const role of ["label", "value", "description"]) {
+    const foreground = `--summary-${role}-foreground`;
+    const ratio =
+      (luminance(background) + 0.05) / (luminance(value(foreground)) + 0.05);
+    assert.ok(ratio >= 4.5, `${foreground}/冰川蓝色晕: ${ratio.toFixed(2)}:1 < 4.5`);
+  }
+  const iconRatio =
+    (luminance(value("--summary-icon-tint")) + 0.05) /
+    (luminance(value("--summary-icon-foreground")) + 0.05);
+  assert.ok(iconRatio >= 3, `集合摘要图标: ${iconRatio.toFixed(2)}:1 < 3`);
+}
 // 三层平面必须构成一道明度阶梯：画布 < 壳 < 卡片，且任意两层不得同值。
 // 壳一旦也用纯白，卡片就没有更亮的空间，画布到两者的距离又相等 —— 画布会被读成孤立的色块。
 {
@@ -309,7 +335,7 @@ try {
     });
   }
   console.log(
-    `PASS: ${pairs.length} text contrast pairs, control border, 明度阶梯, token references, document links; ${sourceCases.length} 个样式误报/漏报回归样本，${allTsx.length} tsx 静态样式检查，${contentTsx.length} 个页面文件字号检查，业务页顶栏引入检查; 5 widths; form, tabs, toggle, dialog, 5 empty states, reduced motion.`,
+    `PASS: ${pairs.length} text contrast pairs, 冰川蓝渐变文字与图标对比度, control border, 明度阶梯, token references, document links; ${sourceCases.length} 个样式误报/漏报回归样本，${allTsx.length} tsx 静态样式检查，${contentTsx.length} 个页面文件字号检查，业务页顶栏引入检查; 5 widths; form, tabs, toggle, dialog, 5 empty states, reduced motion.`,
   );
 } finally {
   await browser.close();

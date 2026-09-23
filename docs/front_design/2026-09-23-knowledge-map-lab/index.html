@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>系统知识地图 · 识途交互原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="主导航">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+          <span class="brand-copy"><strong>识途</strong><small>可观测场景执行平台</small></span>
+        </div>
+        <nav class="nav-list" aria-label="功能导航">
+          <span class="nav-item" title="界面示意"><span class="nav-icon icon-grid" aria-hidden="true"></span><span>总览</span></span>
+          <span class="nav-item" title="界面示意"><span class="nav-icon icon-steps" aria-hidden="true"></span><span>场景</span></span>
+          <span class="nav-item" title="界面示意"><span class="nav-icon icon-play" aria-hidden="true"></span><span>运行</span></span>
+          <span class="nav-item" title="界面示意"><span class="nav-icon icon-target" aria-hidden="true"></span><span>目标系统</span></span>
+          <span class="nav-item active" aria-current="page"><span class="nav-icon icon-map" aria-hidden="true"></span><span>目标知识</span></span>
+        </nav>
+        <div class="sidebar-bottom">
+          <span class="avatar" aria-hidden="true">设</span>
+          <span><strong>设计预览</strong><small>交互原型</small></span>
+        </div>
+      </aside>
+
+      <div class="app-column">
+        <header class="topbar">
+          <div class="topbar-crumb">目标系统 <span aria-hidden="true">/</span> <strong>目标知识</strong></div>
+          <div class="topbar-right"><span class="prototype-flag">交互原型 · 演示数据</span><span class="topbar-dot" aria-hidden="true"></span></div>
+        </header>
+
+        <main class="main-content">
+          <section class="page-heading" aria-labelledby="page-title">
+            <div>
+              <div class="eyebrow"><span class="eyebrow-line"></span> KNOWLEDGE ATLAS</div>
+              <h1 id="page-title">系统知识地图</h1>
+              <p>查看已认识的页面与对象，沿着引用关系找到需要复核的场景。</p>
+            </div>
+            <div class="heading-side">
+              <span id="view-version" class="version-pill">知识投影 r18</span>
+              <span id="computed-at" class="computed-at">计算于 2026-09-23 10:42</span>
+            </div>
+          </section>
+
+          <section class="toolbar" aria-label="知识地图筛选">
+            <label class="target-picker">
+              <span>目标系统</span>
+              <select id="target-select" aria-label="选择目标系统">
+                <option value="customer">客户中心</option>
+                <option value="supply">供应链系统</option>
+              </select>
+            </label>
+            <label class="search-box">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.7" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4.4 4.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              <input id="map-search" type="search" placeholder="搜索页面或对象" autocomplete="off" />
+              <kbd>/</kbd>
+            </label>
+            <div class="status-filters" role="group" aria-label="按对象状态筛选">
+              <button type="button" data-filter="all" aria-pressed="true">全部</button>
+              <button type="button" data-filter="review" aria-pressed="false"><span class="tiny-dot amber"></span>待复核</button>
+              <button type="button" data-filter="trusted" aria-pressed="false"><span class="tiny-dot green"></span>已确认</button>
+              <button type="button" data-filter="discovered" aria-pressed="false"><span class="tiny-dot slate"></span>已发现</button>
+            </div>
+          </section>
+
+          <div class="workspace">
+            <section class="map-panel" aria-labelledby="map-panel-title">
+              <div class="map-panel-header">
+                <div class="map-panel-title">
+                  <span class="map-panel-glyph" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <div><h2 id="map-panel-title">知识分布</h2><p id="map-scope">当前视野：3 个页面 · 10 个对象</p></div>
+                </div>
+                <div class="map-controls" aria-label="地图缩放">
+                  <button id="zoom-out" type="button" aria-label="缩小地图" title="缩小地图">−</button>
+                  <button id="zoom-reset" type="button" aria-label="适应视野" title="适应视野">100%</button>
+                  <button id="zoom-in" type="button" aria-label="放大地图" title="放大地图">+</button>
+                </div>
+              </div>
+
+              <div class="map-viewport" id="map-viewport">
+                <div class="map-stage" id="map-stage">
+                  <svg class="map-links" id="map-links" viewBox="0 0 800 640" preserveAspectRatio="none" aria-hidden="true"></svg>
+                  <div id="page-zones"></div>
+                  <div id="impact-hub" class="impact-hub"></div>
+                </div>
+                <div id="map-empty" class="map-empty" hidden>
+                  <span class="empty-orbit" aria-hidden="true"></span>
+                  <strong>当前条件下没有对象</strong>
+                  <p>试试其他关键词或状态筛选。</p>
+                  <button id="clear-filters" type="button">清除筛选</button>
+                </div>
+              </div>
+
+              <div class="map-panel-footer">
+                <div class="legend"><span><i class="legend-line solid"></i>明确引用</span><span><i class="legend-line dashed"></i>可能匹配</span><span class="legend-muted">覆盖未知仅在详情中说明</span></div>
+                <span class="scope-note">当前视野 · 页面按需加载</span>
+              </div>
+            </section>
+
+            <aside class="inspector" id="inspector" aria-label="对象详情"></aside>
+          </div>
+
+          <p class="prototype-note">本页是独立交互原型。数据、场景名称与证据时间均为演示样例；对象变化仅提示需要核对，不表示关联场景已经失败。</p>
+          <div class="sr-only" id="live-status" role="status" aria-live="polite"></div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

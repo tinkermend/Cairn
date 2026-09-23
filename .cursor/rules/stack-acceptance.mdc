@@ -13,4 +13,6 @@ pnpm check:stack
 
 `STACK_DOWN` 或 `STACK_UNHEALTHY` 不得宣称服务正常。测试通过、代码存在、旧截图都不能代替。探活只证明进程与接线，不代替本次功能验收。
 
+功能开发启停默认 `./scripts/dev.sh`。不要用 `./scripts/stack.sh` 做前后端功能开发的启动或重启；`pnpm check:stack` 探的是当前进程，不要求改切稳定构建栈。
+
 细节见 `.cursor/skills/shitu-stack-acceptance/SKILL.md`。

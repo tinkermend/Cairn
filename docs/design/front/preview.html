@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>识途 · UI 设计语言与组件样本</title>
     <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="../../../packages/web/src/styles/collection-summary.css" />
     <style>
       * {
         box-sizing: border-box;
@@ -1273,7 +1274,7 @@
             <h1>让复杂工作，保持清晰。</h1>
             <p>识途 UI 设计语言与组件样本 · 共用标准，不包含业务页面</p>
           </div>
-          <span class="tag"><span data-icon="Layers"></span>设计基线 v1.3</span>
+          <span class="tag"><span data-icon="Layers"></span>设计基线 v1.5</span>
         </div>
         <section class="section" id="language">
           <div class="section-head">
@@ -1631,6 +1632,36 @@
             <span class="section-number">05</span>
             <h2>导航与数据展示</h2>
             <small>清晰边界 · 稳定密度 · 真实口径</small>
+          </div>
+          <div id="collection-summary" class="stack" style="margin-bottom: 24px">
+            <div class="between">
+              <h3>集合摘要 · 冰川蓝</h3>
+              <span class="tag">虚构样本</span>
+            </div>
+            <div class="collection-summary-region">
+            <dl class="collection-summary">
+              <div class="collection-summary-card">
+                <dt class="collection-summary-label">本页场景<span class="collection-summary-icon" aria-hidden="true" data-icon="Layers"></span></dt>
+                <dd class="collection-summary-value">10</dd>
+                <dd class="collection-summary-description">当前页已加载，不是全部总量</dd>
+              </div>
+              <div class="collection-summary-card">
+                <dt class="collection-summary-label">本页已启用<span class="collection-summary-icon" aria-hidden="true"><svg class="icon" style="color: var(--status-success-foreground)"><use href="#CircleCheck" /></svg></span></dt>
+                <dd class="collection-summary-value">10</dd>
+                <dd class="collection-summary-description">当前页中处于启用状态的场景</dd>
+              </div>
+              <div class="collection-summary-card">
+                <dt class="collection-summary-label">本页目标系统<span class="collection-summary-icon" aria-hidden="true" data-icon="PanelsTopLeft"></span></dt>
+                <dd class="collection-summary-value">3</dd>
+                <dd class="collection-summary-description">当前页场景绑定的目标系统数</dd>
+              </div>
+              <div class="collection-summary-card">
+                <dt class="collection-summary-label">本页步骤<span class="collection-summary-icon" aria-hidden="true" data-icon="Route"></span></dt>
+                <dd class="collection-summary-value">24</dd>
+                <dd class="collection-summary-description">按当前页各场景最新版本统计</dd>
+              </div>
+            </dl>
+            </div>
           </div>
           <div class="grid-2">
             <section class="card">

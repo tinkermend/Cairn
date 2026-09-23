@@ -26,11 +26,13 @@ Worker 的 S1 仍看内部端口是否在听。监听之后必须用节点健康
 
 ## 怎么跑
 
-1. 先看已有终端，复用已在跑的 `pnpm dev` / `pnpm start`，不要再开一套抢端口。
-2. 没有进程时再启动：开发热重载用 `pnpm dev`（或 `dev:backend` / `dev:web`）；验证构建产物用 `pnpm start`。
-3. 启动后执行 `pnpm check:stack`。只动后端用 `backend`，只动控制台用 `web`（仍会探 api）。`--strict` 把降级也判失败。
-4. 失败先读对应终端或 `logs/*.log`，修到 RESULT 为 `STACK_OK` 或可解释的 `STACK_DEGRADED`。
-5. 再做 S4。需要浏览器时先有 S3。
+1. 先看已有终端和 `.run/*.mode`，复用已在跑的进程，不要再开一套抢端口。已在跑 `stack.sh` 且正在做功能开发时，停掉后改切 `dev.sh`，不要两套并存。
+2. 功能开发默认 `./scripts/dev.sh`（或 `pnpm dev` / `dev:backend` / `dev:web`）。没有进程就 `dev.sh start`；需要重启用 `dev.sh restart`，不要切 `stack.sh`。
+3. 只动 web / api / worker 本包源码时靠 Watch / HMR。改了 `shared` / `db` 时先编这些依赖包，或在同一套 dev 栈上重启受影响的后端；不要因此改切稳定构建栈。
+4. `./scripts/stack.sh` / `pnpm start` 只用于验证已编译产物或停机行为。`pnpm check:stack` 探的是当前在听的进程，不绑定 `stack.sh`。
+5. 启动后执行 `pnpm check:stack`。只动后端用 `backend`，只动控制台用 `web`（仍会探 api）。`--strict` 把降级也判失败。
+6. 失败先读对应终端或 `logs/*.log`，修到 RESULT 为 `STACK_OK` 或可解释的 `STACK_DEGRADED`。
+7. 再做 S4。需要浏览器时先有 S3。
 
 ## 结束口径
 
