@@ -7,6 +7,10 @@ import type {
 import type { StatusTone } from '@/components/status-badge'
 
 export const AUTO_REFRESH_STORAGE_KEY = 'cairn.monitoring.auto-refresh'
+export const AUTO_REFRESH_INTERVAL_STORAGE_KEY = 'cairn.monitoring.refresh-interval'
+
+export const REFRESH_INTERVAL_OPTIONS = [15, 30, 60, 120] as const
+export type RefreshIntervalSeconds = (typeof REFRESH_INTERVAL_OPTIONS)[number]
 
 export type MonitorFailureKind = 'object' | 'read' | 'permission'
 
@@ -32,6 +36,27 @@ export function writeAutoRefreshEnabled(enabled: boolean): void {
   }
 }
 
+export function readAutoRefreshInterval(): RefreshIntervalSeconds {
+  try {
+    const raw = localStorage.getItem(AUTO_REFRESH_INTERVAL_STORAGE_KEY)
+    const val = Number(raw)
+    if (REFRESH_INTERVAL_OPTIONS.includes(val as RefreshIntervalSeconds)) {
+      return val as RefreshIntervalSeconds
+    }
+  } catch {
+    /* 无存储时使用默认值 */
+  }
+  return 30
+}
+
+export function writeAutoRefreshInterval(interval: RefreshIntervalSeconds): void {
+  try {
+    localStorage.setItem(AUTO_REFRESH_INTERVAL_STORAGE_KEY, String(interval))
+  } catch {
+    /* 无存储时仍可在本次会话使用 */
+  }
+}
+
 export function formatAsOf(value: string): string {
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
@@ -49,7 +74,8 @@ export function unknownLabel(reason: MonitorUnknownReason): string {
 
 export function formatMetric(metric: MonitorMetricNumber, suffix = ''): string {
   if (metric.availability === 'unknown') return unknownLabel(metric.reason)
-  return `${metric.value}${suffix}`
+  const val = Number.isInteger(metric.value) ? metric.value : Number(metric.value.toFixed(1))
+  return `${val}${suffix}`
 }
 
 export function formatBytes(metric: MonitorMetricNumber): string {

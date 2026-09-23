@@ -374,7 +374,15 @@ export function ModuleInvocationEditor({
                         disabled={disabled}
                         onValueChange={(kind: 'literal' | 'input' | 'step') => {
                           if (kind === 'literal') {
-                            updateInputBinding(input.key, { kind: 'literal', value: '' })
+                            const defaultVal =
+                              input.valueType === 'number'
+                                ? 0
+                                : input.valueType === 'boolean'
+                                  ? false
+                                  : input.valueType === 'json'
+                                    ? {}
+                                    : ''
+                            updateInputBinding(input.key, { kind: 'literal', value: defaultVal })
                             return
                           }
                           if (kind === 'input') {
@@ -403,21 +411,87 @@ export function ModuleInvocationEditor({
                     <div className='sm:col-span-2'>
                       <Label className='text-label'>绑定值</Label>
                       {sourceKind === 'literal' ? (
-                        <Input
-                          placeholder='字面量值'
-                          disabled={disabled}
-                          value={
-                            currentBinding && currentBinding.kind === 'literal'
-                              ? String(currentBinding.value ?? '')
-                              : ''
-                          }
-                          onChange={(event) =>
-                            updateInputBinding(input.key, {
-                              kind: 'literal',
-                              value: event.target.value,
-                            })
-                          }
-                        />
+                        input.valueType === 'boolean' ? (
+                          <Select
+                            disabled={disabled}
+                            value={
+                              currentBinding && currentBinding.kind === 'literal'
+                                ? String(Boolean(currentBinding.value))
+                                : 'false'
+                            }
+                            onValueChange={(val) =>
+                              updateInputBinding(input.key, {
+                                kind: 'literal',
+                                value: val === 'true',
+                              })
+                            }
+                          >
+                            <SelectTrigger className='w-full'>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value='true'>true (是)</SelectItem>
+                              <SelectItem value='false'>false (否)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : input.valueType === 'number' ? (
+                          <Input
+                            type='number'
+                            placeholder='数字字面量'
+                            disabled={disabled}
+                            value={
+                              currentBinding && currentBinding.kind === 'literal'
+                                ? String(currentBinding.value ?? '')
+                                : ''
+                            }
+                            onChange={(event) => {
+                              const val = event.target.value
+                              const num = val === '' ? 0 : Number(val)
+                              updateInputBinding(input.key, {
+                                kind: 'literal',
+                                value: Number.isNaN(num) ? val : num,
+                              })
+                            }}
+                          />
+                        ) : input.valueType === 'json' ? (
+                          <Input
+                            placeholder='JSON 格式，例如 {"key": "val"}'
+                            disabled={disabled}
+                            value={
+                              currentBinding && currentBinding.kind === 'literal'
+                                ? typeof currentBinding.value === 'string'
+                                  ? currentBinding.value
+                                  : JSON.stringify(currentBinding.value)
+                                : ''
+                            }
+                            onChange={(event) => {
+                              let val: any = event.target.value
+                              try {
+                                val = JSON.parse(event.target.value)
+                              } catch {}
+                              updateInputBinding(input.key, {
+                                kind: 'literal',
+                                value: val,
+                              })
+                            }}
+                          />
+                        ) : (
+                          <Input
+                            placeholder='字面量值'
+                            disabled={disabled}
+                            value={
+                              currentBinding && currentBinding.kind === 'literal'
+                                ? String(currentBinding.value ?? '')
+                                : ''
+                            }
+                            onChange={(event) =>
+                              updateInputBinding(input.key, {
+                                kind: 'literal',
+                                value: event.target.value,
+                              })
+                            }
+                          />
+                        )
                       ) : null}
                       {sourceKind === 'input' ? (
                         <Select

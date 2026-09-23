@@ -8,6 +8,8 @@ const searchSchema = z.object({
   editor: z.enum(['flowgram']).optional().catch(undefined),
   runId: entityIdSchema.optional().catch(undefined),
   import: entityIdSchema.optional().catch(undefined),
+  action: z.enum(['inspect-step']).optional().catch(undefined),
+  step_id: entityIdSchema.optional().catch(undefined),
 })
 
 export const Route = createFileRoute('/_authenticated/scenarios/$scenarioId/')({

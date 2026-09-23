@@ -125,45 +125,45 @@ describe('PlatformConfigPage', () => {
       .element(screen.getByRole('button', { name: '保存并生效' }))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByLabelText('AI 定位能力上限'))
+      .element(screen.getByLabelText('AI 定位能力上限', { exact: true }))
       .toHaveTextContent('仅规则')
     await expect
-      .element(screen.getByLabelText('平台默认优先顺序'))
+      .element(screen.getByLabelText('平台默认优先顺序', { exact: true }))
       .toHaveTextContent('规则优先，AI 兜底')
     expect(screen.getByText('请选择').elements()).toHaveLength(0)
     expect(document.body.innerText).not.toMatch(/sk-|apiKey/)
     expect(JSON.stringify(current)).not.toMatch(/sk-|apiKey/)
     await screen.getByRole('tab', { name: '会话策略' }).click()
-    await expect.element(screen.getByLabelText('失联处置')).toBeInTheDocument()
+    await expect.element(screen.getByLabelText('失联处置', { exact: true })).toBeInTheDocument()
     await expect
-      .element(screen.getByText('Profile 亲和等待（秒）'))
+      .element(screen.getByText('原节点优先等待'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('维护操作排队期限（秒）'))
+      .element(screen.getByText('维护操作排队期限'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('默认核验新鲜度（秒，冻结）'))
+      .element(screen.getByText('默认核验新鲜度'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('窗口内自动登录次数（实时）'))
+      .element(screen.getByText('时段内自动登录次数'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('验证码机器尝试次数（实时）'))
+      .element(screen.getByText('验证码机器尝试次数'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('验证码人工接管等待（秒，实时）'))
+      .element(screen.getByText('验证码人工接管等待'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('单次人工保留上限（秒，实时）'))
+      .element(screen.getByText('单次人工保留上限'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('每 Run 自动登录恢复次数'))
+      .element(screen.getByText('每次运行自动登录恢复次数'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('每 Run 人工认证恢复次数'))
+      .element(screen.getByText('每次运行人工认证恢复次数'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('提交后等待离开登录页（秒，实时）'))
+      .element(screen.getByText('提交后等待离开登录页'))
       .toBeInTheDocument()
     await expect
       .element(screen.getByText('每节点预留空闲位'))
@@ -187,10 +187,10 @@ describe('PlatformConfigPage', () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await expect
-      .element(screen.getByLabelText('AI 定位能力上限'))
+      .element(screen.getByLabelText('AI 定位能力上限', { exact: true }))
       .toHaveTextContent('仅规则')
     await expect
-      .element(screen.getByLabelText('平台默认优先顺序'))
+      .element(screen.getByLabelText('平台默认优先顺序', { exact: true }))
       .toHaveTextContent('规则优先，AI 兜底')
     expect(screen.getByText('请选择').elements()).toHaveLength(0)
   })
@@ -200,25 +200,25 @@ describe('PlatformConfigPage', () => {
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
     await expect
-      .element(screen.getByLabelText('模块映射候选上限'))
+      .element(screen.getByLabelText('模块映射候选上限', { exact: true }))
       .toHaveValue(10)
     await expect
-      .element(screen.getByLabelText('模块映射 AI 候选上限'))
+      .element(screen.getByLabelText('模块映射 AI 候选上限', { exact: true }))
       .toHaveValue(5)
     await expect
-      .element(screen.getByLabelText('模块映射记录保留天数'))
+      .element(screen.getByLabelText('模块映射记录保留天数', { exact: true }))
       .toHaveValue(90)
     await expect
-      .element(screen.getByLabelText('模块质量窗口（天）'))
+      .element(screen.getByLabelText('模块质量窗口', { exact: true }))
       .toHaveValue(7)
     await expect
-      .element(screen.getByLabelText('模块质量最少样本'))
+      .element(screen.getByLabelText('模块质量最少样本', { exact: true }))
       .toHaveValue(10)
     await expect
-      .element(screen.getByLabelText('模块降级通过率阈值'))
+      .element(screen.getByLabelText('模块降级通过率阈值', { exact: true }))
       .toHaveValue(0.8)
     await expect
-      .element(screen.getByLabelText('模块连续失败次数'))
+      .element(screen.getByLabelText('模块连续失败次数', { exact: true }))
       .toHaveValue(3)
     await expect
       .element(screen.getByRole('switch', { name: '开放动作模块冻结回退' }))
@@ -260,10 +260,10 @@ describe('PlatformConfigPage', () => {
     })
     signIn(PERMISSIONS)
     const screen = await renderPage()
-    await screen.getByLabelText('模型服务地址').fill('https://model.example/v1')
-    await screen.getByLabelText('模型密钥').fill('review-only-fake-key')
+    await screen.getByLabelText('模型服务地址', { exact: true }).fill('https://model.example/v1')
+    await screen.getByLabelText('模型密钥', { exact: true }).fill('review-only-fake-key')
     await screen.getByRole('button', { name: '登记密钥', exact: true }).click()
-    await expect.element(screen.getByLabelText('模型密钥')).toHaveValue('')
+    await expect.element(screen.getByLabelText('模型密钥', { exact: true })).toHaveValue('')
     expect(mocks.registerPlatformConfigSecret).toHaveBeenCalledWith({
       baseUrl: 'https://model.example/v1',
       apiKey: 'review-only-fake-key',
@@ -292,7 +292,7 @@ describe('PlatformConfigPage', () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await expect.element(screen.getByText(/已绑定 Secret/)).toBeInTheDocument()
-    await screen.getByLabelText('模型服务地址').fill('https://other-model.example/v1')
+    await screen.getByLabelText('模型服务地址', { exact: true }).fill('https://other-model.example/v1')
     await expect.element(screen.getByText(/地址已变更/)).toBeInTheDocument()
   })
 
@@ -300,14 +300,14 @@ describe('PlatformConfigPage', () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
-    const timeout = screen.getByLabelText('默认步骤超时（ms）')
+    const timeout = screen.getByLabelText('默认步骤超时', { exact: true })
     await timeout.fill('10000')
-    await screen.getByLabelText('变更原因').fill('故意不合法')
+    await screen.getByLabelText('变更原因', { exact: true }).fill('故意不合法')
     await screen.getByRole('button', { name: '保存并生效' }).click()
     await expect.element(screen.getByText(/须小于默认步骤超时/)).toBeInTheDocument()
     expect(mocks.updatePlatformConfig).not.toHaveBeenCalled()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
-    await expect.element(screen.getByLabelText('默认步骤超时（ms）')).toHaveValue(10000)
+    await expect.element(screen.getByLabelText('默认步骤超时', { exact: true })).toHaveValue(10000)
   })
 
   it('409 冲突时保留输入与基准修订，明确重新加载后才可编辑保存', async () => {
@@ -327,13 +327,13 @@ describe('PlatformConfigPage', () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
-    await screen.getByLabelText('默认步骤超时（ms）').fill('45000')
-    await screen.getByLabelText('变更原因').fill('提高超时')
+    await screen.getByLabelText('默认步骤超时', { exact: true }).fill('45000')
+    await screen.getByLabelText('变更原因', { exact: true }).fill('提高超时')
     await screen.getByRole('button', { name: '保存并生效' }).click()
     await expect.element(screen.getByText(/已保留你的输入/)).toBeInTheDocument()
     await expect.element(screen.getByText(/当前修订 2/)).toBeInTheDocument()
     await expect
-      .element(screen.getByLabelText('默认步骤超时（ms）'))
+      .element(screen.getByLabelText('默认步骤超时', { exact: true }))
       .toHaveValue(45000)
     expect(mocks.updatePlatformConfig).toHaveBeenCalledTimes(1)
     expect(mocks.updatePlatformConfig.mock.calls[0]![0]).toMatchObject({
@@ -347,10 +347,10 @@ describe('PlatformConfigPage', () => {
       .getByRole('button', { name: '放弃本次修改并载入最新配置' })
       .click()
     await expect
-      .element(screen.getByLabelText('默认步骤超时（ms）'))
+      .element(screen.getByLabelText('默认步骤超时', { exact: true }))
       .toHaveValue(30000)
-    await screen.getByLabelText('默认步骤超时（ms）').fill('45000')
-    await screen.getByLabelText('变更原因').fill('重新提高超时')
+    await screen.getByLabelText('默认步骤超时', { exact: true }).fill('45000')
+    await screen.getByLabelText('变更原因', { exact: true }).fill('重新提高超时')
     await screen.getByRole('button', { name: '保存并生效' }).click()
     await vi.waitFor(() =>
       expect(mocks.updatePlatformConfig).toHaveBeenCalledTimes(2)
@@ -393,7 +393,7 @@ describe('PlatformConfigPage', () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
-    await screen.getByLabelText('默认步骤超时（ms）').fill('45000')
+    await screen.getByLabelText('默认步骤超时', { exact: true }).fill('45000')
     mocks.fetchPlatformConfig.mockResolvedValue({
       ...current,
       revision: 2,
@@ -406,7 +406,7 @@ describe('PlatformConfigPage', () => {
     await client.invalidateQueries({ queryKey: ['platform-config'] })
     await expect.element(screen.getByText(/当前修订 2/)).toBeInTheDocument()
     await expect
-      .element(screen.getByLabelText('默认步骤超时（ms）'))
+      .element(screen.getByLabelText('默认步骤超时', { exact: true }))
       .toHaveValue(45000)
     await expect
       .element(screen.getByRole('button', { name: '保存并生效' }))
@@ -415,8 +415,8 @@ describe('PlatformConfigPage', () => {
     await screen
       .getByRole('button', { name: '放弃本次修改并载入最新配置' })
       .click()
-    await screen.getByLabelText('默认步骤超时（ms）').fill('45000')
-    await screen.getByLabelText('变更原因').fill('仅提高超时')
+    await screen.getByLabelText('默认步骤超时', { exact: true }).fill('45000')
+    await screen.getByLabelText('变更原因', { exact: true }).fill('仅提高超时')
     await screen.getByRole('button', { name: '保存并生效' }).click()
     expect(mocks.updatePlatformConfig).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -433,7 +433,7 @@ describe('PlatformConfigPage', () => {
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
     await expect
-      .element(screen.getByLabelText('默认步骤超时（ms）'))
+      .element(screen.getByLabelText('默认步骤超时', { exact: true }))
       .toHaveValue(30000)
     mocks.fetchPlatformConfig.mockResolvedValue({
       ...current,
@@ -446,7 +446,7 @@ describe('PlatformConfigPage', () => {
     })
     await client.invalidateQueries({ queryKey: ['platform-config'] })
     await expect
-      .element(screen.getByLabelText('默认步骤超时（ms）'))
+      .element(screen.getByLabelText('默认步骤超时', { exact: true }))
       .toHaveValue(45000)
     await expect
       .element(screen.getByRole('button', { name: '保存并生效' }))
@@ -485,19 +485,19 @@ describe('PlatformConfigPage', () => {
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
     await expect
-      .element(screen.getByLabelText('默认步骤超时（ms）'))
+      .element(screen.getByLabelText('默认步骤超时', { exact: true }))
       .toHaveValue(30000)
     await screen.getByRole('tab', { name: '变更记录' }).click()
-    await screen.getByLabelText('恢复原因').fill('恢复 45 秒配置')
+    await screen.getByLabelText('恢复原因', { exact: true }).fill('恢复 45 秒配置')
     await screen.getByRole('button', { name: '恢复这一版' }).click()
     await expect.element(screen.getByText(/当前修订 3/)).toBeInTheDocument()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
     await expect
-      .element(screen.getByLabelText('默认步骤超时（ms）'))
+      .element(screen.getByLabelText('默认步骤超时', { exact: true }))
       .toHaveValue(45000)
     await screen.getByRole('tab', { name: '会话策略' }).click()
-    await screen.getByLabelText('空闲寿命（秒）').fill('900')
-    await screen.getByLabelText('变更原因').fill('延长空闲时间')
+    await screen.getByLabelText('空闲寿命', { exact: true }).fill('900')
+    await screen.getByLabelText('变更原因', { exact: true }).fill('延长空闲时间')
     await screen.getByRole('button', { name: '保存并生效' }).click()
     expect(mocks.updatePlatformConfig).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -513,16 +513,16 @@ describe('PlatformConfigPage', () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '平台 AI' }).click()
-    await expect.element(screen.getByText(/提供商方言/)).toBeInTheDocument()
-    await screen.getByLabelText('模型提供商').click()
+    await expect.element(screen.getByText(/模型厂商/)).toBeInTheDocument()
+    await screen.getByLabelText('模型提供商', { exact: true }).click()
     await screen.getByRole('option', { name: 'DeepSeek' }).click()
     await expect
-      .element(screen.getByLabelText('模型服务地址'))
+      .element(screen.getByLabelText('模型服务地址', { exact: true }))
       .toHaveValue(PLATFORM_AI_PROVIDER_PRESETS.deepseek.defaultBaseUrl)
-    await screen.getByLabelText('模型提供商').click()
+    await screen.getByLabelText('模型提供商', { exact: true }).click()
     await screen.getByRole('option', { name: '通义千问' }).click()
     await expect
-      .element(screen.getByLabelText('模型服务地址'))
+      .element(screen.getByLabelText('模型服务地址', { exact: true }))
       .toHaveValue(PLATFORM_AI_PROVIDER_PRESETS.qwen.defaultBaseUrl)
     await expect
       .element(screen.getByText(PLATFORM_AI_THINKING_UNSUPPORTED_MESSAGE))
@@ -530,11 +530,11 @@ describe('PlatformConfigPage', () => {
     await expect
       .element(screen.getByRole('switch', { name: '思考模式' }))
       .toBeDisabled()
-    await screen.getByLabelText('模型服务地址').fill('https://proxy.example/v1')
-    await screen.getByLabelText('模型提供商').click()
+    await screen.getByLabelText('模型服务地址', { exact: true }).fill('https://proxy.example/v1')
+    await screen.getByLabelText('模型提供商', { exact: true }).click()
     await screen.getByRole('option', { name: '智谱 GLM' }).click()
     await expect
-      .element(screen.getByLabelText('模型服务地址'))
+      .element(screen.getByLabelText('模型服务地址', { exact: true }))
       .toHaveValue('https://proxy.example/v1')
   })
 
@@ -543,30 +543,30 @@ describe('PlatformConfigPage', () => {
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '平台 AI' }).click()
     // 出厂已预填 DeepSeek 与其默认模型，用户只需补密钥
-    await expect.element(screen.getByLabelText('模型名')).toHaveTextContent('deepseek-flash')
+    await expect.element(screen.getByLabelText('模型名', { exact: true })).toHaveTextContent('deepseek-flash')
     await expect
-      .element(screen.getByLabelText('模型服务地址'))
+      .element(screen.getByLabelText('模型服务地址', { exact: true }))
       .toHaveValue(PLATFORM_AI_PROVIDER_PRESETS.deepseek.defaultBaseUrl)
 
-    await screen.getByLabelText('模型名').click()
+    await screen.getByLabelText('模型名', { exact: true }).click()
     await screen.getByRole('option', { name: 'deepseek-v4-pro' }).click()
-    await expect.element(screen.getByLabelText('模型名')).toHaveTextContent('deepseek-v4-pro')
+    await expect.element(screen.getByLabelText('模型名', { exact: true })).toHaveTextContent('deepseek-v4-pro')
 
     // 切到千问：模型跟着换成千问默认，而不是残留 DeepSeek 的名字
-    await screen.getByLabelText('模型提供商').click()
+    await screen.getByLabelText('模型提供商', { exact: true }).click()
     await screen.getByRole('option', { name: '通义千问' }).click()
-    await expect.element(screen.getByLabelText('模型名')).toHaveTextContent('qwen3.8-flash')
-    await screen.getByLabelText('模型名').click()
+    await expect.element(screen.getByLabelText('模型名', { exact: true })).toHaveTextContent('qwen3.8-flash')
+    await screen.getByLabelText('模型名', { exact: true }).click()
     for (const id of ['qwen3.8-flash', 'qwen3.8-max', 'qwen3.7-plus', 'qwen3.7-flash']) {
       await expect.element(screen.getByRole('option', { name: id })).toBeInTheDocument()
     }
 
     // 自定义：出现手填框，切换提供商不覆盖手填值
     await screen.getByRole('option', { name: '自定义…' }).click()
-    await screen.getByLabelText('自定义模型名').fill('my-relay-alias')
-    await screen.getByLabelText('模型提供商').click()
+    await screen.getByLabelText('自定义模型名', { exact: true }).fill('my-relay-alias')
+    await screen.getByLabelText('模型提供商', { exact: true }).click()
     await screen.getByRole('option', { name: '智谱 GLM' }).click()
-    await expect.element(screen.getByLabelText('自定义模型名')).toHaveValue('my-relay-alias')
+    await expect.element(screen.getByLabelText('自定义模型名', { exact: true })).toHaveValue('my-relay-alias')
   })
 
   it('已启用但缺提供商时，任意页签保存都被同一字段错误拦住', async () => {
@@ -590,8 +590,8 @@ describe('PlatformConfigPage', () => {
     signIn(PERMISSIONS)
     const screen = await renderPage()
     await screen.getByRole('tab', { name: '执行默认值' }).click()
-    await screen.getByLabelText('默认步骤超时（ms）').fill('45000')
-    await screen.getByLabelText('变更原因').fill('只改超时')
+    await screen.getByLabelText('默认步骤超时', { exact: true }).fill('45000')
+    await screen.getByLabelText('变更原因', { exact: true }).fill('只改超时')
     await screen.getByRole('button', { name: '保存并生效' }).click()
     await expect
       .element(screen.getByText(PLATFORM_AI_PROVIDER_REQUIRED_MESSAGE))
@@ -629,7 +629,7 @@ describe('PlatformConfigPage', () => {
     window.history.replaceState({}, '', '/platform-config?tab=platform-ai')
     signIn(PERMISSIONS)
     const screen = await renderPage()
-    await screen.getByLabelText('变更原因').fill('补选提供商')
+    await screen.getByLabelText('变更原因', { exact: true }).fill('补选提供商')
     await screen.getByRole('button', { name: '保存并生效' }).click()
     await vi.waitFor(() => expect(mocks.updatePlatformConfig).toHaveBeenCalledTimes(1))
     expect(mocks.updatePlatformConfig.mock.calls[0]![0]).toMatchObject({

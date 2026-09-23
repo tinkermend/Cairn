@@ -25,9 +25,9 @@ import {
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Form } from '@/components/ui/form'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Textarea } from '@/components/ui/textarea'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
@@ -257,7 +257,7 @@ export function PlatformConfigPage() {
       !values.browserAi.model ||
       !values.browserAi.modelFamily
     ) {
-      toast.error('请先填写模型地址、模型名和模型族')
+      toast.error('请先填写模型地址、模型名和视觉模型系列')
       return
     }
     if (!values.browserAi.secretRef && !apiKey.trim()) {
@@ -351,7 +351,7 @@ export function PlatformConfigPage() {
       <Main className='flex min-w-0 flex-1 flex-col gap-6'>
         <PageHeader
           title='平台配置'
-          description='管理跨场景默认策略。保存后只影响之后创建的新运行；已排队或进行中的运行继续使用自己的快照。'
+          description='保存后只影响之后新建的运行。'
         />
         {current.isPending ? (
           <PageSkeleton />
@@ -407,12 +407,13 @@ export function PlatformConfigPage() {
               </TabsList>
               <Form {...form}>
                 <form
-                  className='space-y-6'
+                  className='flex min-w-0 flex-col'
                   onSubmit={(event) => {
                     event.preventDefault()
                     void onSave()
                   }}
                 >
+                  <div className='space-y-6'>
                   <TabsContent value='ai'>
                     <AiFields
                       canWrite={canWrite && !busy}
@@ -454,43 +455,41 @@ export function PlatformConfigPage() {
                   <TabsContent value='evidence'>
                     <EvidenceFields canWrite={canWrite && !busy} />
                   </TabsContent>
+                  </div>
                   {tab !== 'revisions' ? (
-                    <div className='space-y-3 border-t border-border pt-4'>
-                      <div className='space-y-2'>
-                        <Label htmlFor='platform-config-reason'>变更原因</Label>
-                        <Textarea
+                    <div className='sticky bottom-0 z-10 -mx-5 -mb-5 mt-6 border-t border-border bg-card px-5 py-3'>
+                      <div className='flex flex-col gap-2 sm:flex-row sm:items-center'>
+                        <div className='flex shrink-0 gap-2'>
+                          <Can permission='platform-config:write'>
+                            <Button
+                              type='button'
+                              variant='outline'
+                              onClick={() => void onValidate()}
+                            >
+                              校验
+                            </Button>
+                          </Can>
+                          <Can permission='platform-config:write'>
+                            <Button
+                              type='submit'
+                              loading={busy}
+                              disabled={stale || !editingRevision}
+                            >
+                              保存并生效
+                            </Button>
+                          </Can>
+                        </div>
+                        <Label htmlFor='platform-config-reason' className='shrink-0'>
+                          变更原因
+                        </Label>
+                        <Input
                           id='platform-config-reason'
                           value={reason}
                           disabled={!canWrite || busy}
                           onChange={(event) => setReason(event.target.value)}
                           placeholder='说明这次修改的原因，会写入变更记录。'
+                          className='min-w-0 flex-1'
                         />
-                      </div>
-                      {tab === 'execution' ? (
-                        <p className='text-label text-muted-foreground'>
-                          当前默认超时 {document.execution.defaultTimeoutMs}{' '}
-                          ms。AI 请求超时必须小于每个 AI 步骤解析后的超时。
-                        </p>
-                      ) : null}
-                      <div className='flex flex-wrap gap-2'>
-                        <Can permission='platform-config:write'>
-                          <Button
-                            type='submit'
-                            loading={busy}
-                            disabled={stale || !editingRevision}
-                          >
-                            保存并生效
-                          </Button>
-                        </Can>
-                        <Can permission='platform-config:write'>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            onClick={() => void onValidate()}
-                          >
-                            校验
-                          </Button>
-                        </Can>
                       </div>
                     </div>
                   ) : null}

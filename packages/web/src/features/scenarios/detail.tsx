@@ -5,6 +5,8 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
   canAdoptAssistantProposal,
   entityIdSchema,
+  scenarioDocumentDigest,
+  type AssistantProposal,
   canExecuteRun,
   canTrialRun,
   FACTORY_COMPILE_RESOLUTION,
@@ -23,11 +25,13 @@ import {
   outcomeContractFromCandidate,
   proposeOutcomeCandidate,
   type ScenarioModuleInvocationNode,
+  type Step,
 } from '@cairn/shared'
 import {
   ArrowLeft,
   ArrowRight,
   ChevronRight,
+  Copy,
   Info,
   Layers,
   ListOrdered,
@@ -35,6 +39,7 @@ import {
   Plus,
   TriangleAlert,
   Undo2,
+  X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
@@ -56,6 +61,8 @@ import { preferredPasswordAccountId } from '@/features/runs/target-account'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useAssistantStore } from '@/stores/assistant-store'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
+import { buildDiagnosticQuote } from '@/features/assistant/quote-helper'
 import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -101,6 +108,7 @@ import { AuthoringObserveProvider } from './authoring-observe'
 import { applyTargetToDraftStep, resolveHoldingDraftStepId } from './holding-writeback'
 import { ResolutionSourceProvider } from '@/features/authoring/resolution-source'
 import { InputsEditor, StepEditor } from './step-editor'
+import { ScenarioOutputsEditor } from './scenario-outputs-editor'
 import { withPickedSemantic } from '@/features/authoring/fields/target'
 import { expectFromPreviewText } from '@/features/authoring/pick-apply'
 import { ScenarioResolutionStats } from './resolution-stats'
@@ -113,6 +121,7 @@ import { TrialPanel } from './trial-panel'
 import { StudioScreen } from './studio-screen'
 import { HealingCard } from '@/features/authoring/fields/healing-card'
 import { stepTypeLabel } from './labels'
+import { StepTypeIcon } from './step-type-icon'
 import { MapStepBinding } from '@/features/map/step-binding'
 import { KnowledgeProposal } from '@/features/scenarios/knowledge-proposal'
 import { RecordingImportPanel } from './recording-import-panel'
@@ -175,6 +184,11 @@ export function ScenarioDetailPage() {
   const canAssist = useCan('ai:assist')
   const openAssistant = useAssistantStore((state) => state.openPanel)
   const registerAdoptHandler = useAssistantStore((state) => state.registerAdoptHandler)
+  const registerRollbackHandler = useAssistantStore((state) => state.registerRollbackHandler)
+  const setLastAdopted = useAssistantStore((state) => state.setLastAdopted)
+  const previewStepId = useAssistantStore((state) => state.previewStepId)
+  const setPreviewStepId = useAssistantStore((state) => state.setPreviewStepId)
+  const setTrackedRunId = useAssistantStore((state) => state.setTrackedRunId)
   const canStartFormalRun = Boolean(user && canExecuteRun(user.permissions))
   const canStartTrial = Boolean(user && canTrialRun(user.permissions))
   const canAi = Boolean(user && hasPermission(user.permissions, 'ai:execute'))
@@ -211,6 +225,29 @@ export function ScenarioDetailPage() {
     capabilitiesQuery.data?.executableStepTypes ?? DETERMINISTIC_STUDIO_TYPES,
     compileResolution,
   )
+
+  useAssistantContextBinding(
+    scenario
+      ? {
+          page: 'studio',
+          scenarioId,
+          targetId: scenario.targetId,
+          selectedStepId: draft.selected?.id,
+          statusSummary: `${scenario.name} (草稿 r${draft.baseline?.revision ?? scenario.draft?.revision ?? 1})`,
+          isDirty: draft.dirty,
+          ...(scenario.draft && scenario.draft.revision >= 1
+            ? { draftRevision: scenario.draft.revision }
+            : scenario.latestVersionId
+              ? { versionId: scenario.latestVersionId }
+              : {}),
+        }
+      : {
+          page: 'studio',
+          scenarioId,
+          statusSummary: '加载中...',
+        }
+  )
+
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -238,7 +275,7 @@ export function ScenarioDetailPage() {
   })
   const importedStepIds = importedStepsQuery.data ?? []
   const [mobilePane, setMobilePane] = useState<'steps' | 'properties' | 'page'>('steps')
-  const [rightTab, setRightTab] = useState<'step' | 'inputs' | 'outcomes'>('step')
+  const [rightTab, setRightTab] = useState<'step' | 'inputs' | 'outputs' | 'outcomes'>('step')
   const rightPanelRef = useRef<HTMLDivElement>(null)
   const [stepNavigation, setStepNavigation] = useState<{ id: string; sequence: number } | null>(null)
   const [canvasLayout, setCanvasLayout] = useState<'vertical' | 'snake'>('snake')
@@ -256,6 +293,29 @@ export function ScenarioDetailPage() {
       if (selected?.getClientRects().length) selected.scrollIntoView({ block: 'nearest' })
     }
   }, [flowgram, mobilePane, selectedListId])
+  const [recordingBannerDismissed, setRecordingBannerDismissed] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.sessionStorage.getItem(`cairn:dismissed-rec-banner:${scenarioId}`) === 'true'
+    } catch {
+      return false
+    }
+  })
+  function dismissRecordingBanner() {
+    setRecordingBannerDismissed(true)
+    if (typeof window !== 'undefined') {
+      try {
+        window.sessionStorage.setItem(`cairn:dismissed-rec-banner:${scenarioId}`, 'true')
+      } catch {
+        // ignore
+      }
+    }
+  }
+  useEffect(() => {
+    if (draft.selectedId && rightTab === 'step') {
+      rightPanelRef.current?.scrollTo({ top: 0, behavior: 'instant' })
+    }
+  }, [draft.selectedId, rightTab])
   const { run: trialRun } = useRunObservation(runId ?? '', Boolean(runId))
   const canReadSession = Boolean(user && hasPermission(user.permissions, 'session:read'))
   const accountsQuery = useQuery({
@@ -380,34 +440,106 @@ export function ScenarioDetailPage() {
     Boolean(scenario?.draft && draft.selected && document && !isAuthoringDocumentV2(document))
 
   useEffect(() => {
-    if (!canPropose || !scenario?.draft || !document || isAuthoringDocumentV2(document)) {
+    if (!scenario?.draft || !document) {
       registerAdoptHandler(null)
+      registerRollbackHandler(null)
       return
     }
     const revision = scenario.draft.revision
     const current = document
-    registerAdoptHandler(async (proposal) => {
+
+    registerAdoptHandler(async (proposal: AssistantProposal) => {
+      if (!isAuthoringDocumentV2(current)) {
+        const allowed = await canAdoptAssistantProposal({
+          proposal,
+          revision,
+          document: current,
+          hasFieldDrafts: draft.hasFieldDrafts,
+          remoteConflict: draft.conflict || draft.remoteStale,
+        })
+        if (!allowed.ok) return allowed
+        applyStructure(proposal.document, proposal.stepId)
+        const newDigest = await scenarioDocumentDigest(proposal.document)
+        setLastAdopted({ proposalId: proposal.stepId, digest: newDigest })
+        return { ok: true, digest: newDigest }
+      }
+
+      const v2 = current
+      const stepNodes = v2.nodes.filter((n) => n.kind === 'step').map((n) => n.step)
+      const baseDoc = {
+        schemaVersion: 1 as const,
+        inputs: v2.inputs,
+        steps: stepNodes,
+      }
       const allowed = await canAdoptAssistantProposal({
         proposal,
         revision,
-        document: current,
-        hasFieldDrafts: false,
+        document: baseDoc,
+        hasFieldDrafts: draft.hasFieldDrafts,
         remoteConflict: draft.conflict || draft.remoteStale,
       })
       if (!allowed.ok) return allowed
-      applyStructure(proposal.document, proposal.stepId)
+
+      const nextNodes = v2.nodes.map((node) => {
+        if (node.kind === 'step' && node.step.id === proposal.stepId) {
+          const updatedStep = proposal.document.steps.find((s) => s.id === proposal.stepId)
+          return updatedStep ? { ...node, step: updatedStep } : node
+        }
+        return node
+      })
+      applyStructure({ ...v2, nodes: nextNodes }, proposal.stepId)
+      const newDigest = await scenarioDocumentDigest(proposal.document)
+      setLastAdopted({ proposalId: proposal.stepId, digest: newDigest })
+      return { ok: true, digest: newDigest }
+    })
+
+    registerRollbackHandler(async () => {
+      draft.undoStructure()
+      setLastAdopted(null)
       return { ok: true }
     })
-    return () => registerAdoptHandler(null)
+
+    return () => {
+      registerAdoptHandler(null)
+      registerRollbackHandler(null)
+    }
   }, [
     applyStructure,
-    canPropose,
     document,
     draft.conflict,
+    draft.hasFieldDrafts,
     draft.remoteStale,
+    draft.undoStructure,
     registerAdoptHandler,
+    registerRollbackHandler,
     scenario?.draft,
+    setLastAdopted,
   ])
+
+  useEffect(() => {
+    if (!previewStepId) return
+    locateStep(previewStepId)
+    const timer = setTimeout(() => {
+      setPreviewStepId(null)
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [previewStepId, setPreviewStepId])
+
+  useEffect(() => {
+    if (search.action === 'inspect-step' && search.step_id) {
+      locateStep(search.step_id)
+      void navigate({
+        to: '/scenarios/$scenarioId',
+        params: { scenarioId },
+        search: {
+          editor: search.editor,
+          runId: search.runId,
+          import: search.import,
+        },
+        replace: true,
+      })
+    }
+  }, [search.action, search.step_id, scenarioId, search.editor, search.runId, search.import, navigate])
 
   useEffect(() => {
     if (!canWrite || disabled || !document || selectedIndex < 0) return
@@ -566,6 +698,7 @@ export function ScenarioDetailPage() {
     } else {
       draft.applyStructure(insertStep(document, nextStep, after), nextStep.id)
     }
+    setRightTab('step')
     setMobilePane('properties')
   }
 
@@ -581,6 +714,7 @@ export function ScenarioDetailPage() {
       outputBindings: {},
     }
     draft.insertNode(invocation, draft.selectedIndex)
+    setRightTab('step')
     setMobilePane('properties')
   }
 
@@ -610,6 +744,50 @@ export function ScenarioDetailPage() {
     setTypeChange(null)
   }
 
+  function duplicateSelectedNode() {
+    if (!document) return
+    if (draft.selectedNode?.kind === 'module') {
+      const mod = draft.selectedNode
+      const cloned: ScenarioModuleInvocationNode = {
+        ...JSON.parse(JSON.stringify(mod)),
+        invocationId: crypto.randomUUID(),
+        name: `${mod.name} (副本)`,
+      }
+      draft.insertNode(cloned, draft.selectedIndex)
+      setRightTab('step')
+      setMobilePane('properties')
+      toast.success('已复制模块调用')
+      return
+    }
+    if (draft.selected) {
+      const currentStep = draft.selected
+      const newId = crypto.randomUUID()
+      let outputKey = currentStep.outputKey ? `${currentStep.outputKey}_copy` : undefined
+      if (outputKey && documentContextKeysAny(document).has(outputKey)) {
+        outputKey = `${outputKey}_${Math.floor(Math.random() * 1000)}`
+      }
+      const clonedStep: Step = {
+        ...JSON.parse(JSON.stringify(currentStep)),
+        id: newId,
+        name: `${currentStep.name || '步骤'} (副本)`,
+        outputKey,
+      }
+      const after = draft.selectedIndex
+      if (isAuthoringDocumentV2(document)) {
+        const clonedOutcomes =
+          draft.selectedNode?.kind === 'step' && draft.selectedNode.outcomes
+            ? draft.selectedNode.outcomes.map((o) => ({ ...o, id: crypto.randomUUID() }))
+            : undefined
+        draft.insertNode({ kind: 'step', step: clonedStep, outcomes: clonedOutcomes }, after)
+      } else {
+        draft.applyStructure(insertStep(document, clonedStep, after), newId)
+      }
+      setRightTab('step')
+      setMobilePane('properties')
+      toast.success('已复制步骤')
+    }
+  }
+
   function confirmReload() {
     void query.refetch().then((result) => {
       if (result.data?.draft) {
@@ -621,6 +799,7 @@ export function ScenarioDetailPage() {
 
   function attachRun(run: RunDetailDto) {
     queryClient.setQueryData(['runs', run.id], run)
+    setTrackedRunId(run.id)
     void navigate({
       to: '/scenarios/$scenarioId',
       params: { scenarioId },
@@ -740,15 +919,18 @@ export function ScenarioDetailPage() {
                 !(canStartFormalRun && draftHasAi && !canAi && !draft.dirty && compile?.ok) ? (
                   <p className='text-label text-status-warning-foreground'>试跑不可用：{trialDisabledReason}。</p>
                 ) : null}
-                {pendingImportDraftId ? (
-                  <Alert>
+                {pendingImportDraftId && !recordingBannerDismissed ? (
+                  <Alert className='border-primary/40 bg-primary/5 shadow-xs'>
                     <AlertDescription className='flex flex-wrap items-center justify-between gap-3'>
-                      <span>
-                        {openBinding?.recordingDraftId
-                          ? `场景「${openBinding.scenarioName}」有已上传的录制，待预览回填。`
-                          : '有可导入当前场景的录制草稿。'}
-                      </span>
-                      <span className='flex flex-wrap gap-2'>
+                      <div className='flex items-center gap-2'>
+                        <span className='text-sm'>⚡</span>
+                        <span className='font-medium text-foreground text-small'>
+                          {openBinding?.recordingDraftId
+                            ? `场景「${openBinding.scenarioName}」有已上传的录制，待预览回填。`
+                            : '检测到可导入当前场景的录制草稿，可一键转换为操作步骤。'}
+                        </span>
+                      </div>
+                      <span className='flex flex-wrap items-center gap-2'>
                         <Button
                           size='sm'
                           variant='outline'
@@ -759,10 +941,11 @@ export function ScenarioDetailPage() {
                         {canRecord ? (
                           <Button
                             size='sm'
-                            variant='outline'
+                            variant='default'
+                            className='shadow-xs'
                             onClick={() => setImportSearch(pendingImportDraftId)}
                           >
-                            预览回填
+                            预览导入草稿
                           </Button>
                         ) : null}
                         {canWrite && openBinding ? (
@@ -770,6 +953,16 @@ export function ScenarioDetailPage() {
                             关闭绑定
                           </Button>
                         ) : null}
+                        <Button
+                          size='icon'
+                          variant='ghost'
+                          className='size-7 shrink-0 text-muted-foreground hover:text-foreground'
+                          onClick={() => dismissRecordingBanner()}
+                          aria-label='关闭提示'
+                          title='关闭提示'
+                        >
+                          <X className='size-4' />
+                        </Button>
                       </span>
                     </AlertDescription>
                   </Alert>
@@ -934,27 +1127,39 @@ export function ScenarioDetailPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align='end'>
-                        <DropdownMenuLabel>确定性</DropdownMenuLabel>
+                        <DropdownMenuLabel>基础操作</DropdownMenuLabel>
                         {editableTypes
                           .filter((type) =>
-                            ['navigate', 'click', 'fill', 'extract', 'select', 'keyboard', 'wait'].includes(
-                              type,
-                            ),
+                            ['navigate', 'click', 'fill', 'select'].includes(type),
                           )
                           .map((type) => (
-                            <DropdownMenuItem key={type} onClick={() => addStep(type)}>
-                              {stepTypeLabel(type)}
+                            <DropdownMenuItem key={type} className='flex items-center gap-2' onClick={() => addStep(type)}>
+                              <StepTypeIcon type={type} className='size-3.5 text-muted-foreground' />
+                              <span>{stepTypeLabel(type)}</span>
+                            </DropdownMenuItem>
+                          ))}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuLabel>辅助与提取</DropdownMenuLabel>
+                        {editableTypes
+                          .filter((type) =>
+                            ['keyboard', 'wait', 'extract'].includes(type),
+                          )
+                          .map((type) => (
+                            <DropdownMenuItem key={type} className='flex items-center gap-2' onClick={() => addStep(type)}>
+                              <StepTypeIcon type={type} className='size-3.5 text-muted-foreground' />
+                              <span>{stepTypeLabel(type)}</span>
                             </DropdownMenuItem>
                           ))}
                         {editableTypes.some((type) => type.startsWith('ai_')) ? (
                           <>
                             <DropdownMenuSeparator />
-                            <DropdownMenuLabel className='text-ai-foreground'>AI</DropdownMenuLabel>
+                            <DropdownMenuLabel className='text-ai-foreground'>AI 智能</DropdownMenuLabel>
                             {editableTypes
                               .filter((type) => type.startsWith('ai_'))
                               .map((type) => (
-                                <DropdownMenuItem key={type} className='text-ai-foreground' onClick={() => addStep(type)}>
-                                  {stepTypeLabel(type)}
+                                <DropdownMenuItem key={type} className='flex items-center gap-2 text-ai-foreground' onClick={() => addStep(type)}>
+                                  <StepTypeIcon type={type} className='size-3.5 text-ai-foreground' />
+                                  <span>{stepTypeLabel(type)}</span>
                                 </DropdownMenuItem>
                               ))}
                           </>
@@ -962,8 +1167,9 @@ export function ScenarioDetailPage() {
                         {unavailableStudioTypes(capabilitiesQuery.data)
                           .filter((item) => item.type !== 'assert' && item.type !== 'ai_assert')
                           .map((item) => (
-                            <DropdownMenuItem key={item.type} disabled>
-                              {stepTypeLabel(item.type)}（{item.message}）
+                            <DropdownMenuItem key={item.type} disabled className='flex items-center gap-2'>
+                              <StepTypeIcon type={item.type} className='size-3.5 text-muted-foreground opacity-50' />
+                              <span>{stepTypeLabel(item.type)}（{item.message}）</span>
                             </DropdownMenuItem>
                           ))}
                         {fixtureTypes.length > 0 && (
@@ -973,8 +1179,9 @@ export function ScenarioDetailPage() {
                               <DropdownMenuSubTrigger>调试夹具</DropdownMenuSubTrigger>
                               <DropdownMenuSubContent>
                                 {fixtureTypes.map((type) => (
-                                  <DropdownMenuItem key={type} onClick={() => addStep(type)}>
-                                    {stepTypeLabel(type)}
+                                  <DropdownMenuItem key={type} className='flex items-center gap-2' onClick={() => addStep(type)}>
+                                    <StepTypeIcon type={type} className='size-3.5 text-muted-foreground' />
+                                    <span>{stepTypeLabel(type)}</span>
                                     <span className='text-label text-muted-foreground'> · {STEP_TYPE_HINTS[type]}</span>
                                   </DropdownMenuItem>
                                 ))}
@@ -1021,7 +1228,7 @@ export function ScenarioDetailPage() {
                         void navigate({
                           to: '/scenarios/$scenarioId',
                           params: { scenarioId },
-                          search: (prev) => ({ ...prev, editor: undefined }),
+                          search: (prev: any) => ({ ...prev, editor: undefined }),
                           replace: true,
                         })
                       }
@@ -1037,7 +1244,7 @@ export function ScenarioDetailPage() {
                         void navigate({
                           to: '/scenarios/$scenarioId',
                           params: { scenarioId },
-                          search: (prev) => ({ ...prev, editor: 'flowgram' }),
+                          search: (prev: any) => ({ ...prev, editor: 'flowgram' }),
                           replace: true,
                         })
                       }
@@ -1157,9 +1364,55 @@ export function ScenarioDetailPage() {
                       )}
                     </div>
                   </div>
+                ) : authoringNodes(document).length === 0 ? (
+                  <div className='flex-1 p-3.5 flex flex-col items-center justify-center text-center space-y-3.5 bg-muted/10 overflow-y-auto'>
+                    <div className='size-10 rounded-full bg-primary/10 flex items-center justify-center text-primary text-xl'>
+                      ⚡
+                    </div>
+                    <div className='space-y-1 max-w-[200px]'>
+                      <h3 className='text-body font-semibold text-foreground'>开始构建场景</h3>
+                      <p className='text-xs text-muted-foreground leading-relaxed'>
+                        {pendingImportDraftId
+                          ? '已检测到录制草稿，推荐一键转为操作步骤：'
+                          : '你可以导入录制草稿，或添加首个步骤：'}
+                      </p>
+                    </div>
+                    {pendingImportDraftId && canRecord ? (
+                      <Button
+                        size='sm'
+                        variant='default'
+                        className='w-full text-xs font-medium shadow-xs'
+                        onClick={() => setImportSearch(pendingImportDraftId)}
+                      >
+                        ⚡ 预览并导入录制草稿
+                      </Button>
+                    ) : null}
+                    <div className='flex flex-col gap-1.5 w-full pt-1'>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        className='w-full text-xs justify-start text-muted-foreground hover:text-foreground'
+                        onClick={() => addStep('navigate')}
+                        disabled={disabled}
+                      >
+                        <Plus className='size-3.5 mr-1.5 text-primary' />
+                        第 1 步：打开页面 (导航)
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        className='w-full text-xs justify-start text-muted-foreground hover:text-foreground'
+                        onClick={() => addStep('ai_action')}
+                        disabled={disabled}
+                      >
+                        <Plus className='size-3.5 mr-1.5 text-ai-foreground' />
+                        第 1 步：AI 智能操作
+                      </Button>
+                    </div>
+                  </div>
                 ) : (
-                <ol ref={stepList} aria-label='有序步骤列表' className='flex-1 min-h-0 space-y-1.5 overflow-y-auto p-2'>
-                  {authoringNodes(document).map((node, index) => {
+                  <ol ref={stepList} aria-label='有序步骤列表' className='flex-1 min-h-0 space-y-1.5 overflow-y-auto p-2'>
+                      {authoringNodes(document).map((node, index) => {
                     const key = nodeId(node)
                     if (node.kind === 'module') {
                       const isSelected = draft.selectedId === key
@@ -1256,9 +1509,15 @@ export function ScenarioDetailPage() {
                               {holdingDraftStepId === step.id ? <StatusBadge tone='warning'>挂起</StatusBadge> : null}
                               {imported ? <StatusBadge tone='info'>刚导入</StatusBadge> : null}
                               {isAiStepType(step.type) ? (
-                                <StatusBadge tone='ai'>{stepTypeLabel(step.type)}</StatusBadge>
+                                <StatusBadge tone='ai' className='inline-flex items-center gap-1'>
+                                  <StepTypeIcon type={step.type} className='size-3 shrink-0' />
+                                  <span>{stepTypeLabel(step.type)}</span>
+                                </StatusBadge>
                               ) : (
-                                stepTypeLabel(step.type)
+                                <span className='inline-flex items-center gap-1'>
+                                  <StepTypeIcon type={step.type} className='size-3 shrink-0 text-muted-foreground/80' />
+                                  <span>{stepTypeLabel(step.type)}</span>
+                                </span>
                               )}
                               {step.outputKey ? <span>输出 {step.outputKey}</span> : null}
                               {errorCount > 0 ? <span className='inline-flex items-center gap-0.5 text-status-error-foreground'><TriangleAlert className='size-3' />{errorCount} 项错误</span> : null}
@@ -1271,11 +1530,11 @@ export function ScenarioDetailPage() {
                     )
                   })}
                 </ol>
-                )}
+              )}
                 <p className='border-t border-border-divider bg-surface-header px-3 py-2 text-label text-muted-foreground shrink-0'>
                   {draft.selected
-                    ? '新步骤插入到当前步骤之后。使用 Alt + ↑ / Alt + ↓ 重排；输入框内不拦截。'
-                    : '未选中步骤时，新步骤追加到末尾。删除需要确认。'}
+                    ? '新步骤插入到当前步骤之后。'
+                    : '未选中步骤时，新步骤追加到末尾。'}
                 </p>
               </section>
               {!flowgram ? (
@@ -1302,7 +1561,7 @@ export function ScenarioDetailPage() {
               <div
                 ref={rightPanelRef}
                 className={cn(
-                  'w-full lg:w-[320px] xl:w-[360px] 2xl:w-[420px] shrink-0 border-l border-border-divider bg-card flex flex-col min-h-0 overflow-y-auto',
+                  'w-full lg:w-[360px] xl:w-[400px] 2xl:w-[440px] shrink-0 border-l border-border-divider bg-card flex flex-col min-h-0 overflow-y-auto pb-24',
                   mobilePane !== 'properties' && 'max-lg:hidden',
                 )}
               >
@@ -1310,7 +1569,11 @@ export function ScenarioDetailPage() {
                   aria-label={
                     rightTab === 'step'
                       ? (draft.selectedNode?.kind === 'module' ? '模块调用属性' : '步骤属性')
-                      : '场景输入'
+                      : rightTab === 'inputs'
+                        ? '场景输入'
+                        : rightTab === 'outputs'
+                          ? '业务输出'
+                          : '预期与诊断'
                   }
                   className='min-w-0 flex flex-col'
                 >
@@ -1370,6 +1633,36 @@ export function ScenarioDetailPage() {
                       <button
                         type='button'
                         role='tab'
+                        aria-selected={rightTab === 'outputs'}
+                        className={cn(
+                          'flex-1 py-1.5 px-2 rounded-md font-medium text-xs transition-all text-center flex items-center justify-center gap-1.5',
+                          rightTab === 'outputs'
+                            ? 'bg-background text-foreground shadow-xs'
+                            : 'text-muted-foreground hover:text-foreground',
+                        )}
+                        onClick={() => {
+                          setRightTab('outputs')
+                          draft.setSelectedId(null)
+                          rightPanelRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+                        }}
+                      >
+                        <span>业务输出</span>
+                        {(draft.displayOutputs?.metrics?.length ?? 0) > 0 ? (
+                          <span
+                            className={cn(
+                              'inline-flex items-center justify-center px-1.5 py-0.2 text-[10px] font-semibold rounded-full',
+                              rightTab === 'outputs'
+                                ? 'bg-primary/15 text-primary'
+                                : 'bg-muted text-muted-foreground',
+                            )}
+                          >
+                            {draft.displayOutputs?.metrics?.length}
+                          </span>
+                        ) : null}
+                      </button>
+                      <button
+                        type='button'
+                        role='tab'
                         aria-selected={rightTab === 'outcomes'}
                         className={cn(
                           'flex-1 py-1.5 px-2 rounded-md font-medium text-xs transition-all text-center flex items-center justify-center gap-1.5',
@@ -1397,7 +1690,11 @@ export function ScenarioDetailPage() {
                         <p className='text-label text-muted-foreground'>
                           {rightTab === 'step' && draft.selectedNode
                             ? `${draft.selectedNode.kind === 'module' ? '模块' : '步骤'} ${draft.selectedIndex + 1} / ${draft.nodes.length}`
-                            : '场景级'}
+                            : rightTab === 'inputs'
+                              ? '场景级 · 输入参数'
+                              : rightTab === 'outputs'
+                                ? '场景级 · 业务输出与指标'
+                                : '场景级 · 预期与诊断'}
                         </p>
                         <h2 className='mt-0.5 text-section font-semibold break-words'>
                           {rightTab === 'step'
@@ -1406,7 +1703,11 @@ export function ScenarioDetailPage() {
                                 : draft.selected
                                   ? draft.selected.name
                                   : '请选择步骤')
-                            : '输入与诊断'}
+                            : rightTab === 'inputs'
+                              ? '输入与诊断'
+                              : rightTab === 'outputs'
+                                ? '业务输出与巡检指标'
+                                : '预期与诊断'}
                         </h2>
                       </div>
                       <Button
@@ -1487,6 +1788,15 @@ export function ScenarioDetailPage() {
                               }}
                             >
                               下移
+                            </Button>
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              disabled={disabled}
+                              onClick={duplicateSelectedNode}
+                            >
+                              <Copy className='size-3.5 mr-1' />
+                              复制模块
                             </Button>
                             <Button
                               size='sm'
@@ -1582,6 +1892,15 @@ export function ScenarioDetailPage() {
                             <Button
                               size='sm'
                               variant='outline'
+                              disabled={disabled}
+                              onClick={duplicateSelectedNode}
+                            >
+                              <Copy className='size-3.5 mr-1' />
+                              复制步骤
+                            </Button>
+                            <Button
+                              size='sm'
+                              variant='outline'
                               disabled={disabled || nodeCount <= 1}
                               onClick={() => setDeleteId(draft.selected!.id)}
                             >
@@ -1607,22 +1926,53 @@ export function ScenarioDetailPage() {
                           </div>
                         </>
                       ) : (
-                        <div className='text-center py-12 px-4 space-y-3'>
-                          <p className='text-sm text-muted-foreground'>未选中任何步骤</p>
-                          {draft.nodes.length > 0 && (
-                            <Button
-                              size='sm'
-                              variant='outline'
-                              onClick={() => {
-                                draft.setSelectedId(nodeId(draft.nodes[0]))
-                              }}
-                            >
-                              选择第 1 步 (
-                                {draft.nodes[0].kind === 'step'
-                                  ? draft.nodes[0].step.name
-                                  : draft.nodes[0].name || '步骤 1'}
-                              )
-                            </Button>
+                        <div className='py-6 px-4 space-y-4'>
+                          {draft.nodes.length === 0 ? (
+                            <div className='rounded-lg border border-border-divider/80 bg-muted/20 p-5 space-y-4'>
+                              <div className='flex items-center gap-2 text-foreground font-medium text-sm'>
+                                <span className='text-base'>💡</span>
+                                <span>欢迎开始场景编排</span>
+                              </div>
+                              <div className='text-xs text-muted-foreground space-y-2.5 leading-relaxed'>
+                                <p>当前场景还是空的，你可以通过以下方式快速开始：</p>
+                                <ol className='list-decimal list-inside space-y-1.5 pl-1'>
+                                  {pendingImportDraftId ? (
+                                    <li className='text-foreground font-medium'>
+                                      一键导入录制草稿，自动转换为所有操作步骤；
+                                    </li>
+                                  ) : null}
+                                  <li>点击左侧【+ 添加步骤】，选择【打开页面】作为起点；</li>
+                                  <li>或添加【AI 智能操作】，用自然语言快速描述目标动作。</li>
+                                </ol>
+                              </div>
+                              {pendingImportDraftId && canRecord ? (
+                                <Button
+                                  size='sm'
+                                  variant='default'
+                                  className='w-full text-xs shadow-xs'
+                                  onClick={() => setImportSearch(pendingImportDraftId)}
+                                >
+                                  ⚡ 一键预览并导入录制草稿
+                                </Button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div className='text-center py-12 space-y-3'>
+                              <p className='text-sm text-muted-foreground'>未选中任何步骤</p>
+                              <Button
+                                size='sm'
+                                variant='outline'
+                                onClick={() => {
+                                  draft.setSelectedId(nodeId(draft.nodes[0]))
+                                }}
+                              >
+                                选择第 1 步 (
+                                  {draft.nodes[0].kind === 'step'
+                                    ? draft.nodes[0].step.name
+                                    : draft.nodes[0].name || '步骤 1'}
+                                )
+                              </Button>
+                            </div>
                           )}
                         </div>
                       )
@@ -1632,6 +1982,39 @@ export function ScenarioDetailPage() {
                           inputs={draft.displayInputs}
                           disabled={disabled}
                           onChange={draft.updateInputs}
+                        />
+                        <ScenarioResolutionStats scenarioId={scenarioId} />
+                        <DiagnosticList
+                          diagnostics={compile?.diagnostics ?? []}
+                          onSelect={(item) => {
+                            if (item.stepId) {
+                              draft.setSelectedId(item.stepId)
+                              setRightTab('step')
+                            }
+                            queueMicrotask(() => focusStudioField(item))
+                          }}
+                        />
+                        <div className='pt-3 border-t border-border-divider/60 flex items-center justify-between text-xs text-muted-foreground'>
+                          <span>配置场景预期或全局约束？</span>
+                          <button
+                            type='button'
+                            className='text-link hover:underline font-medium'
+                            onClick={() => {
+                              setRightTab('outcomes')
+                              rightPanelRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+                            }}
+                          >
+                            前往预期与诊断 →
+                          </button>
+                        </div>
+                      </>
+                    ) : rightTab === 'outputs' ? (
+                      <>
+                        <ScenarioOutputsEditor
+                          outputs={draft.displayOutputs}
+                          disabled={disabled}
+                          availableContextKeys={document ? Array.from(documentContextKeysAny(document)) : []}
+                          onChange={draft.updateOutputs}
                         />
                         <ScenarioResolutionStats scenarioId={scenarioId} />
                         <DiagnosticList
@@ -1959,24 +2342,48 @@ function DiagnosticList({
   diagnostics: CompileDiagnostic[]
   onSelect: (item: CompileDiagnostic) => void
 }) {
+  const setQuote = useAssistantStore((s) => s.setQuote)
   if (diagnostics.length === 0) {
     return <p className='text-small text-muted-foreground'>当前没有编译诊断。</p>
   }
   return (
     <ul className='space-y-2' aria-label='编译诊断'>
       {diagnostics.map((item) => (
-        <li key={`${item.code}-${item.stepId ?? item.inputKey ?? 'global'}-${item.message}`}>
+        <li
+          key={`${item.code}-${item.stepId ?? item.inputKey ?? 'global'}-${item.message}`}
+          className='flex items-stretch gap-1.5'
+        >
           <button
             type='button'
             className={
               item.severity === 'error'
-                ? 'w-full rounded-md bg-status-error-background p-3 text-left text-small text-status-error-foreground'
-                : 'w-full rounded-md bg-status-warning-background p-3 text-left text-small text-status-warning-foreground'
+                ? 'flex-1 rounded-md bg-status-error-background p-3 text-left text-small text-status-error-foreground'
+                : 'flex-1 rounded-md bg-status-warning-background p-3 text-left text-small text-status-warning-foreground'
             }
             onClick={() => onSelect(item)}
           >
             {item.message}
           </button>
+          <Button
+            type='button'
+            variant='ghost'
+            size='sm'
+            className='self-center h-8 px-2 text-label text-muted-foreground hover:text-foreground shrink-0'
+            title='引用此诊断至识途助手'
+            onClick={(e) => {
+              e.stopPropagation()
+              setQuote(
+                buildDiagnosticQuote(
+                  item.stepId ?? 'diagnostic',
+                  `诊断 [${item.code}]`,
+                  item.message,
+                  { code: item.code, severity: item.severity, stepId: item.stepId }
+                )
+              )
+            }}
+          >
+            求助
+          </Button>
         </li>
       ))}
     </ul>

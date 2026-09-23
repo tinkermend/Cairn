@@ -1,18 +1,43 @@
 import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ExternalLink, Monitor, Play, RefreshCw } from 'lucide-react'
+import {
+  Activity,
+  AlertCircle,
+  Check,
+  ChevronDown,
+  Clock,
+  ExternalLink,
+  Loader2,
+  Monitor,
+  Play,
+  RefreshCw,
+  X,
+  XCircle,
+} from 'lucide-react'
 import { describeAuthIssue, hasPermission, isFinishedRunStatus } from '@cairn/shared'
 import { toast } from 'sonner'
-import { classifyStudioSessionConnect, studioDisconnectedCopy } from './studio-connect'
+import {
+  classifyStudioSessionConnect,
+  deriveSessionPreparationStage,
+  formatOperationTimeout,
+  PREPARATION_STEPS,
+  resolveLatestEventSummary,
+  resolveStudioConnectAction,
+  studioDisconnectedCopy,
+} from './studio-connect'
 import { ApiRequestError } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth-store'
 import {
+  cancelSessionOperation,
   fetchAccountSession,
+  fetchAccountSessionEvents,
+  fetchSessionOperation,
   newSessionIdempotencyKey,
   requestAccountSessionOperation,
   sessionBrowserTransport,
 } from '@/lib/sessions-api'
+import { useSessionObservation } from '@/features/sessions/use-session-observation'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -22,8 +47,9 @@ import { RunVideoSection } from '@/features/runs/run-video'
 import { PlacementHint } from '@/features/runs/placement-hint'
 import { useRunObservation } from '@/features/runs/use-run-observation'
 import { RUN_STATUS_LABELS, runStatusTone } from '@/features/runs/labels'
+import { cn } from '@/lib/utils'
 
-const LIVE_RUN_STATUSES = ['QUEUED', 'RUNNING', 'WAITING_FOR_AUTH', 'HOLDING', 'RECOVERING']
+const LIVE_RUN_STATUSES = ['SCHEDULED', 'QUEUED', 'RUNNING', 'WAITING_FOR_AUTH']
 const sessionTransport = sessionBrowserTransport('session')
 const operationTransport = sessionBrowserTransport('operation')
 
@@ -38,10 +64,10 @@ export function StudioScreen({
   trialDisabledReason,
 }: {
   runId?: string
-  scenarioId: string
+  scenarioId?: string
   targetId?: string
   targetAccountId?: string
-  onStartTrial: () => void
+  onStartTrial?: () => void
   selectedStepName?: string
   selectedIsFirst?: boolean
   trialDisabledReason?: string
@@ -55,15 +81,64 @@ export function StudioScreen({
     runId ?? '',
     Boolean(runId && canRead),
   )
+
+  // 接入会话 SSE 订阅：后端事件实时触发缓存失效
+  useSessionObservation(targetId, targetAccountId)
+
   const [videoOpen, setVideoOpen] = useState(false)
   const [connecting, setConnecting] = useState(false)
+  const [prepareFailed, setPrepareFailed] = useState(false)
+  const [abandoning, setAbandoning] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
   const [pendingOperationId, setPendingOperationId] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(Date.now())
+
+  // 目标或账号切换时及时重置连接与失败状态，防止历史状态泄漏
+  useEffect(() => {
+    setConnecting(false)
+    setPrepareFailed(false)
+    setPendingOperationId(null)
+    setConnectError(null)
+  }, [targetId, targetAccountId])
+
   const sessionQuery = useQuery({
     queryKey: ['account-session', targetId, targetAccountId],
     queryFn: () => fetchAccountSession(targetId!, targetAccountId!),
     enabled: Boolean(targetId && targetAccountId && canReadSession),
   })
   const session = sessionQuery.data
+
+  const activeOpId = session?.currentOperation?.id ?? pendingOperationId
+  const operationQuery = useQuery({
+    queryKey: ['session-operation', activeOpId],
+    queryFn: () => fetchSessionOperation(activeOpId!),
+    enabled: Boolean(activeOpId && canReadSession && (connecting || prepareFailed)),
+  })
+
+  const eventsQuery = useQuery({
+    queryKey: ['account-session-events', targetId, targetAccountId],
+    queryFn: () => fetchAccountSessionEvents(targetId!, targetAccountId!),
+    enabled: Boolean(targetId && targetAccountId && canReadSession && (connecting || prepareFailed)),
+  })
+
+  // 当处于 connecting 时每秒更新计时；每 3 秒兜底刷新一次，防范 SSE 瞬时断线或延迟
+  useEffect(() => {
+    if (!connecting) return
+    let timer: ReturnType<typeof setTimeout>
+    let counter = 0
+    const tick = () => {
+      setNowMs(Date.now())
+      counter++
+      if (counter % 3 === 0) {
+        void sessionQuery.refetch()
+        void operationQuery.refetch()
+      }
+      timer = setTimeout(tick, 1000)
+    }
+    timer = setTimeout(tick, 1000)
+    return () => clearTimeout(timer)
+  }, [connecting, sessionQuery, operationQuery])
+
   const sessionOpen = session?.session?.status === 'OPEN'
   const occupyingRunId = session?.occupancy?.occupyingRunId ?? null
   const occupyingOperationId = session?.occupancy?.occupyingOperationId ?? null
@@ -71,8 +146,17 @@ export function StudioScreen({
   const isLiveState = Boolean(run && LIVE_RUN_STATUSES.includes(run.status))
   const isFinished = Boolean(run && isFinishedRunStatus(run.status))
   const showRunLive = isLiveState
+
+  const connectState = classifyStudioSessionConnect(session, pendingOperationId, operationQuery.data)
+  const isWaitingForAuth = Boolean(
+    !showRunLive &&
+      (connectState === 'waiting_for_auth' ||
+        session?.currentOperation?.status === 'WAITING_FOR_AUTH' ||
+        operationQuery.data?.status === 'WAITING_FOR_AUTH'),
+  )
+
   const showSessionLive = Boolean(
-    !showRunLive && sessionOpen && sessionViewId && !occupyingRunId,
+    !showRunLive && (sessionOpen || isWaitingForAuth) && sessionViewId && !occupyingRunId,
   )
   const sessionPending = Boolean(
     targetId && targetAccountId && canReadSession && sessionQuery.isPending,
@@ -83,51 +167,149 @@ export function StudioScreen({
     lastAuthError: session?.lastAuthError,
   })
 
+  const currentOpStatus = session?.currentOperation?.status ?? operationQuery.data?.status
+  const currentErrorCode = operationQuery.data?.errorCode ?? session?.lastAuthError
+
+  const currentAction = resolveStudioConnectAction({
+    sessionDetail: session,
+    activeOpStatus: currentOpStatus,
+    activeOpErrorCode: currentErrorCode,
+    isFailed: prepareFailed,
+  })
+
+  const stageInfo = deriveSessionPreparationStage({
+    operationStatus: currentOpStatus,
+    events: eventsQuery.data?.items,
+    sessionOpen,
+    lastAuthError: session?.lastAuthError,
+    errorCode: currentErrorCode,
+    prepareFailed,
+    errorMessage: connectError,
+  })
+
+  const latestEventSummary = resolveLatestEventSummary(eventsQuery.data?.items, activeOpId)
+
+  const timeoutInfo = formatOperationTimeout({
+    status: currentOpStatus,
+    queueDeadlineAt: operationQuery.data?.queueDeadlineAt,
+    createdAt: operationQuery.data?.createdAt,
+    nowMs,
+  })
+
   useEffect(() => {
     if (!connecting) return
-    const state = classifyStudioSessionConnect(session, pendingOperationId)
-    if (state === 'open') {
+    if (connectState === 'open') {
       setConnecting(false)
+      setPrepareFailed(false)
       setPendingOperationId(null)
+      setConnectError(null)
       return
     }
-    if (state === 'failed') {
+    if (connectState === 'failed') {
       setConnecting(false)
-      setPendingOperationId(null)
-      toast.error(describeAuthIssue(session?.lastAuthError) ?? '无法连接受管会话')
+      setPrepareFailed(true)
+      const errorMsg =
+        stageInfo.detail || describeAuthIssue(session?.lastAuthError) || '无法连接受管会话'
+      toast.error(errorMsg)
     }
-  }, [connecting, pendingOperationId, session])
+  }, [connecting, connectState, session, stageInfo.detail])
 
+  // 兜底安全上限：300 秒（对齐平台默认排队与调度上限）
   useEffect(() => {
     if (!connecting) return
     const timer = window.setTimeout(() => {
       setConnecting(false)
+      setPrepareFailed(true)
       setPendingOperationId(null)
-      toast.error('还在准备会话。可到浏览器页查看进度，或稍后重试。')
-    }, 90_000)
+      const msg = '会话准备已超时。可到会话页查看详细排障信息，或稍后重试。'
+      setConnectError(msg)
+      toast.error(msg)
+    }, 300_000)
     return () => window.clearTimeout(timer)
   }, [connecting])
 
   async function connectSession() {
     if (!targetId || !targetAccountId || !canControlSession) {
-      onStartTrial()
+      onStartTrial?.()
       return
     }
     setConnecting(true)
+    setPrepareFailed(false)
+    setConnectError(null)
+    setPendingOperationId(null)
     try {
-      if (!sessionOpen) {
-        const accepted = await requestAccountSessionOperation(targetId, targetAccountId, {
-          kind: 'PREPARE',
-          idempotencyKey: newSessionIdempotencyKey('PREPARE'),
-        })
-        setPendingOperationId(accepted.operationId)
+      const action = resolveStudioConnectAction({
+        sessionDetail: session,
+        activeOpStatus: currentOpStatus,
+        activeOpErrorCode: currentErrorCode,
+        isFailed: prepareFailed,
+      })
+
+      if (sessionOpen && action.kind === 'PREPARE' && !prepareFailed) {
+        await sessionQuery.refetch()
+        setConnecting(false)
+        return
       }
+
+      const accepted = await requestAccountSessionOperation(targetId, targetAccountId, {
+        kind: action.kind,
+        idempotencyKey: newSessionIdempotencyKey(action.kind),
+        force: action.kind === 'RESTART',
+      })
+      setPendingOperationId(accepted.operationId)
       await sessionQuery.refetch()
     } catch (error) {
       setConnecting(false)
+      setPrepareFailed(true)
       setPendingOperationId(null)
-      toast.error(error instanceof ApiRequestError ? error.message : '无法连接受管会话')
+      const message =
+        error instanceof ApiRequestError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : '无法连接受管会话'
+      setConnectError(message)
+      toast.error(message)
     }
+  }
+
+  async function abandonTakeover() {
+    if (!targetId || !targetAccountId) return
+    setAbandoning(true)
+    try {
+      await requestAccountSessionOperation(targetId, targetAccountId, {
+        kind: 'CLOSE',
+        idempotencyKey: newSessionIdempotencyKey('CLOSE'),
+        force: true,
+      })
+      toast.info('已放弃人工接管，受管浏览器会话已关闭')
+      setConnecting(false)
+      setPrepareFailed(false)
+      setPendingOperationId(null)
+      setConnectError(null)
+      await sessionQuery.refetch()
+    } catch (err) {
+      toast.error(err instanceof ApiRequestError ? err.message : '关闭会话失败')
+    } finally {
+      setAbandoning(false)
+    }
+  }
+
+  async function cancelConnecting() {
+    const opId = activeOpId
+    if (opId) {
+      try {
+        await cancelSessionOperation(opId)
+        toast.success('已取消会话准备')
+      } catch (err) {
+        toast.error(err instanceof ApiRequestError ? err.message : '取消失败')
+      }
+    }
+    setConnecting(false)
+    setPrepareFailed(false)
+    setPendingOperationId(null)
+    setConnectError(null)
+    void sessionQuery.refetch()
   }
 
   const headerAction = showRunLive ? (
@@ -149,9 +331,15 @@ export function StudioScreen({
       同步画面
     </Button>
   ) : canControlSession && targetId && targetAccountId ? (
-    <Button size='sm' variant='outline' className='h-7 px-2 text-label' disabled={connecting} onClick={() => void connectSession()}>
+    <Button
+      size='sm'
+      variant='outline'
+      className='h-7 px-2 text-label'
+      disabled={(connecting && !prepareFailed) || abandoning}
+      onClick={() => void connectSession()}
+    >
       <Play className='size-3.5 mr-1' />
-      {connecting ? '连接中…' : '连接会话'}
+      {connecting && !prepareFailed ? '准备中…' : currentAction.label}
     </Button>
   ) : canExecute ? (
     <Button size='sm' variant='outline' className='h-7 px-2 text-label' onClick={onStartTrial}>
@@ -173,14 +361,30 @@ export function StudioScreen({
             <StatusBadge tone={runStatusTone(run.status)} className='shrink-0'>
               {RUN_STATUS_LABELS[run.status]}
             </StatusBadge>
+          ) : isWaitingForAuth ? (
+            <StatusBadge tone='warning' className='shrink-0'>
+              需要人工验证
+            </StatusBadge>
           ) : showSessionLive ? (
-            <StatusBadge tone='success' className='shrink-0'>会话已连接</StatusBadge>
+            <StatusBadge tone='success' className='shrink-0'>
+              会话已连接
+            </StatusBadge>
+          ) : prepareFailed ? (
+            <StatusBadge tone='error' className='shrink-0'>
+              {stageInfo.title}
+            </StatusBadge>
+          ) : connecting ? (
+            <StatusBadge tone={stageInfo.statusTone} className='shrink-0'>
+              {stageInfo.title}
+            </StatusBadge>
           ) : run ? (
             <StatusBadge tone={runStatusTone(run.status)} className='shrink-0'>
               {RUN_STATUS_LABELS[run.status]}
             </StatusBadge>
           ) : (
-            <StatusBadge tone='neutral' className='shrink-0'>未连接</StatusBadge>
+            <StatusBadge tone='neutral' className='shrink-0'>
+              未连接
+            </StatusBadge>
           )}
         </div>
         <div className='flex items-center gap-1.5 shrink-0'>
@@ -234,11 +438,41 @@ export function StudioScreen({
           </div>
         ) : showSessionLive && sessionViewId ? (
           <div className='space-y-2'>
-            {selectedIsFirst === false ? (
+            {isWaitingForAuth ? (
+              <Alert variant='warning' className='mx-3 mt-2 border-warning/40 bg-warning/10 text-foreground'>
+                <AlertDescription className='flex flex-wrap items-center justify-between gap-3'>
+                  <div className='text-small'>
+                    <span className='font-semibold text-warning-foreground'>需要人工辅助验证：</span>
+                    {describeAuthIssue(session?.lastAuthError) ?? '目标系统需要完成人机验证（滑块/验证码）或登录'}。请在下方画面中点击「取得控制权」完成操作。
+                  </div>
+                  <div className='flex items-center gap-2'>
+                    {activeOpId ? (
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        className='h-7 text-label'
+                        onClick={() => void cancelConnecting()}
+                      >
+                        取消准备
+                      </Button>
+                    ) : null}
+                    <Button
+                      size='sm'
+                      variant='destructive'
+                      className='h-7 text-label'
+                      disabled={abandoning}
+                      onClick={() => void abandonTakeover()}
+                    >
+                      {abandoning ? '正在关闭…' : '放弃接管并关闭'}
+                    </Button>
+                  </div>
+                </AlertDescription>
+              </Alert>
+            ) : selectedIsFirst === false ? (
               <Alert variant='info' className='mx-3 mt-2'>
                 <AlertDescription>
                   <p>
-                    现在看到的是会话停着的这一页，不是执行到「{selectedStepName || '当前步骤'}」之后的页面。在这里点选只会记住要点哪里，不会打开菜单。要翻到下一页，请先保存并试跑已经保存的步骤。
+                    现在看到的是会话停放的当前页面，不是执行到「{selectedStepName || '当前步骤'}」之后的页面。您可以点击上方「手动操作」在受管画面中切到对应菜单或弹窗后再点「拾取对象」；也可以保存并试跑已保存的步骤。
                   </p>
                   <div className='mt-2 flex flex-wrap items-center gap-2'>
                     <Button size='sm' disabled={Boolean(trialDisabledReason)} onClick={onStartTrial}>
@@ -293,18 +527,166 @@ export function StudioScreen({
           </div>
         ) : sessionPending ? (
           <p className='p-6 text-center text-small text-muted-foreground'>正在连接受管浏览器…</p>
+        ) : connecting || prepareFailed ? (
+          <div className='flex flex-col items-center justify-center p-8 text-center max-w-lg mx-auto w-full'>
+            <div
+              className={cn(
+                'mb-3 flex size-12 items-center justify-center rounded-full',
+                prepareFailed
+                  ? stageInfo.statusTone === 'warning'
+                    ? 'bg-warning/10 text-warning'
+                    : 'bg-destructive/10 text-destructive'
+                  : 'bg-primary/10 text-primary',
+              )}
+            >
+              {prepareFailed ? (
+                <AlertCircle className='size-6' />
+              ) : (
+                <Loader2 className='size-6 animate-spin' />
+              )}
+            </div>
+            <div className='flex items-center gap-2'>
+              <h3 className='text-body font-semibold'>{stageInfo.title}</h3>
+              <StatusBadge tone={stageInfo.statusTone}>{stageInfo.stageBadge}</StatusBadge>
+            </div>
+            <p
+              className={cn(
+                'mt-1 text-small max-w-sm',
+                prepareFailed ? 'text-destructive font-medium' : 'text-muted-foreground',
+              )}
+            >
+              {stageInfo.detail}
+            </p>
+
+            {/* 四阶段 Stepper 进度条 */}
+            <div className='my-5 flex items-center justify-between w-full px-2'>
+              {PREPARATION_STEPS.map((step, idx) => {
+                const isFailed = prepareFailed && stageInfo.failedStepIndex === idx
+                const isDone = !isFailed && stageInfo.stepIndex > idx
+                const isCurrent = !prepareFailed && stageInfo.stepIndex === idx
+                return (
+                  <div key={step.key} className='flex items-center flex-1 last:flex-none'>
+                    <div className='flex flex-col items-center gap-1'>
+                      <div
+                        className={cn(
+                          'flex size-7 items-center justify-center rounded-full text-caption font-semibold transition-all',
+                          isFailed
+                            ? 'bg-destructive text-destructive-foreground ring-4 ring-destructive/20'
+                            : isDone
+                              ? 'bg-success text-success-foreground'
+                              : isCurrent
+                                ? 'bg-primary text-primary-foreground ring-4 ring-primary/20 animate-pulse'
+                                : 'bg-muted text-muted-foreground',
+                        )}
+                      >
+                        {isFailed ? <X className='size-3.5' /> : isDone ? <Check className='size-3.5' /> : idx + 1}
+                      </div>
+                      <span
+                        className={cn(
+                          'text-caption font-medium whitespace-nowrap',
+                          isFailed
+                            ? 'text-destructive font-semibold'
+                            : isCurrent
+                              ? 'text-foreground font-semibold'
+                              : 'text-muted-foreground',
+                        )}
+                      >
+                        {step.title}
+                      </span>
+                    </div>
+                    {idx < PREPARATION_STEPS.length - 1 ? (
+                      <div
+                        className={cn(
+                          'h-0.5 flex-1 mx-2 transition-colors',
+                          isDone ? 'bg-success' : 'bg-border-divider',
+                        )}
+                      />
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* 最新动态展示 */}
+            {latestEventSummary ? (
+              <div className='w-full flex items-center gap-1.5 rounded-md border border-border-card bg-muted/40 px-3 py-2 text-label text-muted-foreground'>
+                <Activity
+                  className={cn(
+                    'size-3.5 shrink-0',
+                    prepareFailed ? 'text-destructive' : 'text-primary animate-pulse',
+                  )}
+                />
+                <span className='truncate text-left'>最新动态：{latestEventSummary}</span>
+              </div>
+            ) : null}
+
+            {/* 倒计时与超时预估 */}
+            <div className='mt-3 flex items-center justify-center gap-1.5 text-label text-muted-foreground'>
+              <Clock className='size-3.5 shrink-0' />
+              <span>{timeoutInfo.hint}</span>
+            </div>
+
+            {/* 操作与逃生按钮 */}
+            <div className='mt-5 flex flex-wrap items-center justify-center gap-3'>
+              {prepareFailed ? (
+                <>
+                  <Button size='sm' onClick={() => void connectSession()}>
+                    <Play className='size-3.5 mr-1' />
+                    {currentAction.label}
+                  </Button>
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={() => {
+                      setPrepareFailed(false)
+                      setPendingOperationId(null)
+                      setConnectError(null)
+                    }}
+                  >
+                    关闭
+                  </Button>
+                  <Button
+                    size='sm'
+                    variant='destructive'
+                    disabled={abandoning}
+                    onClick={() => void abandonTakeover()}
+                  >
+                    {abandoning ? '正在关闭…' : '彻底重置会话'}
+                  </Button>
+                </>
+              ) : (
+                <Button size='sm' variant='outline' onClick={() => void cancelConnecting()}>
+                  <XCircle className='size-3.5 mr-1 text-destructive' />
+                  取消准备
+                </Button>
+              )}
+              <Link
+                to='/sessions/$targetId/$accountId'
+                params={{ targetId: targetId!, accountId: targetAccountId! }}
+                className='text-small font-medium text-link underline'
+              >
+                查看会话详情
+              </Link>
+            </div>
+          </div>
         ) : !runId || !run || isFinished || sessionQuery.isFetched ? (
           <div className='flex flex-col items-center justify-center p-8 text-center'>
             <div className='mb-3 flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground'>
-              <Monitor className='size-6' />
+               <Monitor className='size-6' />
             </div>
             <h3 className='text-body font-medium'>{disconnected.title}</h3>
             <p className='mt-1 max-w-sm text-small text-muted-foreground'>{disconnected.body}</p>
             {canControlSession && targetId && targetAccountId ? (
               <div className='mt-4 flex flex-wrap items-center justify-center gap-2'>
-                <Button disabled={connecting} onClick={() => void connectSession()}>
+                <Button disabled={connecting || abandoning} onClick={() => void connectSession()}>
                   <Play />
-                  {connecting ? '连接中…' : session?.lastAuthError ? '再试一次' : '连接受管会话'}
+                  {connecting
+                    ? '准备中…'
+                    : currentAction.kind === 'PREPARE'
+                      ? session?.lastAuthError
+                        ? '再试一次'
+                        : '连接受管会话'
+                      : currentAction.label}
                 </Button>
                 <Link
                   to='/sessions/$targetId/$accountId'

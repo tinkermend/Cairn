@@ -1,12 +1,9 @@
 import {
   FormControl,
-  FormDescription,
   FormField,
   FormItem,
-  FormLabel,
   FormMessage,
 } from '@/components/ui/form'
-import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -15,96 +12,65 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { CAPTURE_MODE_LABELS } from './labels'
+import {
+  FieldGrid,
+  NumberSetting,
+  SettingLabel,
+  SettingSection,
+} from './setting-layout'
 
 export function EvidenceFields({ canWrite }: { canWrite: boolean }) {
   return (
-    <div className='grid gap-4 md:grid-cols-2'>
-      <CaptureField
-        name='evidence.screenshot'
-        label='截图采集'
-        canWrite={canWrite}
-      />
-      <VideoCaptureField canWrite={canWrite} />
-      <CaptureField
-        name='evidence.trace'
-        label='Trace 采集'
-        canWrite={canWrite}
-      />
-      <FormField
-        name='evidence.retainDays.video'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>录像保留（天）</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>录像比截图重，出厂 14 天。到期后步骤截图仍在。</FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='evidence.retainDays.screenshot'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>截图保留（天）</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='evidence.retainDays.trace'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>一般 Trace 保留（天）</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='evidence.retainDays.debugTrace'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>调试 Trace 保留（天）</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              Trace 选「始终」时使用。始终不等于永久保存。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <p className='text-label text-muted-foreground md:col-span-2'>
-        必要证据由代码约束，不能在这里删掉。
-      </p>
+    <div className='space-y-6'>
+      <SettingSection title='采集'>
+        <FieldGrid>
+          <CaptureField
+            name='evidence.screenshot'
+            label='截图采集'
+            canWrite={canWrite}
+          />
+          <VideoCaptureField canWrite={canWrite} />
+          <CaptureField
+            name='evidence.trace'
+            label='Trace 采集'
+            canWrite={canWrite}
+            help='调试轨迹，用于当场排错，不是业务结果。'
+          />
+        </FieldGrid>
+      </SettingSection>
+      <SettingSection
+        title='保留'
+        hint='平台要求必须留下的证据，不能在这里关掉。'
+      >
+        <FieldGrid>
+          <NumberSetting
+            name='evidence.retainDays.video'
+            label='录像保留'
+            unit='天'
+            canWrite={canWrite}
+            help='录像占用比截图大。到期后，步骤截图仍然保留。'
+          />
+          <NumberSetting
+            name='evidence.retainDays.screenshot'
+            label='截图保留'
+            unit='天'
+            canWrite={canWrite}
+          />
+          <NumberSetting
+            name='evidence.retainDays.trace'
+            label='一般 Trace 保留'
+            unit='天'
+            canWrite={canWrite}
+          />
+          <NumberSetting
+            name='evidence.retainDays.debugTrace'
+            label='调试 Trace 保留'
+            unit='天'
+            canWrite={canWrite}
+            help='调试轨迹。采集方式选「始终」时使用这段时间，方便当场排错。始终保留也不等于永不删除。'
+          />
+        </FieldGrid>
+      </SettingSection>
     </div>
   )
 }
@@ -115,7 +81,10 @@ function VideoCaptureField({ canWrite }: { canWrite: boolean }) {
       name='evidence.video'
       render={({ field }) => (
         <FormItem>
-          <FormLabel>录像采集</FormLabel>
+          <SettingLabel
+            label='录像采集'
+            help='一次运行保留一条录像，成功和失败都留。'
+          />
           <Select
             disabled={!canWrite}
             value={field.value ?? ''}
@@ -134,7 +103,6 @@ function VideoCaptureField({ canWrite }: { canWrite: boolean }) {
               ))}
             </SelectContent>
           </Select>
-          <FormDescription>整次 Run 一条录像。成功失败都留。</FormDescription>
           <FormMessage />
         </FormItem>
       )}
@@ -146,17 +114,19 @@ function CaptureField({
   name,
   label,
   canWrite,
+  help,
 }: {
   name: 'evidence.screenshot' | 'evidence.trace'
   label: string
   canWrite: boolean
+  help?: string
 }) {
   return (
     <FormField
       name={name}
       render={({ field }) => (
         <FormItem>
-          <FormLabel>{label}</FormLabel>
+          <SettingLabel label={label} help={help} />
           <Select
             disabled={!canWrite}
             value={field.value ?? ''}

@@ -1,0 +1,202 @@
+/* 集合摘要的唯一外观实现；正式 React 组件与设计样本共用。 */
+.collection-summary-region {
+  container: collection-summary / inline-size;
+}
+
+.collection-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+}
+
+.collection-summary-card {
+  position: relative;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--summary-card-border);
+  border-radius: var(--summary-card-radius);
+  background: var(--summary-card-background);
+  box-shadow: var(--summary-card-shadow);
+  text-align: start;
+}
+
+.collection-summary-label {
+  min-height: 20px;
+  margin: 0;
+  padding-inline-end: 48px;
+  color: var(--summary-label-foreground);
+  font-size: var(--font-size-small);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-small);
+  overflow-wrap: anywhere;
+}
+
+.collection-summary-icon {
+  position: absolute;
+  top: 18px;
+  inset-inline-end: 18px;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--summary-icon-border);
+  border-radius: 12px;
+  background: var(--summary-icon-background);
+  box-shadow: var(--summary-icon-shadow);
+  color: var(--summary-icon-foreground);
+  transform: rotate(-7deg);
+}
+
+.collection-summary-icon::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border: 1px solid var(--summary-icon-rim);
+  border-radius: 10px;
+  background: var(--summary-icon-layer);
+  transform: translate(4px, 4px);
+  content: '';
+  pointer-events: none;
+}
+
+.collection-summary-icon > svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.75;
+  transform: rotate(7deg);
+  /* 调用方已有的成功、警告等语义色仍保留。 */
+}
+
+.collection-summary-value {
+  margin: 8px 0 0;
+  color: var(--summary-value-foreground);
+  font-size: var(--summary-value-size);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--summary-value-line-height);
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.collection-summary-description {
+  margin: 12px 0 0;
+  color: var(--summary-description-foreground);
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-label);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+button.collection-summary-card {
+  width: 100%;
+  font-family: inherit;
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+button.collection-summary-card:hover {
+  border-color: var(--summary-card-hover-border);
+}
+
+button.collection-summary-card[aria-pressed='true'] {
+  border-color: var(--selection-border);
+  box-shadow:
+    var(--summary-card-shadow),
+    inset 0 0 0 1px var(--selection-border);
+}
+
+button.collection-summary-card:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+/* 按真正可用的内容宽度重排；侧栏展开、收起或窗口缩放都沿用同一规则。 */
+@container collection-summary (min-width: 740px) {
+  .collection-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container collection-summary (max-width: 859px) {
+  .collection-summary-card {
+    padding: 16px;
+  }
+
+  .collection-summary-label {
+    padding-inline-end: 40px;
+  }
+
+  .collection-summary-icon {
+    top: 16px;
+    inset-inline-end: 16px;
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@container collection-summary (min-width: 1440px) {
+  .collection-summary-card {
+    padding: 20px;
+  }
+
+  .collection-summary-icon {
+    top: 20px;
+    inset-inline-end: 20px;
+    width: 40px;
+    height: 40px;
+  }
+
+  .collection-summary-icon > svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .collection-summary-value {
+    font-size: var(--summary-value-wide-size);
+    line-height: var(--summary-value-wide-line-height);
+  }
+}
+
+@media (max-width: 479px) {
+  .collection-summary {
+    gap: 12px;
+  }
+
+  .collection-summary-card {
+    padding: 14px;
+  }
+
+  .collection-summary-label {
+    padding-inline-end: 38px;
+  }
+
+  .collection-summary-icon {
+    top: 14px;
+    inset-inline-end: 14px;
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+  }
+
+  .collection-summary-icon::before {
+    border-radius: 8px;
+    transform: translate(3px, 3px);
+  }
+
+  .collection-summary-icon > svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .collection-summary-value {
+    font-size: var(--font-size-stat);
+    line-height: var(--line-height-stat);
+  }
+
+  .collection-summary-description {
+    margin-top: 8px;
+  }
+}

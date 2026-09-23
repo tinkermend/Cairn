@@ -588,6 +588,18 @@ describe('Scenario Studio', () => {
     ).toEqual(['fill', 'navigate'])
   })
 
+  it('复制步骤会克隆当前步骤并插入到后方', async () => {
+    mocks.fetchScenario.mockResolvedValue(detail())
+    const { screen } = await renderPage()
+    await screen.getByRole('button', { name: /打开页面/ }).click()
+    await screen.getByRole('button', { name: '复制步骤' }).click()
+    await screen.getByRole('button', { name: '保存草稿' }).click()
+    await vi.waitFor(() => expect(mocks.saveScenarioDraft).toHaveBeenCalled())
+    const steps = mocks.saveScenarioDraft.mock.calls[0]![1].document.steps
+    expect(steps.length).toBe(2)
+    expect(steps[1].name).toBe('打开页面 (副本)')
+  })
+
   it('选中步骤后添加会插入其后，连续提取默认输出不重名', async () => {
     const { screen } = await renderPage()
     await screen.getByRole('button', { name: '添加步骤' }).click()

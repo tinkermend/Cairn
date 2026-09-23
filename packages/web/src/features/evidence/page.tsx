@@ -1346,7 +1346,7 @@ function RetentionPanel({
               新运行的默认采集与留存策略在
               <Link
                 to='/platform-config'
-                search={{ tab: undefined }}
+                search={{ tab: undefined, action: undefined, section: undefined }}
                 className='ms-1 text-link'
               >
                 平台配置

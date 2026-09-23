@@ -1,346 +1,201 @@
+import { FormField } from '@/components/ui/form'
 import {
-  FormControl,
-  FormDescription,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
-import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
+  FieldGrid,
+  NumberSetting,
+  SettingSection,
+  SwitchGrid,
+  SwitchRow,
+} from './setting-layout'
 
 export function ExecutionFields({ canWrite }: { canWrite: boolean }) {
   return (
-    <div className='grid gap-4 md:grid-cols-2'>
-      <FormField
-        name='mapScheduledRefreshEnabled'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
-            <div>
-              <FormLabel>开放地图自动复查</FormLabel>
-              <FormDescription>
-                出厂关闭。打开后 Worker
-                才会物化到期窗口；已保存的计划不会补跑错过的窗口。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
+    <div className='space-y-6'>
+      <SettingSection
+        title='调度'
+        hint='关闭时已保存的计划仍可查看，不会自动触发。'
+      >
+        <SwitchGrid>
+          <FormField
+            name='mapScheduledRefreshEnabled'
+            render={({ field }) => (
+              <SwitchRow
+                label='开放知识地图定时采集'
+                help='按计划访问已登记的系统，采集最新页面情况。错过的时间不会补跑。'
                 checked={field.value}
                 disabled={!canWrite}
                 onCheckedChange={field.onChange}
               />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='scenarioScheduledRunEnabled'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
-            <div>
-              <FormLabel>开放场景定时执行</FormLabel>
-              <FormDescription>
-                出厂关闭。与地图复查独立；关闭时已保存的场景计划可以查看和手动校验配置，但不会自动触发。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
+            )}
+          />
+          <FormField
+            name='scenarioScheduledRunEnabled'
+            render={({ field }) => (
+              <SwitchRow
+                label='开放场景定时执行'
+                help='与知识地图采集互不影响。关闭后，已保存的计划仍可查看和检查，但不会自动执行。'
                 checked={field.value}
                 disabled={!canWrite}
                 onCheckedChange={field.onChange}
               />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='suiteScheduledRunEnabled'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
-            <div>
-              <FormLabel>开放场景集定时执行</FormLabel>
-              <FormDescription>
-                出厂关闭。一次触发只创建一个集合运行，子运行仍遵守集合失败策略和截止时间。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
+            )}
+          />
+          <FormField
+            name='suiteScheduledRunEnabled'
+            render={({ field }) => (
+              <SwitchRow
+                label='开放场景集定时执行'
+                help='到点只创建一次集合运行。其中的场景仍遵守该集合的失败处理和截止时间。'
                 checked={field.value}
                 disabled={!canWrite}
                 onCheckedChange={field.onChange}
               />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='knowledgeAnalysisEnabled'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
-            <div>
-              <FormLabel>开放知识分析</FormLabel>
-              <FormDescription>
-                出厂关闭。只沉淀候选知识，不会发布术语或改已发布地图；关闭时不影响确定性地图投影。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
+            )}
+          />
+        </SwitchGrid>
+      </SettingSection>
+
+      <SettingSection
+        title='能力开关'
+        hint='打开后仍受场景或目标上的单独选择约束。'
+      >
+        <SwitchGrid>
+          <FormField
+            name='knowledgeAnalysisEnabled'
+            render={({ field }) => (
+              <SwitchRow
+                label='开放知识分析'
+                help='只生成待确认的知识，不会直接发布术语，也不会修改已经发布的地图。'
                 checked={field.value}
                 disabled={!canWrite}
                 onCheckedChange={field.onChange}
               />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='moduleFallback.enabled'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
-            <div>
-              <FormLabel>开放动作模块冻结回退</FormLabel>
-              <FormDescription>
-                出厂关闭。未完成独立评价前不要对业务打开；打开后也只能用于只读模块的冻结候选。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
+            )}
+          />
+          <FormField
+            name='moduleFallback.enabled'
+            render={({ field }) => (
+              <SwitchRow
+                label='开放动作模块冻结回退'
+                help='只作为只读动作的备用方案。'
+                warning='未经单独评估，不要在正式业务中打开。'
                 checked={field.value}
                 disabled={!canWrite}
                 onCheckedChange={field.onChange}
               />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='runtimeInvariants.allowEachStepProbe'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
-            <div>
-              <FormLabel>允许每步探测错误弹窗</FormLabel>
-              <FormDescription>
-                出厂关闭。打开后仍须在场景里显式选择「每一步后探测」；已开始的运行以快照为准。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
+            )}
+          />
+          <FormField
+            name='runtimeInvariants.allowEachStepProbe'
+            render={({ field }) => (
+              <SwitchRow
+                label='允许每步探测错误弹窗'
+                help='已经开始的运行仍按开始时的配置执行。'
+                warning='还须在场景里选择「每一步后探测」才会生效。'
                 checked={field.value}
                 disabled={!canWrite}
                 onCheckedChange={field.onChange}
               />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='mapExplorationEnabled'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
-            <div>
-              <FormLabel>开放有界地图探索</FormLabel>
-              <FormDescription>
-                出厂关闭。打开后仍需每个目标单独开启探索政策，且不会自动升可信。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
+            )}
+          />
+          <FormField
+            name='mapExplorationEnabled'
+            render={({ field }) => (
+              <SwitchRow
+                label='开放有界地图探索'
+                help='每个目标系统仍要单独允许探索，探索结果不会自动标为可信。'
                 checked={field.value}
                 disabled={!canWrite}
                 onCheckedChange={field.onChange}
               />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='fixtureStepsEnabled'
-        render={({ field }) => (
-          <FormItem className='flex items-center justify-between gap-4 rounded-md border border-border px-3 py-2 md:col-span-2'>
-            <div>
-              <FormLabel>开放调试夹具步骤</FormLabel>
-              <FormDescription>
-                出厂关闭。echo / delay / fail 不访问目标系统，跑出来的成败不构成业务事实，会和真实运行一起进总览口径。仅在排查编排本身时打开。
-              </FormDescription>
-            </div>
-            <FormControl>
-              <Switch
+            )}
+          />
+          <FormField
+            name='fixtureStepsEnabled'
+            render={({ field }) => (
+              <SwitchRow
+                label='开放调试夹具步骤'
+                help='这些步骤不访问目标系统，只用来检查编排能否跑通。成败仍会计入运行总览。'
+                warning='成败会计入运行总览，只在排查编排时打开。'
                 checked={field.value}
                 disabled={!canWrite}
                 onCheckedChange={field.onChange}
               />
-            </FormControl>
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='execution.defaultTimeoutMs'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>默认步骤超时（ms）</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              未写超时的步骤继承此值。单次运行或步骤仍可覆盖。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormItem>
-        <FormLabel>默认自动重试</FormLabel>
-        <p className='text-body'>0，不可改</p>
-        <FormDescription>
-          平台默认重试保持关闭。AI Action 即使步骤未写重试也不会自动重试。
-        </FormDescription>
-      </FormItem>
-      <FormField
-        name='moduleResolver.maxCandidates'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>模块映射候选上限</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              编写期按说法查找时最多返回的候选数。立即生效。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='moduleResolver.aiCandidateLimit'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>模块映射 AI 候选上限</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              预留给 AI 层；当前未开放，不调用模型。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='moduleResolver.logRetentionDays'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>模块映射记录保留天数</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              过期记录按创建时间清理，不影响已写入草稿的调用。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='moduleQuality.windowDays'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>模块质量窗口（天）</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              只允许 7 或 30。立即生效，不改变执行。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='moduleQuality.minSamples'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>模块质量最少样本</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              少于此数只显示样本不足，不给百分比。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='moduleQuality.degradedVerifiedRateBelow'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>模块降级通过率阈值</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                step='0.01'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              正式运行通过率低于此值标为降级，只作提示。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-      <FormField
-        name='moduleQuality.recentFailureStreak'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>模块连续失败次数</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                disabled={!canWrite}
-                value={field.value}
-                onChange={(event) => field.onChange(Number(event.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              最近连续这么多次模块归因失败也标降级。
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
+            )}
+          />
+        </SwitchGrid>
+      </SettingSection>
+
+      <SettingSection title='步骤默认'>
+        <FieldGrid>
+          <NumberSetting
+            name='execution.defaultTimeoutMs'
+            label='默认步骤超时'
+            unit='ms'
+            canWrite={canWrite}
+            help='没有单独写超时的步骤使用这里的值，单次运行或单个步骤仍可另行指定。平台不会自动重试。AI 请求的超时必须短于该步骤的超时。'
+          />
+        </FieldGrid>
+      </SettingSection>
+
+      <SettingSection
+        title='模块映射'
+        hint='只影响编写场景时的查找，不改变正在执行的步骤。'
+      >
+        <FieldGrid>
+          <NumberSetting
+            name='moduleResolver.maxCandidates'
+            label='模块映射候选上限'
+            canWrite={canWrite}
+            help='编写场景时，按步骤描述匹配动作，最多返回这么多条。保存后立即生效。'
+          />
+          <NumberSetting
+            name='moduleResolver.aiCandidateLimit'
+            label='模块映射 AI 候选上限'
+            mark='未开放'
+            canWrite={canWrite}
+            disabled
+            help='预留项，当前不会调用模型。'
+          />
+          <NumberSetting
+            name='moduleResolver.logRetentionDays'
+            label='模块映射记录保留天数'
+            unit='天'
+            canWrite={canWrite}
+            help='过期记录按创建时间清理，已经写进草稿的调用不受影响。'
+          />
+        </FieldGrid>
+      </SettingSection>
+
+      <SettingSection title='模块质量' hint='只作提示，不改变执行。'>
+        <FieldGrid>
+          <NumberSetting
+            name='moduleQuality.windowDays'
+            label='模块质量窗口'
+            unit='天'
+            canWrite={canWrite}
+            help='只能填 7 或 30。保存后立即生效，不改变步骤怎么执行。'
+          />
+          <NumberSetting
+            name='moduleQuality.minSamples'
+            label='模块质量最少样本'
+            canWrite={canWrite}
+            help='样本少于此数时，只提示样本不足，不显示百分比。'
+          />
+          <NumberSetting
+            name='moduleQuality.degradedVerifiedRateBelow'
+            label='模块降级通过率阈值'
+            step='0.01'
+            canWrite={canWrite}
+            help='正式运行的通过率低于此值时标为降级，只作提示，不拦截执行。'
+          />
+          <NumberSetting
+            name='moduleQuality.recentFailureStreak'
+            label='模块连续失败次数'
+            canWrite={canWrite}
+            help='最近连续失败达到这个次数时，也会标为降级。'
+          />
+        </FieldGrid>
+      </SettingSection>
     </div>
   )
 }

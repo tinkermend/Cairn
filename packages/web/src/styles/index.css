@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import './theme.css';
+@import './collection-summary.css';
 
 /*
  * Inter 自托管（拉丁子集，可变字重 400–700，SIL OFL 1.1）。

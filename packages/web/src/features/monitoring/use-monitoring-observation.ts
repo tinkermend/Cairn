@@ -4,13 +4,20 @@ import { DEFAULT_MONITOR_SSE_INTERVAL_MS } from '@cairn/shared'
 import { ApiRequestError } from '@/lib/api-client'
 import { fetchMonitoringOverview, subscribeMonitoringStream } from '@/lib/monitoring-api'
 import { useAuthStore } from '@/stores/auth-store'
-import { readAutoRefreshEnabled, writeAutoRefreshEnabled } from './labels'
+import {
+  readAutoRefreshEnabled,
+  readAutoRefreshInterval,
+  writeAutoRefreshEnabled,
+  writeAutoRefreshInterval,
+  type RefreshIntervalSeconds,
+} from './labels'
 
 export type MonitoringConnection = 'live' | 'recovering' | 'forbidden' | 'idle'
 
 export function useMonitoringObservation() {
   const queryClient = useQueryClient()
   const [autoRefresh, setAutoRefreshState] = useState(readAutoRefreshEnabled)
+  const [refreshInterval, setRefreshIntervalState] = useState<RefreshIntervalSeconds>(readAutoRefreshInterval)
   const [connection, setConnection] = useState<MonitoringConnection>('idle')
   const [intervalMs, setPushInterval] = useState(DEFAULT_MONITOR_SSE_INTERVAL_MS)
   const [visible, setVisible] = useState(() =>
@@ -20,6 +27,7 @@ export function useMonitoringObservation() {
   const dirty = useRef(false)
   const pumping = useRef(false)
   const wasHidden = useRef(false)
+  const lastSnapshotAt = useRef(0)
 
   const overview = useQuery({
     queryKey: ['monitoring', 'overview'],
@@ -39,6 +47,7 @@ export function useMonitoringObservation() {
           dirty.current = false
           await queryClient.invalidateQueries({ queryKey: ['monitoring', 'overview'] })
           await queryClient.invalidateQueries({ queryKey: ['monitoring', 'alerts'] })
+          await queryClient.invalidateQueries({ queryKey: ['monitoring', 'series'] })
         }
       } finally {
         pumping.current = false
@@ -55,6 +64,12 @@ export function useMonitoringObservation() {
   const setAutoRefresh = (enabled: boolean) => {
     setAutoRefreshState(enabled)
     writeAutoRefreshEnabled(enabled)
+  }
+
+  const setRefreshInterval = (sec: RefreshIntervalSeconds) => {
+    setRefreshIntervalState(sec)
+    writeAutoRefreshInterval(sec)
+    lastSnapshotAt.current = 0
   }
 
   useEffect(() => {
@@ -79,12 +94,16 @@ export function useMonitoringObservation() {
         try {
           setConnection((current) => (current === 'forbidden' ? current : 'recovering'))
           await subscribeMonitoringStream({
-            intervalMs: DEFAULT_MONITOR_SSE_INTERVAL_MS,
+            intervalMs: Math.min(refreshInterval * 1000, 60_000),
             lastEventId: lastEventId.current,
             signal: controller.signal,
             handlers: {
               onSnapshot: () => {
-                scheduleRefresh()
+                const now = Date.now()
+                if (lastSnapshotAt.current === 0 || now - lastSnapshotAt.current >= refreshInterval * 1000 - 1500) {
+                  lastSnapshotAt.current = now
+                  scheduleRefresh()
+                }
               },
               onControl: (control) => {
                 if (control.kind === 'ready') {
@@ -134,7 +153,7 @@ export function useMonitoringObservation() {
       stopped = true
       controller.abort()
     }
-  }, [autoRefresh, visible, overview.isSuccess])
+  }, [autoRefresh, visible, overview.isSuccess, refreshInterval])
 
   useEffect(() => {
     if (!visible) {
@@ -152,6 +171,8 @@ export function useMonitoringObservation() {
     connection,
     autoRefresh,
     setAutoRefresh,
+    refreshInterval,
+    setRefreshInterval,
     intervalMs,
     visible,
     refresh: () => {

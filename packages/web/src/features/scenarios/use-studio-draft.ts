@@ -10,6 +10,7 @@ import {
   type ScenarioAuthoringNode,
   type ScenarioDocument,
   type ScenarioInputDecl,
+  type ScenarioOutputDecl,
   type Step,
   type TargetDescriptor,
 } from '@cairn/shared'
@@ -130,7 +131,7 @@ export function useStudioDraft(
           steps: stepNodes,
         },
         {
-          mode: 'release',
+          mode: 'save',
           target: compileTarget,
           executableTypes,
           resolution: compileResolution,
@@ -139,7 +140,7 @@ export function useStudioDraft(
       )
     }
     return compileScenarioDocument(candidate, {
-      mode: 'release',
+      mode: 'save',
       target: compileTarget,
       executableTypes,
       resolution: compileResolution,
@@ -292,6 +293,17 @@ export function useStudioDraft(
     [candidate],
   )
 
+  const updateOutputs = useCallback(
+    (outputs: ScenarioOutputDecl | undefined) => {
+      if (!candidate) return
+      setCandidate({
+        ...candidate,
+        outputs,
+      })
+    },
+    [candidate],
+  )
+
   const undoStructure = useCallback(() => {
     if (!undo) return
     setCandidate(undo.document)
@@ -345,6 +357,7 @@ export function useStudioDraft(
     nodes,
     selectedNode,
     displayInputs,
+    displayOutputs: candidate?.outputs,
     selected,
     selectedIndex,
     selectedId,
@@ -365,6 +378,7 @@ export function useStudioDraft(
     updateNode,
     insertNode,
     updateInputs,
+    updateOutputs,
     undoStructure,
     acceptServer,
     focusFirstDraft,

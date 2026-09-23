@@ -135,14 +135,17 @@ export function InsertModuleDialog({
     setBindings({})
   }, [open])
 
+  const [catalogPage, setCatalogPage] = useState(1)
+  const catalogPageSize = 100
   const catalogQuery = search.trim()
   const modulesQuery = useQuery({
-    queryKey: ['action-modules', { targetId, q: catalogQuery }],
+    queryKey: ['action-modules', { targetId, q: catalogQuery, page: catalogPage, pageSize: catalogPageSize }],
     queryFn: () =>
       fetchActionModules({
         targetId,
         q: catalogQuery || undefined,
-        pageSize: 100,
+        page: catalogPage,
+        pageSize: catalogPageSize,
       }),
     enabled: open,
   })
@@ -493,7 +496,10 @@ export function InsertModuleDialog({
               <Input
                 placeholder='按名称、key 或别名搜索动作模块…'
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value)
+                  setCatalogPage(1)
+                }}
                 className='pl-9'
               />
             </div>
@@ -504,41 +510,68 @@ export function InsertModuleDialog({
                 ) : filteredModules.length === 0 ? (
                   <p className='text-small text-muted-foreground'>未找到匹配的动作模块。</p>
                 ) : (
-                  filteredModules.map((m) => {
-                    const isSelected = m.id === selectedModuleId
-                    return (
-                      <button
-                        key={m.id}
-                        type='button'
-                        onClick={() => {
-                          setSelectedModuleId(m.id)
-                          setSelectedVersionId(null)
-                          setConfirmDeprecated(false)
-                        }}
-                        className={`w-full rounded-md border p-3 text-left transition-colors ${
-                          isSelected
-                            ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                            : 'border-border-card hover:bg-muted/50'
-                        }`}
-                      >
-                        <div className='flex items-center justify-between gap-1'>
-                          <span className='font-medium text-body'>{m.name}</span>
-                          {m.publicationStatus === 'deprecated' ? (
-                            <Badge variant='outline' className='text-label text-muted-foreground'>
-                              已弃用
-                            </Badge>
-                          ) : null}
-                          <ModuleHealthBadge health={m.health} />
+                  <>
+                    {filteredModules.map((m) => {
+                      const isSelected = m.id === selectedModuleId
+                      return (
+                        <button
+                          key={m.id}
+                          type='button'
+                          onClick={() => {
+                            setSelectedModuleId(m.id)
+                            setSelectedVersionId(null)
+                            setConfirmDeprecated(false)
+                          }}
+                          className={`w-full rounded-md border p-3 text-left transition-colors ${
+                            isSelected
+                              ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                              : 'border-border-card hover:bg-muted/50'
+                          }`}
+                        >
+                          <div className='flex items-center justify-between gap-1'>
+                            <span className='font-medium text-body'>{m.name}</span>
+                            {m.publicationStatus === 'deprecated' ? (
+                              <Badge variant='outline' className='text-label text-muted-foreground'>
+                                已弃用
+                              </Badge>
+                            ) : null}
+                            <ModuleHealthBadge health={m.health} />
+                          </div>
+                          <p className='text-label text-muted-foreground'>{m.key}</p>
+                          {m.description && (
+                            <p className='mt-1 line-clamp-2 text-label text-muted-foreground'>
+                              {m.description}
+                            </p>
+                          )}
+                        </button>
+                      )
+                    })}
+                    {modulesQuery.data?.total ? (
+                      <div className='flex items-center justify-between pt-2 text-label text-muted-foreground'>
+                        <span>共 {modulesQuery.data.total} 个模块</span>
+                        <div className='flex gap-1'>
+                          <Button
+                            type='button'
+                            variant='ghost'
+                            size='sm'
+                            disabled={catalogPage <= 1}
+                            onClick={() => setCatalogPage((p) => Math.max(1, p - 1))}
+                          >
+                            上一页
+                          </Button>
+                          <Button
+                            type='button'
+                            variant='ghost'
+                            size='sm'
+                            disabled={catalogPage >= Math.ceil(modulesQuery.data.total / catalogPageSize)}
+                            onClick={() => setCatalogPage((p) => p + 1)}
+                          >
+                            下一页
+                          </Button>
                         </div>
-                        <p className='text-label text-muted-foreground'>{m.key}</p>
-                        {m.description && (
-                          <p className='mt-1 line-clamp-2 text-label text-muted-foreground'>
-                            {m.description}
-                          </p>
-                        )}
-                      </button>
-                    )
-                  })
+                      </div>
+                    ) : null}
+                  </>
                 )}
               </div>
               <div className='rounded-md border border-border-card bg-muted/20 p-4'>

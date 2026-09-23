@@ -6,6 +6,8 @@ import { PlatformConfigPage } from '@/features/platform-config'
 export const Route = createFileRoute('/_authenticated/platform-config/')({
   validateSearch: (search: Record<string, unknown>) => ({
     tab: typeof search.tab === 'string' ? search.tab : undefined,
+    action: typeof search.action === 'string' ? search.action : undefined,
+    section: typeof search.section === 'string' ? search.section : undefined,
   }),
   beforeLoad: ({ search }) => {
     if (search.tab === 'alerting') throw redirect({ to: '/notifications', search: { tab: 'alerts' } })
