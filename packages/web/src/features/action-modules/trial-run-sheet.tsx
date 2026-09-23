@@ -19,6 +19,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { useRunObservation, connectionLabel } from '@/features/runs/use-run-observation'
 import { fetchRun } from '@/lib/runs-api'
 
 export interface TrialRunSheetProps {
@@ -26,6 +27,11 @@ export interface TrialRunSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   currentInputs?: Record<string, string>
+  moduleRevisionInfo?: {
+    draftRevision?: number | null
+    versionNo?: number | null
+    isDirty?: boolean
+  }
   onSaveAsFixture?: (
     name: string,
     inputs: Record<string, string>,
@@ -43,30 +49,24 @@ export function TrialRunSheet({
   open,
   onOpenChange,
   currentInputs,
+  moduleRevisionInfo,
   onSaveAsFixture,
 }: TrialRunSheetProps) {
   const [fixtureName, setFixtureName] = useState('')
   const [savingFixture, setSavingFixture] = useState(false)
 
-  const runQuery = useQuery({
-    queryKey: ['trial-run-observation', runId],
+  const { run: observedRun, connection, query: runQuery } = useRunObservation(
+    runId ?? '',
+    open && Boolean(runId),
+  )
+
+  const fallbackQuery = useQuery({
+    queryKey: ['trial-run-fetch', runId],
     queryFn: () => (runId ? fetchRun(runId) : null),
-    enabled: open && Boolean(runId),
-    refetchInterval: (query) => {
-      const status = query.state.data?.status
-      if (
-        status === 'SUCCEEDED' ||
-        status === 'FAILED' ||
-        status === 'CANCELLED' ||
-        status === 'NEEDS_REVIEW'
-      ) {
-        return false
-      }
-      return 1500
-    },
+    enabled: open && Boolean(runId) && !observedRun,
   })
 
-  const run = runQuery.data
+  const run = observedRun ?? fallbackQuery.data
   const isTerminal =
     run?.status === 'SUCCEEDED' ||
     run?.status === 'FAILED' ||
@@ -125,7 +125,23 @@ export function TrialRunSheet({
           <SheetDescription id='trial-sheet-description' className='text-label text-muted-foreground'>
             {runId ? `执行实例: ${runId}` : '暂无执行实例'}
             {run?.startedAt && ` · 耗时 ${durationText}`}
+            {connection && ` · ${connectionLabel(connection)}`}
           </SheetDescription>
+          {moduleRevisionInfo && (
+            <div className='mt-2 flex flex-wrap items-center gap-2 text-xs'>
+              <Badge variant='outline' className='font-mono'>
+                {moduleRevisionInfo.versionNo
+                  ? `本次执行已发布 v${moduleRevisionInfo.versionNo}`
+                  : `本次执行已保存草稿 r${moduleRevisionInfo.draftRevision ?? 0}`}
+              </Badge>
+              {moduleRevisionInfo.isDirty && (
+                <span className='flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400'>
+                  <AlertTriangle className='size-3' />
+                  编辑器有未保存修改，当前执行基于已保存版本
+                </span>
+              )}
+            </div>
+          )}
         </SheetHeader>
 
         <div className='flex-1 space-y-4 overflow-y-auto p-4'>

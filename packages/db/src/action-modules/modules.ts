@@ -40,6 +40,7 @@ import {
   computeImplementationDigest,
   computeSingleImplementationDigest,
 } from './digest.js'
+import { assertReleaseGateSatisfied } from './cases.js'
 
 function iso(value: Date | string | null | undefined): string | null {
   if (!value) return null
@@ -455,6 +456,7 @@ export async function publishActionModule(
       }
 
       await assertImplementationsVerified(tx as unknown as Db, moduleId, content)
+      await assertReleaseGateSatisfied(tx as unknown as Db, moduleId, content, request.skipReleaseGate)
 
       // 计算摘要
       const contractDigest = computeContractDigest(content.contract)

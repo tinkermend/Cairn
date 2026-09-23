@@ -49,6 +49,7 @@ export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
   map_propose: '探索提名',
   map_guarded_action: '探索守卫',
   map_verify: '探索核验',
+  verify_context: '核验上下文',
 }
 
 export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
@@ -72,6 +73,7 @@ export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
   map_propose: '系统步骤：零 AI 提名下一跳',
   map_guarded_action: '系统步骤：按守卫决定是否导航',
   map_verify: '系统步骤：核验探索结果且不升可信',
+  verify_context: '系统步骤：核验执行上下文',
 }
 
 export const DEFAULT_EFFECT: Record<DeterministicStudioType, EffectType> = {
@@ -189,6 +191,9 @@ export function createBlankStep(
   if (isMapExploreStepType(type)) {
     throw new Error('探索步骤不进入 Studio 步骤库')
   }
+  if (type === 'verify_context') {
+    throw new Error('系统步骤不进入 Studio 步骤库')
+  }
   const effectType = DEFAULT_EFFECT[type]
   switch (type) {
     case 'navigate':
@@ -244,7 +249,7 @@ export function createBlankStep(
         name,
         type,
         effectType,
-        input: { target: defaultTarget('下拉框'), by: 'value', value: '' },
+        input: { target: defaultTarget('下拉框'), by: 'label', value: '' },
       }
     case 'keyboard':
       return { id, name, type, effectType, input: { keys: ['Enter'] } }

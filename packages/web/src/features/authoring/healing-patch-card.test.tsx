@@ -105,4 +105,116 @@ describe('SH-3: HealingPatchCard Component', () => {
     await upgradeBtn.click()
     expect(onUpgrade).toHaveBeenCalledWith('点击登录按钮')
   })
+
+  it('B4: 正确渲染 RepairCandidate 假说、安全护栏和验证范围，且支持采纳', async () => {
+    const onAdopt = vi.fn()
+    const mockCandidate = {
+      id: 'rep-uuid-1',
+      candidateId: 'rep_123456',
+      runId: '11111111-1111-4111-8111-111111111111',
+      sourceAttemptId: '22222222-2222-4222-8222-222222222222',
+      patchTargetRef: {
+        kind: 'scenario' as const,
+        scenarioId: '33333333-3333-4333-8333-333333333333',
+        stepId: 'step-1',
+        sourceDefinitionDigest: 'a'.repeat(64),
+      },
+      patch: {
+        kind: 'ADD_CANDIDATE' as const,
+        suggestedCandidate: { by: 'role' as const, value: 'button', name: '登录' },
+      },
+      hypothesis: '登录按钮更新了角色文本',
+      digestManifest: {
+        sourceDefinitionDigest: 'a'.repeat(64),
+        postPatchExecutionDigest: 'b'.repeat(64),
+        originalContractDigest: 'c'.repeat(64),
+        algorithmVersion: 'v1',
+      },
+      guardResults: {
+        allowedFields: { name: 'allowedFields', status: 'passed' as const, reason: '通过' },
+        unchangedBusinessGoal: { name: 'unchangedBusinessGoal', status: 'passed' as const, reason: '通过' },
+        sideEffectSafety: { name: 'sideEffectSafety', status: 'passed' as const, reason: '通过' },
+        contextIntegrity: { name: 'contextIntegrity', status: 'passed' as const, reason: '通过' },
+        overallPassed: true,
+      },
+      status: 'validated' as const,
+      validationScope: {
+        locatorValid: true,
+        stepPassed: true,
+        outcomePassed: true,
+        crossSampleStable: true,
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+
+    const screen = await render(
+      <HealingPatchCard
+        candidate={mockCandidate}
+        currentRevision={3}
+        onAdopt={onAdopt}
+      />,
+    )
+
+    await expect.element(screen.getByText('受控修复候选 (rep_123456)')).toBeVisible()
+    await expect.element(screen.getByText('验证已通过')).toBeVisible()
+    await expect.element(screen.getByText('静态安全护栏 (Guardrails)')).toBeVisible()
+    await expect.element(screen.getByText('全部通过')).toBeVisible()
+
+    const adoptBtn = screen.getByRole('button', { name: '采纳为草稿 (v3)' })
+    await adoptBtn.click()
+    expect(onAdopt).toHaveBeenCalledWith('rep-uuid-1', 3)
+  })
+
+  it('B4: 安全护栏未通过时阻断采纳操作', async () => {
+    const mockBlockedCandidate = {
+      id: 'rep-uuid-2',
+      candidateId: 'rep_blocked',
+      runId: '11111111-1111-4111-8111-111111111111',
+      sourceAttemptId: '22222222-2222-4222-8222-222222222222',
+      patchTargetRef: {
+        kind: 'scenario' as const,
+        scenarioId: '33333333-3333-4333-8333-333333333333',
+        stepId: 'step-1',
+        sourceDefinitionDigest: 'a'.repeat(64),
+      },
+      patch: {
+        kind: 'UPGRADE_TO_AI_STEP' as const,
+        upgradeSuggestion: { stepType: 'ai_action' as const, prompt: '跳过' },
+      },
+      hypothesis: '尝试降级断言',
+      digestManifest: {
+        sourceDefinitionDigest: 'a'.repeat(64),
+        postPatchExecutionDigest: 'b'.repeat(64),
+        originalContractDigest: 'c'.repeat(64),
+        algorithmVersion: 'v1',
+      },
+      guardResults: {
+        allowedFields: { name: 'allowedFields', status: 'passed' as const, reason: '通过' },
+        unchangedBusinessGoal: { name: 'unchangedBusinessGoal', status: 'rejected' as const, reason: '降低断言' },
+        sideEffectSafety: { name: 'sideEffectSafety', status: 'passed' as const, reason: '通过' },
+        contextIntegrity: { name: 'contextIntegrity', status: 'passed' as const, reason: '通过' },
+        overallPassed: false,
+      },
+      status: 'blocked' as const,
+      validationScope: {
+        locatorValid: false,
+        stepPassed: false,
+        outcomePassed: false,
+        crossSampleStable: false,
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+
+    const screen = await render(
+      <HealingPatchCard
+        candidate={mockBlockedCandidate}
+        currentRevision={3}
+      />,
+    )
+
+    await expect.element(screen.getByText('护栏阻断')).toBeVisible()
+    await expect.element(screen.getByText('安全护栏未通过，禁止采纳')).toBeVisible()
+  })
 })

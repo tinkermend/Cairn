@@ -95,6 +95,7 @@ describe('AM-C: 升级、发布状态、提炼与删除保护', { timeout: 30_00
       expectedRevision,
       confirmedWarnings: warnings,
       actor: { id: accountId },
+      skipReleaseGate: true,
     })
   }
 
@@ -468,5 +469,89 @@ describe('AM-C: 升级、发布状态、提炼与删除保护', { timeout: 30_00
     const expanded = expansion.definition?.steps ?? []
     expect(expanded.map((step) => step.type)).toEqual(expect.arrayContaining(['echo', 'extract', 'assert', 'echo']))
     expect(expanded.some((step) => step.outputKey === 'extracted')).toBe(true)
+  })
+
+  it('AMR-08: 引用列表服务端分页与 SQL 计数，无权查看的场景受保护且不泄露身份', async () => {
+    const { db, account, target } = await setup()
+    const { module: mod, versions } = await publishModule(
+      db,
+      account.id,
+      target.id,
+      'amr.ref.test',
+      echoContent(),
+    )
+    const ver = versions[0]!
+
+    // 创建普通操作员账号 account2，仅赋予 target 的 module 读写权，不赋予 workflow:read
+    const rbac = new api.RbacStore(db, { hash: async (v) => v, verify: async (v, h) => v === h })
+    const modRole = await rbac.createRole(
+      {
+        key: `mod_only_${newId().slice(0, 8)}`,
+        name: '仅模块读写',
+        permissions: ['target:read', 'module:read', 'module:write'],
+      },
+      account,
+    )
+    const account2 = await rbac.createAccount(
+      {
+        email: `amc_op_${newId()}@test.com`,
+        displayName: '操作员 2',
+        password: 'Password123!',
+        roleIds: [modRole.id],
+      },
+      null,
+    )
+    await rbac.assignAccountRoles(
+      account2.id,
+      {
+        roleIds: [modRole.id],
+        targetScopes: [{ roleId: modRole.id, mode: 'selected', targetIds: [target.id] }],
+      },
+      account,
+    )
+
+    // 在 target 下创建 25 个场景引用该模块版本
+    for (let i = 0; i < 25; i++) {
+      const doc: ScenarioAuthoringDocumentV2 = {
+        authoringSchemaVersion: 2,
+        schemaVersion: 1,
+        inputs: [],
+        nodes: [
+          {
+            kind: 'module',
+            invocationId: newId(),
+            moduleId: mod.id,
+            moduleVersionId: ver.id,
+            name: `引用场景 ${i}`,
+            inputBindings: { keyword: { kind: 'literal', value: `test-${i}` } },
+            outputBindings: {},
+          },
+        ],
+      }
+      await userScenario(db, account.id, target.id, `场景 ${i}`, doc)
+    }
+
+    // 1. 分页测试：总数 25，第 1 页 10 条，第 3 页 5 条（管理员视角）
+    const page1 = await api.listModuleReferences(db, mod.id, { page: 1, pageSize: 10 })
+    expect(page1.total).toBe(25)
+    expect(page1.items).toHaveLength(10)
+    expect(page1.page).toBe(1)
+    expect(page1.pageSize).toBe(10)
+
+    const page3 = await api.listModuleReferences(db, mod.id, { page: 3, pageSize: 10 })
+    expect(page3.total).toBe(25)
+    expect(page3.items).toHaveLength(5)
+    expect(page3.page).toBe(3)
+
+    // 2. account2 访问 target 下的引用：有 module:read 但没有 workflow:read，total 为 0 且不暴露场景
+    const pageAccount2 = await api.listModuleReferences(db, mod.id, { page: 1, pageSize: 10 }, { id: account2.id })
+    expect(pageAccount2.total).toBe(0)
+    expect(pageAccount2.items).toHaveLength(0)
+
+    // 3. account2 尝试删除该模块（虽然其拥有 target 的 module:write 权限）
+    // 此时其无权查看引用此模块的场景，删除必须被阻断，且错误信息不泄露场景身份！
+    await expect(
+      api.deleteActionModule(db, mod.id, { id: account2.id }),
+    ).rejects.toThrow('模块仍被受保护场景引用，不能删除')
   })
 })

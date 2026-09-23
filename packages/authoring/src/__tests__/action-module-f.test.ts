@@ -259,7 +259,8 @@ describe('AM-F 多实现与冻结回退', () => {
       loadedModules: new Map([[versionId, loaded]]),
     })
     expect(fallback.ok).toBe(true)
-    expect(fallback.definition?.steps).toHaveLength(2)
+    // 2 个候选实现，每个 1 个 echo 步 + 1 个 verify_context 校验步 = 共 4 步
+    expect(fallback.definition?.steps).toHaveLength(4)
     expect(fallback.definition?.steps[0]?.id).toBe(deterministicStepId(invocationId, defaultEcho, 'default'))
     expect(fallback.definition?.steps[0]?.outputKey).not.toBe('exposed')
     expect(fallback.manifest.candidateGroups).toHaveLength(1)

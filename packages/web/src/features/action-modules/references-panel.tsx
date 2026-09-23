@@ -21,9 +21,11 @@ const BATCH_STATUS = { upgraded: '已升级', skipped: '已跳过', conflict: '�
 export function ActionModuleReferencesPanel({ moduleId }: { moduleId: string }) {
   const navigate = useNavigate()
   const client = useQueryClient()
+  const [page, setPage] = useState(1)
+  const pageSize = 20
   const refs = useQuery({
-    queryKey: ['action-module-references', moduleId],
-    queryFn: () => fetchActionModuleReferences(moduleId, { page: 1, pageSize: 50 }),
+    queryKey: ['action-module-references', moduleId, page, pageSize],
+    queryFn: () => fetchActionModuleReferences(moduleId, { page, pageSize }),
   })
   const versions = useQuery({
     queryKey: ['action-module-versions', moduleId],
@@ -144,6 +146,32 @@ export function ActionModuleReferencesPanel({ moduleId }: { moduleId: string }) 
             ))}
           </tbody>
         </table>
+      </div>
+      <div className='flex items-center justify-between text-label text-muted-foreground px-1'>
+        <span>
+          共 {refs.data?.total ?? 0} 条引用
+          {refs.data?.total ? `（第 ${page} / ${Math.max(1, Math.ceil((refs.data.total) / pageSize))} 页）` : ''}
+        </span>
+        <div className='flex items-center gap-2'>
+          <Button
+            variant='outline'
+            size='sm'
+            disabled={page <= 1 || refs.isLoading}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            上一页
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            disabled={
+              page >= Math.ceil((refs.data?.total ?? 0) / pageSize) || refs.isLoading
+            }
+            onClick={() => setPage((p) => p + 1)}
+          >
+            下一页
+          </Button>
+        </div>
       </div>
       {batch ? (
         <section className='space-y-2 rounded-xl border p-4'>

@@ -190,4 +190,15 @@ describe('demonstration review and atomic editing', () => {
       )
     await expect.element(screen.getByLabelText('内容')).not.toBeInTheDocument()
   })
+
+  it('renders Accordion grouping with business headers and supports batch accept', async () => {
+    const screen = await panel()
+    await expect.element(screen.getByText('表单与数据填写')).toBeVisible()
+    await expect.element(screen.getByText('按钮与触发动作')).toBeVisible()
+
+    // Test batch accept button
+    const batchButtons = screen.getByRole('button', { name: '整组采纳' })
+    await batchButtons.first().click()
+  })
 })
+

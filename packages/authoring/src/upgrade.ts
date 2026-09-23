@@ -700,11 +700,12 @@ function inputSummary(step: Step): string {
 }
 
 export function compareReplaceSteps(original: readonly Step[], expanded: readonly Step[], exposedKeys: ReadonlySet<string>): ReplaceStepCompare[] {
-  const count = Math.max(original.length, expanded.length)
+  const userExpanded = expanded.filter((s) => s.type !== 'verify_context')
+  const count = Math.max(original.length, userExpanded.length)
   const rows: ReplaceStepCompare[] = []
   for (let index = 0; index < count; index++) {
     const left = original[index]
-    const right = expanded[index]
+    const right = userExpanded[index]
     const differences: string[] = []
     if (!left) differences.push('原步骤缺失')
     if (!right) differences.push('展开步骤缺失')

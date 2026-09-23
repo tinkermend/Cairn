@@ -20,6 +20,7 @@ export function BindingFields({
   bindings,
   shape,
   disabled,
+  allowGenerators = false,
   onBinding,
 }: {
   id: string
@@ -29,6 +30,7 @@ export function BindingFields({
   bindings: BindingOption[]
   shape?: OutputShape
   disabled?: boolean
+  allowGenerators?: boolean
   onBinding: (from: string, value: string, fromField?: string) => void
 }) {
   const observe = useAuthoringObserve()
@@ -41,7 +43,10 @@ export function BindingFields({
       <div className='grid gap-3 sm:grid-cols-2'>
         <div className='space-y-2'>
           <div className='flex items-center justify-between gap-1'>
-            <Label>引用上下文</Label>
+            <Label className='flex items-center gap-1.5'>
+              <span>引用上下文</span>
+              <span className='rounded bg-muted px-1.5 py-0.2 text-label font-medium text-muted-foreground'>选填</span>
+            </Label>
             <ContextBindingPopover
               bindings={bindings}
               run={observe.run}
@@ -69,10 +74,10 @@ export function BindingFields({
               className='w-full'
               aria-label='引用上下文'
             >
-              <SelectValue placeholder='使用字面量' />
+              <SelectValue placeholder='直接填写' />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value='__literal__'>使用字面量</SelectItem>
+              <SelectItem value='__literal__'>直接填写</SelectItem>
               {bindings.map((item) => (
                 <SelectItem key={item.key} value={item.key}>
                   {item.label}
@@ -88,15 +93,72 @@ export function BindingFields({
           ) : null}
         </div>
         <div className='space-y-2'>
-          <Label htmlFor={`step-value-${id}`}>内容</Label>
+          <Label htmlFor={`step-value-${id}`} className='flex items-center gap-1.5'>
+            <span>内容</span>
+            {from ? (
+              <span className='rounded bg-muted px-1.5 py-0.2 text-label font-medium text-muted-foreground'>从引用填充</span>
+            ) : (
+              <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
+            )}
+          </Label>
           <Input
             id={`step-value-${id}`}
+            aria-label='内容'
             value={from ? '' : value}
             disabled={disabled || Boolean(from)}
             onChange={(event) => onBinding('', event.target.value)}
           />
         </div>
       </div>
+      {allowGenerators && !from && !disabled ? (
+        <div className='flex flex-wrap items-center gap-1.5 pt-0.5 text-label text-muted-foreground'>
+          <span className='shrink-0 text-label'>快捷填充:</span>
+          <button
+            type='button'
+            className='rounded bg-muted/80 px-2 py-0.5 text-label hover:bg-muted text-foreground transition-colors font-medium border border-border-divider/50'
+            onClick={() => {
+              const rnd = `key_${Math.random().toString(36).slice(2, 8)}`
+              onBinding('', rnd)
+            }}
+            title='生成随机文本标识'
+          >
+            🎲 随机文本
+          </button>
+          <button
+            type='button'
+            className='rounded bg-muted/80 px-2 py-0.5 text-label hover:bg-muted text-foreground transition-colors font-medium border border-border-divider/50'
+            onClick={() => {
+              const rndPhone = `138${Math.floor(10000000 + Math.random() * 90000000)}`
+              onBinding('', rndPhone)
+            }}
+            title='生成11位手机号'
+          >
+            📱 手机号
+          </button>
+          <button
+            type='button'
+            className='rounded bg-muted/80 px-2 py-0.5 text-label hover:bg-muted text-foreground transition-colors font-medium border border-border-divider/50'
+            onClick={() => {
+              const rndNum = `${Math.floor(1000 + Math.random() * 9000)}`
+              onBinding('', rndNum)
+            }}
+            title='生成4位随机数字'
+          >
+            🔢 4位数字
+          </button>
+          <button
+            type='button'
+            className='rounded bg-muted/80 px-2 py-0.5 text-label hover:bg-muted text-foreground transition-colors font-medium border border-border-divider/50'
+            onClick={() => {
+              const uuid = crypto.randomUUID()
+              onBinding('', uuid)
+            }}
+            title='生成标准 UUID'
+          >
+            UUID
+          </button>
+        </div>
+      ) : null}
       {showFields ? (
         <div className='space-y-2'>
           <Label>输出字段</Label>

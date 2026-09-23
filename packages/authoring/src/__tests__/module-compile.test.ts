@@ -480,5 +480,82 @@ describe('AM-A review regressions', () => {
     expect(result.diagnostics.some((d) => d.code === 'MODULE_INPUT_UNDECLARED')).toBe(true)
     expect(result.diagnostics.some((d) => d.code === 'SCENARIO_UNKNOWN_STEP_TYPE')).toBe(true)
   })
+
+  describe('AMR-01 & AMR-02: 步骤参数绑定白名单与校验', () => {
+    it('合法白名单字段绑定且类型匹配时编译通过', () => {
+      const c = content()
+      c.contract.inputs = [
+        { key: 'target_url', label: '目标URL', valueType: 'string', required: true },
+        { key: 'btn_name', label: '按钮文本', valueType: 'string', required: true },
+        { key: 'expected_count', label: '预期数量', valueType: 'number', required: true },
+      ]
+      // Insert navigate after assertion(1) so precondition is satisfied before first write
+      c.implementations[0]!.steps.splice(1, 0, {
+        id: id(6),
+        name: '导航到页面',
+        type: 'navigate',
+        effectType: 'SIDE_EFFECT',
+        input: { url: 'https://example.com' },
+      })
+      // Assertion for number compare
+      c.implementations[0]!.steps.push({
+        id: id(7),
+        name: '数量比对',
+        type: 'assert',
+        effectType: 'READ_ONLY',
+        input: {
+          expect: { kind: 'number_compare', op: 'eq', value: 0 },
+          target: { framePath: [], candidates: [{ by: 'text', value: '10' }] },
+        },
+      })
+      c.implementations[0]!.fieldBindings = [
+        { stepId: id(6), field: 'navigate.url', inputKey: 'target_url' },
+        { stepId: id(2), field: 'target.candidate.name', inputKey: 'btn_name' },
+        { stepId: id(7), field: 'assert.expect.value', inputKey: 'expected_count' },
+      ]
+      // Add wait for disappearance to satisfy verification rule
+      c.implementations[0]!.steps.splice(3, 0, {
+        id: id(8),
+        type: 'wait',
+        name: '等待消失',
+        effectType: 'READ_ONLY',
+        input: { kind: 'hidden', target: { framePath: [], candidates: [{ by: 'testId', value: 'loading' }] } },
+      })
+      const result = compileModuleContent(c, { mode: 'release' })
+      expect(result.ok).toBe(true)
+    })
+
+    it('绑定到不存在的步骤或未声明的 inputKey 时诊断报错', () => {
+      const c = content()
+      c.contract.inputs = [{ key: 'btn_name', label: '按钮', valueType: 'string', required: true }]
+      c.implementations[0]!.fieldBindings = [
+        { stepId: id(999), field: 'target.candidate.name', inputKey: 'btn_name' },
+        { stepId: id(2), field: 'target.candidate.name', inputKey: 'undeclared_input' },
+      ]
+      const result = compileModuleContent(c, { mode: 'save' })
+      expect(result.diagnostics.some((d) => d.code === 'MODULE_BINDING_UNSUPPORTED')).toBe(true)
+      expect(result.diagnostics.some((d) => d.code === 'MODULE_INPUT_UNDECLARED')).toBe(true)
+    })
+
+    it('assert.expect.value 类型不匹配时报错', () => {
+      const c = content()
+      c.contract.inputs = [{ key: 'str_val', label: '字符串', valueType: 'string', required: true }]
+      c.implementations[0]!.steps.push({
+        id: id(7),
+        name: '数值断言',
+        type: 'assert',
+        effectType: 'READ_ONLY',
+        input: {
+          expect: { kind: 'number_compare', op: 'eq', value: 0 },
+          target: { framePath: [], candidates: [{ by: 'text', value: '10' }] },
+        },
+      })
+      c.implementations[0]!.fieldBindings = [
+        { stepId: id(7), field: 'assert.expect.value', inputKey: 'str_val' },
+      ]
+      const result = compileModuleContent(c, { mode: 'save' })
+      expect(result.diagnostics.some((d) => d.code === 'MODULE_BINDING_UNSUPPORTED' && d.message.includes('number_compare'))).toBe(true)
+    })
+  })
 })
 

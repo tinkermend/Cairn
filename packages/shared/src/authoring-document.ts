@@ -7,6 +7,7 @@ import {
 import { outcomeContractSchema, type OutcomeContract } from './outcome.js'
 import { runtimeInvariantSchema } from './runtime-invariant.js'
 import { outputFieldNameSchema } from './output-schema.js'
+import { scenarioOutputDeclSchema } from './run-output.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
 import type { ScenarioDocument } from './scenario.js'
 import {
@@ -162,6 +163,7 @@ export const scenarioAuthoringDocumentV2Schema = z
     nodes: z.array(authoringNodeSchema).min(1).max(MAX_AUTHORING_NODES),
     scenarioOutcomes: z.array(outcomeContractSchema).optional(),
     runtimeInvariants: z.array(runtimeInvariantSchema).optional(),
+    outputs: scenarioOutputDeclSchema.optional(),
     resolution: resolutionPolicySchema.optional(),
   })
   .superRefine((document, ctx) => {
@@ -264,6 +266,8 @@ export const moduleManifestEntrySchema = z.strictObject({
   internalToExpanded: z.record(z.string(), entityIdSchema),
   preconditionStepIds: z.array(entityIdSchema).default([]),
   postconditionStepIds: z.array(entityIdSchema).default([]),
+  outputVerificationStepIds: z.array(entityIdSchema).default([]),
+  frozenOutputs: z.record(z.string(), z.string()).default({}),
   outputRequired: z.array(z.string()).default([]),
   inputBindingsDigest: z.string().min(1).max(128),
 })
@@ -274,6 +278,8 @@ export const candidateAlternativeSchema = z.strictObject({
   implementationDigest: z.string().min(1).max(128),
   stepIds: z.array(entityIdSchema).min(1),
   postconditionStepIds: z.array(entityIdSchema).default([]),
+  outputVerificationStepIds: z.array(entityIdSchema).default([]),
+  frozenOutputs: z.record(z.string(), z.string()).default({}),
   outputStaging: z.record(z.string(), z.string()),
 })
 export type CandidateAlternative = z.infer<typeof candidateAlternativeSchema>
@@ -349,6 +355,7 @@ export function normalizeAuthoringDocument(raw: unknown): ScenarioAuthoringDocum
         authoringSchemaVersion: 2 as const,
         schemaVersion: doc.schemaVersion ?? RUNTIME_SCHEMA_VERSION,
         inputs: doc.inputs ?? [],
+        ...(doc.outputs ? { outputs: doc.outputs } : {}),
         nodes: (doc.steps as Step[]).map((step) => ({
           kind: 'step' as const,
           step,

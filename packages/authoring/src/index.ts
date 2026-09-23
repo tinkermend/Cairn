@@ -36,3 +36,28 @@ export {
 export { DemonstrationParseError, parseDemonstrationFile, sanitizeDemonstrationSource, sanitizeDemonstrationUrl, demonstrationFactDigest } from './demonstration-adapters.js'
 export { suggestDemonstration, previewDemonstration, applyDemonstrationToDocument, DemonstrationApplyError } from './demonstration.js'
 export { validationSubjectDigest, validationRunDigests, classifyValidationSample } from './validation.js'
+export {
+  canonicalizeJson,
+  stripNonSemanticFields,
+  computeContractDigest,
+  computeExecutionDigest,
+  computeSourceDefinitionDigest,
+} from './digest.js'
+export {
+  evaluatePatchGuards,
+  computeDigestManifest,
+  type EvaluatePatchGuardsOptions,
+} from './patch-guard.js'
+export {
+  buildDemonstrationSemanticProposal,
+  type BuildDemonstrationSemanticProposalOptions,
+  type ModelGroupInput,
+} from './demonstration-semantic.js'
+export {
+  computeDatasetProfile,
+  type ComputeDatasetProfileOptions,
+} from './dataset-profiler.js'
+export {
+  buildV2AuthoringSlice,
+  type SlicedAuthoringResult,
+} from './authoring-slice.js'

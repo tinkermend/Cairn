@@ -4,9 +4,11 @@ import {
   FACTORY_COMPILE_RESOLUTION,
   findModuleImplementation,
   isAuthoringDocumentV2,
+  MAX_COMPILED_SCENARIO_STEPS,
   MAX_SCENARIO_STEPS,
   normalizeAuthoringDocument,
   resolveInvocationSelection,
+  scenarioDefinitionSchema,
   scenarioDocumentSchema,
   syncSha256,
   type AuthoringModuleInvocation,
@@ -322,6 +324,8 @@ type ExpandedImplementation = {
   expandedStepIds: string[]
   preconditionStepIds: string[]
   postconditionStepIds: string[]
+  outputVerificationStepIds: string[]
+  frozenOutputs: Record<string, string>
   outputRequired: string[]
   outputStaging: Record<string, string>
 }
@@ -428,7 +432,71 @@ function expandImplementation(input: {
         }
       }
     }
+
+    const stepBindings = (impl.fieldBindings ?? []).filter((b) => b.stepId === orig.id)
+    for (const binding of stepBindings) {
+      const invBinding = invocation.inputBindings[binding.inputKey]
+      if (!invBinding) continue
+      if (invBinding.kind === 'literal') {
+        if (binding.field === 'navigate.url') {
+          (step.input as any).url = String(invBinding.value)
+        } else if (binding.field === 'target.anchor.withinText') {
+          if ((step.input as any).target?.anchor) {
+            (step.input as any).target.anchor.withinText = String(invBinding.value)
+          }
+        } else if (binding.field === 'target.candidate.name') {
+          if ((step.input as any).target?.candidates?.[0]) {
+            (step.input as any).target.candidates[0].name = String(invBinding.value)
+          }
+        } else if (binding.field === 'target.candidate.value') {
+          if ((step.input as any).target?.candidates?.[0]) {
+            (step.input as any).target.candidates[0].value = String(invBinding.value)
+          }
+        } else if (binding.field === 'assert.expect.value') {
+          if ((step.input as any).expect) {
+            if ((step.input as any).expect.kind === 'number_compare') {
+              (step.input as any).expect.value = Number(invBinding.value)
+            } else {
+              (step.input as any).expect.value = String(invBinding.value)
+            }
+          }
+        }
+      } else if (invBinding.kind === 'from') {
+        const resolvedKey = outputRenames.get(invBinding.key) ?? invBinding.key
+        const fieldRefs: Record<string, { from: string; fromField?: string }> = step.fieldRefs ? { ...step.fieldRefs } : {}
+        fieldRefs[binding.field] = {
+          from: resolvedKey,
+          ...(invBinding.field ? { fromField: invBinding.field } : {}),
+        }
+        step.fieldRefs = fieldRefs
+      }
+    }
     expandedSteps.push(step)
+  }
+
+  const frozenOutputs: Record<string, string> = {}
+  for (const outDecl of contract.outputs) {
+    const exposedKey = invocation.outputBindings[outDecl.key]
+    const namespaced = namespacedKey(currentOrdinal, outDecl.key, idImplementationKey)
+    const finalKey = exposeOutputs ? (exposedKey ?? namespaced) : namespaced
+    frozenOutputs[outDecl.key] = finalKey
+  }
+
+  const outputVerificationStepIds: string[] = []
+  if (contract.outputs.length > 0) {
+    const verifyStepId = deterministicStepId(invocation.invocationId, '__verify_context', idImplementationKey)
+    const verifyStep: Step = {
+      id: verifyStepId,
+      name: `验证输出契约 [${impl.implementationKey}]`,
+      type: 'verify_context',
+      effectType: 'READ_ONLY',
+      input: {
+        keys: Object.values(frozenOutputs),
+      },
+    }
+    expandedSteps.push(verifyStep)
+    moduleExpandedStepIds.push(verifyStepId)
+    outputVerificationStepIds.push(verifyStepId)
   }
 
   const lookupExpanded = (internalStepId: string) =>
@@ -460,6 +528,8 @@ function expandImplementation(input: {
     expandedStepIds: moduleExpandedStepIds,
     preconditionStepIds,
     postconditionStepIds,
+    outputVerificationStepIds,
+    frozenOutputs,
     outputRequired,
     outputStaging,
   }
@@ -794,6 +864,7 @@ export function expandAuthoringDocument(
       collectFromUsages(orig.input, ['input'], usages)
       for (const usage of usages) {
         if (!declaredInputKeys.has(usage.key)) continue
+        if (impl.fieldBindings?.some((fb) => fb.inputKey === usage.key && fb.stepId === orig.id)) continue
         const supportedValueFrom =
           BINDABLE_STEP_TYPES.has(orig.type) &&
           usage.path.length === 2 &&
@@ -846,6 +917,8 @@ export function expandAuthoringDocument(
           implementationDigest: singleImplementationDigest(item.impl),
           stepIds: item.expanded.expandedStepIds,
           postconditionStepIds: item.expanded.postconditionStepIds,
+          outputVerificationStepIds: item.expanded.outputVerificationStepIds,
+          frozenOutputs: item.expanded.frozenOutputs,
           outputStaging: item.expanded.outputStaging,
         })),
       })
@@ -872,6 +945,8 @@ export function expandAuthoringDocument(
       internalToExpanded: mergedInternalToExpanded,
       preconditionStepIds: first.expanded.preconditionStepIds,
       postconditionStepIds: first.expanded.postconditionStepIds,
+      outputVerificationStepIds: first.expanded.outputVerificationStepIds,
+      frozenOutputs: first.expanded.frozenOutputs,
       outputRequired: first.expanded.outputRequired,
       inputBindingsDigest,
     })
@@ -935,14 +1010,14 @@ export function expandAuthoringDocument(
     runtimeInvariantEntries.length > 0 ? { entries: runtimeInvariantEntries } : undefined
 
   // 规则 10：步数上限限制
-  if (expandedSteps.length > MAX_SCENARIO_STEPS) {
+  if (expandedSteps.length > MAX_COMPILED_SCENARIO_STEPS) {
     const details = manifestEntries
       .map((e) => `「${e.name}」(${e.expandedStepIds.length}步)`)
       .join('、')
     diagnostics.push({
       code: 'SCENARIO_EXPANDED_STEP_LIMIT',
       severity: 'error',
-      message: `场景展开后总步数达到 ${expandedSteps.length} 步，超过上限 ${MAX_SCENARIO_STEPS} 步（调用包含：${details}）`,
+      message: `场景展开后总步数达到 ${expandedSteps.length} 步，超过上限 ${MAX_COMPILED_SCENARIO_STEPS} 步（调用包含：${details}）`,
     })
   }
 
@@ -953,14 +1028,15 @@ export function expandAuthoringDocument(
 
   // 组装扁平的 ScenarioDefinition
   let definition: ScenarioDefinition | undefined = undefined
-  if (expandedSteps.length > 0 && expandedSteps.length <= MAX_SCENARIO_STEPS) {
+  if (expandedSteps.length > 0 && expandedSteps.length <= MAX_COMPILED_SCENARIO_STEPS) {
     const defCandidate = {
       schemaVersion: document.schemaVersion,
       inputs: document.inputs,
       steps: expandedSteps,
+      ...(document.outputs ? { outputs: document.outputs } : {}),
       ...(document.resolution ? { resolution: document.resolution } : {}),
     }
-    const parsedDef = scenarioDocumentSchema.safeParse(defCandidate)
+    const parsedDef = scenarioDefinitionSchema.safeParse(defCandidate)
     if (parsedDef.success) {
       definition = parsedDef.data
       // 运行现有的扁平场景编译校验（能力闸门、AI 配置等）

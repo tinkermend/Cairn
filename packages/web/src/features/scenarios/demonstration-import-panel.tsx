@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   stepSchema,
   type ApplyDemonstrationBody,
@@ -7,6 +7,7 @@ import {
   type DemonstrationSuggestion,
 } from '@cairn/shared'
 import { toast } from 'sonner'
+import { ChevronDown, ChevronRight, CheckCheck } from 'lucide-react'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   applyDemonstrationImport,
@@ -14,7 +15,13 @@ import {
   previewDemonstrationImport,
 } from '@/lib/demonstrations-api'
 import { fetchScenario } from '@/lib/scenarios-api'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -49,6 +56,57 @@ const editable = [
   'ai_assert',
 ] as const
 
+export interface SuggestionGroupVM {
+  groupId: string
+  title: string
+  description?: string
+  effectType: 'read' | 'idempotent_write' | 'write' | 'unknown'
+  items: Array<{ item: DemonstrationSuggestion; originalIndex: number }>
+}
+
+export function buildSuggestionGroups(suggestions: DemonstrationSuggestion[]): SuggestionGroupVM[] {
+  if (!suggestions.length) return []
+  const groups: SuggestionGroupVM[] = []
+  let currentGroup: SuggestionGroupVM | null = null
+
+  for (let i = 0; i < suggestions.length; i++) {
+    const item = suggestions[i]!
+    let targetType: SuggestionGroupVM['effectType'] = 'unknown'
+    let defaultTitle = '页面交互'
+
+    if (item.action === 'navigate' || item.step?.type === 'navigate') {
+      targetType = 'read'
+      defaultTitle = '页面导航与进入'
+    } else if (item.outcome || item.step?.type === 'assert' || item.action === 'aiWaitFor') {
+      targetType = 'read'
+      defaultTitle = '成功条件与断言'
+    } else if (item.step?.type === 'fill' || item.action === 'aiInput') {
+      targetType = 'idempotent_write'
+      defaultTitle = '表单与数据填写'
+    } else if (item.step?.type === 'click' || item.action === 'aiTap') {
+      targetType = 'write'
+      defaultTitle = '按钮与触发动作'
+    } else if (item.status === 'observation') {
+      targetType = 'read'
+      defaultTitle = '页面观察事实'
+    }
+
+    if (!currentGroup || currentGroup.title !== defaultTitle) {
+      currentGroup = {
+        groupId: `grp-${groups.length + 1}`,
+        title: defaultTitle,
+        effectType: targetType,
+        items: [],
+      }
+      groups.push(currentGroup)
+    }
+
+    currentGroup.items.push({ item, originalIndex: i })
+  }
+
+  return groups
+}
+
 export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
   const {
     open,
@@ -65,6 +123,7 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
   )
   const [preview, setPreview] = useState<DemonstrationPreview>()
   const [choices, setChoices] = useState<Record<string, Decision>>({})
+  const [openGroups, setOpenGroups] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState('')
@@ -72,6 +131,16 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
   const attempt = useRef<{ fingerprint: string; key: string } | null>(null)
   const baseline = useRef(revision)
   const request = useRef(0)
+
+  const groups = useMemo(
+    () => buildSuggestionGroups(preview?.suggestions ?? []),
+    [preview?.suggestions]
+  )
+  useEffect(() => {
+    if (groups.length > 0) {
+      setOpenGroups(groups.map((g) => g.groupId))
+    }
+  }, [groups])
 
   async function refresh(nextRevision = revision) {
     if (!recordingDraftId) return
@@ -266,25 +335,120 @@ export function DemonstrationImportPanel(props: RecordingImportPanelProps) {
                 {preview.suggestions.length - pending} 项 · 尚需处理 {pending}{' '}
                 项
               </p>
-              <ol className='space-y-4'>
-                {preview.suggestions.map((item, index) => (
-                  <li
-                    key={item.id}
-                    className='space-y-3 rounded-lg border border-border-card bg-card p-4'
-                  >
-                    <SuggestionEditor
-                      item={item}
-                      index={index}
-                      choice={choices[item.id]}
-                      inputs={props.inputs}
-                      disabled={applying}
-                      onChange={(next) =>
-                        setChoices((old) => ({ ...old, [item.id]: next }))
+              <div className='space-y-4'>
+                {groups.map((group) => {
+                  const isExpanded = openGroups.includes(group.groupId)
+                  const toggleExpand = () => {
+                    setOpenGroups((prev) =>
+                      prev.includes(group.groupId)
+                        ? prev.filter((id) => id !== group.groupId)
+                        : [...prev, group.groupId]
+                    )
+                  }
+
+                  const groupItems = group.items
+                  const canBatchAccept = groupItems.some(
+                    ({ item }) =>
+                      item.status === 'mapped' &&
+                      choices[item.id]?.disposition !== 'accept'
+                  )
+
+                  const handleBatchAccept = (e: React.MouseEvent) => {
+                    e.stopPropagation()
+                    setChoices((prev) => {
+                      const next = { ...prev }
+                      for (const { item } of groupItems) {
+                        if (item.status === 'mapped') {
+                          next[item.id] = { id: item.id, disposition: 'accept' }
+                        }
                       }
-                    />
-                  </li>
-                ))}
-              </ol>
+                      return next
+                    })
+                    toast.success(`已整组采纳「${group.title}」`)
+                  }
+
+                  return (
+                    <Collapsible
+                      key={group.groupId}
+                      open={isExpanded}
+                      onOpenChange={toggleExpand}
+                      className='rounded-lg border border-border-card bg-card overflow-hidden'
+                    >
+                      <div className='flex items-center justify-between p-3 bg-muted/20 border-b border-border/40'>
+                        <CollapsibleTrigger asChild>
+                          <button
+                            type='button'
+                            className='flex items-center gap-2 cursor-pointer select-none text-left flex-1 min-w-0 mr-2'
+                          >
+                            {isExpanded ? (
+                              <ChevronDown className='h-4 w-4 text-muted-foreground shrink-0' />
+                            ) : (
+                              <ChevronRight className='h-4 w-4 text-muted-foreground shrink-0' />
+                            )}
+                            <span className='text-sm font-semibold truncate'>
+                              {group.title}
+                            </span>
+                            <Badge variant='outline' className='text-[10px] font-mono shrink-0'>
+                              {group.items.length} 个动作
+                            </Badge>
+                            <Badge
+                              variant={
+                                group.effectType === 'write'
+                                  ? 'destructive'
+                                  : group.effectType === 'idempotent_write'
+                                    ? 'secondary'
+                                    : 'outline'
+                              }
+                              className='text-[10px] shrink-0'
+                            >
+                              {group.effectType === 'write'
+                                ? '副作用 (WRITE)'
+                                : group.effectType === 'idempotent_write'
+                                  ? '幂等 (IDEMPOTENT)'
+                                  : '只读 (READ)'}
+                            </Badge>
+                          </button>
+                        </CollapsibleTrigger>
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          className='h-7 text-xs gap-1 shrink-0'
+                          disabled={applying || !canBatchAccept}
+                          onClick={handleBatchAccept}
+                        >
+                          <CheckCheck className='h-3.5 w-3.5' />
+                          整组采纳
+                        </Button>
+                      </div>
+                      <CollapsibleContent className='p-3'>
+                        <ol className='space-y-3'>
+                          {group.items.map(({ item, originalIndex }) => (
+                            <li
+                              key={item.id}
+                              className='space-y-3 rounded-lg border border-border/60 bg-background/50 p-3.5'
+                            >
+                              <SuggestionEditor
+                                item={item}
+                                index={originalIndex}
+                                choice={choices[item.id]}
+                                inputs={props.inputs}
+                                disabled={applying}
+                                onChange={(next) =>
+                                  setChoices((old) => ({
+                                    ...old,
+                                    [item.id]: next,
+                                  }))
+                                }
+                              />
+                            </li>
+                          ))}
+                        </ol>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  )
+                })}
+              </div>
             </>
           )}
           {recordingDraftId && (

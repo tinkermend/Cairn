@@ -74,9 +74,12 @@ export function OutcomeListEditor({
   return (
     <div className='space-y-3'>
       <div className='flex items-center justify-between gap-2'>
-        <h3 className='text-small font-semibold'>
-          {scope === 'scenario' ? '怎样才算成功' : '成功条件'}
-        </h3>
+        <div className='flex items-center gap-1.5'>
+          <h3 className='text-small font-semibold'>
+            {scope === 'scenario' ? '怎样才算成功' : '成功条件'}
+          </h3>
+          <span className='rounded bg-muted px-1.5 py-0.5 text-caption font-medium text-muted-foreground'>选填</span>
+        </div>
         <Button
           type='button'
           size='sm'
@@ -91,7 +94,7 @@ export function OutcomeListEditor({
         <p className='text-small text-muted-foreground'>
           {scope === 'scenario'
             ? '还没有场景级成功条件。可以从页面选择对象，用业务语言写下期望。'
-            : '还没有成功条件。跑完这一步后，怎样才算业务成功？'}
+            : '还没有成功条件。若无需在此步骤单独校验页面状态，可直接留空，不影响步骤正常执行。'}
         </p>
       ) : (
         <ul className='space-y-3'>
@@ -158,7 +161,10 @@ function OutcomeCard({
   return (
     <div className='space-y-3 rounded-md border border-border-card p-3'>
       <div className='space-y-2'>
-        <Label htmlFor={`outcome-meaning-${contract.id}`}>成功含义</Label>
+        <Label htmlFor={`outcome-meaning-${contract.id}`} className='flex items-center gap-1.5'>
+          <span>成功含义</span>
+          <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
+        </Label>
         <Input
           id={`outcome-meaning-${contract.id}`}
           value={contract.meaning}
@@ -314,6 +320,17 @@ function OutcomeCard({
         >
           使用刚点到的对象
         </Button>
+        {!target ? (
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            disabled={disabled}
+            onClick={() => patchRule({ target: defaultTarget(contract.meaning.trim() || '校验目标') })}
+          >
+            直接填写对象
+          </Button>
+        ) : null}
         <Button type='button' size='sm' variant='ghost' disabled={disabled} onClick={onRemove}>
           移除
         </Button>
@@ -322,10 +339,20 @@ function OutcomeCard({
         {expectKindLabel(expect.kind)}
         {target?.candidates[0]?.value ? ` · 已选择「${target.candidates[0].value}」` : ' · 尚未选择页面对象'}
       </p>
+      {target ? (
+        <div className='pt-2 border-t border-border-divider/50'>
+          <TargetFields
+            target={target}
+            disabled={disabled}
+            optional
+            onChange={(next) => patchRule({ target: next })}
+          />
+        </div>
+      ) : null}
       <Collapsible open={advanced} onOpenChange={setAdvanced}>
         <CollapsibleTrigger asChild>
           <Button type='button' size='sm' variant='ghost' className='gap-1'>
-            高级
+            高级设置
             <ChevronDown className={advanced ? 'size-3.5 rotate-180' : 'size-3.5'} />
           </Button>
         </CollapsibleTrigger>
@@ -377,24 +404,6 @@ function OutcomeCard({
               ) : null}
             </div>
           </div>
-          {target ? (
-            <TargetFields
-              target={target}
-              disabled={disabled}
-              optional
-              onChange={(next) => patchRule({ target: next })}
-            />
-          ) : (
-            <Button
-              type='button'
-              size='sm'
-              variant='outline'
-              disabled={disabled}
-              onClick={() => patchRule({ target: defaultTarget('结果') })}
-            >
-              手工指定页面对象
-            </Button>
-          )}
         </CollapsibleContent>
       </Collapsible>
     </div>

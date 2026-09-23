@@ -78,6 +78,7 @@ describe('AM-D: 编写期模块映射', { timeout: 30_000 }, () => {
       expectedRevision,
       confirmedWarnings: warnings,
       actor: { id: accountId },
+      skipReleaseGate: true,
     })
   }
 

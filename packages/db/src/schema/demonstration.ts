@@ -9,6 +9,7 @@ export type DemonstrationReceiptMetadata = {
   protocolVersion: 'demonstration@1'
   factDigest: string
   suggestionDigest: string
+  modelProposalDigest?: string
   adapterVersion: string
   ruleVersion: string
   placement: ApplyDemonstrationBody['placement']

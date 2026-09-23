@@ -24,6 +24,9 @@ import {
   effectTypeSchema,
   FORBIDDEN_CONTEXT_KEYS,
   isAiStepType,
+  MODULE_BINDABLE_FIELDS,
+  moduleBindableFieldSchema,
+  type ModuleBindableField,
   stepSchema,
 } from './step.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
@@ -189,6 +192,23 @@ export function deriveExecutionMode(steps: readonly { type: string }[]): ModuleE
 }
 
 // ---------------------------------------------------------------------------
+// Field bindings (受限参数绑定白名单 AMR-01)
+// ---------------------------------------------------------------------------
+
+export {
+  MODULE_BINDABLE_FIELDS,
+  moduleBindableFieldSchema,
+  type ModuleBindableField,
+} from './step.js'
+
+export const moduleFieldBindingSchema = z.strictObject({
+  stepId: entityIdSchema,
+  field: moduleBindableFieldSchema,
+  inputKey: contextKeySchema,
+})
+export type ModuleFieldBinding = z.infer<typeof moduleFieldBindingSchema>
+
+// ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
 
@@ -199,6 +219,7 @@ export const moduleImplementationSchema = z.strictObject({
   kind: z.literal('structured_steps'),
   steps: z.array(stepSchema).max(MAX_SCENARIO_STEPS),
   outputMapping: outputMappingSchema,
+  fieldBindings: z.array(moduleFieldBindingSchema).max(64).optional(),
   preconditionBindings: z.array(conditionVerificationSchema).max(16).optional(),
   postconditionBindings: z.array(conditionVerificationSchema).max(16).optional(),
 })
@@ -271,6 +292,7 @@ export const MODULE_ERROR_CODES = [
   'MODULE_EXTRACT_SELECTION_INVALID',
   'MODULE_REPLACE_NOT_EQUIVALENT',
   'MODULE_IMPLEMENTATION_UNVERIFIED',
+  'MODULE_TEST_CASES_FAILED',
 ] as const
 export type ModuleErrorCode = (typeof MODULE_ERROR_CODES)[number]
 
@@ -296,6 +318,7 @@ export const MODULE_DIAGNOSTIC_CODES = [
   'MODULE_VERIFICATION_TOO_WEAK',
   'MODULE_PRECONDITION_MISSING',
   'MODULE_SCHEMA_INVALID',
+  'MODULE_BINDING_UNSUPPORTED',
 ] as const
 export type ModuleDiagnosticCode = (typeof MODULE_DIAGNOSTIC_CODES)[number]
 
@@ -428,6 +451,7 @@ export const publishModuleBodySchema = z.strictObject({
   idempotencyKey: z.string().min(1).max(128),
   expectedRevision: z.number().int().min(0),
   confirmedWarnings: z.array(z.string().min(1).max(2048)).max(256).default([]),
+  skipReleaseGate: z.boolean().optional(),
 })
 export type PublishModuleBody = z.infer<typeof publishModuleBodySchema>
 

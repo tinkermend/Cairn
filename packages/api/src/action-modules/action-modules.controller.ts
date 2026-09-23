@@ -29,6 +29,14 @@ import {
   type ModuleResolveCloseBody,
   type ModuleQualityQuery,
   type ModuleInvocationListQuery,
+  createModuleTestCaseBodySchema,
+  updateModuleTestCaseBodySchema,
+  runModuleTestCaseBodySchema,
+  createModuleTestBatchBodySchema,
+  type CreateModuleTestCaseBody,
+  type UpdateModuleTestCaseBody,
+  type RunModuleTestCaseBody,
+  type CreateModuleTestBatchBody,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js'
 import type { RequestAccount } from '../common/request-account.js'
@@ -154,8 +162,9 @@ export class ActionModulesController {
   listReferences(
     @Param('moduleId') id: string,
     @Query(new ZodValidationPipe(moduleReferenceListQuerySchema)) query: ModuleReferenceListQuery,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.actionModules.listReferences(id, query)
+    return this.actionModules.listReferences(id, query, actor)
   }
 
   @Get(':moduleId/delete-preview')
@@ -228,5 +237,97 @@ export class ActionModulesController {
     const { detail, created } = await this.actionModules.trial(id, body, actor)
     res.status(created ? HttpStatus.CREATED : HttpStatus.OK)
     return detail
+  }
+
+  @Get(':moduleId/test-cases')
+  @RequirePermissions('module:read', 'target:read')
+  listTestCases(@Param('moduleId') id: string, @CurrentAccount() actor: RequestAccount) {
+    return this.actionModules.listTestCases(id, actor)
+  }
+
+  @Get(':moduleId/test-cases/:caseId')
+  @RequirePermissions('module:read', 'target:read')
+  getTestCase(
+    @Param('moduleId') id: string,
+    @Param('caseId') caseId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.getTestCase(id, caseId, actor)
+  }
+
+  @Post(':moduleId/test-cases')
+  @RequirePermissions('module:write', 'target:read')
+  createTestCase(
+    @Param('moduleId') id: string,
+    @Body(new ZodValidationPipe(createModuleTestCaseBodySchema)) body: CreateModuleTestCaseBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.createTestCase(id, body, actor)
+  }
+
+  @Post(':moduleId/test-cases/:caseId/update')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('module:write', 'target:read')
+  updateTestCase(
+    @Param('moduleId') id: string,
+    @Param('caseId') caseId: string,
+    @Body(new ZodValidationPipe(updateModuleTestCaseBodySchema)) body: UpdateModuleTestCaseBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.updateTestCase(id, caseId, body, actor)
+  }
+
+  @Post(':moduleId/test-cases/:caseId/delete')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('module:write', 'target:read')
+  deleteTestCase(
+    @Param('moduleId') id: string,
+    @Param('caseId') caseId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.deleteTestCase(id, caseId, actor)
+  }
+
+  @Post(':moduleId/test-cases/:caseId/run')
+  @RequirePermissions('module:write', 'run:execute', 'target:read')
+  runTestCase(
+    @Param('moduleId') id: string,
+    @Param('caseId') caseId: string,
+    @Body(new ZodValidationPipe(runModuleTestCaseBodySchema)) body: RunModuleTestCaseBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.runTestCase(id, caseId, body, actor)
+  }
+
+  @Post(':moduleId/test-cases/:caseId/recompute')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('module:write', 'target:read')
+  recomputeCase(
+    @Param('moduleId') id: string,
+    @Param('caseId') caseId: string,
+    @Body('executionId') executionId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.recomputeCase(id, caseId, executionId, actor)
+  }
+
+  @Post(':moduleId/test-batches')
+  @RequirePermissions('module:write', 'run:execute', 'target:read')
+  createTestBatch(
+    @Param('moduleId') id: string,
+    @Body(new ZodValidationPipe(createModuleTestBatchBodySchema)) body: CreateModuleTestBatchBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.createTestBatch(id, body, actor)
+  }
+
+  @Get(':moduleId/test-batches/:batchId')
+  @RequirePermissions('module:read', 'target:read')
+  getTestBatch(
+    @Param('moduleId') id: string,
+    @Param('batchId') batchId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.actionModules.getTestBatch(id, batchId, actor)
   }
 }

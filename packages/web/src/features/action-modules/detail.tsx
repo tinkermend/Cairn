@@ -79,6 +79,7 @@ import {
 import { ModulePublicationDialog } from './publication-dialog'
 import { ActionModuleQualityPanel } from './quality-panel'
 import { ActionModuleReferencesPanel } from './references-panel'
+import { ActionModuleCasesPanel } from './cases-panel'
 
 const emptyContent = (): ModuleContent => ({
   contract: {
@@ -193,18 +194,7 @@ function ActionModuleEditor({
   const [trialBusy, setTrialBusy] = useState(false)
   const [trialError, setTrialError] = useState('')
   const [tab, setTab] = useState('edit')
-  const trialStorageKey = `cairn:trial-inputs:${moduleId}`
-
   const openTrialModal = () => {
-    try {
-      const cached = localStorage.getItem(trialStorageKey)
-      if (cached) {
-        const parsed = JSON.parse(cached)
-        if (typeof parsed === 'object' && parsed !== null) {
-          setTrialInputs((prev) => ({ ...parsed, ...prev }))
-        }
-      }
-    } catch {}
     setTrialOpen(true)
   }
 
@@ -227,9 +217,6 @@ function ActionModuleEditor({
 
   const clearTrialInputs = () => {
     setTrialInputs({})
-    try {
-      localStorage.removeItem(trialStorageKey)
-    } catch {}
     toast.success('已清空入参')
   }
 
@@ -625,14 +612,24 @@ function ActionModuleEditor({
         />
       )}
       <Tabs value={tab} onValueChange={setTab} className='gap-4'>
-        <TabsList>
-          <TabsTrigger value='edit'>编辑</TabsTrigger>
-          <TabsTrigger value='fixtures'>
-            测试用例 {fixtures.length > 0 ? `(${fixtures.length})` : ''}
-          </TabsTrigger>
-          <TabsTrigger value='references'>引用</TabsTrigger>
-          <TabsTrigger value='quality'>运行质量</TabsTrigger>
-        </TabsList>
+        <div className='max-w-full overflow-x-auto'>
+          <TabsList>
+            <TabsTrigger value='edit'>编辑</TabsTrigger>
+            <TabsTrigger value='cases'>回归测试 (AMR)</TabsTrigger>
+            <TabsTrigger value='fixtures'>
+              测试夹具 {fixtures.length > 0 ? `(${fixtures.length})` : ''}
+            </TabsTrigger>
+            <TabsTrigger value='references'>引用</TabsTrigger>
+            <TabsTrigger value='quality'>运行质量</TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value='cases'>
+          <ActionModuleCasesPanel
+            module={query.data ?? base}
+            canWrite={canWrite}
+            canExecute={canExecuteRun}
+          />
+        </TabsContent>
         <TabsContent value='fixtures'>
           <ModuleFixturesPanel
             moduleId={moduleId}
@@ -1275,7 +1272,7 @@ function ActionModuleEditor({
       <Dialog open={trialOpen} onOpenChange={setTrialOpen}>
         <DialogContent className='sm:max-w-lg'>
           <DialogHeader>
-            <DialogTitle>试跑模块草稿</DialogTitle>
+            <DialogTitle>试跑模块草稿 (r{base.draftRevision})</DialogTitle>
             <DialogDescription>
               在隔离验证场景中执行已保存的草稿 r{base.draftRevision}。
             </DialogDescription>
@@ -1478,12 +1475,6 @@ function ActionModuleEditor({
                       content.implementations[0]?.implementationKey,
                     targetAccountId: trialAccountId.trim() || undefined,
                   })
-                  try {
-                    localStorage.setItem(
-                      trialStorageKey,
-                      JSON.stringify(trialInputs)
-                    )
-                  } catch {}
                   setTrialOpen(false)
                   setActiveTrialRunId(run.id)
                   setTrialSheetOpen(true)
@@ -1510,6 +1501,11 @@ function ActionModuleEditor({
         open={trialSheetOpen}
         onOpenChange={setTrialSheetOpen}
         currentInputs={trialInputs}
+        moduleRevisionInfo={{
+          draftRevision: (query.data ?? base).draftRevision,
+          versionNo: (query.data ?? base).latestVersionNo,
+          isDirty: dirty,
+        }}
         onSaveAsFixture={(name, inputs, lastRun) => {
           const parsedInputs: Record<string, JsonValue> = {}
           for (const [k, v] of Object.entries(inputs)) {

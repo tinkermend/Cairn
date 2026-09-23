@@ -157,6 +157,7 @@ describe('AM-F: 多实现发布与试跑', { timeout: 30_000 }, () => {
       expectedRevision: draft.draftRevision ?? 0,
       confirmedWarnings: warnings,
       actor: { id: account.id },
+      skipReleaseGate: true,
     })
     expect(published.latestVersionNo).toBe(1)
   })
@@ -197,6 +198,7 @@ describe('AM-F: 多实现发布与试跑', { timeout: 30_000 }, () => {
       expectedRevision: draft.draftRevision ?? 0,
       confirmedWarnings: warnings,
       actor: { id: account.id },
+      skipReleaseGate: true,
     })
     const versions = await api.listActionModuleVersions(db, created.id)
     const versionId = versions.items[0]!.id

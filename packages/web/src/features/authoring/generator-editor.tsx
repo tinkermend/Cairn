@@ -55,7 +55,7 @@ export function GeneratorConfigEditor({
         variant='outline'
         size='sm'
         disabled={disabled}
-        className='h-7 text-xs gap-1.5 border-dashed'
+        className='h-7 text-label gap-1.5 border-dashed'
         onClick={() =>
           onChange({
             kind: 'mock_preset',
@@ -71,7 +71,7 @@ export function GeneratorConfigEditor({
   }
 
   return (
-    <div className='p-3 rounded-lg border bg-muted/20 space-y-2.5 text-xs'>
+    <div className='p-3 rounded-lg border bg-muted space-y-2.5 text-label'>
       <div className='flex items-center justify-between'>
         <div className='flex items-center gap-1.5 font-medium text-foreground'>
           <Sparkles className='h-3.5 w-3.5 text-primary' />
@@ -92,7 +92,7 @@ export function GeneratorConfigEditor({
 
       <div className='grid grid-cols-2 gap-2'>
         <div>
-          <Label className='text-[11px] text-muted-foreground'>生成规则类型</Label>
+          <Label className='text-caption text-muted-foreground'>生成规则类型</Label>
           <Select
             value={generator.kind}
             disabled={disabled}
@@ -114,7 +114,7 @@ export function GeneratorConfigEditor({
               }
             }}
           >
-            <SelectTrigger className='h-8 text-xs'>
+            <SelectTrigger className='h-8 text-label'>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -131,13 +131,13 @@ export function GeneratorConfigEditor({
 
         {generator.kind === 'mock_preset' && (
           <div>
-            <Label className='text-[11px] text-muted-foreground'>字典预设项</Label>
+            <Label className='text-caption text-muted-foreground'>字典预设项</Label>
             <Select
               value={generator.preset}
               disabled={disabled}
               onValueChange={(preset: MockPreset) => onChange({ ...generator, preset })}
             >
-              <SelectTrigger className='h-8 text-xs'>
+              <SelectTrigger className='h-8 text-label'>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -154,32 +154,32 @@ export function GeneratorConfigEditor({
         {generator.kind === 'random_number' && (
           <div className='flex gap-1.5'>
             <div className='flex-1'>
-              <Label className='text-[11px] text-muted-foreground'>最小值</Label>
+              <Label className='text-caption text-muted-foreground'>最小值</Label>
               <Input
                 type='number'
-                className='h-8 text-xs'
+                className='h-8 text-label'
                 value={generator.min}
                 disabled={disabled}
                 onChange={(e) => onChange({ ...generator, min: Number(e.target.value) })}
               />
             </div>
             <div className='flex-1'>
-              <Label className='text-[11px] text-muted-foreground'>最大值</Label>
+              <Label className='text-caption text-muted-foreground'>最大值</Label>
               <Input
                 type='number'
-                className='h-8 text-xs'
+                className='h-8 text-label'
                 value={generator.max}
                 disabled={disabled}
                 onChange={(e) => onChange({ ...generator, max: Number(e.target.value) })}
               />
             </div>
             <div className='w-16'>
-              <Label className='text-[11px] text-muted-foreground'>小数位</Label>
+              <Label className='text-caption text-muted-foreground'>小数位</Label>
               <Input
                 type='number'
                 min={0}
                 max={6}
-                className='h-8 text-xs'
+                className='h-8 text-label'
                 value={generator.precision}
                 disabled={disabled}
                 onChange={(e) => onChange({ ...generator, precision: Number(e.target.value) })}
@@ -191,21 +191,21 @@ export function GeneratorConfigEditor({
         {generator.kind === 'random_string' && (
           <div className='flex gap-1.5'>
             <div className='w-20'>
-              <Label className='text-[11px] text-muted-foreground'>长度</Label>
+              <Label className='text-caption text-muted-foreground'>长度</Label>
               <Input
                 type='number'
                 min={1}
                 max={64}
-                className='h-8 text-xs'
+                className='h-8 text-label'
                 value={generator.length}
                 disabled={disabled}
                 onChange={(e) => onChange({ ...generator, length: Number(e.target.value) })}
               />
             </div>
             <div className='flex-1'>
-              <Label className='text-[11px] text-muted-foreground'>前缀</Label>
+              <Label className='text-caption text-muted-foreground'>前缀</Label>
               <Input
-                className='h-8 text-xs'
+                className='h-8 text-label'
                 placeholder='例如 SKU-'
                 value={generator.prefix ?? ''}
                 disabled={disabled}
@@ -217,9 +217,9 @@ export function GeneratorConfigEditor({
 
         {generator.kind === 'template' && (
           <div>
-            <Label className='text-[11px] text-muted-foreground'>模板内容</Label>
+            <Label className='text-caption text-muted-foreground'>模板内容</Label>
             <Input
-              className='h-8 text-xs'
+              className='h-8 text-label'
               placeholder='如 商品_{{random_string}}'
               value={generator.pattern}
               disabled={disabled}
@@ -230,9 +230,9 @@ export function GeneratorConfigEditor({
 
         {generator.kind === 'fixed' && (
           <div>
-            <Label className='text-[11px] text-muted-foreground'>固定默认值</Label>
+            <Label className='text-caption text-muted-foreground'>固定默认值</Label>
             <Input
-              className='h-8 text-xs'
+              className='h-8 text-label'
               value={String(generator.value)}
               disabled={disabled}
               onChange={(e) => onChange({ ...generator, value: e.target.value })}
@@ -242,9 +242,9 @@ export function GeneratorConfigEditor({
 
         {generator.kind === 'enum_sample' && (
           <div>
-            <Label className='text-[11px] text-muted-foreground'>候选列表 (逗号分隔)</Label>
+            <Label className='text-caption text-muted-foreground'>候选列表 (逗号分隔)</Label>
             <Input
-              className='h-8 text-xs'
+              className='h-8 text-label'
               value={generator.options.join(', ')}
               disabled={disabled}
               onChange={(e) =>
@@ -266,16 +266,16 @@ export function GeneratorConfigEditor({
             disabled={disabled}
             onCheckedChange={(checked) => onChange({ ...generator, unique: Boolean(checked) })}
           />
-          <Label htmlFor='unique-check' className='text-xs font-normal text-muted-foreground cursor-pointer'>
+          <Label htmlFor='unique-check' className='text-label font-normal text-muted-foreground cursor-pointer'>
             批次内全局唯一（开启后自动排重碰撞）
           </Label>
         </div>
       )}
 
       {/* 实时求值预览 */}
-      <div className='flex items-center justify-between px-2.5 py-1.5 rounded bg-background/80 border text-[11px] font-mono'>
+      <div className='flex items-center justify-between px-2.5 py-1.5 rounded bg-card border text-caption font-mono'>
         <div className='flex items-center gap-2 truncate'>
-          <Badge variant='outline' className='text-[10px] px-1 py-0 h-4 font-normal'>
+          <Badge variant='outline' className='text-caption px-1 py-0 h-4 font-normal'>
             求值预览
           </Badge>
           <span className='text-foreground font-semibold truncate'>{samplePreview}</span>

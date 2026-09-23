@@ -1,20 +1,24 @@
 import { relations } from 'drizzle-orm'
-import { index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import type {
   ActionModuleDetail,
   EffectType,
+  ModuleCaseResultStatus,
+  ModuleCaseStatus,
   ModuleContent,
   ModuleExecutionMode,
   ModuleInvocationAttribution,
   ModuleInvocationOutcome,
   ModuleInvocationRunKind,
   ModulePublicationStatus,
+  ModuleTestBatchStatus,
   ModuleVerificationStrength,
   ResourceDeletedBy,
+  SampleReview,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
-import { targets } from './targets.js'
+import { targets, targetAccounts } from './targets.js'
 import { runs, scenarios, scenarioVersions } from './execution.js'
 
 export const actionModules = cairnSchema.table(
@@ -247,4 +251,139 @@ export const moduleInvocationResults = cairnSchema.table(
   ],
 )
 export type ModuleInvocationResultRow = typeof moduleInvocationResults.$inferSelect
+
+export const moduleTestCases = cairnSchema.table(
+  'module_test_cases',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    moduleId: uuid('module_id')
+      .notNull()
+      .references(() => actionModules.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    revision: integer('revision').notNull().default(1),
+    contractDigest: text('contract_digest').notNull(),
+    inputs: jsonb('inputs').$type<Record<string, unknown>>().notNull().default({}),
+    expectedModuleOutcome: text('expected_module_outcome').notNull().default('VERIFIED'),
+    expectedFailureCode: text('expected_failure_code'),
+    expectedOutputs: jsonb('expected_outputs').$type<Record<string, unknown>>().notNull().default({}),
+    implementationKey: text('implementation_key').notNull().default('default'),
+    releaseGate: boolean('release_gate').notNull().default(true),
+    targetAccountId: uuid('target_account_id').references(() => targetAccounts.id, { onDelete: 'set null' }),
+    sampleReview: jsonb('sample_review').$type<SampleReview>().notNull(),
+    status: text('status', { enum: ['ACTIVE', 'ARCHIVED', 'INCOMPATIBLE'] })
+      .notNull()
+      .default('ACTIVE')
+      .$type<ModuleCaseStatus>(),
+    createdBy: text('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('module_test_cases_module_status_idx').on(t.moduleId, t.status),
+    index('module_test_cases_module_gate_idx').on(t.moduleId, t.releaseGate),
+  ],
+)
+export type ModuleTestCaseRow = typeof moduleTestCases.$inferSelect
+
+export const moduleCaseExecutions = cairnSchema.table(
+  'module_case_executions',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    caseId: uuid('case_id')
+      .notNull()
+      .references(() => moduleTestCases.id, { onDelete: 'cascade' }),
+    moduleId: uuid('module_id')
+      .notNull()
+      .references(() => actionModules.id, { onDelete: 'cascade' }),
+    caseRevision: integer('case_revision').notNull(),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'cascade' }),
+    comparatorVersion: text('comparator_version').notNull().default('v1'),
+    moduleDraftRevision: integer('module_draft_revision'),
+    moduleVersionId: uuid('module_version_id').references(() => actionModuleVersions.id, { onDelete: 'set null' }),
+    contentDigest: text('content_digest').notNull(),
+    implementationKey: text('implementation_key').notNull().default('default'),
+    targetAccountId: uuid('target_account_id').references(() => targetAccounts.id, { onDelete: 'set null' }),
+    frozenInputs: jsonb('frozen_inputs').$type<Record<string, unknown>>().notNull(),
+    frozenExpectedOutcome: text('frozen_expected_outcome').notNull(),
+    frozenExpectedFailureCode: text('frozen_expected_failure_code'),
+    frozenExpectedOutputs: jsonb('frozen_expected_outputs').$type<Record<string, unknown>>().notNull(),
+    idempotencyKey: text('idempotency_key'),
+    createdBy: text('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('module_case_executions_run_idx').on(t.runId),
+    index('module_case_executions_case_idx').on(t.caseId, t.caseRevision),
+    index('module_case_executions_module_idx').on(t.moduleId, t.createdAt),
+  ],
+)
+export type ModuleCaseExecutionRow = typeof moduleCaseExecutions.$inferSelect
+
+export const moduleCaseResults = cairnSchema.table(
+  'module_case_results',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    executionId: uuid('execution_id')
+      .notNull()
+      .references(() => moduleCaseExecutions.id, { onDelete: 'cascade' }),
+    caseId: uuid('case_id')
+      .notNull()
+      .references(() => moduleTestCases.id, { onDelete: 'cascade' }),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'cascade' }),
+    revision: integer('revision').notNull().default(1),
+    status: text('status', { enum: ['PENDING', 'PASS', 'FAIL', 'INCONCLUSIVE'] })
+      .notNull()
+      .default('PENDING')
+      .$type<ModuleCaseResultStatus>(),
+    outcomeMatched: boolean('outcome_matched'),
+    outputsMatched: boolean('outputs_matched'),
+    evidenceComplete: boolean('evidence_complete'),
+    failureReason: text('failure_reason'),
+    details: jsonb('details').$type<Record<string, unknown>>(),
+    projectorVersion: text('projector_version').notNull().default('v1'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('module_case_results_execution_rev_idx').on(t.executionId, t.revision),
+    index('module_case_results_case_status_idx').on(t.caseId, t.status),
+    index('module_case_results_run_idx').on(t.runId),
+  ],
+)
+export type ModuleCaseResultRow = typeof moduleCaseResults.$inferSelect
+
+export const moduleTestBatches = cairnSchema.table(
+  'module_test_batches',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    moduleId: uuid('module_id')
+      .notNull()
+      .references(() => actionModules.id, { onDelete: 'cascade' }),
+    targetId: uuid('target_id')
+      .notNull()
+      .references(() => targets.id, { onDelete: 'cascade' }),
+    targetAccountId: uuid('target_account_id').references(() => targetAccounts.id, { onDelete: 'set null' }),
+    totalCases: integer('total_cases').notNull(),
+    passedCases: integer('passed_cases').notNull().default(0),
+    failedCases: integer('failed_cases').notNull().default(0),
+    status: text('status', { enum: ['RUNNING', 'COMPLETED', 'HALTED', 'FAILED'] })
+      .notNull()
+      .default('RUNNING')
+      .$type<ModuleTestBatchStatus>(),
+    haltReason: text('halt_reason'),
+    caseExecutionIds: jsonb('case_execution_ids').$type<string[]>().notNull().default([]),
+    confirmedBy: text('confirmed_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('module_test_batches_module_idx').on(t.moduleId, t.createdAt),
+  ],
+)
+export type ModuleTestBatchRow = typeof moduleTestBatches.$inferSelect
+
 

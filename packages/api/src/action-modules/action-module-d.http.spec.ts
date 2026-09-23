@@ -148,6 +148,7 @@ describe('AM-D HTTP → 真实库', { timeout: 30_000 }, () => {
       expectedRevision: 1,
       confirmedWarnings: confirmedWarnings(content),
       idempotencyKey: newId(),
+      skipReleaseGate: true,
     }).expect(200)
     const versions = await request(server).get(`${path}/versions`).expect(200)
     return { id: created.body.id as string, versionId: versions.body.items[0].id as string }

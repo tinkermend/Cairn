@@ -1,5 +1,6 @@
 import {
   deriveExecutionMode,
+  MODULE_BINDABLE_FIELDS,
   moduleContentSchema,
   scenarioDefinitionFromSteps,
   type CompileDiagnostic,
@@ -93,6 +94,73 @@ export function compileModuleContent(
       }
       if (step.outputKey) available.add(step.outputKey)
     })
+    if (impl.fieldBindings) {
+      for (const [bindingIndex, binding] of impl.fieldBindings.entries()) {
+        const bindingPath = [...implPath, 'fieldBindings', String(bindingIndex)]
+        if (!(MODULE_BINDABLE_FIELDS as readonly string[]).includes(binding.field)) {
+          add('MODULE_BINDING_UNSUPPORTED', 'error', `字段「${binding.field}」不在允许绑定的受限字段白名单中`, bindingPath, binding.stepId)
+          continue
+        }
+        const targetStep = steps.find((s) => s.id === binding.stepId)
+        if (!targetStep) {
+          add('MODULE_BINDING_UNSUPPORTED', 'error', `绑定的步骤「${binding.stepId}」不存在`, [...bindingPath, 'stepId'], binding.stepId)
+          continue
+        }
+        const declInput = contract.inputs.find((i) => i.key === binding.inputKey)
+        if (!declInput) {
+          add('MODULE_INPUT_UNDECLARED', 'error', `绑定的输入「${binding.inputKey}」未在契约 inputs 中声明`, [...bindingPath, 'inputKey'], binding.stepId)
+          continue
+        }
+        unusedInputs.delete(binding.inputKey)
+
+        if (binding.field === 'navigate.url') {
+          if (targetStep.type !== 'navigate') {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `字段 navigate.url 仅能绑定到 navigate 步骤`, bindingPath, targetStep.id)
+          }
+          if (declInput.valueType !== 'string') {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `字段 navigate.url 绑定的输入「${declInput.key}」类型必须为 string`, bindingPath, targetStep.id)
+          }
+        } else if (binding.field === 'target.anchor.withinText') {
+          if (!('target' in targetStep.input) || !(targetStep.input as any).target?.anchor) {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `步骤「${targetStep.name}」没有相对锚点配置 (target.anchor)`, bindingPath, targetStep.id)
+          }
+          if (declInput.valueType !== 'string') {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `字段 target.anchor.withinText 绑定的输入「${declInput.key}」类型必须为 string`, bindingPath, targetStep.id)
+          }
+        } else if (binding.field === 'target.candidate.name') {
+          if (!('target' in targetStep.input) || !(targetStep.input as any).target?.candidates?.length) {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `步骤「${targetStep.name}」没有定位候选配置 (target.candidates)`, bindingPath, targetStep.id)
+          }
+          if (declInput.valueType !== 'string') {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `字段 target.candidate.name 绑定的输入「${declInput.key}」类型必须为 string`, bindingPath, targetStep.id)
+          }
+        } else if (binding.field === 'target.candidate.value') {
+          if (!('target' in targetStep.input) || !(targetStep.input as any).target?.candidates?.length) {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `步骤「${targetStep.name}」没有定位候选配置 (target.candidates)`, bindingPath, targetStep.id)
+          }
+          if (declInput.valueType !== 'string') {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `字段 target.candidate.value 绑定的输入「${declInput.key}」类型必须为 string`, bindingPath, targetStep.id)
+          }
+        } else if (binding.field === 'assert.expect.value') {
+          if (targetStep.type !== 'assert') {
+            add('MODULE_BINDING_UNSUPPORTED', 'error', `字段 assert.expect.value 仅能绑定到 assert 步骤`, bindingPath, targetStep.id)
+          } else {
+            const expectKind = (targetStep.input as any).expect?.kind
+            if (expectKind === 'number_compare') {
+              if (declInput.valueType !== 'number') {
+                add('MODULE_BINDING_UNSUPPORTED', 'error', `number_compare 断言绑定的输入「${declInput.key}」类型必须为 number`, bindingPath, targetStep.id)
+              }
+            } else if (expectKind === 'text_equals' || expectKind === 'text_contains') {
+              if (declInput.valueType !== 'string') {
+                add('MODULE_BINDING_UNSUPPORTED', 'error', `文本断言绑定的输入「${declInput.key}」类型必须为 string`, bindingPath, targetStep.id)
+              }
+            } else {
+              add('MODULE_BINDING_UNSUPPORTED', 'error', `断言类型「${expectKind}」不支持绑定 expect.value`, bindingPath, targetStep.id)
+            }
+          }
+        }
+      }
+    }
     const outputStep = (key: string) => {
       const mapping = impl.outputMapping
       return Object.hasOwn(mapping, key) ? steps.find((s) => s.outputKey === mapping[key]) : undefined

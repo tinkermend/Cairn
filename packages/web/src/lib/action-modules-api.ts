@@ -52,7 +52,22 @@ import {
   type ModuleInvocationListQuery,
   type ModuleInvocationListResponse,
   type RunDetailDto,
+  moduleTestCaseSchema,
+  moduleCaseResultSchema,
+  moduleTestBatchSchema,
+  createModuleTestCaseBodySchema,
+  updateModuleTestCaseBodySchema,
+  runModuleTestCaseBodySchema,
+  createModuleTestBatchBodySchema,
+  type ModuleTestCase,
+  type ModuleCaseResult,
+  type ModuleTestBatch,
+  type CreateModuleTestCaseBody,
+  type UpdateModuleTestCaseBody,
+  type RunModuleTestCaseBody,
+  type CreateModuleTestBatchBody,
 } from '@cairn/shared'
+import { z } from 'zod'
 import { apiFetch, toQueryString } from '@/lib/api-client'
 
 export function fetchActionModules(
@@ -275,4 +290,119 @@ export function closeModuleResolution(
     },
   )
 }
+
+// ---------------------------------------------------------------------------
+// Action Module Test Cases & Regression (AMR-04, AMR-05, AMR-06, AMR-10)
+// ---------------------------------------------------------------------------
+
+export const moduleTestCaseListItemSchema = moduleTestCaseSchema.extend({
+  latestResult: moduleCaseResultSchema.optional(),
+})
+export type ModuleTestCaseListItem = z.infer<typeof moduleTestCaseListItemSchema>
+
+export const moduleTestCaseListResponseSchema = z.object({
+  items: z.array(moduleTestCaseListItemSchema),
+  total: z.number().int().nonnegative(),
+})
+export type ModuleTestCaseListResponse = z.infer<typeof moduleTestCaseListResponseSchema>
+
+export function fetchModuleTestCases(moduleId: string): Promise<ModuleTestCaseListResponse> {
+  return apiFetch(`/api/action-modules/${moduleId}/test-cases`, moduleTestCaseListResponseSchema)
+}
+
+export function fetchModuleTestCase(moduleId: string, caseId: string): Promise<ModuleTestCaseListItem> {
+  return apiFetch(`/api/action-modules/${moduleId}/test-cases/${caseId}`, moduleTestCaseListItemSchema)
+}
+
+export function createModuleTestCase(
+  moduleId: string,
+  body: CreateModuleTestCaseBody,
+): Promise<ModuleTestCase> {
+  return apiFetch(`/api/action-modules/${moduleId}/test-cases`, moduleTestCaseSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(createModuleTestCaseBodySchema.parse(body)),
+  })
+}
+
+export function updateModuleTestCase(
+  moduleId: string,
+  caseId: string,
+  body: UpdateModuleTestCaseBody,
+): Promise<ModuleTestCase> {
+  return apiFetch(`/api/action-modules/${moduleId}/test-cases/${caseId}/update`, moduleTestCaseSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updateModuleTestCaseBodySchema.parse(body)),
+  })
+}
+
+export function deleteModuleTestCase(moduleId: string, caseId: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/action-modules/${moduleId}/test-cases/${caseId}/delete`, z.object({ success: z.boolean() }), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+}
+
+export function runModuleTestCase(
+  moduleId: string,
+  caseId: string,
+  body?: RunModuleTestCaseBody,
+): Promise<{ executionId: string; runId: string; status: string }> {
+  return apiFetch(
+    `/api/action-modules/${moduleId}/test-cases/${caseId}/run`,
+    z.object({ executionId: z.string(), runId: z.string(), status: z.string() }).passthrough(),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(runModuleTestCaseBodySchema.parse(body ?? {})),
+    },
+  )
+}
+
+export function createModuleTestBatch(
+  moduleId: string,
+  body: CreateModuleTestBatchBody,
+): Promise<ModuleTestBatch> {
+  return apiFetch(`/api/action-modules/${moduleId}/test-batches`, moduleTestBatchSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(createModuleTestBatchBodySchema.parse(body)),
+  })
+}
+
+export function fetchModuleTestBatch(
+  moduleId: string,
+  batchId: string,
+): Promise<ModuleTestBatch> {
+  return apiFetch(`/api/action-modules/${moduleId}/test-batches/${batchId}`, moduleTestBatchSchema)
+}
+
+export function recomputeModuleCaseResult(
+  moduleId: string,
+  caseId: string,
+  executionId: string,
+): Promise<ModuleCaseResult> {
+  return apiFetch(
+    `/api/action-modules/${moduleId}/test-cases/${caseId}/recompute`,
+    moduleCaseResultSchema,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ executionId }),
+    },
+  )
+}
+
+export type {
+  ModuleTestCase,
+  ModuleCaseResult,
+  ModuleTestBatch,
+  CreateModuleTestCaseBody,
+  UpdateModuleTestCaseBody,
+  RunModuleTestCaseBody,
+  CreateModuleTestBatchBody,
+}
+
 

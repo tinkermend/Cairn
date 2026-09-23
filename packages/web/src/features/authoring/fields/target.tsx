@@ -102,7 +102,14 @@ export function TargetFields({
     <div className='space-y-3'>
       <div className='space-y-2'>
         <div className='flex flex-wrap items-center justify-between gap-2'>
-          <Label htmlFor='target-semantic'>目标</Label>
+          <Label htmlFor='target-semantic' className='flex items-center gap-1.5'>
+            <span>目标</span>
+            {!optional ? (
+              <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
+            ) : (
+              <span className='rounded bg-muted px-1.5 py-0.5 text-caption font-normal text-muted-foreground' aria-hidden='true'>选填</span>
+            )}
+          </Label>
         </div>
         {(target.semantic || target.candidates.some((c) => c.value.trim())) ? (
           <div className='flex items-center justify-between gap-2 rounded-md border border-border-default bg-muted/20 p-2.5'>
@@ -146,6 +153,7 @@ export function TargetFields({
         ) : null}
         <Input
           id='target-semantic'
+          aria-label='目标'
           value={sanitizeLocatorLabel(target.semantic ?? '')}
           disabled={disabled}
           placeholder='例如：订单列表第一行的删除按钮'

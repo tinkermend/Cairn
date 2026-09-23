@@ -414,7 +414,7 @@ describe('ActionModules real HTTP → database', () => {
     const conflict = await request(server).post(`${path}/draft`).send({ baseRevision: 0, content }).expect(409)
     expect(conflict.body.code).toBe('MODULE_DRAFT_CONFLICT')
     await request(server).post(`${path}/draft`).send({ baseRevision: 1, content }).expect(200)
-    const pubBody = { expectedRevision: 2, idempotencyKey: newId() }
+    const pubBody = { expectedRevision: 2, idempotencyKey: newId(), skipReleaseGate: true }
     const pub = await request(server).post(`${path}/publish`).send(pubBody).expect(200)
     expect(pub.body.latestVersionNo).toBe(1)
     const again = await request(server).post(`${path}/publish`).send(pubBody).expect(200)
@@ -439,7 +439,7 @@ describe('ActionModules real HTTP → database', () => {
     const created = await request(server).post('/action-modules').send({ targetId, key: 'review.pub', name: '状态治理', idempotencyKey: newId() }).expect(201)
     const path = `/action-modules/${created.body.id}`
     await request(server).post(`${path}/draft`).send({ baseRevision: 0, content }).expect(200)
-    await request(server).post(`${path}/publish`).send({ expectedRevision: 1, idempotencyKey: newId() }).expect(200)
+    await request(server).post(`${path}/publish`).send({ expectedRevision: 1, idempotencyKey: newId(), skipReleaseGate: true }).expect(200)
     const versions = await request(server).get(`${path}/versions`).expect(200)
     const versionId = versions.body.items[0].id
     const deprecated = await request(server).post(`${path}/versions/${versionId}/publication`).send({ status: 'deprecated', reason: '准备升级' }).expect(200)

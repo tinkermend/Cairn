@@ -379,12 +379,13 @@ describe('AM-B: 编写展开纯函数 (expandAuthoringDocument)', () => {
 
     const result = expandAuthoringDocument(doc, ctx())
     expect(result.ok).toBe(true)
-    expect(result.definition!.steps).toHaveLength(6)
+    // 2 次调用，每次 3 个业务步 + 1 个 verify_context 校验步 = 共 8 步
+    expect(result.definition!.steps).toHaveLength(8)
 
     const stepIds = new Set(result.definition!.steps.map((s) => s.id))
-    expect(stepIds.size).toBe(6)
+    expect(stepIds.size).toBe(8)
 
-    const call2ExtractStep = result.definition!.steps[5]!
+    const call2ExtractStep = result.definition!.steps[6]!
     expect(call2ExtractStep.outputKey).toBe('m1_orderStatus')
   })
 
@@ -463,7 +464,7 @@ describe('AM-B: 编写展开纯函数 (expandAuthoringDocument)', () => {
     expect(unsupported.diagnostics.some((d) => d.code === 'MODULE_BINDING_UNSUPPORTED')).toBe(true)
   })
 
-  it('AMB-05: 展开后恰好 32 步通过，33 步阻断并列出各调用步数', () => {
+  it('AMB-05: 展开后恰好 64 步通过，65 步阻断并列出各调用步数', () => {
     const makeContent = (count: number): ModuleContent => ({
       contract: { inputs: [], outputs: [], preconditions: [], postconditions: [], effectCeiling: 'READ_ONLY' },
       implementations: [
@@ -482,7 +483,7 @@ describe('AM-B: 编写展开纯函数 (expandAuthoringDocument)', () => {
       ],
     })
 
-    const exactContent = makeContent(32)
+    const exactContent = makeContent(64)
     const exactLoaded: LoadedModuleVersion = {
       ...dummyLoadedModule,
       content: exactContent,
@@ -508,10 +509,10 @@ describe('AM-B: 编写展开纯函数 (expandAuthoringDocument)', () => {
       ctx({ loadedModules: new Map([[versionId, exactLoaded]]) }),
     )
     expect(exact.ok).toBe(true)
-    expect(exact.definition!.steps).toHaveLength(32)
+    expect(exact.definition!.steps).toHaveLength(64)
 
-    const overContentA = makeContent(16)
-    const overContentB = makeContent(17)
+    const overContentA = makeContent(32)
+    const overContentB = makeContent(33)
     const overLoadedA: LoadedModuleVersion = {
       ...dummyLoadedModule,
       content: overContentA,
@@ -559,10 +560,10 @@ describe('AM-B: 编写展开纯函数 (expandAuthoringDocument)', () => {
     )
     expect(over.ok).toBe(false)
     const limit = over.diagnostics.find((d) => d.code === 'SCENARIO_EXPANDED_STEP_LIMIT')
-    expect(limit?.message).toContain('33')
+    expect(limit?.message).toContain('65')
     expect(limit?.message).toContain('第一组')
-    expect(limit?.message).toContain('16步')
-    expect(limit?.message).toContain('17步')
+    expect(limit?.message).toContain('32步')
+    expect(limit?.message).toContain('33步')
   })
 
   it('AMB-06: 同样输入重复编译摘要相同；只改调用顺序得到不同但稳定的结果', () => {
@@ -690,5 +691,169 @@ describe('AM-B: 编写展开纯函数 (expandAuthoringDocument)', () => {
     )
     expect(result.ok).toBe(false)
     expect(result.diagnostics.some((d) => d.code === 'MODULE_DIGEST_MISMATCH')).toBe(true)
+  })
+
+  describe('AMR-01 & AMR-03: 字段重写与输出自检步骤合成', () => {
+    it('AMR-01: 字面量绑定就地改写，动态绑定生成 fieldRefs', () => {
+      const stepNavId = '10000000-0000-4000-8000-000000000001'
+      const stepAssertId = '10000000-0000-4000-8000-000000000002'
+      const testContent: ModuleContent = {
+        contract: {
+          inputs: [
+            { key: 'target_url', label: '目标URL', valueType: 'string', required: true },
+            { key: 'expect_text', label: '预期文本', valueType: 'string', required: true },
+          ],
+          outputs: [],
+          preconditions: [],
+          postconditions: [],
+          effectCeiling: 'SIDE_EFFECT',
+        },
+        implementations: [
+          {
+            implementationKey: 'default',
+            kind: 'structured_steps',
+            steps: [
+              {
+                id: stepNavId,
+                name: '导航',
+                type: 'navigate',
+                effectType: 'SIDE_EFFECT',
+                input: { url: 'https://placeholder.com' },
+              },
+              {
+                id: stepAssertId,
+                name: '断言',
+                type: 'assert',
+                effectType: 'READ_ONLY',
+                input: {
+                  expect: { kind: 'text_contains', value: 'old_text' },
+                  target: { framePath: [], candidates: [{ by: 'text', value: 'old_text' }] },
+                },
+              },
+            ],
+            fieldBindings: [
+              { stepId: stepNavId, field: 'navigate.url', inputKey: 'target_url' },
+              { stepId: stepAssertId, field: 'assert.expect.value', inputKey: 'expect_text' },
+            ],
+            outputMapping: {},
+          },
+        ],
+      }
+      const loaded: LoadedModuleVersion = {
+        ...dummyLoadedModule,
+        content: testContent,
+        contentDigest: moduleContentDigest(testContent),
+      }
+
+      const doc: ScenarioAuthoringDocumentV2 = {
+        authoringSchemaVersion: 2,
+        schemaVersion: 1,
+        inputs: [{ key: 'prev_msg', label: '上游消息' }],
+        nodes: [
+          {
+            kind: 'module',
+            invocationId: '20000000-0000-4000-8000-000000000001',
+            moduleId,
+            moduleVersionId: versionId,
+            implementationKey: 'default',
+            inputBindings: {
+              target_url: { kind: 'literal', value: 'https://actual.example.com' },
+              expect_text: { kind: 'from', key: 'prev_msg' },
+            },
+            outputBindings: {},
+          },
+        ],
+      }
+
+      const result = expandAuthoringDocument(doc, ctx({ loadedModules: new Map([[versionId, loaded]]) }))
+      expect(result.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+      expect(result.ok).toBe(true)
+      const steps = result.definition!.steps
+      expect(steps).toHaveLength(2)
+
+      // navigate step should have its url rewritten literally
+      const navStep = steps[0]!
+      expect((navStep.input as { url: string }).url).toBe('https://actual.example.com')
+
+      // assert step should have fieldRefs populated
+      const assertStep = steps[1]!
+      expect(assertStep.fieldRefs).toBeDefined()
+      expect(assertStep.fieldRefs!['assert.expect.value']).toEqual({
+        from: 'prev_msg',
+      })
+    })
+
+    it('AMR-03: 声明 output 时合成 verify_context 步骤并记录 frozenOutputs', () => {
+      const stepExtractId = '10000000-0000-4000-8000-000000000001'
+      const testContent: ModuleContent = {
+        contract: {
+          inputs: [],
+          outputs: [
+            { key: 'token', label: '令牌', shape: { kind: 'scalar', type: 'string' } },
+          ],
+          preconditions: [],
+          postconditions: [],
+          effectCeiling: 'READ_ONLY',
+        },
+        implementations: [
+          {
+            implementationKey: 'default',
+            kind: 'structured_steps',
+            steps: [
+              {
+                id: stepExtractId,
+                name: '提取',
+                type: 'extract',
+                effectType: 'READ_ONLY',
+                outputKey: 'raw_token',
+                input: {
+                  target: { framePath: [], candidates: [{ by: 'testId', value: 'token-elem' }] },
+                  as: 'text',
+                },
+              },
+            ],
+            outputMapping: { token: 'raw_token' },
+          },
+        ],
+      }
+      const loaded: LoadedModuleVersion = {
+        ...dummyLoadedModule,
+        content: testContent,
+        contentDigest: moduleContentDigest(testContent),
+      }
+
+      const doc: ScenarioAuthoringDocumentV2 = {
+        authoringSchemaVersion: 2,
+        schemaVersion: 1,
+        inputs: [],
+        nodes: [
+          {
+            kind: 'module',
+            invocationId: '20000000-0000-4000-8000-000000000001',
+            moduleId,
+            moduleVersionId: versionId,
+            implementationKey: 'default',
+            inputBindings: {},
+            outputBindings: {
+              token: 'scenario_token',
+            },
+          },
+        ],
+      }
+
+      const result = expandAuthoringDocument(doc, ctx({ loadedModules: new Map([[versionId, loaded]]) }))
+      expect(result.ok).toBe(true)
+      const steps = result.definition!.steps
+      // Should have 2 steps: extract + synthesized verify_context
+      expect(steps).toHaveLength(2)
+      const verifyStep = steps[1]!
+      expect(verifyStep.type).toBe('verify_context')
+      expect((verifyStep.input as { keys: string[] }).keys).toEqual(['scenario_token'])
+
+      // Check entry in manifest
+      const entry = result.manifest!.entries[0]!
+      expect(entry.outputVerificationStepIds).toEqual([verifyStep.id])
+      expect(entry.frozenOutputs).toEqual({ token: 'scenario_token' })
+    })
   })
 })

@@ -168,6 +168,7 @@ describe('AM-C HTTP → 真实库', { timeout: 30_000 }, () => {
       expectedRevision: 1,
       confirmedWarnings: confirmedModuleWarnings(content),
       idempotencyKey: newId(),
+      skipReleaseGate: true,
     }).expect(200)
     const versions = await request(server).get(`${path}/versions`).expect(200)
     return { id: created.body.id as string, path, versions: versions.body.items as { id: string; versionNo: number }[] }
@@ -256,6 +257,7 @@ describe('AM-C HTTP → 真实库', { timeout: 30_000 }, () => {
       expectedRevision: afterDraft.body.draftRevision,
       confirmedWarnings: confirmedModuleWarnings(ai),
       idempotencyKey: newId(),
+      skipReleaseGate: true,
     }).expect(200)
     const v2 = (await request(server).get(`${published.path}/versions`).expect(200)).body.items[0] as { id: string }
 
@@ -317,6 +319,7 @@ describe('AM-C HTTP → 真实库', { timeout: 30_000 }, () => {
       expectedRevision: afterDraft.body.draftRevision,
       confirmedWarnings: confirmedModuleWarnings(next),
       idempotencyKey: newId(),
+      skipReleaseGate: true,
     }).expect(200)
     const v2 = (await request(server).get(`${published.path}/versions`).expect(200)).body.items[0] as { id: string }
     const scenario = await createInvocationScenario('待补绑定', published.id, published.versions[0]!.id)
@@ -417,6 +420,7 @@ describe('AM-C HTTP → 真实库', { timeout: 30_000 }, () => {
       expectedRevision: extracted.body.draftRevision,
       confirmedWarnings: confirmedModuleWarnings(extracted.body.draftContent),
       idempotencyKey: newId(),
+      skipReleaseGate: true,
     }).expect(200)
     const extractedVersion = (await request(server).get(`/action-modules/${extracted.body.id}/versions`).expect(200)).body.items[0]
     const compare = await request(server).post(`/scenarios/${created.body.id}/module-replace-preview`).send({

@@ -19,6 +19,10 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
     for (const handle of handles.splice(0).reverse()) await handle.close()
   })
 
+  function publishActionModule(db: any, moduleId: string, input: any) {
+    return api.publishActionModule(db, moduleId, { skipReleaseGate: true, ...input })
+  }
+
   async function setupFixture(driver: ContractDriver = 'postgres') {
     const handle = await openContractDb(driver)
     handles.push(handle)
@@ -159,7 +163,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
     expect(draftSaved.compile?.ok).toBe(true)
 
     // 4. 发布
-    const published = await api.publishActionModule(db, created.id, {
+    const published = await publishActionModule(db, created.id, {
         idempotencyKey: newId(),
       expectedRevision: 2,
       actor: { id: account.id },
@@ -230,7 +234,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       })
 
       // 首次发布 -> v1
-      const pub1 = await api.publishActionModule(db, created.id, {
+      const pub1 = await publishActionModule(db, created.id, {
         idempotencyKey: newId(),
         expectedRevision: 1,
         actor: { id: account.id },
@@ -238,7 +242,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       expect(pub1.latestVersionNo).toBe(1)
 
       // 再次发布同一 revision -> 幂等，依然是 v1
-      const pub2 = await api.publishActionModule(db, created.id, {
+      const pub2 = await publishActionModule(db, created.id, {
         idempotencyKey: newId(),
         expectedRevision: 1,
         actor: { id: account.id },
@@ -266,7 +270,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       })
 
       // 发布新草稿 -> v2
-      const pub3 = await api.publishActionModule(db, created.id, {
+      const pub3 = await publishActionModule(db, created.id, {
         idempotencyKey: newId(),
         expectedRevision: 2,
         confirmedWarnings: compileModuleContent(modifiedContent, { mode: 'release' }).diagnostics.filter((d) => d.severity === 'warning').map(moduleWarningKey),
@@ -351,7 +355,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
         actor: { id: account.id },
       })
 
-      await api.publishActionModule(db, created.id, {
+      await publishActionModule(db, created.id, {
         idempotencyKey: newId(),
         expectedRevision: 1,
         actor: { id: account.id },
@@ -439,7 +443,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       actor: { id: account.id },
     })
 
-    const published = await api.publishActionModule(db, created.id, {
+    const published = await publishActionModule(db, created.id, {
         idempotencyKey: newId(),
       expectedRevision: 1,
       actor: { id: account.id },
@@ -456,7 +460,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       const actor = { id: account.id }
       const module = await api.createActionModule(db, { targetId: target1.id, key: 'review.constraints', name: '约束验证', idempotencyKey: newId(), actor })
       await api.saveActionModuleDraft(db, module.id, { baseRevision: 0, content: validContent, actor })
-      await api.publishActionModule(db, module.id, { expectedRevision: 1, idempotencyKey: newId(), actor })
+      await publishActionModule(db, module.id, { expectedRevision: 1, idempotencyKey: newId(), actor })
       const native = connection(db)
       const { actionModules, actionModuleVersions, actionModuleReceipts, targets } = schemaFor(native)
       const [row] = await native.select().from(actionModules).where(eq(actionModules.id, module.id))
@@ -488,7 +492,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       const current = await api.getActionModule(db, created.id)
       const saved = await api.saveActionModuleDraft(db, created.id, { baseRevision: current.draftRevision!, content: validContent, actor })
       const publish = { expectedRevision: saved.draftRevision!, idempotencyKey: newId(), actor }
-      const [first, same] = await Promise.all([api.publishActionModule(db, created.id, publish), api.publishActionModule(db, created.id, publish)])
+      const [first, same] = await Promise.all([publishActionModule(db, created.id, publish), publishActionModule(db, created.id, publish)])
       expect(same).toEqual(first)
       const version = (await api.listActionModuleVersions(db, created.id)).items[0]!
       expect(version.contentDigest).toBe(api.computeContentDigest(version.content))
@@ -496,8 +500,8 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       expect(version.implementationDigest).toBe(api.computeImplementationDigest(version.content.implementations))
       const modified = structuredClone(validContent); modified.implementations[0]!.steps[0]!.name = '新版提取'
       const next = await api.saveActionModuleDraft(db, created.id, { baseRevision: saved.draftRevision!, content: modified, actor })
-      await api.publishActionModule(db, created.id, { expectedRevision: next.draftRevision!, idempotencyKey: newId(), actor })
-      expect(await api.publishActionModule(db, created.id, publish)).toEqual(first)
+      await publishActionModule(db, created.id, { expectedRevision: next.draftRevision!, idempotencyKey: newId(), actor })
+      expect(await publishActionModule(db, created.id, publish)).toEqual(first)
       expect((await api.listActionModuleVersions(db, created.id)).items).toHaveLength(2)
       expect(await api.getActionModuleVersion(db, created.id, version.id)).toEqual(version)
     })
@@ -507,7 +511,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       const created = await api.createActionModule(db, { targetId: target1.id, key: 'review.filter', name: '可检索模块', idempotencyKey: newId(), actor })
       await api.updateActionModuleMeta(db, created.id, { baseRevision: 0, tags: ['a%b_"'], aliases: ['查询复查专用别名'], actor })
       await api.saveActionModuleDraft(db, created.id, { baseRevision: 1, content: validContent, actor })
-      await api.publishActionModule(db, created.id, { expectedRevision: 2, idempotencyKey: newId(), actor })
+      await publishActionModule(db, created.id, { expectedRevision: 2, idempotencyKey: newId(), actor })
       expect((await api.listActionModules(db, { q: '  复查专用别名  ', tag: 'a%b_"', executionMode: 'DETERMINISTIC', publication: 'published', pageSize: 1 })).total).toBe(1)
       expect((await api.listActionModules(db, { tag: '%' })).total).toBe(0)
       expect((await api.listActionModules(db, { q: '%' })).total).toBe(0)
@@ -517,7 +521,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       expect((await api.listActionModules(db, {})).total).toBe(0)
       await expect(api.getActionModuleVersion(db, created.id, v.id)).rejects.toMatchObject({ code: 'MODULE_NOT_FOUND' })
       await expect(api.saveActionModuleDraft(db, created.id, { baseRevision: 2, content: validContent, actor })).rejects.toMatchObject({ code: 'MODULE_NOT_FOUND' })
-      await expect(api.publishActionModule(db, created.id, { expectedRevision: 2, idempotencyKey: newId(), actor })).rejects.toMatchObject({ code: 'MODULE_NOT_FOUND' })
+      await expect(publishActionModule(db, created.id, { expectedRevision: 2, idempotencyKey: newId(), actor })).rejects.toMatchObject({ code: 'MODULE_NOT_FOUND' })
     })
     it('关闭的 AI 能力阻断发布；逐条警告不能用诊断码或过期集合确认', async () => {
       const { db, account, target1 } = await setupFixture(driver)
@@ -526,16 +530,16 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
       const c = structuredClone(validContent)
       c.implementations[0]!.steps.push({ id: newId(), type: 'ai_assert', name: 'AI 校验', effectType: 'READ_ONLY', input: { instruction: '页面正确' } })
       await api.saveActionModuleDraft(db, created.id, { baseRevision: 0, content: c, actor })
-      await expect(api.publishActionModule(db, created.id, { expectedRevision: 1, idempotencyKey: newId(), actor })).rejects.toMatchObject({ code: 'MODULE_COMPILE_BLOCKED' })
+      await expect(publishActionModule(db, created.id, { expectedRevision: 1, idempotencyKey: newId(), actor })).rejects.toMatchObject({ code: 'MODULE_COMPILE_BLOCKED' })
       const warned = structuredClone(validContent)
       warned.contract.inputs = ['a', 'b'].map((key) => ({ key, label: key, required: false, valueType: 'string' }))
       await api.saveActionModuleDraft(db, created.id, { baseRevision: 1, content: warned, actor })
       const warnings = compileModuleContent(warned, { mode: 'release' }).diagnostics.filter((d) => d.severity === 'warning').map(moduleWarningKey)
       expect(new Set(warnings).size).toBe(2)
       for (const confirmedWarnings of [['MODULE_INPUT_UNUSED'], warnings.slice(0, 1), [...warnings, 'stale']]) {
-        await expect(api.publishActionModule(db, created.id, { expectedRevision: 2, idempotencyKey: newId(), confirmedWarnings, actor })).rejects.toMatchObject({ code: 'MODULE_WARNINGS_NOT_CONFIRMED' })
+        await expect(publishActionModule(db, created.id, { expectedRevision: 2, idempotencyKey: newId(), confirmedWarnings, actor })).rejects.toMatchObject({ code: 'MODULE_WARNINGS_NOT_CONFIRMED' })
       }
-      expect((await api.publishActionModule(db, created.id, { expectedRevision: 2, idempotencyKey: newId(), confirmedWarnings: warnings, actor })).latestVersionNo).toBe(1)
+      expect((await publishActionModule(db, created.id, { expectedRevision: 2, idempotencyKey: newId(), confirmedWarnings: warnings, actor })).latestVersionNo).toBe(1)
     })
   })
 
@@ -604,7 +608,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
     const created = await api.createActionModule(db, body)
     await api.saveActionModuleDraft(db, created.id, { baseRevision: 0, content: validContent, actor })
     const pubBody = { expectedRevision: 1, idempotencyKey: newId(), actor }
-    const published = await api.publishActionModule(db, created.id, pubBody)
+    const published = await publishActionModule(db, created.id, pubBody)
     const options = { writersStopped: true as const, allowMillisecondPrecisionLoss: true }
     const archive = await exportDatabase(db, handle.env, options)
     expect(archive.tables.actionModules).toHaveLength(1)
@@ -613,7 +617,7 @@ describe('AM-A: 动作模块数据库持久化 (A3)', { timeout: 30_000 }, () =>
     const destination = await openContractDb('mysql', undefined, { pristine: true }); handles.push(destination)
     const imported = expose(destination)
     await importDatabase(imported, destination.env, archive, options)
-    expect(await api.publishActionModule(imported, created.id, pubBody)).toEqual(published)
+    expect(await publishActionModule(imported, created.id, pubBody)).toEqual(published)
     expect(await api.createActionModule(imported, body)).toEqual(created)
     expect((await api.listActionModuleVersions(imported, created.id)).items[0]!.contentDigest).toBe(api.computeContentDigest(validContent))
   })

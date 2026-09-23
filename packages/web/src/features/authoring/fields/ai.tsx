@@ -4,6 +4,7 @@ import {
   type OutputFieldType,
   type Step,
   type OutputShape,
+  type ContextBinding,
 } from '@cairn/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,6 +17,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { Plus, Trash2 } from 'lucide-react'
 import { fieldElementId } from '../document'
 import type { BindingOption } from '../document'
 import { BindingFields } from './binding'
@@ -39,24 +41,144 @@ export function AiStepFields({
   bindings?: BindingOption[]
   shapes?: Map<string, OutputShape>
 }) {
-  if (step.type === 'ai_action') return (
-    <div className='space-y-3'>
-      <Label>操作方式</Label>
-      <Select value={'operation' in step.input ? step.input.operation : 'intent'} disabled={disabled} onValueChange={(operation) => {
-        const input = operation === 'intent' ? { instruction: '完成指定的页面操作' }
-          : operation === 'tap' ? { operation: 'tap' as const, targetDescription: '' }
-          : operation === 'input' ? { operation: 'input' as const, mode: 'replace' as const, targetDescription: '', value: '' }
-          : operation === 'keyboard' ? { operation: 'keyboard' as const, key: 'Enter' }
-          : { operation: 'scroll' as const, direction: 'down' as const, distance: 300 }
-        onChange({ ...step, input, policy: { ...step.policy, retryLimit: 0 } })
-      }}>
-        <SelectTrigger className='w-full' aria-label='AI 操作方式'><SelectValue /></SelectTrigger>
-        <SelectContent><SelectItem value='intent'>业务意图</SelectItem><SelectItem value='tap'>点击目标</SelectItem><SelectItem value='input'>输入文字</SelectItem><SelectItem value='keyboard'>按键</SelectItem><SelectItem value='scroll'>相对滚动</SelectItem></SelectContent>
-      </Select>
-      {'operation' in step.input ? <AtomicActionFields step={step} disabled={disabled} bindings={bindings} shapes={shapes} onChange={onChange} /> : <InstructionFields step={step} disabled={disabled} onChange={onChange} />}
+  return (
+    <div className='space-y-4'>
+      {step.type === 'ai_action' ? (
+        <div className='space-y-3'>
+          <div className='flex items-center gap-1.5'>
+            <Label>操作方式</Label>
+            <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
+          </div>
+          <Select value={'operation' in step.input ? step.input.operation : 'intent'} disabled={disabled} onValueChange={(operation) => {
+            const input = operation === 'intent' ? { instruction: '完成指定的页面操作' }
+              : operation === 'tap' ? { operation: 'tap' as const, targetDescription: '' }
+              : operation === 'input' ? { operation: 'input' as const, mode: 'replace' as const, targetDescription: '', value: '' }
+              : operation === 'keyboard' ? { operation: 'keyboard' as const, key: 'Enter' }
+              : { operation: 'scroll' as const, direction: 'down' as const, distance: 300 }
+            onChange({ ...step, input, policy: { ...step.policy, retryLimit: 0 } })
+          }}>
+            <SelectTrigger className='w-full' aria-label='AI 操作方式'><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value='intent'>业务意图</SelectItem><SelectItem value='tap'>点击目标</SelectItem><SelectItem value='input'>输入文字</SelectItem><SelectItem value='keyboard'>按键</SelectItem><SelectItem value='scroll'>相对滚动</SelectItem></SelectContent>
+          </Select>
+          {'operation' in step.input ? <AtomicActionFields step={step} disabled={disabled} bindings={bindings} shapes={shapes} onChange={onChange} /> : <InstructionFields step={step} disabled={disabled} onChange={onChange} />}
+        </div>
+      ) : (
+        <InstructionFields step={step} disabled={disabled} onChange={onChange} />
+      )}
+      <ContextBindingsField
+        stepId={step.id}
+        bindings={step.contextBindings ?? []}
+        disabled={disabled}
+        onChange={(contextBindings) => onChange({ ...step, contextBindings })}
+      />
     </div>
   )
-  return <InstructionFields step={step} disabled={disabled} onChange={onChange} />
+}
+
+export function ContextBindingsField({
+  stepId: _stepId,
+  bindings = [],
+  disabled,
+  onChange,
+}: {
+  stepId: string
+  bindings: ContextBinding[]
+  disabled?: boolean
+  onChange: (bindings: ContextBinding[]) => void
+}) {
+  const addBinding = () => {
+    onChange([
+      ...bindings,
+      {
+        name: `param_${bindings.length + 1}`,
+        source: 'inputs',
+        path: 'key',
+        required: true,
+      },
+    ])
+  }
+
+  const updateBinding = (index: number, patch: Partial<ContextBinding>) => {
+    const next = [...bindings]
+    next[index] = { ...next[index]!, ...patch }
+    onChange(next)
+  }
+
+  const removeBinding = (index: number) => {
+    onChange(bindings.filter((_, i) => i !== index))
+  }
+
+  return (
+    <div className='space-y-2 rounded-md border p-3 bg-muted/20'>
+      <div className='flex items-center justify-between'>
+        <div>
+          <Label className='text-label font-medium'>显式运行上下文绑定 (Context Bindings)</Label>
+          <p className='text-label text-muted-foreground'>
+            仅显式声明的输入或步骤输出才会注入大模型决策上下文，杜绝全量上下文与凭据泄露。
+          </p>
+        </div>
+        <Button
+          type='button'
+          size='sm'
+          variant='outline'
+          disabled={disabled || bindings.length >= 16}
+          className='gap-1 text-label h-7'
+          onClick={addBinding}
+        >
+          <Plus className='h-3 w-3' />
+          添加绑定
+        </Button>
+      </div>
+
+      {bindings.length === 0 ? (
+        <p className='text-label text-muted-foreground italic py-1'>暂无显式绑定参数</p>
+      ) : (
+        <div className='space-y-2 pt-1'>
+          {bindings.map((binding, idx) => (
+            <div key={idx} className='flex items-center gap-2'>
+              <Input
+                placeholder='变量名 (如 orderAmount)'
+                value={binding.name}
+                disabled={disabled}
+                className='h-8 text-label w-1/3'
+                onChange={(e) => updateBinding(idx, { name: e.target.value })}
+              />
+              <Select
+                value={binding.source}
+                disabled={disabled}
+                onValueChange={(val: 'inputs' | 'steps') => updateBinding(idx, { source: val })}
+              >
+                <SelectTrigger className='h-8 text-label w-28'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='inputs'>场景输入</SelectItem>
+                  <SelectItem value='steps'>步骤输出</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder='字段路径 (如 amount 或 step_1.token)'
+                value={binding.path}
+                disabled={disabled}
+                className='h-8 text-label flex-1 font-mono'
+                onChange={(e) => updateBinding(idx, { path: e.target.value })}
+              />
+              <Button
+                type='button'
+                size='sm'
+                variant='ghost'
+                disabled={disabled}
+                className='h-8 w-8 p-0 text-muted-foreground hover:text-destructive'
+                onClick={() => removeBinding(idx)}
+              >
+                <Trash2 className='h-4 w-4' />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function AtomicActionFields({ step, disabled, bindings, shapes, onChange }: { step: Extract<Step, { type: 'ai_action' }>; disabled?: boolean; bindings: BindingOption[]; shapes: Map<string, OutputShape>; onChange: (step: Step) => void }) {
@@ -80,7 +202,7 @@ function AtomicActionFields({ step, disabled, bindings, shapes, onChange }: { st
     </>}
     {input.operation === 'keyboard' && <div className='space-y-2'><Label htmlFor={`atom-key-${step.id}`}>按键组合</Label><Input id={`atom-key-${step.id}`} disabled={disabled} value={input.key} placeholder='Control+a / Enter' onChange={(e) => update({ key: e.target.value })} /></div>}
     {input.operation === 'scroll' && <div className='grid gap-3 sm:grid-cols-2'><div className='space-y-2'><Label>滚动方向</Label><Select disabled={disabled} value={input.direction} onValueChange={(direction) => update({ direction })}><SelectTrigger aria-label='滚动方向'><SelectValue /></SelectTrigger><SelectContent>{([['up', '向上'], ['down', '向下'], ['left', '向左'], ['right', '向右']] as const).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select></div><div className='space-y-2'><Label htmlFor={`atom-distance-${step.id}`}>距离（CSS 像素）</Label><Input id={`atom-distance-${step.id}`} type='number' min={1} max={10000} value={input.distance} disabled={disabled} onChange={(e) => update({ distance: Number(e.target.value) })} /></div></div>}
-    <p className='text-label text-muted-foreground'>每次执行一个明确动作。存在副作用，不会自动重试。</p>
+    <p className='text-label text-muted-foreground'>每次执行一个明确动作。属于页面变更操作，不会自动盲目重试。</p>
   </div>
 }
 
@@ -89,11 +211,13 @@ function InstructionFields({ step, disabled, onChange }: { step: Extract<Step, {
   return (
     <div className='space-y-3'>
       <div className='space-y-2'>
-        <Label htmlFor={fieldElementId(step.id, ['input', 'instruction'])}>
-          业务指令
+        <Label htmlFor={fieldElementId(step.id, ['input', 'instruction'])} className='flex items-center gap-1.5'>
+          <span>业务指令</span>
+          <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
         </Label>
         <Textarea
           id={fieldElementId(step.id, ['input', 'instruction'])}
+          aria-label='业务指令'
           value={step.input.instruction}
           disabled={disabled}
           onChange={(event) => {
@@ -118,8 +242,8 @@ function InstructionFields({ step, disabled, onChange }: { step: Extract<Step, {
       ) : null}
       <p className='text-label text-muted-foreground'>
         {step.type === 'ai_action'
-          ? '副作用固定为有副作用，且不允许自动重试。'
-          : '此步骤只读。判断不成立不是可改重试的故障。'}
+          ? 'AI 步骤为单次智能决策，异常时不会盲目重发操作。'
+          : '此步骤为只读检查，不改变页面内容。'}
       </p>
     </div>
   )

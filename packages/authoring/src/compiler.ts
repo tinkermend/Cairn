@@ -47,22 +47,25 @@ type StepFromRef = {
 }
 
 function stepFromRefs(step: Step): StepFromRef[] {
+  const refs: StepFromRef[] = []
   if (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input') {
-    return step.input.from ? [{ from: step.input.from, fromField: step.input.fromField, fieldPath: ['input', 'from'] }] : []
-  }
-  if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') {
-    return step.input.from ? [{ from: step.input.from, fromField: step.input.fromField, fieldPath: ['input', 'from'] }] : []
-  }
-  if (step.type === 'upload') {
-    return step.input.files.flatMap((f, idx) => {
+    if (step.input.from) refs.push({ from: step.input.from, fromField: step.input.fromField, fieldPath: ['input', 'from'] })
+  } else if (step.type === 'echo' || step.type === 'fill' || step.type === 'select') {
+    if (step.input.from) refs.push({ from: step.input.from, fromField: step.input.fromField, fieldPath: ['input', 'from'] })
+  } else if (step.type === 'upload') {
+    for (const [idx, f] of step.input.files.entries()) {
       if (f.source === 'context') {
         const from = (f as any).from ?? (f as any).contextKey
-        return from ? [{ from, fromField: f.fromField, fieldPath: ['input', 'files', String(idx), 'from'] }] : []
+        if (from) refs.push({ from, fromField: f.fromField, fieldPath: ['input', 'files', String(idx), 'from'] })
       }
-      return []
-    })
+    }
   }
-  return []
+  if (step.fieldRefs) {
+    for (const [targetField, ref] of Object.entries(step.fieldRefs)) {
+      refs.push({ from: ref.from, fromField: ref.fromField, fieldPath: ['fieldRefs', targetField] })
+    }
+  }
+  return refs
 }
 
 function add(
@@ -214,6 +217,115 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
       })
     }
 
+    if (
+      (step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert') &&
+      'contextBindings' in step &&
+      Array.isArray((step as any).contextBindings)
+    ) {
+      const bindings = (step as any).contextBindings
+      const seenBindingNames = new Set<string>()
+      const RESERVED_NAMES = new Set([
+        '__proto__',
+        'constructor',
+        'prototype',
+        'context',
+        'steps',
+        'input',
+        'scenario',
+        'document',
+        'window',
+        'env',
+      ])
+
+      for (const binding of bindings) {
+        if (!binding.name || typeof binding.name !== 'string') {
+          add(diagnostics, 'SCENARIO_AI_CONTEXT_BINDING_INVALID', 'error', `步骤「${step.name}」的 contextBindings 缺少有效绑定名`, {
+            stepId: step.id,
+          })
+          continue
+        }
+        if (seenBindingNames.has(binding.name)) {
+          add(
+            diagnostics,
+            'SCENARIO_AI_CONTEXT_BINDING_INVALID',
+            'error',
+            `步骤「${step.name}」的 contextBindings 包含重复的绑定名「${binding.name}」`,
+            { stepId: step.id },
+          )
+        }
+        seenBindingNames.add(binding.name)
+
+        if (RESERVED_NAMES.has(binding.name)) {
+          add(
+            diagnostics,
+            'SCENARIO_AI_CONTEXT_BINDING_INVALID',
+            'error',
+            `步骤「${step.name}」的绑定名「${binding.name}」与系统保留字段冲突`,
+            { stepId: step.id },
+          )
+        }
+
+        if (
+          binding.path &&
+          (binding.path.includes('__proto__') ||
+            binding.path.includes('constructor') ||
+            binding.path.includes('prototype'))
+        ) {
+          add(
+            diagnostics,
+            'SCENARIO_AI_CONTEXT_BINDING_INVALID',
+            'error',
+            `步骤「${step.name}」的绑定「${binding.name}」path 包含非法的原型属性`,
+            { stepId: step.id },
+          )
+        }
+
+        const source = binding.source
+        if (typeof source !== 'string') {
+          add(diagnostics, 'SCENARIO_AI_CONTEXT_BINDING_INVALID', 'error', `步骤「${step.name}」的绑定「${binding.name}」缺少有效 source`, {
+            stepId: step.id,
+          })
+          continue
+        }
+
+        if (source.startsWith('input.')) {
+          const inputKey = source.slice('input.'.length).split('.')[0]
+          if (!inputKey || (declared.size > 0 && !declared.has(inputKey))) {
+            add(
+              diagnostics,
+              'SCENARIO_AI_CONTEXT_BINDING_UNRESOLVED',
+              release ? 'error' : 'warning',
+              `步骤「${step.name}」的 contextBindings 引用了未定义的场景输入「${inputKey ?? ''}」`,
+              { stepId: step.id },
+            )
+          } else {
+            usedInputs.add(inputKey)
+          }
+        } else if (source.startsWith('steps.')) {
+          const parts = source.slice('steps.'.length).split('.')
+          const targetStepId = parts[0]
+          // seenStepIds contains previous steps up to and including current step, so check targetStepId !== step.id
+          if (!targetStepId || !seenStepIds.has(targetStepId) || targetStepId === step.id) {
+            add(
+              diagnostics,
+              'SCENARIO_AI_CONTEXT_BINDING_UNRESOLVED',
+              release ? 'error' : 'warning',
+              `步骤「${step.name}」的 contextBindings 引用了不存在或后置的步骤「${targetStepId ?? ''}」`,
+              { stepId: step.id },
+            )
+          }
+        } else {
+          add(
+            diagnostics,
+            'SCENARIO_AI_CONTEXT_BINDING_INVALID',
+            'error',
+            `步骤「${step.name}」的绑定「${binding.name}」source 格式非法，须以 input. 或 steps. 开头`,
+            { stepId: step.id },
+          )
+        }
+      }
+    }
+
     if (step.type === 'wait' && step.input.kind === 'semantic') {
       const available = resolution.waitKindsAvailable ?? WAIT_KINDS_AVAILABLE_NOW
       if (!available.includes('semantic')) {
@@ -264,6 +376,67 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
       add(diagnostics, 'SCENARIO_INPUT_UNUSED', 'warning', `声明的输入「${input.label}」没有被任何步骤引用`, {
         inputKey: input.key,
       })
+    }
+  }
+
+  if (document.outputs) {
+    if (document.outputs.metrics) {
+      for (const m of document.outputs.metrics) {
+        if (!available.has(m.fromContextKey)) {
+          add(
+            diagnostics,
+            'OUTPUT_VARIABLE_UNRESOLVED',
+            'warning',
+            `业务输出指标「${m.name}」引用的变量「${m.fromContextKey}」未在输入或任何步骤的 outputKey 中定义`,
+            { fieldPath: ['outputs', 'metrics', m.key, 'fromContextKey'] },
+          )
+        }
+      }
+    }
+    if (document.outputs.dataRowFields) {
+      for (const f of document.outputs.dataRowFields) {
+        if (!available.has(f.fromContextKey)) {
+          add(
+            diagnostics,
+            'OUTPUT_VARIABLE_UNRESOLVED',
+            'warning',
+            `业务输出数据列「${f.columnHeader}」引用的变量「${f.fromContextKey}」未在输入或任何步骤的 outputKey 中定义`,
+            { fieldPath: ['outputs', 'dataRowFields', f.columnKey, 'fromContextKey'] },
+          )
+        }
+      }
+    }
+    if (document.outputs.summaryFromContextKey && !available.has(document.outputs.summaryFromContextKey)) {
+      add(
+        diagnostics,
+        'OUTPUT_VARIABLE_UNRESOLVED',
+        'warning',
+        `业务输出结论引用的变量「${document.outputs.summaryFromContextKey}」未在输入或任何步骤的 outputKey 中定义`,
+        { fieldPath: ['outputs', 'summaryFromContextKey'] },
+      )
+    }
+    if (document.outputs.summaryTemplate) {
+      const matches = document.outputs.summaryTemplate.matchAll(/\$\{([^}]+)\}/g)
+      for (const match of matches) {
+        const token = match[1]
+        if (!token || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(token)) {
+          add(
+            diagnostics,
+            'OUTPUT_VARIABLE_UNRESOLVED',
+            'warning',
+            `业务输出结论模板包含非法的变量插值「\${${token}}」`,
+            { fieldPath: ['outputs', 'summaryTemplate'] },
+          )
+        } else if (!available.has(token)) {
+          add(
+            diagnostics,
+            'OUTPUT_VARIABLE_UNRESOLVED',
+            'warning',
+            `业务输出结论模板引用的变量「${token}」未在输入或任何步骤的 outputKey 中定义`,
+            { fieldPath: ['outputs', 'summaryTemplate'] },
+          )
+        }
+      }
     }
   }
 

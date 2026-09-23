@@ -481,4 +481,24 @@ describe('compileScenarioDocument', () => {
     })
     expect(result.diagnostics.some((item) => item.code === 'OUTCOME_RULE_TARGET_MISSING')).toBe(false)
   })
+
+  it('outputs 业务输出引用未定义变量产生 OUTPUT_VARIABLE_UNRESOLVED 警告', () => {
+    const source = {
+      ...document([navigate(ids.a)]),
+      outputs: {
+        summaryTemplate: '结果：${unknown_var}',
+        metrics: [
+          { key: 'item_count', name: '商品数', fromContextKey: 'unresolved_key' },
+        ],
+        dataRowFields: [
+          { columnKey: 'col_a', columnHeader: '列A', fromContextKey: 'missing_row_key' },
+        ],
+        summaryFromContextKey: 'missing_summary_key',
+      },
+    }
+    const result = compileScenarioDocument(source, { mode: 'save' })
+    const unresolvedCodes = result.diagnostics.filter((d) => d.code === 'OUTPUT_VARIABLE_UNRESOLVED')
+    expect(unresolvedCodes.length).toBe(4)
+    expect(unresolvedCodes.every((d) => d.severity === 'warning')).toBe(true)
+  })
 })

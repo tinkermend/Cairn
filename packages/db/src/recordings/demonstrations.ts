@@ -384,6 +384,7 @@ export async function applyDemonstrationImport(
         protocolVersion: DEMONSTRATION_PROTOCOL,
         factDigest: body.factDigest,
         suggestionDigest: body.suggestionDigest,
+        modelProposalDigest: body.modelProposalDigest,
         adapterVersion: body.adapterVersion,
         ruleVersion: body.ruleVersion,
         placement: body.placement,

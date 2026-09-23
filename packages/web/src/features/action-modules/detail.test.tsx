@@ -31,6 +31,11 @@ const mocks = vi.hoisted(() => ({
   updateActionModulePublication: vi.fn(),
   disableAffectedScenarios: vi.fn(),
   batchUpgradeActionModuleDrafts: vi.fn(),
+  fetchModuleTestCases: vi.fn().mockResolvedValue({ items: [] }),
+  createModuleTestCase: vi.fn(),
+  runModuleTestCase: vi.fn(),
+  deleteModuleTestCase: vi.fn(),
+  createModuleTestBatch: vi.fn(),
   navigate: vi.fn(),
   canWrite: true,
 }))

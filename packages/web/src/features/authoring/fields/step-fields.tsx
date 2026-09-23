@@ -53,11 +53,13 @@ export function StepFields({
   if (step.type === 'navigate') {
     return (
       <div className='space-y-2'>
-        <Label htmlFor={fieldElementId(step.id, ['input', 'url'])}>
-          页面地址
+        <Label htmlFor={fieldElementId(step.id, ['input', 'url'])} className='flex items-center gap-1.5'>
+          <span>页面地址</span>
+          <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
         </Label>
         <Input
           id={fieldElementId(step.id, ['input', 'url'])}
+          aria-label='页面地址'
           value={step.input.url}
           disabled={disabled}
           aria-invalid={step.input.url.trim().length === 0}
@@ -204,6 +206,7 @@ export function StepFields({
           bindings={bindings}
           shape={from ? shapes.get(from) : undefined}
           disabled={disabled}
+          allowGenerators={step.type === 'fill'}
           onBinding={(nextFrom, nextValue, nextField) => {
             if (step.type === 'echo') {
               onChange({
@@ -264,7 +267,7 @@ export function StepFields({
             onChange({ ...step, input: { ...step.input, target } })
           }
         />
-        <div className='grid gap-3 sm:grid-cols-3'>
+        <div className='grid gap-3 sm:grid-cols-2'>
           <div className='space-y-2'>
             <Label>鼠标键</Label>
             <Select
@@ -319,7 +322,10 @@ export function StepFields({
           </div>
         </div>
         <div className='space-y-2'>
-          <Label>点击后页面</Label>
+          <div className='flex items-center gap-1.5'>
+            <Label>点击后页面</Label>
+            <span className='rounded bg-muted px-1.5 py-0.2 text-caption font-medium text-muted-foreground'>选填</span>
+          </div>
           <Select
             value={step.input.pageAfter ?? 'unset'}
             disabled={disabled}
@@ -359,8 +365,14 @@ export function StepFields({
             onChange({ ...step, input: { ...step.input, target } })
           }
         />
+        <p className='text-caption text-muted-foreground bg-muted/40 p-2 rounded border border-border-divider/50'>
+          💡 提示：用于原生 HTML &lt;select&gt; 下拉框。若目标下拉框为浮层菜单或需动态／随机选择选项，推荐使用「AI 操作」（如：在当前分组下拉列表中随机选择一个分组）。
+        </p>
         <div className='space-y-2'>
-          <Label>选择方式</Label>
+          <div className='flex items-center gap-1.5'>
+            <Label>选择方式</Label>
+            <span className='text-destructive font-semibold' aria-hidden='true'>*</span>
+          </div>
           <Select
             value={step.input.by}
             disabled={disabled}
@@ -386,11 +398,11 @@ export function StepFields({
             <SelectTrigger className='w-full' aria-label='选择方式'>
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
-              <SelectItem value='label'>可见文本</SelectItem>
-              <SelectItem value='value'>选项值</SelectItem>
-              <SelectItem value='index'>序号</SelectItem>
-            </SelectContent>
+              <SelectContent>
+                <SelectItem value='label'>可见文本（界面显示的文字）</SelectItem>
+                <SelectItem value='value'>选项值（HTML Value）</SelectItem>
+                <SelectItem value='index'>选项序号（从 0 开始）</SelectItem>
+              </SelectContent>
           </Select>
         </div>
         {step.input.by === 'index' ? (

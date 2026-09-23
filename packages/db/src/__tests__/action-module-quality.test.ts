@@ -86,6 +86,7 @@ describe('AM-E: 模块调用结果投影与统计', { timeout: 30_000 }, () => {
       expectedRevision: draft.draftRevision ?? 0,
       confirmedWarnings: warnings,
       actor: { id: accountId },
+      skipReleaseGate: true,
     })
     const versions = await api.listActionModuleVersions(db, created.id)
     return { module: await api.getActionModule(db, created.id), version: versions.items[0]! }

@@ -49,10 +49,10 @@ import {
   type ScenarioDetailDto,
   type UpgradeModuleVersion,
 } from '@cairn/shared'
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import { recordAudit } from '../audit/record.js'
 import type { Db } from '../client.js'
-import { assertTargetPermission, lockConsoleAuthorization } from '../console/target-authorization.js'
+import { assertTargetPermission, lockConsoleAuthorization, scopedTargetFilter } from '../console/target-authorization.js'
 import { snapshotDeletedBy, toDeleteResult } from '../lifecycle.js'
 import { newId } from '../id.js'
 import { atomic, locked, schemaFor } from '../native.js'
@@ -242,8 +242,12 @@ export async function listModuleReferences(
   db: Db,
   moduleId: string,
   query: Partial<ModuleReferenceListQuery> = {},
+  actor?: ExecutionActor,
 ): Promise<ModuleReferenceListResponse> {
-  await requireModule(db, moduleId)
+  const currentModule = await requireModule(db, moduleId)
+  if (actor?.id) {
+    await assertTargetPermission(db, actor.id, currentModule.targetId, 'module:read')
+  }
   const parsed = moduleReferenceListQuerySchema.parse(query)
   const { scenarioModuleRefs, scenarios, scenarioVersions, targets } = schemaFor(db)
   const versions = await listActionModuleVersions(db, moduleId)
@@ -255,8 +259,21 @@ export async function listModuleReferences(
     isNull(targets.deletedAt),
   ]
   if (parsed.versionId) conditions.push(eq(scenarioModuleRefs.moduleVersionId, parsed.versionId))
+  if (actor?.id) {
+    const scope = await scopedTargetFilter(db, actor.id, scenarios.targetId, 'workflow:read')
+    if (scope) conditions.push(scope)
+  }
 
-  const distinct = await db
+  const [countResult] = await db
+    .select({ total: sql<number>`count(distinct ${scenarios.id})` })
+    .from(scenarioModuleRefs)
+    .innerJoin(scenarios, eq(scenarios.id, scenarioModuleRefs.scenarioId))
+    .innerJoin(targets, eq(targets.id, scenarios.targetId))
+    .where(and(...conditions))
+
+  const total = Number(countResult?.total ?? 0)
+
+  const pageRows = await db
     .selectDistinct({
       scenarioId: scenarios.id,
       name: scenarios.name,
@@ -270,9 +287,9 @@ export async function listModuleReferences(
     .innerJoin(targets, eq(targets.id, scenarios.targetId))
     .where(and(...conditions))
     .orderBy(desc(scenarios.updatedAt), desc(scenarios.id))
+    .limit(parsed.pageSize)
+    .offset((parsed.page - 1) * parsed.pageSize)
 
-  const total = distinct.length
-  const pageRows = distinct.slice((parsed.page - 1) * parsed.pageSize, parsed.page * parsed.pageSize)
   const scenarioIds = pageRows.map((row) => row.scenarioId)
   const refs = scenarioIds.length
     ? await db
@@ -530,7 +547,7 @@ export async function batchUpgradeModuleDrafts(
             scenarioId,
             status: code === 'SCENARIO_DRAFT_CONFLICT' ? 'conflict' : 'skipped',
             code,
-            reason: message,
+            reason: message.slice(0, 512),
           })
         }
       }
@@ -622,16 +639,34 @@ export async function disableAffectedScenarios(
       const current = await requireModule(tx, moduleId)
       await assertTargetPermission(tx, input.actor.id, current.targetId, 'module:publish')
       await assertTargetPermission(tx, input.actor.id, current.targetId, 'workflow:write')
-      const refs = await listModuleReferences(tx, moduleId, { versionId: parsed.versionId, page: 1, pageSize: 100 })
-      const allowed = new Set(
-        refs.items
-          .filter((item) => item.purpose === 'user' && item.publishedUses.some((use) => use.moduleVersionId === parsed.versionId))
-          .map((item) => item.scenarioId),
-      )
+      const { scenarioModuleRefs, scenarios } = schemaFor(tx)
+      const allowedRows = parsed.scenarioIds.length > 0
+        ? await tx
+            .select({ scenarioId: scenarios.id, targetId: scenarios.targetId })
+            .from(scenarioModuleRefs)
+            .innerJoin(scenarios, eq(scenarios.id, scenarioModuleRefs.scenarioId))
+            .where(
+              and(
+                eq(scenarioModuleRefs.moduleId, moduleId),
+                eq(scenarioModuleRefs.moduleVersionId, parsed.versionId),
+                isNull(scenarios.deletedAt),
+                or(isNull(scenarios.purpose), eq(scenarios.purpose, 'user')),
+                inArray(scenarios.id, parsed.scenarioIds),
+              ),
+            )
+        : []
+      const allowedMap = new Map(allowedRows.map((r) => [r.scenarioId, r.targetId]))
       const results = []
       for (const scenarioId of parsed.scenarioIds) {
-        if (!allowed.has(scenarioId)) {
+        const targetId = allowedMap.get(scenarioId)
+        if (!targetId) {
           results.push({ scenarioId, status: 'skipped' as const, reason: '场景未发布引用该版本' })
+          continue
+        }
+        try {
+          await assertTargetPermission(tx, input.actor.id, targetId, 'workflow:write')
+        } catch {
+          results.push({ scenarioId, status: 'skipped' as const, reason: '无场景修改权限' })
           continue
         }
         await updateScenarioMeta(tx, scenarioId, { status: 'disabled', actor: input.actor })
@@ -644,8 +679,87 @@ export async function disableAffectedScenarios(
 }
 
 async function userReferenceItems(db: Db, moduleId: string) {
-  const listed = await listModuleReferences(db, moduleId, { page: 1, pageSize: 100 })
-  return listed.items.filter((item) => item.purpose === 'user')
+  const { scenarioModuleRefs, scenarios, scenarioVersions, targets } = schemaFor(db)
+  const distinctScenarios = await db
+    .selectDistinct({
+      scenarioId: scenarios.id,
+      name: scenarios.name,
+      status: scenarios.status,
+      purpose: scenarios.purpose,
+      createdAt: scenarios.createdAt,
+      updatedAt: scenarios.updatedAt,
+    })
+    .from(scenarioModuleRefs)
+    .innerJoin(scenarios, eq(scenarios.id, scenarioModuleRefs.scenarioId))
+    .innerJoin(targets, eq(targets.id, scenarios.targetId))
+    .where(
+      and(
+        eq(scenarioModuleRefs.moduleId, moduleId),
+        isNull(scenarios.deletedAt),
+        isNull(targets.deletedAt),
+        or(isNull(scenarios.purpose), eq(scenarios.purpose, 'user')),
+      ),
+    )
+    .orderBy(desc(scenarios.updatedAt), desc(scenarios.id))
+
+  if (distinctScenarios.length === 0) return []
+
+  const scenarioIds = distinctScenarios.map((row) => row.scenarioId)
+  const refs = await db
+    .select()
+    .from(scenarioModuleRefs)
+    .where(and(eq(scenarioModuleRefs.moduleId, moduleId), inArray(scenarioModuleRefs.scenarioId, scenarioIds)))
+  const publishedVersions = await db
+    .select()
+    .from(scenarioVersions)
+    .where(and(inArray(scenarioVersions.scenarioId, scenarioIds), eq(scenarioVersions.kind, 'published')))
+
+  const latestPublished = new Map<string, string>()
+  for (const version of publishedVersions) {
+    if (version.versionNo == null) continue
+    const current = latestPublished.get(version.scenarioId)
+    if (!current) {
+      latestPublished.set(version.scenarioId, version.id)
+      continue
+    }
+    const currentRow = publishedVersions.find((item) => item.id === current)
+    if ((currentRow?.versionNo ?? 0) < version.versionNo) latestPublished.set(version.scenarioId, version.id)
+  }
+
+  const versions = await listActionModuleVersions(db, moduleId)
+  const versionNoById = new Map(versions.items.map((item) => [item.id, item.versionNo]))
+  const latest = latestSelectableVersion(versions.items)
+  const lastRuns = await lastRunsByScenario(db, scenarioIds)
+
+  return distinctScenarios.map((row) => {
+    const scenarioRefs = refs.filter((item) => item.scenarioId === row.scenarioId)
+    const draftUses: ModuleReferenceUse[] = scenarioRefs
+      .filter((item) => item.scenarioVersionId == null)
+      .map((item) => ({
+        invocationId: item.invocationId,
+        moduleVersionId: item.moduleVersionId ?? undefined,
+        versionNo: item.moduleVersionId ? versionNoById.get(item.moduleVersionId) : undefined,
+      }))
+    const publishedId = latestPublished.get(row.scenarioId)
+    const publishedUses: ModuleReferenceUse[] = scenarioRefs
+      .filter((item) => item.scenarioVersionId && item.scenarioVersionId === publishedId)
+      .map((item) => ({
+        invocationId: item.invocationId,
+        moduleVersionId: item.moduleVersionId ?? undefined,
+        versionNo: item.moduleVersionId ? versionNoById.get(item.moduleVersionId) : undefined,
+      }))
+    const usedVersionIds = [...draftUses, ...publishedUses].map((item) => item.moduleVersionId).filter(Boolean)
+    return moduleReferenceItemSchema.parse({
+      scenarioId: row.scenarioId,
+      name: row.name,
+      status: row.status,
+      purpose: row.purpose ?? 'user',
+      draftUses,
+      publishedUses,
+      lastRun: lastRuns.get(row.scenarioId) ?? null,
+      upgradeAvailable: Boolean(latest && usedVersionIds.some((id) => id !== latest.id)),
+    })
+  })
 }
 
 export async function previewDeleteActionModule(db: Db, moduleId: string): Promise<ModuleDeletePreviewResponse> {
@@ -681,27 +795,63 @@ export async function deleteActionModuleProtected(
 ): Promise<DeleteResourceResult> {
   const currentModule = await requireModule(db, moduleId)
   await assertTargetPermission(db, actor.id, currentModule.targetId, 'module:write')
-  const users = await userReferenceItems(db, moduleId)
-  if (users.some((item) => item.draftUses.length > 0 || item.publishedUses.length > 0)) {
-    throw conflict('MODULE_REFERENCED', '模块仍被用户场景引用，不能删除', { references: users })
-  }
-  const preview = await previewDeleteActionModule(db, moduleId)
-  if (preview.blockers.length) {
-    throw conflict('RUN_NOT_TERMINAL', preview.blockers[0]!.message)
-  }
-  if (preview.verificationScenarioId) {
-    await deleteScenario(db, preview.verificationScenarioId, actor)
-  }
-  const { actionModules } = schemaFor(db)
+
   const now = new Date()
   return atomic(db, async (tx) => {
     await lockConsoleAuthorization(tx, actor.id)
+    const { actionModules, scenarioModuleRefs, scenarios, runs } = schemaFor(tx)
     const [current] = await locked(tx, tx.select().from(actionModules).where(eq(actionModules.id, moduleId)))
     if (!current) throw notFound('MODULE_NOT_FOUND', '动作模块不存在')
     await assertTargetPermission(tx, actor.id, current.targetId, 'module:write')
     if (current.deletedAt && current.deletedBy) {
       return toDeleteResult({ id: moduleId, deletedAt: current.deletedAt, deletedBy: current.deletedBy })
     }
+
+    // 1. 事务内对全部未删除场景引用做聚合判断（不依赖首屏数据）
+    const allRefs = await tx
+      .select({
+        scenarioId: scenarios.id,
+        targetId: scenarios.targetId,
+        name: scenarios.name,
+        purpose: scenarios.purpose,
+      })
+      .from(scenarioModuleRefs)
+      .innerJoin(scenarios, eq(scenarios.id, scenarioModuleRefs.scenarioId))
+      .where(and(eq(scenarioModuleRefs.moduleId, moduleId), isNull(scenarios.deletedAt)))
+
+    const userRefs = allRefs.filter((item) => (item.purpose ?? 'user') === 'user')
+    if (userRefs.length > 0) {
+      // 检查当前操作者是否对所有使用方拥有 workflow:read 权限，若有无权查看的场景，隐藏其身份
+      let hasInvisible = false
+      for (const ref of userRefs) {
+        try {
+          await assertTargetPermission(tx, actor.id, ref.targetId, 'workflow:read')
+        } catch {
+          hasInvisible = true
+          break
+        }
+      }
+      if (hasInvisible) {
+        throw conflict('MODULE_REFERENCED', '模块仍被受保护场景引用，不能删除')
+      }
+      const users = await userReferenceItems(tx, moduleId)
+      throw conflict('MODULE_REFERENCED', '模块仍被用户场景引用，不能删除', { references: users })
+    }
+
+    // 2. 检查验证场景与其活跃 Run，并在同一事务内软删除验证场景
+    const verification = allRefs.find((item) => item.purpose === 'module_verification')
+    if (verification) {
+      const active = await tx
+        .select({ id: runs.id, status: runs.status })
+        .from(runs)
+        .where(and(eq(runs.scenarioId, verification.scenarioId), isNull(runs.deletedAt)))
+      const activeRuns = active.filter((row) => (ACTIVE_RUN_STATUSES as readonly string[]).includes(row.status))
+      if (activeRuns.length > 0) {
+        throw conflict('RUN_NOT_TERMINAL', '验证场景存在未结束的运行')
+      }
+      await deleteScenario(tx as unknown as Db, verification.scenarioId, actor)
+    }
+
     const deletedBy = await snapshotDeletedBy(tx as unknown as Db, actor)
     await tx.update(actionModules).set({ deletedAt: now, deletedBy, updatedAt: now }).where(eq(actionModules.id, moduleId))
     await recordAudit(tx as unknown as Db, actor, 'module.delete', 'module', moduleId, '删除动作模块')

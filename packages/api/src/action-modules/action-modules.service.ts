@@ -23,6 +23,15 @@ import {
   getActionModuleQuality,
   listModuleInvocations,
   attachModuleListHealth,
+  listModuleTestCases,
+  getModuleTestCase,
+  createModuleTestCase,
+  updateModuleTestCase,
+  deleteModuleTestCase,
+  runModuleTestCase,
+  recomputeModuleCaseResult,
+  createModuleTestBatch,
+  getModuleTestBatch,
   type DbHandle,
 } from '@cairn/db'
 import { FACTORY_PLATFORM_CONFIG } from '@cairn/shared'
@@ -42,6 +51,10 @@ import type {
   ModuleResolveCloseBody,
   ModuleQualityQuery,
   ModuleInvocationListQuery,
+  CreateModuleTestCaseBody,
+  UpdateModuleTestCaseBody,
+  RunModuleTestCaseBody,
+  CreateModuleTestBatchBody,
 } from '@cairn/shared'
 import { rethrowDomain } from '../common/domain-error.js'
 import type { RequestAccount } from '../common/request-account.js'
@@ -114,8 +127,8 @@ export class ActionModulesService {
     return getActionModuleVersion(this.db, id, versionId).catch(rethrowDomain)
   }
 
-  listReferences(id: string, query: ModuleReferenceListQuery) {
-    return listModuleReferences(this.db, id, query).catch(rethrowDomain)
+  listReferences(id: string, query: ModuleReferenceListQuery, actor?: RequestAccount) {
+    return listModuleReferences(this.db, id, query, actor ? { id: actor.id } : undefined).catch(rethrowDomain)
   }
 
   batchUpgrade(id: string, body: ModuleBatchUpgradeBody, actor: RequestAccount) {
@@ -168,5 +181,41 @@ export class ActionModulesService {
     } catch (error) {
       rethrowDomain(error)
     }
+  }
+
+  async listTestCases(moduleId: string, actor: RequestAccount) {
+    return listModuleTestCases(this.db, moduleId, actor.id).catch(rethrowDomain)
+  }
+
+  async getTestCase(moduleId: string, caseId: string, actor: RequestAccount) {
+    return getModuleTestCase(this.db, moduleId, caseId, actor.id).catch(rethrowDomain)
+  }
+
+  async createTestCase(moduleId: string, body: CreateModuleTestCaseBody, actor: RequestAccount) {
+    return createModuleTestCase(this.db, moduleId, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
+  }
+
+  async updateTestCase(moduleId: string, caseId: string, body: UpdateModuleTestCaseBody, actor: RequestAccount) {
+    return updateModuleTestCase(this.db, moduleId, caseId, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
+  }
+
+  async deleteTestCase(moduleId: string, caseId: string, actor: RequestAccount) {
+    return deleteModuleTestCase(this.db, moduleId, caseId, { id: actor.id }).catch(rethrowDomain)
+  }
+
+  async runTestCase(moduleId: string, caseId: string, body: RunModuleTestCaseBody, actor: RequestAccount) {
+    return runModuleTestCase(this.db, moduleId, caseId, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
+  }
+
+  async recomputeCase(moduleId: string, caseId: string, executionId: string, actor: RequestAccount) {
+    return recomputeModuleCaseResult(this.db, executionId, actor.id).catch(rethrowDomain)
+  }
+
+  async createTestBatch(moduleId: string, body: CreateModuleTestBatchBody, actor: RequestAccount) {
+    return createModuleTestBatch(this.db, moduleId, { ...body, actor: { id: actor.id } }).catch(rethrowDomain)
+  }
+
+  async getTestBatch(moduleId: string, batchId: string, actor: RequestAccount) {
+    return getModuleTestBatch(this.db, moduleId, batchId, actor.id).catch(rethrowDomain)
   }
 }
