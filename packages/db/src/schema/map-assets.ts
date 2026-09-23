@@ -192,6 +192,7 @@ export const mapProjectionAssets = cairnSchema.table(
   (t) => [
     uniqueIndex('map_projection_assets_ref_idx').on(t.projectionId, t.assetRefKey),
     index('map_projection_assets_object_idx').on(t.projectionId, t.objectId),
+    index('map_projection_assets_page_idx').on(t.projectionId, t.pageId),
   ],
 )
 

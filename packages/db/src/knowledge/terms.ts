@@ -15,6 +15,7 @@ import {
   type TerminologyEntry,
   type TerminologyListQuery,
   type UpdateTerminologyBody,
+  type KnowledgeSourceRef,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { recordAudit } from '../audit/record.js'
@@ -81,6 +82,140 @@ async function writeRevision(
     actorId,
     createdAt: await clockNow(tx),
   })
+}
+
+export type TermSourceDependencyRow = {
+  id: string
+  targetId: string
+  termId: string
+  termRevision: number
+  sourceKind: string
+  sourceId: string
+  sourceRevision: string | null
+  createdAt: Date
+}
+
+export async function syncTermSourceDependencies(
+  tx: Db,
+  targetId: string,
+  termId: string,
+  termRevision: number,
+  sources: readonly KnowledgeSourceRef[],
+) {
+  const { mapTerminologySourceDependencies } = schemaFor(tx)
+  const now = await clockNow(tx)
+  for (const src of sources ?? []) {
+    let sourceId: string
+    let sourceRevision: string | undefined
+    if (src.kind === 'analysis_candidate') {
+      sourceId = src.candidateId
+    } else if (src.kind === 'map_asset') {
+      sourceId = JSON.stringify(src.assetRef)
+      sourceRevision = src.mapReleaseId
+    } else if (src.kind === 'map_observation') {
+      sourceId = src.observationId
+    } else if (src.kind === 'map_verification') {
+      sourceId = src.verificationId
+    } else if (src.kind === 'term') {
+      sourceId = src.termId
+      sourceRevision = src.revision != null ? String(src.revision) : undefined
+    } else if (src.kind === 'module_version') {
+      sourceId = src.moduleId
+      sourceRevision = src.moduleVersionId
+    } else if (src.kind === 'attempt') {
+      sourceId = src.attemptId
+      sourceRevision = src.runId
+    } else if (src.kind === 'evidence') {
+      sourceId = src.evidenceId
+      sourceRevision = src.attemptId
+    } else {
+      sourceId = ((src as Record<string, unknown>).id as string) ?? 'unknown'
+    }
+
+    await insertRows(tx, mapTerminologySourceDependencies, {
+      id: newId(),
+      targetId,
+      termId,
+      termRevision,
+      sourceKind: src.kind,
+      sourceId,
+      sourceRevision: sourceRevision ?? null,
+      createdAt: now,
+    })
+  }
+}
+
+export async function findTermsBySource(
+  db: Db,
+  targetId: string,
+  sourceKind: string,
+  sourceId: string,
+): Promise<TermSourceDependencyRow[]> {
+  const { mapTerminologySourceDependencies } = schemaFor(db)
+  const rows = await db
+    .select()
+    .from(mapTerminologySourceDependencies)
+    .where(
+      and(
+        eq(mapTerminologySourceDependencies.targetId, targetId),
+        eq(mapTerminologySourceDependencies.sourceKind, sourceKind),
+        eq(mapTerminologySourceDependencies.sourceId, sourceId),
+      ),
+    )
+  return rows as TermSourceDependencyRow[]
+}
+
+export async function listTermSourceDependencies(
+  db: Db,
+  targetId: string,
+  termId: string,
+  revision?: number,
+): Promise<TermSourceDependencyRow[]> {
+  const { mapTerminologySourceDependencies } = schemaFor(db)
+  const conditions = [
+    eq(mapTerminologySourceDependencies.targetId, targetId),
+    eq(mapTerminologySourceDependencies.termId, termId),
+  ]
+  if (revision !== undefined) {
+    conditions.push(eq(mapTerminologySourceDependencies.termRevision, revision))
+  }
+  return db
+    .select()
+    .from(mapTerminologySourceDependencies)
+    .where(and(...conditions)) as Promise<TermSourceDependencyRow[]>
+}
+
+export async function checkTermSourcesFreshness(
+  db: Db,
+  targetId: string,
+  termId: string,
+  access?: {
+    runRead: boolean
+    workflowRead: boolean
+    moduleRead: boolean
+    scenarioId?: string
+    mapAnalyze?: boolean
+    mapRead?: boolean
+    actorId?: string
+  },
+): Promise<{ valid: boolean; reason?: string }> {
+  const { mapTerminologyEntries } = schemaFor(db)
+  const [row] = await db
+    .select()
+    .from(mapTerminologyEntries)
+    .where(and(eq(mapTerminologyEntries.id, termId), eq(mapTerminologyEntries.targetId, targetId)))
+  if (!row) {
+    return { valid: false, reason: 'TERM_NOT_FOUND' }
+  }
+  if (row.termStatus === 'retired') {
+    return { valid: false, reason: 'TERM_RETIRED' }
+  }
+  try {
+    await validateKnowledgeSources(db, targetId, row.sources, access)
+    return { valid: true }
+  } catch {
+    return { valid: false, reason: 'SOURCE_INVALID_OR_REVOKED' }
+  }
 }
 
 export async function listTerminology(db: Db, targetId: string, query: TerminologyListQuery) {
@@ -166,6 +301,7 @@ export async function createTerminology(
     })
     const result = await getTerminology(tx, targetId, id)
     await writeRevision(tx, id, 1, actor.id, { request, result, ...request, revision: 1 })
+    await syncTermSourceDependencies(tx, targetId, id, 1, parsed.sources ?? [])
     await recordAudit(tx, actor, 'knowledge.term', 'map_term', id, `创建术语「${parsed.canonicalName}」`)
     return getTerminology(tx, targetId, id)
   })
@@ -213,6 +349,7 @@ export async function updateTerminology(
       })
       .where(eq(mapTerminologyEntries.id, termId))
     await writeRevision(tx, termId, nextRevision, actor.id, { ...next, revision: nextRevision })
+    await syncTermSourceDependencies(tx, targetId, termId, nextRevision, next.sources ?? [])
     await recordAudit(tx, actor, 'knowledge.term', 'map_term', termId, `更新术语 r${nextRevision}`)
     return getTerminology(tx, targetId, termId)
   })

@@ -34,6 +34,22 @@ export class AnalysisJobsController {
     return this.jobs.observe(jobId, account.id, req, res, Number(after ?? 0))
   }
 
+  @Get(':jobId/insights')
+  @RequirePermissions('map:analyze')
+  insights(@Param('jobId') jobId: string, @CurrentAccount() account: RequestAccount) {
+    return this.jobs.insights(jobId, account.id)
+  }
+
+  @Get(':jobId/insights/:insightId')
+  @RequirePermissions('map:analyze')
+  insight(
+    @Param('jobId') jobId: string,
+    @Param('insightId') insightId: string,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.jobs.insight(jobId, insightId, account.id)
+  }
+
   @Post(':jobId/cancel')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('map:analyze')
@@ -45,3 +61,4 @@ export class AnalysisJobsController {
     return this.jobs.cancel(jobId, body, account)
   }
 }
+

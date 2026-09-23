@@ -10,8 +10,9 @@ import type {
   MapLifecycle,
   MapSummaryResponse,
 } from '@cairn/shared'
-import { Compass } from 'lucide-react'
+import { Compass, Table as TableIcon } from 'lucide-react'
 import { toast } from 'sonner'
+import { AtlasView } from './archipelago/atlas-view'
 import { ApiRequestError } from '@/lib/api-client'
 import {
   fetchMapChanges,
@@ -55,10 +56,26 @@ export function MapAssetsPane({
   targetId,
   summary,
   page,
+  view = 'atlas',
+  pageId,
+  objectId,
+  searchQuery,
+  onViewChange,
+  onPageChange,
+  onObjectChange,
+  onSearchChange,
 }: {
   targetId: string
   summary?: MapSummaryResponse
   page: ReturnType<typeof useCursorPage>
+  view?: 'atlas' | 'list'
+  pageId?: string
+  objectId?: string
+  searchQuery?: string
+  onViewChange?: (view: 'atlas' | 'list') => void
+  onPageChange?: (pageId: string | undefined) => void
+  onObjectChange?: (objectId: string | undefined) => void
+  onSearchChange?: (q: string) => void
 }) {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
@@ -219,17 +236,58 @@ export function MapAssetsPane({
     kind === 'terms'
       ? termsQuery.isPending && !termsQuery.data
       : objectsQuery.isPending
-  if (listPending) return <PageSkeleton />
+  if (view === 'list' && listPending) return <PageSkeleton />
 
   return (
-    <>
-      {(summary?.changeCount ?? 0) + (summary?.conflictCount ?? 0) > 0 ? (
-        <Card>
-          <CardHeader className='pb-3'>
-            <CardTitle className='text-section font-semibold'>
-              待复核变更
-            </CardTitle>
-          </CardHeader>
+    <div className='space-y-4'>
+      <div className='flex items-center justify-between gap-4'>
+        <div className='inline-flex items-center rounded-lg border border-border-card bg-surface-subtle p-0.5'>
+          <button
+            type='button'
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-caption font-medium transition-colors ${
+              view === 'atlas'
+                ? 'bg-surface text-text-primary shadow-xs'
+                : 'text-text-muted hover:text-text-primary'
+            }`}
+            onClick={() => onViewChange?.('atlas')}
+          >
+            <Compass className='size-3.5' />
+            海图视图 (Atlas)
+          </button>
+          <button
+            type='button'
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-caption font-medium transition-colors ${
+              view === 'list'
+                ? 'bg-surface text-text-primary shadow-xs'
+                : 'text-text-muted hover:text-text-primary'
+            }`}
+            onClick={() => onViewChange?.('list')}
+          >
+            <TableIcon className='size-3.5' />
+            列表视图 (List)
+          </button>
+        </div>
+      </div>
+
+      {view === 'atlas' ? (
+        <AtlasView
+          targetId={targetId}
+          pageId={pageId}
+          objectId={objectId}
+          searchQuery={searchQuery}
+          onSelectPage={onPageChange ?? (() => {})}
+          onSelectObject={onObjectChange ?? (() => {})}
+          onSearchChange={onSearchChange ?? (() => {})}
+        />
+      ) : (
+        <>
+          {(summary?.changeCount ?? 0) + (summary?.conflictCount ?? 0) > 0 ? (
+            <Card>
+              <CardHeader className='pb-3'>
+                <CardTitle className='text-section font-semibold'>
+                  待复核变更
+                </CardTitle>
+              </CardHeader>
           <CardContent className='space-y-2'>
             {(changesQuery.data?.items ?? []).length === 0 ? (
               <p className='text-small text-muted-foreground'>
@@ -750,5 +808,7 @@ export function MapAssetsPane({
         </div>
       </div>
     </>
+  )}
+</div>
   )
 }

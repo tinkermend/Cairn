@@ -117,7 +117,7 @@ function writePermissionsFor(consumer: ScheduleConsumer): string[] {
 }
 
 function identityConflictMessage(type: ScheduleConsumerType): string {
-  return type === 'knowledge_analysis' ? '同范围已有启用中的知识分析计划' : '该账号已有自动复查计划'
+  return type === 'knowledge_analysis' ? '同范围已有启用中的知识分析计划' : '该账号已有启用中的知识地图采集计划'
 }
 
 function identityConflictCode(type: ScheduleConsumerType): string {

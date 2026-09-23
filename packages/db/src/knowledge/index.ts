@@ -6,6 +6,11 @@ export {
   updateTerminology,
   retireTerminology,
   listTerminologyForCompose,
+  findTermsBySource,
+  listTermSourceDependencies,
+  checkTermSourcesFreshness,
+  syncTermSourceDependencies,
+  type TermSourceDependencyRow,
 } from './terms.js'
 export {
   getKnowledgeProposal,

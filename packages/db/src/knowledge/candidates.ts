@@ -78,9 +78,9 @@ export async function reviewAnalysisCandidate(db: Db, candidateId: string, input
         : await createTerminology(tx, candidate.targetId, { ...content, idempotencyKey: `analysis:${candidateId}` }, actor)
       destination = { kind: 'term', termId: term.termId, revision: term.revision }
     } else if (body.kind === 'map_refresh') {
-      if (candidate.kind !== 'map_refresh_suggestion') throw badRequest('KNOWLEDGE_INVALID_PROPOSAL', '只有地图复查建议可关联复查计划')
+      if (candidate.kind !== 'map_refresh_suggestion') throw badRequest('KNOWLEDGE_INVALID_PROPOSAL', '只有地图复查建议可关联知识地图采集计划')
       const plan = await getSchedule(tx, body.scheduleId, actor.id)
-      if (plan.targetId !== candidate.targetId || plan.consumerKey !== 'map_refresh') throw badRequest('KNOWLEDGE_INVALID_PROPOSAL', '请选择同一目标系统的地图复查计划')
+      if (plan.targetId !== candidate.targetId || plan.consumerKey !== 'map_refresh') throw badRequest('KNOWLEDGE_INVALID_PROPOSAL', '请选择同一目标系统的知识地图采集计划')
       if (plan.revision !== body.expectedScheduleRevision) throw conflict('KNOWLEDGE_REVISION_CONFLICT', '调度已更新，请重新检查复查范围')
       destination = { kind: 'map_refresh', scheduleId: plan.scheduleId, revision: plan.revision }
     } else {

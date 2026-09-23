@@ -259,7 +259,7 @@ const flattenedDefinitionFields = z.object({
 
 export const scheduleDefinitionOutputSchema = modernDefinitionFields.merge(flattenedDefinitionFields).superRefine((value, ctx) => {
   if (value.consumer.type !== 'knowledge_analysis' && value.timeRule.misfire === 'coalesce') {
-    ctx.addIssue({ code: 'custom', path: ['timeRule', 'misfire'], message: '业务执行和地图复查须跳过错过窗口，只有知识分析支持合并补跑' })
+    ctx.addIssue({ code: 'custom', path: ['timeRule', 'misfire'], message: '业务执行和知识地图采集须跳过错过窗口，只有知识分析支持合并补跑' })
   }
   if (value.effectiveAt && value.expiresAt && value.expiresAt <= value.effectiveAt) {
     ctx.addIssue({ code: 'custom', path: ['expiresAt'], message: '停止时间必须晚于生效时间' })
@@ -856,7 +856,7 @@ export function timeRuleFromPreviewQuery(query: SchedulePreviewQuery): ScheduleT
 export const SCHEDULE_CONSUMER_LABELS: Record<ScheduleConsumerType, string> = {
   scenario_run: '场景执行',
   suite_run: '场景集执行',
-  map_refresh: '地图复查',
+  map_refresh: '知识地图采集',
   knowledge_analysis: '知识分析',
 }
 

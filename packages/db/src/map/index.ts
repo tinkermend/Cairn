@@ -142,3 +142,4 @@ export {
   startMapReferenceScan,
   upsertMapScenarioBinding,
 } from './references.js'
+export { listMapAtlasPages } from './atlas.js'

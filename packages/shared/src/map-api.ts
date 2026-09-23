@@ -5,6 +5,8 @@ import {
   mapIdentityAliasSchema,
   mapLifecycleSchema,
   mapMatchResultSchema,
+  mapPageKindSchema,
+  type MapPageKind,
   mapProjectionStatusSchema,
   mapQueryCluesSchema,
   MAP_QUERY_LIMIT_DEFAULT,
@@ -136,6 +138,7 @@ export const mapListQuerySchema = z
       mapLifecycleSchema.optional(),
     ),
     conditionSnapshot: conditionSnapshotQuerySchema,
+    pageId: z.preprocess((value) => (value === '' || value === null ? undefined : value), entityIdSchema.optional()),
     cursor: optionalQueryString,
     limit: z.preprocess(
       (value) => (value === '' || value === undefined || value === null ? MAP_LIST_LIMIT_DEFAULT : value),
@@ -281,11 +284,26 @@ export const mapIdentityHistoryItemSchema = z.strictObject({
 })
 export type MapIdentityHistoryItem = z.infer<typeof mapIdentityHistoryItemSchema>
 
+export const mapAssetSourceContextSchema = z.strictObject({
+  observationId: entityIdSchema.optional(),
+  runId: entityIdSchema.optional(),
+  attemptId: entityIdSchema.optional(),
+  observedAt: mapUtcInstantSchema.optional(),
+  sourceType: z.string().min(1).max(64).optional(),
+  isDirectVerification: z.boolean().default(false),
+  latestRunId: entityIdSchema.optional(),
+  latestStepRunId: entityIdSchema.optional(),
+  latestScenarioId: entityIdSchema.optional(),
+  evidenceCount: z.number().int().nonnegative().default(0),
+})
+export type MapAssetSourceContext = z.infer<typeof mapAssetSourceContextSchema>
+
 export const mapAssetDetailSchema = mapAssetListItemSchema.extend({
   implementations: z.array(mapImplementationViewSchema).max(64),
   identityHistory: z.array(mapIdentityHistoryItemSchema).max(100),
   applicability: z.enum(['satisfied', 'unsatisfied', 'unknown']).optional(),
   observationCoverage: z.enum(['observed', 'partial', 'unknown']).optional(),
+  sourceContext: mapAssetSourceContextSchema.optional(),
   view: mapViewMetaSchema,
 })
 export type MapAssetDetail = z.infer<typeof mapAssetDetailSchema>
@@ -611,3 +629,102 @@ export const mapImpactSourceSchema = z.strictObject({
   scenarioNames: z.record(z.string(), z.string()),
 })
 export type MapImpactSource = z.infer<typeof mapImpactSourceSchema>
+
+export const MAP_ATLAS_NAME_SOURCES = ['presentation', 'sanitized_route', 'fallback_id'] as const
+export type MapAtlasNameSource = (typeof MAP_ATLAS_NAME_SOURCES)[number]
+export const mapAtlasNameSourceSchema = z.enum(MAP_ATLAS_NAME_SOURCES)
+
+export const mapAtlasPageItemSchema = z.strictObject({
+  pageId: entityIdSchema,
+  pageKind: mapPageKindSchema,
+  routeSummary: z.string().trim().min(1).max(512),
+  displayName: z.string().trim().min(1).max(128),
+  nameSource: mapAtlasNameSourceSchema,
+  uniqueObjectCount: z.number().int().nonnegative(),
+  uniqueNeedsAttentionCount: z.number().int().nonnegative(),
+  lastVerifiedAt: mapUtcInstantSchema.optional(),
+})
+export type MapAtlasPageItem = z.infer<typeof mapAtlasPageItemSchema>
+
+export const mapAtlasPagesResponseSchema = z.strictObject({
+  view: mapViewMetaSchema,
+  presentationRevision: z.number().int().nonnegative(),
+  totalObservedPages: z.number().int().nonnegative(),
+  matchedIslands: z.number().int().nonnegative(),
+  items: z.array(mapAtlasPageItemSchema),
+  nextCursor: nextCursorSchema,
+})
+export type MapAtlasPagesResponse = z.infer<typeof mapAtlasPagesResponseSchema>
+
+export const mapAtlasPagesQuerySchema = z.object({
+  search: optionalQueryString,
+  cursor: optionalQueryString,
+  limit: z.preprocess(
+    (value) => (value === '' || value === undefined || value === null ? 16 : value),
+    z.coerce.number().int().min(1).max(MAP_LIST_LIMIT_MAX),
+  ),
+  expectedProjectionRevision: z.preprocess(
+    (value) => (value === '' || value === null || value === undefined ? undefined : value),
+    z.coerce.number().int().nonnegative().optional(),
+  ),
+  expectedGovernanceRevision: z.preprocess(
+    (value) => (value === '' || value === null || value === undefined ? undefined : value),
+    z.coerce.number().int().nonnegative().optional(),
+  ),
+  expectedPresentationRevision: z.preprocess(
+    (value) => (value === '' || value === null || value === undefined ? undefined : value),
+    z.coerce.number().int().nonnegative().optional(),
+  ),
+})
+export type MapAtlasPagesQuery = z.infer<typeof mapAtlasPagesQuerySchema>
+
+const UUID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+const NUMERIC_ID_REGEX = /^\d+$/
+const LONG_HEX_OR_TOKEN_REGEX = /^[A-Za-z0-9_-]{16,}$/
+
+/**
+ * 确定性脱敏路由路径：
+ * 去除协议与主机名、去除查询参数与 Hash，将 UUID、纯数字 ID、长 Token 等业务标识段统一替换为 :id。
+ */
+export function sanitizeRouteTemplate(route: string | null | undefined): string {
+  if (!route || typeof route !== 'string') return '/'
+  let path = route.trim()
+  if (!path) return '/'
+
+  try {
+    const url = new URL(path)
+    path = url.pathname
+  } catch {
+    const questionIdx = path.indexOf('?')
+    const hashIdx = path.indexOf('#')
+    const cutIdx = Math.min(
+      questionIdx === -1 ? Infinity : questionIdx,
+      hashIdx === -1 ? Infinity : hashIdx,
+    )
+    if (cutIdx !== Infinity) {
+      path = path.slice(0, cutIdx)
+    }
+    if (path.includes('://')) {
+      const parts = path.split('://')[1] ?? ''
+      const firstSlash = parts.indexOf('/')
+      path = firstSlash !== -1 ? parts.slice(firstSlash) : '/'
+    }
+  }
+
+  const noQuery = path.split('?')[0] ?? ''
+  path = noQuery.split('#')[0] ?? ''
+  if (!path.startsWith('/')) path = `/${path}`
+
+  const segments = path.split('/').filter(Boolean)
+  if (segments.length === 0) return '/'
+
+  const sanitized = segments.map((seg) => {
+    if (UUID_REGEX.test(seg) || NUMERIC_ID_REGEX.test(seg) || LONG_HEX_OR_TOKEN_REGEX.test(seg)) {
+      return ':id'
+    }
+    return seg
+  })
+
+  return `/${sanitized.join('/')}`
+}
+

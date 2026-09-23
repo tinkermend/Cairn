@@ -558,7 +558,7 @@ export function ScheduleEditorDialog({
     }
     return {
       ...base,
-      name: name || '地图复查',
+      name: name || '知识地图采集',
       timeRule,
       timezone,
       weekdays: (weekdays.length ? weekdays : [1]) as ScheduleWeekday[],
@@ -928,6 +928,9 @@ export function ScheduleEditorDialog({
           ) : null}
           {type === 'map_refresh' ? (
             <div className='grid gap-2 md:grid-cols-2'>
+              <p className='text-label text-muted-foreground md:col-span-2'>
+                定时访问已知资产，采集最新观察并核验变化。
+              </p>
               <div className='grid gap-1'>
                 <Label htmlFor='schedule-map-account'>地图用途账号</Label>
                 <SelectField

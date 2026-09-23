@@ -6,6 +6,8 @@ import {
   mapListQuerySchema,
   mapScenarioBindingBodySchema,
   mapViewMetaSchema,
+  mapAtlasPagesResponseSchema,
+  sanitizeRouteTemplate,
 } from '../map-api.js'
 import { mapSealReleaseInputSchema } from '../map-release.js'
 
@@ -101,5 +103,48 @@ describe('OM-D 查询与治理契约', () => {
       lifecycleOverrides: [{ assetRefKey: 'p:x:o:44444444-4444-4444-8444-444444444444:i:x:d:0', lifecycle: 'TRUSTED' }],
     })
     expect(parsed.lifecycleOverrides?.[0]?.lifecycle).toBe('TRUSTED')
+  })
+
+  it('sanitizeRouteTemplate 确定性脱敏路由路径', () => {
+    // 正常路由
+    expect(sanitizeRouteTemplate('/orders/list')).toBe('/orders/list')
+    // 带有主机、协议与查询参数
+    expect(sanitizeRouteTemplate('https://erp.example.com/orders/12345/detail?tab=items#section')).toBe('/orders/:id/detail')
+    // 带有 UUID
+    expect(sanitizeRouteTemplate('/customers/a1b2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d/profile')).toBe('/customers/:id/profile')
+    // 空或非法值
+    expect(sanitizeRouteTemplate('')).toBe('/')
+    expect(sanitizeRouteTemplate(null)).toBe('/')
+    expect(sanitizeRouteTemplate('orders')).toBe('/orders')
+  })
+
+  it('mapAtlasPagesResponseSchema 校验群岛聚合响应', () => {
+    const res = mapAtlasPagesResponseSchema.parse({
+      view: {
+        viewRef: { kind: 'missing' },
+        identityRevision: 0,
+        governanceRevision: 0,
+        publicationRevision: 0,
+        computedAt: '2026-09-23T00:00:00.000Z',
+      },
+      presentationRevision: 0,
+      totalObservedPages: 1,
+      matchedIslands: 1,
+      items: [
+        {
+          pageId: '11111111-1111-4111-8111-111111111111',
+          pageKind: 'top',
+          routeSummary: '/orders',
+          displayName: '订单页',
+          nameSource: 'sanitized_route',
+          uniqueObjectCount: 12,
+          uniqueNeedsAttentionCount: 2,
+          lastVerifiedAt: '2026-09-23T00:00:00.000Z',
+        },
+      ],
+      nextCursor: undefined,
+    })
+    expect(res.items).toHaveLength(1)
+    expect(res.items[0]?.displayName).toBe('订单页')
   })
 })

@@ -58,6 +58,29 @@ export const mapTerminologyRevisions = cairnSchema.table(
   (t) => [uniqueIndex('map_terminology_revisions_unique').on(t.termId, t.revision)],
 )
 
+export const mapTerminologySourceDependencies = cairnSchema.table(
+  'map_terminology_source_dependencies',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    targetId: uuid('target_id')
+      .notNull()
+      .references(() => targets.id, { onDelete: 'cascade' }),
+    termId: uuid('term_id')
+      .notNull()
+      .references(() => mapTerminologyEntries.id, { onDelete: 'cascade' }),
+    termRevision: integer('term_revision').notNull(),
+    sourceKind: text('source_kind').notNull(),
+    sourceId: text('source_id').notNull(),
+    sourceRevision: text('source_revision'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('map_term_src_dep_lookup_idx').on(t.targetId, t.sourceKind, t.sourceId),
+    index('map_term_src_dep_term_idx').on(t.termId, t.termRevision),
+  ],
+)
+
+
 export const mapAuthoringProposals = cairnSchema.table(
   'map_authoring_proposals',
   {

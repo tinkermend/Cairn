@@ -27,10 +27,55 @@ const route = getRouteApi('/_authenticated/targets/$targetId/map/')
 
 export function TargetMapPage() {
   const { targetId } = route.useParams()
+  const searchParams = route.useSearch()
+  const navigate = route.useNavigate()
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState('assets')
   const page = useCursorPage()
   const canPublish = useCan('map:publish')
+
+  const currentView = searchParams.view ?? 'atlas'
+
+  const handleViewChange = (newView: 'atlas' | 'list') => {
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        view: newView,
+      }),
+      replace: true,
+    })
+  }
+
+  const handlePageChange = (newPageId: string | undefined) => {
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        pageId: newPageId,
+        objectId: newPageId ? prev.objectId : undefined,
+      }),
+      replace: true,
+    })
+  }
+
+  const handleObjectChange = (newObjectId: string | undefined) => {
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        objectId: newObjectId,
+      }),
+      replace: true,
+    })
+  }
+
+  const handleSearchChange = (newQ: string) => {
+    void navigate({
+      search: (prev) => ({
+        ...prev,
+        q: newQ || undefined,
+      }),
+      replace: true,
+    })
+  }
 
   const targetQuery = useQuery({
     queryKey: ['target', targetId],
@@ -173,7 +218,7 @@ export function TargetMapPage() {
                 </TabsTrigger>
                 <TabsTrigger value='maintenance'>
                   <Wrench className='size-4' />
-                  地图维护与复查
+                  地图维护与采集
                 </TabsTrigger>
                 <TabsTrigger value='policy'>
                   <ShieldCheck className='size-4' />
@@ -186,6 +231,14 @@ export function TargetMapPage() {
                   targetId={targetId}
                   summary={summary}
                   page={page}
+                  view={currentView}
+                  pageId={searchParams.pageId}
+                  objectId={searchParams.objectId}
+                  searchQuery={searchParams.q}
+                  onViewChange={handleViewChange}
+                  onPageChange={handlePageChange}
+                  onObjectChange={handleObjectChange}
+                  onSearchChange={handleSearchChange}
                 />
               </TabsContent>
 

@@ -11,6 +11,7 @@ import {
   notFound,
   getMapSummary,
   listMapAssets,
+  listMapAtlasPages,
   listMapJobCandidateAssets,
   listMapChanges,
   loadMapImpactSource,
@@ -76,6 +77,8 @@ import {
   type MapGovernancePreviewBody,
   type MapImpactQuery,
   type MapListQuery,
+  type MapAtlasPagesQuery,
+  type MapAtlasPagesResponse,
   type MapMatchQuery,
   type MapPublicationBody,
   type MapScenarioBindingBody,
@@ -109,6 +112,10 @@ export class MapService {
 
   summary(targetId: string, query: MapListQuery) {
     return getMapSummary(this.database, targetId, query, evaluateCondition).catch(rethrowDomain)
+  }
+
+  listAtlasPages(targetId: string, query: MapAtlasPagesQuery): Promise<MapAtlasPagesResponse> {
+    return listMapAtlasPages(this.database, targetId, query).catch(rethrowDomain)
   }
 
   listPages(targetId: string, query: MapListQuery) {

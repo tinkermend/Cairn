@@ -170,6 +170,7 @@ export function listDigest(input: {
   kind: string
   projectionId?: string
   releaseId?: string
+  pageId?: string
   search?: string
   lifecycle?: string
   conditionSnapshot?: MapConditionSnapshot
@@ -185,6 +186,7 @@ export function listDigest(input: {
       governanceRevision: input.governanceRevision ?? null,
       projectionId: input.projectionId ?? null,
       releaseId: input.releaseId ?? null,
+      pageId: input.pageId ?? null,
       search: input.search ?? null,
       lifecycle: input.lifecycle ?? null,
       conditionSnapshot: input.conditionSnapshot ?? null,

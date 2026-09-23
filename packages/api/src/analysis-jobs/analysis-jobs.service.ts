@@ -3,6 +3,8 @@ import type { Request, Response } from 'express'
 import {
   cancelAnalysisJob,
   getAnalysisJob,
+  getJobInsight,
+  getJobInsights,
   listAnalysisJobEvents,
   listAnalysisJobs,
   reviewAnalysisCandidate,
@@ -42,6 +44,14 @@ export class AnalysisJobsService {
     return cancelAnalysisJob(this.database, jobId, { kind: 'console', id: account.id }, body.idempotencyKey).catch(
       rethrowDomain,
     )
+  }
+
+  insights(jobId: string, _actorId: string) {
+    return getJobInsights(this.database, jobId).catch(rethrowDomain)
+  }
+
+  insight(jobId: string, insightId: string, _actorId: string) {
+    return getJobInsight(this.database, jobId, insightId).catch(rethrowDomain)
   }
 
   async observe(jobId: string, actorId: string, req: Request, res: Response, after = 0) {

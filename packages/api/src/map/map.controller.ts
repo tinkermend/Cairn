@@ -5,6 +5,7 @@ import {
   mapGovernancePreviewBodySchema,
   mapImpactQuerySchema,
   mapListQuerySchema,
+  mapAtlasPagesQuerySchema,
   mapMatchQuerySchema,
   mapPublicationBodySchema,
   mapScenarioBindingBodySchema,
@@ -37,6 +38,7 @@ import {
   type MapGovernancePreviewBody,
   type MapImpactQuery,
   type MapListQuery,
+  type MapAtlasPagesQuery,
   type MapMatchQuery,
   type MapPublicationBody,
   type MapScenarioBindingBody,
@@ -64,6 +66,15 @@ export class MapController {
     @Query(new ZodValidationPipe(mapListQuerySchema)) query: MapListQuery,
   ) {
     return this.maps.summary(targetId, query)
+  }
+
+  @Get('atlas/pages')
+  @RequirePermissions('target:read', 'map:read')
+  atlasPages(
+    @Param('targetId') targetId: string,
+    @Query(new ZodValidationPipe(mapAtlasPagesQuerySchema)) query: MapAtlasPagesQuery,
+  ) {
+    return this.maps.listAtlasPages(targetId, query)
   }
 
   @Get('pages')

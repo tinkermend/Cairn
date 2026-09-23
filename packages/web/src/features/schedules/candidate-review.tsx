@@ -159,7 +159,7 @@ export function CandidateReviewDialog({
                   <SelectFieldOption value='term'>业务术语</SelectFieldOption>
                   {candidate.kind === 'map_refresh_suggestion' ? (
                     <SelectFieldOption value='map_refresh'>
-                      地图复查计划
+                      知识地图采集计划
                     </SelectFieldOption>
                   ) : null}
                 </SelectField>
@@ -195,7 +195,7 @@ export function CandidateReviewDialog({
                     submit={(action) => review.mutate(action)}
                   />
                 ) : (
-                  <p>需要调度读写权限才能关联复查计划。</p>
+                  <p>需要调度读写权限才能关联知识地图采集计划。</p>
                 )
               ) : null}
               {canReview ? (
@@ -243,8 +243,8 @@ export function CandidateReviewDialog({
           ) : null}
           {!pending && destination?.kind === 'map_refresh' ? (
             <p>
-              已关联复查计划 r{destination.revision}
-              。关联不会启用或执行计划，也不表示地图已验证。
+              已关联知识地图采集计划 r{destination.revision}
+              。关联不会启用或执行计划，也不表示地图已完成核验。
               <a className='ml-2 text-link underline' href='/schedules'>
                 前往定时任务
               </a>
@@ -591,16 +591,18 @@ function RefreshCandidate({
   const plan = query.data?.items.find((item) => item.scheduleId === planId)
   return (
     <div className='grid gap-3'>
-      <p>先在目标知识页检查建议资产并配置复查范围，再关联负责处理的计划。</p>
+      <p>
+        先在目标知识页检查建议资产并配置采集与核验范围，再关联负责处理的计划。
+      </p>
       <a
         className='text-link underline'
         target='_blank'
         rel='noreferrer'
         href={`/targets/${targetId}/map`}
       >
-        打开目标知识与地图复查配置
+        打开目标知识与知识地图采集配置
       </a>
-      <Label htmlFor='candidate-refresh-plan'>关联地图复查计划</Label>
+      <Label htmlFor='candidate-refresh-plan'>关联知识地图采集计划</Label>
       <SelectField
         id='candidate-refresh-plan'
         value={planId}
@@ -658,7 +660,7 @@ function RefreshCandidate({
             })
         }}
       >
-        记录复查计划
+        记录采集计划
       </Button>
     </div>
   )

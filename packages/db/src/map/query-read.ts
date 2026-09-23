@@ -68,6 +68,7 @@ type AssetRefFilter = NonNullable<MapQueryRequest['assetRef']>
 
 type ReadQuery = {
   objectId?: string
+  pageId?: string
   afterKey?: string
   limit?: number
   search?: string
@@ -128,7 +129,7 @@ function containsInsensitive(column: SQLWrapper, needle: string): SQL {
   return sql`lower(${column}) like ${`%${escapeLike(needle.toLowerCase())}%`}`
 }
 
-function businessRouteSql(column: SQLWrapper): SQL {
+export function businessRouteSql(column: SQLWrapper): SQL {
   return sql`(
     (${column} like 'http://%' or ${column} like 'https://%')
     and ${column} not like '%unknown.invalid%'
@@ -320,6 +321,7 @@ async function queryProjection(db: Db, view: ResolvedMapView, input: ReadQuery):
     features: descriptors.features,
   }
   const filters: SQL[] = [eq(assets.projectionId, view.projectionId!)]
+  if (input.pageId) filters.push(eq(assets.pageId, input.pageId))
   if (input.objectId) filters.push(eq(assets.objectId, input.objectId))
   if (input.changeOnly) filters.push(sql`${assets.changeCount} > 0`)
   if (input.group === 'objects') filters.push(sql`${assets.objectId} is not null`)
@@ -427,6 +429,7 @@ async function queryRelease(db: Db, view: ResolvedMapView, input: ReadQuery): Pr
     features: items.features,
   }
   const filters: SQL[] = [eq(items.releaseId, view.releaseId!)]
+  if (input.pageId) filters.push(eq(items.pageId, input.pageId))
   if (input.objectId) filters.push(eq(items.objectId, input.objectId))
   if (input.group === 'objects') filters.push(sql`${items.objectId} is not null`)
   if (input.group === 'pages') filters.push(sql`${items.pageId} is not null`)
@@ -560,6 +563,7 @@ export async function pageViewListAssets(
   while (collected.length < want) {
     const rows = (await queryRows(db, view, {
       group: kind,
+      pageId: query.pageId,
       afterKey: after,
       limit: fetchSize,
       search: query.search,

@@ -50,6 +50,8 @@ function mockService() {
     get: vi.fn(async () => job),
     cancel: vi.fn(async () => ({ ...job, status: 'CANCELLED' })),
     review: vi.fn(async () => job),
+    insights: vi.fn(async () => ({ jobId, insights: [], changeImpacts: [], coverageGaps: [] })),
+    insight: vi.fn(async (_jobId, insightId) => ({ insightId, kind: 'failure_mode', title: '测试洞察' })),
   }
 }
 
@@ -114,5 +116,16 @@ describe('AnalysisJobs HTTP', () => {
       .send({ idempotencyKey: 'cancel-01' })
       .expect(200)
     expect(service.cancel).toHaveBeenCalledWith(jobId, expect.objectContaining({ idempotencyKey: 'cancel-01' }), admin)
+  })
+
+  it('读取分析作业洞察和单项洞察需要 map:analyze', async () => {
+    const insightId = '00000000-0000-4000-8000-000000000001'
+    await request(viewerApp.getHttpServer()).get(`/analysis-jobs/${jobId}/insights`).expect(403)
+    await request(adminApp.getHttpServer()).get(`/analysis-jobs/${jobId}/insights`).expect(200)
+    expect(service.insights).toHaveBeenCalledWith(jobId, admin.id)
+
+    await request(viewerApp.getHttpServer()).get(`/analysis-jobs/${jobId}/insights/${insightId}`).expect(403)
+    await request(adminApp.getHttpServer()).get(`/analysis-jobs/${jobId}/insights/${insightId}`).expect(200)
+    expect(service.insight).toHaveBeenCalledWith(jobId, insightId, admin.id)
   })
 })

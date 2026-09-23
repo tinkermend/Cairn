@@ -31,12 +31,13 @@ export function isUnsafeMapActionName(name: string): boolean {
 }
 
 export function toMapJobCompileAssets(
-  items: readonly Pick<MapAssetListItem, 'assetRef' | 'name' | 'routeTemplate' | 'lifecycle'>[],
+  items: readonly (Pick<MapAssetListItem, 'assetRef' | 'name' | 'routeTemplate' | 'lifecycle'> & { descriptor?: TargetDescriptor })[],
 ): MapJobCompileAsset[] {
   return items.map((item) => ({
     assetRef: item.assetRef,
     name: item.name ?? '未命名对象',
     routeTemplate: item.routeTemplate,
+    descriptor: item.descriptor,
     importance: item.lifecycle === 'TRUSTED' || item.lifecycle === 'VERIFIED' ? 2 : 1,
     failed: item.lifecycle === 'DEGRADED',
     stale: item.lifecycle === 'STALE',

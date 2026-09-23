@@ -134,12 +134,12 @@ describe('定时任务列表', () => {
       .toBeVisible()
   })
 
-  it('已准入不显示为复查成功，错过窗口单独说明', async () => {
+  it('已准入不显示为采集成功，错过窗口单独说明', async () => {
     mocks.fetchSchedules.mockResolvedValue({
       items: [
         {
           scheduleId: '44444444-4444-4444-8444-444444444444',
-          name: '夜间复查',
+          name: '夜间采集',
           targetId: '11111111-1111-4111-8111-111111111111',
           targetAccountId: '22222222-2222-4222-8222-222222222222',
           consumerKey: 'map_refresh',
@@ -187,7 +187,7 @@ describe('定时任务列表', () => {
             createdAt: '2026-09-16T00:00:00.000Z',
             admittedAt: '2026-09-16T00:01:00.000Z',
           },
-          objectLabel: '地图复查',
+          objectLabel: '知识地图采集',
           createdAt: '2026-09-16T00:00:00.000Z',
           updatedAt: '2026-09-16T00:00:00.000Z',
         },
@@ -253,7 +253,7 @@ describe('定时任务列表', () => {
       .toBeVisible()
     await expect.element(page.getByText('已跳过 · 错过窗口')).toBeVisible()
     await expect
-      .element(page.getByText('复查成功', { exact: true }))
+      .element(page.getByText('采集成功', { exact: true }))
       .not.toBeInTheDocument()
   })
 

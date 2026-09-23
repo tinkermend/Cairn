@@ -22,7 +22,7 @@ import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from './map-accounts'
 
 const KIND_LABELS: Record<MapJobKind, string> = {
   map_probe: '探查入口',
-  map_refresh: '复查所选',
+  map_refresh: '复查已有资产',
   map_explore: '有界探索',
 }
 
@@ -271,7 +271,7 @@ export function JobMaintenanceCard({ targetId }: { targetId: string }) {
                     探查入口
                   </SelectFieldOption>
                   <SelectFieldOption value='map_refresh'>
-                    复查所选
+                    复查已有资产
                   </SelectFieldOption>
                 </SelectField>
                 <Label htmlFor='job-account'>目标账号</Label>

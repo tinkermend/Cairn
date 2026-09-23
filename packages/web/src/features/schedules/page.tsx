@@ -129,7 +129,7 @@ export function SchedulesPage() {
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
       <PageHeader
         title='定时任务'
-        description='统一管理场景、场景集、地图复查和知识分析的定时计划。保存默认停用；工厂开关关闭时不会触发。'
+        description='统一管理场景、场景集、知识地图采集和知识分析的定时计划。知识地图采集会定时访问已知资产，采集最新观察并核验变化。保存默认停用；工厂开关关闭时不会触发。'
         actions={
           canWrite ? (
             <Button

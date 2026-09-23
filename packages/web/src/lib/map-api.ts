@@ -37,6 +37,7 @@ import {
   explorationPreviewRequestSchema,
   explorationCreateBodySchema,
   mapSummaryResponseSchema,
+  mapAtlasPagesResponseSchema,
   createTerminologyBodySchema,
   retireTerminologyBodySchema,
   terminologyEntrySchema,
@@ -55,6 +56,8 @@ import {
   type MapImpactListResponse,
   type MapImpactQuery,
   type MapListQuery,
+  type MapAtlasPagesQuery,
+  type MapAtlasPagesResponse,
   type MapPublicationBody,
   type MapReferenceListResponse,
   type MapReleaseListResponse,
@@ -117,6 +120,22 @@ export function fetchMapObject(
   query?: MapListQuery,
 ): Promise<MapAssetDetail> {
   return apiFetch(`/api/targets/${targetId}/map/objects/${objectId}${mapQueryString(query)}`, mapAssetDetailSchema)
+}
+
+export function fetchMapAtlasPages(
+  targetId: string,
+  query?: MapAtlasPagesQuery,
+): Promise<MapAtlasPagesResponse> {
+  const params = new URLSearchParams()
+  if (query?.search) params.set('search', query.search)
+  if (query?.cursor) params.set('cursor', query.cursor)
+  if (query?.limit) params.set('limit', String(query.limit))
+  if (query?.expectedProjectionRevision !== undefined)
+    params.set('expectedProjectionRevision', String(query.expectedProjectionRevision))
+  if (query?.expectedGovernanceRevision !== undefined)
+    params.set('expectedGovernanceRevision', String(query.expectedGovernanceRevision))
+  const qs = params.toString()
+  return apiFetch(`/api/targets/${targetId}/map/atlas/pages${qs ? `?${qs}` : ''}`, mapAtlasPagesResponseSchema)
 }
 
 export function fetchMapChanges(targetId: string, query?: MapListQuery): Promise<MapChangeListResponse> {

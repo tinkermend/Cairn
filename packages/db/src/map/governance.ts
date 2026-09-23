@@ -11,6 +11,7 @@ import {
   mapListQuerySchema,
   mapSummaryResponseSchema,
   type MapAssetListItem,
+  type MapAssetSourceContext,
   type MapGovernanceCommandBody,
   type MapGovernancePreviewBody,
   type MapListQuery,
@@ -138,6 +139,7 @@ export async function listMapAssets(
     kind,
     projectionId: view.projectionId,
     releaseId: view.releaseId,
+    pageId: query.pageId,
     search: query.search,
     lifecycle: query.lifecycle,
     conditionSnapshot: query.conditionSnapshot,
@@ -204,12 +206,62 @@ export async function getMapAssetDetail(
   )
   const primary = assets[0]
   if (!primary) mapNotFound('地图对象不存在')
-  const { mapIdentityRevisions } = schemaFor(db)
+  const { mapIdentityRevisions, mapIdentityAssignments, mapObservations, runs, attempts, evidences } = schemaFor(db)
   const history = await db
     .select()
     .from(mapIdentityRevisions)
     .where(eq(mapIdentityRevisions.targetId, targetId))
     .orderBy(asc(mapIdentityRevisions.revision))
+
+  const [latestObs] = await db
+    .select({
+      sourceRunId: mapObservations.sourceRunId,
+      sourceAttemptId: mapObservations.sourceAttemptId,
+      observedAt: mapObservations.observedAt,
+    })
+    .from(mapIdentityAssignments)
+    .innerJoin(mapObservations, eq(mapObservations.id, mapIdentityAssignments.observationId))
+    .where(
+      and(
+        eq(mapIdentityAssignments.targetId, targetId),
+        eq(mapIdentityAssignments.objectId, objectId),
+      ),
+    )
+    .orderBy(desc(mapObservations.observedAt))
+    .limit(1)
+
+  let sourceContext: MapAssetSourceContext | undefined
+  if (latestObs?.sourceRunId) {
+    const [runRow] = await db
+      .select({ scenarioId: runs.scenarioId })
+      .from(runs)
+      .where(eq(runs.id, latestObs.sourceRunId))
+      .limit(1)
+
+    let stepRunId: string | undefined
+    if (latestObs.sourceAttemptId) {
+      const [attemptRow] = await db
+        .select({ stepRunId: attempts.stepRunId })
+        .from(attempts)
+        .where(eq(attempts.id, latestObs.sourceAttemptId))
+        .limit(1)
+      stepRunId = attemptRow?.stepRunId ?? undefined
+    }
+
+    const [evidenceCountRow] = await db
+      .select({ count: sql<number>`count(*)`.as('count') })
+      .from(evidences)
+      .where(and(eq(evidences.runId, latestObs.sourceRunId), eq(evidences.status, 'available')))
+
+    sourceContext = {
+      isDirectVerification: false,
+      latestRunId: latestObs.sourceRunId,
+      latestStepRunId: stepRunId,
+      latestScenarioId: runRow?.scenarioId ?? undefined,
+      evidenceCount: Number(evidenceCountRow?.count ?? 0),
+    }
+  }
+
   return mapAssetDetailSchema.parse({
     ...toListItem(targetId, primary),
     implementations: assets.filter(item => item.implementationKey).map(item => ({
@@ -238,6 +290,7 @@ export async function getMapAssetDetail(
         newRefs: (row.newRefs as Array<Record<string, unknown>>).map(({ allocationKey: _key, ...ref }) => mapAssetRefSchema.parse(ref)),
       })),
     observationCoverage: primary.changeCount > 0 || primary.dimensions.length > 0 ? 'observed' : 'unknown',
+    sourceContext,
     view: await viewMeta(db, view),
   })
 }

@@ -124,4 +124,44 @@ describe('步骤地图绑定', () => {
       })
     )
   })
+
+  it('已绑定时展示解除绑定按钮并可触发解除操作', async () => {
+    mocks.fetchMapReferences.mockResolvedValue({
+      items: [
+        {
+          grade: 'confirmed_reference',
+          bindingId: 'binding-123',
+          scenarioId: SCENARIO_ID,
+          stepId: STEP_ID,
+          assetRefKey: 'p:x:o:33333333-3333-4333-8333-333333333333:i:x:d:0',
+          scope: { kind: 'draft' },
+        },
+      ],
+      restricted: false,
+    })
+    mocks.removeMapBinding.mockResolvedValue({ ok: true })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <MapStepBinding
+          targetId={TARGET_ID}
+          scenarioId={SCENARIO_ID}
+          stepId={STEP_ID}
+          draftRevision={1}
+        />
+      </QueryClientProvider>
+    )
+    await expect.element(screen.getByText(/当前绑定：/)).toBeVisible()
+    const unbindBtn = screen.getByRole('button', { name: '解除绑定' })
+    await expect.element(unbindBtn).toBeVisible()
+    await unbindBtn.click()
+    await expect.poll(() => mocks.removeMapBinding.mock.calls.length).toBe(1)
+    expect(mocks.removeMapBinding).toHaveBeenCalledWith(
+      TARGET_ID,
+      'binding-123',
+      { expectedDraftRevision: 1 }
+    )
+  })
 })
