@@ -1,11 +1,16 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
-import { fetchReport } from '@/lib/reports-api'
+import { Share2, Check } from 'lucide-react'
+import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { createReportShareToken, fetchReport, fetchReportRevision } from '@/lib/reports-api'
 import { Main } from '@/components/layout/main'
 import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
 import { ReportPanel } from './panel'
+import { SuiteReportView } from './suite-report-view'
 
 export function ReportDetailPage() {
   const { reportId } = useParams({ from: '/_authenticated/reports/$reportId/' })
@@ -13,6 +18,32 @@ export function ReportDetailPage() {
     queryKey: ['report', reportId],
     queryFn: () => fetchReport(reportId),
   })
+  const currentRevisionId = report.data?.currentRevision?.id
+  const revisionDetail = useQuery({
+    queryKey: ['report-revision', reportId, currentRevisionId],
+    queryFn: () => fetchReportRevision(reportId, currentRevisionId!),
+    enabled: Boolean(reportId && currentRevisionId),
+  })
+
+  const [sharing, setSharing] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  const handleShare = async () => {
+    try {
+      setSharing(true)
+      const res = await createReportShareToken(reportId)
+      const fullUrl = `${window.location.origin}${res.url}`
+      await navigator.clipboard.writeText(fullUrl)
+      setCopied(true)
+      toast.success('免登录只读分享链接已复制到剪贴板（24小时内有效）')
+      setTimeout(() => setCopied(false), 3000)
+    } catch (err: any) {
+      toast.error(err?.message || '生成分享链接失败')
+    } finally {
+      setSharing(false)
+    }
+  }
+
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
       <PageHeader
@@ -37,23 +68,41 @@ export function ReportDetailPage() {
         />
       ) : (
         <>
-          {report.data.subject.kind === 'RUN' ? (
-            <Link
-              className='text-body text-link'
-              to='/runs/$runId'
-              params={{ runId: report.data.subject.runId }}
-            >
-              查看来源运行
-            </Link>
-          ) : (
-            <Link
-              className='text-body text-link'
-              to='/suite-runs/$suiteRunId'
-              params={{ suiteRunId: report.data.subject.suiteRunId }}
-            >
-              查看来源集合运行
-            </Link>
-          )}
+          <div className='flex items-center justify-between gap-4'>
+            {report.data.subject.kind === 'RUN' ? (
+              <Link
+                className='text-body text-link'
+                to='/runs/$runId'
+                params={{ runId: report.data.subject.runId }}
+              >
+                查看来源运行
+              </Link>
+            ) : (
+              <Link
+                className='text-body text-link'
+                to='/suite-runs/$suiteRunId'
+                params={{ suiteRunId: report.data.subject.suiteRunId }}
+              >
+                查看来源集合运行
+              </Link>
+            )}
+
+            {report.data.subject.kind === 'SUITE_RUN' && (
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={handleShare}
+                disabled={sharing}
+                className='gap-2'
+              >
+                {copied ? <Check className='size-4 text-emerald-500' /> : <Share2 className='size-4' />}
+                {copied ? '链接已复制' : sharing ? '生成中...' : '分享只读报告'}
+              </Button>
+            )}
+          </div>
+          {revisionDetail.data?.document ? (
+            <SuiteReportView document={revisionDetail.data.document} />
+          ) : null}
           <ReportPanel
             subject={report.data.subject}
             initialReport={report.data}

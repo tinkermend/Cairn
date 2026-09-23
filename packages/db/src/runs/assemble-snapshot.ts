@@ -39,6 +39,7 @@ import {
   type PlatformConfigDocument,
   type ResolutionPolicy,
   type RunSnapshot,
+  type ScenarioOutputDecl,
   type SessionPolicyOverride,
   type Step,
   type SuiteAdmissionSnapshot,
@@ -166,6 +167,7 @@ export type AssembleRunSnapshotInput = {
   mapConsumption: FrozenMapConsumption
   suiteAdmission?: SuiteAdmissionSnapshot
   documentResolution?: ResolutionPolicy
+  outputs?: ScenarioOutputDecl
 }
 
 export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapshot & { digest: string } {
@@ -217,6 +219,7 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     ...(input.runtimeInvariantManifest
       ? { runtimeInvariantManifest: input.runtimeInvariantManifest }
       : {}),
+    ...(input.outputs ? { outputs: input.outputs } : {}),
     input: input.input,
     createdAt: input.createdAt.toISOString(),
     ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),

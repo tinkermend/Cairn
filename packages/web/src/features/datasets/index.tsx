@@ -204,6 +204,9 @@ export function DatasetsPage() {
                           <div className='flex items-center gap-2'>
                             <FileSpreadsheet className='h-4 w-4 text-primary shrink-0' />
                             <span>{item.name}</span>
+                            {item.createdByAccountId == null && (
+                              <span className='text-xs text-muted-foreground'>已删除账号</span>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell>

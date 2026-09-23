@@ -17,6 +17,13 @@ export const SUITE_FAILURE_POLICIES = ['continue', 'stop'] as const
 export type SuiteFailurePolicy = (typeof SUITE_FAILURE_POLICIES)[number]
 export const suiteFailurePolicySchema = z.enum(SUITE_FAILURE_POLICIES)
 
+export const SUITE_EXECUTION_MODES = ['sequential', 'parallel'] as const
+export type SuiteExecutionMode = (typeof SUITE_EXECUTION_MODES)[number]
+export const suiteExecutionModeSchema = z.enum(SUITE_EXECUTION_MODES)
+
+export const DEFAULT_SUITE_CONCURRENCY = 3
+export const MAX_SUITE_CONCURRENCY = 10
+
 export const SUITE_MEMBER_ADMISSIONS = ['PENDING', 'ACTIVE', 'SETTLED', 'SKIPPED'] as const
 export type SuiteMemberAdmission = (typeof SUITE_MEMBER_ADMISSIONS)[number]
 export const suiteMemberAdmissionSchema = z.enum(SUITE_MEMBER_ADMISSIONS)
@@ -82,13 +89,27 @@ export const suiteMemberSchema = z.strictObject({
 })
 export type SuiteMember = z.infer<typeof suiteMemberSchema>
 
+export const suiteStageSchema = z.strictObject({
+  id: z.string().trim().min(1).max(64),
+  name: z.string().trim().min(1).max(128),
+  ordinal: z.number().int().min(0),
+  executionMode: suiteExecutionModeSchema.default('parallel'),
+  maxConcurrency: z.number().int().min(1).max(MAX_SUITE_CONCURRENCY).default(DEFAULT_SUITE_CONCURRENCY),
+  failurePolicy: suiteFailurePolicySchema.default('continue'),
+  members: z.array(suiteMemberSchema).min(1).max(MAX_SUITE_MEMBERS),
+})
+export type SuiteStage = z.infer<typeof suiteStageSchema>
+
 export const suiteDocumentSchema = z
   .strictObject({
     schemaVersion: runtimeSchemaVersionSchema,
     groups: z.array(suiteGroupSchema).max(20).default([]),
+    stages: z.array(suiteStageSchema).max(10).default([]),
     members: z.array(suiteMemberSchema).max(MAX_SUITE_MEMBERS).default([]),
     sharedInput: z.record(z.string(), jsonValueSchema).default({}),
     defaultTargetAccountId: entityIdSchema.optional(),
+    executionMode: suiteExecutionModeSchema.default('parallel'),
+    maxConcurrency: z.number().int().min(1).max(MAX_SUITE_CONCURRENCY).default(DEFAULT_SUITE_CONCURRENCY),
     failurePolicy: suiteFailurePolicySchema.default('continue'),
     reportProfileId: entityIdSchema.optional(),
     autoGenerateFinalReport: z.boolean().default(false),
@@ -101,23 +122,217 @@ export const suiteDocumentSchema = z
       }
       groupIds.add(group.id)
     }
-    const memberIds = new Set<string>()
-    const ordinals = new Set<number>()
-    for (const [index, member] of document.members.entries()) {
-      if (memberIds.has(member.memberId)) {
-        ctx.addIssue({ code: 'custom', path: ['members', index, 'memberId'], message: 'memberId 必须唯一' })
+
+    if (document.stages && document.stages.length > 0) {
+      const stageIds = new Set<string>()
+      const stageOrdinals = new Set<number>()
+      const allMemberIds = new Set<string>()
+
+      for (const [sIndex, stage] of document.stages.entries()) {
+        if (stageIds.has(stage.id)) {
+          ctx.addIssue({ code: 'custom', path: ['stages', sIndex, 'id'], message: '阶段 id 不能重复' })
+        }
+        stageIds.add(stage.id)
+
+        if (stageOrdinals.has(stage.ordinal)) {
+          ctx.addIssue({ code: 'custom', path: ['stages', sIndex, 'ordinal'], message: '阶段序号不能重复' })
+        }
+        stageOrdinals.add(stage.ordinal)
+
+        const memberOrdinals = new Set<number>()
+        for (const [mIndex, member] of stage.members.entries()) {
+          if (allMemberIds.has(member.memberId)) {
+            ctx.addIssue({ code: 'custom', path: ['stages', sIndex, 'members', mIndex, 'memberId'], message: 'memberId 必须唯一' })
+          }
+          allMemberIds.add(member.memberId)
+
+          if (memberOrdinals.has(member.ordinal)) {
+            ctx.addIssue({ code: 'custom', path: ['stages', sIndex, 'members', mIndex, 'ordinal'], message: '阶段内成员序号不能重复' })
+          }
+          memberOrdinals.add(member.ordinal)
+
+          if (member.groupId && !groupIds.has(member.groupId)) {
+            ctx.addIssue({ code: 'custom', path: ['stages', sIndex, 'members', mIndex, 'groupId'], message: '分组不存在' })
+          }
+        }
       }
-      memberIds.add(member.memberId)
-      if (ordinals.has(member.ordinal)) {
-        ctx.addIssue({ code: 'custom', path: ['members', index, 'ordinal'], message: '成员序号不能重复' })
-      }
-      ordinals.add(member.ordinal)
-      if (member.groupId && !groupIds.has(member.groupId)) {
-        ctx.addIssue({ code: 'custom', path: ['members', index, 'groupId'], message: '分组不存在' })
+    } else {
+      const memberIds = new Set<string>()
+      const ordinals = new Set<number>()
+      for (const [index, member] of document.members.entries()) {
+        if (memberIds.has(member.memberId)) {
+          ctx.addIssue({ code: 'custom', path: ['members', index, 'memberId'], message: 'memberId 必须唯一' })
+        }
+        memberIds.add(member.memberId)
+        if (ordinals.has(member.ordinal)) {
+          ctx.addIssue({ code: 'custom', path: ['members', index, 'ordinal'], message: '成员序号不能重复' })
+        }
+        ordinals.add(member.ordinal)
+        if (member.groupId && !groupIds.has(member.groupId)) {
+          ctx.addIssue({ code: 'custom', path: ['members', index, 'groupId'], message: '分组不存在' })
+        }
       }
     }
   })
 export type SuiteDocument = z.infer<typeof suiteDocumentSchema>
+
+export function allSuiteMembers(document: SuiteDocument): SuiteMember[] {
+  if (document.stages && document.stages.length > 0) {
+    const sorted = [...document.stages].sort((a, b) => a.ordinal - b.ordinal)
+    return sorted.flatMap((s) => s.members)
+  }
+  return document.members
+}
+
+export function effectiveSuiteStages(document: SuiteDocument): SuiteStage[] {
+  if (document.stages && document.stages.length > 0) {
+    return [...document.stages].sort((a, b) => a.ordinal - b.ordinal)
+  }
+  return [
+    {
+      id: 'default',
+      name: '默认阶段',
+      ordinal: 0,
+      executionMode: document.executionMode ?? 'parallel',
+      maxConcurrency: document.maxConcurrency ?? 3,
+      failurePolicy: document.failurePolicy ?? 'continue',
+      members: document.members,
+    },
+  ]
+}
+
+export const STAGE_VARIABLE_REGEX = /\$\{stage\[([^\]]+)\]\.members\[([^\]]+)\]\.output\.([a-zA-Z0-9_.]+)\}/g
+
+export function validateStageDependencies(stages: SuiteStage[]): SuiteValidationIssue[] {
+  const issues: SuiteValidationIssue[] = []
+  const sorted = [...stages].sort((a, b) => a.ordinal - b.ordinal)
+  const stageMap = new Map<string, SuiteStage>()
+  for (const s of sorted) {
+    stageMap.set(s.id, s)
+  }
+
+  for (const stage of sorted) {
+    for (const member of stage.members) {
+      const inspectString = (val: string) => {
+        STAGE_VARIABLE_REGEX.lastIndex = 0
+        let match: RegExpExecArray | null
+        while ((match = STAGE_VARIABLE_REGEX.exec(val)) !== null) {
+          const targetStageId = match[1]
+          const targetMemberId = match[2]
+          if (!targetStageId || !targetMemberId) continue
+          const targetStage = stageMap.get(targetStageId)
+          if (!targetStage) {
+            issues.push({
+              memberId: member.memberId,
+              code: 'STAGE_NOT_FOUND',
+              message: `引用的阶段不存在：${targetStageId}`,
+              severity: 'error',
+            })
+            continue
+          }
+          if (targetStage.id === stage.id) {
+            issues.push({
+              memberId: member.memberId,
+              code: 'INTRA_STAGE_VARIABLE_FORBIDDEN',
+              message: `禁止在同一阶段内相互引用变量（阶段 ${stage.id} 成员 ${member.memberId} 引用了 ${targetMemberId}）`,
+              severity: 'error',
+            })
+            continue
+          }
+          if (targetStage.ordinal >= stage.ordinal) {
+            issues.push({
+              memberId: member.memberId,
+              code: 'FORWARD_STAGE_VARIABLE_FORBIDDEN',
+              message: `禁止向前引用后续阶段的变量（当前阶段序号 ${stage.ordinal}，引用阶段序号 ${targetStage.ordinal}）`,
+              severity: 'error',
+            })
+            continue
+          }
+          const targetMember = targetStage.members.find((m) => m.memberId === targetMemberId)
+          if (!targetMember) {
+            issues.push({
+              memberId: member.memberId,
+              code: 'STAGE_MEMBER_NOT_FOUND',
+              message: `引用的成员不存在于阶段 ${targetStageId}：${targetMemberId}`,
+              severity: 'error',
+            })
+          }
+        }
+      }
+
+      const traverse = (node: unknown) => {
+        if (typeof node === 'string') {
+          inspectString(node)
+        } else if (Array.isArray(node)) {
+          for (const item of node) traverse(item)
+        } else if (node && typeof node === 'object') {
+          for (const val of Object.values(node)) traverse(val)
+        }
+      }
+      traverse(member.input)
+    }
+  }
+  return issues
+}
+
+export function interpolateStageVariables(
+  input: Record<string, JsonValue>,
+  stageOutputs: Record<string, Record<string, any>>,
+): Record<string, JsonValue> {
+  const resolvePath = (stageId: string, memberId: string, path: string): JsonValue | undefined => {
+    const memberOutput = stageOutputs[stageId]?.[memberId]
+    if (!memberOutput) return undefined
+    const parts = path.split('.')
+    let curr: any = memberOutput
+    for (const part of parts) {
+      if (curr == null || typeof curr !== 'object') return undefined
+      if (part === 'customData' && curr.customData === undefined && curr.dataRow !== undefined) {
+        curr = curr.dataRow
+      } else {
+        curr = curr[part]
+      }
+    }
+    if (curr === undefined && parts.length === 1 && typeof memberOutput === 'object') {
+      curr = memberOutput.dataRow?.[path] ?? memberOutput.metrics?.[path]
+    }
+    return curr === undefined ? undefined : curr
+  }
+
+  const transform = (val: any): any => {
+    if (typeof val === 'string') {
+      STAGE_VARIABLE_REGEX.lastIndex = 0
+      // Check if it's an exact match of a single expression
+      const exactMatch = val.match(/^\$\{stage\[([^\]]+)\]\.members\[([^\]]+)\]\.output\.([a-zA-Z0-9_.]+)\}$/)
+      if (exactMatch && exactMatch[1] && exactMatch[2] && exactMatch[3]) {
+        const resolved = resolvePath(exactMatch[1], exactMatch[2], exactMatch[3])
+        return resolved !== undefined ? resolved : val
+      }
+      // String replacement
+      return val.replace(STAGE_VARIABLE_REGEX, (_, stageId: string, memberId: string, path: string) => {
+        const resolved = resolvePath(stageId, memberId, path)
+        return resolved !== undefined && resolved !== null ? String(resolved) : ''
+      })
+    }
+    if (Array.isArray(val)) {
+      return val.map((item) => transform(item))
+    }
+    if (val && typeof val === 'object') {
+      const res: Record<string, any> = {}
+      for (const [k, v] of Object.entries(val)) {
+        res[k] = transform(v)
+      }
+      return res
+    }
+    return val
+  }
+
+  return transform(input) as Record<string, JsonValue>
+}
+
+export const rerunSuiteItemBodySchema = z.strictObject({
+  memberId: suiteMemberIdSchema,
+})
+export type RerunSuiteItemBody = z.infer<typeof rerunSuiteItemBodySchema>
 
 export const EMPTY_SUITE_DOCUMENT: SuiteDocument = suiteDocumentSchema.parse({
   schemaVersion: 1,
@@ -203,6 +418,8 @@ export const suiteSummarySchema = z.object({
   draftRevision: z.number().int().positive(),
   publishedVersionNo: z.number().int().positive().nullable(),
   memberCount: z.number().int().nonnegative(),
+  executionMode: suiteExecutionModeSchema.optional(),
+  maxConcurrency: z.number().int().optional(),
   updatedAt: utcInstantSchema,
 })
 export type SuiteSummaryDto = z.infer<typeof suiteSummarySchema>
@@ -282,8 +499,12 @@ export type SuiteValidationIssue = z.infer<typeof suiteValidationIssueSchema>
 
 export function assertPublishedSuiteDocument(document: SuiteDocument): SuiteValidationIssue[] {
   const issues: SuiteValidationIssue[] = []
-  if (document.members.length === 0) {
+  const members = allSuiteMembers(document)
+  if (members.length === 0) {
     issues.push({ code: 'SUITE_EMPTY', message: '发布前至少需要一个成员', severity: 'error' })
+  }
+  if (document.stages && document.stages.length > 0) {
+    issues.push(...validateStageDependencies(document.stages))
   }
   return issues
 }
@@ -318,6 +539,8 @@ export const createSuiteRunBodySchema = z.strictObject({
     )
     .optional(),
   deadlineMs: z.number().int().min(MIN_SUITE_DEADLINE_MS).max(MAX_SUITE_DEADLINE_MS).optional(),
+  executionMode: suiteExecutionModeSchema.optional(),
+  maxConcurrency: z.number().int().min(1).max(MAX_SUITE_CONCURRENCY).optional(),
   idempotencyKey: z.string().trim().min(8).max(128),
 })
 export type CreateSuiteRunBody = z.infer<typeof createSuiteRunBodySchema>
@@ -340,13 +563,17 @@ export const suiteRunItemDtoSchema = z.object({
   displayName: z.string(),
   scenarioId: entityIdSchema,
   scenarioVersionId: entityIdSchema,
-  childRunId: entityIdSchema,
+  childRunId: entityIdSchema.nullable(),
   admission: suiteMemberAdmissionSchema,
   skipReason: z.string().nullable(),
   runStatus: runStatusSchema,
   outcomeStatus: outcomeStatusSchema,
   evidenceStatus: runEvidenceStatusSchema,
   targetAccountId: entityIdSchema.nullable(),
+  originalRunId: entityIdSchema.nullable().optional(),
+  rerunCount: z.number().int().nonnegative().optional(),
+  stageId: z.string().nullable().optional(),
+  stageOrdinal: z.number().int().nonnegative().nullable().optional(),
 })
 export type SuiteRunItemDto = z.infer<typeof suiteRunItemDtoSchema>
 
@@ -361,6 +588,8 @@ export const suiteRunObservationSchema = z.object({
   cancelRequested: z.boolean(),
   reason: z.string().nullable(),
   failurePolicy: suiteFailurePolicySchema,
+  executionMode: suiteExecutionModeSchema.optional(),
+  maxConcurrency: z.number().int().optional(),
   deadlineAt: utcInstantSchema,
   startedAt: utcInstantSchema.nullable(),
   finishedAt: utcInstantSchema.nullable(),
@@ -407,6 +636,8 @@ export const suiteRunPreviewResponseSchema = z.object({
   suiteVersionId: entityIdSchema,
   targetId: entityIdSchema,
   failurePolicy: suiteFailurePolicySchema,
+  executionMode: suiteExecutionModeSchema.optional(),
+  maxConcurrency: z.number().int().optional(),
   deadlineAt: utcInstantSchema,
   accountInterleaveHint: z.literal(true),
   aiBudgetNotReserved: z.literal(true),

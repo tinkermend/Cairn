@@ -184,7 +184,7 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
 
       <PageHeader
         title={batch.name}
-        description={`场景：${scenarioQuery.data?.name ?? batch.scenarioId} · 数据集：${datasetQuery.data?.name ?? batch.datasetId} · 创建于 ${new Date(batch.createdAt).toLocaleString()}`}
+        description={`场景：${scenarioQuery.data?.name ?? batch.scenarioId} · 数据集：${datasetQuery.data?.name ?? batch.datasetId} · 创建于 ${new Date(batch.createdAt).toLocaleString()}${batch.createdByAccountId == null ? ' · 已删除账号' : ''}`}
         actions={
           <div className='flex items-center gap-2'>
             <Button
@@ -254,6 +254,16 @@ export function BatchDetailPage({ batchId }: { batchId: string }) {
           </div>
         }
       />
+
+      {batch.status === 'FAILED' && batch.pausedReason && (
+        <div className='flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-destructive'>
+          <AlertTriangle className='mt-0.5 h-5 w-5 shrink-0' />
+          <div>
+            <h4 className='text-sm font-semibold'>批次未能开始执行</h4>
+            <p className='mt-1 text-xs text-destructive/90'>{batch.pausedReason}</p>
+          </div>
+        </div>
+      )}
 
       {/* Circuit Breaker Alert Banner */}
       {isCircuitBreakerPaused && (

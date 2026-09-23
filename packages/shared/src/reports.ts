@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { runEvidenceStatusSchema } from './evidence.js'
 import { outcomeStatusSchema } from './outcome.js'
+import { runFindingSchema } from './run-output.js'
 import { suiteVerdictSchema } from './suites.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
@@ -123,6 +124,174 @@ export function contentDispositionAttachment(fileName: string): string {
   const ascii = /^[\x20-\x7e]+$/.test(safe) ? safe.replace(/\\/g, '_') : `report${ext.replace(/[^\x20-\x7e]/g, '')}`
   const encoded = encodeURIComponent(safe).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`
+}
+
+export const suiteSummaryBlockSchema = z.strictObject({
+  type: z.literal('suite_business_summary'),
+  /** 系统健康度评分 (0 - 100) 与评级 (优/良/中/差) */
+  healthScore: z.number().int().min(0).max(100),
+  healthGrade: z.enum(['EXCELLENT', 'GOOD', 'FAIR', 'POOR']),
+  /** 核心统计 */
+  totalCount: z.number().int(),
+  normalCount: z.number().int(),
+  warningCount: z.number().int(),
+  anomalousCount: z.number().int(),
+  skippedCount: z.number().int(),
+  /** 耗时对比 */
+  wallClockMs: z.number().int(),
+  childDurationMs: z.number().int(),
+  savedPercent: z.number().int().min(0).max(100),
+  /** 业务汇总宽表行集合（直接汇集各子场景的 RunOutput.dataRow / metrics） */
+  gridRows: z.array(
+    z.strictObject({
+      ordinal: z.number().int(),
+      memberId: z.string(),
+      displayName: z.string(),
+      scenarioName: z.string(),
+      status: z.enum(['NORMAL', 'WARNING', 'ANOMALOUS', 'SKIPPED']),
+      summary: z.string(),
+      metrics: z.record(z.string(), z.union([z.number(), z.string(), z.boolean()])),
+      dataRow: z.record(z.string(), jsonValueSchema),
+      durationMs: z.number().int().nullable(),
+      hasFindings: z.boolean(),
+      originalRunId: z.string().nullable().optional(),
+      rerunCount: z.number().int().optional(),
+      stageId: z.string().nullable().optional(),
+      stageOrdinal: z.number().int().optional(),
+    }),
+  ),
+  /** 汇总所有子场景抛出的 Findings 集合，用于 L2 异常画廊呈现 */
+  aggregatedFindings: z.array(
+    runFindingSchema.extend({
+      memberId: z.string(),
+      displayName: z.string(),
+    }),
+  ),
+})
+export type SuiteSummaryBlock = z.infer<typeof suiteSummaryBlockSchema>
+export type SuiteGridRow = SuiteSummaryBlock['gridRows'][number]
+export type SuiteAggregatedFinding = SuiteSummaryBlock['aggregatedFindings'][number]
+
+export const reportTokenPayloadSchema = z.strictObject({
+  suiteRunId: entityIdSchema,
+  reportRevisionId: entityIdSchema.optional(),
+  exp: z.number().int().positive(),
+  scope: z.literal('readonly_report'),
+})
+export type ReportTokenPayload = z.infer<typeof reportTokenPayloadSchema>
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]!)
+  }
+  const base64 = globalThis.btoa(binary)
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function fromBase64Url(str: string): Uint8Array {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+  while (base64.length % 4) {
+    base64 += '='
+  }
+  const binary = globalThis.atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
+export async function signReportToken(payload: ReportTokenPayload, secret: string): Promise<string> {
+  reportTokenPayloadSchema.parse(payload)
+  const data = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)))
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const sigBuffer = await globalThis.crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data))
+  const sig = toBase64Url(new Uint8Array(sigBuffer))
+  return `${data}.${sig}`
+}
+
+export async function verifyReportToken(token: string, secret: string): Promise<ReportTokenPayload> {
+  const parts = token.split('.')
+  if (parts.length !== 2) throw new Error('INVALID_TOKEN_FORMAT')
+  const [data, sig] = parts
+  if (!data || !sig) throw new Error('INVALID_TOKEN_FORMAT')
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify'],
+  )
+  let sigBytes: Uint8Array
+  try {
+    sigBytes = fromBase64Url(sig)
+  } catch {
+    throw new Error('INVALID_TOKEN_FORMAT')
+  }
+  const valid = await globalThis.crypto.subtle.verify(
+    'HMAC',
+    key,
+    sigBytes as BufferSource,
+    new TextEncoder().encode(data),
+  )
+  if (!valid) throw new Error('INVALID_TOKEN_SIGNATURE')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(fromBase64Url(data)))
+  } catch {
+    throw new Error('INVALID_TOKEN_PAYLOAD')
+  }
+  const payload = reportTokenPayloadSchema.parse(parsed)
+  if (Math.floor(Date.now() / 1000) > payload.exp) {
+    throw new Error('TOKEN_EXPIRED')
+  }
+  return payload
+}
+
+export const HEALTH_GRADE_LABELS: Record<'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR', string> = {
+  EXCELLENT: '优',
+  GOOD: '良',
+  FAIR: '中',
+  POOR: '差',
+}
+
+export const SUITE_GRID_STATUS_LABELS: Record<'NORMAL' | 'WARNING' | 'ANOMALOUS' | 'SKIPPED', string> = {
+  NORMAL: '正常',
+  WARNING: '警告',
+  ANOMALOUS: '异常',
+  SKIPPED: '已跳过',
+}
+
+export function computeSuiteHealthScore(counts: {
+  totalCount: number
+  normalCount: number
+  warningCount: number
+  anomalousCount: number
+  skippedCount?: number
+}): { healthScore: number; healthGrade: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' } {
+  if (counts.totalCount <= 0) {
+    return { healthScore: 100, healthGrade: 'EXCELLENT' }
+  }
+  const evaluated = counts.normalCount + counts.warningCount + counts.anomalousCount + (counts.skippedCount ?? 0)
+  if (evaluated === 0) {
+    return { healthScore: 100, healthGrade: 'EXCELLENT' }
+  }
+  const raw = Math.round(
+    (counts.normalCount * 100 + counts.warningCount * 60 + (counts.skippedCount ?? 0) * 50) / evaluated,
+  )
+  const healthScore = Math.max(0, Math.min(100, raw))
+  let healthGrade: 'EXCELLENT' | 'GOOD' | 'FAIR' | 'POOR' = 'POOR'
+  if (healthScore >= 90) healthGrade = 'EXCELLENT'
+  else if (healthScore >= 75) healthGrade = 'GOOD'
+  else if (healthScore >= 60) healthGrade = 'FAIR'
+  return { healthScore, healthGrade }
 }
 
 export const reportSubjectSchema = z.discriminatedUnion('kind', [

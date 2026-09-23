@@ -24,6 +24,11 @@ export const SUITE_ADMISSION_LABELS: Record<SuiteMemberAdmission, string> = {
   SKIPPED: '已跳过',
 }
 
+export const SUITE_EXECUTION_MODE_LABELS = {
+  parallel: '受控并发',
+  sequential: '严格串行',
+} as const
+
 export { SUITE_VERDICT_LABELS }
 
 export function suiteStatusTone(status: SuiteStatus): StatusTone {

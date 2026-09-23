@@ -3,6 +3,7 @@ import { freezeRunReportContext } from '../reports/profiles.js'
 import { computeSnapshotDigest } from './digest.js'
 import { freezeAuthVerificationForRun } from '../sessions/auth-profile.js'
 import { assembleRunSnapshot, AssembleRunSnapshotError, resolveAssembledAiExecution } from './assemble-snapshot.js'
+import { settleRunOutput } from './output.js'
 import { assertDemonstrationExecutorRolloutTx, saveRunValidationContextTx, markValidationInterventionTx } from './validation.js'
 import { ensureFrozenAccessPolicyTx } from '../map/access.js'
 import { expireRunDeadlines } from './deadline.js'
@@ -11,6 +12,8 @@ import { lockRunAccountScope } from './lock-scope.js'
 import { atomic, databaseNow, locked, schemaFor, updateRows } from '../native.js'
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, max, ne, or, sql, type SQL } from 'drizzle-orm'
 import {
+  assembleRunOutput,
+  deriveFallbackSummary,
   CANCELLED_ATTEMPT_ERROR,
   TERMINAL_RUN_STATUSES,
   cleanupStatusResponseSchema,
@@ -205,6 +208,7 @@ export async function listRuns(
       startedAt: runs.startedAt,
       finishedAt: runs.finishedAt,
       createdAt: runs.createdAt,
+      output: runs.output,
       scenarioName: scenarios.name,
       targetName: targets.name,
       targetAccountName: targetAccounts.displayName,
@@ -261,6 +265,11 @@ export async function listRuns(
       executionOrigin: row.executionOrigin ?? 'standalone',
       suiteRunId: row.suiteRunId ?? null,
       suiteMemberId: row.suiteMemberId ?? null,
+      outputSummary:
+        row.output?.summary ??
+        (isFinishedRunStatus(row.status)
+          ? deriveFallbackSummary(row.status, row.outcomeStatus)
+          : null),
       lease: leases.get(row.id) ? { holderWorkerId: leases.get(row.id)!.holderWorkerId } : null,
     })),
     nextCursor: paginated.nextCursor,
@@ -559,6 +568,50 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     .where(eq(outcomeResults.runId, runId))
     .orderBy(asc(outcomeResults.evaluatedAt))
 
+  const mappedStepRuns = stepRows.map((step) => {
+    const definition = stepsById.get(step.stepId)
+    return {
+      id: step.id,
+      stepId: step.stepId,
+      name: definition?.name ?? step.stepId,
+      type: definition?.type ?? 'unknown',
+      ordinal: step.ordinal,
+      status: step.status,
+      outcomeStatus: step.outcomeStatus ?? 'NOT_EVALUATED',
+      startedAt: iso(step.startedAt),
+      finishedAt: iso(step.finishedAt),
+      attempts: attemptRows
+        .filter((attempt) => attempt.stepRunId === step.id)
+        .sort((a, b) => a.attemptNo - b.attemptNo)
+        .map((attempt) => ({
+          id: attempt.id,
+          attemptNo: attempt.attemptNo,
+          status: attempt.status,
+          startedAt: attempt.startedAt.toISOString(),
+          finishedAt: iso(attempt.finishedAt),
+          output: attempt.output ?? null,
+          error: (attempt.error as ExecutionError | null) ?? null,
+        })),
+    }
+  })
+
+  const output =
+    row.output ??
+    (isFinishedRunStatus(row.status)
+      ? assembleRunOutput({
+          definition: {
+            steps: snapshot.steps,
+            outputs: (snapshot as any).outputs,
+          },
+          context: row.context as any,
+          outcomeResults: outcomeResultRows as any,
+          stepRuns: mappedStepRuns as any,
+          status: row.status,
+          outcomeStatus: row.outcomeStatus,
+          now: row.finishedAt ?? row.updatedAt,
+        })
+      : null)
+
   return runDetailSchema.parse({
     source: row.serviceCallerId ? { kind: 'service', callerId: row.serviceCallerId, credentialId: row.serviceCredentialId } : { kind: 'console' },
     id: row.id,
@@ -613,35 +666,11 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
       evaluatedAt: r.evaluatedAt.toISOString(),
       createdAt: r.createdAt.toISOString(),
     })),
+    output,
     checkpoint: row.checkpoint ?? null,
     debugOverlay: row.debugOverlay ?? null,
     authCheckpoint: parseAuthCheckpoint(row.authCheckpoint),
-    stepRuns: stepRows.map((step) => {
-      const definition = stepsById.get(step.stepId)
-      return {
-        id: step.id,
-        stepId: step.stepId,
-        name: definition?.name ?? step.stepId,
-        type: definition?.type ?? 'unknown',
-        ordinal: step.ordinal,
-        status: step.status,
-        outcomeStatus: step.outcomeStatus ?? 'NOT_EVALUATED',
-        startedAt: iso(step.startedAt),
-        finishedAt: iso(step.finishedAt),
-        attempts: attemptRows
-          .filter((attempt) => attempt.stepRunId === step.id)
-          .sort((a, b) => a.attemptNo - b.attemptNo)
-          .map((attempt) => ({
-            id: attempt.id,
-            attemptNo: attempt.attemptNo,
-            status: attempt.status,
-            startedAt: attempt.startedAt.toISOString(),
-            finishedAt: iso(attempt.finishedAt),
-            output: attempt.output ?? null,
-            error: (attempt.error as ExecutionError | null) ?? null,
-          })),
-      }
-    }),
+    stepRuns: mappedStepRuns,
   })
 }
 
@@ -900,6 +929,7 @@ export async function writeRunWithSnapshot(
           scenarioId: scenario.id,
           scenarioVersionId: version.id,
           steps: version.definition.steps,
+          outputs: version.definition.outputs,
           moduleManifest: version.moduleManifest,
           outcomeManifest,
           runtimeInvariantManifest,
@@ -1739,6 +1769,12 @@ export async function failRunValidation(
       { type: 'evidence.recorded', payload: { type: 'error', status: 'available' } },
       ...authCheckpointEvents(checkpoint),
     ])
+  }).then(async () => {
+    try {
+      await import('../suites/runs.js').then((mod) => mod.scheduleSuiteAdvanceForChild(db, runId))
+    } catch (error) {
+      console.error('[suites] advance after failAttempt failed', runId, error)
+    }
   })
 }
 

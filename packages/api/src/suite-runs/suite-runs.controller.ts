@@ -2,8 +2,10 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req, R
 import type { Request, Response } from 'express'
 import {
   createSuiteRunBodySchema,
+  rerunSuiteItemBodySchema,
   suiteRunListQuerySchema,
   type CreateSuiteRunBody,
+  type RerunSuiteItemBody,
   type SuiteRunListQuery,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
@@ -58,5 +60,16 @@ export class SuiteRunsController {
   @RequirePermissions('run:cancel', 'suite:read')
   cancel(@Param('suiteRunId') suiteRunId: string, @CurrentAccount() account: RequestAccount) {
     return this.suiteRuns.cancel(suiteRunId, account)
+  }
+
+  @Post(':suiteRunId/rerun-item')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('run:execute', 'suite:read')
+  rerunItem(
+    @Param('suiteRunId') suiteRunId: string,
+    @Body(new ZodValidationPipe(rerunSuiteItemBodySchema)) body: RerunSuiteItemBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.suiteRuns.rerunItem(suiteRunId, body, account)
   }
 }

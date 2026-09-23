@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import {
   EMPTY_SUITE_DOCUMENT,
   canExecuteRun,
   hasPermission,
+  allSuiteMembers,
   type SuiteDocument,
   type SuiteMember,
+  type SuiteStage,
 } from '@cairn/shared'
 import { useAuthStore } from '@/stores/auth-store'
-import { ArrowDown, ArrowLeft, ArrowUp, Play, Plus, Save, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import {
@@ -22,36 +23,16 @@ import {
   fetchSuite,
 } from '@/lib/suites-api'
 import { fetchScenarios } from '@/lib/scenarios-api'
-import { fetchTarget } from '@/lib/targets-api'
+import { fetchTarget, fetchTargetAccounts } from '@/lib/targets-api'
 import { useCan } from '@/hooks/use-permissions'
-import { ObjectSchedules } from '@/features/schedules/object-schedules'
 import { Main } from '@/components/layout/main'
-import { PageHeader } from '@/components/layout/page-header'
 import { PageSkeleton } from '@/components/page-skeleton'
 import { QueryErrorState } from '@/components/query-error-state'
-import { Can } from '@/components/rbac/can'
-import { StatusBadge } from '@/components/status-badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { Textarea } from '@/components/ui/textarea'
-import { SUITE_STATUS_LABELS, suiteIssueMessage, suiteStatusTone } from './labels'
-import { ReportProfileEditor, ReportProfileSelect } from '@/features/reports/profiles'
+import { suiteIssueMessage } from './labels'
+import { MemberInputDialog } from './member-input-dialog'
+import { SuiteHeader } from './components/suite-header'
+import { PipelineWorkspace } from './components/pipeline-workspace'
+import { SuiteInspector } from './components/suite-inspector'
 
 function nextMemberId(members: SuiteMember[]) {
   let index = members.length + 1
@@ -64,12 +45,14 @@ function newIdempotencyKey() {
   return `suite-${crypto.randomUUID()}`
 }
 
+const EMPTY_PERMISSIONS: string[] = []
+
 export function SuiteDetailPage() {
   const { suiteId } = useParams({ from: '/_authenticated/suites/$suiteId/' })
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const canWrite = useCan('suite:write')
-  const permissions = useAuthStore((state) => state.auth.user?.permissions ?? [])
+  const permissions = useAuthStore((state) => state.auth.user?.permissions ?? EMPTY_PERMISSIONS)
   const canExecute = canExecuteRun(permissions) && hasPermission(permissions, 'suite:read')
   const query = useQuery({ queryKey: ['suite', suiteId], queryFn: () => fetchSuite(suiteId) })
   const target = useQuery({
@@ -82,10 +65,16 @@ export function SuiteDetailPage() {
     queryFn: () => fetchScenarios({ targetId: query.data!.targetId, status: 'active', limit: 100 }),
     enabled: Boolean(query.data?.targetId),
   })
+  const targetAccounts = useQuery({
+    queryKey: ['target-accounts', query.data?.targetId],
+    queryFn: () => fetchTargetAccounts(query.data!.targetId, { limit: 100 }),
+    enabled: Boolean(query.data?.targetId),
+  })
 
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [document, setDocument] = useState<SuiteDocument>(EMPTY_SUITE_DOCUMENT)
+  const [editingMember, setEditingMember] = useState<SuiteMember | null>(null)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -99,6 +88,13 @@ export function SuiteDetailPage() {
     () => new Map((scenarios.data?.items ?? []).map((item) => [item.id, item.name])),
     [scenarios.data],
   )
+
+  const isDirty = useMemo(() => {
+    if (!query.data) return false
+    if (name !== query.data.name) return true
+    if ((description || null) !== (query.data.description || null)) return true
+    return JSON.stringify(document) !== JSON.stringify(query.data.draft.document)
+  }, [name, description, document, query.data])
 
   async function save() {
     if (!query.data) return
@@ -178,11 +174,15 @@ export function SuiteDetailPage() {
     }
   }
 
-  function addMember(scenarioId: string) {
+  const isStageMode = Boolean(document.stages && document.stages.length > 0)
+
+  // Flat mode member handlers
+  function addMemberFlat(scenarioId: string) {
     const scenario = scenarios.data?.items.find((item) => item.id === scenarioId)
     if (!scenario) return
+    const allMembers = allSuiteMembers(document)
     const member: SuiteMember = {
-      memberId: nextMemberId(document.members),
+      memberId: nextMemberId(allMembers),
       ordinal: document.members.length,
       scenarioId: scenario.id,
       scenarioVersionId: scenario.latestVersionId,
@@ -192,13 +192,172 @@ export function SuiteDetailPage() {
     setDocument({ ...document, members: [...document.members, member] })
   }
 
-  function moveMember(index: number, delta: number) {
+  function moveMemberFlat(index: number, delta: number) {
     const next = [...document.members]
-    const target = index + delta
-    if (target < 0 || target >= next.length) return
+    const targetIdx = index + delta
+    if (targetIdx < 0 || targetIdx >= next.length) return
     const [item] = next.splice(index, 1)
-    next.splice(target, 0, item!)
+    next.splice(targetIdx, 0, item!)
     setDocument({ ...document, members: next.map((member, ordinal) => ({ ...member, ordinal })) })
+  }
+
+  function removeMemberFlat(index: number) {
+    setDocument({
+      ...document,
+      members: document.members
+        .filter((_, idx) => idx !== index)
+        .map((item, ordinal) => ({ ...item, ordinal })),
+    })
+  }
+
+  function updateMemberFlat(index: number, updater: (m: SuiteMember) => SuiteMember) {
+    setDocument({
+      ...document,
+      members: document.members.map((item, idx) => (idx === index ? updater(item) : item)),
+    })
+  }
+
+  // Stage mode handlers
+  function addMemberToStage(stageIndex: number, scenarioId: string) {
+    const scenario = scenarios.data?.items.find((item) => item.id === scenarioId)
+    if (!scenario || !document.stages) return
+    const allMembers = allSuiteMembers(document)
+    const stage = document.stages[stageIndex]
+    if (!stage) return
+    const member: SuiteMember = {
+      memberId: nextMemberId(allMembers),
+      ordinal: stage.members.length,
+      scenarioId: scenario.id,
+      scenarioVersionId: scenario.latestVersionId,
+      displayName: scenario.name,
+      input: {},
+    }
+    const nextStages = document.stages.map((s, idx) =>
+      idx === stageIndex ? { ...s, members: [...s.members, member] } : s,
+    )
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function moveMemberInStage(stageIndex: number, memberIndex: number, delta: number) {
+    if (!document.stages) return
+    const stage = document.stages[stageIndex]
+    if (!stage) return
+    const nextMembers = [...stage.members]
+    const targetIdx = memberIndex + delta
+    if (targetIdx < 0 || targetIdx >= nextMembers.length) return
+    const [item] = nextMembers.splice(memberIndex, 1)
+    nextMembers.splice(targetIdx, 0, item!)
+    const nextStages = document.stages.map((s, idx) =>
+      idx === stageIndex
+        ? { ...s, members: nextMembers.map((m, ordinal) => ({ ...m, ordinal })) }
+        : s,
+    )
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function removeMemberFromStage(stageIndex: number, memberIndex: number) {
+    if (!document.stages) return
+    const stage = document.stages[stageIndex]
+    if (!stage) return
+    const nextMembers = stage.members
+      .filter((_, idx) => idx !== memberIndex)
+      .map((m, ordinal) => ({ ...m, ordinal }))
+    const nextStages = document.stages.map((s, idx) =>
+      idx === stageIndex ? { ...s, members: nextMembers } : s,
+    )
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function updateMemberInStage(
+    stageIndex: number,
+    memberIndex: number,
+    updater: (m: SuiteMember) => SuiteMember,
+  ) {
+    if (!document.stages) return
+    const nextStages = document.stages.map((s, sIdx) => {
+      if (sIdx !== stageIndex) return s
+      const nextMembers = s.members.map((m, mIdx) => (mIdx === memberIndex ? updater(m) : m))
+      return { ...s, members: nextMembers }
+    })
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function addStage() {
+    const currentStages = document.stages ?? []
+    const newOrdinal = currentStages.length
+    const stageId = `stage-${newOrdinal + 1}`
+    const newStage: SuiteStage = {
+      id: stageId,
+      name: `阶段 ${newOrdinal + 1}`,
+      ordinal: newOrdinal,
+      executionMode: 'parallel',
+      maxConcurrency: 3,
+      failurePolicy: 'continue',
+      members: [],
+    }
+    setDocument({ ...document, stages: [...currentStages, newStage] })
+  }
+
+  function removeStage(stageIndex: number) {
+    if (!document.stages) return
+    const nextStages = document.stages
+      .filter((_, idx) => idx !== stageIndex)
+      .map((s, ordinal) => ({ ...s, ordinal }))
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function moveStage(index: number, delta: number) {
+    if (!document.stages) return
+    const next = [...document.stages]
+    const targetIdx = index + delta
+    if (targetIdx < 0 || targetIdx >= next.length) return
+    const [item] = next.splice(index, 1)
+    next.splice(targetIdx, 0, item!)
+    setDocument({ ...document, stages: next.map((stage, ordinal) => ({ ...stage, ordinal })) })
+  }
+
+  function updateStageName(stageIndex: number, newName: string) {
+    if (!document.stages) return
+    const nextStages = document.stages.map((s, idx) => (idx === stageIndex ? { ...s, name: newName } : s))
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function updateStageMode(stageIndex: number, mode: 'parallel' | 'sequential') {
+    if (!document.stages) return
+    const nextStages = document.stages.map((s, idx) => (idx === stageIndex ? { ...s, executionMode: mode } : s))
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function updateStageConcurrency(stageIndex: number, val: number) {
+    if (!document.stages) return
+    const nextStages = document.stages.map((s, idx) => (idx === stageIndex ? { ...s, maxConcurrency: val } : s))
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function updateStageFailurePolicy(stageIndex: number, policy: 'continue' | 'stop') {
+    if (!document.stages) return
+    const nextStages = document.stages.map((s, idx) => (idx === stageIndex ? { ...s, failurePolicy: policy } : s))
+    setDocument({ ...document, stages: nextStages })
+  }
+
+  function toggleStageMode() {
+    if (isStageMode) {
+      const flat = allSuiteMembers(document).map((m, ordinal) => ({ ...m, ordinal }))
+      setDocument({ ...document, stages: [], members: flat })
+      toast.info('已转换为平铺模式')
+    } else {
+      const initialStage: SuiteStage = {
+        id: 'stage-1',
+        name: '阶段 1 (准备与核心)',
+        ordinal: 0,
+        executionMode: document.executionMode ?? 'parallel',
+        maxConcurrency: document.maxConcurrency ?? 3,
+        failurePolicy: document.failurePolicy ?? 'continue',
+        members: [...document.members],
+      }
+      setDocument({ ...document, stages: [initialStage], members: [] })
+      toast.success('已开启多阶段依赖编排模式')
+    }
   }
 
   if (query.isPending) {
@@ -220,186 +379,100 @@ export function SuiteDetailPage() {
 
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
-      <PageHeader
-        parent={
-          <Link to='/suites' className='inline-flex items-center gap-1.5 hover:text-link'>
-            <ArrowLeft className='size-4' />
-            返回场景集
-          </Link>
-        }
-        title={suite.name}
-        description={target.data?.name ?? '同一目标系统下的已发布场景编排。'}
-        actions={
-          <div className='flex flex-wrap items-center gap-2'>
-            <ObjectSchedules context={{ type: 'suite_run', targetId: suite.targetId, targetName: target.data?.name, objectId: suite.id, name: suite.name, versionId: suite.published?.id }} />
-            <StatusBadge tone={suiteStatusTone(suite.status)}>{SUITE_STATUS_LABELS[suite.status]}</StatusBadge>
-            {suite.published ? <StatusBadge tone='info'>已发布 v{suite.published.versionNo}</StatusBadge> : null}
-            <Can permission='suite:write'>
-              <Button variant='outline' disabled={busy} onClick={() => void save()}>
-                <Save />
-                保存草稿
-              </Button>
-              <Button variant='outline' disabled={busy} onClick={() => void publish()}>
-                发布
-              </Button>
-              <Button
-                variant='outline'
-                disabled={busy}
-                onClick={() => {
-                  void updateSuiteEnabled(suiteId, { status: suite.status === 'active' ? 'disabled' : 'active' })
-                    .then((next) => {
-                      queryClient.setQueryData(['suite', suiteId], next)
-                      toast.success(next.status === 'active' ? '已启用' : '已停用')
-                    })
-                    .catch((error) => toast.error(error instanceof ApiRequestError ? error.message : '更新失败'))
-                }}
-              >
-                {suite.status === 'active' ? '停用' : '启用'}
-              </Button>
-            </Can>
-            {canExecute ? (
-              <Button disabled={busy || !suite.published} onClick={() => void startRun()}>
-                <Play />
-                启动运行
-              </Button>
-            ) : null}
-          </div>
-        }
+      {/* Top Header */}
+      <SuiteHeader
+        suite={suite}
+        targetName={target.data?.name}
+        canExecute={Boolean(canExecute)}
+        busy={busy}
+        isDirty={isDirty}
+        onSave={() => void save()}
+        onPublish={() => void publish()}
+        onStartRun={() => void startRun()}
+        onToggleStatus={() => {
+          void updateSuiteEnabled(suiteId, { status: suite.status === 'active' ? 'disabled' : 'active' })
+            .then((next) => {
+              queryClient.setQueryData(['suite', suiteId], next)
+              toast.success(next.status === 'active' ? '已启用' : '已停用')
+            })
+            .catch((error) => toast.error(error instanceof ApiRequestError ? error.message : '更新失败'))
+        }}
       />
-      <section className='grid gap-4 rounded-lg border border-border-card bg-card p-5 shadow-card'>
-        <div className='grid gap-2'>
-          <Label htmlFor='suite-detail-name'>名称</Label>
-          <Input id='suite-detail-name' value={name} disabled={!canWrite} onChange={(event) => setName(event.target.value)} />
-        </div>
-        <div className='grid gap-2'>
-          <Label htmlFor='suite-detail-desc'>说明</Label>
-          <Textarea
-            id='suite-detail-desc'
-            value={description}
-            disabled={!canWrite}
-            onChange={(event) => setDescription(event.target.value)}
+
+      {/* Split Workspace Layout */}
+      <div className='grid grid-cols-1 lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_420px] gap-6 items-start'>
+        {/* Left: Pipeline Workspace (Primary) */}
+        <div className='min-w-0'>
+          <PipelineWorkspace
+            document={document}
+            isStageMode={isStageMode}
+            canWrite={canWrite}
+            scenarioNames={scenarioNames}
+            availableScenarios={scenarios.data?.items ?? []}
+            targetAccounts={targetAccounts.data?.items ?? []}
+            targetId={suite.targetId}
+            onToggleStageMode={toggleStageMode}
+            onAddStage={addStage}
+            onMoveStage={moveStage}
+            onRemoveStage={removeStage}
+            onUpdateStageName={updateStageName}
+            onUpdateStageMode={updateStageMode}
+            onUpdateStageConcurrency={updateStageConcurrency}
+            onUpdateStageFailurePolicy={updateStageFailurePolicy}
+            onAddMemberToStage={addMemberToStage}
+            onUpdateMemberInStage={updateMemberInStage}
+            onMoveMemberInStage={moveMemberInStage}
+            onRemoveMemberFromStage={removeMemberFromStage}
+            onAddMemberFlat={addMemberFlat}
+            onUpdateMemberFlat={updateMemberFlat}
+            onMoveMemberFlat={moveMemberFlat}
+            onRemoveMemberFlat={removeMemberFlat}
+            onOpenInputEditor={(member) => setEditingMember(member)}
           />
         </div>
-        <div className='grid gap-2 sm:grid-cols-2'>
-          <div className='grid gap-2'>
-            <Label>失败策略</Label>
-            <Select
-              value={document.failurePolicy}
-              disabled={!canWrite}
-              onValueChange={(value) =>
-                setDocument({ ...document, failurePolicy: value as SuiteDocument['failurePolicy'] })
-              }
-            >
-              <SelectTrigger aria-label='失败策略'>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value='continue'>失败后继续</SelectItem>
-                <SelectItem value='stop'>失败后停止后续</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <p className='self-end text-label text-muted-foreground'>
-            成员之间不传递页面或输出。成员间隙允许同账号独立运行插入，中间可能被别的运行插入，整次会更久。
-          </p>
+
+        {/* Right: Inspector Properties & Execution Config (Secondary) */}
+        <div className='min-w-0 lg:sticky lg:top-6'>
+          <SuiteInspector
+            name={name}
+            description={description}
+            document={document}
+            canWrite={canWrite}
+            targetAccounts={targetAccounts.data?.items ?? []}
+            targetId={suite.targetId}
+            onUpdateName={setName}
+            onUpdateDescription={setDescription}
+            onUpdateDocument={(updater) => setDocument(updater(document))}
+          />
         </div>
-      </section>
-      <section className='space-y-4 rounded-lg border border-border-card bg-card p-5'>
-        <h2 className='text-title'>集合报告</h2>
-        <ReportProfileSelect targetId={suite.targetId} value={document.reportProfileId} disabled={!canWrite} onChange={(reportProfileId) => setDocument({ ...document, reportProfileId })}/>
-        <label className='flex items-start gap-2 text-body'><input type='checkbox' disabled={!canWrite} checked={document.autoGenerateFinalReport} onChange={(event) => setDocument({ ...document, autoGenerateFinalReport: event.target.checked })}/><span>运行完成并结算证据后，自动生成总报告和 Word / PDF 文件。</span></label>
-        <p className='text-label text-muted-foreground'>配置随新运行冻结。生成失败单独记录，可从运行详情重试报告。</p>
-        <ReportProfileEditor targetId={suite.targetId} editScope='suite'/>
-      </section>
-      <section className='overflow-hidden rounded-lg border border-border-card bg-card shadow-card'>
-        <div className='flex flex-wrap items-center justify-between gap-3 border-b border-border-divider p-4'>
-          <div>
-            <h2 className='text-title'>成员</h2>
-            <p className='text-label text-muted-foreground'>引用已发布场景的精确版本，最多 50 个，允许同一场景重复出现。</p>
-          </div>
-          {canWrite ? (
-            <Select onValueChange={addMember}>
-              <SelectTrigger className='w-56' aria-label='添加成员场景'>
-                <SelectValue placeholder='添加已发布场景' />
-              </SelectTrigger>
-              <SelectContent>
-                {(scenarios.data?.items ?? []).map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
-                    <span className='inline-flex items-center gap-1'>
-                      <Plus className='size-3' />
-                      {item.name}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-        </div>
-        {document.members.length === 0 ? (
-          <p className='p-6 text-body text-muted-foreground'>还没有成员。添加至少一个已发布场景后才能发布。</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>顺序</TableHead>
-                <TableHead>成员</TableHead>
-                <TableHead>场景</TableHead>
-                <TableHead className='w-28' />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {document.members.map((member, index) => (
-                <TableRow key={member.memberId}>
-                  <TableCell>{member.ordinal + 1}</TableCell>
-                  <TableCell>
-                    <Input
-                      value={member.displayName ?? ''}
-                      disabled={!canWrite}
-                      aria-label={`${member.memberId} 展示名称`}
-                      onChange={(event) => {
-                        const members = document.members.map((item) =>
-                          item.memberId === member.memberId ? { ...item, displayName: event.target.value } : item,
-                        )
-                        setDocument({ ...document, members })
-                      }}
-                    />
-                    <p className='mt-1 text-label text-muted-foreground'>{member.memberId}</p>
-                    <details className='mt-2'><summary className='cursor-pointer text-label'>子报告配置</summary><div className='mt-2 min-w-48'><ReportProfileSelect targetId={suite.targetId} label={`${member.memberId} 子报告默认配置`} value={member.reportProfileId} disabled={!canWrite} onChange={(reportProfileId) => setDocument({ ...document, members: document.members.map((item) => item.memberId === member.memberId ? { ...item, reportProfileId } : item) })}/></div></details>
-                  </TableCell>
-                  <TableCell>{scenarioNames.get(member.scenarioId) ?? member.scenarioId.slice(0, 8)}</TableCell>
-                  <TableCell>
-                    {canWrite ? (
-                      <div className='flex gap-1'>
-                        <Button variant='ghost' size='icon' aria-label='上移' onClick={() => moveMember(index, -1)}>
-                          <ArrowUp className='size-4' />
-                        </Button>
-                        <Button variant='ghost' size='icon' aria-label='下移' onClick={() => moveMember(index, 1)}>
-                          <ArrowDown className='size-4' />
-                        </Button>
-                        <Button
-                          variant='ghost'
-                          size='icon'
-                          aria-label='移除'
-                          onClick={() =>
-                            setDocument({
-                              ...document,
-                              members: document.members
-                                .filter((item) => item.memberId !== member.memberId)
-                                .map((item, ordinal) => ({ ...item, ordinal })),
-                            })
-                          }
-                        >
-                          <Trash2 className='size-4' />
-                        </Button>
-                      </div>
-                    ) : null}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </section>
+      </div>
+
+      {/* Member Input Override Dialog */}
+      <MemberInputDialog
+        open={editingMember !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditingMember(null)
+        }}
+        member={editingMember}
+        scenarioName={editingMember ? scenarioNames.get(editingMember.scenarioId) : undefined}
+        disabled={!canWrite}
+        onSave={(memberId, input) => {
+          if (isStageMode && document.stages) {
+            const nextStages = document.stages.map((stage) => ({
+              ...stage,
+              members: stage.members.map((item) =>
+                item.memberId === memberId ? { ...item, input } : item,
+              ),
+            }))
+            setDocument({ ...document, stages: nextStages })
+          } else {
+            const members = document.members.map((item) =>
+              item.memberId === memberId ? { ...item, input } : item,
+            )
+            setDocument({ ...document, members })
+          }
+        }}
+      />
     </Main>
   )
 }

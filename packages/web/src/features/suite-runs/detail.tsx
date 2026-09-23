@@ -1,13 +1,15 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
 import { suiteRunObservationSchema } from '@cairn/shared'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, RotateCcw } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { subscribeObservation } from '@/lib/observation-stream'
-import { cancelSuiteRun, fetchSuiteRun } from '@/lib/suites-api'
+import { cancelSuiteRun, fetchSuiteRun, rerunSuiteItem } from '@/lib/suites-api'
+import { fetchReports, fetchReportRevision } from '@/lib/reports-api'
 import { useCan } from '@/hooks/use-permissions'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Table,
@@ -24,6 +26,7 @@ import { QueryErrorState } from '@/components/query-error-state'
 import { Can } from '@/components/rbac/can'
 import { StatusBadge } from '@/components/status-badge'
 import { ReportPanel } from '@/features/reports/panel'
+import { SuiteReportView } from '@/features/reports/suite-report-view'
 import { RUN_STATUS_LABELS, runStatusTone } from '@/features/runs/labels'
 import {
   RUN_OUTCOME_STATUS_LABELS,
@@ -71,6 +74,39 @@ export function SuiteRunDetailPage() {
       void queryClient.invalidateQueries({ queryKey: ['reports'] })
   }, [run?.automaticReport?.status, queryClient])
 
+  const reportsQuery = useQuery({
+    queryKey: ['reports', { scope: 'suite_summary', suiteRunId }],
+    queryFn: () => fetchReports({ scope: 'suite_summary', suiteRunId }),
+    enabled: Boolean(suiteRunId),
+  })
+  const latestReport = reportsQuery.data?.items[0]
+  const latestRevisionId = latestReport?.currentRevision?.id
+  const reportRevisionQuery = useQuery({
+    queryKey: ['report-revision', latestReport?.id, latestRevisionId],
+    queryFn: () => fetchReportRevision(latestReport!.id, latestRevisionId!),
+    enabled: Boolean(latestReport?.id && latestRevisionId),
+  })
+
+  const [rerunningMember, setRerunningMember] = useState<string | null>(null)
+
+  async function handleRerun(memberId: string) {
+    setRerunningMember(memberId)
+    try {
+      const res = await rerunSuiteItem(suiteRunId, { memberId })
+      toast.success('已启动单项重跑')
+      queryClient.setQueryData(['suite-run', suiteRunId], res.suiteRun)
+      void query.refetch()
+    } catch (error) {
+      toast.error(error instanceof ApiRequestError ? error.message : '重跑失败')
+    } finally {
+      setRerunningMember(null)
+    }
+  }
+
+  const failedItems = run?.items.filter(
+    (i) => i.runStatus === 'FAILED' || i.outcomeStatus === 'FAIL' || i.runStatus === 'CANCELLED',
+  ) ?? []
+
   return (
     <Main className='flex min-w-0 flex-1 flex-col gap-6'>
       <PageHeader
@@ -96,6 +132,27 @@ export function SuiteRunDetailPage() {
               <StatusBadge tone={suiteVerdictTone(run.verdict)}>
                 {SUITE_VERDICT_LABELS[run.verdict]}
               </StatusBadge>
+            ) : null}
+            {run && ['COMPLETED', 'CANCELLED', 'FAILED'].includes(run.status) && failedItems.length > 0 ? (
+              <Can permission='run:execute'>
+                <Button
+                  variant='outline'
+                  disabled={rerunningMember !== null}
+                  onClick={() => {
+                    if (failedItems[0]) void handleRerun(failedItems[0].memberId)
+                  }}
+                >
+                  <RotateCcw className='size-4 mr-1' />
+                  {failedItems.length === 1 ? '只重跑失败项' : `只重跑失败项 (${failedItems.length})`}
+                </Button>
+              </Can>
+            ) : null}
+            {latestReport ? (
+              <Button variant='outline' asChild>
+                <Link to='/reports/$reportId' params={{ reportId: latestReport.id }}>
+                  查看综合总报表
+                </Link>
+              </Button>
             ) : null}
             <Button variant='outline' asChild>
               <Link to='/evidence' search={{ suiteRunId, tab: 'search' }}>
@@ -139,10 +196,18 @@ export function SuiteRunDetailPage() {
         />
       ) : (
         <>
-          <section className='grid gap-3 rounded-lg border border-border-card bg-card p-5 shadow-card sm:grid-cols-4'>
+          <section className='grid gap-3 rounded-lg border border-border-card bg-card p-5 shadow-card sm:grid-cols-5'>
             <div>
               <p className='text-label text-muted-foreground'>计划成员</p>
               <p className='text-title'>{run.counts.planned}</p>
+            </div>
+            <div>
+              <p className='text-label text-muted-foreground'>执行模式</p>
+              <p className='text-title'>
+                {run.executionMode === 'sequential'
+                  ? '严格串行'
+                  : `受控并发 (上限 ${run.maxConcurrency ?? 3})`}
+              </p>
             </div>
             <div>
               <p className='text-label text-muted-foreground'>
@@ -162,9 +227,16 @@ export function SuiteRunDetailPage() {
               </p>
             </div>
             <div>
-              <p className='text-label text-muted-foreground'>失败策略</p>
+              <p className='text-label text-muted-foreground'>耗时度量</p>
               <p className='text-title'>
-                {run.failurePolicy === 'stop' ? '失败即停' : '失败继续'}
+                {run.wallClockMs != null
+                  ? `${(run.wallClockMs / 1000).toFixed(1)}s`
+                  : '执行中'}
+                {run.childDurationMs != null && run.wallClockMs != null && run.childDurationMs > run.wallClockMs ? (
+                  <span className='ml-1 text-xs font-normal text-success'>
+                    (节约 {(((run.childDurationMs - run.wallClockMs) / run.childDurationMs) * 100).toFixed(0)}%)
+                  </span>
+                ) : null}
               </p>
             </div>
           </section>
@@ -177,6 +249,7 @@ export function SuiteRunDetailPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>成员</TableHead>
+                  <TableHead>目标账号</TableHead>
                   <TableHead>放行</TableHead>
                   <TableHead>子运行</TableHead>
                   <TableHead>业务结果</TableHead>
@@ -187,13 +260,37 @@ export function SuiteRunDetailPage() {
                 {run.items.map((item) => (
                   <TableRow key={item.memberId}>
                     <TableCell>
-                      <div className='font-medium'>{item.displayName}</div>
+                      <div className='flex items-center gap-2'>
+                        <span className='font-medium'>{item.displayName}</span>
+                        {item.stageId ? (
+                          <Badge variant='outline' className='font-mono text-[10px]'>
+                            Stage {item.stageOrdinal != null ? item.stageOrdinal + 1 : item.stageId}
+                          </Badge>
+                        ) : null}
+                        {item.rerunCount && item.rerunCount > 0 ? (
+                          <Badge variant='secondary' className='text-[10px] bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'>
+                            重跑第 {item.rerunCount} 次
+                          </Badge>
+                        ) : null}
+                      </div>
                       <div className='text-label text-muted-foreground'>
                         {item.memberId}
                       </div>
                     </TableCell>
                     <TableCell>
-                      {SUITE_ADMISSION_LABELS[item.admission]}
+                      {item.targetAccountId ? (
+                        <span className='font-mono text-xs text-muted-foreground' title={item.targetAccountId}>
+                          {item.targetAccountId.slice(0, 8)}
+                        </span>
+                      ) : (
+                        <span className='text-xs text-muted-foreground'>默认</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div>{SUITE_ADMISSION_LABELS[item.admission]}</div>
+                      {item.skipReason ? (
+                        <div className='text-xs text-muted-foreground'>{item.skipReason}</div>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <StatusBadge tone={runStatusTone(item.runStatus)}>
@@ -208,14 +305,34 @@ export function SuiteRunDetailPage() {
                       </StatusBadge>
                     </TableCell>
                     <TableCell>
-                      <Button variant='outline' size='sm' asChild>
-                        <Link
-                          to='/runs/$runId'
-                          params={{ runId: item.childRunId }}
-                        >
-                          打开子运行
-                        </Link>
-                      </Button>
+                      <div className='flex items-center justify-end gap-2'>
+                        {item.childRunId ? (
+                          <Button variant='outline' size='sm' asChild>
+                            <Link
+                              to='/runs/$runId'
+                              params={{ runId: item.childRunId }}
+                            >
+                              打开子运行
+                            </Link>
+                          </Button>
+                        ) : null}
+                        {['COMPLETED', 'CANCELLED', 'FAILED'].includes(run.status) ? (
+                          <Can permission='run:execute'>
+                            <Button
+                              variant='ghost'
+                              size='sm'
+                              disabled={rerunningMember !== null}
+                              onClick={() => void handleRerun(item.memberId)}
+                            >
+                              <RotateCcw className='size-3.5 mr-1' />
+                              重跑
+                            </Button>
+                          </Can>
+                        ) : null}
+                        {!item.childRunId && !['COMPLETED', 'CANCELLED', 'FAILED'].includes(run.status) ? (
+                          <span className='text-muted-foreground'>-</span>
+                        ) : null}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -231,6 +348,23 @@ export function SuiteRunDetailPage() {
                   : `自动报告${run.automaticReport.status === 'skipped' ? '已跳过' : '生成失败'}：${run.automaticReport.reason ?? '请手动创建报告或联系管理员检查权限。'}`}
             </p>
           )}
+          {reportRevisionQuery.data?.document ? (
+            <section className='space-y-4'>
+              <div className='flex items-center justify-between'>
+                <h2 className='text-title'>综合巡检总报表</h2>
+                {latestReport ? (
+                  <Link
+                    to='/reports/$reportId'
+                    params={{ reportId: latestReport.id }}
+                    className='text-sm text-link'
+                  >
+                    在独立页查看完整报告
+                  </Link>
+                ) : null}
+              </div>
+              <SuiteReportView document={reportRevisionQuery.data.document} />
+            </section>
+          ) : null}
           <ReportPanel subject={{ kind: 'SUITE_RUN', suiteRunId }} />
         </>
       )}

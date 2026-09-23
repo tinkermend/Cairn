@@ -81,7 +81,7 @@ describe('BatchesPage', () => {
           failedItems: 2,
           reviewItems: 1,
           pausedReason: null,
-          createdByAccountId: 'u1',
+          createdByAccountId: null,
           createdAt: '2026-09-22T00:00:00Z',
           updatedAt: '2026-09-22T00:00:00Z',
         },
@@ -100,5 +100,6 @@ describe('BatchesPage', () => {
     await expect.element(screen.getByText('RUNNING')).toBeInTheDocument()
     await expect.element(screen.getByText('45')).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: /详情/ })).toBeInTheDocument()
+    await expect.element(screen.getByText('已删除账号')).toBeInTheDocument()
   })
 })

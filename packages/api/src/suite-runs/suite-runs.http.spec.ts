@@ -54,6 +54,7 @@ function mockService() {
     create: vi.fn(async () => ({ observation, created: true })),
     observation: vi.fn(async () => observation),
     cancel: vi.fn(async () => observation),
+    rerunItem: vi.fn(async () => ({ runId: '99999999-9999-4999-8999-999999999999', suiteRun: observation })),
     stream: vi.fn(),
   }
 }
@@ -105,5 +106,19 @@ describe('SuiteRuns HTTP', () => {
       .send({ suiteId: observation.suiteId, idempotencyKey: 'suite-run-01' })
       .expect(200)
     expect(service.create).toHaveBeenCalled()
+  })
+
+  it('重跑成员项需要 run:execute 和 suite:read 权限', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/suite-runs/${suiteRunId}/rerun-item`)
+      .send({ memberId: 'm1' })
+      .expect(403)
+    expect(service.rerunItem).not.toHaveBeenCalled()
+
+    await request(adminApp.getHttpServer())
+      .post(`/suite-runs/${suiteRunId}/rerun-item`)
+      .send({ memberId: 'm1' })
+      .expect(200)
+    expect(service.rerunItem).toHaveBeenCalledWith(suiteRunId, { memberId: 'm1' }, admin)
   })
 })

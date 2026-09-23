@@ -11,9 +11,12 @@ import {
   type StepRunDto,
   type StepRunStatus,
 } from '@cairn/shared'
-import { ChevronDown, ChevronRight, Layers } from 'lucide-react'
+import { ChevronDown, ChevronRight, Layers, MessageSquare } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Can } from '@/components/rbac/can'
+import { useAssistantStore } from '@/stores/assistant-store'
+import { buildStepQuote } from '@/features/assistant/quote-helper'
 import { StatusBadge } from '@/components/status-badge'
 import { MODULE_EXECUTION_MODE_LABELS } from '@/features/action-modules/labels'
 import { AiAttemptSummary } from './ai-evidence'
@@ -368,6 +371,7 @@ function StepRunItem({
   onSelectStep?: (stepRunId: string, attemptId?: string) => void
 }) {
   const isCurrent = currentStepRunId === step.id
+  const setQuote = useAssistantStore((s) => s.setQuote)
   return (
     <li
       id={`step-run-${step.id}`}
@@ -380,16 +384,36 @@ function StepRunItem({
           : 'border-border-card bg-background'
       } ${onSelectStep ? 'cursor-pointer' : ''}`}
     >
-      <div className='flex flex-wrap items-center gap-2'>
-        <span className='font-medium'>
-          {step.ordinal + 1}. {step.name}
-        </span>
-        <StatusBadge tone={stepRunStatusTone(step.status)}>
-          {STEP_RUN_STATUS_LABELS[step.status]}
-        </StatusBadge>
-        {skipReason ? (
-          <Badge variant='outline'>{SKIP_REASON_LABELS[skipReason]}</Badge>
-        ) : null}
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <div className='flex flex-wrap items-center gap-2'>
+          <span className='font-medium'>
+            {step.ordinal + 1}. {step.name}
+          </span>
+          <StatusBadge tone={stepRunStatusTone(step.status)}>
+            {STEP_RUN_STATUS_LABELS[step.status]}
+          </StatusBadge>
+          {skipReason ? (
+            <Badge variant='outline'>{SKIP_REASON_LABELS[skipReason]}</Badge>
+          ) : null}
+        </div>
+        <Can allOf={['ai:assist']}>
+          <Button
+            type='button'
+            variant='ghost'
+            size='sm'
+            className='h-6 px-1.5 text-label text-muted-foreground hover:text-foreground'
+            title='引用到识途助手'
+            onClick={(e) => {
+              e.stopPropagation()
+              const lastAttempt = step.attempts[step.attempts.length - 1]
+              const err = lastAttempt?.error ? `${lastAttempt.error.code}: ${lastAttempt.error.safeMessage}` : undefined
+              setQuote(buildStepQuote(step, err))
+            }}
+          >
+            <MessageSquare className='mr-1 size-3' />
+            引用
+          </Button>
+        </Can>
       </div>
       <p className='mt-1 text-label text-muted-foreground'>
         {isAiStepType(step.type) ? (
@@ -433,14 +457,37 @@ function StepRunItem({
               : ''}
           </p>
           {attempt.error ? (
-            <p className='mt-1 text-destructive'>
-              {attempt.error.code}: {attempt.error.safeMessage}
-              {attempt.error.code === 'ASSERT_TEMPLATE_INVALID' ? (
-                <span className='ml-1 text-label text-muted-foreground'>
-                  （快照模板语法非法或根节点非序列，不可重试）
-                </span>
-              ) : null}
-            </p>
+            <div className='mt-1 flex items-start justify-between gap-2'>
+              <p className='text-destructive'>
+                {attempt.error.code}: {attempt.error.safeMessage}
+                {attempt.error.code === 'ASSERT_TEMPLATE_INVALID' ? (
+                  <span className='ml-1 text-label text-muted-foreground'>
+                    （快照模板语法非法或根节点非序列，不可重试）
+                  </span>
+                ) : null}
+              </p>
+              <Can allOf={['ai:assist']}>
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='sm'
+                  className='h-5 shrink-0 px-1.5 text-caption text-destructive hover:bg-muted'
+                  title='向助手询问此错误'
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setQuote(
+                      buildStepQuote(
+                        step,
+                        `Attempt #${attempt.attemptNo} 报错 [${attempt.error?.code}]: ${attempt.error?.safeMessage}`
+                      )
+                    )
+                  }}
+                >
+                  <MessageSquare className='mr-1 size-3' />
+                  诊断此错误
+                </Button>
+              </Can>
+            </div>
           ) : null}
           {typeof attempt.output === 'object' &&
           attempt.output !== null &&

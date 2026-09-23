@@ -5,6 +5,7 @@ import type {
   ResourceDeletedBy,
   RunEvidenceStatus,
   SuiteDocument,
+  SuiteExecutionMode,
   SuiteFailurePolicy,
   SuiteMemberAdmission,
   SuiteRunStatus,
@@ -26,6 +27,8 @@ export const scenarioSuites = cairnSchema.table(
     name: text('name').notNull(),
     description: text('description'),
     status: text('status').notNull().default('active').$type<SuiteStatus>(),
+    executionMode: text('execution_mode').notNull().default('parallel').$type<SuiteExecutionMode>(),
+    maxConcurrency: integer('max_concurrency').notNull().default(3),
     createdByConsoleAccountId: uuid('created_by_console_account_id')
       .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
@@ -103,6 +106,8 @@ export const suiteRuns = cairnSchema.table(
     verdict: text('verdict').$type<SuiteVerdict>(),
     evidenceStatus: text('evidence_status').notNull().default('PENDING').$type<RunEvidenceStatus>(),
     failurePolicy: text('failure_policy').notNull().$type<SuiteFailurePolicy>(),
+    executionMode: text('execution_mode').notNull().default('parallel').$type<SuiteExecutionMode>(),
+    maxConcurrency: integer('max_concurrency').notNull().default(3),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
     reason: text('reason'),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
@@ -143,8 +148,12 @@ export const suiteRunItems = cairnSchema.table(
       .notNull()
       .references(() => scenarioVersions.id, { onDelete: 'restrict' }),
     childRunId: uuid('child_run_id')
-      .notNull()
       .references(() => runs.id, { onDelete: 'restrict' }),
+    originalRunId: uuid('original_run_id')
+      .references(() => runs.id, { onDelete: 'restrict' }),
+    rerunCount: integer('rerun_count').default(0).notNull(),
+    stageId: text('stage_id'),
+    stageOrdinal: integer('stage_ordinal'),
     admissionStatus: text('admission_status').notNull().$type<SuiteMemberAdmission>(),
     skipReason: text('skip_reason'),
     targetAccountId: uuid('target_account_id').references(() => targetAccounts.id, { onDelete: 'restrict' }),
@@ -153,9 +162,6 @@ export const suiteRunItems = cairnSchema.table(
     uniqueIndex('suite_run_items_member_idx').on(t.suiteRunId, t.memberId),
     uniqueIndex('suite_run_items_ordinal_idx').on(t.suiteRunId, t.ordinal),
     uniqueIndex('suite_run_items_child_idx').on(t.childRunId),
-    uniqueIndex('suite_run_items_one_active_idx')
-      .on(t.suiteRunId)
-      .where(sql`${t.admissionStatus} = 'ACTIVE'`),
   ],
 )
 

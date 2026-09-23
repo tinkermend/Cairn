@@ -24,6 +24,7 @@ vi.mock('@/lib/datasets-api', () => ({
   createDataset: vi.fn(),
   deleteDataset: vi.fn(),
   fetchDatasetRows: vi.fn(),
+  fetchDatasetProfile: vi.fn(),
   preflightDataset: vi.fn(),
   autoMapDataset: vi.fn(),
 }))
@@ -63,7 +64,7 @@ describe('DatasetsPage', () => {
           columns: [
             { name: '手机号', key: 'phone', type: 'string', sampleValues: ['13800138000'] },
           ],
-          createdByAccountId: 'u1',
+          createdByAccountId: null,
           createdAt: '2026-09-22T00:00:00Z',
           updatedAt: '2026-09-22T00:00:00Z',
         },
@@ -82,5 +83,6 @@ describe('DatasetsPage', () => {
     await expect.element(screen.getByText(/42 行/)).toBeInTheDocument()
     await expect.element(screen.getByText('EXCEL', { exact: true })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: /查看数据/ })).toBeInTheDocument()
+    await expect.element(screen.getByText('已删除账号')).toBeInTheDocument()
   })
 })

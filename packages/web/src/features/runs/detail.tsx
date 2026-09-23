@@ -43,7 +43,9 @@ import { DebugHoldBar } from './debug-hold-bar'
 import { StepTimeline } from './step-timeline'
 import { resolveRunEvidenceFocus } from './evidence-focus'
 import { useAssistantStore } from '@/stores/assistant-store'
+import { useAssistantContextBinding } from '@/features/assistant/use-assistant-context-binding'
 import { RunMetricStrip } from './run-metric-strip'
+import { RunOutputCard } from './run-output-card'
 import { ReportPanel } from '@/features/reports/panel'
 import { AlertTriangle, ArrowLeft, Copy, ListOrdered, Target } from 'lucide-react'
 
@@ -63,6 +65,26 @@ export function RunDetailPage() {
 
   // 录像章节与步骤时间线联动状态
   const [currentStepRunId, setCurrentStepRunId] = useState<string | null>(null)
+  const selectedStepId = currentStepRunId
+    ? run?.stepRuns.find((step) => step.id === currentStepRunId)?.stepId
+    : undefined
+
+  useAssistantContextBinding(
+    run
+      ? {
+          page: 'run',
+          runId,
+          targetId: run.targetId,
+          scenarioId: run.scenarioId,
+          statusSummary: `${run.scenarioName || '运行'} (${run.status})`,
+          ...(selectedStepId ? { selectedStepId } : {}),
+        }
+      : {
+          page: 'run',
+          runId,
+          statusSummary: '加载中...',
+        }
+  )
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null)
   const [seekRequest, setSeekRequest] = useState<{
     token: number
@@ -242,6 +264,22 @@ export function RunDetailPage() {
           <div className='space-y-5'>
             {/* 1. 全局 4 列健康指标条 */}
             <RunMetricStrip run={run} />
+
+            {/* 业务产出与巡检指标 */}
+            <RunOutputCard
+              output={run.output}
+              onFocusEvidence={(evidenceId) => {
+                void navigate({
+                  search: ((prev: Record<string, unknown>) => ({ ...prev, evidence: evidenceId })) as any,
+                })
+              }}
+              onFocusStep={(stepOrdinal) => {
+                const step = run.stepRuns.find((s) => s.ordinal === stepOrdinal)
+                if (step) {
+                  handleSelectStep(step.id)
+                }
+              }}
+            />
 
             {/* 2. 调度提示与地图消费说明 */}
             <PlacementHint

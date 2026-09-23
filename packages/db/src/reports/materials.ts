@@ -15,9 +15,14 @@ const array = (value: JsonValue | undefined): Array<Record<string, JsonValue>> =
 export function reportScreenshotRefs(source: Record<string, JsonValue>): EvidenceRef[] {
   if (source.kind === 'SUITE_RUN') return array(source.items).flatMap((member) => reportScreenshotRefs(object(member.run)))
   const steps = new Map(array(source.stepRuns).map((step) => [String(step.id), step]))
+  const output = object(source.output)
+  const findingEvidenceIds = new Set(
+    array(output.findings).map((f) => String(f.evidenceId)).filter(Boolean),
+  )
   return array(source.evidence).filter((evidence) => evidence.type === 'screenshot').map((evidence) => {
     const step = steps.get(String(evidence.stepRunId))
-    const anomalous = !!step && (['FAILED', 'NEEDS_REVIEW', 'CANCELLED'].includes(String(step.status)) || ['FAIL', 'WARN', 'UNKNOWN'].includes(String(step.outcomeStatus)) || array(step.attempts).some((attempt) => !!attempt.error))
+    const isFinding = findingEvidenceIds.has(String(evidence.evidenceId))
+    const anomalous = isFinding || (!!step && (['FAILED', 'NEEDS_REVIEW', 'CANCELLED'].includes(String(step.status)) || ['FAIL', 'WARN', 'UNKNOWN'].includes(String(step.outcomeStatus)) || array(step.attempts).some((attempt) => !!attempt.error)))
     return { evidenceId: String(evidence.evidenceId), runId: String(source.runId), status: String(evidence.status), digest: typeof evidence.digest === 'string' ? evidence.digest : null,
       caption: `${String(source.scenarioName ?? '场景')} · ${String(step?.name ?? '运行截图')}`, anomalous }
   })

@@ -1,16 +1,16 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common'
+import { BadRequestException, Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common'
 import {
   autoMapBodySchema,
   createDatasetBodySchema,
   datasetListQuerySchema,
   datasetRowsQuerySchema,
-  deleteResourceBodySchema,
+  deleteDatasetBodySchema,
   preflightDatasetBodySchema,
   type AutoMapBody,
   type CreateDatasetBody,
   type DatasetListQuery,
   type DatasetRowsQuery,
-  type DeleteResourceBody,
+  type DeleteDatasetBody,
   type PreflightDatasetBody,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
@@ -58,6 +58,12 @@ export class DatasetsController {
     return this.datasets.get(datasetId, account.id)
   }
 
+  @Get(':datasetId/profile')
+  @RequirePermissions('dataset:read')
+  profile(@Param('datasetId') datasetId: string, @CurrentAccount() account: RequestAccount) {
+    return this.datasets.profile(datasetId, account.id)
+  }
+
   @Get(':datasetId/rows')
   @RequirePermissions('dataset:read')
   rows(
@@ -95,9 +101,15 @@ export class DatasetsController {
   @RequirePermissions('dataset:delete')
   delete(
     @Param('datasetId') datasetId: string,
-    @Body(new ZodValidationPipe(deleteResourceBodySchema)) body: DeleteResourceBody,
+    @Body(new ZodValidationPipe(deleteDatasetBodySchema)) body: DeleteDatasetBody,
     @CurrentAccount() account: RequestAccount,
   ) {
-    return this.datasets.delete(datasetId, body, account)
+    if (body.confirmation !== datasetId) {
+      throw new BadRequestException({
+        code: 'DATASET_DELETE_CONFIRMATION_MISMATCH',
+        message: '确认标识与数据集不一致',
+      })
+    }
+    return this.datasets.delete(datasetId, account)
   }
 }

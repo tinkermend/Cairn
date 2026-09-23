@@ -151,6 +151,8 @@ export async function listSuites(db: Db, query: Partial<SuiteListQuery> = {}, ac
       name: row.suite.name,
       description: row.suite.description,
       status: row.suite.status,
+      executionMode: row.suite.executionMode,
+      maxConcurrency: row.suite.maxConcurrency,
       draftRevision: row.draftRevision,
       publishedVersionNo: row.publishedVersionNo == null ? null : Number(row.publishedVersionNo),
       memberCount: row.document.members.length,
@@ -178,6 +180,8 @@ export async function createSuite(db: Db, input: CreateSuiteBody, actor: AuditAc
         name: body.name,
         description: body.description ?? null,
         status: 'active',
+        executionMode: document.executionMode ?? 'parallel',
+        maxConcurrency: document.maxConcurrency ?? 3,
         createdByConsoleAccountId: actor.id,
         createdAt: now,
         updatedAt: now,
@@ -231,6 +235,8 @@ export async function saveSuiteDraft(
         .set({
           name: body.name ?? suite.name,
           description: body.description === undefined ? suite.description : body.description,
+          executionMode: document.executionMode ?? 'parallel',
+          maxConcurrency: document.maxConcurrency ?? 3,
           updatedAt: now,
         })
         .where(eq(scenarioSuites.id, suiteId))

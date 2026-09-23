@@ -57,7 +57,8 @@ function mockService() {
     create: vi.fn(async () => dataset),
     autoMap: vi.fn(async () => ({ binding: {} })),
     preflight: vi.fn(async () => ({ totalRows: 0, validCount: 0, warningCount: 0, errorCount: 0, issues: [] })),
-    delete: vi.fn(async () => undefined),
+    profile: vi.fn(async () => ({ datasetId, totalRows: 0, analyzedRows: 0, isSampled: false, columns: [], algorithmVersion: '1.0', createdAt: new Date().toISOString() })),
+    delete: vi.fn(async () => ({ deleted: true as const })),
   }
 }
 
@@ -138,5 +139,38 @@ describe('Datasets HTTP', () => {
       .send({ scenarioInputs: [], binding: {} })
       .expect(200)
     expect(service.preflight).toHaveBeenCalled()
+
+    await request(viewerApp.getHttpServer())
+      .get(`/datasets/${datasetId}/profile`)
+      .expect(200)
+    expect(service.profile).toHaveBeenCalledWith(datasetId, viewer.id)
+  })
+
+  it('删除提交与路径一致的确认标识，拒绝生命周期预览体和不一致的标识', async () => {
+    const ok = await request(adminApp.getHttpServer())
+      .post(`/datasets/${datasetId}/delete`)
+      .send({ confirmation: datasetId })
+      .expect(200)
+    expect(ok.body).toEqual({ deleted: true })
+    expect(service.delete).toHaveBeenCalledWith(datasetId, expect.objectContaining({ id: admin.id }))
+
+    service.delete.mockClear()
+    await request(adminApp.getHttpServer())
+      .post(`/datasets/${datasetId}/delete`)
+      .send({ expectedCounts: { runs: 1 } })
+      .expect(400)
+    await request(adminApp.getHttpServer())
+      .post(`/datasets/${datasetId}/delete`)
+      .send({ confirmation: '33333333-3333-4333-8333-333333333333' })
+      .expect(400)
+      .expect((res) => {
+        expect(res.body.code).toBe('DATASET_DELETE_CONFIRMATION_MISMATCH')
+      })
+    expect(service.delete).not.toHaveBeenCalled()
+
+    await request(viewerApp.getHttpServer())
+      .post(`/datasets/${datasetId}/delete`)
+      .send({ confirmation: datasetId })
+      .expect(403)
   })
 })

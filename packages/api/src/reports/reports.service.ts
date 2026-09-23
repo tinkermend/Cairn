@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { createHash } from 'node:crypto'
 import sharp from 'sharp'
 import * as reporting from '@cairn/db'
@@ -19,13 +19,16 @@ import {
   type DbHandle,
 } from '@cairn/db'
 import type { ObjectStore } from '@cairn/storage'
-import type {
-  CreateReportBody,
-  CreateReportRevisionBody,
-  ExportReportBody,
-  ReportListQuery,
+import {
+  type CreateReportBody,
+  type CreateReportRevisionBody,
+  type ExportReportBody,
+  type ReportListQuery,
+  signReportToken,
+  verifyReportToken,
 } from '@cairn/shared'
 import { REPORT_LIMITS, type SaveReportProfileBody, type CreateReportBundleBody, type DeriveMemberReportBody, type UploadReportAssetBody } from '@cairn/shared'
+import { resolveApiEnv } from '../config/env.js'
 import { rethrowDomain } from '../common/domain-error.js'
 import { abortWhenSseClientDrops } from '../common/sse-abort.js'
 import type { RequestAccount } from '../common/request-account'
@@ -175,4 +178,57 @@ export class ReportsService {
       throw new NotFoundException({ code: 'ARTIFACT_NOT_AVAILABLE', message: '产物不可用' })
     }
   }
+
+  async getPublicReportView(token: string) {
+    const env = resolveApiEnv()
+    const payload = await verifyReportToken(token, env.CAIRN_JWT_SECRET)
+    if (!payload || payload.scope !== 'readonly_report') {
+      throw new ForbiddenException({ code: 'REPORT_TOKEN_INVALID', message: '无效或已过期的报告访问令牌' })
+    }
+    const list = await listReports(this.database, { suiteRunId: payload.suiteRunId }).catch(rethrowDomain)
+    const reportSummary = list.items.find((item) => item.subject.kind === 'SUITE_RUN') ?? list.items[0]
+    if (!reportSummary) {
+      throw new NotFoundException({ code: 'REPORT_NOT_FOUND', message: '尚未生成巡检总报告' })
+    }
+    const report = await getReport(this.database, reportSummary.id).catch(rethrowDomain)
+    const targetRevisionId = payload.reportRevisionId ?? report.currentRevision?.id
+    if (!targetRevisionId) {
+      throw new NotFoundException({ code: 'REPORT_REVISION_NOT_FOUND', message: '报告尚未生成有效修订' })
+    }
+    const loaded = await loadReportRevisionDocument(this.database, targetRevisionId).catch(rethrowDomain)
+    return {
+      report,
+      revision: loaded.revision,
+      document: loaded.revision.document,
+      tokenPayload: {
+        suiteRunId: payload.suiteRunId,
+        reportRevisionId: payload.reportRevisionId,
+        exp: payload.exp,
+      },
+    }
+  }
+
+  async createShareToken(reportId: string, actorId: string) {
+    const report = await this.get(reportId, actorId)
+    if (report.subject.kind !== 'SUITE_RUN' || !report.subject.suiteRunId) {
+      throw new BadRequestException('只有场景集总报告支持生成免登录只读分享链接')
+    }
+    const env = resolveApiEnv()
+    const exp = Math.floor(Date.now() / 1000) + 24 * 3600
+    const token = await signReportToken(
+      {
+        suiteRunId: report.subject.suiteRunId,
+        reportRevisionId: report.currentRevision?.id,
+        scope: 'readonly_report',
+        exp,
+      },
+      env.CAIRN_JWT_SECRET,
+    )
+    return {
+      token,
+      url: `/public/reports/view?token=${encodeURIComponent(token)}`,
+      expiresAt: new Date(exp * 1000).toISOString(),
+    }
+  }
 }
+

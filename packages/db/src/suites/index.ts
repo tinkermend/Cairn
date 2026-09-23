@@ -21,6 +21,7 @@ export {
   listSuiteRunEventsAfter,
   listSuiteRuns,
   previewSuiteRun,
+  rerunSuiteItem,
   scheduleSuiteAdvanceForChild,
 } from './runs.js'
 export { validateSuiteDocument } from './validate.js'

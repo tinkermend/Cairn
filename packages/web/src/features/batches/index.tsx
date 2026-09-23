@@ -189,6 +189,9 @@ export function BatchesPage() {
                           >
                             <Layers className='h-4 w-4 text-primary shrink-0' />
                             <span>{batch.name}</span>
+                            {batch.createdByAccountId == null && (
+                              <span className='text-xs text-muted-foreground'>已删除账号</span>
+                            )}
                           </Link>
                         </TableCell>
                         <TableCell className='text-xs'>

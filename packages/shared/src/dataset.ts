@@ -62,7 +62,7 @@ export const datasetDetailSchema = z.strictObject({
   selectedSheet: z.string().nullable().optional(),
   rowCount: z.number().int().nonnegative(),
   columns: z.array(datasetColumnSchema),
-  createdByAccountId: entityIdSchema,
+  createdByAccountId: entityIdSchema.nullable(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
 })
@@ -137,3 +137,13 @@ export const autoMapResultSchema = z.strictObject({
   binding: dataBindingSchema,
 })
 export type AutoMapResult = z.infer<typeof autoMapResultSchema>
+
+export const deleteDatasetBodySchema = z.strictObject({
+  confirmation: entityIdSchema,
+})
+export type DeleteDatasetBody = z.infer<typeof deleteDatasetBodySchema>
+
+export const deleteDatasetResponseSchema = z.strictObject({
+  deleted: z.literal(true),
+})
+export type DeleteDatasetResponse = z.infer<typeof deleteDatasetResponseSchema>

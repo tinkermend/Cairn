@@ -5,17 +5,22 @@ import {
   MAX_SUITE_SNAPSHOT_BYTES,
   SUITE_ADMISSION_PROTOCOL,
   aggregateSuiteVerdict,
+  allSuiteMembers,
   createSuiteRunBodySchema,
+  effectiveSuiteStages,
+  interpolateStageVariables,
   mergeSuiteMemberInput,
   resolveSuiteMemberAccountId,
   suiteRunListQuerySchema,
   suiteRunListResponseSchema,
   suiteRunObservationSchema,
+  validateStageDependencies,
   type CreateSuiteRunBody,
   type ExecutionActor,
   type JsonValue,
   type RunEvidenceStatus,
   type SuiteDocument,
+  type SuiteExecutionMode,
   type SuiteMemberAdmission,
   type SuiteRunCounts,
   type SuiteRunEventDto,
@@ -39,6 +44,7 @@ import { loadResolutionLayers, stepsNeedAiExecute } from '../runs/resolution-lay
 import { loadScenarioVersion } from '../runs/scenarios.js'
 import { resolveRunTargetAccountId, writeRunWithSnapshot } from '../runs/runs.js'
 import { requestRunCancel } from '../runs/runs.js'
+import { readAccountSessionCap } from '../sessions/account-session-concurrency.js'
 import { liveTargetExists } from '../lifecycle.js'
 import { validateSuiteDocument } from './validate.js'
 import { lockReportDefaults, resolveReportProfile } from '../reports/profiles.js'
@@ -119,7 +125,7 @@ async function loadObservationTx(db: Db, suiteRunId: string): Promise<SuiteRunOb
   const rows = await db
     .select({ item: suiteRunItems, child: runs })
     .from(suiteRunItems)
-    .innerJoin(runs, eq(runs.id, suiteRunItems.childRunId))
+    .leftJoin(runs, eq(runs.id, suiteRunItems.childRunId))
     .where(eq(suiteRunItems.suiteRunId, suiteRunId))
     .orderBy(asc(suiteRunItems.ordinal))
   const items: SuiteRunItemDto[] = rows.map(({ item, child }) => ({
@@ -129,17 +135,21 @@ async function loadObservationTx(db: Db, suiteRunId: string): Promise<SuiteRunOb
     displayName: item.displayName,
     scenarioId: item.scenarioId,
     scenarioVersionId: item.scenarioVersionId,
-    childRunId: item.childRunId,
+    childRunId: item.childRunId ?? null,
     admission: item.admissionStatus,
     skipReason: item.skipReason,
-    runStatus: child.status,
-    outcomeStatus: child.outcomeStatus,
-    evidenceStatus: child.evidenceStatus,
+    runStatus: child?.status ?? 'QUEUED',
+    outcomeStatus: child?.outcomeStatus ?? 'NOT_EVALUATED',
+    evidenceStatus: child?.evidenceStatus ?? 'PENDING',
     targetAccountId: item.targetAccountId,
+    originalRunId: item.originalRunId ?? null,
+    rerunCount: item.rerunCount ?? 0,
+    stageId: item.stageId ?? null,
+    stageOrdinal: item.stageOrdinal ?? null,
   }))
   const started = parent.run.startedAt?.getTime() ?? parent.run.createdAt.getTime()
   const finished = parent.run.finishedAt?.getTime() ?? null
-  const childDurations = rows.flatMap(({ child }) => child.startedAt && child.finishedAt
+  const childDurations = rows.flatMap(({ child }) => child?.startedAt && child?.finishedAt
     ? [child.finishedAt.getTime() - child.startedAt.getTime()] : [])
   // Legacy/clock-skewed timestamps must not break observation and orchestration.
   // Keep the underlying facts; an invalid duration is unknown, never negative.
@@ -156,6 +166,8 @@ async function loadObservationTx(db: Db, suiteRunId: string): Promise<SuiteRunOb
     cancelRequested: parent.run.cancelRequestedAt != null,
     reason: parent.run.reason,
     failurePolicy: parent.run.failurePolicy,
+    executionMode: parent.run.executionMode,
+    maxConcurrency: parent.run.maxConcurrency,
     deadlineAt: parent.run.deadlineAt.toISOString(),
     startedAt: parent.run.startedAt?.toISOString() ?? null,
     finishedAt: parent.run.finishedAt?.toISOString() ?? null,
@@ -264,61 +276,72 @@ export async function previewSuiteRun(
   const { suite, version, document } = await resolvePublishedVersion(db, input.suiteId, input.suiteVersionId)
   if (actorId) await assertTargetPermission(db, actorId, suite.targetId, 'run:execute')
   const deadlineAt = new Date(Date.now() + (input.deadlineMs ?? DEFAULT_SUITE_DEADLINE_MS))
+  const allMembers = allSuiteMembers(document)
   const issues: SuiteValidationIssue[] = await validateSuiteDocument(db, suite.targetId, {
     ...document,
     sharedInput: { ...document.sharedInput, ...input.sharedInput },
     defaultTargetAccountId: input.defaultTargetAccountId ?? document.defaultTargetAccountId,
-    members: document.members.map((member) => ({
+    members: allMembers.map((member) => ({
       ...member,
       input: { ...member.input, ...input.memberOverrides?.[member.memberId]?.input },
       targetAccountId: input.memberOverrides?.[member.memberId]?.targetAccountId ?? member.targetAccountId,
     })),
   })
+  if (document.stages && document.stages.length > 0) {
+    issues.push(...validateStageDependencies(document.stages))
+  }
   for (const memberId of Object.keys(input.memberOverrides ?? {})) {
-    if (!document.members.some((member) => member.memberId === memberId)) {
+    if (!allMembers.some((member) => member.memberId === memberId)) {
       issues.push({ memberId, code: 'SUITE_MEMBER_NOT_FOUND', message: '运行覆盖引用了不存在的成员', severity: 'error' })
     }
   }
   const { scenarios } = schemaFor(db)
   const members = []
-  for (const member of [...document.members].sort((a, b) => a.ordinal - b.ordinal)) {
-    const override = input.memberOverrides?.[member.memberId]
-    const effectiveInput = mergeSuiteMemberInput({
-      sharedInput: { ...document.sharedInput, ...input.sharedInput },
-      memberInput: member.input,
-      runOverride: override?.input,
-    })
-    let targetAccountId: string | null = null
-    try {
-      targetAccountId = frozenAccounts?.[member.memberId] === null ? null : await resolveRunTargetAccountId(db, { targetId: suite.targetId, requestedAccountId: frozenAccounts?.[member.memberId] ?? resolveSuiteMemberAccountId({
-        runMemberAccountId: override?.targetAccountId,
-        memberAccountId: member.targetAccountId,
-        runDefaultAccountId: input.defaultTargetAccountId,
-        suiteDefaultAccountId: document.defaultTargetAccountId,
-      }) }) ?? null
-    } catch (error) {
-      issues.push({ memberId: member.memberId, code: 'RUN_ACCOUNT_REQUIRED', message: error instanceof Error ? error.message : '请选择目标账号', severity: 'error' })
+  let globalOrdinal = 0
+  const stages = effectiveSuiteStages(document)
+  for (const stage of stages) {
+    const stageMembers = [...stage.members].sort((a, b) => a.ordinal - b.ordinal)
+    for (const member of stageMembers) {
+      const override = input.memberOverrides?.[member.memberId]
+      const effectiveInput = mergeSuiteMemberInput({
+        sharedInput: { ...document.sharedInput, ...input.sharedInput },
+        memberInput: member.input,
+        runOverride: override?.input,
+      })
+      let targetAccountId: string | null = null
+      try {
+        targetAccountId = frozenAccounts?.[member.memberId] === null ? null : await resolveRunTargetAccountId(db, { targetId: suite.targetId, requestedAccountId: frozenAccounts?.[member.memberId] ?? resolveSuiteMemberAccountId({
+          runMemberAccountId: override?.targetAccountId,
+          memberAccountId: member.targetAccountId,
+          runDefaultAccountId: input.defaultTargetAccountId,
+          suiteDefaultAccountId: document.defaultTargetAccountId,
+        }) }) ?? null
+      } catch (error) {
+        issues.push({ memberId: member.memberId, code: 'RUN_ACCOUNT_REQUIRED', message: error instanceof Error ? error.message : '请选择目标账号', severity: 'error' })
+      }
+      const [scenario] = await db.select({ name: scenarios.name }).from(scenarios).where(eq(scenarios.id, member.scenarioId)).limit(1)
+      const memberIssues = issues.filter((item) => item.memberId === member.memberId)
+      members.push({
+        memberId: member.memberId,
+        ordinal: globalOrdinal++,
+        displayName: member.displayName ?? scenario?.name ?? member.memberId,
+        scenarioId: member.scenarioId,
+        scenarioName: scenario?.name ?? member.memberId,
+        scenarioVersionId: member.scenarioVersionId,
+        effectiveInput,
+        targetAccountId,
+        issues: memberIssues,
+        entryNavigationWarning: memberIssues.some((item) => item.code === 'ENTRY_NAVIGATION_WARNING'),
+      })
     }
-    const [scenario] = await db.select({ name: scenarios.name }).from(scenarios).where(eq(scenarios.id, member.scenarioId)).limit(1)
-    const memberIssues = issues.filter((item) => item.memberId === member.memberId)
-    members.push({
-      memberId: member.memberId,
-      ordinal: member.ordinal,
-      displayName: member.displayName ?? scenario?.name ?? member.memberId,
-      scenarioId: member.scenarioId,
-      scenarioName: scenario?.name ?? member.memberId,
-      scenarioVersionId: member.scenarioVersionId,
-      effectiveInput,
-      targetAccountId,
-      issues: memberIssues,
-      entryNavigationWarning: memberIssues.some((item) => item.code === 'ENTRY_NAVIGATION_WARNING'),
-    })
   }
   return {
     suiteId: suite.id,
     suiteVersionId: version.id,
     targetId: suite.targetId,
     failurePolicy: document.failurePolicy,
+    executionMode: input.executionMode ?? document.executionMode ?? 'parallel',
+    maxConcurrency: input.maxConcurrency ?? document.maxConcurrency ?? 3,
     deadlineAt: deadlineAt.toISOString(),
     accountInterleaveHint: true,
     aiBudgetNotReserved: true,
@@ -367,6 +390,8 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
     }
   }
   const now = new Date()
+  const executionMode = input.executionMode ?? document.executionMode ?? 'parallel'
+  const maxConcurrency = input.maxConcurrency ?? document.maxConcurrency ?? 3
   const deadlineAt = new Date(now.getTime() + (input.deadlineMs ?? DEFAULT_SUITE_DEADLINE_MS))
   const reportDefaults = await resolveReportProfile(db, suite.targetId, document.reportProfileId)
   const snapshot = {
@@ -374,6 +399,8 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
     suiteName: suite.name,
     suiteVersionId: version.id,
     document,
+    executionMode,
+    maxConcurrency,
     sharedInput: input.sharedInput ?? {},
     defaultTargetAccountId: input.defaultTargetAccountId ?? document.defaultTargetAccountId ?? null,
     memberOverrides: input.memberOverrides ?? {},
@@ -408,6 +435,8 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
         status: 'QUEUED',
         evidenceStatus: 'PENDING',
         failurePolicy: document.failurePolicy,
+        executionMode,
+        maxConcurrency,
         deadlineAt,
         snapshot,
         snapshotDigest: sha256Hex(snapshot),
@@ -419,66 +448,87 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
       if (document.autoGenerateFinalReport) await tx.insert(suiteReportTriggers).values({ suiteRunId, status: 'pending', createdAt: now, updatedAt: now })
       const created: { memberId: string; ordinal: number; runId: string; skip: string | null }[] = []
       let snapshotBytes = Buffer.byteLength(JSON.stringify(snapshot), 'utf8')
+      const stages = effectiveSuiteStages(document)
+      const stage0 = stages[0]!
+      const stage0MemberIds = new Set(stage0.members.map((m) => m.memberId))
+      const allMembersList = allSuiteMembers(document)
+
       for (const member of preview.members) {
-        const written = await writeRunWithSnapshot(tx, {
-          scenarioId: member.scenarioId,
-          scenarioVersionId: member.scenarioVersionId,
-          targetAccountId: member.targetAccountId ?? undefined,
-          resolvedTargetAccountId: member.targetAccountId,
-          input: member.effectiveInput,
-          actor,
-          deadlineAt,
-          executionOrigin: 'suite_member',
-          suiteRunId,
-          suiteMemberId: member.memberId,
-          reportDefaults: { profileId: document.members.find((entry) => entry.memberId === member.memberId)?.reportProfileId, displayName: member.displayName },
-          suiteAdmission: {
-            protocol: SUITE_ADMISSION_PROTOCOL,
+        const isStage0 = stage0MemberIds.has(member.memberId)
+        const stage = stages.find((s) => s.members.some((m) => m.memberId === member.memberId)) ?? stage0
+        const memberDef = allMembersList.find((m) => m.memberId === member.memberId)
+        if (isStage0) {
+          const written = await writeRunWithSnapshot(tx, {
+            scenarioId: member.scenarioId,
+            scenarioVersionId: member.scenarioVersionId,
+            targetAccountId: member.targetAccountId ?? undefined,
+            resolvedTargetAccountId: member.targetAccountId,
+            input: member.effectiveInput,
+            actor,
+            deadlineAt,
+            executionOrigin: 'suite_member',
+            suiteRunId,
+            suiteMemberId: member.memberId,
+            reportDefaults: { profileId: memberDef?.reportProfileId, displayName: member.displayName },
+            suiteAdmission: {
+              protocol: SUITE_ADMISSION_PROTOCOL,
+              suiteRunId,
+              memberId: member.memberId,
+            },
+          })
+          const skip = deadlineAt.getTime() <= now.getTime() ? 'deadline_elapsed' : null
+          const [child] = await tx.select({ snapshot: runs.snapshot, targetAccountId: runs.targetAccountId }).from(runs).where(eq(runs.id, written.runId))
+          snapshotBytes += Buffer.byteLength(JSON.stringify(child!.snapshot), 'utf8')
+          if (snapshotBytes > MAX_SUITE_SNAPSHOT_BYTES) throw badRequest('SUITE_SNAPSHOT_TOO_LARGE', '集合及子运行快照总量超过上限')
+          created.push({ memberId: member.memberId, ordinal: member.ordinal, runId: written.runId, skip })
+          await tx.insert(suiteRunItems).values({
+            id: newId(),
             suiteRunId,
             memberId: member.memberId,
-          },
-        })
-        const skip = deadlineAt.getTime() <= now.getTime() ? 'deadline_elapsed' : null
-        const [child] = await tx.select({ snapshot: runs.snapshot, targetAccountId: runs.targetAccountId }).from(runs).where(eq(runs.id, written.runId))
-        snapshotBytes += Buffer.byteLength(JSON.stringify(child!.snapshot), 'utf8')
-        if (snapshotBytes > MAX_SUITE_SNAPSHOT_BYTES) throw badRequest('SUITE_SNAPSHOT_TOO_LARGE', '集合及子运行快照总量超过上限')
-        created.push({ memberId: member.memberId, ordinal: member.ordinal, runId: written.runId, skip })
-        await tx.insert(suiteRunItems).values({
-          id: newId(),
-          suiteRunId,
-          memberId: member.memberId,
-          ordinal: member.ordinal,
-          groupId: document.members.find((item) => item.memberId === member.memberId)?.groupId ?? null,
-          displayName: member.displayName,
-          scenarioId: member.scenarioId,
-          scenarioVersionId: member.scenarioVersionId,
-          childRunId: written.runId,
-          admissionStatus: skip ? 'SKIPPED' : 'PENDING',
-          skipReason: skip,
-          targetAccountId: child!.targetAccountId,
-        })
-        if (skip) {
-          await requestRunCancel(tx, written.runId, actor)
+            ordinal: member.ordinal,
+            groupId: memberDef?.groupId ?? null,
+            displayName: member.displayName,
+            scenarioId: member.scenarioId,
+            scenarioVersionId: member.scenarioVersionId,
+            childRunId: written.runId,
+            originalRunId: null,
+            rerunCount: 0,
+            stageId: stage.id,
+            stageOrdinal: stage.ordinal,
+            admissionStatus: skip ? 'SKIPPED' : 'PENDING',
+            skipReason: skip,
+            targetAccountId: child!.targetAccountId,
+          })
+          if (skip) {
+            await requestRunCancel(tx, written.runId, actor)
+          }
+        } else {
+          // Lazy stage run creation: Subsequent stages pre-register with childRunId = null
+          await tx.insert(suiteRunItems).values({
+            id: newId(),
+            suiteRunId,
+            memberId: member.memberId,
+            ordinal: member.ordinal,
+            groupId: memberDef?.groupId ?? null,
+            displayName: member.displayName,
+            scenarioId: member.scenarioId,
+            scenarioVersionId: member.scenarioVersionId,
+            childRunId: null,
+            originalRunId: null,
+            rerunCount: 0,
+            stageId: stage.id,
+            stageOrdinal: stage.ordinal,
+            admissionStatus: 'PENDING',
+            skipReason: null,
+            targetAccountId: member.targetAccountId ?? document.defaultTargetAccountId,
+          })
         }
       }
-      const first = created.find((item) => !item.skip)
-      if (first) {
-        await tx
-          .update(suiteRunItems)
-          .set({ admissionStatus: 'ACTIVE' })
-          .where(and(eq(suiteRunItems.suiteRunId, suiteRunId), eq(suiteRunItems.memberId, first.memberId)))
-        await tx
-          .update(suiteRuns)
-          .set({ status: 'RUNNING', startedAt: now, updatedAt: now })
-          .where(eq(suiteRuns.id, suiteRunId))
-      } else {
-        await finalizeSuiteTx(tx, suiteRunId, now, 'deadline_elapsed')
-      }
       await appendSuiteEvents(tx, suiteRunId, [
-        { type: 'suite_run.created', payload: { status: first ? 'RUNNING' : 'COMPLETED' } },
-        ...(first ? [{ type: 'suite_run.admitted', payload: { memberId: first.memberId } }] : []),
+        { type: 'suite_run.created', payload: { status: 'QUEUED' } },
       ])
       await recordAudit(tx, actor, 'suite.run', 'suite_run', suiteRunId, `启动场景集「${suite.name}」`)
+      await advanceSuiteRunTx(tx, suiteRunId)
     })
   } catch (error) {
     rethrow(error)
@@ -502,7 +552,7 @@ async function finalizeSuiteTx(tx: Db, suiteRunId: string, now: Date, reason?: s
     })),
   )
   const cancelled = observation.cancelRequested
-  const { suiteRuns } = schemaFor(tx)
+  const { suiteRuns, suiteReportTriggers } = schemaFor(tx)
   await tx
     .update(suiteRuns)
     .set({
@@ -514,155 +564,434 @@ async function finalizeSuiteTx(tx: Db, suiteRunId: string, now: Date, reason?: s
       updatedAt: now,
     })
     .where(eq(suiteRuns.id, suiteRunId))
+
+  // If any item was rerun and an automatic report exists, create a new revision to merge results
+  const hasRerun = observation.items.some((item) => (item.rerunCount ?? 0) > 0)
+  if (hasRerun) {
+    const [trigger] = await tx.select().from(suiteReportTriggers).where(eq(suiteReportTriggers.suiteRunId, suiteRunId)).limit(1)
+    if (trigger && trigger.status === 'created' && trigger.reportId) {
+      try {
+        const [parent] = await tx.select().from(suiteRuns).where(eq(suiteRuns.id, suiteRunId)).limit(1)
+        if (parent) {
+          const { createReportRevision } = await import('../reports/reports.js')
+          const actor = { kind: 'console' as const, id: parent.createdByConsoleAccountId }
+          await createReportRevision(tx, trigger.reportId, {
+            stage: 'final',
+            reason: '失败项局部重跑完成，自动合流衍生新版本报告',
+            idempotencyKey: `auto-rerun-revision:${suiteRunId}:${Date.now()}`,
+          }, actor)
+          await appendSuiteEvents(tx, suiteRunId, [{ type: 'suite_run.report_changed', payload: { reportId: trigger.reportId, status: 'revision_created' } }])
+        }
+      } catch {
+        // Automatic report revision derivation should not fail suite run finalization
+      }
+    }
+  }
 }
 
 export async function advanceSuiteRun(db: Db, suiteRunId: string): Promise<SuiteRunObservation> {
   await atomic(db, async (tx) => {
-    const { suiteRuns, suiteRunItems, runs, targets, scenarios, targetAccounts } = schemaFor(tx)
-    const [parent] = await locked(tx, tx.select().from(suiteRuns).where(eq(suiteRuns.id, suiteRunId)))
-    if (!parent) return
-    const now = new Date()
-    const rows = await tx
-      .select({ item: suiteRunItems, child: runs })
-      .from(suiteRunItems)
-      .innerJoin(runs, eq(runs.id, suiteRunItems.childRunId))
-      .where(eq(suiteRunItems.suiteRunId, suiteRunId))
-      .orderBy(asc(suiteRunItems.ordinal))
+    await advanceSuiteRunTx(tx, suiteRunId)
+  })
+  return loadObservationTx(db, suiteRunId)
+}
 
-    const evidenceStatus = evidenceOf(rows.map(({ child }) => child.evidenceStatus))
-    // Evidence can settle after execution. Terminal parents must still converge.
-    await tx.update(suiteRuns).set({ evidenceStatus, updatedAt: now }).where(eq(suiteRuns.id, suiteRunId))
-    if (!OPEN_SUITE_STATUSES.includes(parent.status)) {
-      if (evidenceStatus !== parent.evidenceStatus) await appendSuiteEvents(tx, suiteRunId, [{ type: 'suite_run.evidence_changed', payload: { evidenceStatus } }])
-      return
-    }
+export async function advanceSuiteRunTx(tx: Db, suiteRunId: string): Promise<void> {
+  const { suiteRuns, suiteRunItems, runs, targets, scenarios, targetAccounts } = schemaFor(tx)
+  const [parent] = await locked(tx, tx.select().from(suiteRuns).where(eq(suiteRuns.id, suiteRunId)))
+  if (!parent) return
+  const now = new Date()
+  const rows = await tx
+    .select({ item: suiteRunItems, child: runs })
+    .from(suiteRunItems)
+    .leftJoin(runs, eq(runs.id, suiteRunItems.childRunId))
+    .where(eq(suiteRunItems.suiteRunId, suiteRunId))
+    .orderBy(asc(suiteRunItems.ordinal))
 
-    const expired = parent.deadlineAt.getTime() <= now.getTime()
-    if (expired && !parent.cancelRequestedAt) {
-      parent.cancelRequestedAt = now
-      await tx.update(suiteRuns).set({ cancelRequestedAt: now, reason: 'deadline_elapsed' }).where(eq(suiteRuns.id, suiteRunId))
-    }
-    if (parent.cancelRequestedAt) {
-      for (const { item, child } of rows) {
-        if (item.admissionStatus === 'ACTIVE' && !CHILD_TERMINAL.has(child.status)) {
-          const cancelled = await requestRunCancel(tx, child.id, { kind: 'console', id: parent.createdByConsoleAccountId })
-          child.status = cancelled.status
-          child.evidenceStatus = cancelled.evidenceStatus
+  const existingChildren = rows.filter((r) => r.child != null).map((r) => r.child!)
+  const evidenceStatus = evidenceOf(existingChildren.map((c) => c.evidenceStatus))
+  // Evidence can settle after execution. Terminal parents must still converge.
+  await tx.update(suiteRuns).set({ evidenceStatus, updatedAt: now }).where(eq(suiteRuns.id, suiteRunId))
+  if (!OPEN_SUITE_STATUSES.includes(parent.status)) {
+    if (evidenceStatus !== parent.evidenceStatus) await appendSuiteEvents(tx, suiteRunId, [{ type: 'suite_run.evidence_changed', payload: { evidenceStatus } }])
+    return
+  }
+
+  const expired = parent.deadlineAt.getTime() <= now.getTime()
+  if (expired && !parent.cancelRequestedAt) {
+    parent.cancelRequestedAt = now
+    await tx.update(suiteRuns).set({ cancelRequestedAt: now, reason: 'deadline_elapsed' }).where(eq(suiteRuns.id, suiteRunId))
+  }
+
+  const doc = parent.snapshot.document as SuiteDocument
+  const stages = effectiveSuiteStages(doc)
+  const stopStageIds = new Set(stages.filter((s) => s.failurePolicy === 'stop').map((s) => s.id))
+
+  const stopFailed =
+    (parent.failurePolicy === 'stop' &&
+      rows.some(
+        ({ item, child }) =>
+          (item.admissionStatus === 'SETTLED' || item.admissionStatus === 'ACTIVE') &&
+          child != null &&
+          (child.status === 'FAILED' || child.status === 'CANCELLED' || child.outcomeStatus === 'FAIL'),
+      )) ||
+    rows.some(
+      ({ item, child }) =>
+        item.stageId &&
+        stopStageIds.has(item.stageId) &&
+        (item.admissionStatus === 'SETTLED' || item.admissionStatus === 'ACTIVE') &&
+        child != null &&
+        (child.status === 'FAILED' || child.status === 'CANCELLED' || child.outcomeStatus === 'FAIL'),
+    )
+  const cancel = parent.cancelRequestedAt != null
+
+  if (cancel || stopFailed) {
+    for (const { item, child } of rows) {
+      if (item.admissionStatus === 'ACTIVE' && child && !CHILD_TERMINAL.has(child.status)) {
+        const cancelled = await requestRunCancel(tx, child.id, { kind: 'console', id: parent.createdByConsoleAccountId })
+        child.status = cancelled.status
+        child.evidenceStatus = cancelled.evidenceStatus
+      }
+      if (item.admissionStatus === 'PENDING') {
+        const reason = expired ? 'deadline_elapsed' : cancel ? 'suite_cancelled' : 'failure_policy_stop'
+        await tx.update(suiteRunItems).set({ admissionStatus: 'SKIPPED', skipReason: reason }).where(eq(suiteRunItems.id, item.id))
+        item.admissionStatus = 'SKIPPED'
+        if (item.childRunId) {
+          await requestRunCancel(tx, item.childRunId, { kind: 'console', id: parent.createdByConsoleAccountId })
         }
       }
     }
+  }
 
-    const events: { type: string; payload?: Record<string, JsonValue> }[] = []
-    let review = false
-    let waiting = false
-    for (const { item, child } of rows) {
-      if (item.admissionStatus === 'ACTIVE' && CHILD_TERMINAL.has(child.status)) {
+  const events: { type: string; payload?: Record<string, JsonValue> }[] = []
+  let hasRunning = false
+  let review = false
+  let waiting = false
+  for (const { item, child } of rows) {
+    if (item.admissionStatus === 'ACTIVE' && child) {
+      if (CHILD_TERMINAL.has(child.status)) {
         await tx
           .update(suiteRunItems)
           .set({ admissionStatus: 'SETTLED' })
           .where(eq(suiteRunItems.id, item.id))
         item.admissionStatus = 'SETTLED'
         events.push({ type: 'suite_run.settled', payload: { memberId: item.memberId, runStatus: child.status } })
-      }
-      if (item.admissionStatus === 'ACTIVE' && child.status === 'NEEDS_REVIEW') review = true
-      if (item.admissionStatus === 'ACTIVE' && ['WAITING_FOR_AUTH', 'RECOVERING', 'HOLDING'].includes(child.status)) waiting = true
-    }
-
-    const stopFailed =
-      parent.failurePolicy === 'stop' &&
-      rows.some(
-        ({ item, child }) =>
-          item.admissionStatus === 'SETTLED' && (child.status === 'FAILED' || child.status === 'CANCELLED' || child.outcomeStatus === 'FAIL'),
-      )
-    const cancel = parent.cancelRequestedAt != null
-    for (const { item } of rows) {
-      if (item.admissionStatus !== 'PENDING') continue
-      if (cancel || stopFailed || parent.deadlineAt.getTime() <= now.getTime()) {
-        const reason = expired ? 'deadline_elapsed' : cancel ? 'suite_cancelled' : 'failure_policy_stop'
-        await tx
-          .update(suiteRunItems)
-          .set({ admissionStatus: 'SKIPPED', skipReason: reason })
-          .where(eq(suiteRunItems.id, item.id))
-        item.admissionStatus = 'SKIPPED'
-        events.push({ type: 'suite_run.skipped', payload: { memberId: item.memberId, reason } })
-        const childId = item.childRunId
-        await requestRunCancel(tx, childId, { kind: 'console', id: parent.createdByConsoleAccountId })
-      }
-    }
-
-    const refreshed = await tx.select().from(suiteRunItems).where(eq(suiteRunItems.suiteRunId, suiteRunId))
-    const hasActive = refreshed.some((item) => item.admissionStatus === 'ACTIVE')
-    const next = refreshed
-      .filter((item) => item.admissionStatus === 'PENDING')
-      .sort((a, b) => a.ordinal - b.ordinal)[0]
-    let admissionFailure: string | undefined
-    if (!hasActive && !review && next && !cancel) {
-      try { await assertTargetPermission(tx, parent.createdByConsoleAccountId, parent.targetId, 'run:execute') }
-      catch (error) {
-        if (!(error instanceof DomainError)) throw error
-        admissionFailure = 'authorization_changed'
-      }
-      const [target] = await tx.select().from(targets).where(eq(targets.id, parent.targetId)).limit(1)
-      const [scenario] = await tx.select().from(scenarios).where(eq(scenarios.id, next.scenarioId)).limit(1)
-      if (!target || target.deletedAt || target.status !== 'active') admissionFailure = 'target_unavailable'
-      if (!scenario || scenario.deletedAt || scenario.status !== 'active') admissionFailure = 'scenario_unavailable'
-      if (next.targetAccountId) {
-        const [account] = await tx.select().from(targetAccounts).where(eq(targetAccounts.id, next.targetAccountId)).limit(1)
-        if (!account || account.deletedAt || account.status !== 'active') admissionFailure = 'account_unavailable'
-      }
-      if (admissionFailure) {
-        for (const item of refreshed.filter((item) => item.admissionStatus === 'PENDING')) {
-          await tx.update(suiteRunItems).set({ admissionStatus: 'SKIPPED', skipReason: admissionFailure }).where(eq(suiteRunItems.id, item.id))
-          await requestRunCancel(tx, item.childRunId, { kind: 'console', id: parent.createdByConsoleAccountId })
-          events.push({ type: 'suite_run.skipped', payload: { memberId: item.memberId, reason: admissionFailure } })
-        }
+      } else if (child.status === 'NEEDS_REVIEW') {
+        review = true
+      } else if (['WAITING_FOR_AUTH', 'RECOVERING', 'HOLDING'].includes(child.status)) {
+        waiting = true
       } else {
-        const nextChild = rows.find((row) => row.item.id === next.id)!.child
-        if (CHILD_TERMINAL.has(nextChild.status)) {
-          await tx.update(suiteRunItems).set({ admissionStatus: 'SKIPPED', skipReason: 'member_already_ended' }).where(eq(suiteRunItems.id, next.id))
-          events.push({ type: 'suite_run.skipped', payload: { memberId: next.memberId, reason: 'member_already_ended' } })
-        } else {
-          await tx.update(suiteRunItems).set({ admissionStatus: 'ACTIVE' }).where(eq(suiteRunItems.id, next.id))
-          events.push({ type: 'suite_run.admitted', payload: { memberId: next.memberId } })
+        hasRunning = true
+      }
+    }
+  }
+
+  // Identify distinct stages and find active stage
+  const stageOrdinals = [...new Set(rows.map((r) => r.item.stageOrdinal ?? 0))].sort((a, b) => a - b)
+  const activeStageOrdinal = stageOrdinals.find((ord) =>
+    rows.some((r) => (r.item.stageOrdinal ?? 0) === ord && r.item.admissionStatus !== 'SETTLED' && r.item.admissionStatus !== 'SKIPPED')
+  )
+
+  let admissionFailure: string | undefined
+  if (activeStageOrdinal !== undefined && !review && !cancel && !stopFailed && !expired) {
+    const activeStageRows = rows.filter((r) => (r.item.stageOrdinal ?? 0) === activeStageOrdinal)
+
+    // Check if any items in active stage need lazy child run creation
+    const uncreatedItems = activeStageRows.filter((r) => r.item.childRunId == null && r.item.admissionStatus === 'PENDING')
+    if (uncreatedItems.length > 0) {
+      const stageOutputs: Record<string, Record<string, any>> = {}
+      for (const r of rows) {
+        if (r.child && r.item.stageId) {
+          const stageMap = stageOutputs[r.item.stageId] ?? (stageOutputs[r.item.stageId] = {})
+          stageMap[r.item.memberId] = r.child.output ?? null
         }
+      }
+
+      const doc = parent.snapshot.document as SuiteDocument
+      const allMembersList = allSuiteMembers(doc)
+      const actor = { kind: 'console' as const, id: parent.createdByConsoleAccountId }
+
+      for (const r of uncreatedItems) {
+        const memberDef = allMembersList.find((m) => m.memberId === r.item.memberId)
+        if (!memberDef) continue
+        const rawInput = mergeSuiteMemberInput({
+          sharedInput: (parent.snapshot as any).sharedInput,
+          memberInput: memberDef.input,
+          runOverride: (parent.snapshot as any).memberOverrides?.[r.item.memberId]?.input,
+        })
+        const effectiveInput = interpolateStageVariables(rawInput, stageOutputs)
+
+        const written = await writeRunWithSnapshot(tx, {
+          scenarioId: r.item.scenarioId,
+          scenarioVersionId: r.item.scenarioVersionId,
+          targetAccountId: r.item.targetAccountId ?? undefined,
+          resolvedTargetAccountId: r.item.targetAccountId,
+          input: effectiveInput,
+          actor,
+          deadlineAt: parent.deadlineAt,
+          executionOrigin: 'suite_member',
+          suiteRunId,
+          suiteMemberId: r.item.memberId,
+          reportDefaults: { profileId: memberDef.reportProfileId, displayName: r.item.displayName },
+          suiteAdmission: {
+            protocol: SUITE_ADMISSION_PROTOCOL,
+            suiteRunId,
+            memberId: r.item.memberId,
+          },
+        })
+
+        const [createdChild] = await tx.select().from(runs).where(eq(runs.id, written.runId))
+        await tx.update(suiteRunItems).set({
+          childRunId: written.runId,
+          targetAccountId: createdChild?.targetAccountId ?? r.item.targetAccountId,
+        }).where(eq(suiteRunItems.id, r.item.id))
+
+        r.item.childRunId = written.runId
+        r.child = createdChild ?? null
       }
     }
 
-    const after = await tx.select().from(suiteRunItems).where(eq(suiteRunItems.suiteRunId, suiteRunId))
-    const remaining = after.some((item) => item.admissionStatus === 'PENDING' || item.admissionStatus === 'ACTIVE')
-    let status: SuiteRunStatus = parent.status
-    if (!remaining) {
-      await finalizeSuiteTx(tx, suiteRunId, now)
-      status = cancel ? 'CANCELLED' : 'COMPLETED'
-      if (admissionFailure) {
-        status = 'FAILED'
-        await tx.update(suiteRuns).set({ status, reason: admissionFailure }).where(eq(suiteRuns.id, suiteRunId))
+    const doc = parent.snapshot.document as SuiteDocument
+    const stageDef = doc.stages?.find((s) => s.ordinal === activeStageOrdinal)
+    const executionMode: SuiteExecutionMode = stageDef?.executionMode ?? parent.executionMode ?? 'parallel'
+    const maxConcurrency: number = stageDef?.maxConcurrency ?? parent.maxConcurrency ?? 3
+    const concurrencyLimit = executionMode === 'sequential' ? 1 : Math.max(1, maxConcurrency)
+
+    const activeCount = activeStageRows.filter((r) => r.item.admissionStatus === 'ACTIVE').length
+    let allowance = Math.max(0, concurrencyLimit - activeCount)
+
+    if (allowance > 0) {
+      const pendingRows = activeStageRows.filter((r) => r.item.admissionStatus === 'PENDING' && r.child != null)
+      if (pendingRows.length > 0) {
+        try {
+          await assertTargetPermission(tx, parent.createdByConsoleAccountId, parent.targetId, 'run:execute')
+        } catch (error) {
+          if (!(error instanceof DomainError)) throw error
+          admissionFailure = 'authorization_changed'
+        }
+        const [target] = await tx.select().from(targets).where(eq(targets.id, parent.targetId)).limit(1)
+        if (!target || target.deletedAt || target.status !== 'active') admissionFailure = 'target_unavailable'
+
+        if (admissionFailure) {
+          for (const { item } of pendingRows) {
+            await tx.update(suiteRunItems).set({ admissionStatus: 'SKIPPED', skipReason: admissionFailure }).where(eq(suiteRunItems.id, item.id))
+            item.admissionStatus = 'SKIPPED'
+            if (item.childRunId) {
+              await requestRunCancel(tx, item.childRunId, { kind: 'console', id: parent.createdByConsoleAccountId })
+            }
+            events.push({ type: 'suite_run.skipped', payload: { memberId: item.memberId, reason: admissionFailure } })
+          }
+        } else {
+          const activeAccountCounts = new Map<string, number>()
+          for (const { item, child } of rows) {
+            if (item.admissionStatus === 'ACTIVE' && child && !CHILD_TERMINAL.has(child.status) && item.targetAccountId) {
+              const current = activeAccountCounts.get(item.targetAccountId) ?? 0
+              activeAccountCounts.set(item.targetAccountId, current + 1)
+            }
+          }
+
+          for (const { item, child } of pendingRows) {
+            if (allowance <= 0) break
+            if (!child) continue
+
+            const [scenario] = await tx.select().from(scenarios).where(eq(scenarios.id, item.scenarioId)).limit(1)
+            if (!scenario || scenario.deletedAt || scenario.status !== 'active') {
+              await tx.update(suiteRunItems).set({ admissionStatus: 'SKIPPED', skipReason: 'scenario_unavailable' }).where(eq(suiteRunItems.id, item.id))
+              item.admissionStatus = 'SKIPPED'
+              if (item.childRunId) {
+                await requestRunCancel(tx, item.childRunId, { kind: 'console', id: parent.createdByConsoleAccountId })
+              }
+              events.push({ type: 'suite_run.skipped', payload: { memberId: item.memberId, reason: 'scenario_unavailable' } })
+              continue
+            }
+
+            if (item.targetAccountId) {
+              const [account] = await tx.select().from(targetAccounts).where(eq(targetAccounts.id, item.targetAccountId)).limit(1)
+              if (!account || account.deletedAt || account.status !== 'active') {
+                await tx.update(suiteRunItems).set({ admissionStatus: 'SKIPPED', skipReason: 'account_unavailable' }).where(eq(suiteRunItems.id, item.id))
+                item.admissionStatus = 'SKIPPED'
+                if (item.childRunId) {
+                  await requestRunCancel(tx, item.childRunId, { kind: 'console', id: parent.createdByConsoleAccountId })
+                }
+                events.push({ type: 'suite_run.skipped', payload: { memberId: item.memberId, reason: 'account_unavailable' } })
+                continue
+              }
+
+              const cap = await readAccountSessionCap(tx, { targetId: parent.targetId, targetAccountId: item.targetAccountId })
+              const inUse = activeAccountCounts.get(item.targetAccountId) ?? 0
+              if (cap.mode === 'exclusive' && inUse > 0) continue
+              if (cap.mode === 'concurrent' && inUse >= cap.effectiveCap) continue
+            }
+
+            if (CHILD_TERMINAL.has(child.status)) {
+              await tx.update(suiteRunItems).set({ admissionStatus: 'SKIPPED', skipReason: 'member_already_ended' }).where(eq(suiteRunItems.id, item.id))
+              item.admissionStatus = 'SKIPPED'
+              events.push({ type: 'suite_run.skipped', payload: { memberId: item.memberId, reason: 'member_already_ended' } })
+            } else {
+              await tx.update(suiteRunItems).set({ admissionStatus: 'ACTIVE' }).where(eq(suiteRunItems.id, item.id))
+              item.admissionStatus = 'ACTIVE'
+              events.push({ type: 'suite_run.admitted', payload: { memberId: item.memberId } })
+              if (item.targetAccountId) {
+                const inUse = activeAccountCounts.get(item.targetAccountId) ?? 0
+                activeAccountCounts.set(item.targetAccountId, inUse + 1)
+              }
+              allowance -= 1
+              hasRunning = true
+            }
+          }
+        }
       }
-      events.push({ type: 'suite_run.finished', payload: { status } })
-    } else if (review) {
-      status = 'NEEDS_REVIEW'
-    } else if (waiting) {
-      status = 'WAITING'
-    } else {
-      status = 'RUNNING'
     }
-    if (status !== parent.status && remaining) {
-      await tx
-        .update(suiteRuns)
-        .set({
-          status,
-          startedAt: parent.startedAt ?? now,
-          updatedAt: now,
-          evidenceStatus: evidenceOf(
-            rows.map((row) => row.child.evidenceStatus),
-          ),
-        })
-        .where(eq(suiteRuns.id, suiteRunId))
-      events.push({ type: 'suite_run.status_changed', payload: { status } })
+  }
+
+  const remaining = rows.some((r) => r.item.admissionStatus === 'PENDING' || r.item.admissionStatus === 'ACTIVE')
+  let status: SuiteRunStatus = parent.status
+  if (!remaining) {
+    await finalizeSuiteTx(tx, suiteRunId, now)
+    status = cancel ? 'CANCELLED' : 'COMPLETED'
+    if (admissionFailure) {
+      status = 'FAILED'
+      await tx.update(suiteRuns).set({ status, reason: admissionFailure }).where(eq(suiteRuns.id, suiteRunId))
     }
-    await appendSuiteEvents(tx, suiteRunId, events)
+    events.push({ type: 'suite_run.finished', payload: { status } })
+  } else if (review) {
+    status = 'NEEDS_REVIEW'
+  } else if (hasRunning) {
+    status = 'RUNNING'
+  } else if (waiting) {
+    status = 'WAITING'
+  } else {
+    status = 'RUNNING'
+  }
+  if (status !== parent.status && remaining) {
+    await tx
+      .update(suiteRuns)
+      .set({
+        status,
+        startedAt: parent.startedAt ?? now,
+        updatedAt: now,
+        evidenceStatus: evidenceOf(
+          rows.filter((r) => r.child != null).map((row) => row.child!.evidenceStatus),
+        ),
+      })
+      .where(eq(suiteRuns.id, suiteRunId))
+    events.push({ type: 'suite_run.status_changed', payload: { status } })
+  }
+  if (events.length) await appendSuiteEvents(tx, suiteRunId, events)
+}
+
+export async function rerunSuiteItem(
+  db: Db,
+  input: { suiteRunId: string; memberId: string },
+  actor: ExecutionActor,
+): Promise<{ runId: string; suiteRun: SuiteRunObservation }> {
+  return atomic(db, async (tx) => {
+    await lockConsoleAuthorization(tx, actor.id)
+    const { suiteRuns, suiteRunItems, runs } = schemaFor(tx)
+    const [parent] = await locked(tx, tx.select().from(suiteRuns).where(eq(suiteRuns.id, input.suiteRunId)))
+    if (!parent) throw notFound('SUITE_RUN_NOT_FOUND', '场景集运行不存在')
+    await assertTargetPermission(tx, actor.id, parent.targetId, 'run:execute')
+
+    const [item] = await tx
+      .select()
+      .from(suiteRunItems)
+      .where(and(eq(suiteRunItems.suiteRunId, input.suiteRunId), eq(suiteRunItems.memberId, input.memberId)))
+      .limit(1)
+    if (!item) throw notFound('SUITE_MEMBER_NOT_FOUND', '场景集成员不存在')
+
+    // Find predecessor stage outputs in case member has stage dependencies
+    const allRows = await tx
+      .select({ item: suiteRunItems, child: runs })
+      .from(suiteRunItems)
+      .leftJoin(runs, eq(runs.id, suiteRunItems.childRunId))
+      .where(eq(suiteRunItems.suiteRunId, input.suiteRunId))
+
+    const stageOutputs: Record<string, Record<string, any>> = {}
+    for (const r of allRows) {
+      if (r.child && r.item.stageId && r.item.memberId !== input.memberId) {
+        const stageMap = stageOutputs[r.item.stageId] ?? (stageOutputs[r.item.stageId] = {})
+        stageMap[r.item.memberId] = r.child.output ?? null
+      }
+    }
+
+    const doc = parent.snapshot.document as SuiteDocument
+    const allMembersList = allSuiteMembers(doc)
+    const memberDef = allMembersList.find((m) => m.memberId === input.memberId)
+    if (!memberDef) throw badRequest('SUITE_MEMBER_NOT_FOUND', '成员定义不存在')
+
+    const rawInput = mergeSuiteMemberInput({
+      sharedInput: (parent.snapshot as any).sharedInput,
+      memberInput: memberDef.input,
+      runOverride: (parent.snapshot as any).memberOverrides?.[input.memberId]?.input,
+    })
+    const effectiveInput = interpolateStageVariables(rawInput, stageOutputs)
+
+    const now = new Date()
+    const deadlineAt = new Date(now.getTime() + DEFAULT_SUITE_DEADLINE_MS)
+    const originalRunId = item.originalRunId ?? item.childRunId
+    const newRerunCount = (item.rerunCount ?? 0) + 1
+
+    const written = await writeRunWithSnapshot(tx, {
+      scenarioId: item.scenarioId,
+      scenarioVersionId: item.scenarioVersionId,
+      targetAccountId: item.targetAccountId ?? undefined,
+      resolvedTargetAccountId: item.targetAccountId,
+      input: effectiveInput,
+      actor,
+      deadlineAt: parent.deadlineAt ?? deadlineAt,
+      executionOrigin: 'suite_member',
+      suiteRunId: input.suiteRunId,
+      suiteMemberId: item.memberId,
+      reportDefaults: { profileId: memberDef.reportProfileId, displayName: item.displayName },
+      suiteAdmission: {
+        protocol: SUITE_ADMISSION_PROTOCOL,
+        suiteRunId: input.suiteRunId,
+        memberId: item.memberId,
+      },
+    })
+
+    const [createdChild] = await tx.select().from(runs).where(eq(runs.id, written.runId))
+
+    await tx
+      .update(suiteRunItems)
+      .set({
+        childRunId: written.runId,
+        originalRunId: originalRunId ?? item.childRunId,
+        rerunCount: newRerunCount,
+        admissionStatus: 'PENDING',
+        skipReason: null,
+        targetAccountId: createdChild?.targetAccountId ?? item.targetAccountId,
+      })
+      .where(and(eq(suiteRunItems.suiteRunId, input.suiteRunId), eq(suiteRunItems.memberId, input.memberId)))
+
+    await tx
+      .update(suiteRuns)
+      .set({
+        status: 'RUNNING',
+        verdict: null,
+        finishedAt: null,
+      })
+      .where(eq(suiteRuns.id, input.suiteRunId))
+
+    await appendSuiteEvents(tx, input.suiteRunId, [
+      {
+        type: 'suite_run.item_updated',
+        payload: {
+          memberId: item.memberId,
+          childRunId: written.runId,
+          admission: 'PENDING',
+          originalRunId: (originalRunId ?? item.childRunId) as string,
+          rerunCount: newRerunCount,
+        },
+      },
+      { type: 'suite_run.status_changed', payload: { status: 'RUNNING' } },
+    ])
+    await recordAudit(tx, actor, 'suite_run.rerun_item', 'suite_run', input.suiteRunId, `重跑成员「${item.displayName}」`)
+
+    await advanceSuiteRunTx(tx, input.suiteRunId)
+    const observation = await loadObservationTx(tx, input.suiteRunId)
+    return { runId: written.runId, suiteRun: observation }
   })
-  return loadObservationTx(db, suiteRunId)
 }
 
 export async function cancelSuiteRun(db: Db, suiteRunId: string, actor: ExecutionActor) {

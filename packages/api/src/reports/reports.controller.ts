@@ -71,6 +71,13 @@ export class ReportsController {
     return this.reports.get(reportId, account.id)
   }
 
+  @Post(':reportId/share-token')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('report:read')
+  shareToken(@Param('reportId') reportId: string, @CurrentAccount() account: RequestAccount) {
+    return this.reports.createShareToken(reportId, account.id)
+  }
+
   @Get(':reportId/revisions/:revisionId')
   @RequirePermissions('report:read')
   revision(

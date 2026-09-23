@@ -4,19 +4,21 @@ import {
   createDataset,
   getDataset,
   getDatasetRows,
+  getDatasetRowsForPreflight,
   listDatasets,
   preflightDataset,
   softDeleteDataset,
   type DbHandle,
 } from '@cairn/db'
-import type {
-  AutoMapBody,
-  CreateDatasetBody,
-  DatasetListQuery,
-  DatasetRowsQuery,
-  DeleteResourceBody,
-  PreflightDatasetBody,
+import {
+  type AutoMapBody,
+  type CreateDatasetBody,
+  type DatasetListQuery,
+  type DatasetRowsQuery,
+  type PreflightDatasetBody,
+  SYNC_PREFLIGHT_MAX_ROWS,
 } from '@cairn/shared'
+import { computeDatasetProfile } from '@cairn/authoring'
 import { rethrowDomain } from '../common/domain-error.js'
 import type { RequestAccount } from '../common/request-account'
 import { DB_HANDLE } from '../db/db.module'
@@ -49,15 +51,60 @@ export class DatasetsService {
   }
 
   async preflight(datasetId: string, body: PreflightDatasetBody, actorId: string) {
-    const rowsRes = await this.getRows(datasetId, { limit: 200 }, actorId)
-    const rowsData = rowsRes.items.map((r) => r.rowData)
-    const targetRows = body.selectedRowIndices?.length
-      ? body.selectedRowIndices.map((idx) => rowsData[idx]).filter((r): r is Record<string, any> => Boolean(r))
-      : rowsData
-    return preflightDataset(targetRows, body.binding, body.scenarioInputs)
+    const dataset = await this.get(datasetId, actorId)
+    if (!dataset) throw new Error('DATASET_NOT_FOUND')
+
+    const selectedIndices = body.selectedRowIndices
+    const chunkSize = 500
+    const allRows: { rowIndex: number; rowData: Record<string, any> }[] = []
+
+    if (selectedIndices && selectedIndices.length > 0) {
+      for (let i = 0; i < selectedIndices.length; i += chunkSize) {
+        const chunk = selectedIndices.slice(i, i + chunkSize)
+        const rows = await getDatasetRowsForPreflight(
+          this.database,
+          datasetId,
+          { selectedRowIndices: chunk },
+          actorId,
+        )
+        allRows.push(...rows)
+      }
+    } else {
+      const limit = Math.min(dataset.rowCount, SYNC_PREFLIGHT_MAX_ROWS)
+      for (let offset = 0; offset < limit; offset += chunkSize) {
+        const rows = await getDatasetRowsForPreflight(
+          this.database,
+          datasetId,
+          { limit: Math.min(chunkSize, limit - offset), offset },
+          actorId,
+        )
+        allRows.push(...rows)
+        if (rows.length < chunkSize) break
+      }
+    }
+
+    return preflightDataset(allRows, body.binding, body.scenarioInputs)
   }
 
-  delete(datasetId: string, _body: DeleteResourceBody, account: RequestAccount) {
+  async profile(datasetId: string, actorId: string) {
+    const dataset = await this.get(datasetId, actorId)
+    if (!dataset) throw new Error('DATASET_NOT_FOUND')
+
+    const rows = await getDatasetRowsForPreflight(
+      this.database,
+      datasetId,
+      { limit: 5000, offset: 0 },
+      actorId,
+    )
+
+    return computeDatasetProfile({
+      datasetId,
+      rows: rows.map((r) => r.rowData),
+      columns: dataset.columns.map((c) => c.name),
+    })
+  }
+
+  delete(datasetId: string, account: RequestAccount) {
     return softDeleteDataset(this.database, datasetId, account.id).catch(rethrowDomain)
   }
 }

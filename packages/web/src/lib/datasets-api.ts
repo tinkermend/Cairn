@@ -4,7 +4,10 @@ import {
   createDatasetBodySchema,
   datasetDetailSchema,
   datasetListResponseSchema,
+  datasetProfileSchema,
   datasetRowsResponseSchema,
+  deleteDatasetBodySchema,
+  deleteDatasetResponseSchema,
   preflightDatasetBodySchema,
   preflightResultSchema,
   type AutoMapBody,
@@ -13,12 +16,7 @@ import {
   type DatasetRowsQuery,
   type PreflightDatasetBody,
 } from '@cairn/shared'
-import { z } from 'zod'
 import { apiFetch, toQueryString } from '@/lib/api-client'
-
-const deleteDatasetResponseSchema = z.strictObject({
-  deleted: z.boolean(),
-})
 
 export function fetchDatasets(query?: DatasetListQuery) {
   return apiFetch(`/api/datasets${toQueryString(query)}`, datasetListResponseSchema)
@@ -40,7 +38,7 @@ export function deleteDataset(datasetId: string) {
   return apiFetch(`/api/datasets/${datasetId}/delete`, deleteDatasetResponseSchema, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirmation: datasetId }),
+    body: JSON.stringify(deleteDatasetBodySchema.parse({ confirmation: datasetId })),
   })
 }
 
@@ -63,3 +61,8 @@ export function autoMapDataset(datasetId: string, body: AutoMapBody) {
     body: JSON.stringify(autoMapBodySchema.parse(body)),
   })
 }
+
+export function fetchDatasetProfile(datasetId: string) {
+  return apiFetch(`/api/datasets/${datasetId}/profile`, datasetProfileSchema)
+}
+

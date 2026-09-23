@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, isNull } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gt, inArray, isNull } from 'drizzle-orm'
 import type {
   AutoMapResult,
   CreateDatasetBody,
@@ -15,6 +15,7 @@ import type {
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { assertTargetPermission, lockConsoleAuthorization, scopedTargetFilter } from '../console/target-authorization.js'
+import { cursorFilter, decodeIndexCursor, encodeCursor } from '../cursor.js'
 import { newId } from '../id.js'
 import { atomic, schemaFor } from '../native.js'
 import { badRequest, notFound } from '../runs/errors.js'
@@ -45,7 +46,7 @@ export function autoMapDataset(
 }
 
 export function preflightDataset(
-  rows: Record<string, JsonValue>[],
+  rows: (Record<string, any> | { rowIndex: number; rowData: Record<string, any> })[],
   binding: DataBinding,
   scenarioInputs: ScenarioInputDecl[],
 ): PreflightResult {
@@ -55,7 +56,10 @@ export function preflightDataset(
   let errorCount = 0
 
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]!
+    const rawRow = rows[i]!
+    const hasRowIndex = 'rowIndex' in rawRow && typeof rawRow.rowIndex === 'number' && 'rowData' in rawRow
+    const rowIndex = hasRowIndex ? rawRow.rowIndex : (typeof (rawRow as any).__rowIndex === 'number' ? (rawRow as any).__rowIndex : i)
+    const row = (hasRowIndex ? rawRow.rowData : rawRow) as Record<string, any>
     let rowHasError = false
     let rowHasWarning = false
 
@@ -68,7 +72,7 @@ export function preflightDataset(
           continue
         } else if (input.required) {
           issues.push({
-            rowIndex: i,
+            rowIndex: rowIndex,
             fieldKey: input.key,
             severity: 'error',
             message: `必填参数 "${input.label || input.key}" 未绑定数据源`,
@@ -89,7 +93,7 @@ export function preflightDataset(
       const isEmpty = val === undefined || val === null || val === ''
       if (input.required && isEmpty) {
         issues.push({
-          rowIndex: i,
+          rowIndex: rowIndex,
           fieldKey: input.key,
           severity: 'error',
           message: `必填参数 "${input.label || input.key}" 在当前行数据为空`,
@@ -103,7 +107,7 @@ export function preflightDataset(
           const num = Number(val)
           if (isNaN(num)) {
             issues.push({
-              rowIndex: i,
+              rowIndex: rowIndex,
               fieldKey: input.key,
               severity: 'error',
               message: `参数 "${input.label || input.key}" 要求数值类型，但实际值为 "${val}"`,
@@ -119,7 +123,7 @@ export function preflightDataset(
             val !== 0
           ) {
             issues.push({
-              rowIndex: i,
+              rowIndex: rowIndex,
               fieldKey: input.key,
               severity: 'error',
               message: `参数 "${input.label || input.key}" 要求布尔类型，但实际值为 "${val}"`,
@@ -234,7 +238,7 @@ export async function getDataset(db: Db, datasetId: string, actorId?: string): P
     selectedSheet: row.selectedSheet,
     rowCount: row.rowCount,
     columns: row.columnsMeta,
-    createdByAccountId: row.createdByAccountId ?? 'system',
+    createdByAccountId: row.createdByAccountId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
@@ -253,6 +257,8 @@ export async function listDatasets(
   if (query.targetId) {
     conditions.push(eq(datasets.targetId, query.targetId))
   }
+  const pageCursor = cursorFilter(datasets.createdAt, datasets.id, query.cursor)
+  if (pageCursor) conditions.push(pageCursor)
 
   const rows = await db
     .select()
@@ -262,7 +268,9 @@ export async function listDatasets(
     .limit(limit + 1)
 
   const hasMore = rows.length > limit
-  const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => ({
+  const page = hasMore ? rows.slice(0, limit) : rows
+  const last = page.at(-1)
+  const items = page.map((r) => ({
     id: r.id,
     name: r.name,
     targetId: r.targetId,
@@ -271,30 +279,33 @@ export async function listDatasets(
     selectedSheet: r.selectedSheet,
     rowCount: r.rowCount,
     columns: r.columnsMeta,
-    createdByAccountId: r.createdByAccountId ?? 'system',
+    createdByAccountId: r.createdByAccountId,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   }))
 
   return {
     items,
-    nextCursor: hasMore ? items[items.length - 1]?.id : undefined,
+    nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : undefined,
   }
 }
 
 export async function getDatasetRows(
   db: Db,
   datasetId: string,
-  options?: { limit?: number; offset?: number },
+  options?: { limit?: number; cursor?: string },
   actorId?: string,
-): Promise<{ items: DatasetRowDto[]; total: number }> {
+): Promise<{ items: DatasetRowDto[]; total: number; nextCursor?: string }> {
   if (actorId) {
     const dataset = await getDataset(db, datasetId, actorId)
     if (!dataset) throw notFound('DATASET_NOT_FOUND', '数据集不存在')
   }
   const { datasetRows } = schemaFor(db)
   const limit = Math.min(options?.limit ?? 50, 200)
-  const offset = options?.offset ?? 0
+  const conditions = [eq(datasetRows.datasetId, datasetId)]
+  if (options?.cursor) {
+    conditions.push(gt(datasetRows.rowIndex, decodeIndexCursor(options.cursor)))
+  }
 
   const [totalRes] = await db
     .select({ total: count() })
@@ -304,13 +315,16 @@ export async function getDatasetRows(
   const rows = await db
     .select()
     .from(datasetRows)
-    .where(eq(datasetRows.datasetId, datasetId))
+    .where(and(...conditions))
     .orderBy(asc(datasetRows.rowIndex))
-    .limit(limit)
-    .offset(offset)
+    .limit(limit + 1)
+
+  const hasMore = rows.length > limit
+  const page = hasMore ? rows.slice(0, limit) : rows
+  const last = page.at(-1)
 
   return {
-    items: rows.map((r) => ({
+    items: page.map((r) => ({
       id: r.id,
       datasetId: r.datasetId,
       rowIndex: r.rowIndex,
@@ -318,6 +332,7 @@ export async function getDatasetRows(
       validStatus: r.validStatus as DatasetRowValidStatus,
     })),
     total: Number(totalRes?.total ?? 0),
+    nextCursor: hasMore && last ? String(last.rowIndex) : undefined,
   }
 }
 
@@ -325,8 +340,8 @@ export async function softDeleteDataset(
   db: Db,
   datasetId: string,
   actorId: string,
-): Promise<void> {
-  return atomic(db, async (tx) => {
+): Promise<{ deleted: true }> {
+  await atomic(db, async (tx) => {
     const { datasets } = schemaFor(tx)
     const [row] = await tx
       .select({ id: datasets.id, targetId: datasets.targetId })
@@ -341,4 +356,42 @@ export async function softDeleteDataset(
       .set({ deletedAt: new Date(), updatedAt: new Date() })
       .where(eq(datasets.id, datasetId))
   })
+  return { deleted: true }
+}
+
+export async function getDatasetRowsForPreflight(
+  db: Db,
+  datasetId: string,
+  options?: { selectedRowIndices?: number[]; limit?: number; offset?: number },
+  actorId?: string,
+): Promise<{ rowIndex: number; rowData: Record<string, JsonValue> }[]> {
+  if (actorId) {
+    const dataset = await getDataset(db, datasetId, actorId)
+    if (!dataset) throw notFound('DATASET_NOT_FOUND', '数据集不存在')
+  }
+  const { datasetRows } = schemaFor(db)
+  const conditions = [eq(datasetRows.datasetId, datasetId)]
+
+  if (options?.selectedRowIndices && options.selectedRowIndices.length > 0) {
+    conditions.push(inArray(datasetRows.rowIndex, options.selectedRowIndices))
+  }
+
+  let query = db
+    .select({ rowIndex: datasetRows.rowIndex, rowData: datasetRows.rowData })
+    .from(datasetRows)
+    .where(and(...conditions))
+    .orderBy(asc(datasetRows.rowIndex))
+
+  if (options?.limit !== undefined) {
+    query = (query as any).limit(options.limit)
+  }
+  if (options?.offset !== undefined) {
+    query = (query as any).offset(options.offset)
+  }
+
+  const rows = await query
+  return rows.map((r) => ({
+    rowIndex: r.rowIndex,
+    rowData: r.rowData as Record<string, JsonValue>,
+  }))
 }

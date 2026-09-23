@@ -78,6 +78,7 @@ const list: RunListResponse = {
       finishedAt: '2026-09-11T01:00:20.000Z',
       evidenceStatus: 'INCOMPLETE',
       outcomeStatus: 'FAIL',
+      outputSummary: '巡检发现 1 项登录超时异常',
     }),
   ],
 }
@@ -316,6 +317,15 @@ describe('RunsPage', () => {
 
     await expect
       .element(screen.getByRole('button', { name: /创建运行/ }).first())
+      .toBeInTheDocument()
+  })
+
+  it('在场景名称下方展示 outputSummary 一句话业务结论', async () => {
+    signIn(['run:read'])
+    const screen = await renderPage()
+
+    await expect
+      .element(screen.getByText('巡检发现 1 项登录超时异常'))
       .toBeInTheDocument()
   })
 })

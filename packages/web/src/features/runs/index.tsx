@@ -503,19 +503,30 @@ export function RunsPage() {
                             </StatusBadge>
                           ) : null}
                         </TableCell>
-                        <TableCell>
-                          <CatalogName
-                            name={item.scenarioName}
-                            deleted={item.scenarioDeleted}
-                          >
-                            <Link
-                              to='/scenarios/$scenarioId'
-                              params={{ scenarioId: item.scenarioId }}
-                              className='text-primary hover:underline'
+                        <TableCell className='max-w-[240px] sm:max-w-xs md:max-w-sm'>
+                          <div className='flex flex-col gap-0.5'>
+                            <CatalogName
+                              name={item.scenarioName}
+                              deleted={item.scenarioDeleted}
                             >
-                              {item.scenarioName}
-                            </Link>
-                          </CatalogName>
+                              <Link
+                                to='/scenarios/$scenarioId'
+                                params={{ scenarioId: item.scenarioId }}
+                                className='font-medium text-primary hover:underline'
+                              >
+                                {item.scenarioName}
+                              </Link>
+                            </CatalogName>
+                            {item.outputSummary ? (
+                              <span
+                                className='text-xs text-muted-foreground truncate'
+                                title={item.outputSummary}
+                                data-testid='run-output-summary-cell'
+                              >
+                                {item.outputSummary}
+                              </span>
+                            ) : null}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <CatalogName

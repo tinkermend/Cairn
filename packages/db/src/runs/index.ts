@@ -86,4 +86,5 @@ export {
   settleRunOutcome,
   type OutcomeResultInsertItem,
 } from './outcome-results.js'
+export { settleRunOutput } from './output.js'
 export { readOverviewAnalytics } from './analytics.js'

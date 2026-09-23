@@ -119,4 +119,105 @@ describe('报告渲染', () => {
       expect((await stat(active)).isDirectory()).toBe(true); await expect(stat(stale)).rejects.toMatchObject({ code: 'ENOENT' })
     } finally { await rm(directory, { recursive: true, force: true }) }
   })
+
+  it('场景集四层巡检总报表支持 L0 看板、L1 业务宽表对照与 L2 异常穿透排版', async () => {
+    const suiteDoc = {
+      stage: 'final' as const,
+      title: '生产环境综合巡检总报表',
+      timeZone: 'Asia/Shanghai',
+      generatedAt: '2026-09-22T12:00:00.000Z',
+      asOf: '2026-09-22T12:00:00.000Z',
+      source: {
+        kind: 'SUITE_RUN' as const,
+        status: 'COMPLETED',
+        verdict: 'anomalies_found',
+        targetName: '电商生产系统',
+        suiteName: '每日核心业务巡检',
+        wallClockMs: 12000,
+        childDurationMs: 36000,
+        counts: { planned: 2, succeeded: 1, failed: 1, cancelled: 0, skipped: 0 },
+        items: [],
+      },
+      summary: { status: 'COMPLETED' },
+      sections: [
+        {
+          id: 'overview',
+          title: '概述',
+          required: true,
+          blocks: [
+            {
+              type: 'suite_business_summary',
+              healthScore: 85,
+              healthGrade: 'GOOD',
+              totalCount: 2,
+              normalCount: 1,
+              warningCount: 0,
+              anomalousCount: 1,
+              skippedCount: 0,
+              wallClockMs: 12000,
+              childDurationMs: 36000,
+              savedPercent: 67,
+              gridRows: [
+                {
+                  ordinal: 0,
+                  memberId: 'm1',
+                  displayName: '用户中心探活',
+                  scenarioName: '用户服务',
+                  status: 'NORMAL',
+                  summary: '鉴权正常',
+                  metrics: { latencyMs: 350 },
+                  dataRow: { token: 'valid' },
+                  durationMs: 4000,
+                  hasFindings: false,
+                },
+                {
+                  ordinal: 1,
+                  memberId: 'm2',
+                  displayName: '订单超时工单',
+                  scenarioName: '履约服务',
+                  status: 'ANOMALOUS',
+                  summary: '发现积压超时工单',
+                  metrics: { backlogCount: 5 },
+                  dataRow: { queue: 'dispatch' },
+                  durationMs: 8000,
+                  hasFindings: true,
+                },
+              ],
+              aggregatedFindings: [
+                {
+                  memberId: 'm2',
+                  displayName: '订单超时工单',
+                  id: 'f-1',
+                  title: '订单积压超时 15 分钟',
+                  severity: 'HIGH',
+                  detail: '5 笔工单待派发',
+                  evidenceId: '00000000-0000-4000-8000-000000000099',
+                },
+              ],
+            },
+            { type: 'summary', data: { ok: true } },
+          ],
+        },
+      ],
+      gaps: [],
+    }
+
+    const lines = reportLines(suiteDoc)
+    expect(lines.some((l) => l.text.includes('【决策与执行总览】'))).toBe(true)
+    expect(lines.some((l) => l.text.includes('系统整体健康度：85分（良）'))).toBe(true)
+    expect(lines.some((l) => l.text.includes('并发节约耗时 67%'))).toBe(true)
+    expect(lines.some((l) => l.text.includes('【核心业务巡检对照总表】'))).toBe(true)
+    expect(lines.some((l) => l.text.includes('用户中心探活'))).toBe(true)
+    expect(lines.some((l) => l.text.includes('【异常归因与证据穿透】'))).toBe(true)
+    expect(lines.some((l) => l.text.includes('订单积压超时 15 分钟'))).toBe(true)
+
+    const docx = renderReportDocx(suiteDoc)
+    expect(docx.toString('utf8')).toContain('序号')
+    expect(docx.toString('utf8')).toContain('核心业务数据')
+    expect(docx.toString('utf8')).toContain('DEF7EC') // 正常绿色高亮
+    expect(docx.toString('utf8')).toContain('FEE2E2') // 异常浅红高亮
+
+    const pdf = await renderReportPdf(suiteDoc)
+    expect(pdf.subarray(0, 5).toString('utf8')).toBe('%PDF-')
+  })
 })

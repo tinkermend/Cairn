@@ -1,7 +1,14 @@
-import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, exists, gt, inArray, isNull, not, sql, type SQL } from 'drizzle-orm'
 import {
   buildResultWorkbook,
   evaluateGenerator,
+  FACTORY_PLATFORM_CONFIG,
+  FIXTURE_STEPS_DISABLED_CODE,
+  FIXTURE_STEPS_DISABLED_MESSAGE,
+  isFinishedRunStatus,
+  isFixtureStepType,
+  unresolvedRunInputMessage,
+  unresolvedRunInputs,
   type BatchDetail,
   type BatchExportResponse,
   type BatchFailureDomain,
@@ -11,13 +18,143 @@ import {
   type BatchStatus,
   type CreateBatchBody,
   type DataBinding,
+  type ScenarioInputDecl,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
+import { cursorFilter, decodeIndexCursor, encodeCursor } from '../cursor.js'
+import { assertAccountAllowsBusiness } from '../console/account-usage.js'
 import { assertTargetPermission, lockConsoleAuthorization, scopedTargetFilter } from '../console/target-authorization.js'
 import { newId } from '../id.js'
-import { atomic, schemaFor } from '../native.js'
-import { badRequest, notFound } from '../runs/errors.js'
-import { writeRunWithSnapshot } from '../runs/runs.js'
+import { lockRunRow } from '../leases/leases.js'
+import { atomic, schemaFor, updateRows } from '../native.js'
+import { appendRunEvents } from '../observe/events.js'
+import { getPlatformConfig } from '../platform-config/store.js'
+import { badRequest, conflict, DomainError, notFound } from '../runs/errors.js'
+import { lockRunAccountScope } from '../runs/lock-scope.js'
+import { settleRunCancellationTx } from '../runs/recover.js'
+import { requestRunCancel, resolveRunTargetAccountId, writeRunWithSnapshot } from '../runs/runs.js'
+
+const STRANDED_BATCH_SCAN_LIMIT = 10
+
+export type BatchDispatchResult =
+  | { ok: true; dispatchedRunIds: string[]; completed: boolean; paused: boolean }
+  | { ok: false; deterministic: boolean; error: unknown }
+
+export function isDeterministicDispatchError(error: unknown): error is DomainError {
+  return (
+    error instanceof DomainError &&
+    (error.kind === 'bad_request' || error.kind === 'conflict' || error.kind === 'not_found')
+  )
+}
+
+function materializeBatchInput(
+  rowData: Record<string, unknown>,
+  bindings: DataBinding,
+  inputs: readonly ScenarioInputDecl[] | undefined,
+): Record<string, unknown> {
+  const itemInput: Record<string, unknown> = {}
+  for (const [key, binding] of Object.entries(bindings)) {
+    if (binding.source === 'column') itemInput[key] = rowData[binding.columnName]
+    else if (binding.source === 'fixed') itemInput[key] = binding.value
+    else itemInput[key] = evaluateGenerator(binding.spec)
+  }
+  for (const decl of inputs ?? []) {
+    const value = itemInput[decl.key]
+    if ((value === undefined || value === null || value === '') && decl.defaultGenerator) {
+      itemInput[decl.key] = evaluateGenerator(decl.defaultGenerator)
+    }
+  }
+  return itemInput
+}
+
+/** 与 writeRunWithSnapshot 的开跑条件对齐。行解析只在创建和重试时做，避免每一窗都重放生成器。 */
+async function assertBatchCanStart(
+  db: Db,
+  input: {
+    scenarioId: string
+    scenarioVersionId: string
+    targetAccountId?: string | null
+    datasetId?: string | null
+    rowIndices?: number[]
+    bindings?: DataBinding
+    checkRows: boolean
+  },
+): Promise<void> {
+  const { scenarios, scenarioVersions, targets, targetAccounts, datasetRows } = schemaFor(db)
+  const [scenario] = await db
+    .select()
+    .from(scenarios)
+    .where(eq(scenarios.id, input.scenarioId))
+    .limit(1)
+  if (!scenario || scenario.deletedAt) throw notFound('SCENARIO_NOT_FOUND', '场景不存在')
+  if (scenario.status === 'disabled') throw conflict('SCENARIO_DISABLED', '场景已停用，不能创建新运行')
+
+  const [version] = await db
+    .select()
+    .from(scenarioVersions)
+    .where(eq(scenarioVersions.id, input.scenarioVersionId))
+    .limit(1)
+  if (!version || version.scenarioId !== scenario.id) {
+    throw notFound('SCENARIO_VERSION_NOT_FOUND', '场景版本不存在')
+  }
+  if (version.kind !== 'published') {
+    throw badRequest('SCENARIO_VERSION_NOT_PUBLISHED', '正式运行只能使用已发布版本')
+  }
+
+  const [target] = await db.select().from(targets).where(eq(targets.id, scenario.targetId)).limit(1)
+  if (!target || target.deletedAt) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
+  if (target.status === 'disabled') throw conflict('TARGET_DISABLED', '目标系统已停用，不能创建新运行')
+
+  const accountId =
+    input.targetAccountId ??
+    (await resolveRunTargetAccountId(db, { targetId: scenario.targetId, requestedAccountId: undefined }))
+  if (accountId) {
+    const [account] = await db
+      .select()
+      .from(targetAccounts)
+      .where(eq(targetAccounts.id, accountId))
+      .limit(1)
+    if (!account || account.deletedAt || account.targetId !== scenario.targetId) {
+      throw badRequest('RUN_ACCOUNT_MISMATCH', '目标账号不属于该场景绑定的目标系统')
+    }
+    if (account.status === 'disabled') throw conflict('RUN_ACCOUNT_DISABLED', '目标账号已停用')
+    assertAccountAllowsBusiness(account.usage)
+  }
+
+  const platform = await getPlatformConfig(db)
+  const document = platform?.document ?? FACTORY_PLATFORM_CONFIG
+  if (!document.fixtureStepsEnabled) {
+    const fixture = version.definition.steps.find((step) => isFixtureStepType(step.type))
+    if (fixture) {
+      throw badRequest(FIXTURE_STEPS_DISABLED_CODE, FIXTURE_STEPS_DISABLED_MESSAGE, {
+        stepId: fixture.id,
+        stepType: fixture.type,
+      })
+    }
+  }
+
+  if (!input.checkRows || !input.datasetId) return
+  const stored = await db
+    .select({ rowIndex: datasetRows.rowIndex, rowData: datasetRows.rowData })
+    .from(datasetRows)
+    .where(eq(datasetRows.datasetId, input.datasetId))
+  const byIndex = new Map(stored.map((row) => [row.rowIndex, (row.rowData ?? {}) as Record<string, unknown>]))
+  for (const rowIndex of input.rowIndices ?? []) {
+    const itemInput = materializeBatchInput(
+      byIndex.get(rowIndex) ?? {},
+      input.bindings ?? {},
+      version.authoringDocument?.inputs,
+    )
+    const unresolved = unresolvedRunInputs(version.definition.steps, itemInput)
+    const first = unresolved[0]
+    if (first) {
+      throw badRequest('SCENARIO_UNRESOLVED_REF', `第 ${rowIndex + 1} 行：${unresolvedRunInputMessage(first)}`, {
+        missingKeys: unresolved.map((item) => item.key),
+        rowIndex,
+      })
+    }
+  }
+}
 
 async function assertBatchScenarioPermission(
   db: Db,
@@ -83,6 +220,15 @@ export async function createBatch(
     }
 
     const totalItems = selectedIndices.length
+    await assertBatchCanStart(tx, {
+      scenarioId: input.scenarioId,
+      scenarioVersionId: input.scenarioVersionId,
+      targetAccountId: input.targetAccountId,
+      datasetId: input.datasetId,
+      rowIndices: selectedIndices,
+      bindings: input.binding ?? {},
+      checkRows: true,
+    })
     const batchId = newId()
     const now = new Date()
     const pacingConfig: BatchPacing = input.pacing ?? { minDelayMs: 1500, maxDelayMs: 3500 }
@@ -199,6 +345,18 @@ export async function advanceBatch(
       return { dispatchedRunIds: [], completed: false, paused: false }
     }
 
+    await assertBatchCanStart(tx, {
+      scenarioId: batch.scenarioId,
+      scenarioVersionId: batch.scenarioVersionId,
+      targetAccountId: batch.targetAccountId,
+      checkRows: false,
+    })
+
+    const creatorId = batch.createdByAccountId
+    if (!creatorId) {
+      throw badRequest('BATCH_CREATOR_MISSING', '创建该批次的账号已不存在，无法继续派发')
+    }
+
     const dispatchedRunIds: string[] = []
     const now = new Date()
 
@@ -236,7 +394,7 @@ export async function advanceBatch(
         input: itemInput,
         actor: {
           kind: 'console',
-          id: batch.createdByAccountId ?? 'system',
+          id: creatorId,
         },
       })
 
@@ -293,22 +451,43 @@ export async function onRunSettledForBatch(
 
     if (!batch) return null
 
+    const [lockedItem] = await tx
+      .select()
+      .from(batchItems)
+      .where(eq(batchItems.id, item.id))
+      .for('update')
+      .limit(1)
+    if (!lockedItem || lockedItem.itemStatus !== 'RUNNING') {
+      return { batchId: batch.id, batchStatus: batch.status }
+    }
+
     let newItemStatus: BatchItemStatus = 'SUCCEEDED'
     if (verdict.status === 'failed') newItemStatus = 'FAILED'
     else if (verdict.status === 'review') newItemStatus = 'NEEDS_REVIEW'
     else if (verdict.status === 'cancelled') newItemStatus = 'CANCELLED'
 
     const now = new Date()
-    await tx
-      .update(batchItems)
-      .set({
+    const moved = await updateRows(
+      tx,
+      batchItems,
+      {
         itemStatus: newItemStatus,
         outcomeVerdict: verdict.outcomeVerdict ?? null,
         failureDomain: verdict.failureDomain ?? null,
         errorMessage: verdict.errorMessage ?? null,
         finishedAt: now,
-      })
-      .where(eq(batchItems.id, item.id))
+      },
+      and(eq(batchItems.id, lockedItem.id), eq(batchItems.itemStatus, 'RUNNING')),
+      { id: batchItems.id },
+    )
+    if (moved.length === 0) {
+      return { batchId: batch.id, batchStatus: batch.status }
+    }
+
+    // 终态批次只收口明细，不再改计数、熔断或批次状态。
+    if (batch.status === 'CANCELLED' || batch.status === 'COMPLETED' || batch.status === 'FAILED') {
+      return { batchId: batch.id, batchStatus: batch.status }
+    }
 
     const successDelta = newItemStatus === 'SUCCEEDED' ? 1 : 0
     const failedDelta = newItemStatus === 'FAILED' ? 1 : 0
@@ -318,7 +497,7 @@ export async function onRunSettledForBatch(
     const updatedFailed = batch.failedItems + failedDelta
     const updatedReview = batch.reviewItems + reviewDelta
 
-    let newBatchStatus = batch.status
+    let newBatchStatus: BatchStatus = batch.status
     let pausedReason = batch.pausedReason
 
     // 检查熔断器 (DC-11, DC-12)
@@ -402,6 +581,9 @@ export async function pauseBatch(
       .for('update')
       .limit(1)
     if (!batch) throw notFound('BATCH_NOT_FOUND', '批量任务不存在')
+    if (batch.status !== 'QUEUED' && batch.status !== 'RUNNING') {
+      throw conflict('BATCH_STATUS_CONFLICT', `批次当前状态为 ${batch.status}，不能暂停`)
+    }
 
     if (actorId) {
       const [scenario] = await tx
@@ -450,7 +632,7 @@ export async function pauseBatch(
 
 export async function resumeBatch(db: Db, batchId: string, actorId?: string): Promise<BatchDetail> {
   return atomic(db, async (tx) => {
-    const { batches, scenarios } = schemaFor(tx)
+    const { batches, batchItems, scenarios } = schemaFor(tx)
     const [batch] = await tx
       .select()
       .from(batches)
@@ -458,6 +640,9 @@ export async function resumeBatch(db: Db, batchId: string, actorId?: string): Pr
       .for('update')
       .limit(1)
     if (!batch) throw notFound('BATCH_NOT_FOUND', '批量任务不存在')
+    if (batch.status !== 'PAUSED') {
+      throw conflict('BATCH_STATUS_CONFLICT', `批次当前状态为 ${batch.status}，不能恢复`)
+    }
 
     if (actorId) {
       const [scenario] = await tx
@@ -471,10 +656,15 @@ export async function resumeBatch(db: Db, batchId: string, actorId?: string): Pr
       }
     }
 
+    const [active] = await tx
+      .select({ id: batchItems.id })
+      .from(batchItems)
+      .where(and(eq(batchItems.batchId, batchId), eq(batchItems.itemStatus, 'RUNNING')))
+      .limit(1)
     const [updated] = await tx
       .update(batches)
       .set({
-        status: 'RUNNING',
+        status: active ? 'RUNNING' : 'QUEUED',
         pausedReason: null,
         updatedAt: new Date(),
       })
@@ -504,6 +694,29 @@ export async function resumeBatch(db: Db, batchId: string, actorId?: string): Pr
   })
 }
 
+async function cancelDispatchedRun(tx: Db, runId: string, actorId: string | null, now: Date) {
+  if (actorId) {
+    await requestRunCancel(tx, runId, { kind: 'console', id: actorId })
+    return
+  }
+  await lockRunAccountScope(tx, runId)
+  const current = await lockRunRow(tx, runId)
+  if (!current || isFinishedRunStatus(current.status) || current.status === 'NEEDS_REVIEW') return
+  const { runs } = schemaFor(tx)
+  const firstCancel = current.cancelRequestedAt == null
+  await tx
+    .update(runs)
+    .set({
+      cancelRequestedAt: current.cancelRequestedAt ?? now,
+      updatedAt: now,
+    })
+    .where(eq(runs.id, runId))
+  if (firstCancel) {
+    await appendRunEvents(tx, runId, [{ type: 'run.cancel_requested', payload: { cancelRequested: true } }])
+  }
+  await settleRunCancellationTx(tx, runId, now)
+}
+
 export async function cancelBatch(
   db: Db,
   batchId: string,
@@ -519,6 +732,9 @@ export async function cancelBatch(
       .for('update')
       .limit(1)
     if (!batch) throw notFound('BATCH_NOT_FOUND', '批量任务不存在')
+    if (batch.status === 'COMPLETED' || batch.status === 'CANCELLED') {
+      throw conflict('BATCH_STATUS_CONFLICT', `批次当前状态为 ${batch.status}，不能取消`)
+    }
 
     if (actorId) {
       const [scenario] = await tx
@@ -541,6 +757,12 @@ export async function cancelBatch(
       })
       .where(and(eq(batchItems.batchId, batchId), eq(batchItems.itemStatus, 'PENDING')))
 
+    const running = await tx
+      .select({ runId: batchItems.runId })
+      .from(batchItems)
+      .where(and(eq(batchItems.batchId, batchId), eq(batchItems.itemStatus, 'RUNNING')))
+      .orderBy(asc(batchItems.runId))
+
     const [updated] = await tx
       .update(batches)
       .set({
@@ -550,6 +772,12 @@ export async function cancelBatch(
       })
       .where(eq(batches.id, batchId))
       .returning()
+
+    const cancelActorId = actorId ?? batch.createdByAccountId
+    for (const row of running) {
+      if (!row.runId) continue
+      await cancelDispatchedRun(tx, row.runId, cancelActorId, now)
+    }
 
     return {
       id: updated!.id,
@@ -607,6 +835,16 @@ export async function retryFailedBatch(
     if (failedItems.length === 0) {
       throw badRequest('NO_FAILED_ITEMS', '该批次无失败项目，无需重试')
     }
+
+    await assertBatchCanStart(tx, {
+      scenarioId: parentBatch.scenarioId,
+      scenarioVersionId: parentBatch.scenarioVersionId,
+      targetAccountId: parentBatch.targetAccountId,
+      datasetId: parentBatch.datasetId,
+      rowIndices: failedItems.map((item) => item.datasetRowIndex),
+      bindings: (parentBatch.dataBindings ?? {}) as DataBinding,
+      checkRows: true,
+    })
 
     const newBatchId = newId()
     const now = new Date()
@@ -668,6 +906,89 @@ export async function retryFailedBatch(
   })
 }
 
+export async function failStrandedBatch(db: Db, batchId: string, reason: string): Promise<boolean> {
+  return atomic(db, async (tx) => {
+    const { batches, batchItems } = schemaFor(tx)
+    const [batch] = await tx
+      .select({ id: batches.id, status: batches.status })
+      .from(batches)
+      .where(eq(batches.id, batchId))
+      .for('update')
+      .limit(1)
+    if (!batch || (batch.status !== 'QUEUED' && batch.status !== 'RUNNING')) return false
+    const [active] = await tx
+      .select({ id: batchItems.id })
+      .from(batchItems)
+      .where(and(eq(batchItems.batchId, batchId), eq(batchItems.itemStatus, 'RUNNING')))
+      .limit(1)
+    if (active) return false
+    await tx
+      .update(batches)
+      .set({ status: 'FAILED', pausedReason: reason, updatedAt: new Date() })
+      .where(eq(batches.id, batchId))
+    return true
+  })
+}
+
+export async function dispatchBatch(
+  db: Db,
+  batchId: string,
+  concurrencyLimit = 5,
+): Promise<BatchDispatchResult> {
+  try {
+    const result = await advanceBatch(db, batchId, concurrencyLimit)
+    return { ok: true, ...result }
+  } catch (error) {
+    const deterministic = isDeterministicDispatchError(error)
+    if (deterministic) {
+      const message = error instanceof Error ? error.message : '批次无法派发'
+      await failStrandedBatch(db, batchId, `派发失败：${message}`)
+    }
+    return { ok: false, deterministic, error }
+  }
+}
+
+export async function sweepStrandedBatches(
+  db: Db,
+  limit = STRANDED_BATCH_SCAN_LIMIT,
+): Promise<{ scanned: number; dispatched: number; failed: number; deferred: number }> {
+  const { batches, batchItems } = schemaFor(db)
+  const pending = db
+    .select({ id: batchItems.id })
+    .from(batchItems)
+    .where(and(eq(batchItems.batchId, batches.id), eq(batchItems.itemStatus, 'PENDING')))
+  const running = db
+    .select({ id: batchItems.id })
+    .from(batchItems)
+    .where(and(eq(batchItems.batchId, batches.id), eq(batchItems.itemStatus, 'RUNNING')))
+  const rows = await db
+    .select({ id: batches.id })
+    .from(batches)
+    .where(
+      and(
+        inArray(batches.status, ['QUEUED', 'RUNNING']),
+        exists(pending),
+        not(exists(running)),
+      ),
+    )
+    .orderBy(asc(batches.updatedAt), asc(batches.id))
+    .limit(Math.min(Math.max(limit, 1), 50))
+
+  let dispatched = 0
+  let failed = 0
+  let deferred = 0
+  for (const row of rows) {
+    const outcome = await dispatchBatch(db, row.id)
+    if (!outcome.ok) {
+      if (outcome.deterministic) failed += 1
+      else deferred += 1
+      continue
+    }
+    if (outcome.dispatchedRunIds.length > 0 || outcome.completed) dispatched += 1
+  }
+  return { scanned: rows.length, dispatched, failed, deferred }
+}
+
 export async function getBatch(db: Db, batchId: string, actorId?: string): Promise<BatchDetail | null> {
   const { batches } = schemaFor(db)
   const [b] = await db.select().from(batches).where(eq(batches.id, batchId)).limit(1)
@@ -689,7 +1010,7 @@ export async function getBatch(db: Db, batchId: string, actorId?: string): Promi
     failedItems: b.failedItems,
     reviewItems: b.reviewItems,
     pausedReason: b.pausedReason,
-    createdByAccountId: b.createdByAccountId ?? 'system',
+    createdByAccountId: b.createdByAccountId,
     createdAt: b.createdAt.toISOString(),
     updatedAt: b.updatedAt.toISOString(),
   }
@@ -706,6 +1027,7 @@ export async function listBatches(
     await scopedTargetFilter(db, actorId, scenarios.targetId, 'batch:read'),
     query.scenarioId ? eq(batches.scenarioId, query.scenarioId) : undefined,
     query.datasetId ? eq(batches.datasetId, query.datasetId) : undefined,
+    cursorFilter(batches.createdAt, batches.id, query.cursor),
   ].filter((item): item is SQL => item !== undefined)
 
   const rows = await db
@@ -717,7 +1039,9 @@ export async function listBatches(
     .limit(limit + 1)
 
   const hasMore = rows.length > limit
-  const items = (hasMore ? rows.slice(0, limit) : rows).map((row) => {
+  const page = hasMore ? rows.slice(0, limit) : rows
+  const last = page.at(-1)?.batch
+  const items = page.map((row) => {
     const b = row.batch
     return {
       id: b.id,
@@ -735,7 +1059,7 @@ export async function listBatches(
       failedItems: b.failedItems,
       reviewItems: b.reviewItems,
       pausedReason: b.pausedReason,
-      createdByAccountId: b.createdByAccountId ?? 'system',
+      createdByAccountId: b.createdByAccountId,
       createdAt: b.createdAt.toISOString(),
       updatedAt: b.updatedAt.toISOString(),
     }
@@ -743,24 +1067,22 @@ export async function listBatches(
 
   return {
     items,
-    nextCursor: hasMore ? items[items.length - 1]?.id : undefined,
+    nextCursor: hasMore && last ? encodeCursor(last.createdAt, last.id) : undefined,
   }
 }
 
 export async function getBatchItems(
   db: Db,
   batchId: string,
-  options?: { limit?: number; offset?: number; status?: BatchItemStatus },
+  options?: { limit?: number; cursor?: string; status?: BatchItemStatus },
   actorId?: string,
-): Promise<{ items: BatchItemDto[]; total: number }> {
+): Promise<{ items: BatchItemDto[]; total: number; nextCursor?: string }> {
   if (actorId) {
     const batch = await getBatch(db, batchId, actorId)
     if (!batch) throw notFound('BATCH_NOT_FOUND', '批量任务不存在')
   }
   const { batchItems } = schemaFor(db)
   const limit = Math.min(options?.limit ?? 50, 100)
-  const offset = options?.offset ?? 0
-
   const conditions = [eq(batchItems.batchId, batchId)]
   if (options?.status) {
     conditions.push(eq(batchItems.itemStatus, options.status))
@@ -771,16 +1093,23 @@ export async function getBatchItems(
     .from(batchItems)
     .where(and(...conditions))
 
+  if (options?.cursor) {
+    conditions.push(gt(batchItems.datasetRowIndex, decodeIndexCursor(options.cursor)))
+  }
+
   const rows = await db
     .select()
     .from(batchItems)
     .where(and(...conditions))
     .orderBy(asc(batchItems.datasetRowIndex))
-    .limit(limit)
-    .offset(offset)
+    .limit(limit + 1)
+
+  const hasMore = rows.length > limit
+  const page = hasMore ? rows.slice(0, limit) : rows
+  const last = page.at(-1)
 
   return {
-    items: rows.map((r) => ({
+    items: page.map((r) => ({
       id: r.id,
       batchId: r.batchId,
       datasetRowIndex: r.datasetRowIndex,
@@ -793,6 +1122,7 @@ export async function getBatchItems(
       finishedAt: r.finishedAt?.toISOString(),
     })),
     total: Number(totalRes?.total ?? 0),
+    nextCursor: hasMore && last ? String(last.datasetRowIndex) : undefined,
   }
 }
 

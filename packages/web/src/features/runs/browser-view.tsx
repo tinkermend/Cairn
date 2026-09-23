@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   AUTH_CONTROL_HEARTBEAT_SECONDS,
   describeManagedAuthWait,
@@ -21,6 +21,7 @@ import {
   resumeRunAuth as runResumeRunAuth,
   subscribeBrowserFrames as runSubscribeBrowserFrames,
 } from '@/lib/runs-api'
+import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/status-badge'
 import { useAuthoringObserve } from '@/features/authoring'
@@ -77,19 +78,28 @@ export function isBrowserViewConnecting(input: {
   )
 }
 
-/** 画面是 object-contain，按整块按钮比例换算会点到留白而不是登录框。 */
+/** 画面是 object-contain，按整块按钮比例换算并夹紧在有效视口内。 */
 function framePointFromClick(
   event: { currentTarget: HTMLElement; clientX: number; clientY: number },
   frame: { width: number; height: number }
 ): { x: number; y: number } {
   const rect = event.currentTarget.getBoundingClientRect()
+  if (rect.width <= 0 || rect.height <= 0 || frame.width <= 0 || frame.height <= 0) {
+    return { x: 0, y: 0 }
+  }
   const scale = Math.min(rect.width / frame.width, rect.height / frame.height)
-  const x =
+  if (scale <= 0 || !Number.isFinite(scale)) {
+    return { x: 0, y: 0 }
+  }
+  const rawX =
     (event.clientX - rect.left - (rect.width - frame.width * scale) / 2) / scale
-  const y =
+  const rawY =
     (event.clientY - rect.top - (rect.height - frame.height * scale) / 2) /
     scale
-  return { x, y }
+  return {
+    x: Number.isFinite(rawX) ? Math.max(0, Math.min(frame.width, Math.round(rawX))) : 0,
+    y: Number.isFinite(rawY) ? Math.max(0, Math.min(frame.height, Math.round(rawY))) : 0,
+  }
 }
 
 export type BrowserTransport = {
@@ -173,6 +183,7 @@ export function BrowserView({
   const [expiresAt, setExpiresAt] = useState<string | null>(null)
   const [viewPageId, setViewPageId] = useState<string | undefined>()
   const [streamError, setStreamError] = useState<string | null>(null)
+  const [authError, setAuthError] = useState<string | null>(null)
   const seq = useRef(0)
   const composing = useRef(false)
   const tokenRef = useRef<string | null>(null)
@@ -358,14 +369,109 @@ export function BrowserView({
   }, [token, canControl, runId, heartbeatAuthControl])
 
   useEffect(() => {
-    if (!canControl || !open || runStatus !== 'WAITING_FOR_AUTH') {
+    const shouldRevoke =
+      !canControl || !open || (!sessionMode && runStatus !== 'WAITING_FOR_AUTH')
+    if (shouldRevoke) {
       const held = tokenRef.current
       tokenRef.current = null
       setToken(null)
       if (held)
         void releaseAuthControl(runId, { token: held }).catch(() => undefined)
     }
-  }, [canControl, open, runStatus, runId, releaseAuthControl])
+  }, [canControl, open, runStatus, sessionMode, runId, releaseAuthControl])
+
+  const pendingWheel = useRef<{
+    x: number
+    y: number
+    deltaX: number
+    deltaY: number
+  } | null>(null)
+  const wheelTimer = useRef<number | null>(null)
+  const wheelInFlight = useRef(false)
+
+  const flushWheel = useCallback(() => {
+    if (!pendingWheel.current || wheelInFlight.current) return
+    if (!token || !pageRef || !frame || !canControl) {
+      pendingWheel.current = null
+      return
+    }
+    const { x, y, deltaX, deltaY } = pendingWheel.current
+    const clampedDeltaX = Math.max(-1000, Math.min(1000, Math.round(deltaX)))
+    const clampedDeltaY = Math.max(-1000, Math.min(1000, Math.round(deltaY)))
+    pendingWheel.current = null
+    if (clampedDeltaX === 0 && clampedDeltaY === 0) return
+
+    wheelInFlight.current = true
+    seq.current += 1
+    const command = {
+      type: 'mouse_wheel' as const,
+      x,
+      y,
+      deltaX: clampedDeltaX,
+      deltaY: clampedDeltaY,
+      pageRef: frame.pageRef,
+      commandId: crypto.randomUUID(),
+      seq: seq.current,
+      frameId: frame.frameId,
+      viewport: { width: frame.width, height: frame.height },
+    } as BrowserAuthInputCommand
+
+    void Promise.resolve(inputAuthControl(runId, { token, command }))
+      .catch((error) => {
+        if (
+          error instanceof ApiRequestError &&
+          (error.status === 401 ||
+            error.status === 403 ||
+            error.payload.code.startsWith('AUTH_'))
+        ) {
+          setToken(null)
+        }
+        toast.error(
+          error instanceof ApiRequestError ? error.message : '输入被拒绝'
+        )
+      })
+      .finally(() => {
+        wheelInFlight.current = false
+        if (pendingWheel.current) {
+          if (wheelTimer.current === null) {
+            wheelTimer.current = window.setTimeout(() => {
+              wheelTimer.current = null
+              flushWheel()
+            }, 40)
+          }
+        }
+      })
+  }, [token, pageRef, frame, canControl, runId, inputAuthControl])
+
+  const scheduleWheel = useCallback(
+    (x: number, y: number, deltaX: number, deltaY: number) => {
+      if (!pendingWheel.current) {
+        pendingWheel.current = { x, y, deltaX, deltaY }
+      } else {
+        pendingWheel.current.x = x
+        pendingWheel.current.y = y
+        pendingWheel.current.deltaX += deltaX
+        pendingWheel.current.deltaY += deltaY
+      }
+      if (wheelTimer.current === null && !wheelInFlight.current) {
+        wheelTimer.current = window.setTimeout(() => {
+          wheelTimer.current = null
+          flushWheel()
+        }, 40)
+      }
+    },
+    [flushWheel]
+  )
+
+  useEffect(() => {
+    return () => {
+      if (wheelTimer.current !== null) {
+        window.clearTimeout(wheelTimer.current)
+        wheelTimer.current = null
+      }
+      pendingWheel.current = null
+    }
+  }, [])
 
   if (!canView) return null
 
@@ -395,6 +501,7 @@ export function BrowserView({
 
   const sendCommand = (partial: BrowserAuthInputPayload) => {
     if (!token || !pageRef || !frame || !canControl) return
+    if (authError) setAuthError(null)
     seq.current += 1
     const command = {
       ...partial,
@@ -404,7 +511,7 @@ export function BrowserView({
       frameId: frame.frameId,
       viewport: { width: frame.width, height: frame.height },
     } as BrowserAuthInputCommand
-    void inputAuthControl(runId, { token, command }).catch((error) => {
+    void Promise.resolve(inputAuthControl(runId, { token, command })).catch((error) => {
       if (
         error instanceof ApiRequestError &&
         (error.status === 401 ||
@@ -416,6 +523,52 @@ export function BrowserView({
         error instanceof ApiRequestError ? error.message : '输入被拒绝'
       )
     })
+  }
+
+  const handleAcquire = () => {
+    setAuthError(null)
+    setBusy(true)
+    void acquireAuthControl(runId)
+      .then((granted) => {
+        setToken(granted.token)
+        setPageRef(granted.pageRef)
+        setExpiresAt(granted.expiresAt)
+        setMeta(granted.meta)
+        setOpen(true)
+        toast.success(sessionMode ? '已取得手动操作权' : '已取得登录输入权')
+      })
+      .catch((error) => {
+        toast.error(
+          error instanceof ApiRequestError
+            ? error.message
+            : sessionMode
+              ? '无法取得操作权'
+              : '无法取得输入权'
+        )
+      })
+      .finally(() => setBusy(false))
+  }
+
+  const handleRelease = () => {
+    if (wheelTimer.current !== null) {
+      window.clearTimeout(wheelTimer.current)
+      wheelTimer.current = null
+    }
+    pendingWheel.current = null
+    if (!token) return
+    setBusy(true)
+    void releaseAuthControl(runId, { token })
+      .then(() => {
+        setToken(null)
+        toast.success(sessionMode ? '已退出手动操作' : '已放弃控制')
+        onRunChanged?.()
+      })
+      .catch((error) => {
+        toast.error(
+          error instanceof ApiRequestError ? error.message : '撤权失败'
+        )
+      })
+      .finally(() => setBusy(false))
   }
 
   return (
@@ -445,7 +598,49 @@ export function BrowserView({
               <StatusBadge tone='warning'>画面不可用</StatusBadge>
             ) : null}
             {controlling ? (
-              <StatusBadge tone='warning'>正在输入</StatusBadge>
+              <StatusBadge tone='warning'>
+                {sessionMode ? '正在手动操作' : '正在输入'}
+              </StatusBadge>
+            ) : null}
+            {sessionMode && canControl && !waiting && !controlling ? (
+              <Button
+                size='sm'
+                variant='outline'
+                disabled={busy}
+                onClick={handleAcquire}
+              >
+                手动操作
+              </Button>
+            ) : null}
+            {sessionMode && canControl && !waiting && controlling ? (
+              <>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={busy}
+                  title='向下翻页滚动目标页面'
+                  onClick={() => sendCommand({ type: 'key', key: 'PageDown' })}
+                >
+                  向下翻页
+                </Button>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={busy}
+                  title='向上翻页滚动目标页面'
+                  onClick={() => sendCommand({ type: 'key', key: 'PageUp' })}
+                >
+                  向上翻页
+                </Button>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={busy}
+                  onClick={handleRelease}
+                >
+                  退出操作
+                </Button>
+              </>
             ) : null}
             {sessionMode && canControl && !waiting && !controlling && onSettleLanding ? (
               <Button
@@ -488,7 +683,9 @@ export function BrowserView({
                   : holding
                     ? '调试挂起中。指认在画面上点选，校验框画在叠加层，不会改目标页。'
                     : sessionMode
-                      ? '实时画面默认只读。登录后的一次性层由整理收口处理，也可再点「整理页面」。'
+                      ? controlling
+                        ? '正在手动操作。可在画面中点击、滚动或在下方输入文本；点击「拾取对象」可随时指认元素。'
+                        : '实时画面已连接。点击「手动操作」可接管画面操作菜单与表单；指认前请先切至目标视图。'
                       : isLiveViewRun(runStatus)
                         ? '只读跟随当前页。在途运行会自动展开画面。'
                         : '只读跟随当前页。运行结束后不再抓取实时画面。'}
@@ -502,7 +699,47 @@ export function BrowserView({
               <StatusBadge tone='success'>画面已连接</StatusBadge>
             ) : null}
             {controlling ? (
-              <StatusBadge tone='warning'>正在输入</StatusBadge>
+              <StatusBadge tone='warning'>
+                {sessionMode ? '正在手动操作' : '正在输入'}
+              </StatusBadge>
+            ) : null}
+            {sessionMode && canControl && !waiting && !controlling ? (
+              <Button
+                variant='outline'
+                disabled={busy}
+                onClick={handleAcquire}
+              >
+                手动操作
+              </Button>
+            ) : null}
+            {sessionMode && canControl && !waiting && controlling ? (
+              <>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={busy}
+                  title='向下翻页滚动目标页面'
+                  onClick={() => sendCommand({ type: 'key', key: 'PageDown' })}
+                >
+                  向下翻页
+                </Button>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={busy}
+                  title='向上翻页滚动目标页面'
+                  onClick={() => sendCommand({ type: 'key', key: 'PageUp' })}
+                >
+                  向上翻页
+                </Button>
+                <Button
+                  variant='outline'
+                  disabled={busy}
+                  onClick={handleRelease}
+                >
+                  退出操作
+                </Button>
+              </>
             ) : null}
             {sessionMode && canControl && !waiting && !controlling && onSettleLanding ? (
               <Button
@@ -541,26 +778,7 @@ export function BrowserView({
                 meta?.authControl?.actorId && !meta.authControl.heldByViewer
               )
             }
-            onClick={() => {
-              setBusy(true)
-              void acquireAuthControl(runId)
-                .then((granted) => {
-                  setToken(granted.token)
-                  setPageRef(granted.pageRef)
-                  setExpiresAt(granted.expiresAt)
-                  setMeta(granted.meta)
-                  setOpen(true)
-                  toast.success('已取得登录输入权')
-                })
-                .catch((error) => {
-                  toast.error(
-                    error instanceof ApiRequestError
-                      ? error.message
-                      : '无法取得输入权'
-                  )
-                })
-                .finally(() => setBusy(false))
-            }}
+            onClick={handleAcquire}
           >
             处理登录
           </Button>
@@ -571,7 +789,7 @@ export function BrowserView({
           ) : null}
         </div>
       ) : null}
-      {controlling ? (
+      {controlling && (!sessionMode || waiting) ? (
         <div className='mt-4 flex flex-wrap gap-2'>
           {onRefreshLogin ? (
             <Button
@@ -592,10 +810,12 @@ export function BrowserView({
           <Button
             disabled={busy}
             onClick={() => {
+              setAuthError(null)
               setBusy(true)
               void resumeRunAuth(runId, { token: token ?? undefined })
                 .then(() => {
                   setToken(null)
+                  setAuthError(null)
                   toast.success(
                     sessionMode
                       ? '已完成认证'
@@ -604,41 +824,36 @@ export function BrowserView({
                   onRunChanged?.()
                 })
                 .catch((error) => {
-                  toast.error(
+                  const msg =
                     error instanceof ApiRequestError
                       ? error.message
-                      : '仍未登录，请继续处理'
-                  )
+                      : '尚未检测到登录成功，请在页面中确认并提交'
+                  setAuthError(msg)
+                  toast.error(msg)
                 })
                 .finally(() => setBusy(false))
             }}
           >
-            {sessionMode ? '完成认证' : '登录完成，继续运行'}
+            {busy ? <Loader2 className='size-3.5 mr-1.5 animate-spin' /> : null}
+            {busy
+              ? '正在核验登录态…'
+              : sessionMode
+                ? '完成认证'
+                : '登录完成，继续运行'}
           </Button>
           <Button
             variant='outline'
             disabled={busy || !token}
             onClick={() => {
-              if (!token) return
-              setBusy(true)
-              void releaseAuthControl(runId, { token })
-                .then(() => {
-                  setToken(null)
-                  toast.success('已放弃控制')
-                  onRunChanged?.()
-                })
-                .catch((error) => {
-                  toast.error(
-                    error instanceof ApiRequestError
-                      ? error.message
-                      : '撤权失败'
-                  )
-                })
-                .finally(() => setBusy(false))
+              setAuthError(null)
+              handleRelease()
             }}
           >
             放弃控制
           </Button>
+          {authError ? (
+            <p className='w-full text-small text-destructive font-medium mt-1'>{authError}</p>
+          ) : null}
         </div>
       ) : null}
       {open ? (
@@ -716,13 +931,20 @@ export function BrowserView({
                 onWheel={(event) => {
                   if (!controlling) return
                   event.preventDefault()
-                  sendCommand({
-                    type: 'mouse_wheel',
-                    x: 0,
-                    y: 0,
-                    deltaX: event.deltaX,
-                    deltaY: event.deltaY,
-                  })
+                  const point = framePointFromClick(event, frame)
+                  scheduleWheel(point.x, point.y, event.deltaX, event.deltaY)
+                }}
+                onKeyDown={(event) => {
+                  if (!controlling) return
+                  if (
+                    event.key === 'PageUp' ||
+                    event.key === 'PageDown' ||
+                    event.key === 'ArrowUp' ||
+                    event.key === 'ArrowDown'
+                  ) {
+                    event.preventDefault()
+                    sendCommand({ type: 'key', key: event.key })
+                  }
                 }}
               >
                 <img
@@ -776,12 +998,18 @@ export function BrowserView({
                 className='text-label text-muted-foreground'
                 htmlFor={inputId}
               >
-                输入将作用于目标系统。中文请先组字再发送。
+                {sessionMode
+                  ? '键盘输入将直接发送至目标网页。中文请先组字再发送。支持方向键与 PageUp/PageDown 滚动。'
+                  : '输入将作用于目标系统。中文请先组字再发送。支持方向键与 PageUp/PageDown 滚动。'}
               </label>
               <input
                 id={inputId}
                 className='w-full rounded-md border border-border-default bg-background px-3 py-2 text-body'
-                placeholder='输入文本后按回车发送'
+                placeholder={
+                  sessionMode
+                    ? '输入文本后回车发送，或按上下方向键、PageUp/PageDown 滚动目标页面'
+                    : '输入文本后回车发送，或按上下方向键、PageUp/PageDown 滚动'
+                }
                 onCompositionStart={() => {
                   composing.current = true
                 }}
@@ -811,10 +1039,22 @@ export function BrowserView({
                     return
                   }
                   if (
+                    event.key === 'PageUp' ||
+                    event.key === 'PageDown' ||
+                    event.key === 'ArrowUp' ||
+                    event.key === 'ArrowDown'
+                  ) {
+                    event.preventDefault()
+                    sendCommand({ type: 'key', key: event.key })
+                    return
+                  }
+                  if (
                     event.key === 'Enter' ||
                     event.key === 'Tab' ||
                     event.key === 'Escape' ||
-                    event.key === 'Backspace'
+                    event.key === 'Backspace' ||
+                    ((event.key === 'Home' || event.key === 'End') &&
+                      !event.currentTarget.value)
                   ) {
                     sendCommand({ type: 'key', key: event.key })
                   }
@@ -822,7 +1062,9 @@ export function BrowserView({
               />
               {remain !== null ? (
                 <p className='text-label text-muted-foreground'>
-                  控制权剩余 {remain} 秒
+                  {sessionMode
+                    ? `手动操作中 · 控制权剩余 ${remain} 秒（有操作或心跳自动续期）`
+                    : `控制权剩余 ${remain} 秒`}
                 </p>
               ) : null}
             </div>

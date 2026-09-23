@@ -67,6 +67,46 @@ describe('场景集规则', () => {
     const issues = assertPublishedSuiteDocument({ schemaVersion: 1, groups: [], members: [{ memberId: 'one', ordinal: 0, scenarioId: 'scenario', scenarioVersionId: 'version', input: {}, reportProfileId: 'member-profile' }], sharedInput: {}, failurePolicy: 'continue', autoGenerateFinalReport: true, reportProfileId: 'profile' })
     expect(issues).toEqual([])
   })
+
+  it('支持受控并发与执行模式设置，校验 1~10 边界', async () => {
+    const { suiteDocumentSchema } = await import('../suites.js')
+    const doc = suiteDocumentSchema.parse({
+      schemaVersion: 1,
+      groups: [],
+      members: [],
+    })
+    expect(doc.executionMode).toBe('parallel')
+    expect(doc.maxConcurrency).toBe(3)
+
+    const seqDoc = suiteDocumentSchema.parse({
+      schemaVersion: 1,
+      groups: [],
+      members: [],
+      executionMode: 'sequential',
+      maxConcurrency: 1,
+    })
+    expect(seqDoc.executionMode).toBe('sequential')
+    expect(seqDoc.maxConcurrency).toBe(1)
+
+    // 校验边界：0 或 > 10 抛错
+    expect(() =>
+      suiteDocumentSchema.parse({
+        schemaVersion: 1,
+        groups: [],
+        members: [],
+        maxConcurrency: 0,
+      }),
+    ).toThrow()
+
+    expect(() =>
+      suiteDocumentSchema.parse({
+        schemaVersion: 1,
+        groups: [],
+        members: [],
+        maxConcurrency: 11,
+      }),
+    ).toThrow()
+  })
 })
 
 describe('报告标题', () => {

@@ -63,5 +63,7 @@ export function retryFailedBatchItems(batchId: string) {
 }
 
 export function exportBatchResults(batchId: string) {
-  return apiFetch(`/api/batches/${batchId}/export`, batchExportResponseSchema)
+  return apiFetch(`/api/batches/${batchId}/export`, batchExportResponseSchema, {
+    method: 'POST',
+  })
 }

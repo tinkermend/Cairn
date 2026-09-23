@@ -236,7 +236,7 @@ describe.each(DRIVERS)('%s 端到端验证：Excel 数据集导入与批处理�
     expect(dataset.id).toBeDefined()
     expect(dataset.rowCount).toBe(6)
 
-    const queriedRows = await getDatasetRows(handle.db, dataset.id, { limit: 10, offset: 0 })
+    const queriedRows = await getDatasetRows(handle.db, dataset.id, { limit: 10 })
     expect(queriedRows.total).toBe(6)
     expect(queriedRows.items[0]!.rowData[colEmpId.key]).toBe('00892')
     expect(queriedRows.items[0]!.rowData[colIdCard.key]).toBe('11010119900307235X')
@@ -387,7 +387,8 @@ describe.each(DRIVERS)('%s 端到端验证：Excel 数据集导入与批处理�
     // -------------------------------------------------------------
     await resumeBatch(handle.db, batch.id, accountId)
     currentBatch = await getBatch(handle.db, batch.id)
-    expect(currentBatch!.status).toBe('RUNNING')
+    // 熔断时没有仍在执行的项，恢复先回到排队，等下一次派发写出 Run 再变成执行中。
+    expect(currentBatch!.status).toBe('QUEUED')
 
     // 推进剩余项（3 项）
     const adv3 = await advanceBatch(handle.db, batch.id, 5)

@@ -5,6 +5,7 @@ import {
   deleteResourceBodySchema,
   deleteResourceResultSchema,
   publishSuiteBodySchema,
+  rerunSuiteItemBodySchema,
   saveSuiteDraftBodySchema,
   suiteDetailSchema,
   suiteListResponseSchema,
@@ -17,6 +18,7 @@ import {
   type CreateSuiteRunBody,
   type DeleteResourceBody,
   type PublishSuiteBody,
+  type RerunSuiteItemBody,
   type SaveSuiteDraftBody,
   type SuiteListQuery,
   type SuiteRunListQuery,
@@ -112,4 +114,17 @@ export function fetchSuiteRun(suiteRunId: string) {
 
 export function cancelSuiteRun(suiteRunId: string) {
   return apiFetch(`/api/suite-runs/${suiteRunId}/cancel`, suiteRunObservationSchema, { method: 'POST' })
+}
+
+const rerunSuiteItemResponseSchema = z.object({
+  runId: z.string(),
+  suiteRun: suiteRunObservationSchema,
+})
+
+export function rerunSuiteItem(suiteRunId: string, body: RerunSuiteItemBody) {
+  return apiFetch(`/api/suite-runs/${suiteRunId}/rerun-item`, rerunSuiteItemResponseSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rerunSuiteItemBodySchema.parse(body)),
+  })
 }

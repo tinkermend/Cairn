@@ -51,6 +51,7 @@ import {
   type ScenarioDocument,
   type ScenarioDto,
   type ScenarioInputDecl,
+  type ScenarioOutputDecl,
   type ScenarioListQuery,
   type ScenarioListResponse,
   type ScenarioStatus,
@@ -365,6 +366,22 @@ export async function syncScenarioModuleRefsTx(
   )
   if (invocations.length === 0) return
 
+  const moduleIds = [...new Set(invocations.map((node) => node.moduleId))]
+  if (moduleIds.length > 0) {
+    const { actionModules } = schemaFor(tx)
+    const lockedModules = await locked(
+      tx,
+      tx.select({ id: actionModules.id, deletedAt: actionModules.deletedAt })
+        .from(actionModules)
+        .where(inArray(actionModules.id, moduleIds)),
+    )
+    for (const m of lockedModules) {
+      if (m.deletedAt) {
+        throw conflict('MODULE_NOT_FOUND', '引用的动作模块已被删除')
+      }
+    }
+  }
+
   for (const node of invocations) {
     await tx.insert(scenarioModuleRefs).values({
       id: newId(),
@@ -632,6 +649,7 @@ export async function createScenarioWithVersion(
     name: string
     steps: Step[]
     inputs?: ScenarioInputDecl[]
+    outputs?: ScenarioOutputDecl
     status?: ScenarioStatus
     actor: AuditActor
     compileMode?: 'save' | 'release'
@@ -639,7 +657,7 @@ export async function createScenarioWithVersion(
   },
 ): Promise<ScenarioDetailDto> {
   const { scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
-  const document = parseDocument(scenarioDefinitionFromSteps(input.steps, input.inputs ?? []))
+  const document = parseDocument(scenarioDefinitionFromSteps(input.steps, input.inputs ?? [], input.outputs))
   const target = await loadTargetContext(db, input.targetId)
   if (!target.exists) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
   if (target.status === 'disabled')
@@ -768,10 +786,10 @@ export async function updateScenarioMeta(
 export async function appendScenarioVersion(
   db: Db,
   scenarioId: string,
-  input: { steps: Step[]; inputs?: ScenarioInputDecl[]; actor: AuditActor; executableTypes?: readonly string[] },
+  input: { steps: Step[]; inputs?: ScenarioInputDecl[]; outputs?: ScenarioOutputDecl; actor: AuditActor; executableTypes?: readonly string[] },
 ): Promise<ScenarioDetailDto> {
   const { scenarioVersions, scenarios } = schemaFor(db)
-  const document = parseDocument(scenarioDefinitionFromSteps(input.steps, input.inputs ?? []))
+  const document = parseDocument(scenarioDefinitionFromSteps(input.steps, input.inputs ?? [], input.outputs))
   const now = new Date()
   try {
     await db.transaction(async (tx) => {

@@ -46,6 +46,36 @@ function xml(value: string) {
   return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 function tableRows(document: ReportDocument): string[][] {
+  const suiteSummary = document.sections
+    .flatMap((section) => section.blocks)
+    .find((block) => block.type === 'suite_business_summary') as Record<string, unknown> | undefined
+
+  if (suiteSummary && Array.isArray(suiteSummary.gridRows) && suiteSummary.gridRows.length) {
+    const labels: Record<string, string> = { NORMAL: '正常', WARNING: '警告', ANOMALOUS: '异常', SKIPPED: '已跳过' }
+    return [
+      ['序号', '子系统', '检查项', '状态', '核心业务数据 / 指标', '发现与耗时'],
+      ...suiteSummary.gridRows.map((item) => {
+        const row = item as Record<string, unknown>
+        const ord = String(Number(row.ordinal ?? 0) + 1)
+        const sub = String(row.scenarioName ?? '')
+        const itemCol = String(row.displayName ?? '')
+        const status = labels[String(row.status)] ?? String(row.status ?? '正常')
+
+        const metrics = row.metrics && typeof row.metrics === 'object' ? (row.metrics as Record<string, unknown>) : {}
+        const mParts = Object.entries(metrics).map(([k, v]) => `${k}: ${v}`)
+        const dataRow = row.dataRow && typeof row.dataRow === 'object' ? (row.dataRow as Record<string, unknown>) : {}
+        const dParts = Object.entries(dataRow).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+        const coreData = [...mParts, ...dParts].join('\n') || '-'
+
+        const duration = row.durationMs != null ? `${(Number(row.durationMs) / 1000).toFixed(1)}s` : ''
+        const summary = String(row.summary ?? '')
+        const findings = duration ? `${summary} (${duration})` : summary || '-'
+
+        return [ord, sub, itemCol, status, coreData, findings]
+      }),
+    ]
+  }
+
   const values = document.source.kind === 'SUITE_RUN' ? document.source.items : document.source.stepRuns
   if (!Array.isArray(values)) return []
   const labels: Record<string, string> = { PASS: '通过', FAIL: '异常', WARN: '提示', UNKNOWN: '未知', NOT_EVALUATED: '未评估', SUCCEEDED: '执行成功', FAILED: '执行失败', CANCELLED: '已取消', SKIPPED: '已跳过', QUEUED: '未执行' }
@@ -64,7 +94,20 @@ export function renderReportDocx(document: ReportDocument, images: ReportImage[]
   const paragraph = (text: string, level = 'body') => `<w:p><w:pPr>${level !== 'body' ? `<w:pStyle w:val="${level === 'title' ? 'Title' : 'Heading1'}"/><w:keepNext/>` : ''}<w:spacing w:after="160"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Arial" w:eastAsia="Noto Sans CJK SC"/><w:sz w:val="${level === 'title' ? 40 : level === 'heading' ? 28 : 22}"/>${level !== 'body' ? '<w:b/>' : ''}</w:rPr><w:t xml:space="preserve">${xml(text)}</w:t></w:r></w:p>`
   const body = reportLines(document).map((line) => paragraph(line.text, line.level)).join('')
   const rows = tableRows(document)
-  const table = rows.length ? `<w:tbl><w:tblPr><w:tblW w:w="9638" w:type="dxa"/><w:tblBorders>${['top','left','bottom','right','insideH','insideV'].map((edge) => `<w:${edge} w:val="single" w:sz="4" w:color="CBD5E1"/>`).join('')}</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="5138"/><w:gridCol w:w="2250"/><w:gridCol w:w="2250"/></w:tblGrid>${rows.map((row, index) => `<w:tr><w:trPr>${index === 0 ? '<w:tblHeader/>' : ''}<w:cantSplit/></w:trPr>${row.map((cell, column) => `<w:tc><w:tcPr><w:tcW w:w="${column === 0 ? 5138 : 2250}" w:type="dxa"/>${index === 0 ? '<w:shd w:fill="EAF0F5"/>' : ''}</w:tcPr>${paragraph(cell)}</w:tc>`).join('')}</w:tr>`).join('')}</w:tbl>` : ''
+  const isBusinessGrid = rows[0]?.length === 6
+  const colWidths = isBusinessGrid
+    ? [578, 1542, 1928, 964, 2891, 1735]
+    : [5138, 2250, 2250]
+  const table = rows.length ? `<w:tbl><w:tblPr><w:tblW w:w="9638" w:type="dxa"/><w:tblBorders>${['top','left','bottom','right','insideH','insideV'].map((edge) => `<w:${edge} w:val="single" w:sz="4" w:color="CBD5E1"/>`).join('')}</w:tblBorders></w:tblPr><w:tblGrid>${colWidths.map((w) => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.map((row, index) => `<w:tr><w:trPr>${index === 0 ? '<w:tblHeader/>' : ''}<w:cantSplit/></w:trPr>${row.map((cell, column) => {
+    let fill = index === 0 ? 'EAF0F5' : index % 2 === 1 ? 'F8FAFC' : 'FFFFFF'
+    if (isBusinessGrid && index > 0 && column === 3) {
+      if (cell === '正常') fill = 'DEF7EC'
+      else if (cell === '警告') fill = 'FEF08A'
+      else if (cell === '异常') fill = 'FEE2E2'
+      else if (cell === '已跳过') fill = 'F3F4F6'
+    }
+    return `<w:tc><w:tcPr><w:tcW w:w="${colWidths[column] ?? 1000}" w:type="dxa"/><w:shd w:fill="${fill}"/></w:tcPr>${paragraph(cell)}</w:tc>`
+  }).join('')}</w:tr>`).join('')}</w:tbl>` : ''
   const imageXml = images.map((image, i) => {
     const scale = Math.min(1, (image.kind === 'logo' ? 160 : 580) / image.width, (image.kind === 'logo' ? 90 : 700) / image.height)
     const cx = Math.round(image.width * scale * 9525), cy = Math.round(image.height * scale * 9525)
@@ -110,17 +153,42 @@ export async function renderReportPdf(document: ReportDocument, images: ReportIm
       pdf.text(line.text, { width: 491, lineGap: 3 }).moveDown(line.level === 'body' ? 0.35 : 0.6)
     }
     const rows = tableRows(document)
-    const drawRow = (row: string[], header: boolean) => {
-      pdf.fontSize(10)
-      const widths = [251, 120, 120], x = [52, 303, 423]
-      const height = Math.max(...row.map((cell, i) => pdf.heightOfString(cell, { width: widths[i]! - 16 }))) + 16
+    const isBusinessGrid = rows[0]?.length === 6
+    const colWidths = isBusinessGrid
+      ? [30, 78, 98, 50, 147, 88]
+      : [251, 120, 120]
+    const colX = isBusinessGrid
+      ? [52, 82, 160, 258, 308, 455]
+      : [52, 303, 423]
+
+    const drawRow = (row: string[], header: boolean, rowIndex: number) => {
+      pdf.fontSize(isBusinessGrid ? 9 : 10)
+      const height = Math.max(...row.map((cell, i) => pdf.heightOfString(cell, { width: (colWidths[i] ?? 80) - 10 }))) + 14
       if (height > 690) throw new Error('表格单行超过页面高度，请缩短成员名称')
-      if (pdf.y + height > pdf.page.height - 58) { pdf.addPage(); if (!header && rows[0]) drawRow(rows[0], true) }
+      if (pdf.y + height > pdf.page.height - 58) {
+        pdf.addPage()
+        if (!header && rows[0]) drawRow(rows[0], true, 0)
+      }
       const y = pdf.y
-      row.forEach((cell, i) => { pdf.rect(x[i]!, y, widths[i]!, height).fillAndStroke(header ? '#EAF0F5' : '#FFFFFF', '#CBD5E1'); pdf.fillColor('#263243').text(cell, x[i]! + 8, y + 8, { width: widths[i]! - 16 }) })
-      pdf.x = 52; pdf.y = y + height
+      row.forEach((cell, i) => {
+        let fill = header ? '#EAF0F5' : rowIndex % 2 === 1 ? '#F8FAFC' : '#FFFFFF'
+        if (isBusinessGrid && !header && i === 3) {
+          if (cell === '正常') fill = '#DEF7EC'
+          else if (cell === '警告') fill = '#FEF08A'
+          else if (cell === '异常') fill = '#FEE2E2'
+          else if (cell === '已跳过') fill = '#F3F4F6'
+        }
+        pdf.rect(colX[i]!, y, colWidths[i]!, height).fillAndStroke(fill, '#CBD5E1')
+        pdf.fillColor('#263243').text(cell, colX[i]! + 5, y + 6, { width: (colWidths[i] ?? 80) - 10 })
+      })
+      pdf.x = 52
+      pdf.y = y + height
     }
-    if (rows.length) { pdf.addPage(); rows.forEach((row, i) => drawRow(row, i === 0)); pdf.moveDown() }
+    if (rows.length) {
+      pdf.addPage()
+      rows.forEach((row, i) => drawRow(row, i === 0, i))
+      pdf.moveDown()
+    }
     for (const image of images.filter((item) => item.kind === 'screenshot')) {
       const scale = Math.min(1, 491 / image.width, 600 / image.height)
       const width = image.width * scale, height = image.height * scale

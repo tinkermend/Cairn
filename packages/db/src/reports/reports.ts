@@ -16,6 +16,8 @@ import {
   reportListResponseSchema,
   reportPreviewResponseSchema,
   substituteReportTitle,
+  suiteSummaryBlockSchema,
+  computeSuiteHealthScore,
   type CreateReportBody,
   type CreateReportRevisionBody,
   type ExportJobDto,
@@ -28,6 +30,9 @@ import {
   type ReportRevisionDto,
   type ReportSubject,
   type ReportTitleVariable,
+  type SuiteSummaryBlock,
+  type SuiteGridRow,
+  type SuiteAggregatedFinding,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { recordAudit, type AuditActor } from '../audit/record.js'
@@ -281,6 +286,7 @@ export async function captureSource(db: Db, subject: ReportSubject, actorId?: st
         status: run.status,
         outcomeStatus: run.outcomeStatus,
         evidenceStatus: run.evidenceStatus,
+        output: (row!.output ?? null) as JsonValue,
         scenarioName: context?.displayName ?? row!.snapshot.notificationPolicy?.scenarioName ?? run.scenarioName,
         targetName: context?.targetName ?? row!.snapshot.notificationPolicy?.targetName ?? run.targetName,
         reportDefaults: context?.reportConfig ?? DEFAULT_REPORT_CONFIG,
@@ -328,14 +334,19 @@ export async function captureSource(db: Db, subject: ReportSubject, actorId?: st
   const items = []
   let snapshotBytes = 0
   for (const item of suite.items) {
-    const child = await captureSource(db, { kind: 'RUN', runId: item.childRunId })
-    snapshotBytes += Buffer.byteLength(JSON.stringify(child.payload))
-    if (snapshotBytes > 16 * 1024 * 1024) throw badRequest('REPORT_SOURCE_LIMIT', '报告来源快照超过 16 MiB，请调整范围')
-    items.push({ ...item, run: child.payload })
+    if (item.childRunId) {
+      const child = await captureSource(db, { kind: 'RUN', runId: item.childRunId })
+      snapshotBytes += Buffer.byteLength(JSON.stringify(child.payload))
+      if (snapshotBytes > 16 * 1024 * 1024) throw badRequest('REPORT_SOURCE_LIMIT', '报告来源快照超过 16 MiB，请调整范围')
+      items.push({ ...item, run: child.payload })
+    } else {
+      items.push({ ...item, run: null })
+    }
   }
-  const evidenceStatus = items.some((item) => item.run.evidenceStatus === 'PENDING') ? 'PENDING'
-    : items.some((item) => item.run.evidenceStatus === 'INCOMPLETE') ? 'INCOMPLETE' : 'COMPLETE'
-  const frozenTargetName = items[0]?.run.targetName
+  const itemsWithRun = items.filter((item): item is typeof item & { run: NonNullable<typeof item.run> } => item.run != null)
+  const evidenceStatus = itemsWithRun.some((item) => item.run.evidenceStatus === 'PENDING') ? 'PENDING'
+    : itemsWithRun.some((item) => item.run.evidenceStatus === 'INCOMPLETE') ? 'INCOMPLETE' : 'COMPLETE'
+  const frozenTargetName = itemsWithRun[0]?.run.targetName
   const targetName = typeof frozenTargetName === 'string' ? frozenTargetName : meta?.targetName ?? '目标系统'
   const frozenDocument = parent!.snapshot.document
   const groups = frozenDocument && typeof frozenDocument === 'object' && !Array.isArray(frozenDocument) ? frozenDocument.groups ?? [] : []
@@ -374,6 +385,157 @@ export async function captureSource(db: Db, subject: ReportSubject, actorId?: st
   }
 }
 
+function assembleSuiteBusinessSummary(source: Record<string, JsonValue>): SuiteSummaryBlock {
+  const items = Array.isArray(source.items) ? (source.items as Array<Record<string, JsonValue>>) : []
+  const gridRows: SuiteGridRow[] = []
+  const aggregatedFindings: SuiteAggregatedFinding[] = []
+
+  let normalCount = 0
+  let warningCount = 0
+  let anomalousCount = 0
+  let skippedCount = 0
+
+  for (const item of items) {
+    const ordinal = Number(item.ordinal ?? 0)
+    const memberId = String(item.memberId ?? `m${ordinal + 1}`)
+    const displayName = String(item.displayName ?? memberId)
+    const childRun = (item.run && typeof item.run === 'object' && !Array.isArray(item.run))
+      ? (item.run as Record<string, JsonValue>)
+      : {}
+    const scenarioName = String(childRun.scenarioName ?? displayName)
+
+    const childOutput = (childRun.output && typeof childRun.output === 'object' && !Array.isArray(childRun.output))
+      ? (childRun.output as Record<string, JsonValue>)
+      : null
+
+    let status: 'NORMAL' | 'WARNING' | 'ANOMALOUS' | 'SKIPPED' = 'NORMAL'
+    let summary = ''
+    let metrics: Record<string, string | number | boolean> = {}
+    let dataRow: Record<string, JsonValue> = {}
+    let hasFindings = false
+
+    if (item.admission === 'SKIPPED') {
+      status = 'SKIPPED'
+      summary = String(item.skipReason ?? '已跳过')
+      skippedCount++
+    } else if (childOutput) {
+      const outputStatus = String(childOutput.status)
+      if (outputStatus === 'ANOMALOUS') {
+        status = 'ANOMALOUS'
+        anomalousCount++
+      } else if (outputStatus === 'WARNING') {
+        status = 'WARNING'
+        warningCount++
+      } else {
+        status = 'NORMAL'
+        normalCount++
+      }
+      summary = typeof childOutput.summary === 'string' ? childOutput.summary : ''
+      if (childOutput.metrics && typeof childOutput.metrics === 'object' && !Array.isArray(childOutput.metrics)) {
+        metrics = childOutput.metrics as Record<string, string | number | boolean>
+      }
+      if (childOutput.dataRow && typeof childOutput.dataRow === 'object' && !Array.isArray(childOutput.dataRow)) {
+        dataRow = childOutput.dataRow as Record<string, JsonValue>
+      }
+      if (Array.isArray(childOutput.findings) && childOutput.findings.length > 0) {
+        hasFindings = true
+        for (const finding of childOutput.findings as Array<Record<string, JsonValue>>) {
+          aggregatedFindings.push({
+            memberId,
+            displayName,
+            id: String(finding.id ?? `f-${aggregatedFindings.length + 1}`),
+            title: String(finding.title ?? '巡检发现异常'),
+            severity: (['INFO', 'WARN', 'HIGH', 'FATAL'].includes(String(finding.severity))
+              ? (finding.severity as 'INFO' | 'WARN' | 'HIGH' | 'FATAL')
+              : 'WARN'),
+            detail: typeof finding.detail === 'string' ? finding.detail : undefined,
+            evidenceId: typeof finding.evidenceId === 'string' ? finding.evidenceId : undefined,
+            stepOrdinal: typeof finding.stepOrdinal === 'number' ? finding.stepOrdinal : undefined,
+          })
+        }
+      }
+    } else {
+      // 兼容没有 output 对象的历史运行或保底回退
+      const runStatus = String(childRun.status ?? '')
+      const outcomeStatus = String(childRun.outcomeStatus ?? '')
+      if (runStatus === 'FAILED' || outcomeStatus === 'FAIL') {
+        status = 'ANOMALOUS'
+        anomalousCount++
+        summary = '运行失败或断言异常'
+      } else if (outcomeStatus === 'WARN') {
+        status = 'WARNING'
+        warningCount++
+        summary = '运行完成但有警告'
+      } else if (runStatus === 'SUCCEEDED' || outcomeStatus === 'PASS') {
+        status = 'NORMAL'
+        normalCount++
+        summary = '运行正常通过'
+      } else {
+        status = 'ANOMALOUS'
+        anomalousCount++
+        summary = runStatus ? `执行状态：${runStatus}` : '未完成'
+      }
+    }
+
+    let durationMs: number | null = null
+    if (childRun.startedAt && childRun.finishedAt) {
+      const s = Date.parse(String(childRun.startedAt))
+      const f = Date.parse(String(childRun.finishedAt))
+      if (!Number.isNaN(s) && !Number.isNaN(f) && f >= s) {
+        durationMs = f - s
+      }
+    }
+
+    gridRows.push({
+      ordinal,
+      memberId,
+      displayName,
+      scenarioName,
+      status,
+      summary,
+      metrics,
+      dataRow,
+      durationMs,
+      hasFindings,
+      originalRunId: typeof item.originalRunId === 'string' ? item.originalRunId : null,
+      rerunCount: typeof item.rerunCount === 'number' ? item.rerunCount : 0,
+      stageId: typeof item.stageId === 'string' ? item.stageId : null,
+      stageOrdinal: typeof item.stageOrdinal === 'number' ? item.stageOrdinal : 0,
+    })
+  }
+
+  const totalCount = gridRows.length
+  const { healthScore, healthGrade } = computeSuiteHealthScore({
+    totalCount,
+    normalCount,
+    warningCount,
+    anomalousCount,
+    skippedCount,
+  })
+
+  const wallClockMs = typeof source.wallClockMs === 'number' ? source.wallClockMs : 0
+  const childDurationMs = typeof source.childDurationMs === 'number' ? source.childDurationMs : 0
+  const savedPercent = (childDurationMs > wallClockMs && childDurationMs > 0)
+    ? Math.max(0, Math.min(100, Math.round(((childDurationMs - wallClockMs) / childDurationMs) * 100)))
+    : 0
+
+  return suiteSummaryBlockSchema.parse({
+    type: 'suite_business_summary',
+    healthScore,
+    healthGrade,
+    totalCount,
+    normalCount,
+    warningCount,
+    anomalousCount,
+    skippedCount,
+    wallClockMs,
+    childDurationMs,
+    savedPercent,
+    gridRows,
+    aggregatedFindings,
+  })
+}
+
 export function buildDocument(input: {
   stage: ReportDocument['stage']
   title: string
@@ -404,7 +566,12 @@ export function buildDocument(input: {
         id: 'overview',
         title: '概述',
         required: true,
-        blocks: [{ type: 'summary', data: input.source }],
+        blocks: input.source.kind === 'SUITE_RUN'
+          ? [
+              { ...assembleSuiteBusinessSummary(input.source) } as unknown as Record<string, JsonValue>,
+              { type: 'summary', data: input.source },
+            ]
+          : [{ type: 'summary', data: input.source }],
       },
       {
         id: 'result',

@@ -87,7 +87,7 @@ export const batchDetailSchema = z.strictObject({
   failedItems: z.number().int().nonnegative(),
   reviewItems: z.number().int().nonnegative(),
   pausedReason: z.string().nullable().optional(),
-  createdByAccountId: entityIdSchema,
+  createdByAccountId: entityIdSchema.nullable(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
 })

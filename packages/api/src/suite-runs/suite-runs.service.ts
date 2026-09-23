@@ -7,10 +7,11 @@ import {
   listSuiteRunEventsAfter,
   listSuiteRuns,
   previewSuiteRun,
+  rerunSuiteItem,
   type DbHandle,
   type ChangeHintBus,
 } from '@cairn/db'
-import type { CreateSuiteRunBody, SuiteRunListQuery } from '@cairn/shared'
+import type { CreateSuiteRunBody, RerunSuiteItemBody, SuiteRunListQuery } from '@cairn/shared'
 import { rethrowDomain } from '../common/domain-error.js'
 import { observeObject } from '../common/observe-object.js'
 import { CHANGE_HINT } from '../observe/change-hint.module.js'
@@ -43,6 +44,10 @@ export class SuiteRunsService {
 
   cancel(suiteRunId: string, account: RequestAccount) {
     return cancelSuiteRun(this.database, suiteRunId, this.actor(account)).catch(rethrowDomain)
+  }
+
+  rerunItem(suiteRunId: string, body: RerunSuiteItemBody, account: RequestAccount) {
+    return rerunSuiteItem(this.database, { suiteRunId, memberId: body.memberId }, this.actor(account)).catch(rethrowDomain)
   }
 
   async stream(suiteRunId: string, actorId: string, req: Request, res: Response) {

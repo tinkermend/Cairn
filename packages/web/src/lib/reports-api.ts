@@ -219,3 +219,28 @@ export function fetchExportJob(jobId: string) {
 export function downloadArtifact(artifactId: string) {
   return apiFetchBlob(`/api/artifacts/${artifactId}/content`)
 }
+
+export function fetchPublicReportView(token: string) {
+  return apiFetch(
+    `/api/public/reports/view?token=${encodeURIComponent(token)}`,
+    z.object({
+      report: reportDtoSchema,
+      revision: reportRevisionDtoSchema,
+      document: reportDocumentSchema,
+      tokenPayload: z.record(z.string(), z.any()),
+    }),
+  )
+}
+
+export function createReportShareToken(reportId: string) {
+  return apiFetch(
+    `/api/reports/${reportId}/share-token`,
+    z.object({
+      token: z.string(),
+      url: z.string(),
+      expiresAt: z.string(),
+    }),
+    { method: 'POST' },
+  )
+}
+

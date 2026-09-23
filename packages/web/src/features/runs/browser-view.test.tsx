@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render } from 'vitest-browser-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ManagedBrowserMeta } from '@cairn/shared'
+import { AuthoringObserveProvider, useAuthoringObserve } from '@/features/authoring'
 import { useAuthStore } from '@/stores/auth-store'
 import { BrowserView } from './browser-view'
 
@@ -67,9 +68,15 @@ async function renderView(status = 'WAITING_FOR_AUTH') {
 describe('BrowserView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.fetchRunObservation.mockResolvedValue({
+      run: null,
+      evidence: [],
+      eventSeq: 0,
+    })
     mocks.fetchManagedBrowser.mockResolvedValue(meta)
     mocks.subscribeBrowserFrames.mockResolvedValue(undefined)
     mocks.releaseAuthControl.mockResolvedValue({ released: true })
+    mocks.inputAuthControl.mockResolvedValue({ accepted: true })
     mocks.heartbeatAuthControl.mockResolvedValue({
       expiresAt: '2026-09-13T00:00:30.000Z',
       epoch: 1,
@@ -430,4 +437,461 @@ describe('BrowserView', () => {
     await expect.element(screen.getByRole('button', { name: '处理登录' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '整理页面' }).elements()).toHaveLength(0)
   })
+
+  it('会话模式非等待认证时支持手动操作接管、画面点击与退出', async () => {
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId: '66666666-6666-4666-8666-666666666666',
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [],
+      authHold: null,
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue(live)
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-manual',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-18T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>((resolve) =>
+        input.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView
+          runId={meta.runId}
+          runStatus="RUNNING"
+          sessionMode
+          defaultOpen
+        />
+      </QueryClientProvider>,
+    )
+    await expect.element(screen.getByRole('button', { name: '手动操作' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '手动操作' }).click()
+    expect(mocks.acquireAuthControl).toHaveBeenCalledWith(meta.runId)
+    await expect.element(screen.getByRole('button', { name: '退出操作' })).toBeInTheDocument()
+    await expect.element(screen.getByText('正在手动操作', { exact: true })).toBeInTheDocument()
+
+    // 点击画面触发 mouse_click
+    await screen.getByRole('img', { name: '受管浏览器当前画面' }).click()
+    expect(mocks.inputAuthControl).toHaveBeenCalledWith(
+      meta.runId,
+      expect.objectContaining({
+        token: 't'.repeat(32),
+        command: expect.objectContaining({
+          type: 'mouse_click',
+          button: 'left',
+        }),
+      }),
+    )
+
+    // 退出操作
+    await screen.getByRole('button', { name: '退出操作' }).click()
+    expect(mocks.releaseAuthControl).toHaveBeenCalledWith(meta.runId, { token: 't'.repeat(32) })
+    await expect.element(screen.getByRole('button', { name: '手动操作' })).toBeInTheDocument()
+  })
+
+  it('手动操作支持精准滚轮落点并合批发送 mouse_wheel', async () => {
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId: '66666666-6666-4666-8666-666666666666',
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [],
+      authHold: null,
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue(live)
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-wheel',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-18T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>((resolve) =>
+        input.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView
+          runId={meta.runId}
+          runStatus="RUNNING"
+          sessionMode
+          defaultOpen
+        />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '手动操作' }).click()
+    await expect.element(screen.getByText('正在手动操作', { exact: true })).toBeInTheDocument()
+
+    // 连续触发画面滚轮并验证防抖合批
+    const img = screen.getByRole('img', { name: '受管浏览器当前画面' }).element()
+    img.dispatchEvent(
+      new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 200,
+        clientY: 300,
+        deltaX: 0,
+        deltaY: 80,
+      }),
+    )
+    img.dispatchEvent(
+      new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 200,
+        clientY: 300,
+        deltaX: 20,
+        deltaY: 40,
+      }),
+    )
+
+    await vi.waitFor(() => {
+      expect(mocks.inputAuthControl).toHaveBeenCalledWith(
+        meta.runId,
+        expect.objectContaining({
+          token: 't'.repeat(32),
+          command: expect.objectContaining({
+            type: 'mouse_wheel',
+            deltaX: 20,
+            deltaY: 120,
+          }),
+        }),
+      )
+    })
+  })
+
+  it('键盘输入框支持 PageDown/PageUp 翻页滚动按键', async () => {
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId: '66666666-6666-4666-8666-666666666666',
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [],
+      authHold: null,
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue(live)
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-input',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-18T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>((resolve) =>
+        input.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView
+          runId={meta.runId}
+          runStatus="RUNNING"
+          sessionMode
+          defaultOpen
+        />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '手动操作' }).click()
+    await expect.element(screen.getByText('正在手动操作', { exact: true })).toBeInTheDocument()
+
+    const input = screen.getByRole('textbox').element()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }))
+
+    await vi.waitFor(() => {
+      expect(mocks.inputAuthControl).toHaveBeenCalledWith(
+        meta.runId,
+        expect.objectContaining({
+          command: expect.objectContaining({
+            type: 'key',
+            key: 'PageDown',
+          }),
+        }),
+      )
+    })
+  })
+
+  it('拾取对象模式下滚轮依然能够响应并派发滚动', async () => {
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId: '66666666-6666-4666-8666-666666666666',
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [],
+      authHold: null,
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue(live)
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-pick',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-18T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>((resolve) =>
+        input.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    function PickingTestHost() {
+      const { setPickMode } = useAuthoringObserve()
+      return (
+        <div>
+          <button type='button' onClick={() => setPickMode(true)}>
+            激活拾取
+          </button>
+          <BrowserView
+            runId={meta.runId}
+            runStatus='RUNNING'
+            sessionMode
+            defaultOpen
+          />
+        </div>
+      )
+    }
+
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <AuthoringObserveProvider
+          sessionId={meta.sessionId ?? undefined}
+          enabled
+          onApplyTarget={() => undefined}
+        >
+          <PickingTestHost />
+        </AuthoringObserveProvider>
+      </QueryClientProvider>,
+    )
+
+    await screen.getByRole('button', { name: '手动操作' }).click()
+    await expect.element(screen.getByText('正在手动操作', { exact: true })).toBeInTheDocument()
+
+    // 激活拾取模式
+    await screen.getByRole('button', { name: '激活拾取' }).click()
+
+    const img = screen.getByRole('img', { name: '受管浏览器当前画面' }).element()
+    img.dispatchEvent(
+      new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 150,
+        clientY: 250,
+        deltaX: 0,
+        deltaY: 100,
+      }),
+    )
+
+    await vi.waitFor(() => {
+      expect(mocks.inputAuthControl).toHaveBeenCalledWith(
+        meta.runId,
+        expect.objectContaining({
+          command: expect.objectContaining({
+            type: 'mouse_wheel',
+            deltaY: 100,
+          }),
+        }),
+      )
+    })
+  })
+
+  it('辅助栏提供快捷向下翻页与向上翻页按钮，点击直接下发 key 命令', async () => {
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId: '66666666-6666-4666-8666-666666666666',
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [],
+      authHold: null,
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue(live)
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-quick-scroll',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-18T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>((resolve) =>
+        input.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView
+          runId={meta.runId}
+          runStatus='RUNNING'
+          sessionMode
+          defaultOpen
+        />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '手动操作' }).click()
+    await expect.element(screen.getByText('正在手动操作', { exact: true })).toBeInTheDocument()
+
+    // 辅助栏出现向下翻页与向上翻页快捷按钮
+    await expect.element(screen.getByRole('button', { name: '向下翻页' })).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '向上翻页' })).toBeInTheDocument()
+
+    await screen.getByRole('button', { name: '向下翻页' }).click()
+    expect(mocks.inputAuthControl).toHaveBeenCalledWith(
+      meta.runId,
+      expect.objectContaining({
+        command: expect.objectContaining({
+          type: 'key',
+          key: 'PageDown',
+        }),
+      }),
+    )
+
+    await screen.getByRole('button', { name: '向上翻页' }).click()
+    expect(mocks.inputAuthControl).toHaveBeenCalledWith(
+      meta.runId,
+      expect.objectContaining({
+        command: expect.objectContaining({
+          type: 'key',
+          key: 'PageUp',
+        }),
+      }),
+    )
+  })
+
+  it('受管画面容器聚焦按键支持 ArrowDown 与 PageDown 滚动', async () => {
+    const live: ManagedBrowserMeta = {
+      ...meta,
+      runStatus: 'RUNNING',
+      framesAvailable: true,
+      currentPage: {
+        pageRef: {
+          sessionId: meta.sessionId!,
+          sessionGeneration: 1,
+          pageId: '66666666-6666-4666-8666-666666666666',
+          documentEpoch: 0,
+        },
+        kind: 'run',
+        viewing: true,
+        currentExecution: true,
+      },
+      pages: [],
+      authHold: null,
+    }
+    mocks.fetchManagedBrowser.mockResolvedValue(live)
+    mocks.subscribeBrowserFrames.mockImplementation(async (_id, input) => {
+      input.onFrame({
+        pageRef: live.currentPage!.pageRef,
+        frameId: 'f-screen-key',
+        width: 1280,
+        height: 720,
+        capturedAt: '2026-09-18T00:00:01.000Z',
+        image: 'data:image/jpeg;base64,ZmFrZQ==',
+      })
+      await new Promise<void>((resolve) =>
+        input.signal.addEventListener('abort', () => resolve(), { once: true }),
+      )
+    })
+    signIn(['session:read', 'session:view', 'session:control'])
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <BrowserView
+          runId={meta.runId}
+          runStatus='RUNNING'
+          sessionMode
+          defaultOpen
+        />
+      </QueryClientProvider>,
+    )
+    await screen.getByRole('button', { name: '手动操作' }).click()
+    await expect.element(screen.getByText('正在手动操作', { exact: true })).toBeInTheDocument()
+
+    // 画面 button 接收 ArrowDown 键
+    const img = screen.getByRole('img', { name: '受管浏览器当前画面' }).element()
+    img.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+
+    await vi.waitFor(() => {
+      expect(mocks.inputAuthControl).toHaveBeenCalledWith(
+        meta.runId,
+        expect.objectContaining({
+          command: expect.objectContaining({
+            type: 'key',
+            key: 'ArrowDown',
+          }),
+        }),
+      )
+    })
+  })
 })
+

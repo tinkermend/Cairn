@@ -25,7 +25,7 @@ describe.each(DRIVERS)('%s 集合取消、证据收敛与输入快照', (driver)
     const scenario = await createScenarioWithVersion(handle.db, { targetId, name: '集合成员', actor: actor(), inputs: inputRequired ? [{ key: 'shared', label: '共享输入' }] : [], steps: [
       { id: newId(), name: '检查输入', type: 'echo', effectType: 'READ_ONLY', input: inputRequired ? { from: 'shared' } : { value: 'ok' } },
     ] })
-    const document: SuiteDocument = { schemaVersion: 1, groups: [], sharedInput: inputRequired ? { shared: '共享输入' } : {}, failurePolicy: 'continue', autoGenerateFinalReport: false,
+    const document: SuiteDocument = { schemaVersion: 1, groups: [], sharedInput: inputRequired ? { shared: '共享输入' } : {}, failurePolicy: 'continue', autoGenerateFinalReport: false, executionMode: 'sequential',
       members: ['one', 'two'].map((memberId, ordinal) => ({ memberId, ordinal, scenarioId: scenario.id, scenarioVersionId: scenario.published!.versionId, input: {} })) }
     const made = await createSuite(handle.db, { targetId, name: '集合验收', document }, actor())
     await publishSuite(handle.db, made.id, { expectedRevision: made.draft.revision, idempotencyKey: newId() }, actor())

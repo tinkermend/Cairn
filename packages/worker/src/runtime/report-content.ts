@@ -9,6 +9,9 @@ const labels: Record<string, string> = {
   all_pass: '全部通过', pass_with_warnings: '通过但有提示', anomalies_found: '发现异常', incomplete: '结论不完整',
   failure_policy_stop: '按失败策略停止', suite_cancelled: '集合已取消', deadline_elapsed: '超过运行期限',
   available: '可用', missing: '缺失', screenshot: '截图',
+  NORMAL: '正常', WARNING: '警告', ANOMALOUS: '异常',
+  EXCELLENT: '优', GOOD: '良', FAIR: '中', POOR: '差',
+  INFO: '信息', HIGH: '高危', FATAL: '严重',
 }
 const text = (value: JsonValue | undefined): string => value == null ? '未记录' : labels[String(value)] ?? String(value)
 const record = (value: JsonValue | undefined): Record<string, JsonValue> => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -68,7 +71,54 @@ export function reportLines(document: ReportDocument): ReportLine[] {
   const includeEvidenceIndex = resultBlock?.includeEvidenceIndex !== false
   const includeAttemptHistory = resultBlock?.includeAttemptHistory !== false
   if (source.kind === 'SUITE_RUN') {
-    add('成员结果汇总', 'heading')
+    const suiteSummary = document.sections
+      .flatMap((section) => section.blocks)
+      .find((block) => block.type === 'suite_business_summary') as Record<string, JsonValue> | undefined
+
+    if (suiteSummary) {
+      add('【决策与执行总览】', 'heading')
+      const grade = text(suiteSummary.healthGrade)
+      add(`系统整体健康度：${suiteSummary.healthScore}分（${grade}） · 覆盖模块：${suiteSummary.totalCount} · 正常：${suiteSummary.normalCount} · 警告：${suiteSummary.warningCount} · 异常：${suiteSummary.anomalousCount} · 跳过：${suiteSummary.skippedCount}`)
+      const wallSec = (Number(suiteSummary.wallClockMs ?? 0) / 1000).toFixed(1)
+      const childSec = (Number(suiteSummary.childDurationMs ?? 0) / 1000).toFixed(1)
+      const saved = Number(suiteSummary.savedPercent ?? 0)
+      add(`真实总耗时：${wallSec} 秒（累计执行耗时：${childSec} 秒${saved > 0 ? `，并发节约耗时 ${saved}%` : ''}）`)
+
+      const gridRows = records(suiteSummary.gridRows)
+      if (gridRows.length) {
+        add('【核心业务巡检对照总表】', 'heading')
+        for (const row of gridRows) {
+          const ord = Number(row.ordinal ?? 0) + 1
+          add(`${ord}. [${text(row.status)}] ${text(row.displayName)} (${text(row.scenarioName)})`, 'heading')
+          if (row.summary) add(`• 结论摘要：${text(row.summary)}`)
+          const metrics = record(row.metrics)
+          const mKeys = Object.keys(metrics)
+          if (mKeys.length) {
+            add(`• 核心业务指标：${mKeys.map((k) => `${k}: ${metrics[k]}`).join('；')}`)
+          }
+          const dataRow = record(row.dataRow)
+          const dKeys = Object.keys(dataRow)
+          if (dKeys.length) {
+            add(`• 业务数据：${dKeys.map((k) => `${k}: ${typeof dataRow[k] === 'object' ? JSON.stringify(dataRow[k]) : String(dataRow[k])}`).join('；')}`)
+          }
+        }
+      }
+
+      const findings = records(suiteSummary.aggregatedFindings)
+      if (findings.length) {
+        add('【异常归因与证据穿透】', 'heading')
+        for (const finding of findings) {
+          add(`[${text(finding.displayName)}] ${text(finding.title)}（严重级别：${text(finding.severity)}）`, 'heading')
+          if (finding.detail) add(`• 异常归因：${text(finding.detail)}`)
+          if (finding.evidenceId) add(`• 现场证据编号：${text(finding.evidenceId)}`)
+        }
+      }
+
+      add('【技术明细与执行追溯】', 'heading')
+    } else {
+      add('成员结果汇总', 'heading')
+    }
+
     const counts = record(source.counts)
     add(`计划 ${text(counts.planned)}；执行成功 ${text(counts.succeeded)}；执行失败 ${text(counts.failed)}；取消 ${text(counts.cancelled)}；跳过 ${text(counts.skipped)}`)
     if ('wallClockMs' in source) add(`集合整次耗时：${source.wallClockMs === null ? '尚未结算' : `${Number(source.wallClockMs) / 1000} 秒`}；子运行耗时合计：${source.childDurationMs === null ? '尚未结算' : `${Number(source.childDurationMs) / 1000} 秒`}`)
