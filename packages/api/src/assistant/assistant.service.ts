@@ -189,6 +189,7 @@ export class AssistantService implements OnModuleInit {
       allowQueue: true,
       ownerInstanceId: this.asyncRunner.ownerInstanceId,
       leaseUntil: new Date(Date.now() + 15_000),
+      requestPayload: parsed as unknown as Record<string, unknown>,
     }).catch(rethrowDomain)
 
     if (started.replay) {
@@ -204,7 +205,6 @@ export class AssistantService implements OnModuleInit {
     }
 
     if (started.turn.status === 'QUEUED') {
-      this.asyncRunner.registerQueued(started.turn.id, actor, parsed, processingToken)
       return {
         turnId: started.turn.id,
         taskId: started.turn.id,

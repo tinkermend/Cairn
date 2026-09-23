@@ -213,6 +213,7 @@ export async function beginAssistantTurn(
     allowQueue?: boolean
     ownerInstanceId?: string
     leaseUntil?: Date
+    requestPayload?: Record<string, unknown> | null
   },
 ): Promise<{ turn: AssistantTurn; replay: boolean; epoch: number }> {
   return atomic(db, async (tx) => {
@@ -309,6 +310,7 @@ export async function beginAssistantTurn(
         parentTurnId: input.parentTurnId,
         requestDigest: input.requestDigest,
         question: input.question,
+        requestPayload: input.requestPayload ?? null,
         status,
         stage,
         eventSeq: 0,
@@ -339,6 +341,7 @@ export async function beginAssistantTurn(
           parentTurnId: input.parentTurnId,
           requestDigest: input.requestDigest,
           question: input.question,
+          requestPayload: input.requestPayload ?? null,
           status: 'QUEUED',
           stage: 'queued',
           eventSeq: 0,
@@ -544,6 +547,7 @@ export interface PromotedAssistantTurn {
   processingToken: string
   ownerAccountId: string
   epoch: number
+  requestPayload: Record<string, unknown> | null
 }
 
 export async function nextQueuedAssistantTurn(
@@ -598,6 +602,7 @@ export async function nextQueuedAssistantTurn(
               processingToken: promoted.processingToken,
               ownerAccountId: promoted.ownerAccountId,
               epoch: promoted.epoch,
+              requestPayload: (promoted.requestPayload as Record<string, unknown>) ?? null,
             }
           : null
       }

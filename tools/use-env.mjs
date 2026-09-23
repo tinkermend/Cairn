@@ -76,8 +76,12 @@ function printSummary(file) {
     store === 's3'
       ? `s3 ${assignmentValue(text, 'CAIRN_S3_ENDPOINT')} / ${assignmentValue(text, 'CAIRN_S3_BUCKET')}`
       : `local ${assignmentValue(text, 'CAIRN_OBJECT_STORE_DIR') || '.data/object-store'}`
+  const hint = assignmentValue(text, 'CAIRN_CHANGE_HINT') || 'auto'
+  const redis = assignmentValue(text, 'CAIRN_REDIS_URL')
+  const displayRedis = redis.replace(/:\/\/[^@/]+@/, '://***@')
   console.log(`  数据库    ${host}:${port}/${name}`)
   console.log(`  对象存储  ${object}`)
+  console.log(`  变化提示  ${hint}${displayRedis ? ` (redis: ${displayRedis})` : ''}`)
 }
 
 function useProfile(name) {

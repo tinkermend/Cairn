@@ -422,10 +422,7 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
       })
       expect(turn.status).toBe('QUEUED')
 
-      // Ensure no in-memory execution context exists (simulating cold boot after crash)
-      ;(asyncRunner as any).queuedExecutions.delete(turn.id)
-
-      // Promote next queued turn
+      // 未提供 requestPayload（例如存量异常记录）时，出队标记为 INTERRUPTED (REQUEST_LOST_ON_RESTART)
       await asyncRunner.promoteNextQueuedTurn()
 
       const record = await getAssistantTurnRecord(db, turn.id, userA.id)
@@ -433,6 +430,33 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
       expect(record.turn.stopReason).toBe('REQUEST_LOST_ON_RESTART')
       expect(record.turn.result?.kind).toBe('unsupported')
       expect(record.turn.result?.reasonCode).toBe('REQUEST_LOST_ON_RESTART')
+    })
+
+    it('排队任务持久化 request_payload，冷启动或跨实例可无损出队并执行', async () => {
+      const clientTurnId = `queued-restore-${newId()}`
+      const { turn } = await beginAssistantTurn(db, {
+        conversationId: conversationAId,
+        ownerAccountId: userA.id,
+        clientTurnId,
+        requestDigest: 'sha256-test-restore',
+        question: '排队请求在重启后恢复',
+        deadlineAt: new Date(Date.now() + 60_000),
+        processingToken: newId(),
+        userLimit: 0,
+        platformLimit: 16,
+        allowQueue: true,
+        requestPayload: {
+          clientTurnId,
+          question: '排队请求在重启后恢复',
+        },
+      })
+      expect(turn.status).toBe('QUEUED')
+
+      // 在没有任何单机内存状态的情况下出队提升
+      await asyncRunner.promoteNextQueuedTurn()
+
+      const record = await getAssistantTurnRecord(db, turn.id, userA.id)
+      expect(record.turn.status).toBe('RUNNING')
     })
 
     it('失效的 processingToken 无法完成轮次（409 Conflict）', async () => {

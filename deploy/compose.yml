@@ -1,4 +1,4 @@
-# 本机 PostgreSQL + MinIO。凭据与远端 shsnc-ah3 对齐，只改监听地址。
+# 本机 PostgreSQL + MinIO + Redis。凭据与远端 shsnc-ah3 对齐，只改监听地址。
 # 用法：在仓库根执行  pnpm infra:up
 name: cairn
 
@@ -70,3 +70,18 @@ services:
         mc mb --ignore-existing "local/$$CAIRN_S3_BUCKET"
         mc anonymous set none "local/$$CAIRN_S3_BUCKET"
         echo "bucket ready: $$CAIRN_S3_BUCKET"
+
+  redis:
+    image: redis:7-alpine
+    container_name: cairn-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${CAIRN_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+

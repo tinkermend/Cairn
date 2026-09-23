@@ -595,6 +595,8 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'run_events.worker_id',
       'assistant_turns.capability_id',
       'assistant_turns.client_turn_id',
+      'assistant_turns.owner_instance_id',
+      'map_terminology_source_dependencies.source_id',
       'credential_bindings.alert_channel_id',
       'credential_verifications.session_id',
       'credential_verifications.source_id',
@@ -722,6 +724,12 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'source_snapshot_id→report_source_snapshots',
       'revision_id→report_revisions',
       'job_id→export_jobs',
+      'approver_account_id→console_accounts',
+      'declared_by_account_id→console_accounts',
+      'source_binding_id→target_business_sources',
+      'snapshot_id→target_business_source_snapshots',
+      'case_id→module_test_cases',
+      'execution_id→module_case_executions',
     ])
     const violations = rows.filter((r) => {
       if (!r.column_name.endsWith('_id')) return false

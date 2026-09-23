@@ -37,6 +37,7 @@ export const assistantTurns = cairnSchema.table(
     question: text('question').notNull(),
     capabilityId: text('capability_id'),
     slots: jsonb('slots').$type<Record<string, unknown> | null>(),
+    requestPayload: jsonb('request_payload').$type<Record<string, unknown> | null>(),
     status: text('status').notNull(),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
     processingToken: text('processing_token').notNull(),

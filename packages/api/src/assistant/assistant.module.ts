@@ -6,8 +6,10 @@ import { AssistantService } from './assistant.service'
 import { AssistantCapabilityRegistry } from './registry'
 import { AssistantAsyncRunner } from './async-runner'
 
+import { AuthModule } from '../auth/auth.module'
+
 @Module({
-  imports: [PlatformConfigModule, TargetsModule],
+  imports: [PlatformConfigModule, TargetsModule, AuthModule],
   controllers: [AssistantController],
   providers: [AssistantService, AssistantCapabilityRegistry, AssistantAsyncRunner],
   exports: [AssistantService, AssistantCapabilityRegistry, AssistantAsyncRunner],

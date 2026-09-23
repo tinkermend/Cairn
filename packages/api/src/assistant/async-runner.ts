@@ -26,11 +26,13 @@ import {
   recordAssistantTurnEvent,
   renewAssistantTurnLease,
   updateAssistantTurnStage,
+  RbacStore,
 } from '@cairn/db'
 import { DB_HANDLE } from '../db/db.module'
 import { CHANGE_HINT } from '../observe/change-hint.module'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import { TargetsService } from '../targets/targets.service'
+import { AuthService } from '../auth/auth.service'
 import { createOpenAiCompatibleClient, type PlatformModelClient } from './model-client'
 import { AssistantModelSession, classifyAssistantCapability } from './model-session'
 import { AssistantCapabilityRegistry } from './registry'
@@ -74,11 +76,17 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
   public readonly ownerInstanceId = crypto.randomUUID()
   private readonly logger = new Logger(AssistantAsyncRunner.name)
   private readonly activeRuns = new Map<string, ActiveExecution>()
-  private readonly queuedExecutions = new Map<
-    string,
-    { actor: Actor; body: CreateAssistantTurnBody; processingToken: string }
-  >()
   private heartbeatTimer: NodeJS.Timeout | null = null
+
+  // Deprecated: queued executions are now fully persisted in DB (assistant_turns.request_payload)
+  registerQueued(
+    _turnId: string,
+    _actor: Actor,
+    _body: CreateAssistantTurnBody,
+    _processingToken: string,
+  ): void {
+    // no-op, state is persisted in DB
+  }
 
   constructor(
     @Inject(DB_HANDLE) private readonly db: DbHandle,
@@ -87,6 +95,7 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
     private readonly targets: TargetsService,
     private readonly registry: AssistantCapabilityRegistry,
     @Optional() private readonly models: PlatformModelClient = createOpenAiCompatibleClient(),
+    @Optional() private readonly auth?: AuthService,
   ) {}
 
   onModuleInit(): void {
@@ -132,18 +141,6 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Enqueue execution context for a queued turn.
-   */
-  registerQueued(
-    turnId: string,
-    actor: Actor,
-    body: CreateAssistantTurnBody,
-    processingToken: string,
-  ): void {
-    this.queuedExecutions.set(turnId, { actor, body, processingToken })
-  }
-
-  /**
    * Fire-and-forget background execution of an assistant turn.
    */
   startExecution(
@@ -166,7 +163,6 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       epoch,
     }
     this.activeRuns.set(turnId, execution)
-    this.queuedExecutions.delete(turnId)
 
     // Execute in background
     this.runTurn(execution).catch((err) => {
@@ -183,7 +179,6 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       active.abortController.abort()
       this.activeRuns.delete(turnId)
     }
-    this.queuedExecutions.delete(turnId)
 
     const turn = await cancelAssistantTurn(this.db, { turnId, ownerAccountId: actorId })
     await this.recordEvent(
@@ -582,23 +577,26 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       if (!promotedTurn) return
 
       const turn = promotedTurn.turn
-      const cached = this.queuedExecutions.get(turn.id)
       const deadlineAt = new Date(Date.now() + (platformAi?.turnTimeoutMs ?? 60_000))
+      const payload = (promotedTurn.requestPayload as CreateAssistantTurnBody | null) ?? null
 
-      if (cached) {
-        this.startExecution(
-          turn.id,
-          cached.actor,
-          cached.body,
-          promotedTurn.processingToken,
-          deadlineAt,
-          promotedTurn.epoch,
-        )
-        return
+      if (payload) {
+        const actor = await this.resolveActor(promotedTurn.ownerAccountId)
+        if (actor) {
+          this.startExecution(
+            turn.id,
+            actor,
+            payload,
+            promotedTurn.processingToken,
+            deadlineAt,
+            promotedTurn.epoch,
+          )
+          return
+        }
       }
 
-      // No cached execution (e.g. server restart): mark turn INTERRUPTED, never synthesize fake actor
-      this.logger.warn(`Turn ${turn.id} lost execution context on restart, marking INTERRUPTED`)
+      // No persisted execution context or unresolvable account: mark turn INTERRUPTED, never synthesize fake actor
+      this.logger.warn(`Turn ${turn.id} lost execution context on restart or missing payload, marking INTERRUPTED`)
       await completeAssistantTurn(this.db, {
         turnId: turn.id,
         ownerAccountId: promotedTurn.ownerAccountId,
@@ -624,6 +622,32 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       ).catch(() => undefined)
     } catch {
       // Ignore background promotion errors during shutdown/mocking
+    }
+  }
+
+  private async resolveActor(accountId: string): Promise<Actor | null> {
+    if (this.auth) {
+      return this.auth.resolveAccount(accountId).catch(() => null)
+    }
+    try {
+      const rbac = new RbacStore(this.db as any, {
+        hash: async () => '',
+        verify: async () => false,
+      })
+      const acc = await rbac.getAccount(accountId)
+      if (!acc) return null
+      return {
+        id: acc.id,
+        displayName: acc.displayName,
+        email: acc.email,
+        status: acc.status,
+        roles: acc.roles,
+        permissions: acc.permissions,
+        targetScopes: acc.targetScopes,
+        targetScopePermissions: acc.targetScopePermissions,
+      }
+    } catch {
+      return null
     }
   }
 }

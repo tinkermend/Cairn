@@ -195,7 +195,11 @@ describe.each(DRIVERS)('%s 助手会话与额度', { timeout: 30_000 }, (driver)
     })
     const queued = await api.beginAssistantTurn(
       db,
-      beginInput(conversation.id, owner.id, { userLimit: 0, allowQueue: true }),
+      beginInput(conversation.id, owner.id, {
+        userLimit: 0,
+        allowQueue: true,
+        requestPayload: { question: '排队问题', foo: 'bar' },
+      }),
     )
     expect(queued.turn.status).toBe('QUEUED')
     expect(queued.epoch).toBe(0)
@@ -209,6 +213,7 @@ describe.each(DRIVERS)('%s 助手会话与额度', { timeout: 30_000 }, (driver)
     )
     expect(promoted?.turn.id).toBe(queued.turn.id)
     expect(promoted?.epoch).toBe(1)
+    expect(promoted?.requestPayload).toEqual({ question: '排队问题', foo: 'bar' })
     expect(
       await api.renewAssistantTurnLease(db, {
         turnId: promoted!.turn.id,
