@@ -10,6 +10,7 @@ import {
   requiredRunInputKeys,
   unresolvedRunInputs,
   updateScenarioBodySchema,
+  validateScenarioDocument,
   validateScenarioDefinition,
   type EchoStep,
 } from '../index.js'
@@ -74,7 +75,7 @@ describe('validateScenarioDefinition', () => {
     expect(definition.steps[1]?.input).toEqual({ from: 'greeting' })
   })
 
-  it('拒绝超过 32 步', () => {
+  it('编写场景文档拒绝超过 32 步', () => {
     const steps = Array.from({ length: 33 }, (_, index) =>
       echo(
         `00000000-0000-4000-8000-${(0x50 + index).toString(16).padStart(12, '0')}`,
@@ -82,7 +83,27 @@ describe('validateScenarioDefinition', () => {
         { input: { value: index } },
       ),
     )
-    expect(() => validateScenarioDefinition({ schemaVersion: 1, steps })).toThrow(ZodError)
+    expect(() => validateScenarioDocument({ schemaVersion: 1, steps })).toThrow(ZodError)
+  })
+
+  it('编译运行定义允许 64 步但拒绝超过 64 步', () => {
+    const steps64 = Array.from({ length: 64 }, (_, index) =>
+      echo(
+        `00000000-0000-4000-8000-${(0x50 + index).toString(16).padStart(12, '0')}`,
+        `s${index}`,
+        { input: { value: index } },
+      ),
+    )
+    expect(() => validateScenarioDefinition({ schemaVersion: 1, steps: steps64 })).not.toThrow()
+
+    const steps65 = Array.from({ length: 65 }, (_, index) =>
+      echo(
+        `00000000-0000-4000-8000-${(0x50 + index).toString(16).padStart(12, '0')}`,
+        `s${index}`,
+        { input: { value: index } },
+      ),
+    )
+    expect(() => validateScenarioDefinition({ schemaVersion: 1, steps: steps65 })).toThrow(ZodError)
   })
 })
 

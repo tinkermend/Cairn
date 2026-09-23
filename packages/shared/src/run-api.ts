@@ -24,6 +24,7 @@ import { outcomeResultDtoSchema, outcomeStatusSchema, type OutcomeResultDto, typ
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
 import { executionOriginSchema } from './suites.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
+import { runOutputSchema, type RunOutput } from './run-output.js'
 
 export const RUN_ERROR_CODES = [
   'RUN_NOT_FOUND',
@@ -203,6 +204,7 @@ export const runSummarySchema = z.object({
   executionOrigin: executionOriginSchema.default('standalone'),
   suiteRunId: entityIdSchema.nullable().optional(),
   suiteMemberId: z.string().nullable().optional(),
+  outputSummary: z.string().nullable().optional(),
   deletedAt: instantOrNull.optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
 })
@@ -242,6 +244,7 @@ export const runDetailSchema = runSummarySchema
     lease: runDetailLeaseSchema,
     placement: runPlacementSchema,
     outcomeResults: z.array(outcomeResultDtoSchema).default([]),
+    output: runOutputSchema.nullable().optional(),
     checkpoint: debugCheckpointSchema.nullable().optional(),
     debugOverlay: debugOverlaySchema.nullable().optional(),
     authCheckpoint: authCheckpointSchema.nullable().optional(),

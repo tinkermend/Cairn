@@ -17,6 +17,7 @@ import { runtimeInvariantManifestSchema, type RuntimeInvariantManifest } from '.
 import { frozenCredentialBindingSchema } from './credentials.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
+import { scenarioOutputDeclSchema } from './scenario.js'
 import {
   contextKeySchema,
   AI_ATOMIC_ACTIONS_PROTOCOL,
@@ -296,6 +297,11 @@ export const runSnapshotSchema = z
      * 严禁增加 .default()，避免存量快照重算 digest 漂移。
      */
     resolution: frozenResolutionSchema.optional(),
+    /**
+     * 冻结的场景业务输出声明。可选：存量快照没有此字段仍可解析。
+     * 严禁增加 .default()，避免存量快照重算 digest 漂移。
+     */
+    outputs: scenarioOutputDeclSchema.optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),
   })

@@ -8,8 +8,10 @@ import {
   RUNTIME_SCHEMA_VERSION,
   objectContentTypeSchema,
   objectDigestSchema,
+  entityIdSchema,
   objectKeyFor,
   objectKeySchema,
+  runObjectIdFromKey,
   capturedSpanMsOf,
   writeEvidenceArtifactKey,
   type EvidenceMetadata,
@@ -26,7 +28,7 @@ import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { evidences } from '../schema/execution.js'
 import { storedObjects } from '../schema/objects.js'
-import { mapRestriction } from '../runs/errors.js'
+import { conflict, mapRestriction } from '../runs/errors.js'
 
 export type StoredObjectRecord = {
   id: string
@@ -88,6 +90,47 @@ export async function getStoredObjectById(db: Db, id: string): Promise<StoredObj
   const { storedObjects } = schemaFor(db)
   const [row] = await db.select().from(storedObjects).where(eq(storedObjects.id, id)).limit(1)
   return row ? toRecord(row) : null
+}
+
+/**
+ * 上传物化前认领本 Run 的对象。键必须落在 `v1/runs/{runId}/`，账本 run_id、摘要和可用状态必须一致。
+ * 句柄自报的体积和键不能代替这次核对。
+ */
+export async function resolveRunObjectForUpload(
+  db: Db,
+  input: { runId: string; objectKey: string; digest: string },
+): Promise<{ objectKey: string; byteSize: number; digest: string; contentType: string }> {
+  const runId = entityIdSchema.parse(input.runId)
+  const digest = objectDigestSchema.parse(input.digest)
+  const objectId = runObjectIdFromKey(input.objectKey, runId)
+  if (!objectId) {
+    throw conflict('FILE_HANDLE_FOREIGN_RUN', '文件句柄的对象键不属于当前 Run')
+  }
+  const key = objectKeyFor(runId, objectId)
+  const { storedObjects } = schemaFor(db)
+  const [row] = await db.select().from(storedObjects).where(eq(storedObjects.objectKey, key)).limit(1)
+  if (!row || row.ownerKind !== 'run' || row.runId !== runId) {
+    throw conflict('FILE_HANDLE_FOREIGN_RUN', '文件句柄的对象不属于当前 Run')
+  }
+  if (
+    row.status !== 'available' ||
+    row.deleteRequestedAt ||
+    row.purgedAt ||
+    row.byteSize == null ||
+    !row.digest ||
+    !row.contentType
+  ) {
+    throw conflict('FILE_OBJECT_UNAVAILABLE', '文件对象不可用')
+  }
+  if (row.digest !== digest) {
+    throw conflict('FILE_HANDLE_INVALID', '文件句柄摘要与账本不一致')
+  }
+  return {
+    objectKey: key,
+    byteSize: row.byteSize,
+    digest: row.digest,
+    contentType: row.contentType,
+  }
 }
 
 export async function getStoredObjectByKey(

@@ -610,6 +610,9 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       // 客户端与外部请求给定的标识。
       'recording_artifacts.client_asset_id', // 浏览器扩展端自生成的素材标识，varchar(128)（0067）
       'service_request_logs.request_id', // HTTP 请求 id，与 console_audit_events / run_events 同类（0080）
+      'platform_ai_calls.context_manifest_id',
+      'repair_candidates.candidate_id',
+      'suite_run_items.stage_id',
     ])
     const { rows } = await pool.query<{ table_name: string; column_name: string; data_type: string }>(
       `SELECT table_name, column_name, data_type FROM information_schema.columns
@@ -668,6 +671,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'artifact_id→recording_artifacts', // 录制域内的 artifact（0067）
       'job_id→analysis_jobs', // 分析域内的 job（0084）
       'occurrence_id→schedule_occurrences', // 调度域内的 occurrence（0084）
+      'incident_id→reliability_incidents',
       'source_object_id→stored_objects', // 「来源对象」，限定词在前（0081），同 object_id→stored_objects
       'fixture_id→target_fixtures',
       'session_id→browser_sessions',

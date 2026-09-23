@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
+import { outputFieldNameSchema } from './output-schema.js'
 import {
   contextKeySchema,
   FORBIDDEN_CONTEXT_KEYS,
@@ -40,56 +41,121 @@ export const SCENARIO_ERROR_CODES = [
 export type ScenarioErrorCode = (typeof SCENARIO_ERROR_CODES)[number]
 
 export const MAX_SCENARIO_STEPS = 32
+export const MAX_SYSTEM_VERIFICATION_STEPS = 32
+export const MAX_COMPILED_SCENARIO_STEPS = 64
 
 export const scenarioNameSchema = z.string().trim().min(1).max(128)
 
 export { scenarioInputDeclSchema, type ScenarioInputDecl }
+
+import {
+  scenarioMetricDeclSchema,
+  scenarioDataRowFieldDeclSchema,
+  scenarioOutputDeclSchema,
+  type ScenarioMetricDecl,
+  type ScenarioDataRowFieldDecl,
+  type ScenarioOutputDecl,
+} from './run-output.js'
+
+export {
+  scenarioMetricDeclSchema,
+  scenarioDataRowFieldDeclSchema,
+  scenarioOutputDeclSchema,
+  type ScenarioMetricDecl,
+  type ScenarioDataRowFieldDecl,
+  type ScenarioOutputDecl,
+}
+
+function refineScenarioDocument(
+  document: {
+    inputs: Array<{ key: string }>
+    steps: Array<{ id: string; outputKey?: string }>
+    outputs?: { metrics?: Array<{ key: string }>; dataRowFields?: Array<{ columnKey: string }> }
+  },
+  ctx: z.RefinementCtx,
+) {
+  const inputKeys = new Set<string>()
+  for (const [index, input] of document.inputs.entries()) {
+    if (inputKeys.has(input.key)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['inputs', index, 'key'],
+        message: '同一场景内 inputs.key 不能重复',
+      })
+    }
+    inputKeys.add(input.key)
+  }
+  const stepIds = new Set<string>()
+  const outputKeys = new Set<string>()
+  for (const [index, step] of document.steps.entries()) {
+    if (stepIds.has(step.id)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['steps', index, 'id'],
+        message: '同一场景内 step.id 不能重复',
+      })
+    }
+    stepIds.add(step.id)
+    if (step.outputKey) {
+      if (outputKeys.has(step.outputKey)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['steps', index, 'outputKey'],
+          message: '同一场景内 outputKey 不能重复',
+        })
+      }
+      outputKeys.add(step.outputKey)
+    }
+  }
+  if (document.outputs?.metrics) {
+    const metricKeys = new Set<string>()
+    for (const [index, metric] of document.outputs.metrics.entries()) {
+      if (metricKeys.has(metric.key)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['outputs', 'metrics', index, 'key'],
+          message: '同一场景内 metrics.key 不能重复',
+        })
+      }
+      metricKeys.add(metric.key)
+    }
+  }
+  if (document.outputs?.dataRowFields) {
+    const colKeys = new Set<string>()
+    for (const [index, field] of document.outputs.dataRowFields.entries()) {
+      if (colKeys.has(field.columnKey)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['outputs', 'dataRowFields', index, 'columnKey'],
+          message: '同一场景内 dataRowFields.columnKey 不能重复',
+        })
+      }
+      colKeys.add(field.columnKey)
+    }
+  }
+}
 
 export const scenarioDocumentSchema = z
   .strictObject({
     schemaVersion: runtimeSchemaVersionSchema,
     inputs: z.array(scenarioInputDeclSchema).max(64).default([]),
     steps: z.array(stepSchema).min(1).max(MAX_SCENARIO_STEPS),
+    outputs: scenarioOutputDeclSchema.optional(),
     resolution: resolutionPolicySchema.optional(),
   })
-  .superRefine((document, ctx) => {
-    const inputKeys = new Set<string>()
-    for (const [index, input] of document.inputs.entries()) {
-      if (inputKeys.has(input.key)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['inputs', index, 'key'],
-          message: '同一场景内 inputs.key 不能重复',
-        })
-      }
-      inputKeys.add(input.key)
-    }
-    const stepIds = new Set<string>()
-    const outputKeys = new Set<string>()
-    for (const [index, step] of document.steps.entries()) {
-      if (stepIds.has(step.id)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['steps', index, 'id'],
-          message: '同一场景内 step.id 不能重复',
-        })
-      }
-      stepIds.add(step.id)
-      if (step.outputKey) {
-        if (outputKeys.has(step.outputKey)) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['steps', index, 'outputKey'],
-            message: '同一场景内 outputKey 不能重复',
-          })
-        }
-        outputKeys.add(step.outputKey)
-      }
-    }
-  })
+  .superRefine(refineScenarioDocument)
 export type ScenarioDocument = z.infer<typeof scenarioDocumentSchema>
-export const scenarioDefinitionSchema = scenarioDocumentSchema
-export type ScenarioDefinition = ScenarioDocument
+
+export const scenarioDefinitionSchema = z
+  .strictObject({
+    schemaVersion: runtimeSchemaVersionSchema,
+    inputs: z.array(scenarioInputDeclSchema).max(64).default([]),
+    steps: z.array(stepSchema).min(1).max(MAX_COMPILED_SCENARIO_STEPS),
+    outputs: scenarioOutputDeclSchema.optional(),
+    resolution: resolutionPolicySchema.optional(),
+  })
+  .superRefine(refineScenarioDocument)
+export type ScenarioDefinition = z.infer<typeof scenarioDefinitionSchema>
 
 export class ScenarioValidationError extends Error {
   readonly code: ScenarioErrorCode
@@ -204,6 +270,12 @@ export function requiredRunInputKeys(
   return [...declared.values(), ...derived]
 }
 
+export function validateScenarioDocument(document: unknown): ScenarioDocument {
+  const parsed = scenarioDocumentSchema.parse(document)
+  assertNoForwardFrom(parsed.steps)
+  return parsed
+}
+
 export function validateScenarioDefinition(definition: unknown): ScenarioDefinition {
   const parsed = scenarioDefinitionSchema.parse(definition)
   assertNoForwardFrom(parsed.steps)
@@ -218,7 +290,7 @@ export const scenarioSchema = z.object({
   purpose: z.enum(['user', 'module_verification', 'map_job']).default('user'),
   latestVersionId: entityIdSchema,
   latestVersionNo: z.number().int().min(1),
-  stepCount: z.number().int().min(1).max(MAX_SCENARIO_STEPS),
+  stepCount: z.number().int().min(1).max(MAX_COMPILED_SCENARIO_STEPS),
   draftDirty: z.boolean().default(false),
   deletedAt: utcInstantSchema.nullable().optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
@@ -360,6 +432,12 @@ export type InlineScenarioModuleInvocationBody = z.infer<typeof inlineScenarioMo
 export function scenarioDefinitionFromSteps(
   steps: ScenarioDefinition['steps'],
   inputs: ScenarioDefinition['inputs'] = [],
+  outputs?: ScenarioOutputDecl,
 ): ScenarioDefinition {
-  return { schemaVersion: RUNTIME_SCHEMA_VERSION, inputs, steps }
+  return {
+    schemaVersion: RUNTIME_SCHEMA_VERSION,
+    inputs,
+    steps,
+    ...(outputs ? { outputs } : {}),
+  }
 }

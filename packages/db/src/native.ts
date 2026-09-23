@@ -105,6 +105,27 @@ const sqliteBytes = sqlite.customType<{ data: Buffer; driverData: Uint8Array }>(
 // Indexed text has a complete-value index, never a lossy prefix. Limits are
 // checked on import and by each backend's physical constraints.
 export const indexedTextLimits: Record<string, number> = {
+  'reliability_signals.kind': 32,
+  'reliability_signals.severity': 16,
+  'reliability_signals.scope_digest': 64,
+  'reliability_signals.grouping_key': 64,
+  'feature_windows.scope_digest': 64,
+  'feature_windows.window_type': 32,
+  'feature_windows.metric_version': 16,
+  'baseline_revisions.scope_digest': 64,
+  'baseline_revisions.baseline_kind': 32,
+  'baseline_revisions.status': 16,
+  'reliability_evaluations.scope_digest': 64,
+  'reliability_checkpoints.lease_owner': 128,
+  'reliability_incidents.grouping_key': 64,
+  'reliability_incidents.scope_digest': 64,
+  'reliability_incidents.severity': 8,
+  'reliability_incidents.status': 24,
+  'reliability_incidents.action_required_reason': 64,
+  'reliability_incident_members.member_ref': 128,
+  'reliability_incident_members.member_type': 32,
+  'map_change_candidates.change_level': 16,
+  'map_change_candidates.status': 24,
   'dataset_rows.valid_status': 16,
   'batches.status': 24,
   'batch_items.item_status': 24,
@@ -406,6 +427,8 @@ export const indexedTextLimits: Record<string, number> = {
   'scenario_ai_calls.model': 256,
   'scenario_ai_calls.phase': 16,
   'scenario_ai_calls.error_code': 64,
+  'repair_candidates.candidate_id': 64,
+  'repair_candidates.status': 32,
 }
 export function nativeTables(driver: Driver, schemaName = 'cairn'): Tables {
   if (driver === 'postgres' && schemaName === 'cairn') return schema

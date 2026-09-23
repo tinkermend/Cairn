@@ -394,6 +394,11 @@ const browserSessionEnvShape = {
     .int()
     .positive()
     .default(300),
+  CAIRN_SESSION_UNATTENDED_AUTH_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(120),
 }
 
 export const DEFAULT_BROWSER_AI_REQUEST_TIMEOUT_MS = 15_000

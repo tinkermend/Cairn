@@ -6,7 +6,9 @@ export const RESOLUTION_PROTOCOL = 'snapshot.resolution@1' as const
 
 export const RESOLUTION_POLICIES = [
   'deterministic_only',
+  'prefer_deterministic_text',
   'prefer_deterministic',
+  'prefer_text_ai',
   'prefer_ai',
   'ai_only',
 ] as const
@@ -15,9 +17,11 @@ export const resolutionPolicySchema = z.enum(RESOLUTION_POLICIES)
 
 export const RESOLUTION_POLICY_RANK: Record<ResolutionPolicy, number> = {
   deterministic_only: 0,
-  prefer_deterministic: 1,
-  prefer_ai: 2,
-  ai_only: 3,
+  prefer_deterministic_text: 1,
+  prefer_deterministic: 2,
+  prefer_text_ai: 3,
+  prefer_ai: 4,
+  ai_only: 5,
 }
 
 export const FACTORY_RESOLUTION_CEILING = 'deterministic_only' as const
@@ -100,16 +104,20 @@ export function applyTargetResolutionPolicyPatch(
 }
 
 export const RESOLUTION_CEILING_LABELS: Record<ResolutionPolicy, string> = {
-  deterministic_only: '仅规则',
-  prefer_deterministic: '规则优先，允许 AI 兜底',
-  prefer_ai: '允许 AI 优先',
+  deterministic_only: '仅规则（禁止任何 AI）',
+  prefer_deterministic_text: '允许平台文本 AI（纯规则 + Playwright AI，严格禁止视觉截图）',
+  prefer_deterministic: '允许完整多模态（规则 + 文本 AI + MidScene 视觉兜底）',
+  prefer_text_ai: '允许文本 AI 优先',
+  prefer_ai: '允许视觉 AI 优先',
   ai_only: '允许仅 AI',
 }
 
 export const RESOLUTION_PREFERENCE_LABELS: Record<ResolutionPolicy, string> = {
   deterministic_only: '仅规则',
-  prefer_deterministic: '规则优先，AI 兜底',
-  prefer_ai: 'AI 优先，规则兜底',
+  prefer_deterministic_text: '规则优先，平台文本 AI 兜底（低成本，不调用视觉）',
+  prefer_deterministic: '规则优先，AI 兜底（完整多模态：文本 → 视觉）',
+  prefer_text_ai: '平台文本 AI 优先，规则兜底',
+  prefer_ai: '视觉 AI 优先，规则兜底',
   ai_only: '仅 AI',
 }
 
@@ -117,8 +125,20 @@ export function policyAllowsAiRung(policy: ResolutionPolicy): boolean {
   return policy !== 'deterministic_only'
 }
 
+export function policyAllowsVisionAi(policy: ResolutionPolicy): boolean {
+  return policy !== 'deterministic_only' && policy !== 'prefer_deterministic_text' && policy !== 'prefer_text_ai'
+}
+
 export function policyStartsAtAiRung(policy: ResolutionPolicy): boolean {
-  return policy === 'prefer_ai' || policy === 'ai_only'
+  return policy === 'prefer_text_ai' || policy === 'prefer_ai' || policy === 'ai_only'
+}
+
+export function policyStartsAtVisionAi(policy: ResolutionPolicy): boolean {
+  return policy === 'prefer_ai'
+}
+
+export function policyStartsAtTextAi(policy: ResolutionPolicy): boolean {
+  return policy === 'prefer_text_ai'
 }
 
 export const frozenResolutionSchema = z.strictObject({

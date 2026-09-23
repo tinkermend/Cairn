@@ -152,6 +152,17 @@ export const notificationPayloadSchema = z.strictObject({
       consolePath: z.literal('/monitoring'),
     })
     .optional(),
+  takeover: z
+    .strictObject({
+      targetId: entityIdSchema,
+      targetAccountId: entityIdSchema,
+      targetName: z.string().max(128),
+      accountDisplayName: z.string().max(128),
+      takeoverUrl: z.string().max(2048),
+      expiresAt: utcInstantSchema,
+      reason: z.string().max(256),
+    })
+    .optional(),
 })
 export type NotificationPayload = z.infer<typeof notificationPayloadSchema>
 export function notificationReasons(
@@ -326,3 +337,123 @@ export const notificationChannelsResponseSchema = z.object({
     .nullable(),
   channels: z.array(notificationChannelSummarySchema),
 })
+
+import type { SuiteSummaryBlock } from './reports.js'
+
+export function buildWechatWorkCard(options: {
+  summary: SuiteSummaryBlock
+  suiteName: string
+  viewUrl?: string
+}): { msgtype: 'markdown'; markdown: { content: string } } {
+  const { summary, suiteName, viewUrl } = options
+  const statusEmoji = summary.anomalousCount > 0 ? '⚠️' : '✅'
+  const lines: string[] = [
+    `### 🔔 [识途巡检通知] ${suiteName}`,
+    `> **巡检状态**：${statusEmoji} ${summary.anomalousCount > 0 ? `发现 ${summary.anomalousCount} 项异常，` : ''}${summary.normalCount} 项正常${summary.warningCount > 0 ? `，${summary.warningCount} 项告警` : ''}`,
+    `> **系统健康度**：<font color="${summary.healthGrade === 'EXCELLENT' ? 'info' : summary.healthGrade === 'POOR' ? 'warning' : 'comment'}">${summary.healthScore}分（${summary.healthGrade}）</font>`,
+    `> **巡检耗时**：${(summary.wallClockMs / 1000).toFixed(1)} 秒`,
+  ]
+
+  if (summary.aggregatedFindings.length > 0) {
+    lines.push('', '【核心异常概览】')
+    for (const f of summary.aggregatedFindings.slice(0, 5)) {
+      lines.push(`❌ **${f.displayName}**：${f.title}${f.detail ? ` (${f.detail})` : ''}`)
+    }
+  }
+
+  if (viewUrl) {
+    lines.push('', `[👉 点击在手机上查阅完整巡检总报告](${viewUrl})`)
+  }
+
+  return {
+    msgtype: 'markdown',
+    markdown: {
+      content: lines.join('\n'),
+    },
+  }
+}
+
+export function buildFeishuCard(options: {
+  summary: SuiteSummaryBlock
+  suiteName: string
+  viewUrl?: string
+}): { msg_type: 'interactive'; card: Record<string, any> } {
+  const { summary, suiteName, viewUrl } = options
+  const template = summary.anomalousCount > 0 ? 'red' : summary.warningCount > 0 ? 'orange' : 'green'
+  const elements: any[] = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `**巡检状态**：${summary.anomalousCount > 0 ? `⚠️ 发现 ${summary.anomalousCount} 项异常，` : '✅ '}${summary.normalCount} 项正常\n**健康评分**：${summary.healthScore} 分 (${summary.healthGrade})\n**巡检耗时**：${(summary.wallClockMs / 1000).toFixed(1)} 秒`,
+      },
+    },
+  ]
+
+  if (summary.aggregatedFindings.length > 0) {
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `**【核心异常概览】**\n` + summary.aggregatedFindings.slice(0, 5).map((f) => `❌ **${f.displayName}**：${f.title}${f.detail ? ` (${f.detail})` : ''}`).join('\n'),
+      },
+    })
+  }
+
+  if (viewUrl) {
+    elements.push({
+      tag: 'action',
+      actions: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '👉 查阅完整巡检总报告' },
+          type: 'primary',
+          url: viewUrl,
+        },
+      ],
+    })
+  }
+
+  return {
+    msg_type: 'interactive',
+    card: {
+      header: {
+        title: { tag: 'plain_text', content: `🔔 [识途巡检] ${suiteName}` },
+        template,
+      },
+      elements,
+    },
+  }
+}
+
+export function buildDingTalkCard(options: {
+  summary: SuiteSummaryBlock
+  suiteName: string
+  viewUrl?: string
+}): { msgtype: 'actionCard'; actionCard: Record<string, any> } {
+  const { summary, suiteName, viewUrl } = options
+  const statusEmoji = summary.anomalousCount > 0 ? '⚠️' : '✅'
+  const lines: string[] = [
+    `### 🔔 [识途巡检通知] ${suiteName}`,
+    `- **巡检状态**：${statusEmoji} ${summary.anomalousCount > 0 ? `发现 ${summary.anomalousCount} 项异常，` : ''}${summary.normalCount} 项正常`,
+    `- **系统健康度**：${summary.healthScore}分（${summary.healthGrade}）`,
+    `- **巡检耗时**：${(summary.wallClockMs / 1000).toFixed(1)} 秒`,
+  ]
+
+  if (summary.aggregatedFindings.length > 0) {
+    lines.push('', '#### 【核心异常概览】')
+    for (const f of summary.aggregatedFindings.slice(0, 5)) {
+      lines.push(`- ❌ **${f.displayName}**：${f.title}${f.detail ? ` (${f.detail})` : ''}`)
+    }
+  }
+
+  return {
+    msgtype: 'actionCard',
+    actionCard: {
+      title: `[识途巡检] ${suiteName}`,
+      text: lines.join('\n\n'),
+      singleTitle: '👉 查阅完整巡检总报告',
+      singleURL: viewUrl ?? '',
+    },
+  }
+}

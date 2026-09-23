@@ -39,6 +39,8 @@ import { ReportsModule } from "./reports/reports.module";
 import { OverviewModule } from "./overview/overview.module";
 import { DatasetsModule } from "./datasets/datasets.module";
 import { BatchesModule } from "./batches/batches.module";
+import { ReliabilityModule } from "./reliability/reliability.module";
+import { RepairModule } from "./repair/repair.module";
 
 @Module({
   imports: [
@@ -63,6 +65,7 @@ import { BatchesModule } from "./batches/batches.module";
     AuthoringModule,
     RecordingsModule,
     RunsModule,
+    RepairModule,
     ServicesModule,
     PlatformConfigModule,
     AssistantModule,
@@ -77,6 +80,7 @@ import { BatchesModule } from "./batches/batches.module";
     ReportsModule,
     DatasetsModule,
     BatchesModule,
+    ReliabilityModule,
     // 必须放在最后：兜底路由要在所有业务路由之后注册
     NotFoundModule,
   ],

@@ -11,6 +11,8 @@ export async function observeObject<T, E extends { seq: number }>(input: {
   event: string; matches: (hint: ChangeHint) => boolean
   snapshot: () => Promise<T>; events: (after: number) => Promise<E[]>
   finished?: (snapshot: T) => boolean
+  readyData?: Record<string, unknown>
+  writeEvent?: (event: E, write: (name: string, data: unknown, seq?: number) => void) => void
 }) {
   const { req, res, objectId } = input
   let cursor = input.after
@@ -47,7 +49,7 @@ export async function observeObject<T, E extends { seq: number }>(input: {
     if (!res.write(frame)) throw new Error('SSE client is not consuming data')
   }
   try {
-    write('ready', { realtime: input.hints.realtime })
+    write('ready', { realtime: input.hints.realtime, ...input.readyData })
     while (!signal.aborted) {
       dirty = false
       if (Date.now() >= expiresAt) throw new Error('认证已过期')
@@ -55,7 +57,14 @@ export async function observeObject<T, E extends { seq: number }>(input: {
       let events: E[]
       do {
         events = await input.events(cursor)
-        for (const event of events) { write('event', event, event.seq); cursor = event.seq }
+        for (const event of events) {
+          if (input.writeEvent) {
+            input.writeEvent(event, write)
+          } else {
+            write('event', event, event.seq)
+          }
+          cursor = event.seq
+        }
       } while (!signal.aborted && events.length === 100)
       write(input.event, snapshot)
       if (input.finished?.(snapshot)) break

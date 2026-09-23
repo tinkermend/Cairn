@@ -89,5 +89,157 @@ export const healingAttemptEvidenceSchema = z.strictObject({
   diagnosis: healingDiagnosisSchema,
   patchApplied: healingPatchSchema.optional(),
   outcome: z.enum(['HEALED_SUCCESS', 'HEAL_FAILED', 'ESCALATED', 'REJECTED_BY_GUARD']),
+  candidateId: z.string().optional(),
+  postPatchDigest: z.string().optional(),
 })
 export type HealingAttemptEvidence = z.infer<typeof healingAttemptEvidenceSchema>
+
+export const REPAIR_CANDIDATE_STATUSES = [
+  'proposed',
+  'blocked',
+  'validating',
+  'validated',
+  'rejected',
+  'expired',
+  'adopted',
+] as const
+export type RepairCandidateStatus = (typeof REPAIR_CANDIDATE_STATUSES)[number]
+export const repairCandidateStatusSchema = z.enum(REPAIR_CANDIDATE_STATUSES)
+
+export const patchTargetRefSchema = z.strictObject({
+  kind: z.enum(['scenario', 'module']),
+  scenarioId: z.string().uuid().optional(),
+  sourceScenarioVersionId: z.string().uuid().optional(),
+  moduleId: z.string().uuid().optional(),
+  moduleVersionId: z.string().uuid().optional(),
+  implementationKey: z.string().optional(),
+  internalStepId: z.string().optional(),
+  stepId: z.string().min(1),
+  sourceDefinitionDigest: z.string().min(1),
+})
+export type PatchTargetRef = z.infer<typeof patchTargetRefSchema>
+
+export const authoringOriginSchema = z.strictObject({
+  invocationId: z.string().optional(),
+  expandedStepId: z.string().optional(),
+  internalStepId: z.string().optional(),
+  moduleManifestDigest: z.string().optional(),
+})
+export type AuthoringOrigin = z.infer<typeof authoringOriginSchema>
+
+export const digestManifestSchema = z.strictObject({
+  sourceDefinitionDigest: z.string().min(1),
+  postPatchExecutionDigest: z.string().min(1),
+  originalContractDigest: z.string().min(1),
+  algorithmVersion: z.string().default('v1'),
+})
+export type DigestManifest = z.infer<typeof digestManifestSchema>
+
+export const guardCheckResultSchema = z.strictObject({
+  name: z.string(),
+  status: z.enum(['passed', 'rejected', 'unknown']),
+  reason: z.string(),
+  basis: z.record(z.string(), z.unknown()).optional(),
+})
+export type GuardCheckResult = z.infer<typeof guardCheckResultSchema>
+
+export const guardResultsSchema = z.strictObject({
+  allowedFields: guardCheckResultSchema,
+  unchangedBusinessGoal: guardCheckResultSchema,
+  sideEffectSafety: guardCheckResultSchema,
+  contextIntegrity: guardCheckResultSchema,
+  overallPassed: z.boolean(),
+})
+export type GuardResults = z.infer<typeof guardResultsSchema>
+
+export const validationScopeSchema = z.strictObject({
+  locatorValid: z.boolean().default(false),
+  stepPassed: z.boolean().default(false),
+  outcomePassed: z.boolean().default(false),
+  crossSampleStable: z.boolean().default(false),
+})
+export type ValidationScope = z.infer<typeof validationScopeSchema>
+
+export const validationRefsSchema = z.strictObject({
+  validationRunId: z.string().uuid().optional(),
+  validationAttemptId: z.string().uuid().optional(),
+  dataVersion: z.string().optional(),
+  pageVersion: z.string().optional(),
+  modelName: z.string().optional(),
+  successConditionsPassed: z.boolean().optional(),
+  evidenceIds: z.array(z.string().uuid()).default([]),
+})
+export type ValidationRefs = z.infer<typeof validationRefsSchema>
+
+export const adoptionReceiptSchema = z.strictObject({
+  expectedRevision: z.number().int(),
+  resultingRevision: z.number().int(),
+  targetKind: z.enum(['scenario', 'module']),
+  targetId: z.string().uuid(),
+  adoptedAt: z.string(),
+  adoptedBy: z.string(),
+  receiptId: z.string().uuid(),
+})
+export type AdoptionReceipt = z.infer<typeof adoptionReceiptSchema>
+
+export const repairCandidateSchema = z.strictObject({
+  id: z.string().uuid(),
+  candidateId: z.string().min(1),
+  runId: z.string().uuid(),
+  sourceAttemptId: z.string().uuid(),
+  patchTargetRef: patchTargetRefSchema,
+  authoringOrigin: authoringOriginSchema.optional(),
+  patch: healingPatchSchema,
+  hypothesis: z.string().min(1),
+  applicability: z.string().optional(),
+  digestManifest: digestManifestSchema,
+  guardResults: guardResultsSchema,
+  status: repairCandidateStatusSchema,
+  validationScope: validationScopeSchema,
+  validationRefs: validationRefsSchema.optional(),
+  adoption: adoptionReceiptSchema.optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+export type RepairCandidate = z.infer<typeof repairCandidateSchema>
+
+export const runtimeRepairUseSchema = z.strictObject({
+  candidateId: z.string(),
+  sourceAttemptId: z.string().uuid(),
+  patchApplied: healingPatchSchema,
+  appliedAtAttemptId: z.string().uuid(),
+  runId: z.string().uuid(),
+})
+export type RuntimeRepairUse = z.infer<typeof runtimeRepairUseSchema>
+
+export const createRepairCandidateBodySchema = z.strictObject({
+  sourceAttemptId: z.string().uuid(),
+  stepId: z.string().min(1),
+  hypothesis: z.string().min(1).max(2048),
+  patch: healingPatchSchema,
+  applicability: z.string().max(1024).optional(),
+  authoringOrigin: authoringOriginSchema.optional(),
+})
+export type CreateRepairCandidateBody = z.infer<typeof createRepairCandidateBodySchema>
+
+export const validateRepairCandidateBodySchema = z.strictObject({
+  validationRunId: z.string().uuid().optional(),
+  validationAttemptId: z.string().uuid().optional(),
+  dataVersion: z.string().max(256).optional(),
+  pageVersion: z.string().max(256).optional(),
+  modelName: z.string().max(256).optional(),
+  validationScope: validationScopeSchema.partial().optional(),
+  successConditionsPassed: z.boolean().optional(),
+  evidenceIds: z.array(z.string().uuid()).max(32).optional(),
+})
+export type ValidateRepairCandidateBody = z.infer<typeof validateRepairCandidateBodySchema>
+
+export const adoptRepairCandidateBodySchema = z.strictObject({
+  expectedRevision: z.number().int().min(1),
+})
+export type AdoptRepairCandidateBody = z.infer<typeof adoptRepairCandidateBodySchema>
+
+export const rejectRepairCandidateBodySchema = z.strictObject({
+  reason: z.string().max(1024).optional(),
+})
+export type RejectRepairCandidateBody = z.infer<typeof rejectRepairCandidateBodySchema>

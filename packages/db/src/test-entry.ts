@@ -59,6 +59,7 @@ export { requireMapCapableAccount, requireTargetHasMapCapableAccount } from './c
 export * from './knowledge/index.js'
 export * from './action-modules/index.js'
 export * from './fixtures/index.js'
+export * from './business-sources/business-sources.js'
 import { createDb as openNative } from './client.js'
 import { registerFixture } from './database.js'
 import type { DbEnv } from '@cairn/shared'

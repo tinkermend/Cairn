@@ -41,6 +41,9 @@ export const prepareNotificationEvents = operation(
 export const repairNotificationIntents = operation(
   notificationCore.repairNotificationIntents,
 );
+export const enqueueTakeoverNotification = operation(
+  notificationCore.enqueueTakeoverNotificationTx,
+);
 export const claimNotificationDeliveries = operation(
   notificationDelivery.claimNotificationDeliveries,
 );
@@ -167,6 +170,7 @@ export const sweepDriftedRuns = operation(impl0.sweepDriftedRuns);
 export const yieldClaimedRun = operation(impl0.yieldClaimedRun);
 export const yieldUnfinishedRun = operation(impl0.yieldUnfinishedRun);
 export const settleRunOutcome = operation(impl0.settleRunOutcome);
+export const settleRunOutput = operation(impl0.settleRunOutput);
 export const backfillOutcomeResults = operation(impl0.backfillOutcomeResults);
 export type { OutcomeResultInsertItem } from "./runs/index.js";
 export type { SettleOutcome } from "./runs/index.js";
@@ -424,6 +428,7 @@ export const findPendingObjectEvidence = operation(
 );
 export const getStoredObjectById = operation(impl3.getStoredObjectById);
 export const getStoredObjectByKey = operation(impl3.getStoredObjectByKey);
+export const resolveRunObjectForUpload = operation(impl3.resolveRunObjectForUpload);
 export const listPurgeCandidates = operation(impl3.listPurgeCandidates);
 export const markEvidenceMissing = operation(impl3.markEvidenceMissing);
 export const markStoredObjectPurgeFailed = operation(
@@ -574,6 +579,7 @@ export const createServiceRun = operation(services.createServiceRun);
 export const getServiceRun = operation(services.getServiceRun);
 export const listServiceRuns = operation(services.listServiceRuns);
 export const serviceCatalog = operation(services.serviceCatalog);
+export const serviceToolsCatalog = operation(services.serviceToolsCatalog);
 export const getServiceWebhook = operation(serviceWebhooks.getServiceWebhook);
 export const getServiceWebhookSecretId = operation(
   serviceWebhooks.getServiceWebhookSecretId,
@@ -674,11 +680,20 @@ export const listAssistantTurnRecords = operation(
   assistant.listAssistantTurnRecords,
 );
 export const recordPlatformAiCall = operation(assistant.recordPlatformAiCall);
+export const listPlatformAiCalls = operation(assistant.listPlatformAiCalls);
+export const cancelAssistantTurn = operation(assistant.cancelAssistantTurn);
+export const updateAssistantTurnStage = operation(assistant.updateAssistantTurnStage);
+export const recordAssistantTurnEvent = operation(assistant.recordAssistantTurnEvent);
+export const listAssistantTurnEvents = operation(assistant.listAssistantTurnEvents);
+export const nextQueuedAssistantTurn = operation(assistant.nextQueuedAssistantTurn);
 export const interruptExpiredAssistantTurns = operation(
   assistant.interruptExpiredAssistantTurns,
 );
 export const purgeExpiredAssistantBodies = operation(
   assistant.purgeExpiredAssistantBodies,
+);
+export const renewAssistantTurnLease = operation(
+  assistant.renewAssistantTurnLease,
 );
 
 import * as mapFacts from "./map/index.js";
@@ -730,6 +745,7 @@ export const getMapRelease = operation(mapFacts.getMapRelease);
 export const loadMapQueryView = operation(mapFacts.loadMapQueryView);
 export const resolveMapView = operation(mapFacts.resolveMapView);
 export const getMapSummary = operation(mapFacts.getMapSummary);
+export const listMapAtlasPages = operation(mapFacts.listMapAtlasPages);
 export const listMapAssets = operation(mapFacts.listMapAssets);
 export const listMapJobCandidateAssets = operation(
   mapFacts.listMapJobCandidateAssets,
@@ -932,11 +948,45 @@ export const attachModuleListHealth = operation(
 export const requireModuleQualityConfig = operation(
   actionModuleImpl.requireModuleQualityConfig,
 );
+export const listModuleTestCases = operation(
+  actionModuleImpl.listModuleTestCases,
+);
+export const getModuleTestCase = operation(
+  actionModuleImpl.getModuleTestCase,
+);
+export const createModuleTestCase = operation(
+  actionModuleImpl.createModuleTestCase,
+);
+export const updateModuleTestCase = operation(
+  actionModuleImpl.updateModuleTestCase,
+);
+export const deleteModuleTestCase = operation(
+  actionModuleImpl.deleteModuleTestCase,
+);
+export const runModuleTestCase = operation(
+  actionModuleImpl.runModuleTestCase,
+);
+export const settleModuleCaseResult = operation(
+  actionModuleImpl.settleModuleCaseResult,
+);
+export const recomputeModuleCaseResult = operation(
+  actionModuleImpl.recomputeModuleCaseResult,
+);
+export const createModuleTestBatch = operation(
+  actionModuleImpl.createModuleTestBatch,
+);
+export const getModuleTestBatch = operation(
+  actionModuleImpl.getModuleTestBatch,
+);
+export const assertReleaseGateSatisfied = operation(
+  actionModuleImpl.assertReleaseGateSatisfied,
+);
 export {
   computeContractDigest,
   computeImplementationDigest,
   computeSingleImplementationDigest,
   computeContentDigest,
+  computeSampleReview,
 } from "./action-modules/index.js";
 
 import * as knowledgeImpl from "./knowledge/index.js";
@@ -952,6 +1002,13 @@ export const updateTerminology = operation(knowledgeImpl.updateTerminology);
 export const retireTerminology = operation(knowledgeImpl.retireTerminology);
 export const listTerminologyForCompose = operation(
   knowledgeImpl.listTerminologyForCompose,
+);
+export const findTermsBySource = operation(knowledgeImpl.findTermsBySource);
+export const listTermSourceDependencies = operation(
+  knowledgeImpl.listTermSourceDependencies,
+);
+export const checkTermSourcesFreshness = operation(
+  knowledgeImpl.checkTermSourcesFreshness,
 );
 export const findKnowledgeProposalRequest = operation(
   knowledgeImpl.findKnowledgeProposalRequest,
@@ -1058,6 +1115,9 @@ export const cancelAnalysisJob = operation(analysisImpl.cancelAnalysisJob);
 export const prepareAnalysisJob = operation(analysisImpl.prepareAnalysisJob);
 export type { PreparedAnalysis } from './analysis/index.js';
 export const indexRunForAnalysis = operation(analysisImpl.indexRunForAnalysis);
+export const getJobInsights = operation(analysisImpl.getJobInsights);
+export const getJobInsight = operation(analysisImpl.getJobInsight);
+export type { JobInsightsSummary } from './analysis/index.js';
 
 export const recreateSessionForOperation = operation(
   impl2.recreateSessionForOperation,
@@ -1247,6 +1307,10 @@ export const resolveSnapshotCredential = operation(
 export const resolveAccountCurrentCredential = operation(
   credentialImpl.resolveAccountCurrentCredential,
 );
+export const resolveAccountAuthMaterials = operation(
+  credentialImpl.resolveAccountAuthMaterials,
+);
+export type { AccountAuthMaterials } from "./credentials/consume.js";
 export const secretIdsStillReferenced = operation(
   credentialImpl.secretIdsStillReferenced,
 );
@@ -1284,6 +1348,7 @@ export const listSuiteRunEventsAfter = operation(
   suiteImpl.listSuiteRunEventsAfter,
 );
 export const cancelSuiteRun = operation(suiteImpl.cancelSuiteRun);
+export const rerunSuiteItem = operation(suiteImpl.rerunSuiteItem);
 export const advanceSuiteRun = operation(suiteImpl.advanceSuiteRun);
 export const advanceDueSuiteRuns = operation(suiteImpl.advanceDueSuiteRuns);
 
@@ -1365,10 +1430,14 @@ export const getDatasetRows = operation(datasetsImpl.getDatasetRows);
 export const softDeleteDataset = operation(datasetsImpl.softDeleteDataset);
 export const autoMapDataset = datasetsImpl.autoMapDataset;
 export const preflightDataset = datasetsImpl.preflightDataset;
+export const getDatasetRowsForPreflight = operation(datasetsImpl.getDatasetRowsForPreflight);
 
 import * as batchesImpl from "./batches/batches.js";
 export const createBatch = operation(batchesImpl.createBatch);
 export const advanceBatch = operation(batchesImpl.advanceBatch);
+export const dispatchBatch = operation(batchesImpl.dispatchBatch);
+export const failStrandedBatch = operation(batchesImpl.failStrandedBatch);
+export const sweepStrandedBatches = operation(batchesImpl.sweepStrandedBatches);
 export const onRunSettledForBatch = operation(batchesImpl.onRunSettledForBatch);
 export const pauseBatch = operation(batchesImpl.pauseBatch);
 export const resumeBatch = operation(batchesImpl.resumeBatch);
@@ -1380,6 +1449,52 @@ export const getBatchItems = operation(batchesImpl.getBatchItems);
 export const exportBatchResults = operation(batchesImpl.exportBatchResults);
 export * from "./datasets/datasets.js";
 export * from "./batches/batches.js";
+
+import * as reliabilityImpl from "./reliability/index.js";
+export const claimReliabilityEvaluation = operation(reliabilityImpl.claimReliabilityEvaluation);
+export const requestReliabilityEvaluation = operation(reliabilityImpl.requestReliabilityEvaluation);
+export const loadReliabilityIncrementalData = operation(reliabilityImpl.loadReliabilityIncrementalData);
+export const writeReliabilityEvaluation = operation(reliabilityImpl.writeReliabilityEvaluation);
+export const reconcileHangingIncidents = operation(reliabilityImpl.reconcileHangingIncidents);
+export const listIncidents = operation(reliabilityImpl.listIncidents);
+export const getIncidentDetail = operation(reliabilityImpl.getIncidentDetail);
+export const mergeIncidents = operation(reliabilityImpl.mergeIncidents);
+export const splitIncidents = operation(reliabilityImpl.splitIncidents);
+export const dismissIncident = operation(reliabilityImpl.dismissIncident);
+export const silenceIncident = operation(reliabilityImpl.silenceIncident);
+export const resolveIncident = operation(reliabilityImpl.resolveIncident);
+export const updateIncidentStatus = operation(reliabilityImpl.updateIncidentStatus);
+export const listIncidentSignals = operation(reliabilityImpl.listIncidentSignals);
+export const getReliabilityOverview = operation(reliabilityImpl.getReliabilityOverview);
+export const listAssetReliabilityItems = operation(reliabilityImpl.listAssetReliabilityItems);
+export const getIncidentImpactSnapshot = operation(reliabilityImpl.getIncidentImpactSnapshot);
+export const executeMaintenanceBatchUpgrade = operation(reliabilityImpl.executeMaintenanceBatchUpgrade);
+export const getMaintenanceUpgradeJob = operation(reliabilityImpl.getMaintenanceUpgradeJob);
+export * from "./reliability/index.js";
+
+import * as repairImpl from "./repair/index.js";
+export const createRepairCandidate = operation(repairImpl.createRepairCandidate);
+export const getRepairCandidate = operation(repairImpl.getRepairCandidate);
+export const listRepairCandidatesByRun = operation(repairImpl.listRepairCandidatesByRun);
+export const updateRepairCandidateValidation = operation(repairImpl.updateRepairCandidateValidation);
+export const updateRepairCandidateStatus = operation(repairImpl.updateRepairCandidateStatus);
+export const adoptRepairCandidate = operation(repairImpl.adoptRepairCandidate);
+export * from "./repair/index.js";
+
+import * as businessSourcesImpl from "./business-sources/business-sources.js";
+export const getBusinessSource = operation(businessSourcesImpl.getBusinessSource);
+export const previewBusinessSource = operation(businessSourcesImpl.previewBusinessSource);
+export const createBusinessSourceCandidate = operation(businessSourcesImpl.createBusinessSourceCandidate);
+export const getBusinessSourceCandidate = operation(businessSourcesImpl.getBusinessSourceCandidate);
+export const approveBusinessSourceCandidate = operation(businessSourcesImpl.approveBusinessSourceCandidate);
+export const revokeBusinessSource = operation(businessSourcesImpl.revokeBusinessSource);
+export const listBusinessRecords = operation(businessSourcesImpl.listBusinessRecords);
+export const claimBusinessSourceBuildJob = operation(businessSourcesImpl.claimBusinessSourceBuildJob);
+export const commitBusinessSourceBatch = operation(businessSourcesImpl.commitBusinessSourceBatch);
+export const finishBusinessSourceBuild = operation(businessSourcesImpl.finishBusinessSourceBuild);
+export const cleanupBusinessSourceSnapshots = operation(businessSourcesImpl.cleanupBusinessSourceSnapshots);
+export * from "./business-sources/business-sources.js";
+
 
 
 

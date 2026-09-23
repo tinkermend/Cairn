@@ -3,6 +3,8 @@ import { aiOutputSchemaSchema } from './output-schema.js'
 import {
   FACTORY_PLATFORM_CONFIG,
   assertAiRequestTimeoutFitsSteps,
+  platformAiProviderSchema,
+  platformModelUrlSchema,
   platformRuntimeDefaultsFrom,
   platformRuntimeDefaultsSchema,
   resolvePlatformExecutionPolicy,
@@ -71,6 +73,16 @@ export const scenarioCapabilitiesSchema = z.strictObject({
 })
 export type ScenarioCapabilities = z.infer<typeof scenarioCapabilitiesSchema>
 
+export const platformAiExecutionConfigSchema = z.strictObject({
+  provider: platformAiProviderSchema.optional(),
+  baseUrl: platformModelUrlSchema,
+  model: z.string().trim().min(1).max(256),
+  secretRef: secretRefSchema.optional(),
+  requestTimeoutMs: z.number().int().positive().max(120_000).optional(),
+  maxOutputTokens: z.number().int().positive().max(8192).optional(),
+})
+export type PlatformAiExecutionConfig = z.infer<typeof platformAiExecutionConfigSchema>
+
 export const aiExecutionConfigSchema = z.strictObject({
   adapter: z.literal(BROWSER_AI_ADAPTER),
   adapterVersion: z.string().min(1).max(64),
@@ -88,6 +100,7 @@ export const aiExecutionConfigSchema = z.strictObject({
   requestTimeoutMs: z.number().int().positive().max(300_000),
   hangWaitMs: z.number().int().positive().max(60_000),
   preferAriaTree: z.boolean().optional(),
+  platformAi: platformAiExecutionConfigSchema.optional(),
 })
 export type AiExecutionConfig = z.infer<typeof aiExecutionConfigSchema>
 
@@ -106,6 +119,7 @@ export const aiCommandSchema = z.strictObject({
   allowedOrigins: z.array(z.string().min(1)).min(1).max(16),
   loginOrigin: z.string().min(1).max(256).optional(),
   loginPath: z.string().max(2048).optional(),
+  contextValues: z.record(z.string(), jsonValueSchema).optional(),
 }).superRefine((command, ctx) => {
   if (command.action) {
     if (command.type !== 'ai_action' || command.instruction !== undefined ||
@@ -310,6 +324,17 @@ export function resolveAiExecutionFromPlatform(
   }
   const snapshotPolicy = resolvePlatformExecutionPolicy(extras.policy, document.execution)
   assertAiRequestTimeoutFitsSteps(steps, snapshotPolicy, ai.requestTimeoutMs)
+  const platformAi =
+    document.platformAi?.enabled && document.platformAi?.baseUrl && document.platformAi?.model
+      ? {
+          provider: document.platformAi.provider,
+          baseUrl: document.platformAi.baseUrl,
+          model: document.platformAi.model,
+          secretRef: document.platformAi.secretRef,
+          requestTimeoutMs: document.platformAi.requestTimeoutMs,
+          maxOutputTokens: document.platformAi.maxOutputTokens,
+        }
+      : undefined
   return aiExecutionConfigSchema.parse({
     adapter: BROWSER_AI_ADAPTER,
     adapterVersion: BROWSER_AI_ADAPTER_VERSION,
@@ -327,6 +352,7 @@ export function resolveAiExecutionFromPlatform(
     requestTimeoutMs: ai.requestTimeoutMs,
     hangWaitMs: extras.hangWaitMs,
     preferAriaTree: ai.preferAriaTree ?? false,
+    ...(platformAi ? { platformAi } : {}),
   })
 }
 

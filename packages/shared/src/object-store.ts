@@ -86,6 +86,21 @@ export function objectKeyFor(runId: string, objectId: string): string {
   return objectKeySchema.parse(`v1/runs/${run}/${id}`)
 }
 
+/**
+ * 当前 Run 的对象键。只接受 `v1/runs/{runId}/{objectId}`，两侧都必须是实体 ID。
+ * 历史证据键可以更松，上传物化不能用那套规则认领字节。
+ */
+export function runObjectIdFromKey(objectKey: string, runId: string): string | undefined {
+  const run = entityIdSchema.safeParse(runId)
+  if (!run.success) return undefined
+  const prefix = `v1/runs/${run.data}/`
+  if (!objectKey.startsWith(prefix)) return undefined
+  const objectId = objectKey.slice(prefix.length)
+  if (objectId.length === 0 || objectId.includes('/')) return undefined
+  const id = entityIdSchema.safeParse(objectId)
+  return id.success ? id.data : undefined
+}
+
 export function artifactObjectKeyFor(artifactId: string, objectId: string): string {
   const artifact = entityIdSchema.parse(artifactId)
   const id = entityIdSchema.parse(objectId)

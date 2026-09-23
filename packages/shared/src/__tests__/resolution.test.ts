@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { canonicalJson } from '../canonical.js'
-import { describeLocatorCandidates, sanitizeLocatorLabel, mergeEffectiveResolution, crossCheckMatches, isCrossCheckContainerTag } from '../resolution-policy.js'
+import { describeLocatorCandidates, sanitizeLocatorLabel, mergeEffectiveResolution, crossCheckMatches, isCrossCheckContainerTag, policyAllowsVisionAi, minResolutionPolicy } from '../resolution-policy.js'
 import { snapshotDigestPayload } from '../digest-payload.js'
 import { deriveAuthoringResolutionMode, snapshotNeedsBrowserAi } from '../resolution.js'
 import { runNeedsAiExecute } from '../ai-runtime.js'
@@ -205,5 +205,28 @@ describe('统一目标解析契约', () => {
         effectiveByStep: { [semantic.id]: 'ai_only' },
       }),
     ).toBe('ai')
+  })
+
+  it('policyAllowsVisionAi 区分文本模型与视觉模型档位，上限截断视觉兜底', () => {
+    expect(policyAllowsVisionAi('deterministic_only')).toBe(false)
+    expect(policyAllowsVisionAi('prefer_deterministic_text')).toBe(false)
+    expect(policyAllowsVisionAi('prefer_text_ai')).toBe(false)
+    expect(policyAllowsVisionAi('prefer_deterministic')).toBe(true)
+    expect(policyAllowsVisionAi('prefer_ai')).toBe(true)
+    expect(policyAllowsVisionAi('ai_only')).toBe(true)
+
+    // 上限为文本模型时，请求完整视觉兜底会被压低到仅文本模型
+    expect(
+      minResolutionPolicy('prefer_deterministic_text', 'prefer_deterministic'),
+    ).toBe('prefer_deterministic_text')
+    expect(
+      minResolutionPolicy('prefer_deterministic_text', 'prefer_ai'),
+    ).toBe('prefer_deterministic_text')
+    expect(
+      mergeEffectiveResolution({
+        ceiling: 'prefer_deterministic_text',
+        defaultResolution: 'prefer_deterministic',
+      }),
+    ).toBe('prefer_deterministic_text')
   })
 })

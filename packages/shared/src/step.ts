@@ -42,21 +42,28 @@ export const MAP_EXPLORE_STEP_TYPES = [
   'map_verify',
 ] as const
 export const MAP_EXPLORE_BROWSER_STEP_TYPES = ['map_observe', 'map_guarded_action', 'map_verify'] as const
+export const SYSTEM_STEP_TYPES = ['verify_context'] as const
 export const EXECUTABLE_STEP_TYPES = [
   ...FIXTURE_STEP_TYPES,
   ...BROWSER_STEP_TYPES,
   ...AI_STEP_TYPES,
   ...MAP_EXPLORE_STEP_TYPES,
+  ...SYSTEM_STEP_TYPES,
 ] as const
 export type FixtureStepType = (typeof FIXTURE_STEP_TYPES)[number]
 export type BrowserStepType = (typeof BROWSER_STEP_TYPES)[number]
 export type AiStepType = (typeof AI_STEP_TYPES)[number]
 export type MapExploreStepType = (typeof MAP_EXPLORE_STEP_TYPES)[number]
+export type SystemStepType = (typeof SYSTEM_STEP_TYPES)[number]
 export type ExecutableStepType = (typeof EXECUTABLE_STEP_TYPES)[number]
 export const executableStepTypeSchema = z.enum(EXECUTABLE_STEP_TYPES)
 
 export function isExecutableStepType(type: string): type is ExecutableStepType {
   return (EXECUTABLE_STEP_TYPES as readonly string[]).includes(type)
+}
+
+export function isSystemStepType(type: string): type is SystemStepType {
+  return (SYSTEM_STEP_TYPES as readonly string[]).includes(type)
 }
 
 /** 调试夹具步骤：不碰浏览器，结果由入参直接决定，只用于排查编排本身。 */
@@ -146,12 +153,29 @@ export const failInputSchema = z.strictObject({
 })
 export type FailInput = z.infer<typeof failInputSchema>
 
+export const MODULE_BINDABLE_FIELDS = [
+  'navigate.url',
+  'target.anchor.withinText',
+  'target.candidate.name',
+  'target.candidate.value',
+  'assert.expect.value',
+] as const
+export type ModuleBindableField = (typeof MODULE_BINDABLE_FIELDS)[number]
+export const moduleBindableFieldSchema = z.enum(MODULE_BINDABLE_FIELDS)
+
+export const stepFieldRefSchema = z.strictObject({
+  from: contextKeySchema,
+  fromField: outputFieldNameSchema.optional(),
+})
+export type StepFieldRef = z.infer<typeof stepFieldRefSchema>
+
 const stepCommon = {
   id: entityIdSchema,
   name: z.string().min(1).max(128),
   effectType: effectTypeSchema,
   outputKey: contextKeySchema.optional(),
   policy: executionPolicySchema.optional(),
+  fieldRefs: z.record(z.string(), stepFieldRefSchema).optional(),
 }
 
 export const echoStepSchema = z.strictObject({
@@ -478,11 +502,31 @@ export const aiAssertInputSchema = z.strictObject({
 })
 export type AiAssertInput = z.infer<typeof aiAssertInputSchema>
 
+export const contextBindingSchema = z.strictObject({
+  name: z
+    .string()
+    .regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/, '绑定名须为字母开头的标识符')
+    .refine((val) => !['__proto__', 'constructor', 'prototype'].includes(val), '非法绑定名'),
+  source: z
+    .string()
+    .regex(/^(input|steps)\.[A-Za-z0-9_.-]+$/, '数据源格式须为 input.<key> 或 steps.<stepId>.<field>')
+    .refine((val) => !val.includes('__proto__') && !val.includes('constructor') && !val.includes('prototype'), '不能包含原型属性'),
+  path: z
+    .string()
+    .min(1)
+    .max(256)
+    .refine((val) => !val.includes('__proto__') && !val.includes('constructor') && !val.includes('prototype'), '不能包含原型属性'),
+  required: z.boolean().default(true),
+  projection: z.enum(['value', 'list_sample', 'summary']).optional(),
+})
+export type ContextBinding = z.infer<typeof contextBindingSchema>
+
 const aiActionStepBase = z.strictObject({
   ...stepCommon,
   type: z.literal('ai_action'),
   effectType: z.literal('SIDE_EFFECT'),
   input: aiActionInputSchema,
+  contextBindings: z.array(contextBindingSchema).optional(),
 })
 export const aiActionStepSchema = aiActionStepBase.superRefine((step, ctx) => {
   if ((step.policy?.retryLimit ?? 0) > 0) {
@@ -499,6 +543,7 @@ export const aiExtractStepSchema = z.strictObject({
   type: z.literal('ai_extract'),
   effectType: z.literal('READ_ONLY'),
   input: aiExtractInputSchema,
+  contextBindings: z.array(contextBindingSchema).optional(),
 })
 
 export const aiAssertStepSchema = z.strictObject({
@@ -506,6 +551,7 @@ export const aiAssertStepSchema = z.strictObject({
   type: z.literal('ai_assert'),
   effectType: z.literal('READ_ONLY'),
   input: aiAssertInputSchema,
+  contextBindings: z.array(contextBindingSchema).optional(),
 })
 
 export const mapObserveStepSchema = z.strictObject({
@@ -526,6 +572,19 @@ export const mapGuardedActionStepSchema = z.strictObject({
   effectType: z.literal('READ_ONLY'),
   input: mapGuardedActionInputSchema,
 })
+export const verifyContextInputSchema = z.strictObject({
+  keys: z.array(contextKeySchema).min(1).max(32),
+})
+export type VerifyContextInput = z.infer<typeof verifyContextInputSchema>
+
+export const verifyContextStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('verify_context'),
+  effectType: z.literal('READ_ONLY'),
+  input: verifyContextInputSchema,
+})
+export type VerifyContextStep = z.infer<typeof verifyContextStepSchema>
+
 export const mapVerifyStepSchema = z.strictObject({
   ...stepCommon,
   type: z.literal('map_verify'),
@@ -555,6 +614,7 @@ export const stepSchema = z
     mapProposeStepSchema,
     mapGuardedActionStepSchema,
     mapVerifyStepSchema,
+    verifyContextStepSchema,
   ])
   .superRefine((step, ctx) => {
     if (step.type === 'ai_action' && (step.policy?.retryLimit ?? 0) > 0) {

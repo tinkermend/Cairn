@@ -193,6 +193,9 @@ export type TargetAccount = {
   username: string
   secretProvider: string | null
   secretId: string | null
+  totpSecretId: string | null
+  storageStateSecretId: string | null
+  storageStateUpdatedAt: Date | null
   expectedIdentity: string | null
   usage: 'business' | 'map' | 'both'
   mapUsageGuard: string | null
@@ -212,6 +215,9 @@ export type NewTargetAccount = {
   updatedAt?: Date | undefined
   secretProvider?: string | null | undefined
   secretId?: string | null | undefined
+  totpSecretId?: string | null | undefined
+  storageStateSecretId?: string | null | undefined
+  storageStateUpdatedAt?: Date | null | undefined
   expectedIdentity?: string | null | undefined
   usage?: 'business' | 'map' | 'both' | undefined
   mapUsageGuard?: string | null | undefined

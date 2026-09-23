@@ -273,14 +273,14 @@ export const platformAiConfigSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['requestTimeoutMs'],
-        message: '单请求超时不能大于整轮超时',
+        message: '单次请求超时不能大于一轮问答超时',
       })
     }
     if (ai.userInflightLimit > ai.platformInflightLimit) {
       ctx.addIssue({
         code: 'custom',
         path: ['userInflightLimit'],
-        message: '用户在途上限不能大于平台在途上限',
+        message: '每人同时提问上限不能大于全平台同时提问上限',
       })
     }
     if (!ai.enabled) return

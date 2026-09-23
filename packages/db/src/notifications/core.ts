@@ -388,6 +388,69 @@ export async function enqueueAlertNotificationTx(
   await materializeNotificationDeliveries(tx, id)
 }
 
+export async function enqueueTakeoverNotificationTx(
+  tx: Db,
+  input: {
+    targetId: string
+    targetAccountId: string
+    targetName: string
+    accountDisplayName: string
+    operationId: string
+    sessionId: string
+    expiresAt: Date
+    reason: string
+    consoleBaseUrl?: string
+    channelIds?: string[]
+  },
+) {
+  const { notificationEvents: e } = schemaFor(tx)
+  await lockNotificationDispatch(tx)
+  const current = await getOrCreatePlatformConfig(tx)
+  if (!current.document.notifications.enabled) return
+  const { assertNotificationWriterRollout } = await import('./config.js')
+  await assertNotificationWriterRollout(tx)
+  const candidateIds =
+    input.channelIds && input.channelIds.length > 0
+      ? input.channelIds
+      : current.document.notifications.channels.filter((c) => c.enabled).map((c) => c.id)
+  const bindings = await freezeNotificationBindings(tx, current.document, candidateIds)
+  if (!bindings.length) return
+
+  const now = await clockNow(tx)
+  const baseUrl = (input.consoleBaseUrl ?? current.document.notifications.consoleBaseUrl ?? '').replace(/\/$/, '')
+  const takeoverUrl = baseUrl
+    ? `${baseUrl}/sessions/${input.targetId}/${input.targetAccountId}?takeover=${input.operationId}`
+    : ''
+  const payload: NotificationPayload = {
+    title: `[人工接管提醒] 目标 ${input.targetName} 需要人工登录认证`,
+    takeover: {
+      targetId: input.targetId,
+      targetAccountId: input.targetAccountId,
+      targetName: input.targetName,
+      accountDisplayName: input.accountDisplayName,
+      takeoverUrl,
+      expiresAt: input.expiresAt.toISOString(),
+      reason: input.reason,
+    },
+  }
+  const id = newId()
+  await insertIgnoreRows(tx, e, {
+    id,
+    sourceKey: `takeover:${input.operationId}`,
+    type: 'session.takeover',
+    targetId: input.targetId,
+    sourceSequence: 1,
+    state: 'ready',
+    payload: notificationPayloadSchema.parse(payload),
+    bindings,
+    occurredAt: now,
+    observedAt: now,
+    nextPrepareAt: now,
+    consoleUrl: takeoverUrl || null,
+  })
+  await materializeNotificationDeliveries(tx, id)
+}
+
 export async function repairNotificationIntents(db: Db) {
   const { runs, notificationEvents: e } = schemaFor(db)
   const candidates = await db

@@ -32,6 +32,16 @@ export function cursorFilter(
   )!
 }
 
+const INDEX_CURSOR = /^(0|[1-9]\d*)$/
+
+/** 按行号升序分页时使用的游标。与 createdAt|id 键集游标不是同一种编码。 */
+export function decodeIndexCursor(cursor: string): number {
+  if (!INDEX_CURSOR.test(cursor)) {
+    throw failure('bad_request', { code: 'INVALID_CURSOR', message: '游标无效' })
+  }
+  return Number(cursor)
+}
+
 export function paginateResults<T extends { id: string; createdAt: Date | string }>(
   rows: T[],
   limit: number,

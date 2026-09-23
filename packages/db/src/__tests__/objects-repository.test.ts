@@ -17,6 +17,7 @@ import {
   recordMissingObjectEvidence,
   recordObjectEvidence,
   reserveStoredObject,
+  resolveRunObjectForUpload,
   type NativeHandle as DbHandle,
 } from '../test-entry.js'
 import { newId } from '../id.js'
@@ -110,6 +111,52 @@ describe.each(DRIVERS)('%s 对象账本 Repository（集成）', { timeout: 30_0
     const found = listed.items.find((item) => item.id === evidence.id)
     expect(found?.objectKey).toBe(reserved.objectKey)
     expect(found?.digest).toBe(committed.digest)
+  })
+
+  it('上传认领只接受当前 Run 账本上的键和摘要', async () => {
+    const digest = `sha256:${'cd'.repeat(32)}`
+    const reserved = await reserveStoredObject(handle.db, {
+      runId,
+      retainUntil: new Date(Date.now() + 86_400_000),
+    })
+    await commitStoredObject(handle.db, {
+      id: reserved.id,
+      contentType: 'application/pdf',
+      byteSize: 12,
+      digest,
+    })
+    await expect(
+      resolveRunObjectForUpload(handle.db, { runId, objectKey: reserved.objectKey, digest }),
+    ).resolves.toEqual({
+      objectKey: reserved.objectKey,
+      byteSize: 12,
+      digest,
+      contentType: 'application/pdf',
+    })
+    await expect(
+      resolveRunObjectForUpload(handle.db, {
+        runId,
+        objectKey: objectKeyFor(newId(), newId()),
+        digest,
+      }),
+    ).rejects.toMatchObject({ code: 'FILE_HANDLE_FOREIGN_RUN' })
+    await expect(
+      resolveRunObjectForUpload(handle.db, {
+        runId,
+        objectKey: reserved.objectKey,
+        digest: `sha256:${'ef'.repeat(32)}`,
+      }),
+    ).rejects.toMatchObject({ code: 'FILE_HANDLE_INVALID' })
+
+    const other = await createRunWithSnapshot(handle.db, {
+      scenarioId,
+      actor: { id: actorId },
+    })
+    const { storedObjects } = schemaFor(handle.db)
+    await handle.db.update(storedObjects).set({ runId: other.detail.id }).where(eq(storedObjects.id, reserved.id))
+    await expect(
+      resolveRunObjectForUpload(handle.db, { runId, objectKey: reserved.objectKey, digest }),
+    ).rejects.toMatchObject({ code: 'FILE_HANDLE_FOREIGN_RUN' })
   })
 
   it('过期 PENDING 不能 commit；清理候选按 purge_attempts 排序', async () => {

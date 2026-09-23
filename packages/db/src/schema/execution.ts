@@ -29,6 +29,7 @@ import type {
   OutcomeProvenance,
   OutcomeVerdict,
   OutcomeManifest,
+  RunOutput,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
@@ -147,6 +148,7 @@ export const runs = cairnSchema.table(
     snapshot: jsonb('snapshot').$type<RunSnapshot>().notNull(),
     snapshotDigest: text('snapshot_digest').notNull(),
     context: jsonb('context').$type<Record<string, JsonValue>>().notNull(),
+    output: jsonb('output').$type<RunOutput>(),
     idempotencyKey: text('idempotency_key'),
     idempotencyDigest: text('idempotency_digest'),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),

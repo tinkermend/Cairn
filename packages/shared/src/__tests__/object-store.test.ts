@@ -7,6 +7,7 @@ import {
   objectDigestSchema,
   objectKeyFor,
   objectKeySchema,
+  runObjectIdFromKey,
 } from '../object-store.js'
 
 const runId = '00000000-0000-4000-8000-0000000000a1'
@@ -37,6 +38,16 @@ describe('objectKeyFor', () => {
 
   it('拒绝非 UUID', () => {
     expect(() => objectKeyFor('not-a-uuid', objectId)).toThrow()
+  })
+})
+
+describe('runObjectIdFromKey', () => {
+  it('只接受当前 Run 前缀下的实体 ID', () => {
+    expect(runObjectIdFromKey(objectKeyFor(runId, objectId), runId)).toBe(objectId)
+    expect(runObjectIdFromKey(`v1/runs/${objectId}/${runId}`, runId)).toBeUndefined()
+    expect(runObjectIdFromKey(`v1/fixtures/${objectId}`, runId)).toBeUndefined()
+    expect(runObjectIdFromKey(`v1/runs/${runId}/sample-obj`, runId)).toBeUndefined()
+    expect(runObjectIdFromKey(`v1/runs/${runId}/${objectId}/extra`, runId)).toBeUndefined()
   })
 })
 

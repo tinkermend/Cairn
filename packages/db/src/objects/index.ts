@@ -8,6 +8,7 @@ export {
   findPendingObjectEvidence,
   getStoredObjectById,
   getStoredObjectByKey,
+  resolveRunObjectForUpload,
   listPurgeCandidates,
   markEvidenceMissing,
   markStoredObjectPurgeFailed,

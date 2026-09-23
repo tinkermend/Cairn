@@ -39,6 +39,7 @@ export const RUN_EVENT_TYPES = [
   'run.captcha_attempted',
   'run.captcha_solved',
   'run.captcha_escalated',
+  'run.output_settled',
 ] as const
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number]
 export const runEventTypeSchema = z.enum(RUN_EVENT_TYPES)
@@ -65,7 +66,14 @@ export const persistedRunEventSchema = eventEnvelopeSchema.extend({
 })
 export type PersistedRunEvent = z.infer<typeof persistedRunEventSchema>
 
-export const CHANGE_HINT_OBJECT_TYPES = ['run', 'suite_run', 'analysis_job', 'schedule'] as const
+export const CHANGE_HINT_OBJECT_TYPES = [
+  'run',
+  'suite_run',
+  'analysis_job',
+  'schedule',
+  'assistant_turn',
+  'assistant_task',
+] as const
 export type ChangeHintObjectType = (typeof CHANGE_HINT_OBJECT_TYPES)[number]
 export const changeHintObjectTypeSchema = z.enum(CHANGE_HINT_OBJECT_TYPES)
 

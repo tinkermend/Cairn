@@ -53,6 +53,8 @@ export const AUTH_INPUT_KEYS = [
   'ArrowRight',
   'ArrowUp',
   'ArrowDown',
+  'PageUp',
+  'PageDown',
 ] as const
 export type AuthInputKey = (typeof AUTH_INPUT_KEYS)[number]
 
