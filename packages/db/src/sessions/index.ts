@@ -86,6 +86,11 @@ export {
   type PlacementFacts,
 } from './occupancy.js'
 export {
+  expireQueuedSessionOperations,
+  countEligibleMaintenanceWorkers,
+  getSessionOperationView,
+} from './operation-queue.js'
+export {
   appendSessionEvent,
   listSessionEvents,
   listSessionEventsAfter,

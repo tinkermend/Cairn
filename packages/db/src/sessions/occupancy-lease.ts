@@ -31,6 +31,7 @@ import {
   loadLiveAccountSessions,
   profileKeyFrom,
   reservationBlocksSession,
+  type SessionClaimOperationWait,
 } from './account-session-concurrency.js'
 import {
   SessionDomainError,
@@ -87,6 +88,7 @@ export type ClaimSessionUseResult =
         | 'SESSION_POLICY_INVALID'
         | 'SESSION_ACCOUNT_CAP_EXCEEDED'
       message?: string
+      operationWait?: SessionClaimOperationWait
     }
 
 export async function insertLease(
@@ -247,7 +249,12 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         pickIdle: input.pickIdle ?? (input.purpose === 'MAINTENANCE' ? 'worst' : 'oldest'),
       })
       if (decision.action === 'reject') {
-        return { ok: false as const, code: decision.code, message: decision.message }
+        return {
+          ok: false as const,
+          code: decision.code,
+          message: decision.message,
+          ...(decision.operationWait ? { operationWait: decision.operationWait } : {}),
+        }
       }
 
       const targetSessionId = decision.action === 'reuse' ? decision.session.id : null
@@ -257,7 +264,12 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
           operationId: input.owner.kind === 'SESSION_OPERATION' ? input.owner.operationId : undefined,
         })
       ) {
-        return { ok: false as const, code: 'SESSION_BUSY' as const, message: '会话正在关闭或重建' }
+        return {
+          ok: false as const,
+          code: 'SESSION_BUSY' as const,
+          message: '会话正在关闭或重建',
+          operationWait: { reason: 'SESSION_BUSY' as const, detail: { reservedOperationId: reserved?.id ?? null } },
+        }
       }
 
       if (decision.action === 'reuse') {
@@ -273,7 +285,21 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
           return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
         }
         const existing = await findActiveLeaseRow(tx, session.id)
-        if (existing) return { ok: false as const, code: 'SESSION_BUSY' as const }
+        if (existing) {
+          return {
+            ok: false as const,
+            code: 'SESSION_BUSY' as const,
+            operationWait: {
+              reason: 'SESSION_BUSY' as const,
+              detail: {
+                sessionId: session.id,
+                purpose: existing.purpose,
+                occupyingRunId: existing.runId,
+                occupyingOperationId: existing.operationId,
+              },
+            },
+          }
+        }
         const bumped = await bumpSessionFence(tx, session.id, input.touchLastUsed !== false)
         if (!bumped) return { ok: false as const, code: 'SESSION_NOT_CLAIMABLE' as const }
         const lease = await insertLease(tx, {

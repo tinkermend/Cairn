@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { and, asc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm'
 import {
   SESSION_MAINTENANCE_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
@@ -10,6 +10,7 @@ import {
   type SessionOperationKind,
   type SessionOperationOrigin,
   type SessionGrant,
+  type SessionAcquireReason,
 } from '@cairn/shared'
 import { assertMaintenanceAuthorized, assertSessionActorPermission } from './access.js'
 import { appendSessionEvent } from './session-events.js'
@@ -26,7 +27,9 @@ import {
   profileKeyFrom,
   readAccountSessionCap,
   workerHasConcurrencyProtocol,
+  type SessionClaimOperationWait,
 } from './account-session-concurrency.js'
+import { expireQueuedSessionOperations, recordOperationWait } from './operation-queue.js'
 import { createSession, findLiveSessions, getSessionById, type SessionKey, type SessionRecord } from './sessions.js'
 import { adoptSessionRetention, applyPendingRetentionIntent } from './session-retention-intent.js'
 import { lockOperationRow, lockSession, lockWorkerRow, toGrant } from './occupancy-tx.js'
@@ -246,6 +249,12 @@ export type ClaimedSessionOperation = {
   grant: SessionGrant | null
   session: SessionRecord | null
   reusedRunId: string | null
+  /** 本次领取如何拿到会话；只在走占用领取（PREPARE / LOGIN / VERIFY 等）时有值。 */
+  acquire?: {
+    reason: SessionAcquireReason
+    profileFallback: boolean
+    accountSlot: number
+  } | null
 }
 
 export async function claimSessionOperation(
@@ -259,34 +268,7 @@ export async function claimSessionOperation(
     const hasMaintenance = Boolean(worker.protocolCapabilities?.includes(SESSION_MAINTENANCE_PROTOCOL))
     const { sessionOperations, runs } = schemaFor(tx)
     const now = await clockNow(tx)
-    const expired = await tx
-      .select()
-      .from(sessionOperations)
-      .where(and(eq(sessionOperations.status, 'QUEUED'), lte(sessionOperations.queueDeadlineAt, now)))
-      .limit(20)
-    for (const row of expired) {
-      const { targetAccounts } = schemaFor(tx)
-      await locked(
-        tx,
-        tx
-          .select({ id: targetAccounts.id })
-          .from(targetAccounts)
-          .where(eq(targetAccounts.id, row.targetAccountId)),
-      )
-      const [expiredRow] = await updateRows(
-        tx,
-        sessionOperations,
-        { status: 'FAILED', errorCode: 'OPERATION_QUEUE_EXPIRED', finishedAt: now, updatedAt: now },
-        and(eq(sessionOperations.id, row.id), eq(sessionOperations.status, 'QUEUED')),
-      )
-      if (expiredRow)
-        await appendSessionEvent(tx, {
-          key: row,
-          type: 'operation.finished',
-          operationId: row.id,
-          payload: { status: 'FAILED', errorCode: 'OPERATION_QUEUE_EXPIRED' },
-        })
-    }
+    await expireQueuedSessionOperations(tx, { now })
     const candidates = await tx
       .select()
       .from(sessionOperations)
@@ -336,7 +318,16 @@ export async function claimSessionOperation(
       }
       if (candidate.origin === 'BACKGROUND') {
         const targetSessionId = candidate.expectedSessionId ?? (livePreview.length === 1 ? livePreview[0]?.id : null)
-        if (targetSessionId && (await findActiveLeaseRow(tx, targetSessionId))) continue
+        const busy = targetSessionId ? await findActiveLeaseRow(tx, targetSessionId) : null
+        if (busy) {
+          await recordOperationWait(tx, candidate, now, 'SESSION_BUSY', {
+            sessionId: targetSessionId,
+            purpose: busy.purpose,
+            occupyingRunId: busy.runId,
+            occupyingOperationId: busy.operationId,
+          })
+          continue
+        }
       }
       if (candidate.expectedSessionId) {
         const live = await getSessionById(tx, candidate.expectedSessionId)
@@ -387,14 +378,20 @@ export async function claimSessionOperation(
         const existing = live ? leases.get(live.id) ?? null : null
         if (existing?.purpose === 'AUTH_WAIT' && live) {
           if (live.ownerWorkerId !== input.workerId || live.ownerWorkerInstanceId !== input.instanceId) {
-            await rollbackClaim(tx, candidate, now)
+            await rollbackClaim(tx, candidate, now, {
+              reason: 'SESSION_ON_OTHER_WORKER',
+              detail: { sessionId: live.id, workerId: live.ownerWorkerId },
+            })
             continue
           }
           if (candidate.kind === 'REFRESH_LOGIN_PAGE') {
             return { operation: moved, grant: toGrant(existing), session: live, reusedRunId: existing.runId }
           }
           if (!existing.runId) {
-            await rollbackClaim(tx, candidate, now)
+            await rollbackClaim(tx, candidate, now, {
+              reason: 'SESSION_BUSY',
+              detail: { sessionId: live.id, purpose: existing.purpose, occupyingOperationId: existing.operationId },
+            })
             continue
           }
           await updateRows(
@@ -437,13 +434,23 @@ export async function claimSessionOperation(
             },
             eq(sessionOperations.id, candidate.id),
           )
+          await appendSessionEvent(tx, {
+            key: candidate,
+            type: 'operation.finished',
+            operationId: candidate.id,
+            sessionId: live?.id ?? null,
+            payload: { status: 'FAILED', errorCode: 'SESSION_NOT_CLAIMABLE' },
+          })
           continue
         }
         if (
           live &&
           (live.ownerWorkerId !== input.workerId || live.ownerWorkerInstanceId !== input.instanceId)
         ) {
-          await rollbackClaim(tx, candidate, now)
+          await rollbackClaim(tx, candidate, now, {
+            reason: 'SESSION_ON_OTHER_WORKER',
+            detail: { sessionId: live.id, workerId: live.ownerWorkerId },
+          })
           continue
         }
         if (live) {
@@ -459,7 +466,7 @@ export async function claimSessionOperation(
               const { sessionLeases } = schemaFor(tx)
               await deleteRows(tx, sessionLeases, eq(sessionLeases.sessionId, live.id))
               if (existing.operationId) {
-                await updateRows(
+                const [interrupted] = await updateRows(
                   tx,
                   sessionOperations,
                   { status: 'CANCELLED', errorCode: 'OPERATION_INTERRUPTED', finishedAt: now, updatedAt: now },
@@ -468,6 +475,14 @@ export async function claimSessionOperation(
                     inArray(sessionOperations.status, ['QUEUED', 'RUNNING', 'WAITING_FOR_AUTH']),
                   ),
                 )
+                if (interrupted)
+                  await appendSessionEvent(tx, {
+                    key: interrupted,
+                    type: 'operation.finished',
+                    operationId: interrupted.id,
+                    sessionId: live.id,
+                    payload: { status: 'CANCELLED', errorCode: 'OPERATION_INTERRUPTED', interruptedBy: candidate.id },
+                  })
               }
             } else {
               await updateRows(
@@ -517,6 +532,12 @@ export async function claimSessionOperation(
           { status: 'FAILED', errorCode: 'SESSION_NOT_CLAIMABLE', finishedAt: now, updatedAt: now },
           eq(sessionOperations.id, candidate.id),
         )
+        await appendSessionEvent(tx, {
+          key: candidate,
+          type: 'operation.finished',
+          operationId: candidate.id,
+          payload: { status: 'FAILED', errorCode: 'SESSION_NOT_CLAIMABLE' },
+        })
         continue
       }
       if (candidate.kind === 'VALIDATE_AUTH_PROFILE' || isSessionLeaseClaimKind(candidate.kind)) {
@@ -541,7 +562,7 @@ export async function claimSessionOperation(
           touchLastUsed: !['VERIFY_AUTH', 'RENEW_AUTH', 'SETTLE_LANDING'].includes(candidate.kind),
         })
         if (!claimed.ok) {
-          await rollbackClaim(tx, candidate, now)
+          await rollbackClaim(tx, candidate, now, claimFailureWait(claimed))
           continue
         }
         await bindOperationSession(tx, moved.id, claimed.session.id, claimed.session.generation)
@@ -554,6 +575,11 @@ export async function claimSessionOperation(
           grant: claimed.grant,
           session: claimed.session,
           reusedRunId: null,
+          acquire: {
+            reason: claimed.acquireReason,
+            profileFallback: claimed.profileFallback,
+            accountSlot: claimed.session.accountSlot ?? 1,
+          },
         }
       }
 
@@ -563,7 +589,13 @@ export async function claimSessionOperation(
   })
 }
 
-export async function rollbackClaim(tx: Db, candidate: SessionOperationRow, now: Date): Promise<void> {
+/** 退回 QUEUED；带上本次没领到的原因，排队界面才说得清在等什么。 */
+export async function rollbackClaim(
+  tx: Db,
+  candidate: SessionOperationRow,
+  now: Date,
+  wait?: SessionClaimOperationWait,
+): Promise<void> {
   const { sessionOperations } = schemaFor(tx)
   await updateRows(
     tx,
@@ -578,6 +610,16 @@ export async function rollbackClaim(tx: Db, candidate: SessionOperationRow, now:
     },
     eq(sessionOperations.id, candidate.id),
   )
+  if (wait) await recordOperationWait(tx, candidate, now, wait.reason, wait.detail ?? null)
+}
+
+function claimFailureWait(
+  failed: Extract<Awaited<ReturnType<typeof claimSessionUse>>, { ok: false }>,
+): SessionClaimOperationWait {
+  if (failed.operationWait) return failed.operationWait
+  if (failed.code === 'SESSION_CAPACITY_EXCEEDED') return { reason: 'WORKER_SESSION_CAPACITY' }
+  if (failed.code === 'SESSION_ACCOUNT_CAP_EXCEEDED') return { reason: 'SESSION_ACCOUNT_AT_CAPACITY' }
+  return { reason: 'SESSION_BUSY', detail: { code: failed.code, ...(failed.message ? { message: failed.message } : {}) } }
 }
 
 export async function finishSessionOperation(

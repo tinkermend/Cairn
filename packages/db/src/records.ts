@@ -25,6 +25,7 @@ import type {
   SessionOperationKind,
   SessionOperationOrigin,
   SessionOperationStatus,
+  SessionOperationWaitReason,
   SessionProfileCleanup,
   SessionProfileState,
   SessionReusePolicy,
@@ -750,6 +751,9 @@ export type SessionOperationRow = {
   updatedAt: Date
   finishedAt: Date | null
 }
+  waitReason: SessionOperationWaitReason | null
+  waitDetail: Record<string, unknown> | null
+  lastClaimAttemptAt: Date | null
 
 export type SessionProfileRow = {
   targetId: string

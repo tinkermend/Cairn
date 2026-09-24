@@ -27,11 +27,22 @@ import { parseTargetSessionPolicyOverride } from './session-policy.js'
 import { readAccountSessionCap } from './account-session-concurrency.js'
 import { loadCurrentAuthProfile } from './auth-profile.js'
 import type { SessionOperationRow } from '../records.js'
+import { effectiveOperationWaitReason } from './operation-queue.js'
 import type { SessionLeaseRow } from '../schema/session.js'
 import type { SessionKey, SessionRecord } from './sessions.js'
 
 const LIVE_SESSION_STATUSES = ['CREATING', 'OPEN', 'CLOSING', 'LOST'] as const
-const ACTIVE_OPERATION_STATUSES = ['QUEUED', 'RUNNING', 'WAITING_FOR_AUTH'] as const
+/**
+ * 活动操作：执行中、等认证，或仍在排队截止内的 QUEUED。
+ * 过了截止未被清理的排队不再算维护中，免得 Worker 全停时挡住用户重新发起。
+ */
+function activeOperationCondition(db: Db): SQL {
+  const { sessionOperations } = schemaFor(db)
+  return or(
+    inArray(sessionOperations.status, ['RUNNING', 'WAITING_FOR_AUTH']),
+    and(eq(sessionOperations.status, 'QUEUED'), sql`${sessionOperations.queueDeadlineAt} > ${databaseNow(db)}`),
+  )!
+}
 
 type OccupancyLive = Pick<
   SessionRecord,
@@ -251,7 +262,7 @@ async function loadOccupancyFactsForAccountKeys(
     .where(
       and(
         inArray(sessionOperations.targetAccountId, accountIds),
-        inArray(sessionOperations.status, ACTIVE_OPERATION_STATUSES),
+        activeOperationCondition(db),
       ),
     )
   const opsByAccount = new Map<string, SessionOperationRow[]>()
@@ -356,7 +367,7 @@ async function loadOccupancyFactsForActiveAccounts(db: Db): Promise<Map<string, 
     .innerJoin(targets, eq(targets.id, sessionOperations.targetId))
     .where(
       and(
-        inArray(sessionOperations.status, ACTIVE_OPERATION_STATUSES),
+        activeOperationCondition(db),
         isNull(targetAccounts.deletedAt),
         isNull(targets.deletedAt),
       ),
@@ -1054,6 +1065,8 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
             typeof facts.activeOp.kindParams?.reusedRunId === 'string'
               ? facts.activeOp.kindParams.reusedRunId
               : null,
+          queueDeadlineAt: facts.activeOp.queueDeadlineAt.toISOString(),
+          waitReason: await effectiveOperationWaitReason(db, facts.activeOp),
         }
       : null,
     actions: actionsFor(

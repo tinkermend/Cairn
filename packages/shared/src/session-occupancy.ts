@@ -60,6 +60,23 @@ export const SESSION_OPERATION_STATUSES = [
 export type SessionOperationStatus = (typeof SESSION_OPERATION_STATUSES)[number]
 export const sessionOperationStatusSchema = z.enum(SESSION_OPERATION_STATUSES)
 
+/**
+ * 会话操作仍在排队时「在等什么」。由领取评估（Worker）或受理检查（API）写入，
+ * 只有原因变化才落一条 operation.queue_waiting。
+ */
+export const SESSION_OPERATION_WAIT_REASONS = [
+  'AWAITING_CLAIM',
+  'NO_ELIGIBLE_WORKER',
+  'WORKER_SESSION_CAPACITY',
+  'SESSION_ACCOUNT_AT_CAPACITY',
+  'SESSION_LOST',
+  'SESSION_BUSY',
+  'SESSION_ON_OTHER_WORKER',
+  'WORKER_PROTOCOL_MISSING',
+] as const
+export type SessionOperationWaitReason = (typeof SESSION_OPERATION_WAIT_REASONS)[number]
+export const sessionOperationWaitReasonSchema = z.enum(SESSION_OPERATION_WAIT_REASONS)
+
 export const SESSION_MAINTENANCE_KINDS = [
   'PREPARE',
   'VERIFY_AUTH',
@@ -140,6 +157,11 @@ export const sessionOperationDtoSchema = z.strictObject({
   attemptNo: z.number().int().nonnegative(),
   queueDeadlineAt: utcInstantSchema,
   errorCode: z.string().min(1).max(64).nullable(),
+  waitReason: sessionOperationWaitReasonSchema.nullable(),
+  waitDetail: z.record(z.string(), z.unknown()).nullable(),
+  lastClaimAttemptAt: utcInstantSchema.nullable(),
+  /** 读时按领取同口径（全局、未过期、更早入队）计算；非 QUEUED 为 null。 */
+  queuePosition: z.number().int().nonnegative().nullable(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
   finishedAt: utcInstantSchema.nullable(),

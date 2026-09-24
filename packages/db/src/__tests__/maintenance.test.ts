@@ -454,6 +454,51 @@ describe.each(DRIVERS)('%s 会话维护账本', { timeout: 60_000 }, (driver) =>
     if (queued.operation) await cancelSessionOperation(handle.db, { operationId: queued.operation.id })
   })
 
+  it('领取阶段判不可领取时写 operation.finished，使用记录不停在执行中', async () => {
+    const { requestSessionOperation, getSessionOperation } = await import('../test-entry.js')
+    const accountId = await makeAccount('unclaimable')
+    const key = { targetId, targetAccountId: accountId }
+    const workerId = `unclaimable-${newId()}`
+    const instanceId = newId()
+    await registerWorker(handle.db, {
+      workerId,
+      instanceId,
+      capacity: 4,
+      lostAfterSeconds: 60,
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, SESSION_MAINTENANCE_PROTOCOL],
+    })
+    // 绕过 API 入口校验，直接入账两类只能在领取时判失败的操作。
+    const { operation: verify } = await requestSessionOperation(handle.db, {
+      key,
+      kind: 'VERIFY_AUTH',
+      kindParams: { requestedBy: actorId },
+      origin: 'USER',
+      idempotencyKey: `unclaimable-verify-${accountId}`,
+    })
+    const { operation: close } = await requestSessionOperation(handle.db, {
+      key,
+      kind: 'CLOSE',
+      kindParams: { requestedBy: actorId },
+      origin: 'USER',
+      idempotencyKey: `unclaimable-close-${accountId}`,
+    })
+    for (let i = 0; i < 5; i += 1) {
+      const pending = await Promise.all([verify.id, close.id].map((id) => getSessionOperation(handle.db, id)))
+      if (pending.every((op) => op?.status !== 'QUEUED')) break
+      await claimSessionOperation(handle.db, { workerId, instanceId, leaseTtlSeconds: 30 })
+    }
+    const events = await listSessionEventsAfter(handle.db, { key, afterSeq: 0 })
+    for (const op of [verify, close]) {
+      expect((await getSessionOperation(handle.db, op.id))).toMatchObject({
+        status: 'FAILED',
+        errorCode: 'SESSION_NOT_CLAIMABLE',
+      })
+      expect(
+        events.find((event) => event.operationId === op.id && event.type === 'operation.finished')?.payload,
+      ).toMatchObject({ status: 'FAILED', errorCode: 'SESSION_NOT_CLAIMABLE' })
+    }
+  })
+
   it('LOGIN 复用 Run AUTH_WAIT，操作账本关联原 Run', async () => {
     const accountId = await makeAccount('login-reuse')
     const worker = await seedWorker(handle)

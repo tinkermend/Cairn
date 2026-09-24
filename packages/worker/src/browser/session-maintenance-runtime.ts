@@ -45,6 +45,7 @@ import {
   type SessionGrant
 } from '@cairn/shared'
 import { profileDirFor } from './profiles'
+import { beginOperationProgress, peekOperationProgress, takeOperationProgress } from './operation-progress'
 import { verifyAuthProfile } from './session-auth'
 import {
   BrowserRuntimeError,
@@ -285,10 +286,20 @@ function borrowedAuthWaitOwner(input: {
 }
 
 export async function attachMaintenanceOperation(this: SessionManagerContext, input: {
-    operation: { id: string; kind: string; targetId: string; targetAccountId: string; origin?: string; kindParams?: Record<string, unknown> | null }
+    operation: {
+      id: string
+      kind: string
+      targetId: string
+      targetAccountId: string
+      origin?: string
+      kindParams?: Record<string, unknown> | null
+      attemptNo?: number
+      createdAt?: Date | null
+    }
     grant: SessionGrant | null
     session: SessionRecord | null
     reusedRunId: string | null
+    acquire?: { reason: string; profileFallback: boolean; accountSlot: number } | null
   }): Promise<void> {
     const db = this.dbHandle
     const key = { targetId: input.operation.targetId, targetAccountId: input.operation.targetAccountId }
@@ -310,7 +321,29 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
         sessionId: input.session?.id ?? input.grant?.sessionId ?? null,
         generation: input.session?.generation ?? input.grant?.generation ?? null,
         operationId: input.operation.id,
-        payload: { kind: input.operation.kind },
+        payload: {
+          kind: input.operation.kind,
+          workerId: this.options.workerId,
+          ...(input.operation.attemptNo != null ? { attemptNo: input.operation.attemptNo } : {}),
+        },
+      })
+    }
+    const progress = beginOperationProgress(db, {
+      key,
+      operationId: input.operation.id,
+      kind: input.operation.kind,
+      background: input.operation.origin === 'BACKGROUND',
+      createdAt: input.operation.createdAt ?? null,
+      sessionId: input.session?.id ?? input.grant?.sessionId ?? null,
+      generation: input.session?.generation ?? input.grant?.generation ?? null,
+    })
+    if (input.acquire) {
+      await progress.mark('session_acquired', {
+        detail: {
+          acquireReason: input.acquire.reason,
+          accountSlot: input.acquire.accountSlot,
+          profileFallback: input.acquire.profileFallback,
+        },
       })
     }
     const attempt = { loginSubmitted: false }
@@ -379,6 +412,7 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
           return
         }
         await adoptSessionRetention(db, { fromSessionId: predecessor.id, toSessionId: created.session.id })
+        const launchStartedAt = Date.now()
         const launched = await runWithSessionRestart(created.session.id, () =>
           this.launchAndOpen(created.session, key),
         )
@@ -386,6 +420,8 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
           await this.finishMaintenance(input.operation.id, key, 'FAILED', undefined, launched.code)
           return
         }
+        progress.bindSession(launched.session)
+        await progress.mark('browser_launched', { durationMs: Date.now() - launchStartedAt })
         await appendSessionEvent(db, {
           key,
           type: 'session.restarted',
@@ -445,6 +481,7 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
       await runWithOccupancy(input.grant, async () => {
         let session = input.session!
         if (!this.lives.has(session.id)) {
+          const launchStartedAt = Date.now()
           let launched = await this.launchAndOpen(session, key)
           if (!launched.ok && launched.code === 'SESSION_NOT_CLAIMABLE') {
             this.logger.warn(
@@ -463,6 +500,10 @@ export async function attachMaintenanceOperation(this: SessionManagerContext, in
             throw new SessionLeaseError(launched.code, launched.message)
           }
           session = launched.session
+          progress.bindSession(session)
+          await progress.mark('browser_launched', { durationMs: Date.now() - launchStartedAt })
+        } else {
+          await progress.mark('browser_reused')
         }
         const live = this.lives.get(session.id)
         if (live) this.ensureRunPage(live, borrowedOwner ?? input.operation.id, input.grant!.leaseId)
@@ -612,9 +653,23 @@ export async function finishMaintenance(this: SessionManagerContext,
       status,
       errorCode,
     })
+    const progress = takeOperationProgress(operationId)
     // 终态已被别人写过（迟到结果）：状态不覆盖，账本也不能追加一条自相矛盾的收尾事件。
     if (!written) return
-    const payload = { status, errorCode: errorCode ?? null }
+    // 后台操作的阶段事件只在失败时补写，且须排在收尾事件之前。
+    await progress?.flush(status === 'FAILED')
+    const payload = {
+      status,
+      errorCode: errorCode ?? null,
+      ...(progress
+        ? {
+            kind: progress.input.kind,
+            workerId: this.options.workerId,
+            durationMs: progress.elapsedMs(),
+            ...(progress.queuedMs != null ? { queuedMs: progress.queuedMs } : {}),
+          }
+        : {}),
+    }
     // 认证结论可以单独入账，但操作生命周期必须落 operation.finished，否则使用记录会停在「执行中」。
     if (event?.type && event.type !== 'operation.finished') {
       await appendSessionEvent(this.dbHandle, {
@@ -668,7 +723,16 @@ export async function runMaintenanceAuth(this: SessionManagerContext,
       return verified.observation
     }
 
+    const probeStartedAt = Date.now()
     const observation = await verifyOnce()
+    await peekOperationProgress(operation.id)?.mark('auth_probed', {
+      durationMs: Date.now() - probeStartedAt,
+      detail: {
+        authState: observation.authState,
+        identityState: observation.identityState ?? null,
+        via: 'auth_profile',
+      },
+    })
     const passed =
       observation.authState === 'AUTHENTICATED' &&
       (verification.capability !== 'IDENTITY_VERIFIED' || observation.identityState === 'MATCH')
@@ -1184,10 +1248,15 @@ async function runLegacyMaintenanceAuth(
 ): Promise<{ ok: true } | { ok: false; code?: SessionErrorCode } | 'waiting'> {
   const live = this.lives.get(session.id)
   if (!live) return { ok: false, code: 'SESSION_NOT_CLAIMABLE' }
+  const probeStartedAt = Date.now()
   const probed = await probeAuth(live.handle, {
     entryUrl: target.entryUrl,
     loginUrl: target.loginUrl,
     loginFields: target.loginFields,
+  })
+  await peekOperationProgress(operation.id)?.mark('auth_probed', {
+    durationMs: Date.now() - probeStartedAt,
+    detail: { authState: probed, via: 'page_heuristic' },
   })
   await persistLegacyObservation(this, session, probed)
   // 与领取路径一致：inspectAuthOnPage 在看不到密码框、也不像登录 URL 时默认

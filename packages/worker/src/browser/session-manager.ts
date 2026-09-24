@@ -336,10 +336,20 @@ export class BrowserSessionManager {
   }
 
   async attachMaintenanceOperation(input: {
-    operation: { id: string; kind: string; targetId: string; targetAccountId: string; origin?: string; kindParams?: Record<string, unknown> | null }
+    operation: {
+      id: string
+      kind: string
+      targetId: string
+      targetAccountId: string
+      origin?: string
+      kindParams?: Record<string, unknown> | null
+      attemptNo?: number
+      createdAt?: Date | null
+    }
     grant: SessionGrant | null
     session: SessionRecord | null
     reusedRunId: string | null
+    acquire?: { reason: string; profileFallback: boolean; accountSlot: number } | null
   }): Promise<void> {
     return attachMaintenanceOperation.call(this, input)
   }

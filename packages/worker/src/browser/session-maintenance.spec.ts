@@ -19,6 +19,7 @@ import { BrowserSessionManager } from './session-manager'
 import { createBrowserPort } from './port'
 import { currentOccupancyGrant, attemptLoginCredentials, attemptLoginWithCredentials, loginWithCredentials, probeAuth } from './runtime'
 import { verifyAuthProfile } from './session-auth'
+import { clearOperationProgress } from './operation-progress'
 vi.mock('@cairn/db', async (load) => ({
   ...(await load<typeof import('@cairn/db')>()),
   invalidateSessionProfile: vi.fn(),
@@ -61,6 +62,7 @@ vi.mock('./runtime', async (load) => {
 })
 let manager: any
 beforeEach(() => {
+  clearOperationProgress()
   vi.clearAllMocks()
   vi.mocked(freezeAuthVerificationForRun).mockResolvedValue({ capability: 'IDENTITY_VERIFIED', profileRevision: 1 } as any)
   vi.mocked(loadTargetForExecution).mockResolvedValue({ id: 't', entryUrl: 'https://example.com', authMethod: 'password', captchaMode: 'none' } as any)

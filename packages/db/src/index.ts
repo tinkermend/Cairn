@@ -369,6 +369,7 @@ export const freezeAuthVerificationForRun = operation(
 export const getTargetAuthProfileView = operation(
   impl2.getTargetAuthProfileView,
 );
+export const getSessionOperationView = operation(impl2.getSessionOperationView);
 export const publishTargetAuthProfile = operation(
   impl2.publishTargetAuthProfile,
 );

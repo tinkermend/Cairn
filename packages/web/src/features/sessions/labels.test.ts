@@ -20,6 +20,29 @@ function event(
 }
 
 describe('groupSessionEventsByActivity', () => {
+  it('只有已提交、尚未领取时显示排队中而不是执行中', () => {
+    const [group] = groupSessionEventsByActivity([
+      event({ id: 'e1', type: 'operation.requested', payload: { kind: 'PREPARE', origin: 'USER' } }),
+    ])
+    expect(group.title).toBe('准备会话')
+    expect(group.status).toBe('QUEUED')
+    expect(group.statusLabel).toBe('排队中')
+  })
+
+  it('被 Worker 领取后显示执行中', () => {
+    const [group] = groupSessionEventsByActivity([
+      event({ id: 'e1', type: 'operation.requested', payload: { kind: 'PREPARE' } }),
+      event({
+        id: 'e2',
+        type: 'operation.claimed',
+        payload: { kind: 'PREPARE' },
+        createdAt: '2026-09-21T04:00:01.000Z',
+      }),
+    ])
+    expect(group.status).toBe('RUNNING')
+    expect(group.statusLabel).toBe('执行中')
+  })
+
   it('检查登录失败若只落下 auth.unknown，也显示失败而不是执行中', () => {
     const [group] = groupSessionEventsByActivity([
       event({
@@ -162,5 +185,62 @@ describe('groupSessionEventsByActivity', () => {
     expect(resolveSessionEvent('operation.waiting_for_auth', { kind: 'LOGIN', reason: 'credential' }).summary).toBe(
       '账号或密码未通过核验',
     )
+  })
+
+  it('排队等待与过程事件有可读的阶段与摘要', () => {
+    expect(
+      resolveSessionEvent('operation.queue_waiting', {
+        kind: 'PREPARE',
+        waitReason: 'SESSION_ACCOUNT_AT_CAPACITY',
+        detail: { lives: 1, cap: 1 },
+      }),
+    ).toMatchObject({ title: '准备会话', stage: '排队等待', tone: 'neutral', summary: '该账号并发会话已达上限（1/1），等待释放' })
+    expect(resolveSessionEvent('operation.queue_waiting', { kind: 'PREPARE', waitReason: 'NO_ELIGIBLE_WORKER' }).tone).toBe(
+      'warning',
+    )
+    expect(
+      resolveSessionEvent('operation.progress', {
+        kind: 'PREPARE',
+        phase: 'session_acquired',
+        detail: { acquireReason: 'created', accountSlot: 1, profileFallback: true },
+      }),
+    ).toMatchObject({ stage: '拿到会话', summary: '新建会话，第 1 个会话位 · 已从其他节点迁移登录资料' })
+    expect(
+      resolveSessionEvent('operation.progress', {
+        kind: 'PREPARE',
+        phase: 'auth_probed',
+        durationMs: 800,
+        detail: { authState: 'EXPIRED', via: 'page_heuristic' },
+      }),
+    ).toMatchObject({ stage: '检查登录状态', summary: '未登录 · 耗时 < 1秒' })
+    expect(resolveSessionEvent('operation.claimed', { kind: 'PREPARE', workerId: 'local-worker' }).summary).toBe(
+      '由执行节点 local-worker 领取',
+    )
+    expect(
+      resolveSessionEvent('operation.finished', {
+        kind: 'PREPARE',
+        status: 'FAILED',
+        errorCode: 'OPERATION_QUEUE_EXPIRED',
+        waitReason: 'NO_ELIGIBLE_WORKER',
+      }).summary,
+    ).toBe('排队已超时：没有在线的执行节点，操作不会开始')
+    expect(
+      resolveSessionEvent('operation.finished', { kind: 'PREPARE', status: 'SUCCEEDED', queuedMs: 1200, durationMs: 26_000 })
+        .summary,
+    ).toBe('排队 1秒 · 执行 26秒')
+  })
+
+  it('分组耗时拆成排队与执行', () => {
+    const [group] = groupSessionEventsByActivity([
+      event({ id: 'e1', type: 'operation.requested', payload: { kind: 'PREPARE' }, createdAt: '2026-09-21T04:00:00.000Z' }),
+      event({ id: 'e2', type: 'operation.claimed', payload: { kind: 'PREPARE' }, createdAt: '2026-09-21T04:00:05.000Z' }),
+      event({
+        id: 'e3',
+        type: 'operation.finished',
+        payload: { kind: 'PREPARE', status: 'SUCCEEDED' },
+        createdAt: '2026-09-21T04:00:31.000Z',
+      }),
+    ])
+    expect(group.durationText).toBe('排队 5秒 · 执行 26秒')
   })
 })

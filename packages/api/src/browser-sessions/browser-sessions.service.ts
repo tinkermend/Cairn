@@ -29,6 +29,7 @@ import {
   listSessionEventsAfter,
   listSessions,
   requestMaintenanceOperation,
+  getSessionOperationView,
   setSessionRetention,
   toSessionOperationDto,
   type DbHandle,
@@ -153,6 +154,7 @@ export class BrowserSessionsService {
         operationId: result.operation?.id ?? null,
         reusedRunId: result.reusedRunId,
         created: result.created,
+        admission: result.eligibleWorkers == null ? null : { eligibleWorkers: result.eligibleWorkers },
       })
     } catch (error) {
       rethrowDomain(error)
@@ -172,9 +174,9 @@ export class BrowserSessionsService {
   }
 
   async getOperation(operationId: string) {
-    const row = await getSessionOperation(this.handle, operationId)
-    if (!row) throw new NotFoundException({ code: 'OPERATION_NOT_FOUND', message: '会话操作不存在' })
-    return sessionOperationDtoSchema.parse(toSessionOperationDto(row))
+    const view = await getSessionOperationView(this.handle, operationId)
+    if (!view) throw new NotFoundException({ code: 'OPERATION_NOT_FOUND', message: '会话操作不存在' })
+    return sessionOperationDtoSchema.parse(view)
   }
 
   async cancelOperation(operationId: string, actor: RequestAccount) {

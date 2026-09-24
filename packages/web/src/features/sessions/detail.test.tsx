@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { ThemeProvider } from '@/context/theme-provider'
 import {
   SessionDetailPage,
+  describeOperationBanner,
   resolveSessionPrimaryAction,
   sessionOperationProgress,
   sessionRetentionHint,
@@ -203,6 +204,122 @@ describe('SessionDetailPage', () => {
         currentStatus: 'SUCCEEDED',
       }),
     ).toEqual({ kind: 'VERIFY_AUTH', status: 'SUBMITTING' })
+  })
+
+  it('排队横幅说清在等什么、排第几、何时超时', () => {
+    const now = Date.parse('2026-09-24T01:10:00.000Z')
+    const waiting = describeOperationBanner({
+      kind: 'PREPARE',
+      status: 'QUEUED',
+      now,
+      waitReason: 'WORKER_SESSION_CAPACITY',
+      waitDetail: { occupied: 2, maxSessions: 2 },
+      queueDeadlineAt: '2026-09-24T01:14:19.000Z',
+      queuePosition: 2,
+    })
+    expect(waiting.headline).toBe('准备会话 · 排队中')
+    expect(waiting.tone).toBe('info')
+    expect(waiting.lines[0]).toBe('执行节点会话已满（2/2），等待释放')
+    expect(waiting.lines[1]).toMatch(/^前面还有 2 个操作 · 将于 .+ 超时（剩 4 分 19 秒）$/)
+
+    const noWorker = describeOperationBanner({
+      kind: 'PREPARE',
+      status: 'QUEUED',
+      now,
+      waitReason: 'NO_ELIGIBLE_WORKER',
+      queueDeadlineAt: '2026-09-24T01:14:19.000Z',
+      queuePosition: 0,
+    })
+    expect(noWorker).toMatchObject({ tone: 'warning', showWorkersLink: true, expired: false })
+    expect(noWorker.lines[0]).toBe('没有在线的执行节点，操作不会开始')
+
+    const expired = describeOperationBanner({
+      kind: 'PREPARE',
+      status: 'QUEUED',
+      now: Date.parse('2026-09-24T02:00:00.000Z'),
+      waitReason: 'NO_ELIGIBLE_WORKER',
+      queueDeadlineAt: '2026-09-24T01:14:19.000Z',
+    })
+    expect(expired).toMatchObject({ headline: '准备会话 · 排队已超时', expired: true, tone: 'warning' })
+    expect(expired.lines[0]).toMatch(/可以重新发起$/)
+  })
+
+  it('普通等待超过 30 秒后说明已等待多久', () => {
+    const now = Date.parse('2026-09-24T01:10:00.000Z')
+    const base = {
+      kind: 'PREPARE',
+      status: 'QUEUED',
+      now,
+      waitReason: 'AWAITING_CLAIM',
+      queueDeadlineAt: '2026-09-24T01:14:00.000Z',
+    }
+    expect(describeOperationBanner({ ...base, createdAt: '2026-09-24T01:09:50.000Z' }).lines[0]).toBe(
+      '等待执行节点领取（通常几秒）',
+    )
+    expect(describeOperationBanner({ ...base, createdAt: '2026-09-24T01:09:00.000Z' }).lines[0]).toBe(
+      '已等待 1 分 0 秒，执行节点仍未领取',
+    )
+    // 有明确原因时仍说原因。
+    expect(
+      describeOperationBanner({
+        ...base,
+        waitReason: 'WORKER_SESSION_CAPACITY',
+        createdAt: '2026-09-24T01:09:00.000Z',
+      }).lines[0],
+    ).toBe('执行节点会话已满，等待释放')
+  })
+
+  it('执行横幅显示当前阶段、已用时长与执行节点', () => {
+    const running = describeOperationBanner({
+      kind: 'PREPARE',
+      status: 'RUNNING',
+      now: Date.parse('2026-09-24T01:10:12.000Z'),
+      latestProgress: { payload: { phase: 'browser_launched', durationMs: 2300 } },
+      claimedAt: '2026-09-24T01:10:00.000Z',
+      ownerWorkerId: 'local-worker',
+    })
+    expect(running.headline).toBe('准备会话 · 执行中')
+    expect(running.lines).toEqual(['当前：启动浏览器 · 耗时 2秒', '已用 12 秒 · 执行节点 local-worker'])
+  })
+
+  it('无可用节点时横幅给出提示与执行节点入口', async () => {
+    const base = await mocks.fetchAccountSession()
+    const deadline = new Date(Date.now() + 120_000).toISOString()
+    mocks.fetchAccountSession.mockResolvedValue({
+      ...base,
+      status: 'maintenance',
+      currentOperation: {
+        id: 'op',
+        kind: 'PREPARE',
+        status: 'QUEUED',
+        reusedRunId: null,
+        queueDeadlineAt: deadline,
+        waitReason: 'NO_ELIGIBLE_WORKER',
+      },
+    })
+    mocks.fetchSessionOperation.mockResolvedValue({
+      id: 'op',
+      kind: 'PREPARE',
+      status: 'QUEUED',
+      queueDeadlineAt: deadline,
+      waitReason: 'NO_ELIGIBLE_WORKER',
+      waitDetail: null,
+      queuePosition: 0,
+      ownerWorkerId: null,
+      errorCode: null,
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const screen = await render(
+      <ThemeProvider>
+        <QueryClientProvider client={client}>
+          <SessionDetailPage />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    )
+    await expect.element(screen.getByText('准备会话 · 排队中')).toBeInTheDocument()
+    await expect.element(screen.getByText('没有在线的执行节点，操作不会开始')).toBeInTheDocument()
+    await expect.element(screen.getByText('查看执行节点')).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: '取消操作' })).toBeInTheDocument()
   })
 
   it('完成后不再悬挂操作进度', async () => {

@@ -62,7 +62,10 @@ import {
   ACCOUNT_SESSION_STATUS_TONE,
   OPERATION_KIND_LABELS,
   PRIMARY_ACTION_LABELS,
+  describeOperationProgress,
+  describeOperationWait,
   describeSessionOperationError,
+  operationWaitNeedsAttention,
   groupSessionEventsByActivity,
   resolveSessionEvent,
   sessionAuthLabel,
@@ -133,6 +136,117 @@ export function sessionOperationProgress(input: {
     return { kind: input.currentKind, status: input.currentStatus }
   }
   return null
+}
+
+export type OperationBanner = {
+  headline: string
+  lines: string[]
+  tone: 'info' | 'warning'
+  /** 已过排队截止：不再显示取消，提示可以重新发起。 */
+  expired: boolean
+  showWorkersLink: boolean
+}
+
+function formatClock(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function formatRemaining(ms: number): string {
+  const seconds = Math.max(0, Math.ceil(ms / 1000))
+  return seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`
+}
+
+/** 操作进度横幅：排队时说清在等什么、排第几、何时超时；执行时说清走到哪一步。 */
+export function describeOperationBanner(input: {
+  kind: string
+  status: string
+  now: number
+  waitReason?: string | null
+  waitDetail?: Record<string, unknown> | null
+  queueDeadlineAt?: string | null
+  queuePosition?: number | null
+  /** 入队时间；普通等待超过 30 秒后改说「已等待多久」，不再说「通常几秒」。 */
+  createdAt?: string | null
+  latestProgress?: { payload: Record<string, unknown> } | null
+  claimedAt?: string | null
+  ownerWorkerId?: string | null
+  lastAuthError?: string | null
+}): OperationBanner {
+  const kind = OPERATION_KIND_LABELS[input.kind] ?? '会话操作'
+  if (input.status === 'QUEUED') {
+    const deadline = input.queueDeadlineAt ? new Date(input.queueDeadlineAt).getTime() : null
+    if (deadline != null && deadline <= input.now) {
+      return {
+        headline: `${kind} · 排队已超时`,
+        lines: [`${describeOperationWait(input.waitReason, input.waitDetail)}，已于 ${formatClock(input.queueDeadlineAt!)} 超时，可以重新发起`],
+        tone: 'warning',
+        expired: true,
+        showWorkersLink: operationWaitNeedsAttention(input.waitReason),
+      }
+    }
+    const attention = operationWaitNeedsAttention(input.waitReason)
+    const waitedMs = input.createdAt ? input.now - new Date(input.createdAt).getTime() : 0
+    // 受理后节点才掉线不会有事件推来；等久了就如实说等了多久，而不是继续承诺「几秒」。
+    const stalled = (!input.waitReason || input.waitReason === 'AWAITING_CLAIM') && waitedMs >= 30_000
+    const lines = [
+      stalled
+        ? `已等待 ${formatRemaining(waitedMs)}，执行节点仍未领取`
+        : describeOperationWait(input.waitReason, input.waitDetail),
+    ]
+    const position =
+      input.queuePosition != null && input.queuePosition > 0 ? `前面还有 ${input.queuePosition} 个操作` : null
+    const timeout =
+      deadline != null
+        ? `将于 ${formatClock(input.queueDeadlineAt!)} 超时（剩 ${formatRemaining(deadline - input.now)}）`
+        : null
+    const tail = [position, timeout].filter(Boolean).join(' · ')
+    if (tail) lines.push(tail)
+    return {
+      headline: `${kind} · 排队中`,
+      lines,
+      tone: attention ? 'warning' : 'info',
+      expired: false,
+      showWorkersLink: attention,
+    }
+  }
+  if (input.status === 'RUNNING') {
+    const lines: string[] = []
+    const step = input.latestProgress ? describeOperationProgress(input.latestProgress.payload) : null
+    lines.push(step ? [`当前：${step.stage}`, step.summary].filter(Boolean).join(' · ') : '当前：准备浏览器')
+    const meta = [
+      input.claimedAt ? `已用 ${formatRemaining(input.now - new Date(input.claimedAt).getTime())}` : null,
+      input.ownerWorkerId ? `执行节点 ${input.ownerWorkerId}` : null,
+    ].filter(Boolean)
+    if (meta.length) lines.push(meta.join(' · '))
+    return { headline: `${kind} · 执行中`, lines, tone: 'info', expired: false, showWorkersLink: false }
+  }
+  if (input.status === 'WAITING_FOR_AUTH') {
+    return {
+      headline: `${kind} · ${describeAuthWaitStage(input.lastAuthError ?? null)}`,
+      lines: [],
+      tone: 'warning',
+      expired: false,
+      showWorkersLink: false,
+    }
+  }
+  return {
+    headline: `${kind} · ${operationStatusLabels[input.status] ?? input.status}`,
+    lines: [],
+    tone: 'info',
+    expired: false,
+    showWorkersLink: false,
+  }
+}
+
+/** 只在需要倒计时的时候每秒走一次本地时钟，不触发任何请求。 */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [active])
+  return now
 }
 
 export function sessionRetentionHint(input: {
@@ -265,7 +379,11 @@ export function SessionDetailPage() {
         await navigate({ to: '/runs/$runId', params: { runId: result.reusedRunId } })
         return
       }
-      toast.success('已提交会话操作')
+      if (result.admission?.eligibleWorkers === 0) {
+        toast.warning('已提交，但当前没有在线的执行节点，操作不会开始')
+      } else {
+        toast.success('已提交会话操作')
+      }
       await queryClient.invalidateQueries({ queryKey: ['account-session', targetId, accountId] })
     },
     onError: (error) => toast.error(error instanceof ApiRequestError ? error.message : '操作失败'),
@@ -302,6 +420,41 @@ export function SessionDetailPage() {
     currentKind: data?.currentOperation?.kind ?? operation.data?.kind,
     currentStatus: data?.currentOperation?.status ?? operation.data?.status,
   })
+  const trackedOperation = operation.data?.id === operationId ? operation.data : null
+  const operationEvents = useMemo(
+    () => (events.data?.items ?? []).filter((event) => event.operationId && event.operationId === operationId),
+    [events.data, operationId],
+  )
+  const now = useNow(progress?.status === 'QUEUED' || progress?.status === 'RUNNING')
+  const banner =
+    progress && progress.status !== 'SUBMITTING'
+      ? describeOperationBanner({
+          kind: progress.kind,
+          status: progress.status,
+          now,
+          waitReason: trackedOperation?.waitReason ?? data?.currentOperation?.waitReason ?? null,
+          waitDetail: trackedOperation?.waitDetail ?? null,
+          queueDeadlineAt: trackedOperation?.queueDeadlineAt ?? data?.currentOperation?.queueDeadlineAt ?? null,
+          queuePosition: trackedOperation?.queuePosition ?? null,
+          createdAt: trackedOperation?.createdAt ?? null,
+          latestProgress: operationEvents.filter((event) => event.type === 'operation.progress').at(-1) ?? null,
+          claimedAt: operationEvents.find((event) => event.type === 'operation.claimed')?.createdAt ?? null,
+          ownerWorkerId: trackedOperation?.ownerWorkerId ?? null,
+          lastAuthError: data?.lastAuthError ?? null,
+        })
+      : null
+  const queueDeadlineAt = progress?.status === 'QUEUED' ? (trackedOperation?.queueDeadlineAt ?? null) : null
+  // Worker 停着时截止不会有任何事件推来；到点补读一次持久化事实，而不是轮询。
+  useEffect(() => {
+    if (!queueDeadlineAt) return
+    const wait = new Date(queueDeadlineAt).getTime() - Date.now() + 1000
+    if (wait <= 0) return
+    const timer = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: ['account-session', targetId, accountId] })
+      void queryClient.invalidateQueries({ queryKey: ['session-operation'] })
+    }, wait)
+    return () => clearTimeout(timer)
+  }, [queueDeadlineAt, queryClient, targetId, accountId])
 
   const primary = resolveSessionPrimaryAction({
     status: data?.status,
@@ -553,20 +706,33 @@ export function SessionDetailPage() {
                 {progress ? (
                   <section
                     aria-label="操作进度"
-                    className="rounded-lg border border-status-warning-border bg-status-warning-surface p-4 shadow-card"
+                    className={
+                      banner?.tone === 'info'
+                        ? 'rounded-lg border border-status-info-accent/30 bg-status-info-background p-4 shadow-card'
+                        : 'rounded-lg border border-status-warning-border bg-status-warning-surface p-4 shadow-card'
+                    }
                   >
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
+                      <div className="min-w-0">
                         <div className="flex items-center gap-2">
-                          <AlertCircle className="size-4 text-status-warning-foreground" />
+                          <AlertCircle
+                            className={
+                              banner?.tone === 'info'
+                                ? 'size-4 text-status-info-foreground'
+                                : 'size-4 text-status-warning-foreground'
+                            }
+                          />
                           <h2 className="text-title-small font-semibold">操作进度</h2>
                         </div>
                         <p role="status" className="mt-1 text-body">
-                          {OPERATION_KIND_LABELS[progress.kind] ?? '会话操作'} ·{' '}
-                          {progress.status === 'WAITING_FOR_AUTH'
-                            ? describeAuthWaitStage(data.lastAuthError)
-                            : (operationStatusLabels[progress.status] ?? progress.status)}
+                          {banner?.headline ??
+                            `${OPERATION_KIND_LABELS[progress.kind] ?? '会话操作'} · ${operationStatusLabels[progress.status] ?? progress.status}`}
                         </p>
+                        {banner?.lines.map((line) => (
+                          <p key={line} className="mt-1 text-small text-muted-foreground">
+                            {line}
+                          </p>
+                        ))}
                         {operation.data?.errorCode ? (
                           <p className="mt-1 text-small text-status-warning-foreground">
                             {describeSessionOperationError(operation.data.errorCode) ??
@@ -575,7 +741,13 @@ export function SessionDetailPage() {
                         ) : null}
                       </div>
                       <div className="flex items-center gap-2">
-                        {['QUEUED', 'WAITING_FOR_AUTH'].includes(
+                        {banner?.showWorkersLink ? (
+                          <Link className="text-small font-medium text-link underline" to="/workers">
+                            查看执行节点
+                          </Link>
+                        ) : null}
+                        {!banner?.expired &&
+                        ['QUEUED', 'WAITING_FOR_AUTH'].includes(
                           operation.data?.status ?? data.currentOperation?.status ?? '',
                         ) ? (
                           <Can permission="session:control">

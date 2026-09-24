@@ -15,6 +15,13 @@ import type { SessionKey } from './sessions.js'
 import { loadOccupancyFacts } from './session-overview.js'
 import { readAccountSessionCap } from './account-session-concurrency.js'
 import { lockConsoleAuthorization, assertTargetPermission } from '../console/target-authorization.js'
+import {
+  availabilityWaitReason,
+  countEligibleMaintenanceWorkers,
+  expireQueuedSessionOperations,
+  recordOperationWait,
+} from './operation-queue.js'
+import { lockOperationRow } from './occupancy-tx.js'
 
 export async function requestMaintenanceOperation(
   db: Db,
@@ -24,7 +31,13 @@ export async function requestMaintenanceOperation(
     origin?: 'USER' | 'BACKGROUND'
     actor?: AuditActor
   },
-): Promise<{ operation: SessionOperationRow | null; created: boolean; reusedRunId: string | null }> {
+): Promise<{
+  operation: SessionOperationRow | null
+  created: boolean
+  reusedRunId: string | null
+  /** 受理时可领取该操作的在线节点数；未新建操作时为 null。 */
+  eligibleWorkers: number | null
+}> {
   return atomic(db, async (tx) => {
     if (input.actor && input.origin !== 'BACKGROUND') await lockConsoleAuthorization(tx, input.actor.id)
     const origin = input.origin ?? 'USER'
@@ -42,6 +55,8 @@ export async function requestMaintenanceOperation(
       origin,
       kindParams: { requestedBy: input.actor?.id },
     })
+    // 截止已过的排队不能靠 Worker 清理（Worker 可能正停着），受理时先在账号锁内收掉，免得挡住重新发起。
+    await expireQueuedSessionOperations(tx, { now: await clockNow(tx), key: input.key })
     const requestDigest = contentDigestFor({ ...input.body, origin, requestedBy: input.actor?.id ?? null })
     const [existing] = await tx
       .select()
@@ -62,6 +77,7 @@ export async function requestMaintenanceOperation(
         created: false,
         reusedRunId:
           typeof existing.kindParams?.reusedRunId === 'string' ? existing.kindParams.reusedRunId : null,
+        eligibleWorkers: null,
       }
     }
     if (input.body.kind === 'RESET_PROFILE' && input.body.confirmAccountId !== input.key.targetAccountId) {
@@ -83,10 +99,10 @@ export async function requestMaintenanceOperation(
       (instances.length <= 1 ? facts.activeOp : null)
     if (origin === 'BACKGROUND') {
       if (selectedLease || selected?.holding)
-        return { operation: selectedOp ?? facts.activeOp, created: false, reusedRunId: null }
+        return { operation: selectedOp ?? facts.activeOp, created: false, reusedRunId: null, eligibleWorkers: null }
     }
     if (origin === 'BACKGROUND' && selectedOp)
-      return { operation: selectedOp, created: false, reusedRunId: null }
+      return { operation: selectedOp, created: false, reusedRunId: null, eligibleWorkers: null }
     if (selectedOp && input.body.kind !== 'REFRESH_LOGIN_PAGE')
       throw conflict('SESSION_OPERATION_CONFLICT', '已有会话操作尚未完成', {
         occupyingOperationId: selectedOp.id,
@@ -175,6 +191,7 @@ export async function requestMaintenanceOperation(
       expectedSessionId: input.body.expectedSessionId ?? selectedLive?.id ?? null,
       expectedGeneration: input.body.expectedGeneration ?? selectedLive?.generation ?? null,
     })
+    let eligibleWorkers: number | null = null
     if (requested.created) {
       await appendSessionEvent(tx, {
         key: input.key,
@@ -184,6 +201,16 @@ export async function requestMaintenanceOperation(
         operationId: requested.operation.id,
         payload: { kind: input.body.kind, origin },
       })
+      if (origin === 'USER') {
+        const availability = await countEligibleMaintenanceWorkers(tx, { key: input.key, kind: input.body.kind })
+        eligibleWorkers = availability.eligible
+        const reason = availabilityWaitReason(availability)
+        if (reason) {
+          await recordOperationWait(tx, requested.operation, await clockNow(tx), reason, {
+            onlineWorkers: availability.online,
+          })
+        }
+      }
       if (input.actor) {
         await recordAudit(
           tx,
@@ -196,9 +223,10 @@ export async function requestMaintenanceOperation(
       }
     }
     return {
-      operation: requested.operation,
+      operation: (await lockOperationRow(tx, requested.operation.id)) ?? requested.operation,
       created: requested.created,
       reusedRunId: selectedLease?.purpose === 'AUTH_WAIT' ? selectedLease.runId : null,
+      eligibleWorkers,
     }
   })
 }
@@ -225,6 +253,16 @@ export async function cancelSessionOperation(
         .where(eq(targetAccounts.id, row.targetAccountId)),
     )
     if (input.actor) await assertSessionActorPermission(tx, input.actor.id, 'session:control')
+    const checkedAt = await clockNow(tx)
+    if (row.status === 'QUEUED' && row.queueDeadlineAt <= checkedAt) {
+      // 已过排队截止：取消就是收掉它，返回真实的过期终态而不是报「不能取消」。
+      await expireQueuedSessionOperations(tx, {
+        now: checkedAt,
+        key: { targetId: row.targetId, targetAccountId: row.targetAccountId },
+      })
+      const settled = await lockOperationRow(tx, row.id)
+      if (settled && settled.status !== 'QUEUED') return settled
+    }
     if (row.status === 'SUCCEEDED' || row.status === 'FAILED' || row.status === 'CANCELLED') {
       throw conflict('OPERATION_ALREADY_FINISHED', '操作已结束')
     }

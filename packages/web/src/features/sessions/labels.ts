@@ -3,6 +3,8 @@ import {
   describeAuthWaitStage,
   SESSION_MAINTENANCE_ERROR_MESSAGES,
   type AccountSessionStatus,
+  type SessionOperationProgressPhase,
+  type SessionOperationWaitReason,
   type SessionMaintenanceErrorCode,
   type SessionOverviewFilter,
   type SessionSystemOverviewFilter,
@@ -87,6 +89,95 @@ export const OPERATION_KIND_LABELS: Record<string, string> = {
   RESET_PROFILE: '清除登录数据',
 }
 
+/** 排队原因的用户文案；detail 来自领取评估，缺字段时退回不带数字的说法。 */
+export function describeOperationWait(
+  reason: SessionOperationWaitReason | string | null | undefined,
+  detail?: Record<string, unknown> | null,
+): string {
+  const num = (key: string) => (typeof detail?.[key] === 'number' ? (detail[key] as number) : null)
+  const str = (key: string) => (typeof detail?.[key] === 'string' ? (detail[key] as string) : null)
+  switch (reason) {
+    case 'NO_ELIGIBLE_WORKER':
+      return '没有在线的执行节点，操作不会开始'
+    case 'WORKER_PROTOCOL_MISSING':
+      return '在线的执行节点版本不支持此操作，操作不会开始'
+    case 'WORKER_SESSION_CAPACITY': {
+      const occupied = num('occupied')
+      const max = num('maxSessions')
+      return occupied != null && max != null
+        ? `执行节点会话已满（${occupied}/${max}），等待释放`
+        : '执行节点会话已满，等待释放'
+    }
+    case 'SESSION_ACCOUNT_AT_CAPACITY': {
+      const lives = num('lives')
+      const cap = num('cap')
+      return lives != null && cap != null
+        ? `该账号并发会话已达上限（${lives}/${cap}），等待释放`
+        : '该账号并发会话已达上限，等待释放'
+    }
+    case 'SESSION_LOST':
+      return '旧会话已失联，需要先处置'
+    case 'SESSION_BUSY':
+      return detail?.occupyingRunId ? '会话正被运行占用，等待释放' : '会话正被占用或正在关闭，等待释放'
+    case 'SESSION_ON_OTHER_WORKER': {
+      const worker = str('workerId')
+      return worker ? `会话在节点 ${worker} 上，等待该节点领取` : '会话在其他节点上，等待该节点领取'
+    }
+    default:
+      return '等待执行节点领取（通常几秒）'
+  }
+}
+
+/** 需要用户处理而不是再等等的排队原因。 */
+export function operationWaitNeedsAttention(reason: string | null | undefined): boolean {
+  return reason === 'NO_ELIGIBLE_WORKER' || reason === 'WORKER_PROTOCOL_MISSING' || reason === 'SESSION_LOST'
+}
+
+export function formatDurationMs(ms: number): string {
+  if (ms < 1000) return '< 1秒'
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}秒`
+  return `${Math.floor(seconds / 60)}分${seconds % 60}秒`
+}
+
+const AUTH_PROBE_RESULT_LABELS: Record<string, string> = {
+  AUTHENTICATED: '已登录',
+  EXPIRED: '未登录',
+  NEEDS_LOGIN: '未登录',
+  UNKNOWN: '无法确认',
+}
+
+export const OPERATION_PROGRESS_LABELS: Record<SessionOperationProgressPhase, string> = {
+  session_acquired: '拿到会话',
+  browser_launched: '启动浏览器',
+  browser_reused: '复用已打开的浏览器',
+  auth_probed: '检查登录状态',
+}
+
+export function describeOperationProgress(payload: Record<string, unknown>): {
+  stage: string
+  summary?: string
+} {
+  const phase = typeof payload.phase === 'string' ? payload.phase : ''
+  const detail =
+    payload.detail && typeof payload.detail === 'object' ? (payload.detail as Record<string, unknown>) : {}
+  const took = typeof payload.durationMs === 'number' ? `耗时 ${formatDurationMs(payload.durationMs)}` : null
+  const stage = OPERATION_PROGRESS_LABELS[phase as SessionOperationProgressPhase] ?? '处理中'
+  const parts: string[] = []
+  if (phase === 'session_acquired') {
+    const slot = typeof detail.accountSlot === 'number' ? `第 ${detail.accountSlot} 个会话位` : null
+    parts.push(detail.acquireReason === 'created' ? ['新建会话', slot].filter(Boolean).join('，') : '复用空闲会话')
+    if (detail.profileFallback === true) parts.push('已从其他节点迁移登录资料')
+  } else if (phase === 'auth_probed') {
+    const state = typeof detail.authState === 'string' ? AUTH_PROBE_RESULT_LABELS[detail.authState] : undefined
+    if (state) parts.push(state)
+    if (detail.identityState === 'MISMATCH') parts.push('账号不符')
+    else if (detail.identityState === 'MATCH') parts.push('账号一致')
+  }
+  if (took) parts.push(took)
+  return { stage, ...(parts.length ? { summary: parts.join(' · ') } : {}) }
+}
+
 export function sessionAuthLabel(authState?: string | null, identityState?: string | null) {
   const auth: Record<string, string> = { AUTHENTICATED: '登录已核验', EXPIRED: '登录已失效', UNKNOWN: '登录待核验' }
   const identity: Record<string, string> = { MATCH: '账号一致', MISMATCH: '账号不符', UNVERIFIED: '身份未核验' }
@@ -113,7 +204,7 @@ export function sessionOccupancyLabel(item: {
 
 export function sessionEventLabel(type: string, payload: Record<string, unknown>) {
   const labels: Record<string, string> = {
-    'operation.requested': '已提交', 'operation.claimed': '开始执行',
+    'operation.requested': '已提交', 'operation.claimed': '开始执行', 'operation.queue_waiting': '排队等待',
     'operation.waiting_for_auth': '等待登录', 'operation.finished': '已结束', 'operation.cancelled': '已取消',
     'retention.set': '已设置保留', 'retention.extended': '已延长保留', 'retention.cleared': '已取消保留',
     'session.closed': '会话已关闭', 'session.restarted': '会话已重启', 'session.lost': '会话已失联',
@@ -127,6 +218,8 @@ export function sessionEventLabel(type: string, payload: Record<string, unknown>
   const label =
     type === 'operation.finished'
       ? status[String(payload.status)] ?? labels[type]
+      : type === 'operation.progress'
+        ? describeOperationProgress(payload).stage
       : type === 'operation.waiting_for_auth'
         ? describeAuthWaitStage(typeof payload.reason === 'string' ? payload.reason : null)
         : labels[type]
@@ -238,6 +331,19 @@ export function resolveSessionEvent(
   } else if (type === 'operation.claimed') {
     stage = '开始执行'
     tone = 'info'
+    if (!summary && typeof payload.workerId === 'string') summary = `由执行节点 ${payload.workerId} 领取`
+  } else if (type === 'operation.queue_waiting') {
+    const reason = typeof payload.waitReason === 'string' ? payload.waitReason : null
+    stage = '排队等待'
+    tone = operationWaitNeedsAttention(reason) ? 'warning' : 'neutral'
+    const detail =
+      payload.detail && typeof payload.detail === 'object' ? (payload.detail as Record<string, unknown>) : null
+    if (!summary) summary = describeOperationWait(reason, detail)
+  } else if (type === 'operation.progress') {
+    const described = describeOperationProgress(payload)
+    stage = described.stage
+    tone = 'info'
+    if (!summary) summary = described.summary
   } else if (type === 'operation.waiting_for_auth') {
     const reason = typeof payload.reason === 'string' ? payload.reason : null
     stage = describeAuthWaitStage(reason)
@@ -253,11 +359,19 @@ export function resolveSessionEvent(
       const err = typeof payload.errorCode === 'string' ? payload.errorCode : undefined
       if (err) {
         summary = describeSessionOperationError(err) ?? err
+        if (err === 'OPERATION_QUEUE_EXPIRED' && typeof payload.waitReason === 'string') {
+          summary = `排队已超时：${describeOperationWait(payload.waitReason)}`
+        }
       }
     } else if (status === 'CANCELLED') {
       stage = '已取消'
       tone = 'neutral'
     }
+    const timing = [
+      typeof payload.queuedMs === 'number' ? `排队 ${formatDurationMs(payload.queuedMs)}` : null,
+      typeof payload.durationMs === 'number' ? `执行 ${formatDurationMs(payload.durationMs)}` : null,
+    ].filter(Boolean)
+    if (timing.length) summary = [summary, timing.join(' · ')].filter(Boolean).join(' · ')
   } else if (type === 'operation.cancelled') {
     stage = '已取消'
     tone = 'neutral'
@@ -371,7 +485,7 @@ export interface SessionActivityGroup {
   id: string
   title: string
   subtitle?: string
-  status: 'SUCCEEDED' | 'FAILED' | 'RUNNING' | 'WAITING_FOR_AUTH' | 'CANCELLED' | 'UNKNOWN'
+  status: 'SUCCEEDED' | 'FAILED' | 'QUEUED' | 'RUNNING' | 'WAITING_FOR_AUTH' | 'CANCELLED' | 'UNKNOWN'
   statusLabel: string
   tone: 'success' | 'warning' | 'destructive' | 'info' | 'neutral'
   origin?: 'USER' | 'BACKGROUND' | null
@@ -488,6 +602,14 @@ export function groupSessionEventsByActivity<
 
     const reqEvt = groupEvents.find((e) => e.type === 'operation.requested')
     const finishEvt = groupEvents.find((e) => e.type === 'operation.finished')
+    const claimedEvt = groupEvents.find((e) => e.type === 'operation.claimed')
+    if (reqEvt && claimedEvt) {
+      // 排队与执行分开算，用户才看得出慢在等节点还是慢在浏览器里。
+      const claimedMs = new Date(claimedEvt.createdAt).getTime()
+      const queuedMs = Math.max(0, claimedMs - new Date(reqEvt.createdAt).getTime())
+      const runMs = Math.max(0, endMs - claimedMs)
+      durationText = `排队 ${formatDurationMs(queuedMs)} · 执行 ${formatDurationMs(runMs)}`
+    }
     const cancelledEvt = groupEvents.find((e) => e.type === 'operation.cancelled')
     const verifiedEvt = groupEvents.find((e) => e.type === 'auth.verified')
     const unknownEvt = groupEvents.find((e) => e.type === 'auth.unknown')
@@ -557,10 +679,15 @@ export function groupSessionEventsByActivity<
         statusLabel = '失败'
         tone = 'destructive'
       }
-    } else if (groupEvents.some((e) => e.type === 'operation.claimed' || e.type === 'operation.requested')) {
+    } else if (groupEvents.some((e) => e.type === 'operation.claimed')) {
       status = 'RUNNING'
       statusLabel = '执行中'
       tone = 'info'
+    } else if (reqEvt) {
+      // 仅有 requested 表示尚无 Worker 领取，与操作进度横幅的 QUEUED 同口径。
+      status = 'QUEUED'
+      statusLabel = '排队中'
+      tone = 'neutral'
     }
 
     const origin =

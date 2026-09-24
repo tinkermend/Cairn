@@ -6,6 +6,7 @@ import {
   effectiveAccountSessionCap,
   type AccountSessionStatus,
   type RunWaitReason,
+  type SessionOperationWaitReason,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { databaseNow, schemaFor } from '../native.js'
@@ -252,7 +253,14 @@ export type SessionClaimDecision =
         | 'SESSION_ACCOUNT_CAP_EXCEEDED'
       waitReason?: RunWaitReason
       message?: string
+      /** 会话操作排队时落账的原因与上下文；Run 侧仍用 waitReason。 */
+      operationWait?: SessionClaimOperationWait
     }
+
+export type SessionClaimOperationWait = {
+  reason: SessionOperationWaitReason
+  detail?: Record<string, unknown>
+}
 
 export async function decideAccountSessionClaim(
   db: Db,
@@ -280,19 +288,48 @@ export async function decideAccountSessionClaim(
     const session = input.lives.find((row) => row.id === input.expectedSessionId)
     if (!session) return { action: 'reject', code: 'SESSION_NOT_CLAIMABLE', message: '指定会话不存在或已关闭' }
     if (session.status === 'CLOSING' || session.status === 'LOST') {
-      return { action: 'reject', code: 'SESSION_BUSY', waitReason: session.status === 'LOST' ? 'SESSION_LOST' : undefined }
+      return {
+        action: 'reject',
+        code: 'SESSION_BUSY',
+        waitReason: session.status === 'LOST' ? 'SESSION_LOST' : undefined,
+        operationWait: {
+          reason: session.status === 'LOST' ? 'SESSION_LOST' : 'SESSION_BUSY',
+          detail: { sessionId: session.id, sessionStatus: session.status },
+        },
+      }
     }
     if (
       session.ownerWorkerId !== input.holderWorkerId ||
       session.ownerWorkerInstanceId !== input.holderInstanceId
     ) {
-      return { action: 'reject', code: 'SESSION_BUSY', message: '会话属于其他 Worker' }
+      return {
+        action: 'reject',
+        code: 'SESSION_BUSY',
+        message: '会话属于其他 Worker',
+        operationWait: {
+          reason: 'SESSION_ON_OTHER_WORKER',
+          detail: { sessionId: session.id, workerId: session.ownerWorkerId },
+        },
+      }
     }
     if (session.status === 'OPEN' && !isClaimable(session)) {
       return { action: 'reject', code: 'SESSION_NOT_CLAIMABLE' }
     }
     if (input.leases.has(session.id)) {
-      return { action: 'reject', code: 'SESSION_BUSY' }
+      const lease = input.leases.get(session.id)
+      return {
+        action: 'reject',
+        code: 'SESSION_BUSY',
+        operationWait: {
+          reason: 'SESSION_BUSY',
+          detail: {
+            sessionId: session.id,
+            purpose: lease?.purpose ?? null,
+            occupyingRunId: lease?.runId ?? null,
+            occupyingOperationId: lease?.operationId ?? null,
+          },
+        },
+      }
     }
     return { action: 'reuse', session }
   }
@@ -313,7 +350,15 @@ export async function decideAccountSessionClaim(
     checkRunCapacity: input.purpose === 'EXECUTION',
   })
   if (foreign) {
-    return { action: 'reject', code: 'SESSION_BUSY', message: '空闲会话应由其所属节点领取' }
+    return {
+      action: 'reject',
+      code: 'SESSION_BUSY',
+      message: '空闲会话应由其所属节点领取',
+      operationWait: {
+        reason: 'SESSION_ON_OTHER_WORKER',
+        detail: { sessionId: foreign.id, workerId: foreign.ownerWorkerId },
+      },
+    }
   }
 
   if (input.lives.length >= cap.effectiveCap) {
@@ -328,6 +373,11 @@ export async function decideAccountSessionClaim(
           ? undefined
           : 'SESSION_ACCOUNT_AT_CAPACITY',
       message: '账号并发会话已达上限',
+      operationWait: lostOnly || exclusiveLost
+        ? { reason: 'SESSION_LOST' }
+        : cap.effectiveCap === 1
+          ? { reason: 'SESSION_BUSY', detail: { lives: input.lives.length, cap: cap.effectiveCap } }
+          : { reason: 'SESSION_ACCOUNT_AT_CAPACITY', detail: { lives: input.lives.length, cap: cap.effectiveCap } },
     }
   }
 
@@ -337,6 +387,14 @@ export async function decideAccountSessionClaim(
       code: 'SESSION_CAPACITY_EXCEEDED',
       waitReason: 'WORKER_SESSION_CAPACITY',
       message: '本 Worker 会话数已达上限',
+      operationWait: {
+        reason: 'WORKER_SESSION_CAPACITY',
+        detail: {
+          workerId: input.holderWorkerId,
+          occupied: input.holderOccupied,
+          maxSessions: input.holderMaxSessions,
+        },
+      },
     }
   }
 
@@ -346,6 +404,10 @@ export async function decideAccountSessionClaim(
       action: 'reject',
       code: 'SESSION_BUSY',
       waitReason: 'SESSION_ACCOUNT_AT_CAPACITY',
+      operationWait: {
+        reason: 'SESSION_ACCOUNT_AT_CAPACITY',
+        detail: { lives: input.lives.length, cap: cap.effectiveCap },
+      },
     }
   }
   return { action: 'create', accountSlot: slot }

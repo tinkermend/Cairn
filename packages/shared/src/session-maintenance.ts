@@ -2,7 +2,11 @@ import { z } from 'zod'
 import { pageRefSchema } from './managed-browser.js'
 import type { IdentityState } from './session-auth.js'
 import type { SessionAuthState, SessionStatus } from './session.js'
-import { SESSION_MAINTENANCE_KINDS, type SessionLeasePurpose } from './session-occupancy.js'
+import {
+  SESSION_MAINTENANCE_KINDS,
+  sessionOperationWaitReasonSchema,
+  type SessionLeasePurpose,
+} from './session-occupancy.js'
 export { SESSION_MAINTENANCE_KINDS } from './session-occupancy.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 import { nextCursorSchema } from './rbac.js'
@@ -111,7 +115,9 @@ export const SESSION_MAINTENANCE_ERROR_MESSAGES: Record<SessionMaintenanceErrorC
 
 export const SESSION_EVENT_TYPES = [
   'operation.requested',
+  'operation.queue_waiting',
   'operation.claimed',
+  'operation.progress',
   'operation.waiting_for_auth',
   'operation.finished',
   'operation.cancelled',
@@ -132,6 +138,18 @@ export const SESSION_EVENT_TYPES = [
   'session.evicted',
 ] as const
 export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number]
+
+/**
+ * operation.progress 的阶段。只描述平台做了什么，payload 不得含凭据、Cookie、表单值或完整 URL 查询串。
+ * 后台操作（origin = BACKGROUND）成功时不落阶段事件，失败时一次性补写。
+ */
+export const SESSION_OPERATION_PROGRESS_PHASES = [
+  'session_acquired',
+  'browser_launched',
+  'browser_reused',
+  'auth_probed',
+] as const
+export type SessionOperationProgressPhase = (typeof SESSION_OPERATION_PROGRESS_PHASES)[number]
 export const sessionEventTypeSchema = z.enum(SESSION_EVENT_TYPES)
 
 export const DEFAULT_MAX_RETAIN_SECONDS = 28_800
@@ -537,6 +555,8 @@ export const accountSessionDetailSchema = z.strictObject({
       kind: z.string(),
       status: z.string(),
       reusedRunId: entityIdSchema.nullable(),
+      queueDeadlineAt: utcInstantSchema,
+      waitReason: sessionOperationWaitReasonSchema.nullable(),
     })
     .nullable(),
   actions: z.array(sessionActionSchema),
@@ -548,6 +568,8 @@ export const sessionOperationAcceptedSchema = z.strictObject({
   operationId: entityIdSchema.nullable(),
   reusedRunId: entityIdSchema.nullable(),
   created: z.boolean(),
+  /** 受理时能领取该操作的在线节点数；0 表示操作不会开始，需前端立即提示。复用已有操作时为 null。 */
+  admission: z.strictObject({ eligibleWorkers: z.number().int().nonnegative() }).nullable(),
 })
 export type SessionOperationAccepted = z.infer<typeof sessionOperationAcceptedSchema>
 
