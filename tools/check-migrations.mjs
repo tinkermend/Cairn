@@ -25,4 +25,4 @@ if (errors.length) {
   for (const e of errors) console.error(`  ✗ ${e}`)
   process.exit(1)
 }
-console.log(`✅ 迁移文件检查通过（PostgreSQL / MySQL 共 ${total} 个）`)
+console.log(`✅ 迁移文件检查通过（PostgreSQL 共 ${total} 个）`)

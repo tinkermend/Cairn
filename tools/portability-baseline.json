@@ -1,0 +1,22 @@
+{
+  "action-modules/modules.ts": {
+    "cast": 1,
+    "json-operator": 2
+  },
+  "batches/batches.ts": {
+    "returning": 5
+  },
+  "business-sources/business-sources.ts": {
+    "ilike": 2,
+    "returning": 1
+  },
+  "console/target-overview.ts": {
+    "json-operator": 1
+  },
+  "datasets/datasets.ts": {
+    "returning": 1
+  },
+  "map/query-read.ts": {
+    "json-operator": 2
+  }
+}

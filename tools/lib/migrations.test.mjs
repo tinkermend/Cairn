@@ -11,10 +11,10 @@ import {
 
 function tree() {
   const root = mkdtempSync(join(tmpdir(), 'cairn-mig-alloc-'))
-  for (const rel of ['mysql']) mkdirSync(join(root, rel))
-  for (const dir of [root, join(root, 'mysql')]) {
-    writeFileSync(join(dir, '0001_baseline.sql'), '-- noop\n')
-  }
+  writeFileSync(join(root, '0001_baseline.sql'), '-- noop\n')
+  // 冻结的历史链：不参与检查，也不再领号。
+  mkdirSync(join(root, 'mysql'))
+  writeFileSync(join(root, 'mysql', '0001_baseline.sql'), '-- noop\n')
   return root
 }
 
@@ -22,10 +22,16 @@ describe('inspectMigrations', () => {
   it('拦住重复前缀和缺号', () => {
     const root = tree()
     writeFileSync(join(root, '0001_dup.sql'), '-- noop\n')
-    writeFileSync(join(root, 'mysql', '0003_gap.sql'), '-- noop\n')
+    writeFileSync(join(root, '0004_gap.sql'), '-- noop\n')
     const { errors } = inspectMigrations(root)
     assert.match(errors.join('\n'), /前缀重复：0001/)
-    assert.match(errors.join('\n'), /序号不连续：期望 0002/)
+    assert.match(errors.join('\n'), /序号不连续：期望 0003/)
+  })
+
+  it('不检查冻结的 mysql 历史链', () => {
+    const root = tree()
+    writeFileSync(join(root, 'mysql', '0003_gap.sql'), '-- noop\n')
+    assert.deepEqual(inspectMigrations(root).errors, [])
   })
 })
 
@@ -38,13 +44,11 @@ describe('allocateMigration', () => {
       allocateMigration({ name: 'beta', migrationsRoot: root, lockPath }),
     ])
     assert.deepEqual([first.logicalVersion, second.logicalVersion].sort(), ['0002', '0003'])
-    const expected = new Set(['0001_baseline.sql', '0002_alpha.sql', '0003_beta.sql', '0002_beta.sql', '0003_alpha.sql'])
-    for (const dir of [root, join(root, 'mysql')]) {
-      const names = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
-      assert.equal(names.length, 3)
-      assert.ok(names.every((name) => expected.has(name)))
-      assert.ok(names.includes('0001_baseline.sql'))
-    }
+    const names = readdirSync(root).filter((f) => f.endsWith('.sql')).sort()
+    assert.equal(names.length, 3)
+    assert.ok(names.includes('0001_baseline.sql'))
+    assert.deepEqual(first.files.length, 1)
+    assert.deepEqual(readdirSync(join(root, 'mysql')), ['0001_baseline.sql'])
   })
 
   it('拒绝已占用的名字和非法名字', async () => {

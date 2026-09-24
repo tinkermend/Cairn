@@ -41,7 +41,7 @@ pnpm infra:down          # 停容器，保留 .data
 
 需要清盘时再 `podman compose -f deploy/compose.yml down -v`，并手动删 `.data/postgres`、`.data/minio`。
 
-数据库后端配置、PostgreSQL / MySQL 的受控迁移和运行观察提示通道见[数据库配置与受控迁移](database-backends.md)。PostgreSQL 默认用 LISTEN/NOTIFY；部署 MySQL 并要实时推送时，需另配 `CAIRN_REDIS_URL`，不要把 Redis 当成队列或锁。
+数据库后端配置、受控迁移和运行观察提示通道见[数据库配置与受控迁移](database-backends.md)。当前只支持部署 PostgreSQL（默认用 LISTEN/NOTIFY）；MySQL 迁移链已冻结，仅为历史实例保留。
 
 ## Worker 内部入口与控制面入口
 

@@ -5,13 +5,14 @@
 | 脚本 | 命令 | 卡住什么 |
 | --- | --- | --- |
 | `check-migrations.mjs` | `pnpm check:migrations` | 迁移文件名规范、前缀唯一、序号连续；`transfer.ts` 必须用目录派生的 `logicalVersion`；含领号自测 |
-| `allocate-migration.mjs` | `pnpm db:new-migration <name>` | 锁内领取 PostgreSQL / MySQL 下一号并立刻落盘，避免并发任务扫到同一最大号 |
+| `allocate-migration.mjs` | `pnpm db:new-migration <name>` | 锁内领取 PostgreSQL 下一号并立刻落盘（MySQL / SQLite 链已冻结，不再领号），避免并发任务扫到同一最大号 |
+| `check-portability.mjs` | `pnpm check:portability` | 数据库可移植：0098 之后的 PG 迁移不得用触发器、函数、DO 块、条件索引、ON CONFLICT、数组、序列、数据库生成 ID 等专有特性（单句可 `-- portability-exception: <原因>` 豁免）；`@cairn/db` 适配层以外的运行时代码，方言写法按 `portability-baseline.json` 只减不增 |
 | `check-deps.mjs` | `pnpm check:deps` | 包边界与依赖方向：package.json 声明的仓内依赖，以及绕开声明的跨包相对路径 import；允许边表在脚本顶部，改边界必须改脚本 |
 | `check-stack.mjs` | `pnpm check:stack` | 本机 api / worker / web 进程探活；不启动进程，也不进 CI |
 | `use-env.mjs` | `pnpm env:use local\|remote`、`pnpm env:status` | 开发连接画像：`.env.local` / `.env.remote` 与 `.env.example` 键集必须对齐；`.env` 只是当前生效指针 |
 | `probe-demonstration-files.mjs` | `node tools/probe-demonstration-files.mjs` | 本机 Web／API／对象存储的 JSON、YAML 文件导入、图片审查、参数／成功条件回填与单步重教；含 390px 窄屏检查 |
 
-`pnpm check` 含依赖、迁移、架构不变量和探活判定单测，并挂在 `pnpm test` 前面；`.github/workflows/ci.yml` 在 push 与 PR 上按同一顺序执行（install → build → check → lint → typecheck → migrate → test）。`pnpm check:stack` 探本机正在跑的进程，不进 CI。
+`pnpm check` 含依赖、迁移、数据库可移植、架构不变量和探活判定单测，并挂在 `pnpm test` 前面；`.github/workflows/ci.yml` 在 push 与 PR 上按同一顺序执行（install → build → check → lint → typecheck → migrate → test）。`pnpm check:stack` 探本机正在跑的进程，不进 CI。
 
 ## 本机进程探活
 
@@ -31,11 +32,11 @@
 
 ## 领取迁移号
 
-PostgreSQL / MySQL 的前缀必须连续且唯一。不要先扫目录再手写 `0035_foo.sql`：两个并发任务会领到同一个号。`pnpm db:new-migration map_widgets` 在锁内同时写下两份占位 SQL，占号就是文件本身。同机多个 worktree 走 git common dir 上的锁。
+PostgreSQL 迁移前缀必须连续且唯一，只写 PG 一份；`mysql/`、`sqlite/` 是冻结的历史链，不要为新功能补写（见[数据库支持范围](../deploy/database-backends.md)）。不要先扫目录再手写 `0035_foo.sql`：两个并发任务会领到同一个号。`pnpm db:new-migration map_widgets` 在锁内写下占位 SQL，占号就是文件本身。同机多个 worktree 走 git common dir 上的锁。
 
 导出 `logicalVersion` 跟仓库当前最新 PG 前缀，不必再改 `transfer.ts`。方案里只写意图名；跨克隆合入时若仍撞号，按当时目录重领，不要预占未落地的序号。
 
-放弃本次增量且它仍是各目录最后一份时，删掉两份文件再让别人领号。中间抽走会留下缺号，检查会失败。
+放弃本次增量且它仍是目录最后一份时，删掉该文件再让别人领号。中间抽走会留下缺号，检查会失败。
 
 ## 开发连接画像
 
@@ -66,4 +67,4 @@ PostgreSQL / MySQL 的前缀必须连续且唯一。不要先扫目录再手写 
 
 探针通过页面保存渠道、测试发送和场景订阅，核对逐收件人部分成功、DATA 后断连、人工重复风险确认、稳定消息编号、真实 Webhook HMAC、权限及 SSE 撤权；同时检查桌面、390px 和键盘路径。结果与截图写入 `.run/notifications-phase-one/`。运行证据等待使用前移 61 秒的测试时钟，不以此声称验证真实业务邮箱入箱。
 
-两库通知契约与转储回归：`CAIRN_DB_CONTRACT_DRIVERS=postgres,mysql pnpm --filter @cairn/db exec vitest run src/__tests__/notifications.test.ts src/__tests__/notification-transfer.test.ts src/__tests__/monitoring-alerts.test.ts`。双向转储测试需要两种真实数据库；常规仅 PostgreSQL 命令不把跳过的 MySQL 转储项计作通过。
+通知契约回归：`pnpm --filter @cairn/db exec vitest run src/__tests__/notifications.test.ts src/__tests__/notification-transfer.test.ts src/__tests__/monitoring-alerts.test.ts`，只跑 PostgreSQL；跳过的 MySQL 转储项不是缺口，不必补跑。

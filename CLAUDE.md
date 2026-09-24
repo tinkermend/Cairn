@@ -19,6 +19,10 @@ Engine 管运行生命周期，Executor 提供执行能力，浏览器统一由 
 
 API 负责鉴权与控制编排，不执行 Scenario、不持有正式浏览器会话；Worker 执行并持久化运行事实，不回调 API 写回事实；Web 不直连数据库或正式 Worker。业务通过 `@cairn/db` 不透明句柄与领域操作访问持久化，不依赖驱动、SQL 方言或物理表；必须原子完成的领域操作不得拆散事务。
 
+### 数据库可移植
+
+当前只部署和验收 PostgreSQL。能在应用层表达的约束、默认值与逻辑就放在应用层，不使用特定数据库的专有特性，使将来换库时业务代码基本不改。可移植是设计约束，不是交付门槛：迁移只写 PG 一份，开发、深度验证与验收只跑 PG；不为 MySQL / SQLite 补写迁移或跑跨库矩阵，除非用户明确要求或已获准的换库方案需要。`pnpm check:portability` 守这条线；确需豁免的迁移语句须写明原因并在回复中说明，不得为过检查而放宽基线。
+
 ### 会话与租约
 
 Session 与 Run 生命周期解耦，同一 Run 默认共用一个受管会话；优先复用健康认证状态，不得每次开跑都无条件重新登录。
@@ -93,5 +97,5 @@ Run 进度通过 SSE 推送，断线后补读持久化事实；不以高频轮�
 | 技术版本、启动与部署 | 各包 `package.json`、`pnpm-lock.yaml`、[部署说明](deploy/README.md)、[数据库支持范围](deploy/database-backends.md) |
 | 工程检查 | [仓库命令](package.json)、[依赖边界](tools/check-deps.mjs)、[架构检查](tools/check-invariants.mjs) |
 | 本机服务启停与探活 | 开发默认 [scripts/dev.sh](scripts/dev.sh)；产物验收 [scripts/stack.sh](scripts/stack.sh)；[进程探活](tools/README.md#本机进程探活)（`pnpm check:stack`） |
-| 新增 db 迁移 | [领取迁移号](tools/README.md#领取迁移号)；先跑 `pnpm db:new-migration <name>`，不要手写后端序号或 `logicalVersion` |
+| 新增 db 迁移 | [领取迁移号](tools/README.md#领取迁移号)；先跑 `pnpm db:new-migration <name>`（只生成 PG 一份），不要手写序号或 `logicalVersion` |
 | 外部目标联调 | [目标清单](docs/targets/README.md) |

@@ -4,12 +4,17 @@
 
 ## 支持范围
 
-| 后端 | 当前验收范围 | 执行所有权 |
-| --- | --- | --- |
-| PostgreSQL 16+ | 服务端部署，独立进程、多 Worker；保留原有历史迁移 | 短事务、行锁、SKIP LOCKED、条件唯一索引、fencing |
-| MySQL 8.4（8.x，InnoDB） | 服务端部署，独立进程、多 Worker | READ COMMITTED 短事务、行锁、SKIP LOCKED；生成占用列 + 唯一索引 |
+PostgreSQL 16+ 是唯一的当前部署与验收后端：服务端部署，独立进程、多 Worker；短事务、行锁、SKIP LOCKED、条件唯一索引、fencing。
 
-SQLite 适配代码和历史迁移文件仅为历史数据和工具兼容保留，不构成部署、迁移或兼容性承诺；新功能不再为它领取迁移或建立验收矩阵。
+换库能力靠设计约束保持，不靠每次交付的双库验证：
+
+- 业务约束、默认值、ID、状态流转与校验放在应用层（`@cairn/db` 领域操作与共享契约），不依赖触发器、存储过程、数据库专有类型或函数；
+- 方言差异只允许留在 `@cairn/db` 适配层内部，业务代码与测试断言不写方言；
+- 新迁移只写 PostgreSQL，但尽量使用各主流库都有对应物的通用 DDL，便于将来一次性生成目标库基线。
+
+`pnpm check:portability`（已挂在 `pnpm check` 里）自动守住前两条：新迁移出现专有特性、或适配层外新增方言写法即失败。规则见 `tools/lib/portability.mjs`。
+
+MySQL 8.4 与 SQLite 的适配代码及历史迁移仅为历史数据和工具兼容保留，不构成当前部署、迁移或兼容性承诺。MySQL 迁移链冻结在 `mysql/0102`（对应 PG `0118`），新功能不再为 MySQL / SQLite 领取迁移或建立验收矩阵；此后的功能在这两个后端上不保证可用。真要切换到 MySQL 时，按当时 PG 结构另立方案，统一生成新基线并补齐验收。
 
 运行观察的变化提示按 `CAIRN_CHANGE_HINT` 装配：PostgreSQL 默认 LISTEN/NOTIFY；MySQL 只有配置了 `CAIRN_REDIS_URL` 才启用 Redis Pub/Sub，否则 `ready.realtime = false`，页面需手动刷新。Redis 只做提示扇出，不能替代 Run 状态、租约或对象存储。对象存储继续使用已有 Local / S3 适配。
 
@@ -19,7 +24,7 @@ SQLite 适配代码和历史迁移文件仅为历史数据和工具兼容保留�
 
 ## 配置和启动
 
-默认 `CAIRN_DB_DRIVER=postgres`，兼容已有 PG 配置。MySQL 示例：
+默认 `CAIRN_DB_DRIVER=postgres`。以下 MySQL 配置仅适用于冻结链范围内的历史实例：
 
 ```dotenv
 CAIRN_DB_DRIVER=mysql
@@ -40,7 +45,7 @@ pnpm --filter @cairn/db build
 node --env-file=.env.mysql packages/db/dist/bin/migrate-cli.js
 ```
 
-API/Worker 启动会检查后端版本与迁移记录。缺失、未知、未完成的结构版本均拒绝启动，不自动回落 PG。MySQL 基线对应逻辑结构 0015，`0002_audit_login` 升到 0016；后续结构变化应新增 PostgreSQL / MySQL 迁移并更新契约/迁移验收，不能修改已发布迁移。
+API/Worker 启动会检查后端版本与迁移记录。缺失、未知、未完成的结构版本均拒绝启动，不自动回落 PG。MySQL 基线对应逻辑结构 0015，`0002_audit_login` 升到 0016，冻结于 `0102`（PG `0118`）。后续结构变化只新增 PostgreSQL 迁移，不能修改已发布迁移。
 
 MySQL DDL 会隐式提交。迁移执行前持久化 `running` 标记；中断或失败后保持阻断，不能把部分 DDL 当作完成后重试。对新建空目标，销毁该隔离目标并重建；对存量实例，先恢复已验证备份，再排查并重跑。不得仅手改标记为 `complete`。
 
@@ -70,9 +75,9 @@ PostgreSQL 可能有微秒时间，而现有应用 `Date` 与新后端统一到�
 
 ## 测试
 
-日常 `pnpm test:db` 只使用 PostgreSQL，按改动范围运行相关定向测试即可。它不把跨库兼容性作为每次功能交付的门槛。
+`pnpm test:db` 只使用 PostgreSQL，按改动范围运行相关定向测试即可。功能开发、新增迁移、深度验证与交付验收都只跑 PostgreSQL，不启动 MySQL，也不以跨库结果作为门槛。
 
-当改动数据库适配层、SQL/迁移、事务或锁／并发持久化语义，以及发布前，运行 `pnpm test:db:compatibility`。该命令以 PostgreSQL 与 MySQL 执行同一契约，并覆盖两个方向的逻辑导入；不包含 SQLite。
+`pnpm test:db:compatibility`（PostgreSQL 与 MySQL 同跑契约并做双向逻辑导入）只在用户明确要求、或已获准的换库方案实施时运行。冻结点之后的新表、新列在 MySQL 上本就不存在，这时该矩阵失败不代表回归。
 
 兼容矩阵的 MySQL 默认连 `127.0.0.1:3307`，可通过以下变量覆盖：
 
@@ -80,8 +85,8 @@ PostgreSQL 可能有微秒时间，而现有应用 `Date` 与新后端统一到�
 - `CAIRN_TEST_MYSQL_PASSWORD`，或 `CAIRN_TEST_MYSQL_ENV_FILE` 指向包含 `MYSQL_ROOT_PASSWORD` 的文件；
 - `CAIRN_TEST_MYSQL_DATABASE`：用于建隔离库的管理连接，默认 `cairn_portability`。
 
-本机使用容器 `cairn-portability-mysql`（MySQL 8.4），仅映射回环地址 3307。其测试密码文件位于被忽略的 `.run/database-portability/mysql.env`。每个用例组创建并清理独立数据库，不迁移开发业务库。日常 CI 只启动 PostgreSQL；兼容工作流才启动 PG 16 / MySQL 8.4 并运行该矩阵。
+本机使用容器 `cairn-portability-mysql`（MySQL 8.4），仅映射回环地址 3307。其测试密码文件位于被忽略的 `.run/database-portability/mysql.env`。每个用例组创建并清理独立数据库，不迁移开发业务库。日常 CI 只启动 PostgreSQL；兼容工作流仅手动触发。
 
-执行、会话、对象、证据的业务断言不写 SQL 方言，并通过 `@cairn/db` 入口保持后端无关。兼容矩阵验证 PostgreSQL / MySQL 两个方向的迁移、失败回滚和源库保留；PG 原有结构升级与索引/触发器测试继续保留。
+执行、会话、对象、证据的业务断言不写 SQL 方言，并通过 `@cairn/db` 入口保持后端无关。
 
 需要运行兼容矩阵时，先执行 `podman start cairn-portability-mysql`，等待 MySQL 就绪；完成后可执行 `podman stop cairn-portability-mysql`。历史三库复查记录只说明当时范围，不改变本页当前支持策略。

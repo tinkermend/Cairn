@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 在锁内领取 PostgreSQL / MySQL 的下一号并立刻落盘。占号就是文件本身，避免并发任务扫到同一个最大号。
+// 在锁内领取 PostgreSQL 的下一号并立刻落盘。占号就是文件本身，避免并发任务扫到同一个最大号。
 import { allocateMigration } from './lib/migrations.mjs'
 
 const name = process.argv[2]

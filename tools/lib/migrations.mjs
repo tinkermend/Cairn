@@ -14,10 +14,9 @@ import { execFileSync } from 'node:child_process'
 
 export const FILENAME_PATTERN = /^(\d{4})_[a-z0-9_]+\.sql$/
 export const MIGRATION_NAME_PATTERN = /^[a-z][a-z0-9_]*$/
-export const BACKENDS = [
-  { id: 'postgres', rel: '.', label: 'postgres' },
-  { id: 'mysql', rel: 'mysql', label: 'mysql' },
-]
+// 只有 PostgreSQL 继续领号。mysql/、sqlite/ 是冻结的历史链（MySQL 止于 0102 ↔ PG 0118），
+// 新功能不为它们写迁移，也不在这里检查。
+export const BACKENDS = [{ id: 'postgres', rel: '.', label: 'postgres' }]
 
 export function defaultMigrationsRoot() {
   return resolve(dirname(fileURLToPath(import.meta.url)), '../../packages/db/migrations')
@@ -123,10 +122,8 @@ export async function withAllocLock(lockPath, fn, opts = {}) {
   }
 }
 
-function stubSql(pgPrefix, backendId) {
-  if (backendId === 'postgres') return `-- ${pgPrefix}：TODO 写明本增量做什么。\n`
-  const label = 'MySQL'
-  return `-- ${pgPrefix} 的 ${label} 等价增量：TODO 写明本增量做什么。\n`
+function stubSql(pgPrefix) {
+  return `-- ${pgPrefix}：TODO 写明本增量做什么。\n`
 }
 
 function nextPrefix(files) {
@@ -158,7 +155,7 @@ export async function allocateMigration(opts) {
         const prefix = nextPrefix(backend.files)
         const filename = `${prefix}_${name}.sql`
         const path = resolve(backend.dir, filename)
-        writeFileSync(path, stubSql(pgPrefix, backend.id), { flag: 'wx' })
+        writeFileSync(path, stubSql(pgPrefix), { flag: 'wx' })
         created.push(path)
         return { backend: backend.label, prefix, filename, path }
       })
