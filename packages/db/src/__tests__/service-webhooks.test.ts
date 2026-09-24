@@ -26,6 +26,8 @@ const echo: Step = {
   effectType: 'READ_ONLY',
   input: { value: 'ok' },
 }
+// MUST 且 onViolation=continue：执行可以成功而业务结果为 FAIL。
+const shippedContractId = api.newId()
 
 async function fixture(driver: (typeof DRIVERS)[number]) {
   const handle = await openContractDb(driver)
@@ -67,9 +69,40 @@ async function fixture(driver: (typeof DRIVERS)[number]) {
     targetId: target.id,
     name: '订单状态同步',
     actor,
-    steps: [echo],
+    steps: [{ ...echo, id: api.newId() }],
   })
-  const version = (await api.listScenarioVersions(db, scenario.id)).items[0]!
+  await api.saveScenarioDraft(db, scenario.id, {
+    revision: 1,
+    document: {
+      authoringSchemaVersion: 2,
+      nodes: [
+        {
+          kind: 'step',
+          step: echo,
+          outcomes: [
+            {
+              id: shippedContractId,
+              scope: 'step',
+              meaning: '订单状态必须为已发货',
+              severity: 'MUST',
+              onViolation: 'continue',
+              provenance: 'manual',
+              rule: {
+                kind: 'deterministic',
+                target: { framePath: [], candidates: [{ by: 'css', value: '#status' }] },
+                expect: { kind: 'text_equals', value: 'SHIPPED' },
+              },
+            },
+          ],
+        },
+      ],
+    },
+    actor,
+  })
+  await api.publishScenarioDraft(db, scenario.id, { revision: 2, actor })
+  const version = (await api.listScenarioVersions(db, scenario.id)).items.reduce((a, b) =>
+    (b.versionNo ?? 0) > (a.versionNo ?? 0) ? b : a,
+  )
   const caller = (
     await api.saveServiceCaller(
       db,
@@ -167,6 +200,40 @@ describe.each(DRIVERS)('%s service webhook facts', (driver) => {
         evidenceStatus: 'COMPLETE',
       })
       .where(eq(schema.runs.id, run.detail.id))
+    // 执行成功、业务 MUST 断言失败（onViolation=continue）；Worker 的结果聚合尚未跑，
+    // 入队时须补算，不得把 NOT_EVALUATED 固化进投递事实。
+    const stepRun = run.detail.stepRuns[0]!
+    const contractId = shippedContractId
+    const attemptId = api.newId()
+    await f.handle.db
+      .update(schema.stepRuns)
+      .set({ status: 'SUCCEEDED', startedAt, finishedAt })
+      .where(eq(schema.stepRuns.id, stepRun.id))
+    await f.handle.db.insert(schema.attempts).values({
+      id: attemptId,
+      stepRunId: stepRun.id,
+      attemptNo: 1,
+      status: 'SUCCEEDED',
+      startedAt,
+      finishedAt,
+    })
+    await f.handle.db.insert(schema.outcomeResults).values({
+      id: api.newId(),
+      runId: run.detail.id,
+      stepRunId: stepRun.id,
+      attemptId,
+      contractId,
+      scope: 'step',
+      meaning: '订单状态必须为已发货',
+      severity: 'MUST',
+      onViolation: 'continue',
+      provenance: 'manual',
+      verdict: 'FAIL',
+      expected: 'SHIPPED',
+      actual: 'customer-secret-actual',
+      evaluatedAt: finishedAt,
+      createdAt: finishedAt,
+    })
     await f.handle.db.insert(schema.evidences).values([
       {
         id: api.newId(),
@@ -202,6 +269,7 @@ describe.each(DRIVERS)('%s service webhook facts', (driver) => {
     const completed = listed.items.find((item) => item.eventType === 'run.completed')!
     expect(started.payload.data).toMatchObject({
       status: 'RUNNING',
+      outcomeStatus: 'NOT_EVALUATED',
       finishedAt: null,
       durationSeconds: null,
       outputs: [],
@@ -209,6 +277,7 @@ describe.each(DRIVERS)('%s service webhook facts', (driver) => {
     })
     expect(completed.payload.data).toMatchObject({
       status: 'COMPLETED',
+      outcomeStatus: 'FAIL',
       idempotencyKey: 'webhook-order-001',
       outputs: [
         {
@@ -220,6 +289,19 @@ describe.each(DRIVERS)('%s service webhook facts', (driver) => {
     })
     expect(JSON.stringify(completed.payload)).not.toContain('do-not-publish')
     expect(JSON.stringify(completed.payload)).not.toContain('not released')
+    expect(JSON.stringify(completed.payload)).not.toContain('customer-secret-actual')
+
+    const publicRun = await api.getServiceRun(f.db, f.principal, run.detail.id)
+    expect(publicRun).toMatchObject({
+      status: 'SUCCEEDED',
+      outcomeStatus: 'FAIL',
+      evidenceStatus: 'COMPLETE',
+      outcomeResults: [
+        { contractId, stepRunId: stepRun.id, severity: 'MUST', onViolation: 'continue', verdict: 'FAIL' },
+      ],
+    })
+    expect(JSON.stringify(publicRun)).not.toContain('customer-secret-actual')
+    expect(publicRun).not.toHaveProperty('snapshot')
 
     const worker = { workerId: `webhook-${api.newId()}`, instanceId: api.newId() }
     await api.registerWorker(f.db, {

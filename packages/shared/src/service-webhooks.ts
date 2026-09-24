@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { isBlockedAlertWebhookUrl } from './alerting.js'
 import { externalRunBodySchema } from './service-access.js'
+import { outcomeStatusSchema } from './outcome.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
 /** Capability advertised by maintenance Workers that durably deliver service callbacks. */
@@ -109,6 +110,8 @@ export const serviceWebhookPayloadSchema = z.strictObject({
     runId: entityIdSchema,
     idempotencyKey: z.string().min(1).max(128).nullable(),
     status: z.enum(['RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED']),
+    /** 业务结果轴；COMPLETED 仍可能是 FAIL。早于该字段落库的投递记录没有它。 */
+    outcomeStatus: outcomeStatusSchema.optional(),
     scenarioId: entityIdSchema,
     scenarioVersionId: entityIdSchema,
     targetId: entityIdSchema,

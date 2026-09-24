@@ -12,6 +12,8 @@ import {
   createScenarioWithVersion,
   listScenarioVersions,
   newId,
+  publishScenarioDraft,
+  saveScenarioDraft,
 } from "@cairn/db";
 import { createTargetBodySchema } from "@cairn/shared";
 import { AppModule } from "../app.module";
@@ -28,6 +30,7 @@ let app: INestApplication,
   callerId: string,
   credentialId: string,
   targetId: string;
+let adminActor: { id: string };
 let body: {
   scenarioId: string;
   scenarioVersionId: string;
@@ -65,6 +68,7 @@ beforeAll(async () => {
     },
     null,
   );
+  adminActor = actor;
   const targets = new TargetsStore(db, () => Buffer.from("encrypted"));
   const target = await targets.createTarget(
     createTargetBodySchema.parse({
@@ -206,10 +210,17 @@ it("concurrent HTTP retries create one persistent Run, keep request IDs, whiteli
   expect(responses[0]!.body).not.toHaveProperty("snapshot");
   expect(responses[0]!.body).not.toHaveProperty("context");
   const id = responses[0]!.body.id;
-  await request(peer.getHttpServer())
+  const fetched = await request(peer.getHttpServer())
     .get(`/api/open/v1/runs/${id}`)
     .auth(key, { type: "bearer" })
     .expect(200);
+  // 执行、业务结果与证据三轴分别对外表达
+  expect(fetched.body).toMatchObject({
+    status: expect.any(String),
+    outcomeStatus: "NOT_EVALUATED",
+    outcomeResults: [],
+    evidenceStatus: expect.any(String),
+  });
   await request(app.getHttpServer())
     .post("/api/open/v1/runs")
     .auth(key, { type: "bearer" })
@@ -311,6 +322,16 @@ it("keeps service Webhook secrets write-only, exports caller-scoped OpenAPI, and
     ]),
   );
   expect(JSON.stringify(openapi.body)).not.toContain(key);
+  // 响应结构由对外契约生成，三轴都有定义
+  const runSchema = openapi.body.components.schemas.ExternalRun;
+  expect(Object.keys(runSchema.properties)).toEqual(
+    expect.arrayContaining(["status", "outcomeStatus", "evidenceStatus", "outcomeResults"]),
+  );
+  expect(openapi.body.paths["/runs/{runId}"].get.responses["200"]).toBeDefined();
+  expect(openapi.body.paths["/tools/{toolKey}/call"].post.responses).toHaveProperty("202");
+  expect(
+    openapi.body.components.schemas.ServiceWebhookPayload.properties.data.properties,
+  ).toHaveProperty("outcomeStatus");
 
   const playgroundBody = {
     ...body,
@@ -833,9 +854,16 @@ it("exposes authorized scenario tools catalog, tool descriptors, and handles syn
     status: "ACCEPTED",
     callId: expect.any(String),
     runId: expect.any(String),
-    pollUrl: expect.stringContaining("/open/v1/runs/"),
-    sseStreamUrl: expect.stringContaining("/open/v1/runs/"),
+    executionStatus: "QUEUED",
+    attention: null,
+    pollUrl: `/api/open/v1/runs/${asyncCallRes.body.runId}`,
   });
+  expect(asyncCallRes.body).not.toHaveProperty("sseStreamUrl");
+  // pollUrl 可直接用于查询
+  await request(app.getHttpServer())
+    .get(asyncCallRes.body.pollUrl)
+    .auth(toolToken, { type: "bearer" })
+    .expect(200);
 
   // 5. POST /api/open/v1/tools/:toolKey/call with timeout -> 202 RUNNING
   const prevTimeout = process.env.CAIRN_TOOL_CALL_TIMEOUT_MS;
@@ -855,8 +883,8 @@ it("exposes authorized scenario tools catalog, tool descriptors, and handles syn
       status: "RUNNING",
       callId: expect.any(String),
       runId: expect.any(String),
-      pollUrl: expect.stringContaining("/open/v1/runs/"),
-      sseStreamUrl: expect.stringContaining("/open/v1/runs/"),
+      executionStatus: expect.any(String),
+      pollUrl: expect.stringMatching(/^\/api\/open\/v1\/runs\//),
     });
   } finally {
     if (prevTimeout !== undefined) {
@@ -866,19 +894,46 @@ it("exposes authorized scenario tools catalog, tool descriptors, and handles syn
     }
   }
 
-  // 6. POST /api/open/v1/tools/:toolKey/call sync completion -> 200
   const servicesService = app.get(ServicesService);
   const origRun = servicesService.run.bind(servicesService);
+
+  // 6. 同步完成 -> 200：三轴分开、只给已放行输出与结构化错误分类
   const spy = vi
     .spyOn(servicesService, "run")
     .mockImplementation(async (actor, runId, cancel) => {
       const realRun = await origRun(actor, runId, cancel);
       return {
         ...realRun,
-        status: "SUCCEEDED" as any,
-        outcomeStatus: "PASSED",
-        evidenceStatus: "VERIFIED",
-        output: { resultData: "inspection ok" },
+        status: "SUCCEEDED" as const,
+        outcomeStatus: "FAIL" as const,
+        evidenceStatus: "COMPLETE" as const,
+        stepRuns: realRun.stepRuns.map((step) => ({
+          ...step,
+          attempts: [
+            {
+              id: newId(),
+              attemptNo: 1,
+              status: "FAILED",
+              startedAt: realRun.createdAt,
+              finishedAt: realRun.createdAt,
+              errorCode: "TIMEOUT",
+              errorCategory: "TIMEOUT" as const,
+              retryable: true,
+              output: null,
+            },
+            {
+              id: newId(),
+              attemptNo: 2,
+              status: "SUCCEEDED",
+              startedAt: realRun.createdAt,
+              finishedAt: realRun.createdAt,
+              errorCode: null,
+              errorCategory: null,
+              retryable: null,
+              output: { resultData: "inspection ok" },
+            },
+          ],
+        })),
       };
     });
 
@@ -895,13 +950,176 @@ it("exposes authorized scenario tools catalog, tool descriptors, and handles syn
 
     expect(syncCallRes.body).toMatchObject({
       executionStatus: "SUCCEEDED",
-      outcomeStatus: "PASSED",
-      evidenceStatus: "VERIFIED",
-      output: { resultData: "inspection ok" },
+      outcomeStatus: "FAIL",
+      outcomeResults: [],
+      evidenceStatus: "COMPLETE",
+      outputs: [{ stepName: "echo", payload: { resultData: "inspection ok" } }],
+      // 重试成功后不再报告前一次失败
+      errors: [],
     });
+    expect(syncCallRes.body).not.toHaveProperty("output");
   } finally {
     spy.mockRestore();
   }
+
+  // 7. 需要人工介入：不空等到超时，立即交回带原因的回执
+  const reviewSpy = vi
+    .spyOn(servicesService, "run")
+    .mockImplementation(async (actor, runId, cancel) => ({
+      ...(await origRun(actor, runId, cancel)),
+      status: "NEEDS_REVIEW" as const,
+    }));
+  try {
+    const started = Date.now();
+    const reviewRes = await request(app.getHttpServer())
+      .post(`/api/open/v1/tools/scenario.${body.scenarioId}/call`)
+      .auth(toolToken, { type: "bearer" })
+      .send({
+        targetAccountId: body.targetAccountId,
+        arguments: {},
+        requestKey: "agent-tool-call-review-01",
+      })
+      .expect(202);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(reviewRes.body).toMatchObject({
+      status: "RUNNING",
+      executionStatus: "NEEDS_REVIEW",
+      attention: { reason: "NEEDS_REVIEW", message: expect.any(String) },
+    });
+  } finally {
+    reviewSpy.mockRestore();
+  }
+
+  // 8. 同步调用缺 run:read：受理前拒绝，不留下无人认领的 Run
+  const executeOnly = await request(app.getHttpServer())
+    .post(`/api/services/${toolCallerId}/credentials`)
+    .auth(jwt, { type: "bearer" })
+    .send({
+      name: "Agent Execute Only",
+      scopes: ["run:execute"],
+      grants: [{ targetId, accountIds: [body.targetAccountId] }],
+    })
+    .expect(201);
+  const denied = await request(app.getHttpServer())
+    .post(`/api/open/v1/tools/scenario.${body.scenarioId}/call`)
+    .auth(executeOnly.body.token as string, { type: "bearer" })
+    .send({
+      targetAccountId: body.targetAccountId,
+      arguments: {},
+      requestKey: "agent-tool-call-noread-01",
+    })
+    .expect(403);
+  expect(denied.body).toMatchObject({ code: "SERVICE_SCOPE_DENIED" });
+  const outstanding = await request(app.getHttpServer())
+    .get(`/api/services/${toolCallerId}/outstanding-runs?limit=100`)
+    .auth(jwt, { type: "bearer" })
+    .expect(200);
+  expect(
+    outstanding.body.items.some(
+      (run: { idempotencyKey: string }) =>
+        run.idempotencyKey === "agent-tool-call-noread-01",
+    ),
+  ).toBe(false);
+});
+
+it("resolves a tool key to the latest published version and rejects a stale descriptorVersion", async () => {
+  const echoStep = {
+    id: newId(),
+    name: "echo",
+    type: "echo" as const,
+    effectType: "READ_ONLY" as const,
+    input: { value: "v1" },
+  };
+  const scenario = await createScenarioWithVersion(db, {
+    targetId,
+    name: "多版本工具场景",
+    actor: adminActor,
+    steps: [echoStep],
+  });
+  await saveScenarioDraft(db, scenario.id, {
+    revision: 1,
+    document: {
+      authoringSchemaVersion: 2,
+      nodes: [{ kind: "step", step: { ...echoStep, input: { value: "v2" } } }],
+    },
+    actor: adminActor,
+  });
+  await publishScenarioDraft(db, scenario.id, { revision: 2, actor: adminActor });
+  const versions = (await listScenarioVersions(db, scenario.id)).items;
+  const latest = versions.reduce((a, b) =>
+    (b.versionNo ?? 0) > (a.versionNo ?? 0) ? b : a,
+  );
+  expect(versions.length).toBeGreaterThan(1);
+
+  const versionedCaller = await request(app.getHttpServer())
+    .post("/api/services")
+    .auth(jwt, { type: "bearer" })
+    .send({
+      name: "Versioned Tools Caller",
+      owner: "测试",
+      maxOutstandingRuns: 10,
+      requestsPerMinute: 60,
+    })
+    .expect(201);
+  const issued = await request(app.getHttpServer())
+    .post(`/api/services/${versionedCaller.body.caller.id}/credentials`)
+    .auth(jwt, { type: "bearer" })
+    .send({
+      name: "Versioned Tools Key",
+      scopes: ["run:execute", "run:read"],
+      grants: [{ targetId, accountIds: [body.targetAccountId] }],
+    })
+    .expect(201);
+  const token = issued.body.token as string;
+
+  const catalog = await request(app.getHttpServer())
+    .get("/api/open/v1/tools?limit=100")
+    .auth(token, { type: "bearer" })
+    .expect(200);
+  const entries = catalog.body.items.filter(
+    (item: { scenarioId: string }) => item.scenarioId === scenario.id,
+  );
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    scenarioVersionId: latest.id,
+    descriptorVersion: `v${latest.versionNo}`,
+  });
+
+  const stale = await request(app.getHttpServer())
+    .post(`/api/open/v1/tools/scenario.${scenario.id}/call`)
+    .auth(token, { type: "bearer" })
+    .send({
+      targetAccountId: body.targetAccountId,
+      arguments: {},
+      requestKey: "versioned-tool-stale-01",
+      descriptorVersion: "v1",
+      async: true,
+    })
+    .expect(409);
+  expect(stale.body).toMatchObject({ code: "TOOL_DESCRIPTOR_CHANGED" });
+
+  const accepted = await request(app.getHttpServer())
+    .post(`/api/open/v1/tools/scenario.${scenario.id}/call`)
+    .auth(token, { type: "bearer" })
+    .send({
+      targetAccountId: body.targetAccountId,
+      arguments: {},
+      requestKey: "versioned-tool-latest-01",
+      descriptorVersion: `v${latest.versionNo}`,
+      async: true,
+    })
+    .expect(202);
+  const run = await request(app.getHttpServer())
+    .get(accepted.body.pollUrl)
+    .auth(token, { type: "bearer" })
+    .expect(200);
+  expect(run.body.scenarioVersionId).toBe(latest.id);
+
+  // 名称不再作为工具键
+  await request(app.getHttpServer())
+    .get(`/api/open/v1/tools/${encodeURIComponent("多版本工具场景")}`)
+    .auth(token, { type: "bearer" })
+    .expect(404);
 });
 
 it(

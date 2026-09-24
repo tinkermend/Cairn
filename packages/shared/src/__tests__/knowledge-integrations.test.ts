@@ -271,22 +271,35 @@ describe('AI-04 Knowledge Integrations & Contracts', () => {
         callId: '00000000-0000-4000-8000-000000000030',
         runId: '00000000-0000-4000-8000-000000000031',
         status: 'ACCEPTED',
-        pollUrl: '/open/v1/runs/00000000-0000-4000-8000-000000000031',
-        sseStreamUrl: '/open/v1/runs/00000000-0000-4000-8000-000000000031/events',
+        executionStatus: 'QUEUED',
+        attention: null,
+        pollUrl: '/api/open/v1/runs/00000000-0000-4000-8000-000000000031',
         createdAt: new Date().toISOString(),
       }
       expect(externalToolReceiptSchema.parse(receipt).status).toBe('ACCEPTED')
+      // 不存在的 SSE 地址不得再出现在回执里
+      expect(() =>
+        externalToolReceiptSchema.parse({ ...receipt, sseStreamUrl: '/open/v1/runs/x/events' }),
+      ).toThrow()
 
       const result = {
         callId: '00000000-0000-4000-8000-000000000030',
         runId: '00000000-0000-4000-8000-000000000031',
         statusRefs: { runId: '00000000-0000-4000-8000-000000000031' },
         executionStatus: 'SUCCEEDED',
-        outcomeStatus: 'PASS',
+        outcomeStatus: 'FAIL',
+        outcomeResults: [],
         evidenceStatus: 'COMPLETE',
-        output: { syncCount: 1 },
+        outputs: [{ stepName: '同步', payload: { syncCount: 1 } }],
+        errors: [],
         unknowns: [],
       }
+      // 执行成功与业务失败可以并存
+      expect(externalToolResultSchema.parse(result)).toMatchObject({
+        executionStatus: 'SUCCEEDED',
+        outcomeStatus: 'FAIL',
+      })
+      expect(() => externalToolResultSchema.parse({ ...result, outcomeStatus: 'PASSED' })).toThrow()
       expect(externalToolResultSchema.parse(result).executionStatus).toBe('SUCCEEDED')
     })
   })

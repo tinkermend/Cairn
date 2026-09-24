@@ -1,4 +1,6 @@
 import {
+  ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -22,7 +24,15 @@ import type {
   ServiceWebhookDeliveryQuery,
   ServiceWebhookWrite,
   ServicePlaygroundRunBody,
+  ExternalRunDto,
+  ExternalToolAttention,
   ExternalToolCall,
+  ExternalToolReceipt,
+  ExternalToolResult,
+} from "@cairn/shared";
+import {
+  externalToolReceiptSchema,
+  externalToolResultSchema,
 } from "@cairn/shared";
 import type { ObjectStore } from "@cairn/storage";
 import { DB_HANDLE } from "../db/db.module";
@@ -319,76 +329,116 @@ export class ServicesService {
     toolKey: string,
     body: ExternalToolCall,
     requestId: string,
-  ): Promise<{ sync: boolean; data: any }> {
+  ): Promise<
+    | { sync: true; data: ExternalToolResult }
+    | { sync: false; data: ExternalToolReceipt }
+  > {
+    // 同步等待要读 Run；先拦下，避免 Run 已受理而调用方只收到 403。
+    if (!body.async && !actor.scopes.includes("run:read"))
+      throw new ForbiddenException({
+        code: "SERVICE_SCOPE_DENIED",
+        message: "同步调用需要读取运行权限（run:read），或改用 async: true",
+      });
     const descriptor = await this.tool(actor, toolKey);
-    const scenarioId = (descriptor as any).scenarioId;
-    const scenarioVersionId = (descriptor as any).scenarioVersionId;
+    if (
+      body.descriptorVersion &&
+      body.descriptorVersion !== descriptor.descriptorVersion
+    )
+      throw new ConflictException({
+        code: "TOOL_DESCRIPTOR_CHANGED",
+        message: `工具已更新为 ${descriptor.descriptorVersion}，请重新读取工具描述后再调用`,
+        details: { descriptorVersion: descriptor.descriptorVersion },
+      });
 
     const runBody: ExternalRunBody = {
-      scenarioId,
-      scenarioVersionId,
+      scenarioId: descriptor.scenarioId,
+      scenarioVersionId: descriptor.scenarioVersionId,
       targetAccountId: body.targetAccountId,
-      input: body.arguments as any,
+      input: body.arguments as ExternalRunBody["input"],
       idempotencyKey: body.requestKey,
     };
 
     const createResult = await this.create(actor, runBody, requestId);
-    const run = createResult.detail;
+    let currentRun = createResult.detail;
+    if (body.async) return { sync: false, data: toolReceipt(currentRun, "ACCEPTED") };
 
-    // 显式指定 async 或异步模式
-    if (body.async) {
-      return {
-        sync: false,
-        data: {
-          callId: run.id,
-          runId: run.id,
-          status: 'ACCEPTED',
-          pollUrl: `/open/v1/runs/${run.id}`,
-          sseStreamUrl: `/open/v1/runs/${run.id}/events`,
-          createdAt: run.createdAt,
-        },
-      };
-    }
-
-    // 同步等待：最多轮询 30 秒 (以防 HTTP 网关 504 超时)
+    // 同步等待有上限（默认 30 秒，防 HTTP 网关超时），到时转为可轮询回执。
     const start = Date.now();
     const timeoutMs = Number(process.env.CAIRN_TOOL_CALL_TIMEOUT_MS || 30_000);
     const pollIntervalMs = Math.min(500, Math.max(10, Math.floor(timeoutMs / 10)));
-    let currentRun = run;
-
-    while (Date.now() - start < timeoutMs) {
-      if (['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(currentRun.status)) {
-        return {
-          sync: true,
-          data: {
-            callId: currentRun.id,
-            runId: currentRun.id,
-            statusRefs: { runId: currentRun.id },
-            executionStatus: currentRun.status,
-            outcomeStatus: (currentRun as any).outcomeStatus ?? 'UNKNOWN',
-            evidenceStatus: currentRun.evidenceStatus ?? 'PENDING',
-            output: (currentRun as any).output ?? {},
-            unknowns: [],
-          },
-        };
-      }
-
+    while (true) {
+      if (FINISHED_TOOL_STATUSES.has(currentRun.status))
+        return { sync: true, data: toolResult(currentRun) };
+      // 需要人来处理的状态不会在等待窗口内自行结束，立即交回回执。
+      if (HUMAN_WAIT_STATUSES.has(currentRun.status))
+        return { sync: false, data: toolReceipt(currentRun, "RUNNING") };
+      if (Date.now() - start >= timeoutMs) break;
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      currentRun = await this.run(actor, run.id);
+      currentRun = await this.run(actor, currentRun.id);
     }
-
-    // 超时 30s 自动转为异步持久化句柄 202
-    return {
-      sync: false,
-      data: {
-        callId: currentRun.id,
-        runId: currentRun.id,
-        status: 'RUNNING',
-        pollUrl: `/open/v1/runs/${currentRun.id}`,
-        sseStreamUrl: `/open/v1/runs/${currentRun.id}/events`,
-        createdAt: currentRun.createdAt,
-      },
-    };
+    return { sync: false, data: toolReceipt(currentRun, "RUNNING") };
   }
 }
 
+
+const FINISHED_TOOL_STATUSES = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
+/** WAITING_FOR_AUTH 可能被自动重登恢复，继续等；这两类只能等人。 */
+const HUMAN_WAIT_STATUSES = new Set(["NEEDS_REVIEW", "HOLDING"]);
+
+function toolAttention(run: ExternalRunDto): ExternalToolAttention | null {
+  if (run.status === "WAITING_FOR_AUTH")
+    return {
+      reason: "WAITING_FOR_AUTH",
+      message: "运行在等待目标系统登录，自动重登未完成时需在控制台完成认证",
+    };
+  if (run.status === "NEEDS_REVIEW")
+    return { reason: "NEEDS_REVIEW", message: "运行需要人工复核后才能给出结论" };
+  if (run.status === "HOLDING")
+    return { reason: "HOLDING", message: "运行已挂起，需在控制台继续或取消" };
+  return null;
+}
+
+function toolReceipt(
+  run: ExternalRunDto,
+  status: ExternalToolReceipt["status"],
+): ExternalToolReceipt {
+  return externalToolReceiptSchema.parse({
+    callId: run.id,
+    runId: run.id,
+    status,
+    executionStatus: run.status,
+    attention: toolAttention(run),
+    pollUrl: `/api/open/v1/runs/${run.id}`,
+    createdAt: run.createdAt,
+  });
+}
+
+function toolResult(run: ExternalRunDto): ExternalToolResult {
+  const outputs: ExternalToolResult["outputs"] = [];
+  const errors: ExternalToolResult["errors"] = [];
+  for (const step of run.stepRuns) {
+    // 以最后一次尝试为准：重试成功后不再报告前面的失败。
+    const last = step.attempts[step.attempts.length - 1];
+    if (!last) continue;
+    if (last.output !== null) outputs.push({ stepName: step.name, payload: last.output });
+    if (last.errorCode)
+      errors.push({
+        stepName: step.name,
+        errorCode: last.errorCode,
+        errorCategory: last.errorCategory,
+        retryable: last.retryable,
+      });
+  }
+  return externalToolResultSchema.parse({
+    callId: run.id,
+    runId: run.id,
+    statusRefs: { runId: run.id },
+    executionStatus: run.status,
+    outcomeStatus: run.outcomeStatus,
+    outcomeResults: run.outcomeResults,
+    evidenceStatus: run.evidenceStatus,
+    outputs,
+    errors,
+    unknowns: [],
+  });
+}

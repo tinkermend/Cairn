@@ -15,6 +15,7 @@ import {
   or,
   type AnyColumn,
 } from 'drizzle-orm'
+import { z } from 'zod'
 import {
   DEFAULT_SERVICE_WEBHOOK_MAX_ATTEMPTS,
   MAP_SCHEDULER_PROTOCOL,
@@ -26,10 +27,15 @@ import {
   serviceWebhookDeliverySchema,
   serviceWebhookPayloadSchema,
   serviceWebhookRetryDelayMs,
+  externalRunSchema,
+  externalToolReceiptSchema,
+  externalToolResultSchema,
   serviceWebhookSchema,
   serviceWebhookWriteSchema,
   jsonValueSchema,
   type JsonValue,
+  type OutcomeStatus,
+  type RunSnapshot,
   type ServicePlaygroundRunBody,
   type ServiceWebhookDeliveryQuery,
   type ServiceWebhookDto,
@@ -46,6 +52,7 @@ import { atomic, clockNow, insertIgnoreRows, locked, schemaFor } from '../native
 import { upsertStandaloneSecret } from '../secrets/store.js'
 import { badRequest, conflict, forbidden, notFound } from '../runs/errors.js'
 import { createServiceRun } from './access.js'
+import { recalculateRunOutcomeTx } from '../runs/outcome-results.js'
 
 const CLAIM_TTL_MS = 60_000
 const DEFAULT_SCAN_LIMIT = 100
@@ -476,6 +483,7 @@ async function buildWebhookPayload(
     id: string
     event: ServiceWebhookEvent
     occurredAt: Date
+    now: Date
     callerId: string
     run: {
       id: string
@@ -488,11 +496,19 @@ async function buildWebhookPayload(
       startedAt: Date | null
       finishedAt: Date | null
       evidenceStatus: string
+      snapshot: unknown
     }
   },
 ): Promise<ServiceWebhookPayload> {
-  const { evidences, stepRuns } = schemaFor(db)
+  const { evidences, stepRuns, runs } = schemaFor(db)
   const startedEvent = input.event === 'run.started'
+  // Worker 在终态之后才另起事务聚合业务结果；与通知一致，入队前在同一事务内补算，
+  // 避免把「执行成功但业务结果尚未聚合」的 NOT_EVALUATED 固化进不可变投递事实。
+  let outcomeStatus: OutcomeStatus = 'NOT_EVALUATED'
+  if (!startedEvent) {
+    await locked(db, db.select({ id: runs.id }).from(runs).where(eq(runs.id, input.run.id)))
+    outcomeStatus = await recalculateRunOutcomeTx(db, input.run.id, input.run.snapshot as RunSnapshot, input.now)
+  }
   const [outputRows, available] = startedEvent
     ? [[], 0] as const
     : await Promise.all([
@@ -536,6 +552,7 @@ async function buildWebhookPayload(
       runId: input.run.id,
       idempotencyKey: input.run.idempotencyKey,
       status: startedEvent ? 'RUNNING' : publicRunStatus(input.run.status),
+      outcomeStatus,
       scenarioId: input.run.scenarioId,
       scenarioVersionId: input.run.scenarioVersionId,
       targetId: input.run.targetId,
@@ -641,6 +658,7 @@ export async function enqueueServiceWebhookDeliveries(
             id,
             event: occurrence.event,
             occurredAt: occurrence.occurredAt,
+            now,
             callerId: webhook.callerId,
             run,
           })
@@ -926,6 +944,20 @@ export async function createServicePlaygroundRun(
 }
 
 /** A valid OpenAPI 3 document plus a caller-scoped discovery extension. */
+// 对外结构直接由 zod 契约生成，不手写第二份。
+function openApiSchema(schema: z.ZodType) {
+  return z.toJSONSchema(schema, { target: 'openapi-3.0', io: 'output', unrepresentable: 'any' })
+}
+const json = (name: string) => ({
+  'application/json': { schema: { $ref: `#/components/schemas/${name}` } },
+})
+const runIdParam = {
+  name: 'runId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', format: 'uuid' },
+}
+
 export async function buildServiceOpenApi(
   db: Db,
   callerId: string,
@@ -1039,10 +1071,50 @@ export async function buildServiceOpenApi(
               },
             },
             responses: {
-              '201': { description: '已受理' },
-              '200': { description: '幂等命中已有运行' },
+              '201': { description: '已受理', content: json('ExternalRun') },
+              '200': { description: '幂等命中已有运行', content: json('ExternalRun') },
               '400': { description: '请求无效' },
               '403': { description: '凭据权限不足' },
+            },
+          },
+        },
+        '/runs/{runId}': {
+          get: {
+            operationId: 'getRun',
+            summary: '查询运行：status 为执行状态，outcomeStatus 为业务结果，evidenceStatus 为证据完整性',
+            security: [{ bearerAuth: [] }],
+            parameters: [runIdParam],
+            responses: {
+              '200': { description: '运行详情', content: json('ExternalRun') },
+              '404': { description: '运行不存在或不在授权范围' },
+            },
+          },
+        },
+        '/runs/{runId}/cancel': {
+          post: {
+            operationId: 'cancelRun',
+            summary: '请求取消运行',
+            security: [{ bearerAuth: [] }],
+            parameters: [runIdParam],
+            responses: {
+              '200': { description: '已请求取消', content: json('ExternalRun') },
+              '404': { description: '运行不存在或不在授权范围' },
+            },
+          },
+        },
+        '/tools/{toolKey}/call': {
+          post: {
+            operationId: 'callTool',
+            summary: '以工具方式调用场景最新已发布版本；同步等待有上限，超时或需人工介入时返回回执',
+            security: [{ bearerAuth: [] }],
+            parameters: [
+              { name: 'toolKey', in: 'path', required: true, schema: { type: 'string' } },
+            ],
+            responses: {
+              '200': { description: '运行已结束', content: json('ExternalToolResult') },
+              '202': { description: '运行未结束，凭 pollUrl 查询', content: json('ExternalToolReceipt') },
+              '403': { description: '凭据权限不足（同步调用还需 run:read）' },
+              '409': { description: '调用方持有的 descriptorVersion 已过期' },
             },
           },
         },
@@ -1061,8 +1133,14 @@ export async function buildServiceOpenApi(
               input: { type: 'object', additionalProperties: true },
             },
           },
+          ExternalRun: openApiSchema(externalRunSchema),
+          ExternalToolResult: openApiSchema(externalToolResultSchema),
+          ExternalToolReceipt: openApiSchema(externalToolReceiptSchema),
+          ServiceWebhookPayload: openApiSchema(serviceWebhookPayloadSchema),
         },
       },
+      /** OpenAPI 3.0 无 webhooks 字段；回调载荷结构见 components.schemas.ServiceWebhookPayload。 */
+      'x-cairn-webhook-payload': { $ref: '#/components/schemas/ServiceWebhookPayload' },
       'x-cairn-authorized-catalog': catalog,
     }
   })

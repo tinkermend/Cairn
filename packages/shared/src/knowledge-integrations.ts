@@ -1,5 +1,9 @@
 import { z } from 'zod'
-import { entityIdSchema, utcInstantSchema } from './wire.js'
+import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
+import { runStatusSchema } from './run.js'
+import { outcomeStatusSchema } from './outcome.js'
+import { executionErrorCategorySchema } from './runtime-error.js'
+import { externalOutcomeResultSchema } from './service-access.js'
 import { type ScenarioInputDecl } from './step.js'
 import {
   calendarTimeRuleSchema,
@@ -286,24 +290,46 @@ export const externalToolCallSchema = z.strictObject({
 })
 export type ExternalToolCall = z.infer<typeof externalToolCallSchema>
 
+/** 需要人工介入才能继续：认证等待、人工复核或调试挂起。 */
+export const externalToolAttentionSchema = z.strictObject({
+  reason: z.enum(['WAITING_FOR_AUTH', 'NEEDS_REVIEW', 'HOLDING']),
+  message: z.string().min(1).max(512),
+})
+export type ExternalToolAttention = z.infer<typeof externalToolAttentionSchema>
+
+/** 未在同步窗口内结束：调用方凭 pollUrl（需 run:read）继续查询。 */
 export const externalToolReceiptSchema = z.strictObject({
   callId: entityIdSchema,
   runId: entityIdSchema,
   status: z.enum(['ACCEPTED', 'RUNNING']),
+  executionStatus: runStatusSchema,
+  attention: externalToolAttentionSchema.nullable(),
   pollUrl: z.string().min(1),
-  sseStreamUrl: z.string().min(1),
   createdAt: utcInstantSchema,
 })
 export type ExternalToolReceipt = z.infer<typeof externalToolReceiptSchema>
 
+/**
+ * 执行状态、业务结果与证据完整性分别表达：executionStatus=SUCCEEDED 不代表业务通过。
+ * outputs 只含已审定对外放行的步骤输出；errors 只给平台结构化分类，不给页面原文。
+ */
 export const externalToolResultSchema = z.strictObject({
   callId: entityIdSchema,
   runId: entityIdSchema,
   statusRefs: z.record(z.string(), z.string()).default({}),
-  executionStatus: z.string(),
-  outcomeStatus: z.string(),
-  evidenceStatus: z.string(),
-  output: z.record(z.string(), z.unknown()).default({}),
+  executionStatus: runStatusSchema,
+  outcomeStatus: outcomeStatusSchema,
+  outcomeResults: z.array(externalOutcomeResultSchema),
+  evidenceStatus: z.enum(['PENDING', 'COMPLETE', 'INCOMPLETE']),
+  outputs: z.array(z.strictObject({ stepName: z.string().min(1), payload: jsonValueSchema })),
+  errors: z.array(
+    z.strictObject({
+      stepName: z.string().min(1),
+      errorCode: z.string().min(1),
+      errorCategory: executionErrorCategorySchema.nullable(),
+      retryable: z.boolean().nullable(),
+    }),
+  ),
   unknowns: z.array(z.string()).default([]),
 })
 export type ExternalToolResult = z.infer<typeof externalToolResultSchema>

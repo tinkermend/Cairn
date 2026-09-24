@@ -5,6 +5,7 @@ import {
   count,
   desc,
   eq,
+  exists,
   gt,
   gte,
   inArray,
@@ -1580,13 +1581,35 @@ async function publicRun(db: Db, id: string, results = false) {
         )
     : [];
   return externalRunSchema.parse({
-    ...detail,
+    id: detail.id,
+    status: detail.status,
+    targetId: detail.targetId,
+    targetAccountId: detail.targetAccountId,
+    scenarioId: detail.scenarioId,
+    scenarioVersionId: detail.scenarioVersionId,
+    createdAt: detail.createdAt,
+    startedAt: detail.startedAt,
+    finishedAt: detail.finishedAt,
+    cancelRequested: detail.cancelRequested,
     cancelReason: row!.cancelReason,
+    evidenceStatus: detail.evidenceStatus,
+    outcomeStatus: detail.outcomeStatus,
+    outcomeResults: detail.outcomeResults.map((r) => ({
+      contractId: r.contractId,
+      stepRunId: r.stepRunId,
+      meaning: r.meaning,
+      severity: r.severity,
+      onViolation: r.onViolation,
+      verdict: r.verdict,
+      evaluatedAt: r.evaluatedAt,
+    })),
     stepRuns: detail.stepRuns.map((s) => ({
       ...s,
       attempts: s.attempts.map((a) => ({
         ...a,
         errorCode: a.error?.code ?? null,
+        errorCategory: a.error?.category ?? null,
+        retryable: a.error?.retryable ?? null,
         output: approved.find((e) => e.attemptId === a.id)?.payload ?? null,
       })),
     })),
@@ -1992,47 +2015,64 @@ export async function serviceToolsCatalog(
       scenarioVersions: v,
     } = schemaFor(tx);
 
+    // 一个场景一个工具，始终解析到最新已发布版本；按场景 ID 分页。
+    // 键只接受目录里给出的 scenario.<uuid>，不按名称匹配（名称可重复）。
     const conditions = [
       eq(tg.credentialId, actor.credentialId),
       eq(t.status, "active"),
       eq(s.status, "active"),
-      eq(v.kind, "published"),
+      isNull(s.deletedAt),
     ];
 
-    if (toolKey) {
-      const rawId = toolKey.startsWith("scenario.") ? toolKey.slice(9) : toolKey;
-      if (isUuid(rawId)) {
-        conditions.push(or(eq(s.id, rawId), eq(s.name, toolKey))!);
-      } else {
-        conditions.push(or(eq(s.name, rawId), eq(s.name, toolKey))!);
-      }
+    if (toolKey !== undefined) {
+      const rawId = toolKey.startsWith("scenario.") ? toolKey.slice(9) : "";
+      if (!isUuid(rawId)) return { items: [], nextCursor: undefined };
+      conditions.push(eq(s.id, rawId));
     }
 
     if (q.cursor) {
-      conditions.push(gt(v.id, q.cursor));
+      conditions.push(gt(s.id, q.cursor));
     }
 
-    const rows = await tx
-      .select({
-        id: v.id,
-        scenarioId: s.id,
-        targetId: s.targetId,
-        scenarioName: s.name,
-        versionNo: v.versionNo,
-        definition: v.definition,
-      })
-      .from(v)
-      .innerJoin(s, eq(s.id, v.scenarioId))
+    const scenarioRows = await tx
+      .select({ id: s.id, targetId: s.targetId, scenarioName: s.name })
+      .from(s)
       .innerJoin(t, eq(t.id, s.targetId))
       .innerJoin(tg, eq(tg.targetId, s.targetId))
-      .where(and(...conditions))
-      .orderBy(asc(v.id))
+      .where(
+        and(
+          ...conditions,
+          exists(
+            tx
+              .select({ id: v.id })
+              .from(v)
+              .where(and(eq(v.scenarioId, s.id), eq(v.kind, "published"))),
+          ),
+        ),
+      )
+      .orderBy(asc(s.id))
       .limit(q.limit + 1);
+    const scenarioPage = page(scenarioRows, q.limit);
+    const rows = [];
+    for (const row of scenarioPage.items) {
+      const [latest] = await tx
+        .select({ id: v.id, versionNo: v.versionNo, definition: v.definition })
+        .from(v)
+        .where(and(eq(v.scenarioId, row.id), eq(v.kind, "published")))
+        .orderBy(desc(v.versionNo))
+        .limit(1);
+      if (latest)
+        rows.push({
+          scenarioId: row.id,
+          targetId: row.targetId,
+          scenarioName: row.scenarioName,
+          ...latest,
+        });
+    }
 
-    const result = page(rows, q.limit);
     return {
-      ...result,
-      items: result.items.map((row) => {
+      nextCursor: scenarioPage.nextCursor,
+      items: rows.map((row) => {
         const def = row.definition as any;
         const key = `scenario.${row.scenarioId}`;
         const inputSchema = scenarioInputsToJsonSchema(def.inputs ?? []);

@@ -2,6 +2,8 @@ import { z } from "zod";
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from "./wire.js";
 import { runInputSchema, runStatusSchema } from "./run.js";
 import { idempotencyKeySchema, stepRunDtoSchema } from "./run-api.js";
+import { outcomeResultDtoSchema, outcomeStatusSchema } from "./outcome.js";
+import { executionErrorCategorySchema } from "./runtime-error.js";
 import { scenarioInputDeclSchema } from "./step.js";
 import {
   normalizeIpAddress,
@@ -425,7 +427,22 @@ export const serviceRunCancelResultSchema = z.object({
 export type ServiceRunCancelResult = z.infer<
   typeof serviceRunCancelResultSchema
 >;
-export const externalRunSchema = z.object({
+/** 对外只给判定结论；expected/actual/details 可能含目标业务数据，不开放。 */
+export const externalOutcomeResultSchema = outcomeResultDtoSchema.pick({
+  contractId: true,
+  stepRunId: true,
+  meaning: true,
+  severity: true,
+  onViolation: true,
+  verdict: true,
+  evaluatedAt: true,
+});
+export type ExternalOutcomeResult = z.infer<typeof externalOutcomeResultSchema>;
+/**
+ * 执行状态（status）、业务结果（outcomeStatus）与证据完整性（evidenceStatus）
+ * 分别表达：SUCCEEDED 不代表业务通过。strict 防止内部字段未经审定外泄。
+ */
+export const externalRunSchema = z.strictObject({
   id: entityIdSchema,
   status: runStatusSchema,
   targetId: entityIdSchema,
@@ -438,6 +455,8 @@ export const externalRunSchema = z.object({
   cancelRequested: z.boolean(),
   cancelReason: z.string().nullable(),
   evidenceStatus: z.enum(["PENDING", "COMPLETE", "INCOMPLETE"]),
+  outcomeStatus: outcomeStatusSchema,
+  outcomeResults: z.array(externalOutcomeResultSchema),
   stepRuns: z.array(
     stepRunDtoSchema.omit({ attempts: true }).extend({
       attempts: z.array(
@@ -448,6 +467,9 @@ export const externalRunSchema = z.object({
           startedAt: utcInstantSchema,
           finishedAt: utcInstantSchema.nullable(),
           errorCode: z.string().nullable(),
+          /** 平台结构化分类；safeMessage 可能夹带页面文本，不对外。 */
+          errorCategory: executionErrorCategorySchema.nullable(),
+          retryable: z.boolean().nullable(),
           output: jsonValueSchema.nullable(),
         }),
       ),

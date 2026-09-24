@@ -1,3 +1,7 @@
+2026-09-24--修复服务工具网关与对外契约：工具键固定解析到场景最新已发布版本（此前会执行最老版本且目录按版本重复列出），支持 descriptorVersion 过期冲突；同步调用缺 run:read 时受理前拒绝，需人工介入时立即交回带原因的回执；结果改为已放行 outputs 与结构化错误分类，删除不存在的 SSE 地址并修正 pollUrl；Run 尝试补 errorCategory/retryable；OpenAPI 由 zod 契约生成 Run、工具结果与 Webhook 载荷结构
+
+2026-09-24--修复受控执行 API 对外结果丢失业务结果轴：GET/创建 Run 与工具同步调用返回 Run 级 outcomeStatus 及脱敏判定摘要（不含 expected/actual），Webhook 载荷新增 outcomeStatus 且入队前在同一事务内补算，避免「执行成功但业务失败」被当成通过；对外 Run DTO 改为显式映射的 strict 契约
+
 2026-09-24--新增数据库可移植检查 pnpm check:portability（挂入 pnpm check）：新 PG 迁移禁用触发器、函数、DO 块、条件索引、ON CONFLICT、数组与数据库生成 ID 等专有特性，@cairn/db 适配层外的方言写法按基线只减不增；同步清理主计划、活跃方案与架构文档中的双库迁移与双库验证要求
 
 2026-09-24--数据库收敛为只部署与验收 PostgreSQL：迁移号领取与检查只覆盖 PG，MySQL 迁移链冻结于 mysql/0102（PG 0118），宪法与部署/工具文档明确可移植是应用层设计约束而非双库验证门槛
