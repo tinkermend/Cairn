@@ -6,6 +6,8 @@ const labels: Record<string, string> = {
   NEEDS_REVIEW: '待核查', WAITING_FOR_AUTH: '等待认证', HOLDING: '已暂停', RECOVERING: '恢复中',
   COMPLETED: '已完成', WAITING: '等待中', PASS: '通过', FAIL: '异常', WARN: '提示', UNKNOWN: '未知', NOT_EVALUATED: '未评估',
   PENDING: '待处理', ACTIVE: '执行中', SETTLED: '已结束', SKIPPED: '已跳过', COMPLETE: '完整', INCOMPLETE: '不完整',
+  disabled: '已停用', fallback_not_selected: '未采用的备选', fallback_abandoned: '备选已放弃',
+  run_halted: '前序失败未执行', condition_not_met: '条件不满足', optional_absent: '未出现',
   all_pass: '全部通过', pass_with_warnings: '通过但有提示', anomalies_found: '发现异常', incomplete: '结论不完整',
   failure_policy_stop: '按失败策略停止', suite_cancelled: '集合已取消', deadline_elapsed: '超过运行期限',
   available: '可用', missing: '缺失', screenshot: '截图',
@@ -51,7 +53,10 @@ export function reportLines(document: ReportDocument): ReportLine[] {
       const attempts = records(step.attempts)
       const hasUnsuccessfulAttempt = attempts.some((attempt) => attempt.status !== 'SUCCEEDED' || record(attempt.error).message)
       if ((!details || !includeSuccess) && step.status === 'SUCCEEDED' && step.outcomeStatus === 'PASS' && !hasUnsuccessfulAttempt) continue
-      add(`${text(step.name)}：${text(step.status)}；业务结果：${text(step.outcomeStatus)}`)
+      const statusText = step.status === 'SKIPPED'
+        ? `跳过（${step.skipReason ? text(step.skipReason) : '已跳过'}）`
+        : text(step.status)
+      add(`${text(step.name)}：${statusText}；业务结果：${text(step.outcomeStatus)}`)
       for (const attempt of attempts) {
         const error = record(attempt.error)
         if (error.message) add(`尝试 ${text(attempt.id)}：${text(error.code)} / ${text(error.message)}`)

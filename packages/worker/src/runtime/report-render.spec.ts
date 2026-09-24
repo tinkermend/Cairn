@@ -32,6 +32,13 @@ describe('报告渲染', () => {
     expect(docx.toString('utf8')).toContain('订单金额检查：执行成功；业务结果：异常')
     expect(docx.toString('utf8')).not.toContain('"type":"summary"')
     expect(reportLines(document).some((line) => line.text.includes('业务结论：异常'))).toBe(true)
+    expect(reportLines({
+      ...document,
+      source: {
+        ...document.source,
+        stepRuns: [{ name: '停用的核对', status: 'SKIPPED', skipReason: 'disabled', outcomeStatus: 'NOT_EVALUATED', attempts: [] }],
+      },
+    }).some((line) => line.text.includes('停用的核对：跳过（已停用）'))).toBe(true)
 
     const pdf = await renderReportPdf(document)
     expect(pdf.subarray(0, 5).toString('utf8')).toBe('%PDF-')
