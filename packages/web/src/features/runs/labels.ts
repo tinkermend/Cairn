@@ -83,7 +83,7 @@ export const MISSING_REASON_LABELS: Record<string, string> = {
   object_store_unavailable: '对象存储不可用',
   object_purged: '已过保留期，对象被清理',
   upload_incomplete: '上传未完成',
-  trace_too_large: 'Trace 超过体积上限，未上传',
+  trace_too_large: '操作轨迹超过体积上限，未上传',
   capture_failed: '采集失败，没有留下可用字节',
   video_too_large: '录像超过体积上限，且没有可播前缀',
   coverage_partial: '录像覆盖不完整',

@@ -149,16 +149,14 @@ export function RunMetricStrip({ run }: Props) {
       </div>
 
       {/* 4. 执行状态与双轴判定 */}
-      <div className='flex flex-col justify-between rounded-lg border border-border-card bg-card p-4 shadow-card'>
+      <div className={`flex flex-col justify-between rounded-lg border bg-card p-4 shadow-card ${
+        (run.outcomeStatus === 'NOT_EVALUATED' || run.outcomeStatus === 'UNKNOWN') && isFinishedRunStatus(run.status)
+          ? 'border-status-warning-foreground/40'
+          : 'border-border-card'
+      }`}>
         <div className='flex items-center justify-between text-muted-foreground'>
-          <span className='text-label font-medium'>双轴判定与证据</span>
+          <span className='text-label font-medium'>业务结果与执行</span>
           <Target className='size-4 text-primary' />
-        </div>
-        <div className='mt-1.5 flex flex-wrap items-center gap-1.5'>
-          <StatusBadge tone={runStatusTone(run.status)}>{RUN_STATUS_LABELS[run.status]}</StatusBadge>
-          <StatusBadge tone={runEvidenceStatusTone(run.evidenceStatus, run.status)}>
-            {RUN_EVIDENCE_STATUS_LABELS[run.evidenceStatus]}
-          </StatusBadge>
         </div>
         <div className='mt-2'>
           <OutcomeAxisSummary
@@ -167,9 +165,15 @@ export function RunMetricStrip({ run }: Props) {
             hasContracts={Boolean(run.snapshot.outcomeManifest?.entries.length)}
           />
         </div>
+        <div className='mt-2 flex flex-wrap items-center gap-1.5'>
+          <StatusBadge tone={runStatusTone(run.status)}>{RUN_STATUS_LABELS[run.status]}</StatusBadge>
+          <StatusBadge tone={runEvidenceStatusTone(run.evidenceStatus, run.status)}>
+            {RUN_EVIDENCE_STATUS_LABELS[run.evidenceStatus]}
+          </StatusBadge>
+        </div>
         <div className='mt-2 border-t border-border-card/60 pt-2 text-label text-muted-foreground truncate'>
           本次采集：截图 {CAPTURE_MODE_LABELS[policy.screenshot]} · 录像{' '}
-          {policy.video === 'always' ? '始终' : '关闭'} · Trace{' '}
+          {policy.video === 'always' ? '始终' : '关闭'} · 操作轨迹{' '}
           {CAPTURE_MODE_LABELS[policy.trace]}
         </div>
       </div>

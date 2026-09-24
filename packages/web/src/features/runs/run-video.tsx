@@ -255,7 +255,7 @@ function StepScreenshotImage({
     <img
       src={url}
       alt='该步骤最后一次尝试的截图'
-      className='mt-2 max-h-56 max-w-full rounded-sm border border-border-card'
+      className='mt-2 h-24 w-40 rounded-sm border border-border-card object-contain'
     />
   )
 }

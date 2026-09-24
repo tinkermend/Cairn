@@ -364,12 +364,12 @@ export function RunVideoPlayer({
       className='group/player space-y-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-primary/40'
     >
       {/* 画面区域 */}
-      <div className='relative overflow-hidden rounded-sm border border-border-card bg-black'>
+      <div className='relative mx-auto max-w-xl overflow-hidden rounded-sm border border-border-card bg-black'>
         <video
           ref={videoRef}
           src={url}
           playsInline
-          className='max-h-96 w-full object-contain'
+          className='max-h-32 w-full object-contain'
           onTimeUpdate={handleTimeUpdate}
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}

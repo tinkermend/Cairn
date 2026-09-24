@@ -47,8 +47,8 @@ describe('运行地图线索', () => {
       </QueryClientProvider>,
     )
     await expect.element(screen.getByText('地图线索')).toBeVisible()
-    await expect.element(screen.getByText(/定位：confirmed/)).toBeVisible()
-    await expect.element(screen.getByText(/业务结果：rejected/)).toBeVisible()
+    await expect.element(screen.getByText(/定位：已确认/)).toBeVisible()
+    await expect.element(screen.getByText(/业务结果：已否定/)).toBeVisible()
     await expect.element(screen.getByText(/不能据此宣称页面改版/)).toBeVisible()
   })
 })

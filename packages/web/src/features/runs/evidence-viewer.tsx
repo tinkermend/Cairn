@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   isAiCallEvidence,
   readScreenshotPayload,
+  SCREENSHOT_DIAGNOSIS_LABELS,
   SCREENSHOT_ROLE_LABELS,
   type EvidenceMetadata,
   type JsonValue,
@@ -29,7 +30,7 @@ const TYPE_LABELS: Record<EvidenceMetadata['type'], string> = {
   error: '错误',
   screenshot: '截图',
   log: '诊断',
-  trace: 'Trace',
+  trace: '操作轨迹',
   video: '录像',
   file: '文件',
 }
@@ -67,9 +68,10 @@ export function AttemptEvidenceList({
 
 function shouldOpenByDefault(item: EvidenceMetadata): boolean {
   if (item.status === 'missing') return true
-  return (
-    item.type === 'error' || item.type === 'screenshot' || item.type === 'trace' || item.type === 'video'
-  )
+  if (item.type === 'screenshot') {
+    return readScreenshotPayload(item.payload)?.role !== 'before_action'
+  }
+  return item.type === 'error' || item.type === 'trace' || item.type === 'video'
 }
 
 function EvidenceItem({
@@ -98,7 +100,8 @@ function EvidenceItem({
         ) : null}
         {item.type === 'screenshot' && item.status === 'available' ? (
           <>
-            <EvidenceScreenshot runId={runId} evidenceId={item.id} />
+            <ScreenshotDiagnosisNote payload={item.payload} />
+            <EvidenceScreenshot runId={runId} evidenceId={item.id} label={screenshotTitle(item)} />
           </>
         ) : null}
         {item.type === 'trace' && item.status === 'available' ? (
@@ -117,11 +120,16 @@ function EvidenceItem({
             </Can>
           )}
         {item.payload !== undefined ? (
-          isAiCallEvidence(item.payload) ? (
-            <AiAttemptSummary output={null} evidence={[item]} />
-          ) : (
-            <StructuredPayload value={item.payload} />
-          )
+          <details className='text-label'>
+            <summary className='cursor-pointer text-muted-foreground'>技术详情</summary>
+            <div className='mt-2'>
+              {isAiCallEvidence(item.payload) ? (
+                <AiAttemptSummary output={null} evidence={[item]} />
+              ) : (
+                <StructuredPayload value={item.payload} />
+              )}
+            </div>
+          </details>
         ) : null}
       </CollapsibleContent>
     </Collapsible>
@@ -130,14 +138,28 @@ function EvidenceItem({
 
 function screenshotTitle(item: EvidenceMetadata): string {
   if (item.type !== 'screenshot') return TYPE_LABELS[item.type]
-  const role = readScreenshotPayload(item.payload)?.role
-  return role ? `${TYPE_LABELS.screenshot} · ${SCREENSHOT_ROLE_LABELS[role]}` : TYPE_LABELS.screenshot
+  const payload = readScreenshotPayload(item.payload)
+  const role = payload?.role
+  const diagnosis = payload?.diagnosis === 'suspected_blank' ? ' · 截图疑似空白' : ''
+  return role ? `${SCREENSHOT_ROLE_LABELS[role]}${diagnosis}` : TYPE_LABELS.screenshot
+}
+
+function ScreenshotDiagnosisNote({ payload }: { payload: EvidenceMetadata['payload'] }) {
+  const parsed = readScreenshotPayload(payload)
+  if (!parsed) return null
+  const diagnosis = parsed.diagnosis ? SCREENSHOT_DIAGNOSIS_LABELS[parsed.diagnosis] : '未检测'
+  return (
+    <p className='text-label text-muted-foreground'>
+      画面：{diagnosis}
+      {parsed.omittedBefore === 'initial_blank_page' ? ' · 进入页面前无可见画面' : ''}
+    </p>
+  )
 }
 
 function statusHint(item: EvidenceMetadata): string {
   if (item.status === 'pending') return '收集中'
   if (item.status === 'missing') return '缺失'
-  return '已就绪'
+  return '已保存'
 }
 
 function EvidenceTraceDownload({
@@ -169,16 +191,16 @@ function EvidenceTraceDownload({
               toast.error(
                 error instanceof ApiRequestError
                   ? error.message
-                  : 'Trace 下载失败'
+                  : '操作轨迹下载失败'
               )
             })
             .finally(() => setBusy(false))
         }}
       >
-        {busy ? '下载中…' : '下载 Trace'}
+        {busy ? '下载中…' : '下载操作轨迹'}
       </Button>
       <p className='text-label text-muted-foreground'>
-        用 Playwright Trace Viewer 打开
+        用 Playwright 轨迹查看器打开
       </p>
     </div>
   )
@@ -225,62 +247,86 @@ function EvidenceFileDownload({
   )
 }
 
+const imageCache = new Map<string, string>()
+
 function EvidenceScreenshot({
   runId,
   evidenceId,
+  label = '步骤截图',
 }: {
   runId: string
   evidenceId: string
+  label?: string
 }) {
-  const [url, setUrl] = useState<string | null>(null)
+  const [url, setUrl] = useState<string | null>(imageCache.get(`${runId}:${evidenceId}`) ?? null)
   const [failed, setFailed] = useState(false)
   const [open, setOpen] = useState(false)
+  const [visible, setVisible] = useState(false)
+  const hostRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
-    let revoked: string | undefined
+    const node = hostRef.current
+    if (!node || url) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) setVisible(true)
+      },
+      { rootMargin: '80px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hostRef, url])
+
+  useEffect(() => {
+    if (!visible || url) return
+    const key = `${runId}:${evidenceId}`
+    const cached = imageCache.get(key)
+    if (cached) {
+      setUrl(cached)
+      return
+    }
     let cancelled = false
     void fetchEvidenceContent(runId, evidenceId)
       .then(({ blob }) => {
         if (cancelled) return
-        revoked = URL.createObjectURL(blob)
-        setUrl(revoked)
+        const created = URL.createObjectURL(blob)
+        imageCache.set(key, created)
+        setUrl(created)
       })
       .catch(() => {
         if (!cancelled) setFailed(true)
       })
     return () => {
       cancelled = true
-      if (revoked) URL.revokeObjectURL(revoked)
     }
-  }, [runId, evidenceId])
+  }, [runId, evidenceId, url, visible])
 
-  if (failed)
-    return (
-      <p className='text-label text-status-warning-foreground'>截图无法加载</p>
-    )
-  if (!url)
-    return <p className='text-label text-muted-foreground'>截图加载中…</p>
+  if (failed) {
+    return <p className='text-label text-status-warning-foreground'>截图无法加载</p>
+  }
   return (
     <>
       <button
+        ref={hostRef}
         type='button'
-        className='block max-w-full text-left'
+        className='flex h-24 w-40 items-center justify-center overflow-hidden rounded-sm border border-border-card bg-muted/30 text-left'
+        aria-label={`查看${label}大图`}
         onClick={() => setOpen(true)}
       >
-        <img
-          src={url}
-          alt='步骤截图，点击看大图'
-          className='max-h-96 max-w-full rounded-sm border border-border-card'
-        />
+        {url ? (
+          <img src={url} alt={label} className='max-h-full max-w-full object-contain' />
+        ) : (
+          <span className='text-label text-muted-foreground'>截图加载中…</span>
+        )}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className='max-h-[90vh] overflow-auto sm:max-w-5xl'>
-          <DialogTitle>步骤截图</DialogTitle>
-          <img
-            src={url}
-            alt='步骤截图大图'
-            className='max-h-[75vh] w-auto max-w-full'
-          />
+          <DialogTitle>{label}</DialogTitle>
+          {url ? (
+            <img src={url} alt={`${label}原始分辨率`} className='max-h-[75vh] w-auto max-w-full object-contain' />
+          ) : (
+            <p className='text-label text-muted-foreground'>截图加载中…</p>
+          )}
         </DialogContent>
       </Dialog>
     </>

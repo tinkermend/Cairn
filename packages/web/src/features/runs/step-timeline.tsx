@@ -4,6 +4,7 @@ import {
   isAiStepType,
   isSelectionDecision,
   skipReasonForStep,
+  STEP_SKIP_REASON_LABELS,
   type ExecutableStepType,
   type ModuleManifestEntry,
   type RunDetailDto,
@@ -15,6 +16,7 @@ import { ChevronDown, ChevronRight, Layers, MessageSquare } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Can } from '@/components/rbac/can'
+import { cn } from '@/lib/utils'
 import { useAssistantStore } from '@/stores/assistant-store'
 import { buildStepQuote } from '@/features/assistant/quote-helper'
 import { StatusBadge } from '@/components/status-badge'
@@ -392,9 +394,64 @@ function StepRunItem({
           <StatusBadge tone={stepRunStatusTone(step.status)}>
             {STEP_RUN_STATUS_LABELS[step.status]}
           </StatusBadge>
-          {skipReason ? (
+          {step.skipReason === 'optional_absent' ? (
+            <Badge variant='outline' className='border-sky-300 bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300'>
+              未出现，已跳过
+            </Badge>
+          ) : step.skipReason === 'condition_not_met' ? (
+            <Badge variant='outline' className='border-border bg-muted text-muted-foreground'>
+              条件不满足，已跳过
+            </Badge>
+          ) : step.skipReason ? (
+            <Badge variant='outline'>{STEP_SKIP_REASON_LABELS[step.skipReason] ?? step.skipReason}</Badge>
+          ) : skipReason ? (
             <Badge variant='outline'>{SKIP_REASON_LABELS[skipReason]}</Badge>
           ) : null}
+          {(() => {
+            const lastAttempt = step.attempts[step.attempts.length - 1]
+            const lastOutput = lastAttempt?.output as any
+            if (step.type === 'decide' && lastOutput?.branch) {
+              return (
+                <Badge
+                  variant='outline'
+                  className={cn(
+                    'text-3xs font-medium',
+                    lastOutput.branch === 'then'
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                      : 'border-amber-300 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                  )}
+                >
+                  {lastOutput.branch === 'then' ? '判定成立 → 执行满足分支' : '判定不成立 → 执行否则分支'}
+                </Badge>
+              )
+            }
+            if (step.type === 'probe' && lastOutput && typeof lastOutput.matched === 'boolean') {
+              return (
+                <Badge
+                  variant='outline'
+                  className={cn(
+                    'text-3xs font-medium',
+                    lastOutput.matched
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                      : 'border-border bg-muted text-muted-foreground'
+                  )}
+                >
+                  {lastOutput.matched ? '页面检查通过 (已找到)' : '页面检查未匹配 (不存在)'}
+                </Badge>
+              )
+            }
+            if (step.type === 'compute' && lastOutput && 'value' in lastOutput) {
+              return (
+                <Badge
+                  variant='outline'
+                  className='text-3xs font-medium border-purple-300 bg-purple-50 text-purple-700 dark:bg-purple-950 dark:text-purple-300'
+                >
+                  计算值: {typeof lastOutput.value === 'object' ? JSON.stringify(lastOutput.value) : String(lastOutput.value)}
+                </Badge>
+              )
+            }
+            return null
+          })()}
         </div>
         <Can allOf={['ai:assist']}>
           <Button
@@ -451,7 +508,7 @@ function StepRunItem({
           }`}
         >
           <p>
-            Attempt #{attempt.attemptNo} · {ATTEMPT_STATUS_LABELS[attempt.status]}
+            第 {attempt.attemptNo} 次尝试 · {ATTEMPT_STATUS_LABELS[attempt.status]}
             {formatDuration(attempt.startedAt, attempt.finishedAt)
               ? ` · ${formatDuration(attempt.startedAt, attempt.finishedAt)}`
               : ''}
@@ -478,7 +535,7 @@ function StepRunItem({
                     setQuote(
                       buildStepQuote(
                         step,
-                        `Attempt #${attempt.attemptNo} 报错 [${attempt.error?.code}]: ${attempt.error?.safeMessage}`
+                        `第 ${attempt.attemptNo} 次尝试报错 [${attempt.error?.code}]: ${attempt.error?.safeMessage}`
                       )
                     )
                   }}

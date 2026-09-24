@@ -63,13 +63,7 @@ export function RunMapConsumption({ frozen }: RunMapConsumptionProps) {
       </p>
     )
   }
-  if (frozen.mode === 'off') {
-    return (
-      <p className='mt-2 text-label text-muted-foreground'>
-        本次运行未启用地图消费。
-      </p>
-    )
-  }
+  if (frozen.mode === 'off') return null
   return (
     <p className='mt-2 text-label text-muted-foreground'>
       地图消费 {MODE_LABELS[frozen.mode] ?? frozen.mode} · 版本{' '}
@@ -97,7 +91,9 @@ export function RunMapDecisions(props: RunMapDecisionsProps) {
   return (
     <div className='space-y-3'>
       {props.steps ? (
-        <div className='flex flex-wrap gap-3'>
+        <details className='text-label text-muted-foreground'>
+          <summary className='cursor-pointer'>按步骤筛选地图选择</summary>
+        <div className='mt-2 flex flex-wrap gap-3'>
           <label className='flex min-w-0 flex-1 flex-col gap-1 text-label'>
             地图选择的步骤
             <SelectField
@@ -131,6 +127,7 @@ export function RunMapDecisions(props: RunMapDecisionsProps) {
             </SelectField>
           </label>
         </div>
+        </details>
       ) : null}
       <DecisionPage
         key={`${props.runId}:${selectedStep}:${selectedAttempt}`}
@@ -166,6 +163,13 @@ function DecisionPage({
   }, [canRead, eventSeq, refetch])
 
   if (!canRead) return null
+  if (query.isSuccess && query.data.items.length === 0 && !query.data.nextCursor && cursors.length === 1) {
+    return (
+      <p className='text-label text-muted-foreground'>
+        {stepRunId ? '该步骤没有地图选择记录。' : '本次运行没有地图选择记录。'}
+      </p>
+    )
+  }
 
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
@@ -184,13 +188,8 @@ function DecisionPage({
             重试
           </Button>
         </div>
-      ) : query.data.items.length === 0 ? (
-        <p className='text-label text-muted-foreground'>
-          {stepRunId
-            ? '该步骤没有地图选择记录。'
-            : '本次运行没有地图选择记录。'}
-        </p>
-      ) : (
+      ) : null}
+      {query.data && query.data.items.length > 0 ? (
         <ul className='space-y-2'>
           {query.data.items.map((item) => (
             <li
@@ -251,7 +250,7 @@ function DecisionPage({
             </li>
           ))}
         </ul>
-      )}
+      ) : null}
       {cursors.length > 1 || query.data?.nextCursor ? (
         <nav aria-label='地图选择分页' className='flex items-center gap-2'>
           <Button

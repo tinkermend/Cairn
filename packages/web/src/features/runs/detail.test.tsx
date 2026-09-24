@@ -281,11 +281,12 @@ describe('RunDetailPage', () => {
     // 注意 exact：'判定取消' 也含'取消'，不加就永远命中
     expect(screen.getByRole('button', { name: '取消', exact: true }).elements()).toHaveLength(0)
 
+    await screen.getByRole('button', { name: '更多操作' }).click()
     await expect.element(screen.getByRole('link', { name: '在结果与报告中查看' })).toHaveAttribute('href', '/evidence')
 
     // 步骤、Attempt、错误、证据、context 一个都不许省
     await expect.element(screen.getByText('1. 提交订单')).toBeInTheDocument()
-    await expect.element(screen.getByText(/Attempt #1/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/第 1 次尝试/)).toBeInTheDocument()
     expect(document.body.textContent).toContain('接管时副作用步骤结果未确认')
     expect(document.body.textContent).toContain('greeting')
   })
@@ -326,7 +327,8 @@ describe('RunDetailPage', () => {
     expect(screen.getByRole('button', { name: '处理登录' }).elements()).toHaveLength(0)
     expect(screen.getByRole('region', { name: '受管浏览器' }).elements()).toHaveLength(0)
     // 刷新是只读操作，任何人都能点
-    await expect.element(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '更多操作' }).click()
+    await expect.element(screen.getByRole('menuitem', { name: '刷新' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '分析本次运行' }).elements()).toHaveLength(0)
     expect(screen.getByRole('button', { name: '删除' }).elements()).toHaveLength(0)
   })
@@ -357,7 +359,8 @@ describe('RunDetailPage', () => {
     )
     signIn(['run:read', 'run:delete'])
     const screen = await renderPage()
-    await expect.element(screen.getByRole('button', { name: '删除' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '更多操作' }).click()
+    await expect.element(screen.getByRole('menuitem', { name: '删除' })).toBeInTheDocument()
   })
 
   it('已删除运行展示清理状态而不是普通加载失败', async () => {
@@ -383,8 +386,9 @@ describe('RunDetailPage', () => {
   it('具备 ai:assist 与目标可见性时出现次级分析入口，核查仍是主操作', async () => {
     signIn(['ai:assist', 'run:read', 'run:review', 'target:read'])
     const screen = await renderPage()
-    await expect.element(screen.getByRole('button', { name: '分析本次运行' })).toBeInTheDocument()
     await expect.element(screen.getByRole('button', { name: '判定失败' })).toBeInTheDocument()
+    await screen.getByRole('button', { name: '更多操作' }).click()
+    await expect.element(screen.getByRole('menuitem', { name: '分析本次运行' })).toBeInTheDocument()
   })
 
   it.each(['FAILED', 'NEEDS_REVIEW'] as const)('认证恢复结论 %s：失败可新建，核查禁止重放', async (status) => {
@@ -644,7 +648,7 @@ describe('RunDetailPage', () => {
     )
     signIn(['run:read', 'run:review'])
     const screen = await renderPage()
-    await expect.element(screen.getByText(/Attempt #1/)).toBeInTheDocument()
+    await expect.element(screen.getByText(/第 1 次尝试/)).toBeInTheDocument()
     const reason = screen.getByText(/缺失原因：执行进程失联，现场字节已不可得/)
     await expect.element(reason).toBeInTheDocument()
     expect(reason.element().className).toContain('text-status-warning-foreground')
@@ -869,7 +873,8 @@ describe('RunDetailPage', () => {
     expect(mocks.fetchRunObservation).toHaveBeenCalledTimes(1)
     await expect.element(screen.getByText('连接正常')).toBeInTheDocument()
 
-    await screen.getByRole('button', { name: '刷新' }).click()
+    await screen.getByRole('button', { name: '更多操作' }).click()
+    await screen.getByRole('menuitem', { name: '刷新' }).click()
     await vi.waitFor(() => expect(mocks.fetchRunObservation).toHaveBeenCalledTimes(2))
     expect(mocks.subscribeRunEvents).toHaveBeenCalled()
   })

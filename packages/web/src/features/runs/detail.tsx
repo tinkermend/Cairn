@@ -7,6 +7,7 @@ import {
   isFinishedRunStatus,
   readRunVideoPayload,
   RUN_EXECUTE_ALL_OF,
+  type RunDetailDto,
 } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
@@ -33,10 +34,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { AttemptEvidenceList } from './evidence-viewer'
 import { OutcomeConditionList } from './outcome-axis'
+import { ContextLists } from './context-lists'
 import { BrowserView } from './browser-view'
 import { findRunVideo, RunVideoSection } from './run-video'
 import { RunMapClues } from '@/features/map/run-clues'
 import { RunMapConsumption, RunMapDecisions } from './map-decisions'
+import { AiActionTracePanel } from './ai-action-trace'
 import { RunResolutionDecisions } from './resolution-decisions'
 import { PlacementHint } from './placement-hint'
 import { DebugHoldBar } from './debug-hold-bar'
@@ -47,7 +50,13 @@ import { useAssistantContextBinding } from '@/features/assistant/use-assistant-c
 import { RunMetricStrip } from './run-metric-strip'
 import { RunOutputCard } from './run-output-card'
 import { ReportPanel } from '@/features/reports/panel'
-import { AlertTriangle, ArrowLeft, Copy, ListOrdered, Target } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Copy, ListOrdered, MoreHorizontal, Target } from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 export function RunDetailPage() {
   const { runId } = useParams({ from: '/_authenticated/runs/$runId/' })
@@ -182,36 +191,54 @@ export function RunDetailPage() {
           actions={
             <div className='flex items-center gap-2'>
               <StatusBadge tone={connectionTone(connection)}>{connectionLabel(connection)}</StatusBadge>
-              <Button variant='outline' onClick={() => void refresh()}>
-                刷新
-              </Button>
-              <Button variant='outline' asChild>
-                <Link to='/evidence' search={{ runId, tab: 'search' }}>
-                  在结果与报告中查看
-                </Link>
-              </Button>
-              {run?.suiteRunId ? (
-                <Button variant='outline' asChild>
-                  <Link to='/suite-runs/$suiteRunId' params={{ suiteRunId: run.suiteRunId }}>
-                    所属场景集运行
-                  </Link>
-                </Button>
-              ) : null}
-              <Can allOf={['notification:read']}><Button variant='outline' asChild><Link to='/notifications' search={{ tab: 'records', runId }}>通知记录</Link></Button></Can>
-              <Can allOf={['ai:assist', 'run:read', 'target:read']}>
-                <Button
-                  variant='outline'
-                  onClick={() =>
-                    openAssistant({
-                      question: '分析本次运行',
-                      capabilityHint: 'run.diagnose',
-                      pageContext: { page: 'run', runId },
-                    })
-                  }
-                >
-                  分析本次运行
-                </Button>
-              </Can>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant='outline' aria-label='更多操作'>
+                    <MoreHorizontal className='size-4' />
+                    更多
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align='end'>
+                  <DropdownMenuItem onClick={() => void refresh()}>刷新</DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to='/evidence' search={{ runId, tab: 'search' }}>
+                      在结果与报告中查看
+                    </Link>
+                  </DropdownMenuItem>
+                  {finished ? (
+                    <Can permission='run:delete'>
+                      <DropdownMenuItem className='text-destructive' onClick={() => setRemoving(true)}>
+                        删除
+                      </DropdownMenuItem>
+                    </Can>
+                  ) : null}
+                  {run?.suiteRunId ? (
+                    <DropdownMenuItem asChild>
+                      <Link to='/suite-runs/$suiteRunId' params={{ suiteRunId: run.suiteRunId }}>
+                        所属场景集运行
+                      </Link>
+                    </DropdownMenuItem>
+                  ) : null}
+                  <Can allOf={['notification:read']}>
+                    <DropdownMenuItem asChild>
+                      <Link to='/notifications' search={{ tab: 'records', runId }}>通知记录</Link>
+                    </DropdownMenuItem>
+                  </Can>
+                  <Can allOf={['ai:assist', 'run:read', 'target:read']}>
+                    <DropdownMenuItem
+                      onClick={() =>
+                        openAssistant({
+                          question: '分析本次运行',
+                          capabilityHint: 'run.diagnose',
+                          pageContext: { page: 'run', runId },
+                        })
+                      }
+                    >
+                      分析本次运行
+                    </DropdownMenuItem>
+                  </Can>
+                </DropdownMenuContent>
+              </DropdownMenu>
               {run && !isFinishedRunStatus(run.status) && run.status !== 'NEEDS_REVIEW' ? (
                 <Can permission='run:cancel'>
                   <Button
@@ -235,11 +262,11 @@ export function RunDetailPage() {
                 </Can>
               ) : null}
               {finished ? (
-                <Can permission='run:delete'>
-                  <Button variant='ghost' className='text-destructive' onClick={() => setRemoving(true)}>
-                    删除
-                  </Button>
-                </Can>
+                <Button variant='outline' asChild>
+                  <Link to='/evidence' search={{ runId, tab: 'search' }}>
+                    查看报告
+                  </Link>
+                </Button>
               ) : null}
             </div>
           }
@@ -264,6 +291,7 @@ export function RunDetailPage() {
           <div className='space-y-5'>
             {/* 1. 全局 4 列健康指标条 */}
             <RunMetricStrip run={run} />
+            <RunReasonLine run={run} onSelectStep={handleSelectStep} />
 
             {/* 业务产出与巡检指标 */}
             <RunOutputCard
@@ -398,12 +426,14 @@ export function RunDetailPage() {
             ) : null}
 
             {/* 6. 受管浏览器视口与录像视口 */}
-            <BrowserView
-              runId={runId}
-              runStatus={run.status}
-              eventSeq={eventSeq}
-              onRunChanged={refresh}
-            />
+            {finished ? null : (
+              <BrowserView
+                runId={runId}
+                runStatus={run.status}
+                eventSeq={eventSeq}
+                onRunChanged={refresh}
+              />
+            )}
             <RunVideoSection
               run={run}
               items={evidenceItems}
@@ -453,7 +483,7 @@ export function RunDetailPage() {
                     <p className='mt-3 text-body text-status-warning-foreground font-medium'>
                       {evidenceItems.some((item) => !item.attemptId)
                         ? '运行在步骤开始前失败。原因见运行级证据。'
-                        : '运行在步骤开始前失败，没有留下 Attempt 证据。常见原因是浏览器步骤未指定目标账号，或会话配置不被支持。'}
+                        : '运行在步骤开始前失败，没有留下尝试证据。常见原因是浏览器步骤未指定目标账号，或会话配置不被支持。'}
                     </p>
                   ) : null}
                   <div className='mt-4'>
@@ -486,40 +516,67 @@ export function RunDetailPage() {
               {/* 右栏：成功条件判定、地图决策与 Context (5 cols) */}
               <div className='space-y-4 lg:col-span-5 xl:col-span-5'>
                 {/* 成功条件判定卡片 */}
+                {(run.snapshot.outcomeManifest?.entries.length ||
+                  run.snapshot.runtimeInvariantManifest?.entries.length) ? (
                 <section className='rounded-lg border border-border-card bg-card p-5 shadow-card'>
                   <h2 className='flex items-center gap-2 text-section font-semibold'>
                     <Target className='size-4 text-primary' />
                     成功条件
                   </h2>
                   <div className='mt-3'>
-                    <OutcomeConditionList runId={run.id} run={run} evidenceItems={evidenceItems} />
+                    <OutcomeConditionList
+                      runId={run.id}
+                      run={run}
+                      evidenceItems={evidenceItems}
+                      onFocusEvidence={(evidenceId) => {
+                        void navigate({
+                          search: ((prev: Record<string, unknown>) => ({ ...prev, evidence: evidenceId })) as never,
+                        })
+                      }}
+                    />
                   </div>
                 </section>
+                ) : (
+                  <p className='text-label text-muted-foreground'>这次运行没有成功条件或运行期约束。</p>
+                )}
 
                 {/* 地图决策与线索 */}
                 <RunMapClues targetId={run.targetId} runId={run.id} />
                 <RunMapDecisions key={run.id} runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} />
                 <RunResolutionDecisions key={run.id} runId={run.id} eventSeq={eventSeq} steps={run.stepRuns} />
+                {(() => {
+                  // AI 动作事实：只对选中 / 焦点 Attempt 展开（数据本身按 Attempt 独立记录）
+                  const focus = resolveRunEvidenceFocus(run, evidenceItems, search)
+                  const focusAttempt = focus.mismatch
+                    ? undefined
+                    : focus.attemptId ?? selectedAttemptId ?? undefined
+                  if (!focusAttempt) return null
+                  return <AiActionTracePanel key={focusAttempt} runId={run.id} attemptId={focusAttempt} />
+                })()}
 
                 {/* Context 卡片 */}
                 <section className='rounded-lg border border-border-card bg-card p-5 shadow-card'>
                   <div className='flex items-center justify-between'>
-                    <h2 className='text-section font-semibold'>Context</h2>
+                    <h2 className='text-section font-semibold'>步骤数据</h2>
                     <Button
                       variant='ghost'
                       size='sm'
                       className='h-7 px-2 text-label'
                       onClick={() => {
                         void navigator.clipboard.writeText(JSON.stringify(run.context, null, 2))
-                        toast.success('已复制 Context')
+                        toast.success('已复制步骤数据')
                       }}
                     >
                       <Copy className='mr-1 size-3' />
                       复制
                     </Button>
                   </div>
-                  <div className='mt-3 rounded-md border border-border-card/60 bg-muted/40 p-3'>
-                    <pre className='overflow-x-auto text-label font-mono'>{JSON.stringify(run.context, null, 2)}</pre>
+                  <div className='mt-3 space-y-2'>
+                    <ContextLists context={run.context} />
+                    <details>
+                      <summary className='cursor-pointer text-label text-muted-foreground'>技术详情</summary>
+                      <pre className='mt-2 overflow-x-auto rounded-md border border-border-card/60 bg-muted/40 p-3 text-label font-mono'>{JSON.stringify(run.context, null, 2)}</pre>
+                    </details>
                   </div>
                 </section>
                 <ReportPanel subject={{ kind: 'RUN', runId: run.id }} />
@@ -550,5 +607,35 @@ export function RunDetailPage() {
         }}
       />
     </>
+  )
+}
+
+function RunReasonLine({
+  run,
+  onSelectStep,
+}: {
+  run: RunDetailDto
+  onSelectStep: (stepRunId: string) => void
+}) {
+  const failed = run.stepRuns.find((step) => step.attempts.some((attempt) => attempt.error))
+  const error = failed?.attempts.find((attempt) => attempt.error)?.error
+  const undetermined = run.outcomeStatus === 'NOT_EVALUATED' || run.outcomeStatus === 'UNKNOWN'
+  const text = error?.safeMessage
+    ?? (run.outcomeStatus === 'FAIL' ? '成功条件未达成' : undetermined && isFinishedRunStatus(run.status) ? '业务结果尚未判定' : '')
+  if (!text) return null
+  const warning = undetermined && isFinishedRunStatus(run.status) && !error
+  return (
+    <p className={warning ? 'rounded-md border border-status-warning-foreground/30 bg-status-warning-background/20 px-3 py-2 text-body font-medium text-status-warning-foreground' : 'text-body'}>
+      {text}
+      {failed ? (
+        <button
+          type='button'
+          className='ml-2 text-primary hover:underline'
+          onClick={() => onSelectStep(failed.id)}
+        >
+          定位到第 {failed.ordinal + 1} 步
+        </button>
+      ) : null}
+    </p>
   )
 }

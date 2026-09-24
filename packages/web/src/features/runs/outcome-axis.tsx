@@ -1,7 +1,9 @@
 import {
+  candidateGroupsOf,
   expectKindLabel,
   joinOutcomeEvaluations,
   joinRuntimeInvariantEvaluations,
+  STEP_SKIP_REASON_LABELS,
   type JoinedOutcomeEvaluation,
   faceScreenshot,
   type OutcomeStatus,
@@ -9,7 +11,6 @@ import {
 } from '@cairn/shared'
 import { RUNTIME_INVARIANT_KIND_LABELS } from '@/features/authoring/invariant-editor'
 import { StatusBadge } from '@/components/status-badge'
-import { AttemptEvidenceList } from './evidence-viewer'
 import type { EvidenceMetadata } from '@cairn/shared'
 import {
   RUN_OUTCOME_STATUS_HINTS,
@@ -25,7 +26,7 @@ export {
 } from './outcome-labels'
 
 function evidenceForOutcomeResult(
-  result: { evidenceId?: string | null; attemptId: string } | undefined,
+  result: { evidenceId?: string | null; attemptId?: string | null } | undefined,
   evidenceItems: EvidenceMetadata[] | undefined,
 ): EvidenceMetadata[] {
   if (!evidenceItems?.length || !result) return []
@@ -98,13 +99,22 @@ export function OutcomeConditionList({
   run,
   evidenceItems,
   onEdit,
+  onFocusEvidence,
 }: {
   runId: string
-  run: Pick<RunDetailDto, 'snapshot' | 'outcomeResults'>
+  run: Pick<RunDetailDto, 'snapshot' | 'outcomeResults'> & {
+    stepRuns?: RunDetailDto['stepRuns']
+  }
   evidenceItems?: EvidenceMetadata[]
   onEdit?: (item: JoinedOutcomeEvaluation) => void
+  onFocusEvidence?: (evidenceId: string) => void
 }) {
-  const rows = joinOutcomeEvaluations(run.snapshot.outcomeManifest, run.outcomeResults)
+  const rows = joinOutcomeEvaluations(
+    run.snapshot.outcomeManifest,
+    run.outcomeResults,
+    run.stepRuns,
+    candidateGroupsOf(run.snapshot),
+  )
   const invariantRows = joinRuntimeInvariantEvaluations(
     run.snapshot.runtimeInvariantManifest,
     run.outcomeResults,
@@ -134,7 +144,9 @@ export function OutcomeConditionList({
                   ? '未求值'
                   : row.displayVerdict === 'UNKNOWN'
                     ? '无法判断'
-                    : RUN_OUTCOME_STATUS_LABELS[row.displayVerdict]}
+                    : row.displayVerdict === 'NOT_APPLICABLE'
+                      ? '不适用'
+                      : RUN_OUTCOME_STATUS_LABELS[row.displayVerdict]}
               </StatusBadge>
             </div>
             <p className='text-label text-muted-foreground'>
@@ -147,13 +159,36 @@ export function OutcomeConditionList({
             {row.displayVerdict === 'NOT_EVALUATED' ? (
               <p className='text-label text-muted-foreground'>运行尚未执行到这条条件。</p>
             ) : null}
+            {row.evaluationCount && row.evaluationCount > 1 ? (
+              <details className='text-label text-muted-foreground'>
+                <summary className='cursor-pointer'>求值 {row.evaluationCount} 次</summary>
+                <ul className='mt-1 space-y-1'>
+                  {(row.history ?? []).map((item, index) => (
+                    <li key={`${item.attemptId ?? index}-${item.evaluatedAt ?? index}`}>
+                      第 {index + 1} 次：{item.verdict}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+            {row.displayVerdict === 'NOT_APPLICABLE' ? (
+              <p className='text-label text-muted-foreground'>
+                不适用（{row.notApplicableReason ? STEP_SKIP_REASON_LABELS[row.notApplicableReason] : '已跳过'}）
+              </p>
+            ) : null}
             {row.displayVerdict === 'UNKNOWN' ? (
               <p className='text-label text-muted-foreground'>
                 取值或定位没有完成，不能把这种情况记成业务不通过。
               </p>
             ) : null}
             {evidence && evidence.length > 0 ? (
-              <AttemptEvidenceList runId={runId} items={evidence} />
+              <button
+                type='button'
+                className='text-label text-primary hover:underline'
+                onClick={() => evidence[0] && onFocusEvidence?.(evidence[0].id)}
+              >
+                查看对应步骤证据
+              </button>
             ) : null}
             {onEdit && row.displayVerdict === 'FAIL' ? (
               <button
@@ -182,7 +217,9 @@ export function OutcomeConditionList({
                     ? '未求值'
                     : row.displayVerdict === 'UNKNOWN'
                       ? '无法判断'
-                      : RUN_OUTCOME_STATUS_LABELS[row.displayVerdict]}
+                      : row.displayVerdict === 'NOT_APPLICABLE'
+                        ? '不适用'
+                        : RUN_OUTCOME_STATUS_LABELS[row.displayVerdict]}
                 </StatusBadge>
               </div>
               <p className='text-label text-muted-foreground'>
@@ -195,8 +232,17 @@ export function OutcomeConditionList({
               {row.displayVerdict === 'NOT_EVALUATED' ? (
                 <p className='text-label text-muted-foreground'>这次运行还没有观察到这条约束。</p>
               ) : null}
+              {row.displayVerdict === 'NOT_APPLICABLE' ? (
+                <p className='text-label text-muted-foreground'>所在步骤已被跳过或停用，此约束不适用。</p>
+              ) : null}
               {evidence && evidence.length > 0 ? (
-                <AttemptEvidenceList runId={runId} items={evidence} />
+                <button
+                  type='button'
+                  className='text-label text-primary hover:underline'
+                  onClick={() => evidence[0] && onFocusEvidence?.(evidence[0].id)}
+                >
+                  查看对应步骤证据
+                </button>
               ) : null}
             </li>
           )

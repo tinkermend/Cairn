@@ -4,6 +4,13 @@ import { useCan } from '@/hooks/use-permissions'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { MAP_DIMENSION_LABELS } from './labels'
 
+const VERDICT_LABELS: Record<string, string> = {
+  confirmed: '已确认',
+  rejected: '已否定',
+  unknown: '尚不确定',
+  not_observed: '未观察到',
+}
+
 type RunMapCluesProps = {
   targetId: string
   runId: string
@@ -20,6 +27,19 @@ export function RunMapClues({ targetId, runId }: RunMapCluesProps) {
   })
 
   if (!allowed) return null
+  const quiet =
+    query.isSuccess &&
+    query.data.clues.every((clue) => clue.verdict === 'not_observed') &&
+    query.data.hypotheses.length === 0 &&
+    query.data.counterExamples.length === 0
+  if (quiet) {
+    return (
+      <p className='text-label text-muted-foreground'>
+        地图线索：这次没有可核对的地图事实。
+        {query.data.gaps.length ? `缺项：${query.data.gaps.join('；')}` : ''}
+      </p>
+    )
+  }
 
   return (
     <section className='space-y-3 rounded-lg border border-border-card bg-card p-5 shadow-card'>
@@ -34,7 +54,7 @@ export function RunMapClues({ targetId, runId }: RunMapCluesProps) {
           <ul className='space-y-2'>
             {query.data.clues.map((clue) => (
               <li key={clue.dimension}>
-                {MAP_DIMENSION_LABELS[clue.dimension] ?? clue.dimension}：{clue.verdict}
+                {MAP_DIMENSION_LABELS[clue.dimension] ?? clue.dimension}：{VERDICT_LABELS[clue.verdict] ?? clue.verdict}
                 {clue.notes.length ? ` · ${clue.notes.join('；')}` : ''}
               </li>
             ))}

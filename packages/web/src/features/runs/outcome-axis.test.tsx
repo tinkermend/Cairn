@@ -63,7 +63,7 @@ describe('OutcomeConditionList 运行期约束', () => {
         evidenceItems={[screenshot]}
       />,
     )
-    expect(screen.container.textContent).toMatch(/截图/)
+    expect(screen.container.textContent).toMatch(/查看对应步骤证据/)
   })
 })
 
@@ -97,6 +97,81 @@ describe('OutcomeConditionList 成功条件', () => {
     expect(screen.container.textContent).toMatch(/内存使用率有数据/)
     expect(screen.container.textContent).toMatch(/对象存在/)
     expect(screen.container.textContent).not.toMatch(/"kind":"exists"/)
+  })
+
+  it('重试后显示求值次数，跳过步骤显示不适用原因', async () => {
+    const contractId = '00000000-0000-4000-8000-000000000031'
+    const stepId = '00000000-0000-4000-8000-000000000032'
+    const skippedStepId = '00000000-0000-4000-8000-000000000033'
+    const screen = await render(
+      <OutcomeConditionList
+        runId='00000000-0000-4000-8000-000000000034'
+        run={{
+          snapshot: {
+            outcomeManifest: {
+              entries: [
+                {
+                  contractId,
+                  scope: 'step',
+                  meaning: '金额已核对',
+                  severity: 'MUST',
+                  onViolation: 'halt',
+                  provenance: 'manual',
+                  stepId,
+                  rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+                },
+                {
+                  contractId: '00000000-0000-4000-8000-000000000035',
+                  scope: 'step',
+                  meaning: '停用步骤的核对',
+                  severity: 'MUST',
+                  onViolation: 'halt',
+                  provenance: 'manual',
+                  stepId: skippedStepId,
+                  rule: { kind: 'deterministic', expect: { kind: 'exists' } },
+                },
+              ],
+            },
+          } as RunSnapshot,
+          stepRuns: [
+            { id: '00000000-0000-4000-8000-000000000041', stepId, ordinal: 1, name: '核对', type: 'assert', status: 'SUCCEEDED', outcomeStatus: 'PASS', startedAt: null, finishedAt: null, attempts: [] },
+            { id: '00000000-0000-4000-8000-000000000042', stepId: skippedStepId, ordinal: 2, name: '停用', type: 'assert', status: 'SKIPPED', skipReason: 'disabled', outcomeStatus: 'NOT_EVALUATED', startedAt: null, finishedAt: null, attempts: [] },
+          ],
+          outcomeResults: [
+            {
+              id: '00000000-0000-4000-8000-000000000036',
+              runId: '00000000-0000-4000-8000-000000000034',
+              stepRunId: '00000000-0000-4000-8000-000000000041',
+              attemptId: '00000000-0000-4000-8000-000000000037',
+              contractId,
+              scope: 'step',
+              meaning: '金额已核对',
+              severity: 'MUST',
+              onViolation: 'halt',
+              provenance: 'manual',
+              verdict: 'UNKNOWN',
+              evaluatedAt: '2026-09-24T00:00:00.000Z',
+            },
+            {
+              id: '00000000-0000-4000-8000-000000000038',
+              runId: '00000000-0000-4000-8000-000000000034',
+              stepRunId: '00000000-0000-4000-8000-000000000041',
+              attemptId: '00000000-0000-4000-8000-000000000039',
+              contractId,
+              scope: 'step',
+              meaning: '金额已核对',
+              severity: 'MUST',
+              onViolation: 'halt',
+              provenance: 'manual',
+              verdict: 'PASS',
+              evaluatedAt: '2026-09-24T00:01:00.000Z',
+            },
+          ],
+        }}
+      />,
+    )
+    expect(screen.container.textContent).toMatch(/求值 2 次/)
+    expect(screen.container.textContent).toMatch(/不适用（已停用）/)
   })
 })
 

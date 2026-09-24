@@ -50,17 +50,20 @@ export function RunResolutionDecisions(props: RunResolutionDecisionsProps) {
   return (
     <div className='space-y-3'>
       {props.steps ? (
-        <label className='flex min-w-0 flex-col gap-1 text-label'>
-          解析决策的步骤
-          <SelectField value={selectedStep} onValueChange={setSelectedStep}>
-            <SelectFieldOption value=''>全部步骤</SelectFieldOption>
-            {props.steps.map((step) => (
-              <SelectFieldOption key={step.id} value={step.id}>
-                {step.name}
-              </SelectFieldOption>
-            ))}
-          </SelectField>
-        </label>
+        <details className='text-label text-muted-foreground'>
+          <summary className='cursor-pointer'>按步骤筛选目标解析</summary>
+          <label className='mt-2 flex min-w-0 flex-col gap-1 text-label'>
+            解析决策的步骤
+            <SelectField value={selectedStep} onValueChange={setSelectedStep}>
+              <SelectFieldOption value=''>全部步骤</SelectFieldOption>
+              {props.steps.map((step) => (
+                <SelectFieldOption key={step.id} value={step.id}>
+                  {step.name}
+                </SelectFieldOption>
+              ))}
+            </SelectField>
+          </label>
+        </details>
       ) : null}
       <DecisionPage
         key={`${props.runId}:${selectedStep}`}
@@ -100,6 +103,13 @@ function DecisionPage({
   }, [canRead, eventSeq, refetch])
 
   if (!canRead) return null
+  if (query.isSuccess && query.data.items.length === 0 && !query.data.nextCursor && cursors.length === 1) {
+    return (
+      <p className='text-label text-muted-foreground'>
+        {stepRunId ? '该步骤没有解析阶梯决策。' : '本次运行没有解析阶梯决策。'}
+      </p>
+    )
+  }
   const stepName = (stepRunIdValue: string) =>
     steps?.find((step) => step.id === stepRunIdValue)?.name ?? `步骤 ${stepRunIdValue.slice(0, 8)}`
 
