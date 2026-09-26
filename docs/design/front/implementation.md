@@ -4,7 +4,7 @@
 
 ## 1. 本轮交付边界
 
-Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用 Input / PasswordInput 是首批正式接入样本，Target / Scenario / Run 已有业务实现。2026-09-13 的[交互原型](../../front_design/2026-09-13-foundation-lab/index.html)已获用户认可，Target / Scenario 列表与详情已完成首批 React 迁移，验收记录见[迁移样板](../../front_design/2026-09-13-react-migration/README.md)，范围见[正式接入方案](../../spec/2026-09-13-ui-foundation-review.md#正式接入方案)。本文记录工程接入约定，日常开发与纠偏执行 [AI 前端开发工作流](ai-workflow.md)。
+Design Token 已由 `packages/web` 全局主题直接导入，登录页与共用 Input / PasswordInput 是首批正式接入样本，Target / Scenario / Run 已有业务实现。2026-09-13 的[交互原型](../../front_design/2026-09-13-foundation-lab/index.html)已获用户认可，Target / Scenario 列表与详情已完成首批 React 迁移，验收记录见[迁移样板](../../front_design/2026-09-13-react-migration/README.md)，历史范围见[正式接入方案](../../spec/archive/2026-09-13-ui-foundation-review.md#正式接入方案)。本文记录工程接入约定，日常开发与纠偏执行 [AI 前端开发工作流](ai-workflow.md)。
 
 视觉样本是评审材料，不是另一套要维护的生产组件库。正式界面继续使用现有 React 19、Vite、Tailwind、shadcn/ui、Radix，并从共用 Token 与基础组件继承视觉状态。
 

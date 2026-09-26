@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-function* walkFiles(dir, extensions = ['.ts', '.js']) {
+function* walkFiles(dir, extensions = ['.ts', '.js', '.tsx']) {
   if (!existsSync(dir)) return
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (
@@ -294,6 +294,112 @@ export const INVARIANT_RULES = [
       return ['生产代码不得在 LifecycleService / session-manager / run-video 以外使用 setInterval']
     },
   },
+  {
+    id: 'INV013_MIDSCENE_CACHE_DISABLED',
+    articles: ['执行分层', '证据与保留策略'],
+    title: '严禁启用 Midscene 原生缓存 (cacheable: false)',
+    rationale: '识途严格控制执行确定性与证据链，禁止 Midscene 内部文件缓存或跨运行缓存行为，cacheable 必须锁死 false',
+    targetDir: 'packages/worker/src/ai',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      const issues = []
+      if (/\bcacheable\s*:\s*true\b/.test(content)) {
+        issues.push('Midscene 适配层严禁配置 cacheable: true，必须显式保持 cacheable: false')
+      }
+      return issues
+    },
+  },
+  {
+    id: 'INV014_AUTHORING_NODES_VIA_WALKER',
+    articles: ['执行分层', '执行上下文'],
+    title: '编写文档必须通过 AST 遍历器与变更器访问，严禁直接读写 .nodes',
+    rationale: '控制流演进要求统一通过 walkAuthoringNodes / locateNode / authoringSteps 等 AST 遍历器与变异函数访问，禁止直接操作 .nodes 数组',
+    targetDir: 'packages',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      // 仅约束 web, api, db, authoring 中的生产源码；白名单 authoring-document.ts 与 compiler.ts
+      if (
+        !rel.startsWith('packages/web/src') &&
+        !rel.startsWith('packages/api/src') &&
+        !rel.startsWith('packages/db/src') &&
+        !rel.startsWith('packages/authoring/src')
+      ) {
+        return []
+      }
+      if (
+        rel.includes('authoring-document.ts') ||
+        rel.includes('compiler.ts')
+      ) {
+        return []
+      }
+      const issues = []
+      const directNodesAccess = /\b(?:doc|document|authoringDoc|scenarioDoc|v2)\.nodes\s*(?:\.|\?\.|\b\[|\s*=)/g
+      let match
+      while ((match = directNodesAccess.exec(content)) !== null) {
+        issues.push(`严禁直接读写编写文档的 .nodes，必须通过 walkAuthoringNodes / locateNode / authoringSteps 等统一 AST 工具访问（发现: "${match[0].trim()}"）`)
+      }
+      return issues
+    },
+  },
+  {
+    id: 'INV015_STEP_RUN_LOOKUP_VIA_ACCESSOR',
+    articles: ['执行分层', '会话与租约'],
+    title: '查找 StepRun 必须使用统一访问器，禁止直接通过 stepId 查找或构造单值 Map',
+    rationale: '控制流可能在循环/分支中多次执行同一 stepId，必须通过 stepRunFor / stepRunsOf / stepRunMapByStep 访问，禁止假设 stepId 唯一性直接查找',
+    targetDir: 'packages',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      if (rel.includes('run-api.ts')) return []
+      const issues = []
+      const forbiddenFind = /\bstepRuns\s*\.\s*find\s*\(\s*(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>[^)]*\bstepId\s*===/g
+      let match
+      while ((match = forbiddenFind.exec(content)) !== null) {
+        issues.push('禁止直接使用 stepRuns.find 查找 stepId，必须使用 stepRunFor(stepRuns, stepId) 或 stepRunsOf(stepRuns, stepId) 统一访问器')
+      }
+      const forbiddenMap = /\bnew\s+Map\s*<[^>]*>\s*\(\s*[^)]*stepRuns[^)]*\.stepId/g
+      while ((match = forbiddenMap.exec(content)) !== null) {
+        issues.push('禁止通过 stepRuns 构造单值 stepId 的 Map，必须使用 stepRunMapByStep 或 groupStepRunsByStep')
+      }
+      return issues
+    },
+  },
+  {
+    id: 'INV016_NO_READ_SNAPSHOT_CONTENT_IN_API',
+    articles: ['执行分层', '安全'],
+    title: 'API 包严禁引用 readSessionStateSnapshotContent',
+    rationale: '读取登录态全文仅允许 Worker 执行面调用，API 只读摘要列，禁止泄漏登录态全文',
+    targetDir: 'packages/api/src',
+    excludeTests: false,
+    check: (file, rel, content) => {
+      const issues = []
+      if (content.includes('readSessionStateSnapshotContent')) {
+        issues.push('API 生产代码严禁引用 readSessionStateSnapshotContent，只允许读取快照摘要')
+      }
+      return issues
+    },
+  },
+  {
+    id: 'INV017_CHROMIUM_LAUNCH_RESTRICTED',
+    articles: ['执行分层'],
+    title: 'Chromium 启动只允许 runtime.ts 与 host-pool.ts',
+    rationale: '浏览器必须统一由 Runtime / HostPool 纳管，禁止在其它位置启动 Chromium 进程',
+    targetDir: 'packages/worker/src',
+    excludeTests: true,
+    check: (file, rel, content) => {
+      const normalized = rel.replaceAll('\\', '/')
+      if (
+        normalized.endsWith('browser/runtime.ts') ||
+        normalized.endsWith('browser/host-pool.ts')
+      ) {
+        return []
+      }
+      const issues = []
+      if (/\b(?:chromium\s*\.\s*launch|launchPersistentContext)\s*\(/.test(content)) {
+        issues.push('Chromium 启动只允许在 browser/runtime.ts 与 browser/host-pool.ts，严禁在其它位置启动进程')
+      }
+      return issues
+    },
+  },
 ]
 
 export function runInvariantChecks() {
@@ -303,7 +409,7 @@ export function runInvariantChecks() {
     const searchPath = resolve(root, rule.targetDir)
     if (!existsSync(searchPath)) continue
 
-    for (const file of walkFiles(searchPath, ['.ts', '.js'])) {
+    for (const file of walkFiles(searchPath, ['.ts', '.js', '.tsx'])) {
       const rel = relative(root, file)
       if (rule.excludeTests) {
         if (file.includes(`${sep}__tests__${sep}`) || /\.(?:spec|test)\./.test(file)) {

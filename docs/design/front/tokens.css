@@ -80,6 +80,22 @@
   --summary-icon-layer: #3e70e909;
   --summary-icon-shadow: 0 5px 9px #3e70e933, inset 0 1px 1px #ffffffc9;
 
+  /* 系统身份色仅用于图标识别，默认沿用主蓝；运行状态使用下方状态 Token。 */
+  --target-icon-blue-bg: var(--primary-100);
+  --target-icon-blue-fg: var(--primary-700);
+  --target-icon-slate-bg: #edf2f8;
+  --target-icon-slate-fg: #40516d;
+  --target-icon-teal-bg: #e9f7f7;
+  --target-icon-teal-fg: #1f6a70;
+  --target-icon-amber-bg: #fff4e3;
+  --target-icon-amber-fg: #8b5b12;
+  --target-icon-violet-bg: var(--ai-light);
+  --target-icon-violet-fg: #6444d4;
+  --target-icon-rose-bg: #fceef4;
+  --target-icon-rose-fg: #9a426d;
+  --target-icon-pine-bg: #eaf6f0;
+  --target-icon-pine-fg: #2c6b58;
+
   /* 交互语义：按钮小字使用 600/700 配白色，不能用 400/500 配白字。 */
   --action-primary: var(--primary-600);
   --action-primary-hover: var(--primary-700);

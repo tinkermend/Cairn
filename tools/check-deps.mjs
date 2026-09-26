@@ -271,10 +271,22 @@ function checkDbNoControlPlaneAccount(report) {
   }
 }
 
+function checkApiNoSnapshotContent(report) {
+  const dir = resolve(root, 'packages/api/src')
+  if (!existsSync(dir)) return
+  for (const file of sourceFiles(dir)) {
+    const source = readFileSync(file, 'utf8')
+    if (source.includes('readSessionStateSnapshotContent')) {
+      report(`API 严禁引用 readSessionStateSnapshotContent（只读摘要列，禁止读取全文）：${relative(root, file)}`)
+    }
+  }
+}
+
 checkOtherPackagesAiIsolation((message) => errors.push(message))
 checkDatabaseBoundary((message) => errors.push(message))
 checkAuthoringPurity((message) => errors.push(message))
 checkDbNoControlPlaneAccount((message) => errors.push(message))
+checkApiNoSnapshotContent((message) => errors.push(message))
 
 for (const dep of SHARED_VERSION_DEPS) {
   const seen = versionsByDep.get(dep)

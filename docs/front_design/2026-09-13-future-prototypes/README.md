@@ -10,8 +10,8 @@
 
 - [项目宪法](../../../AGENTS.md)：统一 Scenario / Run / Evidence，Sequence First，TargetAccount 与控制台身份分离。
 - [前端设计语言](../../design/front/design-language.md)与 [Design Token](../../design/front/tokens.css)：冷灰画布、白色内容面、连续导航外壳、蓝色主操作、紫色仅表达 AI。
-- [MVP 范围与验收基线](../../arch/05_识途MVP范围与开发实施路线图_v1.0.md)：录制、手工、自然语言、表格导入四种创建入口，汇入同一执行闭环；交付顺序只引用[工程计划](../../plan/识途开发路线与工程实施计划.md#5-当前交付顺序与验收样例)。
-- [Authoring 与 IR 设计](../../arch/04_识途Scenario_Authoring与IR详细设计_v1.0.md)：候选步骤可审阅，用户确认后形成草稿和版本。
+- [MVP 范围与验收基线](../../arch/archive/05_识途MVP范围与开发实施路线图_v1.0.md)：录制、手工、自然语言、表格导入四种创建入口，汇入同一执行闭环；交付顺序只引用[工程计划](../../plan/识途开发路线与工程实施计划.md#5-当前交付顺序与验收样例)。
+- [Authoring 与 IR 设计](../../arch/archive/04_识途Scenario_Authoring与IR详细设计_v1.0.md)：候选步骤可审阅，用户确认后形成草稿和版本。
 - [Evidence 方案](../../spec/2026-09-12-evidence-trace.md)：执行结论与证据完整性分为两根轴。
 
 UI/UX 技能的本地检索匹配到 Data-Dense Dashboard，借用其表格、筛选、对齐与清晰状态的方向；其营销页布局建议不适用，本套以仓库现有规范为准。

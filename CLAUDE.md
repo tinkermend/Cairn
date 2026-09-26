@@ -73,10 +73,11 @@ Run 进度通过 SSE 推送，断线后补读持久化事实；不以高频轮�
 
 ### 文档与记录
 
-- 方案、接口契约与验收标准放 `docs/spec/` 并登记 README；仅附简短实施状态。开发顺序、里程碑和交付 Gate 只在主计划维护。
+- 方案、接口契约与验收标准放 `docs/spec/` 并登记 README；仅维护当前推进中的活跃方案（保持 ≤ 15 篇）。开发顺序、里程碑和交付 Gate 只在主计划维护。
+- 按方案完成开发后更新 `CHANGELOG`：`日期--一句话总结说明`，并同步将该方案移入 `docs/spec/archive/` 归档。
+- **单一事实源（SSOT）**：代码实现、`packages/shared` 类型契约、数据库迁移与自动化测试是当前系统行为的唯一事实源。`docs/spec/archive/` 仅作历史施工追溯，严禁作为当前设计决策和行为限制的依据；若方案描述与当前代码/测试冲突，一律以代码为准。
 - Review／复查／验收默认在任务回复中说明问题、修复和验证范围；仅用户明确要求文档报告时写入 `docs/reviews/`。
 - `docs/spec/`、`docs/reviews/`、`docs/plan/`、`docs/arch/`,`docs/targets/` 按现有本机忽略策略维护，不建议移出 `.gitignore`。
-- 按方案完成开发后更新 `CHANGELOG`：`日期--一句话总结说明`。
 - 前端改动先读前端工作流，复用统一设计规范、Token 与组件状态，按影响范围验收。
 
 ### 仓库根目录与一次性脚本
@@ -90,8 +91,7 @@ Run 进度通过 SSE 推送，断线后补读持久化事实；不以高频轮�
 | 任务 | 阅读入口 |
 | --- | --- |
 | 产品范围、交付顺序与阶段目标 | [主计划](docs/plan/识途开发路线与工程实施计划.md) |
-| 领域与架构边界 | [架构索引](docs/arch/README.md) |
-| 模块设计与验收标准 | [方案索引](docs/spec/README.md)、相关实现与测试；[历史报告](docs/reviews/README.md)仅作线索 |
+| 模块设计与验收标准 | [活跃方案索引](docs/spec/README.md)（仅当前进行中方案）、相关实现与测试；[历史归档](docs/spec/archive/README.md)仅作演进考古 |
 | 当前契约、类型、配置与可用能力 | [契约入口](packages/shared/src/index.ts)、实际调用方、能力闸门与测试 |
 | 前端任务 | [前端工作流](docs/design/front/ai-workflow.md)、[设计规范索引](docs/design/front/README.md) |
 | 技术版本、启动与部署 | 各包 `package.json`、`pnpm-lock.yaml`、[部署说明](deploy/README.md)、[数据库支持范围](deploy/database-backends.md) |

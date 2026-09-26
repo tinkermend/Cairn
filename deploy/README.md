@@ -33,13 +33,21 @@ pnpm db:migrate      # schema cairn 仍由迁移创建，不在 compose 里预�
 ## 常用命令
 
 ```bash
-pnpm infra:up
-pnpm infra:status
-pnpm infra:logs
-pnpm infra:down          # 停容器，保留 .data
+./scripts/infra.sh start             # 一键启动所有容器（Postgres, Redis, MinIO）并等待就绪
+./scripts/infra.sh stop              # 一键停止所有容器（保留 .data 数据卷）
+./scripts/infra.sh restart           # 一键重启所有容器并等待就绪
+./scripts/infra.sh status            # 查看各容器状态与健康探活
+./scripts/infra.sh logs [服务]       # 查看容器日志（例如 logs redis 100）
+
+# 对应 npm/pnpm 便捷指令：
+pnpm infra:start                     # 等价于 ./scripts/infra.sh start (别名: pnpm infra:up)
+pnpm infra:stop                      # 等价于 ./scripts/infra.sh stop (别名: pnpm infra:down)
+pnpm infra:restart                   # 一键重启容器组件
+pnpm infra:status                    # 查看运行状态
+pnpm infra:logs                      # 跟踪日志
 ```
 
-需要清盘时再 `podman compose -f deploy/compose.yml down -v`，并手动删 `.data/postgres`、`.data/minio`。
+需要清盘时再 `podman compose -f deploy/compose.yml down -v`（或 `./scripts/infra.sh down`），并手动删 `.data/postgres`、`.data/minio`。
 
 数据库后端配置、受控迁移和运行观察提示通道见[数据库配置与受控迁移](database-backends.md)。当前只支持部署 PostgreSQL（默认用 LISTEN/NOTIFY）；MySQL 迁移链已冻结，仅为历史实例保留。
 
