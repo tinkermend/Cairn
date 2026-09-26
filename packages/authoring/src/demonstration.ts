@@ -8,9 +8,14 @@ import {
   syncSha256,
   applyDemonstrationBodySchema,
   authoringNodeId,
+  insertNodeAfter,
+  isDemonstrationHandoffPlaceholder,
+  locateNode,
   normalizeAuthoringDocument,
   outputShapeForStep,
+  replaceNode,
   scenarioAuthoringDocumentV2Schema,
+  walkAuthoringNodes,
   type ApplyDemonstrationBody,
   type ScenarioAuthoringDocumentV2,
   type OutcomeContract,
@@ -248,11 +253,9 @@ export function applyDemonstrationToDocument(
     reject('每项来源必须处理一次，不能遗漏或重复')
   const document = normalizeAuthoringDocument(structuredClone(documentInput))
   const place = body.placement
-  const anchor =
-    place.kind === 'start'
-      ? -1
-      : document.nodes.findIndex((n) => authoringNodeId(n) === place.nodeId)
-  if (place.kind !== 'start' && anchor < 0) reject('插入或替换位置已不存在')
+  const anchorLoc = place.kind === 'start' ? undefined : locateNode(document, place.nodeId)
+  if (place.kind !== 'start' && !anchorLoc) reject('插入或替换位置已不存在')
+  const anchor = place.kind === 'start' ? -1 : anchorLoc!.index
   const replacements: Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }>[] = []
   const bySource = new Map<
     string,
@@ -318,8 +321,20 @@ export function applyDemonstrationToDocument(
     bySource.set(item.id, node)
     mapping.nodeId = step.id
   }
-  if (place.kind === 'replace') {
-    const original = document.nodes[anchor]
+  let updatedDoc = document
+  if (place.kind === 'replace_initial') {
+    const allItems = walkAuthoringNodes(document)
+    const original = allItems[0]?.node
+    if (
+      allItems.length !== 1 || original?.kind !== 'step' ||
+      original.step.id !== place.nodeId ||
+      !isDemonstrationHandoffPlaceholder(original.step) ||
+      original.outcomes?.length || document.inputs.length
+    ) reject('录制导入占位步骤已变化，请重新选择回填位置')
+    if (!replacements.length) reject('至少保留一个录制动作')
+    updatedDoc = { ...document, nodes: replacements }
+  } else if (place.kind === 'replace') {
+    const original = walkAuthoringNodes(document).find((item) => item.id === place.nodeId)?.node
     if (original?.kind !== 'step') reject('一期仅支持替换独立步骤，不能替换模块节点')
     if (replacements.length !== 1) reject('单步重教须恰好保留一个新动作，其余来源需明确放弃')
     const replacement = replacements[0]!
@@ -337,16 +352,21 @@ export function applyDemonstrationToDocument(
       outputKey: original.step.outputKey,
       policy: original.step.policy,
     })
-    document.nodes[anchor] = {
+    const merged = {
       ...original,
       step: replacement.step,
       ...(original.outcomes || replacement.outcomes
         ? { outcomes: [...(original.outcomes ?? []), ...(replacement.outcomes ?? [])] }
         : {}),
     }
+    updatedDoc = replaceNode(updatedDoc, place.nodeId, merged)
     for (const item of sourceMap) if (item.nodeId === incomingId) item.nodeId = original.step.id
   } else {
-    document.nodes.splice(anchor + 1, 0, ...replacements)
+    let currentAnchor: string | null | undefined = place.kind === 'start' ? null : place.nodeId
+    for (const r of replacements) {
+      updatedDoc = insertNodeAfter(updatedDoc, currentAnchor, r)
+      currentAnchor = authoringNodeId(r)
+    }
   }
-  return { document: scenarioAuthoringDocumentV2Schema.parse(document), sourceMap }
+  return { document: scenarioAuthoringDocumentV2Schema.parse(updatedDoc), sourceMap }
 }

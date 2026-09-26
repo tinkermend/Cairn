@@ -4,6 +4,7 @@ export { compileModuleContent } from './module-compile.js'
 export {
   deriveOutcomeManifest,
   deriveRuntimeInvariantManifest,
+  deriveControlFlowManifest,
   deterministicStepId,
   resolveOutcomeWriteback,
   expandAuthoringDocument,

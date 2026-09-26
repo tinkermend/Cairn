@@ -110,6 +110,9 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
 
   if (document.steps.length === 0) {
     add(diagnostics, 'SCENARIO_EMPTY', 'error', '场景至少需要一步')
+  } else if (document.steps.every((step) => step.disabled)) {
+    // 没有一步会执行，也就没有一步能成功：放行只会建出一条永远收不了尾的 Run。
+    add(diagnostics, 'SCENARIO_ALL_STEPS_DISABLED', 'error', '所有步骤都已停用，至少启用一步才能试跑或发布')
   }
 
   const declared = new Set(document.inputs.map((input) => input.key))
@@ -119,6 +122,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
   const seenInputKeys = new Set<string>()
   const seenStepIds = new Set<string>()
   const seenOutputKeys = new Set<string>()
+  const disabledOutputKeys = new Set<string>()
 
   for (const input of document.inputs) {
     if (seenInputKeys.has(input.key)) {
@@ -135,6 +139,9 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
   }
 
   for (const step of document.steps) {
+    if (step.disabled && step.outputKey) {
+      disabledOutputKeys.add(step.outputKey)
+    }
     if (seenStepIds.has(step.id)) {
       add(diagnostics, 'SCENARIO_STEP_ID_DUPLICATE', 'error', `步骤「${step.name}」的 id 与另一步重复`, {
         stepId: step.id,
@@ -158,6 +165,15 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
     const refs = stepFromRefs(step)
     for (const { from, fromField, fieldPath } of refs) {
       if (declared.has(from)) usedInputs.add(from)
+      if (!step.disabled && disabledOutputKeys.has(from)) {
+        add(
+          diagnostics,
+          'SCENARIO_DISABLED_STEP_OUTPUT_REFERENCED',
+          'warning',
+          `步骤「${step.name}」引用的输出变量「${from}」来自已被禁用的步骤`,
+          { stepId: step.id, inputKey: from, fieldPath },
+        )
+      }
       if (!available.has(from)) {
         add(
           diagnostics,
@@ -168,6 +184,15 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
         )
       } else {
         const shape = outputShapes.get(from)
+        if (shape?.kind === 'list') {
+          add(
+            diagnostics,
+            'SCENARIO_FROM_LIST_NOT_TEXT',
+            'error',
+            `步骤「${step.name}」引用的输出「${from}」是列表，不能直接作为文本使用`,
+            { stepId: step.id, inputKey: from, fieldPath },
+          )
+        }
         if (shape?.kind === 'object' && !fromField) {
           add(
             diagnostics,
@@ -203,6 +228,25 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
     if (step.outputKey) {
       available.add(step.outputKey)
       outputShapes.set(step.outputKey, outputShapeForStep(step))
+    }
+    if (step.type === 'loop') {
+      const loopInput = step.input as any
+      if (loopInput?.control?.type === 'for_each') {
+        if (loopInput.control.as) {
+          available.add(loopInput.control.as)
+          outputShapes.set(loopInput.control.as, { kind: 'unknown' })
+        }
+        if (loopInput.control.indexAs) {
+          available.add(loopInput.control.indexAs)
+          outputShapes.set(loopInput.control.indexAs, { kind: 'scalar', type: 'number' })
+        }
+      }
+      for (const rule of loopInput?.collect ?? []) {
+        if (rule.into) {
+          available.add(rule.into)
+          outputShapes.set(rule.into, { kind: 'list', item: { kind: 'scalar', type: 'json' } })
+        }
+      }
     }
 
     if ((step.type === 'extract' || step.type === 'ai_extract') && !step.outputKey) {
@@ -460,6 +504,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
 
 function synthesizedOutcomeEntries(document: ScenarioDocument): OutcomeManifestEntry[] {
   return document.steps
+    .filter((step) => !step.disabled)
     .filter((step) => step.type === 'assert' || step.type === 'ai_assert')
     .map((step) => ({
       contractId: step.id,
@@ -536,7 +581,7 @@ function addOutcomeCoverageDiagnostics(
   const lastCover = coveringIndexes.length > 0 ? Math.max(...coveringIndexes) : -1
 
   for (const [index, step] of document.steps.entries()) {
-    if (!stepUsesBrowser(step.type) || step.effectType !== 'SIDE_EFFECT') continue
+    if (step.disabled || !stepUsesBrowser(step.type) || step.effectType !== 'SIDE_EFFECT') continue
     if (lastCover < index) {
       add(
         diagnostics,

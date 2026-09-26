@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   normalizeResolverText,
+  walkAuthoringNodes,
   type ResolverCatalogModule,
   type ScenarioAuthoringDocumentV2,
 } from '@cairn/shared'
@@ -121,7 +122,7 @@ describe('AM-D 规则层', () => {
         },
       ],
     }
-    expect(collectAvailableContextKeys(document, document.nodes[0] && 'step' in document.nodes[0] ? document.nodes[0].step.id : undefined)).toEqual([
+    expect(collectAvailableContextKeys(document, walkAuthoringNodes(document)[0]?.id)).toEqual([
       'keyword',
       'orderNo',
     ])
@@ -183,7 +184,7 @@ describe('AM-D 规则层', () => {
       inputBindings: {},
       outputBindings: {},
     }
-    const inserted = insertModuleInvocation(document, invocation, document.nodes[0] && 'step' in document.nodes[0] ? document.nodes[0].step.id : undefined)
+    const inserted = insertModuleInvocation(document, invocation, walkAuthoringNodes(document)[0]?.id)
     expect(inserted?.nodes).toHaveLength(2)
     expect(inserted?.nodes[1]).toMatchObject({ kind: 'module', moduleVersionId: invocation.moduleVersionId })
     expect(insertModuleInvocation(document, invocation, '77777777-7777-4777-8777-777777777777')).toBeNull()

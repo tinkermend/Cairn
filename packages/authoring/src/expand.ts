@@ -5,12 +5,14 @@ import {
   findModuleImplementation,
   isAuthoringDocumentV2,
   MAX_COMPILED_SCENARIO_STEPS,
+  MAX_SCENARIO_LOOP_BUDGET_STEPS,
   MAX_SCENARIO_STEPS,
   normalizeAuthoringDocument,
   resolveInvocationSelection,
   scenarioDefinitionSchema,
   scenarioDocumentSchema,
   syncSha256,
+  walkAuthoringNodes,
   type AuthoringModuleInvocation,
   type AuthoringNode,
   type CandidateGroup,
@@ -29,6 +31,20 @@ import {
   type OutcomeRule,
   runtimeInvariantSchema,
   type RuntimeInvariantManifest,
+  CONTROL_FLOW_PROTOCOL,
+  CONTROL_FLOW_PROTOCOL_V2,
+  OPTIONAL_ALLOWED_STEP_TYPES,
+  authoringNodeId,
+  authoringHasControlBlocks,
+  isNodeOutputPossiblyAbsent,
+  validateExpression,
+  inferExpressionShape,
+  outputShapeForStep,
+  type AuthoringBlockNode,
+  type ControlFlowBlock,
+  type ControlFlowManifest,
+  type Expr,
+  type OutputShape,
   type ScenarioAuthoringDocument,
   type ScenarioAuthoringDocumentV2,
   type ScenarioDefinition,
@@ -70,6 +86,7 @@ export type ExpansionResult = {
   manifest: ModuleManifest
   outcomeManifest?: OutcomeManifest
   runtimeInvariantManifest?: RuntimeInvariantManifest
+  controlFlow?: ControlFlowManifest
   diagnostics: CompileDiagnostic[]
   sourceDigest: string
 }
@@ -121,8 +138,10 @@ export function deriveOutcomeManifest(input: {
 
   if (input.authoringDocument) {
     const doc = input.authoringDocument
-    for (const node of doc.nodes) {
-      if (node.kind === 'step') {
+    for (const item of walkAuthoringNodes(doc)) {
+      const node = item.node
+      // 停用步骤不执行，它的成功条件不适用；与 expandAuthoringDocument 的清单保持一致。
+      if (node.kind === 'step' && !node.step.disabled) {
         const step = node.step
         if (node.outcomes && node.outcomes.length > 0) {
           for (const contract of node.outcomes) {
@@ -200,6 +219,7 @@ export function deriveOutcomeManifest(input: {
   if (input.definition) {
     const existingStepIds = new Set(entries.map((e) => e.stepId))
     for (const step of input.definition.steps) {
+      if (step.disabled) continue
       if ((step.type === 'assert' || step.type === 'ai_assert') && !existingStepIds.has(step.id)) {
         const rule: OutcomeRule =
           step.type === 'assert'
@@ -535,6 +555,178 @@ function expandImplementation(input: {
   }
 }
 
+function shapeForInput(type: ScenarioInputDecl['type']): OutputShape {
+  if (type === 'string' || type === 'url' || type === 'file') return { kind: 'scalar', type: 'string' }
+  if (type === 'number') return { kind: 'scalar', type: 'number' }
+  if (type === 'boolean') return { kind: 'scalar', type: 'boolean' }
+  return { kind: 'unknown' }
+}
+
+function shapeForExpandedStep(step: Step, shapes: Record<string, OutputShape>): OutputShape {
+  if (step.type === 'compute') return inferExpressionShape(step.input.expression, shapes)
+  if (step.type === 'probe') {
+    return {
+      kind: 'object',
+      fields: [{ name: 'matched', type: 'boolean', required: true }],
+    }
+  }
+  return outputShapeForStep(step)
+}
+
+function findUnprotectedExprRefs(expr: Expr, isProtected = false): string[] {
+  if (expr.kind === 'ref') {
+    return isProtected ? [] : [expr.key]
+  }
+  if (expr.kind === 'call') {
+    const protectsArgs = expr.fn === 'exists' || expr.fn === 'coalesce'
+    return expr.args.flatMap((arg) => findUnprotectedExprRefs(arg, isProtected || protectsArgs))
+  }
+  if (expr.kind === 'compare') {
+    return [
+      ...findUnprotectedExprRefs(expr.left, isProtected),
+      ...findUnprotectedExprRefs(expr.right, isProtected),
+    ]
+  }
+  if (expr.kind === 'logic') {
+    return expr.args.flatMap((arg) => findUnprotectedExprRefs(arg, isProtected))
+  }
+  if (expr.kind === 'not') {
+    return findUnprotectedExprRefs(expr.arg, isProtected)
+  }
+  return []
+}
+
+function collectAllExprRefs(expr: Expr): Array<{ key: string; field?: string }> {
+  const refs: Array<{ key: string; field?: string }> = []
+  function walkExpr(e: Expr) {
+    if (e.kind === 'ref') {
+      refs.push({ key: e.key, field: e.field })
+    } else if (e.kind === 'call') {
+      e.args.forEach(walkExpr)
+    } else if (e.kind === 'compare') {
+      walkExpr(e.left)
+      walkExpr(e.right)
+    } else if (e.kind === 'logic') {
+      e.args.forEach(walkExpr)
+    } else if (e.kind === 'not') {
+      walkExpr(e.arg)
+    }
+  }
+  walkExpr(expr)
+  return refs
+}
+
+export function deriveControlFlowManifest(
+  authoringDocument?: ScenarioAuthoringDocumentV2 | null,
+  steps?: Step[] | null,
+): ControlFlowManifest | undefined {
+  if (authoringDocument && authoringHasControlBlocks(authoringDocument)) {
+    const items = walkAuthoringNodes(authoringDocument)
+    const blockNodeMap = new Map<
+      string,
+      {
+        node: AuthoringBlockNode
+        parentId?: string
+        branchKey?: 'then' | 'else' | 'body'
+      }
+    >()
+    const blockBranchStepMap = new Map<string, { then: string[]; else: string[]; body: string[] }>()
+
+    for (const item of items) {
+      if (item.node.kind === 'block') {
+        blockNodeMap.set(item.node.blockId, {
+          node: item.node,
+          parentId: item.parentId,
+          branchKey: item.branchKey,
+        })
+        blockBranchStepMap.set(item.node.blockId, { then: [], else: [], body: [] })
+        const stepHeaderId = 'then' in item.node
+          ? deterministicStepId(item.node.blockId, 'decide')
+          : deterministicStepId(item.node.blockId, 'loop')
+        for (const ancestor of item.ancestry) {
+          blockBranchStepMap.get(ancestor.blockId)?.[ancestor.branchKey]?.push(stepHeaderId)
+        }
+      } else if (item.node.kind === 'step') {
+        const step = item.node.step
+        for (const ancestor of item.ancestry) {
+          blockBranchStepMap.get(ancestor.blockId)?.[ancestor.branchKey]?.push(step.id)
+        }
+        if (item.node.outcomes) {
+          for (const contract of item.node.outcomes) {
+            if (step.type !== 'assert' && step.type !== 'ai_assert') {
+              const derivedId = deterministicStepId(step.id, contract.id)
+              for (const ancestor of item.ancestry) {
+                blockBranchStepMap.get(ancestor.blockId)?.[ancestor.branchKey]?.push(derivedId)
+              }
+            }
+          }
+        }
+      }
+    }
+
+    let hasLoopBlock = false
+    const blocks: ControlFlowBlock[] = []
+    for (const [blockId, info] of blockNodeMap.entries()) {
+      const stepMap = blockBranchStepMap.get(blockId) ?? { then: [], else: [], body: [] }
+      if ('then' in info.node) {
+        const branches: Array<{ key: 'then' | 'else'; stepIds: string[] }> = [
+          { key: 'then', stepIds: stepMap.then },
+        ]
+        if (info.node.else !== undefined || stepMap.else.length > 0) {
+          branches.push({ key: 'else', stepIds: stepMap.else })
+        }
+        blocks.push({
+          blockId,
+          kind: 'if',
+          decideStepId: deterministicStepId(blockId, 'decide'),
+          branches,
+          ...(info.parentId ? { parentBlockId: info.parentId } : {}),
+          ...(info.branchKey && (info.branchKey === 'then' || info.branchKey === 'else')
+            ? { parentBranch: info.branchKey }
+            : {}),
+        })
+      } else {
+        hasLoopBlock = true
+        blocks.push({
+          blockId,
+          kind: info.node.control.type,
+          headerStepId: deterministicStepId(blockId, 'loop'),
+          bodyStepIds: stepMap.body,
+          limits: {
+            maxItems: info.node.control.type === 'for_each' ? info.node.control.maxItems : undefined,
+            maxIterations: info.node.control.type === 'repeat' ? info.node.control.maxIterations : undefined,
+            intervalMs: info.node.control.type === 'repeat' ? info.node.control.intervalMs : undefined,
+            onLimit: info.node.control.type === 'repeat' ? info.node.control.onLimit : undefined,
+          },
+          ...(info.node.collect ? { collect: info.node.collect } : {}),
+          ...(info.parentId ? { parentBlockId: info.parentId } : {}),
+          ...(info.branchKey && (info.branchKey === 'then' || info.branchKey === 'else')
+            ? { parentBranch: info.branchKey }
+            : {}),
+        })
+      }
+    }
+
+    return {
+      protocol: hasLoopBlock ? CONTROL_FLOW_PROTOCOL_V2 : CONTROL_FLOW_PROTOCOL,
+      blocks,
+    }
+  }
+
+  const hasLoopStep = steps?.some((s) => s.type === 'loop')
+  const hasFeatures = steps?.some(
+    (s) => s.type === 'decide' || s.type === 'probe' || s.type === 'compute' || s.type === 'loop' || Boolean((s as any).optional),
+  )
+  if (hasFeatures) {
+    return {
+      protocol: hasLoopStep ? CONTROL_FLOW_PROTOCOL_V2 : CONTROL_FLOW_PROTOCOL,
+      blocks: [],
+    }
+  }
+
+  return undefined
+}
+
 // ---------------------------------------------------------------------------
 // expandAuthoringDocument Pure Function
 // ---------------------------------------------------------------------------
@@ -556,7 +748,9 @@ export function expandAuthoringDocument(
           clampDiagnostic({
             code: issue.path.includes('runtimeInvariants')
               ? 'RUNTIME_INVARIANT_INVALID'
-              : 'OUTCOME_CONTRACT_INVALID',
+              : issue.path.includes('outcomes') || issue.path.includes('scenarioOutcomes')
+                ? 'OUTCOME_CONTRACT_INVALID'
+                : 'SCENARIO_AUTHORING_DOCUMENT_INVALID',
             severity: 'error',
             message: issue.message,
             fieldPath: issue.path.map(String),
@@ -584,37 +778,507 @@ export function expandAuthoringDocument(
   const outcomeManifestEntries: OutcomeManifestEntry[] = []
   const candidateGroups: CandidateGroup[] = []
   const expandedSteps: Step[] = []
+  const blockNodeMap = new Map<
+    string,
+    {
+      node: AuthoringBlockNode
+      parentId?: string
+      branchKey?: 'then' | 'else' | 'body'
+    }
+  >()
+  const blockBranchStepMap = new Map<string, { then: string[]; else: string[]; body: string[] }>()
+
+  const allVariableNames = new Set<string>(document.inputs.map((i) => i.key))
+  const variableScopeMap = new Map<string, string>() // varName -> loopBlockId
 
   const availableContextKeys = new Set<string>(document.inputs.map((i) => i.key))
+  const contextShapes: Record<string, OutputShape> = {}
+  for (const input of document.inputs) {
+    contextShapes[input.key] = shapeForInput(input.type)
+  }
   const sceneOutputKeys = new Set<string>()
   const referencedContentDigests = new Set<string>()
 
   let invocationOrdinal = 0
 
-  for (let nodeIndex = 0; nodeIndex < document.nodes.length; nodeIndex++) {
-    const node = document.nodes[nodeIndex]!
+  const docItems = walkAuthoringNodes(document)
+
+  // 映射循环块结束位置：当遍历离开循环体时激活 collect.into
+  const loopEndCollectMap = new Map<number, Array<{ from: string; fromField?: string; into: string }>>()
+  for (let idx = 0; idx < docItems.length; idx++) {
+    const item = docItems[idx]!
+    if (item.node.kind === 'block' && !('then' in item.node)) {
+      const blockId = item.node.blockId
+      let lastChildIdx = idx
+      for (let k = idx + 1; k < docItems.length; k++) {
+        if (docItems[k]!.ancestry.some((anc) => anc.blockId === blockId)) {
+          lastChildIdx = k
+        }
+      }
+      if (item.node.collect && item.node.collect.length > 0) {
+        const existing = loopEndCollectMap.get(lastChildIdx) ?? []
+        loopEndCollectMap.set(lastChildIdx, [...existing, ...item.node.collect])
+      }
+    }
+  }
+
+  const checkOutOfScopeRef = (
+    key: string,
+    currentAncestry: Array<{ blockId: string; branchKey: 'then' | 'else' | 'body' }> | undefined,
+    fieldPath?: string[],
+  ) => {
+    const scopedBlockId = variableScopeMap.get(key)
+    if (!scopedBlockId) return
+    const isWithinScope = (currentAncestry ?? []).some((anc) => anc.blockId === scopedBlockId)
+    if (!isWithinScope) {
+      diagnostics.push({
+        code: 'SCENARIO_LOOP_OUTPUT_OUT_OF_SCOPE',
+        severity: 'error',
+        message: `循环外引用循环体内部局部变量「${key}」，必须改用 collect 汇集到场景上下文`,
+        fieldPath,
+      })
+    }
+  }
+
+  const addStep = (step: Step, ancestry?: Array<{ blockId: string; branchKey: 'then' | 'else' | 'body' }>) => {
+    expandedSteps.push(step)
+    for (const anc of ancestry ?? []) {
+      const bMap = blockBranchStepMap.get(anc.blockId)
+      if (bMap && anc.branchKey in bMap) {
+        bMap[anc.branchKey].push(step.id)
+      }
+    }
+  }
+
+  for (let nodeIndex = 0; nodeIndex < docItems.length; nodeIndex++) {
+    const prevCollects = loopEndCollectMap.get(nodeIndex - 1)
+    if (prevCollects) {
+      for (const c of prevCollects) {
+        availableContextKeys.add(c.into)
+        contextShapes[c.into] = { kind: 'list', item: { kind: 'scalar', type: 'json' } }
+        variableScopeMap.delete(c.into)
+      }
+    }
+
+    const item = docItems[nodeIndex]!
+    const node = item.node
+
+    if (node.kind === 'block') {
+      blockNodeMap.set(node.blockId, {
+        node,
+        parentId: item.parentId,
+        branchKey: item.branchKey,
+      })
+      blockBranchStepMap.set(node.blockId, { then: [], else: [], body: [] })
+
+      if ('then' in node) {
+        const condValid = validateExpression(node.control.condition)
+        if (!condValid.valid) {
+          diagnostics.push({
+            code: condValid.code as any,
+            severity: 'error',
+            message: condValid.message,
+            fieldPath: ['nodes', String(nodeIndex), 'control', 'condition'],
+          })
+        }
+        const refs = collectAllExprRefs(node.control.condition)
+        for (const ref of refs) {
+          if (!availableContextKeys.has(ref.key)) {
+            diagnostics.push({
+              code: 'SCENARIO_UNRESOLVED_REF',
+              severity: 'error',
+              message: `条件表达式引用了未知的上下文键「${ref.key}」`,
+              fieldPath: ['nodes', String(nodeIndex), 'control', 'condition'],
+            })
+          }
+          checkOutOfScopeRef(ref.key, item.ancestry, ['nodes', String(nodeIndex), 'control', 'condition'])
+        }
+        const conditionShape = inferExpressionShape(node.control.condition, contextShapes)
+        if (!(conditionShape.kind === 'scalar' && conditionShape.type === 'boolean')) {
+          diagnostics.push({
+            code: 'EXPR_TYPE_MISMATCH',
+            severity: 'error',
+            message: '条件表达式的结果必须是布尔值',
+            fieldPath: ['nodes', String(nodeIndex), 'control', 'condition'],
+          })
+        }
+        const unprotectedRefs = findUnprotectedExprRefs(node.control.condition)
+        for (const refKey of unprotectedRefs) {
+          if (isNodeOutputPossiblyAbsent(document, refKey, authoringNodeId(node))) {
+            diagnostics.push({
+              code: 'SCENARIO_CONDITIONAL_OUTPUT_REFERENCED',
+              severity: ctx.mode === 'publish' ? 'error' : 'warning',
+              message: `条件表达式引用了可能缺失的输出「${refKey}」，必须使用 exists() 或 coalesce() 保护`,
+              fieldPath: ['nodes', String(nodeIndex), 'control', 'condition'],
+            })
+          }
+        }
+
+        const decideStepId = deterministicStepId(node.blockId, 'decide')
+        const decideStep: Step = {
+          id: decideStepId,
+          name: node.name ? `分支判定: ${node.name}` : `分支判定: ${node.blockId}`,
+          type: 'decide',
+          effectType: 'READ_ONLY',
+          input: {
+            blockId: node.blockId,
+            condition: node.control.condition,
+          },
+        }
+        addStep(decideStep, item.ancestry)
+        continue
+      } else {
+        // 循环块（for_each / repeat）
+        // 1. 禁止嵌套循环
+        const inLoop = (item.ancestry ?? []).some((anc) => {
+          const bInfo = blockNodeMap.get(anc.blockId)
+          return bInfo && !('then' in bInfo.node)
+        })
+        if (inLoop) {
+          diagnostics.push({
+            code: 'SCENARIO_LOOP_NESTING_UNSUPPORTED',
+            severity: 'error',
+            message: '流程控制块不支持嵌套循环',
+            fieldPath: ['nodes', String(nodeIndex)],
+          })
+        }
+
+        // 收集循环体内部输出供结束条件校验
+        const bodyOutputs = new Set<string>()
+        for (const bNode of node.body) {
+          for (const walkItem of walkAuthoringNodes({ ...document, nodes: [bNode] })) {
+            if (walkItem.node.kind === 'step' && walkItem.node.step.outputKey) {
+              bodyOutputs.add(walkItem.node.step.outputKey)
+            }
+          }
+        }
+
+        if (node.control.type === 'for_each') {
+          if (allVariableNames.has(node.control.as)) {
+            diagnostics.push({
+              code: 'SCENARIO_VARIABLE_NAME_CONFLICT',
+              severity: 'error',
+              message: `循环变量「${node.control.as}」与已有变量名冲突`,
+              fieldPath: ['nodes', String(nodeIndex), 'control', 'as'],
+            })
+          }
+          allVariableNames.add(node.control.as)
+          variableScopeMap.set(node.control.as, node.blockId)
+          availableContextKeys.add(node.control.as)
+          contextShapes[node.control.as] = { kind: 'unknown' }
+
+          if (node.control.indexAs) {
+            if (allVariableNames.has(node.control.indexAs)) {
+              diagnostics.push({
+                code: 'SCENARIO_VARIABLE_NAME_CONFLICT',
+                severity: 'error',
+                message: `循环序号变量「${node.control.indexAs}」与已有变量名冲突`,
+                fieldPath: ['nodes', String(nodeIndex), 'control', 'indexAs'],
+              })
+            }
+            allVariableNames.add(node.control.indexAs)
+            variableScopeMap.set(node.control.indexAs, node.blockId)
+            availableContextKeys.add(node.control.indexAs)
+            contextShapes[node.control.indexAs] = { kind: 'scalar', type: 'number' }
+          }
+
+          if (!availableContextKeys.has(node.control.over.from)) {
+            diagnostics.push({
+              code: 'SCENARIO_UNRESOLVED_REF',
+              severity: 'error',
+              message: `逐项循环引用的集合「${node.control.over.from}」未定义`,
+              fieldPath: ['nodes', String(nodeIndex), 'control', 'over', 'from'],
+            })
+          }
+          checkOutOfScopeRef(node.control.over.from, item.ancestry, ['nodes', String(nodeIndex), 'control', 'over', 'from'])
+
+          if (node.control.stopWhen) {
+            const condValid = validateExpression(node.control.stopWhen)
+            if (!condValid.valid) {
+              diagnostics.push({
+                code: condValid.code as any,
+                severity: 'error',
+                message: condValid.message,
+                fieldPath: ['nodes', String(nodeIndex), 'control', 'stopWhen'],
+              })
+            }
+            const refs = collectAllExprRefs(node.control.stopWhen)
+            for (const ref of refs) {
+              if (!availableContextKeys.has(ref.key) && !bodyOutputs.has(ref.key)) {
+                diagnostics.push({
+                  code: 'SCENARIO_UNRESOLVED_REF',
+                  severity: 'error',
+                  message: `提前结束条件引用了未知的上下文键「${ref.key}」`,
+                  fieldPath: ['nodes', String(nodeIndex), 'control', 'stopWhen'],
+                })
+              }
+            }
+          }
+        } else if (node.control.type === 'repeat') {
+          const condValid = validateExpression(node.control.until)
+          if (!condValid.valid) {
+            diagnostics.push({
+              code: condValid.code as any,
+              severity: 'error',
+              message: condValid.message,
+              fieldPath: ['nodes', String(nodeIndex), 'control', 'until'],
+            })
+          }
+          const refs = collectAllExprRefs(node.control.until)
+          for (const ref of refs) {
+            if (!availableContextKeys.has(ref.key) && !bodyOutputs.has(ref.key)) {
+              diagnostics.push({
+                code: 'SCENARIO_UNRESOLVED_REF',
+                severity: 'error',
+                message: `结束条件引用了未知的上下文键「${ref.key}」`,
+                fieldPath: ['nodes', String(nodeIndex), 'control', 'until'],
+              })
+            }
+          }
+        }
+
+        for (const [cIdx, c] of (node.collect ?? []).entries()) {
+          if (allVariableNames.has(c.into)) {
+            diagnostics.push({
+              code: 'SCENARIO_VARIABLE_NAME_CONFLICT',
+              severity: 'error',
+              message: `汇集目标键名「${c.into}」与已有变量名冲突`,
+              fieldPath: ['nodes', String(nodeIndex), 'collect', String(cIdx), 'into'],
+            })
+          }
+          allVariableNames.add(c.into)
+
+          const validSource =
+            bodyOutputs.has(c.from) ||
+            availableContextKeys.has(c.from) ||
+            (node.control.type === 'for_each' &&
+              (c.from === node.control.as || (node.control.indexAs && c.from === node.control.indexAs)))
+          if (!validSource) {
+            diagnostics.push({
+              code: 'SCENARIO_UNRESOLVED_REF',
+              severity: 'error',
+              message: `汇集规则引用的源「${c.from}」在循环体或上文中未定义`,
+              fieldPath: ['nodes', String(nodeIndex), 'collect', String(cIdx), 'from'],
+            })
+          }
+        }
+
+        const loopHeaderId = deterministicStepId(node.blockId, 'loop')
+        const loopStep: Step = {
+          id: loopHeaderId,
+          name: node.name ? `循环头: ${node.name}` : `循环头: ${node.blockId}`,
+          type: 'loop',
+          effectType: 'READ_ONLY',
+          input: {
+            blockId: node.blockId,
+            control: node.control,
+            ...(node.collect ? { collect: node.collect } : {}),
+          },
+        }
+        addStep(loopStep, item.ancestry)
+        continue
+      }
+    }
 
     if (node.kind === 'step') {
       const step = node.step
-      if (sceneOutputKeys.has(step.outputKey ?? '')) {
+
+      if (step.type === 'loop') {
         diagnostics.push({
-          code: 'SCENARIO_OUTPUT_KEY_DUPLICATE',
+          code: 'LOOP_STEP_NOT_AUTHORABLE',
           severity: 'error',
-          message: `场景输出键「${step.outputKey}」已被占用`,
+          message: '循环步骤由系统根据循环块自动生成，不能直接编写',
           stepId: step.id,
-          fieldPath: ['nodes', String(nodeIndex), 'step', 'outputKey'],
+          fieldPath: ['nodes', String(nodeIndex), 'step', 'type'],
         })
       }
+
+      if (step.type === 'decide') {
+        diagnostics.push({
+          code: 'DECIDE_STEP_NOT_AUTHORABLE',
+          severity: 'error',
+          message: '判定步骤由系统根据条件块自动生成，不能直接编写',
+          stepId: step.id,
+          fieldPath: ['nodes', String(nodeIndex), 'step', 'type'],
+        })
+      }
+
+      if (step.type === 'compute') {
+        const computeInput = step.input as { expression: Expr }
+        const compValid = validateExpression(computeInput.expression)
+        if (!compValid.valid) {
+          diagnostics.push({
+            code: compValid.code as any,
+            severity: 'error',
+            message: compValid.message,
+            stepId: step.id,
+            fieldPath: ['nodes', String(nodeIndex), 'step', 'input', 'expression'],
+          })
+        }
+        const refs = collectAllExprRefs(computeInput.expression)
+        for (const ref of refs) {
+          if (!availableContextKeys.has(ref.key)) {
+            diagnostics.push({
+              code: 'SCENARIO_UNRESOLVED_REF',
+              severity: 'error',
+              message: `计算值表达式引用了未知的上下文键「${ref.key}」`,
+              stepId: step.id,
+              fieldPath: ['nodes', String(nodeIndex), 'step', 'input', 'expression'],
+            })
+          }
+          checkOutOfScopeRef(ref.key, item.ancestry, ['nodes', String(nodeIndex), 'step', 'input', 'expression'])
+        }
+        const unprotectedRefs = findUnprotectedExprRefs(computeInput.expression)
+        for (const refKey of unprotectedRefs) {
+          if (isNodeOutputPossiblyAbsent(document, refKey, authoringNodeId(node))) {
+            diagnostics.push({
+              code: 'SCENARIO_CONDITIONAL_OUTPUT_REFERENCED',
+              severity: ctx.mode === 'publish' ? 'error' : 'warning',
+              message: `计算值步骤引用了可能缺失的输出「${refKey}」，必须使用 exists() 或 coalesce() 保护`,
+              stepId: step.id,
+              fieldPath: ['nodes', String(nodeIndex), 'step', 'input', 'expression'],
+            })
+          }
+        }
+      }
+
+      if (step.type === 'probe') {
+        const probeInput = step.input as { waitMs?: number; target?: any }
+        const waitMs = probeInput.waitMs ?? 2000
+        if (step.policy?.timeoutMs !== undefined && step.policy.timeoutMs <= waitMs) {
+          diagnostics.push({
+            code: 'PROBE_TIMEOUT_TOO_SHORT',
+            severity: 'error',
+            message: `页面检查步骤的超时时间 (${step.policy.timeoutMs}ms) 必须大于等待时间 (${waitMs}ms)`,
+            stepId: step.id,
+            fieldPath: ['nodes', String(nodeIndex), 'step', 'policy', 'timeoutMs'],
+          })
+        }
+        if (!step.policy?.timeoutMs) {
+          step.policy = {
+            ...step.policy,
+            timeoutMs: waitMs + 5000,
+          }
+        }
+        if (probeInput.target?.semantic) {
+          diagnostics.push({
+            code: 'PROBE_AI_TIER_FORBIDDEN',
+            severity: 'error',
+            message: '页面检查步骤仅支持确定性定位，不允许使用 AI 档位或语义描述',
+            stepId: step.id,
+            fieldPath: ['nodes', String(nodeIndex), 'step', 'input', 'target'],
+          })
+        }
+      }
+
+      if (step.optional) {
+        const allowed = OPTIONAL_ALLOWED_STEP_TYPES.includes(step.type as any)
+        if (!allowed) {
+          diagnostics.push({
+            code: 'STEP_OPTIONAL_TYPE_UNSUPPORTED',
+            severity: 'error',
+            message: `步骤类型「${step.type}」不支持声明为可选步骤`,
+            stepId: step.id,
+            fieldPath: ['nodes', String(nodeIndex), 'step', 'optional'],
+          })
+        } else if (step.type === 'keyboard' && !(step.input as any).target) {
+          diagnostics.push({
+            code: 'STEP_OPTIONAL_TYPE_UNSUPPORTED',
+            severity: 'error',
+            message: '无目标的全局键盘步骤不能声明为可选步骤',
+            stepId: step.id,
+            fieldPath: ['nodes', String(nodeIndex), 'step', 'optional'],
+          })
+        }
+      }
+
+      if (step.fieldRefs) {
+        for (const [field, ref] of Object.entries(step.fieldRefs)) {
+          if (ref.from) {
+            if (!availableContextKeys.has(ref.from)) {
+              diagnostics.push({
+                code: 'SCENARIO_UNRESOLVED_REF',
+                severity: 'error',
+                message: `字段「${field}」引用了未知的上下文键「${ref.from}」`,
+                stepId: step.id,
+                fieldPath: ['nodes', String(nodeIndex), 'step', 'fieldRefs', field, 'from'],
+              })
+            }
+            checkOutOfScopeRef(ref.from, item.ancestry, ['nodes', String(nodeIndex), 'step', 'fieldRefs', field, 'from'])
+            if (isNodeOutputPossiblyAbsent(document, ref.from, authoringNodeId(node))) {
+              diagnostics.push({
+                code: 'SCENARIO_CONDITIONAL_OUTPUT_REFERENCED',
+                severity: ctx.mode === 'publish' ? 'error' : 'warning',
+                message: `步骤「${step.name}」的字段「${field}」引用了可能缺失的输出「${ref.from}」`,
+                stepId: step.id,
+              })
+            }
+          }
+        }
+      }
+      const rawInput = step.input as Record<string, unknown> | undefined
+      if (rawInput && typeof rawInput.from === 'string') {
+        if (!availableContextKeys.has(rawInput.from)) {
+          diagnostics.push({
+            code: 'SCENARIO_UNRESOLVED_REF',
+            severity: 'error',
+            message: `步骤「${step.name}」引用了未知的上下文键「${rawInput.from}」`,
+            stepId: step.id,
+            fieldPath: ['nodes', String(nodeIndex), 'step', 'input', 'from'],
+          })
+        }
+        checkOutOfScopeRef(rawInput.from, item.ancestry, ['nodes', String(nodeIndex), 'step', 'input', 'from'])
+        if (isNodeOutputPossiblyAbsent(document, rawInput.from, authoringNodeId(node))) {
+          diagnostics.push({
+            code: 'SCENARIO_CONDITIONAL_OUTPUT_REFERENCED',
+            severity: ctx.mode === 'publish' ? 'error' : 'warning',
+            message: `步骤「${step.name}」引用了可能缺失的输出「${rawInput.from}」`,
+            stepId: step.id,
+          })
+        }
+      }
+
       if (step.outputKey) {
+        if (allVariableNames.has(step.outputKey)) {
+          diagnostics.push({
+            code: 'SCENARIO_VARIABLE_NAME_CONFLICT',
+            severity: 'error',
+            message: `步骤输出键「${step.outputKey}」与已有变量名冲突`,
+            stepId: step.id,
+            fieldPath: ['nodes', String(nodeIndex), 'step', 'outputKey'],
+          })
+        }
+        if (sceneOutputKeys.has(step.outputKey)) {
+          diagnostics.push({
+            code: 'SCENARIO_OUTPUT_KEY_DUPLICATE',
+            severity: 'error',
+            message: `场景输出键「${step.outputKey}」已被占用`,
+            stepId: step.id,
+            fieldPath: ['nodes', String(nodeIndex), 'step', 'outputKey'],
+          })
+        }
+        allVariableNames.add(step.outputKey)
         sceneOutputKeys.add(step.outputKey)
         availableContextKeys.add(step.outputKey)
+        contextShapes[step.outputKey] = shapeForExpandedStep(step, contextShapes)
+
+        const loopAncestor = (item.ancestry ?? []).slice().reverse().find((anc) => {
+          const bInfo = blockNodeMap.get(anc.blockId)
+          return bInfo && !('then' in bInfo.node)
+        })
+        if (loopAncestor) {
+          variableScopeMap.set(step.outputKey, loopAncestor.blockId)
+        }
       }
-      expandedSteps.push(step)
+      addStep(step, item.ancestry)
+
+      // 停用步骤的成功条件不适用：不进清单，派生的检查步骤随之停用，否则缺结果会把整次 Run 判成 UNKNOWN。
+      const manifestSink = step.disabled ? [] : outcomeManifestEntries
 
       if (node.outcomes && node.outcomes.length > 0) {
         for (const contract of node.outcomes) {
           if (step.type === 'assert' || step.type === 'ai_assert') {
-            outcomeManifestEntries.push({
+            manifestSink.push({
               contractId: contract.id,
               scope: contract.scope,
               meaning: contract.meaning,
@@ -647,8 +1311,9 @@ export function expandAuthoringDocument(
                       instruction: contract.rule.instruction,
                     },
                   }
-            expandedSteps.push(derivedStep)
-            outcomeManifestEntries.push({
+            if (step.disabled) derivedStep.disabled = true
+            addStep(derivedStep, item.ancestry)
+            manifestSink.push({
               contractId: contract.id,
               scope: contract.scope,
               meaning: contract.meaning,
@@ -675,7 +1340,7 @@ export function expandAuthoringDocument(
                 kind: 'ai',
                 instruction: (step.input as { instruction: string }).instruction,
               }
-        outcomeManifestEntries.push({
+        manifestSink.push({
           contractId: step.id,
           scope: 'step',
           meaning: step.name,
@@ -692,6 +1357,21 @@ export function expandAuthoringDocument(
     // 处理 module 调用节点
     const invocation = node as AuthoringModuleInvocation
     const currentOrdinal = invocationOrdinal++
+
+    // 规则：循环体内不支持放置动作模块
+    const inLoop = (item.ancestry ?? []).some((anc) => {
+      const bInfo = blockNodeMap.get(anc.blockId)
+      return bInfo && !('then' in bInfo.node)
+    })
+    if (inLoop) {
+      diagnostics.push({
+        code: 'SCENARIO_LOOP_MODULE_UNSUPPORTED',
+        severity: 'error',
+        message: '循环体内暂不支持放置动作模块',
+        fieldPath: ['nodes', String(nodeIndex)],
+      })
+      continue
+    }
 
     // 查找已加载的模块数据
     const lookupKey = invocation.moduleVersionId ?? invocation.moduleDraft?.moduleId ?? invocation.moduleId
@@ -800,6 +1480,15 @@ export function expandAuthoringDocument(
             fieldPath: ['nodes', String(nodeIndex), 'inputBindings', inputDecl.key, 'key'],
           })
         }
+        checkOutOfScopeRef(binding.key, item.ancestry, ['nodes', String(nodeIndex), 'inputBindings', inputDecl.key, 'key'])
+        if (isNodeOutputPossiblyAbsent(document, binding.key, authoringNodeId(node))) {
+          diagnostics.push({
+            code: 'SCENARIO_CONDITIONAL_OUTPUT_REFERENCED',
+            severity: ctx.mode === 'publish' ? 'error' : 'warning',
+            message: `模块输入绑定「${inputDecl.key}」引用了可能缺失的输出「${binding.key}」`,
+            fieldPath: ['nodes', String(nodeIndex), 'inputBindings', inputDecl.key, 'key'],
+          })
+        }
       }
     }
 
@@ -860,6 +1549,14 @@ export function expandAuthoringDocument(
     const declaredInputKeys = new Set(contract.inputs.map((item) => item.key))
     for (let stepIndex = 0; stepIndex < impl.steps.length; stepIndex++) {
       const orig = impl.steps[stepIndex]!
+      if (orig.type === 'decide' || orig.type === 'probe' || orig.type === 'compute') {
+        diagnostics.push({
+          code: 'MODULE_STEP_TYPE_UNSUPPORTED',
+          severity: 'error',
+          message: `动作模块实现中不支持步骤类型「${orig.type}」`,
+          fieldPath: ['nodes', String(nodeIndex), 'implementation', 'steps', String(stepIndex), 'type'],
+        })
+      }
       const usages: Array<{ key: string; path: Array<string | number> }> = []
       collectFromUsages(orig.input, ['input'], usages)
       for (const usage of usages) {
@@ -883,22 +1580,29 @@ export function expandAuthoringDocument(
 
     const fallback = selection.mode === 'frozen_fallback'
     const expandedAlts: Array<{ key: string; impl: ModuleImplementation; expanded: ExpandedImplementation }> = []
-    for (const item of selectedImpls) {
-      const current = item.impl!
+    for (const selectedItem of selectedImpls) {
+      const current = selectedItem.impl!
       const expanded = expandImplementation({
         impl: current,
         invocation,
         contract,
         nodeIndex,
         currentOrdinal,
-        idImplementationKey: fallback ? item.key : undefined,
+        idImplementationKey: fallback ? selectedItem.key : undefined,
         exposeOutputs: !fallback,
         sceneOutputKeys,
         availableContextKeys,
         diagnostics,
       })
-      expandedAlts.push({ key: item.key, impl: current, expanded })
-      expandedSteps.push(...expanded.steps)
+      if (invocation.disabled) {
+        for (const s of expanded.steps) {
+          s.disabled = true
+        }
+      }
+      expandedAlts.push({ key: selectedItem.key, impl: current, expanded })
+      for (const s of expanded.steps) {
+        addStep(s, item.ancestry)
+      }
     }
 
     const first = expandedAlts[0]!
@@ -950,6 +1654,15 @@ export function expandAuthoringDocument(
       outputRequired: first.expanded.outputRequired,
       inputBindingsDigest,
     })
+  }
+
+  // 确保所有循环收集的变量都释放到上下文（针对循环位于文档末尾的情况）
+  for (const collects of loopEndCollectMap.values()) {
+    for (const c of collects) {
+      availableContextKeys.add(c.into)
+      contextShapes[c.into] = { kind: 'list', item: { kind: 'scalar', type: 'json' } }
+      variableScopeMap.delete(c.into)
+    }
   }
 
   // 处理场景级契约 scenarioOutcomes
@@ -1026,6 +1739,129 @@ export function expandAuthoringDocument(
     ...(candidateGroups.length > 0 ? { candidateGroups } : {}),
   }
 
+  const allLoopHeaderIds = new Set<string>()
+  const allLoopBodyStepIds = new Set<string>()
+  let loopEstimatedSteps = 0
+
+  const controlFlowBlocks: ControlFlowBlock[] = []
+  for (const [blockId, info] of blockNodeMap.entries()) {
+    const stepMap = blockBranchStepMap.get(blockId) ?? { then: [], else: [], body: [] }
+    if ('then' in info.node) {
+      const branches: Array<{ key: 'then' | 'else'; stepIds: string[] }> = [
+        { key: 'then', stepIds: stepMap.then },
+      ]
+      if (info.node.else !== undefined || stepMap.else.length > 0) {
+        branches.push({ key: 'else', stepIds: stepMap.else })
+      }
+      controlFlowBlocks.push({
+        blockId,
+        kind: 'if',
+        decideStepId: deterministicStepId(blockId, 'decide'),
+        branches,
+        ...(info.parentId ? { parentBlockId: info.parentId } : {}),
+        ...(info.branchKey && (info.branchKey === 'then' || info.branchKey === 'else')
+          ? { parentBranch: info.branchKey }
+          : {}),
+      })
+    } else {
+      const headerStepId = deterministicStepId(blockId, 'loop')
+      allLoopHeaderIds.add(headerStepId)
+      for (const sId of stepMap.body) {
+        allLoopBodyStepIds.add(sId)
+      }
+      const limit =
+        info.node.control.type === 'for_each'
+          ? info.node.control.maxItems
+          : info.node.control.maxIterations
+      loopEstimatedSteps += 1 + stepMap.body.length * limit
+
+      controlFlowBlocks.push({
+        blockId,
+        kind: info.node.control.type,
+        headerStepId,
+        bodyStepIds: stepMap.body,
+        limits: {
+          maxItems: info.node.control.type === 'for_each' ? info.node.control.maxItems : undefined,
+          maxIterations: info.node.control.type === 'repeat' ? info.node.control.maxIterations : undefined,
+          intervalMs: info.node.control.type === 'repeat' ? info.node.control.intervalMs : undefined,
+          onLimit: info.node.control.type === 'repeat' ? info.node.control.onLimit : undefined,
+        },
+        ...(info.node.collect ? { collect: info.node.collect } : {}),
+        ...(info.parentId ? { parentBlockId: info.parentId } : {}),
+        ...(info.branchKey && (info.branchKey === 'then' || info.branchKey === 'else')
+          ? { parentBranch: info.branchKey }
+          : {}),
+      })
+    }
+  }
+
+  const hasLoopBlock = controlFlowBlocks.some((b) => b.kind === 'for_each' || b.kind === 'repeat')
+  const hasLoopStep = expandedSteps.some((s) => s.type === 'loop')
+
+  if (hasLoopBlock) {
+    const rootStepCount = expandedSteps.filter(
+      (s) => !allLoopBodyStepIds.has(s.id) && !allLoopHeaderIds.has(s.id),
+    ).length
+    const worstCaseSteps = rootStepCount + loopEstimatedSteps
+    if (worstCaseSteps > MAX_SCENARIO_LOOP_BUDGET_STEPS) {
+      diagnostics.push({
+        code: 'SCENARIO_LOOP_BUDGET_EXCEEDED',
+        severity: 'error',
+        message: `循环最坏展开步数估算 (${worstCaseSteps}) 超过平台上限 (${MAX_SCENARIO_LOOP_BUDGET_STEPS} 步)`,
+      })
+    }
+  }
+
+  const hasControlFlowFeatures = expandedSteps.some(
+    (s) => s.type === 'decide' || s.type === 'probe' || s.type === 'compute' || s.type === 'loop' || Boolean((s as any).optional),
+  )
+  const controlFlow: ControlFlowManifest | undefined =
+    controlFlowBlocks.length > 0 || hasControlFlowFeatures
+      ? {
+          protocol: hasLoopBlock || hasLoopStep ? CONTROL_FLOW_PROTOCOL_V2 : CONTROL_FLOW_PROTOCOL,
+          blocks: controlFlowBlocks,
+        }
+      : undefined
+
+  let hasMustOutcome = false
+  let hasMustOutcomeOutsideBranches = false
+
+  for (const item of docItems) {
+    if (item.node.kind === 'step') {
+      const outcomes = item.node.outcomes ?? []
+      for (const oc of outcomes) {
+        if ((oc.severity ?? 'MUST') === 'MUST') {
+          hasMustOutcome = true
+          if (item.ancestry.length === 0) {
+            hasMustOutcomeOutsideBranches = true
+          }
+        }
+      }
+      if (item.node.step.type === 'assert' || item.node.step.type === 'ai_assert') {
+        hasMustOutcome = true
+        if (item.ancestry.length === 0) {
+          hasMustOutcomeOutsideBranches = true
+        }
+      }
+    }
+  }
+  if (document.scenarioOutcomes && document.scenarioOutcomes.length > 0) {
+    for (const oc of document.scenarioOutcomes) {
+      if ((oc.severity ?? 'MUST') === 'MUST') {
+        hasMustOutcome = true
+        hasMustOutcomeOutsideBranches = true
+      }
+    }
+  }
+
+  if (hasMustOutcome && !hasMustOutcomeOutsideBranches) {
+    diagnostics.push({
+      code: 'SCENARIO_OUTCOME_ONLY_IN_BRANCHES',
+      severity: 'warning',
+      message: '场景中所有 MUST 成功条件都位于条件分支内，某些执行路径下可能没有任何必须成立的检查',
+    })
+  }
+
   // 组装扁平的 ScenarioDefinition
   let definition: ScenarioDefinition | undefined = undefined
   if (expandedSteps.length > 0 && expandedSteps.length <= MAX_COMPILED_SCENARIO_STEPS) {
@@ -1079,6 +1915,7 @@ export function expandAuthoringDocument(
     manifest,
     ...(outcomeManifest ? { outcomeManifest } : {}),
     ...(runtimeInvariantManifest ? { runtimeInvariantManifest } : {}),
+    ...(controlFlow ? { controlFlow } : {}),
     diagnostics: diagnostics.map(clampDiagnostic),
     sourceDigest,
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { type ApplyDemonstrationBody, type ScenarioAuthoringDocumentV2, type Step } from '@cairn/shared'
+import { DEMONSTRATION_HANDOFF_PLACEHOLDER_NAME, replaceNode, walkAuthoringNodes, type ApplyDemonstrationBody, type ScenarioAuthoringDocumentV2, type Step } from '@cairn/shared'
 import { parseDemonstrationFile } from '../demonstration-adapters.js'
 import { applyDemonstrationToDocument, previewDemonstration } from '../demonstration.js'
 import { classifyValidationSample, validationRunDigests } from '../validation.js'
@@ -19,20 +19,39 @@ function fixture() {
 }
 
 describe('demonstration decisions and conservative validation', () => {
+  it('atomically replaces the new-scenario placeholder with all reviewed recording steps', () => {
+    const source = parseDemonstrationFile({ targetId: id, captureId: id, profile: 'midscene-yaml-flow@1', text: 'web: {url: https://example.test}\ntasks:\n- name: 浏览\n  flow:\n  - aiTap: 菜单\n  - aiTap: 详情' })
+    const preview = previewDemonstration({ source, scenarioId: id, recordingDraftId: id, baseRevision: 1, placement: { kind: 'replace_initial', nodeId: stepId }, remainingCapacity: 200 })
+    const body: ApplyDemonstrationBody = {
+      protocolVersion: 'demonstration@1', recordingDraftId: id, baseRevision: 1,
+      placement: preview.placement, idempotencyKey: 'replace-initial-test',
+      factDigest: preview.factDigest, suggestionDigest: preview.suggestionDigest,
+      adapterVersion: preview.adapterVersion, ruleVersion: preview.ruleVersion,
+      decisions: preview.suggestions.map(item => ({ id: item.id, disposition: 'accept' })),
+    }
+    const placeholder: Step = { id: stepId, name: DEMONSTRATION_HANDOFF_PLACEHOLDER_NAME, type: 'navigate', effectType: 'SIDE_EFFECT', input: { url: 'https://example.com' } }
+    const document: ScenarioAuthoringDocumentV2 = { authoringSchemaVersion: 2, schemaVersion: 1, inputs: [], nodes: [{ kind: 'step', step: placeholder }] }
+    const result = applyDemonstrationToDocument(document, preview, body)
+    expect(walkAuthoringNodes(result.document)).toHaveLength(3)
+    expect(walkAuthoringNodes(result.document).map(node => node.id)).not.toContain(stepId)
+    expect(result.sourceMap.every(item => item.nodeId)).toBe(true)
+    expect(() => applyDemonstrationToDocument({ ...document, nodes: [{ kind: 'step', step: { ...placeholder, name: '导航' } }] }, preview, body)).toThrow(/占位步骤已变化/)
+    expect(() => applyDemonstrationToDocument({ ...document, nodes: [...document.nodes, { kind: 'step', step: { ...placeholder, id } }] }, preview, body)).toThrow(/占位步骤已变化/)
+  })
   it('reteaches one action while retaining identity, policy, references and ordered outcomes', () => {
     const { document, body, preview } = fixture()
     const result = applyDemonstrationToDocument(document, preview, body)
-    expect(result.document.nodes).toHaveLength(1)
-    expect(result.document.nodes[0]).toMatchObject({ step: { id: stepId, name: '原步骤', type: 'ai_action', policy: { retryLimit: 0 } }, outcomes: [{ provenance: 'imported', severity: 'MUST' }] })
-    expect(document.nodes[0]).toMatchObject({ step: { type: 'click' } })
+    expect(walkAuthoringNodes(result.document)).toHaveLength(1)
+    expect(walkAuthoringNodes(result.document)[0]?.node).toMatchObject({ step: { id: stepId, name: '原步骤', type: 'ai_action', policy: { retryLimit: 0 } }, outcomes: [{ provenance: 'imported', severity: 'MUST' }] })
+    expect(walkAuthoringNodes(document)[0]?.node).toMatchObject({ step: { type: 'click' } })
   })
   it('rejects missing/duplicate decisions, dangling assertion location and incompatible outputs', () => {
     const { document, body, preview } = fixture()
     expect(() => applyDemonstrationToDocument(document, preview, { ...body, decisions: body.decisions.slice(1) })).toThrow()
     expect(() => applyDemonstrationToDocument(document, preview, { ...body, decisions: [body.decisions[0]!, body.decisions[0]!, body.decisions[2]!] })).toThrow()
     expect(() => applyDemonstrationToDocument(document, preview, { ...body, decisions: body.decisions.map((d, i) => i === 1 ? { id: d.id, disposition: 'discard', reason: '不执行' } : d) })).toThrow(/前序/)
-    document.nodes[0] = { kind: 'step', step: { id: stepId, name: '读值', type: 'echo', effectType: 'READ_ONLY', outputKey: 'result', input: { value: 'a' } } as Step }
-    expect(() => applyDemonstrationToDocument(document, preview, body)).toThrow(/输出/)
+    const modifiedDoc = replaceNode(document, stepId, { kind: 'step', step: { id: stepId, name: '读值', type: 'echo', effectType: 'READ_ONLY', outputKey: 'result', input: { value: 'a' } } as Step })
+    expect(() => applyDemonstrationToDocument(modifiedDoc, preview, body)).toThrow(/输出/)
   })
   const passed = { matchesSubject: true, hasContext: true, status: 'SUCCEEDED', outcomeStatus: 'PASS', evidenceStatus: 'COMPLETE', fullyExecuted: true, interventions: [], requiredConditions: 1, conditionStatuses: ['PASS'] }
   it('only passes complete matching business samples', () => {

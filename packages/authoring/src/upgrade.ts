@@ -8,6 +8,10 @@ import {
   upgradeDiffSchema,
   upgradeModuleVersionSchema,
   upgradeWarningKey,
+  locateNode,
+  removeNode,
+  replaceNode,
+  walkAuthoringNodes,
   type AuthoringModuleInvocation,
   type AuthoringNode,
   type EffectType,
@@ -70,13 +74,15 @@ function summarizeImplementation(from: UpgradeModuleVersion, to: UpgradeModuleVe
 }
 
 function invocationIndex(document: ScenarioAuthoringDocumentV2, invocationId: string): number {
-  return document.nodes.findIndex((node) => node.kind === 'module' && node.invocationId === invocationId)
+  return locateNode(document, invocationId)?.index ?? -1
 }
 
 type ContextRef = { nodeId: string; name: string; field?: string }
 
 function nodeDisplayName(node: AuthoringNode): string {
-  return node.kind === 'module' ? node.name || '动作模块' : node.step.name
+  if (node.kind === 'module') return node.name || '动作模块'
+  if (node.kind === 'block') return node.name || '条件块'
+  return node.step.name
 }
 
 function laterReferences(
@@ -85,14 +91,15 @@ function laterReferences(
   key: string,
 ): ContextRef[] {
   const refs: ContextRef[] = []
-  for (let index = afterIndex + 1; index < document.nodes.length; index++) {
-    const node = document.nodes[index]!
+  const items = walkAuthoringNodes(document)
+  for (let index = afterIndex + 1; index < items.length; index++) {
+    const node = items[index]!.node
     if (node.kind === 'step') {
       const from = stepFrom(node.step)
       if (from?.key === key) {
         refs.push({ nodeId: node.step.id, name: node.step.name, field: from.field })
       }
-    } else {
+    } else if (node.kind === 'module') {
       for (const [inputKey, binding] of Object.entries(node.inputBindings)) {
         if (binding.kind === 'from' && binding.key === key) {
           refs.push({
@@ -126,6 +133,12 @@ function stepBinding(step: Step): { from?: string; fromField?: string; value?: J
 function outputShapeHasField(shape: ModuleOutputDecl['shape'] | OutputShape, field: string): boolean | 'unknown' {
   if (shape.kind === 'unknown') return 'unknown'
   if (shape.kind === 'scalar') return false
+  if (shape.kind === 'list') {
+    if (shape.item.kind === 'object') {
+      return shape.item.fields.some((item) => item.name === field)
+    }
+    return false
+  }
   return shape.fields.some((item) => item.name === field)
 }
 
@@ -304,29 +317,29 @@ export function applyModuleUpgrade(input: {
   bindingsPatch?: Record<string, ModuleInputBinding>
 }): ScenarioAuthoringDocumentV2 {
   const document = scenarioAuthoringDocumentV2Schema.parse(input.document)
-  const nodes = document.nodes.map((node) => {
-    if (node.kind !== 'module' || node.invocationId !== input.invocationId) return node
-    const inputBindings: Record<string, ModuleInputBinding> = {}
-    for (const decl of input.toContract.inputs) {
-      const patched = input.bindingsPatch?.[decl.key]
-      const current = node.inputBindings[decl.key]
-      if (patched) inputBindings[decl.key] = patched
-      else if (current) inputBindings[decl.key] = current
-    }
-    const outputBindings: Record<string, string> = {}
-    for (const decl of input.toContract.outputs) {
-      const exposed = node.outputBindings[decl.key]
-      if (exposed) outputBindings[decl.key] = exposed
-    }
-    return {
-      ...node,
-      moduleVersionId: input.toVersionId,
-      moduleDraft: undefined,
-      inputBindings,
-      outputBindings,
-    }
-  })
-  return scenarioAuthoringDocumentV2Schema.parse({ ...document, nodes })
+  const target = walkAuthoringNodes(document).find((item) => item.id === input.invocationId)?.node
+  if (!target || target.kind !== 'module') return document
+
+  const inputBindings: Record<string, ModuleInputBinding> = {}
+  for (const decl of input.toContract.inputs) {
+    const patched = input.bindingsPatch?.[decl.key]
+    const current = target.inputBindings[decl.key]
+    if (patched) inputBindings[decl.key] = patched
+    else if (current) inputBindings[decl.key] = current
+  }
+  const outputBindings: Record<string, string> = {}
+  for (const decl of input.toContract.outputs) {
+    const exposed = target.outputBindings[decl.key]
+    if (exposed) outputBindings[decl.key] = exposed
+  }
+  const updated: AuthoringModuleInvocation = {
+    ...target,
+    moduleVersionId: input.toVersionId,
+    moduleDraft: undefined,
+    inputBindings,
+    outputBindings,
+  }
+  return scenarioAuthoringDocumentV2Schema.parse(replaceNode(document, input.invocationId, updated))
 }
 
 export function unresolvedUpgradeBlockers(
@@ -362,8 +375,10 @@ export function unconfirmedUpgradeWarnings(diffs: readonly UpgradeDiff[], confir
 
 function selectionRange(document: ScenarioAuthoringDocumentV2, selectedStepIds: readonly string[]) {
   const wanted = new Set(selectedStepIds)
+  const items = walkAuthoringNodes(document)
   const indexes: number[] = []
-  for (const [index, node] of document.nodes.entries()) {
+  for (const [index, item] of items.entries()) {
+    const node = item.node
     if (node.kind === 'step' && wanted.has(node.step.id)) indexes.push(index)
     if (node.kind === 'module' && wanted.has(node.invocationId)) {
       return { error: '选择不能包含动作模块调用' }
@@ -378,11 +393,18 @@ function selectionRange(document: ScenarioAuthoringDocumentV2, selectedStepIds: 
     return { error: '必须选择连续的步骤' }
   }
   for (let index = start; index <= end; index++) {
-    if (document.nodes[index]?.kind !== 'step') {
+    if (items[index]?.node.kind !== 'step') {
       return { error: '选择区间不能包含动作模块调用' }
     }
   }
-  return { start, end, nodes: document.nodes.slice(start, end + 1).filter((node): node is Extract<AuthoringNode, { kind: 'step' }> => node.kind === 'step') }
+  return {
+    start,
+    end,
+    nodes: items
+      .slice(start, end + 1)
+      .map((item) => item.node)
+      .filter((node): node is Extract<AuthoringNode, { kind: 'step' }> => node.kind === 'step'),
+  }
 }
 
 function shapeFromStep(step: Step): ModuleOutputDecl['shape'] {
@@ -445,8 +467,9 @@ export function proposeModuleFromSteps(
   const selectedOutputKeys = new Set(range.nodes.map((node) => node.step.outputKey).filter((key): key is string => Boolean(key)))
   const scenarioInputs = new Map(parsed.data.inputs.map((item) => [item.key, item]))
   const priorOutputs = new Map<string, { label: string; shape: ModuleOutputDecl['shape'] }>()
+  const docNodes = walkAuthoringNodes(parsed.data)
   for (let index = 0; index < range.start; index++) {
-    const node = parsed.data.nodes[index]!
+    const node = docNodes[index]!.node
     if (node.kind === 'step' && node.step.outputKey) {
       priorOutputs.set(node.step.outputKey, { label: node.step.name, shape: shapeFromStep(node.step) })
     }
@@ -687,12 +710,12 @@ export function applyModuleReplace(input: {
   if ('error' in range) {
     throw new Error(range.error)
   }
-  const nodes = [
-    ...document.nodes.slice(0, range.start),
-    authoringModuleInvocationSchema.parse(input.invocation),
-    ...document.nodes.slice(range.end + 1),
-  ]
-  return scenarioAuthoringDocumentV2Schema.parse({ ...document, nodes })
+  const parsedInvocation = authoringModuleInvocationSchema.parse(input.invocation)
+  let updated = replaceNode(document, input.selectedStepIds[0]!, parsedInvocation)
+  for (let i = 1; i < input.selectedStepIds.length; i++) {
+    updated = removeNode(updated, input.selectedStepIds[i]!)
+  }
+  return scenarioAuthoringDocumentV2Schema.parse(updated)
 }
 
 function inputSummary(step: Step): string {

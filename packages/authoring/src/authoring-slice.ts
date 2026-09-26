@@ -4,8 +4,10 @@ import {
   type ScenarioDocument,
   type ScenarioInputDecl,
   type Step,
+  authoringNodeId,
   isAuthoringDocumentV2,
   isSensitiveFillInput,
+  walkAuthoringNodes,
 } from '@cairn/shared'
 
 export interface SlicedAuthoringResult {
@@ -33,7 +35,7 @@ export function buildV2AuthoringSlice(
   let inputs: ScenarioInputDecl[] = []
 
   if (isAuthoringDocumentV2(document)) {
-    allNodes = [...document.nodes]
+    allNodes = walkAuthoringNodes(document).map((item) => item.node)
     inputs = [...(document.inputs ?? [])]
   } else if ('steps' in document && Array.isArray(document.steps)) {
     allNodes = document.steps.map((step: Step) => ({
@@ -182,5 +184,5 @@ export function buildV2AuthoringSlice(
 }
 
 function getNodeId(node: ScenarioAuthoringNode): string {
-  return node.kind === 'step' ? node.step.id : node.invocationId
+  return authoringNodeId(node)
 }

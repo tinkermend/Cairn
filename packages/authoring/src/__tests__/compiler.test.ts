@@ -152,6 +152,30 @@ describe('compileScenarioDocument', () => {
     expect(unknown.diagnostics).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_FROM_FIELD_UNKNOWN' })]),
     )
+
+    const listExtract: Step = {
+      id: ids.a,
+      name: '提取列表',
+      type: 'ai_extract',
+      effectType: 'READ_ONLY',
+      outputKey: 'orders',
+      input: {
+        instruction: '提取单号列表',
+        outputSchema: {
+          kind: 'list',
+          item: { kind: 'scalar', type: 'string' },
+          maxItems: 10,
+        },
+      },
+    }
+    const listRef = compileScenarioDocument(
+      document([listExtract, echo(ids.b, '尝试作为文本回显', { from: 'orders' })]),
+      { mode: 'release' },
+    )
+    expect(listRef.ok).toBe(false)
+    expect(listRef.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'SCENARIO_FROM_LIST_NOT_TEXT' })]),
+    )
   })
 
   it('AI Action 禁止自动重试，AI Assert 可充当断言', () => {
@@ -500,5 +524,82 @@ describe('compileScenarioDocument', () => {
     const unresolvedCodes = result.diagnostics.filter((d) => d.code === 'OUTPUT_VARIABLE_UNRESOLVED')
     expect(unresolvedCodes.length).toBe(4)
     expect(unresolvedCodes.every((d) => d.severity === 'warning')).toBe(true)
+  })
+
+  it('活跃步骤引用已停用步骤的输出变量产生 SCENARIO_DISABLED_STEP_OUTPUT_REFERENCED 警告', () => {
+    const disabledExtract: Step = {
+      id: ids.a,
+      name: '停用提取',
+      type: 'extract',
+      effectType: 'READ_ONLY',
+      disabled: true,
+      outputKey: 'token',
+      input: { target: { framePath: [], candidates: [{ by: 'label', value: '令牌' }] }, as: 'text' },
+    }
+    const activeEcho: Step = {
+      id: ids.b,
+      name: '回显令牌',
+      type: 'echo',
+      effectType: 'READ_ONLY',
+      input: { from: 'token' },
+    }
+    const source = document([disabledExtract, activeEcho])
+    const result = compileScenarioDocument(source, { mode: 'save' })
+    expect(
+      result.diagnostics.some(
+        (d) => d.code === 'SCENARIO_DISABLED_STEP_OUTPUT_REFERENCED' && d.severity === 'warning',
+      ),
+    ).toBe(true)
+  })
+
+  it('全部步骤停用时阻断试跑与发布；至少一步启用即可通过', () => {
+    const allDisabled = document([
+      { ...echo(ids.a, '甲', { value: '1' }), disabled: true },
+      { ...echo(ids.b, '乙', { value: '2' }), disabled: true },
+    ])
+    for (const mode of ['save', 'release'] as const) {
+      const result = compileScenarioDocument(allDisabled, { mode })
+      expect(result.ok).toBe(false)
+      expect(
+        result.diagnostics.some((d) => d.code === 'SCENARIO_ALL_STEPS_DISABLED' && d.severity === 'error'),
+      ).toBe(true)
+    }
+
+    const oneEnabled = document([
+      { ...echo(ids.a, '甲', { value: '1' }), disabled: true },
+      echo(ids.b, '乙', { value: '2' }),
+    ])
+    const result = compileScenarioDocument(oneEnabled, { mode: 'release' })
+    expect(result.diagnostics.some((d) => d.code === 'SCENARIO_ALL_STEPS_DISABLED')).toBe(false)
+  })
+
+  it('停用的副作用步骤与存量断言不参与成功条件覆盖诊断', () => {
+    const disabledClick: Step = {
+      id: ids.a,
+      name: '停用的提交',
+      type: 'click',
+      effectType: 'SIDE_EFFECT',
+      disabled: true,
+      input: { target: { framePath: [], candidates: [{ by: 'role', value: 'button', name: '提交' }] } },
+    }
+    const disabledAssert: Step = {
+      id: ids.b,
+      name: '停用的断言',
+      type: 'assert',
+      effectType: 'READ_ONLY',
+      disabled: true,
+      input: {
+        target: { framePath: [], candidates: [{ by: 'role', value: 'heading', name: '完成' }] },
+        expect: { kind: 'visible' },
+      },
+    }
+    const result = compileScenarioDocument(document([navigate(ids.c), disabledClick, disabledAssert]), {
+      mode: 'save',
+    })
+    // 唯一的断言已停用：不能把它算成成功条件，也不对停用的提交追问成功条件。
+    expect(result.diagnostics.some((d) => d.code === 'SCENARIO_NO_OUTCOME')).toBe(true)
+    expect(
+      result.diagnostics.some((d) => d.code === 'SCENARIO_SIDE_EFFECT_WITHOUT_OUTCOME' && d.stepId === ids.a),
+    ).toBe(false)
   })
 })

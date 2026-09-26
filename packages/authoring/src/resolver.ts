@@ -1,6 +1,9 @@
 import {
   authoringModuleInvocationSchema,
   authoringNodeId,
+  insertNodeAfter,
+  locateNode,
+  walkAuthoringNodes,
   CONTAINS_NEEDLE_MIN,
   DEFAULT_RESOLVER_MAX_CANDIDATES,
   INTENT_EXAMPLE_COVERAGE_MIN,
@@ -85,12 +88,13 @@ export function collectAvailableContextKeys(
     keys.push(key)
   }
   for (const input of document.inputs) add(input.key)
-  for (const node of document.nodes) {
+  for (const item of walkAuthoringNodes(document)) {
+    const node = item.node
     if (node.kind === 'step') add(node.step.outputKey)
-    else {
+    else if (node.kind === 'module') {
       for (const exposed of Object.values(node.outputBindings)) add(exposed)
     }
-    if (anchorNodeId && authoringNodeId(node) === anchorNodeId) break
+    if (anchorNodeId && item.id === anchorNodeId) break
   }
   return keys
 }
@@ -101,12 +105,13 @@ export function insertModuleInvocation(
   afterNodeId?: string,
 ): ScenarioAuthoringDocumentV2 | null {
   const parsed = authoringModuleInvocationSchema.parse(invocation)
-  const nodes = [...document.nodes]
-  if (!afterNodeId) return { ...document, nodes: [...nodes, parsed] }
-  const index = nodes.findIndex((node) => authoringNodeId(node) === afterNodeId)
-  if (index < 0) return null
-  nodes.splice(index + 1, 0, parsed)
-  return { ...document, nodes }
+  if (!afterNodeId) {
+    const items = walkAuthoringNodes(document)
+    const lastId = items.length > 0 ? items[items.length - 1]!.id : null
+    return insertNodeAfter(document, lastId, parsed)
+  }
+  if (!locateNode(document, afterNodeId)) return null
+  return insertNodeAfter(document, afterNodeId, parsed)
 }
 
 type RankedHit = {

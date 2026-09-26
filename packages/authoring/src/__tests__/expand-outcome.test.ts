@@ -5,6 +5,7 @@ import {
   type Step,
 } from '@cairn/shared'
 import {
+  deriveOutcomeManifest,
   deterministicStepId,
   expandAuthoringDocument,
   resolveOutcomeWriteback,
@@ -404,5 +405,62 @@ describe('OC-A: 编写展开与契约派生 (expand-outcome)', () => {
     )
     expect(invalid.ok).toBe(false)
     expect(invalid.diagnostics.some((item) => item.code === 'RUNTIME_INVARIANT_INVALID')).toBe(true)
+  })
+
+  it('停用步骤的成功条件不适用：派生检查随之停用，清单不收录；建 Run 推导结果一致', () => {
+    const contract: OutcomeContract = {
+      id: '20000000-0000-4000-8000-000000000012',
+      scope: 'step',
+      meaning: '提交成功提示出现',
+      severity: 'MUST',
+      onViolation: 'halt',
+      provenance: 'manual',
+      rule: { kind: 'deterministic', target: { framePath: [], candidates: [{ by: 'css', value: '#ok' }] }, expect: { kind: 'visible' } },
+    }
+    const disabledAssert: Step = {
+      id: '10000000-0000-4000-8000-000000000006',
+      name: '已停用的存量断言',
+      type: 'assert',
+      effectType: 'READ_ONLY',
+      disabled: true,
+      input: {
+        target: { framePath: [], candidates: [{ by: 'css', value: '#banner' }] },
+        expect: { kind: 'visible' },
+      },
+    }
+    const enabledAssert: Step = {
+      id: '10000000-0000-4000-8000-000000000007',
+      name: '仍启用的断言',
+      type: 'assert',
+      effectType: 'READ_ONLY',
+      input: {
+        target: { framePath: [], candidates: [{ by: 'css', value: '#title' }] },
+        expect: { kind: 'visible' },
+      },
+    }
+    const doc: ScenarioAuthoringDocumentV2 = {
+      authoringSchemaVersion: 2,
+      schemaVersion: 1,
+      inputs: [],
+      nodes: [
+        { kind: 'step', step: navigateStep },
+        { kind: 'step', step: { ...clickStep, disabled: true }, outcomes: [contract] },
+        { kind: 'step', step: disabledAssert },
+        { kind: 'step', step: enabledAssert },
+      ],
+    }
+
+    const expanded = expandAuthoringDocument(doc, makeContext())
+    expect(expanded.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+    const derivedId = deterministicStepId(clickStep.id, contract.id)
+    const derived = expanded.definition?.steps.find((step) => step.id === derivedId)
+    expect(derived?.disabled).toBe(true)
+    expect(expanded.outcomeManifest?.entries.map((entry) => entry.stepId)).toEqual([enabledAssert.id])
+
+    const derivedAtRunCreation = deriveOutcomeManifest({
+      definition: expanded.definition,
+      authoringDocument: doc,
+    })
+    expect(derivedAtRunCreation?.entries.map((entry) => entry.stepId)).toEqual([enabledAssert.id])
   })
 })
