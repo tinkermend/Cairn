@@ -18,10 +18,9 @@ function definition(overrides: Partial<{ timezone: string; weekdays: number[]; w
     windowEnd: overrides.windowEnd ?? '03:30',
     misfire: 'skip',
     consumer: {
-      type: 'map_refresh',
+      type: 'knowledge_analysis',
       targetId: '00000000-0000-4000-8000-000000000001',
-      targetAccountId: '00000000-0000-4000-8000-000000000002',
-      entryId: '00000000-0000-4000-8000-000000000003',
+      mode: 'map_quality',
     },
   })
 }
@@ -153,10 +152,9 @@ describe('调度时间规则', () => {
         misfire: 'skip',
       },
       consumer: {
-        type: 'map_refresh',
+        type: 'knowledge_analysis',
         targetId: '00000000-0000-4000-8000-000000000001',
-        targetAccountId: '00000000-0000-4000-8000-000000000002',
-        entryId: '00000000-0000-4000-8000-000000000003',
+        mode: 'map_quality',
       },
     })
     const windows = previewScheduleWindows({
@@ -206,10 +204,9 @@ describe('调度时间规则', () => {
         windowEnd: '09:00',
         misfire: 'skip',
         consumer: {
-          type: 'map_refresh',
+          type: 'knowledge_analysis',
           targetId: '00000000-0000-4000-8000-000000000001',
-          targetAccountId: '00000000-0000-4000-8000-000000000002',
-          entryId: '00000000-0000-4000-8000-000000000003',
+          mode: 'map_quality',
         },
       }),
     ).toThrow()
@@ -221,10 +218,9 @@ describe('调度时间规则', () => {
         windowEnd: '10:00',
         misfire: 'skip',
         consumer: {
-          type: 'map_refresh',
+          type: 'knowledge_analysis',
           targetId: '00000000-0000-4000-8000-000000000001',
-          targetAccountId: '00000000-0000-4000-8000-000000000002',
-          entryId: '00000000-0000-4000-8000-000000000003',
+          mode: 'map_quality',
         },
       }),
     ).toThrow()

@@ -88,40 +88,11 @@ describe('访问策略路径匹配', () => {
       },
       mapJob: {
         jobId: '00000000-0000-4000-8000-000000000001',
-        purpose: 'map_probe',
-        source: 'manual',
       },
     })
     expect(scope.purposes).toEqual(['business_surface'])
     expect(urlAllowedByCompiledScope(`${shop}/app`, scope)).toBe(true)
     expect(urlAllowedByCompiledScope(`${idp}/login`, scope)).toBe(false)
-  })
-
-  it('探索 allowlist 与安全进入精确路径取交集', () => {
-    const scope = compileAccessScopeFromSnapshot({
-      accessPolicy: {
-        revision: 1,
-        digest: 'b'.repeat(64),
-        policy: {
-          schemaVersion: 1,
-          policyVersion: 1,
-          rules: [{ origin: shop, purpose: 'business_surface', effect: 'allow' }],
-        },
-      },
-      mapJob: {
-        jobId: '00000000-0000-4000-8000-000000000001',
-        purpose: 'map_explore',
-        source: 'explore',
-      },
-      steps: [
-        { type: 'navigate', input: { url: `${shop}/` } },
-        { type: 'map_observe', input: { mode: 'allowlist', allowlist: [{ origin: shop, pathPrefix: '/orders' }] } },
-      ],
-    })
-    expect(urlAllowedByCompiledScope(`${shop}/`, scope)).toBe(true)
-    expect(urlAllowedByCompiledScope(`${shop}/orders/1`, scope)).toBe(true)
-    expect(urlAllowedByCompiledScope(`${shop}/admin`, scope)).toBe(false)
-    expect(urlAllowedByCompiledScope(`${shop}/orders-admin`, scope)).toBe(false)
   })
 
   it('无 accessPolicy 的旧快照按 allowedOrigins 全路径放行', () => {

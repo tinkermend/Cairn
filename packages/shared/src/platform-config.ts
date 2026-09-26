@@ -676,7 +676,7 @@ export type PlatformConfigCurrent = z.infer<typeof platformConfigCurrentSchema>
 
 export const platformConfigReasonSchema = z.string().trim().min(1, '请填写变更原因').max(512)
 
-export const platformConfigWriteDocumentSchema = platformConfigDocumentSchema.superRefine(
+export const platformConfigWriteDocumentSchema = platformConfigDocumentObjectSchema.superRefine(
   (document, ctx) => {
     if ((document.platformAi.enabled || document.analysisAi.enabled) && !document.platformAi.provider) {
       ctx.addIssue({

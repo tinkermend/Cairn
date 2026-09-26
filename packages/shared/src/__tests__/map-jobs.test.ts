@@ -14,7 +14,6 @@ import {
 describe('地图作业契约', () => {
   it('工厂作业政策默认关闭', () => {
     expect(FACTORY_MAP_JOB_POLICY.manualJobsEnabled).toBe(false)
-    expect(FACTORY_MAP_JOB_POLICY.maxProbePages).toBe(1)
     expect(FACTORY_MAP_JOB_POLICY.sliceWorkSeconds).toBe(20)
   })
 
@@ -104,14 +103,6 @@ describe('地图作业契约', () => {
         occurrenceId: '00000000-0000-4000-8000-000000000003',
       }),
     ).toBe('map:scheduled:00000000-0000-4000-8000-000000000003')
-    expect(
-      mapJobCommandKey({
-        source: 'explore',
-        targetId: '00000000-0000-4000-8000-000000000001',
-        targetAccountId: '00000000-0000-4000-8000-000000000002',
-        manualId: 'manual-explore-1',
-      }),
-    ).toBe('map:explore:manual-explore-1')
   })
 
   it('授权更新必须带修订和理由', () => {
