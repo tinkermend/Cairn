@@ -66,7 +66,7 @@ describe.each(DRIVERS)('%s 账号用途准入', { timeout: 60_000 }, (driver) =>
     return { store, target }
   }
 
-  it('RJ-11/14 未标地图用途不能开手工作业或保存复查计划', async () => {
+  it('RJ-11/14 未标地图用途不能开手工作业', async () => {
     const { store, target } = await freshTarget()
     const account = await store.createAccount(
       target.id,
@@ -83,29 +83,6 @@ describe.each(DRIVERS)('%s 账号用途准入', { timeout: 60_000 }, (driver) =>
           idempotencyKey: `enable:${target.id}`.slice(0, 128),
           manualJobsEnabled: true,
           reason: '无采集号',
-        },
-        { kind: 'console', id: actorId },
-      ),
-    ).rejects.toMatchObject({ code: 'MAP_ACCOUNT_USAGE_REQUIRED' })
-    await expect(
-      writeSchedule(
-        handle.db,
-        {
-          expectedRevision: 0,
-          idempotencyKey: `sched:${newId()}`,
-          definition: {
-            timezone: 'Asia/Shanghai',
-            weekdays: [1],
-            windowStart: '02:00',
-            windowEnd: '03:00',
-            misfire: 'skip',
-            consumer: {
-              type: 'map_refresh',
-              targetId: target.id,
-              targetAccountId: account.id,
-              entryId: newId(),
-            },
-          },
         },
         { kind: 'console', id: actorId },
       ),

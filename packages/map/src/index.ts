@@ -48,12 +48,4 @@ export {
   canEnterCandidateBranch,
 } from './consumption.js'
 export type { LocatedCandidate } from './consumption.js'
-export { isUnsafeMapActionName, toMapJobCompileAssets, selectMapJobAssets, compileMapJobSlice } from './jobs.js'
-export type { MapJobCompileAsset } from './jobs.js'
-export {
-  seedUrlsForExploration,
-  buildObservationBundle,
-  proposeExploreHop,
-  decideExploreGuard,
-} from './exploration.js'
 export type { FactReader, MapFactPageItem, MapQueryPort, ProjectionWriter } from './ports.js'

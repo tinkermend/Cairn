@@ -34,7 +34,6 @@ import {
   FIXTURE_STEP_TYPES,
   isAiStepType,
   isFixtureStepType,
-  isMapExploreStepType,
   type ExecutionPolicy,
   type Step,
 } from './step.js'
@@ -187,7 +186,7 @@ export function executableStepTypesFor(
   fixtureStepsEnabled: boolean,
 ): string[] {
   const authoring = EXECUTABLE_STEP_TYPES.filter(
-    (type) => !isMapExploreStepType(type) && (fixtureStepsEnabled || !isFixtureStepType(type)),
+    (type) => fixtureStepsEnabled || !isFixtureStepType(type),
   )
   if (browserAiEnabled) return [...authoring]
   return authoring.filter((type) => !isAiStepType(type))

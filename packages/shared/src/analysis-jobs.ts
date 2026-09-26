@@ -69,7 +69,6 @@ export const analysisCandidateReviewSchema = z.strictObject({
   destination: z.discriminatedUnion('kind', [
     z.strictObject({ kind: z.literal('proposal'), scenarioId: entityIdSchema, proposalId: entityIdSchema }),
     z.strictObject({ kind: z.literal('term'), termId: entityIdSchema, revision: z.number().int().positive() }),
-    z.strictObject({ kind: z.literal('map_refresh'), scheduleId: entityIdSchema, revision: z.number().int().positive() }),
     z.strictObject({ kind: z.literal('reject'), reason: z.string().min(1).max(512) }),
   ]),
 })
@@ -82,7 +81,6 @@ export const reviewAnalysisCandidateBodySchema = z.discriminatedUnion('kind', [
   z.strictObject({ ...reviewBase, kind: z.literal('term'), canonicalName: z.string().trim().min(1).max(128),
     aliases: z.array(z.string().trim().min(1).max(128)).max(16), meaning: z.string().trim().min(1).max(2048),
     existingTerm: z.strictObject({ termId: entityIdSchema, expectedRevision: z.number().int().positive() }).optional() }),
-  z.strictObject({ ...reviewBase, kind: z.literal('map_refresh'), scheduleId: entityIdSchema, expectedScheduleRevision: z.number().int().positive() }),
   z.strictObject({ ...reviewBase, kind: z.literal('reject'), reason: z.string().trim().min(1).max(512) }),
 ])
 export type ReviewAnalysisCandidateBody = z.infer<typeof reviewAnalysisCandidateBodySchema>

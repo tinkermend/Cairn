@@ -148,77 +148,6 @@ function mockService() {
       updatedAt: '1970-01-01T00:00:00.000Z',
     })),
     updateJobPolicy: vi.fn(),
-    explorationPolicy: vi.fn(async () => ({
-      targetId,
-      revision: 0,
-      policy: {
-        schemaVersion: 1,
-        policyVersion: 1,
-        exploreEnabled: false,
-        mode: 'allowlist',
-        modelEnabled: false,
-        maxHopDepth: 1,
-        maxNewPages: 1,
-        maxCandidates: 8,
-        maxActions: 1,
-        maxSeconds: 300,
-        sliceWorkSeconds: 20,
-        allowlist: [],
-        seedRefs: [],
-      },
-      updatedAt: '1970-01-01T00:00:00.000Z',
-    })),
-    updateExplorationPolicy: vi.fn(),
-    previewExploration: vi.fn(async () => ({
-      jobKind: 'map_explore',
-      entryId: objectId,
-      items: [],
-      estimatedActions: 6,
-      estimatedSeconds: 20,
-    })),
-    createExploration: vi.fn(async () => ({
-      created: true,
-      job: {
-        jobId: objectId,
-        targetId,
-        targetAccountId: objectId,
-        jobKind: 'map_explore',
-        jobStatus: 'queued',
-        stopReason: null,
-        revision: 1,
-        remainingBudgetSeconds: 280,
-        firstRunId: objectId,
-        slices: [],
-        createdAt: '2026-09-16T00:00:00.000Z',
-      },
-    })),
-    listSafeEntries: vi.fn(async () => ({ items: [] })),
-    createSafeEntry: vi.fn(),
-    updateSafeEntry: vi.fn(),
-    archiveSafeEntry: vi.fn(),
-    previewJob: vi.fn(async () => ({
-      jobKind: 'map_probe',
-      entryId: objectId,
-      items: [],
-      estimatedActions: 2,
-      estimatedSeconds: 20,
-    })),
-    createJob: vi.fn(async () => ({
-      created: true,
-      job: {
-        jobId: objectId,
-        targetId,
-        targetAccountId: objectId,
-        jobKind: 'map_probe',
-        jobStatus: 'queued',
-        stopReason: null,
-        revision: 1,
-        remainingBudgetSeconds: 280,
-        firstRunId: objectId,
-        slices: [],
-        createdAt: '2026-09-16T00:00:00.000Z',
-      },
-    })),
     getJob: vi.fn(),
     cancelJob: vi.fn(),
     listTerms: vi.fn(async () => ({ items: [] })),
@@ -381,35 +310,8 @@ describe('地图查询 HTTP', () => {
     expect(maps.grantConsumptionEligibility).toHaveBeenCalled()
   })
 
-  it('可读作业政策，写政策与建作业需要 map:maintain', async () => {
+  it('可读作业政策，写政策需要 map:maintain', async () => {
     await request(app.getHttpServer()).get(`/targets/${targetId}/map/job-policy`).expect(200)
-    await request(app.getHttpServer()).get(`/targets/${targetId}/map/safe-entries`).expect(200)
-    await request(app.getHttpServer()).post(`/targets/${targetId}/map/jobs/preview`).send({
-      jobKind: 'map_probe',
-      targetAccountId: objectId,
-      entryId: objectId,
-    }).expect(200)
-    await request(app.getHttpServer()).post(`/targets/${targetId}/map/jobs`).send({
-      manualId: 'manual-job-1',
-      expectedPolicyRevision: 0,
-      jobKind: 'map_probe',
-      targetAccountId: objectId,
-      entryId: objectId,
-    }).expect(202)
-    await request(app.getHttpServer()).post(`/targets/${targetId}/map/safe-entries/${objectId}/update`).send({
-      expectedVersion: 1,
-      name: '更新后入口',
-      url: 'https://example.com/updated',
-      safetyBasisKind: 'confirmed_path',
-      summary: '更新说明',
-      jobKinds: ['map_probe'],
-    }).expect(200)
-    expect(maps.updateSafeEntry).toHaveBeenCalled()
-    await request(app.getHttpServer()).post(`/targets/${targetId}/map/safe-entries/${objectId}/archive`).send({
-      reason: '下线',
-    }).expect(200)
-    expect(maps.archiveSafeEntry).toHaveBeenCalled()
-
     const moduleRef = await Test.createTestingModule({
       controllers: [MapController],
       providers: [
@@ -429,60 +331,16 @@ describe('地图查询 HTTP', () => {
       manualJobsEnabled: true,
       reason: '开放',
     }).expect(403)
-    await request(limited.getHttpServer()).post(`/targets/${targetId}/map/safe-entries/${objectId}/update`).send({
-      expectedVersion: 1,
-      name: '尝试更新',
-      url: 'https://example.com/updated',
-      safetyBasisKind: 'confirmed_path',
-      summary: '更新说明',
-      jobKinds: ['map_probe'],
-    }).expect(403)
-    await request(limited.getHttpServer()).post(`/targets/${targetId}/map/safe-entries/${objectId}/archive`).send({
-      reason: '尝试下线',
-    }).expect(403)
     await limited.close()
   })
 
-  it('OMI01 读探索政策无需 explore；写政策与触发需要 map:explore', async () => {
-    await request(app.getHttpServer()).get(`/targets/${targetId}/map/exploration-policy`).expect(200)
-    await request(app.getHttpServer()).post(`/targets/${targetId}/map/explorations/preview`).send({
-      targetAccountId: objectId,
-      entryId: objectId,
-    }).expect(200)
-    await request(app.getHttpServer()).post(`/targets/${targetId}/map/explorations`).send({
-      manualId: 'manual-explore-1',
-      expectedExplorationRevision: 0,
-      targetAccountId: objectId,
-      entryId: objectId,
-    }).expect(202)
-    const moduleRef = await Test.createTestingModule({
-      controllers: [MapController],
-      providers: [
-        { provide: MapService, useValue: maps },
-        { provide: APP_GUARD, useValue: new StaticAuthGuard({ ...admin, permissions: ['map:maintain'] }) },
-        { provide: APP_GUARD, useClass: PermissionsGuard },
-        { provide: APP_FILTER, useClass: AllExceptionsFilter },
-        Reflector,
-      ],
-    }).compile()
-    const limited = moduleRef.createNestApplication()
-    await limited.init()
-    listenForSupertest(limited)
-    await request(limited.getHttpServer()).post(`/targets/${targetId}/map/exploration-policy`).send({
-      expectedRevision: 0,
-      idempotencyKey: 'explore-policy-1',
-      exploreEnabled: true,
-      mode: 'allowlist',
-      reason: '开放',
-    }).expect(403)
-    await request(limited.getHttpServer()).post(`/targets/${targetId}/map/explorations`).send({
-      manualId: 'manual-explore-1',
-      expectedExplorationRevision: 0,
-      targetAccountId: objectId,
-      entryId: objectId,
-    }).expect(403)
-    await limited.close()
+  it('旧采集接口已下线', async () => {
+    await request(app.getHttpServer()).get(`/targets/${targetId}/map/safe-entries`).expect(404)
+    await request(app.getHttpServer()).post(`/targets/${targetId}/map/jobs`).send({}).expect(404)
+    await request(app.getHttpServer()).get(`/targets/${targetId}/map/exploration-policy`).expect(404)
+    await request(app.getHttpServer()).post(`/targets/${targetId}/map/explorations`).send({}).expect(404)
   })
+
   it('术语复核角色不需要工作流写权限或地图读权限即可创建术语', async () => {
     const account = { ...viewer, permissions: ['target:read', 'map:review'] as RequestAccount['permissions'] }
     const moduleRef = await Test.createTestingModule({ controllers: [MapController], providers: [

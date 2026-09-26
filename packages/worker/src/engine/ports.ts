@@ -93,7 +93,6 @@ export type BrowserPort = {
     options: {
       targetId: string
       allowedOrigins: string[]
-      allowlist: string[]
       stateRule?: import('@cairn/shared').TargetStateRule
       maxCandidates?: number
     },

@@ -167,7 +167,7 @@ describe.each(DRIVERS)('%s 资源生命周期', { timeout: 30_000 }, (driver) =>
       id: scheduleId,
       targetId: f.target.id,
       targetAccountId: account.id,
-      consumerKey: 'map_refresh',
+      consumerKey: 'knowledge_analysis',
       enabled: 1,
       enabledGuard: 'Y',
       revision: 1,

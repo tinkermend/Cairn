@@ -1,12 +1,6 @@
 import { z } from 'zod'
 import { assertExpectSchema, extractManySchema, type ExtractMany } from './browser-command.js'
 import { pageAfterSchema } from './managed-browser.js'
-import {
-  mapGuardedActionInputSchema,
-  mapObserveInputSchema,
-  mapProposeInputSchema,
-  mapVerifyInputSchema,
-} from './map-exploration.js'
 import { aiOutputSchemaSchema, outputFieldNameSchema } from './output-schema.js'
 import { executionErrorCategorySchema } from './runtime-error.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
@@ -42,19 +36,11 @@ export const BROWSER_STEP_TYPES = [
   'probe',
 ] as const
 export const AI_STEP_TYPES = ['ai_action', 'ai_extract', 'ai_assert'] as const
-export const MAP_EXPLORE_STEP_TYPES = [
-  'map_observe',
-  'map_propose',
-  'map_guarded_action',
-  'map_verify',
-] as const
-export const MAP_EXPLORE_BROWSER_STEP_TYPES = ['map_observe', 'map_guarded_action', 'map_verify'] as const
 export const SYSTEM_STEP_TYPES = ['verify_context', 'decide', 'compute', 'loop'] as const
 export const EXECUTABLE_STEP_TYPES = [
   ...FIXTURE_STEP_TYPES,
   ...BROWSER_STEP_TYPES,
   ...AI_STEP_TYPES,
-  ...MAP_EXPLORE_STEP_TYPES,
   ...SYSTEM_STEP_TYPES,
 ] as const
 
@@ -69,7 +55,6 @@ export type OptionalAllowedStepType = (typeof OPTIONAL_ALLOWED_STEP_TYPES)[numbe
 export type FixtureStepType = (typeof FIXTURE_STEP_TYPES)[number]
 export type BrowserStepType = (typeof BROWSER_STEP_TYPES)[number]
 export type AiStepType = (typeof AI_STEP_TYPES)[number]
-export type MapExploreStepType = (typeof MAP_EXPLORE_STEP_TYPES)[number]
 export type SystemStepType = (typeof SYSTEM_STEP_TYPES)[number]
 export type ExecutableStepType = (typeof EXECUTABLE_STEP_TYPES)[number]
 export const executableStepTypeSchema = z.enum(EXECUTABLE_STEP_TYPES)
@@ -95,17 +80,9 @@ export function isAiStepType(type: string): type is AiStepType {
   return (AI_STEP_TYPES as readonly string[]).includes(type)
 }
 
-export function isMapExploreStepType(type: string): type is MapExploreStepType {
-  return (MAP_EXPLORE_STEP_TYPES as readonly string[]).includes(type)
-}
-
-/** 需要受管 Page / Session 的步骤：确定性浏览器命令、三类 AI，以及需要读页的探索步。 */
+/** 需要受管 Page / Session 的步骤：确定性浏览器命令与三类 AI。 */
 export function stepUsesBrowser(type: string): boolean {
-  return (
-    isBrowserStepType(type) ||
-    isAiStepType(type) ||
-    (MAP_EXPLORE_BROWSER_STEP_TYPES as readonly string[]).includes(type)
-  )
+  return isBrowserStepType(type) || isAiStepType(type)
 }
 
 export function hasAiSteps(steps: readonly { type: string }[]): boolean {
@@ -586,24 +563,6 @@ export const aiAssertStepSchema = z.strictObject({
   contextBindings: z.array(contextBindingSchema).optional(),
 })
 
-export const mapObserveStepSchema = z.strictObject({
-  ...stepCommon,
-  type: z.literal('map_observe'),
-  effectType: z.literal('READ_ONLY'),
-  input: mapObserveInputSchema,
-})
-export const mapProposeStepSchema = z.strictObject({
-  ...stepCommon,
-  type: z.literal('map_propose'),
-  effectType: z.literal('READ_ONLY'),
-  input: mapProposeInputSchema,
-})
-export const mapGuardedActionStepSchema = z.strictObject({
-  ...stepCommon,
-  type: z.literal('map_guarded_action'),
-  effectType: z.enum(['READ_ONLY', 'SIDE_EFFECT']),
-  input: mapGuardedActionInputSchema,
-})
 export const verifyContextInputSchema = z.strictObject({
   keys: z.array(contextKeySchema).min(1).max(32),
 })
@@ -617,12 +576,6 @@ export const verifyContextStepSchema = z.strictObject({
 })
 export type VerifyContextStep = z.infer<typeof verifyContextStepSchema>
 
-export const mapVerifyStepSchema = z.strictObject({
-  ...stepCommon,
-  type: z.literal('map_verify'),
-  effectType: z.literal('READ_ONLY'),
-  input: mapVerifyInputSchema,
-})
 
 export const probeInputSchema = z.discriminatedUnion('kind', [
   z.strictObject({
@@ -750,10 +703,6 @@ export const stepSchema = z
     aiActionStepBase,
     aiExtractStepSchema,
     aiAssertStepSchema,
-    mapObserveStepSchema,
-    mapProposeStepSchema,
-    mapGuardedActionStepSchema,
-    mapVerifyStepSchema,
     verifyContextStepSchema,
     probeStepSchema,
     decideStepSchema,
@@ -800,10 +749,6 @@ export type WaitStep = z.infer<typeof waitStepSchema>
 export type AiActionStep = z.infer<typeof aiActionStepSchema>
 export type AiExtractStep = z.infer<typeof aiExtractStepSchema>
 export type AiAssertStep = z.infer<typeof aiAssertStepSchema>
-export type MapObserveStep = z.infer<typeof mapObserveStepSchema>
-export type MapProposeStep = z.infer<typeof mapProposeStepSchema>
-export type MapGuardedActionStep = z.infer<typeof mapGuardedActionStepSchema>
-export type MapVerifyStep = z.infer<typeof mapVerifyStepSchema>
 export type ProbeStep = z.infer<typeof probeStepSchema>
 export type DecideStep = z.infer<typeof decideStepSchema>
 export type ComputeStep = z.infer<typeof computeStepSchema>

@@ -124,8 +124,7 @@ describe('assembleRunSnapshot', () => {
       mapJob: {
         jobId: '00000000-0000-4000-8000-000000000099',
         sliceOrdinal: 0,
-        purpose: 'map_probe',
-        entryId: '00000000-0000-4000-8000-000000000098',
+        purpose: 'map_ingest',
         policyRevision: 1,
         remainingBudgetSeconds: 20,
         consumerVersion: 'map-jobs@1',

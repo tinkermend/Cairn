@@ -172,27 +172,6 @@ export async function listMapAssets(
   })
 }
 
-export async function listMapJobCandidateAssets(
-  db: Db,
-  targetId: string,
-  evaluate?: MapConditionEvaluator,
-): Promise<MapAssetListItem[]> {
-  const items: MapAssetListItem[] = []
-  let cursor: string | undefined
-  do {
-    const page = await listMapAssets(
-      db,
-      targetId,
-      'objects',
-      mapListQuerySchema.parse({ limit: MAP_LIST_LIMIT_MAX, cursor }),
-      evaluate,
-    )
-    items.push(...page.items)
-    cursor = page.nextCursor
-  } while (cursor)
-  return items
-}
-
 export async function getMapAssetDetail(
   db: Db,
   targetId: string,

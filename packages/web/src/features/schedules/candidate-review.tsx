@@ -24,7 +24,6 @@ import {
 } from '@/lib/knowledge-api'
 import { fetchMapTerms } from '@/lib/map-api'
 import { fetchScenario, fetchScenarios } from '@/lib/scenarios-api'
-import { fetchSchedules } from '@/lib/schedules-api'
 import { useCan } from '@/hooks/use-permissions'
 import { Button } from '@/components/ui/button'
 import {
@@ -61,15 +60,8 @@ export function CandidateReviewDialog({
   const canWrite = useCan('workflow:write')
   const canReadScenario = useCan('workflow:read')
   const canReview = useCan('map:review')
-  const canWriteSchedule = useCan('schedule:write')
-  const canReadSchedule = useCan('schedule:read')
-  const canSchedule = canWriteSchedule && canReadSchedule
-  const [kind, setKind] = useState<'term' | 'proposal' | 'map_refresh'>(
-    candidate.kind === 'map_refresh_suggestion'
-      ? 'map_refresh'
-      : candidate.kind === 'term'
-        ? 'term'
-        : 'proposal'
+  const [kind, setKind] = useState<'term' | 'proposal'>(
+    candidate.kind === 'term' ? 'term' : 'proposal'
   )
   const [replacing, setReplacing] = useState(false)
   const [reason, setReason] = useState('')
@@ -159,11 +151,6 @@ export function CandidateReviewDialog({
                     场景知识建议
                   </SelectFieldOption>
                   <SelectFieldOption value='term'>业务术语</SelectFieldOption>
-                  {candidate.kind === 'map_refresh_suggestion' ? (
-                    <SelectFieldOption value='map_refresh'>
-                      知识地图采集计划
-                    </SelectFieldOption>
-                  ) : null}
                 </SelectField>
               </div>
               {kind === 'proposal' ? (
@@ -187,17 +174,6 @@ export function CandidateReviewDialog({
                   />
                 ) : (
                   <p>需要地图审阅权限才能保存术语。</p>
-                )
-              ) : null}
-              {kind === 'map_refresh' ? (
-                canSchedule ? (
-                  <RefreshCandidate
-                    targetId={targetId}
-                    busy={review.isPending}
-                    submit={(action) => review.mutate(action)}
-                  />
-                ) : (
-                  <p>需要调度读写权限才能关联知识地图采集计划。</p>
                 )
               ) : null}
               {canReview ? (
@@ -242,15 +218,6 @@ export function CandidateReviewDialog({
               termId={destination.termId}
               canReview={canReview}
             />
-          ) : null}
-          {!pending && destination?.kind === 'map_refresh' ? (
-            <p>
-              已关联知识地图采集计划 r{destination.revision}
-              。关联不会启用或执行计划，也不表示地图已完成核验。
-              <a className='ml-2 text-link underline' href='/schedules'>
-                前往定时任务
-              </a>
-            </p>
           ) : null}
           {destination?.kind === 'reject' ? (
             <p>拒绝原因：{destination.reason}</p>
@@ -564,106 +531,6 @@ function TermCandidate({
         }
       >
         确认并保存术语
-      </Button>
-    </div>
-  )
-}
-
-function RefreshCandidate({
-  targetId,
-  busy,
-  submit,
-}: {
-  targetId: string
-  busy: boolean
-  submit: Submit
-}) {
-  const [pages, setPages] = useState<(string | undefined)[]>([undefined])
-  const [planId, setPlanId] = useState('')
-  const cursor = pages[pages.length - 1]
-  const query = useQuery({
-    queryKey: ['schedules', 'candidate-refresh', targetId, cursor],
-    queryFn: () =>
-      fetchSchedules({
-        targetId,
-        consumerKey: 'map_refresh',
-        limit: 20,
-        cursor,
-      }),
-  })
-  const plan = query.data?.items.find((item) => item.scheduleId === planId)
-  return (
-    <div className='grid gap-3'>
-      <p>
-        先在目标知识页检查建议资产并配置采集与核验范围，再关联负责处理的计划。
-      </p>
-      <a
-        className='text-link underline'
-        target='_blank'
-        rel='noreferrer'
-        href={`/targets/${targetId}/map`}
-      >
-        打开目标知识与知识地图采集配置
-      </a>
-      <Label htmlFor='candidate-refresh-plan'>关联知识地图采集计划</Label>
-      <SelectField
-        id='candidate-refresh-plan'
-        value={planId}
-        disabled={busy || query.isPending}
-        onValueChange={(value) => setPlanId(value)}
-      >
-        <SelectFieldOption value=''>选择计划</SelectFieldOption>
-        {query.data?.items.map((item) => (
-          <SelectFieldOption key={item.scheduleId} value={item.scheduleId}>
-            {item.name} · {item.enabled ? '已启用' : '已停用'}
-          </SelectFieldOption>
-        ))}
-      </SelectField>
-      {query.isError ? <p role='alert'>{query.error.message}</p> : null}
-      <div className='flex flex-wrap gap-2'>
-        <Button
-          variant='outline'
-          disabled={busy}
-          onClick={() => void query.refetch()}
-        >
-          刷新计划
-        </Button>
-        <Button
-          variant='outline'
-          disabled={busy || pages.length === 1}
-          onClick={() => {
-            setPlanId('')
-            setPages((value) => value.slice(0, -1))
-          }}
-        >
-          上一页
-        </Button>
-        <Button
-          variant='outline'
-          disabled={busy || !query.data?.nextCursor}
-          onClick={() => {
-            setPlanId('')
-            setPages((value) => [...value, query.data!.nextCursor])
-          }}
-        >
-          下一页
-        </Button>
-      </div>
-      <p className='text-label text-muted-foreground'>
-        关联仅记录处理去向，不会自动启用计划或发布地图。
-      </p>
-      <Button
-        disabled={busy || !plan}
-        onClick={() => {
-          if (plan)
-            submit({
-              kind: 'map_refresh',
-              scheduleId: planId,
-              expectedScheduleRevision: plan.revision,
-            })
-        }}
-      >
-        记录采集计划
       </Button>
     </div>
   )

@@ -11,7 +11,6 @@ import { recordAudit } from '../audit/record.js'
 import { assertTargetPermission, lockConsoleAuthorization, targetScopeFor } from '../console/target-authorization.js'
 import { appendJobEvent, assertAnalysisAccess, getAnalysisJob } from '../analysis/jobs.js'
 import { requireLiveTarget } from '../map/view.js'
-import { getSchedule } from '../schedules/schedules.js'
 import { completeKnowledgeProposal, startKnowledgeProposal } from './proposals.js'
 import { createTerminology, getTerminology, updateTerminology } from './terms.js'
 import { validateKnowledgeSources } from './sources.js'
@@ -28,7 +27,7 @@ export async function reviewAnalysisCandidate(db: Db, candidateId: string, input
     if (!job || job.status !== 'SUCCEEDED') throw conflict('ANALYSIS_NOT_COMPLETE', '分析尚未完成')
     await requireLiveTarget(tx, candidate.targetId)
     await assertAnalysisAccess(tx, actor.id, candidate.targetId, job.mode)
-    await assertTargetPermission(tx, actor.id, candidate.targetId, body.kind === 'proposal' ? 'workflow:write' : body.kind === 'map_refresh' ? 'schedule:write' : 'map:review')
+    await assertTargetPermission(tx, actor.id, candidate.targetId, body.kind === 'proposal' ? 'workflow:write' : 'map:review')
     await assertTargetPermission(tx, actor.id, candidate.targetId, 'map:read')
     const commandKey = `candidate:${candidateId}:${body.idempotencyKey}`
     const [previous] = await tx.select().from(analysisCommands).where(eq(analysisCommands.commandKey, commandKey)).limit(1)
@@ -77,12 +76,6 @@ export async function reviewAnalysisCandidate(db: Db, candidateId: string, input
       const term = body.existingTerm ? await updateTerminology(tx, candidate.targetId, body.existingTerm.termId, { ...content, expectedRevision: body.existingTerm.expectedRevision }, actor)
         : await createTerminology(tx, candidate.targetId, { ...content, idempotencyKey: `analysis:${candidateId}` }, actor)
       destination = { kind: 'term', termId: term.termId, revision: term.revision }
-    } else if (body.kind === 'map_refresh') {
-      if (candidate.kind !== 'map_refresh_suggestion') throw badRequest('KNOWLEDGE_INVALID_PROPOSAL', '只有地图复查建议可关联知识地图采集计划')
-      const plan = await getSchedule(tx, body.scheduleId, actor.id)
-      if (plan.targetId !== candidate.targetId || plan.consumerKey !== 'map_refresh') throw badRequest('KNOWLEDGE_INVALID_PROPOSAL', '请选择同一目标系统的知识地图采集计划')
-      if (plan.revision !== body.expectedScheduleRevision) throw conflict('KNOWLEDGE_REVISION_CONFLICT', '调度已更新，请重新检查复查范围')
-      destination = { kind: 'map_refresh', scheduleId: plan.scheduleId, revision: plan.revision }
     } else {
       destination = { kind: 'reject', reason: body.reason }
     }

@@ -15,12 +15,10 @@ export const SCHEDULE_INTERVAL_MAX_MS = 30 * 24 * 60 * 60 * 1000
 
 export const SCHEDULE_CONSUMER_SCENARIO_RUN = 'scenario_run' as const
 export const SCHEDULE_CONSUMER_SUITE_RUN = 'suite_run' as const
-export const SCHEDULE_CONSUMER_MAP_REFRESH = 'map_refresh' as const
 export const SCHEDULE_CONSUMER_KNOWLEDGE_ANALYSIS = 'knowledge_analysis' as const
 export const SCHEDULE_CONSUMER_TYPES = [
   SCHEDULE_CONSUMER_SCENARIO_RUN,
   SCHEDULE_CONSUMER_SUITE_RUN,
-  SCHEDULE_CONSUMER_MAP_REFRESH,
   SCHEDULE_CONSUMER_KNOWLEDGE_ANALYSIS,
 ] as const
 export type ScheduleConsumerType = (typeof SCHEDULE_CONSUMER_TYPES)[number]
@@ -200,15 +198,6 @@ export const suiteRunScheduleConsumerSchema = z.strictObject({
 })
 export type SuiteRunScheduleConsumer = z.infer<typeof suiteRunScheduleConsumerSchema>
 
-export const mapRefreshScheduleConsumerSchema = z.strictObject({
-  type: z.literal(SCHEDULE_CONSUMER_MAP_REFRESH),
-  targetId: entityIdSchema,
-  targetAccountId: entityIdSchema,
-  entryId: entityIdSchema,
-  selectedAssetRefs: z.array(mapAssetRefSchema).max(32).default([]),
-})
-export type MapRefreshScheduleConsumer = z.infer<typeof mapRefreshScheduleConsumerSchema>
-
 export const analysisSourceScopeSchema = z.strictObject({
   scenarioIds: z.array(entityIdSchema).max(32).optional(),
   suiteIds: z.array(entityIdSchema).max(32).optional(),
@@ -236,7 +225,6 @@ export type KnowledgeAnalysisScheduleConsumer = z.infer<typeof knowledgeAnalysis
 export const scheduleConsumerSchema = z.discriminatedUnion('type', [
   scenarioRunScheduleConsumerSchema,
   suiteRunScheduleConsumerSchema,
-  mapRefreshScheduleConsumerSchema,
   knowledgeAnalysisScheduleConsumerSchema,
 ])
 export type ScheduleConsumer = z.infer<typeof scheduleConsumerSchema>
@@ -563,7 +551,6 @@ export function scheduledAnalysisCommandKey(occurrenceId: string): string {
 }
 
 export function scheduleIdentityGuard(consumer: ScheduleConsumer): string | null {
-  if (consumer.type === SCHEDULE_CONSUMER_MAP_REFRESH) return `map_refresh:${consumer.targetAccountId}`
   if (consumer.type === SCHEDULE_CONSUMER_KNOWLEDGE_ANALYSIS) {
     const digest = [
       consumer.mode,
@@ -576,13 +563,8 @@ export function scheduleIdentityGuard(consumer: ScheduleConsumer): string | null
 }
 
 export function consumerTargetAccountId(consumer: ScheduleConsumer): string | null {
-  if (consumer.type === SCHEDULE_CONSUMER_MAP_REFRESH) return consumer.targetAccountId
   if (consumer.type === SCHEDULE_CONSUMER_SCENARIO_RUN) return consumer.accountBinding.targetAccountId ?? null
   return null
-}
-
-export function isMapRefreshConsumer(consumer: ScheduleConsumer): consumer is MapRefreshScheduleConsumer {
-  return consumer.type === SCHEDULE_CONSUMER_MAP_REFRESH
 }
 
 export function calendarWindowsOf(definition: ScheduleDefinition): CalendarWindow[] {
@@ -856,7 +838,6 @@ export function timeRuleFromPreviewQuery(query: SchedulePreviewQuery): ScheduleT
 export const SCHEDULE_CONSUMER_LABELS: Record<ScheduleConsumerType, string> = {
   scenario_run: '场景执行',
   suite_run: '场景集执行',
-  map_refresh: '知识地图采集',
   knowledge_analysis: '知识分析',
 }
 

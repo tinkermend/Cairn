@@ -13,7 +13,6 @@ import { AI_PORT, BROWSER_PORT, type AiPort, type BrowserPort } from './engine/p
 import { BrowserStepExecutor } from './engine/browser-executor'
 import { FixtureStepExecutor } from './engine/fixture-executor'
 import { AiStepExecutor } from './engine/ai-executor'
-import { MapExploreExecutor } from './engine/explore-executor'
 import { STEP_EXECUTOR_REGISTRY, StepExecutorRegistry } from './engine/step-executor'
 import { ObjectsModule } from './objects/objects.module'
 import { ObjectService } from './objects/object.service'
@@ -74,7 +73,6 @@ import { createAiPort } from './ai/port'
         const executors = [
           new FixtureStepExecutor(),
           new BrowserStepExecutor(handle, browser, ai, undefined, objects),
-          new MapExploreExecutor(browser, handle),
         ]
         if (ai) executors.push(new AiStepExecutor(ai))
         return new StepExecutorRegistry(executors)

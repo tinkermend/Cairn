@@ -27,7 +27,6 @@ import {
   listMapReferenceScanWork,
   removeMapScenarioBinding,
   listMapAssets,
-  listMapJobCandidateAssets,
   loadMapQueryView,
   loadMapImpactSource,
   listMapReferences,
@@ -880,9 +879,6 @@ describe.each(DRIVERS)('%s 地图查询与治理', { timeout: 60_000 }, (driver)
     const firstPage = await listMapAssets(handle.db, targetId, 'objects', mapListQuerySchema.parse({ limit: 50 }))
     expect(firstPage.items).toHaveLength(50)
     expect(firstPage.nextCursor).toBeTruthy()
-    const candidates = await listMapJobCandidateAssets(handle.db, targetId)
-    expect(candidates).toHaveLength(60)
-    expect(new Set(candidates.map((item) => item.assetRefKey))).toEqual(keys)
     const summary = await getMapSummary(handle.db, targetId, mapListQuerySchema.parse({}))
     expect(summary.objectCount).toBe(60)
     expect(summary.pageCount).toBe(60)

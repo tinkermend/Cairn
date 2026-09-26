@@ -4,7 +4,7 @@ import { authoringSteps, isAuthoringDocumentV2, scenarioDocumentDigest, scenario
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { insertRows, schemaFor } from '../native.js'
 import { newId } from '../id.js'
-import { acceptKnowledgeProposal, createMapSafeEntry, createScenarioWithVersion, createTerminology, getAnalysisJob, getKnowledgeProposal, getScenario, getTerminology,
+import { acceptKnowledgeProposal, createScenarioWithVersion, createTerminology, getAnalysisJob, getKnowledgeProposal, getScenario, getTerminology,
   listSchedules, reviewAnalysisCandidate, saveScenarioDraft, updateTerminology, validateKnowledgeSources, writeSchedule, type NativeHandle } from '../test-entry.js'
 
 describe.each(DRIVERS)('%s 分析候选人工采纳', { timeout: 60_000 }, driver => {
@@ -138,19 +138,4 @@ describe.each(DRIVERS)('%s 分析候选人工采纳', { timeout: 60_000 }, drive
     expect(updated.schedule.scheduleId).toBe(plan.schedule.scheduleId)
   })
 
-  it('地图建议关联同目标当前修订，不启用计划或产生验证事实', async () => {
-    const f = await fixture()
-    const { analysisCandidates, targetAccounts } = schemaFor(handle.db)
-    await handle.db.update(analysisCandidates).set({ kind: 'map_refresh_suggestion' }).where(eq(analysisCandidates.id, f.candidateId))
-    const accountId = newId()
-    await insertRows(handle.db, targetAccounts, { id: accountId, targetId: f.targetId, displayName: '地图账号', username: 'map-review', status: 'active', usage: 'both', mapUsageGuard: 'Y' })
-    const entry = await createMapSafeEntry(handle.db, f.targetId, { idempotencyKey: newId(), name: '安全入口', url: 'https://example.com/orders', arrivalName: '订单标题', arrivalTarget: { framePath: [], candidates: [{ by: 'role', value: 'heading', name: '订单' }] }, safetyBasisKind: 'confirmed_path', summary: '只读路径', jobKinds: ['map_refresh'] }, actor())
-    const plan = await writeSchedule(handle.db, { expectedRevision: 0, idempotencyKey: newId(), definition: { timezone: 'UTC', weekdays: [1], windowStart: '02:00', windowEnd: '03:00', misfire: 'skip', consumer: { type: 'map_refresh', targetId: f.targetId, targetAccountId: accountId, entryId: entry.entryId } } }, actor())
-    const body = { kind: 'map_refresh' as const, idempotencyKey: newId(), expectedRevision: 1, scheduleId: plan.schedule.scheduleId, expectedScheduleRevision: 9 }
-    await expect(reviewAnalysisCandidate(handle.db, f.candidateId, body, actor())).rejects.toMatchObject({ code: 'KNOWLEDGE_REVISION_CONFLICT' })
-    const result = await reviewAnalysisCandidate(handle.db, f.candidateId, { ...body, expectedScheduleRevision: plan.schedule.revision }, actor())
-    expect(result.candidates![0].status).toBe('proposed')
-    expect(result.candidates![0].review!.destination).toEqual({ kind: 'map_refresh', scheduleId: plan.schedule.scheduleId, revision: plan.schedule.revision })
-    expect((await listSchedules(handle.db, { targetId: f.targetId, limit: 20 }, actorId)).items[0].enabled).toBe(false)
-  })
 })

@@ -24,20 +24,7 @@ import {
   mapConsumptionPolicyUpdateBodySchema,
   mapJobPolicyDtoSchema,
   mapJobPolicyUpdateBodySchema,
-  mapSafeEntryCreateBodySchema,
-  mapSafeEntryUpdateBodySchema,
-  mapSafeEntryArchiveBodySchema,
-  mapSafeEntryDtoSchema,
-  mapSafeEntryListResponseSchema,
-  mapJobPreviewRequestSchema,
-  mapJobPreviewResponseSchema,
-  mapJobCreateBodySchema,
-  mapJobCreateResponseSchema,
   mapJobDtoSchema,
-  explorationPolicyDtoSchema,
-  explorationPolicyUpdateBodySchema,
-  explorationPreviewRequestSchema,
-  explorationCreateBodySchema,
   mapSummaryResponseSchema,
   mapAtlasPagesResponseSchema,
   createTerminologyBodySchema,
@@ -74,19 +61,7 @@ import {
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyDto,
   type MapJobPolicyUpdateBody,
-  type MapSafeEntryCreateBody,
-  type MapSafeEntryUpdateBody,
-  type MapSafeEntryArchiveBody,
-  type MapSafeEntryDto,
-  type MapJobPreviewRequest,
-  type MapJobPreviewResponse,
-  type MapJobCreateBody,
-  type MapJobCreateResponse,
   type MapJobDto,
-  type ExplorationPolicyDto,
-  type ExplorationPolicyUpdateBody,
-  type ExplorationPreviewRequest,
-  type ExplorationCreateBody,
   type MapSummaryResponse,
   type CreateTerminologyBody,
   type RetireTerminologyBody,
@@ -95,32 +70,7 @@ import {
   type TerminologyListResponse,
   type TerminologyMatchResponse,
   type UpdateTerminologyBody,
-  exploreDiscoverySchema,
-  exploreReviewSchema,
-  exploreSourceStateRecipeSchema,
-  exploreTraversalSchema,
-  candidateReviewBodySchema,
-  candidateRunBodySchema,
-  stateRecipeCreateBodySchema,
-  stateRecipeReviewBodySchema,
-  reviewUnknownBodySchema,
-  type ExploreDiscovery,
-  type ExploreReview,
-  type ExploreSourceStateRecipe,
-  type ExploreTraversal,
-  type CandidateReviewBody,
-  type CandidateRunBody,
-  type StateRecipeCreateBody,
-  type StateRecipeReviewBody,
-  type ReviewUnknownBody,
 } from '@cairn/shared'
-export type {
-  ExploreDiscovery,
-  ExploreReview,
-  ExploreSourceStateRecipe,
-  ExploreTraversal,
-}
-import { z } from 'zod'
 import { apiFetch, toQueryString } from '@/lib/api-client'
 
 function mapQueryString(query?: Record<string, unknown>): string {
@@ -300,92 +250,6 @@ export function updateMapJobPolicy(targetId: string, body: MapJobPolicyUpdateBod
   })
 }
 
-export function fetchMapSafeEntries(targetId: string): Promise<{ items: MapSafeEntryDto[] }> {
-  return apiFetch(`/api/targets/${targetId}/map/safe-entries`, mapSafeEntryListResponseSchema)
-}
-
-export function createMapSafeEntry(targetId: string, body: MapSafeEntryCreateBody): Promise<MapSafeEntryDto> {
-  return apiFetch(`/api/targets/${targetId}/map/safe-entries`, mapSafeEntryDtoSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(mapSafeEntryCreateBodySchema.parse(body)),
-  })
-}
-
-export function updateMapSafeEntry(
-  targetId: string,
-  entryId: string,
-  body: MapSafeEntryUpdateBody,
-): Promise<MapSafeEntryDto> {
-  return apiFetch(`/api/targets/${targetId}/map/safe-entries/${entryId}/update`, mapSafeEntryDtoSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(mapSafeEntryUpdateBodySchema.parse(body)),
-  })
-}
-
-export function archiveMapSafeEntry(
-  targetId: string,
-  entryId: string,
-  body: MapSafeEntryArchiveBody,
-): Promise<MapSafeEntryDto> {
-  return apiFetch(`/api/targets/${targetId}/map/safe-entries/${entryId}/archive`, mapSafeEntryDtoSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(mapSafeEntryArchiveBodySchema.parse(body)),
-  })
-}
-
-export function previewMapJob(targetId: string, body: MapJobPreviewRequest): Promise<MapJobPreviewResponse> {
-  return apiFetch(`/api/targets/${targetId}/map/jobs/preview`, mapJobPreviewResponseSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(mapJobPreviewRequestSchema.parse(body)),
-  })
-}
-
-export function fetchExplorationPolicy(targetId: string): Promise<ExplorationPolicyDto> {
-  return apiFetch(`/api/targets/${targetId}/map/exploration-policy`, explorationPolicyDtoSchema)
-}
-
-export function updateExplorationPolicy(
-  targetId: string,
-  body: ExplorationPolicyUpdateBody,
-): Promise<ExplorationPolicyDto> {
-  return apiFetch(`/api/targets/${targetId}/map/exploration-policy`, explorationPolicyDtoSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(explorationPolicyUpdateBodySchema.parse(body)),
-  })
-}
-
-export function previewExploration(
-  targetId: string,
-  body: ExplorationPreviewRequest,
-): Promise<MapJobPreviewResponse> {
-  return apiFetch(`/api/targets/${targetId}/map/explorations/preview`, mapJobPreviewResponseSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(explorationPreviewRequestSchema.parse(body)),
-  })
-}
-
-export function createExploration(targetId: string, body: ExplorationCreateBody): Promise<MapJobCreateResponse> {
-  return apiFetch(`/api/targets/${targetId}/map/explorations`, mapJobCreateResponseSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(explorationCreateBodySchema.parse(body)),
-  })
-}
-
-export function createMapJob(targetId: string, body: MapJobCreateBody): Promise<MapJobCreateResponse> {
-  return apiFetch(`/api/targets/${targetId}/map/jobs`, mapJobCreateResponseSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(mapJobCreateBodySchema.parse(body)),
-  })
-}
-
 export function fetchMapJob(jobId: string): Promise<MapJobDto> {
   return apiFetch(`/api/map-jobs/${jobId}`, mapJobDtoSchema)
 }
@@ -421,74 +285,5 @@ export function retireMapTerm(targetId: string, termId: string, body: RetireTerm
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(retireTerminologyBodySchema.parse(body)),
-  })
-}
-
-export function fetchExploreCandidates(targetId: string, jobId: string) {
-  return apiFetch(`/api/targets/${targetId}/map/explorations/${jobId}/candidates`, z.object({
-    items: z.array(exploreDiscoverySchema),
-    totalGaps: z.number(),
-  }))
-}
-
-export function reviewExploreCandidate(
-  targetId: string,
-  jobId: string,
-  candidateId: string,
-  body: CandidateReviewBody,
-): Promise<ExploreReview> {
-  return apiFetch(`/api/targets/${targetId}/map/explorations/${jobId}/candidates/${candidateId}/review`, exploreReviewSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(candidateReviewBodySchema.parse(body)),
-  })
-}
-
-export function runExploreCandidate(
-  targetId: string,
-  jobId: string,
-  candidateId: string,
-  body: CandidateRunBody,
-): Promise<MapJobCreateResponse> {
-  return apiFetch(`/api/targets/${targetId}/map/explorations/${jobId}/candidates/${candidateId}/run`, mapJobCreateResponseSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(candidateRunBodySchema.parse(body)),
-  })
-}
-
-export function fetchExploreTraversals(targetId: string, jobId: string): Promise<ExploreTraversal[]> {
-  return apiFetch(`/api/targets/${targetId}/map/explorations/${jobId}/traversals`, z.array(exploreTraversalSchema))
-}
-
-export function reviewUnknownExploreJob(
-  targetId: string,
-  jobId: string,
-  body: ReviewUnknownBody,
-): Promise<{ jobId: string; status: string }> {
-  return apiFetch(`/api/targets/${targetId}/map/explorations/${jobId}/review-unknown`, z.object({ jobId: z.string(), status: z.string() }), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(reviewUnknownBodySchema.parse(body)),
-  })
-}
-
-export function fetchStateRecipes(targetId: string): Promise<ExploreSourceStateRecipe[]> {
-  return apiFetch(`/api/targets/${targetId}/map/exploration/state-recipes`, z.array(exploreSourceStateRecipeSchema))
-}
-
-export function createStateRecipe(targetId: string, body: StateRecipeCreateBody): Promise<ExploreSourceStateRecipe> {
-  return apiFetch(`/api/targets/${targetId}/map/exploration/state-recipes`, exploreSourceStateRecipeSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(stateRecipeCreateBodySchema.parse(body)),
-  })
-}
-
-export function reviewStateRecipe(targetId: string, recipeId: string, body: StateRecipeReviewBody): Promise<ExploreSourceStateRecipe> {
-  return apiFetch(`/api/targets/${targetId}/map/exploration/state-recipes/${recipeId}/review`, exploreSourceStateRecipeSchema, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(stateRecipeReviewBodySchema.parse(body)),
   })
 }

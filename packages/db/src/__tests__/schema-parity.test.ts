@@ -713,7 +713,6 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'module_version_id→action_module_versions',
       'accepted_module_version_id→action_module_versions',
       'actor_id→console_accounts',
-      'entry_id→map_safe_entries',
       'job_id→map_jobs',
       'current_version_id→schedule_versions',
       'authorized_actor_id→console_accounts',

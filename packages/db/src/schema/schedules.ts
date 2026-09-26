@@ -1,6 +1,5 @@
 import { index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import type {
-  MapRefreshScheduleConsumer,
   ScheduleAdmissionStatus,
   ScheduleConsumer,
   ScheduleOccurrenceSource,
@@ -58,7 +57,7 @@ export const scheduleVersions = cairnSchema.table(
     windowEnd: text('window_end').notNull(),
     misfire: text('misfire').notNull(),
     timeRule: jsonb('time_rule').$type<ScheduleTimeRule>(),
-    consumer: jsonb('consumer').$type<ScheduleConsumer | MapRefreshScheduleConsumer>().notNull(),
+    consumer: jsonb('consumer').$type<ScheduleConsumer>().notNull(),
     effectiveAt: timestamp('effective_at', { withTimezone: true }),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
     authorizedActorId: uuid('authorized_actor_id').notNull(),
