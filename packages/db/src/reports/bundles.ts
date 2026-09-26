@@ -1,5 +1,5 @@
 import { and, asc, eq } from 'drizzle-orm'
-import { createReportBundleBodySchema, deriveMemberReportBodySchema, reportConfigSchema, REPORT_RENDER_VERSION, REPORT_TEMPLATE_VERSION, type CreateReportBundleBody, type DeriveMemberReportBody, type JsonValue } from '@cairn/shared'
+import { createReportBundleBodySchema, deriveMemberReportBodySchema, reportConfigSchema, REPORT_RENDER_VERSION, REPORT_TEMPLATE_VERSION, type CreateReportBundleBody, type DeriveMemberReportBody, type JsonValue, type ReportFormat } from '@cairn/shared'
 import type { Db } from '../client.js'
 import type { AuditActor } from '../audit/record.js'
 import { recordAudit } from '../audit/record.js'
@@ -10,6 +10,25 @@ import { sha256Hex } from '../runs/digest.js'
 import { badRequest, conflict, notFound } from '../runs/errors.js'
 import { buildDocument, enqueueReportExport, getCachedReportArtifacts, getExportJob, getReport, guardExportJob, insertExportJob, loadReportRevisionDocument, reportTitle, type ExportGrant } from './reports.js'
 import { sealReportMaterials } from './materials.js'
+
+function memberTitle(config: ReturnType<typeof reportConfigSchema.parse>, targetId: string, defaults: ReturnType<typeof reportConfigSchema.parse>, source: Record<string, JsonValue>, member: Record<string, JsonValue>) {
+  return reportTitle(config, { targetId, defaults, payload: source, terminal: true, evidencePending: source.evidenceStatus === 'PENDING', titleVars: { systemName: String(source.targetName ?? ''), scenarioName: String(member.displayName ?? source.scenarioName ?? ''), runNumber: String(source.runId).slice(0, 8) } })
+}
+
+export async function previewMemberReport(db: Db, parentRevisionId: string, body: DeriveMemberReportBody, actorId: string) {
+  const input = deriveMemberReportBodySchema.parse(body)
+  const loaded = await loadReportRevisionDocument(db, parentRevisionId, actorId)
+  await assertTargetPermission(db, actorId, loaded.report.targetId, 'report:read')
+  const parent = loaded.revision
+  if (!parent.sealedAt || !parent.document || parent.document.source.kind !== 'SUITE_RUN') throw badRequest('REPORT_NOT_READY', '请先封存集合总报告材料')
+  const member = (parent.document.source.items as Array<Record<string, JsonValue>>).find((item) => item.memberId === input.memberId)
+  if (!member?.run || typeof member.run !== 'object' || Array.isArray(member.run)) throw notFound('REPORT_MEMBER_NOT_FOUND', '成员不属于该总报告修订')
+  if (input.config && ['logoArtifactId', 'screenshotScope', 'selectedEvidenceIds'].some((key) => key in input.config!)) throw badRequest('REPORT_MATERIAL_FROZEN', '派生子报告复用总报告已封存的材料')
+  const source = member.run as Record<string, JsonValue>
+  const defaults = reportConfigSchema.parse(source.reportDefaults ?? {})
+  const config = reportConfigSchema.parse({ ...defaults, ...input.config, ...(input.config?.title !== undefined ? { titleSyntaxVersion: 2 } : {}) })
+  return { title: memberTitle(config, loaded.report.targetId, defaults, source, member) }
+}
 
 export async function deriveMemberReport(db: Db, parentRevisionId: string, body: DeriveMemberReportBody, actor: AuditActor) {
   const input = deriveMemberReportBodySchema.parse(body)
@@ -33,8 +52,8 @@ export async function deriveMemberReport(db: Db, parentRevisionId: string, body:
     if (input.config && ['logoArtifactId', 'screenshotScope', 'selectedEvidenceIds'].some((key) => key in input.config!)) throw badRequest('REPORT_MATERIAL_FROZEN', '派生子报告复用总报告已封存的材料；单独选图请从子运行创建报告')
     const materials = (await tx.select().from(reportRevisionMaterials).where(eq(reportRevisionMaterials.revisionId, parent.id)).orderBy(asc(reportRevisionMaterials.id))).filter((item) => item.kind === 'logo' || item.runId === source.runId)
     const defaults = reportConfigSchema.parse(source.reportDefaults ?? {})
-    const config = reportConfigSchema.parse({ ...defaults, ...input.config, logoArtifactId: parent.config.logoArtifactId, screenshotScope: parent.config.screenshotScope, selectedEvidenceIds: materials.flatMap((item) => item.evidenceId ? [item.evidenceId] : []) })
-    const title = reportTitle(config, { targetId: loaded.report.targetId, defaults, payload: source, terminal: true, evidencePending: source.evidenceStatus === 'PENDING', titleVars: { systemName: String(source.targetName ?? ''), scenarioName: String(member.displayName ?? source.scenarioName ?? ''), runNumber: String(source.runId).slice(0, 8) } })
+    const config = reportConfigSchema.parse({ ...defaults, ...input.config, ...(input.config?.title !== undefined ? { titleSyntaxVersion: 2 } : {}), logoArtifactId: parent.config.logoArtifactId, screenshotScope: parent.config.screenshotScope, selectedEvidenceIds: materials.flatMap((item) => item.evidenceId ? [item.evidenceId] : []) })
+    const title = memberTitle(config, loaded.report.targetId, defaults, source, member)
     const reportId = newId(), revisionId = newId(), snapshotId = newId()
     await tx.insert(reports).values({ id: reportId, targetId: loaded.report.targetId, subjectKind: 'RUN', runId: String(source.runId), createdByConsoleAccountId: actor.id, idempotencyKey: input.idempotencyKey, requestDigest: digest })
     await tx.insert(reportSourceSnapshots).values({ id: snapshotId, reportId, payload: source, digest: sha256Hex(source), capturedAt: new Date(parent.document.asOf) })
@@ -90,9 +109,9 @@ export async function getReportBundleFiles(db: Db, grant: ExportGrant) {
   const entries = job.sourceManifest.entries as Array<{ reportId: string; revisionId: string; name: string; jobId: string; source?: Record<string, JsonValue> }>
   const result = []
   for (const entry of entries) {
-    await getReport(db, entry.reportId, job.createdByConsoleAccountId)
-    const dependency = await getExportJob(db, entry.jobId, job.createdByConsoleAccountId)
-    const files = await getCachedReportArtifacts(db, entry.revisionId, job.sourceManifest.formats as Array<'docx' | 'pdf'>, job.createdByConsoleAccountId)
+    await getReport(db, entry.reportId, job.createdByConsoleAccountId ?? undefined)
+    const dependency = await getExportJob(db, entry.jobId, job.createdByConsoleAccountId ?? undefined)
+    const files = await getCachedReportArtifacts(db, entry.revisionId, job.sourceManifest.formats as Array<ReportFormat>, job.createdByConsoleAccountId ?? undefined)
     result.push({ ...entry, files, error: dependency.error, status: dependency.status })
   }
   return { manifest: job.sourceManifest, entries: result }

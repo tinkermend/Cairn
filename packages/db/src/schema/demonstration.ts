@@ -1,8 +1,14 @@
 import { index, integer, jsonb, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
-import type { DemonstrationSource, ApplyDemonstrationBody } from '@cairn/shared'
-import { cairnSchema } from './console.js'
-import { recordingDrafts } from './authoring.js'
-import { runs, scenarioVersions } from './execution.js'
+import type {
+  DemonstrationSource,
+  ApplyDemonstrationBody,
+  DemonstrationDecision,
+  GeneralizationRound,
+  RecordingGeneralizationStatus,
+} from '@cairn/shared'
+import { cairnSchema, consoleAccounts } from './console.js'
+import { recordingDrafts, recordingImportReceipts } from './authoring.js'
+import { runs, scenarios, scenarioVersions } from './execution.js'
 import { newId } from '../id.js'
 
 export type DemonstrationReceiptMetadata = {
@@ -103,3 +109,41 @@ export const runValidationContexts = cairnSchema.table(
   },
   (t) => [index('run_validation_contexts_subject_idx').on(t.subjectDigest)],
 )
+
+export const recordingGeneralizations = cairnSchema.table(
+  'recording_generalizations',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    recordingDraftId: uuid('recording_draft_id')
+      .notNull()
+      .references(() => recordingDrafts.id, { onDelete: 'restrict' }),
+    revision: integer('revision').notNull().default(1),
+    status: text('status')
+      .$type<RecordingGeneralizationStatus>()
+      .notNull()
+      .default('editing'),
+    factDigest: text('fact_digest').notNull(),
+    suggestionDigest: text('suggestion_digest').notNull(),
+    adapterVersion: text('adapter_version').notNull(),
+    ruleVersion: text('rule_version').notNull(),
+    candidateDigest: text('candidate_digest').notNull(),
+    decisions: jsonb('decisions').$type<DemonstrationDecision[]>().notNull(),
+    rounds: jsonb('rounds').$type<GeneralizationRound[]>().notNull(),
+    handedOffScenarioId: uuid('handed_off_scenario_id').references(() => scenarios.id, { onDelete: 'set null' }),
+    handedOffReceiptId: uuid('handed_off_receipt_id').references(() => recordingImportReceipts.id, { onDelete: 'set null' }),
+    createdByConsoleAccountId: uuid('created_by_console_account_id')
+      .notNull()
+      .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('recording_generalizations_draft_unique').on(t.recordingDraftId),
+    index('recording_generalizations_draft_idx').on(t.recordingDraftId),
+    index('recording_generalizations_status_idx').on(t.status),
+    index('recording_generalizations_scenario_idx').on(t.handedOffScenarioId),
+  ],
+)
+export type RecordingGeneralizationRow = typeof recordingGeneralizations.$inferSelect
+export type NewRecordingGeneralizationRow = typeof recordingGeneralizations.$inferInsert
+

@@ -4,8 +4,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { and, eq, isNull } from 'drizzle-orm'
 import {
   MODULE_MANIFEST_PROTOCOL,
+  RESOLUTION_PROTOCOL,
+  LOCATOR_RESOLUTION_PROTOCOL,
   OUTCOME_MANIFEST_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
+  ALL_WORKER_ROLES,
+  protocolCapabilitiesForRoles,
   authoringSteps,
   walkAuthoringNodes,
   type ModuleContent,
@@ -244,6 +248,8 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       revision: 2,
       actor: { id: actorId },
     })
+    expect(publishedScenario.draftDirty).toBe(false)
+    expect((await getScenario(handle.db, scenario.id)).draftDirty).toBe(false)
     const pubVersion = publishedScenario.published!
     expect(pubVersion.versionNo).toBe(2)
     expect(pubVersion.moduleManifest?.entries).toHaveLength(1)
@@ -369,7 +375,7 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       capacity: 2,
       maxSessions: 2,
       lostAfterSeconds: 60,
-      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL],
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL, RESOLUTION_PROTOCOL, LOCATOR_RESOLUTION_PROTOCOL],
     })
 
     // 注册 Worker B：具备 MODULE_MANIFEST_PROTOCOL
@@ -381,7 +387,7 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       capacity: 2,
       maxSessions: 2,
       lostAfterSeconds: 60,
-      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, MODULE_MANIFEST_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL],
+      protocolCapabilities: [SESSION_OCCUPANCY_PROTOCOL, MODULE_MANIFEST_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL, RESOLUTION_PROTOCOL, LOCATOR_RESOLUTION_PROTOCOL],
     })
 
     // Worker A 领不到带有 moduleManifest 的 Run
@@ -399,6 +405,58 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       leaseTtlSeconds: 30,
     })
     expect(claimB?.runId).toBe(runResult.detail.id)
+  })
+
+  it('新版定位快照只交给声明了 v2 定位协议的 Worker', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '定位协议闸门场景',
+      steps: [{
+        id: newId(), name: '打开查询', type: 'click', effectType: 'IDEMPOTENT',
+        input: { target: { semantic: '查询入口', candidates: [{ by: 'text', value: '查询' }] } },
+        policy: { locatorPlan: { v: 2, order: ['rule'] } },
+      }],
+      actor: { id: actorId },
+    })
+    const run = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      scenarioVersionId: scenario.published!.versionId,
+      actor: { id: actorId },
+    })
+    expect(run.detail.snapshot.resolution?.protocol).toBe(LOCATOR_RESOLUTION_PROTOCOL)
+
+    const capabilities = protocolCapabilitiesForRoles(ALL_WORKER_ROLES)
+    const oldWorkerId = newId()
+    const oldInstanceId = newId()
+    await registerWorker(handle.db, {
+      workerId: oldWorkerId,
+      instanceId: oldInstanceId,
+      capacity: 1,
+      maxSessions: 1,
+      lostAfterSeconds: 60,
+      protocolCapabilities: capabilities.filter((protocol) => protocol !== LOCATOR_RESOLUTION_PROTOCOL),
+    })
+    expect(await claimRun(handle, {
+      workerId: oldWorkerId,
+      instanceId: oldInstanceId,
+      leaseTtlSeconds: 30,
+    })).toBeNull()
+
+    const newWorkerId = newId()
+    const newInstanceId = newId()
+    await registerWorker(handle.db, {
+      workerId: newWorkerId,
+      instanceId: newInstanceId,
+      capacity: 1,
+      maxSessions: 1,
+      lostAfterSeconds: 60,
+      protocolCapabilities: capabilities,
+    })
+    expect((await claimRun(handle, {
+      workerId: newWorkerId,
+      instanceId: newInstanceId,
+      leaseTtlSeconds: 30,
+    }))?.runId).toBe(run.detail.id)
   })
 
   it('模块验证场景隔离与内联展开', async () => {

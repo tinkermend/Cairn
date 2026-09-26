@@ -657,6 +657,46 @@ describe.each(DRIVERS)('%s 执行账本 Repository（集成）', { timeout: 30_0
     expect(shot?.payload).toBeUndefined()
   })
 
+  it('finishAttempt 成功时保留执行器带出的定位诊断（AI 档救活的补丁提案）', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: 'AI 救活证据',
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    const started = await startAttempt(handle.db, {
+      runId: created.detail.id,
+      stepRunId: created.detail.stepRuns[0]!.id,
+      inputPayload: 'hello',
+      grant,
+    })
+    const diagnostics = {
+      outcome: 'FOUND' as const,
+      candidatesTried: [],
+      resolvedVia: 'ai' as const,
+      suggestedCandidate: { by: 'testId' as const, value: 'search-btn' },
+      suggestedPatch: { kind: 'ADD_CANDIDATE' as const, suggestedCandidate: { by: 'testId' as const, value: 'search-btn' } },
+    }
+    await finishAttempt(handle.db, {
+      runId: created.detail.id,
+      attemptId: started!.attemptId,
+      attemptStatus: 'SUCCEEDED',
+      output: {},
+      diagnostics,
+      stepRunStatus: 'SUCCEEDED',
+      runStatus: 'SUCCEEDED',
+      grant,
+    })
+    const evidence = await listRunEvidence(handle.db, created.detail.id)
+    expect(evidence.items.find((item) => item.type === 'log')?.payload).toEqual(diagnostics)
+  })
+
   it('finishAttempt 把空 Trace 的 capture_failed 落成 missing 行', async () => {
     const scenario = await createScenarioWithVersion(handle.db, {
       targetId,

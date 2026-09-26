@@ -50,7 +50,7 @@ function preferSameRoleShots(items: EvidenceRef[]): EvidenceRef[] {
   return [...passthrough, ...picked]
 }
 
-export async function prepareReportMaterials(db: Db, input: { reportId: string; revisionId: string; targetId: string; source: Record<string, JsonValue>; config: ReportConfig; actorId: string }) {
+export async function prepareReportMaterials(db: Db, input: { reportId: string; revisionId: string; targetId: string; source: Record<string, JsonValue>; config: ReportConfig; actorId?: string; serviceCallerId?: string }) {
   const { reportRevisionMaterials, evidences, storedObjects, artifacts } = schemaFor(db)
   const all = reportScreenshotRefs(input.source)
   const selectedIds = new Set(input.config.selectedEvidenceIds ?? [])
@@ -76,7 +76,7 @@ export async function prepareReportMaterials(db: Db, input: { reportId: string; 
     await db.insert(reportRevisionMaterials).values({ id: newId(), revisionId: input.revisionId, kind: 'logo', sourceArtifactId: input.config.logoArtifactId, sourceObjectId: source?.object.id ?? null, sourceDigest: source?.object.digest ?? null, caption: '组织标识', status: available ? 'pending' : 'missing', missingReason: available ? null : 'Logo 已不可用' })
   }
   if (totalBytes > REPORT_LIMITS.materialBytes) throw badRequest('REPORT_MATERIAL_LIMIT', '报告材料超过 512 MiB，请减少所选截图')
-  if (pending) await insertExportJob(db, { kind: 'report_materialize', reportId: input.reportId, revisionId: input.revisionId, targetId: input.targetId, actorId: input.actorId, key: `materials:${input.revisionId}`, manifest: { revisionId: input.revisionId } })
+  if (pending) await insertExportJob(db, { kind: 'report_materialize', reportId: input.reportId, revisionId: input.revisionId, targetId: input.targetId, actorId: input.actorId, serviceCallerId: input.serviceCallerId, key: `materials:${input.revisionId}`, manifest: { revisionId: input.revisionId } })
   else await sealReportMaterials(db, input.revisionId)
 }
 
@@ -108,11 +108,11 @@ export async function getExportMaterials(db: Db, grant: ExportGrant) {
   return result
 }
 
-export async function reserveExportArtifact(db: Db, grant: ExportGrant, input: { kind: 'report_material' | 'report_docx' | 'report_pdf' | 'report_bundle'; fileName: string; contentType: string }) {
+export async function reserveExportArtifact(db: Db, grant: ExportGrant, input: { kind: 'report_material' | 'report_html' | 'report_bundle'; fileName: string; contentType: string }) {
   return atomic(db, async (tx) => {
     const job = await guardExportJob(tx, grant, true)
     const retainUntil = new Date(Date.now() + (input.kind === 'report_bundle' ? REPORT_LIMITS.bundleRetentionHours * 3_600_000 : REPORT_LIMITS.retentionDays * 86_400_000))
-    return createArtifact(tx, { ...input, targetId: job.targetId, actorId: job.createdByConsoleAccountId, exportJobId: job.id, reportRevisionId: job.reportRevisionId!, retainUntil })
+    return createArtifact(tx, { ...input, targetId: job.targetId, actorId: job.createdByConsoleAccountId ?? undefined, serviceCallerId: job.serviceCallerId ?? undefined, exportJobId: job.id, reportRevisionId: job.reportRevisionId!, retainUntil })
   })
 }
 

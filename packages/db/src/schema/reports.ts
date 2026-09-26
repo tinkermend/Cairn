@@ -4,16 +4,20 @@ import type {
   ExportJobKind,
   ExportJobStatus,
   JsonValue,
+  OutputPolicy,
   ReportConfig,
   ReportDocument,
   ReportScope,
   ReportStage,
   ReportSubjectKind,
+  ReportTriggerStatus,
+  ReportFormat,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema, consoleAccounts } from './console.js'
 import { evidences, runs, scenarios } from './execution.js'
 import { storedObjects } from './objects.js'
+import { serviceCallers } from './service-access.js'
 import { suiteRuns } from './suites.js'
 import { targets } from './targets.js'
 
@@ -26,6 +30,7 @@ export const runReportContexts = cairnSchema.table('run_report_contexts', {
   reportConfig: jsonb('report_config').$type<ReportConfig>().notNull(),
   targetName: text('target_name'),
   configSources: jsonb('config_sources').$type<Record<string, JsonValue>>(),
+  outputPolicy: jsonb('output_policy').$type<OutputPolicy>(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -62,6 +67,7 @@ export const scenarioReportDefaults = cairnSchema.table('scenario_report_default
   scenarioId: uuid('scenario_id').primaryKey().references(() => scenarios.id, { onDelete: 'restrict' }),
   profileId: uuid('profile_id').references(() => reportProfiles.id, { onDelete: 'restrict' }),
   revision: integer('revision').notNull(),
+  outputPolicy: jsonb('output_policy').$type<OutputPolicy>(),
 })
 
 export const artifacts = cairnSchema.table(
@@ -83,6 +89,7 @@ export const artifacts = cairnSchema.table(
       () => consoleAccounts.id,
       { onDelete: 'restrict' },
     ),
+    serviceCallerId: uuid('service_caller_id').references(() => serviceCallers.id, { onDelete: 'restrict' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('artifacts_target_idx').on(t.targetId, t.createdAt), index('artifacts_export_job_idx').on(t.exportJobId), index('artifacts_revision_idx').on(t.reportRevisionId)],
@@ -102,8 +109,8 @@ export const reports = cairnSchema.table(
     requestDigest: text('request_digest'),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdByConsoleAccountId: uuid('created_by_console_account_id')
-      .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
+    serviceCallerId: uuid('service_caller_id').references(() => serviceCallers.id, { onDelete: 'restrict' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -111,6 +118,7 @@ export const reports = cairnSchema.table(
     index('reports_suite_run_idx').on(t.suiteRunId, t.createdAt),
     index('reports_target_idx').on(t.targetId, t.createdAt),
     uniqueIndex('reports_idempotency_idx').on(t.createdByConsoleAccountId, t.idempotencyKey),
+    uniqueIndex('reports_idempotency_service_idx').on(t.serviceCallerId, t.idempotencyKey),
   ],
 )
 
@@ -133,6 +141,7 @@ export const reportRevisions = cairnSchema.table(
       .references(() => reports.id, { onDelete: 'restrict' }),
     revisionNo: integer('revision_no').notNull(),
     createdByConsoleAccountId: uuid('created_by_console_account_id').references(() => consoleAccounts.id, { onDelete: 'restrict' }),
+    serviceCallerId: uuid('service_caller_id').references(() => serviceCallers.id, { onDelete: 'restrict' }),
     idempotencyKey: text('idempotency_key'),
     requestDigest: text('request_digest'),
     stage: text('stage').notNull().$type<ReportStage>(),
@@ -155,6 +164,7 @@ export const reportRevisions = cairnSchema.table(
   (t) => [
     uniqueIndex('report_revisions_no_idx').on(t.reportId, t.revisionNo),
     uniqueIndex('report_revisions_idempotency_idx').on(t.createdByConsoleAccountId, t.idempotencyKey),
+    uniqueIndex('report_revisions_idempotency_service_idx').on(t.serviceCallerId, t.idempotencyKey),
   ],
 )
 
@@ -196,8 +206,8 @@ export const exportJobs = cairnSchema.table(
       onDelete: 'restrict',
     }),
     createdByConsoleAccountId: uuid('created_by_console_account_id')
-      .notNull()
       .references(() => consoleAccounts.id, { onDelete: 'restrict' }),
+    serviceCallerId: uuid('service_caller_id').references(() => serviceCallers.id, { onDelete: 'restrict' }),
     status: text('status').notNull().$type<ExportJobStatus>(),
     contentCompleteness: text('content_completeness'),
     sourceManifest: jsonb('source_manifest').$type<Record<string, JsonValue>>().notNull(),
@@ -216,6 +226,7 @@ export const exportJobs = cairnSchema.table(
   },
   (t) => [
     uniqueIndex('export_jobs_idempotency_idx').on(t.createdByConsoleAccountId, t.idempotencyKey),
+    uniqueIndex('export_jobs_idempotency_service_idx').on(t.serviceCallerId, t.idempotencyKey),
     index('export_jobs_revision_format_idx').on(t.reportRevisionId, t.kind, t.requestDigest),
     index('export_jobs_claim_idx').on(t.status, t.leaseUntil),
   ],
@@ -243,7 +254,7 @@ export const exportJobArtifacts = cairnSchema.table('export_job_artifacts', {
 export const reportRevisionOutputs = cairnSchema.table('report_revision_outputs', {
   id: uuid('id').primaryKey().$defaultFn(newId),
   revisionId: uuid('revision_id').notNull().references(() => reportRevisions.id, { onDelete: 'restrict' }),
-  format: text('format').notNull().$type<'docx' | 'pdf'>(),
+  format: text('format').notNull().$type<ReportFormat>(),
   renderVersion: text('render_version').notNull(),
   artifactId: uuid('artifact_id').notNull().references(() => artifacts.id, { onDelete: 'restrict' }),
 }, (t) => [uniqueIndex('report_revision_outputs_format_idx').on(t.revisionId, t.format, t.renderVersion)])
@@ -256,3 +267,19 @@ export const suiteReportTriggers = cairnSchema.table('suite_report_triggers', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index('suite_report_triggers_pending_idx').on(t.status, t.updatedAt)])
+
+export const reportTriggers = cairnSchema.table('report_triggers', {
+  id: uuid('id').primaryKey().$defaultFn(newId),
+  subjectKind: text('subject_kind').notNull().$type<ReportSubjectKind>(),
+  subjectId: uuid('subject_id').notNull(),
+  status: text('status').notNull().default('pending').$type<ReportTriggerStatus>(),
+  reportId: uuid('report_id').references(() => reports.id, { onDelete: 'restrict' }),
+  reason: text('reason'),
+  retryCount: integer('retry_count').notNull().default(0),
+  idempotencyKey: text('idempotency_key').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('report_triggers_subject_idx').on(t.subjectKind, t.subjectId),
+  index('report_triggers_pending_idx').on(t.status, t.updatedAt),
+])

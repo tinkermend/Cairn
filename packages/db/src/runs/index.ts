@@ -18,6 +18,7 @@ export {
   saveScenarioDraft,
   updateScenarioMeta,
   previewScenarioExpansion,
+  expandWithLoader,
   inlineScenarioModuleInvocation,
   getOrCreateModuleVerificationScenario,
   prepareModuleDraftTrial,

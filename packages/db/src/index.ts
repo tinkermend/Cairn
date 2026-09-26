@@ -116,6 +116,7 @@ export const previewDeleteScenario = operation(impl0.previewDeleteScenario);
 export const previewScenarioExpansion = operation(
   impl0.previewScenarioExpansion,
 );
+export const expandWithLoader = operation(impl0.expandWithLoader);
 export const inlineScenarioModuleInvocation = operation(
   impl0.inlineScenarioModuleInvocation,
 );
@@ -569,6 +570,19 @@ export const applyRecordingImport = operation(impl4.applyRecordingImport);
 export const continueRecordingMapIngest = operation(
   impl4.continueRecordingMapIngest,
 );
+export const getOrCreateRecordingGeneralization = operation(
+  impl4.getOrCreateRecordingGeneralization,
+);
+export const saveRecordingGeneralizationDecisions = operation(
+  impl4.saveRecordingGeneralizationDecisions,
+);
+export const submitRecordingGeneralizationRound = operation(
+  impl4.submitRecordingGeneralizationRound,
+);
+export const updateRecordingGeneralizationRoundStatus = operation(
+  impl4.updateRecordingGeneralizationRoundStatus,
+);
+export const handoffCreateScenario = operation(impl4.handoffCreateScenario);
 export {
   RECORDING_MAP_INGEST_SERVICE_ID,
   recordingMapIngestTestHooks,
@@ -912,6 +926,25 @@ export const createMapJob = operation(mapFacts.createMapJob);
 export const cancelMapJob = operation(mapFacts.cancelMapJob);
 export const completeMapJobSlice = operation(mapFacts.completeMapJobSlice);
 export const hasClaimableUserRun = operation(mapFacts.hasClaimableUserRun);
+export const getTargetStateRule = operation(mapFacts.getTargetStateRule);
+export const upsertTargetStateRule = operation(mapFacts.upsertTargetStateRule);
+export const getExploreEntryRequestProfile = operation(mapFacts.getExploreEntryRequestProfile);
+export const upsertExploreEntryRequestProfile = operation(mapFacts.upsertExploreEntryRequestProfile);
+export const listExploreStateRecipes = operation(mapFacts.listExploreStateRecipes);
+export const getExploreStateRecipe = operation(mapFacts.getExploreStateRecipe);
+export const createExploreStateRecipe = operation(mapFacts.createExploreStateRecipe);
+export const reviewExploreStateRecipe = operation(mapFacts.reviewExploreStateRecipe);
+export const listExploreCandidates = operation(mapFacts.listExploreCandidates);
+export const getExploreCandidate = operation(mapFacts.getExploreCandidate);
+export const reviewExploreCandidate = operation(mapFacts.reviewExploreCandidate);
+export const listExploreTraversals = operation(mapFacts.listExploreTraversals);
+export const reviewUnknownExploreJob = operation(mapFacts.reviewUnknownExploreJob);
+export const recordExploreState = operation(mapFacts.recordExploreState);
+export const recordExploreDiscoveries = operation(mapFacts.recordExploreDiscoveries);
+export const recordExploreTraversal = operation(mapFacts.recordExploreTraversal);
+export const acquireRecipeUsage = operation(mapFacts.acquireRecipeUsage);
+export const acquireReviewQuota = operation(mapFacts.acquireReviewQuota);
+export const consumeExploreCandidateReview = operation(mapFacts.consumeExploreCandidateReview);
 export type { FrozenMapCandidate } from "./map/index.js";
 export {
   mapProjectionTestHooks,
@@ -1420,6 +1453,7 @@ import * as reportImpl from "./reports/index.js";
 export const listReports = operation(reportImpl.listReports);
 export const getReport = operation(reportImpl.getReport);
 export const previewReport = operation(reportImpl.previewReport);
+export const previewReportRevision = operation(reportImpl.previewReportRevision);
 export const createReport = operation(reportImpl.createReport);
 export const createReportRevision = operation(reportImpl.createReportRevision);
 export const enqueueReportExport = operation(reportImpl.enqueueReportExport);
@@ -1443,12 +1477,17 @@ export const reserveExportArtifact = operation(reportImpl.reserveExportArtifact)
 export const commitReportMaterial = operation(reportImpl.commitReportMaterial);
 export const finishReportMaterials = operation(reportImpl.finishReportMaterials);
 export const getCachedReportArtifacts = operation(reportImpl.getCachedReportArtifacts);
+export const getLatestHtmlReportArtifact = operation(reportImpl.getLatestHtmlReportArtifact);
+export const isReportGenerationPending = operation(reportImpl.isReportGenerationPending);
 export const updateExportProgress = operation(reportImpl.updateExportProgress);
 export const cancelExportJob = operation(reportImpl.cancelExportJob);
 export const retryExportJob = operation(reportImpl.retryExportJob);
+export const retryRunReport = operation(reportImpl.retryRunReport);
 export const deriveMemberReport = operation(reportImpl.deriveMemberReport);
+export const previewMemberReport = operation(reportImpl.previewMemberReport);
 export const createReportBundle = operation(reportImpl.createReportBundle);
 export const getReportBundleFiles = operation(reportImpl.getReportBundleFiles);
+export const generateDueReports = operation(reportImpl.generateDueReports);
 export const generateDueSuiteReports = operation(reportImpl.generateDueSuiteReports);
 export const listReportRevisions = operation(reportImpl.listReportRevisions);
 export const listReportExportJobs = operation(reportImpl.listReportExportJobs);
@@ -1540,9 +1579,13 @@ import * as repairImpl from "./repair/index.js";
 export const createRepairCandidate = operation(repairImpl.createRepairCandidate);
 export const getRepairCandidate = operation(repairImpl.getRepairCandidate);
 export const listRepairCandidatesByRun = operation(repairImpl.listRepairCandidatesByRun);
+export const listRepairCandidatesByScenario = operation(repairImpl.listRepairCandidatesByScenario);
 export const updateRepairCandidateValidation = operation(repairImpl.updateRepairCandidateValidation);
 export const updateRepairCandidateStatus = operation(repairImpl.updateRepairCandidateStatus);
+export const rejectRepairCandidate = operation(repairImpl.rejectRepairCandidate);
+export const reopenRepairCandidate = operation(repairImpl.reopenRepairCandidate);
 export const adoptRepairCandidate = operation(repairImpl.adoptRepairCandidate);
+export const validateRepairCandidate = operation(repairImpl.validateRepairCandidate);
 export * from "./repair/index.js";
 
 import * as businessSourcesImpl from "./business-sources/business-sources.js";
@@ -1558,4 +1601,3 @@ export const commitBusinessSourceBatch = operation(businessSourcesImpl.commitBus
 export const finishBusinessSourceBuild = operation(businessSourcesImpl.finishBusinessSourceBuild);
 export const cleanupBusinessSourceSnapshots = operation(businessSourcesImpl.cleanupBusinessSourceSnapshots);
 export * from "./business-sources/business-sources.js";
-

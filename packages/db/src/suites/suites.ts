@@ -30,6 +30,7 @@ import { badRequest, conflict, isUniqueViolation, mapRestriction, notFound } fro
 import { assertTargetPermission, scopedTargetFilter } from '../console/target-authorization.js'
 import { liveTargetExists, snapshotDeletedBy, toDeleteResult } from '../lifecycle.js'
 import { validateSuiteDocument } from './validate.js'
+import { lockAndValidateReportProfiles } from '../reports/profiles.js'
 
 function rethrow(error: unknown): never {
   const mapped = mapRestriction(error)
@@ -174,6 +175,7 @@ export async function createSuite(db: Db, input: CreateSuiteBody, actor: AuditAc
       const [target] = await tx.select().from(targets).where(eq(targets.id, body.targetId)).limit(1)
       if (!target || target.deletedAt) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
       if (target.status === 'disabled') throw conflict('TARGET_DISABLED', '目标系统已停用')
+      await lockAndValidateReportProfiles(tx, body.targetId, document)
       await tx.insert(scenarioSuites).values({
         id,
         targetId: body.targetId,
@@ -216,6 +218,10 @@ export async function saveSuiteDraft(
       const [suite] = await tx.select().from(scenarioSuites).where(eq(scenarioSuites.id, suiteId)).limit(1)
       if (!suite || suite.deletedAt) throw notFound('SUITE_NOT_FOUND', '场景集不存在')
       await assertTargetPermission(tx, actor.id, suite.targetId, 'suite:write')
+      if (document.outputPolicy?.autoGenerateReport || document.autoGenerateFinalReport) {
+        await assertTargetPermission(tx, actor.id, suite.targetId, 'report:export')
+      }
+      await lockAndValidateReportProfiles(tx, suite.targetId, document)
       const [draft] = await tx.select().from(scenarioSuiteDrafts).where(eq(scenarioSuiteDrafts.suiteId, suiteId)).limit(1)
       if (!draft || draft.revision !== body.expectedRevision) {
         throw conflict('SUITE_DRAFT_CONFLICT', '草稿已被他人更新，请刷新后重试')
@@ -266,7 +272,6 @@ export async function publishSuite(
       schemaFor(tx)
     const [suite] = await tx.select().from(scenarioSuites).where(eq(scenarioSuites.id, suiteId)).limit(1)
     if (!suite || suite.deletedAt) throw notFound('SUITE_NOT_FOUND', '场景集不存在')
-    await assertTargetPermission(tx, actor.id, suite.targetId, 'suite:write')
     const [existing] = await tx
       .select()
       .from(scenarioSuitePublishReceipts)
@@ -277,10 +282,15 @@ export async function publishSuite(
         ),
       )
       .limit(1)
+    if (existing) return
     const [draft] = await tx.select().from(scenarioSuiteDrafts).where(eq(scenarioSuiteDrafts.suiteId, suiteId)).limit(1)
     if (!draft) throw notFound('SUITE_NOT_FOUND', '场景集草稿不存在')
-    if (existing) return
+    const draftDoc = draft.document as any
+    if (draftDoc?.outputPolicy?.autoGenerateReport || draftDoc?.autoGenerateFinalReport) {
+      await assertTargetPermission(tx, actor.id, suite.targetId, 'report:export')
+    }
     if (draft.revision !== input.expectedRevision) throw conflict('SUITE_DRAFT_CONFLICT', '草稿已被他人更新，请刷新后重试')
+    await lockAndValidateReportProfiles(tx, suite.targetId, draft.document)
     const empty = assertPublishedSuiteDocument(draft.document)
     if (empty.length) throw badRequest('SUITE_EMPTY', empty[0]!.message)
     const issues = await validateSuiteDocument(tx, suite.targetId, draft.document)

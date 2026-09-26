@@ -109,7 +109,7 @@ export async function listResolutionDecisions(db: Db, runId: string, query: Reso
 
 export async function listResolutionStats(db: Db, scenarioId: string, query: ResolutionStatsQuery) {
   const parsed = resolutionStatsQuerySchema.parse(query)
-  const { resolutionDecisions, runs, scenarios } = schemaFor(db)
+  const { resolutionDecisions, runs, scenarios, stepRuns } = schemaFor(db)
   const [scenario] = await db
     .select({ id: scenarios.id, deletedAt: scenarios.deletedAt })
     .from(scenarios)
@@ -119,6 +119,7 @@ export async function listResolutionStats(db: Db, scenarioId: string, query: Res
   const rows = await db
     .select({
       stepId: resolutionDecisions.stepId,
+      stepName: sql<string | null>`max(${stepRuns.name})`,
       scenarioVersionId: runs.scenarioVersionId,
       targetId: runs.targetId,
       deterministic: sql<number>`sum(case when ${resolutionDecisions.decisionKind} = 'deterministic' then 1 else 0 end)`,
@@ -128,6 +129,7 @@ export async function listResolutionStats(db: Db, scenarioId: string, query: Res
     })
     .from(resolutionDecisions)
     .innerJoin(runs, eq(runs.id, resolutionDecisions.runId))
+    .leftJoin(stepRuns, eq(stepRuns.id, resolutionDecisions.stepRunId))
     .where(
       and(
         eq(runs.scenarioId, scenarioId),
@@ -148,6 +150,7 @@ export async function listResolutionStats(db: Db, scenarioId: string, query: Res
       const located = deterministic + map + ai
       return {
         stepId: row.stepId,
+        stepName: row.stepName ?? null,
         scenarioVersionId: row.scenarioVersionId,
         targetId: row.targetId,
         deterministic,

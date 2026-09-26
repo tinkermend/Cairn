@@ -49,6 +49,30 @@ const accessPolicy: FrozenTargetAccessPolicy = {
 }
 
 describe('assembleRunSnapshot', () => {
+  it('v2 仅文本模型在视觉关闭时冻结文本配置，规则场景不冻结模型', () => {
+    const step: Step = {
+      id: '00000000-0000-4000-8000-000000000027', name: '查询', type: 'click', effectType: 'SIDE_EFFECT',
+      input: { target: { semantic: '查询按钮', candidates: [{ by: 'text', value: '查询' }] } },
+      policy: { locatorPlan: { v: 2, order: ['text_ai'] } },
+    }
+    const document = {
+      ...FACTORY_PLATFORM_CONFIG,
+      locator: { defaultPlan: { v: 2 as const, order: ['rule' as const] }, limits: { v: 2 as const, allowed: ['rule' as const, 'text_ai' as const] } },
+      platformAi: { ...FACTORY_PLATFORM_CONFIG.platformAi, enabled: true, secretRef: { provider: 'local' as const, secretId: '00000000-0000-4000-8000-000000000033' } },
+    }
+    const input = {
+      runId: ids.run, createdAt: new Date('2026-09-26T00:00:00.000Z'), targetId: ids.target,
+      scenarioId: ids.scenario, scenarioVersionId: ids.version, steps: [step], input: {},
+      target: { entryUrl: 'https://erp.example/app', loginUrl: 'https://erp.example/login', authMethod: 'password', captchaMode: 'none', loginFields: null, sessionPolicy: null },
+      platformDocument: document, platformRevision: 3, locatorProtocol: 2 as const,
+      authVerification, allowedOrigins: ['https://erp.example'], accessPolicy, mapConsumption: { mode: 'off' as const },
+    }
+    const snapshot = assembleRunSnapshot(input)
+    expect(snapshot.resolution).toMatchObject({ protocol: 'snapshot.resolution@2', steps: { [step.id]: { actual: ['text_ai'] } }, textConfigVersion: '3' })
+    expect(snapshot.aiExecution).toMatchObject({ visionEnabled: false, modelBaseUrl: document.platformAi.baseUrl })
+    const rule = assembleRunSnapshot({ ...input, steps: [{ ...step, policy: { locatorPlan: { v: 2 as const, order: ['rule' as const] } } }] })
+    expect(rule.aiExecution).toBeUndefined()
+  })
   it('相同输入得到相同 digest，且不改策略合并结果', () => {
     const input = {
       runId: ids.run,

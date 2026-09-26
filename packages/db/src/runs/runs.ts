@@ -10,7 +10,10 @@ import { expireRunDeadlines } from './deadline.js'
 import { settleRunCancellationTx } from './recover.js'
 import { lockRunAccountScope } from './lock-scope.js'
 import { atomic, databaseNow, locked, schemaFor, updateRows } from '../native.js'
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, max, ne, or, sql, type SQL } from 'drizzle-orm'
+import { and, asc, count, desc, eq, exists, inArray, isNotNull, isNull, max, ne, notExists, or, sql, type SQL } from 'drizzle-orm'
+import { applyPatchToDocument, computeDigestManifest, computeTargetDigest, evaluatePatchGuards, findStepInDocument } from '@cairn/authoring'
+import { createOrUpdateRepairCandidateTx, settleCandidateValidationTx } from '../repair/index.js'
+import { canonicalJson, syncSha256, type OutcomeStatus, type RepairSourceRunKind, type RunReportStatus, type ValidationSubject } from '@cairn/shared'
 import {
   assembleRunOutput,
   deriveFallbackSummary,
@@ -80,6 +83,7 @@ import {
   type StepIterationStatus,
   type ExecutionOrigin,
   type SuiteAdmissionSnapshot,
+  type ServiceDeliveryPolicy,
   selectionDecisionSchema,
 } from '@cairn/shared'
 import { cursorFilter, paginateResults } from '../cursor.js'
@@ -151,6 +155,154 @@ export async function getRun(db: Db, runId: string): Promise<RunDetailDto> {
   return detail
 }
 
+export type RunReportInfo = {
+  runReportStatus: RunReportStatus
+  reportId: string | null
+  reportError: string | null
+}
+
+export async function resolveRunReportStatuses(db: Db, runIds: string[]): Promise<Map<string, RunReportInfo>> {
+  const result = new Map<string, RunReportInfo>()
+  if (runIds.length === 0) return result
+
+  const { reports, reportRevisions, reportTriggers, runReportContexts } = schemaFor(db)
+
+  // 1. 查找已生成的报告（未删除），取最新的一份
+  const activeReports = await db
+    .select({
+      id: reports.id,
+      runId: reports.runId,
+      createdAt: reports.createdAt,
+    })
+    .from(reports)
+    .where(and(inArray(reports.runId, runIds), isNull(reports.deletedAt)))
+    .orderBy(desc(reports.createdAt))
+
+  const reportsByRunId = new Map<string, { id: string }>()
+  const reportIds: string[] = []
+  for (const rep of activeReports) {
+    if (rep.runId && !reportsByRunId.has(rep.runId)) {
+      reportsByRunId.set(rep.runId, { id: rep.id })
+      reportIds.push(rep.id)
+    }
+  }
+
+  // 查这些报告的最新 revision 的 contentCompleteness
+  const revisionsByReportId = new Map<string, string>()
+  if (reportIds.length > 0) {
+    const revs = await db
+      .select({
+        reportId: reportRevisions.reportId,
+        contentCompleteness: reportRevisions.contentCompleteness,
+      })
+      .from(reportRevisions)
+      .where(inArray(reportRevisions.reportId, reportIds))
+      .orderBy(desc(reportRevisions.revisionNo))
+
+    for (const rev of revs) {
+      if (!revisionsByReportId.has(rev.reportId)) {
+        revisionsByReportId.set(rev.reportId, rev.contentCompleteness)
+      }
+    }
+  }
+
+  // 2. 查找 reportTriggers
+  const triggers = await db
+    .select({
+      subjectId: reportTriggers.subjectId,
+      status: reportTriggers.status,
+      reportId: reportTriggers.reportId,
+      reason: reportTriggers.reason,
+    })
+    .from(reportTriggers)
+    .where(
+      and(
+        eq(reportTriggers.subjectKind, 'RUN'),
+        inArray(reportTriggers.subjectId, runIds),
+      ),
+    )
+
+  const triggersByRunId = new Map<string, (typeof triggers)[number]>()
+  for (const tr of triggers) {
+    triggersByRunId.set(tr.subjectId, tr)
+  }
+
+  // 3. 查找 runReportContexts
+  const contexts = await db
+    .select({
+      runId: runReportContexts.runId,
+      outputPolicy: runReportContexts.outputPolicy,
+    })
+    .from(runReportContexts)
+    .where(inArray(runReportContexts.runId, runIds))
+
+  const contextsByRunId = new Map<string, (typeof contexts)[number]>()
+  for (const ctx of contexts) {
+    contextsByRunId.set(ctx.runId, ctx)
+  }
+
+  // 4. 为每个 runId 综合判定
+  for (const runId of runIds) {
+    const activeRep = reportsByRunId.get(runId)
+    if (activeRep) {
+      const completeness = revisionsByReportId.get(activeRep.id)
+      result.set(runId, {
+        runReportStatus: completeness === 'partial' ? 'partial_gaps' : 'generated',
+        reportId: activeRep.id,
+        reportError: null,
+      })
+      continue
+    }
+
+    const tr = triggersByRunId.get(runId)
+    if (tr) {
+      if (tr.status === 'created') {
+        result.set(runId, {
+          runReportStatus: 'generated',
+          reportId: tr.reportId ?? null,
+          reportError: null,
+        })
+      } else if (tr.status === 'processing') {
+        result.set(runId, {
+          runReportStatus: 'generating',
+          reportId: null,
+          reportError: null,
+        })
+      } else if (tr.status === 'failed') {
+        result.set(runId, {
+          runReportStatus: 'failed',
+          reportId: null,
+          reportError: tr.reason ?? '生成失败',
+        })
+      } else {
+        result.set(runId, {
+          runReportStatus: 'pending',
+          reportId: null,
+          reportError: null,
+        })
+      }
+      continue
+    }
+
+    const ctx = contextsByRunId.get(runId)
+    if (ctx?.outputPolicy?.autoGenerateReport) {
+      result.set(runId, {
+        runReportStatus: 'pending',
+        reportId: null,
+        reportError: null,
+      })
+    } else {
+      result.set(runId, {
+        runReportStatus: 'not_configured',
+        reportId: null,
+        reportError: null,
+      })
+    }
+  }
+
+  return result
+}
+
 export async function listRuns(
   db: Db,
   query: RunListQuery = {},
@@ -174,7 +326,7 @@ export async function listRuns(
     parsed.executionOrigin ? eq(runs.executionOrigin, parsed.executionOrigin) : undefined,
     parsed.search
       ? or(
-          sql`lower(${runs.id}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
+          sql`cast(${runs.id} as text) like ${'%' + parsed.search.toLowerCase() + '%'}`,
           sql`lower(${scenarios.name}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
           sql`lower(${targets.name}) like ${'%' + parsed.search.toLowerCase() + '%'}`,
         )
@@ -189,6 +341,21 @@ export async function listRuns(
     parsed.isMapJob === true
       ? eq(scenarios.purpose, 'map_job')
       : ne(scenarios.purpose, 'map_job'),
+    parsed.hasReport === true
+      ? exists(
+          db
+            .select({ one: sql`1` })
+            .from(schemaFor(db).reports)
+            .where(and(eq(schemaFor(db).reports.runId, runs.id), isNull(schemaFor(db).reports.deletedAt))),
+        )
+      : parsed.hasReport === false
+        ? notExists(
+            db
+              .select({ one: sql`1` })
+              .from(schemaFor(db).reports)
+              .where(and(eq(schemaFor(db).reports.runId, runs.id), isNull(schemaFor(db).reports.deletedAt))),
+          )
+        : undefined,
     ...createdAtBounds(runs.createdAt, parsed.from, parsed.to),
     cursorFilter(runs.createdAt, runs.id, parsed.cursor),
   ]
@@ -236,6 +403,11 @@ export async function listRuns(
     rows.map((row) => row.id),
   )
 
+  const reportStatuses = await resolveRunReportStatuses(
+    db,
+    rows.map((row) => row.id),
+  )
+
   const paginated = paginateResults(rows, limit)
 
   return runListResponseSchema.parse({
@@ -276,6 +448,8 @@ export async function listRuns(
           ? deriveFallbackSummary(row.status, row.outcomeStatus)
           : null),
       lease: leases.get(row.id) ? { holderWorkerId: leases.get(row.id)!.holderWorkerId } : null,
+      runReportStatus: reportStatuses.get(row.id)?.runReportStatus ?? 'not_configured',
+      reportId: reportStatuses.get(row.id)?.reportId ?? null,
     })),
     nextCursor: paginated.nextCursor,
     hasMore: paginated.hasMore,
@@ -683,6 +857,9 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
         })
       : null)
 
+  const reportStatuses = await resolveRunReportStatuses(db, [runId])
+  const reportInfo = reportStatuses.get(runId)
+
   return runDetailSchema.parse({
     source: row.serviceCallerId ? { kind: 'service', callerId: row.serviceCallerId, credentialId: row.serviceCredentialId } : { kind: 'console' },
     id: row.id,
@@ -743,6 +920,9 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     authCheckpoint: parseAuthCheckpoint(row.authCheckpoint),
     stepRuns: mappedStepRuns,
     iterationsSummary,
+    runReportStatus: reportInfo?.runReportStatus ?? 'not_configured',
+    reportId: reportInfo?.reportId ?? null,
+    reportError: reportInfo?.reportError ?? null,
   })
 }
 
@@ -784,9 +964,11 @@ export type CreateRunWithSnapshotInput = CreateRunBody & {
   executionOrigin?: ExecutionOrigin
   suiteRunId?: string
   suiteMemberId?: string
-  reportDefaults?: { profileId?: string; displayName?: string }
+  reportDefaults?: { profileId?: string; displayName?: string; suppressMemberReport?: boolean }
   resolvedTargetAccountId?: string | null
+  serviceDelivery?: ServiceDeliveryPolicy
   pauseBeforeStepId?: string
+  validationSubject?: ValidationSubject
 }
 
 export async function writeRunWithSnapshot(
@@ -958,7 +1140,9 @@ export async function writeRunWithSnapshot(
   let aiExecution = input.aiExecution
   try {
     const targetResolution = parseTargetResolutionPolicy(target.resolutionPolicy)
-    aiExecution = resolveAssembledAiExecution({
+    aiExecution = version.definition.locatorProtocol === 2 || version.definition.locatorPlan || version.definition.steps.some((step) => step.policy?.locatorPlan)
+      ? undefined
+      : resolveAssembledAiExecution({
       steps: version.definition.steps,
       platformDocument: document,
       platformRevision: platform?.revision,
@@ -1022,6 +1206,8 @@ export async function writeRunWithSnapshot(
           mapCapturePolicyOverride: input.mapCapturePolicy,
           mapJob: input.mapJob,
           documentResolution: version.definition.resolution,
+          documentLocatorPlan: version.definition.locatorPlan,
+          locatorProtocol: version.definition.locatorProtocol,
           target,
           maxConcurrentSessions,
           platformDocument: document,
@@ -1033,7 +1219,9 @@ export async function writeRunWithSnapshot(
           accessPolicy: access.frozen,
           mapConsumption,
           suiteAdmission: input.suiteAdmission,
+          serviceDelivery: input.serviceDelivery,
           pauseBeforeStepId: input.pauseBeforeStepId,
+          validationSubject: input.validationSubject,
         })
       } catch (error) {
         if (error instanceof AssembleRunSnapshotError) throw badRequest(error.code, error.message)
@@ -1075,7 +1263,20 @@ export async function writeRunWithSnapshot(
         suiteMemberId: input.suiteMemberId,
       })
       await insertMapRunReleaseRefTx(tx as unknown as Db, { runId, frozen: mapConsumption })
-      await freezeRunReportContext(tx as unknown as Db, { runId, scenarioId: scenario.id, targetId: scenario.targetId, scenarioName: scenario.name, targetName: target.name, overrideProfileId: input.reportDefaults?.profileId, displayName: input.reportDefaults?.displayName })
+      await freezeRunReportContext(tx as unknown as Db, {
+        runId,
+        scenarioId: scenario.id,
+        targetId: scenario.targetId,
+        scenarioName: scenario.name,
+        targetName: target.name,
+        overrideProfileId: input.reportDefaults?.profileId,
+        displayName: input.reportDefaults?.displayName,
+        isTrial: Boolean(isTrial),
+        isMapJob: Boolean(input.mapJob),
+        debugMode,
+        purpose: scenario.purpose ?? undefined,
+        suppressMemberReport: Boolean(input.reportDefaults?.suppressMemberReport),
+      })
       await saveRunValidationContextTx(tx as unknown as Db, snapshot)
       if (snapshot.steps.length > 0) {
         const loopBodyStepIds = new Set<string>()
@@ -1170,6 +1371,10 @@ export async function createTrialRunFromDraft(
         actor: input.actor,
         executableTypes: input.executableTypes,
       })
+      const executionActor: ExecutionActor =
+        'kind' in input.actor && input.actor.kind === 'service' && 'credentialId' in input.actor && 'scopes' in input.actor
+          ? (input.actor as ExecutionActor)
+          : { kind: 'console', id: input.actor.id }
       return createRunWithSnapshot(tx, {
         scenarioId,
         scenarioVersionId: prepared.versionId,
@@ -1181,7 +1386,7 @@ export async function createTrialRunFromDraft(
         mapCapturePolicy: input.mapCapturePolicy,
         mapConsumption: input.mapConsumption,
         idempotencyKey: input.idempotencyKey,
-        actor: input.actor,
+        actor: executionActor,
         aiExecution: input.aiExecution,
         hangWaitMs: input.hangWaitMs,
         allowTrialVersion: true,
@@ -1537,7 +1742,8 @@ export async function finishAttemptTx(
     recorded.push({ evidenceId, type: 'log', status: 'available' })
   }
 
-  if (!cancelled && attemptStatus !== 'SUCCEEDED' && input.diagnostics) {
+  // 成功 Attempt 只有执行器主动带出诊断（如 AI 档救活的候选）时才会传入，失败则总是落证据。
+  if (!cancelled && input.diagnostics) {
     const evidenceId = newId()
     await tx.insert(evidences).values({
       id: evidenceId,
@@ -1552,6 +1758,90 @@ export async function finishAttemptTx(
     })
     recorded.push({ evidenceId, type: 'log', status: 'available' })
   }
+
+  // 运行期 AI 救活成功时，自动沉淀为定位修复候选（Heal -> Repair 闭环）
+  if (
+    !cancelled &&
+    attemptStatus === 'SUCCEEDED' &&
+    input.diagnostics?.resolvedVia === 'ai' &&
+    input.diagnostics.suggestedPatch?.kind === 'ADD_CANDIDATE'
+  ) {
+    const [stepRun] = await tx
+      .select({ id: stepRuns.id, stepId: stepRuns.stepId })
+      .from(stepRuns)
+      .where(eq(stepRuns.id, attempt.stepRunId))
+      .limit(1)
+
+    if (stepRun && run.scenarioId) {
+      const isModuleStep = Boolean(
+        run.snapshot.moduleManifest?.entries?.some((entry) => entry.expandedStepIds?.includes(stepRun.stepId)),
+      )
+      const step = run.snapshot.steps?.find((s: any) => s.id === stepRun.stepId)
+
+      if (!isModuleStep && step && (step.input as any)?.target) {
+        try {
+          const target = (step.input as any).target
+          const sourceTargetDigest = computeTargetDigest(target)
+          const dedupeKey = syncSha256(
+            canonicalJson([
+              run.scenarioId,
+              stepRun.stepId,
+              sourceTargetDigest,
+              input.diagnostics.suggestedPatch.suggestedCandidate,
+            ]),
+          )
+
+          const originalDoc = {
+            schemaVersion: 1,
+            inputs: [],
+            steps: run.snapshot.steps as any,
+            outputs: undefined,
+          }
+          const patchedDoc = applyPatchToDocument(originalDoc, stepRun.stepId, input.diagnostics.suggestedPatch)
+          const patchedStep = findStepInDocument(patchedDoc, stepRun.stepId)
+
+          const guardResults = evaluatePatchGuards({
+            originalStep: step,
+            patchedStep,
+            patch: input.diagnostics.suggestedPatch,
+            sourceDefinition: originalDoc as unknown as Record<string, unknown>,
+            patchedDefinition: patchedDoc as unknown as Record<string, unknown>,
+          })
+
+          const digestManifest = computeDigestManifest(
+            originalDoc as unknown as Record<string, unknown>,
+            patchedDoc as unknown as Record<string, unknown>,
+          )
+
+          const sourceRunKind: RepairSourceRunKind =
+            run.debugMode && run.debugMode !== 'runThrough'
+              ? 'debug'
+              : (run.scenarioVersionId ? 'published' : 'trial')
+
+          const cand = input.diagnostics.suggestedCandidate
+          const candDesc = cand ? `${cand.by}=${cand.value}${cand.name ? ` [name="${cand.name}"]` : ''}` : '新候选'
+
+          await createOrUpdateRepairCandidateTx(tx, {
+            scenarioId: run.scenarioId,
+            runId: input.runId,
+            sourceAttemptId: input.attemptId,
+            stepId: stepRun.stepId,
+            sourceTargetDigest,
+            dedupeKey,
+            patch: input.diagnostics.suggestedPatch,
+            hypothesis: `原确定性候选全部未命中，AI 定位救活并反向生成候选 ${candDesc}`,
+            digestManifest,
+            guardResults,
+            sourceRunKind,
+          })
+        } catch (err) {
+          // 容错：候选沉淀不能影响 Attempt 本身的成功落库
+          console.error('[finishAttemptTx] 沉淀修复候选失败:', err)
+        }
+      }
+    }
+  }
+
   if (input.debugOverlay) await markValidationInterventionTx(tx, input.runId, 'debug_overlay')
   if (!cancelled) {
     const screenshotId = await insertMissingObjectEvidence(tx, {
@@ -1743,8 +2033,9 @@ export async function finishAttemptTx(
         ...(input.authCheckpoint !== undefined ? { authCheckpoint: input.authCheckpoint } : {}),
       })
       .where(eq(runs.id, input.runId))
+    let calculatedOutcome: OutcomeStatus | undefined
     if (isHaltedRunStatus(finalRunStatus) || input.authCheckpoint) {
-      await recalculateRunOutcomeTx(tx, input.runId, run.snapshot as RunSnapshot, now)
+      calculatedOutcome = await recalculateRunOutcomeTx(tx, input.runId, run.snapshot as RunSnapshot, now)
     }
     if (isHaltedRunStatus(finalRunStatus) || finalRunStatus === 'WAITING_FOR_AUTH') {
       await releaseRunLeaseTx(
@@ -1752,6 +2043,16 @@ export async function finishAttemptTx(
         input.grant,
         finalRunStatus === 'WAITING_FOR_AUTH' ? 'waiting_for_auth' : 'run_halted',
       )
+    }
+    const validationSubject = (run.snapshot as any)?.validationSubject
+    if (validationSubject?.candidateId && (isHaltedRunStatus(finalRunStatus) || cancelled)) {
+      await settleCandidateValidationTx(tx, {
+        runId: input.runId,
+        validationSubject,
+        runStatus: finalRunStatus,
+        outcomeStatus: calculatedOutcome ?? run.outcomeStatus,
+        now,
+      })
     }
   } else if (input.checkpoint !== undefined || input.debugOverlay !== undefined || input.authCheckpoint !== undefined) {
     await tx
@@ -1998,10 +2299,21 @@ export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ fin
     )
     if (drained.length === 0) return { finished: false }
     const [run] = await tx.select().from(runs).where(eq(runs.id, grant.runId)).limit(1)
+    let calculatedOutcome: OutcomeStatus | undefined
     if (run) {
-      await recalculateRunOutcomeTx(tx as unknown as Db, grant.runId, run.snapshot as RunSnapshot, now)
+      calculatedOutcome = await recalculateRunOutcomeTx(tx as unknown as Db, grant.runId, run.snapshot as RunSnapshot, now)
     }
     await releaseRunLeaseTx(tx as unknown as Db, grant, 'run_halted')
+    const validationSubject = (run?.snapshot as any)?.validationSubject
+    if (validationSubject?.candidateId) {
+      await settleCandidateValidationTx(tx, {
+        runId: grant.runId,
+        validationSubject,
+        runStatus: 'SUCCEEDED',
+        outcomeStatus: calculatedOutcome ?? run?.outcomeStatus,
+        now,
+      })
+    }
     await appendRunEvents(tx as unknown as Db, grant.runId, [
       { type: 'run.status_changed', payload: { status: 'SUCCEEDED' } },
     ])
@@ -2080,7 +2392,17 @@ export async function markRunCancelled(
       await releaseRunLeaseTx(tx as unknown as Db, authority.grant, 'run_halted')
     }
     await settleRunCancellationTx(tx as unknown as Db, runId, now)
-    await recalculateRunOutcomeTx(tx as unknown as Db, runId, run.snapshot as RunSnapshot, now)
+    const calculatedOutcome = await recalculateRunOutcomeTx(tx as unknown as Db, runId, run.snapshot as RunSnapshot, now)
+    const validationSubject = (run.snapshot as any)?.validationSubject
+    if (validationSubject?.candidateId) {
+      await settleCandidateValidationTx(tx, {
+        runId,
+        validationSubject,
+        runStatus: 'CANCELLED',
+        outcomeStatus: calculatedOutcome ?? run.outcomeStatus,
+        now,
+      })
+    }
   })
 }
 
@@ -2114,7 +2436,17 @@ export async function failRunValidation(
       .update(runs)
       .set({ status, ...(status === 'FAILED' ? { finishedAt: now } : {}), ...(checkpoint ? { authCheckpoint: checkpoint } : {}), updatedAt: now })
       .where(eq(runs.id, runId))
-    await recalculateRunOutcomeTx(tx as unknown as Db, runId, run.snapshot as RunSnapshot, now)
+    const calculatedOutcome = await recalculateRunOutcomeTx(tx as unknown as Db, runId, run.snapshot as RunSnapshot, now)
+    const validationSubject = (run.snapshot as any)?.validationSubject
+    if (validationSubject?.candidateId) {
+      await settleCandidateValidationTx(tx, {
+        runId,
+        validationSubject,
+        runStatus: status,
+        outcomeStatus: calculatedOutcome ?? run.outcomeStatus,
+        now,
+      })
+    }
     if (options?.stepRunId) {
       await tx.update(stepRuns).set({ status: 'FAILED', finishedAt: now }).where(and(eq(stepRuns.id, options.stepRunId), eq(stepRuns.runId, runId), eq(stepRuns.status, 'RUNNING')))
     }

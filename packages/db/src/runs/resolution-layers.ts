@@ -13,6 +13,7 @@ export async function loadResolutionLayers(db: Db, targetId?: string) {
   const platform = await getOrCreatePlatformConfig(db)
   let targetCeiling: ResolutionPolicy | undefined
   let targetPreference: ResolutionPolicy | undefined
+  let targetPolicy: ReturnType<typeof parseTargetResolutionPolicy> = null
   if (targetId) {
     const { targets } = schemaFor(db)
     const [row] = await db
@@ -21,6 +22,7 @@ export async function loadResolutionLayers(db: Db, targetId?: string) {
       .where(eq(targets.id, targetId))
       .limit(1)
     const policy = parseTargetResolutionPolicy(row?.resolutionPolicy)
+    targetPolicy = policy
     targetCeiling = policy?.ceiling
     targetPreference = policy?.preference
   }
@@ -29,6 +31,7 @@ export async function loadResolutionLayers(db: Db, targetId?: string) {
     revision: platform.revision,
     targetCeiling,
     targetPreference,
+    targetPolicy,
   }
 }
 

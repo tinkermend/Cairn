@@ -10,6 +10,7 @@ import {
   platformModelUrlSchema,
   platformConfigRevisionListSchema,
   upgradePlatformConfigDocument,
+  upgradePlatformLocatorConfig,
   PLATFORM_CONFIG_SCHEMA_UNSUPPORTED,
   type PlatformConfigCurrent,
   type PlatformConfigDocument,
@@ -187,6 +188,7 @@ export async function updatePlatformConfig(
 ): Promise<PlatformConfigCurrent> {
   return writeRevision(db, {
     ...input,
+    document: upgradePlatformLocatorConfig(input.document),
     source: 'update',
     auditAction: 'platform_config.update',
     summary: `更新平台配置到修订 ${input.expectedRevision + 1}`,

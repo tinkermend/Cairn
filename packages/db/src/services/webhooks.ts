@@ -42,7 +42,10 @@ import {
   type ServiceWebhookEvent,
   type ServiceWebhookPayload,
   type ServiceWebhookWrite,
+  projectExternalRunOutput,
+  type RunOutput,
 } from '@cairn/shared'
+import { settleRunOutput } from '../runs/output.js'
 import type { Db } from '../client.js'
 import { recordAudit, type AuditActor } from '../audit/record.js'
 import { assertTargetPermission, lockConsoleAuthorization } from '../console/target-authorization.js'
@@ -505,9 +508,14 @@ async function buildWebhookPayload(
   // Worker 在终态之后才另起事务聚合业务结果；与通知一致，入队前在同一事务内补算，
   // 避免把「执行成功但业务结果尚未聚合」的 NOT_EVALUATED 固化进不可变投递事实。
   let outcomeStatus: OutcomeStatus = 'NOT_EVALUATED'
+  let settledOutput: RunOutput | null = (input.run as { output?: RunOutput | null }).output ?? null
+  const snapshot = input.run.snapshot as RunSnapshot
   if (!startedEvent) {
     await locked(db, db.select({ id: runs.id }).from(runs).where(eq(runs.id, input.run.id)))
-    outcomeStatus = await recalculateRunOutcomeTx(db, input.run.id, input.run.snapshot as RunSnapshot, input.now)
+    outcomeStatus = await recalculateRunOutcomeTx(db, input.run.id, snapshot, input.now)
+    if (!settledOutput && snapshot.serviceDelivery?.runOutput) {
+      settledOutput = await settleRunOutput(db, input.run.id)
+    }
   }
   const [outputRows, available] = startedEvent
     ? [[], 0] as const
@@ -561,6 +569,9 @@ async function buildWebhookPayload(
       finishedAt: startedEvent ? null : iso(input.run.finishedAt),
       durationSeconds,
       outputs,
+      runOutput: (settledOutput && snapshot.serviceDelivery?.runOutput)
+        ? (projectExternalRunOutput(settledOutput, snapshot.outputs) ?? undefined)
+        : undefined,
       evidenceSummary: {
         status: startedEvent ? 'PENDING' : input.run.evidenceStatus,
         availableCount: available,

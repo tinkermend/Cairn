@@ -27,6 +27,7 @@ export function toEvidenceMetadata(row: EvidenceRow): EvidenceMetadata {
     missingReason: row.missingReason ?? undefined,
     uploadAttempts: row.uploadAttempts,
     externalAccess: row.externalAccess === 1,
+    externalAccessSource: (row.externalAccessSource as 'manual' | 'auto' | null) ?? undefined,
     payload,
   })
 }

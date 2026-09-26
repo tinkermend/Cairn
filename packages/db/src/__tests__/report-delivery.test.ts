@@ -5,7 +5,7 @@ import { newId } from '../id.js'
 import { schemaFor } from '../native.js'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { createRunWithSnapshot, createScenarioWithVersion, createSuite, createSuiteRun, publishSuite, registerWorker, type NativeHandle } from '../test-entry.js'
-import { claimExportJobs, completeExportJob, createReport, createReportRevision, deleteReport, enqueueReportExport, getReport, getExportJob, listReports, loadReportRevisionDocument, previewReport } from '../reports/reports.js'
+import { claimExportJobs, completeExportJob, createReport, createReportRevision, deleteReport, enqueueReportExport, getReport, getExportJob, listReports, loadReportRevisionDocument, previewReport, previewReportRevision } from '../reports/reports.js'
 import { createArtifact, attachArtifactBytes, getArtifact } from '../objects/artifacts.js'
 import { deleteRun } from '../runs/runs.js'
 
@@ -87,6 +87,21 @@ describe.each(DRIVERS)('%s 报告交付与恢复', (driver) => {
     expect(original.revision.title).toBe(first.currentRevision!.title)
     expect((await listReports(handle.db, { runId: id }, actorId)).items).toHaveLength(1)
     expect((await listReports(handle.db, { runId: id, scope: 'suite_summary' }, actorId)).items).toHaveLength(0)
+  })
+
+  it('旧标题修订保持原语法，标题覆盖的预览与落库标题相同', async () => {
+    const id = await run()
+    const first = await createReport(handle.db, body(id), actor())
+    expect(first.currentRevision!.config.titleSyntaxVersion).toBeUndefined()
+    const originalPreview = await previewReportRevision(handle.db, first.id, { reason: '沿用旧标题', idempotencyKey: newId() }, actorId)
+    const second = await createReportRevision(handle.db, first.id, { reason: '沿用旧标题', idempotencyKey: newId() }, actor())
+    expect(second.currentRevision!.title).toBe(originalPreview.title)
+    expect(second.currentRevision!.config.titleSyntaxVersion).toBeUndefined()
+    const override = { reason: '新标题', config: { title: '{scenarioName} 完成' }, idempotencyKey: newId() }
+    const preview = await previewReportRevision(handle.db, first.id, override, actorId)
+    const third = await createReportRevision(handle.db, first.id, override, actor())
+    expect(third.currentRevision!.title).toBe(preview.title)
+    expect(third.currentRevision!.config.titleSyntaxVersion).toBe(2)
   })
 
   it('证据中心的集合筛选同时包含总报告和成员报告，并可按范围区分', async () => {

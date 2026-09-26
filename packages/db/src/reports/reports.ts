@@ -17,6 +17,7 @@ import {
   reportPreviewResponseSchema,
   readScreenshotPayload,
   substituteReportTitle,
+  renderReportTitleV2,
   suiteSummaryBlockSchema,
   stepRunFor,
   computeSuiteHealthScore,
@@ -30,11 +31,13 @@ import {
   type ReportListQuery,
   type ReportPreviewResponse,
   type ReportRevisionDto,
+  type ReportStage,
   type ReportSubject,
   type ReportTitleVariable,
   type SuiteSummaryBlock,
   type SuiteGridRow,
   type SuiteAggregatedFinding,
+  type ReportFormat,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { recordAudit, type AuditActor } from '../audit/record.js'
@@ -52,6 +55,7 @@ import { prepareReportMaterials, sealReportMaterials } from './materials.js'
 import { validateReportConfigAssets } from './profiles.js'
 import { revokeReportTrees } from './cleanup.js'
 import { assertReportDeploymentReady } from './protocol.js'
+import { appendRunEvents } from '../observe/events.js'
 
 function subjectOf(row: { subjectKind: 'RUN' | 'SUITE_RUN'; runId: string | null; suiteRunId: string | null }): ReportSubject {
   return row.subjectKind === 'RUN'
@@ -609,18 +613,30 @@ export async function previewReport(db: Db, body: CreateReportBody, actorId?: st
   return atomic(db, async (tx) => previewReportTx(tx, input, actorId))
 }
 
+export async function previewReportRevision(db: Db, reportId: string, body: CreateReportRevisionBody, actorId: string): Promise<ReportPreviewResponse> {
+  const input = createReportRevisionBodySchema.parse(body)
+  return atomic(db, async (tx) => {
+    const current = await getReport(tx, reportId, actorId)
+    await assertReportSourceReadable(tx, current.subject, actorId)
+    const captured = await captureSource(tx, current.subject)
+    await assertTargetPermission(tx, actorId, captured.targetId, 'report:read')
+    const config = reportConfigSchema.parse({ ...captured.defaults, ...current.currentRevision?.config, ...input.config, ...(input.config?.title !== undefined ? { titleSyntaxVersion: 2 } : {}) })
+    await validateReportConfigAssets(tx, captured.targetId, config)
+    const title = reportTitle(config, captured)
+    const stage = input.stage ?? current.currentRevision?.stage ?? 'final'
+    const issues = reportPreviewIssues(captured, stage)
+    return reportPreviewResponseSchema.parse({ subject: current.subject, stage, scope: current.currentRevision?.scope ?? 'run', title, canGenerateFinal: captured.terminal && !captured.evidencePending, evidencePending: captured.evidencePending, issues })
+  })
+}
+
 async function previewReportTx(db: Db, input: CreateReportBody, actorId?: string): Promise<ReportPreviewResponse> {
   await assertReportSourceReadable(db, input.subject, actorId)
   const captured = await captureSource(db, input.subject)
   if (actorId) await assertTargetPermission(db, actorId, captured.targetId, 'report:read')
-  const config = reportConfigSchema.parse({ ...captured.defaults, ...input.config })
+  const config = reportConfigSchema.parse({ ...captured.defaults, ...input.config, ...(input.config?.title !== undefined ? { titleSyntaxVersion: 2 } : {}) })
   await validateReportConfigAssets(db, captured.targetId, config)
   const title = reportTitle(config, captured)
-  const issues: string[] = []
-  if (!captured.terminal && input.stage === 'final') issues.push('来源尚未结束，不能生成终稿')
-  if (captured.evidencePending) issues.push('证据仍在收集，报告内容可能不完整')
-  if (captured.payload.evidenceStatus === 'INCOMPLETE') issues.push('必要证据不完整，请结合缺项核查结论')
-  if (!captured.terminal && input.stage === 'phase') issues.push('阶段性结果：来源尚未结束')
+  const issues = reportPreviewIssues(captured, input.stage)
   return reportPreviewResponseSchema.parse({
     subject: input.subject,
     stage: input.stage,
@@ -632,6 +648,15 @@ async function previewReportTx(db: Db, input: CreateReportBody, actorId?: string
   })
 }
 
+function reportPreviewIssues(captured: CapturedSource, stage: ReportStage): string[] {
+  const issues: string[] = []
+  if (!captured.terminal && stage === 'final') issues.push('来源尚未结束，不能生成终稿')
+  if (captured.evidencePending) issues.push('证据仍在收集，报告内容可能不完整')
+  if (captured.payload.evidenceStatus === 'INCOMPLETE') issues.push('必要证据不完整，请结合缺项核查结论')
+  if (!captured.terminal && stage === 'phase') issues.push('阶段性结果：来源尚未结束')
+  return issues
+}
+
 export function reportTitle(config: ReportConfig, captured: CapturedSource) {
   try {
     const format = new Intl.DateTimeFormat('en-CA', { timeZone: config.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
@@ -639,8 +664,10 @@ export function reportTitle(config: ReportConfig, captured: CapturedSource) {
     const executedDate = format.format(started)
     const end = captured.payload.finishedAt ? format.format(new Date(String(captured.payload.finishedAt))) : executedDate
     const vars = { ...captured.titleVars, executedDate, executedRange: executedDate === end ? executedDate : `${executedDate} 至 ${end}` }
-    if ([...config.title.matchAll(/\{([A-Za-z]+)\}/g)].some((match) => vars[match[1] as ReportTitleVariable] === undefined)) throw new Error('标题包含当前来源不可用的变量，请检查场景名称或场景集名称')
-    return substituteReportTitle(config.title, vars)
+    if (config.titleSyntaxVersion !== 2 && [...config.title.matchAll(/\{([A-Za-z]+)\}/g)].some((match) => vars[match[1] as ReportTitleVariable] === undefined)) throw new Error('标题包含当前来源不可用的变量，请检查场景名称或场景集名称')
+    return config.titleSyntaxVersion === 2
+      ? renderReportTitleV2(config.title, vars, captured.payload.kind === 'SUITE_RUN' ? 'SUITE_RUN' : 'RUN')
+      : substituteReportTitle(config.title, vars)
   }
   catch (error) { throw badRequest('REPORT_TITLE_INVALID', error instanceof Error ? error.message : '报告标题无效') }
 }
@@ -653,13 +680,18 @@ function sourceEvidence(source: Record<string, JsonValue>): Array<Record<string,
 export async function createReport(db: Db, body: CreateReportBody, actor: AuditActor) {
   const input = createReportBodySchema.parse(body)
   return atomic(db, async (tx) => {
-    await lockConsoleAuthorization(tx, actor.id)
+    if (actor.kind !== 'service') {
+      await lockConsoleAuthorization(tx, actor.id)
+    }
     const { reports } = schemaFor(tx)
     const digest = sha256Hex(input)
-    const [existing] = await tx.select().from(reports).where(and(eq(reports.createdByConsoleAccountId, actor.id), eq(reports.idempotencyKey, input.idempotencyKey))).limit(1)
+    const condition = actor.kind === 'service'
+      ? and(eq(reports.serviceCallerId, actor.id), eq(reports.idempotencyKey, input.idempotencyKey))
+      : and(eq(reports.createdByConsoleAccountId, actor.id), eq(reports.idempotencyKey, input.idempotencyKey))
+    const [existing] = await tx.select().from(reports).where(condition).limit(1)
     if (existing) {
       if (existing.requestDigest !== digest) throw conflict('REPORT_IDEMPOTENCY_CONFLICT', '相同幂等键对应不同报告请求')
-      return getReport(tx, existing.id, actor.id)
+      return getReport(tx, existing.id, actor.kind === 'service' ? undefined : actor.id)
     }
     return createReportTx(tx, input, actor, digest)
   })
@@ -667,13 +699,15 @@ export async function createReport(db: Db, body: CreateReportBody, actor: AuditA
 
 async function createReportTx(db: Db, input: CreateReportBody, actor: AuditActor, digest: string) {
   await assertReportDeploymentReady(db)
-  const preview = await previewReport(db, input, actor.id)
+  const preview = await previewReport(db, input, actor.kind === 'service' ? undefined : actor.id)
   if (input.stage === 'final' && !preview.canGenerateFinal) {
     throw badRequest('REPORT_NOT_READY', preview.issues[0] ?? '来源尚未结束')
   }
   const captured = await captureSource(db, input.subject)
-  await assertTargetPermission(db, actor.id, captured.targetId, 'report:export')
-  const config = reportConfigSchema.parse({ ...captured.defaults, ...input.config })
+  if (actor.kind !== 'service') {
+    await assertTargetPermission(db, actor.id, captured.targetId, 'report:export')
+  }
+  const config = reportConfigSchema.parse({ ...captured.defaults, ...input.config, ...(input.config?.title !== undefined ? { titleSyntaxVersion: 2 } : {}) })
   const title = reportTitle(config, captured)
   const reportId = newId()
   await atomic(db, async (tx) => {
@@ -684,7 +718,8 @@ async function createReportTx(db: Db, input: CreateReportBody, actor: AuditActor
       subjectKind: input.subject.kind,
       runId: input.subject.kind === 'RUN' ? input.subject.runId : null,
       suiteRunId: input.subject.kind === 'SUITE_RUN' ? input.subject.suiteRunId : null,
-      createdByConsoleAccountId: actor.id,
+      createdByConsoleAccountId: actor.kind === 'service' ? null : actor.id,
+      serviceCallerId: actor.kind === 'service' ? actor.id : null,
       idempotencyKey: input.idempotencyKey,
       requestDigest: digest,
     })
@@ -710,26 +745,38 @@ async function createReportTx(db: Db, input: CreateReportBody, actor: AuditActor
       templateVersion: REPORT_TEMPLATE_VERSION,
       renderVersion: REPORT_RENDER_VERSION,
       sourceSnapshotId: snapshotId,
+      createdByConsoleAccountId: actor.kind === 'service' ? null : actor.id,
+      serviceCallerId: actor.kind === 'service' ? actor.id : null,
       contentCompleteness: document.gaps.length ? 'partial' : 'complete',
       document,
       sealedAt: null,
     })
-    await prepareReportMaterials(tx, { reportId, revisionId, targetId: captured.targetId, source: captured.payload, config, actorId: actor.id })
+    await prepareReportMaterials(tx, { reportId, revisionId, targetId: captured.targetId, source: captured.payload, config, actorId: actor.kind === 'service' ? undefined : actor.id })
     await recordAudit(tx, actor, 'report.create', 'report', reportId, `创建报告「${title}」`)
   })
-  return getReport(db, reportId)
+  return getReport(db, reportId, actor.kind === 'service' ? undefined : actor.id)
 }
 
 export async function createReportRevision(db: Db, reportId: string, body: CreateReportRevisionBody, actor: AuditActor) {
   const input = createReportRevisionBodySchema.parse(body)
   return atomic(db, async (tx) => {
-    await lockConsoleAuthorization(tx, actor.id)
+    if (actor.kind !== 'service') {
+      await lockConsoleAuthorization(tx, actor.id)
+    }
     const { reports, reportRevisions } = schemaFor(tx)
     await locked(tx, tx.select({ id: reports.id }).from(reports).where(eq(reports.id, reportId)))
     const digest = sha256Hex({ reportId, ...input })
-    const [existing] = await tx.select().from(reportRevisions).where(and(eq(reportRevisions.createdByConsoleAccountId, actor.id), eq(reportRevisions.idempotencyKey, input.idempotencyKey))).limit(1)
+    const [existing] = await tx
+      .select()
+      .from(reportRevisions)
+      .where(
+        actor.kind === 'service'
+          ? and(eq(reportRevisions.serviceCallerId, actor.id), eq(reportRevisions.idempotencyKey, input.idempotencyKey))
+          : and(eq(reportRevisions.createdByConsoleAccountId, actor.id), eq(reportRevisions.idempotencyKey, input.idempotencyKey)),
+      )
+      .limit(1)
     if (existing) {
-      await getReport(tx, reportId, actor.id)
+      await getReport(tx, reportId, actor.kind === 'service' ? undefined : actor.id)
       if (existing.requestDigest !== digest) throw conflict('REPORT_IDEMPOTENCY_CONFLICT', '相同幂等键对应不同修订请求')
       return loadReportDto(tx, reportId, existing.id)
     }
@@ -739,16 +786,17 @@ export async function createReportRevision(db: Db, reportId: string, body: Creat
 
 async function createReportRevisionTx(db: Db, reportId: string, input: CreateReportRevisionBody, actor: AuditActor, digest: string) {
   await assertReportDeploymentReady(db)
-  const current = await getReport(db, reportId, actor.id)
-  await assertTargetPermission(db, actor.id, current.targetId, 'report:export')
+  const current = await getReport(db, reportId, actor.kind === 'service' ? undefined : actor.id)
+  if (actor.kind !== 'service') {
+    await assertTargetPermission(db, actor.id, current.targetId, 'report:export')
+  }
   const captured = await captureSource(db, current.subject)
-  const config = reportConfigSchema.parse({ ...captured.defaults, ...current.currentRevision?.config, ...input.config })
+  const config = reportConfigSchema.parse({ ...captured.defaults, ...current.currentRevision?.config, ...input.config, ...(input.config?.title !== undefined ? { titleSyntaxVersion: 2 } : {}) })
   await validateReportConfigAssets(db, captured.targetId, config)
   const stage = input.stage ?? current.currentRevision?.stage ?? 'final'
   if (stage === 'final' && (!captured.terminal || captured.evidencePending)) throw badRequest('REPORT_NOT_READY', '来源尚未结束或证据仍在收集，请生成阶段报告')
   const title = reportTitle(config, captured)
-  const preview = await previewReport(db, { subject: current.subject, stage, scope: current.currentRevision?.scope ?? 'run', config, idempotencyKey: input.idempotencyKey }, actor.id)
-  const document = buildDocument({ stage, title, config, source: captured.payload, gaps: preview.issues })
+  const document = buildDocument({ stage, title, config, source: captured.payload, gaps: reportPreviewIssues(captured, stage) })
   await atomic(db, async (tx) => {
     const { reportSourceSnapshots, reportRevisions } = schemaFor(tx)
     const snapshotId = newId()
@@ -765,7 +813,8 @@ async function createReportRevisionTx(db: Db, reportId: string, input: CreateRep
       id: revisionId,
       reportId,
       revisionNo: nextNo,
-      createdByConsoleAccountId: actor.id,
+      createdByConsoleAccountId: actor.kind === 'service' ? null : actor.id,
+      serviceCallerId: actor.kind === 'service' ? actor.id : null,
       idempotencyKey: input.idempotencyKey,
       requestDigest: digest,
       stage: input.stage ?? current.currentRevision?.stage ?? 'final',
@@ -780,31 +829,43 @@ async function createReportRevisionTx(db: Db, reportId: string, input: CreateRep
       document,
       sealedAt: null,
     })
-    await prepareReportMaterials(tx, { reportId, revisionId, targetId: current.targetId, source: captured.payload, config, actorId: actor.id })
+    await prepareReportMaterials(tx, {
+      reportId,
+      revisionId,
+      targetId: current.targetId,
+      source: captured.payload,
+      config,
+      actorId: actor.kind === 'service' ? undefined : actor.id,
+      serviceCallerId: actor.kind === 'service' ? actor.id : undefined,
+    })
     await recordAudit(tx, actor, 'report.create', 'report', reportId, `新增报告修订 ${nextNo}：${input.reason}`)
   })
-  return getReport(db, reportId)
+  return getReport(db, reportId, actor.kind === 'service' ? undefined : actor.id)
 }
 
 export async function enqueueReportExport(
   db: Db,
   reportId: string,
   revisionId: string,
-  formats: Array<'docx' | 'pdf'>,
+  formats: Array<ReportFormat>,
   actor: AuditActor,
   idempotencyKey: string,
 ): Promise<ExportJobDto> {
   const input = exportReportBodySchema.parse({ formats, idempotencyKey })
   return atomic(db, async (tx) => {
-    await lockConsoleAuthorization(tx, actor.id)
+    if (actor.kind !== 'service') {
+      await lockConsoleAuthorization(tx, actor.id)
+    }
     return enqueueReportExportTx(tx, reportId, revisionId, [...new Set(input.formats)].sort(), actor, input.idempotencyKey)
   })
 }
 
-async function enqueueReportExportTx(db: Db, reportId: string, revisionId: string, formats: Array<'docx' | 'pdf'>, actor: AuditActor, idempotencyKey: string): Promise<ExportJobDto> {
+async function enqueueReportExportTx(db: Db, reportId: string, revisionId: string, formats: Array<ReportFormat>, actor: AuditActor, idempotencyKey: string): Promise<ExportJobDto> {
   await assertReportDeploymentReady(db)
-  const report = await getReport(db, reportId, actor.id)
-  await assertTargetPermission(db, actor.id, report.targetId, 'report:export')
+  const report = await getReport(db, reportId, actor.kind === 'service' ? undefined : actor.id)
+  if (actor.kind !== 'service') {
+    await assertTargetPermission(db, actor.id, report.targetId, 'report:export')
+  }
   if (!report.currentRevision || report.currentRevision.id !== revisionId) {
     const { reportRevisions } = schemaFor(db)
     const [revision] = await db.select().from(reportRevisions).where(eq(reportRevisions.id, revisionId)).limit(1)
@@ -817,7 +878,11 @@ async function enqueueReportExportTx(db: Db, reportId: string, revisionId: strin
     const [existing] = await tx
       .select()
       .from(exportJobs)
-      .where(and(eq(exportJobs.createdByConsoleAccountId, actor.id), eq(exportJobs.idempotencyKey, idempotencyKey)))
+      .where(
+        actor.kind === 'service'
+          ? and(eq(exportJobs.serviceCallerId, actor.id), eq(exportJobs.idempotencyKey, idempotencyKey))
+          : and(eq(exportJobs.createdByConsoleAccountId, actor.id), eq(exportJobs.idempotencyKey, idempotencyKey)),
+      )
       .limit(1)
     if (existing) {
       if (existing.requestDigest !== digest) throw conflict('EXPORT_IDEMPOTENCY_CONFLICT', '相同幂等键对应不同导出请求')
@@ -829,7 +894,8 @@ async function enqueueReportExportTx(db: Db, reportId: string, revisionId: strin
       targetId: report.targetId,
       reportId,
       reportRevisionId: revisionId,
-      createdByConsoleAccountId: actor.id,
+      createdByConsoleAccountId: actor.kind === 'service' ? null : actor.id,
+      serviceCallerId: actor.kind === 'service' ? actor.id : null,
       status: 'queued',
       sourceManifest: { formats },
       requestDigest: digest,
@@ -841,7 +907,11 @@ async function enqueueReportExportTx(db: Db, reportId: string, revisionId: strin
   const [job] = await db
     .select()
     .from(exportJobs)
-    .where(and(eq(exportJobs.createdByConsoleAccountId, actor.id), eq(exportJobs.idempotencyKey, idempotencyKey)))
+    .where(
+      actor.kind === 'service'
+        ? and(eq(exportJobs.serviceCallerId, actor.id), eq(exportJobs.idempotencyKey, idempotencyKey))
+        : and(eq(exportJobs.createdByConsoleAccountId, actor.id), eq(exportJobs.idempotencyKey, idempotencyKey)),
+    )
     .limit(1)
   if (!job) throw conflict('EXPORT_JOB_CONFLICT', '导出任务创建失败')
   const artifacts = await db.select().from(exportJobArtifacts).where(eq(exportJobArtifacts.jobId, job.id))
@@ -961,14 +1031,16 @@ export async function guardExportJob(db: Db, grant: ExportGrant, lock = false) {
   const query = db.select().from(exportJobs).where(grantPredicate(db, grant))
   if (lock) {
     const [candidate] = await db.select().from(exportJobs).where(eq(exportJobs.id, grant.jobId)).limit(1)
-    if (candidate) await lockConsoleAuthorization(db, candidate.createdByConsoleAccountId)
+    if (candidate?.createdByConsoleAccountId) await lockConsoleAuthorization(db, candidate.createdByConsoleAccountId)
   }
   const [job] = lock ? await locked(db, query) : await query.limit(1)
   if (!job?.reportId) throw conflict('EXPORT_CLAIM_LOST', '导出任务已取消、超时或执行权已失效')
   const [worker] = await db.select().from(workers).where(and(eq(workers.id, grant.workerId), eq(workers.instanceId, grant.instanceId), eq(workers.status, 'READY'))).limit(1)
   if (!worker || !worker.protocolCapabilities.includes(EXPORT_ARTIFACTS_PROTOCOL) || (worker.heartbeatExpiresAt && worker.heartbeatExpiresAt <= new Date())) throw conflict('EXPORT_CLAIM_LOST', '导出节点已失效')
-  const report = await getReport(db, job.reportId, job.createdByConsoleAccountId)
-  await assertTargetPermission(db, job.createdByConsoleAccountId, report.targetId, 'report:export')
+  const report = await getReport(db, job.reportId, job.createdByConsoleAccountId ?? undefined)
+  if (job.createdByConsoleAccountId) {
+    await assertTargetPermission(db, job.createdByConsoleAccountId, report.targetId, 'report:export')
+  }
   return job
 }
 
@@ -978,10 +1050,10 @@ export async function updateExportProgress(db: Db, grant: ExportGrant, progress:
   await db.update(exportJobs).set({ progress: progress.slice(0, 200), updatedAt: new Date() }).where(grantPredicate(db, grant))
 }
 
-export async function insertExportJob(db: Db, input: { kind: 'report_materialize' | 'report_render' | 'report_bundle'; reportId: string; revisionId: string; targetId: string; actorId: string; key: string; manifest: Record<string, JsonValue> }) {
+export async function insertExportJob(db: Db, input: { kind: 'report_materialize' | 'report_render' | 'report_bundle'; reportId: string; revisionId: string; targetId: string; actorId?: string; serviceCallerId?: string; key: string; manifest: Record<string, JsonValue> }) {
   const { exportJobs } = schemaFor(db)
   const id = newId()
-  await db.insert(exportJobs).values({ id, kind: input.kind, reportId: input.reportId, reportRevisionId: input.revisionId, targetId: input.targetId, createdByConsoleAccountId: input.actorId, status: 'queued', sourceManifest: input.manifest, requestDigest: sha256Hex(input.manifest), idempotencyKey: input.key })
+  await db.insert(exportJobs).values({ id, kind: input.kind, reportId: input.reportId, reportRevisionId: input.revisionId, targetId: input.targetId, createdByConsoleAccountId: input.actorId ?? null, serviceCallerId: input.serviceCallerId ?? null, status: 'queued', sourceManifest: input.manifest, requestDigest: sha256Hex(input.manifest), idempotencyKey: input.key })
   return id
 }
 
@@ -1011,7 +1083,9 @@ export async function completeExportJob(
     const { exportJobs, exportJobArtifacts, artifacts, storedObjects, workers, reportRevisions, reportRevisionOutputs } = schemaFor(tx)
     const [candidate] = await tx.select().from(exportJobs).where(eq(exportJobs.id, input.jobId)).limit(1)
     if (!candidate) return false
-    await lockConsoleAuthorization(tx, candidate.createdByConsoleAccountId, false)
+    if (candidate.createdByConsoleAccountId) {
+      await lockConsoleAuthorization(tx, candidate.createdByConsoleAccountId, false)
+    }
     const [job] = await locked(tx, tx.select().from(exportJobs).where(grantPredicate(tx, input)))
     if (!job) return false
     const [worker] = await tx.select().from(workers).where(and(eq(workers.id, input.workerId), eq(workers.instanceId, input.instanceId), eq(workers.status, 'READY'))).limit(1)
@@ -1021,8 +1095,10 @@ export async function completeExportJob(
     if (status !== 'failed') {
       try {
         if (!job.reportId) throw notFound('REPORT_NOT_FOUND', '报告不存在')
-        const report = await getReport(tx, job.reportId, job.createdByConsoleAccountId)
-        await assertTargetPermission(tx, job.createdByConsoleAccountId, report.targetId, 'report:export')
+        const report = await getReport(tx, job.reportId, job.createdByConsoleAccountId ?? undefined)
+        if (job.createdByConsoleAccountId) {
+          await assertTargetPermission(tx, job.createdByConsoleAccountId, report.targetId, 'report:export')
+        }
       } catch { status = 'failed'; error = '来源已删除或当前授权不允许交付报告' }
     }
     if (status !== 'failed') {
@@ -1032,22 +1108,58 @@ export async function completeExportJob(
       contentCompleteness = revision.contentCompleteness
       const deliveredFormats = new Set<string>()
       for (const artifactId of new Set(input.artifactIds)) {
-        const [artifact] = await tx.select({ id: artifacts.id, kind: artifacts.kind, exportJobId: artifacts.exportJobId, revisionId: artifacts.reportRevisionId, creatorId: artifacts.createdByConsoleAccountId }).from(artifacts).innerJoin(storedObjects, eq(storedObjects.artifactId, artifacts.id))
-          .where(and(eq(artifacts.id, artifactId), eq(artifacts.targetId, job.targetId), eq(storedObjects.status, 'available'), isNull(storedObjects.deleteRequestedAt), sql`${storedObjects.retainUntil} > ${new Date()}`, sql`${artifacts.retainUntil} > ${new Date()}`)).limit(1)
+        const [artifact] = await tx
+          .select({
+            id: artifacts.id,
+            kind: artifacts.kind,
+            exportJobId: artifacts.exportJobId,
+            revisionId: artifacts.reportRevisionId,
+            creatorId: artifacts.createdByConsoleAccountId,
+            serviceCallerId: artifacts.serviceCallerId,
+          })
+          .from(artifacts)
+          .innerJoin(storedObjects, eq(storedObjects.artifactId, artifacts.id))
+          .where(
+            and(
+              eq(artifacts.id, artifactId),
+              eq(artifacts.targetId, job.targetId),
+              eq(storedObjects.status, 'available'),
+              isNull(storedObjects.deleteRequestedAt),
+              sql`${storedObjects.retainUntil} > ${new Date()}`,
+              sql`${artifacts.retainUntil} > ${new Date()}`,
+            ),
+          )
+          .limit(1)
         if (!artifact) throw badRequest('EXPORT_ARTIFACT_INVALID', '导出产物不可用或归属不匹配')
         let deliveredId = artifactId
         if (job.kind === 'report_render') {
-          const format = artifact.kind === 'report_pdf' ? 'pdf' : artifact.kind === 'report_docx' ? 'docx' : null
+          const format = artifact.kind === 'report_html' ? 'html' : null
           if (!format || !(job.sourceManifest.formats as JsonValue[]).includes(format)) throw badRequest('EXPORT_ARTIFACT_INVALID', '导出格式不属于当前请求')
           if (deliveredFormats.has(format)) throw badRequest('EXPORT_ARTIFACT_INVALID', '同一格式不能交付重复产物')
           deliveredFormats.add(format)
-          const [cached] = await tx.select({ output: reportRevisionOutputs, object: storedObjects }).from(reportRevisionOutputs)
+          const [cached] = await tx
+            .select({ output: reportRevisionOutputs, object: storedObjects })
+            .from(reportRevisionOutputs)
             .innerJoin(storedObjects, eq(storedObjects.artifactId, reportRevisionOutputs.artifactId))
-            .where(and(eq(reportRevisionOutputs.revisionId, revision.id), eq(reportRevisionOutputs.format, format), eq(reportRevisionOutputs.renderVersion, revision.renderVersion))).limit(1)
+            .where(
+              and(
+                eq(reportRevisionOutputs.revisionId, revision.id),
+                eq(reportRevisionOutputs.format, format),
+                eq(reportRevisionOutputs.renderVersion, revision.renderVersion),
+              ),
+            )
+            .limit(1)
           if (cached?.object.status === 'available' && !cached.object.deleteRequestedAt && cached.object.retainUntil > new Date()) deliveredId = cached.output.artifactId
           else {
             if (artifact.exportJobId && (artifact.exportJobId !== job.id || artifact.revisionId !== revision.id)) throw badRequest('EXPORT_ARTIFACT_INVALID', '产物不属于当前任务及修订')
-            if (!artifact.exportJobId && artifact.creatorId !== job.createdByConsoleAccountId) throw badRequest('EXPORT_ARTIFACT_INVALID', '产物创建者不匹配')
+            if (!artifact.exportJobId) {
+              if (job.createdByConsoleAccountId && artifact.creatorId !== job.createdByConsoleAccountId) {
+                throw badRequest('EXPORT_ARTIFACT_INVALID', '产物创建者不匹配')
+              }
+              if (job.serviceCallerId && artifact.serviceCallerId !== job.serviceCallerId) {
+                throw badRequest('EXPORT_ARTIFACT_INVALID', '产物服务主体不匹配')
+              }
+            }
             if (cached) await tx.update(reportRevisionOutputs).set({ artifactId }).where(eq(reportRevisionOutputs.id, cached.output.id))
             else await tx.insert(reportRevisionOutputs).values({ id: newId(), revisionId: revision.id, format, renderVersion: revision.renderVersion, artifactId })
           }
@@ -1072,7 +1184,7 @@ export async function completeExportJob(
   })
 }
 
-export async function getCachedReportArtifacts(db: Db, revisionId: string, formats: Array<'docx' | 'pdf'>, actorId?: string) {
+export async function getCachedReportArtifacts(db: Db, revisionId: string, formats: Array<ReportFormat>, actorId?: string) {
   const loaded = await loadReportRevisionDocument(db, revisionId, actorId)
   const { reportRevisionOutputs, artifacts, storedObjects } = schemaFor(db)
   const rows = await db.select({ format: reportRevisionOutputs.format, artifact: artifacts, object: storedObjects }).from(reportRevisionOutputs)
@@ -1106,35 +1218,51 @@ export async function loadReportRevisionDocument(db: Db, revisionId: string, act
 
 export async function cancelExportJob(db: Db, jobId: string, actor: AuditActor) {
   return atomic(db, async (tx) => {
-    await lockConsoleAuthorization(tx, actor.id)
+    if (actor.kind !== 'service') {
+      await lockConsoleAuthorization(tx, actor.id)
+    }
     const { exportJobs, reportRevisions } = schemaFor(tx)
     const [job] = await locked(tx, tx.select().from(exportJobs).where(eq(exportJobs.id, jobId)))
     if (!job) throw notFound('EXPORT_JOB_NOT_FOUND', '导出任务不存在')
-    await getReport(tx, job.reportId!, actor.id)
-    await assertTargetPermission(tx, actor.id, job.targetId, 'report:export')
+    await getReport(tx, job.reportId!, actor.kind === 'service' ? undefined : actor.id)
+    if (actor.kind !== 'service') {
+      await assertTargetPermission(tx, actor.id, job.targetId, 'report:export')
+    }
     if (['queued', 'running'].includes(job.status)) {
       await tx.update(exportJobs).set({ status: 'cancelled', leaseUntil: null, error: '用户取消导出', updatedAt: new Date() }).where(eq(exportJobs.id, jobId))
       if (job.kind === 'report_materialize') await tx.update(reportRevisions).set({ preparationError: '材料准备已取消，可重试或新建修订' }).where(and(eq(reportRevisions.id, job.reportRevisionId!), isNull(reportRevisions.sealedAt)))
       await cleanupUnusedJobArtifacts(tx, job.id)
       await recordAudit(tx, actor, 'report.export.cancel', 'export_job', jobId, '取消文件任务，保留运行事实')
     }
-    return getExportJob(tx, jobId, actor.id)
+    return getExportJob(tx, jobId, actor.kind === 'service' ? undefined : actor.id)
   })
 }
 
 export async function retryExportJob(db: Db, jobId: string, key: string, actor: AuditActor) {
   return atomic(db, async (tx) => {
-    await lockConsoleAuthorization(tx, actor.id)
+    if (actor.kind !== 'service') {
+      await lockConsoleAuthorization(tx, actor.id)
+    }
     const { exportJobs, reportRevisions } = schemaFor(tx)
     const [job] = await locked(tx, tx.select().from(exportJobs).where(eq(exportJobs.id, jobId)))
     if (!job) throw notFound('EXPORT_JOB_NOT_FOUND', '导出任务不存在')
-    await getReport(tx, job.reportId!, actor.id)
-    await assertTargetPermission(tx, actor.id, job.targetId, 'report:export')
+    await getReport(tx, job.reportId!, actor.kind === 'service' ? undefined : actor.id)
+    if (actor.kind !== 'service') {
+      await assertTargetPermission(tx, actor.id, job.targetId, 'report:export')
+    }
     const digest = sha256Hex({ retryOf: job.id, manifest: job.sourceManifest })
-    const [existing] = await tx.select().from(exportJobs).where(and(eq(exportJobs.createdByConsoleAccountId, actor.id), eq(exportJobs.idempotencyKey, key))).limit(1)
+    const [existing] = await tx
+      .select()
+      .from(exportJobs)
+      .where(
+        actor.kind === 'service'
+          ? and(eq(exportJobs.serviceCallerId, actor.id), eq(exportJobs.idempotencyKey, key))
+          : and(eq(exportJobs.createdByConsoleAccountId, actor.id), eq(exportJobs.idempotencyKey, key)),
+      )
+      .limit(1)
     if (existing) {
       if (existing.requestDigest !== digest) throw conflict('EXPORT_IDEMPOTENCY_CONFLICT', '幂等键已用于其他导出请求')
-      return getExportJob(tx, existing.id, actor.id)
+      return getExportJob(tx, existing.id, actor.kind === 'service' ? undefined : actor.id)
     }
     if (!['failed', 'cancelled', 'partial'].includes(job.status)) throw conflict('EXPORT_RETRY_NOT_ALLOWED', '当前任务无需重试')
     if (job.retryCount >= REPORT_LIMITS.retries) throw conflict('EXPORT_RETRY_LIMIT', '已达到重试上限，请核对原因后创建新的导出请求')
@@ -1143,23 +1271,40 @@ export async function retryExportJob(db: Db, jobId: string, key: string, actor: 
     if (job.kind === 'report_bundle') {
       const entries = []
       for (const entry of job.sourceManifest.entries as Array<{ reportId: string; revisionId: string; name: string }>) {
-        const dependency = await enqueueReportExportTx(tx, entry.reportId, entry.revisionId, job.sourceManifest.formats as Array<'docx' | 'pdf'>, actor, `bundle-retry:${sha256Hex({ key, revisionId: entry.revisionId })}`)
+        const dependency = await enqueueReportExportTx(tx, entry.reportId, entry.revisionId, job.sourceManifest.formats as Array<ReportFormat>, actor, `bundle-retry:${sha256Hex({ key, revisionId: entry.revisionId })}`)
         entries.push({ ...entry, jobId: dependency.id })
       }
       sourceManifest = { ...sourceManifest, entries, jobIds: entries.map((entry) => entry.jobId) }
     }
-    await tx.insert(exportJobs).values({ id, kind: job.kind, reportId: job.reportId, reportRevisionId: job.reportRevisionId, targetId: job.targetId, createdByConsoleAccountId: actor.id, status: 'queued', sourceManifest, requestDigest: digest, idempotencyKey: key, retryCount: job.retryCount + 1 })
+    await tx.insert(exportJobs).values({
+      id,
+      kind: job.kind,
+      reportId: job.reportId,
+      reportRevisionId: job.reportRevisionId,
+      targetId: job.targetId,
+      createdByConsoleAccountId: actor.kind === 'service' ? null : actor.id,
+      serviceCallerId: actor.kind === 'service' ? actor.id : null,
+      status: 'queued',
+      sourceManifest,
+      requestDigest: digest,
+      idempotencyKey: key,
+      retryCount: job.retryCount + 1,
+    })
     if (job.kind === 'report_materialize') await tx.update(reportRevisions).set({ preparationError: null }).where(and(eq(reportRevisions.id, job.reportRevisionId!), isNull(reportRevisions.sealedAt)))
     await recordAudit(tx, actor, 'report.export.retry', 'export_job', id, `重试导出任务 ${jobId}`)
-    return getExportJob(tx, id, actor.id)
+    return getExportJob(tx, id, actor.kind === 'service' ? undefined : actor.id)
   })
 }
 
 export async function deleteReport(db: Db, reportId: string, actor: AuditActor) {
   return atomic(db, async (tx) => {
-    await lockConsoleAuthorization(tx, actor.id)
+    if (actor.kind !== 'service') {
+      await lockConsoleAuthorization(tx, actor.id)
+    }
     const report = await loadReportDto(tx, reportId)
-    await assertTargetPermission(tx, actor.id, report.targetId, 'report:delete')
+    if (actor.kind !== 'service') {
+      await assertTargetPermission(tx, actor.id, report.targetId, 'report:delete')
+    }
     await revokeReportTrees(tx, [reportId])
     await recordAudit(tx, actor, 'report.delete', 'report', reportId, '删除报告，撤销其产物访问及待处理导出')
     return { id: reportId, deleted: true }
@@ -1220,3 +1365,178 @@ async function captureLoopSummaries(db: Db, run: Awaited<ReturnType<typeof getRu
   }
   return loops
 }
+
+export async function retryRunReport(db: Db, runId: string, actor: AuditActor) {
+  return atomic(db, async (tx) => {
+    const { reportTriggers, runs } = schemaFor(tx)
+    const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1)
+    if (!run) throw notFound('RUN_NOT_FOUND', '运行不存在')
+    if (!['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(run.status)) {
+      throw badRequest('RUN_NOT_TERMINAL', '运行尚未结束，无法重试生成报告')
+    }
+
+    if (run.evidenceStatus === 'PENDING') {
+      await tx.update(runs).set({ evidenceStatus: 'INCOMPLETE', updatedAt: new Date() }).where(eq(runs.id, runId))
+      await appendRunEvents(tx, runId, [{ type: 'run.status_changed', payload: { evidenceStatus: 'INCOMPLETE' } }])
+    }
+
+    const [trigger] = await locked(
+      tx,
+      tx.select().from(reportTriggers).where(
+        and(eq(reportTriggers.subjectKind, 'RUN'), eq(reportTriggers.subjectId, runId)),
+      ),
+    )
+
+    const now = new Date()
+    const retrySeq = (trigger?.retryCount ?? 0) + 1
+    const baseKey = `auto-run-report:${runId}`
+    const nextKey = `${baseKey}:manual-retry:${retrySeq}`
+
+    if (trigger) {
+      await tx.update(reportTriggers).set({
+        status: 'pending',
+        reason: null,
+        retryCount: retrySeq,
+        idempotencyKey: nextKey,
+        updatedAt: now,
+      }).where(eq(reportTriggers.id, trigger.id))
+    } else {
+      await tx.insert(reportTriggers).values({
+        subjectKind: 'RUN',
+        subjectId: runId,
+        status: 'pending',
+        retryCount: retrySeq,
+        idempotencyKey: nextKey,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
+
+    await appendRunEvents(tx, runId, [{
+      type: 'run.report_changed',
+      payload: { status: 'pending', retrySeq },
+    }])
+
+    await recordAudit(tx, actor, 'report.create', 'run', runId, `手动重试生成运行报告 (第 ${retrySeq} 次)`)
+    return { runId, status: 'pending' as const, retrySeq }
+  })
+}
+
+export type LatestHtmlReportArtifact = {
+  reportId: string
+  revisionId: string
+  artifactId: string
+  fileName: string
+  contentType: string
+  byteSize: number | null
+  objectKey: string
+}
+
+export async function getLatestHtmlReportArtifact(
+  db: Db,
+  subject: { runId?: string | null; suiteRunId?: string | null },
+): Promise<LatestHtmlReportArtifact | null> {
+  if (!subject.runId && !subject.suiteRunId) return null
+  const { reports, reportRevisions, reportRevisionOutputs, artifacts, storedObjects } = schemaFor(db)
+
+  const subjectCondition = subject.runId
+    ? eq(reports.runId, subject.runId)
+    : eq(reports.suiteRunId, subject.suiteRunId!)
+
+  const [report] = await db
+    .select({ id: reports.id })
+    .from(reports)
+    .where(and(subjectCondition, isNull(reports.deletedAt)))
+    .orderBy(desc(reports.createdAt))
+    .limit(1)
+
+  if (!report) return null
+
+  const [revision] = await db
+    .select({ id: reportRevisions.id, renderVersion: reportRevisions.renderVersion })
+    .from(reportRevisions)
+    .where(eq(reportRevisions.reportId, report.id))
+    .orderBy(desc(reportRevisions.revisionNo))
+    .limit(1)
+
+  if (!revision) return null
+
+  const [row] = await db
+    .select({
+      artifactId: artifacts.id,
+      fileName: artifacts.fileName,
+      contentType: artifacts.contentType,
+      byteSize: storedObjects.byteSize,
+      objectKey: storedObjects.objectKey,
+    })
+    .from(reportRevisionOutputs)
+    .innerJoin(artifacts, eq(artifacts.id, reportRevisionOutputs.artifactId))
+    .innerJoin(storedObjects, eq(storedObjects.artifactId, artifacts.id))
+    .where(
+      and(
+        eq(reportRevisionOutputs.revisionId, revision.id),
+        eq(reportRevisionOutputs.format, 'html'),
+        eq(reportRevisionOutputs.renderVersion, revision.renderVersion),
+        eq(storedObjects.status, 'available'),
+        isNull(storedObjects.deleteRequestedAt),
+        sql`${storedObjects.retainUntil} > ${new Date()}`,
+        sql`${artifacts.retainUntil} > ${new Date()}`,
+      ),
+    )
+    .limit(1)
+
+  if (!row) return null
+
+  return {
+    reportId: report.id,
+    revisionId: revision.id,
+    artifactId: row.artifactId,
+    fileName: row.fileName,
+    contentType: row.contentType,
+    byteSize: row.byteSize,
+    objectKey: row.objectKey,
+  }
+}
+
+export async function isReportGenerationPending(
+  db: Db,
+  subject: { runId?: string | null; suiteRunId?: string | null },
+): Promise<boolean> {
+  if (!subject.runId && !subject.suiteRunId) return false
+  const { reportTriggers, reports, exportJobs } = schemaFor(db)
+
+  if (subject.runId) {
+    const [trigger] = await db
+      .select({ id: reportTriggers.id })
+      .from(reportTriggers)
+      .where(
+        and(
+          eq(reportTriggers.subjectKind, 'RUN'),
+          eq(reportTriggers.subjectId, subject.runId),
+          eq(reportTriggers.status, 'pending'),
+        ),
+      )
+      .limit(1)
+    if (trigger) return true
+  }
+
+  const subjectCondition = subject.runId
+    ? eq(reports.runId, subject.runId)
+    : eq(reports.suiteRunId, subject.suiteRunId!)
+
+  const [job] = await db
+    .select({ id: exportJobs.id })
+    .from(exportJobs)
+    .innerJoin(reports, eq(reports.id, exportJobs.reportId))
+    .where(
+      and(
+        subjectCondition,
+        isNull(reports.deletedAt),
+        inArray(exportJobs.status, ['queued', 'running']),
+      ),
+    )
+    .limit(1)
+
+  return Boolean(job)
+}
+

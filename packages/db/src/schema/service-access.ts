@@ -9,6 +9,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ServiceDeliveryPolicy,
   ServiceRequestLogDiagnostic,
   ServiceRequestSummary,
   ServiceScope,
@@ -27,6 +28,7 @@ export const serviceCallers = cairnSchema.table(
     requestsPerMinute: integer("requests_per_minute").notNull().default(60),
     maxOutstandingRuns: integer("max_outstanding_runs").notNull().default(2),
     runTimeoutSeconds: integer("run_timeout_seconds").notNull().default(600),
+    deliveryPolicy: jsonb("delivery_policy").$type<ServiceDeliveryPolicy>(),
     windowStartedAt: timestamp("window_started_at", { withTimezone: true }),
     windowRequests: integer("window_requests").notNull().default(0),
     /** 空数组表示不限制来源；写入前由共享 CIDR 契约规范化。 */

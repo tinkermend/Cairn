@@ -145,3 +145,4 @@ export {
   upsertMapScenarioBinding,
 } from './references.js'
 export { listMapAtlasPages } from './atlas.js'
+export * from './exploration.js'

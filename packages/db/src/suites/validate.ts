@@ -1,6 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm'
 import {
   assertPublishedSuiteDocument,
+  allSuiteMembers,
   assertRunFromResolved,
   ScenarioValidationError,
   type JsonValue,
@@ -9,7 +10,7 @@ import {
 } from '@cairn/shared'
 import type { Db } from '../client.js'
 import { schemaFor } from '../native.js'
-import { resolveReportProfile } from '../reports/profiles.js'
+import { assertReportTitleSource, resolveReportProfile } from '../reports/profiles.js'
 
 export async function validateSuiteDocument(
   db: Db,
@@ -18,13 +19,15 @@ export async function validateSuiteDocument(
 ): Promise<SuiteValidationIssue[]> {
   const issues: SuiteValidationIssue[] = [...assertPublishedSuiteDocument(document)]
   const { scenarios, scenarioVersions, targetAccounts } = schemaFor(db)
-  for (const source of [{ profileId: document.reportProfileId, memberId: undefined }, ...document.members.map((member) => ({ profileId: member.reportProfileId, memberId: member.memberId }))]) {
+  for (const source of [{ profileId: document.reportProfileId, memberId: undefined, kind: 'SUITE_RUN' as const }, ...allSuiteMembers(document).map((member) => ({ profileId: member.reportProfileId, memberId: member.memberId, kind: 'RUN' as const }))]) {
     if (!source.profileId) continue
-    try { await resolveReportProfile(db, targetId, source.profileId) }
-    catch { issues.push({ memberId: source.memberId, code: 'REPORT_PROFILE_NOT_FOUND', message: '报告配置档不存在或不属于当前目标系统', severity: 'error' }) }
+    try {
+      const profile = await resolveReportProfile(db, targetId, source.profileId)
+      assertReportTitleSource(profile.config, source.kind)
+    } catch (error) { issues.push({ memberId: source.memberId, code: 'REPORT_PROFILE_INVALID', message: error instanceof Error ? error.message : '报告配置档不可用', severity: 'error' }) }
   }
   let previousAccountId: string | undefined
-  for (const member of document.members) {
+  for (const member of allSuiteMembers(document)) {
     const [scenario] = await db
       .select()
       .from(scenarios)
@@ -89,7 +92,7 @@ export async function validateSuiteDocument(
 }
 
 export function mergeMemberInput(document: SuiteDocument, memberId: string, runOverride?: Record<string, JsonValue>) {
-  const member = document.members.find((item) => item.memberId === memberId)
+  const member = allSuiteMembers(document).find((item) => item.memberId === memberId)
   return {
     ...(document.sharedInput ?? {}),
     ...(member?.input ?? {}),

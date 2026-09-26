@@ -48,6 +48,8 @@ import {
 import { claimRun, markWorkerStopped, registerWorker } from '../leases/leases.js'
 import { exportDatabase, importDatabase } from '../transfer.js'
 import { expose } from '../database.js'
+import { adjustPlatformConfig } from '../testing.js'
+import { registerPlatformAiSecret } from '../platform-config/index.js'
 
 describe.each(DRIVERS)(
   '%s demonstration transactions and generations',
@@ -89,6 +91,29 @@ describe.each(DRIVERS)(
           name: '示教测试目标',
           entryUrl: 'https://example.test',
         })
+      const secretId = newId()
+      await registerPlatformAiSecret(handle.db, {
+        id: secretId,
+        baseUrl: 'https://model.example/v1',
+        ciphertext: Buffer.from('encrypted'),
+        actor: { id: actorId },
+      })
+      await adjustPlatformConfig(
+        handle,
+        { id: actorId },
+        (document) => ({
+          ...document,
+          browserAi: {
+            ...document.browserAi,
+            enabled: true,
+            baseUrl: 'https://model.example/v1',
+            model: 'demo',
+            modelFamily: 'openai',
+            secretRef: { provider: 'local', secretId },
+          },
+        }),
+        '测试：启用 Browser AI',
+      )
     })
     afterAll(async () => {
       await handle?.close()

@@ -8,7 +8,7 @@ import { createRunWithSnapshot, createScenarioWithVersion, createSuite, createSu
 import { createReport, enqueueReportExport, getReport, getExportJob, loadReportRevisionDocument, claimExportJobs, completeExportJob, cancelExportJob, retryExportJob, getCachedReportArtifacts, deleteReport } from '../reports/reports.js'
 import { saveReportProfile, saveScenarioReportDefaults, listReportProfileVersions } from '../reports/profiles.js'
 import { getExportMaterials, reserveExportArtifact, commitReportMaterial, finishReportMaterials } from '../reports/materials.js'
-import { createReportBundle, deriveMemberReport, getReportBundleFiles } from '../reports/bundles.js'
+import { createReportBundle, deriveMemberReport, getReportBundleFiles, previewMemberReport } from '../reports/bundles.js'
 import { generateDueSuiteReports } from '../reports/automatic.js'
 import { attachArtifactBytes } from '../objects/artifacts.js'
 import { createHash } from 'node:crypto'
@@ -48,7 +48,7 @@ describe.each(DRIVERS)('%s 报告完整交付', { timeout: 60_000 }, (driver) =>
     return (await createSuiteRun(handle.db, { suiteId: definition.id, idempotencyKey: newId() }, actor())).observation
   }
   async function summary(id: string) { return createReport(handle.db, { subject: { kind: 'SUITE_RUN', suiteRunId: id }, scope: 'suite_summary', stage: 'phase', config: { screenshotScope: 'none' }, idempotencyKey: newId() }, actor()) }
-  async function output(grant: Awaited<ReturnType<typeof claim>>, kind: 'report_pdf' | 'report_docx' = 'report_pdf') { const a = await reserveExportArtifact(handle.db, grant, { kind, fileName: 'report.pdf', contentType: 'application/pdf' }); await attachArtifactBytes(handle.db, { artifactId: a.id, byteSize: 12, digest: 'sha256:render' }); return a.id }
+  async function output(grant: Awaited<ReturnType<typeof claim>>, kind: 'report_html' = 'report_html') { const a = await reserveExportArtifact(handle.db, grant, { kind, fileName: 'report.html', contentType: 'text/html; charset=utf-8' }); await attachArtifactBytes(handle.db, { artifactId: a.id, byteSize: 12, digest: 'sha256:render' }); return a.id }
 
   it('配置档 OCC、不可变版本和新运行冻结：修改后旧报告仍使用旧标题', async () => {
     const s = await scenario(), profile = await saveReportProfile(handle.db, null, { targetId, name: newId(), config: { ...DEFAULT_REPORT_CONFIG, title: '第一版 {scenarioName}', includeEvidenceIndex: false, includeAttemptHistory: false }, editScope: 'scenario' }, actor())
@@ -102,22 +102,25 @@ describe.each(DRIVERS)('%s 报告完整交付', { timeout: 60_000 }, (driver) =>
     const made = await report(await run()), identity = await worker(), t = schemaFor(handle.db)
     const ids = []
     for (let index = 0; index < 2; index++) {
-      await enqueueReportExport(handle.db, made.id, made.currentRevision!.id, ['pdf'], actor(), newId())
+      await enqueueReportExport(handle.db, made.id, made.currentRevision!.id, ['html'], actor(), newId())
       const grant = await claim(identity), artifactId = await output(grant); ids.push(artifactId)
       await completeExportJob(handle.db, { ...grant, artifactIds: [artifactId], status: 'complete' })
     }
-    expect((await getCachedReportArtifacts(handle.db, made.currentRevision!.id, ['pdf'], actorId))[0]!.artifact.id).toBe(ids[0])
+    expect((await getCachedReportArtifacts(handle.db, made.currentRevision!.id, ['html'], actorId))[0]!.artifact.id).toBe(ids[0])
     expect((await handle.db.select().from(t.storedObjects).where(eq(t.storedObjects.artifactId, ids[1]!)))[0]!.deleteRequestedAt).toBeTruthy()
   })
 
   it('报告包固定总子修订与取数时间，部分格式失败可重试，删除总报告撤销所有派生件', async () => {
     const parent = await suite(), made = await summary(parent.id), revision = made.currentRevision!.id, identity = await worker()
     expect((await loadReportRevisionDocument(handle.db, revision)).revision.document!.source.groups).toEqual([{ id: 'orders', name: '订单检查' }])
-    const child = await deriveMemberReport(handle.db, revision, { memberId: 'one', config: { title: '独立子标题' }, idempotencyKey: newId() }, actor())
+    const childRequest = { memberId: 'one', config: { title: '独立子标题' }, idempotencyKey: newId() }
+    const preview = await previewMemberReport(handle.db, revision, childRequest, actorId)
+    const child = await deriveMemberReport(handle.db, revision, childRequest, actor())
+    expect(child.currentRevision!.title).toBe(preview.title)
     const childDocument = await loadReportRevisionDocument(handle.db, child.currentRevision!.id)
     expect(childDocument.revision.parentReportRevisionId).toBe(revision)
     expect(childDocument.revision.document!.asOf).toBe((await loadReportRevisionDocument(handle.db, revision)).revision.document!.asOf)
-    const request = { reportRevisionId: revision, formats: ['pdf' as const], includeChildReports: true, idempotencyKey: newId() }
+    const request = { reportRevisionId: revision, formats: ['html' as const], includeChildReports: true, idempotencyKey: newId() }
     const bundle = await createReportBundle(handle.db, request, actor())
     expect((await createReportBundle(handle.db, request, actor())).id).toBe(bundle.id)
     const first = await claim(identity); await completeExportJob(handle.db, { ...first, artifactIds: [await output(first)], status: 'complete' })
@@ -153,13 +156,13 @@ describe.each(DRIVERS)('%s 报告完整交付', { timeout: 60_000 }, (driver) =>
 
   it('导出硬并发上限、失联接管和期限回收不会容许旧持有者提交', async () => {
     const made = await report(await run()), t = schemaFor(handle.db)
-    for (let index = 0; index < 6; index++) await enqueueReportExport(handle.db, made.id, made.currentRevision!.id, ['pdf'], actor(), newId())
+    for (let index = 0; index < 6; index++) await enqueueReportExport(handle.db, made.id, made.currentRevision!.id, ['html'], actor(), newId())
     const identities = await Promise.all(Array.from({ length: 5 }, () => worker()))
     const claims = await Promise.all(identities.map((identity) => claimExportJobs(handle.db, { ...identity, limit: 8 })))
     expect(claims.flat()).toHaveLength(4); expect(claims.every((jobs) => jobs.length <= 1)).toBe(true)
     const index = claims.findIndex((jobs) => jobs.length), old = claims[index]![0]!, owner = identities[index]!
     expect(await claimExportJobs(handle.db, owner)).toHaveLength(0)
-    const orphan = await reserveExportArtifact(handle.db, { jobId: old.id, ...owner, claimEpoch: old.claimEpoch }, { kind: 'report_pdf', fileName: 'uncommitted.pdf', contentType: 'application/pdf' })
+    const orphan = await reserveExportArtifact(handle.db, { jobId: old.id, ...owner, claimEpoch: old.claimEpoch }, { kind: 'report_html', fileName: 'uncommitted.html', contentType: 'text/html; charset=utf-8' })
     await attachArtifactBytes(handle.db, { artifactId: orphan.id, byteSize: 12, digest: 'sha256:orphan' })
     await handle.db.update(t.exportJobs).set({ leaseUntil: new Date(0) }).where(eq(t.exportJobs.id, old.id))
     const next = (await claimExportJobs(handle.db, identities[claims.findIndex((jobs) => !jobs.length)]!))[0]!
@@ -180,7 +183,7 @@ describe.each(DRIVERS)('%s 报告完整交付', { timeout: 60_000 }, (driver) =>
   it('删除运行的预览、清理状态和重试包含报告产物，不提前宣称清理完成', async () => {
     const id = await run(), original = await screenshot(id), made = await report(id, { screenshotScope: 'none' })
     const identity = await worker(), t = schemaFor(handle.db)
-    await enqueueReportExport(handle.db, made.id, made.currentRevision!.id, ['pdf'], actor(), newId())
+    await enqueueReportExport(handle.db, made.id, made.currentRevision!.id, ['html'], actor(), newId())
     const grant = await claim(identity), fileId = await output(grant)
     await completeExportJob(handle.db, { ...grant, artifactIds: [fileId], status: 'complete' })
     expect((await previewDeleteRun(handle.db, id)).counts).toMatchObject({ storedObjects: 2, reports: 1, totalBytes: 24 })
@@ -213,9 +216,9 @@ describe.each(DRIVERS)('%s 报告完整交付', { timeout: 60_000 }, (driver) =>
     const t = schemaFor(handle.db)
     await handle.db.update(t.storedObjects).set({ status: 'purged', purgedAt: new Date() })
     const made = await report(await run()), identity = await worker()
-    await enqueueReportExport(handle.db, made.id, made.currentRevision!.id, ['pdf'], actor(), newId())
+    await enqueueReportExport(handle.db, made.id, made.currentRevision!.id, ['html'], actor(), newId())
     const grant = await claim(identity), bytes = Buffer.from('report-transfer-fixture'), digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
-    const file = await reserveExportArtifact(handle.db, grant, { kind: 'report_pdf', fileName: '中文报告.pdf', contentType: 'application/pdf' })
+    const file = await reserveExportArtifact(handle.db, grant, { kind: 'report_html', fileName: '中文报告.html', contentType: 'text/html; charset=utf-8' })
     await attachArtifactBytes(handle.db, { artifactId: file.id, byteSize: bytes.length, digest })
     await completeExportJob(handle.db, { ...grant, artifactIds: [file.id], status: 'complete' })
     await handle.db.update(t.workers).set({ status: 'STOPPED' })

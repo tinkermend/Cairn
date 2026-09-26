@@ -789,7 +789,7 @@ export async function cancelMapJob(db: Db, jobId: string, actor: ExecutionActor)
 export async function completeMapJobSlice(
   db: Db,
   runId: string,
-  outcome: 'completed' | 'failed' | 'cancelled',
+  outcome: 'completed' | 'failed' | 'cancelled' | 'needs_review',
 ): Promise<{ continue: boolean; jobId: string }> {
   const { mapJobSlices, mapJobs } = schemaFor(db)
   const [slice] = await db.select().from(mapJobSlices).where(eq(mapJobSlices.runId, runId)).limit(1)
@@ -798,6 +798,18 @@ export async function completeMapJobSlice(
     const [job] = await locked(tx, tx.select().from(mapJobs).where(eq(mapJobs.id, slice.jobId)))
     if (!job || job.jobStatus === 'cancelled') return { continue: false, jobId: slice.jobId }
     const now = await clockNow(tx)
+    if (outcome === 'needs_review') {
+      await tx
+        .update(mapJobs)
+        .set({
+          jobStatus: 'needs_review',
+          stopReason: 'action_outcome_unknown',
+          // 保留 activeGuard，阻止同条件新探索作业在未知动作上叠加
+          updatedAt: now,
+        })
+        .where(eq(mapJobs.id, job.id))
+      return { continue: false, jobId: job.id }
+    }
     const stop: MapJobStopReason =
       outcome === 'cancelled' ? 'cancelled' : outcome === 'failed' ? 'slice_failed' : 'completed'
     await tx

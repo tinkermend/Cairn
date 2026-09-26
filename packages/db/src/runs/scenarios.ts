@@ -15,6 +15,7 @@ import {
   effectivePoliciesForSteps,
   FACTORY_COMPILE_RESOLUTION,
   resolutionCapabilitiesFromPlatform,
+  upgradeAuthoringLocatorDocument,
   snapshotNeedsBrowserAi,
   canonicalJson,
   syncSha256,
@@ -73,6 +74,7 @@ import { freezeMapDraftBindingsTx, reconcileMapDraftBindingsTx } from '../map/re
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 import { sha256Hex } from './digest.js'
+import { expireRepairCandidatesOnPublishTx } from '../repair/index.js'
 import {
   computeContentDigest,
   computeContractDigest,
@@ -123,8 +125,13 @@ function authoringExtrasDigest(input: {
   })
 }
 
-function isDraftDirty(draftDocument: unknown, publishedDefinition: unknown): boolean {
+function isDraftDirty(draftDocument: unknown, publishedDefinition: unknown, publishedAuthoringDocument?: unknown): boolean {
   try {
+    // v2 编排文档与编译后的运行定义结构不同；应与发布时冻结的编排文档比较。
+    if (publishedAuthoringDocument) {
+      return sha256Hex(normalizeAuthoringDocument(draftDocument)) !==
+        sha256Hex(normalizeAuthoringDocument(publishedAuthoringDocument))
+    }
     return sourceDocumentDigest(draftDocument) !== sourceDocumentDigest(publishedDefinition)
   } catch {
     return true
@@ -176,6 +183,8 @@ async function compileResolutionFromPlatform(db: Db, targetId?: string): Promise
     targetPreference: layers.targetPreference,
     aiRungAvailable: caps.aiRungAvailable && effectiveCeiling !== 'deterministic_only',
     waitKindsAvailable: caps.waitKindsAvailable,
+    locatorDocument: layers.document,
+    locatorTarget: layers.targetPolicy,
   }
 }
 
@@ -194,6 +203,8 @@ function compileDocument(
       ...FACTORY_COMPILE_RESOLUTION,
       ...options?.resolution,
       documentResolution: options?.resolution?.documentResolution ?? document.resolution,
+      documentLocatorPlan: options?.resolution?.documentLocatorPlan ?? document.locatorPlan,
+      locatorProtocol: options?.resolution?.locatorProtocol ?? document.locatorProtocol,
     },
     ...(outcomeManifest !== undefined ? { outcomeManifest } : {}),
   })
@@ -216,6 +227,8 @@ function parseDocument(input: unknown): ScenarioDocument {
         inputs: input.inputs,
         steps: authoringSteps(input),
         ...(input.resolution ? { resolution: input.resolution } : {}),
+        ...(input.locatorPlan ? { locatorPlan: input.locatorPlan } : {}),
+        ...(input.locatorProtocol === 2 ? { locatorProtocol: 2 as const } : {}),
       })
     }
     return parseScenarioDocument(input)
@@ -474,6 +487,8 @@ async function toDetailDto(
       inputs: authoringDoc.inputs,
       steps: authoringSteps(authoringDoc),
       ...(authoringDoc.resolution ? { resolution: authoringDoc.resolution } : {}),
+      ...(authoringDoc.locatorPlan ? { locatorPlan: authoringDoc.locatorPlan } : {}),
+      ...(authoringDoc.locatorProtocol === 2 ? { locatorProtocol: 2 as const } : {}),
     }
     compiled = compileDocument(
       legacyDoc,
@@ -483,7 +498,7 @@ async function toDetailDto(
       deriveOutcomeManifest({ authoringDocument: authoringDoc }) ?? { entries: [] },
     )
   }
-  const dirty = draft ? isDraftDirty(draft.document, latest.definition) : false
+  const dirty = draft ? isDraftDirty(draft.document, latest.definition, latest.authoringDocument) : false
   return scenarioDetailSchema.parse({
     ...toScenarioDto(row, latest, dirty),
     steps: latest.definition.steps,
@@ -615,7 +630,7 @@ export async function listScenarios(
     if (!latest) throw notFound('SCENARIO_VERSION_NOT_FOUND', '场景版本不存在')
     const draft = draftById.get(row.id)
     items.push(
-      toScenarioDto(row, latest, draft ? isDraftDirty(draft.document, latest.definition) : false),
+      toScenarioDto(row, latest, draft ? isDraftDirty(draft.document, latest.definition, latest.authoringDocument) : false),
     )
   }
   return scenarioListResponseSchema.parse({
@@ -883,23 +898,12 @@ export async function saveScenarioDraft(
           '草稿已包含成功条件或运行期约束，旧客户端不能覆盖为 V1 文档。请更新编辑器。',
         )
       }
-      const hasModuleInvocations = authoringHasModuleInvocations(document)
-      const hasOutcomes = authoringHasOutcomes(document)
-      const isV2 = isAuthoringDocumentV2(input.document) || isV2Document(input.document)
-      let savedDoc: unknown
-      if (isV2 || hasModuleInvocations || hasOutcomes) {
-        savedDoc = document
-      } else {
-        const legacyDoc: ScenarioDocument = {
-          schemaVersion: 1,
-          inputs: document.inputs,
-          steps: authoringSteps(document),
-        }
-        compileDocument(legacyDoc, target, 'save', {
-          resolution: await compileResolutionFromPlatform(tx as unknown as Db, current.targetId),
-        })
-        savedDoc = legacyDoc
-      }
+      const resolution = await compileResolutionFromPlatform(tx as unknown as Db, current.targetId)
+      const savedDoc = upgradeAuthoringLocatorDocument({
+        document,
+        platform: resolution.locatorDocument!,
+        target: resolution.locatorTarget,
+      })
       await reconcileMapDraftBindingsTx(tx as unknown as Db, {
         scenarioId,
         targetId: current.targetId,
@@ -916,7 +920,7 @@ export async function saveScenarioDraft(
         })
         .where(eq(scenarioDrafts.scenarioId, scenarioId))
       await tx.update(scenarios).set({ updatedAt: now }).where(eq(scenarios.id, scenarioId))
-      await syncScenarioModuleRefsTx(tx as unknown as Db, scenarioId, null, document)
+      await syncScenarioModuleRefsTx(tx as unknown as Db, scenarioId, null, savedDoc)
       await recordAudit(
         tx as unknown as Db,
         input.actor,
@@ -1025,6 +1029,7 @@ export async function publishScenarioDraft(
         targetId: current.targetId,
         scenarioVersionId: versionId,
       })
+      await expireRepairCandidatesOnPublishTx(tx, scenarioId, authoringDoc)
       await tx.update(scenarios).set({ updatedAt: now }).where(eq(scenarios.id, scenarioId))
       await recordAudit(
         tx as unknown as Db,
@@ -1049,6 +1054,7 @@ export async function prepareTrialVersion(
     runInput: Readonly<Record<string, unknown>>
     actor: AuditActor
     executableTypes?: readonly string[]
+    overrideDocument?: unknown
   },
 ): Promise<{ versionId: string }> {
   const { scenarioDrafts, scenarioVersions, scenarios } = schemaFor(db)
@@ -1078,7 +1084,7 @@ export async function prepareTrialVersion(
       if (!target.exists) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
       if (target.status === 'disabled')
         throw conflict('TARGET_DISABLED', '目标系统已停用，不能试跑')
-      const authoringDoc = normalizeAuthoringDocument(draft.document)
+      const authoringDoc = normalizeAuthoringDocument(input.overrideDocument ?? draft.document)
       const expandResult = await expandWithLoader(tx as unknown as Db, current.targetId, authoringDoc, 'trial', true)
       if (!expandResult.ok) {
         throw badRequest('SCENARIO_COMPILE_BLOCKED', '试跑编译未通过', {

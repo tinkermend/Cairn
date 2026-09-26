@@ -232,13 +232,19 @@ async function loadPreview(
   if (demonstration.source.targetId !== scenario.targetId)
     throw badRequest('RECORDING_BINDING_FORBIDDEN', '来源与场景必须属于同一目标')
   const document = normalizeAuthoringDocument(draft.document)
+  const freedNodes =
+    body.placement.kind === 'replace_initial' ||
+    body.placement.kind === 'replace' ||
+    body.placement.kind === 'replace_sequence'
+      ? 1
+      : 0
   const preview = previewDemonstration({
     source: demonstration.source,
     recordingDraftId: body.recordingDraftId,
     scenarioId,
     baseRevision: draft.revision,
     placement: body.placement,
-    remainingCapacity: Math.max(0, MAX_AUTHORING_NODES - walkAuthoringNodes(document).length + (body.placement.kind === 'replace_initial' ? 1 : 0)),
+    remainingCapacity: Math.max(0, MAX_AUTHORING_NODES - walkAuthoringNodes(document).length + freedNodes),
   })
   return { scenario, draft, document, preview, demonstration }
 }
@@ -327,10 +333,11 @@ export async function applyDemonstrationImport(
       true,
       options,
     )
-    if (!expanded.ok)
+    if (!expanded.ok) {
       throw badRequest('SCENARIO_COMPILE_BLOCKED', '回填后的草稿未通过编译', {
         diagnostics: expanded.diagnostics,
       })
+    }
     const newRevision = state.draft.revision + 1
     const now = new Date()
     await tx

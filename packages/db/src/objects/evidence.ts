@@ -11,6 +11,7 @@ import {
   isFinishedRunStatus,
   resolveEvidencePolicy,
   shouldCaptureEvidence,
+  readScreenshotPayload,
   readRunVideoPayload,
   requiredScreenshotRole,
   screenshotRoleOf,
@@ -22,6 +23,7 @@ import {
   type JsonValue,
   type RunEvidenceStatus,
   type RunSnapshot,
+  type ServiceDeliveryPolicy,
   type Step,
 } from '@cairn/shared'
 import type { Db } from '../client.js'
@@ -32,6 +34,7 @@ import { toEvidenceMetadata } from './evidence-map.js'
 import { lockRunRow } from '../leases/leases.js'
 import { appendRunEvents } from '../observe/events.js'
 import { commitObjectEvidence, findObjectEvidenceByRunType, markEvidenceMissing } from './objects.js'
+import { recordAudit } from '../audit/record.js'
 
 export type PendingEvidenceRow = EvidenceMetadata & {
   objectId: string | null
@@ -292,6 +295,22 @@ export async function settleRunEvidence(
       await appendRunEvents(tx, runId, [
         { type: 'run.status_changed', payload: { evidenceStatus: next } },
       ])
+
+      if (snapshot.serviceDelivery) {
+        await evaluateAutoReleaseEvidence(tx, {
+          runId,
+          runStatus: run.status,
+          serviceCallerId: run.serviceCallerId,
+          serviceCredentialId: run.serviceCredentialId,
+          deliveryPolicy: snapshot.serviceDelivery,
+          evidenceRows,
+          stepRows,
+          attemptRows,
+          stepsById,
+          secretRef: snapshot.secretRef,
+          credentialBinding: snapshot.credentialBinding,
+        })
+      }
     }
 
     return {
@@ -299,6 +318,126 @@ export async function settleRunEvidence(
       updated: Boolean(updated),
     }
   })
+}
+
+async function evaluateAutoReleaseEvidence(
+  tx: Db,
+  input: {
+    runId: string
+    runStatus: string
+    serviceCallerId: string | null
+    serviceCredentialId?: string | null
+    deliveryPolicy: ServiceDeliveryPolicy
+    evidenceRows: EvidenceRow[]
+    stepRows: Array<{ id: string; stepId: string; ordinal?: number; status?: string }>
+    attemptRows: Array<{ id: string; stepRunId: string; attemptNo: number; status: string; error?: unknown; output?: unknown }>
+    stepsById: Map<string, Step>
+    secretRef?: unknown
+    credentialBinding?: unknown
+  },
+): Promise<string[]> {
+  const { runId, runStatus, deliveryPolicy, evidenceRows, stepRows, attemptRows, stepsById } = input
+  const toReleaseIds: string[] = []
+
+  const ALLOWED_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+  // 1. 终态截图自动交付 (finalScreenshot: true)
+  if (deliveryPolicy.finalScreenshot && runStatus === 'SUCCEEDED') {
+    const finalShot = evidenceRows.find(
+      (r) =>
+        r.type === 'screenshot' &&
+        r.status === 'available' &&
+        ALLOWED_CONTENT_TYPES.has(r.contentType ?? 'image/png') &&
+        (readScreenshotPayload(r.payload)?.role === 'final' || r.artifactKey === 'screenshot:run:final'),
+    )
+    if (finalShot) {
+      const isSensitive = readScreenshotPayload(finalShot.payload)?.sensitive === true
+      if (!isSensitive && finalShot.externalAccess !== 1) {
+        toReleaseIds.push(finalShot.id)
+      }
+    }
+  }
+
+  // 2. 失败现场截图自动交付 (failureScreenshot: true)
+  if (deliveryPolicy.failureScreenshot && (runStatus === 'FAILED' || runStatus === 'NEEDS_REVIEW')) {
+    const failedSteps = stepRows
+      .filter((s) => s.status === 'FAILED')
+      .sort((a, b) => (b.ordinal ?? 0) - (a.ordinal ?? 0))
+    const terminalStep = failedSteps[0]
+
+    let terminalAttempt: (typeof attemptRows)[number] | undefined
+    if (terminalStep) {
+      const stepAttempts = attemptRows
+        .filter((a) => a.stepRunId === terminalStep.id)
+        .sort((a, b) => b.attemptNo - a.attemptNo)
+      terminalAttempt = stepAttempts[0]
+    } else {
+      terminalAttempt = attemptRows
+        .filter((a) => a.status === 'FAILED')
+        .sort((a, b) => b.attemptNo - a.attemptNo)[0]
+    }
+
+    if (terminalAttempt) {
+      const err = terminalAttempt.error as { code?: string } | null | undefined
+      const errCode = typeof err?.code === 'string' ? err.code : ''
+      const isAuthError = errCode.startsWith('AUTH_') || errCode === 'AUTH_GATE_CLOSED'
+
+      const stepRow = stepRows.find((s) => s.id === terminalAttempt.stepRunId)
+      const step = stepRow ? stepsById.get(stepRow.stepId) : undefined
+      const inputEvidence = evidenceRows.find(
+        (r) => r.attemptId === terminalAttempt.id && r.type === 'input',
+      )
+      const stepInputStr = JSON.stringify(step?.input ?? '')
+      const hasSecretRef = Boolean(
+        (step?.type as string) === 'authenticate' ||
+          (step?.type as string) === 'auth' ||
+          (step as any)?.secretRef ||
+          stepInputStr.includes('[redacted]') ||
+          JSON.stringify(inputEvidence?.payload ?? '').includes('[redacted]') ||
+          JSON.stringify(terminalAttempt.error ?? '').includes('[redacted]') ||
+          JSON.stringify(terminalAttempt.output ?? '').includes('[redacted]'),
+      )
+
+      const errorShot = evidenceRows.find(
+        (r) =>
+          r.attemptId === terminalAttempt.id &&
+          r.type === 'screenshot' &&
+          r.status === 'available' &&
+          ALLOWED_CONTENT_TYPES.has(r.contentType ?? 'image/png') &&
+          (readScreenshotPayload(r.payload)?.role === 'on_error' || (r.artifactKey && r.artifactKey.includes(':on_error:'))),
+      )
+
+      const isSensitiveShot = readScreenshotPayload(errorShot?.payload)?.sensitive === true
+
+      if (errorShot && !isAuthError && !hasSecretRef && !isSensitiveShot && errorShot.externalAccess !== 1) {
+        toReleaseIds.push(errorShot.id)
+      }
+    }
+  }
+
+  if (toReleaseIds.length > 0) {
+    const { evidences } = schemaFor(tx)
+    await tx
+      .update(evidences)
+      .set({
+        externalAccess: 1,
+        externalAccessSource: 'auto',
+      })
+      .where(inArray(evidences.id, toReleaseIds))
+
+    await recordAudit(
+      tx,
+      input.serviceCallerId && input.serviceCredentialId
+        ? { id: input.serviceCallerId, kind: 'service', credentialId: input.serviceCredentialId }
+        : { id: input.serviceCallerId ?? 'system', kind: 'service' },
+      'evidence.auto_release',
+      'run',
+      runId,
+      `系统根据调用方交付策略自动放行证据（共 ${toReleaseIds.length} 项: ${toReleaseIds.join(', ')}）`,
+    )
+  }
+
+  return toReleaseIds
 }
 
 type RequiredSlot = {

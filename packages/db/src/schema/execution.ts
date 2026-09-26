@@ -272,6 +272,7 @@ export const evidences = cairnSchema.table(
     digest: text('digest'),
     missingReason: text('missing_reason'),
     externalAccess: integer('external_access').notNull().default(0),
+    externalAccessSource: text('external_access_source').$type<'manual' | 'auto'>(),
     uploadAttempts: integer('upload_attempts').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

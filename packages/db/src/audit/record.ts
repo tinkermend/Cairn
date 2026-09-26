@@ -1,5 +1,6 @@
 import {
   AUDIT_USER_AGENT_MAX,
+  entityIdSchema,
   executionActorSchema,
   normalizeLoginIdentifier,
   type ExecutionActor,
@@ -12,8 +13,8 @@ import { schemaFor } from '../native.js'
 import type { Db } from '../client.js'
 import { newId } from '../id.js'
 
-/** 审计主体。只带 id——展示用的名字由读取侧 join，不写进事件行。 */
-export type AuditActor = { id: string }
+/** 审计主体。可为 ExecutionActor 或仅带 id 的控制台/服务主体。 */
+export type AuditActor = ExecutionActor | { id: string; kind?: 'console' | 'service' }
 
 export type LoginAuditWrite = {
   identifier: string
@@ -39,7 +40,7 @@ function clientFields(client?: AuditClient) {
  */
 export async function recordAudit(
   tx: Db,
-  actor: ExecutionActor,
+  actor: AuditActor,
   action: AuditAction,
   resource: string,
   resourceId: string | null,
@@ -49,14 +50,22 @@ export async function recordAudit(
   if (action === 'auth.login') {
     throw new Error('登录事件必须走 recordLoginAudit')
   }
-  actor = executionActorSchema.parse(actor)
+  const isService = actor.kind === 'service'
+  const isActorValidUuid = typeof actor.id === 'string' && entityIdSchema.safeParse(actor.id).success
+  const credentialId =
+    'credentialId' in actor && typeof actor.credentialId === 'string' && entityIdSchema.safeParse(actor.credentialId).success
+      ? actor.credentialId
+      : null
+  const requestId = 'requestId' in actor && typeof actor.requestId === 'string' ? actor.requestId : undefined
+  const hasCompleteServiceActor = Boolean(isService && isActorValidUuid && credentialId)
+
   const { consoleAuditEvents } = schemaFor(tx)
   await tx.insert(consoleAuditEvents).values({
     id: newId(),
-    actorConsoleAccountId: actor.kind === 'service' ? null : actor.id,
-    actorServiceCallerId: actor.kind === 'service' ? actor.id : null,
-    actorServiceCredentialId: actor.kind === 'service' ? actor.credentialId : null,
-    requestId: actor.kind === 'service' ? actor.requestId : undefined,
+    actorConsoleAccountId: !isService && isActorValidUuid ? actor.id : null,
+    actorServiceCallerId: hasCompleteServiceActor ? actor.id : null,
+    actorServiceCredentialId: hasCompleteServiceActor ? credentialId : null,
+    requestId: isService ? requestId : undefined,
     action,
     resource,
     resourceId,

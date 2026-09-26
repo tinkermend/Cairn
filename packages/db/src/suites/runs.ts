@@ -379,7 +379,8 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
     throw badRequest('SUITE_MEMBER_LIMIT', `成员数须为 1–${MAX_SUITE_MEMBERS}`)
   }
   const { suite, version, document } = await resolvePublishedVersion(db, input.suiteId, preview.suiteVersionId)
-  await lockReportDefaults(db, document.members.map((member) => member.scenarioId), [document.reportProfileId, ...document.members.map((member) => member.reportProfileId)].filter((id): id is string => !!id))
+  const documentMembers = allSuiteMembers(document)
+  await lockReportDefaults(db, documentMembers.map((member) => member.scenarioId), [document.reportProfileId, ...documentMembers.map((member) => member.reportProfileId)].filter((id): id is string => !!id))
   await assertTargetPermission(db, actor.id, suite.targetId, 'run:execute')
   const layers = await loadResolutionLayers(db, suite.targetId)
   for (const member of preview.members) {
@@ -445,7 +446,24 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
         createdAt: now,
         updatedAt: now,
       })
-      if (document.autoGenerateFinalReport) await tx.insert(suiteReportTriggers).values({ suiteRunId, status: 'pending', createdAt: now, updatedAt: now })
+      const effectiveOutputPolicy = (document as any).outputPolicy ?? {
+        autoGenerateReport: Boolean(document.autoGenerateFinalReport),
+        reportProfileId: document.reportProfileId,
+        memberReportPolicy: 'inherit',
+      }
+      if (effectiveOutputPolicy.autoGenerateReport) {
+        await tx.insert(suiteReportTriggers).values({ suiteRunId, status: 'pending', createdAt: now, updatedAt: now })
+        const { reportTriggers } = schemaFor(tx)
+        await tx.insert(reportTriggers).values({
+          subjectKind: 'SUITE_RUN',
+          subjectId: suiteRunId,
+          status: 'pending',
+          idempotencyKey: `auto-suite-report:${suiteRunId}`,
+          createdAt: now,
+          updatedAt: now,
+        })
+      }
+      const suppressMember = effectiveOutputPolicy.memberReportPolicy === 'suppress'
       const created: { memberId: string; ordinal: number; runId: string; skip: string | null }[] = []
       let snapshotBytes = Buffer.byteLength(JSON.stringify(snapshot), 'utf8')
       const stages = effectiveSuiteStages(document)
@@ -469,7 +487,7 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
             executionOrigin: 'suite_member',
             suiteRunId,
             suiteMemberId: member.memberId,
-            reportDefaults: { profileId: memberDef?.reportProfileId, displayName: member.displayName },
+            reportDefaults: { profileId: memberDef?.reportProfileId, displayName: member.displayName, suppressMemberReport: suppressMember },
             suiteAdmission: {
               protocol: SUITE_ADMISSION_PROTOCOL,
               suiteRunId,
@@ -501,6 +519,9 @@ async function createSuiteRunTx(db: Db, input: CreateSuiteRunBody, actor: Execut
           })
           if (skip) {
             await requestRunCancel(tx, written.runId, actor)
+            const { reportTriggers } = schemaFor(tx)
+            await tx.update(reportTriggers).set({ status: 'skipped', reason: 'member_skipped', updatedAt: new Date() })
+              .where(and(eq(reportTriggers.subjectKind, 'RUN'), eq(reportTriggers.subjectId, written.runId)))
           }
         } else {
           // Lazy stage run creation: Subsequent stages pre-register with childRunId = null
@@ -658,6 +679,9 @@ export async function advanceSuiteRunTx(tx: Db, suiteRunId: string): Promise<voi
         item.admissionStatus = 'SKIPPED'
         if (item.childRunId) {
           await requestRunCancel(tx, item.childRunId, { kind: 'console', id: parent.createdByConsoleAccountId })
+          const { reportTriggers } = schemaFor(tx)
+          await tx.update(reportTriggers).set({ status: 'skipped', reason: 'member_skipped', updatedAt: new Date() })
+            .where(and(eq(reportTriggers.subjectKind, 'RUN'), eq(reportTriggers.subjectId, item.childRunId)))
         }
       }
     }
@@ -721,6 +745,8 @@ export async function advanceSuiteRunTx(tx: Db, suiteRunId: string): Promise<voi
         })
         const effectiveInput = interpolateStageVariables(rawInput, stageOutputs)
 
+        const parentDoc = (parent.snapshot as any)?.document ?? (parent.snapshot as any)
+        const suppressMember = parentDoc?.outputPolicy?.memberReportPolicy === 'suppress'
         const written = await writeRunWithSnapshot(tx, {
           scenarioId: r.item.scenarioId,
           scenarioVersionId: r.item.scenarioVersionId,
@@ -732,7 +758,7 @@ export async function advanceSuiteRunTx(tx: Db, suiteRunId: string): Promise<voi
           executionOrigin: 'suite_member',
           suiteRunId,
           suiteMemberId: r.item.memberId,
-          reportDefaults: { profileId: memberDef.reportProfileId, displayName: r.item.displayName },
+          reportDefaults: { profileId: memberDef.reportProfileId, displayName: r.item.displayName, suppressMemberReport: suppressMember },
           suiteAdmission: {
             protocol: SUITE_ADMISSION_PROTOCOL,
             suiteRunId,
@@ -931,6 +957,8 @@ export async function rerunSuiteItem(
     const originalRunId = item.originalRunId ?? item.childRunId
     const newRerunCount = (item.rerunCount ?? 0) + 1
 
+    const parentDoc = (parent.snapshot as any)?.document ?? (parent.snapshot as any)
+    const suppressMember = parentDoc?.outputPolicy?.memberReportPolicy === 'suppress'
     const written = await writeRunWithSnapshot(tx, {
       scenarioId: item.scenarioId,
       scenarioVersionId: item.scenarioVersionId,
@@ -942,7 +970,7 @@ export async function rerunSuiteItem(
       executionOrigin: 'suite_member',
       suiteRunId: input.suiteRunId,
       suiteMemberId: item.memberId,
-      reportDefaults: { profileId: memberDef.reportProfileId, displayName: item.displayName },
+      reportDefaults: { profileId: memberDef.reportProfileId, displayName: item.displayName, suppressMemberReport: suppressMember },
       suiteAdmission: {
         protocol: SUITE_ADMISSION_PROTOCOL,
         suiteRunId: input.suiteRunId,

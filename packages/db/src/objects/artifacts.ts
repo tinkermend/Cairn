@@ -21,6 +21,7 @@ export async function createArtifact(
     contentType: string
     retainUntil: Date
     actorId?: string
+    serviceCallerId?: string
     exportJobId?: string
     reportRevisionId?: string
   },
@@ -38,6 +39,7 @@ export async function createArtifact(
       contentType: input.contentType,
       retainUntil: input.retainUntil,
       createdByConsoleAccountId: input.actorId ?? null,
+      serviceCallerId: input.serviceCallerId ?? null,
       exportJobId: input.exportJobId,
       reportRevisionId: input.reportRevisionId,
     })
@@ -64,7 +66,7 @@ export async function getArtifact(
   const [artifact] = await db.select().from(artifacts).where(eq(artifacts.id, artifactId)).limit(1)
   if (!artifact) throw notFound('ARTIFACT_NOT_FOUND', '产物不存在')
   if (actorId) await assertTargetPermission(db, actorId, artifact.targetId, permission)
-  if (['report_docx', 'report_pdf', 'report_bundle'].includes(artifact.kind)) {
+  if (['report_html', 'report_bundle'].includes(artifact.kind)) {
     const [source] = await db.select({ reportId: exportJobs.reportId }).from(exportJobArtifacts)
       .innerJoin(exportJobs, eq(exportJobs.id, exportJobArtifacts.jobId))
       .where(and(eq(exportJobArtifacts.artifactId, artifactId), inArray(exportJobs.status, ['complete', 'partial']))).limit(1)

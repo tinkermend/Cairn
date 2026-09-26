@@ -278,7 +278,7 @@ export async function closeOpenBindings(
 export async function revokeExternalEvidence(tx: Db, runIds: string[]): Promise<void> {
   if (runIds.length === 0) return
   const { evidences, reports, suiteRunItems } = schemaFor(tx)
-  await tx.update(evidences).set({ externalAccess: 0 }).where(inArray(evidences.runId, runIds))
+  await tx.update(evidences).set({ externalAccess: 0, externalAccessSource: null }).where(inArray(evidences.runId, runIds))
   const parents = await tx.select({ id: suiteRunItems.suiteRunId }).from(suiteRunItems).where(inArray(suiteRunItems.childRunId, runIds))
   const related = await tx.select({ id: reports.id }).from(reports).where(or(inArray(reports.runId, runIds), parents.length ? inArray(reports.suiteRunId, parents.map((row) => row.id)) : undefined))
   const { revokeReportTrees } = await import('./reports/cleanup.js')

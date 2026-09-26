@@ -531,6 +531,7 @@ export type AttemptRow = {
 
 export type EvidenceRow = {
   externalAccess?: number
+  externalAccessSource?: 'manual' | 'auto' | null
   id: string
   status: 'available' | 'pending' | 'missing'
   createdAt: Date

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, exists, gt, gte, inArray, isNull, like, lt, lte, or, sql } from 'drizzle-orm'
 import {
   canonicalJson,
   notificationActionSchema,
@@ -189,6 +189,30 @@ export async function listNotificationEvents(db: Db, actorId: string, raw: unkno
         input.scenarioId ? eq(e.scenarioId, input.scenarioId) : undefined,
         input.runId ? eq(e.runId, input.runId) : undefined,
         input.alertId ? eq(e.alertId, input.alertId) : undefined,
+        input.search
+          ? or(
+              sql`cast(${e.id} as text) like ${'%' + input.search.toLowerCase() + '%'}`,
+              sql`cast(${e.runId} as text) like ${'%' + input.search.toLowerCase() + '%'}`,
+              sql`cast(${e.alertId} as text) like ${'%' + input.search.toLowerCase() + '%'}`,
+              sql`cast(${e.targetId} as text) like ${'%' + input.search.toLowerCase() + '%'}`,
+              sql`lower(${e.sourceKey}) like ${'%' + input.search.toLowerCase() + '%'}`,
+              sql`cast(${e.payload} as text) like ${'%' + input.search.toLowerCase() + '%'}`,
+              exists(
+                db
+                  .select({ one: sql`1` })
+                  .from(d)
+                  .where(
+                    and(
+                      eq(d.eventId, e.id),
+                      or(
+                        sql`cast(${d.id} as text) like ${'%' + input.search.toLowerCase() + '%'}`,
+                        sql`lower(${d.recipientLabel}) like ${'%' + input.search.toLowerCase() + '%'}`,
+                      ),
+                    ),
+                  ),
+              ),
+            )
+          : undefined,
         input.from ? gte(e.occurredAt, new Date(input.from)) : undefined,
         input.to ? lte(e.occurredAt, new Date(input.to)) : undefined,
         before

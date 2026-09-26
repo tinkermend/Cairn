@@ -26,6 +26,7 @@ import {
   requiredRunInputKeys,
   scenarioInputsToJsonSchema,
   snapshotNeedsBrowserAi,
+  isAiStepType,
   isAiCallEvidence,
   issueServiceCredentialSchema,
   isIpAllowedByAllowlist,
@@ -65,6 +66,10 @@ import {
   type ServicePageQuery,
   type ServicePrincipal,
   type ServiceScope,
+  DEFAULT_SERVICE_DELIVERY_POLICY,
+  LEGACY_SERVICE_DELIVERY_POLICY,
+  projectExternalRunOutput,
+  type RunOutput,
 } from "@cairn/shared";
 import type { Db } from "../client.js";
 import { atomic, clockNow, locked, schemaFor } from "../native.js";
@@ -340,6 +345,7 @@ async function callerDto(
   };
   return {
     ...row,
+    deliveryPolicy: row.deliveryPolicy ?? DEFAULT_SERVICE_DELIVERY_POLICY,
     outstandingRuns: resolvedCounts.outstandingRuns,
     credentialCount: resolvedCounts.credentialCount,
     archivedAt: iso(row.archivedAt),
@@ -1613,6 +1619,9 @@ async function publicRun(db: Db, id: string, results = false) {
         output: approved.find((e) => e.attemptId === a.id)?.payload ?? null,
       })),
     })),
+    runOutput: (results && detail.snapshot?.serviceDelivery?.runOutput && detail.output)
+      ? projectExternalRunOutput(detail.output as RunOutput, detail.snapshot.outputs)
+      : null,
   });
 }
 export async function createServiceRun(
@@ -1650,12 +1659,29 @@ export async function createServiceRun(
           "RUN_IDEMPOTENCY_CONFLICT",
           "相同幂等键对应不同的运行输入",
         );
+      const existingRes = existing.snapshot.resolution;
+      const existingNeedsAi = existingRes?.protocol === "snapshot.resolution@2"
+        ? existing.snapshot.steps.some((step) => !step.disabled && isAiStepType(step.type)) ||
+          Object.values(existingRes.steps).some((plan) => plan.actual.some((route) => route !== "rule"))
+        : snapshotNeedsBrowserAi(existing.snapshot.steps, existingRes?.protocol === "snapshot.resolution@1" ? existingRes.steps : undefined);
       if (
-        snapshotNeedsBrowserAi(existing.snapshot.steps, existing.snapshot.resolution?.steps) &&
+        existingNeedsAi &&
         !credential.scopes.includes("ai:execute")
       )
         throw forbidden("SERVICE_SCOPE_DENIED", "服务凭据没有 AI 执行权限");
       return { detail: await publicRun(tx, existing.id), created: false };
+    }
+    const { scenarioReportDefaults } = schemaFor(tx);
+    const [scenarioReportDefault] = await tx
+      .select({ outputPolicy: scenarioReportDefaults.outputPolicy })
+      .from(scenarioReportDefaults)
+      .where(eq(scenarioReportDefaults.scenarioId, input.scenarioId))
+      .limit(1);
+    if (
+      scenarioReportDefault?.outputPolicy?.autoGenerateReport &&
+      !credential.scopes.includes("report:export")
+    ) {
+      throw forbidden("SERVICE_SCOPE_DENIED", "场景已配置自动生成报告，但服务凭据没有报告导出权限 (report:export)");
     }
     const [resolved] = await tx
       .select({
@@ -1723,6 +1749,7 @@ export async function createServiceRun(
       hangWaitMs,
       externalIdempotencyDigest: digest,
       deadlineAt: new Date(now.getTime() + caller.runTimeoutSeconds * 1000),
+      serviceDelivery: caller.deliveryPolicy ?? LEGACY_SERVICE_DELIVERY_POLICY,
       serviceAdmission: serviceAdmissionSchema.parse({
         version: 1,
         requestId,
@@ -1926,7 +1953,10 @@ export async function releaseServiceEvidence(
       );
     await tx
       .update(e)
-      .set({ externalAccess: allowed ? 1 : 0 })
+      .set({
+        externalAccess: allowed ? 1 : 0,
+        externalAccessSource: allowed ? "manual" : null,
+      })
       .where(eq(e.id, evidenceId));
     await recordAudit(
       tx,
@@ -1936,7 +1966,11 @@ export async function releaseServiceEvidence(
       runId,
       `${allowed ? "允许" : "禁止"}证据对外访问 ${evidenceId}`,
     );
-    return { id: evidenceId, externalAccess: allowed };
+    return {
+      id: evidenceId,
+      externalAccess: allowed,
+      externalAccessSource: allowed ? "manual" : null,
+    };
   });
 }
 export async function serviceEvidence(
@@ -1993,6 +2027,7 @@ export async function serviceEvidence(
         contentType: r.contentType,
         byteSize: r.byteSize,
         createdAt: iso(r.createdAt),
+        externalAccessSource: (r.externalAccessSource as "manual" | "auto" | null) ?? null,
         ...(r.type === "output" ? { payload: r.payload } : {}),
       })),
     };
@@ -2094,4 +2129,3 @@ export async function serviceToolsCatalog(
     };
   });
 }
-

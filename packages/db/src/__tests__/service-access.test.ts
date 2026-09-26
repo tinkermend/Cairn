@@ -577,6 +577,23 @@ describe.each(DRIVERS)('%s controlled service execution', (driver) => {
     expect(
       (await api.getServiceCaller(f.db, f.caller.id)).credentials
     ).toHaveLength(1)
+    const platform = await api.getOrCreatePlatformConfig(f.db)
+    await api.updatePlatformConfig(f.db, {
+      expectedRevision: platform.revision,
+      actor: f.actor,
+      reason: 'enable browserAi for AI scope test',
+      document: {
+        ...platform.document,
+        browserAi: {
+          ...platform.document.browserAi,
+          enabled: true,
+          baseUrl: 'https://example.com/v1',
+          model: 'dummy-model',
+          modelFamily: 'gemini',
+          secretRef: { provider: 'local', secretId: api.newId() },
+        },
+      },
+    })
     const aiScenario = await api.createScenarioWithVersion(f.db, {
       targetId: f.target.id,
       name: 'AI 权限验收',

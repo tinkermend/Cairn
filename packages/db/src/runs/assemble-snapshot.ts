@@ -15,6 +15,9 @@ import {
   effectivePoliciesForSteps,
   FACTORY_COMPILE_RESOLUTION,
   freezeResolutionSnapshot,
+  frozenLocatorResolutionSchema,
+  LOCATOR_RESOLUTION_PROTOCOL,
+  resolveLocatorPlansForSteps,
   mergeResolutionCeiling,
   parseTargetResolutionPolicy,
   loginScopeFromTargetUrl,
@@ -42,11 +45,16 @@ import {
   type ControlFlowManifest,
   type PlatformConfigDocument,
   type ResolutionPolicy,
+  type LocatorPlan,
+  type LocatorResolution,
+  type LocatorRoute,
   type RunSnapshot,
   type ScenarioOutputDecl,
+  type ServiceDeliveryPolicy,
   type SessionPolicyOverride,
   type Step,
   type SuiteAdmissionSnapshot,
+  type ValidationSubject,
 } from '@cairn/shared'
 import { computeSnapshotDigest } from './digest.js'
 
@@ -76,6 +84,7 @@ export function resolveAssembledAiExecution(input: {
   targetCeiling?: ResolutionPolicy
   targetPreference?: ResolutionPolicy
   effectiveSteps?: Readonly<Record<string, ResolutionPolicy>>
+  locatorPlans?: Readonly<Record<string, LocatorResolution>>
 }): AiExecutionConfig | undefined {
   const document = input.platformDocument ?? FACTORY_PLATFORM_CONFIG
   const policy = resolvePlatformExecutionPolicy(input.executionPolicyOverride, document.execution)
@@ -95,7 +104,13 @@ export function resolveAssembledAiExecution(input: {
       },
       document.browserAi.enabled,
     )
-  const needsAi = snapshotNeedsBrowserAi(input.steps, effective)
+  const requiredLocatorRoutes = input.locatorPlans
+    ? [...new Set(Object.values(input.locatorPlans).flatMap((plan) => plan.actual))] as LocatorRoute[]
+    : undefined
+  const needsAi = requiredLocatorRoutes
+    ? input.steps.some((step) => !step.disabled && (step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert')) ||
+      requiredLocatorRoutes.some((route) => route !== 'rule')
+    : snapshotNeedsBrowserAi(input.steps, effective)
   if (!needsAi) return undefined
   let aiExecution = input.aiExecution
   if (!aiExecution) {
@@ -108,6 +123,7 @@ export function resolveAssembledAiExecution(input: {
         targetCeiling: input.targetCeiling,
         targetPreference: input.targetPreference,
         effectiveSteps: effective,
+        requiredLocatorRoutes,
       })
     } catch (error) {
       const code =
@@ -174,8 +190,12 @@ export type AssembleRunSnapshotInput = {
   mapConsumption: FrozenMapConsumption
   suiteAdmission?: SuiteAdmissionSnapshot
   documentResolution?: ResolutionPolicy
+  documentLocatorPlan?: LocatorPlan
+  locatorProtocol?: 2
   outputs?: ScenarioOutputDecl
+  serviceDelivery?: ServiceDeliveryPolicy
   pauseBeforeStepId?: string
+  validationSubject?: ValidationSubject
 }
 
 export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapshot & { digest: string } {
@@ -192,6 +212,21 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
   const policy = resolvePlatformExecutionPolicy(input.executionPolicyOverride, document.execution)
   const resolutionCaps = resolutionCapabilitiesFromPlatform(document)
   const targetResolution = parseTargetResolutionPolicy(input.target.resolutionPolicy)
+  const useLocatorV2 = Boolean(input.locatorProtocol === 2 || input.documentLocatorPlan || input.steps.some((step) => step.policy?.locatorPlan))
+  let locatorPlans: Record<string, LocatorResolution> | undefined
+  if (useLocatorV2) {
+    try {
+      locatorPlans = resolveLocatorPlansForSteps({
+        steps: input.steps,
+        document,
+        target: targetResolution,
+        scenarioPlan: input.documentLocatorPlan,
+        scenarioPolicy: input.documentResolution,
+      })
+    } catch (error) {
+      throw new AssembleRunSnapshotError('LOCATOR_ROUTE_UNAVAILABLE', error instanceof Error ? error.message : '定位计划不可用')
+    }
+  }
   const effectiveSteps = effectivePoliciesForSteps(
     input.steps,
     {
@@ -223,7 +258,7 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
         (step.type === 'ai_extract' && step.input.outputSchema?.kind === 'list'),
     )
       ? { listOutputProtocol: LIST_OUTPUT_PROTOCOL } : {}),
-    ...(input.outcomeManifest?.entries.some((entry) => entry.provenance === 'imported')
+    ...(input.outcomeManifest?.entries.some((entry) => entry.provenance === 'imported' || entry.provenance === 'generalized')
       ? { importedOutcomeProtocol: IMPORTED_OUTCOME_PROTOCOL } : {}),
     moduleManifest: input.moduleManifest ?? undefined,
     ...(input.moduleManifest?.candidateGroups?.length
@@ -241,7 +276,9 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
         ? { controlFlow: { protocol: CONTROL_FLOW_PROTOCOL, blocks: [] } }
         : {}),
     ...(input.outputs ? { outputs: input.outputs } : {}),
+    ...(input.serviceDelivery ? { serviceDelivery: input.serviceDelivery } : {}),
     ...(input.pauseBeforeStepId ? { pauseBeforeStepId: input.pauseBeforeStepId } : {}),
+    ...(input.validationSubject ? { validationSubject: input.validationSubject } : {}),
     input: input.input,
     createdAt: input.createdAt.toISOString(),
     ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),
@@ -283,6 +320,7 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
       targetCeiling: targetResolution?.ceiling,
       targetPreference: targetResolution?.preference,
       effectiveSteps,
+      locatorPlans,
     }),
     mapCapturePolicy: resolveMapCapturePolicy(
       input.mapJob ? { ...input.mapCapturePolicyOverride, enabled: true } : input.mapCapturePolicyOverride,
@@ -298,7 +336,16 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
       return aiTaskEvidence ? { aiTaskEvidence } : {}
     })(),
   }
-  const frozenResolution = freezeResolutionSnapshot({
+  const frozenResolution = locatorPlans ? frozenLocatorResolutionSchema.parse({
+    protocol: LOCATOR_RESOLUTION_PROTOCOL,
+    allowed: [...new Set(Object.values(locatorPlans).flatMap((plan) => plan.allowed).concat(
+      Object.keys(locatorPlans).length === 0 ? (document.locator?.limits.allowed ?? ['rule']) : [],
+    ))],
+    steps: Object.fromEntries(Object.entries(locatorPlans).map(([id, plan]) => [id, {
+      requested: plan.requested, actual: plan.actual, skipped: plan.skipped, source: plan.source,
+    }])),
+    ...(input.platformRevision ? { textConfigVersion: String(input.platformRevision), visionConfigVersion: String(input.platformRevision) } : {}),
+  }) : freezeResolutionSnapshot({
     ceiling: mergeResolutionCeiling({
       ceiling: resolutionCaps.ceiling,
       targetCeiling: targetResolution?.ceiling,
