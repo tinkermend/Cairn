@@ -165,7 +165,12 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
             applied,
             config.CAIRN_RUN_EVENT_PAGE_SIZE,
           )
-          for (const event of page) sendEvent(event)
+          for (const event of page) {
+            if (event.type === 'run.report_changed' && !input.account.permissions.includes('report:read')) {
+              continue
+            }
+            sendEvent(event)
+          }
           if (closed) return
           if (page.length < config.CAIRN_RUN_EVENT_PAGE_SIZE) break
         }
@@ -232,6 +237,10 @@ export class ObserveService implements OnModuleInit, OnModuleDestroy {
       })
       close()
       return
+    }
+    if (!input.account.permissions.includes('report:read')) {
+      const { runReportStatus, reportId, reportError, ...restRun } = initial.run
+      initial.run = restRun as any
     }
     const cursor = diagnoseRunEventCursor({
       runId: input.runId,

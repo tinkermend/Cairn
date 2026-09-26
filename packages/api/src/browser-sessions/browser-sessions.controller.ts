@@ -125,6 +125,17 @@ export class BrowserSessionsController {
     })
   }
 
+  @Post(':sessionId/browser/pages/:pageId/close')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control')
+  closePage(
+    @Param('sessionId', new ZodValidationPipe(entityIdSchema)) sessionId: string,
+    @Param('pageId') pageId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.sessions.closeManagedPage(sessionId, pageId, actor)
+  }
+
   @Post(':sessionId/observe')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('session:read', 'session:view', 'workflow:write')
@@ -290,6 +301,17 @@ export class SessionOperationsController {
       response: res,
       signal: abortWhenSseClientDrops(req, res),
     })
+  }
+
+  @Post(':operationId/browser/pages/:pageId/close')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control')
+  closePage(
+    @Param('operationId', new ZodValidationPipe(entityIdSchema)) operationId: string,
+    @Param('pageId') pageId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.sessions.closeManagedPage(operationId, pageId, actor)
   }
 }
 

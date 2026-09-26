@@ -37,6 +37,7 @@ import {
 import {
   DEFAULT_MANAGED_BROWSER_CAPABILITIES,
   canObserveManagedFrames,
+  closeManagedPageResponseSchema,
   evaluateWorkerRoute,
   hasPermission,
   isSessionIdleOnlyKind,
@@ -248,6 +249,16 @@ export class BrowserSessionsService {
       JSON.stringify(observeOperationSchema.parse(body)),
     )
     return targetObservationSchema.parse(raw)
+  }
+
+  async closeManagedPage(ownerId: string, pageId: string, actor: RequestAccount) {
+    const raw = await this.forwardJson(
+      ownerId,
+      actor,
+      workerInternalPath(`/pages/${encodeURIComponent(pageId)}/close`),
+      JSON.stringify({}),
+    )
+    return closeManagedPageResponseSchema.parse(raw)
   }
 
   async browserMeta(ownerId: string, actor: RequestAccount, pageId?: string) {

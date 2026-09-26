@@ -92,18 +92,24 @@ export class AssistantModelSession {
     messages: { role: 'system' | 'user'; content: string }[],
     signal?: AbortSignal,
     allowRepair = false,
-  ): Promise<{ ok: true; value: T } | { ok: false; message: string }> {
+  ): Promise<{ ok: true; value: T } | { ok: false; message: string; code?: 'MODEL_UNAVAILABLE' | 'MODEL_TIMEOUT' | 'MODEL_INVALID_OUTPUT' | 'BUDGET_EXHAUSTED' | 'INTENT_UNSUPPORTED' }> {
     const first = await this.call(purpose, messages, signal)
     if (!first.ok) return first
     const parsed = this.parse(schema, first.text)
     if (parsed.ok) return parsed
-    if (!allowRepair || this.used >= this.access.maxCallsPerTurn) return parsed
+    if (!allowRepair || this.used >= this.access.maxCallsPerTurn) {
+      return { ok: false, code: 'MODEL_INVALID_OUTPUT', message: parsed.message }
+    }
     const repaired = await this.call(`${purpose}-repair`, [
       ...messages,
       { role: 'user', content: `上一次输出无法通过契约：${parsed.message}。请只输出合法 JSON。` },
     ], signal)
     if (!repaired.ok) return repaired
-    return this.parse(schema, repaired.text)
+    const repairedParsed = this.parse(schema, repaired.text)
+    if (!repairedParsed.ok) {
+      return { ok: false, code: 'MODEL_INVALID_OUTPUT', message: repairedParsed.message }
+    }
+    return repairedParsed
   }
 
   private parse<T>(schema: z.ZodType<T>, text: string): { ok: true; value: T } | { ok: false; message: string } {
@@ -120,12 +126,12 @@ export class AssistantModelSession {
     purpose: string,
     messages: { role: 'system' | 'user'; content: string }[],
     signal?: AbortSignal,
-  ): Promise<{ ok: true; text: string } | { ok: false; message: string }> {
+  ): Promise<{ ok: true; text: string } | { ok: false; message: string; code: 'MODEL_UNAVAILABLE' | 'MODEL_TIMEOUT' | 'BUDGET_EXHAUSTED' }> {
     if (this.used >= this.access.maxCallsPerTurn) {
-      return { ok: false, message: '本轮模型调用次数已用尽' }
+      return { ok: false, code: 'BUDGET_EXHAUSTED', message: '本轮模型调用次数已用尽' }
     }
     if (Date.now() >= this.access.deadlineAt.getTime()) {
-      return { ok: false, message: '本轮模型时间已用尽' }
+      return { ok: false, code: 'MODEL_TIMEOUT', message: '本轮模型时间已用尽' }
     }
     this.used += 1
     const started = Date.now()
@@ -168,6 +174,9 @@ export class AssistantModelSession {
       })
       return { ok: true, text: result.text }
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : '模型调用失败'
+      const isTimeout = errMsg.toLowerCase().includes('timeout') || errMsg.toLowerCase().includes('deadline')
+      const code: 'MODEL_TIMEOUT' | 'MODEL_UNAVAILABLE' = isTimeout ? 'MODEL_TIMEOUT' : 'MODEL_UNAVAILABLE'
       await recordPlatformAiCall(this.db, {
         turnId: this.turnId,
         ownerAccountId: this.ownerAccountId,
@@ -177,10 +186,10 @@ export class AssistantModelSession {
         model: this.access.model,
         promptVersion: ASSISTANT_PROMPT_VERSION,
         reservedTokens: this.access.maxOutputTokens,
-        error: error instanceof Error ? error.message : '模型调用失败',
+        error: errMsg,
         durationMs: Date.now() - started,
       }).catch(() => undefined)
-      return { ok: false, message: error instanceof Error ? error.message : '模型调用失败' }
+      return { ok: false, code, message: errMsg }
     }
   }
 }
@@ -368,4 +377,161 @@ export async function generateStepChange(
   )
   if (!result.ok) return { error: result.message }
   return { change: result.value }
+}
+
+export const modelAuthoringOperationSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('insert_step'),
+    id: z.string().min(1).max(128),
+    step: z.looseObject({
+      id: z.string().optional(),
+      name: z.string().trim().min(1).max(128),
+      type: z.string(),
+      effectType: z.enum(['READ_ONLY', 'IDEMPOTENT', 'SIDE_EFFECT']).optional(),
+      input: z.record(z.string(), z.unknown()),
+      outputKey: z.string().optional(),
+    }),
+    parentBlockId: z.string().optional(),
+    branchKey: z.enum(['then', 'else', 'body']).optional(),
+    anchorStepId: z.string().nullable().optional(),
+  }),
+  z.strictObject({
+    kind: z.literal('update_step'),
+    id: z.string().min(1).max(128),
+    stepId: z.string().min(1).max(128),
+    patch: z.strictObject({
+      name: z.string().trim().min(1).max(128).optional(),
+      input: z.record(z.string(), z.unknown()).optional(),
+      outputKey: z.string().optional(),
+    }),
+  }),
+  z.strictObject({
+    kind: z.literal('remove_step'),
+    id: z.string().min(1).max(128),
+    stepId: z.string().min(1).max(128),
+  }),
+  z.strictObject({
+    kind: z.literal('move_step'),
+    id: z.string().min(1).max(128),
+    stepId: z.string().min(1).max(128),
+    parentBlockId: z.string().optional(),
+    branchKey: z.enum(['then', 'else', 'body']).optional(),
+    anchorStepId: z.string().nullable().optional(),
+  }),
+])
+export type ModelAuthoringOperation = z.infer<typeof modelAuthoringOperationSchema>
+
+export const modelAuthoringProposalOutputSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('proposal'),
+    operations: z.array(modelAuthoringOperationSchema).min(1).max(4),
+    intentCoverage: z
+      .array(
+        z.strictObject({
+          intentId: z.string().min(1).max(128),
+          operationIds: z.array(z.string().min(1).max(128)),
+        }),
+      )
+      .default([]),
+  }),
+  z.strictObject({
+    kind: z.literal('clarify'),
+    question: z.string().min(1).max(512),
+    missingFields: z.array(z.string().min(1).max(64)).default([]),
+  }),
+  z.strictObject({
+    kind: z.literal('unsupported'),
+    reasonCode: z.string().min(1).max(64),
+    message: z.string().min(1).max(512),
+  }),
+])
+export type ModelAuthoringProposalOutput = z.infer<typeof modelAuthoringProposalOutputSchema>
+
+export async function generateScenarioAuthoringProposal(
+  session: AssistantModelSession,
+  question: string,
+  facts: unknown,
+  signal?: AbortSignal,
+): Promise<{ output?: ModelAuthoringProposalOutput; error?: string; errorCode?: string }> {
+  const result = await session.completeJson(
+    'authoring-propose',
+    modelAuthoringProposalOutputSchema,
+    [
+      {
+        role: 'system',
+        content: `你是识途助手的场景编排助手。
+请根据用户的指令和当前场景结构化上下文，给出严格受限的结构化编排操作（AuthoringOperation）。
+
+【操作类型规范】
+1. insert_step: 新增步骤
+   - 必须提供 step 对象（包含 id, name, type, input）
+   - 可选 parentBlockId、branchKey（在流程控制块内部时指定）
+   - 可选 anchorStepId（在其之后插入；若为 null 则插入到该分支开头）
+2. update_step: 修改已有步骤
+   - 必须提供 stepId
+   - patch 仅允许包含: name, input, outputKey
+   - 保留其他未提及属性，不改变步骤类型，不降低风险等级
+3. remove_step: 删除已有步骤
+   - 必须提供 stepId
+   - 仅当该步骤产出的输出未被后续步骤或场景输出引用时允许删除
+4. move_step: 步骤同分支重排
+   - 必须提供 stepId
+   - 必须在同一父块和分支内移动（禁止跨分支移动）
+   - 可选 anchorStepId（移至该锚点步骤之后；若为 null 则移至分支开头）
+
+【受限步骤类型与字段表】
+仅允许对以下独立步骤类型执行操作：
+- navigate: input 仅限 url
+- click: input 仅限 target
+- fill: input 仅限 target, from, fromField (敏感字段严禁直接生成字面口令 value，必须引用已声明输入或前序输出 from)
+- extract: input 仅限 target, as, attribute, many；可设置 outputKey
+- assert: input 仅限 target, expect
+- select: input 仅限 target, value, label
+- keyboard: input 仅限 target, key
+- wait: input 仅限 kind, target, condition, timeoutMs, durationMs, urlPattern, text
+- ai_action: input 仅限 instruction
+- ai_extract: input 仅限 instruction, schema；可设置 outputKey
+- ai_assert: input 仅限 instruction
+
+【单轮规模硬约束】
+- 单次提议最多包含 4 项操作，其中最多 2 项新增步骤。
+- 若无法一次完成，必须返回 clarify 要求缩小范围。
+
+【歧义与越界处理】
+- 若用户指令模糊（如“把这条指令写清楚”、“处理一下”）且没有明确业务目标，禁止自造“写清楚”文字，必须输出 clarify 澄清业务目标。
+- 若涉及两个同名步骤且未明确选中哪一个，必须输出 clarify。
+- 若缺少断言预期、缺少点击目标、或引用了不存在的输入/输出，必须输出 clarify 说明缺少项。
+- 若要求新建控制块拓扑、模块定义或改写成功条件，必须输出 unsupported 并说明本轮不支持此类操作。
+- 若要求降低风险级别（如付款标为 READ_ONLY）或增加重试，必须输出 unsupported。
+
+【输出 JSON 格式】
+成功提议：
+{
+  "kind": "proposal",
+  "operations": [ ... ],
+  "intentCoverage": [ { "intentId": "子意图描述", "operationIds": ["对应操作id"] } ]
+}
+需要澄清：
+{
+  "kind": "clarify",
+  "question": "澄清问题描述",
+  "missingFields": ["缺失字段名"]
+}
+不支持的操作：
+{
+  "kind": "unsupported",
+  "reasonCode": "错误代码",
+  "message": "不支持原因说明"
+}`,
+      },
+      { role: 'user', content: JSON.stringify({ question, facts }) },
+    ],
+    signal,
+    true,
+  )
+
+  if (!result.ok) {
+    return { error: result.message, errorCode: (result as any).code ?? 'MODEL_INVALID_OUTPUT' }
+  }
+  return { output: result.value }
 }

@@ -97,6 +97,12 @@ async function buildApp(account: RequestAccount) {
       eventSeq: 0,
       queuePosition: null,
     })),
+    getProposalPreview: vi.fn(async () => ({
+      diagnostics: [],
+      blockingCount: 0,
+      baselineCount: 0,
+      deltaCount: 0,
+    })),
   }
   const moduleRef = await Test.createTestingModule({
     controllers: [AssistantController],
@@ -159,5 +165,31 @@ describe('助手 HTTP 权限', () => {
       .expect(200)
     expect(res.body).toEqual({ id: conversation.id, deleted: true })
     expect(assistant.deleteConversation).toHaveBeenCalledWith(expect.anything(), conversation.id)
+  })
+
+  it('编写者可以读取结构化编排候选预览', async () => {
+    const { app, assistant } = await buildApp(principal('author'))
+    apps.push(app)
+    const turnId = '22222222-2222-4222-8222-222222222222'
+    const res = await request(app.getHttpServer())
+      .get(`/assistant/conversations/${conversation.id}/turns/${turnId}/proposal-preview`)
+      .expect(200)
+    expect(res.body).toEqual({
+      diagnostics: [],
+      blockingCount: 0,
+      baselineCount: 0,
+      deltaCount: 0,
+    })
+    expect(assistant.getProposalPreview).toHaveBeenCalledWith(expect.anything(), conversation.id, turnId)
+  })
+
+  it('只读用户无权读取候选预览 (403 workflow:write 缺失)', async () => {
+    const { app, assistant } = await buildApp(principal('viewer'))
+    apps.push(app)
+    const turnId = '22222222-2222-4222-8222-222222222222'
+    await request(app.getHttpServer())
+      .get(`/assistant/conversations/${conversation.id}/turns/${turnId}/proposal-preview`)
+      .expect(403)
+    expect(assistant.getProposalPreview).not.toHaveBeenCalled()
   })
 })

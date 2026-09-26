@@ -275,6 +275,35 @@ describe('BrowserSessions HTTP', () => {
     await app.close()
   })
 
+  it('关闭标签页需要 session:control 权限', async () => {
+    await request(viewerApp.getHttpServer())
+      .post(`/browser-sessions/${SESSION_ID}/browser/pages/page-123/close`)
+      .expect(403)
+
+    service.closeManagedPage = vi.fn().mockResolvedValue({
+      closed: true,
+      pageId: 'page-123',
+      activePageId: 'page-base',
+    })
+
+    const controller: RequestAccount = {
+      ...admin,
+      id: 'acc-controller',
+      permissions: ['session:read', 'session:view', 'session:control'],
+    }
+    const app = await buildApp(controller, service)
+    const res = await request(app.getHttpServer())
+      .post(`/browser-sessions/${SESSION_ID}/browser/pages/page-123/close`)
+      .expect(200)
+    expect(res.body.closed).toBe(true)
+    expect(service.closeManagedPage).toHaveBeenCalledWith(
+      SESSION_ID,
+      'page-123',
+      expect.objectContaining({ id: 'acc-controller' }),
+    )
+    await app.close()
+  })
+
   it('未认证被拒', async () => {
     const app = await buildApp(null, service)
     await request(app.getHttpServer()).get('/browser-sessions').expect(401)

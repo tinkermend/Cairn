@@ -137,6 +137,14 @@ function mockService() {
     mapDecisions: vi.fn(async () => ({ items: [] })),
     resolutionDecisions: vi.fn(async () => ({ items: [] })),
     aiTasks: vi.fn(async () => ({ events: [], observation: null })),
+    createSolidificationDraft: vi.fn(async () => ({
+      recordingDraftId: 'rec-1',
+      scenarioId: detail.scenarioId,
+      sourceNodeId: 'step-1',
+      sourceNodePresent: true,
+      definitionChanged: false,
+      diagnostics: [],
+    })),
   }
 }
 
@@ -551,4 +559,18 @@ describe('Runs HTTP', () => {
     service.iterationDetail.mockResolvedValueOnce(null)
     await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/iterations/${iterationId}`).expect(404)
   })
+
+  it('可由 AI 动作事实生成确定性草案，缺权限拒绝', async () => {
+    const attemptId = '77777777-7777-4777-8777-777777777777'
+    await request(adminApp.getHttpServer())
+      .post(`/runs/${detail.id}/attempts/${attemptId}/solidification-drafts`)
+      .expect(200)
+    expect(service.createSolidificationDraft).toHaveBeenCalledWith(detail.id, attemptId, expect.anything())
+
+    // viewer 缺少 workflow:write 和 target:read，应当被 403 拒绝
+    await request(viewerApp.getHttpServer())
+      .post(`/runs/${detail.id}/attempts/${attemptId}/solidification-drafts`)
+      .expect(403)
+  })
 })
+

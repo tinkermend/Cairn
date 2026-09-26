@@ -21,6 +21,16 @@ import {
   explorationPolicyUpdateBodySchema,
   explorationPreviewRequestSchema,
   explorationCreateBodySchema,
+  stateRecipeCreateBodySchema,
+  stateRecipeReviewBodySchema,
+  candidateReviewBodySchema,
+  candidateRunBodySchema,
+  reviewUnknownBodySchema,
+  type StateRecipeCreateBody,
+  type StateRecipeReviewBody,
+  type CandidateReviewBody,
+  type CandidateRunBody,
+  type ReviewUnknownBody,
   type MapConsumptionEligibilityGrantBody,
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyUpdateBody,
@@ -390,6 +400,101 @@ export class MapController {
     @CurrentAccount() account: RequestAccount,
   ) {
     return this.maps.createExploration(targetId, body, account)
+  }
+
+  @Get('exploration/state-recipes')
+  @RequirePermissions('target:read', 'map:read')
+  listStateRecipes(@Param('targetId') targetId: string) {
+    return this.maps.listStateRecipes(targetId)
+  }
+
+  @Get('exploration/state-recipes/:recipeId')
+  @RequirePermissions('target:read', 'map:read')
+  getStateRecipe(@Param('targetId') targetId: string, @Param('recipeId') recipeId: string) {
+    return this.maps.getStateRecipe(targetId, recipeId)
+  }
+
+  @Post('exploration/state-recipes')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:read', 'map:maintain', 'map:explore', 'run:read')
+  createStateRecipe(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(stateRecipeCreateBodySchema)) body: StateRecipeCreateBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.createStateRecipe(targetId, body, account)
+  }
+
+  @Post('exploration/state-recipes/:recipeId/review')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:read', 'map:maintain', 'map:explore', 'run:read')
+  reviewStateRecipe(
+    @Param('targetId') targetId: string,
+    @Param('recipeId') recipeId: string,
+    @Body(new ZodValidationPipe(stateRecipeReviewBodySchema)) body: StateRecipeReviewBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.reviewStateRecipe(targetId, recipeId, body, account)
+  }
+
+  @Get('explorations/:jobId/candidates')
+  @RequirePermissions('target:read', 'map:read')
+  listCandidates(@Param('targetId') targetId: string, @Param('jobId') jobId: string) {
+    return this.maps.listCandidates(targetId, jobId)
+  }
+
+  @Get('explorations/:jobId/candidates/:candidateId')
+  @RequirePermissions('target:read', 'map:read', 'run:read')
+  getCandidate(
+    @Param('targetId') targetId: string,
+    @Param('jobId') jobId: string,
+    @Param('candidateId') candidateId: string,
+  ) {
+    return this.maps.getCandidate(targetId, jobId, candidateId)
+  }
+
+  @Post('explorations/:jobId/candidates/:candidateId/review')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:read', 'map:maintain', 'map:explore', 'run:read')
+  reviewCandidate(
+    @Param('targetId') targetId: string,
+    @Param('jobId') jobId: string,
+    @Param('candidateId') candidateId: string,
+    @Body(new ZodValidationPipe(candidateReviewBodySchema)) body: CandidateReviewBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.reviewCandidate(targetId, jobId, candidateId, body, account)
+  }
+
+  @Post('explorations/:jobId/candidates/:candidateId/run')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermissions('target:read', 'map:maintain', 'map:explore', 'run:read')
+  runCandidate(
+    @Param('targetId') targetId: string,
+    @Param('jobId') jobId: string,
+    @Param('candidateId') candidateId: string,
+    @Body(new ZodValidationPipe(candidateRunBodySchema)) body: CandidateRunBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.runCandidate(targetId, jobId, candidateId, body, account)
+  }
+
+  @Get('explorations/:jobId/traversals')
+  @RequirePermissions('target:read', 'map:read')
+  listTraversals(@Param('targetId') targetId: string, @Param('jobId') jobId: string) {
+    return this.maps.listTraversals(targetId, jobId)
+  }
+
+  @Post('explorations/:jobId/review-unknown')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:read', 'map:maintain', 'run:read', 'run:review')
+  reviewUnknown(
+    @Param('targetId') targetId: string,
+    @Param('jobId') jobId: string,
+    @Body(new ZodValidationPipe(reviewUnknownBodySchema)) body: ReviewUnknownBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.reviewUnknown(targetId, jobId, body, account)
   }
 
   @Post('jobs')

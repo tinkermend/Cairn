@@ -23,6 +23,7 @@ import {
   authControlHeartbeatResponseSchema,
   authControlInputReceiptSchema,
   canObserveManagedFrames,
+  closeManagedPageResponseSchema,
   evaluateWorkerRoute,
   hasAllPermissions,
   debugActionSchema,
@@ -149,6 +150,16 @@ export class BrowserService {
 
   release(runId: string, body: AuthControlTokenBody, actor: RequestAccount) {
     return this.mutate(runId, actor, workerInternalPath('/auth-control/release'), JSON.stringify(body))
+  }
+
+  closePage(runId: string, pageId: string, actor: RequestAccount) {
+    return this.mutate(
+      runId,
+      actor,
+      workerInternalPath(`/pages/${encodeURIComponent(pageId)}/close`),
+      JSON.stringify({}),
+      closeManagedPageResponseSchema,
+    )
   }
 
   async resumeAuth(runId: string, body: ResumeAuthBody, actor: RequestAccount) {

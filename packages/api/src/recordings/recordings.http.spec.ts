@@ -85,6 +85,11 @@ function mockService() {
     list: vi.fn(async () => ({ items: [draft] })),
     get: vi.fn(async () => draft),
     create: vi.fn(async () => draft),
+    getGeneralization: vi.fn(async () => ({ generalization: { id: 'gen-1' } })),
+    saveGeneralizationDecisions: vi.fn(async () => ({ generalization: { id: 'gen-1' } })),
+    submitGeneralizationRound: vi.fn(async () => ({ round: { roundId: 'r-1' } })),
+    updateGeneralizationRoundStatus: vi.fn(async () => ({ generalization: { id: 'gen-1' } })),
+    handoffCreateScenario: vi.fn(async () => ({ scenario: { id: 'sc-1' } })),
   }
 }
 
@@ -170,5 +175,53 @@ describe('Recordings HTTP', () => {
       .send({ ...body, steps: [{ type: 'navigate', url: 'https://example.com' }] })
       .expect(400)
     expect(service.create).not.toHaveBeenCalled()
+  })
+
+  it('读取泛化工作层', async () => {
+    await request(adminApp.getHttpServer())
+      .get(`/recordings/${draft.id}/generalization`)
+      .expect(200)
+    expect(service.getGeneralization).toHaveBeenCalledWith(draft.id, admin.id)
+  })
+
+  it('保存决策', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/recordings/${draft.id}/generalization/decisions`)
+      .send({ revision: 1, decisions: [{ id: 'entry', disposition: 'accept' }] })
+      .expect(200)
+    expect(service.saveGeneralizationDecisions).toHaveBeenCalled()
+  })
+
+  it('提交泛化轮次', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/recordings/${draft.id}/generalization/rounds`)
+      .send({ revision: 1, quickAction: 'relax_timeout' })
+      .expect(200)
+    expect(service.submitGeneralizationRound).toHaveBeenCalled()
+  })
+
+  it('轮次采纳、拒绝与撤销', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/recordings/${draft.id}/generalization/rounds/r-1/accept`)
+      .expect(200)
+    expect(service.updateGeneralizationRoundStatus).toHaveBeenCalledWith(draft.id, 'r-1', 'accept', expect.anything())
+
+    await request(adminApp.getHttpServer())
+      .post(`/recordings/${draft.id}/generalization/rounds/r-1/reject`)
+      .expect(200)
+    expect(service.updateGeneralizationRoundStatus).toHaveBeenCalledWith(draft.id, 'r-1', 'reject', expect.anything())
+
+    await request(adminApp.getHttpServer())
+      .post(`/recordings/${draft.id}/generalization/rounds/r-1/revert`)
+      .expect(200)
+    expect(service.updateGeneralizationRoundStatus).toHaveBeenCalledWith(draft.id, 'r-1', 'revert', expect.anything())
+  })
+
+  it('新建场景回填', async () => {
+    await request(adminApp.getHttpServer())
+      .post(`/recordings/${draft.id}/handoff/create-scenario`)
+      .send({ name: '新场景', revision: 1, candidateDigest: 'a'.repeat(64) })
+      .expect(200)
+    expect(service.handoffCreateScenario).toHaveBeenCalled()
   })
 })

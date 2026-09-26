@@ -4,6 +4,7 @@ import {
   type ScenarioDocument,
   type HealingPatch,
   type Step,
+  FACTORY_PLATFORM_CONFIG,
 } from '@cairn/shared'
 import {
   assembleDiagnoseContext,
@@ -273,6 +274,111 @@ describe('AI-02 B4: 受控修复候选全生命周期闭环', () => {
       ).rejects.toThrow('该候选未通过安全护栏校验')
     } finally {
       getSpy.mockRestore()
+    }
+  })
+
+  it('RepairService.listCandidatesByScenario 委托 db.listRepairCandidatesByScenario 查询场景候选', async () => {
+    const dbModule = await import('@cairn/db')
+    const listSpy = vi.spyOn(dbModule, 'listRepairCandidatesByScenario').mockResolvedValue([
+      {
+        id: 'rep-cand-1',
+        candidateId: 'rep_001',
+        scenarioId: 'scen-1',
+        status: 'proposed',
+      } as any,
+    ])
+
+    try {
+      const service = new RepairService({} as any)
+      const res = await service.listCandidatesByScenario('scen-1', 'proposed')
+      expect(listSpy).toHaveBeenCalledWith(expect.anything(), 'scen-1', 'proposed')
+      expect(res).toHaveLength(1)
+      expect(res[0]?.id).toBe('rep-cand-1')
+    } finally {
+      listSpy.mockRestore()
+    }
+  })
+
+  it('RepairService.rejectCandidate 传递 actor 与驳回原因', async () => {
+    const dbModule = await import('@cairn/db')
+    const rejectSpy = vi.spyOn(dbModule, 'rejectRepairCandidate').mockResolvedValue({
+      id: 'rep-cand-1',
+      status: 'rejected',
+      rejection: {
+        rejectedAt: '2026-09-26T00:00:00.000Z',
+        rejectedBy: 'user-42',
+        reason: '不符合前端定位规范',
+      },
+    } as any)
+
+    try {
+      const service = new RepairService({} as any)
+      const res = await service.rejectCandidate('rep-cand-1', { reason: '不符合前端定位规范' }, 'user-42')
+      expect(rejectSpy).toHaveBeenCalledWith(expect.anything(), 'rep-cand-1', 'user-42', '不符合前端定位规范')
+      expect(res.status).toBe('rejected')
+      expect(res.rejection?.reason).toBe('不符合前端定位规范')
+    } finally {
+      rejectSpy.mockRestore()
+    }
+  })
+
+  it('RepairService.reopenCandidate 重新打开已驳回的候选', async () => {
+    const dbModule = await import('@cairn/db')
+    const reopenSpy = vi.spyOn(dbModule, 'reopenRepairCandidate').mockResolvedValue({
+      id: 'rep-cand-1',
+      status: 'proposed',
+      reopenHistory: [
+        {
+          reopenedAt: '2026-09-26T01:00:00.000Z',
+          reopenedBy: 'user-42',
+        },
+      ],
+    } as any)
+
+    try {
+      const service = new RepairService({} as any)
+      const res = await service.reopenCandidate('rep-cand-1', 'user-42')
+      expect(reopenSpy).toHaveBeenCalledWith(expect.anything(), 'rep-cand-1', 'user-42')
+      expect(res.status).toBe('proposed')
+      expect(res.reopenHistory).toHaveLength(1)
+    } finally {
+      reopenSpy.mockRestore()
+    }
+  })
+
+  it('RepairService.validateCandidate 发起真实验证试跑并返回 candidate 与 runId', async () => {
+    const dbModule = await import('@cairn/db')
+    const validateSpy = vi.spyOn(dbModule, 'validateRepairCandidate').mockResolvedValue({
+      candidate: {
+        id: 'rep-cand-1',
+        status: 'validating',
+        validationRefs: {
+          validationRunId: 'run-val-123',
+        },
+      } as any,
+      runId: 'run-val-123',
+    })
+
+    try {
+      const service = new RepairService({} as any, {
+        ensure: vi.fn().mockResolvedValue({ document: FACTORY_PLATFORM_CONFIG }),
+      } as any)
+      const res = await service.validateCandidate(
+        'rep-cand-1',
+        {},
+        { id: 'user-42' } as any,
+      )
+      expect(validateSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        'rep-cand-1',
+        expect.objectContaining({
+          actor: { id: 'user-42' },
+        }),
+      )
+      expect(res.runId).toBe('run-val-123')
+      expect(res.candidate.status).toBe('validating')
+    } finally {
+      validateSpy.mockRestore()
     }
   })
 })

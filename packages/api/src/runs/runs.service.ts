@@ -1,10 +1,12 @@
-import { HttpException, HttpStatus, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common'
+import { BadRequestException, HttpException, HttpStatus, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common'
 import {
+  createDemonstration,
   createRunWithSnapshot,
   deleteRun,
   getEvidenceForRun,
   getRun,
   getRunCleanupStatus,
+  getScenario,
   listAiTaskEvents,
   listMapSelectionDecisions,
   listResolutionDecisions,
@@ -17,10 +19,18 @@ import {
   previewDeleteRun,
   requestRunCancel,
   retryRunCleanup,
+  retryRunReport,
   reviewRun,
   type DbHandle,
 } from '@cairn/db'
-import { parseHttpRange } from '@cairn/shared'
+import { aiTraceToDemonstrationSource } from '@cairn/authoring'
+import {
+  computeStepDefinitionDigest,
+  normalizeAuthoringDocument,
+  parseHttpRange,
+  walkAuthoringNodes,
+  type CreateSolidificationDraftResponse,
+} from '@cairn/shared'
 import { assertAiExecutePermission } from '../config/browser-ai'
 import { config } from '../config/env'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
@@ -69,6 +79,10 @@ export class RunsService {
     return getRun(this.db, id).catch(rethrowDomain)
   }
 
+  retryReport(runId: string, actor: RequestAccount) {
+    return retryRunReport(this.db, runId, { kind: 'console', id: actor.id }).catch(rethrowDomain)
+  }
+
   mapDecisions(id: string, query: MapDecisionListQuery) {
     return listMapSelectionDecisions(this.db, id, query).catch(rethrowDomain)
   }
@@ -79,6 +93,149 @@ export class RunsService {
 
   aiTasks(runId: string, attemptId: string, query: AiTaskListQuery) {
     return listAiTaskEvents(this.db, { runId, attemptId, ...query }).catch(rethrowDomain)
+  }
+
+  async createSolidificationDraft(
+    runId: string,
+    attemptId: string,
+    actor: RequestAccount,
+  ): Promise<CreateSolidificationDraftResponse> {
+    try {
+      const run = await getRun(this.db, runId)
+      if (!run) {
+        throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
+      }
+
+      let foundStepRun: (typeof run.stepRuns)[number] | undefined
+      let foundAttempt: (typeof run.stepRuns)[number]['attempts'][number] | undefined
+      for (const stepRun of run.stepRuns) {
+        const attempt = stepRun.attempts.find((a) => a.id === attemptId)
+        if (attempt) {
+          foundStepRun = stepRun
+          foundAttempt = attempt
+          break
+        }
+      }
+
+      if (!foundStepRun || !foundAttempt) {
+        throw new NotFoundException({ code: 'ATTEMPT_NOT_FOUND', message: '步骤尝试记录不存在' })
+      }
+
+      if (foundStepRun.scopePath) {
+        throw new BadRequestException({
+          code: 'MODULE_INTERNAL_NOT_SUPPORTED',
+          message: '模块内部步骤不支持直接生成确定性草案',
+        })
+      }
+
+      const stepDef = run.snapshot?.steps.find((s) => s.id === foundStepRun!.stepId)
+      if (!stepDef || stepDef.type !== 'ai_action') {
+        throw new BadRequestException({
+          code: 'STEP_TYPE_NOT_SUPPORTED',
+          message: '仅支持直属 ai_action 步骤生成确定性草案',
+        })
+      }
+
+      if (foundAttempt.status !== 'SUCCEEDED') {
+        throw new BadRequestException({
+          code: 'ATTEMPT_NOT_SUCCEEDED',
+          message: '仅成功的尝试记录可用于生成确定性草案',
+        })
+      }
+
+      const { events, observation } = await listAiTaskEvents(this.db, {
+        runId,
+        attemptId,
+        limit: 200,
+      })
+
+      if (!events || events.length === 0) {
+        throw new BadRequestException({
+          code: 'AI_TRACE_EMPTY',
+          message: '未记录到可用的 AI 动作事实',
+        })
+      }
+
+      const traceIntegrity = observation?.traceIntegrity ?? 'complete'
+      if (traceIntegrity !== 'complete') {
+        throw new BadRequestException({
+          code: 'TRAJECTORY_INCOMPLETE',
+          message: 'AI 执行轨迹不完整，无法生成确定性草案',
+        })
+      }
+
+      if (observation?.solidifiableLevel === 'blocked') {
+        throw new BadRequestException({
+          code: 'SOLIDIFICATION_BLOCKED',
+          message: `该轨迹不可固化：${observation.solidifiableReasons.join(', ')}`,
+        })
+      }
+
+      const scenario = await getScenario(this.db, run.scenarioId)
+      let sourceNodePresent = false
+      let definitionChanged = false
+      const diagnostics: string[] = []
+
+      const draftDoc = scenario.draft?.document
+      if (draftDoc) {
+        const nodes = walkAuthoringNodes(normalizeAuthoringDocument(draftDoc))
+        const matchedItem = nodes.find((item) => item.id === foundStepRun!.stepId)
+        if (matchedItem && matchedItem.node.kind === 'step') {
+          sourceNodePresent = true
+          const currentDigest = computeStepDefinitionDigest(matchedItem.node.step)
+          const originDigest = observation?.stepDefinitionDigest ?? computeStepDefinitionDigest(stepDef as any)
+          if (currentDigest !== originDigest) {
+            definitionChanged = true
+            diagnostics.push('SOURCE_DEFINITION_CHANGED')
+          }
+        } else {
+          sourceNodePresent = false
+          definitionChanged = true
+          diagnostics.push('STEP_NOT_IN_DRAFT')
+        }
+      } else {
+        sourceNodePresent = false
+        definitionChanged = true
+        diagnostics.push('STEP_NOT_IN_DRAFT')
+      }
+
+      const source = aiTraceToDemonstrationSource({
+        runId,
+        attemptId,
+        stepRunId: foundStepRun.id,
+        targetId: run.targetId,
+        scenarioId: run.scenarioId,
+        stepId: foundStepRun.stepId,
+        stepName: stepDef.name,
+        instruction: (stepDef.input as any)?.instruction,
+        events,
+        sdkVersion: events[0]?.sdkVersion,
+        capturedAt: foundAttempt.startedAt ? new Date(foundAttempt.startedAt).toISOString() : undefined,
+      })
+
+      const draftName = `固化草案-${stepDef.name || foundStepRun.stepId.slice(0, 8)}`.slice(0, 128)
+      const demonstration = await createDemonstration(
+        this.db,
+        {
+          idempotencyKey: `solidify-${attemptId}`,
+          name: draftName,
+          source,
+          acknowledgedOmittedConfig: true,
+        },
+        actor,
+      )
+
+      return {
+        recordingDraftId: demonstration.recordingDraftId,
+        scenarioId: run.scenarioId,
+        sourceNodeId: foundStepRun.stepId,
+        sourceNodePresent,
+        definitionChanged,
+        diagnostics,
+      }
+    } catch (error) {
+      rethrowDomain(error)
+    }
   }
 
   previewDelete(id: string) {
@@ -164,8 +321,11 @@ export class RunsService {
       assertAiExecutePermission(actor, version.definition.steps, {
         document: layers.document,
         documentResolution: version.definition.resolution,
+        documentLocatorPlan: version.definition.locatorPlan,
+        locatorProtocol: version.definition.locatorProtocol,
         targetCeiling: layers.targetCeiling,
         targetPreference: layers.targetPreference,
+        targetPolicy: layers.targetPolicy,
       })
       return await createRunWithSnapshot(this.db, {
         ...body,

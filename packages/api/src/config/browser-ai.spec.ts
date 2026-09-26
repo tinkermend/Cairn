@@ -3,6 +3,7 @@ import { DomainError } from '@cairn/db'
 import {
   FACTORY_PLATFORM_CONFIG,
   localSecretRef,
+  resolveAiExecutionFromPlatform,
   type PlatformConfigDocument,
 } from '@cairn/shared'
 import type { RequestAccount } from '../common/request-account'
@@ -181,5 +182,19 @@ describe('browser AI 控制面', () => {
         targetCeiling: 'deterministic_only',
       }),
     ).not.toThrow()
+  })
+
+  it('v2 仅文本定位独立于视觉配置，仍要求 AI 执行权限', () => {
+    const textOnly = {
+      ...FACTORY_PLATFORM_CONFIG,
+      browserAi: { ...FACTORY_PLATFORM_CONFIG.browserAi, enabled: false, secretRef: undefined },
+      platformAi: { ...FACTORY_PLATFORM_CONFIG.platformAi, enabled: true, secretRef: localSecretRef('00000000-0000-4000-8000-000000000099') },
+      locator: { defaultPlan: { v: 2 as const, order: ['text_ai' as const] }, limits: { v: 2 as const, allowed: ['rule' as const, 'text_ai' as const] } },
+    }
+    const step = { id: '00000000-0000-4000-8000-0000000000c1', type: 'click', policy: { locatorPlan: { v: 2 as const, order: ['text_ai' as const] } } }
+    expect(() => assertAiExecutePermission(actor(['run:execute']), [step], { document: textOnly, locatorProtocol: 2 })).toThrow(DomainError)
+    expect(resolveAiExecutionFromPlatform([step], textOnly, {
+      revision: 3, hangWaitMs: 20_000, requiredLocatorRoutes: ['text_ai'],
+    })).toMatchObject({ visionEnabled: false, modelBaseUrl: textOnly.platformAi.baseUrl, platformAi: { secretRef: textOnly.platformAi.secretRef } })
   })
 })

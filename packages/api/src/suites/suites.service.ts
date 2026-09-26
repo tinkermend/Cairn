@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { ForbiddenException, Inject, Injectable } from '@nestjs/common'
 import {
   createSuite,
   deleteSuite,
@@ -49,6 +49,10 @@ export class SuitesService {
   }
 
   saveDraft(suiteId: string, body: SaveSuiteDraftBody, account: RequestAccount) {
+    const doc = body.document as any
+    if ((doc?.outputPolicy?.autoGenerateReport || doc?.autoGenerateFinalReport) && !account.permissions.includes('report:export')) {
+      throw new ForbiddenException('开启自动生成报告需要导出权限 (report:export)')
+    }
     return saveSuiteDraft(this.database, suiteId, body, this.actor(account)).catch(rethrowDomain)
   }
 

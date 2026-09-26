@@ -11,6 +11,7 @@ import {
   cleanAssistantQuestion,
   extractScenarioSearchKeyword,
   hasAllPermissions,
+  inferAssistantCapability,
   normalizeAssistantPageContext,
   routeAssistantTurn,
   unpackAssistantResultEnvelope,
@@ -19,9 +20,11 @@ import {
   type ChangeHintBus,
   type DbHandle,
   DomainError,
+  assertTargetPermission,
   cancelAssistantTurn,
   completeAssistantTurn,
   getAssistantTurnRecord,
+  getScenario,
   listScenarios,
   nextQueuedAssistantTurn,
   recordAssistantTurnEvent,
@@ -333,17 +336,114 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
 
       let decision: AssistantRouteDecision | null = null
 
-      // Check ordinal reference against parent clarify options or discovery candidates
+      // Check selected option or ordinal reference against parent clarify options or discovery candidates
       if (!isResetIntent && parentResult) {
         if (parentResult.kind === 'clarify' && parentResult.options?.length) {
-          const optIdx = parseOrdinalIndex(body.question, parentResult.options.length)
-          if (optIdx !== null) {
-            const opt = parentResult.options[optIdx]! as any
-            const targetCap = (opt.capabilityId ?? parentRecord?.turn.capabilityId ?? 'scenario.explain') as AssistantCapabilityId
-            decision = {
-              type: 'dispatch',
-              capabilityId: targetCap,
-              slots: { ...(parentRecord?.slots ?? {}), ...(opt.slots ?? {}) },
+          let chosenOpt: (typeof parentResult.options)[number] | null = null
+          if (body.selectedOptionId) {
+            chosenOpt = parentResult.options.find((o) => o.id === body.selectedOptionId) ?? null
+          }
+          if (!chosenOpt) {
+            const optIdx = parseOrdinalIndex(body.question, parentResult.options.length)
+            if (optIdx !== null) {
+              chosenOpt = parentResult.options[optIdx] ?? null
+            }
+          }
+          if (!chosenOpt) {
+            chosenOpt =
+              parentResult.options.find(
+                (o) => o.id === body.question.trim() || o.label === body.question.trim(),
+              ) ?? null
+          }
+
+          if (chosenOpt) {
+            const opt = chosenOpt as any
+            const continuation = (parentRecord?.slots as any)?.continuation
+            const targetCap = (opt.capabilityId ??
+              continuation?.intentCapabilityId ??
+              parentRecord?.turn.capabilityId ??
+              'scenario.explain') as AssistantCapabilityId
+
+            if (opt.kind === 'scenario' || continuation?.scenarioOptions) {
+              const selectedScenarioId = opt.id
+              const scenarioSummary = continuation?.scenarioOptions?.find(
+                (item: any) => item.scenarioId === selectedScenarioId,
+              )
+              let targetId = scenarioSummary?.targetId
+              if (!targetId) {
+                const sc = await getScenario(this.db, selectedScenarioId).catch(() => null)
+                targetId = sc?.targetId
+              }
+
+              if (targetId) {
+                const requiredTargetPerms =
+                  targetCap === 'scenario.propose-step'
+                    ? ['target:read', 'workflow:write']
+                    : ['target:read']
+                if (!hasAllPermissions(actor.permissions, requiredTargetPerms)) {
+                  decision = {
+                    type: 'unsupported',
+                    reasonCode: 'PERMISSION_DENIED',
+                    message: `缺少操作所选场景所需的目标权限 (${requiredTargetPerms.join(', ')})`,
+                  }
+                } else {
+                  try {
+                    if (actor.id) {
+                      for (const p of requiredTargetPerms) {
+                        await assertTargetPermission(this.db, actor.id, targetId, p as any)
+                      }
+                    }
+                    await this.targets.getTarget(targetId)
+                    decision = {
+                      type: 'dispatch',
+                      capabilityId: targetCap,
+                      slots: {
+                        ...(parentRecord?.slots ?? {}),
+                        scenarioId: selectedScenarioId,
+                        targetId,
+                        ...(continuation?.slots ?? {}),
+                      },
+                    }
+                  } catch {
+                    decision = {
+                      type: 'unsupported',
+                      reasonCode: 'TARGET_FORBIDDEN',
+                      message: '没有所选场景所属目标系统的访问权限',
+                    }
+                  }
+                }
+              } else {
+                decision = {
+                  type: 'dispatch',
+                  capabilityId: targetCap,
+                  slots: {
+                    ...(parentRecord?.slots ?? {}),
+                    scenarioId: selectedScenarioId,
+                    ...(continuation?.slots ?? {}),
+                  },
+                }
+              }
+            } else if (opt.kind === 'capability') {
+              decision = {
+                type: 'dispatch',
+                capabilityId: opt.id as AssistantCapabilityId,
+                slots: {
+                  ...(parentRecord?.slots ?? {}),
+                  ...(continuation?.slots ?? {}),
+                  ...(opt.slots ?? {}),
+                },
+              }
+            } else {
+              decision = {
+                type: 'dispatch',
+                capabilityId: targetCap,
+                slots: {
+                  ...(parentRecord?.slots ?? {}),
+                  ...(continuation?.slots ?? {}),
+                  ...(opt.slots ?? {}),
+                  ...(opt.id && !opt.capabilityId ? { scenarioId: opt.id } : {}),
+                },
+              }
             }
           }
         } else if (parentResult.kind === 'discovery' && parentResult.candidates?.length) {
@@ -489,35 +589,56 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
 
       // PD-03: Scenario disambiguation when scenarioId is missing
       if (decision.type === 'clarify' && decision.missingFields?.includes('scenarioId')) {
+        const originalCapId: AssistantCapabilityId =
+          (decision as any).capabilityId ??
+          (body.capabilityHint as AssistantCapabilityId) ??
+          (inferAssistantCapability(body.question) ?? 'scenario.explain')
+
         const kw =
           extractScenarioSearchKeyword(body.question) ||
-          /(?:解释|分析|查看|看下)\s*([^\s,，。？?]+?)(?:场景|工作流)/.exec(body.question)?.[1]
+          /(?:解释|分析|查看|看下|编排|修改|更新)\s*([^\s,，。？?]+?)(?:场景|工作流)/.exec(body.question)?.[1]
         if (kw) {
-          const matching = await listScenarios(this.db, { search: kw, limit: 10 }, actor.id).catch(() => ({ items: [] }))
+          const matching = await listScenarios(this.db, { search: kw, limit: 100 }, actor.id).catch(() => ({ items: [] }))
           if (matching.items.length > 1) {
+            const candidates = matching.items.slice(0, 8)
+            const prompt =
+              matching.items.length > 8
+                ? `为您找到 ${matching.items.length} 个与“${kw}”相关的场景（已展示前 8 个），请选择具体要操作的场景或提供更精确的关键词：`
+                : `找到 ${matching.items.length} 个与“${kw}”相关的场景，请选择具体要操作的场景：`
+
+            const options = await Promise.all(
+              candidates.map(async (s) => {
+                const target = await this.targets.getTarget(s.targetId).catch(() => null)
+                const targetLabel = target?.name ?? s.targetId.slice(0, 8)
+                return {
+                  id: s.id,
+                  label: s.name,
+                  kind: 'scenario' as const,
+                  targetName: targetLabel,
+                }
+              }),
+            )
+
             decision = {
               type: 'clarify',
-              question: `找到 ${matching.items.length} 个与“${kw}”相关的场景，请选择具体要操作的场景：`,
+              question: prompt,
               missingFields: ['scenarioId'],
-              options: await Promise.all(
-                matching.items.map(async (s) => {
-                  const target = await this.targets.getTarget(s.targetId).catch(() => null)
-                  const targetLabel = target?.name ?? s.targetId.slice(0, 8)
-                  return {
-                    id: s.id,
-                    label: `${s.name} · ${targetLabel}${s.draftDirty ? ' (草稿未保存)' : ''}`,
-                    capabilityId: 'scenario.explain',
-                    slots: { ...(decision as any).slots, scenarioId: s.id, targetId: s.targetId },
-                  }
-                }),
-              ),
-            }
+              options,
+              slots: {
+                ...((decision as any).slots ?? {}),
+                continuation: {
+                  intentCapabilityId: originalCapId,
+                  keyword: kw,
+                  scenarioOptions: candidates.map((s) => ({ scenarioId: s.id, targetId: s.targetId })),
+                },
+              },
+            } as any
           } else if (matching.items.length === 1) {
             const s = matching.items[0]!
             decision = {
               type: 'dispatch',
-              capabilityId: 'scenario.explain',
-              slots: { ...(decision as any).slots, scenarioId: s.id, targetId: s.targetId },
+              capabilityId: originalCapId,
+              slots: { ...((decision as any).slots ?? {}), scenarioId: s.id, targetId: s.targetId },
             }
           }
         }
@@ -532,6 +653,7 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
       }
 
       if (decision.type === 'clarify') {
+        slots = (decision as any).slots ?? null
         result = {
           kind: 'clarify',
           question: decision.question,

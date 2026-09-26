@@ -12,12 +12,15 @@ import {
   hasPermission,
   platformRuntimeDefaultsFrom,
   resolutionCapabilitiesFromPlatform,
+  resolveLocatorPlansForSteps,
   resolveAiExecutionFromPlatform,
   runNeedsAiExecute,
   scenarioCapabilitiesFor,
   type AiExecutionConfig,
   type PlatformConfigDocument,
   type ResolutionPolicy,
+  type LocatorPlan,
+  type TargetResolutionPolicy,
   type ScenarioCapabilities,
 } from '@cairn/shared'
 import { config } from './env'
@@ -66,22 +69,35 @@ export function resolveAiExecution(
 
 export function assertAiExecutePermission(
   actor: RequestAccount,
-  steps: readonly { id?: string; type: string; policy?: { resolution?: ResolutionPolicy } }[],
+  steps: readonly { id?: string; type: string; policy?: { resolution?: ResolutionPolicy; locatorPlan?: LocatorPlan } }[],
   extras?: {
     document?: PlatformConfigDocument
     documentResolution?: ResolutionPolicy
     targetCeiling?: ResolutionPolicy
     targetPreference?: ResolutionPolicy
+    documentLocatorPlan?: LocatorPlan
+    locatorProtocol?: 2
+    targetPolicy?: TargetResolutionPolicy | null
   },
 ): void {
   const document = extras?.document ?? FACTORY_PLATFORM_CONFIG
-  if (!runNeedsAiExecute({
+  const v2 = Boolean(extras?.locatorProtocol === 2 || extras?.documentLocatorPlan || steps.some((step) => step.policy?.locatorPlan))
+  const needsAi = v2
+    ? steps.some((step) => step.type.startsWith('ai_')) || Object.values(resolveLocatorPlansForSteps({
+      steps: steps.map((step, index) => ({ ...step, id: step.id ?? String(index) })),
+      document,
+      target: extras?.targetPolicy,
+      scenarioPlan: extras?.documentLocatorPlan,
+      scenarioPolicy: extras?.documentResolution,
+    })).some((plan) => plan.actual.some((route) => route !== 'rule'))
+    : runNeedsAiExecute({
     steps,
     document,
     documentResolution: extras?.documentResolution,
     targetCeiling: extras?.targetCeiling,
     targetPreference: extras?.targetPreference,
-  })) return
+  })
+  if (!needsAi) return
   if (!hasPermission(actor.permissions, 'ai:execute')) {
     throw forbidden('AI_EXECUTE_FORBIDDEN', '缺少 ai:execute，不能运行含 AI 步骤或 AI 解析档位的场景')
   }
@@ -107,9 +123,13 @@ export async function resolveRunAiExecution(
   assertAiExecutePermission(input.actor, version.definition.steps, {
     document: layers.document,
     documentResolution: version.definition.resolution,
+    documentLocatorPlan: version.definition.locatorPlan,
+    locatorProtocol: version.definition.locatorProtocol,
     targetCeiling: layers.targetCeiling,
     targetPreference: layers.targetPreference,
+    targetPolicy: layers.targetPolicy,
   })
+  if (version.definition.locatorProtocol === 2 || version.definition.locatorPlan || version.definition.steps.some((step) => step.policy?.locatorPlan)) return undefined
   return resolveAiExecution(version.definition.steps, layers.document, {
     revision: layers.revision,
   })

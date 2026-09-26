@@ -17,18 +17,26 @@ import {
   sha256Hex,
   quoteTargetSystemId,
   unpackAssistantResultEnvelope,
+  canAdoptAuthoringProposal,
+  compareCompileDiagnostics,
+  normalizeAuthoringDocument,
+  type AuthoringDiff,
+  type AuthoringOperation,
+  type CompileDiagnostic,
   type CreateAssistantTurnBody,
   type DeleteAssistantConversationResult,
   type SubmitAccepted,
   type CancelResult,
   type ModelInvocationRecord,
 } from '@cairn/shared'
+import { applyAuthoringOperations } from '@cairn/authoring'
 import {
   DomainError,
   assertTargetPermission,
   beginAssistantTurn,
   createAssistantConversation,
   deleteAssistantConversation,
+  expandWithLoader,
   getAssistantTurnRecord,
   getRun,
   getScenario,
@@ -335,6 +343,123 @@ export class AssistantService implements OnModuleInit {
       validation: (r.validation as any) ?? { schemaOk: !r.error, grounded: 'not_checked' },
     }))
     return { items }
+  }
+
+  async getProposalPreview(actor: Actor, conversationId: string, turnId: string) {
+    this.requireAssist(actor)
+    if (!hasAllPermissions(actor.permissions, ['workflow:write', 'target:read'])) {
+      throw new DomainError('forbidden', 'PERMISSION_DENIED', '缺少 workflow:write 或 target:read 权限')
+    }
+
+    const record = await getAssistantTurnRecord(this.db, turnId, actor.id).catch(rethrowDomain)
+    if (record.turn.conversationId !== conversationId) {
+      throw new DomainError('not_found', 'ASSISTANT_TURN_NOT_FOUND', '轮次不存在')
+    }
+
+    const result = unpackAssistantResultEnvelope(record.turn.result)
+    if (!result || (result.kind !== 'authoring_proposal' && result.kind !== 'proposal')) {
+      throw new DomainError('bad_request', 'PROPOSAL_NOT_FOUND', '当前轮次不包含可预览的编排建议')
+    }
+
+    let scenarioId: string
+    let draftRevision: number
+    let targetId: string
+    let baselineDigest: string
+    let candidateDigest: string
+    let operations: AuthoringOperation[]
+    let diffs: AuthoringDiff[]
+    let proposalId: string
+
+    if (result.kind === 'authoring_proposal') {
+      scenarioId = result.scenarioId
+      proposalId = result.proposalId
+      draftRevision = result.base.draftRevision
+      baselineDigest = result.base.documentDigest
+      candidateDigest = result.candidateDigest
+      operations = result.operations
+      diffs = result.diffs
+    } else {
+      scenarioId = String(record.slots?.scenarioId ?? '')
+      proposalId = turnId
+      draftRevision = Number(record.slots?.draftRevision ?? 0)
+      baselineDigest = result.documentDigest
+      candidateDigest = result.documentDigest
+      operations = []
+      diffs = result.diffs as any
+    }
+
+    const scenario = await getScenario(this.db, scenarioId).catch(rethrowDomain)
+    targetId = scenario.targetId
+    await this.requireVisibleTarget(actor, targetId)
+
+    const draft = scenario.draft
+    let canAdopt = false
+    let staleReason: string | undefined
+
+    if (!draft) {
+      canAdopt = false
+      staleReason = '场景草稿不存在'
+    } else if (result.kind === 'authoring_proposal') {
+      const draftDoc = normalizeAuthoringDocument(draft.document)
+      const adoptCheck = await canAdoptAuthoringProposal({
+        proposal: result,
+        revision: draft.revision,
+        document: draftDoc,
+        hasFieldDrafts: false,
+        remoteConflict: false,
+      })
+      canAdopt = adoptCheck.ok
+      if (!adoptCheck.ok) {
+        staleReason = adoptCheck.reason
+      }
+    } else {
+      canAdopt = draft.revision === draftRevision
+      if (!canAdopt) staleReason = '草稿版本已更新'
+    }
+
+    let diagnostics: any[] = []
+    let executable = false
+
+    if (draft && operations.length > 0) {
+      const draftDoc = normalizeAuthoringDocument(draft.document)
+      const applied = applyAuthoringOperations(draftDoc, operations)
+      if (applied.ok) {
+        let baselineDiagnostics: CompileDiagnostic[] = []
+        try {
+          const baselineRes = await expandWithLoader(this.db, targetId, draftDoc, 'preview', true)
+          baselineDiagnostics = baselineRes.diagnostics
+        } catch {
+          // ignore
+        }
+
+        try {
+          const candRes = await expandWithLoader(this.db, targetId, applied.document, 'preview', true)
+          diagnostics = candRes.diagnostics
+          compareCompileDiagnostics(baselineDiagnostics, candRes.diagnostics)
+          executable = !candRes.diagnostics.some((d) => d.severity === 'error')
+        } catch {
+          executable = false
+        }
+      }
+    } else if (result.kind === 'authoring_proposal') {
+      diagnostics = result.diagnostics
+      executable = result.executable
+    }
+
+    return {
+      proposalId,
+      scenarioId,
+      draftRevision,
+      targetId,
+      baselineDigest,
+      candidateDigest,
+      operations,
+      diffs,
+      diagnostics,
+      executable,
+      canAdopt,
+      staleReason,
+    }
   }
 
   private requireAssist(actor: Actor) {

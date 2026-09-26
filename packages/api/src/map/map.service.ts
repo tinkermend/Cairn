@@ -53,6 +53,16 @@ import {
   matchTerminology,
   retireTerminology,
   updateTerminology,
+  listExploreStateRecipes,
+  getExploreStateRecipe,
+  createExploreStateRecipe,
+  reviewExploreStateRecipe,
+  listExploreCandidates,
+  getExploreCandidate,
+  reviewExploreCandidate,
+  consumeExploreCandidateReview,
+  listExploreTraversals,
+  reviewUnknownExploreJob,
   type DbHandle,
 } from '@cairn/db'
 import {
@@ -101,6 +111,11 @@ import {
   type RetireTerminologyBody,
   type TerminologyListQuery,
   type UpdateTerminologyBody,
+  type StateRecipeCreateBody,
+  type StateRecipeReviewBody,
+  type CandidateReviewBody,
+  type CandidateRunBody,
+  type ReviewUnknownBody,
 } from '@cairn/shared'
 import { DB_HANDLE } from '../db/db.module'
 import { rethrowDomain } from '../common/domain-error'
@@ -580,5 +595,123 @@ export class MapService {
     } catch (error) {
       rethrowDomain(error)
     }
+  }
+
+  listStateRecipes(targetId: string) {
+    return listExploreStateRecipes(this.database, targetId).catch(rethrowDomain)
+  }
+
+  getStateRecipe(targetId: string, recipeId: string) {
+    return getExploreStateRecipe(this.database, targetId, recipeId).catch(rethrowDomain)
+  }
+
+  createStateRecipe(targetId: string, body: StateRecipeCreateBody, account: RequestAccount) {
+    return createExploreStateRecipe(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  reviewStateRecipe(targetId: string, recipeId: string, body: StateRecipeReviewBody, account: RequestAccount) {
+    return reviewExploreStateRecipe(this.database, targetId, recipeId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  listCandidates(targetId: string, jobId: string) {
+    return listExploreCandidates(this.database, targetId, jobId).catch(rethrowDomain)
+  }
+
+  getCandidate(targetId: string, jobId: string, candidateId: string) {
+    return getExploreCandidate(this.database, targetId, jobId, candidateId).catch(rethrowDomain)
+  }
+
+  reviewCandidate(
+    targetId: string,
+    jobId: string,
+    candidateId: string,
+    body: CandidateReviewBody,
+    account: RequestAccount,
+  ) {
+    return reviewExploreCandidate(this.database, targetId, jobId, candidateId, body, this.actor(account)).catch(
+      rethrowDomain,
+    )
+  }
+
+  async runCandidate(
+    targetId: string,
+    jobId: string,
+    candidateId: string,
+    body: CandidateRunBody,
+    account: RequestAccount,
+  ) {
+    try {
+      const consumed = await consumeExploreCandidateReview(
+        this.database,
+        targetId,
+        jobId,
+        candidateId,
+        body.expectedReviewRevision,
+      )
+      const policy = await getMapJobPolicy(this.database, targetId)
+      const exploration = await getExplorationPolicy(this.database, targetId)
+      const entry = await getMapSafeEntry(this.database, targetId, consumed.parentJob.entryId)
+
+      const compiled = compileMapJobSlice({
+        jobKind: 'map_explore',
+        entry: {
+          entryId: entry.entryId,
+          version: entry.version,
+          name: entry.name,
+          url: entry.url,
+          arrivalName: entry.arrivalName,
+          arrivalTarget: entry.arrivalTarget,
+          safetyBasis: entry.safetyBasis,
+          jobKinds: entry.jobKinds,
+        },
+        included: [],
+        policy: policy.policy,
+        exploration: exploration.policy,
+        seedUrls: seedUrlsForExploration(entry.url),
+        candidateAction: {
+          candidateId: consumed.candidate.id,
+          actionCategory: consumed.review.actionCategory as any,
+          targetUrl: consumed.candidate.targetUrl,
+          targetDescriptor: consumed.candidate.locatorDescriptor,
+        },
+      })
+
+      if (!compiled.ok) {
+        throw conflict(
+          compiled.reason === 'entry_precondition_unknown' ? 'ENTRY_PRECONDITION_UNKNOWN' : 'COMPILE_REJECTED',
+          compiled.message,
+        )
+      }
+
+      return await createMapJob(
+        this.database,
+        targetId,
+        {
+          source: 'explore',
+          manualId: body.idempotencyKey.slice(0, 64),
+          expectedPolicyRevision: policy.revision,
+          expectedExplorationRevision: exploration.revision,
+          jobKind: 'map_explore',
+          targetAccountId: consumed.parentJob.targetAccountId,
+          entryId: consumed.parentJob.entryId,
+          selectedAssetRefs: [],
+        },
+        this.actor(account),
+        {
+          steps: compiled.steps,
+          releaseId: consumed.parentJob.releaseId,
+        },
+      )
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  listTraversals(targetId: string, jobId: string) {
+    return listExploreTraversals(this.database, targetId, jobId).catch(rethrowDomain)
+  }
+
+  reviewUnknown(targetId: string, jobId: string, body: ReviewUnknownBody, account: RequestAccount) {
+    return reviewUnknownExploreJob(this.database, targetId, jobId, body, this.actor(account)).catch(rethrowDomain)
   }
 }

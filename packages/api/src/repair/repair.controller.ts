@@ -6,16 +6,20 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
 } from '@nestjs/common'
 import {
   createRepairCandidateBodySchema,
   validateRepairCandidateBodySchema,
   adoptRepairCandidateBodySchema,
   rejectRepairCandidateBodySchema,
+  reopenRepairCandidateBodySchema,
   type CreateRepairCandidateBody,
   type ValidateRepairCandidateBody,
   type AdoptRepairCandidateBody,
   type RejectRepairCandidateBody,
+  type ReopenRepairCandidateBody,
+  type RepairCandidateStatus,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
 import type { RequestAccount } from '../common/request-account'
@@ -43,6 +47,15 @@ export class RepairController {
     return this.repairService.listCandidatesByRun(runId)
   }
 
+  @Get('scenarios/:scenarioId/repair-candidates')
+  @RequirePermissions('workflow:read')
+  async listCandidatesByScenario(
+    @Param('scenarioId') scenarioId: string,
+    @Query('status') status?: string,
+  ) {
+    return this.repairService.listCandidatesByScenario(scenarioId, status as RepairCandidateStatus | undefined)
+  }
+
   @Get('repair-candidates/:id')
   @RequirePermissions('run:read')
   async getCandidate(@Param('id') id: string) {
@@ -55,8 +68,9 @@ export class RepairController {
   async validateCandidate(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(validateRepairCandidateBodySchema)) body: ValidateRepairCandidateBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.repairService.validateCandidate(id, body)
+    return this.repairService.validateCandidate(id, body, actor)
   }
 
   @Post('repair-candidates/:id/adopt')
@@ -76,7 +90,19 @@ export class RepairController {
   async rejectCandidate(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(rejectRepairCandidateBodySchema)) body: RejectRepairCandidateBody,
+    @CurrentAccount() actor: RequestAccount,
   ) {
-    return this.repairService.rejectCandidate(id, body)
+    return this.repairService.rejectCandidate(id, body, actor.id)
+  }
+
+  @Post('repair-candidates/:id/reopen')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('workflow:write')
+  async reopenCandidate(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(reopenRepairCandidateBodySchema.optional())) _body: ReopenRepairCandidateBody | undefined,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.repairService.reopenCandidate(id, actor.id)
   }
 }

@@ -15,6 +15,7 @@ import {
   listReports,
   loadReportRevisionDocument,
   previewReport,
+  previewReportRevision,
   previewDeleteReport,
   type DbHandle,
 } from '@cairn/db'
@@ -27,7 +28,7 @@ import {
   signReportToken,
   verifyReportToken,
 } from '@cairn/shared'
-import { REPORT_LIMITS, type SaveReportProfileBody, type CreateReportBundleBody, type DeriveMemberReportBody, type UploadReportAssetBody } from '@cairn/shared'
+import { REPORT_LIMITS, type SaveReportProfileBody, type CreateReportBundleBody, type DeriveMemberReportBody, type UploadReportAssetBody, type OutputPolicy } from '@cairn/shared'
 import { resolveApiEnv } from '../config/env.js'
 import { rethrowDomain } from '../common/domain-error.js'
 import { abortWhenSseClientDrops } from '../common/sse-abort.js'
@@ -56,6 +57,10 @@ export class ReportsService {
 
   preview(body: CreateReportBody, actorId: string) {
     return previewReport(this.database, body, actorId).catch(rethrowDomain)
+  }
+
+  previewRevision(reportId: string, body: CreateReportRevisionBody, actorId: string) {
+    return previewReportRevision(this.database, reportId, body, actorId).catch(rethrowDomain)
   }
 
   create(body: CreateReportBody, account: RequestAccount) {
@@ -87,6 +92,7 @@ export class ReportsService {
   revisions(id: string, actorId: string, cursor?: string) { return reporting.listReportRevisions(this.database, id, actorId, cursor).catch(rethrowDomain) }
   jobs(id: string, actorId: string, cursor?: string) { return reporting.listReportExportJobs(this.database, id, actorId, cursor).catch(rethrowDomain) }
   derive(id: string, body: DeriveMemberReportBody, account: RequestAccount) { return reporting.deriveMemberReport(this.database, id, body, this.actor(account)).catch(rethrowDomain) }
+  previewMember(id: string, body: DeriveMemberReportBody, actorId: string) { return reporting.previewMemberReport(this.database, id, body, actorId).catch(rethrowDomain) }
   bundle(body: CreateReportBundleBody, account: RequestAccount) { return reporting.createReportBundle(this.database, body, this.actor(account)).catch(rethrowDomain) }
   cancelJob(id: string, account: RequestAccount) { return reporting.cancelExportJob(this.database, id, this.actor(account)).catch(rethrowDomain) }
   retryJob(id: string, key: string, account: RequestAccount) { return reporting.retryExportJob(this.database, id, key, this.actor(account)).catch(rethrowDomain) }
@@ -95,7 +101,12 @@ export class ReportsService {
   profileVersions(id: string, cursor: string | undefined, actorId: string) { return reporting.listReportProfileVersions(this.database, id, { cursor }, actorId).catch(rethrowDomain) }
   saveProfile(id: string | null, body: SaveReportProfileBody, account: RequestAccount) { return reporting.saveReportProfile(this.database, id, body, this.actor(account)).catch(rethrowDomain) }
   defaults(id: string, actorId: string) { return reporting.getScenarioReportDefaults(this.database, id, actorId).catch(rethrowDomain) }
-  saveDefaults(id: string, body: { profileId: string | null; expectedRevision: number }, account: RequestAccount) { return reporting.saveScenarioReportDefaults(this.database, id, body, this.actor(account)).catch(rethrowDomain) }
+  saveDefaults(id: string, body: { profileId: string | null; expectedRevision: number; outputPolicy?: OutputPolicy }, account: RequestAccount) {
+    if (body.outputPolicy?.autoGenerateReport && !account.permissions.includes('report:export')) {
+      throw new ForbiddenException('开启自动生成报告需要导出权限 (report:export)')
+    }
+    return reporting.saveScenarioReportDefaults(this.database, id, body, this.actor(account)).catch(rethrowDomain)
+  }
   async uploadLogo(body: UploadReportAssetBody, account: RequestAccount) {
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body.base64)) throw new BadRequestException('图片编码无效')
     const bytes = Buffer.from(body.base64, 'base64')
@@ -231,4 +242,3 @@ export class ReportsService {
     }
   }
 }
-

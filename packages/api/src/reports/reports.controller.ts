@@ -51,11 +51,26 @@ export class ReportsController {
     return this.reports.derive(revision, body, account)
   }
 
+  @Post(':reportId/revisions/:revisionId/member-preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('report:read')
+  async previewMember(@Param('reportId') id: string, @Param('revisionId') revision: string, @Body(new ZodValidationPipe(deriveMemberReportBodySchema)) body: DeriveMemberReportBody, @CurrentAccount() account: RequestAccount) {
+    await this.reports.revision(id, revision, account.id)
+    return this.reports.previewMember(revision, body, account.id)
+  }
+
   @Post('preview')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('report:read')
   preview(@Body(new ZodValidationPipe(createReportBodySchema)) body: CreateReportBody, @CurrentAccount() account: RequestAccount) {
     return this.reports.preview(body, account.id)
+  }
+
+  @Post(':reportId/revision-preview')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('report:read')
+  previewRevision(@Param('reportId') reportId: string, @Body(new ZodValidationPipe(createReportRevisionBodySchema)) body: CreateReportRevisionBody, @CurrentAccount() account: RequestAccount) {
+    return this.reports.previewRevision(reportId, body, account.id)
   }
 
   @Post()
@@ -161,13 +176,18 @@ export class ArtifactsController {
   @RequirePermissions('report:export')
   async content(
     @Param('artifactId') artifactId: string,
+    @Query('inline') inline: string | undefined,
     @CurrentAccount() account: RequestAccount,
     @Res() res: Response,
   ) {
     const file = await this.reports.artifactStream(artifactId, account.id)
     res.setHeader('Content-Type', file.contentType)
     if (file.byteSize != null) res.setHeader('Content-Length', String(file.byteSize))
-    res.setHeader('Content-Disposition', contentDispositionAttachment(file.fileName))
+    if (inline === 'true' || inline === '1') {
+      res.setHeader('Content-Disposition', 'inline')
+    } else {
+      res.setHeader('Content-Disposition', contentDispositionAttachment(file.fileName))
+    }
     res.setHeader('X-Content-Type-Options', 'nosniff')
     res.status(HttpStatus.OK)
     await pipeline(Readable.from(file.chunks), res)

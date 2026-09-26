@@ -51,8 +51,15 @@ export class RunsController {
 
   @Get()
   @RequirePermissions('run:read')
-  list(@Query(new ZodValidationPipe(runListQuerySchema)) query: RunListQuery, @CurrentAccount() account: RequestAccount) {
-    return this.runs.list(query, account.id)
+  async list(@Query(new ZodValidationPipe(runListQuerySchema)) query: RunListQuery, @CurrentAccount() account: RequestAccount) {
+    const result = await this.runs.list(query, account.id)
+    if (!account.permissions.includes('report:read')) {
+      return {
+        ...result,
+        items: result.items.map(({ runReportStatus, reportId, ...item }) => item),
+      }
+    }
+    return result
   }
 
   @Post()
@@ -69,9 +76,16 @@ export class RunsController {
 
   @Get(':runId/observation')
   @RequirePermissions('run:read')
-  async observation(@Param('runId') runId: string) {
+  async observation(@Param('runId') runId: string, @CurrentAccount() account: RequestAccount) {
     const result = await this.observations.observation(runId)
     if (!result) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
+    if (!account.permissions.includes('report:read')) {
+      const { runReportStatus, reportId, reportError, ...restRun } = result.run
+      return {
+        ...result,
+        run: restRun,
+      }
+    }
     return result
   }
 
@@ -124,6 +138,17 @@ export class RunsController {
     return this.runs.aiTasks(runId, attemptId, query)
   }
 
+  @Post(':runId/attempts/:attemptId/solidification-drafts')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('run:read', 'workflow:write', 'target:read')
+  createSolidificationDraft(
+    @Param('runId') runId: string,
+    @Param('attemptId') attemptId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.runs.createSolidificationDraft(runId, attemptId, actor)
+  }
+
   @Get(':runId/iterations')
   @RequirePermissions('run:read')
   async listIterations(
@@ -150,8 +175,23 @@ export class RunsController {
 
   @Get(':runId')
   @RequirePermissions('run:read')
-  get(@Param('runId') runId: string) {
-    return this.runs.get(runId)
+  async get(@Param('runId') runId: string, @CurrentAccount() account: RequestAccount) {
+    const result = await this.runs.get(runId)
+    if (!account.permissions.includes('report:read')) {
+      const { runReportStatus, reportId, reportError, ...rest } = result
+      return rest
+    }
+    return result
+  }
+
+  @Post(':runId/reports/retry')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('report:export', 'run:read')
+  retryReport(
+    @Param('runId') runId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.runs.retryReport(runId, actor)
   }
 
   @Get(':runId/evidence')
@@ -299,6 +339,17 @@ export class RunsController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.browser.release(runId, body, actor)
+  }
+
+  @Post(':runId/browser/pages/:pageId/close')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('session:control', 'run:execute')
+  closePage(
+    @Param('runId') runId: string,
+    @Param('pageId') pageId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.browser.closePage(runId, pageId, actor)
   }
 
   @Post(':runId/observe')

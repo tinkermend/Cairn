@@ -11,7 +11,13 @@ import {
   getRecordingDraft,
   listRecordingDrafts,
   renameRecordingDraft,
+  getOrCreateRecordingGeneralization,
+  saveRecordingGeneralizationDecisions,
+  submitRecordingGeneralizationRound,
+  updateRecordingGeneralizationRoundStatus,
+  handoffCreateScenario,
   type DbHandle,
+  type ChangeHintBus,
 } from '@cairn/db'
 import type {
   ClaimRecordingBindingBody,
@@ -19,10 +25,16 @@ import type {
   CreateRecordingBody,
   CreateDemonstrationBody,
   RecordingDraftListQuery,
+  SaveGeneralizationDecisionsBody,
+  SubmitGeneralizationRoundBody,
+  HandoffCreateScenarioBody,
 } from '@cairn/shared'
 import { hasPermission } from '@cairn/shared'
 import { forbidden } from '@cairn/db'
+import type { Request, Response } from 'express'
 import { DB_HANDLE } from '../db/db.module'
+import { CHANGE_HINT } from '../observe/change-hint.module'
+import { observeObject } from '../common/observe-object.js'
 import type { RequestAccount } from '../common/request-account'
 import { rethrowDomain } from '../common/domain-error'
 import { config } from '../config/env'
@@ -30,7 +42,10 @@ import { assertDemonstrationEnabled } from './demonstration-feature'
 
 @Injectable()
 export class RecordingsService {
-  constructor(@Inject(DB_HANDLE) private readonly dbHandle: DbHandle) {}
+  constructor(
+    @Inject(DB_HANDLE) private readonly dbHandle: DbHandle,
+    @Inject(CHANGE_HINT) private readonly hints: ChangeHintBus,
+  ) {}
 
   private get db() {
     return this.dbHandle
@@ -109,6 +124,96 @@ export class RecordingsService {
   async open(actor: RequestAccount) {
     try {
       return { binding: await getOpenRecordingBinding(this.db, actor.id) }
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async getGeneralization(recordingDraftId: string, actorId: string) {
+    try {
+      return await getOrCreateRecordingGeneralization(this.db, recordingDraftId, actorId)
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async observeGeneralization(recordingDraftId: string, actorId: string, req: Request, res: Response, after = 0) {
+    return observeObject({
+      req,
+      res,
+      after,
+      hints: this.hints,
+      objectId: recordingDraftId,
+      event: 'generalization',
+      matches: (hint) => hint.objectType === 'recording_draft' && hint.objectId === recordingDraftId,
+      snapshot: () => this.getGeneralization(recordingDraftId, actorId),
+      events: async () => [],
+    })
+  }
+
+  private async publishHint(recordingDraftId: string) {
+    await this.hints
+      .publish({
+        namespace: this.hints.namespace,
+        eventSeq: Date.now(),
+        objectType: 'recording_draft',
+        objectId: recordingDraftId,
+      })
+      .catch(() => undefined)
+  }
+
+  async saveGeneralizationDecisions(
+    recordingDraftId: string,
+    body: SaveGeneralizationDecisionsBody,
+    actor: RequestAccount,
+  ) {
+    try {
+      const result = await saveRecordingGeneralizationDecisions(this.db, recordingDraftId, body, actor)
+      await this.publishHint(recordingDraftId)
+      return result
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async submitGeneralizationRound(
+    recordingDraftId: string,
+    body: SubmitGeneralizationRoundBody,
+    actor: RequestAccount,
+  ) {
+    try {
+      const result = await submitRecordingGeneralizationRound(this.db, recordingDraftId, body, actor)
+      await this.publishHint(recordingDraftId)
+      return result
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async updateGeneralizationRoundStatus(
+    recordingDraftId: string,
+    roundId: string,
+    action: 'accept' | 'reject' | 'revert',
+    actor: RequestAccount,
+  ) {
+    try {
+      const result = await updateRecordingGeneralizationRoundStatus(this.db, recordingDraftId, roundId, action, actor)
+      await this.publishHint(recordingDraftId)
+      return result
+    } catch (error) {
+      rethrowDomain(error)
+    }
+  }
+
+  async handoffCreateScenario(
+    recordingDraftId: string,
+    body: HandoffCreateScenarioBody,
+    actor: RequestAccount,
+  ) {
+    try {
+      const result = await handoffCreateScenario(this.db, recordingDraftId, body, actor)
+      await this.publishHint(recordingDraftId)
+      return result
     } catch (error) {
       rethrowDomain(error)
     }

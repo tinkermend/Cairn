@@ -95,6 +95,16 @@ export class AssistantController {
     return assistantTurnSchema.parse(await this.assistant.getTurn(actor, id, turnId))
   }
 
+  @Get('conversations/:id/turns/:turnId/proposal-preview')
+  @RequirePermissions('ai:assist', 'workflow:write', 'target:read')
+  async getProposalPreview(
+    @Param('id') id: string,
+    @Param('turnId') turnId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return await this.assistant.getProposalPreview(actor, id, turnId)
+  }
+
   @Post('conversations/:id/turns')
   @HttpCode(HttpStatus.ACCEPTED)
   @RequirePermissions('ai:assist')

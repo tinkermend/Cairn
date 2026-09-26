@@ -12,6 +12,7 @@ import {
   assistantInPageGuidanceSchema,
   assistantKnowledgeAnswerResultSchema,
   assistantKnowledgeProposalSchema,
+  assistantAuthoringProposalSchema,
   assistantProposalSchema,
   operationsActionProposalSchema,
 } from '@cairn/shared'
@@ -355,43 +356,48 @@ export class AssistantCapabilityRegistry {
     this.register({
       descriptor: {
         id: 'scenario.propose-step',
-        version: '1.0.0',
-        label: '单步修改建议',
-        purpose: '为已保存草稿中的现有步骤生成受限候选',
+        version: '2.0.0',
+        label: '场景编排建议',
+        purpose: '为已保存草稿提出步骤新增、字段修改、删除与同分支移动等受限编排建议',
         notApplicable: ['未保存草稿', '已发布版本'],
         requiredPermissions: ['ai:assist', 'workflow:read', 'workflow:write', 'target:read'],
         inputSchemaRef: 'assistantProposeStepInputSchema',
-        outputSchemaRef: 'assistantProposalSchema',
+        outputSchemaRef: 'assistantAuthoringProposalSchema',
         contextProfileRef: 'propose:v1',
         executionMode: 'single_turn',
         sideEffect: 'draft_change',
         allowedTools: [],
         policyRef: 'propose_policy:v1',
-        promptRef: { id: 'propose_prompt', version: 'v1' },
+        promptRef: { id: 'propose_prompt', version: 'v2' },
         validatorRefs: ['compiler_validator'],
         intentMatchers: [
           { kind: 'keyword', pattern: '修改这步' },
+          { kind: 'keyword', pattern: '编排' },
           { kind: 'regex', pattern: '(把|将)当前步骤(改成|调整为)' },
+          { kind: 'regex', pattern: '(在|紧接着).*(后|之后|前|之前)(加|增加|插入|新增).*步' },
+          { kind: 'regex', pattern: '(删掉|删除|去掉).*(步|步骤)' },
+          { kind: 'regex', pattern: '(移动|调换|挪动).*(步|步骤)' },
         ],
         slotBindings: [
           { slot: 'scenarioId', from: 'pageContext', key: 'scenarioId', required: true },
-          { slot: 'stepId', from: 'pageContext', key: 'stepId', required: true },
-          { slot: 'draftRevision', from: 'pageContext', key: 'draftRevision', required: true },
+          { slot: 'stepId', from: 'pageContext', key: 'stepId', required: false },
+          { slot: 'draftRevision', from: 'pageContext', key: 'draftRevision', required: false },
         ],
-        requiredContextKeys: ['scenarioId', 'stepId', 'draftRevision'],
+        requiredContextKeys: ['scenarioId'],
       },
       inputSchema: z.strictObject({
         scenarioId: z.string(),
-        stepId: z.string(),
-        draftRevision: z.number(),
+        stepId: z.string().optional(),
+        draftRevision: z.number().optional(),
       }),
-      outputSchema: assistantProposalSchema,
+      outputSchema: z.union([assistantAuthoringProposalSchema, assistantProposalSchema]),
       handler: async (ctx) => {
         const { handleScenarioProposeStep } = await import('./handlers/propose-step.handler.js')
         return handleScenarioProposeStep(ctx)
       },
       promptTemplates: {
         v1: '只生成一种受限单步变更：ai_instruction、assert_expectation 或 fill_binding。不要输出 value，不要改定位器。输出对应 JSON。',
+        v2: '为已保存草稿提出受限编排提议（insert_step、update_step、remove_step、move_step）。遵循字段策略与单轮硬约束。输出对应 JSON。',
       },
     })
 
