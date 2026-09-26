@@ -9,6 +9,8 @@ import {
 } from '@cairn/authoring'
 import {
   AI_ATOMIC_ACTIONS_PROTOCOL,
+  LIST_OUTPUT_PROTOCOL,
+  AI_TASK_EVIDENCE_PROTOCOL,
   IMPORTED_OUTCOME_PROTOCOL,
   VALIDATION_SUBJECT_PROTOCOL,
   normalizeAuthoringDocument,
@@ -118,7 +120,9 @@ export async function markValidationInterventionTx(tx: Db, runId: string, reason
 export async function assertDemonstrationExecutorRolloutTx(tx: Db, snapshot: RunSnapshot) {
   const required = [
     snapshot.aiAtomicActionsProtocol ? AI_ATOMIC_ACTIONS_PROTOCOL : null,
+    snapshot.listOutputProtocol ? LIST_OUTPUT_PROTOCOL : null,
     snapshot.importedOutcomeProtocol ? IMPORTED_OUTCOME_PROTOCOL : null,
+    snapshot.aiTaskEvidence?.actionEdge === 'record' ? AI_TASK_EVIDENCE_PROTOCOL : null,
   ].filter((v): v is NonNullable<typeof v> => v !== null)
   if (!required.length) return
   const { workers } = schemaFor(tx)

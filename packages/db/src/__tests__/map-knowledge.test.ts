@@ -4,6 +4,7 @@ import {
   MAP_ASSETS_PROTOCOL,
   MAP_IDENTITY_RULE_VERSION,
   RUNTIME_SCHEMA_VERSION,
+  authoringSteps,
   mapListQuerySchema,
   isAuthoringDocumentV2,
   scenarioDocumentDigest,
@@ -45,7 +46,7 @@ function asFlatDocument(document: unknown): ScenarioDocument {
     return scenarioDocumentSchema.parse({
       schemaVersion: document.schemaVersion,
       inputs: document.inputs,
-      steps: document.nodes.filter((node) => node.kind === 'step').map((node) => node.step),
+      steps: authoringSteps(document),
     })
   }
   return scenarioDocumentSchema.parse(document)

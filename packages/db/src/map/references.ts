@@ -1,6 +1,7 @@
 import { compileScenarioDocument } from '@cairn/authoring'
 import { and, asc, eq, gt, inArray, isNull, or } from 'drizzle-orm'
 import {
+  authoringSteps,
   mapAssetRefKey,
   isAuthoringDocumentV2,
   normalizeAuthoringDocument,
@@ -30,7 +31,7 @@ import { loadIdentityAliases } from './identities.js'
 function explicitStepDocument(input: unknown): ScenarioDocument {
   if (!isAuthoringDocumentV2(input)) return parseScenarioDocument(input)
   const document = normalizeAuthoringDocument(input)
-  return { schemaVersion: 1, inputs: document.inputs, steps: document.nodes.flatMap(node => node.kind === 'step' ? [node.step] : []) }
+  return { schemaVersion: 1, inputs: document.inputs, steps: authoringSteps(document) }
 }
 
 function slotKey(body: { scopeKind?: string; stepId?: string; assetRef: { pageId?: string } }): string {

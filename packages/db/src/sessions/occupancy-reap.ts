@@ -6,7 +6,7 @@ import { newId } from '../id.js'
 import { atomic, clockNow, databaseNow, insertRows, locked, schemaFor, updateRows } from '../native.js'
 import { appendRunEvents } from '../observe/events.js'
 import { countFailedRecoveries, lockRunRow, releaseRunLeaseTx } from '../leases/leases.js'
-import { skipRemainingStepRunsTx } from '../runs/step-status.js'
+import { skipRemainingStepRunsTx, skippedStepRunEvents } from '../runs/step-status.js'
 import type { SessionLeaseRow } from '../records.js'
 import { lockOperationRow, lockSession } from './occupancy-tx.js'
 import { getSessionOperation } from './occupancy-read.js'
@@ -254,10 +254,11 @@ export async function expireAuthWaitDeadline(tx: Db, lease: SessionLeaseRow, now
           },
           createdAt: now,
         })
-        await skipRemainingStepRunsTx(tx, lease.runId, now)
+        const skipped = await skipRemainingStepRunsTx(tx, lease.runId, now)
         await appendRunEvents(tx, lease.runId, [
           { type: 'run.status_changed', payload: { status: 'FAILED' } },
           { type: 'evidence.recorded', payload: { type: 'error', status: 'available' } },
+          ...skippedStepRunEvents(skipped),
         ])
       }
     }

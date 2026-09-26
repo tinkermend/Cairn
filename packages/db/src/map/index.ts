@@ -119,6 +119,8 @@ export {
   updateExplorationPolicy,
   listMapSafeEntries,
   createMapSafeEntry,
+  updateMapSafeEntry,
+  archiveMapSafeEntry,
   getMapSafeEntry,
   getMapJob,
   hasReadyMapJobWorker,

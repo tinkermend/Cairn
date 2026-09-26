@@ -65,6 +65,8 @@ type OccupancyLive = Pick<
   | 'authControlActorId'
   | 'authControlExpiresAt'
   | 'accountSlot'
+  | 'isolation'
+  | 'hostId'
 >
 
 export type OccupancyInstance = {
@@ -134,6 +136,8 @@ function toOccupancyLive(row: {
   authControlActorId: OccupancyLive['authControlActorId']
   authControlExpiresAt: OccupancyLive['authControlExpiresAt']
   accountSlot?: number | null
+  isolation?: OccupancyLive['isolation']
+  hostId?: OccupancyLive['hostId']
 }): OccupancyLive {
   return {
     id: row.id,
@@ -155,6 +159,8 @@ function toOccupancyLive(row: {
     authControlActorId: row.authControlActorId,
     authControlExpiresAt: row.authControlExpiresAt,
     accountSlot: row.accountSlot ?? 1,
+    isolation: (row.isolation as 'SHARED' | 'DEDICATED') ?? null,
+    hostId: row.hostId ?? null,
   }
 }
 
@@ -1010,6 +1016,8 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
             keepAliveUntil: facts.live.keepAliveUntil?.toISOString() ?? null,
             nextAuthCheckAt: facts.live.nextAuthCheckAt?.toISOString() ?? null,
             accountSlot: facts.live.accountSlot ?? 1,
+            isolation: (facts.live.isolation as 'SHARED' | 'DEDICATED') ?? null,
+            hostId: facts.live.hostId ?? null,
           }
         : null,
     instances: facts.instances.map((item) => ({
@@ -1029,6 +1037,8 @@ export async function getAccountSessionDetail(db: Db, key: SessionKey): Promise<
       keepAliveUntil: item.session.keepAliveUntil?.toISOString() ?? null,
       nextAuthCheckAt: item.session.nextAuthCheckAt?.toISOString() ?? null,
       accountSlot: item.session.accountSlot ?? 1,
+      isolation: (item.session.isolation as 'SHARED' | 'DEDICATED') ?? null,
+      hostId: item.session.hostId ?? null,
       occupancy: item.lease
         ? {
             purpose: item.lease.purpose,

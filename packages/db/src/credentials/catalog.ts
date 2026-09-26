@@ -910,62 +910,47 @@ async function registerCredentialImpl(
 ): Promise<CredentialDetail> {
   const permissions = await actorPermissions(db, actor.id)
   if (!canWriteCredentialType(permissions, body.type)) throw forbidden('FORBIDDEN', '无权登记该凭据')
-  if (body.type === 'target_password') {
-    if (!body.targetAccountId) throw badRequest('CREDENTIAL_CONSUMER_REQUIRED', '必须选择已有账号')
-    if (!sealed) throw badRequest('CREDENTIAL_MATERIAL_UNAVAILABLE', '登记目标密码必须提供秘密材料')
-    const { targetAccounts } = schemaFor(db)
-    const [account] = await db.select().from(targetAccounts).where(eq(targetAccounts.id, body.targetAccountId)).limit(1)
-    if (!account || account.deletedAt) throw notFound('CREDENTIAL_NOT_FOUND', '目标账号不存在')
-    await replaceTargetAccountSecret(db, {
-      account: {
-        id: account.id,
-        targetId: account.targetId,
-        displayName: body.name ?? account.displayName,
-        username: account.username,
-        configRevision: account.configRevision,
-        secretId: sealed.id,
-        secretProvider: sealed.provider,
-      },
-      sealed,
-      validity: body.validity,
-      actor,
-    })
-    if (
-      body.ownerConsoleAccountId !== undefined ||
-      body.notes !== undefined ||
-      body.purpose !== undefined ||
-      body.tags !== undefined ||
-      body.name
-    ) {
-      const latest = await getCredential(db, account.id, actor)
-      await updateCredentialMetadata(
-        db,
-        account.id,
-        {
-          expectedRevision: latest.revision,
-          name: body.name,
-          ownerConsoleAccountId: body.ownerConsoleAccountId,
-          notes: body.notes,
-          purpose: body.purpose,
-          tags: body.tags,
-        },
-        actor,
-      )
-    }
-    return getCredential(db, account.id, actor)
-  }
-  if (body.type === 'model_key') {
-    if (!sealed) throw badRequest('CREDENTIAL_MATERIAL_UNAVAILABLE', '登记模型密钥必须提供材料')
-    return getCredential(db, sealed.id, actor)
-  }
-  if (!body.alertChannelId || !sealed) throw badRequest('CREDENTIAL_CONSUMER_REQUIRED', '必须选择已有告警渠道')
-  await replaceAlertWebhookSecret(db, {
-    channelId: body.alertChannelId,
-    channelName: body.name ?? 'Webhook',
+  if (!sealed) throw badRequest('CREDENTIAL_MATERIAL_UNAVAILABLE', '登记目标密码必须提供秘密材料')
+  const { targetAccounts } = schemaFor(db)
+  const [account] = await db.select().from(targetAccounts).where(eq(targetAccounts.id, body.targetAccountId)).limit(1)
+  if (!account || account.deletedAt) throw notFound('CREDENTIAL_NOT_FOUND', '目标账号不存在')
+  await replaceTargetAccountSecret(db, {
+    account: {
+      id: account.id,
+      targetId: account.targetId,
+      displayName: body.name ?? account.displayName,
+      username: account.username,
+      configRevision: account.configRevision,
+      secretId: sealed.id,
+      secretProvider: sealed.provider,
+    },
     sealed,
+    validity: body.validity,
     actor,
   })
-  return getCredential(db, body.alertChannelId, actor)
+  if (
+    body.ownerConsoleAccountId !== undefined ||
+    body.notes !== undefined ||
+    body.purpose !== undefined ||
+    body.tags !== undefined ||
+    body.name
+  ) {
+    const latest = await getCredential(db, account.id, actor)
+    await updateCredentialMetadata(
+      db,
+      account.id,
+      {
+        expectedRevision: latest.revision,
+        name: body.name,
+        ownerConsoleAccountId: body.ownerConsoleAccountId,
+        notes: body.notes,
+        purpose: body.purpose,
+        tags: body.tags,
+      },
+      actor,
+    )
+  }
+  return getCredential(db, account.id, actor)
 }
 
 export async function replaceCredentialMaterial(

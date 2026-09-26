@@ -6,6 +6,7 @@ import type { SessionProfileRow } from '../records.js'
 import { schemaFor } from '../native.js'
 import { profileKeyFrom, type SessionProfileKey } from './account-session-concurrency.js'
 import type { SessionKey } from './sessions.js'
+import { clearSessionStateSnapshot } from './session-snapshots.js'
 
 function resolveProfileKey(key: SessionKey | SessionProfileKey): SessionProfileKey {
   return 'accountSlot' in key && key.accountSlot != null ? key : profileKeyFrom(key, 1)
@@ -106,6 +107,7 @@ export async function invalidateSessionProfile(
   key: SessionKey | SessionProfileKey,
 ): Promise<SessionProfileRow | null> {
   return atomic(db, async (tx) => {
+    await clearSessionStateSnapshot(tx, key).catch(() => {})
     const current = await getSessionProfile(tx, key)
     if (!current) return null
     const now = await clockNow(tx as unknown as Db)

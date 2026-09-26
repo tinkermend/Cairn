@@ -1,11 +1,13 @@
 import type { RunLeaseRow, WorkerRow } from '../records.js'
-import { expireRunDeadlines, scheduledStartDeadlineExpired } from '../runs/deadline.js'
+import { scheduledStartDeadlineExpired } from '../runs/deadline.js'
 import { schemaFor } from '../native.js'
 import { updateRows, updateRowsCount } from '../native.js'
-import { and, asc, eq, gt, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, isNull, ne, not, or, sql } from 'drizzle-orm'
 import {
   DEFAULT_BROWSER_MAX_SESSIONS,
   AI_ATOMIC_ACTIONS_PROTOCOL,
+  LIST_OUTPUT_PROTOCOL,
+  AI_TASK_EVIDENCE_PROTOCOL,
   IMPORTED_OUTCOME_PROTOCOL,
   MAP_CONSUMPTION_PROTOCOL,
   MAP_JOBS_PROTOCOL,
@@ -13,6 +15,8 @@ import {
   SUITE_ADMISSION_PROTOCOL,
   RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
   RESOLUTION_PROTOCOL,
+  CONTROL_FLOW_PROTOCOL,
+  CONTROL_FLOW_PROTOCOL_V2,
   SESSION_ACCOUNT_CONCURRENCY_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
   registrationRequiresOccupancy,
@@ -638,17 +642,36 @@ export async function verifyRunLeaseForWrite(tx: Db, grant: RunGrant): Promise<b
   return row !== undefined
 }
 
-export const CLAIM_SCAN_LIMIT = 32
+export const CLAIM_SCAN_LIMIT = 64
 export const CLAIM_EXCLUDE_LIMIT = 64
+const CLAIM_WINDOW_SIZE = 32
+
+export type ClaimScanKey = { createdAt: string; id: string }
+export type ClaimScanCursor = { RECOVERING: ClaimScanKey | null; QUEUED: ClaimScanKey | null }
+export type ClaimRunResult = {
+  grant: RunGrant | null
+  cursor: ClaimScanCursor
+  reason: 'claimed' | 'idle' | 'budget_exhausted' | 'unavailable'
+}
 
 export type ClaimRunDiagnostics = {
+  /** SQL 资格筛选后，进入应用层尝试的候选数；延续原监控口径。 */
   scanned: number
+  /** 按索引窗口读出的原始 Run 数；不是 PostgreSQL 的实际访问行数。 */
+  windowRows: number
+  windows: number
+  candidateSqlMs: number
+  totalMs: number
+  reason: ClaimRunResult['reason'] | null
   excluded: number
   selected: boolean
   recorded: boolean
 }
 
-let lastClaimDiagnostics: ClaimRunDiagnostics = { scanned: 0, excluded: 0, selected: false, recorded: false }
+let lastClaimDiagnostics: ClaimRunDiagnostics = {
+  scanned: 0, windowRows: 0, windows: 0, candidateSqlMs: 0,
+  totalMs: 0, reason: null, excluded: 0, selected: false, recorded: false,
+}
 
 export function takeLastClaimDiagnostics(): ClaimRunDiagnostics {
   return { ...lastClaimDiagnostics }
@@ -662,6 +685,13 @@ function mapJobStartBefore(tx: Db) {
 function mapJobJobId(tx: Db) {
   const { runs } = schemaFor(tx)
   return jsonText(tx, runs.snapshot, ['mapJob', 'jobId'])
+}
+
+function claimCursorTimestamp(tx: Db) {
+  const { runs } = schemaFor(tx)
+  return driverOf(tx) === 'mysql'
+    ? sql<string>`CAST(${runs.createdAt} AS CHAR(64))`
+    : sql<string>`CAST(${runs.createdAt} AS TEXT)`
 }
 
 function jsonTextCompare(tx: Db, left: ReturnType<typeof jsonText>, op: '<=' | '>', right: string) {
@@ -715,42 +745,145 @@ function mapJobYieldPredicate(tx: Db) {
   )`
 }
 
-function targetInFlightCount(tx: Db) {
-  const { runs } = schemaFor(tx)
-  return sql`(
-    SELECT COUNT(*) FROM ${runs} AS claim_inflight
-     WHERE claim_inflight.target_id = ${runs.targetId}
-       AND claim_inflight.status = 'RUNNING'
-       AND claim_inflight.deleted_at IS NULL
-  )`
+function claimEligiblePredicate(
+  tx: Db,
+  status: 'RECOVERING' | 'QUEUED',
+  worker: WorkerRow,
+  input: { workerId: string; instanceId: string },
+  candidateIds: string[],
+  nowIso: string,
+) {
+  const { browserSessions, runLeases, runs } = schemaFor(tx)
+  const startBefore = mapJobStartBefore(tx)
+  return and(
+    eq(runs.status, status),
+    isNull(runs.deletedAt),
+    isNull(runs.cancelRequestedAt),
+    or(isNull(runs.deadlineAt), sql`${runs.deadlineAt} > ${databaseNow(tx)}`),
+    inArray(runs.id, candidateIds),
+    worker.protocolCapabilities?.includes('snapshot.moduleManifest@1')
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'moduleManifest')),
+    worker.protocolCapabilities?.includes('snapshot.candidateGroups@1')
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'candidateGroups')),
+    worker.protocolCapabilities?.includes(MAP_JOBS_PROTOCOL)
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'mapJob')),
+    // 冻结了「启用」的地图消费的 Run，只能交给声明 map-consumption@1 的 Worker：
+    // 不认识该协议的旧 Worker 会按「无地图」悄悄执行，违背快照里的承诺。
+    // 不能像上面那些协议一样只判键存在：freezeMapConsumptionTx 在消费关闭时
+    // 也会写 { mode: 'off' }，键几乎总是存在，按键拦会把旧 Worker 挡在所有 Run 之外。
+    // 所以看值：缺键（旧快照）或 mode = 'off' 都不需要该协议。
+    worker.protocolCapabilities?.includes(MAP_CONSUMPTION_PROTOCOL)
+      ? undefined
+      : or(
+          isNull(jsonText(tx, runs.snapshot, ['mapConsumption', 'mode'])),
+          jsonTextEquals(tx, runs.snapshot, ['mapConsumption', 'mode'], 'off'),
+        ),
+    worker.protocolCapabilities?.includes(OUTCOME_MANIFEST_PROTOCOL)
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'outcomeManifest')),
+    worker.protocolCapabilities?.includes(AI_ATOMIC_ACTIONS_PROTOCOL)
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'aiAtomicActionsProtocol')),
+    worker.protocolCapabilities?.includes(LIST_OUTPUT_PROTOCOL)
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'listOutputProtocol')),
+    worker.protocolCapabilities?.includes(AI_TASK_EVIDENCE_PROTOCOL)
+      ? undefined
+      : or(
+          isNull(jsonText(tx, runs.snapshot, ['aiTaskEvidence', 'actionEdge'])),
+          jsonTextEquals(tx, runs.snapshot, ['aiTaskEvidence', 'actionEdge'], 'off'),
+        ),
+    worker.protocolCapabilities?.includes(IMPORTED_OUTCOME_PROTOCOL)
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'importedOutcomeProtocol')),
+    worker.protocolCapabilities?.includes(RUNTIME_INVARIANT_MANIFEST_PROTOCOL)
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'runtimeInvariantManifest')),
+    worker.protocolCapabilities?.includes(SUITE_ADMISSION_PROTOCOL)
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'suiteAdmission')),
+    worker.protocolCapabilities?.includes(RESOLUTION_PROTOCOL)
+      ? undefined
+      : not(jsonHasKey(tx, runs.snapshot, 'resolution')),
+    worker.protocolCapabilities?.includes(CONTROL_FLOW_PROTOCOL_V2)
+      ? undefined
+      : worker.protocolCapabilities?.includes(CONTROL_FLOW_PROTOCOL)
+        ? or(
+            isNull(jsonText(tx, runs.snapshot, ['controlFlow', 'protocol'])),
+            jsonTextEquals(tx, runs.snapshot, ['controlFlow', 'protocol'], CONTROL_FLOW_PROTOCOL),
+          )
+        : not(jsonHasKey(tx, runs.snapshot, 'controlFlow')),
+    suiteAdmissionPredicate(tx),
+    not(scheduledStartDeadlineExpired(tx, new Date(nowIso))!),
+    sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
+    or(
+      isNull(runs.targetAccountId),
+      sql`EXISTS (
+          SELECT 1 FROM ${browserSessions} s
+           WHERE s.target_id = ${runs.targetId} AND s.target_account_id = ${runs.targetAccountId}
+ AND s.status = 'OPEN' AND s.health <> 'UNHEALTHY'
+ AND s.owner_worker_id = ${input.workerId}
+ AND s.owner_worker_instance_id = ${input.instanceId}
+        )`,
+      and(
+        sql`(
+          SELECT COUNT(*) FROM ${browserSessions} s
+           WHERE s.owner_worker_id = ${input.workerId}
+ AND s.status IN ('CREATING', 'OPEN', 'CLOSING')
+        ) < ${worker.maxSessions}`,
+        worker.protocolCapabilities?.includes(SESSION_ACCOUNT_CONCURRENCY_PROTOCOL)
+          ? undefined
+          : sql`NOT EXISTS (
+          SELECT 1 FROM ${browserSessions} s
+           WHERE s.target_id = ${runs.targetId} AND s.target_account_id = ${runs.targetAccountId}
+ AND s.status IN ('CREATING', 'OPEN', 'CLOSING', 'LOST')
+ AND NOT (s.status = 'OPEN' AND s.owner_worker_id = ${input.workerId})
+        )`,
+      ),
+    ),
+    sql`(
+      NOT ${jsonHasKey(tx, runs.snapshot, 'mapJob')}
+      OR ${startBefore} IS NULL
+      OR ${jsonTextCompare(tx, startBefore, '>', nowIso)}
+    )`,
+    mapJobYieldPredicate(tx),
+  )
 }
 
-async function closeExpiredMapJobWindows(tx: Db, limit: number): Promise<number> {
-  const { runs } = schemaFor(tx)
-  const nowIso = (await clockNow(tx)).toISOString()
-  const startBefore = mapJobStartBefore(tx)
-  const jobId = mapJobJobId(tx)
-  const rows = await locked(
-    tx,
-    tx
-      .select({ id: runs.id, jobId })
-      .from(runs)
-      .where(
-        and(
-          inArray(runs.status, ['QUEUED', 'RECOVERING']),
-          isNull(runs.deletedAt),
-          jsonHasKey(tx, runs.snapshot, 'mapJob'),
-          sql`${startBefore} IS NOT NULL`,
-          jsonTextCompare(tx, startBefore, '<=', nowIso),
-        ),
-      )
-      .orderBy(asc(runs.createdAt), asc(runs.id))
-      .limit(limit),
-  )
+export async function expireMapJobClaimWindows(handle: DbHandle, limit = 100): Promise<{ scanned: number }> {
+  const db = handle.db
+  const { mapJobs, runs } = schemaFor(db)
+  const nowIso = (await clockNow(db)).toISOString()
+  const startBefore = mapJobStartBefore(db)
+  const jobIdAsText = driverOf(db) === 'mysql'
+    ? sql`CAST(expiring_job.id AS CHAR(36))`
+    : sql`CAST(expiring_job.id AS TEXT)`
+  const rows = await db.select({ id: runs.id, jobId: mapJobJobId(db) }).from(runs).where(and(
+    inArray(runs.status, ['QUEUED', 'RECOVERING']), isNull(runs.deletedAt),
+    jsonHasKey(db, runs.snapshot, 'mapJob'), sql`${startBefore} IS NOT NULL`,
+    jsonTextCompare(db, startBefore, '<=', nowIso),
+    sql`EXISTS (SELECT 1 FROM ${mapJobs} AS expiring_job WHERE ${jobIdAsText} = ${mapJobJobId(db)} AND expiring_job.job_status IN ('queued', 'running'))`,
+  )).orderBy(asc(runs.createdAt), asc(runs.id)).limit(limit)
   for (const row of rows) {
-    if (row.jobId) await markMapJobWindowClosed(tx, row.jobId as string)
+    if (!row.jobId) continue
+    await db.transaction(async (transaction) => {
+      const tx = transaction as unknown as Db
+      const { mapJobs, runs } = schemaFor(tx)
+      const [job] = await locked(tx, tx.select({ jobStatus: mapJobs.jobStatus }).from(mapJobs)
+        .where(eq(mapJobs.id, row.jobId as string)))
+      if (!job || !['queued', 'running'].includes(job.jobStatus)) return
+      const [run] = await tx.select({ id: runs.id }).from(runs).where(and(
+        eq(runs.id, row.id), inArray(runs.status, ['QUEUED', 'RECOVERING']),
+        isNull(runs.deletedAt),
+        jsonTextCompare(tx, mapJobStartBefore(tx), '<=', (await clockNow(tx)).toISOString()),
+      )).limit(1)
+      if (run) await markMapJobWindowClosed(tx, row.jobId as string)
+    })
   }
-  return rows.length
+  return { scanned: rows.length }
 }
 
 async function markMapJobRunning(tx: Db, jobId: string): Promise<void> {
@@ -773,219 +906,184 @@ async function markMapJobWindowClosed(tx: Db, jobId: string): Promise<void> {
     .where(eq(mapJobs.id, jobId))
 }
 
-export async function claimRun(
+export async function claimRunWithCursor(
   handle: DbHandle,
   input: {
     workerId: string
     instanceId: string
     leaseTtlSeconds: number
     excludeRunIds?: string[]
+    cursor?: ClaimScanCursor
   },
-): Promise<RunGrant | null> {
+): Promise<ClaimRunResult> {
   const db = handle.db
-  await expireRunDeadlines(db)
-  lastClaimDiagnostics = { scanned: 0, excluded: 0, selected: false, recorded: true }
-  return db.transaction(async (transaction) => {
-    const tx = transaction as unknown as Db
-    const { browserSessions, runLeases, runs, workers } = schemaFor(tx)
-    const [worker] = await locked(
-      tx,
-      tx
-        .select()
-        .from(workers)
-        .where(
-          and(
-            eq(workers.id, input.workerId),
-            eq(workers.instanceId, input.instanceId),
-            eq(workers.status, 'READY'),
-          ),
-        ),
-    )
-    if (!worker) return null
-    let scheduling
-    try {
-      ;({ scheduling } = await readSessionScheduling(tx))
-    } catch {
-      return null
-    }
-    const held = await tx
-      .select({ id: runLeases.id })
-      .from(runLeases)
-      .where(
-        and(
-          eq(runLeases.holderWorkerId, input.workerId),
-          eq(runLeases.status, 'ACTIVE'),
-          sql`${runLeases.expiresAt} > ${databaseNow(tx)}`,
-        ),
-      )
-    if (held.length >= worker.capacity) return null
-    await closeExpiredMapJobWindows(tx, CLAIM_SCAN_LIMIT)
-    const nowIso = (await clockNow(tx)).toISOString()
-    const startBefore = mapJobStartBefore(tx)
-    const skipped = new Set((input.excludeRunIds ?? []).slice(0, CLAIM_EXCLUDE_LIMIT))
-    lastClaimDiagnostics.excluded = skipped.size
-    for (const status of ['RECOVERING', 'QUEUED'] as const) {
-      for (;;) {
-        if (lastClaimDiagnostics.scanned >= CLAIM_SCAN_LIMIT || skipped.size >= CLAIM_EXCLUDE_LIMIT) {
-          return null
+  const startedAt = performance.now()
+  const diagnostics: ClaimRunDiagnostics = {
+    scanned: 0, windowRows: 0, windows: 0, candidateSqlMs: 0,
+    totalMs: 0, reason: null, excluded: 0, selected: false, recorded: true,
+  }
+  const cursor: ClaimScanCursor = {
+    RECOVERING: input.cursor?.RECOVERING ?? null,
+    QUEUED: input.cursor?.QUEUED ?? null,
+  }
+  const result = (grant: RunGrant | null, reason: ClaimRunResult['reason']): ClaimRunResult => {
+    diagnostics.totalMs = performance.now() - startedAt
+    diagnostics.reason = reason
+    lastClaimDiagnostics = diagnostics
+    return { grant, cursor, reason }
+  }
+  const { runs, workers } = schemaFor(db)
+  const [worker] = await db.select().from(workers).where(and(
+    eq(workers.id, input.workerId), eq(workers.instanceId, input.instanceId), eq(workers.status, 'READY'),
+  )).limit(1)
+  if (!worker) return result(null, 'unavailable')
+  let scheduling: Awaited<ReturnType<typeof readSessionScheduling>>['scheduling'] | undefined
+  const excluded = (input.excludeRunIds ?? []).slice(0, CLAIM_EXCLUDE_LIMIT)
+  diagnostics.excluded = excluded.length
+  let needsContinuation = false
+  let totalScanned = 0
+  for (const status of ['RECOVERING', 'QUEUED'] as const) {
+    // Recovery gets the first half; QUEUED can use every unused scan slot.
+    const budget = status === 'RECOVERING' ? CLAIM_SCAN_LIMIT / 2 : CLAIM_SCAN_LIMIT - totalScanned
+    let scannedForStatus = 0
+    while (scannedForStatus < budget) {
+      const after = cursor[status]
+      const windowStartedAt = performance.now()
+      const window = await db.select({
+        id: runs.id, createdAt: runs.createdAt, targetId: runs.targetId,
+        targetAccountId: runs.targetAccountId, cursorCreatedAt: claimCursorTimestamp(db),
+      }).from(runs).where(and(
+        eq(runs.status, status), isNull(runs.deletedAt),
+        after ? or(
+          sql`${runs.createdAt} > ${after.createdAt}`,
+          and(sql`${runs.createdAt} = ${after.createdAt}`, gt(runs.id, after.id)),
+        ) : undefined,
+      )).orderBy(asc(runs.createdAt), asc(runs.id)).limit(Math.min(CLAIM_WINDOW_SIZE, budget - scannedForStatus))
+      diagnostics.candidateSqlMs += performance.now() - windowStartedAt
+      if (!window.length) {
+        cursor[status] = null
+        break
+      }
+      diagnostics.windowRows += window.length
+      diagnostics.windows += 1
+      scannedForStatus += window.length
+      totalScanned += window.length
+      const last = window[window.length - 1]!
+      cursor[status] = { createdAt: last.cursorCreatedAt, id: last.id }
+      const ids = window.map((row) => row.id).filter((id) => !excluded.includes(id))
+      if (!ids.length) continue
+      const nowIso = (await clockNow(db)).toISOString()
+      const candidateStartedAt = performance.now()
+      const candidateRuns = await db.select({
+        id: runs.id, createdAt: runs.createdAt, targetId: runs.targetId,
+        targetAccountId: runs.targetAccountId, mapJobId: mapJobJobId(db),
+        mapJobStartBefore: mapJobStartBefore(db),
+      }).from(runs).where(claimEligiblePredicate(db, status, worker, input, ids, nowIso))
+      diagnostics.candidateSqlMs += performance.now() - candidateStartedAt
+      diagnostics.scanned += candidateRuns.length
+      if (!candidateRuns.length) continue
+      if (!scheduling) {
+        try {
+          ;({ scheduling } = await readSessionScheduling(db))
+        } catch {
+          return result(null, 'unavailable')
         }
-        const exclude = [...skipped]
-        const jobId = mapJobJobId(tx)
-        // Lock only Run rows; correlated predicates avoid outer-join lock differences.
-        const [run] = await locked(
-          tx,
-          tx
-            .select({
-              id: runs.id,
-              createdAt: runs.createdAt,
-              targetId: runs.targetId,
-              targetAccountId: runs.targetAccountId,
-              mapJobId: jobId,
-              mapJobStartBefore: startBefore,
-            })
-            .from(runs)
-            .where(
-              and(
-                eq(runs.status, status),
-                isNull(runs.deletedAt),
-                isNull(runs.cancelRequestedAt),
-                or(isNull(runs.deadlineAt), sql`${runs.deadlineAt} > ${databaseNow(tx)}`),
-                exclude.length ? notInArray(runs.id, exclude) : undefined,
-                worker.protocolCapabilities?.includes('snapshot.moduleManifest@1')
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'moduleManifest')),
-                worker.protocolCapabilities?.includes('snapshot.candidateGroups@1')
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'candidateGroups')),
-                worker.protocolCapabilities?.includes(MAP_JOBS_PROTOCOL)
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'mapJob')),
-                // 冻结了「启用」的地图消费的 Run，只能交给声明 map-consumption@1 的 Worker：
-                // 不认识该协议的旧 Worker 会按「无地图」悄悄执行，违背快照里的承诺。
-                // 不能像上面那些协议一样只判键存在：freezeMapConsumptionTx 在消费关闭时
-                // 也会写 { mode: 'off' }，键几乎总是存在，按键拦会把旧 Worker 挡在所有 Run 之外。
-                // 所以看值：缺键（旧快照）或 mode = 'off' 都不需要该协议。
-                worker.protocolCapabilities?.includes(MAP_CONSUMPTION_PROTOCOL)
-                  ? undefined
-                  : or(
-                      isNull(jsonText(tx, runs.snapshot, ['mapConsumption', 'mode'])),
-                      jsonTextEquals(tx, runs.snapshot, ['mapConsumption', 'mode'], 'off'),
-                    ),
-                worker.protocolCapabilities?.includes(OUTCOME_MANIFEST_PROTOCOL)
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'outcomeManifest')),
-                worker.protocolCapabilities?.includes(AI_ATOMIC_ACTIONS_PROTOCOL)
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'aiAtomicActionsProtocol')),
-                worker.protocolCapabilities?.includes(IMPORTED_OUTCOME_PROTOCOL)
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'importedOutcomeProtocol')),
-                worker.protocolCapabilities?.includes(RUNTIME_INVARIANT_MANIFEST_PROTOCOL)
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'runtimeInvariantManifest')),
-                worker.protocolCapabilities?.includes(SUITE_ADMISSION_PROTOCOL)
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'suiteAdmission')),
-                worker.protocolCapabilities?.includes(RESOLUTION_PROTOCOL)
-                  ? undefined
-                  : not(jsonHasKey(tx, runs.snapshot, 'resolution')),
-                suiteAdmissionPredicate(tx),
-                not(scheduledStartDeadlineExpired(tx, new Date(nowIso))!),
-                sql`NOT EXISTS (SELECT 1 FROM ${runLeases} l WHERE l.run_id = ${runs.id} AND l.status = 'ACTIVE')`,
-                or(
-                  isNull(runs.targetAccountId),
-                  sql`EXISTS (
-          SELECT 1 FROM ${browserSessions} s
-           WHERE s.target_id = ${runs.targetId} AND s.target_account_id = ${runs.targetAccountId}
-             AND s.status = 'OPEN' AND s.health <> 'UNHEALTHY'
-             AND s.owner_worker_id = ${input.workerId}
-             AND s.owner_worker_instance_id = ${input.instanceId}
-        )`,
-                  and(
-                    sql`(
-          SELECT COUNT(*) FROM ${browserSessions} s
-           WHERE s.owner_worker_id = ${input.workerId}
-             AND s.status IN ('CREATING', 'OPEN', 'CLOSING')
-        ) < ${worker.maxSessions}`,
-                    worker.protocolCapabilities?.includes(SESSION_ACCOUNT_CONCURRENCY_PROTOCOL)
-                      ? undefined
-                      : sql`NOT EXISTS (
-          SELECT 1 FROM ${browserSessions} s
-           WHERE s.target_id = ${runs.targetId} AND s.target_account_id = ${runs.targetAccountId}
-             AND s.status IN ('CREATING', 'OPEN', 'CLOSING', 'LOST')
-             AND NOT (s.status = 'OPEN' AND s.owner_worker_id = ${input.workerId})
-        )`,
-                  ),
-                ),
-                sql`(
-                  NOT ${jsonHasKey(tx, runs.snapshot, 'mapJob')}
-                  OR ${startBefore} IS NULL
-                  OR ${jsonTextCompare(tx, startBefore, '>', nowIso)}
-                )`,
-                mapJobYieldPredicate(tx),
-              ),
-            )
-            .orderBy(targetInFlightCount(tx), asc(runs.createdAt), asc(runs.id))
-            .limit(1),
-          true,
-        )
-        if (!run) break
-        lastClaimDiagnostics.scanned += 1
-        skipped.add(run.id)
-        const mapJobId = run.mapJobId as string | null
-        if (mapJobId) {
-          const windowEnd = run.mapJobStartBefore as string | null
-          if (windowEnd && Date.parse(windowEnd) <= Date.parse(nowIso)) {
-            await markMapJobWindowClosed(tx, mapJobId)
-            continue
+      }
+      const currentScheduling = scheduling!
+      const targetIds = [...new Set(candidateRuns.map((row) => row.targetId))]
+      const runningCounts = await db.select({ targetId: runs.targetId, count: sql<number>`count(*)` })
+        .from(runs).where(and(inArray(runs.targetId, targetIds), eq(runs.status, 'RUNNING'), isNull(runs.deletedAt)))
+        .groupBy(runs.targetId)
+      const counts = new Map(runningCounts.map((row) => [row.targetId, Number(row.count)]))
+      candidateRuns.sort((a, b) =>
+        (counts.get(a.targetId) ?? 0) - (counts.get(b.targetId) ?? 0)
+        || a.createdAt.getTime() - b.createdAt.getTime()
+        || a.id.localeCompare(b.id))
+      for (const candidate of candidateRuns) {
+        const attempt = await db.transaction(async (transaction) => {
+          const tx = transaction as unknown as Db
+          const { mapJobs, runLeases, runs, targetAccounts, workers } = schemaFor(tx)
+          const [currentWorker] = await locked(tx, tx.select().from(workers).where(and(
+            eq(workers.id, input.workerId), eq(workers.instanceId, input.instanceId), eq(workers.status, 'READY'),
+          )))
+          if (!currentWorker) return { grant: null, unavailable: true }
+          const [held] = await tx.select({ count: sql<number>`count(*)` }).from(runLeases).where(and(
+            eq(runLeases.holderWorkerId, input.workerId), eq(runLeases.status, 'ACTIVE'),
+            sql`${runLeases.expiresAt} > ${databaseNow(tx)}`,
+          ))
+          if (Number(held?.count ?? 0) >= currentWorker.capacity) return { grant: null, unavailable: true }
+          const mapJobId = candidate.mapJobId as string | null
+          if (mapJobId) {
+            const [job] = await locked(tx, tx.select({ jobStatus: mapJobs.jobStatus }).from(mapJobs)
+              .where(eq(mapJobs.id, mapJobId)), true)
+            if (!job || !['queued', 'running'].includes(job.jobStatus)) return { grant: null, unavailable: false }
+            const windowEnd = candidate.mapJobStartBefore as string | null
+            if (windowEnd && Date.parse(windowEnd) <= (await clockNow(tx)).getTime()) {
+              await markMapJobWindowClosed(tx, mapJobId)
+              return { grant: null, unavailable: false }
+            }
           }
-        }
-        const eligibility = await evaluateRunSessionEligibility(tx, {
-          run: {
-            id: run.id,
-            createdAt: run.createdAt,
-            targetId: run.targetId,
-            targetAccountId: run.targetAccountId,
-          },
-          workerId: input.workerId,
-          instanceId: input.instanceId,
-          maxSessions: worker.maxSessions,
-          scheduling,
-          protocolCapabilities: worker.protocolCapabilities,
-        })
-        if (!eligibility.eligible) continue
-        await tx
-          .update(runs)
-          .set({
-            status: 'RUNNING',
-            startedAt: sql`COALESCE(${runs.startedAt}, ${databaseNow(tx)})`,
-            updatedAt: databaseNow(tx),
+          if (candidate.targetAccountId) {
+            const [account] = await locked(tx, tx.select({ id: targetAccounts.id }).from(targetAccounts)
+              .where(eq(targetAccounts.id, candidate.targetAccountId)), true)
+            if (!account) return { grant: null, unavailable: false }
+          }
+          const [run] = await locked(tx, tx.select({
+            id: runs.id, createdAt: runs.createdAt, targetId: runs.targetId,
+            targetAccountId: runs.targetAccountId,
+          }).from(runs).where(claimEligiblePredicate(
+            tx, status, currentWorker, input, [candidate.id], (await clockNow(tx)).toISOString(),
+          )).limit(1), true)
+          if (!run) return { grant: null, unavailable: false }
+          const eligibility = await evaluateRunSessionEligibility(tx, {
+            run, workerId: input.workerId, instanceId: input.instanceId,
+            maxSessions: currentWorker.maxSessions, scheduling: currentScheduling,
+            protocolCapabilities: currentWorker.protocolCapabilities,
           })
-          .where(eq(runs.id, run.id))
-        await appendRunEvents(tx, run.id, [
-          { type: 'run.status_changed', payload: { status: 'RUNNING' } },
-        ])
-        if (mapJobId) await markMapJobRunning(tx, mapJobId)
-        const [max] = await tx
-          .select({ token: sql<number>`COALESCE(MAX(${runLeases.fencingToken}), 0) + 1` })
-          .from(runLeases)
-          .where(eq(runLeases.runId, run.id))
-        const [lease] = await insertRows(tx, runLeases, {
-          id: newId(),
-          runId: run.id,
-          fencingToken: Number(max!.token),
-          holderWorkerId: input.workerId,
-          status: 'ACTIVE',
-          expiresAt: afterSeconds(tx, input.leaseTtlSeconds),
+          if (!eligibility.eligible) return { grant: null, unavailable: false }
+          await tx.update(runs).set({
+            status: 'RUNNING', startedAt: sql`COALESCE(${runs.startedAt}, ${databaseNow(tx)})`,
+            updatedAt: databaseNow(tx),
+          }).where(eq(runs.id, run.id))
+          await appendRunEvents(tx, run.id, [{ type: 'run.status_changed', payload: { status: 'RUNNING' } }])
+          if (mapJobId) await markMapJobRunning(tx, mapJobId)
+          const [max] = await tx.select({ token: sql<number>`COALESCE(MAX(${runLeases.fencingToken}), 0) + 1` })
+            .from(runLeases).where(eq(runLeases.runId, run.id))
+          const [lease] = await insertRows(tx, runLeases, {
+            id: newId(), runId: run.id, fencingToken: Number(max!.token),
+            holderWorkerId: input.workerId, status: 'ACTIVE',
+            expiresAt: afterSeconds(tx, input.leaseTtlSeconds),
+          })
+          return { grant: toGrant(lease!), unavailable: false }
         })
-        lastClaimDiagnostics.selected = true
-        lastClaimDiagnostics.excluded = skipped.size
-        return toGrant(lease!)
+        if (attempt.unavailable) return result(null, 'unavailable')
+        if (attempt.grant) {
+          // A successful claim removes only one row from the window. Revisit its
+          // remaining rows on the next claim so one Worker can fill every slot.
+          cursor[status] = after
+          diagnostics.selected = true
+          return result(attempt.grant, 'claimed')
+        }
       }
     }
-    lastClaimDiagnostics.excluded = skipped.size
-    return null
-  })
+    if (scannedForStatus >= budget) needsContinuation = true
+  }
+  return result(null, needsContinuation ? 'budget_exhausted' : 'idle')
+}
+
+export async function claimRun(
+  handle: DbHandle,
+  input: Parameters<typeof claimRunWithCursor>[1],
+): Promise<RunGrant | null> {
+  let cursor = input.cursor
+  // Callers that do not retain a cursor keep the old behavior of searching
+  // beyond one bounded window. The executor uses claimRunWithCursor directly.
+  for (let i = 0; i < 256; i += 1) {
+    const claim = await claimRunWithCursor(handle, { ...input, cursor })
+    if (claim.grant || claim.reason !== 'budget_exhausted') return claim.grant
+    cursor = claim.cursor
+  }
+  return null
 }
 
 export async function renewRunLease(

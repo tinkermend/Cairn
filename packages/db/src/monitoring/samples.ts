@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import {
+  DEFAULT_MONITOR_AI_CALL_RETENTION_DAYS,
   DEFAULT_MONITOR_SAMPLE_INTERVAL_MS,
   DEFAULT_MONITOR_SAMPLE_RETENTION_DAYS,
   DEFAULT_MONITOR_SERIES_WINDOW_MS,
@@ -64,6 +65,18 @@ export async function purgeMonitorSamples(
   }
   const cutoff = afterSeconds(db, -retainDays * 86_400)
   return rowsAffected(await db.delete(monitorSamples).where(sql`${monitorSamples.bucketAt} < ${cutoff}`))
+}
+
+export async function purgeScenarioAiCalls(
+  db: Db,
+  retainDays = DEFAULT_MONITOR_AI_CALL_RETENTION_DAYS,
+): Promise<number> {
+  const { scenarioAiCalls } = schemaFor(db)
+  if (retainDays <= 0) {
+    return rowsAffected(await db.delete(scenarioAiCalls))
+  }
+  const cutoff = afterSeconds(db, -retainDays * 86_400)
+  return rowsAffected(await db.delete(scenarioAiCalls).where(sql`${scenarioAiCalls.createdAt} < ${cutoff}`))
 }
 
 export async function readMonitorSeries(

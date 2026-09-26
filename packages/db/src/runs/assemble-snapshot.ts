@@ -1,12 +1,15 @@
 import {
   DEFAULT_BROWSER_AI_HANG_WAIT_MS,
   AI_ATOMIC_ACTIONS_PROTOCOL,
+  LIST_OUTPUT_PROTOCOL,
   IMPORTED_OUTCOME_PROTOCOL,
   FACTORY_PLATFORM_CONFIG,
   MAP_JOB_EVIDENCE_POLICY,
   RUNTIME_SCHEMA_VERSION,
+  CONTROL_FLOW_PROTOCOL,
   assertAiRequestTimeoutFitsSteps,
   freezeExecutorVersions,
+  resolveAiTaskEvidence,
   frozenTargetAuthSchema,
   effectiveAccountSessionCap,
   effectivePoliciesForSteps,
@@ -36,6 +39,7 @@ import {
   type ModuleManifest,
   type OutcomeManifest,
   type RuntimeInvariantManifest,
+  type ControlFlowManifest,
   type PlatformConfigDocument,
   type ResolutionPolicy,
   type RunSnapshot,
@@ -139,6 +143,7 @@ export type AssembleRunSnapshotInput = {
   moduleManifest?: ModuleManifest | null
   outcomeManifest?: OutcomeManifest | null
   runtimeInvariantManifest?: RuntimeInvariantManifest | null
+  controlFlow?: ControlFlowManifest | null
   input: Record<string, JsonValue>
   sessionPolicyOverride?: SessionPolicyOverride | null
   evidencePolicyOverride?: EvidencePolicy | null
@@ -155,6 +160,8 @@ export type AssembleRunSnapshotInput = {
     sessionPolicy: unknown
     resolutionPolicy?: unknown
     sensitiveSelectors?: string[] | null
+    /** Target 级 AI 动作采集开关：'inherit' 沿用平台配置，'off' 关闭。 */
+    aiActionTrace?: string | null
   }
   maxConcurrentSessions?: number
   platformDocument: PlatformConfigDocument
@@ -168,6 +175,7 @@ export type AssembleRunSnapshotInput = {
   suiteAdmission?: SuiteAdmissionSnapshot
   documentResolution?: ResolutionPolicy
   outputs?: ScenarioOutputDecl
+  pauseBeforeStepId?: string
 }
 
 export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapshot & { digest: string } {
@@ -209,6 +217,12 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     steps: [...input.steps],
     ...(input.steps.some((step) => step.type === 'ai_action' && 'operation' in step.input)
       ? { aiAtomicActionsProtocol: AI_ATOMIC_ACTIONS_PROTOCOL } : {}),
+    ...(input.steps.some(
+      (step) =>
+        (step.type === 'extract' && Boolean(step.input.many)) ||
+        (step.type === 'ai_extract' && step.input.outputSchema?.kind === 'list'),
+    )
+      ? { listOutputProtocol: LIST_OUTPUT_PROTOCOL } : {}),
     ...(input.outcomeManifest?.entries.some((entry) => entry.provenance === 'imported')
       ? { importedOutcomeProtocol: IMPORTED_OUTCOME_PROTOCOL } : {}),
     moduleManifest: input.moduleManifest ?? undefined,
@@ -219,7 +233,15 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
     ...(input.runtimeInvariantManifest
       ? { runtimeInvariantManifest: input.runtimeInvariantManifest }
       : {}),
+    ...(input.controlFlow
+      ? { controlFlow: input.controlFlow }
+      : input.steps.some(
+          (s) => s.type === 'decide' || s.type === 'probe' || s.type === 'compute' || Boolean(s.optional),
+        )
+        ? { controlFlow: { protocol: CONTROL_FLOW_PROTOCOL, blocks: [] } }
+        : {}),
     ...(input.outputs ? { outputs: input.outputs } : {}),
+    ...(input.pauseBeforeStepId ? { pauseBeforeStepId: input.pauseBeforeStepId } : {}),
     input: input.input,
     createdAt: input.createdAt.toISOString(),
     ...(input.deadlineAt ? { deadlineAt: input.deadlineAt.toISOString() } : {}),
@@ -266,6 +288,15 @@ export function assembleRunSnapshot(input: AssembleRunSnapshotInput): RunSnapsho
       input.mapJob ? { ...input.mapCapturePolicyOverride, enabled: true } : input.mapCapturePolicyOverride,
       document.mapCapture,
     ),
+    ...(() => {
+      // 关闭或无 ai_action 时不写字段：旧快照与未启用能力的 Run 的摘要逐字节不变
+      const aiTaskEvidence = resolveAiTaskEvidence({
+        platform: document.aiPathLearning,
+        targetMode: (input.target.aiActionTrace as 'inherit' | 'off' | null | undefined) ?? null,
+        steps: input.steps,
+      })
+      return aiTaskEvidence ? { aiTaskEvidence } : {}
+    })(),
   }
   const frozenResolution = freezeResolutionSnapshot({
     ceiling: mergeResolutionCeiling({

@@ -25,6 +25,96 @@ describe.each(DRIVERS)('%s 账号凭据管理闭环', (driver: ContractDriver) =
     const account = await makeAccount()
     return { db, native, tables, rbac, roles, admin, targets, target, account, makeTarget, makeAccount }
   }
+  it('图标和身份色在创建、编辑与重新读取后保持一致，旧记录使用默认值', async () => {
+    const { admin, targets, target } = await setup()
+    expect(target).toMatchObject({ iconKey: 'globe', accentKey: 'blue' })
+    const created = await targets.createTarget({ code: 'id-test', name: '身份测试', entryUrl: 'https://example.com', loginFields: null, authMethod: 'password', captchaMode: 'none', status: 'active', iconKey: 'factory', accentKey: 'teal' }, admin)
+    expect(await targets.getTarget(created.id)).toMatchObject({ iconKey: 'factory', accentKey: 'teal' })
+    await targets.updateTarget(created.id, { iconKey: 'cloud', accentKey: 'amber' }, admin)
+    expect((await targets.listTargets({}, admin)).items.find(item => item.id === created.id)).toMatchObject({ iconKey: 'cloud', accentKey: 'amber' })
+  })
+  it('创建目标时首个账号的凭据需要全范围读写授权，拒绝时整笔创建回滚', async () => {
+    const { rbac, admin, targets, target } = await setup()
+    const targetRole = await rbac.createRole({ key: 'target_creator', name: '系统创建', permissions: ['target:read', 'target:write'] }, admin)
+    const credentialReadRole = await rbac.createRole({ key: 'credential_reader', name: '凭据读取', permissions: ['credential:read'] }, admin)
+    const credentialWriteRole = await rbac.createRole({ key: 'credential_writer', name: '凭据写入', permissions: ['credential:write'] }, admin)
+    const roleIds = [targetRole.id, credentialReadRole.id, credentialWriteRole.id]
+    const scopes = (readMode: 'selected' | 'all', writeMode: 'selected' | 'all') => [
+      { roleId: targetRole.id, mode: 'all' as const, targetIds: [] },
+      { roleId: credentialReadRole.id, mode: readMode, targetIds: readMode === 'all' ? [] : [target.id] },
+      { roleId: credentialWriteRole.id, mode: writeMode, targetIds: writeMode === 'all' ? [] : [target.id] },
+    ]
+    const creator = await rbac.createAccount({
+      email: 'target-creator', displayName: '系统创建者', password: 'test-password',
+      roleIds, targetScopes: scopes('selected', 'all'),
+    }, admin)
+    const firstAccount = { displayName: '首个账号', username: 'first-account', status: 'active' as const, usage: 'business' as const }
+    const body = (code: string, account: typeof firstAccount & { password?: string; totpSecret?: string; validity?: { mode: 'permanent' }; ownerConsoleAccountId?: string }) => ({
+      code, name: code, entryUrl: 'https://example.com', loginFields: null,
+      authMethod: 'password' as const, captchaMode: 'none' as const, status: 'active' as const, account,
+    })
+
+    for (const [code, account] of [
+      ['sealed-gate-password', { ...firstAccount, password: 'secret-password', validity: { mode: 'permanent' as const } }],
+      ['sealed-gate-totp', { ...firstAccount, totpSecret: 'JBSWY3DPEHPK3PXP' }],
+      ['sealed-gate-validity', { ...firstAccount, validity: { mode: 'permanent' as const } }],
+      ['sealed-gate-owner', { ...firstAccount, ownerConsoleAccountId: admin.id }],
+    ] as const) {
+      await expect(targets.createTarget(body(code, account), creator)).rejects.toMatchObject({ kind: 'forbidden' })
+    }
+    expect((await targets.listTargets({ search: 'sealed-gate' }, admin)).items).toHaveLength(0)
+
+    // 与独立添加账号一致：只登记身份、不写凭据时不要求凭据权限。
+    const identityOnly = await targets.createTarget(body('identity-only', firstAccount), creator)
+    expect(identityOnly.accountCount).toBe(1)
+
+    await rbac.assignAccountRoles(creator.id, { roleIds, targetScopes: scopes('all', 'selected') }, admin)
+    await expect(targets.createTarget(body('sealed-gate-write', {
+      ...firstAccount, password: 'secret-password', validity: { mode: 'permanent' },
+    }), creator)).rejects.toMatchObject({ kind: 'forbidden' })
+    expect((await targets.listTargets({ search: 'sealed-gate-write' }, admin)).items).toHaveLength(0)
+
+    await rbac.assignAccountRoles(creator.id, { roleIds, targetScopes: scopes('all', 'all') }, admin)
+    const created = await targets.createTarget(body('sealed-gate-allowed', {
+      ...firstAccount, password: 'secret-password', totpSecret: 'JBSWY3DPEHPK3PXP', validity: { mode: 'permanent' },
+    }), creator)
+    expect((await targets.listAccounts(created.id, {})).items[0]).toMatchObject({ username: 'first-account', hasPassword: true, hasTotp: true })
+  })
+  it('独立新增、更新和清除 TOTP 秘密均按目标范围检查凭据读写权限', async () => {
+    const { rbac, admin, targets, target, account } = await setup()
+    const targetRole = await rbac.createRole({ key: 'totp_target_writer', name: '账号维护', permissions: ['target:read', 'target:write'] }, admin)
+    const credentialRole = await rbac.createRole({ key: 'totp_credential_writer', name: '凭据维护', permissions: ['credential:read', 'credential:write'] }, admin)
+    const roleIds = [targetRole.id, credentialRole.id]
+    const scopes = (credentialMode: 'none' | 'selected') => [
+      { roleId: targetRole.id, mode: 'selected' as const, targetIds: [target.id] },
+      { roleId: credentialRole.id, mode: credentialMode, targetIds: credentialMode === 'none' ? [] : [target.id] },
+    ]
+    const operator = await rbac.createAccount({
+      email: 'totp-operator', displayName: 'TOTP 维护者', password: 'test-password',
+      roleIds, targetScopes: scopes('none'),
+    }, admin)
+    const newAccount = {
+      displayName: '带动态码账号', username: 'totp-account', totpSecret: 'JBSWY3DPEHPK3PXP',
+      usage: 'business' as const, status: 'active' as const,
+    }
+
+    await expect(targets.createAccount(target.id, newAccount, operator)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    await expect(targets.updateAccount(target.id, account.id, { totpSecret: 'JBSWY3DPEHPK3PXP' }, operator)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    expect((await targets.listAccounts(target.id, {})).items).toHaveLength(1)
+    expect((await targets.getAccount(target.id, account.id)).hasTotp).toBe(false)
+
+    await rbac.assignAccountRoles(operator.id, { roleIds, targetScopes: scopes('selected') }, admin)
+    const created = await targets.createAccount(target.id, newAccount, operator)
+    expect(created.hasTotp).toBe(true)
+    expect((await targets.updateAccount(target.id, account.id, { totpSecret: 'JBSWY3DPEHPK3PXP' }, operator)).hasTotp).toBe(true)
+
+    await rbac.assignAccountRoles(operator.id, { roleIds, targetScopes: scopes('none') }, admin)
+    await expect(targets.updateAccount(target.id, account.id, { clearTotp: true }, operator)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
+    expect((await targets.getAccount(target.id, account.id)).hasTotp).toBe(true)
+
+    await rbac.assignAccountRoles(operator.id, { roleIds, targetScopes: scopes('selected') }, admin)
+    expect((await targets.updateAccount(target.id, account.id, { clearTotp: true }, operator)).hasTotp).toBe(false)
+  })
   it('两个入口单独改有效期保留密码及起算时间，账号改名保持同源', async () => {
     const { db, native, tables, admin, targets, target, account } = await setup()
     const before = await api.getCredential(db, account.id, admin)
@@ -47,7 +137,7 @@ describe.each(DRIVERS)('%s 账号凭据管理闭环', (driver: ContractDriver) =
     expect((await api.getCredential(db, account.id, operator)).capabilities.canReplace).toBe(true)
     expect((await api.getCredential(db, b.id, operator)).capabilities.canReplace).toBe(false)
     expect((await targets.listTargets({}, operator)).items).toHaveLength(2)
-    expect((await targets.listTargets({ search: '001alice' }, operator)).items).toHaveLength(2)
+    expect((await targets.listTargets({ search: '001alice' }, operator)).items).toHaveLength(0)
     expect((await targets.listTargets({ credentialAction: 'write' }, operator)).items.map(i => i.id)).toEqual([target.id])
     await expect(targets.updateAccount(other.id, b.id, { password: 'nope', validity: { mode: 'permanent' } }, operator)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
     await expect(targets.updateAccount(target.id, account.id, { displayName: '不允许修改身份' }, operator)).rejects.toMatchObject({ code: 'TARGET_NOT_FOUND' })
@@ -79,10 +169,12 @@ describe.each(DRIVERS)('%s 账号凭据管理闭环', (driver: ContractDriver) =
     expect((await api.getCredential(db, account.id, admin)).revision).toBe(current.revision)
   })
   it('会话列表与 SSE 按同一目标授权过滤，撤权后既有订阅也不再返回事件', async () => {
-    const { db, rbac, admin, target, account, makeTarget, makeAccount } = await setup()
+    const { db, rbac, admin, targets, target, account, makeTarget, makeAccount } = await setup()
     const other = await makeTarget('T2'); const otherAccount = await makeAccount(other.id)
     const role = await rbac.createRole({ key: 'session_reader', name: '会话查看', permissions: ['target:read', 'session:read'] }, admin)
     const reader = await rbac.createAccount({ email: 'session-reader', displayName: '会话查看者', password: 'test-password', roleIds: [role.id], targetScopes: [{ roleId: role.id, mode: 'selected', targetIds: [target.id] }] }, admin)
+    expect((await targets.listTargets({ search: '001alice' }, reader)).items.map(i => i.id)).toEqual([target.id])
+    expect((await targets.listTargets({ search: 'T2' }, reader)).items).toHaveLength(0)
     for (const key of [{ targetId: target.id, targetAccountId: account.id }, { targetId: other.id, targetAccountId: otherAccount.id }]) await api.appendSessionEvent(db, { key, type: 'auth.unknown' })
     expect((await api.listAccountSessionOverview(db, {}, reader.id)).items.map(i => i.targetId)).toEqual([target.id])
     expect((await api.listSessionEventsAfter(db, {}, reader.id)).map(i => i.targetId)).toEqual([target.id])

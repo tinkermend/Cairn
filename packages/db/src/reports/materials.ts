@@ -8,7 +8,7 @@ import { sha256Hex } from '../runs/digest.js'
 import { createArtifact } from '../objects/artifacts.js'
 import { cleanupUnusedJobArtifacts, guardExportJob, insertExportJob, type ExportGrant } from './reports.js'
 
-type EvidenceRef = { evidenceId: string; runId: string; caption: string; anomalous: boolean; status: string; digest: string | null }
+type EvidenceRef = { evidenceId: string; runId: string; caption: string; anomalous: boolean; status: string; digest: string | null; attemptId?: string; role?: string; seq?: number; diagnosis?: string }
 const object = (value: JsonValue | undefined): Record<string, JsonValue> => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 const array = (value: JsonValue | undefined): Array<Record<string, JsonValue>> => Array.isArray(value) ? value.map(object) : []
 
@@ -19,13 +19,35 @@ export function reportScreenshotRefs(source: Record<string, JsonValue>): Evidenc
   const findingEvidenceIds = new Set(
     array(output.findings).map((f) => String(f.evidenceId)).filter(Boolean),
   )
-  return array(source.evidence).filter((evidence) => evidence.type === 'screenshot').map((evidence) => {
+  return preferSameRoleShots(array(source.evidence).filter((evidence) => evidence.type === 'screenshot').map((evidence) => {
     const step = steps.get(String(evidence.stepRunId))
     const isFinding = findingEvidenceIds.has(String(evidence.evidenceId))
     const anomalous = isFinding || (!!step && (['FAILED', 'NEEDS_REVIEW', 'CANCELLED'].includes(String(step.status)) || ['FAIL', 'WARN', 'UNKNOWN'].includes(String(step.outcomeStatus)) || array(step.attempts).some((attempt) => !!attempt.error)))
+    const diagnosis = typeof evidence.diagnosis === 'string' ? evidence.diagnosis : undefined
+    const caption = `${String(source.scenarioName ?? '场景')} · ${String(step?.name ?? '运行截图')}${diagnosis === 'suspected_blank' ? ' · 截图疑似空白' : ''}`
     return { evidenceId: String(evidence.evidenceId), runId: String(source.runId), status: String(evidence.status), digest: typeof evidence.digest === 'string' ? evidence.digest : null,
-      caption: `${String(source.scenarioName ?? '场景')} · ${String(step?.name ?? '运行截图')}`, anomalous }
-  })
+      caption, anomalous, attemptId: evidence.attemptId ? String(evidence.attemptId) : undefined, role: typeof evidence.role === 'string' ? evidence.role : undefined, seq: typeof evidence.seq === 'number' ? evidence.seq : 0, diagnosis }
+  }))
+}
+
+function preferSameRoleShots(items: EvidenceRef[]): EvidenceRef[] {
+  const passthrough: EvidenceRef[] = []
+  const groups = new Map<string, EvidenceRef[]>()
+  for (const item of items) {
+    if (!item.attemptId || !item.role) {
+      passthrough.push(item)
+      continue
+    }
+    const key = `${item.attemptId}:${item.role}`
+    groups.set(key, [...(groups.get(key) ?? []), item])
+  }
+  const picked = [...groups.values()].map((group) =>
+    [...group].sort((left, right) => {
+      const blank = (item: EvidenceRef) => (item.diagnosis === 'suspected_blank' ? 1 : 0)
+      return blank(left) - blank(right) || (right.seq ?? 0) - (left.seq ?? 0)
+    })[0]!,
+  )
+  return [...passthrough, ...picked]
 }
 
 export async function prepareReportMaterials(db: Db, input: { reportId: string; revisionId: string; targetId: string; source: Record<string, JsonValue>; config: ReportConfig; actorId: string }) {

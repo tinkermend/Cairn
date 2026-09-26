@@ -39,7 +39,7 @@ import {
   toDeleteResult,
 } from '../lifecycle.js'
 import { cursorFilter, paginateResults } from '../cursor.js'
-import { assertTargetPermission, lockConsoleAuthorization, targetScopeFor, targetScopeFilter } from './target-authorization.js'
+import { assertTargetPermission, lockConsoleAuthorization, targetScopeFor, targetScopeFilter, targetScopesFor } from './target-authorization.js'
 import { updateCredentialMetadata } from '../credentials/catalog.js'
 import { secretIdsStillReferenced } from '../credentials/consume.js'
 import { targetCleanupObjectFilter } from '../reports/cleanup.js'
@@ -53,6 +53,8 @@ import {
   tallyKnownBytes,
   compactLoginFields,
   DEFAULT_ACCOUNT_USAGE,
+  DEFAULT_TARGET_ICON_KEY,
+  DEFAULT_TARGET_ACCENT_KEY,
   deletePreviewResponseSchema,
   mapUsageGuardFor,
   targetAccountListQuerySchema,
@@ -72,6 +74,7 @@ import {
   sessionPolicyFromPlatform,
   effectiveAccountSessionCap,
   type AuditAction,
+  type AiActionTraceTargetMode,
   type TargetSessionPolicyPatch,
   type TargetResolutionPolicyPatch,
   type CleanupStatus,
@@ -90,6 +93,7 @@ import {
   type TargetLoginFields,
   type UpdateTargetAccountBody,
   type UpdateTargetBody,
+  type SessionSnapshotSummaryDto,
 } from '@cairn/shared'
 import type { PersistenceActor as RequestAccount } from './actor.js'
 import { loadAccountAuthDisplay, loadCurrentAuthProfile } from '../sessions/auth-profile.js'
@@ -101,6 +105,12 @@ import {
   markIdentityReconfirm,
   replaceTargetAccountSecret,
 } from '../credentials/index.js'
+import {
+  readSessionStateSnapshotSummary,
+  readSessionStateSnapshotSummaries,
+  clearSessionStateSnapshot,
+  type SessionSnapshotSummary,
+} from '../sessions/index.js'
 import { getPlatformConfig } from '../platform-config/store.js'
 import { parseTargetSessionPolicyOverride } from '../sessions/session-policy.js'
 import { retireSchedulesForOwner } from '../schedules/schedules.js'
@@ -108,6 +118,25 @@ import { softDeleteSuitesForTarget } from '../suites/suites.js'
 
 function iso(value: Date): string {
   return value.toISOString()
+}
+
+function toSnapshotSummaryDto(summary?: SessionSnapshotSummary | null): SessionSnapshotSummaryDto | null {
+  if (!summary || (!summary.hasSnapshot && !summary.clearedAt)) return null
+  return {
+    hasSnapshot: summary.hasSnapshot,
+    accountSlot: summary.accountSlot,
+    byteSize: summary.byteSize,
+    cookieCount: summary.cookieCount,
+    originCount: summary.originCount,
+    hasIndexedDb: summary.hasIndexedDb,
+    earliestCookieExpiry: summary.earliestCookieExpiry ? iso(summary.earliestCookieExpiry) : null,
+    identity: summary.identity,
+    stale: summary.stale,
+    clearedAt: summary.clearedAt ? iso(summary.clearedAt) : null,
+    capturedAt: summary.capturedAt ? iso(summary.capturedAt) : null,
+    verifiedAt: summary.verifiedAt ? iso(summary.verifiedAt) : null,
+    updatedAt: summary.updatedAt ? iso(summary.updatedAt) : null,
+  }
 }
 
 async function rethrowUnique(
@@ -172,21 +201,25 @@ export class TargetsStore {
   async listTargets(query: TargetListQuery = {}, actor?: RequestAccount): Promise<TargetListResponse> {
     const parsed = targetListQuerySchema.parse(query)
     const { targets, targetAccounts } = schemaFor(this.db)
+    const scopes = actor
+      ? await targetScopesFor(this.db, actor.id, ['target:read', 'session:read', 'credential:read', 'credential:write', 'credential:import'])
+      : undefined
+    const scope = (permission: string) => scopes!.get(permission)!
     const limit = parsed.limit
     const searchPattern = parsed.search ? '%' + parsed.search.toLowerCase() + '%' : ''
     const filters: (SQL | undefined)[] = [
       isNull(targets.deletedAt),
-      actor ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'target:read')) : undefined,
-      actor && parsed.credentialAction ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'credential:read')) : undefined,
-      actor && parsed.credentialAction && parsed.credentialAction !== 'read' ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'credential:write')) : undefined,
-      actor && parsed.credentialAction === 'import' ? targetScopeFilter(targets.id, await targetScopeFor(this.db, actor.id, 'credential:import')) : undefined,
+      actor ? targetScopeFilter(targets.id, scope('target:read')) : undefined,
+      actor && parsed.credentialAction ? targetScopeFilter(targets.id, scope('credential:read')) : undefined,
+      actor && parsed.credentialAction && parsed.credentialAction !== 'read' ? targetScopeFilter(targets.id, scope('credential:write')) : undefined,
+      actor && parsed.credentialAction === 'import' ? targetScopeFilter(targets.id, scope('credential:import')) : undefined,
       parsed.status ? eq(targets.status, parsed.status) : undefined,
       parsed.authMethod ? eq(targets.authMethod, parsed.authMethod) : undefined,
       parsed.search
         ? or(
             sql`lower(${targets.name}) like ${searchPattern}`,
             sql`lower(${targets.code}) like ${searchPattern}`,
-            sql`exists (select 1 from ${targetAccounts} where ${targetAccounts.targetId} = ${targets.id} and ${isNull(targetAccounts.deletedAt)} and (lower(${targetAccounts.username}) like ${searchPattern} or lower(${targetAccounts.displayName}) like ${searchPattern}))`,
+            sql`exists (select 1 from ${targetAccounts} where ${targetAccounts.targetId} = ${targets.id} and ${isNull(targetAccounts.deletedAt)} and ${actor ? targetScopeFilter(targets.id, scope('session:read')) : sql`1 = 1`} and lower(${targetAccounts.displayName}) like ${searchPattern})`,
           )
         : undefined,
       cursorFilter(targets.createdAt, targets.id, parsed.cursor),
@@ -251,6 +284,32 @@ export class TargetsStore {
     return this.getTarget(id)
   }
 
+  /** Target 级 AI 动作采集开关：inherit 沿用平台配置，off 表示该目标系统不采集。 */
+  async updateAiActionTrace(
+    id: string,
+    mode: AiActionTraceTargetMode,
+    actor: RequestAccount,
+  ): Promise<TargetDto> {
+    const { targets } = schemaFor(this.db)
+    await this.loadTarget(id)
+    const now = new Date()
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(targets)
+        .set({ aiActionTrace: mode, updatedAt: now })
+        .where(eq(targets.id, id))
+      await this.writeAudit(
+        tx,
+        actor,
+        'target.update',
+        'target',
+        id,
+        mode === 'off' ? '关闭了该目标系统的 AI 动作采集' : '恢复该目标系统的 AI 动作采集（沿用平台配置）',
+      )
+    })
+    return this.getTarget(id)
+  }
+
   async updateSessionPolicy(
     id: string,
     patch: TargetSessionPolicyPatch,
@@ -306,7 +365,20 @@ export class TargetsStore {
     try {
       await this.db.transaction(async (tx) => {
         await lockConsoleAuthorization(tx, actor.id)
-        if (!(await targetScopeFor(tx, actor.id, 'target:write')).all || !(await targetScopeFor(tx, actor.id, 'target:read')).all) throw failure('forbidden', '创建目标系统需要全部目标的管理范围')
+        const accountNeedsCredentialAccess = Boolean(body.account && (
+          body.account.password || body.account.totpSecret || body.account.validity || body.account.ownerConsoleAccountId
+        ))
+        const scopes = await targetScopesFor(tx, actor.id, [
+          'target:read', 'target:write',
+          ...(accountNeedsCredentialAccess ? ['credential:read', 'credential:write'] : []),
+        ])
+        if (!scopes.get('target:read')?.all || !scopes.get('target:write')?.all) {
+          throw failure('forbidden', '创建目标系统需要全部目标的管理范围')
+        }
+        // 新目标尚无 ID；随创建写入首个账号的秘密或维护信息只能由全范围凭据管理者操作。
+        if (accountNeedsCredentialAccess && (!scopes.get('credential:read')?.all || !scopes.get('credential:write')?.all)) {
+          throw failure('forbidden', '创建目标账号的凭据需要全部目标的凭据管理范围')
+        }
         await tx.insert(targets).values({
           id,
           code: body.code,
@@ -316,6 +388,8 @@ export class TargetsStore {
           authMethod: body.authMethod,
           captchaMode: body.captchaMode,
           status: body.status,
+          iconKey: body.iconKey ?? DEFAULT_TARGET_ICON_KEY,
+          accentKey: body.accentKey ?? DEFAULT_TARGET_ACCENT_KEY,
           loginFields: body.loginFields,
           loginLeaveTimeoutMs: body.loginLeaveTimeoutMs ?? null,
           landingSettleMode: body.landingSettleMode ?? 'default',
@@ -331,7 +405,7 @@ export class TargetsStore {
           'target.create',
           'target',
           id,
-          `${body.name}（${body.code}）`,
+          `${body.name}（${body.code}），外观 ${body.iconKey ?? DEFAULT_TARGET_ICON_KEY}/${body.accentKey ?? DEFAULT_TARGET_ACCENT_KEY}`,
         )
         if (body.account) {
           await this.insertAccount(tx, id, body.account, actor, now)
@@ -359,6 +433,8 @@ export class TargetsStore {
       body.authMethod === undefined &&
       body.captchaMode === undefined &&
       body.status === undefined &&
+      body.iconKey === undefined &&
+      body.accentKey === undefined &&
       body.loginLeaveTimeoutMs === undefined &&
       body.landingSettleMode === undefined &&
       body.landingSettleTimeoutMs === undefined &&
@@ -383,6 +459,8 @@ export class TargetsStore {
             authMethod: body.authMethod ?? current.authMethod,
             captchaMode: body.captchaMode ?? current.captchaMode,
             status: body.status ?? current.status,
+            iconKey: body.iconKey ?? current.iconKey,
+            accentKey: body.accentKey ?? current.accentKey,
             loginFields: body.loginFields === undefined ? current.loginFields : body.loginFields,
             loginLeaveTimeoutMs:
               body.loginLeaveTimeoutMs === undefined
@@ -419,7 +497,11 @@ export class TargetsStore {
           'target.update',
           'target',
           id,
-          loginOnly ? '更新了登录框定位' : `${body.name ?? current.name}（${current.code}）`,
+          loginOnly
+            ? '更新了登录框定位'
+            : body.iconKey !== undefined || body.accentKey !== undefined
+              ? `${body.name ?? current.name}（${current.code}），外观 ${body.iconKey ?? current.iconKey}/${body.accentKey ?? current.accentKey}`
+              : `${body.name ?? current.name}（${current.code}）`,
         )
       })
     } catch (error) {
@@ -555,7 +637,7 @@ export class TargetsStore {
     actor: RequestAccount,
     body?: DeleteResourceBody,
   ): Promise<CleanupStatusResponse> {
-    const { targets, targetAccounts, actionModules, scenarios, recordingDrafts, runs, storedObjects, scenarioSuites, schedules, targetFixtures } = schemaFor(
+    const { targets, targetAccounts, actionModules, scenarios, recordingDrafts, runs, storedObjects, scenarioSuites, schedules, targetFixtures, secrets } = schemaFor(
       this.db,
     )
 
@@ -650,6 +732,11 @@ export class TargetsStore {
           const secretIds = accountsWithSecrets
             .map((a) => a.secretId)
             .filter((s): s is string => s !== null)
+
+          for (const account of accounts) {
+            await clearTargetAccountSecrets(tx, { accountId: account.id, actor })
+          }
+
           const exclusive = await exclusiveSecretIds(
             tx as unknown as Db,
             secretIds,
@@ -864,9 +951,19 @@ export class TargetsStore {
         paginated.items.map(async (row) => [row.id, await loadAccountCredentialView(this.db, row.id)] as const),
       ),
     )
+    const snapshotSummaries = await readSessionStateSnapshotSummaries(this.db, {
+      targetId,
+      targetAccountIds: paginated.items.map((row) => row.id),
+    })
     return targetAccountListResponseSchema.parse({
       items: paginated.items.map((row) =>
-        this.toAccount(row, profile, { ...extras.get(row.id), accountSessionMode }, credentialViews.get(row.id)),
+        this.toAccount(
+          row,
+          profile,
+          { ...extras.get(row.id), accountSessionMode },
+          credentialViews.get(row.id),
+          snapshotSummaries.get(row.id),
+        ),
       ),
       nextCursor: paginated.nextCursor,
       hasMore: paginated.hasMore,
@@ -885,7 +982,7 @@ export class TargetsStore {
       await this.db.transaction(async (tx) => {
         await lockConsoleAuthorization(tx, actor.id)
         await assertTargetPermission(tx, actor.id, targetId, 'target:write')
-        if (body.password || body.validity || body.ownerConsoleAccountId) {
+        if (body.password || body.totpSecret || body.validity || body.ownerConsoleAccountId) {
           await assertTargetPermission(tx, actor.id, targetId, 'credential:read')
           await assertTargetPermission(tx, actor.id, targetId, 'credential:write')
         }
@@ -925,7 +1022,7 @@ export class TargetsStore {
         usernameChanged = body.username !== undefined && body.username !== current.username
         const editsIdentity = body.displayName !== undefined || body.username !== undefined || body.status !== undefined || body.usage !== undefined
         if (editsIdentity) await assertTargetPermission(tx, actor.id, targetId, 'target:write')
-        if (nextSecret || body.clearPassword || body.validity || body.ownerConsoleAccountId !== undefined || body.confirmIdentityMaterial) {
+        if (nextSecret || body.clearPassword || body.totpSecret || body.clearTotp || body.validity || body.ownerConsoleAccountId !== undefined || body.confirmIdentityMaterial) {
           await assertTargetPermission(tx, actor.id, targetId, 'credential:write')
           await assertTargetPermission(tx, actor.id, targetId, 'credential:read')
         }
@@ -1180,11 +1277,16 @@ export class TargetsStore {
       platformDefault: sessionPolicyFromPlatform(FACTORY_PLATFORM_CONFIG.session),
       targetOverride: target.sessionPolicy as never,
     }).accountSessionMode
+    const snapshotSummary = await readSessionStateSnapshotSummary(this.db, {
+      targetId,
+      targetAccountId: accountId,
+    })
     return this.toAccount(
       row,
       profile,
       { ...extras.get(accountId), accountSessionMode },
       await loadAccountCredentialView(this.db, accountId),
+      snapshotSummary,
     )
   }
 
@@ -1256,7 +1358,7 @@ export class TargetsStore {
     const { secrets, targetAccounts, targets } = schemaFor(tx)
     const [liveTarget] = await tx.select({ id: targets.id }).from(targets).where(and(eq(targets.id, targetId), isNull(targets.deletedAt))).for('share')
     if (!liveTarget) throw failure('not_found', '目标系统不存在')
-    if (body.password || body.validity || body.ownerConsoleAccountId) {
+    if (body.password || body.totpSecret || body.validity || body.ownerConsoleAccountId) {
       await assertTargetPermission(tx, actor.id, targetId, 'credential:read')
       await assertTargetPermission(tx, actor.id, targetId, 'credential:write')
     }
@@ -1365,12 +1467,15 @@ export class TargetsStore {
       authMethod: row.authMethod,
       captchaMode: row.captchaMode,
       status: row.status,
+      iconKey: row.iconKey,
+      accentKey: row.accentKey,
       loginFields: compactLoginFields((row.loginFields as TargetLoginFields | null) ?? null),
       loginLeaveTimeoutMs: row.loginLeaveTimeoutMs ?? null,
       landingSettleMode: row.landingSettleMode ?? 'default',
       landingSettleTimeoutMs: row.landingSettleTimeoutMs ?? null,
       captcha: row.captcha ?? null,
       sensitiveSelectors: row.sensitiveSelectors ?? [],
+      aiActionTrace: (row.aiActionTrace as 'inherit' | 'off' | null) ?? null,
       accountCount,
       currentAuthProfileRevision: row.currentAuthProfileRevision,
       ...(extras?.sessionPolicy !== undefined ? { sessionPolicy: extras.sessionPolicy } : {}),
@@ -1395,6 +1500,7 @@ export class TargetsStore {
       accountSessionMode?: 'exclusive' | 'concurrent'
     },
     credential?: Awaited<ReturnType<typeof loadAccountCredentialView>>,
+    snapshotSummary?: SessionSnapshotSummary | null,
   ): TargetAccountDto {
     return targetAccountSchema.parse({
       id: row.id,
@@ -1405,6 +1511,7 @@ export class TargetsStore {
       hasTotp: Boolean(row.totpSecretId),
       hasStorageState: Boolean(row.storageStateSecretId),
       storageStateUpdatedAt: row.storageStateUpdatedAt ? iso(row.storageStateUpdatedAt) : null,
+      snapshotSummary: toSnapshotSummaryDto(snapshotSummary),
       status: row.status,
       expectedIdentity: row.expectedIdentity,
       usage: row.usage ?? DEFAULT_ACCOUNT_USAGE,
@@ -1548,13 +1655,15 @@ export class TargetsStore {
         }
       }
 
+      await clearSessionStateSnapshot(tx, { targetId, targetAccountId: accountId })
+
       await this.writeAudit(
         tx,
         actor,
         'target_account.password',
         'target_account',
         accountId,
-        `清除免登 StorageState：${account.displayName}（${account.username}）`,
+        `清除免登与登录态快照：${account.displayName}（${account.username}）`,
       )
       return this.getAccount(targetId, accountId)
     })

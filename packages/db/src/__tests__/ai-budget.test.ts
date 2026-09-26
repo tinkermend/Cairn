@@ -90,15 +90,17 @@ describe.each(DRIVERS)('%s AI 调用预算', { timeout: 30_000 }, (driver) => {
     await completeAiModelCall(handle.db, {
       evidenceId: first.evidenceId,
       phase: 'failed',
+      route: 'aria_text',
       errorCode: 'AI_CALL_FAILED',
     })
     const evidence = await listRunEvidence(handle.db, created.detail.id)
     const calls = evidence.items.filter((item) => isAiCallEvidence(item.payload))
     expect(calls).toHaveLength(1)
     expect(isAiCallEvidence(calls[0]!.payload) && calls[0]!.payload.phase).toBe('failed')
+    expect(isAiCallEvidence(calls[0]!.payload) && (calls[0]!.payload as any).route).toBe('aria_text')
     const { scenarioAiCalls } = schemaFor(handle.db)
     const ledger = await handle.db.select().from(scenarioAiCalls)
-    expect(ledger.some((row) => row.evidenceId === first.evidenceId && row.phase === 'failed')).toBe(true)
+    expect(ledger.some((row) => row.evidenceId === first.evidenceId && row.phase === 'failed' && row.route === 'aria_text')).toBe(true)
     await completeAiModelCall(handle.db, {
       evidenceId: first.evidenceId,
       phase: 'failed',

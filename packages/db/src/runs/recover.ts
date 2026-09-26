@@ -31,7 +31,8 @@ import { settleRunEvidence } from '../objects/evidence.js'
 import { appendRunEvents } from '../observe/events.js'
 import { conflict, notFound } from './errors.js'
 import { appendOrphanAfterGapTx } from '../map/attempt-facts.js'
-import { cancelPendingStepRunsTx, skipRemainingStepRunsTx } from './step-status.js'
+import { cancelPendingStepRunsTx, skipRemainingStepRunsTx, skippedStepRunEvents } from './step-status.js'
+import { settleAiActionTraceTx } from './ai-path-learning.js'
 import { recalculateRunOutcomeTx } from './outcome-results.js'
 
 const RUN_RECOVERY_EXHAUSTED: RunLeaseErrorCode = 'RUN_RECOVERY_EXHAUSTED'
@@ -383,7 +384,7 @@ export async function settleRunCancellationTx(
   await tx.update(sessionLeases).set({ status: 'REVOKED', releasedAt: now, releaseReason: 'run_cancelled' })
     .where(and(eq(sessionLeases.runId, runId), eq(sessionLeases.purpose, 'AUTH_WAIT'), eq(sessionLeases.status, 'ACTIVE')))
   if (outcome !== 'continue') return outcome
-  const { runs, stepRuns } = schemaFor(tx)
+  const { runs, stepRuns, stepIterations } = schemaFor(tx)
   await tx.update(runs).set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
     .where(eq(runs.id, runId))
   const [cancelledRun] = await tx.select({ snapshot: runs.snapshot }).from(runs).where(eq(runs.id, runId)).limit(1)
@@ -393,6 +394,8 @@ export async function settleRunCancellationTx(
   // Orphan attempts are now closed. A read-only orphan can still have a RUNNING StepRun.
   await tx.update(stepRuns).set({ status: 'CANCELLED', finishedAt: now })
     .where(and(eq(stepRuns.runId, runId), inArray(stepRuns.status, ['PENDING', 'RUNNING'])))
+  await tx.update(stepIterations).set({ status: 'CANCELLED', finishedAt: now, updatedAt: now })
+    .where(and(eq(stepIterations.runId, runId), eq(stepIterations.status, 'RUNNING')))
   await appendRunEvents(tx, runId, [
     { type: 'run.status_changed', payload: { status: 'CANCELLED' } },
   ])
@@ -420,9 +423,11 @@ export async function reviewRun(
     if (runRow) {
       await recalculateRunOutcomeTx(tx as unknown as Db, input.runId, runRow.snapshot as RunSnapshot, now)
     }
-    if (input.conclusion === 'fail') {
-      await skipRemainingStepRunsTx(tx as unknown as Db, input.runId, now)
-    } else {
+    const skipped =
+      input.conclusion === 'fail'
+        ? await skipRemainingStepRunsTx(tx as unknown as Db, input.runId, now)
+        : []
+    if (input.conclusion !== 'fail') {
       await cancelPendingStepRunsTx(tx as unknown as Db, input.runId, now)
     }
     await recordAudit(
@@ -435,6 +440,7 @@ export async function reviewRun(
     )
     await appendRunEvents(tx as unknown as Db, input.runId, [
       { type: 'run.status_changed', payload: { status } },
+      ...skippedStepRunEvents(skipped),
     ])
   })
   // 执行轴已落。收尾失败不回滚核查，留给 cleanup 扫描已终态 + 轴 PENDING。
@@ -483,6 +489,42 @@ async function closeRunningAttemptsTx(
   }
 }
 
+/** 恢复路径的 AI 轨迹收尾：同一恢复事务内执行，无租约校验（事务本身即所有权）。 */
+async function settleAiTraceOnRecoveryTx(
+  tx: Db,
+  runId: string,
+  attemptId: string,
+  stepRunId: string,
+  status: 'FAILED' | 'CANCELLED',
+  error: ExecutionError,
+): Promise<void> {
+  try {
+    const { runs, stepRuns } = schemaFor(tx)
+    const [runRow] = await tx.select({ snapshot: runs.snapshot }).from(runs).where(eq(runs.id, runId)).limit(1)
+    const [stepRow] = await tx
+      .select({ stepId: stepRuns.stepId })
+      .from(stepRuns)
+      .where(eq(stepRuns.id, stepRunId))
+      .limit(1)
+    const snapshot = runRow?.snapshot as RunSnapshot | undefined
+    if (!snapshot || !stepRow || !Array.isArray(snapshot.steps)) return
+    const step = snapshot.steps.find((item) => item.id === stepRow.stepId)
+    if (!step || step.type !== 'ai_action') return
+    if (snapshot.aiTaskEvidence?.actionEdge !== 'record') return
+    await settleAiActionTraceTx(tx, {
+      attemptId,
+      runId,
+      stepRunId,
+      step,
+      snapshot,
+      stepResult: status === 'CANCELLED' ? 'CANCELLED' : 'FAILED',
+      errorCode: error.code,
+    })
+  } catch {
+    // 轨迹收尾失败不阻断恢复主路径；事件保持 prepared，行为与未收尾一致
+  }
+}
+
 async function closeAttemptTx(
   tx: Db,
   input: {
@@ -508,6 +550,8 @@ async function closeAttemptTx(
     { id: attempts.id },
   )
   if (closed.length === 0) return
+  // Worker 失联/取消时收尾 AI 动作轨迹：仍为 prepared 的动作记 interrupted/unknown，不留永久悬挂
+  await settleAiTraceOnRecoveryTx(tx, input.runId, input.attemptId, input.stepRunId, input.status, input.error)
   const evidenceId = newId()
   await tx.insert(evidences).values({
     id: evidenceId,

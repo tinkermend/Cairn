@@ -24,6 +24,7 @@ export type ReserveAiModelCallInput = {
   grant: RunGrant
   sessionLease?: SessionGrant & { holderWorkerId: string }
   model?: string
+  route?: import('@cairn/shared').AiCallRoute
 }
 
 export type ReserveAiModelCallResult =
@@ -59,6 +60,7 @@ export async function reserveAiModelCall(
       n,
       phase: 'reserved',
       model: input.model,
+      route: input.route,
       startedAt: new Date().toISOString(),
       attemptId: input.attemptId,
     })
@@ -89,6 +91,8 @@ export async function completeAiModelCall(
     cost?: number | null
     errorCode?: string
     summary?: string
+    intent?: import('@cairn/shared').AiCallIntent
+    route?: import('@cairn/shared').AiCallRoute
   },
 ): Promise<void> {
   const { evidences: table } = schemaFor(db)
@@ -99,6 +103,7 @@ export async function completeAiModelCall(
     ...row.payload,
     phase: input.phase,
     model: input.model ?? row.payload.model,
+    route: input.route ?? row.payload.route,
     endedAt,
     durationMs: input.durationMs,
     inputTokens: input.inputTokens ?? null,
@@ -129,6 +134,8 @@ export async function completeAiModelCall(
       outputTokens: input.outputTokens ?? null,
       cost: null,
       errorCode: input.errorCode ?? null,
+      intent: input.intent ?? null,
+      route: input.route ?? null,
     })
   } catch (error) {
     console.error('[db] scenario_ai_calls 写入失败，不影响 evidence', error instanceof Error ? error.message : error)

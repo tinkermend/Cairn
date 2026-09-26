@@ -124,7 +124,7 @@ async function assertBatchCanStart(
   const platform = await getPlatformConfig(db)
   const document = platform?.document ?? FACTORY_PLATFORM_CONFIG
   if (!document.fixtureStepsEnabled) {
-    const fixture = version.definition.steps.find((step) => isFixtureStepType(step.type))
+    const fixture = version.definition.steps.find((step) => !step.disabled && isFixtureStepType(step.type))
     if (fixture) {
       throw badRequest(FIXTURE_STEPS_DISABLED_CODE, FIXTURE_STEPS_DISABLED_MESSAGE, {
         stepId: fixture.id,

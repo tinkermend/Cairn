@@ -7,6 +7,7 @@ export {
   listAssistantTurnEvents,
   nextQueuedAssistantTurn,
   createAssistantConversation,
+  deleteAssistantConversation,
   getAssistantConversation,
   getAssistantTurn,
   getAssistantTurnRecord,

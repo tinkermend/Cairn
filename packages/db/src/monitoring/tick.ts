@@ -62,6 +62,19 @@ export async function collectPlatformSamples(
     { key: 'ai.inputTokens', scope: 'platform', value: ai.inputTokens },
     { key: 'ai.outputTokens', scope: 'platform', value: ai.outputTokens },
   ])
+  const { sessionStateSnapshots } = schemaFor(db)
+  const [snapshotStats] = await db
+    .select({
+      count: sql<number>`count(*)`,
+      bytes: sql<number>`coalesce(sum(${sessionStateSnapshots.byteSize}), 0)`,
+    })
+    .from(sessionStateSnapshots)
+  if (snapshotStats) {
+    writes.push(
+      { key: 'sessions.stateSnapshotCount', scope: 'platform', value: Number(snapshotStats.count ?? 0) },
+      { key: 'sessions.stateSnapshotBytes', scope: 'platform', value: Number(snapshotStats.bytes ?? 0) },
+    )
+  }
   if (probe) {
     writes.push(
       { key: 'objectStore.up', scope: 'platform', value: probe.up },
@@ -75,6 +88,7 @@ export async function collectPlatformSamples(
 export async function collectWorkerSamples(
   db: Db,
   workerId: string,
+  options?: { refillDelayMs?: number | null },
 ): Promise<MonitorSampleWrite[]> {
   const { workers } = schemaFor(db)
   const [row] = await db.select().from(workers).where(eq(workers.id, workerId)).limit(1)
@@ -87,6 +101,12 @@ export async function collectWorkerSamples(
       scopeId: workerId,
       value: claim.recorded ? claim.scanned : null,
     },
+    { key: 'queue.claim.durationMs', scope: 'worker', scopeId: workerId, value: claim.recorded ? claim.totalMs : null },
+    { key: 'queue.claim.candidateSqlMs', scope: 'worker', scopeId: workerId, value: claim.recorded ? claim.candidateSqlMs : null },
+    { key: 'queue.claim.windowRows', scope: 'worker', scopeId: workerId, value: claim.recorded ? claim.windowRows : null },
+    { key: 'queue.claim.windows', scope: 'worker', scopeId: workerId, value: claim.recorded ? claim.windows : null },
+    { key: 'queue.claim.budgetExhausted', scope: 'worker', scopeId: workerId, value: claim.recorded ? Number(claim.reason === 'budget_exhausted') : null },
+    { key: 'queue.claim.refillDelayMs', scope: 'worker', scopeId: workerId, value: options?.refillDelayMs ?? null },
     { key: 'worker.process.rssBytes', scope: 'worker', scopeId: workerId, value: row.sampledRssBytes },
     {
       key: 'worker.process.eventLoopDelayMs',

@@ -13,7 +13,10 @@ import {
   shouldCaptureEvidence,
   readRunVideoPayload,
   requiredScreenshotRole,
+  screenshotRoleOf,
+  screenshotSatisfiesRequiredRole,
   writeEvidenceArtifactKey,
+  type ScreenshotRole,
   type EvidenceMetadata,
   type EvidenceType,
   type JsonValue,
@@ -363,7 +366,7 @@ function collectRequiredEvidence(
           attemptId: attempt.id,
           type: 'screenshot',
           artifactKey,
-          missingReason: reasonFor(rows, 'screenshot', artifactKey),
+          missingReason: reasonForScreenshot(rows, role),
         })
       }
       if (shouldCaptureEvidence(policy.trace, failed)) {
@@ -395,6 +398,13 @@ function collectRequiredEvidence(
     })
   }
   return required
+}
+
+function reasonForScreenshot(rows: EvidenceRow[], role: ScreenshotRole): string | undefined {
+  const matched = rows.filter((row) => screenshotSatisfiesRequiredRole(row, role))
+  if (matched.some((row) => row.status === 'available' || row.status === 'pending')) return undefined
+  if (matched.length === 0) return 'missing'
+  return matched.find((row) => row.status === 'missing')?.missingReason ?? 'missing'
 }
 
 function reasonFor(rows: EvidenceRow[], type: EvidenceType, artifactKey?: string): string | undefined {
@@ -453,6 +463,20 @@ function decideEvidenceStatus(input: {
       if (!outcome) missing = true
       else if (outcome.status === 'pending') pending = true
       else if (outcome.status === 'missing') missing = true
+      continue
+    }
+    if (slot.type === 'screenshot') {
+      const role = screenshotRoleOf({ artifactKey: slot.artifactKey })
+      const matched = role
+        ? input.evidenceRows.filter(
+            (row) => row.attemptId === slot.attemptId && screenshotSatisfiesRequiredRole(row, role),
+          )
+        : input.evidenceRows.filter(
+            (row) => row.attemptId === slot.attemptId && row.type === 'screenshot',
+          )
+      if (matched.some((row) => row.status === 'available')) continue
+      if (matched.some((row) => row.status === 'pending')) pending = true
+      else missing = true
       continue
     }
     const row =

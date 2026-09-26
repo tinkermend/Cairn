@@ -12,10 +12,14 @@ import { schemaFor } from '../native.js'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import {
   claimRun,
+  expireMapJobClaimWindows,
   cancelMapJob,
   completeMapJobSlice,
   createMapJob,
   createMapSafeEntry,
+  updateMapSafeEntry,
+  archiveMapSafeEntry,
+  listMapSafeEntries,
   createRunWithSnapshot,
   createScenarioWithVersion,
   getMapJob,
@@ -492,6 +496,30 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     expect(running.jobStatus).toBe('running')
   })
 
+  it('地图作业取消与领取并发时保持取消状态', async () => {
+    await cancelClaimable()
+    const { targetId, accountId } = await freshTarget()
+    const capable = await readyWorker(`race-${newId()}`, [MAP_JOBS_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL])
+    await prepareSession(targetId, accountId, capable.workerId, capable.instanceId)
+    await enableJobs(targetId)
+    const entry = await addEntry(targetId)
+    const job = await createMapJob(handle.db, targetId, {
+      manualId: `race-${newId()}`.slice(0, 32),
+      expectedPolicyRevision: 1, jobKind: 'map_probe',
+      targetAccountId: accountId, entryId: entry.entryId,
+    }, actor(), { steps: probeSteps() })
+    await Promise.all([
+      claimRun(handle, {
+        workerId: capable.workerId, instanceId: capable.instanceId,
+        leaseTtlSeconds: 60,
+      }),
+      cancelMapJob(handle.db, job.job.jobId, actor()),
+    ])
+    const cancelled = await getMapJob(handle.db, job.job.jobId)
+    expect(cancelled.jobStatus).toBe('cancelled')
+    expect(cancelled.stopReason).toBe('cancelled')
+  }, 10_000)
+
   it('OMH08 startBefore 到期后 claim 跳过地图片', async () => {
     await cancelClaimable()
     const { targetId, accountId } = await freshTarget()
@@ -520,6 +548,11 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
       leaseTtlSeconds: 60,
     })
     expect(grant?.runId ?? null).not.toBe(job.job.firstRunId)
+    const swept = await expireMapJobClaimWindows(handle, 100)
+    expect(swept.scanned).toBeGreaterThan(0)
+    const closed = await getMapJob(handle.db, job.job.jobId)
+    expect(closed.jobStatus).toBe('cancelled')
+    expect(closed.stopReason).toBe('window_closed')
   })
 
   it('分片失败记 slice_failed，不把剩余预算写成耗尽', async () => {
@@ -555,5 +588,89 @@ describe.each(DRIVERS)('%s 地图作业账本', { timeout: 60_000 }, (driver) =>
     expect(finished.jobStatus).toBe('failed')
     expect(finished.stopReason).toBe('slice_failed')
     expect(finished.remainingBudgetSeconds).toBeGreaterThan(0)
+  })
+
+  it('安全进入路径支持选填就绪默认兜底、编辑带乐观锁版本自增、以及归档软删除', async () => {
+    const { targetId } = await freshTarget()
+
+    // 1. 创建入口，测试默认兜底（arrivalName / arrivalTarget）
+    const created = await createMapSafeEntry(
+      handle.db,
+      targetId,
+      {
+        idempotencyKey: `default-entry:${newId()}`,
+        name: '管理后台',
+        url: 'https://admin.example/dashboard',
+        safetyBasisKind: 'confirmed_path',
+        summary: '已确认只读业务入口',
+      } as any,
+      actor(),
+    )
+    expect(created.name).toBe('管理后台')
+    expect(created.version).toBe(1)
+    expect(created.arrivalName).toBe('页面就绪')
+    expect(created.arrivalTarget).toEqual({ framePath: [], candidates: [{ by: 'css', value: 'body' }] })
+    expect(created.archivedAt).toBeNull()
+
+    // 2. 列表包含该入口
+    const listBefore = await listMapSafeEntries(handle.db, targetId)
+    expect(listBefore.items.some((item) => item.entryId === created.entryId)).toBe(true)
+
+    // 3. 更新测试：版本不匹配时抛出 OCC 冲突错误
+    await expect(
+      updateMapSafeEntry(
+        handle.db,
+        targetId,
+        created.entryId,
+        {
+          expectedVersion: 999,
+          name: '修改后的后台',
+          url: 'https://admin.example/new',
+          safetyBasisKind: 'confirmed_path',
+          summary: '更新说明',
+          jobKinds: ['map_probe', 'map_refresh', 'map_explore'],
+        },
+        actor(),
+      ),
+    ).rejects.toThrow('安全进入路径已被他人修改')
+
+    // 4. 正常更新：版本自增为 2
+    const updated = await updateMapSafeEntry(
+      handle.db,
+      targetId,
+      created.entryId,
+      {
+        expectedVersion: 1,
+        name: '管理后台 v2',
+        url: 'https://admin.example/v2',
+        arrivalName: '控制台大盘',
+        arrivalTarget: { framePath: [], candidates: [{ by: 'role', value: 'heading', name: '控制台大盘' }] },
+        safetyBasisKind: 'controlled_env',
+        summary: '受控测试环境安全复查',
+        jobKinds: ['map_probe', 'map_explore'],
+      },
+      actor(),
+    )
+    expect(updated.version).toBe(2)
+    expect(updated.name).toBe('管理后台 v2')
+    expect(updated.arrivalName).toBe('控制台大盘')
+    expect(updated.jobKinds).toEqual(['map_probe', 'map_explore'])
+
+    // 5. 归档测试：成功软删除
+    const archived = await archiveMapSafeEntry(
+      handle.db,
+      targetId,
+      created.entryId,
+      { reason: '测试完成下线' },
+      actor(),
+    )
+    expect(archived.archivedAt).toBeTruthy()
+
+    // 6. 默认列表过滤掉已归档项，但 includeArchived 可查到
+    const listAfterDefault = await listMapSafeEntries(handle.db, targetId)
+    expect(listAfterDefault.items.some((item) => item.entryId === created.entryId)).toBe(false)
+
+    const listWithArchived = await listMapSafeEntries(handle.db, targetId, { includeArchived: true })
+    expect(listWithArchived.items.some((item) => item.entryId === created.entryId)).toBe(true)
   })
 })

@@ -28,9 +28,11 @@ import {
   moduleUpgradeBodySchema,
   moduleUpgradePreviewBodySchema,
   moduleUpgradePreviewResponseSchema,
+  authoringSteps,
   normalizeAuthoringDocument,
   sourceDescription,
   upgradeModuleVersionSchema,
+  walkAuthoringNodes,
   type ActionModuleDetail,
   type ActionModuleVersionDto,
   type DeleteResourceResult,
@@ -363,7 +365,9 @@ async function previewUpgradeOnDocument(
   toVersion: UpgradeModuleVersion,
   bindingsPatch: Record<string, ModuleInputBinding> = {},
 ): Promise<ModuleUpgradePreviewResponse> {
-  const invocation = document.nodes.find((node) => node.kind === 'module' && node.invocationId === invocationId)
+  const invocation = walkAuthoringNodes(document).find(
+    (item) => item.node.kind === 'module' && item.node.invocationId === invocationId,
+  )?.node as Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'module' }> | undefined
   if (!invocation || invocation.kind !== 'module') throw notFound('MODULE_VERSION_NOT_FOUND', '场景草稿中没有该模块调用')
   if (invocation.moduleId !== toVersion.moduleId) throw badRequest('MODULE_TARGET_MISMATCH', '升级目标不属于该调用的模块')
   const from = invocation.moduleVersionId
@@ -400,7 +404,9 @@ export async function previewScenarioModuleUpgrade(
 ): Promise<ModuleUpgradePreviewResponse> {
   const parsed = moduleUpgradePreviewBodySchema.parse(body)
   const { scenario, document } = await loadDraftDocument(db, scenarioId)
-  const invocation = document.nodes.find((node) => node.kind === 'module' && node.invocationId === parsed.invocationId)
+  const invocation = walkAuthoringNodes(document).find(
+    (item) => item.node.kind === 'module' && item.node.invocationId === parsed.invocationId,
+  )?.node as Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'module' }> | undefined
   if (!invocation || invocation.kind !== 'module') throw notFound('MODULE_VERSION_NOT_FOUND', '场景草稿中没有该模块调用')
   const to = toUpgradeVersion(await getActionModuleVersion(db, invocation.moduleId, parsed.toVersionId))
   return previewUpgradeOnDocument(db, scenario, document, parsed.invocationId, to)
@@ -441,7 +447,9 @@ export async function upgradeScenarioModuleDraft(
       if (revision !== parsed.baseRevision) {
         throw conflict('SCENARIO_DRAFT_CONFLICT', '草稿已被他人更新', { revision })
       }
-      const invocation = document.nodes.find((node) => node.kind === 'module' && node.invocationId === parsed.invocationId)
+      const invocation = walkAuthoringNodes(document).find(
+        (item) => item.node.kind === 'module' && item.node.invocationId === parsed.invocationId,
+      )?.node as Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'module' }> | undefined
       if (!invocation || invocation.kind !== 'module') throw notFound('MODULE_VERSION_NOT_FOUND', '场景草稿中没有该模块调用')
       const to = toUpgradeVersion(await getActionModuleVersion(tx, invocation.moduleId, parsed.toVersionId))
       if (invocation.moduleVersionId === to.versionId && Object.keys(parsed.bindingsPatch).length === 0) {
@@ -504,9 +512,10 @@ export async function batchUpgradeModuleDrafts(
             results.push({ scenarioId, status: 'skipped', code: 'MODULE_VERIFICATION_NOT_BATCHABLE', reason: '验证场景不参加批量升级' })
             continue
           }
-          const invocations = document.nodes.filter(
-            (node): node is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'module' }> =>
-              node.kind === 'module' && node.moduleId === moduleId && node.moduleVersionId !== to.versionId,
+          const invocations = walkAuthoringNodes(document).flatMap((item) =>
+            item.node.kind === 'module' && item.node.moduleId === moduleId && item.node.moduleVersionId !== to.versionId
+              ? [item.node]
+              : [],
           )
           if (invocations.length === 0) {
             results.push({ scenarioId, status: 'skipped', code: 'MODULE_UPGRADE_NOT_NEEDED', reason: '没有需要升级的调用' })
@@ -954,9 +963,7 @@ export async function previewReplaceStepsWithModule(
   const expansion = await expandWithLoader(db, scenario.targetId, next, 'preview', false)
   const entry = expansion.manifest.entries.find((item) => item.invocationId === invocation.invocationId)
   const expanded = (expansion.definition?.steps ?? []).filter((step) => entry?.expandedStepIds.includes(step.id))
-  const original = document.nodes
-    .filter((node): node is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => node.kind === 'step' && input.stepIds.includes(node.step.id))
-    .map((node) => node.step)
+  const original = authoringSteps(document).filter((step) => input.stepIds.includes(step.id))
   const steps = compareReplaceSteps(original, expanded, new Set(Object.values(invocation.outputBindings)))
   return moduleReplacePreviewResponseSchema.parse({
     equal: steps.every((item) => item.equal),

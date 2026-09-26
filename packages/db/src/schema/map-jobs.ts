@@ -98,10 +98,12 @@ export const mapSafeEntries = cairnSchema.table(
     commandKey: text('command_key').notNull(),
     createdBy: uuid('created_by').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('map_safe_entries_cmd').on(t.targetId, t.commandKey),
     index('map_safe_entries_target_idx').on(t.targetId, t.createdAt),
+    index('map_safe_entries_archived_idx').on(t.targetId, t.archivedAt),
   ],
 )
 

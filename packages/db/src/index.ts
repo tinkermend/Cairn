@@ -83,6 +83,8 @@ export const targetScopeFor = operation(targetAuthorization.targetScopeFor);
 export const authorizeTargetRequest = operation(
   targetAuthorization.authorizeTargetRequest,
 );
+import { readTargetOverview as readTargetOverviewImpl } from './console/target-overview.js';
+export const readTargetOverview = operation(readTargetOverviewImpl);
 
 import * as impl0 from "./runs/index.js";
 export { DomainError } from "./runs/index.js";
@@ -143,6 +145,7 @@ export const listRuns = operation(impl0.listRuns);
 export const loadRunDetail = operation(impl0.loadRunDetail);
 export const computeRunPlacement = operation(impl0.computeRunPlacement);
 export const loadRunRow = operation(impl0.loadRunRow);
+export const loadRunControlState = operation(impl0.loadRunControlState);
 export const loadRunLoopState = operation(impl0.loadRunLoopState);
 export const loadRunStepStates = operation(impl0.loadRunStepStates);
 export const readOverviewAnalytics = operation(impl0.readOverviewAnalytics);
@@ -156,10 +159,23 @@ export const enterRunHolding = operation(impl0.enterRunHolding);
 export const updateRunDebugOverlay = operation(impl0.updateRunDebugOverlay);
 export const stopRunDebug = operation(impl0.stopRunDebug);
 export const continueRunDebug = operation(impl0.continueRunDebug);
+export const loadRunIterations = operation(impl0.loadRunIterations);
+export const loadIterationDetail = operation(impl0.loadIterationDetail);
+export const loadLoopFrozenItems = operation(impl0.loadLoopFrozenItems);
+export const updateRunContext = operation(impl0.updateRunContext);
+export const settleLoopIteration = operation(impl0.settleLoopIteration);
+export const startIteration = operation(impl0.startIteration);
+export const finishIteration = operation(impl0.finishIteration);
+export { formatScopePath, startIterationTx, finishIterationTx } from "./runs/index.js";
+export type {
+  StartIterationInput,
+  StartIterationResult,
+  FinishIterationInput,
+} from "./runs/index.js";
 export type { FinishAttemptInput } from "./runs/index.js";
 export type { FinishAttemptResult } from "./runs/index.js";
 export type { RunWriteAuthority } from "./runs/index.js";
-export type { RunLoopState, RunStepState } from "./runs/index.js";
+export type { RunControlState, RunLoopState, RunStepState } from "./runs/index.js";
 export const expireStaleRunLeases = operation(impl0.expireStaleRunLeases);
 export const reconcileOrphanAttempts = operation(impl0.reconcileOrphanAttempts);
 export const resumeRunAfterAuth = operation(impl0.resumeRunAfterAuth);
@@ -172,6 +188,16 @@ export const yieldUnfinishedRun = operation(impl0.yieldUnfinishedRun);
 export const settleRunOutcome = operation(impl0.settleRunOutcome);
 export const settleRunOutput = operation(impl0.settleRunOutput);
 export const backfillOutcomeResults = operation(impl0.backfillOutcomeResults);
+export const appendAiTaskEvent = operation(impl0.appendAiTaskEvent);
+export const settleAiActionTrace = operation(impl0.settleAiActionTrace);
+export const listAiTaskEvents = operation(impl0.listAiTaskEvents);
+export const queryAiPathInsights = operation(impl0.queryAiPathInsights);
+export type {
+  AppendAiTaskEventInput,
+  SettleAiActionTraceInput,
+  ListAiTaskEventsInput,
+  StepAiPathInsight,
+} from "./runs/index.js";
 export type { OutcomeResultInsertItem } from "./runs/index.js";
 export type { SettleOutcome } from "./runs/index.js";
 export type { YieldClaimReason } from "./runs/index.js";
@@ -202,12 +228,25 @@ export {
   takeLastClaimDiagnostics,
 } from "./leases/index.js";
 export type { ClaimRunDiagnostics } from "./leases/index.js";
+export type { ClaimRunResult, ClaimScanCursor } from "./leases/index.js";
 export const claimRun = (
   database: Database,
   ...args: Parameters<typeof impl1.claimRun> extends [unknown, ...infer A]
     ? A
     : never
 ) => impl1.claimRun(nativeHandle(database), ...args);
+export const claimRunWithCursor = (
+  database: Database,
+  ...args: Parameters<typeof impl1.claimRunWithCursor> extends [unknown, ...infer A]
+    ? A
+    : never
+) => impl1.claimRunWithCursor(nativeHandle(database), ...args);
+export const expireMapJobClaimWindows = (
+  database: Database,
+  ...args: Parameters<typeof impl1.expireMapJobClaimWindows> extends [unknown, ...infer A]
+    ? A
+    : never
+) => impl1.expireMapJobClaimWindows(nativeHandle(database), ...args);
 export const renewRunLease = operation(impl1.renewRunLease);
 export const findActiveLeaseForRun = operation(impl1.findActiveLeaseForRun);
 export const listActiveLeasesByRunIds = operation(
@@ -297,6 +336,21 @@ export const upsertSessionProfile = operation(impl2.upsertSessionProfile);
 export const invalidateSessionProfile = operation(
   impl2.invalidateSessionProfile,
 );
+export const writeSessionStateSnapshot = operation(impl2.writeSessionStateSnapshot);
+export const markSessionStateSnapshotStale = operation(impl2.markSessionStateSnapshotStale);
+export const readSessionStateSnapshotSummary = operation(impl2.readSessionStateSnapshotSummary);
+export const readSessionStateSnapshotSummaries = operation(impl2.readSessionStateSnapshotSummaries);
+export const readSessionStateSnapshotContent = operation(impl2.readSessionStateSnapshotContent);
+export const clearSessionStateSnapshot = operation(impl2.clearSessionStateSnapshot);
+export const pruneSnapshotsExceedingCap = operation(impl2.pruneSnapshotsExceedingCap);
+export {
+  MAX_SNAPSHOT_BYTE_SIZE,
+  type WriteSessionSnapshotInput,
+  type WriteSessionSnapshotResult,
+  type WriteSessionSnapshotAuthority,
+  type SessionSnapshotSummary,
+  type SessionSnapshotContent,
+} from "./sessions/index.js";
 export const evaluateRunSessionEligibility = operation(
   impl2.evaluateRunSessionEligibility,
 );
@@ -357,6 +411,7 @@ export const findAuthWaitLeaseForOperation = operation(
   impl2.findAuthWaitLeaseForOperation,
 );
 export const getSessionOperation = operation(impl2.getSessionOperation);
+export const getSessionOperationView = operation(impl2.getSessionOperationView);
 export const markSessionOperationWaitingForAuth = operation(
   impl2.markSessionOperationWaitingForAuth,
 );
@@ -369,7 +424,6 @@ export const freezeAuthVerificationForRun = operation(
 export const getTargetAuthProfileView = operation(
   impl2.getTargetAuthProfileView,
 );
-export const getSessionOperationView = operation(impl2.getSessionOperationView);
 export const publishTargetAuthProfile = operation(
   impl2.publishTargetAuthProfile,
 );
@@ -670,6 +724,9 @@ export const listAssistantConversations = operation(
 export const getAssistantConversation = operation(
   assistant.getAssistantConversation,
 );
+export const deleteAssistantConversation = operation(
+  assistant.deleteAssistantConversation,
+);
 export const beginAssistantTurn = operation(assistant.beginAssistantTurn);
 export const completeAssistantTurn = operation(assistant.completeAssistantTurn);
 export const getAssistantTurn = operation(assistant.getAssistantTurn);
@@ -696,6 +753,7 @@ export const purgeExpiredAssistantBodies = operation(
 export const renewAssistantTurnLease = operation(
   assistant.renewAssistantTurnLease,
 );
+export * from "./assistant/index.js";
 
 import * as mapFacts from "./map/index.js";
 export const appendMapObservation = operation(mapFacts.appendMapObservation);
@@ -842,6 +900,8 @@ export const updateExplorationPolicy = operation(
 );
 export const listMapSafeEntries = operation(mapFacts.listMapSafeEntries);
 export const createMapSafeEntry = operation(mapFacts.createMapSafeEntry);
+export const updateMapSafeEntry = operation(mapFacts.updateMapSafeEntry);
+export const archiveMapSafeEntry = operation(mapFacts.archiveMapSafeEntry);
 export const getMapSafeEntry = operation(mapFacts.getMapSafeEntry);
 export const getMapJob = operation(mapFacts.getMapJob);
 export const hasReadyMapJobWorker = operation(mapFacts.hasReadyMapJobWorker);
@@ -1166,6 +1226,9 @@ export const insertMonitorSamples = operation(
 );
 export const purgeMonitorSamples = operation(
   monitoringImpl.purgeMonitorSamples,
+);
+export const purgeScenarioAiCalls = operation(
+  monitoringImpl.purgeScenarioAiCalls,
 );
 export const readMonitorSeries = operation(monitoringImpl.readMonitorSeries);
 export const summarizeAi = operation(monitoringImpl.summarizeAi);
@@ -1495,7 +1558,4 @@ export const commitBusinessSourceBatch = operation(businessSourcesImpl.commitBus
 export const finishBusinessSourceBuild = operation(businessSourcesImpl.finishBusinessSourceBuild);
 export const cleanupBusinessSourceSnapshots = operation(businessSourcesImpl.cleanupBusinessSourceSnapshots);
 export * from "./business-sources/business-sources.js";
-
-
-
 

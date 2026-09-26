@@ -42,6 +42,8 @@ export const targets = cairnSchema.table(
     status: text('status', { enum: ['active', 'disabled'] })
       .notNull()
       .default('active'),
+    iconKey: text('icon_key').notNull().default('globe'),
+    accentKey: text('accent_key').notNull().default('blue'),
     loginFields: jsonb('login_fields').$type<{
       username?: { by: 'id' | 'name' | 'css'; value: string }
       password?: { by: 'id' | 'name' | 'css'; value: string }
@@ -56,6 +58,8 @@ export const targets = cairnSchema.table(
     currentAuthProfileRevision: integer('current_auth_profile_revision'),
     sessionPolicy: jsonb('session_policy').$type<Record<string, unknown>>(),
     resolutionPolicy: jsonb('resolution_policy').$type<Record<string, unknown>>(),
+    /** Target 级 AI 动作采集开关：'inherit'（沿用平台配置，含 NULL）或 'off'。 */
+    aiActionTrace: text('ai_action_trace'),
     sensitiveSelectors: jsonb('sensitive_selectors').$type<string[]>().notNull().default([]),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedBy: jsonb('deleted_by').$type<ResourceDeletedBy>(),

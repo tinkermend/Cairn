@@ -7,6 +7,8 @@ import {
   CLAIM_EXCLUDE_LIMIT,
   CLAIM_SCAN_LIMIT,
   claimRun,
+  claimRunWithCursor,
+  closeWorkerSessions,
   createRunWithSnapshot,
   createScenarioWithVersion,
   registerWorker,
@@ -103,7 +105,7 @@ describe.each(DRIVERS)('%s 领取公平性与扫描上界', { timeout: 90_000 },
   }
 
   async function occupyOtherWorker(targetId: string, accountId: string) {
-    const other = await readyWorker(`occ-${accountId.slice(0, 6)}`)
+    const other = await readyWorker(`occ-${accountId}`)
     const session = await requireCreatedSession(handle.db, {
       key: { targetId, targetAccountId: accountId },
       ownerWorkerId: other.workerId,
@@ -177,6 +179,104 @@ describe.each(DRIVERS)('%s 领取公平性与扫描上界', { timeout: 90_000 },
     })
     expect(next?.runId).toBe(recovered.detail.id)
     expect(next?.runId).not.toBe(later.detail.id)
+  })
+
+  it('有界窗口续扫越过不可领队头，并在到达队尾后回绕', async () => {
+    await cancelClaimable()
+    const blocked = await freshSlot('续扫队头')
+    const free = await freshSlot('续扫队尾')
+    const claimant = await readyWorker(`cursor-${free.targetId.slice(0, 6)}`)
+    const occupier = await occupyOtherWorker(blocked.targetId, blocked.accountId)
+    const seed = await queueRun(blocked.targetId, blocked.accountId, '不可领种子')
+    if (driver === 'postgres') {
+      await handle.raw(`
+        INSERT INTO cairn.runs (
+          id, target_id, scenario_id, scenario_version_id, target_account_id,
+          created_by_console_account_id, status, snapshot, snapshot_digest,
+          context, created_at, updated_at
+        )
+        SELECT (
+          substr(md5(g::text || seed.id::text), 1, 8) || '-' ||
+          substr(md5(g::text || seed.id::text), 9, 4) || '-' ||
+          '4' || substr(md5(g::text || seed.id::text), 14, 3) || '-' ||
+          'a' || substr(md5(g::text || seed.id::text), 18, 3) || '-' ||
+          substr(md5(g::text || seed.id::text), 21, 12)
+        )::uuid, seed.target_id, seed.scenario_id, seed.scenario_version_id,
+        seed.target_account_id, seed.created_by_console_account_id,
+        seed.status, seed.snapshot, seed.snapshot_digest, seed.context,
+        seed.created_at + g * interval '1 microsecond', seed.updated_at
+        FROM cairn.runs seed CROSS JOIN generate_series(1, 999) g
+        WHERE seed.id = $1
+      `, [seed.detail.id])
+    } else {
+      for (let i = 0; i < CLAIM_SCAN_LIMIT + 1; i += 1) {
+        await queueRun(blocked.targetId, blocked.accountId, `不可领-${i}`)
+      }
+    }
+    const later = await queueRun(free.targetId, free.accountId, '可领队尾')
+    let cursor: Parameters<typeof claimRunWithCursor>[1]['cursor']
+    let grantId: string | undefined
+    const startedAt = performance.now()
+    for (let i = 0; i < (driver === 'postgres' ? 70 : 4) && !grantId; i += 1) {
+      const claim = await claimRunWithCursor(handle, {
+        workerId: claimant.workerId, instanceId: claimant.instanceId,
+        leaseTtlSeconds: 30, cursor,
+      })
+      cursor = claim.cursor
+      grantId = claim.grant?.runId
+      expect(takeLastClaimDiagnostics().scanned).toBeLessThanOrEqual(CLAIM_SCAN_LIMIT)
+      if (!grantId) expect(claim.reason).toBe('budget_exhausted')
+    }
+    expect(grantId).toBe(later.detail.id)
+    if (driver === 'postgres') expect(performance.now() - startedAt).toBeLessThan(2_000)
+    // The claim starts at the current tail. Crossing it resets the queued cursor.
+    const wrap = await claimRunWithCursor(handle, {
+      workerId: claimant.workerId, instanceId: claimant.instanceId,
+      leaseTtlSeconds: 30, cursor,
+    })
+    expect(wrap.cursor.QUEUED).toBeNull()
+    await closeWorkerSessions(handle.db, occupier.workerId)
+    const revisited = await claimRunWithCursor(handle, {
+      workerId: claimant.workerId, instanceId: claimant.instanceId,
+      leaseTtlSeconds: 30, cursor: wrap.cursor,
+    })
+    expect(revisited.grant?.runId).toBe(seed.detail.id)
+  })
+
+  it('领取成功后重看窗口剩余 Run，可连续填满 Worker 的 8 个槽位', async () => {
+    await cancelClaimable()
+    const claimant = await readyWorker(`fill-${newId()}`)
+    const ids: string[] = []
+    for (let i = 0; i < 8; i += 1) {
+      const slot = await freshSlot(`补位-${i}`)
+      ids.push((await queueRun(slot.targetId, slot.accountId, `补位运行-${i}`)).detail.id)
+    }
+    let cursor: Parameters<typeof claimRunWithCursor>[1]['cursor']
+    const claimed: string[] = []
+    const startedAt = performance.now()
+    for (let i = 0; i < 8; i += 1) {
+      const result = await claimRunWithCursor(handle, {
+        workerId: claimant.workerId, instanceId: claimant.instanceId,
+        leaseTtlSeconds: 30, cursor,
+      })
+      cursor = result.cursor
+      expect(result.reason).toBe('claimed')
+      claimed.push(result.grant!.runId)
+    }
+    expect(claimed.sort()).toEqual(ids.sort())
+    // The previous 1-second tick could claim only one Run per tick.
+    expect(performance.now() - startedAt).toBeLessThan(2_667)
+  })
+
+  it('多个 Worker 竞争同一 Run 时只有一个 ACTIVE 领取', async () => {
+    await cancelClaimable()
+    const slot = await freshSlot('并发领取')
+    const run = await queueRun(slot.targetId, slot.accountId, '唯一运行')
+    const workers = await Promise.all(Array.from({ length: 4 }, (_, i) => readyWorker(`race-${i}-${newId()}`)))
+    const claims = await Promise.all(workers.map((worker) => claimRunWithCursor(handle, {
+      workerId: worker.workerId, instanceId: worker.instanceId, leaseTtlSeconds: 30,
+    })))
+    expect(claims.flatMap((claim) => claim.grant ? [claim.grant.runId] : [])).toEqual([run.detail.id])
   })
 
   it('Worker 自身会话容量已满时，排队目标不进扫描直接判空', async () => {

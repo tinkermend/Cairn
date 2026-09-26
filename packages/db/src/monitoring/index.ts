@@ -20,6 +20,7 @@ export {
 export {
   insertMonitorSamples,
   purgeMonitorSamples,
+  purgeScenarioAiCalls,
   readMonitorSeries,
   countScenarioAiInBucket,
   type MonitorSampleWrite,

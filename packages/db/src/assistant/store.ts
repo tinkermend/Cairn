@@ -8,6 +8,7 @@ import {
   assistantResultSchema,
   packAssistantResultEnvelope,
   unpackAssistantResultEnvelope,
+  unpackAssistantResultEnvelopeDetailed,
   type AssistantConversation,
   type AssistantConversationList,
   type AssistantResult,
@@ -67,6 +68,7 @@ function toTurn(row: {
   createdAt: Date | string
   updatedAt: Date | string
 }): AssistantTurn {
+  const env = row.result ? unpackAssistantResultEnvelopeDetailed(row.result) : null
   return assistantTurnSchema.parse({
     id: row.id,
     conversationId: row.conversationId,
@@ -76,11 +78,13 @@ function toTurn(row: {
     capabilityId: row.capabilityId,
     status: row.status,
     deadlineAt: iso(row.deadlineAt),
-    result: row.result ? unpackAssistantResultEnvelope(row.result) : null,
+    result: env ? env.result : (row.result ? unpackAssistantResultEnvelope(row.result) : null),
     stage: (row.stage as any) ?? undefined,
     eventSeq: row.eventSeq ?? undefined,
     queuePosition: row.queuePosition ?? undefined,
     stopReason: row.stopReason ?? undefined,
+    thinkingText: env?.thinkingText ?? undefined,
+    thinkingDurationMs: env?.thinkingDurationMs ?? undefined,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
   })
@@ -176,6 +180,34 @@ export async function getAssistantConversation(
     .limit(1)
   if (!row) throw notFound('ASSISTANT_CONVERSATION_NOT_FOUND', '对话不存在')
   return row
+}
+
+export async function deleteAssistantConversation(
+  db: Db,
+  id: string,
+  ownerAccountId: string,
+): Promise<{ id: string; deleted: true }> {
+  return atomic(db, async (tx) => {
+    const { assistantConversations, assistantTurns, assistantTurnEvents } = schemaFor(tx)
+    const [row] = await tx
+      .select({ id: assistantConversations.id })
+      .from(assistantConversations)
+      .where(and(eq(assistantConversations.id, id), eq(assistantConversations.ownerAccountId, ownerAccountId)))
+      .limit(1)
+    if (!row) throw notFound('ASSISTANT_CONVERSATION_NOT_FOUND', '对话不存在')
+
+    const turns = await tx
+      .select({ id: assistantTurns.id })
+      .from(assistantTurns)
+      .where(eq(assistantTurns.conversationId, id))
+    for (const t of turns) {
+      await tx.delete(assistantTurnEvents).where(eq(assistantTurnEvents.turnId, t.id))
+    }
+    await tx.delete(assistantTurns).where(eq(assistantTurns.conversationId, id))
+    await tx.delete(assistantConversations).where(eq(assistantConversations.id, id))
+
+    return { id, deleted: true as const }
+  })
 }
 
 export async function interruptExpiredAssistantTurns(db: Db, now = new Date()): Promise<number> {
@@ -406,6 +438,8 @@ export async function completeAssistantTurn(
     slots?: Record<string, unknown> | null
     result?: AssistantResult | null
     stopReason?: string | null
+    thinkingText?: string | null
+    thinkingDurationMs?: number | null
   },
 ): Promise<AssistantTurn> {
   return atomic(db, async (tx) => {
@@ -421,7 +455,13 @@ export async function completeAssistantTurn(
     let finalResult = current.result
     if (input.result !== undefined && input.result !== null) {
       const validated = assistantResultSchema.parse(input.result)
-      finalResult = packAssistantResultEnvelope(validated, 2)
+      finalResult = packAssistantResultEnvelope(
+        validated,
+        2,
+        undefined,
+        input.thinkingText ?? undefined,
+        input.thinkingDurationMs != null ? input.thinkingDurationMs : undefined,
+      )
     }
     const now = new Date()
     await tx

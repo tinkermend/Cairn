@@ -19,6 +19,11 @@ import {
   applyRecordingImportBodySchema,
   candidateStepFromItem,
   canonicalJson,
+  authoringSteps,
+  insertNodeAfter,
+  locateNode,
+  replaceNode,
+  walkAuthoringNodes,
   normalizeApiOrigin,
   normalizeRecording,
   parseScenarioDocument,
@@ -363,9 +368,7 @@ export async function applyRecordingImport(
           {
             schemaVersion: next.document.schemaVersion,
             inputs: next.document.inputs,
-            steps: next.document.nodes
-              .filter((node): node is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => node.kind === 'step')
-              .map((node) => node.step),
+            steps: authoringSteps(next.document),
           },
           {
             mode: 'release',
@@ -389,9 +392,7 @@ export async function applyRecordingImport(
         : {
             schemaVersion: next.document.schemaVersion,
             inputs: next.document.inputs,
-            steps: next.document.nodes
-              .filter((node): node is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => node.kind === 'step')
-              .map((node) => node.step),
+            steps: authoringSteps(next.document),
           }
       await tx
         .update(scenarioDrafts)
@@ -513,15 +514,16 @@ function isIncomingV2(raw: unknown): boolean {
 }
 
 function remainingAuthoringCapacity(document: ScenarioAuthoringDocumentV2): number {
+  const count = walkAuthoringNodes(document).length
   if (authoringHasModuleInvocations(document)) {
-    return Math.max(0, MAX_AUTHORING_NODES - document.nodes.length)
+    return Math.max(0, MAX_AUTHORING_NODES - count)
   }
-  return Math.max(0, MAX_SCENARIO_STEPS - document.nodes.length)
+  return Math.max(0, MAX_SCENARIO_STEPS - count)
 }
 
 function assertNodeAnchor(document: ScenarioAuthoringDocumentV2, anchor: RecordingInsertAnchor) {
   if (anchor.kind === 'start') return
-  if (!document.nodes.some((node) => authoringNodeId(node) === anchor.stepId)) {
+  if (!locateNode(document, anchor.stepId)) {
     throw conflict('RECORDING_IMPORT_STALE', '插入位置的步骤已不存在，请重新预览')
   }
 }
@@ -535,21 +537,20 @@ function applyDispositionsToAuthoring(
   if (dispositions.length !== items.length) {
     throw badRequest('RECORDING_IMPORT_INCOMPLETE', '必须处理预览中的每一项')
   }
-  const at =
-    anchor.kind === 'start'
-      ? 0
-      : document.nodes.findIndex((node) => authoringNodeId(node) === anchor.stepId) + 1
-  if (anchor.kind === 'after' && at === 0) {
+  const loc = anchor.kind === 'start' ? undefined : locateNode(document, anchor.stepId)
+  if (anchor.kind === 'after' && !loc) {
     throw conflict('RECORDING_IMPORT_STALE', '插入位置的步骤已不存在，请重新预览')
   }
+  const at = anchor.kind === 'start' ? 0 : loc!.index + 1
 
   const used = new Set<number>()
   const inserted: Array<{ kind: 'step'; step: Step; outcomes?: OutcomeContract[] }> = []
   const extraOutcomes = new Map<string, OutcomeContract[]>()
   const scenarioOutcomes = [...(document.scenarioOutcomes ?? [])]
   const sourceMap: RecordingImportReceipt['sourceMap'] = []
-  let lastActionId =
-    [...document.nodes.slice(0, at)].reverse().find((node) => node.kind === 'step')?.step.id
+  const docItems = walkAuthoringNodes(document)
+  const prevStepItem = [...docItems.slice(0, at)].reverse().find((item) => item.node.kind === 'step')
+  let lastActionId = prevStepItem?.node.kind === 'step' ? prevStepItem.node.step.id : undefined
 
   for (const item of items) {
     const index = dispositions.findIndex((entry) => sameSourceIndexes(entry.sourceIndexes, item.sourceIndexes))
@@ -615,26 +616,34 @@ function applyDispositionsToAuthoring(
   }
 
   const limit = authoringHasModuleInvocations(document) ? MAX_AUTHORING_NODES : MAX_SCENARIO_STEPS
-  if (document.nodes.length + inserted.length > limit) {
+  const currentCount = walkAuthoringNodes(document).length
+  if (currentCount + inserted.length > limit) {
     throw badRequest(
       'RECORDING_IMPORT_CAPACITY',
-      `回填后将超过 ${limit} 个节点，当前还可插入 ${Math.max(0, limit - document.nodes.length)} 步`,
+      `回填后将超过 ${limit} 个节点，当前还可插入 ${Math.max(0, limit - currentCount)} 步`,
     )
   }
 
-  const prefix = document.nodes.slice(0, at).map((node) => {
-    if (node.kind !== 'step') return node
-    const added = extraOutcomes.get(node.step.id)
-    if (!added?.length) return node
-    return { ...node, outcomes: [...(node.outcomes ?? []), ...added] }
-  })
-  const suffix = document.nodes.slice(at)
+  let updatedDoc: ScenarioAuthoringDocumentV2 = document
+  for (const [stepId, added] of extraOutcomes) {
+    const existing = docItems.find((item) => item.id === stepId)?.node
+    if (existing && existing.kind === 'step') {
+      updatedDoc = replaceNode(updatedDoc, stepId, {
+        ...existing,
+        outcomes: [...(existing.outcomes ?? []), ...added],
+      })
+    }
+  }
+  let currentAnchor: string | null | undefined = anchor.kind === 'start' ? null : anchor.stepId
+  for (const ins of inserted) {
+    updatedDoc = insertNodeAfter(updatedDoc, currentAnchor, ins)
+    currentAnchor = authoringNodeId(ins)
+  }
+  if (scenarioOutcomes.length > 0) {
+    updatedDoc = { ...updatedDoc, scenarioOutcomes }
+  }
   return {
-    document: {
-      ...document,
-      nodes: [...prefix, ...inserted, ...suffix],
-      ...(scenarioOutcomes.length > 0 ? { scenarioOutcomes } : {}),
-    },
+    document: updatedDoc,
     sourceMap,
   }
 }

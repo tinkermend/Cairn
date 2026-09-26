@@ -74,7 +74,10 @@ export async function appendRunEvents(
   }
   const { enqueueRunNotificationIntentTx } = await import('../notifications/core.js')
   await enqueueRunNotificationIntentTx(tx, runId)
-  onCommit(tx, () => publishChangeHint({ runId, eventSeq: sequence }))
+  const runControlChanged = drafts.some(
+    (draft) => draft.type === 'run.cancel_requested' || draft.type === 'run.status_changed',
+  )
+  onCommit(tx, () => publishChangeHint({ runId, eventSeq: sequence, runControlChanged }))
   return sequence
 }
 

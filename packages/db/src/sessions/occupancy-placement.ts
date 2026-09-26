@@ -69,6 +69,45 @@ export async function evaluateRunSessionEligibility(
     }
   }
 
+  // SHARED 模式登录态在数据库，不做 Profile 亲和等待与位置转移（§4.5）
+  const runWithPolicy = input.run as {
+    id: string
+    createdAt: Date
+    targetId: string
+    targetAccountId: string | null
+    isolation?: 'SHARED' | 'DEDICATED' | null
+    sessionPolicy?: unknown
+  }
+  let isShared: boolean | null = null
+  if (runWithPolicy.isolation === 'SHARED') isShared = true
+  else if (runWithPolicy.isolation === 'DEDICATED') isShared = false
+
+  if (isShared === null && runWithPolicy.sessionPolicy && typeof runWithPolicy.sessionPolicy === 'object') {
+    const sp = runWithPolicy.sessionPolicy as Record<string, unknown>
+    if (sp.browserIsolation === 'SHARED') isShared = true
+    else if (sp.browserIsolation === 'DEDICATED') isShared = false
+  }
+
+  if (isShared === null) {
+    const { targets } = schemaFor(db)
+    const [target] = await db
+      .select({ sessionPolicy: targets.sessionPolicy })
+      .from(targets)
+      .where(eq(targets.id, input.run.targetId))
+      .limit(1)
+    if (
+      target?.sessionPolicy &&
+      (target.sessionPolicy as Record<string, unknown>).browserIsolation === 'SHARED'
+    ) {
+      isShared = true
+    } else {
+      isShared = false
+    }
+  }
+  if (isShared) {
+    return { eligible: true, fallback: false, facts: empty }
+  }
+
   const profile = await getSessionProfile(db, profileKeyFrom(key, decision.accountSlot))
   if (!profile || profile.state !== 'PRESENT' || !profile.locationWorkerId) {
     return { eligible: true, fallback: false, facts: empty }

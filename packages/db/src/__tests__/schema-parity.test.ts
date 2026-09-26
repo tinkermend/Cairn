@@ -596,6 +596,7 @@ describe.skipIf(!parsed.success)('迁移与 Drizzle schema 一致性（集成）
       'assistant_turns.capability_id',
       'assistant_turns.client_turn_id',
       'assistant_turns.owner_instance_id',
+      'ai_task_events.agent_instance_id',
       'map_terminology_source_dependencies.source_id',
       'credential_bindings.alert_channel_id',
       'credential_verifications.session_id',

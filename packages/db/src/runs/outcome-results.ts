@@ -1,7 +1,9 @@
 import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm'
 import {
   aggregateRunOutcomeStatus,
+  loopBodyHeadersOf,
   aggregateStepRunOutcomeStatus,
+  candidateGroupsOf,
   deriveRuntimeInvariantResults,
   effectTypeSchema,
   isHaltedRunStatus,
@@ -111,7 +113,14 @@ export async function saveStepOutcomeResultsTx(
 
       if (stepContracts.length > 0) {
         const rows = await tx
-          .select({ contractId: outcomeResults.contractId, verdict: outcomeResults.verdict })
+          .select({
+            contractId: outcomeResults.contractId,
+            verdict: outcomeResults.verdict,
+            evaluatedAt: outcomeResults.evaluatedAt,
+            provenance: outcomeResults.provenance,
+            attemptId: outcomeResults.attemptId,
+            stepRunId: outcomeResults.stepRunId,
+          })
           .from(outcomeResults)
           .where(eq(outcomeResults.stepRunId, input.stepRunId))
           .orderBy(asc(outcomeResults.evaluatedAt))
@@ -285,7 +294,7 @@ export async function recalculateRunOutcomeTx(
   snapshot: RunSnapshot,
   now: Date,
 ): Promise<OutcomeStatus> {
-  const { outcomeResults, runs } = schemaFor(tx)
+  const { outcomeResults, runs, stepRuns } = schemaFor(tx)
   const [run] = await tx.select().from(runs).where(eq(runs.id, runId)).limit(1)
   await syncRuntimeInvariantResultsTx(tx, {
     runId,
@@ -304,15 +313,38 @@ export async function recalculateRunOutcomeTx(
   }
 
   const rows = await tx
-    .select({ contractId: outcomeResults.contractId, verdict: outcomeResults.verdict })
+    .select({
+      id: outcomeResults.id,
+      contractId: outcomeResults.contractId,
+      stepRunId: outcomeResults.stepRunId,
+      attemptId: outcomeResults.attemptId,
+      verdict: outcomeResults.verdict,
+      provenance: outcomeResults.provenance,
+      evaluatedAt: outcomeResults.evaluatedAt,
+    })
     .from(outcomeResults)
     .where(eq(outcomeResults.runId, runId))
     .orderBy(asc(outcomeResults.evaluatedAt))
+
+  const stepRows = await tx
+    .select({
+      id: stepRuns.id,
+      stepId: stepRuns.stepId,
+      status: stepRuns.status,
+      skipReason: stepRuns.skipReason,
+    })
+    .from(stepRuns)
+    .where(eq(stepRuns.runId, runId))
+
+  const candidateGroups = candidateGroupsOf(snapshot)
 
   const outcomeStatus = aggregateRunOutcomeStatus(
     snapshot.outcomeManifest,
     rows,
     snapshot.runtimeInvariantManifest,
+    stepRows,
+    candidateGroups,
+    loopBodyHeadersOf(snapshot.controlFlow),
   )
   await tx.update(runs).set({ outcomeStatus, updatedAt: now }).where(eq(runs.id, runId))
   return outcomeStatus

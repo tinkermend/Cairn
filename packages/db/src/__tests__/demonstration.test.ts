@@ -8,6 +8,8 @@ import {
   SESSION_OCCUPANCY_PROTOCOL,
   DEMONSTRATION_PROTOCOL,
   normalizeAuthoringDocument,
+  stepRunFor,
+  walkAuthoringNodes,
   syncSha256Bytes,
   type AiExecutionConfig,
   type ApplyDemonstrationBody,
@@ -168,11 +170,12 @@ describe.each(DRIVERS)(
       const applied = await applyDemonstrationImport(handle.db, current.id, body, actor())
       const doc = normalizeAuthoringDocument(applied.scenario.draft!.document)
       expect(doc.inputs).toContainEqual({ key: 'orderNo', label: '订单号' })
-      expect(doc.nodes[1]).toMatchObject({
+      const docNodes = walkAuthoringNodes(doc).map((i) => i.node)
+      expect(docNodes[1]).toMatchObject({
         kind: 'step',
         step: { type: 'ai_action', input: { from: 'orderNo' } },
       })
-      expect(doc.nodes[2]).toMatchObject({
+      expect(docNodes[2]).toMatchObject({
         outcomes: [{ provenance: 'imported', severity: 'MUST', onViolation: 'halt' }],
       })
       expect(applied.receipt.demonstration?.sourceMap.at(-1)?.contractId).toBeTruthy()
@@ -462,7 +465,7 @@ describe.each(DRIVERS)(
         const contract = snapshot.outcomeManifest!.entries.find(
           (entry) => entry.provenance === 'imported',
         )!
-        const stepRun = created.detail.stepRuns.find((step) => step.stepId === contract.stepId)!
+        const stepRun = stepRunFor(created.detail.stepRuns, contract.stepId)!
         const attempt = await startAttempt(handle.db, {
           runId: created.detail.id,
           stepRunId: stepRun.id,

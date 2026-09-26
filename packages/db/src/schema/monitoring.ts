@@ -10,6 +10,8 @@ import type {
   MonitorApiIdSource,
   MonitorSampleScope,
   WorkerStatus,
+  AiCallIntent,
+  AiCallRoute,
 } from '@cairn/shared'
 import { newId } from '../id.js'
 import { cairnSchema } from './console.js'
@@ -77,12 +79,15 @@ export const scenarioAiCalls = cairnSchema.table(
     outputTokens: integer('output_tokens'),
     cost: doublePrecision('cost'),
     errorCode: text('error_code'),
+    intent: text('intent').$type<AiCallIntent>(),
+    route: text('route').$type<AiCallRoute>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex('scenario_ai_calls_evidence_unique').on(t.evidenceId),
     index('scenario_ai_calls_created_idx').on(t.createdAt),
     index('scenario_ai_calls_model_created_idx').on(t.model, t.createdAt),
+    index('scenario_ai_calls_run_idx').on(t.runId),
   ],
 )
 

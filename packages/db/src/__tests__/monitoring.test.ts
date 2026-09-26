@@ -6,6 +6,7 @@ import {
   MODULE_MANIFEST_PROTOCOL,
   OBJECT_MISSING_REASONS,
   SESSION_OCCUPANCY_PROTOCOL,
+  knownMetric,
   unknownMetric,
   type MonitorMetricNumber,
   type Step,
@@ -31,6 +32,7 @@ import {
   listWorkers,
   markLostApiInstances,
   purgeMonitorSamples,
+  purgeScenarioAiCalls,
   readMonitorSeries,
   recordManualObjectStoreProbe,
   summarizeAi,
@@ -905,5 +907,63 @@ describe.each(DRIVERS)('%s 监控只读聚合', { timeout: 60_000 }, (driver) =>
     const tokens = await summarizeAi(handle.db, await clockNow(handle.db))
     expect(tokens.inputTokens).toEqual(unknownMetric('not_reported'))
     expect(tokens.outputTokens).toEqual(unknownMetric('not_reported'))
+
+    await handle.db.insert(scenarioAiCalls).values([
+      {
+        id: newId(),
+        evidenceId: newId(),
+        runId: newId(),
+        stepRunId: newId(),
+        purpose: 'scenario',
+        phase: 'completed',
+        route: 'aria_text',
+        model: 'deepseek-chat',
+        inputTokens: 100,
+        outputTokens: 20,
+      },
+      {
+        id: newId(),
+        evidenceId: newId(),
+        runId: newId(),
+        stepRunId: newId(),
+        purpose: 'scenario',
+        phase: 'completed',
+        route: 'vision',
+        model: 'qwen-vl-max',
+        inputTokens: 500,
+        outputTokens: 50,
+      },
+    ])
+    const detailed = await summarizeAi(handle.db, await clockNow(handle.db))
+    expect(detailed.textCalls).toEqual(knownMetric(1))
+    expect(detailed.visionCalls).toEqual(knownMetric(2))
+    expect(detailed.textTokens).toEqual(knownMetric(120))
+    expect(detailed.visionTokens).toEqual(knownMetric(550))
+  })
+
+  it('AI 调用台账按保留天数清理，只删过期行', async () => {
+    const { scenarioAiCalls } = schemaFor(handle.db)
+    const dbNow = await clockNow(handle.db)
+    const staleId = newId()
+    const freshId = newId()
+    const row = (id: string, createdAt: Date) => ({
+      id,
+      evidenceId: newId(),
+      runId: newId(),
+      stepRunId: newId(),
+      purpose: 'scenario',
+      phase: 'completed' as const,
+      createdAt,
+    })
+    await handle.db.insert(scenarioAiCalls).values([
+      row(staleId, new Date(dbNow.getTime() - 11 * 86_400_000)),
+      row(freshId, new Date(dbNow.getTime() - 9 * 86_400_000)),
+    ])
+
+    expect(await purgeScenarioAiCalls(handle.db, 10)).toBeGreaterThanOrEqual(1)
+    const [stale] = await handle.db.select().from(scenarioAiCalls).where(eq(scenarioAiCalls.id, staleId))
+    const [fresh] = await handle.db.select().from(scenarioAiCalls).where(eq(scenarioAiCalls.id, freshId))
+    expect(stale).toBeUndefined()
+    expect(fresh?.id).toBe(freshId)
   })
 })

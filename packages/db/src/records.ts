@@ -138,6 +138,8 @@ export type Target = {
   loginUrl: string | null
   authMethod: 'password' | 'manual'
   captchaMode: 'none' | 'image' | 'slider' | 'sms' | 'other'
+  iconKey: string
+  accentKey: string
   loginFields: {
     username?: { by: 'id' | 'name' | 'css'; value: string }
     password?: { by: 'id' | 'name' | 'css'; value: string }
@@ -150,6 +152,8 @@ export type Target = {
   currentAuthProfileRevision: number | null
   sessionPolicy: Record<string, unknown> | null
   resolutionPolicy: Record<string, unknown> | null
+  /** 'inherit'（含 null）沿用平台配置，'off' 关闭该目标系统的 AI 动作采集。 */
+  aiActionTrace: string | null
   sensitiveSelectors: string[]
   deletedAt: Date | null
   deletedBy: ResourceDeletedBy | null
@@ -166,6 +170,8 @@ export type NewTarget = {
   loginUrl?: string | null | undefined
   authMethod?: 'password' | 'manual' | undefined
   captchaMode?: 'none' | 'image' | 'slider' | 'sms' | 'other' | undefined
+  iconKey?: string | undefined
+  accentKey?: string | undefined
   loginFields?:
     | {
         username?: { by: 'id' | 'name' | 'css'; value: string }
@@ -612,6 +618,8 @@ export type BrowserSessionRow = {
   predecessorSessionId: string | null
   closeReason: string | null
   closedAt: Date | null
+  isolation: string | null
+  hostId: string | null
 }
 
 export type NewBrowserSession = {
@@ -622,6 +630,8 @@ export type NewBrowserSession = {
   maxLifetimeSeconds: number
   ownerWorkerId: string
   ownerWorkerInstanceId?: string | null | undefined
+  isolation?: string | null | undefined
+  hostId?: string | null | undefined
   generation: number
   profileKey: string
   accountSlot?: number | undefined
@@ -747,13 +757,13 @@ export type SessionOperationRow = {
   ownerWorkerInstanceId: string | null
   attemptNo: number
   errorCode: string | null
+  waitReason: SessionOperationWaitReason | null
+  waitDetail: Record<string, unknown> | null
+  lastClaimAttemptAt: Date | null
   createdAt: Date
   updatedAt: Date
   finishedAt: Date | null
 }
-  waitReason: SessionOperationWaitReason | null
-  waitDetail: Record<string, unknown> | null
-  lastClaimAttemptAt: Date | null
 
 export type SessionProfileRow = {
   targetId: string

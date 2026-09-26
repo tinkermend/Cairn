@@ -15,6 +15,7 @@ import {
   getRun,
   listRunEvidence,
   listScenarioVersions,
+  loadRunControlState,
   mapPgRestriction,
   openIsolatedDb,
   requestRunCancel,
@@ -33,6 +34,7 @@ import { targetAccounts as pg_targetAccounts, targets as pg_targets } from '../s
 let targetAccounts = pg_targetAccounts
 let targets = pg_targets
 import { forceGrantForRun, seedWorker } from './lease-harness.js'
+import { resetChangeHintPublisher, setChangeHintPublisher, type ChangeHintDraft } from '../observe/hint.js'
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_exec`
 
@@ -113,6 +115,61 @@ describe.each(DRIVERS)('%s 执行账本 Repository（集成）', { timeout: 30_0
         actor: { id: actorId },
       }),
     ).rejects.toMatchObject({ code: 'RUN_IDEMPOTENCY_CONFLICT' })
+  })
+
+  it('仅读取 Run 控制状态，不返回快照或上下文', async () => {
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '运行控制状态',
+      steps: [echoStep],
+      actor: { id: actorId },
+    })
+    const deadlineAt = new Date(Date.now() + 60_000)
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      deadlineAt,
+      actor: { id: actorId },
+    })
+    const runId = created.detail.id
+    expect(await loadRunControlState(handle.db, runId)).toEqual({
+      id: runId,
+      status: 'QUEUED',
+      cancelRequestedAt: null,
+      deadlineAt,
+    })
+
+    const cancelRequestedAt = new Date()
+    await handle.db.update(runs).set({ status: 'RUNNING', cancelRequestedAt }).where(eq(runs.id, runId))
+    expect(await loadRunControlState(handle.db, runId)).toEqual({
+      id: runId,
+      status: 'RUNNING',
+      cancelRequestedAt,
+      deadlineAt,
+    })
+    expect(await loadRunControlState(handle.db, newId())).toBeNull()
+  })
+
+  it('只把取消及状态变化标记为运行控制提示', async () => {
+    const hints: ChangeHintDraft[] = []
+    setChangeHintPublisher((hint) => hints.push(hint))
+    try {
+      const scenario = await createScenarioWithVersion(handle.db, {
+        targetId,
+        name: '运行控制提示',
+        steps: [echoStep],
+        actor: { id: actorId },
+      })
+      const created = await createRunWithSnapshot(handle.db, {
+        scenarioId: scenario.id,
+        actor: { id: actorId },
+      })
+      expect(hints).toContainEqual(expect.objectContaining({ runId: created.detail.id, runControlChanged: false }))
+
+      await requestRunCancel(handle.db, created.detail.id, { id: actorId })
+      expect(hints).toContainEqual(expect.objectContaining({ runId: created.detail.id, runControlChanged: true }))
+    } finally {
+      resetChangeHintPublisher()
+    }
   })
 
   it('参数化 from：保存成功，缺 input 创建失败', async () => {
@@ -465,6 +522,50 @@ describe.each(DRIVERS)('%s 执行账本 Repository（集成）', { timeout: 30_0
     await requestRunCancel(handle.db, cancelledRun.detail.id, { id: actorId })
     expect((await finishRunIfDrained(handle.db, cancelGrant)).finished).toBe(false)
     expect((await getRun(handle.db, cancelledRun.detail.id)).status).toBe('RUNNING')
+  })
+
+  it('停用步骤建 Run 即跳过，成功与跳过混合可补写成功；全部停用拒绝建 Run', async () => {
+    const disabledEcho: Step = {
+      ...echoStep,
+      id: '00000000-0000-4000-8000-000000000062',
+      name: '停用回显',
+      outputKey: 'later',
+      disabled: true,
+    }
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '停用收尾',
+      steps: [echoStep, disabledEcho],
+      actor: { id: actorId },
+    })
+    const created = await createRunWithSnapshot(handle.db, {
+      scenarioId: scenario.id,
+      actor: { id: actorId },
+    })
+    expect(created.detail.stepRuns.map((step) => step.status)).toEqual(['PENDING', 'SKIPPED'])
+    expect(created.detail.stepRuns[1]?.finishedAt).toBeTruthy()
+
+    const worker = await seedWorker(handle)
+    const grant = await forceGrantForRun(handle, created.detail.id, worker.workerId)
+    expect((await finishRunIfDrained(handle.db, grant)).finished).toBe(false)
+    await handle.db
+      .update(stepRuns)
+      .set({ status: 'SUCCEEDED' })
+      .where(eq(stepRuns.id, created.detail.stepRuns[0]!.id))
+    expect((await finishRunIfDrained(handle.db, grant)).finished).toBe(true)
+    expect((await getRun(handle.db, created.detail.id)).status).toBe('SUCCEEDED')
+
+    // 绕过编译拦截建出的全停用版本：建 Run 时挡住，否则没有一步能成功，Run 收不了尾。
+    const allDisabled = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: '全部停用',
+      steps: [{ ...echoStep, disabled: true }],
+      actor: { id: actorId },
+      compileMode: 'save',
+    })
+    await expect(
+      createRunWithSnapshot(handle.db, { scenarioId: allDisabled.id, actor: { id: actorId } }),
+    ).rejects.toMatchObject({ code: 'SCENARIO_ALL_STEPS_DISABLED', kind: 'bad_request' })
   })
 
   it('删除仍有活跃 Run 的场景 → RUN_NOT_TERMINAL；23503 兜底可映射', async () => {

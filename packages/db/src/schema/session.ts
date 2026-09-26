@@ -1,6 +1,7 @@
-import { index, integer, jsonb, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, jsonb, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 import type {
   AuthCapabilityTier,
+  BrowserIsolation,
   IdentityState,
   SessionAuthState,
   SessionHealth,
@@ -20,7 +21,7 @@ import type {
 import { newId } from '../id.js'
 import { cairnSchema } from './console.js'
 import { runs } from './execution.js'
-import { targetAccounts } from './targets.js'
+import { targets, targetAccounts } from './targets.js'
 
 /**
  * 部分唯一索引与 CHECK 约束由 migration 0008 卡住；
@@ -75,6 +76,8 @@ export const browserSessions = cairnSchema.table(
     predecessorSessionId: uuid('predecessor_session_id'),
     closeReason: text('close_reason'),
     closedAt: timestamp('closed_at', { withTimezone: true }),
+    isolation: text('isolation').$type<BrowserIsolation>(),
+    hostId: text('host_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -212,6 +215,42 @@ export const sessionEvents = cairnSchema.table(
   (t) => [
     index('session_events_key_seq_idx').on(t.targetId, t.targetAccountId, t.seq),
     index('session_events_session_idx').on(t.sessionId, t.seq),
+    index('session_events_target_created_idx').on(t.targetId, t.createdAt, t.id),
+  ],
+)
+
+export const sessionStateSnapshots = cairnSchema.table(
+  'session_state_snapshots',
+  {
+    targetId: uuid('target_id')
+      .notNull()
+      .references(() => targets.id, { onDelete: 'cascade' }),
+    targetAccountId: uuid('target_account_id')
+      .notNull()
+      .references(() => targetAccounts.id, { onDelete: 'cascade' }),
+    accountSlot: integer('account_slot').notNull().default(1),
+    state: jsonb('state'),
+    formatVersion: integer('format_version').notNull().default(1),
+    byteSize: integer('byte_size').notNull().default(0),
+    cookieCount: integer('cookie_count').notNull().default(0),
+    originCount: integer('origin_count').notNull().default(0),
+    hasIndexedDb: boolean('has_indexed_db').notNull().default(false),
+    earliestCookieExpiry: timestamp('earliest_cookie_expiry', { withTimezone: true }),
+    sessionId: uuid('session_id'),
+    sessionGeneration: integer('session_generation'),
+    sessionFencingToken: integer('session_fencing_token'),
+    identity: text('identity'),
+    stale: boolean('stale').notNull().default(false),
+    contentDigest: text('content_digest'),
+    clearedAt: timestamp('cleared_at', { withTimezone: true }),
+    capturedAt: timestamp('captured_at', { withTimezone: true }),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.targetId, t.targetAccountId, t.accountSlot] }),
+    index('session_state_snapshots_account_idx').on(t.targetAccountId),
   ],
 )
 
@@ -221,3 +260,6 @@ export type SessionRetentionIntentRow = typeof sessionRetentionIntents.$inferSel
 export type NewSessionRetentionIntent = typeof sessionRetentionIntents.$inferInsert
 export type SessionEventRow = typeof sessionEvents.$inferSelect
 export type NewSessionEvent = typeof sessionEvents.$inferInsert
+export type SessionStateSnapshotRow = typeof sessionStateSnapshots.$inferSelect
+export type NewSessionStateSnapshot = typeof sessionStateSnapshots.$inferInsert
+

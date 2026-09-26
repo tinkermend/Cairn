@@ -15,6 +15,8 @@ import type {
   ScenarioStatus,
   ScenarioVersionKind,
   StepRunStatus,
+  StepIterationStatus,
+  StepSkipReason,
   ResourceDeletedBy,
   DebugMode,
   DebugCheckpoint,
@@ -187,14 +189,48 @@ export const stepRuns = cairnSchema.table(
     /** 创建时从 snapshot.steps[].name 冻结的展示名；列表不再回读整份 snapshot。 */
     name: text('name'),
     ordinal: integer('ordinal').notNull(),
+    scopePath: text('scope_path').notNull().default(''),
     status: text('status').notNull().$type<StepRunStatus>(),
+    skipReason: text('skip_reason').$type<StepSkipReason>(),
     outcomeStatus: text('outcome_status').notNull().default('NOT_EVALUATED').$type<OutcomeStatus>(),
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
   },
   (t) => [
-    uniqueIndex('step_runs_run_step_idx').on(t.runId, t.stepId),
-    uniqueIndex('step_runs_run_ordinal_idx').on(t.runId, t.ordinal),
+    uniqueIndex('step_runs_run_step_scope_idx').on(t.runId, t.stepId, t.scopePath),
+    uniqueIndex('step_runs_run_ordinal_scope_idx').on(t.runId, t.ordinal, t.scopePath),
+    index('step_runs_run_scope_idx').on(t.runId, t.scopePath),
+  ],
+)
+
+export const stepIterations = cairnSchema.table(
+  'step_iterations',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => runs.id, { onDelete: 'cascade' }),
+    blockId: uuid('block_id').notNull(),
+    headerStepId: uuid('header_step_id').notNull(),
+    scopePath: text('scope_path').notNull(),
+    iterationIndex: integer('iteration_index').notNull(),
+    status: text('status').notNull().$type<StepIterationStatus>(),
+    item: jsonb('item').$type<JsonValue>(),
+    frame: jsonb('frame').$type<Record<string, unknown>>().notNull().default({}),
+    stopDecision: jsonb('stop_decision').$type<JsonValue>(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('step_iterations_run_block_scope_iter_idx').on(
+      t.runId,
+      t.blockId,
+      t.scopePath,
+      t.iterationIndex,
+    ),
+    index('step_iterations_run_scope_idx').on(t.runId, t.scopePath),
   ],
 )
 
@@ -326,6 +362,7 @@ export const scenarioVersionsRelations = relations(scenarioVersions, ({ one }) =
 export const runsRelations = relations(runs, ({ one, many }) => ({
   scenario: one(scenarios, { fields: [runs.scenarioId], references: [scenarios.id] }),
   stepRuns: many(stepRuns),
+  stepIterations: many(stepIterations),
   outcomeResults: many(outcomeResults),
 }))
 
@@ -333,6 +370,10 @@ export const stepRunsRelations = relations(stepRuns, ({ one, many }) => ({
   run: one(runs, { fields: [stepRuns.runId], references: [runs.id] }),
   attempts: many(attempts),
   outcomeResults: many(outcomeResults),
+}))
+
+export const stepIterationsRelations = relations(stepIterations, ({ one }) => ({
+  run: one(runs, { fields: [stepIterations.runId], references: [runs.id] }),
 }))
 
 export const outcomeResultsRelations = relations(outcomeResults, ({ one }) => ({
@@ -347,6 +388,8 @@ export type ScenarioVersionRow = typeof scenarioVersions.$inferSelect
 export type ScenarioDraftRow = typeof scenarioDrafts.$inferSelect
 export type RunRow = typeof runs.$inferSelect
 export type StepRunRow = typeof stepRuns.$inferSelect
+export type StepIterationRow = typeof stepIterations.$inferSelect
+export type StepIterationInsert = typeof stepIterations.$inferInsert
 export type AttemptRow = typeof attempts.$inferSelect
 export type EvidenceRow = typeof evidences.$inferSelect
 export type OutcomeResultRow = typeof outcomeResults.$inferSelect

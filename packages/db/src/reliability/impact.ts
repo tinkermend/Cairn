@@ -3,6 +3,7 @@ import {
   RELIABILITY_ERROR_CODES,
   isAuthoringDocumentV2,
   normalizeAuthoringDocument,
+  walkAuthoringNodes,
   type BatchUpgradeBody,
   type ExecutionActor,
   type ImpactedAssetDto,
@@ -232,9 +233,8 @@ export async function getIncidentImpactSnapshot(
     }
 
     // Scan module invocations
-    const moduleNodes = document.nodes.filter(
-      (node): node is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'module' }> =>
-        node.kind === 'module',
+    const moduleNodes = walkAuthoringNodes(document).flatMap((item) =>
+      item.node.kind === 'module' ? [item.node] : [],
     )
 
     for (const node of moduleNodes) {

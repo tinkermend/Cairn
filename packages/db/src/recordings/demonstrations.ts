@@ -9,6 +9,7 @@ import {
   normalizeAuthoringDocument,
   recordingImportReceiptSchema,
   syncSha256,
+  walkAuthoringNodes,
   type ApplyDemonstrationBody,
   type CreateDemonstrationBody,
   type PreviewDemonstrationBody,
@@ -237,7 +238,7 @@ async function loadPreview(
     scenarioId,
     baseRevision: draft.revision,
     placement: body.placement,
-    remainingCapacity: Math.max(0, MAX_AUTHORING_NODES - document.nodes.length),
+    remainingCapacity: Math.max(0, MAX_AUTHORING_NODES - walkAuthoringNodes(document).length + (body.placement.kind === 'replace_initial' ? 1 : 0)),
   })
   return { scenario, draft, document, preview, demonstration }
 }

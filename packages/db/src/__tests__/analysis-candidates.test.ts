@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { isAuthoringDocumentV2, scenarioDocumentDigest, scenarioDocumentSchema, type ReviewAnalysisCandidateBody } from '@cairn/shared'
+import { authoringSteps, isAuthoringDocumentV2, scenarioDocumentDigest, scenarioDocumentSchema, type ReviewAnalysisCandidateBody } from '@cairn/shared'
 import { DRIVERS, openContractDb } from './contract-fixture.js'
 import { insertRows, schemaFor } from '../native.js'
 import { newId } from '../id.js'
@@ -34,7 +34,7 @@ describe.each(DRIVERS)('%s 分析候选人工采纳', { timeout: 60_000 }, drive
   async function proposalBody(scenarioId: string, expectedRevision = 1): Promise<Extract<ReviewAnalysisCandidateBody, { kind: 'proposal' }>> {
     const scenario = await getScenario(handle.db, scenarioId)
     const draft = scenario.draft!
-    const document = isAuthoringDocumentV2(draft.document) ? scenarioDocumentSchema.parse({ schemaVersion: 1, inputs: draft.document.inputs, steps: draft.document.nodes.flatMap(node => node.kind === 'step' ? [node.step] : []) }) : scenarioDocumentSchema.parse(draft.document)
+    const document = isAuthoringDocumentV2(draft.document) ? scenarioDocumentSchema.parse({ schemaVersion: 1, inputs: draft.document.inputs, steps: authoringSteps(draft.document) }) : scenarioDocumentSchema.parse(draft.document)
     return { kind: 'proposal', idempotencyKey: newId(), expectedRevision, scenarioId, expectedDraftRevision: draft.revision,
       documentDigest: await scenarioDocumentDigest(document), document: { ...document, steps: document.steps.map(step => ({ ...step, name: `${step.name}（已审阅）` })) } }
   }

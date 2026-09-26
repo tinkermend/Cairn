@@ -460,4 +460,25 @@ describe.each(DRIVERS)('%s 编写调试与 HOLDING 状态', { timeout: 30_000 },
     expect(stopped.stepRuns[1]?.status).toBe('PENDING')
     expect(stopped.stepRuns.some((item) => item.status === 'SKIPPED')).toBe(false)
   })
+
+  it('试跑支持 pauseBeforeStepId 并在快照中冻结', async () => {
+    const actor = { id: actorId, email: 'author@example.com' }
+    const scenario = await createScenarioWithVersion(handle.db, {
+      targetId,
+      name: `pause-${newId().slice(0, 8)}`,
+      actor,
+      steps: [echoStep, secondStep],
+    })
+    await saveScenarioDraft(handle.db, scenario.id, {
+      revision: 1,
+      actor,
+      document: { schemaVersion: 1, inputs: [], steps: [echoStep, secondStep] },
+    })
+    const trial = await createTrialRunFromDraft(handle.db, scenario.id, {
+      revision: 2,
+      actor,
+      pauseBeforeStepId: secondStep.id,
+    })
+    expect(trial.detail.snapshot.pauseBeforeStepId).toBe(secondStep.id)
+  })
 })

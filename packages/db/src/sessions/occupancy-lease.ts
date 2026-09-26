@@ -66,6 +66,7 @@ export type ClaimSessionUseInput = {
   touchLastUsed?: boolean
   sessionId?: string | null
   pickIdle?: 'oldest' | 'worst'
+  isolation?: 'SHARED' | 'DEDICATED' | null
 }
 
 export type ClaimSessionUseResult =
@@ -335,6 +336,7 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         authProbeIntervalSeconds: input.authProbeIntervalSeconds,
         evictionPriority: input.evictionPriority,
         accountSlot: decision.accountSlot,
+        isolation: input.isolation,
       })
       if (!created.ok) return { ok: false as const, code: created.code, message: created.message }
       const session = await lockSession(tx, created.session.id)
@@ -350,29 +352,31 @@ export async function claimSessionUse(db: Db, input: ClaimSessionUseInput): Prom
         holderWorkerId: input.holderWorkerId,
         leaseTtlSeconds: input.leaseTtlSeconds,
       })
-      const profileKey = profileKeyFrom(input.key, decision.accountSlot)
-      const profile = await getSessionProfile(tx, profileKey)
       let profileFallback = false
-      if (
-        profile?.state === 'PRESENT' &&
-        profile.locationWorkerId &&
-        profile.locationWorkerId !== input.holderWorkerId
-      ) {
-        await transferProfileLocation(
-          tx,
-          profileKey,
-          profile.locationWorkerId,
-          input.holderWorkerId,
-          profile.revision,
-        )
-        profileFallback = true
-      } else if (!profile) {
-        await upsertSessionProfile(tx, {
-          key: profileKey,
-          workerId: input.holderWorkerId,
-          revision: 1,
-          state: 'PRESENT',
-        })
+      if (input.isolation !== 'SHARED') {
+        const profileKey = profileKeyFrom(input.key, decision.accountSlot)
+        const profile = await getSessionProfile(tx, profileKey)
+        if (
+          profile?.state === 'PRESENT' &&
+          profile.locationWorkerId &&
+          profile.locationWorkerId !== input.holderWorkerId
+        ) {
+          await transferProfileLocation(
+            tx,
+            profileKey,
+            profile.locationWorkerId,
+            input.holderWorkerId,
+            profile.revision,
+          )
+          profileFallback = true
+        } else if (!profile) {
+          await upsertSessionProfile(tx, {
+            key: profileKey,
+            workerId: input.holderWorkerId,
+            revision: 1,
+            state: 'PRESENT',
+          })
+        }
       }
       await applyPendingRetentionIntent(tx, bumped.id)
       return {

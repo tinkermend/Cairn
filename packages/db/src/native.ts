@@ -429,6 +429,13 @@ export const indexedTextLimits: Record<string, number> = {
   'scenario_ai_calls.error_code': 64,
   'repair_candidates.candidate_id': 64,
   'repair_candidates.status': 32,
+  'ai_task_events.agent_instance_id': 64,
+  'ai_task_events.phase': 16,
+  'ai_path_observations.namespace_digest': 64,
+  'ai_path_observations.solidifiable_level': 16,
+  'ai_path_observations.trace_integrity': 16,
+  'ai_path_observations.step_result': 16,
+  'ai_path_observations.step_definition_digest': 64,
 }
 export function nativeTables(driver: Driver, schemaName = 'cairn'): Tables {
   if (driver === 'postgres' && schemaName === 'cairn') return schema

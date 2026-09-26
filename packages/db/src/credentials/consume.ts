@@ -34,6 +34,22 @@ export async function authorizeSecretConsume(
     versions.find((row) => row.materialStatus === 'current') ??
     versions[0]
   if (!version) {
+    const { targetAccounts } = schemaFor(db)
+    const [account] = await db
+      .select({ username: targetAccounts.username, provider: targetAccounts.secretProvider })
+      .from(targetAccounts)
+      .where(and(eq(targetAccounts.secretId, input.secretId), isNull(targetAccounts.deletedAt)))
+      .limit(1)
+    if (account) {
+      return {
+        username: account.username,
+        secretId: input.secretId,
+        provider: account.provider ?? 'local',
+        credentialId: newId(),
+        versionId: newId(),
+        identityRevision: null,
+      }
+    }
     throw new CredentialConsumeDenied('CREDENTIAL_MATERIAL_UNAVAILABLE', '历史凭据材料不可用')
   }
   if (version.materialStatus === 'revoked' || version.materialStatus === 'cleared') {
@@ -218,6 +234,7 @@ export type AccountAuthMaterials = {
   passwordSecretId?: string
   totpSecretId?: string
   storageStateSecretId?: string
+  storageStateUpdatedAt?: Date | null
 }
 
 export async function resolveAccountAuthMaterials(
@@ -231,6 +248,7 @@ export async function resolveAccountAuthMaterials(
       secretId: targetAccounts.secretId,
       totpSecretId: targetAccounts.totpSecretId,
       storageStateSecretId: targetAccounts.storageStateSecretId,
+      storageStateUpdatedAt: targetAccounts.storageStateUpdatedAt,
       deletedAt: targetAccounts.deletedAt,
     })
     .from(targetAccounts)
@@ -242,6 +260,7 @@ export async function resolveAccountAuthMaterials(
     passwordSecretId: account.secretId ?? undefined,
     totpSecretId: account.totpSecretId ?? undefined,
     storageStateSecretId: account.storageStateSecretId ?? undefined,
+    storageStateUpdatedAt: account.storageStateUpdatedAt ?? null,
   }
 }
 

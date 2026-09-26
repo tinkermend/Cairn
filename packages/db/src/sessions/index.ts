@@ -142,5 +142,21 @@ export { recoverSessionOperations, markMaintenanceLoginSubmitted } from './occup
 export { recordCaptchaLoginAttempt } from './captcha-audit.js'
 
 export { bindOperationSession } from './occupancy.js'
-
 export { recreateSessionForOperation } from './occupancy.js'
+
+export {
+  MAX_SNAPSHOT_BYTE_SIZE,
+  writeSessionStateSnapshot,
+  markSessionStateSnapshotStale,
+  readSessionStateSnapshotSummary,
+  readSessionStateSnapshotSummaries,
+  readSessionStateSnapshotContent,
+  clearSessionStateSnapshot,
+  pruneSnapshotsExceedingCap,
+  type WriteSessionSnapshotInput,
+  type WriteSessionSnapshotResult,
+  type WriteSessionSnapshotAuthority,
+  type SessionSnapshotSummary,
+  type SessionSnapshotContent,
+} from './session-snapshots.js'
+

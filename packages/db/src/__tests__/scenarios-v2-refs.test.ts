@@ -6,12 +6,14 @@ import {
   MODULE_MANIFEST_PROTOCOL,
   OUTCOME_MANIFEST_PROTOCOL,
   SESSION_OCCUPANCY_PROTOCOL,
+  authoringSteps,
+  walkAuthoringNodes,
   type ModuleContent,
   type ScenarioAuthoringDocumentV2,
 } from '@cairn/shared'
 import {
   createActionModule,
-  publishActionModule,
+  publishActionModule as rawPublishActionModule,
   saveActionModuleDraft,
   listActionModuleVersions,
   createScenarioWithVersion,
@@ -33,6 +35,9 @@ import {
 } from '../test-entry.js'
 import { newId } from '../id.js'
 import { computeContentDigest } from '../action-modules/digest.js'
+
+const publishActionModule: typeof rawPublishActionModule = (db, moduleId, input) =>
+  rawPublishActionModule(db, moduleId, { skipReleaseGate: true, ...input })
 
 const SCHEMA = `cairn_test_${Date.now().toString(36)}_v2refs`
 
@@ -230,7 +235,7 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
     expect(preview.diagnostics.map((item) => item.code)).toEqual(
       expect.arrayContaining(['SCENARIO_NO_OUTCOME']),
     )
-    expect(preview.definition.steps).toHaveLength(3) // 1 nav + 2 module steps
+    expect(preview.definition.steps).toHaveLength(4) // 1 nav + 2 module steps + 1 verify_context
     expect(preview.manifest?.entries).toHaveLength(1)
     expect(preview.manifest?.entries[0]!.moduleKey).toBe('search.box')
 
@@ -242,7 +247,7 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
     const pubVersion = publishedScenario.published!
     expect(pubVersion.versionNo).toBe(2)
     expect(pubVersion.moduleManifest?.entries).toHaveLength(1)
-    expect(pubVersion.definition.steps).toHaveLength(3)
+    expect(pubVersion.definition.steps).toHaveLength(4)
 
     // 验证发布引用落库
     const pubRefs = await handle.db
@@ -492,7 +497,7 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
     })
     expect(inlined.draft?.revision).toBe(3)
     const inlinedDoc = inlined.draft!.document as ScenarioAuthoringDocumentV2
-    expect(inlinedDoc.nodes).toHaveLength(1)
+    expect(inlinedDoc.nodes).toHaveLength(2)
     expect(inlinedDoc.nodes[0]!.kind).toBe('step')
     if (inlinedDoc.nodes[0]!.kind === 'step') {
       expect(inlinedDoc.nodes[0]!.step.name).toBe('步骤A')
@@ -616,8 +621,14 @@ describe.each(DRIVERS)('%s 场景 V2 动作模块引用与展开（集成）', {
       actor: { id: actorId },
     })
     const doc = inlined.draft!.document as ScenarioAuthoringDocumentV2
-    expect(doc.nodes.map((node) => node.kind)).toEqual(['module', 'step', 'step', 'module'])
-    const inlinedSteps = doc.nodes.flatMap((node) => (node.kind === 'step' ? [node.step] : []))
+    expect(walkAuthoringNodes(doc).map(({ node }) => node.kind)).toEqual([
+      'module',
+      'step',
+      'step',
+      'step',
+      'module',
+    ])
+    const inlinedSteps = authoringSteps(doc)
     // 内部级联引用必须仍然指向同一批步骤产出的键
     expect((inlinedSteps[1]!.input as { from?: string }).from).toBe(inlinedSteps[0]!.outputKey)
     expect(inlinedSteps.every((step) => !step.outputKey?.startsWith('m'))).toBe(true)

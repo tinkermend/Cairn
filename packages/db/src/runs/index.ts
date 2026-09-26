@@ -43,6 +43,7 @@ export {
   loadRunDetail,
   computeRunPlacement,
   loadRunRow,
+  loadRunControlState,
   loadRunLoopState,
   loadRunStepStates,
   markRunCancelled,
@@ -58,11 +59,25 @@ export {
   updateRunDebugOverlay,
   stopRunDebug,
   continueRunDebug,
+  formatScopePath,
+  startIteration,
+  startIterationTx,
+  finishIteration,
+  finishIterationTx,
+  loadRunIterations,
+  loadIterationDetail,
+  loadLoopFrozenItems,
+  updateRunContext,
+  settleLoopIteration,
   type FinishAttemptInput,
   type FinishAttemptResult,
   type RunWriteAuthority,
+  type RunControlState,
   type RunLoopState,
   type RunStepState,
+  type StartIterationInput,
+  type StartIterationResult,
+  type FinishIterationInput,
 } from './runs.js'
 export {
   expireStaleRunLeases,
@@ -88,3 +103,4 @@ export {
 } from './outcome-results.js'
 export { settleRunOutput } from './output.js'
 export { readOverviewAnalytics } from './analytics.js'
+export * from './ai-path-learning.js'

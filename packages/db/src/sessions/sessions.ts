@@ -73,6 +73,8 @@ export type SessionRecord = {
   predecessorSessionId: string | null
   closeReason: string | null
   closedAt: Date | null
+  isolation: 'SHARED' | 'DEDICATED' | null
+  hostId: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -167,6 +169,8 @@ function toSession(row: BrowserSessionRow): SessionRecord {
     predecessorSessionId: row.predecessorSessionId ?? null,
     closeReason: row.closeReason,
     closedAt: row.closedAt,
+    isolation: (row.isolation as 'SHARED' | 'DEDICATED' | null) ?? null,
+    hostId: row.hostId ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -297,6 +301,8 @@ export type CreateSessionInput = {
   profileKey?: string
   predecessorSessionId?: string
   id?: string
+  isolation?: 'SHARED' | 'DEDICATED' | null
+  hostId?: string | null
 }
 
 export type CreateSessionResult =
@@ -378,6 +384,8 @@ export async function createSession(
       keepAliveSeconds: input.keepAliveSeconds ?? null,
       authProbeIntervalSeconds: input.authProbeIntervalSeconds ?? null,
       evictionPriority: input.evictionPriority ?? 0,
+      isolation: input.isolation ?? null,
+      hostId: input.hostId ?? null,
       expiresAt,
       lastUsedAt: now,
       createdAt: now,
@@ -448,6 +456,8 @@ export async function setSessionStatus(
     closeReason?: string | null
     ownerWorkerId?: string
     ownerWorkerInstanceId?: string
+    hostId?: string | null
+    isolation?: 'SHARED' | 'DEDICATED' | null
   },
 ): Promise<boolean> {
   const { browserSessions } = schemaFor(db)
@@ -470,6 +480,8 @@ export async function setSessionStatus(
       status: input.status,
       version: input.expectedVersion + 1,
       updatedAt: now,
+      ...(input.hostId !== undefined ? { hostId: input.hostId } : {}),
+      ...(input.isolation !== undefined ? { isolation: input.isolation } : {}),
       ...(closed
         ? {
             closedAt: now,
@@ -949,6 +961,8 @@ export function toSessionDto(row: BrowserSessionRow, lease: SessionLeaseRow | nu
     nextAuthCheckAt: row.nextAuthCheckAt?.toISOString() ?? null,
     predecessorSessionId: row.predecessorSessionId,
     closeReason: row.closeReason,
+    isolation: (row.isolation as 'SHARED' | 'DEDICATED' | null) ?? null,
+    hostId: row.hostId ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     activeLease: lease

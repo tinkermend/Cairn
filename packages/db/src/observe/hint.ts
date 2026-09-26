@@ -5,6 +5,7 @@ export type ChangeHintDraft = {
   eventSeq: number
   objectType?: ChangeHintObjectType
   objectId?: string
+  runControlChanged?: boolean
 }
 
 export type ChangeHintPublisher = (hint: ChangeHintDraft) => void

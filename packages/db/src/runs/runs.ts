@@ -28,12 +28,14 @@ import {
   redactJson,
   resolverDiagnosticsSchema,
   isHaltedRunStatus,
+  isRunDrainedForSuccess,
   FACTORY_PLATFORM_CONFIG,
   FIXTURE_STEPS_DISABLED_CODE,
   FIXTURE_STEPS_DISABLED_MESSAGE,
   isFixtureStepType,
   parseTargetResolutionPolicy,
   sessionPolicyOverrideSchema,
+  stepRunFor,
   idempotentRequestMatches,
   runDetailSchema,
   runEvidenceListResponseSchema,
@@ -55,6 +57,7 @@ import {
   type ExecutionError,
   type ExecutionPolicy,
   type JsonValue,
+  type LoopIterationSummaryDto,
   type MapFactBatchItem,
   type RunDetailDto,
   type RunGrant,
@@ -67,12 +70,14 @@ import {
   type ScreenshotPointer,
   type SessionGrant,
   type StepRunStatus,
+  type StepSkipReason,
   type DebugMode,
   type DebugCheckpoint,
   type DebugOverlay,
   type AuthCheckpoint,
   type FrozenMapJob,
   type SelectionDecision,
+  type StepIterationStatus,
   type ExecutionOrigin,
   type SuiteAdmissionSnapshot,
   selectionDecisionSchema,
@@ -99,7 +104,7 @@ import { findLiveSession, verifySessionLeaseForCommit } from '../sessions/sessio
 import { computeOccupancyPlacement } from '../sessions/occupancy.js'
 import { runLeases, workers } from '../schema/worker.js'
 import type { Db } from '../client.js'
-import { cancelPendingStepRunsTx, skipRemainingStepRunsTx, skipStepRunsTx } from './step-status.js'
+import { cancelPendingStepRunsTx, skipRemainingStepRunsTx, skipStepRunsTx, skippedStepRunEvents } from './step-status.js'
 import { newId } from '../id.js'
 import { runCleanupObjectScope } from '../reports/cleanup.js'
 import { attempts, evidences, runs, scenarios, stepRuns } from '../schema/execution.js'
@@ -113,7 +118,7 @@ import { badRequest, conflict, mapRestriction, notFound } from './errors.js'
 import { toEvidenceMetadata } from '../objects/evidence-map.js'
 import { appendRunEvents } from '../observe/events.js'
 import { loadScenarioVersion, prepareTrialVersion } from './scenarios.js'
-import { deriveOutcomeManifest, deriveRuntimeInvariantManifest } from '@cairn/authoring'
+import { deriveOutcomeManifest, deriveRuntimeInvariantManifest, deriveControlFlowManifest } from '@cairn/authoring'
 import {
   saveStepOutcomeResultsTx,
   recalculateRunOutcomeTx,
@@ -538,7 +543,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
   const stepRows = await db
     .select()
     .from(stepRuns)
-    .where(eq(stepRuns.runId, runId))
+    .where(and(eq(stepRuns.runId, runId), eq(stepRuns.scopePath, '')))
     .orderBy(asc(stepRuns.ordinal))
   const attemptRows =
     stepRows.length === 0
@@ -568,6 +573,70 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     .where(eq(outcomeResults.runId, runId))
     .orderBy(asc(outcomeResults.evaluatedAt))
 
+  const loopBlocks = (snapshot.controlFlow?.blocks ?? [])
+    .filter((b): b is typeof b & { kind: 'for_each' | 'repeat' } => b.kind === 'for_each' || b.kind === 'repeat')
+    .map((b) => ({ blockId: b.blockId, kind: b.kind }))
+
+  const loopSteps = (snapshot.steps as Array<{ type?: string; input?: any }>).filter(
+    (step) => step.type === 'loop' && step.input?.blockId,
+  ).map((step) => ({
+    blockId: step.input.blockId as string,
+    kind: (step.input.control?.type ?? 'for_each') as 'for_each' | 'repeat',
+  }))
+
+  const allLoops = [...loopBlocks]
+  for (const ls of loopSteps) {
+    if (!allLoops.some((b) => b.blockId === ls.blockId)) {
+      allLoops.push(ls)
+    }
+  }
+
+  let iterationsSummary: Record<string, LoopIterationSummaryDto> | undefined = undefined
+  if (allLoops.length > 0) {
+    const { stepIterations } = schemaFor(db)
+    const iterationRows = await db
+      .select()
+      .from(stepIterations)
+      .where(eq(stepIterations.runId, runId))
+      .orderBy(asc(stepIterations.iterationIndex))
+
+    iterationsSummary = {}
+    for (const loopItem of allLoops) {
+      const rows = iterationRows.filter((r) => r.blockId === loopItem.blockId)
+      let succeeded = 0
+      let failed = 0
+      let skipped = 0
+      let running = 0
+      let stoppedEarly = false
+      let limitReached = false
+
+      for (const r of rows) {
+        if (r.status === 'SUCCEEDED') succeeded++
+        else if (r.status === 'FAILED') failed++
+        else if (r.status === 'SKIPPED') skipped++
+        else if (r.status === 'RUNNING') running++
+
+        if (r.stopDecision && typeof r.stopDecision === 'object') {
+          const sd = r.stopDecision as Record<string, any>
+          if (sd.matched === true || sd.stoppedEarly === true) stoppedEarly = true
+          if (sd.limitReached === true) limitReached = true
+        }
+      }
+
+      iterationsSummary[loopItem.blockId] = {
+        blockId: loopItem.blockId,
+        kind: loopItem.kind,
+        total: rows.length,
+        succeeded,
+        failed,
+        skipped,
+        running,
+        ...(stoppedEarly ? { stoppedEarly: true } : {}),
+        ...(limitReached ? { limitReached: true } : {}),
+      }
+    }
+  }
+
   const mappedStepRuns = stepRows.map((step) => {
     const definition = stepsById.get(step.stepId)
     return {
@@ -576,7 +645,9 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
       name: definition?.name ?? step.stepId,
       type: definition?.type ?? 'unknown',
       ordinal: step.ordinal,
+      scopePath: step.scopePath || undefined,
       status: step.status,
+      skipReason: (step.skipReason as StepSkipReason | null) ?? undefined,
       outcomeStatus: step.outcomeStatus ?? 'NOT_EVALUATED',
       startedAt: iso(step.startedAt),
       finishedAt: iso(step.finishedAt),
@@ -671,6 +742,7 @@ export async function loadRunDetail(db: Db, runId: string): Promise<RunDetailDto
     debugOverlay: row.debugOverlay ?? null,
     authCheckpoint: parseAuthCheckpoint(row.authCheckpoint),
     stepRuns: mappedStepRuns,
+    iterationsSummary,
   })
 }
 
@@ -714,6 +786,7 @@ export type CreateRunWithSnapshotInput = CreateRunBody & {
   suiteMemberId?: string
   reportDefaults?: { profileId?: string; displayName?: string }
   resolvedTargetAccountId?: string | null
+  pauseBeforeStepId?: string
 }
 
 export async function writeRunWithSnapshot(
@@ -739,6 +812,10 @@ export async function writeRunWithSnapshot(
 
   if (scenario.status === 'disabled')
     throw conflict('SCENARIO_DISABLED', '场景已停用，不能创建新运行')
+  // 编译已拦截；这里挡住绕过编译的入口。没有一步能成功的 Run 永远写不出终态。
+  if (version.definition.steps.length > 0 && version.definition.steps.every((step) => step.disabled)) {
+    throw badRequest('SCENARIO_ALL_STEPS_DISABLED', '所有步骤都已停用，至少启用一步才能运行')
+  }
 
   const [target] = await db.select().from(targets).where(eq(targets.id, scenario.targetId)).limit(1)
   if (!target || target.deletedAt) throw notFound('TARGET_NOT_FOUND', '目标系统不存在')
@@ -814,7 +891,7 @@ export async function writeRunWithSnapshot(
   // 夹具步不访问目标系统，跑出来的成败不是业务事实。闸门放在这里：
   // 控制台、调度、场景集、开放服务与地图作业都经由本函数建 Run，不各拦一次。
   if (!document.fixtureStepsEnabled) {
-    const fixture = version.definition.steps.find((step) => isFixtureStepType(step.type))
+    const fixture = version.definition.steps.find((step) => !step.disabled && isFixtureStepType(step.type))
     if (fixture) {
       throw badRequest(FIXTURE_STEPS_DISABLED_CODE, FIXTURE_STEPS_DISABLED_MESSAGE, {
         stepId: fixture.id,
@@ -918,6 +995,10 @@ export async function writeRunWithSnapshot(
         const runtimeInvariantManifest = deriveRuntimeInvariantManifest(
           version.authoringDocument ?? null,
         )
+        const controlFlow = deriveControlFlowManifest(
+          version.authoringDocument ?? null,
+          version.definition.steps,
+        )
         snapshot = assembleRunSnapshot({
           runId,
           createdAt: now,
@@ -933,6 +1014,7 @@ export async function writeRunWithSnapshot(
           moduleManifest: version.moduleManifest,
           outcomeManifest,
           runtimeInvariantManifest,
+          controlFlow,
           input: runInput,
           sessionPolicyOverride: input.sessionPolicy,
           evidencePolicyOverride: input.evidencePolicy,
@@ -951,6 +1033,7 @@ export async function writeRunWithSnapshot(
           accessPolicy: access.frozen,
           mapConsumption,
           suiteAdmission: input.suiteAdmission,
+          pauseBeforeStepId: input.pauseBeforeStepId,
         })
       } catch (error) {
         if (error instanceof AssembleRunSnapshotError) throw badRequest(error.code, error.message)
@@ -995,16 +1078,34 @@ export async function writeRunWithSnapshot(
       await freezeRunReportContext(tx as unknown as Db, { runId, scenarioId: scenario.id, targetId: scenario.targetId, scenarioName: scenario.name, targetName: target.name, overrideProfileId: input.reportDefaults?.profileId, displayName: input.reportDefaults?.displayName })
       await saveRunValidationContextTx(tx as unknown as Db, snapshot)
       if (snapshot.steps.length > 0) {
-        await tx.insert(stepRuns).values(
-          snapshot.steps.map((step, ordinal) => ({
-            id: newId(),
-            runId,
-            stepId: step.id,
-            name: step.name,
-            ordinal,
-            status: 'PENDING' as const,
-          })),
-        )
+        const loopBodyStepIds = new Set<string>()
+        for (const block of snapshot.controlFlow?.blocks ?? []) {
+          if (block.kind === 'for_each' || block.kind === 'repeat') {
+            for (const stepId of block.bodyStepIds ?? []) {
+              loopBodyStepIds.add(stepId)
+            }
+          }
+        }
+        const initialSteps = snapshot.steps
+          .map((step, ordinal) => ({ step, ordinal }))
+          .filter(({ step }) => !loopBodyStepIds.has(step.id))
+
+        if (initialSteps.length > 0) {
+          await tx.insert(stepRuns).values(
+            initialSteps.map(({ step, ordinal }) => ({
+              id: newId(),
+              runId,
+              stepId: step.id,
+              name: step.name,
+              ordinal,
+              scopePath: '',
+              // 停用步骤不会执行，建 Run 时就落为跳过：最后一个启用步骤成功即可在同一事务里收尾。
+              status: step.disabled ? ('SKIPPED' as const) : ('PENDING' as const),
+              skipReason: step.disabled ? ('disabled' as const) : null,
+              finishedAt: step.disabled ? now : null,
+            })),
+          )
+        }
       }
       await recordAudit(
         tx as unknown as Db,
@@ -1058,6 +1159,7 @@ export async function createTrialRunFromDraft(
     aiExecution?: AiExecutionConfig
     hangWaitMs?: number
     debugMode?: DebugMode
+    pauseBeforeStepId?: string
   },
 ): Promise<{ detail: RunDetailDto; created: boolean }> {
   try {
@@ -1084,6 +1186,7 @@ export async function createTrialRunFromDraft(
         hangWaitMs: input.hangWaitMs,
         allowTrialVersion: true,
         debugMode: input.debugMode,
+        pauseBeforeStepId: input.pauseBeforeStepId,
       })
     })
   } catch (error) {
@@ -1242,9 +1345,23 @@ export type FinishAttemptInput = {
   error?: ExecutionError | null
   context?: Record<string, JsonValue>
   stepRunStatus: StepRunStatus
+  stepSkipReason?: StepSkipReason
+  scopePath?: string
+  iterationUpdate?: {
+    frame?: Record<string, unknown>
+    status?: StepIterationStatus
+    stopDecision?: JsonValue
+  }
+  headerFinish?: {
+    headerStepId: string
+    status: StepRunStatus
+    /** 循环以失败收尾时的原因（如 LOOP_LIMIT_REACHED），写成循环头上的一次失败尝试。 */
+    error?: ExecutionError
+  }
   runStatus?: RunStatus
   skipRemaining?: boolean
   skipStepIds?: string[]
+  skips?: Array<{ stepIds: string[]; reason: StepSkipReason }>
   selectionDecision?: SelectionDecision
   cancelPending?: boolean
   checkpoint?: DebugCheckpoint | null
@@ -1462,20 +1579,130 @@ export async function finishAttemptTx(
     await tx.update(runs).set({ context, updatedAt: now }).where(eq(runs.id, input.runId))
   }
 
+  if (input.scopePath && input.iterationUpdate) {
+    const { stepIterations } = schemaFor(tx)
+    const iterStatus = cancelled ? 'CANCELLED' : input.iterationUpdate.status
+    await tx
+      .update(stepIterations)
+      .set({
+        ...(input.iterationUpdate.frame !== undefined ? { frame: input.iterationUpdate.frame } : {}),
+        ...(iterStatus !== undefined ? { status: iterStatus, finishedAt: now } : {}),
+        ...(input.iterationUpdate.stopDecision !== undefined ? { stopDecision: input.iterationUpdate.stopDecision } : {}),
+        updatedAt: now,
+      })
+      .where(and(eq(stepIterations.runId, input.runId), eq(stepIterations.scopePath, input.scopePath)))
+
+    if (input.iterationUpdate.status && !cancelled) {
+      const [iterRow] = await tx
+        .select({ id: stepIterations.id, blockId: stepIterations.blockId, iterationIndex: stepIterations.iterationIndex })
+        .from(stepIterations)
+        .where(and(eq(stepIterations.runId, input.runId), eq(stepIterations.scopePath, input.scopePath)))
+        .limit(1)
+      if (iterRow) {
+        await appendRunEvents(tx, input.runId, [
+          {
+            type: 'iteration.finished',
+            payload: {
+              iterationId: iterRow.id,
+              blockId: iterRow.blockId,
+              scopePath: input.scopePath,
+              iterationIndex: iterRow.iterationIndex,
+              status: input.iterationUpdate.status,
+              ...(input.iterationUpdate.stopDecision !== undefined ? { stopDecision: input.iterationUpdate.stopDecision } : {}),
+            },
+          },
+        ])
+      }
+    }
+  }
+
+  if (input.headerFinish) {
+    await finishLoopHeaderTx(tx, {
+      runId: input.runId,
+      headerStepId: input.headerFinish.headerStepId,
+      status: cancelled ? 'CANCELLED' : input.headerFinish.status,
+      error: cancelled ? undefined : input.headerFinish.error,
+      secrets: input.secrets ?? [],
+      now,
+    })
+  }
+
   const finalStepStatus = cancelled ? 'CANCELLED' : stepRunStatus
   const stepTerminal = finalStepStatus !== 'RUNNING' && finalStepStatus !== 'PENDING'
   await tx
     .update(stepRuns)
     .set({
       status: finalStepStatus,
+      ...(finalStepStatus === 'SKIPPED' && input.stepSkipReason ? { skipReason: input.stepSkipReason } : {}),
       ...(stepTerminal ? { finishedAt: now } : {}),
     })
     .where(eq(stepRuns.id, attempt.stepRunId))
 
-  let skipped: { id: string; stepId: string }[] = []
-  if (cancelled || input.cancelPending) await cancelPendingStepRunsTx(tx, input.runId, now)
-  else if (skipRemaining) skipped = await skipRemainingStepRunsTx(tx, input.runId, now)
-  else if (input.skipStepIds?.length) skipped = await skipStepRunsTx(tx, input.runId, input.skipStepIds, now)
+  // 只有 Run 真的停下（失败、待核查、取消）才把本项和循环头记为失败；调试挂起时保持 RUNNING，
+  // 单步重试成功后循环还要接着跑。
+  const runHalting = cancelled || (runStatus !== undefined && isHaltedRunStatus(runStatus))
+  if (input.scopePath && (finalStepStatus === 'FAILED' || cancelled) && runHalting && !input.iterationUpdate?.status) {
+    const { stepIterations } = schemaFor(tx)
+    const effectiveStatus = cancelled ? 'CANCELLED' : 'FAILED'
+    const [iterRow] = await tx
+      .select({
+        id: stepIterations.id,
+        blockId: stepIterations.blockId,
+        iterationIndex: stepIterations.iterationIndex,
+        headerStepId: stepIterations.headerStepId,
+      })
+      .from(stepIterations)
+      .where(and(eq(stepIterations.runId, input.runId), eq(stepIterations.scopePath, input.scopePath)))
+      .limit(1)
+    if (iterRow) {
+      await tx
+        .update(stepIterations)
+        .set({
+          status: effectiveStatus,
+          finishedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(stepIterations.id, iterRow.id))
+
+      if (!cancelled) {
+        await appendRunEvents(tx, input.runId, [
+          {
+            type: 'iteration.finished',
+            payload: {
+              iterationId: iterRow.id,
+              blockId: iterRow.blockId,
+              scopePath: input.scopePath,
+              iterationIndex: iterRow.iterationIndex,
+              status: 'FAILED',
+            },
+          },
+        ])
+      }
+
+      await finishLoopHeaderTx(tx, {
+        runId: input.runId,
+        headerStepId: iterRow.headerStepId,
+        status: effectiveStatus,
+        now,
+      })
+    }
+  }
+
+  let skipped: { id: string; stepId: string; skipReason: StepSkipReason }[] = []
+  if (cancelled || input.cancelPending) {
+    await cancelPendingStepRunsTx(tx, input.runId, now)
+  } else if (skipRemaining) {
+    skipped = await skipRemainingStepRunsTx(tx, input.runId, now, 'run_halted')
+  } else if (input.skips?.length) {
+    for (const group of input.skips) {
+      if (group.stepIds.length > 0) {
+        const batch = await skipStepRunsTx(tx, input.runId, group.stepIds, now, group.reason, input.scopePath)
+        skipped.push(...batch)
+      }
+    }
+  } else if (input.skipStepIds?.length) {
+    skipped = await skipStepRunsTx(tx, input.runId, input.skipStepIds, now, 'fallback_not_selected', input.scopePath)
+  }
 
   const untrustedOutcome =
     cancelled || (input.attemptStatus === 'SUCCEEDED' && attemptStatus !== 'SUCCEEDED')
@@ -1562,10 +1789,14 @@ export async function finishAttemptTx(
           {
             type: 'step_run.finished' as const,
             stepRunId: attempt.stepRunId,
-            payload: { status: finalStepStatus },
+            payload: {
+              status: finalStepStatus,
+              ...(finalStepStatus === 'SKIPPED' && input.stepSkipReason ? { skipReason: input.stepSkipReason } : {}),
+            },
           },
         ]
       : []),
+    ...skippedStepRunEvents(skipped),
     ...(finalRunStatus
       ? [{ type: 'run.status_changed' as const, payload: { status: finalRunStatus } }]
       : []),
@@ -1616,11 +1847,130 @@ async function insertMissingObjectEvidence(
 }
 
 /**
- * 步骤已全部成功但 Run 仍停在 `RUNNING` 时补写终态（§7 第 4 步「没有 PENDING 则成功」）。
+ * 收尾循环头（根作用域）。失败时补一条失败尝试并记错误证据，让「为什么失败」落在循环头上，
+ * 而不是出现一个所有尝试都成功、Run 却失败的结果。
+ */
+export async function finishLoopHeaderTx(
+  tx: Db,
+  input: {
+    runId: string
+    headerStepId: string
+    status: StepRunStatus
+    error?: ExecutionError
+    secrets?: readonly string[]
+    now: Date
+  },
+): Promise<void> {
+  const { attempts, evidences, stepRuns } = schemaFor(tx)
+  const [header] = await tx
+    .select({ id: stepRuns.id })
+    .from(stepRuns)
+    .where(and(eq(stepRuns.runId, input.runId), eq(stepRuns.stepId, input.headerStepId), eq(stepRuns.scopePath, '')))
+    .limit(1)
+  if (!header) return
+  await tx.update(stepRuns).set({ status: input.status, finishedAt: input.now }).where(eq(stepRuns.id, header.id))
+  if (!input.error || input.status !== 'FAILED') return
+  const [latest] = await tx
+    .select({ attemptNo: max(attempts.attemptNo) })
+    .from(attempts)
+    .where(eq(attempts.stepRunId, header.id))
+  const attemptId = newId()
+  await tx.insert(attempts).values({
+    id: attemptId,
+    stepRunId: header.id,
+    attemptNo: (latest?.attemptNo ?? 0) + 1,
+    status: 'FAILED',
+    startedAt: input.now,
+    finishedAt: input.now,
+    output: null,
+    error: input.error as unknown as JsonValue,
+  })
+  await tx.insert(evidences).values({
+    id: newId(),
+    runId: input.runId,
+    stepRunId: header.id,
+    attemptId,
+    type: 'error',
+    status: 'available',
+    schemaVersion: 1,
+    payload: redactJson(input.error as unknown as JsonValue, input.secrets ?? []),
+    createdAt: input.now,
+  })
+}
+
+/**
+ * 循环某一项没有经过尝试就结束时（末尾步骤停用、恢复时本项步骤已全部收口），
+ * 在一个事务里收尾本项、写入汇集结果并按需收尾循环头。Run 终态仍交给
+ * `finishRunIfDrained` 或 `failRunValidation`，本函数不写 Run 状态。
+ */
+export async function settleLoopIteration(
+  db: Db,
+  input: {
+    grant: RunGrant
+    runId: string
+    scopePath: string
+    iterationUpdate: NonNullable<FinishAttemptInput['iterationUpdate']>
+    rootContext?: Record<string, JsonValue>
+    headerFinish?: FinishAttemptInput['headerFinish']
+  },
+): Promise<{ settled: boolean }> {
+  const { runs, stepIterations } = schemaFor(db)
+  const now = new Date()
+  return db.transaction(async (tx) => {
+    const locked = await lockRunRow(tx as unknown as Db, input.runId)
+    if (!locked || locked.status !== 'RUNNING') return { settled: false }
+    if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return { settled: false }
+    const update = input.iterationUpdate
+    const [iter] = await updateRows(
+      tx,
+      stepIterations,
+      {
+        ...(update.frame !== undefined ? { frame: update.frame } : {}),
+        ...(update.status !== undefined ? { status: update.status, finishedAt: now } : {}),
+        ...(update.stopDecision !== undefined ? { stopDecision: update.stopDecision } : {}),
+        updatedAt: now,
+      },
+      and(eq(stepIterations.runId, input.runId), eq(stepIterations.scopePath, input.scopePath)),
+      { id: stepIterations.id, blockId: stepIterations.blockId, iterationIndex: stepIterations.iterationIndex },
+    )
+    if (input.rootContext) {
+      await tx.update(runs).set({ context: input.rootContext, updatedAt: now }).where(eq(runs.id, input.runId))
+    }
+    if (input.headerFinish) {
+      await finishLoopHeaderTx(tx as unknown as Db, {
+        runId: input.runId,
+        headerStepId: input.headerFinish.headerStepId,
+        status: input.headerFinish.status,
+        error: input.headerFinish.error,
+        now,
+      })
+    }
+    if (iter && update.status) {
+      await appendRunEvents(tx as unknown as Db, input.runId, [
+        {
+          type: 'iteration.finished',
+          payload: {
+            iterationId: iter.id,
+            blockId: iter.blockId,
+            scopePath: input.scopePath,
+            iterationIndex: iter.iterationIndex,
+            status: update.status,
+            ...(update.stopDecision !== undefined ? { stopDecision: update.stopDecision } : {}),
+          },
+        },
+      ])
+    }
+    return { settled: true }
+  })
+}
+
+/**
+ * 步骤都已收口但 Run 仍停在 `RUNNING` 时补写终态（§7 第 4 步「没有 PENDING 则成功」）。
  *
- * 最后一步成功已能在同一事务里直接写 SUCCEEDED；这条覆盖续跑与恢复路径。单条条件更新，
- * 只要还有非 SUCCEEDED 的 step_run（含 PENDING / RUNNING / FAILED / SKIPPED / CANCELLED）
- * 或有取消请求就 0 行，不会把没跑完的 Run 判成成功。
+ * 最后一步成功已能在同一事务里直接写 SUCCEEDED；这条覆盖续跑、恢复与调试挂起后继续的路径。
+ * 判定用 `isRunDrainedForSuccess`：跳过（停用步骤、未采用的回退分支）算正常收口；
+ * 还有 PENDING / RUNNING / FAILED / CANCELLED 或有取消请求就不写，不会把没跑完的 Run 判成成功。
+ * 读步骤状态与写 Run 都在 Run 行锁和租约校验之后，只有当前持租方能走到这里。
  */
 export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ finished: boolean }> {
   const { runs, stepRuns } = schemaFor(db)
@@ -1630,6 +1980,11 @@ export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ fin
     const locked = await lockRunRow(tx as unknown as Db, grant.runId)
     if (!locked || locked.status !== 'RUNNING') return { finished: false }
     if (!(await verifyRunLeaseForWrite(tx as unknown as Db, grant))) return { finished: false }
+    const states = await tx
+      .select({ status: stepRuns.status })
+      .from(stepRuns)
+      .where(eq(stepRuns.runId, grant.runId))
+    if (!isRunDrainedForSuccess(states)) return { finished: false }
     const drained = await updateRows(
       tx,
       runs,
@@ -1638,8 +1993,6 @@ export async function finishRunIfDrained(db: Db, grant: RunGrant): Promise<{ fin
         eq(runs.id, grant.runId),
         eq(runs.status, 'RUNNING'),
         isNull(runs.cancelRequestedAt),
-        sql`EXISTS (SELECT 1 FROM ${stepRuns} WHERE run_id = ${grant.runId} AND status = 'SUCCEEDED')`,
-        sql`NOT EXISTS (SELECT 1 FROM ${stepRuns} WHERE run_id = ${grant.runId} AND status <> 'SUCCEEDED')`,
       ),
       { id: runs.id },
     )
@@ -1669,8 +2022,29 @@ export async function skipRemainingStepRuns(db: Db, runId: string): Promise<void
   await skipRemainingStepRunsTx(db, runId, new Date())
 }
 
-export async function skipStepRuns(db: Db, runId: string, stepIds: readonly string[]): Promise<void> {
-  await skipStepRunsTx(db, runId, stepIds, new Date())
+export async function skipStepRuns(
+  db: Db,
+  runId: string,
+  stepIds: readonly string[],
+  reason: StepSkipReason = 'disabled',
+  scopePath?: string,
+): Promise<void> {
+  const now = new Date()
+  await db.transaction(async (tx) => {
+    const skipped = await skipStepRunsTx(tx as unknown as Db, runId, stepIds, now, reason, scopePath)
+    if (skipped.length > 0) {
+      await appendRunEvents(tx as unknown as Db, runId, skippedStepRunEvents(skipped))
+    }
+  })
+}
+
+export async function updateRunContext(
+  db: Db,
+  runId: string,
+  context: Record<string, JsonValue>,
+): Promise<void> {
+  const { runs } = schemaFor(db)
+  await db.update(runs).set({ context, updatedAt: new Date() }).where(eq(runs.id, runId))
 }
 
 export async function cancelPendingStepRuns(db: Db, runId: string): Promise<void> {
@@ -1969,9 +2343,17 @@ export async function continueRunDebug(
     if (!run || run.status !== 'HOLDING' || run.cancelRequestedAt) return false
     if (!(await verifyRunLeaseForWrite(tx as unknown as Db, input.grant))) return false
     const detail = await loadRunDetail(tx as unknown as Db, input.runId)
-    const current = detail?.checkpoint
-      ? detail.stepRuns.find((item) => item.stepId === detail.checkpoint?.stepId)
-      : undefined
+    const checkpoint = detail?.checkpoint
+    // 循环体内的检查点：详情只含根作用域记录，按作用域取本项的步骤记录。
+    const current = !checkpoint
+      ? undefined
+      : checkpoint.scopePath
+        ? stepRunFor(
+            await loadRunStepStates(tx as unknown as Db, input.runId, checkpoint.scopePath),
+            checkpoint.stepId,
+            checkpoint.scopePath,
+          )
+        : stepRunFor(detail!.stepRuns, checkpoint.stepId)
     if (!current) {
       throw conflict('STEP_CANNOT_RETRY', '没有可继续的当前步骤')
     }
@@ -2047,6 +2429,28 @@ export async function loadRunRow(db: Db, runId: string) {
   return row ?? null
 }
 
+export type RunControlState = {
+  id: string
+  status: RunStatus
+  cancelRequestedAt: Date | null
+  deadlineAt: Date | null
+}
+
+export async function loadRunControlState(db: Db, runId: string): Promise<RunControlState | null> {
+  const { runs } = schemaFor(db)
+  const [row] = await db
+    .select({
+      id: runs.id,
+      status: runs.status,
+      cancelRequestedAt: runs.cancelRequestedAt,
+      deadlineAt: runs.deadlineAt,
+    })
+    .from(runs)
+    .where(eq(runs.id, runId))
+    .limit(1)
+  return row ?? null
+}
+
 export type RunLoopState = {
   id: string
   status: RunStatus
@@ -2077,7 +2481,9 @@ export type RunStepState = {
   id: string
   stepId: string
   ordinal: number
+  scopePath?: string
   status: StepRunStatus
+  skipReason?: StepSkipReason | null
   attempts: Array<{
     id: string
     attemptNo: number
@@ -2086,17 +2492,23 @@ export type RunStepState = {
   }>
 }
 
-export async function loadRunStepStates(db: Db, runId: string): Promise<RunStepState[]> {
+export async function loadRunStepStates(db: Db, runId: string, scopePath?: string): Promise<RunStepState[]> {
   const { stepRuns, attempts } = schemaFor(db)
   const stepRows = await db
     .select({
       id: stepRuns.id,
       stepId: stepRuns.stepId,
       ordinal: stepRuns.ordinal,
+      scopePath: stepRuns.scopePath,
       status: stepRuns.status,
+      skipReason: stepRuns.skipReason,
     })
     .from(stepRuns)
-    .where(eq(stepRuns.runId, runId))
+    .where(
+      scopePath !== undefined
+        ? and(eq(stepRuns.runId, runId), eq(stepRuns.scopePath, scopePath))
+        : and(eq(stepRuns.runId, runId), eq(stepRuns.scopePath, ''))
+    )
     .orderBy(asc(stepRuns.ordinal))
 
   if (stepRows.length === 0) return []
@@ -2132,7 +2544,9 @@ export async function loadRunStepStates(db: Db, runId: string): Promise<RunStepS
     id: step.id,
     stepId: step.stepId,
     ordinal: step.ordinal,
+    scopePath: step.scopePath || undefined,
     status: step.status as StepRunStatus,
+    skipReason: (step.skipReason as StepSkipReason | null) ?? undefined,
     attempts: (attemptsByStepRunId.get(step.id) ?? []).map((a) => ({
       id: a.id,
       attemptNo: a.attemptNo,
@@ -2141,5 +2555,19 @@ export async function loadRunStepStates(db: Db, runId: string): Promise<RunStepS
     })),
   }))
 }
+
+export {
+  formatScopePath,
+  startIteration,
+  startIterationTx,
+  finishIteration,
+  finishIterationTx,
+  loadRunIterations,
+  loadIterationDetail,
+  loadLoopFrozenItems,
+  type StartIterationInput,
+  type StartIterationResult,
+  type FinishIterationInput,
+} from './iterations.js'
 
 export type { ExecutionPolicy }

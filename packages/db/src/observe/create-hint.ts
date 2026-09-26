@@ -17,7 +17,7 @@ export type ChangeHintBus = {
   readonly realtime: boolean
   readonly namespace: string
   publish(hint: ChangeHint): Promise<void>
-  subscribe(onHint: ChangeHintListener, onReconnect?: () => void): Promise<void | (() => void)>
+  subscribe(onHint: ChangeHintListener, onReconnect?: () => void, onDisconnect?: () => void): Promise<void | (() => void)>
   ping(): Promise<boolean>
   close(): Promise<void>
 }
@@ -41,16 +41,17 @@ export function createChangeHint(input: {
       : driver === 'redis'
         ? createRedisHint(input.redisUrl!, input.namespace)
         : createNoneHint(input.namespace)
-  const subscribers = new Set<{ hint: ChangeHintListener; reconnect?: () => void }>()
+  const subscribers = new Set<{ hint: ChangeHintListener; reconnect?: () => void; disconnect?: () => void }>()
   let subscription: Promise<unknown> | undefined
   const bus: ChangeHintBus = {
     ...transport,
-    async subscribe(hint, reconnect) {
-      const entry = { hint, reconnect }
+    async subscribe(hint, reconnect, disconnect) {
+      const entry = { hint, reconnect, disconnect }
       subscribers.add(entry)
       subscription ??= transport.subscribe(
         (value) => { for (const listener of subscribers) { try { listener.hint(value) } catch (error) { console.error('[db] change-hint listener failed', error) } } },
-        () => { for (const listener of subscribers) listener.reconnect?.() },
+        () => { for (const listener of subscribers) { try { listener.reconnect?.() } catch (error) { console.error('[db] change-hint reconnect listener failed', error) } } },
+        () => { for (const listener of subscribers) { try { listener.disconnect?.() } catch (error) { console.error('[db] change-hint disconnect listener failed', error) } } },
       ).catch((error) => { subscription = undefined; throw error })
       try { await subscription } catch (error) { subscribers.delete(entry); throw error }
       return () => { subscribers.delete(entry) }
@@ -65,6 +66,7 @@ export function createChangeHint(input: {
         eventSeq: draft.eventSeq,
         objectType: draft.objectType,
         objectId: draft.objectId ?? draft.runId,
+        runControlChanged: draft.runControlChanged,
       })
       .catch((error) => {
         console.error('[db] change-hint publish failed', error)
@@ -110,6 +112,7 @@ function createPostgresHint(env: DbEnv, namespace: string): ChangeHintBus {
   let reconnecting = false
   let onHintRef: ChangeHintListener | undefined
   let onReconnectRef: (() => void) | undefined
+  let onDisconnectRef: (() => void) | undefined
 
   function logClientError(client: Client, label: string) {
     client.on('error', (error) => {
@@ -173,11 +176,22 @@ function createPostgresHint(env: DbEnv, namespace: string): ChangeHintBus {
     }
     const previous = listener
     listener = client
+    client.on('error', () => {
+      if (listener !== client) return
+      markListenerDisconnected(client)
+      void client.end().catch(() => undefined)
+    })
     client.on('end', () => {
-      if (listener === client) listener = null
-      scheduleReconnect()
+      markListenerDisconnected(client)
     })
     if (previous && previous !== client) await previous.end().catch(() => undefined)
+  }
+
+  function markListenerDisconnected(client: Client) {
+    if (listener !== client) return
+    listener = null
+    onDisconnectRef?.()
+    scheduleReconnect()
   }
 
   function scheduleReconnect() {
@@ -222,9 +236,10 @@ function createPostgresHint(env: DbEnv, namespace: string): ChangeHintBus {
         throw error
       }
     },
-    async subscribe(onHint, onReconnect) {
+    async subscribe(onHint, onReconnect, onDisconnect) {
       onHintRef = onHint
       onReconnectRef = onReconnect
+      onDisconnectRef = onDisconnect
       await attachListener(onHint)
     },
     async ping() {
@@ -297,18 +312,29 @@ function createRedisHint(url: string, namespace: string): ChangeHintBus {
       await ensure()
       await publisher.publish(channel, JSON.stringify(changeHintSchema.parse(hint)))
     },
-    async subscribe(onHint, onReconnect) {
-      await subscriber.connect()
-      subscriber.on('reconnecting', () => onReconnect?.())
-      await subscriber.subscribe(channel, (raw) => {
-        try {
-          const parsed = changeHintSchema.safeParse(JSON.parse(raw) as unknown)
-          if (!parsed.success || parsed.data.namespace !== namespace) return
-          onHint(parsed.data)
-        } catch {
-          return
-        }
-      })
+    async subscribe(onHint, onReconnect, onDisconnect) {
+      if (!subscriber.isOpen) await subscriber.connect()
+      const disconnected = () => onDisconnect?.()
+      const reconnected = () => onReconnect?.()
+      subscriber.on('reconnecting', disconnected)
+      subscriber.on('end', disconnected)
+      subscriber.on('ready', reconnected)
+      try {
+        await subscriber.subscribe(channel, (raw) => {
+          try {
+            const parsed = changeHintSchema.safeParse(JSON.parse(raw) as unknown)
+            if (!parsed.success || parsed.data.namespace !== namespace) return
+            onHint(parsed.data)
+          } catch {
+            return
+          }
+        })
+      } catch (error) {
+        subscriber.off('reconnecting', disconnected)
+        subscriber.off('end', disconnected)
+        subscriber.off('ready', reconnected)
+        throw error
+      }
     },
     async ping() {
       try {

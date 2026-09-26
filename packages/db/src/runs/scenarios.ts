@@ -25,9 +25,15 @@ import {
   authoringHasModuleInvocations,
   authoringHasOutcomes,
   authoringNodeId,
+  authoringSteps,
+  insertNodeAfter,
+  locateNode,
   normalizeAuthoringDocument,
   parseScenarioDocument,
+  removeNode,
+  replaceNode,
   scenarioAuthoringDocumentV2Schema,
+  walkAuthoringNodes,
   scenarioDefinitionFromSteps,
   scenarioDetailSchema,
   scenarioDocumentSchema,
@@ -208,7 +214,7 @@ function parseDocument(input: unknown): ScenarioDocument {
       return parseScenarioDocument({
         schemaVersion: input.schemaVersion,
         inputs: input.inputs,
-        steps: input.nodes.filter((node) => node.kind === 'step').map((node) => node.step),
+        steps: authoringSteps(input),
         ...(input.resolution ? { resolution: input.resolution } : {}),
       })
     }
@@ -309,7 +315,8 @@ export async function expandWithLoader(
 ): Promise<ExpansionResult> {
   const loader = createModuleVersionLoader(db, targetId, allowDraftFallback)
   const loadedModules = new Map<string, LoadedModuleVersion>()
-  for (const node of doc.nodes) {
+  for (const item of walkAuthoringNodes(doc)) {
+    const node = item.node
     if (node.kind === 'module') {
       const loaded = await loader(node.moduleId, node.moduleVersionId)
       if (loaded) {
@@ -360,9 +367,8 @@ export async function syncScenarioModuleRefsTx(
           : eq(scenarioModuleRefs.scenarioVersionId, scenarioVersionId),
       ),
     )
-  const invocations = document.nodes.filter(
-    (node): node is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'module' }> =>
-      node.kind === 'module',
+  const invocations = walkAuthoringNodes(document).flatMap((item) =>
+    item.node.kind === 'module' ? [item.node] : [],
   )
   if (invocations.length === 0) return
 
@@ -449,7 +455,7 @@ async function toDetailDto(
     draft?.document ?? latest.authoringDocument ?? latest.definition,
   )
   let compiled: CompileResult
-  const hasModuleInvocations = authoringDoc.nodes.some((s) => s.kind === 'module')
+  const hasModuleInvocations = authoringHasModuleInvocations(authoringDoc)
   const resolution = options?.resolution ?? (await compileResolutionFromPlatform(db, row.targetId))
   const compileOptions = { ...options, resolution }
   if (hasModuleInvocations) {
@@ -466,9 +472,7 @@ async function toDetailDto(
     const legacyDoc: ScenarioDocument = {
       schemaVersion: 1,
       inputs: authoringDoc.inputs,
-      steps: authoringDoc.nodes
-        .filter((s): s is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => s.kind === 'step')
-        .map((s) => s.step),
+      steps: authoringSteps(authoringDoc),
       ...(authoringDoc.resolution ? { resolution: authoringDoc.resolution } : {}),
     }
     compiled = compileDocument(
@@ -889,9 +893,7 @@ export async function saveScenarioDraft(
         const legacyDoc: ScenarioDocument = {
           schemaVersion: 1,
           inputs: document.inputs,
-          steps: document.nodes
-            .filter((s): s is Extract<ScenarioAuthoringDocumentV2['nodes'][number], { kind: 'step' }> => s.kind === 'step')
-            .map((s) => s.step),
+          steps: authoringSteps(document),
         }
         compileDocument(legacyDoc, target, 'save', {
           resolution: await compileResolutionFromPlatform(tx as unknown as Db, current.targetId),
@@ -1422,16 +1424,15 @@ export async function inlineScenarioModuleInvocation(
         })
       }
       const authoringDoc = normalizeAuthoringDocument(draft.document)
-      const nodeIndex = authoringDoc.nodes.findIndex(
-        (node) => node.kind === 'module' && node.invocationId === invocationId,
-      )
-      if (nodeIndex === -1) {
+      const loc = locateNode(authoringDoc, invocationId)
+      if (!loc) {
         throw notFound('NODE_NOT_FOUND', '指定的动作模块调用节点不存在')
       }
-      const invocationNode = authoringDoc.nodes[nodeIndex] as Extract<
-        ScenarioAuthoringDocumentV2['nodes'][number],
-        { kind: 'module' }
-      >
+      const invocationItem = walkAuthoringNodes(authoringDoc).find((item) => item.id === invocationId)
+      if (!invocationItem || invocationItem.node.kind !== 'module') {
+        throw notFound('NODE_NOT_FOUND', '指定的动作模块调用节点不存在')
+      }
+      const invocationNode = invocationItem.node
       // 必须展开整篇文档：单独展开这一个调用会让调用序号回到 0，
       // 展开出来的步骤与绑定会和文档里其余调用对不上。
       const expanded = await expandWithLoader(
@@ -1485,22 +1486,26 @@ export async function inlineScenarioModuleInvocation(
         }
       })
 
-      const newNodes = [
-        ...authoringDoc.nodes.slice(0, nodeIndex),
-        ...inlinedNodes,
-        ...authoringDoc.nodes.slice(nodeIndex + 1),
-      ]
-      if (newNodes.length > 32) {
+      let updatedDoc = authoringDoc
+      if (inlinedNodes.length > 0) {
+        updatedDoc = replaceNode(updatedDoc, invocationId, inlinedNodes[0]!)
+        let prevAnchor = authoringNodeId(inlinedNodes[0]!)
+        for (let i = 1; i < inlinedNodes.length; i++) {
+          updatedDoc = insertNodeAfter(updatedDoc, prevAnchor, inlinedNodes[i]!)
+          prevAnchor = authoringNodeId(inlinedNodes[i]!)
+        }
+      } else {
+        updatedDoc = removeNode(updatedDoc, invocationId)
+      }
+      const totalNodes = walkAuthoringNodes(updatedDoc).length
+      if (totalNodes > 32) {
         throw badRequest(
           'SCENARIO_STEP_LIMIT_EXCEEDED',
-          `内联展开后场景总步骤数达到 ${newNodes.length}，超过 32 步上限`,
+          `内联展开后场景总步骤数达到 ${totalNodes}，超过 32 步上限`,
         )
       }
 
-      const newDoc: ScenarioAuthoringDocumentV2 = {
-        ...authoringDoc,
-        nodes: newNodes,
-      }
+      const newDoc: ScenarioAuthoringDocumentV2 = updatedDoc
 
       await tx
         .update(scenarioDrafts)

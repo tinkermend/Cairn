@@ -20,6 +20,8 @@ import {
   mapJobPolicySchema,
   mapJobPolicyUpdateBodySchema,
   mapSafeEntryCreateBodySchema,
+  mapSafeEntryUpdateBodySchema,
+  mapSafeEntryArchiveBodySchema,
   mapSafeEntryDtoSchema,
   mapSafeEntrySchema,
   scenarioDefinitionFromSteps,
@@ -36,6 +38,8 @@ import {
   type MapJobPolicyUpdateBody,
   type MapJobStopReason,
   type MapSafeEntryCreateBody,
+  type MapSafeEntryUpdateBody,
+  type MapSafeEntryArchiveBody,
   type MapSafeEntryDto,
   type Step,
 } from '@cairn/shared'
@@ -47,6 +51,8 @@ import { createRunWithSnapshot, requestRunCancel } from '../runs/runs.js'
 import { isUniqueViolation } from '../runs/errors.js'
 import { findLiveSessions } from '../sessions/sessions.js'
 import {
+  conflict,
+  notFound,
   mapActiveSliceExists,
   mapAuthPreparationRequired,
   mapCommandIdempotencyConflict,
@@ -280,10 +286,17 @@ export async function updateExplorationPolicy(
   })
 }
 
-export async function listMapSafeEntries(db: Db, targetId: string): Promise<{ items: MapSafeEntryDto[] }> {
+export async function listMapSafeEntries(
+  db: Db,
+  targetId: string,
+  options?: { includeArchived?: boolean },
+): Promise<{ items: MapSafeEntryDto[] }> {
   await requireLiveTarget(db, targetId)
   const { mapSafeEntries } = schemaFor(db)
-  const rows = await db.select().from(mapSafeEntries).where(eq(mapSafeEntries.targetId, targetId)).orderBy(desc(mapSafeEntries.createdAt))
+  const condition = options?.includeArchived
+    ? eq(mapSafeEntries.targetId, targetId)
+    : and(eq(mapSafeEntries.targetId, targetId), isNull(mapSafeEntries.archivedAt))
+  const rows = await db.select().from(mapSafeEntries).where(condition).orderBy(desc(mapSafeEntries.createdAt))
   return {
     items: rows.map((row) =>
       mapSafeEntryDtoSchema.parse({
@@ -297,6 +310,7 @@ export async function listMapSafeEntries(db: Db, targetId: string): Promise<{ it
         safetyBasis: row.safetyBasis,
         jobKinds: row.jobKinds,
         createdAt: row.createdAt.toISOString(),
+        archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
       }),
     ),
   }
@@ -329,6 +343,7 @@ export async function createMapSafeEntry(
         safetyBasis: receipt.safetyBasis,
         jobKinds: receipt.jobKinds,
         createdAt: receipt.createdAt.toISOString(),
+        archivedAt: receipt.archivedAt ? receipt.archivedAt.toISOString() : null,
       })
     }
     const now = await clockNow(tx)
@@ -362,7 +377,165 @@ export async function createMapSafeEntry(
       createdAt: now,
     })
     await recordAudit(tx, actor, 'map.safe_entry.create', 'target', targetId, parsed.summary)
-    return mapSafeEntryDtoSchema.parse({ ...entry, targetId, createdAt: now.toISOString() })
+    return mapSafeEntryDtoSchema.parse({ ...entry, targetId, createdAt: now.toISOString(), archivedAt: null })
+  })
+}
+
+export async function updateMapSafeEntry(
+  db: Db,
+  targetId: string,
+  entryId: string,
+  body: MapSafeEntryUpdateBody,
+  actor: ExecutionActor,
+): Promise<MapSafeEntryDto> {
+  const parsed = mapSafeEntryUpdateBodySchema.parse(body)
+  await requireLiveTarget(db, targetId)
+  return atomic(db, async (tx) => {
+    const { mapSafeEntries } = schemaFor(tx)
+    const [existing] = await tx
+      .select()
+      .from(mapSafeEntries)
+      .where(and(eq(mapSafeEntries.id, entryId), eq(mapSafeEntries.targetId, targetId)))
+      .limit(1)
+
+    if (!existing || existing.archivedAt) {
+      throw notFound('MAP_SAFE_ENTRY_NOT_FOUND', '安全进入路径不存在或已被归档')
+    }
+
+    if (existing.entryVersion !== parsed.expectedVersion) {
+      throw conflict('MAP_SAFE_ENTRY_OCC_CONFLICT', '安全进入路径已被他人修改，请刷新后重试')
+    }
+
+    const now = await clockNow(tx)
+    const nextVersion = existing.entryVersion + 1
+    const safetyBasis = {
+      kind: parsed.safetyBasisKind,
+      summary: parsed.summary,
+      confirmedBy: actor.id,
+      confirmedAt: now.toISOString(),
+    }
+
+    await tx
+      .update(mapSafeEntries)
+      .set({
+        entryVersion: nextVersion,
+        entryName: parsed.name,
+        entryUrl: parsed.url,
+        arrivalName: parsed.arrivalName,
+        arrivalTarget: parsed.arrivalTarget,
+        safetyBasis,
+        jobKinds: parsed.jobKinds,
+      })
+      .where(and(eq(mapSafeEntries.id, entryId), eq(mapSafeEntries.entryVersion, existing.entryVersion)))
+
+    await recordAudit(tx, actor, 'map.safe_entry.update', 'target', targetId, `更新安全进入路径：${parsed.name}`)
+
+    return mapSafeEntryDtoSchema.parse({
+      targetId,
+      entryId,
+      version: nextVersion,
+      name: parsed.name,
+      url: parsed.url,
+      arrivalName: parsed.arrivalName,
+      arrivalTarget: parsed.arrivalTarget,
+      safetyBasis,
+      jobKinds: parsed.jobKinds,
+      createdAt: existing.createdAt.toISOString(),
+      archivedAt: null,
+    })
+  })
+}
+
+export async function archiveMapSafeEntry(
+  db: Db,
+  targetId: string,
+  entryId: string,
+  body: MapSafeEntryArchiveBody,
+  actor: ExecutionActor,
+): Promise<MapSafeEntryDto> {
+  mapSafeEntryArchiveBodySchema.parse(body)
+  await requireLiveTarget(db, targetId)
+  return atomic(db, async (tx) => {
+    const { mapSafeEntries, mapJobs, schedules, scheduleVersions } = schemaFor(tx)
+    const [existing] = await tx
+      .select()
+      .from(mapSafeEntries)
+      .where(and(eq(mapSafeEntries.id, entryId), eq(mapSafeEntries.targetId, targetId)))
+      .limit(1)
+
+    if (!existing || existing.archivedAt) {
+      throw notFound('MAP_SAFE_ENTRY_NOT_FOUND', '安全进入路径不存在或已被归档')
+    }
+
+    // 1. 检查在途作业
+    const inFlightJobs = await tx
+      .select({ id: mapJobs.id, jobStatus: mapJobs.jobStatus })
+      .from(mapJobs)
+      .where(and(
+        eq(mapJobs.targetId, targetId),
+        eq(mapJobs.entryId, entryId),
+        inArray(mapJobs.jobStatus, ['queued', 'running']),
+      ))
+      .limit(1)
+    if (inFlightJobs.length > 0) {
+      throw conflict('MAP_SAFE_ENTRY_IN_USE', '该安全入口当前有正在执行中的地图作业，请等待作业完成或中止后再删除。')
+    }
+
+    // 2. 检查激活的定时任务
+    const activeSchedules = await tx
+      .select({
+        id: schedules.id,
+        name: schedules.name,
+        consumer: scheduleVersions.consumer,
+      })
+      .from(schedules)
+      .innerJoin(scheduleVersions, eq(schedules.currentVersionId, scheduleVersions.id))
+      .where(and(
+        eq(schedules.targetId, targetId),
+        eq(schedules.enabled, 1),
+        eq(schedules.consumerKey, 'map_refresh'),
+      ))
+
+    for (const sched of activeSchedules) {
+      const consumer = sched.consumer as { type?: string; entryId?: string } | undefined
+      if (consumer && consumer.type === 'map_refresh' && consumer.entryId === entryId) {
+        throw conflict(
+          'MAP_SAFE_ENTRY_IN_USE',
+          `无法删除该入口：定时计划【${sched.name || '地图复查计划'}】正在使用此入口，请先停用或更换该计划的进入路径。`,
+        )
+      }
+    }
+
+    const now = await clockNow(tx)
+    await tx
+      .update(mapSafeEntries)
+      .set({
+        archivedAt: now,
+      })
+      .where(eq(mapSafeEntries.id, entryId))
+
+    await recordAudit(
+      tx,
+      actor,
+      'map.safe_entry.archive',
+      'target',
+      targetId,
+      body.reason || `归档安全进入路径：${existing.entryName}`,
+    )
+
+    return mapSafeEntryDtoSchema.parse({
+      targetId,
+      entryId: existing.id,
+      version: existing.entryVersion,
+      name: existing.entryName,
+      url: existing.entryUrl,
+      arrivalName: existing.arrivalName,
+      arrivalTarget: existing.arrivalTarget,
+      safetyBasis: existing.safetyBasis,
+      jobKinds: existing.jobKinds,
+      createdAt: existing.createdAt.toISOString(),
+      archivedAt: now.toISOString(),
+    })
   })
 }
 
@@ -656,6 +829,7 @@ export async function getMapSafeEntry(db: Db, targetId: string, entryId: string)
     safetyBasis: row.safetyBasis,
     jobKinds: row.jobKinds,
     createdAt: row.createdAt.toISOString(),
+    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
   })
 }
 

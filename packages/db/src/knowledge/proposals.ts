@@ -99,7 +99,7 @@ function toProposal(row: {
 
 function flattenKnowledgeDocument(value: unknown): ScenarioDocument {
   if (isAuthoringDocumentV2(value)) {
-    if (value.nodes.some((node) => node.kind === 'module' || (node.outcomes?.length ?? 0) > 0)) authoringSchemaUnsupported()
+    if (value.nodes.some((node) => node.kind === 'module' || node.kind === 'block' || (node.kind === 'step' && (node.outcomes?.length ?? 0) > 0))) authoringSchemaUnsupported()
     return parseScenarioDocument({
       schemaVersion: value.schemaVersion,
       inputs: value.inputs,

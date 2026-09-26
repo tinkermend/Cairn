@@ -15,8 +15,10 @@ import {
   reportListQuerySchema,
   reportListResponseSchema,
   reportPreviewResponseSchema,
+  readScreenshotPayload,
   substituteReportTitle,
   suiteSummaryBlockSchema,
+  stepRunFor,
   computeSuiteHealthScore,
   type CreateReportBody,
   type CreateReportRevisionBody,
@@ -43,6 +45,7 @@ import { atomic, locked, schemaFor, updateRows } from '../native.js'
 import { sha256Hex } from '../runs/digest.js'
 import { badRequest, conflict, notFound } from '../runs/errors.js'
 import { getRun } from '../runs/runs.js'
+import { loadIterationDetail, loadRunIterations } from '../runs/iterations.js'
 import { getSuiteRunObservation } from '../suites/runs.js'
 import { snapshotDeletedBy } from '../lifecycle.js'
 import { prepareReportMaterials, sealReportMaterials } from './materials.js'
@@ -298,12 +301,18 @@ export async function captureSource(db: Db, subject: ReportSubject, actorId?: st
         targetAccountName: run.targetAccountName,
         accountNameSource: 'generation_time',
         outcomeResults: run.outcomeResults.map((result) => ({ stepRunId: result.stepRunId, attemptId: result.attemptId, meaning: result.meaning, verdict: result.verdict, severity: result.severity, evidenceId: result.evidenceId ?? null })),
-        evidence: evidence.map((item) => ({ evidenceId: item.id, type: item.type, status: item.status,
-          stepRunId: item.stepRunId, attemptId: item.attemptId, digest: item.digest, missingReason: item.missingReason })),
+        evidence: evidence.map((item) => {
+          const shot = readScreenshotPayload(item.payload)
+          return { evidenceId: item.id, type: item.type, status: item.status,
+          stepRunId: item.stepRunId, attemptId: item.attemptId, digest: item.digest, missingReason: item.missingReason,
+          ...(shot ? { role: shot.role, seq: shot.seq ?? 0, ...(shot.diagnosis ? { diagnosis: shot.diagnosis } : {}) } : {}) }
+        }),
+        loops: (await captureLoopSummaries(db, run)) as unknown as JsonValue,
         stepRuns: run.stepRuns.map((step) => ({
           id: step.id,
           name: step.name,
           status: step.status,
+          ...(step.skipReason ? { skipReason: step.skipReason } : {}),
           outcomeStatus: step.outcomeStatus,
           attempts: step.attempts.map((attempt) => ({ id: attempt.id, status: attempt.status,
             error: attempt.error ? { code: attempt.error.code, message: attempt.error.safeMessage } : null })),
@@ -1168,3 +1177,46 @@ export async function previewDeleteReport(db: Db, reportId: string, actorId: str
 }
 
 export { snapshotDeletedBy }
+
+const MAX_REPORTED_LOOP_FAILURES = 20
+
+/**
+ * 报告里的循环汇总：循环体步骤按项存放、不在 Run 详情里，报告只写总数与失败项明细，
+ * 不逐项罗列成功项。
+ */
+async function captureLoopSummaries(db: Db, run: Awaited<ReturnType<typeof getRun>>) {
+  const loops = []
+  for (const block of run.snapshot.controlFlow?.blocks ?? []) {
+    if (block.kind !== 'for_each' && block.kind !== 'repeat') continue
+    const header = stepRunFor(run.stepRuns, block.headerStepId)
+    if (!header) continue
+    const summary = run.iterationsSummary?.[block.blockId]
+    const { iterations } = await loadRunIterations(db, run.id, { blockId: block.blockId, limit: 200 })
+    const failures = []
+    for (const iteration of iterations.filter((item) => item.status === 'FAILED').slice(0, MAX_REPORTED_LOOP_FAILURES)) {
+      const detail = await loadIterationDetail(db, run.id, iteration.id)
+      const failedStep = detail?.stepRuns.find((step) => step.status === 'FAILED')
+      const error = failedStep?.attempts.filter((attempt) => attempt.error).at(-1)?.error
+      const item = iteration.item === undefined ? null : typeof iteration.item === 'string' ? iteration.item : JSON.stringify(iteration.item)
+      failures.push({
+        index: iteration.iterationIndex + 1,
+        item: item && item.length > 80 ? `${item.slice(0, 77)}...` : item,
+        stepName: failedStep?.name ?? null,
+        code: error?.code ?? null,
+        message: error?.safeMessage ?? null,
+      })
+    }
+    loops.push({
+      headerStepRunId: header.id,
+      kind: block.kind,
+      total: summary?.total ?? iterations.length,
+      succeeded: summary?.succeeded ?? 0,
+      failed: summary?.failed ?? 0,
+      skipped: summary?.skipped ?? 0,
+      stoppedEarly: Boolean(summary?.stoppedEarly),
+      limitReached: Boolean(summary?.limitReached),
+      failures,
+    })
+  }
+  return loops
+}
