@@ -38,6 +38,7 @@ pnpm db:migrate      # schema cairn 仍由迁移创建，不在 compose 里预�
 ./scripts/infra.sh restart           # 一键重启所有容器并等待就绪
 ./scripts/infra.sh status            # 查看各容器状态与健康探活
 ./scripts/infra.sh logs [服务]       # 查看容器日志（例如 logs redis 100）
+./scripts/infra.sh clean-test-dbs    # 扫描并清理历史测试遗留的孤儿数据库
 
 # 对应 npm/pnpm 便捷指令：
 pnpm infra:start                     # 等价于 ./scripts/infra.sh start (别名: pnpm infra:up)
@@ -45,6 +46,7 @@ pnpm infra:stop                      # 等价于 ./scripts/infra.sh stop (别名
 pnpm infra:restart                   # 一键重启容器组件
 pnpm infra:status                    # 查看运行状态
 pnpm infra:logs                      # 跟踪日志
+pnpm infra:clean-test-dbs            # 一键清理测试残留孤儿数据库
 ```
 
 需要清盘时再 `podman compose -f deploy/compose.yml down -v`（或 `./scripts/infra.sh down`），并手动删 `.data/postgres`、`.data/minio`。

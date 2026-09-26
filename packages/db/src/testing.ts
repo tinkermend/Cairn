@@ -79,11 +79,68 @@ function templateDatabase(): string | undefined {
 }
 
 /**
+ * 清理上次被异常中断（如 Ctrl+C、崩溃或进程强杀）遗留的孤儿测试数据库。
+ * 保护活跃连接，防止并发套件误删；只清理无连接且符合测试命名前缀的孤儿库。
+ */
+export async function cleanupOrphanTestDatabases(env?: PostgresDbEnv): Promise<number> {
+  const dbEnv = env ?? (await requireReachableDb())
+  const admin = new Pool({
+    host: dbEnv.CAIRN_DB_HOST,
+    port: dbEnv.CAIRN_DB_PORT,
+    database: dbEnv.CAIRN_DB_NAME,
+    user: dbEnv.CAIRN_DB_USER,
+    password: dbEnv.CAIRN_DB_PASSWORD,
+    connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+  })
+
+  try {
+    const res = await admin.query<{ datname: string }>(`
+      SELECT datname FROM pg_database 
+      WHERE (
+        datname LIKE 'cairn_test_%' OR 
+        datname LIKE 'cairn_port_%' OR 
+        datname LIKE 'cairn_assist_%' OR 
+        datname LIKE 'cairn_session_%' OR 
+        datname LIKE 'cairn_harness_%' OR 
+        datname LIKE 'service_http_%' OR 
+        datname LIKE 'cairn_am%' OR 
+        datname LIKE 'cairn_cfg%'
+      )
+      AND datname NOT IN ('cairn', 'postgres', 'template0', 'template1')
+      AND datname NOT IN (
+        SELECT DISTINCT datname FROM pg_stat_activity 
+        WHERE datname IS NOT NULL AND pid <> pg_backend_pid()
+      )
+    `)
+
+    let cleaned = 0
+    for (const row of res.rows) {
+      try {
+        await admin.query(`DROP DATABASE IF EXISTS "${row.datname}" WITH (FORCE)`)
+        cleaned++
+      } catch {
+        // 忽略单库删除竞争失败
+      }
+    }
+    if (cleaned > 0) {
+      console.log(`[testing] 自动垃圾回收：已清理 ${cleaned} 个历史残留孤儿测试库`)
+    }
+    return cleaned
+  } catch (error) {
+    console.warn(`[testing] 自动清理孤儿测试库警告: ${(error as Error).message}`)
+    return 0
+  } finally {
+    await admin.end()
+  }
+}
+
+/**
  * 在运行测试套件前，一次性初始化基准模板库并执行全部迁移。
  * 后续所有 openIsolatedDb 均基于此模板克隆，省去逐用例执行 migration 的高昂耗时。
  */
 export async function setupTestTemplateDatabase(): Promise<void> {
   const env = await requireReachableDb()
+  await cleanupOrphanTestDatabases(env)
   const name = `cairn_test_template_${randomUUID().replaceAll('-', '')}`
   const admin = new Pool({
     host: env.CAIRN_DB_HOST,

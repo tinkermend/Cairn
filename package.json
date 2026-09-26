@@ -45,6 +45,7 @@
     "infra:restart": "./scripts/infra.sh restart",
     "infra:status": "./scripts/infra.sh status",
     "infra:logs": "./scripts/infra.sh logs",
+    "infra:clean-test-dbs": "./scripts/infra.sh clean-test-dbs",
     "db:migrate": "pnpm --filter @cairn/db migrate",
     "db:new-migration": "node tools/allocate-migration.mjs",
     "secret:register-browser-ai": "pnpm --filter @cairn/worker register-ai-secret",

@@ -372,6 +372,50 @@ logs_cmd() {
   fi
 }
 
+clean_test_dbs_cmd() {
+  echo "正在检查并清理所有孤儿测试数据库..."
+  local engine; engine="$(detect_engine)"
+  if [[ -z "$engine" ]]; then
+    echo "  ✗ 未找到容器引擎" >&2
+    exit 1
+  fi
+
+  local dbs
+  dbs="$($engine exec -i cairn-postgres psql -U cairn -d postgres -t -A -c "
+    SELECT datname FROM pg_database 
+    WHERE (
+      datname LIKE 'cairn_test_%' OR 
+      datname LIKE 'cairn_port_%' OR 
+      datname LIKE 'cairn_assist_%' OR 
+      datname LIKE 'cairn_session_%' OR 
+      datname LIKE 'cairn_harness_%' OR 
+      datname LIKE 'service_http_%' OR 
+      datname LIKE 'cairn_am%' OR 
+      datname LIKE 'cairn_cfg%'
+    )
+    AND datname NOT IN ('cairn', 'postgres', 'template0', 'template1')
+    AND datname NOT IN (
+      SELECT DISTINCT datname FROM pg_stat_activity 
+      WHERE datname IS NOT NULL AND pid <> pg_backend_pid()
+    );
+  " 2>/dev/null || true)"
+
+  if [[ -z "$dbs" ]]; then
+    echo "  ✅ 当前数据库干净，未发现残留孤儿测试库"
+    return 0
+  fi
+
+  local count=0
+  for db in $dbs; do
+    [[ -n "$db" ]] || continue
+    echo "  - 清理 $db..."
+    $engine exec -i cairn-postgres psql -U cairn -d postgres -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);" >/dev/null 2>&1 || true
+    count=$((count + 1))
+  done
+
+  echo "  ✅ 成功清理 $count 个残留孤儿测试库"
+}
+
 cmd="${1:-}"
 target="${2:-all}"
 
@@ -391,13 +435,16 @@ case "$cmd" in
   status|ps)
     status_cmd "$target"
     ;;
+  clean-test-dbs|clean-dbs)
+    clean_test_dbs_cmd
+    ;;
   logs)
     shift
     logs_cmd "$@"
     ;;
   *)
     cat <<EOF
-用法: $0 {start|stop|restart|status|down|logs} [服务组件]
+用法: $0 {start|stop|restart|status|down|logs|clean-test-dbs} [服务组件]
 
 服务组件 (可选):
   all        所有基础设施组件 (postgres, minio, redis) [默认]
@@ -410,6 +457,7 @@ case "$cmd" in
   $0 stop               # 停止所有基础设施容器（保留数据）
   $0 restart            # 重启所有基础设施容器并等待健康就绪
   $0 status             # 查看所有组件容器运行状态与健康检查
+  $0 clean-test-dbs     # 扫描并清理历史测试遗留的孤儿数据库
   $0 start redis        # 仅启动 Redis 容器
   $0 stop postgres      # 仅停止 PostgreSQL 容器
   $0 restart minio      # 仅重启 MinIO 容器
