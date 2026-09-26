@@ -55,9 +55,7 @@ import {
   type DbHandle,
   type ClaimScanCursor,
   getMapJobPolicy,
-  getMapSafeEntry,
   getMapSummary,
-  listMapJobCandidateAssets,
   settleRevokedRuns,
   settleTargetCleanups,
   settleRunCleanups,
@@ -79,7 +77,6 @@ import {
   maintenanceWindowSlot,
   deriveAuthCapability,
   platformConfigDocumentSchema,
-  isMapRefreshConsumer,
   parseWorkerRoles,
   protocolCapabilitiesForRoles,
   isHaltedRunStatus,
@@ -123,9 +120,6 @@ import { config } from "../config/env";
 import { placementYieldExcludes } from "./placement-backoff";
 import { DB_HANDLE } from "../db/db.module";
 import {
-  compileMapJobSlice,
-  selectMapJobAssets,
-  toMapJobCompileAssets,
 } from "@cairn/map";
 import { MapProjectionService } from "../map/projection.service";
 import { MapReferenceScanService } from "../map/reference-scan.service";
@@ -511,94 +505,10 @@ export class LifecycleService
       for (const item of pending) {
         if (this.stopped) break;
         try {
-          if (!isMapRefreshConsumer(item.definition.consumer)) {
-            await admitScheduleOccurrence(
-              this.handle,
-              item.occurrence.occurrenceId,
-              { steps: [], includedCount: 1 },
-              { kind: "console", id: item.authorizedActorId },
-            );
-            continue;
-          }
-          const policy = await getMapJobPolicy(
-            this.handle,
-            item.definition.consumer.targetId,
-          );
-          const entry = await getMapSafeEntry(
-            this.handle,
-            item.definition.consumer.targetId,
-            item.definition.consumer.entryId,
-          );
-          const assets = toMapJobCompileAssets(
-            await listMapJobCandidateAssets(
-              this.handle,
-              item.definition.consumer.targetId,
-            ),
-          );
-          const selected = selectMapJobAssets(
-            "map_refresh",
-            policy.policy,
-            assets,
-            item.definition.consumer.selectedAssetRefs,
-          );
-          const included = assets.filter((asset) =>
-            selected.some(
-              (row) =>
-                row.included &&
-                (row.assetRef.objectId ?? row.assetRef.pageId) ===
-                  (asset.assetRef.objectId ?? asset.assetRef.pageId),
-            ),
-          );
-          if (included.length === 0) {
-            await admitScheduleOccurrence(
-              this.handle,
-              item.occurrence.occurrenceId,
-              { steps: [], includedCount: 0 },
-              { kind: "console", id: item.authorizedActorId },
-            );
-            continue;
-          }
-          const compiled = compileMapJobSlice({
-            jobKind: "map_refresh",
-            entry: {
-              entryId: entry.entryId,
-              version: entry.version,
-              name: entry.name,
-              url: entry.url,
-              arrivalName: entry.arrivalName,
-              arrivalTarget: entry.arrivalTarget,
-              safetyBasis: entry.safetyBasis,
-              jobKinds: entry.jobKinds,
-            },
-            included,
-            policy: policy.policy,
-          });
-          if (!compiled.ok) {
-            await admitScheduleOccurrence(
-              this.handle,
-              item.occurrence.occurrenceId,
-              {
-                steps: [],
-                includedCount: included.length,
-                skipReason: "SAFETY_BASIS_REQUIRED",
-              },
-              { kind: "console", id: item.authorizedActorId },
-            );
-            continue;
-          }
-          const summary = await getMapSummary(
-            this.handle,
-            item.definition.consumer.targetId,
-            { limit: 1 },
-          );
           await admitScheduleOccurrence(
             this.handle,
             item.occurrence.occurrenceId,
-            {
-              steps: compiled.steps,
-              releaseId: summary.publishedReleaseId,
-              includedCount: included.length,
-            },
+            { steps: [], includedCount: 1 },
             { kind: "console", id: item.authorizedActorId },
           );
         } catch (error) {

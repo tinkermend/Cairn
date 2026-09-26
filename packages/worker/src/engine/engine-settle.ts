@@ -40,11 +40,10 @@ const SETTLER_WARN: Record<string, string> = {
   batchItem: '批量任务项状态收尾失败',
 }
 
-function mapJobOutcome(status: RunStatus): 'completed' | 'cancelled' | 'failed' | 'needs_review' | null {
+function mapJobOutcome(status: RunStatus): 'completed' | 'cancelled' | 'failed' | null {
   if (status === 'SUCCEEDED') return 'completed'
   if (status === 'CANCELLED') return 'cancelled'
-  if (status === 'NEEDS_REVIEW') return 'needs_review'
-  if (status === 'FAILED') return 'failed'
+  if (status === 'FAILED' || status === 'NEEDS_REVIEW') return 'failed'
   return null
 }
 

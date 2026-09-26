@@ -2,7 +2,6 @@ import type { Page, Frame } from 'playwright'
 import {
   computeControlFingerprint,
   sanitizeExplorationUrl,
-  type ExplorationCandidate,
   type TargetDescriptor,
   type TargetStateRule,
 } from '@cairn/shared'
@@ -303,7 +302,6 @@ export async function collectSurfaceExploration(input: {
   page: Page
   targetId: string
   allowedOrigins: string[]
-  allowlist: string[]
   stateRule?: TargetStateRule
   maxCandidates?: number
   baseUrl?: string
@@ -409,13 +407,7 @@ export async function collectSurfaceExploration(input: {
     if (!isVoidHref) {
       // 尝试解析为 explicit_url
       try {
-        const allowlistEntries = input.allowlist.map((item) =>
-          typeof item === 'string'
-            ? { origin: new URL(item).origin, pathPrefix: new URL(item).pathname }
-            : item,
-        )
         const sanitized = sanitizeExplorationUrl(rawHref, currentUrl, {
-          allowlist: allowlistEntries,
           allowedSpaHashPrefixes: input.stateRule?.allowedSpaHashPrefixes ?? ['#/'],
         })
         if (sanitized.ok) {
@@ -474,22 +466,4 @@ export async function collectSurfaceExploration(input: {
     truncationReason: rawScan.truncated ? `候选数量达到上限 ${maxBudget}` : undefined,
     gaps,
   }
-}
-
-/**
- * 转换为向后兼容的 ExplorationCandidate[]（供 ObservationBundle 使用）
- */
-export function toObservationCandidates(candidates: ProcessedCandidate[], limit = 16): ExplorationCandidate[] {
-  return candidates
-    .filter((c) => c.eligible && c.canonicalTargetUrl)
-    .slice(0, limit)
-    .map((c) => ({
-      id: c.candidateId,
-      kind: 'navigate' as const,
-      url: c.canonicalTargetUrl!,
-      reason:
-        c.candidateCategory === 'explicit_url'
-          ? `直达链接：${c.accessibleName}`
-          : `导航：${c.accessibleName}`,
-    }))
 }

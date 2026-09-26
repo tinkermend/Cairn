@@ -1,16 +1,8 @@
 import type { BrowserContext, Page, Route, Dialog } from 'playwright'
-import {
-  isUrlInExploreAllowlist,
-  type ExplorationAllowlistEntry,
-  type ExploreEntryRequestProfile,
-  type RequestPattern,
-} from '@cairn/shared'
 
+/** 只读采集守卫：导航与数据请求限定在授权 Origin 内，数据请求默认只放行 GET。 */
 export type ExploreGuardOptions = {
-  allowlist: readonly ExplorationAllowlistEntry[]
   allowedOrigins: string[]
-  entryProfile?: ExploreEntryRequestProfile
-  stepEnvelope?: readonly RequestPattern[]
 }
 
 export type BlockedRequestRecord = {
@@ -90,7 +82,7 @@ export async function installExploreGuard(
       return
     }
 
-    // 2. Navigation / Document requests: must pass allowlist and origins
+    // 2. Navigation / Document requests: must stay within authorized origins
     if (request.isNavigationRequest() || resourceType === 'document') {
       try {
         const parsed = new URL(url)
@@ -100,17 +92,6 @@ export async function installExploreGuard(
             method,
             resourceType,
             reason: `导航地址 ${url} 超出目标系统授权源`,
-            timestamp: new Date().toISOString(),
-          })
-          await route.abort('blockedbyclient').catch(() => {})
-          return
-        }
-        if (options.allowlist.length > 0 && !isUrlInExploreAllowlist(url, options.allowlist)) {
-          blockedRequests.push({
-            url,
-            method,
-            resourceType,
-            reason: `导航地址 ${url} 未在探索 allowlist 范围内`,
             timestamp: new Date().toISOString(),
           })
           await route.abort('blockedbyclient').catch(() => {})
@@ -141,74 +122,10 @@ export async function installExploreGuard(
     // 4. Data requests (xhr, fetch, ping, eventsource, other)
     if (['xhr', 'fetch', 'ping', 'eventsource', 'other'].includes(resourceType)) {
       let allowed = false
-      let matchReason = ''
-
-      // Check stepEnvelope first if present
-      if (options.stepEnvelope) {
-        const matched = options.stepEnvelope.some((rule: RequestPattern) => {
-          if (rule.method && rule.method.toUpperCase() !== method) return false
-          if (rule.origin) {
-            try {
-              if (new URL(url).origin !== rule.origin) return false
-            } catch {
-              return false
-            }
-          }
-          if (rule.path) {
-            try {
-              const pathname = new URL(url).pathname
-              const regex = new RegExp(rule.path)
-              if (!regex.test(pathname)) return false
-            } catch {
-              return false
-            }
-          }
-          return true
-        })
-        if (matched) {
-          allowed = true
-          matchReason = 'stepEnvelope'
-        }
-      }
-
-      // Check entryProfile
-      if (!allowed && options.entryProfile) {
-        const matched = options.entryProfile.initialDataRequests.some((rule: RequestPattern) => {
-          if (rule.method && rule.method.toUpperCase() !== method) return false
-          if (rule.origin) {
-            try {
-              if (new URL(url).origin !== rule.origin) return false
-            } catch {
-              return false
-            }
-          }
-          if (rule.path) {
-            try {
-              const pathname = new URL(url).pathname
-              const regex = new RegExp(rule.path)
-              if (!regex.test(pathname)) return false
-            } catch {
-              return false
-            }
-          }
-          return true
-        })
-        if (matched) {
-          allowed = true
-          matchReason = 'entryProfile'
-        }
-      }
-
-      // If no envelope or profile is configured, allow read-only GET data requests to allowed origins
-      if (!allowed && !options.stepEnvelope && !options.entryProfile) {
-        try {
-          const parsed = new URL(url)
-          if (options.allowedOrigins.includes(parsed.origin) && method === 'GET') {
-            allowed = true
-            matchReason = 'default_readonly_origin_get'
-          }
-        } catch {}
-      }
+      try {
+        const parsed = new URL(url)
+        allowed = options.allowedOrigins.includes(parsed.origin) && (method === 'GET' || method === 'HEAD')
+      } catch {}
 
       if (allowed) {
         await route.continue().catch(() => {})

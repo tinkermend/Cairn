@@ -334,7 +334,6 @@ export class BrowserSessionManager {
     options: {
       targetId: string
       allowedOrigins: string[]
-      allowlist: string[]
       stateRule?: TargetStateRule
       maxCandidates?: number
     },
@@ -353,7 +352,6 @@ export class BrowserSessionManager {
         page,
         targetId: options.targetId,
         allowedOrigins: options.allowedOrigins,
-        allowlist: options.allowlist,
         stateRule: options.stateRule,
         maxCandidates: options.maxCandidates,
       })
