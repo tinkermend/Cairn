@@ -211,6 +211,16 @@ export type StepAiPathInsight = z.infer<typeof stepAiPathInsightSchema>
 export const aiPathInsightsResponseSchema = z.array(stepAiPathInsightSchema)
 export type AiPathInsightsResponse = z.infer<typeof aiPathInsightsResponseSchema>
 
+export const createSolidificationDraftResponseSchema = z.strictObject({
+  recordingDraftId: entityIdSchema,
+  scenarioId: entityIdSchema,
+  sourceNodeId: entityIdSchema,
+  sourceNodePresent: z.boolean(),
+  definitionChanged: z.boolean(),
+  diagnostics: z.array(z.string()),
+})
+export type CreateSolidificationDraftResponse = z.infer<typeof createSolidificationDraftResponseSchema>
+
 export const AI_PATH_INSIGHT_MIN_SAMPLES = 3
 /** 洞察读取的观察行上限（按时间倒序取最近的），避免窗口内全量加载。 */
 export const AI_PATH_INSIGHT_MAX_ROWS = 2000

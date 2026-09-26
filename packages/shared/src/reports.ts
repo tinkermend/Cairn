@@ -3,11 +3,13 @@ import { nextCursorSchema } from './rbac.js'
 import { runEvidenceStatusSchema } from './evidence.js'
 import { outcomeStatusSchema } from './outcome.js'
 import { runFindingSchema } from './run-output.js'
-import { suiteVerdictSchema } from './suites.js'
+import { suiteVerdictSchema } from './suite-verdict.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
+import { REPORT_TITLE_CATALOG, reportTitleSources, type ReportTitleSource } from './report-title-template.js'
+export { REPORT_TITLE_CATALOG, parseReportTitle, reportTitleSources, renderReportTitleV2, type ReportTitleSource, type ReportTitleSegment } from './report-title-template.js'
 
 export const EXPORT_ARTIFACTS_PROTOCOL = 'export-artifacts@2' as const
-export const REPORT_RENDER_VERSION = 'report-render@7' as const
+export const REPORT_RENDER_VERSION = 'report-render@8' as const
 export const REPORT_TEMPLATE_VERSION = 'report-template@1' as const
 
 export const REPORT_LIMITS = Object.freeze({
@@ -32,7 +34,7 @@ export const REPORT_SCOPES = ['run', 'suite_summary', 'suite_bundle'] as const
 export type ReportScope = (typeof REPORT_SCOPES)[number]
 export const reportScopeSchema = z.enum(REPORT_SCOPES)
 
-export const REPORT_FORMATS = ['docx', 'pdf'] as const
+export const REPORT_FORMATS = ['html'] as const
 export type ReportFormat = (typeof REPORT_FORMATS)[number]
 export const reportFormatSchema = z.enum(REPORT_FORMATS)
 
@@ -48,7 +50,7 @@ export const EXPORT_JOB_STATUSES = ['queued', 'running', 'complete', 'partial', 
 export type ExportJobStatus = (typeof EXPORT_JOB_STATUSES)[number]
 export const exportJobStatusSchema = z.enum(EXPORT_JOB_STATUSES)
 
-export const ARTIFACT_KINDS = ['brand_logo', 'report_material', 'report_docx', 'report_pdf', 'report_bundle'] as const
+export const ARTIFACT_KINDS = ['brand_logo', 'report_material', 'report_html', 'report_bundle'] as const
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number]
 export const artifactKindSchema = z.enum(ARTIFACT_KINDS)
 
@@ -56,14 +58,7 @@ export const OBJECT_OWNER_KINDS = ['run', 'artifact', 'fixture'] as const
 export type ObjectOwnerKind = (typeof OBJECT_OWNER_KINDS)[number]
 export const objectOwnerKindSchema = z.enum(OBJECT_OWNER_KINDS)
 
-export const REPORT_TITLE_VARIABLES = [
-  'systemName',
-  'scenarioName',
-  'suiteName',
-  'executedDate',
-  'executedRange',
-  'runNumber',
-] as const
+export const REPORT_TITLE_VARIABLES = REPORT_TITLE_CATALOG.map((item) => item.key)
 export type ReportTitleVariable = (typeof REPORT_TITLE_VARIABLES)[number]
 
 export const SCREENSHOT_SCOPES = ['anomalies', 'selected', 'none'] as const
@@ -72,6 +67,7 @@ export const screenshotScopeSchema = z.enum(SCREENSHOT_SCOPES)
 
 export const reportConfigSchema = z.strictObject({
   title: z.string().trim().min(1).max(200),
+  titleSyntaxVersion: z.literal(2).optional(),
   subtitle: z.string().trim().max(200).optional(),
   organization: z.string().trim().max(128).optional(),
   authorDisplayName: z.string().trim().max(64).optional(),
@@ -89,7 +85,7 @@ export const reportConfigSchema = z.strictObject({
 export type ReportConfig = z.infer<typeof reportConfigSchema>
 
 // Optional overrides must not inject defaults and erase the configuration frozen at Run creation.
-export const reportConfigOverrideSchema = reportConfigSchema.partial().extend({
+export const reportConfigOverrideSchema = reportConfigSchema.partial().omit({ titleSyntaxVersion: true }).extend({
   timeZone: reportConfigSchema.shape.timeZone.removeDefault().optional(),
   detailLevel: reportConfigSchema.shape.detailLevel.removeDefault().optional(),
   screenshotScope: reportConfigSchema.shape.screenshotScope.removeDefault().optional(),
@@ -110,13 +106,30 @@ export function substituteReportTitle(template: string, vars: Partial<Record<Rep
   return template.replace(/\{([A-Za-z]+)\}/g, (_, name: string) => vars[name as ReportTitleVariable] ?? `{${name}}`)
 }
 
+/** Preserve v1 templates' permissive brace semantics when displaying existing bindings. */
+export function reportConfigTitleSources(config: ReportConfig): ReportTitleSource[] {
+  if (config.titleSyntaxVersion === 2) return reportTitleSources(config.title)
+  const sources: ReportTitleSource[] = []
+  for (const source of ['RUN', 'SUITE_RUN'] as const) {
+    const vars: Partial<Record<ReportTitleVariable, string>> = {
+      systemName: 'x', executedDate: 'x', executedRange: 'x', runNumber: 'x',
+      ...(source === 'RUN' ? { scenarioName: 'x' } : { suiteName: 'x' }),
+    }
+    try {
+      substituteReportTitle(config.title, vars)
+      if (![...config.title.matchAll(/\{([A-Za-z]+)\}/g)].some((match) => vars[match[1] as ReportTitleVariable] === undefined)) sources.push(source)
+    } catch { /* Existing invalid templates remain visible as repair targets. */ }
+  }
+  return sources
+}
+
 export function sanitizeReportFileName(input: string): string {
   const cleaned = input.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/\s+/g, ' ').trim()
   return Array.from(cleaned).slice(0, 80).join('') || 'report'
 }
 
 export function contentDispositionAttachment(fileName: string): string {
-  const extension = fileName.match(/\.(?:docx|pdf|zip)$/i)?.[0] ?? ''
+  const extension = fileName.match(/\.(?:html|zip)$/i)?.[0] ?? ''
   const safe = extension
     ? `${Array.from(sanitizeReportFileName(fileName.slice(0, -extension.length))).slice(0, 80 - extension.length).join('')}${extension}`
     : sanitizeReportFileName(fileName)
@@ -363,14 +376,14 @@ export const createReportRevisionBodySchema = z.strictObject({
 export type CreateReportRevisionBody = z.infer<typeof createReportRevisionBodySchema>
 
 export const exportReportBodySchema = z.strictObject({
-  formats: z.array(reportFormatSchema).min(1).max(2),
+  formats: z.array(reportFormatSchema).min(1).max(1),
   idempotencyKey: z.string().trim().min(8).max(128),
 })
 export type ExportReportBody = z.infer<typeof exportReportBodySchema>
 
 export const createReportBundleBodySchema = z.strictObject({
   reportRevisionId: entityIdSchema,
-  formats: z.array(reportFormatSchema).min(1).max(2),
+  formats: z.array(reportFormatSchema).min(1).max(1),
   includeChildReports: z.boolean().default(false),
   idempotencyKey: z.string().trim().min(8).max(128),
 })
@@ -486,11 +499,30 @@ export const saveReportProfileBodySchema = z.strictObject({
 })
 export type SaveReportProfileBody = z.infer<typeof saveReportProfileBodySchema>
 
+import {
+  outputPolicySchema,
+  type OutputPolicy,
+  RUN_REPORT_STATUSES,
+  type RunReportStatus,
+  runReportStatusSchema,
+} from './reports-policy.js'
+export {
+  outputPolicySchema,
+  type OutputPolicy,
+  RUN_REPORT_STATUSES,
+  type RunReportStatus,
+  runReportStatusSchema,
+}
+
+export const REPORT_TRIGGER_STATUSES = ['pending', 'processing', 'created', 'skipped', 'failed'] as const
+export type ReportTriggerStatus = (typeof REPORT_TRIGGER_STATUSES)[number]
+export const reportTriggerStatusSchema = z.enum(REPORT_TRIGGER_STATUSES)
+
 export const reportProfileListQuerySchema = z.object({ targetId: entityIdSchema, limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.string().optional() })
 export const reportProfileListResponseSchema = z.object({ items: z.array(reportProfileDtoSchema), nextCursor: nextCursorSchema })
 export const reportProfileVersionsResponseSchema = z.object({ items: z.array(reportProfileDtoSchema), nextCursor: nextCursorSchema })
-export const scenarioReportDefaultsSchema = z.object({ scenarioId: entityIdSchema, profileId: entityIdSchema.nullable(), revision: z.number().int().nonnegative() })
-export const saveScenarioReportDefaultsBodySchema = z.strictObject({ profileId: entityIdSchema.nullable(), expectedRevision: z.number().int().nonnegative() })
+export const scenarioReportDefaultsSchema = z.object({ scenarioId: entityIdSchema, profileId: entityIdSchema.nullable(), revision: z.number().int().nonnegative(), outputPolicy: outputPolicySchema.optional() })
+export const saveScenarioReportDefaultsBodySchema = z.strictObject({ profileId: entityIdSchema.nullable(), expectedRevision: z.number().int().nonnegative(), outputPolicy: outputPolicySchema.optional() })
 export const uploadReportAssetBodySchema = z.strictObject({
   targetId: entityIdSchema,
   editScope: z.enum(['scenario', 'suite']),
@@ -498,5 +530,6 @@ export const uploadReportAssetBodySchema = z.strictObject({
   contentType: z.enum(['image/png', 'image/jpeg']),
   base64: z.string().min(1).max(Math.ceil(REPORT_LIMITS.logoBytes / 3) * 4),
 })
+export const uploadReportAssetBodySchema_type = uploadReportAssetBodySchema
 export type UploadReportAssetBody = z.infer<typeof uploadReportAssetBodySchema>
 export const retryExportJobBodySchema = z.strictObject({ idempotencyKey: z.string().trim().min(8).max(128) })

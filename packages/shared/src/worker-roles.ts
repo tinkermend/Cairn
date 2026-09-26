@@ -1,5 +1,6 @@
 import { CANDIDATE_GROUPS_PROTOCOL, MODULE_MANIFEST_PROTOCOL } from './authoring-document.js'
 import { RESOLUTION_PROTOCOL } from './resolution-policy.js'
+import { LOCATOR_RESOLUTION_PROTOCOL } from './locator-plan.js'
 import { MAP_CONSUMPTION_PROTOCOL } from './map-consumption.js'
 import { MAP_EXPLORE_PROTOCOL } from './map-exploration.js'
 import { MAP_JOBS_PROTOCOL } from './map-jobs.js'
@@ -49,6 +50,7 @@ const PROTOCOL_ORDER = [
   IMPORTED_OUTCOME_PROTOCOL,
   RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
   RESOLUTION_PROTOCOL,
+  LOCATOR_RESOLUTION_PROTOCOL,
   CONTROL_FLOW_PROTOCOL,
   CONTROL_FLOW_PROTOCOL_V2,
 ] as const

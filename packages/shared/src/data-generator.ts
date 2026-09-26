@@ -69,6 +69,25 @@ export const templateGeneratorSchema = z.strictObject({
 })
 export type TemplateGenerator = z.infer<typeof templateGeneratorSchema>
 
+export const GENERATOR_MACROS = [
+  { token: '{{date:YYYY-MM-DD}}', label: '当前日期', description: '按指定日期格式生成当前日期' },
+  { token: '{{rand:8}}', label: '随机字母数字', description: '生成指定长度的字母数字' },
+  { token: '{{number:6}}', label: '随机数字', description: '生成指定长度的数字' },
+  { token: '{{alpha:8}}', label: '随机字母', description: '生成指定长度的字母' },
+  { token: '{{uuid}}', label: 'UUID', description: '生成 UUID v4' },
+] as const
+
+export function generatorTemplateIssues(pattern: string): Array<{ start: number; end: number; message: string }> {
+  const issues: Array<{ start: number; end: number; message: string }> = []
+  const tokens = /\{\{.*?(?:\}\}|$)/g
+  for (const match of pattern.matchAll(tokens)) {
+    const raw = match[0]
+    const valid = /^\{\{(?:date[.:][A-Za-z0-9_\-:\s]+|(?:rand|alphanumeric|number|alpha)[.:]\d+|uuid)\}\}$/.test(raw)
+    if (!valid) issues.push({ start: match.index, end: match.index + raw.length, message: raw.endsWith('}}') ? `不支持的生成器宏：${raw}` : '生成器宏缺少右大括号 }}' })
+  }
+  return issues
+}
+
 export const enumSampleGeneratorSchema = z.strictObject({
   kind: z.literal('enum_sample'),
   options: z.array(z.string()).min(1).max(100),
@@ -234,6 +253,8 @@ export function evaluateGenerator(spec: DataGeneratorSpec): JsonValue {
     }
 
     case 'template': {
+      const issue = generatorTemplateIssues(spec.pattern)[0]
+      if (issue) throw new Error(issue.message)
       let result = spec.pattern
       result = result.replace(/\{\{date[.:]([A-Za-z0-9_\-:\s]+)\}\}/g, (_m, fmt) => formatDate(new Date(), fmt))
       result = result.replace(/\{\{(?:rand|alphanumeric)[.:](\d+)\}\}/g, (_m, lenStr) => randomChars(Number(lenStr), CHARSETS.alphanumeric))

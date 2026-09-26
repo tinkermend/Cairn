@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { canonicalJson, sha256Hex } from './canonical.js'
+import { syncSha256 } from './sha256-sync.js'
 import {
   implementationKeySchema,
   moduleExecutionModeSchema,
@@ -9,6 +11,7 @@ import { runtimeInvariantSchema } from './runtime-invariant.js'
 import { outputFieldNameSchema } from './output-schema.js'
 import { scenarioOutputDeclSchema } from './run-output.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
+import { locatorPlanSchema } from './locator-plan.js'
 import type { ScenarioDocument } from './scenario.js'
 import { conditionSchema, type Expr } from './expression.js'
 import {
@@ -58,17 +61,48 @@ export type SkipReason = (typeof SKIP_REASONS)[number]
 // Authoring document node types
 // ---------------------------------------------------------------------------
 
+/** 模块展开来源追溯 */
+export const authoringStepModuleOriginSchema = z.strictObject({
+  kind: z.literal('module_unwrap').optional(),
+  moduleVersionId: entityIdSchema,
+  invocationId: entityIdSchema,
+})
+export type AuthoringStepModuleOrigin = z.infer<typeof authoringStepModuleOriginSchema>
+
+/** AI 步骤固化来源追溯 */
+export const authoringStepSolidificationOriginSchema = z.strictObject({
+  kind: z.literal('ai_solidification'),
+  sourceStepId: entityIdSchema,
+  instruction: z.string().max(512),
+  runId: entityIdSchema,
+  attemptId: entityIdSchema,
+  traceDigest: z.string().max(128).optional(),
+})
+export type AuthoringStepSolidificationOrigin = z.infer<typeof authoringStepSolidificationOriginSchema>
+
+/** 录制草稿与泛化来源追溯 */
+export const authoringStepRecordingOriginSchema = z.strictObject({
+  kind: z.literal('recording'),
+  recordingDraftId: entityIdSchema,
+  sourceIds: z.array(z.string().min(1).max(128)),
+  generalizationRoundId: entityIdSchema.optional(),
+})
+export type AuthoringStepRecordingOrigin = z.infer<typeof authoringStepRecordingOriginSchema>
+
+/** 步骤来源追溯联合契约（兼容历史无 kind 的模块展开对象、新 AI 固化来源与录制来源） */
+export const authoringStepOriginSchema = z.union([
+  authoringStepModuleOriginSchema,
+  authoringStepSolidificationOriginSchema,
+  authoringStepRecordingOriginSchema,
+])
+export type AuthoringStepOrigin = z.infer<typeof authoringStepOriginSchema>
+
 /** 普通独立步骤节点 */
 export const authoringStepNodeSchema = z.strictObject({
   kind: z.literal('step'),
   step: stepSchema,
-  /** 仅“展开为独立步骤”后的来源追溯说明，不参与运行时判定 */
-  origin: z
-    .strictObject({
-      moduleVersionId: entityIdSchema,
-      invocationId: entityIdSchema,
-    })
-    .optional(),
+  /** 仅“展开为独立步骤”或“AI 固化”后的来源追溯说明，不参与运行时判定 */
+  origin: authoringStepOriginSchema.optional(),
   /** 挂载在该步骤上的成功条件契约 */
   outcomes: z.array(outcomeContractSchema).optional(),
 })
@@ -274,8 +308,11 @@ export const scenarioAuthoringDocumentV2Schema = z
     runtimeInvariants: z.array(runtimeInvariantSchema).optional(),
     outputs: scenarioOutputDeclSchema.optional(),
     resolution: resolutionPolicySchema.optional(),
+    locatorPlan: locatorPlanSchema.optional(),
+    locatorProtocol: z.literal(2).optional(),
   })
   .superRefine((document, ctx) => {
+    if (document.resolution && document.locatorPlan) ctx.addIssue({ code: 'custom', path: ['locatorPlan'], message: '场景不能同时设置旧版与新版定位策略' })
     const inputKeys = new Set<string>()
     for (const [index, input] of document.inputs.entries()) {
       if (inputKeys.has(input.key)) {
@@ -510,6 +547,9 @@ export function normalizeAuthoringDocument(raw: unknown): ScenarioAuthoringDocum
         schemaVersion: doc.schemaVersion ?? RUNTIME_SCHEMA_VERSION,
         inputs: doc.inputs ?? [],
         ...(doc.outputs ? { outputs: doc.outputs } : {}),
+        ...(doc.resolution ? { resolution: doc.resolution } : {}),
+        ...(doc.locatorPlan ? { locatorPlan: doc.locatorPlan } : {}),
+        ...(doc.locatorProtocol === 2 ? { locatorProtocol: 2 as const } : {}),
         nodes: (doc.steps as Step[]).map((step) => ({
           kind: 'step' as const,
           step,
@@ -743,6 +783,25 @@ export function replaceNode(
 }
 
 /**
+ * 将指定 ID 的节点替换为多个节点（纯函数）。如果替换列表为空，等价于移除该节点。
+ */
+export function replaceNodeWithMany(
+  doc: ScenarioAuthoringDocumentV2,
+  id: string,
+  nodes: AuthoringNode[],
+): ScenarioAuthoringDocumentV2 {
+  const loc = locateNode(doc, id)
+  if (!loc) return doc
+  const newNodes = modifyBranchList(doc.nodes, loc.parentId, loc.branchKey, (list) =>
+    list.flatMap((n) => (authoringNodeId(n) === id ? nodes : [n])),
+  )
+  return {
+    ...doc,
+    nodes: newNodes,
+  }
+}
+
+/**
  * 在同一父节点内移动指定节点（纯函数）。delta < 0 向前移，delta > 0 向后移。
  */
 export function moveNodeWithin(
@@ -939,3 +998,15 @@ export function authoringSteps(
   return document.steps ?? []
 }
 
+/** 完整结构化草稿（V2）确定性 SHA-256 摘要 */
+export async function authoringDocumentDigest(
+  document: ScenarioAuthoringDocumentV2,
+): Promise<string> {
+  return sha256Hex(canonicalJson(scenarioAuthoringDocumentV2Schema.parse(document)))
+}
+
+export function syncAuthoringDocumentDigest(
+  document: ScenarioAuthoringDocumentV2,
+): string {
+  return syncSha256(canonicalJson(scenarioAuthoringDocumentV2Schema.parse(document)))
+}

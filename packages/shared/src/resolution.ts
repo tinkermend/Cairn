@@ -1,4 +1,8 @@
 import { z } from 'zod'
+import { locatorPlanSchema } from './locator-plan.js'
+import type { LocatorPlan } from './locator-plan.js'
+import type { PlatformConfigDocument } from './platform-config.js'
+import type { TargetResolutionPolicy } from './resolution-policy.js'
 import { candidateTrySchema } from './browser-command.js'
 import { mapEvidenceRefSchema } from './map-c0.js'
 import {
@@ -30,6 +34,7 @@ export const RESOLUTION_REASON_CODES = [
   'AI_NOT_FOUND',
   'AI_AMBIGUOUS_POINT',
   'AI_HUNG',
+  'AI_CALL_FAILED',
   'AI_DISABLED',
   'AI_CONFIG_INVALID',
   'WAIT_KIND_UNAVAILABLE',
@@ -50,6 +55,8 @@ export const resolutionCrossCheckSchema = z.enum(RESOLUTION_CROSS_CHECKS)
 
 export const resolutionRungRecordSchema = z.strictObject({
   rung: resolutionRungSchema,
+  aiRoute: z.enum(['text', 'vision']).optional(),
+  outcomeClass: z.enum(['miss', 'ambiguous', 'hung', 'budget', 'cancelled', 'lease_lost', 'error']).optional(),
   outcome: z.string().min(1).max(64),
   spentMs: z.number().int().nonnegative().max(120_000),
   candidatesTried: z.array(candidateTrySchema).max(8).optional(),
@@ -68,6 +75,7 @@ export const resolutionDecisionSchema = z.strictObject({
   attemptId: entityIdSchema,
   stepId: entityIdSchema,
   effectivePolicy: resolutionPolicySchema,
+  plan: locatorPlanSchema.optional(),
   rungs: z.array(resolutionRungRecordSchema).max(4),
   decision: resolutionDecisionKindSchema,
   reasonCode: resolutionReasonCodeSchema.optional(),
@@ -110,6 +118,7 @@ export const resolutionStatsItemSchema = z.strictObject({
   ai: z.number().int().nonnegative(),
   failed: z.number().int().nonnegative(),
   fallbackRate: z.number().min(0).max(1).nullable(),
+  stepName: z.string().nullable().optional(),
 })
 export type ResolutionStatsItem = z.infer<typeof resolutionStatsItemSchema>
 
@@ -127,6 +136,8 @@ export const resolutionCapabilitiesSchema = z.strictObject({
   ceiling: resolutionPolicySchema,
   default: resolutionPolicySchema,
   aiRungAvailable: z.boolean(),
+  textReady: z.boolean().optional(),
+  visionReady: z.boolean().optional(),
   reasons: z.array(
     z.strictObject({
       code: z.enum(RESOLUTION_UNAVAILABLE_CODES),
@@ -143,6 +154,10 @@ export type CompileResolutionContext = {
   targetCeiling?: ResolutionPolicy
   targetPreference?: ResolutionPolicy
   documentResolution?: ResolutionPolicy
+  documentLocatorPlan?: LocatorPlan
+  locatorProtocol?: 2
+  locatorDocument?: PlatformConfigDocument
+  locatorTarget?: TargetResolutionPolicy | null
   aiRungAvailable?: boolean
   waitKindsAvailable?: readonly WaitKind[]
 }

@@ -3,6 +3,7 @@ import { frozenNotificationPolicySchema } from './notifications.js'
 import { aiExecutionConfigSchema } from './ai-runtime.js'
 import { snapshotNeedsBrowserAi } from './resolution.js'
 import { frozenResolutionSchema } from './resolution-policy.js'
+import { frozenLocatorResolutionSchema } from './locator-plan.js'
 import { evidencePolicySchema } from './evidence-policy.js'
 import { pageRefSchema } from './managed-browser.js'
 import { frozenTargetAuthSchema } from './platform-config.js'
@@ -18,6 +19,7 @@ import { frozenCredentialBindingSchema } from './credentials.js'
 import { secretRefSchema } from './secret-ref.js'
 import { sessionPolicySchema } from './session.js'
 import { scenarioOutputDeclSchema } from './scenario.js'
+import { serviceDeliveryPolicySchema } from './service-delivery.js'
 import { aiTaskEvidenceSnapshotSchema } from './ai-path-learning.js'
 import {
   contextKeySchema,
@@ -25,6 +27,7 @@ import {
   LIST_OUTPUT_PROTOCOL,
   executionPolicySchema,
   FORBIDDEN_CONTEXT_KEYS,
+  isAiStepType,
   stepSchema,
 } from './step.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
@@ -36,6 +39,12 @@ import {
   utcInstantSchema,
   type JsonValue,
 } from './wire.js'
+
+export const validationSubjectSchema = z.strictObject({
+  candidateId: z.string().min(1),
+  stepId: entityIdSchema,
+})
+export type ValidationSubject = z.infer<typeof validationSubjectSchema>
 
 /**
  * Run / StepRun / Attempt 状态词表。
@@ -108,7 +117,8 @@ export const debugOverlaySchema = z.strictObject({
   stepOverrides: z.record(
     z.string(),
     z.strictObject({
-      target: targetDescriptorSchema,
+      target: targetDescriptorSchema.optional(),
+      step: stepSchema.optional(),
     }),
   ),
 })
@@ -416,7 +426,7 @@ export const runSnapshotSchema = z
      * 冻结的有效解析策略。可选：旧快照无字段按 deterministic_only 解释。
      * 严禁增加 .default()，避免存量快照重算 digest 漂移。
      */
-    resolution: frozenResolutionSchema.optional(),
+    resolution: z.union([frozenResolutionSchema, frozenLocatorResolutionSchema]).optional(),
     /**
      * 冻结的场景业务输出声明。可选：存量快照没有此字段仍可解析。
      * 严禁增加 .default()，避免存量快照重算 digest 漂移。
@@ -424,8 +434,12 @@ export const runSnapshotSchema = z
     outputs: scenarioOutputDeclSchema.optional(),
     /** 冻结的 AI 动作事实采集策略（AP-0）。可选，严禁 .default()。 */
     aiTaskEvidence: aiTaskEvidenceSnapshotSchema.optional(),
+    /** 冻结的外部服务交付策略。可选，严禁 .default()。 */
+    serviceDelivery: serviceDeliveryPolicySchema.optional(),
     /** 试跑暂停断点：到达该步骤前夕切入 HOLDING。可选。 */
     pauseBeforeStepId: entityIdSchema.optional(),
+    /** 修复候选验证目标（R3：自愈修复闭环）。可选，严禁 .default()。 */
+    validationSubject: validationSubjectSchema.optional(),
     /** 预留给 P1。摘要不能代替内嵌的 steps。 */
     digest: z.string().min(1).max(128).optional(),
   })
@@ -443,8 +457,8 @@ export const runSnapshotSchema = z
     ) {
       ctx.addIssue({ code: 'custom', path: ['listOutputProtocol'], message: '列表型输出必须声明执行协议能力' })
     }
-    if (snapshot.outcomeManifest?.entries.some((entry) => entry.provenance === 'imported') && !snapshot.importedOutcomeProtocol) {
-      ctx.addIssue({ code: 'custom', path: ['importedOutcomeProtocol'], message: '导入成功条件必须声明执行协议能力' })
+    if (snapshot.outcomeManifest?.entries.some((entry) => entry.provenance === 'imported' || entry.provenance === 'generalized') && !snapshot.importedOutcomeProtocol) {
+      ctx.addIssue({ code: 'custom', path: ['importedOutcomeProtocol'], message: '导入或泛化成功条件必须声明执行协议能力' })
     }
     const hasControlFlowFeatures = snapshot.steps.some(
       (s) => s.type === 'decide' || s.type === 'probe' || s.type === 'compute' || s.type === 'loop' || Boolean(s.optional),
@@ -685,7 +699,12 @@ export const runSnapshotSchema = z
         message: '有 secretRef 时必须同时给出 targetAccountId',
       })
     }
-    if (snapshotNeedsBrowserAi(snapshot.steps, snapshot.resolution?.steps) && !snapshot.aiExecution) {
+    const resolution = snapshot.resolution
+    const needsAiExecution = resolution?.protocol === 'snapshot.resolution@2'
+      ? snapshot.steps.some((step) => !step.disabled && isAiStepType(step.type)) ||
+        Object.values(resolution.steps).some((plan) => plan.actual.some((route) => route !== 'rule'))
+      : snapshotNeedsBrowserAi(snapshot.steps, resolution ? resolution.steps : undefined)
+    if (needsAiExecution && !snapshot.aiExecution) {
       ctx.addIssue({
         code: 'custom',
         path: ['aiExecution'],

@@ -2,16 +2,6 @@ import { z } from 'zod'
 import { locatorCandidateSchema, targetDescriptorSchema, type LocatorCandidate, type TargetDescriptor } from './target-descriptor.js'
 
 /**
- * 自愈策略档位：
- * - off: 完全关闭自愈与诊断
- * - authoring_only: 出厂默认，仅在 Studio 调试与单步/场景试跑时激活自愈诊断与补丁建议
- * - safe_runtime: 允许在生产运行时针对无副作用/未触碰的步骤执行受控自愈 Attempt
- */
-export const HEALER_POLICIES = ['off', 'authoring_only', 'safe_runtime'] as const
-export type HealerPolicy = (typeof HEALER_POLICIES)[number]
-export const healerPolicySchema = z.enum(HEALER_POLICIES)
-
-/**
  * 自愈根因类型
  */
 export const HEALING_ROOT_CAUSES = [
@@ -106,6 +96,23 @@ export const REPAIR_CANDIDATE_STATUSES = [
 export type RepairCandidateStatus = (typeof REPAIR_CANDIDATE_STATUSES)[number]
 export const repairCandidateStatusSchema = z.enum(REPAIR_CANDIDATE_STATUSES)
 
+export const REPAIR_SOURCE_RUN_KINDS = ['published', 'trial', 'debug'] as const
+export type RepairSourceRunKind = (typeof REPAIR_SOURCE_RUN_KINDS)[number]
+export const repairSourceRunKindSchema = z.enum(REPAIR_SOURCE_RUN_KINDS)
+
+export const candidateRejectionReceiptSchema = z.strictObject({
+  rejectedAt: z.string(),
+  rejectedBy: z.string(),
+  reason: z.string().optional(),
+})
+export type CandidateRejectionReceipt = z.infer<typeof candidateRejectionReceiptSchema>
+
+export const candidateReopenReceiptSchema = z.strictObject({
+  reopenedAt: z.string(),
+  reopenedBy: z.string(),
+})
+export type CandidateReopenReceipt = z.infer<typeof candidateReopenReceiptSchema>
+
 export const patchTargetRefSchema = z.strictObject({
   kind: z.enum(['scenario', 'module']),
   scenarioId: z.string().uuid().optional(),
@@ -116,6 +123,7 @@ export const patchTargetRefSchema = z.strictObject({
   internalStepId: z.string().optional(),
   stepId: z.string().min(1),
   sourceDefinitionDigest: z.string().min(1),
+  sourceTargetDigest: z.string().min(1).optional(),
 })
 export type PatchTargetRef = z.infer<typeof patchTargetRefSchema>
 
@@ -185,8 +193,16 @@ export type AdoptionReceipt = z.infer<typeof adoptionReceiptSchema>
 export const repairCandidateSchema = z.strictObject({
   id: z.string().uuid(),
   candidateId: z.string().min(1),
-  runId: z.string().uuid(),
+  scenarioId: z.string().uuid(),
+  runId: z.string().uuid().nullable().optional(),
   sourceAttemptId: z.string().uuid(),
+  sourceTargetDigest: z.string().min(1),
+  dedupeKey: z.string().min(1),
+  observationCount: z.number().int().nonnegative().default(1),
+  rejectedObservationCount: z.number().int().nonnegative().default(0),
+  lastSeenRunId: z.string().uuid().nullable().optional(),
+  lastSeenAt: z.string(),
+  sourceRunKind: repairSourceRunKindSchema.default('published'),
   patchTargetRef: patchTargetRefSchema,
   authoringOrigin: authoringOriginSchema.optional(),
   patch: healingPatchSchema,
@@ -198,6 +214,8 @@ export const repairCandidateSchema = z.strictObject({
   validationScope: validationScopeSchema,
   validationRefs: validationRefsSchema.optional(),
   adoption: adoptionReceiptSchema.optional(),
+  rejection: candidateRejectionReceiptSchema.optional(),
+  reopenHistory: z.array(candidateReopenReceiptSchema).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -223,6 +241,8 @@ export const createRepairCandidateBodySchema = z.strictObject({
 export type CreateRepairCandidateBody = z.infer<typeof createRepairCandidateBodySchema>
 
 export const validateRepairCandidateBodySchema = z.strictObject({
+  targetAccountId: z.string().uuid().optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
   validationRunId: z.string().uuid().optional(),
   validationAttemptId: z.string().uuid().optional(),
   dataVersion: z.string().max(256).optional(),
@@ -243,3 +263,8 @@ export const rejectRepairCandidateBodySchema = z.strictObject({
   reason: z.string().max(1024).optional(),
 })
 export type RejectRepairCandidateBody = z.infer<typeof rejectRepairCandidateBodySchema>
+
+export const reopenRepairCandidateBodySchema = z.strictObject({
+  reason: z.string().max(1024).optional(),
+})
+export type ReopenRepairCandidateBody = z.infer<typeof reopenRepairCandidateBodySchema>

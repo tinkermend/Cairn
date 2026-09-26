@@ -31,6 +31,7 @@ export const demonstrationProfileSchema = z.enum([
   'cairn-crx-capture@1',
   'midscene-recorder-json@1',
   'midscene-yaml-flow@1',
+  'cairn-ai-trace@1',
 ])
 export type DemonstrationProfile = z.infer<typeof demonstrationProfileSchema>
 const shortText = z.string().max(512)
@@ -88,6 +89,7 @@ export const demonstrationFactSchema = z.strictObject({
     value: z
       .discriminatedUnion('state', [
         z.strictObject({ state: z.literal('literal'), text: z.string().max(16_384) }),
+        z.strictObject({ state: z.literal('reference'), from: z.string().max(128) }),
         z.strictObject({ state: z.enum(['redacted', 'missing']), reason: shortText }),
       ])
       .optional(),
@@ -130,8 +132,8 @@ export const demonstrationSourceSchema = z
     targetId: entityIdSchema,
     bindingId: entityIdSchema.optional(),
     sourceKind: z.enum(['interaction_trace', 'script', 'legacy_normalized']),
-    channel: z.enum(['extension', 'file']),
-    producerKind: z.enum(['cairn_crx', 'chrome_recorder', 'studio_preview', 'unknown']),
+    channel: z.enum(['extension', 'file', 'run']),
+    producerKind: z.enum(['cairn_crx', 'chrome_recorder', 'studio_preview', 'cairn_run', 'unknown']),
     actorKind: z.enum(['human', 'ai', 'unknown']),
     authorship: z.enum(['human', 'ai', 'unknown']),
     importProfile: demonstrationProfileSchema,
@@ -177,6 +179,7 @@ export const demonstrationPlacementSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('start') }),
   z.strictObject({ kind: z.literal('after'), nodeId: entityIdSchema }),
   z.strictObject({ kind: z.literal('replace'), nodeId: entityIdSchema }),
+  z.strictObject({ kind: z.literal('replace_sequence'), nodeId: entityIdSchema }),
   z.strictObject({ kind: z.literal('replace_initial'), nodeId: entityIdSchema }),
 ])
 export type DemonstrationPlacement = z.infer<typeof demonstrationPlacementSchema>
@@ -231,6 +234,7 @@ export const demonstrationDecisionSchema = z.discriminatedUnion('disposition', [
     reason: z.string().trim().min(1).max(200),
   }),
 ])
+export type DemonstrationDecision = z.infer<typeof demonstrationDecisionSchema>
 export const applyDemonstrationBodySchema = previewDemonstrationBodySchema.extend({
   idempotencyKey: idempotencyKeySchema,
   factDigest: digestSchema,

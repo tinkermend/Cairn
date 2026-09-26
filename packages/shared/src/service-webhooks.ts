@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { isBlockedAlertWebhookUrl } from './alerting.js'
-import { externalRunBodySchema } from './service-access.js'
+import { externalRunBodySchema, externalRunOutputSchema } from './service-access.js'
 import { outcomeStatusSchema } from './outcome.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
 
@@ -120,6 +120,7 @@ export const serviceWebhookPayloadSchema = z.strictObject({
     finishedAt: utcInstantSchema.nullable(),
     durationSeconds: z.number().int().nonnegative().nullable(),
     outputs: z.array(serviceWebhookOutputSchema).max(100),
+    runOutput: externalRunOutputSchema.optional(),
     evidenceSummary: z.strictObject({
       status: z.string().min(1).max(32),
       availableCount: z.number().int().nonnegative(),

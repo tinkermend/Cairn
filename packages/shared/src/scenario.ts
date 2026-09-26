@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { nextCursorSchema } from './rbac.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
+import { locatorPlanSchema } from './locator-plan.js'
 import { outputFieldNameSchema } from './output-schema.js'
 import {
   contextKeySchema,
@@ -143,8 +144,13 @@ export const scenarioDocumentSchema = z
     steps: z.array(stepSchema).min(1).max(MAX_SCENARIO_STEPS),
     outputs: scenarioOutputDeclSchema.optional(),
     resolution: resolutionPolicySchema.optional(),
+    locatorPlan: locatorPlanSchema.optional(),
+    locatorProtocol: z.literal(2).optional(),
   })
-  .superRefine(refineScenarioDocument)
+  .superRefine((document, ctx) => {
+    refineScenarioDocument(document, ctx)
+    if (document.resolution && document.locatorPlan) ctx.addIssue({ code: 'custom', path: ['locatorPlan'], message: '场景不能同时设置旧版与新版定位策略' })
+  })
 export type ScenarioDocument = z.infer<typeof scenarioDocumentSchema>
 
 export const scenarioDefinitionSchema = z
@@ -154,8 +160,13 @@ export const scenarioDefinitionSchema = z
     steps: z.array(stepSchema).min(1).max(MAX_COMPILED_SCENARIO_STEPS),
     outputs: scenarioOutputDeclSchema.optional(),
     resolution: resolutionPolicySchema.optional(),
+    locatorPlan: locatorPlanSchema.optional(),
+    locatorProtocol: z.literal(2).optional(),
   })
-  .superRefine(refineScenarioDocument)
+  .superRefine((document, ctx) => {
+    refineScenarioDocument(document, ctx)
+    if (document.resolution && document.locatorPlan) ctx.addIssue({ code: 'custom', path: ['locatorPlan'], message: '场景不能同时设置旧版与新版定位策略' })
+  })
 export type ScenarioDefinition = z.infer<typeof scenarioDefinitionSchema>
 
 export class ScenarioValidationError extends Error {

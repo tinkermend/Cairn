@@ -840,6 +840,19 @@ export function formatManagedPageLocation(url: string | null | undefined): strin
   }
 }
 
+export function managedPageBadge(kind: string): string {
+  switch (kind) {
+    case 'base':
+      return '底页'
+    case 'run':
+      return '运行页'
+    case 'popup':
+      return '弹出页'
+    default:
+      return '页面'
+  }
+}
+
 export function managedPageCaption(page: { kind: string; url?: string | null }): string {
   return formatManagedPageLocation(page.url) ?? (page.kind === 'popup' ? '弹出页' : page.kind === 'run' ? '运行页' : '会话页')
 }

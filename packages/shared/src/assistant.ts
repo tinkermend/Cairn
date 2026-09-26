@@ -14,6 +14,14 @@ import {
   type Step,
 } from './step.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
+import {
+  assistantAuthoringProposalSchema,
+  type AssistantAuthoringProposal,
+} from './authoring-proposals.js'
+import {
+  authoringDocumentDigest,
+  type ScenarioAuthoringDocumentV2,
+} from './authoring-document.js'
 
 export const ASSISTANT_HISTORICAL_CAPABILITY_IDS = [
   'run.diagnose',
@@ -348,9 +356,9 @@ export const ASSISTANT_CAPABILITIES: readonly AssistantCapabilityDef[] = [
   },
   {
     id: 'scenario.propose-step',
-    label: '单步修改建议',
+    label: '场景编排建议',
     requiredPermissions: ['ai:assist', 'workflow:read', 'workflow:write', 'target:read'],
-    description: '为已保存草稿中的现有步骤生成受限候选',
+    description: '为已保存草稿提出步骤新增、字段修改、删除与同分支移动等受限编排建议',
   },
   {
     id: 'scenario.compose_with_knowledge',
@@ -736,19 +744,19 @@ export const assistantGuideSchema = z.strictObject({
 })
 export type AssistantGuide = z.infer<typeof assistantGuideSchema>
 
+export const assistantClarifyOptionSchema = z.strictObject({
+  id: z.string().min(1).max(64),
+  label: z.string().min(1).max(128),
+  kind: z.enum(['capability', 'scenario']).optional(),
+  targetName: z.string().max(128).optional(),
+})
+export type AssistantClarifyOption = z.infer<typeof assistantClarifyOptionSchema>
+
 export const assistantClarifySchema = z.strictObject({
   kind: z.literal('clarify'),
   question: z.string().min(1).max(512),
   missingFields: z.array(z.string().min(1).max(64)).max(8),
-  options: z
-    .array(
-      z.strictObject({
-        id: z.string().min(1).max(64),
-        label: z.string().min(1).max(128),
-      }),
-    )
-    .max(8)
-    .optional(),
+  options: z.array(assistantClarifyOptionSchema).max(8).optional(),
 })
 export type AssistantClarify = z.infer<typeof assistantClarifySchema>
 
@@ -1025,6 +1033,7 @@ export const assistantResultSchema = z.discriminatedUnion('kind', [
   assistantExplanationSchema,
   assistantProposalSchema,
   assistantKnowledgeProposalSchema,
+  assistantAuthoringProposalSchema,
   assistantGuideSchema,
   assistantDiscoveryResultSchema,
   assistantClarifySchema,
@@ -1143,6 +1152,7 @@ export const createAssistantTurnBodySchema = z.strictObject({
   question: z.string().trim().min(1).max(ASSISTANT_MAX_QUESTION_CHARS),
   pageContext: assistantPageContextSchema.optional(),
   replyToTurnId: entityIdSchema.optional(),
+  selectedOptionId: z.string().min(1).max(128).optional(),
   taskId: entityIdSchema.optional(),
   expectedRevision: z.number().int().nonnegative().optional(),
   cancelCurrentTask: z.boolean().optional(),
@@ -1245,7 +1255,8 @@ const COMPARE_QUESTION = /对比|比较|差异|两.?次运行|较上一次/
 const DISCOVER_QUESTION = /有哪些场景|查找场景|搜索场景|列出场景|看下场景|所有场景|场景列表|(找|搜索|查找|列出|查看|看下).*(场景|工作流)|找对账/
 const BUSINESS_RECORDS_QUESTION = /有哪些(厂家|制造商|供应商)|查询(厂家|制造商|供应商)|(厂家|制造商|供应商)列表/
 const EXPLAIN_QUESTION = /这个场景|这一步|在做什么|解释步骤|引用不到/
-const PROPOSE_QUESTION = /改成|写清楚|修改建议|改用前一步|把.{1,16}改/
+const PROPOSE_QUESTION =
+  /改成|写清楚|修改建议|改用前一步|把.{1,16}改|编排|修改这步|(在|紧接着).*(后|之后|前|之前)(加|增加|插入|新增).*步|(删掉|删除|去掉).*(步|步骤)|(移动|调换|挪动).*(步|步骤)/
 const KNOWLEDGE_QUESTION = /按知识|根据术语|用做法|根据地图|知识建议|补全场景|按订单号|根据已有知识/
 
 export function cleanAssistantQuestion(question: string): string {
@@ -1464,11 +1475,11 @@ export function routeAssistantTurn(input: {
   }
   if (chosen === 'scenario.propose-step') {
     slots.changeRequest = input.question
-    if (!slots.draftRevision || !slots.stepId) {
+    if (!slots.scenarioId) {
       return {
         type: 'clarify',
-        missingFields: [!slots.stepId ? 'stepId' : 'draftRevision'],
-        question: '请先保存草稿并选中要修改的步骤。',
+        missingFields: ['scenarioId'],
+        question: '请先进入或指定场景后再生成编排建议。',
       }
     }
   }
@@ -1503,6 +1514,25 @@ export async function canAdoptAssistantProposal(input: {
   }
   const digest = await scenarioDocumentDigest(input.document)
   if (digest !== input.proposal.documentDigest) {
+    return { ok: false, reason: '本地文档与生成来源不一致，请基于当前草稿重新生成' }
+  }
+  return { ok: true }
+}
+
+export async function canAdoptAuthoringProposal(input: {
+  proposal: AssistantAuthoringProposal
+  revision: number
+  document: ScenarioAuthoringDocumentV2
+  hasFieldDrafts: boolean
+  remoteConflict: boolean
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (input.hasFieldDrafts) return { ok: false, reason: '当前步骤还有未提交的字段草稿，不能覆盖' }
+  if (input.remoteConflict) return { ok: false, reason: '远端草稿已变化，请基于当前草稿重新生成' }
+  if (input.revision !== input.proposal.base.draftRevision) {
+    return { ok: false, reason: '草稿版本已变化，请基于当前草稿重新生成' }
+  }
+  const digest = await authoringDocumentDigest(input.document)
+  if (digest !== input.proposal.base.documentDigest) {
     return { ok: false, reason: '本地文档与生成来源不一致，请基于当前草稿重新生成' }
   }
   return { ok: true }

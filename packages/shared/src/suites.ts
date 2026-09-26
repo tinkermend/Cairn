@@ -5,6 +5,9 @@ import { outcomeStatusSchema } from './outcome.js'
 import { runEvidenceStatusSchema } from './evidence.js'
 import { runStatusSchema } from './run.js'
 import { entityIdSchema, jsonValueSchema, runtimeSchemaVersionSchema, utcInstantSchema, type JsonValue } from './wire.js'
+import { outputPolicySchema, type OutputPolicy } from './reports-policy.js'
+import { suiteVerdictSchema, type SuiteVerdict } from './suite-verdict.js'
+export { SUITE_VERDICTS, suiteVerdictSchema, SUITE_VERDICT_LABELS, type SuiteVerdict } from './suite-verdict.js'
 
 export const SUITE_ADMISSION_PROTOCOL = 'suite-admission@1' as const
 export const SUITE_SCHEDULER_PROTOCOL = 'suite-scheduler@1' as const
@@ -39,17 +42,6 @@ export const SUITE_RUN_STATUSES = [
 ] as const
 export type SuiteRunStatus = (typeof SUITE_RUN_STATUSES)[number]
 export const suiteRunStatusSchema = z.enum(SUITE_RUN_STATUSES)
-
-export const SUITE_VERDICTS = ['all_pass', 'pass_with_warnings', 'anomalies_found', 'incomplete'] as const
-export type SuiteVerdict = (typeof SUITE_VERDICTS)[number]
-export const suiteVerdictSchema = z.enum(SUITE_VERDICTS)
-
-export const SUITE_VERDICT_LABELS: Record<SuiteVerdict, string> = {
-  all_pass: '全部通过',
-  pass_with_warnings: '通过但有提示',
-  anomalies_found: '发现异常',
-  incomplete: '无法完整判断',
-}
 
 export const EXECUTION_ORIGINS = ['standalone', 'suite_member', 'batch_item'] as const
 export type ExecutionOrigin = (typeof EXECUTION_ORIGINS)[number]
@@ -113,6 +105,7 @@ export const suiteDocumentSchema = z
     failurePolicy: suiteFailurePolicySchema.default('continue'),
     reportProfileId: entityIdSchema.optional(),
     autoGenerateFinalReport: z.boolean().default(false),
+    outputPolicy: outputPolicySchema.optional(),
   })
   .superRefine((document, ctx) => {
     const groupIds = new Set<string>()
@@ -602,6 +595,7 @@ export const suiteRunObservationSchema = z.object({
   readAt: utcInstantSchema,
   createdAt: utcInstantSchema,
   automaticReport: z.object({ status: z.enum(['pending', 'created', 'skipped', 'failed']), reportId: entityIdSchema.nullable(), reason: z.string().nullable() }).nullable().optional(),
+  runReportStatus: z.enum(['not_configured', 'pending', 'generating', 'generated', 'failed', 'partial_gaps']).optional(),
 })
 export type SuiteRunObservation = z.infer<typeof suiteRunObservationSchema>
 

@@ -52,6 +52,7 @@ export const screenshotEvidencePayloadSchema = z.strictObject({
   seq: z.number().int().nonnegative().optional(),
   diagnosis: screenshotDiagnosisSchema.optional(),
   omittedBefore: z.literal('initial_blank_page').optional(),
+  sensitive: z.boolean().optional(),
 })
 export type ScreenshotEvidencePayload = z.infer<typeof screenshotEvidencePayloadSchema>
 
@@ -63,6 +64,9 @@ export function writeEvidenceArtifactKey(input: {
   seq?: number
 }): string {
   if (input.type === 'video' && !input.attemptId) return 'video:run'
+  if (input.type === 'screenshot' && !input.attemptId && input.role === 'final') {
+    return 'screenshot:run:final'
+  }
   if (input.type === 'screenshot' && input.attemptId && input.role) {
     return `screenshot:${input.attemptId}:${input.role}:${input.seq ?? 0}`
   }

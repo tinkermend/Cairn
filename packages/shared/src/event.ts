@@ -42,6 +42,7 @@ export const RUN_EVENT_TYPES = [
   'run.output_settled',
   'iteration.started',
   'iteration.finished',
+  'run.report_changed',
 ] as const
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number]
 export const runEventTypeSchema = z.enum(RUN_EVENT_TYPES)
@@ -95,6 +96,7 @@ export const CHANGE_HINT_OBJECT_TYPES = [
   'schedule',
   'assistant_turn',
   'assistant_task',
+  'recording_draft',
 ] as const
 export type ChangeHintObjectType = (typeof CHANGE_HINT_OBJECT_TYPES)[number]
 export const changeHintObjectTypeSchema = z.enum(CHANGE_HINT_OBJECT_TYPES)

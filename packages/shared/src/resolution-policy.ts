@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { entityIdSchema } from './wire.js'
 import type { LocatorCandidate } from './target-descriptor.js'
+import { locatorLimitsSchema, locatorPlanSchema } from './locator-plan.js'
 
 export const RESOLUTION_PROTOCOL = 'snapshot.resolution@1' as const
 
@@ -67,15 +68,22 @@ export const targetResolutionPolicySchema = z
   .strictObject({
     preference: resolutionPolicySchema.optional(),
     ceiling: resolutionPolicySchema.optional(),
+    plan: locatorPlanSchema.optional(),
+    limits: locatorLimitsSchema.optional(),
   })
-  .refine((value) => value.preference !== undefined || value.ceiling !== undefined, {
+  .refine((value) => value.preference !== undefined || value.ceiling !== undefined || value.plan !== undefined || value.limits !== undefined, {
     message: '至少指定解析优先顺序或该系统解析上限',
+  })
+  .refine((value) => !(value.preference || value.ceiling) || !(value.plan || value.limits), {
+    message: '同一层不能同时使用旧版与新版定位策略',
   })
 export type TargetResolutionPolicy = z.infer<typeof targetResolutionPolicySchema>
 
 export const targetResolutionPolicyPatchSchema = z.strictObject({
   preference: resolutionPolicySchema.nullable().optional(),
   ceiling: resolutionPolicySchema.nullable().optional(),
+  plan: locatorPlanSchema.nullable().optional(),
+  limits: locatorLimitsSchema.nullable().optional(),
 })
 export type TargetResolutionPolicyPatch = z.infer<typeof targetResolutionPolicyPatchSchema>
 
@@ -85,28 +93,34 @@ export function parseTargetResolutionPolicy(value: unknown): TargetResolutionPol
     .strictObject({
       preference: resolutionPolicySchema.optional(),
       ceiling: resolutionPolicySchema.optional(),
+      plan: locatorPlanSchema.optional(),
+      limits: locatorLimitsSchema.optional(),
     })
     .parse(value)
-  if (parsed.preference === undefined && parsed.ceiling === undefined) return null
-  return parsed
+  if (parsed.preference === undefined && parsed.ceiling === undefined && parsed.plan === undefined && parsed.limits === undefined) return null
+  return targetResolutionPolicySchema.parse(parsed)
 }
 
 export function applyTargetResolutionPolicyPatch(
   current: TargetResolutionPolicy | null,
   patch: TargetResolutionPolicyPatch,
 ): TargetResolutionPolicy | null {
-  const next: { preference?: ResolutionPolicy; ceiling?: ResolutionPolicy } = { ...current }
+  const next: { preference?: ResolutionPolicy; ceiling?: ResolutionPolicy; plan?: import('./locator-plan.js').LocatorPlan; limits?: import('./locator-plan.js').LocatorLimits } = { ...current }
   if (patch.preference === null) delete next.preference
   else if (patch.preference !== undefined) next.preference = patch.preference
   if (patch.ceiling === null) delete next.ceiling
   else if (patch.ceiling !== undefined) next.ceiling = patch.ceiling
+  if (patch.plan === null) delete next.plan
+  else if (patch.plan !== undefined) { next.plan = patch.plan; delete next.preference; delete next.ceiling }
+  if (patch.limits === null) delete next.limits
+  else if (patch.limits !== undefined) { next.limits = patch.limits; delete next.ceiling; delete next.preference }
   return parseTargetResolutionPolicy(next)
 }
 
 export const RESOLUTION_CEILING_LABELS: Record<ResolutionPolicy, string> = {
-  deterministic_only: '仅规则（禁止任何 AI）',
-  prefer_deterministic_text: '允许平台文本 AI（纯规则 + Playwright AI，严格禁止视觉截图）',
-  prefer_deterministic: '允许完整多模态（规则 + 文本 AI + MidScene 视觉兜底）',
+  deterministic_only: '仅规则定位（不使用 AI 找元素）',
+  prefer_deterministic_text: '文本定位（规则 + 平台文本 AI，不使用视觉找元素）',
+  prefer_deterministic: '完整多模态定位（规则 + 文本 AI + 视觉 AI 兜底）',
   prefer_text_ai: '允许文本 AI 优先',
   prefer_ai: '允许视觉 AI 优先',
   ai_only: '允许仅 AI',
@@ -248,8 +262,8 @@ export function crossCheckMatches(
 ): boolean {
   const hay = elementTexts.map(normalizeCrossCheckText).filter(Boolean)
   return candidates.some((candidate) => {
-    if (candidate.by === 'css') return false
-    const needles = [candidate.value, candidate.name]
+    if (candidate.by === 'css' || candidate.by === 'testId') return false
+    const needles = (candidate.by === 'role' ? [candidate.name] : [candidate.value])
       .filter((item): item is string => Boolean(item))
       .map(normalizeCrossCheckText)
     return needles.some((needle) => needle && hay.some((item) => item.includes(needle)))

@@ -26,7 +26,7 @@ export const MAP_JOB_DEPTHS = ['reachability', 'structure', 'locator', 'safe_rev
 export type MapJobDepth = (typeof MAP_JOB_DEPTHS)[number]
 export const mapJobDepthSchema = z.enum(MAP_JOB_DEPTHS)
 
-export const MAP_JOB_STATUSES = ['queued', 'running', 'completed', 'cancelled', 'failed'] as const
+export const MAP_JOB_STATUSES = ['queued', 'running', 'completed', 'cancelled', 'failed', 'needs_review'] as const
 export type MapJobStatus = (typeof MAP_JOB_STATUSES)[number]
 export const mapJobStatusSchema = z.enum(MAP_JOB_STATUSES)
 
@@ -44,6 +44,7 @@ export const MAP_JOB_STOP_REASONS = [
   'compile_rejected',
   'active_slice_exists',
   'window_closed',
+  'action_outcome_unknown',
 ] as const
 export type MapJobStopReason = (typeof MAP_JOB_STOP_REASONS)[number]
 export const mapJobStopReasonSchema = z.enum(MAP_JOB_STOP_REASONS)
@@ -236,6 +237,15 @@ export const frozenMapJobSchema = z.strictObject({
   startBefore: utcInstantSchema.optional(),
   source: z.enum(['manual', 'scheduled', 'explore']).default('manual'),
   occurrenceId: entityIdSchema.optional(),
+  exploration: z.record(z.string(), z.unknown()).optional(),
+  explorationPolicyRevision: z.number().int().min(1).optional(),
+  entryProfile: z.record(z.string(), z.unknown()).optional(),
+  recipe: z.record(z.string(), z.unknown()).optional(),
+  recipeRevision: z.number().int().min(1).optional(),
+  stateRule: z.record(z.string(), z.unknown()).optional(),
+  stateRuleRevision: z.number().int().min(1).optional(),
+  approvalEnvelope: z.array(z.record(z.string(), z.unknown())).optional(),
+  budget: z.record(z.string(), z.unknown()).optional(),
 })
 export type FrozenMapJob = z.infer<typeof frozenMapJobSchema>
 

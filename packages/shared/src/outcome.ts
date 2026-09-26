@@ -55,6 +55,7 @@ export const OUTCOME_PROVENANCES = [
   'module_inherited',
   'recorded',
   'imported',
+  'generalized',
   'ai_compiled',
   'legacy_assert',
   'runtime_invariant',

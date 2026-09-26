@@ -10,6 +10,7 @@ import {
 import { aiOutputSchemaSchema, outputFieldNameSchema } from './output-schema.js'
 import { executionErrorCategorySchema } from './runtime-error.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
+import { locatorPlanSchema } from './locator-plan.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
 import { durationMsSchema, entityIdSchema, jsonValueSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
 import { runFileHandleSchema } from './run-file.js'
@@ -134,8 +135,9 @@ export const executionPolicySchema = z.strictObject({
   timeoutMs: timeoutMsSchema.optional(),
   retryLimit: z.number().int().min(0).max(10).optional(),
   resolution: resolutionPolicySchema.optional(),
+  locatorPlan: locatorPlanSchema.optional(),
   deepLocate: z.boolean().optional(),
-})
+}).refine((value) => !(value.resolution && value.locatorPlan), '同一步骤不能同时设置旧版与新版定位策略')
 export type ExecutionPolicy = z.infer<typeof executionPolicySchema>
 
 /** Delay 上限 5 分钟：这是测试夹具，不是平台超时上限。 */
@@ -599,7 +601,7 @@ export const mapProposeStepSchema = z.strictObject({
 export const mapGuardedActionStepSchema = z.strictObject({
   ...stepCommon,
   type: z.literal('map_guarded_action'),
-  effectType: z.literal('READ_ONLY'),
+  effectType: z.enum(['READ_ONLY', 'SIDE_EFFECT']),
   input: mapGuardedActionInputSchema,
 })
 export const verifyContextInputSchema = z.strictObject({

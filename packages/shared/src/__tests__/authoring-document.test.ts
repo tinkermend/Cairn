@@ -11,11 +11,13 @@ import {
   normalizeAuthoringDocument,
   removeNode,
   replaceNode,
+  replaceNodeWithMany,
   unwrapBlock,
   wrapNodesInIfBlock,
   saveScenarioDraftBodySchema,
   scenarioAuthoringDocumentV2Schema,
   walkAuthoringNodes,
+  authoringStepOriginSchema,
   CANDIDATE_GROUPS_PROTOCOL,
   MODULE_MANIFEST_PROTOCOL,
   RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
@@ -353,4 +355,41 @@ describe('包裹为条件块 / 解除包裹（复查修复）', () => {
     const result = unwrapBlock(withElseDoc, blockId)
     expect(result.ok).toBe(false)
   })
+
+  it('replaceNodeWithMany 将单节点替换为序列，并支持嵌套分支', () => {
+    const wrapped = wrapNodesInIfBlock(doc, [ids[1]!, ids[2]!], { blockId })
+    expect(wrapped.ok).toBe(true)
+    if (!wrapped.ok) return
+
+    // 在 if 块的 then 分支中将 ids[1] 替换为两个新步骤
+    const repA = step('30000000-0000-4000-8000-00000000000a')
+    const repB = step('30000000-0000-4000-8000-00000000000b')
+    const replacedNested = replaceNodeWithMany(wrapped.document, ids[1]!, [repA, repB])
+    const ifNode = replacedNested.nodes.find((n) => authoringNodeId(n) === blockId) as any
+    expect(ifNode?.then.map(authoringNodeId)).toEqual([
+      '30000000-0000-4000-8000-00000000000a',
+      '30000000-0000-4000-8000-00000000000b',
+      ids[2],
+    ])
+  })
+
+  it('authoringStepOriginSchema 兼容历史无 kind 形状与新 AI 固化来源', () => {
+    const legacy = {
+      moduleVersionId: '00000000-0000-4000-8000-000000000001',
+      invocationId: '00000000-0000-4000-8000-000000000002',
+    }
+    const parsedLegacy = authoringStepOriginSchema.parse(legacy)
+    expect(parsedLegacy.moduleVersionId).toBe(legacy.moduleVersionId)
+
+    const solidification = {
+      kind: 'ai_solidification' as const,
+      sourceStepId: '00000000-0000-4000-8000-000000000003',
+      instruction: '点击登录按钮',
+      runId: '00000000-0000-4000-8000-000000000004',
+      attemptId: '00000000-0000-4000-8000-000000000005',
+    }
+    const parsedSolidification = authoringStepOriginSchema.parse(solidification)
+    expect(parsedSolidification.kind).toBe('ai_solidification')
+  })
 })
+

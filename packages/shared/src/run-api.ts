@@ -28,6 +28,7 @@ import { outcomeResultDtoSchema, outcomeStatusSchema, type OutcomeResultDto, typ
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
 import { executionOriginSchema } from './suites.js'
 import { entityIdSchema, jsonValueSchema, utcInstantSchema } from './wire.js'
+import { runReportStatusSchema, type RunReportStatus } from './reports.js'
 import { runOutputSchema, type RunOutput } from './run-output.js'
 
 export const RUN_ERROR_CODES = [
@@ -95,7 +96,7 @@ export const createRunBodySchema = z.strictObject({
   scenarioId: entityIdSchema,
   scenarioVersionId: entityIdSchema.optional(),
   targetAccountId: entityIdSchema.optional(),
-  input: runInputSchema.optional(),
+  input: z.lazy(() => runInputSchema).optional(),
   policy: executionPolicySchema.optional(),
   /** 会话策略覆盖；与 policy 并列，不进 Step 级 executionPolicy。 */
   sessionPolicy: sessionPolicyOverrideSchema.optional(),
@@ -110,7 +111,7 @@ export type CreateRunBody = z.infer<typeof createRunBodySchema>
 export const trialRunBodySchema = z.strictObject({
   revision: z.number().int().min(1),
   targetAccountId: entityIdSchema.optional(),
-  input: runInputSchema.optional(),
+  input: z.lazy(() => runInputSchema).optional(),
   policy: executionPolicySchema.optional(),
   sessionPolicy: sessionPolicyOverrideSchema.optional(),
   evidencePolicy: evidencePolicySchema.optional(),
@@ -214,6 +215,8 @@ export const runSummarySchema = z.object({
   suiteRunId: entityIdSchema.nullable().optional(),
   suiteMemberId: z.string().nullable().optional(),
   outputSummary: z.string().nullable().optional(),
+  runReportStatus: runReportStatusSchema.optional(),
+  reportId: entityIdSchema.nullable().optional(),
   deletedAt: instantOrNull.optional(),
   deletedBy: resourceDeletedBySchema.nullable().optional(),
 })
@@ -312,6 +315,7 @@ export const runDetailSchema = runSummarySchema
     debugOverlay: debugOverlaySchema.nullable().optional(),
     authCheckpoint: authCheckpointSchema.nullable().optional(),
     iterationsSummary: z.record(z.string(), loopIterationSummarySchema).optional(),
+    reportError: z.string().nullable().optional(),
   })
 export type RunDetailDto = z.infer<typeof runDetailSchema>
 
@@ -328,6 +332,7 @@ export const runListQuerySchema = z.object({
   sourceKind: z.enum(['console', 'service']).optional(),
   suiteRunId: entityIdSchema.optional(),
   executionOrigin: executionOriginSchema.optional(),
+  hasReport: z.coerce.boolean().optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),

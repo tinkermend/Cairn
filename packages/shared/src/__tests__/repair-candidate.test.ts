@@ -57,12 +57,21 @@ describe('repair candidate and context schemas', () => {
     const candidate = {
       id: '11111111-1111-4111-8111-111111111111',
       candidateId: 'rep_cand_123',
+      scenarioId: '11111111-1111-4111-8111-111111111111',
       runId: '22222222-2222-4222-8222-222222222222',
       sourceAttemptId: '33333333-3333-4333-8333-333333333333',
+      sourceTargetDigest: 'sha256:target123',
+      dedupeKey: 'sha256:dedupe123',
+      observationCount: 1,
+      rejectedObservationCount: 0,
+      lastSeenRunId: '22222222-2222-4222-8222-222222222222',
+      lastSeenAt: '2026-09-23T00:00:00.000Z',
+      sourceRunKind: 'published',
       patchTargetRef: {
         kind: 'scenario',
         stepId: 'step_login_btn',
         sourceDefinitionDigest: 'sha256:abc',
+        sourceTargetDigest: 'sha256:target123',
       },
       patch: {
         kind: 'REPLACE_LOCATOR',

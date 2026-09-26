@@ -1,13 +1,280 @@
 import { z } from 'zod'
-import { entityIdSchema, utcInstantSchema, jsonValueSchema } from './wire.js'
-import { outcomeContractSchema, type OutcomeContract } from './outcome.js'
+import { entityIdSchema, utcInstantSchema, jsonValueSchema, timeoutMsSchema } from './wire.js'
+import {
+  outcomeContractSchema,
+  outcomeRuleSchema,
+  outcomeSeveritySchema,
+  outcomeOnViolationSchema,
+  type OutcomeContract,
+  type OutcomeSeverity,
+  type OutcomeOnViolation,
+} from './outcome.js'
 import { scenarioOutputDeclSchema, type ScenarioOutputDecl } from './run-output.js'
-import { effectTypeSchema, scenarioInputTypeSchema, type EffectType, type ScenarioInputType } from './step.js'
+import {
+  contextKeySchema,
+  effectTypeSchema,
+  executableStepTypeSchema,
+  scenarioInputTypeSchema,
+  stepSchema,
+  type EffectType,
+  type ScenarioInputType,
+  type Step,
+  type ExecutableStepType,
+} from './step.js'
 import { authoringNodeSchema, type AuthoringNode } from './authoring-document.js'
 import { compileDiagnosticSchema, type CompileDiagnostic } from './scenario.js'
 import { dataBindingSchema, type DataBinding } from './dataset.js'
 
 export const digestHexSchema = z.string().regex(/^[a-f0-9]{64}$/, '摘要须为 64 位十六进制 SHA-256')
+
+// ---------------------------------------------------------------------------
+// C0: Assistant Authoring Proposal & Operations (Structured Draft Editing)
+// ---------------------------------------------------------------------------
+
+export const AUTHORING_ALLOWED_STEP_TYPES = [
+  'navigate',
+  'click',
+  'fill',
+  'extract',
+  'assert',
+  'select',
+  'keyboard',
+  'wait',
+  'ai_action',
+  'ai_extract',
+  'ai_assert',
+] as const
+export type AuthoringAllowedStepType = (typeof AUTHORING_ALLOWED_STEP_TYPES)[number]
+export const authoringAllowedStepTypeSchema = z.enum(AUTHORING_ALLOWED_STEP_TYPES)
+
+export function isAuthoringAllowedStepType(type: string): type is AuthoringAllowedStepType {
+  return (AUTHORING_ALLOWED_STEP_TYPES as readonly string[]).includes(type)
+}
+
+export const AUTHORING_STEP_FIELD_POLICIES: Record<
+  AuthoringAllowedStepType,
+  {
+    allowedInputKeys: readonly string[]
+    allowsOutputKey: boolean
+  }
+> = {
+  navigate: {
+    allowedInputKeys: ['url'],
+    allowsOutputKey: false,
+  },
+  click: {
+    allowedInputKeys: ['target'],
+    allowsOutputKey: false,
+  },
+  select: {
+    allowedInputKeys: ['target', 'value', 'label'],
+    allowsOutputKey: false,
+  },
+  keyboard: {
+    allowedInputKeys: ['target', 'key'],
+    allowsOutputKey: false,
+  },
+  wait: {
+    allowedInputKeys: ['target', 'condition', 'timeoutMs', 'kind', 'durationMs', 'urlPattern', 'text'],
+    allowsOutputKey: false,
+  },
+  fill: {
+    allowedInputKeys: ['target', 'from', 'fromField', 'value', 'sensitive'],
+    allowsOutputKey: false,
+  },
+  extract: {
+    allowedInputKeys: ['target', 'as', 'attribute', 'many'],
+    allowsOutputKey: true,
+  },
+  assert: {
+    allowedInputKeys: ['target', 'expect'],
+    allowsOutputKey: false,
+  },
+  ai_action: {
+    allowedInputKeys: ['instruction'],
+    allowsOutputKey: false,
+  },
+  ai_extract: {
+    allowedInputKeys: ['instruction', 'schema'],
+    allowsOutputKey: true,
+  },
+  ai_assert: {
+    allowedInputKeys: ['instruction'],
+    allowsOutputKey: false,
+  },
+}
+
+export const authoringInsertStepOperationSchema = z.strictObject({
+  kind: z.literal('insert_step'),
+  id: z.string().min(1).max(128),
+  step: stepSchema,
+  parentBlockId: entityIdSchema.optional(),
+  branchKey: z.enum(['then', 'else', 'body']).optional(),
+  anchorStepId: z.string().min(1).max(128).nullable().optional(),
+})
+export type AuthoringInsertStepOperation = z.infer<typeof authoringInsertStepOperationSchema>
+
+export const authoringUpdateStepOperationSchema = z.strictObject({
+  kind: z.literal('update_step'),
+  id: z.string().min(1).max(128),
+  stepId: entityIdSchema,
+  patch: z.strictObject({
+    name: z.string().trim().min(1).max(128).optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
+    outputKey: contextKeySchema.optional(),
+  }),
+})
+export type AuthoringUpdateStepOperation = z.infer<typeof authoringUpdateStepOperationSchema>
+
+export const authoringRemoveStepOperationSchema = z.strictObject({
+  kind: z.literal('remove_step'),
+  id: z.string().min(1).max(128),
+  stepId: entityIdSchema,
+})
+export type AuthoringRemoveStepOperation = z.infer<typeof authoringRemoveStepOperationSchema>
+
+export const authoringMoveStepOperationSchema = z.strictObject({
+  kind: z.literal('move_step'),
+  id: z.string().min(1).max(128),
+  stepId: entityIdSchema,
+  parentBlockId: entityIdSchema.optional(),
+  branchKey: z.enum(['then', 'else', 'body']).optional(),
+  anchorStepId: z.string().min(1).max(128).nullable().optional(),
+})
+export type AuthoringMoveStepOperation = z.infer<typeof authoringMoveStepOperationSchema>
+
+export const authoringSetStepPolicyOperationSchema = z.strictObject({
+  kind: z.literal('set_step_policy'),
+  id: z.string().min(1).max(128),
+  stepId: entityIdSchema,
+  timeoutMs: timeoutMsSchema.optional(),
+  retryLimit: z.number().int().min(0).max(10).optional(),
+})
+export type AuthoringSetStepPolicyOperation = z.infer<typeof authoringSetStepPolicyOperationSchema>
+
+export const authoringAddOutcomeOperationSchema = z.strictObject({
+  kind: z.literal('add_outcome'),
+  id: z.string().min(1).max(128),
+  stepId: entityIdSchema,
+  meaning: z.string().min(1).max(512),
+  rule: outcomeRuleSchema,
+  severity: outcomeSeveritySchema.default('SHOULD'),
+  onViolation: outcomeOnViolationSchema.default('continue'),
+})
+export type AuthoringAddOutcomeOperation = z.infer<typeof authoringAddOutcomeOperationSchema>
+
+export const authoringOperationSchema = z.discriminatedUnion('kind', [
+  authoringInsertStepOperationSchema,
+  authoringUpdateStepOperationSchema,
+  authoringRemoveStepOperationSchema,
+  authoringMoveStepOperationSchema,
+  authoringSetStepPolicyOperationSchema,
+  authoringAddOutcomeOperationSchema,
+])
+export type AuthoringOperation = z.infer<typeof authoringOperationSchema>
+
+export const authoringDiffAddSchema = z.strictObject({
+  type: z.literal('add'),
+  stepId: entityIdSchema,
+  stepName: z.string().min(1).max(128),
+  stepType: executableStepTypeSchema,
+  parentBlockId: entityIdSchema.optional(),
+  branchKey: z.enum(['then', 'else', 'body']).optional(),
+  index: z.number().int().nonnegative(),
+  detail: z.string().max(512).optional(),
+  riskLevel: effectTypeSchema.optional(),
+})
+export type AuthoringDiffAdd = z.infer<typeof authoringDiffAddSchema>
+
+export const authoringDiffRemoveSchema = z.strictObject({
+  type: z.literal('remove'),
+  stepId: entityIdSchema,
+  stepName: z.string().min(1).max(128),
+  stepType: executableStepTypeSchema,
+  parentBlockId: entityIdSchema.optional(),
+  branchKey: z.enum(['then', 'else', 'body']).optional(),
+  index: z.number().int().nonnegative(),
+  detail: z.string().max(512).optional(),
+  riskLevel: effectTypeSchema.optional(),
+})
+export type AuthoringDiffRemove = z.infer<typeof authoringDiffRemoveSchema>
+
+export const authoringDiffModifySchema = z.strictObject({
+  type: z.literal('modify'),
+  stepId: entityIdSchema,
+  stepName: z.string().min(1).max(128),
+  stepType: executableStepTypeSchema,
+  fieldPath: z.array(z.string().min(1)).max(8),
+  from: z.unknown().optional(),
+  to: z.unknown().optional(),
+  sensitive: z.boolean().optional(),
+})
+export type AuthoringDiffModify = z.infer<typeof authoringDiffModifySchema>
+
+export const authoringDiffMoveSchema = z.strictObject({
+  type: z.literal('move'),
+  stepId: entityIdSchema,
+  stepName: z.string().min(1).max(128),
+  stepType: executableStepTypeSchema,
+  parentBlockId: entityIdSchema.optional(),
+  branchKey: z.enum(['then', 'else', 'body']).optional(),
+  fromIndex: z.number().int().nonnegative(),
+  toIndex: z.number().int().nonnegative(),
+  detail: z.string().max(512).optional(),
+})
+export type AuthoringDiffMove = z.infer<typeof authoringDiffMoveSchema>
+
+export const authoringDiffOutcomeAddSchema = z.strictObject({
+  type: z.literal('outcome_add'),
+  stepId: entityIdSchema,
+  stepName: z.string().min(1).max(128),
+  contractId: entityIdSchema,
+  meaning: z.string().min(1).max(512),
+  ruleKind: z.enum(['deterministic', 'ai']),
+  severity: outcomeSeveritySchema,
+  onViolation: outcomeOnViolationSchema,
+  detail: z.string().max(512).optional(),
+})
+export type AuthoringDiffOutcomeAdd = z.infer<typeof authoringDiffOutcomeAddSchema>
+
+export const authoringDiffSchema = z.discriminatedUnion('type', [
+  authoringDiffAddSchema,
+  authoringDiffRemoveSchema,
+  authoringDiffModifySchema,
+  authoringDiffMoveSchema,
+  authoringDiffOutcomeAddSchema,
+])
+export type AuthoringDiff = z.infer<typeof authoringDiffSchema>
+
+export const authoringIntentCoverageItemSchema = z.strictObject({
+  intentId: z.string().min(1).max(128),
+  operationIds: z.array(z.string().min(1).max(128)),
+})
+export type AuthoringIntentCoverageItem = z.infer<typeof authoringIntentCoverageItemSchema>
+
+export const assistantAuthoringProposalSchema = z.strictObject({
+  kind: z.literal('authoring_proposal'),
+  proposalId: entityIdSchema,
+  scenarioId: entityIdSchema,
+  base: z.strictObject({
+    draftRevision: z.number().int().nonnegative(),
+    documentDigest: digestHexSchema,
+    dependencyFingerprint: z.string().min(1).max(128),
+  }),
+  operations: z.array(authoringOperationSchema).min(1).max(4),
+  candidateDigest: digestHexSchema,
+  intentCoverage: z.array(authoringIntentCoverageItemSchema),
+  diffs: z.array(authoringDiffSchema),
+  diagnostics: z.array(compileDiagnosticSchema),
+  executable: z.boolean(),
+  validation: z.strictObject({
+    schema: z.literal('passed'),
+    expansion: z.literal('passed'),
+    compiler: z.enum(['passed', 'baseline_errors']),
+  }),
+})
+export type AssistantAuthoringProposal = z.infer<typeof assistantAuthoringProposalSchema>
+
 
 // ---------------------------------------------------------------------------
 // C1: Authoring Edit Proposal (V2 Scenario / Module)

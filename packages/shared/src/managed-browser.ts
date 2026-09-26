@@ -106,8 +106,16 @@ export const managedPageSummarySchema = z.strictObject({
   viewing: z.boolean(),
   currentExecution: z.boolean(),
   url: z.string().max(2048).nullable().optional(),
+  canClose: z.boolean().optional(),
 })
 export type ManagedPageSummary = z.infer<typeof managedPageSummarySchema>
+
+export const closeManagedPageResponseSchema = z.strictObject({
+  closed: z.boolean(),
+  pageId: z.string(),
+  activePageId: z.string(),
+})
+export type CloseManagedPageResponse = z.infer<typeof closeManagedPageResponseSchema>
 
 export const managedBrowserAuthHoldSchema = z.strictObject({
   expiresAt: utcInstantSchema,

@@ -12,6 +12,10 @@ describe('MENU_CATALOG and routing consistency', () => {
       expect(ids.has(item.id)).toBe(false)
       ids.add(item.id)
       expect(item.route.startsWith('/')).toBe(true)
+      if (item.id === 'menu.evidence') {
+        // menu.evidence 已在侧栏与能力地图中收归「运行记录」，保留契约仅用于深链重定向
+        continue
+      }
       // Check that RBAC capability exists
       const cap = capabilityById(item.id)
       expect(cap).toBeDefined()

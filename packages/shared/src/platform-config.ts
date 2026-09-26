@@ -18,6 +18,7 @@ import {
   FACTORY_RESOLUTION_DEFAULT,
   resolutionPolicySchema,
 } from './resolution-policy.js'
+import { locatorLimitsSchema, locatorPlanSchema } from './locator-plan.js'
 import { LOCAL_SECRET_PROVIDER, secretRefSchema } from './secret-ref.js'
 import {
   DEFAULT_SESSION_AUTH_PROBE_INTERVAL_SECONDS,
@@ -352,6 +353,7 @@ export const platformConfigDocumentSchema = z
     session: platformSessionDefaultsSchema,
     evidence: platformEvidenceDefaultsSchema,
     browserAi: platformBrowserAiConfigSchema,
+    locator: z.strictObject({ defaultPlan: locatorPlanSchema, limits: locatorLimitsSchema }).optional(),
     platformAi: platformAiConfigSchema.default(FACTORY_PLATFORM_AI),
     analysisAi: analysisAiSchema.default(FACTORY_ANALYSIS_AI),
     sessionScheduling: platformSessionSchedulingSchema.default(FACTORY_SESSION_SCHEDULING),

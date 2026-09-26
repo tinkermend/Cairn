@@ -52,8 +52,14 @@ export const platformNotificationsSchema = z
         .max(2048)
         .refine((v) => {
           const u = new URL(v)
-          return u.protocol === 'https:' && !u.username && !u.password && !u.search && !u.hash
-        }, '控制台地址须为不含认证信息的 HTTPS 地址'),
+          return (
+            (u.protocol === 'https:' || u.protocol === 'http:') &&
+            !u.username &&
+            !u.password &&
+            !u.search &&
+            !u.hash
+          )
+        }, '控制台地址须为不含认证信息的 HTTP 或 HTTPS 地址'),
     ]),
     smtp: notificationSmtpSchema.nullable(),
     channels: z.array(notificationChannelSchema).max(16),
@@ -265,6 +271,7 @@ export const notificationChannelStateSchema = z
   })
   .refine((v) => v.enabled !== undefined || v.revokeVersion !== undefined, '请选择操作')
 export const notificationListQuerySchema = z.object({
+  search: z.string().trim().max(128).optional(),
   type: z.enum(['run', 'alert', 'test']).optional(),
   status: notificationStatusSchema.optional(),
   targetId: entityIdSchema.optional(),

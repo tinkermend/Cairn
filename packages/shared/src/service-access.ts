@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { entityIdSchema, jsonValueSchema, utcInstantSchema } from "./wire.js";
+import { entityIdSchema, jsonValueSchema, utcInstantSchema, type JsonValue } from "./wire.js";
 import { runInputSchema, runStatusSchema } from "./run.js";
 import { idempotencyKeySchema, stepRunDtoSchema } from "./run-api.js";
 import { outcomeResultDtoSchema, outcomeStatusSchema } from "./outcome.js";
@@ -10,6 +10,12 @@ import {
   normalizeIpAllowlist,
   normalizeIpCidr,
 } from "./service-network.js";
+export * from "./service-delivery.js";
+import {
+  serviceDeliveryPolicySchema,
+  DEFAULT_SERVICE_DELIVERY_POLICY,
+  externalRunOutputSchema,
+} from "./service-delivery.js";
 
 export const SERVICE_SCOPES = [
   "run:execute",
@@ -17,12 +23,14 @@ export const SERVICE_SCOPES = [
   "run:cancel",
   "evidence:read",
   "ai:execute",
+  "report:export",
+  "report:read",
 ] as const;
 export type ServiceScope = (typeof SERVICE_SCOPES)[number];
 export const serviceScopesSchema = z
   .array(z.enum(SERVICE_SCOPES))
   .min(1)
-  .max(5)
+  .max(7)
   .refine((xs) => new Set(xs).size === xs.length, "权限不得重复")
   .refine(
     (xs) => !xs.includes("evidence:read") || xs.includes("run:read"),
@@ -36,6 +44,7 @@ export const serviceCallerBodySchema = z.strictObject({
   requestsPerMinute: z.number().int().min(1).max(600).default(60),
   maxOutstandingRuns: z.number().int().min(1).max(20).default(2),
   runTimeoutSeconds: z.number().int().min(1).max(3600).default(600),
+  deliveryPolicy: serviceDeliveryPolicySchema.default(DEFAULT_SERVICE_DELIVERY_POLICY),
 });
 export type ServiceCallerBody = z.infer<typeof serviceCallerBodySchema>;
 const serviceIpCidrSchema = z
@@ -88,6 +97,7 @@ export const serviceCallerSchema = serviceCallerBodySchema
     credentialCount: z.number().int().nonnegative(),
     /** 空数组代表不限制来源；非空时每个开放请求必须命中其中一项。 */
     ipWhitelist: z.array(serviceIpCidrSchema).max(64),
+    deliveryPolicy: serviceDeliveryPolicySchema,
   })
   .strip();
 export type ServiceCallerDto = z.infer<typeof serviceCallerSchema>;
@@ -438,6 +448,7 @@ export const externalOutcomeResultSchema = outcomeResultDtoSchema.pick({
   evaluatedAt: true,
 });
 export type ExternalOutcomeResult = z.infer<typeof externalOutcomeResultSchema>;
+
 /**
  * 执行状态（status）、业务结果（outcomeStatus）与证据完整性（evidenceStatus）
  * 分别表达：SUCCEEDED 不代表业务通过。strict 防止内部字段未经审定外泄。
@@ -457,6 +468,7 @@ export const externalRunSchema = z.strictObject({
   evidenceStatus: z.enum(["PENDING", "COMPLETE", "INCOMPLETE"]),
   outcomeStatus: outcomeStatusSchema,
   outcomeResults: z.array(externalOutcomeResultSchema),
+  runOutput: externalRunOutputSchema.nullish(),
   stepRuns: z.array(
     stepRunDtoSchema.omit({ attempts: true }).extend({
       attempts: z.array(

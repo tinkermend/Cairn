@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  generatorTemplateIssues,
   evaluateGenerator,
   evaluateGeneratorWithUniqueness,
   materializeBatchInputs,
@@ -8,6 +9,12 @@ import {
 } from '../index.js'
 
 describe('Data Generator Engine (DC-01, DC-02)', () => {
+  it('生成器宏目录与求值器接受相同语法，并拒绝未知宏', () => {
+    expect(generatorTemplateIssues('商品_{{rand:8}}')).toEqual([])
+    expect(String(evaluateGenerator({ kind: 'template', pattern: '商品_{{rand:8}}', unique: false }))).toMatch(/^商品_[A-Za-z0-9]{8}$/)
+    expect(generatorTemplateIssues('商品_{{random_string}}')).toHaveLength(1)
+    expect(() => evaluateGenerator({ kind: 'template', pattern: '商品_{{random_string}}', unique: false })).toThrow('不支持的生成器宏')
+  })
   it('DC-01（随机数值范围与精度）：100 次求值严格落在 [10, 20] 且小数位不超过 2 位', () => {
     const spec: DataGeneratorSpec = {
       kind: 'random_number',

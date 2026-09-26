@@ -26,6 +26,7 @@ import {
   FACTORY_RESOLUTION_DEFAULT,
   type ResolutionPolicy,
 } from './resolution-policy.js'
+import type { LocatorRoute } from './locator-plan.js'
 import {
   AI_STEP_TYPES,
   aiAtomicActionInputSchema,
@@ -100,6 +101,7 @@ export const aiExecutionConfigSchema = z.strictObject({
   requestTimeoutMs: z.number().int().positive().max(300_000),
   hangWaitMs: z.number().int().positive().max(60_000),
   preferAriaTree: z.boolean().optional(),
+  visionEnabled: z.boolean().optional(),
   platformAi: platformAiExecutionConfigSchema.optional(),
 })
 export type AiExecutionConfig = z.infer<typeof aiExecutionConfigSchema>
@@ -202,6 +204,8 @@ export function defaultAuthoringCapabilities(): AuthoringCapabilities {
 }
 
 export function resolutionCapabilitiesFromPlatform(document: PlatformConfigDocument): ResolutionCapabilities {
+  const textReady = Boolean(document.platformAi.enabled && document.platformAi.baseUrl && document.platformAi.model && document.platformAi.secretRef)
+  const visionReady = Boolean(document.browserAi.enabled && document.browserAi.baseUrl && document.browserAi.model && document.browserAi.modelFamily && document.browserAi.secretRef)
   const ceiling = document.browserAi.enabled
     ? (document.browserAi.resolutionCeiling ?? FACTORY_RESOLUTION_CEILING)
     : 'deterministic_only'
@@ -217,6 +221,8 @@ export function resolutionCapabilitiesFromPlatform(document: PlatformConfigDocum
   return {
     ceiling,
     default: document.browserAi.defaultResolution ?? FACTORY_RESOLUTION_DEFAULT,
+    textReady,
+    visionReady,
     aiRungAvailable:
       document.browserAi.enabled &&
       ceiling !== 'deterministic_only' &&
@@ -306,27 +312,37 @@ export function resolveAiExecutionFromPlatform(
     targetCeiling?: ResolutionPolicy
     targetPreference?: ResolutionPolicy
     effectiveSteps?: Readonly<Record<string, ResolutionPolicy>>
+    requiredLocatorRoutes?: readonly LocatorRoute[]
   },
 ) {
-  if (!runNeedsAiExecute({
+  const explicitAiStep = steps.some((step) => !('disabled' in step && step.disabled) && isAiStepType(step.type))
+  const needsLocator = extras.requiredLocatorRoutes?.some((route) => route !== 'rule') ?? false
+  const legacyNeedsAi = extras.requiredLocatorRoutes === undefined && runNeedsAiExecute({
     steps,
     document,
     documentResolution: extras.documentResolution,
     targetCeiling: extras.targetCeiling,
     targetPreference: extras.targetPreference,
     effectiveSteps: extras.effectiveSteps,
-  })) return undefined
-  if (!document.browserAi.enabled) {
+  })
+  if (!explicitAiStep && !needsLocator && !legacyNeedsAi) return undefined
+  const needsVision = explicitAiStep || extras.requiredLocatorRoutes?.includes('vision_ai') === true || !extras.requiredLocatorRoutes
+  const needsText = extras.requiredLocatorRoutes?.includes('text_ai') === true
+  if (needsVision && !document.browserAi.enabled) {
     throw Object.assign(new Error('浏览器仿真 AI 未启用'), { code: 'AI_DISABLED' })
   }
   const ai = document.browserAi
-  if (!ai.baseUrl || !ai.model || !ai.modelFamily || !ai.secretRef) {
+  if (needsVision && (!ai.baseUrl || !ai.model || !ai.modelFamily || !ai.secretRef)) {
     throw Object.assign(new Error('浏览器仿真 AI 配置不完整'), { code: 'AI_CONFIG_INVALID' })
   }
+  if (needsText && (!document.platformAi.enabled || !document.platformAi.baseUrl || !document.platformAi.model || !document.platformAi.secretRef)) {
+    throw Object.assign(new Error('平台 AI 文本模型未就绪，请检查启用状态、地址、模型和绑定密钥'), { code: 'AI_CONFIG_INVALID' })
+  }
   const snapshotPolicy = resolvePlatformExecutionPolicy(extras.policy, document.execution)
-  assertAiRequestTimeoutFitsSteps(steps, snapshotPolicy, ai.requestTimeoutMs)
+  const requestTimeoutMs = needsVision ? ai.requestTimeoutMs : document.platformAi.requestTimeoutMs
+  assertAiRequestTimeoutFitsSteps(steps, snapshotPolicy, requestTimeoutMs)
   const platformAi =
-    document.platformAi?.enabled && document.platformAi?.baseUrl && document.platformAi?.model
+    document.platformAi?.enabled && document.platformAi?.baseUrl && document.platformAi?.model && document.platformAi?.secretRef
       ? {
           provider: document.platformAi.provider,
           baseUrl: document.platformAi.baseUrl,
@@ -342,17 +358,18 @@ export function resolveAiExecutionFromPlatform(
     sdkVersion: BROWSER_AI_SDK_VERSION,
     routeId: BROWSER_AI_ROUTE_ID,
     configVersion: String(extras.revision),
-    modelBaseUrl: ai.baseUrl,
-    modelName: ai.model,
-    modelFamily: ai.modelFamily,
-    secretRef: ai.secretRef,
+    modelBaseUrl: needsVision ? ai.baseUrl : document.platformAi.baseUrl,
+    modelName: needsVision ? ai.model : document.platformAi.model,
+    modelFamily: needsVision ? ai.modelFamily : (document.platformAi.provider ?? 'openai'),
+    secretRef: needsVision ? ai.secretRef : document.platformAi.secretRef,
     promptVersion: BROWSER_AI_PROMPT_VERSION,
     policyVersion: BROWSER_AI_POLICY_VERSION,
     maxCalls: ai.stepMaxCalls,
-    maxOutputTokens: ai.maxOutputTokens,
-    requestTimeoutMs: ai.requestTimeoutMs,
+    maxOutputTokens: needsVision ? ai.maxOutputTokens : document.platformAi.maxOutputTokens,
+    requestTimeoutMs,
     hangWaitMs: extras.hangWaitMs,
     preferAriaTree: ai.preferAriaTree ?? false,
+    visionEnabled: needsVision,
     ...(platformAi ? { platformAi } : {}),
   })
 }

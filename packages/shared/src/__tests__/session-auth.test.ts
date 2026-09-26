@@ -17,6 +17,7 @@ import {
   describeAuthWaitStage,
   formatManagedPageLocation,
   managedPageCaption,
+  managedPageBadge,
   classifyAuthSignals,
   readJsonPath,
   resolveVerifyUrl,
@@ -523,6 +524,10 @@ describe('登录等待原因与页面位置', () => {
     )
     expect(managedPageCaption({ kind: 'base', url: 'https://shop.example.com/app' })).toBe('shop.example.com/app')
     expect(managedPageCaption({ kind: 'base' })).toBe('会话页')
+    expect(managedPageBadge('base')).toBe('底页')
+    expect(managedPageBadge('run')).toBe('运行页')
+    expect(managedPageBadge('popup')).toBe('弹出页')
+    expect(managedPageBadge('unknown')).toBe('页面')
   })
 })
 
