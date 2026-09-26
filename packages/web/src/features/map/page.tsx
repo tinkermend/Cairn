@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, getRouteApi } from '@tanstack/react-router'
-import { ArrowLeft, Compass, ShieldCheck, Wrench } from 'lucide-react'
+import { ArrowLeft, Compass, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
 import { fetchMapSummary, publishMapRelease } from '@/lib/map-api'
@@ -17,11 +17,7 @@ import { QueryErrorState } from '@/components/query-error-state'
 import { Can } from '@/components/rbac/can'
 import { StatusBadge } from '@/components/status-badge'
 import { MapAssetsPane } from './assets-pane'
-import { AutoRefreshCard } from './auto-refresh'
 import { ConsumptionPolicyCard } from './consumption-policy'
-import { ExplorationCard } from './exploration'
-import { JobMaintenanceCard } from './job-maintenance'
-import { SafeEntriesCard } from './safe-entries-card'
 import { MapSummaryBanner } from './summary-banner'
 
 const route = getRouteApi('/_authenticated/targets/$targetId/map/')
@@ -217,10 +213,6 @@ export function TargetMapPage() {
                   <Compass className='size-4' />
                   知识资产全景
                 </TabsTrigger>
-                <TabsTrigger value='maintenance'>
-                  <Wrench className='size-4' />
-                  地图维护与采集
-                </TabsTrigger>
                 <TabsTrigger value='policy'>
                   <ShieldCheck className='size-4' />
                   运行消费策略
@@ -241,13 +233,6 @@ export function TargetMapPage() {
                   onObjectChange={handleObjectChange}
                   onSearchChange={handleSearchChange}
                 />
-              </TabsContent>
-
-              <TabsContent value='maintenance' className='space-y-5'>
-                <SafeEntriesCard targetId={targetId} />
-                <JobMaintenanceCard targetId={targetId} />
-                <AutoRefreshCard targetId={targetId} />
-                <ExplorationCard targetId={targetId} />
               </TabsContent>
 
               <TabsContent value='policy' className='space-y-5'>

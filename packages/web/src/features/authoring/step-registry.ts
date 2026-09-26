@@ -1,6 +1,5 @@
 import {
   isAiStepType,
-  isMapExploreStepType,
   type EffectType,
   type ExecutableStepType,
   type ScenarioCapabilities,
@@ -50,10 +49,6 @@ export const STEP_TYPE_LABELS: Record<ExecutableStepType, string> = {
   ai_action: '视觉操作',
   ai_extract: 'AI 提取',
   ai_assert: 'AI 判断',
-  map_observe: '探索观察',
-  map_propose: '探索提名',
-  map_guarded_action: '探索守卫',
-  map_verify: '探索核验',
   verify_context: '核验上下文',
   loop: '循环头',
 }
@@ -79,10 +74,6 @@ export const STEP_TYPE_HINTS: Record<ExecutableStepType, string> = {
   ai_action: '视觉模型看当前页面并执行动作；需要视觉模型配置',
   ai_extract: '先尝试 Aria 文本分析（需启用），未命中可回退视觉模型；需要视觉模型就绪',
   ai_assert: '先尝试 Aria 文本判断（需启用），未命中可回退视觉模型；需要视觉模型就绪',
-  map_observe: '系统步骤：观察当前页与 allowlist 候选',
-  map_propose: '系统步骤：零 AI 提名下一跳',
-  map_guarded_action: '系统步骤：按守卫决定是否导航',
-  map_verify: '系统步骤：核验探索结果且不升可信',
   verify_context: '系统步骤：核验执行上下文',
 }
 
@@ -199,9 +190,6 @@ export function createBlankStep(
       outputKey: uniqueOutputKey('asserted', taken),
       input: { instruction: '判断当前页是否满足业务条件' },
     }
-  }
-  if (isMapExploreStepType(type)) {
-    throw new Error('探索步骤不进入 Studio 步骤库')
   }
   if (type === 'verify_context') {
     throw new Error('系统步骤不进入 Studio 步骤库')

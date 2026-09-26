@@ -98,18 +98,6 @@ export function ExecutionFields({ canWrite }: { canWrite: boolean }) {
             )}
           />
           <FormField
-            name='mapExplorationEnabled'
-            render={({ field }) => (
-              <SwitchRow
-                label='开放有界地图探索'
-                help='每个目标系统仍要单独允许探索，探索结果不会自动标为可信。'
-                checked={field.value}
-                disabled={!canWrite}
-                onCheckedChange={field.onChange}
-              />
-            )}
-          />
-          <FormField
             name='fixtureStepsEnabled'
             render={({ field }) => (
               <SwitchRow

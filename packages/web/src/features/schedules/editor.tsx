@@ -13,7 +13,6 @@ import {
 } from '@cairn/shared'
 import { toast } from 'sonner'
 import { ApiRequestError } from '@/lib/api-client'
-import { fetchMapSafeEntries } from '@/lib/map-api'
 import { fetchPlatformConfig } from '@/lib/platform-config-api'
 import { fetchScenario, fetchScenarios } from '@/lib/scenarios-api'
 import {
@@ -50,7 +49,6 @@ import {
   runInputValues,
 } from '@/features/runs/run-input-fields'
 import { CONSUMER_LABELS, MODE_LABELS } from './labels'
-import { MAP_ACCOUNT_REQUIRED, mapCapableAccounts } from '@/features/map/map-accounts'
 
 const WEEKDAYS: { value: ScheduleWeekday; label: string }[] = [
   { value: 1, label: '周一' },
@@ -71,16 +69,7 @@ export type ScenarioOrSuiteObjectContext = {
   versionId?: string | null
 }
 
-export type MapRefreshObjectContext = {
-  type: 'map_refresh'
-  targetId: string
-  targetName?: string
-  name?: string
-}
-
-export type ScheduleObjectContext =
-  | ScenarioOrSuiteObjectContext
-  | MapRefreshObjectContext
+export type ScheduleObjectContext = ScenarioOrSuiteObjectContext
 
 function emptyDefinition(
   type: ScheduleConsumerType,
@@ -152,16 +141,7 @@ function emptyDefinition(
       },
     }
   }
-  return {
-    ...base,
-    consumer: {
-      type: 'map_refresh',
-      targetId,
-      targetAccountId: '',
-      entryId: '',
-      selectedAssetRefs: [],
-    },
-  }
+  throw new Error(`未知调度类型：${type as string}`)
 }
 
 export function ScheduleEditorDialog({
@@ -183,11 +163,7 @@ export function ScheduleEditorDialog({
   )
   const [name, setName] = useState(
     existing?.name ??
-      (context
-        ? context.type === 'map_refresh'
-          ? (context.name ?? `${context.targetName ?? '目标知识'} · 采集计划`)
-          : `${context.name} · 定时执行`
-        : '')
+      (context ? `${context.name} · 定时执行` : '')
   )
   const [targetId, setTargetId] = useState(
     existing?.targetId ?? context?.targetId ?? ''
@@ -238,9 +214,7 @@ export function ScheduleEditorDialog({
   const [accountId, setAccountId] = useState(
     existing?.definition.consumer.type === 'scenario_run'
       ? (existing.definition.consumer.accountBinding.targetAccountId ?? '')
-      : existing?.definition.consumer.type === 'map_refresh'
-        ? existing.definition.consumer.targetAccountId
-        : ''
+      : ''
   )
   const [suiteId, setSuiteId] = useState(
     existing?.definition.consumer.type === 'suite_run'
@@ -248,11 +222,6 @@ export function ScheduleEditorDialog({
       : context?.type === 'suite_run'
         ? context.objectId
         : ''
-  )
-  const [entryId, setEntryId] = useState(
-    existing?.definition.consumer.type === 'map_refresh'
-      ? existing.definition.consumer.entryId
-      : ''
   )
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(
     existing?.definition.consumer.type === 'knowledge_analysis'
@@ -312,14 +281,6 @@ export function ScheduleEditorDialog({
     queryFn: () =>
       fetchTargetAccounts(targetId, { status: 'active', limit: 50 }),
     enabled: Boolean(targetId) && type !== 'knowledge_analysis',
-  })
-  const mapAccounts = useMemo(() => {
-    return mapCapableAccounts(accountsQuery.data?.items ?? [])
-  }, [accountsQuery.data?.items])
-  const entriesQuery = useQuery({
-    queryKey: ['map-entries', targetId],
-    queryFn: () => fetchMapSafeEntries(targetId),
-    enabled: Boolean(targetId) && type === 'map_refresh',
   })
   const canReadConfig = useCan('platform-config:read')
   const configQuery = useQuery({
@@ -576,29 +537,7 @@ export function ScheduleEditorDialog({
         },
       }
     }
-    return {
-      ...base,
-      name: name || '知识地图采集',
-      timeRule,
-      timezone: timeRule.kind === 'calendar' ? timezone : 'UTC',
-      weekdays:
-        timeRule.kind === 'calendar'
-          ? ((weekdays.length ? weekdays : [1]) as ScheduleWeekday[])
-          : ([1, 2, 3, 4, 5, 6, 7] as ScheduleWeekday[]),
-      windowStart: timeRule.kind === 'calendar' ? windowStart : '00:00',
-      windowEnd: timeRule.kind === 'calendar' ? windowEnd : '23:59',
-      misfire: timeRule.misfire,
-      consumer: {
-        type: 'map_refresh',
-        targetId,
-        targetAccountId: accountId,
-        entryId,
-        selectedAssetRefs:
-          existing?.definition.consumer.type === 'map_refresh'
-            ? existing.definition.consumer.selectedAssetRefs
-            : [],
-      },
-    }
+    throw new Error(`未知调度类型：${type as string}`)
   }, [
     accountId,
     anchor,
@@ -610,7 +549,6 @@ export function ScheduleEditorDialog({
     context?.type,
     existing,
     analysisMode,
-    entryId,
     existingIntervalAnchor,
     intervalMin,
     name,
@@ -710,7 +648,7 @@ export function ScheduleEditorDialog({
         ? configQuery.data?.document.suiteScheduledRunEnabled
         : type === 'knowledge_analysis'
           ? configQuery.data?.document.knowledgeAnalysisEnabled
-          : configQuery.data?.document.mapScheduledRefreshEnabled
+          : false
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -763,7 +701,6 @@ export function ScheduleEditorDialog({
                 setScenarioId('')
                 setSuiteId('')
                 setAccountId('')
-                setEntryId('')
                 setSource({ includeFailures: true })
               }}
             >
@@ -947,52 +884,6 @@ export function ScheduleEditorDialog({
               >
                 {inputError || '输入会随调度修订保存，后续执行使用该修订。'}
               </p>
-            </div>
-          ) : null}
-          {type === 'map_refresh' ? (
-            <div className='grid gap-2 md:grid-cols-2'>
-              <p className='text-label text-muted-foreground md:col-span-2'>
-                定时访问已知资产，采集最新观察并核验变化。
-              </p>
-              <div className='grid gap-1'>
-                <Label htmlFor='schedule-map-account'>地图用途账号</Label>
-                <SelectField
-                  id='schedule-map-account'
-
-                  disabled={!canWrite}
-                  value={accountId}
-                  onValueChange={(value) => setAccountId(value)}
-                >
-                  <SelectFieldOption value=''>选择账号</SelectFieldOption>
-                  {mapAccounts.map((item) => (
-                    <SelectFieldOption key={item.id} value={item.id}>
-                      {item.displayName}
-                    </SelectFieldOption>
-                  ))}
-                </SelectField>
-                {mapAccounts.length === 0 ? (
-                  <p className='text-caption text-muted-foreground'>
-                    {MAP_ACCOUNT_REQUIRED}
-                  </p>
-                ) : null}
-              </div>
-              <div className='grid gap-1'>
-                <Label htmlFor='schedule-entry'>安全进入</Label>
-                <SelectField
-                  id='schedule-entry'
-
-                  disabled={!canWrite}
-                  value={entryId}
-                  onValueChange={(value) => setEntryId(value)}
-                >
-                  <SelectFieldOption value=''>选择入口</SelectFieldOption>
-                  {(entriesQuery.data?.items ?? []).map((item) => (
-                    <SelectFieldOption key={item.entryId} value={item.entryId}>
-                      {item.name}
-                    </SelectFieldOption>
-                  ))}
-                </SelectField>
-              </div>
             </div>
           ) : null}
           {type === 'knowledge_analysis' ? (
@@ -1320,8 +1211,7 @@ export function ScheduleEditorDialog({
                 !canWrite ||
                 saveMutation.isPending ||
                 enableMutation.isPending ||
-                (type === 'scenario_run' && Boolean(inputError)) ||
-                (type === 'map_refresh' && (!accountId || !entryId))
+                (type === 'scenario_run' && Boolean(inputError))
               }
               onClick={() => saveMutation.mutate()}
             >
@@ -1333,8 +1223,7 @@ export function ScheduleEditorDialog({
                 !canWrite ||
                 enableMutation.isPending ||
                 saveMutation.isPending ||
-                (type === 'scenario_run' && Boolean(inputError)) ||
-                (type === 'map_refresh' && (!accountId || !entryId))
+                (type === 'scenario_run' && Boolean(inputError))
               }
               onClick={() => enableMutation.mutate()}
             >
