@@ -11,7 +11,11 @@ import {
   runSnapshotSchema,
   runStatusSchema,
   stepRunStatusSchema,
+  stepIterationStatusSchema,
+  stepSkipReasonSchema,
   type RunStatus,
+  type StepSkipReason,
+  type StepIterationStatus,
 } from './run.js'
 import { sessionPolicyOverrideSchema, sessionStatusSchema } from './session.js'
 import { executionPolicySchema } from './step.js'
@@ -76,6 +80,10 @@ export const RUN_ERROR_CODES = [
   'MAP_CONSUMPTION_NOT_ELIGIBLE',
   'MAP_RELEASE_NOT_PUBLISHED',
   'MAP_RELEASE_WITHDRAWN',
+  'LOOP_INPUT_INVALID',
+  'LOOP_PAYLOAD_TOO_LARGE',
+  'LOOP_TOO_MANY_ITEMS',
+  'LOOP_LIMIT_REACHED',
 ] as const
 export type RunErrorCode = (typeof RUN_ERROR_CODES)[number]
 
@@ -110,6 +118,7 @@ export const trialRunBodySchema = z.strictObject({
   mapConsumption: mapConsumptionOverrideSchema.optional(),
   idempotencyKey: idempotencyKeySchema.optional(),
   debugMode: debugModeSchema.optional(),
+  pauseBeforeStepId: entityIdSchema.optional(),
 })
 export type TrialRunBody = z.infer<typeof trialRunBodySchema>
 
@@ -227,13 +236,67 @@ export const stepRunDtoSchema = z.object({
   name: z.string().min(1),
   type: z.string().min(1),
   ordinal: z.number().int().min(0),
+  scopePath: z.string().optional(),
   status: stepRunStatusSchema,
+  skipReason: stepSkipReasonSchema.optional(),
   outcomeStatus: outcomeStatusSchema.default('NOT_EVALUATED'),
   startedAt: instantOrNull,
   finishedAt: instantOrNull,
   attempts: z.array(attemptDtoSchema),
 })
 export type StepRunDto = z.infer<typeof stepRunDtoSchema>
+
+// 循环块运行摘要（嵌于 RunDetailDto）
+export const loopIterationSummarySchema = z.strictObject({
+  blockId: entityIdSchema,
+  kind: z.enum(['for_each', 'repeat']),
+  total: z.number().int().min(0),
+  succeeded: z.number().int().min(0),
+  failed: z.number().int().min(0),
+  skipped: z.number().int().min(0),
+  running: z.number().int().min(0),
+  stoppedEarly: z.boolean().optional(),
+  limitReached: z.boolean().optional(),
+})
+export type LoopIterationSummaryDto = z.infer<typeof loopIterationSummarySchema>
+
+// 迭代列表项与详情 DTO
+export const stepIterationDtoSchema = z.strictObject({
+  id: entityIdSchema,
+  runId: entityIdSchema,
+  blockId: entityIdSchema,
+  headerStepId: entityIdSchema,
+  scopePath: z.string().min(1),
+  iterationIndex: z.number().int().min(0),
+  status: stepIterationStatusSchema,
+  item: jsonValueSchema.optional(),
+  stopDecision: jsonValueSchema.optional(),
+  startedAt: utcInstantSchema,
+  finishedAt: utcInstantSchema.nullable(),
+})
+export type StepIterationDto = z.infer<typeof stepIterationDtoSchema>
+
+export const stepIterationListQuerySchema = z.strictObject({
+  blockId: entityIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50).optional(),
+  offset: z.coerce.number().int().min(0).default(0).optional(),
+})
+export type StepIterationListQuery = z.infer<typeof stepIterationListQuerySchema>
+
+export const stepIterationListDtoSchema = z.strictObject({
+  iterations: z.array(stepIterationDtoSchema),
+  total: z.number().int().min(0).optional(),
+  offset: z.number().int().min(0).optional(),
+  limit: z.number().int().min(0).optional(),
+  nextCursor: z.string().optional(),
+})
+export type StepIterationListDto = z.infer<typeof stepIterationListDtoSchema>
+
+export const stepIterationDetailDtoSchema = z.strictObject({
+  iteration: stepIterationDtoSchema,
+  stepRuns: z.array(stepRunDtoSchema),
+})
+export type StepIterationDetailDto = z.infer<typeof stepIterationDetailDtoSchema>
 
 export const runDetailSchema = runSummarySchema
   .omit({ lease: true })
@@ -248,6 +311,7 @@ export const runDetailSchema = runSummarySchema
     checkpoint: debugCheckpointSchema.nullable().optional(),
     debugOverlay: debugOverlaySchema.nullable().optional(),
     authCheckpoint: authCheckpointSchema.nullable().optional(),
+    iterationsSummary: z.record(z.string(), loopIterationSummarySchema).optional(),
   })
 export type RunDetailDto = z.infer<typeof runDetailSchema>
 
@@ -297,4 +361,48 @@ export function isRunObservationComplete(input: {
   evidenceStatus: RunEvidenceStatus
 }): boolean {
   return isFinishedRunStatus(input.status) && input.evidenceStatus !== 'PENDING'
+}
+
+// ---------------------------------------------------------------------------
+// StepRun Unified Accessors (CF-A §7)
+// ---------------------------------------------------------------------------
+
+export function stepRunFor<T extends { stepId: string; scopePath?: string | null }>(
+  stepRuns: readonly T[],
+  stepId: string,
+  scopePath = '',
+): T | undefined {
+  return stepRuns.find((item) => item.stepId === stepId && (item.scopePath ?? '') === scopePath)
+}
+
+export function stepRunsOf<T extends { stepId: string }>(
+  stepRuns: readonly T[],
+  stepId: string,
+): T[] {
+  return stepRuns.filter((item) => item.stepId === stepId)
+}
+
+export function groupStepRunsByStep<T extends { stepId: string }>(
+  stepRuns: readonly T[],
+): Map<string, T[]> {
+  const map = new Map<string, T[]>()
+  for (const item of stepRuns) {
+    const list = map.get(item.stepId)
+    if (list) list.push(item)
+    else map.set(item.stepId, [item])
+  }
+  return map
+}
+
+export function stepRunMapByStep<T extends { stepId: string; scopePath?: string | null }>(
+  stepRuns: readonly T[],
+  scopePath = '',
+): Map<string, T> {
+  const map = new Map<string, T>()
+  for (const item of stepRuns) {
+    if ((item.scopePath ?? '') === scopePath) {
+      map.set(item.stepId, item)
+    }
+  }
+  return map
 }

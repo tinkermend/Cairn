@@ -43,6 +43,7 @@ export type ScenarioErrorCode = (typeof SCENARIO_ERROR_CODES)[number]
 export const MAX_SCENARIO_STEPS = 32
 export const MAX_SYSTEM_VERIFICATION_STEPS = 32
 export const MAX_COMPILED_SCENARIO_STEPS = 64
+export const MAX_SCENARIO_LOOP_BUDGET_STEPS = 2000
 
 export const scenarioNameSchema = z.string().trim().min(1).max(128)
 
@@ -213,13 +214,25 @@ export function unresolvedRunInputs(
   const available = new Set(Object.keys(input))
   const unresolved: { key: string; stepName: string }[] = []
   for (const step of steps) {
-    const froms = contextFrom(step)
-    for (const from of froms) {
-      if (!available.has(from) && !unresolved.some((item) => item.key === from)) {
-        unresolved.push({ key: from, stepName: step.name })
+    if (!step.disabled) {
+      const froms = contextFrom(step)
+      for (const from of froms) {
+        if (!available.has(from) && !unresolved.some((item) => item.key === from)) {
+          unresolved.push({ key: from, stepName: step.name })
+        }
       }
     }
     if (step.outputKey) available.add(step.outputKey)
+    if (step.type === 'loop') {
+      const loopInput = step.input as any
+      if (loopInput?.control?.type === 'for_each') {
+        if (loopInput.control.as) available.add(loopInput.control.as)
+        if (loopInput.control.indexAs) available.add(loopInput.control.indexAs)
+      }
+      for (const rule of loopInput?.collect ?? []) {
+        if (rule.into) available.add(rule.into)
+      }
+    }
   }
   return unresolved
 }

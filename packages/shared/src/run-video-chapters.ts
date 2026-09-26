@@ -22,6 +22,23 @@ export type RunVideoChapter = {
   faceAttemptId?: string
   faceEvidenceId?: string
   moduleName?: string
+  /** 循环头章节：每一项在录像轴上的时间段，供按项跳转。 */
+  iterations?: RunVideoIterationSegment[]
+}
+
+export type RunVideoIterationSegment = {
+  index: number
+  status: StepRunStatus
+  fromMs: number
+  toMs: number
+}
+
+export type RunVideoIterationInput = {
+  headerStepId: string
+  iterationIndex: number
+  status: StepRunStatus
+  startedAt: string
+  finishedAt: string | null
 }
 
 export type RunVideoPin = {
@@ -55,6 +72,8 @@ export type BuildRunVideoChaptersInput = {
   run: RunDetailDto
   payload?: RunVideoPayload | null
   evidenceItems?: EvidenceMetadata[]
+  /** 循环迭代记录（按需取自迭代接口）；缺省时循环只显示为一个整体章节。 */
+  iterations?: readonly RunVideoIterationInput[]
 }
 
 function mergeGaps(gaps: RunVideoGap[]): RunVideoGap[] {
@@ -74,7 +93,7 @@ function mergeGaps(gaps: RunVideoGap[]): RunVideoGap[] {
 }
 
 export function buildRunVideoChapters(input: BuildRunVideoChaptersInput): RunVideoChapterModel {
-  const { run, payload, evidenceItems } = input
+  const { run, payload, evidenceItems, iterations } = input
   const timing = payload?.timing
   if (
     !timing ||
@@ -214,6 +233,9 @@ export function buildRunVideoChapters(input: BuildRunVideoChaptersInput): RunVid
       faceAttemptId: lastFinished?.id,
       faceEvidenceId: faceItem?.id,
       moduleName: stepIdToModuleName.get(stepRun.stepId),
+      ...(stepRun.type === 'loop' && iterations?.length
+        ? { iterations: iterationSegments(iterations, stepRun.stepId, originMs, spanMs) }
+        : {}),
     })
   }
 
@@ -283,4 +305,26 @@ export function gapAtPlayhead(
     gaps.find((g) => currentMs === g.toMs && g.toMs > g.fromMs) ??
     null
   )
+}
+
+function iterationSegments(
+  iterations: readonly RunVideoIterationInput[],
+  headerStepId: string,
+  originMs: number,
+  spanMs: number,
+): RunVideoIterationSegment[] {
+  const segments: RunVideoIterationSegment[] = []
+  for (const item of iterations) {
+    if (item.headerStepId !== headerStepId) continue
+    const from = Date.parse(item.startedAt) - originMs
+    const to = item.finishedAt ? Date.parse(item.finishedAt) - originMs : spanMs
+    if (Number.isNaN(from) || to <= 0 || from >= spanMs) continue
+    segments.push({
+      index: item.iterationIndex,
+      status: item.status,
+      fromMs: Math.max(0, from),
+      toMs: Math.min(spanMs, Math.max(from + 1, to)),
+    })
+  }
+  return segments.sort((a, b) => a.index - b.index)
 }

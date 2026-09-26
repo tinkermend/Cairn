@@ -280,6 +280,12 @@ describe('LOGIN_FIELD_HEURISTICS', () => {
 })
 
 describe('targetSchema / list', () => {
+  it('受控图标与身份色有旧数据默认值，拒绝外部资源或任意颜色', () => {
+    expect(targetSchema.parse(target)).toMatchObject({ iconKey: 'globe', accentKey: 'blue' })
+    expect(createTargetBodySchema.parse({ code: 'system-a', name: '系统 A', entryUrl: 'https://example.com' })).toMatchObject({ iconKey: 'globe', accentKey: 'blue' })
+    expect(() => createTargetBodySchema.parse({ code: 'system-a', name: '系统 A', entryUrl: 'https://example.com', iconKey: 'https://example.com/icon.svg' })).toThrow()
+    expect(() => createTargetBodySchema.parse({ code: 'system-a', name: '系统 A', entryUrl: 'https://example.com', accentKey: '#ff0000' })).toThrow()
+  })
   it('列表信封带可选 nextCursor', () => {
     expect(() => targetSchema.parse(target)).not.toThrow()
     expect(targetListResponseSchema.parse({ items: [target] }).nextCursor).toBeUndefined()

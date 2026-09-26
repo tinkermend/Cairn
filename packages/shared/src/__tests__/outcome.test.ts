@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   aggregateRunOutcomeStatus,
   aggregateStepRunOutcomeStatus,
+  effectiveOutcomeEvaluations,
+  joinOutcomeEvaluations,
+  loopBodyHeadersOf,
   outcomeContractSchema,
   outcomeManifestSchema,
   outcomeRuleSchema,
@@ -343,5 +346,276 @@ describe('OCA-13 digest 不漂移反向验收', () => {
     })
     expect('runtimeInvariantManifest' in snapshotDigestPayload(parsedNew)).toBe(true)
     expect(syncSha256(canonicalJson(snapshotDigestPayload(parsedNew)))).not.toBe(oldDigest)
+  })
+})
+
+describe('CF-A 成功条件多次求值与候选回退语义 (R1–R5)', () => {
+  const stepA = '00000000-0000-4000-8000-000000000801'
+  const stepB = '00000000-0000-4000-8000-000000000802'
+  const contractA = '00000000-0000-4000-8000-000000000901'
+  const contractB = '00000000-0000-4000-8000-000000000902'
+
+  const manifest: OutcomeManifest = {
+    entries: [
+      {
+        contractId: contractA,
+        scope: 'step',
+        meaning: '步骤 A 成功条件',
+        severity: 'MUST',
+        onViolation: 'halt',
+        provenance: 'manual',
+        stepId: stepA,
+        rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+      },
+      {
+        contractId: contractB,
+        scope: 'step',
+        meaning: '步骤 B 成功条件',
+        severity: 'MUST',
+        onViolation: 'halt',
+        provenance: 'manual',
+        stepId: stepB,
+        rule: { kind: 'deterministic', expect: { kind: 'visible' } },
+      },
+    ],
+  }
+
+  it('CFA-07 / R1 重试覆盖：同一 StepRun 检查步骤超时后重试通过，以最后一次尝试为准', () => {
+    const stepRunId = '00000000-0000-4000-8000-000000000701'
+    const stepContracts = [{ id: contractA, severity: 'MUST' as const }]
+
+    const results = [
+      {
+        contractId: contractA,
+        stepRunId,
+        attemptId: 'att-1',
+        verdict: 'UNKNOWN' as const,
+        evaluatedAt: '2026-09-24T10:00:00.000Z',
+      },
+      {
+        contractId: contractA,
+        stepRunId,
+        attemptId: 'att-2',
+        verdict: 'PASS' as const,
+        evaluatedAt: '2026-09-24T10:00:05.000Z',
+      },
+    ]
+
+    // StepRun 级聚合：最后一次通过，StepRun 整体即为 PASS
+    expect(aggregateStepRunOutcomeStatus(stepContracts, results)).toBe('PASS')
+
+    // Run 级聚合（单步场景）
+    const singleStepManifest: OutcomeManifest = {
+      entries: [manifest.entries[0]!],
+    }
+    const stepRuns = [{ id: stepRunId, stepId: stepA, status: 'SUCCEEDED' as const }]
+    expect(aggregateRunOutcomeStatus(singleStepManifest, results, null, stepRuns)).toBe('PASS')
+
+    // joinOutcomeEvaluations 返回正确求值次数与结论
+    const joined = joinOutcomeEvaluations(singleStepManifest, results, stepRuns)
+    expect(joined[0]?.displayVerdict).toBe('PASS')
+    expect(joined[0]?.evaluationCount).toBe(2)
+    expect(joined[0]?.applicable).toBe(true)
+  })
+
+  it('R2 多实例折叠：同一条件落在多个 StepRun 时，各步先取 R1，再按 FAIL > UNKNOWN 折叠', () => {
+    const sr1 = '00000000-0000-4000-8000-000000000711'
+    const sr2 = '00000000-0000-4000-8000-000000000712'
+
+    // sr1 第一次 FAIL，重试 PASS -> sr1 结论 PASS
+    // sr2 第一次 FAIL -> sr2 结论 FAIL
+    // 整体折叠 PASS 与 FAIL -> 必须全过，整体为 FAIL
+    const resultsPartialFail = [
+      { contractId: contractA, stepRunId: sr1, verdict: 'FAIL' as const, evaluatedAt: '2026-09-24T10:00:00.000Z' },
+      { contractId: contractA, stepRunId: sr1, verdict: 'PASS' as const, evaluatedAt: '2026-09-24T10:00:05.000Z' },
+      { contractId: contractA, stepRunId: sr2, verdict: 'FAIL' as const, evaluatedAt: '2026-09-24T10:00:10.000Z' },
+    ]
+
+    const singleStepManifest: OutcomeManifest = { entries: [manifest.entries[0]!] }
+    const stepRuns = [
+      { id: sr1, stepId: stepA, status: 'SUCCEEDED' as const },
+      { id: sr2, stepId: stepA, status: 'FAILED' as const },
+    ]
+
+    expect(aggregateRunOutcomeStatus(singleStepManifest, resultsPartialFail, null, stepRuns)).toBe('FAIL')
+
+    // 若 sr2 重试后也 PASS，则整体折叠为 PASS
+    const resultsAllPass = [
+      ...resultsPartialFail,
+      { contractId: contractA, stepRunId: sr2, verdict: 'PASS' as const, evaluatedAt: '2026-09-24T10:00:15.000Z' },
+    ]
+    expect(aggregateRunOutcomeStatus(singleStepManifest, resultsAllPass, null, stepRuns)).toBe('PASS')
+  })
+
+  it('CFA-09 / R3 约束不覆盖：运行期约束在第一次尝试时违反，重试成功仍记 FAIL', () => {
+    const invId = '00000000-0000-4000-8000-000000000999'
+    const invariantManifest = {
+      entries: [{ id: invId, severity: 'MUST' as const, meaning: '页面不得报错' }],
+    }
+
+    const results = [
+      {
+        contractId: invId,
+        provenance: 'runtime_invariant' as const,
+        verdict: 'FAIL' as const,
+        evaluatedAt: '2026-09-24T10:00:00.000Z',
+      },
+      {
+        contractId: invId,
+        provenance: 'runtime_invariant' as const,
+        verdict: 'PASS' as const,
+        evaluatedAt: '2026-09-24T10:00:05.000Z',
+      },
+    ]
+
+    expect(aggregateRunOutcomeStatus(null, results, invariantManifest)).toBe('FAIL')
+  })
+
+  it('R4 不适用与全不适用边界：跳过步骤的条件展示为 NOT_APPLICABLE 且不参与聚合，全不适用收尾为 NOT_EVALUATED', () => {
+    // 步骤 A 被作者停用，步骤 B 成功且通过
+    const stepRuns = [
+      { id: 'sr-a', stepId: stepA, status: 'SKIPPED' as const, skipReason: 'disabled' as const },
+      { id: 'sr-b', stepId: stepB, status: 'SUCCEEDED' as const },
+    ]
+    const results = [
+      { contractId: contractB, stepRunId: 'sr-b', verdict: 'PASS' as const },
+    ]
+
+    // 步骤 A 的条件不适用，Run 级结果按步骤 B 计为 PASS
+    expect(aggregateRunOutcomeStatus(manifest, results, null, stepRuns)).toBe('PASS')
+
+    const joined = joinOutcomeEvaluations(manifest, results, stepRuns)
+    expect(joined[0]?.displayVerdict).toBe('NOT_APPLICABLE')
+    expect(joined[0]?.applicable).toBe(false)
+    expect(joined[0]?.notApplicableReason).toBe('disabled')
+    expect(joined[1]?.displayVerdict).toBe('PASS')
+
+    // 全不适用边界：若全部条件绑定的步骤都因不适用原因跳过，结果为 NOT_EVALUATED
+    const allDisabledStepRuns = [
+      { id: 'sr-a', stepId: stepA, status: 'SKIPPED' as const, skipReason: 'disabled' as const },
+      { id: 'sr-b', stepId: stepB, status: 'SKIPPED' as const, skipReason: 'disabled' as const },
+    ]
+    expect(aggregateRunOutcomeStatus(manifest, [], null, allDisabledStepRuns)).toBe('NOT_EVALUATED')
+
+    // run_halted 边界：因前序失败而跳过（run_halted），MUST 条件仍算作适用且未完成 -> UNKNOWN
+    const haltedStepRuns = [
+      { id: 'sr-a', stepId: stepA, status: 'FAILED' as const },
+      { id: 'sr-b', stepId: stepB, status: 'SKIPPED' as const, skipReason: 'run_halted' as const },
+    ]
+    expect(aggregateRunOutcomeStatus(manifest, [], null, haltedStepRuns)).toBe('UNKNOWN')
+  })
+
+  it('CFA-08 / R5 候选回退：A 失败切 B，B 成功，A 上的条件判定为不适用，Run 结果按 B 计', () => {
+    const candidateGroups = [
+      {
+        groupId: '00000000-0000-4000-8000-000000000601',
+        invocationId: '00000000-0000-4000-8000-000000000602',
+        alternatives: [
+          {
+            implementationKey: 'alt-a',
+            implementationDigest: 'sha-a',
+            stepIds: [stepA],
+            postconditionStepIds: [],
+            outputVerificationStepIds: [],
+            frozenOutputs: {},
+            outputStaging: {},
+          },
+          {
+            implementationKey: 'alt-b',
+            implementationDigest: 'sha-b',
+            stepIds: [stepB],
+            postconditionStepIds: [],
+            outputVerificationStepIds: [],
+            frozenOutputs: {},
+            outputStaging: {},
+          },
+        ],
+      },
+    ]
+
+    // 备选 A 执行失败，已产生 FAIL 结果；备选 B 执行成功，产生 PASS 结果
+    const stepRuns = [
+      { id: 'sr-a', stepId: stepA, status: 'FAILED' as const },
+      { id: 'sr-b', stepId: stepB, status: 'SUCCEEDED' as const },
+    ]
+    const results = [
+      {
+        contractId: contractA,
+        stepRunId: 'sr-a',
+        verdict: 'FAIL' as const,
+        evaluatedAt: '2026-09-24T10:00:00.000Z',
+      },
+      {
+        contractId: contractB,
+        stepRunId: 'sr-b',
+        verdict: 'PASS' as const,
+        evaluatedAt: '2026-09-24T10:00:05.000Z',
+      },
+    ]
+
+    // R5：最终选中的是备选 B，备选 A 上的 FAIL 结果不影响整次运行，聚合为 PASS
+    expect(aggregateRunOutcomeStatus(manifest, results, null, stepRuns, candidateGroups)).toBe('PASS')
+
+    const joined = joinOutcomeEvaluations(manifest, results, stepRuns, candidateGroups)
+    expect(joined[0]?.displayVerdict).toBe('NOT_APPLICABLE')
+    expect(joined[0]?.applicable).toBe(false)
+    expect(joined[0]?.notApplicableReason).toBe('fallback_abandoned')
+    expect(joined[1]?.displayVerdict).toBe('PASS')
+    expect(joined[1]?.applicable).toBe(true)
+  })
+})
+
+
+describe('循环中的成功条件口径（复查修复）', () => {
+  const bodyStepId = '00000000-0000-4000-8000-0000000000b1'
+  const headerStepId = '00000000-0000-4000-8000-0000000000a1'
+  const manifest = {
+    entries: [
+      {
+        contractId: '00000000-0000-4000-8000-0000000000c1',
+        scope: 'step' as const,
+        meaning: '循环体断言',
+        severity: 'MUST' as const,
+        onViolation: 'halt' as const,
+        provenance: 'legacy_assert' as const,
+        stepId: bodyStepId,
+        rule: { kind: 'ai' as const, instruction: '检查' },
+      },
+    ],
+  }
+  const loopHeaders = loopBodyHeadersOf({ blocks: [{ kind: 'for_each', headerStepId, bodyStepIds: [bodyStepId] }] })
+  const pass = (stepRunId: string) => ({
+    contractId: manifest.entries[0]!.contractId,
+    stepRunId,
+    verdict: 'PASS' as const,
+    evaluatedAt: '2026-09-25T00:00:00.000Z',
+  })
+
+  it('集合为空、循环头成功：循环体里的条件不适用，不判 UNKNOWN', () => {
+    const stepRuns = [{ id: 'h', stepId: headerStepId, status: 'SUCCEEDED' as const }]
+    expect(aggregateRunOutcomeStatus(manifest, [], null, stepRuns, [], loopHeaders)).toBe('NOT_EVALUATED')
+    const [row] = joinOutcomeEvaluations(manifest, [], stepRuns, [], loopHeaders)
+    expect(row?.displayVerdict).toBe('NOT_APPLICABLE')
+  })
+
+  it('循环没跑到（循环头未成功）：条件仍为未知', () => {
+    const stepRuns = [{ id: 'h', stepId: headerStepId, status: 'SKIPPED' as const, skipReason: 'run_halted' as const }]
+    expect(aggregateRunOutcomeStatus(manifest, [], null, stepRuns, [], loopHeaders)).toBe('UNKNOWN')
+  })
+
+  it('第 1 项通过、其余项因中止没跑：判为 UNKNOWN 而不是 PASS', () => {
+    const stepRuns = [
+      { id: 'r1', stepId: bodyStepId, status: 'SUCCEEDED' as const },
+      { id: 'r2', stepId: bodyStepId, status: 'SKIPPED' as const, skipReason: 'run_halted' as const },
+    ]
+    expect(aggregateRunOutcomeStatus(manifest, [pass('r1')], null, stepRuns, [], loopHeaders)).toBe('UNKNOWN')
+  })
+
+  it('部分项因条件不满足跳过、其余项通过：判为 PASS', () => {
+    const stepRuns = [
+      { id: 'r1', stepId: bodyStepId, status: 'SUCCEEDED' as const },
+      { id: 'r2', stepId: bodyStepId, status: 'SKIPPED' as const, skipReason: 'condition_not_met' as const },
+    ]
+    expect(aggregateRunOutcomeStatus(manifest, [pass('r1')], null, stepRuns, [], loopHeaders)).toBe('PASS')
   })
 })

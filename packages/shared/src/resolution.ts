@@ -178,9 +178,10 @@ export function snapshotNeedsBrowserAi(
   steps: readonly Step[],
   effectiveByStep?: Readonly<Record<string, ResolutionPolicy>>,
 ): boolean {
-  if (hasAiSteps(steps)) return true
+  const enabled = steps.filter((step) => !step.disabled)
+  if (hasAiSteps(enabled)) return true
   if (!effectiveByStep) return false
-  return steps.some((step) => !isAiStepType(step.type) && policyAllowsAiRung(effectiveByStep[step.id] ?? 'deterministic_only'))
+  return enabled.some((step) => !isAiStepType(step.type) && policyAllowsAiRung(effectiveByStep[step.id] ?? 'deterministic_only'))
 }
 
 export function deriveAuthoringResolutionMode(input: {

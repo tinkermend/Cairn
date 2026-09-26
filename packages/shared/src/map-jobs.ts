@@ -155,6 +155,7 @@ export type MapJobPolicyUpdateBody = z.infer<typeof mapJobPolicyUpdateBodySchema
 
 export const MAP_SAFETY_BASIS_KINDS = ['confirmed_path', 'target_readonly', 'controlled_env'] as const
 export const mapSafetyBasisKindSchema = z.enum(MAP_SAFETY_BASIS_KINDS)
+export type MapSafetyBasisKind = (typeof MAP_SAFETY_BASIS_KINDS)[number]
 
 export const mapSafetyBasisSchema = z.strictObject({
   kind: mapSafetyBasisKindSchema,
@@ -179,6 +180,7 @@ export type MapSafeEntry = z.infer<typeof mapSafeEntrySchema>
 export const mapSafeEntryDtoSchema = mapSafeEntrySchema.extend({
   targetId: entityIdSchema,
   createdAt: utcInstantSchema,
+  archivedAt: utcInstantSchema.nullable().optional(),
 })
 export type MapSafeEntryDto = z.infer<typeof mapSafeEntryDtoSchema>
 
@@ -191,13 +193,36 @@ export const mapSafeEntryCreateBodySchema = z.strictObject({
   idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{8,128}$/),
   name: z.string().trim().min(1).max(128),
   url: z.string().url().max(2048),
-  arrivalName: z.string().trim().min(1).max(128),
-  arrivalTarget: targetDescriptorSchema,
+  arrivalName: z.string().trim().min(1).max(128).default('页面就绪'),
+  arrivalTarget: targetDescriptorSchema.default({
+    framePath: [],
+    candidates: [{ by: 'css', value: 'body' }],
+  }),
   safetyBasisKind: mapSafetyBasisKindSchema,
   summary: z.string().trim().min(1).max(512),
   jobKinds: z.array(mapJobKindSchema).min(1).max(3).default(['map_probe', 'map_refresh']),
 })
 export type MapSafeEntryCreateBody = z.infer<typeof mapSafeEntryCreateBodySchema>
+
+export const mapSafeEntryUpdateBodySchema = z.strictObject({
+  expectedVersion: z.number().int().min(1),
+  name: z.string().trim().min(1).max(128),
+  url: z.string().url().max(2048),
+  arrivalName: z.string().trim().min(1).max(128).default('页面就绪'),
+  arrivalTarget: targetDescriptorSchema.default({
+    framePath: [],
+    candidates: [{ by: 'css', value: 'body' }],
+  }),
+  safetyBasisKind: mapSafetyBasisKindSchema,
+  summary: z.string().trim().min(1).max(512),
+  jobKinds: z.array(mapJobKindSchema).min(1).max(3),
+})
+export type MapSafeEntryUpdateBody = z.infer<typeof mapSafeEntryUpdateBodySchema>
+
+export const mapSafeEntryArchiveBodySchema = z.strictObject({
+  reason: z.string().trim().max(512).optional(),
+})
+export type MapSafeEntryArchiveBody = z.infer<typeof mapSafeEntryArchiveBodySchema>
 
 export const frozenMapJobSchema = z.strictObject({
   jobId: entityIdSchema,

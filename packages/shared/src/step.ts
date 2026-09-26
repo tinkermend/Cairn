@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { assertExpectSchema } from './browser-command.js'
+import { assertExpectSchema, extractManySchema, type ExtractMany } from './browser-command.js'
 import { pageAfterSchema } from './managed-browser.js'
 import {
   mapGuardedActionInputSchema,
@@ -15,6 +15,11 @@ import { durationMsSchema, entityIdSchema, jsonValueSchema, timeoutMsSchema, utc
 import { runFileHandleSchema } from './run-file.js'
 import { objectDigestSchema } from './object-store.js'
 import { dataGeneratorSpecSchema, type DataGeneratorSpec } from './data-generator.js'
+import {
+  conditionSchema,
+  exprSchema,
+  validateSafeRegexPattern,
+} from './expression.js'
 
 /**
  * 可执行 Step。枚举即注册表：没写进这里的 type 过不了 `stepSchema`。
@@ -33,6 +38,7 @@ export const BROWSER_STEP_TYPES = [
   'wait',
   'download',
   'upload',
+  'probe',
 ] as const
 export const AI_STEP_TYPES = ['ai_action', 'ai_extract', 'ai_assert'] as const
 export const MAP_EXPLORE_STEP_TYPES = [
@@ -42,7 +48,7 @@ export const MAP_EXPLORE_STEP_TYPES = [
   'map_verify',
 ] as const
 export const MAP_EXPLORE_BROWSER_STEP_TYPES = ['map_observe', 'map_guarded_action', 'map_verify'] as const
-export const SYSTEM_STEP_TYPES = ['verify_context'] as const
+export const SYSTEM_STEP_TYPES = ['verify_context', 'decide', 'compute', 'loop'] as const
 export const EXECUTABLE_STEP_TYPES = [
   ...FIXTURE_STEP_TYPES,
   ...BROWSER_STEP_TYPES,
@@ -50,6 +56,15 @@ export const EXECUTABLE_STEP_TYPES = [
   ...MAP_EXPLORE_STEP_TYPES,
   ...SYSTEM_STEP_TYPES,
 ] as const
+
+export const OPTIONAL_ALLOWED_STEP_TYPES = [
+  'click',
+  'fill',
+  'select',
+  'keyboard',
+  'extract',
+] as const
+export type OptionalAllowedStepType = (typeof OPTIONAL_ALLOWED_STEP_TYPES)[number]
 export type FixtureStepType = (typeof FIXTURE_STEP_TYPES)[number]
 export type BrowserStepType = (typeof BROWSER_STEP_TYPES)[number]
 export type AiStepType = (typeof AI_STEP_TYPES)[number]
@@ -173,6 +188,8 @@ const stepCommon = {
   id: entityIdSchema,
   name: z.string().min(1).max(128),
   effectType: effectTypeSchema,
+  disabled: z.boolean().optional(),
+  optional: z.boolean().optional(),
   outputKey: contextKeySchema.optional(),
   policy: executionPolicySchema.optional(),
   fieldRefs: z.record(z.string(), stepFieldRefSchema).optional(),
@@ -233,6 +250,7 @@ export const extractInputSchema = z
     target: targetDescriptorSchema,
     as: z.enum(['text', 'value', 'attribute']),
     attribute: z.string().trim().min(1).max(128).optional(),
+    many: extractManySchema.optional(),
   })
   .refine((input) => input.as !== 'attribute' || Boolean(input.attribute), {
     message: 'extract as=attribute 时必须提供 attribute',
@@ -379,7 +397,18 @@ export const downloadInputSchema = z.strictObject({
   expect: z
     .strictObject({
       /** 受限正则（无回溯构造），编译期校验可编译。 */
-      fileNamePattern: z.string().min(1).max(256).optional(),
+      fileNamePattern: z
+        .string()
+        .min(1)
+        .max(256)
+        .optional()
+        .superRefine((pat, ctx) => {
+          if (!pat) return
+          const res = validateSafeRegexPattern(pat)
+          if (!res.valid) {
+            ctx.addIssue({ code: 'custom', message: res.reason })
+          }
+        }),
       minBytes: z.number().int().positive().optional(),
     })
     .optional(),
@@ -450,6 +479,7 @@ export type UploadStepOutput = z.infer<typeof uploadStepOutputSchema>
 export const aiInstructionSchema = z.string().trim().min(1).max(4096)
 
 export const AI_ATOMIC_ACTIONS_PROTOCOL = 'ai.atomic-actions@1' as const
+export const LIST_OUTPUT_PROTOCOL = 'output.list@1' as const
 
 export const aiAtomicInputSchema = z.strictObject({
   operation: z.literal('input'),
@@ -592,6 +622,114 @@ export const mapVerifyStepSchema = z.strictObject({
   input: mapVerifyInputSchema,
 })
 
+export const probeInputSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('element'),
+    target: targetDescriptorSchema,
+    state: z.enum(['visible', 'present']).default('visible'),
+    waitMs: z.number().int().min(0).max(30_000).default(2000),
+  }),
+  z.strictObject({
+    kind: z.literal('text'),
+    text: z.string().min(1).max(1024),
+    target: targetDescriptorSchema.optional(),
+    waitMs: z.number().int().min(0).max(30_000).default(2000),
+  }),
+  z.strictObject({
+    kind: z.literal('url'),
+    urlPattern: z.string().min(1).max(2048),
+    waitMs: z.number().int().min(0).max(30_000).default(2000),
+  }),
+])
+export type ProbeInput = z.infer<typeof probeInputSchema>
+
+export const probeStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('probe'),
+  effectType: z.literal('READ_ONLY'),
+  input: probeInputSchema,
+})
+
+export const decideInputSchema = z.strictObject({
+  blockId: entityIdSchema,
+  condition: conditionSchema,
+})
+export type DecideInput = z.infer<typeof decideInputSchema>
+
+export const decideStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('decide'),
+  effectType: z.literal('READ_ONLY'),
+  input: decideInputSchema,
+})
+
+export const computeInputSchema = z.strictObject({
+  expression: exprSchema,
+})
+export type ComputeInput = z.infer<typeof computeInputSchema>
+
+export const computeStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('compute'),
+  effectType: z.literal('READ_ONLY'),
+  input: computeInputSchema,
+  outputKey: contextKeySchema,
+})
+
+export const listRefSchema = z.strictObject({
+  from: contextKeySchema,
+  fromField: z.string().optional(),
+})
+export type ListRef = z.infer<typeof listRefSchema>
+
+export const collectRulesSchema = z
+  .array(
+    z.strictObject({
+      from: contextKeySchema,
+      fromField: z.string().optional(),
+      into: contextKeySchema,
+    }),
+  )
+  .max(8)
+export type CollectRule = z.infer<typeof collectRulesSchema>[number]
+
+export const authoringControlForEachSchema = z.strictObject({
+  type: z.literal('for_each'),
+  over: listRefSchema,
+  as: contextKeySchema,
+  indexAs: contextKeySchema.optional(),
+  maxItems: z.number().int().min(1).max(200).default(50),
+  stopWhen: conditionSchema.optional(),
+})
+export type AuthoringControlForEach = z.infer<typeof authoringControlForEachSchema>
+
+export const authoringControlRepeatSchema = z.strictObject({
+  type: z.literal('repeat'),
+  until: conditionSchema,
+  maxIterations: z.number().int().min(1).max(100).default(20),
+  intervalMs: z.number().int().min(0).max(60_000).optional(),
+  onLimit: z.enum(['fail', 'stop']).default('fail'),
+})
+export type AuthoringControlRepeat = z.infer<typeof authoringControlRepeatSchema>
+
+export const loopInputSchema = z.strictObject({
+  blockId: entityIdSchema,
+  control: z.discriminatedUnion('type', [
+    authoringControlForEachSchema,
+    authoringControlRepeatSchema,
+  ]),
+  collect: collectRulesSchema.optional(),
+})
+export type LoopInput = z.infer<typeof loopInputSchema>
+
+export const loopStepSchema = z.strictObject({
+  ...stepCommon,
+  type: z.literal('loop'),
+  effectType: z.literal('READ_ONLY'),
+  input: loopInputSchema,
+})
+export type LoopStep = z.infer<typeof loopStepSchema>
+
 export const stepSchema = z
   .discriminatedUnion('type', [
     echoStepSchema,
@@ -615,6 +753,10 @@ export const stepSchema = z
     mapGuardedActionStepSchema,
     mapVerifyStepSchema,
     verifyContextStepSchema,
+    probeStepSchema,
+    decideStepSchema,
+    computeStepSchema,
+    loopStepSchema,
   ])
   .superRefine((step, ctx) => {
     if (step.type === 'ai_action' && (step.policy?.retryLimit ?? 0) > 0) {
@@ -623,6 +765,23 @@ export const stepSchema = z
         path: ['policy', 'retryLimit'],
         message: 'ai_action 不允许自动重试',
       })
+    }
+    if (step.optional && !OPTIONAL_ALLOWED_STEP_TYPES.includes(step.type as any)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['optional'],
+        message: `单步可选 (optional) 仅允许用于 ${OPTIONAL_ALLOWED_STEP_TYPES.join(', ')} 步骤`,
+      })
+    }
+    if (step.type === 'probe') {
+      const waitMs = step.input.waitMs ?? 2000
+      if (step.policy?.timeoutMs !== undefined && step.policy.timeoutMs <= waitMs) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['policy', 'timeoutMs'],
+          message: `页面检查步骤的超时上限 (policy.timeoutMs=${step.policy.timeoutMs}ms) 必须大于等待上限 (waitMs=${waitMs}ms)`,
+        })
+      }
     }
   })
 export type EchoStep = z.infer<typeof echoStepSchema>
@@ -643,6 +802,9 @@ export type MapObserveStep = z.infer<typeof mapObserveStepSchema>
 export type MapProposeStep = z.infer<typeof mapProposeStepSchema>
 export type MapGuardedActionStep = z.infer<typeof mapGuardedActionStepSchema>
 export type MapVerifyStep = z.infer<typeof mapVerifyStepSchema>
+export type ProbeStep = z.infer<typeof probeStepSchema>
+export type DecideStep = z.infer<typeof decideStepSchema>
+export type ComputeStep = z.infer<typeof computeStepSchema>
 export type Step = z.infer<typeof stepSchema>
 
 export const SCENARIO_INPUT_TYPES = [

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { resolverDiagnosticsSchema } from './browser-command.js'
 import { pageRefSchema, type PageRef } from './managed-browser.js'
 import { isSensitiveLocatorHay } from './sensitive-fill.js'
+import { stepSchema } from './step.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
 import { entityIdSchema } from './wire.js'
 
@@ -37,6 +38,13 @@ export const targetObservationPreviewSchema = z.strictObject({
 })
 export type TargetObservationPreview = z.infer<typeof targetObservationPreviewSchema>
 
+export const pickDisambiguationSchema = z.strictObject({
+  visibleText: z.string().min(1).max(80),
+  accessibleName: z.string().min(1).max(80),
+  recommended: z.enum(['visible_text', 'accessible_name']),
+})
+export type PickDisambiguation = z.infer<typeof pickDisambiguationSchema>
+
 export const targetObservationSchema = z.strictObject({
   outcome: targetObservationOutcomeSchema,
   target: targetDescriptorSchema.optional(),
@@ -58,6 +66,7 @@ export const targetObservationSchema = z.strictObject({
     )
     .optional(),
   assist: targetAssistSchema.optional(),
+  disambiguation: pickDisambiguationSchema.optional(),
 })
 export type TargetObservation = z.infer<typeof targetObservationSchema>
 
@@ -79,11 +88,19 @@ export const observeOperationSchema = z.strictObject({
 })
 export type ObserveOperation = z.infer<typeof observeOperationSchema>
 
-export const DEBUG_ACTIONS = ['retry_current', 'continue', 'stop', 'pause'] as const
+export const DEBUG_ACTIONS = [
+  'retry_current',
+  'continue',
+  'stop',
+  'pause',
+  'continue_to_step',
+] as const
 export type DebugActionType = (typeof DEBUG_ACTIONS)[number]
 export const debugActionSchema = z.strictObject({
   action: z.enum(DEBUG_ACTIONS),
+  targetStepId: entityIdSchema.optional(),
   targetOverride: targetDescriptorSchema.optional(),
+  stepOverride: stepSchema.optional(),
   fencingToken: z.string().min(1).optional(),
   confirmSideEffect: z.boolean().optional(),
   pageChangedAck: z.boolean().optional(),

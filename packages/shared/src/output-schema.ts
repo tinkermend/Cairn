@@ -44,16 +44,38 @@ export const aiObjectOutputSchema = z.strictObject({
   kind: z.literal('object'),
   fields: z.array(aiOutputFieldSchema).min(1).max(32),
 })
-export const aiOutputSchemaSchema = z.discriminatedUnion('kind', [
+export const MAX_STEP_OUTPUT_KB = 256
+export const MAX_STEP_OUTPUT_BYTES = MAX_STEP_OUTPUT_KB * 1024
+
+export const aiListItemOutputSchema = z.discriminatedUnion('kind', [
   aiScalarOutputSchema,
   aiObjectOutputSchema,
 ])
+export type AiListItemOutput = z.infer<typeof aiListItemOutputSchema>
+
+export const aiListOutputSchema = z.strictObject({
+  kind: z.literal('list'),
+  item: aiListItemOutputSchema,
+  maxItems: z.number().int().min(1).max(200).default(50),
+})
+export type AiListOutput = z.infer<typeof aiListOutputSchema>
+
+export const aiOutputSchemaSchema = z.discriminatedUnion('kind', [
+  aiScalarOutputSchema,
+  aiObjectOutputSchema,
+  aiListOutputSchema,
+])
 export type AiOutputSchema = z.infer<typeof aiOutputSchemaSchema>
+
+export type ListItemOutputShape =
+  | { kind: 'scalar'; type: OutputFieldType | 'json' }
+  | { kind: 'object'; fields: readonly { name: string; type: OutputFieldType | 'json'; required: boolean }[] }
 
 export type OutputShape =
   | { kind: 'unknown' }
   | { kind: 'scalar'; type: OutputFieldType | 'json' }
   | { kind: 'object'; fields: readonly { name: string; type: OutputFieldType | 'json'; required: boolean }[] }
+  | { kind: 'list'; item: ListItemOutputShape; maxItems?: number }
 
 export function fieldsOfOutputSchema(schema: AiOutputSchema): readonly AiOutputField[] {
   return schema.kind === 'object' ? schema.fields : []
@@ -68,18 +90,59 @@ export function parseAiOutput(
     if (!parsed.ok) return parsed
     return { ok: true, value: parsed.value }
   }
+  if (schema.kind === 'list') {
+    if (!Array.isArray(raw)) {
+      return { ok: false, code: 'AI_OUTPUT_INVALID', message: '提取结果必须是数组' }
+    }
+    const maxItems = schema.maxItems ?? 50
+    if (raw.length > maxItems) {
+      return {
+        ok: false,
+        code: 'AI_OUTPUT_INVALID',
+        message: `提取结果超过上限 ${maxItems} 项（实际 ${raw.length} 项）`,
+      }
+    }
+    const list: JsonValue[] = []
+    for (let i = 0; i < raw.length; i++) {
+      const item = raw[i]
+      if (schema.item.kind === 'scalar') {
+        const parsed = parseScalar(item, schema.item.type)
+        if (!parsed.ok) {
+          return { ok: false, code: 'AI_OUTPUT_INVALID', message: `第 ${i + 1} 项 ${parsed.message}` }
+        }
+        if (typeof parsed.value === 'string' && parsed.value.trim() === '') {
+          return { ok: false, code: 'AI_OUTPUT_INVALID', message: `第 ${i + 1} 项取到空值` }
+        }
+        list.push(parsed.value)
+      } else {
+        const parsed = parseObject(item, schema.item.fields)
+        if (!parsed.ok) {
+          return { ok: false, code: 'AI_OUTPUT_INVALID', message: `第 ${i + 1} 项：${parsed.message}` }
+        }
+        list.push(parsed.value)
+      }
+    }
+    return { ok: true, value: list }
+  }
+  return parseObject(raw, schema.fields)
+}
+
+function parseObject(
+  raw: unknown,
+  fields: readonly AiOutputField[],
+): { ok: true; value: JsonValue } | { ok: false; code: 'AI_OUTPUT_INVALID'; message: string } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, code: 'AI_OUTPUT_INVALID', message: '提取结果必须是对象' }
   }
   const source = raw as Record<string, unknown>
   const extra = Object.getOwnPropertyNames(source).filter(
-    (key) => !schema.fields.some((field) => field.name === key),
+    (key) => !fields.some((field) => field.name === key),
   )
   if (extra.length > 0) {
     return { ok: false, code: 'AI_OUTPUT_INVALID', message: `提取结果含未声明字段：${extra.join(', ')}` }
   }
   const out: Record<string, JsonValue> = {}
-  for (const field of schema.fields) {
+  for (const field of fields) {
     const required = field.required !== false
     if (!Object.hasOwn(source, field.name)) {
       if (required) {
@@ -91,8 +154,6 @@ export function parseAiOutput(
     if (!parsed.ok) {
       return { ok: false, code: 'AI_OUTPUT_INVALID', message: `字段 ${field.name} ${parsed.message}` }
     }
-    // 页面还在加载时模型倾向于回空串而不是报错。必填字段放行空值会把这个错误
-    // 顺着 context 传给后续步骤，失败点离原因很远，也拿不到本步的重试机会。
     if (required && typeof parsed.value === 'string' && parsed.value.trim() === '') {
       return { ok: false, code: 'AI_OUTPUT_INVALID', message: `必填字段 ${field.name} 取到空值` }
     }

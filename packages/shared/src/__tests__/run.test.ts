@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { isFinishedRunStatus, isHaltedRunStatus, runSnapshotSchema, runStatusSchema } from '../run.js'
+import {
+  isFinishedRunStatus,
+  isHaltedRunStatus,
+  isOpenStepRunStatus,
+  isRunDrainedForSuccess,
+  runSnapshotSchema,
+  runStatusSchema,
+} from '../run.js'
 import { DEFAULT_SESSION_POLICY } from '../session.js'
 
 const ids = {
@@ -51,6 +58,28 @@ describe('runStatusSchema', () => {
     expect(isFinishedRunStatus('NEEDS_REVIEW')).toBe(false)
     expect(isHaltedRunStatus('HOLDING')).toBe(false)
     expect(isFinishedRunStatus('HOLDING')).toBe(false)
+  })
+})
+
+describe('StepRun 收口判定', () => {
+  it('只有 PENDING 与 RUNNING 还会被推进', () => {
+    expect(isOpenStepRunStatus('PENDING')).toBe(true)
+    expect(isOpenStepRunStatus('RUNNING')).toBe(true)
+    for (const status of ['SUCCEEDED', 'FAILED', 'SKIPPED', 'CANCELLED']) {
+      expect(isOpenStepRunStatus(status)).toBe(false)
+    }
+  })
+
+  it('成功与跳过混合可收尾为成功；全部跳过、仍有未完成或失败都不行', () => {
+    const of = (...statuses: string[]) => statuses.map((status) => ({ status }))
+    expect(isRunDrainedForSuccess(of('SUCCEEDED', 'SKIPPED'))).toBe(true)
+    expect(isRunDrainedForSuccess(of('SKIPPED', 'SUCCEEDED', 'SKIPPED'))).toBe(true)
+    expect(isRunDrainedForSuccess(of('SKIPPED', 'SKIPPED'))).toBe(false)
+    expect(isRunDrainedForSuccess(of())).toBe(false)
+    expect(isRunDrainedForSuccess(of('SUCCEEDED', 'PENDING'))).toBe(false)
+    expect(isRunDrainedForSuccess(of('SUCCEEDED', 'RUNNING'))).toBe(false)
+    expect(isRunDrainedForSuccess(of('SUCCEEDED', 'FAILED', 'SKIPPED'))).toBe(false)
+    expect(isRunDrainedForSuccess(of('SUCCEEDED', 'CANCELLED'))).toBe(false)
   })
 })
 

@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 import { idempotencyKeySchema } from './run-api.js'
 import { scenarioInputDeclSchema, scenarioNameSchema } from './scenario.js'
-import { stepSchema } from './step.js'
+import { stepSchema, type Step } from './step.js'
 import { outcomeRuleSchema } from './outcome.js'
 import { targetDescriptorSchema } from './target-descriptor.js'
 
@@ -10,6 +10,12 @@ export const DEMONSTRATION_PROTOCOL = 'demonstration@1' as const
 export const DEMONSTRATION_ADAPTER_VERSION = 'demonstration-adapters@1' as const
 export const DEMONSTRATION_RULE_VERSION = 'demonstration-rules@1' as const
 export const DEMONSTRATION_REDACTION_VERSION = 'demonstration-redaction@1' as const
+export const DEMONSTRATION_HANDOFF_PLACEHOLDER_NAME = '录制导入占位'
+export function isDemonstrationHandoffPlaceholder(step: Step): boolean {
+  return step.name === DEMONSTRATION_HANDOFF_PLACEHOLDER_NAME &&
+    step.type === 'navigate' && step.input.url === 'https://example.com' &&
+    !step.outputKey && !step.disabled
+}
 export const DEMONSTRATION_LIMITS = {
   actions: 200,
   envelopeBytes: 1_048_576,
@@ -171,6 +177,7 @@ export const demonstrationPlacementSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('start') }),
   z.strictObject({ kind: z.literal('after'), nodeId: entityIdSchema }),
   z.strictObject({ kind: z.literal('replace'), nodeId: entityIdSchema }),
+  z.strictObject({ kind: z.literal('replace_initial'), nodeId: entityIdSchema }),
 ])
 export type DemonstrationPlacement = z.infer<typeof demonstrationPlacementSchema>
 export const demonstrationOutcomeCandidateSchema = z.strictObject({

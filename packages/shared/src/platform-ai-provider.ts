@@ -190,9 +190,16 @@ export function readPlatformAiChatResult(body: unknown, mode: 'business' | 'prob
     throw new Error('模型没有返回可用结果')
   }
   const message = (record.choices[0] as { message?: Record<string, unknown> } | undefined)?.message
-  const text = typeof message?.content === 'string' ? message.content.trim() : ''
-  const reasoningText =
+  let text = typeof message?.content === 'string' ? message.content.trim() : ''
+  let reasoningText =
     typeof message?.reasoning_content === 'string' ? message.reasoning_content.trim() : ''
+  if (!reasoningText && text.includes('<think>') && text.includes('</think>')) {
+    const thinkMatch = /<think>([\s\S]*?)<\/think>/.exec(text)
+    if (thinkMatch && thinkMatch[1]) {
+      reasoningText = thinkMatch[1].trim()
+      text = text.replace(/<think>[\s\S]*?<\/think>/, '').trim()
+    }
+  }
   const usage =
     record.usage && typeof record.usage === 'object' && !Array.isArray(record.usage)
       ? (record.usage as Record<string, unknown>)
@@ -333,6 +340,7 @@ export async function streamPlatformAiChatCompletion(input: {
   let usage: { promptTokens?: number; completionTokens?: number } | undefined
   let buffer = ''
   let totalBytes = 0
+  let inThinkTag = false
 
   try {
     for (;;) {
@@ -364,10 +372,46 @@ export async function streamPlatformAiChatCompletion(input: {
           }
           const choice = Array.isArray(parsed.choices) ? (parsed.choices[0] as Record<string, unknown> | undefined) : undefined
           const delta = choice?.delta && typeof choice.delta === 'object' ? (choice.delta as Record<string, unknown>) : undefined
-          const textDelta = typeof delta?.content === 'string' ? delta.content : undefined
-          const reasoningDelta = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : undefined
-          if (textDelta) fullText += textDelta
-          if (reasoningDelta) fullReasoning += reasoningDelta
+          const rawContent = typeof delta?.content === 'string' ? delta.content : undefined
+          let reasoningDelta = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : undefined
+          let textDelta: string | undefined
+
+          if (reasoningDelta) {
+            fullReasoning += reasoningDelta
+          }
+
+          if (rawContent) {
+            if (rawContent.includes('<think>')) {
+              inThinkTag = true
+              const parts = rawContent.split('<think>')
+              if (parts[0]) {
+                textDelta = (textDelta ?? '') + parts[0]
+                fullText += parts[0]
+              }
+              if (parts[1]) {
+                reasoningDelta = (reasoningDelta ?? '') + parts[1]
+                fullReasoning += parts[1]
+              }
+            } else if (rawContent.includes('</think>')) {
+              inThinkTag = false
+              const parts = rawContent.split('</think>')
+              if (parts[0]) {
+                reasoningDelta = (reasoningDelta ?? '') + parts[0]
+                fullReasoning += parts[0]
+              }
+              if (parts[1]) {
+                textDelta = (textDelta ?? '') + parts[1]
+                fullText += parts[1]
+              }
+            } else if (inThinkTag) {
+              reasoningDelta = (reasoningDelta ?? '') + rawContent
+              fullReasoning += rawContent
+            } else {
+              textDelta = (textDelta ?? '') + rawContent
+              fullText += rawContent
+            }
+          }
+
           if (textDelta || reasoningDelta) {
             input.onChunk?.({ textDelta, reasoningDelta })
           }

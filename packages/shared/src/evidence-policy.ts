@@ -35,6 +35,8 @@ export const evidencePolicySchema = z.strictObject({
   captureContractVersion: z.literal(1).optional(),
   /** 缺省按历史整页解释；新组装快照冻结 viewport。 */
   screenshotViewport: screenshotViewportSchema.optional(),
+  /** 循环内证据采集口径：all（默认）或 bounded（首末失败项抓图） */
+  iterationEvidence: z.enum(['all', 'bounded']).optional(),
 })
 export type EvidencePolicy = z.infer<typeof evidencePolicySchema>
 
@@ -45,6 +47,7 @@ export type ResolvedEvidencePolicy = {
   required: EvidenceType[]
   retainDays: { screenshot: number; video: number; trace: number }
   screenshotViewport: ScreenshotViewport
+  iterationEvidence: 'all' | 'bounded'
 }
 
 /** 历史 Snapshot / 无字段时的解释。新产品出厂默认在 FACTORY_PLATFORM_CONFIG.evidence。 */
@@ -59,6 +62,7 @@ export const DEFAULT_EVIDENCE_POLICY: ResolvedEvidencePolicy = {
     trace: DEFAULT_TRACE_RETAIN_DAYS,
   },
   screenshotViewport: 'full_page',
+  iterationEvidence: 'all',
 }
 
 export function resolveEvidencePolicy(
@@ -83,6 +87,7 @@ export function resolveEvidencePolicy(
       trace: traceRetain,
     },
     screenshotViewport: policy?.screenshotViewport ?? platformDefault.screenshotViewport ?? 'full_page',
+    iterationEvidence: policy?.iterationEvidence ?? platformDefault.iterationEvidence ?? 'all',
   }
 }
 

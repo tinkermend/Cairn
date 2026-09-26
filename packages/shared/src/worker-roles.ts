@@ -4,7 +4,8 @@ import { MAP_CONSUMPTION_PROTOCOL } from './map-consumption.js'
 import { MAP_EXPLORE_PROTOCOL } from './map-exploration.js'
 import { MAP_JOBS_PROTOCOL } from './map-jobs.js'
 import { IMPORTED_OUTCOME_PROTOCOL, OUTCOME_MANIFEST_PROTOCOL } from './outcome.js'
-import { AI_ATOMIC_ACTIONS_PROTOCOL } from './step.js'
+import { AI_ATOMIC_ACTIONS_PROTOCOL, LIST_OUTPUT_PROTOCOL } from './step.js'
+import { AI_TASK_EVIDENCE_PROTOCOL } from './ai-path-learning.js'
 import { RUNTIME_INVARIANT_MANIFEST_PROTOCOL } from './runtime-invariant.js'
 import { KNOWLEDGE_ANALYSIS_PROTOCOL } from './analysis-jobs.js'
 import { MAP_SCHEDULER_PROTOCOL, UNIFIED_SCHEDULER_PROTOCOL } from './schedules.js'
@@ -15,6 +16,7 @@ import { NOTIFICATION_WORKER_PROTOCOL, RUN_NOTIFICATION_PROTOCOL } from './notif
 import { EXPORT_ARTIFACTS_PROTOCOL } from './reports.js'
 import { SERVICE_WEBHOOK_DELIVERY_PROTOCOL } from './service-webhooks.js'
 import { SUITE_ADMISSION_PROTOCOL, SUITE_SCHEDULER_PROTOCOL } from './suites.js'
+import { CONTROL_FLOW_PROTOCOL, CONTROL_FLOW_PROTOCOL_V2 } from './run.js'
 
 export const WORKER_ROLES = ['executor', 'scheduler', 'maintenance', 'analyst', 'all'] as const
 export type WorkerRole = (typeof WORKER_ROLES)[number]
@@ -42,9 +44,13 @@ const PROTOCOL_ORDER = [
   EXPORT_ARTIFACTS_PROTOCOL,
   OUTCOME_MANIFEST_PROTOCOL,
   AI_ATOMIC_ACTIONS_PROTOCOL,
+  LIST_OUTPUT_PROTOCOL,
+  AI_TASK_EVIDENCE_PROTOCOL,
   IMPORTED_OUTCOME_PROTOCOL,
   RUNTIME_INVARIANT_MANIFEST_PROTOCOL,
   RESOLUTION_PROTOCOL,
+  CONTROL_FLOW_PROTOCOL,
+  CONTROL_FLOW_PROTOCOL_V2,
 ] as const
 
 export type WorkerRoleSet = {

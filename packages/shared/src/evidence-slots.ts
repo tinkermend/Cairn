@@ -35,12 +35,23 @@ export const EVIDENCE_ARTIFACT_KEY_MAX = 160
 
 export const evidenceArtifactKeySchema = z.string().trim().min(1).max(EVIDENCE_ARTIFACT_KEY_MAX)
 
+export const SCREENSHOT_DIAGNOSES = ['suspected_blank', 'not_flagged'] as const
+export type ScreenshotDiagnosis = (typeof SCREENSHOT_DIAGNOSES)[number]
+export const screenshotDiagnosisSchema = z.enum(SCREENSHOT_DIAGNOSES)
+
+export const SCREENSHOT_DIAGNOSIS_LABELS: Record<ScreenshotDiagnosis, string> = {
+  suspected_blank: '截图疑似空白',
+  not_flagged: '未发现空白迹象',
+}
+
 export const screenshotEvidencePayloadSchema = z.strictObject({
   role: screenshotRoleSchema,
   viewport: screenshotViewportSchema,
   capturedAt: utcInstantSchema,
   pageRef: pageRefSchema.optional(),
   seq: z.number().int().nonnegative().optional(),
+  diagnosis: screenshotDiagnosisSchema.optional(),
+  omittedBefore: z.literal('initial_blank_page').optional(),
 })
 export type ScreenshotEvidencePayload = z.infer<typeof screenshotEvidencePayloadSchema>
 
@@ -87,18 +98,47 @@ export function isSideEffectBrowserCommand(type: string): boolean {
   )
 }
 
+export function screenshotRoleOf(row: {
+  artifactKey?: string | null
+  payload?: unknown
+}): ScreenshotRole | undefined {
+  const parsed = readScreenshotPayload(row.payload)
+  if (parsed?.role) return parsed.role
+  const key = row.artifactKey
+  if (!key?.startsWith('screenshot:')) return undefined
+  const role = key.split(':')[2]
+  if (!role || !(SCREENSHOT_ROLES as readonly string[]).includes(role)) return undefined
+  return role as ScreenshotRole
+}
+
+export function screenshotSatisfiesRequiredRole(
+  row: { type: string; artifactKey?: string | null; payload?: unknown },
+  role: ScreenshotRole,
+): boolean {
+  return row.type === 'screenshot' && screenshotRoleOf(row) === role
+}
+
 export function faceScreenshot<T extends { attemptId?: string; type: string; payload?: unknown }>(
   items: readonly T[],
   attemptId: string,
 ): T | undefined {
   const shots = items.filter((item) => item.attemptId === attemptId && item.type === 'screenshot')
   const rank = (item: T) => {
-    const role = readScreenshotPayload(item.payload)?.role
-    if (role === 'on_error') return 0
-    if (role === 'after_action' || role === 'after_condition' || role === 'final') return 1
-    if (role === 'handoff') return 2
-    if (role === 'before_action') return 3
-    return 4
+    const payload = readScreenshotPayload(item.payload)
+    const role = payload?.role
+    const roleRank =
+      role === 'on_error' ? 0
+      : role === 'after_action' || role === 'after_condition' || role === 'final' ? 1
+      : role === 'handoff' ? 2
+      : role === 'before_action' ? 3
+      : 4
+    const blankRank = payload?.diagnosis === 'suspected_blank' ? 1 : 0
+    const seq = payload?.seq ?? 0
+    return [roleRank, blankRank, -seq] as const
   }
-  return [...shots].sort((left, right) => rank(left) - rank(right))[0]
+  return [...shots].sort((left, right) => {
+    const a = rank(left)
+    const b = rank(right)
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
+  })[0]
 }

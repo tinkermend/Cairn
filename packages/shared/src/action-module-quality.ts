@@ -13,6 +13,7 @@ import {
   type RunStatus,
   type StepRunStatus,
 } from './run.js'
+import { stepRunMapByStep } from './run-api.js'
 import { entityIdSchema, utcInstantSchema } from './wire.js'
 import { type ModuleHealthSignal, type ModuleHealthSummary, moduleHealthSummarySchema } from './action-module-health.js'
 
@@ -328,7 +329,7 @@ function deriveOne(
   group?: CandidateGroup,
 ): ModuleInvocationResult {
   const authHint = input.run.authHint ?? { hadAuthWaitOrRecovery: false, authStateExpired: false }
-  const byId = new Map(input.stepRuns.map((item) => [item.stepId, item]))
+  const byId = stepRunMapByStep(input.stepRuns)
   const winningAlt = group?.alternatives.find((item) =>
     item.stepIds.length > 0 && item.stepIds.every((stepId) => byId.get(stepId)?.status === 'SUCCEEDED'),
   )

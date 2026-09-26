@@ -342,6 +342,9 @@ export const platformModuleFallbackSchema = z.strictObject({
 })
 export type PlatformModuleFallback = z.infer<typeof platformModuleFallbackSchema>
 
+export { FACTORY_AI_PATH_LEARNING, platformAiPathLearningSchema, type PlatformAiPathLearning } from './ai-path-learning.js'
+import { FACTORY_AI_PATH_LEARNING, platformAiPathLearningSchema } from './ai-path-learning.js'
+
 export const platformConfigDocumentSchema = z
   .strictObject({
     schemaVersion: z.literal(PLATFORM_CONFIG_SCHEMA_VERSION),
@@ -365,6 +368,7 @@ export const platformConfigDocumentSchema = z
     moduleResolver: platformModuleResolverSchema.default(FACTORY_MODULE_RESOLVER),
     moduleQuality: platformModuleQualitySchema.default(FACTORY_MODULE_QUALITY),
     moduleFallback: platformModuleFallbackSchema.default(FACTORY_MODULE_FALLBACK),
+    aiPathLearning: platformAiPathLearningSchema.default(FACTORY_AI_PATH_LEARNING),
     runtimeInvariants: platformRuntimeInvariantDefaultsSchema.default(FACTORY_RUNTIME_INVARIANT_DEFAULTS),
     alerting: z.strictObject({
       rules: z.array(alertRuleSchema).max(64),
@@ -452,6 +456,7 @@ export const FACTORY_BROWSER_AI_ENDPOINT = {
 
 export const FACTORY_PLATFORM_CONFIG: PlatformConfigDocument = {
   analysisAi: FACTORY_ANALYSIS_AI,
+  aiPathLearning: FACTORY_AI_PATH_LEARNING,
   schemaVersion: PLATFORM_CONFIG_SCHEMA_VERSION,
   execution: {
     defaultTimeoutMs: DEFAULT_STEP_TIMEOUT_MS,
@@ -827,6 +832,7 @@ export function resolvePlatformEvidencePolicy(
       trace: trace === 'always' ? platform.retainDays.debugTrace : platform.retainDays.trace,
     },
     screenshotViewport: override?.screenshotViewport ?? 'viewport',
+    iterationEvidence: override?.iterationEvidence ?? 'all',
   }
   const resolved = resolveEvidencePolicy(override, base)
   if (override?.retainDays?.trace === undefined) {

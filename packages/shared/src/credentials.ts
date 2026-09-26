@@ -572,34 +572,17 @@ export const credentialHistoryResponseSchema = z.object({
 })
 export type CredentialHistoryResponse = z.infer<typeof credentialHistoryResponseSchema>
 
-export const credentialRegisterBodySchema = z
-  .strictObject({
-    type: z.enum(['target_password', 'model_key', 'alert_webhook']),
-    targetAccountId: entityIdSchema.optional(),
-    modelSlot: z.enum(['browserAi', 'platformAi']).optional(),
-    alertChannelId: entityIdSchema.optional(),
-    name: z.string().trim().min(1).max(128).optional(),
-    password: z.string().min(1).max(256).optional(),
-    apiKey: z.string().min(1).max(4096).optional(),
-    webhookUrl: z.string().min(1).max(2048).optional(),
-    webhookToken: z.string().min(1).max(1024).optional(),
-    validity: credentialValidityWriteSchema,
-    ownerConsoleAccountId: entityIdSchema.nullable().optional(),
-    notes: z.string().trim().max(CREDENTIAL_NOTES_MAX).optional(),
-    purpose: z.string().trim().max(256).optional(),
-    tags: z.array(z.string().trim().min(1).max(CREDENTIAL_TAG_MAX)).max(CREDENTIAL_TAG_LIMIT).optional(),
-  })
-  .superRefine((body, ctx) => {
-    if (body.type === 'target_password' && !body.targetAccountId) {
-      ctx.addIssue({ code: 'custom', path: ['targetAccountId'], message: '目标登录凭据必须选择已有账号' })
-    }
-    if (body.type === 'model_key' && !body.modelSlot) {
-      ctx.addIssue({ code: 'custom', path: ['modelSlot'], message: '模型密钥必须选择已有配置槽位' })
-    }
-    if (body.type === 'alert_webhook' && !body.alertChannelId) {
-      ctx.addIssue({ code: 'custom', path: ['alertChannelId'], message: '告警凭据必须选择已有渠道' })
-    }
-  })
+export const credentialRegisterBodySchema = z.strictObject({
+  type: z.literal('target_password'),
+  targetAccountId: entityIdSchema,
+  name: z.string().trim().min(1).max(128).optional(),
+  password: z.string().min(1).max(256),
+  validity: credentialValidityWriteSchema,
+  ownerConsoleAccountId: entityIdSchema.nullable().optional(),
+  notes: z.string().trim().max(CREDENTIAL_NOTES_MAX).optional(),
+  purpose: z.string().trim().max(256).optional(),
+  tags: z.array(z.string().trim().min(1).max(CREDENTIAL_TAG_MAX)).max(CREDENTIAL_TAG_LIMIT).optional(),
+})
 export type CredentialRegisterBody = z.infer<typeof credentialRegisterBodySchema>
 
 export const credentialMetadataBodySchema = z.strictObject({

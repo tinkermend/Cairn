@@ -127,4 +127,19 @@ describe('凭据有效期计算', () => {
       }),
     ).toThrow()
   })
+
+  it('登记契约只接受目标账号密码及其必填材料', () => {
+    const body = {
+      type: 'target_password',
+      targetAccountId: '11111111-1111-4111-8111-111111111111',
+      password: 'secret',
+      validity: { mode: 'permanent' },
+    }
+    expect(credentialRegisterBodySchema.safeParse(body).success).toBe(true)
+    expect(credentialRegisterBodySchema.safeParse({ ...body, password: undefined }).success).toBe(false)
+    expect(credentialRegisterBodySchema.safeParse({ ...body, targetAccountId: undefined }).success).toBe(false)
+    expect(credentialRegisterBodySchema.safeParse({ ...body, modelSlot: 'platformAi' }).success).toBe(false)
+    expect(credentialRegisterBodySchema.safeParse({ ...body, type: 'model_key', modelSlot: 'platformAi' }).success).toBe(false)
+    expect(credentialRegisterBodySchema.safeParse({ ...body, type: 'alert_webhook', alertChannelId: body.targetAccountId }).success).toBe(false)
+  })
 })

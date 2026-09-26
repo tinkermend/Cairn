@@ -457,7 +457,7 @@ export function deriveRuntimeInvariantResults(input: {
 export type JoinedRuntimeInvariantEvaluation = {
   entry: RuntimeInvariant
   result?: OutcomeResultDto
-  displayVerdict: OutcomeStatus
+  displayVerdict: OutcomeStatus | 'NOT_APPLICABLE'
 }
 
 export function joinRuntimeInvariantEvaluations(

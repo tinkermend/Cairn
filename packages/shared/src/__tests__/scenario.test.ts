@@ -249,6 +249,10 @@ describe('领域码常量', () => {
       'MAP_CONSUMPTION_NOT_ELIGIBLE',
       'MAP_RELEASE_NOT_PUBLISHED',
       'MAP_RELEASE_WITHDRAWN',
+      'LOOP_INPUT_INVALID',
+      'LOOP_PAYLOAD_TOO_LARGE',
+      'LOOP_TOO_MANY_ITEMS',
+      'LOOP_LIMIT_REACHED',
     ])
     expect(TARGET_ERROR_CODES).toEqual(
       expect.arrayContaining([

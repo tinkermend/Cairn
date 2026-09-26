@@ -17,6 +17,8 @@ import { sanitizeAriaSnapshot } from './browser-command.js'
 
 /** 当前识途录制器壳对应的来源版本。导入路径只接受这一版。 */
 export const RECORDER_SOURCE_VERSION = 'playwright-crx@0.15.0'
+/** Midscene 扩展将事件先转换为受限的 RecordingEvent，再上传此固定版本。 */
+export const MIDSCENE_RECORDER_SOURCE_VERSION = 'midscene@1.12.6'
 /** 可执行转换规则版本。预览/回填必须带上并重跑。 */
 export const RECORDING_NORMALIZER_VERSION = 'recording-normalizer@4'
 
@@ -367,11 +369,11 @@ export function normalizeRecording(
 
   const merged = mergeConsecutiveFills(parsed)
   const diagnostics: string[] = []
-  const sourceUnsupported = Boolean(
-    options.forImport && options.sourceVersion && options.sourceVersion !== RECORDER_SOURCE_VERSION,
-  )
-  if (options.sourceVersion && options.sourceVersion !== RECORDER_SOURCE_VERSION) {
-    diagnostics.push(`来源版本是 ${options.sourceVersion}，不能按 ${RECORDER_SOURCE_VERSION} 做可执行转换`)
+  const supportedSource = options.sourceVersion === RECORDER_SOURCE_VERSION ||
+    options.sourceVersion === MIDSCENE_RECORDER_SOURCE_VERSION
+  const sourceUnsupported = Boolean(options.forImport && options.sourceVersion && !supportedSource)
+  if (options.sourceVersion && !supportedSource) {
+    diagnostics.push(`来源版本是 ${options.sourceVersion}，不在可执行导入版本内`)
   }
 
   const items: RecordingItem[] = []

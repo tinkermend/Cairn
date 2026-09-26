@@ -7,6 +7,7 @@ import {
   maxConcurrentSessionsSchema,
   targetSessionPolicyOverrideSchema,
   sessionPolicySchema,
+  sessionSnapshotSummarySchema,
 } from './session.js'
 import { nextCursorSchema } from './rbac.js'
 import { resourceDeletedBySchema } from './resource-lifecycle.js'
@@ -21,6 +22,7 @@ import {
   issuerExpirySourceSchema,
 } from './credentials.js'
 import { resolutionPolicySchema } from './resolution-policy.js'
+import { aiActionTraceTargetModeSchema } from './ai-path-learning.js'
 import { entityIdSchema, timeoutMsSchema, utcInstantSchema } from './wire.js'
 import { sensitiveSelectorsSchema } from './evidence-slots.js'
 
@@ -43,6 +45,17 @@ export {
 
 export const TARGET_STATUSES = ['active', 'disabled'] as const
 export type TargetStatus = (typeof TARGET_STATUSES)[number]
+
+/** Stable local identity choices. These keys never accept image URLs or CSS values. */
+export const TARGET_ICON_KEYS = ['globe', 'building', 'layers', 'database', 'cloud', 'shopping-bag', 'landmark', 'factory'] as const
+export type TargetIconKey = (typeof TARGET_ICON_KEYS)[number]
+export const DEFAULT_TARGET_ICON_KEY: TargetIconKey = 'globe'
+export const targetIconKeySchema = z.enum(TARGET_ICON_KEYS)
+
+export const TARGET_ACCENT_KEYS = ['blue', 'pine', 'slate', 'teal', 'amber', 'violet', 'rose'] as const
+export type TargetAccentKey = (typeof TARGET_ACCENT_KEYS)[number]
+export const DEFAULT_TARGET_ACCENT_KEY: TargetAccentKey = 'blue'
+export const targetAccentKeySchema = z.enum(TARGET_ACCENT_KEYS)
 
 export const AUTH_METHODS = ['password', 'manual'] as const
 export type AuthMethod = (typeof AUTH_METHODS)[number]
@@ -129,6 +142,8 @@ export const targetSchema = z.object({
   authMethod: authMethodSchema,
   captchaMode: captchaModeSchema,
   status: targetStatusSchema,
+  iconKey: targetIconKeySchema.default(DEFAULT_TARGET_ICON_KEY),
+  accentKey: targetAccentKeySchema.default(DEFAULT_TARGET_ACCENT_KEY),
   loginFields: targetLoginFieldsDtoSchema,
   loginLeaveTimeoutMs: timeoutMsSchema.nullable().optional(),
   landingSettleMode: landingSettleModeSchema.optional(),
@@ -139,6 +154,7 @@ export const targetSchema = z.object({
   deletedBy: resourceDeletedBySchema.nullable().optional(),
   currentAuthProfileRevision: z.number().int().positive().nullable().optional(),
   sensitiveSelectors: sensitiveSelectorsSchema.optional(),
+  aiActionTrace: aiActionTraceTargetModeSchema.nullable().optional(),
   sessionPolicy: targetSessionPolicyOverrideSchema.nullable().optional(),
   effectiveSessionPolicy: sessionPolicySchema.optional(),
   resolutionPolicy: z
@@ -184,6 +200,7 @@ export const targetAccountSchema = z.object({
   hasTotp: z.boolean().default(false),
   hasStorageState: z.boolean().default(false),
   storageStateUpdatedAt: utcInstantSchema.nullable().optional(),
+  snapshotSummary: sessionSnapshotSummarySchema.nullable().optional(),
   status: targetStatusSchema,
   expectedIdentity: z.string().trim().min(1).max(256).nullable().optional(),
   usage: accountUsageSchema.default(DEFAULT_ACCOUNT_USAGE),
@@ -262,6 +279,8 @@ export const createTargetBodySchema = z
     authMethod: authMethodSchema.default('password'),
     captchaMode: captchaModeSchema.default('none'),
     status: targetStatusSchema.default('active'),
+    iconKey: targetIconKeySchema.default(DEFAULT_TARGET_ICON_KEY),
+    accentKey: targetAccentKeySchema.default(DEFAULT_TARGET_ACCENT_KEY),
     loginFields: loginFieldsInputSchema,
     loginLeaveTimeoutMs: timeoutMsSchema.nullable().optional(),
     landingSettleMode: landingSettleModeSchema.optional(),
@@ -287,6 +306,8 @@ export const updateTargetBodySchema = z
     authMethod: authMethodSchema.optional(),
     captchaMode: captchaModeSchema.optional(),
     status: targetStatusSchema.optional(),
+    iconKey: targetIconKeySchema.optional(),
+    accentKey: targetAccentKeySchema.optional(),
     loginFields: loginFieldsInputSchema,
     loginLeaveTimeoutMs: timeoutMsSchema.nullable().optional(),
     landingSettleMode: landingSettleModeSchema.optional(),
@@ -302,6 +323,8 @@ export const updateTargetBodySchema = z
       body.authMethod !== undefined ||
       body.captchaMode !== undefined ||
       body.status !== undefined ||
+      body.iconKey !== undefined ||
+      body.accentKey !== undefined ||
       body.loginFields !== undefined ||
       body.loginLeaveTimeoutMs !== undefined ||
       body.landingSettleMode !== undefined ||
@@ -406,4 +429,3 @@ export const importStorageStateBodySchema = z
     storageState: (v.storageState ?? v.state)!,
   }))
 export type ImportStorageStateBody = z.infer<typeof importStorageStateBodySchema>
-

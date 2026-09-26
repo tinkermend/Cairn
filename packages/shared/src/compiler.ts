@@ -1,5 +1,5 @@
 import { type OutcomeManifest } from './outcome.js'
-import { type OutputShape } from './output-schema.js'
+import { type OutputShape, type ListItemOutputShape } from './output-schema.js'
 import { type CompileResolutionContext } from './resolution.js'
 import { type Step } from './step.js'
 import {
@@ -56,7 +56,18 @@ export const COMPILE_DIAGNOSTIC_CODES = [
   'OUTPUT_VARIABLE_UNRESOLVED',
   'SCENARIO_AI_CONTEXT_BINDING_INVALID',
   'SCENARIO_AI_CONTEXT_BINDING_UNRESOLVED',
+  'SCENARIO_DISABLED_STEP_OUTPUT_REFERENCED',
+  'SCENARIO_FROM_LIST_NOT_TEXT',
+  'SCENARIO_ALL_STEPS_DISABLED',
   'SCENARIO_COMPILE_ERROR',
+  'EXPR_TYPE_MISMATCH',
+  'SCENARIO_LOOP_MODULE_UNSUPPORTED',
+  'SCENARIO_LOOP_NESTING_UNSUPPORTED',
+  'SCENARIO_VARIABLE_NAME_CONFLICT',
+  'SCENARIO_LOOP_OUTPUT_OUT_OF_SCOPE',
+  'SCENARIO_LOOP_BUDGET_EXCEEDED',
+  'LOOP_STEP_NOT_AUTHORABLE',
+  'LOOP_INPUT_INVALID',
 ] as const
 export type CompileDiagnosticCode = (typeof COMPILE_DIAGNOSTIC_CODES)[number]
 
@@ -88,6 +99,24 @@ export function outputShapeForStep(step: Step): OutputShape {
   if (step.type === 'ai_extract') {
     const schema = step.input.outputSchema
     if (schema.kind === 'scalar') return { kind: 'scalar', type: schema.type }
+    if (schema.kind === 'list') {
+      const item: ListItemOutputShape =
+        schema.item.kind === 'scalar'
+          ? { kind: 'scalar', type: schema.item.type }
+          : {
+              kind: 'object',
+              fields: schema.item.fields.map((field) => ({
+                name: field.name,
+                type: field.type,
+                required: field.required !== false,
+              })),
+            }
+      return {
+        kind: 'list',
+        item,
+        maxItems: schema.maxItems,
+      }
+    }
     return {
       kind: 'object',
       fields: schema.fields.map((field) => ({
@@ -116,7 +145,17 @@ export function outputShapeForStep(step: Step): OutputShape {
       ],
     }
   }
-  if (step.type === 'download' || step.type === 'extract' || step.type === 'echo') {
+  if (step.type === 'extract') {
+    if (step.input.many) {
+      return {
+        kind: 'list',
+        item: { kind: 'scalar', type: 'string' },
+        maxItems: step.input.many.maxItems,
+      }
+    }
+    return { kind: 'scalar', type: 'json' }
+  }
+  if (step.type === 'download' || step.type === 'echo') {
     return { kind: 'scalar', type: 'json' }
   }
   return { kind: 'unknown' }

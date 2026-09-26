@@ -165,6 +165,7 @@ export const aiCallEvidenceSchema = z.strictObject({
   errorCode: z.string().min(1).max(128).optional(),
   summary: z.string().max(2048).optional(),
   attemptId: entityIdSchema.optional(),
+  route: z.enum(['vision', 'aria_text']).optional(),
 })
 export type AiCallEvidence = z.infer<typeof aiCallEvidenceSchema>
 

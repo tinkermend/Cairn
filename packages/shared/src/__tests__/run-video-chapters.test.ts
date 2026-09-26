@@ -508,3 +508,33 @@ describe('run-video-chapters', () => {
     expect(ch2?.stepRunId).toBe('step-2')
   })
 })
+
+describe('run-video-chapters 循环按项分段（复查修复）', () => {
+  it('循环头章节带上每一项的时间段，其他步骤不带', () => {
+    const header = {
+      id: 'sr-loop',
+      stepId: 'loop-header',
+      name: '循环头: 逐项',
+      type: 'loop',
+      ordinal: 0,
+      status: 'SUCCEEDED' as const,
+      outcomeStatus: 'NOT_EVALUATED' as const,
+      startedAt: '2026-09-21T02:00:01.000Z',
+      finishedAt: '2026-09-21T02:00:10.000Z',
+      attempts: [{ id: 'a-1', attemptNo: 1, status: 'SUCCEEDED' as const, startedAt: '2026-09-21T02:00:01.000Z', finishedAt: '2026-09-21T02:00:01.100Z', output: null, error: null }],
+    }
+    const model = buildRunVideoChapters({
+      run: mockRun({ stepRuns: [header] }),
+      payload: mockPayload,
+      iterations: [
+        { headerStepId: 'loop-header', iterationIndex: 1, status: 'FAILED', startedAt: '2026-09-21T02:00:05.000Z', finishedAt: '2026-09-21T02:00:09.000Z' },
+        { headerStepId: 'loop-header', iterationIndex: 0, status: 'SUCCEEDED', startedAt: '2026-09-21T02:00:02.000Z', finishedAt: '2026-09-21T02:00:05.000Z' },
+        { headerStepId: 'other-loop', iterationIndex: 0, status: 'SUCCEEDED', startedAt: '2026-09-21T02:00:02.000Z', finishedAt: '2026-09-21T02:00:03.000Z' },
+      ],
+    })
+    expect(model.chapters[0]?.iterations).toEqual([
+      { index: 0, status: 'SUCCEEDED', fromMs: 2000, toMs: 5000 },
+      { index: 1, status: 'FAILED', fromMs: 5000, toMs: 9000 },
+    ])
+  })
+})

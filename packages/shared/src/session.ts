@@ -29,6 +29,11 @@ export const SESSION_REUSE_POLICIES = ['REUSE_PAGE', 'NEW_PAGE', 'RECREATE_SESSI
 export type SessionReusePolicy = (typeof SESSION_REUSE_POLICIES)[number]
 export const sessionReusePolicySchema = z.enum(SESSION_REUSE_POLICIES)
 
+export const BROWSER_ISOLATIONS = ['SHARED', 'DEDICATED'] as const
+export type BrowserIsolation = (typeof BROWSER_ISOLATIONS)[number]
+export const browserIsolationSchema = z.enum(BROWSER_ISOLATIONS)
+export const DEFAULT_BROWSER_ISOLATION: BrowserIsolation = 'DEDICATED'
+
 export const SESSION_ERROR_CODES = [
   'SESSION_ACCOUNT_REQUIRED',
   'SESSION_NOT_CLAIMABLE',
@@ -189,6 +194,7 @@ export const sessionPolicySchema = z
     evictionPriority: z.number().int().default(DEFAULT_SESSION_EVICTION_PRIORITY),
     lostDisposition: sessionLostDispositionSchema.default(DEFAULT_SESSION_LOST_DISPOSITION),
     accountSessionMode: accountSessionModeSchema.default(DEFAULT_ACCOUNT_SESSION_MODE),
+    browserIsolation: browserIsolationSchema.default(DEFAULT_BROWSER_ISOLATION),
   })
   .superRefine((policy, ctx) => {
     if (policy.maxLifetimeSeconds <= policy.idleTtlSeconds) {
@@ -231,6 +237,7 @@ export const DEFAULT_SESSION_POLICY: SessionPolicy = {
   evictionPriority: DEFAULT_SESSION_EVICTION_PRIORITY,
   lostDisposition: DEFAULT_SESSION_LOST_DISPOSITION,
   accountSessionMode: DEFAULT_ACCOUNT_SESSION_MODE,
+  browserIsolation: DEFAULT_BROWSER_ISOLATION,
 }
 
 /** POST /runs 可只覆盖部分字段；解析后写完整值进快照。 */
@@ -246,6 +253,7 @@ export const sessionPolicyOverrideSchema = z.strictObject({
   keepAliveSeconds: z.number().int().positive().optional(),
   authProbeIntervalSeconds: z.number().int().positive().optional(),
   evictionPriority: z.number().int().optional(),
+  browserIsolation: browserIsolationSchema.optional(),
 })
 export type SessionPolicyOverride = z.infer<typeof sessionPolicyOverrideSchema>
 
@@ -270,6 +278,7 @@ export const targetSessionPolicyPatchSchema = z.strictObject({
   evictionPriority: z.number().int().nullable().optional(),
   lostDisposition: sessionLostDispositionSchema.nullable().optional(),
   accountSessionMode: accountSessionModeSchema.nullable().optional(),
+  browserIsolation: browserIsolationSchema.nullable().optional(),
 })
 export type TargetSessionPolicyPatch = z.infer<typeof targetSessionPolicyPatchSchema>
 
@@ -384,6 +393,8 @@ export const sessionDtoSchema = z.object({
   nextAuthCheckAt: utcInstantSchema.nullable().optional(),
   predecessorSessionId: z.uuid().nullable().optional(),
   closeReason: z.string().min(1).nullable(),
+  isolation: browserIsolationSchema.nullable().optional(),
+  hostId: z.string().nullable().optional(),
   createdAt: utcInstantSchema,
   updatedAt: utcInstantSchema,
   /** 当前 `ACTIVE` 租约；没有则为 null。 */
@@ -416,3 +427,21 @@ export const disposeSessionBodySchema = z.strictObject({
   note: z.string().trim().min(1).max(512).optional(),
 })
 export type DisposeSessionBody = z.infer<typeof disposeSessionBodySchema>
+
+export const sessionSnapshotSummarySchema = z.object({
+  hasSnapshot: z.boolean(),
+  accountSlot: z.number().int().optional(),
+  byteSize: z.number().int().nonnegative().nullable().optional(),
+  cookieCount: z.number().int().nonnegative().nullable(),
+  originCount: z.number().int().nonnegative().nullable(),
+  hasIndexedDb: z.boolean().nullable(),
+  earliestCookieExpiry: utcInstantSchema.nullable(),
+  identity: z.string().nullable(),
+  stale: z.boolean(),
+  clearedAt: utcInstantSchema.nullable().optional(),
+  capturedAt: utcInstantSchema.nullable(),
+  verifiedAt: utcInstantSchema.nullable().optional(),
+  updatedAt: utcInstantSchema.nullable(),
+})
+export type SessionSnapshotSummaryDto = z.infer<typeof sessionSnapshotSummarySchema>
+

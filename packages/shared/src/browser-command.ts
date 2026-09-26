@@ -47,8 +47,21 @@ export const BROWSER_STEP_ERROR_CODES = [
   'UPLOAD_PRECONDITION_FAILED',
   'UPLOAD_FILE_CHOOSER_TIMEOUT',
   'FIXTURE_SIZE_EXCEEDED',
+  'EXTRACT_TOO_MANY',
+  'EXTRACT_TOO_FEW',
 ] as const
 export type BrowserStepErrorCode = (typeof BROWSER_STEP_ERROR_CODES)[number]
+
+export const extractManySchema = z
+  .strictObject({
+    maxItems: z.number().int().min(1).max(1000),
+    minItems: z.number().int().min(0).max(1000).optional(),
+  })
+  .refine(
+    (val) => val.minItems === undefined || val.minItems <= val.maxItems,
+    'minItems 不能大于 maxItems',
+  )
+export type ExtractMany = z.infer<typeof extractManySchema>
 
 export const EXTRACT_AS = ['text', 'value', 'attribute'] as const
 export type ExtractAs = (typeof EXTRACT_AS)[number]
@@ -150,6 +163,8 @@ export const browserCommandSchema = z.discriminatedUnion('type', [
     target: targetDescriptorSchema,
     as: z.enum(EXTRACT_AS),
     attribute: z.string().trim().min(1).max(128).optional(),
+    many: extractManySchema.optional(),
+    timeoutMs: z.number().int().positive().optional(),
   }),
   z.strictObject({
     type: z.literal('assert'),
@@ -197,6 +212,15 @@ export const browserCommandSchema = z.discriminatedUnion('type', [
         minBytes: z.number().int().optional(),
       })
       .optional(),
+  }),
+  z.strictObject({
+    type: z.literal('probe'),
+    probeKind: z.enum(['element', 'text', 'url']),
+    target: targetDescriptorSchema.optional(),
+    state: z.enum(['visible', 'present']).optional(),
+    text: z.string().optional(),
+    urlPattern: z.string().optional(),
+    waitMs: z.number().int().min(0).max(30_000).optional(),
   }),
 ])
 export type BrowserCommand = z.infer<typeof browserCommandSchema>

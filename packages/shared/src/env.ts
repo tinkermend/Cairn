@@ -7,6 +7,7 @@ import {
   DEFAULT_MONITOR_OBJECT_STORE_PROBE_MS,
   DEFAULT_MONITOR_SAMPLE_INTERVAL_MS,
   DEFAULT_MONITOR_SAMPLE_RETENTION_DAYS,
+  DEFAULT_MONITOR_AI_CALL_RETENTION_DAYS,
   MIN_MONITOR_SAMPLE_INTERVAL_MS,
 } from './monitoring.js'
 import { objectStoreDriverSchema } from './object-store.js'
@@ -159,6 +160,12 @@ const monitorTelemetryEnvShape = {
     .positive()
     .max(365)
     .default(DEFAULT_MONITOR_SAMPLE_RETENTION_DAYS),
+  CAIRN_MONITOR_AI_CALL_RETENTION_DAYS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(365)
+    .default(DEFAULT_MONITOR_AI_CALL_RETENTION_DAYS),
   CAIRN_MONITOR_DISK_SAMPLE_MS: z.coerce
     .number()
     .int()

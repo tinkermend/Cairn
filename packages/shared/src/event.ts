@@ -40,9 +40,30 @@ export const RUN_EVENT_TYPES = [
   'run.captcha_solved',
   'run.captcha_escalated',
   'run.output_settled',
+  'iteration.started',
+  'iteration.finished',
 ] as const
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number]
 export const runEventTypeSchema = z.enum(RUN_EVENT_TYPES)
+
+export const iterationStartedPayloadSchema = z.strictObject({
+  iterationId: entityIdSchema,
+  blockId: entityIdSchema,
+  scopePath: z.string().min(1),
+  iterationIndex: z.number().int().min(0),
+  item: jsonValueSchema.optional(),
+})
+export type IterationStartedPayload = z.infer<typeof iterationStartedPayloadSchema>
+
+export const iterationFinishedPayloadSchema = z.strictObject({
+  iterationId: entityIdSchema,
+  blockId: entityIdSchema,
+  scopePath: z.string().min(1),
+  iterationIndex: z.number().int().min(0),
+  status: z.enum(['PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'SKIPPED', 'CANCELLED']),
+  stopDecision: jsonValueSchema.optional(),
+})
+export type IterationFinishedPayload = z.infer<typeof iterationFinishedPayloadSchema>
 
 export const eventEnvelopeSchema = z.strictObject({
   schemaVersion: runtimeSchemaVersionSchema,
@@ -52,6 +73,7 @@ export const eventEnvelopeSchema = z.strictObject({
   runId: entityIdSchema.optional(),
   stepRunId: entityIdSchema.optional(),
   attemptId: entityIdSchema.optional(),
+  scopePath: z.string().optional(),
   /** Worker 标识，与 CAIRN_WORKER_ID 同形，不是 UUID。 */
   workerId: z.string().min(1).max(128).optional(),
   requestId: requestIdValueSchema.optional(),
@@ -84,6 +106,7 @@ export const changeHintSchema = z
     runId: entityIdSchema.optional(),
     objectType: changeHintObjectTypeSchema.optional(),
     objectId: entityIdSchema.optional(),
+    runControlChanged: z.boolean().optional(),
   })
   .superRefine((value, ctx) => {
     const objectType = value.objectType ?? 'run'

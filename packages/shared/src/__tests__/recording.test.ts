@@ -3,6 +3,7 @@ import {
   MAX_RECORDING_EVENTS,
   MAX_RECORDING_JSON_BYTES,
   RECORDER_SOURCE_VERSION,
+  MIDSCENE_RECORDER_SOURCE_VERSION,
   RECORDING_SOURCE_LABELS,
   assertRecordingPayloadSize,
   createRecordingBodySchema,
@@ -442,7 +443,19 @@ describe('normalizeRecording JSONL 探针', () => {
       forImport: true,
     })
     expect(result.items.every((item) => item.status === 'unresolved')).toBe(true)
-    expect(result.diagnostics.some((line) => line.includes('不能按'))).toBe(true)
+    expect(result.diagnostics.some((line) => line.includes('不在可执行导入版本内'))).toBe(true)
+  })
+
+  it('Midscene 固定转换版本可回填同一类确定性步骤', () => {
+    const result = normalizeRecording([
+      { name: 'navigate', url: 'https://modelapi.im/monitor' },
+      { name: 'click', selector: 'a[href="/available-channels"]', button: 'left', clickCount: 1, modifiers: 0 },
+    ], { sourceVersion: MIDSCENE_RECORDER_SOURCE_VERSION, forImport: true })
+    expect(result.items.map((item) => [item.status, item.candidateStepType])).toEqual([
+      ['mapped', 'navigate'],
+      ['mapped', 'click'],
+    ])
+    expect(result.diagnostics).toEqual([])
   })
 
   it('密码字段、autocomplete、嵌套秘密与 URL 查询秘密都被剥掉', () => {

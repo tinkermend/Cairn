@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { pageRefSchema } from './managed-browser.js'
 import type { IdentityState } from './session-auth.js'
-import type { SessionAuthState, SessionStatus } from './session.js'
+import { browserIsolationSchema, type SessionAuthState, type SessionStatus } from './session.js'
 import {
   SESSION_MAINTENANCE_KINDS,
   sessionOperationWaitReasonSchema,
@@ -136,6 +136,11 @@ export const SESSION_EVENT_TYPES = [
   'auth.signal_observed',
   'session.keepalive_extended',
   'session.evicted',
+  'session.host_assigned',
+  'session.host_lost',
+  'session.state_captured',
+  'session.state_restored',
+  'session.state_capture_skipped',
 ] as const
 export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number]
 
@@ -499,6 +504,8 @@ export const accountSessionDetailSchema = z.strictObject({
       keepAliveUntil: utcInstantSchema.nullable().optional(),
       nextAuthCheckAt: utcInstantSchema.nullable().optional(),
       accountSlot: z.number().int().min(1).max(16).optional(),
+      isolation: browserIsolationSchema.nullable().optional(),
+      hostId: z.string().nullable().optional(),
     })
     .nullable(),
   instances: z
@@ -520,6 +527,8 @@ export const accountSessionDetailSchema = z.strictObject({
         keepAliveUntil: utcInstantSchema.nullable().optional(),
         nextAuthCheckAt: utcInstantSchema.nullable().optional(),
         accountSlot: z.number().int().min(1).max(16).optional(),
+        isolation: browserIsolationSchema.nullable().optional(),
+        hostId: z.string().nullable().optional(),
         occupancy: z
           .strictObject({
             purpose: z.string(),

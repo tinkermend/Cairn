@@ -171,19 +171,49 @@ describe('resolveSessionPolicy', () => {
       accountSessionMode: 'exclusive',
       notifyOnAuthWait: true,
       unattendedAuthTimeoutSeconds: 120,
+      browserIsolation: 'DEDICATED',
     })
   })
 
   it('三级覆盖按 平台 → Target → Run', () => {
     const resolved = resolveSessionPolicyLayers({
       platformDefault: DEFAULT_SESSION_POLICY,
-      targetOverride: { reclaim: 'AUTH_DRIVEN', keepAliveSeconds: 1800 },
+      targetOverride: { reclaim: 'AUTH_DRIVEN', keepAliveSeconds: 1800, browserIsolation: 'SHARED' },
       runOverride: { leaseTtlSeconds: 20 },
     })
     expect(resolved.reclaim).toBe('AUTH_DRIVEN')
     expect(resolved.keepAliveSeconds).toBe(1800)
     expect(resolved.leaseTtlSeconds).toBe(20)
     expect(resolved.idleTtlSeconds).toBe(DEFAULT_SESSION_POLICY.idleTtlSeconds)
+    expect(resolved.browserIsolation).toBe('SHARED')
+  })
+
+  it('目标和Run均可覆盖 browserIsolation，默认回落 DEDICATED', () => {
+    expect(targetSessionPolicyOverrideSchema.parse({ browserIsolation: 'SHARED' })).toEqual({
+      browserIsolation: 'SHARED',
+    })
+    expect(sessionPolicyOverrideSchema.parse({ browserIsolation: 'SHARED' })).toEqual({
+      browserIsolation: 'SHARED',
+    })
+    expect(
+      resolveSessionPolicyLayers({
+        platformDefault: DEFAULT_SESSION_POLICY,
+        targetOverride: { browserIsolation: 'SHARED' },
+      }).browserIsolation,
+    ).toBe('SHARED')
+    expect(
+      resolveSessionPolicyLayers({
+        platformDefault: DEFAULT_SESSION_POLICY,
+        targetOverride: { browserIsolation: 'SHARED' },
+        runOverride: { browserIsolation: 'DEDICATED' },
+      }).browserIsolation,
+    ).toBe('DEDICATED')
+    expect(
+      applyTargetSessionPolicyPatch({ browserIsolation: 'SHARED' }, { browserIsolation: null }),
+    ).toBeNull()
+    expect(applyTargetSessionPolicyPatch(null, { browserIsolation: 'SHARED' })).toEqual({
+      browserIsolation: 'SHARED',
+    })
   })
 
   it('目标可覆盖 lostDisposition，Run 覆盖拒绝该字段', () => {

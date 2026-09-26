@@ -91,11 +91,15 @@ export function requiredAlertMetricScope(key: MonitorMetricKey): MonitorSampleSc
     key.startsWith('worker.process.') ||
     key === 'worker.clockSkewMs' ||
     key === 'worker.browserProcessCount' ||
+    key === 'worker.browserHostCount' ||
+    key === 'worker.browserContextCount' ||
+    key === 'worker.browserProcessRssBytes' ||
+    key === 'worker.browserHostLostCount' ||
     key === 'worker.profileCount' ||
     key === 'worker.profileDiskFreeBytes' ||
     key === 'worker.midsceneBytes' ||
     key === 'profile.nodeDiskUsageBytes' ||
-    key === 'queue.lastClaimScanCount'
+    key === 'queue.lastClaimScanCount' || key.startsWith('queue.claim.')
   ) {
     return 'worker'
   }

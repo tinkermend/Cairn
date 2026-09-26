@@ -47,6 +47,50 @@ describe('parseAiOutput', () => {
       value: { orderNo: 'A-1', note: '' },
     })
   })
+
+  it('列表型输出正常解析标量与对象列表', () => {
+    const scalarListSchema = {
+      kind: 'list' as const,
+      item: { kind: 'scalar' as const, type: 'string' as const },
+      maxItems: 5,
+    }
+    expect(parseAiOutput(['A', 'B'], scalarListSchema)).toEqual({
+      ok: true,
+      value: ['A', 'B'],
+    })
+
+    const objectListSchema = {
+      kind: 'list' as const,
+      item: {
+        kind: 'object' as const,
+        fields: [{ name: 'id', type: 'number' as const }],
+      },
+      maxItems: 2,
+    }
+    expect(parseAiOutput([{ id: 1 }, { id: 2 }], objectListSchema)).toEqual({
+      ok: true,
+      value: [{ id: 1 }, { id: 2 }],
+    })
+  })
+
+  it('列表型输出超过 maxItems 或格式错误时拒绝', () => {
+    const listSchema = {
+      kind: 'list' as const,
+      item: { kind: 'scalar' as const, type: 'string' as const },
+      maxItems: 2,
+    }
+    expect(parseAiOutput(['A', 'B', 'C'], listSchema)).toEqual({
+      ok: false,
+      code: 'AI_OUTPUT_INVALID',
+      message: '提取结果超过上限 2 项（实际 3 项）',
+    })
+    expect(parseAiOutput('not-array', listSchema)).toEqual({
+      ok: false,
+      code: 'AI_OUTPUT_INVALID',
+      message: '提取结果必须是数组',
+    })
+    expect(parseAiOutput(['A', 123], listSchema).ok).toBe(false)
+  })
 })
 
 describe('fillTextFromContext', () => {
