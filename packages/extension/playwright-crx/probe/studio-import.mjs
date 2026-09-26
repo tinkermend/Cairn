@@ -304,7 +304,9 @@ try {
   }
   let highlightError = ''
   const highlighted = await web
-    .locator('[data-imported]')
+    .locator('[data-list-step]')
+    .filter({ has: web.getByText('刚导入', { exact: true }) })
+    .locator('button[aria-pressed="true"]')
     .first()
     .waitFor({ timeout: 10_000 })
     .then(() => true)

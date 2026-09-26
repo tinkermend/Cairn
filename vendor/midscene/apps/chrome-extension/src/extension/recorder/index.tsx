@@ -14,7 +14,6 @@ import { recordLogger } from './logger';
 import { startNewRecording } from './startNewRecording';
 import type { ViewMode } from './types';
 import './recorder.less';
-import { useEnvConfig } from '@midscene/visualizer';
 import { generateDefaultSessionName } from './utils';
 
 export default function Recorder() {
@@ -24,10 +23,7 @@ export default function Recorder() {
   // Get stores
   const sessionStore = useRecordingSessionStore();
   const recordStore = useRecordStore();
-
-  // Environment configuration check
-  const { config } = useEnvConfig();
-  const configAlreadySet = Object.keys(config || {}).length >= 1;
+  const restoreSessionEvents = recordStore.restoreSessionEvents;
 
   // Initialize stores on component mount
   useEffect(() => {
@@ -131,15 +127,32 @@ export default function Recorder() {
     emergencySaveEvents, // Pass emergency save function
   );
 
-  // Load current session events when switching sessions
+  // Session summaries intentionally omit screenshots and events. Hydrate the
+  // selected session from IndexedDB after the recording store has initialized;
+  // clearing from a summary would erase the saved recording on panel reload.
   useEffect(() => {
-    const currentSession = getCurrentSession();
-    if (currentSession && currentSession.events.length > 0) {
-      setEvents(currentSession.events);
-    } else {
-      clearEvents();
-    }
-  }, [currentSessionId, getCurrentSession, setEvents, clearEvents]);
+    if (!isStoreInitialized || !recordStore.isInitialized) return;
+    let cancelled = false;
+    const hydrateSelectedSession = async () => {
+      if (!currentSessionId) {
+        restoreSessionEvents([]);
+        return;
+      }
+      const session = await loadSession(currentSessionId);
+      if (
+        !cancelled &&
+        useRecordingSessionStore.getState().currentSessionId === currentSessionId
+      ) {
+        restoreSessionEvents(session?.events ?? []);
+      }
+    };
+    void hydrateSelectedSession().catch((error) => {
+      recordLogger.error('Failed to restore recording session', { sessionId: currentSessionId }, error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isStoreInitialized, recordStore.isInitialized, currentSessionId, loadSession, restoreSessionEvents]);
 
   // Edit session handler
   const handleEditSession = (session: RecordingSession) => {
@@ -181,7 +194,7 @@ export default function Recorder() {
       });
       const fullSession = await loadSession(session.id);
       if (!fullSession) {
-        message.error('Session not found');
+        message.error('录制记录不存在');
         return;
       }
       setCurrentSession(session.id);
@@ -235,7 +248,7 @@ export default function Recorder() {
           height: '200px',
         }}
       >
-        <div>Loading sessions...</div>
+        <div>正在加载录制记录…</div>
       </div>
     );
   }

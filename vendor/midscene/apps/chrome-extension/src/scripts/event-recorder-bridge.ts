@@ -70,6 +70,65 @@ let pendingEvents: ChromeRecordedEvent[] | null = null;
 let isPageUnloading = false;
 const eventSendStats = { sent: 0, failed: 0, pending: 0 };
 
+function stableCssSelector(target: Element): string {
+  const parts: string[] = [];
+  let element: Element | null = target;
+  while (element && parts.length < 8) {
+    const tag = element.tagName.toLowerCase();
+    const id = element.getAttribute('id');
+    if (id) {
+      const candidate = `#${CSS.escape(id)}`;
+      if (document.querySelectorAll(candidate).length === 1) {
+        parts.unshift(candidate);
+        return parts.join(' > ');
+      }
+    }
+    for (const attribute of ['data-testid', 'name', 'href']) {
+      const value = element.getAttribute(attribute);
+      if (!value || value.length > 256 || /[?#]/.test(value)) continue;
+      const candidate = `${tag}[${attribute}="${CSS.escape(value)}"]`;
+      if (document.querySelectorAll(candidate).length === 1) {
+        parts.unshift(candidate);
+        return parts.join(' > ');
+      }
+    }
+    const siblings = element.parentElement
+      ? Array.from(element.parentElement.children).filter((child) => child.tagName === element!.tagName)
+      : [];
+    const index = siblings.indexOf(element) + 1;
+    parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${index})` : tag);
+    const candidate = parts.join(' > ');
+    if (document.querySelectorAll(candidate).length === 1) return candidate;
+    element = element.parentElement;
+  }
+  return parts.join(' > ');
+}
+
+function interactiveTarget(target: Element): Element {
+  return target.closest('button, a[href], input, select, textarea, [role="button"], [role="tab"], [contenteditable="true"]') ?? target;
+}
+
+function targetDescription(target: Element): string | undefined {
+  const element = interactiveTarget(target);
+  const tag = element.tagName.toLowerCase();
+  const role = element.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'button' ? 'button' : tag);
+  const labelledBy = element.getAttribute('aria-labelledby');
+  const labelledText = labelledBy
+    ? labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim()).filter(Boolean).join(' ')
+    : '';
+  const label = (
+    element.getAttribute('aria-label') ||
+    labelledText ||
+    element.getAttribute('title') ||
+    (element as HTMLElement).innerText ||
+    element.textContent ||
+    element.getAttribute('placeholder') ||
+    ''
+  ).replace(/\s+/g, ' ').trim().slice(0, 180);
+  if (!label || /password|passwd|secret|token|api[_-]?key|密码|口令|密钥|验证码/i.test(label)) return undefined;
+  return `${role} "${label}"`;
+}
+
 // Helper function to capture screenshot with timeout
 async function captureScreenshot(timeout = 1000): Promise<string | undefined> {
   // Skip screenshot if page is unloading
@@ -181,6 +240,18 @@ async function initializeRecorder(sessionId: string): Promise<void> {
 
   window.recorder = new window.EventRecorder(
     async (event: ChromeRecordedEvent) => {
+      const previous = events[events.length - 1];
+      if (event.type === 'navigation' && previous?.type === 'navigation' && previous.url === event.url) {
+        return;
+      }
+      const element = (event as ChromeRecordedEvent & { element?: Element }).element;
+      if (element && event.type !== 'navigation') {
+        const target = interactiveTarget(element);
+        const selector = stableCssSelector(target);
+        const description = targetDescription(target);
+        event.rawPayload = { ...event.rawPayload, selector, targetDescription: description };
+        if (description) event.elementDescription = description;
+      }
       // Update last activity time when new event occurs
       lastActivityTime = Date.now();
 
@@ -197,7 +268,9 @@ async function initializeRecorder(sessionId: string): Promise<void> {
 
       // Add screenshots to the latest event
       // Send updated events array to extension
-      sendEventsToExtension(optimizedEvent);
+      // A link may unload this document before the debounce or screenshot
+      // finishes. Forward navigation-capable actions immediately.
+      sendEventsToExtension(optimizedEvent, event.type === 'click' || event.type === 'keydown');
     },
     sessionId,
   );
@@ -525,8 +598,8 @@ window.addEventListener('beforeunload', async () => {
   }
 
   // Flush any pending events immediately without waiting
-  if (events.length > 0 || pendingEvents) {
-    const eventsToSend = pendingEvents || events;
+  if (pendingEvents) {
+    const eventsToSend = pendingEvents;
     // Use synchronous approach for beforeunload
     try {
       await sendEventsToExtension(eventsToSend, true);
@@ -541,8 +614,8 @@ window.addEventListener('pagehide', async () => {
   if (!isPageUnloading) {
     isPageUnloading = true;
     console.log('[EventRecorder Bridge] Page hiding, flushing events');
-    if (events.length > 0) {
-      await sendEventsToExtension(events, true);
+    if (pendingEvents) {
+      await sendEventsToExtension(pendingEvents, true);
     }
   }
   if (pageChangeDetectionInterval) {
@@ -562,8 +635,8 @@ document.addEventListener('visibilitychange', () => {
     // Debounce visibility changes to avoid excessive sends
     visibilityTimer = setTimeout(() => {
       console.log('[EventRecorder Bridge] Page became hidden, flushing events');
-      if (events.length > 0) {
-        sendEventsToExtension(events, true);
+      if (pendingEvents) {
+        sendEventsToExtension(pendingEvents, true);
       }
     }, 100);
   } else if (document.visibilityState === 'visible') {
@@ -590,9 +663,10 @@ const checkForNavigation = () => {
     });
     lastUrl = currentUrl;
 
-    // Flush events on navigation
-    if (events.length > 0 && !isPageUnloading) {
-      sendEventsToExtension(events, true);
+    // A click is forwarded synchronously before SPA routing. Only pending
+    // non-click events need a flush here.
+    if (pendingEvents && !isPageUnloading) {
+      sendEventsToExtension(pendingEvents, true);
     }
   }
 

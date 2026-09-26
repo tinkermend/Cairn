@@ -83,7 +83,7 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
   onStopRecording,
   isFromStopRecording,
 }) => {
-  const [selectedType, setSelectedType] = useState<CodeGenerationType>('yaml');
+  const [selectedType, setSelectedType] = useState<CodeGenerationType>('none');
 
   // Initialize defaultType from localStorage
   const [defaultType, setDefaultType] = useState<CodeGenerationType>(() => {
@@ -98,7 +98,7 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
         error,
       );
     }
-    return 'yaml'; // fallback default
+    return 'none'; // Recording and upload do not require a client model configuration.
   });
   const [yamlLanguagePreference, setYamlLanguagePreference] =
     useState<YamlLanguagePreference>(() => getStoredYamlLanguagePreference());
@@ -238,7 +238,13 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
     );
   };
 
-  const defaultModelConfig = globalModelConfigManager.getModelConfig('default');
+  const defaultModelConfig = (() => {
+    try {
+      return globalModelConfigManager.getModelConfig('default');
+    } catch {
+      return null;
+    }
+  })();
   const resolvedYamlLanguage = resolveYamlGenerationLanguage(
     yamlLanguagePreference,
   );
@@ -265,10 +271,9 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
           details: 'Analyzing session content...',
         });
 
-        const { title, description } = await generateRecordTitle(
-          finalEvents,
-          defaultModelConfig,
-        );
+        const { title, description } = defaultModelConfig
+          ? await generateRecordTitle(finalEvents, defaultModelConfig)
+          : {};
 
         if (title || description) {
           updateSession(sessionId, {
@@ -450,6 +455,10 @@ export const ProgressModal: React.FC<ProgressModalProps> = ({
 
   // Common function to handle code generation with streaming support
   const handleCodeGeneration = async (type: 'playwright' | 'yaml') => {
+    if (!defaultModelConfig) {
+      message.warning('请先上传录制草稿，在识途场景编排中使用平台模型处理');
+      return;
+    }
     // Get the most current events
     const currentEvents = getCurrentEvents();
 

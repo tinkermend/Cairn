@@ -7,11 +7,12 @@
 export { CairnPanel } from './panel'
 export { canAttachRecorder } from './auth-gate'
 export { loadCairnSession } from './session'
-export { CAIRN_ATTACH, CAIRN_DETACH, CAIRN_STATUS, CAIRN_OPEN_TARGET } from './messages'
+export { CAIRN_ATTACH, CAIRN_ATTACHMENT_CHANGED, CAIRN_RECOVER, CAIRN_DETACH, CAIRN_STATUS, CAIRN_SET_MODE, CAIRN_OPEN_TARGET } from './messages'
 export { savePendingBridge } from './binding'
 export { CAIRN_API, handleCairnApiMessage } from './api-bridge'
 export {
   WORKBENCH_PATH,
+  openWorkbenchPanel,
   nextRecorderPanelPath,
   resetRecorderPanelPath,
   withDeadline,

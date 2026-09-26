@@ -23,6 +23,10 @@ import {
 import React, { useEffect, useState } from 'react';
 import { useCairnStore } from '../store';
 import { loginToCairn } from '../utils/cairn';
+import {
+  CAIRN_ENVIRONMENTS,
+  type CairnEnvironment,
+} from '../utils/cairn-environments';
 
 const { Text } = Typography;
 
@@ -36,14 +40,18 @@ export const CairnConnectModal: React.FC<CairnConnectModalProps> = ({
   onClose,
 }) => {
   const {
+    environment,
     apiOrigin,
+    authStatus,
+    error: authError,
     token,
     account,
     targetId,
     targets,
     binding,
     isLoading,
-    setApiOrigin,
+    setEnvironment,
+    initialize,
     setAuth,
     setTargetId,
     refreshTargets,
@@ -57,28 +65,23 @@ export const CairnConnectModal: React.FC<CairnConnectModalProps> = ({
 
   useEffect(() => {
     if (open) {
-      form.setFieldsValue({
-        apiOrigin,
-      });
       if (token) {
         void refreshTargets();
         void refreshBinding();
       }
     }
-  }, [open, apiOrigin, token]);
+  }, [open, token]);
 
-  const handleLogin = async (values: any) => {
+  const handleLogin = async (values: { email: string; password: string }) => {
     setSubmitting(true);
     setLoginError(null);
     try {
-      const origin = values.apiOrigin?.trim() || apiOrigin;
-      setApiOrigin(origin);
-
-      const res = await loginToCairn(origin, values.email, values.password);
+      const res = await loginToCairn(apiOrigin, values.email.trim(), values.password);
       setAuth(res.accessToken, res.account);
-      message.success(`登录成功，欢迎 ${res.account.displayName || res.account.email}`);
+      form.resetFields(['password']);
+      message.success(`登录成功，欢迎 ${res.account.displayName}`);
     } catch (err: any) {
-      setLoginError(err.message || '登录失败，请检查账号密码及 API 地址');
+      setLoginError(err.message || '登录失败，请检查账号密码或服务连接');
     } finally {
       setSubmitting(false);
     }
@@ -94,11 +97,14 @@ export const CairnConnectModal: React.FC<CairnConnectModalProps> = ({
       title={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <CloudUploadOutlined style={{ color: '#2B83FF', fontSize: 18 }} />
-          <span>识途平台连接设置</span>
+          <span>{token ? '识途平台连接设置' : '登录识途'}</span>
         </div>
       }
       open={open}
       onCancel={onClose}
+      closable={!!token}
+      maskClosable={!!token}
+      keyboard={!!token}
       footer={null}
       destroyOnClose={false}
       width={460}
@@ -107,15 +113,23 @@ export const CairnConnectModal: React.FC<CairnConnectModalProps> = ({
         {/* 平台环境配置 */}
         <div style={{ marginBottom: 16 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            API 服务地址 (Origin)
+            平台环境
           </Text>
-          <Input
-            value={apiOrigin}
-            onChange={(e) => setApiOrigin(e.target.value)}
-            placeholder="http://localhost:3030"
+          <Select<CairnEnvironment>
+            aria-label="平台环境"
+            value={environment}
+            onChange={setEnvironment}
             disabled={!!token || submitting}
-            style={{ marginTop: 4 }}
+            style={{ width: '100%', marginTop: 4 }}
+            options={Object.entries(CAIRN_ENVIRONMENTS).map(([value, config]) => ({
+              value: value as CairnEnvironment,
+              label: config.origin ? config.label : `${config.label}（未配置）`,
+              disabled: !config.origin,
+            }))}
           />
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+            {apiOrigin}
+          </Text>
         </div>
 
         {/* 状态展示 */}
@@ -130,10 +144,10 @@ export const CairnConnectModal: React.FC<CairnConnectModalProps> = ({
                   <span>
                     已连接：<strong>{account.displayName || account.email}</strong>
                   </span>
-                  <Tag color="blue">{account.role || '编写者'}</Tag>
+                  <Tag color="blue">{account.roles?.map((role) => role.name).join('、') || '未分配角色'}</Tag>
                 </div>
               }
-              description={<div style={{ fontSize: 12, marginTop: 4 }}>{account.email}</div>}
+              description={account.email ? <div style={{ fontSize: 12, marginTop: 4 }}>{account.email}</div> : undefined}
               style={{ marginBottom: 16 }}
             />
 
@@ -147,18 +161,18 @@ export const CairnConnectModal: React.FC<CairnConnectModalProps> = ({
                 description={
                   <div style={{ fontSize: 12 }}>
                     场景 ID: {binding.scenarioId}
-                    {binding.targetId && <div>已自动为您关联对应 Target</div>}
+                    {binding.targetId && <div>已自动关联对应目标系统</div>}
                   </div>
                 }
                 style={{ marginBottom: 16 }}
               />
             )}
 
-            {/* Target 目标系统选择 */}
+            {/* 目标系统选择 */}
             <div style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                 <Text strong style={{ fontSize: 13 }}>
-                  当前录制的目标系统 (Target)
+                  当前录制的目标系统
                 </Text>
                 <Button
                   type="link"
@@ -200,6 +214,15 @@ export const CairnConnectModal: React.FC<CairnConnectModalProps> = ({
           </div>
         ) : (
           <div>
+            {authStatus === 'error' && authError && (
+              <Alert
+                type="warning"
+                showIcon
+                message={authError}
+                action={<Button size="small" onClick={() => void initialize()}>重试验证</Button>}
+                style={{ marginBottom: 16 }}
+              />
+            )}
             {loginError && (
               <Alert
                 type="error"
@@ -214,26 +237,25 @@ export const CairnConnectModal: React.FC<CairnConnectModalProps> = ({
             <Form form={form} layout="vertical" onFinish={handleLogin}>
               <Form.Item
                 name="email"
-                label="控制台账号 (Email)"
+                label="账号"
                 rules={[
-                  { required: true, message: '请输入识途账号邮箱' },
-                  { type: 'email', message: '请输入有效的邮箱地址' },
+                  { required: true, whitespace: true, message: '请输入账号' },
+                  { max: 64, message: '账号不能超过 64 个字符' },
                 ]}
               >
-                <Input prefix={<UserOutlined />} placeholder="author@cairn.local" />
+                <Input prefix={<UserOutlined />} placeholder="请输入账号" autoComplete="username" autoFocus />
               </Form.Item>
 
               <Form.Item
                 name="password"
-                label="账号密码"
+                label="密码"
                 rules={[{ required: true, message: '请输入密码' }]}
               >
-                <Input.Password placeholder="请输入密码" />
+                <Input.Password placeholder="请输入密码" autoComplete="current-password" />
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 0 }}>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                  <Button onClick={onClose}>取消</Button>
                   <Button type="primary" htmlType="submit" loading={submitting}>
                     登录识途
                   </Button>

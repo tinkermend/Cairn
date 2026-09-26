@@ -1,6 +1,6 @@
 /// <reference types="chrome" />
-import { globalThemeConfig } from '@midscene/visualizer';
-import { App as AntdApp, Button, Checkbox, ConfigProvider } from 'antd';
+import { App as AntdApp, Button, Checkbox, ConfigProvider, theme } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { workerMessageTypes } from '../../utils/workerMessageTypes';
@@ -68,20 +68,20 @@ function ConfirmDialog() {
   };
 
   return (
-    <ConfigProvider theme={globalThemeConfig()}>
+    <ConfigProvider locale={zhCN} theme={{ algorithm: theme.defaultAlgorithm, token: { colorPrimary: '#245ce5' } }}>
       <AntdApp component={false}>
         <div className="confirm-dialog">
           <div className="confirm-header">
-            <img src="/icon128.png" alt="Midscene" className="confirm-logo" />
-            <h2 className="confirm-title">Midscene Bridge</h2>
+            <img src="/logo-cairn.svg" alt="识途" className="confirm-logo" />
+            <h2 className="confirm-title">识途浏览器协作授权</h2>
           </div>
 
           <div className="confirm-content">
             <p className="confirm-message">
-              Midscene CLI is requesting to control this browser.
+              识途本地协作服务请求控制此浏览器。
             </p>
             <div className="server-info">
-              <span className="server-label">Server:</span>
+              <span className="server-label">服务地址：</span>
               <span className="server-url">{serverUrl}</span>
             </div>
           </div>
@@ -91,15 +91,15 @@ function ConfirmDialog() {
               checked={rememberChoice}
               onChange={(e) => setRememberChoice(e.target.checked)}
             >
-              Remember this choice
+              记住此选择
             </Checkbox>
           </div>
 
           <div className="confirm-footer">
             <div className="confirm-buttons">
-              <Button onClick={handleDeny}>Deny ({countdown}s)</Button>
+              <Button onClick={handleDeny}>拒绝（{countdown} 秒）</Button>
               <Button type="primary" onClick={handleAllow}>
-                Allow
+                允许
               </Button>
             </div>
           </div>

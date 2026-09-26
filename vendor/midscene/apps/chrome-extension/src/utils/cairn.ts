@@ -2,9 +2,9 @@ import type { ChromeRecordedEvent } from '@midscene/recorder-ui';
 
 export interface CairnAccount {
   id: string;
-  email: string;
+  email: string | null;
   displayName: string;
-  role: string;
+  roles: Array<{ id: string; key: string; name: string; kind: string }>;
 }
 
 export interface CairnTarget {
@@ -208,7 +208,7 @@ export async function cairnFetch<T>(
 /** 账号密码登录 */
 export async function loginToCairn(
   apiOrigin: string,
-  email: string,
+  account: string,
   password: string,
 ): Promise<{ accessToken: string; account: CairnAccount }> {
   return cairnFetch<{ accessToken: string; account: CairnAccount }>(
@@ -216,7 +216,8 @@ export async function loginToCairn(
     '/api/auth/login',
     {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      // 平台接口沿用 email 字段名，实际接受账号标识（包括 admin）。
+      body: JSON.stringify({ email: account, password }),
     },
   );
 }
@@ -264,6 +265,13 @@ export async function fetchCairnOpenBinding(
 
 /** 提取更富有业务语义的操作元素选择器/描述 */
 export function extractEventSelector(event: ChromeRecordedEvent): string {
+  // Prefer the selector captured on the live page. AI descriptions are useful
+  // to read, but they are not necessarily executable locators.
+  const recordedSelector = event.rawPayload?.selector;
+  if (typeof recordedSelector === 'string' && recordedSelector.trim()) {
+    return recordedSelector.slice(0, 2048);
+  }
+
   // 1. 优先使用已生成的 AI 语义描述
   const desc = event.elementDescription || (event.semantic as any)?.elementDescription;
   if (desc && desc !== 'failed to generate element description') {
@@ -308,10 +316,15 @@ export function convertMidsceneToRecordingEvents(
   const result: any[] = [];
 
   for (const event of sanitized) {
+    // Scrolling is browser positioning, not a click. A following locator can
+    // scroll into view during replay. Do not fabricate an executable action.
+    if (event.type === 'scroll' || event.type === 'setViewport') continue;
     const selector = extractEventSelector(event);
 
     if (event.type === 'navigation') {
       if (event.url) {
+        const previous = result[result.length - 1];
+        if (previous?.name === 'navigate' && previous.url === event.url) continue;
         result.push({
           name: 'navigate',
           url: event.url,
@@ -357,6 +370,178 @@ export function convertMidsceneToRecordingEvents(
     : [{ name: 'navigate', url: 'about:blank' }];
 }
 
+/** Keep user actions that can become platform steps, including viewport positioning. */
+export function midsceneUploadEvents(events: ChromeRecordedEvent[]): ChromeRecordedEvent[] {
+  const result: ChromeRecordedEvent[] = [];
+  const scrollPositions = new Map<string, { x: number; y: number }>();
+  let navigationObserved = false;
+  for (const event of sanitizeEventsForCairn(events)) {
+    if (event.type === 'setViewport') continue;
+    const previous = result[result.length - 1];
+    if (event.type === 'navigation' && previous?.type === 'navigation' && previous.url === event.url) continue;
+    if (event.type === 'navigation') {
+      scrollPositions.clear();
+      navigationObserved = true;
+    }
+    if (event.type === 'scroll') {
+      const position = scrollPosition(event);
+      const selector = (event.rawPayload as Record<string, unknown> | undefined)?.selector;
+      const key = typeof selector === 'string' && selector ? selector : 'document';
+      const prior = scrollPositions.get(key) ?? (navigationObserved ? { x: 0, y: 0 } : undefined);
+      if (position) scrollPositions.set(key, position);
+      if (position && prior && position.x === prior.x && position.y === prior.y) continue;
+      const previousScroll = result[result.length - 1];
+      const previousSelector = (previousScroll?.rawPayload as Record<string, unknown> | undefined)?.selector;
+      if (previousScroll?.type === 'scroll' && previousSelector === selector) {
+        result[result.length - 1] = event;
+        continue;
+      }
+    }
+    result.push(event);
+  }
+  return result;
+}
+
+function scrollPosition(event: ChromeRecordedEvent): { x: number; y: number } | undefined {
+  const parts = event.value?.split(',').map(Number);
+  if (!parts || parts.length !== 2 || parts.some((value) => !Number.isFinite(value))) return undefined;
+  return { x: parts[0], y: parts[1] };
+}
+
+function scrollTarget(event: ChromeRecordedEvent): string | undefined {
+  const payload = event.rawPayload as Record<string, unknown> | undefined;
+  const selector = payload?.selector;
+  if (selector === 'nav' || selector === 'aside') return 'left navigation sidebar';
+  if (selector === 'body' || selector === 'html') return undefined;
+  const description = semanticTarget(event);
+  return description && description.length <= 100 ? description : undefined;
+}
+
+function semanticTarget(event: ChromeRecordedEvent): string | undefined {
+  const payload = event.rawPayload as Record<string, unknown> | undefined;
+  const selector = payload?.selector;
+  const candidates = [
+    payload?.targetDescription,
+    (event.semantic as { elementDescription?: unknown } | undefined)?.elementDescription,
+    event.elementDescription,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    const value = candidate.replace(/\s+/g, ' ').trim().slice(0, 4096);
+    if (
+      !value ||
+      value === selector ||
+      value === 'failed to generate element description' ||
+      /password|passwd|secret|token|api[_-]?key|密码|口令|密钥|验证码/i.test(value)
+    ) continue;
+    return value;
+  }
+  return undefined;
+}
+
+/** Midscene interactions enter the platform's AI demonstration import path. */
+export function buildMidsceneDemonstrationSource(
+  events: ChromeRecordedEvent[],
+  targetId: string,
+  bindingId?: string,
+  captureId = crypto.randomUUID(),
+) {
+  const priorScrollPositions = new Map<string, { x: number; y: number }>();
+  let navigationObserved = false;
+  const facts = midsceneUploadEvents(events).map((event, sequence) => {
+    const data: Record<string, unknown> = {};
+    const diagnostics: string[] = [];
+    const description = event.type === 'scroll' ? scrollTarget(event) : semanticTarget(event);
+    if (description) data.targetDescription = description;
+    if (event.type === 'navigation') {
+      if (event.url) data.url = sanitizeUrl(event.url);
+      else diagnostics.push('导航缺少页面地址');
+      priorScrollPositions.clear();
+      navigationObserved = true;
+    } else if (event.type === 'scroll') {
+      const position = scrollPosition(event);
+      const selector = (event.rawPayload as Record<string, unknown> | undefined)?.selector;
+      const key = typeof selector === 'string' && selector ? selector : 'document';
+      const prior = priorScrollPositions.get(key) ?? (navigationObserved ? { x: 0, y: 0 } : undefined);
+      if (position) priorScrollPositions.set(key, position);
+      if (!position || !prior) {
+        diagnostics.push('滚动缺少可确认的起点，需在编排台修正');
+      } else {
+        const dx = position.x - prior.x;
+        const dy = position.y - prior.y;
+        const vertical = Math.abs(dy) >= Math.abs(dx);
+        const delta = vertical ? dy : dx;
+        const distance = Math.round(Math.abs(delta));
+        if (distance < 1 || distance > 10_000) {
+          diagnostics.push('滚动距离无效，需在编排台修正');
+        } else if (key !== 'document' && !description) {
+          diagnostics.push('滚动容器缺少可回放的语义，请在编排台修正');
+        } else {
+          data.direction = vertical ? (delta > 0 ? 'down' : 'up') : (delta > 0 ? 'right' : 'left');
+          data.distance = distance;
+          data.scrollType = 'singleAction';
+        }
+      }
+    } else if (event.type === 'click') {
+      if (!description) diagnostics.push('点击缺少可回放的元素语义，请在编排台修正');
+    } else if (event.type === 'input') {
+      const value = event.value ?? '';
+      if (value === '******') {
+        data.value = { state: 'redacted', reason: '敏感输入已移除' };
+        diagnostics.push('敏感输入需在编排台重新编写');
+      } else if (value === '') {
+        data.mode = 'clear';
+      } else {
+        data.mode = 'replace';
+        data.value = { state: 'literal', text: value };
+      }
+      if (!description) diagnostics.push('输入缺少可回放的元素语义，请在编排台修正');
+    } else if (event.type === 'keydown') {
+      if (event.value) data.key = event.value;
+      else diagnostics.push('按键缺少键值');
+    } else {
+      diagnostics.push(`暂不支持 ${event.type} 操作，请在编排台修正`);
+    }
+    const id = `event-${sequence + 1}`;
+    const observation = { status: 'missing', reason: '扩展未上传页面截图' };
+    return {
+      id,
+      sourceIds: [id],
+      sequence,
+      kind: 'action',
+      action: event.type === 'scroll' ? 'aiScroll' : event.type,
+      pageId: null,
+      documentEpoch: null,
+      framePath: null,
+      timestampPrecision: 'unknown',
+      semanticSource: description ? 'heuristic' : 'unknown',
+      data,
+      before: observation,
+      after: observation,
+      diagnostics,
+    };
+  });
+  return {
+    protocolVersion: 'demonstration@1',
+    captureId,
+    targetId,
+    ...(bindingId ? { bindingId } : {}),
+    sourceKind: 'interaction_trace',
+    channel: 'extension',
+    producerKind: 'chrome_recorder',
+    actorKind: 'human',
+    authorship: 'human',
+    importProfile: 'midscene-recorder-json@1',
+    producerVersion: '1.12.6',
+    detectedShape: 'midscene-event-array',
+    adapterVersion: 'demonstration-adapters@1',
+    redactionVersion: 'demonstration-redaction@1',
+    facts,
+    omittedConfig: [],
+    assetManifest: [],
+  };
+}
+
 /**
  * 组装并上传录制草稿数据至识途平台 (POST /api/recordings)
  * 版本带有 midscene@ 前缀，平台自动将其打标为 AI 录制来源。
@@ -371,28 +556,22 @@ export async function uploadCairnRecording(
     name?: string;
   },
 ): Promise<{ recordingDraftId: string; name: string; source: string }> {
-  const cleanEvents = sanitizeEventsForCairn(params.events);
-  if (cleanEvents.length === 0) {
+  const source = buildMidsceneDemonstrationSource(params.events, params.targetId, params.bindingId);
+  if (source.facts.length === 0) {
     throw new Error('当前录制会话没有有效操作事件');
   }
-
-  const recordingEvents = convertMidsceneToRecordingEvents(cleanEvents);
-  const recordingId = crypto.randomUUID();
   const idempotencyKey = crypto.randomUUID();
 
   const body = {
-    targetId: params.targetId,
-    recordingId,
-    sourceVersion: 'midscene@1.12.6',
     idempotencyKey,
-    name: (params.name || `Midscene录制-${new Date().toLocaleTimeString()}`).slice(0, 64),
-    bindingId: params.bindingId || undefined,
-    events: recordingEvents,
+    name: (params.name || `识途录制-${new Date().toLocaleTimeString('zh-CN')}`).slice(0, 64),
+    source,
+    acknowledgedOmittedConfig: true,
   };
 
   const res = await cairnFetch<any>(
     apiOrigin,
-    '/api/recordings',
+    '/api/recordings/demonstrations',
     {
       method: 'POST',
       body: JSON.stringify(body),
@@ -400,11 +579,10 @@ export async function uploadCairnRecording(
     token,
   );
 
-  const detail = res.detail || res;
   return {
-    recordingDraftId: detail.id || recordingId,
-    name: detail.name || body.name,
-    source: detail.source || 'ai',
+    recordingDraftId: res.recordingDraftId,
+    name: body.name,
+    source: 'ai',
   };
 }
 

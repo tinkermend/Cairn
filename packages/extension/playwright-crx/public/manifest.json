@@ -34,7 +34,7 @@
     }
   },
   "side_panel": {
-    "default_path": "empty.html"
+    "default_path": "index.html"
   },
   "permissions": ["debugger", "tabs", "contextMenus", "storage", "sidePanel"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],

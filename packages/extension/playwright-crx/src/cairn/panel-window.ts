@@ -1,6 +1,18 @@
 /** 工作台页面。未挂录制器时由产品侧自己打开。 */
 export const WORKBENCH_PATH = 'index.html'
 
+/** Chrome 要求 open() 在点击回调的用户手势内发起，不能先等待 setOptions()。 */
+export function openWorkbenchPanel(
+  sidePanel: Pick<typeof chrome.sidePanel, 'open' | 'setOptions'>,
+  windowId: number | undefined,
+  recorderOwnsPanel: boolean,
+): Promise<void> {
+  const opening = windowId === undefined ? Promise.resolve() : sidePanel.open({ windowId })
+  // 录制器接管期间改 path 会重载侧栏并断开它的端口。
+  if (recorderOwnsPanel) return opening
+  return opening.then(() => sidePanel.setOptions({ path: WORKBENCH_PATH, enabled: true }))
+}
+
 let serial = 0
 
 /**

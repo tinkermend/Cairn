@@ -1,6 +1,6 @@
 import type { ChromeRecordedEvent } from '@midscene/recorder-ui';
 import { message } from 'antd';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { RecordingSession } from '../../../store';
 import { recordLogger } from '../logger';
 
@@ -17,6 +17,14 @@ export const useLifecycleCleanup = (
   events: ChromeRecordedEvent[], // Add events parameter to save current events
   emergencySaveEvents: (events?: ChromeRecordedEvent[]) => Promise<void>, // Add emergency save function
 ) => {
+  const latestRecording = useRef({
+    isRecording, stopRecording, setIsRecording, currentSessionId,
+    getCurrentSession, updateSession, events, emergencySaveEvents,
+  });
+  latestRecording.current = {
+    isRecording, stopRecording, setIsRecording, currentSessionId,
+    getCurrentSession, updateSession, events, emergencySaveEvents,
+  };
   // Monitor visibility changes for the extension popup
   useEffect(() => {
     if (!isRecording) return;
@@ -78,22 +86,24 @@ export const useLifecycleCleanup = (
   useEffect(() => {
     return () => {
       // Clean up any ongoing recording when component unmounts
-      if (isRecording) {
+      const latest = latestRecording.current;
+      if (latest.isRecording) {
         recordLogger.info(
           'Component unmounting, cleaning up recording and saving events',
         );
-        setIsRecording(false).catch(console.error);
+        void (async () => {
+          await latest.emergencySaveEvents(latest.events);
+          await latest.stopRecording();
+          await latest.setIsRecording(false);
+        })().catch(console.error);
 
-        // Emergency save current events
-        emergencySaveEvents(events).catch(console.error);
-
-        if (currentSessionId) {
-          const session = getCurrentSession();
+        if (latest.currentSessionId) {
+          const session = latest.getCurrentSession();
           if (session) {
             // Save current events before unmounting
-            updateSession(currentSessionId, {
+            latest.updateSession(latest.currentSessionId, {
               status: 'completed',
-              events: [...events], // Save current recording events
+              events: [...latest.events],
               updatedAt: Date.now(),
             });
           }

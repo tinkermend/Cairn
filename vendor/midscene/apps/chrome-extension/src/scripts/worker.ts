@@ -354,43 +354,14 @@ async function stopBackgroundBridge(): Promise<void> {
   }
 }
 
-async function initBackgroundBridge(): Promise<void> {
-  // Wait for chrome.storage to be available
-  if (!chrome?.storage?.local) {
-    console.log('[BackgroundBridge] chrome.storage not ready, retrying...');
-    setTimeout(() => initBackgroundBridge(), 100);
-    return;
-  }
-
-  try {
-    // Respect the user's intent: if they explicitly stopped bridge, don't auto-start
-    const result = await chrome.storage.local.get(BRIDGE_STOPPED_KEY);
-    if (result[BRIDGE_STOPPED_KEY]) {
-      console.log(
-        '[BackgroundBridge] Bridge was stopped by user, skipping auto-start',
-      );
-      currentBridgeStatus = 'closed';
-      broadcastBridgeStatus('closed');
-      return;
-    }
-
-    console.log('[BackgroundBridge] Auto-starting background bridge...');
-    await startBackgroundBridge();
-  } catch (error) {
-    console.error('[BackgroundBridge] Failed to init:', error);
-  }
-}
-
-// Initialize background bridge on startup (with delay to ensure chrome APIs are ready)
-setTimeout(() => initBackgroundBridge(), 0);
-
 // ==================== Keepalive Mechanism ====================
 // Register alarm listener for keepalive pings
 registerAlarmListener();
 
-// Setup keepalive on startup - will be updated after initBackgroundBridge checks stopped state
+// Collaborative recording does not use Bridge. Clear a keepalive alarm left by
+// older extension versions instead of starting a background connection loop.
 safeSetupKeepalive({
-  shouldEnable: true,
+  shouldEnable: false,
   storageKey: BRIDGE_PERMISSION_KEY,
   currentBridgeStatus,
 });

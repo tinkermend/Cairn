@@ -1,6 +1,6 @@
 import './App.css';
-import { PlaygroundPopup } from './extension/popup';
+import { CairnRecorderPopup } from './extension/popup';
 
 export default function App() {
-  return <PlaygroundPopup />;
+  return <CairnRecorderPopup />;
 }

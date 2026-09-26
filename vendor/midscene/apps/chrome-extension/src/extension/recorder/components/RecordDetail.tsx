@@ -3,31 +3,24 @@ import {
   ClearOutlined,
   CloseOutlined,
   CloudUploadOutlined,
-  CodeOutlined,
-  ControlOutlined,
-  LoadingOutlined,
   PlayCircleOutlined,
-  RightOutlined,
 } from '@ant-design/icons';
 import { RecordTimeline } from '@midscene/recorder-ui';
-import { Alert, Button, Empty, Spin, Tag, Tooltip } from 'antd';
+import { Alert, Button, Empty, Popconfirm, Tag, Tooltip } from 'antd';
 import type React from 'react';
-import { useEffect, useState } from 'react';
-import { useCairnStore, useRecordStore, useRecordingSessionStore } from '../../../store';
+import { useState } from 'react';
 import { CairnConnectModal } from '../../../components/CairnConnectModal';
+import { useCairnStore, useRecordStore, useRecordingSessionStore } from '../../../store';
 import { promptUploadToCairn } from '../../../utils/cairn-uploader';
-
-import { ProgressModal } from './ProgressModal';
 
 interface RecordDetailProps {
   sessionId: string;
   isRecording: boolean;
   isStarting: boolean;
   currentTab: chrome.tabs.Tab | null;
-  // events: ChromeRecordedEvent[];
   onBack: () => void;
   onStartRecording: (id: string) => void;
-  onStopRecording: () => void;
+  onStopRecording: () => void | Promise<void>;
   onClearEvents: () => void;
   isExtensionMode: boolean;
   onClose: () => void;
@@ -37,393 +30,150 @@ export const RecordDetail: React.FC<RecordDetailProps> = ({
   sessionId,
   isRecording,
   isStarting,
-  // events = [],
   onBack,
   onStartRecording,
   onStopRecording,
   onClearEvents,
   onClose,
 }) => {
-  // useState must be called at the top level of the component, not after conditional statements
-  const [tab, setTab] = useState<'timeline' | 'code'>('timeline');
-  const [isFromStopRecording, setIsFromStopRecording] = useState(false);
   const [isCairnModalOpen, setIsCairnModalOpen] = useState(false);
-  const { events } = useRecordStore();
+  const events = useRecordStore((state) => state.events);
+  const targetId = useCairnStore((state) => state.targetId);
+  const targets = useCairnStore((state) => state.targets);
+  const currentTarget = targets.find((target) => target.id === targetId);
+  const sessions = useRecordingSessionStore((state) => state.sessions);
+  const session = sessions.find((item) => item.id === sessionId);
 
-  const cairnToken = useCairnStore((state) => state.token);
-  const cairnTargetId = useCairnStore((state) => state.targetId);
-  const cairnTargets = useCairnStore((state) => state.targets);
-  const currentTarget = cairnTargets.find((t) => t.id === cairnTargetId);
-
-  // Get the session directly from the store to ensure we always have the latest data
-  const { sessions } = useRecordingSessionStore();
-  const session = sessions.find((s) => s.id === sessionId);
-
-  // reset tab when sessionId changes
-  useEffect(() => {
-    setTab('timeline');
-    setIsFromStopRecording(false);
-  }, [sessionId]);
-
-  // If session is not found, show error
   if (!session) {
     return (
       <div className="record-detail-view">
         <Alert
-          message="Session Not Found"
-          description="The requested session could not be found."
+          message="录制记录不存在"
+          description="这条录制记录已被删除或暂时无法读取。"
           type="error"
           showIcon
-          style={{ marginBottom: '16px' }}
         />
-        <Button
-          type="text"
-          icon={<ArrowLeftOutlined />}
-          onClick={onBack}
-          className="back-button"
-        >
-          Back to Sessions
+        <Button type="text" icon={<ArrowLeftOutlined />} onClick={onBack}>
+          返回录制列表
         </Button>
       </div>
     );
   }
 
-  // Wrap onStopRecording, switch to code tab after stopping recording
-  const handleStopRecording = () => {
-    onStopRecording();
-    setIsFromStopRecording(true);
-    setTab('code');
-  };
-
-  // Reset isFromStopRecording state when manually switching to code tab
-  const handleTabChange = (newTab: 'timeline' | 'code') => {
-    if (newTab === 'timeline') {
-      setIsFromStopRecording(false);
-    }
-    setTab(newTab);
-  };
-
   return (
-    <div className="record-detail-view flex flex-col h-full">
-      {/* Header bar */}
-      <div className="flex items-center">
-        {/* Recording status */}
-        <div className="flex items-center mr-2">
-          {isRecording ? (
-            <div
-              className="flex items-center gap-[4px] h-[20px] px-[7px] py-[4px] rounded-[23px] cursor-pointer hover:opacity-80 transition-opacity"
-              style={{
-                background: 'rgba(255, 17, 17, 0.08)',
-                // Transparent red background
-              }}
-              onClick={handleStopRecording}
-              title="Click to stop recording"
-            >
-              <span
-                className="inline-block rec-dot-pulse"
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: '#FF1111',
-                }}
-              />
-              <span
-                className="text-[10px] font-medium"
-                style={{
-                  color: '#FF1111',
-                  fontFamily: 'Inter, -apple-system, sans-serif',
-                  lineHeight: '2em',
-                  fontWeight: 700,
-                }}
-              >
-                REC
-              </span>
-              <style>{`
-                @keyframes rec-dot-pulse {
-                  0% { 
-                    transform: scale(1);
-                    opacity: 1;
-                  }
-                  50% { 
-                    transform: scale(1.3);
-                    opacity: 0.7;
-                  }
-                  100% { 
-                    transform: scale(1);
-                    opacity: 1;
-                  }
-                }
-                .rec-dot-pulse {
-                  animation: rec-dot-pulse 1.5s infinite ease-in-out;
-                }
-              `}</style>
-            </div>
-          ) : (
-            <div className="flex items-center gap-[4px] h-[20px] px-[7px] py-[4px] rounded-[23px] bg-[#EFFFE0]">
-              <span className="w-[6px] h-[6px] rounded-full bg-[#00C700] inline-block" />
-              <span
-                className="text-[#12A902] text-[10px] font-medium leading-[2em]"
-                style={{
-                  fontFamily: 'PingFang SC, -apple-system, sans-serif',
-                  fontWeight: 700,
-                }}
-              >
-                Ready
-              </span>
-            </div>
-          )}
+    <div className="record-detail-view">
+      <div className="record-detail-header">
+        <div className="record-detail-heading">
+          <span className={`record-detail-status${isRecording ? ' is-recording' : ''}`}>
+            <span className="record-detail-status-dot" />
+            {isRecording ? '录制中' : events.length > 0 ? '已暂停' : '待录制'}
+          </span>
+          <strong title={session.name}>{session.name}</strong>
         </div>
-        {/* Title */}
-        <span
-          className="text-[12px] font-medium text-[rgba(0,0,0,0.9)] leading-[1.67em] truncate flex-1 flex items-center gap-1.5"
-          style={{ fontFamily: 'PingFang SC, -apple-system, sans-serif' }}
-        >
-          <span className="truncate">{session.name}</span>
-          {cairnToken && (
-            <Tooltip title={`当前归属识途目标：${currentTarget ? currentTarget.name : '未选择目标（点击设置）'}`}>
-              <Tag
-                color={currentTarget ? 'blue' : 'default'}
-                className="cursor-pointer text-[10px] px-1 py-0 leading-none h-[18px] inline-flex items-center max-w-[120px] truncate"
-                onClick={() => setIsCairnModalOpen(true)}
-              >
-                {currentTarget ? currentTarget.name : '未选Target'}
-              </Tag>
-            </Tooltip>
-          )}
-        </span>
-        {/* Action buttons */}
-        <div className="flex items-center gap-2 ml-2">
-          {events.length > 0 && !isRecording && (
-            <Tooltip title={cairnToken ? '将本次录制一键脱敏上传至识途平台生成草稿' : '连接识途平台账号并上传草稿'}>
-              <Button
-                icon={<CloudUploadOutlined />}
-                onClick={() => {
-                  promptUploadToCairn({
-                    events,
-                    sessionName: session.name,
-                    onOpenConnectModal: () => setIsCairnModalOpen(true),
-                  });
-                }}
-                size="small"
-                type="primary"
-                className="!bg-[#2B83FF] flex items-center justify-center text-[11px] h-[24px] px-2"
-              >
-                上传草稿
-              </Button>
-            </Tooltip>
-          )}
+        <div className="record-detail-header-actions">
           <Button
-            icon={<ClearOutlined />}
-            onClick={() => {
-              setTab('timeline');
-              setIsFromStopRecording(false);
-              onClearEvents();
-            }}
-            disabled={events.length === 0 || isRecording}
-            size="small"
             type="text"
-            title="Clear all events"
-            className="text-[#333333]"
-          />
-          <Button
             icon={<CloseOutlined />}
             onClick={onClose}
-            size="small"
-            type="text"
-            title="Close"
-            className="text-[#333333]"
+            aria-label="返回录制列表"
+            title="返回录制列表"
           />
         </div>
       </div>
 
-      {/* Figma-style Tabs */}
-      <div
-        className="px-2 py-0  my-[20px]"
-        style={{
-          background: '#F2F4F7',
-          borderRadius: '8px',
-          height: '41px',
-          display: 'flex',
-          alignItems: 'stretch',
-        }}
-      >
-        <div className="flex gap-2 w-full items-stretch !text-[12px]">
-          <button
-            type="button"
-            className={
-              'flex items-center justify-center gap-1.5 flex-1 transition-colors !font-medium !leading-[1.83em] !bg-transparent !rounded-lg !py-2 !px-0 !border-none !cursor-pointer text-[rgba(0,0,0,0.85)]'
-            }
-            style={{
-              fontFamily: 'Inter, -apple-system, sans-serif',
-            }}
-            onClick={() => handleTabChange('timeline')}
+      <div className="record-detail-context">
+        <span>目标系统</span>
+        <Tooltip title="点击更换录制的目标系统">
+          <Tag
+            className="record-detail-target"
+            onClick={() => setIsCairnModalOpen(true)}
           >
-            {/* Timeline icon */}
-            <div className="w-4 h-4 flex items-center justify-center !rounded-none">
-              <ControlOutlined />
-            </div>
-            Record Timeline
-          </button>
+            {currentTarget ? currentTarget.name : '请选择目标系统'}
+          </Tag>
+        </Tooltip>
+      </div>
 
-          {/* Divider */}
-          <div className="flex items-center">
-            <RightOutlined className="text-xs w-3 h-3 " />
-          </div>
-
-          <button
-            type="button"
-            className={`flex items-center justify-center gap-1.5 flex-1 transition-colors !font-medium !leading-[1.83em] !bg-transparent !rounded-lg !py-2 !px-0 !border-none !cursor-pointer ${
-              tab === 'code'
-                ? 'text-[rgba(0,0,0,0.85)]'
-                : 'text-[rgba(0,0,0,0.25)]'
-            } ${events.length === 0 ? '!text-gray-300 !cursor-not-allowed' : ''}`}
-            style={{
-              fontFamily: 'Inter, -apple-system, sans-serif',
-            }}
-            onClick={() => events.length > 0 && handleTabChange('code')}
-            disabled={events.length === 0}
-            title={events.length === 0 ? 'Record some events first' : undefined}
+      <div className="record-detail-section-heading">
+        <div>
+          <h2>操作记录</h2>
+          <span>{events.length} 个操作</span>
+        </div>
+        <div className="record-detail-tools">
+          {events.length > 0 && !isRecording && (
+            <Button
+              type="primary"
+              size="small"
+              icon={<CloudUploadOutlined />}
+              onClick={() => {
+                promptUploadToCairn({
+                  events,
+                  sessionName: session.name,
+                  onOpenConnectModal: () => setIsCairnModalOpen(true),
+                });
+              }}
+            >
+              上传草稿
+            </Button>
+          )}
+          <Popconfirm
+            title="清空操作记录"
+            description="确定清空这条录制中的全部操作吗？"
+            okText="清空"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={onClearEvents}
+            disabled={events.length === 0 || isRecording}
           >
-            {/* Code icon */}
-            <div className="w-4 h-4 flex items-center justify-center !rounded-none">
-              <CodeOutlined className="!bg-transparent" />
-            </div>
-            Generate code
-          </button>
+            <Button
+              type="text"
+              size="small"
+              icon={<ClearOutlined />}
+              disabled={events.length === 0 || isRecording}
+              aria-label="清空操作记录"
+              title="清空操作记录"
+            />
+          </Popconfirm>
         </div>
       </div>
 
-      {/* Tab content area */}
-      <div className="flex-1 overflow-auto">
-        {tab === 'timeline' ? (
-          events.length === 0 ? (
-            <Empty description="No events recorded yet" />
-          ) : (
-            <div className="p-[16px 0]">
-              <RecordTimeline events={events} variant="chrome-extension" />
-            </div>
-          )
+      <div className="record-detail-timeline">
+        {events.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description="还没有记录到操作"
+          />
         ) : (
-          <ProgressModal
-            eventsCount={events.length}
-            sessionName={session.name}
-            events={events}
-            sessionId={session.id}
-            onStopRecording={handleStopRecording}
-            isFromStopRecording={isFromStopRecording}
-          />
+          <RecordTimeline events={events} variant="chrome-extension" />
         )}
       </div>
 
-      {/* Fixed bottom action bar - only shown in timeline tab */}
-      {tab === 'timeline' && (
-        <div className="px-4 py-6 flex justify-center">
-          {!isRecording ? (
+      <div className="record-detail-footer">
+        {isRecording ? (
+          <div className="record-detail-recording-bar">
+            <span className="record-detail-recording-indicator">
+              <span className="record-detail-status-dot" />
+              正在记录浏览器操作
+            </span>
             <Button
-              type="primary"
-              icon={<PlayCircleOutlined />}
-              onClick={() => onStartRecording(sessionId)}
-              disabled={isRecording || isStarting}
-              loading={isStarting}
-              className="!fixed bottom-4 left-1/2 transform -translate-x-1/2 z-[1000] !h-[40px] !py-[12px] !px-[12px] !rounded-[48px]"
-              style={{ fontFamily: 'Inter, -apple-system, sans-serif' }}
+              danger
+              onClick={() => void onStopRecording()}
             >
-              {events.length > 0 ? 'Resume Recording' : 'Start Recording'}
+              停止录制
             </Button>
-          ) : (
-            <div
-              className="relative"
-              style={{ maxWidth: '304px', width: '100%' }}
-            >
-              {/* Gradient border background */}
-              <div
-                className="absolute inset-0 rounded-xl p-[1px] rec-breath-border"
-                style={{
-                  background:
-                    'linear-gradient(45deg, #538CFF, #0066FF, #7B02C5, #FF7D3C, #FFA53C)',
-                  boxShadow: '0px 0px 0px 3px rgba(217, 233, 255, 1)',
-                }}
-              >
-                <div className="w-full h-full bg-white rounded-xl" />
-                <style>{`
-                  @keyframes rec-breath {
-                    0%   { filter: brightness(1) opacity(1); }
-                    50%  { filter: brightness(1.08) opacity(0.88); }
-                    100% { filter: brightness(1) opacity(1); }
-                  }
-                  .rec-breath-border {
-                    animation: rec-breath 2s infinite ease-in-out;
-                  }
-                `}</style>
-              </div>
+          </div>
+        ) : (
+          <Button
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            onClick={() => onStartRecording(sessionId)}
+            disabled={isStarting}
+            loading={isStarting}
+          >
+            {events.length > 0 ? '继续录制' : '开始录制'}
+          </Button>
+        )}
+      </div>
 
-              {/* Content container */}
-              <div className="relative flex items-center px-4 py-3">
-                {/* Recording status */}
-                <div className="flex items-center gap-2.5 flex-1">
-                  <Spin
-                    size="small"
-                    indicator={
-                      <LoadingOutlined spin style={{ fontSize: 15 }} />
-                    }
-                    style={{
-                      color: '#2B83FF',
-                      fontSize: '16px',
-                    }}
-                  />
-                  <span
-                    className="text-[14px] font-medium text-[rgba(0,0,0,0.85)]"
-                    style={{
-                      fontFamily: 'Inter, -apple-system, sans-serif',
-                      lineHeight: '1.21',
-                    }}
-                  >
-                    Recording
-                  </span>
-                </div>
-
-                {/* Divider */}
-                <div
-                  className="border-l mx-4"
-                  style={{
-                    width: '0px',
-                    height: '15px',
-                    borderLeftColor: 'rgba(0,0,0,0.08)',
-                    borderLeftWidth: '1px',
-                  }}
-                />
-
-                <button
-                  type="button"
-                  onClick={handleStopRecording}
-                  disabled={!isRecording}
-                  className="flex items-center gap-1 hover:opacity-80 transition-opacity bg-transparent border-none p-0 cursor-pointer"
-                  style={{ background: 'none' }}
-                >
-                  <div
-                    className="bg-[#151414] w-3 h-3"
-                    style={{
-                      borderRadius: '2px',
-                    }}
-                  />
-                  <span
-                    className="text-sm font-medium text-[rgba(0,0,0,0.85)]"
-                    style={{
-                      fontFamily: 'Inter, -apple-system, sans-serif',
-                      lineHeight: '1.21',
-                    }}
-                  >
-                    Stop
-                  </span>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Cairn platform connect modal */}
       <CairnConnectModal
         open={isCairnModalOpen}
         onClose={() => setIsCairnModalOpen(false)}

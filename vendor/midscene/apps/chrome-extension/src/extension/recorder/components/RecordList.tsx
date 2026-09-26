@@ -8,7 +8,6 @@ import { Alert, Button, Empty, List, Popconfirm } from 'antd';
 import type React from 'react';
 import type { RecordingSession } from '../../../store';
 import './RecordList.less';
-import { EnvConfigReminder, useEnvConfig } from '@midscene/visualizer';
 
 interface RecordListProps {
   sessions: RecordingSession[];
@@ -35,151 +34,122 @@ export const RecordList: React.FC<RecordListProps> = ({
   isRecordingStoreReady,
   handleCreateNewSession,
 }) => {
-  const { config } = useEnvConfig();
-
-  const runButtonEnabled = Object.keys(config || {}).length >= 1;
   const hasEventsToExport = sessions.some(
     (session) => (session.eventCount ?? session.events.length) > 0,
   );
 
   return (
-    <div className="record-list-view relative">
-      {/* Environment setup reminder */}
-      <EnvConfigReminder />
-
-      {/* Export All Events Button */}
-      {hasEventsToExport && (
-        <div className="h-[30px] font-bold text-[14px] p-[5px]">
-          <span>Record All</span>
-          <DownloadOutlined
-            onClick={onExportAllEvents}
-            className="cursor-pointer float-right"
-          />
+    <div className="record-list-view">
+      <div className="record-list-heading">
+        <div>
+          <h1>录制记录</h1>
+          <p>选择记录查看操作并上传场景草稿</p>
         </div>
-      )}
+        {hasEventsToExport && (
+          <Button
+            type="text"
+            icon={<DownloadOutlined />}
+            onClick={onExportAllEvents}
+            aria-label="导出全部录制"
+            title="导出全部录制"
+          />
+        )}
+      </div>
 
       {!isExtensionMode && (
         <Alert
-          message="Limited Functionality"
-          description="Recording features require Chrome extension environment. Only session management and event viewing are available."
+          message="当前环境无法录制"
+          description="请在 Chrome 扩展侧栏中打开录制器。"
           type="info"
           showIcon
-          className="mb-4"
+          className="record-list-alert"
         />
       )}
 
       {sessions.length === 0 ? (
-        <Empty
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description={
-            <span className="record-list-empty-description">
-              Start your first recording
-            </span>
-          }
-        />
+        <div className="record-list-empty">
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={<span className="record-list-empty-description">还没有录制记录</span>}
+          />
+          <p>打开目标系统，点击下方按钮开始首次录制。</p>
+        </div>
       ) : (
         <List
           className="session-list"
-          grid={{ gutter: 16, column: 1 }}
           dataSource={[...sessions].sort((a, b) => b.updatedAt - a.updatedAt)}
-          renderItem={(session) => (
-            <List.Item className="session-item">
-              <div
-                className={`w-full bg-[#F4F6F9] rounded-lg cursor-pointer transition-all duration-200 overflow-hidden hover:shadow-md ${
-                  session.id === currentSessionId
-                    ? 'border-2 border-[#F4F6F9] bg-blue-50'
-                    : ''
-                }`}
-                onClick={() => onViewDetail(session)}
-              >
-                {/* Main content area */}
-                <div className="bg-white border border-[#F2F4F7] rounded-[8px] p-3 flex flex-col gap-2">
-                  <div className="font-medium text-sm leading-[1.21] text-black w-full">
-                    {session.name}
-                  </div>
-                  {session.description && (
-                    <div className="font-normal text-xs leading-[1.67] text-[#595959] max-h-10 overflow-hidden line-clamp-2">
-                      {session.description}
-                    </div>
-                  )}
-                  <div className="font-normal text-xs leading-[1.67] text-[#595959]">
-                    {session.url &&
-                      `URL: ${session.url.slice(0, 50)}${session.url.length > 50 ? '...' : ''}`}
-                  </div>
-                  <div className="font-normal text-xs leading-[1.67] text-[#595959]">
-                    {new Date(session.createdAt).toLocaleString()}
-                  </div>
-                </div>
-
-                {/* Action bar */}
-                <div className="h-10 bg-[#F2F4F7] rounded-b-lg flex items-center justify-between px-3">
-                  <div className="flex items-center justify-center flex-1">
+          renderItem={(session) => {
+            const eventCount = session.eventCount ?? session.events.length;
+            return (
+              <List.Item className="session-item">
+                <article className={`session-card${session.id === currentSessionId ? ' is-current' : ''}`}>
+                  <button
+                    type="button"
+                    className="session-card-main"
+                    onClick={() => onViewDetail(session)}
+                  >
+                    <span className="session-card-name">{session.name}</span>
+                    {session.description && (
+                      <span className="session-card-description">{session.description}</span>
+                    )}
+                    <span className="session-card-url" title={session.url || undefined}>
+                      {session.url || '未记录页面地址'}
+                    </span>
+                    <span className="session-card-meta">
+                      <span>{new Date(session.createdAt).toLocaleString('zh-CN')}</span>
+                      <span>{eventCount} 个操作</span>
+                    </span>
+                  </button>
+                  <div className="session-card-actions">
                     <Button
                       type="text"
                       icon={<EditOutlined />}
-                      size="small"
-                      className="!w-4 !h-4 !p-0 !border-0 !bg-transparent !text-[#595959] hover:!text-blue-500 hover:!bg-transparent focus:!bg-transparent !shadow-none"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEditSession(session);
-                      }}
+                      aria-label={`编辑录制：${session.name}`}
+                      title="编辑录制"
+                      onClick={() => onEditSession(session)}
                     />
-                  </div>
-                  <div className="w-px h-5 bg-[rgba(0, 0, 0, 0.04)]" />
-                  <div className="flex items-center justify-center flex-1">
                     <Button
                       type="text"
                       icon={<DownloadOutlined />}
-                      size="small"
-                      className="!w-4 !h-4 !p-0 !border-0 !bg-transparent !text-[#595959] hover:!text-blue-500 hover:!bg-transparent focus:!bg-transparent !shadow-none disabled:!text-gray-300"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onExportSession(session);
-                      }}
-                      disabled={
-                        (session.eventCount ?? session.events.length) === 0
-                      }
+                      aria-label={`导出录制：${session.name}`}
+                      title="导出录制"
+                      disabled={eventCount === 0}
+                      onClick={() => onExportSession(session)}
                     />
-                  </div>
-                  <div className="w-px h-5 bg-[rgba(0, 0, 0, 0.04)]" />
-                  <div className="flex items-center justify-center flex-1">
                     <Popconfirm
-                      title="Delete session"
-                      description="Are you sure you want to delete this session?"
-                      onConfirm={(e) => {
-                        e?.stopPropagation();
-                        onDeleteSession(session.id);
-                      }}
-                      onCancel={(e) => e?.stopPropagation()}
+                      title="删除录制"
+                      description="确定删除这条录制记录吗？"
+                      okText="删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => onDeleteSession(session.id)}
                     >
                       <Button
                         type="text"
                         danger
                         icon={<DeleteOutlined />}
-                        size="small"
-                        className="!w-4 !h-4 !p-0 !border-0 !bg-transparent !text-[#595959] hover:!text-red-500 hover:!bg-transparent focus:!bg-transparent !shadow-none"
-                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`删除录制：${session.name}`}
+                        title="删除录制"
                       />
                     </Popconfirm>
                   </div>
-                </div>
-              </div>
-            </List.Item>
-          )}
+                </article>
+              </List.Item>
+            );
+          }}
         />
       )}
 
-      <Button
-        type="primary"
-        className="!fixed bottom-4 left-1/2 transform -translate-x-1/2 z-[1000] !h-[40px] !py-[12px] !px-[16px] !rounded-[48px]"
-        disabled={!runButtonEnabled || !isRecordingStoreReady}
-        // className="!fixed bottom-4 left-1/2 transform -translate-x-1/2 z-[1000] flex items-center justify-center gap-[10px] text-[14px] text-white w-[172px] h-[40px] rounded-[48px] border py-[12px] px-[16px]"
-        icon={<PlusOutlined className="stroke-[2]" />}
-        onClick={handleCreateNewSession}
-      >
-        New Recording
-      </Button>
+      <div className="record-list-footer">
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          disabled={!isExtensionMode || !isRecordingStoreReady}
+          onClick={handleCreateNewSession}
+        >
+          新建录制
+        </Button>
+      </div>
     </div>
   );
 };

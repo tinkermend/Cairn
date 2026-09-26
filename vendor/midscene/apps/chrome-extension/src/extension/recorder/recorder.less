@@ -1,8 +1,9 @@
 .popup-record-container {
   height: 100%;
-  overflow-y: auto;
+  min-height: 0;
+  overflow-y: hidden;
   overflow-x: hidden; // Disable horizontal scrollbar
-  padding: 16px 0;
+  padding: 0;
   box-sizing: border-box;
   width: 100%;
 
@@ -464,6 +465,10 @@
     max-width: 100% !important;
   }
 
+  .record-list-view .session-list {
+    overflow-y: auto !important;
+  }
+
   .ant-list-item {
     overflow: visible !important;
     max-width: 100% !important;
@@ -741,5 +746,184 @@
     height: 24px !important;
     max-width: none !important;
     object-fit: cover;
+  }
+}
+
+.record-detail-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  color: #18253d;
+}
+
+.record-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.record-detail-heading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+
+  strong {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.record-detail-status {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: #edf2f8;
+  color: #526681;
+  font-size: 11px;
+  font-weight: 600;
+
+  &.is-recording {
+    background: #fff0f1;
+    color: #bd293b;
+
+    .record-detail-status-dot {
+      background: #f04452;
+    }
+  }
+}
+
+.record-detail-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.record-detail-context {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 8px 0 14px;
+  color: #607087;
+  font-size: 12px;
+}
+
+.record-detail-target {
+  max-width: 65%;
+  margin: 0;
+  overflow: hidden;
+  border-color: #cfdbf0;
+  background: #f3f6ff;
+  color: #1b48be;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-detail-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid #eaf0f6;
+
+  > div:first-child {
+    display: flex;
+    align-items: baseline;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  > div:first-child > span {
+    color: #607087;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+}
+
+.record-detail-tools {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.record-detail-timeline {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0;
+
+  > .ant-empty {
+    margin-top: 40px;
+  }
+}
+
+.record-detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-height: 58px;
+  border-top: 1px solid #eaf0f6;
+  background: #fff;
+
+  > .ant-btn {
+    min-width: 136px;
+    height: 38px;
+    font-weight: 600;
+  }
+}
+
+.record-detail-recording-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
+.record-detail-recording-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #bd293b;
+  font-size: 12px;
+
+  .record-detail-status-dot {
+    background: #f04452;
+  }
+}
+
+@media (max-width: 360px) {
+  .record-detail-section-heading > div:first-child {
+    display: block;
+  }
+
+  .record-detail-tools .ant-btn-primary {
+    padding-inline: 7px;
   }
 }

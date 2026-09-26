@@ -25,7 +25,7 @@ export const useRecordingSession = (currentTab: chrome.tabs.Tab | null) => {
     loadSession,
   } = useRecordingSessionStore();
 
-  const { clearEvents } = useRecordStore();
+  const { clearEvents, resetTransientEvents } = useRecordStore();
 
   // Create session utility function
   const createNewSession = useCallback(
@@ -51,11 +51,10 @@ export const useRecordingSession = (currentTab: chrome.tabs.Tab | null) => {
         url: currentTab?.url,
       };
 
-      const sessionPersistence = addSession(newSession);
-      const currentSessionPersistence = setCurrentSession(newSession.id);
-      clearEvents();
-
       try {
+        await resetTransientEvents();
+        const sessionPersistence = addSession(newSession);
+        const currentSessionPersistence = setCurrentSession(newSession.id);
         await Promise.all([sessionPersistence, currentSessionPersistence]);
       } catch (error) {
         await setCurrentSession(null);
@@ -70,6 +69,7 @@ export const useRecordingSession = (currentTab: chrome.tabs.Tab | null) => {
       addSession,
       setCurrentSession,
       clearEvents,
+      resetTransientEvents,
       sessions,
       updateSession,
     ],

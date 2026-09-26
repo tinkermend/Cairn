@@ -23,7 +23,7 @@ import { resolveRecordingUploadMeta } from './draft-meta'
 import { formatPickedElement } from './inspect'
 import { recordingItemMeta } from './labels'
 import { LoginForm } from './login-form'
-import { CAIRN_OPEN_TARGET, requestAttach, requestDetach, requestStatus, type CairnAttachStatus } from './messages'
+import { CAIRN_ATTACHMENT_CHANGED, CAIRN_OPEN_TARGET, requestAttach, requestDetach, requestFreshTab, requestMode, requestStatus, type CairnAttachStatus, type CairnAttachMode } from './messages'
 import { previewRecording } from './preview'
 import { CAPTURE_CHANGED, CAPTURE_GET, CAPTURE_RESET, captureSource, previewCapture, type CaptureState } from './capture'
 import {
@@ -51,8 +51,9 @@ const ASSERT_MODES: Mode[] = ['assertingVisibility', 'assertingText']
 /** 引擎只认「高亮这个定位」，没有「取消高亮」；用一个必然匹配不到的定位收掉上一次高亮。 */
 const NO_HIGHLIGHT = 'css=cairn-no-such-element'
 
-function dispatchMode(mode: Mode) {
-  return window.dispatch?.({ event: 'setMode', params: { mode } })
+async function dispatchMode(mode: CairnAttachMode) {
+  const result = await requestMode(mode)
+  if (!result?.ok) throw new Error(result?.error ?? '录制模式切换失败')
 }
 
 export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
@@ -71,12 +72,14 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
     tone: 'ok' | 'error' | 'info' | 'warning'
     text: string
     undo?: boolean
+    recoveryTabId?: number
   } | null>(null)
   const [confirmClear, setConfirmClear] = React.useState(false)
   const [expanded, setExpanded] = React.useState<readonly number[]>([])
   // 删除只排除上传的行，引擎采到的 JSONL 一行不动。
   const [excluded, setExcluded] = React.useState<readonly number[]>([])
   const [attachment, setAttachment] = React.useState<CairnAttachStatus | null>(null)
+  const effectiveMode = attachment?.attached ? attachment.mode : mode
   const removalRef = React.useRef<readonly number[] | null>(null)
   const attachedRef = React.useRef(false)
   const attemptRef = React.useRef<{ fingerprint: string; recordingId: string } | null>(null)
@@ -191,6 +194,23 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
       alive = false
     }
   }, [mode, sources])
+
+  React.useEffect(() => {
+    let alive = true
+    const listener = (event: { event?: string }, sender: chrome.runtime.MessageSender) => {
+      if (sender.id !== chrome.runtime.id || event.event !== CAIRN_ATTACHMENT_CHANGED) return
+      void requestStatus().then((status) => {
+        if (!alive) return
+        setAttachment(status)
+        attachedRef.current = status.attached
+      }).catch(() => {})
+    }
+    chrome.runtime.onMessage.addListener(listener)
+    return () => {
+      alive = false
+      chrome.runtime.onMessage.removeListener(listener)
+    }
+  }, [])
 
   const onLogin = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -313,47 +333,104 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   }
 
   const onRecord = async () => {
-    if (RECORDING_MODES.includes(mode)) {
-      await dispatchMode('standby')
+    if (attachedRef.current && attachment?.attached) {
+      setBusy(true)
+      setMessage(null)
+      try {
+        await dispatchMode(RECORDING_MODES.includes(effectiveMode) ? 'standby' : 'recording')
+        const status = await requestStatus()
+        setAttachment(status)
+        attachedRef.current = status.attached
+      } catch (error) {
+        setMessage({ tone: 'error', text: error instanceof Error ? error.message : '录制模式切换失败' })
+      } finally {
+        setBusy(false)
+      }
       return
     }
-    const attached = await requestAttach('recording')
-    if (!attached.ok) {
-      setMessage({ tone: 'error', text: attached.error ?? '无法挂到当前标签页' })
-      return
+    setBusy(true)
+    setMessage(null)
+    try {
+      const attached = await requestAttach('recording')
+      if (!attached.ok) {
+        setAttachment(null)
+        attachedRef.current = false
+        setMessage({
+          tone: 'error',
+          text: attached.error ?? '无法挂到当前标签页',
+          recoveryTabId: attached.recovery === 'fresh-tab' ? attached.tabId : undefined,
+        })
+        return
+      }
+      const status = await requestStatus()
+      setAttachment(status)
+      attachedRef.current = status.attached
+      if (!status.attached) {
+        setMessage({ tone: 'error', text: '录制器未挂到页面，请重新开始录制' })
+        return
+      }
+      if (attached.recovered) {
+        setMessage({ tone: 'info', text: '原标签页的框架已失效，已在新标签页开始录制；原标签页仍保留。' })
+      }
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : '无法挂到当前标签页' })
+    } finally {
+      setBusy(false)
     }
-    await dispatchMode('recording')
+  }
+
+  const onRecover = async (tabId: number) => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      const recovered = await requestFreshTab(tabId)
+      if (!recovered.ok) {
+        setMessage({ tone: 'error', text: recovered.error ?? '无法重新打开当前页面' })
+        return
+      }
+      const status = await requestStatus()
+      setAttachment(status)
+      attachedRef.current = status.attached
+      if (!status.attached) {
+        setMessage({ tone: 'error', text: '新标签页尚未接上录制器，请重试' })
+        return
+      }
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : '无法重新打开当前页面' })
+    } finally {
+      setBusy(false)
+    }
   }
 
   const onInspect = async () => {
-    if (mode === 'recording-inspecting') {
+    if (effectiveMode === 'recording-inspecting') {
       await dispatchMode('recording')
       return
     }
-    if (mode === 'inspecting') {
+    if (effectiveMode === 'inspecting') {
       await dispatchMode('standby')
       return
     }
-    const next = RECORDING_MODES.includes(mode) ? 'recording-inspecting' : 'inspecting'
-    const attached = await requestAttach(next)
-    if (!attached.ok) {
-      setMessage({ tone: 'error', text: attached.error ?? '无法挂到当前标签页' })
-      return
+    const next = RECORDING_MODES.includes(effectiveMode) ? 'recording-inspecting' : 'inspecting'
+    if (!attachedRef.current) {
+      const attached = await requestAttach(next)
+      if (!attached.ok) setMessage({ tone: 'error', text: attached.error ?? '无法挂到当前标签页' })
+    } else {
+      await dispatchMode(next)
     }
-    await dispatchMode(next)
   }
 
   const onAssert = async () => {
-    if (ASSERT_MODES.includes(mode)) {
+    if (ASSERT_MODES.includes(effectiveMode)) {
       await dispatchMode('recording')
       return
     }
-    const attached = await requestAttach('assertingVisibility')
-    if (!attached.ok) {
-      setMessage({ tone: 'error', text: attached.error ?? '无法挂到当前标签页' })
-      return
+    if (!attachedRef.current) {
+      const attached = await requestAttach('assertingVisibility')
+      if (!attached.ok) setMessage({ tone: 'error', text: attached.error ?? '无法挂到当前标签页' })
+    } else {
+      await dispatchMode('assertingVisibility')
     }
-    await dispatchMode('assertingVisibility')
   }
 
   const onSubmitObservation = async () => {
@@ -396,7 +473,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
 
   const onClear = () => {
     void chrome.runtime.sendMessage({ event: CAPTURE_RESET }).then(() => setCapture({ facts: [] }))
-    window.dispatch?.({ event: 'clear' })
+    try { void Promise.resolve(window.dispatch?.({ event: 'clear' })).catch(() => {}) } catch { /* stale vendor port */ }
     setConfirmClear(false)
     setExpanded([])
     setExcluded([])
@@ -430,7 +507,7 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
 
   const highlight = (selector: string | null) => {
     if (!attachedRef.current) return
-    window.dispatch?.({ event: 'highlightRequested', params: { selector: selector ?? NO_HIGHLIGHT } })
+    try { void Promise.resolve(window.dispatch?.({ event: 'highlightRequested', params: { selector: selector ?? NO_HIGHLIGHT } })).catch(() => {}) } catch { /* stale vendor port */ }
   }
 
   const loggedIn = session ? canAttachRecorder(session) : false
@@ -454,9 +531,9 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
   const canUpload = canUploadRecording(permissions)
   const ready = preview && !('error' in preview) ? preview : null
   const items = ready?.items ?? []
-  const recording = RECORDING_MODES.includes(mode)
-  const inspecting = INSPECT_MODES.includes(mode)
-  const asserting = ASSERT_MODES.includes(mode)
+  const recording = RECORDING_MODES.includes(effectiveMode) && attachment?.attached === true
+  const inspecting = INSPECT_MODES.includes(effectiveMode)
+  const asserting = ASSERT_MODES.includes(effectiveMode)
   const uploadMeta = resolveRecordingUploadMeta({
     name: draftName,
     targetId,
@@ -639,6 +716,11 @@ export const CairnPanel: React.FC<Props> = ({ sources, mode, picked }) => {
           {'undo' in status && status.undo ? (
             <button type='button' className='cairn-step-toggle' onClick={onUndoDelete}>
               撤销
+            </button>
+          ) : null}
+          {'recoveryTabId' in status && typeof status.recoveryTabId === 'number' ? (
+            <button type='button' className='cairn-step-toggle' disabled={busy} onClick={() => void onRecover(status.recoveryTabId!)}>
+              在新标签页重新打开当前页面
             </button>
           ) : null}
         </div>

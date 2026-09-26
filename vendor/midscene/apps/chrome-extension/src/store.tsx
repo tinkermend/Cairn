@@ -12,6 +12,11 @@ import {
   fetchCairnTargets,
   fetchCairnOpenBinding,
 } from './utils/cairn';
+import {
+  cairnEnvironmentOrigin,
+  isCairnEnvironment,
+  type CairnEnvironment,
+} from './utils/cairn-environments';
 
 const { create } = Z;
 export const useBlackboardPreference = create<{
@@ -351,6 +356,8 @@ export const useRecordStore = create<{
   updateEvent: (event: ChromeRecordedEvent) => Promise<void>;
   addEvent: (event: ChromeRecordedEvent) => Promise<void>;
   setEvents: (events: ChromeRecordedEvent[]) => Promise<void>;
+  restoreSessionEvents: (events: ChromeRecordedEvent[]) => void;
+  resetTransientEvents: () => Promise<void>;
   clearEvents: () => Promise<void>;
   emergencySaveEvents: (events?: ChromeRecordedEvent[]) => Promise<void>;
 }>((set, get) => ({
@@ -435,6 +442,16 @@ export const useRecordStore = create<{
       }
     }
   },
+  restoreSessionEvents: (events: ChromeRecordedEvent[]) => {
+    set((state) => ({
+      // A live recording can have newer events than the last IndexedDB batch.
+      events: state.isRecording ? mergeEvents(events, state.events) : events,
+    }));
+  },
+  resetTransientEvents: async () => {
+    await clearEventsFromStorage();
+    set({ events: [] });
+  },
   clearEvents: async () => {
     await clearEventsFromStorage();
     const sessionId = useRecordingSessionStore.getState().currentSessionId;
@@ -480,21 +497,24 @@ export type ServiceModeType = 'Server' | 'In-Browser' | 'In-Browser-Extension'; 
 
 // ==================== 识途平台协同 Store ====================
 
-const CAIRN_STORAGE_ORIGIN = 'cairn-api-origin';
+const CAIRN_STORAGE_ENVIRONMENT = 'cairn-environment';
+const CAIRN_LEGACY_STORAGE_ORIGIN = 'cairn-api-origin';
 const CAIRN_STORAGE_TOKEN = 'cairn-auth-token';
 const CAIRN_STORAGE_ACCOUNT = 'cairn-auth-account';
 const CAIRN_STORAGE_TARGET_ID = 'cairn-target-id';
 
 export interface CairnState {
+  environment: CairnEnvironment;
   apiOrigin: string;
   token: string | null;
   account: CairnAccount | null;
+  authStatus: 'checking' | 'authenticated' | 'unauthenticated' | 'error';
   targetId: string | null;
   targets: CairnTarget[];
   binding: CairnBinding | null;
   isLoading: boolean;
   error: string | null;
-  setApiOrigin: (origin: string) => void;
+  setEnvironment: (environment: CairnEnvironment) => void;
   setAuth: (token: string | null, account: CairnAccount | null) => void;
   setTargetId: (targetId: string | null) => void;
   setBinding: (binding: CairnBinding | null) => void;
@@ -505,19 +525,23 @@ export interface CairnState {
 }
 
 export const useCairnStore = create<CairnState>((set, get) => ({
-  apiOrigin: 'http://localhost:3030',
+  environment: 'development',
+  apiOrigin: cairnEnvironmentOrigin('development')!,
   token: null,
   account: null,
+  authStatus: 'checking',
   targetId: null,
   targets: [],
   binding: null,
   isLoading: false,
   error: null,
 
-  setApiOrigin: (origin: string) => {
-    const cleanOrigin = origin.trim().replace(/\/+$/, '');
-    void cairnStorage.setItem(CAIRN_STORAGE_ORIGIN, cleanOrigin);
-    set({ apiOrigin: cleanOrigin });
+  setEnvironment: (environment: CairnEnvironment) => {
+    const origin = cairnEnvironmentOrigin(environment);
+    if (!origin || environment === get().environment) return;
+    get().logout();
+    void cairnStorage.setItem(CAIRN_STORAGE_ENVIRONMENT, environment);
+    set({ environment, apiOrigin: origin });
   },
 
   setAuth: (token: string | null, account: CairnAccount | null) => {
@@ -531,7 +555,12 @@ export const useCairnStore = create<CairnState>((set, get) => ({
     } else {
       void cairnStorage.removeItem(CAIRN_STORAGE_ACCOUNT);
     }
-    set({ token, account, error: null });
+    set({
+      token,
+      account,
+      authStatus: token && account ? 'authenticated' : 'unauthenticated',
+      error: null,
+    });
     if (token) {
       void get().refreshTargets();
       void get().refreshBinding();
@@ -552,47 +581,56 @@ export const useCairnStore = create<CairnState>((set, get) => ({
   },
 
   initialize: async () => {
+    set({ authStatus: 'checking', token: null, account: null, error: null });
     try {
-      const [savedOrigin, savedToken, savedAccountStr, savedTargetId] = await Promise.all([
-        cairnStorage.getItem(CAIRN_STORAGE_ORIGIN),
+      const [savedEnvironment, legacyOrigin, savedToken, savedTargetId] = await Promise.all([
+        cairnStorage.getItem(CAIRN_STORAGE_ENVIRONMENT),
+        cairnStorage.getItem(CAIRN_LEGACY_STORAGE_ORIGIN),
         cairnStorage.getItem(CAIRN_STORAGE_TOKEN),
-        cairnStorage.getItem(CAIRN_STORAGE_ACCOUNT),
         cairnStorage.getItem(CAIRN_STORAGE_TARGET_ID),
       ]);
 
-      const apiOrigin = savedOrigin || 'http://localhost:3030';
-      let account: CairnAccount | null = null;
-      if (savedAccountStr) {
-        try {
-          account = JSON.parse(savedAccountStr);
-        } catch {
-          account = null;
-        }
+      const savedEnvironmentIsConfigured = isCairnEnvironment(savedEnvironment) && !!cairnEnvironmentOrigin(savedEnvironment);
+      const environment = savedEnvironmentIsConfigured
+        ? savedEnvironment
+        : 'development';
+      const apiOrigin = cairnEnvironmentOrigin(environment)!;
+      // 旧版可自填地址；只复用同一本地开发 API 的会话，避免向新环境发送旧 Token。
+      const legacyOriginIsDevelopment = !legacyOrigin ||
+        ['http://localhost:3030', 'http://127.0.0.1:3030', 'http://127.0.0.1:5173', apiOrigin].includes(legacyOrigin.replace(/\/+$/, ''));
+      const reuseSavedSession = savedEnvironmentIsConfigured || (!savedEnvironment && legacyOriginIsDevelopment);
+      if (!reuseSavedSession) {
+        get().logout();
       }
-
+      void cairnStorage.removeItem(CAIRN_LEGACY_STORAGE_ORIGIN);
       set({
+        environment,
         apiOrigin,
-        token: savedToken || null,
-        account,
-        targetId: savedTargetId || null,
+        targetId: reuseSavedSession ? savedTargetId || null : null,
       });
 
       // 如果有 Token，则调用 /api/me 校验
-      if (savedToken) {
+      if (savedToken && reuseSavedSession) {
         try {
           const meRes = await fetchCairnMe(apiOrigin, savedToken);
-          set({ account: meRes.account, error: null });
+          if (!meRes.account?.id) {
+            throw new Error('识途登录信息无效，请重新登录');
+          }
+          set({ token: savedToken, account: meRes.account, authStatus: 'authenticated', error: null });
           await get().refreshTargets();
           await get().refreshBinding();
         } catch (err: any) {
-          // Token 失效，自动清除
           if (err?.status === 401) {
             get().logout();
+          } else {
+            set({ authStatus: 'error', error: err?.message || '无法验证登录状态，请重试' });
           }
         }
+      } else {
+        set({ authStatus: 'unauthenticated' });
       }
     } catch (e: any) {
-      console.warn('Failed to initialize Cairn store:', e);
+      set({ authStatus: 'error', error: e?.message || '无法读取登录状态，请重试' });
     }
   },
 
@@ -610,6 +648,10 @@ export const useCairnStore = create<CairnState>((set, get) => ({
         get().setTargetId(targets[0].id);
       }
     } catch (err: any) {
+      if (err?.status === 401) {
+        get().logout();
+        return;
+      }
       set({ isLoading: false, error: err?.message || '获取目标系统列表失败' });
     }
   },
@@ -624,8 +666,8 @@ export const useCairnStore = create<CairnState>((set, get) => ({
       if (binding?.targetId) {
         get().setTargetId(binding.targetId);
       }
-    } catch {
-      // 忽略静默探测错误
+    } catch (err: any) {
+      if (err?.status === 401) get().logout();
     }
   },
 
@@ -636,6 +678,7 @@ export const useCairnStore = create<CairnState>((set, get) => ({
     set({
       token: null,
       account: null,
+      authStatus: 'unauthenticated',
       targetId: null,
       targets: [],
       binding: null,
@@ -643,4 +686,3 @@ export const useCairnStore = create<CairnState>((set, get) => ({
     });
   },
 }));
-

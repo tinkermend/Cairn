@@ -1,8 +1,8 @@
 import type { ChromeRecordedEvent } from '@midscene/recorder-ui';
-import { globalModelConfigManager } from '@midscene/shared/env';
 import { message } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { type RecordingSession, useRecordStore } from '../../../store';
+import { type RecordingSession, useCairnStore, useRecordStore } from '../../../store';
+import { fetchCairnMe } from '../../../utils/cairn';
 import {
   clearDescriptionCache,
   optimizeEvent,
@@ -15,7 +15,6 @@ import {
   cleanupPreviousRecordings,
   ensureScriptInjected,
   exportEventsToFile,
-  generateRecordTitle,
   generateSessionName,
   sendContentScriptMessage,
 } from '../utils';
@@ -43,6 +42,7 @@ export const useRecordingControl = (
     addEvent,
     updateEvent,
     clearEvents,
+    resetTransientEvents,
     setEvents,
     emergencySaveEvents,
   } = useRecordStore();
@@ -126,39 +126,6 @@ export const useRecordingControl = (
                 updatedAt: Date.now(),
               };
 
-              // Generate AI title and description if we have events
-              if (events.length > 3 && !session.name && !session.description) {
-                recordLogger.info('Generating AI title', {
-                  eventsCount: events.length,
-                });
-                const hideLoadingMessage = message.loading(
-                  'Generating recording title and description...',
-                  0,
-                );
-                try {
-                  const { title, description } = await generateRecordTitle(
-                    events,
-                    globalModelConfigManager.getModelConfig('default'),
-                  );
-
-                  if (title) {
-                    updateData.name = title;
-                    recordLogger.success('AI title generated');
-                  }
-                  if (description) {
-                    updateData.description = description;
-                  }
-                } catch (error) {
-                  recordLogger.error(
-                    'Failed to generate title/description',
-                    undefined,
-                    error,
-                  );
-                } finally {
-                  hideLoadingMessage();
-                }
-              }
-
               updateSession(currentSessionId, updateData);
             }
           }
@@ -184,9 +151,19 @@ export const useRecordingControl = (
   const startRecording = useCallback(
     (sessionId: string) =>
       runSingleFlight(startRecordingPromiseRef, async () => {
+        const cairn = useCairnStore.getState();
+        if (cairn.authStatus !== 'authenticated' || !cairn.token || !cairn.account) {
+          message.error('请先登录识途，再开始录制');
+          return;
+        }
         setIsStarting(true);
         let startStage = 'initialize recording';
         try {
+          startStage = 'verify Cairn login';
+          await fetchCairnMe(cairn.apiOrigin, cairn.token);
+          if (useCairnStore.getState().token !== cairn.token) {
+            throw new Error('识途登录状态已改变');
+          }
           await withRecorderMessageTimeout(
             (async () => {
               recordLogger.info('Starting recording', {
@@ -242,6 +219,13 @@ export const useRecordingControl = (
               // Clear the AI description cache to avoid using old descriptions
               clearDescriptionCache();
 
+              // Reset the previous session before the content script emits its
+              // initial navigation event. Clearing afterwards loses that event.
+              await resetTransientEvents();
+              if (sessionToUse.events.length > 0) {
+                await setEvents(sessionToUse.events);
+              }
+
               // Send message to content script to start recording
               startStage = 'start content-script recorder';
               await sendContentScriptMessage(
@@ -254,28 +238,25 @@ export const useRecordingControl = (
               );
               await setIsRecording(true);
 
-              // Only clear events if this is a new session or if the session has no existing events
-              // This allows resuming recording on existing sessions without losing previous events
-              if (sessionToUse.events.length === 0) {
-                clearEvents(); // Clear previous events for new recording
-              } else {
-                // Load existing events for continuation
-                setEvents(sessionToUse.events);
-              }
               message.success('Recording started');
             })(),
             `recording startup at ${startStage}`,
             START_RECORDING_TIMEOUT_MS,
           );
         } catch (error) {
+          if ((error as { status?: number })?.status === 401) {
+            useCairnStore.getState().logout();
+            message.error('识途登录已过期，请重新登录');
+            return;
+          }
           recordLogger.error(
             'Failed to start recording',
             { startStage },
             error,
           );
-          message.error(
-            'Failed to start recording. Please ensure you are on a regular web page (not Chrome internal pages) and try again.',
-          );
+          message.error(startStage === 'verify Cairn login'
+            ? '无法验证识途登录状态，请检查连接后重试'
+            : '启动录制失败，请确认当前页面可录制后重试');
         } finally {
           setIsStarting(false);
         }
@@ -288,6 +269,7 @@ export const useRecordingControl = (
       currentTab,
       setIsRecording,
       clearEvents,
+      resetTransientEvents,
       setEvents,
     ],
   );

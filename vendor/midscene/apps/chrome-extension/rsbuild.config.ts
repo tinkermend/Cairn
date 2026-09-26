@@ -40,9 +40,9 @@ export default defineConfig({
       html: {
         title: ({ entryName }) => {
           if (entryName === 'confirm') {
-            return 'Midscene Bridge';
+            return '识途浏览器协作授权';
           }
-          return 'Midscene';
+          return '识途协同录制';
         },
       },
       output: {

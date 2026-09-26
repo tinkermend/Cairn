@@ -3,7 +3,9 @@ import { Input, Modal, message } from 'antd';
 import { CloudUploadOutlined, LinkOutlined } from '@ant-design/icons';
 import type { ChromeRecordedEvent } from '@midscene/recorder-ui';
 import { useCairnStore } from '../store';
-import { uploadCairnRecording, getCairnStudioUrl } from './cairn';
+import { uploadCairnRecording, getCairnStudioUrl, midsceneUploadEvents } from './cairn';
+import { generateCairnDraftName } from './cairn-draft-name';
+import './cairn-uploader.less';
 
 export interface PromptUploadOptions {
   events: ChromeRecordedEvent[];
@@ -20,7 +22,7 @@ export function promptUploadToCairn(options: PromptUploadOptions): void {
   const store = useCairnStore.getState();
 
   // 1. 校验是否已登录
-  if (!store.token || !store.account) {
+  if (store.authStatus !== 'authenticated' || !store.token || !store.account) {
     message.info('请先连接并登录识途平台');
     onOpenConnectModal();
     return;
@@ -40,52 +42,48 @@ export function promptUploadToCairn(options: PromptUploadOptions): void {
   }
 
   const currentTarget = store.targets.find((t) => t.id === store.targetId);
-  const targetName = currentTarget ? currentTarget.name : store.targetId;
+  const targetName = currentTarget?.name || '目标系统';
   const activeBinding = store.binding;
-  let draftNameInput = sessionName || `Midscene录制-${new Date().toLocaleTimeString()}`;
+  const suggestedName = generateCairnDraftName({ targetName, sessionName, events });
+  let draftNameInput = suggestedName;
+  const uploadCount = midsceneUploadEvents(events).length;
 
   Modal.confirm({
-    title: '上传录制草稿至识途平台',
-    icon: <CloudUploadOutlined style={{ color: '#2B83FF' }} />,
+    title: '上传录制草稿',
+    icon: <CloudUploadOutlined style={{ color: '#245ce5' }} />,
     content: (
-      <div style={{ marginTop: 12 }}>
+      <div className="cairn-upload-confirm">
         {activeBinding && (
-          <div
-            style={{
-              padding: '6px 10px',
-              backgroundColor: '#e6f7ff',
-              border: '1px solid #91d5ff',
-              borderRadius: 6,
-              marginBottom: 12,
-              fontSize: 12,
-              color: '#0050b3',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-            }}
-          >
+          <div className="cairn-upload-binding">
             <LinkOutlined />
-            <span>检测到来自控制台场景协同录制，上传后将自动关联该场景！</span>
+            <span>上传后将自动关联当前场景</span>
           </div>
         )}
-        <div style={{ marginBottom: 10 }}>
-          <span style={{ fontSize: 12, color: '#666' }}>目标系统：</span>
-          <strong style={{ fontSize: 13, color: '#1677ff' }}>{targetName}</strong>
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <span style={{ fontSize: 12, color: '#666' }}>包含操作：</span>
-          <span>共 <strong>{events.length}</strong> 步（已自动脱敏敏感输入并剔除 Base64 截图）</span>
-        </div>
-        <div>
-          <span style={{ fontSize: 12, color: '#666' }}>草稿名称：</span>
+        <dl className="cairn-upload-summary">
+          <div>
+            <dt>目标系统</dt>
+            <dd>{targetName}</dd>
+          </div>
+          <div>
+            <dt>录制操作</dt>
+            <dd>
+              {uploadCount} 项
+              {events.length !== uploadCount && <span>（原始记录 {events.length} 条）</span>}
+            </dd>
+          </div>
+        </dl>
+        <div className="cairn-upload-name-field">
+          <label htmlFor="cairn-draft-name">草稿名称</label>
           <Input
+            id="cairn-draft-name"
             defaultValue={draftNameInput}
+            maxLength={64}
             onChange={(e) => {
               draftNameInput = e.target.value;
             }}
             placeholder="请输入录制草稿名称"
-            style={{ marginTop: 4 }}
           />
+          <p>已按目标系统、录制页面和时间生成，可直接修改。已识别的敏感输入会脱敏，上传后可在编排台检查步骤。</p>
         </div>
       </div>
     ),
@@ -94,11 +92,15 @@ export function promptUploadToCairn(options: PromptUploadOptions): void {
     onOk: async () => {
       const hideLoading = message.loading('正在上传录制草稿至识途平台...', 0);
       try {
+        const currentAuth = useCairnStore.getState();
+        if (currentAuth.authStatus !== 'authenticated' || currentAuth.token !== store.token) {
+          throw new Error('登录状态已改变，请重新登录后上传');
+        }
         const res = await uploadCairnRecording(store.apiOrigin, store.token!, {
           events,
           targetId: store.targetId!,
           bindingId: activeBinding?.id,
-          name: draftNameInput,
+          name: draftNameInput.trim() || suggestedName,
         });
 
         hideLoading();
@@ -137,6 +139,7 @@ export function promptUploadToCairn(options: PromptUploadOptions): void {
         });
       } catch (err: any) {
         hideLoading();
+        if (err?.status === 401) useCairnStore.getState().logout();
         message.error(err?.message || '上传录制草稿失败');
       }
     },

@@ -148,7 +148,12 @@ try {
     timeout: 20_000,
   })
   const names = await panel.locator('.cairn-step .cairn-step-name').allInnerTexts()
-  check('录到全部真实步骤', names.length === 4, names.join(' | '))
+  check('录到全部真实步骤',
+    names.some((name) => name.includes('打开页面')) &&
+    names.some((name) => name.includes('订单号')) &&
+    names.some((name) => name.includes('查询')) &&
+    names.some((name) => name.includes('多余按钮')),
+    names.join(' | '))
   let facts
   for (let attempt = 0; attempt < 50; attempt++) {
     facts = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
@@ -156,7 +161,14 @@ try {
     if (clicks.length === 2 && clicks.every((f) => f.after.status === 'captured')) break
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  check('事实在合并前采集并保留唯一身份', facts.facts.length === 4 && new Set(facts.facts.map((f) => f.id)).size === 4)
+  const initialActions = facts.facts.map((f) => f.action)
+  check('事实在合并前采集并保留唯一身份',
+    initialActions.includes('openPage') &&
+    facts.facts.some((f) => f.action === 'fill' && f.data.value?.text === 'SO-9') &&
+    initialActions.filter((action) => action === 'click').length === 2 &&
+    !initialActions.includes('closePage') &&
+    new Set(facts.facts.map((f) => f.id)).size === facts.facts.length,
+    initialActions.join(','))
   check('点击前观察可溯源且不是点击后快照', facts.facts.filter((f) => f.action === 'click').every((f) => f.before.status === 'captured' && f.before.observedAt <= f.after.observedAt), JSON.stringify(facts.facts.filter((f) => f.action === 'click').map((f) => ({ before: f.before, after: f.after }))))
   check(
     '在录哪一页写在面板上',
@@ -207,6 +219,12 @@ try {
   await target.locator('#result').getByText('已查询', { exact: true }).waitFor()
   const navigation = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
   check('导航后使用新的 documentEpoch', new Set(navigation.facts.filter((f) => f.documentEpoch).map((f) => f.documentEpoch)).size >= 2)
+  // Upstream attributes a navigation to the preceding click for five seconds.
+  await target.waitForTimeout(5200)
+  await target.goto(`${fixtureUrl}?direct=1`)
+  await panel.waitForFunction(async () => (await chrome.runtime.sendMessage({ event: 'cairn.capture.get' })).facts.some((f) => f.action === 'navigate' && f.data.url?.includes('direct=1')))
+  const directNavigation = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
+  check('直接跳转保留独立导航事实', directNavigation.facts.some((f) => f.action === 'navigate' && f.data.url?.includes('direct=1')))
   const popupReady = context.waitForEvent('page')
   await target.click('#popup')
   const popup = await popupReady
@@ -216,6 +234,23 @@ try {
   const popupFacts = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
   check('popup 的操作身份与原页面区分', new Set(popupFacts.facts.filter((f) => f.pageId).map((f) => f.pageId)).size >= 2)
   await popup.close()
+
+  // CDP mousePressed/mouseReleased without mouseMoved models an immediate native click:
+  // the recorder must derive its selector from the event target, not stale hover state.
+  await target.mouse.move(0, 0)
+  const nextBox = await target.locator('#next').boundingBox()
+  if (!nextBox) throw new Error('下一页链接不在视口中')
+  const cdp = await context.newCDPSession(target)
+  const nextPoint = { x: nextBox.x + nextBox.width / 2, y: nextBox.y + nextBox.height / 2 }
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...nextPoint, button: 'left', clickCount: 1 })
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...nextPoint, button: 'left', clickCount: 1 })
+  await target.waitForURL('**/next')
+  const noHoverFacts = await panel.evaluate(() => chrome.runtime.sendMessage({ event: 'cairn.capture.get' }))
+  const priorClicks = popupFacts.facts.filter((f) => f.action === 'click').length
+  const afterClicks = noHoverFacts.facts.filter((f) => f.action === 'click').length
+  check('没有 mousemove 的真实点击仍执行并记录', afterClicks > priorClicks,
+    JSON.stringify({ priorClicks, afterClicks, tail: noHoverFacts.facts.slice(-3).map((f) => ({ action: f.action, dataKeys: Object.keys(f.data ?? {}) })) }))
+  await cdp.detach()
 
   // 7. 退出要回到登录，并且扩展自己不再认为有页面被接管。
   // 不能用 chrome.debugger.getTargets 判断：这一页本来就挂着 Playwright 的调试连接。

@@ -1,6 +1,6 @@
 {
-  "name": "Midscene.js · 识途协同录制",
-  "description": "识途平台 AI+视觉自动化与操作录制浏览器扩展 (基于 Midscene.js)",
+  "name": "识途协同录制",
+  "description": "录制浏览器操作并上传识途场景草稿",
   "version": "1.12.6",
   "manifest_version": 3,
   "permissions": [
@@ -34,7 +34,7 @@
   ],
   "action": {
     "default_icon": "icon128.png",
-    "default_title": "Midscene.js"
+    "default_title": "识途协同录制"
   },
   "side_panel": {
     "default_path": "./index.html"

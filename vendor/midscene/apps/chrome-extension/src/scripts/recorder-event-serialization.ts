@@ -7,6 +7,7 @@ export const serializeRecorderEvent = (
   event: ChromeRecordedEvent,
 ): ChromeRecordedEvent => ({
   type: event.type,
+  rawPayload: event.rawPayload,
   url: event.url,
   title: event.title,
   value: event.value,

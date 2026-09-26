@@ -20,6 +20,29 @@ export class DemonstrationCapture {
   get(): CaptureState { return structuredClone(this.state) }
   reset(): void { this.state = { facts: [] }; this.cache = new WeakMap(); this.pages.clear(); this.emit() }
   private emit(): void { this.changed(this.get()) }
+  /** Page creation and direct navigation bypass ContextRecorder's action methods. */
+  recordStandalone(context: Action): void {
+    // Playwright emits closePage when its debugger detaches even if the Chrome tab remains open.
+    if (!['openPage', 'navigate'].includes(String(context.action.name))) return
+    if (this.state.facts.length >= 200) {
+      this.state.error = '本段已达 200 条事实限制，请上传或清空后继续；不能上传不完整片段'
+      this.emit()
+      return
+    }
+    try {
+      const input = { ...context.action, ...context.frame }
+      const fact = parseDemonstrationFile({ text: JSON.stringify([input]), profile: RECORDER_SOURCE_VERSION, targetId: placeholderId, captureId: placeholderId }).facts[0]!
+      fact.id = crypto.randomUUID(); fact.sourceIds = [fact.id]; fact.sequence = this.state.facts.length
+      fact.pageId = context.frame.pageAlias ?? null
+      fact.observedAt = new Date().toISOString(); fact.timestampPrecision = 'millisecond'
+      // A standalone event has no source frame to observe. Preserve its action and URL without inventing a DOM state.
+      if (fact.pageId) this.pages.add(fact.pageId)
+      this.state.facts.push(fact)
+      this.emit()
+    } catch {
+      this.state.error = '有动作未能保留为脱敏事实，请清空本段并重新录制'; this.emit()
+    }
+  }
   private async observe(frame: Frame): Promise<DemonstrationObservation> {
     let timer: ReturnType<typeof setTimeout> | undefined
     const epoch = frame._currentDocument?.documentId

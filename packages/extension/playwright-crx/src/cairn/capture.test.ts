@@ -8,6 +8,17 @@ function frame() {
 const context = (text: string) => ({ frame: { pageAlias: 'page', framePath: [] }, action: { name: 'fill', selector: '#order', text } })
 
 describe('pre-merge capture ownership and observations', () => {
+  it('keeps standalone page navigation and avoids a duplicate initial page fact', async () => {
+    const capture = new DemonstrationCapture(); const page = frame()
+    capture.recordStandalone({ frame: { pageAlias: 'page', framePath: [] }, action: { name: 'openPage', url: 'https://example.test/orders?token=secret' } })
+    capture.recordStandalone({ frame: { pageAlias: 'page', framePath: [] }, action: { name: 'navigate', url: 'https://example.test/next?token=secret' } })
+    capture.recordStandalone({ frame: { pageAlias: 'page', framePath: [] }, action: { name: 'closePage' } })
+    const complete = await capture.begin(page, context('a'), 'record')
+    complete()
+    expect(capture.get().facts.map((item) => item.action)).toEqual(['openPage', 'navigate', 'fill'])
+    expect(capture.get().facts.map((item) => item.sequence)).toEqual([0, 1, 2])
+    expect(JSON.stringify(capture.get())).not.toContain('token=secret')
+  })
   it('keeps every native input fact, stable IDs and only honest cached before-state', async () => {
     const capture = new DemonstrationCapture(); const page = frame()
     const first = await capture.begin(page, context('a'), 'record'); first(); await new Promise((r) => setTimeout(r, 0))

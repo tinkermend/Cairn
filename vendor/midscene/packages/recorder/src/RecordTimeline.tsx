@@ -78,6 +78,7 @@ export const RecordTimeline = ({
   variant = 'default',
 }: RecordTimelineProps) => {
   const { message } = AntdApp.useApp();
+  const isChinese = variant === 'chrome-extension';
   const [expandedEvents, setExpandedEvents] = useState<Set<number>>(new Set());
   const timelineRootRef = useRef<HTMLDivElement>(null);
 
@@ -132,10 +133,10 @@ export const RecordTimeline = ({
     navigator.clipboard
       .writeText(text)
       .then(() => {
-        message.success('JSON copied to clipboard');
+        message.success(isChinese ? '已复制 JSON' : 'JSON copied to clipboard');
       })
       .catch(() => {
-        message.error('Copy failed');
+        message.error(isChinese ? '复制失败' : 'Copy failed');
       });
   };
   const getEventIcon = (type: string) => {
@@ -181,7 +182,7 @@ export const RecordTimeline = ({
   };
 
   const formatTime = (timestamp: number) => {
-    return new Date(timestamp).toLocaleTimeString('en-US', {
+    return new Date(timestamp).toLocaleTimeString(isChinese ? 'zh-CN' : 'en-US', {
       hour12: false,
       hour: '2-digit',
       minute: '2-digit',
@@ -215,24 +216,24 @@ export const RecordTimeline = ({
     switch (event.type) {
       case 'click':
         if (event.targetTagName === 'BUTTON') {
-          return 'Click Button';
+          return isChinese ? '点击按钮' : 'Click Button';
         }
         if (event.value && !isCoordinateValue(event.value)) {
-          return `Click Element "${event.value}"`;
+          return isChinese ? `点击元素“${event.value}”` : `Click Element "${event.value}"`;
         }
-        return 'Click';
+        return isChinese ? '点击' : 'Click';
       case 'drag':
-        return 'Drag';
+        return isChinese ? '拖拽' : 'Drag';
       case 'input':
-        return 'Input';
+        return isChinese ? '输入' : 'Input';
       case 'scroll':
-        return 'Scroll';
+        return isChinese ? '滚动' : 'Scroll';
       case 'navigation':
-        return 'Navigate';
+        return isChinese ? '页面跳转' : 'Navigate';
       case 'setViewport':
-        return 'Viewport changed';
+        return isChinese ? '视口变化' : 'Viewport changed';
       case 'keydown':
-        return 'Key down';
+        return isChinese ? '按键' : 'Key down';
       default:
         return event.type;
     }
@@ -249,7 +250,7 @@ export const RecordTimeline = ({
             <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
               <Text>{eventTitle} - </Text>
               <ShinyText
-                text="analyzing target..."
+                text={isChinese ? '正在分析目标…' : 'analyzing target...'}
                 disabled={false}
                 speed={3}
                 className="step-title-shiny"
@@ -299,7 +300,7 @@ export const RecordTimeline = ({
         }
         return (
           <Text>
-            {eventTitle} - {event.value?.split(' ')[0] || 'recorded scroll'}
+            {eventTitle} - {event.value?.split(' ')[0] || (isChinese ? '已记录滚动' : 'recorded scroll')}
           </Text>
         );
 
@@ -336,7 +337,7 @@ export const RecordTimeline = ({
       case 'keydown':
         return (
           <Text>
-            {eventTitle} - Key: {event.value || 'Unknown'}
+            {eventTitle} - {isChinese ? '按键' : 'Key'}: {event.value || (isChinese ? '未知' : 'Unknown')}
           </Text>
         );
 
@@ -353,7 +354,7 @@ export const RecordTimeline = ({
       case 'click':
       case 'drag':
         return getMidsceneRecorderSemantic(event)?.status === 'pending'
-          ? `${eventTitle} - analyzing target...`
+          ? `${eventTitle} - ${isChinese ? '正在分析目标…' : 'analyzing target...'}`
           : description
             ? `${eventTitle} - ${description}`
             : eventTitle;
@@ -364,7 +365,7 @@ export const RecordTimeline = ({
       case 'scroll':
         return description
           ? `${eventTitle} - ${description}`
-          : `${eventTitle} - ${event.value?.split(' ')[0] || 'recorded scroll'}`;
+          : `${eventTitle} - ${event.value?.split(' ')[0] || (isChinese ? '已记录滚动' : 'recorded scroll')}`;
       case 'navigation':
         return `${eventTitle} - ${description || event.url || ''}`;
       case 'setViewport': {
@@ -374,7 +375,7 @@ export const RecordTimeline = ({
           : eventTitle;
       }
       case 'keydown':
-        return `${eventTitle} - Key: ${event.value || 'Unknown'}`;
+        return `${eventTitle} - ${isChinese ? '按键' : 'Key'}: ${event.value || (isChinese ? '未知' : 'Unknown')}`;
       default:
         return eventTitle;
     }
@@ -574,7 +575,7 @@ export const RecordTimeline = ({
                         background: 'rgba(255, 255, 255, 0.9)',
                         border: '1px solid #d9d9d9',
                       }}
-                      title="Copy JSON"
+                      title={isChinese ? '复制 JSON' : 'Copy JSON'}
                     />
                   </div>
                 </Card>

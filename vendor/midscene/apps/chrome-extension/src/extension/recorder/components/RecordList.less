@@ -1,21 +1,192 @@
-.ant-row {
-  margin: 0 !important;
+.record-list-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
-.ant-col {
-  padding: 0 !important;
+
+.record-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 12px;
+  padding: 20px 2px 16px;
+
+  h1 {
+    margin: 0;
+    color: #18253d;
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 26px;
+  }
+
+  p {
+    margin: 2px 0 0;
+    color: #607087;
+    font-size: 12px;
+    line-height: 18px;
+  }
+
+  .ant-btn {
+    flex: 0 0 auto;
+    color: #40516d;
+
+    &:hover {
+      color: #245ce5;
+      background: #eaf0ff;
+    }
+  }
+}
+
+.record-list-alert {
+  flex: 0 0 auto;
+  margin-bottom: 12px;
+}
+
+.record-list-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding-bottom: 36px;
+  text-align: center;
+
+  .ant-empty {
+    margin: 0;
+  }
+
+  p {
+    margin: 8px 0 0;
+    color: #607087;
+    font-size: 12px;
+  }
+}
+
+.record-list-empty-description {
+  color: #18253d;
 }
 
 .session-list {
-  padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 2px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd6e6 transparent;
 }
+
 .session-item {
-  padding: 0;
+  padding: 0 0 10px !important;
   margin: 0 !important;
 }
 
-// Ant Design gives Empty descriptions a fixed dark foreground. Bind this
-// Recorder-specific empty state to the extension's semantic text token so it
-// stays readable on both the light and dark side-panel surfaces.
-.record-list-empty-description {
-  color: var(--midscene-text-primary, #1f2329);
+.session-card {
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid #e3e9f2;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 2px 4px #263a6003, 0 10px 28px #263a6005;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+
+  &:hover,
+  &.is-current {
+    border-color: #7693cc;
+    box-shadow: 0 2px 8px #3563e91a;
+  }
+}
+
+.session-card-main {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  gap: 6px;
+  padding: 14px 14px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+
+  &:focus-visible {
+    outline: 2px solid #245ce5;
+    outline-offset: -2px;
+  }
+}
+
+.session-card-name {
+  overflow: hidden;
+  color: #18253d;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-card-description {
+  overflow: hidden;
+  color: #40516d;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-card-url {
+  overflow: hidden;
+  color: #607087;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #607087;
+  font-size: 12px;
+}
+
+.session-card-actions {
+  display: flex;
+  justify-content: space-around;
+  padding: 5px 10px;
+  border-top: 1px solid #eaf0f6;
+  background: #fbfcfe;
+
+  .ant-btn {
+    width: 34px;
+    height: 30px;
+    color: #607087;
+
+    &:hover {
+      color: #245ce5;
+      background: #eaf0ff;
+    }
+
+    &.ant-btn-dangerous:hover {
+      color: #bd293b;
+      background: #fff0f1;
+    }
+  }
+}
+
+.record-list-footer {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 14px 0 16px;
+  border-top: 1px solid #eaf0f6;
+  background: #f2f5f9;
+
+  .ant-btn {
+    min-width: 136px;
+    height: 38px;
+    font-weight: 600;
+  }
 }

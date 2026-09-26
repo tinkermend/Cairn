@@ -4,7 +4,6 @@ import {
   FileTextOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
-import { Button, Typography } from 'antd';
 import type React from 'react';
 import { useEffect, useRef } from 'react';
 import { ThinkingProcessSection } from './ThinkingProcessSection';
@@ -14,8 +13,6 @@ import './CodeBlock.css';
 import Highlight from 'react-highlight';
 
 import 'highlight.js/styles/github.css';
-
-const { Text } = Typography;
 
 interface CodeBlockProps {
   type: 'yaml' | 'playwright';
@@ -115,39 +112,6 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
         </div>
       )}
 
-      {code && (
-        <div className="mt-3 text-center">
-          <Text type="secondary" className="text-xs">
-            {type === 'playwright' ? (
-              <>
-                💡 Learn how to integrate Playwright with Midscene.js
-                <a
-                  target="_blank"
-                  href="https://midscenejs.com/integrate-with-playwright.html"
-                  rel="noreferrer"
-                >
-                  {' '}
-                  here
-                </a>
-                .
-              </>
-            ) : (
-              <>
-                💡 Learn how to integrate YAML scripts with Midscene.js
-                <a
-                  target="_blank"
-                  href="https://midscenejs.com/automate-with-scripts-in-yaml.html"
-                  rel="noreferrer"
-                >
-                  {' '}
-                  here
-                </a>
-                .
-              </>
-            )}
-          </Text>
-        </div>
-      )}
     </div>
   );
 };

@@ -312,7 +312,7 @@ describe('删除误录步', () => {
 describe('录制上下文', () => {
   it('挂接后写出在录哪一页，未挂接说清点录制会挂当前页', () => {
     expect(
-      describeAttachment({ attached: true, title: '订单管理', url: 'https://lab.example/orders' }, {
+      describeAttachment({ attached: true, title: '订单管理', url: 'https://lab.example/orders', mode: 'recording' }, {
         recording: true,
         stepCount: 4,
         unresolvedCount: 0,
@@ -327,7 +327,7 @@ describe('录制上下文', () => {
 
   it('挂着但没在录时报可导入步数与待处理数', () => {
     expect(
-      describeAttachment({ attached: true, title: '', url: 'https://lab.example/orders' }, {
+      describeAttachment({ attached: true, title: '', url: 'https://lab.example/orders', mode: 'standby' }, {
         recording: false,
         stepCount: 3,
         unresolvedCount: 1,

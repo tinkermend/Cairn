@@ -228,60 +228,27 @@ export const generateBoxedImage = async (
   }
 };
 
-// Main function to optimize event with AI description and boxed image
+// Recording must not depend on a client-side model configuration. The page
+// bridge supplies semantic labels when available; unresolved elements remain
+// explicit for the platform authoring review instead of invoking local AI.
 export const optimizeEvent = async (
   event: RecordedEvent,
-  updateCallback: (updatedEvent: RecordedEvent) => void,
+  _updateCallback: (updatedEvent: RecordedEvent) => void,
 ): Promise<RecordedEvent> => {
   try {
+    if (event.elementDescription) {
+      return { ...event, descriptionLoading: false };
+    }
     const boxedImageBase64 = await generateBoxedImage(event);
-    if (boxedImageBase64) {
-      event.screenshotWithBox = boxedImageBase64;
-    }
-
-    const hashId = event.hashId;
-    const eventWithDescription = { ...event };
-
-    // Set initial loading state
-    eventWithDescription.elementDescription = 'AI is analyzing element...';
-    eventWithDescription.descriptionLoading = true;
-    updateCallback(eventWithDescription);
-
-    // Check cache first
-    if (descriptionCache.has(hashId)) {
-      const cachedDescription = descriptionCache.get(hashId)!;
-      eventWithDescription.elementDescription = cachedDescription;
-      eventWithDescription.descriptionLoading = false;
-      updateCallback(eventWithDescription);
-      return eventWithDescription;
-    }
-
-    // Generate description with debouncing
-    generateAIDescription(event, hashId)
-      .then((description) => {
-        updateCallback({
-          ...event,
-          elementDescription: description,
-          descriptionLoading: false,
-        });
-      })
-      .catch((error) => {
-        console.error(
-          '[optimizeEvent] Error in AI description generation:',
-          error,
-        );
-        updateCallback({
-          ...event,
-          elementDescription: generateFallbackDescription(),
-          descriptionLoading: false,
-        });
-      });
-    return eventWithDescription;
+    return {
+      ...event,
+      ...(boxedImageBase64 ? { screenshotWithBox: boxedImageBase64 } : {}),
+      descriptionLoading: false,
+    };
   } catch (error) {
     console.error('[optimizeEvent] Error processing event:', error);
     return {
       ...event,
-      elementDescription: generateFallbackDescription(),
       descriptionLoading: false,
     };
   }

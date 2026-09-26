@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { WORKBENCH_PATH, nextRecorderPanelPath, resetRecorderPanelPath, withDeadline } from '../panel-window'
+import { describe, expect, it, vi } from 'vitest'
+import { WORKBENCH_PATH, nextRecorderPanelPath, openWorkbenchPanel, resetRecorderPanelPath, withDeadline } from '../panel-window'
 
 /**
  * 复刻两个真实约束，回归录制/选取按钮点了没反应的那个 bug：
@@ -74,5 +74,29 @@ describe('录制器接管已经打开的侧栏', () => {
     await expect(
       withDeadline(showRecorder(host, nextRecorderPanelPath()), 20, '接管超时'),
     ).resolves.toBeUndefined()
+  })
+})
+
+describe('从浏览器操作打开工作台', () => {
+  it('在用户手势消失前调用 open，再复位侧栏路径', async () => {
+    let hasUserGesture = true
+    queueMicrotask(() => { hasUserGesture = false })
+    const open = vi.fn(async () => {
+      if (!hasUserGesture) throw new Error('sidePanel.open() requires a user gesture')
+    })
+    const setOptions = vi.fn(async () => {})
+
+    await expect(openWorkbenchPanel({ open, setOptions }, 8, false)).resolves.toBeUndefined()
+    expect(open).toHaveBeenCalledWith({ windowId: 8 })
+    expect(setOptions).toHaveBeenCalledWith({ path: WORKBENCH_PATH, enabled: true })
+    expect(open.mock.invocationCallOrder[0]).toBeLessThan(setOptions.mock.invocationCallOrder[0])
+  })
+
+  it('录制器占用侧栏时不重载工作台路径', async () => {
+    const open = vi.fn(async () => {})
+    const setOptions = vi.fn(async () => {})
+    await openWorkbenchPanel({ open, setOptions }, 8, true)
+    expect(open).toHaveBeenCalledOnce()
+    expect(setOptions).not.toHaveBeenCalled()
   })
 })

@@ -1,80 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it, rs } from '@rstest/core';
 /**
  * @vitest-environment jsdom
  */
-import { act } from 'react';
-import type React from 'react';
-import { useEffect } from 'react';
+import { afterEach, beforeEach, describe, expect, it, rs } from '@rstest/core';
+import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { useCairnStore } from '../src/store';
 
-const setPopupTab = rs.fn();
-const getAgentRefs: Array<unknown> = [];
-const constructedAgentOptions: Array<unknown> = [];
-const verifyCallbacks: Array<unknown> = [];
 const configProviderThemes: Array<unknown> = [];
-let sdkSyncEffectCount = 0;
-let prefersDarkMode = false;
-let themeChangeListener: (() => void) | undefined;
-
-rs.mock('@midscene/core/ai-model', () => ({
-  runConnectivityTest: rs.fn(),
-}));
-
-rs.mock('@midscene/visualizer', () => ({
-  NavActions: ({
-    onAgentOptionsSave,
-    onVerify,
-  }: {
-    onAgentOptionsSave?: (options: Record<string, number>) => void;
-    onVerify?: unknown;
-  }) => (
-    <>
-      <button
-        onClick={() =>
-          onAgentOptionsSave?.({
-            replanningCycleLimit: 12,
-            screenshotShrinkFactor: 2,
-            waitAfterAction: 500,
-          })
-        }
-        type="button"
-      >
-        Save agent options
-      </button>
-      <button onClick={() => verifyCallbacks.push(onVerify)} type="button">
-        Capture verify callback
-      </button>
-    </>
-  ),
-  globalThemeConfig: () => ({
-    token: { colorPrimary: '#base-primary' },
-  }),
-  safeOverrideAIConfig: rs.fn(),
-  useEnvConfig: (selector?: (state: Record<string, unknown>) => unknown) => {
-    const state = {
-      config: {
-        MIDSCENE_MODEL_API_KEY: 'test-key',
-        MIDSCENE_MODEL_NAME: 'test-model',
-      },
-      setPopupTab,
-    };
-    return selector ? selector(state) : state;
-  },
-}));
 
 rs.mock('antd', () => ({
-  App: Object.assign(
-    ({ children }: { children: React.ReactNode }) => children,
-    {
-      useApp: () => ({
-        message: {
-          error: rs.fn(),
-          info: rs.fn(),
-          success: rs.fn(),
-        },
-      }),
-    },
-  ),
+  App: ({ children }: { children: React.ReactNode }) => children,
   ConfigProvider: ({
     children,
     theme,
@@ -85,78 +20,62 @@ rs.mock('antd', () => ({
     configProviderThemes.push(theme);
     return children;
   },
-  Dropdown: ({ children }: { children: React.ReactNode }) => children,
+  Button: ({
+    children,
+    onClick,
+    'aria-label': ariaLabel,
+  }: {
+    children?: React.ReactNode;
+    onClick?: () => void;
+    'aria-label'?: string;
+  }) => (
+    <button type="button" onClick={onClick} aria-label={ariaLabel}>
+      {children}
+    </button>
+  ),
   theme: {
     darkAlgorithm: 'dark-algorithm',
     defaultAlgorithm: 'default-algorithm',
   },
 }));
 
-rs.mock('@midscene/shared/env', () => ({
-  MIDSCENE_MODEL_API_KEY: 'test-key',
-}));
-
-rs.mock('@midscene/web/chrome-extension', () => ({
-  ChromeExtensionProxyPage: class ChromeExtensionProxyPage {},
-  ChromeExtensionProxyPageAgent: class ChromeExtensionProxyPageAgent {
-    constructor(_page: unknown, options: unknown) {
-      constructedAgentOptions.push(options);
-    }
-  },
-}));
-
-rs.mock('../src/components/playground', () => ({
-  BrowserExtensionPlayground: ({
-    getAgent,
-    onPlaygroundSDKChange,
-  }: {
-    getAgent: unknown;
-    onPlaygroundSDKChange?: (sdk: { id: string }) => void;
-  }) => {
-    getAgentRefs.push(getAgent);
-
-    useEffect(() => {
-      sdkSyncEffectCount += 1;
-      onPlaygroundSDKChange?.({ id: 'sdk' });
-    }, [getAgent, onPlaygroundSDKChange]);
-
-    return <div>playground</div>;
-  },
-}));
-
-rs.mock('../src/extension/bridge', () => ({
-  default: () => <div>bridge</div>,
+rs.mock('../src/components/CairnConnectModal', () => ({
+  CairnConnectModal: ({ open }: { open: boolean }) =>
+    open ? <div>识途登录窗口已打开</div> : null,
 }));
 
 rs.mock('../src/extension/recorder', () => ({
-  default: () => <div>recorder</div>,
+  default: () => <div>录制器内容</div>,
 }));
 
-describe('PlaygroundPopup', () => {
+describe('CairnRecorderPopup', () => {
   beforeEach(() => {
-    // Tell React this test environment expects act-wrapped updates.
     (
       globalThis as typeof globalThis & {
         IS_REACT_ACT_ENVIRONMENT?: boolean;
       }
     ).IS_REACT_ACT_ENVIRONMENT = true;
-    localStorage.clear();
-    setPopupTab.mockClear();
-    getAgentRefs.length = 0;
-    constructedAgentOptions.length = 0;
-    verifyCallbacks.length = 0;
     configProviderThemes.length = 0;
-    sdkSyncEffectCount = 0;
-    prefersDarkMode = false;
-    themeChangeListener = undefined;
+    useCairnStore.setState({
+      authStatus: 'authenticated',
+      token: 'test-token',
+      account: {
+        id: 'author-1',
+        email: 'author@example.test',
+        displayName: '编写者',
+        roles: [],
+      },
+      targetId: null,
+      targets: [],
+      binding: null,
+      initialize: async () => {},
+    });
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: rs.fn(() => ({
-        addEventListener: (eventName: string, listener: () => void) => {
-          if (eventName === 'change') themeChangeListener = listener;
-        },
-        matches: prefersDarkMode,
+        matches: true,
         media: '(prefers-color-scheme: dark)',
+        addEventListener: rs.fn(),
         removeEventListener: rs.fn(),
       })),
     });
@@ -167,109 +86,71 @@ describe('PlaygroundPopup', () => {
     document.documentElement.removeAttribute('data-theme');
   });
 
-  it('uses Ant Design dark tokens for the system dark theme', async () => {
-    prefersDarkMode = true;
-    const { PlaygroundPopup } = await import('../src/extension/popup');
+  it('keeps the recorder light and Chinese even when the system prefers dark', async () => {
+    const { CairnRecorderPopup } = await import('../src/extension/popup');
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
 
     await act(async () => {
-      root.render(<PlaygroundPopup />);
-      await Promise.resolve();
+      root.render(<CairnRecorderPopup />);
     });
 
-    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(document.documentElement.lang).toBe('zh-CN');
     expect(configProviderThemes.at(-1)).toEqual(
       expect.objectContaining({
-        algorithm: 'dark-algorithm',
-        token: expect.objectContaining({ colorPrimary: '#2D5290' }),
+        algorithm: 'default-algorithm',
+        token: expect.objectContaining({ colorPrimary: '#245ce5' }),
       }),
     );
-    expect(themeChangeListener).toEqual(expect.any(Function));
+    expect(container.textContent).toContain('识途协同录制');
+    expect(container.textContent).toContain('录制器内容');
+    expect(container.textContent).not.toContain('Playground');
+    expect(container.textContent).not.toContain('Midscene');
+    expect(container.textContent).not.toContain('GitHub');
 
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async () => root.unmount());
   });
 
-  it('keeps getAgent stable when playground SDK state updates', async () => {
-    const { PlaygroundPopup } = await import('../src/extension/popup');
+  it('requires a platform login before rendering the recorder', async () => {
+    useCairnStore.setState({
+      authStatus: 'unauthenticated',
+      token: null,
+      account: null,
+    });
+    const { CairnRecorderPopup } = await import('../src/extension/popup');
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
 
     await act(async () => {
-      root.render(<PlaygroundPopup />);
-      await Promise.resolve();
+      root.render(<CairnRecorderPopup />);
     });
 
-    expect(sdkSyncEffectCount).toBe(1);
-    expect(getAgentRefs).toHaveLength(2);
-    expect(getAgentRefs[0]).toBe(getAgentRefs[1]);
+    expect(container.textContent).toContain('登录识途后开始录制');
+    expect(container.textContent).toContain('识途登录窗口已打开');
+    expect(container.textContent).not.toContain('录制器内容');
 
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async () => root.unmount());
   });
 
-  it('persists Agent options and supplies them to newly created Agents', async () => {
-    const { PlaygroundPopup } = await import('../src/extension/popup');
+  it('opens platform settings from the target selector', async () => {
+    const { CairnRecorderPopup } = await import('../src/extension/popup');
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
 
     await act(async () => {
-      root.render(<PlaygroundPopup />);
-      await Promise.resolve();
+      root.render(<CairnRecorderPopup />);
     });
-    await act(async () => {
-      const saveButton = Array.from(container.querySelectorAll('button')).find(
-        (button) => button.textContent === 'Save agent options',
-      );
-      saveButton?.click();
-      await Promise.resolve();
-    });
-
-    const expectedOptions = {
-      replanningCycleLimit: 12,
-      screenshotShrinkFactor: 2,
-      waitAfterAction: 500,
-    };
-    expect(
-      JSON.parse(
-        localStorage.getItem('midscene-extension-agent-options') || '{}',
-      ),
-    ).toEqual(expectedOptions);
-
-    const getAgent = getAgentRefs.at(-1) as () => unknown;
-    getAgent();
-    expect(constructedAgentOptions.at(-1)).toEqual(expectedOptions);
+    expect(container.textContent).not.toContain('识途登录窗口已打开');
 
     await act(async () => {
-      root.unmount();
+      container.querySelector<HTMLButtonElement>('.cairn-recorder-target')?.click();
     });
-  });
+    expect(container.textContent).toContain('识途登录窗口已打开');
 
-  it('provides model verification outside Playground mode', async () => {
-    const { PlaygroundPopup } = await import('../src/extension/popup');
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
-
-    await act(async () => {
-      root.render(<PlaygroundPopup />);
-      await Promise.resolve();
-    });
-    await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent === 'Capture verify callback')
-        ?.click();
-    });
-
-    expect(verifyCallbacks.at(-1)).toEqual(expect.any(Function));
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async () => root.unmount());
   });
 });
