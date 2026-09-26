@@ -32,6 +32,8 @@ import {
   forbidden,
   listMapSafeEntries,
   createMapSafeEntry,
+  updateMapSafeEntry,
+  archiveMapSafeEntry,
   getMapSafeEntry,
   getMapJob,
   createMapJob,
@@ -87,6 +89,8 @@ import {
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyUpdateBody,
   type MapSafeEntryCreateBody,
+  type MapSafeEntryUpdateBody,
+  type MapSafeEntryArchiveBody,
   type MapJobPreviewRequest,
   type MapJobCreateBody,
   type ExplorationPolicyUpdateBody,
@@ -404,12 +408,30 @@ export class MapService {
     return updateMapJobPolicy(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
   }
 
-  listSafeEntries(targetId: string) {
-    return listMapSafeEntries(this.database, targetId).catch(rethrowDomain)
+  listSafeEntries(targetId: string, options?: { includeArchived?: boolean }) {
+    return listMapSafeEntries(this.database, targetId, options).catch(rethrowDomain)
   }
 
   createSafeEntry(targetId: string, body: MapSafeEntryCreateBody, account: RequestAccount) {
     return createMapSafeEntry(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  updateSafeEntry(
+    targetId: string,
+    entryId: string,
+    body: MapSafeEntryUpdateBody,
+    account: RequestAccount,
+  ) {
+    return updateMapSafeEntry(this.database, targetId, entryId, body, this.actor(account)).catch(rethrowDomain)
+  }
+
+  archiveSafeEntry(
+    targetId: string,
+    entryId: string,
+    body: MapSafeEntryArchiveBody,
+    account: RequestAccount,
+  ) {
+    return archiveMapSafeEntry(this.database, targetId, entryId, body, this.actor(account)).catch(rethrowDomain)
   }
 
   explorationPolicy(targetId: string) {

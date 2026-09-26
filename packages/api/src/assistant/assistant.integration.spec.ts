@@ -6,7 +6,7 @@ import {
 import { APP_FILTER, APP_GUARD, Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   createAccountBodySchema,
   createTargetBodySchema,
@@ -114,6 +114,17 @@ describe('助手权限先行（真实仓储）', { timeout: 30_000 }, () => {
     await getOrCreatePlatformConfig(db)
     const secrets = new LocalSecretProvider(Buffer.alloc(32, 7))
     const platformConfig = new PlatformConfigService(db, secrets)
+    vi.spyOn(platformConfig, 'resolvePlatformAiAccess').mockResolvedValue({
+      revision: 1,
+      baseUrl: 'http://127.0.0.1:9999',
+      model: 'test-model',
+      provider: 'openai',
+      thinkingMode: 'off',
+      apiKey: 'test-key',
+      requestTimeoutMs: 10000,
+      maxCallsPerTurn: 4,
+      maxOutputTokens: 2000,
+    })
     const targetsService = new TargetsService(db, secrets)
     const service = new AssistantService(
       db,

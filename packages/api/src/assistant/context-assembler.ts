@@ -9,6 +9,8 @@ import {
   type MissingInfoReason,
   citationKey,
   isSensitiveFillInput,
+  stepRunMapByStep,
+  stepRunsOf,
   SENSITIVE_FILL_HINT,
   canonicalJson,
 } from '@cairn/shared'
@@ -143,8 +145,9 @@ export async function assembleDiagnoseContext(
       ? options.quote.targetId
       : undefined)
 
+  const byStep = effectiveStepId ? stepRunsOf(run.stepRuns, effectiveStepId) : []
   const targetSteps = effectiveStepId
-    ? run.stepRuns.filter((item) => item.stepId === effectiveStepId || item.id === effectiveStepId)
+    ? (byStep.length > 0 ? byStep : run.stepRuns.filter((item) => item.id === effectiveStepId))
     : run.stepRuns
 
   if (effectiveStepId && targetSteps.length === 0) {
@@ -420,8 +423,8 @@ export async function assembleRunCompareContext(
       : 'compatible_configuration'
     : 'incomparable'
 
-  const baseSteps = new Map(baseObservation.run.stepRuns.map((s) => [s.stepId, s]))
-  const targetSteps = new Map(targetObservation.run.stepRuns.map((s) => [s.stepId, s]))
+  const baseSteps = stepRunMapByStep(baseObservation.run.stepRuns)
+  const targetSteps = stepRunMapByStep(targetObservation.run.stepRuns)
 
   const allStepIds = Array.from(new Set([...baseSteps.keys(), ...targetSteps.keys()]))
   const differences: RunCompareFactPack['differences'] = []

@@ -20,6 +20,7 @@ import {
   previewDeleteScenario,
   previewRecordingImport,
   publishScenarioDraft,
+  queryAiPathInsights,
   saveScenarioDraft,
   updateScenarioMeta,
   previewScenarioExpansion,
@@ -35,6 +36,7 @@ import {
 } from '@cairn/db'
 import {
   FACTORY_PLATFORM_CONFIG,
+  type AiPathInsightsQuery,
   type AcceptKnowledgeProposalBody,
   type ApplyRecordingImportBody,
   type ApplyDemonstrationBody,
@@ -126,6 +128,10 @@ export class ScenariosService {
     return listResolutionStats(this.db, id, query).catch(rethrowDomain)
   }
 
+  aiPathInsights(scenarioId: string, query: AiPathInsightsQuery) {
+    return queryAiPathInsights(this.db, scenarioId, query).catch(rethrowDomain)
+  }
+
   versions(id: string) {
     return listScenarioVersions(this.db, id).catch(rethrowDomain)
   }
@@ -197,6 +203,7 @@ export class ScenariosService {
         mapCapturePolicy: body.mapCapturePolicy,
         idempotencyKey: body.idempotencyKey,
         debugMode: body.debugMode,
+        pauseBeforeStepId: body.pauseBeforeStepId,
         actor: { id: actor.id },
         executableTypes: types,
         hangWaitMs: config.CAIRN_BROWSER_AI_HANG_WAIT_MS,

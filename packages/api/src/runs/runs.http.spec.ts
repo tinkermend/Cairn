@@ -82,6 +82,21 @@ function mockService() {
     resumeAuth: vi.fn(async () => ({ ...detail, status: 'RECOVERING' })),
     evidence: vi.fn(async (): Promise<{ items: unknown[] }> => ({ items: [] })),
     evidenceContent: vi.fn(),
+    iterations: vi.fn(async () => ({ iterations: [], total: 0, offset: 0, limit: 50 })),
+    iterationDetail: vi.fn(async () => ({
+      iteration: {
+        id: '11111111-2222-3333-4444-555555555555',
+        runId: detail.id,
+        blockId: 'blk_1',
+        headerStepId: 'step_1',
+        scopePath: 'L1#0',
+        iterationIndex: 0,
+        status: 'SUCCEEDED',
+        startedAt: '2026-09-10T00:00:00.000Z',
+        finishedAt: '2026-09-10T00:00:01.000Z',
+      },
+      stepRuns: [],
+    })),
     previewDelete: vi.fn(async () => ({ previewToken: 'tok', counts: {}, blockers: [] })),
     delete: vi.fn(async () => ({
       resourceId: detail.id,
@@ -121,6 +136,7 @@ function mockService() {
     })),
     mapDecisions: vi.fn(async () => ({ items: [] })),
     resolutionDecisions: vi.fn(async () => ({ items: [] })),
+    aiTasks: vi.fn(async () => ({ events: [], observation: null })),
   }
 }
 
@@ -483,6 +499,20 @@ describe('Runs HTTP', () => {
     await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/resolution-decisions`).expect(403)
   })
 
+  it('可读运行 AI 动作事实，缺 target:read 拒绝', async () => {
+    const attemptId = '77777777-7777-4777-8777-777777777777'
+    await request(adminApp.getHttpServer())
+      .get(`/runs/${detail.id}/attempts/${attemptId}/ai-tasks`)
+      .expect(200)
+    expect(service.aiTasks).toHaveBeenCalledWith(detail.id, attemptId, { limit: 50 })
+    await request(adminApp.getHttpServer())
+      .get(`/runs/${detail.id}/attempts/${attemptId}/ai-tasks?limit=invalid`)
+      .expect(400)
+    await request(viewerApp.getHttpServer())
+      .get(`/runs/${detail.id}/attempts/${attemptId}/ai-tasks`)
+      .expect(403)
+  })
+
   it('删除无对象返回 200，有待清理对象返回 202', async () => {
     const service = mockService()
     const app = await buildApp(admin, service)
@@ -500,5 +530,25 @@ describe('Runs HTTP', () => {
     const accepted = await request(app.getHttpServer()).post(`/runs/${detail.id}/delete`).expect(202)
     expect(accepted.body.totalObjects).toBe(2)
     await app.close()
+  })
+
+  it('可读运行迭代列表和详情，校验权限与未找到错误', async () => {
+    const iterationId = '11111111-2222-3333-4444-555555555555'
+    await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/iterations`).expect(200)
+    expect(service.iterations).toHaveBeenCalledWith(detail.id, expect.any(Object))
+
+    await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/iterations/${iterationId}`).expect(200)
+    expect(service.iterationDetail).toHaveBeenCalledWith(detail.id, iterationId)
+
+    // viewer 有 run:read 权限，也可以读取
+    await request(viewerApp.getHttpServer()).get(`/runs/${detail.id}/iterations`).expect(200)
+
+    // 运行不存在时返回 404
+    service.get.mockResolvedValueOnce(null)
+    await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/iterations`).expect(404)
+
+    // 迭代不存在时返回 404
+    service.iterationDetail.mockResolvedValueOnce(null)
+    await request(adminApp.getHttpServer()).get(`/runs/${detail.id}/iterations/${iterationId}`).expect(404)
   })
 })

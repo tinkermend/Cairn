@@ -4,6 +4,7 @@ import {
   type AssistantStepChange,
   type ScenarioDocument,
   applyStepProposal,
+  authoringSteps,
   compareCompileDiagnostics,
   isAuthoringDocumentV2,
   parseScenarioDocument,
@@ -22,7 +23,7 @@ function requireFlatDocument(document: unknown): ScenarioDocument {
     return parseScenarioDocument({
       schemaVersion: document.schemaVersion,
       inputs: document.inputs,
-      steps: document.nodes.flatMap((n) => (n.kind === 'step' ? [n.step] : [])),
+      steps: authoringSteps(document),
     })
   }
   return parseScenarioDocument(document)

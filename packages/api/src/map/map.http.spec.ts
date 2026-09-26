@@ -194,6 +194,8 @@ function mockService() {
     })),
     listSafeEntries: vi.fn(async () => ({ items: [] })),
     createSafeEntry: vi.fn(),
+    updateSafeEntry: vi.fn(),
+    archiveSafeEntry: vi.fn(),
     previewJob: vi.fn(async () => ({
       jobKind: 'map_probe',
       entryId: objectId,
@@ -394,6 +396,20 @@ describe('地图查询 HTTP', () => {
       targetAccountId: objectId,
       entryId: objectId,
     }).expect(202)
+    await request(app.getHttpServer()).post(`/targets/${targetId}/map/safe-entries/${objectId}/update`).send({
+      expectedVersion: 1,
+      name: '更新后入口',
+      url: 'https://example.com/updated',
+      safetyBasisKind: 'confirmed_path',
+      summary: '更新说明',
+      jobKinds: ['map_probe'],
+    }).expect(200)
+    expect(maps.updateSafeEntry).toHaveBeenCalled()
+    await request(app.getHttpServer()).post(`/targets/${targetId}/map/safe-entries/${objectId}/archive`).send({
+      reason: '下线',
+    }).expect(200)
+    expect(maps.archiveSafeEntry).toHaveBeenCalled()
+
     const moduleRef = await Test.createTestingModule({
       controllers: [MapController],
       providers: [
@@ -412,6 +428,17 @@ describe('地图查询 HTTP', () => {
       idempotencyKey: 'job-policy-1',
       manualJobsEnabled: true,
       reason: '开放',
+    }).expect(403)
+    await request(limited.getHttpServer()).post(`/targets/${targetId}/map/safe-entries/${objectId}/update`).send({
+      expectedVersion: 1,
+      name: '尝试更新',
+      url: 'https://example.com/updated',
+      safetyBasisKind: 'confirmed_path',
+      summary: '更新说明',
+      jobKinds: ['map_probe'],
+    }).expect(403)
+    await request(limited.getHttpServer()).post(`/targets/${targetId}/map/safe-entries/${objectId}/archive`).send({
+      reason: '尝试下线',
     }).expect(403)
     await limited.close()
   })

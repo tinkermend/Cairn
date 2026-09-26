@@ -10,6 +10,7 @@ import {
   assistantExplanationSchema,
   assistantGuideSchema,
   assistantInPageGuidanceSchema,
+  assistantKnowledgeAnswerResultSchema,
   assistantKnowledgeProposalSchema,
   assistantProposalSchema,
   operationsActionProposalSchema,
@@ -732,6 +733,52 @@ export class AssistantCapabilityRegistry {
       handler: async (ctx) => {
         const { handleInPageGuidance } = await import('./handlers/in-page-guidance.handler.js')
         return handleInPageGuidance(ctx)
+      },
+    })
+
+    // 13. knowledge.answer
+    this.register({
+      descriptor: {
+        id: 'knowledge.answer',
+        version: '1.0.0',
+        label: '有源开放问答',
+        purpose: '在已授权和已验证的平台知识与业务事实范围内进行有源回答',
+        notApplicable: ['未授权的业务系统事实', '写操作执行意图'],
+        requiredPermissions: ['ai:assist'],
+        inputSchemaRef: 'assistantKnowledgeAnswerInputSchema',
+        outputSchemaRef: 'assistantKnowledgeAnswerResultSchema',
+        contextProfileRef: 'knowledge_answer:v1',
+        executionMode: 'single_turn',
+        sideEffect: 'read_only',
+        allowedTools: [],
+        policyRef: 'knowledge_answer_policy:v1',
+        promptRef: null,
+        validatorRefs: ['schema_validator', 'grounding_validator'],
+        intentMatchers: [
+          { kind: 'keyword', pattern: '怎么配置' },
+          { kind: 'keyword', pattern: '什么是' },
+          { kind: 'keyword', pattern: '规则' },
+          { kind: 'keyword', pattern: '关系' },
+          { kind: 'keyword', pattern: '说明' },
+        ],
+        slotBindings: [
+          { slot: 'question', from: 'question', key: 'question', required: true },
+          { slot: 'runId', from: 'pageContext', key: 'runId', required: false },
+          { slot: 'scenarioId', from: 'pageContext', key: 'scenarioId', required: false },
+          { slot: 'targetId', from: 'pageContext', key: 'targetId', required: false },
+        ],
+        requiredContextKeys: [],
+      },
+      inputSchema: z.strictObject({
+        question: z.string().optional(),
+        runId: z.string().optional(),
+        scenarioId: z.string().optional(),
+        targetId: z.string().optional(),
+      }),
+      outputSchema: assistantKnowledgeAnswerResultSchema,
+      handler: async (ctx) => {
+        const { handleKnowledgeAnswer } = await import('./handlers/knowledge-answer.handler.js')
+        return handleKnowledgeAnswer(ctx)
       },
     })
   }

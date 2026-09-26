@@ -14,6 +14,8 @@ import {
   mapConsumptionPolicyUpdateBodySchema,
   mapJobPolicyUpdateBodySchema,
   mapSafeEntryCreateBodySchema,
+  mapSafeEntryUpdateBodySchema,
+  mapSafeEntryArchiveBodySchema,
   mapJobPreviewRequestSchema,
   mapJobCreateBodySchema,
   explorationPolicyUpdateBodySchema,
@@ -23,6 +25,8 @@ import {
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyUpdateBody,
   type MapSafeEntryCreateBody,
+  type MapSafeEntryUpdateBody,
+  type MapSafeEntryArchiveBody,
   type MapJobPreviewRequest,
   type MapJobCreateBody,
   type ExplorationPolicyUpdateBody,
@@ -297,8 +301,13 @@ export class MapController {
 
   @Get('safe-entries')
   @RequirePermissions('target:read', 'map:read')
-  listSafeEntries(@Param('targetId') targetId: string) {
-    return this.maps.listSafeEntries(targetId)
+  listSafeEntries(
+    @Param('targetId') targetId: string,
+    @Query('includeArchived') includeArchived?: string,
+  ) {
+    return this.maps.listSafeEntries(targetId, {
+      includeArchived: includeArchived === 'true' || includeArchived === '1',
+    })
   }
 
   @Post('safe-entries')
@@ -309,6 +318,30 @@ export class MapController {
     @CurrentAccount() account: RequestAccount,
   ) {
     return this.maps.createSafeEntry(targetId, body, account)
+  }
+
+  @Post('safe-entries/:entryId/update')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('map:maintain')
+  updateSafeEntry(
+    @Param('targetId') targetId: string,
+    @Param('entryId') entryId: string,
+    @Body(new ZodValidationPipe(mapSafeEntryUpdateBodySchema)) body: MapSafeEntryUpdateBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.updateSafeEntry(targetId, entryId, body, account)
+  }
+
+  @Post('safe-entries/:entryId/archive')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('map:maintain')
+  archiveSafeEntry(
+    @Param('targetId') targetId: string,
+    @Param('entryId') entryId: string,
+    @Body(new ZodValidationPipe(mapSafeEntryArchiveBodySchema)) body: MapSafeEntryArchiveBody,
+    @CurrentAccount() account: RequestAccount,
+  ) {
+    return this.maps.archiveSafeEntry(targetId, entryId, body, account)
   }
 
   @Post('jobs/preview')

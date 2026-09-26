@@ -6,7 +6,7 @@ import {
 import { APP_FILTER, APP_GUARD, Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   type Step,
   createAccountBodySchema,
@@ -85,6 +85,7 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
   let assistantService: AssistantService
   let asyncRunner: AssistantAsyncRunner
   let capabilityRegistry: AssistantCapabilityRegistry
+  let platformConfig: PlatformConfigService
 
   beforeAll(async () => {
     db = await openIsolatedDb(`cairn_asst_cap_${newId().replaceAll('-', '')}`)
@@ -198,7 +199,18 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
 
     await getOrCreatePlatformConfig(db)
     const secrets = new LocalSecretProvider(Buffer.alloc(32, 9))
-    const platformConfig = new PlatformConfigService(db, secrets)
+    platformConfig = new PlatformConfigService(db, secrets)
+    vi.spyOn(platformConfig, 'resolvePlatformAiAccess').mockResolvedValue({
+      revision: 1,
+      baseUrl: 'http://127.0.0.1:9999',
+      model: 'test-model',
+      provider: 'openai',
+      thinkingMode: 'off',
+      apiKey: 'test-key',
+      requestTimeoutMs: 10000,
+      maxCallsPerTurn: 4,
+      maxOutputTokens: 2000,
+    })
     const targetsService = new TargetsService(db, secrets)
     capabilityRegistry = new AssistantCapabilityRegistry()
     const hintsBus = {
@@ -573,6 +585,16 @@ describe('平台助手能力契约、多租户授权与轮次安全底座测试'
       const userBInvocations = await assistantService.listModelInvocations(userB, {})
       expect(userBInvocations.items.some((i) => i.ownerRef.turnId === turnB.turnId)).toBe(true)
       expect(userBInvocations.items.some((i) => i.ownerRef.turnId === turnA.turnId)).toBe(false)
+    })
+
+    it('未启用平台 AI 时，createTurn 后端硬拦截并拒绝（403 ASSISTANT_MODEL_DISABLED）', async () => {
+      vi.spyOn(platformConfig, 'resolvePlatformAiAccess').mockResolvedValueOnce(null)
+      await expect(
+        assistantService.createTurn(userA, conversationAId, {
+          clientTurnId: `client-turn-${newId()}`,
+          question: '测试无 AI 拦截',
+        }),
+      ).rejects.toThrow('当前平台未启用 AI 模型')
     })
   })
 })

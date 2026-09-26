@@ -11,6 +11,7 @@ import {
   cleanAssistantQuestion,
   extractScenarioSearchKeyword,
   hasAllPermissions,
+  normalizeAssistantPageContext,
   routeAssistantTurn,
   unpackAssistantResultEnvelope,
 } from '@cairn/shared'
@@ -32,11 +33,12 @@ import { DB_HANDLE } from '../db/db.module'
 import { CHANGE_HINT } from '../observe/change-hint.module'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import { TargetsService } from '../targets/targets.service'
-import { AuthService } from '../auth/auth.service'
 import { createOpenAiCompatibleClient, type PlatformModelClient } from './model-client'
-import { AssistantModelSession, classifyAssistantCapability } from './model-session'
+import { AssistantModelSession, classifyAssistantCapability, supervisorRouteWithLlm } from './model-session'
 import { AssistantCapabilityRegistry } from './registry'
 import type { RequestAccount as Actor } from '../common/request-account'
+
+import { AuthService } from '../auth/auth.service'
 
 interface ActiveExecution {
   turnId: string
@@ -77,16 +79,6 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(AssistantAsyncRunner.name)
   private readonly activeRuns = new Map<string, ActiveExecution>()
   private heartbeatTimer: NodeJS.Timeout | null = null
-
-  // Deprecated: queued executions are now fully persisted in DB (assistant_turns.request_payload)
-  registerQueued(
-    _turnId: string,
-    _actor: Actor,
-    _body: CreateAssistantTurnBody,
-    _processingToken: string,
-  ): void {
-    // no-op, state is persisted in DB
-  }
 
   constructor(
     @Inject(DB_HANDLE) private readonly db: DbHandle,
@@ -138,6 +130,18 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Failed to renew lease for turn ${turnId}`, err)
       }
     }
+  }
+
+  /**
+   * @deprecated 排队上下文已持久化至数据库 assistant_turns.request_payload，不再使用内存注册。
+   */
+  registerQueued(
+    _turnId: string,
+    _actor: Actor,
+    _body: CreateAssistantTurnBody,
+    _processingToken: string,
+  ): void {
+    // No-op: request payload is persisted directly in database
   }
 
   /**
@@ -268,8 +272,42 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
     }
 
     const access = await this.platformConfig.resolvePlatformAiAccess()
+    let pendingThinkingBuffer = ''
+    let thinkingFlushTimer: NodeJS.Timeout | null = null
+
+    const flushThinkingBuffer = async () => {
+      if (!pendingThinkingBuffer) return
+      const delta = pendingThinkingBuffer
+      pendingThinkingBuffer = ''
+      currentSeq++
+      await this.recordEvent(
+        turnId,
+        'thinking',
+        { delta },
+        currentSeq,
+      ).catch(() => undefined)
+      await this.hints
+        .publish({
+          namespace: this.hints.namespace,
+          eventSeq: currentSeq,
+          objectType: 'assistant_turn',
+          objectId: turnId,
+        })
+        .catch(() => undefined)
+    }
+
+    const onThinkingDelta = (delta: string) => {
+      pendingThinkingBuffer += delta
+      if (!thinkingFlushTimer) {
+        thinkingFlushTimer = setTimeout(() => {
+          thinkingFlushTimer = null
+          void flushThinkingBuffer()
+        }, 50)
+      }
+    }
+
     const session = access
-      ? new AssistantModelSession(this.db, turnId, { ...access, deadlineAt }, this.models, actor.id)
+      ? new AssistantModelSession(this.db, turnId, { ...access, deadlineAt }, this.models, actor.id, onThinkingDelta)
       : null
 
     try {
@@ -325,7 +363,94 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      // If no ordinal match, route normally
+      // 1. If explicit capabilityHint provided or parent clarify selected, route directly
+      if (!decision && body.capabilityHint) {
+        decision = routeAssistantTurn({
+          question: body.question,
+          capabilityHint: body.capabilityHint,
+          pageContext: body.pageContext,
+          available: availableIds,
+        })
+      }
+
+      // 2. 100% LLM Supervisor routing when session (platform AI) is available and no explicit hint
+      if (!decision && session && !body.capabilityHint) {
+        const skills = availableDescriptors.map((desc) => ({
+          id: desc.id as AssistantCapabilityId,
+          label: desc.label,
+          purpose: desc.purpose,
+        }))
+        const supervisorRoute = await supervisorRouteWithLlm(
+          session,
+          cleanAssistantQuestion(body.question),
+          skills,
+          body.pageContext,
+          abortController.signal,
+        )
+
+        if (
+          supervisorRoute &&
+          supervisorRoute.skillId !== 'none' &&
+          availableIds.includes(supervisorRoute.skillId as AssistantCapabilityId) &&
+          supervisorRoute.confidence >= 0.5
+        ) {
+          const chosen = supervisorRoute.skillId as AssistantCapabilityId
+          const normalizedContext = normalizeAssistantPageContext(body.pageContext)
+          const fallbackSlots: Record<string, unknown> = {}
+          if (normalizedContext?.runId) fallbackSlots.runId = normalizedContext.runId
+          if (normalizedContext?.scenarioId) fallbackSlots.scenarioId = normalizedContext.scenarioId
+          if (normalizedContext?.targetId) fallbackSlots.targetId = normalizedContext.targetId
+          if (normalizedContext?.stepId) fallbackSlots.stepId = normalizedContext.stepId
+          if (normalizedContext?.draftRevision) fallbackSlots.draftRevision = normalizedContext.draftRevision
+          if (normalizedContext?.versionId) fallbackSlots.versionId = normalizedContext.versionId
+
+          if (chosen === 'knowledge.answer') {
+            decision = {
+              type: 'dispatch',
+              capabilityId: 'knowledge.answer',
+              slots: {
+                ...fallbackSlots,
+                ...supervisorRoute.slots,
+              },
+            }
+          } else {
+            const tentative = routeAssistantTurn({
+              question: body.question,
+              capabilityHint: chosen,
+              pageContext: body.pageContext,
+              available: availableIds,
+            })
+            if (tentative.type === 'dispatch') {
+              decision = {
+                ...tentative,
+                slots: {
+                  ...tentative.slots,
+                  ...supervisorRoute.slots,
+                },
+              }
+            } else if (
+              tentative.type === 'clarify' &&
+              tentative.missingFields?.includes('capabilityId')
+            ) {
+              // 遗留正则竞争命中了其他关键词（如"运行"、"对比"），但已被 Supervisor LLM 明确裁决；以 Supervisor 裁决为准
+              decision = {
+                type: 'dispatch',
+                capabilityId: chosen,
+                slots: {
+                  ...fallbackSlots,
+                  ...supervisorRoute.slots,
+                },
+              }
+            } else {
+              decision = tentative
+            }
+          }
+        } else if (supervisorRoute && (supervisorRoute.confidence < 0.5 || supervisorRoute.skillId === 'none')) {
+          decision = clarifyAvailableCapabilities(availableIds)
+        }
+      }
+
+      // 3. Fallback for offline/test environments without active AI session
       if (!decision) {
         decision = routeAssistantTurn({
           question: body.question,
@@ -352,24 +477,6 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
           ownerAccountId: actor.id,
           stopReason: 'superseded_by_new_task',
         }).catch(() => undefined)
-      }
-
-      if (decision.type === 'unsupported' && decision.reasonCode === 'TASK_UNSUPPORTED' && session) {
-        const classified = await classifyAssistantCapability(
-          session,
-          cleanAssistantQuestion(body.question),
-          availableIds,
-          abortController.signal,
-          body.pageContext,
-        )
-        if (classified) {
-          decision = routeAssistantTurn({
-            question: body.question,
-            capabilityHint: classified,
-            pageContext: body.pageContext,
-            available: availableIds,
-          })
-        }
       }
 
       if (
@@ -477,8 +584,15 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      if (thinkingFlushTimer) {
+        clearTimeout(thinkingFlushTimer)
+        thinkingFlushTimer = null
+      }
+      await flushThinkingBuffer()
+
       await recordStage('persisting')
       const status = result.kind === 'clarify' ? 'CLARIFY' : 'COMPLETED'
+      const reasoningInfo = session?.getReasoningInfo()
       await completeAssistantTurn(this.db, {
         turnId,
         ownerAccountId: actor.id,
@@ -487,9 +601,18 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
         capabilityId,
         slots,
         result,
+        thinkingText: reasoningInfo?.reasoningText || undefined,
+        thinkingDurationMs: reasoningInfo?.durationMs != null ? Math.round(reasoningInfo.durationMs) : undefined,
       })
     } catch (error) {
+      if (thinkingFlushTimer) {
+        clearTimeout(thinkingFlushTimer)
+        thinkingFlushTimer = null
+      }
+      await flushThinkingBuffer()
+
       this.logger.error(`runTurn error:`, error)
+      const reasoningInfo = session?.getReasoningInfo()
       if (abortController.signal.aborted) {
         await completeAssistantTurn(this.db, {
           turnId,
@@ -497,6 +620,8 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
           processingToken,
           status: 'CANCELLED',
           stopReason: 'cancelled',
+          thinkingText: reasoningInfo?.reasoningText || undefined,
+          thinkingDurationMs: reasoningInfo?.durationMs != null ? Math.round(reasoningInfo.durationMs) : undefined,
         }).catch(() => undefined)
       } else {
         const isDomain = error instanceof DomainError
@@ -514,6 +639,8 @@ export class AssistantAsyncRunner implements OnModuleInit, OnModuleDestroy {
                 reasonCode: isDomain ? error.code : 'TURN_FAILED',
                 message: error instanceof Error ? error.message : '助手处理失败',
               },
+          thinkingText: reasoningInfo?.reasoningText || undefined,
+          thinkingDurationMs: reasoningInfo?.durationMs != null ? Math.round(reasoningInfo.durationMs) : undefined,
         }).catch(() => undefined)
       }
     } finally {

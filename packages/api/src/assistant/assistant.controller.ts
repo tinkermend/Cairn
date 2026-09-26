@@ -22,6 +22,7 @@ import {
   cancelResultSchema,
   createAssistantConversationBodySchema,
   createAssistantTurnBodySchema,
+  deleteAssistantConversationResultSchema,
   submitAcceptedSchema,
   type CreateAssistantConversationBody,
   type CreateAssistantTurnBody,
@@ -60,6 +61,18 @@ export class AssistantController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return assistantConversationListSchema.parse(await this.assistant.listConversations(actor, query))
+  }
+
+  @Post('conversations/:id/delete')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('ai:assist')
+  async deleteConversation(
+    @Param('id') id: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return deleteAssistantConversationResultSchema.parse(
+      await this.assistant.deleteConversation(actor, id),
+    )
   }
 
   @Get('conversations/:id/turns')

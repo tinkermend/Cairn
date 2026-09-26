@@ -8,6 +8,7 @@ import {
   type PatchTargetRef,
   type ScenarioDocument,
   type HealingPatch,
+  stepRunFor,
 } from '@cairn/shared'
 import {
   evaluatePatchGuards,
@@ -96,7 +97,7 @@ export class RepairService {
       }
 
       // Check step and attempt existence
-      const stepRun = run.stepRuns.find((s) => s.stepId === body.stepId || s.id === body.stepId)
+      const stepRun = stepRunFor(run.stepRuns, body.stepId) ?? run.stepRuns.find((s) => s.id === body.stepId)
       const effectiveStepId = stepRun ? stepRun.stepId : body.stepId
 
       // Reconstruct ScenarioDocument from run snapshot

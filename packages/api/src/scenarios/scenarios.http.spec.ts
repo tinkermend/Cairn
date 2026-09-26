@@ -87,6 +87,7 @@ function mockService() {
       unavailableReasons: [{ type: 'ai_action', code: 'AI_DISABLED', message: 'off' }],
     })),
     resolutionStats: vi.fn(async () => ({ items: [] })),
+    aiPathInsights: vi.fn(async () => []),
     createRecordingBinding: vi.fn(async () => ({ binding: { id: 'bind-1' }, ticket: 't'.repeat(64) })),
     listRecordingImports: vi.fn(async () => ({ bindings: [], drafts: [], receipts: [] })),
     previewRecordingImport: vi.fn(async () => ({ items: [] })),
@@ -157,6 +158,13 @@ describe('Scenarios HTTP', () => {
     await request(adminApp.getHttpServer()).get(`/scenarios/${scenario.id}/resolution-stats`).expect(200)
     expect(service.resolutionStats).toHaveBeenCalledWith(scenario.id, {})
     await request(viewerApp.getHttpServer()).get(`/scenarios/${scenario.id}/resolution-stats`).expect(403)
+  })
+
+  it('路径洞察需要 workflow/target 读权限', async () => {
+    await request(adminApp.getHttpServer()).get(`/scenarios/${scenario.id}/ai-path-insights`).expect(200)
+    expect(service.aiPathInsights).toHaveBeenCalledWith(scenario.id, { windowDays: 30 })
+    await request(adminApp.getHttpServer()).get(`/scenarios/${scenario.id}/ai-path-insights?windowDays=invalid`).expect(400)
+    await request(viewerApp.getHttpServer()).get(`/scenarios/${scenario.id}/ai-path-insights`).expect(403)
   })
 
   it('无 workflow:write 不能新建', async () => {

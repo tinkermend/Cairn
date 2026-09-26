@@ -13,10 +13,14 @@ import {
   mapDecisionListQuerySchema,
   resolutionDecisionListQuerySchema,
   runListQuerySchema,
+  stepIterationListQuerySchema,
   type MapDecisionListQuery,
   type ResolutionDecisionListQuery,
+  type StepIterationListQuery,
   type AcquireAuthControlBody,
   type DeleteResourceBody,
+  aiTaskListQuerySchema,
+  type AiTaskListQuery,
   type AuthControlInputBody,
   type AuthControlTokenBody,
   type CreateRunBody,
@@ -108,6 +112,40 @@ export class RunsController {
     @Query(new ZodValidationPipe(resolutionDecisionListQuerySchema)) query: ResolutionDecisionListQuery,
   ) {
     return this.runs.resolutionDecisions(runId, query)
+  }
+
+  @Get(':runId/attempts/:attemptId/ai-tasks')
+  @RequirePermissions('run:read', 'target:read')
+  aiTasks(
+    @Param('runId') runId: string,
+    @Param('attemptId') attemptId: string,
+    @Query(new ZodValidationPipe(aiTaskListQuerySchema)) query: AiTaskListQuery,
+  ) {
+    return this.runs.aiTasks(runId, attemptId, query)
+  }
+
+  @Get(':runId/iterations')
+  @RequirePermissions('run:read')
+  async listIterations(
+    @Param('runId') runId: string,
+    @Query(new ZodValidationPipe(stepIterationListQuerySchema)) query: StepIterationListQuery,
+  ) {
+    const run = await this.runs.get(runId)
+    if (!run) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
+    return this.runs.iterations(runId, query)
+  }
+
+  @Get(':runId/iterations/:iterationId')
+  @RequirePermissions('run:read')
+  async getIteration(
+    @Param('runId') runId: string,
+    @Param('iterationId') iterationId: string,
+  ) {
+    const run = await this.runs.get(runId)
+    if (!run) throw new NotFoundException({ code: 'RUN_NOT_FOUND', message: '运行不存在' })
+    const result = await this.runs.iterationDetail(runId, iterationId)
+    if (!result) throw new NotFoundException({ code: 'ITERATION_NOT_FOUND', message: '迭代记录不存在' })
+    return result
   }
 
   @Get(':runId')

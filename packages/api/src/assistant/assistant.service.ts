@@ -18,6 +18,7 @@ import {
   quoteTargetSystemId,
   unpackAssistantResultEnvelope,
   type CreateAssistantTurnBody,
+  type DeleteAssistantConversationResult,
   type SubmitAccepted,
   type CancelResult,
   type ModelInvocationRecord,
@@ -27,6 +28,7 @@ import {
   assertTargetPermission,
   beginAssistantTurn,
   createAssistantConversation,
+  deleteAssistantConversation,
   getAssistantTurnRecord,
   getRun,
   getScenario,
@@ -116,6 +118,21 @@ export class AssistantService implements OnModuleInit {
     return listAssistantConversations(this.db, actor.id, query).catch(rethrowDomain)
   }
 
+  async deleteConversation(actor: Actor, id: string): Promise<DeleteAssistantConversationResult> {
+    this.requireAssist(actor)
+    try {
+      const turns = await listAssistantTurnRecords(this.db, id, actor.id, { limit: 100 })
+      for (const t of turns.items) {
+        if (t.turn.status === 'RUNNING' || t.turn.status === 'QUEUED') {
+          await this.asyncRunner.cancel(t.turn.id, actor.id).catch(() => undefined)
+        }
+      }
+    } catch {
+      // 容错：若轮次列表拉取失败仍继续删除会话主体
+    }
+    return deleteAssistantConversation(this.db, id, actor.id).catch(rethrowDomain)
+  }
+
   async listTurns(actor: Actor, conversationId: string, query: { cursor?: string; limit?: number }) {
     this.requireAssist(actor)
     const list = await listAssistantTurnRecords(this.db, conversationId, actor.id, query).catch(rethrowDomain)
@@ -159,6 +176,11 @@ export class AssistantService implements OnModuleInit {
       } catch (err) {
         if (err instanceof DomainError) throw err
       }
+    }
+
+    const access = await this.platformConfig.resolvePlatformAiAccess().catch(() => null)
+    if (!access) {
+      rethrowDomain(new DomainError('forbidden', 'ASSISTANT_MODEL_DISABLED', '当前平台未启用 AI 模型或未配置有效模型提供商，识途助手已暂停服务'))
     }
 
     const config = await this.platformConfig.get()

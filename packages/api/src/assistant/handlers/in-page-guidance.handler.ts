@@ -61,6 +61,47 @@ export async function handleInPageGuidance(
     return result
   }
 
+  // 若未直接命中且具有 LLM 会话，基于地标元数据进行语义生成
+  if (ctx.session) {
+    await onProgress?.('generating', '正在调用模型推理当前页面动线指引...')
+    const { z } = await import('zod')
+    const llmResult = await ctx.session.completeJson(
+      'in_page_guidance',
+      z.strictObject({
+        directAnswer: z.string().min(1).max(500),
+        visualPath: z.array(z.string()).min(1).max(5),
+        shortcutHint: z.string().optional(),
+      }),
+      [
+        {
+          role: 'system',
+          content: `你是识途平台的界面操作指引专家。根据当前页面的界面地标与可用操作，直接回答用户关于页面操作的提问。
+【规则】
+1. 回答要精准、言简意赅，指出具体区域、按钮名称与触发方式；
+2. visualPath 给出 2~3 个按序指引步骤；
+3. 输出 JSON: {"directAnswer": "...", "visualPath": ["1. ...", "2. ..."], "shortcutHint": "可选快捷键"}。`,
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            question,
+            page: manifest.pageTitle,
+            landmarks: manifest.regions,
+          }),
+        },
+      ],
+      ctx.signal,
+    )
+    if (llmResult.ok) {
+      return {
+        kind: 'in_page_guidance',
+        directAnswer: llmResult.value.directAnswer,
+        visualPath: llmResult.value.visualPath,
+        shortcutHint: llmResult.value.shortcutHint,
+      }
+    }
+  }
+
   // 兜底返回当前页面主要操作概览
   const actionsSummary = manifest.regions
     .flatMap((r) => r.actions.map((a) => `【${a.name}】(${a.trigger})`))

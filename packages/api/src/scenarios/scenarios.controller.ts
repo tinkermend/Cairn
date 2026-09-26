@@ -2,6 +2,8 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Res } 
 import type { Response } from 'express'
 import { z } from 'zod'
 import {
+  aiPathInsightsQuerySchema,
+  type AiPathInsightsQuery,
   applyRecordingImportBodySchema,
   applyDemonstrationBodySchema,
   previewDemonstrationBodySchema,
@@ -97,6 +99,15 @@ export class ScenariosController {
     @Query(new ZodValidationPipe(resolutionStatsQuerySchema)) query: ResolutionStatsQuery,
   ) {
     return this.scenarios.resolutionStats(scenarioId, query)
+  }
+
+  @Get(':scenarioId/ai-path-insights')
+  @RequirePermissions('workflow:read', 'target:read')
+  aiPathInsights(
+    @Param('scenarioId') scenarioId: string,
+    @Query(new ZodValidationPipe(aiPathInsightsQuerySchema)) query: AiPathInsightsQuery,
+  ) {
+    return this.scenarios.aiPathInsights(scenarioId, query)
   }
 
   @Get(':scenarioId/validation')

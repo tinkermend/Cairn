@@ -2,6 +2,7 @@ import {
   type AssistantExplanation,
   type AssistantResult,
   type ScenarioDocument,
+  authoringSteps,
   isAuthoringDocumentV2,
   parseScenarioDocument,
   scenarioFactsForModel,
@@ -18,7 +19,7 @@ function requireFlatDocument(document: unknown): ScenarioDocument {
     return parseScenarioDocument({
       schemaVersion: document.schemaVersion,
       inputs: document.inputs,
-      steps: document.nodes.flatMap((n) => (n.kind === 'step' ? [n.step] : [])),
+      steps: authoringSteps(document),
     })
   }
   return parseScenarioDocument(document)

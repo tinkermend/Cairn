@@ -5,11 +5,14 @@ import {
   getEvidenceForRun,
   getRun,
   getRunCleanupStatus,
+  listAiTaskEvents,
   listMapSelectionDecisions,
   listResolutionDecisions,
   listRunEvidence,
   listRuns,
+  loadIterationDetail,
   loadResolutionLayers,
+  loadRunIterations,
   loadScenarioVersion,
   previewDeleteRun,
   requestRunCancel,
@@ -22,12 +25,14 @@ import { assertAiExecutePermission } from '../config/browser-ai'
 import { config } from '../config/env'
 import { PlatformConfigService } from '../platform-config/platform-config.service'
 import type {
+  AiTaskListQuery,
   CreateRunBody,
   DeleteResourceBody,
   MapDecisionListQuery,
   ResolutionDecisionListQuery,
   ReviewRunBody,
   RunListQuery,
+  StepIterationListQuery,
 } from '@cairn/shared'
 import type { ObjectStore } from '@cairn/storage'
 import { DB_HANDLE } from '../db/db.module'
@@ -72,6 +77,10 @@ export class RunsService {
     return listResolutionDecisions(this.db, id, query).catch(rethrowDomain)
   }
 
+  aiTasks(runId: string, attemptId: string, query: AiTaskListQuery) {
+    return listAiTaskEvents(this.db, { runId, attemptId, ...query }).catch(rethrowDomain)
+  }
+
   previewDelete(id: string) {
     return previewDeleteRun(this.db, id).catch(rethrowDomain)
   }
@@ -90,6 +99,14 @@ export class RunsService {
 
   evidence(id: string) {
     return listRunEvidence(this.db, id).catch(rethrowDomain)
+  }
+
+  iterations(id: string, query?: StepIterationListQuery) {
+    return loadRunIterations(this.db, id, query).catch(rethrowDomain)
+  }
+
+  iterationDetail(runId: string, iterationId: string) {
+    return loadIterationDetail(this.db, runId, iterationId).catch(rethrowDomain)
   }
 
   async evidenceContent(runId: string, evidenceId: string, rangeHeader?: string): Promise<EvidenceContent> {
@@ -181,7 +198,6 @@ export class RunsService {
       rethrowDomain(error)
     }
   }
-
 }
 
 function filenameFor(type: string, runId: string): string {

@@ -4,6 +4,7 @@ import {
   assistantCapabilityIdSchema,
   assistantHypothesisSchema,
   assistantStepChangeSchema,
+  PAGE_LANDMARK_MANIFESTS,
   type AssistantCapabilityId,
   type AssistantHypothesis,
   type AssistantPageContext,
@@ -54,6 +55,9 @@ export function parseModelJson(text: string): unknown {
 
 export class AssistantModelSession {
   used = 0
+  private accumulatedReasoning = ''
+  private thinkingStartedAt?: number
+  private thinkingEndedAt?: number
 
   constructor(
     private readonly db: DbHandle,
@@ -61,7 +65,22 @@ export class AssistantModelSession {
     private readonly access: PlatformAiAccess,
     private readonly client: PlatformModelClient,
     private readonly ownerAccountId?: string,
+    private readonly onThinkingDelta?: (delta: string) => void,
   ) {}
+
+  getReasoningInfo(): { reasoningText?: string; durationMs?: number } {
+    const text = this.accumulatedReasoning.trim()
+    const durationMs =
+      this.thinkingStartedAt && this.thinkingEndedAt
+        ? this.thinkingEndedAt - this.thinkingStartedAt
+        : this.thinkingStartedAt
+          ? Date.now() - this.thinkingStartedAt
+          : undefined
+    return {
+      reasoningText: text || undefined,
+      durationMs,
+    }
+  }
 
   remainingMs() {
     return Math.max(1, Math.min(this.access.requestTimeoutMs, this.access.deadlineAt.getTime() - Date.now()))
@@ -122,7 +141,19 @@ export class AssistantModelSession {
         timeoutMs: this.remainingMs(),
         json: true,
         signal,
+        onThinkingDelta: (delta) => {
+          if (!this.thinkingStartedAt) this.thinkingStartedAt = Date.now()
+          this.accumulatedReasoning += delta
+          this.onThinkingDelta?.(delta)
+        },
       })
+      if (result.reasoningText && !this.accumulatedReasoning.includes(result.reasoningText)) {
+        if (!this.thinkingStartedAt) this.thinkingStartedAt = started
+        this.accumulatedReasoning += (this.accumulatedReasoning ? '\n' : '') + result.reasoningText
+      }
+      if (this.thinkingStartedAt && !this.thinkingEndedAt) {
+        this.thinkingEndedAt = Date.now()
+      }
       await recordPlatformAiCall(this.db, {
         turnId: this.turnId,
         ownerAccountId: this.ownerAccountId,
@@ -154,6 +185,100 @@ export class AssistantModelSession {
   }
 }
 
+export const modelSupervisorRouteSchema = z.strictObject({
+  skillId: z.union([assistantCapabilityIdSchema, z.literal('none')]),
+  confidence: z.number().min(0).max(1),
+  slots: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+  reasoning: z.string().optional(),
+})
+export type ModelSupervisorRouteOutput = z.infer<typeof modelSupervisorRouteSchema>
+
+export async function supervisorRouteWithLlm(
+  session: AssistantModelSession,
+  question: string,
+  availableSkills: readonly { id: AssistantCapabilityId; label: string; purpose?: string }[],
+  pageContext?: AssistantPageContext,
+  signal?: AbortSignal,
+): Promise<ModelSupervisorRouteOutput | null> {
+  const page = pageContext?.page
+  const landmarks = page ? PAGE_LANDMARK_MANIFESTS[page] : null
+  const landmarkPrompt = landmarks
+    ? `\n\n【当前页面地标与可用操作】:\n页面: ${landmarks.pageTitle} (${landmarks.page})\n${JSON.stringify(
+        landmarks.regions.map((r) => ({
+          region: r.regionName,
+          actions: r.actions.map((a) => ({ name: a.name, trigger: a.trigger, description: a.description })),
+        })),
+        null,
+        2,
+      )}`
+    : '\n\n【当前页面信息】: 无特定页面地标上下文'
+
+  const skillPrompt = availableSkills
+    .map((s) => `- ${s.id}: 【${s.label}】${s.purpose ?? ''}`)
+    .join('\n')
+
+  const result = await session.completeJson(
+    'classify',
+    modelSupervisorRouteSchema,
+    [
+      {
+        role: 'system',
+        content: `你是识途助手的主管意图路由器（Supervisor Intent Router）。
+你的职责是精准理解用户在平台控制台提问的语义，并将其分派给最合适的能力（Skill）。
+
+【核心决策原则】
+1. 若用户在当前页面提问某个按钮、操作或功能在页面哪里、怎么操作（如“添加步骤在页面哪里”、“怎么保存草稿”、“怎么排序”）：
+   - 若当前页面地标中存在对应操作，必须选择 "in-page.guidance"，并在 slots 中提取 actionKey / question 等信息。
+2. 若用户询问的是全局独立大模块、跨系统菜单或跨页面入口（如“在哪里改密码”、“去哪里配置目标系统”、“怎么看监控”）：
+   - 必须选择 "platform.guide"，并在 slots 中尽量提取 topic（如 accounts, browser, platform-config, studio, scenarios, runs, targets 等）。
+3. 若用户提问运行故障、失败原因、慢在何处：
+   - 选择 "run.diagnose"，并在 slots 中带上 runId（若上下文有）或 findRecentFailed: true。
+4. 若用户提问比对运行差异：
+   - 选择 "run.compare"，并在 slots 中带上 baseRunId / targetRunId。
+5. 若用户询问当前场景逻辑、步骤在做什么、或修改建议：
+   - 选择 "scenario.explain" 或 "scenario.propose-step"，并在 slots 中带上 scenarioId（若上下文有）。
+6. 若用户想要查找/搜索现有场景：
+   - 选择 "scenario.discover"，并在 slots 中提取 filter 关键词。
+7. 若用户询问受控单资源运维写操作（如暂停调度、恢复调度、取消运行）：
+   - 选择 "operations.action"，并在 slots 中提取 actionKey 与 resourceId。
+8. 若用户询问平台概念、使用规范、功能配置说明或业务实体事实（非页面局部找按钮动线、非运行失败诊断、非场景步骤解释、且不包含任何修改/执行等写意图）：
+   - 选择 "knowledge.answer"，并在 slots 中尽量提取相关关键词或查询意图；若含有明确写意图，禁止选择此能力，强制转入专有操作或澄清。
+9. 若都不匹配或用户在进行与平台完全无关的闲聊，skillId 必须输出 "none"，confidence 设为 0。不要勉强归类。
+
+【当前页面信息】
+${landmarkPrompt}
+
+【可用能力列表】
+${skillPrompt}
+- none: 无法匹配任何可用能力
+
+请严格输出 JSON:
+{
+  "skillId": "能力ID或none",
+  "confidence": 0.0到1.0的置信度数值,
+  "slots": { "关键参数名": "提取的值" },
+  "reasoning": "简要判断理由"
+}`,
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          question,
+          page: pageContext?.page ?? (pageContext as any)?.pageKind ?? null,
+          scenarioId: pageContext?.scenarioId ?? null,
+          runId: pageContext?.runId ?? null,
+          stepId: pageContext?.stepId ?? null,
+          targetId: (pageContext as any)?.targetId ?? null,
+        }),
+      },
+    ],
+    signal,
+  )
+
+  if (!result.ok) return null
+  return result.value
+}
+
 export async function classifyAssistantCapability(
   session: AssistantModelSession,
   question: string,
@@ -161,29 +286,12 @@ export async function classifyAssistantCapability(
   signal?: AbortSignal,
   pageContext?: AssistantPageContext,
 ): Promise<AssistantCapabilityId | null> {
-  const result = await session.completeJson(
-    'classify',
-    modelClassifySchema,
-    [
-      {
-        role: 'system',
-        content:
-          '你是识途助手路由器。只能从给定能力中选一个；都不合适时必须选 "none"，不要勉强归类。输出 JSON {"capabilityId":"..."}。不要编造能力。若问句指向当前页面但没有点名能力，run 页优先 run.diagnose，studio 页优先 scenario.explain。目标页、首页或其他页面不要仅因所在页面就选择能力。',
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          question,
-          available: [...available, 'none'],
-          page: pageContext?.page ?? null,
-        }),
-      },
-    ],
-    signal,
-  )
-  if (!result.ok || result.value.capabilityId === 'none') return null
-  if (!available.includes(result.value.capabilityId)) return null
-  return result.value.capabilityId
+  const skills = available.map((id) => ({ id, label: id }))
+  const res = await supervisorRouteWithLlm(session, question, skills, pageContext, signal)
+  if (!res || res.skillId === 'none' || !available.includes(res.skillId as AssistantCapabilityId)) {
+    return null
+  }
+  return res.skillId as AssistantCapabilityId
 }
 
 export async function generateDiagnosisHypotheses(

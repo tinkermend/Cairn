@@ -161,6 +161,23 @@ describe('Credentials HTTP', () => {
     expect(service.replace).not.toHaveBeenCalled()
   })
 
+  it('登记接口只接收目标账号密码', async () => {
+    const body = {
+      type: 'target_password',
+      targetAccountId: credentialId,
+      password: 'secret',
+      validity: { mode: 'permanent' },
+    }
+    await request(adminApp.getHttpServer()).post('/credentials').send(body).expect(200)
+    expect(service.register).toHaveBeenCalledWith(body, admin)
+
+    vi.clearAllMocks()
+    await request(adminApp.getHttpServer()).post('/credentials').send({ ...body, modelSlot: 'platformAi' }).expect(400)
+    await request(adminApp.getHttpServer()).post('/credentials').send({ ...body, type: 'model_key' }).expect(400)
+    await request(adminApp.getHttpServer()).post('/credentials').send({ ...body, type: 'alert_webhook' }).expect(400)
+    expect(service.register).not.toHaveBeenCalled()
+  })
+
   it('管理员可登记批次并逐项提交', async () => {
     await request(adminApp.getHttpServer())
       .post('/credentials/batches')

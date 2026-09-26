@@ -10,7 +10,7 @@ import { APP_FILTER, APP_GUARD, Reflector } from '@nestjs/core'
 import { Test } from '@nestjs/testing'
 import request from 'supertest'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PERMISSIONS, targetAccountSchema, targetListResponseSchema, targetSchema } from '@cairn/shared'
+import { PERMISSIONS, targetAccountSchema, targetListResponseSchema, targetOverviewResponseSchema, targetSchema } from '@cairn/shared'
 import { AllExceptionsFilter } from '../common/all-exceptions.filter'
 import type { RequestAccount } from '../common/request-account'
 import { PermissionsGuard } from '../rbac/permissions.guard'
@@ -75,6 +75,19 @@ class StaticAuthGuard implements CanActivate {
 function mockService() {
   return {
     listTargets: vi.fn(async () => ({ items: [target] })),
+    overview: vi.fn(async () => ({
+      asOf: now,
+      summary: {
+        totalTargets: 0,
+        readyTargets: { value: 0, coverage: 'complete' as const, coveredTargets: 0 },
+        needLoginTargets: { value: 0, coverage: 'complete' as const, coveredTargets: 0 },
+        runningTargets: { value: 0, coverage: 'complete' as const, coveredTargets: 0 },
+      },
+      filteredTotal: 0,
+      items: [],
+      nextCursor: null,
+      snapshotToken: 'snapshot-1',
+    })),
     getTarget: vi.fn(async () => target),
     createTarget: vi.fn(async () => target),
     updateTarget: vi.fn(async () => target),
@@ -217,6 +230,34 @@ describe('Targets HTTP', () => {
     expect(() => targetListResponseSchema.parse(res.body)).not.toThrow()
     for (const item of res.body.items) {
       expect(item).not.toHaveProperty('password')
+    }
+  })
+
+  it('GET /targets/overview 按独立查询契约读取，静态路由不被目标 ID 截获', async () => {
+    const res = await request(viewerApp.getHttpServer())
+      .get(`/targets/overview?targetId=${target.id}&filter=running&sort=name`)
+      .expect(200)
+    expect(() => targetOverviewResponseSchema.parse(res.body)).not.toThrow()
+    expect(service.overview).toHaveBeenCalledWith(
+      { targetId: target.id, filter: 'running', sort: 'name' },
+      expect.objectContaining({ id: viewerPrincipal.id }),
+    )
+    expect(service.getTarget).not.toHaveBeenCalled()
+
+    await request(viewerApp.getHttpServer()).get('/targets/overview?filter=unknown').expect(400)
+    expect(service.overview).toHaveBeenCalledTimes(1)
+  })
+
+  it('GET /targets/overview 要求 target:read', async () => {
+    const noTargetRead = await buildApp({
+      ...viewerPrincipal,
+      permissions: ['session:read'],
+    }, service)
+    try {
+      await request(noTargetRead.getHttpServer()).get('/targets/overview').expect(403)
+      expect(service.overview).not.toHaveBeenCalled()
+    } finally {
+      await noTargetRead.close()
     }
   })
 
@@ -451,6 +492,11 @@ describe('Targets HTTP', () => {
 
     await request(adminApp.getHttpServer())
       .post(`/targets/${target.id}/accounts/${account.id}/clear-storage-state`)
+      .expect(200)
+    expect(service.clearAccountStorageState).toHaveBeenCalled()
+
+    await request(adminApp.getHttpServer())
+      .post(`/targets/${target.id}/accounts/${account.id}/session-state/clear`)
       .expect(200)
     expect(service.clearAccountStorageState).toHaveBeenCalled()
   })

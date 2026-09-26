@@ -12,6 +12,7 @@ import {
   startAuthProfileValidation,
   getAuthProfileValidation,
   TargetsStore,
+  readTargetOverview,
   updateTargetAccountIdentity,
   type DbHandle,
 } from '@cairn/db'
@@ -24,6 +25,7 @@ import {
   type TargetAccessPolicyUpdateBody,
   type PublishTargetAuthProfileBody,
   type StartAuthProfileValidationBody,
+  type TargetOverviewQuery,
   type UpdateTargetAccountIdentityBody,
 } from '@cairn/shared'
 import { config } from '../config/env'
@@ -48,6 +50,10 @@ export class TargetsService {
     return this.store.listTargets(...args).catch(rethrowDomain)
   }
 
+  overview(query: TargetOverviewQuery, actor: RequestAccount) {
+    return readTargetOverview(this.database, query, actor.id).catch(rethrowDomain)
+  }
+
   getTarget(...args: Parameters<TargetsStore['getTarget']>) {
     return this.store.getTarget(...args).catch(rethrowDomain)
   }
@@ -66,6 +72,10 @@ export class TargetsService {
 
   updateResolutionPolicy(...args: Parameters<TargetsStore['updateResolutionPolicy']>) {
     return this.store.updateResolutionPolicy(...args).catch(rethrowDomain)
+  }
+
+  updateAiActionTrace(...args: Parameters<TargetsStore['updateAiActionTrace']>) {
+    return this.store.updateAiActionTrace(...args).catch(rethrowDomain)
   }
 
   deleteTarget(...args: Parameters<TargetsStore['deleteTarget']>) {

@@ -23,6 +23,7 @@ import {
   PERMISSIONS,
   moduleWarningKey,
   upgradeWarningKey,
+  walkAuthoringNodes,
   type ModuleContent,
   type ScenarioAuthoringDocumentV2,
   type Step,
@@ -434,7 +435,7 @@ describe('AM-C HTTP → 真实库', { timeout: 30_000 }, () => {
       baseRevision: saved.body.draft.revision,
       idempotencyKey: newId(),
     }).expect(200)
-    expect(replaced.body.draft.document.nodes[0].kind).toBe('module')
+    expect(walkAuthoringNodes(replaced.body.draft.document)[0]?.node.kind).toBe('module')
     const expansion = await request(server).post(`/scenarios/${created.body.id}/module-expansion-preview`).send({}).expect(200)
     expect(expansion.body.definition.steps.map((step: { type: string }) => step.type)).toEqual(
       expect.arrayContaining(['echo', 'extract', 'assert', 'echo']),

@@ -12,10 +12,12 @@ import {
   targetAccessPolicyUpdateBodySchema,
   targetAccountListQuerySchema,
   targetListQuerySchema,
+  targetOverviewQuerySchema,
   updateTargetAccountBodySchema,
   updateTargetBodySchema,
   targetSessionPolicyPatchSchema,
   targetResolutionPolicyPatchSchema,
+  targetAiActionTraceBodySchema,
   importStorageStateBodySchema,
   type CreateTargetAccountBody,
   type CreateTargetBody,
@@ -27,10 +29,12 @@ import {
   type DeleteResourceBody,
   type TargetAccountListQuery,
   type TargetListQuery,
+  type TargetOverviewQuery,
   type UpdateTargetAccountBody,
   type UpdateTargetBody,
   type TargetSessionPolicyPatch,
   type TargetResolutionPolicyPatch,
+  type TargetAiActionTraceBody,
   type ImportStorageStateBody,
 } from '@cairn/shared'
 import { ZodValidationPipe } from '../common/zod-validation.pipe'
@@ -47,6 +51,12 @@ export class TargetsController {
   @RequirePermissions('target:read')
   listTargets(@Query(new ZodValidationPipe(targetListQuerySchema)) query: TargetListQuery, @CurrentAccount() actor: RequestAccount) {
     return this.targets.listTargets(query, actor)
+  }
+
+  @Get('overview')
+  @RequirePermissions('target:read')
+  overview(@Query(new ZodValidationPipe(targetOverviewQuerySchema)) query: TargetOverviewQuery, @CurrentAccount() actor: RequestAccount) {
+    return this.targets.overview(query, actor)
   }
 
   @Post()
@@ -147,6 +157,17 @@ export class TargetsController {
     @CurrentAccount() actor: RequestAccount,
   ) {
     return this.targets.updateResolutionPolicy(targetId, body, actor)
+  }
+
+  @Post(':targetId/ai-action-trace')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  updateAiActionTrace(
+    @Param('targetId') targetId: string,
+    @Body(new ZodValidationPipe(targetAiActionTraceBodySchema)) body: TargetAiActionTraceBody,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.updateAiActionTrace(targetId, body.mode, actor)
   }
 
   @Get(':targetId/auth-profile')
@@ -278,6 +299,17 @@ export class TargetsController {
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('target:write')
   clearStorageState(
+    @Param('targetId') targetId: string,
+    @Param('accountId') accountId: string,
+    @CurrentAccount() actor: RequestAccount,
+  ) {
+    return this.targets.clearAccountStorageState(targetId, accountId, actor)
+  }
+
+  @Post(':targetId/accounts/:accountId/session-state/clear')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('target:write')
+  clearSessionState(
     @Param('targetId') targetId: string,
     @Param('accountId') accountId: string,
     @CurrentAccount() actor: RequestAccount,

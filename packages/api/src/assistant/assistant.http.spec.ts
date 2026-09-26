@@ -74,6 +74,7 @@ async function buildApp(account: RequestAccount) {
     })),
     createConversation: vi.fn(async () => conversation),
     listConversations: vi.fn(async () => ({ items: [conversation] })),
+    deleteConversation: vi.fn(async (_actor, id: string) => ({ id, deleted: true })),
     listTurns: vi.fn(async () => ({ items: [] })),
     getTurn: vi.fn(async () => ({
       id: '22222222-2222-4222-8222-222222222222',
@@ -147,5 +148,16 @@ describe('助手 HTTP 权限', () => {
         pageContext: { page: 'run', runId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
       })
       .expect(202)
+  })
+
+  it('编写者可以删除会话', async () => {
+    const { app, assistant } = await buildApp(principal('author'))
+    apps.push(app)
+    const res = await request(app.getHttpServer())
+      .post(`/assistant/conversations/${conversation.id}/delete`)
+      .send({})
+      .expect(200)
+    expect(res.body).toEqual({ id: conversation.id, deleted: true })
+    expect(assistant.deleteConversation).toHaveBeenCalledWith(expect.anything(), conversation.id)
   })
 })
