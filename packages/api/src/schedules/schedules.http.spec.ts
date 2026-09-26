@@ -14,7 +14,6 @@ import { SchedulesService } from './schedules.service'
 const scheduleId = '11111111-1111-4111-8111-111111111111'
 const targetId = '22222222-2222-4222-8222-222222222222'
 const accountId = '33333333-3333-4333-8333-333333333333'
-const entryId = '44444444-4444-4444-8444-444444444444'
 
 const definition = {
   timezone: 'Asia/Shanghai',
@@ -23,10 +22,9 @@ const definition = {
   windowEnd: '03:00',
   misfire: 'skip' as const,
   consumer: {
-    type: 'map_refresh' as const,
+    type: 'knowledge_analysis' as const,
     targetId,
-    targetAccountId: accountId,
-    entryId,
+    mode: 'map_quality' as const,
   },
 }
 
@@ -34,7 +32,7 @@ const schedule = {
   scheduleId,
   targetId,
   targetAccountId: accountId,
-  consumerKey: 'map_refresh',
+  consumerKey: 'knowledge_analysis',
   enabled: false,
   revision: 1,
   currentVersionId: '55555555-5555-4555-8555-555555555555',

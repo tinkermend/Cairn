@@ -12,7 +12,6 @@ import {
   getMapSummary,
   listMapAssets,
   listMapAtlasPages,
-  listMapJobCandidateAssets,
   listMapChanges,
   loadMapImpactSource,
   conflict,
@@ -23,20 +22,10 @@ import {
   loadRunMapClues,
   getMapConsumptionPolicy,
   grantMapConsumptionEligibility,
-  requireMapCapableAccount,
   updateMapConsumptionPolicy,
   getMapJobPolicy,
   updateMapJobPolicy,
-  getExplorationPolicy,
-  updateExplorationPolicy,
-  forbidden,
-  listMapSafeEntries,
-  createMapSafeEntry,
-  updateMapSafeEntry,
-  archiveMapSafeEntry,
-  getMapSafeEntry,
   getMapJob,
-  createMapJob,
   cancelMapJob,
   previewMapGovernance,
   publishMapRelease,
@@ -53,29 +42,15 @@ import {
   matchTerminology,
   retireTerminology,
   updateTerminology,
-  listExploreStateRecipes,
-  getExploreStateRecipe,
-  createExploreStateRecipe,
-  reviewExploreStateRecipe,
-  listExploreCandidates,
-  getExploreCandidate,
-  reviewExploreCandidate,
-  consumeExploreCandidateReview,
-  listExploreTraversals,
-  reviewUnknownExploreJob,
   type DbHandle,
 } from '@cairn/db'
 import {
   applyDetailApplicability,
-  compileMapJobSlice,
-  seedUrlsForExploration,
   evaluateCondition,
   gradeMapImpact,
   groupMapDiagnosisClues,
   classifyRoute,
   queryMap,
-  selectMapJobAssets,
-  toMapJobCompileAssets,
 } from '@cairn/map'
 import {
   hasPermission,
@@ -98,24 +73,10 @@ import {
   type MapConsumptionEligibilityGrantBody,
   type MapConsumptionPolicyUpdateBody,
   type MapJobPolicyUpdateBody,
-  type MapSafeEntryCreateBody,
-  type MapSafeEntryUpdateBody,
-  type MapSafeEntryArchiveBody,
-  type MapJobPreviewRequest,
-  type MapJobCreateBody,
-  type ExplorationPolicyUpdateBody,
-  type ExplorationPreviewRequest,
-  type ExplorationCreateBody,
-  mapJobPreviewResponseSchema,
   type CreateTerminologyBody,
   type RetireTerminologyBody,
   type TerminologyListQuery,
   type UpdateTerminologyBody,
-  type StateRecipeCreateBody,
-  type StateRecipeReviewBody,
-  type CandidateReviewBody,
-  type CandidateRunBody,
-  type ReviewUnknownBody,
 } from '@cairn/shared'
 import { DB_HANDLE } from '../db/db.module'
 import { rethrowDomain } from '../common/domain-error'
@@ -423,158 +384,6 @@ export class MapService {
     return updateMapJobPolicy(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
   }
 
-  listSafeEntries(targetId: string, options?: { includeArchived?: boolean }) {
-    return listMapSafeEntries(this.database, targetId, options).catch(rethrowDomain)
-  }
-
-  createSafeEntry(targetId: string, body: MapSafeEntryCreateBody, account: RequestAccount) {
-    return createMapSafeEntry(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
-  }
-
-  updateSafeEntry(
-    targetId: string,
-    entryId: string,
-    body: MapSafeEntryUpdateBody,
-    account: RequestAccount,
-  ) {
-    return updateMapSafeEntry(this.database, targetId, entryId, body, this.actor(account)).catch(rethrowDomain)
-  }
-
-  archiveSafeEntry(
-    targetId: string,
-    entryId: string,
-    body: MapSafeEntryArchiveBody,
-    account: RequestAccount,
-  ) {
-    return archiveMapSafeEntry(this.database, targetId, entryId, body, this.actor(account)).catch(rethrowDomain)
-  }
-
-  explorationPolicy(targetId: string) {
-    return getExplorationPolicy(this.database, targetId).catch(rethrowDomain)
-  }
-
-  updateExplorationPolicy(targetId: string, body: ExplorationPolicyUpdateBody, account: RequestAccount) {
-    return updateExplorationPolicy(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
-  }
-
-  async previewJob(targetId: string, body: MapJobPreviewRequest) {
-    try {
-      await requireMapCapableAccount(this.database, targetId, body.targetAccountId)
-      const policy = await getMapJobPolicy(this.database, targetId)
-      const entry = await getMapSafeEntry(this.database, targetId, body.entryId)
-      const assets = toMapJobCompileAssets(await listMapJobCandidateAssets(this.database, targetId))
-      const items = selectMapJobAssets(body.jobKind, policy.policy, assets, body.selectedAssetRefs)
-      return mapJobPreviewResponseSchema.parse({
-        jobKind: body.jobKind,
-        entryId: body.entryId,
-        items,
-        estimatedActions: items.filter((item) => item.included).length + 2,
-        estimatedSeconds: policy.policy.sliceWorkSeconds,
-      })
-    } catch (error) {
-      rethrowDomain(error)
-    }
-  }
-
-  async createJob(targetId: string, body: MapJobCreateBody, account: RequestAccount) {
-    try {
-      if (body.jobKind === 'map_explore' && !hasPermission(account.permissions, 'map:explore')) {
-        throw forbidden('MAP_FORBIDDEN', '需要探索权限')
-      }
-      const policy = await getMapJobPolicy(this.database, targetId)
-      const entry = await getMapSafeEntry(this.database, targetId, body.entryId)
-      const assets = toMapJobCompileAssets(await listMapJobCandidateAssets(this.database, targetId))
-      const items = selectMapJobAssets(body.jobKind, policy.policy, assets, body.selectedAssetRefs)
-      const included = assets.filter((asset) =>
-        items.some(
-          (item) =>
-            item.included &&
-            (item.assetRef.objectId ?? item.assetRef.pageId) === (asset.assetRef.objectId ?? asset.assetRef.pageId),
-        ),
-      )
-      const exploration = body.jobKind === 'map_explore' ? await getExplorationPolicy(this.database, targetId) : null
-      const compiled = compileMapJobSlice({
-        jobKind: body.jobKind,
-        entry: {
-          entryId: entry.entryId,
-          version: entry.version,
-          name: entry.name,
-          url: entry.url,
-          arrivalName: entry.arrivalName,
-          arrivalTarget: entry.arrivalTarget,
-          safetyBasis: entry.safetyBasis,
-          jobKinds: entry.jobKinds,
-        },
-        included,
-        policy: policy.policy,
-        exploration: exploration?.policy,
-        seedUrls: exploration ? seedUrlsForExploration(entry.url) : undefined,
-      })
-      if (!compiled.ok) {
-        throw conflict(
-          compiled.reason === 'entry_precondition_unknown' ? 'ENTRY_PRECONDITION_UNKNOWN' : 'COMPILE_REJECTED',
-          compiled.message,
-        )
-      }
-      const summary = await getMapSummary(this.database, targetId, { limit: 1 })
-      return await createMapJob(this.database, targetId, body, this.actor(account), {
-        steps: compiled.steps,
-        releaseId: summary.publishedReleaseId,
-      })
-    } catch (error) {
-      rethrowDomain(error)
-    }
-  }
-
-  async previewExploration(targetId: string, body: ExplorationPreviewRequest) {
-    try {
-      const exploration = await getExplorationPolicy(this.database, targetId)
-      const entry = await getMapSafeEntry(this.database, targetId, body.entryId)
-      const seedUrls = seedUrlsForExploration(entry.url)
-      const items = [
-        ...exploration.policy.allowlist.map((item) => ({
-          assetRef: { targetId },
-          name: item.pathPrefix ? `${item.origin}${item.pathPrefix}` : item.origin,
-          included: true,
-          reason: exploration.policy.exploreEnabled ? 'allowlist 内只读范围' : '政策仍关闭，仅预览',
-        })),
-        ...seedUrls.map((url) => ({
-          assetRef: { targetId },
-          name: url,
-          included: exploration.policy.allowlist.length === 0 ? false : true,
-          reason: '安全进入或种子 URL',
-        })),
-      ]
-      return mapJobPreviewResponseSchema.parse({
-        jobKind: 'map_explore',
-        entryId: body.entryId,
-        items: items.slice(0, 32),
-        estimatedActions: 6,
-        estimatedSeconds: exploration.policy.sliceWorkSeconds,
-      })
-    } catch (error) {
-      rethrowDomain(error)
-    }
-  }
-
-  async createExploration(targetId: string, body: ExplorationCreateBody, account: RequestAccount) {
-    const jobPolicy = await getMapJobPolicy(this.database, targetId).catch(rethrowDomain)
-    return this.createJob(
-      targetId,
-      {
-        source: 'explore',
-        manualId: body.manualId,
-        expectedPolicyRevision: jobPolicy.revision,
-        expectedExplorationRevision: body.expectedExplorationRevision,
-        jobKind: 'map_explore',
-        targetAccountId: body.targetAccountId,
-        entryId: body.entryId,
-        selectedAssetRefs: body.selectedAssetRefs,
-      },
-      account,
-    )
-  }
-
   getJob(jobId: string) {
     return getMapJob(this.database, jobId).catch(rethrowDomain)
   }
@@ -595,123 +404,5 @@ export class MapService {
     } catch (error) {
       rethrowDomain(error)
     }
-  }
-
-  listStateRecipes(targetId: string) {
-    return listExploreStateRecipes(this.database, targetId).catch(rethrowDomain)
-  }
-
-  getStateRecipe(targetId: string, recipeId: string) {
-    return getExploreStateRecipe(this.database, targetId, recipeId).catch(rethrowDomain)
-  }
-
-  createStateRecipe(targetId: string, body: StateRecipeCreateBody, account: RequestAccount) {
-    return createExploreStateRecipe(this.database, targetId, body, this.actor(account)).catch(rethrowDomain)
-  }
-
-  reviewStateRecipe(targetId: string, recipeId: string, body: StateRecipeReviewBody, account: RequestAccount) {
-    return reviewExploreStateRecipe(this.database, targetId, recipeId, body, this.actor(account)).catch(rethrowDomain)
-  }
-
-  listCandidates(targetId: string, jobId: string) {
-    return listExploreCandidates(this.database, targetId, jobId).catch(rethrowDomain)
-  }
-
-  getCandidate(targetId: string, jobId: string, candidateId: string) {
-    return getExploreCandidate(this.database, targetId, jobId, candidateId).catch(rethrowDomain)
-  }
-
-  reviewCandidate(
-    targetId: string,
-    jobId: string,
-    candidateId: string,
-    body: CandidateReviewBody,
-    account: RequestAccount,
-  ) {
-    return reviewExploreCandidate(this.database, targetId, jobId, candidateId, body, this.actor(account)).catch(
-      rethrowDomain,
-    )
-  }
-
-  async runCandidate(
-    targetId: string,
-    jobId: string,
-    candidateId: string,
-    body: CandidateRunBody,
-    account: RequestAccount,
-  ) {
-    try {
-      const consumed = await consumeExploreCandidateReview(
-        this.database,
-        targetId,
-        jobId,
-        candidateId,
-        body.expectedReviewRevision,
-      )
-      const policy = await getMapJobPolicy(this.database, targetId)
-      const exploration = await getExplorationPolicy(this.database, targetId)
-      const entry = await getMapSafeEntry(this.database, targetId, consumed.parentJob.entryId)
-
-      const compiled = compileMapJobSlice({
-        jobKind: 'map_explore',
-        entry: {
-          entryId: entry.entryId,
-          version: entry.version,
-          name: entry.name,
-          url: entry.url,
-          arrivalName: entry.arrivalName,
-          arrivalTarget: entry.arrivalTarget,
-          safetyBasis: entry.safetyBasis,
-          jobKinds: entry.jobKinds,
-        },
-        included: [],
-        policy: policy.policy,
-        exploration: exploration.policy,
-        seedUrls: seedUrlsForExploration(entry.url),
-        candidateAction: {
-          candidateId: consumed.candidate.id,
-          actionCategory: consumed.review.actionCategory as any,
-          targetUrl: consumed.candidate.targetUrl,
-          targetDescriptor: consumed.candidate.locatorDescriptor,
-        },
-      })
-
-      if (!compiled.ok) {
-        throw conflict(
-          compiled.reason === 'entry_precondition_unknown' ? 'ENTRY_PRECONDITION_UNKNOWN' : 'COMPILE_REJECTED',
-          compiled.message,
-        )
-      }
-
-      return await createMapJob(
-        this.database,
-        targetId,
-        {
-          source: 'explore',
-          manualId: body.idempotencyKey.slice(0, 64),
-          expectedPolicyRevision: policy.revision,
-          expectedExplorationRevision: exploration.revision,
-          jobKind: 'map_explore',
-          targetAccountId: consumed.parentJob.targetAccountId,
-          entryId: consumed.parentJob.entryId,
-          selectedAssetRefs: [],
-        },
-        this.actor(account),
-        {
-          steps: compiled.steps,
-          releaseId: consumed.parentJob.releaseId,
-        },
-      )
-    } catch (error) {
-      rethrowDomain(error)
-    }
-  }
-
-  listTraversals(targetId: string, jobId: string) {
-    return listExploreTraversals(this.database, targetId, jobId).catch(rethrowDomain)
-  }
-
-  reviewUnknown(targetId: string, jobId: string, body: ReviewUnknownBody, account: RequestAccount) {
-    return reviewUnknownExploreJob(this.database, targetId, jobId, body, this.actor(account)).catch(rethrowDomain)
   }
 }
