@@ -420,6 +420,16 @@ function expandImplementation(input: {
     if (step.type === 'fill' || step.type === 'echo' || step.type === 'select' ||
       (step.type === 'ai_action' && 'operation' in step.input && step.input.operation === 'input')) {
       const stepInput = step.input as { value?: unknown; from?: string; fromField?: string }
+      if (typeof stepInput.value === 'string' && !stepInput.from) {
+        const expression = /^\$\{(inputs|steps)\.([A-Za-z][A-Za-z0-9_]*)\}$/.exec(stepInput.value)
+        if (expression?.[1] === 'inputs') {
+          stepInput.from = expression[2]
+          delete stepInput.value
+        } else if (expression?.[1] === 'steps') {
+          stepInput.from = outputRenames.get(expression[2]!) ?? expression[2]
+          delete stepInput.value
+        }
+      }
       if (stepInput.from) {
         const binding = invocation.inputBindings[stepInput.from]
         if (binding) {
@@ -1871,6 +1881,8 @@ export function expandAuthoringDocument(
       steps: expandedSteps,
       ...(document.outputs ? { outputs: document.outputs } : {}),
       ...(document.resolution ? { resolution: document.resolution } : {}),
+      ...(document.locatorPlan ? { locatorPlan: document.locatorPlan } : {}),
+      ...(document.locatorProtocol === 2 ? { locatorProtocol: 2 as const } : {}),
     }
     const parsedDef = scenarioDefinitionSchema.safeParse(defCandidate)
     if (parsedDef.success) {

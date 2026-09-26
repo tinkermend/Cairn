@@ -198,6 +198,21 @@ describe('AM-B: 编写展开纯函数 (expandAuthoringDocument)', () => {
     expect((fromPrior.definition!.steps[1]!.input as { fromField?: string }).fromField).toBe('id')
   })
 
+  it('作用域表达式在模块展开时变成可执行的结构化引用', () => {
+    const content = structuredClone(dummyContent)
+    const fill = content.implementations[0]!.steps[0]!
+    if (fill.type !== 'fill') throw new Error('fixture')
+    fill.input = { ...fill.input, from: undefined, value: '${inputs.orderId}' }
+    content.implementations[0]!.steps.push({ id: 'step-copy-output', name: '引用前序输出', type: 'echo', effectType: 'READ_ONLY', input: { value: '${steps.orderStatus}' } })
+    const loaded = { ...dummyLoadedModule, content, contentDigest: moduleContentDigest(content) }
+    const expanded = expandAuthoringDocument(invoke({ orderId: { kind: 'from', key: 'sceneOrderId' } }), ctx({ loadedModules: new Map([[versionId, loaded]]) }))
+    expect(expanded.ok, JSON.stringify(expanded.diagnostics)).toBe(true)
+    expect((expanded.definition!.steps[0]!.input as { from?: string }).from).toBe('sceneOrderId')
+    const referenced = expanded.definition!.steps.find((step) => step.name === '引用前序输出')!
+    expect((referenced.input as { from?: string }).from).toBe('sceneStatus')
+    expect((referenced.input as { value?: unknown }).value).toBeUndefined()
+  })
+
   it('AMB-04: 暴露名冲突报诊断；未暴露内部输出不能按原名引用', () => {
     const conflict = expandAuthoringDocument(
       {

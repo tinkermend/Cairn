@@ -526,6 +526,14 @@ describe('compileScenarioDocument', () => {
     expect(unresolvedCodes.every((d) => d.severity === 'warning')).toBe(true)
   })
 
+  it('发布时阻断未知的业务结论模板变量', () => {
+    const source = { ...document([navigate(ids.a)]), outputs: { summaryTemplate: '结果：${unknown_var}' } }
+    const draft = compileScenarioDocument(source, { mode: 'save' })
+    expect(draft.diagnostics.find((item) => item.code === 'OUTPUT_VARIABLE_UNRESOLVED')?.severity).toBe('warning')
+    const published = compileScenarioDocument(source, { mode: 'release' })
+    expect(published.diagnostics.find((item) => item.code === 'OUTPUT_VARIABLE_UNRESOLVED')?.severity).toBe('error')
+  })
+
   it('活跃步骤引用已停用步骤的输出变量产生 SCENARIO_DISABLED_STEP_OUTPUT_REFERENCED 警告', () => {
     const disabledExtract: Step = {
       id: ids.a,

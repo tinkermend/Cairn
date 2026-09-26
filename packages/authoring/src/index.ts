@@ -36,6 +36,7 @@ export {
 } from './resolver.js'
 export { DemonstrationParseError, parseDemonstrationFile, sanitizeDemonstrationSource, sanitizeDemonstrationUrl, demonstrationFactDigest } from './demonstration-adapters.js'
 export { suggestDemonstration, previewDemonstration, applyDemonstrationToDocument, DemonstrationApplyError } from './demonstration.js'
+export { aiTraceToDemonstrationSource, type AiTraceToDemonstrationSourceInput } from './ai-trace-adapter.js'
 export { validationSubjectDigest, validationRunDigests, classifyValidationSample } from './validation.js'
 export {
   canonicalizeJson,
@@ -43,12 +44,18 @@ export {
   computeContractDigest,
   computeExecutionDigest,
   computeSourceDefinitionDigest,
+  computeTargetDigest,
 } from './digest.js'
 export {
   evaluatePatchGuards,
   computeDigestManifest,
   type EvaluatePatchGuardsOptions,
 } from './patch-guard.js'
+export {
+  applyPatchToDocument,
+  findStepInDocument,
+  PatchApplyError,
+} from './patch-apply.js'
 export {
   buildDemonstrationSemanticProposal,
   type BuildDemonstrationSemanticProposalOptions,
@@ -62,3 +69,21 @@ export {
   buildV2AuthoringSlice,
   type SlicedAuthoringResult,
 } from './authoring-slice.js'
+export {
+  applyAuthoringOperations,
+  type ApplyAuthoringOperationsResult,
+  type ApplyAuthoringOperationsOptions,
+} from './authoring-operations.js'
+export {
+  foldRecordingGeneralization,
+  type FoldRecordingGeneralizationResult,
+} from './recording-generalization.js'
+export {
+  generateQuickActionRound,
+  interpretGeneralizationIntent,
+  type GenerateQuickActionRoundOptions,
+  type GenerateQuickActionRoundResult,
+  type InterpretGeneralizationIntentOptions,
+  type TargetDataset,
+  type TargetDatasetColumn,
+} from './recording-rules.js'

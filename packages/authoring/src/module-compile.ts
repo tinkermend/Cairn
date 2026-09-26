@@ -92,6 +92,16 @@ export function compileModuleContent(
         if (declaredInputs.has(from)) unusedInputs.delete(from)
         if (!available.has(from)) add('MODULE_INPUT_UNDECLARED', 'error', `引用「${from}」不是模块输入或更早步骤的输出`, [...stepPath(index, 'input'), 'from'], step.id)
       }
+      if (step.type === 'fill' || step.type === 'echo' || step.type === 'select') {
+        const value = step.input.value
+        if (typeof value === 'string' && value.includes('${')) {
+          const expression = /^\$\{(inputs|steps)\.([A-Za-z][A-Za-z0-9_]*)\}$/.exec(value)
+          if (!expression) add('MODULE_BINDING_UNSUPPORTED', release ? 'error' : 'warning', '作用域表达式须完整填写在值字段中，不支持嵌入其他文本', [...stepPath(index, 'input'), 'value'], step.id)
+          else if (expression[1] === 'inputs' && !declaredInputs.has(expression[2]!)) add('MODULE_INPUT_UNDECLARED', release ? 'error' : 'warning', `模块输入「${expression[2]}」未声明`, [...stepPath(index, 'input'), 'value'], step.id)
+          else if (expression[1] === 'steps' && !available.has(expression[2]!)) add('MODULE_INPUT_UNDECLARED', release ? 'error' : 'warning', `前序步骤输出「${expression[2]}」不存在`, [...stepPath(index, 'input'), 'value'], step.id)
+          else if (expression[1] === 'inputs') unusedInputs.delete(expression[2]!)
+        }
+      }
       if (step.outputKey) available.add(step.outputKey)
     })
     if (impl.fieldBindings) {

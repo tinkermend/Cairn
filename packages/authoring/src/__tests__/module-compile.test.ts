@@ -9,6 +9,15 @@ const step2Id = '00000000-0000-4000-8000-000000000012'
 const assertStepId = '00000000-0000-4000-8000-000000000013'
 
 describe('AM-A: 模块编译', () => {
+  it('只接受已声明且完整占据值字段的作用域表达式', () => {
+    const content: ModuleContent = {
+      contract: { inputs: [{ key: 'orderId', label: '订单号', valueType: 'string', required: true }], outputs: [{ key: 'done', label: '结果', shape: { kind: 'scalar', type: 'string' } }], effectCeiling: 'READ_ONLY', preconditions: [], postconditions: [{ meaning: '有输出', verification: { kind: 'output_required', outputKey: 'done' } }] },
+      implementations: [{ implementationKey: 'default', kind: 'structured_steps', steps: [{ id: step1Id, name: '回显', type: 'echo', effectType: 'READ_ONLY', outputKey: 'done', input: { value: '${inputs.orderId}' } }], outputMapping: { done: 'done' } }],
+    }
+    expect(compileModuleContent(content, { mode: 'release' }).diagnostics.some((item) => item.code === 'MODULE_INPUT_UNDECLARED')).toBe(false)
+    content.implementations[0]!.steps[0]!.input = { value: '前缀 ${inputs.orderId}' }
+    expect(compileModuleContent(content, { mode: 'release' }).diagnostics.some((item) => item.code === 'MODULE_BINDING_UNSUPPORTED' && item.severity === 'error')).toBe(true)
+  })
   describe('compileModuleContent 校验规则', () => {
     const validAssertStep: Step = {
       id: assertStepId,
@@ -558,4 +567,3 @@ describe('AM-A review regressions', () => {
     })
   })
 })
-

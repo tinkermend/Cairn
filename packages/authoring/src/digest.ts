@@ -117,3 +117,14 @@ export function computeSourceDefinitionDigest(definition: Record<string, unknown
   const canonical = canonicalizeJson(cleaned)
   return syncSha256(canonical)
 }
+
+/**
+ * Computes single step target descriptor digest.
+ */
+export function computeTargetDigest(target: unknown): string {
+  if (!target || typeof target !== 'object') return ''
+  const cleaned = stripNonSemanticFields(target)
+  const canonical = canonicalizeJson(cleaned)
+  return syncSha256(canonical)
+}
+

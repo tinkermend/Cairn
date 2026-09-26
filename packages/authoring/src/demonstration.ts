@@ -14,6 +14,7 @@ import {
   normalizeAuthoringDocument,
   outputShapeForStep,
   replaceNode,
+  replaceNodeWithMany,
   scenarioAuthoringDocumentV2Schema,
   walkAuthoringNodes,
   type ApplyDemonstrationBody,
@@ -40,7 +41,66 @@ function toStep(fact: DemonstrationFact, source: DemonstrationSource): Step | un
   let input: unknown
   let effectType = 'SIDE_EFFECT'
   const midscene = source.importProfile === 'midscene-recorder-json@1'
-  if (fact.action === 'navigate' || fact.action === 'openPage' || fact.action === 'navigation') {
+  const aiTrace = source.importProfile === 'cairn-ai-trace@1'
+
+  if (aiTrace) {
+    if (fact.action === 'click') {
+      if (d.target) {
+        type = 'click'
+        input = {
+          target: d.target,
+          button: d.button ?? 'left',
+          clickCount: d.clickCount ?? 1,
+          modifiers: d.modifiers,
+        }
+      } else if (d.targetDescription) {
+        type = 'ai_action'
+        input = { operation: 'tap', targetDescription: d.targetDescription }
+      }
+    } else if (fact.action === 'fill') {
+      if (d.mode === 'type_only') {
+        type = 'ai_action'
+        input = {
+          operation: 'input',
+          targetDescription: d.targetDescription || '输入框',
+          mode: 'type_only',
+          value: value ?? '',
+        }
+      } else if (d.target) {
+        type = 'fill'
+        if (d.value?.state === 'reference') {
+          input = { target: d.target, from: d.value.from }
+        } else if (d.mode === 'clear') {
+          input = { target: d.target, value: '' }
+        } else {
+          input = { target: d.target, value: value ?? '' }
+        }
+      } else if (d.targetDescription) {
+        type = 'ai_action'
+        input = {
+          operation: 'input',
+          targetDescription: d.targetDescription,
+          mode: d.mode ?? 'replace',
+          ...(d.mode === 'clear' ? {} : { value: value ?? '' }),
+        }
+      }
+    } else if (fact.action === 'keyboard') {
+      type = 'keyboard'
+      input = {
+        ...(d.target ? { target: d.target } : {}),
+        keys: [d.key || 'Enter'],
+      }
+    } else if (fact.action === 'navigate') {
+      type = 'navigate'
+      input = { url: d.url }
+    } else if (fact.action === 'sleep') {
+      type = 'wait'
+      effectType = 'READ_ONLY'
+      input = { kind: 'time', durationMs: d.durationMs ?? 1000 }
+    } else if (fact.action === 'scroll') {
+      return undefined
+    }
+  } else if (fact.action === 'navigate' || fact.action === 'openPage' || fact.action === 'navigation') {
     type = 'navigate'
     input = { url: d.url }
   } else if (fact.action === 'fill') {
@@ -361,6 +421,48 @@ export function applyDemonstrationToDocument(
     }
     updatedDoc = replaceNode(updatedDoc, place.nodeId, merged)
     for (const item of sourceMap) if (item.nodeId === incomingId) item.nodeId = original.step.id
+  } else if (place.kind === 'replace_sequence') {
+    const original = walkAuthoringNodes(document).find((item) => item.id === place.nodeId)?.node
+    if (original?.kind !== 'step') reject('仅支持将独立步骤替换为多步')
+    if (!replacements.length) reject('替换为多步须至少保留一个新动作，全部放弃请直接删除原步骤')
+    const originalStep = original.step
+    if (originalStep.outputKey) {
+      reject(`原步骤声明了输出「${originalStep.outputKey}」，替换后会导致输出断链，禁止替换`)
+    }
+    const subsequentNodes = walkAuthoringNodes(document)
+      .map((i) => i.node)
+      .filter((n) => authoringNodeId(n) !== place.nodeId)
+    for (const other of subsequentNodes) {
+      if (other.kind === 'step') {
+        const bindings = (other.step as any).contextBindings
+        if (bindings && typeof bindings === 'object') {
+          for (const [k, v] of Object.entries(bindings)) {
+            if ((v as any)?.source === place.nodeId || (v as any)?.stepId === place.nodeId) {
+              reject(`原步骤被后续步骤「${other.step.name}」的上下文引用，禁止替换`)
+            }
+          }
+        }
+      }
+    }
+    if (original.outcomes?.length) {
+      const last = replacements[replacements.length - 1]!
+      last.outcomes = [...(last.outcomes ?? []), ...original.outcomes]
+    }
+    if (preview.importProfile === 'cairn-ai-trace@1') {
+      const instruction =
+        (originalStep.input as any)?.instruction ||
+        originalStep.name
+      for (const rep of replacements) {
+        rep.origin = {
+          kind: 'ai_solidification',
+          sourceStepId: originalStep.id,
+          instruction: instruction.slice(0, 512),
+          runId: preview.recordingDraftId,
+          attemptId: preview.recordingDraftId,
+        }
+      }
+    }
+    updatedDoc = replaceNodeWithMany(updatedDoc, place.nodeId, replacements)
   } else {
     let currentAnchor: string | null | undefined = place.kind === 'start' ? null : place.nodeId
     for (const r of replacements) {

@@ -3,10 +3,14 @@ import {
   EXECUTABLE_STEP_TYPES,
   FACTORY_COMPILE_RESOLUTION,
   FORBIDDEN_CONTEXT_KEYS,
+  LOCATOR_ROUTE_LABELS,
+  LOCATOR_SKIP_LABELS,
   ScenarioValidationError,
   WAIT_KINDS_AVAILABLE_NOW,
   assertNoForwardFrom,
   mergeEffectiveResolution,
+  locatorReadiness,
+  resolveLocatorPlansForSteps,
   outputShapeForStep,
   policyAllowsAiRung,
   stepUsesBrowser,
@@ -79,6 +83,7 @@ function add(
 }
 
 function locatorSteps(step: Step): Extract<Step, { input: { target?: unknown } }>[] {
+  if (step.disabled) return []
   if (
     step.type === 'click' ||
     step.type === 'fill' ||
@@ -105,6 +110,8 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
     ...FACTORY_COMPILE_RESOLUTION,
     ...ctx.resolution,
     documentResolution: ctx.resolution?.documentResolution ?? document.resolution,
+    documentLocatorPlan: ctx.resolution?.documentLocatorPlan ?? document.locatorPlan,
+    locatorProtocol: ctx.resolution?.locatorProtocol ?? document.locatorProtocol,
     waitKindsAvailable: ctx.resolution?.waitKindsAvailable ?? WAIT_KINDS_AVAILABLE_NOW,
   }
 
@@ -156,7 +163,12 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
       }
       seenOutputKeys.add(step.outputKey)
     }
-    if (!(executable as readonly string[]).includes(step.type)) {
+    const requiresVisualModel = step.type === 'ai_action' || step.type === 'ai_extract' || step.type === 'ai_assert'
+    if (requiresVisualModel && resolution.locatorDocument && !locatorReadiness(resolution.locatorDocument).visionReady) {
+      add(diagnostics, 'SCENARIO_AI_UNAVAILABLE', 'error',
+        `步骤「${step.name}」${step.type === 'ai_action' ? '是视觉操作' : '可能回退到视觉模型'}，请先在平台配置中启用并完善浏览器 AI 视觉模型及绑定密钥`,
+        { stepId: step.id, fieldPath: ['type'] })
+    } else if (!(executable as readonly string[]).includes(step.type)) {
       add(diagnostics, 'SCENARIO_UNKNOWN_STEP_TYPE', 'error', `步骤「${step.name}」的类型尚未开放`, {
         stepId: step.id,
       })
@@ -255,7 +267,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
       })
     }
     if (step.type === 'ai_action' && (step.policy?.retryLimit ?? 0) > 0) {
-      add(diagnostics, 'SCENARIO_AI_RETRY_FORBIDDEN', 'error', `步骤「${step.name}」是 AI Action，不允许自动重试`, {
+      add(diagnostics, 'SCENARIO_AI_RETRY_FORBIDDEN', 'error', `步骤「${step.name}」是视觉操作，不允许自动重试`, {
         stepId: step.id,
         fieldPath: ['policy', 'retryLimit'],
       })
@@ -467,7 +479,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
           add(
             diagnostics,
             'OUTPUT_VARIABLE_UNRESOLVED',
-            'warning',
+            release ? 'error' : 'warning',
             `业务输出结论模板包含非法的变量插值「\${${token}}」`,
             { fieldPath: ['outputs', 'summaryTemplate'] },
           )
@@ -475,7 +487,7 @@ export function compileScenarioDocument(document: ScenarioDocument, ctx: Compile
           add(
             diagnostics,
             'OUTPUT_VARIABLE_UNRESOLVED',
-            'warning',
+            release ? 'error' : 'warning',
             `业务输出结论模板引用的变量「${token}」未在输入或任何步骤的 outputKey 中定义`,
             { fieldPath: ['outputs', 'summaryTemplate'] },
           )
@@ -605,6 +617,60 @@ function addTargetResolutionDiagnostics(
   },
   release: boolean,
 ): void {
+  if (!target) return
+  if (step.type === 'assert' && (resolution.locatorProtocol === 2 || resolution.documentLocatorPlan || step.policy?.locatorPlan)) {
+    if (target && target.candidates.length === 0) add(diagnostics, 'SCENARIO_TARGET_EMPTY', release ? 'error' : 'warning',
+      `步骤「${step.name}」的成功条件只使用规则判定，请提供规则候选`,
+      { stepId: step.id, fieldPath: ['input', 'target', 'candidates'] })
+    return
+  }
+  if ((resolution.locatorProtocol === 2 || resolution.documentLocatorPlan || step.policy?.locatorPlan) && resolution.locatorDocument) {
+    let plan
+    try {
+      plan = resolveLocatorPlansForSteps({
+        steps: [step],
+        document: resolution.locatorDocument,
+        target: resolution.locatorTarget,
+        scenarioPlan: resolution.documentLocatorPlan,
+        scenarioPolicy: resolution.documentResolution,
+      })[step.id]!
+    } catch (error) {
+      add(diagnostics, 'SCENARIO_LOCATOR_UNAVAILABLE', release ? 'error' : 'warning',
+        `步骤「${step.name}」定位方式不可用：${error instanceof Error ? error.message : '请检查模型配置'}`,
+        { stepId: step.id, fieldPath: ['policy', 'locatorPlan'] })
+      return
+    }
+    for (const skipped of plan.skipped) {
+      add(diagnostics, 'SCENARIO_LOCATOR_SKIPPED', 'warning',
+        `步骤「${step.name}」继承的${LOCATOR_ROUTE_LABELS[skipped.route]}定位路线已跳过：${LOCATOR_SKIP_LABELS[skipped.reason]}`,
+        { stepId: step.id, fieldPath: ['policy', 'locatorPlan'] })
+    }
+    if (!target) return
+    const usesModel = plan.actual.some((route) => route !== 'rule')
+    const hasRules = target.candidates.length > 0
+    if (plan.actual.includes('rule') && !hasRules) {
+      add(diagnostics, 'SCENARIO_TARGET_EMPTY', release ? 'error' : 'warning',
+        `步骤「${step.name}」的定位顺序包含规则，但没有规则定位候选`,
+        { stepId: step.id, fieldPath: ['input', 'target', 'candidates'] })
+    }
+    if (usesModel && !target.semantic?.trim() && (!hasRules || target.candidates.every((candidate) => candidate.by === 'css'))) {
+      add(diagnostics, 'SCENARIO_MODEL_DESCRIPTION_REQUIRED', 'error',
+        `步骤「${step.name}」请填写「要找的页面元素」；仅有 CSS 无法作为模型目标描述`,
+        { stepId: step.id, fieldPath: ['input', 'target', 'semantic'] })
+    }
+    if (usesModel && (step.effectType === 'SIDE_EFFECT' || step.effectType === 'IDEMPOTENT')) {
+      const identity = target.candidates.some((candidate) =>
+        candidate.by === 'role' ? Boolean(candidate.name?.trim())
+          : candidate.by === 'label' || candidate.by === 'text' || candidate.by === 'title' ? Boolean(candidate.value.trim()) : false)
+      const pureModel = Boolean(step.policy?.locatorPlan && step.policy.locatorPlan.order.every((route) => route !== 'rule'))
+      if (!identity) add(diagnostics, 'SCENARIO_MODEL_WRITE_IDENTITY_REQUIRED', pureModel ? 'warning' : release ? 'error' : 'warning',
+        pureModel
+          ? `步骤「${step.name}」显式选择纯模型写操作，缺少独立身份核对；请填写明确目标描述并检查运行证据`
+          : `步骤「${step.name}」缺少可核对的角色名称或可见文字，模型定位后会阻止写操作`,
+        { stepId: step.id, fieldPath: ['input', 'target', 'candidates'] })
+    }
+    return
+  }
   const explicit = step.policy?.resolution ?? resolution.documentResolution
   const effective = mergeEffectiveResolution({
     ceiling: resolution.ceiling,
